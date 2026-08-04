@@ -281,10 +281,36 @@ therefore compares the kernel against an **fp4-activation** reference at the
 same 1e-3 / 1e-2 — pointing the bound at what it can describe — and prints the
 bf16 gap as a measurement beside it. **The tolerance was not loosened.**
 
-What remains genuinely open is whether ~9% rms per layer is acceptable across
-50 blocks and 29 steps. That is an end-to-end quality question, not a per-tensor
-one, and it is why the switch stays off until someone generates the same seed
-both ways and looks.
+### What ~9% per layer does over a whole generation
+
+Measured, rather than argued about. `VIDFAB_NATIVE_NVFP4=1` exists so the same
+seed can be run both ways; 22 frames at 1:1, 30 steps, seed 11, everything else
+identical:
+
+| | per step | denoise | total | video latents |
+|---|---|---|---|---|
+| dequantise-then-cuBLAS | 1.19 s | 34.5 s | 48.7 s | mean +0.0659, std 1.063 |
+| **native nvfp4** | **0.68 s** | **19.7 s** | **25.8 s** | mean +0.0135, std 1.089 |
+
+**1.75× per step, 1.89× end to end.** And the output is *different video*:
+
+```
+mean |diff|  13.5 levels of 255      p99 100, max 183
+correlation  0.874 overall,  0.629 on frame 0 luma
+means        73.3 vs 74.1     stds  48.3 vs 48.0
+```
+
+The global statistics match almost exactly while the correlation does not,
+which is the signature of a **different sample rather than a degraded one** — a
+denoiser whose trajectory was perturbed early converges somewhere else in the
+same distribution. That is what 50 blocks and 29 steps do with a 9% per-layer
+perturbation, and no per-tensor tolerance would have predicted it.
+
+So the switch stays **off by default**. It is not broken and it is not noise on
+top of the reference image; it is a lossier model that generates its own
+equally plausible video, almost twice as fast. Whether that trade is worth
+taking is a judgement about output quality that wants eyes on a set of samples,
+not another number — which is exactly why it is a flag and not a default.
 
 ## Performance
 
