@@ -1178,6 +1178,303 @@ VIDFAB_TEST(linear_int8_convrot) {
                   "convrot skipped when in_features % group != 0");
 }
 
+// --- nvfp4 storage ----------------------------------------------------------
+//
+// Two facts about how the shipped checkpoints store an nvfp4 weight are not
+// inferable from the file and were measured against the fp8 build of the same
+// model (docs/transformer_spec.md 8.4):
+//
+//   - the **high** nibble of each byte is the even-indexed element;
+//   - block scales are written in a 128x4 tile layout, not row-major.
+//
+// Both are silent when wrong. They leave the value histogram intact and the
+// output finite and correctly scaled, and they cost elementwise correlation
+// against the reference — 0.995 becomes 0.00003 — while every summary statistic
+// stays where it was. So each wrong form is constructed below and the kernel is
+// required *not* to match it; a test that only checked the right answer would
+// pass under all four combinations.
+
+// The 128x4 tile map, written out as an explicit walk of the tile and its
+// interior rather than as the kernel's packed shift expression, so that the two
+// are genuinely independent statements of the same layout.
+size_t nvfp4_scale_slot(int o, int k, int blocks_per_row) {
+  const int tiles_per_row = blocks_per_row / 4;
+  const size_t tile = size_t(o / 128) * tiles_per_row + size_t(k / 4);
+  const int row_in_tile = o % 128;
+  // The 128 rows of a tile are visited as four groups of 32, the group index
+  // moving slower than the row inside it.
+  const size_t inside = size_t(row_in_tile % 32) * 16 + size_t(row_in_tile / 32) * 4 + size_t(k % 4);
+  return tile * 128 * 4 + inside;
+}
+
+// A weight in the checkpoint's storage form, plus everything needed to state
+// what it should dequantise to.
+struct Nvfp4Weight {
+  int out_features = 0;
+  int in_features = 0;
+  float global = 0.0f;
+  std::vector<uint8_t> codes;    // one E2M1 code per element, [out, in]
+  std::vector<uint8_t> scales;   // one e4m3 byte per 16 elements, unswizzled [out, in/16]
+  std::vector<uint8_t> packed;   // [out, in/2], even element in the high nibble
+  std::vector<uint8_t> stored;   // `scales` written through the 128x4 tile map
+};
+
+Nvfp4Weight make_nvfp4(int out_features, int in_features, float global, uint32_t seed) {
+  Nvfp4Weight w;
+  w.out_features = out_features;
+  w.in_features = in_features;
+  w.global = global;
+  const int blocks_per_row = in_features / int(vidfab::cuda::kNVFP4BlockSize);
+
+  uint32_t s = seed;
+  auto next = [&]() {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    return s;
+  };
+
+  w.codes.resize(size_t(out_features) * in_features);
+  for (size_t i = 0; i < w.codes.size(); ++i) w.codes[i] = uint8_t(next() & 0x0Fu);
+
+  w.scales.resize(size_t(out_features) * blocks_per_row);
+  for (size_t i = 0; i < w.scales.size(); ++i) {
+    // Exponents 4..11 keep the scales well clear of the subnormals and of the
+    // 0x7F/0xFF NaN encodings, and spread over three orders of magnitude so a
+    // scale landing on the wrong block cannot go unnoticed.
+    const uint32_t r = next();
+    w.scales[i] = uint8_t(((4u + (r % 8u)) << 3) | (r >> 8 & 0x07u));
+  }
+
+  w.packed.assign(size_t(out_features) * in_features / 2, 0);
+  for (int o = 0; o < out_features; ++o) {
+    for (int i = 0; i < in_features; i += 2) {
+      const size_t e = size_t(o) * in_features + i;
+      w.packed[size_t(o) * (in_features / 2) + i / 2] =
+          uint8_t((w.codes[e] << 4) | w.codes[e + 1]);
+    }
+  }
+
+  w.stored.assign(w.scales.size(), 0);
+  for (int o = 0; o < out_features; ++o) {
+    for (int k = 0; k < blocks_per_row; ++k) {
+      w.stored[nvfp4_scale_slot(o, k, blocks_per_row)] = w.scales[size_t(o) * blocks_per_row + k];
+    }
+  }
+  return w;
+}
+
+// How the weight should come out. `block` and `swap_nibbles` exist so the same
+// function can produce the wrong forms the kernel must be shown to reject.
+std::vector<float> nvfp4_reference(const Nvfp4Weight& w, int block = 16,
+                                   bool swap_nibbles = false) {
+  const int blocks_per_row = w.in_features / int(vidfab::cuda::kNVFP4BlockSize);
+  std::vector<float> out(w.codes.size());
+  for (int o = 0; o < w.out_features; ++o) {
+    for (int i = 0; i < w.in_features; ++i) {
+      const int k = std::min(i / block, blocks_per_row - 1);
+      // Same order of operations as the kernel, so bf16 rounding matches and
+      // exact equality is the right bar.
+      const float scale =
+          vidfab::f8_e4m3_to_f32(w.scales[size_t(o) * blocks_per_row + k]) * w.global;
+      const int src = swap_nibbles ? (i ^ 1) : i;
+      const float v = vidfab::f4_e2m1_to_f32(w.codes[size_t(o) * w.in_features + src]) * scale;
+      out[size_t(o) * w.in_features + i] = vidfab::bf16_to_f32(vidfab::f32_to_bf16(v));
+    }
+  }
+  return out;
+}
+
+VIDFAB_TEST(nn_dequant_nvfp4) {
+  // 256 rows spans two row-tiles and 128 columns gives eight scale blocks, so
+  // both halves of the tile index vary; a one-tile case would pass under a
+  // layout that ignored the tiling entirely.
+  const int out_features = 256;
+  const int in_features = 128;
+  const float global = 1.3580322e-3f;  // the qkv_proj block 0 value, not a power of two
+  const Nvfp4Weight w = make_nvfp4(out_features, in_features, global, 20260804u);
+
+  // All sixteen E2M1 codes have to appear or the pattern coverage claim below
+  // is empty.
+  bool seen[16] = {false};
+  for (uint8_t c : w.codes) seen[c] = true;
+  for (int c = 0; c < 16; ++c) CHECK(seen[c]);
+
+  DeviceBuffer<uint8_t> dw(w.packed.size());
+  dw.copy_from_host(w.packed.data(), w.packed.size());
+  DeviceBuffer<uint8_t> dsc(w.stored.size());
+  dsc.copy_from_host(w.stored.data(), w.stored.size());
+  BfBuf ddst(w.codes.size());
+
+  vidfab::cuda::launch_dequant_nvfp4(dw.get(), dsc.get(), global, ddst.p(), out_features,
+                                     in_features, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> got = ddst.host();
+
+  // E2M1 has one mantissa bit and e4m3 three, so the product carries at most
+  // five significant bits and bf16 holds eight: with the same operation order
+  // the two sides agree bit for bit.
+  CHECK_CLOSE(nvfp4_reference(w), got, 0.0, "dequant nvfp4");
+
+  // Each wrong form, and the distance from it. These are the checks that give
+  // the one above any power.
+  const std::vector<float> swapped = nvfp4_reference(w, 16, /*swap_nibbles=*/true);
+  CHECK_MSG(max_abs_diff(swapped, got) > 1e-4,
+            "dequant nvfp4 must take the even element from the HIGH nibble (max diff %.4g)",
+            max_abs_diff(swapped, got));
+
+  const std::vector<float> stride32 = nvfp4_reference(w, 32);
+  CHECK_MSG(max_abs_diff(stride32, got) > 1e-4,
+            "dequant nvfp4 must scale in blocks of 16, not 32 (max diff %.4g)",
+            max_abs_diff(stride32, got));
+
+  // Block scales read row-major instead of through the tile map.
+  {
+    Nvfp4Weight flat = w;
+    flat.stored = w.scales;  // as if the file were plain [out, in/16]
+    DeviceBuffer<uint8_t> dflat(flat.stored.size());
+    dflat.copy_from_host(flat.stored.data(), flat.stored.size());
+    BfBuf dout(w.codes.size());
+    vidfab::cuda::launch_dequant_nvfp4(dw.get(), dflat.get(), global, dout.p(), out_features,
+                                       in_features, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    CHECK_MSG(max_abs_diff(dout.host(), got) > 1e-4,
+              "dequant nvfp4 must unswizzle the 128x4 block-scale tiling (max diff %.4g)",
+              max_abs_diff(dout.host(), got));
+  }
+
+  // A shape the tile map cannot address must be refused rather than silently
+  // mis-offset: 200 does not divide by 128, 96 does not divide by 64.
+  for (auto bad : {std::pair<int, int>(200, 128), std::pair<int, int>(256, 96)}) {
+    bool threw = false;
+    try {
+      vidfab::cuda::launch_dequant_nvfp4(dw.get(), dsc.get(), global, ddst.p(), bad.first,
+                                         bad.second, nullptr);
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK_MSG(threw, "launch_dequant_nvfp4 must refuse %dx%d", bad.first, bad.second);
+  }
+}
+
+// The AWQ per-input-channel activation scale. Only the text encoder's weights
+// carry one; the transformer's are all null, which is a positive statement that
+// the quantiser folded the scale into the preceding norm.
+VIDFAB_TEST(nn_pre_quant_scale) {
+  const int rows = 17;
+  const int dim = 96;
+  const std::vector<float> x = bf16_round(make_data(size_t(rows) * dim, 771u, 1.0f));
+  const std::vector<float> scale = bf16_round(make_data(dim, 772u, 0.5f));
+
+  BfBuf dx(x), dscale(scale), dy(x.size());
+  vidfab::cuda::launch_pre_quant_scale(dx.p(), dscale.p(), dy.p(), rows, dim, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+  std::vector<float> want(x.size());
+  for (int r = 0; r < rows; ++r) {
+    for (int i = 0; i < dim; ++i) {
+      want[size_t(r) * dim + i] =
+          vidfab::bf16_to_f32(vidfab::f32_to_bf16(x[size_t(r) * dim + i] * scale[i]));
+    }
+  }
+  CHECK_CLOSE(want, dy.host(), 0.0, "pre_quant_scale");
+
+  // Scaling by row instead of by column is the plausible transposition.
+  std::vector<float> by_row(x.size());
+  for (int r = 0; r < rows; ++r) {
+    for (int i = 0; i < dim; ++i) {
+      by_row[size_t(r) * dim + i] = x[size_t(r) * dim + i] * scale[r % dim];
+    }
+  }
+  CHECK_MSG(max_abs_diff(by_row, dy.host()) > 1e-4,
+            "pre_quant_scale must scale per input channel, not per row (max diff %.4g)",
+            max_abs_diff(by_row, dy.host()));
+}
+
+// The whole path: a stored nvfp4 weight through LinearRunner against a host
+// matmul of the dequantised reference.
+VIDFAB_TEST(linear_nvfp4) {
+  CublasScope cb;
+  const int rows = 29;
+  const int in_features = 128;
+  const int out_features = 256;
+  const float global = 2.899169921875e-3f;
+
+  const Nvfp4Weight w = make_nvfp4(out_features, in_features, global, 4242u);
+  const std::vector<float> wdq = nvfp4_reference(w);
+  const std::vector<float> x = bf16_round(make_data(size_t(rows) * in_features, 4243u, 0.1f));
+
+  DeviceBuffer<uint8_t> dw(w.packed.size());
+  dw.copy_from_host(w.packed.data(), w.packed.size());
+  DeviceBuffer<uint8_t> dsc(w.stored.size());
+  dsc.copy_from_host(w.stored.data(), w.stored.size());
+  BfBuf dx(x), dy(size_t(rows) * out_features);
+
+  vidfab::cuda::QuantWeight qw;
+  qw.format = vidfab::cuda::QuantFormat::kNVFP4;
+  qw.data = dw.get();
+  qw.out_features = out_features;
+  qw.in_features = in_features;
+  qw.block_scale = dsc.get();
+  qw.global_scale = global;
+  CHECK(qw.stored_bytes() == size_t(out_features) * in_features / 2);
+
+  vidfab::cuda::LinearRunner runner;
+  runner.init(cb.h, nullptr);
+  Workspace ws;
+  ws.reserve(vidfab::cuda::linear_workspace_bytes(qw, rows, vidfab::cuda::ComputeType::kBF16) +
+             256);
+  runner.forward(qw, dx.p(), rows, dy.p(), ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+  const std::vector<float> want = cpu_matmul_nt(x, wdq, rows, out_features, in_features);
+  CHECK_CLOSE_REL(want, dy.host(), 1e-3, 1e-2, "linear nvfp4 dequantise-then-GEMM");
+
+  // A GEMM against the nibble-swapped weight is well scaled and completely
+  // wrong, which is the shape of the failure this format invites.
+  const std::vector<float> wrong = cpu_matmul_nt(
+      x, nvfp4_reference(w, 16, /*swap_nibbles=*/true), rows, out_features, in_features);
+  CHECK_MSG(max_abs_diff(wrong, dy.host()) > 1e-3,
+            "linear nvfp4 must not match the nibble-swapped weight (max diff %.4g)",
+            max_abs_diff(wrong, dy.host()));
+
+  // A weight the checkpoint did not flag full_precision may take a native path
+  // later; enabling it must not move the answer.
+  const std::vector<float> got = dy.host();
+  runner.set_native(true);
+  runner.forward(qw, dx.p(), rows, dy.p(), ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE_REL(got, dy.host(), 1e-3, 1e-2, "linear nvfp4 native == dequantised");
+  runner.set_native(false);
+
+  // With an AWQ activation scale the runner must scale the activation, not the
+  // weight — the two differ because the GEMM is not symmetric in them.
+  {
+    const std::vector<float> pqs = bf16_round(make_data(in_features, 4244u, 0.5f));
+    BfBuf dpqs(pqs);
+    vidfab::cuda::QuantWeight aw = qw;
+    aw.pre_quant_scale = dpqs.p();
+
+    std::vector<float> xs(x.size());
+    for (int r = 0; r < rows; ++r) {
+      for (int i = 0; i < in_features; ++i) {
+        xs[size_t(r) * in_features + i] = vidfab::bf16_to_f32(
+            vidfab::f32_to_bf16(x[size_t(r) * in_features + i] * pqs[i]));
+      }
+    }
+    Workspace ws2;
+    ws2.reserve(vidfab::cuda::linear_workspace_bytes(aw, rows, vidfab::cuda::ComputeType::kBF16) +
+                256);
+    runner.forward(aw, dx.p(), rows, dy.p(), ws2);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    CHECK_CLOSE_REL(cpu_matmul_nt(xs, wdq, rows, out_features, in_features), dy.host(), 1e-3,
+                    1e-2, "linear nvfp4 with pre_quant_scale");
+    CHECK_MSG(max_abs_diff(got, dy.host()) > 1e-3,
+              "pre_quant_scale must actually reach the activation (max diff %.4g)",
+              max_abs_diff(got, dy.host()));
+  }
+}
+
 // --- nvfp4 tensor core ------------------------------------------------------
 //
 // The shipped nvfp4 checkpoints are packed for
