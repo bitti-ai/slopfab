@@ -233,8 +233,38 @@ onward. **If you just want to see it work, use `--frames 22 --aspect 1:1
 --steps 30` and wait under a minute.**
 
 Roughly 25 s of the fixed cost is loading 19.6 GiB of transformer weights, and
-~7 s is the conditioner, which streams its 24.4 GB rather than resident-loading
+~5 s is the conditioner, which streams its 24.4 GB rather than resident-loading
 it.
+
+**Measure with the GPU idle.** A contended card does not halve throughput here,
+it costs up to 14x: the conditioner's attention is a dependent chain of short
+launches and WDDM time-slicing destroys dependent chains rather than slowing
+them proportionally. The same encoder attention measured 2.55 ms with another
+process on the card and 0.159 ms with it idle. Check `nvidia-smi` before
+believing any number in this file.
+
+### Conditioner residency
+
+| mode | load | encode (warm) | peak |
+|---|---|---|---|
+| streaming *(default)* | 0.00 s | **0.62 s** | 1.20 GB |
+| resident | 6.2 s | 0.12 s | 23.13 GB |
+
+Streaming is the default because the transformer needs 19.6 GiB later in the
+same process. Its encode used to be 2.9 s, of which **96% was a single-threaded
+host `memcpy`** staging weights into pinned memory — and most of *that* was soft
+page faults on the 27 GB mapping, not memcpy bandwidth. The mapping is now
+page-locked once with `cudaHostRegister` and each weight DMAs straight out of
+it, which lifted H2D from 8.7 GB/s to ~42 GB/s and removed 930 MB of pinned
+staging. Registration is best-effort; if it fails the old staging path still
+runs, just slower.
+
+**Resident mode has a bad tail on a shared card.** If another process wants the
+memory, WDDM evicts the 22.7 GB weight arena to system RAM and faults it back
+over PCIe — an encode measured at 485 s once under contention, recovering to
+0.9 s on the next call. The residency check samples free VRAM once at load and
+cannot see a later competing allocation. Prefer streaming unless the card is
+yours alone.
 
 So the four linear layers are already at the machine ceiling and are not worth
 touching — `cublasLt` heuristic search, a larger cuBLAS workspace and row
