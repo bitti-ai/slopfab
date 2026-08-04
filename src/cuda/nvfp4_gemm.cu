@@ -224,8 +224,12 @@ __device__ inline uint32_t swap_nibbles(uint32_t v) {
 template <bool kSwizzled>
 __device__ __host__ inline size_t scale_offset(int m, int j, int k_blocks) {
   if (kSwizzled) {
+    // `j & 3` is always zero on the kernel's own path -- it loads four blocks
+    // at a time -- and is written out anyway so the same function serves a
+    // host packer that addresses one block.
     return (static_cast<size_t>(m >> 7) * (k_blocks >> 2) + (j >> 2)) * 512 +
-           static_cast<size_t>(m & 31) * 16 + static_cast<size_t>((m & 127) >> 5) * 4;
+           static_cast<size_t>(m & 31) * 16 + static_cast<size_t>((m & 127) >> 5) * 4 +
+           static_cast<size_t>(j & 3);
   }
   return static_cast<size_t>(m) * k_blocks + j;
 }
