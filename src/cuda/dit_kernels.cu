@@ -44,6 +44,18 @@ inline int grid_1d(size_t n, int block) { return static_cast<int>((n + block - 1
 // The final layer goes through the same kernel with `num_modality = 1` and
 // `num_param = 2`, because it selects on `timestep_indices` alone and has no
 // modality dependence (spec 3.2).
+//
+// The write is fully coalesced: consecutive threads own consecutive `channel`
+// values, and `channels = 5376 = 21 * blockDim.x`, so no warp ever straddles a
+// (modality, param) boundary and every store is one aligned 128-byte
+// transaction. That exactness is a property of 5376, not a requirement — a
+// hidden size that is not a multiple of the block size costs one split
+// transaction per group and nothing else.
+//
+// Note the bias starts the fma chain rather than being added at the end. That
+// is one rounding *fewer* than a `linear`-then-add-bias reference, so this is
+// not bit-identical to a torch dump of the same operation; it is closer to the
+// exact value, which is the point of spec 9.1.
 __global__ void adaln_expand_kernel(const float* __restrict__ w, const float* __restrict__ bias,
                                     const float* __restrict__ code, float* __restrict__ out,
                                     int num_t, int num_modality, int num_param, int channels,
@@ -94,10 +106,26 @@ void launch_adaln_expand(const float* w, const float* bias, const float* code, f
   if (num_t <= 0 || num_modality <= 0 || num_param <= 0 || channels <= 0 || rank <= 0) {
     throw std::runtime_error("launch_adaln_expand: every extent must be positive");
   }
-  const int out_features = num_modality * num_param * channels;
-  const dim3 grid(grid_1d(static_cast<size_t>(out_features), kThreads), num_t);
+  // The product, not just the factors. A signed overflow here would make the
+  // `p >= out_features` guard compare against a negative bound, so every thread
+  // would pass it and write outside the allocation — silent corruption rather
+  // than a fault.
+  const size_t features = static_cast<size_t>(num_modality) * num_param * channels;
+  if (features > 0x7FFFFFFFull) {
+    throw std::runtime_error("launch_adaln_expand: " + std::to_string(features) +
+                             " output features overflows the kernel's index type");
+  }
+  if (num_t > 65535) {
+    throw std::runtime_error("launch_adaln_expand: " + std::to_string(num_t) +
+                             " timesteps exceeds the gridDim.y limit");
+  }
+  const int out_features = static_cast<int>(features);
+  const dim3 grid(grid_1d(features, kThreads), num_t);
   adaln_expand_kernel<<<grid, kThreads, 0, stream>>>(w, bias, code, out, num_t, num_modality,
                                                      num_param, channels, rank, out_features);
+  // A launch-configuration check, not an execution check: an asynchronous fault
+  // from any earlier kernel on this stream also latches here and will be
+  // reported with this file's line number.
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

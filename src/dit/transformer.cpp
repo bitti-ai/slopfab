@@ -427,7 +427,10 @@ struct Transformer::Impl {
 
   // Staging for the two async host->device copies whose source would otherwise
   // be a local: cudaMemcpyAsync from pageable memory is not guaranteed to have
-  // consumed the buffer by the time it returns.
+  // consumed the buffer by the time it returns. What actually makes these safe
+  // is the synchronise at the end of `forward`; if step pipelining is ever
+  // added and that sync removed, these must become PinnedBuffers, because the
+  // driver's inline-copy threshold for small transfers is not a guarantee.
   std::vector<float> host_code;
   std::vector<int32_t> host_ts;
 
