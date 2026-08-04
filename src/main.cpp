@@ -27,6 +27,7 @@
 #include <chrono>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/generate.h"
 #include "vidfab/vae/vit_decoder.h"
 #endif
 
@@ -58,6 +59,9 @@ void print_usage() {
       "  --seed <n>                   noise seed\n"
       "  --raw                        write .y4m + .wav instead of muxing MP4\n"
       "  --dry-run                    resolve and print the plan, touch no weights\n"
+      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
+      "                               noise, to exercise the VAEs and the muxer\n"
+      "  --vae <f> --audio-vae <f>    decoder checkpoints\n"
       "\n"
       "inspect options:\n"
       "  --list                       print every tensor, not just a summary\n"
@@ -559,6 +563,7 @@ int cmd_tokenize(int argc, char** argv) {
 int cmd_generate(int argc, char** argv) {
   vidfab::GenerateRequest req;
   bool dry_run = false;
+  bool synthetic = false;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -601,13 +606,15 @@ int cmd_generate(int argc, char** argv) {
       req.raw_output = true;
     } else if (arg == "--dry-run") {
       dry_run = true;
+    } else if (arg == "--synthetic-latents") {
+      synthetic = true;
     } else {
       std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
       return 2;
     }
   }
 
-  if (req.prompt.empty() && !dry_run) {
+  if (req.prompt.empty() && !dry_run && !synthetic) {
     std::fprintf(stderr, "vidfab: generate needs --prompt \"...\"\n");
     return 2;
   }
@@ -616,11 +623,24 @@ int cmd_generate(int argc, char** argv) {
   std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
   if (dry_run) return 0;
 
-  std::fprintf(stderr,
-               "\nvidfab: generate is not wired end to end yet.\n"
-               "        The plan above is resolved; the denoising stages are still landing.\n"
-               "        Working today: `vidfab decode` (video VAE), `vidfab tokenize`.\n");
+#if !VIDFAB_WITH_CUDA
+  std::fprintf(stderr, "vidfab: built without CUDA support; generate needs a GPU\n");
   return 1;
+#else
+  vidfab::RunOptions options;
+  options.source =
+      synthetic ? vidfab::LatentSource::kSyntheticNoise : vidfab::LatentSource::kDenoise;
+
+  std::printf("\n");
+  const vidfab::RunResult run = vidfab::run_generate(req, plan, options);
+  if (!run.ok) {
+    std::fprintf(stderr, "\nvidfab: %s\n", run.message.c_str());
+    return 1;
+  }
+  std::printf("\ndone in %.2f s\n", run.seconds_denoise + run.seconds_video_decode +
+                                        run.seconds_audio_decode + run.seconds_output);
+  return 0;
+#endif
 }
 
 int cmd_devices() {
