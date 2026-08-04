@@ -149,9 +149,10 @@ from the reference PyTorch pipeline; `vidfab compare` is built to consume them.
 
 ## Architecture notes
 
-`docs/vae_decoder_spec.md`, `docs/transformer_spec.md` and
-`docs/audio_vae_spec.md` document each stage layer by layer with citations
-into the reference source; `docs/convrot_notes.md` covers the int8 rotation.
+`docs/vae_decoder_spec.md`, `docs/transformer_spec.md`,
+`docs/text_encoder_spec.md` and `docs/audio_vae_spec.md` document each stage
+layer by layer with citations into the reference source by file and line;
+`docs/convrot_notes.md` covers the int8 rotation.
 Three things about the video decoder are worth knowing before reading the code,
 because each produces plausible-but-wrong output if taken the obvious way:
 
