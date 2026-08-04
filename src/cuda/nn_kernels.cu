@@ -15,8 +15,10 @@
 #include "vidfab/cuda/nn_kernels.cuh"
 
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "vidfab/cuda/device.h"
 
@@ -423,9 +425,15 @@ __global__ void rope_neox_kernel(__nv_bfloat16* __restrict__ x, const float* __r
 // where the reference casts it (spec 9.2). Casting later — or not at all —
 // makes us disagree with the reference by more than its own error floor at the
 // T coordinates a long prompt reaches.
-__global__ void rope_tables_h3_kernel(const double* __restrict__ pos, int rows, float theta,
-                                      int freq_dim, float* __restrict__ cos_out,
-                                      float* __restrict__ sin_out) {
+//
+// `inv_freq` is precomputed by the launcher rather than derived here. It
+// depends only on k, which runs over 16 values, so computing it in the kernel
+// meant 1.8M redundant fp64 `pow` calls at the 1/64 rate fp64 runs at on this
+// card. Doing it on the host in fp64 also makes us agree with the reference
+// bit-for-bit instead of to within a library's last ulp.
+__global__ void rope_tables_h3_kernel(const double* __restrict__ pos,
+                                      const float* __restrict__ inv_freq, int rows, int freq_dim,
+                                      float* __restrict__ cos_out, float* __restrict__ sin_out) {
   const int half = 3 * freq_dim;
   const int full = 2 * half;
   const int j = blockIdx.y * blockDim.x + threadIdx.x;
@@ -435,12 +443,8 @@ __global__ void rope_tables_h3_kernel(const double* __restrict__ pos, int rows, 
   const int axis = j / freq_dim;
   const int k = j - axis * freq_dim;
 
-  // fp64 then rounded once, as the spec recommends over an fp32 pow chain.
-  const float inv_freq =
-      static_cast<float>(1.0 / pow(static_cast<double>(theta),
-                                   static_cast<double>(k) / static_cast<double>(freq_dim)));
   const float p = static_cast<float>(pos[static_cast<size_t>(row) * 3 + axis]);
-  const float angle = p * inv_freq;
+  const float angle = p * inv_freq[k];
 
   const float c = cosf(angle);
   const float s = sinf(angle);
@@ -452,6 +456,17 @@ __global__ void rope_tables_h3_kernel(const double* __restrict__ pos, int rows, 
 }
 
 // --- row permutation --------------------------------------------------------
+//
+// A permutation is a pure move, so the packed path copies raw uint4 rather than
+// converting anything: 8 bf16 or 4 fp32 per thread instead of one element.
+// Measured on the bf16 gather at n*dim = 270M: 0.618 ms / 1312 GB/s scalar
+// against 0.543 / 1494 packed.
+
+// Elements of T in one 16-byte transaction.
+template <typename T>
+struct PackWidth {
+  static constexpr int value = static_cast<int>(16 / sizeof(T));
+};
 
 template <typename T>
 __global__ void gather_rows_kernel(const T* __restrict__ src, const int32_t* __restrict__ index,
@@ -464,6 +479,18 @@ __global__ void gather_rows_kernel(const T* __restrict__ src, const int32_t* __r
 }
 
 template <typename T>
+__global__ void gather_rows_packed_kernel(const T* __restrict__ src,
+                                          const int32_t* __restrict__ index, T* __restrict__ dst,
+                                          int n, int packs) {
+  const int row = blockIdx.x;
+  const int p = blockIdx.y * blockDim.x + threadIdx.x;
+  if (row >= n || p >= packs) return;
+  const size_t dim = static_cast<size_t>(packs) * PackWidth<T>::value;
+  reinterpret_cast<uint4*>(dst + static_cast<size_t>(row) * dim)[p] =
+      reinterpret_cast<const uint4*>(src + static_cast<size_t>(index[row]) * dim)[p];
+}
+
+template <typename T>
 __global__ void scatter_rows_kernel(const T* __restrict__ src, const int32_t* __restrict__ index,
                                     T* __restrict__ dst, int n, int dim) {
   const int row = blockIdx.x;
@@ -471,6 +498,27 @@ __global__ void scatter_rows_kernel(const T* __restrict__ src, const int32_t* __
   if (row >= n || col >= dim) return;
   dst[static_cast<size_t>(index[row]) * dim + col] =
       src[static_cast<size_t>(row) * dim + col];
+}
+
+template <typename T>
+__global__ void scatter_rows_packed_kernel(const T* __restrict__ src,
+                                           const int32_t* __restrict__ index, T* __restrict__ dst,
+                                           int n, int packs) {
+  const int row = blockIdx.x;
+  const int p = blockIdx.y * blockDim.x + threadIdx.x;
+  if (row >= n || p >= packs) return;
+  const size_t dim = static_cast<size_t>(packs) * PackWidth<T>::value;
+  reinterpret_cast<uint4*>(dst + static_cast<size_t>(index[row]) * dim)[p] =
+      reinterpret_cast<const uint4*>(src + static_cast<size_t>(row) * dim)[p];
+}
+
+// Row bases are `row * dim`, so a `dim` divisible by the pack width settles
+// alignment given a 16-byte-aligned buffer — cudaMalloc gives 256 and the
+// workspace gives 256.
+template <typename T>
+bool row_packable(const T* a, const T* b, int dim) {
+  return dim % PackWidth<T>::value == 0 && reinterpret_cast<uintptr_t>(a) % 16 == 0 &&
+         reinterpret_cast<uintptr_t>(b) % 16 == 0;
 }
 
 // --- elementwise ------------------------------------------------------------
@@ -642,10 +690,20 @@ void build_rope_tables_h3(const double* pos, int rows, float rope_theta, int fre
   DeviceBuffer<double> staged(static_cast<size_t>(rows) * 3);
   staged.copy_from_host(pos, static_cast<size_t>(rows) * 3);
 
+  // fp64 then rounded once, as the spec recommends over an fp32 pow chain.
+  std::vector<float> inv_freq(static_cast<size_t>(freq_dim));
+  for (int k = 0; k < freq_dim; ++k) {
+    inv_freq[k] = static_cast<float>(
+        1.0 / std::pow(static_cast<double>(rope_theta),
+                       static_cast<double>(k) / static_cast<double>(freq_dim)));
+  }
+  DeviceBuffer<float> dinv(inv_freq.size());
+  dinv.copy_from_host(inv_freq.data(), inv_freq.size());
+
   const int half = 3 * freq_dim;
   const dim3 block(128);
   const dim3 grid(rows, (half + 127) / 128);
-  rope_tables_h3_kernel<<<grid, block, 0, stream>>>(staged.get(), rows, rope_theta, freq_dim,
+  rope_tables_h3_kernel<<<grid, block, 0, stream>>>(staged.get(), dinv.get(), rows, freq_dim,
                                                     cos_out, sin_out);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -662,36 +720,60 @@ void launch_head_rmsnorm(__nv_bfloat16* x, const __nv_bfloat16* w, int rows, int
   launch_rmsnorm(x, w, x, rows * heads, dim, eps, stream);
 }
 
+namespace {
+
+template <typename T>
+void launch_gather_impl(const T* src, const int32_t* index, T* dst, int n, int dim,
+                        cudaStream_t stream) {
+  if (row_packable(src, dst, dim)) {
+    const int packs = dim / PackWidth<T>::value;
+    const dim3 grid(n, grid_1d(static_cast<size_t>(packs), kRowThreads));
+    gather_rows_packed_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, packs);
+  } else {
+    const dim3 grid(n, grid_1d(static_cast<size_t>(dim), kRowThreads));
+    gather_rows_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, dim);
+  }
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+template <typename T>
+void launch_scatter_impl(const T* src, const int32_t* index, T* dst, int n, int dim,
+                         cudaStream_t stream) {
+  if (row_packable(src, dst, dim)) {
+    const int packs = dim / PackWidth<T>::value;
+    const dim3 grid(n, grid_1d(static_cast<size_t>(packs), kRowThreads));
+    scatter_rows_packed_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, packs);
+  } else {
+    const dim3 grid(n, grid_1d(static_cast<size_t>(dim), kRowThreads));
+    scatter_rows_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, dim);
+  }
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+}  // namespace
+
 void launch_gather_rows(const __nv_bfloat16* src, const int32_t* index, __nv_bfloat16* dst, int n,
                         int dim, cudaStream_t stream) {
   require_positive(n, dim, "launch_gather_rows");
-  const dim3 grid(n, grid_1d(static_cast<size_t>(dim), kRowThreads));
-  gather_rows_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  launch_gather_impl(src, index, dst, n, dim, stream);
 }
 
 void launch_gather_rows_f32(const float* src, const int32_t* index, float* dst, int n, int dim,
                             cudaStream_t stream) {
   require_positive(n, dim, "launch_gather_rows_f32");
-  const dim3 grid(n, grid_1d(static_cast<size_t>(dim), kRowThreads));
-  gather_rows_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  launch_gather_impl(src, index, dst, n, dim, stream);
 }
 
 void launch_scatter_rows(const __nv_bfloat16* src, const int32_t* index, __nv_bfloat16* dst, int n,
                          int dim, cudaStream_t stream) {
   require_positive(n, dim, "launch_scatter_rows");
-  const dim3 grid(n, grid_1d(static_cast<size_t>(dim), kRowThreads));
-  scatter_rows_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  launch_scatter_impl(src, index, dst, n, dim, stream);
 }
 
 void launch_scatter_rows_f32(const float* src, const int32_t* index, float* dst, int n, int dim,
                              cudaStream_t stream) {
   require_positive(n, dim, "launch_scatter_rows_f32");
-  const dim3 grid(n, grid_1d(static_cast<size_t>(dim), kRowThreads));
-  scatter_rows_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  launch_scatter_impl(src, index, dst, n, dim, stream);
 }
 
 void launch_add(const float* a, const float* b, float* out, size_t n, cudaStream_t stream) {

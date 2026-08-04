@@ -251,12 +251,20 @@ __global__ void convrot_kernel(const T* __restrict__ in, T* __restrict__ out, in
 
 // --- bias -------------------------------------------------------------------
 
+// The column index comes off the grid, not out of a modulo. A flat `i % cols`
+// on a `size_t` compiles to a 64-bit integer division — twenty-odd
+// instructions — per element, on a kernel that is otherwise pure streaming, and
+// qkv_proj runs it over 811M elements.
+//
+// Rows on grid.x and columns on grid.y, matching the row-wise kernels in
+// nn_kernels.cu: gridDim.y is capped at 65535 and a 768p/10s request packs
+// ~73.4k rows, so rows must not go on y.
 template <typename YT, typename BT>
-__global__ void add_bias_kernel(YT* __restrict__ y, const BT* __restrict__ bias, int cols,
-                                size_t total) {
-  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= total) return;
-  const float b = load_as_f32(bias + (i % cols));
+__global__ void add_bias_kernel(YT* __restrict__ y, const BT* __restrict__ bias, int cols) {
+  const int col = static_cast<int>(blockIdx.y * blockDim.x + threadIdx.x);
+  if (col >= cols) return;
+  const size_t i = static_cast<size_t>(blockIdx.x) * cols + col;
+  const float b = load_as_f32(bias + col);
   store_from_f32(y + i, load_as_f32(y + i) + b);
 }
 
@@ -296,20 +304,19 @@ size_t element_bytes(QuantFormat f) {
 
 void add_bias(void* y, bool y_is_f32, const QuantWeight& w, int rows, cudaStream_t stream) {
   if (!w.has_bias()) return;
-  const size_t total = static_cast<size_t>(rows) * w.out_features;
-  const int grid = grid_1d(total, kThreads);
   const int cols = w.out_features;
+  const dim3 grid(static_cast<unsigned>(rows),
+                  static_cast<unsigned>(grid_1d(static_cast<size_t>(cols), kThreads)));
 
   if (y_is_f32) {
     float* yf = static_cast<float*>(y);
     switch (w.bias_format) {
       case QuantFormat::kF32:
-        add_bias_kernel<<<grid, kThreads, 0, stream>>>(yf, static_cast<const float*>(w.bias), cols,
-                                                       total);
+        add_bias_kernel<<<grid, kThreads, 0, stream>>>(yf, static_cast<const float*>(w.bias), cols);
         break;
       case QuantFormat::kBF16:
         add_bias_kernel<<<grid, kThreads, 0, stream>>>(
-            yf, static_cast<const __nv_bfloat16*>(w.bias), cols, total);
+            yf, static_cast<const __nv_bfloat16*>(w.bias), cols);
         break;
       default:
         throw std::runtime_error("linear: unsupported bias format");
@@ -318,12 +325,11 @@ void add_bias(void* y, bool y_is_f32, const QuantWeight& w, int rows, cudaStream
     __nv_bfloat16* yb = static_cast<__nv_bfloat16*>(y);
     switch (w.bias_format) {
       case QuantFormat::kF32:
-        add_bias_kernel<<<grid, kThreads, 0, stream>>>(yb, static_cast<const float*>(w.bias), cols,
-                                                       total);
+        add_bias_kernel<<<grid, kThreads, 0, stream>>>(yb, static_cast<const float*>(w.bias), cols);
         break;
       case QuantFormat::kBF16:
         add_bias_kernel<<<grid, kThreads, 0, stream>>>(
-            yb, static_cast<const __nv_bfloat16*>(w.bias), cols, total);
+            yb, static_cast<const __nv_bfloat16*>(w.bias), cols);
         break;
       default:
         throw std::runtime_error("linear: unsupported bias format");
