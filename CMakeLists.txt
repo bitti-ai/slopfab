@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+﻿cmake_minimum_required(VERSION 3.24)
 
 # CUDA is enabled lazily: the core loader and CLI build without it so the
 # project stays useful on machines without a toolkit, and so early phases can
@@ -23,6 +23,7 @@ add_library(vidfab_core STATIC
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
   src/core/safetensors_write.cpp
+  src/sampler/scheduler.cpp
   src/video/y4m.cpp
 )
 
@@ -108,3 +109,4 @@ if(VIDFAB_BUILD_TESTS)
     add_test(NAME kernels COMMAND vidfab_kernel_tests)
   endif()
 endif()
+

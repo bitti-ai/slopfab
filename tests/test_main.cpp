@@ -1,4 +1,4 @@
-// Unit tests. Hand-rolled rather than gtest to keep the dependency count at
+﻿// Unit tests. Hand-rolled rather than gtest to keep the dependency count at
 // zero; the harness is a few dozen lines and reports the same information.
 
 #include <cmath>
@@ -13,6 +13,7 @@
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/sampler/scheduler.h"
 #include "vidfab/tensor_convert.h"
 
 namespace {
@@ -78,12 +79,19 @@ void test_json() {
   CHECK(v.find("nested")->find("inner")->find("deep")->as_string() == "yes");
   CHECK(v.find("absent") == nullptr);
 
-  // Escapes, including a surrogate pair (U+1F600).
-  const json::Value esc = json::parse(R"({"s": "a\"b\\c\ndAe😀"})");
+  // Escapes. Written as \u escapes rather than literal characters so the test
+  // cannot be broken by a tool re-encoding the source file.
+  //   Ä      -> 2-byte UTF-8 (C3 84)
+  //   😀 -> surrogate pair for U+1F600, 4-byte UTF-8 (F0 9F 98 80)
+  const json::Value esc = json::parse(R"({"s": "a\"b\\c\ndÄ😀"})");
   const std::string& s = esc.find("s")->as_string();
-  CHECK(s.find("a\"b\\c\nd") == 0);
-  CHECK(s.find("Ae") != std::string::npos);
-  CHECK(s.size() > 10);  // 4-byte UTF-8 emoji appended
+  CHECK(s.rfind("a\"b\\c\nd", 0) == 0);
+  CHECK(s.substr(7) == "\xC3\x84\xF0\x9F\x98\x80");
+  CHECK(s.size() == 13);
+
+  // A lone high surrogate is replaced rather than aborting the parse.
+  const json::Value lone = json::parse(R"({"s": "\uD83D!"})");
+  CHECK(lone.find("s")->as_string() == "\xEF\xBF\xBD!");
 
   CHECK(json::parse("{}").as_object().empty());
   CHECK(json::parse("[]").as_array().empty());
@@ -328,6 +336,105 @@ void test_compare() {
   CHECK_NEAR(widened[1], 2.0f, 0.0);
 }
 
+// --- scheduler --------------------------------------------------------------
+
+void test_scheduler() {
+  TEST("scheduler");
+  using vidfab::sampler::FlowScheduler;
+
+  FlowScheduler s(12.0f);
+  s.set_timesteps(50);
+
+  const std::vector<float>& sig = s.sigmas();
+  CHECK(!sig.empty());
+  // The grid starts at 1 and ends at exactly 0; the shift maps both to
+  // themselves.
+  CHECK_NEAR(sig.front(), 1.0f, 1e-6);
+  CHECK_NEAR(sig.back(), 0.0f, 0.0);
+  // Strictly decreasing after duplicate collapsing.
+  bool decreasing = true;
+  for (size_t i = 0; i + 1 < sig.size(); ++i) {
+    if (!(sig[i + 1] < sig[i])) decreasing = false;
+  }
+  CHECK(decreasing);
+  // One model evaluation per sigma except the terminal zero.
+  CHECK(s.timesteps().size() == sig.size() - 1);
+  // t = 1 - sigma, and t increases towards clean.
+  CHECK_NEAR(s.timesteps().front(), 0.0f, 1e-6);
+  CHECK(s.timesteps().back() > s.timesteps().front());
+
+  // The shift pushes sigma above the unshifted grid everywhere in between:
+  // 12*b/(1+11b) > b for 0 < b < 1.
+  FlowScheduler unshifted(1.0f);
+  unshifted.set_timesteps(50);
+  CHECK(unshifted.sigmas().size() == 50);
+  bool shift_raises = true;
+  for (size_t i = 1; i + 1 < unshifted.sigmas().size() && i + 1 < sig.size(); ++i) {
+    if (!(sig[i] > unshifted.sigmas()[i])) shift_raises = false;
+  }
+  CHECK(shift_raises);
+  // shift = 1 is the identity map.
+  CHECK_NEAR(unshifted.sigmas()[10], 1.0f - 10.0f / 49.0f, 1e-6);
+
+  // Audio runs the same scheduler at a different shift.
+  FlowScheduler audio(3.0f);
+  audio.set_timesteps(50);
+  CHECK(audio.sigmas().size() >= 2);
+  CHECK_NEAR(audio.sigmas().back(), 0.0f, 0.0);
+
+  // A single Euler step. With v = 0 the update is a pure blend towards x_t,
+  // so x stays put; the ratio only rescales the x0 contribution.
+  const std::vector<float> x = {1.0f, -2.0f, 0.5f};
+  const std::vector<float> zero_v = {0.0f, 0.0f, 0.0f};
+  std::vector<float> out(3);
+  s.step(0, x.data(), zero_v.data(), 3, out.data());
+  // denoised = x + sigma*0 = x, so out = r*x + (1-r)*x = x.
+  CHECK_NEAR(out[0], 1.0f, 1e-6);
+  CHECK_NEAR(out[1], -2.0f, 1e-6);
+
+  // With a non-zero velocity, verify against the formula directly.
+  const std::vector<float> v = {0.25f, 1.0f, -0.5f};
+  s.step(3, x.data(), v.data(), 3, out.data());
+  {
+    const float t = s.timesteps()[3];
+    const float sfrom = 1.0f - t;
+    const float ratio = s.sigmas()[4] / s.sigmas()[3];
+    for (int i = 0; i < 3; ++i) {
+      const float denoised = x[static_cast<size_t>(i)] + sfrom * v[static_cast<size_t>(i)];
+      const float want = ratio * x[static_cast<size_t>(i)] + (1.0f - ratio) * denoised;
+      CHECK_NEAR(out[static_cast<size_t>(i)], want, 1e-6);
+    }
+  }
+
+  // step() may alias its input.
+  std::vector<float> inplace = x;
+  s.step(3, inplace.data(), v.data(), 3, inplace.data());
+  CHECK_NEAR(inplace[0], out[0], 1e-6);
+
+  // The last step lands exactly on x0, because sigma_next is 0 so ratio is 0.
+  const int last = static_cast<int>(s.num_steps()) - 1;
+  s.step(last, x.data(), v.data(), 3, out.data());
+  {
+    const float sfrom = 1.0f - s.timesteps()[static_cast<size_t>(last)];
+    CHECK_NEAR(out[0], x[0] + sfrom * v[0], 1e-6);
+  }
+
+  // scale_noise: t = 1 returns the clean sample, t = 0 returns pure noise.
+  const std::vector<float> noise = {10.0f, 20.0f, 30.0f};
+  FlowScheduler::scale_noise(x.data(), noise.data(), 1.0f, 3, out.data());
+  CHECK_NEAR(out[0], 1.0f, 1e-6);
+  FlowScheduler::scale_noise(x.data(), noise.data(), 0.0f, 3, out.data());
+  CHECK_NEAR(out[0], 10.0f, 1e-6);
+  FlowScheduler::scale_noise(x.data(), noise.data(), 0.25f, 3, out.data());
+  CHECK_NEAR(out[0], 0.25f * 1.0f + 0.75f * 10.0f, 1e-6);
+
+  CHECK(throws([] {
+    FlowScheduler bad(12.0f);
+    bad.set_timesteps(1);
+  }));
+  CHECK(throws([] { FlowScheduler bad(0.0f); }));
+}
+
 }  // namespace
 
 int main() {
@@ -335,7 +442,9 @@ int main() {
   test_dtype();
   test_safetensors();
   test_compare();
+  test_scheduler();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }
+
