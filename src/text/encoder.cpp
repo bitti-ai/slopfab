@@ -11,6 +11,8 @@
 
 #include "vidfab/text/encoder.h"
 
+#include <cuda_runtime.h>
+
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -241,6 +243,28 @@ void pack_layer(const SafeTensors& checkpoint, const EncoderConfig& config, int 
             name + " is " + std::to_string(view.nbytes) + " bytes, layout expects " +
                 std::to_string(layout.bytes[i]));
     std::memcpy(dst + layout.offset[i], view.data, view.nbytes);
+  }
+}
+
+void upload_layer_direct(const SafeTensors& checkpoint, const EncoderConfig& config, int layer,
+                         const LayerLayout& layout, uint8_t* dst, void* stream) {
+  require(layer >= 0 && layer < config.num_layers,
+          "upload_layer_direct: layer " + std::to_string(layer) + " out of range");
+  const std::string prefix = layer_prefix(layer);
+  for (int i = 0; i < kLayerTensorCount; ++i) {
+    const TensorSpec spec = layer_tensor_spec(config, static_cast<LayerTensor>(i));
+    const std::string name = prefix + spec.suffix;
+    const TensorView& view = checkpoint.at(name);
+    require(view.nbytes == layout.bytes[i],
+            name + " is " + std::to_string(view.nbytes) + " bytes, layout expects " +
+                std::to_string(layout.bytes[i]));
+    const cudaError_t status =
+        cudaMemcpyAsync(dst + layout.offset[i], view.data, view.nbytes, cudaMemcpyHostToDevice,
+                        static_cast<cudaStream_t>(stream));
+    if (status != cudaSuccess) {
+      throw std::runtime_error("text encoder: uploading " + name + " failed: " +
+                               cudaGetErrorString(status));
+    }
   }
 }
 

@@ -204,6 +204,13 @@ void validate_checkpoint(const SafeTensors& checkpoint, const EncoderConfig& con
 void pack_layer(const SafeTensors& checkpoint, const EncoderConfig& config, int layer,
                 const LayerLayout& layout, uint8_t* dst);
 
+// Issues one layer's 18 tensors as asynchronous DMAs straight out of the
+// checkpoint mapping into `dst`, with no host copy. Only valid once the
+// mapping has been page-locked; otherwise the copies degrade to synchronous
+// staged transfers inside the driver and the point is lost.
+void upload_layer_direct(const SafeTensors& checkpoint, const EncoderConfig& config, int layer,
+                         const LayerLayout& layout, uint8_t* dst, void* stream);
+
 // inv_freq[j] = theta^(-2j/head_dim), j in [0, head_dim/2). For Qwen3-VL that
 // is 5e6^(-j/64) over j in [0, 64) — spec section 2.5.
 std::vector<float> rope_inv_freq(int head_dim, float theta);

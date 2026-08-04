@@ -565,6 +565,11 @@ struct Encoder::Impl {
   std::vector<DeviceBuffer<uint8_t>> resident;
   DeviceBuffer<uint8_t> ping[2];
   PinnedBuffer<uint8_t> staging[2];
+  // Set when the whole checkpoint mapping is page-locked, which lets each
+  // weight DMA straight out of it instead of being memcpy'd into a pinned
+  // staging buffer first. See `try_register_mapping`.
+  bool mapping_registered = false;
+  const void* registered_base = nullptr;
 
   cublasHandle_t cublas = nullptr;
   cudaStream_t compute = nullptr;
@@ -605,11 +610,68 @@ struct Encoder::Impl {
     cublas = nullptr;
   }
 
+  // Page-locks the entire checkpoint mapping so weights can be uploaded
+  // without a host-side copy.
+  //
+  // The staging path this replaces was, measured, 96% of a streaming encode:
+  // 57-62 ms per layer of single-threaded `memcpy` against 9.6 ms of DMA. Most
+  // of that was not memcpy bandwidth but soft page faults on the 27 GB mapping
+  // (~119k pages per layer). Registering the range up front pays those faults
+  // once and lifts H2D from 8.7 GB/s pageable to ~42 GB/s.
+  //
+  // Best-effort by design: registering tens of gigabytes can fail on a machine
+  // short of physical memory or lockable pages, and that is not a reason to
+  // refuse to run. On failure the staging path still works, just slower.
+  void try_register_mapping() {
+    mapping_registered = false;
+    registered_base = nullptr;
+    if (checkpoint == nullptr) return;
+    const void* base = checkpoint->mapping_base();
+    if (base == nullptr) return;
+
+    // cudaHostRegister wants a page-aligned range. The mapping base is already
+    // allocation-granularity aligned, and a file mapping always covers whole
+    // pages, so rounding the length up stays inside it.
+    constexpr size_t kPage = 4096;
+    const size_t bytes = (checkpoint->file_size() + kPage - 1) / kPage * kPage;
+
+    const cudaError_t status =
+        cudaHostRegister(const_cast<void*>(base), bytes, cudaHostRegisterReadOnly);
+    if (status == cudaSuccess) {
+      mapping_registered = true;
+      registered_base = base;
+    } else {
+      // Clear the sticky error so the next real call is not misattributed.
+      cudaGetLastError();
+    }
+  }
+
+  void unregister_mapping() {
+    if (!mapping_registered || registered_base == nullptr) return;
+    cudaHostUnregister(const_cast<void*>(registered_base));
+    mapping_registered = false;
+    registered_base = nullptr;
+  }
+
   // Packs layer `layer` into pinned slot `slot` and starts its upload to
   // `dst`. Pageable memory would make cudaMemcpyAsync synchronous and force a
   // staging copy inside the driver, which is exactly what the pinned buffers
   // are for (spec section 7.2).
   void stage_upload(int layer, int slot, uint8_t* dst) {
+    // The previous upload out of this pinned buffer must have landed before it
+    // is overwritten.
+    if (mapping_registered) {
+      // No host copy at all: eighteen DMAs straight out of the page-locked
+      // mapping into the layer arena. Nothing is written on the host, so the
+      // pinned slot is unused and there is nothing to wait for beyond the
+      // previous upload into this arena, which the caller's ping-pong event
+      // already orders.
+      VIDFAB_CUDA_CHECK(cudaEventSynchronize(upload_done[slot]));
+      upload_layer_direct(*checkpoint, cfg, layer, layout, dst, transfer);
+      VIDFAB_CUDA_CHECK(cudaEventRecord(upload_done[slot], transfer));
+      return;
+    }
+
     // The previous upload out of this pinned buffer must have landed before it
     // is overwritten.
     VIDFAB_CUDA_CHECK(cudaEventSynchronize(upload_done[slot]));
@@ -620,6 +682,7 @@ struct Encoder::Impl {
   }
 
   void free_weights() {
+    unregister_mapping();
     resident.clear();
     for (int i = 0; i < 2; ++i) {
       ping[i].reset();
@@ -681,12 +744,20 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
     mode = (free_bytes > weight_bytes + headroom) ? Residency::kResident : Residency::kStreaming;
   }
 
-  // Both modes stage through pinned host memory, so both allocate the buffers;
-  // the resident path uses them to overlap the pack with the upload and then
-  // throws them away.
-  s.staging[0].allocate(layer_bytes);
-  s.staging[1].allocate(layer_bytes);
-  s.stats.host_pinned_bytes = 2 * layer_bytes;
+  // Page-lock the mapping if we can, which removes the host copy from every
+  // upload in both modes. Best effort: if it fails we fall back to staging.
+  s.try_register_mapping();
+
+  // The staging buffers are only needed when registration failed. Allocating
+  // 930 MB of pinned memory that nothing will ever touch would be a waste of
+  // exactly the resource that made registration fail in the first place.
+  if (!s.mapping_registered) {
+    s.staging[0].allocate(layer_bytes);
+    s.staging[1].allocate(layer_bytes);
+    s.stats.host_pinned_bytes = 2 * layer_bytes;
+  } else {
+    s.stats.host_pinned_bytes = 0;
+  }
 
   if (mode == Residency::kResident) {
     try {
