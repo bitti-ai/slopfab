@@ -70,10 +70,13 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/vae_kernels.cu
       src/cuda/vit_decoder.cu
       src/cuda/audio_vae_kernels.cu
+      src/cuda/dit_kernels.cu
       # Host-side orchestration lives here rather than in vidfab_core so that
       # the dependency runs one way: cuda -> core, never back.
       src/vae/decode_pipeline.cpp
       src/vae/audio_decoder.cpp
+      src/dit/transformer.cpp
+      src/dit/denoise.cpp
     )
     target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas)
@@ -134,6 +137,7 @@ if(VIDFAB_BUILD_TESTS)
       tests/test_kernels.cu
       tests/test_nn_kernels.cu
       tests/test_audio_vae.cu
+      tests/test_transformer.cu
     )
     target_link_libraries(vidfab_kernel_tests PRIVATE vidfab_cuda)
     add_test(NAME kernels COMMAND vidfab_kernel_tests)
