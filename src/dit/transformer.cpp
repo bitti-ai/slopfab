@@ -44,6 +44,7 @@
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/workspace.cuh"
 #include "vidfab/dtype.h"
+#include "vidfab/json.h"
 #include "vidfab/tensor_convert.h"
 
 namespace vidfab::cuda {
@@ -118,6 +119,66 @@ size_t format_bytes(QuantFormat f) {
       throw std::runtime_error("transformer: nvfp4 is not a whole-byte format");
   }
   return 0;
+}
+
+// True when `name` is stored as nvfp4. Structural, from the file itself, rather
+// than from a flag or from which checkpoint the caller thinks it opened: a U8
+// `.weight` alongside an e4m3 `.weight_scale` carrying one scale per 16
+// contracted elements. Both halves are needed — U8 alone would also match a
+// byte blob, and it is the scale's trailing dimension that pins the block size
+// this port implements. The two bf16 refiner blocks fall out of it for free.
+bool is_nvfp4(const SafeTensors& st, const std::string& name, int in_features) {
+  const TensorView* w = st.find(name + ".weight");
+  const TensorView* s = st.find(name + ".weight_scale");
+  if (w == nullptr || s == nullptr) return false;
+  if (w->dtype != DType::kU8 || s->dtype != DType::kF8E4M3) return false;
+  return s->shape.size() == 2 &&
+         s->shape[1] == in_features / static_cast<int>(cuda::kNVFP4BlockSize);
+}
+
+// What a `comfy_quant` blob says about its tensor.
+struct QuantTag {
+  std::string format;             // empty when the tensor carries no blob
+  bool full_precision = false;
+};
+
+// The blob is the checkpoint's own statement of what its bytes mean, so it is
+// parsed rather than pattern-matched. A substring search cannot tell a format
+// it does not implement from one it does — it just fails to find its needle and
+// carries on — and this is the file's only description of layouts that are
+// otherwise indistinguishable by inspection.
+QuantTag read_comfy_quant(const SafeTensors& st, const std::string& name) {
+  QuantTag tag;
+  const TensorView* v = st.find(name + ".comfy_quant");
+  if (v == nullptr) return tag;
+
+  std::string text(static_cast<const char*>(v->data), v->nbytes);
+  // ComfyUI writes the blob as a byte tensor, which may be NUL-padded to a
+  // whole number of elements.
+  while (!text.empty() && (text.back() == '\0' || text.back() == ' ' || text.back() == '\n')) {
+    text.pop_back();
+  }
+  if (text.empty()) return tag;
+
+  json::Value root;
+  try {
+    root = json::parse(text);
+  } catch (const std::exception& e) {
+    throw std::runtime_error("transformer: '" + name + ".comfy_quant' is not valid JSON (" +
+                             e.what() + "): " + text);
+  }
+  if (const json::Value* f = root.find("format"); f != nullptr) tag.format = f->as_string();
+  if (const json::Value* p = root.find("full_precision_matrix_mult"); p != nullptr) {
+    tag.full_precision = p->as_bool();
+  }
+
+  // Anything else is a layout this port has not been shown, and guessing at one
+  // yields finite plausible output rather than a failure.
+  if (tag.format != "nvfp4" && tag.format != "float8_e4m3fn") {
+    throw std::runtime_error("transformer: '" + name + "' declares quant format '" + tag.format +
+                             "', which this port does not implement");
+  }
+  return tag;
 }
 
 std::string shape_string(const std::vector<int64_t>& s) {
@@ -670,27 +731,34 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
   // A block's tensor set, shared by the 50 main blocks and the 2 refiner
   // blocks; the refiner differs only by having no `adaln_proj` (spec 6).
+  // One quantised projection. nvfp4 changes both the weight's shape — half as
+  // many bytes on the contraction axis — and the weight_scale's, from a
+  // per-tensor scalar to one e4m3 byte per 16 contracted elements, and adds the
+  // second-level `weight_scale_2`. Which of the two it is comes from the file.
+  auto plan_linear = [&](const std::string& name, int out_features, int in_features) {
+    if (is_nvfp4(checkpoint, name, in_features)) {
+      plan.require(name + ".weight", {out_features, in_features / 2}, Store::kVerbatim);
+      plan.require(name + ".weight_scale",
+                   {out_features, in_features / static_cast<int>(cuda::kNVFP4BlockSize)},
+                   Store::kVerbatim);
+      plan.optional_scalar(name + ".weight_scale_2");
+    } else {
+      plan.require(name + ".weight", {out_features, in_features}, Store::kVerbatim);
+      plan.optional_scalar(name + ".weight_scale");
+    }
+    plan.optional(name + ".input_scale");
+    plan.optional(name + ".comfy_quant");
+  };
+
   auto plan_block = [&](const std::string& prefix, bool with_adaln) {
     plan.require(prefix + "norm1.weight", {hidden}, Store::kAsBF16);
     plan.require(prefix + "norm2.weight", {hidden}, Store::kAsBF16);
-    plan.require(prefix + "attn.qkv_proj.weight", {3 * inner, hidden}, Store::kVerbatim);
-    plan.optional_scalar(prefix + "attn.qkv_proj.weight_scale");
-    plan.optional(prefix + "attn.qkv_proj.input_scale");
-    plan.optional(prefix + "attn.qkv_proj.comfy_quant");
+    plan_linear(prefix + "attn.qkv_proj", 3 * inner, hidden);
     plan.require(prefix + "attn.q_norm.weight", {head_dim}, Store::kAsBF16);
     plan.require(prefix + "attn.k_norm.weight", {head_dim}, Store::kAsBF16);
-    plan.require(prefix + "attn.out_proj.weight", {hidden, inner}, Store::kVerbatim);
-    plan.optional_scalar(prefix + "attn.out_proj.weight_scale");
-    plan.optional(prefix + "attn.out_proj.input_scale");
-    plan.optional(prefix + "attn.out_proj.comfy_quant");
-    plan.require(prefix + "mlp.fc1.weight", {2 * ffn, hidden}, Store::kVerbatim);
-    plan.optional_scalar(prefix + "mlp.fc1.weight_scale");
-    plan.optional(prefix + "mlp.fc1.input_scale");
-    plan.optional(prefix + "mlp.fc1.comfy_quant");
-    plan.require(prefix + "mlp.fc2.weight", {hidden, ffn}, Store::kVerbatim);
-    plan.optional_scalar(prefix + "mlp.fc2.weight_scale");
-    plan.optional(prefix + "mlp.fc2.input_scale");
-    plan.optional(prefix + "mlp.fc2.comfy_quant");
+    plan_linear(prefix + "attn.out_proj", hidden, inner);
+    plan_linear(prefix + "mlp.fc1", 2 * ffn, hidden);
+    plan_linear(prefix + "mlp.fc2", hidden, ffn);
     if (with_adaln) {
       plan.require(prefix + "adaln_proj.linear.weight", {adaln_out, AdaLNTable::kRank},
                    Store::kAsF32);
@@ -764,16 +832,36 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   auto quant = [&](const std::string& name, int out_features, int in_features) {
     QuantWeight w;
     const TensorView& v = checkpoint.at(name + ".weight");
-    w.format = format_of(v.dtype, name + ".weight");
-    w.data = ptr(name + ".weight");
     w.out_features = out_features;
     w.in_features = in_features;
-    w.weight_scale = f32(name + ".weight_scale");
-    w.input_scale = host_scalar(name + ".input_scale");
-    if (w.format == QuantFormat::kF8E4M3 && w.weight_scale == nullptr) {
-      throw std::runtime_error("transformer: '" + name +
-                               ".weight' is fp8 but ships no weight_scale");
+    w.data = ptr(name + ".weight");
+
+    if (is_nvfp4(checkpoint, name, in_features)) {
+      w.format = QuantFormat::kNVFP4;
+      // Raw e4m3 bytes in a 128x4 tiling, not floats and not row-major, so this
+      // deliberately does not go through `f32` — reinterpreting them as float
+      // would read a quarter of the array and scale by nonsense.
+      w.block_scale = static_cast<const uint8_t*>(ptr(name + ".weight_scale"));
+      if (checkpoint.find(name + ".weight_scale_2") == nullptr) {
+        throw std::runtime_error("transformer: '" + name +
+                                 ".weight' is nvfp4 but ships no weight_scale_2; the default 1.0 "
+                                 "would be wrong by about 700x rather than visibly broken");
+      }
+      w.global_scale = host_scalar(name + ".weight_scale_2");
+    } else {
+      w.format = format_of(v.dtype, name + ".weight");
+      w.weight_scale = f32(name + ".weight_scale");
+      if (w.format == QuantFormat::kF8E4M3 && w.weight_scale == nullptr) {
+        throw std::runtime_error("transformer: '" + name +
+                                 ".weight' is fp8 but ships no weight_scale");
+      }
     }
+
+    w.input_scale = host_scalar(name + ".input_scale");
+    // The file decides, not a heuristic on which scales are present. No layer
+    // of the nvfp4 transformer sets it and 50 of the fp8 transformer's do —
+    // exactly `mlp.fc2`, which also ships no input_scale (spec 8.2).
+    w.full_precision = read_comfy_quant(checkpoint, name).full_precision;
     return w;
   };
 
@@ -786,14 +874,41 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
     // Spec 8.1: `qkv_proj.weight` is contiguous [Wq; Wk; Wv], already
     // de-interleaved. Three views over one allocation, sharing both scales.
+    //
+    // For nvfp4 **both** arrays have to be sliced. Advancing `data` and leaving
+    // `block_scale` at the base gives k and v the wrong scales entirely, which
+    // is finite, well shaped and wrong — the exact failure this format invites.
     const QuantWeight fused = quant(prefix + "attn.qkv_proj", 3 * inner, hidden);
-    const size_t third = static_cast<size_t>(inner) * hidden * format_bytes(fused.format);
     b.wq = fused;
     b.wq.out_features = inner;
     b.wk = b.wq;
     b.wv = b.wq;
-    b.wk.data = static_cast<const uint8_t*>(fused.data) + third;
-    b.wv.data = static_cast<const uint8_t*>(fused.data) + 2 * third;
+
+    if (fused.format == QuantFormat::kNVFP4) {
+      // Slicing the block scales on a byte offset is only correct because each
+      // third is a whole number of the 128-row tiles they are stored in: the
+      // tile index runs row-major, so rows [inner, 2*inner) begin exactly at
+      // tile (inner/128) and nowhere else. With `inner` not a multiple of 128
+      // the thirds would start mid-tile and the offset would silently address
+      // another row's scales.
+      if (inner % 128 != 0) {
+        throw std::runtime_error(
+            "transformer: inner_dim " + std::to_string(inner) +
+            " is not a multiple of 128, so the qkv thirds do not fall on nvfp4 block-scale tile "
+            "boundaries and cannot be sliced by offset");
+      }
+      const size_t data_third = static_cast<size_t>(inner) * hidden / 2;
+      const size_t scale_third =
+          static_cast<size_t>(inner) * hidden / static_cast<size_t>(cuda::kNVFP4BlockSize);
+      b.wk.data = static_cast<const uint8_t*>(fused.data) + data_third;
+      b.wv.data = static_cast<const uint8_t*>(fused.data) + 2 * data_third;
+      b.wk.block_scale = fused.block_scale + scale_third;
+      b.wv.block_scale = fused.block_scale + 2 * scale_third;
+    } else {
+      const size_t third = static_cast<size_t>(inner) * hidden * format_bytes(fused.format);
+      b.wk.data = static_cast<const uint8_t*>(fused.data) + third;
+      b.wv.data = static_cast<const uint8_t*>(fused.data) + 2 * third;
+    }
 
     b.out_proj = quant(prefix + "attn.out_proj", hidden, inner);
     b.fc1 = quant(prefix + "mlp.fc1", 2 * ffn, hidden);
