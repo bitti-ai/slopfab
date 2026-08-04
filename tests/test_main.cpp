@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "harness.h"
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
 #include "vidfab/safetensors.h"
@@ -18,41 +19,7 @@
 
 namespace {
 
-int g_checks = 0;
-int g_failures = 0;
-const char* g_current_test = "";
-
-void check(bool ok, const char* expr, int line) {
-  ++g_checks;
-  if (!ok) {
-    ++g_failures;
-    std::fprintf(stderr, "  FAIL %s:%d  %s\n", g_current_test, line, expr);
-  }
-}
-
-void check_near(double a, double b, double tol, const char* expr, int line) {
-  ++g_checks;
-  if (!(std::fabs(a - b) <= tol)) {
-    ++g_failures;
-    std::fprintf(stderr, "  FAIL %s:%d  %s  (%g vs %g)\n", g_current_test, line, expr, a, b);
-  }
-}
-
-#define CHECK(expr) check((expr), #expr, __LINE__)
-#define CHECK_NEAR(a, b, tol) check_near((a), (b), (tol), #a " ~= " #b, __LINE__)
-
-#define TEST(name)                     \
-  g_current_test = name;               \
-  std::printf("test %s\n", name);
-
-bool throws(void (*fn)()) {
-  try {
-    fn();
-  } catch (const std::exception&) {
-    return true;
-  }
-  return false;
-}
+using ::vidfab::test::throws;
 
 // --- json -------------------------------------------------------------------
 
@@ -435,16 +402,13 @@ void test_scheduler() {
   CHECK(throws([] { FlowScheduler bad(0.0f); }));
 }
 
+const bool registered = ::vidfab::test::register_test("json", &test_json) &&
+                        ::vidfab::test::register_test("dtype", &test_dtype) &&
+                        ::vidfab::test::register_test("safetensors", &test_safetensors) &&
+                        ::vidfab::test::register_test("compare", &test_compare) &&
+                        ::vidfab::test::register_test("scheduler", &test_scheduler);
+
 }  // namespace
 
-int main() {
-  test_json();
-  test_dtype();
-  test_safetensors();
-  test_compare();
-  test_scheduler();
-
-  std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
-  return g_failures == 0 ? 0 : 1;
-}
+int main() { return ::vidfab::test::run_all(); }
 

@@ -95,7 +95,13 @@ endif()
 
 if(VIDFAB_BUILD_TESTS)
   enable_testing()
-  add_executable(vidfab_tests tests/test_main.cpp)
+  # Host tests. Each area contributes its own translation unit and registers
+  # its cases with the shared harness, so adding tests never touches a file
+  # someone else is editing.
+  add_executable(vidfab_tests
+    tests/harness.cpp
+    tests/test_main.cpp
+  )
   target_link_libraries(vidfab_tests PRIVATE vidfab_core)
   if(MSVC)
     target_compile_options(vidfab_tests PRIVATE /W4 /permissive- /utf-8)
@@ -105,7 +111,10 @@ if(VIDFAB_BUILD_TESTS)
   add_test(NAME unit COMMAND vidfab_tests)
 
   if(VIDFAB_ENABLE_CUDA)
-    add_executable(vidfab_kernel_tests tests/test_kernels.cu)
+    add_executable(vidfab_kernel_tests
+      tests/harness.cpp
+      tests/test_kernels.cu
+    )
     target_link_libraries(vidfab_kernel_tests PRIVATE vidfab_cuda)
     add_test(NAME kernels COMMAND vidfab_kernel_tests)
   endif()

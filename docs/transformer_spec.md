@@ -1309,14 +1309,26 @@ original `time_embedder` weights. Anyone comparing this port against the
 official MiniMax output should expect a small systematic difference from this
 alone.
 
-### 10.3 UNRESOLVED (low risk) — QKV interleave, re-verify after download
+### 10.3 RESOLVED — QKV interleave, re-verified on late blocks
 
-§8.1's conclusion (contiguous `[q; k; v]`, *not* per-head interleaved) rests on
-a row-norm statistic over blocks 0 and 1, which were the only fully-downloaded
-fp8 QKV tensors. The separation is large and consistent, and the interleaved
-partition is flat, so the conclusion is solid — but re-run the same check on a
-late block (e.g. 45) once the file is complete. The two layouts differ by a
-per-head shuffle that produces **plausible-looking garbage**, not a crash.
+§8.1's conclusion (contiguous `[q; k; v]`, *not* per-head interleaved) originally
+rested on blocks 0 and 1. Re-run on blocks 30 and 35 (the latest blocks whose
+fp8 QKV payload had arrived), sampling every 8th row's mean `|w|`:
+
+```
+block  0: contiguous [q,k,v] = 9.019, 8.282, 5.674   interleaved = 7.635, 7.670, 7.670
+block 30: contiguous [q,k,v] = 4.030, 4.102, 5.077   interleaved = 4.381, 4.410, 4.418
+block 35: contiguous [q,k,v] = 6.535, 6.493, 8.286   interleaved = 7.040, 7.125, 7.150
+```
+
+The contiguous partition separates at every depth (note the ordering flips —
+`v` is *smallest* at block 0 and *largest* by block 30, which is a real depth
+trend, not an artefact) while the interleaved partition is flat to within 1 %
+everywhere. **Confirmed: contiguous `[Wq; Wk; Wv]`, do not de-interleave.**
+
+The same pass re-confirmed §8.2 on blocks 0/30/35: fp8 `amax` is exactly
+`448.0`, NaN count is exactly 0, and `448 × weight_scale` lands on clean
+fp16-representable values (3.640625, 11.875001, 7.750000).
 
 ### 10.4 UNRESOLVED (irrelevant to our checkpoint) — sinusoid `max_period`
 

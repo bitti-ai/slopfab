@@ -16,47 +16,13 @@
 
 #include <algorithm>
 
+#include "harness.h"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/dtype.h"
 
 namespace {
-
-int g_checks = 0;
-int g_failures = 0;
-const char* g_test = "";
-
-void check_close(const std::vector<float>& expected, const std::vector<float>& actual,
-                 double tol, const char* what, int line) {
-  ++g_checks;
-  if (expected.size() != actual.size()) {
-    ++g_failures;
-    std::fprintf(stderr, "  FAIL %s:%d  %s: size %zu vs %zu\n", g_test, line, what,
-                 expected.size(), actual.size());
-    return;
-  }
-  double worst = 0.0;
-  size_t worst_i = 0;
-  for (size_t i = 0; i < expected.size(); ++i) {
-    const double d = std::fabs(static_cast<double>(expected[i]) - actual[i]);
-    if (d > worst) {
-      worst = d;
-      worst_i = i;
-    }
-  }
-  if (worst > tol) {
-    ++g_failures;
-    std::fprintf(stderr, "  FAIL %s:%d  %s: max abs err %.3e at %zu (%.6g vs %.6g)\n", g_test,
-                 line, what, worst, worst_i, expected[worst_i], actual[worst_i]);
-  }
-}
-
-#define CHECK_CLOSE(e, a, tol, what) check_close((e), (a), (tol), (what), __LINE__)
-
-#define TEST(name)         \
-  g_test = name;           \
-  std::printf("test %s\n", name);
 
 // Deterministic pseudo-random fill; avoids <random> so results are identical
 // across standard library versions.
@@ -315,11 +281,7 @@ void test_softmax() {
   for (int r = 0; r < rows; ++r) {
     double sum = 0.0;
     for (int c = 0; c < cols; ++c) sum += got[r * cols + c];
-    ++g_checks;
-    if (std::fabs(sum - 1.0) > 1e-5) {
-      ++g_failures;
-      std::fprintf(stderr, "  FAIL softmax row %d sums to %.9f\n", r, sum);
-    }
+    CHECK_MSG(std::fabs(sum - 1.0) <= 1e-5, "softmax row %d sums to %.9f", r, sum);
   }
 }
 
@@ -526,13 +488,9 @@ void test_gemm_scatter() {
       }
     }
   }
-  ++g_checks;
   // 1797-term fp32 dot products; 2e-3 is comfortably inside accumulation noise.
-  if (worst > 2e-3) {
-    ++g_failures;
-    std::fprintf(stderr, "  FAIL gemm_nn_batched_ld: worst abs err %.3e over %d probes\n", worst,
-                 checked);
-  }
+  CHECK_MSG(worst <= 2e-3, "gemm_nn_batched_ld: worst abs err %.3e over %d probes", worst,
+            checked);
 
   // Full coverage without an O(seq) CPU reference: run the same multiply
   // through the plain batched wrapper into a contiguous [H][S][D] buffer,
@@ -591,7 +549,6 @@ void test_widen_f16() {
   const std::vector<float> got = to_host(dout);
 
   // Exact equality: these are lossless widenings, not approximations.
-  ++g_checks;
   size_t mismatches = 0;
   size_t first = 0;
   for (size_t i = 0; i < want.size(); ++i) {
@@ -600,12 +557,9 @@ void test_widen_f16() {
       ++mismatches;
     }
   }
-  if (mismatches != 0) {
-    ++g_failures;
-    std::fprintf(stderr,
-                 "  FAIL widen_f16: %zu of %zu patterns differ; first at 0x%04X (%.9g vs %.9g)\n",
-                 mismatches, want.size(), patterns[first], want[first], got[first]);
-  } else {
+  CHECK_MSG(mismatches == 0, "widen_f16: %zu of %zu patterns differ; first at 0x%04X (%.9g vs %.9g)",
+            mismatches, want.size(), patterns[first], want[first], got[first]);
+  if (mismatches == 0) {
     std::printf("  all %zu finite fp16 bit patterns widen identically\n", patterns.size());
   }
 }
@@ -709,6 +663,17 @@ void test_misc() {
   CHECK_CLOSE(want_dn, to_host(ddn), 1e-6, "latent_denorm");
 }
 
+const bool registered = ::vidfab::test::register_test("norms", &test_norms) &&
+                        ::vidfab::test::register_test("gemm", &test_gemm) &&
+                        ::vidfab::test::register_test("swiglu", &test_swiglu) &&
+                        ::vidfab::test::register_test("softmax", &test_softmax) &&
+                        ::vidfab::test::register_test("depth_to_space", &test_depth_to_space) &&
+                        ::vidfab::test::register_test("qkv_norm_rope", &test_qkv_rope) &&
+                        ::vidfab::test::register_test("gemm_nn_batched_ld", &test_gemm_scatter) &&
+                        ::vidfab::test::register_test("widen_f16", &test_widen_f16) &&
+                        ::vidfab::test::register_test("transpose_cn_to_nc", &test_transpose) &&
+                        ::vidfab::test::register_test("misc", &test_misc);
+
 }  // namespace
 
 int main() {
@@ -716,21 +681,5 @@ int main() {
     std::fprintf(stderr, "no CUDA device visible; skipping kernel tests\n");
     return 0;
   }
-  try {
-    test_norms();
-    test_gemm();
-    test_swiglu();
-    test_softmax();
-    test_depth_to_space();
-    test_qkv_rope();
-    test_gemm_scatter();
-    test_widen_f16();
-    test_transpose();
-    test_misc();
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "exception: %s\n", e.what());
-    return 1;
-  }
-  std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return ::vidfab::test::run_all();
 }
