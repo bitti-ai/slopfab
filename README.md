@@ -3,9 +3,10 @@
 A from-scratch C++/CUDA implementation of [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3),
 targeting a single RTX 5090 with no Python at runtime.
 
-**Status: the video VAE decoder works, and `generate` resolves a request but
-does not yet run one.** The transformer, text encoder and audio decoder are in
-progress. See [Roadmap](#roadmap).
+**Status: everything downstream of the denoiser works end to end.** `generate
+--synthetic-latents` produces a real MP4 — both VAEs, the colour transform and
+the muxer, running against the real checkpoints. The text conditioner and the
+transformer forward pass are the remaining gap. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -21,11 +22,22 @@ than approximately.
 |---|---|---|
 | CUDA runtime + cuBLAS | kernels, GEMM | static |
 | C++17 standard library | — | — |
-| ffmpeg *(planned)* | MP4/AAC muxing only | **dynamic**, for LGPL |
+| ffmpeg | MP4/AAC muxing only | **dynamic, resolved at runtime** |
 
 There is deliberately no JSON library and no test framework — both are
 hand-written and small. Nothing in the decode path allocates through a
 third-party abstraction.
+
+ffmpeg is loaded with `LoadLibrary`/`dlopen` at first use and is never linked
+at build time; the build system does not reference an ffmpeg header or library
+at all, and the handful of ABI declarations needed to drive it live in
+`src/video/ffmpeg_abi.h`. That is a licensing requirement — LGPL compliance
+depends on being able to substitute your own build, which `VIDFAB_FFMPEG_DIR`
+exists for — and it means a missing or unusable ffmpeg degrades to the `.y4m` +
+`.wav` writers rather than failing the run. Every struct offset the muxer
+relies on is validated at load time by driving ffmpeg's own allocators and
+reading the value back, so a layout that has moved is reported by name instead
+of corrupting memory.
 
 ## Build
 
@@ -46,6 +58,13 @@ without CUDA; the decoder does not.
 # Resolve a request: canvas, frame alignment, packed sequence length, both
 # sigma schedules. Reads no weights, so it is instant.
 vidfab generate --prompt "..." --aspect 16:9 --frames 124 --steps 50 --dry-run
+
+# Everything downstream of the denoiser, against the real checkpoints: seeded
+# noise -> unpatchify -> video VAE -> audio VAE -> H.264/AAC in an MP4.
+vidfab generate --synthetic-latents --frames 22 --aspect 1:1 \
+                --vae weights/vae/minimax_h3_video_vae_fp16.safetensors \
+                --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors \
+                --out out.mp4
 
 # Inspect a checkpoint: tensor names, shapes, dtype breakdown, metadata
 vidfab inspect weights/vae/minimax_h3_video_vae_fp16.safetensors --list --prefix decoder
@@ -94,11 +113,23 @@ someone else is editing.
 
 - **Host tests**: JSON parser, dtype conversions including fp8 E4M3 and fp4
   E2M1, safetensors loading and its rejection cases, comparison statistics, the
-  flow scheduler, token packing and request resolution. 1445 checks.
-- **GPU kernel tests**: every kernel and both cuBLAS wrappers against
-  independent CPU references. 38 checks. These exist because the failure modes
-  here are silent — a wrong QKV de-interleave, a wrong depth-to-space ordering,
-  or a transposed GEMM all produce plausible output.
+  flow scheduler, token packing, request resolution, the AdaLN table, the
+  tokenizer, latent noise, the WAV writer and the colour transform.
+  **1719 checks.**
+- **GPU kernel tests**: every kernel against independent CPU references written
+  from the spec rather than from the kernel. **318 checks.** These exist because
+  the failure modes here are silent — a wrong QKV de-interleave, a wrong
+  depth-to-space ordering, or a transposed GEMM all produce plausible output.
+
+Two habits do most of the work. Where a wrong implementation is *plausible*
+rather than merely broken, the test computes the wrong form too and asserts the
+kernel does not match it — a missing `1 +` in AdaLN, a gate applied to the sum
+instead of the branch, swapped SwiGLU halves, RoPE pairing `j` with `j + 64`
+instead of `j + 48`, a Sylvester Hadamard instead of the regular one, a skipped
+ConvRot activation rotation. And where an external reference exists, it is used:
+the tokenizer is pinned to HuggingFace's output over 98 cases, the rotary grids
+to numpy at zero tolerance, and the MP4 colour transform to the bytes in a
+`.y4m` written by the other code path.
 
 The packing tests are worth singling out. They compare the float64 rotary grids
 against golden values taken from numpy **with zero tolerance**, because numpy's
@@ -118,8 +149,10 @@ from the reference PyTorch pipeline; `vidfab compare` is built to consume them.
 
 ## Architecture notes
 
-`docs/vae_decoder_spec.md` documents the decoder layer by layer with citations
-into the reference source. Three things in it are worth knowing before reading
+`docs/vae_decoder_spec.md`, `docs/transformer_spec.md` and
+`docs/audio_vae_spec.md` document each stage layer by layer with citations
+into the reference source; `docs/convrot_notes.md` covers the int8 rotation.
+The video decoder's three traps are worth knowing before reading the code. Three things in it are worth knowing before reading
 the code, because each produces plausible-but-wrong output if taken the obvious
 way:
 
@@ -146,12 +179,14 @@ than only at seams.
 | Video VAE decoder | done |
 | Flow-matching sampler | done |
 | Token packing, rotary grids, request resolution | done |
-| Shared kernel layer, quantised linear, attention | in progress |
-| Audio VAE (DAC + BigVGAN) | in progress |
-| WAV writer, MP4/AAC muxing | in progress |
-| Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | not started |
-| H3-Omni-Transformer, 50 layers | not started |
-| `generate` wired end to end | not started |
+| Rank-8 AdaLN table lookup | done |
+| Shared kernel layer, quantised linear, blocked attention | done |
+| Audio VAE (DAC + BigVGAN) | done |
+| WAV writer, MP4/AAC muxing | done |
+| `generate` back half (unpatchify → VAEs → mux) | done |
+| H3-Omni-Transformer, 50 layers | in progress |
+| Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | spec in progress |
+| Fused attention, native fp8/nvfp4/int4 GEMM | not started |
 
 ## Memory budget
 
