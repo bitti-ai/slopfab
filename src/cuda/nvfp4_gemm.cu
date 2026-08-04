@@ -304,7 +304,20 @@ __device__ inline void store_tile(uint32_t* __restrict__ dst, uint32_t* __restri
   dst_scale[tid] = p.scale;
 }
 
-__global__ __launch_bounds__(kThreads) void nvfp4_gemm_kernel(
+// **The `, 2` is load-bearing and is not a hint about what would be nice.**
+// Without a minimum-blocks argument ptxas optimises for one block and targets
+// 255 registers; it happened to land on 126, one either side of the cliff at
+// 128, so two blocks per SM was luck rather than a decision. Any change that
+// moves register pressure -- and the shared-window fix below moves it to 130 --
+// silently costs a block and about a quarter of the throughput.
+//
+// Two is also the ceiling, and both walls are already touched:
+//   shared    45056 x 2 = 90112 of the SM's 102400 bytes
+//   registers   128 x 512 = 65536, the whole register file
+// So a third block is impossible at this tile size, and asking for one would
+// force registers to 85 and spill. Anyone changing kBM/kBN/kBK is standing
+// against those two numbers.
+__global__ __launch_bounds__(kThreads, 2) void nvfp4_gemm_kernel(
     const uint8_t* __restrict__ aq, const uint8_t* __restrict__ as,
     const uint8_t* __restrict__ bq, const uint8_t* __restrict__ bs, __nv_bfloat16* __restrict__ y,
     int rows, int out_features, int k_bytes, int k_blocks, int k_tiles, float global_scale) {
@@ -323,15 +336,22 @@ __global__ __launch_bounds__(kThreads) void nvfp4_gemm_kernel(
   const int m0 = static_cast<int>(blockIdx.x) * kBM;
   const int n0 = static_cast<int>(blockIdx.y) * kBN;
 
-  uint32_t* const stage[2] = {smem, smem + kStageWords};
-
+  // **Every stage base is an integer offset from `smem`, never an element of a
+  // pointer array.** `uint32_t* stage[2]` indexed by a runtime buffer number
+  // is the obvious way to write this and it costs a quarter of the kernel:
+  // ptxas can no longer prove the address is in the shared window, so every
+  // access in the k loop below becomes a generic `LD.E`/`ST.E` instead of
+  // `LDS`/`STS`, and the array itself lands in local memory and is reloaded
+  // with an `LDL.64` each iteration. It does not show up as a spill -- a local
+  // array is not a spill -- so the usual "0 bytes spill" check misses it
+  // entirely. Arithmetic on the `__shared__` symbol keeps the window; an array
+  // of pointers to it does not.
   Prefetch pa;
   Prefetch pb;
   fetch_tile<false, false>(aq, as, m0, rows, 0, k_bytes, k_blocks, tid, pa);
   fetch_tile<true, true>(bq, bs, n0, out_features, 0, k_bytes, k_blocks, tid, pb);
-  store_tile(stage[0], stage[0] + 2 * kBM * kRowWords, tid, pa);
-  store_tile(stage[0] + kBM * kRowWords, stage[0] + 2 * kBM * kRowWords + kBM * kScaleWords, tid,
-             pb);
+  store_tile(smem, smem + 2 * kBM * kRowWords, tid, pa);
+  store_tile(smem + kBM * kRowWords, smem + 2 * kBM * kRowWords + kBM * kScaleWords, tid, pb);
   __syncthreads();
 
   float acc[kMTiles][kNTiles][4];
@@ -358,7 +378,7 @@ __global__ __launch_bounds__(kThreads) void nvfp4_gemm_kernel(
       fetch_tile<true, true>(bq, bs, n0, out_features, k0, k_bytes, k_blocks, tid, pb);
     }
 
-    const uint32_t* const sa = stage[cur];
+    const uint32_t* const sa = smem + cur * kStageWords;
     const uint32_t* const sb = sa + kBM * kRowWords;
     const uint32_t* const sas = sa + 2 * kBM * kRowWords;
     const uint32_t* const sbs = sas + kBM * kScaleWords;
@@ -401,7 +421,7 @@ __global__ __launch_bounds__(kThreads) void nvfp4_gemm_kernel(
       // Safe without a second barrier: buffer `nxt` was last read in iteration
       // kt-1, and every warp passed that iteration's barrier before reaching
       // this store.
-      uint32_t* const dst = stage[nxt];
+      uint32_t* const dst = smem + nxt * kStageWords;
       store_tile(dst, dst + 2 * kBM * kRowWords, tid, pa);
       store_tile(dst + kBM * kRowWords, dst + 2 * kBM * kRowWords + kBM * kScaleWords, tid, pb);
       __syncthreads();
