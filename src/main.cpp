@@ -14,6 +14,7 @@
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/safetensors_write.h"
 #include "vidfab/tensor_convert.h"
 
 #include "vidfab/video/y4m.h"
@@ -317,6 +318,7 @@ int cmd_decode(int argc, char** argv) {
   std::string latent_path;
   std::string out_path = "out.y4m";
   std::string ppm_path;
+  std::string dump_path;
   int T = 7;
   int H = 16;
   int W = 16;
@@ -334,6 +336,8 @@ int cmd_decode(int argc, char** argv) {
       out_path = argv[++i];
     } else if (arg == "--ppm" && i + 1 < argc) {
       ppm_path = argv[++i];
+    } else if (arg == "--dump" && i + 1 < argc) {
+      dump_path = argv[++i];
     } else if (arg == "--shape" && i + 3 < argc) {
       T = std::atoi(argv[++i]);
       H = std::atoi(argv[++i]);
@@ -425,6 +429,16 @@ int cmd_decode(int argc, char** argv) {
   if (nonfinite != 0) {
     std::fprintf(stderr, "vidfab: decode produced non-finite pixels\n");
     return 1;
+  }
+
+  if (!dump_path.empty()) {
+    // Raw fp32 pixels, so two runs can be diffed with `vidfab compare` at
+    // float precision rather than after 8-bit quantisation.
+    vidfab::write_safetensors(
+        dump_path, {{"pixels",
+                     {3, video.frames, video.height, video.width},
+                     video.data}});
+    std::printf("wrote      %s\n", dump_path.c_str());
   }
 
   vidfab::video::write_y4m(out_path, video.data, video.frames, video.height, video.width,

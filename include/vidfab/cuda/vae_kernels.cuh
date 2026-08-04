@@ -29,12 +29,22 @@ void launch_softmax_rows(float* scores, int rows, int cols, float scale, cudaStr
 void launch_merge_heads(const float* in, float* out, int seq, int heads, int head_dim,
                         cudaStream_t stream);
 
-// x += y * scale, scale broadcast over columns (LayerScale).
-void launch_layerscale_residual(float* x, const float* y, const float* scale, int rows, int cols,
-                                cudaStream_t stream);
+// x += (y + bias) * scale, bias and scale broadcast over columns (LayerScale).
+// `bias` may be null when it has already been applied.
+void launch_layerscale_residual(float* x, const float* y, const float* bias, const float* scale,
+                                int rows, int cols, cudaStream_t stream);
 
-// out = silu(in[:, :inner]) * in[:, inner:]
-void launch_swiglu(const float* in, float* out, int rows, int inner, cudaStream_t stream);
+// out = silu(in[:, :inner] + bias[:inner]) * (in[:, inner:] + bias[inner:])
+// `bias` may be null.
+void launch_swiglu(const float* in, const float* bias, float* out, int rows, int inner,
+                   cudaStream_t stream);
+
+// Widens `count` fp16 values to fp32 on the device.
+void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t stream);
+
+// [channels, voxels] -> [voxels, channels]
+void launch_transpose_cn_to_nc(const float* src, float* dst, int channels, int voxels,
+                               cudaStream_t stream);
 
 // tokens [T*H*W, channels*patch_t*patch*patch] -> out [channels, T*patch_t, H*patch, W*patch]
 void launch_depth_to_space(const float* tokens, float* out, int T, int H, int W, int channels,

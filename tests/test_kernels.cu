@@ -263,9 +263,25 @@ void test_swiglu() {
 
   DeviceBuffer<float> din = to_device(in);
   DeviceBuffer<float> dout(want.size());
-  vidfab::cuda::launch_swiglu(din.get(), dout.get(), rows, inner, nullptr);
+  vidfab::cuda::launch_swiglu(din.get(), nullptr, dout.get(), rows, inner, nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want, to_host(dout), 1e-5, "swiglu");
+
+  // With the w1 bias folded in, the result must match applying the bias first.
+  const std::vector<float> bias = make_data(static_cast<size_t>(2) * inner, 78u, 1.5f);
+  std::vector<float> want_biased(static_cast<size_t>(rows) * inner);
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < inner; ++c) {
+      const float gate = in[static_cast<size_t>(r) * 2 * inner + c] + bias[c];
+      const float value = in[static_cast<size_t>(r) * 2 * inner + inner + c] + bias[inner + c];
+      want_biased[static_cast<size_t>(r) * inner + c] =
+          (gate / (1.0f + std::exp(-gate))) * value;
+    }
+  }
+  DeviceBuffer<float> dbias = to_device(bias);
+  vidfab::cuda::launch_swiglu(din.get(), dbias.get(), dout.get(), rows, inner, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE(want_biased, to_host(dout), 1e-5, "swiglu with fused bias");
 }
 
 void test_softmax() {
@@ -466,9 +482,26 @@ void test_misc() {
   DeviceBuffer<float> dx = to_device(x);
   DeviceBuffer<float> dy = to_device(y);
   DeviceBuffer<float> ds = to_device(scale);
-  vidfab::cuda::launch_layerscale_residual(dx.get(), dy.get(), ds.get(), rows, cols, nullptr);
+  vidfab::cuda::launch_layerscale_residual(dx.get(), dy.get(), nullptr, ds.get(), rows, cols,
+                                           nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_res, to_host(dx), 1e-6, "layerscale_residual");
+
+  // Fused bias variant: x += (y + bias) * scale
+  const std::vector<float> lsbias = make_data(cols, 24u);
+  std::vector<float> want_fused(x.size());
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < cols; ++c) {
+      const size_t i = static_cast<size_t>(r) * cols + c;
+      want_fused[i] = x[i] + (y[i] + lsbias[c]) * scale[c];
+    }
+  }
+  DeviceBuffer<float> dx2 = to_device(x);
+  DeviceBuffer<float> dlb = to_device(lsbias);
+  vidfab::cuda::launch_layerscale_residual(dx2.get(), dy.get(), dlb.get(), ds.get(), rows, cols,
+                                           nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE(want_fused, to_host(dx2), 1e-6, "layerscale_residual with fused bias");
 
   // add_bias
   const std::vector<float> base = make_data(static_cast<size_t>(rows) * cols, 31u);

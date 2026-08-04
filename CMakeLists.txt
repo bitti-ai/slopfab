@@ -22,6 +22,7 @@ add_library(vidfab_core STATIC
   src/core/json.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
+  src/core/safetensors_write.cpp
   src/video/y4m.cpp
 )
 

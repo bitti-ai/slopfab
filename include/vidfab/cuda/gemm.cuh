@@ -64,4 +64,19 @@ inline void gemm_nn_batched(cublasHandle_t h, const float* A, const float* B, fl
                                                 batch));
 }
 
+// As gemm_nn_batched, but with an explicit row stride for C. Setting ldc wider
+// than N lets a batched GEMM scatter its per-batch results into interleaved
+// columns of one matrix — used to write attention output directly in
+// token-major layout instead of transposing afterwards. `ldc` is the row
+// length of the destination; `strideC` is the per-batch column offset.
+inline void gemm_nn_batched_ld(cublasHandle_t h, const float* A, const float* B, float* C, int M,
+                               int N, int K, int batch, long long strideA, long long strideB,
+                               long long strideC, int ldc) {
+  const float alpha = 1.0f;
+  const float beta = 0.0f;
+  VIDFAB_CUBLAS_CHECK(cublasSgemmStridedBatched(h, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N,
+                                                strideB, A, K, strideA, &beta, C, ldc, strideC,
+                                                batch));
+}
+
 }  // namespace vidfab::cuda

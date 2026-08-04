@@ -7,7 +7,11 @@
 
 #include "vidfab/cuda/vae_kernels.cuh"
 
+#include <cuda_fp16.h>
+
 #include <cmath>
+#include <stdexcept>
+#include <string>
 
 namespace vidfab::cuda {
 namespace {
@@ -126,6 +130,12 @@ __global__ void add_bias_kernel(float* __restrict__ y, const float* __restrict__
 //
 // Output layout is head-major [H][S][D] so attention can use strided batched
 // GEMM directly.
+// One warp per (token, head). head_dim is 64, so each lane holds exactly two
+// elements in registers: indices `lane` and `lane + 32`. The RMS reduction is
+// a pure warp shuffle — no shared memory, no __syncthreads — and the rotary
+// partner is fetched by shuffle rather than re-read from global.
+//
+// Requires head_dim == 2 * warpSize (64), which the launcher asserts.
 __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
                                            const float* __restrict__ cos_tab,
                                            const float* __restrict__ sin_tab,
@@ -133,58 +143,72 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
                                            float* __restrict__ v_out, int seq, int heads,
                                            int head_dim, int rope_dim, int num_patches,
                                            float eps) {
-  extern __shared__ float shared[];
-  const int token = blockIdx.x;
-  const int head = blockIdx.y;
-  if (token >= seq || head >= heads) return;
+  const int warp_in_block = threadIdx.x / kWarp;
+  const int lane = threadIdx.x % kWarp;
+  const int pair = blockIdx.x * (blockDim.x / kWarp) + warp_in_block;
+  const int total_pairs = seq * heads;
+  if (pair >= total_pairs) return;
+
+  const int head = pair % heads;
+  const int token = pair / heads;
 
   const int triple = 3 * head_dim;
   const float* row = qkv + static_cast<size_t>(token) * heads * triple + head * triple;
   const size_t out_base = (static_cast<size_t>(head) * seq + token) * head_dim;
 
   // V needs no normalisation or rotation.
-  for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
-    v_out[out_base + d] = row[2 * head_dim + d];
-  }
+  v_out[out_base + lane] = row[2 * head_dim + lane];
+  v_out[out_base + lane + kWarp] = row[2 * head_dim + lane + kWarp];
 
   // Suffix tokens (register + zero cls) carry position id 0, so their rotation
   // is the identity. They still take part in attention.
   const bool rotate = token < num_patches;
+  const int half = rope_dim / 2;
 
   for (int which = 0; which < 2; ++which) {
     const float* src = row + which * head_dim;
     float* dst = (which == 0 ? q_out : k_out) + out_base;
 
-    float sum_sq = 0.0f;
-    for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
-      const float v = src[d];
-      sum_sq += v * v;
+    const float v0 = src[lane];
+    const float v1 = src[lane + kWarp];
+
+    float sum_sq = v0 * v0 + v1 * v1;
+    for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
+      sum_sq += __shfl_xor_sync(0xFFFFFFFFu, sum_sq, offset);
     }
-    __syncthreads();
-    const float total = block_reduce_sum(sum_sq, shared);
-    const float inv = rsqrtf(total / static_cast<float>(head_dim) + eps);
+    const float inv = rsqrtf(sum_sq / static_cast<float>(head_dim) + eps);
 
     // Normalise first, then rotate — the reference order. Swapping them
     // changes the result because RMSNorm is not rotation-invariant per pair.
-    for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
-      const float normalised = src[d] * inv;
-      if (!rotate || d >= rope_dim) {
-        dst[d] = normalised;
-        continue;
-      }
-      // GPT-NeoX half-split: dimension d pairs with d + rope_dim/2.
-      const int half = rope_dim / 2;
+    const float n0 = v0 * inv;
+    const float n1 = v1 * inv;
+
+    // Each output index d in [0, rope_dim) pairs with d+half (negated) when
+    // d < half, or d-half when d >= half.
+    //
+    // The shuffles must be executed by every lane of the warp, including lanes
+    // whose own d falls outside rope_dim (for head_dim 64 / rope_dim 48 that is
+    // lanes 16..31 of the upper register). So the partner is always fetched and
+    // the rotation is selected afterwards, never branched around.
+    auto rotated = [&](int d, float normalised) -> float {
+      const bool active = rotate && d < rope_dim;
+      const int partner_index = (d < half) ? (d + half) : (d - half);
+      const int src_lane = partner_index & (kWarp - 1);
+      const int src_reg = partner_index >> 5;
+      const float p0 = __shfl_sync(0xFFFFFFFFu, n0, src_lane);
+      const float p1 = __shfl_sync(0xFFFFFFFFu, n1, src_lane);
+      if (!active) return normalised;
+      const float sign = (d < half) ? -1.0f : 1.0f;
+      const float partner = sign * ((src_reg == 0) ? p0 : p1);
       const float c = cos_tab[static_cast<size_t>(token) * rope_dim + d];
       const float s = sin_tab[static_cast<size_t>(token) * rope_dim + d];
-      float partner;
-      if (d < half) {
-        partner = -(src[d + half] * inv);
-      } else {
-        partner = src[d - half] * inv;
-      }
-      dst[d] = normalised * c + partner * s;
-    }
-    __syncthreads();
+      return normalised * c + partner * s;
+    };
+
+    const float out0 = rotated(lane, n0);
+    const float out1 = rotated(lane + kWarp, n1);
+    dst[lane] = out0;
+    dst[lane + kWarp] = out1;
   }
 }
 
@@ -194,17 +218,19 @@ __global__ void softmax_rows_kernel(float* __restrict__ scores, int cols, float 
   const size_t row = blockIdx.x;
   float* r = scores + row * cols;
 
+  // The scale is applied on the fly rather than written back first: r[i]*scale
+  // is the same float multiply in both passes, so this is bit-identical to
+  // storing it, and it removes a full read+write pass over a 394 MiB buffer.
   float local_max = -INFINITY;
   for (int i = threadIdx.x; i < cols; i += blockDim.x) {
-    r[i] *= scale;
-    local_max = fmaxf(local_max, r[i]);
+    local_max = fmaxf(local_max, r[i] * scale);
   }
   const float row_max = block_reduce_max(local_max, shared);
 
   __syncthreads();
   float local_sum = 0.0f;
   for (int i = threadIdx.x; i < cols; i += blockDim.x) {
-    const float e = __expf(r[i] - row_max);
+    const float e = __expf(r[i] * scale - row_max);
     r[i] = e;
     local_sum += e;
   }
@@ -227,29 +253,59 @@ __global__ void merge_heads_kernel(const float* __restrict__ in, float* __restri
   out[idx] = in[(static_cast<size_t>(h) * seq + s) * head_dim + d];
 }
 
-// x += y * scale, with scale broadcast over the channel dimension (LayerScale).
+// x += (y + bias) * scale, with bias and scale broadcast over columns.
+//
+// The bias add is folded in because this kernel already reads y: applying it
+// as a separate pass costs a full read+write of the buffer for one FMA.
+// `bias` may be null when the caller has already applied it.
+// Row index comes from blockIdx.y, avoiding a 64-bit modulo per element.
 __global__ void layerscale_residual_kernel(float* __restrict__ x, const float* __restrict__ y,
-                                           const float* __restrict__ scale, int rows, int cols) {
-  const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  const size_t total = static_cast<size_t>(rows) * cols;
-  if (idx >= total) return;
-  const int c = static_cast<int>(idx % cols);
-  x[idx] += y[idx] * scale[c];
+                                           const float* __restrict__ bias,
+                                           const float* __restrict__ scale, int cols) {
+  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= cols) return;
+  const size_t idx = static_cast<size_t>(blockIdx.y) * cols + c;
+  const float v = (bias != nullptr) ? (y[idx] + bias[c]) : y[idx];
+  x[idx] += v * scale[c];
 }
 
 // SwiGLU: gate is the FIRST half of w1's output, value the second.
 // out = silu(gate) * value. Reversing these is a silent correctness bug.
-__global__ void swiglu_kernel(const float* __restrict__ in, float* __restrict__ out, int rows,
-                              int inner) {
-  const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  const size_t total = static_cast<size_t>(rows) * inner;
-  if (idx >= total) return;
-  const int c = static_cast<int>(idx % inner);
-  const size_t row = idx / inner;
+//
+// The w1 bias is folded in for the same reason as above: this kernel already
+// streams the whole 2*inner-wide row.
+__global__ void swiglu_kernel(const float* __restrict__ in, const float* __restrict__ bias,
+                              float* __restrict__ out, int inner) {
+  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= inner) return;
+  const size_t row = blockIdx.y;
   const float* r = in + row * 2 * inner;
-  const float gate = r[c];
-  const float value = r[inner + c];
-  out[idx] = (gate / (1.0f + __expf(-gate))) * value;
+  float gate = r[c];
+  float value = r[inner + c];
+  if (bias != nullptr) {
+    gate += bias[c];
+    value += bias[inner + c];
+  }
+  out[row * inner + c] = (gate / (1.0f + __expf(-gate))) * value;
+}
+
+// Widens fp16 checkpoint bytes to fp32 on the device, so the host never has to
+// run a scalar conversion loop and only half as many bytes cross PCIe.
+__global__ void widen_f16_kernel(const __half* __restrict__ src, float* __restrict__ dst,
+                                 size_t count) {
+  const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (idx >= count) return;
+  dst[idx] = __half2float(src[idx]);
+}
+
+// [channels, voxels] -> [voxels, channels]. The ViT consumes one channel-last
+// token per latent voxel.
+__global__ void transpose_cn_to_nc_kernel(const float* __restrict__ src, float* __restrict__ dst,
+                                          int channels, int voxels) {
+  const int n = blockIdx.x * blockDim.x + threadIdx.x;
+  if (n >= voxels) return;
+  const int c = blockIdx.y;
+  dst[static_cast<size_t>(n) * channels + c] = src[static_cast<size_t>(c) * voxels + n];
 }
 
 // Depth-to-space with channel-major ordering.
@@ -330,10 +386,19 @@ void launch_add_bias(float* y, const float* bias, int rows, int cols, cudaStream
 void launch_split_qkv_norm_rope(const float* qkv, const float* cos_tab, const float* sin_tab,
                                 float* q, float* k, float* v, int seq, int heads, int head_dim,
                                 int rope_dim, int num_patches, float eps, cudaStream_t stream) {
-  const int threads = 64;
-  const size_t shared = ((threads + kWarp - 1) / kWarp) * sizeof(float);
-  const dim3 grid(seq, heads);
-  split_qkv_norm_rope_kernel<<<grid, threads, shared, stream>>>(
+  // The warp-per-pair layout gives each lane exactly two elements.
+  if (head_dim != 2 * kWarp) {
+    throw std::runtime_error("split_qkv_norm_rope: head_dim must be 64, got " +
+                             std::to_string(head_dim));
+  }
+  if (rope_dim % 2 != 0 || rope_dim > head_dim) {
+    throw std::runtime_error("split_qkv_norm_rope: rope_dim must be even and <= head_dim");
+  }
+  const int threads = 256;
+  const int warps_per_block = threads / kWarp;
+  const int pairs = seq * heads;
+  const int blocks = (pairs + warps_per_block - 1) / warps_per_block;
+  split_qkv_norm_rope_kernel<<<blocks, threads, 0, stream>>>(
       qkv, cos_tab, sin_tab, q, k, v, seq, heads, head_dim, rope_dim, num_patches, eps);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
@@ -354,20 +419,35 @@ void launch_merge_heads(const float* in, float* out, int seq, int heads, int hea
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_layerscale_residual(float* x, const float* y, const float* scale, int rows, int cols,
-                                cudaStream_t stream) {
-  const size_t total = static_cast<size_t>(rows) * cols;
+void launch_layerscale_residual(float* x, const float* y, const float* bias, const float* scale,
+                                int rows, int cols, cudaStream_t stream) {
   const int threads = 256;
-  const int blocks = static_cast<int>((total + threads - 1) / threads);
-  layerscale_residual_kernel<<<blocks, threads, 0, stream>>>(x, y, scale, rows, cols);
+  const dim3 grid((cols + threads - 1) / threads, rows);
+  layerscale_residual_kernel<<<grid, threads, 0, stream>>>(x, y, bias, scale, cols);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_swiglu(const float* in, float* out, int rows, int inner, cudaStream_t stream) {
-  const size_t total = static_cast<size_t>(rows) * inner;
+void launch_swiglu(const float* in, const float* bias, float* out, int rows, int inner,
+                   cudaStream_t stream) {
   const int threads = 256;
-  const int blocks = static_cast<int>((total + threads - 1) / threads);
-  swiglu_kernel<<<blocks, threads, 0, stream>>>(in, out, rows, inner);
+  const dim3 grid((inner + threads - 1) / threads, rows);
+  swiglu_kernel<<<grid, threads, 0, stream>>>(in, bias, out, inner);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t stream) {
+  const int threads = 256;
+  const size_t blocks = (count + threads - 1) / threads;
+  widen_f16_kernel<<<static_cast<int>(blocks), threads, 0, stream>>>(
+      static_cast<const __half*>(src), dst, count);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_transpose_cn_to_nc(const float* src, float* dst, int channels, int voxels,
+                               cudaStream_t stream) {
+  const int threads = 256;
+  const dim3 grid((voxels + threads - 1) / threads, channels);
+  transpose_cn_to_nc_kernel<<<grid, threads, 0, stream>>>(src, dst, channels, voxels);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

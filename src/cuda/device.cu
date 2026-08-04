@@ -63,7 +63,11 @@ DeviceInfo query_device(int index) {
 
 void set_device(int index) { VIDFAB_CUDA_CHECK(cudaSetDevice(index)); }
 
-Stream::Stream() { VIDFAB_CUDA_CHECK(cudaStreamCreate(&stream_)); }
+Stream::Stream() {
+  // Non-blocking: a default stream would implicitly synchronise against the
+  // legacy NULL stream, silently serialising any future concurrent work.
+  VIDFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+}
 
 Stream::~Stream() { destroy(); }
 
