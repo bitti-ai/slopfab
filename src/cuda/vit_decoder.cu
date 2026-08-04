@@ -1,6 +1,9 @@
 #include <cublas_v2.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -123,7 +126,7 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_tokens;   // [S, dim]
   DeviceBuffer<float> d_normed;   // [S, dim]
   DeviceBuffer<float> d_qkv;      // [S, 3*dim]
-  DeviceBuffer<float> d_q, d_k, d_v, d_attn;  // [H, S, D]
+  DeviceBuffer<float> d_q, d_k, d_v;  // [H, S, D]
   DeviceBuffer<float> d_scores;   // [H, S, S]
   DeviceBuffer<float> d_merged;   // [S, dim]
   DeviceBuffer<float> d_proj;     // [S, dim] or [S, patch_dim]
@@ -160,6 +163,12 @@ struct ViTDecoder::Impl {
   }
 
   void ensure_scratch(int seq, int num_patches) {
+    // Three buffers below are sized from num_patches while the early-out tests
+    // seq. That is only safe because the two move together; assert it rather
+    // than rely on the caller.
+    if (seq != num_patches + cfg.num_suffix) {
+      throw std::runtime_error("vae: ensure_scratch called with inconsistent seq/num_patches");
+    }
     if (seq <= cap_seq) return;
     const int dim = cfg.dim;
     const int hd = cfg.head_dim;
@@ -175,7 +184,6 @@ struct ViTDecoder::Impl {
     d_q.allocate(s * cfg.heads * hd);
     d_k.allocate(s * cfg.heads * hd);
     d_v.allocate(s * cfg.heads * hd);
-    d_attn.allocate(s * cfg.heads * hd);
     d_scores.allocate(static_cast<size_t>(cfg.heads) * s * s);
     d_merged.allocate(s * dim);
     d_proj.allocate(s * static_cast<size_t>(cfg.patch_dim()));
@@ -256,11 +264,12 @@ struct ViTDecoder::Impl {
     // --- attention ---
     cuda::launch_rmsnorm(d_tokens.get(), b.norm1.get(), d_normed.get(), seq, dim, cfg.eps, s);
     gemm_nt(d_normed.get(), b.qkv_w.get(), d_qkv.get(), seq, 3 * dim, dim);
-    cuda::launch_add_bias(d_qkv.get(), b.qkv_b.get(), seq, 3 * dim, s);
 
-    cuda::launch_split_qkv_norm_rope(d_qkv.get(), d_cos.get(), d_sin.get(), d_q.get(), d_k.get(),
-                                     d_v.get(), seq, heads, hd, cfg.rope_dim, num_patches, cfg.eps,
-                                     s);
+    // The qkv bias is applied inside the split kernel, which already reads
+    // every element of d_qkv once.
+    cuda::launch_split_qkv_norm_rope(d_qkv.get(), b.qkv_b.get(), d_cos.get(), d_sin.get(),
+                                     d_q.get(), d_k.get(), d_v.get(), seq, heads, hd, cfg.rope_dim,
+                                     num_patches, cfg.eps, s);
 
     const long long head_stride = static_cast<long long>(seq) * hd;
     const long long score_stride = static_cast<long long>(seq) * seq;

@@ -17,17 +17,16 @@ void launch_layernorm(const float* x, const float* weight, const float* bias, fl
 
 void launch_add_bias(float* y, const float* bias, int rows, int cols, cudaStream_t stream);
 
-// Splits interleaved fused QKV, applies non-affine RMSNorm over head_dim, then
-// RoPE over the first `rope_dim` dims. Outputs are head-major [H][S][D].
-// Tokens at index >= num_patches are suffix tokens and skip rotation.
-void launch_split_qkv_norm_rope(const float* qkv, const float* cos_tab, const float* sin_tab,
-                                float* q, float* k, float* v, int seq, int heads, int head_dim,
-                                int rope_dim, int num_patches, float eps, cudaStream_t stream);
+// Splits interleaved fused QKV, adds the optional to_qkv bias, applies
+// non-affine RMSNorm over head_dim, then RoPE over the first `rope_dim` dims.
+// Outputs are head-major [H][S][D]. Tokens at index >= num_patches are suffix
+// tokens and skip rotation. `bias` may be null.
+void launch_split_qkv_norm_rope(const float* qkv, const float* bias, const float* cos_tab,
+                                const float* sin_tab, float* q, float* k, float* v, int seq,
+                                int heads, int head_dim, int rope_dim, int num_patches, float eps,
+                                cudaStream_t stream);
 
 void launch_softmax_rows(float* scores, int rows, int cols, float scale, cudaStream_t stream);
-
-void launch_merge_heads(const float* in, float* out, int seq, int heads, int head_dim,
-                        cudaStream_t stream);
 
 // x += (y + bias) * scale, bias and scale broadcast over columns (LayerScale).
 // `bias` may be null when it has already been applied.

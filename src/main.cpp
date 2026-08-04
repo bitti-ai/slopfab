@@ -325,6 +325,7 @@ int cmd_decode(int argc, char** argv) {
   uint32_t seed = 1234;
   bool no_tiling = false;
   int fps = 24;
+  int repeat = 1;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -346,6 +347,8 @@ int cmd_decode(int argc, char** argv) {
       seed = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
     } else if (arg == "--fps" && i + 1 < argc) {
       fps = std::atoi(argv[++i]);
+    } else if (arg == "--repeat" && i + 1 < argc) {
+      repeat = std::max(1, std::atoi(argv[++i]));
     } else if (arg == "--no-tiling") {
       no_tiling = true;
     } else {
@@ -400,14 +403,22 @@ int cmd_decode(int argc, char** argv) {
   vidfab::vae::DecodeSchedule schedule;
   schedule.tiling_enabled = !no_tiling;
 
-  const auto t0 = std::chrono::steady_clock::now();
-  vidfab::vae::DecodedVideo video = decoder.decode(z.data(), T, H, W, mean, std_dev, schedule);
-  const auto t1 = std::chrono::steady_clock::now();
-  const double seconds = std::chrono::duration<double>(t1 - t0).count();
-
-  std::printf("decoded    %d frames of %dx%d in %.2f s (%.2f fps)\n", video.frames, video.width,
-              video.height, seconds,
-              seconds > 0 ? static_cast<double>(video.frames) / seconds : 0.0);
+  // The first decode pays one-time costs the steady state does not: scratch
+  // allocation, the first RoPE build, and cuBLAS heuristic selection for each
+  // GEMM shape. Reporting it as the decode time overstates the cost by a
+  // noticeable margin, so timings are reported per run and `--repeat` exists to
+  // expose the warm number.
+  vidfab::vae::DecodedVideo video;
+  for (int run = 0; run < repeat; ++run) {
+    const auto t0 = std::chrono::steady_clock::now();
+    video = decoder.decode(z.data(), T, H, W, mean, std_dev, schedule);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(t1 - t0).count();
+    const char* label = (run == 0) ? "decoded   " : "  (warm)  ";
+    std::printf("%s %d frames of %dx%d in %.3f s (%.2f fps)\n", label, video.frames, video.width,
+                video.height, seconds,
+                seconds > 0 ? static_cast<double>(video.frames) / seconds : 0.0);
+  }
 
   // Report basic statistics: a decode that silently produced NaN or a constant
   // image should be visible here without opening the file.

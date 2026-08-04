@@ -137,6 +137,7 @@ __global__ void add_bias_kernel(float* __restrict__ y, const float* __restrict__
 //
 // Requires head_dim == 2 * warpSize (64), which the launcher asserts.
 __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
+                                           const float* __restrict__ bias,
                                            const float* __restrict__ cos_tab,
                                            const float* __restrict__ sin_tab,
                                            float* __restrict__ q_out, float* __restrict__ k_out,
@@ -154,11 +155,18 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
 
   const int triple = 3 * head_dim;
   const float* row = qkv + static_cast<size_t>(token) * heads * triple + head * triple;
+  // The to_qkv bias shares the projection's interleaved layout, so this head's
+  // slice sits at the same offset. Folding it in here removes the last
+  // standalone bias pass over the 88 MB qkv buffer.
+  const float* bias_row = (bias != nullptr) ? (bias + head * triple) : nullptr;
   const size_t out_base = (static_cast<size_t>(head) * seq + token) * head_dim;
 
   // V needs no normalisation or rotation.
-  v_out[out_base + lane] = row[2 * head_dim + lane];
-  v_out[out_base + lane + kWarp] = row[2 * head_dim + lane + kWarp];
+  v_out[out_base + lane] =
+      row[2 * head_dim + lane] + (bias != nullptr ? bias_row[2 * head_dim + lane] : 0.0f);
+  v_out[out_base + lane + kWarp] =
+      row[2 * head_dim + lane + kWarp] +
+      (bias != nullptr ? bias_row[2 * head_dim + lane + kWarp] : 0.0f);
 
   // Suffix tokens (register + zero cls) carry position id 0, so their rotation
   // is the identity. They still take part in attention.
@@ -169,13 +177,21 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
     const float* src = row + which * head_dim;
     float* dst = (which == 0 ? q_out : k_out) + out_base;
 
-    const float v0 = src[lane];
-    const float v1 = src[lane + kWarp];
+    const float v0 = src[lane] + (bias != nullptr ? bias_row[which * head_dim + lane] : 0.0f);
+    const float v1 = src[lane + kWarp] +
+                     (bias != nullptr ? bias_row[which * head_dim + lane + kWarp] : 0.0f);
 
-    float sum_sq = v0 * v0 + v1 * v1;
+    // The two halves are reduced separately and summed at the end. Folding
+    // them into one accumulator first would reassociate the 64-element sum and
+    // shift every Q/K element by about an ulp; keeping them apart reproduces
+    // the block-reduction order this kernel originally used.
+    float s0 = v0 * v0;
+    float s1 = v1 * v1;
     for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
-      sum_sq += __shfl_xor_sync(0xFFFFFFFFu, sum_sq, offset);
+      s0 += __shfl_xor_sync(0xFFFFFFFFu, s0, offset);
+      s1 += __shfl_xor_sync(0xFFFFFFFFu, s1, offset);
     }
+    const float sum_sq = s0 + s1;
     const float inv = rsqrtf(sum_sq / static_cast<float>(head_dim) + eps);
 
     // Normalise first, then rotate — the reference order. Swapping them
@@ -218,19 +234,24 @@ __global__ void softmax_rows_kernel(float* __restrict__ scores, int cols, float 
   const size_t row = blockIdx.x;
   float* r = scores + row * cols;
 
-  // The scale is applied on the fly rather than written back first: r[i]*scale
-  // is the same float multiply in both passes, so this is bit-identical to
-  // storing it, and it removes a full read+write pass over a 394 MiB buffer.
+  // The scale is applied on the fly rather than written back first, which
+  // removes a full read+write pass over a 394 MiB buffer.
+  //
+  // __fmul_rn is required, not stylistic: nvcc contracts by default, and a
+  // plain `r[i] * scale - row_max` fuses into an FMA that keeps the product at
+  // internal precision. Writing the scaled value to global first, as this
+  // kernel originally did, forces a round to fp32. The intrinsic blocks
+  // contraction so the arithmetic stays identical to that version.
   float local_max = -INFINITY;
   for (int i = threadIdx.x; i < cols; i += blockDim.x) {
-    local_max = fmaxf(local_max, r[i] * scale);
+    local_max = fmaxf(local_max, __fmul_rn(r[i], scale));
   }
   const float row_max = block_reduce_max(local_max, shared);
 
   __syncthreads();
   float local_sum = 0.0f;
   for (int i = threadIdx.x; i < cols; i += blockDim.x) {
-    const float e = __expf(r[i] * scale - row_max);
+    const float e = __expf(__fmul_rn(r[i], scale) - row_max);
     r[i] = e;
     local_sum += e;
   }
@@ -238,19 +259,6 @@ __global__ void softmax_rows_kernel(float* __restrict__ scores, int cols, float 
   const float inv = 1.0f / total;
 
   for (int i = threadIdx.x; i < cols; i += blockDim.x) r[i] *= inv;
-}
-
-// Repacks attention output from head-major [H][S][D] to token-major [S][H*D].
-__global__ void merge_heads_kernel(const float* __restrict__ in, float* __restrict__ out, int seq,
-                                   int heads, int head_dim) {
-  const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  const size_t total = static_cast<size_t>(seq) * heads * head_dim;
-  if (idx >= total) return;
-  const int d = static_cast<int>(idx % head_dim);
-  const size_t rest = idx / head_dim;
-  const int h = static_cast<int>(rest % heads);
-  const int s = static_cast<int>(rest / heads);
-  out[idx] = in[(static_cast<size_t>(h) * seq + s) * head_dim + d];
 }
 
 // x += (y + bias) * scale, with bias and scale broadcast over columns.
@@ -383,9 +391,10 @@ void launch_add_bias(float* y, const float* bias, int rows, int cols, cudaStream
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_split_qkv_norm_rope(const float* qkv, const float* cos_tab, const float* sin_tab,
-                                float* q, float* k, float* v, int seq, int heads, int head_dim,
-                                int rope_dim, int num_patches, float eps, cudaStream_t stream) {
+void launch_split_qkv_norm_rope(const float* qkv, const float* bias, const float* cos_tab,
+                                const float* sin_tab, float* q, float* k, float* v, int seq,
+                                int heads, int head_dim, int rope_dim, int num_patches, float eps,
+                                cudaStream_t stream) {
   // The warp-per-pair layout gives each lane exactly two elements.
   if (head_dim != 2 * kWarp) {
     throw std::runtime_error("split_qkv_norm_rope: head_dim must be 64, got " +
@@ -399,7 +408,7 @@ void launch_split_qkv_norm_rope(const float* qkv, const float* cos_tab, const fl
   const int pairs = seq * heads;
   const int blocks = (pairs + warps_per_block - 1) / warps_per_block;
   split_qkv_norm_rope_kernel<<<blocks, threads, 0, stream>>>(
-      qkv, cos_tab, sin_tab, q, k, v, seq, heads, head_dim, rope_dim, num_patches, eps);
+      qkv, bias, cos_tab, sin_tab, q, k, v, seq, heads, head_dim, rope_dim, num_patches, eps);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -407,15 +416,6 @@ void launch_softmax_rows(float* scores, int rows, int cols, float scale, cudaStr
   const int threads = 256;
   const size_t shared = (threads / kWarp) * sizeof(float);
   softmax_rows_kernel<<<rows, threads, shared, stream>>>(scores, cols, scale);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
-}
-
-void launch_merge_heads(const float* in, float* out, int seq, int heads, int head_dim,
-                        cudaStream_t stream) {
-  const size_t total = static_cast<size_t>(seq) * heads * head_dim;
-  const int threads = 256;
-  const int blocks = static_cast<int>((total + threads - 1) / threads);
-  merge_heads_kernel<<<blocks, threads, 0, stream>>>(in, out, seq, heads, head_dim);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

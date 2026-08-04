@@ -14,9 +14,12 @@
 #include <string>
 #include <vector>
 
+#include <algorithm>
+
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
+#include "vidfab/dtype.h"
 
 namespace {
 
@@ -435,36 +438,175 @@ void test_qkv_rope() {
   DeviceBuffer<float> dk(per);
   DeviceBuffer<float> dv(per);
 
-  vidfab::cuda::launch_split_qkv_norm_rope(dqkv.get(), dcos.get(), dsin.get(), dq.get(), dk.get(),
-                                           dv.get(), seq, heads, head_dim, rope_dim, num_patches,
-                                           eps, nullptr);
+  vidfab::cuda::launch_split_qkv_norm_rope(dqkv.get(), nullptr, dcos.get(), dsin.get(), dq.get(),
+                                           dk.get(), dv.get(), seq, heads, head_dim, rope_dim,
+                                           num_patches, eps, nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_q, to_host(dq), 1e-5, "rope q");
   CHECK_CLOSE(want_k, to_host(dk), 1e-5, "rope k");
   CHECK_CLOSE(want_v, to_host(dv), 0.0, "v passthrough");
+
+  // With the to_qkv bias fused in, the result must match adding it beforehand.
+  const std::vector<float> qkv_bias =
+      make_data(static_cast<size_t>(heads) * 3 * head_dim, 313u, 0.7f);
+  std::vector<float> qkv_biased = qkv;
+  for (int t = 0; t < seq; ++t) {
+    for (size_t j = 0; j < qkv_bias.size(); ++j) {
+      qkv_biased[static_cast<size_t>(t) * heads * triple + j] += qkv_bias[j];
+    }
+  }
+  DeviceBuffer<float> dqkvb = to_device(qkv_biased);
+  DeviceBuffer<float> dbias = to_device(qkv_bias);
+  DeviceBuffer<float> dq_ref(per), dk_ref(per), dv_ref(per);
+  DeviceBuffer<float> dq_fused(per), dk_fused(per), dv_fused(per);
+
+  vidfab::cuda::launch_split_qkv_norm_rope(dqkvb.get(), nullptr, dcos.get(), dsin.get(),
+                                           dq_ref.get(), dk_ref.get(), dv_ref.get(), seq, heads,
+                                           head_dim, rope_dim, num_patches, eps, nullptr);
+  vidfab::cuda::launch_split_qkv_norm_rope(dqkv.get(), dbias.get(), dcos.get(), dsin.get(),
+                                           dq_fused.get(), dk_fused.get(), dv_fused.get(), seq,
+                                           heads, head_dim, rope_dim, num_patches, eps, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE(to_host(dq_ref), to_host(dq_fused), 1e-6, "fused qkv bias q");
+  CHECK_CLOSE(to_host(dk_ref), to_host(dk_fused), 1e-6, "fused qkv bias k");
+  CHECK_CLOSE(to_host(dv_ref), to_host(dv_fused), 0.0, "fused qkv bias v");
+}
+
+// The AV GEMM writes token-major directly by using ldc = heads*head_dim and a
+// per-head column offset. This is the only wrapper whose layout is not
+// otherwise exercised, and a mistake here yields plausible wrong numbers, so it
+// is tested at the shape production actually uses.
+void test_gemm_scatter() {
+  TEST("gemm_nn_batched_ld");
+  cublasHandle_t h = nullptr;
+  VIDFAB_CUBLAS_CHECK(cublasCreate(&h));
+
+  const int seq = 1797;  // production: 7*16*16 patches + 5 suffix tokens
+  const int heads = 32;
+  const int head_dim = 64;
+
+  // P[head][seq][seq] @ V[head][seq][head_dim] -> out[seq][heads*head_dim]
+  // Small values keep the 1797-term dot products well conditioned.
+  const std::vector<float> P =
+      make_data(static_cast<size_t>(heads) * seq * seq, 61u, 0.05f);
+  const std::vector<float> V =
+      make_data(static_cast<size_t>(heads) * seq * head_dim, 62u, 1.0f);
+
+  DeviceBuffer<float> dP = to_device(P);
+  DeviceBuffer<float> dV = to_device(V);
+  DeviceBuffer<float> dout(static_cast<size_t>(seq) * heads * head_dim);
+  dout.zero();
+
+  vidfab::cuda::gemm_nn_batched_ld(h, dP.get(), dV.get(), dout.get(), seq, head_dim, seq, heads,
+                                   static_cast<long long>(seq) * seq,
+                                   static_cast<long long>(seq) * head_dim,
+                                   /*strideC=*/head_dim, /*ldc=*/heads * head_dim);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> got = to_host(dout);
+
+  // Spot-check a scattering of (token, head, dim) triples against a CPU dot
+  // product. Checking all 3.7 M outputs against an O(seq) reference would take
+  // minutes; these positions cover the first/last head and token extremes.
+  const int tokens[] = {0, 1, 897, 1795, 1796};
+  const int hs[] = {0, 1, 17, 31};
+  const int ds[] = {0, 33, 63};
+  int checked = 0;
+  double worst = 0.0;
+  for (int t : tokens) {
+    for (int hh : hs) {
+      for (int dd : ds) {
+        double acc = 0.0;
+        for (int k = 0; k < seq; ++k) {
+          acc += static_cast<double>(P[(static_cast<size_t>(hh) * seq + t) * seq + k]) *
+                 V[(static_cast<size_t>(hh) * seq + k) * head_dim + dd];
+        }
+        const double actual = got[(static_cast<size_t>(t) * heads + hh) * head_dim + dd];
+        worst = std::max(worst, std::fabs(acc - actual));
+        ++checked;
+      }
+    }
+  }
+  ++g_checks;
+  // 1797-term fp32 dot products; 2e-3 is comfortably inside accumulation noise.
+  if (worst > 2e-3) {
+    ++g_failures;
+    std::fprintf(stderr, "  FAIL gemm_nn_batched_ld: worst abs err %.3e over %d probes\n", worst,
+                 checked);
+  }
+  cublasDestroy(h);
+}
+
+// The weight path now widens fp16 on the device instead of on the host. That
+// changed the input to every parameter in the network, so the two conversions
+// are compared directly rather than assumed equivalent.
+void test_widen_f16() {
+  TEST("widen_f16");
+  // Cover every fp16 bit pattern: normals, subnormals, both zeros, and the
+  // boundaries. Infinities and NaNs are excluded because the host path emits a
+  // signalling NaN payload where the hardware quiets it, which is irrelevant
+  // for real weights but would fail an exact comparison.
+  std::vector<uint16_t> patterns;
+  for (uint32_t bits = 0; bits <= 0xFFFFu; ++bits) {
+    const uint16_t exp = static_cast<uint16_t>((bits >> 10) & 0x1Fu);
+    if (exp == 0x1F) continue;  // inf / nan
+    patterns.push_back(static_cast<uint16_t>(bits));
+  }
+
+  // Host reference: the same routine the loader used before.
+  std::vector<float> want(patterns.size());
+  for (size_t i = 0; i < patterns.size(); ++i) {
+    want[i] = vidfab::f16_to_f32(patterns[i]);
+  }
+
+  DeviceBuffer<uint16_t> draw(patterns.size());
+  draw.copy_from_host(patterns.data(), patterns.size());
+  DeviceBuffer<float> dout(patterns.size());
+  vidfab::cuda::launch_widen_f16(draw.get(), dout.get(), patterns.size(), nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> got = to_host(dout);
+
+  // Exact equality: these are lossless widenings, not approximations.
+  ++g_checks;
+  size_t mismatches = 0;
+  size_t first = 0;
+  for (size_t i = 0; i < want.size(); ++i) {
+    if (std::memcmp(&want[i], &got[i], sizeof(float)) != 0) {
+      if (mismatches == 0) first = i;
+      ++mismatches;
+    }
+  }
+  if (mismatches != 0) {
+    ++g_failures;
+    std::fprintf(stderr,
+                 "  FAIL widen_f16: %zu of %zu patterns differ; first at 0x%04X (%.9g vs %.9g)\n",
+                 mismatches, want.size(), patterns[first], want[first], got[first]);
+  } else {
+    std::printf("  all %zu finite fp16 bit patterns widen identically\n", patterns.size());
+  }
+}
+
+void test_transpose() {
+  TEST("transpose_cn_to_nc");
+  const int channels = 24;
+  const int voxels = 7 * 16 * 16;
+  const std::vector<float> src = make_data(static_cast<size_t>(channels) * voxels, 71u);
+  std::vector<float> want(src.size());
+  for (int n = 0; n < voxels; ++n) {
+    for (int c = 0; c < channels; ++c) {
+      want[static_cast<size_t>(n) * channels + c] = src[static_cast<size_t>(c) * voxels + n];
+    }
+  }
+  DeviceBuffer<float> dsrc = to_device(src);
+  DeviceBuffer<float> ddst(src.size());
+  vidfab::cuda::launch_transpose_cn_to_nc(dsrc.get(), ddst.get(), channels, voxels, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE(want, to_host(ddst), 0.0, "transpose_cn_to_nc");
 }
 
 void test_misc() {
   TEST("misc");
-  // merge_heads: [H][S][D] -> [S][H*D]
-  const int seq = 11;
-  const int heads = 5;
   const int head_dim = 8;
-  const std::vector<float> in = make_data(static_cast<size_t>(seq) * heads * head_dim, 1234u);
-  std::vector<float> want(in.size());
-  for (int s = 0; s < seq; ++s) {
-    for (int h = 0; h < heads; ++h) {
-      for (int d = 0; d < head_dim; ++d) {
-        want[(static_cast<size_t>(s) * heads + h) * head_dim + d] =
-            in[(static_cast<size_t>(h) * seq + s) * head_dim + d];
-      }
-    }
-  }
-  DeviceBuffer<float> din = to_device(in);
-  DeviceBuffer<float> dout(in.size());
-  vidfab::cuda::launch_merge_heads(din.get(), dout.get(), seq, heads, head_dim, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  CHECK_CLOSE(want, to_host(dout), 0.0, "merge_heads");
+  (void)head_dim;
 
   // layerscale_residual: x += y * scale, scale broadcast over columns
   const int rows = 7;
@@ -556,6 +698,9 @@ int main() {
     test_softmax();
     test_depth_to_space();
     test_qkv_rope();
+    test_gemm_scatter();
+    test_widen_f16();
+    test_transpose();
     test_misc();
   } catch (const std::exception& e) {
     std::fprintf(stderr, "exception: %s\n", e.what());

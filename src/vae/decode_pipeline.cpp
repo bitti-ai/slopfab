@@ -174,8 +174,12 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
           ? split_tiles(W_px, schedule.tile_size, schedule.tile_overlap_min, cfg.patch)
           : split_tiles(W_px, W_px, 0, cfg.patch);
 
-  std::vector<float> window_out;
   std::vector<float> clip(static_cast<size_t>(ch) * window * voxels_per_frame);
+
+  // Tile buffers are hoisted out of the chunk loop and reused: moving out of
+  // them each chunk would leave them empty, so forward_window's resize() would
+  // reallocate and zero-fill the whole output on every single call.
+  std::vector<std::vector<float>> tiles(ytiles.starts.size() * xtiles.starts.size());
 
   for (int c = 0; c < num_chunks; ++c) {
     const int t_start = c * chunk;
@@ -195,7 +199,6 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
 
     // Spatial tiling. Tiles are decoded independently, then blended against
     // their raw (unblended) neighbours and trimmed.
-    std::vector<std::vector<float>> tiles(ytiles.starts.size() * xtiles.starts.size());
     std::vector<int> tile_h(ytiles.starts.size());
     std::vector<int> tile_w(xtiles.starts.size());
 
@@ -221,8 +224,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
           }
         }
 
-        forward_window(z_tile.data(), window, th, tw, window_out);
-        tiles[ti * xtiles.starts.size() + tj] = std::move(window_out);
+        forward_window(z_tile.data(), window, th, tw, tiles[ti * xtiles.starts.size() + tj]);
       }
     }
 
