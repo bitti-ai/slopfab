@@ -88,6 +88,53 @@ __device__ inline uint8_t f32_to_f8_e4m3_dev(float f) {
   return static_cast<uint8_t>(sign | (static_cast<uint32_t>(e + 7) << 3) | (q - 8));
 }
 
+// --- float4 E2M1 ------------------------------------------------------------
+//
+// Sixteen representable values, which is why `f4_e2m1_to_f32` in dtype.h uses a
+// table. A table is the wrong shape on the device: the index *is* the data, so
+// a warp holding sixteen different nibbles serialises a __constant__ lookup
+// into sixteen transactions on a kernel that is otherwise pure streaming.
+// Building the float out of the bits is uniform and branch-light. The two are
+// compared on all sixteen patterns in test_nn_kernels.cu.
+//
+// Exponent 0 holds only ±0 and ±0.5; above it the fp32 exponent is 127+e-1 and
+// the single mantissa bit lands at the top of fp32's field.
+__device__ inline float f4_e2m1_to_f32_dev(uint32_t nibble) {
+  const uint32_t mag = nibble & 0x07u;
+  uint32_t bits;
+  if (mag == 0) {
+    bits = 0u;
+  } else if (mag == 1) {
+    bits = 0x3F000000u;  // 0.5, the only subnormal
+  } else {
+    bits = ((126u + (mag >> 1)) << 23) | ((mag & 1u) << 22);
+  }
+  return __uint_as_float(bits | ((nibble & 0x08u) << 28));
+}
+
+// Where row `o`'s scale for contraction block `k` actually lives.
+//
+// The block scales are **not** row-major. Both shipped nvfp4 checkpoints write
+// them in the 128x4 tile layout the block-scaled mma consumes:
+//
+//   tile = (o / 128) * (blocks_per_row / 4) + (k / 4)
+//   idx  = tile * 512 + (o % 32) * 16 + ((o % 128) / 32) * 4 + (k % 4)
+//
+// Reading them row-major instead is silent: the output stays finite and
+// correctly scaled, and its elementwise correlation against the fp8 build of
+// the same model is 0.00003. docs/transformer_spec.md 8.4 records the
+// measurement, the four alternative tilings that were ruled out, and the
+// no-padding precondition this relies on.
+//
+// Tiles are row-major over `o`, which is the reason the qkv split in
+// transformer.cpp may slice this array at a byte offset at all — and it only
+// holds because each third is a whole number of 128-row tiles.
+__device__ inline size_t nvfp4_scale_offset(int o, int k, int blocks_per_row) {
+  const int tile = (o >> 7) * (blocks_per_row >> 2) + (k >> 2);
+  return static_cast<size_t>(tile) * 512 +
+         static_cast<size_t>((o & 31) * 16 + ((o & 127) >> 5) * 4 + (k & 3));
+}
+
 // --- packed bf16 store ------------------------------------------------------
 
 __device__ inline void store8_bf16(__nv_bfloat16* p, const float* in) {
@@ -146,6 +193,49 @@ __global__ void dequant_i8_scalar_kernel(const int8_t* __restrict__ src,
   const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= n) return;
   dst[i] = __float2bfloat16(static_cast<float>(src[i]) * scale[i / in_features]);
+}
+
+// Eight elements per thread: one 32-bit load of four packed bytes, one 16-byte
+// store, and both nibbles of every pair sit inside the same 16-wide scale
+// block, so the scale is fetched once per thread and its block index is a shift
+// rather than a division. Rows ride grid.y with a stride loop so that no index
+// here needs a 64-bit divide — the same reason add_bias_kernel takes its column
+// off the grid.
+//
+// `global_scale` multiplies. That direction is not a convention we adopted: at
+// every sampled tensor `6 * 448 * weight_scale_2` reproduces the amax of the
+// fp8 build of the same model to four decimal places (qkv_proj block 0:
+// 6 * 448 * 0.0013580322 = 3.6408 against a measured 3.64063), while dividing
+// lands around 1e6.
+__global__ void dequant_nvfp4_kernel(const uint8_t* __restrict__ src,
+                                     const uint8_t* __restrict__ block_scale, float global_scale,
+                                     __nv_bfloat16* __restrict__ dst, int out_features,
+                                     int packs_per_row, int blocks_per_row) {
+  const int pack = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (pack >= packs_per_row) return;
+  const size_t row_bytes = static_cast<size_t>(packs_per_row) * 4;
+  const size_t row_elems = static_cast<size_t>(packs_per_row) * 8;
+
+  for (int o = static_cast<int>(blockIdx.y); o < out_features;
+       o += static_cast<int>(gridDim.y)) {
+    const uint32_t raw = *reinterpret_cast<const uint32_t*>(
+        src + static_cast<size_t>(o) * row_bytes + static_cast<size_t>(pack) * 4);
+    const float s =
+        f8_e4m3_to_f32_dev(block_scale[nvfp4_scale_offset(o, pack >> 1, blocks_per_row)]) *
+        global_scale;
+    float v[8];
+#pragma unroll
+    for (int b = 0; b < 4; ++b) {
+      const uint32_t byte = (raw >> (8 * b)) & 0xFFu;
+      // The even-indexed element is the **high** nibble. Swapping these two
+      // lines leaves the value histogram untouched and the output finite and
+      // well scaled; it drops elementwise correlation against the fp8 build
+      // from 0.995 to 0.00003 and nothing else moves (spec 8.4).
+      v[2 * b] = f4_e2m1_to_f32_dev(byte >> 4) * s;
+      v[2 * b + 1] = f4_e2m1_to_f32_dev(byte & 0x0Fu) * s;
+    }
+    store8_bf16(dst + static_cast<size_t>(o) * row_elems + static_cast<size_t>(pack) * 8, v);
+  }
 }
 
 __global__ void quantize_f8_kernel(const __nv_bfloat16* __restrict__ src, float inv_scale,
@@ -297,6 +387,33 @@ __global__ void add_bias_kernel(YT* __restrict__ y, const BT* __restrict__ bias,
   store_from_f32(y + i, load_as_f32(y + i) + b);
 }
 
+// --- AWQ activation scale ---------------------------------------------------
+
+// dst[r, i] = src[r, i] * scale[i]. Same grid shape and the same reason as
+// add_bias_kernel: the column comes off the grid rather than a modulo, and rows
+// go on x because a packed sequence runs to tens of thousands of them while
+// gridDim.y stops at 65535.
+template <typename T>
+__global__ void pre_quant_scale_kernel(const T* __restrict__ src,
+                                       const __nv_bfloat16* __restrict__ scale,
+                                       T* __restrict__ dst, int dim) {
+  const int col = static_cast<int>(blockIdx.y * blockDim.x + threadIdx.x);
+  if (col >= dim) return;
+  const size_t i = static_cast<size_t>(blockIdx.x) * dim + col;
+  store_from_f32(dst + i, load_as_f32(src + i) * __bfloat162float(scale[col]));
+}
+
+template <typename T>
+void launch_pre_quant_scale_impl(const T* src, const __nv_bfloat16* scale, T* dst, int rows,
+                                 int dim, cudaStream_t stream) {
+  if (rows <= 0 || dim <= 0) return;
+  if (scale == nullptr) throw std::runtime_error("pre_quant_scale: null scale");
+  const dim3 grid(static_cast<unsigned>(rows),
+                  static_cast<unsigned>(grid_1d(static_cast<size_t>(dim), kThreads)));
+  pre_quant_scale_kernel<<<grid, kThreads, 0, stream>>>(src, scale, dst, dim);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
 // --- helpers ----------------------------------------------------------------
 
 int convrot_stages(int group) {
@@ -394,6 +511,13 @@ const __nv_bfloat16* materialise_bf16(const QuantWeight& w, Workspace& ws, cudaS
       launch_dequant_i8_per_channel(static_cast<const int8_t*>(w.data), w.weight_scale, dst,
                                     w.out_features, w.in_features, stream);
       break;
+    case QuantFormat::kNVFP4:
+      if (w.block_scale == nullptr) {
+        throw std::runtime_error("linear: nvfp4 weight without block_scale");
+      }
+      launch_dequant_nvfp4(static_cast<const uint8_t*>(w.data), w.block_scale, w.global_scale, dst,
+                           w.out_features, w.in_features, stream);
+      break;
     case QuantFormat::kF16:
       f16_to_bf16_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(
           static_cast<const __half*>(w.data), dst, n);
@@ -434,9 +558,14 @@ size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType comput
       total += align_up(weights * sizeof(__nv_bfloat16));
       total += align_up(weights * sizeof(float));
     }
+    // The AWQ scale writes a scaled copy of the activation, which ConvRot then
+    // reads and rotates into a second copy, so on a layer with both the two
+    // buffers are live at once and add rather than overlap.
+    if (w.pre_quant_scale != nullptr) total += align_up(act * sizeof(float));
     if (convrot_applies(w)) total += align_up(act * sizeof(float));
   } else {
     if (w.format != QuantFormat::kBF16) total += align_up(weights * sizeof(__nv_bfloat16));
+    if (w.pre_quant_scale != nullptr) total += align_up(act * sizeof(__nv_bfloat16));
     if (convrot_applies(w)) total += align_up(act * sizeof(__nv_bfloat16));
   }
   return total;
@@ -471,10 +600,21 @@ void LinearRunner::forward(const QuantWeight& w, const __nv_bfloat16* x, int row
 
   const __nv_bfloat16* weight = materialise_bf16(w, ws, stream_);
 
+  // AWQ scales the activation per input channel ahead of everything else. A
+  // null pointer means the quantiser folded the scale into the preceding norm's
+  // weight, so it is "already accounted for" rather than "unknown" — check the
+  // tensor, never the layer's name. nvfp4 weights are never ConvRot, so the two
+  // never actually compose; the order below is the one that would be right if
+  // they ever did.
   const __nv_bfloat16* xin = x;
+  if (w.pre_quant_scale != nullptr) {
+    __nv_bfloat16* xs = ws.alloc_n<__nv_bfloat16>(static_cast<size_t>(rows) * w.in_features);
+    launch_pre_quant_scale(xin, w.pre_quant_scale, xs, rows, w.in_features, stream_);
+    xin = xs;
+  }
   if (convrot_applies(w)) {
     __nv_bfloat16* xr = ws.alloc_n<__nv_bfloat16>(static_cast<size_t>(rows) * w.in_features);
-    launch_convrot(x, xr, rows, w.in_features, w.convrot_group, stream_);
+    launch_convrot(xin, xr, rows, w.in_features, w.convrot_group, stream_);
     xin = xr;
   }
 
@@ -509,9 +649,14 @@ void LinearRunner::forward_f32(const QuantWeight& w, const float* x, int rows, f
   }
 
   const float* xin = x;
+  if (w.pre_quant_scale != nullptr) {
+    float* xs = ws.alloc_n<float>(static_cast<size_t>(rows) * w.in_features);
+    launch_pre_quant_scale_impl(xin, w.pre_quant_scale, xs, rows, w.in_features, stream_);
+    xin = xs;
+  }
   if (convrot_applies(w)) {
     float* xr = ws.alloc_n<float>(static_cast<size_t>(rows) * w.in_features);
-    launch_convrot_f32(x, xr, rows, w.in_features, w.convrot_group, stream_);
+    launch_convrot_f32(xin, xr, rows, w.in_features, w.convrot_group, stream_);
     xin = xr;
   }
 
@@ -591,6 +736,39 @@ void launch_dequant_i8_per_channel(const int8_t* src, const float* scale, __nv_b
                                                                            in_features, n);
   }
   VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float global_scale,
+                          __nv_bfloat16* dst, int out_features, int in_features,
+                          cudaStream_t stream) {
+  if (out_features <= 0 || in_features <= 0) return;
+  if (block_scale == nullptr) {
+    throw std::runtime_error("launch_dequant_nvfp4: block_scale is null");
+  }
+  // The 128x4 scale tiling has no padded case in either shipped checkpoint —
+  // all 200 quantised linears of the transformer divide exactly, and so do the
+  // encoder's — and a padded one would need a different address map rather than
+  // a rounded-up bound. Refuse instead of computing a plausible wrong offset.
+  if (out_features % 128 != 0 || in_features % (4 * kNVFP4BlockSize) != 0) {
+    throw std::runtime_error(
+        "launch_dequant_nvfp4: " + std::to_string(out_features) + "x" +
+        std::to_string(in_features) +
+        " does not tile the swizzled block-scale layout, which requires out_features % 128 == 0 "
+        "and in_features % 64 == 0");
+  }
+
+  const int packs_per_row = in_features / 8;
+  const int blocks_per_row = in_features / kNVFP4BlockSize;
+  const dim3 grid(static_cast<unsigned>(grid_1d(static_cast<size_t>(packs_per_row), kThreads)),
+                  static_cast<unsigned>(std::min(out_features, 65535)));
+  dequant_nvfp4_kernel<<<grid, kThreads, 0, stream>>>(src, block_scale, global_scale, dst,
+                                                      out_features, packs_per_row, blocks_per_row);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_pre_quant_scale(const __nv_bfloat16* src, const __nv_bfloat16* scale,
+                            __nv_bfloat16* dst, int rows, int dim, cudaStream_t stream) {
+  launch_pre_quant_scale_impl(src, scale, dst, rows, dim, stream);
 }
 
 void launch_quantize_f8e4m3(const __nv_bfloat16* src, float input_scale, uint8_t* dst, size_t n,
