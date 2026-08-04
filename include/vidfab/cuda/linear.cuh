@@ -8,6 +8,10 @@
 //                  optional per-tensor input_scale
 //   I8 + ConvRot   per-output-channel weight_scale,    (Qwen3-VL text encoder)
 //                  Hadamard rotation on the contraction axis
+//   NVFP4          E2M1 nibbles, an e4m3 scale per 16  (both nvfp4 checkpoints)
+//                  contracted elements, one fp32 global scale on top, and on
+//                  the AWQ text encoder an optional per-input-channel
+//                  activation scale
 //
 // Every weight is stored PyTorch-style `[out_features, in_features]` row-major
 // and there are no transposes anywhere in either checkpoint, so the contraction
@@ -46,7 +50,14 @@ enum class QuantFormat {
   kBF16,
   kF8E4M3,   // per-tensor scales
   kI8,       // per-output-channel weight_scale
+  kNVFP4,    // 4-bit, block-scaled; `data` is half as many bytes as elements
 };
+
+// Elements of the contraction axis sharing one e4m3 block scale. Fixed, not a
+// parameter: 16 is what `scale_vec::4X` on m16n8k64 implements and what both
+// shipped checkpoints are packed for, and a checkpoint using anything else
+// would need a different instruction, not a different constant.
+constexpr int kNVFP4BlockSize = 16;
 
 // Compute precision for the GEMM itself. Accumulation is fp32 in every case;
 // this selects the operand precision.
@@ -72,6 +83,31 @@ struct QuantWeight {
   // statement that the layer must run at full precision — see the header
   // comment. Never synthesise a value for it.
   float input_scale = 0.0f;
+
+  // The checkpoint's own `full_precision_matrix_mult` flag, read out of the
+  // `comfy_quant` blob. Every quantised layer of the nvfp4 text encoder sets
+  // it and no layer of the nvfp4 transformer does, so it is the file — not a
+  // heuristic on which scales are present — that decides whether a native
+  // low-precision GEMM is allowed. Nothing may clear it.
+  bool full_precision = false;
+
+  // --- nvfp4 ----------------------------------------------------------------
+
+  // Device, `out_features * in_features / kNVFP4BlockSize` raw e4m3 bytes.
+  // Block j of row o scales stored elements [j*16, j*16+16).
+  const uint8_t* block_scale = nullptr;
+
+  // Second-level scale, host side, multiplying the whole tensor. Stored as
+  // `.weight_scale_2`; one per tensor, so it costs nothing to fold in.
+  float global_scale = 1.0f;
+
+  // AWQ, device, `in_features` elements. The activation is scaled by this per
+  // input channel before the GEMM. Present on exactly the text-encoder layers
+  // whose input does not come straight from a norm — absent elsewhere because
+  // the quantiser folded it into the preceding norm's weight, so a null
+  // pointer here means "already accounted for", not "unknown". Check per
+  // tensor; do not infer it from the layer's name.
+  const __nv_bfloat16* pre_quant_scale = nullptr;
 
   // ConvRot: the contraction axis was rotated offline in groups of
   // `convrot_group`, so the activation must be rotated the same way online.

@@ -327,6 +327,11 @@ size_t element_bytes(QuantFormat f) {
     case QuantFormat::kF8E4M3:
     case QuantFormat::kI8:
       return 1;
+    case QuantFormat::kNVFP4:
+      // Half a byte. Callers that need a size must go through `stored_bytes`,
+      // which knows the packing; returning 0 or 1 here would be a silent
+      // half-or-double on every offset computed from it.
+      throw std::runtime_error("linear: nvfp4 has no whole-byte element size");
   }
   return 0;
 }
@@ -410,7 +415,11 @@ const __nv_bfloat16* materialise_bf16(const QuantWeight& w, Workspace& ws, cudaS
 // --- QuantWeight ------------------------------------------------------------
 
 size_t QuantWeight::stored_bytes() const {
-  return element_bytes(format) * static_cast<size_t>(out_features) * in_features;
+  const size_t n = static_cast<size_t>(out_features) * in_features;
+  // Two nibbles per byte, low nibble first. `in_features` is even in every
+  // shipped tensor; an odd one has no packing convention to follow.
+  if (format == QuantFormat::kNVFP4) return n / 2;
+  return element_bytes(format) * n;
 }
 
 size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType compute) {
@@ -448,10 +457,12 @@ void LinearRunner::forward(const QuantWeight& w, const __nv_bfloat16* x, int row
 
   // Native low-precision GEMM is not wired up yet — both settings dequantise.
   // The guard is written now so the invariant survives that change: a weight
-  // that ships no input_scale is flagged full_precision_matrix_mult and must
-  // never reach an fp8 GEMM (spec 8.2).
-  const bool native_path =
-      native_ && w.format == QuantFormat::kF8E4M3 && w.input_scale != 0.0f;
+  // the checkpoint flagged full_precision_matrix_mult, or an fp8 weight that
+  // ships no input_scale (the same statement in the older files' vocabulary),
+  // must never reach a low-precision GEMM (spec 8.2).
+  const bool native_path = native_ && !w.full_precision &&
+                           ((w.format == QuantFormat::kF8E4M3 && w.input_scale != 0.0f) ||
+                            w.format == QuantFormat::kNVFP4);
   (void)native_path;
 
   // The arena is only rewound, never freed, and everything below is issued on

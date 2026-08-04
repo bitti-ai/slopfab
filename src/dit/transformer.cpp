@@ -111,6 +111,11 @@ size_t format_bytes(QuantFormat f) {
     case QuantFormat::kF8E4M3:
     case QuantFormat::kI8:
       return 1;
+    case QuantFormat::kNVFP4:
+      // The qkv split below is the only caller, and for nvfp4 it has to slice
+      // the block scales as well as the nibbles. Throwing keeps a half-sized
+      // offset from being computed silently.
+      throw std::runtime_error("transformer: nvfp4 is not a whole-byte format");
   }
   return 0;
 }
