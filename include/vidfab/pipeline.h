@@ -7,6 +7,12 @@
 // The pipeline encodes the prompt, frees the conditioner, loads the
 // transformer, denoises, frees it, then decodes with the two VAEs.
 //
+// The nvfp4 pair is the one combination that *would* fit — 12.8 GB and 11.7 GB
+// against ~30 GB free — but the sequencing stays, because the other three
+// combinations still do not and holding both buys a single 0.12 s encode. The
+// ordering is therefore not conditional on the checkpoint formats, and nothing
+// below inspects them to decide it.
+//
 // `resolve_plan` does every piece of geometry and schedule arithmetic up front
 // and without touching a weight file, so a request can be validated — and its
 // memory footprint reported — before 20 GB of I/O happens.

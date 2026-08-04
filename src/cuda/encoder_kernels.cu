@@ -301,18 +301,6 @@ const __nv_bfloat16* norm_ptr(const uint8_t* base, const LayerLayout& layout, La
   return reinterpret_cast<const __nv_bfloat16*>(base + layout.offset[static_cast<int>(which)]);
 }
 
-// Every quantised layer of this checkpoint declares full_precision_matrix_mult,
-// so nvfp4 reaches cuBLAS dequantised to bf16 exactly as the int8 build does —
-// including the AWQ activation scaling, which `LinearRunner` applies from
-// `pre_quant_scale` before the GEMM. Nothing here is encoder-specific, which is
-// why this is a forwarding call and not a path.
-void encoder_linear(vidfab::cuda::LinearRunner& linear, const QuantWeight& w,
-                    const __nv_bfloat16* x, int rows, __nv_bfloat16* y, Workspace& ws,
-                    cudaStream_t stream) {
-  (void)stream;  // the runner carries the stream it was initialised with
-  linear.forward(w, x, rows, y, ws);
-}
-
 CausalAttentionConfig attention_config(const LayerDims& dims) {
   CausalAttentionConfig cfg;
   cfg.seq_len = dims.num_tokens;
@@ -606,9 +594,9 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
   // to the GEMM: q/k/v share one rotation of `n`, and LinearRunner applies it
   // per call. The rotation must see the *complete* RMSNorm output — H does not
   // commute with diag(w) (spec section 5.3).
-  encoder_linear(linear, w.q_proj, n, rows, q, ws, stream);
-  encoder_linear(linear, w.k_proj, n, rows, k, ws, stream);
-  encoder_linear(linear, w.v_proj, n, rows, v, ws, stream);
+  linear.forward(w.q_proj, n, rows, q, ws);
+  linear.forward(w.k_proj, n, rows, k, ws);
+  linear.forward(w.v_proj, n, rows, v, ws);
 
   // QK-norm BEFORE RoPE. Reversing the two is a silent quality bug: RMSNorm
   // scales channel j by w[j], RoPE mixes j with j+64, and those two weights
@@ -625,17 +613,17 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
   vidfab::cuda::launch_rope_neox(k, cos, sin, rows, d.num_kv_heads, d.head_dim, stream);
 
   causal_attention_forward(handle, stream, q, k, v, attn, attention_config(d), ws);
-  encoder_linear(linear, w.o_proj, attn, rows, proj, ws, stream);
+  linear.forward(w.o_proj, attn, rows, proj, ws);
   launch_residual_add(x, proj, L * d.hidden, stream);
 
   // --- MLP half.
   vidfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n, rows, d.hidden, d.rms_norm_eps,
                                stream);
-  encoder_linear(linear, w.gate_proj, n, rows, gate, ws, stream);
-  encoder_linear(linear, w.up_proj, n, rows, up, ws, stream);
+  linear.forward(w.gate_proj, n, rows, gate, ws);
+  linear.forward(w.up_proj, n, rows, up, ws);
   // gate_proj goes through SiLU; up_proj does not.
   launch_swiglu_split(gate, up, gate, L * d.intermediate, stream);
-  encoder_linear(linear, w.down_proj, gate, rows, proj, ws, stream);
+  linear.forward(w.down_proj, gate, rows, proj, ws);
   launch_residual_add(x, proj, L * d.hidden, stream);
 }
 
