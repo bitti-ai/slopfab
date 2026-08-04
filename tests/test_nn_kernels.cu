@@ -1385,15 +1385,48 @@ VIDFAB_TEST(production_shape_timings) {
     cfg.query_block = 1024;
     Workspace ws;
     ws.reserve(vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kBlocked));
-    const float ms = timer.measure(
-        [&] {
-          vidfab::cuda::attention_forward(cb.h, nullptr, q.p(), k.p(), v.p(), out.p(), cfg,
-                                          vidfab::cuda::AttentionBackend::kBlocked, ws);
-        },
-        1, 3);
+    // Something else on this box touches the GPU intermittently: roughly one run
+    // in six comes back at half throughput. Take the best of three passes rather
+    // than believing a single number.
+    float ms = 1e30f;
+    for (int pass = 0; pass < 3; ++pass) {
+      ms = std::min(ms, timer.measure(
+                            [&] {
+                              vidfab::cuda::attention_forward(cb.h, nullptr, q.p(), k.p(), v.p(),
+                                                              out.p(), cfg,
+                                                              vidfab::cuda::AttentionBackend::kBlocked,
+                                                              ws);
+                            },
+                            1, 3));
+    }
     const double flops = 4.0 * double(seq) * seq * head_dim * heads;
     std::printf("  attention   seq=%-6d heads=56 head_dim=128  %8.2f ms  (%.1f TFLOP/s)\n", seq,
                 ms, flops / (ms * 1e-3) / 1e12);
+    CHECK(ms > 0.0f);
+  }
+
+  {
+    // q_norm/k_norm: 128-wide rows, the narrow-row path. Bytes are read+write of
+    // the activation; the 128-element weight stays in L2.
+    const int qk_heads = 56;
+    const int qk_dim = 128;
+    const size_t n = size_t(seq) * qk_heads * qk_dim;
+    const size_t wn = size_t(qk_dim);
+    BfBuf x(n), w(wn);
+    VIDFAB_CUDA_CHECK(cudaMemset(x.raw.get(), 0x3C, x.raw.nbytes()));
+    VIDFAB_CUDA_CHECK(cudaMemset(w.raw.get(), 0x3F, w.raw.nbytes()));
+    float ms = 1e30f;
+    for (int pass = 0; pass < 3; ++pass) {
+      ms = std::min(ms, timer.measure(
+                            [&] {
+                              vidfab::cuda::launch_head_rmsnorm(x.p(), w.p(), seq, qk_heads, qk_dim,
+                                                                1e-5f, nullptr);
+                            },
+                            3, 20));
+    }
+    const double bytes = 2.0 * double(n) * 2.0;
+    std::printf("  head_rmsnorm rows=%-6d heads=56 dim=128     %8.3f ms  (%.0f GB/s)\n", seq, ms,
+                bytes / (ms * 1e-3) / 1e9);
     CHECK(ms > 0.0f);
   }
 
@@ -1438,8 +1471,10 @@ VIDFAB_TEST(production_shape_timings) {
     Workspace ws;
     ws.reserve(vidfab::cuda::linear_workspace_bytes(qw, seq, vidfab::cuda::ComputeType::kBF16) +
                256);
-    const float ms =
-        timer.measure([&] { runner.forward(qw, dx.p(), seq, dy.p(), ws); }, 2, 10);
+    float ms = 1e30f;
+    for (int pass = 0; pass < 2; ++pass) {
+      ms = std::min(ms, timer.measure([&] { runner.forward(qw, dx.p(), seq, dy.p(), ws); }, 2, 10));
+    }
     const double flops = 2.0 * double(seq) * sh.out_features * sh.in_features;
     std::printf("  linear %-9s [%5d,%5d] rows=%-6d  %8.3f ms  (%.1f TFLOP/s)\n", sh.name,
                 sh.out_features, sh.in_features, seq, ms, flops / (ms * 1e-3) / 1e12);
