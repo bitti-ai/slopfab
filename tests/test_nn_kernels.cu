@@ -1949,6 +1949,49 @@ struct Timer {
   }
 };
 
+// The dequantiser runs once per GEMM on every one of the 200 quantised linears,
+// fifty times a step, so its cost is not incidental. It is pure streaming and
+// should sit near the card's bandwidth: 2 bytes written and 9/16 read per
+// element, of which the store is the overwhelming majority.
+VIDFAB_TEST(nvfp4_dequant_timings) {
+  Timer timer;
+  const struct {
+    const char* name;
+    int out_features;
+    int in_features;
+  } shapes[] = {
+      {"blocks.N.attn.qkv_proj", 21504, 5376},
+      {"blocks.N.attn.out_proj", 5376, 7168},
+      {"blocks.N.mlp.fc1", 28672, 5376},
+      {"blocks.N.mlp.fc2", 5376, 14336},
+  };
+
+  for (const auto& s : shapes) {
+    const size_t n = size_t(s.out_features) * s.in_features;
+    DeviceBuffer<uint8_t> dw(n / 2);
+    DeviceBuffer<uint8_t> dsc(n / size_t(vidfab::cuda::kNVFP4BlockSize));
+    BfBuf ddst(n);
+    // 0x38 is e4m3 1.0; the codes themselves do not affect timing.
+    VIDFAB_CUDA_CHECK(cudaMemset(dw.get(), 0x52, dw.nbytes()));
+    VIDFAB_CUDA_CHECK(cudaMemset(dsc.get(), 0x38, dsc.nbytes()));
+
+    float ms = 1e30f;
+    for (int pass = 0; pass < 3; ++pass) {
+      ms = std::min(ms, timer.measure(
+                            [&] {
+                              vidfab::cuda::launch_dequant_nvfp4(dw.get(), dsc.get(), 1.0f,
+                                                                 ddst.p(), s.out_features,
+                                                                 s.in_features, nullptr);
+                            },
+                            3, 20));
+    }
+    const double bytes = double(n) * 2.0 + double(n) / 2.0 + double(n) / 16.0;
+    std::printf("  %-24s %6d x %5d  %7.3f ms  %7.1f GB/s\n", s.name, s.out_features,
+                s.in_features, ms, bytes / (double(ms) * 1e-3) / 1e9);
+    CHECK(ms > 0.0f);
+  }
+}
+
 VIDFAB_TEST(production_shape_timings) {
   CublasScope cb;
   size_t free_bytes = 0;
