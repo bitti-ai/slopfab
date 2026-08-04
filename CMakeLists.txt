@@ -26,6 +26,8 @@ add_library(vidfab_core STATIC
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
   src/video/y4m.cpp
+  src/video/mux.cpp
+  src/audio/wav.cpp
 )
 
 target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -57,11 +59,17 @@ if(VIDFAB_ENABLE_CUDA)
 
     add_library(vidfab_cuda STATIC
       src/cuda/device.cu
+      src/cuda/workspace.cu
+      src/cuda/nn_kernels.cu
+      src/cuda/linear.cu
+      src/cuda/attention.cu
       src/cuda/vae_kernels.cu
       src/cuda/vit_decoder.cu
+      src/cuda/audio_vae_kernels.cu
       # Host-side orchestration lives here rather than in vidfab_core so that
       # the dependency runs one way: cuda -> core, never back.
       src/vae/decode_pipeline.cpp
+      src/vae/audio_decoder.cpp
     )
     target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas)
@@ -101,6 +109,7 @@ if(VIDFAB_BUILD_TESTS)
   add_executable(vidfab_tests
     tests/harness.cpp
     tests/test_main.cpp
+    tests/test_output.cpp
   )
   target_link_libraries(vidfab_tests PRIVATE vidfab_core)
   if(MSVC)
@@ -114,6 +123,8 @@ if(VIDFAB_BUILD_TESTS)
     add_executable(vidfab_kernel_tests
       tests/harness.cpp
       tests/test_kernels.cu
+      tests/test_nn_kernels.cu
+      tests/test_audio_vae.cu
     )
     target_link_libraries(vidfab_kernel_tests PRIVATE vidfab_cuda)
     add_test(NAME kernels COMMAND vidfab_kernel_tests)

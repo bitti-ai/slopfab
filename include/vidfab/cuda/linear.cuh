@@ -1,0 +1,157 @@
+// Quantised linear layers.
+//
+// Three checkpoints, three storage formats, one operation. This header is the
+// single place that knows how a stored weight becomes `y = x W^T + b`:
+//
+//   BF16/F16/F32   dense, no scales                    (norms, refiner, VAE)
+//   F8_E4M3        per-tensor weight_scale,            (H3 transformer blocks)
+//                  optional per-tensor input_scale
+//   I8 + ConvRot   per-output-channel weight_scale,    (Qwen3-VL text encoder)
+//                  Hadamard rotation on the contraction axis
+//
+// Every weight is stored PyTorch-style `[out_features, in_features]` row-major
+// and there are no transposes anywhere in either checkpoint, so the contraction
+// is always over the second axis.
+//
+// **Correctness before speed.** The first implementation dequantises the weight
+// into workspace and runs an ordinary cuBLAS GEMM. That is numerically *better*
+// than a native low-precision GEMM, not worse, and it is what the transformer
+// spec recommends for a port that does not want fp8 tensor cores (§8.2). It
+// costs one extra read+write of the weight per GEMM. Native fp8/int8 GEMM goes
+// behind the same API later, selected by `LinearRunner::set_native`.
+//
+// Two traps, both of which produce plausible output rather than a crash:
+//
+//   - `mlp.fc2` in the H3 transformer ships **no input_scale** and is tagged
+//     `"full_precision_matrix_mult": true`. It must never take an fp8 GEMM
+//     path. `QuantWeight::input_scale == 0` marks this and is load-bearing.
+//   - ConvRot is a rotation applied offline to the weight. Skipping the
+//     matching online rotation of the activation computes `x H W^T`, which is
+//     well-scaled noise. See docs/convrot_notes.md.
+#pragma once
+
+#include <cublas_v2.h>
+#include <cuda_bf16.h>
+
+#include <cstddef>
+#include <cstdint>
+
+#include "vidfab/cuda/workspace.cuh"
+
+namespace vidfab::cuda {
+
+enum class QuantFormat {
+  kF32,
+  kF16,
+  kBF16,
+  kF8E4M3,   // per-tensor scales
+  kI8,       // per-output-channel weight_scale
+};
+
+// Compute precision for the GEMM itself. Accumulation is fp32 in every case;
+// this selects the operand precision.
+enum class ComputeType {
+  kBF16,  // default for both block stacks; matches the reference's dtype
+  kF32,   // patch projections, output heads, AdaLN — see spec section 9.1
+};
+
+// A weight as it sits on the device, plus everything needed to interpret it.
+// Owns nothing: the pointers belong to whoever loaded the checkpoint.
+struct QuantWeight {
+  QuantFormat format = QuantFormat::kBF16;
+  const void* data = nullptr;  // device, [out_features, in_features] row-major
+  int out_features = 0;
+  int in_features = 0;
+
+  // Device pointer. One element when `per_channel_scale` is false, otherwise
+  // `out_features` elements. Null for unquantised formats.
+  const float* weight_scale = nullptr;
+  bool per_channel_scale = false;
+
+  // Host scalar. Zero means "absent", which for an fp8 weight is a positive
+  // statement that the layer must run at full precision — see the header
+  // comment. Never synthesise a value for it.
+  float input_scale = 0.0f;
+
+  // ConvRot: the contraction axis was rotated offline in groups of
+  // `convrot_group`, so the activation must be rotated the same way online.
+  // Only meaningful when `in_features % convrot_group == 0`; the quantiser
+  // skips rotation otherwise, so check per tensor rather than assuming.
+  bool convrot = false;
+  int convrot_group = 256;
+
+  // Optional, device, `out_features` elements. Biases are never quantised and
+  // never rotated.
+  const void* bias = nullptr;
+  QuantFormat bias_format = QuantFormat::kF32;
+
+  bool has_bias() const { return bias != nullptr; }
+  size_t stored_bytes() const;
+};
+
+// Bytes of workspace `forward` needs for a given weight and batch size. Call
+// this over every layer at load time and reserve the maximum once.
+size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType compute);
+
+class LinearRunner {
+ public:
+  LinearRunner() = default;
+
+  void init(cublasHandle_t handle, cudaStream_t stream);
+
+  // Selects native low-precision GEMM where the format supports it. Off by
+  // default: the dequantise-then-GEMM path is the reference behaviour and the
+  // one the unit tests pin. Turning this on must not change results by more
+  // than the per-tensor tolerance (1e-3 abs / 1e-2 rel).
+  void set_native(bool enable) { native_ = enable; }
+  bool native() const { return native_; }
+
+  // y[rows, out_features] = x[rows, in_features] @ W^T + bias
+  //
+  // `x` and `y` are row-major and must not alias. Applies ConvRot to a copy of
+  // `x` in workspace when the weight requires it; `x` itself is not modified.
+  void forward(const QuantWeight& w, const __nv_bfloat16* x, int rows, __nv_bfloat16* y,
+               Workspace& ws);
+
+  // fp32 in, fp32 out. For the four fp32 tensors in the transformer — the two
+  // patch projections and the two output heads — where the reference aligns
+  // the activation with the parameter dtype.
+  void forward_f32(const QuantWeight& w, const float* x, int rows, float* y, Workspace& ws);
+
+ private:
+  cublasHandle_t handle_ = nullptr;
+  cudaStream_t stream_ = nullptr;
+  bool native_ = false;
+};
+
+// --- ConvRot ----------------------------------------------------------------
+//
+// H = kron(h4, h4, h4, h4) / 16 over a 256-wide group, where h4 is the regular
+// (not Sylvester) Hadamard matrix. H is symmetric, orthogonal and involutory,
+// so the same transform serves both directions. Implemented as a four-stage
+// radix-4 butterfly with a single 1/16 at the end. See docs/convrot_notes.md
+// — the wrong Hadamard gives relative error 1.4, not a crash.
+void launch_convrot(const __nv_bfloat16* in, __nv_bfloat16* out, int rows, int dim, int group,
+                    cudaStream_t stream);
+void launch_convrot_f32(const float* in, float* out, int rows, int dim, int group,
+                        cudaStream_t stream);
+
+// --- dequantisation ---------------------------------------------------------
+
+// dst[i] = f8_e4m3(src[i]) * (*scale). `scale` is a device scalar.
+void launch_dequant_f8e4m3(const uint8_t* src, const float* scale, __nv_bfloat16* dst, size_t n,
+                           cudaStream_t stream);
+
+// dst[o, i] = src[o, i] * scale[o]. Per-output-channel, as ConvRot int8 uses
+// despite its format tag reading "int8_tensorwise".
+void launch_dequant_i8_per_channel(const int8_t* src, const float* scale, __nv_bfloat16* dst,
+                                   int out_features, int in_features, cudaStream_t stream);
+
+// dst[i] = clamp(src[i] / input_scale, -448, 448) rounded to e4m3.
+void launch_quantize_f8e4m3(const __nv_bfloat16* src, float input_scale, uint8_t* dst, size_t n,
+                            cudaStream_t stream);
+
+void launch_widen_bf16(const __nv_bfloat16* src, float* dst, size_t n, cudaStream_t stream);
+void launch_narrow_to_bf16(const float* src, __nv_bfloat16* dst, size_t n, cudaStream_t stream);
+
+}  // namespace vidfab::cuda
