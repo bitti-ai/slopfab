@@ -1178,6 +1178,114 @@ VIDFAB_TEST(linear_int8_convrot) {
                   "convrot skipped when in_features % group != 0");
 }
 
+// --- nvfp4 tensor core ------------------------------------------------------
+//
+// The shipped nvfp4 checkpoints are packed for
+//
+//   mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale
+//       .scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3
+//
+// and every byte of that instruction's operand layout has to be right before a
+// GEMM built on it can be trusted. The A/B packing is inferable from the 8-bit
+// m16n8k32 layout; the block-scale operand is not, so it was established by
+// experiment and is pinned here. Getting either wrong yields finite, plausibly
+// scaled garbage -- the failure mode this whole project keeps running into.
+
+__device__ __host__ inline float e2m1_ref(uint8_t n) {
+  const float m[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+  const float v = m[n & 7];
+  return (n & 8) ? -v : v;
+}
+
+__global__ void nvfp4_mma_kernel(const uint32_t* a, const uint32_t* b, const uint32_t* sa,
+                                 float* out) {
+  const int lane = threadIdx.x;
+  const uint32_t ra[4] = {a[lane * 4], a[lane * 4 + 1], a[lane * 4 + 2], a[lane * 4 + 3]};
+  const uint32_t rb[2] = {b[lane * 2], b[lane * 2 + 1]};
+  const uint32_t s_a = sa[lane];
+  const uint32_t s_b = 0x38383838u;  // four e4m3 1.0 scales
+  float c[4] = {0, 0, 0, 0};
+  asm volatile(
+      "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
+      ".f32.e2m1.e2m1.f32.ue4m3 "
+      "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
+      : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+      : "r"(ra[0]), "r"(ra[1]), "r"(ra[2]), "r"(ra[3]), "r"(rb[0]), "r"(rb[1]), "r"(s_a),
+        "r"(s_b));
+  const int gid = lane >> 2, tig = lane & 3;
+  out[gid * 8 + tig * 2] = c[0];
+  out[gid * 8 + tig * 2 + 1] = c[1];
+  out[(gid + 8) * 8 + tig * 2] = c[2];
+  out[(gid + 8) * 8 + tig * 2 + 1] = c[3];
+}
+
+// The lane that carries row r's block scales. Rows 0-7 sit on lane 4r, rows
+// 8-15 on lane 4(r-8)+1; lanes 4g+2 and 4g+3 carry nothing, which is why only
+// 64 of the warp's 128 scale bytes are live.
+int scale_lane_for_row(int r) { return r < 8 ? 4 * r : 4 * (r - 8) + 1; }
+
+VIDFAB_TEST(nvfp4_mma_operand_layout) {
+  uint8_t A[16][64], B[64][8];
+  for (int r = 0; r < 16; ++r)
+    for (int k = 0; k < 64; ++k) A[r][k] = static_cast<uint8_t>((r * 7 + k * 3) % 15);
+  for (int k = 0; k < 64; ++k)
+    for (int c = 0; c < 8; ++c) B[k][c] = static_cast<uint8_t>((k * 5 + c * 11) % 15);
+
+  // Each register packs eight consecutive-k nibbles; the register pair splits
+  // rows at 8 and the pair-of-pairs splits k at 32.
+  std::vector<uint32_t> ha(32 * 4, 0), hb(32 * 2, 0), hs(32, 0x38383838u);
+  for (int lane = 0; lane < 32; ++lane) {
+    const int gid = lane >> 2, tig = lane & 3;
+    for (int i = 0; i < 8; ++i) {
+      ha[lane * 4 + 0] |= uint32_t(A[gid][tig * 8 + i] & 15) << (4 * i);
+      ha[lane * 4 + 1] |= uint32_t(A[gid + 8][tig * 8 + i] & 15) << (4 * i);
+      ha[lane * 4 + 2] |= uint32_t(A[gid][32 + tig * 8 + i] & 15) << (4 * i);
+      ha[lane * 4 + 3] |= uint32_t(A[gid + 8][32 + tig * 8 + i] & 15) << (4 * i);
+      hb[lane * 2 + 0] |= uint32_t(B[tig * 8 + i][gid] & 15) << (4 * i);
+      hb[lane * 2 + 1] |= uint32_t(B[32 + tig * 8 + i][gid] & 15) << (4 * i);
+    }
+  }
+
+  DeviceBuffer<uint32_t> da(ha.size()), db(hb.size()), ds(hs.size());
+  da.copy_from_host(ha.data(), ha.size());
+  db.copy_from_host(hb.data(), hb.size());
+  ds.copy_from_host(hs.data(), hs.size());
+  DeviceBuffer<float> dout(128);
+  nvfp4_mma_kernel<<<1, 32>>>(da.get(), db.get(), ds.get(), dout.get());
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> got = to_host(dout);
+
+  std::vector<float> want(128, 0.0f);
+  for (int r = 0; r < 16; ++r)
+    for (int c = 0; c < 8; ++c)
+      for (int k = 0; k < 64; ++k) want[r * 8 + c] += e2m1_ref(A[r][k]) * e2m1_ref(B[k][c]);
+  // fp4 products of these magnitudes accumulate exactly in fp32, so this is an
+  // equality, not a tolerance.
+  CHECK_CLOSE_REL(want, got, 0.0, 0.0, "nvfp4 m16n8k64 A/B/accumulator layout");
+
+  // Block scales: A and B all 1.0, so every row sums to 4 blocks x 16 = 64.
+  // Doubling one (lane, byte) must lift exactly its own row by exactly 16.
+  const std::vector<uint32_t> ones(32 * 4, 0x22222222u), onesb(32 * 2, 0x22222222u);
+  DeviceBuffer<uint32_t> ua(ones.size()), ub(onesb.size()), dsx(32);
+  ua.copy_from_host(ones.data(), ones.size());
+  ub.copy_from_host(onesb.data(), onesb.size());
+  for (int r : {0, 3, 7, 8, 11, 15}) {
+    for (int blk : {0, 3}) {
+      std::vector<uint32_t> s(32, 0x38383838u);
+      const int lane = scale_lane_for_row(r);
+      s[lane] = (s[lane] & ~(0xFFu << (8 * blk))) | (uint32_t(0x40) << (8 * blk));  // e4m3 2.0
+      dsx.copy_from_host(s.data(), s.size());
+      nvfp4_mma_kernel<<<1, 32>>>(ua.get(), ub.get(), dsx.get(), dout.get());
+      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      const std::vector<float> g = to_host(dout);
+      for (int rr = 0; rr < 16; ++rr) {
+        const float expect = rr == r ? 80.0f : 64.0f;  // 64 + 16 on the scaled row
+        CHECK_NEAR(g[rr * 8], expect, 1e-3);
+      }
+    }
+  }
+}
+
 // --- attention --------------------------------------------------------------
 
 VIDFAB_TEST(attention_blocked) {
