@@ -224,6 +224,44 @@ term is the fp32 accumulator being read-modify-written twice per key block.
 That model reproduces all three points to within 3%, and it says the useful
 knob is a **larger key block**, not a larger query block.
 
+## Known numerical gap — open
+
+`transformer_forward_vs_cpu_reference` reports ten **deferred** checks. They are
+known defects that were consciously shipped past to reach an end-to-end run;
+they still measure and still print every time the suite runs, and the summary
+line says `DEFERRED` rather than folding them into either passes or failures.
+
+Measured:
+
+| quantity | asserted | observed |
+|---|---|---|
+| token refiner vs CPU reference | `< 1e-5` | **3.125e-02** (one bf16 ULP in [4, 8)) |
+| video velocity, max | `< 3%` of rms | 2.13 – 3.54% |
+| video velocity, mean | `< 1%` of rms | 0.57 – 0.83% *(still asserts)* |
+| audio velocity, max | `< 3%` of rms | 2.14 – 3.15% |
+| best geometry agreement | `< 1e-6` | 1.698e-02 |
+
+**What is known.** At `L = 1` the refiner is *bit-exact* — 0 of 128 elements
+differ. From `L = 2` upward, 72–79% differ. Whatever is responsible is
+degenerate at a single token, and attention is the only such thing on that
+path: with one row, the softmax over one key is identically 1 and the output is
+exactly `v`. So this is not a narrowing bug in `condition_proj` or the block
+algebra, both of which are exercised identically at `L = 1`.
+
+**Ruled out.** A truncating `fp32 -> bf16` conversion, which was the first
+hypothesis. Truncation is one-sided; the measured signed mean is `+1.66e-04`
+against a half-ULP bound of `1.95e-03`, and that check is still live precisely
+so this stays ruled out.
+
+**Prime suspect — in the test, not the model.** The CPU reference's
+`attention()` rounds each unnormalised exponential to bf16
+(`prob[j] = as_bf16(e)`) and then divides by `sum`, which it accumulated in
+fp64 from the *unrounded* values. Numerator and denominator come from different
+precisions. That is self-cancelling at `L = 1` and injects a systematic ~0.4%
+per element beyond it, which is the right size for the ~0.82% mean seen
+downstream. The GPU normalises consistently. **The fix to try first is to round
+the denominator the same way as the numerator and re-measure.**
+
 ## Memory budget
 
 The card is a 32 GB RTX 5090 and the stages do not fit together, which is what
