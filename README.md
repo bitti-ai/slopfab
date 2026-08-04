@@ -194,7 +194,9 @@ than only at seams.
 | `generate` end to end, real prompt to MP4 | done |
 | H3-Omni-Transformer, 50 layers | done |
 | Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | done |
-| Fused attention, native fp8/nvfp4/int4 GEMM | not started |
+| Fused attention (FlashAttention-2, `mma.sync`) | done |
+| `cp.async` double-buffered K/V staging | not started |
+| Native fp8/nvfp4/int4 GEMM | not started |
 
 ## Performance
 
@@ -207,7 +209,8 @@ the 419 on the spec sheet.** At 575 W it holds about 2.45 GHz, and cuBLAS on a
 
 | op | shape | time | achieved |
 |---|---|---|---|
-| attention | seq 37710, 56 heads, dim 128 | 749 ms | 1.41 TB/s |
+| attention, blocked | seq 37710, 56 heads, dim 128 | 561 ms | 72.6 TFLOP/s |
+| **attention, fused** | seq 37710, 56 heads, dim 128 | **349 ms** | **117 TFLOP/s** |
 | `qkv_proj` | `[21504, 5376]` × 37710 rows | 36.2 ms | 234 TFLOP/s |
 | `attn.out_proj` | `[5376, 7168]` | 12.1 ms | 237 TFLOP/s |
 | `mlp.fc1` | `[28672, 5376]` | 48.3 ms | 232 TFLOP/s |
@@ -270,18 +273,51 @@ So the four linear layers are already at the machine ceiling and are not worth
 touching — `cublasLt` heuristic search, a larger cuBLAS workspace and row
 alignment were all measured and buy nothing.
 
-Attention is 86% of a denoising step and is **bandwidth-bound, not
-compute-bound**: it moves ~1131 GB per layer at 1.41 TB/s while running at only
-65 of 220 TFLOP/s. The cost is the score tile round-tripping through HBM at
-~12 bytes per element. The blocked design's own floor is ~682 ms, so the
-current implementation is within 9% of what it can be — further wins require
-changing the score dtype or removing the round trip, not tuning.
+Attention **was** 86% of a denoising step and bandwidth-bound: the blocked path
+moves ~1131 GB per layer at 1.41 TB/s while running at only 72.6 of 216
+TFLOP/s, because the score tile round-trips through HBM at ~12 bytes per
+element. Its own floor was ~682 ms, so tuning it further was pointless — the
+round trip had to go, not shrink.
 
 The tile-budget sweep (192 MiB → 1010 ms, 640 MiB → 749 ms, 1536 MiB → 711 ms)
 is explained by `t ≈ (12·H·S² + 16·H·D·S²/bk) / 1.4 TB/s`, where the second
 term is the fp32 accumulator being read-modify-written twice per key block.
-That model reproduces all three points to within 3%, and it says the useful
-knob is a **larger key block**, not a larger query block.
+That model reproduces all three points to within 3%, and both of its terms are
+exactly what the fused kernel deletes.
+
+### The fused kernel
+
+`AttentionBackend::kFused` keeps S and P in registers and never writes them
+anywhere. **349 ms against the blocked path's 561, at 117 TFLOP/s — 54% of the
+machine ceiling, and no workspace at all against 1.63 GiB.**
+
+The load-bearing decision is `mma.sync` instead of `nvcuda::wmma`. `wmma` does
+not specify which row an accumulator element belongs to, and O needs a *per-row*
+rescale on every key block, which forces O into shared memory — the first
+attempt did exactly that and came out at 1312 ms, **2.3× slower than the path it
+was replacing**. `mma.sync.aligned.m16n8k16` does specify the layout: a thread's
+four accumulator registers hold rows `groupID` and `groupID+8`. So the rescale
+is four multiplies, the row reduction is two shuffles across the four
+consecutive lanes of a group, and — the part that pays for the rest — the QK
+accumulator tiles at n-offset 0 and 8 *are* the four A-fragment registers the PV
+`mma` wants, so S becomes P by a register permute with no transpose and no
+store.
+
+Two things that are easy to get wrong and are load-bearing here:
+
+- **The fp32 shared tiles could not be de-conflicted by padding.** `wmma` wants
+  an fp32 `ldm` that is a multiple of 4 floats, and for any such stride, rows 8
+  apart — the pair every 16×16 fragment touches — land in the same bank.
+  Deleting the tiles was the only fix.
+- **The grid is `(query_tile, head)` and the order matters.** CUDA dispatches x
+  fastest, so resident blocks share a head and walk one K/V stream together.
+  That stream is 19.3 MB, which lives in L2. The 638 GB of K/V re-reads is L2
+  traffic, not DRAM; swapping the dimensions would make it DRAM traffic.
+
+Remaining headroom is `cp.async` double-buffering of the K/V stage, which is
+still two barriers and 2-byte scalar loads. That needs V pre-converted to fp16
+once per call — 541 MB — so it trades the zero-workspace property for an
+estimated 290–340 ms.
 
 ## Audio level — settled
 
