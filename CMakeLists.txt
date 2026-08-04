@@ -26,6 +26,7 @@ add_library(vidfab_core STATIC
   src/dit/adaln.cpp
   src/dit/packing.cpp
   src/pipeline.cpp
+  src/sampler/noise.cpp
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
   src/video/y4m.cpp
@@ -113,6 +114,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/harness.cpp
     tests/test_main.cpp
     tests/test_adaln.cpp
+    tests/test_noise.cpp
     tests/test_packing.cpp
     tests/test_pipeline.cpp
     tests/test_tokenizer.cpp
