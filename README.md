@@ -135,9 +135,10 @@ someone else is editing.
   E2M1, safetensors loading and its rejection cases, comparison statistics, the
   flow scheduler, token packing, request resolution, the AdaLN table, the
   tokenizer, latent noise, the WAV writer and the colour transform.
-  **1669 checks.**
+  **1729 checks.**
 - **GPU kernel tests**: every kernel against independent CPU references written
-  from the spec rather than from the kernel. **821 checks**, plus 11 DEFERRED.
+  from the spec rather than from the kernel. **889 checks**, plus 11 DEFERRED
+  and, at present, **one real failure** — see [Native nvfp4 GEMM](#native-nvfp4-gemm--one-failing-check).
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong
   depth-to-space ordering, or a transposed GEMM all produce plausible output.
 
@@ -248,7 +249,35 @@ than only at seams.
 | Qwen3-VL-32B text encoder (nvfp4 AWQ, 50 layers) | done |
 | Fused attention (FlashAttention-2, `mma.sync`) | done |
 | `cp.async` double-buffered K/V staging | not started |
-| Native fp8/nvfp4/int4 GEMM | not started |
+| Native nvfp4 GEMM (`mma.sync` block-scaled) | landed, **off by default, one failing check** |
+| Native fp8/int4 GEMM | not started |
+
+## Native nvfp4 GEMM — one failing check
+
+`LinearRunner::set_native` selects a hand-written block-scaled tensor-core GEMM
+that feeds the checkpoint's bytes straight into
+`mma.sync.aligned.m16n8k64.…block_scale` with nothing dequantised. It is **off
+by default**, so nothing above depends on it.
+
+It does not currently agree with the dequantise-then-cuBLAS reference:
+`linear_nvfp4` reports 2.234e-02 absolute against a 1e-3 abs / 1e-2 rel bar,
+about 20x its allowance, on a synthetic `rows=29, in=128, out=256` case.
+
+The open question is whether that is a defect or the format. Neither checkpoint
+ships an `input_scale`, so activations are quantised dynamically to E2M1 at
+`amax/6` per 16-element block. E2M1 has eight magnitudes, so per-element
+relative error is 10–20%, and because signal and error both grow as √K the
+output's *relative* error stays near that level instead of averaging down —
+which would put a native fp4-activation GEMM permanently outside a 1e-2
+per-tensor bound, at any K, with no kernel fix available. That is being
+separated from a residual layout bug by quantising the activations to fp4 on
+the host first and re-running: if agreement snaps to tolerance, the operand
+path is right and the activation quantiser is the whole story.
+
+**The tolerance has deliberately not been loosened to make this pass.** If the
+bound is unreachable in principle then the right check is agreement against an
+fp4-activation reference plus an end-to-end quality bar, and that is a decision
+to take openly rather than by editing a threshold.
 
 ## Performance
 
