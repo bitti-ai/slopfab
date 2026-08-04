@@ -510,6 +510,28 @@ Decomposition: `p = modality*32256 + param*5376 + channel`, with
 and `modality ∈ {0:video, 1:text, 2:audio}` matching
 `MINIMAX_H3_VIDEO_TAG/TEXT_TAG/AUDIO_TAG` (`packing.py:49-51`).
 
+**This ordering is now empirically confirmed, not just read off the convert
+script.** Evaluating `W_8 @ adaln_t_table[0] + b` for block 0 and taking the
+mean of each 5376-wide parameter slice gives:
+
+| modality | shift_msa | scale_msa | gate_msa | shift_mlp | scale_mlp | gate_mlp |
+|---|---|---|---|---|---|---|
+| video | −0.0024 | **−0.8161** | −0.0019 | −0.0011 | **−0.8062** | +0.0008 |
+| text | +0.0024 | **−0.4275** | −0.0016 | +0.0007 | **+0.2217** | −0.0032 |
+| audio | +0.0011 | **−0.6696** | +0.0012 | +0.0003 | **−0.9126** | +0.0007 |
+
+Slots 1 and 4 carry large non-zero means; slots 0, 2, 3 and 5 all sit within
+±0.004 of zero. That is exactly the signature of a `1 + scale` parameterisation
+— the scale parameters are centred away from zero, the shifts and gates are
+centred on it — and it lands on slots 1 and 4 and nowhere else. Any other
+assignment of the six parameters would put the two non-zero-mean slices in the
+wrong place. The resulting `1 + scale_msa` spans `[−0.15, 1.87]` with 3.5 % of
+channels non-positive, which is a sane modulation range.
+
+The same evaluation confirms the final layer's `[shift; scale]` order: rows
+`0:5376` have mean −0.0002 with standard deviation 0.010 (a shift), and rows
+`5376:10752` give `1 + scale` a mean of 0.198 (a scale).
+
 Row selection (`transformer.py:616`, docstring `transformer.py:105-108`):
 
 ```
@@ -1295,7 +1317,73 @@ It does not happen at practical `N`, but a port should assert
 
 ## 10. Open questions / UNRESOLVED
 
-### 10.1 UNRESOLVED — the `adaln_t_table` index mapping
+### 10.1 PARTLY RESOLVED — the `adaln_t_table` index mapping
+
+The file is now complete and the table has been read and analysed. Two of the
+three sub-questions are settled by measurement; the third is not, and the
+reason it cannot be is stated precisely below.
+
+**SETTLED — the grid is uniform over `[0, 1]` in 1024 intervals.** The table is
+smooth in the row index with no plateaus, steps or irregular spacing. A lookup
+table of discrete *training* timesteps would be piecewise-flat or unevenly
+spaced; it is neither.
+
+**SETTLED — the lookup is linearly interpolated, not nearest-neighbour.**
+Measured on the real tensor:
+
+| column | range | max row-to-row step, as fraction of range | max 2nd difference / range |
+|---|---|---|---|
+| c0 | 0.870090 | 0.0029 | 2.3e-5 |
+| c1 | 0.314754 | 0.0093 | 6.8e-5 |
+| c2 | 0.126696 | 0.0229 | 3.8e-4 |
+| c3 | 0.102978 | 0.0140 | 2.4e-4 |
+| c4 | 0.010183 | 0.0361 | 9.7e-4 |
+| c5 | 0.002224 | 0.0419 | 1.4e-3 |
+| c6 | 0.001175 | 0.0690 | 4.1e-3 |
+| c7 | 0.000653 | 0.0559 | 2.7e-3 |
+
+The decisive test: drop every other row, linearly interpolate the omitted ones
+back, and measure the error. Worst case over all eight columns is **2.4e-5
+absolute, ≤ 0.2 % of the column range**. At the full grid the error is roughly
+four times smaller again, because the error of linear interpolation is
+second-order in the step. Nearest-neighbour, by contrast, incurs up to half a
+grid step — **1.5 % to 3.5 % of range on the small components, one to two
+orders of magnitude worse**. Interpolate.
+
+**Incidentally confirmed — the rank-8 factorisation is an SVD/PCA truncation
+(§10.2).** The per-column ranges decay geometrically (0.870, 0.315, 0.127,
+0.103, 0.0102, 0.00222, 0.00118, 0.000653), which is a singular-value profile.
+The components are ordered by decreasing importance, exactly as a truncated SVD
+produces. This is now evidence rather than inference.
+
+**STILL UNRESOLVED — the direction: does row 0 mean `t = 0` or `t = 1`?**
+Because the grid is uniform, "over `t`" and "over `sigma = 1 - t`" differ *only*
+by reversing the row order, so this is a single bit. It cannot be recovered
+from the local files: doing so requires rebuilding `SiLU(time_embedder(t))`
+from the **original** `MiniMaxAI/MiniMax-H3` `transformer/` shards, and those
+weights are not present — the pruned checkpoint deleted `time_embedder.*`
+entirely, which is the whole point of the pruning.
+
+Evidence favouring **row 0 ↔ `t = 0`**, which is the implemented default:
+
+- `‖row‖` is 0.5387 at row 0 and 0.4252 at row 1024, with a minimum of 0.0666
+  near the middle. Row 0 is the more extreme endpoint.
+- `‖row_{j+1} − row_j‖` is largest at row 0 (0.00489) and decays to 0.00254
+  before rising slightly to 0.00272 at the far end.
+- Both are consistent with `Timesteps(t=0)` being the distinguished point of
+  the sinusoid manifold: with `flip_sin_to_cos=True`, `s(0)` is exactly
+  `(1,…,1, 0,…,0)` — all 128 cosines at their maximum and all 128 sines exactly
+  zero — while `s(1)` is a generic point.
+
+This is suggestive, not conclusive, because the sinusoid passes through an
+unknown two-layer MLP and a SiLU before reaching the table. **Keep the switch.**
+If the direction is wrong the symptom is specific and easy to see end to end:
+the sample degrades rather than improves along the denoising trajectory. That
+is §3.5's step 3, and flipping the default is a one-line change.
+
+---
+
+**Original statement of the question, retained for context:**
 
 **What is unknown:** how a continuous timestep `t ∈ [0,1]` selects (or blends)
 a row of `adaln_t_table [1025, 8]`; whether the grid is over `t` or over
@@ -1336,10 +1424,15 @@ rested on blocks 0 and 1. Re-run on blocks 30 and 35 (the latest blocks whose
 fp8 QKV payload had arrived), sampling every 8th row's mean `|w|`:
 
 ```
-block  0: contiguous [q,k,v] = 9.019, 8.282, 5.674   interleaved = 7.635, 7.670, 7.670
-block 30: contiguous [q,k,v] = 4.030, 4.102, 5.077   interleaved = 4.381, 4.410, 4.418
-block 35: contiguous [q,k,v] = 6.535, 6.493, 8.286   interleaved = 7.040, 7.125, 7.150
+block  0: contiguous [q,k,v] = 9.019, 8.282,  5.674   interleaved = 7.635,  7.670,  7.670
+block 30: contiguous [q,k,v] = 4.030, 4.102,  5.077   interleaved = 4.381,  4.410,  4.418
+block 35: contiguous [q,k,v] = 6.535, 6.493,  8.286   interleaved = 7.040,  7.125,  7.150
+block 45: contiguous [q,k,v] = 8.867, 8.539, 12.659   interleaved = 9.813, 10.151, 10.101
+block 49: contiguous [q,k,v] = 4.482, 4.532,  7.652   interleaved = 5.450,  5.789,  5.426
 ```
+
+Blocks 45 and 49 were re-run on the completed file, which is what §10.3
+originally asked for.
 
 The contiguous partition separates at every depth (note the ordering flips —
 `v` is *smallest* at block 0 and *largest* by block 30, which is a real depth
