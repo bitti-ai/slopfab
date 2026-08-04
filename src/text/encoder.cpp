@@ -1,1 +1,317 @@
+// Host-side half of the Qwen3-VL conditioner: checkpoint validation, the layer
+// blob layout, the RoPE tables and the embedding gather. Nothing here touches
+// CUDA, which is what lets it be read and tested without a device — and what
+// lets `include/vidfab/text/encoder.h` stay free of CUDA types for host
+// translation units. The forward pass lives in src/cuda/encoder_kernels.cu.
+//
+// The validation is deliberately unforgiving. Every silent failure in
+// docs/text_encoder_spec.md section 9 is a wrong *number*, not a wrong shape,
+// so shapes are the only thing a loader can check — and a checkpoint that
+// differs in any of them is not the one the spec describes.
+
 #include "vidfab/text/encoder.h"
+
+#include <cmath>
+#include <cstring>
+#include <stdexcept>
+
+namespace vidfab::text {
+namespace {
+
+constexpr int kConvRotGroup = 256;
+
+// Every allocation in the blob starts on a 256-byte boundary. The int8 weights
+// are already multiples of 256 bytes, but the F32 scales and BF16 norms are
+// not, and cuBLAS wants its operands aligned.
+size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
+
+std::string layer_prefix(int layer) { return "model.layers." + std::to_string(layer) + "."; }
+
+const char* kQuantSuffixes[7] = {
+    "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+    "mlp.gate_proj",    "mlp.up_proj",      "mlp.down_proj",
+};
+
+// Removes ASCII whitespace and trailing NULs so the payload can be matched with
+// plain substring tests. The file is 72 bytes of JSON in a U8 tensor and the
+// project carries no JSON dependency into this layer.
+std::string squeeze(const void* data, size_t n) {
+  const char* p = static_cast<const char*>(data);
+  std::string out;
+  out.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    const char c = p[i];
+    if (c == '\0') break;
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+    out.push_back(c);
+  }
+  return out;
+}
+
+void require(bool ok, const std::string& message) {
+  if (!ok) throw std::runtime_error("text encoder: " + message);
+}
+
+std::string shape_string(const std::vector<int64_t>& shape) {
+  std::string s = "[";
+  for (size_t i = 0; i < shape.size(); ++i) {
+    if (i != 0) s += ", ";
+    s += std::to_string(shape[i]);
+  }
+  return s + "]";
+}
+
+void check_tensor(const SafeTensors& checkpoint, const std::string& name, DType dtype, int64_t dim0,
+                  int64_t dim1) {
+  const TensorView* view = checkpoint.find(name);
+  require(view != nullptr, name + " is missing");
+  require(view->dtype == dtype, name + " has dtype " + dtype_name(view->dtype) + ", expected " +
+                                    dtype_name(dtype));
+  const size_t rank = dim1 == 0 ? 1u : 2u;
+  require(view->shape.size() == rank,
+          name + " has shape " + shape_string(view->shape) + ", expected rank " +
+              std::to_string(rank));
+  require(view->shape[0] == dim0, name + " has shape " + shape_string(view->shape) +
+                                      ", expected first dim " + std::to_string(dim0));
+  if (dim1 != 0) {
+    require(view->shape[1] == dim1, name + " has shape " + shape_string(view->shape) +
+                                        ", expected second dim " + std::to_string(dim1));
+  }
+}
+
+}  // namespace
+
+TensorSpec layer_tensor_spec(const EncoderConfig& c, LayerTensor which) {
+  const int64_t hidden = c.hidden_size;
+  const int64_t q_width = static_cast<int64_t>(c.num_attention_heads) * c.head_dim;   // 8192
+  const int64_t kv_width = static_cast<int64_t>(c.num_key_value_heads) * c.head_dim;  // 1024
+  const int64_t inner = c.intermediate_size;
+
+  switch (which) {
+    // Every linear is stored PyTorch-style [out_features, in_features]; there
+    // are no transposes anywhere in this checkpoint (spec section 8.1). The
+    // scales are [out, 1] F32 — per output channel, despite the format tag
+    // reading "int8_tensorwise" (spec section 5.1).
+    case LayerTensor::kQWeight:
+      return {"self_attn.q_proj.weight", DType::kI8, q_width, hidden};
+    case LayerTensor::kQScale:
+      return {"self_attn.q_proj.weight_scale", DType::kF32, q_width, 1};
+    case LayerTensor::kKWeight:
+      return {"self_attn.k_proj.weight", DType::kI8, kv_width, hidden};
+    case LayerTensor::kKScale:
+      return {"self_attn.k_proj.weight_scale", DType::kF32, kv_width, 1};
+    case LayerTensor::kVWeight:
+      return {"self_attn.v_proj.weight", DType::kI8, kv_width, hidden};
+    case LayerTensor::kVScale:
+      return {"self_attn.v_proj.weight_scale", DType::kF32, kv_width, 1};
+    case LayerTensor::kOWeight:
+      return {"self_attn.o_proj.weight", DType::kI8, hidden, q_width};
+    case LayerTensor::kOScale:
+      return {"self_attn.o_proj.weight_scale", DType::kF32, hidden, 1};
+    case LayerTensor::kGateWeight:
+      return {"mlp.gate_proj.weight", DType::kI8, inner, hidden};
+    case LayerTensor::kGateScale:
+      return {"mlp.gate_proj.weight_scale", DType::kF32, inner, 1};
+    case LayerTensor::kUpWeight:
+      return {"mlp.up_proj.weight", DType::kI8, inner, hidden};
+    case LayerTensor::kUpScale:
+      return {"mlp.up_proj.weight_scale", DType::kF32, inner, 1};
+    case LayerTensor::kDownWeight:
+      return {"mlp.down_proj.weight", DType::kI8, hidden, inner};
+    case LayerTensor::kDownScale:
+      return {"mlp.down_proj.weight_scale", DType::kF32, hidden, 1};
+    case LayerTensor::kInputLayerNorm:
+      return {"input_layernorm.weight", DType::kBF16, hidden, 0};
+    case LayerTensor::kPostAttentionLayerNorm:
+      return {"post_attention_layernorm.weight", DType::kBF16, hidden, 0};
+    // q_norm and k_norm are [head_dim], one vector shared by all 64 (resp. 8)
+    // heads and applied over the 128-wide head axis only — not over 8192 or
+    // 1024 (spec section 4.1).
+    case LayerTensor::kQNorm:
+      return {"self_attn.q_norm.weight", DType::kBF16, c.head_dim, 0};
+    case LayerTensor::kKNorm:
+      return {"self_attn.k_norm.weight", DType::kBF16, c.head_dim, 0};
+    case LayerTensor::kCount:
+      break;
+  }
+  throw std::runtime_error("text encoder: layer_tensor_spec: bad LayerTensor");
+}
+
+LayerLayout make_layer_layout(const EncoderConfig& config) {
+  LayerLayout layout;
+  size_t cursor = 0;
+  for (int i = 0; i < kLayerTensorCount; ++i) {
+    const TensorSpec spec = layer_tensor_spec(config, static_cast<LayerTensor>(i));
+    const int64_t elements = spec.dim1 == 0 ? spec.dim0 : spec.dim0 * spec.dim1;
+    const size_t bytes = static_cast<size_t>(elements) * dtype_size(spec.dtype);
+    layout.offset[i] = cursor;
+    layout.bytes[i] = bytes;
+    cursor = align_up(cursor + bytes);
+  }
+  layout.total_bytes = cursor;
+  return layout;
+}
+
+void validate_checkpoint(const SafeTensors& checkpoint, const EncoderConfig& config) {
+  require(config.num_layers > 0, "num_layers must be positive");
+  require(config.head_dim % 2 == 0, "head_dim must be even");
+  require(config.num_attention_heads % config.num_key_value_heads == 0,
+          "num_attention_heads must be a multiple of num_key_value_heads");
+  // Every in_features here is 5120, 8192 or 25600, all divisible by 256, so
+  // every quantised weight in this checkpoint is rotated and there is no
+  // skip-when-not-divisible case (spec section 5.2).
+  require(config.hidden_size % kConvRotGroup == 0 && config.intermediate_size % kConvRotGroup == 0 &&
+              (config.num_attention_heads * config.head_dim) % kConvRotGroup == 0,
+          "every ConvRot contraction width must be a multiple of 256");
+
+  check_tensor(checkpoint, "model.embed_tokens.weight", DType::kBF16, config.vocab_size,
+               config.hidden_size);
+
+  // The absence of these two is what makes "the raw output of the last layer
+  // present" the right answer, and it is worth failing loudly if a future
+  // checkpoint reintroduces them: `hidden_states[N]` in HF is the *post-norm*
+  // value, which is exactly the conditioning encoders.py:142-149 rejects
+  // (spec section 1.4).
+  require(checkpoint.find("model.norm.weight") == nullptr,
+          "model.norm.weight is present. This checkpoint is not the 50-layer truncation this "
+          "port implements; taking the last layer's raw output would no longer match "
+          "hidden_states[50]");
+  require(checkpoint.find("lm_head.weight") == nullptr,
+          "lm_head.weight is present; the conditioner path never runs a head");
+
+  size_t layer_tensors = 0;
+  size_t visual_tensors = 0;
+  size_t other_tensors = 0;
+  for (const auto& entry : checkpoint.tensors()) {
+    const std::string& name = entry.first;
+    if (name.rfind("model.layers.", 0) == 0) {
+      ++layer_tensors;
+    } else if (name.rfind("visual.", 0) == 0) {
+      ++visual_tensors;
+    } else {
+      ++other_tensors;
+    }
+  }
+
+  // 18 loaded + 7 comfy_quant descriptors = 25 per layer (spec section 8.3).
+  const size_t expected_layer_tensors = static_cast<size_t>(config.num_layers) * 25;
+  require(layer_tensors == expected_layer_tensors,
+          "found " + std::to_string(layer_tensors) + " model.layers.* tensors, expected " +
+              std::to_string(expected_layer_tensors) + " (25 per layer x " +
+              std::to_string(config.num_layers) + ")");
+  require(other_tensors == 1, "found " + std::to_string(other_tensors) +
+                                  " tensors outside model.layers.* and visual.*, expected only "
+                                  "model.embed_tokens.weight");
+  (void)visual_tensors;  // present in the file, never loaded (spec section 8.4)
+
+  for (int layer = 0; layer < config.num_layers; ++layer) {
+    const std::string prefix = layer_prefix(layer);
+    for (int i = 0; i < kLayerTensorCount; ++i) {
+      const TensorSpec spec = layer_tensor_spec(config, static_cast<LayerTensor>(i));
+      check_tensor(checkpoint, prefix + spec.suffix, spec.dtype, spec.dim0, spec.dim1);
+    }
+    for (const char* linear : kQuantSuffixes) {
+      const std::string name = prefix + linear + ".comfy_quant";
+      const TensorView* view = checkpoint.find(name);
+      require(view != nullptr, name + " is missing");
+      const std::string payload = squeeze(view->data, view->nbytes);
+      // A wrong Hadamard or a skipped activation rotation is silent — it
+      // produces well-scaled noise (spec section 9, items 1 and 2) — so the
+      // one thing the file does tell us about the rotation is checked.
+      require(payload.find("\"convrot\":true") != std::string::npos,
+              name + " does not declare convrot; this port only implements the rotated form");
+      require(payload.find("\"convrot_groupsize\":256") != std::string::npos,
+              name + " declares a ConvRot group size other than 256: " + payload);
+      require(payload.find("\"format\":\"int8_tensorwise\"") != std::string::npos,
+              name + " declares an unexpected format: " + payload);
+    }
+  }
+}
+
+void pack_layer(const SafeTensors& checkpoint, const EncoderConfig& config, int layer,
+                const LayerLayout& layout, uint8_t* dst) {
+  require(layer >= 0 && layer < config.num_layers,
+          "pack_layer: layer " + std::to_string(layer) + " out of range");
+  const std::string prefix = layer_prefix(layer);
+  for (int i = 0; i < kLayerTensorCount; ++i) {
+    const TensorSpec spec = layer_tensor_spec(config, static_cast<LayerTensor>(i));
+    const std::string name = prefix + spec.suffix;
+    const TensorView& view = checkpoint.at(name);
+    require(view.nbytes == layout.bytes[i],
+            name + " is " + std::to_string(view.nbytes) + " bytes, layout expects " +
+                std::to_string(layout.bytes[i]));
+    std::memcpy(dst + layout.offset[i], view.data, view.nbytes);
+  }
+}
+
+std::vector<float> rope_inv_freq(int head_dim, float theta) {
+  require(head_dim > 0 && head_dim % 2 == 0, "rope_inv_freq: head_dim must be positive and even");
+  require(theta > 0.0f, "rope_inv_freq: theta must be positive");
+  const int half = head_dim / 2;
+  std::vector<float> inv(static_cast<size_t>(half));
+  for (int j = 0; j < half; ++j) {
+    // The reference evaluates `base ** (arange(0, dim, 2) / dim)` in fp32.
+    // Doing it in fp64 and rounding differs by at most 1.19e-7 relative, far
+    // below the bf16 activation noise, and is marginally more accurate
+    // (spec section 6.4).
+    const double exponent = -static_cast<double>(2 * j) / static_cast<double>(head_dim);
+    inv[static_cast<size_t>(j)] =
+        static_cast<float>(std::pow(static_cast<double>(theta), exponent));
+  }
+  return inv;
+}
+
+void build_rope_tables(int num_tokens, const std::vector<float>& inv_freq, std::vector<float>& cos,
+                       std::vector<float>& sin) {
+  require(num_tokens > 0, "build_rope_tables: num_tokens must be positive");
+  require(!inv_freq.empty(), "build_rope_tables: inv_freq is empty");
+  const int half = static_cast<int>(inv_freq.size());
+  const int head_dim = half * 2;
+  const size_t n = static_cast<size_t>(num_tokens) * head_dim;
+  cos.assign(n, 0.0f);
+  sin.assign(n, 0.0f);
+
+  for (int s = 0; s < num_tokens; ++s) {
+    const float pos = static_cast<float>(s);
+    float* cos_row = cos.data() + static_cast<size_t>(s) * head_dim;
+    float* sin_row = sin.data() + static_cast<size_t>(s) * head_dim;
+    for (int j = 0; j < half; ++j) {
+      // fp32 throughout: the reference computes the angles inside an explicit
+      // `maybe_autocast(enabled=False)` block, and `(float)s` is exact for any
+      // reachable L (spec section 6.1).
+      const float angle = pos * inv_freq[static_cast<size_t>(j)];
+      const float c = std::cos(angle);
+      const float sn = std::sin(angle);
+      // The half period is duplicated, not interleaved. That duplication is
+      // what makes the GPT-NeoX pairing of j with j+half correct, and it is
+      // the reference's own `cat((freqs, freqs), -1)` (spec section 2.4).
+      cos_row[j] = c;
+      cos_row[j + half] = c;
+      sin_row[j] = sn;
+      sin_row[j + half] = sn;
+    }
+  }
+}
+
+void gather_embedding_rows(const TensorView& embed, const std::vector<int32_t>& ids,
+                           std::vector<uint16_t>& out) {
+  require(embed.dtype == DType::kBF16,
+          "embedding table has dtype " + std::string(dtype_name(embed.dtype)) + ", expected BF16");
+  require(embed.shape.size() == 2, "embedding table is not 2-D");
+  const int64_t vocab = embed.shape[0];
+  const int64_t hidden = embed.shape[1];
+  out.assign(ids.size() * static_cast<size_t>(hidden), 0);
+
+  const uint16_t* table = static_cast<const uint16_t*>(embed.data);
+  for (size_t i = 0; i < ids.size(); ++i) {
+    const int32_t id = ids[i];
+    require(id >= 0 && id < vocab, "token id " + std::to_string(id) + " at position " +
+                                       std::to_string(i) + " is outside the vocabulary of " +
+                                       std::to_string(vocab));
+    std::memcpy(out.data() + i * static_cast<size_t>(hidden),
+                table + static_cast<size_t>(id) * static_cast<size_t>(hidden),
+                static_cast<size_t>(hidden) * sizeof(uint16_t));
+  }
+}
+
+}  // namespace vidfab::text
