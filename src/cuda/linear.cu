@@ -11,6 +11,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -190,8 +191,17 @@ __global__ void f32_to_bf16_kernel(const float* __restrict__ src, __nv_bfloat16*
 // A Walsh-Hadamard transform is the wrong matrix here and produces relative
 // error 1.4, not a crash (docs/convrot_notes.md).
 //
-// One block per 256-wide group, `group/4` threads: each thread owns one
-// butterfly and the group lives in shared memory across the four stages.
+// Several groups per block, `group/4` threads each: a thread owns one butterfly
+// and its group lives in shared memory across the four stages. One group per
+// block would be 64 threads — two warps — for the 256-wide group the quantiser
+// uses, which wastes most of a launch.
+//
+// **Shared memory is padded one word every four.** Stage 0 has thread t reading
+// `buf[4t]`, so without padding 8 threads of every warp land in the same bank:
+// an 8-way conflict on the first and heaviest stage. Mapping element i to
+// `i + i/4` makes stage 0 and stage 1 conflict-free (5 and 32 are coprime) and
+// leaves stages 2 and 3 at 2-way. The padding also has to be applied to the
+// group base, hence `padded_group` rather than `group`.
 
 template <typename T>
 __device__ inline float load_as_f32(const T* p);
@@ -215,37 +225,56 @@ __device__ inline void store_from_f32<__nv_bfloat16>(__nv_bfloat16* p, float v) 
   *p = __float2bfloat16(v);
 }
 
+// Element i of a group sits at word `i + i/4` of that group's slice.
+__device__ inline int convrot_pad(int i) { return i + (i >> 2); }
+
 template <typename T>
 __global__ void convrot_kernel(const T* __restrict__ in, T* __restrict__ out, int group,
-                               int stages, float norm) {
-  extern __shared__ float buf[];
-  const size_t base = static_cast<size_t>(blockIdx.x) * group;
+                               int stages, float norm, int groups_per_block, size_t total_groups) {
+  extern __shared__ float shared[];
+  const int quarter = group / 4;
+  const int local = static_cast<int>(threadIdx.x) / quarter;
+  const int t = static_cast<int>(threadIdx.x) - local * quarter;
+  const size_t g = static_cast<size_t>(blockIdx.x) * groups_per_block + local;
 
-  for (int i = threadIdx.x; i < group; i += blockDim.x) buf[i] = load_as_f32(in + base + i);
+  float* buf = shared + static_cast<size_t>(local) * (group + group / 4);
+  const size_t base = g * group;
+
+  // A tail block has groups past the end. Those threads must not read or write
+  // global memory, but they must still reach every barrier below, so they run
+  // the butterfly over zeros in their own slice rather than returning.
+  const bool live = g < total_groups;
+  for (int i = t; i < group; i += quarter) {
+    buf[convrot_pad(i)] = live ? load_as_f32(in + base + i) : 0.0f;
+  }
   __syncthreads();
 
-  // Exactly `quarter` threads, one butterfly each — the launcher enforces it.
-  // Every barrier below is therefore hit by the whole block, which a loop over
-  // butterflies would not guarantee.
-  const int t = threadIdx.x;
+  // Exactly `quarter` threads per group, one butterfly each — the launcher
+  // enforces it. Every barrier below is therefore hit by the whole block, which
+  // a loop over butterflies would not guarantee.
   int stride = 1;
   for (int s = 0; s < stages; ++s) {
     const int i = (t / stride) * 4 * stride + (t % stride);
-    const float a = buf[i];
-    const float b = buf[i + stride];
-    const float c = buf[i + 2 * stride];
-    const float d = buf[i + 3 * stride];
+    const int i0 = convrot_pad(i);
+    const int i1 = convrot_pad(i + stride);
+    const int i2 = convrot_pad(i + 2 * stride);
+    const int i3 = convrot_pad(i + 3 * stride);
+    const float a = buf[i0];
+    const float b = buf[i1];
+    const float c = buf[i2];
+    const float d = buf[i3];
     __syncthreads();  // every lane must have read before any write lands
-    buf[i] = a + b + c - d;
-    buf[i + stride] = a + b - c + d;
-    buf[i + 2 * stride] = a - b + c + d;
-    buf[i + 3 * stride] = -a + b + c + d;
+    buf[i0] = a + b + c - d;
+    buf[i1] = a + b - c + d;
+    buf[i2] = a - b + c + d;
+    buf[i3] = -a + b + c + d;
     __syncthreads();
     stride *= 4;
   }
 
-  for (int i = threadIdx.x; i < group; i += blockDim.x) {
-    store_from_f32(out + base + i, buf[i] * norm);
+  if (!live) return;
+  for (int i = t; i < group; i += quarter) {
+    store_from_f32(out + base + i, buf[convrot_pad(i)] * norm);
   }
 }
 
@@ -499,10 +528,16 @@ void launch_convrot_impl(const T* in, T* out, int rows, int dim, int group, cuda
   // which is why the quantiser insists on a power-of-four group size.
   const float norm = 1.0f / std::sqrt(static_cast<float>(group));
   const size_t groups = static_cast<size_t>(rows) * (dim / group);
-  const int threads = group / 4;
-  const int shared = group * static_cast<int>(sizeof(float));
-  convrot_kernel<<<static_cast<int>(groups), threads, shared, stream>>>(in, out, group, stages,
-                                                                       norm);
+  const int quarter = group / 4;
+  // Aim for a 256-thread block; a group wider than 1024 butterflies has already
+  // been rejected above.
+  const int groups_per_block = std::max(1, 256 / quarter);
+  const int threads = groups_per_block * quarter;
+  const int shared =
+      groups_per_block * (group + group / 4) * static_cast<int>(sizeof(float));
+  const int blocks = static_cast<int>((groups + groups_per_block - 1) / groups_per_block);
+  convrot_kernel<<<blocks, threads, shared, stream>>>(in, out, group, stages, norm,
+                                                      groups_per_block, groups);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
