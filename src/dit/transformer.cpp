@@ -853,6 +853,17 @@ std::vector<float> Transformer::debug_modulation(int block_index,
   return out;
 }
 
+std::vector<float> Transformer::debug_text_cache() const {
+  Impl& s = *impl_;
+  if (s.num_text == 0 || s.text_cache.size() == 0) return {};
+  std::vector<uint16_t> bits(s.text_cache.size());
+  VIDFAB_CUDA_CHECK(cudaMemcpy(bits.data(), s.text_cache.get(),
+                               bits.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+  std::vector<float> out(bits.size());
+  for (size_t i = 0; i < bits.size(); ++i) out[i] = bf16_to_f32(bits[i]);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 
 void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {

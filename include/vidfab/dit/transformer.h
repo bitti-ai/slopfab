@@ -101,6 +101,12 @@ class Transformer {
   // on zero — and reading those needs the numbers.
   std::vector<float> debug_modulation(int block_index, const std::vector<float>& timesteps);
 
+  // The cached refiner output, `[L, hidden]` widened to fp32. Verification
+  // only: the text stream is invisible in the model's output except through
+  // attention, so a bug in it shows up as a few percent of error smeared over
+  // every video row and nowhere that localises it.
+  std::vector<float> debug_text_cache() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
