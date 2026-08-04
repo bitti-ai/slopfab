@@ -13,6 +13,7 @@
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/tensor_convert.h"
 
 namespace {
 
@@ -262,12 +263,78 @@ void test_safetensors() {
   CHECK(missing_rejected);
 }
 
+// --- compare ----------------------------------------------------------------
+
+void test_compare() {
+  TEST("compare");
+  using namespace vidfab;
+
+  // Identical inputs produce exactly zero error.
+  const std::vector<float> a = {1.0f, 2.0f, -3.0f, 0.0f};
+  CompareStats same = compare(a, a);
+  CHECK(same.shape_match);
+  CHECK(same.count == 4);
+  CHECK_NEAR(same.max_abs_err, 0.0, 0.0);
+  CHECK_NEAR(same.rms_err, 0.0, 0.0);
+  CHECK(same.passes(0.0, 0.0));
+
+  // A single perturbed element drives max_abs_err and argmax.
+  std::vector<float> b = a;
+  b[2] = -3.5f;
+  CompareStats diff = compare(a, b);
+  CHECK_NEAR(diff.max_abs_err, 0.5, 1e-9);
+  CHECK(diff.argmax_abs == 2);
+  CHECK_NEAR(diff.lhs_at_argmax, -3.0, 1e-9);
+  CHECK_NEAR(diff.rhs_at_argmax, -3.5, 1e-9);
+  // Relative error is 0.5/3.
+  CHECK_NEAR(diff.max_rel_err, 0.5 / 3.0, 1e-9);
+  CHECK(!diff.passes(1e-3, 1e-3));
+  CHECK(diff.passes(1.0, 1e-3));   // passes on absolute
+  CHECK(diff.passes(1e-9, 0.2));   // passes on relative
+
+  // Size mismatch never passes.
+  CompareStats mismatch = compare(a, std::vector<float>{1.0f});
+  CHECK(!mismatch.shape_match);
+  CHECK(!mismatch.passes(1e9, 1e9));
+
+  // A near-zero reference must not manufacture a huge relative error.
+  CompareStats tiny = compare(std::vector<float>{1e-9f}, std::vector<float>{2e-9f});
+  CHECK_NEAR(tiny.max_rel_err, 0.0, 0.0);
+  CHECK(tiny.passes(1e-6, 0.0));
+
+  // Matching NaNs agree; a NaN against a number does not.
+  const float nan_v = std::nanf("");
+  CHECK(compare({nan_v}, {nan_v}).nan_mismatches == 0);
+  CompareStats nan_bad = compare({nan_v}, {1.0f});
+  CHECK(nan_bad.nan_mismatches == 1);
+  CHECK(!nan_bad.passes(1e9, 1e9));
+
+  // to_f32 widens each stored dtype correctly.
+  std::vector<uint8_t> raw(4);
+  const uint16_t bf16_one = 0x3F80;
+  std::memcpy(raw.data(), &bf16_one, 2);
+  const uint16_t bf16_two = 0x4000;
+  std::memcpy(raw.data() + 2, &bf16_two, 2);
+
+  TensorView view;
+  view.name = "t";
+  view.dtype = DType::kBF16;
+  view.shape = {2};
+  view.data = raw.data();
+  view.nbytes = 4;
+  const std::vector<float> widened = to_f32(view);
+  CHECK(widened.size() == 2);
+  CHECK_NEAR(widened[0], 1.0f, 0.0);
+  CHECK_NEAR(widened[1], 2.0f, 0.0);
+}
+
 }  // namespace
 
 int main() {
   test_json();
   test_dtype();
   test_safetensors();
+  test_compare();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

@@ -21,6 +21,7 @@ option(VIDFAB_BUILD_TESTS "Build unit tests" ON)
 add_library(vidfab_core STATIC
   src/core/json.cpp
   src/core/safetensors.cpp
+  src/core/tensor_convert.cpp
 )
 
 target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

@@ -12,6 +12,7 @@
 
 #include "vidfab/dtype.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/tensor_convert.h"
 
 #if VIDFAB_WITH_CUDA
 #include "vidfab/cuda/device.h"
@@ -29,13 +30,19 @@ void print_usage() {
       "\n"
       "commands:\n"
       "  inspect <file.safetensors>   summarise a checkpoint's tensors\n"
+      "  compare <ref> <actual>       diff two checkpoints tensor by tensor\n"
       "  devices                      list visible CUDA devices\n"
       "  version                      print the version and exit\n"
       "\n"
       "inspect options:\n"
       "  --list                       print every tensor, not just a summary\n"
       "  --prefix <str>               only tensors whose name starts with <str>\n"
-      "  --limit <n>                  cap listed tensors (default 40, 0 = all)\n",
+      "  --limit <n>                  cap listed tensors (default 40, 0 = all)\n"
+      "\n"
+      "compare options:\n"
+      "  --abs-tol <x>                absolute tolerance (default 1e-3)\n"
+      "  --rel-tol <x>                relative tolerance (default 1e-2)\n"
+      "  --verbose                    report passing tensors too\n",
       kVersion);
 }
 
@@ -155,6 +162,108 @@ int cmd_inspect(int argc, char** argv) {
   return 0;
 }
 
+// Compares every tensor shared by two checkpoints. This is how a ported stage
+// is validated: dump reference activations from the Python implementation, run
+// ours, and diff. Exit code is non-zero when any tensor exceeds tolerance, so
+// it can be used directly as a test.
+int cmd_compare(int argc, char** argv) {
+  std::string ref_path;
+  std::string act_path;
+  double abs_tol = 1e-3;
+  double rel_tol = 1e-2;
+  bool verbose = false;
+
+  for (int i = 0; i < argc; ++i) {
+    const std::string_view arg = argv[i];
+    if (arg == "--abs-tol" && i + 1 < argc) {
+      abs_tol = std::strtod(argv[++i], nullptr);
+    } else if (arg == "--rel-tol" && i + 1 < argc) {
+      rel_tol = std::strtod(argv[++i], nullptr);
+    } else if (arg == "--verbose" || arg == "-v") {
+      verbose = true;
+    } else if (!arg.empty() && arg.front() == '-') {
+      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      return 2;
+    } else if (ref_path.empty()) {
+      ref_path = argv[i];
+    } else if (act_path.empty()) {
+      act_path = argv[i];
+    } else {
+      std::fprintf(stderr, "vidfab: unexpected argument '%s'\n", argv[i]);
+      return 2;
+    }
+  }
+
+  if (ref_path.empty() || act_path.empty()) {
+    std::fprintf(stderr, "vidfab: compare needs a reference and an actual .safetensors path\n");
+    return 2;
+  }
+
+  vidfab::SafeTensors ref;
+  vidfab::SafeTensors act;
+  ref.open(ref_path);
+  act.open(act_path);
+
+  std::printf("reference  %s (%zu tensors)\n", ref.path().c_str(), ref.tensor_count());
+  std::printf("actual     %s (%zu tensors)\n", act.path().c_str(), act.tensor_count());
+  std::printf("tolerance  abs %g, rel %g  (a tensor passes on either)\n\n", abs_tol, rel_tol);
+
+  size_t compared = 0;
+  size_t failed = 0;
+  size_t missing = 0;
+  double worst_abs = 0.0;
+  std::string worst_name;
+
+  std::vector<float> ref_values;
+  std::vector<float> act_values;
+
+  for (const auto& [name, ref_view] : ref.tensors()) {
+    const vidfab::TensorView* act_view = act.find(name);
+    if (act_view == nullptr) {
+      ++missing;
+      if (verbose) std::printf("  MISSING  %s\n", name.c_str());
+      continue;
+    }
+
+    vidfab::to_f32(ref_view, ref_values);
+    vidfab::to_f32(*act_view, act_values);
+    const vidfab::CompareStats stats = vidfab::compare(ref_values, act_values);
+    ++compared;
+
+    if (stats.max_abs_err > worst_abs) {
+      worst_abs = stats.max_abs_err;
+      worst_name = name;
+    }
+
+    const bool ok = stats.passes(abs_tol, rel_tol);
+    if (!ok) ++failed;
+
+    if (!ok || verbose) {
+      std::printf("  %-7s %-52s max_abs %.3e  max_rel %.3e  rms %.3e\n", ok ? "ok" : "FAIL",
+                  name.c_str(), stats.max_abs_err, stats.max_rel_err, stats.rms_err);
+      if (!stats.shape_match) {
+        std::printf("           shape/element-count mismatch: %lld vs %lld\n",
+                    static_cast<long long>(ref_view.numel()),
+                    static_cast<long long>(act_view->numel()));
+      } else if (!ok && stats.argmax_abs >= 0) {
+        std::printf("           worst at index %lld: reference %.6g, actual %.6g\n",
+                    static_cast<long long>(stats.argmax_abs), stats.lhs_at_argmax,
+                    stats.rhs_at_argmax);
+      }
+      if (stats.nan_mismatches != 0) {
+        std::printf("           %lld non-finite mismatches\n",
+                    static_cast<long long>(stats.nan_mismatches));
+      }
+    }
+  }
+
+  std::printf("\n%zu compared, %zu failed, %zu missing from actual\n", compared, failed, missing);
+  if (!worst_name.empty()) {
+    std::printf("worst absolute error %.3e in %s\n", worst_abs, worst_name.c_str());
+  }
+  return (failed == 0 && missing == 0) ? 0 : 1;
+}
+
 int cmd_devices() {
 #if !VIDFAB_WITH_CUDA
   std::fprintf(stderr, "vidfab: built without CUDA support\n");
@@ -191,6 +300,7 @@ int main(int argc, char** argv) {
   const std::string_view command = argv[1];
   try {
     if (command == "inspect") return cmd_inspect(argc - 2, argv + 2);
+    if (command == "compare") return cmd_compare(argc - 2, argv + 2);
     if (command == "devices") return cmd_devices();
     if (command == "version") {
       std::printf("vidfab %s\n", kVersion);
