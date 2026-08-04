@@ -60,14 +60,20 @@ const CommandHelp kCommands[] = {
      "\n"
      "checkpoints (all required unless --dry-run or --synthetic-latents):\n"
      "  --tokenizer <f>              tokenizer.json\n"
-     "  --text-encoder <f>           Qwen3-VL conditioner, int8 ConvRot\n"
-     "  --transformer <f>            H3 omni transformer, fp8\n"
+     "  --text-encoder <f>           Qwen3-VL conditioner, int8 ConvRot or nvfp4 AWQ\n"
+     "  --transformer <f>            H3 omni transformer, fp8 or nvfp4\n"
      "  --vae <f>                    video VAE decoder\n"
      "  --audio-vae <f>              audio VAE decoder\n"
      "\n"
-     "The conditioner and the transformer do not fit on one 32 GB card at the\n"
-     "same time, so they are loaded and freed in sequence. Expect the first\n"
-     "output well after the progress line starts moving.\n"},
+     "The quantisation of each checkpoint is read out of the file, so there is\n"
+     "no flag for it and the two need not match.\n"
+     "\n"
+     "The conditioner and the transformer are loaded and freed in sequence\n"
+     "rather than together: at 23.1 GB and 19.3 GB the int8 and fp8 pair cannot\n"
+     "co-exist on a 32 GB card. The nvfp4 pair would (13.1 GB and 12.5 GB), but\n"
+     "the sequencing costs nothing measurable and is what makes every mixture of\n"
+     "the four safe. Expect the first output well after the progress line starts\n"
+     "moving.\n"},
     {"inspect", "vidfab inspect <file.safetensors> [options]",
      "summarise a checkpoint's tensors",
      "  --list                       print every tensor, not just a summary\n"

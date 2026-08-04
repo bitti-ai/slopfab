@@ -74,11 +74,17 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
     // --- conditioning -------------------------------------------------------
     //
-    // The conditioner and the transformer cannot co-exist on a 32 GB card
-    // (24.4 GB and 19.3 GB of weights), so the encoder is loaded, used and
-    // freed before the transformer is touched. The scoping below is the
-    // enforcement: `encoder` and its checkpoint mapping both die at the closing
-    // brace, and the transformer is not constructed until after it.
+    // The encoder is loaded, used and freed before the transformer is touched.
+    // The scoping below is the enforcement: `encoder` and its checkpoint
+    // mapping both die at the closing brace, and the transformer is not
+    // constructed until after it.
+    //
+    // The int8 conditioner and the fp8 transformer cannot co-exist on a 32 GB
+    // card — measured, 23.1 GB peak and 19.3 GB. The nvfp4 pair can (13.1 and
+    // 12.5), so the sequencing is no longer forced for that combination, but it
+    // stays: a resident encode is 0.12 s against a whole denoising run, the
+    // saving would be nothing, and dropping it would make three of the four
+    // checkpoint combinations fail at the worst possible moment.
     text::PromptEmbedding prompt;
     {
       const Clock::time_point t0 = Clock::now();

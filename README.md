@@ -49,9 +49,12 @@ cmake -S . -B build
 cmake --build build --config Release
 ```
 
-The default CUDA architecture is `120` (Blackwell / RTX 50 series). Override
-with `-DCMAKE_CUDA_ARCHITECTURES=90` for Hopper. The core library and CLI build
-without CUDA; the decoder does not.
+The default CUDA architecture is `120a` (Blackwell / RTX 50 series). The `a`
+is load-bearing rather than decorative: `ptxas` rejects the `.block_scale`
+operand plain `sm_120` does not have, and that operand is the whole of native
+nvfp4. Override with `-DCMAKE_CUDA_ARCHITECTURES=90` for Hopper, which has no
+nvfp4 at all. The core library and CLI build without CUDA; the decoder does
+not.
 
 ## Usage
 
@@ -61,7 +64,17 @@ without CUDA; the decoder does not.
 vidfab generate --prompt "..." --aspect 16:9 --frames 124 --steps 50 --dry-run
 
 # The real thing: prompt -> conditioner -> transformer -> denoise -> VAEs -> MP4.
-vidfab generate --prompt "integrated_multimodal_description: ..."                 --frames 22 --aspect 1:1 --steps 30 --seed 11                 --tokenizer      <tokenizer.json>                 --text-encoder   weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors                 --transformer    weights/transformer/fl2va_pruned_fp8_scaled.safetensors                 --vae            weights/vae/minimax_h3_video_vae_fp16.safetensors                 --audio-vae      weights/vae/minimax_h3_audio_vae_fp32.safetensors                 --out cat.mp4
+vidfab generate --prompt "integrated_multimodal_description: ..." \
+                --frames 22 --aspect 1:1 --steps 30 --seed 11 \
+                --tokenizer      <tokenizer.json> \
+                --text-encoder   weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors \
+                --transformer    weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors \
+                --vae            weights/vae/minimax_h3_video_vae_fp16.safetensors \
+                --audio-vae      weights/vae/minimax_h3_audio_vae_fp32.safetensors \
+                --out cat.mp4
+
+# The quantisation of each checkpoint is read out of the file, so there is no
+# flag for it and the pair need not match. `generate.cmd` wraps all of this.
 
 # Every command documents itself.
 vidfab generate --help
@@ -122,10 +135,10 @@ someone else is editing.
   E2M1, safetensors loading and its rejection cases, comparison statistics, the
   flow scheduler, token packing, request resolution, the AdaLN table, the
   tokenizer, latent noise, the WAV writer and the colour transform.
-  **1729 checks.**
+  **1669 checks.**
 - **GPU kernel tests**: every kernel against independent CPU references written
-  from the spec rather than from the kernel. **457 checks.** These exist because
-  the failure modes here are silent — a wrong QKV de-interleave, a wrong
+  from the spec rather than from the kernel. **821 checks**, plus 11 DEFERRED.
+  These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong
   depth-to-space ordering, or a transposed GEMM all produce plausible output.
 
 Two habits do most of the work. Where a wrong implementation is *plausible*
@@ -160,6 +173,44 @@ from the reference PyTorch pipeline; `vidfab compare` is built to consume them.
 `docs/text_encoder_spec.md` and `docs/audio_vae_spec.md` document each stage
 layer by layer with citations into the reference source by file and line;
 `docs/convrot_notes.md` covers the int8 rotation.
+
+### The nvfp4 conditioner
+
+Both builds of the conditioner load, and which one a file is comes from its own
+`comfy_quant` descriptors rather than from a flag — they differ in tensor count
+(34 per layer against 25), dtype and shape, so a mismatch is a validation error
+rather than wrong numbers. Four things about the nvfp4 build were established by
+comparing it elementwise against the int8 build of the same model rather than by
+reading a convention off the file, because every one of them fails silently:
+
+- **The HIGH nibble holds the even-indexed element.** The other way round
+  correlates with the truth at +0.0008 — that is, not at all — while still
+  producing finite, correctly shaped, plausibly scaled output.
+- **`weight_scale` is not row-major.** Its declared shape is `[out, in/16]` but
+  its bytes are in a 128x4 tile swizzle. Read row-major it scores relative L2
+  0.77 at correlation +0.79: well-scaled noise, invisible to every shape and
+  finiteness check in the suite.
+- **The activation is multiplied by `pre_quant_scale`**, the stored weight
+  having already been divided: `y = (x*s) @ (W/s)^T`. Multiplying scores
+  relative L2 0.10 against the int8 build, dividing 0.78, skipping it 0.50.
+- **Only `o_proj` and `down_proj` carry that scale.** The other five had it
+  folded into the preceding norm, which is why this build's `input_layernorm`
+  and `post_attention_layernorm` differ from the int8 build's while `q_norm`
+  and `k_norm` — which sit after the projections and have nothing to absorb —
+  are bitwise identical to it.
+
+All 350 quantised linears declare `full_precision_matrix_mult`, so every one of
+them dequantises and runs bf16 and none may ever take a native fp4 GEMM. The
+file says so and validation insists on it; nothing infers it from which scales
+happen to be present. The build is also *not* ConvRot-rotated, unlike the int8
+one, and the embedding table does not follow the linears — it is I8 with a
+per-row F32 scale here and BF16 there.
+
+End to end the two builds' `hidden_states[50]` agree to 1.9% of the int8
+output's norm, which is the gap between two quantisations of one model and not
+an error bar. `tools/nvfp4_layout_probe.py` is the offline harness that pinned
+all of this and prints the grid.
+
 Three things about the video decoder are worth knowing before reading the code,
 because each produces plausible-but-wrong output if taken the obvious way:
 
@@ -194,6 +245,7 @@ than only at seams.
 | `generate` end to end, real prompt to MP4 | done |
 | H3-Omni-Transformer, 50 layers | done |
 | Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | done |
+| Qwen3-VL-32B text encoder (nvfp4 AWQ, 50 layers) | done |
 | Fused attention (FlashAttention-2, `mma.sync`) | done |
 | `cp.async` double-buffered K/V staging | not started |
 | Native fp8/nvfp4/int4 GEMM | not started |
@@ -248,13 +300,25 @@ believing any number in this file.
 
 ### Conditioner residency
 
-| mode | load | encode (warm) | peak |
-|---|---|---|---|
-| streaming *(default)* | 0.00 s | **0.62 s** | 1.20 GB |
-| resident | 6.2 s | 0.12 s | 23.13 GB |
+Both builds of the conditioner, both modes, measured on one idle 5090 over a
+190-token prompt in a single run:
 
-Streaming is the default because the transformer needs 19.6 GiB later in the
-same process. Its encode used to be 2.9 s, of which **96% was a single-threaded
+| build | mode | load | encode (warm) | peak |
+|---|---|---|---|---|
+| int8 + ConvRot | streaming *(default)* | 0.00 s | **0.66 s** | 1.20 GB |
+| int8 + ConvRot | resident | 4.95 s | 0.11 s | 23.08 GB |
+| nvfp4 + AWQ | streaming *(default)* | 0.00 s | **0.48 s** | 0.80 GB |
+| nvfp4 + AWQ | resident | 9.30 s | 0.12 s | 13.09 GB |
+
+nvfp4 is smaller in both modes and faster in streaming, where the encode is
+bound by how many bytes cross PCIe rather than by arithmetic — half the weight
+bytes, roughly two-thirds the time. Resident is a dead heat, because there both
+builds dequantise to bf16 and run the same cuBLAS GEMM; nvfp4's resident load is
+*slower* (9.30 s against 4.95 s) despite reading a smaller file, which is the
+50 x 7 extra `weight_scale_2` reads and the larger tensor count, not bandwidth.
+
+Streaming is the default because the transformer needs 19.6 GiB (fp8) or
+12.5 GB (nvfp4) later in the same process. Its encode used to be 2.9 s, of which **96% was a single-threaded
 host `memcpy`** staging weights into pinned memory — and most of *that* was soft
 page faults on the 27 GB mapping, not memcpy bandwidth. The mapping is now
 page-locked once with `cudaHostRegister` and each weight DMAs straight out of
@@ -412,23 +476,35 @@ assertions they replaced are what found this and are worth keeping pointed at
 it. The mean error is inside the project's 1% per-tensor tolerance and that
 bound still asserts; only the max exceeds its 3% bar, in some geometries.
 
-## Memory budget## Memory budget
+## Memory budget
 
-The card is a 32 GB RTX 5090 and the stages do not fit together, which is what
-forces the pipeline's shape. Resident weights, measured from the checkpoints:
+The card is a 32 GB RTX 5090. Resident weights, measured from the checkpoints:
 
 | Stage | Device weights |
 |---|---|
-| Qwen3-VL conditioner, int8 | 24.4 GB (+1.6 GB embedding, kept on the host) |
+| Qwen3-VL conditioner, int8 + ConvRot | 22.7 GB (23.1 GB peak; +1.6 GB embedding, kept on the host) |
+| Qwen3-VL conditioner, nvfp4 + AWQ | 12.8 GB (13.1 GB peak; +0.78 GB embedding, kept on the host) |
 | H3 transformer, fp8 | 19.3 GB |
+| H3 transformer, nvfp4 | 12.5 GB |
 | Video VAE decoder | 9.0 GB (fp16 on disk, widened to fp32) |
 | Audio VAE | 0.6 GB |
 
-So the conditioner and the transformer cannot co-exist, and the pipeline runs
-strictly in sequence: encode the prompt, free the conditioner, load the
-transformer, denoise, free it, decode. The vision tower in the conditioner
-checkpoint (1.19 GB) is never loaded — it is reached only by the keyframe path,
-which this port does not implement.
+The pipeline runs strictly in sequence — encode the prompt, free the
+conditioner, load the transformer, denoise, free it, decode — and that ordering
+used to be forced: 23.1 GB and 19.3 GB do not co-exist on a 32 GB card.
+
+**nvfp4 changes that, and the sequencing stays anyway.** The nvfp4 pair is
+13.1 GB and 12.5 GB, which does fit together with room to spare. But three of
+the four checkpoint combinations still do not, the saving from keeping both
+loaded is one 0.12 s encode against a denoising run measured in tens of
+minutes, and dropping the sequencing would turn a mixed pair into an
+out-of-memory failure at the worst possible moment. So the swap is kept as a
+matter of it costing nothing, not of it being unavoidable. Ruled out rather
+than not tried.
+
+The vision tower in the conditioner checkpoint (1.19 GB in the nvfp4 build) is
+never loaded — it is reached only by the keyframe path, which this port does
+not implement.
 
 ## Licence
 
