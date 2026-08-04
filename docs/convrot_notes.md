@@ -1,4 +1,56 @@
-# ConvRot (int8) — what is settled and what is not
+# ConvRot (int8) — SOLVED
+
+**Everything below the summary is the working-out. The answer is:**
+
+```
+h4 = [[ 1,  1,  1, -1],          # regular Hadamard, symmetric, row sums 2
+      [ 1,  1, -1,  1],          # note: NOT 2I - J, and NOT Sylvester
+      [ 1, -1,  1,  1],
+      [-1,  1,  1,  1]]
+
+H   = kron(h4, h4, h4, h4) / sqrt(256)     # 256x256, symmetric, orthogonal,
+                                           # and involutory: H @ H == I
+W_rot = (W.view(out, in/256, 256) @ H.T).view(out, in)      # offline, in the checkpoint
+x_rot = (x.view(..., in/256, 256) @ H  ).view(..., in)      # online, REQUIRED at inference
+```
+
+Because `H` is symmetric, both are the same transform. It costs a 4-stage
+radix-4 butterfly over each 256-wide block, with a single `1/16` at the end:
+
+```
+for stride in (1, 4, 16, 64):
+    a,b,c,d = x[i], x[i+stride], x[i+2*stride], x[i+3*stride]
+    x[i]          =  a + b + c - d
+    x[i+stride]   =  a + b - c + d
+    x[i+2*stride] =  a - b + c + d
+    x[i+3*stride] = -a + b + c + d
+x /= 16
+```
+
+**Verified against ground truth**, not inferred: 256 values of
+`model.layers.0.self_attn.k_proj.weight` range-fetched out of the 48 GB bf16
+checkpoint, pushed through the transform above, and compared with the same row
+dequantised from the int8 file. **Relative error 0.0084** — pure int8
+quantisation noise (`W_rot[0] = -0.020724` vs predicted `-0.020732`).
+
+Two wrong candidates were ruled out the same way, and both would have produced
+well-scaled noise rather than an error:
+
+| candidate | relative error |
+|---|---|
+| Sylvester / Walsh–Hadamard, `/16` | 1.497 |
+| `kron^4(2I - J)`, `/16` | 1.387 |
+| **`kron^4(regular H4)`, `/16`** | **0.0084** |
+
+Also settled: `weight_scale` is **per-output-channel** `[out, 1]` despite the
+format being named `int8_tensorwise`; biases are unquantised and unrotated; and
+layers whose `in_features` is not divisible by 256 skip rotation entirely (none
+in Qwen3-VL — every `in_features` is 5120 or 25600 — but check per tensor in
+the transformer).
+
+---
+
+# Original working-out
 
 Both quantised checkpoints we intend to load are `*_int8_convrot`, and the
 `comfy_quant` blob attached to every quantised tensor reads:
