@@ -56,6 +56,7 @@ using vidfab::cuda::Workspace;
 constexpr int kWarp = 32;
 constexpr int kThreads = 256;
 constexpr int kSoftmaxThreads = 256;
+constexpr int kConvRotGroup = 256;
 constexpr int kDefaultQueryBlock = 256;
 
 // Score tiles dominate the attention footprint: `heads * bq * bk` elements at
@@ -237,6 +238,55 @@ int choose_key_block(const CausalAttentionConfig& cfg) {
   return static_cast<int>(bk);
 }
 
+// --- weight plumbing --------------------------------------------------------
+
+QuantWeight int8_convrot(const uint8_t* base, const LayerLayout& layout, LayerTensor weight,
+                         LayerTensor scale, int out_features, int in_features) {
+  QuantWeight w;
+  w.format = QuantFormat::kI8;
+  w.data = base + layout.offset[static_cast<int>(weight)];
+  w.out_features = out_features;
+  w.in_features = in_features;
+  w.weight_scale =
+      reinterpret_cast<const float*>(base + layout.offset[static_cast<int>(scale)]);
+  // Per output channel despite the format tag reading "int8_tensorwise", and
+  // there is no input_scale anywhere in this checkpoint: the quantiser is
+  // symmetric per row at /127, so `int8 * weight_scale` is exact
+  // (spec section 5.1).
+  w.per_channel_scale = true;
+  w.input_scale = 0.0f;
+  w.convrot = true;
+  w.convrot_group = kConvRotGroup;
+  return w;
+}
+
+const __nv_bfloat16* norm_ptr(const uint8_t* base, const LayerLayout& layout, LayerTensor which) {
+  return reinterpret_cast<const __nv_bfloat16*>(base + layout.offset[static_cast<int>(which)]);
+}
+
+CausalAttentionConfig attention_config(const LayerDims& dims) {
+  CausalAttentionConfig cfg;
+  cfg.seq_len = dims.num_tokens;
+  cfg.num_heads = dims.num_heads;
+  cfg.num_kv_heads = dims.num_kv_heads;
+  cfg.head_dim = dims.head_dim;
+  cfg.query_block = dims.attn_query_block;
+  return cfg;
+}
+
+// The dequantisation scratch a projection of this shape will want. Shapes only:
+// `linear_workspace_bytes` never dereferences the pointers.
+size_t projection_workspace(int out_features, int in_features, int rows) {
+  QuantWeight w;
+  w.format = QuantFormat::kI8;
+  w.out_features = out_features;
+  w.in_features = in_features;
+  w.per_channel_scale = true;
+  w.convrot = true;
+  w.convrot_group = kConvRotGroup;
+  return vidfab::cuda::linear_workspace_bytes(w, rows, ComputeType::kBF16);
+}
+
 }  // namespace
 
 // --- causal attention, public ------------------------------------------------
@@ -372,6 +422,411 @@ void launch_residual_add(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n
   if (n == 0) return;
   residual_add_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(x, branch, n);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+// --- decoder layer -----------------------------------------------------------
+
+LayerWeights layer_weights_from_blob(const uint8_t* base, const LayerLayout& layout,
+                                     const EncoderConfig& config) {
+  const int hidden = config.hidden_size;
+  const int q_width = config.num_attention_heads * config.head_dim;
+  const int kv_width = config.num_key_value_heads * config.head_dim;
+  const int inner = config.intermediate_size;
+
+  LayerWeights w;
+  w.q_proj = int8_convrot(base, layout, LayerTensor::kQWeight, LayerTensor::kQScale, q_width,
+                          hidden);
+  w.k_proj = int8_convrot(base, layout, LayerTensor::kKWeight, LayerTensor::kKScale, kv_width,
+                          hidden);
+  w.v_proj = int8_convrot(base, layout, LayerTensor::kVWeight, LayerTensor::kVScale, kv_width,
+                          hidden);
+  w.o_proj = int8_convrot(base, layout, LayerTensor::kOWeight, LayerTensor::kOScale, hidden,
+                          q_width);
+  w.gate_proj = int8_convrot(base, layout, LayerTensor::kGateWeight, LayerTensor::kGateScale, inner,
+                             hidden);
+  w.up_proj =
+      int8_convrot(base, layout, LayerTensor::kUpWeight, LayerTensor::kUpScale, inner, hidden);
+  w.down_proj = int8_convrot(base, layout, LayerTensor::kDownWeight, LayerTensor::kDownScale,
+                             hidden, inner);
+  w.input_layernorm = norm_ptr(base, layout, LayerTensor::kInputLayerNorm);
+  w.post_attention_layernorm = norm_ptr(base, layout, LayerTensor::kPostAttentionLayerNorm);
+  w.q_norm = norm_ptr(base, layout, LayerTensor::kQNorm);
+  w.k_norm = norm_ptr(base, layout, LayerTensor::kKNorm);
+  return w;
+}
+
+size_t layer_workspace_bytes(const LayerDims& d) {
+  if (d.num_tokens <= 0) return 0;
+  const size_t L = static_cast<size_t>(d.num_tokens);
+  const size_t q_width = static_cast<size_t>(d.num_heads) * d.head_dim;
+  const size_t kv_width = static_cast<size_t>(d.num_kv_heads) * d.head_dim;
+  const size_t bf = sizeof(__nv_bfloat16);
+
+  // Live across the whole layer, in the order `encoder_layer_forward` carves
+  // them. Two [L, 25600] intermediates dominate: 419 MB each at L = 4096.
+  size_t activations = 0;
+  activations += align_up(L * d.hidden * bf);        // n
+  activations += align_up(L * q_width * bf);        // q
+  activations += align_up(L * kv_width * bf);       // k
+  activations += align_up(L * kv_width * bf);       // v
+  activations += align_up(L * q_width * bf);        // attention output
+  activations += align_up(L * d.hidden * bf);       // projection output
+  activations += align_up(L * d.intermediate * bf); // gate
+  activations += align_up(L * d.intermediate * bf); // up
+
+  // Transient, carved on top: one GEMM's dequantisation scratch, or the
+  // attention tiles, whichever is larger. The seven GEMMs are strictly
+  // sequential, so one weight scratch buffer suffices (spec section 7.1).
+  size_t transient = causal_attention_workspace_bytes(attention_config(d));
+  const int rows = d.num_tokens;
+  transient = std::max(transient, projection_workspace(static_cast<int>(q_width), d.hidden, rows));
+  transient = std::max(transient, projection_workspace(static_cast<int>(kv_width), d.hidden, rows));
+  transient = std::max(transient, projection_workspace(d.hidden, static_cast<int>(q_width), rows));
+  transient = std::max(transient, projection_workspace(d.intermediate, d.hidden, rows));
+  transient = std::max(transient, projection_workspace(d.hidden, d.intermediate, rows));
+
+  return activations + transient;
+}
+
+void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
+                           vidfab::cuda::LinearRunner& linear, const LayerWeights& w,
+                           const LayerDims& d, const float* cos, const float* sin,
+                           __nv_bfloat16* x, Workspace& ws) {
+  require(d.num_tokens > 0, "encoder_layer_forward: num_tokens must be positive");
+  const size_t L = static_cast<size_t>(d.num_tokens);
+  const int rows = d.num_tokens;
+  const size_t q_width = static_cast<size_t>(d.num_heads) * d.head_dim;
+  const size_t kv_width = static_cast<size_t>(d.num_kv_heads) * d.head_dim;
+
+  Workspace::Scope scope(ws);
+  __nv_bfloat16* n = ws.alloc_n<__nv_bfloat16>(L * d.hidden);
+  __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(L * q_width);
+  __nv_bfloat16* k = ws.alloc_n<__nv_bfloat16>(L * kv_width);
+  __nv_bfloat16* v = ws.alloc_n<__nv_bfloat16>(L * kv_width);
+  __nv_bfloat16* attn = ws.alloc_n<__nv_bfloat16>(L * q_width);
+  __nv_bfloat16* proj = ws.alloc_n<__nv_bfloat16>(L * d.hidden);
+  __nv_bfloat16* gate = ws.alloc_n<__nv_bfloat16>(L * d.intermediate);
+  __nv_bfloat16* up = ws.alloc_n<__nv_bfloat16>(L * d.intermediate);
+
+  // --- attention half. Pre-norm: the residual carries the *unnormalised*
+  // stream and is never gated or scaled (spec section 4.4).
+  vidfab::cuda::launch_rmsnorm(x, w.input_layernorm, n, rows, d.hidden, d.rms_norm_eps, stream);
+
+  // ConvRot rotates the contraction axis, so it belongs to the activation, not
+  // to the GEMM: q/k/v share one rotation of `n`, and LinearRunner applies it
+  // per call. The rotation must see the *complete* RMSNorm output — H does not
+  // commute with diag(w) (spec section 5.3).
+  linear.forward(w.q_proj, n, rows, q, ws);
+  linear.forward(w.k_proj, n, rows, k, ws);
+  linear.forward(w.v_proj, n, rows, v, ws);
+
+  // QK-norm BEFORE RoPE. Reversing the two is a silent quality bug: RMSNorm
+  // scales channel j by w[j], RoPE mixes j with j+64, and those two weights
+  // differ by up to 440x on k_norm (spec section 4.2).
+  vidfab::cuda::launch_head_rmsnorm(q, w.q_norm, rows, d.num_heads, d.head_dim, d.rms_norm_eps,
+                                    stream);
+  vidfab::cuda::launch_head_rmsnorm(k, w.k_norm, rows, d.num_kv_heads, d.head_dim, d.rms_norm_eps,
+                                    stream);
+  // v is not normalised. Only q and k.
+
+  // All 128 head dims rotate, pairing j with j + 64 — unlike the H3 DiT, which
+  // rotates 96 of 128 and pairs j with j + 48 (spec section 2.4).
+  vidfab::cuda::launch_rope_neox(q, cos, sin, rows, d.num_heads, d.head_dim, stream);
+  vidfab::cuda::launch_rope_neox(k, cos, sin, rows, d.num_kv_heads, d.head_dim, stream);
+
+  causal_attention_forward(handle, stream, q, k, v, attn, attention_config(d), ws);
+  linear.forward(w.o_proj, attn, rows, proj, ws);
+  launch_residual_add(x, proj, L * d.hidden, stream);
+
+  // --- MLP half.
+  vidfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n, rows, d.hidden, d.rms_norm_eps,
+                               stream);
+  linear.forward(w.gate_proj, n, rows, gate, ws);
+  linear.forward(w.up_proj, n, rows, up, ws);
+  // gate_proj goes through SiLU; up_proj does not.
+  launch_swiglu_split(gate, up, gate, L * d.intermediate, stream);
+  linear.forward(w.down_proj, gate, rows, proj, ws);
+  launch_residual_add(x, proj, L * d.hidden, stream);
+}
+
+// --- Encoder ------------------------------------------------------------------
+
+struct Encoder::Impl {
+  EncoderConfig cfg;
+  EncoderStats stats;
+  Residency mode = Residency::kResident;
+  bool loaded = false;
+
+  const SafeTensors* checkpoint = nullptr;
+  const TensorView* embed = nullptr;
+  LayerLayout layout;
+
+  // kResident: one blob per layer. kStreaming: two, ping-ponged.
+  std::vector<DeviceBuffer<uint8_t>> resident;
+  DeviceBuffer<uint8_t> ping[2];
+  PinnedBuffer<uint8_t> staging[2];
+
+  cublasHandle_t cublas = nullptr;
+  cudaStream_t compute = nullptr;
+  cudaStream_t transfer = nullptr;
+  cudaEvent_t upload_done[2] = {nullptr, nullptr};
+  cudaEvent_t compute_done[2] = {nullptr, nullptr};
+
+  Workspace ws;
+  vidfab::cuda::LinearRunner linear;
+
+  void open_device() {
+    if (cublas != nullptr) return;
+    VIDFAB_CUBLAS_CHECK(cublasCreate(&cublas));
+    // Non-blocking rather than the legacy default stream: the streaming path
+    // needs the upload stream to run concurrently with compute, and the legacy
+    // default stream serialises against every other blocking stream.
+    VIDFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&compute, cudaStreamNonBlocking));
+    VIDFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&transfer, cudaStreamNonBlocking));
+    for (int i = 0; i < 2; ++i) {
+      VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&upload_done[i], cudaEventDisableTiming));
+      VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&compute_done[i], cudaEventDisableTiming));
+    }
+    linear.init(cublas, compute);
+  }
+
+  void close_device() {
+    for (int i = 0; i < 2; ++i) {
+      if (upload_done[i] != nullptr) cudaEventDestroy(upload_done[i]);
+      if (compute_done[i] != nullptr) cudaEventDestroy(compute_done[i]);
+      upload_done[i] = nullptr;
+      compute_done[i] = nullptr;
+    }
+    if (transfer != nullptr) cudaStreamDestroy(transfer);
+    if (compute != nullptr) cudaStreamDestroy(compute);
+    if (cublas != nullptr) cublasDestroy(cublas);
+    transfer = nullptr;
+    compute = nullptr;
+    cublas = nullptr;
+  }
+
+  // Packs layer `layer` into pinned slot `slot` and starts its upload to
+  // `dst`. Pageable memory would make cudaMemcpyAsync synchronous and force a
+  // staging copy inside the driver, which is exactly what the pinned buffers
+  // are for (spec section 7.2).
+  void stage_upload(int layer, int slot, uint8_t* dst) {
+    // The previous upload out of this pinned buffer must have landed before it
+    // is overwritten.
+    VIDFAB_CUDA_CHECK(cudaEventSynchronize(upload_done[slot]));
+    pack_layer(*checkpoint, cfg, layer, layout, staging[slot].get());
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(dst, staging[slot].get(), layout.total_bytes,
+                                      cudaMemcpyHostToDevice, transfer));
+    VIDFAB_CUDA_CHECK(cudaEventRecord(upload_done[slot], transfer));
+  }
+
+  void free_weights() {
+    resident.clear();
+    for (int i = 0; i < 2; ++i) {
+      ping[i].reset();
+      staging[i].reset();
+    }
+  }
+};
+
+Encoder::Encoder() : impl_(new Impl()) {}
+
+Encoder::~Encoder() {
+  unload();
+  impl_->close_device();
+}
+
+const EncoderConfig& Encoder::config() const { return impl_->cfg; }
+
+size_t Encoder::weight_bytes() const { return impl_->stats.weight_bytes; }
+
+Residency Encoder::residency() const { return impl_->mode; }
+
+const EncoderStats& Encoder::stats() const { return impl_->stats; }
+
+void Encoder::unload() {
+  if (impl_->compute != nullptr) cudaStreamSynchronize(impl_->compute);
+  if (impl_->transfer != nullptr) cudaStreamSynchronize(impl_->transfer);
+  impl_->free_weights();
+  impl_->ws = Workspace();
+  impl_->loaded = false;
+  impl_->checkpoint = nullptr;
+  impl_->embed = nullptr;
+  impl_->stats = EncoderStats();
+}
+
+void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
+  unload();
+  const auto t0 = std::chrono::steady_clock::now();
+
+  Impl& s = *impl_;
+  s.cfg = config;
+  validate_checkpoint(checkpoint, config);
+  s.checkpoint = &checkpoint;
+  s.embed = &checkpoint.at("model.embed_tokens.weight");
+  s.layout = make_layer_layout(config);
+  s.open_device();
+
+  const size_t layer_bytes = s.layout.total_bytes;
+  const size_t weight_bytes = layer_bytes * static_cast<size_t>(config.num_layers);
+
+  Residency mode = config.residency;
+  if (mode == Residency::kAuto) {
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
+    // The working set at the 8192-token bound is ~2.4 GB of activations plus
+    // the 262 MB dequantisation scratch; ask for 3 GB of room on top of the
+    // weights before committing to residency.
+    const size_t headroom = 3ull << 30;
+    mode = (free_bytes > weight_bytes + headroom) ? Residency::kResident : Residency::kStreaming;
+  }
+
+  // Both modes stage through pinned host memory, so both allocate the buffers;
+  // the resident path uses them to overlap the pack with the upload and then
+  // throws them away.
+  s.staging[0].allocate(layer_bytes);
+  s.staging[1].allocate(layer_bytes);
+  s.stats.host_pinned_bytes = 2 * layer_bytes;
+
+  if (mode == Residency::kResident) {
+    try {
+      s.resident.resize(static_cast<size_t>(config.num_layers));
+      for (int i = 0; i < config.num_layers; ++i) s.resident[static_cast<size_t>(i)].allocate(layer_bytes);
+    } catch (const std::exception&) {
+      s.resident.clear();
+      if (config.residency != Residency::kAuto) throw;
+      // Only kAuto is allowed to change its mind: an explicit kResident that
+      // does not fit is a sizing error the caller wants to hear about.
+      std::printf(
+          "  text encoder: %.2f GB of layer weights did not fit; falling back to streaming\n",
+          static_cast<double>(weight_bytes) / (1 << 30));
+      mode = Residency::kStreaming;
+    }
+  }
+
+  if (mode == Residency::kResident) {
+    for (int i = 0; i < config.num_layers; ++i) {
+      s.stage_upload(i, i % 2, s.resident[static_cast<size_t>(i)].get());
+    }
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.transfer));
+    for (int i = 0; i < 2; ++i) s.staging[i].reset();
+    s.stats.host_pinned_bytes = 0;
+    s.stats.weight_bytes = weight_bytes;
+  } else {
+    // Two device buffers, ping-ponged: layer i+1 uploads while layer i
+    // computes. 0.98 GB instead of 24.39 GB.
+    for (int i = 0; i < 2; ++i) s.ping[i].allocate(layer_bytes);
+    s.stats.weight_bytes = 2 * layer_bytes;
+  }
+
+  s.mode = mode;
+  s.stats.load_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  s.loaded = true;
+}
+
+PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
+  Impl& s = *impl_;
+  require(s.loaded, "encode: load() has not been called");
+  require(!token_ids.empty(),
+          "encode: the prompt tokenised to zero tokens. The reference does not handle an empty "
+          "prompt and neither does this port");
+  require(static_cast<int>(token_ids.size()) <= s.cfg.max_prompt_tokens,
+          "encode: " + std::to_string(token_ids.size()) + " tokens exceeds max_prompt_tokens " +
+              std::to_string(s.cfg.max_prompt_tokens) +
+              ". Truncating would be silently observable to the user, so this is an error");
+
+  const auto t0 = std::chrono::steady_clock::now();
+  const int L = static_cast<int>(token_ids.size());
+  const int hidden = s.cfg.hidden_size;
+  const size_t stream_elems = static_cast<size_t>(L) * hidden;
+
+  // hidden_states[0] is the embedding lookup, unscaled and with no positional
+  // add. Gathered on the host: only L of 151936 rows are ever read.
+  std::vector<uint16_t> host_embed;
+  gather_embedding_rows(*s.embed, token_ids, host_embed);
+  DeviceBuffer<uint16_t> x(stream_elems);
+  x.copy_from_host(host_embed.data(), host_embed.size(), s.compute);
+  __nv_bfloat16* xp = reinterpret_cast<__nv_bfloat16*>(x.get());
+
+  // One cos/sin pair for the whole request, shared by all 50 layers and by both
+  // q and k.
+  const std::vector<float> inv_freq = rope_inv_freq(s.cfg.head_dim, s.cfg.rope_theta);
+  std::vector<float> cos_host;
+  std::vector<float> sin_host;
+  build_rope_tables(L, inv_freq, cos_host, sin_host);
+  DeviceBuffer<float> cos(cos_host.size());
+  DeviceBuffer<float> sin(sin_host.size());
+  cos.copy_from_host(cos_host.data(), cos_host.size(), s.compute);
+  sin.copy_from_host(sin_host.data(), sin_host.size(), s.compute);
+
+  LayerDims dims;
+  dims.num_tokens = L;
+  dims.hidden = hidden;
+  dims.num_heads = s.cfg.num_attention_heads;
+  dims.num_kv_heads = s.cfg.num_key_value_heads;
+  dims.head_dim = s.cfg.head_dim;
+  dims.intermediate = s.cfg.intermediate_size;
+  dims.rms_norm_eps = s.cfg.rms_norm_eps;
+  s.ws.reserve(layer_workspace_bytes(dims));
+
+  const int N = s.cfg.num_layers;
+  if (s.mode == Residency::kResident) {
+    for (int i = 0; i < N; ++i) {
+      const LayerWeights w =
+          layer_weights_from_blob(s.resident[static_cast<size_t>(i)].get(), s.layout, s.cfg);
+      encoder_layer_forward(s.cublas, s.compute, s.linear, w, dims, cos.get(), sin.get(), xp,
+                            s.ws);
+    }
+  } else {
+    s.stage_upload(0, 0, s.ping[0].get());
+    for (int i = 0; i < N; ++i) {
+      const int slot = i % 2;
+      VIDFAB_CUDA_CHECK(cudaStreamWaitEvent(s.compute, s.upload_done[slot], 0));
+      const LayerWeights w = layer_weights_from_blob(s.ping[slot].get(), s.layout, s.cfg);
+      encoder_layer_forward(s.cublas, s.compute, s.linear, w, dims, cos.get(), sin.get(), xp,
+                            s.ws);
+      VIDFAB_CUDA_CHECK(cudaEventRecord(s.compute_done[slot], s.compute));
+
+      if (i + 1 < N) {
+        const int next = (i + 1) % 2;
+        // The buffer layer i+1 lands in is the one layer i-1 computed from, so
+        // that compute must finish first. Without this the upload would race
+        // ahead and rewrite weights mid-GEMM — silently, and only under load.
+        if (i >= 1) VIDFAB_CUDA_CHECK(cudaStreamWaitEvent(s.transfer, s.compute_done[next], 0));
+        s.stage_upload(i + 1, next, s.ping[next].get());
+      }
+    }
+  }
+
+  // fp32 on the host. NO final norm and NO lm_head: the wanted tensor is the
+  // raw output of the last layer present (spec section 1.4).
+  DeviceBuffer<float> out(stream_elems);
+  vidfab::cuda::launch_widen_bf16(xp, out.get(), stream_elems, s.compute);
+
+  PromptEmbedding result;
+  result.num_tokens = L;
+  result.hidden_size = hidden;
+  result.data.resize(stream_elems);
+  out.copy_to_host(result.data.data(), stream_elems, s.compute);
+  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.compute));
+
+  s.stats.workspace_bytes = s.ws.capacity();
+  s.stats.activation_bytes = x.nbytes() + cos.nbytes() + sin.nbytes() + out.nbytes();
+  s.stats.peak_device_bytes =
+      s.stats.weight_bytes + s.stats.workspace_bytes + s.stats.activation_bytes;
+  s.stats.last_num_tokens = L;
+  s.stats.last_encode_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  return result;
+}
+
+PromptEmbedding Encoder::encode(const Tokenizer& tokenizer, const std::string& prompt) {
+  require(!prompt.empty(), "encode: the prompt is empty");
+  // add_special_tokens=False: no BOS, no EOS, no chat template. One extra
+  // leading token shifts every RoPE position and, because attention is causal,
+  // changes every row (spec section 1.2).
+  return encode(tokenizer.encode(prompt));
 }
 
 }  // namespace vidfab::text
