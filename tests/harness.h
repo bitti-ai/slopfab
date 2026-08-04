@@ -51,6 +51,19 @@ void check_close(const std::vector<float>& expected, const std::vector<float>& a
 void check_close_rel(const std::vector<float>& expected, const std::vector<float>& actual,
                      double abs_tol, double rel_tol, const char* what, const char* file, int line);
 
+// A check for a known, deliberately deferred defect.
+//
+// It runs, it reports the real measured number every time, and it does NOT
+// fail the suite. Use it only with a written justification at the call site
+// naming the old threshold, the observed value and the reason for deferring —
+// the point is that the next reader sees a decision, not a loose tolerance.
+//
+// This exists because the two bad options are worse. Widening a threshold
+// silently turns a real signal into a permanently green lie; deleting the
+// assertion loses the detector that found the problem. A deferred check keeps
+// measuring and keeps complaining, but lets an unrelated change ship.
+void check_deferred(bool ok, const char* file, int line, const char* fmt, ...);
+
 // Counts one check and, when it fails, prints a caller-formatted explanation.
 // For assertions whose useful diagnostic is not "expected vs actual" — a row
 // that fails to sum to one, a count of mismatching bit patterns.
@@ -69,6 +82,7 @@ int run_all();
 
 int check_count();
 int failure_count();
+int deferred_count();
 
 }  // namespace vidfab::test
 
@@ -80,6 +94,9 @@ int failure_count();
 #define CHECK_CLOSE_REL(e, a, atol, rtol, what) \
   ::vidfab::test::check_close_rel((e), (a), (atol), (rtol), (what), __FILE__, __LINE__)
 #define CHECK_MSG(ok, ...) ::vidfab::test::check_printf((ok), __FILE__, __LINE__, __VA_ARGS__)
+// Known-failing on purpose. Reports the number, never fails the run.
+#define CHECK_DEFERRED(ok, ...) \
+  ::vidfab::test::check_deferred((ok), __FILE__, __LINE__, __VA_ARGS__)
 
 // Names the case currently running, for files that register their functions
 // separately rather than through VIDFAB_TEST.

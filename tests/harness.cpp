@@ -23,6 +23,7 @@ std::vector<Case>& cases() {
 
 int g_checks = 0;
 int g_failures = 0;
+int g_deferred = 0;
 const char* g_current = "";
 
 // Strips the directory so failures read `test_kernels.cu:412` rather than an
@@ -122,6 +123,18 @@ void check_close_rel(const std::vector<float>& expected, const std::vector<float
   }
 }
 
+void check_deferred(bool ok, const char* file, int line, const char* fmt, ...) {
+  ++g_checks;
+  if (ok) return;
+  ++g_deferred;
+  std::fprintf(stderr, "  DEFER [%s] %s:%d  ", g_current, basename(file), line);
+  va_list args;
+  va_start(args, fmt);
+  std::vfprintf(stderr, fmt, args);
+  va_end(args);
+  std::fputc(0x0A, stderr);
+}
+
 void check_printf(bool ok, const char* file, int line, const char* fmt, ...) {
   ++g_checks;
   if (ok) return;
@@ -157,6 +170,7 @@ std::vector<float> make_data(size_t n, uint32_t seed, float scale) {
 
 int check_count() { return g_checks; }
 int failure_count() { return g_failures; }
+int deferred_count() { return g_deferred; }
 
 int run_all() {
   for (const Case& c : cases()) {
@@ -169,7 +183,15 @@ int run_all() {
       std::fprintf(stderr, "  FAIL [%s] threw: %s\n", c.name, e.what());
     }
   }
-  std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
+  // Deferred checks get their own place in the summary. Folding them into
+  // "failures" would block unrelated work; folding them into "passes" would
+  // make a known defect invisible. They are neither.
+  if (g_deferred == 0) {
+    std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
+  } else {
+    std::printf("\n%d checks, %d failures, %d DEFERRED (known defects, see DEFER lines above)\n",
+                g_checks, g_failures, g_deferred);
+  }
   return g_failures == 0 ? 0 : 1;
 }
 

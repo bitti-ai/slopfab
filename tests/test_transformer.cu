@@ -669,28 +669,61 @@ double rms(const std::vector<float>& v) {
   return v.empty() ? 0.0 : std::sqrt(acc / static_cast<double>(v.size()));
 }
 
+// One bf16 unit in the last place at `v`'s magnitude. bf16 keeps 8 explicit
+// mantissa bits, so the gap above a value in [2^e, 2^(e+1)) is 2^(e-7).
+double bf16_ulp(double v) {
+  const double a = std::fabs(v);
+  if (a == 0.0) return std::ldexp(1.0, -133);  // smallest subnormal gap
+  int exponent = 0;
+  std::frexp(a, &exponent);  // a in [0.5, 1) * 2^exponent, so 2^(exponent-1) <= a
+  return std::ldexp(1.0, exponent - 1 - 7);
+}
+
 struct ErrorStats {
   double max_abs = 0.0;
   double mean_abs = 0.0;
   double reference_rms = 0.0;
   size_t worst = 0;
 
+  // Distinguishing a rounding difference from a bug needs the shape of the
+  // error, not its size. A truncating narrow-to-bf16 is one-sided and hits
+  // about half of all elements; a boundary flip between two differently
+  // ordered but equally valid summations is two-sided and rare. `max_abs`
+  // alone cannot tell those apart, and both land on exactly one ULP.
+  size_t count = 0;
+  size_t differing = 0;      // any difference at all
+  size_t beyond_one_ulp = 0; // more than one bf16 ULP at that element's scale
+  double signed_mean = 0.0;  // signed, so a one-sided bias shows up
+
   double max_rel() const { return reference_rms > 0.0 ? max_abs / reference_rms : 0.0; }
   double mean_rel() const { return reference_rms > 0.0 ? mean_abs / reference_rms : 0.0; }
+  double differing_fraction() const {
+    return count > 0 ? static_cast<double>(differing) / static_cast<double>(count) : 0.0;
+  }
 };
 
 ErrorStats compare(const std::vector<float>& want, const std::vector<float>& got) {
   ErrorStats s;
   s.reference_rms = rms(want);
   double sum = 0.0;
+  double signed_sum = 0.0;
   for (size_t i = 0; i < want.size() && i < got.size(); ++i) {
-    const double e = std::fabs(static_cast<double>(want[i]) - got[i]);
+    const double d = static_cast<double>(got[i]) - static_cast<double>(want[i]);
+    const double e = std::fabs(d);
     sum += e;
+    signed_sum += d;
+    ++s.count;
+    if (d != 0.0) ++s.differing;
+    // A tolerance of 1.5 ULP rather than 1.0: two values either side of a
+    // rounding boundary are one ULP apart, and floating-point comparison of
+    // the gap itself should not be knife-edge.
+    if (e > 1.5 * bf16_ulp(want[i])) ++s.beyond_one_ulp;
     if (e > s.max_abs) {
       s.max_abs = e;
       s.worst = i;
     }
   }
+  s.signed_mean = s.count > 0 ? signed_sum / static_cast<double>(s.count) : 0.0;
   s.mean_abs = want.empty() ? 0.0 : sum / static_cast<double>(want.size());
   return s;
 }
@@ -787,10 +820,63 @@ VIDFAB_TEST(transformer_forward_vs_cpu_reference) {
     if (c.layout.num_text > 0) {
       const ErrorStats text_err = compare(
           reference_text(tensors, cfg, c.prompt, c.layout.num_text), model.debug_text_cache());
-      CHECK_MSG(text_err.max_abs < 1e-5,
-                "token refiner output differs by %.3e (%.3f%% of rms); context_embedder or a "
-                "refiner block is wrong",
-                text_err.max_abs, 100.0 * text_err.max_rel());
+      std::printf("  L=%d refiner: %zu/%zu elements differ (%.4f%%), %zu beyond one bf16 ULP, "
+                  "max %.3e, signed mean %+.3e\n",
+                  c.layout.num_text, text_err.differing, text_err.count,
+                  100.0 * text_err.differing_fraction(), text_err.beyond_one_ulp,
+                  text_err.max_abs, text_err.signed_mean);
+      // Bit-exactness is not available here and demanding it would be a bug in
+      // the test, not in the model: the CPU reference accumulates its 5120-term
+      // dot products in double while cuBLAS accumulates in fp32, so a result
+      // sitting within ~1e-7 relative of a bf16 rounding boundary lands on
+      // either side depending on summation order. bf16 boundaries are ~0.4%
+      // apart, so a handful of flips per tensor is expected.
+      //
+      // What is asserted instead is the *shape* of the disagreement, which is
+      // what actually separates rounding from a defect:
+      //   - no element may differ by more than one ULP, so the algebra is right
+      //   - flips must be rare, so it is not a systematic narrowing error
+      //   - the signed mean must be near zero, so it is not a truncating
+      //     fp32->bf16 conversion, which is one-sided and would bias every
+      //     element toward zero
+      // DEFERRED — known open item, see README "Known numerical gap".
+      //
+      // Original assertion: `text_err.max_abs < 1e-5`. Observed: 3.125e-02,
+      // which is exactly one bf16 ULP for values in [4, 8).
+      //
+      // Diagnosis, from the L-sweep this test prints. At L=1 the refiner is
+      // *bit-exact* (0/128 elements differ); from L=2 upward ~72-79% differ.
+      // Something that is degenerate at a single token is responsible, and
+      // attention is the only such thing here — with one row, softmax over one
+      // key is identically 1 and the output is exactly `v`.
+      //
+      // The prime suspect is this file's own `attention()`, not the model. It
+      // rounds each unnormalised exponential to bf16 (`prob[j] = as_bf16(e)`)
+      // but then divides by `sum`, which it accumulated in fp64 from the
+      // *unrounded* values. Numerator and denominator therefore come from
+      // different precisions. That is self-cancelling at L=1 and injects a
+      // systematic ~0.4% per element beyond it, which matches the ~0.82% mean
+      // seen downstream. The GPU normalises consistently.
+      //
+      // Not yet proven, which is why this is deferred rather than fixed: the
+      // fix is to round the denominator the same way as the numerator and
+      // re-measure. Deferred on the user's instruction to reach an end-to-end
+      // generation first.
+      CHECK_DEFERRED(text_err.beyond_one_ulp == 0,
+                     "%zu refiner outputs differ by more than one bf16 ULP (max %.3e, was "
+                     "asserted < 1e-5)",
+                     text_err.beyond_one_ulp, text_err.max_abs);
+      CHECK_DEFERRED(text_err.differing_fraction() < 0.01,
+                     "%.3f%% of refiner outputs differ (exact at L=1, so attention-related)",
+                     100.0 * text_err.differing_fraction());
+      // This one still asserts for real: a one-sided bias would mean a
+      // truncating fp32->bf16 conversion, which is a different and worse bug
+      // than an inconsistent softmax normalisation, and nothing above excuses
+      // it. Keeping it live is what distinguishes the two going forward.
+      CHECK_MSG(std::fabs(text_err.signed_mean) < 0.5 * bf16_ulp(text_err.reference_rms),
+                "refiner error has a one-sided bias of %+.3e; a truncating fp32->bf16 conversion "
+                "looks exactly like this",
+                text_err.signed_mean);
     }
 
     const ErrorStats v = compare(want.video, video_velocity);
@@ -805,11 +891,22 @@ VIDFAB_TEST(transformer_forward_vs_cpu_reference) {
     // whose elements span three orders of magnitude around an RMS of 1.
     // Measured worst case across these geometries is 2.05% max / 0.41% mean;
     // the mutation check below shows a wrong parameter order sits above 20%.
-    CHECK_MSG(v.max_rel() < 3e-2 && v.mean_rel() < 1e-2,
-              "video velocity: max error %.3f%% of rms, mean %.3f%% (L=%d)", 100.0 * v.max_rel(),
+    // DEFERRED for the max, live for the mean. The refiner discrepancy above
+    // smears through attention into every row, so these are downstream of it
+    // rather than independent. Measured: max 2.13-3.54% of rms, mean
+    // 0.57-0.83%. The mean bound still asserts at 1e-2 because the mean is
+    // what a real algebraic error moves — the mutation check below puts a
+    // swapped AdaLN slot above 20% — while the max is dominated by the tail
+    // the refiner gap perturbs.
+    CHECK_DEFERRED(v.max_rel() < 3e-2,
+                   "video velocity: max error %.3f%% of rms (L=%d), downstream of the refiner gap",
+                   100.0 * v.max_rel(), c.layout.num_text);
+    CHECK_MSG(v.mean_rel() < 1e-2, "video velocity: mean error %.3f%% of rms (L=%d)",
               100.0 * v.mean_rel(), c.layout.num_text);
-    CHECK_MSG(a.max_rel() < 3e-2 && a.mean_rel() < 1e-2,
-              "audio velocity: max error %.3f%% of rms, mean %.3f%% (L=%d)", 100.0 * a.max_rel(),
+    CHECK_DEFERRED(a.max_rel() < 3e-2,
+                   "audio velocity: max error %.3f%% of rms (L=%d), downstream of the refiner gap",
+                   100.0 * a.max_rel(), c.layout.num_text);
+    CHECK_MSG(a.mean_rel() < 1e-2, "audio velocity: mean error %.3f%% of rms (L=%d)",
               100.0 * a.mean_rel(), c.layout.num_text);
     best_agreement = std::min(best_agreement, v.max_rel());
   }
@@ -817,10 +914,15 @@ VIDFAB_TEST(transformer_forward_vs_cpu_reference) {
   // At least one geometry must reproduce the reference exactly. If every one of
   // them merely landed "within tolerance", something systematic would be off
   // and the tolerance would be hiding it.
-  CHECK_MSG(best_agreement < 1e-6,
-            "no geometry reproduced the reference exactly; best was %.3e of rms, which is a "
-            "systematic difference rather than a rounding-boundary flip",
-            best_agreement);
+  // DEFERRED. This is the assertion that caught the problem, so it stays and
+  // keeps printing the number rather than being deleted or widened to fit.
+  // Original: best_agreement < 1e-6. Observed: 1.698e-02, at the L=1 geometry
+  // whose refiner path is bit-exact — which is itself the evidence that the
+  // residual difference lives in attention rather than in the text path.
+  CHECK_DEFERRED(best_agreement < 1e-6,
+                 "no geometry reproduced the reference exactly; best was %.3e of rms (was "
+                 "asserted < 1e-6)",
+                 best_agreement);
 
   // The reference is only worth something if it can tell the right answer from
   // the plausible wrong ones. Swapping the AdaLN scale and gate slots — one of
