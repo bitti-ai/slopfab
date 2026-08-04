@@ -1497,8 +1497,12 @@ VIDFAB_TEST(production_shape_timings) {
     cfg.num_heads = heads;
     cfg.head_dim = head_dim;
     cfg.query_block = 1024;
+    const size_t ws_bytes =
+        vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kBlocked);
     Workspace ws;
-    ws.reserve(vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kBlocked));
+    ws.reserve(ws_bytes);
+    std::printf("  attention workspace %.2f GiB (score tile, accumulator, fp16 k/v/q)\n",
+                double(ws_bytes) / (1 << 30));
     // Something else on this box touches the GPU intermittently: roughly one run
     // in six comes back at half throughput. Take the best of three passes rather
     // than believing a single number.
