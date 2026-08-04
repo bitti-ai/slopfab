@@ -84,6 +84,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/workspace.cu
       src/cuda/nn_kernels.cu
       src/cuda/linear.cu
+      src/cuda/nvfp4_gemm.cu
       src/cuda/attention.cu
       src/cuda/vae_kernels.cu
       src/cuda/vit_decoder.cu

@@ -18,6 +18,7 @@
 
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/gemm.cuh"
+#include "vidfab/cuda/nvfp4_gemm.cuh"
 
 namespace vidfab::cuda {
 namespace {
@@ -592,7 +593,22 @@ void LinearRunner::forward(const QuantWeight& w, const __nv_bfloat16* x, int row
   const bool native_path = native_ && !w.full_precision &&
                            ((w.format == QuantFormat::kF8E4M3 && w.input_scale != 0.0f) ||
                             w.format == QuantFormat::kNVFP4);
-  (void)native_path;
+
+  // Native nvfp4. The extra conditions are not a weakening of the guard above:
+  // ConvRot never coincides with an nvfp4 transformer weight and the rotation
+  // belongs to the activation, `pre_quant_scale` is an AWQ text-encoder field
+  // that `full_precision` already excludes, and `nvfp4_gemm_supported` is the
+  // block-scale swizzle's no-padding precondition. Each falls through to the
+  // reference path, which is always correct, never to something approximate.
+  if (native_path && w.format == QuantFormat::kNVFP4 && w.block_scale != nullptr &&
+      !convrot_applies(w) && w.pre_quant_scale == nullptr &&
+      nvfp4_gemm_supported(w.out_features, w.in_features)) {
+    Workspace::Scope native_scope(ws);
+    nvfp4_gemm_forward(x, static_cast<const uint8_t*>(w.data), w.block_scale, w.global_scale, y,
+                       rows, w.out_features, w.in_features, ws, stream_);
+    add_bias(y, /*y_is_f32=*/false, w, rows, stream_);
+    return;
+  }
 
   // The arena is only rewound, never freed, and everything below is issued on
   // one stream, so releasing the cursor at return cannot race the GEMM.
