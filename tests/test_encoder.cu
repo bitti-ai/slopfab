@@ -123,23 +123,74 @@ double rms_error_ratio(const std::vector<float>& want, const std::vector<float>&
   return rms(diff) / std::max(1e-30, rms(want));
 }
 
-std::string find_checkpoint() {
-  // The worktree layout puts the repository three levels up, so the search
-  // reaches further than test_adaln's.
+// The worktree layout puts the repository three levels up, so the search
+// reaches further than test_adaln's.
+std::string find_relative(const std::string& suffix) {
   for (const char* prefix : {"", "../", "../../", "../../../", "../../../../"}) {
-    const std::string p =
-        std::string(prefix) + "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+    const std::string p = std::string(prefix) + suffix;
     if (std::filesystem::exists(p)) return p;
   }
   return {};
 }
 
+std::string find_checkpoint() {
+  return find_relative("weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors");
+}
+
+std::string find_nvfp4_checkpoint() {
+  return find_relative("weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors");
+}
+
 std::string find_tokenizer() {
-  for (const char* prefix : {"", "../", "../../", "../../../", "../../../../"}) {
-    const std::string p = std::string(prefix) + "ref/FL2VA/text_encoder/tokenizer.json";
-    if (std::filesystem::exists(p)) return p;
+  const std::string p = find_relative("ref/text_encoder/tokenizer.json");
+  return p.empty() ? find_relative("ref/FL2VA/text_encoder/tokenizer.json") : p;
+}
+
+// The prompt every checkpoint-dependent test conditions on. Long enough that
+// the row statistics below are about the model rather than about one sentence.
+const char* kPrompt =
+    "A slow aerial shot over a rain-slicked city at night, neon signs reflected in the "
+    "puddles, a lone figure walking beneath the overpass while a tram passes overhead. "
+    "The camera drifts forward and tilts down as the light changes from red to green, "
+    "steam rising from a vent, distant sirens, the hum of traffic on a wet road. "
+    "Cut to a narrow street market, awnings dripping, a vendor folding a tarp over "
+    "crates of fruit while two children run past kicking up spray. The lens racks focus "
+    "from the foreground puddle to a bus pulling away, its windows fogged, passengers "
+    "silhouetted against the interior light. Overhead wires sway. A cat crosses the "
+    "frame and disappears into a doorway. The shot holds on the empty street as the rain "
+    "eases and the reflections settle, then pushes in slowly on a single lit window "
+    "three floors up, where a figure stands with their back to the glass.";
+
+// Tokenised with no chat template and no special tokens, or a synthetic id run
+// when ref/ is absent. One extra leading token would shift every RoPE position
+// and, because attention is causal, change every row (spec section 1.2).
+std::vector<int32_t> prompt_ids() {
+  const std::string tok = find_tokenizer();
+  if (tok.empty()) {
+    std::printf("  ref/ tokenizer.json not present; using synthetic token ids\n");
+    std::vector<int32_t> ids;
+    for (int i = 0; i < 200; ++i) ids.push_back(1000 + i);
+    return ids;
   }
-  return {};
+  vidfab::text::Tokenizer tokenizer;
+  tokenizer.load(tok);
+  std::vector<int32_t> ids = tokenizer.encode(kPrompt);
+  std::printf("  tokenised the prompt to %zu tokens\n", ids.size());
+  return ids;
+}
+
+// Per-row RMS over the 5120 channels of an encoder output.
+std::vector<double> row_rms(const vidfab::text::PromptEmbedding& e) {
+  std::vector<double> out(e.num_tokens, 0.0);
+  for (int r = 0; r < e.num_tokens; ++r) {
+    double acc = 0.0;
+    for (int i = 0; i < e.hidden_size; ++i) {
+      const double v = e.data[size_t(r) * e.hidden_size + i];
+      acc += v * v;
+    }
+    out[size_t(r)] = std::sqrt(acc / e.hidden_size);
+  }
+  return out;
 }
 
 // --- CPU references ---------------------------------------------------------
@@ -890,6 +941,118 @@ VIDFAB_TEST(encoder_validation_rejects_a_foreign_checkpoint) {
   std::filesystem::remove(path, ec);
 }
 
+VIDFAB_TEST(encoder_embedding_gather_int8) {
+  // The nvfp4 build stores the embedding table as I8 with a per-row F32 scale
+  // while the int8+ConvRot build stores the same table as BF16 — the embedding
+  // does not follow the linears. Both directions of the row scale are finite
+  // and correctly shaped, so only a comparison can tell them apart; that
+  // comparison is in tools/nvfp4_layout_probe.py and gives 0.94% relative L2
+  // for multiply against 7.5e6 for divide. This pins the multiply.
+  const int64_t vocab = 6;
+  const int64_t hidden = 8;
+
+  std::vector<int8_t> table(size_t(vocab) * hidden);
+  for (size_t i = 0; i < table.size(); ++i) table[i] = int8_t(int(i * 37 % 255) - 127);
+  std::vector<float> scale(static_cast<size_t>(vocab));
+  for (int64_t r = 0; r < vocab; ++r) scale[size_t(r)] = 1e-3f * float(1 + r * 3);
+
+  vidfab::TensorView embed;
+  embed.name = "model.embed_tokens.weight";
+  embed.dtype = vidfab::DType::kI8;
+  embed.shape = {vocab, hidden};
+  embed.data = table.data();
+  embed.nbytes = table.size();
+
+  vidfab::TensorView embed_scale;
+  embed_scale.name = "model.embed_tokens.weight_scale";
+  embed_scale.dtype = vidfab::DType::kF32;
+  embed_scale.shape = {vocab, 1};
+  embed_scale.data = scale.data();
+  embed_scale.nbytes = scale.size() * sizeof(float);
+
+  const std::vector<int32_t> ids = {4, 0, 4, 2};
+  std::vector<uint16_t> out;
+  vidfab::text::gather_embedding_rows(embed, &embed_scale, ids, out);
+  CHECK(out.size() == ids.size() * size_t(hidden));
+
+  double worst = 0.0;
+  for (size_t i = 0; i < ids.size(); ++i) {
+    const size_t row = size_t(ids[i]);
+    for (int64_t j = 0; j < hidden; ++j) {
+      const float want = float(table[row * hidden + j]) * scale[row];
+      const float got = vidfab::bf16_to_f32(out[i * size_t(hidden) + j]);
+      // The only loss is the single bf16 rounding of the product.
+      worst = std::max(worst, std::fabs(double(got - want)) / std::max(1e-30f, std::fabs(want)));
+    }
+  }
+  CHECK_MSG(worst < 4e-3, "int8 embedding gather: worst relative error %.3e", worst);
+
+  // The same id must gather the same row every time it appears.
+  for (int64_t j = 0; j < hidden; ++j) CHECK(out[j] == out[2 * size_t(hidden) + j]);
+
+  // Dividing by the scale instead of multiplying is the silent alternative. It
+  // is off by six orders of magnitude here, and by seven on the real table.
+  const float divided = float(table[size_t(ids[0]) * hidden]) / scale[size_t(ids[0])];
+  const float multiplied = vidfab::bf16_to_f32(out[0]);
+  CHECK_MSG(std::fabs(divided) > 100.0f * std::fabs(multiplied),
+            "the per-row scale must multiply, not divide");
+
+  // Structural refusals: an I8 table with no scale, and a scale of the wrong
+  // length, are both loader bugs that would otherwise read whatever is next in
+  // memory.
+  bool threw = false;
+  try {
+    vidfab::text::gather_embedding_rows(embed, nullptr, ids, out);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  CHECK(threw);
+
+  vidfab::TensorView short_scale = embed_scale;
+  short_scale.shape = {vocab - 1, 1};
+  threw = false;
+  try {
+    vidfab::text::gather_embedding_rows(embed, &short_scale, ids, out);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  CHECK(threw);
+}
+
+VIDFAB_TEST(encoder_nvfp4_layer_layout) {
+  vidfab::text::EncoderConfig cfg;
+  cfg.format = vidfab::text::WeightFormat::kNVFP4Awq;
+  const vidfab::text::LayerLayout layout = vidfab::text::make_layer_layout(cfg);
+
+  using LT = vidfab::text::LayerTensor;
+  // Two E2M1 per byte on the contraction axis, one e4m3 scale per 16.
+  CHECK(layout.bytes[int(LT::kQWeight)] == size_t(8192) * 2560);
+  CHECK(layout.bytes[int(LT::kQScale)] == size_t(8192) * 320);
+  CHECK(layout.bytes[int(LT::kOWeight)] == size_t(5120) * 4096);
+  CHECK(layout.bytes[int(LT::kOScale)] == size_t(5120) * 512);
+  CHECK(layout.bytes[int(LT::kDownWeight)] == size_t(5120) * 12800);
+  CHECK(layout.bytes[int(LT::kDownScale)] == size_t(5120) * 1600);
+  // Present on exactly these two; the other five folded into the norms.
+  CHECK(layout.bytes[int(LT::kOPreQuantScale)] == size_t(8192) * 2);
+  CHECK(layout.bytes[int(LT::kDownPreQuantScale)] == size_t(25600) * 2);
+
+  // Every scale tensor must be whole 128x4 tiles, which is what lets the
+  // swizzle be computed rather than stored. Checked here because a checkpoint
+  // that broke it would need a padding convention this port has never seen.
+  for (int out_features : {8192, 1024, 5120, 25600}) CHECK(out_features % 128 == 0);
+  for (int in_features : {5120, 8192, 25600}) CHECK((in_features / 16) % 4 == 0);
+
+  // Half the int8 build's blob, which is the whole point of this format.
+  vidfab::text::EncoderConfig i8 = cfg;
+  i8.format = vidfab::text::WeightFormat::kI8ConvRot;
+  const size_t i8_bytes = vidfab::text::make_layer_layout(i8).total_bytes;
+  std::printf("  layer blob: nvfp4 %.1f MB, int8 %.1f MB, ratio %.3f\n",
+              double(layout.total_bytes) / (1 << 20), double(i8_bytes) / (1 << 20),
+              double(layout.total_bytes) / double(i8_bytes));
+  CHECK(layout.total_bytes * 2 < i8_bytes * 5 / 4);
+  CHECK(layout.total_bytes % 256 == 0);
+}
+
 // --- checkpoint-dependent ----------------------------------------------------
 
 VIDFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {
@@ -1240,6 +1403,222 @@ VIDFAB_TEST(encoder_real_encode) {
 
     encoder.unload();
   }
+}
+
+
+// Runs one encoder over `ids` in one residency mode and reports what it cost.
+// Separate from the assertions so that the two checkpoints and the two modes
+// are measured by identical code — the residency comparison is the point.
+struct EncodeRun {
+  bool ok = false;
+  vidfab::text::PromptEmbedding out;
+  double load_seconds = 0.0;
+  double cold_encode = 0.0;
+  double warm_encode = 0.0;
+  size_t weight_bytes = 0;
+  size_t peak_bytes = 0;
+  size_t measured_bytes = 0;
+};
+
+EncodeRun run_encoder(const vidfab::SafeTensors& st, vidfab::text::Residency mode,
+                      const std::vector<int32_t>& ids, const char* label) {
+  EncodeRun r;
+  size_t free_before = 0;
+  size_t total = 0;
+  VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_before, &total));
+
+  vidfab::text::Encoder encoder;
+  vidfab::text::EncoderConfig cfg;
+  cfg.residency = mode;
+  try {
+    encoder.load(st, cfg);
+  } catch (const std::exception& e) {
+    std::printf("  %s: load failed (%s)\n", label, e.what());
+    return r;
+  }
+  if (encoder.residency() != mode) {
+    std::printf("  %s: fell back to the other residency mode; not measuring\n", label);
+    return r;
+  }
+
+  r.out = encoder.encode(ids);
+  r.cold_encode = encoder.stats().last_encode_seconds;
+  size_t free_after = 0;
+  VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
+
+  encoder.encode(ids);
+  r.warm_encode = encoder.stats().last_encode_seconds;
+
+  r.load_seconds = encoder.stats().load_seconds;
+  r.weight_bytes = encoder.stats().weight_bytes;
+  r.peak_bytes = encoder.stats().peak_device_bytes;
+  r.measured_bytes = free_before - free_after;
+  r.ok = true;
+  std::printf(
+      "  %-22s load %6.2f s, encode %6.3f s (warm %6.3f s) for %d tokens, weights %6.2f GB, "
+      "accounted peak %5.2f GB, measured %5.2f GB\n",
+      label, r.load_seconds, r.cold_encode, r.warm_encode, r.out.num_tokens,
+      double(r.weight_bytes) / (1 << 30), double(r.peak_bytes) / (1 << 30),
+      double(r.measured_bytes) / (1 << 30));
+  encoder.unload();
+  return r;
+}
+
+// The structural checks from docs/text_encoder_spec.md section 1.4. They do not
+// depend on which build produced the output, which is exactly why they are
+// worth applying to both: they say "this is an unnormalised residual stream",
+// and a final norm having crept in is the failure they exist to catch.
+void check_residual_stream_shape(const vidfab::text::PromptEmbedding& e, const char* label) {
+  size_t nonfinite = 0;
+  for (float v : e.data) {
+    if (!std::isfinite(v)) ++nonfinite;
+  }
+  CHECK_MSG(nonfinite == 0, "%s: %zu of %zu output values are not finite", label, nonfinite,
+            e.data.size());
+
+  const std::vector<double> rms_rows = row_rms(e);
+  const double lo = *std::min_element(rms_rows.begin(), rms_rows.end());
+  const double hi = *std::max_element(rms_rows.begin(), rms_rows.end());
+  std::printf(
+      "  %s: row RMS first %.1f, min %.2f, max %.2f, spread %.1fx (L2 of the last row %.1f)\n",
+      label, rms_rows.front(), lo, hi, hi / lo,
+      rms_rows.back() * std::sqrt(double(e.hidden_size)));
+
+  // An RMSNorm divides every row by its own scale, so a normalised stream has a
+  // nearly constant row RMS. A raw residual does not, and the spread is the
+  // discriminator rather than the absolute level.
+  CHECK_MSG(lo > 0.5, "%s: row RMS falls to %.4f; the stream has collapsed", label, lo);
+  CHECK_MSG(hi < 1e5, "%s: row RMS reaches %.4f, implausibly large", label, hi);
+  CHECK_MSG(hi / lo > 3.0,
+            "%s: row RMS is nearly constant across rows (min %.3f, max %.3f) - that is what an "
+            "RMSNorm output looks like, and no final norm may be applied here",
+            label, lo, hi);
+
+  // Token 0 carries an attention-sink massive activation an order of magnitude
+  // above every other row. Its presence says the stream has the model's own
+  // structure, which well-scaled noise would not.
+  const double others_max = *std::max_element(rms_rows.begin() + 1, rms_rows.end());
+  CHECK_MSG(rms_rows.front() > 5.0 * others_max,
+            "%s: token 0 RMS %.2f is not the attention-sink outlier it should be (next largest "
+            "%.2f)",
+            label, rms_rows.front(), others_max);
+}
+
+VIDFAB_TEST(encoder_nvfp4_real_encode) {
+  const std::string path = find_nvfp4_checkpoint();
+  if (path.empty()) {
+    std::printf("  nvfp4 text encoder checkpoint not present; skipping\n");
+    return;
+  }
+
+  vidfab::SafeTensors st;
+  st.open(path);
+  // 1700 layer tensors at 34 per layer, 3 for the embedding, 351 visual.* that
+  // are present and never loaded.
+  CHECK(st.tensor_count() == 2054);
+  CHECK(vidfab::text::detect_weight_format(st) == vidfab::text::WeightFormat::kNVFP4Awq);
+
+  vidfab::text::EncoderConfig cfg;
+  vidfab::text::validate_checkpoint(st, cfg);
+
+  // Asking for the other build must be refused rather than half-read.
+  cfg.format = vidfab::text::WeightFormat::kI8ConvRot;
+  bool threw = false;
+  try {
+    vidfab::text::validate_checkpoint(st, cfg);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  CHECK(threw);
+
+  const std::vector<int32_t> ids = prompt_ids();
+  CHECK(!ids.empty());
+
+  size_t free_before = 0;
+  size_t total = 0;
+  VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_before, &total));
+  std::printf("  device: %.2f GB free of %.2f GB\n", double(free_before) / (1 << 30),
+              double(total) / (1 << 30));
+  if (free_before < (size_t(2) << 30)) {
+    std::printf("  only %.2f GB free; need ~2 GB even to stream. Skipping.\n",
+                double(free_before) / (1 << 30));
+    return;
+  }
+
+  const EncodeRun resident =
+      run_encoder(st, vidfab::text::Residency::kResident, ids, "nvfp4 resident");
+  const EncodeRun streaming =
+      run_encoder(st, vidfab::text::Residency::kStreaming, ids, "nvfp4 streaming");
+
+  if (resident.ok) check_residual_stream_shape(resident.out, "nvfp4 resident");
+  if (streaming.ok) check_residual_stream_shape(streaming.out, "nvfp4 streaming");
+
+  // The two modes differ only in when the weights arrive, so they must agree
+  // bit for bit. A double-buffering race would show up here and nowhere else.
+  if (resident.ok && streaming.ok) {
+    size_t mismatches = 0;
+    for (size_t i = 0; i < resident.out.data.size(); ++i) {
+      if (resident.out.data[i] != streaming.out.data[i]) ++mismatches;
+    }
+    CHECK_MSG(mismatches == 0,
+              "%zu of %zu values differ between the residency modes (max abs %.4g)", mismatches,
+              resident.out.data.size(), max_abs_diff(resident.out.data, streaming.out.data));
+  }
+
+  // --- the cross-checkpoint comparison, which is what actually catches a wrong
+  // AWQ direction or a wrong block stride. Both are silent: they leave the
+  // output finite, correctly shaped and plausibly scaled, and they pass every
+  // structural check above. Neither survives being compared with the other
+  // build of the same model.
+  //
+  // Two *different quantisations* agree to a few percent, not to 1e-3 — that is
+  // a different bar from the project's per-tensor tolerance and must not be
+  // confused with it. A wrong fold direction misses by order one.
+  const std::string int8_path = find_checkpoint();
+  if (int8_path.empty() || !resident.ok) {
+    std::printf("  int8 checkpoint not present; skipping the cross-checkpoint comparison\n");
+    return;
+  }
+  vidfab::SafeTensors i8;
+  i8.open(int8_path);
+  const EncodeRun other =
+      run_encoder(i8, vidfab::text::Residency::kStreaming, ids, "int8 streaming");
+  if (!other.ok) return;
+  check_residual_stream_shape(other.out, "int8 streaming");
+
+  double worst_row = 0.0;
+  int worst_index = 0;
+  double total_num = 0.0;
+  double total_den = 0.0;
+  for (int r = 0; r < resident.out.num_tokens; ++r) {
+    double num = 0.0;
+    double den = 0.0;
+    for (int i = 0; i < 5120; ++i) {
+      const size_t k = size_t(r) * 5120 + i;
+      const double d = double(resident.out.data[k]) - other.out.data[k];
+      num += d * d;
+      den += double(other.out.data[k]) * other.out.data[k];
+    }
+    total_num += num;
+    total_den += den;
+    const double rel = std::sqrt(num / std::max(1e-30, den));
+    if (rel > worst_row) {
+      worst_row = rel;
+      worst_index = r;
+    }
+  }
+  const double overall = std::sqrt(total_num / std::max(1e-30, total_den));
+  std::printf("  nvfp4 vs int8 hidden_states[50]: %.4f overall, worst row %d at %.4f\n", overall,
+              worst_index, worst_row);
+  CHECK_MSG(overall < 0.25,
+            "the two builds of one model disagree by %.4f of the int8 output's norm. A few percent "
+            "is the expected quantisation gap; order one means the AWQ fold direction or the block "
+            "scale mapping is wrong, and neither would look wrong on its own",
+            overall);
+  CHECK_MSG(overall > 1e-4,
+            "the two builds agree to %.3e, which is closer than two different quantisations of one "
+            "model can be. Something is comparing an output with itself",
+            overall);
 }
 
 }  // namespace
