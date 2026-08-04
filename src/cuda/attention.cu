@@ -553,10 +553,20 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
 // so the transposing writes are conflict-free.
 namespace fused {
 
-constexpr int kWarps = 4;
+// Eight warps, not four. Four warps is exactly one warp per sub-partition, so
+// every shared-load and MUFU latency in the inner loop is fully exposed -- the
+// kernel was ~14% of the tensor-pipe ceiling with nothing co-resident to cover
+// it. Occupancy *percentage* is the wrong metric here (a well-tuned FA2 kernel
+// runs at 12.5% and still reaches 70% of peak); what matters is independent
+// instruction streams per scheduler, and eight warps gives two.
+//
+// kBc doubles with it. Everything proportional to kBr*D -- the rescale, the
+// epilogue -- is paid once per key block, so its cost per FLOP falls as 1/kBc,
+// and kBr=128 halves how many times K and V are re-read per head.
+constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * kWarp;
 constexpr int kBr = 16 * kWarps;  // query rows per block, 16 per warp
-constexpr int kBc = 32;           // key rows per step
+constexpr int kBc = 64;           // key rows per step
 constexpr int kMmaN = 8;          // n extent of one mma tile
 
 // 16-bit tiles only, so the bank argument is the honest one: at stride 136
