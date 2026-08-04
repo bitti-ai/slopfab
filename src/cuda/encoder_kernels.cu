@@ -53,6 +53,12 @@ using vidfab::cuda::QuantFormat;
 using vidfab::cuda::QuantWeight;
 using vidfab::cuda::Workspace;
 
+// src/text/encoder.cpp works out the on-disk shapes from its own copy of this,
+// because it is host-compiled and linear.cuh drags in cuBLAS. If the two ever
+// disagree the scale tensor's declared width is wrong and nothing else notices.
+static_assert(vidfab::cuda::kNVFP4BlockSize == 16,
+              "the encoder's nvfp4 shapes and scale swizzle assume 16 elements per block");
+
 constexpr int kWarp = 32;
 constexpr int kThreads = 256;
 constexpr int kSoftmaxThreads = 256;
@@ -238,6 +244,129 @@ int choose_key_block(const CausalAttentionConfig& cfg) {
   return static_cast<int>(bk);
 }
 
+// --- nvfp4, TEMPORARY -------------------------------------------------------
+//
+// **Delete this whole section at merge.** `launch_dequant_nvfp4` and
+// `launch_pre_quant_scale` are declared in vidfab/cuda/linear.cuh and belong to
+// src/cuda/linear.cu; these exist only so that this module is not blocked on
+// that landing. They are deliberately *not* given the declared names, so that
+// they can neither collide with the real definitions at link time nor silently
+// shadow them.
+//
+// Two things here were established by comparing this checkpoint against the
+// int8+ConvRot build of the same model, elementwise, rather than by reading a
+// convention off the file. See tools/nvfp4_layout_probe.py, which prints the
+// grid. Both wrong answers are silent:
+//
+//   - The HIGH nibble holds the even-indexed element. The other way round
+//     scores correlation +0.0008 against a correct reference — no correlation
+//     at all — while still producing finite, correctly shaped output.
+//   - `weight_scale`'s declared shape is [out, in/16] but its bytes are in a
+//     128x4 tile swizzle. Read row-major it scores relative L2 0.77 at
+//     correlation +0.79: well-scaled noise.
+//
+// Scoped to the text encoder. The transformer's nvfp4 build is a different
+// quantiser's output and its layout is that loader's to establish.
+
+// E2M1: 1 sign bit, 2 exponent, 1 mantissa, no zero exponent offset games.
+// Sixteen values; computed rather than tabled because a dynamically indexed
+// local array would spill to local memory in a kernel this bandwidth-bound.
+__device__ inline float e2m1_to_f32(uint32_t nibble) {
+  const uint32_t exponent = (nibble >> 1) & 3u;
+  const float mantissa = (nibble & 1u) ? 0.5f : 0.0f;
+  const float magnitude =
+      exponent == 0u ? mantissa : (1.0f + mantissa) * static_cast<float>(1u << (exponent - 1u));
+  return (nibble & 8u) ? -magnitude : magnitude;
+}
+
+// OCP E4M3: 4 exponent bits, 3 mantissa, bias 7, no infinities, 0x7F/0xFF NaN.
+__device__ inline float e4m3_to_f32(uint8_t v) {
+  const uint32_t sign = static_cast<uint32_t>(v & 0x80u) << 24;
+  const uint32_t exponent = (v >> 3) & 0x0Fu;
+  const uint32_t mantissa = v & 0x07u;
+  if (exponent == 0u) {
+    // Subnormal, value mantissa * 2^-9. Unreached by this checkpoint, whose
+    // block scales run 1.25 to 448, but cheap to get right.
+    const float m = static_cast<float>(mantissa) * (1.0f / 512.0f);
+    return (v & 0x80u) ? -m : m;
+  }
+  if (exponent == 0x0Fu && mantissa == 0x07u) return __int_as_float(sign | 0x7FC00000u);
+  return __int_as_float(sign | ((exponent + 120u) << 23) | (mantissa << 20));
+}
+
+// Byte offset of the e4m3 scale for output row `o`, block `k`, in a tensor with
+// `blocks` = in_features/16 blocks per row.
+//
+// The tile is 128 rows x 4 blocks = 512 bytes, laid out row-of-tiles major.
+// Inside a tile the slowest index is (o % 32) at stride 16, then which quarter
+// of the 128 rows at stride 4, then (k % 4) at stride 1 — so four consecutive
+// blocks of one row are four consecutive bytes, which is the only part of this
+// that is visible by eye. In-tile maximum is 31*16 + 3*4 + 3 = 511, so the map
+// is a bijection onto the tile.
+__device__ inline size_t nvfp4_scale_offset(int o, int k, int blocks) {
+  const int tile = (o / 128) * (blocks / 4) + (k / 4);
+  return static_cast<size_t>(tile) * 512 + static_cast<size_t>((o % 32) * 16) +
+         static_cast<size_t>(((o % 128) / 32) * 4) + static_cast<size_t>(k % 4);
+}
+
+// One thread per stored byte, i.e. per pair of output elements. Both nibbles of
+// a byte are always in the same 16-element block (16 elements is 8 whole
+// bytes), so the scale is fetched once.
+__global__ void temp_dequant_nvfp4_kernel(const uint8_t* __restrict__ src,
+                                          const uint8_t* __restrict__ block_scale,
+                                          float global_scale, __nv_bfloat16* __restrict__ dst,
+                                          int out_features, int in_features, int blocks) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int packed_cols = in_features / 2;
+  if (i >= static_cast<size_t>(out_features) * packed_cols) return;
+
+  const int o = static_cast<int>(i / packed_cols);
+  const int byte_col = static_cast<int>(i % packed_cols);
+  const int element = byte_col * 2;
+  const float scale =
+      e4m3_to_f32(block_scale[nvfp4_scale_offset(o, element / 16, blocks)]) * global_scale;
+
+  const uint8_t packed = src[i];
+  const size_t out = static_cast<size_t>(o) * in_features + element;
+  dst[out] = __float2bfloat16(e2m1_to_f32(packed >> 4) * scale);
+  dst[out + 1] = __float2bfloat16(e2m1_to_f32(packed & 0x0Fu) * scale);
+}
+
+__global__ void temp_pre_quant_scale_kernel(const __nv_bfloat16* __restrict__ src,
+                                            const __nv_bfloat16* __restrict__ scale,
+                                            __nv_bfloat16* __restrict__ dst, int rows, int dim) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= static_cast<size_t>(rows) * dim) return;
+  dst[i] = __float2bfloat16(__bfloat162float(src[i]) *
+                            __bfloat162float(scale[static_cast<int>(i % dim)]));
+}
+
+void temp_launch_dequant_nvfp4_swizzled(const uint8_t* src, const uint8_t* block_scale,
+                                        float global_scale, __nv_bfloat16* dst, int out_features,
+                                        int in_features, cudaStream_t stream) {
+  require(in_features % 64 == 0,
+          "nvfp4 dequant: in_features must be a multiple of 64 (16 per block, 4 blocks per scale "
+          "tile)");
+  require(out_features % 128 == 0,
+          "nvfp4 dequant: out_features must be a multiple of 128, the scale swizzle's tile height. "
+          "A padded layout is plausible but no shipped checkpoint uses one, so this refuses rather "
+          "than guessing which convention it would follow");
+  const int blocks = in_features / 16;
+  const size_t bytes = static_cast<size_t>(out_features) * (in_features / 2);
+  temp_dequant_nvfp4_kernel<<<grid_1d(bytes, kThreads), kThreads, 0, stream>>>(
+      src, block_scale, global_scale, dst, out_features, in_features, blocks);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void temp_launch_pre_quant_scale(const __nv_bfloat16* src, const __nv_bfloat16* scale,
+                                 __nv_bfloat16* dst, int rows, int dim, cudaStream_t stream) {
+  const size_t n = static_cast<size_t>(rows) * dim;
+  if (n == 0) return;
+  temp_pre_quant_scale_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(src, scale, dst, rows,
+                                                                            dim);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
 // --- weight plumbing --------------------------------------------------------
 
 QuantWeight int8_convrot(const uint8_t* base, const LayerLayout& layout, LayerTensor weight,
@@ -260,8 +389,79 @@ QuantWeight int8_convrot(const uint8_t* base, const LayerLayout& layout, LayerTe
   return w;
 }
 
+// `pre_quant` is kCount where the layer has none — which is a positive
+// statement that the quantiser folded it into the preceding norm, not that it
+// is unknown. Five of the seven are like that; checked per tensor, never
+// inferred from the name.
+QuantWeight nvfp4_awq(const uint8_t* base, const LayerLayout& layout, LayerTensor weight,
+                      LayerTensor scale, LayerTensor pre_quant, float global_scale,
+                      int out_features, int in_features) {
+  QuantWeight w;
+  w.format = QuantFormat::kNVFP4;
+  w.data = base + layout.offset[static_cast<int>(weight)];
+  w.out_features = out_features;
+  w.in_features = in_features;
+  w.block_scale = base + layout.offset[static_cast<int>(scale)];
+  w.global_scale = global_scale;
+  // Every quantised linear of this build declares full_precision_matrix_mult,
+  // so none may ever reach a native fp4 GEMM. The flag comes from the file and
+  // validation has already insisted all 350 carry it.
+  w.full_precision = true;
+  // Not rotated, unlike the int8 build. Leaving this true would apply a
+  // Hadamard nothing had undone.
+  w.convrot = false;
+  w.per_channel_scale = false;
+  w.weight_scale = nullptr;
+  if (pre_quant != LayerTensor::kCount &&
+      layout.bytes[static_cast<int>(pre_quant)] != 0) {
+    w.pre_quant_scale =
+        reinterpret_cast<const __nv_bfloat16*>(base + layout.offset[static_cast<int>(pre_quant)]);
+  }
+  return w;
+}
+
 const __nv_bfloat16* norm_ptr(const uint8_t* base, const LayerLayout& layout, LayerTensor which) {
   return reinterpret_cast<const __nv_bfloat16*>(base + layout.offset[static_cast<int>(which)]);
+}
+
+// TEMPORARY, with the two launchers above: once linear.cu handles kNVFP4 this
+// collapses back to a plain `linear.forward(w, x, rows, y, ws)` at every call
+// site. The GEMM itself is unchanged either way — the checkpoint declares every
+// one of these layers full precision, so the weight is dequantised to bf16 and
+// run through cuBLAS exactly as the int8 path is.
+void encoder_linear(vidfab::cuda::LinearRunner& linear, const QuantWeight& w,
+                    const __nv_bfloat16* x, int rows, __nv_bfloat16* y, Workspace& ws,
+                    cudaStream_t stream) {
+  if (w.format != QuantFormat::kNVFP4) {
+    linear.forward(w, x, rows, y, ws);
+    return;
+  }
+
+  Workspace::Scope scope(ws);
+
+  // AWQ: the stored weight has already been divided by this, so the activation
+  // is multiplied. Verified elementwise against the int8 build — multiplying
+  // scores relative L2 0.10, dividing 0.78, skipping it 0.50, and all three are
+  // finite and correctly scaled.
+  const __nv_bfloat16* xin = x;
+  if (w.pre_quant_scale != nullptr) {
+    __nv_bfloat16* scaled = ws.alloc_n<__nv_bfloat16>(static_cast<size_t>(rows) * w.in_features);
+    temp_launch_pre_quant_scale(x, w.pre_quant_scale, scaled, rows, w.in_features, stream);
+    xin = scaled;
+  }
+
+  const size_t n = static_cast<size_t>(w.out_features) * w.in_features;
+  __nv_bfloat16* dense = ws.alloc_n<__nv_bfloat16>(n);
+  temp_launch_dequant_nvfp4_swizzled(static_cast<const uint8_t*>(w.data), w.block_scale,
+                                     w.global_scale, dense, w.out_features, w.in_features, stream);
+
+  QuantWeight bf16 = w;
+  bf16.format = QuantFormat::kBF16;
+  bf16.data = dense;
+  bf16.block_scale = nullptr;
+  bf16.pre_quant_scale = nullptr;
+  bf16.global_scale = 1.0f;
+  linear.forward(bf16, xin, rows, y, ws);
 }
 
 CausalAttentionConfig attention_config(const LayerDims& dims) {
@@ -276,7 +476,18 @@ CausalAttentionConfig attention_config(const LayerDims& dims) {
 
 // The dequantisation scratch a projection of this shape will want. Shapes only:
 // `linear_workspace_bytes` never dereferences the pointers.
-size_t projection_workspace(int out_features, int in_features, int rows) {
+//
+// Both formats come to the same total — one dense bf16 copy of the weight plus
+// one transformed copy of the activation — but for different reasons: the int8
+// path rotates the activation, the nvfp4 path scales it. Sizing them separately
+// keeps that a coincidence rather than an assumption.
+size_t projection_workspace(WeightFormat format, int out_features, int in_features, int rows) {
+  const size_t weight = align_up(static_cast<size_t>(out_features) * in_features *
+                                 sizeof(__nv_bfloat16));
+  const size_t activation = align_up(static_cast<size_t>(rows) * in_features *
+                                     sizeof(__nv_bfloat16));
+  if (format == WeightFormat::kNVFP4Awq) return weight + activation;
+
   QuantWeight w;
   w.format = QuantFormat::kI8;
   w.out_features = out_features;
@@ -427,11 +638,40 @@ void launch_residual_add(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n
 // --- decoder layer -----------------------------------------------------------
 
 LayerWeights layer_weights_from_blob(const uint8_t* base, const LayerLayout& layout,
-                                     const EncoderConfig& config) {
+                                     const EncoderConfig& config,
+                                     const LayerGlobalScales& globals) {
   const int hidden = config.hidden_size;
   const int q_width = config.num_attention_heads * config.head_dim;
   const int kv_width = config.num_key_value_heads * config.head_dim;
   const int inner = config.intermediate_size;
+
+  if (config.format == WeightFormat::kNVFP4Awq) {
+    // The seven globals are in the order q, k, v, o, gate, up, down. Only
+    // o_proj and down_proj carry a pre_quant_scale; the other five had it
+    // folded into input_layernorm and post_attention_layernorm respectively,
+    // which is why those two norms differ from the int8 build's while q_norm
+    // and k_norm are bitwise identical to it.
+    LayerWeights w;
+    w.q_proj = nvfp4_awq(base, layout, LayerTensor::kQWeight, LayerTensor::kQScale,
+                         LayerTensor::kCount, globals.value[0], q_width, hidden);
+    w.k_proj = nvfp4_awq(base, layout, LayerTensor::kKWeight, LayerTensor::kKScale,
+                         LayerTensor::kCount, globals.value[1], kv_width, hidden);
+    w.v_proj = nvfp4_awq(base, layout, LayerTensor::kVWeight, LayerTensor::kVScale,
+                         LayerTensor::kCount, globals.value[2], kv_width, hidden);
+    w.o_proj = nvfp4_awq(base, layout, LayerTensor::kOWeight, LayerTensor::kOScale,
+                         LayerTensor::kOPreQuantScale, globals.value[3], hidden, q_width);
+    w.gate_proj = nvfp4_awq(base, layout, LayerTensor::kGateWeight, LayerTensor::kGateScale,
+                            LayerTensor::kCount, globals.value[4], inner, hidden);
+    w.up_proj = nvfp4_awq(base, layout, LayerTensor::kUpWeight, LayerTensor::kUpScale,
+                          LayerTensor::kCount, globals.value[5], inner, hidden);
+    w.down_proj = nvfp4_awq(base, layout, LayerTensor::kDownWeight, LayerTensor::kDownScale,
+                            LayerTensor::kDownPreQuantScale, globals.value[6], hidden, inner);
+    w.input_layernorm = norm_ptr(base, layout, LayerTensor::kInputLayerNorm);
+    w.post_attention_layernorm = norm_ptr(base, layout, LayerTensor::kPostAttentionLayerNorm);
+    w.q_norm = norm_ptr(base, layout, LayerTensor::kQNorm);
+    w.k_norm = norm_ptr(base, layout, LayerTensor::kKNorm);
+    return w;
+  }
 
   LayerWeights w;
   w.q_proj = int8_convrot(base, layout, LayerTensor::kQWeight, LayerTensor::kQScale, q_width,
@@ -479,11 +719,12 @@ size_t layer_workspace_bytes(const LayerDims& d) {
   // sequential, so one weight scratch buffer suffices (spec section 7.1).
   size_t transient = causal_attention_workspace_bytes(attention_config(d));
   const int rows = d.num_tokens;
-  transient = std::max(transient, projection_workspace(static_cast<int>(q_width), d.hidden, rows));
-  transient = std::max(transient, projection_workspace(static_cast<int>(kv_width), d.hidden, rows));
-  transient = std::max(transient, projection_workspace(d.hidden, static_cast<int>(q_width), rows));
-  transient = std::max(transient, projection_workspace(d.intermediate, d.hidden, rows));
-  transient = std::max(transient, projection_workspace(d.hidden, d.intermediate, rows));
+  const WeightFormat f = d.format;
+  transient = std::max(transient, projection_workspace(f, static_cast<int>(q_width), d.hidden, rows));
+  transient = std::max(transient, projection_workspace(f, static_cast<int>(kv_width), d.hidden, rows));
+  transient = std::max(transient, projection_workspace(f, d.hidden, static_cast<int>(q_width), rows));
+  transient = std::max(transient, projection_workspace(f, d.intermediate, d.hidden, rows));
+  transient = std::max(transient, projection_workspace(f, d.hidden, d.intermediate, rows));
 
   return activations + transient;
 }
@@ -516,9 +757,9 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
   // to the GEMM: q/k/v share one rotation of `n`, and LinearRunner applies it
   // per call. The rotation must see the *complete* RMSNorm output — H does not
   // commute with diag(w) (spec section 5.3).
-  linear.forward(w.q_proj, n, rows, q, ws);
-  linear.forward(w.k_proj, n, rows, k, ws);
-  linear.forward(w.v_proj, n, rows, v, ws);
+  encoder_linear(linear, w.q_proj, n, rows, q, ws, stream);
+  encoder_linear(linear, w.k_proj, n, rows, k, ws, stream);
+  encoder_linear(linear, w.v_proj, n, rows, v, ws, stream);
 
   // QK-norm BEFORE RoPE. Reversing the two is a silent quality bug: RMSNorm
   // scales channel j by w[j], RoPE mixes j with j+64, and those two weights
@@ -535,17 +776,17 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
   vidfab::cuda::launch_rope_neox(k, cos, sin, rows, d.num_kv_heads, d.head_dim, stream);
 
   causal_attention_forward(handle, stream, q, k, v, attn, attention_config(d), ws);
-  linear.forward(w.o_proj, attn, rows, proj, ws);
+  encoder_linear(linear, w.o_proj, attn, rows, proj, ws, stream);
   launch_residual_add(x, proj, L * d.hidden, stream);
 
   // --- MLP half.
   vidfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n, rows, d.hidden, d.rms_norm_eps,
                                stream);
-  linear.forward(w.gate_proj, n, rows, gate, ws);
-  linear.forward(w.up_proj, n, rows, up, ws);
+  encoder_linear(linear, w.gate_proj, n, rows, gate, ws, stream);
+  encoder_linear(linear, w.up_proj, n, rows, up, ws, stream);
   // gate_proj goes through SiLU; up_proj does not.
   launch_swiglu_split(gate, up, gate, L * d.intermediate, stream);
-  linear.forward(w.down_proj, gate, rows, proj, ws);
+  encoder_linear(linear, w.down_proj, gate, rows, proj, ws, stream);
   launch_residual_add(x, proj, L * d.hidden, stream);
 }
 
@@ -559,7 +800,14 @@ struct Encoder::Impl {
 
   const SafeTensors* checkpoint = nullptr;
   const TensorView* embed = nullptr;
+  // Non-null only for the nvfp4 build, whose embedding table is I8 with a
+  // per-row F32 scale rather than BF16.
+  const TensorView* embed_scale = nullptr;
   LayerLayout layout;
+  // One set of seven `weight_scale_2` values per layer. Host floats, read once
+  // at load: 350 scalars is not worth a device allocation or a re-read per
+  // encode.
+  std::vector<LayerGlobalScales> globals;
 
   // kResident: one blob per layer. kStreaming: two, ping-ponged.
   std::vector<DeviceBuffer<uint8_t>> resident;
@@ -704,6 +952,8 @@ size_t Encoder::weight_bytes() const { return impl_->stats.weight_bytes; }
 
 Residency Encoder::residency() const { return impl_->mode; }
 
+WeightFormat Encoder::format() const { return impl_->cfg.format; }
+
 const EncoderStats& Encoder::stats() const { return impl_->stats; }
 
 void Encoder::unload() {
@@ -723,14 +973,28 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
 
   Impl& s = *impl_;
   s.cfg = config;
-  validate_checkpoint(checkpoint, config);
+  // Detection is per file and there is no flag: the two builds differ in tensor
+  // count, dtype and shape, so validation catches a mismatch rather than
+  // letting it become wrong numbers. An explicitly set format is checked
+  // against the file rather than trusted.
+  s.cfg.format = detect_weight_format(checkpoint);
+  if (config.format != WeightFormat::kAuto && config.format != s.cfg.format) {
+    throw std::runtime_error(
+        "text encoder: the checkpoint declares the other weight format; detection is per file");
+  }
+  validate_checkpoint(checkpoint, s.cfg);
   s.checkpoint = &checkpoint;
   s.embed = &checkpoint.at("model.embed_tokens.weight");
-  s.layout = make_layer_layout(config);
+  s.embed_scale = checkpoint.find("model.embed_tokens.weight_scale");
+  s.layout = make_layer_layout(s.cfg);
+  s.globals.resize(static_cast<size_t>(s.cfg.num_layers));
+  for (int i = 0; i < s.cfg.num_layers; ++i) {
+    s.globals[static_cast<size_t>(i)] = read_global_scales(checkpoint, s.cfg, i);
+  }
   s.open_device();
 
   const size_t layer_bytes = s.layout.total_bytes;
-  const size_t weight_bytes = layer_bytes * static_cast<size_t>(config.num_layers);
+  const size_t weight_bytes = layer_bytes * static_cast<size_t>(s.cfg.num_layers);
 
   Residency mode = config.residency;
   if (mode == Residency::kAuto) {
@@ -815,7 +1079,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   // hidden_states[0] is the embedding lookup, unscaled and with no positional
   // add. Gathered on the host: only L of 151936 rows are ever read.
   std::vector<uint16_t> host_embed;
-  gather_embedding_rows(*s.embed, token_ids, host_embed);
+  gather_embedding_rows(*s.embed, s.embed_scale, token_ids, host_embed);
   DeviceBuffer<uint16_t> x(stream_elems);
   x.copy_from_host(host_embed.data(), host_embed.size(), s.compute);
   __nv_bfloat16* xp = reinterpret_cast<__nv_bfloat16*>(x.get());
@@ -832,6 +1096,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   sin.copy_from_host(sin_host.data(), sin_host.size(), s.compute);
 
   LayerDims dims;
+  dims.format = s.cfg.format;
   dims.num_tokens = L;
   dims.hidden = hidden;
   dims.num_heads = s.cfg.num_attention_heads;
@@ -845,7 +1110,8 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   if (s.mode == Residency::kResident) {
     for (int i = 0; i < N; ++i) {
       const LayerWeights w =
-          layer_weights_from_blob(s.resident[static_cast<size_t>(i)].get(), s.layout, s.cfg);
+          layer_weights_from_blob(s.resident[static_cast<size_t>(i)].get(), s.layout, s.cfg,
+                                  s.globals[static_cast<size_t>(i)]);
       encoder_layer_forward(s.cublas, s.compute, s.linear, w, dims, cos.get(), sin.get(), xp,
                             s.ws);
     }
@@ -854,7 +1120,8 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
     for (int i = 0; i < N; ++i) {
       const int slot = i % 2;
       VIDFAB_CUDA_CHECK(cudaStreamWaitEvent(s.compute, s.upload_done[slot], 0));
-      const LayerWeights w = layer_weights_from_blob(s.ping[slot].get(), s.layout, s.cfg);
+      const LayerWeights w = layer_weights_from_blob(s.ping[slot].get(), s.layout, s.cfg,
+                                                    s.globals[static_cast<size_t>(i)]);
       encoder_layer_forward(s.cublas, s.compute, s.linear, w, dims, cos.get(), sin.get(), xp,
                             s.ws);
       VIDFAB_CUDA_CHECK(cudaEventRecord(s.compute_done[slot], s.compute));

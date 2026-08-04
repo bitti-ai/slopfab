@@ -785,6 +785,9 @@ VIDFAB_TEST(encoder_layer_vs_cpu_reference) {
 
 VIDFAB_TEST(encoder_layer_layout) {
   vidfab::text::EncoderConfig cfg;
+  // The host helpers refuse kAuto: two incompatible layouts and no file in
+  // front of them is exactly where silently picking one goes wrong.
+  cfg.format = vidfab::text::WeightFormat::kI8ConvRot;
   const vidfab::text::LayerLayout layout = vidfab::text::make_layer_layout(cfg);
 
   const size_t q = size_t(8192) * 5120;
@@ -820,9 +823,16 @@ VIDFAB_TEST(encoder_layer_layout) {
 
   // Every offset is 256-byte aligned and no two tensors overlap.
   for (int i = 0; i < vidfab::text::kLayerTensorCount; ++i) {
+    if (layout.bytes[i] == 0) continue;
     CHECK(layout.offset[i] % 256 == 0);
     if (i > 0) CHECK(layout.offset[i] >= layout.offset[i - 1] + layout.bytes[i - 1]);
   }
+
+  // The int8 build has no AWQ activation scaling; those two slots are empty and
+  // cost nothing in the blob.
+  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kOPreQuantScale)] == 0);
+  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kDownPreQuantScale)] == 0);
+  CHECK(!vidfab::text::layer_tensor_spec(cfg, vidfab::text::LayerTensor::kOPreQuantScale).present());
 
   // Every contraction width is a multiple of the ConvRot group, so there is no
   // skip-when-not-divisible case in this checkpoint (spec section 5.2).
@@ -858,7 +868,10 @@ VIDFAB_TEST(encoder_validation_rejects_a_foreign_checkpoint) {
   }
   CHECK(threw);
   // The message must name the offending tensor, not just say "bad checkpoint".
-  CHECK_MSG(message.find("model.embed_tokens.weight") != std::string::npos,
+  // Format detection runs first now — there are two incompatible builds and
+  // every later check depends on which one this is — so the first thing missing
+  // from a foreign file is the descriptor detection reads.
+  CHECK_MSG(message.find("model.layers.0.self_attn.q_proj.comfy_quant") != std::string::npos,
             "validation message does not name the tensor: %s", message.c_str());
 
   // The gather refuses the same file for the same reason, and refuses an id
@@ -866,7 +879,7 @@ VIDFAB_TEST(encoder_validation_rejects_a_foreign_checkpoint) {
   std::vector<uint16_t> out;
   bool gather_threw = false;
   try {
-    vidfab::text::gather_embedding_rows(st.at("model.embed_tokens.weight"), {0, 1}, out);
+    vidfab::text::gather_embedding_rows(st.at("model.embed_tokens.weight"), nullptr, {0, 1}, out);
   } catch (const std::exception&) {
     gather_threw = true;
   }

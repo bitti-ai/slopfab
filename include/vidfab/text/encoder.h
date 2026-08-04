@@ -22,11 +22,13 @@
 //   - Attention is strictly CAUSAL (spec section 3). The reference's
 //     `attention_mask = ones_like(input_ids)` is a *padding* mask meaning
 //     "nothing is padded", not a request for bidirectional attention.
-//   - Weights are int8 with ConvRot and per-output-channel scales, ~24.4 GB
-//     resident. That does not co-exist on one 32 GB card with the 19.3 GB
-//     transformer, so `encode` is expected to run once and then `unload`
-//     before the denoiser loads. The pipeline enforces the ordering. The
-//     streaming residency mode below removes even that constraint.
+//   - Two builds of this model ship, and both are supported. The int8+ConvRot
+//     one is ~24.4 GB resident; the nvfp4+AWQ one is ~12.6 GB. Neither is a
+//     flag: `WeightFormat` below is read out of the file. 24.4 GB does not
+//     co-exist on one 32 GB card with the 19.3 GB fp8 transformer, so `encode`
+//     is expected to run once and then `unload` before the denoiser loads. The
+//     pipeline enforces the ordering. The streaming residency mode below
+//     removes even that constraint.
 #pragma once
 
 #include <cstddef>
@@ -41,24 +43,52 @@
 
 namespace vidfab::text {
 
-// Where the 24.4 GB of int8 weights live between `load` and `encode`.
+// Where the layer weights live between `load` and `encode`.
 //
 // Both modes compute the same thing; only the schedule differs. Streaming
 // exists because text encoding runs *once per request* while the transformer
 // that follows needs 19.3 GB in the same process, so a conditioner that fits in
-// ~2 GB is worth having even though it is slower.
+// ~2 GB is worth having even though it is slower. The nvfp4 build halves the
+// resident figure, which changes when that trade is worth making but not the
+// fact that it exists.
 enum class Residency {
   // Free VRAM decides: resident when the card has room for the weights plus
   // working set, streaming otherwise. The default.
   kAuto,
-  // All 50 layers uploaded once. Fastest encode, ~24.4 GB held until unload().
+  // All 50 layers uploaded once. Fastest encode; 24.4 GB held until unload()
+  // on the int8 build, 12.6 GB on the nvfp4 one.
   kResident,
   // Each layer staged through pinned host memory and uploaded just before use,
   // double-buffered against compute. ~1 GB of layer buffers.
   kStreaming,
 };
 
+// How the 350 quantised linears of this checkpoint are stored. Detected from
+// the file's own `comfy_quant` blobs, never from a flag: the two builds differ
+// in tensor count, dtype and shape, so a mismatch is caught at validation
+// rather than becoming wrong numbers.
+enum class WeightFormat {
+  // Read it out of the checkpoint. The default, and what `load` always uses.
+  kAuto,
+  // qwen3vl_32b_int8_convrot: int8 + per-output-channel F32 scale, ConvRot on
+  // the contraction axis at group 256. 25 tensors per layer.
+  kI8ConvRot,
+  // qwen3vl_32b_minimax_h3_nvfp4_awq: E2M1 nibbles, an e4m3 scale per 16
+  // contracted elements, one F32 global scale per tensor, and an AWQ
+  // per-input-channel activation scale on the two linears whose input does not
+  // come straight from a norm. Not rotated. 34 tensors per layer.
+  kNVFP4Awq,
+};
+
+// Reads the format out of `model.layers.0.*.comfy_quant`. Never returns kAuto;
+// throws if the blobs do not describe either shipped build.
+WeightFormat detect_weight_format(const SafeTensors& checkpoint);
+
 struct EncoderConfig {
+  // Resolved from the checkpoint by `load`. Left kAuto here so that nothing but
+  // the file can decide it; the host helpers below require it resolved.
+  WeightFormat format = WeightFormat::kAuto;
+
   int hidden_size = 5120;
   int num_layers = 50;  // the checkpoint is pre-truncated; this is the whole file
   int num_attention_heads = 64;
@@ -119,7 +149,8 @@ class Encoder {
 
   const EncoderConfig& config() const;
   size_t weight_bytes() const;
-  Residency residency() const;  // the mode actually chosen, never kAuto
+  Residency residency() const;    // the mode actually chosen, never kAuto
+  WeightFormat format() const;    // the format detected in the file, never kAuto
   const EncoderStats& stats() const;
 
   // Frees all device memory. Call before loading the transformer.
@@ -144,9 +175,15 @@ class Encoder {
 // public because each one is a place where a silent error is possible and a
 // direct test is cheap.
 
-// The 18 tensors of one decoder layer that this port actually loads. The seven
-// `comfy_quant` blobs are validated and discarded; nothing else exists under
-// `model.layers.i.` (spec section 8.3).
+// The per-layer tensors this port loads into the device blob, as the union over
+// both formats. Which of them exist, and with what dtype and shape, depends on
+// `EncoderConfig::format`; `layer_tensor_spec` returns an absent spec for the
+// ones a given format does not have, and those occupy no bytes in the blob.
+//
+// The seven `comfy_quant` blobs are validated and discarded. The seven nvfp4
+// `weight_scale_2` values are single floats read at load time into
+// `QuantWeight::global_scale`, so they are not in this list either — a scalar
+// per tensor is not worth a device allocation (spec section 8.3).
 enum class LayerTensor {
   kQWeight,
   kQScale,
@@ -156,12 +193,14 @@ enum class LayerTensor {
   kVScale,
   kOWeight,
   kOScale,
+  kOPreQuantScale,  // nvfp4 only
   kGateWeight,
   kGateScale,
   kUpWeight,
   kUpScale,
   kDownWeight,
   kDownScale,
+  kDownPreQuantScale,  // nvfp4 only
   kInputLayerNorm,
   kPostAttentionLayerNorm,
   kQNorm,
@@ -172,13 +211,18 @@ enum class LayerTensor {
 constexpr int kLayerTensorCount = static_cast<int>(LayerTensor::kCount);
 
 struct TensorSpec {
-  const char* suffix;  // appended to "model.layers.<i>."
+  const char* suffix;  // appended to "model.layers.<i>."; null when absent
   DType dtype;
   int64_t dim0;
   int64_t dim1;  // 0 marks a 1-D tensor
+
+  // False for a tensor this format does not ship. Callers must check: an
+  // absent entry has no name to look up and no bytes in the blob.
+  bool present() const { return suffix != nullptr; }
 };
 
-// Expected name, dtype and shape of each of the 18, resolved from `config`.
+// Expected name, dtype and shape of one per-layer tensor, resolved from
+// `config` — which must have a resolved `format`.
 TensorSpec layer_tensor_spec(const EncoderConfig& config, LayerTensor which);
 
 // Byte offsets of one layer's tensors inside a single packed blob, in the order
@@ -194,17 +238,32 @@ LayerLayout make_layer_layout(const EncoderConfig& config);
 
 // Throws std::runtime_error naming the offending tensor on the first problem.
 // Checks the tensor count, every shape and dtype of every layer, that all 350
-// quantised weights are int8 + ConvRot at group 256, and that no `model.norm`
-// or `lm_head` is present — the last because their absence is what makes
-// "output of the last layer, unnormalised" the right answer (spec section 1.4).
+// quantised weights declare the format `config.format` names, and that no
+// `model.norm` or `lm_head` is present — the last because their absence is what
+// makes "output of the last layer, unnormalised" the right answer (spec
+// section 1.4).
+//
+// `config.format` may be kAuto, in which case it is detected first; pass a
+// resolved one to assert that the file is the build you expect.
 void validate_checkpoint(const SafeTensors& checkpoint, const EncoderConfig& config);
 
-// Copies one layer's 18 tensors out of the mapping into `dst`, which must hold
-// `layout.total_bytes`.
+// The seven `weight_scale_2` values of one layer, in the order of the seven
+// quantised linears (q, k, v, o, gate, up, down). Single floats, so they are
+// read straight into `QuantWeight::global_scale` rather than into the blob.
+// All ones for a format that has no such scale.
+struct LayerGlobalScales {
+  float value[7] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+LayerGlobalScales read_global_scales(const SafeTensors& checkpoint, const EncoderConfig& config,
+                                     int layer);
+
+// Copies one layer's present tensors out of the mapping into `dst`, which must
+// hold `layout.total_bytes`.
 void pack_layer(const SafeTensors& checkpoint, const EncoderConfig& config, int layer,
                 const LayerLayout& layout, uint8_t* dst);
 
-// Issues one layer's 18 tensors as asynchronous DMAs straight out of the
+// Issues one layer's present tensors as asynchronous DMAs straight out of the
 // checkpoint mapping into `dst`, with no host copy. Only valid once the
 // mapping has been page-locked; otherwise the copies degrade to synchronous
 // staged transfers inside the driver and the point is lost.
@@ -229,11 +288,21 @@ std::vector<float> rope_inv_freq(int head_dim, float theta);
 void build_rope_tables(int num_tokens, const std::vector<float>& inv_freq, std::vector<float>& cos,
                        std::vector<float>& sin);
 
-// Gathers `ids.size()` rows of a BF16 `[vocab, hidden]` embedding table into
-// `out` as raw bf16 bit patterns. Host-side because only `L` of 151936 rows are
-// ever read; uploading the table would cost 1.56 GB for nothing.
-void gather_embedding_rows(const TensorView& embed, const std::vector<int32_t>& ids,
-                           std::vector<uint16_t>& out);
+// Gathers `ids.size()` rows of a `[vocab, hidden]` embedding table into `out`
+// as raw bf16 bit patterns. Host-side because only `L` of 151936 rows are ever
+// read; uploading the table would cost 1.56 GB on the bf16 build and 0.78 GB on
+// the int8 one for nothing.
+//
+// Two storage forms, and which one is in front of you is not implied by the
+// checkpoint's *weight* format: the nvfp4 build stores this table as I8 with an
+// F32 per-row `weight_scale` while its linears are E2M1, and the int8+ConvRot
+// build stores it as plain BF16 while its linears are int8. So `weight_scale`
+// is passed separately and must be non-null exactly when `embed` is I8. The
+// row scale multiplies — verified against the bf16 table of the other build at
+// 0.94% relative L2 over a 153-row sample, where dividing is off by seven
+// orders of magnitude.
+void gather_embedding_rows(const TensorView& embed, const TensorView* weight_scale,
+                           const std::vector<int32_t>& ids, std::vector<uint16_t>& out);
 
 }  // namespace vidfab::text
 
@@ -306,6 +375,10 @@ struct LayerWeights {
 };
 
 struct LayerDims {
+  // Only `layer_workspace_bytes` needs this: the forward pass dispatches on
+  // each `QuantWeight::format` instead, so a wrong value here is a sizing bug
+  // rather than an arithmetic one.
+  WeightFormat format = WeightFormat::kI8ConvRot;
   int num_tokens = 0;
   int hidden = 5120;
   int num_heads = 64;
@@ -317,8 +390,11 @@ struct LayerDims {
 };
 
 // Interprets one packed layer blob (see `LayerLayout`) as device pointers.
+// `globals` supplies the seven nvfp4 `weight_scale_2` values; it is ignored for
+// a format that has none.
 LayerWeights layer_weights_from_blob(const uint8_t* base, const LayerLayout& layout,
-                                     const EncoderConfig& config);
+                                     const EncoderConfig& config,
+                                     const LayerGlobalScales& globals = {});
 
 size_t layer_workspace_bytes(const LayerDims& dims);
 
