@@ -1396,6 +1396,14 @@ VIDFAB_TEST(nn_pre_quant_scale) {
             max_abs_diff(by_row, dy.host()));
 }
 
+// Defined with the native-GEMM tests at the end of this file, where the rule
+// they implement is written down. Declared here so `linear_nvfp4` can hold the
+// native path to an fp4-activation reference without moving the definitions out
+// of the block they belong to.
+std::vector<float> host_quantise_act(const std::vector<float>& x, int rows, int dim);
+double rms_rel(const std::vector<float>& want, const std::vector<float>& got);
+double correlation(const std::vector<float>& a, const std::vector<float>& b);
+
 // The whole path: a stored nvfp4 weight through LinearRunner against a host
 // matmul of the dequantised reference.
 VIDFAB_TEST(linear_nvfp4) {
@@ -1443,14 +1451,37 @@ VIDFAB_TEST(linear_nvfp4) {
             "linear nvfp4 must not match the nibble-swapped weight (max diff %.4g)",
             max_abs_diff(wrong, dy.host()));
 
-  // A weight the checkpoint did not flag full_precision may take a native path
-  // later; enabling it must not move the answer.
+  // A weight the checkpoint did not flag full_precision takes the native
+  // tensor-core path when `set_native` is on. **That path does not compute the
+  // same thing as this one, and the difference is arithmetic rather than
+  // implementation**: it quantises the activation to nvfp4 too, because neither
+  // shipped checkpoint carries an input_scale. E2M1 has one mantissa bit, so
+  // the composed result sits about 9% rms from a bf16-activation reference, at
+  // every K -- signal and error both grow as sqrt(K), so a dot product cannot
+  // average it away. Asserting agreement with the dequantised path here would
+  // be asserting that 4-bit activations are free.
+  //
+  // So the bound is pointed at what it can describe. The native path is held to
+  // the same 1e-3 / 1e-2 against a reference that quantises the activation the
+  // same way, which is a real assertion -- it passes at ~2e-3 and fails on any
+  // operand, stride or scale error -- and the distance from the bf16 path is
+  // reported rather than asserted. `nvfp4_activation_cost` measures that
+  // distance properly, across three distributions and four values of K;
+  // `nvfp4_gemm_exact_fp4_activations` is the control that separates the two.
   const std::vector<float> got = dy.host();
   runner.set_native(true);
   runner.forward(qw, dx.p(), rows, dy.p(), ws);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  CHECK_CLOSE_REL(got, dy.host(), 1e-3, 1e-2, "linear nvfp4 native == dequantised");
+  const std::vector<float> native = dy.host();
   runner.set_native(false);
+  CHECK_CLOSE_REL(cpu_matmul_nt(host_quantise_act(x, rows, in_features), wdq, rows, out_features,
+                                in_features),
+                  native, 1e-3, 1e-2, "linear nvfp4 native vs an fp4-activation reference");
+  std::printf("  linear nvfp4 native vs dequantised: rms_rel %.4f (4-bit activations)\n",
+              rms_rel(got, native));
+  // Still the same matrix, and still the same one the dequantised path
+  // computes: a layout error would take the correlation to ~0, not to 0.99.
+  CHECK(correlation(got, native) > 0.99);
 
   // With an AWQ activation scale the runner must scale the activation, not the
   // weight — the two differ because the GEMM is not symmetric in them.

@@ -428,28 +428,29 @@ __global__ __launch_bounds__(kThreads, 2) void nvfp4_gemm_kernel(
     }
   }
 
-  const bool pairable = (out_features & 1) == 0;
+  // **The column never needs a guard, and there is no scalar fallback.**
+  // `out_features % 128 == 0` is the block-scale swizzle's own precondition,
+  // enforced by `nvfp4_gemm_supported` and thrown on by `nvfp4_gemm_forward`,
+  // so `n0 + 128 <= out_features` and this thread's pair is always whole and
+  // always 4-byte aligned. Carrying the fallback anyway cost 64 `STG.E.U16`
+  // and 64 `F2FP` against 32 packed stores, plus 39 BSSY/BSYNC pairs of
+  // reconvergence, to serve a shape the launcher refuses to accept.
+  //
+  // The *row* guard stays: `rows` is a batch size and is under no such
+  // constraint.
 #pragma unroll
   for (int mt = 0; mt < kMTiles; ++mt) {
     const int row_lo = m0 + wm * kWM + mt * 16 + gid;
-    const int row_hi = row_lo + 8;
 #pragma unroll
     for (int nt = 0; nt < kNTiles; ++nt) {
       const int col = n0 + wn * kWN + nt * 8 + tig * 2;
       const float* c = acc[mt][nt];
 #pragma unroll
       for (int half = 0; half < 2; ++half) {
-        const int row = half ? row_hi : row_lo;
+        const int row = row_lo + half * 8;
         if (row >= rows) continue;
-        const float v0 = c[half * 2] * global_scale;
-        const float v1 = c[half * 2 + 1] * global_scale;
-        __nv_bfloat16* out = y + static_cast<size_t>(row) * out_features + col;
-        if (pairable && col + 1 < out_features) {
-          *reinterpret_cast<__nv_bfloat162*>(out) = __floats2bfloat162_rn(v0, v1);
-        } else {
-          if (col < out_features) out[0] = __float2bfloat16(v0);
-          if (col + 1 < out_features) out[1] = __float2bfloat16(v1);
-        }
+        *reinterpret_cast<__nv_bfloat162*>(y + static_cast<size_t>(row) * out_features + col) =
+            __floats2bfloat162_rn(c[half * 2] * global_scale, c[half * 2 + 1] * global_scale);
       }
     }
   }

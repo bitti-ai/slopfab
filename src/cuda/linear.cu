@@ -569,6 +569,21 @@ size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType comput
     if (w.pre_quant_scale != nullptr) total += align_up(act * sizeof(__nv_bfloat16));
     if (convrot_applies(w)) total += align_up(act * sizeof(__nv_bfloat16));
   }
+
+  // The native nvfp4 GEMM carves a quantised copy of the activation instead of
+  // a dequantised copy of the weight, so the two are alternatives and this is a
+  // max rather than a sum. Sized unconditionally because this function is not
+  // told whether `set_native` is on, and because the difference only ever
+  // matters for a weight the native path could take at all.
+  //
+  // At every production shape the dequantised weight is the larger of the two,
+  // so this changes nothing today. It is here because "the other buffer happens
+  // to be bigger" is a coincidence, not an invariant, and a caller with many
+  // rows and few output features would otherwise throw from Workspace::alloc.
+  if (w.format == QuantFormat::kNVFP4 && compute == ComputeType::kBF16 &&
+      nvfp4_gemm_supported(w.out_features, w.in_features)) {
+    total = std::max(total, nvfp4_gemm_workspace_bytes(rows, w.in_features));
+  }
   return total;
 }
 
