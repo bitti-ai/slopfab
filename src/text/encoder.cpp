@@ -132,9 +132,9 @@ TensorSpec layer_tensor_spec(const EncoderConfig& c, LayerTensor which) {
     // Two E2M1 nibbles per byte, so the contracted dimension is halved on disk;
     // one e4m3 scale per 16 contracted elements, so it is divided by 16. The
     // scale tensor's declared shape is [out, in/16] but its *bytes* are in a
-    // 128x4 tile swizzle — see temp_launch_dequant_nvfp4_swizzled in
-    // src/cuda/encoder_kernels.cu. The shape check here is still worth making:
-    // it is the byte count that the swizzle assumes.
+    // 128x4 tile swizzle — see `launch_dequant_nvfp4` in src/cuda/linear.cu.
+    // The shape check here is still worth making: it is the byte count that the
+    // swizzle assumes.
     const int64_t half = kNVFP4Pack;
     const int64_t blk = kNVFP4Block;
     switch (which) {
