@@ -23,6 +23,7 @@ add_library(vidfab_core STATIC
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
   src/core/safetensors_write.cpp
+  src/dit/packing.cpp
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
   src/video/y4m.cpp
@@ -109,6 +110,7 @@ if(VIDFAB_BUILD_TESTS)
   add_executable(vidfab_tests
     tests/harness.cpp
     tests/test_main.cpp
+    tests/test_packing.cpp
     tests/test_output.cpp
   )
   target_link_libraries(vidfab_tests PRIVATE vidfab_core)

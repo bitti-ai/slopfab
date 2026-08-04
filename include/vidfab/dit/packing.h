@@ -43,18 +43,21 @@ struct SequenceLayout {
   int total_rows() const { return video_start() + num_video_rows; }  // S
 };
 
-// Canvas resolution from an aspect ratio and short edge, per packing.py.
-// Both returned dimensions are multiples of 32.
-void resolve_canvas_size(int aspect_w, int aspect_h, int short_edge, int* out_h, int* out_w);
+// Canvas resolution from a display aspect ratio. Only the ratio of the two
+// arguments matters: the short edge is fixed at 768, the area is capped at
+// 768*1344, and both axes are then rounded to the nearest multiple of 32 — so
+// the final area can land slightly *above* the pre-rounding budget. Throws for
+// ratios outside 1:4 .. 4:1.
+void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w);
 
-// Rounds a requested pixel-frame count to one the temporal grid can express:
-// 17*k + 5. Returns the aligned count.
+// Snaps a frame count **up** to the next `17*k + 5` the video VAE can encode.
 int align_num_frames(int num_frames);
 
 // Latent frames for an aligned pixel-frame count: F = 5*k + 2 for 17*k + 5.
+// Throws if `aligned_frames % 17 != 5`.
 int video_latent_num_frames(int aligned_frames);
 
-// Audio latents per channel at 40 latents/s for 24 fps video.
+// Audio latents per channel: 40 per second at 24 fps.
 int audio_latents_for_frames(int aligned_frames);
 
 struct PackedIndices {
