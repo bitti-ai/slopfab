@@ -67,6 +67,16 @@ enum class AttentionBackend {
   kFused,
 };
 
+// The fastest backend that can run this configuration. kFused is instantiated
+// for head_dim 64 and 128 and falls back to kBlocked for anything else.
+//
+// Callers must route both `attention_workspace_bytes` and `attention_forward`
+// through this rather than choosing separately: the two backends have very
+// different workspace requirements (kFused needs none), so a caller that sized
+// for one and dispatched to the other would either waste a gigabyte or read
+// past its arena.
+AttentionBackend attention_preferred_backend(const AttentionConfig& cfg);
+
 // Workspace required for a given configuration and backend.
 size_t attention_workspace_bytes(const AttentionConfig& cfg, AttentionBackend backend);
 

@@ -373,7 +373,8 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     acfg.seq_len = std::max(seq, 1);
     acfg.num_heads = cfg.num_attention_heads;
     acfg.head_dim = cfg.attention_head_dim;
-    scratch = std::max(scratch, cuda::attention_workspace_bytes(acfg, AttentionBackend::kBlocked));
+    scratch = std::max(scratch, cuda::attention_workspace_bytes(
+                                    acfg, cuda::attention_preferred_backend(acfg)));
   }
   c.scratch = scratch;
   c.total = bytes + align_up(scratch);
@@ -564,8 +565,8 @@ struct Transformer::Impl {
     acfg.seq_len = rows;
     acfg.num_heads = cfg.num_attention_heads;
     acfg.head_dim = cfg.attention_head_dim;
-    cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, AttentionBackend::kBlocked,
-                            ws);
+    cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg,
+                            cuda::attention_preferred_backend(acfg), ws);
 
     for (int start = 0; start < rows; start += chunk) {
       const int n = std::min(chunk, rows - start);

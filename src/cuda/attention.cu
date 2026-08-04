@@ -862,6 +862,10 @@ void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16*
 
 }  // namespace
 
+AttentionBackend attention_preferred_backend(const AttentionConfig& cfg) {
+  return fused::supported(cfg) ? AttentionBackend::kFused : AttentionBackend::kBlocked;
+}
+
 float AttentionConfig::effective_scale() const {
   return scale > 0.0f ? scale : 1.0f / std::sqrt(static_cast<float>(head_dim));
 }
