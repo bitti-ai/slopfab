@@ -1356,7 +1356,16 @@ orders of magnitude worse**. Interpolate.
 The components are ordered by decreasing importance, exactly as a truncated SVD
 produces. This is now evidence rather than inference.
 
-**STILL UNRESOLVED — the direction: does row 0 mean `t = 0` or `t = 1`?**
+**RESOLVED BY OBSERVATION — row 0 means `t = 0`.** The first end-to-end
+generation converged to a coherent, prompt-faithful video (a 30-step,
+22-frame 768×768 request produced exactly the described scene). The reversed
+mapping predicts a specific and unmistakable failure — the sample degrading
+along the trajectory rather than improving, ending in noise — and that did not
+happen. The switch and the reasoning below are retained because the argument
+that *predicted* the right answer is worth keeping, but the default is now
+confirmed rather than merely recommended.
+
+**The original argument, which turned out to be right:**
 Because the grid is uniform, "over `t`" and "over `sigma = 1 - t`" differ *only*
 by reversing the row order, so this is a single bit. It cannot be recovered
 from the local files: doing so requires rebuilding `SiLU(time_embedder(t))`

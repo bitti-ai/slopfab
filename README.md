@@ -3,10 +3,11 @@
 A from-scratch C++/CUDA implementation of [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3),
 targeting a single RTX 5090 with no Python at runtime.
 
-**Status: everything downstream of the denoiser works end to end.** `generate
---synthetic-latents` produces a real MP4 — both VAEs, the colour transform and
-the muxer, running against the real checkpoints. The text conditioner and the
-transformer forward pass are the remaining gap. See [Roadmap](#roadmap).
+**Status: `vidfab generate` works end to end.** A text prompt goes in and a
+real MP4 comes out — Qwen3-VL conditioner, 50-block transformer, flow-matching
+denoise loop, both VAEs, H.264/AAC muxing, no Python anywhere. Output is
+coherent, prompt-faithful video. See [Roadmap](#roadmap) and
+[Known numerical gap](#known-numerical-gap--open).
 
 ## Why
 
@@ -59,8 +60,14 @@ without CUDA; the decoder does not.
 # sigma schedules. Reads no weights, so it is instant.
 vidfab generate --prompt "..." --aspect 16:9 --frames 124 --steps 50 --dry-run
 
-# Everything downstream of the denoiser, against the real checkpoints: seeded
-# noise -> unpatchify -> video VAE -> audio VAE -> H.264/AAC in an MP4.
+# The real thing: prompt -> conditioner -> transformer -> denoise -> VAEs -> MP4.
+vidfab generate --prompt "integrated_multimodal_description: ..."                 --frames 22 --aspect 1:1 --steps 30 --seed 11                 --tokenizer      <tokenizer.json>                 --text-encoder   weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors                 --transformer    weights/transformer/fl2va_pruned_fp8_scaled.safetensors                 --vae            weights/vae/minimax_h3_video_vae_fp16.safetensors                 --audio-vae      weights/vae/minimax_h3_audio_vae_fp32.safetensors                 --out cat.mp4
+
+# Every command documents itself.
+vidfab generate --help
+
+# Everything downstream of the denoiser only, against the real checkpoints:
+# seeded noise -> unpatchify -> video VAE -> audio VAE -> H.264/AAC in an MP4.
 vidfab generate --synthetic-latents --frames 22 --aspect 1:1 \
                 --vae weights/vae/minimax_h3_video_vae_fp16.safetensors \
                 --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors \
@@ -184,7 +191,8 @@ than only at seams.
 | Audio VAE (DAC + BigVGAN) | done |
 | WAV writer, MP4/AAC muxing | done |
 | `generate` back half (unpatchify → VAEs → mux) | done |
-| H3-Omni-Transformer, 50 layers | implemented, merging |
+| `generate` end to end, real prompt to MP4 | done |
+| H3-Omni-Transformer, 50 layers | done |
 | Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | done |
 | Fused attention, native fp8/nvfp4/int4 GEMM | not started |
 
