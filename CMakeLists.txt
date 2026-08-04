@@ -52,8 +52,26 @@ if(VIDFAB_ENABLE_CUDA)
     # Must be set before enable_language(CUDA), which otherwise picks a
     # conservative default. 90 = Hopper, 120 = Blackwell (RTX 50 series), which
     # is the primary target and the only one of the two with native fp4.
+    #
+    # **120a, not 120.** The trailing `a` selects the architecture-specific
+    # target, and it is required rather than preferred: the block-scaled fp4
+    # tensor-core instruction this project needs for nvfp4 weights,
+    #
+    #   mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale
+    #       .scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3
+    #
+    # is rejected by ptxas on plain `sm_120` with "Feature '.block_scale' not
+    # supported on .target 'sm_120'", and assembles on `sm_120a`. `scale_vec::4X`
+    # with `.ue4m3` scales is exactly the shipped checkpoint layout: 16 elements
+    # per block, E4M3 scale, which is NVFP4 rather than MXFP4's 32-element
+    # blocks and UE8M0 scales.
+    #
+    # The cost is that an `a` target emits no forward-compatible PTX, so the
+    # binary runs on sm_120 hardware and nothing later. That is the right trade
+    # here -- this project targets one RTX 5090 -- but it is a real constraint,
+    # not a free upgrade.
     if(NOT CMAKE_CUDA_ARCHITECTURES)
-      set(CMAKE_CUDA_ARCHITECTURES 120 CACHE STRING "CUDA architectures" FORCE)
+      set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architectures" FORCE)
     endif()
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
