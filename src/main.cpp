@@ -4,15 +4,18 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
+#include "vidfab/pipeline.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/safetensors_write.h"
 #include "vidfab/tensor_convert.h"
@@ -38,12 +41,23 @@ void print_usage() {
       "usage: vidfab <command> [options]\n"
       "\n"
       "commands:\n"
+      "  generate --prompt <text>     text to video and audio\n"
       "  inspect <file.safetensors>   summarise a checkpoint's tensors\n"
       "  compare <ref> <actual>       diff two checkpoints tensor by tensor\n"
       "  decode --vae <f> [--latent <f>]  run the video VAE decoder\n"
       "  tokenize --tokenizer <f> <text>  encode text and round-trip it\n"
       "  devices                      list visible CUDA devices\n"
       "  version                      print the version and exit\n"
+      "\n"
+      "generate options:\n"
+      "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
+      "  --out <file>                 output path (default video.mp4)\n"
+      "  --aspect <W:H>               display aspect, 1:4 to 4:1 (default 16:9)\n"
+      "  --frames <n>                 snapped up to 17k+5 (default 124)\n"
+      "  --steps <n>                  sigma grid points, n-1 evaluations (default 50)\n"
+      "  --seed <n>                   noise seed\n"
+      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
+      "  --dry-run                    resolve and print the plan, touch no weights\n"
       "\n"
       "inspect options:\n"
       "  --list                       print every tensor, not just a summary\n"
@@ -538,6 +552,77 @@ int cmd_tokenize(int argc, char** argv) {
   return round == text ? 0 : 1;
 }
 
+// Resolves a request all the way to a plan, then runs it. The stages are added
+// one at a time; until they all exist this reports precisely which one is
+// missing rather than pretending. `--dry-run` stops after the plan, which
+// costs no I/O and is the fastest way to check geometry and schedule.
+int cmd_generate(int argc, char** argv) {
+  vidfab::GenerateRequest req;
+  bool dry_run = false;
+
+  for (int i = 0; i < argc; ++i) {
+    const std::string_view arg = argv[i];
+    auto next = [&](const char* what) -> const char* {
+      if (i + 1 >= argc) {
+        throw std::runtime_error(std::string("generate: ") + what + " needs a value");
+      }
+      return argv[++i];
+    };
+    if (arg == "--prompt") {
+      req.prompt = next("--prompt");
+    } else if (arg == "--out") {
+      req.out_path = next("--out");
+    } else if (arg == "--frames") {
+      req.num_frames = std::atoi(next("--frames"));
+    } else if (arg == "--steps") {
+      req.num_inference_steps = std::atoi(next("--steps"));
+    } else if (arg == "--seed") {
+      req.seed = std::strtoull(next("--seed"), nullptr, 10);
+    } else if (arg == "--aspect") {
+      const std::string v = next("--aspect");
+      const size_t colon = v.find(':');
+      if (colon == std::string::npos) {
+        std::fprintf(stderr, "vidfab: --aspect wants W:H, e.g. 16:9\n");
+        return 2;
+      }
+      req.aspect_w = std::atoi(v.substr(0, colon).c_str());
+      req.aspect_h = std::atoi(v.substr(colon + 1).c_str());
+    } else if (arg == "--transformer") {
+      req.transformer_path = next("--transformer");
+    } else if (arg == "--text-encoder") {
+      req.text_encoder_path = next("--text-encoder");
+    } else if (arg == "--tokenizer") {
+      req.tokenizer_path = next("--tokenizer");
+    } else if (arg == "--vae") {
+      req.video_vae_path = next("--vae");
+    } else if (arg == "--audio-vae") {
+      req.audio_vae_path = next("--audio-vae");
+    } else if (arg == "--raw") {
+      req.raw_output = true;
+    } else if (arg == "--dry-run") {
+      dry_run = true;
+    } else {
+      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      return 2;
+    }
+  }
+
+  if (req.prompt.empty() && !dry_run) {
+    std::fprintf(stderr, "vidfab: generate needs --prompt \"...\"\n");
+    return 2;
+  }
+
+  const vidfab::GeneratePlan plan = vidfab::resolve_plan(req);
+  std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
+  if (dry_run) return 0;
+
+  std::fprintf(stderr,
+               "\nvidfab: generate is not wired end to end yet.\n"
+               "        The plan above is resolved; the denoising stages are still landing.\n"
+               "        Working today: `vidfab decode` (video VAE), `vidfab tokenize`.\n");
+  return 1;
+}
+
 int cmd_devices() {
 #if !VIDFAB_WITH_CUDA
   std::fprintf(stderr, "vidfab: built without CUDA support\n");
@@ -573,6 +658,7 @@ int main(int argc, char** argv) {
 
   const std::string_view command = argv[1];
   try {
+    if (command == "generate") return cmd_generate(argc - 2, argv + 2);
     if (command == "inspect") return cmd_inspect(argc - 2, argv + 2);
     if (command == "compare") return cmd_compare(argc - 2, argv + 2);
     if (command == "devices") return cmd_devices();
