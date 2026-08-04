@@ -3,8 +3,9 @@
 A from-scratch C++/CUDA implementation of [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3),
 targeting a single RTX 5090 with no Python at runtime.
 
-**Status: the video VAE decoder works.** The transformer, text encoder and audio
-decoder are not implemented yet. See [Roadmap](#roadmap).
+**Status: the video VAE decoder works, and `generate` resolves a request but
+does not yet run one.** The transformer, text encoder and audio decoder are in
+progress. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -42,6 +43,10 @@ without CUDA; the decoder does not.
 ## Usage
 
 ```sh
+# Resolve a request: canvas, frame alignment, packed sequence length, both
+# sigma schedules. Reads no weights, so it is instant.
+vidfab generate --prompt "..." --aspect 16:9 --frames 124 --steps 50 --dry-run
+
 # Inspect a checkpoint: tensor names, shapes, dtype breakdown, metadata
 vidfab inspect weights/vae/minimax_h3_video_vae_fp16.safetensors --list --prefix decoder
 
@@ -83,13 +88,23 @@ Correctness is defined as agreement within tolerance, not bit-exactness —
 that is not achievable across different GEMM implementations, and error
 compounds over denoising steps.
 
-- **Host tests** (`tests/test_main.cpp`): JSON parser, dtype conversions
-  including fp8 E4M3 and fp4 E2M1, safetensors loading and its rejection cases,
-  comparison statistics. 107 checks.
-- **GPU kernel tests** (`tests/test_kernels.cu`): every kernel and both cuBLAS
-  wrappers against independent CPU references. 32 checks. These exist because
-  the failure modes here are silent — a wrong QKV de-interleave, a wrong
-  depth-to-space ordering, or a transposed GEMM all produce plausible output.
+Tests self-register with a shared harness (`tests/harness.h`), so each area
+contributes its own translation unit and adding tests never touches a file
+someone else is editing.
+
+- **Host tests**: JSON parser, dtype conversions including fp8 E4M3 and fp4
+  E2M1, safetensors loading and its rejection cases, comparison statistics, the
+  flow scheduler, token packing and request resolution. 1445 checks.
+- **GPU kernel tests**: every kernel and both cuBLAS wrappers against
+  independent CPU references. 38 checks. These exist because the failure modes
+  here are silent — a wrong QKV de-interleave, a wrong depth-to-space ordering,
+  or a transposed GEMM all produce plausible output.
+
+The packing tests are worth singling out. They compare the float64 rotary grids
+against golden values taken from numpy **with zero tolerance**, because numpy's
+`linspace` computes `arange(n) * ((stop - start) / n) + start` and
+`(left + ratio) - left` is not `ratio` in float64 — reusing `ratio` puts the
+width grid one ulp off, which a loose tolerance would happily accept.
 
 ```sh
 build/Release/vidfab_tests.exe
@@ -129,10 +144,32 @@ than only at seams.
 | safetensors loader, dtype layer, compare harness | done |
 | CUDA device layer | done |
 | Video VAE decoder | done |
-| Fused attention, fp16/fp8/nvfp4/int4 paths | in progress |
-| Qwen3-VL-32B text encoder (truncated at layer 50) | not started |
+| Flow-matching sampler | done |
+| Token packing, rotary grids, request resolution | done |
+| Shared kernel layer, quantised linear, attention | in progress |
+| Audio VAE (DAC + BigVGAN) | in progress |
+| WAV writer, MP4/AAC muxing | in progress |
+| Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | not started |
 | H3-Omni-Transformer, 50 layers | not started |
-| Flow-matching sampler, audio VAE, muxing | not started |
+| `generate` wired end to end | not started |
+
+## Memory budget
+
+The card is a 32 GB RTX 5090 and the stages do not fit together, which is what
+forces the pipeline's shape. Resident weights, measured from the checkpoints:
+
+| Stage | Device weights |
+|---|---|
+| Qwen3-VL conditioner, int8 | 24.4 GB (+1.6 GB embedding, kept on the host) |
+| H3 transformer, fp8 | 19.3 GB |
+| Video VAE decoder | 9.0 GB (fp16 on disk, widened to fp32) |
+| Audio VAE | 0.6 GB |
+
+So the conditioner and the transformer cannot co-exist, and the pipeline runs
+strictly in sequence: encode the prompt, free the conditioner, load the
+transformer, denoise, free it, decode. The vision tower in the conditioner
+checkpoint (1.19 GB) is never loaded — it is reached only by the keyframe path,
+which this port does not implement.
 
 ## Licence
 
