@@ -1,11 +1,17 @@
 #include "vidfab/generate.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <stdexcept>
 
 #include "vidfab/audio/wav.h"
+#include "vidfab/dit/denoise.h"
 #include "vidfab/dit/packing.h"
+#include "vidfab/dit/transformer.h"
+#include "vidfab/text/encoder.h"
+#include "vidfab/text/tokenizer.h"
+#include "vidfab/sampler/scheduler.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/sampler/noise.h"
 #include "vidfab/tensor_convert.h"
@@ -57,15 +63,115 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   std::vector<float> audio_rows;  // [Sa, 32]
 
   if (options.source == LatentSource::kDenoise) {
-    result.ok = false;
-    result.message =
-        "the conditioner and the denoising loop are not wired in yet. Everything downstream of "
-        "them works: run with --synthetic-latents to exercise unpatchify, both VAEs, the colour "
-        "transform and the muxer against the real weights.";
-    return result;
-  }
+    if (request.text_encoder_path.empty() || request.tokenizer_path.empty() ||
+        request.transformer_path.empty()) {
+      result.message =
+          "generate needs --text-encoder, --tokenizer and --transformer (or pass "
+          "--synthetic-latents to skip conditioning and denoising)";
+      return result;
+    }
 
-  {
+    // --- conditioning -------------------------------------------------------
+    //
+    // The conditioner and the transformer cannot co-exist on a 32 GB card
+    // (24.4 GB and 19.3 GB of weights), so the encoder is loaded, used and
+    // freed before the transformer is touched. The scoping below is the
+    // enforcement: `encoder` and its checkpoint mapping both die at the closing
+    // brace, and the transformer is not constructed until after it.
+    text::PromptEmbedding prompt;
+    {
+      const Clock::time_point t0 = Clock::now();
+      text::Tokenizer tokenizer;
+      tokenizer.load(request.tokenizer_path);
+
+      // No chat template, no BOS, no EOS: `hidden_states[50]` of a raw prompt
+      // is the conditioning H3 expects, and a special token here would shift
+      // every rotary position downstream (spec 1.2).
+      const std::vector<int32_t> ids = tokenizer.encode(request.prompt);
+      if (ids.empty()) {
+        result.message = "the prompt tokenised to zero tokens";
+        return result;
+      }
+
+      SafeTensors encoder_file;
+      encoder_file.open(request.text_encoder_path);
+      text::Encoder encoder;
+      text::EncoderConfig ecfg;
+      ecfg.residency = text::Residency::kStreaming;
+      encoder.load(encoder_file, ecfg);
+      prompt = encoder.encode(ids);
+      encoder.unload();
+      result.seconds_conditioning = seconds_since(t0);
+      if (options.verbose) {
+        std::printf("prompt      %d tokens -> [%d, %d] in %.2f s (%s residency)\n",
+                    static_cast<int>(ids.size()), prompt.num_tokens, prompt.hidden_size,
+                    result.seconds_conditioning,
+                    encoder.residency() == text::Residency::kStreaming ? "streaming" : "resident");
+      }
+    }
+
+    // --- denoise ------------------------------------------------------------
+    //
+    // The layout only now knows its text length, so the packed sequence and its
+    // rotary coordinates are built here rather than in `resolve_plan`.
+    dit::SequenceLayout live = layout;
+    live.num_text = prompt.num_tokens;
+    const dit::PackedIndices idx = dit::build_indices(live);
+    const std::vector<double> pos = dit::build_position_ids(live);
+
+    {
+      const Clock::time_point t0 = Clock::now();
+      SafeTensors dit_file;
+      dit_file.open(request.transformer_path);
+      dit::Transformer model;
+      model.load(dit_file);
+      if (options.verbose) {
+        std::printf("transformer %.2f GiB on device, %d packed rows\n",
+                    static_cast<double>(model.weight_bytes()) / (1024.0 * 1024.0 * 1024.0),
+                    live.total_rows());
+      }
+      model.prepare_text(prompt.data.data(), prompt.num_tokens);
+      model.prepare_sequence(live, idx, pos);
+
+      sampler::FlowScheduler video_sched(12.0f);
+      sampler::FlowScheduler audio_sched(3.0f);
+      video_sched.set_timesteps(request.num_inference_steps);
+      audio_sched.set_timesteps(request.num_inference_steps);
+
+      dit::DenoiseInputs in;
+      in.layout = &live;
+      in.indices = &idx;
+      in.video_timesteps = &plan.video_timesteps;
+      in.audio_timesteps = &plan.audio_timesteps;
+      in.video_scheduler = &video_sched;
+      in.audio_scheduler = &audio_sched;
+      in.seed = request.seed;
+
+      const int total_steps = plan.num_model_evaluations();
+      const Clock::time_point loop_start = Clock::now();
+      const dit::DenoiseOutputs out = dit::denoise(model, in, [&](int step, int steps) {
+        if (options.verbose) {
+          const double elapsed = seconds_since(loop_start);
+          const double per_step = elapsed / static_cast<double>(step + 1);
+          std::printf("\rstep %d/%d  %.1f s/step  eta %.0f s      ", step + 1, steps, per_step,
+                      per_step * (steps - step - 1));
+          std::fflush(stdout);
+        }
+        return true;
+      });
+      if (options.verbose) std::printf("\n");
+
+      video_rows = out.video_rows;
+      audio_rows = out.audio_rows;
+      model.unload();
+      result.seconds_denoise = seconds_since(t0);
+      if (options.verbose) {
+        std::printf("denoised    %d steps in %.1f s (%.2f s/step)\n", total_steps,
+                    result.seconds_denoise,
+                    result.seconds_denoise / std::max(1, total_steps));
+      }
+    }
+  } else {
     // Seeded noise in exactly the shapes the denoiser would have produced, so
     // nothing downstream can tell the difference.
     const Clock::time_point t0 = Clock::now();
