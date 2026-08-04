@@ -1059,6 +1059,26 @@ attn.qkv_proj / attn.out_proj / mlp.fc1 :  {"format": "float8_e4m3fn"}
 mlp.fc2                                 :  {"format": "float8_e4m3fn", "full_precision_matrix_mult": true}
 ```
 
+**Verified across all 50 blocks** (not just block 0): `input_scale` is present on
+`attn.qkv_proj`, `attn.out_proj` and `mlp.fc1` in every one of the 50 blocks and
+**absent on `mlp.fc2` in every one of the 50**. The `comfy_quant` payloads split
+exactly 141 × `{"format": "float8_e4m3fn"}` (the three scaled linears) and
+50 × `{"format": "float8_e4m3fn", "full_precision_matrix_mult": true}`
+(`mlp.fc2`). There is no block anywhere in the file that deviates.
+
+Observed ranges of `448 × scale` over the blocks measured:
+
+| tensor | `448 × weight_scale` | `448 × input_scale` |
+|---|---|---|
+| `attn.qkv_proj` | 2.33 – 11.88 | 11.95 – 178.50 |
+| `attn.out_proj` | 1.48 – 6.16 | 24.00 – 858.00 |
+| `mlp.fc1` | 3.03 – 20.00 | 4.59 – 139.50 |
+| `mlp.fc2` | 2.41 – 19.50 | — |
+
+Note the calibrated activation maximum reaching **858** on `out_proj`. That is
+comfortably inside fp16 and bf16 range, but it rules out any scheme that
+assumes activations are O(1).
+
 Measured scale semantics (block 0):
 
 | tensor | fp8 max\|w\| | `weight_scale` | `448 × weight_scale` | `input_scale` | `448 × input_scale` |
