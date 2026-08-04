@@ -183,9 +183,23 @@ void launch_dequant_f8e4m3(const uint8_t* src, const float* scale, __nv_bfloat16
 void launch_dequant_i8_per_channel(const int8_t* src, const float* scale, __nv_bfloat16* dst,
                                    int out_features, int in_features, cudaStream_t stream);
 
-// dst[o, i] = e2m1(nibble i of row o) * e4m3(block_scale[o, i/16]) * global.
-// `src` holds `out_features * in_features / 2` bytes, low nibble first;
-// `block_scale` holds `out_features * in_features / 16` raw e4m3 bytes.
+// dst[o, i] = e2m1(nibble i of row o) * e4m3(block scale of (o, i/16)) * global.
+// `src` holds `out_features * in_features / 2` bytes; `block_scale` holds
+// `out_features * in_features / 16` raw e4m3 bytes.
+//
+// Two things this signature deliberately does not promise, because both turned
+// out to be properties of the file rather than of the format, and the earlier
+// version of this comment asserted the wrong value for the first:
+//
+//   - which nibble of a byte is the even-indexed element (it is the *high* one
+//     in the nvfp4 text encoder — see dtype.h for how that was established);
+//   - that `block_scale` is plain `[out, in/16]` row-major. In the text encoder
+//     it is swizzled, so the implementation has to unswizzle on the way in.
+//
+// Both were measured on the text encoder. The transformer is a different
+// quantiser output and is being measured separately; if the two disagree, the
+// layout becomes an argument here rather than a constant inside. Until that
+// lands, do not hard-code either answer.
 void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float global_scale,
                           __nv_bfloat16* dst, int out_features, int in_features,
                           cudaStream_t stream);

@@ -131,7 +131,24 @@ inline float f4_e2m1_to_f32(uint8_t nibble) {
   return kTable[nibble & 0x0Fu];
 }
 
-// NVFP4 packs two values per byte. Low nibble is the even-indexed element.
+// NVFP4 packs two values per byte. These name the nibble's *position* and
+// nothing else — deliberately, because which position holds the even-indexed
+// element is a property of the file, not of the format.
+//
+// This comment used to assert the low nibble was the even element. That was
+// wrong, and wrong in the way this project keeps being wrong: a swapped nibble
+// order leaves the value histogram almost untouched, so every aggregate
+// statistic looks healthy and the error only appears elementwise. It was caught
+// by scoring candidate layouts by elementwise correlation against the int8
+// build of the *same* model, where the right answer separated from the wrong
+// one by roughly a thousandfold. On the nvfp4 text encoder the **high** nibble
+// is the even-indexed element.
+//
+// That is established for the text encoder. Whether the nvfp4 transformer
+// agrees is a separate measurement on a separate quantiser output — a 19-byte
+// `comfy_quant` with no `pre_quant_scale`, against the encoder's 55-byte one —
+// and it is being run the same way. Do not assume the two agree, and do not
+// bake either answer in here until both are measured; the caller decides.
 inline float f4_lo(uint8_t byte) { return f4_e2m1_to_f32(byte & 0x0Fu); }
 inline float f4_hi(uint8_t byte) { return f4_e2m1_to_f32(byte >> 4); }
 
