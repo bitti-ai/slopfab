@@ -484,15 +484,16 @@ void launch_quantize_nvfp4_activations(const __nv_bfloat16* x, uint8_t* packed, 
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
-                        float global_scale, __nv_bfloat16* y, int rows, int out_features,
-                        int in_features, Workspace& ws, cudaStream_t stream) {
+void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w_packed,
+                          const uint8_t* w_scale, float global_scale, __nv_bfloat16* y, int rows,
+                          int out_features, int in_features, cudaStream_t stream) {
   if (rows <= 0 || out_features <= 0) return;
-  // Throw rather than pad. `out % 128` and `Kb % 4` are the swizzle's
-  // no-padding precondition; every quantised tensor in both checkpoints
-  // satisfies both, so the padded layout has never been observed and guessing
-  // its convention is exactly the unverified assumption this project keeps
-  // being bitten by. A file that needs it should say so on the day it appears.
+  // Throw rather than pad. `out % 128` and `Kb % 4` are the block-scale
+  // swizzle's no-padding precondition; every quantised tensor in both
+  // checkpoints satisfies both, so the padded layout has never been observed
+  // and guessing its convention is exactly the unverified assumption this
+  // project keeps being bitten by. A file that needs it should say so on the
+  // day it appears.
   if (!nvfp4_gemm_supported(out_features, in_features)) {
     throw std::runtime_error("nvfp4_gemm: " + std::to_string(out_features) + "x" +
                              std::to_string(in_features) +
@@ -500,34 +501,49 @@ void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const u
                              "layout has never been observed and is not guessed at");
   }
 
-  const int k_bytes = in_features / 2;
-  const int k_blocks = in_features / 16;
-  const int k_tiles = (in_features + kBK - 1) / kBK;
+  // Row blocks on x and column blocks on y, not the other way round: CUDA
+  // dispatches x fastest, so the resident blocks share one 128-column slab of
+  // the weight -- 344 KB at qkv_proj -- and sweep the activation together.
+  // Swapping them would put the larger of the two streams in the reused
+  // position and spill it out of L2.
+  const dim3 grid(static_cast<unsigned>((rows + kBM - 1) / kBM),
+                  static_cast<unsigned>((out_features + kBN - 1) / kBN));
+  nvfp4_gemm_kernel<<<grid, kThreads, 0, stream>>>(
+      xq, xs, w_packed, w_scale, y, rows, out_features, in_features / 2, in_features / 16,
+      (in_features + kBK - 1) / kBK, global_scale);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
+                        float global_scale, __nv_bfloat16* y, int rows, int out_features,
+                        int in_features, Workspace& ws, cudaStream_t stream) {
+  if (rows <= 0 || out_features <= 0) return;
+  if (!nvfp4_gemm_supported(out_features, in_features)) {
+    throw std::runtime_error("nvfp4_gemm: " + std::to_string(out_features) + "x" +
+                             std::to_string(in_features) +
+                             " needs out % 128 == 0 and in % 64 == 0; the padded block-scale "
+                             "layout has never been observed and is not guessed at");
+  }
 
   // Rows are processed in bounded passes so the activation buffer does not
   // scale with the batch. Every call the transformer makes is already inside
   // one pass; the loop exists so a larger caller degrades in workspace rather
   // than failing to allocate.
+  //
+  // A caller with one activation and several weights -- qkv_proj is three
+  // GEMMs against one `normed` -- should quantise once and use
+  // `nvfp4_gemm_forward_q` instead, rather than paying for this three times.
   for (int start = 0; start < rows; start += kNVFP4RowChunk) {
     const int n = std::min(kNVFP4RowChunk, rows - start);
     Workspace::Scope scope(ws);
-    uint8_t* xq = ws.alloc_n<uint8_t>(static_cast<size_t>(n) * k_bytes);
-    uint8_t* xs = ws.alloc_n<uint8_t>(static_cast<size_t>(n) * k_blocks);
+    uint8_t* xq = ws.alloc_n<uint8_t>(static_cast<size_t>(n) * (in_features / 2));
+    uint8_t* xs = ws.alloc_n<uint8_t>(static_cast<size_t>(n) * (in_features / 16));
 
     launch_quantize_nvfp4_activations(x + static_cast<size_t>(start) * in_features, xq, xs, n,
                                       in_features, stream);
-
-    // Row blocks on x and column blocks on y, not the other way round: CUDA
-    // dispatches x fastest, so the resident blocks share one 128-column slab of
-    // the weight -- 344 KB at qkv_proj -- and sweep the activation together.
-    // Swapping them would put the larger of the two streams in the reused
-    // position and spill it out of L2.
-    const dim3 grid(static_cast<unsigned>((n + kBM - 1) / kBM),
-                    static_cast<unsigned>((out_features + kBN - 1) / kBN));
-    nvfp4_gemm_kernel<<<grid, kThreads, 0, stream>>>(
-        xq, xs, w_packed, w_scale, y + static_cast<size_t>(start) * out_features, n, out_features,
-        k_bytes, k_blocks, k_tiles, global_scale);
-    VIDFAB_CUDA_CHECK(cudaGetLastError());
+    nvfp4_gemm_forward_q(xq, xs, w_packed, w_scale, global_scale,
+                         y + static_cast<size_t>(start) * out_features, n, out_features,
+                         in_features, stream);
   }
 }
 

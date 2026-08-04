@@ -89,4 +89,18 @@ void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const u
                         float global_scale, __nv_bfloat16* y, int rows, int out_features,
                         int in_features, Workspace& ws, cudaStream_t stream);
 
+// As above, but against an activation the caller has already quantised with
+// `launch_quantize_nvfp4_activations`.
+//
+// This exists because `qkv_proj` is three GEMMs against one `normed`, so the
+// convenience form above quantises the same [8192, 5376] activation three
+// times per block per chunk and throws two of them away. Quantising is ~113 MB
+// of traffic; the caller that knows the activation is shared should pay it
+// once. `xq` is `in_features/2` bytes per row and `xs` is `in_features/16`,
+// both row-major and both sized for `rows` -- no internal chunking, because
+// the buffers are the caller's.
+void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w_packed,
+                          const uint8_t* w_scale, float global_scale, __nv_bfloat16* y, int rows,
+                          int out_features, int in_features, cudaStream_t stream);
+
 }  // namespace vidfab::cuda
