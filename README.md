@@ -184,7 +184,7 @@ than only at seams.
 | WAV writer, MP4/AAC muxing | done |
 | `generate` back half (unpatchify → VAEs → mux) | done |
 | H3-Omni-Transformer, 50 layers | in progress |
-| Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | spec in progress |
+| Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | spec done, implementation in progress |
 | Fused attention, native fp8/nvfp4/int4 GEMM | not started |
 
 ## Memory budget
