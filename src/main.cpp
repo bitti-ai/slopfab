@@ -35,44 +35,101 @@ namespace {
 
 constexpr const char* kVersion = "0.1.0";
 
+// Per-command help. Keeping the detail beside the summary in one table is what
+// stops `vidfab <cmd> --help` from drifting out of step with the top-level
+// usage, which is the usual way CLI help rots.
+struct CommandHelp {
+  const char* name;
+  const char* usage;
+  const char* summary;
+  const char* detail;
+};
+
+const CommandHelp kCommands[] = {
+    {"generate", "vidfab generate --prompt <text> [options]", "text to video and audio",
+     "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
+     "  --out <file>                 output path (default video.mp4)\n"
+     "  --aspect <W:H>               display aspect, 1:4 to 4:1 (default 16:9)\n"
+     "  --frames <n>                 snapped up to 17k+5 (default 124, minimum 6)\n"
+     "  --steps <n>                  sigma grid points, n-1 evaluations (default 50)\n"
+     "  --seed <n>                   noise seed\n"
+     "  --raw                        write .y4m + .wav instead of muxing MP4\n"
+     "  --dry-run                    resolve and print the plan, touch no weights\n"
+     "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
+     "                               noise, to exercise the VAEs and the muxer\n"
+     "\n"
+     "checkpoints (all required unless --dry-run or --synthetic-latents):\n"
+     "  --tokenizer <f>              tokenizer.json\n"
+     "  --text-encoder <f>           Qwen3-VL conditioner, int8 ConvRot\n"
+     "  --transformer <f>            H3 omni transformer, fp8\n"
+     "  --vae <f>                    video VAE decoder\n"
+     "  --audio-vae <f>              audio VAE decoder\n"
+     "\n"
+     "The conditioner and the transformer do not fit on one 32 GB card at the\n"
+     "same time, so they are loaded and freed in sequence. Expect the first\n"
+     "output well after the progress line starts moving.\n"},
+    {"inspect", "vidfab inspect <file.safetensors> [options]",
+     "summarise a checkpoint's tensors",
+     "  --list                       print every tensor, not just a summary\n"
+     "  --prefix <str>               only tensors whose name starts with <str>\n"
+     "  --limit <n>                  cap listed tensors (default 40, 0 = all)\n"},
+    {"compare", "vidfab compare <reference> <actual> [options]",
+     "diff two checkpoints tensor by tensor",
+     "  --abs-tol <x>                absolute tolerance (default 1e-3)\n"
+     "  --rel-tol <x>                relative tolerance (default 1e-2)\n"
+     "  --verbose                    report passing tensors too\n"},
+    {"decode", "vidfab decode --vae <f> [--latent <f>] [options]",
+     "run the video VAE decoder",
+     "  --vae <f>                    video VAE checkpoint\n"
+     "  --latent <f>                 latent safetensors; omit for a synthetic one\n"
+     "  --shape <T> <H> <W>          synthetic latent shape\n"
+     "  --out <f>                    .y4m output\n"
+     "  --ppm <f>                    also write frame 0 as a PPM\n"
+     "  --dump <f>                   raw fp32 pixels as safetensors\n"},
+    {"tokenize", "vidfab tokenize --tokenizer <f> <text>",
+     "encode text and round-trip it",
+     "  --tokenizer <f>              tokenizer.json\n"
+     "  --pieces                     also print the pre-tokenizer split\n"},
+    {"devices", "vidfab devices", "list visible CUDA devices", ""},
+    {"version", "vidfab version", "print the version and exit", ""},
+};
+
+const CommandHelp* find_command(std::string_view name) {
+  for (const CommandHelp& c : kCommands) {
+    if (name == c.name) return &c;
+  }
+  return nullptr;
+}
+
+// True when the argument list asks for help. Checked before any other option,
+// so `--help` works even alongside otherwise invalid arguments.
+bool wants_help(int argc, char** argv) {
+  for (int i = 0; i < argc; ++i) {
+    const std::string_view a = argv[i];
+    if (a == "--help" || a == "-h" || a == "help") return true;
+  }
+  return false;
+}
+
+int print_command_help(const CommandHelp& c) {
+  std::printf("usage: %s\n\n%s\n", c.usage, c.summary);
+  if (c.detail[0] != '\0') std::printf("\noptions:\n%s", c.detail);
+  return 0;
+}
+
 void print_usage() {
   std::printf(
       "vidfab %s - MiniMax H3 video generation\n"
       "\n"
       "usage: vidfab <command> [options]\n"
+      "       vidfab <command> --help\n"
       "\n"
-      "commands:\n"
-      "  generate --prompt <text>     text to video and audio\n"
-      "  inspect <file.safetensors>   summarise a checkpoint's tensors\n"
-      "  compare <ref> <actual>       diff two checkpoints tensor by tensor\n"
-      "  decode --vae <f> [--latent <f>]  run the video VAE decoder\n"
-      "  tokenize --tokenizer <f> <text>  encode text and round-trip it\n"
-      "  devices                      list visible CUDA devices\n"
-      "  version                      print the version and exit\n"
-      "\n"
-      "generate options:\n"
-      "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
-      "  --out <file>                 output path (default video.mp4)\n"
-      "  --aspect <W:H>               display aspect, 1:4 to 4:1 (default 16:9)\n"
-      "  --frames <n>                 snapped up to 17k+5 (default 124)\n"
-      "  --steps <n>                  sigma grid points, n-1 evaluations (default 50)\n"
-      "  --seed <n>                   noise seed\n"
-      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
-      "  --dry-run                    resolve and print the plan, touch no weights\n"
-      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
-      "                               noise, to exercise the VAEs and the muxer\n"
-      "  --vae <f> --audio-vae <f>    decoder checkpoints\n"
-      "\n"
-      "inspect options:\n"
-      "  --list                       print every tensor, not just a summary\n"
-      "  --prefix <str>               only tensors whose name starts with <str>\n"
-      "  --limit <n>                  cap listed tensors (default 40, 0 = all)\n"
-      "\n"
-      "compare options:\n"
-      "  --abs-tol <x>                absolute tolerance (default 1e-3)\n"
-      "  --rel-tol <x>                relative tolerance (default 1e-2)\n"
-      "  --verbose                    report passing tensors too\n",
+      "commands:\n",
       kVersion);
+  for (const CommandHelp& c : kCommands) {
+    std::printf("  %-9s %s\n", c.name, c.summary);
+  }
+  std::printf("\nRun `vidfab <command> --help` for that command's options.\n");
 }
 
 std::string format_shape(const std::vector<int64_t>& shape) {
@@ -103,6 +160,8 @@ std::string format_bytes(uint64_t n) {
 }
 
 int cmd_inspect(int argc, char** argv) {
+  if (wants_help(argc, argv)) return print_command_help(*find_command("inspect"));
+
   std::string path;
   std::string prefix;
   bool list = false;
@@ -196,6 +255,8 @@ int cmd_inspect(int argc, char** argv) {
 // ours, and diff. Exit code is non-zero when any tensor exceeds tolerance, so
 // it can be used directly as a test.
 int cmd_compare(int argc, char** argv) {
+  if (wants_help(argc, argv)) return print_command_help(*find_command("compare"));
+
   std::string ref_path;
   std::string act_path;
   double abs_tol = 1e-3;
@@ -334,6 +395,8 @@ std::vector<float> synthetic_latent(int T, int H, int W, uint32_t seed) {
 }
 
 int cmd_decode(int argc, char** argv) {
+  if (wants_help(argc, argv)) return print_command_help(*find_command("decode"));
+
   std::string vae_path;
   std::string latent_path;
   std::string out_path = "out.y4m";
@@ -509,6 +572,8 @@ int cmd_decode(int argc, char** argv) {
 #endif  // VIDFAB_WITH_CUDA
 
 int cmd_tokenize(int argc, char** argv) {
+  if (wants_help(argc, argv)) return print_command_help(*find_command("tokenize"));
+
   std::string tok_path;
   std::string text;
   bool show_pieces = false;
@@ -561,6 +626,8 @@ int cmd_tokenize(int argc, char** argv) {
 // missing rather than pretending. `--dry-run` stops after the plan, which
 // costs no I/O and is the fastest way to check geometry and schedule.
 int cmd_generate(int argc, char** argv) {
+  if (wants_help(argc, argv)) return print_command_help(*find_command("generate"));
+
   vidfab::GenerateRequest req;
   bool dry_run = false;
   bool synthetic = false;
@@ -677,6 +744,14 @@ int main(int argc, char** argv) {
   }
 
   const std::string_view command = argv[1];
+
+  // `--help` is honoured for every command here rather than inside each one,
+  // so a command that takes no arguments at all still answers it. Checked
+  // before dispatch, so it never runs the command by accident.
+  if (const CommandHelp* c = find_command(command); c != nullptr && wants_help(argc - 2, argv + 2)) {
+    return print_command_help(*c);
+  }
+
   try {
     if (command == "generate") return cmd_generate(argc - 2, argv + 2);
     if (command == "inspect") return cmd_inspect(argc - 2, argv + 2);
@@ -691,6 +766,13 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (command == "help" || command == "--help" || command == "-h") {
+      if (argc > 2) {
+        const CommandHelp* c = find_command(argv[2]);
+        if (c != nullptr) return print_command_help(*c);
+        std::fprintf(stderr, "vidfab: unknown command '%s'\n\n", argv[2]);
+        print_usage();
+        return 2;
+      }
       print_usage();
       return 0;
     }
