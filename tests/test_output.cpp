@@ -410,7 +410,9 @@ VIDFAB_TEST(ffmpeg_probe_is_coherent) {
     CHECK(!ffmpeg_version().empty());
     std::printf("  ffmpeg: %s\n", ffmpeg_version().c_str());
   } else {
-    CHECK(ffmpeg_version().empty() || !ffmpeg_version().empty());  // either is legitimate
+    // No assertion on the version string here: it is empty when nothing
+    // loaded and populated when something loaded but was the wrong major, and
+    // both are legitimate outcomes of an unavailable ffmpeg.
     std::printf("  ffmpeg unavailable: %s\n", first.c_str());
   }
 
