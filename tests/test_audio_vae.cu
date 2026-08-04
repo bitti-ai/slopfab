@@ -668,7 +668,13 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
     want[i] = kGolden[i];
     got[i] = audio.samples[static_cast<size_t>(kGoldenIndex[i])];
   }
-  CHECK_CLOSE_REL(want, got, 1e-3, 1e-2, "audio decode vs reference");
+  // Tolerance is 1e-5/1e-4, not the project-wide 1e-3/1e-2. That looser pair
+  // exists for comparing a quantised model against a different GEMM
+  // implementation; this is an fp32 decoder against a float64 transcription of
+  // its own arithmetic, and it agrees to 2.2e-7. Leaving the wide tolerance
+  // here would mean a 1% output gain error passed by construction — which the
+  // mutation check below demonstrates, and which is why these are tight.
+  CHECK_CLOSE_REL(want, got, 1e-5, 1e-4, "audio decode vs reference");
   {
     double worst_abs = 0.0;
     for (size_t i = 0; i < want.size(); ++i) {
@@ -686,8 +692,44 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
     peak = std::max(peak, std::abs(static_cast<double>(v)));
   }
   CHECK_MSG(all_finite, "audio decode produced a non-finite sample");
-  CHECK_NEAR(std::sqrt(sum_sq / audio.samples.size()), 0.10619, 2e-3);
-  CHECK_NEAR(peak, 0.4025816, 2e-3);
+  const double measured_rms = std::sqrt(sum_sq / audio.samples.size());
+  // Tightened from 2e-3 for the same reason: a 1% gain error shifts the RMS by
+  // 1.06e-3 and slipped through the old bound.
+  CHECK_NEAR(measured_rms, 0.106190, 1e-4);
+  CHECK_NEAR(peak, 0.4025816, 1e-4);
+
+  // Mutation check: prove the golden numbers above are a *gain* test and not
+  // merely a smoke test.
+  //
+  // This matters because a decoder whose output level is wrong by a constant
+  // factor is the same silent-wrong shape as every other trap in this port —
+  // the audio is still audio, still the right length, still finite, and still
+  // correlated with the prompt. Nothing qualitative catches it. So: take the
+  // real output, apply a 1% gain error, and require that the comparison which
+  // just passed now fails. If it does not, the tolerances are too loose to be
+  // load-bearing and the assertions above are decoration.
+  {
+    auto within_tolerance = [](const std::vector<float>& want_v, const std::vector<float>& got_v) {
+      for (size_t i = 0; i < want_v.size(); ++i) {
+        const double d = std::abs(static_cast<double>(want_v[i]) - got_v[i]);
+        if (d > 1e-5 + 1e-4 * std::abs(static_cast<double>(want_v[i]))) return false;
+      }
+      return true;
+    };
+    CHECK_MSG(within_tolerance(want, got), "the unmutated golden comparison should pass");
+
+    for (double gain : {0.99, 1.01, 1.05}) {
+      std::vector<float> mutated(got.size());
+      for (size_t i = 0; i < got.size(); ++i) {
+        mutated[i] = static_cast<float>(got[i] * gain);
+      }
+      const bool rms_still_ok = std::abs(measured_rms * gain - 0.106190) <= 1e-4;
+      CHECK_MSG(!within_tolerance(want, mutated) || !rms_still_ok,
+                "a %.0f%% gain error passed both the golden comparison and the RMS check; the "
+                "audio level is not actually pinned",
+                100.0 * (gain - 1.0));
+    }
+  }
 
   // A constant latent is the cheapest guard against a padding bug: replicate
   // padding keeps every anti-alias window well defined, so nothing may go

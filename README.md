@@ -253,6 +253,33 @@ term is the fp32 accumulator being read-modify-written twice per key block.
 That model reproduces all three points to within 3%, and it says the useful
 knob is a **larger key block**, not a larger query block.
 
+## Audio level — settled
+
+Early runs produced very quiet audio (mean −59.7 dB, peak −38.5 dB), which is
+consistent with "quiet room tone" *and* with a gain error. That ambiguity is
+the same silent-wrong shape as every other trap here, so it was resolved by
+experiment rather than by listening.
+
+Same seed, same geometry, same everything — only the soundscape clause of the
+prompt changed:
+
+| soundscape in the prompt | mean | peak |
+|---|---|---|
+| "quiet room tone, soft paw-steps on wood" | −59.7 dB | −38.5 dB |
+| "loud clattering pots, a barking dog, a slamming door" | **−20.6 dB** | **−2.0 dB** |
+
+A 39 dB spread driven by conditioning alone. **A constant gain error cannot do
+that**, so the level is the model obeying the prompt.
+
+The decoder's own gain is pinned separately, against a float64 NumPy
+transcription of the reference decode path, which it matches to **2.15e-7**.
+That test now carries a mutation check: it applies a ±1%, +5% gain to the real
+output and requires the assertions to fail. Adding it immediately showed the
+original tolerances were too loose to catch 1% — the golden comparison used a
+1e-2 relative bound, so a 1% gain error passed *by construction*. Tolerances
+are now 1e-5/1e-4 and the RMS bound is 1e-4, which the implementation clears by
+three orders of magnitude.
+
 ## Known numerical gap — open
 
 `transformer_forward_vs_cpu_reference` reports ten **deferred** checks. They are

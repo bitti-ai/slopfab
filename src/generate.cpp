@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <stdexcept>
 
@@ -172,6 +173,27 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       video_rows = out.video_rows;
       audio_rows = out.audio_rows;
       model.unload();
+
+      // Latent statistics, because a wrong level downstream is ambiguous
+      // between "the decoder's gain is off" and "the latents never got
+      // denoised". Both VAEs were trained on normalised latents, so a
+      // converged sample should land near mean 0, std 1 here; anything far
+      // from that says the problem is upstream of the decoder.
+      if (options.verbose) {
+        auto stats = [](const std::vector<float>& v, const char* name) {
+          if (v.empty()) return;
+          double sum = 0.0;
+          for (float x : v) sum += x;
+          const double mean = sum / static_cast<double>(v.size());
+          double var = 0.0;
+          for (float x : v) var += (x - mean) * (x - mean);
+          var /= static_cast<double>(v.size());
+          std::printf("latents     %-5s mean %+.4f  std %.4f  (expect ~0, ~1)\n", name, mean,
+                      std::sqrt(var));
+        };
+        stats(video_rows, "video");
+        stats(audio_rows, "audio");
+      }
       result.seconds_denoise = seconds_since(t0);
       if (options.verbose) {
         std::printf("denoised    %d steps in %.1f s (%.2f s/step)\n", total_steps,
