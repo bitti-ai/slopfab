@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -504,6 +505,16 @@ struct Transformer::Impl {
   Impl() {
     VIDFAB_CUBLAS_CHECK(cublasCreate(&blas));
     linear.init(blas, stream.get());
+
+    // The native nvfp4 GEMM is 2.6-4.1x the dequantise-then-cuBLAS path and is
+    // off unless asked for, because it quantises activations to E2M1 and that
+    // costs ~9% rms per layer against a bf16-activation reference — a property
+    // of the format, not a defect (see the README). Whether that survives 50
+    // blocks and 29 steps is an end-to-end question, and this switch exists so
+    // it can be answered by generating the same seed both ways rather than
+    // argued about. Same shape as VIDFAB_CUBLAS_PEDANTIC in vit_decoder.cu.
+    const char* native = std::getenv("VIDFAB_NATIVE_NVFP4");
+    if (native != nullptr && native[0] == '1') linear.set_native(true);
   }
   ~Impl() {
     if (blas != nullptr) cublasDestroy(blas);

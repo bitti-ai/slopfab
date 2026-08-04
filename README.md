@@ -137,8 +137,7 @@ someone else is editing.
   tokenizer, latent noise, the WAV writer and the colour transform.
   **1729 checks.**
 - **GPU kernel tests**: every kernel against independent CPU references written
-  from the spec rather than from the kernel. **889 checks**, plus 11 DEFERRED
-  and, at present, **one real failure** — see [Native nvfp4 GEMM](#native-nvfp4-gemm--one-failing-check).
+  from the spec rather than from the kernel. **1043 checks**, plus 11 DEFERRED.
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong
   depth-to-space ordering, or a transposed GEMM all produce plausible output.
 
@@ -249,35 +248,43 @@ than only at seams.
 | Qwen3-VL-32B text encoder (nvfp4 AWQ, 50 layers) | done |
 | Fused attention (FlashAttention-2, `mma.sync`) | done |
 | `cp.async` double-buffered K/V staging | not started |
-| Native nvfp4 GEMM (`mma.sync` block-scaled) | landed, **off by default, one failing check** |
+| Native nvfp4 GEMM (`mma.sync` block-scaled) | landed, **off by default** |
 | Native fp8/int4 GEMM | not started |
 
-## Native nvfp4 GEMM — one failing check
+## Native nvfp4 GEMM — correct, and off by default
 
 `LinearRunner::set_native` selects a hand-written block-scaled tensor-core GEMM
 that feeds the checkpoint's bytes straight into
-`mma.sync.aligned.m16n8k64.…block_scale` with nothing dequantised. It is **off
-by default**, so nothing above depends on it.
+`mma.sync.aligned.m16n8k64.…block_scale` with nothing dequantised — 443–738
+TFLOP/s, 2.6–4.1× the dequantise-then-cuBLAS path.
 
-It does not currently agree with the dequantise-then-cuBLAS reference:
-`linear_nvfp4` reports 2.234e-02 absolute against a 1e-3 abs / 1e-2 rel bar,
-about 20x its allowance, on a synthetic `rows=29, in=128, out=256` case.
+It is off by default anyway, and the reason is worth stating precisely, because
+the obvious summary of it is wrong.
 
-The open question is whether that is a defect or the format. Neither checkpoint
-ships an `input_scale`, so activations are quantised dynamically to E2M1 at
-`amax/6` per 16-element block. E2M1 has eight magnitudes, so per-element
-relative error is 10–20%, and because signal and error both grow as √K the
-output's *relative* error stays near that level instead of averaging down —
-which would put a native fp4-activation GEMM permanently outside a 1e-2
-per-tensor bound, at any K, with no kernel fix available. That is being
-separated from a residual layout bug by quantising the activations to fp4 on
-the host first and re-running: if agreement snaps to tolerance, the operand
-path is right and the activation quantiser is the whole story.
+**The kernel is correct.** Fed activations that already sit exactly on the fp4
+grid, it agrees with the reference at rms_rel **1.6e-3** — bf16 output rounding
+and nothing else — and at **1.7e-3** on real `blocks.0` weights from the
+checkpoint.
 
-**The tolerance has deliberately not been loosened to make this pass.** If the
-bound is unreachable in principle then the right check is agreement against an
-fp4-activation reference plus an end-to-end quality bar, and that is a decision
-to take openly rather than by editing a threshold.
+**The ~9% gap is the format, not the kernel.** Neither checkpoint ships an
+`input_scale`, so activations are quantised dynamically to E2M1 at `amax/6` per
+16-element block. E2M1 carries one mantissa bit, and a dot product cannot
+average that away because signal and error both grow as √K. Three properties
+say format rather than defect: correlation **0.9955**, where a misread layout
+gives 0.00003; flatness in K from 128 to 5376, where a real bug would shrink;
+and flatness in output magnitude, which is why every large *relative* error sits
+on an output that cancelled towards zero.
+
+So a native fp4-activation GEMM cannot meet a 1e-2 relative bound against a
+bf16-activation reference at any K, and no kernel work will close it. The test
+therefore compares the kernel against an **fp4-activation** reference at the
+same 1e-3 / 1e-2 — pointing the bound at what it can describe — and prints the
+bf16 gap as a measurement beside it. **The tolerance was not loosened.**
+
+What remains genuinely open is whether ~9% rms per layer is acceptable across
+50 blocks and 29 steps. That is an end-to-end quality question, not a per-tensor
+one, and it is why the switch stays off until someone generates the same seed
+both ways and looks.
 
 ## Performance
 
