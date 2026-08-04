@@ -23,6 +23,7 @@ add_library(vidfab_core STATIC
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
   src/core/safetensors_write.cpp
+  src/dit/adaln.cpp
   src/dit/packing.cpp
   src/pipeline.cpp
   src/sampler/scheduler.cpp
@@ -111,6 +112,7 @@ if(VIDFAB_BUILD_TESTS)
   add_executable(vidfab_tests
     tests/harness.cpp
     tests/test_main.cpp
+    tests/test_adaln.cpp
     tests/test_packing.cpp
     tests/test_pipeline.cpp
     tests/test_tokenizer.cpp

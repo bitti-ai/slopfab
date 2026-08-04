@@ -20,6 +20,7 @@
 #include <memory>
 #include <vector>
 
+#include "vidfab/dit/adaln.h"
 #include "vidfab/dit/packing.h"
 #include "vidfab/safetensors.h"
 
@@ -43,20 +44,6 @@ struct TransformerConfig {
 
   int inner_dim() const { return num_attention_heads * attention_head_dim; }
   int video_patch_dim() const { return in_channels * 4; }  // patch (1,2,2)
-};
-
-// How a continuous timestep selects a row of `adaln_t_table [1025, 8]`.
-//
-// UNRESOLVED in the spec (section 10.1): no file in ref/ describes the grid,
-// and the pruned checkpoint carries no metadata for it. `1025 = 2^10 + 1`
-// makes a dyadic grid over t in [0,1] near certain. Linear interpolation is
-// the default because it agrees with nearest on every grid point and is
-// strictly closer everywhere else, given SiLU(temb(t)) is smooth in t.
-//
-// Verification recipe in spec section 3.5. Keep this switch until it is run.
-enum class AdaLNLookup {
-  kLinear,   // default: j = floor(t*1024), blend with j+1
-  kNearest,  // c = table[round(t*1024)]
 };
 
 class Transformer {
