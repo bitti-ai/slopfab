@@ -188,6 +188,42 @@ than only at seams.
 | Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | spec done, implementation in progress |
 | Fused attention, native fp8/nvfp4/int4 GEMM | not started |
 
+## Performance
+
+Measured on the RTX 5090, and the first number is the one that recalibrates
+everything else:
+
+**The sustained dense bf16 GEMM ceiling on this card is 216–222 TFLOP/s, not
+the 419 on the spec sheet.** At 575 W it holds about 2.45 GHz, and cuBLAS on a
+16384³ GEMM gets 220. Every efficiency claim below is against that.
+
+| op | shape | time | achieved |
+|---|---|---|---|
+| attention | seq 37710, 56 heads, dim 128 | 749 ms | 1.41 TB/s |
+| `qkv_proj` | `[21504, 5376]` × 37710 rows | 36.2 ms | 234 TFLOP/s |
+| `attn.out_proj` | `[5376, 7168]` | 12.1 ms | 237 TFLOP/s |
+| `mlp.fc1` | `[28672, 5376]` | 48.3 ms | 232 TFLOP/s |
+| `mlp.fc2` | `[5376, 14336]` | 24.0 ms | 231 TFLOP/s |
+| video VAE decode | 124 frames at 1344×768 | 52.7 s | — |
+| audio VAE decode | 5.2 s of 32 kHz stereo | 0.25 s | — |
+
+So the four linear layers are already at the machine ceiling and are not worth
+touching — `cublasLt` heuristic search, a larger cuBLAS workspace and row
+alignment were all measured and buy nothing.
+
+Attention is 86% of a denoising step and is **bandwidth-bound, not
+compute-bound**: it moves ~1131 GB per layer at 1.41 TB/s while running at only
+65 of 220 TFLOP/s. The cost is the score tile round-tripping through HBM at
+~12 bytes per element. The blocked design's own floor is ~682 ms, so the
+current implementation is within 9% of what it can be — further wins require
+changing the score dtype or removing the round trip, not tuning.
+
+The tile-budget sweep (192 MiB → 1010 ms, 640 MiB → 749 ms, 1536 MiB → 711 ms)
+is explained by `t ≈ (12·H·S² + 16·H·D·S²/bk) / 1.4 TB/s`, where the second
+term is the fp32 accumulator being read-modify-written twice per key block.
+That model reproduces all three points to within 3%, and it says the useful
+knob is a **larger key block**, not a larger query block.
+
 ## Memory budget
 
 The card is a 32 GB RTX 5090 and the stages do not fit together, which is what
