@@ -16,6 +16,13 @@ constexpr float kAudioSigmaShift = 3.0f;
 constexpr int kSpatialCompression = 16;
 constexpr int kFps = 24;
 
+// The video decoder consumes 7-token temporal windows (`tokens_chunk_size` 5 +
+// `token_overlap` 2), so a latent shorter than that cannot be decoded at all.
+// `F = 5k + 2` for `17k + 5` pixel frames, so `F >= 7` means `k >= 1` means at
+// least 22 pixel frames.
+constexpr int kMinLatentFrames = 7;
+constexpr int kMinFrames = 22;
+
 }  // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
@@ -31,6 +38,19 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
 
   plan.aligned_frames = dit::align_num_frames(request.num_frames);
   plan.duration_seconds = static_cast<double>(plan.aligned_frames) / kFps;
+
+  // Checked here rather than in the decoder so the run fails in milliseconds
+  // instead of after uploading 9 GB of VAE weights. The decoder does keep its
+  // own guard — this one is about where the user finds out.
+  if (dit::video_latent_num_frames(plan.aligned_frames) < kMinLatentFrames) {
+    throw std::runtime_error(
+        "num_frames = " + std::to_string(request.num_frames) + " aligns to " +
+        std::to_string(plan.aligned_frames) + " frames, which is " +
+        std::to_string(dit::video_latent_num_frames(plan.aligned_frames)) +
+        " latent frames; the video decoder needs at least " +
+        std::to_string(kMinLatentFrames) + ". Ask for at least 6 frames, which aligns up to " +
+        std::to_string(kMinFrames) + ".");
+  }
 
   plan.layout.num_text = 0;  // filled in after tokenisation
   plan.layout.num_condition_video = 0;  // t2va has no conditioning rows

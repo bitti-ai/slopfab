@@ -6,12 +6,25 @@
 // geometry.
 
 #include <cmath>
+#include <stdexcept>
 #include <string>
 
 #include "harness.h"
 #include "vidfab/pipeline.h"
 
 namespace {
+
+// `throws` takes a plain function pointer, so a capturing lambda will not do.
+bool rejects_frame_count(int frames) {
+  try {
+    vidfab::GenerateRequest r;
+    r.num_frames = frames;
+    vidfab::resolve_plan(r);
+  } catch (const std::exception&) {
+    return true;
+  }
+  return false;
+}
 
 vidfab::GenerateRequest base_request() {
   vidfab::GenerateRequest r;
@@ -120,6 +133,27 @@ VIDFAB_TEST(pipeline_plan_rejects_bad_requests) {
     r.num_frames = 0;
     vidfab::resolve_plan(r);
   }));
+
+  // Too few frames to decode. `F = 5k + 2` and the video decoder needs 7-token
+  // temporal windows, so `F >= 7` means at least 22 aligned frames. Alignment
+  // rounds *up*, so only requests that align to 5 — that is, 1 through 5 — are
+  // actually unsatisfiable; 6 already aligns to 22. Rejected up front rather
+  // than after 9 GB of weights have been uploaded.
+  for (int frames : {1, 2, 3, 4, 5}) {
+    CHECK_MSG(rejects_frame_count(frames),
+              "num_frames=%d should be rejected: it yields fewer than 7 latent frames", frames);
+  }
+
+  // 6 is the smallest request that resolves, and it aligns to exactly 7 latent
+  // frames.
+  CHECK(!rejects_frame_count(6));
+  CHECK(!rejects_frame_count(21));
+  CHECK(!rejects_frame_count(22));
+  vidfab::GenerateRequest ok;
+  ok.num_frames = 6;
+  const vidfab::GeneratePlan p = vidfab::resolve_plan(ok);
+  CHECK(p.aligned_frames == 22);
+  CHECK(p.layout.num_latent_frames == 7);
 }
 
 VIDFAB_TEST(pipeline_schedules_stay_paired) {
