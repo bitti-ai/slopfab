@@ -1,0 +1,8 @@
+build/
+out/
+weights/
+ref/
+*.y4m
+*.wav
+*.mp4
+*.safetensors

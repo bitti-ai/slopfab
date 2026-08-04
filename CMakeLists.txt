@@ -1,0 +1,81 @@
+cmake_minimum_required(VERSION 3.24)
+
+# CUDA is enabled lazily: the core loader and CLI build without it so the
+# project stays useful on machines without a toolkit, and so early phases can
+# be developed and tested before any kernels exist.
+project(vidfab LANGUAGES CXX VERSION 0.1.0)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+option(VIDFAB_ENABLE_CUDA "Build CUDA kernels" ON)
+option(VIDFAB_BUILD_TESTS "Build unit tests" ON)
+
+# --- core -------------------------------------------------------------------
+
+add_library(vidfab_core STATIC
+  src/core/json.cpp
+  src/core/safetensors.cpp
+)
+
+target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+if(MSVC)
+  # /utf-8 keeps string literals well-defined regardless of the system codepage.
+  target_compile_options(vidfab_core PRIVATE /W4 /permissive- /utf-8)
+else()
+  target_compile_options(vidfab_core PRIVATE -Wall -Wextra)
+endif()
+
+# --- cuda -------------------------------------------------------------------
+
+if(VIDFAB_ENABLE_CUDA)
+  include(CheckLanguage)
+  check_language(CUDA)
+  if(CMAKE_CUDA_COMPILER)
+    # Must be set before enable_language(CUDA), which otherwise picks a
+    # conservative default. 90 = Hopper, 120 = Blackwell (RTX 50 series), which
+    # is the primary target and the only one of the two with native fp4.
+    if(NOT CMAKE_CUDA_ARCHITECTURES)
+      set(CMAKE_CUDA_ARCHITECTURES 120 CACHE STRING "CUDA architectures" FORCE)
+    endif()
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    message(STATUS "vidfab: CUDA ${CMAKE_CUDA_COMPILER_VERSION}, arch ${CMAKE_CUDA_ARCHITECTURES}")
+    target_compile_definitions(vidfab_core PUBLIC VIDFAB_WITH_CUDA=1)
+  else()
+    message(WARNING "vidfab: no CUDA compiler found; building CPU-only")
+    set(VIDFAB_ENABLE_CUDA OFF)
+  endif()
+endif()
+
+# --- cli --------------------------------------------------------------------
+
+add_executable(vidfab src/main.cpp)
+target_link_libraries(vidfab PRIVATE vidfab_core)
+
+if(MSVC)
+  target_compile_options(vidfab PRIVATE /W4 /permissive- /utf-8)
+else()
+  target_compile_options(vidfab PRIVATE -Wall -Wextra)
+endif()
+
+# --- tests ------------------------------------------------------------------
+
+if(VIDFAB_BUILD_TESTS)
+  enable_testing()
+  add_executable(vidfab_tests tests/test_main.cpp)
+  target_link_libraries(vidfab_tests PRIVATE vidfab_core)
+  if(MSVC)
+    target_compile_options(vidfab_tests PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(vidfab_tests PRIVATE -Wall -Wextra)
+  endif()
+  add_test(NAME unit COMMAND vidfab_tests)
+endif()
