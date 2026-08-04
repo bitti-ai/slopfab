@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/vit_decoder.h"
@@ -90,40 +91,22 @@ struct ViTDecoder::Impl {
     if (blas != nullptr) cublasDestroy(blas);
   }
 
-  // Row-major C[M,N] = A[M,K] * B[K,N]^T where B is stored [N,K] row-major.
-  // cuBLAS is column-major, so operands swap: a row-major [M,K] buffer is a
-  // column-major [K,M] buffer of the same bytes.
   void gemm_nt(const float* A, const float* B, float* C, int M, int N, int K) {
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    CUBLAS_CHECK(cublasSgemm(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, K, A, K, &beta, C,
-                             N));
+    cuda::gemm_nt(blas, A, B, C, M, N, K);
   }
 
-  // Row-major C[M,N] = A[M,K] * B[K,N].
   void gemm_nn(const float* A, const float* B, float* C, int M, int N, int K) {
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    CUBLAS_CHECK(cublasSgemm(blas, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N, A, K, &beta, C,
-                             N));
+    cuda::gemm_nn(blas, A, B, C, M, N, K);
   }
 
-  // Batched row-major C[b][M,N] = A[b][M,K] * B[b][N,K]^T.
   void gemm_nt_batched(const float* A, const float* B, float* C, int M, int N, int K, int batch,
                        long long strideA, long long strideB, long long strideC) {
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    CUBLAS_CHECK(cublasSgemmStridedBatched(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, K,
-                                           strideB, A, K, strideA, &beta, C, N, strideC, batch));
+    cuda::gemm_nt_batched(blas, A, B, C, M, N, K, batch, strideA, strideB, strideC);
   }
 
-  // Batched row-major C[b][M,N] = A[b][M,K] * B[b][K,N].
   void gemm_nn_batched(const float* A, const float* B, float* C, int M, int N, int K, int batch,
                        long long strideA, long long strideB, long long strideC) {
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    CUBLAS_CHECK(cublasSgemmStridedBatched(blas, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N,
-                                           strideB, A, K, strideA, &beta, C, N, strideC, batch));
+    cuda::gemm_nn_batched(blas, A, B, C, M, N, K, batch, strideA, strideB, strideC);
   }
 
   void ensure_scratch(int seq) {
