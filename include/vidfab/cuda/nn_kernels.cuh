@@ -89,6 +89,11 @@ void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream);
 // Note the pairing is j with j+48 over the 96 rotary channels, *not* j with
 // j+64 over all 128. The 48-wide half-period is [T(16) | H(16) | W(16)].
 // Spec section 5.3.
+//
+// The 96 is fixed by MM-RoPE's `3 axes x 16 frequencies x 2`, not derived from
+// `head_dim`; `head_dim` only has to be at least that. Kept as a constant
+// rather than a parameter because a caller that got it wrong would produce a
+// plausible wrong video, not an error.
 void launch_rope_h3(__nv_bfloat16* x, const float* cos, const float* sin, int rows, int heads,
                     int head_dim, cudaStream_t stream);
 
@@ -96,6 +101,9 @@ void launch_rope_h3(__nv_bfloat16* x, const float* cos, const float* sin, int ro
 // j + head_dim/2. For the Qwen3-VL encoder: its 3-D mrope degenerates to this
 // for a pure-text sequence, because all three position axes carry the same
 // value and the section split then has no effect.
+//
+// `cos` and `sin` are `[rows, head_dim]` — the half-period duplicated, as the
+// reference builds it — not `[rows, head_dim/2]`.
 void launch_rope_neox(__nv_bfloat16* x, const float* cos, const float* sin, int rows, int heads,
                       int head_dim, cudaStream_t stream);
 
