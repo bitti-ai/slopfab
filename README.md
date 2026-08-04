@@ -152,9 +152,8 @@ from the reference PyTorch pipeline; `vidfab compare` is built to consume them.
 `docs/vae_decoder_spec.md`, `docs/transformer_spec.md` and
 `docs/audio_vae_spec.md` document each stage layer by layer with citations
 into the reference source; `docs/convrot_notes.md` covers the int8 rotation.
-The video decoder's three traps are worth knowing before reading the code. Three things in it are worth knowing before reading
-the code, because each produces plausible-but-wrong output if taken the obvious
-way:
+Three things about the video decoder are worth knowing before reading the code,
+because each produces plausible-but-wrong output if taken the obvious way:
 
 - **The decoder has no convolutional upsampler.** The `block_out_channels` and
   `spatial_downsample_factors` in `vae/config.json` describe the *encoder*. The
