@@ -324,6 +324,19 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   const int inner = config.ffn_inner;
   const int ch = config.in_channels;
 
+  // Shape constraints the kernels rely on. Checked once here rather than in the
+  // launcher, which runs 36 times per window.
+  if (config.head_dim != 64) {
+    throw std::runtime_error("vae: split_qkv_norm_rope requires head_dim 64, got " +
+                             std::to_string(config.head_dim));
+  }
+  if (config.rope_dim % 2 != 0 || config.rope_dim > config.head_dim) {
+    throw std::runtime_error("vae: rope_dim must be even and <= head_dim");
+  }
+  if (config.heads * config.head_dim != dim) {
+    throw std::runtime_error("vae: heads * head_dim must equal dim");
+  }
+
   WeightUploader uploader(d.stream.get());
 
   d.x_embed_w = uploader.upload(ckpt, "decoder.x_embedder.weight", static_cast<size_t>(dim) * ch);

@@ -533,6 +533,31 @@ void test_gemm_scatter() {
     std::fprintf(stderr, "  FAIL gemm_nn_batched_ld: worst abs err %.3e over %d probes\n", worst,
                  checked);
   }
+
+  // Full coverage without an O(seq) CPU reference: run the same multiply
+  // through the plain batched wrapper into a contiguous [H][S][D] buffer,
+  // permute on the host, and compare every element. The two calls may select
+  // different cuBLAS kernels so this is not bit-exact, but a layout error is
+  // O(result magnitude), not O(1e-4).
+  DeviceBuffer<float> dplain(static_cast<size_t>(heads) * seq * head_dim);
+  vidfab::cuda::gemm_nn_batched(h, dP.get(), dV.get(), dplain.get(), seq, head_dim, seq, heads,
+                                static_cast<long long>(seq) * seq,
+                                static_cast<long long>(seq) * head_dim,
+                                static_cast<long long>(seq) * head_dim);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> plain = to_host(dplain);
+
+  std::vector<float> permuted(plain.size());
+  for (int t = 0; t < seq; ++t) {
+    for (int hh = 0; hh < heads; ++hh) {
+      for (int dd = 0; dd < head_dim; ++dd) {
+        permuted[(static_cast<size_t>(t) * heads + hh) * head_dim + dd] =
+            plain[(static_cast<size_t>(hh) * seq + t) * head_dim + dd];
+      }
+    }
+  }
+  CHECK_CLOSE(permuted, got, 1e-4, "gemm_nn_batched_ld full scatter layout");
+
   cublasDestroy(h);
 }
 

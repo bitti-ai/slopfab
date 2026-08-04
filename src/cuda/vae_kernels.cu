@@ -395,14 +395,6 @@ void launch_split_qkv_norm_rope(const float* qkv, const float* bias, const float
                                 const float* sin_tab, float* q, float* k, float* v, int seq,
                                 int heads, int head_dim, int rope_dim, int num_patches, float eps,
                                 cudaStream_t stream) {
-  // The warp-per-pair layout gives each lane exactly two elements.
-  if (head_dim != 2 * kWarp) {
-    throw std::runtime_error("split_qkv_norm_rope: head_dim must be 64, got " +
-                             std::to_string(head_dim));
-  }
-  if (rope_dim % 2 != 0 || rope_dim > head_dim) {
-    throw std::runtime_error("split_qkv_norm_rope: rope_dim must be even and <= head_dim");
-  }
   const int threads = 256;
   const int warps_per_block = threads / kWarp;
   const int pairs = seq * heads;
