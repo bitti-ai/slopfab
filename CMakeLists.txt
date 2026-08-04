@@ -86,6 +86,16 @@ if(VIDFAB_ENABLE_CUDA)
     # Whole-program compilation: no device code crosses translation units, and
     # -rdc=true would otherwise require an explicit device-link step.
     set_target_properties(vidfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
+
+    # The CUDA runtime is linked statically, which is deliberate: it keeps the
+    # binary's runtime dependencies to the driver alone. The cost is a
+    # cosmetic `LNK4098: defaultlib 'LIBCMT' conflicts` on MSVC, because
+    # cudart_static.lib is built against the static CRT while this project uses
+    # the dynamic one. The linker resolves it correctly and NVIDIA's own
+    # samples emit the same warning; it is left visible rather than suppressed
+    # with /NODEFAULTLIB, which would hide a real CRT conflict if one ever
+    # appeared. Switching to CUDA_RUNTIME_LIBRARY=Shared would silence it at
+    # the price of shipping cudart64_*.dll — the wrong trade for this project.
     target_link_libraries(vidfab_cuda PUBLIC vidfab_core)
 
     target_compile_definitions(vidfab_core PUBLIC VIDFAB_WITH_CUDA=1)
