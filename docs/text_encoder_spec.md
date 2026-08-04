@@ -826,7 +826,7 @@ is the standard pre-norm behaviour and is why §1.4's output has a large RMS.
 
 ---
 
-## 5. Quantisation: int8 + ConvRot
+## 5. Quantisation: int8 + ConvRot, and nvfp4 + AWQ
 
 ### 5.1 What is quantised, and the dequantisation formula
 
@@ -971,6 +971,142 @@ orthogonality preserves its norm). **Run one layer both ways during bring-up.**
 Given that a wrong ConvRot is silent, this is the single highest-value test in
 the module. A third check: `butterfly(butterfly(v)) == v` to fp32 round-off, for
 random `v`, which catches stride/sign errors in the butterfly itself.
+
+
+### 5.5 The other build: nvfp4 + AWQ
+
+The same model ships a second time as
+`qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` (14.61 GiB, 2054 tensors). It is
+a different quantiser's output, not a repacking, and it differs from section 5.1
+in every respect that matters. Both builds load; which one a file is comes from
+its own `comfy_quant` descriptors, never from a flag.
+
+Per quantised linear:
+
+| tensor | dtype | shape |
+|---|---|---|
+| `.weight` | U8 | `[out, in/2]` — two E2M1 nibbles per byte |
+| `.weight_scale` | F8_E4M3 | `[out, in/16]` — one scale per 16 contracted elements |
+| `.weight_scale_2` | F32 | scalar — one global scale per tensor |
+| `.pre_quant_scale` | BF16 | `[in]` — **present on `o_proj` and `down_proj` only** |
+| `.comfy_quant` | U8 | `[55]` |
+
+34 tensors per layer against the int8 build's 25: 4 norms + 7 x (weight,
+weight_scale, weight_scale_2, comfy_quant) + 2 pre_quant_scale. 50 layers gives
+1700, plus 3 for the embedding, plus 351 `visual.*` that are present and never
+loaded, which is the 2054.
+
+The `comfy_quant` payload is exactly
+`{"format": "nvfp4", "full_precision_matrix_mult": true}` on **all 350**
+quantised linears. So every layer is checkpoint-declared full precision: it
+dequantises and runs bf16, and must never take a native fp4 GEMM. That comes
+from the file and is asserted at validation; nothing may infer it from which
+scales happen to be present. This build is also **not** ConvRot-rotated —
+`convrot` is absent — so nothing in section 5.2 or 5.3 applies to it.
+
+The embedding table does not follow the linears. Here it is
+**I8 `[151936, 5120]` with an F32 per-row `weight_scale` `[151936, 1]`** and a
+`comfy_quant` of `{"format": "int8_tensorwise"}`; in the int8+ConvRot build the
+same tensor is BF16. The row scale multiplies.
+
+#### 5.5.1 Four things that must be established empirically
+
+Every one of these is silent: the wrong answer is finite, correctly shaped and
+plausibly scaled, and passes every structural check in section 1.4. All four
+were pinned by comparing this build elementwise against the int8 build of the
+same model, after de-rotating the latter with the ConvRot Hadamard.
+`tools/nvfp4_layout_probe.py` prints the grid; the control that the two files
+are the same model at all is `model.embed_tokens`, which agrees at relative
+L2 0.0094 / correlation +0.99996.
+
+**1. The HIGH nibble holds the even-indexed element.** Not the low one. Scored
+on layer-0 `q_proj` against the de-rotated int8 weight:
+
+| nibble order | relative L2 | correlation |
+|---|---|---|
+| high = even | **0.0981** | **+0.995178** |
+| low = even | 1.4765 | +0.000844 |
+
+Same verdict on `o_proj`, `gate_proj` and `down_proj`. The wrong order is not
+merely worse — it is uncorrelated.
+
+**2. `weight_scale` is stored swizzled, not row-major.** Its declared shape is
+`[out, in/16]`, but the bytes are in a 128x4 tile layout. For output row `m` and
+block `k`, with `K = in_features/16`:
+
+```
+tile   = (m / 128) * (K / 4) + (k / 4)
+offset = tile * 512 + (m % 32) * 16 + ((m % 128) / 32) * 4 + (k % 4)
+```
+
+The tile is 128 rows x 4 blocks = 512 bytes, laid out row-of-tiles major. Inside
+it the slowest index is `m % 32` at stride 16, then which quarter of the 128
+rows at stride 4, then `k % 4` at stride 1 — so four consecutive blocks of one
+row are four consecutive bytes, which is the only part visible by eye. In-tile
+maximum is `31*16 + 3*4 + 3 = 511`, a bijection onto the tile.
+
+Read row-major instead, with everything else correct, layer-0 `o_proj` scores
+relative L2 **0.7707** at correlation **+0.793**. That is well-scaled noise, and
+no shape check, dtype check or finiteness check would ever catch it.
+
+Requires `out_features % 128 == 0` and `(in_features/16) % 4 == 0`. Both hold
+for all seven linears with nothing left over — q 8192x320, k/v 1024x320,
+o 5120x512, gate/up 25600x320, down 5120x1600 — and the stored byte count equals
+`out * in/16` exactly, which is independent evidence that there is no padding.
+A padded layout is plausible but no shipped file exercises one, so the loader
+**throws** rather than guessing which convention it would follow.
+
+**3. The activation is multiplied by `pre_quant_scale`.** The AWQ convention is
+`y = (x*s) @ (W/s)^T`: the stored weight has already been divided, so it is the
+activation that is scaled. Layer-0 `o_proj`, correct nibble order and swizzle:
+
+| fold | relative L2 | correlation |
+|---|---|---|
+| `W * s` (multiply the activation) | **0.0999** | **+0.995014** |
+| `W / s` | 0.7798 | +0.639554 |
+| no fold | 0.5023 | +0.946950 |
+
+`down_proj` gives 0.1073 / 1.0401 / 0.3608 for the same three.
+
+**4. The other five linears had it folded into the preceding norm.** `q_proj`,
+`k_proj` and `v_proj` into `input_layernorm`; `gate_proj` and `up_proj` into
+`post_attention_layernorm`. Check per tensor — never infer it from the layer's
+name, and never synthesise a value for it: a null pointer means "already
+accounted for", not "unknown".
+
+The evidence, and it is a clean control. Between the two builds at layer 0:
+
+| tensor | identical? | median relative difference |
+|---|---|---|
+| `input_layernorm.weight` | no | 0.5092 |
+| `post_attention_layernorm.weight` | no | 0.8250 |
+| `self_attn.q_norm.weight` | **yes, bitwise** | 0.0000 |
+| `self_attn.k_norm.weight` | **yes, bitwise** | 0.0000 |
+
+`q_norm` and `k_norm` sit *after* the projections and have nothing to absorb, so
+their being bitwise identical while the other two differ is exactly the
+signature of the fold. And the ratio `nvfp4_norm / int8_norm` *is* the folded
+scale: using it as the fold recovers `q_proj` at relative L2 0.0981 and
+`gate_proj` at 0.1054, the same floor as the two linears that store their scale
+explicitly.
+
+#### 5.5.2 The cross-check to run once
+
+Sections 5.4's advice applies here in a different form. Run the same prompt
+through both builds and compare `hidden_states[50]`.
+
+They are two *different quantisations* of one model, so the bar is a few
+percent, **not** the project's 1e-3 / 1e-2 per-tensor tolerance — that tolerance
+is for two paths computing the same thing, and confusing the two bars will make
+you chase a gap that is not there. Measured over a 190-token prompt: **0.0187**
+of the int8 output's norm overall, worst row 0.171.
+
+That bar has real power despite being loose. A wrong AWQ fold direction, a
+row-major scale read or a swapped nibble order all miss by order one, while
+leaving output that passes every structural check in section 1.4 — including the
+token-0 massive activation, the row-RMS spread, and finiteness. Bracket it on
+both sides: agreement much better than a percent would mean something is
+comparing an output with itself.
 
 ---
 
