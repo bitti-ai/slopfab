@@ -1601,11 +1601,15 @@ VIDFAB_TEST(production_shape_timings) {
     BfBuf x(norm_n), out(norm_n), w(weight_n);
     VIDFAB_CUDA_CHECK(cudaMemset(x.raw.get(), 0x3C, x.raw.nbytes()));
     VIDFAB_CUDA_CHECK(cudaMemset(w.raw.get(), 0x3F, w.raw.nbytes()));
-    const float ms_norm = timer.measure(
-        [&] {
-          vidfab::cuda::launch_rmsnorm(x.p(), w.p(), out.p(), seq, model_dim, 1e-5f, nullptr);
-        },
-        3, 20);
+    float ms_norm = 1e30f;
+    for (int pass = 0; pass < 3; ++pass) {
+      ms_norm = std::min(ms_norm, timer.measure(
+                                      [&] {
+                                        vidfab::cuda::launch_rmsnorm(x.p(), w.p(), out.p(), seq,
+                                                                     model_dim, 1e-5f, nullptr);
+                                      },
+                                      3, 20));
+    }
     const double bytes = 3.0 * double(seq) * model_dim * 2.0;
     std::printf("  rmsnorm     rows=%-6d dim=5376              %8.3f ms  (%.0f GB/s)\n", seq,
                 ms_norm, bytes / (ms_norm * 1e-3) / 1e9);
@@ -1618,12 +1622,17 @@ VIDFAB_TEST(production_shape_timings) {
     std::vector<int32_t> a(seq);
     for (int r = 0; r < seq; ++r) a[r] = r % mod_rows;
     DeviceBuffer<int32_t> da = to_device_i32(a);
-    const float ms_mod = timer.measure(
-        [&] {
-          vidfab::cuda::launch_rmsnorm_modulate(x.p(), w.p(), scale.get(), shift.get(), da.get(),
-                                                out.p(), seq, model_dim, 1e-5f, nullptr);
-        },
-        3, 20);
+    float ms_mod = 1e30f;
+    for (int pass = 0; pass < 3; ++pass) {
+      ms_mod = std::min(ms_mod,
+                        timer.measure(
+                            [&] {
+                              vidfab::cuda::launch_rmsnorm_modulate(x.p(), w.p(), scale.get(),
+                                                                    shift.get(), da.get(), out.p(),
+                                                                    seq, model_dim, 1e-5f, nullptr);
+                            },
+                            3, 20));
+    }
     std::printf("  rmsnorm_mod rows=%-6d dim=5376              %8.3f ms\n", seq, ms_mod);
     CHECK(ms_norm > 0.0f && ms_mod > 0.0f);
   }

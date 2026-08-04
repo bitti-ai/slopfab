@@ -30,7 +30,8 @@
 // read back by the softmax, which halves the traffic through the single largest
 // buffer in the pipeline and lets the key block grow threefold inside the same
 // budget. Measured at seq 37710, 56 heads: 744 ms with fp32 scores and bf16
-// probabilities, 564 ms this way.
+// probabilities, 561 ms this way. (Measure it twice — another process on this
+// box intermittently takes half the card, and a contended run reads ~1180 ms.)
 //
 // It is not a precision regression. fp16 carries 11 mantissa bits to bf16's 8
 // and the accumulation is fp32 either way, so the probabilities are strictly
@@ -314,7 +315,7 @@ void launch_online_softmax(int chunks, int blocks, __half* tile, float* acc, flo
 // outside [6e-8, 65504], which post-norm activations never are.
 
 __global__ void bf16_to_f16_packed_kernel(const __nv_bfloat16* __restrict__ src,
-                                          __half* __restrict__ dst, size_t packs, size_t n) {
+                                          __half* __restrict__ dst, size_t packs) {
   const size_t p = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (p >= packs) return;
   const size_t base = p * 8;
@@ -325,7 +326,6 @@ __global__ void bf16_to_f16_packed_kernel(const __nv_bfloat16* __restrict__ src,
 #pragma unroll
   for (int i = 0; i < 4; ++i) h[i] = __float22half2_rn(__bfloat1622float2(in[i]));
   *reinterpret_cast<uint4*>(dst + base) = out;
-  (void)n;
 }
 
 __global__ void bf16_to_f16_scalar_kernel(const __nv_bfloat16* __restrict__ src,
@@ -344,7 +344,7 @@ void convert_bf16_to_f16(const __nv_bfloat16* src, __half* dst, size_t n, cudaSt
   if (aligned) {
     const size_t packs = n / 8;
     bf16_to_f16_packed_kernel<<<static_cast<int>((packs + 255) / 256), 256, 0, stream>>>(src, dst,
-                                                                                         packs, n);
+                                                                                         packs);
   } else {
     bf16_to_f16_scalar_kernel<<<static_cast<int>((n + 255) / 256), 256, 0, stream>>>(src, dst, n);
   }
