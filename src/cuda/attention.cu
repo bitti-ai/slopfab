@@ -52,6 +52,7 @@
 #include "vidfab/cuda/attention.cuh"
 
 #include <cuda_fp16.h>
+#include <mma.h>
 
 #include <algorithm>
 #include <cmath>
@@ -493,6 +494,281 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
   }
 }
 
+// --- fused backend ----------------------------------------------------------
+//
+// The blocked path above is FlashAttention's algorithm with cuBLAS doing the two
+// GEMMs, which means the score tile is written to HBM by the QK GEMM, read back
+// by the softmax, and read a third time by the PV GEMM. At seq 37710 that round
+// trip is ~12 bytes per score element and it is 86% of a denoising step. This
+// kernel exists to delete it: S and P never leave shared memory.
+//
+// **Shape of the decomposition.** One block owns one query tile of `kBr` rows
+// for one head; `kWarps` warps split it so that **each warp owns 16 whole rows
+// and every column of them**. That is the load-bearing choice: a row's softmax
+// never spans two warps, so the running max, the correction factor and the sum
+// are warp-local and need no `__syncthreads` and no shared reduction. Only the
+// K/V staging and the O rescale are block-wide.
+//
+// **Why bf16 fragments and not the fp16 the blocked path uses.** The fp16
+// conversion of k and v exists only because cuBLAS will not take bf16 in and
+// fp16 out; `wmma` takes bf16 directly with an fp32 accumulator, so the two
+// full-sequence conversion buffers and their HBM traffic disappear. The
+// probabilities stay fp16 -- P feeds a second mma whose operands must share a
+// type, so V is converted to fp16 during SMEM staging, which costs no HBM
+// traffic and keeps the 11 mantissa bits the blocked path deliberately chose
+// over bf16's 8.
+//
+// **Accumulator in shared memory, not registers.** O is rescaled by a
+// *per-row* factor every key block. `wmma`'s accumulator fragment does not
+// expose which row an element belongs to -- the mapping is unspecified -- so a
+// register-resident O cannot be scaled correctly without assuming a layout the
+// API does not promise. Keeping O in SMEM makes the rescale an ordinary
+// indexed loop. It costs SMEM bandwidth per key block and no HBM traffic, which
+// is the trade this kernel is for.
+namespace fused {
+
+constexpr int kWarps = 4;
+constexpr int kThreads = kWarps * kWarp;
+constexpr int kBr = 16 * kWarps;  // query rows per block, 16 per warp
+constexpr int kBc = 32;           // key rows per step
+constexpr int kM = 16;            // wmma tile extent
+
+// Padding keeps successive rows out of the same SMEM bank. 8 elements of a
+// 2-byte type and 4 of a 4-byte type are both 16 bytes, which is also the
+// alignment `load_matrix_sync` wants.
+constexpr int kPadH = 8;
+constexpr int kPadF = 4;
+
+struct Smem {
+  __nv_bfloat16* qs;  // [kBr][D + kPadH]
+  __nv_bfloat16* ks;  // [kBc][D + kPadH]
+  __half* vs;         // [kBc][D + kPadH]
+  float* st;          // [kBr][kBc + kPadF]
+  __half* ps;         // [kBr][kBc + kPadH]
+  float* os;          // [kBr][D + kPadF]
+  float* cs;          // [kBr]
+};
+
+__host__ __device__ inline size_t smem_bytes(int D) {
+  size_t n = 0;
+  n += sizeof(__nv_bfloat16) * kBr * (D + kPadH);
+  n += sizeof(__nv_bfloat16) * kBc * (D + kPadH);
+  n += sizeof(__half) * kBc * (D + kPadH);
+  n += sizeof(float) * kBr * (kBc + kPadF);
+  n += sizeof(__half) * kBr * (kBc + kPadH);
+  n += sizeof(float) * kBr * (D + kPadF);
+  n += sizeof(float) * kBr;
+  return n;
+}
+
+__device__ inline Smem carve(char* raw, int D) {
+  Smem s;
+  s.qs = reinterpret_cast<__nv_bfloat16*>(raw);
+  raw += sizeof(__nv_bfloat16) * kBr * (D + kPadH);
+  s.ks = reinterpret_cast<__nv_bfloat16*>(raw);
+  raw += sizeof(__nv_bfloat16) * kBc * (D + kPadH);
+  s.vs = reinterpret_cast<__half*>(raw);
+  raw += sizeof(__half) * kBc * (D + kPadH);
+  s.st = reinterpret_cast<float*>(raw);
+  raw += sizeof(float) * kBr * (kBc + kPadF);
+  s.ps = reinterpret_cast<__half*>(raw);
+  raw += sizeof(__half) * kBr * (kBc + kPadH);
+  s.os = reinterpret_cast<float*>(raw);
+  raw += sizeof(float) * kBr * (D + kPadF);
+  s.cs = reinterpret_cast<float*>(raw);
+  return s;
+}
+
+// D is a template parameter so the fragment loops unroll to a constant count and
+// the SMEM strides fold into the addressing.
+template <int D>
+__global__ __launch_bounds__(kThreads) void fused_kernel(
+    const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ k,
+    const __nv_bfloat16* __restrict__ v, __nv_bfloat16* __restrict__ out, int seq, int heads,
+    int num_kv_heads, float scale) {
+  using namespace nvcuda;
+
+  extern __shared__ char raw_smem[];
+  Smem sm = carve(raw_smem, D);
+
+  const int q0 = blockIdx.x * kBr;
+  const int head = blockIdx.y;
+  const int tid = threadIdx.x;
+  const int warp = tid / kWarp;
+  const int lane = tid % kWarp;
+
+  const int group = heads / num_kv_heads;
+  const int kv_head = head / group;
+  const size_t qld = static_cast<size_t>(heads) * D;
+  const size_t kvld = static_cast<size_t>(num_kv_heads) * D;
+
+  constexpr int kDTiles = D / kM;
+  constexpr int kCTiles = kBc / kM;
+
+  // Q tile -> SMEM, zero-filled past the end of the sequence so the tail block's
+  // fragments read defined data. Its scores are discarded by the row guard at
+  // the end, never by the arithmetic.
+  for (int i = tid; i < kBr * D; i += kThreads) {
+    const int r = i / D;
+    const int c = i % D;
+    const int row = q0 + r;
+    sm.qs[r * (D + kPadH) + c] =
+        row < seq ? q[static_cast<size_t>(row) * qld + head * D + c] : __float2bfloat16(0.0f);
+  }
+  for (int i = tid; i < kBr * D; i += kThreads) sm.os[(i / D) * (D + kPadF) + (i % D)] = 0.0f;
+  __syncthreads();
+
+  // Per-row softmax state. Each warp owns rows [warp*16, warp*16+16), so lane r
+  // (r < 16) is the sole owner of row warp*16 + r and no reduction is needed.
+  float m_run = kHostNegInf;
+  float l_run = 0.0f;
+  const int my_row = warp * kM + lane;  // meaningful only for lane < kM
+  const bool row_owner = lane < kM;
+
+  wmma::fragment<wmma::matrix_a, kM, kM, kM, __nv_bfloat16, wmma::row_major> qf[kDTiles];
+#pragma unroll
+  for (int t = 0; t < kDTiles; ++t) {
+    wmma::load_matrix_sync(qf[t], sm.qs + (warp * kM) * (D + kPadH) + t * kM, D + kPadH);
+  }
+
+  for (int k0 = 0; k0 < seq; k0 += kBc) {
+    __syncthreads();  // previous iteration's PV is done reading ks/vs
+    for (int i = tid; i < kBc * D; i += kThreads) {
+      const int r = i / D;
+      const int c = i % D;
+      const int row = k0 + r;
+      const bool live = row < seq;
+      const size_t src = static_cast<size_t>(row) * kvld + kv_head * D + c;
+      sm.ks[r * (D + kPadH) + c] = live ? k[src] : __float2bfloat16(0.0f);
+      sm.vs[r * (D + kPadH) + c] = live ? __float2half(__bfloat162float(v[src])) : __float2half(0.0f);
+    }
+    __syncthreads();
+
+    // S = Q K^T. K is [kBc][D] row-major in SMEM; reading it as a col_major B
+    // fragment with ld = D + kPadH yields K^T without a transpose pass.
+#pragma unroll
+    for (int j = 0; j < kCTiles; ++j) {
+      wmma::fragment<wmma::accumulator, kM, kM, kM, float> acc;
+      wmma::fill_fragment(acc, 0.0f);
+#pragma unroll
+      for (int t = 0; t < kDTiles; ++t) {
+        wmma::fragment<wmma::matrix_b, kM, kM, kM, __nv_bfloat16, wmma::col_major> kf;
+        wmma::load_matrix_sync(kf, sm.ks + (j * kM) * (D + kPadH) + t * kM, D + kPadH);
+        wmma::mma_sync(acc, qf[t], kf, acc);
+      }
+      wmma::store_matrix_sync(sm.st + (warp * kM) * (kBc + kPadF) + j * kM, acc, kBc + kPadF,
+                              wmma::mem_row_major);
+    }
+    __syncwarp();
+
+    // Online softmax over this warp's own 16 rows. Columns past the sequence end
+    // are excluded here rather than by zeroing k: a zero key gives score 0,
+    // whose exp is 1, which would silently inflate the denominator.
+    float c_scale = 0.0f;
+    if (row_owner) {
+      const float* srow = sm.st + my_row * (kBc + kPadF);
+      const int live = min(kBc, seq - k0);
+      float tile_max = kHostNegInf;
+      for (int j = 0; j < live; ++j) tile_max = fmaxf(tile_max, srow[j] * scale);
+      const float m_new = fmaxf(m_run, tile_max);
+      // m_new is -inf only if this warp has seen no live key at all, and then
+      // every exp below is skipped; guarding keeps inf - inf out of the fp path.
+      c_scale = (m_run == kHostNegInf || m_new == kHostNegInf) ? 0.0f : __expf(m_run - m_new);
+      float sum = 0.0f;
+      __half* prow = sm.ps + my_row * (kBc + kPadH);
+      for (int j = 0; j < kBc; ++j) {
+        float p = 0.0f;
+        if (j < live && m_new != kHostNegInf) {
+          p = __expf(srow[j] * scale - m_new);
+          sum += p;
+        }
+        prow[j] = __float2half(p);
+      }
+      l_run = l_run * c_scale + sum;
+      m_run = m_new;
+      sm.cs[my_row] = c_scale;
+    }
+    __syncthreads();
+
+    // O *= c, then O += P V. The rescale is a plain indexed loop precisely
+    // because O lives in SMEM.
+    for (int i = tid; i < kBr * D; i += kThreads) {
+      const int r = i / D;
+      sm.os[r * (D + kPadF) + (i % D)] *= sm.cs[r];
+    }
+    __syncthreads();
+
+#pragma unroll
+    for (int jj = 0; jj < kDTiles; ++jj) {
+      wmma::fragment<wmma::accumulator, kM, kM, kM, float> acc;
+      wmma::load_matrix_sync(acc, sm.os + (warp * kM) * (D + kPadF) + jj * kM, D + kPadF,
+                             wmma::mem_row_major);
+#pragma unroll
+      for (int t = 0; t < kCTiles; ++t) {
+        wmma::fragment<wmma::matrix_a, kM, kM, kM, __half, wmma::row_major> pf;
+        wmma::fragment<wmma::matrix_b, kM, kM, kM, __half, wmma::row_major> vf;
+        wmma::load_matrix_sync(pf, sm.ps + (warp * kM) * (kBc + kPadH) + t * kM, kBc + kPadH);
+        wmma::load_matrix_sync(vf, sm.vs + (t * kM) * (D + kPadH) + jj * kM, D + kPadH);
+        wmma::mma_sync(acc, pf, vf, acc);
+      }
+      wmma::store_matrix_sync(sm.os + (warp * kM) * (D + kPadF) + jj * kM, acc, D + kPadF,
+                              wmma::mem_row_major);
+    }
+  }
+  __syncthreads();
+
+  if (row_owner && q0 + my_row < seq) {
+    const float inv = l_run > 0.0f ? 1.0f / l_run : 0.0f;
+    const float* orow = sm.os + my_row * (D + kPadF);
+    __nv_bfloat16* dst = out + static_cast<size_t>(q0 + my_row) * qld + head * D;
+    for (int d = 0; d < D; ++d) dst[d] = __float2bfloat16(orow[d] * inv);
+  }
+}
+
+// >48 KB of shared memory per block is opt-in, and the opt-in is per function.
+// Doing it once per (function, device) rather than per launch keeps it off the
+// hot path; the flag is idempotent so a race between threads is harmless.
+template <int D>
+void ensure_smem_optin() {
+  static thread_local bool done = false;
+  if (done) return;
+  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D>,
+                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                         static_cast<int>(smem_bytes(D))));
+  done = true;
+}
+
+template <int D>
+void launch(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
+            const __nv_bfloat16* v, __nv_bfloat16* out, const AttentionConfig& cfg,
+            int num_kv_heads) {
+  ensure_smem_optin<D>();
+  const dim3 grid(static_cast<unsigned>((cfg.seq_len + kBr - 1) / kBr),
+                  static_cast<unsigned>(cfg.num_heads));
+  fused_kernel<D><<<grid, kThreads, smem_bytes(D), stream>>>(
+      q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale());
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+bool supported(const AttentionConfig& cfg) { return cfg.head_dim == 64 || cfg.head_dim == 128; }
+
+}  // namespace fused
+
+void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
+               const __nv_bfloat16* v, __nv_bfloat16* out, const AttentionConfig& cfg,
+               int num_kv_heads) {
+  check_config(cfg, num_kv_heads);
+  if (!fused::supported(cfg)) {
+    throw std::runtime_error("attention: kFused supports head_dim 64 or 128, got " +
+                             std::to_string(cfg.head_dim));
+  }
+  if (cfg.head_dim == 64) {
+    fused::launch<64>(stream, q, k, v, out, cfg, num_kv_heads);
+  } else {
+    fused::launch<128>(stream, q, k, v, out, cfg, num_kv_heads);
+  }
+}
+
 }  // namespace
 
 float AttentionConfig::effective_scale() const {
@@ -500,9 +776,11 @@ float AttentionConfig::effective_scale() const {
 }
 
 size_t attention_workspace_bytes(const AttentionConfig& cfg, AttentionBackend backend) {
-  if (backend != AttentionBackend::kBlocked) {
-    throw std::runtime_error("attention: kFused is not implemented yet");
-  }
+  // The fused backend keeps the score tile, the probabilities and the
+  // accumulator in shared memory, and reads q, k and v as bf16 without the
+  // fp16 conversion copies the blocked path needs. It therefore wants no
+  // workspace at all -- not a smaller one.
+  if (backend == AttentionBackend::kFused) return 0;
   if (cfg.seq_len <= 0 || cfg.num_heads <= 0 || cfg.head_dim <= 0) return 0;
 
   const int bq = effective_query_block(cfg);
@@ -528,8 +806,9 @@ size_t attention_workspace_bytes(const AttentionConfig& cfg, AttentionBackend ba
 void attention_forward(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16* q,
                        const __nv_bfloat16* k, const __nv_bfloat16* v, __nv_bfloat16* out,
                        const AttentionConfig& cfg, AttentionBackend backend, Workspace& ws) {
-  if (backend != AttentionBackend::kBlocked) {
-    throw std::runtime_error("attention: kFused is not implemented yet");
+  if (backend == AttentionBackend::kFused) {
+    run_fused(stream, q, k, v, out, cfg, cfg.num_heads);
+    return;
   }
   run_blocked(handle, stream, q, k, v, out, cfg, cfg.num_heads, ws);
 }
@@ -538,8 +817,9 @@ void attention_forward_gqa(cublasHandle_t handle, cudaStream_t stream, const __n
                            const __nv_bfloat16* k, const __nv_bfloat16* v, __nv_bfloat16* out,
                            const AttentionConfig& cfg, int num_kv_heads, AttentionBackend backend,
                            Workspace& ws) {
-  if (backend != AttentionBackend::kBlocked) {
-    throw std::runtime_error("attention: kFused is not implemented yet");
+  if (backend == AttentionBackend::kFused) {
+    run_fused(stream, q, k, v, out, cfg, num_kv_heads);
+    return;
   }
   run_blocked(handle, stream, q, k, v, out, cfg, num_kv_heads, ws);
 }

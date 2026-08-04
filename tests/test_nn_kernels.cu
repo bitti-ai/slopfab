@@ -1221,17 +1221,102 @@ VIDFAB_TEST(attention_blocked) {
   CHECK_CLOSE_REL(results[0], results[1], 1e-3, 1e-2, "attention query_block 64 == 128");
   CHECK_CLOSE_REL(results[0], results[2], 1e-3, 1e-2, "attention query_block 64 == 512");
 
-  // kFused is deferred; the enum stays so the API does not move under callers.
-  bool threw = false;
-  try {
+  // The fused backend must agree with the dense CPU reference and with the
+  // blocked backend it replaces. It takes no workspace, so pass an empty one --
+  // if it ever starts allocating, this fails rather than silently reading
+  // whatever the caller happened to leave reserved.
+  {
+    cfg.query_block = 1024;
+    BfBuf dfused(size_t(seq) * width);
     Workspace ws;
-    ws.reserve(1 << 20);
-    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dq.p(), cfg,
+    CHECK(vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kFused) == 0);
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dfused.p(), cfg,
                                     vidfab::cuda::AttentionBackend::kFused, ws);
-  } catch (const std::exception&) {
-    threw = true;
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    const std::vector<float> got = dfused.host();
+    CHECK_CLOSE_REL(want, got, 1e-3, 1e-2, "fused attention vs dense CPU");
+    CHECK_CLOSE_REL(results[0], got, 1e-3, 1e-2, "fused attention == blocked attention");
   }
-  CHECK(threw);
+
+  // head_dim outside the instantiated set must be refused, not silently wrong.
+  {
+    vidfab::cuda::AttentionConfig odd = cfg;
+    odd.head_dim = 96;
+    bool threw = false;
+    try {
+      Workspace ws;
+      BfBuf dodd(size_t(seq) * heads * 96);
+      vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dodd.p(), odd,
+                                      vidfab::cuda::AttentionBackend::kFused, ws);
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+}
+
+// The fused kernel's tail handling is invisible at a sequence that divides the
+// block sizes evenly. kBr is 64 and kBc is 32, so a prime sequence exercises a
+// ragged query tile and a ragged key step at once -- the case where a masked
+// column would otherwise contribute exp(0) = 1 to the denominator, which is
+// wrong by a factor that grows with how much of the tile is padding.
+VIDFAB_TEST(attention_fused_ragged_tail) {
+  CublasScope cb;
+  const int heads = 3;
+  const int head_dim = 128;
+  const int width = heads * head_dim;
+
+  for (int seq : {17, 61, 127, 199}) {
+    const std::vector<float> q = bf16_round(make_data(size_t(seq) * width, 401u + seq, 0.3f));
+    const std::vector<float> k = bf16_round(make_data(size_t(seq) * width, 402u + seq, 0.3f));
+    const std::vector<float> v = bf16_round(make_data(size_t(seq) * width, 403u + seq, 1.0f));
+    BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * width);
+
+    vidfab::cuda::AttentionConfig cfg;
+    cfg.seq_len = seq;
+    cfg.num_heads = heads;
+    cfg.head_dim = head_dim;
+
+    const std::vector<float> want =
+        cpu_attention(q, k, v, seq, heads, heads, head_dim, cfg.effective_scale());
+
+    Workspace ws;
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                    vidfab::cuda::AttentionBackend::kFused, ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2,
+                    ("fused attention, ragged seq " + std::to_string(seq)).c_str());
+  }
+}
+
+// Grouped-query: 6 query heads share 2 kv heads. Getting the kv head index wrong
+// still produces finite, plausibly-scaled output, so it is pinned against the
+// CPU reference rather than against a shape check.
+VIDFAB_TEST(attention_fused_gqa) {
+  CublasScope cb;
+  const int seq = 96;
+  const int heads = 6;
+  const int kv_heads = 2;
+  const int head_dim = 128;
+
+  const std::vector<float> q = bf16_round(make_data(size_t(seq) * heads * head_dim, 511u, 0.3f));
+  const std::vector<float> k = bf16_round(make_data(size_t(seq) * kv_heads * head_dim, 512u, 0.3f));
+  const std::vector<float> v = bf16_round(make_data(size_t(seq) * kv_heads * head_dim, 513u, 1.0f));
+  BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * heads * head_dim);
+
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len = seq;
+  cfg.num_heads = heads;
+  cfg.head_dim = head_dim;
+
+  const std::vector<float> want =
+      cpu_attention(q, k, v, seq, heads, kv_heads, head_dim, cfg.effective_scale());
+
+  Workspace ws;
+  vidfab::cuda::attention_forward_gqa(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                      kv_heads, vidfab::cuda::AttentionBackend::kFused, ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2, "fused gqa attention vs dense CPU");
 }
 
 // The score tile is fp16 and doubles as the probability buffer. Two things have
@@ -1521,6 +1606,25 @@ VIDFAB_TEST(production_shape_timings) {
     std::printf("  attention   seq=%-6d heads=56 head_dim=128  %8.2f ms  (%.1f TFLOP/s)\n", seq,
                 ms, flops / (ms * 1e-3) / 1e12);
     CHECK(ms > 0.0f);
+
+    // Same buffers, same timer, same best-of-three: the only honest way to
+    // report what removing the HBM round trip actually bought.
+    Workspace none;
+    float fms = 1e30f;
+    for (int pass = 0; pass < 3; ++pass) {
+      fms = std::min(fms, timer.measure(
+                              [&] {
+                                vidfab::cuda::attention_forward(
+                                    cb.h, nullptr, q.p(), k.p(), v.p(), out.p(), cfg,
+                                    vidfab::cuda::AttentionBackend::kFused, none);
+                              },
+                              1, 3));
+    }
+    std::printf("  attention   fused (no workspace)                %8.2f ms  (%.1f TFLOP/s)\n", fms,
+                flops / (fms * 1e-3) / 1e12);
+    std::printf("  fused speedup %.2fx over blocked, workspace %.2f GiB -> 0\n", ms / fms,
+                double(ws_bytes) / (1 << 30));
+    CHECK(fms > 0.0f);
   }
 
   {
