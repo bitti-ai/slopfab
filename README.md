@@ -115,9 +115,9 @@ someone else is editing.
   E2M1, safetensors loading and its rejection cases, comparison statistics, the
   flow scheduler, token packing, request resolution, the AdaLN table, the
   tokenizer, latent noise, the WAV writer and the colour transform.
-  **1719 checks.**
+  **1729 checks.**
 - **GPU kernel tests**: every kernel against independent CPU references written
-  from the spec rather than from the kernel. **318 checks.** These exist because
+  from the spec rather than from the kernel. **457 checks.** These exist because
   the failure modes here are silent — a wrong QKV de-interleave, a wrong
   depth-to-space ordering, or a transposed GEMM all produce plausible output.
 
@@ -184,8 +184,8 @@ than only at seams.
 | Audio VAE (DAC + BigVGAN) | done |
 | WAV writer, MP4/AAC muxing | done |
 | `generate` back half (unpatchify → VAEs → mux) | done |
-| H3-Omni-Transformer, 50 layers | in progress |
-| Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | spec done, implementation in progress |
+| H3-Omni-Transformer, 50 layers | implemented, merging |
+| Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | done |
 | Fused attention, native fp8/nvfp4/int4 GEMM | not started |
 
 ## Performance
