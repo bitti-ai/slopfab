@@ -309,14 +309,39 @@ hypothesis. Truncation is one-sided; the measured signed mean is `+1.66e-04`
 against a half-ULP bound of `1.95e-03`, and that check is still live precisely
 so this stays ruled out.
 
-**Prime suspect — in the test, not the model.** The CPU reference's
-`attention()` rounds each unnormalised exponential to bf16
-(`prob[j] = as_bf16(e)`) and then divides by `sum`, which it accumulated in
-fp64 from the *unrounded* values. Numerator and denominator come from different
-precisions. That is self-cancelling at `L = 1` and injects a systematic ~0.4%
-per element beyond it, which is the right size for the ~0.82% mean seen
-downstream. The GPU normalises consistently. **The fix to try first is to round
-the denominator the same way as the numerator and re-measure.**
+**Four hypotheses tested and ruled out.** Each was a real experiment against
+the real checkpoint, not reasoning; the numbers are what closed them.
+
+| hypothesis | result |
+|---|---|
+| Truncating `fp32 -> bf16` conversion (one-sided) | **Ruled out.** Signed mean is `+1.66e-04` against a half-ULP bound of `1.95e-03`. That assertion is still live. |
+| The reference's softmax rounds its numerator to bf16 but sums an unrounded fp64 denominator | **Ruled out, and it was backwards.** The GPU has the *same* asymmetry — it adds fp32 `e` to the running sum and writes bf16 probabilities — so making the reference self-consistent moved it *away* from the thing it models: 72.5% to 73.75% differing, audio mean 0.82% to 1.05%. |
+| The fp16 score tile in attention | **Ruled out.** Modelling it in the reference moved 72.5% to 72.03% and the mean from 0.827% to 0.824%. Marginal. |
+| The reference accumulates dot products in fp64 while the GPU uses fp32 | **Ruled out.** Switching the reference to fp32 accumulation changed *nothing* — 72.5%, mean 0.827%, identical to three decimal places. |
+
+That last one is the most informative: accumulation precision is not the driver,
+so the divergence comes from the explicit bf16 roundings of intermediates, which
+both sides already perform at matching points.
+
+**Where that leaves it.** The residual is consistent with ordinary bf16
+precision divergence accumulated through two refiner blocks and fifty main
+blocks — max refiner error is *exactly* one bf16 ULP, which is the granularity
+of the storage format, and there is no systematic sign bias. Two fp32 values
+differing by ~0.2% land on different bf16 values about 70% of the time, which is
+the observed rate. But that is an explanation consistent with the evidence, not
+a demonstration, and it is not being claimed as settled.
+
+Worth keeping in proportion: **the mean error is inside the project's stated
+per-tensor tolerance** (0.57-0.85% against a 1% bound, and that bound still
+asserts). Only the max exceeds its 3% bar, and only in some geometries. The
+end-to-end output is coherent, prompt-faithful video.
+
+**Next thing to try**, for whoever picks this up: bisect *within* the block
+rather than around it. Expose the residual stream after each of the two refiner
+blocks and after attention versus after the FFN, and find the first stage where
+`L = 2` stops agreeing. Everything so far has treated the block as opaque, which
+is why four plausible mechanisms could each be eliminated without the number
+moving.
 
 ## Memory budget
 

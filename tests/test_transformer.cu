@@ -216,6 +216,15 @@ std::vector<float> attention(const std::vector<float>& q, const std::vector<floa
         logit[static_cast<size_t>(j)] = acc * scale;
         mx = std::max(mx, logit[static_cast<size_t>(j)]);
       }
+      // The asymmetry here is deliberate and was measured, not overlooked: the
+      // sum accumulates the *unrounded* exponential while `prob` keeps the
+      // bf16-rounded one, because that is what the GPU's online softmax does
+      // (it adds fp32 `e` into the running sum and writes bf16 into the
+      // probabilities buffer). Making this reference internally self-consistent
+      // by rounding the denominator too was tried and made agreement *worse* —
+      // 72.5% to 73.75% of refiner elements differing, and audio mean error
+      // from 0.82% to 1.05% — precisely because it moved the reference away
+      // from the thing it is modelling. See README "Known numerical gap".
       double sum = 0.0;
       for (int j = 0; j < rows; ++j) {
         const double e = std::exp(logit[static_cast<size_t>(j)] - mx);
