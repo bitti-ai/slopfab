@@ -1,4 +1,4 @@
-// vidfab — MiniMax H3 video generation in C++/CUDA.
+// vidfab - MiniMax H3 video generation in C++/CUDA.
 
 #include <algorithm>
 #include <cinttypes>
@@ -16,6 +16,7 @@
 #include "vidfab/safetensors.h"
 #include "vidfab/safetensors_write.h"
 #include "vidfab/tensor_convert.h"
+#include "vidfab/text/tokenizer.h"
 
 #include "vidfab/video/y4m.h"
 
@@ -32,7 +33,7 @@ constexpr const char* kVersion = "0.1.0";
 
 void print_usage() {
   std::printf(
-      "vidfab %s — MiniMax H3 video generation\n"
+      "vidfab %s - MiniMax H3 video generation\n"
       "\n"
       "usage: vidfab <command> [options]\n"
       "\n"
@@ -40,6 +41,7 @@ void print_usage() {
       "  inspect <file.safetensors>   summarise a checkpoint's tensors\n"
       "  compare <ref> <actual>       diff two checkpoints tensor by tensor\n"
       "  decode --vae <f> [--latent <f>]  run the video VAE decoder\n"
+      "  tokenize --tokenizer <f> <text>  encode text and round-trip it\n"
       "  devices                      list visible CUDA devices\n"
       "  version                      print the version and exit\n"
       "\n"
@@ -488,6 +490,54 @@ int cmd_decode(int argc, char** argv) {
 }
 #endif  // VIDFAB_WITH_CUDA
 
+int cmd_tokenize(int argc, char** argv) {
+  std::string tok_path;
+  std::string text;
+  bool show_pieces = false;
+
+  for (int i = 0; i < argc; ++i) {
+    const std::string_view arg = argv[i];
+    if (arg == "--tokenizer" && i + 1 < argc) {
+      tok_path = argv[++i];
+    } else if (arg == "--pieces") {
+      show_pieces = true;
+    } else if (!arg.empty() && arg.front() == '-') {
+      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      return 2;
+    } else {
+      if (!text.empty()) text += " ";
+      text += argv[i];
+    }
+  }
+  if (tok_path.empty()) {
+    std::fprintf(stderr, "vidfab: tokenize needs --tokenizer <tokenizer.json>\n");
+    return 2;
+  }
+
+  vidfab::text::Tokenizer tok;
+  tok.load(tok_path);
+  std::printf("vocab      %zu tokens\n", tok.vocab_size());
+
+  if (show_pieces) {
+    std::printf("pieces     ");
+    for (const std::string& p : tok.pre_tokenize(text)) std::printf("[%s]", p.c_str());
+    std::printf("\n");
+  }
+
+  const std::vector<int32_t> ids = tok.encode(text);
+  std::printf("ids (%zu)   ", ids.size());
+  for (int32_t id : ids) std::printf("%d ", id);
+  std::printf("\n");
+  std::printf("tokens     ");
+  for (int32_t id : ids) std::printf("[%s]", tok.id_to_token(id).c_str());
+  std::printf("\n");
+
+  const std::string round = tok.decode(ids);
+  std::printf("decoded    %s\n", round.c_str());
+  std::printf("round trip %s\n", round == text ? "OK" : "MISMATCH");
+  return round == text ? 0 : 1;
+}
+
 int cmd_devices() {
 #if !VIDFAB_WITH_CUDA
   std::fprintf(stderr, "vidfab: built without CUDA support\n");
@@ -526,6 +576,7 @@ int main(int argc, char** argv) {
     if (command == "inspect") return cmd_inspect(argc - 2, argv + 2);
     if (command == "compare") return cmd_compare(argc - 2, argv + 2);
     if (command == "devices") return cmd_devices();
+    if (command == "tokenize") return cmd_tokenize(argc - 2, argv + 2);
 #if VIDFAB_WITH_CUDA
     if (command == "decode") return cmd_decode(argc - 2, argv + 2);
 #endif
@@ -545,3 +596,5 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
+
+
