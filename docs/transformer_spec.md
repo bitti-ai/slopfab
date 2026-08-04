@@ -1219,6 +1219,120 @@ final_layer.audio_out.*       -> audio_proj_out.*
 rope.inv_freq                 -> dropped (recomputed)
 ```
 
+### 8.6 nvfp4 dequantisation
+
+`MiniMax_H3_FL2VA_pruned_nvfp4.safetensors` is **the same model** as the fp8
+file. That is not an assumption: all 332 tensors that are float and unquantised
+in both are **bitwise identical**, max abs difference exactly 0. Everything
+below was measured against the fp8 build on that basis, and nothing in it was
+inferred from the file's own structure — the two facts that matter cannot be.
+
+1132 tensors against the fp8 file's 1082: **+200** `weight_scale_2`, **−150**
+`input_scale`. Only the 200 linears `blocks.N.{attn.qkv_proj, attn.out_proj,
+mlp.fc1, mlp.fc2}`, `N ∈ [0, 50)`, change format. The two refiner blocks,
+`condition_proj`, both patch projections, both output heads and every norm stay
+exactly as they are in the fp8 file.
+
+| suffix | dtype | shape | meaning |
+|---|---|---|---|
+| `.weight` | `U8` | `[out, in/2]` | two E2M1 nibbles per byte |
+| `.weight_scale` | `F8_E4M3` | `[out, in/16]` | one e4m3 scale per 16 contracted elements, **swizzled** |
+| `.weight_scale_2` | `F32` | scalar `[]` | second-level scale for the whole tensor |
+| `.comfy_quant` | `U8` | 19 B | `{"format": "nvfp4"}` on all 200 |
+
+There is **no `input_scale` anywhere** in the nvfp4 transformer and **no
+`full_precision_matrix_mult` on any layer** — unlike the text encoder, where all
+350 quantised linears set it. So the fp8 file's `mlp.fc2` invariant has no
+counterpart here; `full_precision` comes from the parsed blob and is simply
+false throughout.
+
+```
+w[o, i] = e2m1(nibble) * e4m3(block_scale[o, i/16]) * weight_scale_2
+```
+
+**The global scale multiplies.** `6 × 448 × weight_scale_2` reproduces the amax
+of the fp8 tensor to four decimal places on every tensor sampled — block 0's
+`qkv_proj` gives `6 × 448 × 0.0013580322 = 3.6408` against a measured `3.64063`
+— while dividing lands around `1e6`.
+
+#### The two traps
+
+Both are silent. Each leaves the value histogram exactly as it was, the output
+finite, and every summary statistic where it belongs. Only elementwise
+correlation against the fp8 build separates them.
+
+**1. The even-indexed element is the HIGH nibble**, not the low one. Byte 0 of
+row 0 of `blocks.0.attn.qkv_proj` is `0xba`; column 0's E2M1 code is `0xb` and
+column 1's is `0xa`.
+
+**2. Block scales are stored in a 128×4 tile layout**, not row-major. For
+logical `(m = output row, k = column/16)` with `K4 = in/16`:
+
+```
+tile = (m / 128) * (K4 / 4) + (k / 4)
+idx  = tile * 512 + (m % 32) * 16 + ((m % 128) / 32) * 4 + (k % 4)
+```
+
+Measured over the full 2×2 of {nibble order} × {scale layout} on
+`blocks.0.attn.qkv_proj`, 116M elements, scored by elementwise correlation:
+
+| scale layout | nibble order | correlation | max abs | mean abs |
+|---|---|---|---|---|
+| swizzled | **high = even** | **0.995342** | 0.150 | 0.0053 |
+| swizzled | low = even | 0.000031 | 3.707 | 0.0850 |
+| row-major | high = even | 0.868062 | 3.494 | 0.0254 |
+| row-major | low = even | −0.000020 | 3.641 | 0.0891 |
+
+Same ordering on `blocks.0.{attn.out_proj, mlp.fc1, mlp.fc2}`, `blocks.25.attn.
+qkv_proj` and `blocks.49.mlp.fc2`: the correct cell 0.9952–0.9955, every other
+cell ≤ 0.93. The residual 0.995 rather than 1.0 is fp4-against-fp8 disagreement
+on the same underlying weight, which is the floor.
+
+Note the two wrong nibble orders have *entirely ordinary* `max_abs` and
+`mean_abs`. Any check built on aggregate statistics passes all four rows.
+
+Reconstructing the ideal E2M1 code from the fp8 reference and the unswizzled
+scale and comparing it to the actual nibble stream gives **90.23%** exact
+agreement for high-nibble-even against **6.55%** — chance — for low-nibble-even.
+The 10% shortfall is fp8 rounding landing on a neighbouring E2M1 level.
+
+The tile map is uniquely determined. Exact-code agreement for the four nearest
+alternatives: in-tile row-major 0.3963, `(k%4)*128 + (m%128)` 0.3963,
+column-major tiles 0.3025, no swizzle 0.3790.
+
+This layout is the one the block-scaled `mma` consumes, so the checkpoint is
+pre-swizzled for a native fp4 GEMM. A consumer feeding the `mma` directly must
+still swap the nibbles within each byte: that instruction's operand registers
+put the **lower**-k element in the low nibble, the opposite of the file.
+
+#### Preconditions this relies on
+
+The tiling has **no padded case**: all 200 quantised linears satisfy
+`out % 128 == 0` and `in/16 % 4 == 0` — `qkv_proj` 21504×336, `out_proj`
+5376×448, `fc1` 28672×336, `fc2` 5376×896. A padded tile would need a different
+address map rather than a rounded-up bound, so `launch_dequant_nvfp4` refuses a
+shape it cannot address instead of computing a plausible wrong offset.
+
+**The qkv split slices both arrays.** `attn.qkv_proj` is one stored tensor
+viewed as three weights, so `data` advances by `inner*hidden/2` bytes and
+`block_scale` by `inner*hidden/16`. Advancing one and not the other gives k and
+v another row's scales entirely.
+
+Slicing the *scales* on a byte offset is only valid because the tile index runs
+row-major and each third is a whole number of 128-row tiles — `inner = 7168 =
+56 × 128`. Verified explicitly: all three thirds are bitwise identical to the
+corresponding row ranges of the fully unswizzled array. With `inner` not a
+multiple of 128 the thirds would begin mid-tile and the offset would silently
+address the wrong rows, so the loader asserts it.
+
+#### End to end
+
+Resident weights **11.749 GiB** against the fp8 build's 19.600 GiB. Running one
+denoise step of the same geometry through both models and correlating the
+velocities gives **0.97126** video and **0.99588** audio — fifty blocks of
+accumulated fp4-against-fp8 disagreement, against 0.00003 for a layout error on
+the raw weights.
+
 ---
 
 ## 9. Numerical-fidelity notes

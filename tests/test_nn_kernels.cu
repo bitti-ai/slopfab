@@ -1182,7 +1182,7 @@ VIDFAB_TEST(linear_int8_convrot) {
 //
 // Two facts about how the shipped checkpoints store an nvfp4 weight are not
 // inferable from the file and were measured against the fp8 build of the same
-// model (docs/transformer_spec.md 8.4):
+// model (docs/transformer_spec.md 8.6):
 //
 //   - the **high** nibble of each byte is the even-indexed element;
 //   - block scales are written in a 128x4 tile layout, not row-major.

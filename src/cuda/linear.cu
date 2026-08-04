@@ -123,7 +123,7 @@ __device__ inline float f4_e2m1_to_f32_dev(uint32_t nibble) {
 //
 // Reading them row-major instead is silent: the output stays finite and
 // correctly scaled, and its elementwise correlation against the fp8 build of
-// the same model is 0.00003. docs/transformer_spec.md 8.4 records the
+// the same model is 0.00003. docs/transformer_spec.md 8.6 records the
 // measurement, the four alternative tilings that were ruled out, and the
 // no-padding precondition this relies on.
 //
@@ -231,7 +231,7 @@ __global__ void dequant_nvfp4_kernel(const uint8_t* __restrict__ src,
       // The even-indexed element is the **high** nibble. Swapping these two
       // lines leaves the value histogram untouched and the output finite and
       // well scaled; it drops elementwise correlation against the fp8 build
-      // from 0.995 to 0.00003 and nothing else moves (spec 8.4).
+      // from 0.995 to 0.00003 and nothing else moves (spec 8.6).
       v[2 * b] = f4_e2m1_to_f32_dev(byte >> 4) * s;
       v[2 * b + 1] = f4_e2m1_to_f32_dev(byte & 0x0Fu) * s;
     }
