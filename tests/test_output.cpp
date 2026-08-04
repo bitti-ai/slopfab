@@ -303,3 +303,236 @@ VIDFAB_TEST(wav_rejects_malformed_requests) {
   }));
   std::filesystem::remove(path);
 }
+
+// --- colour conversion ------------------------------------------------------
+
+// The .y4m fallback and the .mp4 are two views of the same frame, so their
+// colour transforms have to agree exactly — not approximately, since a
+// half-step difference in the limited-range scaling is the signature of a
+// full-range mix-up and would look like a gamma shift when switching between
+// the two files. Comparing against the bytes actually in a .y4m, rather than
+// against a formula repeated here, is what keeps the two implementations
+// pinned together as either changes.
+VIDFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
+  using namespace vidfab::video;
+
+  const int frames = 3;
+  const int height = 8;
+  const int width = 16;
+  const std::vector<float> clip = make_clip(frames, height, width);
+
+  const std::filesystem::path path = temp_path("vidfab_convert.y4m");
+  write_y4m(path.string(), clip, frames, height, width, FrameRate{24, 1});
+  const std::vector<uint8_t> file = read_file(path);
+
+  // Skip the header line, then walk FRAME markers.
+  size_t off = 0;
+  while (off < file.size() && file[off] != '\n') ++off;
+  ++off;
+
+  const size_t frame_pixels = static_cast<size_t>(height) * width;
+  const size_t chroma_pixels = frame_pixels / 4;
+  const size_t plane = static_cast<size_t>(frames) * frame_pixels;
+
+  // Deliberately over-wide strides: ffmpeg pads every AVFrame row for
+  // alignment, so a converter that assumes stride == width writes a sheared
+  // image into a real encoder while still passing a naive test.
+  const int y_stride = width + 13;
+  const int c_stride = width / 2 + 5;
+  std::vector<uint8_t> y(static_cast<size_t>(y_stride) * height, 0xAB);
+  std::vector<uint8_t> u(static_cast<size_t>(c_stride) * (height / 2), 0xAB);
+  std::vector<uint8_t> v(static_cast<size_t>(c_stride) * (height / 2), 0xAB);
+
+  int y_diff = 0;
+  int u_diff = 0;
+  int v_diff = 0;
+  int pad_touched = 0;
+  for (int f = 0; f < frames; ++f) {
+    CHECK(tag_at(file, off, "FRAM"));
+    while (off < file.size() && file[off] != '\n') ++off;
+    ++off;
+
+    const size_t base = static_cast<size_t>(f) * frame_pixels;
+    rgb_frame_to_yuv420(clip.data() + base, clip.data() + plane + base,
+                        clip.data() + 2 * plane + base, height, width, y.data(), y_stride, u.data(),
+                        c_stride, v.data(), c_stride);
+
+    for (int row = 0; row < height; ++row) {
+      for (int col = 0; col < width; ++col) {
+        if (y[static_cast<size_t>(row) * y_stride + col] !=
+            file[off + static_cast<size_t>(row) * width + col]) {
+          ++y_diff;
+        }
+      }
+      for (int col = width; col < y_stride; ++col) {
+        if (y[static_cast<size_t>(row) * y_stride + col] != 0xAB) ++pad_touched;
+      }
+    }
+    const size_t u_off = off + frame_pixels;
+    const size_t v_off = u_off + chroma_pixels;
+    for (int row = 0; row < height / 2; ++row) {
+      for (int col = 0; col < width / 2; ++col) {
+        const size_t src = static_cast<size_t>(row) * (width / 2) + col;
+        if (u[static_cast<size_t>(row) * c_stride + col] != file[u_off + src]) ++u_diff;
+        if (v[static_cast<size_t>(row) * c_stride + col] != file[v_off + src]) ++v_diff;
+      }
+    }
+    off = v_off + chroma_pixels;
+  }
+
+  CHECK_MSG(y_diff == 0, "luma differs from write_y4m in %d of %zu samples", y_diff,
+            frame_pixels * frames);
+  CHECK_MSG(u_diff == 0, "Cb differs from write_y4m in %d samples", u_diff);
+  CHECK_MSG(v_diff == 0, "Cr differs from write_y4m in %d samples", v_diff);
+  CHECK_MSG(pad_touched == 0, "%d stride pad bytes were overwritten", pad_touched);
+
+  std::filesystem::remove(path);
+}
+
+// --- ffmpeg ----------------------------------------------------------------
+
+VIDFAB_TEST(ffmpeg_probe_is_coherent) {
+  using namespace vidfab::video;
+
+  std::string first;
+  std::string second;
+  const bool a = ffmpeg_available(&first);
+  const bool b = ffmpeg_available(&second);
+  // The probe is cached, so repeated calls must agree — and must be callable
+  // before anything else has run.
+  CHECK(a == b);
+  CHECK(first == second);
+  CHECK(ffmpeg_available(nullptr) == a);
+  // A failure that does not say why is useless to whoever has to install it.
+  CHECK(!first.empty());
+
+  if (a) {
+    CHECK(!ffmpeg_version().empty());
+    std::printf("  ffmpeg: %s\n", ffmpeg_version().c_str());
+  } else {
+    CHECK(ffmpeg_version().empty() || !ffmpeg_version().empty());  // either is legitimate
+    std::printf("  ffmpeg unavailable: %s\n", first.c_str());
+  }
+
+  // Every status has a message, including whatever the probe returned.
+  const MuxStatus all[] = {MuxStatus::kOk, MuxStatus::kLibraryNotFound, MuxStatus::kSymbolMissing,
+                           MuxStatus::kEncoderMissing, MuxStatus::kWriteFailed};
+  for (MuxStatus st : all) {
+    CHECK(mux_status_message(st) != nullptr && mux_status_message(st)[0] != '\0');
+  }
+}
+
+VIDFAB_TEST(mp4_video_and_audio_end_to_end) {
+  using namespace vidfab::video;
+
+  std::string detail;
+  if (!ffmpeg_available(&detail)) {
+    std::printf("  skipped: no usable ffmpeg (%s)\n", detail.c_str());
+    return;
+  }
+
+  const int frames = 24;
+  const int size = 128;
+  const int rate = 32000;
+  const std::vector<float> clip = make_clip(frames, size, size);
+  const std::vector<float> tone = make_tone(2, rate, 1.0f, 440.0f);
+
+  const std::filesystem::path path = temp_path("vidfab_muxed.mp4");
+  std::filesystem::remove(path);
+
+  MuxRequest req;
+  req.path = path.string();
+  req.video = &clip;
+  req.frames = frames;
+  req.height = size;
+  req.width = size;
+  req.fps = FrameRate{24, 1};
+  req.audio = &tone;
+  req.audio_channels = 2;
+  req.audio_sample_rate = rate;
+  req.video_bitrate = 2'000'000;
+  req.audio_bitrate = 128'000;
+
+  const MuxStatus status = write_mp4(req);
+  CHECK_MSG(status == MuxStatus::kOk, "write_mp4 returned %s", mux_status_message(status));
+  if (status != MuxStatus::kOk) return;
+
+  const std::vector<uint8_t> b = read_file(path);
+  // An MP4 opens with an `ftyp` box: a big-endian size, the tag, then a brand.
+  // Checking the tag rather than the extension is what catches a truncated or
+  // never-finalised file, which is exactly what a missing av_write_trailer
+  // produces.
+  CHECK(b.size() > 4096);
+  CHECK(tag_at(b, 4, "ftyp"));
+  if (b.size() >= 8) {
+    const uint32_t box = (static_cast<uint32_t>(b[0]) << 24) | (static_cast<uint32_t>(b[1]) << 16) |
+                         (static_cast<uint32_t>(b[2]) << 8) | static_cast<uint32_t>(b[3]);
+    CHECK(box >= 8 && box <= b.size());
+  }
+  // A finalised MP4 carries its index; without a trailer there is no `moov`.
+  bool has_moov = false;
+  for (size_t i = 0; i + 4 <= b.size(); ++i) {
+    if (tag_at(b, i, "moov")) {
+      has_moov = true;
+      break;
+    }
+  }
+  CHECK(has_moov);
+  std::printf("  wrote %s (%zu bytes)\n", path.string().c_str(), b.size());
+
+  std::filesystem::remove(path);
+}
+
+VIDFAB_TEST(mp4_video_only_and_bad_requests) {
+  using namespace vidfab::video;
+
+  if (!ffmpeg_available(nullptr)) {
+    std::printf("  skipped: no usable ffmpeg\n");
+    return;
+  }
+
+  const int frames = 8;
+  const int size = 64;
+  const std::vector<float> clip = make_clip(frames, size, size);
+
+  const std::filesystem::path path = temp_path("vidfab_silent.mp4");
+  std::filesystem::remove(path);
+
+  MuxRequest req;
+  req.path = path.string();
+  req.video = &clip;
+  req.frames = frames;
+  req.height = size;
+  req.width = size;
+  req.fps = FrameRate{24, 1};
+  req.video_bitrate = 1'000'000;
+  // No audio at all: a video-only MP4 is a supported request, not an error.
+  CHECK(write_mp4(req) == MuxStatus::kOk);
+  const std::vector<uint8_t> b = read_file(path);
+  CHECK(b.size() > 1024);
+  CHECK(tag_at(b, 4, "ftyp"));
+  std::filesystem::remove(path);
+
+  // Malformed requests are rejected without writing anything, and without
+  // reaching ffmpeg: odd dimensions cannot be 4:2:0 subsampled, and a sample
+  // count that disagrees with the shape means the caller has a layout bug.
+  MuxRequest odd = req;
+  odd.height = size + 1;
+  CHECK(write_mp4(odd) == MuxStatus::kWriteFailed);
+
+  MuxRequest short_data = req;
+  short_data.frames = frames + 1;
+  CHECK(write_mp4(short_data) == MuxStatus::kWriteFailed);
+
+  MuxRequest no_video = req;
+  no_video.video = nullptr;
+  CHECK(write_mp4(no_video) == MuxStatus::kWriteFailed);
+
+  // An audio buffer that is not a whole number of frames is a caller layout
+  // bug; dropping the track and writing a silent file would hide it.
+  const std::vector<float> ragged(1001);
+  MuxRequest bad_audio = req;
+  bad_audio.audio = &ragged;
+  bad_audio.audio_channels = 2;
+  CHECK(write_mp4(bad_audio) == MuxStatus::kWriteFailed);
+}
