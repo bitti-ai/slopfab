@@ -183,6 +183,18 @@ void launch_dequant_f8e4m3(const uint8_t* src, const float* scale, __nv_bfloat16
 void launch_dequant_i8_per_channel(const int8_t* src, const float* scale, __nv_bfloat16* dst,
                                    int out_features, int in_features, cudaStream_t stream);
 
+// dst[o, i] = e2m1(nibble i of row o) * e4m3(block_scale[o, i/16]) * global.
+// `src` holds `out_features * in_features / 2` bytes, low nibble first;
+// `block_scale` holds `out_features * in_features / 16` raw e4m3 bytes.
+void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float global_scale,
+                          __nv_bfloat16* dst, int out_features, int in_features,
+                          cudaStream_t stream);
+
+// dst[r, i] = src[r, i] * scale[i]. The AWQ activation scaling; separate from
+// the GEMM because it also has to happen ahead of a native fp4 path.
+void launch_pre_quant_scale(const __nv_bfloat16* src, const __nv_bfloat16* scale,
+                            __nv_bfloat16* dst, int rows, int dim, cudaStream_t stream);
+
 // dst[i] = clamp(src[i] / input_scale, -448, 448) rounded to e4m3.
 void launch_quantize_f8e4m3(const __nv_bfloat16* src, float input_scale, uint8_t* dst, size_t n,
                             cudaStream_t stream);
