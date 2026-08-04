@@ -1029,6 +1029,19 @@ VIDFAB_TEST(encoder_real_encode) {
   std::printf("  device: %.2f GB free of %.2f GB\n", double(free_before) / (1 << 30),
               double(total) / (1 << 30));
 
+  // Skip rather than fail when the card is busy. Streaming residency needs
+  // ~1.2 GB and resident needs 24.4, so on a shared or contended GPU this test
+  // can legitimately have nowhere to run — and a red test that means "someone
+  // else is using the card" trains people to ignore red tests. The resident
+  // block below already degrades to a printed note on its own; this guard
+  // covers the streaming block, which has no fallback beneath it.
+  constexpr size_t kStreamingHeadroom = size_t(2) << 30;
+  if (free_before < kStreamingHeadroom) {
+    std::printf("  only %.2f GB free; need ~2 GB even to stream. Skipping.\n",
+                double(free_before) / (1 << 30));
+    return;
+  }
+
   std::vector<float> resident_out;
 
   // --- residency mode 1: everything on the device.
