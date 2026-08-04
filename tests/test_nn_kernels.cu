@@ -1234,6 +1234,120 @@ VIDFAB_TEST(attention_blocked) {
   CHECK(threw);
 }
 
+// The score tile is fp16 and doubles as the probability buffer. Two things have
+// to hold and neither is visible from the shapes above, where the tile budget
+// swallows the whole sequence in a single key block:
+//
+//   - the online softmax must give the same answer however the keys are split,
+//     which is what exercises the running max, the correction factor and the
+//     accumulator rescale at all; and
+//   - the fp16 tile has to stay inside tolerance against an fp64-ordered
+//     reference. The error is *recorded* here, not just bounded, so that a
+//     future format change has a number to beat rather than an assertion to
+//     satisfy.
+VIDFAB_TEST(attention_fp16_score_tile) {
+  CublasScope cb;
+  const int seq = 1024;
+  const int heads = 4;
+  const int head_dim = 128;
+  const int width = heads * head_dim;
+
+  // Amplitude 0.5 over 128 channels puts scores at a few units — the same order
+  // as post-q_norm/k_norm H3, and far from the 65504 where fp16 would saturate.
+  const std::vector<float> q = bf16_round(make_data(size_t(seq) * width, 181u, 0.5f));
+  const std::vector<float> k = bf16_round(make_data(size_t(seq) * width, 182u, 0.5f));
+  const std::vector<float> v = bf16_round(make_data(size_t(seq) * width, 183u, 1.0f));
+  BfBuf dq(q), dk(k), dv(v);
+
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len = seq;
+  cfg.num_heads = heads;
+  cfg.head_dim = head_dim;
+
+  const std::vector<float> want =
+      cpu_attention(q, k, v, seq, heads, heads, head_dim, cfg.effective_scale());
+
+  double norm_sq = 0.0;
+  for (float f : want) norm_sq += double(f) * f;
+  const double want_rms = std::sqrt(norm_sq / double(want.size()));
+
+  // `out` is bf16, so *any* correct implementation is at least this far from the
+  // fp64 reference. Measuring the kernel against a fixed constant would mostly
+  // measure that floor — one bf16 ulp is 0.4 % relative — so the bound below is
+  // expressed as a multiple of it instead.
+  const std::vector<float> rounded = bf16_round(want);
+  double floor_sq = 0.0;
+  for (size_t i = 0; i < want.size(); ++i) {
+    const double d = double(rounded[i]) - want[i];
+    floor_sq += d * d;
+  }
+  const double output_floor_rel = std::sqrt(floor_sq / double(want.size())) / want_rms;
+
+  // Key blocks that do and do not divide the sequence, plus one that leaves a
+  // short tail, crossed with two query blocks.
+  const int key_blocks[] = {0, 128, 256, 384, 1024};
+  const int query_blocks[] = {256, 1024};
+  std::vector<std::vector<float>> results;
+  double worst_rms_rel = 0.0;
+  double worst_abs = 0.0;
+
+  for (int kb : key_blocks) {
+    for (int qb : query_blocks) {
+      cfg.key_block = kb;
+      cfg.query_block = qb;
+      BfBuf dout(size_t(seq) * width);
+      Workspace ws;
+      ws.reserve(
+          vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kBlocked));
+      vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                      vidfab::cuda::AttentionBackend::kBlocked, ws);
+      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      const std::vector<float> got = dout.host();
+
+      double err_sq = 0.0;
+      for (size_t i = 0; i < got.size(); ++i) {
+        const double d = double(got[i]) - want[i];
+        err_sq += d * d;
+        worst_abs = std::max(worst_abs, std::fabs(d));
+      }
+      worst_rms_rel = std::max(worst_rms_rel, std::sqrt(err_sq / double(got.size())) / want_rms);
+
+      CHECK_CLOSE_REL(want, got, 1e-3, 1e-2,
+                      ("attention key_block " + std::to_string(kb) + " query_block " +
+                       std::to_string(qb))
+                          .c_str());
+      results.push_back(got);
+    }
+  }
+
+  // Every split must agree to the same tolerance. A correction factor applied to
+  // the wrong operand, or skipped when the running max happens not to move,
+  // shows up here and nowhere else in this file.
+  for (size_t i = 1; i < results.size(); ++i) {
+    CHECK_CLOSE_REL(results[0], results[i], 1e-3, 1e-2,
+                    "attention result independent of key/query block");
+  }
+
+  // Recorded, not merely bounded. Measured: rms_rel 1.67e-3 against a 1.66e-3
+  // bf16 output floor, a ratio of 1.01 — the score path contributes
+  // sqrt(1.67^2 - 1.66^2) = 1.8e-4, well under the quantisation of the format it
+  // is written to. At this output precision an fp16 score tile is
+  // indistinguishable from exact arithmetic.
+  //
+  // Be clear about what the assertion is worth: at ratio 1.01 it has no power to
+  // separate fp16 probabilities from bf16 ones, because neither is visible
+  // through a bf16 output. It catches gross regressions — an fp8 tile, a lost
+  // fp32 accumulator, a correction factor applied to the wrong operand — and the
+  // key/query block sweep above is what actually pins the online softmax.
+  std::printf("  fp16 score tile: worst rms_rel %.3g (bf16 output floor %.3g, ratio %.2f), "
+              "worst abs %.3g, output rms %.3g\n",
+              worst_rms_rel, output_floor_rel, worst_rms_rel / output_floor_rel, worst_abs,
+              want_rms);
+  CHECK_MSG(worst_rms_rel < 1.3 * output_floor_rel,
+            "fp16 score tile rms_rel %.4g exceeds 1.3x the %.4g bf16 output floor", worst_rms_rel,
+            output_floor_rel);
+}
+
 VIDFAB_TEST(attention_gqa) {
   CublasScope cb;
   const int seq = 256;

@@ -38,9 +38,21 @@ struct AttentionConfig {
   float scale = 0.0f;
 
   // Rows of queries processed per block. Sets the peak score-tile footprint:
-  // `query_block * seq_len * 4` bytes per concurrent head. Tuning knob only —
-  // results must not depend on it, and a unit test pins that.
+  // `query_block * key_block * 2` bytes per concurrent head, with `key_block`
+  // chosen to hold that inside a fixed budget. Tuning knob only — results must
+  // not depend on it, and a unit test pins that.
   int query_block = 1024;
+
+  // Keys processed per online-softmax step. 0 means "as large as the score tile
+  // budget allows", which is what production wants and what every caller should
+  // leave it at.
+  //
+  // It is settable only because the budget is 640 MiB: at any test-sized shape
+  // the chosen key block covers the whole sequence in one step, so the running
+  // max, the correction factor and the accumulator rescale — the part of this
+  // algorithm that fails silently — would never execute in a unit test. Like
+  // `query_block`, results must not depend on it, and a test pins that.
+  int key_block = 0;
 
   float effective_scale() const;
 };
@@ -61,6 +73,14 @@ size_t attention_workspace_bytes(const AttentionConfig& cfg, AttentionBackend ba
 // out[seq, heads*head_dim] = softmax(q k^T * scale) v, per head.
 //
 // `out` may not alias q, k or v.
+//
+// **Range limit.** The score tile is fp16 (see attention.cu for why that is
+// more accurate than fp32-scores-plus-bf16-probabilities, not less). fp16
+// saturates at 65504, and an infinity there becomes a NaN in the softmax rather
+// than a large number. H3 scores land at ±10..30 because q_norm/k_norm fix the
+// per-head RMS and RoPE preserves norm; a caller feeding unnormalised queries
+// at a magnitude where `|q.k| * scale` could approach 6e4 needs a different
+// kernel, not a bigger tolerance.
 void attention_forward(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16* q,
                        const __nv_bfloat16* k, const __nv_bfloat16* v, __nv_bfloat16* out,
                        const AttentionConfig& cfg, AttentionBackend backend, Workspace& ws);
