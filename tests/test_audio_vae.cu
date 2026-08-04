@@ -515,6 +515,34 @@ VIDFAB_TEST(audio_aa_activation) {
 
   // Length arithmetic for an odd input: the decimation keeps ceil(L/2).
   CHECK(((7 - 1) / 2 + 1) == 4);
+
+  // Extreme inputs must stay finite. The clamped index is the only thing
+  // standing between the resamplers and a read off the end of the row, and an
+  // out-of-range read is exactly what turns into a NaN that then poisons every
+  // later stage. This check needs no checkpoint, so it runs everywhere.
+  {
+    const int len = 33;
+    std::vector<float> wild(static_cast<size_t>(len));
+    for (int i = 0; i < len; ++i) {
+      wild[static_cast<size_t>(i)] = (i % 2 == 0) ? 1.0e6f : -1.0e6f;
+    }
+    const std::vector<float> log_alpha(1, 1.5f);
+    const std::vector<float> log_beta(1, -1.5f);
+    DeviceBuffer<float> dx = to_device(wild);
+    DeviceBuffer<float> df = to_device(filter);
+    DeviceBuffer<float> da = to_device(log_alpha);
+    DeviceBuffer<float> db = to_device(log_beta);
+    DeviceBuffer<float> dmid(static_cast<size_t>(2 * len));
+    DeviceBuffer<float> dy(static_cast<size_t>(len));
+    vidfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1, 1,
+                                           len, nullptr);
+    vidfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    bool finite = true;
+    for (float v : to_host(dmid)) finite = finite && std::isfinite(v);
+    for (float v : to_host(dy)) finite = finite && std::isfinite(v);
+    CHECK_MSG(finite, "anti-alias wrapper produced a non-finite sample on a +/-1e6 input");
+  }
 }
 
 VIDFAB_TEST(audio_elementwise) {

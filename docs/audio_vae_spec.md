@@ -689,14 +689,35 @@ not ported.
 
 ### 13.2 Memory
 
-One `cudaMalloc` for all 779 decode-path tensors (247.64 MiB), staged through a
-single host vector, with a name -> offset table. Activations are seven fixed
-buffers sized from `max(C*T) * B`, which for `A=405` is
-`2 * 256 * 10125 = 5,184,000` floats = 19.8 MiB each (the product `C*T` is
-constant at 2,592,000 from stage 1 onward), plus one double-width buffer for the
-2x anti-alias intermediate. Peak device memory is therefore weights plus about
-160 MiB, independent of which stage is running. No streaming or chunking is
-needed at these sizes and none is implemented.
+One `cudaMalloc` for all 779 decode-path tensors (259,672,032 B = 247.64 MiB),
+staged through a single host vector, with a name -> offset table. Activations
+are six equal buffers sized from `max(C*T) * B` — for `A=405` that is
+`2 * 256 * 10125 = 5,184,000` floats = 19.8 MiB each, the product `C*T` being
+constant at 2,592,000 from stage 1 onward — plus one double-width buffer for the
+2x anti-alias intermediate. Eight buffer-widths in total, ~158 MiB, independent
+of which stage is running. No streaming or chunking is needed at these sizes and
+none is implemented.
+
+### 13.3 Measured
+
+RTX 5090 (sm_120), CUDA 13.0, `A = 405` (10.125 s of stereo at 32 kHz,
+324,000 samples per channel):
+
+```
+decode wall time      51.4 ms      (both stereo channels, one call)
+weights               247.64 MiB
+peak device memory    408.00 MiB   (weights + activation pool, cudaMemGetInfo delta)
+```
+
+That is ~950 GFLOP of convolution in 51 ms, i.e. about 18 TFLOP/s fp32 — roughly
+a fifth of the card's peak, which is what a shared-memory-tiled direct
+convolution gets at these channel counts.
+
+Accuracy against the float64 NumPy transcription of §2 driven by the same
+checkpoint, `A = 3`: **worst absolute deviation 2.15e-7** over the sampled
+output, four orders of magnitude inside the project's 1e-3 tolerance. At that
+margin the two implementations are running the same arithmetic, not merely
+agreeing to tolerance.
 
 ---
 

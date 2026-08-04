@@ -239,6 +239,12 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
 
   const int num_stages = static_cast<int>(config.decoder_rates.size());
   const int num_kernels = static_cast<int>(config.resblock_kernel_sizes.size());
+  // AMPBlock1 is fixed at three dilations and BigVGAN at three resblock kernels
+  // (dac_audio_vae.py:181-182); the per-stage arrays are sized for that.
+  if (num_kernels != 3) {
+    throw std::runtime_error("audio vae: expected 3 resblock kernel sizes, got " +
+                             std::to_string(num_kernels));
+  }
   im.stages.clear();
   im.stages.reserve(static_cast<size_t>(num_stages));
 
@@ -345,7 +351,13 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
   }
 
   const AudioVAEConfig& cfg = im.config;
-  const int batch = kStereo;
+  // The decoder itself is mono; the two stereo channels ride through it as two
+  // batch items (decoders.py:130), so the batch dimension IS the channel count.
+  const int batch = cfg.output_channels;
+  if (batch != kStereo) {
+    throw std::runtime_error("audio vae: decode expects [2, 32, A], got output_channels " +
+                             std::to_string(batch));
+  }
   const int zc = cfg.latent_channels;
   const int total_upsample = cfg.total_upsample();
 
