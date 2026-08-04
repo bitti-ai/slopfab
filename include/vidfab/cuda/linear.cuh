@@ -187,19 +187,24 @@ void launch_dequant_i8_per_channel(const int8_t* src, const float* scale, __nv_b
 // `src` holds `out_features * in_features / 2` bytes; `block_scale` holds
 // `out_features * in_features / 16` raw e4m3 bytes.
 //
-// Two things this signature deliberately does not promise, because both turned
-// out to be properties of the file rather than of the format, and the earlier
-// version of this comment asserted the wrong value for the first:
+// Two things about the stored bytes that the shapes do not tell you, both
+// measured rather than assumed, and the earlier version of this comment had the
+// first of them backwards:
 //
-//   - which nibble of a byte is the even-indexed element (it is the *high* one
-//     in the nvfp4 text encoder — see dtype.h for how that was established);
-//   - that `block_scale` is plain `[out, in/16]` row-major. In the text encoder
-//     it is swizzled, so the implementation has to unswizzle on the way in.
+//   - the **high** nibble of a byte is the even-indexed element (dtype.h
+//     records how that was established, and why no summary statistic caught it);
+//   - `block_scale` is **not** plain `[out, in/16]` row-major. It is swizzled
+//     into 512-byte tiles, so the implementation unswizzles on the way in.
 //
-// Both were measured on the text encoder. The transformer is a different
-// quantiser output and is being measured separately; if the two disagree, the
-// layout becomes an argument here rather than a constant inside. Until that
-// lands, do not hard-code either answer.
+// Both hold on both checkpoints despite their different quantiser provenance,
+// so they are constants and this signature takes no layout argument. Shipping a
+// parameter with one valid value would only be an invitation to pass the wrong
+// one; the wrong forms stay computable in the CPU-reference test instead, so a
+// toolkit that ever flips the convention fails by name rather than silently.
+//
+// `global_scale` multiplies: `w = e2m1 * e4m3_block * weight_scale_2`. Checked,
+// not inferred from the vendor's convention — `6 * 448 * weight_scale_2`
+// reproduces the fp8 checkpoint's amax for the same tensor to four decimals.
 void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float global_scale,
                           __nv_bfloat16* dst, int out_features, int in_features,
                           cudaStream_t stream);

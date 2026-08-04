@@ -131,24 +131,25 @@ inline float f4_e2m1_to_f32(uint8_t nibble) {
   return kTable[nibble & 0x0Fu];
 }
 
-// NVFP4 packs two values per byte. These name the nibble's *position* and
-// nothing else — deliberately, because which position holds the even-indexed
-// element is a property of the file, not of the format.
+// NVFP4 packs two values per byte, and the **high** nibble is the even-indexed
+// element. These functions name the nibble's position rather than its index so
+// that the mapping is stated once, here, instead of being re-assumed at every
+// call site.
 //
-// This comment used to assert the low nibble was the even element. That was
-// wrong, and wrong in the way this project keeps being wrong: a swapped nibble
-// order leaves the value histogram almost untouched, so every aggregate
-// statistic looks healthy and the error only appears elementwise. It was caught
-// by scoring candidate layouts by elementwise correlation against the int8
-// build of the *same* model, where the right answer separated from the wrong
-// one by roughly a thousandfold. On the nvfp4 text encoder the **high** nibble
-// is the even-indexed element.
+// This comment used to assert the opposite, and the way that survived is worth
+// recording. A swapped nibble order leaves the value histogram almost
+// untouched, so every aggregate statistic stays healthy and the error is
+// visible only elementwise — which is why it was found by scoring candidate
+// layouts by elementwise correlation against the int8 build of the *same*
+// model. Right separated from wrong by roughly a thousandfold.
 //
-// That is established for the text encoder. Whether the nvfp4 transformer
-// agrees is a separate measurement on a separate quantiser output — a 19-byte
-// `comfy_quant` with no `pre_quant_scale`, against the encoder's 55-byte one —
-// and it is being run the same way. Do not assume the two agree, and do not
-// bake either answer in here until both are measured; the caller decides.
+// Measured independently on both checkpoints, which have different quantiser
+// provenance (a 19-byte `comfy_quant` with no `pre_quant_scale` on the
+// transformer, 55 bytes with one on the text encoder), and they agree. So this
+// is a constant, not a per-file property, and a per-file switch would be a
+// distinction with no evidence behind it. A 332-tensor bitwise-identical
+// control confirms the fp8 and nvfp4 transformers really are one model, which
+// is what makes that cross-checkpoint comparison mean anything.
 inline float f4_lo(uint8_t byte) { return f4_e2m1_to_f32(byte & 0x0Fu); }
 inline float f4_hi(uint8_t byte) { return f4_e2m1_to_f32(byte >> 4); }
 
