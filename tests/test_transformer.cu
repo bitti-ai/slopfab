@@ -362,6 +362,69 @@ void run_block(const Tensors& t, const TransformerConfig& cfg, const RefBlock& b
   gated_add(ff, /*gate=*/5);
 }
 
+// Same block, recording the residual stream at the two points the GPU emits:
+// after the attention residual and after the FFN residual. Deliberately a thin
+// wrapper over `run_block`'s body rather than a second implementation — a
+// bisect against a *different* reference would prove nothing about the one the
+// main test uses.
+void run_block_halves(const Tensors& t, const TransformerConfig& cfg, const RefBlock& blk,
+                      std::vector<float>& x, int rows,
+                      std::vector<std::pair<std::string, std::vector<float>>>& out) {
+  const int hidden = cfg.hidden_size;
+  const int inner = cfg.inner_dim();
+  const int ffn = cfg.ffn_dim;
+  const std::string& p = blk.prefix;
+
+  auto gated_add = [&](const std::vector<float>& branch) {
+    for (int r = 0; r < rows; ++r) {
+      for (int i = 0; i < hidden; ++i) {
+        x[static_cast<size_t>(r) * hidden + i] += branch[static_cast<size_t>(r) * hidden + i];
+      }
+    }
+    round_bf16(x);
+  };
+
+  std::vector<float> n = rmsnorm(x, at(t, p + "norm1.weight"), rows, hidden, cfg.norm_eps);
+  round_bf16(n);
+  const std::vector<float> qkv = rounded(at(t, p + "attn.qkv_proj.weight"));
+  std::vector<float> wq(qkv.begin(), qkv.begin() + static_cast<size_t>(inner) * hidden);
+  std::vector<float> wk(qkv.begin() + static_cast<size_t>(inner) * hidden,
+                        qkv.begin() + static_cast<size_t>(2 * inner) * hidden);
+  std::vector<float> wv(qkv.begin() + static_cast<size_t>(2 * inner) * hidden, qkv.end());
+  std::vector<float> q = matmul_nt(n, wq, nullptr, rows, inner, hidden);
+  std::vector<float> k = matmul_nt(n, wk, nullptr, rows, inner, hidden);
+  std::vector<float> v = matmul_nt(n, wv, nullptr, rows, inner, hidden);
+  round_bf16(q);
+  round_bf16(k);
+  round_bf16(v);
+  head_rmsnorm(q, at(t, p + "attn.q_norm.weight"), rows, cfg.num_attention_heads,
+               cfg.attention_head_dim, cfg.norm_eps);
+  head_rmsnorm(k, at(t, p + "attn.k_norm.weight"), rows, cfg.num_attention_heads,
+               cfg.attention_head_dim, cfg.norm_eps);
+  round_bf16(q);
+  round_bf16(k);
+  std::vector<float> a =
+      attention(q, k, v, rows, cfg.num_attention_heads, cfg.attention_head_dim);
+  std::vector<float> branch =
+      matmul_nt(a, rounded(at(t, p + "attn.out_proj.weight")), nullptr, rows, hidden, inner);
+  round_bf16(branch);
+  gated_add(branch);
+  out.emplace_back("attn", x);
+
+  std::vector<float> n2 = rmsnorm(x, at(t, p + "norm2.weight"), rows, hidden, cfg.norm_eps);
+  round_bf16(n2);
+  std::vector<float> fused =
+      matmul_nt(n2, rounded(at(t, p + "mlp.fc1.weight")), nullptr, rows, 2 * ffn, hidden);
+  round_bf16(fused);
+  std::vector<float> act = swiglu(fused, rows, ffn);
+  round_bf16(act);
+  std::vector<float> ff =
+      matmul_nt(act, rounded(at(t, p + "mlp.fc2.weight")), nullptr, rows, hidden, ffn);
+  round_bf16(ff);
+  gated_add(ff);
+  out.emplace_back("ffn", x);
+}
+
 // m(t) = W_8 @ c(t) + b, in the checkpoint's flat layout, for every distinct
 // timestep. fp32 throughout (spec 9.1).
 std::vector<float> expand_adaln(const Tensors& t, const AdaLNTable& table,
@@ -767,6 +830,74 @@ Case make_case(const TransformerConfig& cfg, int text_rows, float audio_t) {
   // `torch.unique` yields two entries unless the two schedules coincide.
   c.rt = vidfab::dit::build_row_timesteps(c.layout, c.idx, 0.62f, audio_t);
   return c;
+}
+
+
+// Bisect the refiner stage by stage.
+//
+// Comparing only the end of the refiner cannot tell "one operation is wrong"
+// from "bf16 rounding accumulated across all of them", and those have very
+// different consequences. This walks the same boundaries on both sides and
+// prints where agreement is first lost, and by how much at each step.
+VIDFAB_TEST(transformer_refiner_bisect) {
+  const TransformerConfig cfg = tiny_config();
+  const Tensors tensors = build_synthetic(cfg);
+  const std::string path = write_synthetic(tensors);
+  vidfab::SafeTensors st;
+  st.open(path);
+
+  Transformer model;
+  model.load(st, cfg);
+
+  // L = 2 is the smallest size that disagrees; L = 1 is bit-exact because
+  // attention over one key is the identity on v. Running both is what makes
+  // the comparison a bisect rather than a single reading.
+  for (int L : {1, 2, 5}) {
+    const Case c = make_case(cfg, L, 0.31f);
+    const std::vector<float>& prompt = c.prompt;
+    const std::vector<Transformer::DebugStage> got = model.debug_text_stages(prompt.data(), L);
+
+    // The CPU side, recomputed at the same boundaries.
+    std::vector<std::pair<std::string, std::vector<float>>> want;
+    {
+      std::vector<float> text =
+          matmul_nt(rounded(prompt), rounded(at(tensors, "condition_proj.weight")), nullptr, L,
+                    cfg.hidden_size, cfg.text_dim);
+      round_bf16(text);
+      {
+        const std::vector<float>& b = at(tensors, "condition_proj.bias");
+        for (int r = 0; r < L; ++r) {
+          for (int i = 0; i < cfg.hidden_size; ++i) {
+            text[static_cast<size_t>(r) * cfg.hidden_size + i] += b[static_cast<size_t>(i)];
+          }
+        }
+        round_bf16(text);
+      }
+      want.emplace_back("condition_proj", text);
+      for (int i = 0; i < cfg.num_refiner_layers; ++i) {
+        RefBlock blk{"token_refiner.blocks." + std::to_string(i) + ".", false};
+        run_block_halves(tensors, cfg, blk, text, L, want);
+      }
+      std::vector<float> normed =
+          rmsnorm(text, at(tensors, "token_refiner.final_norm.weight"), L, cfg.hidden_size,
+                  cfg.norm_eps);
+      round_bf16(normed);
+      want.emplace_back("final_norm", normed);
+    }
+
+    CHECK_MSG(got.size() == want.size(), "L=%d: %zu GPU stages vs %zu reference stages", L,
+              got.size(), want.size());
+    if (got.size() != want.size()) continue;
+
+    std::printf("  L=%d stage bisect:\n", L);
+    for (size_t i = 0; i < got.size(); ++i) {
+      CHECK(got[i].label == want[i].first);
+      const ErrorStats e = compare(want[i].second, got[i].data);
+      std::printf("    %-16s %5zu/%5zu differ (%6.2f%%)  max %.3e (%.3f%% rms)  signed %+.2e\n",
+                  got[i].label.c_str(), e.differing, e.count, 100.0 * e.differing_fraction(),
+                  e.max_abs, 100.0 * e.max_rel(), e.signed_mean);
+    }
+  }
 }
 
 VIDFAB_TEST(transformer_forward_vs_cpu_reference) {

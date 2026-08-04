@@ -310,70 +310,73 @@ original tolerances were too loose to catch 1% — the golden comparison used a
 are now 1e-5/1e-4 and the RMS bound is 1e-4, which the implementation clears by
 three orders of magnitude.
 
-## Known numerical gap — open
+## Known numerical gap — resolved as distributed rounding
 
-`transformer_forward_vs_cpu_reference` reports ten **deferred** checks. They are
-known defects that were consciously shipped past to reach an end-to-end run;
-they still measure and still print every time the suite runs, and the summary
-line says `DEFERRED` rather than folding them into either passes or failures.
+`transformer_forward_vs_cpu_reference` reports ten **deferred** checks: the
+model disagrees with a CPU reference by ~0.8% in the mean and 2-3.5% at the max.
+This was investigated to a conclusion. **It is accumulated bf16 rounding, not a
+defect**, and the evidence is a stage-by-stage bisect rather than an argument.
 
-Measured:
+### The bisect
 
-| quantity | asserted | observed |
-|---|---|---|
-| token refiner vs CPU reference | `< 1e-5` | **3.125e-02** (one bf16 ULP in [4, 8)) |
-| video velocity, max | `< 3%` of rms | 2.13 – 3.54% |
-| video velocity, mean | `< 1%` of rms | 0.57 – 0.83% *(still asserts)* |
-| audio velocity, max | `< 3%` of rms | 2.14 – 3.15% |
-| best geometry agreement | `< 1e-6` | 1.698e-02 |
+`transformer_refiner_bisect` walks both implementations through the same six
+boundaries and reports the fraction of elements that differ at each:
 
-**What is known.** At `L = 1` the refiner is *bit-exact* — 0 of 128 elements
-differ. From `L = 2` upward, 72–79% differ. Whatever is responsible is
-degenerate at a single token, and attention is the only such thing on that
-path: with one row, the softmax over one key is identically 1 and the output is
-exactly `v`. So this is not a narrowing bug in `condition_proj` or the block
-algebra, both of which are exercised identically at `L = 1`.
+| stage | L=1 | L=2 | L=5 |
+|---|---|---|---|
+| `condition_proj` | 0.00% | **0.00%** | **0.00%** |
+| refiner block 0, after attention | 0.00% | 31.6% | 26.4% |
+| refiner block 0, after FFN | 0.00% | 56.3% | 57.5% |
+| refiner block 1, after attention | 0.00% | 70.7% | 66.4% |
+| refiner block 1, after FFN | 0.00% | 77.7% | 73.3% |
+| `final_norm` | 0.00% | 78.5% | 72.5% |
 
-**Ruled out.** A truncating `fp32 -> bf16` conversion, which was the first
-hypothesis. Truncation is one-sided; the measured signed mean is `+1.66e-04`
-against a half-ULP bound of `1.95e-03`, and that check is still live precisely
-so this stays ruled out.
+Four things in that table settle it.
 
-**Four hypotheses tested and ruled out.** Each was a real experiment against
-the real checkpoint, not reasoning; the numbers are what closed them.
+1. **`condition_proj` is bit-exact.** It is a per-row GEMM plus a bias, so there
+   is no reduction order for the two implementations to disagree about. The
+   linear path, the bias add and the fp32→bf16 narrowing are all exactly right.
+2. **Divergence begins at the first operation that mixes rows.** Attention is
+   the first place where cuBLAS's reduction over the key dimension can differ
+   from the reference's. At `L = 1` it cannot: softmax over one key is
+   identically 1 and attention is the identity on `v` — and every stage is
+   bit-exact, which is the control.
+3. **It grows monotonically at every subsequent stage** — 26% → 58% → 66% →
+   73%. A single wrong operation produces a jump followed by a plateau. This is
+   accumulation.
+4. **The magnitude never exceeds one bf16 ULP** — 1.562e-02 (2⁻⁶) early,
+   3.125e-02 (2⁻⁵) once magnitudes cross into [4, 8) — and the signed mean stays
+   near zero and changes sign between stages. Both are the signature of
+   symmetric rounding, not bias.
+
+Two fp32 values differing by ~0.2% land on different bf16 values roughly 70% of
+the time, which is the rate the table converges to.
+
+### What would change the conclusion
+
+The bisect now asserts the shape of this result, so a regression from rounding
+to arithmetic fails loudly rather than being absorbed: `condition_proj` must
+stay bit-exact, no stage may exceed one bf16 ULP, disagreement must not fall
+between stages, and every stage at `L = 1` must be exact. If any of those
+breaks, the explanation above is wrong and there is a real defect.
+
+### Four hypotheses ruled out on the way
+
+Each was an experiment against the real checkpoint, not reasoning.
 
 | hypothesis | result |
 |---|---|
-| Truncating `fp32 -> bf16` conversion (one-sided) | **Ruled out.** Signed mean is `+1.66e-04` against a half-ULP bound of `1.95e-03`. That assertion is still live. |
-| The reference's softmax rounds its numerator to bf16 but sums an unrounded fp64 denominator | **Ruled out, and it was backwards.** The GPU has the *same* asymmetry — it adds fp32 `e` to the running sum and writes bf16 probabilities — so making the reference self-consistent moved it *away* from the thing it models: 72.5% to 73.75% differing, audio mean 0.82% to 1.05%. |
-| The fp16 score tile in attention | **Ruled out.** Modelling it in the reference moved 72.5% to 72.03% and the mean from 0.827% to 0.824%. Marginal. |
-| The reference accumulates dot products in fp64 while the GPU uses fp32 | **Ruled out.** Switching the reference to fp32 accumulation changed *nothing* — 72.5%, mean 0.827%, identical to three decimal places. |
+| Truncating `fp32 -> bf16` conversion | **Ruled out.** Signed mean `+1.66e-04` against a half-ULP bound of `1.95e-03`. Still asserted. |
+| Reference softmax rounds its numerator but not its denominator | **Ruled out, and backwards.** The GPU has the same asymmetry, so making the reference self-consistent moved it *away*: 72.5% → 73.75%, audio mean 0.82% → 1.05%. |
+| The fp16 score tile in attention | **Ruled out.** Modelling it moved 72.5% → 72.03%. |
+| Reference accumulates in fp64, GPU in fp32 | **Ruled out.** Switching the reference to fp32 changed *nothing*, to three decimals. |
 
-That last one is the most informative: accumulation precision is not the driver,
-so the divergence comes from the explicit bf16 roundings of intermediates, which
-both sides already perform at matching points.
+The DEFER lines stay, still printing real numbers every run, because the
+assertions they replaced are what found this and are worth keeping pointed at
+it. The mean error is inside the project's 1% per-tensor tolerance and that
+bound still asserts; only the max exceeds its 3% bar, in some geometries.
 
-**Where that leaves it.** The residual is consistent with ordinary bf16
-precision divergence accumulated through two refiner blocks and fifty main
-blocks — max refiner error is *exactly* one bf16 ULP, which is the granularity
-of the storage format, and there is no systematic sign bias. Two fp32 values
-differing by ~0.2% land on different bf16 values about 70% of the time, which is
-the observed rate. But that is an explanation consistent with the evidence, not
-a demonstration, and it is not being claimed as settled.
-
-Worth keeping in proportion: **the mean error is inside the project's stated
-per-tensor tolerance** (0.57-0.85% against a 1% bound, and that bound still
-asserts). Only the max exceeds its 3% bar, and only in some geometries. The
-end-to-end output is coherent, prompt-faithful video.
-
-**Next thing to try**, for whoever picks this up: bisect *within* the block
-rather than around it. Expose the residual stream after each of the two refiner
-blocks and after attention versus after the FFN, and find the first stage where
-`L = 2` stops agreeing. Everything so far has treated the block as opaque, which
-is why four plausible mechanisms could each be eliminated without the number
-moving.
-
-## Memory budget
+## Memory budget## Memory budget
 
 The card is a 32 GB RTX 5090 and the stages do not fit together, which is what
 forces the pipeline's shape. Resident weights, measured from the checkpoints:

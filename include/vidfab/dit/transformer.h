@@ -107,6 +107,24 @@ class Transformer {
   // every video row and nowhere that localises it.
   std::vector<float> debug_text_cache() const;
 
+  // One labelled snapshot of the residual stream from inside `prepare_text`.
+  struct DebugStage {
+    std::string label;   // "condition_proj", "attn", "ffn", "final_norm"
+    int rows = 0;
+    int dim = 0;
+    std::vector<float> data;
+  };
+
+  // Re-runs `prepare_text` capturing the residual stream at every stage
+  // boundary, in order: condition_proj, then attn/ffn for each refiner block,
+  // then final_norm.
+  //
+  // This exists to localise a numerical disagreement to a single operation.
+  // Comparing only the *end* of the refiner cannot distinguish "one op is
+  // wrong" from "bf16 rounding accumulated everywhere", and those have very
+  // different consequences while looking identical from outside.
+  std::vector<DebugStage> debug_text_stages(const float* prompt_embeds, int num_tokens);
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

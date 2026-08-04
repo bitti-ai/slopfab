@@ -21,6 +21,8 @@
 
 #include "vidfab/dit/transformer.h"
 
+#include <functional>
+
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -490,6 +492,20 @@ struct Transformer::Impl {
 
   // --- one block -----------------------------------------------------------
 
+  // Debug capture. Null in production and therefore free; when set, it is
+  // called with the residual stream at each labelled point so a bisect can
+  // find the first stage that diverges from a CPU reference. Without this the
+  // block is opaque from outside, which is exactly why four plausible
+  // explanations for the known numerical gap could each be eliminated without
+  // the number moving.
+  std::function<void(const char*, const __nv_bfloat16*, int, int)> stage_hook;
+
+  void emit_stage(const char* label, const __nv_bfloat16* x, int rows, int dim) {
+    if (!stage_hook) return;
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    stage_hook(label, x, rows, dim);
+  }
+
   void run_block(const BlockWeights& b, const float* mod_base, int rows, __nv_bfloat16* x,
                  const int32_t* adaln_idx, const float* cos, const float* sin, __nv_bfloat16* q,
                  __nv_bfloat16* k, __nv_bfloat16* v, __nv_bfloat16* attn_out,
@@ -559,6 +575,7 @@ struct Transformer::Impl {
         cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
       }
     }
+    emit_stage("attn", x, rows, hidden);
 
     for (int start = 0; start < rows; start += chunk) {
       const int n = std::min(chunk, rows - start);
@@ -581,6 +598,7 @@ struct Transformer::Impl {
         cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
       }
     }
+    emit_stage("ffn", x, rows, hidden);
   }
 };
 
@@ -853,6 +871,33 @@ std::vector<float> Transformer::debug_modulation(int block_index,
   return out;
 }
 
+std::vector<Transformer::DebugStage> Transformer::debug_text_stages(const float* prompt_embeds,
+                                                                   int num_tokens) {
+  Impl& s = *impl_;
+  std::vector<DebugStage> stages;
+  s.stage_hook = [&](const char* label, const __nv_bfloat16* x, int rows, int dim) {
+    DebugStage stage;
+    stage.label = label;
+    stage.rows = rows;
+    stage.dim = dim;
+    const size_t n = static_cast<size_t>(rows) * dim;
+    std::vector<uint16_t> bits(n);
+    VIDFAB_CUDA_CHECK(
+        cudaMemcpy(bits.data(), x, n * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    stage.data.resize(n);
+    for (size_t i = 0; i < n; ++i) stage.data[i] = bf16_to_f32(bits[i]);
+    stages.push_back(std::move(stage));
+  };
+  try {
+    prepare_text(prompt_embeds, num_tokens);
+  } catch (...) {
+    s.stage_hook = nullptr;
+    throw;
+  }
+  s.stage_hook = nullptr;
+  return stages;
+}
+
 std::vector<float> Transformer::debug_text_cache() const {
   Impl& s = *impl_;
   if (s.num_text == 0 || s.text_cache.size() == 0) return {};
@@ -905,6 +950,7 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   s.text_cache.allocate(rows * hidden);
   __nv_bfloat16* x = s.text_cache.get();
   s.linear.forward(s.condition_proj, xin, num_tokens, x, ws);
+  s.emit_stage("condition_proj", x, num_tokens, hidden);
 
   __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(rows * inner);
   __nv_bfloat16* k = ws.alloc_n<__nv_bfloat16>(rows * inner);
@@ -929,6 +975,7 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   VIDFAB_CUDA_CHECK(cudaMemcpyAsync(x, normed, rows * hidden * sizeof(__nv_bfloat16),
                                     cudaMemcpyDeviceToDevice, s.stream.get()));
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  s.emit_stage("final_norm", x, num_tokens, hidden);
   ws.clear();
 }
 
