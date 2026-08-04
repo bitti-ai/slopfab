@@ -89,8 +89,4 @@ void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const u
                         float global_scale, __nv_bfloat16* y, int rows, int out_features,
                         int in_features, Workspace& ws, cudaStream_t stream);
 
-// Byte offset of block `j` of output row `m` in a swizzled `.weight_scale`,
-// exposed so a test can build one without restating the formula.
-size_t nvfp4_scale_offset(int m, int j, int k_blocks);
-
 }  // namespace vidfab::cuda

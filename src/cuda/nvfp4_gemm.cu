@@ -34,6 +34,17 @@
 // register-prefetch double buffer, which is enough to keep the tensor pipe fed
 // at these shapes; splitting k would only pay at row counts far below what the
 // transformer generates (it chunks at 8192).
+//
+// **What it costs numerically, measured rather than argued.** Against a
+// reference that quantises the activation the same way, this GEMM agrees to
+// 1.6e-3 rms relative -- bf16 output rounding, nothing more, on the shipped
+// `blocks.0` weights as well as on synthetic ones. Against a *bf16*-activation
+// reference it differs by about 9% rms, flat in K from 128 to 5376 and flat in
+// output magnitude, with correlation 0.9955. That is the format, not the
+// kernel: E2M1 has one mantissa bit, and a dot product cannot average the error
+// away because signal and error both grow as sqrt(K).
+// `nvfp4_activation_cost` measures it on every run and
+// `nvfp4_gemm_exact_fp4_activations` is the control that separates the two.
 
 #include "vidfab/cuda/nvfp4_gemm.cuh"
 
@@ -147,10 +158,19 @@ __global__ __launch_bounds__(256) void quantize_act_kernel(const __nv_bfloat16* 
 // that a static `__shared__` gets without an opt-in, for no further gain in
 // arithmetic intensity.
 //
-// **Both operands stage through the same layout**, because they *are* the same
-// layout: activation and weight are each row-major over the contraction axis,
-// `in/2` packed bytes and `in/16` scale bytes per row. Only the row count and
-// the base pointer differ.
+// **Both operands stage into the same shared layout**, and that is the point:
+// A and B differ only in how their bytes are *read* -- the weight's nibbles are
+// swapped and its scales unswizzled on the way in -- so `fetch_tile` carries
+// those two as template flags and everything downstream of the store is
+// identical. The mma sees one layout, not two.
+//
+// **Measured, sm_120a, CUDA 13.0:** 126 registers, no spills, 45056 bytes of
+// static shared, one barrier. Both limits land on the same number: 256 threads
+// at 126 registers is 32256 of the SM's 65536, and 45056 bytes is under half of
+// its 100 KB, so two blocks are resident -- 16 warps, four per scheduler.
+// Occupancy is 25% and that is the intended operating point, as in
+// attention.cu: what feeds a tensor pipe is independent instruction streams per
+// scheduler, not warp slots filled.
 
 constexpr int kBM = 128;
 constexpr int kBN = 128;
@@ -222,7 +242,7 @@ __device__ inline uint32_t swap_nibbles(uint32_t v) {
 // from another. The activation is quantised by this file straight into
 // row-major order; only the stored weight is swizzled.
 template <bool kSwizzled>
-__device__ __host__ inline size_t scale_offset(int m, int j, int k_blocks) {
+__device__ inline size_t scale_offset(int m, int j, int k_blocks) {
   if (kSwizzled) {
     // `j & 3` is always zero on the kernel's own path -- it loads four blocks
     // at a time -- and is written out anyway so the same function serves a
@@ -422,10 +442,6 @@ bool nvfp4_gemm_supported(int out_features, int in_features) {
   // packed row 32-byte aligned and a scale row 4-byte aligned -- and it happens
   // to subsume the swizzle's `Kb % 4`. `out % 128` is the swizzle's.
   return in_features > 0 && out_features > 0 && in_features % 64 == 0 && out_features % 128 == 0;
-}
-
-size_t nvfp4_scale_offset(int m, int j, int k_blocks) {
-  return scale_offset<true>(m, j, k_blocks);
 }
 
 size_t nvfp4_gemm_workspace_bytes(int rows, int in_features) {

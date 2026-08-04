@@ -13,11 +13,14 @@
 
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
+#include <cuda_fp4.h>
+#include <cuda_fp8.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -27,8 +30,10 @@
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
+#include "vidfab/cuda/nvfp4_gemm.cuh"
 #include "vidfab/cuda/workspace.cuh"
 #include "vidfab/dtype.h"
+#include "vidfab/safetensors.h"
 
 namespace {
 
@@ -2191,6 +2196,783 @@ VIDFAB_TEST(production_shape_timings) {
     }
     std::printf("  rmsnorm_mod rows=%-6d dim=5376              %8.3f ms\n", seq, ms_mod);
     CHECK(ms_norm > 0.0f && ms_mod > 0.0f);
+  }
+}
+
+// --- native nvfp4 GEMM ------------------------------------------------------
+//
+// Everything from here to the end of the file belongs to the native
+// block-scaled nvfp4 GEMM in src/cuda/nvfp4_gemm.cu. It is one block so that
+// the three tracks working on this file merge cleanly.
+//
+// Three separable things can be wrong and any two of them can cancel: the
+// register operand layout (pinned by `nvfp4_mma_operand_layout`), the on-disk
+// convention (pinned by `nn_dequant_nvfp4`), and the dynamic activation
+// quantisation, which is this project's own choice and belongs to no
+// checkpoint. Each is checked on its own here.
+//
+// The last of the three is not free and is not a bug. `nvfp4_activation_cost`
+// measures it, and the reason it is measured rather than asserted is written
+// out there.
+
+// The e4m3 and e2m1 encoders, by brute force over the representable set. A
+// reference exists to be obviously right; round-to-nearest-*even* on a
+// four-bit exponent is easy to get subtly wrong by hand, and a reference that
+// shares a bug with the thing it checks proves nothing.
+// `nvfp4_rounding_reference` pins both against the hardware converters the
+// kernel actually issues, before anything is built on them.
+uint8_t host_e4m3(float v) {
+  uint8_t best = 0;
+  double bd = 1e300;
+  for (int c = 0; c < 0x7F; ++c) {  // non-negative only; 0x7F is NaN
+    const double d = std::fabs(double(vidfab::f8_e4m3_to_f32(uint8_t(c))) - double(v));
+    if (d < bd || (d == bd && (c & 1) == 0)) {
+      bd = d;
+      best = static_cast<uint8_t>(c);
+    }
+  }
+  return best;
+}
+
+// The sign is carried, not searched for. Rounding over all sixteen codes at
+// once makes +0.1 a tie between +0.0 and -0.0, and which of the two comes back
+// is a question about the sign of zero rather than about rounding -- the
+// hardware keeps the input's sign, so this does too. It is the only place the
+// two ever disagreed, over 0 of 270 *values* and 8 of 270 codes.
+uint8_t host_e2m1(float v) {
+  uint8_t mag = 0;
+  double bd = 1e300;
+  for (int c = 0; c < 8; ++c) {
+    const double d = std::fabs(double(vidfab::f4_e2m1_to_f32(uint8_t(c))) - std::fabs(double(v)));
+    if (d < bd || (d == bd && (c & 1) == 0)) {
+      bd = d;
+      mag = static_cast<uint8_t>(c);
+    }
+  }
+  return static_cast<uint8_t>(mag | (std::signbit(v) ? 8u : 0u));
+}
+
+// A dense matrix put into the checkpoint's storage form, plus exactly what
+// those bytes mean. `make_nvfp4` above starts from random codes, which is the
+// right shape for a layout test; this starts from real values, which is what a
+// numerical one needs.
+//
+// `dense` is the reference the GEMM is judged against. It is not the input
+// matrix: it is the input matrix after nvfp4 has had its way with it.
+struct NvfpPacked {
+  std::vector<uint8_t> data;
+  std::vector<uint8_t> scale;
+  std::vector<float> dense;
+};
+
+// `high_even` and `swizzled` select the on-disk convention. Both shipped
+// checkpoints are (true, true); the other three exist so a test can show the
+// kernel tells them apart rather than happening to agree on symmetric data.
+NvfpPacked pack_nvfp4(const std::vector<float>& w, int rows, int cols, float global,
+                      bool high_even, bool swizzled) {
+  const int kb = cols / 16;
+  NvfpPacked t;
+  t.data.assign(size_t(rows) * cols / 2, 0);
+  t.scale.assign(size_t(rows) * kb, 0);
+  t.dense.assign(size_t(rows) * cols, 0.0f);
+  for (int r = 0; r < rows; ++r) {
+    for (int b = 0; b < kb; ++b) {
+      float amax = 0.0f;
+      for (int i = 0; i < 16; ++i) {
+        amax = std::max(amax, std::fabs(w[size_t(r) * cols + b * 16 + i]));
+      }
+      const uint8_t s8 = host_e4m3(amax / 6.0f / global);
+      const float sd = vidfab::f8_e4m3_to_f32(s8) * global;
+      const float inv = sd > 0.0f ? 1.0f / sd : 0.0f;
+      t.scale[swizzled ? nvfp4_scale_slot(r, b, kb) : size_t(r) * kb + b] = s8;
+      for (int i = 0; i < 16; ++i) {
+        const int col = b * 16 + i;
+        const size_t flat = size_t(r) * cols + col;
+        const uint8_t q = host_e2m1(w[flat] * inv);
+        t.data[flat / 2] |= static_cast<uint8_t>(q << (((col % 2 == 0) == high_even) ? 4 : 0));
+        t.dense[flat] = vidfab::f4_e2m1_to_f32(q) * sd;
+      }
+    }
+  }
+  return t;
+}
+
+// The kernel's activation rule restated: amax/6 rounded to e4m3, then the
+// elements divided by the *decoded* scale and rounded to e2m1. In float rather
+// than double so the ties fall the same way.
+std::vector<float> host_quantise_act(const std::vector<float>& x, int rows, int dim) {
+  std::vector<float> out(x.size(), 0.0f);
+  for (int r = 0; r < rows; ++r) {
+    for (int b = 0; b < dim / 16; ++b) {
+      float amax = 0.0f;
+      for (int i = 0; i < 16; ++i) {
+        amax = std::max(amax, std::fabs(x[size_t(r) * dim + b * 16 + i]));
+      }
+      const uint8_t s8 = host_e4m3(amax * (1.0f / 6.0f));
+      const float sd = vidfab::f8_e4m3_to_f32(s8);
+      const float inv = sd > 0.0f ? 1.0f / sd : 0.0f;
+      for (int i = 0; i < 16; ++i) {
+        const size_t flat = size_t(r) * dim + b * 16 + i;
+        out[flat] = vidfab::f4_e2m1_to_f32(host_e2m1(x[flat] * inv)) * sd;
+      }
+    }
+  }
+  return out;
+}
+
+// Box-Muller over the harness's own generator, because post-norm activations
+// are Gaussian-ish and the harness's uniform is not.
+//
+// The reason is realism, not pessimism, and the naive argument for it is
+// backwards. One would expect uniform data to flatter a block-scaled format --
+// every element sits near its own block maximum, so a shared scale wastes
+// nothing. Measured, uniform comes out *worse*: 0.101 against Gaussian's
+// 0.095 (`nvfp4_activation_cost`). E2M1's grid is finer near zero, with a step
+// of 0.5 below 2 and of 2 above 4, so a distribution that puts most of its
+// mass well inside its own maximum is the one the format suits.
+std::vector<float> make_gaussian(size_t n, uint32_t seed, float sigma) {
+  const std::vector<float> u = make_data(2 * n, seed, 0.5f);  // (-0.5, 0.5)
+  std::vector<float> v(n);
+  for (size_t i = 0; i < n; ++i) {
+    const float a = std::max(1e-7f, u[2 * i] + 0.5f);
+    v[i] = sigma * std::sqrt(-2.0f * std::log(a)) * std::cos(6.2831853f * (u[2 * i + 1] + 0.5f));
+  }
+  return v;
+}
+
+double rms_rel(const std::vector<float>& want, const std::vector<float>& got) {
+  double num = 0.0;
+  double den = 0.0;
+  for (size_t i = 0; i < want.size(); ++i) {
+    const double d = double(got[i]) - want[i];
+    num += d * d;
+    den += double(want[i]) * want[i];
+  }
+  return den > 0.0 ? std::sqrt(num / den) : 0.0;
+}
+
+// Pearson correlation. The discriminator between quantisation noise and a
+// layout bug: noise leaves this at 0.99-something, a misread operand collapses
+// it towards zero while leaving every summary statistic looking healthy.
+double correlation(const std::vector<float>& a, const std::vector<float>& b) {
+  double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+  const double n = double(a.size());
+  for (size_t i = 0; i < a.size(); ++i) {
+    sa += a[i];
+    sb += b[i];
+    saa += double(a[i]) * a[i];
+    sbb += double(b[i]) * b[i];
+    sab += double(a[i]) * b[i];
+  }
+  const double cov = sab / n - (sa / n) * (sb / n);
+  const double va = saa / n - (sa / n) * (sa / n);
+  const double vb = sbb / n - (sb / n) * (sb / n);
+  return (va > 0 && vb > 0) ? cov / std::sqrt(va * vb) : 0.0;
+}
+
+std::vector<float> run_native_nvfp4(const std::vector<float>& x, const NvfpPacked& w, int rows,
+                                    int out_features, int in_features, float global) {
+  BfBuf dx(x), dy(size_t(rows) * out_features);
+  DeviceBuffer<uint8_t> dw(w.data.size()), dws(w.scale.size());
+  dw.copy_from_host(w.data.data(), w.data.size());
+  dws.copy_from_host(w.scale.data(), w.scale.size());
+  Workspace ws;
+  ws.reserve(vidfab::cuda::nvfp4_gemm_workspace_bytes(rows, in_features) + 4096);
+  vidfab::cuda::nvfp4_gemm_forward(dx.p(), dw.get(), dws.get(), global, dy.p(), rows, out_features,
+                                   in_features, ws, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  return dy.host();
+}
+
+// --- the B-side block-scale operand -----------------------------------------
+
+__global__ void nvfp4_mma_bscale_kernel(const uint32_t* a, const uint32_t* b, const uint32_t* sa,
+                                        const uint32_t* sb, float* out) {
+  const int lane = threadIdx.x;
+  const uint32_t ra[4] = {a[lane * 4], a[lane * 4 + 1], a[lane * 4 + 2], a[lane * 4 + 3]};
+  const uint32_t rb[2] = {b[lane * 2], b[lane * 2 + 1]};
+  const uint32_t s_a = sa[lane];
+  const uint32_t s_b = sb[lane];
+  float c[4] = {0, 0, 0, 0};
+  asm volatile(
+      "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
+      ".f32.e2m1.e2m1.f32.ue4m3 "
+      "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
+      : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+      : "r"(ra[0]), "r"(ra[1]), "r"(ra[2]), "r"(ra[3]), "r"(rb[0]), "r"(rb[1]), "r"(s_a),
+        "r"(s_b));
+  const int gid = lane >> 2, tig = lane & 3;
+  out[gid * 8 + tig * 2] = c[0];
+  out[gid * 8 + tig * 2 + 1] = c[1];
+  out[(gid + 8) * 8 + tig * 2] = c[2];
+  out[(gid + 8) * 8 + tig * 2 + 1] = c[3];
+}
+
+// `nvfp4_mma_operand_layout` pins the A side: row r's four block scales are the
+// four bytes of lane `r < 8 ? 4r : 4(r-8)+1`. The B side needs its own
+// experiment and does not follow by symmetry. A has sixteen rows and uses
+// sixteen lanes; B has eight columns and uses **eight** — column c's scales are
+// the four bytes of lane 4c, and lanes 4c+1..4c+3 carry nothing at all.
+//
+// Halving the A rule instead — putting columns 0-3 on lanes 4g and 4-7 on lanes
+// 4g+1, which is the shape one reaches for — writes half the scales into lanes
+// the instruction ignores. It does not crash and does not produce zeros. It
+// produces a well-formed matrix with four of its eight columns scaled wrong.
+VIDFAB_TEST(nvfp4_mma_b_scale_operand_layout) {
+  const std::vector<uint32_t> ones(32 * 4, 0x22222222u), onesb(32 * 2, 0x22222222u);
+  DeviceBuffer<uint32_t> da(ones.size()), db(onesb.size()), dsa(32), dsb(32);
+  da.copy_from_host(ones.data(), ones.size());
+  db.copy_from_host(onesb.data(), onesb.size());
+  const std::vector<uint32_t> unit(32, 0x38383838u);  // four e4m3 1.0 scales
+  dsa.copy_from_host(unit.data(), unit.size());
+  DeviceBuffer<float> dout(128);
+
+  // Every element and every scale 1.0, so each output is 4 blocks x 16 = 64.
+  dsb.copy_from_host(unit.data(), unit.size());
+  nvfp4_mma_bscale_kernel<<<1, 32>>>(da.get(), db.get(), dsa.get(), dsb.get(), dout.get());
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE(std::vector<float>(128, 64.0f), to_host(dout), 0.0, "nvfp4 B unit scales");
+
+  int live_lanes = 0;
+  for (int lane = 0; lane < 32; ++lane) {
+    for (int blk : {0, 2, 3}) {
+      std::vector<uint32_t> s(32, 0x38383838u);
+      s[lane] = (s[lane] & ~(0xFFu << (8 * blk))) | (uint32_t(0x40) << (8 * blk));  // e4m3 2.0
+      dsb.copy_from_host(s.data(), s.size());
+      nvfp4_mma_bscale_kernel<<<1, 32>>>(da.get(), db.get(), dsa.get(), dsb.get(), dout.get());
+      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      const std::vector<float> g = to_host(dout);
+      const int live_col = (lane % 4 == 0) ? lane / 4 : -1;
+      bool ok = true;
+      for (int r = 0; r < 16; ++r) {
+        for (int c = 0; c < 8; ++c) {
+          ok = ok && std::fabs(g[r * 8 + c] - (c == live_col ? 80.0f : 64.0f)) < 1e-3;
+        }
+      }
+      if (live_col >= 0 && blk == 0) ++live_lanes;
+      CHECK_MSG(ok, "B scale lane %d byte %d: expected %s", lane, blk,
+                live_col >= 0 ? "its own column lifted by one block" : "no effect at all");
+    }
+  }
+  CHECK_MSG(live_lanes == 8, "exactly eight B scale lanes should be live, saw %d", live_lanes);
+}
+
+// --- rounding ---------------------------------------------------------------
+
+__global__ void nvfp4_cvt_probe_kernel(const float* in, uint8_t* e2m1, uint8_t* e4m3, int pairs) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= pairs) return;
+  e2m1[i] = static_cast<uint8_t>(__nv_cvt_float2_to_fp4x2(make_float2(in[i * 2], in[i * 2 + 1]),
+                                                          __NV_E2M1, cudaRoundNearest));
+  e4m3[i] = __nv_cvt_float_to_fp8(in[i * 2], __NV_SATFINITE, __NV_E4M3);
+}
+
+// The awkward inputs are the ties — 0.25, 0.75, 1.75, 3.5, 5.0 — where
+// round-to-nearest-even and round-half-away-from-zero disagree, and the
+// saturating end, where e2m1 must clamp to +-6 rather than wrap.
+VIDFAB_TEST(nvfp4_rounding_reference) {
+  std::vector<float> vals = {0.0f, 0.25f, 0.75f, 1.25f, 1.75f, 2.5f,
+                             3.5f, 5.0f,  6.0f,  1e4f,  -1e4f, 0.0f};
+  const std::vector<float> r = make_data(512, 909u, 8.0f);
+  vals.insert(vals.end(), r.begin(), r.end());
+
+  DeviceBuffer<float> din(vals.size());
+  din.copy_from_host(vals.data(), vals.size());
+  const int pairs = int(vals.size() / 2);
+  DeviceBuffer<uint8_t> d4(pairs), d8(pairs);
+  nvfp4_cvt_probe_kernel<<<(pairs + 127) / 128, 128>>>(din.get(), d4.get(), d8.get(), pairs);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint8_t> h4(pairs), h8(pairs);
+  d4.copy_to_host(h4.data(), h4.size());
+  d8.copy_to_host(h8.data(), h8.size());
+
+  int bad4 = 0, bad8 = 0;
+  for (int i = 0; i < pairs; ++i) {
+    // The instruction packs the even index in the LOW nibble. That the
+    // checkpoint does the opposite is a separate statement about a separate
+    // layer, and conflating the two is exactly the trap this file exists for.
+    if ((h4[i] & 0x0F) != host_e2m1(vals[i * 2])) ++bad4;
+    if ((h4[i] >> 4) != host_e2m1(vals[i * 2 + 1])) ++bad4;
+    if (vals[i * 2] >= 0.0f && h8[i] != host_e4m3(vals[i * 2])) ++bad8;
+  }
+  CHECK_MSG(bad4 == 0, "host e2m1 encoder disagrees with cvt.rn.satfinite on %d of %d", bad4,
+            pairs * 2);
+  CHECK_MSG(bad8 == 0, "host e4m3 encoder disagrees with cvt.rn.satfinite on %d of %d", bad8,
+            pairs);
+}
+
+// --- activation quantisation ------------------------------------------------
+
+VIDFAB_TEST(nvfp4_activation_quantisation) {
+  const int rows = 7;
+  const int dim = 64;
+  std::vector<float> x = make_gaussian(size_t(rows) * dim, 4242u, 0.7f);
+  // Three blocks with a story: all zeros, far under e4m3's smallest scale, and
+  // far over its largest. None may produce a NaN and none may wrap.
+  for (int i = 0; i < 16; ++i) x[0 * dim + i] = 0.0f;
+  for (int i = 0; i < 16; ++i) x[1 * dim + 16 + i] = 1e-6f * float(i + 1);
+  for (int i = 0; i < 16; ++i) x[2 * dim + 32 + i] = 5000.0f;
+  const std::vector<float> xr = bf16_round(x);
+
+  BfBuf dx(x);
+  DeviceBuffer<uint8_t> dq(size_t(rows) * dim / 2), ds(size_t(rows) * dim / 16);
+  vidfab::cuda::launch_quantize_nvfp4_activations(dx.p(), dq.get(), ds.get(), rows, dim, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint8_t> hq(dq.size()), hs(ds.size());
+  dq.copy_to_host(hq.data(), hq.size());
+  ds.copy_to_host(hs.data(), hs.size());
+
+  // The activation buffer is written by this project, for this instruction, so
+  // it owes the checkpoint's conventions nothing: low nibble is the even
+  // element and the scales are plain row-major.
+  int bad_scale = 0, bad_nibble = 0;
+  for (int r = 0; r < rows; ++r) {
+    for (int b = 0; b < dim / 16; ++b) {
+      float amax = 0.0f;
+      for (int i = 0; i < 16; ++i) {
+        amax = std::max(amax, std::fabs(xr[size_t(r) * dim + b * 16 + i]));
+      }
+      const uint8_t s8 = host_e4m3(amax * (1.0f / 6.0f));
+      if (hs[size_t(r) * (dim / 16) + b] != s8) ++bad_scale;
+      const float sd = vidfab::f8_e4m3_to_f32(s8);
+      const float inv = sd > 0.0f ? 1.0f / sd : 0.0f;
+      for (int i = 0; i < 16; ++i) {
+        const size_t flat = size_t(r) * dim + b * 16 + i;
+        const uint8_t got = (i % 2 == 0) ? (hq[flat / 2] & 0x0F) : (hq[flat / 2] >> 4);
+        if (host_e2m1(xr[flat] * inv) != got) ++bad_nibble;
+      }
+    }
+  }
+  CHECK_MSG(bad_scale == 0, "%d of %d block scales are not amax/6 rounded to e4m3", bad_scale,
+            int(hs.size()));
+  CHECK_MSG(bad_nibble == 0, "%d of %d nibbles differ from the host rule", bad_nibble,
+            int(xr.size()));
+
+  // Zero block: scale zero, nibbles zero, and no NaN out of the reciprocal.
+  CHECK(hs[0] == 0);
+  bool zeros = true;
+  for (int i = 0; i < 8; ++i) zeros = zeros && hq[i] == 0;
+  CHECK(zeros);
+
+  // Underflow flushes the whole block rather than clipping it onto the grid.
+  // e4m3's smallest positive is 2^-9, so a block whose largest element is under
+  // 6 * 2^-10 has no representable scale and becomes zero. Documented, not
+  // accidental: it is why the header argues a per-tensor activation scale buys
+  // nothing for post-norm activations, whose blocks are nowhere near this.
+  CHECK(hs[dim / 16 + 1] == 0);
+
+  // Overflow saturates. 5000 wants a scale of 833, e4m3 stops at 448, and the
+  // elements then clip at 6 — finite and too small, never wrapped, never NaN.
+  CHECK(vidfab::f8_e4m3_to_f32(hs[2 * (dim / 16) + 2]) == 448.0f);
+  bool clipped = true;
+  for (int i = 0; i < 8; ++i) {
+    const uint8_t byte = hq[(size_t(2) * dim + 32) / 2 + i];
+    clipped = clipped && (byte & 0x0F) == 7 && (byte >> 4) == 7;  // +6 both halves
+  }
+  CHECK(clipped);
+}
+
+// --- the GEMM against a CPU reference ---------------------------------------
+
+VIDFAB_TEST(nvfp4_gemm_matches_cpu_reference) {
+  struct Shape {
+    int rows, out, in;
+  };
+  // Ragged row counts on purpose: 1 leaves 127 rows of a tile as padding, 200
+  // leaves a 72-row tail, 129 leaves a one-row second tile. The contraction
+  // covers half a staging tile (64), one (128), one and a half (192) and two
+  // and a half (320).
+  const Shape shapes[] = {{1, 128, 64},    {17, 128, 128}, {128, 256, 192},
+                          {200, 128, 320}, {129, 256, 64}};
+
+  for (const Shape& s : shapes) {
+    const std::vector<float> x = bf16_round(make_gaussian(size_t(s.rows) * s.in, 71u + s.in, 0.8f));
+    const std::vector<float> wd = make_gaussian(size_t(s.out) * s.in, 33u + s.out, 0.05f);
+    const NvfpPacked w = pack_nvfp4(wd, s.out, s.in, 0.7f, true, true);
+    // The reference sees the same activation the kernel does. This check is
+    // about the GEMM; what 4-bit activations cost is a different question,
+    // measured in `nvfp4_activation_cost`.
+    CHECK_CLOSE_REL(cpu_matmul_nt(host_quantise_act(x, s.rows, s.in), w.dense, s.rows, s.out, s.in),
+                    run_native_nvfp4(x, w, s.rows, s.out, s.in, 0.7f), 1e-3, 1e-2,
+                    "native nvfp4 GEMM vs CPU reference");
+  }
+}
+
+// The load path from stored bytes to mma registers is not the identity, and
+// every way of getting it wrong is silent. Each wrong form is constructed here
+// and the kernel required not to match it.
+VIDFAB_TEST(nvfp4_gemm_disk_layout) {
+  const int rows = 64, out = 128, in = 192;
+  const std::vector<float> x = bf16_round(make_gaussian(size_t(rows) * in, 515u, 0.8f));
+  const std::vector<float> wd = make_gaussian(size_t(out) * in, 616u, 0.05f);
+  const NvfpPacked right = pack_nvfp4(wd, out, in, 1.0f, true, true);
+  const std::vector<float> want =
+      cpu_matmul_nt(host_quantise_act(x, rows, in), right.dense, rows, out, in);
+
+  CHECK_CLOSE_REL(want, run_native_nvfp4(x, right, rows, out, in, 1.0f), 1e-3, 1e-2,
+                  "checkpoint layout: high nibble even, block scales swizzled");
+
+  const struct {
+    bool high_even, swizzled;
+    const char* what;
+  } wrong[] = {
+      {false, true, "low nibble even"},
+      {true, false, "block scales row-major rather than 128x4 tiled"},
+      {false, false, "both conventions inverted"},
+  };
+  for (const auto& c : wrong) {
+    const NvfpPacked bad = pack_nvfp4(wd, out, in, 1.0f, c.high_even, c.swizzled);
+    const double rel = rms_rel(want, run_native_nvfp4(x, bad, rows, out, in, 1.0f));
+    CHECK_MSG(rel > 0.2, "%s must disagree with the checkpoint layout, rms_rel %.4f", c.what, rel);
+  }
+
+  // A block stride error inside an otherwise correct swizzle: every row's block
+  // scales rotated by one. Every byte is still present and still in the right
+  // tile, so nothing about the size or the value histogram gives it away.
+  NvfpPacked rot = right;
+  const int kb = in / 16;
+  for (int m = 0; m < out; ++m) {
+    for (int b = 0; b < kb; ++b) {
+      rot.scale[nvfp4_scale_slot(m, b, kb)] = right.scale[nvfp4_scale_slot(m, (b + 1) % kb, kb)];
+    }
+  }
+  const double rel = rms_rel(want, run_native_nvfp4(x, rot, rows, out, in, 1.0f));
+  CHECK_MSG(rel > 0.2, "block scales rotated by one block must disagree, rms_rel %.4f", rel);
+
+  // The shapes the 128x4 tiling cannot address are refused, not guessed at.
+  CHECK(vidfab::cuda::nvfp4_gemm_supported(out, in));
+  CHECK(!vidfab::cuda::nvfp4_gemm_supported(out, in + 16));   // in % 64 != 0
+  CHECK(!vidfab::cuda::nvfp4_gemm_supported(out + 64, in));   // out % 128 != 0
+}
+
+// The global scale multiplies the whole tensor and is folded into the epilogue,
+// so it has to appear exactly once. Twice, or not at all, still gives a
+// well-formed matrix.
+VIDFAB_TEST(nvfp4_gemm_global_scale) {
+  const int rows = 32, out = 128, in = 128;
+  const std::vector<float> x = bf16_round(make_gaussian(size_t(rows) * in, 808u, 0.8f));
+  const std::vector<float> wd = make_gaussian(size_t(out) * in, 909u, 0.05f);
+  const NvfpPacked w = pack_nvfp4(wd, out, in, 1.0f, true, true);
+
+  // The same stored bytes twice, with only the scalar changed, so anything the
+  // quantiser does cancels and what is left is the epilogue's multiply.
+  const std::vector<float> at_one = run_native_nvfp4(x, w, rows, out, in, 1.0f);
+  const float g = 3.25f;
+  const std::vector<float> at_g = run_native_nvfp4(x, w, rows, out, in, g);
+
+  std::vector<float> lifted(at_one.size()), twice(at_one.size());
+  for (size_t i = 0; i < at_one.size(); ++i) {
+    lifted[i] = at_one[i] * g;
+    twice[i] = at_one[i] * g * g;
+  }
+  // Not equality, and the reason is worth stating because the tempting
+  // argument is wrong: g has three significant bits, but `at_one` is already
+  // rounded to bf16, so scaling it multiplies a half-ULP error by 3.25 before
+  // `at_g`'s own rounding is added. Two bf16 ULP apart is correct behaviour.
+  // The bar still has all the power it needs: getting the count wrong moves
+  // the answer by a factor of 3.25.
+  CHECK_CLOSE_REL(lifted, at_g, 1e-3, 1e-2, "global scale applied exactly once");
+  CHECK(rms_rel(at_one, at_g) > 0.5);  // not zero times
+  CHECK(rms_rel(twice, at_g) > 0.5);   // not twice
+
+  // And the scalar the checkpoint actually carries reaches the same answer
+  // whether it is folded into the stored scales or passed alongside them.
+  const NvfpPacked folded = pack_nvfp4(wd, out, in, g, true, true);
+  CHECK_CLOSE_REL(cpu_matmul_nt(host_quantise_act(x, rows, in), folded.dense, rows, out, in),
+                  run_native_nvfp4(x, folded, rows, out, in, g), 1e-3, 1e-2,
+                  "global scale against a weight packed for it");
+}
+
+// --- what the operand path costs, separated from what the format costs -------
+
+// The decisive experiment. Every activation here is already exactly on the fp4
+// grid: each block is built from a power-of-two scale and the eight E2M1
+// magnitudes, with at least one element at 6s so `amax/6` recovers `s` exactly.
+// The kernel's dynamic quantiser is therefore the identity on this input, and
+// what remains is the operand path alone.
+//
+// If this agrees and `nvfp4_activation_cost` does not, the activation
+// quantisation is the entire story and the load path is correct. That is the
+// one measurement that tells a numerical limit apart from a layout bug.
+VIDFAB_TEST(nvfp4_gemm_exact_fp4_activations) {
+  const int rows = 128, out = 256, in = 512;
+  const float grid[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+
+  std::vector<float> x(size_t(rows) * in);
+  const std::vector<float> u = make_data(x.size(), 31337u, 0.5f);
+  for (int r = 0; r < rows; ++r) {
+    for (int b = 0; b < in / 16; ++b) {
+      // Powers of two from 2^-4 to 2^3, all exactly e4m3.
+      const float s = std::ldexp(1.0f, ((r * 7 + b * 3) % 8) - 4);
+      for (int i = 0; i < 16; ++i) {
+        const size_t flat = size_t(r) * in + b * 16 + i;
+        const int code = int((u[flat] + 0.5f) * 8.0f) & 7;
+        const float sign = (int((u[flat] + 0.5f) * 64.0f) & 1) ? -1.0f : 1.0f;
+        x[flat] = sign * grid[code] * s;
+      }
+      x[size_t(r) * in + b * 16] = 6.0f * s;  // pin amax so the scale round-trips
+    }
+  }
+  // Every value is a small multiple of a power of two, so bf16 holds it exactly
+  // and the buffer the kernel reads is the buffer built here.
+  CHECK(bf16_round(x) == x);
+  CHECK(host_quantise_act(x, rows, in) == x);
+
+  const std::vector<float> wd = make_gaussian(size_t(out) * in, 2468u, 0.05f);
+  const NvfpPacked w = pack_nvfp4(wd, out, in, 1.0f, true, true);
+  const std::vector<float> got = run_native_nvfp4(x, w, rows, out, in, 1.0f);
+  const std::vector<float> want = cpu_matmul_nt(x, w.dense, rows, out, in);
+
+  std::printf("  nvfp4 exact-fp4 activations: rms_rel %.6f  corr %.6f\n", rms_rel(want, got),
+              correlation(want, got));
+  CHECK_CLOSE_REL(want, got, 1e-3, 1e-2, "native nvfp4 GEMM on fp4-exact activations");
+}
+
+// The measurement, not an assertion.
+//
+// `set_native(true)` replaces bf16 activations with 4-bit ones, and that is a
+// change to the arithmetic, not to the implementation of it. E2M1 has eight
+// magnitudes; a 16-element block sharing one scale carries a per-element
+// relative error of order 10%, and a dot product does not average it away —
+// both the signal and the error grow as sqrt(K), so the output's relative error
+// stays where the input's was. Nothing about the kernel changes that and no
+// value of K rescues it, which is what the sweep below is for.
+//
+// So this reports rather than asserts. `nvfp4_gemm_exact_fp4_activations` is
+// the assertion that the operand path is right; this is the cost of the format
+// on top of it, and whether that cost is acceptable is a modelling decision.
+VIDFAB_TEST(nvfp4_activation_cost) {
+  const int rows = 128, out = 256;
+  const std::vector<float> wd_full = make_gaussian(size_t(out) * 5376, 2468u, 0.05f);
+
+  std::printf("  nvfp4 activation cost vs a bf16-activation reference:\n");
+  std::printf("      %-26s %6s %8s %8s %8s %9s\n", "distribution", "K", "rms_rel", "median",
+              "p99", "corr");
+
+  struct Case {
+    const char* name;
+    int seed;
+    int hot_stride;  // 0 = none
+    bool uniform;
+  };
+  const Case cases[] = {{"gaussian", 1234, 0, false},
+                        {"gaussian + hot channels", 5678, 61, false},
+                        {"uniform", 4321, 0, true}};
+
+  for (const Case& c : cases) {
+    for (int in : {128, 512, 2048, 5376}) {
+      std::vector<float> x = c.uniform ? make_data(size_t(rows) * in, uint32_t(c.seed), 1.0f)
+                                       : make_gaussian(size_t(rows) * in, uint32_t(c.seed), 1.0f);
+      // Post-norm transformer activations are not clean Gaussians: a handful of
+      // channels run an order of magnitude hot and persist across rows. That is
+      // the case block scaling exists for, and no uniform generator produces it.
+      if (c.hot_stride) {
+        for (int ch = 0; ch < in; ch += c.hot_stride) {
+          for (int r = 0; r < rows; ++r) x[size_t(r) * in + ch] *= 20.0f;
+        }
+      }
+      x = bf16_round(x);
+
+      const std::vector<float> wd(wd_full.begin(), wd_full.begin() + size_t(out) * in);
+      const NvfpPacked w = pack_nvfp4(wd, out, in, 1.0f, true, true);
+      const std::vector<float> got = run_native_nvfp4(x, w, rows, out, in, 1.0f);
+
+      // Same weight both sides, so the only difference is the activation.
+      const std::vector<float> ref = cpu_matmul_nt(x, w.dense, rows, out, in);
+
+      std::vector<double> rel;
+      rel.reserve(got.size());
+      double num = 0.0, den = 0.0, hi_err = 0.0, lo_err = 0.0;
+      int hi_n = 0, lo_n = 0;
+      double amax = 0.0;
+      for (float v : ref) amax = std::max(amax, std::fabs(double(v)));
+      for (size_t i = 0; i < got.size(); ++i) {
+        const double a = std::fabs(double(ref[i]));
+        const double d = std::fabs(double(got[i]) - ref[i]);
+        num += d * d;
+        den += double(ref[i]) * ref[i];
+        if (a > 1e-6) rel.push_back(d / a);
+        // Error against output magnitude: quantisation noise is roughly flat in
+        // absolute terms, so it shows up as a huge *relative* error wherever
+        // the output cancelled towards zero and a small one where it did not.
+        if (a > 0.5 * amax) {
+          hi_err += d;
+          ++hi_n;
+        } else if (a < 0.05 * amax) {
+          lo_err += d;
+          ++lo_n;
+        }
+      }
+      std::sort(rel.begin(), rel.end());
+      const double med = rel.empty() ? 0.0 : rel[rel.size() / 2];
+      const double p99 = rel.empty() ? 0.0 : rel[rel.size() * 99 / 100];
+      std::printf("      %-26s %6d %8.4f %8.4f %8.4f %9.6f\n", c.name, in,
+                  std::sqrt(num / std::max(den, 1e-30)), med, p99, correlation(ref, got));
+      if (in == 5376) {
+        std::printf("          mean |err| on the largest half of outputs %.3e, "
+                    "on the smallest twentieth %.3e\n",
+                    hi_n ? hi_err / hi_n : 0.0, lo_n ? lo_err / lo_n : 0.0);
+      }
+      CHECK(std::sqrt(num / std::max(den, 1e-30)) < 1.0);  // still the same matrix
+    }
+  }
+}
+
+// The same measurement on a real tensor. Synthetic weights cannot say whether
+// the shipped block scales are benign; these are the bytes the model ships.
+VIDFAB_TEST(nvfp4_activation_cost_real_weights) {
+  std::string path;
+  for (const char* prefix : {"", "../", "../../", "../../../"}) {
+    const std::string p =
+        std::string(prefix) + "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
+    if (std::filesystem::exists(p)) {
+      path = p;
+      break;
+    }
+  }
+  if (path.empty()) {
+    std::printf("  nvfp4 real-weight error: checkpoint absent, skipped\n");
+    return;
+  }
+
+  vidfab::SafeTensors st;
+  st.open(path);
+  const int rows = 128;
+  const char* names[] = {"blocks.0.attn.qkv_proj", "blocks.0.mlp.fc2"};
+  for (const char* name : names) {
+    const vidfab::TensorView& wv = st.at(std::string(name) + ".weight");
+    const vidfab::TensorView& sv = st.at(std::string(name) + ".weight_scale");
+    const vidfab::TensorView& gv = st.at(std::string(name) + ".weight_scale_2");
+    const int out = int(wv.shape[0]);
+    const int in = int(wv.shape[1]) * 2;
+    float global = 1.0f;
+    std::memcpy(&global, gv.data, sizeof(float));
+
+    // One 128-row slab, which is a whole number of scale tiles and so slices
+    // cleanly out of both arrays.
+    const int slab = 128;
+    const int kb = in / 16;
+    std::vector<uint8_t> wpacked(static_cast<const uint8_t*>(wv.data),
+                                 static_cast<const uint8_t*>(wv.data) + size_t(slab) * in / 2);
+    std::vector<uint8_t> wscale(static_cast<const uint8_t*>(sv.data),
+                                static_cast<const uint8_t*>(sv.data) + size_t(slab) * kb);
+
+    // What those bytes mean, straight from the file.
+    std::vector<float> dense(size_t(slab) * in);
+    for (int o = 0; o < slab; ++o) {
+      for (int i = 0; i < in; ++i) {
+        const float s = vidfab::f8_e4m3_to_f32(wscale[nvfp4_scale_slot(o, i / 16, kb)]) * global;
+        const uint8_t byte = wpacked[(size_t(o) * in + i) / 2];
+        dense[size_t(o) * in + i] =
+            vidfab::f4_e2m1_to_f32(i % 2 == 0 ? (byte >> 4) : (byte & 0x0F)) * s;
+      }
+    }
+
+    // Post-RMSNorm activations: unit RMS per row is what the norm produces, and
+    // the hot channels are what makes the case hard.
+    std::vector<float> x = make_gaussian(size_t(rows) * in, 777u, 1.0f);
+    for (int ch = 0; ch < in; ch += 61) {
+      for (int r = 0; r < rows; ++r) x[size_t(r) * in + ch] *= 20.0f;
+    }
+    x = bf16_round(x);
+
+    NvfpPacked w;
+    w.data = std::move(wpacked);
+    w.scale = std::move(wscale);
+    w.dense = dense;
+    const std::vector<float> got = run_native_nvfp4(x, w, rows, slab, in, global);
+    const std::vector<float> ref = cpu_matmul_nt(x, dense, rows, slab, in);
+    const std::vector<float> fp4_ref =
+        cpu_matmul_nt(host_quantise_act(x, rows, in), dense, rows, slab, in);
+
+    std::printf("  %-24s out=%-6d in=%-6d  vs bf16 act: rms_rel %.4f corr %.6f | "
+                "vs fp4 act: rms_rel %.6f\n",
+                name, out, in, rms_rel(ref, got), correlation(ref, got), rms_rel(fp4_ref, got));
+    // The operand path on the shipped bytes, with the format's own cost taken
+    // out of both sides. This one is an assertion.
+    CHECK_CLOSE_REL(fp4_ref, got, 1e-3, 1e-2, "native nvfp4 GEMM on a shipped weight");
+  }
+}
+
+// --- timings ----------------------------------------------------------------
+
+VIDFAB_TEST(nvfp4_gemm_production_timings) {
+  CublasScope cb;
+  cudaDeviceProp prop{};
+  VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+  std::printf("  %s: %d SMs, %d KB shared per SM\n", prop.name, prop.multiProcessorCount,
+              int(prop.sharedMemPerMultiprocessor >> 10));
+
+  struct Shape {
+    const char* name;
+    int out, in;
+  };
+  const Shape shapes[] = {{"qkv_proj", 21504, 5376},
+                          {"attn.out_proj", 5376, 7168},
+                          {"mlp.fc1", 28672, 5376},
+                          {"mlp.fc2", 5376, 14336}};
+
+  Timer timer;
+  for (const Shape& s : shapes) {
+    // The bytes never leave the device and their values do not affect timing.
+    DeviceBuffer<uint8_t> dw(size_t(s.out) * s.in / 2), dws(size_t(s.out) * s.in / 16);
+    VIDFAB_CUDA_CHECK(cudaMemset(dw.get(), 0x25, dw.nbytes()));
+    VIDFAB_CUDA_CHECK(cudaMemset(dws.get(), 0x38, dws.nbytes()));
+
+    for (int rows : {512, 2048, 8192}) {
+      BfBuf dx(size_t(rows) * s.in), dy(size_t(rows) * s.out);
+      VIDFAB_CUDA_CHECK(cudaMemset(dx.raw.get(), 0x3C, dx.raw.nbytes()));
+
+      Workspace ws;
+      ws.reserve(vidfab::cuda::nvfp4_gemm_workspace_bytes(rows, s.in) + (1u << 20));
+      Workspace dqws;
+      dqws.reserve(size_t(s.out) * s.in * sizeof(__nv_bfloat16) + 4096);
+
+      const double flops = 2.0 * rows * s.out * s.in;
+      // What the native path must move: the weight, its scales, the activation
+      // in and the result out. The reference path moves the dequantised weight
+      // twice on top of all of it.
+      const double bytes = double(s.out) * s.in / 2 + double(s.out) * s.in / 16 +
+                           2.0 * rows * s.in + 2.0 * rows * s.out;
+
+      float ms = 1e30f;
+      for (int pass = 0; pass < 3; ++pass) {
+        ms = std::min(ms, timer.measure(
+                              [&] {
+                                vidfab::cuda::nvfp4_gemm_forward(dx.p(), dw.get(), dws.get(), 1.0f,
+                                                                 dy.p(), rows, s.out, s.in, ws,
+                                                                 nullptr);
+                              },
+                              2, 5));
+      }
+
+      // The reference path, same shape, same process: the production
+      // dequantiser followed by a cuBLAS bf16 GEMM.
+      float dq_ms = 1e30f;
+      for (int pass = 0; pass < 3; ++pass) {
+        dq_ms = std::min(dq_ms, timer.measure(
+                                    [&] {
+                                      Workspace::Scope scope(dqws);
+                                      __nv_bfloat16* wb =
+                                          dqws.alloc_n<__nv_bfloat16>(size_t(s.out) * s.in);
+                                      vidfab::cuda::launch_dequant_nvfp4(dw.get(), dws.get(), 1.0f,
+                                                                         wb, s.out, s.in, nullptr);
+                                      const float alpha = 1.0f, beta = 0.0f;
+                                      VIDFAB_CUBLAS_CHECK(cublasGemmEx(
+                                          cb.h, CUBLAS_OP_T, CUBLAS_OP_N, s.out, rows, s.in,
+                                          &alpha, wb, CUDA_R_16BF, s.in, dx.p(), CUDA_R_16BF, s.in,
+                                          &beta, dy.p(), CUDA_R_16BF, s.out, CUBLAS_COMPUTE_32F,
+                                          CUBLAS_GEMM_DEFAULT));
+                                    },
+                                    2, 5));
+      }
+
+      std::printf("  %-14s out=%-6d in=%-6d rows=%-5d  native %8.3f ms %6.1f TFLOP/s %6.0f GB/s"
+                  "  |  dequant+cuBLAS %8.3f ms %6.1f TFLOP/s  |  x%.2f\n",
+                  s.name, s.out, s.in, rows, ms, flops / (ms * 1e-3) / 1e12,
+                  bytes / (ms * 1e-3) / 1e9, dq_ms, flops / (dq_ms * 1e-3) / 1e12, dq_ms / ms);
+      CHECK(ms > 0.0f && dq_ms > 0.0f);
+    }
   }
 }
 
