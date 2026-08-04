@@ -48,6 +48,16 @@ if(VIDFAB_ENABLE_CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     message(STATUS "vidfab: CUDA ${CMAKE_CUDA_COMPILER_VERSION}, arch ${CMAKE_CUDA_ARCHITECTURES}")
+
+    add_library(vidfab_cuda STATIC
+      src/cuda/device.cu
+    )
+    target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    # Whole-program compilation: no device code crosses translation units, and
+    # -rdc=true would otherwise require an explicit device-link step.
+    set_target_properties(vidfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
+    target_link_libraries(vidfab_cuda PUBLIC vidfab_core)
+
     target_compile_definitions(vidfab_core PUBLIC VIDFAB_WITH_CUDA=1)
   else()
     message(WARNING "vidfab: no CUDA compiler found; building CPU-only")
@@ -59,6 +69,9 @@ endif()
 
 add_executable(vidfab src/main.cpp)
 target_link_libraries(vidfab PRIVATE vidfab_core)
+if(VIDFAB_ENABLE_CUDA)
+  target_link_libraries(vidfab PRIVATE vidfab_cuda)
+endif()
 
 if(MSVC)
   target_compile_options(vidfab PRIVATE /W4 /permissive- /utf-8)

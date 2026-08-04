@@ -13,6 +13,10 @@
 #include "vidfab/dtype.h"
 #include "vidfab/safetensors.h"
 
+#if VIDFAB_WITH_CUDA
+#include "vidfab/cuda/device.h"
+#endif
+
 namespace {
 
 constexpr const char* kVersion = "0.1.0";
@@ -25,6 +29,7 @@ void print_usage() {
       "\n"
       "commands:\n"
       "  inspect <file.safetensors>   summarise a checkpoint's tensors\n"
+      "  devices                      list visible CUDA devices\n"
       "  version                      print the version and exit\n"
       "\n"
       "inspect options:\n"
@@ -150,6 +155,31 @@ int cmd_inspect(int argc, char** argv) {
   return 0;
 }
 
+int cmd_devices() {
+#if !VIDFAB_WITH_CUDA
+  std::fprintf(stderr, "vidfab: built without CUDA support\n");
+  return 1;
+#else
+  const int count = vidfab::cuda::device_count();
+  if (count == 0) {
+    std::fprintf(stderr, "vidfab: no CUDA device is visible\n");
+    return 1;
+  }
+  for (int i = 0; i < count; ++i) {
+    const vidfab::cuda::DeviceInfo d = vidfab::cuda::query_device(i);
+    std::printf("device %d  %s\n", d.index, d.name.c_str());
+    std::printf("  compute capability  %d.%d\n", d.major, d.minor);
+    std::printf("  memory              %s free of %s\n", format_bytes(d.free_memory).c_str(),
+                format_bytes(d.total_memory).c_str());
+    std::printf("  multiprocessors     %d\n", d.multiprocessors);
+    std::printf("  shared mem / block  %s\n", format_bytes(d.shared_memory_per_block).c_str());
+    std::printf("  numeric support     bf16=%s fp8=%s fp4=%s\n", d.supports_bf16 ? "yes" : "no",
+                d.supports_fp8 ? "yes" : "no", d.supports_fp4 ? "yes" : "no");
+  }
+  return 0;
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -161,6 +191,7 @@ int main(int argc, char** argv) {
   const std::string_view command = argv[1];
   try {
     if (command == "inspect") return cmd_inspect(argc - 2, argv + 2);
+    if (command == "devices") return cmd_devices();
     if (command == "version") {
       std::printf("vidfab %s\n", kVersion);
       return 0;
