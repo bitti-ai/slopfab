@@ -312,10 +312,18 @@ indexing. It cannot, in fact, because `model.norm` is absent; but a port that
 reintroduce the bug in a form that still produces well-scaled output. **Do not
 add a final norm.**
 
-Sanity check available to the implementer: the layer-49 residual stream is a
-raw pre-norm residual and its per-row RMS should be *large* and grow with depth
-(hundreds, typically) — not O(1). An output whose rows have RMS ≈ 1 means a
-final norm crept in.
+Sanity check available to the implementer. An earlier draft of this section said
+the per-row *RMS* reaches "hundreds"; that was wrong, and measurement on the real
+checkpoint corrects it. It is the per-row **L2 norm** that reaches the hundreds.
+The RMS over 5120 channels is 2.9–3.8 for ordinary tokens, and 214 for token 0 —
+the usual attention-sink massive activation. So an absolute RMS threshold is a
+bad check: it would either fire on every ordinary row or miss a crept-in norm
+entirely.
+
+Check the **spread across rows** instead. A final RMSNorm flattens every row to
+`RMS(w)`, so the ratio between the largest and smallest per-row RMS collapses
+toward 1. We measure a 75× spread, which no post-norm output can produce. That
+is the discriminating test, and it is what `tests/test_encoder.cu` asserts.
 
 ### 1.5 Output
 
