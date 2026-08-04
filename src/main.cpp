@@ -324,6 +324,7 @@ int cmd_decode(int argc, char** argv) {
   int W = 16;
   uint32_t seed = 1234;
   bool no_tiling = false;
+  bool bench_load = false;
   int fps = 24;
   int repeat = 1;
 
@@ -351,6 +352,8 @@ int cmd_decode(int argc, char** argv) {
       repeat = std::max(1, std::atoi(argv[++i]));
     } else if (arg == "--no-tiling") {
       no_tiling = true;
+    } else if (arg == "--bench-load") {
+      bench_load = true;
     } else {
       std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
       return 2;
@@ -391,6 +394,28 @@ int cmd_decode(int argc, char** argv) {
   }
 
   std::printf("latent     [24, %d, %d, %d] -> %d x %d px\n", T, H, W, W * 16, H * 16);
+
+  // Loading twice in one process distinguishes two very different causes of a
+  // slow load: if the second is much faster, the first was paying page faults
+  // to pull the mapping in from storage; if they match, the cost is the host
+  // memcpy and PCIe, and only then is parallelising or double-buffering it
+  // worth building.
+  if (bench_load) {
+    auto time_load = [&](const char* label) {
+      vidfab::vae::ViTDecoder probe;
+      const auto s0 = std::chrono::steady_clock::now();
+      probe.load(ckpt);
+      const auto s1 = std::chrono::steady_clock::now();
+      const double sec = std::chrono::duration<double>(s1 - s0).count();
+      std::printf("load %-8s %s in %.3f s (%.2f GB/s of fp16 across PCIe)\n", label,
+                  format_bytes(probe.weight_bytes()).c_str(), sec,
+                  (static_cast<double>(probe.weight_bytes()) / 2.0) / sec / 1e9);
+    };
+    time_load("first");
+    time_load("second");
+    time_load("third");
+    return 0;
+  }
 
   vidfab::vae::ViTDecoder decoder;
   const auto load_start = std::chrono::steady_clock::now();
