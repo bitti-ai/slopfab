@@ -17,9 +17,26 @@
 
 namespace vidfab::dit {
 
+// Produces the two velocity predictions for one step, in place of the
+// transformer. See `DenoiseInputs::velocity`.
+using VelocityFn = std::function<void(int step, const RowTimesteps& row_timesteps,
+                                      const float* video_rows, const float* audio_rows,
+                                      float* video_velocity, float* audio_velocity)>;
+
 struct DenoiseInputs {
   const SequenceLayout* layout = nullptr;
   const PackedIndices* indices = nullptr;
+
+  // Substitutes the transformer. Null in production, in which case
+  // `Transformer::forward` runs.
+  //
+  // This is here because the loop's arithmetic is worth pinning on its own and
+  // is otherwise reachable only through a 19.5 GiB checkpoint and forty minutes
+  // of GPU time. Three things in it are easy to get wrong and invisible in the
+  // output shape: the plus in `x + sigma*v`, the two schedulers advancing on
+  // their own sigma grids inside one iteration, and the terminal ratio of zero
+  // that makes the last step return the denoised estimate outright.
+  VelocityFn velocity;
 
   // Schedules, already validated to be the same length by resolve_plan.
   const std::vector<float>* video_timesteps = nullptr;

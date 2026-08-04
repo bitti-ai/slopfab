@@ -1,1 +1,1113 @@
+// The H3 omni transformer forward pass. See the header for the four hazards;
+// this file is the arithmetic, the memory plan and the reasons behind both.
+//
+// **The memory plan is the design.** 19.5 GiB of weights are resident on a
+// 32 GB card, leaving roughly 12 GB for everything else, and at seq = 37710 the
+// naive activation buffers do not fit comfortably:
+//
+//     hidden [S, 5376]  bf16  =  405 MB
+//     qkv    [S, 21504] bf16  = 1.62 GB
+//     ffn    [S, 28672] bf16  = 2.16 GB
+//
+// Every one of `qkv_proj`, the FFN, the two input projections and the two
+// output heads is strictly row-wise, so they are processed `kRowChunk` rows at
+// a time — exactly equivalent, and it cuts the transient buffers by four to
+// five times. Attention is the exception: it needs the whole sequence on the
+// key axis, so `q`, `k` and `v` are materialised in full and only the query
+// axis is blocked, which `attention_forward` already does internally.
+//
+// The workspace is reserved once at the high-water mark in `prepare_sequence`
+// and never grows inside the loop.
+
 #include "vidfab/dit/transformer.h"
+
+#include <cublas_v2.h>
+#include <cuda_bf16.h>
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstring>
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "vidfab/cuda/attention.cuh"
+#include "vidfab/cuda/device.h"
+#include "vidfab/cuda/gemm.cuh"
+#include "vidfab/cuda/linear.cuh"
+#include "vidfab/cuda/nn_kernels.cuh"
+#include "vidfab/cuda/workspace.cuh"
+#include "vidfab/dtype.h"
+#include "vidfab/tensor_convert.h"
+
+namespace vidfab::cuda {
+
+// Defined in src/cuda/dit_kernels.cu. Declared here rather than in a header
+// because they have exactly one caller each; a signature drift is a link
+// error, which is the failure mode you want.
+void launch_adaln_expand(const float* w, const float* bias, const float* code, float* out,
+                         int num_t, int num_modality, int num_param, int channels, int rank,
+                         cudaStream_t stream);
+void launch_add_rows_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
+                          cudaStream_t stream);
+
+}  // namespace vidfab::cuda
+
+namespace vidfab::dit {
+namespace {
+
+using cuda::AttentionBackend;
+using cuda::AttentionConfig;
+using cuda::ComputeType;
+using cuda::DeviceBuffer;
+using cuda::QuantFormat;
+using cuda::QuantWeight;
+using cuda::Workspace;
+
+// Rows per pass through the row-wise stages. 8192 keeps the fused FFN
+// projection at 470 MB instead of 2.16 GB while still handing cuBLAS a GEMM
+// large enough to reach peak.
+constexpr int kRowChunk = 8192;
+
+// Spec 3.2: six modulation parameters, three modalities.
+constexpr int kNumParams = 6;
+constexpr int kNumModalities = 3;
+// Spec 8.3: the final layer emits [shift; scale] and has no modality axis.
+constexpr int kFinalParams = 2;
+
+inline size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
+
+QuantFormat format_of(DType dt, const std::string& name) {
+  switch (dt) {
+    case DType::kF32:
+      return QuantFormat::kF32;
+    case DType::kBF16:
+      return QuantFormat::kBF16;
+    case DType::kF16:
+      return QuantFormat::kF16;
+    case DType::kF8E4M3:
+      return QuantFormat::kF8E4M3;
+    case DType::kI8:
+      return QuantFormat::kI8;
+    default:
+      throw std::runtime_error("transformer: tensor '" + name + "' has dtype " +
+                               dtype_name(dt) + ", which no linear layer can consume");
+  }
+}
+
+size_t format_bytes(QuantFormat f) {
+  switch (f) {
+    case QuantFormat::kF32:
+      return 4;
+    case QuantFormat::kF16:
+    case QuantFormat::kBF16:
+      return 2;
+    case QuantFormat::kF8E4M3:
+    case QuantFormat::kI8:
+      return 1;
+  }
+  return 0;
+}
+
+std::string shape_string(const std::vector<int64_t>& s) {
+  std::string out = "[";
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (i != 0) out += ", ";
+    out += std::to_string(s[i]);
+  }
+  return out + "]";
+}
+
+// --- staged host -> device upload -------------------------------------------
+//
+// 21 GB through pageable memory is the difference between a three second load
+// and a forty second one: a pageable cudaMemcpy stages through a driver-owned
+// bounce buffer one chunk at a time with no overlap. Two pinned buffers and two
+// events let the next memcpy from the mapping run while the previous DMA is in
+// flight.
+class Uploader {
+ public:
+  explicit Uploader(cudaStream_t stream) : stream_(stream) {
+    for (int i = 0; i < 2; ++i) {
+      slot_[i].allocate(kStageBytes);
+      VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&event_[i], cudaEventDisableTiming));
+      // Recorded once so the first wait on each slot is a no-op rather than a
+      // wait on an event that was never recorded (which is legal but reads as
+      // an accident).
+      VIDFAB_CUDA_CHECK(cudaEventRecord(event_[i], stream_));
+    }
+  }
+
+  ~Uploader() {
+    // Best-effort: throwing from a destructor would terminate, and the caller
+    // synchronises again before touching any of the uploaded memory.
+    cudaStreamSynchronize(stream_);
+    for (int i = 0; i < 2; ++i) cudaEventDestroy(event_[i]);
+  }
+
+  Uploader(const Uploader&) = delete;
+  Uploader& operator=(const Uploader&) = delete;
+
+  void copy(void* dst, const void* src, size_t bytes) {
+    const uint8_t* s = static_cast<const uint8_t*>(src);
+    uint8_t* d = static_cast<uint8_t*>(dst);
+    while (bytes > 0) {
+      const size_t n = std::min(bytes, kStageBytes);
+      VIDFAB_CUDA_CHECK(cudaEventSynchronize(event_[cur_]));
+      std::memcpy(slot_[cur_].get(), s, n);
+      VIDFAB_CUDA_CHECK(
+          cudaMemcpyAsync(d, slot_[cur_].get(), n, cudaMemcpyHostToDevice, stream_));
+      VIDFAB_CUDA_CHECK(cudaEventRecord(event_[cur_], stream_));
+      cur_ ^= 1;
+      s += n;
+      d += n;
+      bytes -= n;
+    }
+  }
+
+ private:
+  static constexpr size_t kStageBytes = 32u << 20;
+  cudaStream_t stream_;
+  cuda::PinnedBuffer<uint8_t> slot_[2];
+  cudaEvent_t event_[2] = {nullptr, nullptr};
+  int cur_ = 0;
+};
+
+// How a checkpoint tensor reaches the device.
+enum class Store {
+  // Byte-for-byte. fp8 projection weights, bf16 refiner weights, fp32 scales.
+  kVerbatim,
+  // Widened to fp32 on the host, then narrowed to bf16. Norm weights, which
+  // every kernel here consumes as bf16 regardless of how they were stored.
+  kAsBF16,
+  // Widened to fp32. The rank-8 AdaLN projections (F16 on disk) and the four
+  // fp32 tensors, all of which the spec requires be evaluated in fp32 (9.1).
+  kAsF32,
+};
+
+struct Record {
+  const TensorView* view = nullptr;
+  Store store = Store::kVerbatim;
+  size_t offset = 0;
+  size_t bytes = 0;
+};
+
+// Collects the expected tensor list, validating every shape as it goes, and
+// accounts for exactly one arena allocation.
+class Plan {
+ public:
+  explicit Plan(const SafeTensors& st) : st_(st) {}
+
+  const TensorView& require(const std::string& name, const std::vector<int64_t>& shape,
+                            Store store) {
+    const TensorView* v = st_.find(name);
+    if (v == nullptr) {
+      throw std::runtime_error("transformer: checkpoint is missing '" + name + "' " +
+                               shape_string(shape));
+    }
+    if (v->shape != shape) {
+      throw std::runtime_error("transformer: '" + name + "' has shape " +
+                               shape_string(v->shape) + ", expected " + shape_string(shape));
+    }
+    add(name, *v, store);
+    return *v;
+  }
+
+  // Present-or-not tensors: `.input_scale` is absent exactly on `mlp.fc2`
+  // (spec 8.2), `.comfy_quant` is a ComfyUI provenance tag we only need to
+  // account for, and `rope.inv_freq` is recomputed rather than read.
+  const TensorView* optional(const std::string& name) {
+    const TensorView* v = st_.find(name);
+    if (v == nullptr) return nullptr;
+    consumed_.insert(name);
+    return v;
+  }
+
+  // A per-tensor scale. Written as a rank-0 tensor in our checkpoint; `[1]` is
+  // accepted too because nothing downstream can tell the difference and a
+  // requantiser that emits one rather than the other is not wrong.
+  const TensorView* optional_scalar(const std::string& name) {
+    const TensorView* v = st_.find(name);
+    if (v == nullptr) return nullptr;
+    if (v->numel() != 1 || v->shape.size() > 1) {
+      throw std::runtime_error("transformer: '" + name + "' has shape " +
+                               shape_string(v->shape) + ", expected a scalar");
+    }
+    add(name, *v, Store::kVerbatim);
+    return v;
+  }
+
+  // Every tensor in the file must have been claimed by the walk above. A
+  // checkpoint with extra keys is a different model, and finding that out now
+  // beats finding it out from a wrong video.
+  void finish() {
+    if (consumed_.size() == st_.tensor_count()) return;
+    std::string extra;
+    int shown = 0;
+    for (const auto& kv : st_.tensors()) {
+      if (consumed_.count(kv.first) != 0) continue;
+      if (shown++ != 0) extra += ", ";
+      if (shown > 6) {
+        extra += "...";
+        break;
+      }
+      extra += kv.first;
+    }
+    throw std::runtime_error("transformer: checkpoint has " + std::to_string(st_.tensor_count()) +
+                             " tensors but only " + std::to_string(consumed_.size()) +
+                             " are part of the model; unclaimed: " + extra);
+  }
+
+  const std::map<std::string, Record>& records() const { return records_; }
+  size_t arena_bytes() const { return total_; }
+
+ private:
+  void add(const std::string& name, const TensorView& v, Store store) {
+    Record r;
+    r.view = &v;
+    r.store = store;
+    switch (store) {
+      case Store::kVerbatim:
+        r.bytes = v.nbytes;
+        break;
+      case Store::kAsBF16:
+        r.bytes = static_cast<size_t>(v.numel()) * 2;
+        break;
+      case Store::kAsF32:
+        r.bytes = static_cast<size_t>(v.numel()) * 4;
+        break;
+    }
+    r.offset = total_;
+    total_ += align_up(r.bytes);
+    records_[name] = r;
+    consumed_.insert(name);
+  }
+
+  const SafeTensors& st_;
+  std::map<std::string, Record> records_;
+  std::set<std::string> consumed_;
+  size_t total_ = 0;
+};
+
+// One attention + FFN pair. The main blocks and the refiner blocks differ only
+// in whether `adaln_w` is set: the refiner has no AdaLN, no RoPE and no
+// timestep dependence (spec 6).
+struct BlockWeights {
+  const __nv_bfloat16* norm1 = nullptr;
+  const __nv_bfloat16* norm2 = nullptr;
+  const __nv_bfloat16* q_norm = nullptr;
+  const __nv_bfloat16* k_norm = nullptr;
+  QuantWeight wq, wk, wv, out_proj, fc1, fc2;
+  const float* adaln_w = nullptr;
+  const float* adaln_b = nullptr;
+};
+
+// Sizes of the transient buffers `forward` carves, all in one place so that
+// `activation_bytes` and the carve cannot drift apart.
+struct Carve {
+  int chunk = 0;
+  size_t qkv = 0;       // one of q/k/v, elements
+  size_t normed = 0;
+  size_t fused = 0;
+  size_t act = 0;
+  size_t fbuf = 0;      // elements of one fp32 [chunk, hidden] buffer
+  size_t scratch = 0;   // bytes left for LinearRunner and attention
+  size_t total = 0;     // bytes
+};
+
+// `chunk_override` exists for the token refiner, which runs the whole text
+// stream in one pass: its attention is over all L rows anyway, so chunking the
+// row-wise stages around it would buy nothing and complicate the carve.
+Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
+                 int chunk_override = 0) {
+  const int seq = layout.total_rows();
+  const int hidden = cfg.hidden_size;
+  const int inner = cfg.inner_dim();
+
+  Carve c;
+  c.chunk = chunk_override > 0 ? chunk_override : std::min(kRowChunk, std::max(seq, 1));
+  c.qkv = static_cast<size_t>(seq) * inner;
+  c.normed = static_cast<size_t>(c.chunk) * hidden;
+  c.fused = static_cast<size_t>(c.chunk) * 2 * cfg.ffn_dim;
+  c.act = static_cast<size_t>(c.chunk) * cfg.ffn_dim;
+  c.fbuf = static_cast<size_t>(c.chunk) * hidden;
+
+  size_t bytes = 0;
+  bytes += 4 * align_up(c.qkv * sizeof(__nv_bfloat16));  // q, k, v, attn_out
+  bytes += align_up(c.normed * sizeof(__nv_bfloat16));
+  bytes += align_up(c.fused * sizeof(__nv_bfloat16));
+  bytes += align_up(c.act * sizeof(__nv_bfloat16));
+  bytes += align_up(c.normed * sizeof(__nv_bfloat16));  // branch
+  bytes += 2 * align_up(c.fbuf * sizeof(float));        // fp32 in/out of the final norm
+
+  // The largest weight any single GEMM has to dequantise, plus attention's
+  // score tile. Both are taken through Workspace::Scope, so they overlap
+  // rather than accumulate.
+  size_t scratch = 0;
+  {
+    QuantWeight probe;
+    probe.format = QuantFormat::kF8E4M3;
+    probe.out_features = 2 * cfg.ffn_dim;
+    probe.in_features = hidden;
+    scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kBF16));
+    probe.out_features = hidden;
+    probe.in_features = cfg.ffn_dim;
+    scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kBF16));
+    probe.out_features = 3 * inner;
+    probe.in_features = hidden;
+    scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kBF16));
+    // The fp32 heads widen their weight through bf16, so both copies are live.
+    probe.format = QuantFormat::kBF16;
+    probe.out_features = hidden;
+    probe.in_features = cfg.text_dim;
+    scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kF32));
+  }
+  {
+    AttentionConfig acfg;
+    acfg.seq_len = std::max(seq, 1);
+    acfg.num_heads = cfg.num_attention_heads;
+    acfg.head_dim = cfg.attention_head_dim;
+    scratch = std::max(scratch, cuda::attention_workspace_bytes(acfg, AttentionBackend::kBlocked));
+  }
+  c.scratch = scratch;
+  c.total = bytes + align_up(scratch);
+  return c;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+
+struct Transformer::Impl {
+  TransformerConfig cfg;
+  AdaLNLookup lookup = AdaLNLookup::kLinear;
+  AdaLNTable table;
+
+  cuda::Stream stream;
+  cublasHandle_t blas = nullptr;
+  cuda::LinearRunner linear;
+  Workspace ws;
+
+  DeviceBuffer<uint8_t> arena;
+  size_t arena_bytes = 0;
+
+  std::vector<BlockWeights> blocks;
+  std::vector<BlockWeights> refiner;
+  const __nv_bfloat16* refiner_final_norm = nullptr;
+  const __nv_bfloat16* final_norm = nullptr;
+  const float* final_adaln_w = nullptr;
+  const float* final_adaln_b = nullptr;
+  QuantWeight condition_proj, video_in, audio_in, video_out, audio_out;
+
+  // Per request.
+  SequenceLayout layout;
+  PackedIndices indices;
+  bool has_sequence = false;
+  int num_text = 0;
+  Carve carve;
+  DeviceBuffer<float> rope_cos, rope_sin;
+  DeviceBuffer<int32_t> d_text_idx, d_audio_idx, d_video_idx;
+  DeviceBuffer<__nv_bfloat16> text_cache;
+  DeviceBuffer<__nv_bfloat16> hidden;
+  DeviceBuffer<float> d_video_rows, d_audio_rows;  // latents in, velocities out
+  DeviceBuffer<float> d_video_head, d_audio_head;
+
+  // Per step.
+  DeviceBuffer<float> d_code;
+  DeviceBuffer<float> mod;        // [layers][6][T*3][hidden]
+  DeviceBuffer<float> final_mod;  // [2][T][hidden]
+  DeviceBuffer<int32_t> d_adaln, d_ts_video, d_ts_audio;
+  int mod_timesteps = 0;
+
+  // Staging for the two async host->device copies whose source would otherwise
+  // be a local: cudaMemcpyAsync from pageable memory is not guaranteed to have
+  // consumed the buffer by the time it returns.
+  std::vector<float> host_code;
+  std::vector<int32_t> host_ts;
+
+  Impl() {
+    VIDFAB_CUBLAS_CHECK(cublasCreate(&blas));
+    linear.init(blas, stream.get());
+  }
+  ~Impl() {
+    if (blas != nullptr) cublasDestroy(blas);
+  }
+
+  bool loaded() const { return !blocks.empty(); }
+
+  void require_loaded(const char* what) const {
+    if (!loaded()) throw std::runtime_error(std::string("transformer: ") + what +
+                                            " called before load()");
+  }
+
+  // --- modulation ----------------------------------------------------------
+
+  size_t block_mod_stride() const {
+    return static_cast<size_t>(kNumParams) * mod_timesteps * kNumModalities * cfg.hidden_size;
+  }
+  size_t mod_row_stride() const {
+    return static_cast<size_t>(mod_timesteps) * kNumModalities * cfg.hidden_size;
+  }
+
+  // Evaluates c(t) for each distinct timestep and expands it through all 51
+  // rank-8 projections. 38.7 MB in fp32 at T = 2, which is the whole per-step
+  // AdaLN cost — the pruned checkpoint replaced 13 billion parameters with
+  // this (spec 3.4).
+  void build_modulation(const std::vector<float>& timesteps) {
+    const int T = static_cast<int>(timesteps.size());
+    if (T <= 0) throw std::runtime_error("transformer: no distinct timesteps");
+
+    host_code.assign(static_cast<size_t>(T) * AdaLNTable::kRank, 0.0f);
+    for (int i = 0; i < T; ++i) {
+      const std::array<float, AdaLNTable::kRank> c = table.lookup(timesteps[i], lookup);
+      for (int k = 0; k < AdaLNTable::kRank; ++k) {
+        host_code[static_cast<size_t>(i) * AdaLNTable::kRank + k] = c[k];
+      }
+    }
+    if (d_code.size() < host_code.size()) d_code.allocate(host_code.size());
+    d_code.copy_from_host(host_code.data(), host_code.size(), stream.get());
+
+    mod_timesteps = T;
+    const size_t per_block = block_mod_stride();
+    const size_t need = per_block * blocks.size();
+    if (mod.size() < need) mod.allocate(need);
+    const size_t final_need = static_cast<size_t>(kFinalParams) * T * cfg.hidden_size;
+    if (final_mod.size() < final_need) final_mod.allocate(final_need);
+
+    for (size_t b = 0; b < blocks.size(); ++b) {
+      cuda::launch_adaln_expand(blocks[b].adaln_w, blocks[b].adaln_b, d_code.get(),
+                                mod.get() + b * per_block, T, kNumModalities, kNumParams,
+                                cfg.hidden_size, AdaLNTable::kRank, stream.get());
+    }
+    cuda::launch_adaln_expand(final_adaln_w, final_adaln_b, d_code.get(), final_mod.get(), T,
+                              /*num_modality=*/1, kFinalParams, cfg.hidden_size,
+                              AdaLNTable::kRank, stream.get());
+  }
+
+  // --- one block -----------------------------------------------------------
+
+  void run_block(const BlockWeights& b, const float* mod_base, int rows, __nv_bfloat16* x,
+                 const int32_t* adaln_idx, const float* cos, const float* sin, __nv_bfloat16* q,
+                 __nv_bfloat16* k, __nv_bfloat16* v, __nv_bfloat16* attn_out,
+                 __nv_bfloat16* normed, __nv_bfloat16* fused, __nv_bfloat16* act,
+                 __nv_bfloat16* branch) {
+    const int hidden = cfg.hidden_size;
+    const int inner = cfg.inner_dim();
+    const int chunk = carve.chunk;
+    const float eps = cfg.norm_eps;
+    const size_t stride = mod_row_stride();
+
+    // Spec 3.2's parameter order. Six tables, each [T*3, hidden], indexed by
+    // adaln_idx[row] = timestep_index*3 + tag.
+    const float* shift_msa = mod_base != nullptr ? mod_base + 0 * stride : nullptr;
+    const float* scale_msa = mod_base != nullptr ? mod_base + 1 * stride : nullptr;
+    const float* gate_msa = mod_base != nullptr ? mod_base + 2 * stride : nullptr;
+    const float* shift_mlp = mod_base != nullptr ? mod_base + 3 * stride : nullptr;
+    const float* scale_mlp = mod_base != nullptr ? mod_base + 4 * stride : nullptr;
+    const float* gate_mlp = mod_base != nullptr ? mod_base + 5 * stride : nullptr;
+
+    for (int start = 0; start < rows; start += chunk) {
+      const int n = std::min(chunk, rows - start);
+      const size_t off = static_cast<size_t>(start) * hidden;
+      if (mod_base != nullptr) {
+        cuda::launch_rmsnorm_modulate(x + off, b.norm1, scale_msa, shift_msa, adaln_idx + start,
+                                      normed, n, hidden, eps, stream.get());
+      } else {
+        cuda::launch_rmsnorm(x + off, b.norm1, normed, n, hidden, eps, stream.get());
+      }
+      // Three GEMMs against contiguous thirds of `qkv_proj` rather than one
+      // fused GEMM plus a split: identical arithmetic, and it writes straight
+      // into the full-sequence q/k/v without a [chunk, 21504] staging buffer.
+      const size_t qoff = static_cast<size_t>(start) * inner;
+      linear.forward(b.wq, normed, n, q + qoff, ws);
+      linear.forward(b.wk, normed, n, k + qoff, ws);
+      linear.forward(b.wv, normed, n, v + qoff, ws);
+    }
+
+    // QK-norm over the 128-wide head dimension, then RoPE — in that order
+    // (spec 4.3). `v` is not normalised and never rotated.
+    cuda::launch_head_rmsnorm(q, b.q_norm, rows, cfg.num_attention_heads, cfg.attention_head_dim,
+                              eps, stream.get());
+    cuda::launch_head_rmsnorm(k, b.k_norm, rows, cfg.num_attention_heads, cfg.attention_head_dim,
+                              eps, stream.get());
+    if (cos != nullptr) {
+      cuda::launch_rope_h3(q, cos, sin, rows, cfg.num_attention_heads, cfg.attention_head_dim,
+                           stream.get());
+      cuda::launch_rope_h3(k, cos, sin, rows, cfg.num_attention_heads, cfg.attention_head_dim,
+                           stream.get());
+    }
+
+    AttentionConfig acfg;
+    acfg.seq_len = rows;
+    acfg.num_heads = cfg.num_attention_heads;
+    acfg.head_dim = cfg.attention_head_dim;
+    cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, AttentionBackend::kBlocked,
+                            ws);
+
+    for (int start = 0; start < rows; start += chunk) {
+      const int n = std::min(chunk, rows - start);
+      const size_t off = static_cast<size_t>(start) * hidden;
+      linear.forward(b.out_proj, attn_out + static_cast<size_t>(start) * inner, n, branch, ws);
+      if (mod_base != nullptr) {
+        cuda::launch_add_gated(x + off, branch, gate_msa, adaln_idx + start, n, hidden,
+                               stream.get());
+      } else {
+        cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
+      }
+    }
+
+    for (int start = 0; start < rows; start += chunk) {
+      const int n = std::min(chunk, rows - start);
+      const size_t off = static_cast<size_t>(start) * hidden;
+      if (mod_base != nullptr) {
+        cuda::launch_rmsnorm_modulate(x + off, b.norm2, scale_mlp, shift_mlp, adaln_idx + start,
+                                      normed, n, hidden, eps, stream.get());
+      } else {
+        cuda::launch_rmsnorm(x + off, b.norm2, normed, n, hidden, eps, stream.get());
+      }
+      linear.forward(b.fc1, normed, n, fused, ws);
+      // Gate first: our checkpoints use the original `mlp.fc1` naming, whose
+      // first half goes through the SiLU (spec 4.4).
+      cuda::launch_swiglu(fused, act, n, cfg.ffn_dim, stream.get());
+      linear.forward(b.fc2, act, n, branch, ws);
+      if (mod_base != nullptr) {
+        cuda::launch_add_gated(x + off, branch, gate_mlp, adaln_idx + start, n, hidden,
+                               stream.get());
+      } else {
+        cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
+      }
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
+
+Transformer::Transformer() : impl_(new Impl()) {}
+Transformer::~Transformer() = default;
+
+const TransformerConfig& Transformer::config() const { return impl_->cfg; }
+size_t Transformer::weight_bytes() const { return impl_->arena_bytes; }
+void Transformer::set_adaln_lookup(AdaLNLookup mode) { impl_->lookup = mode; }
+AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
+
+void Transformer::unload() {
+  impl_->blocks.clear();
+  impl_->refiner.clear();
+  impl_->arena.reset();
+  impl_->arena_bytes = 0;
+  impl_->has_sequence = false;
+}
+
+void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config) {
+  Impl& s = *impl_;
+  unload();
+  s.cfg = config;
+
+  const int hidden = config.hidden_size;
+  const int inner = config.inner_dim();
+  const int ffn = config.ffn_dim;
+  const int head_dim = config.attention_head_dim;
+  const int patch = config.video_patch_dim();
+  const int adaln_out = kNumParams * kNumModalities * hidden;
+  const int final_adaln_out = kFinalParams * hidden;
+
+  Plan plan(checkpoint);
+
+  // Spec 8.3 — the 32 top-level tensors.
+  plan.require("video_patch_proj.weight", {hidden, patch}, Store::kAsF32);
+  plan.require("video_patch_proj.bias", {hidden}, Store::kAsF32);
+  plan.require("audio_patch_proj.weight", {hidden, config.audio_in_channels}, Store::kAsF32);
+  plan.require("audio_patch_proj.bias", {hidden}, Store::kAsF32);
+  plan.require("condition_proj.weight", {hidden, config.text_dim}, Store::kVerbatim);
+  plan.require("condition_proj.bias", {hidden}, Store::kAsF32);
+  // Claimed but not uploaded: the lookup runs on the host — 8 floats per
+  // denoising step — and `AdaLNTable::load` validates its shape and finiteness.
+  plan.optional("adaln_t_table");
+  // Recomputed in fp64 and rounded, which convert.py:104-107 says is bitwise
+  // equal to the stored tensor. Claimed only so the count check balances.
+  plan.optional("rope.inv_freq");
+
+  plan.require("final_layer.norm.weight", {hidden}, Store::kAsBF16);
+  plan.require("final_layer.adaln_proj.linear.weight", {final_adaln_out, AdaLNTable::kRank},
+               Store::kAsF32);
+  plan.require("final_layer.adaln_proj.linear.bias", {final_adaln_out}, Store::kAsF32);
+  plan.require("final_layer.video_out.weight", {patch, hidden}, Store::kAsF32);
+  plan.require("final_layer.video_out.bias", {patch}, Store::kAsF32);
+  plan.require("final_layer.audio_out.weight", {config.audio_in_channels, hidden}, Store::kAsF32);
+  plan.require("final_layer.audio_out.bias", {config.audio_in_channels}, Store::kAsF32);
+  plan.require("token_refiner.final_norm.weight", {hidden}, Store::kAsBF16);
+
+  // A block's tensor set, shared by the 50 main blocks and the 2 refiner
+  // blocks; the refiner differs only by having no `adaln_proj` (spec 6).
+  auto plan_block = [&](const std::string& prefix, bool with_adaln) {
+    plan.require(prefix + "norm1.weight", {hidden}, Store::kAsBF16);
+    plan.require(prefix + "norm2.weight", {hidden}, Store::kAsBF16);
+    plan.require(prefix + "attn.qkv_proj.weight", {3 * inner, hidden}, Store::kVerbatim);
+    plan.optional_scalar(prefix + "attn.qkv_proj.weight_scale");
+    plan.optional(prefix + "attn.qkv_proj.input_scale");
+    plan.optional(prefix + "attn.qkv_proj.comfy_quant");
+    plan.require(prefix + "attn.q_norm.weight", {head_dim}, Store::kAsBF16);
+    plan.require(prefix + "attn.k_norm.weight", {head_dim}, Store::kAsBF16);
+    plan.require(prefix + "attn.out_proj.weight", {hidden, inner}, Store::kVerbatim);
+    plan.optional_scalar(prefix + "attn.out_proj.weight_scale");
+    plan.optional(prefix + "attn.out_proj.input_scale");
+    plan.optional(prefix + "attn.out_proj.comfy_quant");
+    plan.require(prefix + "mlp.fc1.weight", {2 * ffn, hidden}, Store::kVerbatim);
+    plan.optional_scalar(prefix + "mlp.fc1.weight_scale");
+    plan.optional(prefix + "mlp.fc1.input_scale");
+    plan.optional(prefix + "mlp.fc1.comfy_quant");
+    plan.require(prefix + "mlp.fc2.weight", {hidden, ffn}, Store::kVerbatim);
+    plan.optional_scalar(prefix + "mlp.fc2.weight_scale");
+    plan.optional(prefix + "mlp.fc2.input_scale");
+    plan.optional(prefix + "mlp.fc2.comfy_quant");
+    if (with_adaln) {
+      plan.require(prefix + "adaln_proj.linear.weight", {adaln_out, AdaLNTable::kRank},
+                   Store::kAsF32);
+      plan.require(prefix + "adaln_proj.linear.bias", {adaln_out}, Store::kAsF32);
+    }
+  };
+
+  for (int i = 0; i < config.num_refiner_layers; ++i) {
+    plan_block("token_refiner.blocks." + std::to_string(i) + ".", /*with_adaln=*/false);
+  }
+  for (int i = 0; i < config.num_layers; ++i) {
+    plan_block("blocks." + std::to_string(i) + ".", /*with_adaln=*/true);
+  }
+  plan.finish();
+
+  // --- upload ---------------------------------------------------------------
+
+  s.arena.allocate(plan.arena_bytes());
+  s.arena_bytes = plan.arena_bytes();
+  uint8_t* base = s.arena.get();
+
+  {
+    Uploader up(s.stream.get());
+    std::vector<float> wide;
+    std::vector<uint16_t> narrow;
+    for (const auto& kv : plan.records()) {
+      const Record& r = kv.second;
+      uint8_t* dst = base + r.offset;
+      switch (r.store) {
+        case Store::kVerbatim:
+          up.copy(dst, r.view->data, r.bytes);
+          break;
+        case Store::kAsF32:
+          to_f32(*r.view, wide);
+          up.copy(dst, wide.data(), wide.size() * sizeof(float));
+          break;
+        case Store::kAsBF16:
+          to_f32(*r.view, wide);
+          narrow.resize(wide.size());
+          for (size_t i = 0; i < wide.size(); ++i) narrow[i] = f32_to_bf16(wide[i]);
+          up.copy(dst, narrow.data(), narrow.size() * sizeof(uint16_t));
+          break;
+      }
+    }
+  }
+  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+
+  // --- wire up --------------------------------------------------------------
+
+  auto ptr = [&](const std::string& name) -> const void* {
+    const auto it = plan.records().find(name);
+    if (it == plan.records().end()) return nullptr;
+    return base + it->second.offset;
+  };
+  auto bf = [&](const std::string& name) {
+    return static_cast<const __nv_bfloat16*>(ptr(name));
+  };
+  auto f32 = [&](const std::string& name) { return static_cast<const float*>(ptr(name)); };
+
+  // A scalar `input_scale` is a host value: it selects a code path rather than
+  // feeding a kernel. Zero means absent, which for an fp8 weight is the
+  // checkpoint asserting the layer must run at full precision (spec 8.2).
+  auto host_scalar = [&](const std::string& name) -> float {
+    const TensorView* v = checkpoint.find(name);
+    if (v == nullptr) return 0.0f;
+    std::vector<float> tmp;
+    to_f32(*v, tmp);
+    return tmp.empty() ? 0.0f : tmp[0];
+  };
+
+  auto quant = [&](const std::string& name, int out_features, int in_features) {
+    QuantWeight w;
+    const TensorView& v = checkpoint.at(name + ".weight");
+    w.format = format_of(v.dtype, name + ".weight");
+    w.data = ptr(name + ".weight");
+    w.out_features = out_features;
+    w.in_features = in_features;
+    w.weight_scale = f32(name + ".weight_scale");
+    w.input_scale = host_scalar(name + ".input_scale");
+    if (w.format == QuantFormat::kF8E4M3 && w.weight_scale == nullptr) {
+      throw std::runtime_error("transformer: '" + name +
+                               ".weight' is fp8 but ships no weight_scale");
+    }
+    return w;
+  };
+
+  auto build_block = [&](const std::string& prefix, bool with_adaln) {
+    BlockWeights b;
+    b.norm1 = bf(prefix + "norm1.weight");
+    b.norm2 = bf(prefix + "norm2.weight");
+    b.q_norm = bf(prefix + "attn.q_norm.weight");
+    b.k_norm = bf(prefix + "attn.k_norm.weight");
+
+    // Spec 8.1: `qkv_proj.weight` is contiguous [Wq; Wk; Wv], already
+    // de-interleaved. Three views over one allocation, sharing both scales.
+    const QuantWeight fused = quant(prefix + "attn.qkv_proj", 3 * inner, hidden);
+    const size_t third = static_cast<size_t>(inner) * hidden * format_bytes(fused.format);
+    b.wq = fused;
+    b.wq.out_features = inner;
+    b.wk = b.wq;
+    b.wv = b.wq;
+    b.wk.data = static_cast<const uint8_t*>(fused.data) + third;
+    b.wv.data = static_cast<const uint8_t*>(fused.data) + 2 * third;
+
+    b.out_proj = quant(prefix + "attn.out_proj", hidden, inner);
+    b.fc1 = quant(prefix + "mlp.fc1", 2 * ffn, hidden);
+    b.fc2 = quant(prefix + "mlp.fc2", hidden, ffn);
+    if (with_adaln) {
+      b.adaln_w = f32(prefix + "adaln_proj.linear.weight");
+      b.adaln_b = f32(prefix + "adaln_proj.linear.bias");
+    }
+    return b;
+  };
+
+  s.refiner.clear();
+  for (int i = 0; i < config.num_refiner_layers; ++i) {
+    s.refiner.push_back(build_block("token_refiner.blocks." + std::to_string(i) + ".", false));
+  }
+  s.blocks.clear();
+  for (int i = 0; i < config.num_layers; ++i) {
+    s.blocks.push_back(build_block("blocks." + std::to_string(i) + ".", true));
+  }
+
+  s.refiner_final_norm = bf("token_refiner.final_norm.weight");
+  s.final_norm = bf("final_layer.norm.weight");
+  s.final_adaln_w = f32("final_layer.adaln_proj.linear.weight");
+  s.final_adaln_b = f32("final_layer.adaln_proj.linear.bias");
+
+  s.condition_proj = quant("condition_proj", hidden, config.text_dim);
+  s.condition_proj.bias = ptr("condition_proj.bias");
+  s.condition_proj.bias_format = QuantFormat::kF32;
+
+  auto fp32_layer = [&](const std::string& name, int out_features, int in_features) {
+    QuantWeight w;
+    w.format = QuantFormat::kF32;
+    w.data = ptr(name + ".weight");
+    w.out_features = out_features;
+    w.in_features = in_features;
+    w.bias = ptr(name + ".bias");
+    w.bias_format = QuantFormat::kF32;
+    return w;
+  };
+  s.video_in = fp32_layer("video_patch_proj", hidden, patch);
+  s.audio_in = fp32_layer("audio_patch_proj", hidden, config.audio_in_channels);
+  s.video_out = fp32_layer("final_layer.video_out", patch, hidden);
+  s.audio_out = fp32_layer("final_layer.audio_out", config.audio_in_channels, hidden);
+
+  s.table.load(checkpoint);
+}
+
+// ---------------------------------------------------------------------------
+
+size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
+  const TransformerConfig& cfg = impl_->cfg;
+  const Carve c = plan_carve(cfg, layout);
+  const int seq = layout.total_rows();
+
+  size_t total = c.total;
+  total += align_up(static_cast<size_t>(seq) * cfg.hidden_size * sizeof(__nv_bfloat16));  // hidden
+  total += 2 * align_up(static_cast<size_t>(seq) * 96 * sizeof(float));                   // rope
+  total += 3 * align_up(static_cast<size_t>(seq) * sizeof(int32_t));                      // indices
+  // Modulation at the t2va worst case of two distinct timesteps (spec 7.5).
+  total += align_up(static_cast<size_t>(cfg.num_layers) * kNumParams * 2 * kNumModalities *
+                    cfg.hidden_size * sizeof(float));
+  const size_t video_rows = static_cast<size_t>(layout.num_condition_video) + layout.num_video_rows;
+  total += 2 * align_up(video_rows * cfg.video_patch_dim() * sizeof(float));
+  total += 2 * align_up(static_cast<size_t>(layout.num_audio_rows) * cfg.audio_in_channels *
+                        sizeof(float));
+  return total;
+}
+
+std::vector<float> Transformer::debug_modulation(int block_index,
+                                                 const std::vector<float>& timesteps) {
+  Impl& s = *impl_;
+  s.require_loaded("debug_modulation");
+  if (block_index < 0 || block_index >= static_cast<int>(s.blocks.size())) {
+    throw std::runtime_error("transformer: block index " + std::to_string(block_index) +
+                             " out of range");
+  }
+  s.build_modulation(timesteps);
+  const size_t per_block = s.block_mod_stride();
+  std::vector<float> out(per_block);
+  VIDFAB_CUDA_CHECK(cudaMemcpyAsync(out.data(), s.mod.get() + block_index * per_block,
+                                    per_block * sizeof(float), cudaMemcpyDeviceToHost,
+                                    s.stream.get()));
+  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+
+void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
+  Impl& s = *impl_;
+  s.require_loaded("prepare_text");
+  if (num_tokens < 0) throw std::runtime_error("transformer: negative token count");
+
+  s.num_text = num_tokens;
+  if (num_tokens == 0) {
+    s.text_cache.reset();
+    return;
+  }
+
+  const int hidden = s.cfg.hidden_size;
+  const int inner = s.cfg.inner_dim();
+  const size_t rows = static_cast<size_t>(num_tokens);
+
+  // The refiner is O(L^2) with L in the low thousands and, unlike everything
+  // else here, has no timestep dependence — so it runs once per request rather
+  // than once per step, which the reference only fails to do because its
+  // forward is stateless (spec 6).
+  SequenceLayout text_only;
+  text_only.num_text = num_tokens;
+  const Carve text_carve = plan_carve(s.cfg, text_only, /*chunk_override=*/num_tokens);
+
+  Workspace& ws = s.ws;
+  // The refiner needs one extra bf16 [L, text_dim] buffer that the main path
+  // does not, for the fp32 prompt embedding narrowed to the block dtype.
+  ws.reserve(std::max(ws.capacity(),
+                      text_carve.total + align_up(rows * s.cfg.text_dim * sizeof(__nv_bfloat16))));
+  ws.clear();
+
+  DeviceBuffer<float> d_prompt(rows * s.cfg.text_dim);
+  d_prompt.copy_from_host(prompt_embeds, d_prompt.size(), s.stream.get());
+
+  __nv_bfloat16* xin = ws.alloc_n<__nv_bfloat16>(rows * s.cfg.text_dim);
+  cuda::launch_narrow_to_bf16(d_prompt.get(), xin, d_prompt.size(), s.stream.get());
+
+  s.text_cache.allocate(rows * hidden);
+  __nv_bfloat16* x = s.text_cache.get();
+  s.linear.forward(s.condition_proj, xin, num_tokens, x, ws);
+
+  __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(rows * inner);
+  __nv_bfloat16* k = ws.alloc_n<__nv_bfloat16>(rows * inner);
+  __nv_bfloat16* v = ws.alloc_n<__nv_bfloat16>(rows * inner);
+  __nv_bfloat16* attn_out = ws.alloc_n<__nv_bfloat16>(rows * inner);
+  __nv_bfloat16* normed = ws.alloc_n<__nv_bfloat16>(rows * hidden);
+  __nv_bfloat16* fused = ws.alloc_n<__nv_bfloat16>(rows * 2 * s.cfg.ffn_dim);
+  __nv_bfloat16* act = ws.alloc_n<__nv_bfloat16>(rows * s.cfg.ffn_dim);
+  __nv_bfloat16* branch = ws.alloc_n<__nv_bfloat16>(rows * hidden);
+
+  const Carve saved = s.carve;
+  s.carve.chunk = num_tokens;
+  for (const BlockWeights& b : s.refiner) {
+    // No AdaLN, no RoPE, no mask: `mod_base` and `cos` are null.
+    s.run_block(b, nullptr, num_tokens, x, nullptr, nullptr, nullptr, q, k, v, attn_out, normed,
+                fused, act, branch);
+  }
+  s.carve = saved;
+
+  cuda::launch_rmsnorm(x, s.refiner_final_norm, normed, num_tokens, hidden, s.cfg.norm_eps,
+                       s.stream.get());
+  VIDFAB_CUDA_CHECK(cudaMemcpyAsync(x, normed, rows * hidden * sizeof(__nv_bfloat16),
+                                    cudaMemcpyDeviceToDevice, s.stream.get()));
+  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  ws.clear();
+}
+
+void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedIndices& indices,
+                                   const std::vector<double>& position_ids) {
+  Impl& s = *impl_;
+  s.require_loaded("prepare_sequence");
+
+  const int seq = layout.total_rows();
+  if (seq <= 0) throw std::runtime_error("transformer: empty packed sequence");
+  if (layout.num_text != s.num_text) {
+    throw std::runtime_error("transformer: layout has " + std::to_string(layout.num_text) +
+                             " text rows but prepare_text cached " + std::to_string(s.num_text));
+  }
+  if (position_ids.size() != static_cast<size_t>(seq) * 3) {
+    throw std::runtime_error("transformer: position_ids has " +
+                             std::to_string(position_ids.size()) + " entries, expected 3 * " +
+                             std::to_string(seq));
+  }
+  if (static_cast<int>(indices.tags.size()) != seq) {
+    throw std::runtime_error("transformer: token tags do not cover the sequence");
+  }
+
+  s.layout = layout;
+  s.indices = indices;
+  s.carve = plan_carve(s.cfg, layout);
+
+  s.rope_cos.allocate(static_cast<size_t>(seq) * 96);
+  s.rope_sin.allocate(static_cast<size_t>(seq) * 96);
+  cuda::build_rope_tables_h3(position_ids.data(), seq, s.cfg.rope_theta, s.cfg.rope_freq_dim,
+                             s.rope_cos.get(), s.rope_sin.get(), s.stream.get());
+
+  auto upload_idx = [&](const std::vector<int32_t>& src, DeviceBuffer<int32_t>& dst) {
+    dst.allocate(std::max<size_t>(src.size(), 1));
+    if (!src.empty()) dst.copy_from_host(src.data(), src.size(), s.stream.get());
+  };
+  upload_idx(indices.text, s.d_text_idx);
+  upload_idx(indices.audio, s.d_audio_idx);
+  upload_idx(indices.video, s.d_video_idx);
+
+  s.hidden.allocate(static_cast<size_t>(seq) * s.cfg.hidden_size);
+  s.d_adaln.allocate(static_cast<size_t>(seq));
+  s.d_ts_video.allocate(std::max<size_t>(indices.video.size(), 1));
+  s.d_ts_audio.allocate(std::max<size_t>(indices.audio.size(), 1));
+
+  s.d_video_rows.allocate(std::max<size_t>(indices.video.size(), 1) * s.cfg.video_patch_dim());
+  s.d_video_head.allocate(s.d_video_rows.size());
+  s.d_audio_rows.allocate(std::max<size_t>(indices.audio.size(), 1) * s.cfg.audio_in_channels);
+  s.d_audio_head.allocate(s.d_audio_rows.size());
+
+  s.ws.reserve(s.carve.total);
+  s.has_sequence = true;
+  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+}
+
+// ---------------------------------------------------------------------------
+
+void Transformer::forward(const float* video_latents, const float* audio_latents,
+                          const RowTimesteps& row_timesteps, float* video_velocity,
+                          float* audio_velocity) {
+  Impl& s = *impl_;
+  s.require_loaded("forward");
+  if (!s.has_sequence) throw std::runtime_error("transformer: forward before prepare_sequence");
+
+  const TransformerConfig& cfg = s.cfg;
+  const int seq = s.layout.total_rows();
+  const int hidden = cfg.hidden_size;
+  const int patch = cfg.video_patch_dim();
+  const int audio_dim = cfg.audio_in_channels;
+  const int chunk = s.carve.chunk;
+  const int video_rows = static_cast<int>(s.indices.video.size());
+  const int audio_rows = static_cast<int>(s.indices.audio.size());
+
+  if (static_cast<int>(row_timesteps.adaln.size()) != seq) {
+    throw std::runtime_error("transformer: row timesteps do not cover the sequence");
+  }
+
+  // Modulation for this step's distinct timesteps, and the per-row indices
+  // into it. `torch.unique(sorted=True)` sorts ascending, so which of the video
+  // and audio timesteps is index 0 flips over the schedule (spec 7.5) — the
+  // indices have to be re-uploaded every step, not cached.
+  s.build_modulation(row_timesteps.unique);
+  s.d_adaln.copy_from_host(row_timesteps.adaln.data(), row_timesteps.adaln.size(),
+                           s.stream.get());
+  // The final layer selects on `timestep_indices` alone, with no modality
+  // dependence (spec 3.2), so each head needs its own rows' timestep index in
+  // gathered order.
+  s.host_ts.assign(static_cast<size_t>(video_rows + audio_rows), 0);
+  for (int i = 0; i < video_rows; ++i) {
+    s.host_ts[static_cast<size_t>(i)] =
+        row_timesteps.indices[static_cast<size_t>(s.indices.video[i])];
+  }
+  for (int i = 0; i < audio_rows; ++i) {
+    s.host_ts[static_cast<size_t>(video_rows + i)] =
+        row_timesteps.indices[static_cast<size_t>(s.indices.audio[i])];
+  }
+  if (video_rows > 0) {
+    s.d_ts_video.copy_from_host(s.host_ts.data(), video_rows, s.stream.get());
+  }
+  if (audio_rows > 0) {
+    s.d_ts_audio.copy_from_host(s.host_ts.data() + video_rows, audio_rows, s.stream.get());
+  }
+
+  s.ws.clear();
+  Workspace& ws = s.ws;
+  const size_t qkv_n = s.carve.qkv;
+  __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(qkv_n);
+  __nv_bfloat16* k = ws.alloc_n<__nv_bfloat16>(qkv_n);
+  __nv_bfloat16* v = ws.alloc_n<__nv_bfloat16>(qkv_n);
+  __nv_bfloat16* attn_out = ws.alloc_n<__nv_bfloat16>(qkv_n);
+  __nv_bfloat16* normed = ws.alloc_n<__nv_bfloat16>(s.carve.normed);
+  __nv_bfloat16* fused = ws.alloc_n<__nv_bfloat16>(s.carve.fused);
+  __nv_bfloat16* act = ws.alloc_n<__nv_bfloat16>(s.carve.act);
+  __nv_bfloat16* branch = ws.alloc_n<__nv_bfloat16>(s.carve.normed);
+  float* fa = ws.alloc_n<float>(s.carve.fbuf);
+  float* fb = ws.alloc_n<float>(s.carve.fbuf);
+
+  __nv_bfloat16* x = s.hidden.get();
+  // The three index sets partition [0, S) for a padless sequence, so the
+  // scatters below cover every row. Zeroing first is cheap insurance against a
+  // layout that ever stops being a permutation.
+  s.hidden.zero(s.stream.get());
+
+  if (video_rows > 0) {
+    s.d_video_rows.copy_from_host(video_latents, static_cast<size_t>(video_rows) * patch,
+                                  s.stream.get());
+  }
+  if (audio_rows > 0) {
+    s.d_audio_rows.copy_from_host(audio_latents, static_cast<size_t>(audio_rows) * audio_dim,
+                                  s.stream.get());
+  }
+
+  // proj_in / audio_proj_in run in fp32: they are fp32 tensors in the
+  // checkpoint and the reference aligns the activation with the parameter
+  // dtype at each of them (spec 9.1).
+  auto project_in = [&](const QuantWeight& w, const float* src, int in_dim, int rows,
+                        const int32_t* index) {
+    for (int start = 0; start < rows; start += chunk) {
+      const int n = std::min(chunk, rows - start);
+      s.linear.forward_f32(w, src + static_cast<size_t>(start) * in_dim, n, fa, ws);
+      cuda::launch_narrow_to_bf16(fa, normed, static_cast<size_t>(n) * hidden, s.stream.get());
+      cuda::launch_scatter_rows(normed, index + start, x, n, hidden, s.stream.get());
+    }
+  };
+  project_in(s.video_in, s.d_video_rows.get(), patch, video_rows, s.d_video_idx.get());
+  project_in(s.audio_in, s.d_audio_rows.get(), audio_dim, audio_rows, s.d_audio_idx.get());
+  if (s.num_text > 0) {
+    cuda::launch_scatter_rows(s.text_cache.get(), s.d_text_idx.get(), x, s.num_text, hidden,
+                              s.stream.get());
+  }
+
+  const size_t per_block = s.block_mod_stride();
+  for (size_t b = 0; b < s.blocks.size(); ++b) {
+    s.run_block(s.blocks[b], s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),
+                s.rope_cos.get(), s.rope_sin.get(), q, k, v, attn_out, normed, fused, act, branch);
+  }
+
+  // Both heads run over every row in the reference and are selected afterwards.
+  // Gathering first is mathematically identical, because `norm_out` is per-row,
+  // and it saves S * 5376 * 128 flops per step (spec 1.5).
+  const size_t final_stride = static_cast<size_t>(s.mod_timesteps) * hidden;
+  const float* final_shift = s.final_mod.get();
+  const float* final_scale = s.final_mod.get() + final_stride;
+
+  auto run_head = [&](const QuantWeight& w, int out_dim, int rows, const int32_t* index,
+                      const int32_t* ts_index, float* dst) {
+    for (int start = 0; start < rows; start += chunk) {
+      const int n = std::min(chunk, rows - start);
+      cuda::launch_gather_rows(x, index + start, normed, n, hidden, s.stream.get());
+      cuda::launch_widen_bf16(normed, fa, static_cast<size_t>(n) * hidden, s.stream.get());
+      cuda::launch_rmsnorm_modulate_f32(fa, s.final_norm, final_scale, final_shift,
+                                        ts_index + start, fb, n, hidden, cfg.norm_eps,
+                                        s.stream.get());
+      s.linear.forward_f32(w, fb, n, dst + static_cast<size_t>(start) * out_dim, ws);
+    }
+  };
+  run_head(s.video_out, patch, video_rows, s.d_video_idx.get(), s.d_ts_video.get(),
+           s.d_video_head.get());
+  run_head(s.audio_out, audio_dim, audio_rows, s.d_audio_idx.get(), s.d_ts_audio.get(),
+           s.d_audio_head.get());
+
+  if (video_rows > 0) {
+    s.d_video_head.copy_to_host(video_velocity, static_cast<size_t>(video_rows) * patch,
+                                s.stream.get());
+  }
+  if (audio_rows > 0) {
+    s.d_audio_head.copy_to_host(audio_velocity, static_cast<size_t>(audio_rows) * audio_dim,
+                                s.stream.get());
+  }
+  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+}
+
+}  // namespace vidfab::dit

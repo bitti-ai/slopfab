@@ -88,6 +88,19 @@ class Transformer {
   // rather than mid-run.
   size_t activation_bytes(const SequenceLayout& layout) const;
 
+  // The rank-8 modulation of one block, evaluated at `timesteps` and copied
+  // back to the host as `[6 params][T*3 modality rows][hidden]` — the layout
+  // the modulate kernels index, parameter-outer.
+  //
+  // For verification only, and worth its place in the public surface: spec
+  // 3.2's parameter order is the single most consequential index in the model
+  // and it cannot be checked from any shape. A wrong assignment still produces
+  // finite, plausibly scaled video. What identifies a correct one is the
+  // *statistics* — `scale_msa` and `scale_mlp` carry large non-zero means
+  // because of the `1 + scale` parameterisation, while the shifts and gates sit
+  // on zero — and reading those needs the numbers.
+  std::vector<float> debug_modulation(int block_index, const std::vector<float>& timesteps);
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
