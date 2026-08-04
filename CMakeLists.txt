@@ -22,6 +22,7 @@ add_library(vidfab_core STATIC
   src/core/json.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
+  src/video/y4m.cpp
 )
 
 target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -48,12 +49,19 @@ if(VIDFAB_ENABLE_CUDA)
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    find_package(CUDAToolkit REQUIRED)
     message(STATUS "vidfab: CUDA ${CMAKE_CUDA_COMPILER_VERSION}, arch ${CMAKE_CUDA_ARCHITECTURES}")
 
     add_library(vidfab_cuda STATIC
       src/cuda/device.cu
+      src/cuda/vae_kernels.cu
+      src/cuda/vit_decoder.cu
+      # Host-side orchestration lives here rather than in vidfab_core so that
+      # the dependency runs one way: cuda -> core, never back.
+      src/vae/decode_pipeline.cpp
     )
     target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas)
     # Whole-program compilation: no device code crosses translation units, and
     # -rdc=true would otherwise require an explicit device-link step.
     set_target_properties(vidfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)

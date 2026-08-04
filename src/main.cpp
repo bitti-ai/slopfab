@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -11,11 +12,17 @@
 #include <vector>
 
 #include "vidfab/dtype.h"
+#include "vidfab/json.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/tensor_convert.h"
 
+#include "vidfab/video/y4m.h"
+
 #if VIDFAB_WITH_CUDA
+#include <chrono>
+
 #include "vidfab/cuda/device.h"
+#include "vidfab/vae/vit_decoder.h"
 #endif
 
 namespace {
@@ -31,6 +38,7 @@ void print_usage() {
       "commands:\n"
       "  inspect <file.safetensors>   summarise a checkpoint's tensors\n"
       "  compare <ref> <actual>       diff two checkpoints tensor by tensor\n"
+      "  decode --vae <f> [--latent <f>]  run the video VAE decoder\n"
       "  devices                      list visible CUDA devices\n"
       "  version                      print the version and exit\n"
       "\n"
@@ -264,6 +272,172 @@ int cmd_compare(int argc, char** argv) {
   return (failed == 0 && missing == 0) ? 0 : 1;
 }
 
+#if VIDFAB_WITH_CUDA
+// Reads latents_mean / latents_std from the checkpoint's __metadata__ JSON,
+// which carries full fp32 text. The F16 tensors of the same name lose
+// precision, and the FL2VA copy of config.json has corrupted digits.
+bool latent_stats_from_metadata(const vidfab::SafeTensors& ckpt, std::vector<float>& mean,
+                                std::vector<float>& std_dev) {
+  auto it = ckpt.metadata().find("minimax_h3_video_vae");
+  if (it == ckpt.metadata().end()) return false;
+  try {
+    const vidfab::json::Value meta = vidfab::json::parse(it->second);
+    const vidfab::json::Value* m = meta.find("latents_mean");
+    const vidfab::json::Value* s = meta.find("latents_std");
+    if (m == nullptr || s == nullptr) return false;
+    mean.clear();
+    std_dev.clear();
+    for (const auto& v : m->as_array()) mean.push_back(static_cast<float>(v.as_number()));
+    for (const auto& v : s->as_array()) std_dev.push_back(static_cast<float>(v.as_number()));
+    return mean.size() == 24 && std_dev.size() == 24;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
+// Deterministic pseudo-random latent, so a run without a real latent file
+// still exercises the whole path reproducibly.
+std::vector<float> synthetic_latent(int T, int H, int W, uint32_t seed) {
+  std::vector<float> z(static_cast<size_t>(24) * T * H * W);
+  uint32_t state = seed != 0 ? seed : 1u;
+  for (float& v : z) {
+    // xorshift32, then map to roughly standard normal via Box-Muller-free
+    // approximation: sum of uniforms is adequate for a smoke test.
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    const float u = static_cast<float>(state & 0xFFFFFFu) / static_cast<float>(0x1000000u);
+    v = (u - 0.5f) * 2.0f;
+  }
+  return z;
+}
+
+int cmd_decode(int argc, char** argv) {
+  std::string vae_path;
+  std::string latent_path;
+  std::string out_path = "out.y4m";
+  std::string ppm_path;
+  int T = 7;
+  int H = 16;
+  int W = 16;
+  uint32_t seed = 1234;
+  bool no_tiling = false;
+  int fps = 24;
+
+  for (int i = 0; i < argc; ++i) {
+    const std::string_view arg = argv[i];
+    if (arg == "--vae" && i + 1 < argc) {
+      vae_path = argv[++i];
+    } else if (arg == "--latent" && i + 1 < argc) {
+      latent_path = argv[++i];
+    } else if (arg == "--out" && i + 1 < argc) {
+      out_path = argv[++i];
+    } else if (arg == "--ppm" && i + 1 < argc) {
+      ppm_path = argv[++i];
+    } else if (arg == "--shape" && i + 3 < argc) {
+      T = std::atoi(argv[++i]);
+      H = std::atoi(argv[++i]);
+      W = std::atoi(argv[++i]);
+    } else if (arg == "--seed" && i + 1 < argc) {
+      seed = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
+    } else if (arg == "--fps" && i + 1 < argc) {
+      fps = std::atoi(argv[++i]);
+    } else if (arg == "--no-tiling") {
+      no_tiling = true;
+    } else {
+      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      return 2;
+    }
+  }
+
+  if (vae_path.empty()) {
+    std::fprintf(stderr, "vidfab: decode needs --vae <video_vae.safetensors>\n");
+    return 2;
+  }
+
+  vidfab::SafeTensors ckpt;
+  ckpt.open(vae_path);
+
+  std::vector<float> mean;
+  std::vector<float> std_dev;
+  if (!latent_stats_from_metadata(ckpt, mean, std_dev)) {
+    std::fprintf(stderr, "vidfab: could not read latents_mean/std from checkpoint metadata\n");
+    return 1;
+  }
+
+  std::vector<float> z;
+  if (!latent_path.empty()) {
+    vidfab::SafeTensors latent_file;
+    latent_file.open(latent_path);
+    const vidfab::TensorView& lv = latent_file.at("latent");
+    if (lv.shape.size() != 4 || lv.shape[0] != 24) {
+      std::fprintf(stderr, "vidfab: latent tensor must be [24, T, H, W]\n");
+      return 1;
+    }
+    T = static_cast<int>(lv.shape[1]);
+    H = static_cast<int>(lv.shape[2]);
+    W = static_cast<int>(lv.shape[3]);
+    z = vidfab::to_f32(lv);
+  } else {
+    std::printf("no --latent given; decoding a deterministic synthetic latent (seed %u)\n", seed);
+    z = synthetic_latent(T, H, W, seed);
+  }
+
+  std::printf("latent     [24, %d, %d, %d] -> %d x %d px\n", T, H, W, W * 16, H * 16);
+
+  vidfab::vae::ViTDecoder decoder;
+  const auto load_start = std::chrono::steady_clock::now();
+  decoder.load(ckpt);
+  const auto load_end = std::chrono::steady_clock::now();
+  std::printf("weights    %s on device in %.2f s\n",
+              format_bytes(decoder.weight_bytes()).c_str(),
+              std::chrono::duration<double>(load_end - load_start).count());
+
+  vidfab::vae::DecodeSchedule schedule;
+  schedule.tiling_enabled = !no_tiling;
+
+  const auto t0 = std::chrono::steady_clock::now();
+  vidfab::vae::DecodedVideo video = decoder.decode(z.data(), T, H, W, mean, std_dev, schedule);
+  const auto t1 = std::chrono::steady_clock::now();
+  const double seconds = std::chrono::duration<double>(t1 - t0).count();
+
+  std::printf("decoded    %d frames of %dx%d in %.2f s (%.2f fps)\n", video.frames, video.width,
+              video.height, seconds,
+              seconds > 0 ? static_cast<double>(video.frames) / seconds : 0.0);
+
+  // Report basic statistics: a decode that silently produced NaN or a constant
+  // image should be visible here without opening the file.
+  double sum = 0.0;
+  float lo = 1e30f;
+  float hi = -1e30f;
+  size_t nonfinite = 0;
+  for (float v : video.data) {
+    if (!std::isfinite(v)) {
+      ++nonfinite;
+      continue;
+    }
+    sum += v;
+    lo = std::min(lo, v);
+    hi = std::max(hi, v);
+  }
+  std::printf("pixels     min %.4f  max %.4f  mean %.4f  non-finite %zu\n", lo, hi,
+              sum / static_cast<double>(video.data.size()), nonfinite);
+  if (nonfinite != 0) {
+    std::fprintf(stderr, "vidfab: decode produced non-finite pixels\n");
+    return 1;
+  }
+
+  vidfab::video::write_y4m(out_path, video.data, video.frames, video.height, video.width,
+                           {fps, 1});
+  std::printf("wrote      %s\n", out_path.c_str());
+  if (!ppm_path.empty()) {
+    vidfab::video::write_ppm(ppm_path, video.data, video.frames, video.height, video.width, 0);
+    std::printf("wrote      %s\n", ppm_path.c_str());
+  }
+  return 0;
+}
+#endif  // VIDFAB_WITH_CUDA
+
 int cmd_devices() {
 #if !VIDFAB_WITH_CUDA
   std::fprintf(stderr, "vidfab: built without CUDA support\n");
@@ -302,6 +476,9 @@ int main(int argc, char** argv) {
     if (command == "inspect") return cmd_inspect(argc - 2, argv + 2);
     if (command == "compare") return cmd_compare(argc - 2, argv + 2);
     if (command == "devices") return cmd_devices();
+#if VIDFAB_WITH_CUDA
+    if (command == "decode") return cmd_decode(argc - 2, argv + 2);
+#endif
     if (command == "version") {
       std::printf("vidfab %s\n", kVersion);
       return 0;
