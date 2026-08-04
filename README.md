@@ -215,6 +215,27 @@ the 419 on the spec sheet.** At 575 W it holds about 2.45 GHz, and cuBLAS on a
 | video VAE decode | 124 frames at 1344×768 | 52.7 s | — |
 | audio VAE decode | 5.2 s of 32 kHz stereo | 0.25 s | — |
 
+### How long a generation actually takes
+
+Measured end to end on the RTX 5090, and worth reading before you run the
+default:
+
+| request | rows | per step | total |
+|---|---|---|---|
+| 22 frames, 1:1, 30 steps | 4 167 | 1.5 s | **~50 s** |
+| **124 frames, 16:9, 50 steps (the default)** | 37 710 | **38.8 s** | **~33 min** |
+
+The default is the reference model's own default and it is genuinely that
+slow — attention is 86% of a step and scales with the square of the packed
+sequence, so the 9× row increase costs 26× the time. It is not hung: a
+progress line reports seconds per step and a running ETA from the first step
+onward. **If you just want to see it work, use `--frames 22 --aspect 1:1
+--steps 30` and wait under a minute.**
+
+Roughly 25 s of the fixed cost is loading 19.6 GiB of transformer weights, and
+~7 s is the conditioner, which streams its 24.4 GB rather than resident-loading
+it.
+
 So the four linear layers are already at the machine ceiling and are not worth
 touching — `cublasLt` heuristic search, a larger cuBLAS workspace and row
 alignment were all measured and buy nothing.

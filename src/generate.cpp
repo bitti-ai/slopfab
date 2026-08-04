@@ -148,6 +148,14 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       in.seed = request.seed;
 
       const int total_steps = plan.num_model_evaluations();
+      // Say something before the first step rather than after it. At the
+      // default geometry a step is ~39 s, so a silent minute is otherwise the
+      // user's first impression and it reads as a hang.
+      if (options.verbose) {
+        std::printf("denoising   %d steps over %d rows; the first step sets the pace\n",
+                    total_steps, live.total_rows());
+        std::fflush(stdout);
+      }
       const Clock::time_point loop_start = Clock::now();
       const dit::DenoiseOutputs out = dit::denoise(model, in, [&](int step, int steps) {
         if (options.verbose) {
