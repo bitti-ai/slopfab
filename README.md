@@ -154,20 +154,20 @@ someone else is editing.
 - **Host tests**: JSON parser, dtype conversions including fp8 E4M3 and fp4
   E2M1, safetensors loading and its rejection cases, comparison statistics, the
   flow scheduler and its second-order sampler, token packing, request
-  resolution, the AdaLN table, the tokenizer, latent noise, the WAV writer and
-  the colour transform.
-  **2120 checks** — but only with `ref/` and the checkpoints present. Three
+  resolution, the AdaLN table, the step cache's compute-or-skip decision, the
+  tokenizer, latent noise, the WAV writer and the colour transform.
+  **2198 checks** — but only with `ref/` and the checkpoints present. Three
   tests skip themselves without them (two tokenizer goldens, which need
   `ref/FL2VA/text_encoder/tokenizer.json`, and one transformer case that needs
-  a real checkpoint), so a clean clone reports **2060** and is not failing.
-  `ref/` is licence-restricted and not redistributable, so 2060 is the number
-  most people will see; run from the repository root to get 2120.
+  a real checkpoint), so a clean clone reports **2138** and is not failing.
+  `ref/` is licence-restricted and not redistributable, so 2138 is the number
+  most people will see; run from the repository root to get 2198.
   Both figures are measured on the merged tree rather than added up from
   branches: contributors state a delta and the absolute is set here, because
   two branches each correctly adding to the same baseline is how this number
   went wrong before.
 - **GPU kernel tests**: every kernel against independent CPU references written
-  from the spec rather than from the kernel. **1062 checks**, plus 11 DEFERRED,
+  from the spec rather than from the kernel. **1122 checks**, plus 11 DEFERRED,
   measured with the checkpoints present — a tree without `weights/` skips the
   cases that need them and reports fewer, which is not a failure.
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong

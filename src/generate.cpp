@@ -201,13 +201,14 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
       const int total_steps = plan.num_model_evaluations();
       // Say something before the first step rather than after it. At the
-      // default geometry a step is ~39 s, so a silent minute is otherwise the
+      // default geometry a step is ~19 s, so a silent half-minute is otherwise the
       // user's first impression and it reads as a hang.
       if (options.verbose) {
         std::printf("denoising   %d steps over %d rows; the first step sets the pace\n",
                     total_steps, live.total_rows());
         // Said only when it is not the default, so a run that looks like every
-        // other run is one, and an ab2 run is never mistaken for a baseline.
+        // other run is one, and neither an ab2 run nor a cached one is ever
+        // mistaken for a baseline.
         if (options.sampler == sampler::SamplerKind::kAb2) {
           std::printf("sampler     ab2 (Adams-Bashforth 2; step 1 is Euler)\n");
         }
@@ -392,18 +393,6 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   {
     const Clock::time_point t0 = Clock::now();
     const bool have_audio = !audio.samples.empty();
-
-    // Raw fp32 pixels, before the colour transform and 8-bit quantisation that
-    // every other output path applies. Two runs of the same seed and geometry
-    // are then comparable at float precision with `vidfab compare`, which is
-    // the only way to tell "bit-identical" from "close" — and the difference
-    // between those two is the whole gate on a flag that is supposed to change
-    // nothing when it is off.
-    if (!request.dump_path.empty()) {
-      write_safetensors(request.dump_path,
-                        {{"pixels", {3, video.frames, video.height, video.width}, video.data}});
-      if (options.verbose) std::printf("dumped      %s\n", request.dump_path.c_str());
-    }
 
     bool muxed = false;
     if (!request.raw_output) {

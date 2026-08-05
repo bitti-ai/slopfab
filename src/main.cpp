@@ -62,8 +62,6 @@ const CommandHelp kCommands[] = {
      "  --sampler euler|ab2          integrator (default euler)\n"
      "  --seed <n>                   noise seed\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
-     "  --dump <f>                   also write raw fp32 pixels as safetensors, for\n"
-     "                               `vidfab compare` at float precision\n"
      "  --dry-run                    resolve and print the plan, touch no weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
      "                               noise, to exercise the VAEs and the muxer\n"
@@ -796,8 +794,6 @@ int cmd_generate(int argc, char** argv) {
       req.audio_vae_path = next("--audio-vae");
     } else if (arg == "--raw") {
       req.raw_output = true;
-    } else if (arg == "--dump") {
-      req.dump_path = next("--dump");
     } else if (arg == "--cache-threshold") {
       req.cache_threshold = static_cast<float>(std::strtod(next("--cache-threshold"), nullptr));
     } else if (arg == "--cache-warmup") {
@@ -844,7 +840,6 @@ int cmd_generate(int argc, char** argv) {
                  "vidfab: --cache-threshold and --skip-every are alternatives; pass one\n");
     return 2;
   }
-
   // Refused, not warned about. AB2 extrapolates from `v_{n-1}`, and with step
   // caching on that is a *reused* velocity — a point the model never visited at
   // that timestep — so the two-point extrapolation is extrapolating a constant

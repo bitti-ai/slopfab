@@ -66,11 +66,6 @@ struct GenerateRequest {
   // when ffmpeg cannot be loaded.
   bool raw_output = false;
 
-  // Raw fp32 pixels alongside the video, so two runs can be diffed at float
-  // precision with `vidfab compare` rather than after 8-bit quantisation.
-  // Empty = not written.
-  std::string dump_path;
-
   // Step caching (see dit/step_cache.h). Off by default: `threshold == 0` and
   // `skip_every == 0` mean every step is evaluated, which is the shipped
   // behaviour and must stay bit-identical to a build without any of this.
