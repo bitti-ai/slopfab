@@ -63,6 +63,23 @@ struct RunOptions {
   // is distant video-to-video attention. Its cost scales as the band's share of
   // the sequence, so it saves more the longer the request.
   int attention_band = 0;
+  // If set, the fp32 latent rows in this file replace the seeded noise draw.
+  // Off by default; nothing about a normal run reads it.
+  //
+  // It does two jobs, and both belong to the frame-banding quality probe:
+  //
+  //   - with the denoiser, it starts a chunk from its slice of the *full*
+  //     request's noise field instead of an independent chunk-sized draw, so
+  //     the probe measures the loss of cross-chunk attention rather than three
+  //     unrelated samples;
+  //   - with `--synthetic-latents`, it skips conditioning and denoising
+  //     altogether and sends the file's own rows through unpatchify, both VAEs
+  //     and the muxer — which is how a cross-faded latent becomes an MP4 with
+  //     its audio, without a second decode path existing to drift.
+  //
+  // The file is the same shape `--dump-latents` writes: `video_rows` [V, 96]
+  // and `audio_rows` [Sa, 32], both fp32, both checked against the layout.
+  std::string init_latents_path;
 };
 
 struct RunResult {

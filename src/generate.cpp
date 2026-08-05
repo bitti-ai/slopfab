@@ -65,6 +65,30 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   std::vector<float> video_rows;  // [V, 96]
   std::vector<float> audio_rows;  // [Sa, 32]
 
+  // Supplied initial latents, if any. Read before anything expensive happens so
+  // a wrong shape fails in a second rather than after 25 GB of conditioner.
+  std::vector<float> init_video;
+  std::vector<float> init_audio;
+  if (!options.init_latents_path.empty()) {
+    SafeTensors file;
+    file.open(options.init_latents_path);
+    init_video = to_f32(file.at("video_rows"));
+    init_audio = to_f32(file.at("audio_rows"));
+    const size_t want_video = static_cast<size_t>(layout.num_video_rows) * 96;
+    const size_t want_audio = static_cast<size_t>(layout.num_audio_rows) * 32;
+    if (init_video.size() != want_video || init_audio.size() != want_audio) {
+      result.message = "--init-latents " + options.init_latents_path + " holds " +
+                       std::to_string(init_video.size()) + " video and " +
+                       std::to_string(init_audio.size()) + " audio floats; this geometry wants " +
+                       std::to_string(want_video) + " and " + std::to_string(want_audio);
+      return result;
+    }
+    if (options.verbose) {
+      std::printf("latents     %s replaces the seeded draw (%d video rows, %d audio rows)\n",
+                  options.init_latents_path.c_str(), layout.num_video_rows, layout.num_audio_rows);
+    }
+  }
+
   if (options.source == LatentSource::kDenoise) {
     if (request.text_encoder_path.empty() || request.tokenizer_path.empty() ||
         request.transformer_path.empty()) {
@@ -167,6 +191,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       in.video_scheduler = &video_sched;
       in.audio_scheduler = &audio_sched;
       in.seed = request.seed;
+      if (!options.init_latents_path.empty()) {
+        in.init_video_rows = &init_video;
+        in.init_audio_rows = &init_audio;
+      }
 
       const int total_steps = plan.num_model_evaluations();
       // Say something before the first step rather than after it. At the
@@ -229,6 +257,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     result.seconds_transformer_load, result.seconds_prepare);
       }
     }
+  } else if (!options.init_latents_path.empty()) {
+    // Decode a latent that already exists. The whole back half — unpatchify,
+    // both VAEs, the colour transform, the muxer — is the same code the
+    // denoising path uses, which is the reason this is a flag on `generate`
+    // rather than a second decoder that could drift from it.
+    video_rows = std::move(init_video);
+    audio_rows = std::move(init_audio);
   } else {
     // Seeded noise in exactly the shapes the denoiser would have produced, so
     // nothing downstream can tell the difference.

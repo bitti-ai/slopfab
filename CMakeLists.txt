@@ -24,6 +24,7 @@ add_library(vidfab_core STATIC
   src/core/tensor_convert.cpp
   src/core/safetensors_write.cpp
   src/dit/adaln.cpp
+  src/dit/chunking.cpp
   src/dit/packing.cpp
   src/pipeline.cpp
   src/sampler/noise.cpp
@@ -152,6 +153,18 @@ else()
   target_compile_options(vidfab_loadprobe PRIVATE -Wall -Wextra)
 endif()
 
+# Temporal-chunking driver for the frame-banding quality probe. Separate binary
+# for the same reason as the load probe: it links vidfab_core only, so it
+# initialises no CUDA context and reads no checkpoint, and it can be run while
+# the card is busy with the generations it is preparing or analysing.
+add_executable(vidfab_chunkprobe tools/chunkprobe.cpp)
+target_link_libraries(vidfab_chunkprobe PRIVATE vidfab_core)
+if(MSVC)
+  target_compile_options(vidfab_chunkprobe PRIVATE /W4 /permissive- /utf-8)
+else()
+  target_compile_options(vidfab_chunkprobe PRIVATE -Wall -Wextra)
+endif()
+
 # --- tests ------------------------------------------------------------------
 
 if(VIDFAB_BUILD_TESTS)
@@ -164,6 +177,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_main.cpp
     tests/test_adaln.cpp
     tests/test_compare_metrics.cpp
+    tests/test_chunking.cpp
     tests/test_noise.cpp
     tests/test_packing.cpp
     tests/test_pipeline.cpp

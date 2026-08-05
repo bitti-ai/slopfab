@@ -74,6 +74,10 @@ const CommandHelp kCommands[] = {
      "  --dump-latents <f>           the denoiser's own output as fp32 safetensors,\n"
      "                               before either VAE; the diff point for a change\n"
      "                               to the transformer\n"
+     "  --init-latents <f>           start the loop from these latents instead of the\n"
+     "                               seeded draw; with --synthetic-latents, decode\n"
+     "                               them straight to video and audio. Same shape as\n"
+     "                               --dump-latents writes. Off by default.\n"
      "\n"
      "checkpoints (all required unless --dry-run or --synthetic-latents):\n"
      "  --tokenizer <f>              tokenizer.json\n"
@@ -696,6 +700,7 @@ int cmd_generate(int argc, char** argv) {
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
   std::string dump_latents;
   int attn_band = 0;
+  std::string init_latents;
   int bench_load = 0;
 
   for (int i = 0; i < argc; ++i) {
@@ -755,6 +760,8 @@ int cmd_generate(int argc, char** argv) {
       dump_latents = next("--dump-latents");
     } else if (arg == "--attn-band") {
       attn_band = std::atoi(next("--attn-band"));
+    } else if (arg == "--init-latents") {
+      init_latents = next("--init-latents");
     } else if (arg == "--bench-load") {
       bench_load = std::atoi(next("--bench-load"));
     } else {
@@ -763,6 +770,8 @@ int cmd_generate(int argc, char** argv) {
     }
   }
 
+  // `--synthetic-latents --init-latents <f>` is the decode-an-existing-latent
+  // path and needs no prompt; the seeded-noise form still does not either.
   if (req.prompt.empty() && !dry_run && !synthetic) {
     std::fprintf(stderr, "vidfab: generate needs --prompt \"...\"\n");
     return 2;
@@ -813,6 +822,7 @@ int cmd_generate(int argc, char** argv) {
 #if !VIDFAB_WITH_CUDA
   (void)sampler_kind;
   (void)dump_latents;
+  (void)init_latents;
   std::fprintf(stderr, "vidfab: built without CUDA support; generate needs a GPU\n");
   return 1;
 #else
@@ -822,6 +832,7 @@ int cmd_generate(int argc, char** argv) {
   options.sampler = sampler_kind;
   options.dump_latents_path = dump_latents;
   options.attention_band = attn_band;
+  options.init_latents_path = init_latents;
 
   std::printf("\n");
   const vidfab::RunResult run = vidfab::run_generate(req, plan, options);

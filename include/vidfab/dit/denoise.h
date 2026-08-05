@@ -47,6 +47,19 @@ struct DenoiseInputs {
   sampler::FlowScheduler* audio_scheduler = nullptr;
 
   uint64_t seed = 0;
+
+  // Initial latents, replacing the seeded draw. Null in production — the loop
+  // then draws from `seed` exactly as the reference does.
+  //
+  // This exists for the frame-banding quality probe, which runs one request as
+  // several overlapping shorter ones and needs each of them to start from its
+  // *slice of the full request's noise field* rather than from an independent
+  // chunk-sized draw. A chunk-sized draw would be a different field entirely
+  // (the generator is indexed by flat position, so F changes the stride), and
+  // the probe would then be measuring three unrelated samples instead of the
+  // loss of cross-chunk attention. Shapes are checked against the layout.
+  const std::vector<float>* init_video_rows = nullptr;
+  const std::vector<float>* init_audio_rows = nullptr;
 };
 
 struct DenoiseOutputs {

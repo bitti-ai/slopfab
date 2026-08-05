@@ -58,13 +58,25 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   // Draw order matters for reproducibility even though our generator is not
   // torch's: video first, in `(24, F, Hl, Wl)` layout and then patchified, then
   // audio drawn directly in row layout `(2A, 32)` (spec 1.3).
-  {
+  //
+  // Supplied initial latents replace the draw entirely rather than perturbing
+  // it, and both modalities are all-or-nothing per modality so a caller cannot
+  // half-substitute one and silently get seeded noise for the rest.
+  if (inputs.init_video_rows != nullptr) {
+    require(inputs.init_video_rows->size() == out.video_rows.size(),
+            "the supplied initial video latents disagree with the layout");
+    out.video_rows = *inputs.init_video_rows;
+  } else {
     const std::vector<float> noise = sampler::video_noise(
         inputs.seed, layout.num_latent_frames, layout.latent_height, layout.latent_width,
         transformer.config().in_channels);
     patchify_video(noise.data(), layout, out.video_rows.data());
   }
-  {
+  if (inputs.init_audio_rows != nullptr) {
+    require(inputs.init_audio_rows->size() == out.audio_rows.size(),
+            "the supplied initial audio latents disagree with the layout");
+    out.audio_rows = *inputs.init_audio_rows;
+  } else {
     const std::vector<float> noise =
         sampler::audio_noise(inputs.seed, layout.num_audio_latents, audio_dim);
     require(noise.size() == out.audio_rows.size(), "audio noise shape disagrees with the layout");
