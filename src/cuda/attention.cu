@@ -570,20 +570,23 @@ namespace fused {
 // this comment. Re-measure rather than trusting the numbers; the *ceiling* is
 // what does not move.
 //
-//   D = 128 : 173 registers, 0 spills, 34304 B smem -> 1 block/SM.
-//             No cliff to fall off, but note *why* has changed: deleting the
-//             shared Q tile took smem from 69120 to 34304 B, so two blocks now
-//             fit in shared memory (68608 <= 102400) and are stopped by
-//             registers alone (173 * 256 * 2 = 88576 > 65536). It reads like
-//             an occupancy win and is not one. `o[kOTiles][4]` alone is 64
-//             registers of irreducible accumulator, so 2 blocks/SM here would
-//             need <=128 and is unreachable. Instruction count is still the
-//             only currency; spending a register costs nothing.
+//   D = 128 : 175 registers, 0 spills, 68608 B smem -> 1 block/SM.
+//             No cliff to fall off. Two blocks would need <=128 registers AND
+//             <=51200 B, and `o[kOTiles][4]` alone is 64 registers of
+//             irreducible accumulator. Instruction count is the only currency
+//             here; spending a register costs nothing.
 //
-//   D = 64  : 125 registers, 0 spills -> 2 blocks/SM, with **three registers
-//             of margin**. The ceiling is 128 and it is exact: 128 * 256
-//             threads is precisely half the 65536-register file. At 129 this
-//             path drops to 1 block/SM -- a 2x occupancy loss.
+//   D = 64  : 127 registers, 0 spills -> 2 blocks/SM, with **one register of
+//             margin**. The ceiling is 128 and it is exact: 128 * 256 threads
+//             is precisely half the 65536-register file. At 129 this path
+//             drops to 1 block/SM -- a 2x occupancy loss.
+//
+// Those two lines were 174 / 125 before the K/V pipeline landed, i.e. three
+// registers of margin at D=64 rather than one. **The double buffer spent two of
+// them**, and that is stated rather than absorbed: it is a real narrowing of
+// the budget for whoever edits next, not a rounding difference. Where a choice
+// existed the margin was defended -- see the note on tracking V's buffer
+// pointer in `fused_kernel`, which costs a register at D=128 to save one here.
 //
 // The trap: **no test in this suite can see that happen.** The tests check
 // numbers, and this failure only moves the clock. A change that is bit-exact,
