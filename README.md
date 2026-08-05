@@ -335,7 +335,7 @@ the 419 on the spec sheet.** At 575 W it holds about 2.45 GHz, and cuBLAS on a
 | op | shape | time | achieved |
 |---|---|---|---|
 | attention, blocked | seq 37710, 56 heads, dim 128 | 561 ms | 72.6 TFLOP/s |
-| **attention, fused** | seq 37710, 56 heads, dim 128 | **349 ms** | **117 TFLOP/s** |
+| **attention, fused** | seq 37710, 56 heads, dim 128 | **228.4 ms** | **178.5 TFLOP/s** |
 | `qkv_proj` | `[21504, 5376]` × 37710 rows | 36.2 ms | 234 TFLOP/s |
 | `attn.out_proj` | `[5376, 7168]` | 12.1 ms | 237 TFLOP/s |
 | `mlp.fc1` | `[28672, 5376]` | 48.3 ms | 232 TFLOP/s |
@@ -351,7 +351,7 @@ default:
 | request | rows | per step | total |
 |---|---|---|---|
 | 22 frames, 1:1, 30 steps | 4 167 | 1.07 s | **~50 s** |
-| **124 frames, 16:9, 50 steps (the default)** | 37 710 | **25.0 s** | **~21 min** |
+| **124 frames, 16:9, 50 steps (the default)** | 37 710 | **19.1 s** | **~16 min** |
 
 Both rows are the nvfp4 pair, measured with `VIDFAB_PROFILE=1` on an idle card,
 whose device timeline accounts for 100.00% of a step at 0.24% overhead. **An
@@ -362,10 +362,15 @@ discrepancy visible in this file for some time, which is the argument for
 quoting a geometry and an idle card beside every number rather than a
 percentage on its own.
 
+The default row is post-staging-rewrite: the same measurement read 24.85 s
+before it and 19.09 s after, and 98.5% of that 5.76 s came out of `attn.fused`
+alone, which is the check that nothing else moved. **The quick row has not been
+re-measured since**, so treat 1.07 s as an upper bound.
+
 The default is the reference model's own default and it is genuinely that
-slow — the fused attention kernel alone is 70.4% of a step (the whole attention
-sub-block is 82.5%) and scales with the square of the packed sequence, so the
-9× row increase costs 23× the time. It is not hung: a
+slow — the fused attention kernel alone is 61.5% of a step (down from 70.4%
+before the staging rewrite) and scales with the square of the packed sequence,
+so the 9× row increase costs 18× the time. It is not hung: a
 progress line reports seconds per step and a running ETA from the first step
 onward. **If you just want to see it work, use `--frames 22 --aspect 1:1
 --steps 30` and wait under a minute.**
@@ -435,8 +440,20 @@ exactly what the fused kernel deletes.
 ### The fused kernel
 
 `AttentionBackend::kFused` keeps S and P in registers and never writes them
-anywhere. **349 ms against the blocked path's 561, at 117 TFLOP/s — 54% of the
-machine ceiling, and no workspace at all against 1.63 GiB.**
+anywhere. **228.4 ms against the blocked path's 561, at 178.5 TFLOP/s — 82% of
+the machine ceiling, and no workspace at all against 1.63 GiB.**
+
+It first landed at 349 ms and 117 TFLOP/s. The remaining 121 ms was not in the
+mma pipeline at all but in the K/V staging loop, which re-derived `r = i / D`,
+`c = i % D` and a fresh 64-bit global address for **every 2-byte element** —
+172 instructions per trip of which only 128 moved data, between two
+`__syncthreads()` where no `mma` could issue. Hoisting the loop invariants and
+giving each thread eight contiguous columns turns K's staging into four
+`LDG.E.128` and four `STS.128` instead of 32 scalar pairs, and takes the
+staging from 1376 instructions per warp per key block to ~195. The obvious
+lane-to-row mapping for this is wrong in a way that costs most of the win: it
+puts all 32 of V's transposing `STS.U16` in one bank. The 8×4 remap that fixes
+it is in the code beside the reason.
 
 The load-bearing decision is `mma.sync` instead of `nvcuda::wmma`. `wmma` does
 not specify which row an accumulator element belongs to, and O needs a *per-row*
