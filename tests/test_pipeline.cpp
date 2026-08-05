@@ -112,6 +112,58 @@ VIDFAB_TEST(pipeline_plan_aspect_and_frames) {
   CHECK(sq.layout.rows_per_frame() == 24 * 24);
 }
 
+VIDFAB_TEST(pipeline_plan_explicit_resolution) {
+  // The property the whole flag rests on: naming the canvas the default
+  // already produces must reproduce the default plan exactly. If this drifts,
+  // adding the option moved the default for everyone who never passed it.
+  const vidfab::GeneratePlan derived = vidfab::resolve_plan(base_request());
+
+  vidfab::GenerateRequest named = base_request();
+  named.canvas_width = 1344;
+  named.canvas_height = 768;
+  const vidfab::GeneratePlan explicit_plan = vidfab::resolve_plan(named);
+
+  CHECK(explicit_plan.canvas_width == derived.canvas_width);
+  CHECK(explicit_plan.canvas_height == derived.canvas_height);
+  CHECK(explicit_plan.layout.latent_width == derived.layout.latent_width);
+  CHECK(explicit_plan.layout.latent_height == derived.layout.latent_height);
+  CHECK(explicit_plan.layout.total_rows() == derived.layout.total_rows());
+
+  // An explicit canvas wins over the aspect rather than being reconciled with
+  // it — the two disagree here on purpose, and the canvas is what survives.
+  vidfab::GenerateRequest both = base_request();
+  both.aspect_w = 1;
+  both.aspect_h = 1;
+  both.canvas_width = 1024;
+  both.canvas_height = 512;
+  const vidfab::GeneratePlan p = vidfab::resolve_plan(both);
+  CHECK(p.canvas_width == 1024 && p.canvas_height == 512);
+  CHECK(p.layout.latent_width == 64 && p.layout.latent_height == 32);
+
+  // One axis alone is not an explicit canvas, so it falls back to the aspect
+  // rather than silently generating a 1344x0 plan.
+  vidfab::GenerateRequest half = base_request();
+  half.canvas_width = 1024;
+  const vidfab::GeneratePlan fell_back = vidfab::resolve_plan(half);
+  CHECK(fell_back.canvas_width == 1344 && fell_back.canvas_height == 768);
+
+  // Over the trained area is allowed here and refused nowhere — the warning
+  // lives in the CLI, and the plan resolves so a caller can see the cost.
+  vidfab::GenerateRequest big = base_request();
+  big.canvas_width = 1920;
+  big.canvas_height = 1088;
+  const vidfab::GeneratePlan large = vidfab::resolve_plan(big);
+  CHECK(large.layout.total_rows() > derived.layout.total_rows());
+
+  // A canvas off the 32-grid is rejected, not rounded.
+  CHECK(::vidfab::test::throws([] {
+    vidfab::GenerateRequest r;
+    r.canvas_width = 1350;
+    r.canvas_height = 768;
+    vidfab::resolve_plan(r);
+  }));
+}
+
 VIDFAB_TEST(pipeline_plan_rejects_bad_requests) {
   // A one-point grid has no model evaluation at all.
   CHECK(::vidfab::test::throws([] {

@@ -110,6 +110,32 @@ void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_
                     static_cast<int>(round_half_even(width / kCanvasMultiple)) * kCanvasMultiple);
 }
 
+void validate_canvas_size(int height, int width) {
+  if (height <= 0 || width <= 0) {
+    throw std::runtime_error("resolution: both axes must be positive, got " +
+                             std::to_string(width) + "x" + std::to_string(height));
+  }
+  // 32 rather than 16: the VAE compresses by 16 and the patchifier then walks
+  // 2x2 patches, so an axis that is a multiple of 16 but not 32 produces a
+  // latent with an odd extent and a patch grid that silently drops its last
+  // row or column.
+  if (height % kCanvasMultiple != 0 || width % kCanvasMultiple != 0) {
+    throw std::runtime_error("resolution: both axes must be a multiple of " +
+                             std::to_string(kCanvasMultiple) + ", got " + std::to_string(width) +
+                             "x" + std::to_string(height));
+  }
+  const double ratio = static_cast<double>(width) / static_cast<double>(height);
+  if (!(ratio >= kMinAspect && ratio <= kMaxAspect)) {
+    throw std::runtime_error("resolution: MiniMax-H3 supports 1:4 to 4:1, and " +
+                             std::to_string(width) + "x" + std::to_string(height) + " is " +
+                             std::to_string(ratio));
+  }
+}
+
+bool canvas_exceeds_trained_area(int height, int width) {
+  return static_cast<long long>(height) * width > static_cast<long long>(kMaxPixels);
+}
+
 int align_num_frames(int num_frames) {
   if (num_frames < 1) {
     throw std::runtime_error("align_num_frames: num_frames must be positive");

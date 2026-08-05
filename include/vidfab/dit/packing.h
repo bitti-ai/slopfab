@@ -50,6 +50,21 @@ struct SequenceLayout {
 // ratios outside 1:4 .. 4:1.
 void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w);
 
+// Checks a canvas the caller chose outright, rather than deriving one from a
+// ratio. Enforces what the pipeline cannot work without — positive axes, both a
+// multiple of 32, and a ratio inside 1:4 .. 4:1 — and nothing else. In
+// particular the area is **not** capped: `resolve_canvas_size` scales a request
+// down to the trained budget because the caller only asked for a shape, whereas
+// a caller naming 1920x1088 has asked for that canvas and gets it. The cost of
+// exceeding the budget is quadratic in area and belongs to whoever typed it, so
+// `canvas_exceeds_trained_area` exists to warn rather than to refuse.
+void validate_canvas_size(int height, int width);
+
+// True when a canvas is larger than the 768*1344 the released model was trained
+// at. Packed rows grow with area and attention grows with their square, so this
+// is the difference between a slow run and an unusable one.
+bool canvas_exceeds_trained_area(int height, int width);
+
 // Snaps a frame count **up** to the next `17*k + 5` the video VAE can encode.
 int align_num_frames(int num_frames);
 

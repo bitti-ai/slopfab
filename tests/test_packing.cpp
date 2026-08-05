@@ -77,6 +77,40 @@ VIDFAB_TEST(packing_geometry) {
     resolve_canvas_size(5, 1, &a, &b);
   }));
 
+  // An explicit canvas is checked, not derived. The load-bearing property is
+  // that naming the default resolution and asking for 16:9 land on the same
+  // canvas — otherwise adding the flag would have moved the default.
+  int ah = 0;
+  int aw = 0;
+  resolve_canvas_size(16, 9, &ah, &aw);
+  validate_canvas_size(ah, aw);
+  CHECK(aw == 1344 && ah == 768);
+
+  // Multiple of 32 on both axes. 16 is the VAE's compression factor and would
+  // look plausible; it is rejected because the 2x2 patch grid then loses its
+  // last row or column silently.
+  validate_canvas_size(768, 1344);
+  validate_canvas_size(512, 512);
+  CHECK(::vidfab::test::throws([] { validate_canvas_size(768, 1360); }));  // 1360 = 16*85
+  CHECK(::vidfab::test::throws([] { validate_canvas_size(784, 1344); }));  // 784  = 16*49
+  CHECK(::vidfab::test::throws([] { validate_canvas_size(0, 1344); }));
+  CHECK(::vidfab::test::throws([] { validate_canvas_size(768, -32); }));
+
+  // The same 1:4..4:1 range the aspect path enforces, applied to the canvas
+  // the caller named rather than to a ratio they asked for.
+  validate_canvas_size(768, 3072);                                          // exactly 4:1
+  validate_canvas_size(3072, 768);                                          // exactly 1:4
+  CHECK(::vidfab::test::throws([] { validate_canvas_size(768, 3104); }));   // just over 4:1
+  CHECK(::vidfab::test::throws([] { validate_canvas_size(3104, 768); }));   // just over 1:4
+
+  // The area cap is deliberately NOT enforced here — that is the difference
+  // between the two entry points, and a test that accepted an over-budget
+  // canvas by accident would look identical to one that meant to.
+  validate_canvas_size(1088, 1920);
+  CHECK(canvas_exceeds_trained_area(1088, 1920));
+  CHECK(!canvas_exceeds_trained_area(768, 1344));   // exactly the budget is not over it
+  CHECK(!canvas_exceeds_trained_area(768, 768));
+
   // Frame alignment snaps UP to 17k + 5, and an already-aligned count is a
   // fixed point.
   CHECK(align_num_frames(240) == 243);

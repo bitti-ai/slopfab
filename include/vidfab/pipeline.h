@@ -31,9 +31,21 @@ struct GenerateRequest {
   std::string out_path = "video.mp4";
 
   // Only the ratio matters; the short edge is fixed at 768 and the area capped
-  // at 768*1344, per the released model.
+  // at 768*1344, per the released model. Ignored when the canvas is named
+  // outright below.
   int aspect_w = 16;
   int aspect_h = 9;
+
+  // An explicit canvas, which takes precedence over the aspect ratio when both
+  // axes are set. Zero means "derive it from the aspect", so the default is
+  // whatever 16:9 resolves to and adding this field changed no existing run.
+  // Unlike the aspect path this is not scaled down to the trained area — a
+  // caller naming a canvas gets that canvas, and is warned if it is larger than
+  // the model was trained for.
+  int canvas_width = 0;
+  int canvas_height = 0;
+
+  bool has_explicit_canvas() const { return canvas_width > 0 && canvas_height > 0; }
 
   // Snapped up to the next 17*k + 5 the video VAE can encode.
   int num_frames = 124;

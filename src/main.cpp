@@ -51,7 +51,11 @@ const CommandHelp kCommands[] = {
     {"generate", "vidfab generate --prompt <text> [options]", "text to video and audio",
      "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
      "  --out <file>                 output path (default video.mp4)\n"
-     "  --aspect <W:H>               display aspect, 1:4 to 4:1 (default 16:9)\n"
+     "  --aspect <W:H>               display aspect, 1:4 to 4:1 (default 16:9 -> 1344x768)\n"
+     "  --resolution <WxH>           exact canvas instead of an aspect; both axes a\n"
+     "                               multiple of 32, ratio 1:4 to 4:1. Not capped to the\n"
+     "                               trained 1344x768 area — larger is allowed, warned\n"
+     "                               about, and costs attention time quadratically\n"
      "  --frames <n>                 snapped up to 17k+5 (default 124, minimum 6)\n"
      "  --steps <n>                  sigma grid points, n-1 evaluations (default 50)\n"
      "  --sampler euler|ab2          integrator (default euler)\n"
@@ -702,6 +706,8 @@ int cmd_generate(int argc, char** argv) {
   int attn_band = 0;
   std::string init_latents;
   int bench_load = 0;
+  bool saw_aspect = false;
+  bool saw_resolution = false;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -740,6 +746,22 @@ int cmd_generate(int argc, char** argv) {
       }
       req.aspect_w = std::atoi(v.substr(0, colon).c_str());
       req.aspect_h = std::atoi(v.substr(colon + 1).c_str());
+      saw_aspect = true;
+    } else if (arg == "--resolution") {
+      const std::string v = next("--resolution");
+      const size_t x = v.find_first_of("xX");
+      if (x == std::string::npos) {
+        std::fprintf(stderr, "vidfab: --resolution wants WxH, e.g. 1344x768\n");
+        return 2;
+      }
+      req.canvas_width = std::atoi(v.substr(0, x).c_str());
+      req.canvas_height = std::atoi(v.substr(x + 1).c_str());
+      if (req.canvas_width <= 0 || req.canvas_height <= 0) {
+        std::fprintf(stderr, "vidfab: --resolution wants two positive numbers, got '%s'\n",
+                     v.c_str());
+        return 2;
+      }
+      saw_resolution = true;
     } else if (arg == "--transformer") {
       req.transformer_path = next("--transformer");
     } else if (arg == "--text-encoder") {
@@ -777,7 +799,32 @@ int cmd_generate(int argc, char** argv) {
     return 2;
   }
 
+  // Rejected rather than ranked. Silently letting one win would mean a run
+  // whose canvas is not the one half the command line asked for, and the two
+  // flags are close enough in intent that a user passing both has made a
+  // mistake worth telling them about.
+  if (saw_aspect && saw_resolution) {
+    std::fprintf(stderr,
+                 "vidfab: --aspect and --resolution set the same thing; pass one or the other\n");
+    return 2;
+  }
   const vidfab::GeneratePlan plan = vidfab::resolve_plan(req);
+
+  // After `resolve_plan`, so a canvas that is going to be rejected outright is
+  // not first warned about — an invalid request should produce one message
+  // about what is wrong with it, not a size advisory followed by a refusal.
+  if (saw_resolution && vidfab::dit::canvas_exceeds_trained_area(req.canvas_height,
+                                                                req.canvas_width)) {
+    // A warning, not a refusal: the caller named this canvas. But packed rows
+    // grow with area and attention with their square, so an innocent-looking
+    // doubling is roughly four times the attention cost.
+    std::fprintf(stderr,
+                 "vidfab: %dx%d is %.2fx the 1344x768 area the model was trained at; "
+                 "attention cost grows with the square of that, and quality outside the "
+                 "trained range is uncharacterised\n",
+                 req.canvas_width, req.canvas_height,
+                 static_cast<double>(req.canvas_width) * req.canvas_height / (1344.0 * 768.0));
+  }
   std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
   if (dry_run) return 0;
 

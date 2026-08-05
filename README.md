@@ -76,6 +76,13 @@ vidfab generate --prompt "integrated_multimodal_description: ..." \
 # The quantisation of each checkpoint is read out of the file, so there is no
 # flag for it and the pair need not match. `generate.cmd` wraps all of this.
 
+# Name the canvas outright instead of asking for a shape. --aspect picks the
+# largest canvas of that ratio inside the trained 1344x768 area; --resolution
+# takes what you give it. Both axes must be a multiple of 32 and the ratio must
+# stay inside 1:4 .. 4:1, but the area is *not* capped -- a larger canvas is
+# allowed, warned about, and costs attention time with the square of its area.
+vidfab generate --prompt "..." --resolution 1024x512 --dry-run
+
 # Every command documents itself.
 vidfab generate --help
 
@@ -149,12 +156,12 @@ someone else is editing.
   flow scheduler and its second-order sampler, token packing, request
   resolution, the AdaLN table, the tokenizer, latent noise, the WAV writer and
   the colour transform.
-  **2100 checks** — but only with `ref/` and the checkpoints present. Three
+  **2120 checks** — but only with `ref/` and the checkpoints present. Three
   tests skip themselves without them (two tokenizer goldens, which need
   `ref/FL2VA/text_encoder/tokenizer.json`, and one transformer case that needs
-  a real checkpoint), so a clean clone reports **2040** and is not failing.
-  `ref/` is licence-restricted and not redistributable, so 2040 is the number
-  most people will see; run from the repository root to get 2100.
+  a real checkpoint), so a clean clone reports **2060** and is not failing.
+  `ref/` is licence-restricted and not redistributable, so 2060 is the number
+  most people will see; run from the repository root to get 2120.
   Both figures are measured on the merged tree rather than added up from
   branches: contributors state a delta and the absolute is set here, because
   two branches each correctly adding to the same baseline is how this number

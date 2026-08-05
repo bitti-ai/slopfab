@@ -32,9 +32,15 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   }
 
   GeneratePlan plan;
-  dit::resolve_canvas_size(static_cast<double>(request.aspect_w),
-                           static_cast<double>(request.aspect_h), &plan.canvas_height,
-                           &plan.canvas_width);
+  if (request.has_explicit_canvas()) {
+    dit::validate_canvas_size(request.canvas_height, request.canvas_width);
+    plan.canvas_height = request.canvas_height;
+    plan.canvas_width = request.canvas_width;
+  } else {
+    dit::resolve_canvas_size(static_cast<double>(request.aspect_w),
+                             static_cast<double>(request.aspect_h), &plan.canvas_height,
+                             &plan.canvas_width);
+  }
 
   plan.aligned_frames = dit::align_num_frames(request.num_frames);
   plan.duration_seconds = static_cast<double>(plan.aligned_frames) / kFps;
@@ -91,12 +97,26 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
 
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan) {
   const dit::SequenceLayout& l = plan.layout;
+  // The canvas line says where the number came from, because "1344 x 768" from
+  // an explicit --resolution and the same figure derived from 16:9 are the same
+  // canvas reached two ways, and only one of them was capped to the trained
+  // area on the way.
+  char provenance[64];
+  if (request.has_explicit_canvas()) {
+    std::snprintf(provenance, sizeof(provenance), "as given%s",
+                  dit::canvas_exceeds_trained_area(plan.canvas_height, plan.canvas_width)
+                      ? ", above the trained area"
+                      : "");
+  } else {
+    std::snprintf(provenance, sizeof(provenance), "from %d:%d", request.aspect_w,
+                  request.aspect_h);
+  }
   char buf[2048];
   std::snprintf(
       buf, sizeof(buf),
       "request\n"
       "  prompt              %zu characters\n"
-      "  canvas              %d x %d  (%d:%d)\n"
+      "  canvas              %d x %d  (%s)\n"
       "  frames              %d requested -> %d aligned (%.2f s at %d fps)\n"
       "  latent grid         %d frames of %d x %d  -> %d rows per frame\n"
       "  audio latents       %d per channel -> %d rows\n"
@@ -106,8 +126,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       "                      audio %.6f .. %.6f (shift %.1f)\n"
       "  seed                %llu\n"
       "  output              %s\n",
-      request.prompt.size(), plan.canvas_height, plan.canvas_width, request.aspect_w,
-      request.aspect_h, request.num_frames, plan.aligned_frames, plan.duration_seconds, kFps,
+      request.prompt.size(), plan.canvas_height, plan.canvas_width, provenance,
+      request.num_frames, plan.aligned_frames, plan.duration_seconds, kFps,
       l.num_latent_frames, l.latent_height, l.latent_width, l.rows_per_frame(),
       l.num_audio_latents, l.num_audio_rows, l.total_rows(), request.num_inference_steps,
       plan.num_model_evaluations(), static_cast<double>(plan.video_sigmas.front()),
