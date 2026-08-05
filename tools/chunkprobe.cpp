@@ -204,9 +204,17 @@ void report_pair(const char* label, const std::vector<float>& ref, const std::ve
   }
   const Moments mr = moments(ref.data(), ref.size());
   const Moments ma = moments(act.data(), act.size());
-  std::printf("%-6s rel_L2 %.4f   correlation %.4f   mean %+.4f vs %+.4f   std %.4f vs %.4f\n",
+  // max|diff| is here so an exact-equality control reads as 0 rather than as a
+  // rounded 0.0000: rel_L2 cannot distinguish "identical" from "identical to
+  // four decimals", and one of the runs this drives is a byte-for-byte check.
+  double worst = 0.0;
+  for (size_t i = 0; i < ref.size(); ++i) {
+    worst = std::max(worst, std::fabs(static_cast<double>(ref[i]) - act[i]));
+  }
+  std::printf("%-6s rel_L2 %.4f   correlation %.4f   mean %+.4f vs %+.4f   std %.4f vs %.4f   "
+              "max|diff| %.3e\n",
               label, relative_l2(ref, act), correlation(ref, act), mr.mean, ma.mean, mr.std_dev,
-              ma.std_dev);
+              ma.std_dev, worst);
 }
 
 // Norm of the difference between consecutive latent frames, normalised by the
