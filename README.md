@@ -339,12 +339,22 @@ default:
 
 | request | rows | per step | total |
 |---|---|---|---|
-| 22 frames, 1:1, 30 steps | 4 167 | 1.5 s | **~50 s** |
-| **124 frames, 16:9, 50 steps (the default)** | 37 710 | **38.8 s** | **~33 min** |
+| 22 frames, 1:1, 30 steps | 4 167 | 1.07 s | **~50 s** |
+| **124 frames, 16:9, 50 steps (the default)** | 37 710 | **25.0 s** | **~21 min** |
+
+Both rows are the nvfp4 pair, measured with `VIDFAB_PROFILE=1` on an idle card,
+whose device timeline accounts for 100.00% of a step at 0.24% overhead. **An
+earlier revision of this table said 38.8 s and ~33 min**; that was an fp8
+carry-over never re-measured against the nvfp4 pair, and it was 36% too high.
+Its own per-layer table already contradicted it, summing to 23.5 s — a
+discrepancy visible in this file for some time, which is the argument for
+quoting a geometry and an idle card beside every number rather than a
+percentage on its own.
 
 The default is the reference model's own default and it is genuinely that
-slow — attention is 86% of a step and scales with the square of the packed
-sequence, so the 9× row increase costs 26× the time. It is not hung: a
+slow — the fused attention kernel alone is 70.4% of a step (the whole attention
+sub-block is 82.5%) and scales with the square of the packed sequence, so the
+9× row increase costs 23× the time. It is not hung: a
 progress line reports seconds per step and a running ETA from the first step
 onward. **If you just want to see it work, use `--frames 22 --aspect 1:1
 --steps 30` and wait under a minute.**
