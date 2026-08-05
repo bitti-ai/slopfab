@@ -407,6 +407,96 @@ These are quality comparisons run at one base commit with matched geometry
 (22 frames, 1:1, 4170 packed rows) and matched seeds, so the *ratios* transfer;
 the wall times were taken before the attention staging rewrite and do not.
 
+## Temporal locality — probed before the banding kernel was written
+
+Frame-banded attention (each query attending only within ±N latent frames) is
+the largest remaining win available here. It is lossy, so before anyone spent a
+day on the kernel the question *"does this model tolerate losing distant
+temporal attention at all?"* was asked with a deliberately cruder experiment
+that needs no kernel: **run one request as three overlapping shorter ones and
+cross-fade the latents.**
+
+`vidfab_chunkprobe` drives it and links `vidfab_core` only, so it starts no
+CUDA context and can run while the card is busy. `--frames 15` snaps to 22
+pixel frames (7 latent), `--frames 45` to 56 (17 latent), and three chunks at a
+stride of 5 latent frames tile 17 exactly with a 2-frame overlap. The stride
+must be a multiple of 5 — `span[j] = (5/3)·FRAMES_PER_LATENT[j % 5]` repeats
+with period 5, so any other stride would give each chunk a different internal
+rotary spacing from the frames it stands in for, and the probe would be
+measuring its own misconfiguration. `resolve_chunk_plan` refuses it.
+
+Each chunk starts from **its slice of the full request's noise field**, not an
+independent draw — a band restricts attention over one noise field, so a slice
+is the closer analogue, and independent draws would have guaranteed no two
+chunks could agree. Slicing and blending the field back reproduces it bit
+exactly for video, and to one fp32 ulp for audio.
+
+**Chunking is strictly more damaging than a band**, which is the point: no
+cross-chunk attention at all rather than a soft window, a separate audio
+schedule per chunk, and a rotary grid that restarts at every boundary.
+
+### The floor does not transfer between geometries
+
+Measured at the probe's own geometry — 56 frames, 1:1, 10 040 packed rows, 29
+evaluations, `euler` against `ab2`, two legitimate integrations of one ODE:
+
+| | video rel_L2 | correlation | audio rel_L2 |
+|---|---|---|---|
+| **the floor** (euler vs ab2) | **0.4346** | 0.9053 | 0.3668 |
+| chunked and cross-faded | **0.7771** | 0.6960 | 0.7199 |
+
+The floor here is **roughly twice the 0.2210 measured at 4170 rows** for the
+sampler sweep above. Floors are geometry-specific and inheriting one is a way
+to be wrong by a factor of two; measure it beside every comparison.
+
+### The result: a different scene, not a seam
+
+Chunking lands at **1.79× the floor** with correlation falling 0.905 → 0.696,
+while the global statistics still match (video mean −0.0269 vs −0.0358, std
+1.0901 vs 1.0834). That is the same "different sample, not degraded" signature
+as the nvfp4 and AB2 sections — but here it is *not* benign, and the numbers
+that say so are not the aggregate ones.
+
+**There is no seam.** The frame-to-frame step profile deviates from the
+reference only 1.29× more at the chunk overlaps than away from them, and the
+single worst step in the clip is not at a boundary. Mean luma across chunk
+interiors spreads 13.95 levels of 255 against the reference's own 17.24 over
+the same windows, so there is no exposure drift either. Every artefact the
+probe was designed to catch at the boundaries is absent.
+
+**What fails is scene identity.** Chunk 0's last five frames and chunk 1's
+first five cover *the same five pixel frames* of the same request, from the
+same sliced noise, with the same prompt — and they render different
+locomotives (gold boiler domes against none), different backgrounds (leafy
+greenery against a lawn), and a different camera height. Each chunk is
+individually coherent and plausible. They are simply not the same video, and
+the cross-fade between two of them is a visible double exposure.
+
+**That is not a blend artefact**, which the 2-frame overlap made the obvious
+suspect. A longer cross-fade would smear the dissolve over more frames; it
+cannot reconcile a gold-domed locomotive with a plain one. Audio agrees:
+−14.5 dB mean and −0.5 dB peak against the reference's −18.5 and −5.4, i.e.
+three independently scheduled streams summing hot to the edge of clipping.
+
+### What this does and does not license
+
+It does **not** condemn banding, and the difference is mechanical rather than a
+hedge. Chunking removes cross-boundary information *entirely*; a band still
+passes it transitively, and 50 layers of ±N frames reach far further than N.
+This probe cannot say how much bandwidth that path needs — only that the path
+matters.
+
+What it does establish is that **this checkpoint fixes global scene identity
+using long-range temporal context**, and that the failure mode to watch for is
+not a seam at a boundary but the subject quietly becoming a different subject
+across the clip. Aggregate statistics are blind to it; correlation and eyes are
+not.
+
+So: **build the kernel**, and when measuring it, re-measure the floor at the
+target geometry, report correlation beside rel_L2, and look at whether the
+subject is still the same object at the end of the clip. `vidfab_chunkprobe
+stats` prints exactly that set.
+
 ## Performance
 
 Measured on the RTX 5090, and the first number is the one that recalibrates
