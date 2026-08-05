@@ -164,11 +164,17 @@ __global__ __launch_bounds__(256) void quantize_act_kernel(const __nv_bfloat16* 
 // those two as template flags and everything downstream of the store is
 // identical. The mma sees one layout, not two.
 //
-// **Measured, sm_120a, CUDA 13.0:** 126 registers, no spills, 45056 bytes of
-// static shared, one barrier. Both limits land on the same number: 256 threads
-// at 126 registers is 32256 of the SM's 65536, and 45056 bytes is under half of
-// its 100 KB, so two blocks are resident -- 16 warps, four per scheduler.
-// Occupancy is 25% and that is the intended operating point, as in
+// **Measured, sm_120a, CUDA 13.0:** 128 registers, 16 bytes of spill stores and
+// 12 of spill loads, 45056 bytes of static shared, one barrier. Two blocks are
+// resident and both walls are touched at once -- 256 threads at 128 registers is
+// 32768 of the SM's 65536, and 45056 x 2 is 90112 of its 102400 bytes. See the
+// note on `__launch_bounds__` above the kernel: the 128 is pinned deliberately
+// and the spill is the price of pinning it.
+//
+// That is **16 warps of 48, so 33.3% occupancy**, four per scheduler. An earlier
+// version of this comment said 25%, having divided by 64 warps -- sm_120 caps an
+// SM at 1536 threads, not 2048, and the older figure is the one to distrust if
+// it turns up again. Either way the operating point is intended, as in
 // attention.cu: what feeds a tensor pipe is independent instruction streams per
 // scheduler, not warp slots filled.
 
