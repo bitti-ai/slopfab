@@ -52,6 +52,12 @@ struct RunOptions {
   // for the same quality, not to make a step cheaper. Defaults to the
   // reference's Euler, and nothing about the default path changes.
   sampler::SamplerKind sampler = sampler::SamplerKind::kEuler;
+
+  // Where to write the decoded video as raw fp32 pixels, if anywhere. Empty
+  // writes nothing. `decode` has had this since the beginning; `generate` needs
+  // it for the same reason — comparing two runs after 8-bit quantisation
+  // cannot distinguish a small trajectory difference from rounding.
+  std::string pixel_dump_path;
 };
 
 struct RunResult {

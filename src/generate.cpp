@@ -325,6 +325,17 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
   // --- output ---------------------------------------------------------------
 
+  // Before the muxer, and before anything can fail on ffmpeg: the fp32 pixels
+  // are the artefact a comparison between two runs is made of, and they are
+  // worth having even from a run whose MP4 does not get written.
+  if (!options.pixel_dump_path.empty() && !video.data.empty()) {
+    write_safetensors(options.pixel_dump_path,
+                      {{"pixels", {3, video.frames, video.height, video.width}, video.data}});
+    if (options.verbose) {
+      std::printf("pixels      %s (fp32)\n", options.pixel_dump_path.c_str());
+    }
+  }
+
   {
     const Clock::time_point t0 = Clock::now();
     const bool have_audio = !audio.samples.empty();
