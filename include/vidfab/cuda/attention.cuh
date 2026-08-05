@@ -54,8 +54,30 @@ struct AttentionConfig {
   // `query_block`, results must not depend on it, and a test pins that.
   int key_block = 0;
 
+  // Frame-banded attention, kFused only. Device pointer to four int32 per query
+  // tile -- `[lo0, hi0, lo1, hi1]`, two half-open key ranges -- or nullptr for
+  // full attention, which is the default and what every existing caller gets.
+  //
+  // Two ranges rather than one because the packed sequence is
+  // `[ text | conditions | audio | video ]`: text and audio sit at the front,
+  // so a band around a late video frame would exclude the conditioning entirely
+  // unless it is carried as its own range. Build it with
+  // `vidfab::dit::build_banded_key_ranges`, passing `attention_fused_query_tile()`
+  // and `attention_fused_key_align()` so the ranges match the kernel's own
+  // tiling; the bounds must be multiples of the latter.
+  //
+  // This is a lossy approximation behind a default-off flag. It is not a tuning
+  // knob like the two above: results *do* depend on it, by construction.
+  const int32_t* band_ranges = nullptr;
+
   float effective_scale() const;
 };
+
+// The fused kernel's query tile and key-block granularity. Exposed so a caller
+// can build `band_ranges` that line up with the kernel's own loop rather than
+// hard-coding constants that live in the .cu.
+int attention_fused_query_tile();
+int attention_fused_key_align();
 
 enum class AttentionBackend {
   // Two cuBLAS GEMMs per query block plus an online softmax. Correct, memory

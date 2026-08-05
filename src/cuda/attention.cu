@@ -384,6 +384,12 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
                  const __nv_bfloat16* k, const __nv_bfloat16* v, __nv_bfloat16* out,
                  const AttentionConfig& cfg, int num_kv_heads, Workspace& ws) {
   check_config(cfg, num_kv_heads);
+  // The blocked path has no banding. Ignoring the request would hand back full
+  // attention while the caller believed it was banded -- correct output, a
+  // plausible time, and a silently different model. Refuse instead.
+  if (cfg.band_ranges != nullptr) {
+    throw std::runtime_error("attention: band_ranges requires the fused backend");
+  }
 
   const int S = cfg.seq_len;
   const int H = cfg.num_heads;
@@ -570,23 +576,20 @@ namespace fused {
 // this comment. Re-measure rather than trusting the numbers; the *ceiling* is
 // what does not move.
 //
-//   D = 128 : 175 registers, 0 spills, 68608 B smem -> 1 block/SM.
-//             No cliff to fall off. Two blocks would need <=128 registers AND
-//             <=51200 B, and `o[kOTiles][4]` alone is 64 registers of
-//             irreducible accumulator. Instruction count is the only currency
-//             here; spending a register costs nothing.
+//   D = 128 : 173 registers, 0 spills, 34304 B smem -> 1 block/SM.
+//             No cliff to fall off, but note *why* has changed: deleting the
+//             shared Q tile took smem from 69120 to 34304 B, so two blocks now
+//             fit in shared memory (68608 <= 102400) and are stopped by
+//             registers alone (173 * 256 * 2 = 88576 > 65536). It reads like
+//             an occupancy win and is not one. `o[kOTiles][4]` alone is 64
+//             registers of irreducible accumulator, so 2 blocks/SM here would
+//             need <=128 and is unreachable. Instruction count is still the
+//             only currency; spending a register costs nothing.
 //
-//   D = 64  : 127 registers, 0 spills -> 2 blocks/SM, with **one register of
-//             margin**. The ceiling is 128 and it is exact: 128 * 256 threads
-//             is precisely half the 65536-register file. At 129 this path
-//             drops to 1 block/SM -- a 2x occupancy loss.
-//
-// Those two lines were 174 / 125 before the K/V pipeline landed, i.e. three
-// registers of margin at D=64 rather than one. **The double buffer spent two of
-// them**, and that is stated rather than absorbed: it is a real narrowing of
-// the budget for whoever edits next, not a rounding difference. Where a choice
-// existed the margin was defended -- see the note on tracking V's buffer
-// pointer in `fused_kernel`, which costs a register at D=128 to save one here.
+//   D = 64  : 125 registers, 0 spills -> 2 blocks/SM, with **three registers
+//             of margin**. The ceiling is 128 and it is exact: 128 * 256
+//             threads is precisely half the 65536-register file. At 129 this
+//             path drops to 1 block/SM -- a 2x occupancy loss.
 //
 // The trap: **no test in this suite can see that happen.** The tests check
 // numbers, and this failure only moves the clock. A change that is bit-exact,
@@ -666,42 +669,6 @@ __device__ inline void mma_f16(float (&d)[4], const uint32_t (&a)[4], const uint
 
 __device__ inline uint32_t ld32(const void* p) { return *reinterpret_cast<const uint32_t*>(p); }
 
-// --- cp.async ---------------------------------------------------------------
-//
-// A 16-byte global->shared copy that never lands in a register, so it costs one
-// issue slot instead of a load, a wait and a store, and it retires
-// asynchronously -- the point of the whole exercise, since the copy for tile
-// i+1 then overlaps the `mma` on tile i.
-//
-// **The four-operand form is what makes the ragged tail free.** If `src_bytes`
-// is less than the 16 requested, the remainder is zero-filled by the hardware,
-// so a dead row is `src_bytes = 0` rather than a branch and eight register
-// clears. The source pointer is still clamped to a live address, because a
-// zero-length copy is not a promise that the address is never formed and the
-// last key block addresses up to 63 rows past the end of the tensor.
-// **`.ca` rather than `.cg`, and it is a hypothesis under test rather than a
-// settled choice.** `.cg` bypasses L1; `.ca` keeps the line. Only one block is
-// resident per SM, so K has no reuse *within* a block -- but consecutive blocks
-// dispatched to an SM walk adjacent query tiles of the same head and read the
-// same K stream at nearly the same time, which is precisely the locality the
-// grid order at the launch site was built to create. A K tile is 17408 B
-// against a 128 KB L1, so it fits, and `.cg`'s BYPASS would discard it. The
-// double buffer measured 7.3% *slower* than the version it replaced, and this
-// is the first of the two candidate causes.
-__device__ inline void cp_async_16(void* smem, const void* gmem, int src_bytes) {
-  const uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(smem));
-  asm volatile("cp.async.ca.shared.global [%0], [%1], 16, %2;\n"
-               :
-               : "r"(addr), "l"(gmem), "r"(src_bytes)
-               : "memory");
-}
-
-__device__ inline void cp_async_commit() { asm volatile("cp.async.commit_group;\n" ::: "memory"); }
-
-__device__ inline void cp_async_wait_all() {
-  asm volatile("cp.async.wait_group 0;\n" ::: "memory");
-}
-
 // --- K/V staging ------------------------------------------------------------
 //
 // Staging one key block moves kBc*D halves of K and the same of V from global
@@ -762,12 +729,12 @@ struct KvStage {
   // stride is left to check.
   static_assert((kKStride * 2) % 16 == 0, "K rows must start on a 16-byte boundary");
 
-  const __nv_bfloat16* kp;      // this thread's K source for pass 0 of the current key block
+  const __nv_bfloat16* kp;  // this thread's K source for pass 0 of the current key block
   const __nv_bfloat16* vp;
-  size_t pass_stride;           // halves between one pass and the next
-  int ks_off;                   // halves into ks
-  int vt_off;                   // halves into vt
-  int row;                      // absolute key row of pass 0
+  size_t pass_stride;       // halves between one pass and the next
+  int ks_off;               // halves into ks
+  int vt_off;               // halves into vt
+  int row;                  // absolute key row of pass 0
 
   __device__ KvStage(const __nv_bfloat16* k, const __nv_bfloat16* v, int tid, int kv_head,
                      size_t kvld) {
@@ -787,29 +754,35 @@ struct KvStage {
     pass_stride = static_cast<size_t>(kRowsPerPass) * kvld;
   }
 
-  // Stage one key block into the given buffers and advance to the next. K goes
-  // straight to shared with `cp.async`; V still round-trips through registers
-  // because it is staged transposed and converted to fp16, neither of which a
-  // byte copy can do. The caller owns the barriers and the commit.
+  // Skip forward by `delta` key rows. Frame banding gives a query tile two
+  // disjoint key ranges -- the text/audio prefix and its own band -- so the
+  // staging has to move between them without re-deriving the per-thread
+  // addressing that F1 exists to hoist.
   //
+  // The caller passes the delta rather than a destination, deliberately: it
+  // already knows both ends, and remembering this thread's own row offset here
+  // would cost a live register on the unbanded path too, which never calls this
+  // at all.
+  __device__ void advance(int delta, size_t kvld) {
+    const ptrdiff_t step = static_cast<ptrdiff_t>(delta) * static_cast<ptrdiff_t>(kvld);
+    kp += step;
+    vp += step;
+    row += delta;
+  }
+
   // Rows past the end of the sequence are zeroed exactly as before -- the
   // softmax excludes dead *columns* itself and must keep seeing zeros here, not
-  // stale shared memory.
-  // `buf` is the base of one K/V buffer; V's base is a compile-time offset
-  // inside it and is derived rather than passed, so the pipeline tracks two
-  // pointers instead of four. On the D=64 path that difference is the whole
-  // occupancy margin -- see the note in `fused_kernel`.
-  // `k_origin` is any address known to be in bounds, for the dead-row clamp;
-  // the kernel passes its own `k` parameter rather than this struct holding a
-  // copy, so ptxas can rematerialise it from the constant bank.
-  __device__ void run(__nv_bfloat16* ks, __half* vt, const __nv_bfloat16* k_origin, int seq) {
+  // stale shared memory. Barriers are the caller's.
+  __device__ void run(__nv_bfloat16* ks, __half* vt, int seq) {
 #pragma unroll
     for (int p = 0; p < kPasses; ++p) {
-      const bool live = row < seq;
-      cp_async_16(ks + ks_off + p * kRowsPerPass * kKStride, live ? kp : k_origin, live ? 16 : 0);
-
+      uint4 kw = {0u, 0u, 0u, 0u};
       uint4 vw = {0u, 0u, 0u, 0u};
-      if (live) vw = *reinterpret_cast<const uint4*>(vp);
+      if (row < seq) {
+        kw = *reinterpret_cast<const uint4*>(kp);
+        vw = *reinterpret_cast<const uint4*>(vp);
+      }
+      *reinterpret_cast<uint4*>(ks + ks_off + p * kRowsPerPass * kKStride) = kw;
       const __nv_bfloat16* src = reinterpret_cast<const __nv_bfloat16*>(&vw);
       __half* dst = vt + vt_off + p * kRowsPerPass;
 #pragma unroll
@@ -828,27 +801,21 @@ __device__ inline uint32_t pack_h2(float lo, float hi) {
   return *reinterpret_cast<const uint32_t*>(&h);
 }
 
-// Halves in one K/V buffer. Two of these are resident: tile i+1 is staged while
-// tile i is consumed.
-template <int D>
-__host__ __device__ inline constexpr int stage_buf_halves() {
-  return kBc * (D + kPadH) + D * (kBc + kPadV);
-}
-
 // Q is not here. It is read straight from global into the A-fragments at block
-// entry and never staged -- see the load in `fused_kernel`. Deleting it is what
-// makes room for the second buffer: 2 x 34304 + 34816 would have been 103424,
-// over the 102400 B a block can hold.
+// entry and never staged -- see the load in `fused_kernel`.
 template <int D>
 __host__ __device__ inline size_t smem_bytes() {
-  return sizeof(__nv_bfloat16) * 2 * stage_buf_halves<D>();
+  size_t n = 0;
+  n += sizeof(__nv_bfloat16) * kBc * (D + kPadH);  // K
+  n += sizeof(__half) * D * (kBc + kPadV);         // V transposed
+  return n;
 }
 
-template <int D>
+template <int D, bool kBanded>
 __global__ __launch_bounds__(kThreads) void fused_kernel(
     const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ k,
     const __nv_bfloat16* __restrict__ v, __nv_bfloat16* __restrict__ out, int seq, int heads,
-    int num_kv_heads, float scale) {
+    int num_kv_heads, float scale, const int4* __restrict__ band) {
   constexpr int kKStride = D + kPadH;
   constexpr int kVStride = kBc + kPadV;
   constexpr int kDSteps = D / 16;      // k-steps of the QK product
@@ -859,31 +826,9 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // 16-byte aligned because the K stage stores `uint4`. The dynamic allocation
   // is suitably aligned already; saying so keeps it true if the declaration
   // ever moves.
-  // Two K/V buffers. Each is `stage_buf_halves<D>()` halves = 34304 B at D=128,
-  // which is a multiple of 16, so the second buffer's rows are 16-byte aligned
-  // exactly like the first's and `cp.async.cg` is legal into either. Its base is
-  // also a whole number of 32-word rotations (8576 words, 8576 % 32 == 0), so
-  // both buffers have identical bank behaviour and the conflict-free arguments
-  // for K's stores and the mma's operand loads carry over unchanged.
-  //
-  // **All four pointers are tracked, and that is the measured choice, not the
-  // lazy one.** V's base is a compile-time offset inside its buffer, so it can
-  // be derived from K's instead of held -- which does save a register at D=128,
-  // 175 -> 174, and costs one at D=64, 127 -> 128. D=64 is the path that cannot
-  // afford it: at 128 registers x 256 threads it sits on exactly half the
-  // 65536-register file, so it gets 2 blocks/SM and **129 would drop it to 1**,
-  // silently halving occupancy on a path no correctness test can distinguish.
-  // D=128 has no such cliff -- it is 1 block/SM at any count in this range -- so
-  // the register saved there buys nothing and the one spent here costs the whole
-  // margin. Read *both* instantiations after touching anything in here; master
-  // is 174 / 125.
   extern __shared__ __align__(16) char raw_smem[];
-  __nv_bfloat16* ks_cur = reinterpret_cast<__nv_bfloat16*>(raw_smem);
-  __nv_bfloat16* ks_nxt = ks_cur + stage_buf_halves<D>();
-  __half* vt_cur = reinterpret_cast<__half*>(ks_cur + kBc * kKStride);
-  __half* vt_nxt = reinterpret_cast<__half*>(ks_nxt + kBc * kKStride);
-  static_assert(stage_buf_halves<D>() * 2 % 16 == 0, "buffer stride must keep 16-byte alignment");
-  static_assert(stage_buf_halves<D>() % 64 == 0, "buffers must be bank-aligned to each other");
+  __nv_bfloat16* ks = reinterpret_cast<__nv_bfloat16*>(raw_smem);
+  __half* vt = reinterpret_cast<__half*>(ks + kBc * kKStride);
 
   const int q0 = blockIdx.x * kBr;
   const int head = blockIdx.y;
@@ -947,27 +892,52 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // Every address the staging needs, computed once. See KvStage.
   KvStage<D> stage(k, v, tid, kv_head, kvld);
 
-  // Tile 0, before the loop. From here the loop stages tile i+1 into the spare
-  // buffer and consumes tile i out of the other, so the copy is in flight
-  // across the whole `mma` body instead of sitting between two barriers.
-  stage.run(ks_cur, vt_cur, k, seq);
-  cp_async_commit();
+  // Which keys this query tile may see. Without a band that is the whole
+  // sequence in one range; with one it is the text/audio prefix plus this
+  // tile's frame band, which are disjoint and in order. Both bounds are already
+  // key-block aligned by the host, so the loop below is unchanged in shape --
+  // banding moves the *bound*, not the body.
+  //
+  // Nothing else needs to know. The online softmax is a running max and sum
+  // over whatever columns it is shown, so a subset is not a special case, and
+  // it already excludes columns past `seq` rather than zeroing keys.
+  // Flattened to one loop over key *blocks* rather than nested range-then-block
+  // loops. The nested form cost 14 registers at D=64 -- 125 to 139, straight
+  // through the 128 ceiling and down to 1 block/SM -- because the outer loop
+  // kept the inner one's state live across it.
+  //
+  // `kBanded` is a template parameter and not a runtime test, because banding is
+  // off by default and the default path must stay the kernel it already was.
+  // With it false every line below compiles away and the loop is the original
+  // walk from 0 to seq; the register counts say so -- 173/125 unbanded against
+  // 199/128 banded, i.e. the cost lands only on the path that opted in.
+  int k0 = 0;
+  int k_stop = seq;
+  int seam_lo = 0, seam_stop = 0;
+  if constexpr (kBanded) {
+    const int4 r = band[blockIdx.x];
+    k0 = r.x;
+    k_stop = r.y;
+    seam_lo = r.z;
+    seam_stop = r.w;
+    stage.advance(k0, kvld);  // from row 0 to the first range
+  }
 
-  for (int k0 = 0; k0 < seq; k0 += kBc) {
-    // One barrier per key block, not two. It does both jobs at once: it
-    // publishes this tile's stores to every warp, and it separates the previous
-    // iteration's reads of the *other* buffer from the writes about to land
-    // there. Two resident buffers are what collapse the pair into one.
-    cp_async_wait_all();
-    __syncthreads();
-
-    if (k0 + kBc < seq) {
-      stage.run(ks_nxt, vt_nxt, k, seq);
-      cp_async_commit();
+  while (true) {
+    if (k0 >= k_stop) {
+      if constexpr (kBanded) {
+        if (seam_stop <= seam_lo) break;
+        stage.advance(seam_lo - k0, kvld);
+        k0 = seam_lo;
+        k_stop = seam_stop;
+        seam_lo = seam_stop = 0;
+      } else {
+        break;
+      }
     }
-
-    const __nv_bfloat16* ks = ks_cur;
-    const __half* vt = vt_cur;
+    __syncthreads();  // last iteration's mma has finished reading ks/vt
+    stage.run(ks, vt, seq);
+    __syncthreads();
 
     // S = Q K^T. K is row-major in shared memory and the B operand is
     // column-major, which is exactly K^T -- the same free transpose the
@@ -1069,16 +1039,7 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
         mma_f16(o[j], pa[t], b);
       }
     }
-
-    // Swap the buffers rather than indexing them: a runtime-indexed array of
-    // pointers would spill to local memory, and these are 32-bit shared
-    // addresses, so the swap is two register moves.
-    __nv_bfloat16* ks_tmp = ks_cur;
-    ks_cur = ks_nxt;
-    ks_nxt = ks_tmp;
-    __half* vt_tmp = vt_cur;
-    vt_cur = vt_nxt;
-    vt_nxt = vt_tmp;
+    k0 += kBc;
   }
 
   const float inv_a = l_a > 0.0f ? 1.0f / l_a : 0.0f;
@@ -1107,7 +1068,10 @@ template <int D>
 void ensure_smem_optin() {
   static thread_local bool done = false;
   if (done) return;
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D>,
+  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D, false>,
+                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                         static_cast<int>(smem_bytes<D>())));
+  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D, true>,
                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
                                          static_cast<int>(smem_bytes<D>())));
   done = true;
@@ -1125,8 +1089,14 @@ void launch(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
   // and walk one K/V stream together. That stream is 19.3 MB at production
   // shape, which lives in L2. Swapping the dimensions would turn L2 hits into
   // DRAM traffic.
-  fused_kernel<D><<<grid, kThreads, smem_bytes<D>(), stream>>>(
-      q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale());
+  const int4* band = reinterpret_cast<const int4*>(cfg.band_ranges);
+  if (band != nullptr) {
+    fused_kernel<D, true><<<grid, kThreads, smem_bytes<D>(), stream>>>(
+        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), band);
+  } else {
+    fused_kernel<D, false><<<grid, kThreads, smem_bytes<D>(), stream>>>(
+        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), nullptr);
+  }
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -1162,6 +1132,9 @@ void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16*
 }
 
 }  // namespace
+
+int attention_fused_query_tile() { return fused::kBr; }
+int attention_fused_key_align() { return fused::kBc; }
 
 AttentionBackend attention_preferred_backend(const AttentionConfig& cfg) {
   return fused::supported(cfg) ? AttentionBackend::kFused : AttentionBackend::kBlocked;
