@@ -149,12 +149,12 @@ someone else is editing.
   flow scheduler and its second-order sampler, token packing, request
   resolution, the AdaLN table, the tokenizer, latent noise, the WAV writer and
   the colour transform.
-  **1968 checks** — but only with `ref/` and the checkpoints present. Three
+  **2012 checks** — but only with `ref/` and the checkpoints present. Three
   tests skip themselves without them (two tokenizer goldens, which need
   `ref/FL2VA/text_encoder/tokenizer.json`, and one transformer case that needs
-  a real checkpoint), so a clean clone reports **1908** and is not failing.
-  `ref/` is licence-restricted and not redistributable, so 1908 is the number
-  most people will see; run from the repository root to get 1968.
+  a real checkpoint), so a clean clone reports **1952** and is not failing.
+  `ref/` is licence-restricted and not redistributable, so 1952 is the number
+  most people will see; run from the repository root to get 2012.
   Both figures are measured on the merged tree rather than added up from
   branches: contributors state a delta and the absolute is set here, because
   two branches each correctly adding to the same baseline is how this number
