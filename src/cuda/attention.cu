@@ -663,6 +663,33 @@ __device__ inline void mma_f16(float (&d)[4], const uint32_t (&a)[4], const uint
 
 __device__ inline uint32_t ld32(const void* p) { return *reinterpret_cast<const uint32_t*>(p); }
 
+// --- cp.async ---------------------------------------------------------------
+//
+// A 16-byte global->shared copy that never lands in a register, so it costs one
+// issue slot instead of a load, a wait and a store, and it retires
+// asynchronously -- the point of the whole exercise, since the copy for tile
+// i+1 then overlaps the `mma` on tile i.
+//
+// **The four-operand form is what makes the ragged tail free.** If `src_bytes`
+// is less than the 16 requested, the remainder is zero-filled by the hardware,
+// so a dead row is `src_bytes = 0` rather than a branch and eight register
+// clears. The source pointer is still clamped to a live address, because a
+// zero-length copy is not a promise that the address is never formed and the
+// last key block addresses up to 63 rows past the end of the tensor.
+__device__ inline void cp_async_16(void* smem, const void* gmem, int src_bytes) {
+  const uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(smem));
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n"
+               :
+               : "r"(addr), "l"(gmem), "r"(src_bytes)
+               : "memory");
+}
+
+__device__ inline void cp_async_commit() { asm volatile("cp.async.commit_group;\n" ::: "memory"); }
+
+__device__ inline void cp_async_wait_all() {
+  asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+}
+
 // --- K/V staging ------------------------------------------------------------
 //
 // Staging one key block moves kBc*D halves of K and the same of V from global
@@ -723,12 +750,13 @@ struct KvStage {
   // stride is left to check.
   static_assert((kKStride * 2) % 16 == 0, "K rows must start on a 16-byte boundary");
 
-  const __nv_bfloat16* kp;  // this thread's K source for pass 0 of the current key block
+  const __nv_bfloat16* kp;      // this thread's K source for pass 0 of the current key block
   const __nv_bfloat16* vp;
-  size_t pass_stride;       // halves between one pass and the next
-  int ks_off;               // halves into ks
-  int vt_off;               // halves into vt
-  int row;                  // absolute key row of pass 0
+  const __nv_bfloat16* k_safe;  // a always-in-bounds K address, for dead rows
+  size_t pass_stride;           // halves between one pass and the next
+  int ks_off;                   // halves into ks
+  int vt_off;                   // halves into vt
+  int row;                      // absolute key row of pass 0
 
   __device__ KvStage(const __nv_bfloat16* k, const __nv_bfloat16* v, int tid, int kv_head,
                      size_t kvld) {
@@ -745,22 +773,26 @@ struct KvStage {
     const size_t off = static_cast<size_t>(row) * kvld + static_cast<size_t>(kv_head) * D + col;
     kp = k + off;
     vp = v + off;
+    k_safe = k;
     pass_stride = static_cast<size_t>(kRowsPerPass) * kvld;
   }
 
+  // Stage one key block into the given buffers and advance to the next. K goes
+  // straight to shared with `cp.async`; V still round-trips through registers
+  // because it is staged transposed and converted to fp16, neither of which a
+  // byte copy can do. The caller owns the barriers and the commit.
+  //
   // Rows past the end of the sequence are zeroed exactly as before -- the
   // softmax excludes dead *columns* itself and must keep seeing zeros here, not
-  // stale shared memory. Barriers are the caller's.
+  // stale shared memory.
   __device__ void run(__nv_bfloat16* ks, __half* vt, int seq) {
 #pragma unroll
     for (int p = 0; p < kPasses; ++p) {
-      uint4 kw = {0u, 0u, 0u, 0u};
+      const bool live = row < seq;
+      cp_async_16(ks + ks_off + p * kRowsPerPass * kKStride, live ? kp : k_safe, live ? 16 : 0);
+
       uint4 vw = {0u, 0u, 0u, 0u};
-      if (row < seq) {
-        kw = *reinterpret_cast<const uint4*>(kp);
-        vw = *reinterpret_cast<const uint4*>(vp);
-      }
-      *reinterpret_cast<uint4*>(ks + ks_off + p * kRowsPerPass * kKStride) = kw;
+      if (live) vw = *reinterpret_cast<const uint4*>(vp);
       const __nv_bfloat16* src = reinterpret_cast<const __nv_bfloat16*>(&vw);
       __half* dst = vt + vt_off + p * kRowsPerPass;
 #pragma unroll
@@ -779,14 +811,20 @@ __device__ inline uint32_t pack_h2(float lo, float hi) {
   return *reinterpret_cast<const uint32_t*>(&h);
 }
 
+// Halves in one K/V buffer. Two of these are resident: tile i+1 is staged while
+// tile i is consumed.
+template <int D>
+__host__ __device__ inline constexpr int stage_buf_halves() {
+  return kBc * (D + kPadH) + D * (kBc + kPadV);
+}
+
 // Q is not here. It is read straight from global into the A-fragments at block
-// entry and never staged -- see the load in `fused_kernel`.
+// entry and never staged -- see the load in `fused_kernel`. Deleting it is what
+// makes room for the second buffer: 2 x 34304 + 34816 would have been 103424,
+// over the 102400 B a block can hold.
 template <int D>
 __host__ __device__ inline size_t smem_bytes() {
-  size_t n = 0;
-  n += sizeof(__nv_bfloat16) * kBc * (D + kPadH);  // K
-  n += sizeof(__half) * D * (kBc + kPadV);         // V transposed
-  return n;
+  return sizeof(__nv_bfloat16) * 2 * stage_buf_halves<D>();
 }
 
 template <int D>
@@ -804,9 +842,19 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // 16-byte aligned because the K stage stores `uint4`. The dynamic allocation
   // is suitably aligned already; saying so keeps it true if the declaration
   // ever moves.
+  // Two K/V buffers. Each is `stage_buf_halves<D>()` halves = 34304 B at D=128,
+  // which is a multiple of 16, so the second buffer's rows are 16-byte aligned
+  // exactly like the first's and `cp.async.cg` is legal into either. Its base is
+  // also a whole number of 32-word rotations (8576 words, 8576 % 32 == 0), so
+  // both buffers have identical bank behaviour and the conflict-free arguments
+  // for K's stores and the mma's operand loads carry over unchanged.
   extern __shared__ __align__(16) char raw_smem[];
-  __nv_bfloat16* ks = reinterpret_cast<__nv_bfloat16*>(raw_smem);
-  __half* vt = reinterpret_cast<__half*>(ks + kBc * kKStride);
+  __nv_bfloat16* ks_cur = reinterpret_cast<__nv_bfloat16*>(raw_smem);
+  __nv_bfloat16* ks_nxt = ks_cur + stage_buf_halves<D>();
+  __half* vt_cur = reinterpret_cast<__half*>(ks_cur + kBc * kKStride);
+  __half* vt_nxt = reinterpret_cast<__half*>(ks_nxt + kBc * kKStride);
+  static_assert(stage_buf_halves<D>() * 2 % 16 == 0, "buffer stride must keep 16-byte alignment");
+  static_assert(stage_buf_halves<D>() % 64 == 0, "buffers must be bank-aligned to each other");
 
   const int q0 = blockIdx.x * kBr;
   const int head = blockIdx.y;
@@ -870,10 +918,27 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // Every address the staging needs, computed once. See KvStage.
   KvStage<D> stage(k, v, tid, kv_head, kvld);
 
+  // Tile 0, before the loop. From here the loop stages tile i+1 into the spare
+  // buffer and consumes tile i out of the other, so the copy is in flight
+  // across the whole `mma` body instead of sitting between two barriers.
+  stage.run(ks_cur, vt_cur, seq);
+  cp_async_commit();
+
   for (int k0 = 0; k0 < seq; k0 += kBc) {
-    __syncthreads();  // last iteration's mma has finished reading ks/vt
-    stage.run(ks, vt, seq);
+    // One barrier per key block, not two. It does both jobs at once: it
+    // publishes this tile's stores to every warp, and it separates the previous
+    // iteration's reads of the *other* buffer from the writes about to land
+    // there. Two resident buffers are what collapse the pair into one.
+    cp_async_wait_all();
     __syncthreads();
+
+    if (k0 + kBc < seq) {
+      stage.run(ks_nxt, vt_nxt, seq);
+      cp_async_commit();
+    }
+
+    const __nv_bfloat16* ks = ks_cur;
+    const __half* vt = vt_cur;
 
     // S = Q K^T. K is row-major in shared memory and the B operand is
     // column-major, which is exactly K^T -- the same free transpose the
@@ -975,6 +1040,16 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
         mma_f16(o[j], pa[t], b);
       }
     }
+
+    // Swap the buffers rather than indexing them: a runtime-indexed array of
+    // pointers would spill to local memory, and these are 32-bit shared
+    // addresses, so the swap is four register moves.
+    __nv_bfloat16* ks_tmp = ks_cur;
+    ks_cur = ks_nxt;
+    ks_nxt = ks_tmp;
+    __half* vt_tmp = vt_cur;
+    vt_cur = vt_nxt;
+    vt_nxt = vt_tmp;
   }
 
   const float inv_a = l_a > 0.0f ? 1.0f / l_a : 0.0f;
