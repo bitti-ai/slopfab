@@ -160,9 +160,17 @@ someone else is editing.
   two branches each correctly adding to the same baseline is how this number
   went wrong before.
 - **GPU kernel tests**: every kernel against independent CPU references written
-  from the spec rather than from the kernel. **1043 checks**, plus 11 DEFERRED.
+  from the spec rather than from the kernel. **1053 checks**, plus 11 DEFERRED,
+  measured with the checkpoints present — a tree without `weights/` skips the
+  cases that need them and reports fewer, which is not a failure.
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong
   depth-to-space ordering, or a transposed GEMM all produce plausible output.
+  Two of the newest close holes that had been open since the fused kernel
+  landed: nothing had ever run it at `head_dim = 64`, and nothing pinned the
+  precision of its probability tile. The second bars at 1.10× of the bf16
+  output floor and currently measures **1.01×**, so a change dropping P to
+  bf16 — which models at 1.21–1.31× depending on amplitude — fails it instead
+  of passing unnoticed.
 
 Two habits do most of the work. Where a wrong implementation is *plausible*
 rather than merely broken, the test computes the wrong form too and asserts the
