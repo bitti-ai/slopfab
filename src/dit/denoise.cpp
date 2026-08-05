@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "vidfab/cuda/profile.h"
 #include "vidfab/sampler/noise.h"
 
 namespace vidfab::dit {
@@ -75,8 +76,15 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
 
   const int steps = static_cast<int>(video_t.size());
   for (int i = 0; i < steps; ++i) {
-    const RowTimesteps row_timesteps = build_row_timesteps(layout, indices, video_t[static_cast<size_t>(i)],
-                                                           audio_t[static_cast<size_t>(i)]);
+    RowTimesteps row_timesteps;
+    {
+      // Rebuilt every step because `torch.unique(sorted=True)` reorders the two
+      // timesteps as the schedules cross, so this is not cacheable. It is pure
+      // host work over `seq` rows and it is on the critical path.
+      cuda::HostSpan span("build_row_timesteps");
+      row_timesteps = build_row_timesteps(layout, indices, video_t[static_cast<size_t>(i)],
+                                          audio_t[static_cast<size_t>(i)]);
+    }
     if (inputs.velocity) {
       inputs.velocity(i, row_timesteps, out.video_rows.data(), out.audio_rows.data(),
                       video_velocity.data(), audio_velocity.data());
@@ -85,11 +93,14 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                           video_velocity.data(), audio_velocity.data());
     }
 
-    // In place: FlowScheduler::step permits `out` to alias `sample`.
-    inputs.video_scheduler->step(i, out.video_rows.data(), video_velocity.data(),
-                                 out.video_rows.size(), out.video_rows.data());
-    inputs.audio_scheduler->step(i, out.audio_rows.data(), audio_velocity.data(),
-                                 out.audio_rows.size(), out.audio_rows.data());
+    {
+      // In place: FlowScheduler::step permits `out` to alias `sample`.
+      cuda::HostSpan span("scheduler_step");
+      inputs.video_scheduler->step(i, out.video_rows.data(), video_velocity.data(),
+                                   out.video_rows.size(), out.video_rows.data());
+      inputs.audio_scheduler->step(i, out.audio_rows.data(), audio_velocity.data(),
+                                   out.audio_rows.size(), out.audio_rows.data());
+    }
 
     if (progress && !progress(i, steps)) break;
   }

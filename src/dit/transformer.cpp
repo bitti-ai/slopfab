@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -43,6 +44,7 @@
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
+#include "vidfab/cuda/profile.h"
 #include "vidfab/cuda/workspace.cuh"
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
@@ -597,6 +599,9 @@ struct Transformer::Impl {
     const int chunk = carve.chunk;
     const float eps = cfg.norm_eps;
     const size_t stride = mod_row_stride();
+    // Only armed between `forward`'s begin_step and end_step, so the token
+    // refiner — which shares this function — contributes nothing.
+    cuda::StepProfiler& prof = cuda::StepProfiler::instance();
 
     // Spec 3.2's parameter order. Six tables, each [T*3, hidden], indexed by
     // adaln_idx[row] = timestep_index*3 + tag.
@@ -616,6 +621,7 @@ struct Transformer::Impl {
       } else {
         cuda::launch_rmsnorm(x + off, b.norm1, normed, n, hidden, eps, stream.get());
       }
+      prof.tick("attn.norm1", stream.get());
       // Three GEMMs against contiguous thirds of `qkv_proj` rather than one
       // fused GEMM plus a split: identical arithmetic, and it writes straight
       // into the full-sequence q/k/v without a [chunk, 21504] staging buffer.
@@ -623,6 +629,7 @@ struct Transformer::Impl {
       linear.forward(b.wq, normed, n, q + qoff, ws);
       linear.forward(b.wk, normed, n, k + qoff, ws);
       linear.forward(b.wv, normed, n, v + qoff, ws);
+      prof.tick("attn.qkv_proj", stream.get());
     }
 
     // QK-norm over the 128-wide head dimension, then RoPE — in that order
@@ -637,6 +644,7 @@ struct Transformer::Impl {
       cuda::launch_rope_h3(k, cos, sin, rows, cfg.num_attention_heads, cfg.attention_head_dim,
                            stream.get());
     }
+    prof.tick("attn.qknorm_rope", stream.get());
 
     AttentionConfig acfg;
     acfg.seq_len = rows;
@@ -644,17 +652,20 @@ struct Transformer::Impl {
     acfg.head_dim = cfg.attention_head_dim;
     cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg,
                             cuda::attention_preferred_backend(acfg), ws);
+    prof.tick("attn.fused", stream.get());
 
     for (int start = 0; start < rows; start += chunk) {
       const int n = std::min(chunk, rows - start);
       const size_t off = static_cast<size_t>(start) * hidden;
       linear.forward(b.out_proj, attn_out + static_cast<size_t>(start) * inner, n, branch, ws);
+      prof.tick("attn.out_proj", stream.get());
       if (mod_base != nullptr) {
         cuda::launch_add_gated(x + off, branch, gate_msa, adaln_idx + start, n, hidden,
                                stream.get());
       } else {
         cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
       }
+      prof.tick("attn.residual", stream.get());
     }
     emit_stage("attn", x, rows, hidden);
 
@@ -667,17 +678,22 @@ struct Transformer::Impl {
       } else {
         cuda::launch_rmsnorm(x + off, b.norm2, normed, n, hidden, eps, stream.get());
       }
+      prof.tick("mlp.norm2", stream.get());
       linear.forward(b.fc1, normed, n, fused, ws);
+      prof.tick("mlp.fc1", stream.get());
       // Gate first: our checkpoints use the original `mlp.fc1` naming, whose
       // first half goes through the SiLU (spec 4.4).
       cuda::launch_swiglu(fused, act, n, cfg.ffn_dim, stream.get());
+      prof.tick("mlp.swiglu", stream.get());
       linear.forward(b.fc2, act, n, branch, ws);
+      prof.tick("mlp.fc2", stream.get());
       if (mod_base != nullptr) {
         cuda::launch_add_gated(x + off, branch, gate_mlp, adaln_idx + start, n, hidden,
                                stream.get());
       } else {
         cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
       }
+      prof.tick("mlp.residual", stream.get());
     }
     emit_stage("ffn", x, rows, hidden);
   }
@@ -1188,11 +1204,16 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
     throw std::runtime_error("transformer: row timesteps do not cover the sequence");
   }
 
+  cuda::StepProfiler& prof = cuda::StepProfiler::instance();
+  const std::chrono::steady_clock::time_point t_enter = std::chrono::steady_clock::now();
+  prof.begin_step(s.stream.get());
+
   // Modulation for this step's distinct timesteps, and the per-row indices
   // into it. `torch.unique(sorted=True)` sorts ascending, so which of the video
   // and audio timesteps is index 0 flips over the schedule (spec 7.5) — the
   // indices have to be re-uploaded every step, not cached.
   s.build_modulation(row_timesteps.unique);
+  prof.tick("mod.expand", s.stream.get());
   s.d_adaln.copy_from_host(row_timesteps.adaln.data(), row_timesteps.adaln.size(),
                            s.stream.get());
   // The final layer selects on `timestep_indices` alone, with no modality
@@ -1213,6 +1234,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   if (audio_rows > 0) {
     s.d_ts_audio.copy_from_host(s.host_ts.data() + video_rows, audio_rows, s.stream.get());
   }
+  prof.tick("mod.index_h2d", s.stream.get());
 
   s.ws.clear();
   Workspace& ws = s.ws;
@@ -1233,6 +1255,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   // scatters below cover every row. Zeroing first is cheap insurance against a
   // layout that ever stops being a permutation.
   s.hidden.zero(s.stream.get());
+  prof.tick("hidden.zero", s.stream.get());
 
   if (video_rows > 0) {
     s.d_video_rows.copy_from_host(video_latents, static_cast<size_t>(video_rows) * patch,
@@ -1242,6 +1265,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
     s.d_audio_rows.copy_from_host(audio_latents, static_cast<size_t>(audio_rows) * audio_dim,
                                   s.stream.get());
   }
+  prof.tick("latent_h2d", s.stream.get());
 
   // proj_in / audio_proj_in run in fp32: they are fp32 tensors in the
   // checkpoint and the reference aligns the activation with the parameter
@@ -1261,6 +1285,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
     cuda::launch_scatter_rows(s.text_cache.get(), s.d_text_idx.get(), x, s.num_text, hidden,
                               s.stream.get());
   }
+  prof.tick("proj_in", s.stream.get());
 
   const size_t per_block = s.block_mod_stride();
   for (size_t b = 0; b < s.blocks.size(); ++b) {
@@ -1291,6 +1316,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
            s.d_video_head.get());
   run_head(s.audio_out, audio_dim, audio_rows, s.d_audio_idx.get(), s.d_ts_audio.get(),
            s.d_audio_head.get());
+  prof.tick("final_layer", s.stream.get());
 
   if (video_rows > 0) {
     s.d_video_head.copy_to_host(video_velocity, static_cast<size_t>(video_rows) * patch,
@@ -1300,7 +1326,19 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
     s.d_audio_head.copy_to_host(audio_velocity, static_cast<size_t>(audio_rows) * audio_dim,
                                 s.stream.get());
   }
+  prof.tick("velocity_d2h", s.stream.get());
+
+  // The one synchronise in the step. How much of it is spent blocked here is
+  // the whole answer to "was the host ever the bottleneck": if the host had
+  // been the slow side it would arrive late and wait for nothing.
+  const std::chrono::steady_clock::time_point t_issued = std::chrono::steady_clock::now();
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  const std::chrono::steady_clock::time_point t_exit = std::chrono::steady_clock::now();
+  prof.end_step();
+  prof.sample_memory();
+  prof.add_step_wall(std::chrono::duration<double, std::milli>(t_exit - t_enter).count(),
+                     std::chrono::duration<double, std::milli>(t_issued - t_enter).count(),
+                     std::chrono::duration<double, std::milli>(t_exit - t_issued).count());
 }
 
 }  // namespace vidfab::dit

@@ -46,6 +46,14 @@ struct RunResult {
   std::vector<std::string> outputs;
 
   double seconds_conditioning = 0.0;
+  // Opening the checkpoint and filling the device arena. Part of
+  // `seconds_denoise`, broken out because it is fixed cost and the loop is not.
+  double seconds_transformer_load = 0.0;
+  // `prepare_text` (the token refiner, once per request) plus
+  // `prepare_sequence` (rotary tables, index uploads, workspace reserve).
+  double seconds_prepare = 0.0;
+  // The denoising loop alone: no load, no prepare.
+  double seconds_denoise_loop = 0.0;
   double seconds_denoise = 0.0;
   double seconds_video_decode = 0.0;
   double seconds_audio_decode = 0.0;

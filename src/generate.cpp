@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "vidfab/audio/wav.h"
+#include "vidfab/cuda/profile.h"
 #include "vidfab/dit/denoise.h"
 #include "vidfab/dit/packing.h"
 #include "vidfab/dit/transformer.h"
@@ -132,13 +133,16 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       dit_file.open(request.transformer_path);
       dit::Transformer model;
       model.load(dit_file);
+      result.seconds_transformer_load = seconds_since(t0);
       if (options.verbose) {
-        std::printf("transformer %.2f GiB on device, %d packed rows\n",
+        std::printf("transformer %.2f GiB on device, %d packed rows, loaded in %.2f s\n",
                     static_cast<double>(model.weight_bytes()) / (1024.0 * 1024.0 * 1024.0),
-                    live.total_rows());
+                    live.total_rows(), result.seconds_transformer_load);
       }
+      const Clock::time_point t_prep = Clock::now();
       model.prepare_text(prompt.data.data(), prompt.num_tokens);
       model.prepare_sequence(live, idx, pos);
+      result.seconds_prepare = seconds_since(t_prep);
 
       sampler::FlowScheduler video_sched(12.0f);
       sampler::FlowScheduler audio_sched(3.0f);
@@ -175,6 +179,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         return true;
       });
       if (options.verbose) std::printf("\n");
+      result.seconds_denoise_loop = seconds_since(loop_start);
+      cuda::StepProfiler::instance().report(stdout);
 
       video_rows = out.video_rows;
       audio_rows = out.audio_rows;
@@ -202,9 +208,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       }
       result.seconds_denoise = seconds_since(t0);
       if (options.verbose) {
-        std::printf("denoised    %d steps in %.1f s (%.2f s/step)\n", total_steps,
-                    result.seconds_denoise,
-                    result.seconds_denoise / std::max(1, total_steps));
+        std::printf("denoised    %d steps in %.1f s (%.2f s/step); +%.1f s load, +%.1f s prepare\n",
+                    total_steps, result.seconds_denoise_loop,
+                    result.seconds_denoise_loop / std::max(1, total_steps),
+                    result.seconds_transformer_load, result.seconds_prepare);
       }
     }
   } else {

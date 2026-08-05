@@ -81,6 +81,7 @@ if(VIDFAB_ENABLE_CUDA)
 
     add_library(vidfab_cuda STATIC
       src/cuda/device.cu
+      src/cuda/profile.cpp
       src/cuda/workspace.cu
       src/cuda/nn_kernels.cu
       src/cuda/linear.cu
