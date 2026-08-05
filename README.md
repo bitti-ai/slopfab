@@ -364,6 +364,26 @@ including, absurdly, `ab2` at 19 evaluations landing **closer** to the 50-step
 Euler reference (0.115) than `ab2` at 49 evaluations does (0.221). A metric
 where 19 evaluations beat 49 of the same sampler is not measuring convergence.
 
+**What this section does not test, and the limitation is load-bearing.** Every
+number above measures *distance from `euler` at 50 steps* — which assumes
+`euler@50` is the thing to be close to. Nothing here asks whether either
+sampler produces **better** output at equal cost; only whether the two agree.
+Those are different questions, and the sweep was designed for the first.
+
+That matters because the 0.2210 figure is used elsewhere as a **noise floor** —
+a symmetric, directionless yardstick. If one sampler is systematically better
+at the same evaluation count, the difference is not pure chaos, the floor
+contains a real directional component, and every ratio-to-floor computed
+against it understates what it is measuring.
+
+There is one informal observation pointing that way: a viewer comparing `ab2`
+against `euler` at 40 steps, default geometry, band off, same seed and prompt,
+judged the `ab2` clip better in both video and audio. **That is one person, one
+clip, unblinded — it is not evidence and it is recorded as a question rather
+than a result.** Settling it needs a blind comparison over several seeds, which
+is cheap at the quick geometry and has not been run. Until it is, `ab2` is
+ruled out as a *step-count reduction* and untested as a *quality change*.
+
 The Euler controls at matched step counts are what make that readable, and
 they are non-monotone:
 
@@ -795,6 +815,15 @@ gap being compared. What the data supports is narrower: **banding at ±9 costs
 video roughly 1.6–2.0× the sampler noise floor, with audio uncharacterised.**
 Whether that trade is worth taking is a judgement about output that wants eyes on
 a set of samples, which is why it is a flag and not a default.
+
+**One viewer has now looked**, at 40 steps, default geometry, same seed and
+prompt, band off against band ±9: the banded clip's **camera movement differs,
+and the quality is otherwise good**. That is the "different sample rather than
+a degraded one" signature again, reported by eyes rather than inferred from
+statistics — and it is what the whole table above is a proxy for, since no
+rel_L2 answers "did the clip become a different clip". It is one person and one
+pair of clips, so it does not settle the trade; it is recorded because it is
+the only observation here of the kind the decision actually turns on.
 
 All fifteen latent dumps behind this table were compared with `vidfab compare`,
 whose `rel_L2` and correlation were cross-checked against an independently
