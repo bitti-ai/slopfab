@@ -615,8 +615,9 @@ namespace fused {
 // numbers, and this failure only moves the clock. A change that is bit-exact,
 // digest-identical and obviously correct can still halve D=64's occupancy, and
 // the only thing that reports it is `-Xptxas -v`. So if you touch this kernel,
-// read the register count for **both** instantiations, not just D=128 -- the
-// one with headroom is the one people quote.
+// read the register count for **all four** instantiations, not just D=128 --
+// the one with headroom is the one people quote, and the template doubled how
+// many ways there are to miss.
 //
 // Deliberately not a `__launch_bounds__` / `minBlocksPerMultiprocessor` cap --
 // and this has now been measured rather than assumed.
@@ -632,9 +633,12 @@ namespace fused {
 // were measured on the commit that wrote them. A merge will not conflict on
 // them and will not update them, so this block can arrive in a tree where it
 // is false -- which has already happened once, cleanly, with no diff to
-// review. Therefore: **whoever merges a change to this file re-measures both
-// instantiations and edits these numbers in the same commit.** Nothing checks
-// this. It is not optional and it is not the author's job, it is the merger's.
+// review. Therefore: **whoever merges a change to this file re-measures all
+// four instantiations and edits these numbers in the same commit.** Nothing
+// checks this. It is not optional and it is not the author's job, it is the
+// merger's. This paragraph has now been honoured twice and corrected once --
+// the "both" it used to say predated the template, which is the same staleness
+// it exists to prevent, in the sentence that prevents it.
 //
 // Three measurements from the campaign that established the rule, all of which
 // would have fooled a careful person:
