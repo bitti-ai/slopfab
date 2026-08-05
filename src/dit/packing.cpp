@@ -331,6 +331,11 @@ RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndic
   // every row is an overridden audio row; `audio_t` is absent when none is.
   // Getting this wrong would leave a value in `unique` that no row carries,
   // which shifts every index by one.
+  //
+  // Counting rather than scanning relies on `idx.audio` holding distinct rows,
+  // which is what `build_indices` produces — it is the half-open range
+  // [audio_start, video_start). That is the only precondition here beyond the
+  // one the old code already had, which was that those indices are in range.
   const bool has_video = static_cast<size_t>(total) > num_overridden;
   const bool has_audio = num_overridden > 0;
 
