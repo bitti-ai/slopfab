@@ -103,8 +103,14 @@ vidfab compare reference.safetensors actual.safetensors --abs-tol 1e-3
 vidfab devices
 ```
 
-`--dump <f>` writes raw fp32 pixels as safetensors, so two runs can be compared
-at float precision instead of after 8-bit quantisation.
+`decode --dump <f>` writes raw fp32 pixels as safetensors, so two runs can be
+compared at float precision instead of after 8-bit quantisation.
+`generate --dump-latents <f>` writes the denoiser's own output — the packed
+video and audio rows — before either VAE sees it. That is the diff point for a
+change to the transformer: 7.5 MB a side at the default geometry rather than
+400 MB, and no 9 GB decoder between the change and the comparison. Two runs of
+the same seed and geometry must agree exactly, so
+`vidfab compare a b --abs-tol 0` is the whole test.
 
 `--sampler euler|ab2` selects the integrator; `euler` is the default and is the
 reference's own update, unchanged. `ab2` is Adams-Bashforth 2, second order at
@@ -140,8 +146,9 @@ someone else is editing.
 
 - **Host tests**: JSON parser, dtype conversions including fp8 E4M3 and fp4
   E2M1, safetensors loading and its rejection cases, comparison statistics, the
-  flow scheduler, token packing, request resolution, the AdaLN table, the
-  tokenizer, latent noise, the WAV writer and the colour transform.
+  flow scheduler and its second-order sampler, token packing, request
+  resolution, the AdaLN table, the tokenizer, latent noise, the WAV writer and
+  the colour transform.
   **1891 checks** — but only with `ref/` and the checkpoints present. Three
   tests skip themselves without them (two tokenizer goldens, which need
   `ref/FL2VA/text_encoder/tokenizer.json`, and one transformer case that needs

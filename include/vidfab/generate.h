@@ -37,6 +37,12 @@ struct RunOptions {
   LatentSource source = LatentSource::kDenoise;
   bool verbose = true;
 
+  // Which integrator the two schedulers use. Both cost one forward pass per
+  // step; the reason to change it is to be able to lower `num_inference_steps`
+  // for the same quality, not to make a step cheaper. Defaults to the
+  // reference's Euler, and nothing about the default path changes.
+  sampler::SamplerKind sampler = sampler::SamplerKind::kEuler;
+
   // If set, the denoiser's own output — the packed video and audio rows,
   // fp32 — is written here as safetensors before either VAE sees it.
   //
@@ -47,11 +53,6 @@ struct RunOptions {
   // the same seed and geometry must produce byte-identical files, so
   // `vidfab compare a b --abs-tol 0` is the whole test.
   std::string dump_latents_path;
-  // Which integrator the two schedulers use. Both cost one forward pass per
-  // step; the reason to change it is to be able to lower `num_inference_steps`
-  // for the same quality, not to make a step cheaper. Defaults to the
-  // reference's Euler, and nothing about the default path changes.
-  sampler::SamplerKind sampler = sampler::SamplerKind::kEuler;
 };
 
 struct RunResult {

@@ -59,6 +59,9 @@ const CommandHelp kCommands[] = {
      "  --dry-run                    resolve and print the plan, touch no weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
      "                               noise, to exercise the VAEs and the muxer\n"
+     "  --dump-latents <f>           the denoiser's own output as fp32 safetensors,\n"
+     "                               before either VAE; the diff point for a change\n"
+     "                               to the transformer\n"
      "\n"
      "checkpoints (all required unless --dry-run or --synthetic-latents):\n"
      "  --tokenizer <f>              tokenizer.json\n"
@@ -643,8 +646,8 @@ int cmd_generate(int argc, char** argv) {
   vidfab::GenerateRequest req;
   bool dry_run = false;
   bool synthetic = false;
-  std::string dump_latents;
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
+  std::string dump_latents;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -699,6 +702,8 @@ int cmd_generate(int argc, char** argv) {
       dry_run = true;
     } else if (arg == "--synthetic-latents") {
       synthetic = true;
+    } else if (arg == "--dump-latents") {
+      dump_latents = next("--dump-latents");
     } else {
       std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
       return 2;
@@ -716,14 +721,15 @@ int cmd_generate(int argc, char** argv) {
 
 #if !VIDFAB_WITH_CUDA
   (void)sampler_kind;
+  (void)dump_latents;
   std::fprintf(stderr, "vidfab: built without CUDA support; generate needs a GPU\n");
   return 1;
 #else
   vidfab::RunOptions options;
   options.source =
       synthetic ? vidfab::LatentSource::kSyntheticNoise : vidfab::LatentSource::kDenoise;
-  options.dump_latents_path = dump_latents;
   options.sampler = sampler_kind;
+  options.dump_latents_path = dump_latents;
 
   std::printf("\n");
   const vidfab::RunResult run = vidfab::run_generate(req, plan, options);
