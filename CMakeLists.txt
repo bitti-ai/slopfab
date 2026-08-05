@@ -153,6 +153,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_noise.cpp
     tests/test_packing.cpp
     tests/test_pipeline.cpp
+    tests/test_sampler.cpp
     tests/test_tokenizer.cpp
     tests/test_output.cpp
   )

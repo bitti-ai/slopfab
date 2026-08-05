@@ -129,9 +129,20 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
     // AB2 is that same step with v_n replaced by the linear extrapolation of
     // the velocity field to the midpoint of the interval,
     //
-    //   v_hat = 1.5*v_n - 0.5*v_{n-1}
+    //   v_hat = 1.5*v_n - 0.5*v_{n-1}  ==  v_n + 0.5*(v_n - v_{n-1})
     //
-    // and nothing else changes. Writing it as a substitution rather than as a
+    // and nothing else changes. The right-hand form is the one evaluated, and
+    // the difference is not cosmetic. `1.5f*v` is not exact in fp32 whenever v
+    // needs its full mantissa, so the literal left-hand form does not return
+    // v_n bitwise when v_{n-1} == v_n — it lands an ulp away, and a velocity
+    // field that has gone locally constant would be perturbed by the sampler
+    // rather than left alone. The right-hand form rounds once instead of
+    // twice, differences two numbers of the same magnitude (exactly, by
+    // Sterbenz, whenever they are within a factor of two), and makes "AB2
+    // reduces to Euler on a constant velocity" a bit identity. Same
+    // coefficients, better arithmetic.
+    //
+    // Writing it as a substitution rather than as a
     // second expression is deliberate: `s` and `r` are then consumed exactly
     // as Euler consumes them, from the two different sources spec 7.3 insists
     // on keeping apart — `s` from the timestep the transformer was
@@ -151,7 +162,7 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
     // written and their step savings are not multiplicative. Nothing here
     // tries to detect or fix that.
     for (size_t i = 0; i < count; ++i) {
-      const float v_hat = 1.5f * velocity[i] - 0.5f * previous_velocity_[i];
+      const float v_hat = velocity[i] + 0.5f * (velocity[i] - previous_velocity_[i]);
       const float denoised = sample[i] + sigma_from_timestep * v_hat;
       out[i] = ratio * sample[i] + (1.0f - ratio) * denoised;
     }
