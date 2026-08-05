@@ -112,6 +112,12 @@ change to the transformer: 7.5 MB a side at the default geometry rather than
 the same seed and geometry must agree exactly, so
 `vidfab compare a b --abs-tol 0` is the whole test.
 
+`--sampler euler|ab2|ab2var` selects the integrator; `euler` is the default and
+is the reference's own update, unchanged. `ab2` is Adams-Bashforth 2 and
+`ab2var` is the same method with the coefficients the non-uniform sigma grid
+calls for. All three cost exactly one forward pass per step, so the only reason
+to change it is to be able to lower `--steps`.
+
 ## Getting weights
 
 The video VAE is a single standalone file (4.85 GB):
