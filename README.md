@@ -106,11 +106,12 @@ vidfab devices
 `--dump <f>` writes raw fp32 pixels as safetensors, so two runs can be compared
 at float precision instead of after 8-bit quantisation.
 
-`--sampler euler|ab2|ab2var` selects the integrator; `euler` is the default and
-is the reference's own update, unchanged. `ab2` is Adams-Bashforth 2 and
-`ab2var` is the same method with the coefficients the non-uniform sigma grid
-calls for. All three cost exactly one forward pass per step, so the only reason
-to change it is to be able to lower `--steps`.
+`--sampler euler|ab2` selects the integrator; `euler` is the default and is the
+reference's own update, unchanged. `ab2` is Adams-Bashforth 2, second order at
+the same one forward pass per step. It was measured against Euler at matched
+step counts and **does not buy fewer evaluations on this checkpoint** — see
+[the sweep](#a-second-order-sampler--measured-and-ruled-out-as-a-step-count-reduction)
+before reaching for it.
 
 ## Getting weights
 
@@ -147,6 +148,9 @@ someone else is editing.
   a real checkpoint), so a clean clone reports **1831** and is not failing.
   `ref/` is licence-restricted and not redistributable, so 1831 is the number
   most people will see; run from the repository root to get 1891.
+  This branch adds **+77 new host checks** (`tests/test_sampler.cpp`); the
+  absolute count is set on the integration branch from a measured run of the
+  merged tree, not from arithmetic here.
 - **GPU kernel tests**: every kernel against independent CPU references written
   from the spec rather than from the kernel. **1043 checks**, plus 11 DEFERRED.
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong
@@ -322,6 +326,66 @@ top of the reference image; it is a lossier model that generates its own
 equally plausible video, almost twice as fast. Whether that trade is worth
 taking is a judgement about output quality that wants eyes on a set of samples,
 not another number — which is exactly why it is a flag and not a default.
+
+## A second-order sampler — measured, and ruled out as a step-count reduction
+
+`--sampler ab2` is Adams-Bashforth 2: `x_{n+1} = x_n + h(1.5 v_n - 0.5 v_{n-1})`,
+second order at the same one forward pass per step, with the first step of a
+trajectory falling back to Euler. It is correct — the linear-ODE test shows it
+converging at **3.99× per halving** against Euler's 2.0×, and `--sampler euler`
+is bit-identical to the pre-change update by cross-build comparison.
+
+**It does not buy fewer evaluations on this checkpoint.** The estimate going in
+was 1.5–1.8×. Measured, it is ~1.26×, video only, at the bottom of the step
+range, and nothing at all at the default 50.
+
+The reason is not the sampler. **From 25 steps up this checkpoint is
+insensitive to step count**, and the residual differences between runs are
+chaotic rather than convergent. One control establishes it: `ab2` and `euler`
+at the *same* 49 evaluations differ by rel_L2 **0.2210** on the video latents.
+That is a noise floor, and it swallows nearly every measurement in the sweep —
+including, absurdly, `ab2` at 19 evaluations landing **closer** to the 50-step
+Euler reference (0.115) than `ab2` at 49 evaluations does (0.221). A metric
+where 19 evaluations beat 49 of the same sampler is not measuring convergence.
+
+The Euler controls at matched step counts are what make that readable, and
+they are non-monotone:
+
+| video rel_L2 vs euler@50 | 20 | 25 | 30 | 40 |
+|---|---|---|---|---|
+| euler | **0.4232** | 0.2208 | 0.2056 | 0.2095 |
+| ab2 | **0.1151** | 0.2339 | 0.1598 | 0.2088 |
+
+Euler at 40 steps is no closer to Euler at 50 than Euler at 25 is. Audio is
+worse still — 0.0821 at 25 steps, 0.3804 at 30, 0.0903 at 40. Meanwhile the
+global statistics match almost exactly across every run (mean 0.050–0.055
+against the reference's 0.0513, std 1.048–1.057 against 1.0530, correlation
+0.97–0.99). That is the same signature as the nvfp4 section above: **a
+different sample, not a degraded one.**
+
+One effect is real and replicated. At 20 grid points Euler genuinely degrades —
+it is the worst point in the table — and AB2 does not, on **4 of 4 seeds**,
+each against its own 50-step reference:
+
+| seed | euler@20 | ab2@20 | correlation |
+|---|---|---|---|
+| 11 | 0.4232 | 0.1151 | 0.910 → 0.993 |
+| 12 | 0.3771 | 0.2224 | 0.928 → 0.975 |
+| 13 | 0.3514 | 0.2187 | 0.938 → 0.976 |
+| 14 | 0.4366 | 0.2947 | 0.904 → 0.956 |
+
+So AB2 at 20 grid points sits in the band Euler needs 25 for: 19 evaluations
+against 24, **~1.26×**, video only. Audio shows no effect (2 of 4 seeds, ratios
+0.77–1.66). The variable-step coefficient variant was tried and dropped: it won
+on the linear ODE and the advantage did not transfer to the checkpoint.
+
+`ab2` stays as an off-by-default flag, because the code is correct and someone
+who wants 20 grid points should have it. **There is deliberately no `--steps`
+recommendation here** — the evidence does not support one. The default stays 50.
+
+These are quality comparisons run at one base commit with matched geometry
+(22 frames, 1:1, 4170 packed rows) and matched seeds, so the *ratios* transfer;
+the wall times were taken before the attention staging rewrite and do not.
 
 ## Performance
 

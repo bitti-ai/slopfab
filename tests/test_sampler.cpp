@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "harness.h"
+#include "vidfab/generate.h"
 #include "vidfab/sampler/scheduler.h"
 
 using vidfab::sampler::FlowScheduler;
@@ -340,6 +341,63 @@ VIDFAB_TEST(ab2_histories_do_not_cross_between_schedulers) {
   }
   CHECK_CLOSE(yv, xv, 0.0, "interleaved video history");
   CHECK_CLOSE(ya, xa, 0.0, "interleaved audio history");
+}
+
+// The wiring, which the cross-build bit-identity proof cannot see.
+//
+// That proof compiles two versions of scheduler.cpp against a driver that
+// never mentions SamplerKind, so it pins the *scheduler's* default path
+// exactly. What it cannot reach is the path from the CLI to the scheduler:
+// `RunOptions::sampler` and the two `set_sampler` calls `run_generate` makes.
+// If that field defaulted to kAb2, or the call were dropped, the md5 proof
+// would still pass and every euler run would silently be something else.
+//
+// It needs no GPU: RunOptions is a plain struct in a host-safe header, and
+// what a scheduler does with the value it is handed is host arithmetic. The
+// CLI's own string parsing lives inside main.cpp and is not linkable, so it
+// was verified by execution instead: `--sampler ab2 --dry-run` resolves, and
+// `--sampler nonsense` exits 2 naming the valid values.
+VIDFAB_TEST(run_options_default_selects_the_euler_path) {
+  // The default a run gets when no --sampler flag is passed at all.
+  const vidfab::RunOptions defaults;
+  CHECK(defaults.sampler == SamplerKind::kEuler);
+
+  // And handing that default to a scheduler must be indistinguishable from
+  // never touching the sampler — bitwise, over a whole trajectory. This is the
+  // assertion that fails if the default ever moves.
+  const std::vector<float> x0 = ::vidfab::test::make_data(48, 0xE01E);
+  auto trajectory = [&](bool configure, SamplerKind kind) {
+    FlowScheduler s(12.0f);
+    s.set_timesteps(30);
+    if (configure) s.set_sampler(kind);
+    std::vector<float> x = x0;
+    const int steps = static_cast<int>(s.num_steps());
+    for (int i = 0; i < steps; ++i) {
+      std::vector<float> v(x.size());
+      for (size_t j = 0; j < v.size(); ++j) v[j] = 0.3f * x[j] - 0.05f;
+      s.step(i, x.data(), v.data(), x.size(), x.data());
+    }
+    return x;
+  };
+
+  const std::vector<float> untouched = trajectory(false, SamplerKind::kEuler);
+  const std::vector<float> via_defaults = trajectory(true, defaults.sampler);
+  CHECK_CLOSE(untouched, via_defaults, 0.0,
+              "RunOptions' default drives the same path as never calling set_sampler");
+
+  // Explicit euler is the same path too, so `--sampler euler` is not a
+  // different mode that merely looks like the default.
+  const std::vector<float> explicit_euler = trajectory(true, SamplerKind::kEuler);
+  CHECK_CLOSE(untouched, explicit_euler, 0.0, "--sampler euler is the default path");
+
+  // And the plumbing is not a no-op: asking for ab2 must actually change the
+  // trajectory, or a dropped set_sampler call would pass everything above.
+  const std::vector<float> as_ab2 = trajectory(true, SamplerKind::kAb2);
+  bool differs = false;
+  for (size_t j = 0; j < as_ab2.size(); ++j) {
+    if (as_ab2[j] != untouched[j]) differs = true;
+  }
+  CHECK_MSG(differs, "set_sampler(kAb2) left the trajectory unchanged; the plumbing is dead");
 }
 
 // State makes ordering load-bearing, so the errors have to be exceptions and
