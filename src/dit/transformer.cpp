@@ -650,9 +650,13 @@ struct Transformer::Impl {
     acfg.seq_len = rows;
     acfg.num_heads = cfg.num_attention_heads;
     acfg.head_dim = cfg.attention_head_dim;
-    cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg,
-                            cuda::attention_preferred_backend(acfg), ws);
-    prof.tick("attn.fused", stream.get());
+    // The label follows the backend that actually ran. It used to say
+    // "attn.fused" unconditionally, so the profile could not distinguish the
+    // fused path from a fallback to the blocked one — only the magnitudes
+    // could, which is not a check, it is a reader noticing.
+    const AttentionBackend backend = cuda::attention_preferred_backend(acfg);
+    cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
+    prof.tick(backend == AttentionBackend::kFused ? "attn.fused" : "attn.blocked", stream.get());
 
     for (int start = 0; start < rows; start += chunk) {
       const int n = std::min(chunk, rows - start);
