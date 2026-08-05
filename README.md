@@ -135,7 +135,7 @@ someone else is editing.
   E2M1, safetensors loading and its rejection cases, comparison statistics, the
   flow scheduler, token packing, request resolution, the AdaLN table, the
   tokenizer, latent noise, the WAV writer and the colour transform.
-  **1729 checks.**
+  **1891 checks.**
 - **GPU kernel tests**: every kernel against independent CPU references written
   from the spec rather than from the kernel. **1043 checks**, plus 11 DEFERRED.
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong

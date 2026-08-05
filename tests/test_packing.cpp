@@ -11,13 +11,17 @@
 // The reference values come from docs/transformer_spec.md sections 1.1, 1.4,
 // 2.3 and 7.5, which cite ref/diffusers/modular/packing.py by line.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <numeric>
+#include <string>
 #include <vector>
 
 #include "harness.h"
 #include "vidfab/dit/packing.h"
+#include "vidfab/sampler/scheduler.h"
 
 namespace {
 
@@ -399,6 +403,292 @@ VIDFAB_TEST(packing_row_timesteps) {
   bool in_range = true;
   for (int32_t a : rt.adaln) in_range = in_range && a >= 0 && a < 2 * 3;
   CHECK(in_range);
+}
+
+// ---------------------------------------------------------------------------
+// build_row_timesteps: the sort-free rewrite against the sort it replaced.
+// ---------------------------------------------------------------------------
+//
+// `build_row_timesteps` used to materialise an S-element `row_t`, sort it, and
+// `std::unique` it, which at S = 37 710 is an O(S log S) way to compute a
+// two-valued function. The rewrite is a min/max of two scalars and a single
+// O(S) pass. That is only safe if it is *byte for byte* the same answer, so
+// the old body is kept here verbatim as the reference and the two are compared
+// exactly — not within a tolerance — over every shape the schedule can reach.
+
+// The implementation as it stood at 2480c82, unchanged. Do not "improve" it:
+// its value is that it is the thing being replaced.
+RowTimesteps row_timesteps_by_sort(const SequenceLayout& layout, const PackedIndices& idx,
+                                   float video_t, float audio_t) {
+  const int total = layout.total_rows();
+
+  std::vector<float> row_t(static_cast<size_t>(total), video_t);
+  for (size_t i = static_cast<size_t>(layout.num_condition_video); i < idx.audio.size(); ++i) {
+    row_t[static_cast<size_t>(idx.audio[i])] = audio_t;
+  }
+
+  RowTimesteps out;
+  out.unique = row_t;
+  std::sort(out.unique.begin(), out.unique.end());
+  out.unique.erase(std::unique(out.unique.begin(), out.unique.end()), out.unique.end());
+
+  out.indices.resize(static_cast<size_t>(total));
+  out.adaln.resize(static_cast<size_t>(total));
+  for (int s = 0; s < total; ++s) {
+    const auto it =
+        std::lower_bound(out.unique.begin(), out.unique.end(), row_t[static_cast<size_t>(s)]);
+    const int32_t ti = static_cast<int32_t>(it - out.unique.begin());
+    out.indices[static_cast<size_t>(s)] = ti;
+    out.adaln[static_cast<size_t>(s)] = ti * 3 + std::max(idx.tags[static_cast<size_t>(s)], 0);
+  }
+  return out;
+}
+
+// Bitwise float equality, not `==`: `==` would call +0.0 and -0.0 identical,
+// and the point of this comparison is that nothing at all moved.
+bool same_bits(float a, float b) {
+  uint32_t ua = 0;
+  uint32_t ub = 0;
+  std::memcpy(&ua, &a, sizeof(ua));
+  std::memcpy(&ub, &b, sizeof(ub));
+  return ua == ub;
+}
+
+bool identical(const RowTimesteps& a, const RowTimesteps& b) {
+  if (a.unique.size() != b.unique.size()) return false;
+  if (a.indices.size() != b.indices.size()) return false;
+  if (a.adaln.size() != b.adaln.size()) return false;
+  for (size_t i = 0; i < a.unique.size(); ++i) {
+    if (!same_bits(a.unique[i], b.unique[i])) return false;
+  }
+  for (size_t i = 0; i < a.indices.size(); ++i) {
+    if (a.indices[i] != b.indices[i]) return false;
+  }
+  for (size_t i = 0; i < a.adaln.size(); ++i) {
+    if (a.adaln[i] != b.adaln[i]) return false;
+  }
+  return true;
+}
+
+// A small t2va-shaped layout. Kept small so the cross-product of layouts and
+// timestep pairs stays instant; the shape of the answer does not depend on S,
+// and the real 73 390-row layout is exercised separately below.
+SequenceLayout small_layout(int num_text, int num_audio_latents, int num_latent_frames) {
+  SequenceLayout l;
+  l.num_text = num_text;
+  l.num_condition_video = 0;
+  l.num_latent_frames = num_latent_frames;
+  l.latent_height = 4;
+  l.latent_width = 6;
+  l.num_audio_latents = num_audio_latents;
+  l.num_audio_rows = 2 * num_audio_latents;
+  l.num_video_rows = num_latent_frames * l.rows_per_frame();
+  return l;
+}
+
+VIDFAB_TEST(packing_row_timesteps_matches_sort) {
+  std::vector<SequenceLayout> layouts;
+  std::vector<std::string> names;
+
+  layouts.push_back(reference_layout(4));
+  names.push_back("reference 10 s t2va");
+
+  layouts.push_back(small_layout(3, 5, 2));
+  names.push_back("small t2va");
+
+  // No audio rows at all: `audio_t` never occurs, so `unique` is one entry and
+  // every index is 0 whatever the two timesteps are.
+  layouts.push_back(small_layout(3, 0, 2));
+  names.push_back("no audio rows");
+
+  // Non-zero C. The audio loop starts C entries into `idx.audio`, so the first
+  // C audio rows keep the *video* timestep even though they are audio rows —
+  // and the C conditioning video rows sit between the text and the audio.
+  {
+    SequenceLayout l = small_layout(3, 5, 2);
+    l.num_condition_video = 3;
+    layouts.push_back(l);
+    names.push_back("C = 3");
+  }
+
+  // C larger than the audio row count: nothing is overridden at all.
+  {
+    SequenceLayout l = small_layout(3, 2, 2);
+    l.num_condition_video = 9;
+    layouts.push_back(l);
+    names.push_back("C past the end of idx.audio");
+  }
+
+  // Every row is an overridden audio row, so `video_t` occurs nowhere and
+  // `unique` holds the *audio* timestep alone. A rewrite that assumes the video
+  // timestep is always present puts a value in `unique` that no row carries.
+  {
+    SequenceLayout l;
+    l.num_audio_latents = 3;
+    l.num_audio_rows = 6;
+    layouts.push_back(l);
+    names.push_back("audio only");
+  }
+
+  // Degenerate: no rows. `unique` must come back empty, not one entry.
+  layouts.push_back(SequenceLayout{});
+  names.push_back("empty");
+
+  std::vector<std::pair<float, float>> pairs = {
+      {0.25f, 0.75f},  // video first
+      {0.75f, 0.25f},  // audio first — the flip
+      {0.5f, 0.5f},    // exactly equal, collapses to one entry
+      {0.0f, 0.0f},   {1.0f, 1.0f},  {0.0f, 1.0f},
+      {1.0f, 0.0f},   {1.0f, 0.999f}, {0.999f, 1.0f},
+  };
+  // One ulp apart in both directions: the closest two distinct floats the
+  // schedule could ever hand over, where a `fabs(a - b) < eps` style compare
+  // would wrongly collapse them to one entry.
+  const float t = 0.87345f;
+  pairs.push_back({t, std::nextafter(t, 1.0f)});
+  pairs.push_back({std::nextafter(t, 1.0f), t});
+  pairs.push_back({t, std::nextafter(t, 0.0f)});
+
+  int compared = 0;
+  for (size_t li = 0; li < layouts.size(); ++li) {
+    const PackedIndices idx = build_indices(layouts[li]);
+    for (const auto& p : pairs) {
+      const RowTimesteps want = row_timesteps_by_sort(layouts[li], idx, p.first, p.second);
+      const RowTimesteps got = build_row_timesteps(layouts[li], idx, p.first, p.second);
+      CHECK_MSG(identical(want, got), "row timesteps differ from the sort reference: %s, v=%.9g a=%.9g",
+                names[li].c_str(), static_cast<double>(p.first), static_cast<double>(p.second));
+      ++compared;
+    }
+  }
+  CHECK(compared == static_cast<int>(layouts.size() * pairs.size()));
+}
+
+VIDFAB_TEST(packing_row_timesteps_over_the_real_schedule) {
+  // The two schedulers a real request runs: shift 12 for video, shift 3 for
+  // audio, stepped together. This is where the identity of index 0 is actually
+  // decided, so walk every step of a full 50-step schedule and require the
+  // rewrite to agree with the sort at every one.
+  vidfab::sampler::FlowScheduler video(12.0f);
+  vidfab::sampler::FlowScheduler audio(3.0f);
+  video.set_timesteps(50);
+  audio.set_timesteps(50);
+  const std::vector<float>& vt = video.timesteps();
+  const std::vector<float>& at = audio.timesteps();
+  CHECK(vt.size() == at.size());
+
+  const SequenceLayout l = reference_layout(7);
+  const PackedIndices idx = build_indices(l);
+
+  int one_entry = 0;
+  int video_is_zero = 0;
+  int audio_is_zero = 0;
+  for (size_t i = 0; i < vt.size(); ++i) {
+    const RowTimesteps want = row_timesteps_by_sort(l, idx, vt[i], at[i]);
+    const RowTimesteps got = build_row_timesteps(l, idx, vt[i], at[i]);
+    CHECK_MSG(identical(want, got), "schedule step %zu: v=%.9g a=%.9g", i,
+              static_cast<double>(vt[i]), static_cast<double>(at[i]));
+    if (got.unique.size() == 1) {
+      ++one_entry;
+    } else if (got.indices[static_cast<size_t>(l.video_start())] == 0) {
+      ++video_is_zero;
+    } else {
+      ++audio_is_zero;
+    }
+  }
+
+  // The test would still pass if the schedule only ever produced one regime, so
+  // say which regimes it actually covered. Both grids start at sigma = 1, where
+  // the shift is the identity and the two timesteps are equal, and separate
+  // afterwards — so a real 50-step schedule visits the collapsed case and the
+  // two-entry case both.
+  CHECK_MSG(one_entry > 0, "no step collapsed to a single unique timestep (of %zu)", vt.size());
+  CHECK_MSG(video_is_zero + audio_is_zero > 0, "no step produced two unique timesteps (of %zu)",
+            vt.size());
+  CHECK_MSG(one_entry + video_is_zero + audio_is_zero == static_cast<int>(vt.size()),
+            "regimes: %d collapsed, %d video-first, %d audio-first, of %zu steps", one_entry,
+            video_is_zero, audio_is_zero, vt.size());
+}
+
+VIDFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
+  // Three rewrites of this function are plausible rather than merely broken,
+  // and all three produce correctly shaped output. Compute each wrong form and
+  // require the implementation not to match it.
+  const SequenceLayout l = reference_layout(5);
+  const PackedIndices idx = build_indices(l);
+  const size_t text_row = 0;
+  const size_t audio_row = static_cast<size_t>(l.audio_start());
+  const size_t video_row = static_cast<size_t>(l.video_start());
+
+  // (1) Descending `unique`. torch.unique(sorted=True) is ascending; taking
+  //     max first is the natural mistake when you already have both scalars.
+  {
+    const RowTimesteps rt = build_row_timesteps(l, idx, 0.75f, 0.25f);
+    CHECK(rt.unique.size() == 2);
+    CHECK(rt.unique[0] < rt.unique[1]);
+    const std::vector<float> descending = {0.75f, 0.25f};
+    CHECK(rt.unique != descending);
+    CHECK_NEAR(rt.unique[0], 0.25, 0.0);
+    CHECK_NEAR(rt.unique[1], 0.75, 0.0);
+  }
+
+  // (2) `unique` always of size 2. Equal timesteps must *collapse* — the first
+  //     step of every real schedule is exactly this case, because at sigma = 1
+  //     both shifts are the identity.
+  {
+    const RowTimesteps rt = build_row_timesteps(l, idx, 0.5f, 0.5f);
+    CHECK(rt.unique.size() == 1);
+    CHECK(rt.unique.size() != 2);
+    bool all_zero = true;
+    for (int32_t v : rt.indices) all_zero = all_zero && v == 0;
+    CHECK(all_zero);
+    // ...and the adaln index then depends on the tag alone, which is what a
+    // stale `ti = 1` for the audio rows would break.
+    CHECK(rt.adaln[audio_row] == kTagAudio);
+    CHECK(rt.adaln[audio_row] != 1 * 3 + kTagAudio);
+  }
+
+  // (3) The index not flipping when the two grids cross: video pinned to 0 and
+  //     audio to 1 regardless of order. Correct whenever video_t < audio_t and
+  //     silently wrong — a wrong AdaLN table row for every row in the sequence
+  //     — whenever it is not.
+  {
+    const RowTimesteps lo = build_row_timesteps(l, idx, 0.25f, 0.75f);
+    const RowTimesteps hi = build_row_timesteps(l, idx, 0.75f, 0.25f);
+
+    CHECK(lo.indices[video_row] == 0 && lo.indices[audio_row] == 1);
+    CHECK(hi.indices[video_row] == 1 && hi.indices[audio_row] == 0);
+    CHECK(lo.indices[video_row] != hi.indices[video_row]);
+    CHECK(lo.indices[audio_row] != hi.indices[audio_row]);
+
+    // Text rows follow the video timestep, so they flip with it.
+    CHECK(lo.indices[text_row] == 0 && hi.indices[text_row] == 1);
+    CHECK(hi.adaln[text_row] == 1 * 3 + kTagText);
+    CHECK(hi.adaln[text_row] != 0 * 3 + kTagText);
+  }
+
+  // (4) The audio loop starting at 0 instead of `num_condition_video`. With
+  //     C = 3 the first three audio rows keep the video timestep; starting at
+  //     zero would give them the audio one, which changes only 3 rows of
+  //     73 000 and nothing else.
+  {
+    SequenceLayout c = reference_layout(5);
+    c.num_condition_video = 3;
+    const PackedIndices cidx = build_indices(c);
+    const RowTimesteps rt = build_row_timesteps(c, cidx, 0.75f, 0.25f);
+    const size_t first_audio = static_cast<size_t>(c.audio_start());
+    // Audio rows [0, 3) of the audio block are not stepped: video timestep,
+    // which here sorts second.
+    CHECK(rt.indices[first_audio + 0] == 1);
+    CHECK(rt.indices[first_audio + 1] == 1);
+    CHECK(rt.indices[first_audio + 2] == 1);
+    CHECK(rt.indices[first_audio + 3] == 0);
+    // Their tag is still audio, so the adaln row is the video *timestep* with
+    // the audio modality.
+    CHECK(rt.adaln[first_audio + 0] == 1 * 3 + kTagAudio);
+    CHECK(rt.adaln[first_audio + 3] == 0 * 3 + kTagAudio);
+    // And the conditioning video rows sit before the audio block, tagged video.
+    CHECK(rt.adaln[static_cast<size_t>(c.condition_start())] == 1 * 3 + kTagVideo);
+  }
 }
 
 }  // namespace

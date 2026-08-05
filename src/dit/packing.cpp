@@ -302,29 +302,76 @@ RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndic
                                  float video_t, float audio_t) {
   const int total = layout.total_rows();
 
-  // Every row defaults to the video timestep — including text rows, which are
-  // never overridden and so inherit it.
-  std::vector<float> row_t(static_cast<size_t>(total), video_t);
-  for (size_t i = static_cast<size_t>(layout.num_condition_video); i < idx.audio.size(); ++i) {
-    row_t[static_cast<size_t>(idx.audio[i])] = audio_t;
+  // This reproduces `torch.unique(row_t, sorted=True, return_inverse=True)`
+  // over a per-row timestep vector that takes **exactly two values**: every row
+  // defaults to the video timestep — including text rows, which are never
+  // overridden and so inherit it — and the audio rows from
+  // `num_condition_video` onward are set to the audio timestep. So the sorted
+  // unique set is the ascending dedupe of at most `{video_t, audio_t}` and the
+  // per-row index is one comparison. Neither the sort nor the S-element `row_t`
+  // temporary is needed; both used to be here, and at S = 37 710 the sort was
+  // the whole cost of the function.
+  //
+  // Ascending is load-bearing, not cosmetic: which of the two timesteps is
+  // index 0 flips as the shifted video (shift 12) and audio (shift 3) grids
+  // cross, and that index feeds the AdaLN table row (spec sections 3.2, 3.4 and
+  // 7.5). It has to be reproduced rather than fixed by convention.
+
+  // The audio loop deliberately starts at `num_condition_video` into
+  // `idx.audio` — conditioning audio rows are not stepped and keep the video
+  // timestep. C is 0 for t2va, but the offset is what makes fl2va right.
+  // The unsigned cast is the old loop's, kept deliberately: a negative C wraps
+  // to a huge value, the clamp makes it `size()`, and the loop runs zero times
+  // exactly as the old `for (size_t i = C; i < audio.size(); ++i)` did.
+  const size_t audio_begin =
+      std::min(static_cast<size_t>(layout.num_condition_video), idx.audio.size());
+  const size_t num_overridden = idx.audio.size() - audio_begin;
+
+  // Which of the two values actually occurs. `video_t` is absent only when
+  // every row is an overridden audio row; `audio_t` is absent when none is.
+  // Getting this wrong would leave a value in `unique` that no row carries,
+  // which shifts every index by one.
+  const bool has_video = static_cast<size_t>(total) > num_overridden;
+  const bool has_audio = num_overridden > 0;
+
+  RowTimesteps out;
+  int32_t video_index = 0;
+  int32_t audio_index = 0;
+  if (has_video && has_audio) {
+    // `<` and `==` exactly as std::sort and std::unique used them, so the
+    // equal case collapses to a single entry and every index is 0. (The two
+    // are `==` but not bitwise identical only for +0.0 against -0.0, where the
+    // old code's answer was whatever std::sort happened to leave first —
+    // unspecified. Outside the schedule's range either way.)
+    if (audio_t < video_t) {
+      out.unique = {audio_t, video_t};
+      video_index = 1;
+    } else if (video_t < audio_t) {
+      out.unique = {video_t, audio_t};
+      audio_index = 1;
+    } else {
+      out.unique = {video_t};
+    }
+  } else if (has_video) {
+    out.unique = {video_t};
+  } else if (has_audio) {
+    out.unique = {audio_t};
   }
 
-  // torch.unique(sorted=True, return_inverse=True). Ascending, so which of the
-  // two timesteps is index 0 flips over the schedule as the shifted video and
-  // audio grids cross. That feeds the AdaLN index, so it has to be reproduced
-  // rather than fixed by convention.
-  RowTimesteps out;
-  out.unique = row_t;
-  std::sort(out.unique.begin(), out.unique.end());
-  out.unique.erase(std::unique(out.unique.begin(), out.unique.end()), out.unique.end());
-
-  out.indices.resize(static_cast<size_t>(total));
+  // `max(tag, 0)` clamps padding rows (tag = -1) so they cannot index
+  // backwards into the modulation table.
+  out.indices.assign(static_cast<size_t>(total), video_index);
   out.adaln.resize(static_cast<size_t>(total));
+  const int32_t video_base = video_index * 3;
   for (int s = 0; s < total; ++s) {
-    const auto it = std::lower_bound(out.unique.begin(), out.unique.end(), row_t[static_cast<size_t>(s)]);
-    const int32_t ti = static_cast<int32_t>(it - out.unique.begin());
-    out.indices[static_cast<size_t>(s)] = ti;
-    out.adaln[static_cast<size_t>(s)] = ti * 3 + std::max(idx.tags[static_cast<size_t>(s)], 0);
+    out.adaln[static_cast<size_t>(s)] = video_base + std::max(idx.tags[static_cast<size_t>(s)], 0);
+  }
+
+  const int32_t audio_base = audio_index * 3;
+  for (size_t i = audio_begin; i < idx.audio.size(); ++i) {
+    const size_t s = static_cast<size_t>(idx.audio[i]);
+    out.indices[s] = audio_index;
+    out.adaln[s] = audio_base + std::max(idx.tags[s], 0);
   }
   return out;
 }
