@@ -691,4 +691,142 @@ VIDFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
   }
 }
 
+// Frame-banded attention is lossy, so what it drops has to be exactly what was
+// intended. Every failure below is silent: the model still runs, the output is
+// still finite and plausibly scaled, and only the samples change.
+VIDFAB_TEST(packing_banded_key_ranges) {
+  // The default request: 124 frames at 16:9 -> 37 latent frames of 48x84.
+  SequenceLayout layout;
+  layout.num_text = 17;
+  layout.num_audio_rows = 414;
+  layout.num_latent_frames = 37;
+  layout.latent_height = 48;
+  layout.latent_width = 84;
+  layout.num_video_rows = layout.num_latent_frames * layout.rows_per_frame();
+
+  const int S = layout.total_rows();
+  const int R = layout.rows_per_frame();
+  const int vstart = layout.video_start();
+  CHECK(R == 1008);
+  CHECK(S == 37727);
+
+  const int kQueryTile = 128;
+  const int kKeyAlign = 64;
+
+  // Band off must be exactly full attention, every tile, or the flag's default
+  // is not the behaviour it replaces.
+  {
+    const BandedKeyRanges off = build_banded_key_ranges(layout, 0, kQueryTile, kKeyAlign);
+    bool all_global = true;
+    for (int t = 0; t < off.num_query_tiles; ++t) {
+      if (off.ranges[size_t(t) * 4 + 0] != 0) all_global = false;
+      if (off.ranges[size_t(t) * 4 + 1] < S) all_global = false;
+      if (off.ranges[size_t(t) * 4 + 3] != 0) all_global = false;
+    }
+    CHECK(all_global);
+  }
+
+  const BandedKeyRanges b = build_banded_key_ranges(layout, 9, kQueryTile, kKeyAlign);
+  CHECK(b.num_query_tiles == (S + kQueryTile - 1) / kQueryTile);
+
+  bool covers_own_rows = true;   // a query must always see its own frame
+  bool keeps_conditioning = true;  // ...and the text/audio prefix
+  bool ordered_disjoint = true;
+  bool aligned = true;
+  bool in_bounds = true;
+  int banded_tiles = 0;
+  int max_keys = 0;
+
+  for (int t = 0; t < b.num_query_tiles; ++t) {
+    const int lo0 = b.ranges[size_t(t) * 4 + 0], hi0 = b.ranges[size_t(t) * 4 + 1];
+    const int lo1 = b.ranges[size_t(t) * 4 + 2], hi1 = b.ranges[size_t(t) * 4 + 3];
+    const int q0 = t * kQueryTile;
+    const int q_last = std::min(q0 + kQueryTile, S) - 1;
+
+    if (lo0 % kKeyAlign || hi0 % kKeyAlign || lo1 % kKeyAlign || hi1 % kKeyAlign) aligned = false;
+    if (lo0 > hi0 || lo1 > hi1) ordered_disjoint = false;
+    if (hi1 > 0 && lo1 <= hi0) ordered_disjoint = false;  // merged, or double-counted
+    if (hi0 > ((S + kKeyAlign - 1) / kKeyAlign) * kKeyAlign) in_bounds = false;
+    if (hi1 > ((S + kKeyAlign - 1) / kKeyAlign) * kKeyAlign) in_bounds = false;
+
+    const auto covered = [&](int row) {
+      return (row >= lo0 && row < hi0) || (hi1 > lo1 && row >= lo1 && row < hi1);
+    };
+    // Self-attention: every row of this tile must be able to see itself.
+    for (int r = q0; r <= q_last; ++r) {
+      if (!covered(r)) covers_own_rows = false;
+    }
+    // The prompt. Losing this is the failure that would look like the model
+    // ignoring its conditioning while every shape and norm stayed plausible.
+    for (int r = 0; r < vstart; ++r) {
+      if (!covered(r)) keeps_conditioning = false;
+    }
+    const int keys = b.keys_for_tile(t);
+    max_keys = std::max(max_keys, keys);
+    if (keys < S) ++banded_tiles;
+  }
+
+  CHECK(aligned);
+  CHECK(ordered_disjoint);
+  CHECK(in_bounds);
+  CHECK_MSG(covers_own_rows, "a banded query tile cannot see its own rows");
+  CHECK_MSG(keeps_conditioning, "a banded query tile cannot see the text/audio prefix");
+  // Most tiles must actually be banded, or the flag is doing nothing.
+  CHECK(banded_tiles > b.num_query_tiles * 3 / 4);
+  // The global tiles hold `seq_end` keys, which exceeds S because the ranges are
+  // rounded out to whole key blocks. That is the intended conservative
+  // direction, so the bound is against the aligned end, not against S.
+  const int seq_end = ((S + kKeyAlign - 1) / kKeyAlign) * kKeyAlign;
+  CHECK(max_keys <= seq_end);
+
+  // Every interior tile -- one whose band reaches neither end of the video --
+  // must see the prefix plus its band and nothing more. A 128-row query tile is
+  // narrower than a 1008-row frame, so it spans one frame or straddles two,
+  // giving 2*9+1 or 2*9+2 frames; the bound has to allow both, plus at most one
+  // key block of outward rounding at each of the two edges.
+  {
+    const int band = 9;
+    int checked = 0;
+    bool within_model = true;
+    for (int t = 0; t < b.num_query_tiles; ++t) {
+      const int q0 = t * kQueryTile;
+      const int q_last = std::min(q0 + kQueryTile, S) - 1;
+      if (q0 < vstart) continue;
+      const int f_first = (q0 - vstart) / R;
+      const int f_last = (q_last - vstart) / R;
+      if (f_first - band < 0 || f_last + band + 1 > layout.num_latent_frames) continue;
+      const int frames = (f_last + band + 1) - (f_first - band);
+      const int lo_bound = vstart + frames * R;
+      const int hi_bound = lo_bound + 4 * kKeyAlign;
+      const int keys = b.keys_for_tile(t);
+      if (keys < lo_bound || keys > hi_bound) within_model = false;
+      ++checked;
+    }
+    CHECK(checked > 0);
+    CHECK_MSG(within_model, "a banded tile's key count does not match the cost model");
+  }
+
+  // A band wide enough to reach both ends must collapse to full attention --
+  // the two ranges merge rather than leaving a gap in the middle.
+  {
+    const BandedKeyRanges wide = build_banded_key_ranges(layout, 64, kQueryTile, kKeyAlign);
+    bool all_full = true;
+    for (int t = 0; t < wide.num_query_tiles; ++t) {
+      if (wide.keys_for_tile(t) < S) all_full = false;
+      if (wide.ranges[size_t(t) * 4 + 3] != 0) all_full = false;
+    }
+    CHECK(all_full);
+  }
+
+  // Tiles holding any text or audio row attend globally, including the one that
+  // straddles the video boundary -- that tile has rows on both sides and the
+  // frame arithmetic would go negative for the audio ones.
+  {
+    const int straddle = vstart / kQueryTile;
+    CHECK(b.ranges[size_t(straddle) * 4 + 0] == 0);
+    CHECK(b.ranges[size_t(straddle) * 4 + 1] >= S);
+    CHECK(b.ranges[size_t(0) * 4 + 1] >= S);
+  }
+}
+
 }  // namespace

@@ -109,4 +109,56 @@ struct RowTimesteps {
 RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndices& idx,
                                  float video_t, float audio_t);
 
+// --- frame-banded attention -------------------------------------------------
+//
+// Which keys one query tile may attend to when the band is on. Host-side index
+// arithmetic, computed once per request; the kernel reads it and changes only
+// its loop bounds.
+//
+// **The band is frame-granular, not a window over the packed row index.** Video
+// packs frame-major, so a latent frame is a contiguous run of `R` rows (1008 at
+// the default geometry) and a naive band over row index would cut *within* a
+// frame -- a horizontal strip of one frame plus a horizontal strip of the next.
+// That is an anisotropic spatial prior that would show up as a banding artefact
+// and be blamed on the method rather than on the indexing. Frame-granular means
+// every query attends to whole frames.
+//
+// **Two ranges per tile, not one, and the second is the reason.** The packed
+// sequence is `[ text | conditions | audio | video ]`, so text and audio sit at
+// the *front*. A single [lo, hi) window around a late video frame would exclude
+// them and cut every video row off from the prompt -- the conditioning path.
+// So a video tile gets the text/audio prefix **plus** its band. That prefix is
+// 431 of 37727 rows at the default geometry, 1.14%, so always including it costs
+// essentially nothing and removing it would not be a speedup, it would be a
+// different model.
+//
+// Tiles containing any text or audio row attend globally: they are a tiny
+// fraction of S, banding them buys nothing, and they are the conditioning.
+//
+// Ranges are rounded outwards to `key_align` so the kernel's key loop steps
+// over whole blocks. Rounding out rather than in is deliberate -- it attends to
+// at most `key_align - 1` extra rows per edge, which is conservative (closer to
+// full attention), never lossy, and deterministic.
+struct BandedKeyRanges {
+  int query_tile = 0;
+  int num_query_tiles = 0;
+  // Two half-open [lo, hi) ranges per tile, flattened as
+  // `[t*4+0] = lo0, [t*4+1] = hi0, [t*4+2] = lo1, [t*4+3] = hi1`.
+  // The second is empty (lo1 == hi1 == 0) when the two would touch and have
+  // been merged, and when the tile attends globally.
+  std::vector<int32_t> ranges;
+
+  // Keys this tile attends to, for the cost model and the tests.
+  int keys_for_tile(int t) const {
+    return (ranges[size_t(t) * 4 + 1] - ranges[size_t(t) * 4 + 0]) +
+           (ranges[size_t(t) * 4 + 3] - ranges[size_t(t) * 4 + 2]);
+  }
+};
+
+// `band_frames` is a half-width: a query in latent frame f attends to frames
+// [f - band_frames, f + band_frames], so 2*band_frames + 1 frames in all.
+// 0 disables banding and every tile attends globally.
+BandedKeyRanges build_banded_key_ranges(const SequenceLayout& layout, int band_frames,
+                                        int query_tile, int key_align);
+
 }  // namespace vidfab::dit

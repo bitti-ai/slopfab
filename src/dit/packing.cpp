@@ -381,4 +381,61 @@ RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndic
   return out;
 }
 
+BandedKeyRanges build_banded_key_ranges(const SequenceLayout& layout, int band_frames,
+                                        int query_tile, int key_align) {
+  if (query_tile <= 0 || key_align <= 0) {
+    throw std::runtime_error("banded attention: query_tile and key_align must be positive");
+  }
+  const int S = layout.total_rows();
+  const int R = layout.rows_per_frame();
+  const int F = layout.num_latent_frames;
+  const int video_start = layout.video_start();
+
+  BandedKeyRanges out;
+  out.query_tile = query_tile;
+  out.num_query_tiles = (S + query_tile - 1) / query_tile;
+  out.ranges.assign(static_cast<size_t>(out.num_query_tiles) * 4, 0);
+
+  const auto round_down = [key_align](int x) { return x / key_align * key_align; };
+  const auto round_up = [key_align](int x) { return (x + key_align - 1) / key_align * key_align; };
+  const int seq_end = round_up(S);
+
+  for (int t = 0; t < out.num_query_tiles; ++t) {
+    const int q0 = t * query_tile;
+    const int q_last = std::min(q0 + query_tile, S) - 1;
+    int lo0 = 0, hi0 = 0, lo1 = 0, hi1 = 0;
+
+    // A tile is banded only if every row in it is video. `q0 < video_start`
+    // catches both the pure text/audio tiles and the one that straddles the
+    // boundary, and gives them global attention -- which is what the
+    // conditioning rows need and what makes the frame arithmetic below safe,
+    // since `q0 - video_start` is then never negative.
+    if (band_frames <= 0 || R <= 0 || F <= 0 || q0 < video_start) {
+      lo0 = 0;
+      hi0 = seq_end;
+    } else {
+      const int f_first = (q0 - video_start) / R;
+      const int f_last = (q_last - video_start) / R;
+      const int f_lo = std::max(0, f_first - band_frames);
+      const int f_hi = std::min(F, f_last + band_frames + 1);
+
+      lo0 = 0;
+      hi0 = round_up(video_start);  // text + audio: the conditioning, always
+      lo1 = round_down(video_start + f_lo * R);
+      hi1 = std::min(seq_end, round_up(video_start + f_hi * R));
+      // Touching or overlapping ranges become one, so the kernel never stages a
+      // key block twice -- which would double-count it in the softmax sum.
+      if (lo1 <= hi0) {
+        hi0 = std::max(hi0, hi1);
+        lo1 = hi1 = 0;
+      }
+    }
+    out.ranges[static_cast<size_t>(t) * 4 + 0] = lo0;
+    out.ranges[static_cast<size_t>(t) * 4 + 1] = hi0;
+    out.ranges[static_cast<size_t>(t) * 4 + 2] = lo1;
+    out.ranges[static_cast<size_t>(t) * 4 + 3] = hi1;
+  }
+  return out;
+}
+
 }  // namespace vidfab::dit
