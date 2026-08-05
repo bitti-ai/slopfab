@@ -2337,10 +2337,72 @@ struct Timer {
   }
 };
 
+// --- operands for a timing kernel -------------------------------------------
+//
+// **Constant operands are not a neutral choice, and this benchmark used to make
+// it.** A `cudaMemset` fills a buffer with one repeated byte, so a GEMM over two
+// such buffers multiplies the same pair of 16-bit values in every lane on every
+// cycle and the tensor-core multiplier array barely toggles. Dynamic power *is*
+// switching activity, so the card stops drawing its 575 W limit and boosts to
+// the top of its V/F curve — measured here at 2865 MHz against the ~2.5 GHz it
+// holds on real data, which is worth about 14% of throughput.
+//
+// That is enough to have put the reported figures **above this card's own
+// sustained bf16 ceiling** (216-222 TFLOP/s): the four linears read 234-237
+// TFLOP/s in the table this file feeds, a physical impossibility that sat in
+// README.md unnoticed while the same table declared the ceiling two lines above.
+//
+// So the operands are filled with pseudo-random bits instead. The fill runs on
+// the device because the largest of these buffers is 1.08 GB and staging it
+// through the host would cost more than the measurement.
+__global__ void fill_bf16_kernel(uint16_t* __restrict__ dst, size_t n, uint32_t seed) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  uint32_t s = static_cast<uint32_t>(i) * 2654435761u + seed;
+  s ^= s << 13;
+  s ^= s >> 17;
+  s ^= s << 5;
+  // Sign and all seven mantissa bits random; exponent in [126, 128], i.e. |x| in
+  // [0.5, 4). Broad enough to toggle the datapath, tight enough that neither a
+  // K = 14336 dot product nor a 37710-key softmax can leave range.
+  const uint32_t exp = 126u + (s >> 28) % 3u;
+  dst[i] = static_cast<uint16_t>((s & 0x8000u) | (exp << 7) | ((s >> 8) & 0x7Fu));
+}
+
+// e4m3 codes. The exponent is kept near the format's bias of 7 and the two NaN
+// patterns (|code| == 0x7F) are unreachable by construction rather than masked
+// out afterwards, so no fill can turn a timing run into a NaN propagation study.
+__global__ void fill_f8_kernel(uint8_t* __restrict__ dst, size_t n, uint32_t seed) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  uint32_t s = static_cast<uint32_t>(i) * 2246822519u + seed;
+  s ^= s << 13;
+  s ^= s >> 17;
+  s ^= s << 5;
+  const uint32_t e = 5u + (s >> 27) % 5u;  // 2^-2 .. 2^2 before the tensor scale
+  dst[i] = static_cast<uint8_t>((s & 0x80u) | (e << 3) | ((s >> 4) & 0x07u));
+}
+
+void fill_random(BfBuf& b, uint32_t seed) {
+  const size_t n = b.raw.size();
+  fill_bf16_kernel<<<static_cast<int>((n + 255) / 256), 256>>>(b.raw.get(), n, seed);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void fill_random_f8(DeviceBuffer<uint8_t>& b, uint32_t seed) {
+  const size_t n = b.size();
+  fill_f8_kernel<<<static_cast<int>((n + 255) / 256), 256>>>(b.get(), n, seed);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
 // The dequantiser runs once per GEMM on every one of the 200 quantised linears,
 // fifty times a step, so its cost is not incidental. It is pure streaming and
 // should sit near the card's bandwidth: 2 bytes written and 9/16 read per
 // element, of which the store is the overwhelming majority.
+//
+// This one keeps its `cudaMemset` fills deliberately: it is bound by how many
+// bytes cross the memory system, not by multiplier switching, and it is the
+// control that says so.
 VIDFAB_TEST(nvfp4_dequant_timings) {
   Timer timer;
   const struct {
@@ -2409,9 +2471,13 @@ VIDFAB_TEST(production_shape_timings) {
   {
     BfBuf q(size_t(seq) * width), k(size_t(seq) * width), v(size_t(seq) * width),
         out(size_t(seq) * width);
-    VIDFAB_CUDA_CHECK(cudaMemset(q.raw.get(), 0x3C, q.raw.nbytes()));
-    VIDFAB_CUDA_CHECK(cudaMemset(k.raw.get(), 0x3B, k.raw.nbytes()));
-    VIDFAB_CUDA_CHECK(cudaMemset(v.raw.get(), 0x3D, v.raw.nbytes()));
+    // Random, not memset: see fill_bf16_kernel. Constant q and k also make every
+    // score identical, so the online softmax never rescales and its running
+    // maximum never moves — the kernel would be measured on the one input that
+    // exercises none of its data-dependent work.
+    fill_random(q, 0x5EEDu);
+    fill_random(k, 0xA17Eu);
+    fill_random(v, 0xC0FFu);
 
     vidfab::cuda::AttentionConfig cfg;
     cfg.seq_len = seq;
@@ -2519,11 +2585,11 @@ VIDFAB_TEST(production_shape_timings) {
       continue;
     }
     DeviceBuffer<uint8_t> raw(wn);
-    VIDFAB_CUDA_CHECK(cudaMemset(raw.get(), 0x38, raw.nbytes()));
+    fill_random_f8(raw, 0x1234u);
     const std::vector<float> sv(1, 8.1264e-3f);
     DeviceBuffer<float> dscale = to_device(sv);
     BfBuf dx(xn), dy(yn);
-    VIDFAB_CUDA_CHECK(cudaMemset(dx.raw.get(), 0x3C, dx.raw.nbytes()));
+    fill_random(dx, 0x9ABCu);
 
     vidfab::cuda::QuantWeight qw;
     qw.format = vidfab::cuda::QuantFormat::kF8E4M3;
