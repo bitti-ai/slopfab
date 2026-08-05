@@ -172,6 +172,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         // other run is one, and an ab2 run is never mistaken for a baseline.
         if (options.sampler == sampler::SamplerKind::kAb2) {
           std::printf("sampler     ab2 (Adams-Bashforth 2; step 1 is Euler)\n");
+        } else if (options.sampler == sampler::SamplerKind::kAb2Variable) {
+          std::printf("sampler     ab2var (variable-step AB2; step 1 is Euler)\n");
         }
         std::fflush(stdout);
       }

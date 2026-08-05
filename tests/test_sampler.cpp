@@ -99,25 +99,66 @@ double linear_ode_wrong(float shift, int grid_points, float k, float c_now, floa
 // and not a tolerance. It catches a sign error on either term and any
 // coefficient pair that does not sum to one.
 VIDFAB_TEST(ab2_reproduces_euler_on_a_constant_velocity_field) {
-  for (const float shift : {12.0f, 3.0f}) {
-    for (const int grid : {6, 20, 50}) {
-      FlowScheduler euler(shift), ab2(shift);
-      euler.set_timesteps(grid);
-      ab2.set_timesteps(grid);
-      ab2.set_sampler(SamplerKind::kAb2);
+  for (const SamplerKind kind : {SamplerKind::kAb2, SamplerKind::kAb2Variable}) {
+    for (const float shift : {12.0f, 3.0f}) {
+      for (const int grid : {6, 20, 50}) {
+        FlowScheduler euler(shift), ab2(shift);
+        euler.set_timesteps(grid);
+        ab2.set_timesteps(grid);
+        ab2.set_sampler(kind);
 
-      const std::vector<float> v = {0.75f, -0.4f, 3.25f, 0.0f, -1e-3f};
-      std::vector<float> xe = {1.0f, -2.0f, 0.5f, 7.5f, -0.125f};
-      std::vector<float> xa = xe;
+        // Awkward on purpose: 1.5*v is not exact in fp32 for -0.4f or -1e-3f,
+        // so the literal 1.5/-0.5 association would land an ulp off here and
+        // this equality would be a tolerance instead of an identity.
+        const std::vector<float> v = {0.75f, -0.4f, 3.25f, 0.0f, -1e-3f};
+        std::vector<float> xe = {1.0f, -2.0f, 0.5f, 7.5f, -0.125f};
+        std::vector<float> xa = xe;
 
-      const int steps = static_cast<int>(euler.num_steps());
-      for (int i = 0; i < steps; ++i) {
-        euler.step(i, xe.data(), v.data(), xe.size(), xe.data());
-        ab2.step(i, xa.data(), v.data(), xa.size(), xa.data());
+        const int steps = static_cast<int>(euler.num_steps());
+        for (int i = 0; i < steps; ++i) {
+          euler.step(i, xe.data(), v.data(), xe.size(), xe.data());
+          ab2.step(i, xa.data(), v.data(), xa.size(), xa.data());
+        }
+        CHECK_CLOSE(xe, xa, 0.0, "ab2 on a constant velocity field is bitwise Euler");
       }
-      CHECK_CLOSE(xe, xa, 0.0, "ab2 on a constant velocity field is bitwise Euler");
     }
   }
+}
+
+// The variable-step coefficients, which are a separate mode because they are
+// not what the campaign asked for and this is the evidence for keeping them.
+// On the real shifted grids they are better than the fixed ones everywhere,
+// and by most where it matters — the short schedules.
+VIDFAB_TEST(ab2_variable_step_beats_the_fixed_coefficients) {
+  const float k = 1.0f;
+  const double exact = std::exp(-static_cast<double>(k));
+  for (const float shift : {12.0f, 3.0f}) {
+    for (const int grid : {13, 25, 49, 97}) {
+      const double a = std::abs(linear_ode(shift, grid, SamplerKind::kAb2, k) - exact);
+      const double v = std::abs(linear_ode(shift, grid, SamplerKind::kAb2Variable, k) - exact);
+      CHECK_MSG(v < a, "shift %.0f, %d points: ab2var %.3e is not better than ab2 %.3e",
+                static_cast<double>(shift), grid, v, a);
+    }
+  }
+  // On a uniform grid — shift 1 is the identity map, so sigma is a plain
+  // linspace — h_n == h_{n-1} and the coefficient is a half. The two modes
+  // then agree, to fp32 rather than bitwise because the blend is computed as
+  // h/(2*h_prev) from two rounded step sizes rather than written down.
+  FlowScheduler fixed(1.0f), var(1.0f);
+  fixed.set_timesteps(50);
+  var.set_timesteps(50);
+  fixed.set_sampler(SamplerKind::kAb2);
+  var.set_sampler(SamplerKind::kAb2Variable);
+  std::vector<float> xf = ::vidfab::test::make_data(32, 0xA10E), xv = xf;
+  const int steps = static_cast<int>(fixed.num_steps());
+  for (int i = 0; i < steps; ++i) {
+    std::vector<float> vf(xf.size()), vv(xv.size());
+    for (size_t j = 0; j < vf.size(); ++j) vf[j] = 0.3f * xf[j] - 0.05f;
+    for (size_t j = 0; j < vv.size(); ++j) vv[j] = 0.3f * xv[j] - 0.05f;
+    fixed.step(i, xf.data(), vf.data(), xf.size(), xf.data());
+    var.step(i, xv.data(), vv.data(), xv.size(), xv.data());
+  }
+  CHECK_CLOSE(xf, xv, 1e-5, "on a uniform grid the two ab2 modes agree");
 }
 
 // The first step of a trajectory has no history, so it must be plain Euler —
@@ -183,9 +224,11 @@ VIDFAB_TEST(ab2_is_second_order_on_a_linear_ode) {
     for (int g = 0; g < 4; ++g) {
       e_err[g] = std::abs(linear_ode(shift, kGrids[g], SamplerKind::kEuler, k) - exact);
       a_err[g] = std::abs(linear_ode(shift, kGrids[g], SamplerKind::kAb2, k) - exact);
-      std::printf("  shift %4.0f  %3d points  euler %.4e  ab2 %.4e  ratio %5.2f\n",
+      const double v_err =
+          std::abs(linear_ode(shift, kGrids[g], SamplerKind::kAb2Variable, k) - exact);
+      std::printf("  shift %4.0f  %3d points  euler %.4e  ab2 %.4e  ratio %5.2f  ab2var %.4e\n",
                   static_cast<double>(shift), kGrids[g], e_err[g], a_err[g],
-                  e_err[g] / a_err[g]);
+                  e_err[g] / a_err[g], v_err);
     }
 
     for (int g = 0; g < 4; ++g) {
