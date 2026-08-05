@@ -592,6 +592,30 @@ namespace fused {
 // D=64 is supported but nothing in this port takes it -- H3 is head_dim 128
 // throughout -- and forcing a cap risks spills on a path that never runs. That
 // is a change worth measuring before making, and it has not been measured.
+//
+// **These counts are branch-local, and this comment merges silently.** They
+// were measured on the commit that wrote them. A merge will not conflict on
+// them and will not update them, so this block can arrive in a tree where it
+// is false -- which has already happened once, cleanly, with no diff to
+// review. Therefore: **whoever merges a change to this file re-measures both
+// instantiations and edits these numbers in the same commit.** Nothing checks
+// this. It is not optional and it is not the author's job, it is the merger's.
+//
+// Two measurements from the campaign that established the rule, both of which
+// would have fooled a careful person:
+//
+//   * Two branches each started from D=64 = 125. One spent 3 registers, the
+//     other 2. Each measured itself, each was correctly under the ceiling, and
+//     the same three registers were spent twice -- so the merge lands at 129
+//     or 130 and drops to 1 block/SM. **Per-branch checks are structurally
+//     incapable of catching this**; only a measurement on the integration
+//     branch, after the second change lands, can.
+//   * A variant that derived `vt` from `ks` instead of tracking it **saved a
+//     register at D=128 and cost one at D=64** -- ptxas rescheduled and the
+//     trade inverted. D=128 is 1 block/SM at any count in this range, so the
+//     saving bought nothing while the cost was the entire margin. Optimising
+//     on the D=128 number alone would have shipped at the ceiling and called
+//     it an improvement.
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * kWarp;
 constexpr int kBr = 16 * kWarps;  // query rows per block, 16 per warp
