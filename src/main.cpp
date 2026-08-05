@@ -53,7 +53,7 @@ const CommandHelp kCommands[] = {
      "  --aspect <W:H>               display aspect, 1:4 to 4:1 (default 16:9)\n"
      "  --frames <n>                 snapped up to 17k+5 (default 124, minimum 6)\n"
      "  --steps <n>                  sigma grid points, n-1 evaluations (default 50)\n"
-     "  --sampler euler|ab2|ab2var   integrator (default euler)\n"
+     "  --sampler euler|ab2          integrator (default euler)\n"
      "  --seed <n>                   noise seed\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
      "  --dry-run                    resolve and print the plan, touch no weights\n"
@@ -73,8 +73,6 @@ const CommandHelp kCommands[] = {
      "--sampler ab2 is Adams-Bashforth 2: second order at the same one forward\n"
      "pass per step, so a step costs what it always did and the reason to use it\n"
      "is to lower --steps. Its first step has no velocity history and is Euler.\n"
-     "ab2var is the same method with the coefficients the non-uniform sigma grid\n"
-     "actually calls for rather than the fixed-step 3/2 and -1/2.\n"
      "\n"
      "The conditioner and the transformer are loaded and freed in sequence\n"
      "rather than together: at 23.1 GB and 19.3 GB the int8 and fp8 pair cannot\n"
@@ -672,11 +670,8 @@ int cmd_generate(int argc, char** argv) {
         sampler_kind = vidfab::sampler::SamplerKind::kEuler;
       } else if (v == "ab2") {
         sampler_kind = vidfab::sampler::SamplerKind::kAb2;
-      } else if (v == "ab2var") {
-        sampler_kind = vidfab::sampler::SamplerKind::kAb2Variable;
       } else {
-        std::fprintf(stderr, "vidfab: --sampler wants euler, ab2 or ab2var, got '%s'\n",
-                     v.c_str());
+        std::fprintf(stderr, "vidfab: --sampler wants euler or ab2, got '%s'\n", v.c_str());
         return 2;
       }
     } else if (arg == "--aspect") {

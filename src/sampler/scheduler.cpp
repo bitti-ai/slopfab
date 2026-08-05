@@ -13,7 +13,6 @@ FlowScheduler::FlowScheduler(float shift) : shift_(shift) {
 
 void FlowScheduler::clear_history() {
   previous_velocity_.clear();
-  previous_h_ = 0.0f;
   has_previous_ = false;
   expected_step_ = -1;
 }
@@ -83,9 +82,7 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
         " (or 0 to restart, or reset()). The sampler carries a velocity history, so steps must "
         "run in sequence");
   }
-  const bool second_order =
-      sampler_ == SamplerKind::kAb2 || sampler_ == SamplerKind::kAb2Variable;
-  const bool extrapolate = second_order && has_previous_;
+  const bool extrapolate = sampler_ == SamplerKind::kAb2 && has_previous_;
   if (extrapolate && previous_velocity_.size() != count) {
     throw std::runtime_error("scheduler: sample length changed from " +
                              std::to_string(previous_velocity_.size()) + " to " +
@@ -106,11 +103,6 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
   const float sigma = sigmas_[static_cast<size_t>(step_index)];
   const float sigma_next = sigmas_[static_cast<size_t>(step_index) + 1];
   const float ratio = sigma_next / sigma;
-
-  // The effective step size this update takes, in the variable the schedule
-  // marches: h_n = (1-ratio)*sigma_from_t, which is sigma_n - sigma_{n+1} up
-  // to the fp32 round trip the two sources deliberately keep apart.
-  const float h = (1.0f - ratio) * sigma_from_timestep;
 
   if (!extrapolate) {
     // Euler, byte for byte what this function has always computed. kAb2's
@@ -158,18 +150,10 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
     // stays fp32. It also makes the reduction to Euler exact rather than
     // approximate: when v_{n-1} == v_n, v_hat == v_n bitwise.
     //
-    // kAb2's coefficients are the fixed-step ones on a grid that is not fixed
-    // (sigma is shifted by 12 or 3): expanding v_{n-1} about sigma_n gives a
-    // local error of (h_n/2)(h_n - h_{n-1})*v', where the exact solution wants
-    // (h_n/2)*h_n*v'. Refining the grid shrinks (h_n - h_{n-1}) as h^2, so the
-    // order survives; a *short* schedule is where it does not, and short
-    // schedules are the point of this mode. kAb2Variable is the same
-    // extrapolation with the coefficient that cancels that term outright,
-    //
-    //   v_hat = v_n + (h_n / 2h_{n-1}) * (v_n - v_{n-1})
-    //
-    // which is a half exactly when the steps are equal, so the two modes share
-    // this loop and differ only in `blend`.
+    // The coefficients are the fixed-step ones on a grid that is not fixed
+    // (sigma is shifted by 12 or 3), so the local error carries a
+    // (h_n - h_{n-1}) factor rather than h_n. That is the brief; see the
+    // linear-ODE test for what it buys in practice.
     //
     // NOTE, if step caching is ever enabled alongside this: v_{n-1} would then
     // sometimes be a *reused* velocity from an earlier step rather than a
@@ -177,21 +161,18 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
     // model never actually visited. The two features are not composable as
     // written and their step savings are not multiplicative. Nothing here
     // tries to detect or fix that.
-    const float blend =
-        sampler_ == SamplerKind::kAb2Variable ? h / (2.0f * previous_h_) : 0.5f;
     for (size_t i = 0; i < count; ++i) {
-      const float v_hat = velocity[i] + blend * (velocity[i] - previous_velocity_[i]);
+      const float v_hat = velocity[i] + 0.5f * (velocity[i] - previous_velocity_[i]);
       const float denoised = sample[i] + sigma_from_timestep * v_hat;
       out[i] = ratio * sample[i] + (1.0f - ratio) * denoised;
     }
   }
 
-  if (second_order) {
+  if (sampler_ == SamplerKind::kAb2) {
     // After the update, so `velocity` is still the caller's buffer and the
     // aliasing rule (`out` may alias `sample`) is untouched. One buffer copy
     // per step against a transformer forward pass measured in seconds.
     previous_velocity_.assign(velocity, velocity + count);
-    previous_h_ = h;
     has_previous_ = true;
   }
 }

@@ -19,7 +19,7 @@
 
 namespace vidfab::sampler {
 
-// Which integrator advances the trajectory. All of them cost exactly one model
+// Which integrator advances the trajectory. Both cost exactly one model
 // evaluation per step; the difference is what they do with the velocity they
 // were given.
 enum class SamplerKind {
@@ -32,12 +32,6 @@ enum class SamplerKind {
   // cheaper step. The first step of a trajectory has no history and falls back
   // to Euler.
   kAb2,
-  // The same method with the coefficients a *variable* step grid actually
-  // calls for: v_n + (h_n/2h_{n-1})*(v_n - v_{n-1}), rather than a fixed half.
-  // The sigma grid is shifted by 12 or 3 and is nowhere near uniform, so the
-  // two differ, and they differ most on the short schedules this exists to
-  // make usable. Identical to kAb2 wherever h_n == h_{n-1}.
-  kAb2Variable,
 };
 
 class FlowScheduler {
@@ -99,8 +93,6 @@ class FlowScheduler {
   // audio instances that share a denoising loop never see each other's history
   // and may differ in length.
   std::vector<float> previous_velocity_;
-  // h_{n-1}, the previous step's effective size. Only kAb2Variable reads it.
-  float previous_h_ = 0.0f;
   bool has_previous_ = false;
   // The only index `step` will accept next, or -1 for "fresh, any index".
   int expected_step_ = -1;
