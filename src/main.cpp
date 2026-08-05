@@ -15,6 +15,7 @@
 
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
+#include "vidfab/dit/step_cache.h"
 #include "vidfab/pipeline.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/safetensors_write.h"
@@ -841,6 +842,32 @@ int cmd_generate(int argc, char** argv) {
   if (req.cache_threshold > 0.0f && req.skip_every > 0) {
     std::fprintf(stderr,
                  "vidfab: --cache-threshold and --skip-every are alternatives; pass one\n");
+    return 2;
+  }
+
+  // Refused, not warned about. AB2 extrapolates from `v_{n-1}`, and with step
+  // caching on that is a *reused* velocity — a point the model never visited at
+  // that timestep — so the two-point extrapolation is extrapolating a constant
+  // across the skipped interval. The composition is wrong by construction, not
+  // merely unmeasured, and the failure mode is a plausible-looking number
+  // rather than a crash: whoever ran it would report a combined speedup that
+  // multiplies two savings which do not multiply. See the reasoning recorded in
+  // src/sampler/scheduler.cpp.
+  //
+  // The test is `StepCacheConfig::enabled()` rather than a second copy of its
+  // condition spelled out here, so that "caching is on" has exactly one
+  // definition. A duplicated predicate is how `--sampler ab2` alone — the floor
+  // control, which must stay legal — would eventually start being refused by a
+  // guard that had drifted from the library it is guarding.
+  vidfab::dit::StepCacheConfig cache_cfg;
+  cache_cfg.threshold = req.cache_threshold;
+  cache_cfg.warmup = req.cache_warmup;
+  cache_cfg.skip_every = req.skip_every;
+  if (cache_cfg.enabled() && sampler_kind == vidfab::sampler::SamplerKind::kAb2) {
+    std::fprintf(stderr,
+                 "vidfab: --sampler ab2 does not compose with step caching: ab2 extrapolates\n"
+                 "        from the previous velocity, which caching makes a reused one. Run\n"
+                 "        them separately; their savings are not multiplicative.\n");
     return 2;
   }
 

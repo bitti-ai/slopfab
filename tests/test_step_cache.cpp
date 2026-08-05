@@ -330,6 +330,40 @@ VIDFAB_TEST(step_cache_uses_both_timesteps) {
   CHECK(count(plan) > count(plan_step_cache(cfg, frozen, code)));
 }
 
+VIDFAB_TEST(step_cache_enabled_is_the_one_definition) {
+  // `StepCacheConfig::enabled()` is what the CLI uses to decide whether
+  // `--sampler ab2` is refused, so this is not an accessor test — it pins the
+  // exact combination matrix that guard implements.
+  //
+  // The row that matters most is the last one. `--sampler ab2` with caching off
+  // is the floor control for the whole threshold sweep: two legitimate
+  // integrations of the same ODE at identical evaluation counts, which is the
+  // only way to know whether a threshold's diff means anything or sits inside
+  // the distance two valid trajectories land apart anyway. If `enabled()` ever
+  // returns true for a default-constructed config, that run becomes illegal and
+  // the sweep loses its interpretation while every individual number in it
+  // still looks fine.
+  StepCacheConfig off;
+  CHECK(!off.enabled());
+
+  StepCacheConfig warmup_only;
+  warmup_only.warmup = 12;
+  CHECK(!warmup_only.enabled());  // warmup alone is inert, not an opt-in
+
+  StepCacheConfig explicit_zero;
+  explicit_zero.threshold = 0.0f;
+  explicit_zero.skip_every = 0;
+  CHECK(!explicit_zero.enabled());
+
+  StepCacheConfig thresholded;
+  thresholded.threshold = 1e-6f;
+  CHECK(thresholded.enabled());
+
+  StepCacheConfig interval;
+  interval.skip_every = 1;
+  CHECK(interval.enabled());  // degenerate but opted in: it took the flag path
+}
+
 VIDFAB_TEST(step_cache_short_schedules) {
   StepCacheConfig cfg;
   cfg.threshold = 1e-9f;
