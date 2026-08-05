@@ -1819,14 +1819,23 @@ VIDFAB_TEST(attention_fused_head_dim_64) {
 // bf16 output floor and the 1.01x fp16 ratio that `attention_fp16_score_tile`
 // measured independently, neither of which it was fitted to.
 //
-// Reusing that test's 1.3x would have been the wrong move and is worth saying
-// out loud: bf16 P clears 1.3x by between 0.03 and 0.09. A bar a regression
-// passes by three hundredths is not evidence, it is a coin flip wearing a pass
-// label -- and it is worse than no bar, because the green tick ends the
-// conversation. That test's own comment says as much about its 1.3x: at ratio
-// 1.01 it "has no power to separate fp16 probabilities from bf16 ones". Right
-// about its assertion; the *measurement* separates them fine at 1.25x against
-// 1.01x, which is what this bar is for.
+// At *this* test's amplitudes the same model puts fp16 P at 1.006x and bf16 P
+// at 1.307x, so the two figures to hold in mind are 1.01x and ~1.3x.
+//
+// Reusing the blocked path's 1.3x would have been the wrong move, and the
+// reason is sharper than "it is too loose": bf16 P lands at 1.307x here and at
+// 1.21-1.27x at other amplitudes, so it sits *astride* that bar and which side
+// it falls depends on the data. A bar a regression clears or misses by seven
+// thousandths is not evidence either way -- it is a coin flip wearing whichever
+// label it lands on, and a green one ends the conversation. 1.10x is chosen to
+// sit clear of both figures: fp16 has ~9 points of headroom, bf16 ~20 points of
+// exceedance, and neither depends on the draw.
+//
+// That test's own comment says its 1.3x "has no power to separate fp16
+// probabilities from bf16 ones, because neither is visible through a bf16
+// output". The first half is right about its assertion. The second half is too
+// strong: the *measurement* separates them cleanly, 1.31x against 1.01x. Both
+// comments are left standing because they are about different things.
 VIDFAB_TEST(attention_fused_probability_precision) {
   CublasScope cb;
   const int seq = 1024;
