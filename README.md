@@ -626,10 +626,89 @@ Two things that are easy to get wrong and are load-bearing here:
   That stream is 19.3 MB, which lives in L2. The 638 GB of K/V re-reads is L2
   traffic, not DRAM; swapping the dimensions would make it DRAM traffic.
 
-Remaining headroom is `cp.async` double-buffering of the K/V stage, which is
-still two barriers and 2-byte scalar loads. That needs V pre-converted to fp16
-once per call — 541 MB — so it trades the zero-workspace property for an
-estimated 290–340 ms.
+`cp.async` double-buffering of the K/V stage was tried and **reverted**: two
+resident buffers and one barrier instead of two measured **7.3% slower** than
+the single-buffered kernel it replaced, and `cp.async.ca` in place of `.cg`
+refuted the L1-bypass explanation. The surviving hypothesis is that the
+compiler's own hoisted loads already covered the latency, and an explicit
+one-tile pipeline replaced a working schedule with a rigid one.
+
+### Frame-banded attention — `--attn-band`, off by default
+
+A video row attends to ±N latent frames instead of the whole packed sequence.
+Text and audio rows keep global attention, and every video row keeps the
+text/audio prefix, so the conditioning path is untouched; what it drops is
+distant video-to-video attention. At ±9 frames on the default geometry that is
+**2.05× on the attention kernel and 1.44× on a denoising step** — 19.2 s to
+13.2 s, roughly 16 minutes to 11 on a default run. The saving grows with request
+length, because the band is a fixed number of frames and the sequence is not.
+
+The prior is unusually good for a lossy method: MiniMax's own documentation says
+H3 *"natively supports sparse-attention training and inference"*, introduced in
+the final training stage. **These weights were fine-tuned to tolerate sparsity**;
+the open release ships full attention only because their sparse path is not
+published.
+
+**The band is frame-granular, not a window over the packed row index.** Video
+packs frame-major, so a latent frame is a contiguous run of 1008 rows and a naive
+row-index band would cut *within* a frame — an anisotropic spatial prior that
+would look like a banding artefact and get blamed on the method. Each query tile
+therefore gets two key ranges, not one: its frame band **plus** the text/audio
+prefix, which is 431 of 37 730 rows (1.14%) and sits at the *front* of the
+sequence. A single window around a late frame would exclude it and cut every
+video row off from the prompt.
+
+**What it costs, measured against its own noise floor.** The floor is the
+distance between two integrators on the same request — `--sampler euler` against
+`ab2`, both band-off, same geometry and step count — i.e. the distance between
+two equally valid samples. **It has to be measured where the comparison is
+made:** it is 0.221 at 4 170 rows, 0.435 at 10 040, and 0.348 at 37 730 with 40
+steps. Inheriting one of those instead of measuring it is worth a factor of two.
+
+| steps | video floor | video band ±9 | ratio | audio floor | audio band ±9 | ratio |
+|---|---|---|---|---|---|---|
+| 6 | 0.2371 | 0.4640 | 1.96 | 0.7375 | 0.7118 | 0.97 |
+| 24 | 0.3718 | 0.6129 | 1.65 | 0.4414 | 0.9213 | 2.09 |
+| 40 | 0.3478 | 0.6321 | 1.82 | 0.7628 | 0.8570 | 1.12 |
+
+**Video and audio must be reported separately and never combined.** Audio is 414
+of 37 730 rows, so a combined figure reads 1.65× and buries a 2.09×.
+
+**Video's cost is 1.6–2.0× the floor and shows no step-count trend.** Audio's is
+**not characterised**, and the reason is worth stating because two points made it
+look like one: measured at 6 and 24 steps alone, audio's ratio appeared to climb
+from 0.97 to 2.09 while video's fell, with a tidy mechanism attached — audio
+converging while the band's damage accumulated. The 40-step point destroyed it.
+Neither series is monotonic, and the 24-step reading was an outlier in *both* of
+its components rather than a point on a line.
+
+The diagnostic that says which number to trust is the spread of each quantity
+across the three step counts:
+
+| | floor | band | ratio | |
+|---|---|---|---|---|
+| video | ×1.57 | ×1.36 | **×1.19** | normalising **absorbs** variance |
+| audio | ×1.73 | ×1.29 | **×2.16** | normalising **amplifies** it |
+
+For video the ratio is steadier than either of its parts, which is what a
+working yardstick looks like. For audio, dividing by the floor produces something
+*less* stable than the raw numbers — so the audio ratio is not a measurement, it
+is two noisy numbers divided. Fixing that needs more **seeds**, not more step
+counts; one seed per point leaves the floor moving as much as the effect.
+
+**Is it worse than chunking the request?** Measured against its own floor, ±9
+banding is 1.6–2.0× for video; a chunked-and-cross-faded probe was 1.79× against
+its floor. Dividing those is the natural thing to do and it does not support a
+conclusion — different geometries, different step counts, and the band's own
+ratio moves ×1.19 across step counts with a single seed, comparable to the whole
+gap being compared. What the data supports is narrower: **banding at ±9 costs
+video roughly 1.6–2.0× the sampler noise floor, with audio uncharacterised.**
+Whether that trade is worth taking is a judgement about output that wants eyes on
+a set of samples, which is why it is a flag and not a default.
+
+All fifteen latent dumps behind this table were compared with `vidfab compare`,
+whose `rel_L2` and correlation were cross-checked against an independently
+written tool: the two agree to every digit quoted.
 
 ## Audio level — settled
 
