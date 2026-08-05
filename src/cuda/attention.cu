@@ -563,6 +563,35 @@ namespace fused {
 // kBc doubles with it. Everything proportional to kBr*D -- the rescale, the
 // epilogue -- is paid once per key block, so its cost per FLOP falls as 1/kBc,
 // and kBr=128 halves how many times K and V are re-read per head.
+//
+// --- REGISTER BUDGET: the two instantiations are in different regimes -------
+//
+// Measured on this file with `-Xptxas -v`, sm_120a, at the commit that added
+// this comment. Re-measure rather than trusting the numbers; the *ceiling* is
+// what does not move.
+//
+//   D = 128 : 174 registers, 0 spills, 69120 B smem -> 1 block/SM.
+//             No cliff to fall off. Two blocks would need <=128 registers AND
+//             <=51200 B, and `o[kOTiles][4]` alone is 64 registers of
+//             irreducible accumulator. Instruction count is the only currency
+//             here; spending a register costs nothing.
+//
+//   D = 64  : 125 registers, 0 spills -> 2 blocks/SM, with **three registers
+//             of margin**. The ceiling is 128 and it is exact: 128 * 256
+//             threads is precisely half the 65536-register file. At 129 this
+//             path drops to 1 block/SM -- a 2x occupancy loss.
+//
+// The trap: **no test in this suite can see that happen.** The tests check
+// numbers, and this failure only moves the clock. A change that is bit-exact,
+// digest-identical and obviously correct can still halve D=64's occupancy, and
+// the only thing that reports it is `-Xptxas -v`. So if you touch this kernel,
+// read the register count for **both** instantiations, not just D=128 -- the
+// one with headroom is the one people quote.
+//
+// Deliberately not a `__launch_bounds__` / `minBlocksPerMultiprocessor` cap.
+// D=64 is supported but nothing in this port takes it -- H3 is head_dim 128
+// throughout -- and forcing a cap risks spills on a path that never runs. That
+// is a change worth measuring before making, and it has not been measured.
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * kWarp;
 constexpr int kBr = 16 * kWarps;  // query rows per block, 16 per warp
