@@ -35,6 +35,17 @@ enum class LatentSource {
 struct RunOptions {
   LatentSource source = LatentSource::kDenoise;
   bool verbose = true;
+
+  // If set, the denoiser's own output — the packed video and audio rows,
+  // fp32 — is written here as safetensors before either VAE sees it.
+  //
+  // This is the diff point for a change to the transformer. `decode --dump`
+  // compares pixels, which works but puts 9 GB of VAE between the change and
+  // the comparison and costs 400 MB a side; these are the bytes the change
+  // actually moves, and 7.5 MB of them at the default geometry. Two runs of
+  // the same seed and geometry must produce byte-identical files, so
+  // `vidfab compare a b --abs-tol 0` is the whole test.
+  std::string dump_latents_path;
 };
 
 struct RunResult {

@@ -103,8 +103,14 @@ vidfab compare reference.safetensors actual.safetensors --abs-tol 1e-3
 vidfab devices
 ```
 
-`--dump <f>` writes raw fp32 pixels as safetensors, so two runs can be compared
-at float precision instead of after 8-bit quantisation.
+`decode --dump <f>` writes raw fp32 pixels as safetensors, so two runs can be
+compared at float precision instead of after 8-bit quantisation.
+`generate --dump-latents <f>` writes the denoiser's own output — the packed
+video and audio rows — before either VAE sees it. That is the diff point for a
+change to the transformer: 7.5 MB a side at the default geometry rather than
+400 MB, and no 9 GB decoder between the change and the comparison. Two runs of
+the same seed and geometry must agree exactly, so
+`vidfab compare a b --abs-tol 0` is the whole test.
 
 ## Getting weights
 

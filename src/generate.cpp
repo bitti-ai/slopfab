@@ -15,6 +15,7 @@
 #include "vidfab/text/tokenizer.h"
 #include "vidfab/sampler/scheduler.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/safetensors_write.h"
 #include "vidfab/sampler/noise.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/audio_decoder.h"
@@ -225,6 +226,18 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     dit::patchify_video(video_latents.data(), layout, video_rows.data());
     audio_rows = sampler::audio_noise(request.seed, layout.num_audio_latents);
     result.seconds_denoise = seconds_since(t0);
+  }
+
+  // The denoiser's output, before either VAE. Written from both branches on
+  // purpose: `--synthetic-latents` then dumps seeded noise, which is the
+  // control that says the dump itself is deterministic.
+  if (!options.dump_latents_path.empty()) {
+    write_safetensors(options.dump_latents_path,
+                      {{"video_rows", {layout.num_video_rows, 96}, video_rows},
+                       {"audio_rows", {layout.num_audio_rows, 32}, audio_rows}});
+    if (options.verbose) {
+      std::printf("wrote       %s (denoiser output, fp32)\n", options.dump_latents_path.c_str());
+    }
   }
 
   // --- video ----------------------------------------------------------------
