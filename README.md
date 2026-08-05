@@ -364,25 +364,26 @@ including, absurdly, `ab2` at 19 evaluations landing **closer** to the 50-step
 Euler reference (0.115) than `ab2` at 49 evaluations does (0.221). A metric
 where 19 evaluations beat 49 of the same sampler is not measuring convergence.
 
-**What this section does not test, and the limitation is load-bearing.** Every
-number above measures *distance from `euler` at 50 steps* — which assumes
-`euler@50` is the thing to be close to. Nothing here asks whether either
-sampler produces **better** output at equal cost; only whether the two agree.
-Those are different questions, and the sweep was designed for the first.
+**Euler is the reference throughout, and deliberately so.** It is the update the
+reference implementation ships (spec §7.3), so "distance from `euler` at 50
+steps" is the right axis for a port whose job is to match that reference. A
+large `ab2` distance is therefore a statement about how far a different
+integrator travels, not a verdict on it.
 
-That matters because the 0.2210 figure is used elsewhere as a **noise floor** —
-a symmetric, directionless yardstick. If one sampler is systematically better
-at the same evaluation count, the difference is not pure chaos, the floor
-contains a real directional component, and every ratio-to-floor computed
-against it understates what it is measuring.
+**Which of the two makes preferable video is left to the user.** They are one
+flag apart, cost the same per step, and the answer is a matter of taste across a
+distribution of samples rather than something this project should assert. One
+viewer comparing the two at 40 steps, same seed and prompt, preferred `ab2` on
+both video and audio — one person, one clip, recorded because it is worth
+knowing that the question is live, and not pursued further because it is a
+choice rather than a defect.
 
-There is one informal observation pointing that way: a viewer comparing `ab2`
-against `euler` at 40 steps, default geometry, band off, same seed and prompt,
-judged the `ab2` clip better in both video and audio. **That is one person, one
-clip, unblinded — it is not evidence and it is recorded as a question rather
-than a result.** Settling it needs a blind comparison over several seeds, which
-is cheap at the quick geometry and has not been run. Until it is, `ab2` is
-ruled out as a *step-count reduction* and untested as a *quality change*.
+One consequence worth stating for the sections that reuse the **0.2210** figure
+as a noise floor: it is measured between *two different integrators*, not
+between two draws of one. It bounds how far two defensible results can sit
+apart, which is what a floor is for — but it is not a pure-chance quantity, and
+a ratio against it should be read as "compared to the spread between samplers"
+rather than "compared to nothing at all".
 
 The Euler controls at matched step counts are what make that readable, and
 they are non-monotone:
