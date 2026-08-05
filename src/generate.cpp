@@ -141,6 +141,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     live.total_rows(), result.seconds_transformer_load);
       }
       const Clock::time_point t_prep = Clock::now();
+      // Before prepare_sequence: that is where the per-query-tile key ranges are
+      // built, and they depend on the band.
+      model.set_attention_band(options.attention_band);
+      if (options.attention_band > 0 && options.verbose) {
+        std::printf("attention  frame band +/-%d latent frames (lossy, changes the sample)\n",
+                    options.attention_band);
+      }
       model.prepare_text(prompt.data.data(), prompt.num_tokens);
       model.prepare_sequence(live, idx, pos);
       result.seconds_prepare = seconds_since(t_prep);

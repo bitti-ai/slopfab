@@ -53,6 +53,16 @@ struct RunOptions {
   // the same seed and geometry must produce byte-identical files, so
   // `vidfab compare a b --abs-tol 0` is the whole test.
   std::string dump_latents_path;
+
+  // Frame-banded attention: a video row attends to +/- this many latent frames
+  // rather than the whole packed sequence. 0 is off and is the default.
+  //
+  // Lossy by construction and therefore not a tuning knob: it changes the
+  // sample. Text and audio rows keep global attention and every video row keeps
+  // the text/audio prefix, so the conditioning path is unaffected; what it drops
+  // is distant video-to-video attention. Its cost scales as the band's share of
+  // the sequence, so it saves more the longer the request.
+  int attention_band = 0;
 };
 
 struct RunResult {

@@ -483,6 +483,11 @@ struct Transformer::Impl {
   bool has_sequence = false;
   int num_text = 0;
   Carve carve;
+  // Frame-banded attention. `attn_band` is a request-level setting; `d_band`
+  // holds the per-query-tile key ranges the kernel reads, built once in
+  // `prepare_sequence` and empty when banding is off.
+  int attn_band = 0;
+  DeviceBuffer<int32_t> d_band;
   DeviceBuffer<float> rope_cos, rope_sin;
   DeviceBuffer<int32_t> d_text_idx, d_audio_idx, d_video_idx;
   DeviceBuffer<__nv_bfloat16> text_cache;
@@ -657,6 +662,9 @@ struct Transformer::Impl {
     // fused path from a fallback to the blocked one — only the magnitudes
     // could, which is not a check, it is a reader noticing.
     const AttentionBackend backend = cuda::attention_preferred_backend(acfg);
+    // Empty unless this request asked for a band, so the default path hands the
+    // kernel a null pointer and gets the unbanded instantiation.
+    acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
     cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
     prof.tick(backend == AttentionBackend::kFused ? "attn.fused" : "attn.blocked", stream.get());
 
@@ -714,6 +722,9 @@ const TransformerConfig& Transformer::config() const { return impl_->cfg; }
 size_t Transformer::weight_bytes() const { return impl_->arena_bytes; }
 void Transformer::set_adaln_lookup(AdaLNLookup mode) { impl_->lookup = mode; }
 AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
+
+void Transformer::set_attention_band(int frames) { impl_->attn_band = frames > 0 ? frames : 0; }
+int Transformer::attention_band() const { return impl_->attn_band; }
 
 void Transformer::unload() {
   impl_->blocks.clear();
@@ -1193,6 +1204,23 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   s.layout = layout;
   s.indices = indices;
   s.carve = plan_carve(s.cfg, layout);
+
+  // Frame-banded attention: one small table for the whole request, ~300 entries
+  // at the default geometry, rebuilt here because it depends on the layout and
+  // nothing else. Off leaves the buffer empty, which is what the attention call
+  // site turns into a null `band_ranges` and so into the unbanded kernel.
+  //
+  // Built from the kernel's own tiling rather than from constants repeated here:
+  // a query tile or key alignment that drifted from the kernel's would produce a
+  // band subtly misaligned with the loop, which is a wrong model rather than an
+  // error.
+  s.d_band.reset();
+  if (s.attn_band > 0) {
+    const dit::BandedKeyRanges band = dit::build_banded_key_ranges(
+        layout, s.attn_band, cuda::attention_fused_query_tile(), cuda::attention_fused_key_align());
+    s.d_band.allocate(band.ranges.size());
+    s.d_band.copy_from_host(band.ranges.data(), band.ranges.size(), s.stream.get());
+  }
 
   s.rope_cos.allocate(static_cast<size_t>(seq) * 96);
   s.rope_sin.allocate(static_cast<size_t>(seq) * 96);

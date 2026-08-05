@@ -61,6 +61,17 @@ class Transformer {
   void set_adaln_lookup(AdaLNLookup mode);
   AdaLNLookup adaln_lookup() const;
 
+  // Frame-banded attention: a video row attends to +/- this many latent frames
+  // instead of the whole sequence. 0 is off and is the default.
+  //
+  // **This is lossy and it changes the sample**, unlike every other knob on this
+  // class. Text and audio rows keep global attention, and every video row keeps
+  // the text/audio prefix, so the conditioning path is untouched; what it drops
+  // is distant video-to-video attention. Set before `prepare_sequence`, which is
+  // where the per-query-tile key ranges are built.
+  void set_attention_band(int frames);
+  int attention_band() const;
+
   // Runs the token refiner over the conditioning embedding and caches the
   // result. Position-agnostic and timestep-independent, so it runs once per
   // request rather than once per step — the reference re-runs it every step

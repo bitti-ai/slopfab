@@ -60,6 +60,10 @@ const CommandHelp kCommands[] = {
      "  --dry-run                    resolve and print the plan, touch no weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
      "                               noise, to exercise the VAEs and the muxer\n"
+     "  --attn-band <frames>         frame-banded attention: a video row attends to\n"
+     "                               +/- this many latent frames instead of the whole\n"
+     "                               sequence. 0 (default) is off. Lossy -- it changes\n"
+     "                               the sample, and saves more the longer the request\n"
      "  --dump-latents <f>           the denoiser's own output as fp32 safetensors,\n"
      "                               before either VAE; the diff point for a change\n"
      "                               to the transformer\n"
@@ -684,6 +688,7 @@ int cmd_generate(int argc, char** argv) {
   bool synthetic = false;
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
   std::string dump_latents;
+  int attn_band = 0;
   int bench_load = 0;
 
   for (int i = 0; i < argc; ++i) {
@@ -741,6 +746,8 @@ int cmd_generate(int argc, char** argv) {
       synthetic = true;
     } else if (arg == "--dump-latents") {
       dump_latents = next("--dump-latents");
+    } else if (arg == "--attn-band") {
+      attn_band = std::atoi(next("--attn-band"));
     } else if (arg == "--bench-load") {
       bench_load = std::atoi(next("--bench-load"));
     } else {
@@ -807,6 +814,7 @@ int cmd_generate(int argc, char** argv) {
       synthetic ? vidfab::LatentSource::kSyntheticNoise : vidfab::LatentSource::kDenoise;
   options.sampler = sampler_kind;
   options.dump_latents_path = dump_latents;
+  options.attention_band = attn_band;
 
   std::printf("\n");
   const vidfab::RunResult run = vidfab::run_generate(req, plan, options);
