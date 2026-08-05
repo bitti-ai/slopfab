@@ -155,6 +155,17 @@ std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
 // deliberately a knob — spec 3.5 leaves the grid semantics unresolved).
 using CodeFn = std::function<std::array<float, AdaLNTable::kRank>(float t)>;
 
+// One step's conditioning signature: `c(t_v)` followed by `c(t_a)`, resized to
+// 2*kRank.
+//
+// Shared by the denoise loop and by `plan_step_cache` on purpose. The two must
+// agree about what a step's signature *is* — not merely about what to do with
+// it — and the way they would silently stop agreeing is one of them ordering
+// the pair the other way, or passing the audio timestep where the video one
+// belongs. Either produces a different-but-plausible skip schedule, and the
+// planner is what the tests check while the loop is what runs.
+void build_signature(const CodeFn& code, float t_video, float t_audio, std::vector<float>& out);
+
 std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
                                      const std::vector<std::pair<float, float>>& schedule,
                                      const CodeFn& code);

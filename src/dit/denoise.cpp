@@ -8,6 +8,7 @@
 
 #include "vidfab/dit/denoise.h"
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -96,32 +97,33 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
 
   // The signature of a step, `c(t_v)` then `c(t_a)`. Built only when the cache
   // is on, so a default run never touches the AdaLN table here.
+  //
+  // `adaln_code` honours the configured lookup mode rather than hardcoding one
+  // — the grid semantics are unresolved and the mode is deliberately a knob
+  // (spec 3.5). Two distinct timesteps per step for t2va (spec 7.5), on grids
+  // of different shift that move at different rates, so both go into it.
+  const CodeFn code = inputs.code ? inputs.code : CodeFn([&transformer](float t) {
+    return transformer.adaln_code(t);
+  });
   std::vector<float> signature;
-  if (cache.enabled()) signature.resize(2 * static_cast<size_t>(AdaLNTable::kRank));
 
+  out.decisions.reserve(static_cast<size_t>(std::max(0, steps)));
   for (int i = 0; i < steps; ++i) {
     bool compute = true;
     if (cache.enabled()) {
       cuda::HostSpan span("step_cache");
-      // Two distinct timesteps per step for t2va (spec 7.5), on grids of
-      // different shift that move at different rates, so both go into the
-      // distance. `adaln_code` honours the configured lookup mode rather than
-      // hardcoding one — the grid semantics are unresolved and the mode is
-      // deliberately a knob (spec 3.5).
-      const std::array<float, AdaLNTable::kRank> cv =
-          inputs.code ? inputs.code(video_t[static_cast<size_t>(i)])
-                      : transformer.adaln_code(video_t[static_cast<size_t>(i)]);
-      const std::array<float, AdaLNTable::kRank> ca =
-          inputs.code ? inputs.code(audio_t[static_cast<size_t>(i)])
-                      : transformer.adaln_code(audio_t[static_cast<size_t>(i)]);
-      for (int k = 0; k < AdaLNTable::kRank; ++k) {
-        signature[static_cast<size_t>(k)] = cv[static_cast<size_t>(k)];
-        signature[static_cast<size_t>(AdaLNTable::kRank + k)] = ca[static_cast<size_t>(k)];
-      }
+      // Shared with `plan_step_cache`, so the loop and the planner cannot
+      // disagree about what this step's signature is — only about what to do
+      // with it, which is the thing under test.
+      build_signature(code, video_t[static_cast<size_t>(i)], audio_t[static_cast<size_t>(i)],
+                      signature);
       compute = cache.should_compute(i, signature.data(), static_cast<int>(signature.size()));
     } else {
       compute = cache.should_compute(i, nullptr, 0);
     }
+    // Recorded here, from the variable that gates the call below, before
+    // anything can act on it.
+    out.decisions.push_back(compute ? 1u : 0u);
 
     // The skip. Not calling `forward` is the entire mechanism; the velocity
     // buffers below still hold the last computed prediction.

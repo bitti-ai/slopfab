@@ -22,6 +22,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -29,6 +30,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "harness.h"
@@ -1152,6 +1154,150 @@ vidfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
   in.audio_scheduler = &audio;
   in.seed = 4242;
   return in;
+}
+
+// The step cache's decision function is pinned in tests/test_step_cache.cpp,
+// which runs on the host. What that cannot reach is whether the *loop* honours
+// it, and the two failures are different: `plan_step_cache` saying compute at
+// {0,1,2,5,9,...} while the loop actually evaluated {0,1,2,5,10,...} would leave
+// every diff statistic internally consistent, the skip count correct, and the
+// by-skip-position analysis — the one that survives the trajectory noise floor
+// and therefore carries the whole result — describing a schedule that never ran.
+//
+// The bug direction is "faster". Skipping more steps, or different ones, looks
+// like the feature working well and beats any pre-registered forecast, which is
+// exactly the result nobody interrogates. A pre-registered number is no
+// protection; only a reference is.
+//
+// Three things must agree, and they come from three independent places:
+//   1. `plan_step_cache` — the planner, from the schedule and the config
+//   2. `out.decisions`   — recorded inside the loop from the gate variable
+//   3. the steps on which the substituted velocity was actually invoked
+// (1) vs (2) is "the loop decided what the planner decided"; (2) vs (3) is "the
+// loop then did what it decided". Neither implies the other.
+VIDFAB_TEST(denoise_skips_exactly_the_planned_steps) {
+  const SequenceLayout layout = tiny_layout();
+  const PackedIndices idx = vidfab::dit::build_indices(layout);
+
+  // A code function standing in for the AdaLN table: c(t) = (t, 0...). The
+  // relative-L1 distance between consecutive signatures is then a known
+  // function of the two schedules, and the planner and the loop must derive it
+  // from the same timesteps.
+  const vidfab::dit::CodeFn code = [](float t) {
+    std::array<float, vidfab::dit::AdaLNTable::kRank> c{};
+    c[0] = t;
+    c[1] = 0.5f * t;
+    return c;
+  };
+
+  struct Case {
+    const char* name;
+    float threshold;
+    int warmup;
+    int skip_every;
+  };
+  const Case cases[] = {
+      {"off", 0.0f, 3, 0},
+      {"threshold", 0.30f, 3, 0},
+      {"threshold, warmup 6", 0.30f, 6, 0},
+      {"skip-every 3", 0.0f, 3, 3},
+      {"threshold below any increment", 1e-9f, 2, 0},
+      {"threshold above every increment", 1e6f, 2, 0},
+  };
+
+  for (const Case& c : cases) {
+    vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+    video.set_timesteps(16);
+    audio.set_timesteps(16);
+
+    Transformer model;  // never used: `velocity` and `code` short-circuit it
+    vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+    in.code = code;
+    in.cache.threshold = c.threshold;
+    in.cache.warmup = c.warmup;
+    in.cache.skip_every = c.skip_every;
+
+    std::vector<uint8_t> invoked(video.timesteps().size(), 0);
+    in.velocity = [&](int step, const RowTimesteps&, const float*, const float*, float* vv,
+                      float* av) {
+      invoked[static_cast<size_t>(step)] = 1;
+      std::fill(vv, vv + layout.num_video_rows * 96, 0.25f);
+      std::fill(av, av + layout.num_audio_rows * 32, -0.5f);
+    };
+
+    // The planner, driven from the same two schedules the loop reads.
+    std::vector<std::pair<float, float>> schedule;
+    for (size_t i = 0; i < video.timesteps().size(); ++i) {
+      schedule.emplace_back(video.timesteps()[i], audio.timesteps()[i]);
+    }
+    const std::vector<uint8_t> planned = vidfab::dit::plan_step_cache(in.cache, schedule, code);
+
+    const vidfab::dit::DenoiseOutputs out = vidfab::dit::denoise(model, in);
+
+    CHECK_MSG(out.decisions == planned, "%s: loop decisions differ from plan_step_cache", c.name);
+    CHECK_MSG(invoked == planned, "%s: forward ran on steps the plan did not choose", c.name);
+    CHECK_MSG(out.decisions.size() == video.timesteps().size(),
+              "%s: %zu decisions for %zu evaluations", c.name, out.decisions.size(),
+              video.timesteps().size());
+
+    int computed = 0;
+    for (uint8_t v : planned) computed += v;
+    CHECK_MSG(out.steps_computed == computed, "%s: steps_computed %d, plan says %d", c.name,
+              out.steps_computed, computed);
+    CHECK_MSG(out.steps_skipped == static_cast<int>(planned.size()) - computed,
+              "%s: steps_skipped disagrees with the plan", c.name);
+
+    // The two guarantees, asserted against what actually ran rather than
+    // against the planner that was already checked for them on the host.
+    CHECK_MSG(invoked.front() == 1, "%s: step 0 was skipped and has no velocity to reuse", c.name);
+    CHECK_MSG(invoked.back() == 1, "%s: the terminal step was skipped", c.name);
+  }
+}
+
+// The cache off must leave the loop's output untouched, elementwise, against
+// the same loop built without a cache config at all. This is the unit-level
+// half of the bit-identity gate: it needs no checkpoint and no card time, so a
+// regression in the default path fails here long before a generation is run.
+VIDFAB_TEST(denoise_cache_disabled_changes_nothing) {
+  const SequenceLayout layout = tiny_layout();
+  const PackedIndices idx = vidfab::dit::build_indices(layout);
+
+  auto run = [&](bool set_inert_flags) {
+    vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+    video.set_timesteps(14);
+    audio.set_timesteps(14);
+    Transformer model;
+    vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+    if (set_inert_flags) {
+      // Explicitly zero, plus a warmup that must not switch anything on by
+      // itself. `--cache-warmup` alone is inert and this is where that is
+      // enforced end to end rather than at the predicate.
+      in.cache.threshold = 0.0f;
+      in.cache.skip_every = 0;
+      in.cache.warmup = 9;
+    }
+    in.velocity = [&](int step, const RowTimesteps&, const float* v, const float*, float* vv,
+                      float* av) {
+      // Velocity that depends on the step and on the current latents, so a
+      // reused one would diverge immediately rather than coincidentally match.
+      const float s = 0.1f * static_cast<float>(step + 1);
+      for (int r = 0; r < layout.num_video_rows * 96; ++r) vv[r] = s * (v[r] + 0.3f);
+      std::fill(av, av + layout.num_audio_rows * 32, s);
+    };
+    return vidfab::dit::denoise(model, in);
+  };
+
+  const vidfab::dit::DenoiseOutputs a = run(false);
+  const vidfab::dit::DenoiseOutputs b = run(true);
+
+  CHECK(a.steps_skipped == 0);
+  CHECK(b.steps_skipped == 0);
+  CHECK(a.decisions == b.decisions);
+  for (uint8_t d : a.decisions) CHECK(d == 1);
+  // Exact equality, not a tolerance: the default path must be the same
+  // arithmetic in the same order, not merely close to it.
+  CHECK(a.video_rows == b.video_rows);
+  CHECK(a.audio_rows == b.audio_rows);
 }
 
 VIDFAB_TEST(denoise_zero_velocity_is_a_fixed_point) {

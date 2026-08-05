@@ -83,20 +83,27 @@ std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
   return out;
 }
 
+void build_signature(const CodeFn& code, float t_video, float t_audio, std::vector<float>& out) {
+  if (!code) throw std::runtime_error("build_signature: no code function");
+  const std::array<float, AdaLNTable::kRank> cv = code(t_video);
+  const std::array<float, AdaLNTable::kRank> ca = code(t_audio);
+  out.resize(2 * static_cast<size_t>(AdaLNTable::kRank));
+  for (int k = 0; k < AdaLNTable::kRank; ++k) {
+    out[static_cast<size_t>(k)] = cv[static_cast<size_t>(k)];
+    out[static_cast<size_t>(AdaLNTable::kRank + k)] = ca[static_cast<size_t>(k)];
+  }
+}
+
 std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
                                      const std::vector<std::pair<float, float>>& schedule,
                                      const CodeFn& code) {
   if (!code) throw std::runtime_error("plan_step_cache: no code function");
   std::vector<std::vector<float>> codes;
   codes.reserve(schedule.size());
+  std::vector<float> row;
   for (const std::pair<float, float>& t : schedule) {
-    const std::array<float, AdaLNTable::kRank> cv = code(t.first);
-    const std::array<float, AdaLNTable::kRank> ca = code(t.second);
-    std::vector<float> row;
-    row.reserve(2 * AdaLNTable::kRank);
-    row.insert(row.end(), cv.begin(), cv.end());
-    row.insert(row.end(), ca.begin(), ca.end());
-    codes.push_back(std::move(row));
+    build_signature(code, t.first, t.second, row);
+    codes.push_back(row);
   }
   return plan_step_cache(config, codes);
 }

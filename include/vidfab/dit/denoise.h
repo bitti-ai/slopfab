@@ -84,6 +84,29 @@ struct DenoiseOutputs {
   // every geometry and schedule length.
   int steps_computed = 0;
   int steps_skipped = 0;
+
+  // The compute/skip decision the loop actually took at each step: 1 = the
+  // transformer ran, 0 = the previous velocity was reused. Length is the number
+  // of model evaluations in the schedule.
+  //
+  // This exists because the counts above are a *weak* check. They catch
+  // "skipped 14 when the plan said 12" and miss "skipped 12, two of them the
+  // wrong steps" — and a swap is the more likely failure, since an off-by-one
+  // in the warmup or terminal guard moves *which* steps rather than how many.
+  // The by-skip-position analysis is the one that survives the trajectory noise
+  // floor, so it is the one carrying the result, and it would be describing a
+  // schedule that did not happen.
+  //
+  // The bug direction here is "faster", which is the direction nobody
+  // interrogates: skipping more steps, or different ones, looks like the
+  // feature working well and beats whatever was pre-registered. A
+  // pre-registered number is no protection against that; only a reference is,
+  // and this is the reference.
+  //
+  // Recorded from the same variable that gates the forward call, not
+  // re-derived from the config — a re-derivation would agree with the planner
+  // by construction and check nothing.
+  std::vector<uint8_t> decisions;
 };
 
 // Called after each step with (step_index, total_steps). Return false to abort.
