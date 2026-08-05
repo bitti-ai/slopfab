@@ -597,6 +597,116 @@ __device__ inline void mma_f16(float (&d)[4], const uint32_t (&a)[4], const uint
 
 __device__ inline uint32_t ld32(const void* p) { return *reinterpret_cast<const uint32_t*>(p); }
 
+// --- K/V staging ------------------------------------------------------------
+//
+// Staging one key block moves kBc*D halves of K and the same of V from global
+// into shared. It sits between two `__syncthreads`, so no `mma` can issue while
+// any of it is in flight, and that made it the kernel's largest single cost.
+//
+// **Nothing about a thread's share of it depends on the key block.** Its row,
+// its column, both shared destinations and both global sources are fixed by the
+// thread index; from one key block to the next the sources advance by exactly
+// `kBc * kvld` and the destinations do not move at all. The previous version
+// derived all of it from a flat index on every element -- `r = i / D`,
+// `c = i % D`, then a 64-bit `row*kvld + kv_head*D + c`, reloading the kernel
+// parameters from the constant bank as it went -- and cost **172 SASS
+// instructions per trip over 8 trips, 1376 per warp per key block**, of which
+// 128 were the loads and 128 the stores. `KvStage` hoists the lot: the staging
+// call inside the `k0` loop does not reference `k0`.
+//
+// **Each thread takes eight contiguous columns**, one 16-byte access. K is
+// staged row-major, so that is one `LDG.128` and one `STS.128`. V is staged
+// transposed on purpose (see above), so its eight halves land in eight
+// different rows of `vt` and its stores stay scalar `STS.U16`; only its load
+// widens.
+//
+// **The lane -> row map is permuted, and that is load-bearing.** A warp covers
+// 8 rows x 32 columns as (row rr, 16-byte column cc). K's 16-byte store starts
+// in bank `4*rr + 4*cc + 16*cg (mod 32)`, and a 128-bit store is issued in
+// phases of eight lanes whose starting banks must be eight distinct multiples
+// of four. The natural `rr = lane/4` gives a phase `rr + cc` of
+// 0,1,2,3,1,2,3,4 -- three collisions, a 2-way conflict on every K store.
+// `rr = lane/8 + 4*((lane/4) & 1)` gives it {0,4} x {0,1,2,3}, which is
+// 0,4,8,...,28. V's scatter is indifferent to the permutation: `kVStride` is 66
+// halves, so 33 words, so its bank reduces to `col + e + row/2 (mod 32)` and a
+// warp covers 16 distinct words with the two lanes of each pair writing the two
+// halves of one word.
+constexpr int kVec = 8;                          // halves in a 16-byte access
+constexpr int kStageCols = 4;                    // 16-byte columns one warp covers
+constexpr int kStageRows = kWarp / kStageCols;   // rows one warp covers
+
+// Hoisted staging state for one thread. Constructed once; `run` stages the
+// current key block and advances to the next, so the loop body carries no
+// addressing of its own. Keeping it a value rather than inline code is what
+// lets a second buffer be staged ahead of the one being consumed without
+// touching any of the arithmetic.
+template <int D>
+struct KvStage {
+  static constexpr int kColGroups = D / (kVec * kStageCols);          // 4 at D=128, 2 at D=64
+  static constexpr int kRowsPerPass = kWarps / kColGroups * kStageRows;
+  static constexpr int kPasses = kBc / kRowsPerPass;
+  static constexpr int kKStride = D + kPadH;
+  static constexpr int kVStride = kBc + kPadV;
+
+  static_assert(kStageCols == 4 && kStageRows == 8, "the bank argument above assumes 4x8 warps");
+  static_assert(D % (kVec * kStageCols) == 0, "D must tile into whole 16-byte column groups");
+  static_assert(kWarps % kColGroups == 0, "warps must split evenly over the column groups");
+  static_assert(kPasses * kRowsPerPass == kBc, "the passes must tile the key block exactly");
+  // 16-byte shared stores need 16-byte-aligned rows at both ends of the tile.
+  static_assert((kKStride * 2) % 16 == 0, "K rows must start on a 16-byte boundary");
+  static_assert((kBr * (D + kPadH) * 2) % 16 == 0, "ks must start on a 16-byte boundary");
+
+  const __nv_bfloat16* kp;  // this thread's K source for pass 0 of the current key block
+  const __nv_bfloat16* vp;
+  size_t pass_stride;       // halves between one pass and the next
+  int ks_off;               // halves into ks
+  int vt_off;               // halves into vt
+  int row;                  // absolute key row of pass 0
+
+  __device__ KvStage(const __nv_bfloat16* k, const __nv_bfloat16* v, int tid, int kv_head,
+                     size_t kvld) {
+    const int warp = tid / kWarp;
+    const int lane = tid % kWarp;
+    const int cc = lane & (kStageCols - 1);
+    const int rr = (lane >> 3) + 4 * ((lane >> 2) & 1);
+    const int cg = warp % kColGroups;
+    const int rg = warp / kColGroups;
+    const int col = (cg * kStageCols + cc) * kVec;
+    row = rg * kStageRows + rr;
+    ks_off = row * kKStride + col;
+    vt_off = col * kVStride + row;
+    const size_t off = static_cast<size_t>(row) * kvld + static_cast<size_t>(kv_head) * D + col;
+    kp = k + off;
+    vp = v + off;
+    pass_stride = static_cast<size_t>(kRowsPerPass) * kvld;
+  }
+
+  // Rows past the end of the sequence are zeroed exactly as before -- the
+  // softmax excludes dead *columns* itself and must keep seeing zeros here, not
+  // stale shared memory. Barriers are the caller's.
+  __device__ void run(__nv_bfloat16* ks, __half* vt, int seq) {
+#pragma unroll
+    for (int p = 0; p < kPasses; ++p) {
+      uint4 kw = {0u, 0u, 0u, 0u};
+      uint4 vw = {0u, 0u, 0u, 0u};
+      if (row < seq) {
+        kw = *reinterpret_cast<const uint4*>(kp);
+        vw = *reinterpret_cast<const uint4*>(vp);
+      }
+      *reinterpret_cast<uint4*>(ks + ks_off + p * kRowsPerPass * kKStride) = kw;
+      const __nv_bfloat16* src = reinterpret_cast<const __nv_bfloat16*>(&vw);
+      __half* dst = vt + vt_off + p * kRowsPerPass;
+#pragma unroll
+      for (int e = 0; e < kVec; ++e) {
+        dst[e * kVStride] = __float2half(__bfloat162float(src[e]));
+      }
+      kp += pass_stride;
+      vp += pass_stride;
+      row += kRowsPerPass;
+    }
+  }
+};
+
 __device__ inline uint32_t pack_h2(float lo, float hi) {
   const __half2 h = __floats2half2_rn(lo, hi);
   return *reinterpret_cast<const uint32_t*>(&h);
@@ -624,7 +734,10 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   constexpr int kOTiles = D / kMmaN;   // n-tiles of O
   constexpr int kPSteps = kBc / 16;    // k-steps of the PV product
 
-  extern __shared__ char raw_smem[];
+  // 16-byte aligned because the K stage stores `uint4`. The dynamic allocation
+  // is suitably aligned already; saying so keeps it true if the declaration
+  // ever moves.
+  extern __shared__ __align__(16) char raw_smem[];
   __nv_bfloat16* qs = reinterpret_cast<__nv_bfloat16*>(raw_smem);
   __nv_bfloat16* ks = qs + kBr * kQStride;
   __half* vt = reinterpret_cast<__half*>(ks + kBc * kKStride);
@@ -677,17 +790,12 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   float m_a = kHostNegInf, m_b = kHostNegInf;
   float l_a = 0.0f, l_b = 0.0f;
 
+  // Every address the staging needs, computed once. See KvStage.
+  KvStage<D> stage(k, v, tid, kv_head, kvld);
+
   for (int k0 = 0; k0 < seq; k0 += kBc) {
     __syncthreads();  // last iteration's mma has finished reading ks/vt
-    for (int i = tid; i < kBc * D; i += kThreads) {
-      const int r = i / D;
-      const int c = i % D;
-      const int row = k0 + r;
-      const bool live = row < seq;
-      const size_t src = static_cast<size_t>(row) * kvld + kv_head * D + c;
-      ks[r * kKStride + c] = live ? k[src] : __float2bfloat16(0.0f);
-      vt[c * kVStride + r] = live ? __float2half(__bfloat162float(v[src])) : __float2half(0.0f);
-    }
+    stage.run(ks, vt, seq);
     __syncthreads();
 
     // S = Q K^T. K is row-major in shared memory and the B operand is
@@ -852,6 +960,15 @@ void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16*
   if (!fused::supported(cfg)) {
     throw std::runtime_error("attention: kFused supports head_dim 64 or 128, got " +
                              std::to_string(cfg.head_dim));
+  }
+  // K and V are staged with 16-byte vector loads. Every element offset the
+  // kernel forms is a multiple of eight halves -- head_dim is 64 or 128 and each
+  // thread starts on an eight-column boundary -- so only the base pointers can
+  // break it, and every allocator here returns at least 256 bytes of alignment.
+  // Check rather than fault: a misaligned address is a kernel abort with no
+  // indication of which pointer was wrong.
+  if (((reinterpret_cast<uintptr_t>(k) | reinterpret_cast<uintptr_t>(v)) & 15u) != 0) {
+    throw std::runtime_error("attention: kFused needs 16-byte aligned k and v");
   }
   if (cfg.head_dim == 64) {
     fused::launch<64>(stream, q, k, v, out, cfg, num_kv_heads);
