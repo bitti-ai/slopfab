@@ -570,11 +570,15 @@ namespace fused {
 // this comment. Re-measure rather than trusting the numbers; the *ceiling* is
 // what does not move.
 //
-//   D = 128 : 174 registers, 0 spills, 69120 B smem -> 1 block/SM.
-//             No cliff to fall off. Two blocks would need <=128 registers AND
-//             <=51200 B, and `o[kOTiles][4]` alone is 64 registers of
-//             irreducible accumulator. Instruction count is the only currency
-//             here; spending a register costs nothing.
+//   D = 128 : 173 registers, 0 spills, 34304 B smem -> 1 block/SM.
+//             No cliff to fall off, but note *why* has changed: deleting the
+//             shared Q tile took smem from 69120 to 34304 B, so two blocks now
+//             fit in shared memory (68608 <= 102400) and are stopped by
+//             registers alone (173 * 256 * 2 = 88576 > 65536). It reads like
+//             an occupancy win and is not one. `o[kOTiles][4]` alone is 64
+//             registers of irreducible accumulator, so 2 blocks/SM here would
+//             need <=128 and is unreachable. Instruction count is still the
+//             only currency; spending a register costs nothing.
 //
 //   D = 64  : 125 registers, 0 spills -> 2 blocks/SM, with **three registers
 //             of margin**. The ceiling is 128 and it is exact: 128 * 256
@@ -714,9 +718,10 @@ struct KvStage {
   static_assert(D % (kVec * kStageCols) == 0, "D must tile into whole 16-byte column groups");
   static_assert(kWarps % kColGroups == 0, "warps must split evenly over the column groups");
   static_assert(kPasses * kRowsPerPass == kBc, "the passes must tile the key block exactly");
-  // 16-byte shared stores need 16-byte-aligned rows at both ends of the tile.
+  // 16-byte shared stores need 16-byte-aligned rows. `ks` itself is at offset 0
+  // of the dynamic allocation, which `__align__(16)` pins, so only the row
+  // stride is left to check.
   static_assert((kKStride * 2) % 16 == 0, "K rows must start on a 16-byte boundary");
-  static_assert((kBr * (D + kPadH) * 2) % 16 == 0, "ks must start on a 16-byte boundary");
 
   const __nv_bfloat16* kp;  // this thread's K source for pass 0 of the current key block
   const __nv_bfloat16* vp;
@@ -774,10 +779,11 @@ __device__ inline uint32_t pack_h2(float lo, float hi) {
   return *reinterpret_cast<const uint32_t*>(&h);
 }
 
+// Q is not here. It is read straight from global into the A-fragments at block
+// entry and never staged -- see the load in `fused_kernel`.
 template <int D>
 __host__ __device__ inline size_t smem_bytes() {
   size_t n = 0;
-  n += sizeof(__nv_bfloat16) * kBr * (D + kPadH);  // Q
   n += sizeof(__nv_bfloat16) * kBc * (D + kPadH);  // K
   n += sizeof(__half) * D * (kBc + kPadV);         // V transposed
   return n;
@@ -788,7 +794,6 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
     const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ k,
     const __nv_bfloat16* __restrict__ v, __nv_bfloat16* __restrict__ out, int seq, int heads,
     int num_kv_heads, float scale) {
-  constexpr int kQStride = D + kPadH;
   constexpr int kKStride = D + kPadH;
   constexpr int kVStride = kBc + kPadV;
   constexpr int kDSteps = D / 16;      // k-steps of the QK product
@@ -800,8 +805,7 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // is suitably aligned already; saying so keeps it true if the declaration
   // ever moves.
   extern __shared__ __align__(16) char raw_smem[];
-  __nv_bfloat16* qs = reinterpret_cast<__nv_bfloat16*>(raw_smem);
-  __nv_bfloat16* ks = qs + kBr * kQStride;
+  __nv_bfloat16* ks = reinterpret_cast<__nv_bfloat16*>(raw_smem);
   __half* vt = reinterpret_cast<__half*>(ks + kBc * kKStride);
 
   const int q0 = blockIdx.x * kBr;
@@ -821,27 +825,38 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   const int row_a = warp * 16 + gid;
   const int row_b = row_a + 8;
 
-  // Q -> shared, zero past the end of the sequence so the tail block's operands
-  // are defined. Those rows are discarded by the guard in the epilogue, never by
-  // the arithmetic.
-  for (int i = tid; i < kBr * D; i += kThreads) {
-    const int r = i / D;
-    const int c = i % D;
-    const int row = q0 + r;
-    qs[r * kQStride + c] =
-        row < seq ? q[static_cast<size_t>(row) * qld + head * D + c] : __float2bfloat16(0.0f);
-  }
-  __syncthreads();
-
-  // Q A-fragments, loaded once and reused across every key block.
+  // Q A-fragments, straight from global, loaded once and reused across every
+  // key block.
+  //
+  // Q used to be staged through a kBr x D shared tile that existed for exactly
+  // this one read: 34816 B alive for the kernel's whole lifetime, written once,
+  // read once, dead from here on. The `mma` A-fragment layout says which two
+  // elements of which row each lane wants, so the tile was only ever a
+  // transpose-free reshuffle of bytes the thread could address itself --
+  // 32 four-byte loads per thread, once per block, amortised over 590 key
+  // blocks against a barrier and a kBr*D staging loop it also removes.
+  //
+  // Deleting it is the precondition for double-buffering K/V rather than a
+  // saving in its own right: two K/V buffers are 68608 B, and
+  // 68608 + 34816 = 103424 exceeds the 102400 B a block can hold. With Q gone
+  // the pair fits with room to spare.
+  //
+  // Rows past the end of the sequence read zero, exactly as the zero-filled
+  // shared tile gave them. They are discarded by the guard in the epilogue,
+  // never by the arithmetic.
+  const bool q_live_a = q0 + row_a < seq;
+  const bool q_live_b = q0 + row_b < seq;
+  const __nv_bfloat16* qsrc_a =
+      q + static_cast<size_t>(q0 + row_a) * qld + head * D + tig * 2;
+  const __nv_bfloat16* qsrc_b =
+      q + static_cast<size_t>(q0 + row_b) * qld + head * D + tig * 2;
   uint32_t qa[kDSteps][4];
 #pragma unroll
   for (int t = 0; t < kDSteps; ++t) {
-    const __nv_bfloat16* base = qs + t * 16 + tig * 2;
-    qa[t][0] = ld32(base + row_a * kQStride);
-    qa[t][1] = ld32(base + row_b * kQStride);
-    qa[t][2] = ld32(base + row_a * kQStride + 8);
-    qa[t][3] = ld32(base + row_b * kQStride + 8);
+    qa[t][0] = q_live_a ? ld32(qsrc_a + t * 16) : 0u;
+    qa[t][1] = q_live_b ? ld32(qsrc_b + t * 16) : 0u;
+    qa[t][2] = q_live_a ? ld32(qsrc_a + t * 16 + 8) : 0u;
+    qa[t][3] = q_live_b ? ld32(qsrc_b + t * 16 + 8) : 0u;
   }
 
   float o[kOTiles][4];
@@ -1023,14 +1038,17 @@ void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16*
     throw std::runtime_error("attention: kFused supports head_dim 64 or 128, got " +
                              std::to_string(cfg.head_dim));
   }
-  // K and V are staged with 16-byte vector loads. Every element offset the
-  // kernel forms is a multiple of eight halves -- head_dim is 64 or 128 and each
-  // thread starts on an eight-column boundary -- so only the base pointers can
-  // break it, and every allocator here returns at least 256 bytes of alignment.
-  // Check rather than fault: a misaligned address is a kernel abort with no
-  // indication of which pointer was wrong.
-  if (((reinterpret_cast<uintptr_t>(k) | reinterpret_cast<uintptr_t>(v)) & 15u) != 0) {
-    throw std::runtime_error("attention: kFused needs 16-byte aligned k and v");
+  // K and V are staged with 16-byte vector loads, and Q's A-fragments are read
+  // from global as 4-byte pairs. Every element offset the kernel forms is a
+  // multiple of eight halves for K/V and of two for Q -- head_dim is 64 or 128
+  // and each thread starts on an eight-column boundary -- so only the base
+  // pointers can break it, and every allocator here returns at least 256 bytes
+  // of alignment. Check rather than fault: a misaligned address is a kernel
+  // abort with no indication of which pointer was wrong.
+  const uintptr_t bases = reinterpret_cast<uintptr_t>(q) | reinterpret_cast<uintptr_t>(k) |
+                          reinterpret_cast<uintptr_t>(v);
+  if ((bases & 15u) != 0) {
+    throw std::runtime_error("attention: kFused needs 16-byte aligned q, k and v");
   }
   if (cfg.head_dim == 64) {
     fused::launch<64>(stream, q, k, v, out, cfg, num_kv_heads);
