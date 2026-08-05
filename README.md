@@ -148,7 +148,7 @@ someone else is editing.
   `ref/` is licence-restricted and not redistributable, so 1831 is the number
   most people will see; run from the repository root to get 1891.
 - **GPU kernel tests**: every kernel against independent CPU references written
-  from the spec rather than from the kernel. **1043 checks**, plus 11 DEFERRED.
+  from the spec rather than from the kernel. **1051 checks**, plus 11 DEFERRED.
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong
   depth-to-space ordering, or a transposed GEMM all produce plausible output.
 

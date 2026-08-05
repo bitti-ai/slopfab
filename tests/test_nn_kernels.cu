@@ -2130,6 +2130,12 @@ VIDFAB_TEST(production_shape_timings) {
     cfg.num_heads = heads;
     cfg.head_dim = head_dim;
     cfg.query_block = 1024;
+    // The production shape must dispatch to the fused kernel on its own, not
+    // only when a benchmark names it. A silent fall back to the blocked path
+    // would still produce correct output and a believable number -- it is only
+    // visible if something asserts which backend the pipeline would pick.
+    CHECK(vidfab::cuda::attention_preferred_backend(cfg) == vidfab::cuda::AttentionBackend::kFused);
+
     const size_t ws_bytes =
         vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kBlocked);
     Workspace ws;
