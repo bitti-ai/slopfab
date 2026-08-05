@@ -752,7 +752,6 @@ struct KvStage {
 
   const __nv_bfloat16* kp;      // this thread's K source for pass 0 of the current key block
   const __nv_bfloat16* vp;
-  const __nv_bfloat16* k_safe;  // a always-in-bounds K address, for dead rows
   size_t pass_stride;           // halves between one pass and the next
   int ks_off;                   // halves into ks
   int vt_off;                   // halves into vt
@@ -773,7 +772,6 @@ struct KvStage {
     const size_t off = static_cast<size_t>(row) * kvld + static_cast<size_t>(kv_head) * D + col;
     kp = k + off;
     vp = v + off;
-    k_safe = k;
     pass_stride = static_cast<size_t>(kRowsPerPass) * kvld;
   }
 
@@ -785,11 +783,18 @@ struct KvStage {
   // Rows past the end of the sequence are zeroed exactly as before -- the
   // softmax excludes dead *columns* itself and must keep seeing zeros here, not
   // stale shared memory.
-  __device__ void run(__nv_bfloat16* ks, __half* vt, int seq) {
+  // `buf` is the base of one K/V buffer; V's base is a compile-time offset
+  // inside it and is derived rather than passed, so the pipeline tracks two
+  // pointers instead of four. On the D=64 path that difference is the whole
+  // occupancy margin -- see the note in `fused_kernel`.
+  // `k_origin` is any address known to be in bounds, for the dead-row clamp;
+  // the kernel passes its own `k` parameter rather than this struct holding a
+  // copy, so ptxas can rematerialise it from the constant bank.
+  __device__ void run(__nv_bfloat16* ks, __half* vt, const __nv_bfloat16* k_origin, int seq) {
 #pragma unroll
     for (int p = 0; p < kPasses; ++p) {
       const bool live = row < seq;
-      cp_async_16(ks + ks_off + p * kRowsPerPass * kKStride, live ? kp : k_safe, live ? 16 : 0);
+      cp_async_16(ks + ks_off + p * kRowsPerPass * kKStride, live ? kp : k_origin, live ? 16 : 0);
 
       uint4 vw = {0u, 0u, 0u, 0u};
       if (live) vw = *reinterpret_cast<const uint4*>(vp);
@@ -848,6 +853,18 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // also a whole number of 32-word rotations (8576 words, 8576 % 32 == 0), so
   // both buffers have identical bank behaviour and the conflict-free arguments
   // for K's stores and the mma's operand loads carry over unchanged.
+  //
+  // **All four pointers are tracked, and that is the measured choice, not the
+  // lazy one.** V's base is a compile-time offset inside its buffer, so it can
+  // be derived from K's instead of held -- which does save a register at D=128,
+  // 175 -> 174, and costs one at D=64, 127 -> 128. D=64 is the path that cannot
+  // afford it: at 128 registers x 256 threads it sits on exactly half the
+  // 65536-register file, so it gets 2 blocks/SM and **129 would drop it to 1**,
+  // silently halving occupancy on a path no correctness test can distinguish.
+  // D=128 has no such cliff -- it is 1 block/SM at any count in this range -- so
+  // the register saved there buys nothing and the one spent here costs the whole
+  // margin. Read *both* instantiations after touching anything in here; master
+  // is 174 / 125.
   extern __shared__ __align__(16) char raw_smem[];
   __nv_bfloat16* ks_cur = reinterpret_cast<__nv_bfloat16*>(raw_smem);
   __nv_bfloat16* ks_nxt = ks_cur + stage_buf_halves<D>();
@@ -921,7 +938,7 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // Tile 0, before the loop. From here the loop stages tile i+1 into the spare
   // buffer and consumes tile i out of the other, so the copy is in flight
   // across the whole `mma` body instead of sitting between two barriers.
-  stage.run(ks_cur, vt_cur, seq);
+  stage.run(ks_cur, vt_cur, k, seq);
   cp_async_commit();
 
   for (int k0 = 0; k0 < seq; k0 += kBc) {
@@ -933,7 +950,7 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
     __syncthreads();
 
     if (k0 + kBc < seq) {
-      stage.run(ks_nxt, vt_nxt, seq);
+      stage.run(ks_nxt, vt_nxt, k, seq);
       cp_async_commit();
     }
 
@@ -1043,7 +1060,7 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
 
     // Swap the buffers rather than indexing them: a runtime-indexed array of
     // pointers would spill to local memory, and these are 32-bit shared
-    // addresses, so the swap is four register moves.
+    // addresses, so the swap is two register moves.
     __nv_bfloat16* ks_tmp = ks_cur;
     ks_cur = ks_nxt;
     ks_nxt = ks_tmp;
