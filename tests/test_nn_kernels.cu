@@ -32,6 +32,7 @@
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/nvfp4_gemm.cuh"
 #include "vidfab/cuda/workspace.cuh"
+#include "vidfab/dit/packing.h"
 #include "vidfab/dtype.h"
 #include "vidfab/safetensors.h"
 
@@ -1791,6 +1792,190 @@ VIDFAB_TEST(attention_fused_head_dim_64) {
                                         kv_heads, vidfab::cuda::AttentionBackend::kFused, ws);
     VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2, "fused gqa attention, head_dim 64");
+  }
+}
+
+// Dense attention restricted to an explicit key set, for frame banding.
+//
+// It takes the *ranges* rather than a band width, deliberately. The ranges are
+// the specification of what the kernel must do; whether they describe the right
+// band is a separate question, answered on the host by
+// `packing_banded_key_ranges`. Re-deriving an idealised band here would test the
+// two implementations against each other's opinion of the rounding, and the
+// first disagreement would get resolved by tuning the reference until it
+// matched -- which is backwards, and would silently accept a kernel that
+// attends to nearly the right keys.
+std::vector<float> cpu_attention_banded(const std::vector<float>& q, const std::vector<float>& k,
+                                        const std::vector<float>& v, int seq, int heads,
+                                        int kv_heads, int head_dim, float scale,
+                                        const std::vector<int32_t>& ranges, int query_tile) {
+  const int qld = heads * head_dim;
+  const int kvld = kv_heads * head_dim;
+  const int group = heads / kv_heads;
+  std::vector<float> out(size_t(seq) * qld, 0.0f);
+
+  for (int h = 0; h < heads; ++h) {
+    const int kv = h / group;
+    for (int i = 0; i < seq; ++i) {
+      const size_t t = size_t(i / query_tile) * 4;
+      const int lo0 = ranges[t + 0], hi0 = std::min(ranges[t + 1], seq);
+      const int lo1 = ranges[t + 2], hi1 = std::min(ranges[t + 3], seq);
+
+      double m = -1e300;
+      std::vector<std::pair<int, double>> p;
+      p.reserve(size_t(hi0 - lo0) + size_t(std::max(0, hi1 - lo1)));
+      const auto score = [&](int j) {
+        double dot = 0.0;
+        for (int d = 0; d < head_dim; ++d) {
+          dot += double(q[size_t(i) * qld + h * head_dim + d]) *
+                 k[size_t(j) * kvld + kv * head_dim + d];
+        }
+        const double s = dot * scale;
+        m = std::max(m, s);
+        p.emplace_back(j, s);
+      };
+      for (int j = lo0; j < hi0; ++j) score(j);
+      for (int j = lo1; j < hi1; ++j) score(j);
+
+      double sum = 0.0;
+      for (auto& e : p) {
+        e.second = std::exp(e.second - m);
+        sum += e.second;
+      }
+      for (auto& e : p) {
+        const double w = e.second / sum;
+        for (int d = 0; d < head_dim; ++d) {
+          out[size_t(i) * qld + h * head_dim + d] +=
+              float(w * v[size_t(e.first) * kvld + kv * head_dim + d]);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Does the kernel attend to *exactly* the keys the host asked for?
+//
+// Nothing else can answer this. A band one key block too narrow produces
+// finite, plausibly-scaled output, passes every norm and shape check, and is
+// **faster** -- so it would show up as a speedup that beats its own forecast,
+// which is the last thing anyone questions. The band edges here are chosen so
+// the rounding is live: R = 42 rows per frame against a 64-row key block, so no
+// frame boundary lands on a block boundary and every range is rounded outwards.
+VIDFAB_TEST(attention_fused_banded) {
+  CublasScope cb;
+  using vidfab::dit::SequenceLayout;
+
+  SequenceLayout layout;
+  layout.num_text = 5;
+  layout.num_audio_rows = 8;
+  layout.num_latent_frames = 12;
+  layout.latent_height = 12;
+  layout.latent_width = 14;  // R = 6*7 = 42, coprime-ish with the 64-row block
+  layout.num_video_rows = layout.num_latent_frames * layout.rows_per_frame();
+
+  const int seq = layout.total_rows();
+  const int heads = 2;
+  const int head_dim = 128;
+  const int width = heads * head_dim;
+  const int tile = vidfab::cuda::attention_fused_query_tile();
+  const int align = vidfab::cuda::attention_fused_key_align();
+  CHECK(layout.rows_per_frame() == 42);
+  CHECK(layout.rows_per_frame() % align != 0);  // the rounding must be exercised
+
+  const std::vector<float> q = bf16_round(make_data(size_t(seq) * width, 701u, 0.3f));
+  const std::vector<float> k = bf16_round(make_data(size_t(seq) * width, 702u, 0.3f));
+  const std::vector<float> v = bf16_round(make_data(size_t(seq) * width, 703u, 1.0f));
+  BfBuf dq(q), dk(k), dv(v);
+
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len = seq;
+  cfg.num_heads = heads;
+  cfg.head_dim = head_dim;
+
+  for (int band : {2, 3, 5, 64}) {
+    const vidfab::dit::BandedKeyRanges r =
+        vidfab::dit::build_banded_key_ranges(layout, band, tile, align);
+    DeviceBuffer<int32_t> dranges(r.ranges.size());
+    dranges.copy_from_host(r.ranges.data(), r.ranges.size());
+
+    BfBuf dout(size_t(seq) * width);
+    vidfab::cuda::AttentionConfig banded = cfg;
+    banded.band_ranges = dranges.get();
+    Workspace ws;
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), banded,
+                                    vidfab::cuda::AttentionBackend::kFused, ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+    const std::vector<float> want = cpu_attention_banded(
+        q, k, v, seq, heads, heads, head_dim, cfg.effective_scale(), r.ranges, tile);
+    CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2,
+                    ("banded fused attention, band +/-" + std::to_string(band)).c_str());
+  }
+
+  // A band wide enough to span the sequence must reproduce full attention
+  // exactly -- same bytes, not merely the same tolerance. If it does not, the
+  // banded path differs from the unbanded one for reasons that have nothing to
+  // do with banding.
+  {
+    const vidfab::dit::BandedKeyRanges wide =
+        vidfab::dit::build_banded_key_ranges(layout, 64, tile, align);
+    DeviceBuffer<int32_t> dranges(wide.ranges.size());
+    dranges.copy_from_host(wide.ranges.data(), wide.ranges.size());
+
+    BfBuf dfull(size_t(seq) * width), dwide(size_t(seq) * width);
+    Workspace ws;
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dfull.p(), cfg,
+                                    vidfab::cuda::AttentionBackend::kFused, ws);
+    vidfab::cuda::AttentionConfig banded = cfg;
+    banded.band_ranges = dranges.get();
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dwide.p(), banded,
+                                    vidfab::cuda::AttentionBackend::kFused, ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    CHECK_MSG(dfull.bits() == dwide.bits(),
+              "a band covering the sequence is not bit-identical to full attention");
+  }
+
+  // A narrow band must actually change the answer. Without this the test above
+  // would pass just as well against a kernel that ignored `band_ranges`
+  // entirely -- which is the failure the blocked backend throws to avoid.
+  {
+    const vidfab::dit::BandedKeyRanges narrow =
+        vidfab::dit::build_banded_key_ranges(layout, 1, tile, align);
+    DeviceBuffer<int32_t> dranges(narrow.ranges.size());
+    dranges.copy_from_host(narrow.ranges.data(), narrow.ranges.size());
+    BfBuf dfull(size_t(seq) * width), dnarrow(size_t(seq) * width);
+    Workspace ws;
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dfull.p(), cfg,
+                                    vidfab::cuda::AttentionBackend::kFused, ws);
+    vidfab::cuda::AttentionConfig banded = cfg;
+    banded.band_ranges = dranges.get();
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dnarrow.p(), banded,
+                                    vidfab::cuda::AttentionBackend::kFused, ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    CHECK_MSG(dfull.bits() != dnarrow.bits(), "a +/-1 frame band did not change the output");
+  }
+
+  // The blocked backend has no banding and must refuse rather than quietly
+  // returning full attention under a banded caller's name.
+  {
+    DeviceBuffer<int32_t> dranges(4);
+    const std::vector<int32_t> z = {0, seq, 0, 0};
+    dranges.copy_from_host(z.data(), z.size());
+    vidfab::cuda::AttentionConfig banded = cfg;
+    banded.band_ranges = dranges.get();
+    BfBuf dout(size_t(seq) * width);
+    Workspace ws;
+    ws.reserve(vidfab::cuda::attention_workspace_bytes(banded,
+                                                       vidfab::cuda::AttentionBackend::kBlocked));
+    bool threw = false;
+    try {
+      vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), banded,
+                                      vidfab::cuda::AttentionBackend::kBlocked, ws);
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK(threw);
   }
 }
 

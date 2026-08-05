@@ -570,11 +570,31 @@ namespace fused {
 // epilogue -- is paid once per key block, so its cost per FLOP falls as 1/kBc,
 // and kBr=128 halves how many times K and V are re-read per head.
 //
-// --- REGISTER BUDGET: the two instantiations are in different regimes -------
+// --- REGISTER BUDGET: four instantiations now, in different regimes ---------
 //
 // Measured on this file with `-Xptxas -v`, sm_120a, at the commit that added
 // this comment. Re-measure rather than trusting the numbers; the *ceiling* is
 // what does not move.
+//
+//   D = 128, kBanded=false : 173 registers -> 1 block/SM
+//   D = 128, kBanded=true  : 188 registers -> 1 block/SM
+//   D =  64, kBanded=false : 125 registers -> 2 blocks/SM, three of margin
+//   D =  64, kBanded=true  : 128 registers -> 2 blocks/SM, **zero margin**
+//
+// **`D=64, kBanded=true` sits exactly on the ceiling.** 128 * 256 threads * 2
+// blocks is 65536, precisely the register file, so it gets its second block
+// with nothing to spare -- any change to the banded path at that head dim
+// breaks 2 blocks/SM on the first register it spends. That is a far tighter
+// constraint than the unbanded path's three, and it is not what the next
+// person will expect from a line that reads "128, fine".
+//
+// The unbanded numbers are the ones to defend hardest: banding is off by
+// default, so `kBanded=false` is what production runs. It is instruction-for-
+// instruction identical to the pre-banding kernel -- 1792 SASS opcodes at
+// D=128, 1280 at D=64, zero differences in the stream -- and that is the
+// property the template exists to hold, not a coincidence to be preserved by
+// luck. The detail below on what it took to get there is not history for its
+// own sake; it is the failure mode.
 //
 //   D = 128 : 173 registers, 0 spills, 34304 B smem -> 1 block/SM.
 //             No cliff to fall off, but note *why* has changed: deleting the
@@ -616,7 +636,7 @@ namespace fused {
 // instantiations and edits these numbers in the same commit.** Nothing checks
 // this. It is not optional and it is not the author's job, it is the merger's.
 //
-// Two measurements from the campaign that established the rule, both of which
+// Three measurements from the campaign that established the rule, all of which
 // would have fooled a careful person:
 //
 //   * Two branches each started from D=64 = 125. One spent 3 registers, the
@@ -635,6 +655,24 @@ namespace fused {
 //     saving bought nothing while the cost was the entire margin. Optimising
 //     on the D=128 number alone would have shipped at the ceiling and called
 //     it an improvement.
+//   * **A flag charged the path that does not use it.** Frame banding is off by
+//     default, so its cost should have landed entirely on callers who ask for
+//     it. Three intermediates said otherwise, each producing correct output and
+//     passing every test: the natural nested range-then-block loop took D=64
+//     from 125 to **139**, through the ceiling to 1 block/SM, because the outer
+//     loop kept the inner one's state live across it; flattening it fixed D=64
+//     and pushed D=128 to **199**; templating on `kBanded` fixed the banded
+//     path but left unbanded at **187/128**, because the loop's *shape* had
+//     changed and a member had been added to `KvStage` for every caller,
+//     including the ones that never call it. Only `advance(delta)` in place of
+//     a stateful `seek`, and a `while` whose unbanded form is literally the
+//     original `k0 < seq`, returned unbanded to 173/125.
+//
+//     The lesson is narrower than "check both instantiations": **an off-by-
+//     default feature is not free merely because it is guarded.** Its cost
+//     hides in shared state and in loop structure, neither of which the guard
+//     covers, and the only proof is a SASS comparison against the kernel before
+//     the flag existed.
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * kWarp;
 constexpr int kBr = 16 * kWarps;  // query rows per block, 16 per warp
