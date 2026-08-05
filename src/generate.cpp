@@ -15,6 +15,7 @@
 #include "vidfab/text/tokenizer.h"
 #include "vidfab/sampler/scheduler.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/safetensors_write.h"
 #include "vidfab/sampler/noise.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/audio_decoder.h"

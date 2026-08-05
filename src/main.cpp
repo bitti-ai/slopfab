@@ -650,6 +650,7 @@ int cmd_generate(int argc, char** argv) {
   bool synthetic = false;
   std::string dump_latents;
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
+  std::string dump_latents;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -726,6 +727,7 @@ int cmd_generate(int argc, char** argv) {
 
 #if !VIDFAB_WITH_CUDA
   (void)sampler_kind;
+  (void)dump_latents;
   std::fprintf(stderr, "vidfab: built without CUDA support; generate needs a GPU\n");
   return 1;
 #else
@@ -734,6 +736,7 @@ int cmd_generate(int argc, char** argv) {
       synthetic ? vidfab::LatentSource::kSyntheticNoise : vidfab::LatentSource::kDenoise;
   options.dump_latents_path = dump_latents;
   options.sampler = sampler_kind;
+  options.dump_latents_path = dump_latents;
 
   std::printf("\n");
   const vidfab::RunResult run = vidfab::run_generate(req, plan, options);
