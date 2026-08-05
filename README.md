@@ -141,7 +141,12 @@ someone else is editing.
   E2M1, safetensors loading and its rejection cases, comparison statistics, the
   flow scheduler, token packing, request resolution, the AdaLN table, the
   tokenizer, latent noise, the WAV writer and the colour transform.
-  **1891 checks.**
+  **1891 checks** — but only with `ref/` and the checkpoints present. Three
+  tests skip themselves without them (two tokenizer goldens, which need
+  `ref/FL2VA/text_encoder/tokenizer.json`, and one transformer case that needs
+  a real checkpoint), so a clean clone reports **1831** and is not failing.
+  `ref/` is licence-restricted and not redistributable, so 1831 is the number
+  most people will see; run from the repository root to get 1891.
 - **GPU kernel tests**: every kernel against independent CPU references written
   from the spec rather than from the kernel. **1043 checks**, plus 11 DEFERRED.
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong
