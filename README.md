@@ -435,6 +435,59 @@ These are quality comparisons run at one base commit with matched geometry
 (22 frames, 1:1, 4170 packed rows) and matched seeds, so the *ratios* transfer;
 the wall times were taken before the attention staging rewrite and do not.
 
+## Step caching — shipped, and deliberately uncharacterised
+
+`--cache-threshold <x>` reuses the previous step's velocity instead of calling
+the transformer, when the timestep conditioning has barely moved. `0` is off and
+is the default. `--cache-warmup <n>` forces the first `n` steps to evaluate, and
+`--skip-every <n>` is a calibration-free fixed-interval alternative; the two
+skipping modes are rejected together, as is `--sampler ab2` with either, because
+AB2 extrapolates from `v_{n-1}` and a reused velocity makes that extrapolation
+run through a point the model never visited.
+
+**This architecture suits the technique unusually well.** TeaCache and its
+relatives need a per-model polynomial fitted offline, because the quantity they
+want — how much the conditioning moved — is buried in a timestep MLP. Here the
+*entire* timestep conditioning is an 8-vector, `adaln_t_table[row(t)]`, shared
+by all 51 AdaLN consumers (spec §3.4). So `‖c(t_i) − c(t_last)‖` is exact,
+calibration-free and costs microseconds, and the previous velocities are already
+sitting in host vectors the denoise loop allocates anyway.
+
+**What is measured.** The conditioning trajectory, computed on the host from the
+real checkpoint: per-step movement is 0.077–0.083 across the first half of a
+30-step schedule, then ramps to 0.83 at the last step. The resulting skip counts,
+of 29 evaluations:
+
+| threshold | 0.08 | 0.10 | 0.15 | 0.20 | 0.30 | 0.50 |
+|---|---|---|---|---|---|---|
+| evaluations skipped | 0 | 6 | 9 | 12 | 15 | 19 |
+
+Each skipped evaluation is **19.1 s** at the default geometry, so threshold 0.20
+would take a 50-step run from ~16 min to roughly ~11.
+
+**What is not measured: any of it.** No quality comparison has been run at any
+threshold — not one sample, not one seed. The flag is shipped because the code
+is verified, not because the trade is understood, and **a user turning it on is
+the first person to find out what it costs.** Two things are mechanically
+guaranteed and neither is a quality claim: with the flag off the output is
+bit-identical to a build without the feature, and the loop provably skips exactly
+the steps the planner chose — the planner's decisions and the loop's recorded
+decisions are asserted equal, along with the steps the substituted velocity was
+actually used on. Warmup has a floor of 2 because steps 0 and 1 have no previous
+velocity to reuse, and the last step always evaluates because `sigma_next = 0`
+makes `x_next = denoised`, so a stale velocity there writes into the output
+undamped.
+
+**And there is a known, unresolved tension a user should walk into knowingly.**
+The conventional guidance for this technique is that early steps matter most and
+should never be skipped. On this checkpoint the indicator says the opposite: with
+shift 12 the video timestep moves 0.003 per step early and 0.17 late, so the
+skips are **strongly front-loaded** — at threshold 0.20 with the default warmup,
+8 of 12 skips fall in the first half, and the last several steps always evaluate.
+Whether "the conditioning barely moved" and "an error here will not compound over
+the remaining steps" coincide is exactly the question no measurement here
+answers. The flag defaults to off for that reason.
+
 ## Temporal locality — probed before the banding kernel was written
 
 Frame-banded attention (each query attending only within ±N latent frames) is
