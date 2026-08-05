@@ -1730,6 +1730,70 @@ VIDFAB_TEST(attention_fused_ragged_tail) {
   }
 }
 
+// head_dim 64 is the other instantiation `supported()` accepts, and until this
+// existed nothing exercised it -- every fused test above is 128-wide. The two
+// differ in more than a constant: the staging tiles the key block into 2 passes
+// rather than 4 and each warp covers a 32-column group of a 64-wide head rather
+// than of a 128-wide one, so a mapping that covers D=128 exactly can still
+// double-write or skip columns at D=64. A ragged sequence checks that against
+// the tail at the same time.
+VIDFAB_TEST(attention_fused_head_dim_64) {
+  CublasScope cb;
+  const int heads = 5;
+  const int head_dim = 64;
+  const int width = heads * head_dim;
+
+  for (int seq : {64, 129, 200}) {
+    const std::vector<float> q = bf16_round(make_data(size_t(seq) * width, 601u + seq, 0.3f));
+    const std::vector<float> k = bf16_round(make_data(size_t(seq) * width, 602u + seq, 0.3f));
+    const std::vector<float> v = bf16_round(make_data(size_t(seq) * width, 603u + seq, 1.0f));
+    BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * width);
+
+    vidfab::cuda::AttentionConfig cfg;
+    cfg.seq_len = seq;
+    cfg.num_heads = heads;
+    cfg.head_dim = head_dim;
+    CHECK(vidfab::cuda::attention_preferred_backend(cfg) == vidfab::cuda::AttentionBackend::kFused);
+
+    const std::vector<float> want =
+        cpu_attention(q, k, v, seq, heads, heads, head_dim, cfg.effective_scale());
+
+    Workspace ws;
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                    vidfab::cuda::AttentionBackend::kFused, ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2,
+                    ("fused attention, head_dim 64, seq " + std::to_string(seq)).c_str());
+  }
+
+  // Grouped-query at 64 wide as well: `kvld` is num_kv_heads*64 there, which is
+  // the stride the staging walks, and a kv head offset of `kv_head*64` is the
+  // one place a 128-wide assumption would survive every test above.
+  {
+    const int seq = 96;
+    const int kv_heads = 1;
+    const std::vector<float> q = bf16_round(make_data(size_t(seq) * heads * head_dim, 611u, 0.3f));
+    const std::vector<float> k =
+        bf16_round(make_data(size_t(seq) * kv_heads * head_dim, 612u, 0.3f));
+    const std::vector<float> v =
+        bf16_round(make_data(size_t(seq) * kv_heads * head_dim, 613u, 1.0f));
+    BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * heads * head_dim);
+
+    vidfab::cuda::AttentionConfig cfg;
+    cfg.seq_len = seq;
+    cfg.num_heads = heads;
+    cfg.head_dim = head_dim;
+
+    const std::vector<float> want =
+        cpu_attention(q, k, v, seq, heads, kv_heads, head_dim, cfg.effective_scale());
+    Workspace ws;
+    vidfab::cuda::attention_forward_gqa(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                        kv_heads, vidfab::cuda::AttentionBackend::kFused, ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2, "fused gqa attention, head_dim 64");
+  }
+}
+
 // Grouped-query: 6 query heads share 2 kv heads. Getting the kv head index wrong
 // still produces finite, plausibly-scaled output, so it is pinned against the
 // CPU reference rather than against a shape check.
