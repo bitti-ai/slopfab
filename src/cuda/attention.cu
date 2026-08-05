@@ -588,10 +588,15 @@ namespace fused {
 // read the register count for **both** instantiations, not just D=128 -- the
 // one with headroom is the one people quote.
 //
-// Deliberately not a `__launch_bounds__` / `minBlocksPerMultiprocessor` cap.
-// D=64 is supported but nothing in this port takes it -- H3 is head_dim 128
-// throughout -- and forcing a cap risks spills on a path that never runs. That
-// is a change worth measuring before making, and it has not been measured.
+// Deliberately not a `__launch_bounds__` / `minBlocksPerMultiprocessor` cap --
+// and this has now been measured rather than assumed.
+// `__launch_bounds__(kThreads, D == 64 ? 2 : 1)` *does* hold D=64 to 128
+// registers and keep 2 blocks/SM. It pays 8 B stack frame, 12 B spill stores
+// and 8 B spill loads **in the inner loop**, on the very path it rescues, and
+// pushes D=128 to 202 registers (harmless -- no cliff there). So the trade is
+// 2x occupancy against spills in the hot loop, which settles on a clock and
+// not on an argument. Measured, understood, not applied: nothing in this port
+// takes D=64, so the clock that would decide it has never been worth running.
 //
 // **These counts are branch-local, and this comment merges silently.** They
 // were measured on the commit that wrote them. A merge will not conflict on
@@ -605,11 +610,15 @@ namespace fused {
 // would have fooled a careful person:
 //
 //   * Two branches each started from D=64 = 125. One spent 3 registers, the
-//     other 2. Each measured itself, each was correctly under the ceiling, and
-//     the same three registers were spent twice -- so the merge lands at 129
-//     or 130 and drops to 1 block/SM. **Per-branch checks are structurally
-//     incapable of catching this**; only a measurement on the integration
-//     branch, after the second change lands, can.
+//     other 2, each correctly under the ceiling on its own branch. This was
+//     first written as a prediction that the merge would land at 129-130 by
+//     adding the two spends. **That prediction was wrong and understated its
+//     own case: measured after the merge, D=64 came out at 132.** ptxas
+//     reallocates across the whole function body rather than summing
+//     per-branch costs, so a merge can overshoot what its parents spent.
+//     Per-branch numbers are not additive and therefore not predictive:
+//     **only a measurement on the integration branch, after the second change
+//     lands, tells you anything.**
 //   * A variant that derived `vt` from `ks` instead of tracking it **saved a
 //     register at D=128 and cost one at D=64** -- ptxas rescheduled and the
 //     trade inverted. D=128 is 1 block/SM at any count in this range, so the
