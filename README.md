@@ -373,7 +373,11 @@ different sample, not a degraded one.**
 
 One effect is real and replicated. At 20 grid points Euler genuinely degrades —
 it is the worst point in the table — and AB2 does not, on **4 of 4 seeds**,
-each against its own 50-step reference:
+each against its own 50-step reference. Four seeds, but **one geometry and one
+prompt**: enough to say Euler at 20 degrades and AB2 at 20 does not, not enough
+to say how that scales to 124 frames, where the packed sequence is 9× longer
+and the sigma grid is identical while the trajectory is not. Read the 1.26× as
+specific to what was measured.
 
 | seed | euler@20 | ab2@20 | correlation |
 |---|---|---|---|
