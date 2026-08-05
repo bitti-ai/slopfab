@@ -1,6 +1,7 @@
 #include "vidfab/tensor_convert.h"
 
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace vidfab {
@@ -85,6 +86,10 @@ CompareStats compare(const std::vector<float>& reference, const std::vector<floa
   // very signal we are trying to measure.
   double sum_abs = 0.0;
   double sum_sq = 0.0;
+  double sum_ref_sq = 0.0;
+  double sum_ref = 0.0;
+  double sum_act = 0.0;
+  int64_t finite = 0;
 
   for (size_t i = 0; i < reference.size(); ++i) {
     const double r = reference[i];
@@ -104,6 +109,10 @@ CompareStats compare(const std::vector<float>& reference, const std::vector<floa
     const double err = std::fabs(r - a);
     sum_abs += err;
     sum_sq += err * err;
+    sum_ref_sq += r * r;
+    sum_ref += r;
+    sum_act += a;
+    ++finite;
 
     if (err > stats.max_abs_err) {
       stats.max_abs_err = err;
@@ -124,6 +133,50 @@ CompareStats compare(const std::vector<float>& reference, const std::vector<floa
   const auto n = static_cast<double>(reference.size());
   stats.mean_abs_err = sum_abs / n;
   stats.rms_err = std::sqrt(sum_sq / n);
+  stats.finite_count = finite;
+
+  // --- whole-tensor metrics, over the finite population --------------------
+  //
+  // rel_L2 normalises by the *reference* norm; see the header for why that
+  // choice rather than `actual` or the mean of the two.
+  if (sum_ref_sq > 0.0) {
+    stats.rel_l2 = std::sqrt(sum_sq) / std::sqrt(sum_ref_sq);
+  } else {
+    // An all-zero reference. Calling a non-zero difference "perfect" here
+    // would be the one answer that is definitely wrong.
+    stats.rel_l2 = (sum_sq == 0.0) ? 0.0 : std::numeric_limits<double>::infinity();
+  }
+
+  // Pearson, second pass. The one-pass "computational formula"
+  // (sum_ra - sum_r*sum_a/n) cancels catastrophically when the mean dominates
+  // the variance, and it does not give exactly +/-1 on the two cases that
+  // anchor this metric. Two passes over a diff buffer costs nothing.
+  if (finite > 0) {
+    const auto fn = static_cast<double>(finite);
+    const double mean_r = sum_ref / fn;
+    const double mean_a = sum_act / fn;
+    double s_rr = 0.0;
+    double s_aa = 0.0;
+    double s_ra = 0.0;
+    for (size_t i = 0; i < reference.size(); ++i) {
+      const double r = reference[i];
+      const double a = actual[i];
+      if (!std::isfinite(r) || !std::isfinite(a)) continue;
+      const double dr = r - mean_r;
+      const double da = a - mean_a;
+      s_rr += dr * dr;
+      s_aa += da * da;
+      s_ra += dr * da;
+    }
+    // Zero variance on either side leaves correlation genuinely undefined
+    // rather than merely awkward; 0 is the reported value and the header says
+    // so. `s_ra / sqrt(s_rr * s_aa)` is deliberate: for `actual == reference`
+    // it is S / sqrt(S*S), and IEEE754 makes sqrt(fl(S*S)) exactly S, so the
+    // result is exactly +1 (and exactly -1 against a negation).
+    if (s_rr > 0.0 && s_aa > 0.0) {
+      stats.correlation = s_ra / std::sqrt(s_rr * s_aa);
+    }
+  }
   return stats;
 }
 

@@ -163,6 +163,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/harness.cpp
     tests/test_main.cpp
     tests/test_adaln.cpp
+    tests/test_compare_metrics.cpp
     tests/test_noise.cpp
     tests/test_packing.cpp
     tests/test_pipeline.cpp

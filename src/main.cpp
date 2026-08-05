@@ -97,7 +97,30 @@ const CommandHelp kCommands[] = {
      "diff two checkpoints tensor by tensor",
      "  --abs-tol <x>                absolute tolerance (default 1e-3)\n"
      "  --rel-tol <x>                relative tolerance (default 1e-2)\n"
-     "  --verbose                    report passing tensors too\n"},
+     "  --verbose                    report passing tensors too\n"
+     "\n"
+     "Pass/fail is elementwise: a tensor passes on either tolerance. Beside\n"
+     "that, two whole-tensor quality metrics are reported, because \"is any\n"
+     "element wrong\" and \"is this the same tensor\" are different questions and\n"
+     "the second is the one a quality comparison asks.\n"
+     "\n"
+     "  rel_L2       ||reference - actual|| / ||reference||\n"
+     "               = sqrt(sum (r-a)^2) / sqrt(sum r^2)\n"
+     "               Normalised by the REFERENCE -- not by actual, and not by\n"
+     "               the mean of the two norms. So it is asymmetric on purpose:\n"
+     "               compare(a,b) and compare(b,a) ask different questions.\n"
+     "               Zero reference gives 0 if the difference is zero, else inf.\n"
+     "\n"
+     "  correlation  Pearson over the flattened tensor, MEANS SUBTRACTED:\n"
+     "               S_ra / sqrt(S_rr * S_aa), S_xy = sum (x-mean_x)(y-mean_y).\n"
+     "               Not cosine similarity. Identical tensors give exactly +1,\n"
+     "               a tensor against its own negation exactly -1, and a\n"
+     "               constant tensor (zero variance) gives 0, undefined.\n"
+     "\n"
+     "Both are computed over the flattened tensor across element pairs where\n"
+     "both sides are finite. Matching global statistics with falling\n"
+     "correlation is this project's signature of a different sample rather\n"
+     "than a degraded one -- see the README.\n"},
     {"decode", "vidfab decode --vae <f> [--latent <f>] [options]",
      "run the video VAE decoder",
      "  --vae <f>                    video VAE checkpoint\n"
@@ -351,6 +374,14 @@ int cmd_compare(int argc, char** argv) {
     if (!ok || verbose) {
       std::printf("  %-7s %-52s max_abs %.3e  max_rel %.3e  rms %.3e\n", ok ? "ok" : "FAIL",
                   name.c_str(), stats.max_abs_err, stats.max_rel_err, stats.rms_err);
+      // On a continuation line rather than widened into the one above: that
+      // line is already 120 columns and anything reading it would break.
+      // Suppressed for a shape mismatch, where neither metric was computed and
+      // printing 0.000e+00 / +0.0000 would read as agreement.
+      if (stats.shape_match) {
+        std::printf("          rel_L2 %.4e  correlation %+.4f\n", stats.rel_l2,
+                    stats.correlation);
+      }
       if (!stats.shape_match) {
         std::printf("           shape/element-count mismatch: %lld vs %lld\n",
                     static_cast<long long>(ref_view.numel()),
