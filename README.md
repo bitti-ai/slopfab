@@ -589,12 +589,34 @@ the 419 on the spec sheet.** At 575 W it holds about 2.45 GHz, and cuBLAS on a
 
 | op | shape | time | achieved |
 |---|---|---|---|
-| attention, blocked | seq 37710, 56 heads, dim 128 | 561 ms | 72.6 TFLOP/s |
-| **attention, fused** | seq 37710, 56 heads, dim 128 | **228.4 ms** | **178.5 TFLOP/s** |
-| `qkv_proj` | `[21504, 5376]` × 37710 rows | 36.2 ms | 234 TFLOP/s |
-| `attn.out_proj` | `[5376, 7168]` | 12.1 ms | 237 TFLOP/s |
-| `mlp.fc1` | `[28672, 5376]` | 48.3 ms | 232 TFLOP/s |
-| `mlp.fc2` | `[5376, 14336]` | 24.0 ms | 231 TFLOP/s |
+| attention, blocked | seq 37710, 56 heads, dim 128 | 589.6 ms | 69.1 TFLOP/s |
+| **attention, fused** | seq 37710, 56 heads, dim 128 | **234.5 ms** | **173.9 TFLOP/s** |
+| `qkv_proj` | `[21504, 5376]` × 37710 rows | 42.0 ms | 207 TFLOP/s |
+| `attn.out_proj` | `[5376, 7168]` | 13.6 ms | 214 TFLOP/s |
+| `mlp.fc1` | `[28672, 5376]` | 56.0 ms | 208 TFLOP/s |
+| `mlp.fc2` | `[5376, 14336]` | 27.4 ms | 212 TFLOP/s |
+
+**An earlier revision of this table was wrong, and the way it was wrong is worth
+keeping.** It reported the four linears at 231–237 TFLOP/s — *above* the ceiling
+declared two paragraphs earlier, in a file that insists every efficiency claim be
+measured against it. Nobody noticed for months. The cause was the benchmark
+filling both operands with `cudaMemset`, so every tensor-core lane multiplied the
+same two 16-bit values every cycle: switching activity collapses, the most
+power-dense kernel in the pipeline stops reaching the 575 W limit, and the card
+boosts. Measured with real data the clock is **2527 MHz at 575 W**; with memsets
+it was **2857–2865 MHz at 517–535 W**. In situ, during an actual generation, it
+is **2505 MHz at 575 W** — which is the benchmark and the pipeline finally
+agreeing.
+
+Attention was flattered worse than a clock argument alone explains, because
+constant `q` and `k` make every score identical, so the online softmax never
+rescales and never moves its running maximum — **the fused kernel was being timed
+on the one input that exercises none of its data-dependent work.**
+
+The control that makes this specific rather than general: `nvfp4_dequant_timings`
+kept its memsets deliberately and did not move (1414 / 2094 / 1419 / 1403 GB/s).
+It is bandwidth-bound, so it never reaches the power limit, so it never had a
+boost to lose.
 | video VAE decode | 124 frames at 1344×768 | 52.7 s | — |
 | audio VAE decode | 5.2 s of 32 kHz stereo | 0.25 s | — |
 
@@ -740,15 +762,25 @@ over PCIe — an encode measured at 485 s once under contention, recovering to
 cannot see a later competing allocation. Prefer streaming unless the card is
 yours alone.
 
-So the four linear layers are already at the machine ceiling and are not worth
-touching — `cublasLt` heuristic search, a larger cuBLAS workspace and row
-alignment were all measured and buy nothing.
+So the four linear layers are not worth touching — `cublasLt` heuristic search,
+a larger cuBLAS workspace and row alignment were all measured and buy nothing.
+The precise version of that claim is better than "at the machine ceiling": at
+the 2505 MHz the card actually holds under a generation, 170 SMs at 512
+bf16 FLOP/clk give a roofline these four hit to **97.6–101%**. There is no
+headroom in them at all, and the 1.7% that chunking into 8192-row passes costs
+— measured by wave quantisation, and separately by the four in-situ TFLOP/s
+figures landing within 1.5% of the isolated ones once both are clocked the same
+— is the only part that is even structurally attributable.
 
-Attention **was** 86% of a denoising step and bandwidth-bound: the blocked path
-moves ~1131 GB per layer at 1.41 TB/s while running at only 72.6 of 216
+Attention **was** the dominant cost of a denoising step and bandwidth-bound: the
+blocked path moves ~1131 GB per layer while running at only 69.1 of 216
 TFLOP/s, because the score tile round-trips through HBM at ~12 bytes per
 element. Its own floor was ~682 ms, so tuning it further was pointless — the
-round trip had to go, not shrink.
+round trip had to go, not shrink. (The 1.41 TB/s and ~682 ms figures here were
+derived from the constant-operand timings and are correspondingly a few percent
+optimistic; they are left as written because the argument they support —
+delete the round trip rather than tune it — does not turn on the last digit,
+and the path they describe no longer runs.)
 
 The tile-budget sweep (192 MiB → 1010 ms, 640 MiB → 749 ms, 1536 MiB → 711 ms)
 is explained by `t ≈ (12·H·S² + 16·H·D·S²/bk) / 1.4 TB/s`, where the second
@@ -759,8 +791,8 @@ exactly what the fused kernel deletes.
 ### The fused kernel
 
 `AttentionBackend::kFused` keeps S and P in registers and never writes them
-anywhere. **228.4 ms against the blocked path's 561, at 178.5 TFLOP/s — 82% of
-the machine ceiling, and no workspace at all against 1.63 GiB.**
+anywhere. **234.5 ms against the blocked path's 589.6, at 173.9 TFLOP/s — 78–80%
+of the machine ceiling, and no workspace at all against 1.63 GiB.**
 
 It first landed at 349 ms and 117 TFLOP/s. The remaining 121 ms was not in the
 mma pipeline at all but in the K/V staging loop, which re-derived `r = i / D`,
