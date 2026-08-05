@@ -1794,6 +1794,100 @@ VIDFAB_TEST(attention_fused_head_dim_64) {
   }
 }
 
+// The fused kernel's probability precision is pinned by nothing else in this
+// file, and that is a hole rather than an oversight of one change.
+//
+// `attention_fp16_score_tile` below measures exactly the right quantity, and
+// passes `AttentionBackend::kBlocked` at both its workspace sizing and its
+// forward call -- it never runs `kFused` at any configuration. Every other
+// fused test bounds 1e-3 absolute / 1e-2 relative against the CPU reference,
+// and a host model of this kernel's own schedule says fp32, fp16 **and** bf16
+// probabilities all pass that bound at every depth from 512 to 32768. So those
+// tests cannot see P at all: they would go green whatever it was carried in.
+//
+// What that leaves unguarded: P feeds a second `mma` whose two operands must
+// share a type, so any change that stages V as bf16 -- which is what a
+// `cp.async` byte copy of V would require -- silently drops P from fp16's 11
+// mantissa bits to bf16's 8. The file header records that fp16 was chosen over
+// bf16 deliberately, for exactly those bits. Nothing was checking.
+//
+// **The bar is 1.10x and it is chosen, not inherited.** A host model of this
+// schedule puts fp16 P at 1.00-1.01x the bf16 output floor and bf16 P at
+// 1.21-1.27x, flat in K depth from 512 to 32768 -- signal and error both grow
+// as sqrt(K), so it does not compound. 1.10x sits between them. Two things make
+// that model trustworthy enough to set a bar from: it reproduces the 1.66e-3
+// bf16 output floor and the 1.01x fp16 ratio that `attention_fp16_score_tile`
+// measured independently, neither of which it was fitted to.
+//
+// Reusing that test's 1.3x would have been the wrong move and is worth saying
+// out loud: bf16 P clears 1.3x by between 0.03 and 0.09. A bar a regression
+// passes by three hundredths is not evidence, it is a coin flip wearing a pass
+// label -- and it is worse than no bar, because the green tick ends the
+// conversation. That test's own comment says as much about its 1.3x: at ratio
+// 1.01 it "has no power to separate fp16 probabilities from bf16 ones". Right
+// about its assertion; the *measurement* separates them fine at 1.25x against
+// 1.01x, which is what this bar is for.
+VIDFAB_TEST(attention_fused_probability_precision) {
+  CublasScope cb;
+  const int seq = 1024;
+  const int heads = 4;
+  const int head_dim = 128;
+  const int width = heads * head_dim;
+
+  // Same amplitudes as the blocked path's test, so the two ratios are directly
+  // comparable: scores at a few units, the order post-q_norm/k_norm H3 produces.
+  const std::vector<float> q = bf16_round(make_data(size_t(seq) * width, 181u, 0.5f));
+  const std::vector<float> k = bf16_round(make_data(size_t(seq) * width, 182u, 0.5f));
+  const std::vector<float> v = bf16_round(make_data(size_t(seq) * width, 183u, 1.0f));
+  BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * width);
+
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len = seq;
+  cfg.num_heads = heads;
+  cfg.head_dim = head_dim;
+  CHECK(vidfab::cuda::attention_preferred_backend(cfg) == vidfab::cuda::AttentionBackend::kFused);
+
+  const std::vector<float> want =
+      cpu_attention(q, k, v, seq, heads, heads, head_dim, cfg.effective_scale());
+
+  double norm_sq = 0.0;
+  for (double x : want) norm_sq += x * x;
+  const double want_rms = std::sqrt(norm_sq / double(want.size()));
+
+  // The floor: what rounding the exact answer to the output's own format costs.
+  // Error below this is invisible by construction, whatever produced it.
+  const std::vector<float> rounded = bf16_round(want);
+  double floor_sq = 0.0;
+  for (size_t i = 0; i < want.size(); ++i) {
+    const double d = double(rounded[i]) - want[i];
+    floor_sq += d * d;
+  }
+  const double output_floor_rel = std::sqrt(floor_sq / double(want.size())) / want_rms;
+
+  Workspace ws;
+  vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                  vidfab::cuda::AttentionBackend::kFused, ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> got = dout.host();
+
+  double err_sq = 0.0;
+  double worst_abs = 0.0;
+  for (size_t i = 0; i < got.size(); ++i) {
+    const double d = double(got[i]) - want[i];
+    err_sq += d * d;
+    worst_abs = std::max(worst_abs, std::fabs(d));
+  }
+  const double rms_rel = std::sqrt(err_sq / double(got.size())) / want_rms;
+
+  std::printf("  fused P precision: rms_rel %.3g (bf16 output floor %.3g, ratio %.2f), "
+              "worst abs %.3g\n",
+              rms_rel, output_floor_rel, rms_rel / output_floor_rel, worst_abs);
+  CHECK_MSG(rms_rel < 1.10 * output_floor_rel,
+            "fused probabilities: rms_rel %.4g is %.2fx the %.4g bf16 output floor, over the 1.10x "
+            "bar; bf16 probabilities model at 1.21-1.27x",
+            rms_rel, rms_rel / output_floor_rel, output_floor_rel);
+}
+
 // Grouped-query: 6 query heads share 2 kv heads. Getting the kv head index wrong
 // still produces finite, plausibly-scaled output, so it is pinned against the
 // CPU reference rather than against a shape check.
