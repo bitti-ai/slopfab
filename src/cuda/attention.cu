@@ -679,9 +679,18 @@ __device__ inline uint32_t ld32(const void* p) { return *reinterpret_cast<const 
 // clears. The source pointer is still clamped to a live address, because a
 // zero-length copy is not a promise that the address is never formed and the
 // last key block addresses up to 63 rows past the end of the tensor.
+// **`.ca` rather than `.cg`, and it is a hypothesis under test rather than a
+// settled choice.** `.cg` bypasses L1; `.ca` keeps the line. Only one block is
+// resident per SM, so K has no reuse *within* a block -- but consecutive blocks
+// dispatched to an SM walk adjacent query tiles of the same head and read the
+// same K stream at nearly the same time, which is precisely the locality the
+// grid order at the launch site was built to create. A K tile is 17408 B
+// against a 128 KB L1, so it fits, and `.cg`'s BYPASS would discard it. The
+// double buffer measured 7.3% *slower* than the version it replaced, and this
+// is the first of the two candidate causes.
 __device__ inline void cp_async_16(void* smem, const void* gmem, int src_bytes) {
   const uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(smem));
-  asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n"
+  asm volatile("cp.async.ca.shared.global [%0], [%1], 16, %2;\n"
                :
                : "r"(addr), "l"(gmem), "r"(src_bytes)
                : "memory");
