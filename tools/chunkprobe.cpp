@@ -165,29 +165,13 @@ Moments moments(const float* v, size_t n, size_t stride = 1) {
   return m;
 }
 
-// Relative L2 against the *reference*, which is the convention every other
-// quality number in this project uses: ||a - b|| / ||a||.
+// rel_L2 and correlation now come from `vidfab::compare` rather than from a
+// copy here. This tool grew its own pair, as did the AB2 sampler sweep and the
+// banding work, which is what put them in the shared header — see
+// `include/vidfab/tensor_convert.h` for the exact formulas and the reasons for
+// those choices rather than the neighbouring plausible ones.
 double relative_l2(const std::vector<float>& a, const std::vector<float>& b) {
-  double num = 0.0;
-  double den = 0.0;
-  for (size_t i = 0; i < a.size(); ++i) {
-    const double d = static_cast<double>(a[i]) - b[i];
-    num += d * d;
-    den += static_cast<double>(a[i]) * a[i];
-  }
-  return den > 0.0 ? std::sqrt(num / den) : 0.0;
-}
-
-double correlation(const std::vector<float>& a, const std::vector<float>& b) {
-  const Moments ma = moments(a.data(), a.size());
-  const Moments mb = moments(b.data(), b.size());
-  double cov = 0.0;
-  for (size_t i = 0; i < a.size(); ++i) {
-    cov += (static_cast<double>(a[i]) - ma.mean) * (static_cast<double>(b[i]) - mb.mean);
-  }
-  cov /= static_cast<double>(a.size());
-  const double denom = ma.std_dev * mb.std_dev;
-  return denom > 0.0 ? cov / denom : 0.0;
+  return vidfab::compare(a, b).rel_l2;
 }
 
 std::vector<float> read_rows(const vidfab::SafeTensors& st, const char* name, int64_t width) {
@@ -204,17 +188,15 @@ void report_pair(const char* label, const std::vector<float>& ref, const std::ve
   }
   const Moments mr = moments(ref.data(), ref.size());
   const Moments ma = moments(act.data(), act.size());
-  // max|diff| is here so an exact-equality control reads as 0 rather than as a
-  // rounded 0.0000: rel_L2 cannot distinguish "identical" from "identical to
-  // four decimals", and one of the runs this drives is a byte-for-byte check.
-  double worst = 0.0;
-  for (size_t i = 0; i < ref.size(); ++i) {
-    worst = std::max(worst, std::fabs(static_cast<double>(ref[i]) - act[i]));
-  }
+  // One call to the shared implementation for all three of rel_L2, correlation
+  // and max|diff|. The last is reported because rel_L2 cannot distinguish
+  // "identical" from "identical to four decimals", and one of the runs this
+  // tool drives is a byte-for-byte control.
+  const vidfab::CompareStats s = vidfab::compare(ref, act);
   std::printf("%-6s rel_L2 %.4f   correlation %.4f   mean %+.4f vs %+.4f   std %.4f vs %.4f   "
               "max|diff| %.3e\n",
-              label, relative_l2(ref, act), correlation(ref, act), mr.mean, ma.mean, mr.std_dev,
-              ma.std_dev, worst);
+              label, s.rel_l2, s.correlation, mr.mean, ma.mean, mr.std_dev, ma.std_dev,
+              s.max_abs_err);
 }
 
 // Norm of the difference between consecutive latent frames, normalised by the
