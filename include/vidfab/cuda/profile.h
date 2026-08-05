@@ -81,10 +81,12 @@ class StepProfiler {
   struct Mark {
     const char* label;
     cudaEvent_t event;
+    long long host_ns;  // when the host finished issuing everything up to here
   };
   struct Total {
     std::string label;
-    double ms = 0.0;
+    double ms = 0.0;        // GPU: the interval between two stream markers
+    double host_ms = 0.0;   // host: how long the host spent issuing that interval
     long long count = 0;
     bool host = false;
   };
@@ -104,6 +106,14 @@ class StepProfiler {
   double issue_ms_ = 0.0;
   double wait_ms_ = 0.0;
   double span_ms_ = 0.0;
+
+  // Whether the GPU ever ran out of work. The origin event is recorded onto an
+  // empty stream — the previous step synchronised — so the GPU and host clocks
+  // start together and the two timelines are directly comparable from there.
+  // `lead` is how far the GPU is *behind* the host at a marker: positive means
+  // a backlog, and a backlog is the only thing that keeps the GPU fed.
+  double idle_ms_ = 0.0;      // sum of max(0, host reached mark k - GPU reached k-1)
+  double min_lead_ms_ = 0.0;  // worst backlog over the step; <= 0 means a stall
 
   size_t total_bytes_ = 0;
   size_t peak_used_ = 0;   // total - free, at its worst

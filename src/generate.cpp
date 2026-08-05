@@ -357,6 +357,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       }
     }
     result.seconds_output = seconds_since(t0);
+    if (options.verbose) std::printf("output      %.2f s\n", result.seconds_output);
   }
 
   result.ok = true;
