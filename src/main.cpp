@@ -55,7 +55,6 @@ const CommandHelp kCommands[] = {
      "  --steps <n>                  sigma grid points, n-1 evaluations (default 50)\n"
      "  --sampler euler|ab2|ab2var   integrator (default euler)\n"
      "  --seed <n>                   noise seed\n"
-     "  --dump <f>                   also write raw fp32 pixels as safetensors\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
      "  --dry-run                    resolve and print the plan, touch no weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
@@ -651,7 +650,6 @@ int cmd_generate(int argc, char** argv) {
   bool synthetic = false;
   std::string dump_latents;
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
-  std::string pixel_dump;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -703,8 +701,6 @@ int cmd_generate(int argc, char** argv) {
       req.video_vae_path = next("--vae");
     } else if (arg == "--audio-vae") {
       req.audio_vae_path = next("--audio-vae");
-    } else if (arg == "--dump") {
-      pixel_dump = next("--dump");
     } else if (arg == "--raw") {
       req.raw_output = true;
     } else if (arg == "--dry-run") {
@@ -730,7 +726,6 @@ int cmd_generate(int argc, char** argv) {
 
 #if !VIDFAB_WITH_CUDA
   (void)sampler_kind;
-  (void)pixel_dump;
   std::fprintf(stderr, "vidfab: built without CUDA support; generate needs a GPU\n");
   return 1;
 #else
@@ -739,7 +734,6 @@ int cmd_generate(int argc, char** argv) {
       synthetic ? vidfab::LatentSource::kSyntheticNoise : vidfab::LatentSource::kDenoise;
   options.dump_latents_path = dump_latents;
   options.sampler = sampler_kind;
-  options.pixel_dump_path = pixel_dump;
 
   std::printf("\n");
   const vidfab::RunResult run = vidfab::run_generate(req, plan, options);
