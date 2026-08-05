@@ -61,6 +61,8 @@ const CommandHelp kCommands[] = {
      "  --sampler euler|ab2          integrator (default euler)\n"
      "  --seed <n>                   noise seed\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
+     "  --dump <f>                   also write raw fp32 pixels as safetensors, for\n"
+     "                               `vidfab compare` at float precision\n"
      "  --dry-run                    resolve and print the plan, touch no weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
      "                               noise, to exercise the VAEs and the muxer\n"
@@ -82,6 +84,25 @@ const CommandHelp kCommands[] = {
      "                               seeded draw; with --synthetic-latents, decode\n"
      "                               them straight to video and audio. Same shape as\n"
      "                               --dump-latents writes. Off by default.\n"
+     "\n"
+     "step caching (all off by default; each one trades quality for time):\n"
+     "  --cache-threshold <x>        reuse the previous step's velocity until the\n"
+     "                               conditioning has moved by <x>. 0 = off (default).\n"
+     "                               Units: accumulated relative L1 of the rank-8 AdaLN\n"
+     "                               code c(t) over the pair (video t, audio t) --\n"
+     "                               dimensionless, and 1.0 means the conditioning has\n"
+     "                               moved, summed over the skipped steps, by as much as\n"
+     "                               its own magnitude. Useful values are far below 1.\n"
+     "  --cache-warmup <n>           first n steps always evaluated (default 3, floor 2)\n"
+     "  --skip-every <n>             instead of the threshold, evaluate every n-th step.\n"
+     "                               0 = off (default). A calibration-free baseline the\n"
+     "                               threshold has to beat; the two cannot be combined.\n"
+     "\n"
+     "The first steps and the last step are always evaluated whatever these say.\n"
+     "The trajectory is most sensitive early, and at the terminal step the sigma\n"
+     "ratio is zero, so a reused velocity there lands in the output undamped.\n"
+     "Every run that reused anything prints how many of its evaluations it\n"
+     "skipped.\n"
      "\n"
      "checkpoints (all required unless --dry-run or --synthetic-latents):\n"
      "  --tokenizer <f>              tokenizer.json\n"
@@ -774,6 +795,14 @@ int cmd_generate(int argc, char** argv) {
       req.audio_vae_path = next("--audio-vae");
     } else if (arg == "--raw") {
       req.raw_output = true;
+    } else if (arg == "--dump") {
+      req.dump_path = next("--dump");
+    } else if (arg == "--cache-threshold") {
+      req.cache_threshold = static_cast<float>(std::strtod(next("--cache-threshold"), nullptr));
+    } else if (arg == "--cache-warmup") {
+      req.cache_warmup = std::atoi(next("--cache-warmup"));
+    } else if (arg == "--skip-every") {
+      req.skip_every = std::atoi(next("--skip-every"));
     } else if (arg == "--dry-run") {
       dry_run = true;
     } else if (arg == "--synthetic-latents") {
@@ -796,6 +825,22 @@ int cmd_generate(int argc, char** argv) {
   // path and needs no prompt; the seeded-noise form still does not either.
   if (req.prompt.empty() && !dry_run && !synthetic) {
     std::fprintf(stderr, "vidfab: generate needs --prompt \"...\"\n");
+    return 2;
+  }
+  if (req.cache_threshold < 0.0f) {
+    std::fprintf(stderr, "vidfab: --cache-threshold cannot be negative (0 disables it)\n");
+    return 2;
+  }
+  if (req.skip_every < 0) {
+    std::fprintf(stderr, "vidfab: --skip-every cannot be negative (0 disables it)\n");
+    return 2;
+  }
+  // Rejected rather than silently resolved. A fixed interval and an adaptive
+  // threshold ORed together is neither policy, and the fixed one exists
+  // precisely so the adaptive one has something to be measured against.
+  if (req.cache_threshold > 0.0f && req.skip_every > 0) {
+    std::fprintf(stderr,
+                 "vidfab: --cache-threshold and --skip-every are alternatives; pass one\n");
     return 2;
   }
 

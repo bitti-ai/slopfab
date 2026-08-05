@@ -16,6 +16,7 @@
 //   4. QK-norm runs *before* RoPE, and `mlp.fc1`'s first half is the gate.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -71,6 +72,17 @@ class Transformer {
   // where the per-query-tile key ranges are built.
   void set_attention_band(int frames);
   int attention_band() const;
+  // `c(t)` — the 8-vector that is the *entire* timestep conditioning for this
+  // checkpoint, shared by all 51 AdaLN consumers (spec 3.4). Goes through the
+  // configured lookup mode, so it is exactly the vector `build_modulation`
+  // expands; reading the table directly would silently pin the mode, which
+  // spec 3.5 deliberately leaves as a knob.
+  //
+  // Public because the step cache outside this class needs it and it is
+  // microseconds of host work — the alternative, a fitted proxy for how much
+  // the conditioning moved, is what TeaCache has to do on models that still
+  // carry a timestep MLP.
+  std::array<float, AdaLNTable::kRank> adaln_code(float t) const;
 
   // Runs the token refiner over the conditioning embedding and caches the
   // result. Position-agnostic and timestep-independent, so it runs once per

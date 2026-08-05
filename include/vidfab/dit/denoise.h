@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "vidfab/dit/packing.h"
+#include "vidfab/dit/step_cache.h"
 #include "vidfab/dit/transformer.h"
 #include "vidfab/sampler/scheduler.h"
 
@@ -37,6 +38,17 @@ struct DenoiseInputs {
   // their own sigma grids inside one iteration, and the terminal ratio of zero
   // that makes the last step return the denoised estimate outright.
   VelocityFn velocity;
+
+  // Step caching. Disabled by default (`threshold == 0`, `skip_every == 0`),
+  // in which case the loop below is the loop it was, plus one host branch per
+  // step that is always taken.
+  StepCacheConfig cache;
+
+  // Substitutes the transformer's AdaLN lookup when building a step's
+  // conditioning signature, for the same reason `velocity` substitutes the
+  // forward pass. Null in production, where `Transformer::adaln_code` runs and
+  // honours the configured lookup mode.
+  CodeFn code;
 
   // Schedules, already validated to be the same length by resolve_plan.
   const std::vector<float>* video_timesteps = nullptr;
@@ -65,6 +77,13 @@ struct DenoiseInputs {
 struct DenoiseOutputs {
   std::vector<float> video_rows;  // [V, 96] fp32
   std::vector<float> audio_rows;  // [Sa, 32] fp32
+
+  // How the loop actually spent its evaluations. Reported rather than inferred:
+  // a cache threshold whose skip count is not printed cannot be reasoned about
+  // at all, since the same flag value skips a different number of steps at
+  // every geometry and schedule length.
+  int steps_computed = 0;
+  int steps_skipped = 0;
 };
 
 // Called after each step with (step_index, total_steps). Return false to abort.

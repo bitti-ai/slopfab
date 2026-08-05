@@ -8,6 +8,7 @@
 
 #include "vidfab/dit/denoise.h"
 
+#include <array>
 #include <stdexcept>
 #include <string>
 
@@ -83,26 +84,73 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     out.audio_rows = noise;
   }
 
+  // These persist across iterations and are the whole of the cache's storage:
+  // a skipped step simply does not overwrite them, and the two schedulers
+  // consume the velocities still sitting here. 14.3 MB at the default geometry,
+  // already allocated, so the feature costs no memory at all.
   std::vector<float> video_velocity(out.video_rows.size(), 0.0f);
   std::vector<float> audio_velocity(out.audio_rows.size(), 0.0f);
 
   const int steps = static_cast<int>(video_t.size());
+  StepCache cache(inputs.cache, steps);
+
+  // The signature of a step, `c(t_v)` then `c(t_a)`. Built only when the cache
+  // is on, so a default run never touches the AdaLN table here.
+  std::vector<float> signature;
+  if (cache.enabled()) signature.resize(2 * static_cast<size_t>(AdaLNTable::kRank));
+
   for (int i = 0; i < steps; ++i) {
-    RowTimesteps row_timesteps;
-    {
-      // Rebuilt every step because `torch.unique(sorted=True)` reorders the two
-      // timesteps as the schedules cross, so this is not cacheable. It is pure
-      // host work over `seq` rows and it is on the critical path.
-      cuda::HostSpan span("build_row_timesteps");
-      row_timesteps = build_row_timesteps(layout, indices, video_t[static_cast<size_t>(i)],
-                                          audio_t[static_cast<size_t>(i)]);
-    }
-    if (inputs.velocity) {
-      inputs.velocity(i, row_timesteps, out.video_rows.data(), out.audio_rows.data(),
-                      video_velocity.data(), audio_velocity.data());
+    bool compute = true;
+    if (cache.enabled()) {
+      cuda::HostSpan span("step_cache");
+      // Two distinct timesteps per step for t2va (spec 7.5), on grids of
+      // different shift that move at different rates, so both go into the
+      // distance. `adaln_code` honours the configured lookup mode rather than
+      // hardcoding one — the grid semantics are unresolved and the mode is
+      // deliberately a knob (spec 3.5).
+      const std::array<float, AdaLNTable::kRank> cv =
+          inputs.code ? inputs.code(video_t[static_cast<size_t>(i)])
+                      : transformer.adaln_code(video_t[static_cast<size_t>(i)]);
+      const std::array<float, AdaLNTable::kRank> ca =
+          inputs.code ? inputs.code(audio_t[static_cast<size_t>(i)])
+                      : transformer.adaln_code(audio_t[static_cast<size_t>(i)]);
+      for (int k = 0; k < AdaLNTable::kRank; ++k) {
+        signature[static_cast<size_t>(k)] = cv[static_cast<size_t>(k)];
+        signature[static_cast<size_t>(AdaLNTable::kRank + k)] = ca[static_cast<size_t>(k)];
+      }
+      compute = cache.should_compute(i, signature.data(), static_cast<int>(signature.size()));
     } else {
-      transformer.forward(out.video_rows.data(), out.audio_rows.data(), row_timesteps,
-                          video_velocity.data(), audio_velocity.data());
+      compute = cache.should_compute(i, nullptr, 0);
+    }
+
+    // The skip. Not calling `forward` is the entire mechanism; the velocity
+    // buffers below still hold the last computed prediction.
+    //
+    // NOTE for whoever lands the AB2 sampler: if `--sampler ab2` and a nonzero
+    // `--cache-threshold` are ever enabled together, AB2's velocity history is
+    // built partly from *reused* velocities rather than from fresh evaluations,
+    // so its two-point extrapolation is extrapolating a constant over the
+    // skipped interval. That is recorded, not solved, and the two speedups are
+    // not multiplicative either.
+    if (compute) {
+      RowTimesteps row_timesteps;
+      {
+        // Rebuilt every step because `torch.unique(sorted=True)` reorders the
+        // two timesteps as the schedules cross, so this is not cacheable. It is
+        // pure host work over `seq` rows and it is on the critical path — and
+        // it is the *only* per-step work a skipped step also avoids, which is
+        // why it sits inside this branch rather than above it.
+        cuda::HostSpan span("build_row_timesteps");
+        row_timesteps = build_row_timesteps(layout, indices, video_t[static_cast<size_t>(i)],
+                                            audio_t[static_cast<size_t>(i)]);
+      }
+      if (inputs.velocity) {
+        inputs.velocity(i, row_timesteps, out.video_rows.data(), out.audio_rows.data(),
+                        video_velocity.data(), audio_velocity.data());
+      } else {
+        transformer.forward(out.video_rows.data(), out.audio_rows.data(), row_timesteps,
+                            video_velocity.data(), audio_velocity.data());
+      }
     }
 
     {
@@ -117,6 +165,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     if (progress && !progress(i, steps)) break;
   }
 
+  out.steps_computed = cache.computed();
+  out.steps_skipped = cache.skipped();
   return out;
 }
 

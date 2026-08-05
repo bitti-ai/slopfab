@@ -725,6 +725,9 @@ AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
 
 void Transformer::set_attention_band(int frames) { impl_->attn_band = frames > 0 ? frames : 0; }
 int Transformer::attention_band() const { return impl_->attn_band; }
+std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
+  return impl_->table.lookup(t, impl_->lookup);
+}
 
 void Transformer::unload() {
   impl_->blocks.clear();

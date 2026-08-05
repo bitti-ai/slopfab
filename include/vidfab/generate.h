@@ -99,6 +99,10 @@ struct RunResult {
   double seconds_prepare = 0.0;
   // The denoising loop alone: no load, no prepare.
   double seconds_denoise_loop = 0.0;
+  // Evaluations actually run, and evaluations served from the previous
+  // velocity. `steps_skipped` is zero unless step caching was turned on.
+  int steps_computed = 0;
+  int steps_skipped = 0;
   double seconds_denoise = 0.0;
   double seconds_video_decode = 0.0;
   double seconds_audio_decode = 0.0;

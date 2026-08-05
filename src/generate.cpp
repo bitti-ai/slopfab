@@ -195,6 +195,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         in.init_video_rows = &init_video;
         in.init_audio_rows = &init_audio;
       }
+      in.cache.threshold = request.cache_threshold;
+      in.cache.warmup = request.cache_warmup;
+      in.cache.skip_every = request.skip_every;
 
       const int total_steps = plan.num_model_evaluations();
       // Say something before the first step rather than after it. At the
@@ -207,6 +210,17 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         // other run is one, and an ab2 run is never mistaken for a baseline.
         if (options.sampler == sampler::SamplerKind::kAb2) {
           std::printf("sampler     ab2 (Adams-Bashforth 2; step 1 is Euler)\n");
+        }
+        if (in.cache.enabled()) {
+          if (in.cache.skip_every > 0) {
+            std::printf("step cache  fixed interval: every %d-th step evaluated, warmup %d\n",
+                        in.cache.skip_every, std::max(dit::kMinWarmup, in.cache.warmup));
+          } else {
+            std::printf(
+                "step cache  threshold %.4g (accumulated relative-L1 of c(t)), warmup %d\n",
+                static_cast<double>(in.cache.threshold),
+                std::max(dit::kMinWarmup, in.cache.warmup));
+          }
         }
         std::fflush(stdout);
       }
@@ -223,7 +237,17 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       });
       if (options.verbose) std::printf("\n");
       result.seconds_denoise_loop = seconds_since(loop_start);
+      result.steps_computed = out.steps_computed;
+      result.steps_skipped = out.steps_skipped;
       cuda::StepProfiler::instance().report(stdout);
+      // Always printed when anything was reused, verbose or not: a run whose
+      // skip count is invisible cannot be compared against another one.
+      if (out.steps_skipped != 0) {
+        std::printf("step cache  %d of %d evaluations skipped (%d computed), %.1f%%\n",
+                    out.steps_skipped, out.steps_computed + out.steps_skipped, out.steps_computed,
+                    100.0 * out.steps_skipped /
+                        static_cast<double>(std::max(1, out.steps_computed + out.steps_skipped)));
+      }
 
       video_rows = out.video_rows;
       audio_rows = out.audio_rows;
@@ -368,6 +392,18 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   {
     const Clock::time_point t0 = Clock::now();
     const bool have_audio = !audio.samples.empty();
+
+    // Raw fp32 pixels, before the colour transform and 8-bit quantisation that
+    // every other output path applies. Two runs of the same seed and geometry
+    // are then comparable at float precision with `vidfab compare`, which is
+    // the only way to tell "bit-identical" from "close" — and the difference
+    // between those two is the whole gate on a flag that is supposed to change
+    // nothing when it is off.
+    if (!request.dump_path.empty()) {
+      write_safetensors(request.dump_path,
+                        {{"pixels", {3, video.frames, video.height, video.width}, video.data}});
+      if (options.verbose) std::printf("dumped      %s\n", request.dump_path.c_str());
+    }
 
     bool muxed = false;
     if (!request.raw_output) {

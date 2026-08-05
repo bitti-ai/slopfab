@@ -26,6 +26,7 @@ add_library(vidfab_core STATIC
   src/dit/adaln.cpp
   src/dit/chunking.cpp
   src/dit/packing.cpp
+  src/dit/step_cache.cpp
   src/pipeline.cpp
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
@@ -182,6 +183,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_packing.cpp
     tests/test_pipeline.cpp
     tests/test_sampler.cpp
+    tests/test_step_cache.cpp
     tests/test_tokenizer.cpp
     tests/test_output.cpp
   )
