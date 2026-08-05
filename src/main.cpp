@@ -823,6 +823,7 @@ int cmd_generate(int argc, char** argv) {
   (void)sampler_kind;
   (void)dump_latents;
   (void)init_latents;
+  (void)attn_band;
   std::fprintf(stderr, "vidfab: built without CUDA support; generate needs a GPU\n");
   return 1;
 #else
