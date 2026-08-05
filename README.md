@@ -149,15 +149,16 @@ someone else is editing.
   flow scheduler and its second-order sampler, token packing, request
   resolution, the AdaLN table, the tokenizer, latent noise, the WAV writer and
   the colour transform.
-  **1891 checks** — but only with `ref/` and the checkpoints present. Three
+  **1968 checks** — but only with `ref/` and the checkpoints present. Three
   tests skip themselves without them (two tokenizer goldens, which need
   `ref/FL2VA/text_encoder/tokenizer.json`, and one transformer case that needs
-  a real checkpoint), so a clean clone reports **1831** and is not failing.
-  `ref/` is licence-restricted and not redistributable, so 1831 is the number
-  most people will see; run from the repository root to get 1891.
-  This branch adds **+77 new host checks** (`tests/test_sampler.cpp`); the
-  absolute count is set on the integration branch from a measured run of the
-  merged tree, not from arithmetic here.
+  a real checkpoint), so a clean clone reports **1908** and is not failing.
+  `ref/` is licence-restricted and not redistributable, so 1908 is the number
+  most people will see; run from the repository root to get 1968.
+  Both figures are measured on the merged tree rather than added up from
+  branches: contributors state a delta and the absolute is set here, because
+  two branches each correctly adding to the same baseline is how this number
+  went wrong before.
 - **GPU kernel tests**: every kernel against independent CPU references written
   from the spec rather than from the kernel. **1043 checks**, plus 11 DEFERRED.
   These exist because the failure modes here are silent — a wrong QKV de-interleave, a wrong
