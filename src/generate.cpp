@@ -149,6 +149,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       sampler::FlowScheduler audio_sched(3.0f);
       video_sched.set_timesteps(request.num_inference_steps);
       audio_sched.set_timesteps(request.num_inference_steps);
+      video_sched.set_sampler(options.sampler);
+      audio_sched.set_sampler(options.sampler);
 
       dit::DenoiseInputs in;
       in.layout = &live;
@@ -166,6 +168,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (options.verbose) {
         std::printf("denoising   %d steps over %d rows; the first step sets the pace\n",
                     total_steps, live.total_rows());
+        // Said only when it is not the default, so a run that looks like every
+        // other run is one, and an ab2 run is never mistaken for a baseline.
+        if (options.sampler == sampler::SamplerKind::kAb2) {
+          std::printf("sampler     ab2 (Adams-Bashforth 2; step 1 is Euler)\n");
+        }
         std::fflush(stdout);
       }
       const Clock::time_point loop_start = Clock::now();

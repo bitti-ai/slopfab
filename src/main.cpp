@@ -18,6 +18,7 @@
 #include "vidfab/pipeline.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/safetensors_write.h"
+#include "vidfab/sampler/scheduler.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/text/tokenizer.h"
 
@@ -52,6 +53,7 @@ const CommandHelp kCommands[] = {
      "  --aspect <W:H>               display aspect, 1:4 to 4:1 (default 16:9)\n"
      "  --frames <n>                 snapped up to 17k+5 (default 124, minimum 6)\n"
      "  --steps <n>                  sigma grid points, n-1 evaluations (default 50)\n"
+     "  --sampler euler|ab2          integrator (default euler)\n"
      "  --seed <n>                   noise seed\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
      "  --dry-run                    resolve and print the plan, touch no weights\n"
@@ -70,6 +72,10 @@ const CommandHelp kCommands[] = {
      "\n"
      "The quantisation of each checkpoint is read out of the file, so there is\n"
      "no flag for it and the two need not match.\n"
+     "\n"
+     "--sampler ab2 is Adams-Bashforth 2: second order at the same one forward\n"
+     "pass per step, so a step costs what it always did and the reason to use it\n"
+     "is to lower --steps. Its first step has no velocity history and is Euler.\n"
      "\n"
      "The conditioner and the transformer are loaded and freed in sequence\n"
      "rather than together: at 23.1 GB and 19.3 GB the int8 and fp8 pair cannot\n"
@@ -641,6 +647,7 @@ int cmd_generate(int argc, char** argv) {
   bool dry_run = false;
   bool synthetic = false;
   std::string dump_latents;
+  vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -660,6 +667,16 @@ int cmd_generate(int argc, char** argv) {
       req.num_inference_steps = std::atoi(next("--steps"));
     } else if (arg == "--seed") {
       req.seed = std::strtoull(next("--seed"), nullptr, 10);
+    } else if (arg == "--sampler") {
+      const std::string v = next("--sampler");
+      if (v == "euler") {
+        sampler_kind = vidfab::sampler::SamplerKind::kEuler;
+      } else if (v == "ab2") {
+        sampler_kind = vidfab::sampler::SamplerKind::kAb2;
+      } else {
+        std::fprintf(stderr, "vidfab: --sampler wants euler or ab2, got '%s'\n", v.c_str());
+        return 2;
+      }
     } else if (arg == "--aspect") {
       const std::string v = next("--aspect");
       const size_t colon = v.find(':');
@@ -703,6 +720,7 @@ int cmd_generate(int argc, char** argv) {
   if (dry_run) return 0;
 
 #if !VIDFAB_WITH_CUDA
+  (void)sampler_kind;
   std::fprintf(stderr, "vidfab: built without CUDA support; generate needs a GPU\n");
   return 1;
 #else
@@ -710,6 +728,7 @@ int cmd_generate(int argc, char** argv) {
   options.source =
       synthetic ? vidfab::LatentSource::kSyntheticNoise : vidfab::LatentSource::kDenoise;
   options.dump_latents_path = dump_latents;
+  options.sampler = sampler_kind;
 
   std::printf("\n");
   const vidfab::RunResult run = vidfab::run_generate(req, plan, options);

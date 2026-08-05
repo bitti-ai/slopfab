@@ -359,8 +359,12 @@ void test_scheduler() {
   CHECK_NEAR(out[0], 1.0f, 1e-6);
   CHECK_NEAR(out[1], -2.0f, 1e-6);
 
-  // With a non-zero velocity, verify against the formula directly.
+  // With a non-zero velocity, verify against the formula directly. `reset()`
+  // before each probe because `step` is order-sensitive now — it carries a
+  // velocity history under kAb2 — and these are deliberate random accesses
+  // rather than a trajectory.
   const std::vector<float> v = {0.25f, 1.0f, -0.5f};
+  s.reset();
   s.step(3, x.data(), v.data(), 3, out.data());
   {
     const float t = s.timesteps()[3];
@@ -375,11 +379,13 @@ void test_scheduler() {
 
   // step() may alias its input.
   std::vector<float> inplace = x;
+  s.reset();
   s.step(3, inplace.data(), v.data(), 3, inplace.data());
   CHECK_NEAR(inplace[0], out[0], 1e-6);
 
   // The last step lands exactly on x0, because sigma_next is 0 so ratio is 0.
   const int last = static_cast<int>(s.num_steps()) - 1;
+  s.reset();
   s.step(last, x.data(), v.data(), 3, out.data());
   {
     const float sfrom = 1.0f - s.timesteps()[static_cast<size_t>(last)];

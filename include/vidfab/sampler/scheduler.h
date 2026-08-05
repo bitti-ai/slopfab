@@ -19,6 +19,21 @@
 
 namespace vidfab::sampler {
 
+// Which integrator advances the trajectory. Both cost exactly one model
+// evaluation per step; the difference is what they do with the velocity they
+// were given.
+enum class SamplerKind {
+  // First order. The reference's update, and the default — nothing else in
+  // this file changes its arithmetic by so much as an ulp.
+  kEuler,
+  // Adams-Bashforth 2 with the fixed-step coefficients 3/2 and -1/2, applied
+  // to the same effective step size Euler uses. Second order at one evaluation
+  // per step, so the point of it is being able to *lower* --steps, not a
+  // cheaper step. The first step of a trajectory has no history and falls back
+  // to Euler.
+  kAb2,
+};
+
 class FlowScheduler {
  public:
   // `shift` is the exponential sigma shift: sigma' = s*sigma / (1 + (s-1)*sigma).
@@ -39,11 +54,27 @@ class FlowScheduler {
   size_t num_steps() const { return timesteps_.size(); }
   float shift() const { return shift_; }
 
-  // One Euler step (eta = 0). `step_index` selects the sigma pair; `sample` is
-  // x_t and `velocity` the transformer output. Both spans must be the same
-  // length. Writes x_{t+1} into `out`, which may alias `sample`.
-  void step(int step_index, const float* sample, const float* velocity, size_t count,
-            float* out) const;
+  // Selects the integrator. Clears any velocity history, so it is only
+  // meaningful between trajectories. Default kEuler.
+  void set_sampler(SamplerKind kind);
+  SamplerKind sampler() const { return sampler_; }
+
+  // Forgets the velocity history and the step cursor, so the next `step` may
+  // carry any index and is treated as the first of a fresh trajectory.
+  // `set_timesteps` and `set_sampler` both do this implicitly.
+  void reset();
+
+  // One step (eta = 0). `step_index` selects the sigma pair; `sample` is x_t
+  // and `velocity` the transformer output. Both spans must be the same length.
+  // Writes x_{t+1} into `out`, which may alias `sample`.
+  //
+  // Not const, and order-sensitive: kAb2 keeps v_{n-1} here, so a caller that
+  // skips or repeats an index would silently extrapolate from the wrong
+  // velocity. `step_index` must therefore be either 0 — which restarts the
+  // trajectory, which is what makes one scheduler reusable across runs — or
+  // exactly one past the previous call's. Anything else throws. `count` may
+  // change between trajectories but not within one.
+  void step(int step_index, const float* sample, const float* velocity, size_t count, float* out);
 
   // Rectified-flow forward process in H3's convention: x_t = t*x0 + (1-t)*noise.
   // Used to noise conditioning anchors, where t is a noise-augmentation level
@@ -51,9 +82,20 @@ class FlowScheduler {
   static void scale_noise(const float* x0, const float* noise, float t, size_t count, float* out);
 
  private:
+  void clear_history();
+
   float shift_;
   std::vector<float> sigmas_;
   std::vector<float> timesteps_;
+
+  SamplerKind sampler_ = SamplerKind::kEuler;
+  // v_{n-1}, kept only under kAb2. One buffer per scheduler, so the video and
+  // audio instances that share a denoising loop never see each other's history
+  // and may differ in length.
+  std::vector<float> previous_velocity_;
+  bool has_previous_ = false;
+  // The only index `step` will accept next, or -1 for "fresh, any index".
+  int expected_step_ = -1;
 };
 
 }  // namespace vidfab::sampler

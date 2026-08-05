@@ -1141,8 +1141,8 @@ VIDFAB_TEST(transformer_load_rejects_bad_shapes) {
 
 vidfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
                                                const PackedIndices& idx,
-                                               const vidfab::sampler::FlowScheduler& video,
-                                               const vidfab::sampler::FlowScheduler& audio) {
+                                               vidfab::sampler::FlowScheduler& video,
+                                               vidfab::sampler::FlowScheduler& audio) {
   vidfab::dit::DenoiseInputs in;
   in.layout = &layout;
   in.indices = &idx;

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "vidfab/pipeline.h"
+#include "vidfab/sampler/scheduler.h"
 
 namespace vidfab {
 
@@ -46,6 +47,11 @@ struct RunOptions {
   // the same seed and geometry must produce byte-identical files, so
   // `vidfab compare a b --abs-tol 0` is the whole test.
   std::string dump_latents_path;
+  // Which integrator the two schedulers use. Both cost one forward pass per
+  // step; the reason to change it is to be able to lower `num_inference_steps`
+  // for the same quality, not to make a step cheaper. Defaults to the
+  // reference's Euler, and nothing about the default path changes.
+  sampler::SamplerKind sampler = sampler::SamplerKind::kEuler;
 };
 
 struct RunResult {

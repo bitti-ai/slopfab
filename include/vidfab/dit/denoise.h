@@ -41,8 +41,10 @@ struct DenoiseInputs {
   // Schedules, already validated to be the same length by resolve_plan.
   const std::vector<float>* video_timesteps = nullptr;
   const std::vector<float>* audio_timesteps = nullptr;
-  const sampler::FlowScheduler* video_scheduler = nullptr;
-  const sampler::FlowScheduler* audio_scheduler = nullptr;
+  // Non-const because a second-order sampler keeps v_{n-1} inside the
+  // scheduler, one buffer per modality. The loop below is unaware of it.
+  sampler::FlowScheduler* video_scheduler = nullptr;
+  sampler::FlowScheduler* audio_scheduler = nullptr;
 
   uint64_t seed = 0;
 };
