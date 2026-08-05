@@ -59,6 +59,25 @@ class SafeTensors {
   // Null when closed.
   const void* mapping_base() const { return base_; }
 
+  // Asks the OS to read the whole mapping in, asynchronously, instead of
+  // waiting for it to be demanded a fault at a time. Best-effort in exactly the
+  // sense `cudaHostRegister` is on the conditioner's mapping: it is a hint, it
+  // can fail, and every caller is correct without it — just slower.
+  //
+  // This is worth 3x on a cold load and it is not the drive. The same 12.5 GB
+  // nvfp4 checkpoint, same session, same access order, cache evicted before
+  // each sample: 20.8 s demand-faulted against 7.3 s prefetched, where an
+  // unbuffered sequential read of the same file is 5.8-7.1 s. Demand faulting a
+  // mapping is a synchronous, one-outstanding-request-at-a-time walk; the drive
+  // is an NVMe SSD that needs depth to reach its rate and never gets any.
+  //
+  // Call it only where the whole file is about to be consumed. `inspect` and
+  // `compare` read the header and a few tensors, and would pay 12 GB of I/O for
+  // nothing.
+  //
+  // Returns whether the hint was accepted, for logging; ignoring it is fine.
+  bool prefetch() const;
+
   // Free-form key/value block stored under "__metadata__". Absent in most
   // checkpoints; ComfyUI writes provenance here.
   const std::map<std::string, std::string>& metadata() const { return metadata_; }

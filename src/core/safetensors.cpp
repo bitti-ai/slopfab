@@ -1,5 +1,6 @@
 #include "vidfab/safetensors.h"
 
+#include <cstdlib>
 #include <stdexcept>
 #include <utility>
 
@@ -30,6 +31,19 @@ constexpr uint64_t kMaxHeaderBytes = 256ull << 20;
 
 [[noreturn]] void fail(const std::string& path, const std::string& what) {
   throw std::runtime_error("safetensors: " + path + ": " + what);
+}
+
+// `std::getenv` is C4996 under /W4 on MSVC and this file is built with it.
+bool env_flag(const char* name) {
+#ifdef _MSC_VER
+  size_t len = 0;
+  char buf[8] = {};
+  if (getenv_s(&len, buf, sizeof(buf), name) != 0) return false;
+  return len != 0 && buf[0] == '1';
+#else
+  const char* v = std::getenv(name);
+  return v != nullptr && v[0] == '1';
+#endif
 }
 
 }  // namespace
@@ -202,6 +216,36 @@ void SafeTensors::close() {
 #endif
   base_ = nullptr;
   size_ = 0;
+}
+
+bool SafeTensors::prefetch() const {
+  if (base_ == nullptr || size_ == 0) return false;
+  // Exists so the same binary can be run both ways. Proving that a readahead
+  // hint left the weight arena bit-identical needs an A/B, and an A/B across
+  // two builds proves less than one across two runs of one build. Same shape
+  // as VIDFAB_NATIVE_NVFP4 in transformer.cpp.
+  if (env_flag("VIDFAB_NO_PREFETCH")) return false;
+#ifdef _WIN32
+  // PrefetchVirtualMemory is Windows 8+. Resolved at run time rather than
+  // link time so a build that runs on something older degrades to demand
+  // faulting instead of failing to start.
+  using Fn = BOOL(WINAPI*)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+  static const Fn prefetch_fn = [] {
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    return k32 == nullptr
+               ? nullptr
+               : reinterpret_cast<Fn>(GetProcAddress(k32, "PrefetchVirtualMemory"));
+  }();
+  if (prefetch_fn == nullptr) return false;
+  WIN32_MEMORY_RANGE_ENTRY range;
+  range.VirtualAddress = base_;
+  range.NumberOfBytes = size_;
+  return prefetch_fn(GetCurrentProcess(), 1, &range, 0) != FALSE;
+#else
+  // POSIX spells the same hint MADV_WILLNEED. Same contract: advisory, and the
+  // mapping is correct whether or not the kernel acts on it.
+  return madvise(base_, size_, MADV_WILLNEED) == 0;
+#endif
 }
 
 void SafeTensors::parse_header() {

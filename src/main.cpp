@@ -28,6 +28,7 @@
 #include <chrono>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/dit/transformer.h"
 #include "vidfab/generate.h"
 #include "vidfab/vae/vit_decoder.h"
 #endif
@@ -69,6 +70,10 @@ const CommandHelp kCommands[] = {
      "  --transformer <f>            H3 omni transformer, fp8 or nvfp4\n"
      "  --vae <f>                    video VAE decoder\n"
      "  --audio-vae <f>              audio VAE decoder\n"
+     "\n"
+     "  --bench-load <n>             load --transformer n times and exit, timing each.\n"
+     "                               The first pays for reading the file, the rest do\n"
+     "                               not; the gap is the cold-start cost.\n"
      "\n"
      "The quantisation of each checkpoint is read out of the file, so there is\n"
      "no flag for it and the two need not match.\n"
@@ -648,6 +653,7 @@ int cmd_generate(int argc, char** argv) {
   bool synthetic = false;
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
   std::string dump_latents;
+  int bench_load = 0;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -704,6 +710,8 @@ int cmd_generate(int argc, char** argv) {
       synthetic = true;
     } else if (arg == "--dump-latents") {
       dump_latents = next("--dump-latents");
+    } else if (arg == "--bench-load") {
+      bench_load = std::atoi(next("--bench-load"));
     } else {
       std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
       return 2;
@@ -718,6 +726,44 @@ int cmd_generate(int argc, char** argv) {
   const vidfab::GeneratePlan plan = vidfab::resolve_plan(req);
   std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
   if (dry_run) return 0;
+
+#if VIDFAB_WITH_CUDA
+  // Times the transformer load on its own, the same way `decode --bench-load`
+  // times the VAE's and for the same reason: the first load in a process pays
+  // for pulling the mapping in from storage and the later ones do not, and the
+  // gap between them is the entire subject of cold-start work. Loading through
+  // `generate` proper would first stream 25 GB of conditioner, which both costs
+  // a minute and evicts the very file being measured.
+  //
+  // Nothing here evicts the cache, so the first number is only a *cold* number
+  // if the caller made it one.
+  if (bench_load > 0) {
+    if (req.transformer_path.empty()) {
+      std::fprintf(stderr, "vidfab: --bench-load needs --transformer <f>\n");
+      return 2;
+    }
+    vidfab::SafeTensors ckpt;
+    ckpt.open(req.transformer_path);
+    std::printf("\n%s\n%.3f GB on disk, %zu tensors\n", req.transformer_path.c_str(),
+                ckpt.file_size() / 1e9, ckpt.tensor_count());
+    for (int i = 0; i < bench_load; ++i) {
+      vidfab::dit::Transformer probe;
+      const auto s0 = std::chrono::steady_clock::now();
+      probe.load(ckpt);
+      const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count();
+      std::printf("load %d: %s on device in %6.3f s  (%.2f GB/s off disk)\n", i + 1,
+                  format_bytes(probe.weight_bytes()).c_str(), sec,
+                  static_cast<double>(ckpt.file_size()) / sec / 1e9);
+      std::fflush(stdout);
+    }
+    return 0;
+  }
+#else
+  if (bench_load > 0) {
+    std::fprintf(stderr, "vidfab: --bench-load needs a GPU build\n");
+    return 1;
+  }
+#endif
 
 #if !VIDFAB_WITH_CUDA
   (void)sampler_kind;

@@ -207,6 +207,9 @@ AudioDecoder::~AudioDecoder() = default;
 
 void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& config) {
   Impl& im = *impl_;
+  // See the note on `SafeTensors::prefetch`: this loader consumes the whole
+  // file, so it asks for it up front rather than one page fault at a time.
+  checkpoint.prefetch();
   im.config = config;
 
   if (config.decoder_rates.size() != config.decoder_kernel_sizes.size()) {

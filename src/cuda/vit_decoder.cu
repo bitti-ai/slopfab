@@ -307,6 +307,9 @@ size_t ViTDecoder::weight_bytes() const { return impl_->weight_bytes; }
 
 void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   Impl& d = *impl_;
+  // See the note on `SafeTensors::prefetch`: this loader consumes the whole
+  // file, so it asks for it up front rather than one page fault at a time.
+  ckpt.prefetch();
   d.cfg = config;
   CUBLAS_CHECK(cublasCreate(&d.blas));
   CUBLAS_CHECK(cublasSetStream(d.blas, d.stream.get()));

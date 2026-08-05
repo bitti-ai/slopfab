@@ -139,6 +139,19 @@ else()
   target_compile_options(vidfab PRIVATE -Wall -Wextra)
 endif()
 
+# --- tools ------------------------------------------------------------------
+
+# Disk-side load probe. Deliberately a separate binary rather than a `vidfab`
+# subcommand: it links vidfab_core only, so it never initialises CUDA and can
+# be run while the card is busy with something else.
+add_executable(vidfab_loadprobe tools/loadprobe.cpp)
+target_link_libraries(vidfab_loadprobe PRIVATE vidfab_core)
+if(MSVC)
+  target_compile_options(vidfab_loadprobe PRIVATE /W4 /permissive- /utf-8)
+else()
+  target_compile_options(vidfab_loadprobe PRIVATE -Wall -Wextra)
+endif()
+
 # --- tests ------------------------------------------------------------------
 
 if(VIDFAB_BUILD_TESTS)

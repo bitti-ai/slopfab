@@ -31,6 +31,8 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -723,6 +725,13 @@ void Transformer::unload() {
 
 void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config) {
   Impl& s = *impl_;
+  // Issued first, before anything else in this function, because it is
+  // asynchronous: the plan walk and the arena allocation below run while the
+  // OS is already reading the file. Every byte of this checkpoint is about to
+  // be consumed, which is the condition `prefetch` documents. Best-effort — a
+  // failure just means the old demand-fault path, which is what this did
+  // before and is 3x slower on a cold cache.
+  checkpoint.prefetch();
   unload();
   s.cfg = config;
 
@@ -836,6 +845,33 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     }
   }
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+
+  // A hash of the finished weight arena, off unless asked for. This exists so
+  // that a change to *how* the file is read can be shown to have left *what*
+  // was read alone: any reordering, buffering or prefetch change must produce
+  // the same 12.5 GB byte for byte, and a single number either matches or it
+  // does not. Reading it back costs one D2H of the arena — about half a second
+  // — which is why it is behind an environment variable rather than always on.
+  if (const char* want = std::getenv("VIDFAB_ARENA_HASH"); want != nullptr && want[0] == '1') {
+    constexpr size_t kChunk = 64u << 20;
+    std::vector<uint64_t> host(kChunk / sizeof(uint64_t));
+    uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
+    size_t left = s.arena_bytes;
+    const uint8_t* src = base;
+    while (left > 0) {
+      const size_t n = std::min(left, kChunk);
+      VIDFAB_CUDA_CHECK(cudaMemcpy(host.data(), src, n, cudaMemcpyDeviceToHost));
+      // Whole words only; the arena's records are 256-byte aligned, so the
+      // trailing partial word can only be padding this loop never reaches.
+      const size_t words = n / sizeof(uint64_t);
+      for (size_t i = 0; i < words; ++i) h = (h ^ host[i]) * 1099511628211ull;
+      src += n;
+      left -= n;
+    }
+    std::printf("arena %zu bytes, %zu records, fnv1a %016llx\n", s.arena_bytes,
+                plan.records().size(), static_cast<unsigned long long>(h));
+    std::fflush(stdout);
+  }
 
   // --- wire up --------------------------------------------------------------
 

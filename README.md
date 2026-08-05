@@ -451,9 +451,10 @@ progress line reports seconds per step and a running ETA from the first step
 onward. **If you just want to see it work, use `--frames 22 --aspect 1:1
 --steps 30` and wait under a minute.**
 
-Roughly 25 s of the fixed cost is loading 19.6 GiB of transformer weights, and
-~5 s is the conditioner, which streams its 24.4 GB rather than resident-loading
-it.
+Roughly 5.5 s of the fixed cost is loading 19.6 GiB of transformer weights from
+a warm page cache — but 22 s from a cold one, and up to 94 s before this was
+fixed. See [Cold weight loading](#cold-weight-loading). ~5 s is the
+conditioner, which streams its 24.4 GB rather than resident-loading it.
 
 **Measure with the GPU idle.** A contended card does not halve throughput here,
 it costs up to 14x: the conditioner's attention is a dependent chain of short
@@ -489,6 +490,69 @@ page-locked once with `cudaHostRegister` and each weight DMAs straight out of
 it, which lifted H2D from 8.7 GB/s to ~42 GB/s and removed 930 MB of pinned
 staging. Registration is best-effort; if it fails the old staging path still
 runs, just slower.
+
+### Cold weight loading
+
+The first run of the day pays for reading the checkpoint off the drive, and it
+was paying about three times what the drive charges. `SafeTensors` maps the
+file and every loader then demand-faults it in, which is a synchronous walk
+that never gives the SSD any queue depth. One `PrefetchVirtualMemory` over the
+mapping — `MADV_WILLNEED` on POSIX — replaces that with one asynchronous read.
+
+Measured end to end through `generate --bench-load`, cache evicted before each
+cold sample, card confirmed idle, n=2 cold and n=3 warm per configuration:
+
+| checkpoint | | cold | warm |
+|---|---|---|---|
+| nvfp4, 12.5 GB | demand faulted | 26.4, 28.0 s | 3.34–3.48 s |
+| | **prefetched** | **12.6, 13.1 s** | 3.67–3.90 s |
+| fp8, 21.0 GB | demand faulted | 45.0, **94.3** s | 5.47–5.69 s |
+| | **prefetched** | **22.1, 24.6 s** | 6.21–6.56 s |
+
+**14 s off a cold nvfp4 run and 21–70 s off a cold fp8 one.** That is seconds
+off a fresh run and never a percentage of a step — this is outside the denoise
+loop entirely. Against the default 50-step run at ~16 min it is 1–7%; against
+the ~50 s quick geometry the nvfp4 saving alone is over a quarter of the whole
+run, and the fp8 tail case was longer than the generation it preceded. That
+contrast is the honest way to read it.
+
+**It also removes a tail, and that tail was the original mystery.** Two samples
+of the same cold fp8 file demand-faulted took 45.0 s and 94.3 s — a 2.1×
+spread on identical work, which is the same instability an earlier profiler saw
+as 22.6 s and 60.7 s and could not explain. Prefetched, the same file is 22.1
+and 24.6 s. The win is as much that the number becomes predictable as that it
+becomes smaller.
+
+**Warm loads are ~0.4 s (nvfp4) and ~0.8 s (fp8) slower**, consistently and
+outside the noise: prefetching an already-resident 21 GB mapping still has to
+walk five million pages into the working set. Paying that to save 14–70 s on
+the first load is the right trade, but it is a real cost and not a free win.
+
+**Access order is not the problem, which took measuring to establish.** Every
+loader walks tensors in `std::map` name order, and that is emphatically not
+file order — 453 backward seeks over 1632 GB cumulative for nvfp4, 402 over
+615 GB for fp8. Sorting the upload by file offset looks like the obvious fix
+and buys **nothing**: replaying the exact extents unbuffered gives 2.19 GB/s in
+name order against 2.26 GB/s in file order, and mapped-and-cold the two are
+21.7 s against 21.6 s. Even *with* prefetch the two orders are identical at
+7.0 s. The sort is deliberately not implemented.
+
+The measurement method mattered as much as the result, because "cold" on
+Windows is not a controlled condition. `tools/loadprobe.cpp` replays a
+checkpoint's real extent list under `FILE_FLAG_NO_BUFFERING`, which bypasses
+the cache and so always measures the drive: spread 1.01× over five samples,
+against the 2.7× the old figures had. For the mapped path it drops the file's
+own cached pages by opening it unbuffered, and then *verifies* the eviction
+with a probe read rather than assuming it — the first attempt read 62 GB past
+the target with `FILE_FLAG_SEQUENTIAL_SCAN` set, which retires pages as they
+are consumed, so the flood evicted itself and left the target fully cached.
+That same probe later caught two contaminated samples in flight.
+
+Weights are bit-identical, which is the point of a readahead change and is
+checked rather than argued: `VIDFAB_ARENA_HASH=1` hashes the finished arena,
+and ten loads of each checkpoint across both settings of `VIDFAB_NO_PREFETCH`
+agree exactly — nvfp4 `7da30a6df7e45676` over 12,615,830,272 bytes and 930
+records, fp8 `190cdce19da29c2d` over 21,045,398,272 bytes and 730 records.
 
 **Resident mode has a bad tail on a shared card.** If another process wants the
 memory, WDDM evicts the 22.7 GB weight arena to system RAM and faults it back
