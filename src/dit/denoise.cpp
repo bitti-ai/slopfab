@@ -153,8 +153,12 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         // it is the *only* per-step work a skipped step also avoids, which is
         // why it sits inside this branch rather than above it.
         cuda::HostSpan span("build_row_timesteps");
-        row_timesteps = build_row_timesteps(layout, indices, video_t[static_cast<size_t>(i)],
-                                            audio_t[static_cast<size_t>(i)]);
+        const float vt = video_t[static_cast<size_t>(i)];
+        const float at = audio_t[static_cast<size_t>(i)];
+        row_timesteps = layout.condition_audio_is_explicit
+                            ? build_row_timesteps(layout, indices, vt, at,
+                                                  std::max(vt, 0.999f), 1.0f)
+                            : build_row_timesteps(layout, indices, vt, at);
       }
       if (inputs.velocity) {
         inputs.velocity(i, row_timesteps, all_video.data(), all_audio.data(),

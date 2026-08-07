@@ -410,6 +410,39 @@ RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndic
   return out;
 }
 
+RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndices& idx,
+                                 float video_t, float audio_t, float condition_video_t,
+                                 float condition_audio_t) {
+  const int total = layout.total_rows();
+  if (static_cast<int>(idx.tags.size()) != total)
+    throw std::runtime_error("packing: Ref2VA tags do not cover the sequence");
+  std::vector<float> row_t(static_cast<size_t>(total), video_t);
+  const size_t cv = std::min(static_cast<size_t>(std::max(0, layout.num_condition_video)),
+                             idx.video.size());
+  const size_t ca = std::min(static_cast<size_t>(std::max(0, layout.num_condition_audio)),
+                             idx.audio.size());
+  for (size_t i = 0; i < cv; ++i) row_t[static_cast<size_t>(idx.video[i])] = condition_video_t;
+  for (size_t i = 0; i < ca; ++i) row_t[static_cast<size_t>(idx.audio[i])] = condition_audio_t;
+  for (size_t i = ca; i < idx.audio.size(); ++i)
+    row_t[static_cast<size_t>(idx.audio[i])] = audio_t;
+
+  RowTimesteps out;
+  out.unique = row_t;
+  std::sort(out.unique.begin(), out.unique.end());
+  out.unique.erase(std::unique(out.unique.begin(), out.unique.end()), out.unique.end());
+  out.indices.resize(static_cast<size_t>(total));
+  out.adaln.resize(static_cast<size_t>(total));
+  for (int s = 0; s < total; ++s) {
+    const int32_t ti = static_cast<int32_t>(
+        std::lower_bound(out.unique.begin(), out.unique.end(), row_t[static_cast<size_t>(s)]) -
+        out.unique.begin());
+    out.indices[static_cast<size_t>(s)] = ti;
+    out.adaln[static_cast<size_t>(s)] =
+        ti * 3 + std::max(idx.tags[static_cast<size_t>(s)], 0);
+  }
+  return out;
+}
+
 BandedKeyRanges build_banded_key_ranges(const SequenceLayout& layout, int band_frames,
                                         int query_tile, int key_align) {
   if (query_tile <= 0 || key_align <= 0) {

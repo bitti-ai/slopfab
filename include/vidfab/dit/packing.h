@@ -128,6 +128,9 @@ struct RowTimesteps {
 
 RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndices& idx,
                                  float video_t, float audio_t);
+RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndices& idx,
+                                 float video_t, float audio_t, float condition_video_t,
+                                 float condition_audio_t);
 
 // --- frame-banded attention -------------------------------------------------
 //

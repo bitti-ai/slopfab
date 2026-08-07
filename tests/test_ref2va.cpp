@@ -218,3 +218,22 @@ VIDFAB_TEST(ref2va_interleaved_reference_timesteps) {
   auto image_rt=build_row_timesteps(image_only.layout,image_only.indices,0.75f,0.25f);
   for(int i:image_only.indices.audio) CHECK(image_rt.indices[static_cast<size_t>(i)]==0);
 }
+
+VIDFAB_TEST(ref2va_fixed_condition_noise_levels) {
+  const ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 4, 0};
+  const auto p = build_ref2va_packed_sequence({kTagText}, {image}, 1, 4, 4, 2);
+  const auto rt = build_row_timesteps(p.layout, p.indices, 0.7f, 0.3f, 0.999f, 1.0f);
+  CHECK(rt.unique.size() == 3);
+  CHECK_NEAR(rt.unique[0], 0.3f, 0.0);
+  CHECK_NEAR(rt.unique[1], 0.7f, 0.0);
+  CHECK_NEAR(rt.unique[2], 0.999f, 0.0);
+  for (int i = 0; i < p.layout.num_condition_video; ++i) {
+    const int row = p.indices.video[static_cast<size_t>(i)];
+    CHECK(rt.indices[static_cast<size_t>(row)] == 2);
+    CHECK(rt.adaln[static_cast<size_t>(row)] == 2 * 3 + kTagVideo);
+  }
+  const int target_video = p.indices.video[static_cast<size_t>(p.layout.num_condition_video)];
+  CHECK(rt.indices[static_cast<size_t>(target_video)] == 1);
+  const int target_audio = p.indices.audio[0];
+  CHECK(rt.indices[static_cast<size_t>(target_audio)] == 0);
+}
