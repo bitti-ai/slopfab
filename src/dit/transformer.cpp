@@ -857,6 +857,26 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
   Plan plan(checkpoint);
 
+  auto plan_nf4 = [&](const std::string& name, int out_features, int in_features) {
+    const NF4State state = read_nf4_state(checkpoint, name);
+    if (state.shape != std::vector<int64_t>{out_features, in_features}) {
+      throw std::runtime_error("transformer: '" + nf4_state_name(name) + "' declares shape " +
+                               shape_string(state.shape) + ", expected " +
+                               shape_string({out_features, in_features}));
+    }
+    const int64_t elements = static_cast<int64_t>(out_features) * in_features;
+    const int64_t blocks = (elements + state.block_size - 1) / state.block_size;
+    const int64_t nested = (blocks + state.nested_block_size - 1) / state.nested_block_size;
+    plan.require(name + ".weight", {elements / 2, 1}, Store::kVerbatim);
+    plan.require(name + ".weight.absmax", {blocks}, Store::kVerbatim);
+    plan.require(name + ".weight.quant_map", {16}, Store::kVerbatim);
+    plan.require(name + ".weight.nested_absmax", {nested}, Store::kVerbatim);
+    plan.require(name + ".weight.nested_quant_map", {256}, Store::kVerbatim);
+    plan.require(nf4_state_name(name),
+                 {static_cast<int64_t>(checkpoint.at(nf4_state_name(name)).nbytes)},
+                 Store::kVerbatim);
+  };
+
   // Spec 8.3 — the 32 top-level tensors.
   plan.require("video_patch_proj.weight", {hidden, patch}, Store::kAsF32);
   plan.require("video_patch_proj.bias", {hidden}, Store::kAsF32);
@@ -879,9 +899,14 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
   plan.require("final_layer.norm.weight", {hidden}, Store::kAsBF16);
   if (full_adaln) {
-    plan.require("final_layer.adaln_proj.linear.weight",
-                 {final_adaln_out, config.timestep_embed_dim}, Store::kVerbatim);
-    plan.optional_scalar("final_layer.adaln_proj.linear.weight_scale");
+    const std::string final_adaln = "final_layer.adaln_proj.linear";
+    if (is_nf4(checkpoint, final_adaln)) {
+      plan_nf4(final_adaln, final_adaln_out, config.timestep_embed_dim);
+    } else {
+      plan.require(final_adaln + ".weight",
+                   {final_adaln_out, config.timestep_embed_dim}, Store::kVerbatim);
+      plan.optional_scalar(final_adaln + ".weight_scale");
+    }
     plan.optional("final_layer.adaln_proj.linear.input_scale");
     plan.optional("final_layer.adaln_proj.linear.comfy_quant");
     plan.require("final_layer.adaln_proj.linear.bias", {final_adaln_out}, Store::kAsBF16);
@@ -904,23 +929,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   // second-level `weight_scale_2`. Which of the two it is comes from the file.
   auto plan_linear = [&](const std::string& name, int out_features, int in_features) {
     if (is_nf4(checkpoint, name)) {
-      const NF4State state = read_nf4_state(checkpoint, name);
-      if (state.shape != std::vector<int64_t>{out_features, in_features}) {
-        throw std::runtime_error("transformer: '" + nf4_state_name(name) + "' declares shape " +
-                                 shape_string(state.shape) + ", expected " +
-                                 shape_string({out_features, in_features}));
-      }
-      const int64_t elements = static_cast<int64_t>(out_features) * in_features;
-      const int64_t blocks = (elements + state.block_size - 1) / state.block_size;
-      const int64_t nested = (blocks + state.nested_block_size - 1) / state.nested_block_size;
-      plan.require(name + ".weight", {elements / 2, 1}, Store::kVerbatim);
-      plan.require(name + ".weight.absmax", {blocks}, Store::kVerbatim);
-      plan.require(name + ".weight.quant_map", {16}, Store::kVerbatim);
-      plan.require(name + ".weight.nested_absmax", {nested}, Store::kVerbatim);
-      plan.require(name + ".weight.nested_quant_map", {256}, Store::kVerbatim);
-      plan.require(nf4_state_name(name),
-                   {static_cast<int64_t>(checkpoint.at(nf4_state_name(name)).nbytes)},
-                   Store::kVerbatim);
+      plan_nf4(name, out_features, in_features);
     } else if (is_nvfp4(checkpoint, name, in_features)) {
       plan.require(name + ".weight", {out_features, in_features / 2}, Store::kVerbatim);
       plan.require(name + ".weight_scale",
