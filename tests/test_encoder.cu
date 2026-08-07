@@ -1071,14 +1071,14 @@ VIDFAB_TEST(reference_vision_support_never_silently_ignores_pixels) {
   vidfab::write_safetensors(vision_path, {{"visual.patch_embed.weight", {1}, {1.0f}}});
   vidfab::SafeTensors vision;
   vision.open(vision_path);
-  bool unsupported_failed = false;
+  bool malformed_failed = false;
   try {
     vidfab::text::require_reference_vision_support(vision, 1);
   } catch (const std::runtime_error& e) {
-    unsupported_failed = std::string(e.what()).find("found 1 Qwen vision tensors") !=
-                         std::string::npos;
+    malformed_failed = std::string(e.what()).find("exactly 351 Qwen vision tensors") !=
+                       std::string::npos;
   }
-  CHECK(unsupported_failed);
+  CHECK(malformed_failed);
 }
 
 // --- checkpoint-dependent ----------------------------------------------------
