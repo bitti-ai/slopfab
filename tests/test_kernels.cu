@@ -589,6 +589,35 @@ void test_narrow_f16() {
             mismatches, want.size());
 }
 
+void test_heads_to_tokens_bf16() {
+  TEST("heads_to_tokens_bf16");
+  const int seq = 11, heads = 3, dim = 64;
+  const std::vector<float> src = make_data(static_cast<size_t>(seq) * heads * dim, 0xa771u, 8.0f);
+  DeviceBuffer<float> dsrc = to_device(src);
+  DeviceBuffer<__nv_bfloat16> ddst(src.size());
+  vidfab::cuda::launch_heads_to_tokens_bf16(dsrc.get(), ddst.get(), seq, heads, dim, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<__nv_bfloat16> got(src.size());
+  ddst.copy_to_host(got.data(), got.size());
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+  size_t mismatches = 0;
+  for (int token = 0; token < seq; ++token) {
+    for (int h = 0; h < heads; ++h) {
+      for (int d = 0; d < dim; ++d) {
+        const size_t dst = (static_cast<size_t>(token) * heads + h) * dim + d;
+        const size_t from = (static_cast<size_t>(h) * seq + token) * dim + d;
+        const __nv_bfloat16 want = __float2bfloat16_rn(src[from]);
+        uint16_t wb = 0, gb = 0;
+        std::memcpy(&wb, &want, sizeof(wb));
+        std::memcpy(&gb, &got[dst], sizeof(gb));
+        mismatches += wb != gb;
+      }
+    }
+  }
+  CHECK_MSG(mismatches == 0, "heads_to_tokens_bf16: %zu layout/rounding mismatches", mismatches);
+}
+
 void test_transpose() {
   TEST("transpose_cn_to_nc");
   const int channels = 24;
@@ -697,6 +726,8 @@ const bool registered = ::vidfab::test::register_test("norms", &test_norms) &&
                         ::vidfab::test::register_test("gemm_nn_batched_ld", &test_gemm_scatter) &&
                         ::vidfab::test::register_test("widen_f16", &test_widen_f16) &&
                         ::vidfab::test::register_test("narrow_f16", &test_narrow_f16) &&
+                        ::vidfab::test::register_test("heads_to_tokens_bf16",
+                                                     &test_heads_to_tokens_bf16) &&
                         ::vidfab::test::register_test("transpose_cn_to_nc", &test_transpose) &&
                         ::vidfab::test::register_test("misc", &test_misc);
 
