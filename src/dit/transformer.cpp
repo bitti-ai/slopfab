@@ -118,12 +118,69 @@ size_t format_bytes(QuantFormat f) {
     case QuantFormat::kI8:
       return 1;
     case QuantFormat::kNVFP4:
+    case QuantFormat::kNF4:
       // The qkv split below is the only caller, and for nvfp4 it has to slice
       // the block scales as well as the nibbles. Throwing keeps a half-sized
       // offset from being computed silently.
       throw std::runtime_error("transformer: nvfp4 is not a whole-byte format");
   }
   return 0;
+}
+
+struct NF4State {
+  int block_size = 0;
+  int nested_block_size = 0;
+  float nested_offset = 0.0f;
+  std::vector<int64_t> shape;
+};
+
+std::string nf4_state_name(const std::string& name) {
+  return name + ".weight.quant_state.bitsandbytes__nf4";
+}
+
+bool is_nf4(const SafeTensors& st, const std::string& name) {
+  return st.find(nf4_state_name(name)) != nullptr;
+}
+
+NF4State read_nf4_state(const SafeTensors& st, const std::string& name) {
+  const std::string state_name = nf4_state_name(name);
+  const TensorView* v = st.find(state_name);
+  if (v == nullptr || v->dtype != DType::kU8 || v->shape.size() != 1) {
+    throw std::runtime_error("transformer: '" + state_name +
+                             "' must be a rank-1 U8 JSON tensor");
+  }
+  std::string text(static_cast<const char*>(v->data), v->nbytes);
+  json::Value root;
+  try {
+    root = json::parse(text);
+  } catch (const std::exception& e) {
+    throw std::runtime_error("transformer: '" + state_name + "' is not valid JSON (" +
+                             e.what() + ")");
+  }
+  auto require = [&](const char* key) -> const json::Value& {
+    const json::Value* value = root.find(key);
+    if (value == nullptr) {
+      throw std::runtime_error("transformer: '" + state_name + "' is missing '" + key + "'");
+    }
+    return *value;
+  };
+  if (require("quant_type").as_string() != "nf4" ||
+      require("dtype").as_string() != "bfloat16" ||
+      require("nested_dtype").as_string() != "float32") {
+    throw std::runtime_error("transformer: '" + state_name +
+                             "' has an unsupported bitsandbytes NF4 contract");
+  }
+  NF4State state;
+  state.block_size = static_cast<int>(require("blocksize").as_int());
+  state.nested_block_size = static_cast<int>(require("nested_blocksize").as_int());
+  state.nested_offset = static_cast<float>(require("nested_offset").as_number());
+  for (const json::Value& dim : require("shape").as_array()) state.shape.push_back(dim.as_int());
+  if (state.block_size != 64 || state.nested_block_size != 256 ||
+      !std::isfinite(state.nested_offset)) {
+    throw std::runtime_error("transformer: '" + state_name +
+                             "' requires unsupported NF4 block sizes or offset");
+  }
+  return state;
 }
 
 // True when `name` is stored as nvfp4. Structural, from the file itself, rather
@@ -780,11 +837,13 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   if (s.architecture == TransformerArchitecture::kUnknown) {
     throw std::runtime_error("transformer: checkpoint architecture is unknown");
   }
+  const TransformerQuantization checkpoint_quant = detect_transformer_quantization(checkpoint);
   if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN &&
-      detect_transformer_quantization(checkpoint) != TransformerQuantization::kFloat8) {
+      checkpoint_quant != TransformerQuantization::kFloat8 &&
+      checkpoint_quant != TransformerQuantization::kBitsAndBytesNF4) {
     throw std::runtime_error(
-        "transformer: full-AdaLN execution currently requires the FP8 Ref2VA checkpoint; "
-        "NF4 is accepted only as an architectural oracle");
+        "transformer: full-AdaLN execution requires an FP8 or bitsandbytes NF4 Ref2VA "
+        "checkpoint");
   }
   const bool full_adaln = s.architecture == TransformerArchitecture::kRef2VAFullAdaLN;
 
@@ -844,7 +903,25 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   // per-tensor scalar to one e4m3 byte per 16 contracted elements, and adds the
   // second-level `weight_scale_2`. Which of the two it is comes from the file.
   auto plan_linear = [&](const std::string& name, int out_features, int in_features) {
-    if (is_nvfp4(checkpoint, name, in_features)) {
+    if (is_nf4(checkpoint, name)) {
+      const NF4State state = read_nf4_state(checkpoint, name);
+      if (state.shape != std::vector<int64_t>{out_features, in_features}) {
+        throw std::runtime_error("transformer: '" + nf4_state_name(name) + "' declares shape " +
+                                 shape_string(state.shape) + ", expected " +
+                                 shape_string({out_features, in_features}));
+      }
+      const int64_t elements = static_cast<int64_t>(out_features) * in_features;
+      const int64_t blocks = (elements + state.block_size - 1) / state.block_size;
+      const int64_t nested = (blocks + state.nested_block_size - 1) / state.nested_block_size;
+      plan.require(name + ".weight", {elements / 2, 1}, Store::kVerbatim);
+      plan.require(name + ".weight.absmax", {blocks}, Store::kVerbatim);
+      plan.require(name + ".weight.quant_map", {16}, Store::kVerbatim);
+      plan.require(name + ".weight.nested_absmax", {nested}, Store::kVerbatim);
+      plan.require(name + ".weight.nested_quant_map", {256}, Store::kVerbatim);
+      plan.require(nf4_state_name(name),
+                   {static_cast<int64_t>(checkpoint.at(nf4_state_name(name)).nbytes)},
+                   Store::kVerbatim);
+    } else if (is_nvfp4(checkpoint, name, in_features)) {
       plan.require(name + ".weight", {out_features, in_features / 2}, Store::kVerbatim);
       plan.require(name + ".weight_scale",
                    {out_features, in_features / static_cast<int>(cuda::kNVFP4BlockSize)},
@@ -976,7 +1053,17 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     w.in_features = in_features;
     w.data = ptr(name + ".weight");
 
-    if (is_nvfp4(checkpoint, name, in_features)) {
+    if (is_nf4(checkpoint, name)) {
+      const NF4State state = read_nf4_state(checkpoint, name);
+      w.format = QuantFormat::kNF4;
+      w.nf4_absmax = static_cast<const uint8_t*>(ptr(name + ".weight.absmax"));
+      w.nf4_quant_map = f32(name + ".weight.quant_map");
+      w.nf4_nested_absmax = f32(name + ".weight.nested_absmax");
+      w.nf4_nested_quant_map = f32(name + ".weight.nested_quant_map");
+      w.nf4_block_size = state.block_size;
+      w.nf4_nested_block_size = state.nested_block_size;
+      w.nf4_nested_offset = state.nested_offset;
+    } else if (is_nvfp4(checkpoint, name, in_features)) {
       w.format = QuantFormat::kNVFP4;
       // Raw e4m3 bytes in a 128x4 tiling, not floats and not row-major, so this
       // deliberately does not go through `f32` — reinterpreting them as float
@@ -1024,7 +1111,21 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     b.wk = b.wq;
     b.wv = b.wq;
 
-    if (fused.format == QuantFormat::kNVFP4) {
+    if (fused.format == QuantFormat::kNF4) {
+      const size_t elements_third = static_cast<size_t>(inner) * hidden;
+      if (elements_third % fused.nf4_block_size != 0 ||
+          (elements_third / fused.nf4_block_size) % fused.nf4_nested_block_size != 0) {
+        throw std::runtime_error("transformer: qkv thirds do not align to NF4 nested blocks");
+      }
+      const size_t blocks_third = elements_third / fused.nf4_block_size;
+      const size_t nested_third = blocks_third / fused.nf4_nested_block_size;
+      b.wk.data = static_cast<const uint8_t*>(fused.data) + elements_third / 2;
+      b.wv.data = static_cast<const uint8_t*>(fused.data) + elements_third;
+      b.wk.nf4_absmax = fused.nf4_absmax + blocks_third;
+      b.wv.nf4_absmax = fused.nf4_absmax + 2 * blocks_third;
+      b.wk.nf4_nested_absmax = fused.nf4_nested_absmax + nested_third;
+      b.wv.nf4_nested_absmax = fused.nf4_nested_absmax + 2 * nested_third;
+    } else if (fused.format == QuantFormat::kNVFP4) {
       // Slicing the block scales on a byte offset is only correct because each
       // third is a whole number of the 128-row tiles they are stored in: the
       // tile index runs row-major, so rows [inner, 2*inner) begin exactly at
