@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <memory>
 #include <vector>
 
 #include "vidfab/safetensors.h"
@@ -83,6 +84,27 @@ QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& token_ids
 void qwen3vl_vision_rope_tables(const QwenVisionPositions& positions,
                                std::vector<float>& cos, std::vector<float>& sin,
                                int head_dim = 72, float theta = 10000.0f);
+
+struct QwenVisionEmbedding {
+  int tokens = 0;
+  int hidden = 5120;
+  std::vector<uint16_t> main;
+  std::vector<uint16_t> deepstack[3];
+};
+
+class QwenVisionEncoder {
+ public:
+  QwenVisionEncoder();
+  ~QwenVisionEncoder();
+  QwenVisionEncoder(const QwenVisionEncoder&) = delete;
+  QwenVisionEncoder& operator=(const QwenVisionEncoder&) = delete;
+  void load(const SafeTensors& checkpoint);
+  void unload();
+  QwenVisionEmbedding encode(const std::vector<QwenPixelValues>& images);
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 // Matches Qwen2VLImageProcessorFast.smart_resize for H3's processor config:
 // factor=patch_size*merge_size=32, min_pixels=65536, max_pixels=16777216.
