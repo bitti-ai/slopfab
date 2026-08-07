@@ -158,4 +158,27 @@ std::vector<float> KeyframeEncoder::encode_moments(const float* pixels, int heig
   return moments;
 }
 
+std::vector<float> KeyframeEncoder::encode_condition_rows(
+    const RGBImage& image, const float* normal, const std::vector<float>& latents_mean,
+    const std::vector<float>& latents_std) {
+  if (!normal) throw std::runtime_error("keyframe encoder: missing posterior normal field");
+  const std::vector<float> pixels = prepare_keyframe_pixels(image);
+  const std::vector<float> moments = encode_moments(pixels.data(), image.height, image.width);
+  const int latent_h = image.height / 16;
+  const int latent_w = image.width / 16;
+  const std::vector<float> latents = sample_keyframe_latents(
+      moments.data(), normal, latent_h, latent_w, latents_mean, latents_std);
+  return patchify_keyframe_latents(latents.data(), latent_h, latent_w);
+}
+
+std::vector<float> KeyframeEncoder::encode_reference_image(
+    const RGBImage& image, const std::vector<float>& latents_mean,
+    const std::vector<float>& latents_std) {
+  if (image.height <= 0 || image.width <= 0 || image.height % 16 || image.width % 16)
+    throw std::runtime_error("keyframe encoder: reference dimensions must be multiples of 16");
+  const size_t count = static_cast<size_t>(24) * (image.height / 16) * (image.width / 16);
+  const std::vector<float> normal = torch_cpu_normal_seed42(count);
+  return encode_condition_rows(image, normal.data(), latents_mean, latents_std);
+}
+
 }  // namespace vidfab::vae

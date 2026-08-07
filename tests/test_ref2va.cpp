@@ -130,6 +130,16 @@ VIDFAB_TEST(ref2va_keyframe_patchify) {
     vidfab::vae::patchify_keyframe_latents(latent, 1, 4);
   }));
 }
+
+VIDFAB_TEST(ref2va_torch_cpu_seed42_normal) {
+  const auto n = vidfab::vae::torch_cpu_normal_seed42(16);
+  // torch.manual_seed(42); torch.randn(16), contiguous CPU float kernel.
+  const float golden[] = {1.92691541f, 1.48728406f, 0.90071720f, -2.10552096f,
+                          0.67841846f, -1.23454487f, -0.04306748f, -1.60466695f,
+                          -0.75213528f, 1.64872301f, -0.39247864f, -1.40360725f,
+                          -0.72788125f, -0.55943018f, -0.76883894f, 0.76244539f};
+  for (int i = 0; i < 16; ++i) CHECK_NEAR(n[i], golden[i], 3e-6);
+}
 VIDFAB_TEST(ref2va_order_positions_and_timesteps) {
   const ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 6, 0};  // 6 video rows
   const ReferenceGeometry audio{ReferenceKind::kAudio, 1, 0, 0, 2};  // 4 audio rows

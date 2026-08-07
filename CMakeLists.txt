@@ -185,6 +185,16 @@ else()
   target_compile_options(vidfab_vaeprobe PRIVATE -Wall -Wextra)
 endif()
 
+if(VIDFAB_ENABLE_CUDA)
+  add_executable(vidfab_vaecudaprobe tools/vaecudaprobe.cpp)
+  target_link_libraries(vidfab_vaecudaprobe PRIVATE vidfab_cuda)
+  if(MSVC)
+    target_compile_options(vidfab_vaecudaprobe PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(vidfab_vaecudaprobe PRIVATE -Wall -Wextra)
+  endif()
+endif()
+
 # --- tests ------------------------------------------------------------------
 
 if(VIDFAB_BUILD_TESTS)

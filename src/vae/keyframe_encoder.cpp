@@ -4,11 +4,42 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <array>
 
 #include "vidfab/dtype.h"
 
 namespace vidfab::vae {
 namespace {
+
+class TorchMT19937 {
+ public:
+  explicit TorchMT19937(uint64_t seed) {
+    state_[0] = static_cast<uint32_t>(seed);
+    for (uint32_t i = 1; i < 624; ++i)
+      state_[i] = 1812433253u * (state_[i - 1] ^ (state_[i - 1] >> 30)) + i;
+  }
+  uint32_t next() {
+    if (left_-- == 1) twist();
+    uint32_t y = state_[next_++];
+    y ^= y >> 11;
+    y ^= (y << 7) & 0x9d2c5680u;
+    y ^= (y << 15) & 0xefc60000u;
+    return y ^ (y >> 18);
+  }
+ private:
+  void twist() {
+    for (int i = 0; i < 624; ++i) {
+      const uint32_t mixed = (state_[i] & 0x80000000u) | (state_[(i + 1) % 624] & 0x7fffffffu);
+      state_[i] = state_[(i + 397) % 624] ^ (mixed >> 1) ^
+                  ((mixed & 1u) ? 0x9908b0dfu : 0u);
+    }
+    left_ = 624;
+    next_ = 0;
+  }
+  std::array<uint32_t, 624> state_{};
+  int left_ = 1;
+  int next_ = 0;
+};
 
 void require_tensor(const SafeTensors& ckpt, const std::string& name,
                     std::initializer_list<int64_t> shape, EncoderWeightSummary* summary) {
@@ -134,6 +165,30 @@ std::vector<float> patchify_keyframe_latents(const float* latents, int height, i
     }
   }
   return rows;
+}
+
+std::vector<float> torch_cpu_normal_seed42(size_t count) {
+  if (count < 16) throw std::runtime_error("keyframe encoder: Torch normal field must have >=16 values");
+  TorchMT19937 generator(42);
+  std::vector<float> out(count);
+  auto uniform = [&] { return static_cast<float>(generator.next() & 0xFFFFFFu) / 16777216.0f; };
+  for (float& value : out) value = uniform();
+  auto fill16 = [](float* data) {
+    constexpr float two_pi = 6.2831853071795864769f;
+    for (int j = 0; j < 8; ++j) {
+      const float radius = std::sqrt(-2.0f * std::log(1.0f - data[j]));
+      const float theta = two_pi * data[j + 8];
+      data[j] = radius * std::cos(theta);
+      data[j + 8] = radius * std::sin(theta);
+    }
+  };
+  for (size_t i = 0; i + 15 < count; i += 16) fill16(out.data() + i);
+  if (count % 16) {
+    float* tail = out.data() + count - 16;
+    for (int i = 0; i < 16; ++i) tail[i] = uniform();
+    fill16(tail);
+  }
+  return out;
 }
 
 }  // namespace vidfab::vae

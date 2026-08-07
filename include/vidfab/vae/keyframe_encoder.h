@@ -34,6 +34,9 @@ EncoderWeightSummary validate_keyframe_encoder_weights(const SafeTensors& checkp
 // 1x2x2 video patch embedding layout.
 std::vector<float> patchify_keyframe_latents(const float* latents, int height, int width);
 
+// PyTorch CPUGeneratorImpl MT19937 + contiguous-float normal_fill, seeded 42.
+std::vector<float> torch_cpu_normal_seed42(size_t count);
+
 #ifdef VIDFAB_WITH_CUDA
 class KeyframeEncoder {
  public:
@@ -47,6 +50,17 @@ class KeyframeEncoder {
   // Runs the genuine single-frame encoder and quant_conv graph. Input is
   // ImageNet-normalized planar [3,H,W], output [48,H/16,W/16].
   std::vector<float> encode_moments(const float* pixels, int height, int width);
+
+  // Complete Ref2VA conditioning path. `normal` contains 24*(H/16)*(W/16)
+  // standard-normal values in channel-major order.
+  std::vector<float> encode_condition_rows(const RGBImage& image, const float* normal,
+                                           const std::vector<float>& latents_mean,
+                                           const std::vector<float>& latents_std);
+
+  // Production seed-42 form used by Ref2VA.
+  std::vector<float> encode_reference_image(const RGBImage& image,
+                                            const std::vector<float>& latents_mean,
+                                            const std::vector<float>& latents_std);
 
  private:
   struct Impl;
