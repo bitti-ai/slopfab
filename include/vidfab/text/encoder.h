@@ -7,8 +7,9 @@
 // `{"num_hidden_layers": 50, "output": "unnormalized_hidden_after_layer_50"}`
 // and it contains `model.layers.0` through `.49` and nothing after.
 //
-// The `visual.*` tower is present in the file but is **not loaded**: it is
-// reached only by the fl2va keyframe path, and this port is t2va only.
+// Ref2VA also runs the checkpoint's complete `visual.*` tower, replaces the
+// image-pad embeddings, and injects its three DeepStack outputs at decoder
+// layers 8, 16 and 24.
 //
 // Consequences that shape the interface:
 //
@@ -85,10 +86,8 @@ enum class WeightFormat {
 // throws if the blobs do not describe either shipped build.
 WeightFormat detect_weight_format(const SafeTensors& checkpoint);
 
-// Ref2VA must replace <|image_pad|> token embeddings with outputs produced
-// from the image pixels by Qwen's visual tower. Until that forward path exists,
-// reject reference requests at the checkpoint boundary instead of silently
-// running the ordinary text-only conditioner.
+// Validates that a reference request has the complete Qwen visual tower rather
+// than silently running the ordinary text-only conditioner.
 void require_reference_vision_support(const SafeTensors& checkpoint, size_t reference_count);
 
 struct EncoderConfig {

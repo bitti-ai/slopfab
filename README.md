@@ -1053,9 +1053,9 @@ out-of-memory failure at the worst possible moment. So the swap is kept as a
 matter of it costing nothing, not of it being unavoidable. Ruled out rather
 than not tried.
 
-The vision tower in the conditioner checkpoint (1.19 GB in the nvfp4 build) is
-never loaded — it is reached only by the keyframe path, which this port does
-not implement.
+Ref2VA loads the conditioner checkpoint's vision tower on demand, runs all 27
+visual blocks and the main/DeepStack mergers, then releases those weights after
+the one conditioning pass. Text-only generation never pays that 1.19 GB cost.
 
 ## Licence
 
