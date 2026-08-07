@@ -103,6 +103,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/audio_vae_kernels.cu
       src/cuda/dit_kernels.cu
       src/cuda/encoder_kernels.cu
+      src/cuda/keyframe_encoder.cu
       # Host-side orchestration lives here rather than in vidfab_core so that
       # the dependency runs one way: cuda -> core, never back.
       src/vae/decode_pipeline.cpp
@@ -223,6 +224,7 @@ if(VIDFAB_BUILD_TESTS)
       tests/test_audio_vae.cu
       tests/test_transformer.cu
       tests/test_encoder.cu
+      tests/test_keyframe_encoder.cu
     )
     target_link_libraries(vidfab_kernel_tests PRIVATE vidfab_cuda)
     add_test(NAME kernels COMMAND vidfab_kernel_tests)
