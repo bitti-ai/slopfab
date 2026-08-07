@@ -40,4 +40,24 @@ VIDFAB_TEST(reference_image_rejects_truncated_ppm) {
   CHECK(rejected);
 }
 
+VIDFAB_TEST(reference_image_lanczos_golden) {
+  vidfab::RGBImage image;
+  image.width = 2;
+  image.height = 1;
+  image.pixels = {0, 10, 20, 255, 110, 20};
+  const auto identity = vidfab::resize_reference_lanczos(image, 2, 1);
+  CHECK(identity.pixels == image.pixels);
+
+  const auto wide = vidfab::resize_reference_lanczos(image, 4, 1);
+  CHECK(wide.width == 4 && wide.height == 1);
+  // Scale-adaptive Lanczos-3, half-pixel centers, edge replication and
+  // round-half-up byte conversion.
+  const uint8_t golden[] = {0, 0, 20, 54, 31, 20, 201, 89, 20, 255, 120, 20};
+  CHECK(wide.pixels == std::vector<uint8_t>(std::begin(golden), std::end(golden)));
+
+  vidfab::RGBImage constant{3, 2, std::vector<uint8_t>(18, 73)};
+  const auto scaled = vidfab::resize_reference_lanczos(constant, 7, 5);
+  for (uint8_t value : scaled.pixels) CHECK(value == 73);
+}
+
 }  // namespace
