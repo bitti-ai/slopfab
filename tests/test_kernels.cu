@@ -7,6 +7,7 @@
 // written from the spec rather than from the kernel.
 
 #include <cublas_v2.h>
+#include <cuda_fp16.h>
 
 #include <cmath>
 #include <cstdio>
@@ -564,6 +565,30 @@ void test_widen_f16() {
   }
 }
 
+void test_narrow_f16() {
+  TEST("narrow_f16");
+  std::vector<float> input = make_data(65537, 0x51a7u, 64.0f);
+  input.insert(input.end(), {0.0f, -0.0f, 65504.0f, -65504.0f, 0x1p-24f, -0x1p-24f});
+
+  std::vector<uint16_t> want(input.size());
+  for (size_t i = 0; i < input.size(); ++i) {
+    const __half h = __float2half_rn(input[i]);
+    std::memcpy(&want[i], &h, sizeof(uint16_t));
+  }
+  DeviceBuffer<float> src = to_device(input);
+  DeviceBuffer<uint16_t> dst(input.size());
+  vidfab::cuda::launch_narrow_f16(src.get(), dst.get(), input.size(), nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> got(input.size());
+  dst.copy_to_host(got.data(), got.size());
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+  size_t mismatches = 0;
+  for (size_t i = 0; i < want.size(); ++i) mismatches += want[i] != got[i];
+  CHECK_MSG(mismatches == 0, "narrow_f16: %zu of %zu round-to-nearest-even results differ",
+            mismatches, want.size());
+}
+
 void test_transpose() {
   TEST("transpose_cn_to_nc");
   const int channels = 24;
@@ -671,6 +696,7 @@ const bool registered = ::vidfab::test::register_test("norms", &test_norms) &&
                         ::vidfab::test::register_test("qkv_norm_rope", &test_qkv_rope) &&
                         ::vidfab::test::register_test("gemm_nn_batched_ld", &test_gemm_scatter) &&
                         ::vidfab::test::register_test("widen_f16", &test_widen_f16) &&
+                        ::vidfab::test::register_test("narrow_f16", &test_narrow_f16) &&
                         ::vidfab::test::register_test("transpose_cn_to_nc", &test_transpose) &&
                         ::vidfab::test::register_test("misc", &test_misc);
 
