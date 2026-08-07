@@ -10,6 +10,7 @@
 #include "vidfab/image.h"
 #include "vidfab/cuda/profile.h"
 #include "vidfab/dit/denoise.h"
+#include "vidfab/dit/checkpoint.h"
 #include "vidfab/dit/packing.h"
 #include "vidfab/dit/transformer.h"
 #include "vidfab/text/encoder.h"
@@ -121,6 +122,21 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
           "generate needs --text-encoder, --tokenizer and --transformer (or pass "
           "--synthetic-latents to skip conditioning and denoising)";
       return result;
+    }
+
+    // Ref2VA and the pruned T2VA/FL2VA transformer share most tensor names but
+    // have incompatible timestep/AdaLN graphs. Check the cheap header contract
+    // before loading the 15+ GiB conditioner so a wrong --transformer fails in
+    // milliseconds rather than after an otherwise successful text encode.
+    if (!reference_images.empty()) {
+      try {
+        SafeTensors transformer_header;
+        transformer_header.open(request.transformer_path);
+        dit::require_ref2va_transformer(transformer_header, reference_images.size());
+      } catch (const std::exception& e) {
+        result.message = e.what();
+        return result;
+      }
     }
 
     // --- conditioning -------------------------------------------------------
