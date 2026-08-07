@@ -29,6 +29,7 @@ enum : int32_t {
 struct SequenceLayout {
   int num_text = 0;             // L
   int num_condition_video = 0;  // C, always 0 for t2va
+  int num_condition_audio = 0;  // reference audio rows, 0 for t2va/fl2va
   int num_audio_rows = 0;       // Sa = 2 * num_audio_latents
   int num_video_rows = 0;       // V = F * R
   int num_audio_latents = 0;    // A, per channel
@@ -38,7 +39,7 @@ struct SequenceLayout {
 
   int rows_per_frame() const { return (latent_height / 2) * (latent_width / 2); }  // R
   int condition_start() const { return num_text; }
-  int audio_start() const { return num_text + num_condition_video; }
+  int audio_start() const { return num_text + num_condition_video + num_condition_audio; }
   int video_start() const { return audio_start() + num_audio_rows; }
   int total_rows() const { return video_start() + num_video_rows; }  // S
 };
