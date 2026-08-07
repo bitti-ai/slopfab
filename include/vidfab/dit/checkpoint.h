@@ -11,6 +11,7 @@ namespace vidfab::dit {
 enum class TransformerArchitecture {
   kUnknown,
   kPrunedTable,
+  kRef2VAPrunedTable,
   kRef2VAFullAdaLN,
 };
 

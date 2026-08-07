@@ -1,5 +1,8 @@
 #include "vidfab/dit/checkpoint.h"
 
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 
@@ -8,6 +11,13 @@ namespace {
 
 bool has(const SafeTensors& st, const char* name) { return st.find(name) != nullptr; }
 
+bool path_marks_ref2va(const SafeTensors& st) {
+  std::string name = std::filesystem::path(st.path()).filename().string();
+  std::transform(name.begin(), name.end(), name.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return name.find("ref2va") != std::string::npos;
+}
+
 }  // namespace
 
 TransformerArchitecture detect_transformer_architecture(const SafeTensors& checkpoint) {
@@ -15,6 +25,10 @@ TransformerArchitecture detect_transformer_architecture(const SafeTensors& check
   // table and contract every AdaLN projection to rank eight.
   if (has(checkpoint, "adaln_t_table") &&
       has(checkpoint, "blocks.0.adaln_proj.linear.weight")) {
+    // The released pruned Ref2VA FP8 file has the exact same tensor names,
+    // shapes, dtypes and empty metadata as the FL2VA file. The distribution
+    // filename is therefore the only identity signal available in the file.
+    if (path_marks_ref2va(checkpoint)) return TransformerArchitecture::kRef2VAPrunedTable;
     return TransformerArchitecture::kPrunedTable;
   }
 
@@ -48,6 +62,8 @@ const char* transformer_architecture_name(TransformerArchitecture architecture) 
   switch (architecture) {
     case TransformerArchitecture::kPrunedTable:
       return "pruned AdaLN-table transformer";
+    case TransformerArchitecture::kRef2VAPrunedTable:
+      return "pruned AdaLN-table Ref2VA transformer";
     case TransformerArchitecture::kRef2VAFullAdaLN:
       return "full-AdaLN Ref2VA transformer";
     case TransformerArchitecture::kUnknown:
@@ -69,7 +85,8 @@ const char* transformer_quantization_name(TransformerQuantization quantization) 
 void require_ref2va_transformer(const SafeTensors& checkpoint, size_t reference_count) {
   if (reference_count == 0) return;
   const TransformerArchitecture architecture = detect_transformer_architecture(checkpoint);
-  if (architecture == TransformerArchitecture::kRef2VAFullAdaLN) return;
+  if (architecture == TransformerArchitecture::kRef2VAPrunedTable ||
+      architecture == TransformerArchitecture::kRef2VAFullAdaLN) return;
   throw std::runtime_error(
       "reference-image conditioning requires a Ref2VA transformer, but '" +
       checkpoint.path() + "' is a " + transformer_architecture_name(architecture));

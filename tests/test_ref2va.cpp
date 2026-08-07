@@ -35,6 +35,19 @@ VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
   CHECK(rejected);
   require_ref2va_transformer(pruned, 0);
 
+  const auto pruned_ref_path = checkpoint_fixture(
+      "ref2va_pruned_fp8", {{"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+                             {"blocks.0.adaln_proj.linear.weight", {6, 8},
+                              std::vector<float>(6 * 8)}});
+  vidfab::SafeTensors pruned_ref;
+  pruned_ref.open(pruned_ref_path);
+  CHECK(detect_transformer_architecture(pruned_ref) ==
+        TransformerArchitecture::kRef2VAPrunedTable);
+  CHECK(std::string(transformer_architecture_name(
+            TransformerArchitecture::kRef2VAPrunedTable)) ==
+        "pruned AdaLN-table Ref2VA transformer");
+  require_ref2va_transformer(pruned_ref, 1);
+
   const auto ref_path = checkpoint_fixture(
       "ref2va_kind", {{"time_embedder.proj_in.weight", {1}, {0.0f}},
                        {"time_embedder.proj_out.weight", {1}, {0.0f}},
