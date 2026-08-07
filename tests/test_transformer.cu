@@ -71,6 +71,10 @@ std::string find_nvfp4_checkpoint() {
   return find_weight_file("weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors");
 }
 
+std::string find_ref2va_nf4_checkpoint() {
+  return find_weight_file("weights/transformer/minimax-h3-ref2va-nf4.safetensors");
+}
+
 bool full_run_requested() {
   const char* v = std::getenv("VIDFAB_TRANSFORMER_FULL");
   return v != nullptr && v[0] != '\0' && v[0] != '0';
@@ -1661,6 +1665,33 @@ VIDFAB_TEST(transformer_real_checkpoint) {
   CHECK(all_finite(out.audio_rows));
   std::printf("  49-step denoise: video rms %.4f, audio rms %.4f\n", rms(out.video_rows),
               rms(out.audio_rows));
+}
+
+VIDFAB_TEST(transformer_real_ref2va_nf4_checkpoint_load) {
+  const std::string path = find_ref2va_nf4_checkpoint();
+  if (path.empty()) {
+    std::printf("  Ref2VA NF4 transformer checkpoint not present; skipping\n");
+    return;
+  }
+
+  vidfab::SafeTensors st;
+  st.open(path);
+  CHECK_MSG(st.tensor_count() == 1830, "NF4 checkpoint has %zu tensors, expected 1830",
+            st.tensor_count());
+
+  size_t states = 0;
+  for (const auto& kv : st.tensors()) {
+    if (kv.first.find(".weight.quant_state.bitsandbytes__nf4") != std::string::npos) ++states;
+  }
+  CHECK_MSG(states == 259, "expected 259 NF4 matrices, found %zu", states);
+
+  Transformer model;
+  model.load(st, TransformerConfig{});
+  const double resident_gib =
+      static_cast<double>(model.weight_bytes()) / (1024.0 * 1024.0 * 1024.0);
+  std::printf("  Ref2VA NF4 resident %.3f GiB\n", resident_gib);
+  CHECK_MSG(resident_gib > 15.0 && resident_gib < 17.0,
+            "NF4 transformer occupies %.3f GiB, expected about 16", resident_gib);
 }
 
 // The nvfp4 build of the same 33B model, end to end and against the fp8 build.
