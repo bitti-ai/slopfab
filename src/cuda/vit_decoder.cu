@@ -9,7 +9,9 @@
 #include <vector>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/gemm.cuh"
+#include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/vit_decoder.h"
@@ -160,7 +162,9 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_normed;   // [S, dim]
   DeviceBuffer<float> d_qkv;      // [S, 3*dim]
   DeviceBuffer<float> d_q, d_k, d_v;  // [H, S, D]
-  DeviceBuffer<float> d_scores;   // [H, S, S]
+  DeviceBuffer<__nv_bfloat16> d_q_bf16, d_k_bf16, d_v_bf16;  // [S, H, D]
+  DeviceBuffer<__nv_bfloat16> d_attn_bf16;                     // [S, H, D]
+  cuda::Workspace attention_ws;
   DeviceBuffer<float> d_merged;   // [S, dim]
   DeviceBuffer<float> d_proj;     // [S, dim] or [S, patch_dim]
   DeviceBuffer<float> d_ffn;      // [S, 2*ffn_inner]
@@ -225,7 +229,10 @@ struct ViTDecoder::Impl {
     d_q.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
     d_k.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
     d_v.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
-    d_scores.allocate(static_cast<size_t>(cfg.heads) * seq * seq);
+    d_q_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
+    d_k_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
+    d_v_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
+    d_attn_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
     d_merged.allocate(s * dim);
     d_proj.allocate(s * static_cast<size_t>(cfg.patch_dim()));
     d_ffn.allocate(s * 2 * cfg.ffn_inner);
@@ -311,20 +318,25 @@ struct ViTDecoder::Impl {
 
     // The qkv bias is applied inside the split kernel, which already reads
     // every element of d_qkv once.
-    const long long head_stride = static_cast<long long>(seq) * hd;
-    const long long score_stride = static_cast<long long>(seq) * seq;
-    const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
+    cuda::AttentionConfig attn_cfg;
+    attn_cfg.seq_len = seq;
+    attn_cfg.num_heads = heads;
+    attn_cfg.head_dim = hd;
+    const cuda::AttentionBackend attn_backend = cuda::attention_preferred_backend(attn_cfg);
+    attention_ws.reserve(cuda::attention_workspace_bytes(attn_cfg, attn_backend));
     for (int doc = 0; doc < batch; ++doc) {
       const size_t row0 = static_cast<size_t>(doc) * seq;
       cuda::launch_split_qkv_norm_rope(d_qkv.get() + row0 * 3 * dim, b.qkv_b.get(), d_cos.get(),
                                        d_sin.get(), d_q.get(), d_k.get(), d_v.get(), seq, heads,
                                        hd, cfg.rope_dim, num_patches, cfg.eps, s);
-      gemm_nt_batched(d_q.get(), d_k.get(), d_scores.get(), seq, seq, hd, heads, head_stride,
-                      head_stride, score_stride);
-      cuda::launch_softmax_rows(d_scores.get(), heads * seq, seq, scale, s);
-      cuda::gemm_nn_batched_ld(blas, d_scores.get(), d_v.get(), d_merged.get() + row0 * dim, seq,
-                               hd, seq, heads, score_stride, head_stride, /*strideC=*/hd,
-                               /*ldc=*/heads * hd);
+      cuda::launch_heads_to_tokens_bf16(d_q.get(), d_q_bf16.get(), seq, heads, hd, s);
+      cuda::launch_heads_to_tokens_bf16(d_k.get(), d_k_bf16.get(), seq, heads, hd, s);
+      cuda::launch_heads_to_tokens_bf16(d_v.get(), d_v_bf16.get(), seq, heads, hd, s);
+      attention_ws.clear();
+      cuda::attention_forward(blas, s, d_q_bf16.get(), d_k_bf16.get(), d_v_bf16.get(),
+                              d_attn_bf16.get(), attn_cfg, attn_backend, attention_ws);
+      cuda::launch_widen_bf16(d_attn_bf16.get(), d_merged.get() + row0 * dim,
+                              static_cast<size_t>(seq) * dim, s);
     }
 
     gemm_nt(d_merged.get(), b.out_w.get(), d_normed.get(), rows, dim, dim);

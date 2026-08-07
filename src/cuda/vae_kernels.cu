@@ -312,6 +312,20 @@ __global__ void narrow_f16_kernel(const float* __restrict__ src, __half* __restr
   if (idx < count) dst[idx] = __float2half_rn(src[idx]);
 }
 
+__global__ void heads_to_tokens_bf16_kernel(const float* __restrict__ src,
+                                             __nv_bfloat16* __restrict__ dst, int seq,
+                                             int heads, int head_dim) {
+  const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t total = static_cast<size_t>(seq) * heads * head_dim;
+  if (idx >= total) return;
+  const int d = static_cast<int>(idx % head_dim);
+  const size_t q = idx / head_dim;
+  const int h = static_cast<int>(q % heads);
+  const int token = static_cast<int>(q / heads);
+  const size_t src_idx = (static_cast<size_t>(h) * seq + token) * head_dim + d;
+  dst[idx] = __float2bfloat16_rn(src[src_idx]);
+}
+
 // [channels, voxels] -> [voxels, channels]. The ViT consumes one channel-last
 // token per latent voxel.
 __global__ void transpose_cn_to_nc_kernel(const float* __restrict__ src, float* __restrict__ dst,
@@ -446,6 +460,15 @@ void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t s
   const size_t blocks = (count + threads - 1) / threads;
   narrow_f16_kernel<<<static_cast<int>(blocks), threads, 0, stream>>>(
       src, static_cast<__half*>(dst), count);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_heads_to_tokens_bf16(const float* src, __nv_bfloat16* dst, int seq, int heads,
+                                 int head_dim, cudaStream_t stream) {
+  const size_t count = static_cast<size_t>(seq) * heads * head_dim;
+  const int threads = 256;
+  heads_to_tokens_bf16_kernel<<<static_cast<int>((count + threads - 1) / threads), threads, 0,
+                                 stream>>>(src, dst, seq, heads, head_dim);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

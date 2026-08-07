@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
 
 #include "vidfab/cuda/device.h"
 
@@ -44,6 +45,11 @@ void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t st
 // Narrows fp32 activations for tensor-core linear projections. GEMM output and
 // accumulation remain fp32; only the operands use checkpoint-native fp16.
 void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t stream);
+
+// Converts head-major [heads, seq, dim] fp32 into the token-major BF16 layout
+// consumed by the shared fused-attention kernel.
+void launch_heads_to_tokens_bf16(const float* src, __nv_bfloat16* dst, int seq, int heads,
+                                 int head_dim, cudaStream_t stream);
 
 // [channels, voxels] -> [voxels, channels]
 void launch_transpose_cn_to_nc(const float* src, float* dst, int channels, int voxels,
