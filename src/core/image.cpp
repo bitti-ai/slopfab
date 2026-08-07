@@ -1,4 +1,5 @@
 #include "vidfab/image.h"
+#include "vidfab/video/media.h"
 
 #include <cctype>
 #include <fstream>
@@ -6,13 +7,6 @@
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
-
-#ifdef _WIN32
-#define NOMINMAX
-#include <windows.h>
-#include <wincodec.h>
-#include <wrl/client.h>
-#endif
 
 namespace vidfab {
 namespace {
@@ -64,60 +58,6 @@ RGBImage load_ppm(const std::string& path) {
   return image;
 }
 
-#ifdef _WIN32
-std::wstring widen_path(const std::string& path) {
-  const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(),
-                                    static_cast<int>(path.size()), nullptr, 0);
-  if (n <= 0) throw image_error(path, "path is not valid UTF-8");
-  std::wstring wide(static_cast<size_t>(n), L'\0');
-  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()),
-                      wide.data(), n);
-  return wide;
-}
-
-RGBImage load_wic(const std::string& path) {
-  using Microsoft::WRL::ComPtr;
-  const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  const bool uninitialize = SUCCEEDED(init);
-  if (FAILED(init) && init != RPC_E_CHANGED_MODE) throw image_error(path, "cannot initialize COM");
-  HRESULT hr;
-  ComPtr<IWICImagingFactory> factory;
-  hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                        IID_PPV_ARGS(&factory));
-  ComPtr<IWICBitmapDecoder> decoder;
-  if (SUCCEEDED(hr)) {
-    const std::wstring wide = widen_path(path);
-    hr = factory->CreateDecoderFromFilename(wide.c_str(), nullptr, GENERIC_READ,
-                                            WICDecodeMetadataCacheOnDemand, &decoder);
-  }
-  ComPtr<IWICBitmapFrameDecode> frame;
-  if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &frame);
-  UINT width = 0, height = 0;
-  if (SUCCEEDED(hr)) hr = frame->GetSize(&width, &height);
-  if (SUCCEEDED(hr) && (width == 0 || height == 0 ||
-                        static_cast<uint64_t>(width) * height >
-                            std::numeric_limits<size_t>::max() / 3)) hr = E_INVALIDARG;
-  ComPtr<IWICFormatConverter> converter;
-  if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
-  if (SUCCEEDED(hr)) {
-    hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat24bppRGB,
-                               WICBitmapDitherTypeNone, nullptr, 0.0,
-                               WICBitmapPaletteTypeCustom);
-  }
-  RGBImage image;
-  if (SUCCEEDED(hr)) {
-    image.width = static_cast<int>(width);
-    image.height = static_cast<int>(height);
-    image.pixels.resize(static_cast<size_t>(width) * height * 3);
-    hr = converter->CopyPixels(nullptr, width * 3, static_cast<UINT>(image.pixels.size()),
-                               image.pixels.data());
-  }
-  if (uninitialize) CoUninitialize();
-  if (FAILED(hr)) throw image_error(path, "cannot decode image");
-  return image;
-}
-#endif
-
 }  // namespace
 
 RGBImage load_reference_image(const std::string& path) {
@@ -126,11 +66,8 @@ RGBImage load_reference_image(const std::string& path) {
   probe.read(magic, 2);
   if (!probe) throw image_error(path, "cannot open or read file");
   if (magic[0] == 'P' && magic[1] == '6') return load_ppm(path);
-#ifdef _WIN32
-  return load_wic(path);
-#else
-  throw image_error(path, "unsupported format; this build supports binary PPM (P6)");
-#endif
+  const video::DecodedVideoFrame frame = video::decode_first_video_frame(path);
+  return {frame.width, frame.height, frame.rgb24};
 }
 
 RGBImage resize_reference_lanczos(const RGBImage& image, int width, int height) {

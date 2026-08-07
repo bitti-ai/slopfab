@@ -43,10 +43,6 @@ add_library(vidfab_core STATIC
 
 target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-if(WIN32)
-  target_link_libraries(vidfab_core PUBLIC windowscodecs ole32)
-endif()
-
 if(MSVC)
   # /utf-8 keeps string literals well-defined regardless of the system codepage.
   target_compile_options(vidfab_core PRIVATE /W4 /permissive- /utf-8)

@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -38,6 +39,38 @@ VIDFAB_TEST(reference_image_rejects_truncated_ppm) {
   }
   std::remove(path.c_str());
   CHECK(rejected);
+}
+
+VIDFAB_TEST(reference_media_decodes_common_formats_with_ffmpeg) {
+  const std::string source = "vidfab_test_media_source.ppm";
+  {
+    std::ofstream out(source, std::ios::binary);
+    out << "P6\n3 2\n255\n";
+    const char pixels[] = {char(255), 0, 0, 0, char(255), 0, 0, 0, char(255),
+                           char(255), char(255), 0, 0, char(255), char(255),
+                           char(255), 0, char(255)};
+    out.write(pixels, sizeof(pixels));
+  }
+#ifdef _WIN32
+  constexpr const char* quiet = " >NUL 2>&1";
+#else
+  constexpr const char* quiet = " >/dev/null 2>&1";
+#endif
+  int exercised = 0;
+  for (const char* extension : {"png", "jpg", "bmp"}) {
+    const std::string output = std::string("vidfab_test_media.") + extension;
+    const std::string command = "ffmpeg -y -loglevel error -i " + source + " " + output + quiet;
+    if (std::system(command.c_str()) != 0) continue;
+    const vidfab::RGBImage image = vidfab::load_reference_image(output);
+    CHECK(image.width == 3);
+    CHECK(image.height == 2);
+    CHECK(image.pixels.size() == 18);
+    std::remove(output.c_str());
+    ++exercised;
+  }
+  std::remove(source.c_str());
+  if (exercised == 0) std::printf("  ffmpeg executable unavailable; skipping format fixtures\n");
+  else CHECK(exercised == 3);
 }
 
 VIDFAB_TEST(reference_image_lanczos_golden) {
