@@ -68,9 +68,9 @@ class ViTDecoder {
   ViTDecoder(const ViTDecoder&) = delete;
   ViTDecoder& operator=(const ViTDecoder&) = delete;
 
-  // Uploads decoder weights to the device, widening the stored fp16 to fp32.
-  // The reference loader casts these same weights to fp32 parameters, so fp32
-  // compute is what the reference actually runs.
+  // Uploads linear matrices in checkpoint-native fp16 for tensor-core GEMM
+  // with fp32 accumulation. Norm, bias, scale, residual, attention and output
+  // buffers stay fp32.
   void load(const SafeTensors& checkpoint, const ViTConfig& config = {});
 
   const ViTConfig& config() const;

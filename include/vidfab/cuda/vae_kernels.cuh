@@ -41,6 +41,10 @@ void launch_swiglu(const float* in, const float* bias, float* out, int rows, int
 // Widens `count` fp16 values to fp32 on the device.
 void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t stream);
 
+// Narrows fp32 activations for tensor-core linear projections. GEMM output and
+// accumulation remain fp32; only the operands use checkpoint-native fp16.
+void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t stream);
+
 // [channels, voxels] -> [voxels, channels]
 void launch_transpose_cn_to_nc(const float* src, float* dst, int channels, int voxels,
                                cudaStream_t stream);
