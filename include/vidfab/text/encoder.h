@@ -120,6 +120,9 @@ struct PromptEmbedding {
   int num_tokens = 0;
   int hidden_size = 5120;
   std::vector<float> data;
+  // H3 AdaLN modality tag per Qwen output row: text=1, video=0. For each
+  // reference, vision_start, every image_pad, and vision_end are video.
+  std::vector<int32_t> modality_tags;
 };
 
 // Measured, not estimated. Reported so a caller can choose a residency mode on

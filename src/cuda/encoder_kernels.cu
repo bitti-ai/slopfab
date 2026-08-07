@@ -1022,6 +1022,17 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   result.num_tokens = L;
   result.hidden_size = hidden;
   result.data.resize(stream_elems);
+  result.modality_tags.assign(static_cast<size_t>(L), 1);
+  if (visual.tokens) {
+    size_t at = 0;
+    for (const auto& image : *s.pending_images) {
+      const size_t count = image.grid.merged_token_count();
+      const int first = mm_plan.image_rows[at];
+      for (size_t j = 0; j < count + 2; ++j)
+        result.modality_tags[static_cast<size_t>(first - 1) + j] = 0;
+      at += count;
+    }
+  }
   out.copy_to_host(result.data.data(), stream_elems, s.compute);
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.compute));
 
