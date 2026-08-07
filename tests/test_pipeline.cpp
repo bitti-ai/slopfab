@@ -236,9 +236,17 @@ VIDFAB_TEST(pipeline_describe_plan) {
 
 VIDFAB_TEST(pipeline_reference_image_limit) {
   vidfab::GenerateRequest r = base_request();
-  r.reference_image_paths.assign(9, "image.png");
+  r.reference_image_paths = {"subject.png", "style.png", "scene.png"};
   const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
-  CHECK(vidfab::describe_plan(r, p).find("9 (Ref2VA, ordered)") != std::string::npos);
+  CHECK(vidfab::describe_plan(r, p).find("3 (Ref2VA, ordered)") != std::string::npos);
+  CHECK(r.reference_image_paths[0] == "subject.png");
+  CHECK(r.reference_image_paths[1] == "style.png");
+  CHECK(r.reference_image_paths[2] == "scene.png");
+
+  // Nine is accepted; the tenth is rejected before any image I/O or GPU work.
+  r.reference_image_paths.assign(9, "image.png");
+  CHECK(vidfab::describe_plan(r, vidfab::resolve_plan(r)).find("9 (Ref2VA, ordered)") !=
+        std::string::npos);
   r.reference_image_paths.push_back("too-many.png");
   bool rejected = false;
   try {
