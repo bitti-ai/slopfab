@@ -349,13 +349,8 @@ RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndic
   // The unsigned cast is the old loop's, kept deliberately: a negative C wraps
   // to a huge value, the clamp makes it `size()`, and the loop runs zero times
   // exactly as the old `for (size_t i = C; i < audio.size(); ++i)` did.
-  // Older fl2va layouts used C as the shared condition count. Ref2VA records
-  // the audio count explicitly because its video/audio geometries differ.
-  const int condition_audio = layout.num_condition_audio > 0
-                                  ? layout.num_condition_audio
-                                  : layout.num_condition_video;
   const size_t audio_begin =
-      std::min(static_cast<size_t>(condition_audio), idx.audio.size());
+      std::min(static_cast<size_t>(layout.num_condition_audio), idx.audio.size());
   const size_t num_overridden = idx.audio.size() - audio_begin;
 
   // Which of the two values actually occurs. `video_t` is absent only when

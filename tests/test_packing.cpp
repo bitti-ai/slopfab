@@ -700,13 +700,13 @@ VIDFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
     CHECK(hi.adaln[text_row] != 0 * 3 + kTagText);
   }
 
-  // (4) The audio loop starting at 0 instead of `num_condition_video`. With
+  // (4) The audio loop starting at 0 instead of `num_condition_audio`. With
   //     C = 3 the first three audio rows keep the video timestep; starting at
   //     zero would give them the audio one, which changes only 3 rows of
   //     73 000 and nothing else.
   {
     SequenceLayout c = reference_layout(5);
-    c.num_condition_video = 3;
+    c.num_condition_audio = 3;
     const PackedIndices cidx = build_indices(c);
     const RowTimesteps rt = build_row_timesteps(c, cidx, 0.75f, 0.25f);
     const size_t first_audio = static_cast<size_t>(c.audio_start());
@@ -720,8 +720,6 @@ VIDFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
     // the audio modality.
     CHECK(rt.adaln[first_audio + 0] == 1 * 3 + kTagAudio);
     CHECK(rt.adaln[first_audio + 3] == 0 * 3 + kTagAudio);
-    // And the conditioning video rows sit before the audio block, tagged video.
-    CHECK(rt.adaln[static_cast<size_t>(c.condition_start())] == 1 * 3 + kTagVideo);
   }
 }
 
