@@ -10,46 +10,69 @@ bool has(const SafeTensors& st, const char* name) { return st.find(name) != null
 
 }  // namespace
 
-TransformerCheckpointKind detect_transformer_checkpoint(const SafeTensors& checkpoint) {
+TransformerArchitecture detect_transformer_architecture(const SafeTensors& checkpoint) {
   // The released pruned checkpoints replace the timestep MLP with a lookup
   // table and contract every AdaLN projection to rank eight.
   if (has(checkpoint, "adaln_t_table") &&
       has(checkpoint, "blocks.0.adaln_proj.linear.weight")) {
-    return TransformerCheckpointKind::kPrunedTable;
+    return TransformerArchitecture::kPrunedTable;
   }
 
   // The Ref2VA file retains the timestep MLP and full AdaLN projections. Its
-  // bitsandbytes NF4 weights are unambiguously identified by the quant-state
-  // tensor; a flattened U8 weight alone is not sufficient evidence.
+  // Quantization is deliberately not part of architecture detection: both the
+  // NF4 release and the FP8 release use this full-AdaLN Ref2VA architecture.
   if (has(checkpoint, "time_embedder.proj_in.weight") &&
       has(checkpoint, "time_embedder.proj_out.weight") &&
-      has(checkpoint,
-          "blocks.0.adaln_proj.linear.weight.quant_state.bitsandbytes__nf4") &&
-      has(checkpoint, "blocks.0.adaln_proj.linear.weight.absmax")) {
-    return TransformerCheckpointKind::kRef2VABitsAndBytesNF4;
+      has(checkpoint, "blocks.0.adaln_proj.linear.weight")) {
+    return TransformerArchitecture::kRef2VAFullAdaLN;
   }
-  return TransformerCheckpointKind::kUnknown;
+  return TransformerArchitecture::kUnknown;
 }
 
-const char* transformer_checkpoint_kind_name(TransformerCheckpointKind kind) {
-  switch (kind) {
-    case TransformerCheckpointKind::kPrunedTable:
+TransformerQuantization detect_transformer_quantization(const SafeTensors& checkpoint) {
+  const TensorView* weight = checkpoint.find("blocks.0.attn.qkv_proj.weight");
+  if (weight == nullptr) return TransformerQuantization::kUnknown;
+  if (has(checkpoint,
+          "blocks.0.attn.qkv_proj.weight.quant_state.bitsandbytes__nf4")) {
+    return TransformerQuantization::kBitsAndBytesNF4;
+  }
+  if (weight->dtype == DType::kF8E4M3) return TransformerQuantization::kFloat8;
+  const TensorView* scale = checkpoint.find("blocks.0.attn.qkv_proj.weight_scale");
+  if (weight->dtype == DType::kU8 && scale != nullptr && scale->dtype == DType::kF8E4M3) {
+    return TransformerQuantization::kNativeNVFP4;
+  }
+  return TransformerQuantization::kUnknown;
+}
+
+const char* transformer_architecture_name(TransformerArchitecture architecture) {
+  switch (architecture) {
+    case TransformerArchitecture::kPrunedTable:
       return "pruned AdaLN-table transformer";
-    case TransformerCheckpointKind::kRef2VABitsAndBytesNF4:
-      return "Ref2VA bitsandbytes NF4 transformer";
-    case TransformerCheckpointKind::kUnknown:
+    case TransformerArchitecture::kRef2VAFullAdaLN:
+      return "full-AdaLN Ref2VA transformer";
+    case TransformerArchitecture::kUnknown:
       return "unknown transformer";
   }
   return "unknown transformer";
 }
 
+const char* transformer_quantization_name(TransformerQuantization quantization) {
+  switch (quantization) {
+    case TransformerQuantization::kFloat8: return "float8";
+    case TransformerQuantization::kNativeNVFP4: return "native NVFP4";
+    case TransformerQuantization::kBitsAndBytesNF4: return "bitsandbytes NF4";
+    case TransformerQuantization::kUnknown: return "unknown";
+  }
+  return "unknown";
+}
+
 void require_ref2va_transformer(const SafeTensors& checkpoint, size_t reference_count) {
   if (reference_count == 0) return;
-  const TransformerCheckpointKind kind = detect_transformer_checkpoint(checkpoint);
-  if (kind == TransformerCheckpointKind::kRef2VABitsAndBytesNF4) return;
+  const TransformerArchitecture architecture = detect_transformer_architecture(checkpoint);
+  if (architecture == TransformerArchitecture::kRef2VAFullAdaLN) return;
   throw std::runtime_error(
       "reference-image conditioning requires a Ref2VA transformer, but '" +
-      checkpoint.path() + "' is a " + transformer_checkpoint_kind_name(kind));
+      checkpoint.path() + "' is a " + transformer_architecture_name(architecture));
 }
 
 }  // namespace vidfab::dit

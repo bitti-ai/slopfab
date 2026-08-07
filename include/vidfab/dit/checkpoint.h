@@ -8,14 +8,23 @@ namespace vidfab::dit {
 
 // Transformer families have the same top-level projection names, but their
 // timestep/AdaLN and quantised-weight layouts are not interchangeable.
-enum class TransformerCheckpointKind {
+enum class TransformerArchitecture {
   kUnknown,
   kPrunedTable,
-  kRef2VABitsAndBytesNF4,
+  kRef2VAFullAdaLN,
 };
 
-TransformerCheckpointKind detect_transformer_checkpoint(const SafeTensors& checkpoint);
-const char* transformer_checkpoint_kind_name(TransformerCheckpointKind kind);
+enum class TransformerQuantization {
+  kUnknown,
+  kFloat8,
+  kNativeNVFP4,
+  kBitsAndBytesNF4,
+};
+
+TransformerArchitecture detect_transformer_architecture(const SafeTensors& checkpoint);
+TransformerQuantization detect_transformer_quantization(const SafeTensors& checkpoint);
+const char* transformer_architecture_name(TransformerArchitecture architecture);
+const char* transformer_quantization_name(TransformerQuantization quantization);
 
 // Ref2VA inputs must never be passed through an FL2VA/T2VA transformer. This
 // is intentionally a header-only inspection and does not touch tensor data.
