@@ -176,8 +176,23 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
       const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
       vae::KeyframeEncoder image_encoder(vae_file);
-      for (const RGBImage& image : reference_images) {
+      for (size_t reference_index = 0; reference_index < reference_images.size();
+           ++reference_index) {
+        const RGBImage& image = reference_images[reference_index];
         std::vector<float> rows = image_encoder.encode_reference_image(image, mean, stddev);
+        // Released Ref2VA anchors are almost clean, but not quite: the fixed
+        // timestep is 0.999 and the request generator contributes the other
+        // 0.001. Keep each ordered reference on its own deterministic stream.
+        const int latent_h = image.height / 16;
+        const int latent_w = image.width / 16;
+        const uint64_t reference_seed =
+            request.seed ^ (0x9e3779b97f4a7c15ULL * (reference_index + 1));
+        const std::vector<float> noise_latents =
+            sampler::video_noise(reference_seed, 1, latent_h, latent_w);
+        const std::vector<float> noise_rows =
+            vae::patchify_keyframe_latents(noise_latents.data(), latent_h, latent_w);
+        sampler::FlowScheduler::scale_noise(rows.data(), noise_rows.data(), 0.999f,
+                                            rows.size(), rows.data());
         condition_video_rows.insert(condition_video_rows.end(), rows.begin(), rows.end());
         reference_geometry.push_back({dit::ReferenceKind::kImage, 1, image.height / 16,
                                       image.width / 16, 0});
