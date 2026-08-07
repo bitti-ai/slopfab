@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "vidfab/image.h"
+#include "vidfab/safetensors.h"
 
 namespace vidfab::vae {
 
@@ -17,5 +18,19 @@ std::vector<float> sample_keyframe_latents(const float* moments, const float* no
                                            int height, int width,
                                            const std::vector<float>& latents_mean,
                                            const std::vector<float>& latents_std);
+
+struct EncoderWeightSummary {
+  size_t tensors = 0;
+  size_t bytes = 0;
+};
+
+// Validates the exact six-level H3 image encoder and quant_conv checkpoint
+// graph. Decoder tensors may coexist in the archive and are ignored.
+EncoderWeightSummary validate_keyframe_encoder_weights(const SafeTensors& checkpoint);
+
+// Patchifies one normalized [24,H,W] image latent into Ref2VA rows
+// [H/2*W/2, 96]. This is the single-frame specialization of the transformer's
+// 1x2x2 video patch embedding layout.
+std::vector<float> patchify_keyframe_latents(const float* latents, int height, int width);
 
 }  // namespace vidfab::vae

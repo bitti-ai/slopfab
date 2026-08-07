@@ -3,10 +3,37 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 #include "vidfab/dtype.h"
 
 namespace vidfab::vae {
+namespace {
+
+void require_tensor(const SafeTensors& ckpt, const std::string& name,
+                    std::initializer_list<int64_t> shape, EncoderWeightSummary* summary) {
+  const TensorView& tensor = ckpt.at(name);
+  if (tensor.dtype != DType::kF16 || tensor.shape != std::vector<int64_t>(shape)) {
+    throw std::runtime_error("keyframe encoder: tensor '" + name + "' has wrong dtype or shape");
+  }
+  ++summary->tensors;
+  summary->bytes += tensor.nbytes;
+}
+
+void require_affine(const SafeTensors& ckpt, const std::string& name, int channels,
+                    EncoderWeightSummary* summary) {
+  require_tensor(ckpt, name + ".weight", {channels}, summary);
+  require_tensor(ckpt, name + ".bias", {channels}, summary);
+}
+
+void require_conv(const SafeTensors& ckpt, const std::string& name, int out_channels,
+                  int in_channels, int kernel, EncoderWeightSummary* summary) {
+  require_tensor(ckpt, name + ".weight",
+                 {out_channels, in_channels, kernel, kernel, kernel}, summary);
+  require_tensor(ckpt, name + ".bias", {out_channels}, summary);
+}
+
+}  // namespace
 
 std::vector<float> prepare_keyframe_pixels(const RGBImage& image) {
   if (image.width <= 0 || image.height <= 0 ||
@@ -51,6 +78,62 @@ std::vector<float> sample_keyframe_latents(const float* moments, const float* no
     }
   }
   return out;
+}
+
+EncoderWeightSummary validate_keyframe_encoder_weights(const SafeTensors& checkpoint) {
+  if (!checkpoint.is_open()) throw std::runtime_error("keyframe encoder: checkpoint is not open");
+  EncoderWeightSummary result;
+  constexpr int channels[] = {128, 256, 256, 512, 512, 1024};
+  constexpr int space_down[] = {2, 2, 2, 2, 1, 1};
+
+  require_conv(checkpoint, "encoder.conv_in", 128, 3, 3, &result);
+  int previous = 128;
+  for (int level = 0; level < 6; ++level) {
+    const int output = channels[level];
+    for (int block = 0; block < 2; ++block) {
+      const int input = block == 0 ? previous : output;
+      const std::string prefix = "encoder.down." + std::to_string(level) + ".block." +
+                                 std::to_string(block);
+      require_affine(checkpoint, prefix + ".norm1", input, &result);
+      require_conv(checkpoint, prefix + ".conv1", output, input, 3, &result);
+      require_affine(checkpoint, prefix + ".norm2", output, &result);
+      require_conv(checkpoint, prefix + ".conv2", output, output, 3, &result);
+      if (input != output) require_conv(checkpoint, prefix + ".nin_shortcut", output, input, 1, &result);
+    }
+    if (space_down[level] == 2)
+      require_conv(checkpoint, "encoder.down." + std::to_string(level) + ".downsample.conv",
+                   output, output, 3, &result);
+    previous = output;
+  }
+  require_affine(checkpoint, "encoder.norm_out", 1024, &result);
+  require_conv(checkpoint, "encoder.conv_out", 48, 1024, 3, &result);
+  require_conv(checkpoint, "quant_conv", 48, 48, 1, &result);
+  return result;
+}
+
+std::vector<float> patchify_keyframe_latents(const float* latents, int height, int width) {
+  if (!latents || height <= 0 || width <= 0 || (height & 1) || (width & 1))
+    throw std::runtime_error("keyframe encoder: patchify requires positive even dimensions");
+  constexpr int channels = 24;
+  const int patch_h = height / 2;
+  const int patch_w = width / 2;
+  const size_t plane = static_cast<size_t>(height) * width;
+  std::vector<float> rows(static_cast<size_t>(patch_h) * patch_w * channels * 4);
+  for (int ph = 0; ph < patch_h; ++ph) {
+    for (int pw = 0; pw < patch_w; ++pw) {
+      const size_t row = static_cast<size_t>(ph) * patch_w + pw;
+      for (int c = 0; c < channels; ++c) {
+        for (int dy = 0; dy < 2; ++dy) {
+          for (int dx = 0; dx < 2; ++dx) {
+            const size_t column = static_cast<size_t>(c) * 4 + dy * 2 + dx;
+            rows[row * channels * 4 + column] =
+                latents[static_cast<size_t>(c) * plane + (ph * 2 + dy) * width + pw * 2 + dx];
+          }
+        }
+      }
+    }
+  }
+  return rows;
 }
 
 }  // namespace vidfab::vae

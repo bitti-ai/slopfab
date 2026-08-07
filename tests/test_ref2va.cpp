@@ -112,6 +112,24 @@ VIDFAB_TEST(ref2va_keyframe_vae_contract) {
   CHECK(std::abs(latent[0] - 1.0f) < 1e-6f);
   CHECK(std::abs(latent[1] + 0.5f) < 1e-6f);
 }
+
+VIDFAB_TEST(ref2va_keyframe_patchify) {
+  std::vector<float> latent(24 * 2 * 4);
+  for (size_t i = 0; i < latent.size(); ++i) latent[i] = static_cast<float>(i);
+  const auto rows = vidfab::vae::patchify_keyframe_latents(latent.data(), 2, 4);
+  CHECK(rows.size() == 2 * 96);
+  CHECK(rows[0] == 0.0f);
+  CHECK(rows[1] == 1.0f);
+  CHECK(rows[2] == 4.0f);
+  CHECK(rows[3] == 5.0f);
+  CHECK(rows[4] == 8.0f);
+  CHECK(rows[96] == 2.0f);
+  CHECK(rows[99] == 7.0f);
+  CHECK(::vidfab::test::throws([] {
+    float latent[24 * 4] = {};
+    vidfab::vae::patchify_keyframe_latents(latent, 1, 4);
+  }));
+}
 VIDFAB_TEST(ref2va_order_positions_and_timesteps) {
   const ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 6, 0};  // 6 video rows
   const ReferenceGeometry audio{ReferenceKind::kAudio, 1, 0, 0, 2};  // 4 audio rows
