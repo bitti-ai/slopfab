@@ -3462,3 +3462,21 @@ VIDFAB_TEST(qwen_vision_layernorm_and_gelu) {
   vidfab::cuda::launch_gelu_tanh(dg.p(), gx.size(), nullptr);
   CHECK_CLOSE(gw, dg.host(), 1e-2, "vision gelu tanh");
 }
+
+VIDFAB_TEST(qwen_vision_merge_and_deepstack_scatter) {
+  const int groups = 2, dim = 3;
+  const auto x = bf16_round(make_data(groups * 4 * dim, 8110, 1.0f));
+  BfBuf dx(x), merged(x.size());
+  vidfab::cuda::launch_merge_four_rows(dx.p(), merged.p(), groups, dim, nullptr);
+  CHECK_CLOSE(x, merged.host(), 0, "merge four contiguous rows");
+
+  const std::vector<int32_t> rows = {1, 4};
+  const auto add = bf16_round(std::vector<float>{1, 2, 3, -1, -.5f, .25f});
+  auto base = bf16_round(make_data(6 * dim, 8111, .2f));
+  auto want = base;
+  for (int r = 0; r < 2; ++r)
+    for (int d = 0; d < dim; ++d) want[rows[r] * dim + d] += add[r * dim + d];
+  BfBuf dadd(add), dbase(base); auto didx = to_device_i32(rows);
+  vidfab::cuda::launch_scatter_add_rows(dadd.p(), didx.get(), dbase.p(), 2, dim, nullptr);
+  CHECK_CLOSE(want, dbase.host(), 2e-2, "deepstack additive scatter");
+}

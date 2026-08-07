@@ -143,6 +143,16 @@ void launch_scatter_rows(const __nv_bfloat16* src, const int32_t* index, __nv_bf
 void launch_scatter_rows_f32(const float* src, const int32_t* index, float* dst, int n, int dim,
                              cudaStream_t stream);
 
+// dst[index[i], :] += src[i, :], used by Qwen DeepStack. Indices must be
+// unique; accumulation is fp32 and rounded once to bf16.
+void launch_scatter_add_rows(const __nv_bfloat16* src, const int32_t* index,
+                             __nv_bfloat16* dst, int n, int dim, cudaStream_t stream);
+
+// Concatenates each four consecutive merge-group-major patch rows. The host
+// patchifier guarantees those rows describe a 2x2 spatial group.
+void launch_merge_four_rows(const __nv_bfloat16* src, __nv_bfloat16* dst,
+                            int groups, int dim, cudaStream_t stream);
+
 // --- elementwise ------------------------------------------------------------
 
 void launch_add(const float* a, const float* b, float* out, size_t n, cudaStream_t stream);

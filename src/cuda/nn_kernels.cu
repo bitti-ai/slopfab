@@ -393,6 +393,25 @@ __global__ void gelu_tanh_kernel(__nv_bfloat16* x, size_t n) {
   }
 }
 
+__global__ void scatter_add_rows_kernel(const __nv_bfloat16* src, const int32_t* index,
+                                        __nv_bfloat16* dst, int dim) {
+  const int r = blockIdx.x;
+  const int d = blockIdx.y * blockDim.x + threadIdx.x;
+  if (d < dim) {
+    const size_t to = static_cast<size_t>(index[r]) * dim + d;
+    dst[to] = __float2bfloat16(__bfloat162float(dst[to]) +
+                              __bfloat162float(src[static_cast<size_t>(r) * dim + d]));
+  }
+}
+
+__global__ void merge_four_rows_kernel(const __nv_bfloat16* src, __nv_bfloat16* dst,
+                                       int dim) {
+  const int g = blockIdx.x;
+  const int d = blockIdx.y * blockDim.x + threadIdx.x;
+  if (d < 4 * dim) dst[static_cast<size_t>(g) * 4 * dim + d] =
+      src[static_cast<size_t>(g) * 4 * dim + d];
+}
+
 // --- rotary -----------------------------------------------------------------
 //
 // MM-RoPE rotates the first 96 of 128 head channels, pairing j with j+48
@@ -820,6 +839,22 @@ void launch_scatter_rows_f32(const float* src, const int32_t* index, float* dst,
                              cudaStream_t stream) {
   require_positive(n, dim, "launch_scatter_rows_f32");
   launch_scatter_impl(src, index, dst, n, dim, stream);
+}
+
+void launch_scatter_add_rows(const __nv_bfloat16* src, const int32_t* index,
+                             __nv_bfloat16* dst, int n, int dim, cudaStream_t stream) {
+  require_positive(n, dim, "launch_scatter_add_rows");
+  scatter_add_rows_kernel<<<dim3(n, grid_1d(dim, kRowThreads)), kRowThreads, 0, stream>>>(
+      src, index, dst, dim);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_merge_four_rows(const __nv_bfloat16* src, __nv_bfloat16* dst,
+                            int groups, int dim, cudaStream_t stream) {
+  require_positive(groups, dim, "launch_merge_four_rows");
+  merge_four_rows_kernel<<<dim3(groups, grid_1d(4 * dim, kRowThreads)), kRowThreads, 0, stream>>>(
+      src, dst, dim);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_add(const float* a, const float* b, float* out, size_t n, cudaStream_t stream) {
