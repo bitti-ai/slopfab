@@ -52,9 +52,6 @@ VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
   unknown.open(unknown_path);
   CHECK(detect_transformer_checkpoint(unknown) == TransformerCheckpointKind::kUnknown);
 
-  std::filesystem::remove(pruned_path);
-  std::filesystem::remove(ref_path);
-  std::filesystem::remove(unknown_path);
 }
 
 VIDFAB_TEST(ref2va_image_size) {
