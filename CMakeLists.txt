@@ -22,6 +22,7 @@ add_library(vidfab_core STATIC
   src/core/json.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
+  src/core/image.cpp
   src/core/safetensors_write.cpp
   src/dit/adaln.cpp
   src/dit/chunking.cpp
@@ -37,6 +38,10 @@ add_library(vidfab_core STATIC
 )
 
 target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+if(WIN32)
+  target_link_libraries(vidfab_core PUBLIC windowscodecs ole32)
+endif()
 
 if(MSVC)
   # /utf-8 keeps string literals well-defined regardless of the system codepage.
