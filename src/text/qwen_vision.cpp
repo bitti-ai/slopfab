@@ -81,6 +81,47 @@ QwenVisionPositions qwen3vl_vision_positions(const QwenImageGrid& g, int side, i
   return out;
 }
 
+QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& ids,
+                                           const std::vector<QwenImageGrid>& grids,
+                                           int32_t vs, int32_t pad, int32_t ve) {
+  QwenMultimodalPlan out;
+  const size_t L = ids.size();
+  out.position_ids.resize(3 * L);
+  size_t cursor = 0, image = 0;
+  int32_t next = 0;
+  auto scalar = [&](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; ++i, ++next)
+      for (int a = 0; a < 3; ++a) out.position_ids[static_cast<size_t>(a) * L + i] = next;
+  };
+  while (cursor < L) {
+    auto it = std::find(ids.begin() + static_cast<std::ptrdiff_t>(cursor), ids.end(), vs);
+    if (it == ids.end()) { scalar(cursor, L); cursor = L; break; }
+    const size_t start = static_cast<size_t>(it - ids.begin());
+    scalar(cursor, start + 1); // text prefix and vision_start are ordinary 1-D positions
+    if (image >= grids.size()) throw std::runtime_error("Qwen vision: more vision blocks than grids");
+    const auto& g = grids[image++];
+    const size_t merged = g.merged_token_count();
+    if (start + 1 + merged >= L) throw std::runtime_error("Qwen vision: truncated image-pad run");
+    const int mh = g.height / 2, mw = g.width / 2;
+    for (size_t j = 0; j < merged; ++j) {
+      const size_t row = start + 1 + j;
+      if (ids[row] != pad) throw std::runtime_error("Qwen vision: image-pad count disagrees with grid");
+      const int t = static_cast<int>(j / static_cast<size_t>(mh * mw));
+      const int rem = static_cast<int>(j % static_cast<size_t>(mh * mw));
+      out.position_ids[row] = next + t;
+      out.position_ids[L + row] = next + rem / mw;
+      out.position_ids[2 * L + row] = next + rem % mw;
+      out.image_rows.push_back(static_cast<int32_t>(row));
+    }
+    const size_t end = start + 1 + merged;
+    if (ids[end] != ve) throw std::runtime_error("Qwen vision: image-pad run lacks vision_end");
+    next += std::max({g.temporal, mh, mw});
+    cursor = end; // vision_end is consumed by the next scalar run
+  }
+  if (image != grids.size()) throw std::runtime_error("Qwen vision: fewer vision blocks than grids");
+  return out;
+}
+
 size_t QwenImageGrid::patch_count() const {
   return static_cast<size_t>(temporal) * height * width;
 }

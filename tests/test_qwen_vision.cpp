@@ -60,3 +60,19 @@ VIDFAB_TEST(qwen_vision_position_order_and_interpolation) {
   CHECK(p.rotary_thw[0] == 0 && p.rotary_thw[1] == 0 && p.rotary_thw[2] == 0);
   CHECK(p.rotary_thw[3] == 0 && p.rotary_thw[4] == 0 && p.rotary_thw[5] == 1);
 }
+
+VIDFAB_TEST(qwen_vision_decoder_mrope_and_scatter_rows) {
+  const std::vector<int32_t> ids = {7, 151652, 151655, 151655, 151655, 151655, 151653, 8};
+  const auto p = qwen3vl_multimodal_plan(ids, {{1, 4, 4}});
+  CHECK(p.image_rows == std::vector<int32_t>({2, 3, 4, 5}));
+  const size_t L = ids.size();
+  CHECK(p.position_ids[0] == 0 && p.position_ids[1] == 1);
+  CHECK(p.position_ids[2] == 2 && p.position_ids[L + 2] == 2 && p.position_ids[2 * L + 2] == 2);
+  CHECK(p.position_ids[3] == 2 && p.position_ids[L + 3] == 2 && p.position_ids[2 * L + 3] == 3);
+  CHECK(p.position_ids[4] == 2 && p.position_ids[L + 4] == 3 && p.position_ids[2 * L + 4] == 2);
+  CHECK(p.position_ids[6] == 4 && p.position_ids[7] == 5);
+  CHECK(::vidfab::test::throws([] {
+    (void)qwen3vl_multimodal_plan(
+        {7, 151652, 151655, 151655, 151655, 151655, 151653, 8}, {{1, 2, 2}});
+  }));
+}

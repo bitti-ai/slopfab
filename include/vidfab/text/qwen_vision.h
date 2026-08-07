@@ -63,6 +63,20 @@ QwenVisionPositions qwen3vl_vision_positions(const QwenImageGrid& grid,
                                              int position_side = 48,
                                              int merge_size = 2);
 
+struct QwenMultimodalPlan {
+  // Axis-major [3, token_count] positions for the decoder's interleaved mRoPE.
+  std::vector<int32_t> position_ids;
+  // Decoder row for each merged visual output. The same indices are used for
+  // the main scatter and all three DeepStack additions.
+  std::vector<int32_t> image_rows;
+};
+
+QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& token_ids,
+                                           const std::vector<QwenImageGrid>& grids,
+                                           int32_t vision_start_id = 151652,
+                                           int32_t image_pad_id = 151655,
+                                           int32_t vision_end_id = 151653);
+
 // Matches Qwen2VLImageProcessorFast.smart_resize for H3's processor config:
 // factor=patch_size*merge_size=32, min_pixels=65536, max_pixels=16777216.
 // Throws for invalid sizes and aspect ratios greater than 200:1.
