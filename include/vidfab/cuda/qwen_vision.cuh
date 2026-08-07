@@ -36,10 +36,42 @@ struct QwenVisionBlockScratch {
   __nv_bfloat16* mlp = nullptr;    // [S,4304]
 };
 
+struct QwenVisionMergerWeights {
+  const __nv_bfloat16* norm_weight = nullptr;
+  const __nv_bfloat16* norm_bias = nullptr;
+  QuantWeight fc1, fc2;
+  bool norm_before_merge = false; // true for main merger, false for DeepStack
+};
+
 void qwen_vision_block_forward(cublasHandle_t handle, cudaStream_t stream,
                                LinearRunner& linear, const QwenVisionBlockWeights& weights,
                                const float* cos, const float* sin, __nv_bfloat16* x,
                                int rows, QwenVisionBlockScratch scratch, Workspace& ws,
                                float layernorm_eps = 1e-6f);
+
+void qwen_vision_patch_embed(LinearRunner& linear, const QuantWeight& projection,
+                             const __nv_bfloat16* pixel_rows,
+                             const __nv_bfloat16* position_table,
+                             const int32_t* position_index, __nv_bfloat16* x,
+                             int rows, Workspace& ws, cudaStream_t stream);
+
+void qwen_vision_merger_forward(cudaStream_t stream, LinearRunner& linear,
+                                const QwenVisionMergerWeights& weights,
+                                const __nv_bfloat16* x, __nv_bfloat16* normed,
+                                __nv_bfloat16* merged, __nv_bfloat16* hidden,
+                                __nv_bfloat16* output, int rows, Workspace& ws,
+                                float layernorm_eps = 1e-6f);
+
+// Runs all 27 blocks. DeepStack outputs correspond to completed visual blocks
+// 8, 16 and 24 (zero-based indexes), exactly as the checkpoint configuration.
+void qwen_vision_tower_forward(cublasHandle_t handle, cudaStream_t stream,
+                               LinearRunner& linear, const QwenVisionBlockWeights* blocks,
+                               const QwenVisionMergerWeights& main_merger,
+                               const QwenVisionMergerWeights* deepstack_mergers,
+                               const float* cos, const float* sin, __nv_bfloat16* x,
+                               int rows, QwenVisionBlockScratch block_scratch,
+                               __nv_bfloat16* merger_normed, __nv_bfloat16* merged,
+                               __nv_bfloat16* merger_hidden, __nv_bfloat16* output,
+                               __nv_bfloat16** deepstack_outputs, Workspace& ws);
 
 }  // namespace vidfab::cuda
