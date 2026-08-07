@@ -30,6 +30,12 @@ void launch_rmsnorm(const __nv_bfloat16* x, const __nv_bfloat16* w, __nv_bfloat1
 void launch_rmsnorm_f32(const float* x, const float* w, float* out, int rows, int dim, float eps,
                         cudaStream_t stream);
 
+// ViT affine LayerNorm: subtract mean, divide by population standard
+// deviation, then apply both learned weight and bias. All reductions are fp32.
+void launch_layernorm_affine(const __nv_bfloat16* x, const __nv_bfloat16* w,
+                             const __nv_bfloat16* bias, __nv_bfloat16* out,
+                             int rows, int dim, float eps, cudaStream_t stream);
+
 // RMSNorm followed by AdaLN modulation, fused:
 //
 //   n = rmsnorm(x[r], w, eps)
@@ -75,6 +81,7 @@ void launch_swiglu(const __nv_bfloat16* fused, __nv_bfloat16* out, int rows, int
                    cudaStream_t stream);
 
 void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream);
+void launch_gelu_tanh(__nv_bfloat16* x, size_t n, cudaStream_t stream);
 
 // --- rotary -----------------------------------------------------------------
 

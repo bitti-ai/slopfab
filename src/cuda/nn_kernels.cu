@@ -173,6 +173,28 @@ __global__ void rmsnorm_f32_kernel(const float* __restrict__ x, const float* __r
                                                               dim, eps, shared);
 }
 
+__global__ void layernorm_affine_kernel(const __nv_bfloat16* __restrict__ x,
+                                        const __nv_bfloat16* __restrict__ w,
+                                        const __nv_bfloat16* __restrict__ bias,
+                                        __nv_bfloat16* __restrict__ out, int dim, float eps) {
+  extern __shared__ float shared[];
+  const size_t base = static_cast<size_t>(blockIdx.x) * dim;
+  float sum = 0.0f;
+  for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += __bfloat162float(x[base + i]);
+  const float mean = block_reduce_sum(sum, shared) / dim;
+  __syncthreads();
+  float sq = 0.0f;
+  for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+    const float d = __bfloat162float(x[base + i]) - mean; sq += d * d;
+  }
+  const float inv = rsqrtf(block_reduce_sum(sq, shared) / dim + eps);
+  for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+    const float y = (__bfloat162float(x[base + i]) - mean) * inv * __bfloat162float(w[i]) +
+                    __bfloat162float(bias[i]);
+    out[base + i] = __float2bfloat16(y);
+  }
+}
+
 // --- narrow-row rmsnorm -----------------------------------------------------
 //
 // q_norm/k_norm normalise over head_dim = 128, which is 16 packs. The block
@@ -360,6 +382,15 @@ __global__ void silu_kernel(const float* __restrict__ x, float* __restrict__ out
   if (i >= n) return;
   const float v = x[i];
   out[i] = v / (1.0f + __expf(-v));
+}
+
+__global__ void gelu_tanh_kernel(__nv_bfloat16* x, size_t n) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < n) {
+    const float v = __bfloat162float(x[i]);
+    constexpr float k = 0.7978845608028654f; // sqrt(2/pi)
+    x[i] = __float2bfloat16(0.5f * v * (1.0f + tanhf(k * (v + 0.044715f * v * v * v))));
+  }
 }
 
 // --- rotary -----------------------------------------------------------------
@@ -591,6 +622,15 @@ void launch_rmsnorm_f32(const float* x, const float* w, float* out, int rows, in
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
+void launch_layernorm_affine(const __nv_bfloat16* x, const __nv_bfloat16* w,
+                             const __nv_bfloat16* bias, __nv_bfloat16* out,
+                             int rows, int dim, float eps, cudaStream_t stream) {
+  require_positive(rows, dim, "launch_layernorm_affine");
+  layernorm_affine_kernel<<<rows, kRowThreads, reduce_shared_bytes(), stream>>>(x, w, bias, out,
+                                                                                dim, eps);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
 void launch_rmsnorm_modulate(const __nv_bfloat16* x, const __nv_bfloat16* w, const float* scale,
                              const float* shift, const int32_t* a, __nv_bfloat16* out, int rows,
                              int dim, float eps, cudaStream_t stream) {
@@ -650,6 +690,12 @@ void launch_swiglu(const __nv_bfloat16* fused, __nv_bfloat16* out, int rows, int
 void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream) {
   if (n == 0) return;
   silu_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, out, n);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_gelu_tanh(__nv_bfloat16* x, size_t n, cudaStream_t stream) {
+  if (!n) return;
+  gelu_tanh_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, n);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

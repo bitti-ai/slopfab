@@ -3432,3 +3432,33 @@ VIDFAB_TEST(nvfp4_gemm_production_timings) {
 }
 
 }  // namespace
+
+VIDFAB_TEST(qwen_vision_layernorm_and_gelu) {
+  const int rows = 2, dim = 7;
+  const auto x = bf16_round(make_data(rows * dim, 8101, 2.0f));
+  const auto w = bf16_round(make_data(dim, 8102, 0.3f));
+  const auto b = bf16_round(make_data(dim, 8103, 0.2f));
+  std::vector<float> want(rows * dim);
+  for (int r = 0; r < rows; ++r) {
+    float mean = 0, var = 0;
+    for (int j = 0; j < dim; ++j) mean += x[r * dim + j];
+    mean /= dim;
+    for (int j = 0; j < dim; ++j) { float d = x[r * dim + j] - mean; var += d * d; }
+    const float inv = 1.0f / std::sqrt(var / dim + 1e-6f);
+    for (int j = 0; j < dim; ++j)
+      want[r * dim + j] = (x[r * dim + j] - mean) * inv * w[j] + b[j];
+  }
+  BfBuf dx(x), dw(w), db(b), out(rows * dim);
+  vidfab::cuda::launch_layernorm_affine(dx.p(), dw.p(), db.p(), out.p(), rows, dim, 1e-6f, nullptr);
+  CHECK_CLOSE(want, out.host(), 2e-2, "vision layernorm");
+
+  const auto gx = bf16_round(std::vector<float>{-3, -1, 0, 0.5f, 2});
+  std::vector<float> gw(gx.size());
+  for (size_t i = 0; i < gx.size(); ++i) {
+    const float v = gx[i];
+    gw[i] = .5f * v * (1 + std::tanh(0.7978845608028654f * (v + .044715f * v * v * v)));
+  }
+  BfBuf dg(gx);
+  vidfab::cuda::launch_gelu_tanh(dg.p(), gx.size(), nullptr);
+  CHECK_CLOSE(gw, dg.host(), 1e-2, "vision gelu tanh");
+}
