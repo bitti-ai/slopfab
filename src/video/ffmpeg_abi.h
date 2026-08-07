@@ -54,6 +54,7 @@ struct AVCodec;
 struct AVOutputFormat;
 struct AVIOContext;
 struct AVDictionary;
+struct SwsContext;
 
 // The one exception, and it is not an exception at all: AVRational is two ints
 // passed by value across the ABI, and has been since libavutil existed. It is
@@ -85,6 +86,8 @@ constexpr int kColorTrcBt709 = 1;
 constexpr int kColorSpaceBt709 = 1;
 
 constexpr int kMediaTypeUnknown = -1;
+constexpr int kMediaTypeVideo = 0;
+constexpr int kSwsBicubic = 4;
 
 constexpr int kCodecFlagGlobalHeader = 0x00400000;
 constexpr int kAvioFlagWrite = 2;
@@ -111,6 +114,8 @@ struct Layout {
   // because there is no setter for it. It has sat behind
   // {av_class, iformat, oformat, priv_data} since libavformat 52.
   size_t format_pb;
+  size_t format_nb_streams;
+  size_t format_streams;
 
   // AVStream: the muxer rewrites `time_base` during avformat_write_header and
   // we must read it back to rescale packet timestamps, and `codecpar` is where
@@ -167,6 +172,8 @@ struct Layout {
 // ffmpeg 8.x: libavcodec 62, libavformat 62, libavutil 60.
 constexpr Layout kLayoutFfmpeg8 = {
     /* format_pb */ 32,
+    /* format_nb_streams */ 44,
+    /* format_streams */ 48,
     /* stream_codecpar */ 16,
     /* stream_time_base */ 32,
     /* par_codec_type */ 0,
@@ -234,17 +241,22 @@ using AvCompareTsFn = int (*)(int64_t, AVRational, int64_t, AVRational);
 using AvcodecVersionFn = unsigned (*)(void);
 using AvcodecFindEncoderByNameFn = const AVCodec* (*)(const char*);
 using AvcodecFindEncoderFn = const AVCodec* (*)(int);
+using AvcodecFindDecoderFn = const AVCodec* (*)(int);
 using AvcodecAllocContext3Fn = AVCodecContext* (*)(const AVCodec*);
 using AvcodecFreeContextFn = void (*)(AVCodecContext**);
 using AvcodecOpen2Fn = int (*)(AVCodecContext*, const AVCodec*, AVDictionary**);
 using AvcodecParametersFromContextFn = int (*)(AVCodecParameters*, const AVCodecContext*);
+using AvcodecParametersToContextFn = int (*)(AVCodecContext*, const AVCodecParameters*);
 using AvcodecSendFrameFn = int (*)(AVCodecContext*, const AVFrame*);
+using AvcodecSendPacketFn = int (*)(AVCodecContext*, const AVPacket*);
+using AvcodecReceiveFrameFn = int (*)(AVCodecContext*, AVFrame*);
 using AvcodecReceivePacketFn = int (*)(AVCodecContext*, AVPacket*);
 using AvcodecGetSupportedConfigFn = int (*)(const AVCodecContext*, const AVCodec*, int, unsigned,
                                             const void**, int*);
 using AvPacketAllocFn = AVPacket* (*)(void);
 using AvPacketFreeFn = void (*)(AVPacket**);
 using AvPacketRescaleTsFn = void (*)(AVPacket*, AVRational, AVRational);
+using AvPacketUnrefFn = void (*)(AVPacket*);
 
 // libavformat
 using AvformatVersionFn = unsigned (*)(void);
@@ -257,6 +269,17 @@ using AvInterleavedWriteFrameFn = int (*)(AVFormatContext*, AVPacket*);
 using AvWriteTrailerFn = int (*)(AVFormatContext*);
 using AvioOpenFn = int (*)(AVIOContext**, const char*, int);
 using AvioClosepFn = int (*)(AVIOContext**);
+using AvformatOpenInputFn = int (*)(AVFormatContext**, const char*, const void*, AVDictionary**);
+using AvformatFindStreamInfoFn = int (*)(AVFormatContext*, AVDictionary**);
+using AvFindBestStreamFn = int (*)(AVFormatContext*, int, int, int, const AVCodec**, int);
+using AvReadFrameFn = int (*)(AVFormatContext*, AVPacket*);
+using AvformatCloseInputFn = void (*)(AVFormatContext**);
+
+using SwscaleVersionFn = unsigned (*)(void);
+using SwsGetContextFn = SwsContext* (*)(int, int, int, int, int, int, int, void*, void*, const double*);
+using SwsScaleFn = int (*)(SwsContext*, const uint8_t* const[], const int[], int, int,
+                           uint8_t* const[], const int[]);
+using SwsFreeContextFn = void (*)(SwsContext*);
 
 // The whole bound surface. Anything added here must also be added to the
 // resolve list in mux.cpp, which is what makes a missing symbol a clean
@@ -280,16 +303,21 @@ struct Api {
   AvcodecVersionFn avcodec_version;
   AvcodecFindEncoderByNameFn avcodec_find_encoder_by_name;
   AvcodecFindEncoderFn avcodec_find_encoder;
+  AvcodecFindDecoderFn avcodec_find_decoder;
   AvcodecAllocContext3Fn avcodec_alloc_context3;
   AvcodecFreeContextFn avcodec_free_context;
   AvcodecOpen2Fn avcodec_open2;
   AvcodecParametersFromContextFn avcodec_parameters_from_context;
+  AvcodecParametersToContextFn avcodec_parameters_to_context;
   AvcodecSendFrameFn avcodec_send_frame;
+  AvcodecSendPacketFn avcodec_send_packet;
+  AvcodecReceiveFrameFn avcodec_receive_frame;
   AvcodecReceivePacketFn avcodec_receive_packet;
   AvcodecGetSupportedConfigFn avcodec_get_supported_config;
   AvPacketAllocFn av_packet_alloc;
   AvPacketFreeFn av_packet_free;
   AvPacketRescaleTsFn av_packet_rescale_ts;
+  AvPacketUnrefFn av_packet_unref;
 
   AvformatVersionFn avformat_version;
   AvformatAllocOutputContext2Fn avformat_alloc_output_context2;
@@ -300,6 +328,16 @@ struct Api {
   AvWriteTrailerFn av_write_trailer;
   AvioOpenFn avio_open;
   AvioClosepFn avio_closep;
+  AvformatOpenInputFn avformat_open_input;
+  AvformatFindStreamInfoFn avformat_find_stream_info;
+  AvFindBestStreamFn av_find_best_stream;
+  AvReadFrameFn av_read_frame;
+  AvformatCloseInputFn avformat_close_input;
+
+  SwscaleVersionFn swscale_version;
+  SwsGetContextFn sws_getContext;
+  SwsScaleFn sws_scale;
+  SwsFreeContextFn sws_freeContext;
 };
 
 }  // namespace vidfab::video::ff
