@@ -1363,6 +1363,91 @@ VIDFAB_TEST(nn_dequant_nvfp4) {
   }
 }
 
+struct Nf4Weight {
+  int out = 0, in = 0;
+  float offset = 0.0f;
+  std::vector<uint8_t> packed, absmax;
+  std::vector<float> map, nested_map, nested_absmax;
+};
+
+Nf4Weight make_nf4(int out, int in) {
+  Nf4Weight w;
+  w.out = out; w.in = in; w.offset = 0.21360844373703003f;
+  w.map = {-1.0f, -0.6961928f, -0.52507305f, -0.39491749f, -0.28444138f,
+           -0.18477343f, -0.09105004f, 0.0f, 0.07958030f, 0.16093020f,
+           0.24611230f, 0.33791524f, 0.44070983f, 0.56261700f, 0.72295684f, 1.0f};
+  w.nested_map.resize(256);
+  for (int i = 0; i < 256; ++i) w.nested_map[i] = (float(i) - 127.0f) / 128.0f;
+  const size_t n = size_t(out) * in;
+  const size_t blocks = (n + 63) / 64;
+  w.nested_absmax.resize((blocks + 255) / 256);
+  for (size_t i = 0; i < w.nested_absmax.size(); ++i) w.nested_absmax[i] = 0.75f + float(i) * 1.25f;
+  w.absmax.resize(blocks);
+  for (size_t i = 0; i < blocks; ++i) w.absmax[i] = uint8_t((i * 73 + 19) & 255);
+  w.packed.resize((n + 1) / 2);
+  for (size_t i = 0; i < w.packed.size(); ++i) {
+    // Deliberately different nibbles; a swapped implementation cannot pass.
+    w.packed[i] = uint8_t((((i * 5 + 3) & 15) << 4) | ((i * 11 + 9) & 15));
+  }
+  return w;
+}
+
+std::vector<float> nf4_reference(const Nf4Weight& w, bool swap = false) {
+  const size_t n = size_t(w.out) * w.in;
+  std::vector<float> result(n);
+  for (size_t i = 0; i < n; ++i) {
+    const size_t block = i / 64;
+    const float scale = w.nested_map[w.absmax[block]] * w.nested_absmax[block / 256] + w.offset;
+    const uint8_t byte = w.packed[i / 2];
+    const bool high = ((i & 1) == 0) != swap;
+    const uint8_t code = high ? byte >> 4 : byte & 15;
+    result[i] = vidfab::bf16_to_f32(vidfab::f32_to_bf16(w.map[code] * scale));
+  }
+  return result;
+}
+
+VIDFAB_TEST(nn_dequant_nf4_double_quant) {
+  // 258 weight-scale blocks cross a 256-scale nested boundary.
+  const Nf4Weight w = make_nf4(129, 128);
+  DeviceBuffer<uint8_t> dp(w.packed.size()), da(w.absmax.size());
+  dp.copy_from_host(w.packed.data(), w.packed.size());
+  da.copy_from_host(w.absmax.data(), w.absmax.size());
+  auto dm = to_device(w.map), dnm = to_device(w.nested_map), dna = to_device(w.nested_absmax);
+  BfBuf got(size_t(w.out) * w.in);
+  vidfab::cuda::launch_dequant_nf4(dp.get(), da.get(), dm.get(), dnm.get(), dna.get(), 64, 256,
+                                   w.offset, got.p(), w.out, w.in, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE(nf4_reference(w), got.host(), 0.0, "double-quant NF4 dequantisation");
+  CHECK_MSG(max_abs_diff(nf4_reference(w, true), got.host()) > 0.1,
+            "NF4 even element must use HIGH nibble (max diff %.4g)",
+            max_abs_diff(nf4_reference(w, true), got.host()));
+}
+
+VIDFAB_TEST(linear_nf4_double_quant) {
+  CublasScope cb;
+  const int rows = 7;
+  const Nf4Weight w = make_nf4(16, 128);
+  DeviceBuffer<uint8_t> dp(w.packed.size()), da(w.absmax.size());
+  dp.copy_from_host(w.packed.data(), w.packed.size());
+  da.copy_from_host(w.absmax.data(), w.absmax.size());
+  auto dm = to_device(w.map), dnm = to_device(w.nested_map), dna = to_device(w.nested_absmax);
+  const auto x = bf16_round(make_data(size_t(rows) * w.in, 20260807u, 0.1f));
+  BfBuf dx(x), dy(size_t(rows) * w.out);
+  vidfab::cuda::QuantWeight qw;
+  qw.format = vidfab::cuda::QuantFormat::kNF4; qw.data = dp.get();
+  qw.out_features = w.out; qw.in_features = w.in; qw.nf4_absmax = da.get();
+  qw.nf4_quant_map = dm.get(); qw.nf4_nested_quant_map = dnm.get();
+  qw.nf4_nested_absmax = dna.get(); qw.nf4_nested_offset = w.offset;
+  CHECK(qw.stored_bytes() == w.packed.size());
+  vidfab::cuda::LinearRunner runner; runner.init(cb.h, nullptr);
+  Workspace ws; ws.reserve(vidfab::cuda::linear_workspace_bytes(
+      qw, rows, vidfab::cuda::ComputeType::kBF16) + 256);
+  runner.forward(qw, dx.p(), rows, dy.p(), ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const auto want = cpu_matmul_nt(x, nf4_reference(w), rows, w.out, w.in);
+  CHECK_CLOSE_REL(want, dy.host(), 1e-3, 1e-2, "linear NF4 dequantise-then-GEMM");
+}
+
 // The AWQ per-input-channel activation scale. Only the text encoder's weights
 // carry one; the transformer's are all null, which is a positive statement that
 // the quantiser folded the scale into the preceding norm.
