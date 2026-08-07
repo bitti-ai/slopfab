@@ -570,8 +570,8 @@ const __nv_bfloat16* materialise_bf16(const QuantWeight& w, Workspace& ws, cudaS
 
 size_t QuantWeight::stored_bytes() const {
   const size_t n = static_cast<size_t>(out_features) * in_features;
-  // Two nibbles per byte, low nibble first. `in_features` is even in every
-  // shipped tensor; an odd one has no packing convention to follow.
+  // Two nibbles per byte. Both shipped 4-bit formats place the even element in
+  // the high nibble; their dequantisers pin that convention independently.
   if (format == QuantFormat::kNVFP4 || format == QuantFormat::kNF4) return (n + 1) / 2;
   return element_bytes(format) * n;
 }

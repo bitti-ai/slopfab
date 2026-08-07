@@ -12,6 +12,8 @@
 //                  contracted elements, one fp32 global scale on top, and on
 //                  the AWQ text encoder an optional per-input-channel
 //                  activation scale
+//   NF4            bitsandbytes nibbles, an absmax per 64 elements, with those
+//                  absmax values themselves quantised in blocks of 256
 //
 // Every weight is stored PyTorch-style `[out_features, in_features]` row-major
 // and there are no transposes anywhere in either checkpoint, so the contraction
