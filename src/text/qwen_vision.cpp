@@ -41,6 +41,40 @@ QwenImageGrid qwen3vl_image_grid(int width, int height) {
   return {1, resized_h / 16, resized_w / 16};
 }
 
+QwenPixelValues qwen3vl_patchify_resized_rgb(const std::vector<uint8_t>& rgb,
+                                             int width, int height) {
+  if (width <= 0 || height <= 0 || width % kFactor || height % kFactor)
+    throw std::runtime_error("Qwen image: resized dimensions must be positive multiples of 32");
+  if (rgb.size() != static_cast<size_t>(width) * height * 3)
+    throw std::runtime_error("Qwen image: RGB byte count does not match dimensions");
+
+  QwenPixelValues out;
+  out.grid = {1, height / 16, width / 16};
+  constexpr int patch = 16, merge = 2, temporal = 2, channels = 3;
+  constexpr int row_width = channels * temporal * patch * patch;
+  out.rows.resize(out.grid.patch_count() * row_width);
+
+  // Equivalent to reshape(t,tp,c,h/m,m,p,w/m,m,p), then transpose
+  // (t,h/m,w/m,m,m,c,tp,p,p). This keeps each 2x2 merge group contiguous.
+  size_t dst = 0;
+  for (int tile_y = 0; tile_y < height / (merge * patch); ++tile_y)
+    for (int tile_x = 0; tile_x < width / (merge * patch); ++tile_x)
+      for (int merge_y = 0; merge_y < merge; ++merge_y)
+        for (int merge_x = 0; merge_x < merge; ++merge_x)
+          for (int channel = 0; channel < channels; ++channel)
+            for (int time = 0; time < temporal; ++time)
+              for (int py = 0; py < patch; ++py)
+                for (int px = 0; px < patch; ++px) {
+                  (void)time;  // a still image is duplicated over the temporal patch
+                  const int y = (tile_y * merge + merge_y) * patch + py;
+                  const int x = (tile_x * merge + merge_x) * patch + px;
+                  out.rows[dst++] = rgb[(static_cast<size_t>(y) * width + x) * 3 + channel] /
+                                           127.5f -
+                                       1.0f;
+                }
+  return out;
+}
+
 std::vector<int32_t> qwen3vl_image_block(const std::vector<int32_t>& label_ids,
                                          size_t merged_tokens, int32_t vision_start_id,
                                          int32_t image_pad_id, int32_t vision_end_id) {

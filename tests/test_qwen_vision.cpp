@@ -29,3 +29,21 @@ VIDFAB_TEST(qwen_vision_minimax_presentation) {
   CHECK(ids[5] == 151655);
   CHECK(ids[6] == 151653);
 }
+
+VIDFAB_TEST(qwen_vision_pixel_patch_order) {
+  std::vector<uint8_t> rgb(32 * 32 * 3, 128);
+  // Distinguish the first pixel/channel and the first pixel of the patch to
+  // its right. Merge-group ordering must make those patches consecutive rows.
+  rgb[0] = 255;
+  rgb[(16 * 3)] = 0;
+  const auto pixels = qwen3vl_patchify_resized_rgb(rgb, 32, 32);
+  CHECK(pixels.grid.patch_count() == 4);
+  CHECK(pixels.rows.size() == 4 * 1536);
+  CHECK_NEAR(pixels.rows[0], 1.0, 1e-6);
+  CHECK_NEAR(pixels.rows[1536], -1.0, 1e-6);
+  // Temporal duplication is inside a row, after channel and before y/x.
+  CHECK_NEAR(pixels.rows[256], 1.0, 1e-6);
+  CHECK(::vidfab::test::throws([] {
+    (void)qwen3vl_patchify_resized_rgb(std::vector<uint8_t>(31 * 32 * 3), 31, 32);
+  }));
+}

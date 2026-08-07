@@ -18,10 +18,23 @@ struct QwenImageGrid {
   size_t merged_token_count() const;
 };
 
+struct QwenPixelValues {
+  QwenImageGrid grid;
+  // Row-major [grid_t*grid_h*grid_w, 3*2*16*16], matching the processor's
+  // pixel_values. Values are RGB normalized by (x-.5)/.5.
+  std::vector<float> rows;
+};
+
 // Matches Qwen2VLImageProcessorFast.smart_resize for H3's processor config:
 // factor=patch_size*merge_size=32, min_pixels=65536, max_pixels=16777216.
 // Throws for invalid sizes and aspect ratios greater than 200:1.
 QwenImageGrid qwen3vl_image_grid(int width, int height);
+
+// Patchifies an image already resized to the grid selected above. Keeping
+// interpolation outside this primitive makes its byte-to-row mapping exact
+// and independently testable. A still is repeated for the temporal size 2.
+QwenPixelValues qwen3vl_patchify_resized_rgb(const std::vector<uint8_t>& rgb,
+                                             int width, int height);
 
 // MiniMax's image presentation, before the verbatim prompt. No chat template,
 // BOS, EOS, im_start, or im_end tokens are added.
