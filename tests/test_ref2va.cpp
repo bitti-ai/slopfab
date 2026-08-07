@@ -1,8 +1,61 @@
 #include "harness.h"
+#include "vidfab/dit/checkpoint.h"
 #include "vidfab/dit/ref2va.h"
+#include "vidfab/safetensors.h"
+#include "vidfab/safetensors_write.h"
 #include "vidfab/vae/keyframe_encoder.h"
 
+#include <filesystem>
+
 using namespace vidfab::dit;
+
+namespace {
+std::string checkpoint_fixture(
+    const char* stem, std::vector<vidfab::TensorWrite> tensors) {
+  const auto path = std::filesystem::temp_directory_path() /
+                    (std::string("vidfab_") + stem + ".safetensors");
+  vidfab::write_safetensors(path.string(), tensors);
+  return path.string();
+}
+}  // namespace
+
+VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
+  const auto pruned_path = checkpoint_fixture(
+      "pruned_kind", {{"adaln_t_table", {1}, {0, 0, 0, 0}},
+                       {"blocks.0.adaln_proj.linear.weight", {1}, {0, 0, 0, 0}}});
+  vidfab::SafeTensors pruned;
+  pruned.open(pruned_path);
+  CHECK(detect_transformer_checkpoint(pruned) == TransformerCheckpointKind::kPrunedTable);
+  bool rejected = false;
+  try {
+    require_ref2va_transformer(pruned, 1);
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  require_ref2va_transformer(pruned, 0);
+
+  const auto ref_path = checkpoint_fixture(
+      "ref2va_kind", {{"time_embedder.proj_in.weight", {1}, {0, 0, 0, 0}},
+                       {"time_embedder.proj_out.weight", {1}, {0, 0, 0, 0}},
+                       {"blocks.0.adaln_proj.linear.weight.quant_state.bitsandbytes__nf4",
+                        {1}, {0, 0, 0, 0}},
+                       {"blocks.0.adaln_proj.linear.weight.absmax", {1}, {0, 0, 0, 0}}});
+  vidfab::SafeTensors ref;
+  ref.open(ref_path);
+  CHECK(detect_transformer_checkpoint(ref) ==
+        TransformerCheckpointKind::kRef2VABitsAndBytesNF4);
+  require_ref2va_transformer(ref, 1);
+
+  const auto unknown_path = checkpoint_fixture("unknown_kind", {{"x", {1}, {0, 0, 0, 0}}});
+  vidfab::SafeTensors unknown;
+  unknown.open(unknown_path);
+  CHECK(detect_transformer_checkpoint(unknown) == TransformerCheckpointKind::kUnknown);
+
+  std::filesystem::remove(pruned_path);
+  std::filesystem::remove(ref_path);
+  std::filesystem::remove(unknown_path);
+}
 
 VIDFAB_TEST(ref2va_image_size) {
   int h = 0, w = 0;

@@ -26,6 +26,7 @@ add_library(vidfab_core STATIC
   src/core/safetensors_write.cpp
   src/dit/adaln.cpp
   src/dit/chunking.cpp
+  src/dit/checkpoint.cpp
   src/dit/packing.cpp
   src/dit/ref2va.cpp
   src/dit/step_cache.cpp
