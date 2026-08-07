@@ -51,6 +51,7 @@ enum class QuantFormat {
   kF8E4M3,   // per-tensor scales
   kI8,       // per-output-channel weight_scale
   kNVFP4,    // 4-bit, block-scaled; `data` is half as many bytes as elements
+  kNF4,      // bitsandbytes NF4, double-quantised 64-element block scales
 };
 
 // Elements of the contraction axis sharing one e4m3 block scale. Fixed, not a
@@ -108,6 +109,17 @@ struct QuantWeight {
   // pointer here means "already accounted for", not "unknown". Check per
   // tensor; do not infer it from the layer's name.
   const __nv_bfloat16* pre_quant_scale = nullptr;
+
+  // --- bitsandbytes NF4 ----------------------------------------------------
+  // Codes are packed high nibble first. Each 64 weights share an absmax; the
+  // absmax bytes are themselves quantised in groups of 256.
+  const uint8_t* nf4_absmax = nullptr;
+  const float* nf4_quant_map = nullptr;         // 16 entries
+  const float* nf4_nested_quant_map = nullptr;  // 256 entries
+  const float* nf4_nested_absmax = nullptr;
+  int nf4_block_size = 64;
+  int nf4_nested_block_size = 256;
+  float nf4_nested_offset = 0.0f;
 
   // ConvRot: the contraction axis was rotated offline in groups of
   // `convrot_group`, so the activation must be rotated the same way online.
@@ -208,6 +220,12 @@ void launch_dequant_i8_per_channel(const int8_t* src, const float* scale, __nv_b
 void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float global_scale,
                           __nv_bfloat16* dst, int out_features, int in_features,
                           cudaStream_t stream);
+
+void launch_dequant_nf4(const uint8_t* src, const uint8_t* absmax, const float* quant_map,
+                        const float* nested_quant_map, const float* nested_absmax,
+                        int block_size, int nested_block_size, float nested_offset,
+                        __nv_bfloat16* dst, int out_features, int in_features,
+                        cudaStream_t stream);
 
 // dst[r, i] = src[r, i] * scale[i]. The AWQ activation scaling; separate from
 // the GEMM because it also has to happen ahead of a native fp4 path.

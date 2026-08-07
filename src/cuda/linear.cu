@@ -239,6 +239,25 @@ __global__ void dequant_nvfp4_kernel(const uint8_t* __restrict__ src,
   }
 }
 
+__global__ void dequant_nf4_kernel(const uint8_t* __restrict__ src,
+                                   const uint8_t* __restrict__ absmax,
+                                   const float* __restrict__ quant_map,
+                                   const float* __restrict__ nested_quant_map,
+                                   const float* __restrict__ nested_absmax, int block_size,
+                                   int nested_block_size, float nested_offset,
+                                   __nv_bfloat16* __restrict__ dst, size_t n) {
+  const size_t byte = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t even = byte * 2;
+  if (even >= n) return;
+  const size_t scale_index = even / static_cast<size_t>(block_size);
+  const float scale = nested_quant_map[absmax[scale_index]] *
+                          nested_absmax[scale_index / static_cast<size_t>(nested_block_size)] +
+                      nested_offset;
+  const uint8_t packed = src[byte];
+  dst[even] = __float2bfloat16(quant_map[packed >> 4] * scale);
+  if (even + 1 < n) dst[even + 1] = __float2bfloat16(quant_map[packed & 0x0f] * scale);
+}
+
 __global__ void quantize_f8_kernel(const __nv_bfloat16* __restrict__ src, float inv_scale,
                                    uint8_t* __restrict__ dst, size_t n) {
   const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -505,6 +524,16 @@ const __nv_bfloat16* materialise_bf16(const QuantWeight& w, Workspace& ws, cudaS
       }
       launch_dequant_f8e4m3(static_cast<const uint8_t*>(w.data), w.weight_scale, dst, n, stream);
       break;
+    case QuantFormat::kNF4:
+      if (w.nf4_absmax == nullptr || w.nf4_quant_map == nullptr ||
+          w.nf4_nested_quant_map == nullptr || w.nf4_nested_absmax == nullptr) {
+        throw std::runtime_error("linear: nf4 weight without complete double-quant state");
+      }
+      launch_dequant_nf4(static_cast<const uint8_t*>(w.data), w.nf4_absmax,
+                         w.nf4_quant_map, w.nf4_nested_quant_map, w.nf4_nested_absmax,
+                         w.nf4_block_size, w.nf4_nested_block_size, w.nf4_nested_offset, dst,
+                         w.out_features, w.in_features, stream);
+      break;
     case QuantFormat::kI8:
       if (w.weight_scale == nullptr) {
         throw std::runtime_error("linear: int8 weight without weight_scale");
@@ -543,7 +572,7 @@ size_t QuantWeight::stored_bytes() const {
   const size_t n = static_cast<size_t>(out_features) * in_features;
   // Two nibbles per byte, low nibble first. `in_features` is even in every
   // shipped tensor; an odd one has no packing convention to follow.
-  if (format == QuantFormat::kNVFP4) return n / 2;
+  if (format == QuantFormat::kNVFP4 || format == QuantFormat::kNF4) return (n + 1) / 2;
   return element_bytes(format) * n;
 }
 
@@ -794,6 +823,25 @@ void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float 
                   static_cast<unsigned>(std::min(out_features, 65535)));
   dequant_nvfp4_kernel<<<grid, kThreads, 0, stream>>>(src, block_scale, global_scale, dst,
                                                       out_features, packs_per_row, blocks_per_row);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_dequant_nf4(const uint8_t* src, const uint8_t* absmax, const float* quant_map,
+                        const float* nested_quant_map, const float* nested_absmax,
+                        int block_size, int nested_block_size, float nested_offset,
+                        __nv_bfloat16* dst, int out_features, int in_features,
+                        cudaStream_t stream) {
+  if (src == nullptr || absmax == nullptr || quant_map == nullptr || nested_quant_map == nullptr ||
+      nested_absmax == nullptr || dst == nullptr) {
+    throw std::runtime_error("launch_dequant_nf4: null pointer");
+  }
+  if (block_size <= 0 || nested_block_size <= 0) {
+    throw std::runtime_error("launch_dequant_nf4: block sizes must be positive");
+  }
+  const size_t n = static_cast<size_t>(out_features) * in_features;
+  dequant_nf4_kernel<<<grid_1d((n + 1) / 2, kThreads), kThreads, 0, stream>>>(
+      src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
+      nested_offset, dst, n);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
