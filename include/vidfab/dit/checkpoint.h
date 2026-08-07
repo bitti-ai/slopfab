@@ -15,6 +15,11 @@ enum class TransformerArchitecture {
   kRef2VAFullAdaLN,
 };
 
+constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture) {
+  return architecture == TransformerArchitecture::kPrunedTable ||
+         architecture == TransformerArchitecture::kRef2VAPrunedTable;
+}
+
 enum class TransformerQuantization {
   kUnknown,
   kFloat8,

@@ -557,10 +557,10 @@ struct Transformer::Impl {
     const int T = static_cast<int>(timesteps.size());
     if (T <= 0) throw std::runtime_error("transformer: no distinct timesteps");
 
-    const int code_dim = architecture == TransformerArchitecture::kPrunedTable
+    const int code_dim = is_pruned_table_architecture(architecture)
                              ? AdaLNTable::kRank
                              : cfg.timestep_embed_dim;
-    if (architecture == TransformerArchitecture::kPrunedTable) {
+    if (is_pruned_table_architecture(architecture)) {
       host_code.assign(static_cast<size_t>(T) * code_dim, 0.0f);
       for (int i = 0; i < T; ++i) {
         const std::array<float, AdaLNTable::kRank> c = table.lookup(timesteps[i], lookup);
@@ -587,7 +587,7 @@ struct Transformer::Impl {
     if (final_mod.size() < final_need) final_mod.allocate(final_need);
 
     for (size_t b = 0; b < blocks.size(); ++b) {
-      if (architecture == TransformerArchitecture::kPrunedTable) {
+      if (is_pruned_table_architecture(architecture)) {
         cuda::launch_adaln_expand(blocks[b].adaln_w, blocks[b].adaln_b, d_code.get(),
                                   mod.get() + b * per_block, T, kNumModalities, kNumParams,
                                   cfg.hidden_size, code_dim, stream.get());
@@ -596,7 +596,7 @@ struct Transformer::Impl {
                            mod.get() + b * per_block, ws);
       }
     }
-    if (architecture == TransformerArchitecture::kPrunedTable) {
+    if (is_pruned_table_architecture(architecture)) {
       cuda::launch_adaln_expand(final_adaln_w, final_adaln_b, d_code.get(), final_mod.get(), T,
                                 /*num_modality=*/1, kFinalParams, cfg.hidden_size, code_dim,
                                 stream.get());
@@ -751,7 +751,7 @@ AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
 void Transformer::set_attention_band(int frames) { impl_->attn_band = frames > 0 ? frames : 0; }
 int Transformer::attention_band() const { return impl_->attn_band; }
 std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
-  if (impl_->architecture != TransformerArchitecture::kPrunedTable) {
+  if (!is_pruned_table_architecture(impl_->architecture)) {
     throw std::runtime_error("transformer: rank-8 adaln_code is unavailable for full-AdaLN architecture");
   }
   return impl_->table.lookup(t, impl_->lookup);

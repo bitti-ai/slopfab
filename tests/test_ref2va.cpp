@@ -20,6 +20,10 @@ std::string checkpoint_fixture(
 }  // namespace
 
 VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
+  CHECK(is_pruned_table_architecture(TransformerArchitecture::kPrunedTable));
+  CHECK(is_pruned_table_architecture(TransformerArchitecture::kRef2VAPrunedTable));
+  CHECK(!is_pruned_table_architecture(TransformerArchitecture::kRef2VAFullAdaLN));
+  CHECK(!is_pruned_table_architecture(TransformerArchitecture::kUnknown));
   const auto pruned_path = checkpoint_fixture(
       "pruned_kind", {{"adaln_t_table", {1}, {0.0f}},
                        {"blocks.0.adaln_proj.linear.weight", {1}, {0.0f}}});
