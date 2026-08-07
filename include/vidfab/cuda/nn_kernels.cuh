@@ -156,6 +156,8 @@ void launch_merge_four_rows(const __nv_bfloat16* src, __nv_bfloat16* dst,
 // --- elementwise ------------------------------------------------------------
 
 void launch_add(const float* a, const float* b, float* out, size_t n, cudaStream_t stream);
+void launch_add_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
+                     cudaStream_t stream);
 void launch_axpby(const float* x, float a, const float* y, float b, float* out, size_t n,
                   cudaStream_t stream);
 

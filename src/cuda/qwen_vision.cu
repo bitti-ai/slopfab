@@ -42,4 +42,25 @@ void qwen_vision_attention(cublasHandle_t handle, cudaStream_t stream,
   attention_forward(handle, stream, q, k, v, out, cfg, backend, ws);
 }
 
+void qwen_vision_block_forward(cublasHandle_t handle, cudaStream_t stream,
+                               LinearRunner& linear, const QwenVisionBlockWeights& w,
+                               const float* cos, const float* sin, __nv_bfloat16* x,
+                               int rows, QwenVisionBlockScratch s, Workspace& ws,
+                               float eps) {
+  constexpr int hidden = 1152, heads = 16, head_dim = 72, intermediate = 4304;
+  if (!x || !s.normed || !s.qkv || !s.q || !s.k || !s.v || !s.branch || !s.mlp)
+    throw std::runtime_error("qwen vision block: null activation scratch");
+  launch_layernorm_affine(x, w.norm1_weight, w.norm1_bias, s.normed, rows, hidden, eps, stream);
+  linear.forward(w.qkv, s.normed, rows, s.qkv, ws);
+  qwen_vision_attention(handle, stream, s.qkv, cos, sin, s.q, s.k, s.v, s.branch,
+                        rows, heads, head_dim, ws);
+  linear.forward(w.attention_out, s.branch, rows, s.normed, ws);
+  launch_add_bf16(x, s.normed, static_cast<size_t>(rows) * hidden, stream);
+  launch_layernorm_affine(x, w.norm2_weight, w.norm2_bias, s.normed, rows, hidden, eps, stream);
+  linear.forward(w.mlp_fc1, s.normed, rows, s.mlp, ws);
+  launch_gelu_tanh(s.mlp, static_cast<size_t>(rows) * intermediate, stream);
+  linear.forward(w.mlp_fc2, s.mlp, rows, s.normed, ws);
+  launch_add_bf16(x, s.normed, static_cast<size_t>(rows) * hidden, stream);
+}
+
 }  // namespace vidfab::cuda

@@ -393,6 +393,11 @@ __global__ void gelu_tanh_kernel(__nv_bfloat16* x, size_t n) {
   }
 }
 
+__global__ void add_bf16_kernel(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < n) x[i] = __float2bfloat16(__bfloat162float(x[i]) + __bfloat162float(branch[i]));
+}
+
 __global__ void scatter_add_rows_kernel(const __nv_bfloat16* src, const int32_t* index,
                                         __nv_bfloat16* dst, int dim) {
   const int r = blockIdx.x;
@@ -715,6 +720,13 @@ void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream) {
 void launch_gelu_tanh(__nv_bfloat16* x, size_t n, cudaStream_t stream) {
   if (!n) return;
   gelu_tanh_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, n);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_add_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
+                     cudaStream_t stream) {
+  if (!n) return;
+  add_bf16_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, branch, n);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
