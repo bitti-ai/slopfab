@@ -76,3 +76,16 @@ VIDFAB_TEST(qwen_vision_decoder_mrope_and_scatter_rows) {
         {7, 151652, 151655, 151655, 151655, 151655, 151653, 8}, {{1, 2, 2}});
   }));
 }
+
+VIDFAB_TEST(qwen_vision_two_axis_rope) {
+  const auto p = qwen3vl_vision_positions({1, 2, 2});
+  std::vector<float> c, s;
+  qwen3vl_vision_rope_tables(p, c, s);
+  CHECK(c.size() == 4 * 72 && s.size() == c.size());
+  CHECK_NEAR(c[0], 1.0, 1e-6);
+  CHECK_NEAR(s[0], 0.0, 1e-6);
+  // Row one is (h=0,w=1): height frequencies remain identity, width changes.
+  CHECK_NEAR(c[72], 1.0, 1e-6);
+  CHECK_NEAR(c[72 + 18], std::cos(1.0), 1e-6);
+  CHECK_NEAR(c[72 + 18 + 36], c[72 + 18], 1e-6);
+}

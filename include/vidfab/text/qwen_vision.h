@@ -77,6 +77,13 @@ QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& token_ids
                                            int32_t image_pad_id = 151655,
                                            int32_t vision_end_id = 151653);
 
+// Qwen vision uses 2-D rotary embedding within each 72-wide attention head.
+// Eighteen frequencies come from height and eighteen from width, then the
+// half-split layout is duplicated to 72 channels.
+void qwen3vl_vision_rope_tables(const QwenVisionPositions& positions,
+                               std::vector<float>& cos, std::vector<float>& sin,
+                               int head_dim = 72, float theta = 10000.0f);
+
 // Matches Qwen2VLImageProcessorFast.smart_resize for H3's processor config:
 // factor=patch_size*merge_size=32, min_pixels=65536, max_pixels=16777216.
 // Throws for invalid sizes and aspect ratios greater than 200:1.

@@ -122,6 +122,27 @@ QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& ids,
   return out;
 }
 
+void qwen3vl_vision_rope_tables(const QwenVisionPositions& p, std::vector<float>& cos,
+                               std::vector<float>& sin, int head_dim, float theta) {
+  if (head_dim <= 0 || head_dim % 4 || theta <= 0 || p.rotary_thw.size() % 3)
+    throw std::runtime_error("Qwen vision: invalid rotary shape");
+  const size_t rows = p.rotary_thw.size() / 3;
+  const int axis_half = head_dim / 4; // 18 frequencies for a 72-wide head
+  cos.resize(rows * head_dim); sin.resize(rows * head_dim);
+  for (size_t r = 0; r < rows; ++r) {
+    const int coords[2] = {p.rotary_thw[r * 3 + 1], p.rotary_thw[r * 3 + 2]};
+    for (int a = 0; a < 2; ++a)
+      for (int j = 0; j < axis_half; ++j) {
+        const double inv = std::pow(static_cast<double>(theta),
+                                    -2.0 * j / (head_dim / 2));
+        const float angle = static_cast<float>(coords[a] * inv);
+        const int k = a * axis_half + j;
+        cos[r * head_dim + k] = cos[r * head_dim + k + head_dim / 2] = std::cos(angle);
+        sin[r * head_dim + k] = sin[r * head_dim + k + head_dim / 2] = std::sin(angle);
+      }
+  }
+}
+
 size_t QwenImageGrid::patch_count() const {
   return static_cast<size_t>(temporal) * height * width;
 }
