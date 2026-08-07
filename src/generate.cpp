@@ -12,6 +12,7 @@
 #include "vidfab/dit/denoise.h"
 #include "vidfab/dit/checkpoint.h"
 #include "vidfab/dit/packing.h"
+#include "vidfab/dit/ref2va.h"
 #include "vidfab/dit/transformer.h"
 #include "vidfab/text/encoder.h"
 #include "vidfab/text/tokenizer.h"
@@ -22,6 +23,7 @@
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/audio_decoder.h"
 #include "vidfab/vae/vit_decoder.h"
+#include "vidfab/vae/keyframe_encoder.h"
 #include "vidfab/video/mux.h"
 #include "vidfab/video/y4m.h"
 
@@ -79,6 +81,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (options.verbose) {
         std::printf("reference   %s (%dx%d)\n", path.c_str(), image.width, image.height);
       }
+      int resized_h = 0, resized_w = 0;
+      dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w);
+      image = resize_reference_lanczos(image, resized_w, resized_h);
       reference_images.push_back(std::move(image));
     }
   } catch (const std::exception& e) {
@@ -139,6 +144,32 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       }
     }
 
+    // --- fixed image anchors ------------------------------------------------
+    std::vector<float> condition_video_rows;
+    std::vector<dit::ReferenceGeometry> reference_geometry;
+    if (!reference_images.empty()) {
+      if (request.video_vae_path.empty()) {
+        result.message = "--reference-image requires --video-vae for H3 image encoding";
+        return result;
+      }
+      const Clock::time_point t0 = Clock::now();
+      SafeTensors vae_file;
+      vae_file.open(request.video_vae_path);
+      const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
+      const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
+      vae::KeyframeEncoder image_encoder(vae_file);
+      for (const RGBImage& image : reference_images) {
+        std::vector<float> rows = image_encoder.encode_reference_image(image, mean, stddev);
+        condition_video_rows.insert(condition_video_rows.end(), rows.begin(), rows.end());
+        reference_geometry.push_back({dit::ReferenceKind::kImage, 1, image.height / 16,
+                                      image.width / 16, 0});
+      }
+      if (options.verbose)
+        std::printf("references  %zu images -> %zu fixed video rows in %.2f s\n",
+                    reference_images.size(), condition_video_rows.size() / 96,
+                    seconds_since(t0));
+    }
+
     // --- conditioning -------------------------------------------------------
     //
     // The encoder is loaded, used and freed before the transformer is touched.
@@ -195,9 +226,23 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     // The layout only now knows its text length, so the packed sequence and its
     // rotary coordinates are built here rather than in `resolve_plan`.
     dit::SequenceLayout live = layout;
-    live.num_text = prompt.num_tokens;
-    const dit::PackedIndices idx = dit::build_indices(live);
-    const std::vector<double> pos = dit::build_position_ids(live);
+    dit::PackedIndices idx;
+    std::vector<double> pos;
+    if (reference_geometry.empty()) {
+      live.num_text = prompt.num_tokens;
+      idx = dit::build_indices(live);
+      pos = dit::build_position_ids(live);
+    } else {
+      // Placeholder until Qwen exposes per-token vision tags through
+      // PromptEmbedding. Text rows retain their current clean interface.
+      std::vector<int32_t> text_tags(static_cast<size_t>(prompt.num_tokens), dit::kTagText);
+      dit::Ref2VAPackedSequence packed = dit::build_ref2va_packed_sequence(
+          text_tags, reference_geometry, live.num_latent_frames, live.latent_height,
+          live.latent_width, live.num_audio_latents);
+      live = std::move(packed.layout);
+      idx = std::move(packed.indices);
+      pos = std::move(packed.position_ids);
+    }
 
     {
       const Clock::time_point t0 = Clock::now();
@@ -238,6 +283,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       in.video_scheduler = &video_sched;
       in.audio_scheduler = &audio_sched;
       in.seed = request.seed;
+      if (!condition_video_rows.empty()) in.condition_video_rows = &condition_video_rows;
       if (!options.init_latents_path.empty()) {
         in.init_video_rows = &init_video;
         in.init_audio_rows = &init_audio;

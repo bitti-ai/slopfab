@@ -4,6 +4,8 @@
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <cmath>
+#include <algorithm>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -129,6 +131,52 @@ RGBImage load_reference_image(const std::string& path) {
 #else
   throw image_error(path, "unsupported format; this build supports binary PPM (P6)");
 #endif
+}
+
+RGBImage resize_reference_lanczos(const RGBImage& image, int width, int height) {
+  if (image.width <= 0 || image.height <= 0 || width <= 0 || height <= 0 ||
+      image.pixels.size() != static_cast<size_t>(image.width) * image.height * 3)
+    throw std::runtime_error("reference image: invalid Lanczos resize");
+  auto kernel = [](double x) {
+    x = std::abs(x);
+    if (x == 0.0) return 1.0;
+    if (x >= 3.0) return 0.0;
+    constexpr double pi = 3.14159265358979323846;
+    return std::sin(pi * x) * std::sin(pi * x / 3.0) / (pi * pi * x * x / 3.0);
+  };
+  const double sx = static_cast<double>(image.width) / width;
+  const double sy = static_cast<double>(image.height) / height;
+  const double fx = std::max(1.0, sx), fy = std::max(1.0, sy);
+  std::vector<double> tmp(static_cast<size_t>(image.height) * width * 3);
+  for (int y = 0; y < image.height; ++y) for (int x = 0; x < width; ++x) {
+    const double center = (x + 0.5) * sx - 0.5;
+    const int first = static_cast<int>(std::floor(center - 3.0 * fx + 1.0));
+    const int last = static_cast<int>(std::floor(center + 3.0 * fx));
+    double sum = 0.0, rgb[3] = {};
+    for (int ix = first; ix <= last; ++ix) {
+      const double w = kernel((ix - center) / fx);
+      const int sample = std::clamp(ix, 0, image.width - 1);
+      sum += w;
+      for (int c = 0; c < 3; ++c) rgb[c] += w * image.pixels[(static_cast<size_t>(y) * image.width + sample) * 3 + c];
+    }
+    for (int c = 0; c < 3; ++c) tmp[(static_cast<size_t>(y) * width + x) * 3 + c] = rgb[c] / sum;
+  }
+  RGBImage out{width, height, std::vector<uint8_t>(static_cast<size_t>(width) * height * 3)};
+  for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+    const double center = (y + 0.5) * sy - 0.5;
+    const int first = static_cast<int>(std::floor(center - 3.0 * fy + 1.0));
+    const int last = static_cast<int>(std::floor(center + 3.0 * fy));
+    double sum = 0.0, rgb[3] = {};
+    for (int iy = first; iy <= last; ++iy) {
+      const double w = kernel((iy - center) / fy);
+      const int sample = std::clamp(iy, 0, image.height - 1);
+      sum += w;
+      for (int c = 0; c < 3; ++c) rgb[c] += w * tmp[(static_cast<size_t>(sample) * width + x) * 3 + c];
+    }
+    for (int c = 0; c < 3; ++c) out.pixels[(static_cast<size_t>(y) * width + x) * 3 + c] =
+        static_cast<uint8_t>(std::clamp(std::floor(rgb[c] / sum + 0.5), 0.0, 255.0));
+  }
+  return out;
 }
 
 }  // namespace vidfab
