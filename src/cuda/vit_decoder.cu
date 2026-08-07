@@ -118,6 +118,7 @@ struct ViTDecoder::Impl {
   // freed mid-run: cudaFree synchronises the whole device, which would make
   // any future stream overlap impossible.
   int cap_seq = 0;
+  int cap_batch = 0;
   // RoPE tables depend only on the window extents, which repeat across every
   // tile and chunk, so they are rebuilt only when the shape actually changes.
   int rope_T = -1;
@@ -162,39 +163,43 @@ struct ViTDecoder::Impl {
     cuda::gemm_nn_batched(blas, A, B, C, M, N, K, batch, strideA, strideB, strideC);
   }
 
-  void ensure_scratch(int seq, int num_patches) {
+  void ensure_scratch(int seq, int num_patches, int batch) {
     // Three buffers below are sized from num_patches while the early-out tests
     // seq. That is only safe because the two move together; assert it rather
     // than rely on the caller.
     if (seq != num_patches + cfg.num_suffix) {
       throw std::runtime_error("vae: ensure_scratch called with inconsistent seq/num_patches");
     }
-    if (seq <= cap_seq) return;
+    if (seq <= cap_seq && batch <= cap_batch) return;
     const int dim = cfg.dim;
     const int hd = cfg.head_dim;
-    const size_t s = static_cast<size_t>(seq);
+    const size_t s = static_cast<size_t>(seq) * batch;
     const int ch = cfg.in_channels;
 
-    d_latent.allocate(static_cast<size_t>(ch) * num_patches);
-    d_patch.allocate(static_cast<size_t>(num_patches) * ch);
-    d_quantised.allocate(static_cast<size_t>(num_patches) * ch);
+    d_latent.allocate(static_cast<size_t>(batch) * ch * num_patches);
+    d_patch.allocate(static_cast<size_t>(batch) * num_patches * ch);
+    d_quantised.allocate(static_cast<size_t>(batch) * num_patches * ch);
     d_tokens.allocate(s * dim);
     d_normed.allocate(s * dim);
     d_qkv.allocate(s * 3 * dim);
-    d_q.allocate(s * cfg.heads * hd);
-    d_k.allocate(s * cfg.heads * hd);
-    d_v.allocate(s * cfg.heads * hd);
-    d_scores.allocate(static_cast<size_t>(cfg.heads) * s * s);
+    // Attention is deliberately serialized by document. Replicating the
+    // quadratic score buffer for every spatial tile would erase batching's
+    // memory advantage; token-wise activations above remain batched.
+    d_q.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
+    d_k.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
+    d_v.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
+    d_scores.allocate(static_cast<size_t>(cfg.heads) * seq * seq);
     d_merged.allocate(s * dim);
     d_proj.allocate(s * static_cast<size_t>(cfg.patch_dim()));
     d_ffn.allocate(s * 2 * cfg.ffn_inner);
     d_act.allocate(s * cfg.ffn_inner);
-    d_cos.allocate(s * cfg.rope_dim);
-    d_sin.allocate(s * cfg.rope_dim);
+    d_cos.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
+    d_sin.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
 
     // Only after every allocation has succeeded: if one throws, a retry at the
     // same seq must rebuild rather than run on undersized buffers.
     cap_seq = seq;
+    cap_batch = batch;
     rope_T = rope_H = rope_W = -1;  // tables live in the reallocated buffers
   }
 
@@ -255,47 +260,46 @@ struct ViTDecoder::Impl {
     rope_W = W;
   }
 
-  void run_block(const BlockWeights& b, int seq, int num_patches) {
+  void run_block(const BlockWeights& b, int seq, int num_patches, int batch) {
     const int dim = cfg.dim;
     const int hd = cfg.head_dim;
     const int heads = cfg.heads;
     cudaStream_t s = stream.get();
 
     // --- attention ---
-    cuda::launch_rmsnorm(d_tokens.get(), b.norm1.get(), d_normed.get(), seq, dim, cfg.eps, s);
-    gemm_nt(d_normed.get(), b.qkv_w.get(), d_qkv.get(), seq, 3 * dim, dim);
+    const int rows = seq * batch;
+    cuda::launch_rmsnorm(d_tokens.get(), b.norm1.get(), d_normed.get(), rows, dim, cfg.eps, s);
+    gemm_nt(d_normed.get(), b.qkv_w.get(), d_qkv.get(), rows, 3 * dim, dim);
 
     // The qkv bias is applied inside the split kernel, which already reads
     // every element of d_qkv once.
-    cuda::launch_split_qkv_norm_rope(d_qkv.get(), b.qkv_b.get(), d_cos.get(), d_sin.get(),
-                                     d_q.get(), d_k.get(), d_v.get(), seq, heads, hd, cfg.rope_dim,
-                                     num_patches, cfg.eps, s);
-
     const long long head_stride = static_cast<long long>(seq) * hd;
     const long long score_stride = static_cast<long long>(seq) * seq;
-    gemm_nt_batched(d_q.get(), d_k.get(), d_scores.get(), seq, seq, hd, heads, head_stride,
-                    head_stride, score_stride);
-
     const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
-    cuda::launch_softmax_rows(d_scores.get(), heads * seq, seq, scale, s);
+    for (int doc = 0; doc < batch; ++doc) {
+      const size_t row0 = static_cast<size_t>(doc) * seq;
+      cuda::launch_split_qkv_norm_rope(d_qkv.get() + row0 * 3 * dim, b.qkv_b.get(), d_cos.get(),
+                                       d_sin.get(), d_q.get(), d_k.get(), d_v.get(), seq, heads,
+                                       hd, cfg.rope_dim, num_patches, cfg.eps, s);
+      gemm_nt_batched(d_q.get(), d_k.get(), d_scores.get(), seq, seq, hd, heads, head_stride,
+                      head_stride, score_stride);
+      cuda::launch_softmax_rows(d_scores.get(), heads * seq, seq, scale, s);
+      cuda::gemm_nn_batched_ld(blas, d_scores.get(), d_v.get(), d_merged.get() + row0 * dim, seq,
+                               hd, seq, heads, score_stride, head_stride, /*strideC=*/hd,
+                               /*ldc=*/heads * hd);
+    }
 
-    // Write the attention output straight into token-major [S, H*D] layout by
-    // giving cuBLAS ldc = heads*head_dim and a per-head column offset. This
-    // replaces a separate merge_heads pass over 29 MB per block.
-    cuda::gemm_nn_batched_ld(blas, d_scores.get(), d_v.get(), d_merged.get(), seq, hd, seq, heads,
-                             score_stride, head_stride, /*strideC=*/hd, /*ldc=*/heads * hd);
-
-    gemm_nt(d_merged.get(), b.out_w.get(), d_normed.get(), seq, dim, dim);
+    gemm_nt(d_merged.get(), b.out_w.get(), d_normed.get(), rows, dim, dim);
     cuda::launch_layerscale_residual(d_tokens.get(), d_normed.get(), b.out_b.get(), b.scale1.get(),
-                                     seq, dim, s);
+                                     rows, dim, s);
 
     // --- feed forward ---
-    cuda::launch_rmsnorm(d_tokens.get(), b.norm2.get(), d_normed.get(), seq, dim, cfg.eps, s);
-    gemm_nt(d_normed.get(), b.w1.get(), d_ffn.get(), seq, 2 * cfg.ffn_inner, dim);
-    cuda::launch_swiglu(d_ffn.get(), b.w1_b.get(), d_act.get(), seq, cfg.ffn_inner, s);
-    gemm_nt(d_act.get(), b.w2.get(), d_normed.get(), seq, dim, cfg.ffn_inner);
+    cuda::launch_rmsnorm(d_tokens.get(), b.norm2.get(), d_normed.get(), rows, dim, cfg.eps, s);
+    gemm_nt(d_normed.get(), b.w1.get(), d_ffn.get(), rows, 2 * cfg.ffn_inner, dim);
+    cuda::launch_swiglu(d_ffn.get(), b.w1_b.get(), d_act.get(), rows, cfg.ffn_inner, s);
+    gemm_nt(d_act.get(), b.w2.get(), d_normed.get(), rows, dim, cfg.ffn_inner);
     cuda::launch_layerscale_residual(d_tokens.get(), d_normed.get(), b.w2_b.get(), b.scale2.get(),
-                                     seq, dim, s);
+                                     rows, dim, s);
   }
 };
 
@@ -385,8 +389,16 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
 }
 
 void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector<float>& out) {
+  std::vector<std::vector<float>> batch_out;
+  forward_windows(z, 1, T, H, W, batch_out);
+  out = std::move(batch_out.front());
+}
+
+void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
+                                 std::vector<std::vector<float>>& out) {
   Impl& d = *impl_;
   if (d.blocks.empty()) throw std::runtime_error("vae: decoder weights not loaded");
+  if (batch <= 0) throw std::runtime_error("vae: window batch must be positive");
 
   const ViTConfig& cfg = d.cfg;
   const int ch = cfg.in_channels;
@@ -395,43 +407,38 @@ void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector
   const int dim = cfg.dim;
   cudaStream_t s = d.stream.get();
 
-  d.ensure_scratch(seq, num_patches);
+  d.ensure_scratch(seq, num_patches, batch);
   d.build_rope(T, H, W, seq, num_patches);
 
   // Latent arrives channel-first [C, T, H, W]; the ViT wants one token per
   // voxel, channel-last, in (t, h, w) row-major order. The transpose runs on
   // the device — it used to round-trip the same bytes back to the host.
   const size_t voxels = static_cast<size_t>(num_patches);
-  d.d_latent.copy_from_host(z, static_cast<size_t>(ch) * voxels, s);
-  cuda::launch_transpose_cn_to_nc(d.d_latent.get(), d.d_patch.get(), ch,
-                                  static_cast<int>(voxels), s);
+  d.d_latent.copy_from_host(z, static_cast<size_t>(batch) * ch * voxels, s);
+  for (int doc = 0; doc < batch; ++doc) {
+    const size_t latent0 = static_cast<size_t>(doc) * ch * voxels;
+    const size_t patch0 = static_cast<size_t>(doc) * num_patches;
+    const size_t token0 = static_cast<size_t>(doc) * seq;
+    cuda::launch_transpose_cn_to_nc(d.d_latent.get() + latent0,
+                                    d.d_patch.get() + patch0 * ch, ch,
+                                    static_cast<int>(voxels), s);
+    d.gemm_nt(d.d_patch.get() + patch0 * ch, d.post_quant_w.get(),
+              d.d_quantised.get() + patch0 * ch, num_patches, ch, ch);
+    cuda::launch_add_bias(d.d_quantised.get() + patch0 * ch, d.post_quant_b.get(), num_patches,
+                          ch, s);
+    d.gemm_nt(d.d_quantised.get() + patch0 * ch, d.x_embed_w.get(),
+              d.d_tokens.get() + token0 * dim, num_patches, dim, ch);
+    cuda::launch_add_bias(d.d_tokens.get() + token0 * dim, d.x_embed_b.get(), num_patches, dim, s);
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
+        d.d_tokens.get() + (token0 + num_patches) * dim, d.register_tokens.get(),
+        static_cast<size_t>(cfg.num_register) * dim * sizeof(float), cudaMemcpyDeviceToDevice, s));
+    VIDFAB_CUDA_CHECK(cudaMemsetAsync(
+        d.d_tokens.get() + (token0 + num_patches + cfg.num_register) * dim, 0,
+        static_cast<size_t>(dim) * sizeof(float), s));
+  }
 
-  // post_quant_conv is a 1x1x1 Conv3d, i.e. a per-token linear map.
-  d.gemm_nt(d.d_patch.get(), d.post_quant_w.get(), d.d_quantised.get(), num_patches, ch, ch);
-  cuda::launch_add_bias(d.d_quantised.get(), d.post_quant_b.get(), num_patches, ch, s);
-
-  // x_embedder: Linear(24 -> 2048)
-  d.gemm_nt(d.d_quantised.get(), d.x_embed_w.get(), d.d_tokens.get(), num_patches, dim, ch);
-  cuda::launch_add_bias(d.d_tokens.get(), d.x_embed_b.get(), num_patches, dim, s);
-
-  // Append the 4 learned register tokens, then a literal zero token. The zero
-  // token has no parameters but still contributes to every softmax denominator.
-  VIDFAB_CUDA_CHECK(cudaMemcpyAsync(d.d_tokens.get() + static_cast<size_t>(num_patches) * dim,
-                                    d.register_tokens.get(),
-                                    static_cast<size_t>(cfg.num_register) * dim * sizeof(float),
-                                    cudaMemcpyDeviceToDevice, s));
-  VIDFAB_CUDA_CHECK(cudaMemsetAsync(
-      d.d_tokens.get() + static_cast<size_t>(num_patches + cfg.num_register) * dim, 0,
-      static_cast<size_t>(dim) * sizeof(float), s));
-
-  for (int i = 0; i < cfg.num_layers; ++i) d.run_block(d.blocks[i], seq, num_patches);
-
-  // norm_out and proj_out are token-wise, so the suffix can be dropped first.
-  cuda::launch_layernorm(d.d_tokens.get(), d.norm_out_w.get(), d.norm_out_b.get(), d.d_normed.get(),
-                         num_patches, dim, cfg.eps, s);
-  const int patch_dim = cfg.patch_dim();
-  d.gemm_nt(d.d_normed.get(), d.proj_out_w.get(), d.d_proj.get(), num_patches, patch_dim, dim);
-  cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
+  for (int i = 0; i < cfg.num_layers; ++i)
+    d.run_block(d.blocks[i], seq, num_patches, batch);
 
   const size_t pixels = static_cast<size_t>(cfg.out_channels) * (T * cfg.patch_t) *
                         (H * cfg.patch) * (W * cfg.patch);
@@ -440,16 +447,24 @@ void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector
     d.pinned_out.allocate(pixels);
     d.cap_pixels = pixels;
   }
-  cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
-                              cfg.patch_t, cfg.patch, s);
-
-  // Staged through pinned memory: a device-to-host async copy into a pageable
-  // std::vector blocks until completion and runs at roughly a quarter of the
-  // achievable rate.
-  out.resize(pixels);
-  d.d_pixels.copy_to_host(d.pinned_out.get(), pixels, s);
-  d.stream.synchronize();
-  std::memcpy(out.data(), d.pinned_out.get(), pixels * sizeof(float));
+  const int patch_dim = cfg.patch_dim();
+  out.resize(static_cast<size_t>(batch));
+  for (int doc = 0; doc < batch; ++doc) {
+    const size_t token0 = static_cast<size_t>(doc) * seq;
+    // The suffix rows between documents mean the final projection is issued
+    // per document. It runs once per decode, unlike the 216 projections in
+    // the transformer body, and preserves the exact singleton arithmetic.
+    cuda::launch_layernorm(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
+                           d.norm_out_b.get(), d.d_normed.get(), num_patches, dim, cfg.eps, s);
+    d.gemm_nt(d.d_normed.get(), d.proj_out_w.get(), d.d_proj.get(), num_patches, patch_dim, dim);
+    cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
+    cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
+                                cfg.patch_t, cfg.patch, s);
+    d.d_pixels.copy_to_host(d.pinned_out.get(), pixels, s);
+    d.stream.synchronize();
+    out[static_cast<size_t>(doc)].resize(pixels);
+    std::memcpy(out[static_cast<size_t>(doc)].data(), d.pinned_out.get(), pixels * sizeof(float));
+  }
 }
 
 }  // namespace vidfab::vae

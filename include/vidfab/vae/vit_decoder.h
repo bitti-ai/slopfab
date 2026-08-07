@@ -83,6 +83,13 @@ class ViTDecoder {
   // [3, T*4, H*16, W*16] contiguous fp32 in ImageNet-normalised space.
   void forward_window(const float* z, int T, int H, int W, std::vector<float>& out);
 
+  // Runs equal-shape independent windows together through the token-wise
+  // projections. Attention remains document-local: suffix tokens, RoPE and
+  // softmax denominators are never shared between batch items. `z` is
+  // [batch, C, T, H, W]; `out` receives one pixel tensor per batch item.
+  void forward_windows(const float* z, int batch, int T, int H, int W,
+                       std::vector<std::vector<float>>& out);
+
   // Full decode: latent de-normalisation, temporal chunking, spatial tiling,
   // cross-fade stitching and pixel de-normalisation.
   // `z_norm` is [24, T_lat, H_lat, W_lat] as produced by the diffusion model.

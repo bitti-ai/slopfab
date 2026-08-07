@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <stdexcept>
 #include <vector>
 
@@ -202,30 +203,47 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     std::vector<int> tile_h(ytiles.starts.size());
     std::vector<int> tile_w(xtiles.starts.size());
 
+    std::map<std::pair<int, int>, std::vector<size_t>> shape_groups;
     for (size_t ti = 0; ti < ytiles.starts.size(); ++ti) {
       for (size_t tj = 0; tj < xtiles.starts.size(); ++tj) {
-        const int y0 = ytiles.starts[ti] / cfg.patch;
-        const int x0 = xtiles.starts[tj] / cfg.patch;
         const int th = std::min(ytiles.extents[ti], H_px - ytiles.starts[ti]) / cfg.patch;
         const int tw = std::min(xtiles.extents[tj], W_px - xtiles.starts[tj]) / cfg.patch;
         tile_h[ti] = th * cfg.patch;
         tile_w[tj] = tw * cfg.patch;
+        shape_groups[{th, tw}].push_back(ti * xtiles.starts.size() + tj);
+      }
+    }
 
-        std::vector<float> z_tile(static_cast<size_t>(ch) * window * th * tw);
+    // Equal-shape tiles share the weight-heavy token projections. Ragged edge
+    // shapes form their own batches so attention geometry and stitching stay
+    // exactly the same as independent forward_window calls.
+    for (const auto& [shape, ids] : shape_groups) {
+      const int th = shape.first;
+      const int tw = shape.second;
+      const size_t tile_voxels = static_cast<size_t>(window) * th * tw;
+      std::vector<float> z_batch(static_cast<size_t>(ids.size()) * ch * tile_voxels);
+      for (size_t bi = 0; bi < ids.size(); ++bi) {
+        const size_t id = ids[bi];
+        const size_t ti = id / xtiles.starts.size();
+        const size_t tj = id % xtiles.starts.size();
+        const int y0 = ytiles.starts[ti] / cfg.patch;
+        const int x0 = xtiles.starts[tj] / cfg.patch;
         for (int ci = 0; ci < ch; ++ci) {
           for (int t = 0; t < window; ++t) {
             for (int y = 0; y < th; ++y) {
               const size_t src = ((static_cast<size_t>(ci) * window + t) * H_lat + (y0 + y)) *
                                      W_lat + x0;
-              const size_t dst = ((static_cast<size_t>(ci) * window + t) * th + y) * tw;
+              const size_t dst = (bi * ch + ci) * tile_voxels +
+                                 (static_cast<size_t>(t) * th + y) * tw;
               std::copy_n(clip.begin() + static_cast<long long>(src), tw,
-                          z_tile.begin() + static_cast<long long>(dst));
+                          z_batch.begin() + static_cast<long long>(dst));
             }
           }
         }
-
-        forward_window(z_tile.data(), window, th, tw, tiles[ti * xtiles.starts.size() + tj]);
       }
+      std::vector<std::vector<float>> batch_tiles;
+      forward_windows(z_batch.data(), static_cast<int>(ids.size()), window, th, tw, batch_tiles);
+      for (size_t bi = 0; bi < ids.size(); ++bi) tiles[ids[bi]] = std::move(batch_tiles[bi]);
     }
 
     // Merge tiles into the chunk's pixel buffer.
