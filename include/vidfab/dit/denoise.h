@@ -72,6 +72,11 @@ struct DenoiseInputs {
   // loss of cross-chunk attention. Shapes are checked against the layout.
   const std::vector<float>* init_video_rows = nullptr;
   const std::vector<float>* init_audio_rows = nullptr;
+
+  // Fixed Ref2VA anchors, in the same condition-first order as PackedIndices.
+  // They are projected by every transformer evaluation but never stepped.
+  const std::vector<float>* condition_video_rows = nullptr;
+  const std::vector<float>* condition_audio_rows = nullptr;
 };
 
 struct DenoiseOutputs {

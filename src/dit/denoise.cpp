@@ -44,18 +44,26 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   // (spec 9.5). resolve_plan already checks this; checking again is free.
   require(video_t.size() == audio_t.size(), "video and audio schedules differ in length");
   require(!video_t.empty(), "schedule has no model evaluations");
-  // t2va has no conditioning rows; fl2va's keyframe path is explicitly out of
-  // scope (spec 0.1) and would need the anchor rows re-imposed by construction.
-  require(layout.num_condition_video == 0, "conditioning rows are an fl2va feature, not t2va");
-
   const int patch = transformer.config().video_patch_dim();
   const int audio_dim = transformer.config().audio_in_channels;
   const size_t video_rows = indices.video.size();
   const size_t audio_rows = indices.audio.size();
 
   DenoiseOutputs out;
-  out.video_rows.assign(video_rows * patch, 0.0f);
-  out.audio_rows.assign(audio_rows * audio_dim, 0.0f);
+  const size_t cv = static_cast<size_t>(layout.num_condition_video) * patch;
+  const size_t ca = static_cast<size_t>(layout.num_condition_audio) * audio_dim;
+  require((cv == 0) == (inputs.condition_video_rows == nullptr),
+          "condition video rows are missing or unexpected");
+  require((ca == 0) == (inputs.condition_audio_rows == nullptr),
+          "condition audio rows are missing or unexpected");
+  if (cv) require(inputs.condition_video_rows->size() == cv, "condition video shape disagrees with layout");
+  if (ca) require(inputs.condition_audio_rows->size() == ca, "condition audio shape disagrees with layout");
+  std::vector<float> all_video(video_rows * patch, 0.0f);
+  std::vector<float> all_audio(audio_rows * audio_dim, 0.0f);
+  if (cv) std::copy(inputs.condition_video_rows->begin(), inputs.condition_video_rows->end(), all_video.begin());
+  if (ca) std::copy(inputs.condition_audio_rows->begin(), inputs.condition_audio_rows->end(), all_audio.begin());
+  out.video_rows.assign(all_video.size() - cv, 0.0f);
+  out.audio_rows.assign(all_audio.size() - ca, 0.0f);
 
   // Draw order matters for reproducibility even though our generator is not
   // torch's: video first, in `(24, F, Hl, Wl)` layout and then patchified, then
@@ -84,13 +92,15 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     require(noise.size() == out.audio_rows.size(), "audio noise shape disagrees with the layout");
     out.audio_rows = noise;
   }
+  std::copy(out.video_rows.begin(), out.video_rows.end(), all_video.begin() + cv);
+  std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);
 
   // These persist across iterations and are the whole of the cache's storage:
   // a skipped step simply does not overwrite them, and the two schedulers
   // consume the velocities still sitting here. 14.3 MB at the default geometry,
   // already allocated, so the feature costs no memory at all.
-  std::vector<float> video_velocity(out.video_rows.size(), 0.0f);
-  std::vector<float> audio_velocity(out.audio_rows.size(), 0.0f);
+  std::vector<float> video_velocity(all_video.size(), 0.0f);
+  std::vector<float> audio_velocity(all_audio.size(), 0.0f);
 
   const int steps = static_cast<int>(video_t.size());
   StepCache cache(inputs.cache, steps);
@@ -147,10 +157,10 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                                             audio_t[static_cast<size_t>(i)]);
       }
       if (inputs.velocity) {
-        inputs.velocity(i, row_timesteps, out.video_rows.data(), out.audio_rows.data(),
+        inputs.velocity(i, row_timesteps, all_video.data(), all_audio.data(),
                         video_velocity.data(), audio_velocity.data());
       } else {
-        transformer.forward(out.video_rows.data(), out.audio_rows.data(), row_timesteps,
+        transformer.forward(all_video.data(), all_audio.data(), row_timesteps,
                             video_velocity.data(), audio_velocity.data());
       }
     }
@@ -158,10 +168,12 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     {
       // In place: FlowScheduler::step permits `out` to alias `sample`.
       cuda::HostSpan span("scheduler_step");
-      inputs.video_scheduler->step(i, out.video_rows.data(), video_velocity.data(),
+      inputs.video_scheduler->step(i, all_video.data() + cv, video_velocity.data() + cv,
                                    out.video_rows.size(), out.video_rows.data());
-      inputs.audio_scheduler->step(i, out.audio_rows.data(), audio_velocity.data(),
+      inputs.audio_scheduler->step(i, all_audio.data() + ca, audio_velocity.data() + ca,
                                    out.audio_rows.size(), out.audio_rows.data());
+      std::copy(out.video_rows.begin(), out.video_rows.end(), all_video.begin() + cv);
+      std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);
     }
 
     if (progress && !progress(i, steps)) break;
