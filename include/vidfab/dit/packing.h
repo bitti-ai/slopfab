@@ -30,6 +30,10 @@ struct SequenceLayout {
   int num_text = 0;             // L
   int num_condition_video = 0;  // C, always 0 for t2va
   int num_condition_audio = 0;  // reference audio rows, 0 for t2va/fl2va
+  // False preserves the legacy fl2va convention where num_condition_video is
+  // also the prefix of idx.audio kept at video_t. Ref2VA sets this true even
+  // when it has zero audio anchors (for example an image-only request).
+  bool condition_audio_is_explicit = false;
   int num_audio_rows = 0;       // Sa = 2 * num_audio_latents
   int num_video_rows = 0;       // V = F * R
   int num_audio_latents = 0;    // A, per channel

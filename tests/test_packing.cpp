@@ -707,6 +707,7 @@ VIDFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
   {
     SequenceLayout c = reference_layout(5);
     c.num_condition_audio = 3;
+    c.condition_audio_is_explicit = true;
     const PackedIndices cidx = build_indices(c);
     const RowTimesteps rt = build_row_timesteps(c, cidx, 0.75f, 0.25f);
     const size_t first_audio = static_cast<size_t>(c.audio_start());

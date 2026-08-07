@@ -11,6 +11,7 @@ VIDFAB_TEST(ref2va_order_and_clock) {
   ReferenceGeometry clip{ReferenceKind::kVideo,2,4,4,3};
   auto p=build_ref2va_packed_sequence({kTagText,kTagVideo},{image,clip},2,4,4,2);
   CHECK(p.layout.num_condition_video==12); CHECK(p.layout.num_condition_audio==6);
+  CHECK(p.layout.condition_audio_is_explicit);
   CHECK(p.layout.total_rows()==32); CHECK(p.indices.video.size()==20); CHECK(p.indices.audio.size()==10);
   CHECK(p.indices.video[0]==2); CHECK(p.indices.audio[0]==6); CHECK(p.indices.video[4]==12);
   CHECK(p.indices.audio[6]==20); CHECK(p.indices.video[12]==24);
