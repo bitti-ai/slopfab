@@ -1,5 +1,6 @@
 #include "harness.h"
 #include "vidfab/dit/ref2va.h"
+#include "vidfab/vae/keyframe_encoder.h"
 
 using namespace vidfab::dit;
 
@@ -37,6 +38,25 @@ VIDFAB_TEST(ref2va_image_size) {
   CHECK(::vidfab::test::throws([] { int a, b; resolve_reference_image_size(0, 1, &a, &b); }));
   CHECK(::vidfab::test::throws([] { int a, b; resolve_reference_image_size(1, -1, &a, &b); }));
   CHECK(::vidfab::test::throws([] { int b; resolve_reference_image_size(1, 1, nullptr, &b); }));
+}
+
+VIDFAB_TEST(ref2va_keyframe_vae_contract) {
+  vidfab::RGBImage image;
+  image.width = 1;
+  image.height = 1;
+  image.pixels = {255, 0, 128};
+  const auto pixels = vidfab::vae::prepare_keyframe_pixels(image);
+  CHECK(pixels.size() == 3);
+  CHECK(std::abs(pixels[0] - (1.0f - 0.485f) / 0.229f) < 1e-6f);
+  CHECK(std::abs(pixels[1] - (0.0f - 0.456f) / 0.224f) < 1e-6f);
+
+  std::vector<float> moments(48, 0.0f), normal(24, 0.0f), mean(24, 1.0f), sd(24, 2.0f);
+  moments[0] = 3.0f;
+  const auto latent = vidfab::vae::sample_keyframe_latents(
+      moments.data(), normal.data(), 1, 1, mean, sd);
+  CHECK(latent.size() == 24);
+  CHECK(std::abs(latent[0] - 1.0f) < 1e-6f);
+  CHECK(std::abs(latent[1] + 0.5f) < 1e-6f);
 }
 VIDFAB_TEST(ref2va_order_positions_and_timesteps) {
   const ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 6, 0};  // 6 video rows

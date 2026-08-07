@@ -88,6 +88,32 @@ inline float f16_to_f32(uint16_t v) {
   return out;
 }
 
+inline uint16_t f32_to_f16(float f) {
+  uint32_t bits;
+  std::memcpy(&bits, &f, sizeof(bits));
+  const uint32_t sign = (bits >> 16) & 0x8000u;
+  const uint32_t abs = bits & 0x7FFFFFFFu;
+  if (abs >= 0x7F800000u)
+    return static_cast<uint16_t>(sign | 0x7C00u | ((abs & 0x7FFFFFu) ? 0x0200u : 0u));
+  int exp = static_cast<int>((abs >> 23) & 0xFFu) - 127 + 15;
+  uint32_t mant = abs & 0x7FFFFFu;
+  if (exp >= 31) return static_cast<uint16_t>(sign | 0x7C00u);
+  if (exp <= 0) {
+    if (exp < -10) return static_cast<uint16_t>(sign);
+    mant |= 0x800000u;
+    const int shift = 14 - exp;
+    const uint32_t half_mant = mant >> shift;
+    const uint32_t remainder = mant & ((1u << shift) - 1u);
+    const uint32_t halfway = 1u << (shift - 1);
+    return static_cast<uint16_t>(sign | half_mant +
+        (remainder > halfway || (remainder == halfway && (half_mant & 1u))));
+  }
+  uint32_t half = sign | (static_cast<uint32_t>(exp) << 10) | (mant >> 13);
+  const uint32_t remainder = mant & 0x1FFFu;
+  if (remainder > 0x1000u || (remainder == 0x1000u && (half & 1u))) ++half;
+  return static_cast<uint16_t>(half);
+}
+
 // float8 E4M3 in the OCP/CUDA variant used by both ComfyUI's fp8 checkpoints
 // and NVFP4 block scales: 4 exponent bits, 3 mantissa bits, bias 7, no
 // infinities, and 0xFF/0x7F reserved for NaN.
