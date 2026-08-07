@@ -377,6 +377,7 @@ struct BlockWeights {
   QuantWeight wq, wk, wv, out_proj, fc1, fc2;
   const float* adaln_w = nullptr;
   const float* adaln_b = nullptr;
+  QuantWeight full_adaln;
 };
 
 // Sizes of the transient buffers `forward` carves, all in one place so that
@@ -458,8 +459,10 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
 
 struct Transformer::Impl {
   TransformerConfig cfg;
+  TransformerArchitecture architecture = TransformerArchitecture::kUnknown;
   AdaLNLookup lookup = AdaLNLookup::kLinear;
   AdaLNTable table;
+  FullAdaLNTimestepEmbedding timestep_embedding;
 
   cuda::Stream stream;
   cublasHandle_t blas = nullptr;
@@ -475,6 +478,7 @@ struct Transformer::Impl {
   const __nv_bfloat16* final_norm = nullptr;
   const float* final_adaln_w = nullptr;
   const float* final_adaln_b = nullptr;
+  QuantWeight final_full_adaln;
   QuantWeight condition_proj, video_in, audio_in, video_out, audio_out;
 
   // Per request.
@@ -553,12 +557,24 @@ struct Transformer::Impl {
     const int T = static_cast<int>(timesteps.size());
     if (T <= 0) throw std::runtime_error("transformer: no distinct timesteps");
 
-    host_code.assign(static_cast<size_t>(T) * AdaLNTable::kRank, 0.0f);
-    for (int i = 0; i < T; ++i) {
-      const std::array<float, AdaLNTable::kRank> c = table.lookup(timesteps[i], lookup);
-      for (int k = 0; k < AdaLNTable::kRank; ++k) {
-        host_code[static_cast<size_t>(i) * AdaLNTable::kRank + k] = c[k];
+    const int code_dim = architecture == TransformerArchitecture::kPrunedTable
+                             ? AdaLNTable::kRank
+                             : cfg.timestep_embed_dim;
+    if (architecture == TransformerArchitecture::kPrunedTable) {
+      host_code.assign(static_cast<size_t>(T) * code_dim, 0.0f);
+      for (int i = 0; i < T; ++i) {
+        const std::array<float, AdaLNTable::kRank> c = table.lookup(timesteps[i], lookup);
+        for (int k = 0; k < code_dim; ++k) {
+          host_code[static_cast<size_t>(i) * code_dim + k] = c[k];
+        }
       }
+    } else {
+      host_code = timestep_embedding.forward(timesteps);
+      // Each AdaLN module applies SiLU to the shared time MLP result before
+      // casting/projecting. Applying it once is identical because every one
+      // of the 51 consumers reads the same tensor and FP8 forward_f32 widens
+      // the stored weight rather than narrowing the activation.
+      for (float& value : host_code) value = value / (1.0f + std::exp(-value));
     }
     if (d_code.size() < host_code.size()) d_code.allocate(host_code.size());
     d_code.copy_from_host(host_code.data(), host_code.size(), stream.get());
@@ -571,13 +587,22 @@ struct Transformer::Impl {
     if (final_mod.size() < final_need) final_mod.allocate(final_need);
 
     for (size_t b = 0; b < blocks.size(); ++b) {
-      cuda::launch_adaln_expand(blocks[b].adaln_w, blocks[b].adaln_b, d_code.get(),
-                                mod.get() + b * per_block, T, kNumModalities, kNumParams,
-                                cfg.hidden_size, AdaLNTable::kRank, stream.get());
+      if (architecture == TransformerArchitecture::kPrunedTable) {
+        cuda::launch_adaln_expand(blocks[b].adaln_w, blocks[b].adaln_b, d_code.get(),
+                                  mod.get() + b * per_block, T, kNumModalities, kNumParams,
+                                  cfg.hidden_size, code_dim, stream.get());
+      } else {
+        linear.forward_f32(blocks[b].full_adaln, d_code.get(), T,
+                           mod.get() + b * per_block, ws);
+      }
     }
-    cuda::launch_adaln_expand(final_adaln_w, final_adaln_b, d_code.get(), final_mod.get(), T,
-                              /*num_modality=*/1, kFinalParams, cfg.hidden_size,
-                              AdaLNTable::kRank, stream.get());
+    if (architecture == TransformerArchitecture::kPrunedTable) {
+      cuda::launch_adaln_expand(final_adaln_w, final_adaln_b, d_code.get(), final_mod.get(), T,
+                                /*num_modality=*/1, kFinalParams, cfg.hidden_size, code_dim,
+                                stream.get());
+    } else {
+      linear.forward_f32(final_full_adaln, d_code.get(), T, final_mod.get(), ws);
+    }
   }
 
   // --- one block -----------------------------------------------------------
@@ -726,6 +751,9 @@ AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
 void Transformer::set_attention_band(int frames) { impl_->attn_band = frames > 0 ? frames : 0; }
 int Transformer::attention_band() const { return impl_->attn_band; }
 std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
+  if (impl_->architecture != TransformerArchitecture::kPrunedTable) {
+    throw std::runtime_error("transformer: rank-8 adaln_code is unavailable for full-AdaLN architecture");
+  }
   return impl_->table.lookup(t, impl_->lookup);
 }
 
@@ -748,6 +776,17 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   checkpoint.prefetch();
   unload();
   s.cfg = config;
+  s.architecture = detect_transformer_architecture(checkpoint);
+  if (s.architecture == TransformerArchitecture::kUnknown) {
+    throw std::runtime_error("transformer: checkpoint architecture is unknown");
+  }
+  if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN &&
+      detect_transformer_quantization(checkpoint) != TransformerQuantization::kFloat8) {
+    throw std::runtime_error(
+        "transformer: full-AdaLN execution currently requires the FP8 Ref2VA checkpoint; "
+        "NF4 is accepted only as an architectural oracle");
+  }
+  const bool full_adaln = s.architecture == TransformerArchitecture::kRef2VAFullAdaLN;
 
   const int hidden = config.hidden_size;
   const int inner = config.inner_dim();
@@ -769,14 +808,29 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   // Claimed but not uploaded: the lookup runs on the host — 8 floats per
   // denoising step — and `AdaLNTable::load` validates its shape and finiteness.
   plan.optional("adaln_t_table");
+  if (full_adaln) {
+    plan.optional("time_embedder.proj_in.weight");
+    plan.optional("time_embedder.proj_in.bias");
+    plan.optional("time_embedder.proj_out.weight");
+    plan.optional("time_embedder.proj_out.bias");
+  }
   // Recomputed in fp64 and rounded, which convert.py:104-107 says is bitwise
   // equal to the stored tensor. Claimed only so the count check balances.
   plan.optional("rope.inv_freq");
 
   plan.require("final_layer.norm.weight", {hidden}, Store::kAsBF16);
-  plan.require("final_layer.adaln_proj.linear.weight", {final_adaln_out, AdaLNTable::kRank},
-               Store::kAsF32);
-  plan.require("final_layer.adaln_proj.linear.bias", {final_adaln_out}, Store::kAsF32);
+  if (full_adaln) {
+    plan.require("final_layer.adaln_proj.linear.weight",
+                 {final_adaln_out, config.timestep_embed_dim}, Store::kVerbatim);
+    plan.optional_scalar("final_layer.adaln_proj.linear.weight_scale");
+    plan.optional("final_layer.adaln_proj.linear.input_scale");
+    plan.optional("final_layer.adaln_proj.linear.comfy_quant");
+    plan.require("final_layer.adaln_proj.linear.bias", {final_adaln_out}, Store::kAsBF16);
+  } else {
+    plan.require("final_layer.adaln_proj.linear.weight", {final_adaln_out, AdaLNTable::kRank},
+                 Store::kAsF32);
+    plan.require("final_layer.adaln_proj.linear.bias", {final_adaln_out}, Store::kAsF32);
+  }
   plan.require("final_layer.video_out.weight", {patch, hidden}, Store::kAsF32);
   plan.require("final_layer.video_out.bias", {patch}, Store::kAsF32);
   plan.require("final_layer.audio_out.weight", {config.audio_in_channels, hidden}, Store::kAsF32);
@@ -814,9 +868,14 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     plan_linear(prefix + "mlp.fc1", 2 * ffn, hidden);
     plan_linear(prefix + "mlp.fc2", hidden, ffn);
     if (with_adaln) {
-      plan.require(prefix + "adaln_proj.linear.weight", {adaln_out, AdaLNTable::kRank},
-                   Store::kAsF32);
-      plan.require(prefix + "adaln_proj.linear.bias", {adaln_out}, Store::kAsF32);
+      if (full_adaln) {
+        plan_linear(prefix + "adaln_proj.linear", adaln_out, config.timestep_embed_dim);
+        plan.require(prefix + "adaln_proj.linear.bias", {adaln_out}, Store::kAsBF16);
+      } else {
+        plan.require(prefix + "adaln_proj.linear.weight", {adaln_out, AdaLNTable::kRank},
+                     Store::kAsF32);
+        plan.require(prefix + "adaln_proj.linear.bias", {adaln_out}, Store::kAsF32);
+      }
     }
   };
 
@@ -995,8 +1054,15 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     b.fc1 = quant(prefix + "mlp.fc1", 2 * ffn, hidden);
     b.fc2 = quant(prefix + "mlp.fc2", hidden, ffn);
     if (with_adaln) {
-      b.adaln_w = f32(prefix + "adaln_proj.linear.weight");
-      b.adaln_b = f32(prefix + "adaln_proj.linear.bias");
+      if (full_adaln) {
+        b.full_adaln = quant(prefix + "adaln_proj.linear", adaln_out,
+                             config.timestep_embed_dim);
+        b.full_adaln.bias = ptr(prefix + "adaln_proj.linear.bias");
+        b.full_adaln.bias_format = QuantFormat::kBF16;
+      } else {
+        b.adaln_w = f32(prefix + "adaln_proj.linear.weight");
+        b.adaln_b = f32(prefix + "adaln_proj.linear.bias");
+      }
     }
     return b;
   };
@@ -1012,8 +1078,15 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
   s.refiner_final_norm = bf("token_refiner.final_norm.weight");
   s.final_norm = bf("final_layer.norm.weight");
-  s.final_adaln_w = f32("final_layer.adaln_proj.linear.weight");
-  s.final_adaln_b = f32("final_layer.adaln_proj.linear.bias");
+  if (full_adaln) {
+    s.final_full_adaln = quant("final_layer.adaln_proj.linear", final_adaln_out,
+                               config.timestep_embed_dim);
+    s.final_full_adaln.bias = ptr("final_layer.adaln_proj.linear.bias");
+    s.final_full_adaln.bias_format = QuantFormat::kBF16;
+  } else {
+    s.final_adaln_w = f32("final_layer.adaln_proj.linear.weight");
+    s.final_adaln_b = f32("final_layer.adaln_proj.linear.bias");
+  }
 
   s.condition_proj = quant("condition_proj", hidden, config.text_dim);
   s.condition_proj.bias = ptr("condition_proj.bias");
@@ -1034,7 +1107,12 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   s.video_out = fp32_layer("final_layer.video_out", patch, hidden);
   s.audio_out = fp32_layer("final_layer.audio_out", config.audio_in_channels, hidden);
 
-  s.table.load(checkpoint);
+  if (full_adaln) {
+    s.timestep_embedding.load(checkpoint, config.timestep_freq_dim,
+                              config.timestep_hidden_dim, config.timestep_embed_dim);
+  } else {
+    s.table.load(checkpoint);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,6 +1123,14 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   const int seq = layout.total_rows();
 
   size_t total = c.total;
+  if (impl_->architecture == TransformerArchitecture::kRef2VAFullAdaLN &&
+      !impl_->blocks.empty()) {
+    size_t full_scratch = cuda::linear_workspace_bytes(
+        impl_->blocks.front().full_adaln, 2, ComputeType::kF32);
+    full_scratch = std::max(full_scratch, cuda::linear_workspace_bytes(
+        impl_->final_full_adaln, 2, ComputeType::kF32));
+    if (full_scratch > c.scratch) total += align_up(full_scratch) - align_up(c.scratch);
+  }
   total += align_up(static_cast<size_t>(seq) * cfg.hidden_size * sizeof(__nv_bfloat16));  // hidden
   total += 2 * align_up(static_cast<size_t>(seq) * 96 * sizeof(float));                   // rope
   total += 3 * align_up(static_cast<size_t>(seq) * sizeof(int32_t));                      // indices
@@ -1207,6 +1293,14 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   s.layout = layout;
   s.indices = indices;
   s.carve = plan_carve(s.cfg, layout);
+  if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN) {
+    const size_t old_scratch = s.carve.scratch;
+    s.carve.scratch = std::max(s.carve.scratch, cuda::linear_workspace_bytes(
+        s.blocks.front().full_adaln, 2, ComputeType::kF32));
+    s.carve.scratch = std::max(s.carve.scratch, cuda::linear_workspace_bytes(
+        s.final_full_adaln, 2, ComputeType::kF32));
+    s.carve.total += align_up(s.carve.scratch) - align_up(old_scratch);
+  }
 
   // Frame-banded attention: one small table for the whole request, ~300 entries
   // at the default geometry, rebuilt here because it depends on the layout and

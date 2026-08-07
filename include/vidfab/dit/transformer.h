@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "vidfab/dit/adaln.h"
+#include "vidfab/dit/checkpoint.h"
 #include "vidfab/dit/packing.h"
 #include "vidfab/safetensors.h"
 
@@ -42,6 +43,9 @@ struct TransformerConfig {
   float norm_eps = 1e-5f;
   int adaln_rank = 8;
   int adaln_table_rows = 1025;
+  int timestep_freq_dim = 256;
+  int timestep_hidden_dim = 5376;
+  int timestep_embed_dim = 2688;
 
   int inner_dim() const { return num_attention_heads * attention_head_dim; }
   int video_patch_dim() const { return in_channels * 4; }  // patch (1,2,2)
