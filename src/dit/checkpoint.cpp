@@ -32,9 +32,9 @@ TransformerArchitecture detect_transformer_architecture(const SafeTensors& check
     return TransformerArchitecture::kPrunedTable;
   }
 
-  // The Ref2VA file retains the timestep MLP and full AdaLN projections. Its
-  // Quantization is deliberately not part of architecture detection: both the
-  // NF4 release and the FP8 release use this full-AdaLN Ref2VA architecture.
+  // The unpruned Ref2VA file retains the timestep MLP and full AdaLN
+  // projections. Quantization is deliberately not part of architecture
+  // detection; the released pruned FP8 variant is handled above.
   if (has(checkpoint, "time_embedder.proj_in.weight") &&
       has(checkpoint, "time_embedder.proj_out.weight") &&
       has(checkpoint, "blocks.0.adaln_proj.linear.weight")) {

@@ -90,10 +90,14 @@ vidfab generate --prompt "..." --resolution 1024x512 --dry-run
 vidfab generate --prompt "integrated_multimodal_description: ..." \
                 --reference-image subject.png \
                 --reference-image style.jpg \
-                --transformer weights/transformer/MiniMax_H3_Ref2VA.safetensors \
+                --transformer weights/transformer/minimax_h3_ref2va_pruned_fp8_scaled.safetensors \
                 --tokenizer <tokenizer.json> --text-encoder <text-encoder.safetensors> \
                 --vae <video-vae.safetensors> --audio-vae <audio-vae.safetensors> \
                 --out referenced.mp4
+
+# The pruned FP8 Ref2VA and FL2VA archives have the same tensor schema and no
+# identifying metadata. Keep `ref2va` in the Ref2VA filename: vidfab uses that
+# distribution name to reject accidental image conditioning with FL2VA weights.
 
 # Every command documents itself.
 vidfab generate --help
