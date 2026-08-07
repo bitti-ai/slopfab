@@ -29,6 +29,7 @@ add_library(vidfab_core STATIC
   src/dit/packing.cpp
   src/dit/ref2va.cpp
   src/dit/step_cache.cpp
+  src/vae/keyframe_encoder.cpp
   src/pipeline.cpp
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
@@ -103,7 +104,6 @@ if(VIDFAB_ENABLE_CUDA)
       # Host-side orchestration lives here rather than in vidfab_core so that
       # the dependency runs one way: cuda -> core, never back.
       src/vae/decode_pipeline.cpp
-      src/vae/keyframe_encoder.cpp
       src/generate.cpp
       src/vae/audio_decoder.cpp
       src/dit/transformer.cpp
