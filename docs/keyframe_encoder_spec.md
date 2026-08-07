@@ -27,3 +27,10 @@ remaining implementation is therefore a CUDA FP16 Conv3D cross-correlation
 for stride-2 downsample), time-isolated GroupNorm+SiLU, residual add, and a
 streaming weight uploader. The graph/weight and posterior/patch layout
 contracts above are implemented and independently testable.
+
+The reference distribution creates `torch.randn(mean.shape)` on the CPU and
+then copies it to the parameter device. Bit-identical seed-42 sampling also
+requires PyTorch's CPU normal-generator stream; the project's sampler
+explicitly documents that its counter-based generator is not PyTorch-compatible.
+`sample_keyframe_latents` therefore accepts the externally generated normal
+field instead of silently substituting the diffusion-noise generator.
