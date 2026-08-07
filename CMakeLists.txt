@@ -34,6 +34,7 @@ add_library(vidfab_core STATIC
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
+  src/text/qwen_vision.cpp
   src/video/y4m.cpp
   src/video/mux.cpp
   src/audio/wav.cpp
@@ -194,6 +195,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_sampler.cpp
     tests/test_step_cache.cpp
     tests/test_tokenizer.cpp
+    tests/test_qwen_vision.cpp
     tests/test_output.cpp
   )
   target_link_libraries(vidfab_tests PRIVATE vidfab_core)
