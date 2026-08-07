@@ -26,6 +26,10 @@ constexpr int kMinFrames = 22;
 }  // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  if (request.reference_image_paths.size() > 9) {
+    throw std::runtime_error("MiniMax-H3 Ref2VA accepts at most 9 reference images, got " +
+                             std::to_string(request.reference_image_paths.size()));
+  }
   if (request.num_inference_steps < 2) {
     throw std::runtime_error("num_inference_steps must be at least 2: the grid includes a "
                              "terminal sigma of zero that gets no model evaluation");
@@ -116,6 +120,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       buf, sizeof(buf),
       "request\n"
       "  prompt              %zu characters\n"
+      "  reference images    %zu%s\n"
       "  canvas              %d x %d  (%s)\n"
       "  frames              %d requested -> %d aligned (%.2f s at %d fps)\n"
       "  latent grid         %d frames of %d x %d  -> %d rows per frame\n"
@@ -126,7 +131,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       "                      audio %.6f .. %.6f (shift %.1f)\n"
       "  seed                %llu\n"
       "  output              %s\n",
-      request.prompt.size(), plan.canvas_height, plan.canvas_width, provenance,
+      request.prompt.size(), request.reference_image_paths.size(),
+      request.reference_image_paths.empty() ? " (text-to-video)" : " (Ref2VA, ordered)",
+      plan.canvas_height, plan.canvas_width, provenance,
       request.num_frames, plan.aligned_frames, plan.duration_seconds, kFps,
       l.num_latent_frames, l.latent_height, l.latent_width, l.rows_per_frame(),
       l.num_audio_latents, l.num_audio_rows, l.total_rows(), request.num_inference_steps,

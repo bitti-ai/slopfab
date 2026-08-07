@@ -234,4 +234,19 @@ VIDFAB_TEST(pipeline_describe_plan) {
   CHECK(text.find("49 model evaluations") != std::string::npos);
 }
 
+VIDFAB_TEST(pipeline_reference_image_limit) {
+  vidfab::GenerateRequest r = base_request();
+  r.reference_image_paths.assign(9, "image.png");
+  const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
+  CHECK(vidfab::describe_plan(r, p).find("9 (Ref2VA, ordered)") != std::string::npos);
+  r.reference_image_paths.push_back("too-many.png");
+  bool rejected = false;
+  try {
+    vidfab::resolve_plan(r);
+  } catch (const std::exception&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+}
+
 }  // namespace

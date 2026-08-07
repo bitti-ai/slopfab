@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "vidfab/audio/wav.h"
+#include "vidfab/image.h"
 #include "vidfab/cuda/profile.h"
 #include "vidfab/dit/denoise.h"
 #include "vidfab/dit/packing.h"
@@ -59,6 +60,30 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                        const RunOptions& options) {
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
+
+  // Decode all references before opening a multi-gigabyte checkpoint. Besides
+  // giving file errors promptly, this validates the Ref2VA aspect contract at
+  // the dimensions actually presented by the decoder.
+  std::vector<RGBImage> reference_images;
+  reference_images.reserve(request.reference_image_paths.size());
+  try {
+    for (const std::string& path : request.reference_image_paths) {
+      RGBImage image = load_reference_image(path);
+      if (static_cast<int64_t>(image.width) > 4LL * image.height ||
+          static_cast<int64_t>(image.height) > 4LL * image.width) {
+        result.message = "reference image '" + path + "' must be within 1:4 and 4:1, got " +
+                         std::to_string(image.width) + "x" + std::to_string(image.height);
+        return result;
+      }
+      if (options.verbose) {
+        std::printf("reference   %s (%dx%d)\n", path.c_str(), image.width, image.height);
+      }
+      reference_images.push_back(std::move(image));
+    }
+  } catch (const std::exception& e) {
+    result.message = e.what();
+    return result;
+  }
 
   // --- latents ---------------------------------------------------------------
 

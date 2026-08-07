@@ -62,6 +62,10 @@ struct GenerateRequest {
   std::string video_vae_path;
   std::string audio_vae_path;
 
+  // Ordered subject/style/scene references. Presence selects the Ref2VA task;
+  // the same order labels images in the multimodal prompt and packed sequence.
+  std::vector<std::string> reference_image_paths;
+
   // Write .y4m + .wav instead of muxing an MP4. Also the automatic fallback
   // when ffmpeg cannot be loaded.
   bool raw_output = false;

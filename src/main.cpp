@@ -51,6 +51,10 @@ struct CommandHelp {
 const CommandHelp kCommands[] = {
     {"generate", "vidfab generate --prompt <text> [options]", "text to video and audio",
      "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
+     "  --reference-image <file>     ordered Ref2VA image; repeat up to 9 times. PNG,\n"
+     "                               JPEG, BMP, TIFF, GIF and binary PPM on Windows;\n"
+     "                               binary PPM elsewhere. Requires Ref2VA transformer\n"
+     "                               weights. Files are read only when the run starts\n"
      "  --out <file>                 output path (default video.mp4)\n"
      "  --aspect <W:H>               display aspect, 1:4 to 4:1 (default 16:9 -> 1344x768)\n"
      "  --resolution <WxH>           exact canvas instead of an aspect; both axes a\n"
@@ -796,6 +800,8 @@ int cmd_generate(int argc, char** argv) {
       req.video_vae_path = next("--vae");
     } else if (arg == "--audio-vae") {
       req.audio_vae_path = next("--audio-vae");
+    } else if (arg == "--reference-image") {
+      req.reference_image_paths.emplace_back(next("--reference-image"));
     } else if (arg == "--raw") {
       req.raw_output = true;
     } else if (arg == "--cache-threshold") {
@@ -826,6 +832,12 @@ int cmd_generate(int argc, char** argv) {
   // path and needs no prompt; the seeded-noise form still does not either.
   if (req.prompt.empty() && !dry_run && !synthetic) {
     std::fprintf(stderr, "vidfab: generate needs --prompt \"...\"\n");
+    return 2;
+  }
+  if (synthetic && !req.reference_image_paths.empty()) {
+    std::fprintf(stderr,
+                 "vidfab: --reference-image needs denoising and cannot be combined with "
+                 "--synthetic-latents\n");
     return 2;
   }
   if (req.cache_threshold < 0.0f) {
