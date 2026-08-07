@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <memory>
 
 #include "vidfab/image.h"
 #include "vidfab/safetensors.h"
@@ -32,5 +33,25 @@ EncoderWeightSummary validate_keyframe_encoder_weights(const SafeTensors& checkp
 // [H/2*W/2, 96]. This is the single-frame specialization of the transformer's
 // 1x2x2 video patch embedding layout.
 std::vector<float> patchify_keyframe_latents(const float* latents, int height, int width);
+
+#ifdef VIDFAB_WITH_CUDA
+class KeyframeEncoder {
+ public:
+  explicit KeyframeEncoder(const SafeTensors& checkpoint);
+  ~KeyframeEncoder();
+  KeyframeEncoder(KeyframeEncoder&&) noexcept;
+  KeyframeEncoder& operator=(KeyframeEncoder&&) noexcept;
+  KeyframeEncoder(const KeyframeEncoder&) = delete;
+  KeyframeEncoder& operator=(const KeyframeEncoder&) = delete;
+
+  // Runs the genuine single-frame encoder and quant_conv graph. Input is
+  // ImageNet-normalized planar [3,H,W], output [48,H/16,W/16].
+  std::vector<float> encode_moments(const float* pixels, int height, int width);
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+#endif
 
 }  // namespace vidfab::vae

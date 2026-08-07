@@ -107,6 +107,7 @@ if(VIDFAB_ENABLE_CUDA)
       # Host-side orchestration lives here rather than in vidfab_core so that
       # the dependency runs one way: cuda -> core, never back.
       src/vae/decode_pipeline.cpp
+      src/vae/keyframe_cuda.cpp
       src/generate.cpp
       src/vae/audio_decoder.cpp
       src/dit/transformer.cpp
