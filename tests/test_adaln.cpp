@@ -29,6 +29,7 @@ namespace {
 
 using vidfab::dit::AdaLNLookup;
 using vidfab::dit::AdaLNTable;
+using vidfab::dit::FullAdaLNTimestepEmbedding;
 
 std::string find_checkpoint() {
   for (const char* prefix : {"", "../", "../../"}) {
@@ -208,3 +209,54 @@ VIDFAB_TEST(adaln_real_table) {
 }
 
 }  // namespace
+
+VIDFAB_TEST(full_adaln_timestep_sinusoid_layout) {
+  const std::vector<float> at_zero = vidfab::dit::minimax_h3_timestep_sinusoid(0.0f, 4);
+  CHECK(at_zero.size() == 4);
+  CHECK_NEAR(at_zero[0], 1.0, 0.0);
+  CHECK_NEAR(at_zero[1], 1.0, 0.0);
+  CHECK_NEAR(at_zero[2], 0.0, 0.0);
+  CHECK_NEAR(at_zero[3], 0.0, 0.0);
+
+  const std::vector<float> at_one = vidfab::dit::minimax_h3_timestep_sinusoid(1.0f, 4);
+  CHECK_NEAR(at_one[0], std::cos(1.0), 1e-7);
+  CHECK_NEAR(at_one[1], std::cos(0.01), 1e-7);
+  CHECK_NEAR(at_one[2], std::sin(1.0), 1e-7);
+  CHECK_NEAR(at_one[3], std::sin(0.01), 1e-7);
+  CHECK(::vidfab::test::throws([] { vidfab::dit::minimax_h3_timestep_sinusoid(0.5f, 3); }));
+}
+
+VIDFAB_TEST(full_adaln_timestep_mlp_contract_and_math) {
+  const auto path = std::filesystem::temp_directory_path() / "vidfab_full_adaln_time.safetensors";
+  vidfab::write_safetensors(
+      path.string(),
+      {{"time_embedder.proj_in.weight", {2, 4}, {1, 0, 0, 0, 0, 1, 0, 0}},
+       {"time_embedder.proj_in.bias", {2}, {0.25f, -0.5f}},
+       {"time_embedder.proj_out.weight", {3, 2}, {1, 0, 0, 1, 2, -1}},
+       {"time_embedder.proj_out.bias", {3}, {0.1f, 0.2f, 0.3f}}});
+  vidfab::SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  FullAdaLNTimestepEmbedding embedding;
+  embedding.load(checkpoint, 4, 2, 3);
+  const std::vector<float> got = embedding.forward(0.0f);
+  const float h0 = 1.25f / (1.0f + std::exp(-1.25f));
+  const float h1 = 0.5f / (1.0f + std::exp(-0.5f));
+  CHECK_NEAR(got[0], h0 + 0.1f, 1e-6);
+  CHECK_NEAR(got[1], h1 + 0.2f, 1e-6);
+  CHECK_NEAR(got[2], 2.0f * h0 - h1 + 0.3f, 1e-6);
+
+  const std::vector<float> batch = embedding.forward({0.0f, 1.0f});
+  CHECK(batch.size() == 6);
+  CHECK_NEAR(batch[0], got[0], 0.0);
+  CHECK_NEAR(batch[1], got[1], 0.0);
+  CHECK_NEAR(batch[2], got[2], 0.0);
+
+  bool rejected = false;
+  try {
+    FullAdaLNTimestepEmbedding bad;
+    bad.load(checkpoint, 6, 2, 3);
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+}

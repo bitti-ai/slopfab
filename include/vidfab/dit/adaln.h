@@ -29,6 +29,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <vector>
 
 #include "vidfab/safetensors.h"
@@ -91,6 +92,36 @@ class AdaLNTable {
 
  private:
   std::vector<float> data_;  // [1025, 8] fp32
+};
+
+// Conventional MiniMax-H3 timestep front end used by the unpruned Ref2VA
+// transformer. Timesteps are unscaled values in [0, 1]. The sinusoid is the
+// diffusers Timesteps(freq_dim, flip_sin_to_cos=true,
+// downscale_freq_shift=0) layout: all cosine channels, then all sine channels.
+std::vector<float> minimax_h3_timestep_sinusoid(float timestep, int freq_dim = 256);
+
+// Host reference and loader contract for
+//   proj_out(SiLU(proj_in(time_proj(t)))).
+// The real model dimensions are 256 -> 5376 -> 2688; dimensions are arguments
+// so small exact fixtures can exercise the same arithmetic in unit tests.
+class FullAdaLNTimestepEmbedding {
+ public:
+  void load(const SafeTensors& checkpoint, int freq_dim = 256, int hidden_dim = 5376,
+            int output_dim = 2688);
+  bool loaded() const { return !proj_in_weight_.empty(); }
+  int freq_dim() const { return freq_dim_; }
+  int hidden_dim() const { return hidden_dim_; }
+  int output_dim() const { return output_dim_; }
+
+  std::vector<float> forward(float timestep) const;
+  std::vector<float> forward(const std::vector<float>& timesteps) const;
+
+ private:
+  int freq_dim_ = 0;
+  int hidden_dim_ = 0;
+  int output_dim_ = 0;
+  std::vector<float> proj_in_weight_, proj_in_bias_;
+  std::vector<float> proj_out_weight_, proj_out_bias_;
 };
 
 }  // namespace vidfab::dit
