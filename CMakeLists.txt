@@ -104,6 +104,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/dit_kernels.cu
       src/cuda/encoder_kernels.cu
       src/cuda/keyframe_encoder.cu
+      src/cuda/qwen_vision.cu
       # Host-side orchestration lives here rather than in vidfab_core so that
       # the dependency runs one way: cuda -> core, never back.
       src/vae/decode_pipeline.cpp
