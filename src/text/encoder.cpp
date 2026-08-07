@@ -18,6 +18,30 @@
 #include <stdexcept>
 
 namespace vidfab::text {
+
+void require_reference_vision_support(const SafeTensors& checkpoint, size_t reference_count) {
+  if (reference_count == 0) return;
+
+  size_t visual_tensors = 0;
+  for (const auto& entry : checkpoint.tensors()) {
+    if (entry.first.rfind("visual.", 0) == 0 ||
+        entry.first.rfind("model.visual.", 0) == 0) {
+      ++visual_tensors;
+    }
+  }
+  if (visual_tensors == 0) {
+    throw std::runtime_error(
+        "reference-image conditioning requires the Qwen3-VL visual tower, but text encoder '" +
+        checkpoint.path() +
+        "' contains no visual.* or model.visual.* tensors; refusing to ignore the image pixels "
+        "and run text-to-video");
+  }
+  throw std::runtime_error(
+      "reference-image conditioning found " + std::to_string(visual_tensors) +
+      " Qwen vision tensors in text encoder '" + checkpoint.path() +
+      "', but this build does not implement the visual-tower pixel forward pass; refusing to "
+      "ignore the image pixels and run text-to-video");
+}
 namespace {
 
 constexpr int kConvRotGroup = 256;

@@ -153,6 +153,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
       SafeTensors encoder_file;
       encoder_file.open(request.text_encoder_path);
+      try {
+        text::require_reference_vision_support(encoder_file, reference_images.size());
+      } catch (const std::exception& e) {
+        result.message = e.what();
+        return result;
+      }
       text::Encoder encoder;
       text::EncoderConfig ecfg;
       ecfg.residency = text::Residency::kStreaming;

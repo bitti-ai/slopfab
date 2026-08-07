@@ -1053,6 +1053,34 @@ VIDFAB_TEST(encoder_nvfp4_layer_layout) {
   CHECK(layout.total_bytes % 256 == 0);
 }
 
+VIDFAB_TEST(reference_vision_support_never_silently_ignores_pixels) {
+  const std::string no_vision_path = "vidfab_test_qwen_no_vision.safetensors";
+  vidfab::write_safetensors(no_vision_path, {{"model.embed_tokens.weight", {1}, {0.0f}}});
+  vidfab::SafeTensors no_vision;
+  no_vision.open(no_vision_path);
+  vidfab::text::require_reference_vision_support(no_vision, 0);
+  bool missing_failed = false;
+  try {
+    vidfab::text::require_reference_vision_support(no_vision, 1);
+  } catch (const std::runtime_error& e) {
+    missing_failed = std::string(e.what()).find("contains no visual.*") != std::string::npos;
+  }
+  CHECK(missing_failed);
+
+  const std::string vision_path = "vidfab_test_qwen_with_vision.safetensors";
+  vidfab::write_safetensors(vision_path, {{"visual.patch_embed.weight", {1}, {1.0f}}});
+  vidfab::SafeTensors vision;
+  vision.open(vision_path);
+  bool unsupported_failed = false;
+  try {
+    vidfab::text::require_reference_vision_support(vision, 1);
+  } catch (const std::runtime_error& e) {
+    unsupported_failed = std::string(e.what()).find("found 1 Qwen vision tensors") !=
+                         std::string::npos;
+  }
+  CHECK(unsupported_failed);
+}
+
 // --- checkpoint-dependent ----------------------------------------------------
 
 VIDFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {

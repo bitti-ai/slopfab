@@ -84,6 +84,12 @@ enum class WeightFormat {
 // throws if the blobs do not describe either shipped build.
 WeightFormat detect_weight_format(const SafeTensors& checkpoint);
 
+// Ref2VA must replace <|image_pad|> token embeddings with outputs produced
+// from the image pixels by Qwen's visual tower. Until that forward path exists,
+// reject reference requests at the checkpoint boundary instead of silently
+// running the ordinary text-only conditioner.
+void require_reference_vision_support(const SafeTensors& checkpoint, size_t reference_count);
+
 struct EncoderConfig {
   // Resolved from the checkpoint by `load`. Left kAuto here so that nothing but
   // the file can decide it; the host helpers below require it resolved.
