@@ -83,6 +83,18 @@ vidfab generate --prompt "integrated_multimodal_description: ..." \
 # allowed, warned about, and costs attention time with the square of its area.
 vidfab generate --prompt "..." --resolution 1024x512 --dry-run
 
+# Condition a run with MiniMax H3 Ref2VA images. Repeat --reference-image in
+# subject/style/scene order; that order is preserved in the multimodal prompt
+# and packed sequence. At most nine images are accepted. This mode requires a
+# Ref2VA transformer checkpoint (FL2VA/text-to-video weights are not compatible).
+vidfab generate --prompt "integrated_multimodal_description: ..." \
+                --reference-image subject.png \
+                --reference-image style.jpg \
+                --transformer weights/transformer/MiniMax_H3_Ref2VA.safetensors \
+                --tokenizer <tokenizer.json> --text-encoder <text-encoder.safetensors> \
+                --vae <video-vae.safetensors> --audio-vae <audio-vae.safetensors> \
+                --out referenced.mp4
+
 # Every command documents itself.
 vidfab generate --help
 
