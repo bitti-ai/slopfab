@@ -30,6 +30,24 @@
 namespace vidfab {
 namespace {
 
+std::vector<uint8_t> resize_rgb_bilinear(const RGBImage& in, int width, int height) {
+  std::vector<uint8_t> out(static_cast<size_t>(width) * height * 3);
+  for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+    const float sy = (y + .5f) * in.height / height - .5f;
+    const float sx = (x + .5f) * in.width / width - .5f;
+    const int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, in.height - 1);
+    const int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, in.width - 1);
+    const int y1 = std::min(y0 + 1, in.height - 1), x1 = std::min(x0 + 1, in.width - 1);
+    const float fy = std::clamp(sy - std::floor(sy), 0.0f, 1.0f);
+    const float fx = std::clamp(sx - std::floor(sx), 0.0f, 1.0f);
+    for (int c = 0; c < 3; ++c) {
+      auto at=[&](int yy,int xx){return in.pixels[(static_cast<size_t>(yy)*in.width+xx)*3+c];};
+      const float v=(1-fy)*((1-fx)*at(y0,x0)+fx*at(y0,x1))+fy*((1-fx)*at(y1,x0)+fx*at(y1,x1));
+      out[(static_cast<size_t>(y)*width+x)*3+c]=static_cast<uint8_t>(std::clamp(std::lround(v),0l,255l));
+    }
+  } return out;
+}
+
 using Clock = std::chrono::steady_clock;
 
 double seconds_since(Clock::time_point start) {
@@ -192,7 +210,20 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // No chat template, no BOS, no EOS: `hidden_states[50]` of a raw prompt
       // is the conditioning H3 expects, and a special token here would shift
       // every rotary position downstream (spec 1.2).
-      const std::vector<int32_t> ids = tokenizer.encode(request.prompt);
+      std::vector<int32_t> ids;
+      std::vector<text::QwenPixelValues> qwen_images;
+      for (size_t i = 0; i < reference_images.size(); ++i) {
+        const auto grid = text::qwen3vl_image_grid(reference_images[i].width,
+                                                    reference_images[i].height);
+        const int rw = grid.width * 16, rh = grid.height * 16;
+        auto rgb = resize_rgb_bilinear(reference_images[i], rw, rh);
+        qwen_images.push_back(text::qwen3vl_patchify_resized_rgb(rgb, rw, rh));
+        const auto label = tokenizer.encode("<Picture " + std::to_string(i + 1) + ">: ");
+        const auto block = text::qwen3vl_image_block(label, grid.merged_token_count());
+        ids.insert(ids.end(), block.begin(), block.end());
+      }
+      const auto prompt_ids = tokenizer.encode(request.prompt);
+      ids.insert(ids.end(), prompt_ids.begin(), prompt_ids.end());
       if (ids.empty()) {
         result.message = "the prompt tokenised to zero tokens";
         return result;
@@ -210,7 +241,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       text::EncoderConfig ecfg;
       ecfg.residency = text::Residency::kStreaming;
       encoder.load(encoder_file, ecfg);
-      prompt = encoder.encode(ids);
+      prompt = qwen_images.empty() ? encoder.encode(ids) : encoder.encode(ids, qwen_images);
       encoder.unload();
       result.seconds_conditioning = seconds_since(t0);
       if (options.verbose) {
