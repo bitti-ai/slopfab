@@ -264,11 +264,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       idx = dit::build_indices(live);
       pos = dit::build_position_ids(live);
     } else {
-      // Placeholder until Qwen exposes per-token vision tags through
-      // PromptEmbedding. Text rows retain their current clean interface.
-      std::vector<int32_t> text_tags(static_cast<size_t>(prompt.num_tokens), dit::kTagText);
       dit::Ref2VAPackedSequence packed = dit::build_ref2va_packed_sequence(
-          text_tags, reference_geometry, live.num_latent_frames, live.latent_height,
+          prompt.modality_tags, reference_geometry, live.num_latent_frames, live.latent_height,
           live.latent_width, live.num_audio_latents);
       live = std::move(packed.layout);
       idx = std::move(packed.indices);
