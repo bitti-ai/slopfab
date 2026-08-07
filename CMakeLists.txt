@@ -133,6 +133,9 @@ if(VIDFAB_ENABLE_CUDA)
     # the price of shipping cudart64_*.dll — the wrong trade for this project.
     target_link_libraries(vidfab_cuda PUBLIC vidfab_core)
 
+    add_executable(vidfab_qwenvisionprobe tools/qwenvisionprobe.cpp)
+    target_link_libraries(vidfab_qwenvisionprobe PRIVATE vidfab_cuda)
+
     target_compile_definitions(vidfab_core PUBLIC VIDFAB_WITH_CUDA=1)
   else()
     message(WARNING "vidfab: no CUDA compiler found; building CPU-only")
