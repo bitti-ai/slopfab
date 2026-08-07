@@ -175,6 +175,14 @@ else()
   target_compile_options(vidfab_chunkprobe PRIVATE -Wall -Wextra)
 endif()
 
+add_executable(vidfab_vaeprobe tools/vaeprobe.cpp)
+target_link_libraries(vidfab_vaeprobe PRIVATE vidfab_core)
+if(MSVC)
+  target_compile_options(vidfab_vaeprobe PRIVATE /W4 /permissive- /utf-8)
+else()
+  target_compile_options(vidfab_vaeprobe PRIVATE -Wall -Wextra)
+endif()
+
 # --- tests ------------------------------------------------------------------
 
 if(VIDFAB_BUILD_TESTS)
