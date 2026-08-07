@@ -114,7 +114,7 @@ const CommandHelp kCommands[] = {
      "checkpoints (all required unless --dry-run or --synthetic-latents):\n"
      "  --tokenizer <f>              tokenizer.json\n"
      "  --text-encoder <f>           Qwen3-VL conditioner, int8 ConvRot or nvfp4 AWQ\n"
-     "  --transformer <f>            H3 omni transformer, fp8 or nvfp4\n"
+     "  --transformer <f>            H3 omni transformer, fp8, nvfp4 or NF4\n"
      "  --vae <f>                    video VAE decoder\n"
      "  --audio-vae <f>              audio VAE decoder\n"
      "\n"

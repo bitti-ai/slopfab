@@ -95,6 +95,16 @@ vidfab generate --prompt "integrated_multimodal_description: ..." \
                 --vae <video-vae.safetensors> --audio-vae <audio-vae.safetensors> \
                 --out referenced.mp4
 
+# The unpruned bitsandbytes build is also executable. Its double-quantised NF4
+# matrices stay packed in GPU memory; one active matrix is expanded to BF16 in
+# reusable workspace for each GEMM rather than expanding the whole model.
+vidfab generate --prompt "integrated_multimodal_description: ..." \
+                --reference-image subject.png \
+                --transformer weights/transformer/minimax-h3-ref2va-nf4.safetensors \
+                --tokenizer <tokenizer.json> --text-encoder <text-encoder.safetensors> \
+                --vae <video-vae.safetensors> --audio-vae <audio-vae.safetensors> \
+                --out referenced-nf4.mp4
+
 # The pruned FP8 Ref2VA and FL2VA archives have the same tensor schema and no
 # identifying metadata. Keep `ref2va` in the Ref2VA filename: vidfab uses that
 # distribution name to reject accidental image conditioning with FL2VA weights.
