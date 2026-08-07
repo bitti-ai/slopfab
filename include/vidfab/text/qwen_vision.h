@@ -2,7 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
+
+#include "vidfab/safetensors.h"
 
 namespace vidfab::text {
 
@@ -24,6 +27,41 @@ struct QwenPixelValues {
   // pixel_values. Values are RGB normalized by (x-.5)/.5.
   std::vector<float> rows;
 };
+
+struct QwenVisionConfig {
+  int hidden_size = 1152;
+  int intermediate_size = 4304;
+  int num_heads = 16;
+  int depth = 27;
+  int position_side = 48;
+  int merge_size = 2;
+  int output_size = 5120;
+};
+
+// Host metadata consumed by the CUDA visual tower. `prefix` permits both the
+// original HF `model.visual.*` naming and the flattened repack's `visual.*`.
+struct QwenVisionCheckpoint {
+  const SafeTensors* checkpoint = nullptr;
+  std::string prefix;
+  QwenVisionConfig config;
+};
+
+// Validates all 351 BF16 tensors and returns their resolved prefix. This is a
+// real loader boundary: partial towers and subtly different Qwen variants are
+// rejected before any 1.19 GB device upload begins.
+QwenVisionCheckpoint load_qwen3vl_vision_checkpoint(const SafeTensors& checkpoint);
+
+struct QwenVisionPositions {
+  // Learned absolute-position row for each unmerged patch.
+  std::vector<int32_t> learned;
+  // (temporal, height, width), one triplet per unmerged patch, in the same
+  // merge-group-major order as QwenPixelValues::rows.
+  std::vector<int32_t> rotary_thw;
+};
+
+QwenVisionPositions qwen3vl_vision_positions(const QwenImageGrid& grid,
+                                             int position_side = 48,
+                                             int merge_size = 2);
 
 // Matches Qwen2VLImageProcessorFast.smart_resize for H3's processor config:
 // factor=patch_size*merge_size=32, min_pixels=65536, max_pixels=16777216.

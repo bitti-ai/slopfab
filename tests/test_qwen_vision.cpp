@@ -47,3 +47,16 @@ VIDFAB_TEST(qwen_vision_pixel_patch_order) {
     (void)qwen3vl_patchify_resized_rgb(std::vector<uint8_t>(31 * 32 * 3), 31, 32);
   }));
 }
+
+VIDFAB_TEST(qwen_vision_position_order_and_interpolation) {
+  const auto p = qwen3vl_vision_positions({1, 2, 4});
+  CHECK(p.learned.size() == 8);
+  CHECK(p.learned[0] == 0);
+  CHECK(p.learned[1] == 15);
+  CHECK(p.learned[2] == 47 * 48);
+  CHECK(p.learned[3] == 47 * 48 + 15);
+  CHECK(p.learned[4] == 31);
+  CHECK(p.learned[7] == 48 * 48 - 1);
+  CHECK(p.rotary_thw[0] == 0 && p.rotary_thw[1] == 0 && p.rotary_thw[2] == 0);
+  CHECK(p.rotary_thw[3] == 0 && p.rotary_thw[4] == 0 && p.rotary_thw[5] == 1);
+}

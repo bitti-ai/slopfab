@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 namespace vidfab::text {
 namespace {
@@ -13,7 +14,72 @@ constexpr double kMaxPixels = 16777216.0;
 int round_factor(double value) {
   return std::max(kFactor, static_cast<int>(std::round(value / kFactor)) * kFactor);
 }
+
+void check(const SafeTensors& st, const std::string& name, const std::vector<int64_t>& shape) {
+  const TensorView* t = st.find(name);
+  if (!t) throw std::runtime_error("Qwen vision: missing " + name);
+  if (t->dtype != DType::kBF16 || t->shape != shape)
+    throw std::runtime_error("Qwen vision: incompatible tensor " + name);
+}
 }  // namespace
+
+QwenVisionCheckpoint load_qwen3vl_vision_checkpoint(const SafeTensors& st) {
+  std::string p;
+  if (st.find("visual.patch_embed.proj.weight")) p = "visual.";
+  else if (st.find("model.visual.patch_embed.proj.weight")) p = "model.visual.";
+  else throw std::runtime_error("Qwen vision: visual patch embedding is absent");
+
+  check(st, p + "patch_embed.proj.weight", {1152, 3, 2, 16, 16});
+  check(st, p + "patch_embed.proj.bias", {1152});
+  check(st, p + "pos_embed.weight", {2304, 1152});
+  for (int i = 0; i < 27; ++i) {
+    const std::string b = p + "blocks." + std::to_string(i) + ".";
+    check(st, b + "norm1.weight", {1152}); check(st, b + "norm1.bias", {1152});
+    check(st, b + "norm2.weight", {1152}); check(st, b + "norm2.bias", {1152});
+    check(st, b + "attn.qkv.weight", {3456, 1152}); check(st, b + "attn.qkv.bias", {3456});
+    check(st, b + "attn.proj.weight", {1152, 1152}); check(st, b + "attn.proj.bias", {1152});
+    check(st, b + "mlp.linear_fc1.weight", {4304, 1152}); check(st, b + "mlp.linear_fc1.bias", {4304});
+    check(st, b + "mlp.linear_fc2.weight", {1152, 4304}); check(st, b + "mlp.linear_fc2.bias", {1152});
+  }
+  auto merger = [&](const std::string& base, bool main) {
+    check(st, base + "norm.weight", {main ? 1152 : 4608});
+    check(st, base + "norm.bias", {main ? 1152 : 4608});
+    check(st, base + "linear_fc1.weight", {4608, 4608});
+    check(st, base + "linear_fc1.bias", {4608});
+    check(st, base + "linear_fc2.weight", {5120, 4608});
+    check(st, base + "linear_fc2.bias", {5120});
+  };
+  merger(p + "merger.", true);
+  for (int i = 0; i < 3; ++i)
+    merger(p + "deepstack_merger_list." + std::to_string(i) + ".", false);
+
+  size_t count = 0;
+  for (const auto& kv : st.tensors()) if (kv.first.rfind(p, 0) == 0) ++count;
+  if (count != 351) throw std::runtime_error("Qwen vision: expected 351 tensors, found " + std::to_string(count));
+  return {&st, p, {}};
+}
+
+QwenVisionPositions qwen3vl_vision_positions(const QwenImageGrid& g, int side, int merge) {
+  if (g.temporal <= 0 || g.height <= 0 || g.width <= 0 || side <= 0 || merge <= 0 ||
+      g.height % merge || g.width % merge)
+    throw std::runtime_error("Qwen vision: invalid position grid");
+  QwenVisionPositions out;
+  out.learned.reserve(g.patch_count()); out.rotary_thw.reserve(g.patch_count() * 3);
+  auto bucket = [side](int x, int extent) {
+    // torch.linspace(0, side-1, extent).long(): conversion truncates.
+    return extent == 1 ? 0 : static_cast<int>((static_cast<int64_t>(x) * (side - 1)) / (extent - 1));
+  };
+  for (int t = 0; t < g.temporal; ++t)
+    for (int by = 0; by < g.height / merge; ++by)
+      for (int bx = 0; bx < g.width / merge; ++bx)
+        for (int my = 0; my < merge; ++my)
+          for (int mx = 0; mx < merge; ++mx) {
+            const int y = by * merge + my, x = bx * merge + mx;
+            out.learned.push_back(bucket(y, g.height) * side + bucket(x, g.width));
+            out.rotary_thw.insert(out.rotary_thw.end(), {t, y, x});
+          }
+  return out;
+}
 
 size_t QwenImageGrid::patch_count() const {
   return static_cast<size_t>(temporal) * height * width;
