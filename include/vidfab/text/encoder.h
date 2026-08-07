@@ -40,6 +40,7 @@
 #include "vidfab/dtype.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/text/tokenizer.h"
+#include "vidfab/text/qwen_vision.h"
 
 namespace vidfab::text {
 
@@ -166,6 +167,8 @@ class Encoder {
   // stream. `token_ids` must come from `Tokenizer::encode` with no special
   // tokens added.
   PromptEmbedding encode(const std::vector<int32_t>& token_ids);
+  PromptEmbedding encode(const std::vector<int32_t>& token_ids,
+                         const std::vector<QwenPixelValues>& images);
 
   // Convenience: tokenise then encode.
   PromptEmbedding encode(const Tokenizer& tokenizer, const std::string& prompt);

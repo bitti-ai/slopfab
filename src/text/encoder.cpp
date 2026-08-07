@@ -36,11 +36,8 @@ void require_reference_vision_support(const SafeTensors& checkpoint, size_t refe
         "' contains no visual.* or model.visual.* tensors; refusing to ignore the image pixels "
         "and run text-to-video");
   }
-  throw std::runtime_error(
-      "reference-image conditioning found " + std::to_string(visual_tensors) +
-      " Qwen vision tensors in text encoder '" + checkpoint.path() +
-      "', but this build does not implement the visual-tower pixel forward pass; refusing to "
-      "ignore the image pixels and run text-to-video");
+  if (visual_tensors != 351)
+    throw std::runtime_error("reference-image conditioning requires exactly 351 Qwen vision tensors");
 }
 namespace {
 

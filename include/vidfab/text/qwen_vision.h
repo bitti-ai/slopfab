@@ -84,6 +84,9 @@ QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& token_ids
 void qwen3vl_vision_rope_tables(const QwenVisionPositions& positions,
                                std::vector<float>& cos, std::vector<float>& sin,
                                int head_dim = 72, float theta = 10000.0f);
+void qwen3vl_decoder_rope_tables(const QwenMultimodalPlan& plan, int tokens,
+                                 std::vector<float>& cos, std::vector<float>& sin,
+                                 int head_dim = 128, float theta = 5.0e6f);
 
 struct QwenVisionEmbedding {
   int tokens = 0;

@@ -664,6 +664,8 @@ struct Encoder::Impl {
 
   Workspace ws;
   vidfab::cuda::LinearRunner linear;
+  QwenVisionEncoder vision;
+  const std::vector<QwenPixelValues>* pending_images = nullptr;
 
   void open_device() {
     if (cublas != nullptr) return;
@@ -917,6 +919,22 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   // add. Gathered on the host: only L of 151936 rows are ever read.
   std::vector<uint16_t> host_embed;
   gather_embedding_rows(*s.embed, s.embed_scale, token_ids, host_embed);
+  QwenVisionEmbedding visual;
+  QwenMultimodalPlan mm_plan;
+  if (s.pending_images && !s.pending_images->empty()) {
+    s.vision.load(*s.checkpoint);
+    visual = s.vision.encode(*s.pending_images);
+    std::vector<QwenImageGrid> grids; grids.reserve(s.pending_images->size());
+    for (const auto& im : *s.pending_images) grids.push_back(im.grid);
+    mm_plan = qwen3vl_multimodal_plan(token_ids, grids);
+    require(static_cast<int>(mm_plan.image_rows.size()) == visual.tokens,
+            "encode: visual output count disagrees with image-pad tokens");
+    for (int i = 0; i < visual.tokens; ++i)
+      std::memcpy(host_embed.data() + static_cast<size_t>(mm_plan.image_rows[i]) * hidden,
+                  visual.main.data() + static_cast<size_t>(i) * hidden,
+                  static_cast<size_t>(hidden) * sizeof(uint16_t));
+    s.vision.unload();
+  }
   DeviceBuffer<uint16_t> x(stream_elems);
   x.copy_from_host(host_embed.data(), host_embed.size(), s.compute);
   __nv_bfloat16* xp = reinterpret_cast<__nv_bfloat16*>(x.get());
@@ -926,11 +944,30 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   const std::vector<float> inv_freq = rope_inv_freq(s.cfg.head_dim, s.cfg.rope_theta);
   std::vector<float> cos_host;
   std::vector<float> sin_host;
-  build_rope_tables(L, inv_freq, cos_host, sin_host);
+  if (visual.tokens) qwen3vl_decoder_rope_tables(mm_plan, L, cos_host, sin_host,
+                                                 s.cfg.head_dim, s.cfg.rope_theta);
+  else build_rope_tables(L, inv_freq, cos_host, sin_host);
   DeviceBuffer<float> cos(cos_host.size());
   DeviceBuffer<float> sin(sin_host.size());
   cos.copy_from_host(cos_host.data(), cos_host.size(), s.compute);
   sin.copy_from_host(sin_host.data(), sin_host.size(), s.compute);
+  DeviceBuffer<int32_t> image_rows;
+  DeviceBuffer<uint16_t> deep[3];
+  if (visual.tokens) {
+    image_rows.allocate(mm_plan.image_rows.size());
+    image_rows.copy_from_host(mm_plan.image_rows.data(), mm_plan.image_rows.size(), s.compute);
+    for (int j = 0; j < 3; ++j) {
+      deep[j].allocate(visual.deepstack[j].size());
+      deep[j].copy_from_host(visual.deepstack[j].data(), visual.deepstack[j].size(), s.compute);
+    }
+  }
+  auto inject = [&](int layer) {
+    if (!visual.tokens) return;
+    int j = layer == 8 ? 0 : layer == 16 ? 1 : layer == 24 ? 2 : -1;
+    if (j >= 0) cuda::launch_scatter_add_rows(reinterpret_cast<__nv_bfloat16*>(deep[j].get()),
+                                               image_rows.get(), xp, visual.tokens, hidden,
+                                               s.compute);
+  };
 
   LayerDims dims;
   dims.format = s.cfg.format;
@@ -951,6 +988,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
                                   s.globals[static_cast<size_t>(i)]);
       encoder_layer_forward(s.cublas, s.compute, s.linear, w, dims, cos.get(), sin.get(), xp,
                             s.ws);
+      inject(i);
     }
   } else {
     s.stage_upload(0, 0, s.ping[0].get());
@@ -961,6 +999,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
                                                     s.globals[static_cast<size_t>(i)]);
       encoder_layer_forward(s.cublas, s.compute, s.linear, w, dims, cos.get(), sin.get(), xp,
                             s.ws);
+      inject(i);
       VIDFAB_CUDA_CHECK(cudaEventRecord(s.compute_done[slot], s.compute));
 
       if (i + 1 < N) {
@@ -994,6 +1033,21 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   s.stats.last_encode_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   return result;
+}
+
+PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
+                                const std::vector<QwenPixelValues>& images) {
+  Impl& s = *impl_;
+  require(!images.empty(), "encode: multimodal overload requires at least one image");
+  s.pending_images = &images;
+  try {
+    PromptEmbedding out = encode(token_ids);
+    s.pending_images = nullptr;
+    return out;
+  } catch (...) {
+    s.pending_images = nullptr;
+    throw;
+  }
 }
 
 PromptEmbedding Encoder::encode(const Tokenizer& tokenizer, const std::string& prompt) {

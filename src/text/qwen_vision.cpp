@@ -143,6 +143,23 @@ void qwen3vl_vision_rope_tables(const QwenVisionPositions& p, std::vector<float>
   }
 }
 
+void qwen3vl_decoder_rope_tables(const QwenMultimodalPlan& p, int tokens,
+                                 std::vector<float>& cos, std::vector<float>& sin,
+                                 int head_dim, float theta) {
+  if (tokens <= 0 || head_dim != 128 || p.position_ids.size() != static_cast<size_t>(3 * tokens))
+    throw std::runtime_error("Qwen vision: invalid decoder rotary plan");
+  cos.resize(static_cast<size_t>(tokens) * head_dim); sin.resize(cos.size());
+  for (int r = 0; r < tokens; ++r) for (int j = 0; j < head_dim / 2; ++j) {
+    // Qwen3-VL interleaves THW for 20 cycles, then assigns four trailing
+    // frequencies to T: section counts [24,20,20].
+    const int axis = j < 60 ? j % 3 : 0;
+    const double inv = std::pow(static_cast<double>(theta), -2.0 * j / head_dim);
+    const float a = static_cast<float>(p.position_ids[static_cast<size_t>(axis) * tokens + r] * inv);
+    cos[static_cast<size_t>(r)*head_dim+j]=cos[static_cast<size_t>(r)*head_dim+j+64]=std::cos(a);
+    sin[static_cast<size_t>(r)*head_dim+j]=sin[static_cast<size_t>(r)*head_dim+j+64]=std::sin(a);
+  }
+}
+
 size_t QwenImageGrid::patch_count() const {
   return static_cast<size_t>(temporal) * height * width;
 }
