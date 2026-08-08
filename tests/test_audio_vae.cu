@@ -792,5 +792,45 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
   }
 }
 
+VIDFAB_TEST(audio_decoder_nf4_checkpoint) {
+  const std::string path = "weights/vae/audio_vae_nf4.safetensors";
+  if (!std::filesystem::exists(path)) {
+    std::fprintf(stderr, "  (no %s; skipping NF4 audio VAE)\n", path.c_str());
+    return;
+  }
+  vidfab::SafeTensors ckpt;
+  ckpt.open(path);
+  CHECK(ckpt.tensor_count() == 1117);
+  vidfab::vae::AudioDecoder decoder;
+  decoder.load(ckpt);
+  CHECK(decoder.weight_bytes() > 240u * 1024u * 1024u);
+  CHECK(decoder.weight_bytes() < 270u * 1024u * 1024u);
+  const std::vector<float> z = reference_latents(2, 32, 3, 12345u);
+  const vidfab::vae::DecodedAudio audio = decoder.decode(z.data(), 3);
+  CHECK(audio.channels == 2);
+  CHECK(audio.sample_rate == 32000);
+  CHECK(audio.num_frames() == 2400);
+  bool finite = true;
+  for (float sample : audio.samples) finite = finite && std::isfinite(sample);
+  CHECK_MSG(finite, "NF4 audio VAE emitted non-finite sample");
+  vidfab::SafeTensors fp32_ckpt;
+  fp32_ckpt.open(checkpoint_path());
+  vidfab::vae::AudioDecoder fp32_decoder;
+  fp32_decoder.load(fp32_ckpt);
+  const auto reference = fp32_decoder.decode(z.data(), 3);
+  double err2 = 0.0, ref2 = 0.0, dot = 0.0, got2 = 0.0, max_abs = 0.0;
+  for (size_t i = 0; i < audio.samples.size(); ++i) {
+    const double a = reference.samples[i], b = audio.samples[i], e = b - a;
+    err2 += e * e; ref2 += a * a; dot += a * b; got2 += b * b;
+    max_abs = std::max(max_abs, std::abs(e));
+  }
+  const double rel_l2 = std::sqrt(err2 / ref2);
+  const double corr = dot / std::sqrt(ref2 * got2);
+  std::fprintf(stderr, "  BF16 audio VAE vs FP32: rel_L2 %.6f corr %.6f max %.6f\n",
+               rel_l2, corr, max_abs);
+  CHECK_MSG(rel_l2 < 0.05, "BF16 audio VAE rel_L2 %.6f exceeds 0.05", rel_l2);
+  CHECK_MSG(corr > 0.999, "BF16 audio VAE correlation %.6f is below 0.999", corr);
+}
+
 }  // namespace
 // `main` lives in tests/test_kernels.cu; this translation unit only registers.

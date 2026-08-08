@@ -136,6 +136,12 @@ vidfab compare reference.safetensors actual.safetensors --abs-tol 1e-3
 vidfab devices
 ```
 
+Both VAE arguments also accept the compact checkpoints in `weights/vae`:
+`video_vae_nf4.safetensors` and `audio_vae_nf4.safetensors`. The video VAE keeps
+bitsandbytes NF4 matrices packed on device and expands only the matrix currently
+being used into reusable FP16 workspace. The audio file's decode graph is BF16
+weight-normalized; its NF4 pre-block is not part of synthesis.
+
 `decode --dump <f>` writes raw fp32 pixels as safetensors, so two runs can be
 compared at float precision instead of after 8-bit quantisation.
 `generate --dump-latents <f>` writes the denoiser's own output — the packed

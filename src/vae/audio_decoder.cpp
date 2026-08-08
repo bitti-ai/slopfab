@@ -162,9 +162,8 @@ class Staging {
 
   Slice add(const std::string& name, std::initializer_list<int64_t> expect) {
     const TensorView& t = ckpt_.at(name);
-    if (t.dtype != DType::kF32) {
-      throw std::runtime_error("audio vae: " + name + " is not F32");
-    }
+    if (t.dtype != DType::kF32 && t.dtype != DType::kF16 && t.dtype != DType::kBF16)
+      throw std::runtime_error("audio vae: " + name + " is not a floating tensor");
     if (t.shape.size() != expect.size()) {
       throw std::runtime_error("audio vae: " + name + " has rank " +
                                std::to_string(t.shape.size()) + ", expected " +
@@ -181,9 +180,38 @@ class Staging {
     }
     const size_t count = static_cast<size_t>(t.numel());
     const Slice slice{data_.size(), count};
-    data_.resize(data_.size() + count);
-    std::memcpy(data_.data() + slice.offset, t.data, count * sizeof(float));
+    const std::vector<float> values = to_f32(t);
+    data_.insert(data_.end(), values.begin(), values.end());
     ++tensors_;
+    return slice;
+  }
+
+  Slice add_conv(const std::string& name, std::initializer_list<int64_t> expect) {
+    if (ckpt_.find(name + ".weight") != nullptr) return add(name + ".weight", expect);
+    const TensorView& v = ckpt_.at(name + ".weight_v");
+    const TensorView& g = ckpt_.at(name + ".weight_g");
+    const std::vector<int64_t> shape(expect);
+    if (v.shape != shape || g.shape.size() != shape.size() || g.shape[0] != shape[0])
+      throw std::runtime_error("audio vae: malformed weight norm for " + name);
+    for (size_t i = 1; i < g.shape.size(); ++i)
+      if (g.shape[i] != 1) throw std::runtime_error("audio vae: weight_g is not channel-wise for " + name);
+    const std::vector<float> vf = to_f32(v);
+    const std::vector<float> gf = to_f32(g);
+    const size_t channels = static_cast<size_t>(shape[0]);
+    const size_t per_channel = vf.size() / channels;
+    const Slice slice{data_.size(), vf.size()};
+    data_.resize(data_.size() + vf.size());
+    for (size_t c = 0; c < channels; ++c) {
+      double sum = 0.0;
+      for (size_t j = 0; j < per_channel; ++j) {
+        const float x = vf[c * per_channel + j];
+        sum += static_cast<double>(x) * x;
+      }
+      const float scale = gf[c] / static_cast<float>(std::sqrt(std::max(sum, 1e-30)));
+      for (size_t j = 0; j < per_channel; ++j)
+        data_[slice.offset + c * per_channel + j] = vf[c * per_channel + j] * scale;
+    }
+    tensors_ += 2;
     return slice;
   }
 
@@ -235,9 +263,9 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
 
   Staging st(checkpoint);
 
-  im.dec_in_proj = ConvSpec{st.add("dec_in_proj.weight", {ld, zc, 1}),
+  im.dec_in_proj = ConvSpec{st.add_conv("dec_in_proj", {ld, zc, 1}),
                             st.add("dec_in_proj.bias", {ld}), ld, zc, 1};
-  im.conv_pre = ConvSpec{st.add("decoder.conv_pre.weight", {dd, ld, 7}),
+  im.conv_pre = ConvSpec{st.add_conv("decoder.conv_pre", {dd, ld, 7}),
                          st.add("decoder.conv_pre.bias", {dd}), dd, ld, 7};
 
   const int num_stages = static_cast<int>(config.decoder_rates.size());
@@ -261,7 +289,7 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
     // ConvTranspose1d weights are [Cin, Cout, K] — input channels first, the
     // opposite of Conv1d. See docs/audio_vae_spec.md §5.
     const std::string up = "decoder.ups." + std::to_string(i) + ".0.";
-    stage.up = ConvSpec{st.add(up + "weight", {ch, out_ch, stage.kernel}),
+    stage.up = ConvSpec{st.add_conv(up.substr(0, up.size() - 1), {ch, out_ch, stage.kernel}),
                         st.add(up + "bias", {out_ch}), out_ch, ch, stage.kernel};
 
     for (int j = 0; j < num_kernels; ++j) {
@@ -272,11 +300,11 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
       block.kernel = config.resblock_kernel_sizes[static_cast<size_t>(j)];
       for (int d = 0; d < 3; ++d) {
         block.convs1[d] =
-            ConvSpec{st.add(join(p + "convs1.", d, ".weight"), {out_ch, out_ch, block.kernel}),
+            ConvSpec{st.add_conv(join(p + "convs1.", d, ""), {out_ch, out_ch, block.kernel}),
                      st.add(join(p + "convs1.", d, ".bias"), {out_ch}), out_ch, out_ch,
                      block.kernel};
         block.convs2[d] =
-            ConvSpec{st.add(join(p + "convs2.", d, ".weight"), {out_ch, out_ch, block.kernel}),
+            ConvSpec{st.add_conv(join(p + "convs2.", d, ""), {out_ch, out_ch, block.kernel}),
                      st.add(join(p + "convs2.", d, ".bias"), {out_ch}), out_ch, out_ch,
                      block.kernel};
       }
@@ -309,12 +337,31 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
         "audio vae: decoder.conv_post.bias is present, but the 32 kHz config sets "
         "use_bias_at_final=false");
   }
-  im.conv_post = ConvSpec{st.add("decoder.conv_post.weight", {1, ch, 7}), Slice{}, 1, ch, 7};
+  im.conv_post = ConvSpec{st.add_conv("decoder.conv_post", {1, ch, 7}), Slice{}, 1, ch, 7};
 
   // Latent statistics ship as tensors as well as in the metadata JSON; prefer
   // the tensors so no JSON has to be parsed on the decode path.
-  im.latents_mean = to_f32(checkpoint.at("latents_mean"));
-  im.latents_std = to_f32(checkpoint.at("latents_std"));
+  if (const TensorView* mean = checkpoint.find("latents_mean")) {
+    im.latents_mean = to_f32(*mean);
+    im.latents_std = to_f32(checkpoint.at("latents_std"));
+  } else {
+    im.latents_mean = {
+        -.0202116875f, .3876466480f, -.0439827980f, -.2859151494f, .0817968621f,
+        -.3578264135f, .0406238100f, -.0155253450f, -.2233624817f, .1821006843f,
+        .2941778784f, -.0790116760f, -.0568150728f, -.3699028222f, -.3161631559f,
+        .5905951377f, -.0521395681f, .0136731603f, -.0369164786f, .0973266065f,
+        -.3394662329f, -.3068567754f, -.2450459891f, -.0346985245f, .0286803218f,
+        -.2121777927f, -.1678263170f, .3221287889f, -.1223055852f, .4356604928f,
+        -.0502599202f, .3979258376f};
+    im.latents_std = {
+        1.6895524230f, 2.7626372722f, 1.7945344281f, 1.6801681847f, 1.6390226547f,
+        2.7788298349f, 1.7659090096f, 1.6199757612f, 2.6336525640f, 1.8539356673f,
+        2.5056497897f, 1.8110192379f, 1.9579657791f, 1.6685498244f, 1.4922469314f,
+        3.2986701981f, 1.9491804497f, 1.8720003270f, 1.8334080103f, 1.6488070417f,
+        1.6176957696f, 1.9131449235f, 1.5695245398f, 1.6943659940f, 1.8318420763f,
+        1.5540637422f, 1.9344930329f, 1.5991982161f, 1.7180459898f, 1.6307219191f,
+        1.8661226051f, 1.5613768203f};
+  }
   if (im.latents_mean.size() != static_cast<size_t>(zc) ||
       im.latents_std.size() != static_cast<size_t>(zc)) {
     throw std::runtime_error("audio vae: latents_mean/latents_std are not [" +
