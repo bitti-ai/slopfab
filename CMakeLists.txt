@@ -117,7 +117,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/text/encoder.cpp
     )
     target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas)
+    target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas CUDA::cuda_driver)
     # Whole-program compilation: no device code crosses translation units, and
     # -rdc=true would otherwise require an explicit device-link step.
     set_target_properties(vidfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)

@@ -4,6 +4,7 @@
 
 #include "vidfab/cuda/sol_attention.cuh"
 
+#include <cuda.h>
 #include <cfloat>
 #include <cmath>
 #include <mma.h>
@@ -93,7 +94,8 @@ __global__ void thresholds(const __nv_bfloat16* q, const float* key_mean,
   if (t == 0) tau[size_t(qb) * heads + h] = scale * (mu + beta * sqrtf(fmaxf(var, 0.0f)));
 }
 
-__global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
+__global__ void sol(const __grid_constant__ CUtensorMap q_map,
+                    const __nv_bfloat16* q, const __nv_bfloat16* k,
                     const __nv_bfloat16* v, const __nv_bfloat16* km, const float* vs,
                     const float* tau, __nv_bfloat16* out, int seq, int heads,
                     int prefix, float scale, unsigned long long* route_counts) {
@@ -101,18 +103,37 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   const int warp = t / 32;
   const int qlo = qb * B, qn = min(B, seq - qlo), nblocks = (seq + B - 1) / B;
   const size_t width = size_t(heads) * D;
-  extern __shared__ __align__(16) unsigned char storage[];
+  extern __shared__ __align__(128) unsigned char storage[];
   float* score = reinterpret_cast<float*>(storage);
   float* acc = score + B * B;
   __nv_bfloat16* prob = reinterpret_cast<__nv_bfloat16*>(acc + B * D);
   __nv_bfloat16* staged_q = prob + B * B;
-  __shared__ float qm[D], red[D];
+  __shared__ float qm[D];
   __shared__ float om[B], ol[B], rescale[B], block_m[B], approx_weight[B];
   __shared__ int take;
   __shared__ uint8_t routes[Threads];
+  __shared__ alignas(8) uint64_t q_barrier;
 
-  for (int p = t; p < qn * D; p += Threads)
-    staged_q[p] = q[size_t(qlo + p / D) * width + h * D + p % D];
+  if (t == 0) {
+    const uint32_t dst = static_cast<uint32_t>(__cvta_generic_to_shared(staged_q));
+    uint32_t bar = static_cast<uint32_t>(__cvta_generic_to_shared(&q_barrier));
+    uint64_t state;
+    asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n"
+                 "fence.proxy.async.shared::cta;\n"
+                 "mbarrier.arrive.expect_tx.shared::cta.b64 %1, [%0], %2;\n"
+                 "cp.async.bulk.tensor.3d.shared::cta.global.tile."
+                 "mbarrier::complete_tx::bytes [%3], [%4, {%5, %6, %7}], [%0];"
+                 : "+r"(bar), "=l"(state)
+                 : "r"(B * D * int(sizeof(__nv_bfloat16))), "r"(dst), "l"(&q_map),
+                   "r"(0), "r"(h), "r"(qlo)
+                 : "memory");
+    uint32_t ready;
+    do {
+      asm volatile("{ .reg .pred p; mbarrier.test_wait.shared::cta.b64 p, [%1], %2; "
+                   "selp.b32 %0, 1, 0, p; }"
+                   : "=r"(ready) : "r"(bar), "l"(state) : "memory");
+    } while (!ready);
+  }
   __syncthreads();
   if (t < D) {
     float x = 0;
@@ -265,6 +286,27 @@ void validate(const AttentionConfig& c) {
   if (c.exact_prefix < 0 || c.exact_prefix > c.seq_len) throw std::runtime_error("Sol-Attn: invalid exact_prefix");
   if (!std::isfinite(c.sol_beta)) throw std::runtime_error("Sol-Attn: sol_beta must be finite");
 }
+
+CUtensorMap make_q_map(const __nv_bfloat16* q, const AttentionConfig& c) {
+  CUtensorMap map{};
+  const cuuint64_t dims[3] = {D, static_cast<cuuint64_t>(c.num_heads),
+                              static_cast<cuuint64_t>(c.seq_len)};
+  const cuuint64_t strides[2] = {D * sizeof(__nv_bfloat16),
+                                 cuuint64_t(c.num_heads) * D * sizeof(__nv_bfloat16)};
+  const cuuint32_t box[3] = {D, 1, B};
+  const cuuint32_t elem[3] = {1, 1, 1};
+  const CUresult status = cuTensorMapEncodeTiled(
+      &map, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 3, const_cast<__nv_bfloat16*>(q), dims,
+      strides, box, elem, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_NONE,
+      CU_TENSOR_MAP_L2_PROMOTION_L2_128B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  if (status != CUDA_SUCCESS) {
+    const char* message = nullptr;
+    cuGetErrorString(status, &message);
+    throw std::runtime_error(std::string("Sol-Attn: Q tensor map: ") +
+                             (message ? message : "CUDA driver error"));
+  }
+  return map;
+}
 }  // namespace
 
 size_t sol_attention_workspace_bytes(const AttentionConfig& c) {
@@ -288,13 +330,14 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   auto* key_mean = ws.alloc_n<float>(size_t(c.num_heads) * D);
   auto* key_var = ws.alloc_n<float>(size_t(c.num_heads) * D);
   auto* tau = ws.alloc_n<float>(size_t(nb) * c.num_heads);
+  const CUtensorMap q_map = make_q_map(q, c);
   pool_kv<<<dim3(nb, c.num_heads), D, 0, stream>>>(k, v, km, vs, c.seq_len, c.num_heads);
   key_stats<<<c.num_heads, D, 0, stream>>>(km, key_mean, key_var, nb, c.num_heads);
   thresholds<<<dim3(nb, c.num_heads), Threads, 0, stream>>>(
       q, key_mean, key_var, tau, c.seq_len, c.num_heads, c.effective_scale(), c.sol_beta);
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(sol, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                         int(SolSharedBytes)));
-  sol<<<dim3(nb, c.num_heads), Threads, SolSharedBytes, stream>>>(q, k, v, km, vs, tau, out, c.seq_len,
+  sol<<<dim3(nb, c.num_heads), Threads, SolSharedBytes, stream>>>(q_map, q, k, v, km, vs, tau, out, c.seq_len,
                                                      c.num_heads, c.exact_prefix,
                                                      c.effective_scale(), c.sol_route_counts);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
