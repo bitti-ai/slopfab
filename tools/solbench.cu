@@ -77,13 +77,17 @@ int main(int argc, char** argv) {
   cfg.seq_len = seq; cfg.num_heads = heads; cfg.head_dim = 128; cfg.exact_prefix = prefix;
   cfg.sol_beta = beta;
   vidfab::cuda::DeviceBuffer<unsigned long long> routes(2);
-  VIDFAB_CUDA_CHECK(cudaMemset(routes.get(), 0, routes.nbytes()));
-  cfg.sol_route_counts = routes.get();
   const size_t sol_bytes = vidfab::cuda::attention_workspace_bytes(
       cfg, vidfab::cuda::AttentionBackend::kSol);
   vidfab::cuda::Workspace ws; ws.reserve(sol_bytes);
   const float sol = time_backend(blas, q.get(), k.get(), v.get(), out.get(), cfg,
                                  vidfab::cuda::AttentionBackend::kSol, ws, 2, iterations);
+  // Diagnostics are deliberately outside the timed path.
+  VIDFAB_CUDA_CHECK(cudaMemset(routes.get(), 0, routes.nbytes()));
+  cfg.sol_route_counts = routes.get();
+  ws.clear();
+  vidfab::cuda::attention_forward(blas, nullptr, q.get(), k.get(), v.get(), out.get(), cfg,
+                                  vidfab::cuda::AttentionBackend::kSol, ws);
   unsigned long long route_host[2]{};
   VIDFAB_CUDA_CHECK(cudaMemcpy(route_host, routes.get(), sizeof(route_host), cudaMemcpyDeviceToHost));
   cfg.sol_route_counts = nullptr;
