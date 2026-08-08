@@ -349,6 +349,11 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   if (c.sol_phase_ms) VIDFAB_CUDA_CHECK(cudaEventRecord(phase[3], stream));
   const bool pipeline_ran = c.sol_pipeline &&
       sol_pipeline_forward(stream, q, k, v, km, vm, vs, tau, out, c);
+  if (c.sol_pipeline && !pipeline_ran) {
+    throw std::runtime_error(
+        "Sol-Attn experimental pipeline unavailable: requires SM120, head_dim=128, "
+        "at most 1024 blocks, and aligned TMA-compatible Q/K/V tensors");
+  }
   if (!pipeline_ran) {
     VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(sol, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                           int(SolSharedBytes)));

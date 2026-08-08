@@ -509,7 +509,7 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     AttentionBackend backend = AttentionBackend::kFused;
     if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
     if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
-    if (attention_mode == AttentionMode::kSol) backend = AttentionBackend::kSol;
+    if (is_sol_attention(attention_mode)) backend = AttentionBackend::kSol;
     scratch = std::max(scratch, cuda::attention_workspace_bytes(acfg, backend));
   }
   c.scratch = scratch;
@@ -824,14 +824,15 @@ struct Transformer::Impl {
     if (block_attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
     // Released H3 policy: dense for the first ten denoiser evaluations and
     // for blocks 0 and 1 on every later evaluation. Refiner layer=-1 is dense.
-    if (block_attention_mode == AttentionMode::kSol && denoise_step >= 10 && layer >= 2)
+    if (is_sol_attention(block_attention_mode) && denoise_step >= 10 && layer >= 2)
       backend = AttentionBackend::kSol;
     // Empty unless this request asked for a band, so the default path hands the
     // kernel a null pointer and gets the unbanded instantiation.
     acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
     if (backend == AttentionBackend::kSol && rows == layout.total_rows()) {
       acfg.exact_prefix = layout.video_start();
-      acfg.sol_pipeline = sol_pipeline_diag;
+      acfg.sol_pipeline = block_attention_mode == AttentionMode::kSolExperimental ||
+                          sol_pipeline_diag;
     }
     if (layer >= 0 && !sol_capture_path.empty()) capture_sol_inputs(q, k, v, rows, layer);
     cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
@@ -1665,7 +1666,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   const size_t per_block = s.block_mod_stride();
   for (size_t b = 0; b < s.blocks.size(); ++b) {
     const AttentionMode block_mode =
-        s.attention_mode == AttentionMode::kSol && (s.denoise_step < 10 || b < 2)
+        is_sol_attention(s.attention_mode) && (s.denoise_step < 10 || b < 2)
             ? AttentionMode::kFlash2
             : s.attention_mode;
     s.run_block(s.blocks[b], s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),

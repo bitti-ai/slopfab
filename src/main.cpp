@@ -448,7 +448,9 @@ const CommandHelp kCommands[] = {
      "                               The audio cost is NOT characterised -- one seed\n"
      "                               per point leaves its noise floor moving as much\n"
      "                               as the effect. Judge output before relying on it\n"
-     "  --attention <backend>        none, flash2, sage2 (default), or sol. 'none' uses\n"
+     "  --attention <backend>        none, flash2, sage2 (default), sol, or\n"
+     "                               sol-experimental. The experimental SM120-only\n"
+     "                               path is lossy and fails rather than falling back.\n"
      "                               unfused reference implementation. Sage2 is lossy\n"
      "                               INT8/FP8 attention and requires a supported GPU\n"
      "  --dump-latents <f>           the denoiser's own output as fp32 safetensors,\n"
@@ -1199,9 +1201,12 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       else if (v == "flash2") attention_mode = vidfab::AttentionMode::kFlash2;
       else if (v == "sage2") attention_mode = vidfab::AttentionMode::kSage2;
       else if (v == "sol") attention_mode = vidfab::AttentionMode::kSol;
+      else if (v == "sol-experimental")
+        attention_mode = vidfab::AttentionMode::kSolExperimental;
       else {
         std::fprintf(stderr,
-                     "vidfab: --attention wants none, flash2, sage2, or sol, got '%s'\n", v.c_str());
+                     "vidfab: --attention wants none, flash2, sage2, sol, or "
+                     "sol-experimental, got '%s'\n", v.c_str());
         return 2;
       }
     } else if (arg == "--init-latents") {

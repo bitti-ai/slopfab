@@ -871,7 +871,7 @@ one-tile pipeline replaced a working schedule with a rigid one.
 
 ### Frame-banded attention — `--attn-band`, off by default
 
-The generator exposes `--attention none|flash2|sage2`. `flash2` is the default
+The generator exposes `--attention none|flash2|sage2|sol|sol-experimental`. `flash2` is the default
 exact BF16 fused path; `none` is the unfused, memory-bounded cuBLAS reference.
 `sage2` is an explicitly lossy SageAttention2.2 path: smooth-K, per-warp INT8
 Q/K, per-channel FP8 E4M3 V, and the upstream INT8-QK/FP8-PV tensor-core
@@ -880,6 +880,16 @@ sizing. It supports head dimensions 64 and 128 on compute capability 8.9 or
 newer. Frame banding with Sage2 is rejected rather than silently falling back.
 The vendored primitives retain Apache-2.0 notices under
 `third_party/sageattention`.
+
+`sol` is the scalar training-free block-routing reference. `sol-experimental`
+selects the separate SM120 TMA/WMMA pipeline evaluated in
+`docs/sol_quality_gate_2026-08-08.md`. Both are lossy: rejected 64-token blocks
+use the released centroid/value correction rather than exact token attention.
+The experimental spelling is intentional while its quality matrix is under
+review. It requires SM120, head dimension 128, no more than 1024 physical
+blocks, and TMA-compatible aligned tensors; an unsupported request fails
+clearly and never silently runs the scalar kernel. Frame banding is incompatible
+with either Sol mode.
 
 A video row attends to ±N latent frames instead of the whole packed sequence.
 Text and audio rows keep global attention, and every video row keeps the
