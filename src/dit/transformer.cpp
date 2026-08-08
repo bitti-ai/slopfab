@@ -946,6 +946,12 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   }
   const TransformerQuantization checkpoint_quant = detect_transformer_quantization(checkpoint);
   if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN &&
+      checkpoint_quant == TransformerQuantization::kBitsAndBytesNF4) {
+    throw std::runtime_error(
+        "transformer: full-AdaLN NF4 Ref2VA is disabled because it produces invalid tiled "
+        "video; use the pruned FP8 Ref2VA checkpoint");
+  }
+  if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN &&
       checkpoint_quant != TransformerQuantization::kFloat8 &&
       checkpoint_quant != TransformerQuantization::kBitsAndBytesNF4) {
     throw std::runtime_error(

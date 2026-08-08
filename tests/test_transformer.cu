@@ -1686,12 +1686,13 @@ VIDFAB_TEST(transformer_real_ref2va_nf4_checkpoint_load) {
   CHECK_MSG(states == 259, "expected 259 NF4 matrices, found %zu", states);
 
   Transformer model;
-  model.load(st, TransformerConfig{});
-  const double resident_gib =
-      static_cast<double>(model.weight_bytes()) / (1024.0 * 1024.0 * 1024.0);
-  std::printf("  Ref2VA NF4 resident %.3f GiB\n", resident_gib);
-  CHECK_MSG(resident_gib > 15.0 && resident_gib < 17.0,
-            "NF4 transformer occupies %.3f GiB, expected about 16", resident_gib);
+  bool rejected = false;
+  try {
+    model.load(st, TransformerConfig{});
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  CHECK(rejected);
 }
 
 // The nvfp4 build of the same 33B model, end to end and against the fp8 build.
