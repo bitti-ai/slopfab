@@ -1816,6 +1816,61 @@ VIDFAB_TEST(attention_fused_ragged_tail) {
   }
 }
 
+VIDFAB_TEST(attention_sol) {
+  CublasScope cb;
+  const int seq = 79;  // one full and one ragged physical block
+  const int heads = 2;
+  const int dim = 128;
+  const int width = heads * dim;
+  const std::vector<float> q = bf16_round(make_data(size_t(seq) * width, 911u, 0.3f));
+  std::vector<float> k = bf16_round(make_data(size_t(seq) * width, 912u, 0.3f));
+  const std::vector<float> v = bf16_round(make_data(size_t(seq) * width, 913u, 1.0f));
+
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len = seq;
+  cfg.num_heads = heads;
+  cfg.head_dim = dim;
+  const size_t bytes =
+      vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kSol);
+  CHECK(bytes > 0);
+
+  auto run = [&](const std::vector<float>& keys, float beta) {
+    BfBuf dq(q), dk(keys), dv(v), dout(size_t(seq) * width);
+    cfg.sol_beta = beta;
+    Workspace ws;
+    ws.reserve(bytes);
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                    vidfab::cuda::AttentionBackend::kSol, ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    return dout.host();
+  };
+
+  // A cutoff below every finite proxy selects every block, reducing Sol-Attn
+  // to exact attention. This pins the common online-softmax state and tail.
+  const std::vector<float> want =
+      cpu_attention(q, k, v, seq, heads, heads, dim, cfg.effective_scale());
+  CHECK_CLOSE_REL(want, run(k, -1.0e6f), 1e-3, 1e-2,
+                  "Sol-Attn all-selected equals dense attention");
+
+  // If K is constant within each physical block, the zeroth-order correction
+  // is mathematically exact even when every routable block is rejected. This
+  // independently catches mean-vs-sum and ragged-tail multiplicity mistakes.
+  for (int row = 0; row < seq; ++row) {
+    const int source = (row / 64) * 64;
+    for (int x = 0; x < width; ++x) k[size_t(row) * width + x] = k[size_t(source) * width + x];
+  }
+  const std::vector<float> constant_want =
+      cpu_attention(q, k, v, seq, heads, heads, dim, cfg.effective_scale());
+  CHECK_CLOSE_REL(constant_want, run(k, 1.0e6f), 1e-3, 1e-2,
+                  "Sol-Attn rejected constant-K blocks equal dense attention");
+
+  // Forced-exact prefix includes the crossing physical block, so selecting an
+  // arbitrary multimodal boundary cannot approximate any prefix key.
+  cfg.exact_prefix = 70;
+  CHECK_CLOSE_REL(constant_want, run(k, 1.0e6f), 1e-3, 1e-2,
+                  "Sol-Attn forced-exact prefix");
+}
+
 VIDFAB_TEST(attention_sage2) {
   CublasScope cb;
   const int seq = 199;
