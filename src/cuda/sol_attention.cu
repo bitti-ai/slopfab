@@ -15,10 +15,8 @@ namespace vidfab::cuda {
 namespace {
 constexpr int B = 64;
 constexpr int D = 128;
-// SM120's warp MMA path uses the same four-warp CTA shape as the released
-// CuTe kernel.  Besides reducing CTA-wide synchronization cost, this gives
-// each thread stable ownership of 64 output values for the whole mainloop.
-constexpr int Threads = 128;
+constexpr int Threads = 256;
+constexpr size_t SolSharedBytes = (B * B + B * D) * sizeof(float) + B * B * sizeof(__nv_bfloat16);
 constexpr size_t Align = 256;
 size_t aligned(size_t n) { return (n + Align - 1) & ~(Align - 1); }
 
@@ -99,17 +97,16 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
                     const float* tau, __nv_bfloat16* out, int seq, int heads,
                     int prefix, float scale) {
   const int qb = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
+  const int warp = t / 32;
   const int qlo = qb * B, qn = min(B, seq - qlo), nblocks = (seq + B - 1) / B;
   const size_t width = size_t(heads) * D;
-  const int warp = t / 32;
-  __shared__ float qm[D], score[B * B];
+  extern __shared__ __align__(16) unsigned char storage[];
+  float* score = reinterpret_cast<float*>(storage);
+  float* acc = score + B * B;
+  __nv_bfloat16* prob = reinterpret_cast<__nv_bfloat16*>(acc + B * D);
+  __shared__ float qm[D], red[D];
   __shared__ float om[B], ol[B], rescale[B], block_m[B];
-  // Evaluate a whole route group in parallel.  The old implementation used
-  // a 128-thread reduction (and seven barriers) for every physical block.
-  // This is the native equivalent of the reference kernel's CTA-local route
-  // tile: one thread owns one pooled-key dot product, then the mainloop reads
-  // the compact byte table without another reduction.
-  __shared__ unsigned char route[Threads];
+  __shared__ int take;
 
   if (t < D) {
     float x = 0;
@@ -119,29 +116,20 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   if (t < B) { om[t] = -FLT_MAX; ol[t] = 0; }
   __syncthreads();
 
-  // 8192 output scalars / 128 threads = 64 register accumulators per thread.
-  float acc[64];
-#pragma unroll
-  for (int slot = 0; slot < 64; ++slot) acc[slot] = 0;
+  for (int od = t; od < B * D; od += Threads) acc[od] = 0;
+  __syncthreads();
 
-  for (int route_base = 0; route_base < nblocks; route_base += Threads) {
-    const int route_kb = route_base + t;
-    if (route_kb < nblocks) {
-      float proxy = 0;
-#pragma unroll 4
-      for (int d = 0; d < D; ++d)
-        proxy += qm[d] * __bfloat162float(
-            km[(size_t(route_kb) * heads + h) * D + d]);
-      const int klo = route_kb * B;
-      route[t] = qlo < prefix || klo < prefix || abs(qb - route_kb) <= 1 ||
-                 proxy * scale > tau[size_t(qb) * heads + h];
+  for (int kb = 0; kb < nblocks; ++kb) {
+    const int klo = kb * B, kn = min(B, seq - klo);
+    float px = t < D ? qm[t] * __bfloat162float(km[(size_t(kb) * heads + h) * D + t]) : 0;
+    const float proxy = reduce128(px, red) * scale;
+    if (t == 0) {
+      // Prefix queries are dense. Prefix/sink keys and immediate physical
+      // neighbours are invariant exact routes in the official H3 policy.
+      take = qlo < prefix || klo < prefix || abs(qb - kb) <= 1 ||
+             proxy > tau[size_t(qb) * heads + h];
     }
     __syncthreads();
-
-    const int route_end = min(route_base + Threads, nblocks);
-    for (int kb = route_base; kb < route_end; ++kb) {
-    const int klo = kb * B, kn = min(B, seq - klo);
-    const bool take = route[kb - route_base] != 0;
 
     if (take) {
       if (qn == B && kn == B) {
@@ -163,18 +151,15 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
             wmma::mma_sync(c, a, b, c);
           }
           for (unsigned i = 0; i < c.num_elements; ++i) c.x[i] *= scale;
-          wmma::store_matrix_sync(score + qr * B + kr, c, B,
-                                  wmma::mem_row_major);
+          wmma::store_matrix_sync(score + qr * B + kr, c, B, wmma::mem_row_major);
         }
       } else {
         for (int p = t; p < qn * kn; p += Threads) {
           const int qr = p / kn, kr = p % kn;
           float dot = 0;
-#pragma unroll 4
-          for (int d = 0; d < D; ++d) {
+          for (int d = 0; d < D; ++d)
             dot += __bfloat162float(q[size_t(qlo + qr) * width + h * D + d]) *
                    __bfloat162float(k[size_t(klo + kr) * width + h * D + d]);
-          }
           score[qr * B + kr] = dot * scale;
         }
       }
@@ -191,16 +176,41 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
         om[t] = nm;
       }
       __syncthreads();
-#pragma unroll 64
-      for (int slot = 0; slot < 64; ++slot) {
-        const int od = t + slot * Threads;
-        if (od >= qn * D) continue;
-        const int qr = od / D, d = od % D;
-        float add = 0;
-        for (int kr = 0; kr < kn; ++kr)
-          add += expf(score[qr * B + kr] - block_m[qr]) *
-                 __bfloat162float(v[size_t(klo + kr) * width + h * D + d]);
-        acc[slot] = acc[slot] * rescale[qr] + add;
+      for (int od = t; od < qn * D; od += Threads) {
+        const int qr = od / D;
+        acc[od] *= rescale[qr];
+      }
+      if (qn == B && kn == B) {
+        for (int p = t; p < B * B; p += Threads)
+          prob[p] = __float2bfloat16_rn(expf(score[p] - block_m[p / B]));
+        __syncthreads();
+        using namespace nvcuda;
+        for (int tile = warp; tile < 32; tile += Threads / 32) {
+          const int qr = (tile / 8) * 16, d = (tile % 8) * 16;
+          wmma::fragment<wmma::accumulator, 16, 16, 16, float> c;
+          wmma::load_matrix_sync(c, acc + qr * D + d, D, wmma::mem_row_major);
+#pragma unroll
+          for (int kr = 0; kr < B; kr += 16) {
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16,
+                           wmma::row_major> a;
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16,
+                           wmma::row_major> b;
+            wmma::load_matrix_sync(a, prob + qr * B + kr, B);
+            wmma::load_matrix_sync(b, v + size_t(klo + kr) * width + h * D + d,
+                                   width);
+            wmma::mma_sync(c, a, b, c);
+          }
+          wmma::store_matrix_sync(acc + qr * D + d, c, D, wmma::mem_row_major);
+        }
+      } else {
+        for (int od = t; od < qn * D; od += Threads) {
+          const int qr = od / D, d = od % D;
+          float add = 0;
+          for (int kr = 0; kr < kn; ++kr)
+            add += expf(score[qr * B + kr] - block_m[qr]) *
+                   __bfloat162float(v[size_t(klo + kr) * width + h * D + d]);
+          acc[od] += add;
+        }
       }
     } else {
       if (t < qn) {
@@ -216,24 +226,18 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
         om[t] = nm;
       }
       __syncthreads();
-#pragma unroll 64
-      for (int slot = 0; slot < 64; ++slot) {
-        const int od = t + slot * Threads;
-        if (od >= qn * D) continue;
+      for (int od = t; od < qn * D; od += Threads) {
         const int qr = od / D, d = od % D;
-        acc[slot] = acc[slot] * rescale[qr] +
-                    expf(score[qr * B] - block_m[qr]) * vs[(size_t(kb) * heads + h) * D + d];
+        acc[od] = acc[od] * rescale[qr] +
+                  expf(score[qr * B] - block_m[qr]) * vs[(size_t(kb) * heads + h) * D + d];
       }
     }
     __syncthreads();
-    }
   }
-#pragma unroll 64
-  for (int slot = 0; slot < 64; ++slot) {
-    const int od = t + slot * Threads;
+  for (int od = t; od < qn * D; od += Threads) {
     if (od < qn * D) {
       const int qr = od / D, d = od % D;
-      out[size_t(qlo + qr) * width + h * D + d] = __float2bfloat16_rn(acc[slot] / ol[qr]);
+      out[size_t(qlo + qr) * width + h * D + d] = __float2bfloat16_rn(acc[od] / ol[qr]);
     }
   }
 }
@@ -272,7 +276,9 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   key_stats<<<c.num_heads, D, 0, stream>>>(km, key_mean, key_var, nb, c.num_heads);
   thresholds<<<dim3(nb, c.num_heads), Threads, 0, stream>>>(
       q, key_mean, key_var, tau, c.seq_len, c.num_heads, c.effective_scale(), c.sol_beta);
-  sol<<<dim3(nb, c.num_heads), Threads, 0, stream>>>(q, k, v, km, vs, tau, out, c.seq_len,
+  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(sol, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        int(SolSharedBytes)));
+  sol<<<dim3(nb, c.num_heads), Threads, SolSharedBytes, stream>>>(q, k, v, km, vs, tau, out, c.seq_len,
                                                      c.num_heads, c.exact_prefix,
                                                      c.effective_scale());
   VIDFAB_CUDA_CHECK(cudaGetLastError());
