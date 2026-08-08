@@ -30,6 +30,8 @@ inline bool is_sol_attention(AttentionMode mode) {
 
 struct SolSchedule {
   float beta = 1.0f;
+  float error_k = 0.0f;
+  float error_v = 0.0f;
   int step_begin = 10;
   int step_end = std::numeric_limits<int>::max();
   int step_every = 1;

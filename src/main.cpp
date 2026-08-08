@@ -452,6 +452,7 @@ const CommandHelp kCommands[] = {
      "                               sol-experimental. The experimental SM120-only\n"
      "                               path is lossy and fails rather than falling back.\n"
      "  --sol-beta <f>               routing threshold multiplier (default 1)\n"
+     "  --sol-error-k/v <f>           experimental K-residual/V-dispersion weights\n"
      "  --sol-step-start/end <n>     inclusive active denoise range (default 10..max)\n"
      "  --sol-step-every <n>         activate every nth step in that range\n"
      "  --sol-layer-start/end <n>    inclusive active main-layer range (default 2..max)\n"
@@ -1217,6 +1218,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       }
     } else if (arg == "--sol-beta") {
       sol_schedule.beta = std::strtof(next("--sol-beta"), nullptr);
+    } else if (arg == "--sol-error-k") {
+      sol_schedule.error_k=std::strtof(next("--sol-error-k"),nullptr);
+    } else if (arg == "--sol-error-v") {
+      sol_schedule.error_v=std::strtof(next("--sol-error-v"),nullptr);
     } else if (arg == "--sol-step-start") {
       sol_schedule.step_begin = std::atoi(next("--sol-step-start"));
     } else if (arg == "--sol-step-end") {
@@ -1245,7 +1250,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     std::fprintf(stderr, "vidfab: generate needs --prompt \"...\"\n");
     return 2;
   }
-  if (!std::isfinite(sol_schedule.beta) || sol_schedule.step_every <= 0 ||
+  if (!std::isfinite(sol_schedule.beta)||!std::isfinite(sol_schedule.error_k)||
+      !std::isfinite(sol_schedule.error_v)||sol_schedule.error_k<0||sol_schedule.error_v<0||
+      sol_schedule.step_every <= 0 ||
       sol_schedule.layer_every <= 0 || sol_schedule.step_begin < 0 ||
       sol_schedule.layer_begin < 0 || sol_schedule.step_end < sol_schedule.step_begin ||
       sol_schedule.layer_end < sol_schedule.layer_begin) {

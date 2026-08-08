@@ -35,20 +35,31 @@ __device__ float reduce128(float x, float* s) {
 
 __global__ void pool_kv(const __nv_bfloat16* k, const __nv_bfloat16* v,
                         __nv_bfloat16* km, __nv_bfloat16* vm, float* vs,
+                        float* k_residual, float* v_residual,
                         int seq, int heads) {
   const int kb = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
   const int lo = kb * B, hi = min(lo + B, seq);
   const size_t width = size_t(heads) * D;
   const size_t dst = (size_t(kb) * heads + h) * D + d;
-  float sk = 0, sv = 0;
+  float sk=0,sv=0,sk2=0,sv2=0;
   for (int r = lo; r < hi; ++r) {
     const size_t p = size_t(r) * width + h * D + d;
     sk += __bfloat162float(k[p]);
     sv += __bfloat162float(v[p]);
+    const float kx=__bfloat162float(k[p]),vx=__bfloat162float(v[p]);
+    sk2+=kx*kx;sv2+=vx*vx;
   }
   km[dst] = __float2bfloat16_rn(sk / float(hi - lo));
   vm[dst] = __float2bfloat16_rn(sv / float(hi - lo));
   vs[dst] = sv;
+  __shared__ float kr[D],vr[D];
+  const float inv=1.0f/float(hi-lo),mk=sk*inv,mv0=sv*inv;
+  kr[d]=fmaxf(0.0f,sk2*inv-mk*mk);
+  vr[d]=fmaxf(0.0f,sv2*inv-mv0*mv0);
+  __syncthreads();
+  for(int n=D/2;n;n>>=1){if(d<n){kr[d]+=kr[d+n];vr[d]+=vr[d+n];}__syncthreads();}
+  if(d==0){const size_t b=size_t(kb)*heads+h;
+    k_residual[b]=sqrtf(kr[0]/D);v_residual[b]=sqrtf(vr[0]/D);}
 }
 
 // Released H3 diagonal estimator over pooled keys: population mean and
@@ -316,6 +327,7 @@ size_t sol_attention_workspace_bytes(const AttentionConfig& c) {
   const size_t nb = (size_t(c.seq_len) + B - 1) / B;
   const size_t pooled = nb * c.num_heads * D;
   return 2*aligned(pooled * sizeof(__nv_bfloat16)) + aligned(pooled * sizeof(float)) +
+         2*aligned(nb*c.num_heads*sizeof(float))+
          2 * aligned(size_t(c.num_heads) * D * sizeof(float)) +
          aligned(nb * c.num_heads * sizeof(float));
 }
@@ -330,6 +342,8 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   auto* km = ws.alloc_n<__nv_bfloat16>(pooled);
   auto* vm = ws.alloc_n<__nv_bfloat16>(pooled);
   auto* vs = ws.alloc_n<float>(pooled);
+  auto* k_residual=ws.alloc_n<float>(size_t(nb)*c.num_heads);
+  auto* v_residual=ws.alloc_n<float>(size_t(nb)*c.num_heads);
   auto* key_mean = ws.alloc_n<float>(size_t(c.num_heads) * D);
   auto* key_var = ws.alloc_n<float>(size_t(c.num_heads) * D);
   auto* tau = ws.alloc_n<float>(size_t(nb) * c.num_heads);
@@ -339,7 +353,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
     for (auto& event : phase) VIDFAB_CUDA_CHECK(cudaEventCreate(&event));
     VIDFAB_CUDA_CHECK(cudaEventRecord(phase[0], stream));
   }
-  pool_kv<<<dim3(nb, c.num_heads), D, 0, stream>>>(k, v, km, vm, vs,
+  pool_kv<<<dim3(nb, c.num_heads), D, 0, stream>>>(k, v, km, vm, vs,k_residual,v_residual,
                                                    c.seq_len, c.num_heads);
   if (c.sol_phase_ms) VIDFAB_CUDA_CHECK(cudaEventRecord(phase[1], stream));
   key_stats<<<c.num_heads, D, 0, stream>>>(km, key_mean, key_var, nb, c.num_heads);
@@ -348,7 +362,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
       q, key_mean, key_var, tau, c.seq_len, c.num_heads, c.effective_scale(), c.sol_beta);
   if (c.sol_phase_ms) VIDFAB_CUDA_CHECK(cudaEventRecord(phase[3], stream));
   const bool pipeline_ran = c.sol_pipeline &&
-      sol_pipeline_forward(stream, q, k, v, km, vm, vs, tau, out, c);
+      sol_pipeline_forward(stream,q,k,v,km,vm,vs,k_residual,v_residual,tau,out,c);
   if (c.sol_pipeline && !pipeline_ran) {
     throw std::runtime_error(
         "Sol-Attn experimental pipeline unavailable: requires SM120, head_dim=128, "

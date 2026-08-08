@@ -833,6 +833,8 @@ struct Transformer::Impl {
     if (backend == AttentionBackend::kSol && rows == layout.total_rows()) {
       acfg.exact_prefix = layout.video_start();
       acfg.sol_beta = sol_schedule.beta;
+      acfg.sol_error_k=sol_schedule.error_k;
+      acfg.sol_error_v=sol_schedule.error_v;
       acfg.sol_pipeline = block_attention_mode == AttentionMode::kSolExperimental ||
                           sol_pipeline_diag;
     }

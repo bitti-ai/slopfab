@@ -58,8 +58,9 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     const __grid_constant__ CUtensorMap kmap,
     const __grid_constant__ CUtensorMap vmap, __nv_bfloat16* out,
     const __nv_bfloat16* km, const __nv_bfloat16* vm, const float* vs,
+    const float* k_residual,const float* v_residual,
     const float* tau,
-    int seq, int heads, int prefix, float scale,
+    int seq, int heads, int prefix, float scale,float error_k,float error_v,
     unsigned long long* route_counts) {
   const int qb = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
   const int qlo = qb * B, qn=min(B,seq-qlo), blocks = (seq+B-1)/B, warp = t >> 5;
@@ -100,12 +101,19 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   __syncthreads();
   score[t]=qavg/float(qn);
   __syncthreads();
+  __shared__ float query_norm;
+  if(t==0){float qnorm=0;for(int d=0;d<D;++d)qnorm+=score[d]*score[d];
+    query_norm=sqrtf(qnorm);}
+  __syncthreads();
   for(int kb=t;kb<blocks;kb+=Threads) {
     float proxy=0;
     for(int d=0;d<D;++d)
       proxy += score[d]*__bfloat162float(km[(size_t(kb)*heads+h)*D+d]);
+    const size_t bi=size_t(kb)*heads+h;
+    const float hetero=query_norm*k_residual[bi]*
+                       (1.0f+error_v*v_residual[bi]);
     const bool take=qlo<prefix || kb*B<prefix || abs(qb-kb)<=1 ||
-                    proxy*scale>tau[size_t(qb)*heads+h];
+                    (proxy+error_k*hetero)*scale>tau[size_t(qb)*heads+h];
     const int slot=take?atomicAdd(&exact_count,1):atomicAdd(&approx_count,1);
     route_ids[take?slot:MaxBlocks-1-slot]=uint16_t(kb);
     if(route_counts) atomicAdd(route_counts+(take?0:1),1ull);
@@ -320,7 +328,7 @@ bool map_for(const __nv_bfloat16* p, const AttentionConfig& c, CUtensorMap* m) {
 bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const __nv_bfloat16* k, const __nv_bfloat16* v,
                           const __nv_bfloat16* km, const __nv_bfloat16* vm,
-                          const float* vs,
+                          const float* vs,const float* k_residual,const float* v_residual,
                           const float* tau, __nv_bfloat16* out,
                           const AttentionConfig& c) {
   if (c.head_dim != D || (c.seq_len+B-1)/B > MaxBlocks) return false;
@@ -331,8 +339,8 @@ bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(exact_pipeline,
       cudaFuncAttributeMaxDynamicSharedMemorySize,int(SmemBytes)));
   exact_pipeline<<<dim3((c.seq_len+B-1)/B,c.num_heads),Threads,SmemBytes,stream>>>(
-      q_map,k_map,v_map,out,km,vm,vs,tau,c.seq_len,c.num_heads,c.exact_prefix,
-      c.effective_scale(),c.sol_route_counts);
+      q_map,k_map,v_map,out,km,vm,vs,k_residual,v_residual,tau,c.seq_len,c.num_heads,
+      c.exact_prefix,c.effective_scale(),c.sol_error_k,c.sol_error_v,c.sol_route_counts);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
   return true;
 }

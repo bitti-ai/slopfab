@@ -76,6 +76,8 @@ struct AttentionConfig {
   // away for a normal distribution).
   int exact_prefix = 0;
   float sol_beta = 1.0f;  // Official H3 diagonal-estimator cutoff.
+  float sol_error_k = 0.0f;  // Experimental q-norm * within-block K residual bound.
+  float sol_error_v = 0.0f;  // Optional within-block V-dispersion multiplier.
   // Optional device counters [exact routes, approximate routes]. Null keeps
   // production routing free of diagnostic atomics.
   unsigned long long* sol_route_counts = nullptr;

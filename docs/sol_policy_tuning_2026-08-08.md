@@ -30,3 +30,20 @@ That is below normal timing dispersion and is not a meaningful speedup.
 Therefore no cadence/beta policy simultaneously provides material acceleration
 and the declared quality. No holdout was consumed and the experimental path
 remains disabled. Artifacts are under `build-sol/quality-tuning/`.
+
+## Error-aware routing follow-up
+
+The experimental route score was extended with CTA-local query norm times the
+preprocessed within-block K residual RMS, optionally weighted by within-block V
+dispersion. Both weights default to zero. A capture-only grid (before another
+prompt run) selected `error_k=.02,error_v=.10`: on step 0/layer 0 and
+step 10/layer 2 it routed 22.4%/19.7% exact, ran at 1.259x/1.370x, and changed
+rel-L2 from about .1442 to .1304 and .04168 to .04036. This was the best
+matched-density point across `error_k=.02,.05,.10` and V weights `.02,.05,.10`.
+
+The frozen candidate then failed the hardest allowed tuning case, dialogue seed
+11: video/audio latent cosine .9877/.9429 and decoded audio cosine .75965.
+Testing stopped immediately; the other tuning rows and every holdout remained
+untouched. Default-zero routing still gives 1.404x on the representative active
+capture, all outputs finite, and six pipeline checks pass. Error-aware controls
+remain experimental diagnostics, not a promoted policy.

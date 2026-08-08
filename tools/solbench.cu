@@ -96,6 +96,7 @@ float time_backend(cublasHandle_t blas, const __nv_bfloat16* q, const __nv_bfloa
 int main(int argc, char** argv) {
   int seq = 8192, heads = 8, iterations = 5, prefix = 951;
   float beta = 1.0f;
+  float error_k=0.0f,error_v=0.0f;
   bool pipeline = false;
   std::string input;
   std::string save_input;
@@ -109,6 +110,8 @@ int main(int argc, char** argv) {
       if (++i >= argc) return 2;
       beta = std::strtof(argv[i], nullptr);
     }
+    else if (!std::strcmp(argv[i],"--error-k")){if(++i>=argc)return 2;error_k=std::strtof(argv[i],nullptr);}
+    else if (!std::strcmp(argv[i],"--error-v")){if(++i>=argc)return 2;error_v=std::strtof(argv[i],nullptr);}
     else if (!std::strcmp(argv[i], "--experimental-pipeline")) pipeline = true;
     else if (!std::strcmp(argv[i], "--pipeline")) {
       std::fprintf(stderr,"--pipeline was renamed --experimental-pipeline\n");
@@ -190,6 +193,7 @@ int main(int argc, char** argv) {
   vidfab::cuda::AttentionConfig cfg;
   cfg.seq_len = seq; cfg.num_heads = heads; cfg.head_dim = 128; cfg.exact_prefix = prefix;
   cfg.sol_beta = beta;
+  cfg.sol_error_k=error_k;cfg.sol_error_v=error_v;
   cfg.sol_pipeline = pipeline;
   vidfab::cuda::DeviceBuffer<unsigned long long> routes(2);
   const size_t sol_bytes = vidfab::cuda::attention_workspace_bytes(
