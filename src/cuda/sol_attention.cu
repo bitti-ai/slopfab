@@ -45,33 +45,49 @@ __global__ void pool_kv(const __nv_bfloat16* k, const __nv_bfloat16* v,
   vs[dst] = sv;
 }
 
-// The diagonal-estimator threshold is produced once per (head, query block),
-// rather than once per query row. Its small output is not a routing map.
-__global__ void thresholds(const __nv_bfloat16* q, const __nv_bfloat16* km, float* tau,
-                           int seq, int heads, float scale, float beta) {
+// Released H3 diagonal estimator over pooled keys: population mean and
+// diagonal population variance, once per head and request.
+__global__ void key_stats(const __nv_bfloat16* km, float* key_mean, float* key_var,
+                          int nblocks, int heads) {
+  const int h = blockIdx.x, d = threadIdx.x;
+  float mean = 0, m2 = 0;
+  for (int kb = 0; kb < nblocks; ++kb) {
+    const float x = __bfloat162float(km[(size_t(kb) * heads + h) * D + d]);
+    const float delta = x - mean;
+    mean += delta / float(kb + 1);
+    m2 += delta * (x - mean);
+  }
+  key_mean[h * D + d] = mean;
+  key_var[h * D + d] = m2 / float(nblocks);
+}
+
+// tau = scale * (qbar.meanK + beta * sqrt(qbar^2.diagVarK)).
+__global__ void thresholds(const __nv_bfloat16* q, const float* key_mean,
+                           const float* key_var, float* tau, int seq, int heads,
+                           float scale, float beta) {
   const int qb = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
   const int qlo = qb * B, qhi = min(qlo + B, seq);
-  const int nblocks = (seq + B - 1) / B;
   const size_t width = size_t(heads) * D;
-  __shared__ float qm[D], scratch[D], mean, m2;
+  __shared__ float scratch[D];
   if (t < D) {
     float x = 0;
     for (int r = qlo; r < qhi; ++r) x += __bfloat162float(q[size_t(r) * width + h * D + t]);
-    qm[t] = x / float(qhi - qlo);
+    const float qm = x / float(qhi - qlo);
+    scratch[t] = qm * key_mean[h * D + t];
   }
-  if (t == 0) mean = m2 = 0;
   __syncthreads();
-  for (int kb = 0; kb < nblocks; ++kb) {
-    float x = t < D ? qm[t] * __bfloat162float(km[(size_t(kb) * heads + h) * D + t]) : 0;
-    const float proxy = reduce128(x, scratch) * scale;
-    if (t == 0) {
-      const float delta = proxy - mean;
-      mean += delta / float(kb + 1);
-      m2 += delta * (proxy - mean);
-    }
-    __syncthreads();
+  float mu = t < D ? scratch[t] : 0;
+  mu = reduce128(mu, scratch);
+  // Recompute qbar after the reduction because scratch is the reduction arena.
+  float variance_term = 0;
+  if (t < D) {
+    float x = 0;
+    for (int r = qlo; r < qhi; ++r) x += __bfloat162float(q[size_t(r) * width + h * D + t]);
+    const float qm = x / float(qhi - qlo);
+    variance_term = qm * qm * key_var[h * D + t];
   }
-  if (t == 0) tau[size_t(qb) * heads + h] = mean + beta * sqrtf(m2 / float(nblocks));
+  const float var = reduce128(variance_term, scratch);
+  if (t == 0) tau[size_t(qb) * heads + h] = scale * (mu + beta * sqrtf(fmaxf(var, 0.0f)));
 }
 
 __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
@@ -96,7 +112,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   // 8192 output scalars / 256 threads = 32 register accumulators per thread.
   float acc[32];
 #pragma unroll
-  for (float& x : acc) x = 0;
+  for (int slot = 0; slot < 32; ++slot) acc[slot] = 0;
 
   for (int kb = 0; kb < nblocks; ++kb) {
     const int klo = kb * B, kn = min(B, seq - klo);
@@ -134,6 +150,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
         om[t] = nm;
       }
       __syncthreads();
+#pragma unroll 32
       for (int slot = 0; slot < 32; ++slot) {
         const int od = t + slot * Threads;
         if (od >= qn * D) continue;
@@ -158,6 +175,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
         om[t] = nm;
       }
       __syncthreads();
+#pragma unroll 32
       for (int slot = 0; slot < 32; ++slot) {
         const int od = t + slot * Threads;
         if (od >= qn * D) continue;
@@ -168,6 +186,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
     }
     __syncthreads();
   }
+#pragma unroll 32
   for (int slot = 0; slot < 32; ++slot) {
     const int od = t + slot * Threads;
     if (od < qn * D) {
@@ -191,6 +210,7 @@ size_t sol_attention_workspace_bytes(const AttentionConfig& c) {
   const size_t nb = (size_t(c.seq_len) + B - 1) / B;
   const size_t pooled = nb * c.num_heads * D;
   return aligned(pooled * sizeof(__nv_bfloat16)) + aligned(pooled * sizeof(float)) +
+         2 * aligned(size_t(c.num_heads) * D * sizeof(float)) +
          aligned(nb * c.num_heads * sizeof(float));
 }
 
@@ -203,10 +223,13 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   const size_t pooled = size_t(nb) * c.num_heads * D;
   auto* km = ws.alloc_n<__nv_bfloat16>(pooled);
   auto* vs = ws.alloc_n<float>(pooled);
+  auto* key_mean = ws.alloc_n<float>(size_t(c.num_heads) * D);
+  auto* key_var = ws.alloc_n<float>(size_t(c.num_heads) * D);
   auto* tau = ws.alloc_n<float>(size_t(nb) * c.num_heads);
   pool_kv<<<dim3(nb, c.num_heads), D, 0, stream>>>(k, v, km, vs, c.seq_len, c.num_heads);
-  thresholds<<<dim3(nb, c.num_heads), Threads, 0, stream>>>(q, km, tau, c.seq_len, c.num_heads,
-                                                            c.effective_scale(), c.sol_beta);
+  key_stats<<<c.num_heads, D, 0, stream>>>(km, key_mean, key_var, nb, c.num_heads);
+  thresholds<<<dim3(nb, c.num_heads), Threads, 0, stream>>>(
+      q, key_mean, key_var, tau, c.seq_len, c.num_heads, c.effective_scale(), c.sol_beta);
   sol<<<dim3(nb, c.num_heads), Threads, 0, stream>>>(q, k, v, km, vs, tau, out, c.seq_len,
                                                      c.num_heads, c.exact_prefix,
                                                      c.effective_scale());
