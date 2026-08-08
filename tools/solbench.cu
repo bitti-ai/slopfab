@@ -27,6 +27,19 @@ __global__ void fill(__nv_bfloat16* p, size_t n, unsigned seed, float amplitude)
   }
 }
 
+__global__ void scan_nonfinite(const __nv_bfloat16* p, size_t n,
+                               unsigned long long* result) {
+  for (size_t i=size_t(blockIdx.x)*blockDim.x+threadIdx.x;i<n;
+       i+=size_t(gridDim.x)*blockDim.x) {
+    if (!isfinite(__bfloat162float(p[i]))) {
+      atomicAdd(result,1ull);
+      atomicMin(result+1,static_cast<unsigned long long>(i));
+    }
+    const float a=fabsf(__bfloat162float(p[i]));
+    if(isfinite(a)) atomicMax(reinterpret_cast<unsigned int*>(result+2),__float_as_uint(a));
+  }
+}
+
 float time_backend(cublasHandle_t blas, const __nv_bfloat16* q, const __nv_bfloat16* k,
                    const __nv_bfloat16* v, __nv_bfloat16* out,
                    const vidfab::cuda::AttentionConfig& cfg,
@@ -104,6 +117,9 @@ int main(int argc, char** argv) {
     prefix = static_cast<int>(capture.exact_prefix);
   }
   if (seq <= 0 || heads <= 0 || iterations <= 0) return 2;
+  int smem_per_sm = 0, regs_per_sm = 0;
+  cudaDeviceGetAttribute(&smem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, 0);
+  cudaDeviceGetAttribute(&regs_per_sm, cudaDevAttrMaxRegistersPerMultiprocessor, 0);
   prefix = std::min(prefix, seq);
   const size_t values = size_t(seq) * heads * 128;
   vidfab::cuda::DeviceBuffer<__nv_bfloat16> q(values), k(values), v(values), out(values);
@@ -165,10 +181,20 @@ int main(int argc, char** argv) {
   vidfab::cuda::attention_forward(blas, nullptr, q.get(), k.get(), v.get(), out.get(), cfg,
                                   vidfab::cuda::AttentionBackend::kSol, ws);
   cfg.sol_phase_ms = nullptr;
+  vidfab::cuda::DeviceBuffer<unsigned long long> finite_diag(3);
+  const unsigned long long finite_init[3]={0,~0ull,0};
+  VIDFAB_CUDA_CHECK(cudaMemcpy(finite_diag.get(),finite_init,sizeof(finite_init),
+                               cudaMemcpyHostToDevice));
+  scan_nonfinite<<<256,256>>>(out.get(),values,finite_diag.get());
+  unsigned long long finite_host[3]{};
+  VIDFAB_CUDA_CHECK(cudaMemcpy(finite_host,finite_diag.get(),sizeof(finite_host),
+                               cudaMemcpyDeviceToHost));
   const float dense = time_backend(blas, q.get(), k.get(), v.get(), out.get(), cfg,
                                    vidfab::cuda::AttentionBackend::kFused, ws, 2, iterations);
   std::printf("seq=%d heads=%d prefix=%d beta=%.3g pipeline=%d workspace=%.2f MiB\n", seq, heads, prefix, beta, int(pipeline),
               sol_bytes / 1048576.0);
+  std::printf("device shared/SM=%.1f KiB registers/SM=%d\n",
+              smem_per_sm / 1024.0, regs_per_sm);
   if (!input.empty()) std::printf("input=%s step=%d layer=%d\n", input.c_str(), capture.denoise_step, capture.layer);
   std::printf("sol %.3f ms  dense %.3f ms  speedup %.3fx\n", sol, dense, dense / sol);
   const double route_total = double(route_host[0] + route_host[1]);
@@ -176,6 +202,16 @@ int main(int argc, char** argv) {
               100.0 * route_host[0] / route_total, 100.0 * route_host[1] / route_total);
   std::printf("phases pool %.3f  stats %.3f  threshold %.3f  main %.3f ms\n",
               phases[0], phases[1], phases[2], phases[3]);
+  if (finite_host[0]) {
+    const size_t row=finite_host[1]/size_t(heads*128);
+    const size_t rem=finite_host[1]%size_t(heads*128);
+    std::printf("NONFINITE count=%llu first row=%zu head=%zu dim=%zu\n",
+                finite_host[0],row,rem/128,rem%128);
+  } else {
+    const unsigned max_bits=static_cast<unsigned>(finite_host[2]);
+    float max_abs=0; std::memcpy(&max_abs,&max_bits,sizeof(max_abs));
+    std::printf("output finite max_abs=%.7g\n",max_abs);
+  }
   cublasDestroy(blas);
   return 0;
 }
