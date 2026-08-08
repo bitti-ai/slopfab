@@ -51,6 +51,7 @@
 
 #include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/sage_attention.cuh"
+#include "vidfab/cuda/sol_attention.cuh"
 
 #include <cuda_fp16.h>
 
@@ -1194,6 +1195,7 @@ size_t attention_workspace_bytes(const AttentionConfig& cfg, AttentionBackend ba
   // workspace at all -- not a smaller one.
   if (backend == AttentionBackend::kFused) return 0;
   if (backend == AttentionBackend::kSage2) return sage2_workspace_bytes(cfg, cfg.num_heads);
+  if (backend == AttentionBackend::kSol) return sol_attention_workspace_bytes(cfg);
   if (cfg.seq_len <= 0 || cfg.num_heads <= 0 || cfg.head_dim <= 0) return 0;
 
   const int bq = effective_query_block(cfg);
@@ -1227,6 +1229,10 @@ void attention_forward(cublasHandle_t handle, cudaStream_t stream, const __nv_bf
     sage2_attention_forward(stream, q, k, v, out, cfg, cfg.num_heads, ws);
     return;
   }
+  if (backend == AttentionBackend::kSol) {
+    sol_attention_forward(stream, q, k, v, out, cfg, ws);
+    return;
+  }
   run_blocked(handle, stream, q, k, v, out, cfg, cfg.num_heads, ws);
 }
 
@@ -1240,6 +1246,12 @@ void attention_forward_gqa(cublasHandle_t handle, cudaStream_t stream, const __n
   }
   if (backend == AttentionBackend::kSage2) {
     sage2_attention_forward(stream, q, k, v, out, cfg, num_kv_heads, ws);
+    return;
+  }
+  if (backend == AttentionBackend::kSol) {
+    if (num_kv_heads != cfg.num_heads)
+      throw std::runtime_error("Sol-Attn: grouped-query attention is not supported");
+    sol_attention_forward(stream, q, k, v, out, cfg, ws);
     return;
   }
   run_blocked(handle, stream, q, k, v, out, cfg, num_kv_heads, ws);

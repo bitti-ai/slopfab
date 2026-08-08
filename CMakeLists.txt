@@ -97,6 +97,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/nvfp4_gemm.cu
       src/cuda/attention.cu
       src/cuda/sage_attention.cu
+      src/cuda/sol_attention.cu
       src/cuda/vae_kernels.cu
       src/cuda/vit_decoder.cu
       src/cuda/audio_vae_kernels.cu
