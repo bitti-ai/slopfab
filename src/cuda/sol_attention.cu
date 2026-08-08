@@ -109,6 +109,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   __shared__ float qm[D], red[D];
   __shared__ float om[B], ol[B], rescale[B], block_m[B], approx_weight[B];
   __shared__ int take;
+  __shared__ uint8_t routes[Threads];
 
   for (int p = t; p < qn * D; p += Threads)
     staged_q[p] = q[size_t(qlo + p / D) * width + h * D + p % D];
@@ -124,16 +125,24 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   for (int od = t; od < B * D; od += Threads) acc[od] = 0;
   __syncthreads();
 
-  for (int kb = 0; kb < nblocks; ++kb) {
+  for (int route_base = 0; route_base < nblocks; route_base += Threads) {
+    const int route_kb = route_base + t;
+    if (route_kb < nblocks) {
+      float proxy = 0;
+#pragma unroll 4
+      for (int d = 0; d < D; ++d)
+        proxy += qm[d] * __bfloat162float(km[(size_t(route_kb) * heads + h) * D + d]);
+      const int route_klo = route_kb * B;
+      routes[t] = qlo < prefix || route_klo < prefix || abs(qb - route_kb) <= 1 ||
+                  proxy * scale > tau[size_t(qb) * heads + h];
+      if (route_counts) atomicAdd(route_counts + (routes[t] ? 0 : 1), 1ull);
+    }
+    __syncthreads();
+    const int route_end = min(route_base + Threads, nblocks);
+    for (int kb = route_base; kb < route_end; ++kb) {
     const int klo = kb * B, kn = min(B, seq - klo);
-    float px = t < D ? qm[t] * __bfloat162float(km[(size_t(kb) * heads + h) * D + t]) : 0;
-    const float proxy = reduce128(px, red) * scale;
     if (t == 0) {
-      // Prefix queries are dense. Prefix/sink keys and immediate physical
-      // neighbours are invariant exact routes in the official H3 policy.
-      take = qlo < prefix || klo < prefix || abs(qb - kb) <= 1 ||
-             proxy > tau[size_t(qb) * heads + h];
-      if (route_counts) atomicAdd(route_counts + (take ? 0 : 1), 1ull);
+      take = routes[kb - route_base];
     }
     __syncthreads();
 
@@ -239,6 +248,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
       }
     }
     __syncthreads();
+    }
   }
   for (int od = t; od < qn * D; od += Threads) {
     if (od < qn * D) {
