@@ -34,7 +34,8 @@ __device__ float reduce128(float x, float* s) {
 }
 
 __global__ void pool_kv(const __nv_bfloat16* k, const __nv_bfloat16* v,
-                        __nv_bfloat16* km, float* vs, int seq, int heads) {
+                        __nv_bfloat16* km, __nv_bfloat16* vm, float* vs,
+                        int seq, int heads) {
   const int kb = blockIdx.x, h = blockIdx.y, d = threadIdx.x;
   const int lo = kb * B, hi = min(lo + B, seq);
   const size_t width = size_t(heads) * D;
@@ -46,6 +47,7 @@ __global__ void pool_kv(const __nv_bfloat16* k, const __nv_bfloat16* v,
     sv += __bfloat162float(v[p]);
   }
   km[dst] = __float2bfloat16_rn(sk / float(hi - lo));
+  vm[dst] = __float2bfloat16_rn(sv / float(hi - lo));
   vs[dst] = sv;
 }
 
@@ -313,7 +315,7 @@ size_t sol_attention_workspace_bytes(const AttentionConfig& c) {
   if (c.seq_len <= 0 || c.num_heads <= 0 || c.head_dim != D) return 0;
   const size_t nb = (size_t(c.seq_len) + B - 1) / B;
   const size_t pooled = nb * c.num_heads * D;
-  return aligned(pooled * sizeof(__nv_bfloat16)) + aligned(pooled * sizeof(float)) +
+  return 2*aligned(pooled * sizeof(__nv_bfloat16)) + aligned(pooled * sizeof(float)) +
          2 * aligned(size_t(c.num_heads) * D * sizeof(float)) +
          aligned(nb * c.num_heads * sizeof(float));
 }
@@ -326,6 +328,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   const int nb = (c.seq_len + B - 1) / B;
   const size_t pooled = size_t(nb) * c.num_heads * D;
   auto* km = ws.alloc_n<__nv_bfloat16>(pooled);
+  auto* vm = ws.alloc_n<__nv_bfloat16>(pooled);
   auto* vs = ws.alloc_n<float>(pooled);
   auto* key_mean = ws.alloc_n<float>(size_t(c.num_heads) * D);
   auto* key_var = ws.alloc_n<float>(size_t(c.num_heads) * D);
@@ -336,7 +339,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
     for (auto& event : phase) VIDFAB_CUDA_CHECK(cudaEventCreate(&event));
     VIDFAB_CUDA_CHECK(cudaEventRecord(phase[0], stream));
   }
-  pool_kv<<<dim3(nb, c.num_heads), D, 0, stream>>>(k, v, km, vs,
+  pool_kv<<<dim3(nb, c.num_heads), D, 0, stream>>>(k, v, km, vm, vs,
                                                    c.seq_len, c.num_heads);
   if (c.sol_phase_ms) VIDFAB_CUDA_CHECK(cudaEventRecord(phase[1], stream));
   key_stats<<<c.num_heads, D, 0, stream>>>(km, key_mean, key_var, nb, c.num_heads);
@@ -345,7 +348,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
       q, key_mean, key_var, tau, c.seq_len, c.num_heads, c.effective_scale(), c.sol_beta);
   if (c.sol_phase_ms) VIDFAB_CUDA_CHECK(cudaEventRecord(phase[3], stream));
   const bool pipeline_ran = c.sol_pipeline &&
-      sol_pipeline_forward(stream, q, k, v, km, vs, tau, out, c);
+      sol_pipeline_forward(stream, q, k, v, km, vm, vs, tau, out, c);
   if (!pipeline_ran) {
     VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(sol, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                           int(SolSharedBytes)));

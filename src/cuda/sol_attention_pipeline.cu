@@ -57,7 +57,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     const __grid_constant__ CUtensorMap qmap,
     const __grid_constant__ CUtensorMap kmap,
     const __grid_constant__ CUtensorMap vmap, __nv_bfloat16* out,
-    const __nv_bfloat16* km, const float* vs,
+    const __nv_bfloat16* km, const __nv_bfloat16* vm, const float* vs,
     const float* tau,
     int seq, int heads, int prefix, float scale,
     unsigned long long* route_counts) {
@@ -152,16 +152,42 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       ratio[t]=denom[t]*rs;denom[t]=ratio[t]+sum;old_m[t]=nm;
     }
     __syncthreads();
-    for(int p=t;p<qn*D;p+=Threads) {
-      const int row=p/D,col=p%D;
-      float add=0;
-      for(int j=0;j<count;++j) {
-        const int kb=route_ids[MaxBlocks-1-(base+j)];
-        add+=score[row*B+j]*vs[(size_t(kb)*heads+h)*D+col];
+    for(int x=t;x<count*D;x+=Threads) {
+      const int col=x/D,d=x%D,kb=route_ids[MaxBlocks-1-(base+col)];
+      kv[col*D+d]=vm[(size_t(kb)*heads+h)*D+d];
+    }
+    __syncthreads();
+    for(int n=0;n<8;++n) {
+      wmma::fragment<wmma::accumulator,16,16,16,float> add;
+      wmma::fill_fragment(add,0.0f);
+      for(int j=0;j<count;j+=16) {
+        auto* ps=prob_scratch+warp*256;
+        for(int p=(t&31);p<256;p+=32) {
+          const int row=warp*16+p/16,col=j+p%16;
+          float weighted=0;
+          if(row<qn&&col<count) {
+            const int kb=route_ids[MaxBlocks-1-(base+col)];
+            weighted=score[row*B+col]*min(B,seq-kb*B);
+          }
+          ps[p]=__float2bfloat16_rn(weighted);
+        }
+        __syncwarp();
+        wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
+        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major> b;
+        wmma::load_matrix_sync(a,ps,16);
+        wmma::load_matrix_sync(b,kv+j*D+n*16,D);
+        wmma::mma_sync(add,a,b,add);
       }
-      const float prev=base?__bfloat162float(out[size_t(qlo+row)*heads*D+h*D+col]):0.0f;
-      out[size_t(qlo+row)*heads*D+h*D+col]=
-          __float2bfloat16_rn((prev*ratio[row]+add)/denom[row]);
+      const int lane=t&31,qr0=warp*16,d=n*16;
+      for(unsigned i=0;i<add.num_elements;++i) {
+        const int row=qr0+lane/4+int((i/2)%2)*8;
+        const int col=d+(lane%4)*2+int(i%2)+int(i/4)*8;
+        if(row<qn) {
+          const size_t pos=size_t(qlo+row)*heads*D+h*D+col;
+          const float prev=base?__bfloat162float(out[pos]):0.0f;
+          out[pos]=__float2bfloat16_rn((prev*ratio[row]+add.x[i])/denom[row]);
+        }
+      }
     }
     __syncthreads();
   }
@@ -288,7 +314,8 @@ bool map_for(const __nv_bfloat16* p, const AttentionConfig& c, CUtensorMap* m) {
 
 bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const __nv_bfloat16* k, const __nv_bfloat16* v,
-                          const __nv_bfloat16* km, const float* vs,
+                          const __nv_bfloat16* km, const __nv_bfloat16* vm,
+                          const float* vs,
                           const float* tau, __nv_bfloat16* out,
                           const AttentionConfig& c) {
   if (c.head_dim != D || (c.seq_len+B-1)/B > MaxBlocks) return false;
@@ -299,7 +326,7 @@ bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(exact_pipeline,
       cudaFuncAttributeMaxDynamicSharedMemorySize,int(SmemBytes)));
   exact_pipeline<<<dim3((c.seq_len+B-1)/B,c.num_heads),Threads,SmemBytes,stream>>>(
-      q_map,k_map,v_map,out,km,vs,tau,c.seq_len,c.num_heads,c.exact_prefix,
+      q_map,k_map,v_map,out,km,vm,vs,tau,c.seq_len,c.num_heads,c.exact_prefix,
       c.effective_scale(),c.sol_route_counts);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
   return true;
