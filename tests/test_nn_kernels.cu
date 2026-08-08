@@ -188,6 +188,85 @@ std::vector<float> cpu_attention(const std::vector<float>& q, const std::vector<
   return out;
 }
 
+// Independent one-head Sol-Attn oracle for routing/correction tests.
+std::vector<float> cpu_sol_attention(const std::vector<float>& q, const std::vector<float>& k,
+                                     const std::vector<float>& v, int seq, int prefix,
+                                     float scale, float beta, int* selected, int* rejected) {
+  constexpr int block = 64, dim = 128;
+  const int nb = (seq + block - 1) / block;
+  std::vector<float> km(size_t(nb) * dim), vs(size_t(nb) * dim), mean(dim), var(dim);
+  for (int kb = 0; kb < nb; ++kb) {
+    const int lo = kb * block, hi = std::min(lo + block, seq);
+    for (int d = 0; d < dim; ++d) {
+      for (int r = lo; r < hi; ++r) {
+        km[size_t(kb) * dim + d] += k[size_t(r) * dim + d];
+        vs[size_t(kb) * dim + d] += v[size_t(r) * dim + d];
+      }
+      km[size_t(kb) * dim + d] = vidfab::bf16_to_f32(vidfab::f32_to_bf16(
+          km[size_t(kb) * dim + d] / float(hi - lo)));
+    }
+  }
+  for (int d = 0; d < dim; ++d) {
+    for (int kb = 0; kb < nb; ++kb) mean[d] += km[size_t(kb) * dim + d] / float(nb);
+    for (int kb = 0; kb < nb; ++kb) {
+      const float x = km[size_t(kb) * dim + d] - mean[d];
+      var[d] += x * x / float(nb);
+    }
+  }
+  std::vector<float> out(size_t(seq) * dim), qm(dim), logits(seq);
+  for (int row = 0; row < seq; ++row) {
+    const int qb = row / block, qlo = qb * block, qhi = std::min(qlo + block, seq);
+    std::fill(qm.begin(), qm.end(), 0.0f);
+    double mu = 0, vv = 0;
+    for (int d = 0; d < dim; ++d) {
+      for (int r = qlo; r < qhi; ++r) qm[d] += q[size_t(r) * dim + d];
+      qm[d] /= float(qhi - qlo);
+      mu += double(qm[d]) * mean[d];
+      vv += double(qm[d]) * qm[d] * var[d];
+    }
+    const double tau = scale * (mu + beta * std::sqrt(std::max(vv, 0.0)));
+    double max_logit = -1e300;
+    std::vector<uint8_t> take(nb);
+    for (int kb = 0; kb < nb; ++kb) {
+      double proxy = 0;
+      for (int d = 0; d < dim; ++d) proxy += double(qm[d]) * km[size_t(kb) * dim + d];
+      take[kb] = qlo < prefix || kb * block < prefix || std::abs(qb - kb) <= 1 ||
+                 proxy * scale > tau;
+      if (row == qlo) take[kb] ? ++*selected : ++*rejected;
+      const int lo = kb * block, hi = std::min(lo + block, seq);
+      if (take[kb]) {
+        for (int kr = lo; kr < hi; ++kr) {
+          double dot = 0;
+          for (int d = 0; d < dim; ++d) dot += double(q[size_t(row) * dim + d]) * k[size_t(kr) * dim + d];
+          logits[kr] = float(dot * scale);
+          max_logit = std::max(max_logit, double(logits[kr]));
+        }
+      } else {
+        double dot = 0;
+        for (int d = 0; d < dim; ++d) dot += double(q[size_t(row) * dim + d]) * km[size_t(kb) * dim + d];
+        logits[lo] = float(dot * scale);
+        max_logit = std::max(max_logit, double(logits[lo]));
+      }
+    }
+    double denom = 0;
+    for (int kb = 0; kb < nb; ++kb) {
+      const int lo = kb * block, hi = std::min(lo + block, seq);
+      if (take[kb]) for (int kr = lo; kr < hi; ++kr) denom += std::exp(logits[kr] - max_logit);
+      else denom += (hi - lo) * std::exp(logits[lo] - max_logit);
+    }
+    for (int d = 0; d < dim; ++d) {
+      double num = 0;
+      for (int kb = 0; kb < nb; ++kb) {
+        const int lo = kb * block, hi = std::min(lo + block, seq);
+        if (take[kb]) for (int kr = lo; kr < hi; ++kr) num += std::exp(logits[kr] - max_logit) * v[size_t(kr) * dim + d];
+        else num += std::exp(logits[lo] - max_logit) * vs[size_t(kb) * dim + d];
+      }
+      out[size_t(row) * dim + d] = float(num / denom);
+    }
+  }
+  return out;
+}
+
 std::vector<float> cpu_matmul_nt(const std::vector<float>& A, const std::vector<float>& B, int M,
                                  int N, int K) {
   std::vector<float> C(size_t(M) * N);
@@ -1871,6 +1950,32 @@ VIDFAB_TEST(attention_sol) {
   cfg.exact_prefix = 70;
   CHECK_CLOSE_REL(constant_want, run(k, 1.0e6f), 1e-3, 1e-2,
                   "Sol-Attn forced-exact prefix");
+
+  // Nonconstant mixed-route oracle: six blocks ensure prefix, local and
+  // threshold-selected routes coexist with corrected rejected routes.
+  {
+    const int mixed_seq = 321;
+    std::vector<float> mq = bf16_round(make_data(size_t(mixed_seq) * dim, 921u, 0.8f));
+    std::vector<float> mk = bf16_round(make_data(size_t(mixed_seq) * dim, 922u, 0.8f));
+    std::vector<float> mv = bf16_round(make_data(size_t(mixed_seq) * dim, 923u, 1.0f));
+    int selected = 0, rejected = 0;
+    const std::vector<float> oracle = cpu_sol_attention(
+        mq, mk, mv, mixed_seq, 70, 1.0f / std::sqrt(float(dim)), 1.0f, &selected, &rejected);
+    CHECK(selected > 0 && rejected > 0);
+    BfBuf dqm(mq), dkm(mk), dvm(mv), dom(size_t(mixed_seq) * dim);
+    vidfab::cuda::AttentionConfig mixed;
+    mixed.seq_len = mixed_seq;
+    mixed.num_heads = 1;
+    mixed.head_dim = dim;
+    mixed.exact_prefix = 70;
+    Workspace mixed_ws;
+    mixed_ws.reserve(vidfab::cuda::attention_workspace_bytes(
+        mixed, vidfab::cuda::AttentionBackend::kSol));
+    vidfab::cuda::attention_forward(cb.h, nullptr, dqm.p(), dkm.p(), dvm.p(), dom.p(), mixed,
+                                    vidfab::cuda::AttentionBackend::kSol, mixed_ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    CHECK_CLOSE_REL(oracle, dom.host(), 2e-3, 2e-2, "Sol-Attn mixed-route CPU oracle");
+  }
 }
 
 VIDFAB_TEST(attention_sage2) {
