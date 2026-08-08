@@ -843,7 +843,9 @@ struct Transformer::Impl {
     diagnose("attention",attn_out,size_t(rows)*inner,layer);
     const char* label = backend == AttentionBackend::kFused ? "attn.flash2" :
                         backend == AttentionBackend::kSage2 ? "attn.sage2" :
-                        backend == AttentionBackend::kSol ? "attn.sol" : "attn.none";
+                        backend == AttentionBackend::kSol ?
+                          (block_attention_mode==AttentionMode::kSolExperimental?
+                            "attn.sol.experimental":"attn.sol") : "attn.none";
     prof.tick(label, stream.get());
 
     for (int start = 0; start < rows; start += chunk) {

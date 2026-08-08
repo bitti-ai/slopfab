@@ -886,7 +886,9 @@ selects the separate SM120 TMA/WMMA pipeline evaluated in
 `docs/sol_quality_gate_2026-08-08.md`. Both are lossy: rejected 64-token blocks
 use the released centroid/value correction rather than exact token attention.
 The experimental spelling is intentional while its quality matrix is under
-review. It requires SM120, head dimension 128, no more than 1024 physical
+review. The declared two-seed quality matrix failed 11 of 12 numeric rows, so
+this path is not production-approved and remains disabled by default; see
+`docs/sol_quality_matrix_2026-08-08.md`. It requires SM120, head dimension 128, no more than 1024 physical
 blocks, and TMA-compatible aligned tensors; an unsupported request fails
 clearly and never silently runs the scalar kernel. Frame banding is incompatible
 with either Sol mode.
