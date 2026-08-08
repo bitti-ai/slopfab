@@ -95,7 +95,7 @@ __global__ void thresholds(const __nv_bfloat16* q, const float* key_mean,
 __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
                     const __nv_bfloat16* v, const __nv_bfloat16* km, const float* vs,
                     const float* tau, __nv_bfloat16* out, int seq, int heads,
-                    int prefix, float scale) {
+                    int prefix, float scale, unsigned long long* route_counts) {
   const int qb = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
   const int warp = t / 32;
   const int qlo = qb * B, qn = min(B, seq - qlo), nblocks = (seq + B - 1) / B;
@@ -128,6 +128,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
       // neighbours are invariant exact routes in the official H3 policy.
       take = qlo < prefix || klo < prefix || abs(qb - kb) <= 1 ||
              proxy > tau[size_t(qb) * heads + h];
+      if (route_counts) atomicAdd(route_counts + (take ? 0 : 1), 1ull);
     }
     __syncthreads();
 
@@ -280,7 +281,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
                                         int(SolSharedBytes)));
   sol<<<dim3(nb, c.num_heads), Threads, SolSharedBytes, stream>>>(q, k, v, km, vs, tau, out, c.seq_len,
                                                      c.num_heads, c.exact_prefix,
-                                                     c.effective_scale());
+                                                     c.effective_scale(), c.sol_route_counts);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 }  // namespace vidfab::cuda

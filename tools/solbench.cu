@@ -70,16 +70,25 @@ int main(int argc, char** argv) {
   cublasHandle_t blas{}; cublasCreate(&blas);
   vidfab::cuda::AttentionConfig cfg;
   cfg.seq_len = seq; cfg.num_heads = heads; cfg.head_dim = 128; cfg.exact_prefix = prefix;
+  vidfab::cuda::DeviceBuffer<unsigned long long> routes(2);
+  VIDFAB_CUDA_CHECK(cudaMemset(routes.get(), 0, routes.nbytes()));
+  cfg.sol_route_counts = routes.get();
   const size_t sol_bytes = vidfab::cuda::attention_workspace_bytes(
       cfg, vidfab::cuda::AttentionBackend::kSol);
   vidfab::cuda::Workspace ws; ws.reserve(sol_bytes);
   const float sol = time_backend(blas, q.get(), k.get(), v.get(), out.get(), cfg,
                                  vidfab::cuda::AttentionBackend::kSol, ws, 2, iterations);
+  unsigned long long route_host[2]{};
+  VIDFAB_CUDA_CHECK(cudaMemcpy(route_host, routes.get(), sizeof(route_host), cudaMemcpyDeviceToHost));
+  cfg.sol_route_counts = nullptr;
   const float dense = time_backend(blas, q.get(), k.get(), v.get(), out.get(), cfg,
                                    vidfab::cuda::AttentionBackend::kFused, ws, 2, iterations);
   std::printf("seq=%d heads=%d prefix=%d workspace=%.2f MiB\n", seq, heads, prefix,
               sol_bytes / 1048576.0);
   std::printf("sol %.3f ms  dense %.3f ms  speedup %.3fx\n", sol, dense, dense / sol);
+  const double route_total = double(route_host[0] + route_host[1]);
+  std::printf("routes exact %.1f%%  approximate %.1f%%\n",
+              100.0 * route_host[0] / route_total, 100.0 * route_host[1] / route_total);
   cublasDestroy(blas);
   return 0;
 }
