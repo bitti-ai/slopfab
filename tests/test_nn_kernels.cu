@@ -2047,6 +2047,40 @@ VIDFAB_TEST(attention_sol_pipeline_real_scale_finite) {
   CHECK_MSG(bad==0,"Sol real-scale grouped pipeline produced %zu non-finite values",bad);
 }
 
+VIDFAB_TEST(attention_sol_pipeline_large_pooled_v) {
+  CublasScope cb;
+  // A 64-row pooled V sum is ~131k here: well beyond BF16's finite range,
+  // while the corrected attention result remains a perfectly finite ~2k.
+  // This reproduces the end-to-end failure that motivated keeping the
+  // approximate V contraction in FP32.
+  const int seq=321,dim=128;
+  const auto q=bf16_round(make_data(size_t(seq)*dim,951u,0.4f));
+  auto k=bf16_round(make_data(size_t(seq)*dim,952u,0.4f));
+  std::vector<float> v(size_t(seq)*dim);
+  for(int row=0;row<seq;++row) {
+    const int source=(row/64)*64;
+    for(int x=0;x<dim;++x) {
+      k[size_t(row)*dim+x]=k[size_t(source)*dim+x];
+      v[size_t(row)*dim+x]=2048.0f+float((x%7)-3)*8.0f;
+    }
+  }
+  const auto want=cpu_attention(q,k,v,seq,1,1,dim,1.0f/std::sqrt(float(dim)));
+  BfBuf dq(q),dk(k),dv(v),dout(size_t(seq)*dim);
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len=seq;cfg.num_heads=1;cfg.head_dim=dim;
+  cfg.exact_prefix=0;cfg.sol_pipeline=true;cfg.sol_beta=1.0e6f;
+  Workspace ws;ws.reserve(vidfab::cuda::attention_workspace_bytes(
+      cfg,vidfab::cuda::AttentionBackend::kSol));
+  vidfab::cuda::attention_forward(cb.h,nullptr,dq.p(),dk.p(),dv.p(),dout.p(),cfg,
+                                  vidfab::cuda::AttentionBackend::kSol,ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const auto got=dout.host();
+  size_t bad=0;
+  for(float x:got) bad+=!std::isfinite(x);
+  CHECK_MSG(bad==0,"Sol large pooled-V pipeline produced %zu non-finite values",bad);
+  CHECK_CLOSE_REL(want,got,2e-3,2e-2,"Sol pipeline large pooled-V FP32 correction");
+}
+
 VIDFAB_TEST(attention_sage2) {
   CublasScope cb;
   const int seq = 199;
