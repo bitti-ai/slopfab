@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -38,6 +39,32 @@ __global__ void scan_nonfinite(const __nv_bfloat16* p, size_t n,
     const float a=fabsf(__bfloat162float(p[i]));
     if(isfinite(a)) atomicMax(reinterpret_cast<unsigned int*>(result+2),__float_as_uint(a));
   }
+}
+
+__global__ void compare_outputs(const __nv_bfloat16* sol,
+                                const __nv_bfloat16* dense, size_t n,
+                                double* sums, unsigned long long* bad,
+                                unsigned* max_diff) {
+  __shared__ double sd[256], ss[256], sr[256], sp[256];
+  __shared__ unsigned long long bs[256], br[256];
+  __shared__ float md[256];
+  double d2=0,s2=0,r2=0,dot=0; unsigned long long sb=0,rb=0; float mx=0;
+  for(size_t i=size_t(blockIdx.x)*blockDim.x+threadIdx.x;i<n;
+      i+=size_t(gridDim.x)*blockDim.x) {
+    const float s=__bfloat162float(sol[i]), r=__bfloat162float(dense[i]);
+    const bool sf=isfinite(s),rf=isfinite(r); sb+=!sf;rb+=!rf;
+    if(sf&&rf) { const double e=double(s)-r;d2+=e*e;s2+=double(s)*s;
+      r2+=double(r)*r;dot+=double(s)*r;mx=fmaxf(mx,fabsf(s-r)); }
+  }
+  const int t=threadIdx.x;sd[t]=d2;ss[t]=s2;sr[t]=r2;sp[t]=dot;
+  bs[t]=sb;br[t]=rb;md[t]=mx;__syncthreads();
+  for(int k=128;k;k>>=1){if(t<k){sd[t]+=sd[t+k];ss[t]+=ss[t+k];
+    sr[t]+=sr[t+k];sp[t]+=sp[t+k];bs[t]+=bs[t+k];br[t]+=br[t+k];
+    md[t]=fmaxf(md[t],md[t+k]);}__syncthreads();}
+  if(t==0){atomicAdd(sums,sd[0]);atomicAdd(sums+1,ss[0]);
+    atomicAdd(sums+2,sr[0]);atomicAdd(sums+3,sp[0]);
+    atomicAdd(bad,bs[0]);atomicAdd(bad+1,br[0]);
+    atomicMax(max_diff,__float_as_uint(md[0]));}
 }
 
 float time_backend(cublasHandle_t blas, const __nv_bfloat16* q, const __nv_bfloat16* k,
@@ -122,7 +149,7 @@ int main(int argc, char** argv) {
   cudaDeviceGetAttribute(&regs_per_sm, cudaDevAttrMaxRegistersPerMultiprocessor, 0);
   prefix = std::min(prefix, seq);
   const size_t values = size_t(seq) * heads * 128;
-  vidfab::cuda::DeviceBuffer<__nv_bfloat16> q(values), k(values), v(values), out(values);
+  vidfab::cuda::DeviceBuffer<__nv_bfloat16> q(values), k(values), v(values), out(values), dense_out(values);
   if (captured.empty()) {
     fill<<<std::min<size_t>(65535, (values + 255) / 256), 256>>>(q.get(), values, 1, 0.3f);
     fill<<<std::min<size_t>(65535, (values + 255) / 256), 256>>>(k.get(), values, 2, 0.3f);
@@ -189,14 +216,30 @@ int main(int argc, char** argv) {
   unsigned long long finite_host[3]{};
   VIDFAB_CUDA_CHECK(cudaMemcpy(finite_host,finite_diag.get(),sizeof(finite_host),
                                cudaMemcpyDeviceToHost));
-  const float dense = time_backend(blas, q.get(), k.get(), v.get(), out.get(), cfg,
+  const float dense = time_backend(blas, q.get(), k.get(), v.get(), dense_out.get(), cfg,
                                    vidfab::cuda::AttentionBackend::kFused, ws, 2, iterations);
+  vidfab::cuda::DeviceBuffer<double> compare_sums(4);
+  vidfab::cuda::DeviceBuffer<unsigned long long> compare_bad(2);
+  vidfab::cuda::DeviceBuffer<unsigned> compare_max(1);
+  VIDFAB_CUDA_CHECK(cudaMemset(compare_sums.get(),0,compare_sums.nbytes()));
+  VIDFAB_CUDA_CHECK(cudaMemset(compare_bad.get(),0,compare_bad.nbytes()));
+  VIDFAB_CUDA_CHECK(cudaMemset(compare_max.get(),0,compare_max.nbytes()));
+  compare_outputs<<<256,256>>>(out.get(),dense_out.get(),values,compare_sums.get(),
+                               compare_bad.get(),compare_max.get());
+  double cmp[4]{};unsigned long long cmp_bad[2]{};unsigned cmp_max_bits=0;
+  VIDFAB_CUDA_CHECK(cudaMemcpy(cmp,compare_sums.get(),sizeof(cmp),cudaMemcpyDeviceToHost));
+  VIDFAB_CUDA_CHECK(cudaMemcpy(cmp_bad,compare_bad.get(),sizeof(cmp_bad),cudaMemcpyDeviceToHost));
+  VIDFAB_CUDA_CHECK(cudaMemcpy(&cmp_max_bits,compare_max.get(),sizeof(cmp_max_bits),cudaMemcpyDeviceToHost));
+  float cmp_max=0;std::memcpy(&cmp_max,&cmp_max_bits,sizeof(cmp_max));
   std::printf("seq=%d heads=%d prefix=%d beta=%.3g pipeline=%d workspace=%.2f MiB\n", seq, heads, prefix, beta, int(pipeline),
               sol_bytes / 1048576.0);
   std::printf("device shared/SM=%.1f KiB registers/SM=%d\n",
               smem_per_sm / 1024.0, regs_per_sm);
   if (!input.empty()) std::printf("input=%s step=%d layer=%d\n", input.c_str(), capture.denoise_step, capture.layer);
   std::printf("sol %.3f ms  dense %.3f ms  speedup %.3fx\n", sol, dense, dense / sol);
+  std::printf("compare rel_l2=%.7g cosine=%.9g max_abs_diff=%.7g finite sol=%zu dense=%zu\n",
+              std::sqrt(cmp[0]/cmp[2]),cmp[3]/std::sqrt(cmp[1]*cmp[2]),cmp_max,
+              values-size_t(cmp_bad[0]),values-size_t(cmp_bad[1]));
   const double route_total = double(route_host[0] + route_host[1]);
   std::printf("routes exact %.1f%%  approximate %.1f%%\n",
               100.0 * route_host[0] / route_total, 100.0 * route_host[1] / route_total);
