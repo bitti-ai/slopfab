@@ -22,6 +22,7 @@
 #include "vidfab/dit/transformer.h"
 
 #include <functional>
+#include <fstream>
 
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
@@ -50,6 +51,7 @@
 #include "vidfab/cuda/workspace.cuh"
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
+#include "vidfab/sol_capture.h"
 #include "vidfab/tensor_convert.h"
 
 namespace vidfab::cuda {
@@ -554,6 +556,42 @@ struct Transformer::Impl {
   int attn_band = 0;
   AttentionMode attention_mode = AttentionMode::kFlash2;
   int denoise_step = -1;
+  std::string sol_capture_path;
+  int sol_capture_step = 0;
+  int sol_capture_layer = 0;
+  bool sol_capture_done = false;
+
+  void capture_sol_inputs(const __nv_bfloat16* q, const __nv_bfloat16* k,
+                          const __nv_bfloat16* v, int rows, int layer) {
+    if (sol_capture_done) return;
+    if (denoise_step != sol_capture_step || layer != sol_capture_layer) return;
+
+    const uint64_t n = static_cast<uint64_t>(rows) * cfg.num_attention_heads *
+                       cfg.attention_head_dim;
+    std::vector<uint16_t> host(static_cast<size_t>(n) * 3);
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(host.data(), q, n * sizeof(uint16_t),
+                                      cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(host.data() + n, k, n * sizeof(uint16_t),
+                                      cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(host.data() + 2 * n, v, n * sizeof(uint16_t),
+                                      cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SolCaptureHeader header{{'V','F','S','O','L','Q','K','V'}, 1, sizeof(SolCaptureHeader),
+                            static_cast<uint32_t>(rows),
+                            static_cast<uint32_t>(cfg.num_attention_heads),
+                            static_cast<uint32_t>(cfg.attention_head_dim),
+                            static_cast<uint32_t>(layout.video_start()), denoise_step, layer, n,
+                            {0, 0}};
+    std::ofstream out(sol_capture_path, std::ios::binary | std::ios::trunc);
+    if (!out) throw std::runtime_error("transformer: cannot create Sol capture: " + sol_capture_path);
+    out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    out.write(reinterpret_cast<const char*>(host.data()),
+              static_cast<std::streamsize>(host.size() * sizeof(uint16_t)));
+    if (!out) throw std::runtime_error("transformer: failed writing Sol capture: " + sol_capture_path);
+    sol_capture_done = true;
+    std::fprintf(stderr, "vidfab: captured Sol Q/K/V step %d layer %d to %s\n",
+                 denoise_step, layer, sol_capture_path.c_str());
+  }
   DeviceBuffer<int32_t> d_band;
   DeviceBuffer<float> rope_cos, rope_sin;
   DeviceBuffer<int32_t> d_text_idx, d_audio_idx, d_video_idx;
@@ -591,6 +629,14 @@ struct Transformer::Impl {
     // argued about. Same shape as VIDFAB_CUBLAS_PEDANTIC in vit_decoder.cu.
     const char* native = std::getenv("VIDFAB_NATIVE_NVFP4");
     if (native != nullptr && native[0] == '1') linear.set_native(true);
+    const char* capture = std::getenv("VIDFAB_SOL_CAPTURE");
+    if (capture != nullptr && *capture != '\0') {
+      sol_capture_path = capture;
+      const char* step = std::getenv("VIDFAB_SOL_CAPTURE_STEP");
+      const char* layer = std::getenv("VIDFAB_SOL_CAPTURE_LAYER");
+      if (step != nullptr && *step != '\0') sol_capture_step = std::atoi(step);
+      if (layer != nullptr && *layer != '\0') sol_capture_layer = std::atoi(layer);
+    }
   }
   ~Impl() {
     if (blas != nullptr) cublasDestroy(blas);
@@ -688,7 +734,7 @@ struct Transformer::Impl {
                  const int32_t* adaln_idx, const float* cos, const float* sin, __nv_bfloat16* q,
                  __nv_bfloat16* k, __nv_bfloat16* v, __nv_bfloat16* attn_out,
                  __nv_bfloat16* normed, __nv_bfloat16* fused, __nv_bfloat16* act,
-                 __nv_bfloat16* branch, AttentionMode block_attention_mode) {
+                 __nv_bfloat16* branch, AttentionMode block_attention_mode, int layer = -1) {
     const int hidden = cfg.hidden_size;
     const int inner = cfg.inner_dim();
     const int chunk = carve.chunk;
@@ -759,6 +805,7 @@ struct Transformer::Impl {
     if (block_attention_mode == AttentionMode::kSol && rows == layout.total_rows()) {
       acfg.exact_prefix = layout.video_start();
     }
+    if (layer >= 0 && !sol_capture_path.empty()) capture_sol_inputs(q, k, v, rows, layer);
     cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
     const char* label = backend == AttentionBackend::kFused ? "attn.flash2" :
                         backend == AttentionBackend::kSage2 ? "attn.sage2" :
@@ -1589,7 +1636,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
             : s.attention_mode;
     s.run_block(s.blocks[b], s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),
                 s.rope_cos.get(), s.rope_sin.get(), q, k, v, attn_out, normed, fused, act, branch,
-                block_mode);
+                block_mode, static_cast<int>(b));
   }
 
   // Both heads run over every row in the reference and are selected afterwards.
