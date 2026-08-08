@@ -164,6 +164,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         inputs.velocity(i, row_timesteps, all_video.data(), all_audio.data(),
                         video_velocity.data(), audio_velocity.data());
       } else {
+        transformer.set_denoise_step(i);
         transformer.forward(all_video.data(), all_audio.data(), row_timesteps,
                             video_velocity.data(), audio_velocity.data());
       }

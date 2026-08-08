@@ -553,6 +553,7 @@ struct Transformer::Impl {
   // `prepare_sequence` and empty when banding is off.
   int attn_band = 0;
   AttentionMode attention_mode = AttentionMode::kFlash2;
+  int denoise_step = -1;
   DeviceBuffer<int32_t> d_band;
   DeviceBuffer<float> rope_cos, rope_sin;
   DeviceBuffer<int32_t> d_text_idx, d_audio_idx, d_video_idx;
@@ -687,7 +688,7 @@ struct Transformer::Impl {
                  const int32_t* adaln_idx, const float* cos, const float* sin, __nv_bfloat16* q,
                  __nv_bfloat16* k, __nv_bfloat16* v, __nv_bfloat16* attn_out,
                  __nv_bfloat16* normed, __nv_bfloat16* fused, __nv_bfloat16* act,
-                 __nv_bfloat16* branch) {
+                 __nv_bfloat16* branch, AttentionMode block_attention_mode) {
     const int hidden = cfg.hidden_size;
     const int inner = cfg.inner_dim();
     const int chunk = carve.chunk;
@@ -749,13 +750,13 @@ struct Transformer::Impl {
     // fused path from a fallback to the blocked one — only the magnitudes
     // could, which is not a check, it is a reader noticing.
     AttentionBackend backend = AttentionBackend::kFused;
-    if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
-    if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
-    if (attention_mode == AttentionMode::kSol) backend = AttentionBackend::kSol;
+    if (block_attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
+    if (block_attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
+    if (block_attention_mode == AttentionMode::kSol) backend = AttentionBackend::kSol;
     // Empty unless this request asked for a band, so the default path hands the
     // kernel a null pointer and gets the unbanded instantiation.
     acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
-    if (attention_mode == AttentionMode::kSol && rows == layout.total_rows()) {
+    if (block_attention_mode == AttentionMode::kSol && rows == layout.total_rows()) {
       acfg.exact_prefix = layout.video_start();
     }
     cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
@@ -823,6 +824,7 @@ void Transformer::set_attention_band(int frames) { impl_->attn_band = frames > 0
 int Transformer::attention_band() const { return impl_->attn_band; }
 void Transformer::set_attention_mode(AttentionMode mode) { impl_->attention_mode = mode; }
 AttentionMode Transformer::attention_mode() const { return impl_->attention_mode; }
+void Transformer::set_denoise_step(int step) { impl_->denoise_step = step; }
 std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
   if (!is_pruned_table_architecture(impl_->architecture)) {
     throw std::runtime_error("transformer: rank-8 adaln_code is unavailable for full-AdaLN architecture");
@@ -1384,7 +1386,7 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   for (const BlockWeights& b : s.refiner) {
     // No AdaLN, no RoPE, no mask: `mod_base` and `cos` are null.
     s.run_block(b, nullptr, num_tokens, x, nullptr, nullptr, nullptr, q, k, v, attn_out, normed,
-                fused, act, branch);
+                fused, act, branch, AttentionMode::kFlash2);
   }
   s.carve = saved;
 
@@ -1581,8 +1583,13 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
 
   const size_t per_block = s.block_mod_stride();
   for (size_t b = 0; b < s.blocks.size(); ++b) {
+    const AttentionMode block_mode =
+        s.attention_mode == AttentionMode::kSol && (s.denoise_step < 10 || b < 2)
+            ? AttentionMode::kFlash2
+            : s.attention_mode;
     s.run_block(s.blocks[b], s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),
-                s.rope_cos.get(), s.rope_sin.get(), q, k, v, attn_out, normed, fused, act, branch);
+                s.rope_cos.get(), s.rope_sin.get(), q, k, v, attn_out, normed, fused, act, branch,
+                block_mode);
   }
 
   // Both heads run over every row in the reference and are selected afterwards.

@@ -75,7 +75,7 @@ struct AttentionConfig {
   // sol_beta is the standardized proxy-score cutoff (1.28155 ~= 90% routed
   // away for a normal distribution).
   int exact_prefix = 0;
-  float sol_beta = 1.2815516f;
+  float sol_beta = 1.0f;  // Official H3 diagonal-estimator cutoff.
 
   float effective_scale() const;
 };
