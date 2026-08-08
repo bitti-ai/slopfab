@@ -822,11 +822,14 @@ struct Transformer::Impl {
     AttentionBackend backend = AttentionBackend::kFused;
     if (block_attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
     if (block_attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
-    if (block_attention_mode == AttentionMode::kSol) backend = AttentionBackend::kSol;
+    // Released H3 policy: dense for the first ten denoiser evaluations and
+    // for blocks 0 and 1 on every later evaluation. Refiner layer=-1 is dense.
+    if (block_attention_mode == AttentionMode::kSol && denoise_step >= 10 && layer >= 2)
+      backend = AttentionBackend::kSol;
     // Empty unless this request asked for a band, so the default path hands the
     // kernel a null pointer and gets the unbanded instantiation.
     acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
-    if (block_attention_mode == AttentionMode::kSol && rows == layout.total_rows()) {
+    if (backend == AttentionBackend::kSol && rows == layout.total_rows()) {
       acfg.exact_prefix = layout.video_start();
       acfg.sol_pipeline = sol_pipeline_diag;
     }

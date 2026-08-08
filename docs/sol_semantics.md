@@ -34,3 +34,13 @@ approximation, not grouped correction, persistent fragments, or normalization.
 The beta-1 output itself is finite, but repeated 4% layer errors are not a safe
 quality contract for iterative denoising. The backend must remain disabled by
 default until an end-to-end-validated hybrid policy exists.
+
+## H3 runtime policy
+
+The released `sol_attn_h3.py` keeps `tau=1.0` constant. It runs dense attention
+for the first 10 denoiser evaluations and for blocks 0 and 1 on every later
+evaluation; token-refiner attention is outside the sparse 50-block stack. The
+native dispatcher now mirrors those gates. The prefix sink spans every row
+before `video_start`, and native prefix query tiles are fully exact, matching
+the release's explicit dense sink-query replacement at physical-block
+granularity.
