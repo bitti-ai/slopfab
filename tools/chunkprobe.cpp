@@ -193,9 +193,19 @@ void report_pair(const char* label, const std::vector<float>& ref, const std::ve
   // "identical" from "identical to four decimals", and one of the runs this
   // tool drives is a byte-for-byte control.
   const vidfab::CompareStats s = vidfab::compare(ref, act);
-  std::printf("%-6s rel_L2 %.4f   correlation %.4f   mean %+.4f vs %+.4f   std %.4f vs %.4f   "
+  double dot = 0.0, ref_sq = 0.0, act_sq = 0.0;
+  for (size_t i = 0; i < ref.size(); ++i) {
+    if (!std::isfinite(ref[i]) || !std::isfinite(act[i])) continue;
+    dot += static_cast<double>(ref[i]) * act[i];
+    ref_sq += static_cast<double>(ref[i]) * ref[i];
+    act_sq += static_cast<double>(act[i]) * act[i];
+  }
+  const double cosine = ref_sq > 0.0 && act_sq > 0.0
+                            ? dot / std::sqrt(ref_sq * act_sq)
+                            : 0.0;
+  std::printf("%-6s rel_L2 %.4f   cosine %.4f   correlation %.4f   mean %+.4f vs %+.4f   std %.4f vs %.4f   "
               "max|diff| %.3e\n",
-              label, s.rel_l2, s.correlation, mr.mean, ma.mean, mr.std_dev, ma.std_dev,
+              label, s.rel_l2, cosine, s.correlation, mr.mean, ma.mean, mr.std_dev, ma.std_dev,
               s.max_abs_err);
 }
 
