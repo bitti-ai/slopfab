@@ -15,7 +15,7 @@ namespace vidfab::cuda {
 namespace {
 constexpr int B = 64, D = 128, Threads = 128;
 constexpr size_t SmemBytes = (B * D + 2 * B * D) * sizeof(__nv_bfloat16) +
-                             B * B * sizeof(float);
+                             B * B * (sizeof(float) + sizeof(__nv_bfloat16));
 
 struct TmaState { uint64_t token[2]; };
 
@@ -56,22 +56,23 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   auto* q = reinterpret_cast<__nv_bfloat16*>(raw);
   auto* kv = q + B * D;
   auto* score = reinterpret_cast<float*>(kv + 2 * B * D);
+  auto* prob = reinterpret_cast<__nv_bfloat16*>(score + B * B);
   __shared__ alignas(8) uint64_t qbar, bars[2];
   __shared__ uint64_t states[2];
   __shared__ float old_m[B], denom[B], ratio[B], new_m[B];
+  using namespace nvcuda;
 
   if (t == 0) {
     states[0] = issue(&qmap, q, h, qlo, &qbar);
     wait(&qbar, states[0]);
     states[0] = issue(&kmap, kv, h, 0, &bars[0]);
   }
-  float o[B];
+  wmma::fragment<wmma::accumulator,16,16,16,float> o[8];
 #pragma unroll
-  for (int r = 0; r < B; ++r) o[r] = 0.0f;
+  for (int n = 0; n < 8; ++n) wmma::fill_fragment(o[n], 0.0f);
   if (t < B) { old_m[t] = -FLT_MAX; denom[t] = 0.0f; }
   __syncthreads();
 
-  using namespace nvcuda;
   for (int kb = 0; kb < blocks; ++kb) {
     const int stage = kb & 1;
     if (t == 0) {
@@ -105,25 +106,45 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       ratio[t]=rs; new_m[t]=nm; denom[t]=denom[t]*rs+sum; old_m[t]=nm;
     }
     __syncthreads();
+    for (int p=t;p<B*B;p+=Threads)
+      prob[p]=__float2bfloat16_rn(expf(score[p]-new_m[p/B]));
+    __syncthreads();
     if (t == 0) {
       states[stage] = issue(&vmap, kv + stage * B * D, h, kb * B, &bars[stage]);
       wait(&bars[stage], states[stage]);
     }
     __syncthreads();
+    for (int n=0;n<8;++n) {
+      const int tile=warp+n*4, qr=tile/8*16, d=tile%8*16;
+      auto& c=o[n];
 #pragma unroll
-    for (int r=0;r<B;++r) {
-      float add=0;
-      for(int j=0;j<B;++j)
-        add += expf(score[r*B+j]-new_m[r]) *
-               __bfloat162float(kv[stage*B*D+j*D+t]);
-      o[r] = o[r]*ratio[r]+add;
+      for(unsigned i=0;i<c.num_elements;++i) {
+        const int row=qr+(t&31)/4+int((i/2)%2)*8;
+        c.x[i] *= ratio[row];
+      }
+#pragma unroll
+      for(int j=0;j<B;j+=16) {
+        wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
+        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major> b;
+        wmma::load_matrix_sync(a,prob+qr*B+j,B);
+        wmma::load_matrix_sync(b,kv+stage*B*D+j*D+d,D);
+        wmma::mma_sync(c,a,b,c);
+      }
     }
     __syncthreads();
     // The next K was issued before QK and occupies the alternate stage.
   }
+  const int lane=t&31;
+  for(int n=0;n<8;++n) {
+    const int tile=warp+n*4, qr=tile/8*16, d=tile%8*16;
 #pragma unroll
-  for (int r=0;r<B;++r)
-    out[size_t(qlo+r)*heads*D+h*D+t]=__float2bfloat16_rn(o[r]/denom[r]);
+    for(unsigned i=0;i<o[n].num_elements;++i) {
+      const int row=qr+lane/4+int((i/2)%2)*8;
+      const int col=d+(lane%4)*2+int(i%2)+int(i/4)*8;
+      out[size_t(qlo+row)*heads*D+h*D+col]=
+          __float2bfloat16_rn(o[n].x[i]/denom[row]);
+    }
+  }
 }
 
 CUtensorMap map_for(const __nv_bfloat16* p, const AttentionConfig& c) {
