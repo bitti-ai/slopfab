@@ -105,7 +105,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   float* acc = score + B * B;
   __nv_bfloat16* prob = reinterpret_cast<__nv_bfloat16*>(acc + B * D);
   __shared__ float qm[D], red[D];
-  __shared__ float om[B], ol[B], rescale[B], block_m[B];
+  __shared__ float om[B], ol[B], rescale[B], block_m[B], approx_weight[B];
   __shared__ int take;
 
   if (t < D) {
@@ -223,14 +223,15 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
         const float nm = fmaxf(om[t], score[t * B]);
         rescale[t] = expf(om[t] - nm);
         block_m[t] = nm;
-        ol[t] = ol[t] * rescale[t] + float(kn) * expf(score[t * B] - nm);
+        approx_weight[t] = expf(score[t * B] - nm);
+        ol[t] = ol[t] * rescale[t] + float(kn) * approx_weight[t];
         om[t] = nm;
       }
       __syncthreads();
       for (int od = t; od < qn * D; od += Threads) {
         const int qr = od / D, d = od % D;
         acc[od] = acc[od] * rescale[qr] +
-                  expf(score[qr * B] - block_m[qr]) * vs[(size_t(kb) * heads + h) * D + d];
+                  approx_weight[qr] * vs[(size_t(kb) * heads + h) * D + d];
       }
     }
     __syncthreads();
