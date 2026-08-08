@@ -557,6 +557,7 @@ struct Transformer::Impl {
   int attn_band = 0;
   AttentionMode attention_mode = AttentionMode::kFlash2;
   int denoise_step = -1;
+  SolSchedule sol_schedule;
   std::string sol_capture_path;
   int sol_capture_step = 0;
   int sol_capture_layer = 0;
@@ -824,13 +825,14 @@ struct Transformer::Impl {
     if (block_attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
     // Released H3 policy: dense for the first ten denoiser evaluations and
     // for blocks 0 and 1 on every later evaluation. Refiner layer=-1 is dense.
-    if (is_sol_attention(block_attention_mode) && denoise_step >= 10 && layer >= 2)
+    if (is_sol_attention(block_attention_mode))
       backend = AttentionBackend::kSol;
     // Empty unless this request asked for a band, so the default path hands the
     // kernel a null pointer and gets the unbanded instantiation.
     acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
     if (backend == AttentionBackend::kSol && rows == layout.total_rows()) {
       acfg.exact_prefix = layout.video_start();
+      acfg.sol_beta = sol_schedule.beta;
       acfg.sol_pipeline = block_attention_mode == AttentionMode::kSolExperimental ||
                           sol_pipeline_diag;
     }
@@ -906,6 +908,7 @@ void Transformer::set_attention_band(int frames) { impl_->attn_band = frames > 0
 int Transformer::attention_band() const { return impl_->attn_band; }
 void Transformer::set_attention_mode(AttentionMode mode) { impl_->attention_mode = mode; }
 AttentionMode Transformer::attention_mode() const { return impl_->attention_mode; }
+void Transformer::set_sol_schedule(const SolSchedule& schedule) { impl_->sol_schedule=schedule; }
 void Transformer::set_denoise_step(int step) { impl_->denoise_step = step; }
 std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
   if (!is_pruned_table_architecture(impl_->architecture)) {
@@ -1666,7 +1669,8 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   const size_t per_block = s.block_mod_stride();
   for (size_t b = 0; b < s.blocks.size(); ++b) {
     const AttentionMode block_mode =
-        is_sol_attention(s.attention_mode) && (s.denoise_step < 10 || b < 2)
+        is_sol_attention(s.attention_mode) &&
+                !s.sol_schedule.active(s.denoise_step,static_cast<int>(b))
             ? AttentionMode::kFlash2
             : s.attention_mode;
     s.run_block(s.blocks[b], s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),

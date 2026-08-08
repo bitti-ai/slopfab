@@ -310,6 +310,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // built, and they depend on the band.
       model.set_attention_band(options.attention_band);
       model.set_attention_mode(options.attention_mode);
+      model.set_sol_schedule(options.sol_schedule);
       if (options.attention_band > 0 && options.verbose) {
         std::printf("attention  frame band +/-%d latent frames (lossy, changes the sample)\n",
                     options.attention_band);

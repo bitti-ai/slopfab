@@ -80,6 +80,7 @@ class Transformer {
   int attention_band() const;
   void set_attention_mode(AttentionMode mode);
   AttentionMode attention_mode() const;
+  void set_sol_schedule(const SolSchedule& schedule);
   void set_denoise_step(int step);
   // `c(t)` — the 8-vector that is the *entire* timestep conditioning for this
   // checkpoint, shared by all 51 AdaLN consumers (spec 3.4). Goes through the

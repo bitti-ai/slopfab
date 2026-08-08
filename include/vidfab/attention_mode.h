@@ -1,5 +1,7 @@
 #pragma once
 
+#include <limits>
+
 namespace vidfab {
 
 // User-selected implementation for MiniMax H3 self-attention.
@@ -25,5 +27,22 @@ inline const char* attention_mode_name(AttentionMode mode) {
 inline bool is_sol_attention(AttentionMode mode) {
   return mode == AttentionMode::kSol || mode == AttentionMode::kSolExperimental;
 }
+
+struct SolSchedule {
+  float beta = 1.0f;
+  int step_begin = 10;
+  int step_end = std::numeric_limits<int>::max();
+  int step_every = 1;
+  int layer_begin = 2;
+  int layer_end = std::numeric_limits<int>::max();
+  int layer_every = 1;
+
+  bool active(int step, int layer) const {
+    return step >= step_begin && step <= step_end && step_every > 0 &&
+           (step - step_begin) % step_every == 0 && layer >= layer_begin &&
+           layer <= layer_end && layer_every > 0 &&
+           (layer - layer_begin) % layer_every == 0;
+  }
+};
 
 }  // namespace vidfab

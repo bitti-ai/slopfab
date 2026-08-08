@@ -66,6 +66,7 @@ struct RunOptions {
   int attention_band = 0;
   // Attention implementation. Flash2 preserves the former default.
   AttentionMode attention_mode = AttentionMode::kFlash2;
+  SolSchedule sol_schedule;
   // If set, the fp32 latent rows in this file replace the seeded noise draw.
   // Off by default; nothing about a normal run reads it.
   //

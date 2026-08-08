@@ -11,6 +11,7 @@
 
 #include "harness.h"
 #include "vidfab/pipeline.h"
+#include "vidfab/attention_mode.h"
 
 namespace {
 
@@ -255,6 +256,22 @@ VIDFAB_TEST(pipeline_reference_image_limit) {
     rejected = true;
   }
   CHECK(rejected);
+}
+
+VIDFAB_TEST(sol_schedule_ranges_and_cadence) {
+  vidfab::SolSchedule s;
+  CHECK(!s.active(9,2));
+  CHECK(!s.active(10,1));
+  CHECK(s.active(10,2));
+  CHECK(s.active(11,49));
+  s.step_end=16;s.step_every=2;s.layer_end=10;s.layer_every=3;
+  CHECK(s.active(10,2));
+  CHECK(s.active(12,5));
+  CHECK(s.active(16,8));
+  CHECK(!s.active(11,2));
+  CHECK(!s.active(12,3));
+  CHECK(!s.active(18,8));
+  CHECK(!s.active(12,11));
 }
 
 }  // namespace

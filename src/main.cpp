@@ -451,6 +451,11 @@ const CommandHelp kCommands[] = {
      "  --attention <backend>        none, flash2, sage2 (default), sol, or\n"
      "                               sol-experimental. The experimental SM120-only\n"
      "                               path is lossy and fails rather than falling back.\n"
+     "  --sol-beta <f>               routing threshold multiplier (default 1)\n"
+     "  --sol-step-start/end <n>     inclusive active denoise range (default 10..max)\n"
+     "  --sol-step-every <n>         activate every nth step in that range\n"
+     "  --sol-layer-start/end <n>    inclusive active main-layer range (default 2..max)\n"
+     "  --sol-layer-every <n>        activate every nth layer in that range\n"
      "                               unfused reference implementation. Sage2 is lossy\n"
      "                               INT8/FP8 attention and requires a supported GPU\n"
      "  --dump-latents <f>           the denoiser's own output as fp32 safetensors,\n"
@@ -1107,6 +1112,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   std::string dump_latents;
   int attn_band = 0;
   vidfab::AttentionMode attention_mode = vidfab::AttentionMode::kSage2;
+  vidfab::SolSchedule sol_schedule;
   std::string init_latents;
   int bench_load = 0;
   bool saw_aspect = false;
@@ -1209,6 +1215,20 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                      "sol-experimental, got '%s'\n", v.c_str());
         return 2;
       }
+    } else if (arg == "--sol-beta") {
+      sol_schedule.beta = std::strtof(next("--sol-beta"), nullptr);
+    } else if (arg == "--sol-step-start") {
+      sol_schedule.step_begin = std::atoi(next("--sol-step-start"));
+    } else if (arg == "--sol-step-end") {
+      sol_schedule.step_end = std::atoi(next("--sol-step-end"));
+    } else if (arg == "--sol-step-every") {
+      sol_schedule.step_every = std::atoi(next("--sol-step-every"));
+    } else if (arg == "--sol-layer-start") {
+      sol_schedule.layer_begin = std::atoi(next("--sol-layer-start"));
+    } else if (arg == "--sol-layer-end") {
+      sol_schedule.layer_end = std::atoi(next("--sol-layer-end"));
+    } else if (arg == "--sol-layer-every") {
+      sol_schedule.layer_every = std::atoi(next("--sol-layer-every"));
     } else if (arg == "--init-latents") {
       init_latents = next("--init-latents");
     } else if (arg == "--bench-load") {
@@ -1223,6 +1243,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // path and needs no prompt; the seeded-noise form still does not either.
   if (req.prompt.empty() && !dry_run && !synthetic) {
     std::fprintf(stderr, "vidfab: generate needs --prompt \"...\"\n");
+    return 2;
+  }
+  if (!std::isfinite(sol_schedule.beta) || sol_schedule.step_every <= 0 ||
+      sol_schedule.layer_every <= 0 || sol_schedule.step_begin < 0 ||
+      sol_schedule.layer_begin < 0 || sol_schedule.step_end < sol_schedule.step_begin ||
+      sol_schedule.layer_end < sol_schedule.layer_begin) {
+    std::fprintf(stderr,"vidfab: invalid Sol beta/range/cadence\n");
     return 2;
   }
   if (synthetic && !req.reference_image_paths.empty()) {
@@ -1363,6 +1390,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.dump_latents_path = dump_latents;
   options.attention_band = attn_band;
   options.attention_mode = attention_mode;
+  options.sol_schedule = sol_schedule;
   options.init_latents_path = init_latents;
 
   std::printf("\n");
