@@ -1,6 +1,7 @@
 build/
 build*/
 out/
+dist/
 weights/
 ref/
 *.y4m
