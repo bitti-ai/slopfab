@@ -50,6 +50,7 @@
 // block at a time, which is the same arithmetic for 1/37th of the buffer.
 
 #include "vidfab/cuda/attention.cuh"
+#include "vidfab/cuda/sage_attention.cuh"
 
 #include <cuda_fp16.h>
 
@@ -1192,6 +1193,7 @@ size_t attention_workspace_bytes(const AttentionConfig& cfg, AttentionBackend ba
   // fp16 conversion copies the blocked path needs. It therefore wants no
   // workspace at all -- not a smaller one.
   if (backend == AttentionBackend::kFused) return 0;
+  if (backend == AttentionBackend::kSage2) return sage2_workspace_bytes(cfg, cfg.num_heads);
   if (cfg.seq_len <= 0 || cfg.num_heads <= 0 || cfg.head_dim <= 0) return 0;
 
   const int bq = effective_query_block(cfg);
@@ -1221,6 +1223,10 @@ void attention_forward(cublasHandle_t handle, cudaStream_t stream, const __nv_bf
     run_fused(stream, q, k, v, out, cfg, cfg.num_heads);
     return;
   }
+  if (backend == AttentionBackend::kSage2) {
+    sage2_attention_forward(stream, q, k, v, out, cfg, cfg.num_heads, ws);
+    return;
+  }
   run_blocked(handle, stream, q, k, v, out, cfg, cfg.num_heads, ws);
 }
 
@@ -1230,6 +1236,10 @@ void attention_forward_gqa(cublasHandle_t handle, cudaStream_t stream, const __n
                            Workspace& ws) {
   if (backend == AttentionBackend::kFused) {
     run_fused(stream, q, k, v, out, cfg, num_kv_heads);
+    return;
+  }
+  if (backend == AttentionBackend::kSage2) {
+    sage2_attention_forward(stream, q, k, v, out, cfg, num_kv_heads, ws);
     return;
   }
   run_blocked(handle, stream, q, k, v, out, cfg, num_kv_heads, ws);
