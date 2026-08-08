@@ -70,6 +70,13 @@ struct AttentionConfig {
   // knob like the two above: results *do* depend on it, by construction.
   const int32_t* band_ranges = nullptr;
 
+  // Sol-Attn routing. Keys in [0, exact_prefix) are always evaluated exactly;
+  // this keeps H3's text/condition/audio prefix out of the approximation.
+  // sol_beta is the standardized proxy-score cutoff (1.28155 ~= 90% routed
+  // away for a normal distribution).
+  int exact_prefix = 0;
+  float sol_beta = 1.2815516f;
+
   float effective_scale() const;
 };
 
@@ -88,6 +95,7 @@ enum class AttentionBackend {
   // Single fused kernel keeping the score tile in shared memory / registers.
   kFused,
   kSage2,
+  kSol,
 };
 
 // The fastest backend that can run this configuration. kFused is instantiated

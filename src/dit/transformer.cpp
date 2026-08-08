@@ -506,6 +506,7 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     AttentionBackend backend = AttentionBackend::kFused;
     if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
     if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
+    if (attention_mode == AttentionMode::kSol) backend = AttentionBackend::kSol;
     scratch = std::max(scratch, cuda::attention_workspace_bytes(acfg, backend));
   }
   c.scratch = scratch;
@@ -750,12 +751,17 @@ struct Transformer::Impl {
     AttentionBackend backend = AttentionBackend::kFused;
     if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
     if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
+    if (attention_mode == AttentionMode::kSol) backend = AttentionBackend::kSol;
     // Empty unless this request asked for a band, so the default path hands the
     // kernel a null pointer and gets the unbanded instantiation.
     acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
+    if (attention_mode == AttentionMode::kSol && rows == layout.total_rows()) {
+      acfg.exact_prefix = layout.video_start();
+    }
     cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
     const char* label = backend == AttentionBackend::kFused ? "attn.flash2" :
-                        backend == AttentionBackend::kSage2 ? "attn.sage2" : "attn.none";
+                        backend == AttentionBackend::kSage2 ? "attn.sage2" :
+                        backend == AttentionBackend::kSol ? "attn.sol" : "attn.none";
     prof.tick(label, stream.get());
 
     for (int start = 0; start < rows; start += chunk) {
