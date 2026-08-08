@@ -335,17 +335,37 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   auto* key_var = ws.alloc_n<float>(size_t(c.num_heads) * D);
   auto* tau = ws.alloc_n<float>(size_t(nb) * c.num_heads);
   const CUtensorMap q_map = make_q_map(q, c);
+  cudaEvent_t phase[5]{};
+  if (c.sol_phase_ms) {
+    for (auto& event : phase) VIDFAB_CUDA_CHECK(cudaEventCreate(&event));
+    VIDFAB_CUDA_CHECK(cudaEventRecord(phase[0], stream));
+  }
   pool_kv<<<dim3(nb, c.num_heads), D, 0, stream>>>(k, v, km, vs, vsm,
                                                    c.seq_len, c.num_heads);
+  if (c.sol_phase_ms) VIDFAB_CUDA_CHECK(cudaEventRecord(phase[1], stream));
   key_stats<<<c.num_heads, D, 0, stream>>>(km, key_mean, key_var, nb, c.num_heads);
+  if (c.sol_phase_ms) VIDFAB_CUDA_CHECK(cudaEventRecord(phase[2], stream));
   thresholds<<<dim3(nb, c.num_heads), Threads, 0, stream>>>(
       q, key_mean, key_var, tau, c.seq_len, c.num_heads, c.effective_scale(), c.sol_beta);
-  if (c.sol_pipeline && sol_pipeline_forward(stream, q, k, v, km, vsm, tau, out, c)) return;
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(sol, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                        int(SolSharedBytes)));
-  sol<<<dim3(nb, c.num_heads), Threads, SolSharedBytes, stream>>>(q_map, q, k, v, km, vs, tau, out, c.seq_len,
-                                                     c.num_heads, c.exact_prefix,
-                                                     c.effective_scale(), c.sol_route_counts);
+  if (c.sol_phase_ms) VIDFAB_CUDA_CHECK(cudaEventRecord(phase[3], stream));
+  const bool pipeline_ran = c.sol_pipeline &&
+      sol_pipeline_forward(stream, q, k, v, km, vsm, tau, out, c);
+  if (!pipeline_ran) {
+    VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(sol, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          int(SolSharedBytes)));
+    sol<<<dim3(nb, c.num_heads), Threads, SolSharedBytes, stream>>>(
+        q_map, q, k, v, km, vs, tau, out, c.seq_len, c.num_heads, c.exact_prefix,
+        c.effective_scale(), c.sol_route_counts);
+  }
   VIDFAB_CUDA_CHECK(cudaGetLastError());
+  if (c.sol_phase_ms) {
+    VIDFAB_CUDA_CHECK(cudaEventRecord(phase[4], stream));
+    VIDFAB_CUDA_CHECK(cudaEventSynchronize(phase[4]));
+    for (int i = 0; i < 4; ++i) {
+      VIDFAB_CUDA_CHECK(cudaEventElapsedTime(c.sol_phase_ms + i, phase[i], phase[i + 1]));
+      cudaEventDestroy(phase[i]);
+    }
+    cudaEventDestroy(phase[4]);
+  }
 }
 }  // namespace vidfab::cuda

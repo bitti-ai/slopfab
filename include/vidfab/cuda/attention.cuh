@@ -79,6 +79,9 @@ struct AttentionConfig {
   // Optional device counters [exact routes, approximate routes]. Null keeps
   // production routing free of diagnostic atomics.
   unsigned long long* sol_route_counts = nullptr;
+  // Optional host output [pool, key stats, thresholds, main] in milliseconds.
+  // Enabling this synchronizes the stream and is for solbench only.
+  float* sol_phase_ms = nullptr;
   // Opt-in SM120 experimental exact mainloop. Unsupported/ragged shapes fall
   // through to the established Sol kernel.
   bool sol_pipeline = false;

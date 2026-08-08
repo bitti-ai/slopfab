@@ -159,6 +159,12 @@ int main(int argc, char** argv) {
   unsigned long long route_host[2]{};
   VIDFAB_CUDA_CHECK(cudaMemcpy(route_host, routes.get(), sizeof(route_host), cudaMemcpyDeviceToHost));
   cfg.sol_route_counts = nullptr;
+  float phases[4]{};
+  cfg.sol_phase_ms = phases;
+  ws.clear();
+  vidfab::cuda::attention_forward(blas, nullptr, q.get(), k.get(), v.get(), out.get(), cfg,
+                                  vidfab::cuda::AttentionBackend::kSol, ws);
+  cfg.sol_phase_ms = nullptr;
   const float dense = time_backend(blas, q.get(), k.get(), v.get(), out.get(), cfg,
                                    vidfab::cuda::AttentionBackend::kFused, ws, 2, iterations);
   std::printf("seq=%d heads=%d prefix=%d beta=%.3g pipeline=%d workspace=%.2f MiB\n", seq, heads, prefix, beta, int(pipeline),
@@ -168,6 +174,8 @@ int main(int argc, char** argv) {
   const double route_total = double(route_host[0] + route_host[1]);
   std::printf("routes exact %.1f%%  approximate %.1f%%\n",
               100.0 * route_host[0] / route_total, 100.0 * route_host[1] / route_total);
+  std::printf("phases pool %.3f  stats %.3f  threshold %.3f  main %.3f ms\n",
+              phases[0], phases[1], phases[2], phases[3]);
   cublasDestroy(blas);
   return 0;
 }
