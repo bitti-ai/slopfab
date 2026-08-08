@@ -6,6 +6,10 @@
 #include <string>
 
 namespace vidfab::text {
+
+int qwen3vl_deepstack_slot(int text_decoder_layer) {
+  return text_decoder_layer >= 0 && text_decoder_layer < 3 ? text_decoder_layer : -1;
+}
 namespace {
 constexpr int kFactor = 32;
 constexpr double kMinPixels = 65536.0;

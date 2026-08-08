@@ -963,7 +963,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   }
   auto inject = [&](int layer) {
     if (!visual.tokens) return;
-    int j = layer == 8 ? 0 : layer == 16 ? 1 : layer == 24 ? 2 : -1;
+    const int j = qwen3vl_deepstack_slot(layer);
     if (j >= 0) cuda::launch_scatter_add_rows(reinterpret_cast<__nv_bfloat16*>(deep[j].get()),
                                                image_rows.get(), xp, visual.tokens, hidden,
                                                s.compute);

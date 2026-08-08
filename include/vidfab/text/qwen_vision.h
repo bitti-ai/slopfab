@@ -78,6 +78,10 @@ QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& token_ids
                                            int32_t image_pad_id = 151655,
                                            int32_t vision_end_id = 151653);
 
+// DeepStack features are extracted from vision layers 8/16/24, then injected
+// after text-decoder layers 0/1/2 respectively.
+int qwen3vl_deepstack_slot(int text_decoder_layer);
+
 // Qwen vision uses 2-D rotary embedding within each 72-wide attention head.
 // Eighteen frequencies come from height and eighteen from width, then the
 // half-split layout is duplicated to 72 channels.

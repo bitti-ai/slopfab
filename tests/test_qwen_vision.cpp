@@ -3,6 +3,16 @@
 
 using namespace vidfab::text;
 
+VIDFAB_TEST(qwen_vision_deepstack_targets_first_text_layers) {
+  CHECK(qwen3vl_deepstack_slot(-1) == -1);
+  CHECK(qwen3vl_deepstack_slot(0) == 0);
+  CHECK(qwen3vl_deepstack_slot(1) == 1);
+  CHECK(qwen3vl_deepstack_slot(2) == 2);
+  CHECK(qwen3vl_deepstack_slot(8) == -1);
+  CHECK(qwen3vl_deepstack_slot(16) == -1);
+  CHECK(qwen3vl_deepstack_slot(24) == -1);
+}
+
 VIDFAB_TEST(qwen_vision_smart_resize_and_merge) {
   auto square = qwen3vl_image_grid(256, 256);
   CHECK(square.temporal == 1);
