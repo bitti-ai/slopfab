@@ -54,7 +54,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     int seq, int heads, int prefix, float scale,
     unsigned long long* route_counts) {
   const int qb = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
-  const int qlo = qb * B, blocks = seq / B, warp = t >> 5;
+  const int qlo = qb * B, qn=min(B,seq-qlo), blocks = (seq+B-1)/B, warp = t >> 5;
   extern __shared__ __align__(128) unsigned char raw[];
   auto* q = reinterpret_cast<__nv_bfloat16*>(raw);
   auto* kv = q + B * D;
@@ -80,8 +80,8 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   __syncthreads();
 
   if (t < D) {
-    float x=0; for(int r=0;r<B;++r) x+=__bfloat162float(q[r*D+t]);
-    qmean[t]=x/float(B);
+    float x=0; for(int r=0;r<qn;++r) x+=__bfloat162float(q[r*D+t]);
+    qmean[t]=x/float(qn);
   }
   __syncthreads();
   for(int kb=t;kb<blocks;kb+=Threads) {
@@ -100,14 +100,15 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   // exact selected blocks follow through the TMA/WMMA pipeline below.
   for(int ai=0;ai<approx_count;++ai) {
     const int kb=approx_ids[ai];
-    if(t<B) {
+    const int kn=min(B,seq-kb*B);
+    if(t<qn) {
       float s=0; for(int d=0;d<D;++d)
         s += __bfloat162float(q[t*D+d])*
              __bfloat162float(km[(size_t(kb)*heads+h)*D+d]);
       s*=scale;
       const float nm=fmaxf(old_m[t],s), rs=expf(old_m[t]-nm), w=expf(s-nm);
       ratio[t]=rs; new_m[t]=nm; approx_weight[t]=w;
-      denom[t]=denom[t]*rs+B*w; old_m[t]=nm;
+      denom[t]=denom[t]*rs+kn*w; old_m[t]=nm;
     }
     __syncthreads();
     for(int n=0;n<8;++n) {
@@ -116,8 +117,9 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       for(unsigned i=0;i<o[n].num_elements;++i) {
         const int row=qr+(t&31)/4+int((i/2)%2)*8;
         const int col=d0+(t&31)%4*2+int(i%2)+int(i/4)*8;
-        o[n].x[i]=o[n].x[i]*ratio[row]+approx_weight[row]*
-          vs[(size_t(kb)*heads+h)*D+col];
+        if(row<qn)
+          o[n].x[i]=o[n].x[i]*ratio[row]+approx_weight[row]*
+            vs[(size_t(kb)*heads+h)*D+col];
       }
     }
     __syncthreads();
@@ -129,6 +131,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
 
   for (int ordinal = 0; ordinal < exact_count; ++ordinal) {
     const int kb=exact_ids[ordinal], stage = ordinal & 1;
+    const int kn=min(B,seq-kb*B);
     if (t == 0) {
       wait(&bars[stage], states[stage]);
       if (ordinal + 1 < exact_count)
@@ -152,7 +155,10 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       wmma::store_matrix_sync(score + qr * B + kr, c, B, wmma::mem_row_major);
     }
     __syncthreads();
-    if (t < B) {
+    for(int p=t;p<B*B;p+=Threads)
+      if(p/B>=qn || p%B>=kn) score[p]=-FLT_MAX;
+    __syncthreads();
+    if (t < qn) {
       float bm = -FLT_MAX;
       for (int j=0;j<B;++j) bm=fmaxf(bm,score[t*B+j]);
       const float nm=fmaxf(old_m[t],bm), rs=expf(old_m[t]-nm);
@@ -174,7 +180,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
 #pragma unroll
       for(unsigned i=0;i<c.num_elements;++i) {
         const int row=qr+(t&31)/4+int((i/2)%2)*8;
-        c.x[i] *= ratio[row];
+        if(row<qn) c.x[i] *= ratio[row];
       }
 #pragma unroll
       for(int j=0;j<B;j+=16) {
@@ -195,8 +201,9 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     for(unsigned i=0;i<o[n].num_elements;++i) {
       const int row=qr+lane/4+int((i/2)%2)*8;
       const int col=d+(lane%4)*2+int(i%2)+int(i/4)*8;
-      out[size_t(qlo+row)*heads*D+h*D+col]=
-          __float2bfloat16_rn(o[n].x[i]/denom[row]);
+      if(row<qn)
+        out[size_t(qlo+row)*heads*D+h*D+col]=
+            __float2bfloat16_rn(o[n].x[i]/denom[row]);
     }
   }
 }
@@ -221,11 +228,11 @@ bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const __nv_bfloat16* km, const float* vs,
                           const float* tau, __nv_bfloat16* out,
                           const AttentionConfig& c) {
-  if (c.seq_len % B || c.head_dim != D || c.seq_len/B > MaxBlocks) return false;
+  if (c.head_dim != D || (c.seq_len+B-1)/B > MaxBlocks) return false;
   const auto q_map=map_for(q,c), k_map=map_for(k,c), v_map=map_for(v,c);
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(exact_pipeline,
       cudaFuncAttributeMaxDynamicSharedMemorySize,int(SmemBytes)));
-  exact_pipeline<<<dim3(c.seq_len/B,c.num_heads),Threads,SmemBytes,stream>>>(
+  exact_pipeline<<<dim3((c.seq_len+B-1)/B,c.num_heads),Threads,SmemBytes,stream>>>(
       q_map,k_map,v_map,out,km,vs,tau,c.seq_len,c.num_heads,c.exact_prefix,
       c.effective_scale(),c.sol_route_counts);
   VIDFAB_CUDA_CHECK(cudaGetLastError());

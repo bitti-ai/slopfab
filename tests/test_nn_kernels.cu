@@ -1909,6 +1909,7 @@ VIDFAB_TEST(attention_sol) {
   cfg.seq_len = seq;
   cfg.num_heads = heads;
   cfg.head_dim = dim;
+  cfg.sol_pipeline = true;
   CHECK_NEAR(cfg.sol_beta, 1.0f, 0.0);
   const size_t bytes =
       vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kSol);
@@ -1968,6 +1969,7 @@ VIDFAB_TEST(attention_sol) {
     mixed.num_heads = 1;
     mixed.head_dim = dim;
     mixed.exact_prefix = 70;
+    mixed.sol_pipeline = true;
     Workspace mixed_ws;
     mixed_ws.reserve(vidfab::cuda::attention_workspace_bytes(
         mixed, vidfab::cuda::AttentionBackend::kSol));
