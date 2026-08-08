@@ -454,7 +454,8 @@ struct Carve {
 // stream in one pass: its attention is over all L rows anyway, so chunking the
 // row-wise stages around it would buy nothing and complicate the carve.
 Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
-                 int chunk_override = 0) {
+                 int chunk_override = 0,
+                 AttentionMode attention_mode = AttentionMode::kFlash2) {
   const int seq = layout.total_rows();
   const int hidden = cfg.hidden_size;
   const int inner = cfg.inner_dim();
@@ -502,8 +503,10 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     acfg.seq_len = std::max(seq, 1);
     acfg.num_heads = cfg.num_attention_heads;
     acfg.head_dim = cfg.attention_head_dim;
-    scratch = std::max(scratch, cuda::attention_workspace_bytes(
-                                    acfg, cuda::attention_preferred_backend(acfg)));
+    AttentionBackend backend = AttentionBackend::kFused;
+    if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
+    if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
+    scratch = std::max(scratch, cuda::attention_workspace_bytes(acfg, backend));
   }
   c.scratch = scratch;
   c.total = bytes + align_up(scratch);
@@ -548,6 +551,7 @@ struct Transformer::Impl {
   // holds the per-query-tile key ranges the kernel reads, built once in
   // `prepare_sequence` and empty when banding is off.
   int attn_band = 0;
+  AttentionMode attention_mode = AttentionMode::kFlash2;
   DeviceBuffer<int32_t> d_band;
   DeviceBuffer<float> rope_cos, rope_sin;
   DeviceBuffer<int32_t> d_text_idx, d_audio_idx, d_video_idx;
@@ -743,12 +747,16 @@ struct Transformer::Impl {
     // "attn.fused" unconditionally, so the profile could not distinguish the
     // fused path from a fallback to the blocked one — only the magnitudes
     // could, which is not a check, it is a reader noticing.
-    const AttentionBackend backend = cuda::attention_preferred_backend(acfg);
+    AttentionBackend backend = AttentionBackend::kFused;
+    if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
+    if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
     // Empty unless this request asked for a band, so the default path hands the
     // kernel a null pointer and gets the unbanded instantiation.
     acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
     cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
-    prof.tick(backend == AttentionBackend::kFused ? "attn.fused" : "attn.blocked", stream.get());
+    const char* label = backend == AttentionBackend::kFused ? "attn.flash2" :
+                        backend == AttentionBackend::kSage2 ? "attn.sage2" : "attn.none";
+    prof.tick(label, stream.get());
 
     for (int start = 0; start < rows; start += chunk) {
       const int n = std::min(chunk, rows - start);
@@ -807,6 +815,8 @@ AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
 
 void Transformer::set_attention_band(int frames) { impl_->attn_band = frames > 0 ? frames : 0; }
 int Transformer::attention_band() const { return impl_->attn_band; }
+void Transformer::set_attention_mode(AttentionMode mode) { impl_->attention_mode = mode; }
+AttentionMode Transformer::attention_mode() const { return impl_->attention_mode; }
 std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
   if (!is_pruned_table_architecture(impl_->architecture)) {
     throw std::runtime_error("transformer: rank-8 adaln_code is unavailable for full-AdaLN architecture");
@@ -1229,7 +1239,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
 size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   const TransformerConfig& cfg = impl_->cfg;
-  const Carve c = plan_carve(cfg, layout);
+  const Carve c = plan_carve(cfg, layout, 0, impl_->attention_mode);
   const int seq = layout.total_rows();
 
   size_t total = c.total;
@@ -1333,7 +1343,8 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   // forward is stateless (spec 6).
   SequenceLayout text_only;
   text_only.num_text = num_tokens;
-  const Carve text_carve = plan_carve(s.cfg, text_only, /*chunk_override=*/num_tokens);
+  const Carve text_carve = plan_carve(s.cfg, text_only, /*chunk_override=*/num_tokens,
+                                      s.attention_mode);
 
   Workspace& ws = s.ws;
   // The refiner needs one extra bf16 [L, text_dim] buffer that the main path
@@ -1402,7 +1413,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
 
   s.layout = layout;
   s.indices = indices;
-  s.carve = plan_carve(s.cfg, layout);
+  s.carve = plan_carve(s.cfg, layout, 0, s.attention_mode);
   if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN) {
     const size_t old_scratch = s.carve.scratch;
     s.carve.scratch = std::max(s.carve.scratch, cuda::linear_workspace_bytes(

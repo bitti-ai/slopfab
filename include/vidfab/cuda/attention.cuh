@@ -87,6 +87,7 @@ enum class AttentionBackend {
   kBlocked,
   // Single fused kernel keeping the score tile in shared memory / registers.
   kFused,
+  kSage2,
 };
 
 // The fastest backend that can run this configuration. kFused is instantiated

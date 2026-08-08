@@ -21,6 +21,8 @@
 #include <memory>
 #include <vector>
 
+#include "vidfab/attention_mode.h"
+
 #include "vidfab/dit/adaln.h"
 #include "vidfab/dit/checkpoint.h"
 #include "vidfab/dit/packing.h"
@@ -76,6 +78,8 @@ class Transformer {
   // where the per-query-tile key ranges are built.
   void set_attention_band(int frames);
   int attention_band() const;
+  void set_attention_mode(AttentionMode mode);
+  AttentionMode attention_mode() const;
   // `c(t)` — the 8-vector that is the *entire* timestep conditioning for this
   // checkpoint, shared by all 51 AdaLN consumers (spec 3.4). Goes through the
   // configured lookup mode, so it is exactly the vector `build_modulation`

@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "vidfab/attention_mode.h"
 #include "vidfab/pipeline.h"
 #include "vidfab/sampler/scheduler.h"
 
@@ -63,6 +64,8 @@ struct RunOptions {
   // is distant video-to-video attention. Its cost scales as the band's share of
   // the sequence, so it saves more the longer the request.
   int attention_band = 0;
+  // Attention implementation. Flash2 preserves the former default.
+  AttentionMode attention_mode = AttentionMode::kFlash2;
   // If set, the fp32 latent rows in this file replace the seeded noise draw.
   // Off by default; nothing about a normal run reads it.
   //

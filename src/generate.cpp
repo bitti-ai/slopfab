@@ -309,9 +309,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // Before prepare_sequence: that is where the per-query-tile key ranges are
       // built, and they depend on the band.
       model.set_attention_band(options.attention_band);
+      model.set_attention_mode(options.attention_mode);
       if (options.attention_band > 0 && options.verbose) {
         std::printf("attention  frame band +/-%d latent frames (lossy, changes the sample)\n",
                     options.attention_band);
+      }
+      if (options.verbose) {
+        std::printf("attention  backend %s\n", attention_mode_name(options.attention_mode));
       }
       model.prepare_text(prompt.data.data(), prompt.num_tokens);
       model.prepare_sequence(live, idx, pos);

@@ -80,6 +80,9 @@ const CommandHelp kCommands[] = {
      "                               The audio cost is NOT characterised -- one seed\n"
      "                               per point leaves its noise floor moving as much\n"
      "                               as the effect. Judge output before relying on it\n"
+     "  --attention <backend>        none, flash2 (default), or sage2. 'none' uses the\n"
+     "                               unfused reference implementation. Sage2 is lossy\n"
+     "                               INT8/FP8 attention and requires a supported GPU\n"
      "  --dump-latents <f>           the denoiser's own output as fp32 safetensors,\n"
      "                               before either VAE; the diff point for a change\n"
      "                               to the transformer\n"
@@ -732,6 +735,7 @@ int cmd_generate(int argc, char** argv) {
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
   std::string dump_latents;
   int attn_band = 0;
+  vidfab::AttentionMode attention_mode = vidfab::AttentionMode::kFlash2;
   std::string init_latents;
   int bench_load = 0;
   bool saw_aspect = false;
@@ -818,6 +822,16 @@ int cmd_generate(int argc, char** argv) {
       dump_latents = next("--dump-latents");
     } else if (arg == "--attn-band") {
       attn_band = std::atoi(next("--attn-band"));
+    } else if (arg == "--attention") {
+      const std::string v = next("--attention");
+      if (v == "none") attention_mode = vidfab::AttentionMode::kNone;
+      else if (v == "flash2") attention_mode = vidfab::AttentionMode::kFlash2;
+      else if (v == "sage2") attention_mode = vidfab::AttentionMode::kSage2;
+      else {
+        std::fprintf(stderr,
+                     "vidfab: --attention wants none, flash2, or sage2, got '%s'\n", v.c_str());
+        return 2;
+      }
     } else if (arg == "--init-latents") {
       init_latents = next("--init-latents");
     } else if (arg == "--bench-load") {
@@ -846,6 +860,11 @@ int cmd_generate(int argc, char** argv) {
   }
   if (req.skip_every < 0) {
     std::fprintf(stderr, "vidfab: --skip-every cannot be negative (0 disables it)\n");
+    return 2;
+  }
+  if (attn_band > 0 && attention_mode != vidfab::AttentionMode::kFlash2) {
+    std::fprintf(stderr,
+                 "vidfab: --attn-band currently requires --attention flash2\n");
     return 2;
   }
   // Rejected rather than silently resolved. A fixed interval and an adaptive
@@ -963,6 +982,7 @@ int cmd_generate(int argc, char** argv) {
   options.sampler = sampler_kind;
   options.dump_latents_path = dump_latents;
   options.attention_band = attn_band;
+  options.attention_mode = attention_mode;
   options.init_latents_path = init_latents;
 
   std::printf("\n");
