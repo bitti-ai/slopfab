@@ -20,6 +20,7 @@ option(VIDFAB_BUILD_TESTS "Build unit tests" ON)
 
 add_library(vidfab_core STATIC
   src/core/json.cpp
+  src/core/nf4.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
   src/core/image.cpp
@@ -92,6 +93,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/workspace.cu
       src/cuda/nn_kernels.cu
       src/cuda/linear.cu
+      src/cuda/nf4_weight.cu
       src/cuda/nvfp4_gemm.cu
       src/cuda/attention.cu
       src/cuda/vae_kernels.cu

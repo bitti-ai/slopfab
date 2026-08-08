@@ -229,6 +229,11 @@ void launch_dequant_nf4(const uint8_t* src, const uint8_t* absmax, const float* 
                         __nv_bfloat16* dst, int out_features, int in_features,
                         cudaStream_t stream);
 
+void launch_dequant_nf4_f16(const uint8_t* src, const uint8_t* absmax, const float* quant_map,
+                            const float* nested_quant_map, const float* nested_absmax,
+                            int block_size, int nested_block_size, float nested_offset,
+                            __half* dst, size_t n, cudaStream_t stream);
+
 // dst[r, i] = src[r, i] * scale[i]. The AWQ activation scaling; separate from
 // the GEMM because it also has to happen ahead of a native fp4 path.
 void launch_pre_quant_scale(const __nv_bfloat16* src, const __nv_bfloat16* scale,

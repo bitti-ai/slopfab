@@ -258,6 +258,25 @@ __global__ void dequant_nf4_kernel(const uint8_t* __restrict__ src,
   if (even + 1 < n) dst[even + 1] = __float2bfloat16(quant_map[packed & 0x0f] * scale);
 }
 
+__global__ void dequant_nf4_f16_kernel(const uint8_t* __restrict__ src,
+                                       const uint8_t* __restrict__ absmax,
+                                       const float* __restrict__ quant_map,
+                                       const float* __restrict__ nested_quant_map,
+                                       const float* __restrict__ nested_absmax, int block_size,
+                                       int nested_block_size, float nested_offset,
+                                       __half* __restrict__ dst, size_t n) {
+  const size_t byte = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t even = byte * 2;
+  if (even >= n) return;
+  const size_t scale_index = even / static_cast<size_t>(block_size);
+  const float scale = nested_quant_map[absmax[scale_index]] *
+                          nested_absmax[scale_index / static_cast<size_t>(nested_block_size)] +
+                      nested_offset;
+  const uint8_t packed = src[byte];
+  dst[even] = __float2half_rn(quant_map[packed >> 4] * scale);
+  if (even + 1 < n) dst[even + 1] = __float2half_rn(quant_map[packed & 0x0f] * scale);
+}
+
 __global__ void quantize_f8_kernel(const __nv_bfloat16* __restrict__ src, float inv_scale,
                                    uint8_t* __restrict__ dst, size_t n) {
   const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -840,6 +859,20 @@ void launch_dequant_nf4(const uint8_t* src, const uint8_t* absmax, const float* 
   }
   const size_t n = static_cast<size_t>(out_features) * in_features;
   dequant_nf4_kernel<<<grid_1d((n + 1) / 2, kThreads), kThreads, 0, stream>>>(
+      src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
+      nested_offset, dst, n);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_dequant_nf4_f16(const uint8_t* src, const uint8_t* absmax, const float* quant_map,
+                            const float* nested_quant_map, const float* nested_absmax,
+                            int block_size, int nested_block_size, float nested_offset,
+                            __half* dst, size_t n, cudaStream_t stream) {
+  if (!src || !absmax || !quant_map || !nested_quant_map || !nested_absmax || !dst)
+    throw std::runtime_error("launch_dequant_nf4_f16: null pointer");
+  if (block_size <= 0 || nested_block_size <= 0)
+    throw std::runtime_error("launch_dequant_nf4_f16: invalid block sizes");
+  dequant_nf4_f16_kernel<<<grid_1d((n + 1) / 2, kThreads), kThreads, 0, stream>>>(
       src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
       nested_offset, dst, n);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
