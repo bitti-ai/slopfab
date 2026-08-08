@@ -298,6 +298,10 @@ void validate(const AttentionConfig& c) {
   if (c.band_ranges) throw std::runtime_error("Sol-Attn: frame banding is incompatible");
   if (c.exact_prefix < 0 || c.exact_prefix > c.seq_len) throw std::runtime_error("Sol-Attn: invalid exact_prefix");
   if (!std::isfinite(c.sol_beta)) throw std::runtime_error("Sol-Attn: sol_beta must be finite");
+  if (!std::isfinite(c.sol_error_k) || c.sol_error_k < 0.0f)
+    throw std::runtime_error("Sol-Attn: sol_error_k must be finite and nonnegative");
+  if (!std::isfinite(c.sol_error_v) || c.sol_error_v < 0.0f)
+    throw std::runtime_error("Sol-Attn: sol_error_v must be finite and nonnegative");
 }
 
 CUtensorMap make_q_map(const __nv_bfloat16* q, const AttentionConfig& c) {

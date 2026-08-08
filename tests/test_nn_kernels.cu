@@ -21,11 +21,14 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "harness.h"
 #include "vidfab/cuda/attention.cuh"
+#include "vidfab/cuda/sol_attention.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
@@ -2079,6 +2082,45 @@ VIDFAB_TEST(attention_sol_pipeline_large_pooled_v) {
   for(float x:got) bad+=!std::isfinite(x);
   CHECK_MSG(bad==0,"Sol large pooled-V pipeline produced %zu non-finite values",bad);
   CHECK_CLOSE_REL(want,got,2e-3,2e-2,"Sol pipeline large pooled-V FP32 correction");
+}
+
+VIDFAB_TEST(attention_sol_rejects_invalid_error_weights) {
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len=64;cfg.num_heads=1;cfg.head_dim=128;
+  vidfab::cuda::Workspace ws;
+  auto rejected=[&]() {
+    try {
+      vidfab::cuda::sol_attention_forward(nullptr,nullptr,nullptr,nullptr,nullptr,cfg,ws);
+      return false;
+    } catch(const std::runtime_error&) { return true; }
+  };
+  cfg.sol_error_k=-1.0f;CHECK(rejected());
+  cfg.sol_error_k=std::numeric_limits<float>::infinity();CHECK(rejected());
+  cfg.sol_error_k=0.0f;cfg.sol_error_v=-1.0f;CHECK(rejected());
+  cfg.sol_error_v=std::numeric_limits<float>::quiet_NaN();CHECK(rejected());
+}
+
+VIDFAB_TEST(attention_sol_zero_error_weight_ignores_infinite_residual) {
+  CublasScope cb;
+  const int seq=321,dim=128;
+  std::vector<float> q(size_t(seq)*dim,0.0f),k(size_t(seq)*dim),v;
+  v=bf16_round(make_data(size_t(seq)*dim,961u,1.0f));
+  // Squaring this finite BF16 value overflows FP32 residual preprocessing,
+  // while alternating signs keep the centroid and zero-Q proxy finite.
+  for(int row=0;row<seq;++row)for(int d=0;d<dim;++d)
+    k[size_t(row)*dim+d]=((row+d)&1)?-3.0e38f:3.0e38f;
+  k=bf16_round(k);
+  BfBuf dq(q),dk(k),dv(v),dout(size_t(seq)*dim);
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len=seq;cfg.num_heads=1;cfg.head_dim=dim;cfg.sol_pipeline=true;
+  cfg.sol_beta=1.0e6f;cfg.sol_error_k=0.0f;cfg.sol_error_v=0.0f;
+  Workspace ws;ws.reserve(vidfab::cuda::attention_workspace_bytes(
+      cfg,vidfab::cuda::AttentionBackend::kSol));
+  vidfab::cuda::attention_forward(cb.h,nullptr,dq.p(),dk.p(),dv.p(),dout.p(),cfg,
+                                  vidfab::cuda::AttentionBackend::kSol,ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  size_t bad=0;for(float x:dout.host())bad+=!std::isfinite(x);
+  CHECK_MSG(bad==0,"zero Sol error weights consumed infinite residual: %zu nonfinite",bad);
 }
 
 VIDFAB_TEST(attention_sage2) {

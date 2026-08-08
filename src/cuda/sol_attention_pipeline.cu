@@ -109,11 +109,15 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     float proxy=0;
     for(int d=0;d<D;++d)
       proxy += score[d]*__bfloat162float(km[(size_t(kb)*heads+h)*D+d]);
-    const size_t bi=size_t(kb)*heads+h;
-    const float hetero=query_norm*k_residual[bi]*
-                       (1.0f+error_v*v_residual[bi]);
+    float adjusted=proxy;
+    if(error_k>0.0f) {
+      const size_t bi=size_t(kb)*heads+h;
+      float hetero=query_norm*k_residual[bi];
+      if(error_v>0.0f)hetero*=1.0f+error_v*v_residual[bi];
+      adjusted+=error_k*hetero;
+    }
     const bool take=qlo<prefix || kb*B<prefix || abs(qb-kb)<=1 ||
-                    (proxy+error_k*hetero)*scale>tau[size_t(qb)*heads+h];
+                    adjusted*scale>tau[size_t(qb)*heads+h];
     const int slot=take?atomicAdd(&exact_count,1):atomicAdd(&approx_count,1);
     route_ids[take?slot:MaxBlocks-1-slot]=uint16_t(kb);
     if(route_counts) atomicAdd(route_counts+(take?0:1),1ull);
