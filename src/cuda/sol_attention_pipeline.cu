@@ -20,6 +20,13 @@ constexpr size_t SmemBytes = B * D * sizeof(__nv_bfloat16) +
 
 struct TmaState { uint64_t token[2]; };
 
+__device__ __forceinline__ float fast_exp(float x) {
+  float y;
+  x *= 1.4426950408889634f;
+  asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(y) : "f"(x));
+  return y;
+}
+
 __device__ uint64_t issue(const CUtensorMap* map, void* dst, int h, int row,
                           uint64_t* barrier) {
   uint32_t bar = uint32_t(__cvta_generic_to_shared(barrier));
@@ -73,15 +80,27 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     wait(&qbar, states[0]);
     exact_count=0; approx_count=0;
   }
-  wmma::fragment<wmma::accumulator,16,16,16,float> o[8];
-  wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> qr[8];
-#pragma unroll
-  for (int n = 0; n < 8; ++n) wmma::fill_fragment(o[n], 0.0f);
+  wmma::fragment<wmma::accumulator,16,16,16,float>
+      o0,o1,o2,o3,o4,o5,o6,o7;
+  // Keep these as named fragments. Indexing an array of WMMA fragments makes
+  // nvcc materialize it in a 256-byte local stack frame on sm_120a.
+  wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major>
+      qr0,qr1,qr2,qr3,qr4,qr5,qr6,qr7;
+  wmma::fill_fragment(o0,0.0f); wmma::fill_fragment(o1,0.0f);
+  wmma::fill_fragment(o2,0.0f); wmma::fill_fragment(o3,0.0f);
+  wmma::fill_fragment(o4,0.0f); wmma::fill_fragment(o5,0.0f);
+  wmma::fill_fragment(o6,0.0f); wmma::fill_fragment(o7,0.0f);
   if (t < B) { old_m[t] = -FLT_MAX; denom[t] = 0.0f; }
   __syncthreads();
 
-#pragma unroll
-  for(int d=0;d<D;d+=16) wmma::load_matrix_sync(qr[d/16],q+warp*16*D+d,D);
+  wmma::load_matrix_sync(qr0,q+warp*16*D+  0,D);
+  wmma::load_matrix_sync(qr1,q+warp*16*D+ 16,D);
+  wmma::load_matrix_sync(qr2,q+warp*16*D+ 32,D);
+  wmma::load_matrix_sync(qr3,q+warp*16*D+ 48,D);
+  wmma::load_matrix_sync(qr4,q+warp*16*D+ 64,D);
+  wmma::load_matrix_sync(qr5,q+warp*16*D+ 80,D);
+  wmma::load_matrix_sync(qr6,q+warp*16*D+ 96,D);
+  wmma::load_matrix_sync(qr7,q+warp*16*D+112,D);
   __syncthreads();
   float qavg=0; for(int r=0;r<qn;++r) qavg+=__bfloat162float(q[r*D+t]);
   __syncthreads();
@@ -111,12 +130,16 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     for(int kr=0;kr<B;kr+=16) {
       wmma::fragment<wmma::accumulator,16,16,16,float> c;
       wmma::fill_fragment(c,0.0f);
-#pragma unroll
-      for(int d=0;d<D;d+=16) {
-        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::col_major> b;
-        wmma::load_matrix_sync(b,kv+kr*D+d,D);
-        wmma::mma_sync(c,qr[d/16],b,c);
-      }
+#define VIDFAB_QK_STEP(QR, OFF) do {                                      \
+        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,             \
+                       wmma::col_major> b;                                 \
+        wmma::load_matrix_sync(b,kv+kr*D+(OFF),D);                         \
+        wmma::mma_sync(c,(QR),b,c);                                        \
+      } while (false)
+      VIDFAB_QK_STEP(qr0,  0); VIDFAB_QK_STEP(qr1, 16);
+      VIDFAB_QK_STEP(qr2, 32); VIDFAB_QK_STEP(qr3, 48);
+      VIDFAB_QK_STEP(qr4, 64); VIDFAB_QK_STEP(qr5, 80);
+      VIDFAB_QK_STEP(qr6, 96); VIDFAB_QK_STEP(qr7,112);
       for(unsigned i=0;i<c.num_elements;++i)c.x[i]*=scale;
       wmma::store_matrix_sync(score+warp*16*B+kr,c,B,wmma::mem_row_major);
     }
@@ -124,28 +147,34 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     if(t<qn) {
       float bm=-FLT_MAX;
       for(int j=0;j<count;++j)bm=fmaxf(bm,score[t*B+j]);
-      const float nm=fmaxf(old_m[t],bm),rs=expf(old_m[t]-nm);
+      const float nm=fmaxf(old_m[t],bm),rs=fast_exp(old_m[t]-nm);
       float sum=0;
       for(int j=0;j<count;++j) {
         const int kb=route_ids[MaxBlocks-1-(base+j)],kn=min(B,seq-kb*B);
-        sum+=kn*expf(score[t*B+j]-nm);
+        sum+=kn*fast_exp(score[t*B+j]-nm);
       }
       ratio[t]=rs;denom[t]=denom[t]*rs+sum;old_m[t]=nm;
     }
     __syncthreads();
-    for(int n=0;n<8;++n) {
-      const int qr0=warp*16,d=n*16; auto& c=o[n];
-      for(unsigned i=0;i<c.num_elements;++i) {
-        const int row=qr0+(t&31)/4+int((i/2)%2)*8;
-        const int col=d+(t&31)%4*2+int(i%2)+int(i/4)*8;
-        if(row<qn){float add=0;
-          for(int j=0;j<count;++j){const int kb=route_ids[MaxBlocks-1-(base+j)];
-            add+=expf(score[row*B+j]-old_m[row])*
-                 vs[(size_t(kb)*heads+h)*D+col];}
-          c.x[i]=c.x[i]*ratio[row]+add;
-        }
-      }
-    }
+#define VIDFAB_APPROX_O(C, OFF) do {                                       \
+      const int qr0=warp*16,d=(OFF); auto& c=(C);                           \
+      for(unsigned i=0;i<c.num_elements;++i) {                              \
+        const int row=qr0+(t&31)/4+int((i/2)%2)*8;                          \
+        const int col=d+(t&31)%4*2+int(i%2)+int(i/4)*8;                    \
+        if(row<qn){float add=0;                                             \
+          for(int j=0;j<count;++j){                                        \
+            const int kb=route_ids[MaxBlocks-1-(base+j)];                   \
+            add+=fast_exp(score[row*B+j]-old_m[row])*                       \
+                 vs[(size_t(kb)*heads+h)*D+col];}                           \
+          c.x[i]=c.x[i]*ratio[row]+add;                                     \
+        }                                                                  \
+      }                                                                    \
+    } while(false)
+    VIDFAB_APPROX_O(o0,  0); VIDFAB_APPROX_O(o1, 16);
+    VIDFAB_APPROX_O(o2, 32); VIDFAB_APPROX_O(o3, 48);
+    VIDFAB_APPROX_O(o4, 64); VIDFAB_APPROX_O(o5, 80);
+    VIDFAB_APPROX_O(o6, 96); VIDFAB_APPROX_O(o7,112);
+#undef VIDFAB_APPROX_O
     __syncthreads();
   }
 
@@ -160,12 +189,10 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     for (int kr = 0; kr < B; kr += 16) {
       wmma::fragment<wmma::accumulator,16,16,16,float> c;
       wmma::fill_fragment(c, 0.0f);
-#pragma unroll
-      for (int d = 0; d < D; d += 16) {
-        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::col_major> b;
-        wmma::load_matrix_sync(b, kv + stage * B * D + kr * D + d, D);
-        wmma::mma_sync(c, qr[d/16], b, c);
-      }
+      VIDFAB_QK_STEP(qr0,  0); VIDFAB_QK_STEP(qr1, 16);
+      VIDFAB_QK_STEP(qr2, 32); VIDFAB_QK_STEP(qr3, 48);
+      VIDFAB_QK_STEP(qr4, 64); VIDFAB_QK_STEP(qr5, 80);
+      VIDFAB_QK_STEP(qr6, 96); VIDFAB_QK_STEP(qr7,112);
       for (unsigned i=0;i<c.num_elements;++i) c.x[i] *= scale;
       wmma::store_matrix_sync(score + warp * 16 * B + kr, c, B, wmma::mem_row_major);
     }
@@ -176,8 +203,8 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     if (t < qn) {
       float bm = -FLT_MAX;
       for (int j=0;j<B;++j) bm=fmaxf(bm,score[t*B+j]);
-      const float nm=fmaxf(old_m[t],bm), rs=expf(old_m[t]-nm);
-      float sum=0; for(int j=0;j<B;++j) sum += expf(score[t*B+j]-nm);
+      const float nm=fmaxf(old_m[t],bm), rs=fast_exp(old_m[t]-nm);
+      float sum=0; for(int j=0;j<B;++j) sum += fast_exp(score[t*B+j]-nm);
       ratio[t]=rs; denom[t]=denom[t]*rs+sum; old_m[t]=nm;
     }
     __syncthreads();
@@ -186,46 +213,59 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       wait(&bars[stage], states[stage]);
     }
     __syncthreads();
-    for (int n=0;n<8;++n) {
-      const int qr0=warp*16; auto& c=o[n];
-#pragma unroll
-      for(unsigned i=0;i<c.num_elements;++i) {
-        const int row=qr0+(t&31)/4+int((i/2)%2)*8;
-        if(row<qn) c.x[i] *= ratio[row];
-      }
-    }
+#define VIDFAB_SCALE_O(C) do {                                             \
+      const int qr0=warp*16; auto& c=(C);                                  \
+      for(unsigned i=0;i<c.num_elements;++i) {                              \
+        const int row=qr0+(t&31)/4+int((i/2)%2)*8;                          \
+        if(row<qn) c.x[i] *= ratio[row];                                    \
+      }                                                                    \
+    } while(false)
+    VIDFAB_SCALE_O(o0); VIDFAB_SCALE_O(o1); VIDFAB_SCALE_O(o2); VIDFAB_SCALE_O(o3);
+    VIDFAB_SCALE_O(o4); VIDFAB_SCALE_O(o5); VIDFAB_SCALE_O(o6); VIDFAB_SCALE_O(o7);
+#undef VIDFAB_SCALE_O
     for(int j=0;j<B;j+=16) {
       auto* ps=prob_scratch+warp*256;
       for(int p=(t&31);p<256;p+=32) {
         const int row=warp*16+p/16,col=j+p%16;
         ps[p]=(row<qn && col<kn)?__float2bfloat16_rn(
-          expf(score[row*B+col]-old_m[row])):__float2bfloat16_rn(0);
+          fast_exp(score[row*B+col]-old_m[row])):__float2bfloat16_rn(0);
       }
       __syncwarp();
       wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
       wmma::load_matrix_sync(a,ps,16);
-      for(int n=0;n<8;++n) {
-        const int d=n*16;
-        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major> b;
-        wmma::load_matrix_sync(b,kv+stage*B*D+j*D+d,D);
-        wmma::mma_sync(o[n],a,b,o[n]);
-      }
+#define VIDFAB_PV_STEP(C, OFF) do {                                        \
+        const int d=(OFF);                                                  \
+        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,               \
+                       wmma::row_major> b;                                   \
+        wmma::load_matrix_sync(b,kv+stage*B*D+j*D+d,D);                     \
+        wmma::mma_sync((C),a,b,(C));                                        \
+      } while(false)
+      VIDFAB_PV_STEP(o0,  0); VIDFAB_PV_STEP(o1, 16);
+      VIDFAB_PV_STEP(o2, 32); VIDFAB_PV_STEP(o3, 48);
+      VIDFAB_PV_STEP(o4, 64); VIDFAB_PV_STEP(o5, 80);
+      VIDFAB_PV_STEP(o6, 96); VIDFAB_PV_STEP(o7,112);
+#undef VIDFAB_PV_STEP
       __syncwarp();
     }
     __syncthreads();
   }
   const int lane=t&31;
-  for(int n=0;n<8;++n) {
-    const int qr0=warp*16, d=n*16;
-#pragma unroll
-    for(unsigned i=0;i<o[n].num_elements;++i) {
-      const int row=qr0+lane/4+int((i/2)%2)*8;
-      const int col=d+(lane%4)*2+int(i%2)+int(i/4)*8;
-      if(row<qn)
-        out[size_t(qlo+row)*heads*D+h*D+col]=
-            __float2bfloat16_rn(o[n].x[i]/denom[row]);
-    }
-  }
+#define VIDFAB_STORE_O(C, OFF) do {                                        \
+    const int qr0=warp*16, d=(OFF); auto& frag=(C);                         \
+    for(unsigned i=0;i<frag.num_elements;++i) {                             \
+      const int row=qr0+lane/4+int((i/2)%2)*8;                              \
+      const int col=d+(lane%4)*2+int(i%2)+int(i/4)*8;                      \
+      if(row<qn)                                                            \
+        out[size_t(qlo+row)*heads*D+h*D+col]=                              \
+            __float2bfloat16_rn(frag.x[i]/denom[row]);                     \
+    }                                                                      \
+  } while(false)
+  VIDFAB_STORE_O(o0,  0); VIDFAB_STORE_O(o1, 16);
+  VIDFAB_STORE_O(o2, 32); VIDFAB_STORE_O(o3, 48);
+  VIDFAB_STORE_O(o4, 64); VIDFAB_STORE_O(o5, 80);
+  VIDFAB_STORE_O(o6, 96); VIDFAB_STORE_O(o7,112);
+#undef VIDFAB_STORE_O
+#undef VIDFAB_QK_STEP
 }
 
 CUtensorMap map_for(const __nv_bfloat16* p, const AttentionConfig& c) {
