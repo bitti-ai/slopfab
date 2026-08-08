@@ -44,6 +44,7 @@
 
 #include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/diagnostics.cuh"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
@@ -560,6 +561,21 @@ struct Transformer::Impl {
   int sol_capture_step = 0;
   int sol_capture_layer = 0;
   bool sol_capture_done = false;
+  bool tensor_diag = false;
+  bool sol_pipeline_diag = false;
+  DeviceBuffer<cuda::TensorScan> d_tensor_diag;
+
+  void diagnose(const char* stage,const __nv_bfloat16* p,size_t n,int layer){
+    if(!tensor_diag)return;
+    VIDFAB_CUDA_CHECK(cudaMemsetAsync(d_tensor_diag.get(),0,sizeof(cuda::TensorScan),stream.get()));
+    cuda::launch_tensor_scan(p,n,d_tensor_diag.get(),stream.get());
+    cuda::TensorScan h{};d_tensor_diag.copy_to_host(&h,1,stream.get());
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    float mx=0;std::memcpy(&mx,&h.max_bits,sizeof(mx));
+    std::fprintf(stderr,"vidfab tensor step=%d layer=%d stage=%s nonfinite=%llu max=%.7g\n",
+                 denoise_step,layer,stage,h.nonfinite,mx);
+    if(h.nonfinite)throw std::runtime_error("transformer: first non-finite tensor at "+std::string(stage));
+  }
 
   void capture_sol_inputs(const __nv_bfloat16* q, const __nv_bfloat16* k,
                           const __nv_bfloat16* v, int rows, int layer) {
@@ -633,6 +649,11 @@ struct Transformer::Impl {
     const char* native = std::getenv("VIDFAB_NATIVE_NVFP4");
     if (native != nullptr && native[0] == '1') linear.set_native(true);
     const char* capture = std::getenv("VIDFAB_SOL_CAPTURE");
+    const char* diag = std::getenv("VIDFAB_TENSOR_DIAG");
+    tensor_diag=diag!=nullptr&&diag[0]=='1';
+    if(tensor_diag)d_tensor_diag.allocate(1);
+    const char* sol_pipe=std::getenv("VIDFAB_SOL_PIPELINE");
+    sol_pipeline_diag=sol_pipe!=nullptr&&sol_pipe[0]=='1';
     if (capture != nullptr && *capture != '\0') {
       sol_capture_path = capture;
       const char* step = std::getenv("VIDFAB_SOL_CAPTURE_STEP");
@@ -807,9 +828,11 @@ struct Transformer::Impl {
     acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
     if (block_attention_mode == AttentionMode::kSol && rows == layout.total_rows()) {
       acfg.exact_prefix = layout.video_start();
+      acfg.sol_pipeline = sol_pipeline_diag;
     }
     if (layer >= 0 && !sol_capture_path.empty()) capture_sol_inputs(q, k, v, rows, layer);
     cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
+    diagnose("attention",attn_out,size_t(rows)*inner,layer);
     const char* label = backend == AttentionBackend::kFused ? "attn.flash2" :
                         backend == AttentionBackend::kSage2 ? "attn.sage2" :
                         backend == AttentionBackend::kSol ? "attn.sol" : "attn.none";
@@ -819,6 +842,7 @@ struct Transformer::Impl {
       const int n = std::min(chunk, rows - start);
       const size_t off = static_cast<size_t>(start) * hidden;
       linear.forward(b.out_proj, attn_out + static_cast<size_t>(start) * inner, n, branch, ws);
+      diagnose("out_proj",branch,size_t(n)*hidden,layer);
       prof.tick("attn.out_proj", stream.get());
       if (mod_base != nullptr) {
         cuda::launch_add_gated(x + off, branch, gate_msa, adaln_idx + start, n, hidden,
@@ -827,6 +851,7 @@ struct Transformer::Impl {
         cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
       }
       prof.tick("attn.residual", stream.get());
+      diagnose("attention_residual",x+off,size_t(n)*hidden,layer);
     }
     emit_stage("attn", x, rows, hidden);
 
@@ -840,6 +865,7 @@ struct Transformer::Impl {
         cuda::launch_rmsnorm(x + off, b.norm2, normed, n, hidden, eps, stream.get());
       }
       prof.tick("mlp.norm2", stream.get());
+      diagnose("adaln_mlp",normed,size_t(n)*hidden,layer);
       linear.forward(b.fc1, normed, n, fused, ws);
       prof.tick("mlp.fc1", stream.get());
       // Gate first: our checkpoints use the original `mlp.fc1` naming, whose
@@ -847,6 +873,7 @@ struct Transformer::Impl {
       cuda::launch_swiglu(fused, act, n, cfg.ffn_dim, stream.get());
       prof.tick("mlp.swiglu", stream.get());
       linear.forward(b.fc2, act, n, branch, ws);
+      diagnose("mlp",branch,size_t(n)*hidden,layer);
       prof.tick("mlp.fc2", stream.get());
       if (mod_base != nullptr) {
         cuda::launch_add_gated(x + off, branch, gate_mlp, adaln_idx + start, n, hidden,
@@ -855,6 +882,7 @@ struct Transformer::Impl {
         cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
       }
       prof.tick("mlp.residual", stream.get());
+      diagnose("mlp_residual",x+off,size_t(n)*hidden,layer);
     }
     emit_stage("ffn", x, rows, hidden);
   }
