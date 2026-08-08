@@ -16,7 +16,8 @@ namespace {
 constexpr int B = 64;
 constexpr int D = 128;
 constexpr int Threads = 256;
-constexpr size_t SolSharedBytes = (B * B + B * D) * sizeof(float) + B * B * sizeof(__nv_bfloat16);
+constexpr size_t SolSharedBytes = (B * B + B * D) * sizeof(float) +
+                                  (B * B + B * D) * sizeof(__nv_bfloat16);
 constexpr size_t Align = 256;
 size_t aligned(size_t n) { return (n + Align - 1) & ~(Align - 1); }
 
@@ -104,13 +105,17 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   float* score = reinterpret_cast<float*>(storage);
   float* acc = score + B * B;
   __nv_bfloat16* prob = reinterpret_cast<__nv_bfloat16*>(acc + B * D);
+  __nv_bfloat16* staged_q = prob + B * B;
   __shared__ float qm[D], red[D];
   __shared__ float om[B], ol[B], rescale[B], block_m[B], approx_weight[B];
   __shared__ int take;
 
+  for (int p = t; p < qn * D; p += Threads)
+    staged_q[p] = q[size_t(qlo + p / D) * width + h * D + p % D];
+  __syncthreads();
   if (t < D) {
     float x = 0;
-    for (int r = 0; r < qn; ++r) x += __bfloat162float(q[size_t(qlo + r) * width + h * D + t]);
+    for (int r = 0; r < qn; ++r) x += __bfloat162float(staged_q[r * D + t]);
     qm[t] = x / float(qn);
   }
   if (t < B) { om[t] = -FLT_MAX; ol[t] = 0; }
@@ -145,8 +150,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
                            wmma::row_major> a;
             wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16,
                            wmma::col_major> b;
-            wmma::load_matrix_sync(a, q + size_t(qlo + qr) * width + h * D + d,
-                                   width);
+            wmma::load_matrix_sync(a, staged_q + qr * D + d, D);
             wmma::load_matrix_sync(b, k + size_t(klo + kr) * width + h * D + d,
                                    width);
             wmma::mma_sync(c, a, b, c);
@@ -159,7 +163,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
           const int qr = p / kn, kr = p % kn;
           float dot = 0;
           for (int d = 0; d < D; ++d)
-            dot += __bfloat162float(q[size_t(qlo + qr) * width + h * D + d]) *
+            dot += __bfloat162float(staged_q[qr * D + d]) *
                    __bfloat162float(k[size_t(klo + kr) * width + h * D + d]);
           score[qr * B + kr] = dot * scale;
         }
@@ -217,7 +221,7 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
       if (t < qn) {
         float dot = 0;
         for (int d = 0; d < D; ++d)
-          dot += __bfloat162float(q[size_t(qlo + t) * width + h * D + d]) *
+          dot += __bfloat162float(staged_q[t * D + d]) *
                  __bfloat162float(km[(size_t(kb) * heads + h) * D + d]);
         score[t * B] = dot * scale;
         const float nm = fmaxf(om[t], score[t * B]);
