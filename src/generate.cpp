@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <stdexcept>
 
 #include "vidfab/audio/wav.h"
@@ -66,7 +67,12 @@ std::string strip_extension(const std::string& path) {
 // over the copies in the config JSON: the tensors are what the checkpoint
 // actually carries, and a config file can drift from the weights beside it.
 std::vector<float> read_stat(const SafeTensors& st, const char* name, int expect) {
-  const TensorView& view = st.at(name);
+  const TensorView* found = st.find(name);
+  if (found == nullptr && expect == 24) {
+    if (std::strcmp(name, "latents_mean") == 0) return vae::default_video_latents_mean();
+    if (std::strcmp(name, "latents_std") == 0) return vae::default_video_latents_std();
+  }
+  const TensorView& view = found ? *found : st.at(name);
   std::vector<float> out = to_f32(view);
   if (static_cast<int>(out.size()) != expect) {
     throw std::runtime_error(std::string("vae: ") + name + " has " + std::to_string(out.size()) +

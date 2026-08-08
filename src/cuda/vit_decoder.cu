@@ -12,7 +12,9 @@
 #include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
+#include "vidfab/cuda/nf4_weight.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
+#include "vidfab/nf4.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/vit_decoder.h"
 
@@ -73,39 +75,6 @@ class WeightUploader {
     }
     return out;
   }
-
-
-  DeviceBuffer<__half> upload_matrix(const SafeTensors& ckpt, const std::string& name,
-                                     size_t expected_elems) {
-    const TensorView& view = ckpt.at(name);
-    const size_t count = static_cast<size_t>(view.numel());
-    if (count != expected_elems) {
-      throw std::runtime_error("vae: tensor '" + name + "' has " + std::to_string(count) +
-                               " elements, expected " + std::to_string(expected_elems));
-    }
-    DeviceBuffer<__half> out(count);
-    if (view.dtype == DType::kF16) {
-      const auto* src = static_cast<const uint8_t*>(view.data);
-      size_t done = 0;
-      while (done < count) {
-        const size_t n = std::min(count - done, kStagingElems);
-        std::memcpy(raw_.get(), src + done * sizeof(uint16_t), n * sizeof(uint16_t));
-        VIDFAB_CUDA_CHECK(cudaMemcpyAsync(out.get() + done, raw_.get(), n * sizeof(uint16_t),
-                                          cudaMemcpyHostToDevice, stream_));
-        VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
-        done += n;
-      }
-    } else {
-      const std::vector<float> host = to_f32(view);
-      std::vector<__half> half(count);
-      for (size_t i = 0; i < count; ++i) half[i] = __float2half_rn(host[i]);
-      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(out.get(), half.data(), count * sizeof(__half),
-                                        cudaMemcpyHostToDevice, stream_));
-      VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
-    }
-    return out;
-  }
-
  private:
   // 64 Mi elements = 128 MiB of fp16 per hop.
   static constexpr size_t kStagingElems = 64ull << 20;
@@ -119,13 +88,13 @@ struct BlockWeights {
   DeviceBuffer<float> norm2;      // [dim]
   DeviceBuffer<float> scale1;     // [dim]
   DeviceBuffer<float> scale2;     // [dim]
-  DeviceBuffer<__half> qkv_w;     // [3*dim, dim]
+  cuda::F16Weight qkv_w;          // [3*dim, dim]
   DeviceBuffer<float> qkv_b;      // [3*dim]
-  DeviceBuffer<__half> out_w;     // [dim, dim]
+  cuda::F16Weight out_w;          // [dim, dim]
   DeviceBuffer<float> out_b;      // [dim]
-  DeviceBuffer<__half> w1;        // [2*ffn_inner, dim]
+  cuda::F16Weight w1;             // [2*ffn_inner, dim]
   DeviceBuffer<float> w1_b;       // [2*ffn_inner]
-  DeviceBuffer<__half> w2;        // [dim, ffn_inner]
+  cuda::F16Weight w2;             // [dim, ffn_inner]
   DeviceBuffer<float> w2_b;       // [dim]
 };
 
@@ -138,14 +107,14 @@ struct ViTDecoder::Impl {
   size_t weight_bytes = 0;
 
   std::vector<BlockWeights> blocks;
-  DeviceBuffer<__half> x_embed_w;     // [dim, in_channels]
+  cuda::F16Weight x_embed_w;          // [dim, in_channels]
   DeviceBuffer<float> x_embed_b;      // [dim]
   DeviceBuffer<float> register_tokens;  // [num_register, dim]
   DeviceBuffer<float> norm_out_w;
   DeviceBuffer<float> norm_out_b;
-  DeviceBuffer<__half> proj_out_w;    // [patch_dim, dim]
+  cuda::F16Weight proj_out_w;         // [patch_dim, dim]
   DeviceBuffer<float> proj_out_b;     // [patch_dim]
-  DeviceBuffer<__half> post_quant_w;  // [in_channels, in_channels]
+  cuda::F16Weight post_quant_w;       // [in_channels, in_channels]
   DeviceBuffer<float> post_quant_b;   // [in_channels]
 
   // Scratch, resized on demand for the current window size. Nothing is ever
@@ -170,6 +139,8 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_ffn;      // [S, 2*ffn_inner]
   DeviceBuffer<float> d_act;      // [S, ffn_inner]
   DeviceBuffer<__half> d_gemm_in; // narrowed input for tensor-core linears
+  DeviceBuffer<__half> d_weight;  // active NF4 matrix expansion
+  size_t cap_weight = 0;
   DeviceBuffer<float> d_cos, d_sin;  // [S, rope_dim]
   DeviceBuffer<float> d_latent;     // [in_channels, T*H*W]
   DeviceBuffer<float> d_patch;      // [N, in_channels] packed tokens
@@ -182,7 +153,8 @@ struct ViTDecoder::Impl {
     if (blas != nullptr) cublasDestroy(blas);
   }
 
-  void gemm_nt(const float* A, const __half* B, float* C, int M, int N, int K) {
+  void gemm_nt(const float* A, const cuda::F16Weight& weight, float* C, int M, int N, int K) {
+    const __half* B = weight.materialize(d_weight.get(), cap_weight, stream.get());
     cuda::launch_narrow_f16(A, d_gemm_in.get(), static_cast<size_t>(M) * K, stream.get());
     const float alpha = 1.0f, beta = 0.0f;
     CUBLAS_CHECK(cublasGemmEx(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F,
@@ -314,7 +286,7 @@ struct ViTDecoder::Impl {
     // --- attention ---
     const int rows = seq * batch;
     cuda::launch_rmsnorm(d_tokens.get(), b.norm1.get(), d_normed.get(), rows, dim, cfg.eps, s);
-    gemm_nt(d_normed.get(), b.qkv_w.get(), d_qkv.get(), rows, 3 * dim, dim);
+    gemm_nt(d_normed.get(), b.qkv_w, d_qkv.get(), rows, 3 * dim, dim);
 
     // The qkv bias is applied inside the split kernel, which already reads
     // every element of d_qkv once.
@@ -339,15 +311,15 @@ struct ViTDecoder::Impl {
                               static_cast<size_t>(seq) * dim, s);
     }
 
-    gemm_nt(d_merged.get(), b.out_w.get(), d_normed.get(), rows, dim, dim);
+    gemm_nt(d_merged.get(), b.out_w, d_normed.get(), rows, dim, dim);
     cuda::launch_layerscale_residual(d_tokens.get(), d_normed.get(), b.out_b.get(), b.scale1.get(),
                                      rows, dim, s);
 
     // --- feed forward ---
     cuda::launch_rmsnorm(d_tokens.get(), b.norm2.get(), d_normed.get(), rows, dim, cfg.eps, s);
-    gemm_nt(d_normed.get(), b.w1.get(), d_ffn.get(), rows, 2 * cfg.ffn_inner, dim);
+    gemm_nt(d_normed.get(), b.w1, d_ffn.get(), rows, 2 * cfg.ffn_inner, dim);
     cuda::launch_swiglu(d_ffn.get(), b.w1_b.get(), d_act.get(), rows, cfg.ffn_inner, s);
-    gemm_nt(d_act.get(), b.w2.get(), d_normed.get(), rows, dim, cfg.ffn_inner);
+    gemm_nt(d_act.get(), b.w2, d_normed.get(), rows, dim, cfg.ffn_inner);
     cuda::launch_layerscale_residual(d_tokens.get(), d_normed.get(), b.w2_b.get(), b.scale2.get(),
                                      rows, dim, s);
   }
@@ -396,16 +368,18 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
 
   WeightUploader uploader(d.stream.get());
 
-  d.x_embed_w = uploader.upload_matrix(ckpt, "decoder.x_embedder.weight", static_cast<size_t>(dim) * ch);
+  d.x_embed_w.load(ckpt, "decoder.x_embedder.weight", static_cast<size_t>(dim) * ch,
+                   d.stream.get(), "video vae");
   d.x_embed_b = uploader.upload(ckpt, "decoder.x_embedder.bias", dim);
   d.register_tokens = uploader.upload(ckpt, "decoder.register_tokens",
                                       static_cast<size_t>(config.num_register) * dim);
   d.norm_out_w = uploader.upload(ckpt, "decoder.norm_out.weight", dim);
   d.norm_out_b = uploader.upload(ckpt, "decoder.norm_out.bias", dim);
-  d.proj_out_w = uploader.upload_matrix(ckpt, "decoder.proj_out.weight",
-                                 static_cast<size_t>(config.patch_dim()) * dim);
+  d.proj_out_w.load(ckpt, "decoder.proj_out.weight",
+                    static_cast<size_t>(config.patch_dim()) * dim, d.stream.get(), "video vae");
   d.proj_out_b = uploader.upload(ckpt, "decoder.proj_out.bias", config.patch_dim());
-  d.post_quant_w = uploader.upload_matrix(ckpt, "post_quant_conv.weight", static_cast<size_t>(ch) * ch);
+  d.post_quant_w.load(ckpt, "post_quant_conv.weight", static_cast<size_t>(ch) * ch,
+                      d.stream.get(), "video vae");
   d.post_quant_b = uploader.upload(ckpt, "post_quant_conv.bias", ch);
 
   d.blocks.resize(config.num_layers);
@@ -416,24 +390,34 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
     b.norm2 = uploader.upload(ckpt, p + "norm2.weight", dim);
     b.scale1 = uploader.upload(ckpt, p + "scale1", dim);
     b.scale2 = uploader.upload(ckpt, p + "scale2", dim);
-    b.qkv_w = uploader.upload_matrix(ckpt, p + "attn.to_qkv.weight", static_cast<size_t>(3) * dim * dim);
+    b.qkv_w.load(ckpt, p + "attn.to_qkv.weight", static_cast<size_t>(3) * dim * dim,
+                 d.stream.get(), "video vae");
     b.qkv_b = uploader.upload(ckpt, p + "attn.to_qkv.bias", static_cast<size_t>(3) * dim);
-    b.out_w = uploader.upload_matrix(ckpt, p + "attn.to_out.weight", static_cast<size_t>(dim) * dim);
+    b.out_w.load(ckpt, p + "attn.to_out.weight", static_cast<size_t>(dim) * dim,
+                 d.stream.get(), "video vae");
     b.out_b = uploader.upload(ckpt, p + "attn.to_out.bias", dim);
-    b.w1 = uploader.upload_matrix(ckpt, p + "ff.w1.weight", static_cast<size_t>(2) * inner * dim);
+    b.w1.load(ckpt, p + "ff.w1.weight", static_cast<size_t>(2) * inner * dim,
+              d.stream.get(), "video vae");
     b.w1_b = uploader.upload(ckpt, p + "ff.w1.bias", static_cast<size_t>(2) * inner);
-    b.w2 = uploader.upload_matrix(ckpt, p + "ff.w2.weight", static_cast<size_t>(dim) * inner);
+    b.w2.load(ckpt, p + "ff.w2.weight", static_cast<size_t>(dim) * inner,
+              d.stream.get(), "video vae");
     b.w2_b = uploader.upload(ckpt, p + "ff.w2.bias", dim);
   }
 
-  size_t total = d.x_embed_w.nbytes() + d.x_embed_b.nbytes() + d.register_tokens.nbytes() +
-                 d.norm_out_w.nbytes() + d.norm_out_b.nbytes() + d.proj_out_w.nbytes() +
-                 d.proj_out_b.nbytes() + d.post_quant_w.nbytes() + d.post_quant_b.nbytes();
+  size_t max_weight = std::max({d.x_embed_w.elements(), d.proj_out_w.elements(),
+                                d.post_quant_w.elements()});
+  size_t total = d.x_embed_w.stored_bytes() + d.x_embed_b.nbytes() + d.register_tokens.nbytes() +
+                 d.norm_out_w.nbytes() + d.norm_out_b.nbytes() + d.proj_out_w.stored_bytes() +
+                 d.proj_out_b.nbytes() + d.post_quant_w.stored_bytes() + d.post_quant_b.nbytes();
   for (const BlockWeights& b : d.blocks) {
     total += b.norm1.nbytes() + b.norm2.nbytes() + b.scale1.nbytes() + b.scale2.nbytes() +
-             b.qkv_w.nbytes() + b.qkv_b.nbytes() + b.out_w.nbytes() + b.out_b.nbytes() +
-             b.w1.nbytes() + b.w1_b.nbytes() + b.w2.nbytes() + b.w2_b.nbytes();
+             b.qkv_w.stored_bytes() + b.qkv_b.nbytes() + b.out_w.stored_bytes() + b.out_b.nbytes() +
+             b.w1.stored_bytes() + b.w1_b.nbytes() + b.w2.stored_bytes() + b.w2_b.nbytes();
+    max_weight = std::max({max_weight, b.qkv_w.elements(), b.out_w.elements(), b.w1.elements(),
+                           b.w2.elements()});
   }
+  d.cap_weight = max_weight;
+  d.d_weight.allocate(max_weight);
   d.weight_bytes = total;
   d.stream.synchronize();
 }
@@ -472,11 +456,11 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     cuda::launch_transpose_cn_to_nc(d.d_latent.get() + latent0,
                                     d.d_patch.get() + patch0 * ch, ch,
                                     static_cast<int>(voxels), s);
-    d.gemm_nt(d.d_patch.get() + patch0 * ch, d.post_quant_w.get(),
+    d.gemm_nt(d.d_patch.get() + patch0 * ch, d.post_quant_w,
               d.d_quantised.get() + patch0 * ch, num_patches, ch, ch);
     cuda::launch_add_bias(d.d_quantised.get() + patch0 * ch, d.post_quant_b.get(), num_patches,
                           ch, s);
-    d.gemm_nt(d.d_quantised.get() + patch0 * ch, d.x_embed_w.get(),
+    d.gemm_nt(d.d_quantised.get() + patch0 * ch, d.x_embed_w,
               d.d_tokens.get() + token0 * dim, num_patches, dim, ch);
     cuda::launch_add_bias(d.d_tokens.get() + token0 * dim, d.x_embed_b.get(), num_patches, dim, s);
     VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
@@ -506,7 +490,7 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     // the transformer body, and preserves the exact singleton arithmetic.
     cuda::launch_layernorm(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
                            d.norm_out_b.get(), d.d_normed.get(), num_patches, dim, cfg.eps, s);
-    d.gemm_nt(d.d_normed.get(), d.proj_out_w.get(), d.d_proj.get(), num_patches, patch_dim, dim);
+    d.gemm_nt(d.d_normed.get(), d.proj_out_w, d.d_proj.get(), num_patches, patch_dim, dim);
     cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
     cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
                                 cfg.patch_t, cfg.patch, s);

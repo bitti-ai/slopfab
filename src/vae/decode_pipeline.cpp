@@ -11,6 +11,26 @@
 #include "vidfab/vae/vit_decoder.h"
 
 namespace vidfab::vae {
+
+const std::vector<float>& default_video_latents_mean() {
+  static const std::vector<float> values = {
+      .8580903411f, -.9606591463f, 1.0661640167f, -.5090325475f, -.2727581859f,
+      -1.3675414324f, -.2553254962f, -.2690755427f, -.5376840830f, -.0464097299f,
+      .6657370329f, .1969012767f, -.5460608006f, -.4035342038f, -.2368302494f,
+      .2592845261f, -.3013394475f, .2113419920f, -1.1206848621f, .3581933379f,
+      -.0422514379f, .2604829967f, .2286409289f, .7056031823f};
+  return values;
+}
+
+const std::vector<float>& default_video_latents_std() {
+  static const std::vector<float> values = {
+      1.2223774195f, 1.2767263651f, 1.6831774712f, 1.7549455166f, 1.5636216402f,
+      2.1941435337f, .9653137922f, 1.0569885969f, .8419489264f, .7729952931f,
+      1.8955937624f, .9468418360f, .7996809483f, .4498890042f, .7197399735f,
+      .6936293244f, 2.9610950947f, 2.7694199085f, 3.0496184826f, 2.1088054180f,
+      3.2762262821f, 3.1627357006f, 2.2816812992f, 2.6127843857f};
+  return values;
+}
 namespace {
 
 // ImageNet statistics used by the reference VAEProcessor (normalize.py:9-10).

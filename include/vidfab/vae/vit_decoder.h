@@ -14,6 +14,9 @@
 
 namespace vidfab::vae {
 
+const std::vector<float>& default_video_latents_mean();
+const std::vector<float>& default_video_latents_std();
+
 struct ViTConfig {
   int num_layers = 36;
   int dim = 2048;

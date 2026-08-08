@@ -552,8 +552,8 @@ int cmd_decode(int argc, char** argv) {
   std::vector<float> mean;
   std::vector<float> std_dev;
   if (!latent_stats_from_metadata(ckpt, mean, std_dev)) {
-    std::fprintf(stderr, "vidfab: could not read latents_mean/std from checkpoint metadata\n");
-    return 1;
+    mean = vidfab::vae::default_video_latents_mean();
+    std_dev = vidfab::vae::default_video_latents_std();
   }
 
   std::vector<float> z;

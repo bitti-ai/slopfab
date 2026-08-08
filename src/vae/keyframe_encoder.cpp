@@ -7,6 +7,7 @@
 #include <array>
 
 #include "vidfab/dtype.h"
+#include "vidfab/nf4.h"
 
 namespace vidfab::vae {
 namespace {
@@ -44,7 +45,16 @@ class TorchMT19937 {
 void require_tensor(const SafeTensors& ckpt, const std::string& name,
                     std::initializer_list<int64_t> shape, EncoderWeightSummary* summary) {
   const TensorView& tensor = ckpt.at(name);
-  if (tensor.dtype != DType::kF16 || tensor.shape != std::vector<int64_t>(shape)) {
+  const std::vector<int64_t> expected(shape);
+  bool valid = false;
+  if (is_nf4_weight(ckpt, name)) {
+    valid = tensor.dtype == DType::kU8 &&
+            read_nf4_state(ckpt, name, "keyframe encoder").shape == expected;
+  } else {
+    valid = (tensor.dtype == DType::kF16 || tensor.dtype == DType::kBF16) &&
+            tensor.shape == expected;
+  }
+  if (!valid) {
     throw std::runtime_error("keyframe encoder: tensor '" + name + "' has wrong dtype or shape");
   }
   ++summary->tensors;
