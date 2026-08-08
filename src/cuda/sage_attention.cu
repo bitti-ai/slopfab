@@ -165,7 +165,12 @@ __global__ void quant_v(const __nv_bfloat16* v, int8_t* out, float* scales,
   int8_t* dst = out + (static_cast<size_t>(d) * heads + h) * padded;
   for (int s = threadIdx.x; s < padded; s += blockDim.x) {
     float x = s < seq ? __bfloat162float(v[(static_cast<size_t>(s) * heads + h) * dim + d]) / scale : 0.0f;
-    dst[s] = static_cast<int8_t>(__nv_fp8_e4m3(x).__x);
+    // The upstream FP8 MMA expects the sequence dimension permuted inside
+    // each 16-row group: 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15.
+    const int base = s & ~15;
+    const int r = s & 15;
+    const int perm = (r / 8) * 2 + ((r / 2) & 3) * 4 + (r & 1);
+    dst[base + perm] = static_cast<int8_t>(__nv_fp8_e4m3(x).__x);
   }
 }
 

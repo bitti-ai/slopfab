@@ -1816,6 +1816,53 @@ VIDFAB_TEST(attention_fused_ragged_tail) {
   }
 }
 
+VIDFAB_TEST(attention_sage2) {
+  CublasScope cb;
+  const int seq = 199;
+  const int heads = 2;
+  const int head_dim = 128;
+  const int width = heads * head_dim;
+  const std::vector<float> q = bf16_round(make_data(size_t(seq) * width, 871u, 0.3f));
+  const std::vector<float> k = bf16_round(make_data(size_t(seq) * width, 872u, 0.3f));
+  const std::vector<float> v = bf16_round(make_data(size_t(seq) * width, 873u, 1.0f));
+  const std::vector<float> want =
+      cpu_attention(q, k, v, seq, heads, heads, head_dim, 1.0f / std::sqrt(128.0f));
+  BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * width);
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len = seq;
+  cfg.num_heads = heads;
+  cfg.head_dim = head_dim;
+  Workspace ws;
+  const size_t bytes =
+      vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kSage2);
+  CHECK(bytes > 0);
+  ws.reserve(bytes);
+  vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                  vidfab::cuda::AttentionBackend::kSage2, ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> got = dout.host();
+  CHECK_CLOSE_REL(want, got, 2.5e-2, 1e-1, "sage2 attention vs dense CPU");
+
+  // Quantization is deterministic, including the ragged Q/K/V padding.
+  BfBuf again(size_t(seq) * width);
+  ws.clear();
+  vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), again.p(), cfg,
+                                  vidfab::cuda::AttentionBackend::kSage2, ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK(dout.bits() == again.bits());
+
+  cfg.band_ranges = reinterpret_cast<const int32_t*>(uintptr_t{16});
+  bool threw = false;
+  try {
+    ws.clear();
+    vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), again.p(), cfg,
+                                    vidfab::cuda::AttentionBackend::kSage2, ws);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  CHECK(threw);
+}
+
 // head_dim 64 is the other instantiation `supported()` accepts, and until this
 // existed nothing exercised it -- every fused test above is 128-wide. The two
 // differ in more than a constant: the staging tiles the key block into 2 passes
@@ -2618,6 +2665,42 @@ VIDFAB_TEST(production_shape_timings) {
     std::printf("  fused speedup %.2fx over blocked, workspace %.2f GiB -> 0\n", ms / fms,
                 double(ws_bytes) / (1 << 30));
     CHECK(fms > 0.0f);
+
+    // Independent acceptance measurement: conversion/smoothing and the
+    // quantized attention kernel are one timed operation.
+    const std::vector<uint16_t> flash_bits = out.bits();
+    const size_t sage_ws_bytes = vidfab::cuda::attention_workspace_bytes(
+        cfg, vidfab::cuda::AttentionBackend::kSage2);
+    Workspace sage_ws;
+    sage_ws.reserve(sage_ws_bytes);
+    float sms = 1e30f;
+    for (int pass = 0; pass < 3; ++pass) {
+      sms = std::min(sms, timer.measure(
+          [&] { vidfab::cuda::attention_forward(cb.h, nullptr, q.p(), k.p(), v.p(), out.p(), cfg,
+                                                vidfab::cuda::AttentionBackend::kSage2, sage_ws); },
+          1, 3));
+    }
+    const std::vector<uint16_t> sage_bits = out.bits();
+    vidfab::cuda::attention_forward(cb.h, nullptr, q.p(), k.p(), v.p(), out.p(), cfg,
+                                    vidfab::cuda::AttentionBackend::kSage2, sage_ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    const std::vector<uint16_t> sage_repeat = out.bits();
+    double err2 = 0.0, ref2 = 0.0, dot = 0.0, got2 = 0.0, max_abs = 0.0;
+    size_t mismatches = 0;
+    for (size_t i = 0; i < flash_bits.size(); ++i) {
+      const double a = vidfab::bf16_to_f32(flash_bits[i]);
+      const double b = vidfab::bf16_to_f32(sage_bits[i]);
+      const double e = b - a;
+      err2 += e * e; ref2 += a * a; dot += a * b; got2 += b * b;
+      max_abs = std::max(max_abs, std::abs(e));
+      mismatches += sage_bits[i] != sage_repeat[i];
+    }
+    std::printf("  attention   sage2 (all conversions)             %8.2f ms  (%.2fx flash2)\n",
+                sms, fms / sms);
+    std::printf("  sage2 workspace %.3f GiB, rel_L2 %.6f corr %.6f max_abs %.6g repeat_mismatch %zu\n",
+                double(sage_ws_bytes) / (1 << 30), std::sqrt(err2 / ref2),
+                dot / std::sqrt(ref2 * got2), max_abs, mismatches);
+    CHECK(sms > 0.0f);
   }
 
   {

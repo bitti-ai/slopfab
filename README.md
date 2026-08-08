@@ -317,6 +317,7 @@ than only at seams.
 | Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | done |
 | Qwen3-VL-32B text encoder (nvfp4 AWQ, 50 layers) | done |
 | Fused attention (FlashAttention-2, `mma.sync`) | done |
+| SageAttention2.2 (INT8 Q/K, FP8 P/V) | done; opt-in |
 | `cp.async` double-buffered K/V staging | not started |
 | Native nvfp4 GEMM (`mma.sync` block-scaled) | landed, **off by default** |
 | Native fp8/int4 GEMM | not started |
@@ -869,6 +870,16 @@ compiler's own hoisted loads already covered the latency, and an explicit
 one-tile pipeline replaced a working schedule with a rigid one.
 
 ### Frame-banded attention — `--attn-band`, off by default
+
+The generator exposes `--attention none|flash2|sage2`. `flash2` is the default
+exact BF16 fused path; `none` is the unfused, memory-bounded cuBLAS reference.
+`sage2` is an explicitly lossy SageAttention2.2 path: smooth-K, per-warp INT8
+Q/K, per-channel FP8 E4M3 V, and the upstream INT8-QK/FP8-PV tensor-core
+kernel. Its transient packed tensors and scales are included in workspace
+sizing. It supports head dimensions 64 and 128 on compute capability 8.9 or
+newer. Frame banding with Sage2 is rejected rather than silently falling back.
+The vendored primitives retain Apache-2.0 notices under
+`third_party/sageattention`.
 
 A video row attends to ±N latent frames instead of the whole packed sequence.
 Text and audio rows keep global attention, and every video row keeps the
