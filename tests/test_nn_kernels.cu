@@ -1818,7 +1818,7 @@ VIDFAB_TEST(attention_fused_ragged_tail) {
 
 VIDFAB_TEST(attention_sol) {
   CublasScope cb;
-  const int seq = 79;  // one full and one ragged physical block
+  const int seq = 263;  // four full blocks, local routes, and a ragged tail
   const int heads = 2;
   const int dim = 128;
   const int width = heads * dim;
@@ -1830,9 +1830,11 @@ VIDFAB_TEST(attention_sol) {
   cfg.seq_len = seq;
   cfg.num_heads = heads;
   cfg.head_dim = dim;
+  CHECK_NEAR(cfg.sol_beta, 1.0f, 0.0);
   const size_t bytes =
       vidfab::cuda::attention_workspace_bytes(cfg, vidfab::cuda::AttentionBackend::kSol);
   CHECK(bytes > 0);
+  CHECK(bytes < size_t(seq) * heads * dim * sizeof(float));
 
   auto run = [&](const std::vector<float>& keys, float beta) {
     BfBuf dq(q), dk(keys), dv(v), dout(size_t(seq) * width);
