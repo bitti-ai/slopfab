@@ -505,7 +505,6 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     acfg.seq_len = std::max(seq, 1);
     acfg.num_heads = cfg.num_attention_heads;
     acfg.head_dim = cfg.attention_head_dim;
-    acfg.sol_pipeline = attention_mode == AttentionMode::kSol;
     AttentionBackend backend = AttentionBackend::kFused;
     if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
     if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
@@ -795,7 +794,6 @@ struct Transformer::Impl {
     acfg.seq_len = rows;
     acfg.num_heads = cfg.num_attention_heads;
     acfg.head_dim = cfg.attention_head_dim;
-    acfg.sol_pipeline = block_attention_mode == AttentionMode::kSol;
     // The label follows the backend that actually ran. It used to say
     // "attn.fused" unconditionally, so the profile could not distinguish the
     // fused path from a fallback to the blocked one — only the magnitudes
