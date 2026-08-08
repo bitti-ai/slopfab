@@ -591,6 +591,9 @@ struct Transformer::Impl {
     sol_capture_done = true;
     std::fprintf(stderr, "vidfab: captured Sol Q/K/V step %d layer %d to %s\n",
                  denoise_step, layer, sol_capture_path.c_str());
+    const char* stop = std::getenv("VIDFAB_SOL_CAPTURE_EXIT");
+    if (stop != nullptr && stop[0] == '1')
+      throw std::runtime_error("transformer: stopped after requested Sol capture");
   }
   DeviceBuffer<int32_t> d_band;
   DeviceBuffer<float> rope_cos, rope_sin;
