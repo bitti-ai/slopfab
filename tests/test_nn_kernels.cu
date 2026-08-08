@@ -2000,6 +2000,28 @@ VIDFAB_TEST(attention_sol_pipeline_exact) {
                   "Sol SM120 pipeline exact oracle");
 }
 
+VIDFAB_TEST(attention_sol_pipeline_mixed) {
+  CublasScope cb;
+  const int seq=384, dim=128;
+  const auto q=bf16_round(make_data(size_t(seq)*dim,931u,0.8f));
+  const auto k=bf16_round(make_data(size_t(seq)*dim,932u,0.8f));
+  const auto v=bf16_round(make_data(size_t(seq)*dim,933u,1.0f));
+  int selected=0,rejected=0;
+  const auto want=cpu_sol_attention(q,k,v,seq,70,1.0f/std::sqrt(float(dim)),
+                                    1.0f,&selected,&rejected);
+  CHECK(selected>0 && rejected>0);
+  BfBuf dq(q),dk(k),dv(v),dout(size_t(seq)*dim);
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len=seq; cfg.num_heads=1; cfg.head_dim=dim;
+  cfg.exact_prefix=70; cfg.sol_pipeline=true;
+  Workspace ws; ws.reserve(vidfab::cuda::attention_workspace_bytes(
+      cfg,vidfab::cuda::AttentionBackend::kSol));
+  vidfab::cuda::attention_forward(cb.h,nullptr,dq.p(),dk.p(),dv.p(),dout.p(),cfg,
+                                  vidfab::cuda::AttentionBackend::kSol,ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE_REL(want,dout.host(),2e-3,2e-2,"Sol pipeline mixed-route CPU oracle");
+}
+
 VIDFAB_TEST(attention_sage2) {
   CublasScope cb;
   const int seq = 199;

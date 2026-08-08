@@ -14,6 +14,7 @@
 namespace vidfab::cuda {
 namespace {
 constexpr int B = 64, D = 128, Threads = 128;
+constexpr int MaxBlocks = 1024;
 constexpr size_t SmemBytes = (B * D + 2 * B * D) * sizeof(__nv_bfloat16) +
                              B * B * (sizeof(float) + sizeof(__nv_bfloat16));
 
@@ -49,7 +50,9 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     const __grid_constant__ CUtensorMap qmap,
     const __grid_constant__ CUtensorMap kmap,
     const __grid_constant__ CUtensorMap vmap, __nv_bfloat16* out,
-    int seq, int heads, float scale) {
+    const __nv_bfloat16* km, const float* vs, const float* tau,
+    int seq, int heads, int prefix, float scale,
+    unsigned long long* route_counts) {
   const int qb = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
   const int qlo = qb * B, blocks = seq / B, warp = t >> 5;
   extern __shared__ __align__(128) unsigned char raw[];
@@ -60,12 +63,15 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   __shared__ alignas(8) uint64_t qbar, bars[2];
   __shared__ uint64_t states[2];
   __shared__ float old_m[B], denom[B], ratio[B], new_m[B];
+  __shared__ float qmean[D], approx_weight[B];
+  __shared__ int exact_ids[MaxBlocks], approx_ids[MaxBlocks];
+  __shared__ int exact_count, approx_count;
   using namespace nvcuda;
 
   if (t == 0) {
     states[0] = issue(&qmap, q, h, qlo, &qbar);
     wait(&qbar, states[0]);
-    states[0] = issue(&kmap, kv, h, 0, &bars[0]);
+    exact_count=0; approx_count=0;
   }
   wmma::fragment<wmma::accumulator,16,16,16,float> o[8];
 #pragma unroll
@@ -73,13 +79,61 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   if (t < B) { old_m[t] = -FLT_MAX; denom[t] = 0.0f; }
   __syncthreads();
 
-  for (int kb = 0; kb < blocks; ++kb) {
-    const int stage = kb & 1;
+  if (t < D) {
+    float x=0; for(int r=0;r<B;++r) x+=__bfloat162float(q[r*D+t]);
+    qmean[t]=x/float(B);
+  }
+  __syncthreads();
+  for(int kb=t;kb<blocks;kb+=Threads) {
+    float proxy=0;
+    for(int d=0;d<D;++d)
+      proxy += qmean[d]*__bfloat162float(km[(size_t(kb)*heads+h)*D+d]);
+    const bool take=qlo<prefix || kb*B<prefix || abs(qb-kb)<=1 ||
+                    proxy*scale>tau[size_t(qb)*heads+h];
+    const int slot=take?atomicAdd(&exact_count,1):atomicAdd(&approx_count,1);
+    (take?exact_ids:approx_ids)[slot]=kb;
+    if(route_counts) atomicAdd(route_counts+(take?0:1),1ull);
+  }
+  __syncthreads();
+
+  // Apply all rejected centroid blocks. Online softmax is order-independent;
+  // exact selected blocks follow through the TMA/WMMA pipeline below.
+  for(int ai=0;ai<approx_count;++ai) {
+    const int kb=approx_ids[ai];
+    if(t<B) {
+      float s=0; for(int d=0;d<D;++d)
+        s += __bfloat162float(q[t*D+d])*
+             __bfloat162float(km[(size_t(kb)*heads+h)*D+d]);
+      s*=scale;
+      const float nm=fmaxf(old_m[t],s), rs=expf(old_m[t]-nm), w=expf(s-nm);
+      ratio[t]=rs; new_m[t]=nm; approx_weight[t]=w;
+      denom[t]=denom[t]*rs+B*w; old_m[t]=nm;
+    }
+    __syncthreads();
+    for(int n=0;n<8;++n) {
+      const int tile=warp+n*4, qr=tile/8*16, d0=tile%8*16;
+#pragma unroll
+      for(unsigned i=0;i<o[n].num_elements;++i) {
+        const int row=qr+(t&31)/4+int((i/2)%2)*8;
+        const int col=d0+(t&31)%4*2+int(i%2)+int(i/4)*8;
+        o[n].x[i]=o[n].x[i]*ratio[row]+approx_weight[row]*
+          vs[(size_t(kb)*heads+h)*D+col];
+      }
+    }
+    __syncthreads();
+  }
+
+  if(t==0 && exact_count)
+    states[0]=issue(&kmap,kv,h,exact_ids[0]*B,&bars[0]);
+  __syncthreads();
+
+  for (int ordinal = 0; ordinal < exact_count; ++ordinal) {
+    const int kb=exact_ids[ordinal], stage = ordinal & 1;
     if (t == 0) {
       wait(&bars[stage], states[stage]);
-      if (kb + 1 < blocks)
+      if (ordinal + 1 < exact_count)
         states[stage ^ 1] = issue(&kmap, kv + (stage ^ 1) * B * D, h,
-                                  (kb + 1) * B, &bars[stage ^ 1]);
+                                  exact_ids[ordinal+1] * B, &bars[stage ^ 1]);
     }
     __syncthreads();
     for (int tile = warp; tile < 16; tile += 4) {
@@ -164,13 +218,16 @@ CUtensorMap map_for(const __nv_bfloat16* p, const AttentionConfig& c) {
 
 bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const __nv_bfloat16* k, const __nv_bfloat16* v,
-                          __nv_bfloat16* out, const AttentionConfig& c) {
-  if (c.seq_len % B || c.exact_prefix != c.seq_len || c.head_dim != D) return false;
-  const auto qm=map_for(q,c), km=map_for(k,c), vm=map_for(v,c);
+                          const __nv_bfloat16* km, const float* vs,
+                          const float* tau, __nv_bfloat16* out,
+                          const AttentionConfig& c) {
+  if (c.seq_len % B || c.head_dim != D || c.seq_len/B > MaxBlocks) return false;
+  const auto q_map=map_for(q,c), k_map=map_for(k,c), v_map=map_for(v,c);
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(exact_pipeline,
       cudaFuncAttributeMaxDynamicSharedMemorySize,int(SmemBytes)));
   exact_pipeline<<<dim3(c.seq_len/B,c.num_heads),Threads,SmemBytes,stream>>>(
-      qm,km,vm,out,c.seq_len,c.num_heads,c.effective_scale());
+      q_map,k_map,v_map,out,km,vs,tau,c.seq_len,c.num_heads,c.exact_prefix,
+      c.effective_scale(),c.sol_route_counts);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
   return true;
 }

@@ -322,7 +322,6 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
                            const __nv_bfloat16* k, const __nv_bfloat16* v,
                            __nv_bfloat16* out, const AttentionConfig& c, Workspace& ws) {
   validate(c);
-  if (c.sol_pipeline && sol_pipeline_forward(stream, q, k, v, out, c)) return;
   Workspace::Scope scope(ws);
   const int nb = (c.seq_len + B - 1) / B;
   const size_t pooled = size_t(nb) * c.num_heads * D;
@@ -336,6 +335,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   key_stats<<<c.num_heads, D, 0, stream>>>(km, key_mean, key_var, nb, c.num_heads);
   thresholds<<<dim3(nb, c.num_heads), Threads, 0, stream>>>(
       q, key_mean, key_var, tau, c.seq_len, c.num_heads, c.effective_scale(), c.sol_beta);
+  if (c.sol_pipeline && sol_pipeline_forward(stream, q, k, v, km, vs, tau, out, c)) return;
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(sol, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                         int(SolSharedBytes)));
   sol<<<dim3(nb, c.num_heads), Threads, SolSharedBytes, stream>>>(q_map, q, k, v, km, vs, tau, out, c.seq_len,
