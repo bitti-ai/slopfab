@@ -109,7 +109,11 @@ int main(int argc, char** argv) {
       if (++i >= argc) return 2;
       beta = std::strtof(argv[i], nullptr);
     }
-    else if (!std::strcmp(argv[i], "--pipeline")) pipeline = true;
+    else if (!std::strcmp(argv[i], "--experimental-pipeline")) pipeline = true;
+    else if (!std::strcmp(argv[i], "--pipeline")) {
+      std::fprintf(stderr,"--pipeline was renamed --experimental-pipeline\n");
+      return 2;
+    }
     else if (!std::strcmp(argv[i], "--input")) {
       if (++i >= argc) return 2;
       input = argv[i];

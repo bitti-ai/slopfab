@@ -15,6 +15,7 @@ endif()
 
 option(VIDFAB_ENABLE_CUDA "Build CUDA kernels" ON)
 option(VIDFAB_BUILD_TESTS "Build unit tests" ON)
+option(VIDFAB_BUILD_DEV_TOOLS "Build developer profiling/probe executables" OFF)
 
 # --- core -------------------------------------------------------------------
 
@@ -139,8 +140,10 @@ if(VIDFAB_ENABLE_CUDA)
     target_link_libraries(vidfab_qwenvisionprobe PRIVATE vidfab_cuda)
     add_executable(vidfab_qwenconditionerprobe tools/qwenconditionerprobe.cpp)
     target_link_libraries(vidfab_qwenconditionerprobe PRIVATE vidfab_cuda)
-    add_executable(vidfab_solbench tools/solbench.cu)
-    target_link_libraries(vidfab_solbench PRIVATE vidfab_cuda)
+    if(VIDFAB_BUILD_DEV_TOOLS)
+      add_executable(vidfab_solbench tools/solbench.cu)
+      target_link_libraries(vidfab_solbench PRIVATE vidfab_cuda)
+    endif()
 
     target_compile_definitions(vidfab_core PUBLIC VIDFAB_WITH_CUDA=1)
   else()

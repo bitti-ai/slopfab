@@ -269,18 +269,17 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
 #undef VIDFAB_QK_STEP
 }
 
-CUtensorMap map_for(const __nv_bfloat16* p, const AttentionConfig& c) {
-  CUtensorMap m{};
+bool map_for(const __nv_bfloat16* p, const AttentionConfig& c, CUtensorMap* m) {
+  *m=CUtensorMap{};
   const cuuint64_t dims[3]={D,cuuint64_t(c.num_heads),cuuint64_t(c.seq_len)};
   const cuuint64_t strides[2]={D*sizeof(__nv_bfloat16),
                               cuuint64_t(c.num_heads)*D*sizeof(__nv_bfloat16)};
   const cuuint32_t box[3]={D,1,B}, elem[3]={1,1,1};
-  const CUresult status=cuTensorMapEncodeTiled(&m,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,3,
+  const CUresult status=cuTensorMapEncodeTiled(m,CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,3,
       const_cast<__nv_bfloat16*>(p),dims,strides,box,elem,
       CU_TENSOR_MAP_INTERLEAVE_NONE,CU_TENSOR_MAP_SWIZZLE_NONE,
       CU_TENSOR_MAP_L2_PROMOTION_L2_128B,CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-  if (status != CUDA_SUCCESS) return CUtensorMap{};
-  return m;
+  return status==CUDA_SUCCESS;
 }
 }  // namespace
 
@@ -290,7 +289,10 @@ bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const float* tau, __nv_bfloat16* out,
                           const AttentionConfig& c) {
   if (c.head_dim != D || (c.seq_len+B-1)/B > MaxBlocks) return false;
-  const auto q_map=map_for(q,c), k_map=map_for(k,c), v_map=map_for(v,c);
+  CUtensorMap q_map{},k_map{},v_map{};
+  // Misaligned or otherwise unsupported K/V layouts are valid inputs for the
+  // scalar Sol kernel. Never launch TMA with a zero/invalid descriptor.
+  if(!map_for(q,c,&q_map)||!map_for(k,c,&k_map)||!map_for(v,c,&v_map)) return false;
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(exact_pipeline,
       cudaFuncAttributeMaxDynamicSharedMemorySize,int(SmemBytes)));
   exact_pipeline<<<dim3((c.seq_len+B-1)/B,c.num_heads),Threads,SmemBytes,stream>>>(
