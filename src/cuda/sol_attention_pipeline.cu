@@ -152,9 +152,9 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       ratio[t]=denom[t]*rs;denom[t]=ratio[t]+sum;old_m[t]=nm;
     }
     __syncthreads();
-    for(int x=t;x<count*D;x+=Threads) {
+    for(int x=t;x<B*D;x+=Threads) {
       const int col=x/D,d=x%D,kb=route_ids[MaxBlocks-1-(base+col)];
-      kv[col*D+d]=vm[(size_t(kb)*heads+h)*D+d];
+      kv[col*D+d]=col<count?vm[(size_t(kb)*heads+h)*D+d]:__float2bfloat16_rn(0.0f);
     }
     __syncthreads();
     for(int n=0;n<8;++n) {
