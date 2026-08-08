@@ -51,12 +51,17 @@ float time_backend(cublasHandle_t blas, const __nv_bfloat16* q, const __nv_bfloa
 
 int main(int argc, char** argv) {
   int seq = 8192, heads = 8, iterations = 5, prefix = 951;
+  float beta = 1.0f;
   for (int i = 1; i < argc; ++i) {
     auto next = [&]() { if (++i >= argc) std::exit(2); return std::atoi(argv[i]); };
     if (!std::strcmp(argv[i], "--seq")) seq = next();
     else if (!std::strcmp(argv[i], "--heads")) heads = next();
     else if (!std::strcmp(argv[i], "--iters")) iterations = next();
     else if (!std::strcmp(argv[i], "--prefix")) prefix = next();
+    else if (!std::strcmp(argv[i], "--beta")) {
+      if (++i >= argc) return 2;
+      beta = std::strtof(argv[i], nullptr);
+    }
     else { std::fprintf(stderr, "unknown option: %s\n", argv[i]); return 2; }
   }
   if (seq <= 0 || heads <= 0 || iterations <= 0) return 2;
@@ -70,6 +75,7 @@ int main(int argc, char** argv) {
   cublasHandle_t blas{}; cublasCreate(&blas);
   vidfab::cuda::AttentionConfig cfg;
   cfg.seq_len = seq; cfg.num_heads = heads; cfg.head_dim = 128; cfg.exact_prefix = prefix;
+  cfg.sol_beta = beta;
   vidfab::cuda::DeviceBuffer<unsigned long long> routes(2);
   VIDFAB_CUDA_CHECK(cudaMemset(routes.get(), 0, routes.nbytes()));
   cfg.sol_route_counts = routes.get();
@@ -83,7 +89,7 @@ int main(int argc, char** argv) {
   cfg.sol_route_counts = nullptr;
   const float dense = time_backend(blas, q.get(), k.get(), v.get(), out.get(), cfg,
                                    vidfab::cuda::AttentionBackend::kFused, ws, 2, iterations);
-  std::printf("seq=%d heads=%d prefix=%d workspace=%.2f MiB\n", seq, heads, prefix,
+  std::printf("seq=%d heads=%d prefix=%d beta=%.3g workspace=%.2f MiB\n", seq, heads, prefix, beta,
               sol_bytes / 1048576.0);
   std::printf("sol %.3f ms  dense %.3f ms  speedup %.3fx\n", sol, dense, dense / sol);
   const double route_total = double(route_host[0] + route_host[1]);
