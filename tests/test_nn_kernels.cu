@@ -1978,6 +1978,28 @@ VIDFAB_TEST(attention_sol) {
   }
 }
 
+VIDFAB_TEST(attention_sol_pipeline_exact) {
+  CublasScope cb;
+  const int seq = 128, heads = 1, dim = 128;
+  const auto q = bf16_round(make_data(size_t(seq) * dim, 921u, 0.3f));
+  const auto k = bf16_round(make_data(size_t(seq) * dim, 922u, 0.3f));
+  const auto v = bf16_round(make_data(size_t(seq) * dim, 923u, 1.0f));
+  const auto want = cpu_attention(q, k, v, seq, heads, heads, dim,
+                                  1.0f / std::sqrt(float(dim)));
+  BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * dim);
+  vidfab::cuda::AttentionConfig cfg;
+  cfg.seq_len = seq; cfg.num_heads = heads; cfg.head_dim = dim;
+  cfg.exact_prefix = seq; cfg.sol_pipeline = true;
+  Workspace ws;
+  ws.reserve(vidfab::cuda::attention_workspace_bytes(
+      cfg, vidfab::cuda::AttentionBackend::kSol));
+  vidfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                  vidfab::cuda::AttentionBackend::kSol, ws);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE_REL(want, dout.host(), 2e-3, 2e-2,
+                  "Sol SM120 pipeline exact oracle");
+}
+
 VIDFAB_TEST(attention_sage2) {
   CublasScope cb;
   const int seq = 199;

@@ -322,6 +322,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
                            const __nv_bfloat16* k, const __nv_bfloat16* v,
                            __nv_bfloat16* out, const AttentionConfig& c, Workspace& ws) {
   validate(c);
+  if (c.sol_pipeline && sol_pipeline_forward(stream, q, k, v, out, c)) return;
   Workspace::Scope scope(ws);
   const int nb = (c.seq_len + B - 1) / B;
   const size_t pooled = size_t(nb) * c.num_heads * D;

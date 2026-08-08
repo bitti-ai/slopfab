@@ -79,6 +79,9 @@ struct AttentionConfig {
   // Optional device counters [exact routes, approximate routes]. Null keeps
   // production routing free of diagnostic atomics.
   unsigned long long* sol_route_counts = nullptr;
+  // Opt-in SM120 experimental exact mainloop. Unsupported/ragged shapes fall
+  // through to the established Sol kernel.
+  bool sol_pipeline = false;
 
   float effective_scale() const;
 };
