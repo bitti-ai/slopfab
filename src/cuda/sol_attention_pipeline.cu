@@ -80,16 +80,10 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     wait(&qbar, states[0]);
     exact_count=0; approx_count=0;
   }
-  wmma::fragment<wmma::accumulator,16,16,16,float>
-      o0,o1,o2,o3,o4,o5,o6,o7;
   // Keep these as named fragments. Indexing an array of WMMA fragments makes
   // nvcc materialize it in a 256-byte local stack frame on sm_120a.
   wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major>
       qr0,qr1,qr2,qr3,qr4,qr5,qr6,qr7;
-  wmma::fill_fragment(o0,0.0f); wmma::fill_fragment(o1,0.0f);
-  wmma::fill_fragment(o2,0.0f); wmma::fill_fragment(o3,0.0f);
-  wmma::fill_fragment(o4,0.0f); wmma::fill_fragment(o5,0.0f);
-  wmma::fill_fragment(o6,0.0f); wmma::fill_fragment(o7,0.0f);
   if (t < B) { old_m[t] = -FLT_MAX; denom[t] = 0.0f; }
   __syncthreads();
 
@@ -155,29 +149,38 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
         score[t*B+j]=p;
         sum+=kn*p;
       }
-      ratio[t]=rs;denom[t]=denom[t]*rs+sum;old_m[t]=nm;
+      ratio[t]=denom[t]*rs;denom[t]=ratio[t]+sum;old_m[t]=nm;
     }
     __syncthreads();
-#define VIDFAB_APPROX_O(C, OFF) do {                                       \
-      const int qr0=warp*16,d=(OFF); auto& c=(C);                           \
-      for(unsigned i=0;i<c.num_elements;++i) {                              \
-        const int row=qr0+(t&31)/4+int((i/2)%2)*8;                          \
-        const int col=d+(t&31)%4*2+int(i%2)+int(i/4)*8;                    \
-        if(row<qn){float add=0;                                             \
-          for(int j=0;j<count;++j){                                        \
-            const int kb=route_ids[MaxBlocks-1-(base+j)];                   \
-            add+=score[row*B+j]*vs[(size_t(kb)*heads+h)*D+col];}            \
-          c.x[i]=c.x[i]*ratio[row]+add;                                     \
-        }                                                                  \
-      }                                                                    \
-    } while(false)
-    VIDFAB_APPROX_O(o0,  0); VIDFAB_APPROX_O(o1, 16);
-    VIDFAB_APPROX_O(o2, 32); VIDFAB_APPROX_O(o3, 48);
-    VIDFAB_APPROX_O(o4, 64); VIDFAB_APPROX_O(o5, 80);
-    VIDFAB_APPROX_O(o6, 96); VIDFAB_APPROX_O(o7,112);
-#undef VIDFAB_APPROX_O
+    for(int p=t;p<qn*D;p+=Threads) {
+      const int row=p/D,col=p%D;
+      float add=0;
+      for(int j=0;j<count;++j) {
+        const int kb=route_ids[MaxBlocks-1-(base+j)];
+        add+=score[row*B+j]*vs[(size_t(kb)*heads+h)*D+col];
+      }
+      const float prev=base?__bfloat162float(out[size_t(qlo+row)*heads*D+h*D+col]):0.0f;
+      out[size_t(qlo+row)*heads*D+h*D+col]=
+          __float2bfloat16_rn((prev*ratio[row]+add)/denom[row]);
+    }
     __syncthreads();
   }
+
+  // Begin the persistent output-fragment lifetime only after approximation.
+  wmma::fragment<wmma::accumulator,16,16,16,float>
+      o0,o1,o2,o3,o4,o5,o6,o7;
+#define VIDFAB_INIT_O(C, OFF) do {                                         \
+    auto& frag=(C); const int d=(OFF),lane=t&31,qr0=warp*16;                \
+    for(unsigned i=0;i<frag.num_elements;++i) {                             \
+      const int row=qr0+lane/4+int((i/2)%2)*8;                              \
+      const int col=d+(lane%4)*2+int(i%2)+int(i/4)*8;                      \
+      frag.x[i]=(row<qn&&approx_count)?                                    \
+          __bfloat162float(out[size_t(qlo+row)*heads*D+h*D+col])*denom[row]:0.0f; \
+    }                                                                      \
+  } while(false)
+  VIDFAB_INIT_O(o0,0); VIDFAB_INIT_O(o1,16); VIDFAB_INIT_O(o2,32); VIDFAB_INIT_O(o3,48);
+  VIDFAB_INIT_O(o4,64); VIDFAB_INIT_O(o5,80); VIDFAB_INIT_O(o6,96); VIDFAB_INIT_O(o7,112);
+#undef VIDFAB_INIT_O
 
   for (int ordinal = 0; ordinal < exact_count; ++ordinal) {
     const int kb=route_ids[ordinal], stage = 0;
