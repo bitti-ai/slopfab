@@ -6,6 +6,7 @@
 
 #include <cfloat>
 #include <cmath>
+#include <mma.h>
 #include <stdexcept>
 
 #include "vidfab/cuda/device.h"
@@ -14,7 +15,10 @@ namespace vidfab::cuda {
 namespace {
 constexpr int B = 64;
 constexpr int D = 128;
-constexpr int Threads = 256;
+// SM120's warp MMA path uses the same four-warp CTA shape as the released
+// CuTe kernel.  Besides reducing CTA-wide synchronization cost, this gives
+// each thread stable ownership of 64 output values for the whole mainloop.
+constexpr int Threads = 128;
 constexpr size_t Align = 256;
 size_t aligned(size_t n) { return (n + Align - 1) & ~(Align - 1); }
 
@@ -97,9 +101,15 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   const int qb = blockIdx.x, h = blockIdx.y, t = threadIdx.x;
   const int qlo = qb * B, qn = min(B, seq - qlo), nblocks = (seq + B - 1) / B;
   const size_t width = size_t(heads) * D;
-  __shared__ float qm[D], red[D], score[B * B];
+  const int warp = t / 32;
+  __shared__ float qm[D], score[B * B];
   __shared__ float om[B], ol[B], rescale[B], block_m[B];
-  __shared__ int take;
+  // Evaluate a whole route group in parallel.  The old implementation used
+  // a 128-thread reduction (and seven barriers) for every physical block.
+  // This is the native equivalent of the reference kernel's CTA-local route
+  // tile: one thread owns one pooled-key dot product, then the mainloop reads
+  // the compact byte table without another reduction.
+  __shared__ unsigned char route[Threads];
 
   if (t < D) {
     float x = 0;
@@ -109,33 +119,64 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
   if (t < B) { om[t] = -FLT_MAX; ol[t] = 0; }
   __syncthreads();
 
-  // 8192 output scalars / 256 threads = 32 register accumulators per thread.
-  float acc[32];
+  // 8192 output scalars / 128 threads = 64 register accumulators per thread.
+  float acc[64];
 #pragma unroll
-  for (int slot = 0; slot < 32; ++slot) acc[slot] = 0;
+  for (int slot = 0; slot < 64; ++slot) acc[slot] = 0;
 
-  for (int kb = 0; kb < nblocks; ++kb) {
-    const int klo = kb * B, kn = min(B, seq - klo);
-    float px = t < D ? qm[t] * __bfloat162float(km[(size_t(kb) * heads + h) * D + t]) : 0;
-    const float proxy = reduce128(px, red) * scale;
-    if (t == 0) {
-      // Prefix queries are dense. Prefix/sink keys and immediate physical
-      // neighbours are invariant exact routes in the official H3 policy.
-      take = qlo < prefix || klo < prefix || abs(qb - kb) <= 1 ||
-             proxy > tau[size_t(qb) * heads + h];
+  for (int route_base = 0; route_base < nblocks; route_base += Threads) {
+    const int route_kb = route_base + t;
+    if (route_kb < nblocks) {
+      float proxy = 0;
+#pragma unroll 4
+      for (int d = 0; d < D; ++d)
+        proxy += qm[d] * __bfloat162float(
+            km[(size_t(route_kb) * heads + h) * D + d]);
+      const int klo = route_kb * B;
+      route[t] = qlo < prefix || klo < prefix || abs(qb - route_kb) <= 1 ||
+                 proxy * scale > tau[size_t(qb) * heads + h];
     }
     __syncthreads();
 
+    const int route_end = min(route_base + Threads, nblocks);
+    for (int kb = route_base; kb < route_end; ++kb) {
+    const int klo = kb * B, kn = min(B, seq - klo);
+    const bool take = route[kb - route_base] != 0;
+
     if (take) {
-      for (int p = t; p < qn * kn; p += Threads) {
-        const int qr = p / kn, kr = p % kn;
-        float dot = 0;
-#pragma unroll 4
-        for (int d = 0; d < D; ++d) {
-          dot += __bfloat162float(q[size_t(qlo + qr) * width + h * D + d]) *
-                 __bfloat162float(k[size_t(klo + kr) * width + h * D + d]);
+      if (qn == B && kn == B) {
+        using namespace nvcuda;
+        for (int tile = warp; tile < 16; tile += Threads / 32) {
+          const int qr = (tile / 4) * 16, kr = (tile % 4) * 16;
+          wmma::fragment<wmma::accumulator, 16, 16, 16, float> c;
+          wmma::fill_fragment(c, 0.0f);
+#pragma unroll
+          for (int d = 0; d < D; d += 16) {
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16,
+                           wmma::row_major> a;
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16,
+                           wmma::col_major> b;
+            wmma::load_matrix_sync(a, q + size_t(qlo + qr) * width + h * D + d,
+                                   width);
+            wmma::load_matrix_sync(b, k + size_t(klo + kr) * width + h * D + d,
+                                   width);
+            wmma::mma_sync(c, a, b, c);
+          }
+          for (unsigned i = 0; i < c.num_elements; ++i) c.x[i] *= scale;
+          wmma::store_matrix_sync(score + qr * B + kr, c, B,
+                                  wmma::mem_row_major);
         }
-        score[qr * B + kr] = dot * scale;
+      } else {
+        for (int p = t; p < qn * kn; p += Threads) {
+          const int qr = p / kn, kr = p % kn;
+          float dot = 0;
+#pragma unroll 4
+          for (int d = 0; d < D; ++d) {
+            dot += __bfloat162float(q[size_t(qlo + qr) * width + h * D + d]) *
+                   __bfloat162float(k[size_t(klo + kr) * width + h * D + d]);
+          }
+          score[qr * B + kr] = dot * scale;
+        }
       }
       __syncthreads();
       if (t < qn) {
@@ -150,8 +191,8 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
         om[t] = nm;
       }
       __syncthreads();
-#pragma unroll 32
-      for (int slot = 0; slot < 32; ++slot) {
+#pragma unroll 64
+      for (int slot = 0; slot < 64; ++slot) {
         const int od = t + slot * Threads;
         if (od >= qn * D) continue;
         const int qr = od / D, d = od % D;
@@ -175,8 +216,8 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
         om[t] = nm;
       }
       __syncthreads();
-#pragma unroll 32
-      for (int slot = 0; slot < 32; ++slot) {
+#pragma unroll 64
+      for (int slot = 0; slot < 64; ++slot) {
         const int od = t + slot * Threads;
         if (od >= qn * D) continue;
         const int qr = od / D, d = od % D;
@@ -185,9 +226,10 @@ __global__ void sol(const __nv_bfloat16* q, const __nv_bfloat16* k,
       }
     }
     __syncthreads();
+    }
   }
-#pragma unroll 32
-  for (int slot = 0; slot < 32; ++slot) {
+#pragma unroll 64
+  for (int slot = 0; slot < 64; ++slot) {
     const int od = t + slot * Threads;
     if (od < qn * D) {
       const int qr = od / D, d = od % D;
