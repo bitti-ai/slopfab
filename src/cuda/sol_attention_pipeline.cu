@@ -50,7 +50,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     const __grid_constant__ CUtensorMap qmap,
     const __grid_constant__ CUtensorMap kmap,
     const __grid_constant__ CUtensorMap vmap, __nv_bfloat16* out,
-    const __nv_bfloat16* km, const __nv_bfloat16* vsm,
+    const __nv_bfloat16* km, const float* vs,
     const float* tau,
     int seq, int heads, int prefix, float scale,
     unsigned long long* route_counts) {
@@ -133,35 +133,18 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       ratio[t]=rs;denom[t]=denom[t]*rs+sum;old_m[t]=nm;
     }
     __syncthreads();
-    for(int x=t;x<count*D;x+=Threads) {
-      const int row=x/D,d=x%D,kb=route_ids[MaxBlocks-1-(base+row)];
-      kv[row*D+d]=vsm[(size_t(kb)*heads+h)*D+d];
-    }
-    __syncthreads();
     for(int n=0;n<8;++n) {
-      const int qr0=warp*16; auto& c=o[n];
+      const int qr0=warp*16,d=n*16; auto& c=o[n];
       for(unsigned i=0;i<c.num_elements;++i) {
         const int row=qr0+(t&31)/4+int((i/2)%2)*8;
-        if(row<qn)c.x[i]*=ratio[row];
+        const int col=d+(t&31)%4*2+int(i%2)+int(i/4)*8;
+        if(row<qn){float add=0;
+          for(int j=0;j<count;++j){const int kb=route_ids[MaxBlocks-1-(base+j)];
+            add+=expf(score[row*B+j]-old_m[row])*
+                 vs[(size_t(kb)*heads+h)*D+col];}
+          c.x[i]=c.x[i]*ratio[row]+add;
+        }
       }
-    }
-    for(int j=0;j<B;j+=16) {
-      auto* ps=prob_scratch+warp*256;
-      for(int p=(t&31);p<256;p+=32) {
-        const int row=warp*16+p/16,col=j+p%16;
-        ps[p]=(row<qn && col<count)?__float2bfloat16_rn(
-          expf(score[row*B+col]-old_m[row])):__float2bfloat16_rn(0);
-      }
-      __syncwarp();
-      wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major>a;
-      wmma::load_matrix_sync(a,ps,16);
-      for(int n=0;n<8;++n) {
-        const int d=n*16;
-        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major>b;
-        wmma::load_matrix_sync(b,kv+j*D+d,D);
-        wmma::mma_sync(o[n],a,b,o[n]);
-      }
-      __syncwarp();
     }
     __syncthreads();
   }
@@ -262,8 +245,7 @@ CUtensorMap map_for(const __nv_bfloat16* p, const AttentionConfig& c) {
 
 bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const __nv_bfloat16* k, const __nv_bfloat16* v,
-                          const __nv_bfloat16* km,
-                          const __nv_bfloat16* vsm,
+                          const __nv_bfloat16* km, const float* vs,
                           const float* tau, __nv_bfloat16* out,
                           const AttentionConfig& c) {
   if (c.head_dim != D || (c.seq_len+B-1)/B > MaxBlocks) return false;
@@ -271,7 +253,7 @@ bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(exact_pipeline,
       cudaFuncAttributeMaxDynamicSharedMemorySize,int(SmemBytes)));
   exact_pipeline<<<dim3((c.seq_len+B-1)/B,c.num_heads),Threads,SmemBytes,stream>>>(
-      q_map,k_map,v_map,out,km,vsm,tau,c.seq_len,c.num_heads,c.exact_prefix,
+      q_map,k_map,v_map,out,km,vs,tau,c.seq_len,c.num_heads,c.exact_prefix,
       c.effective_scale(),c.sol_route_counts);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
   return true;

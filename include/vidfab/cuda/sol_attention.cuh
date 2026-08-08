@@ -19,8 +19,7 @@ void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
 
 bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const __nv_bfloat16* k, const __nv_bfloat16* v,
-                          const __nv_bfloat16* km,
-                          const __nv_bfloat16* vsm,
+                          const __nv_bfloat16* km, const float* vs,
                           const float* tau, __nv_bfloat16* out,
                           const AttentionConfig& cfg);
 
