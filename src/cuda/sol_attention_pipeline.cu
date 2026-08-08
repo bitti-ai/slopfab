@@ -151,7 +151,9 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       float sum=0;
       for(int j=0;j<count;++j) {
         const int kb=route_ids[MaxBlocks-1-(base+j)],kn=min(B,seq-kb*B);
-        sum+=kn*fast_exp(score[t*B+j]-nm);
+        const float p=fast_exp(score[t*B+j]-nm);
+        score[t*B+j]=p;
+        sum+=kn*p;
       }
       ratio[t]=rs;denom[t]=denom[t]*rs+sum;old_m[t]=nm;
     }
@@ -164,8 +166,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
         if(row<qn){float add=0;                                             \
           for(int j=0;j<count;++j){                                        \
             const int kb=route_ids[MaxBlocks-1-(base+j)];                   \
-            add+=fast_exp(score[row*B+j]-old_m[row])*                       \
-                 vs[(size_t(kb)*heads+h)*D+col];}                           \
+            add+=score[row*B+j]*vs[(size_t(kb)*heads+h)*D+col];}            \
           c.x[i]=c.x[i]*ratio[row]+add;                                     \
         }                                                                  \
       }                                                                    \
