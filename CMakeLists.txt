@@ -137,6 +137,8 @@ if(VIDFAB_ENABLE_CUDA)
     target_link_libraries(vidfab_qwenvisionprobe PRIVATE vidfab_cuda)
     add_executable(vidfab_qwenconditionerprobe tools/qwenconditionerprobe.cpp)
     target_link_libraries(vidfab_qwenconditionerprobe PRIVATE vidfab_cuda)
+    add_executable(vidfab_solbench tools/solbench.cu)
+    target_link_libraries(vidfab_solbench PRIVATE vidfab_cuda)
 
     target_compile_definitions(vidfab_core PUBLIC VIDFAB_WITH_CUDA=1)
   else()
