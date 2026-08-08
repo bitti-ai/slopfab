@@ -1,6 +1,6 @@
 // Experimental aligned exact SM120 mainloop. The production Sol kernel remains
 // the fallback. One thread owns one output column and keeps all 64 row outputs
-// in registers; the score arena and ping-pong K/V stages are the only large
+// in registers; the score arena and reusable K/V stage are the only large
 // shared allocations.
 #include "vidfab/cuda/sol_attention.cuh"
 
@@ -15,8 +15,8 @@ namespace vidfab::cuda {
 namespace {
 constexpr int B = 64, D = 128, Threads = 128;
 constexpr int MaxBlocks = 1024;
-constexpr size_t SmemBytes = 2 * B * D * sizeof(__nv_bfloat16) +
-                             B * B * (sizeof(float) + sizeof(__nv_bfloat16));
+constexpr size_t SmemBytes = B * D * sizeof(__nv_bfloat16) +
+                             B * B * sizeof(float) + 4 * 16 * 16 * sizeof(__nv_bfloat16);
 
 struct TmaState { uint64_t token[2]; };
 
@@ -59,13 +59,12 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   extern __shared__ __align__(128) unsigned char raw[];
   auto* q = reinterpret_cast<__nv_bfloat16*>(raw);
   auto* score = reinterpret_cast<float*>(raw);
-  auto* prob = reinterpret_cast<__nv_bfloat16*>(score + B * B);
-  auto* kv = prob + B * B;
-  __shared__ alignas(8) uint64_t qbar, bars[2];
-  __shared__ uint64_t states[2];
-  __shared__ float old_m[B], denom[B], ratio[B], new_m[B];
-  __shared__ float qmean[D];
-  __shared__ uint16_t exact_ids[MaxBlocks], approx_ids[MaxBlocks];
+  auto* prob_scratch = reinterpret_cast<__nv_bfloat16*>(score + B * B);
+  auto* kv = prob_scratch + 4 * 16 * 16;
+  __shared__ alignas(8) uint64_t qbar, bars[1];
+  __shared__ uint64_t states[1];
+  __shared__ float old_m[B], denom[B], ratio[B];
+  __shared__ uint16_t route_ids[MaxBlocks];
   __shared__ int exact_count, approx_count;
   using namespace nvcuda;
 
@@ -81,22 +80,21 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   if (t < B) { old_m[t] = -FLT_MAX; denom[t] = 0.0f; }
   __syncthreads();
 
-  if (t < D) {
-    float x=0; for(int r=0;r<qn;++r) x+=__bfloat162float(q[r*D+t]);
-    qmean[t]=x/float(qn);
-  }
-  __syncthreads();
 #pragma unroll
   for(int d=0;d<D;d+=16) wmma::load_matrix_sync(qr[d/16],q+warp*16*D+d,D);
+  __syncthreads();
+  float qavg=0; for(int r=0;r<qn;++r) qavg+=__bfloat162float(q[r*D+t]);
+  __syncthreads();
+  score[t]=qavg/float(qn);
   __syncthreads();
   for(int kb=t;kb<blocks;kb+=Threads) {
     float proxy=0;
     for(int d=0;d<D;++d)
-      proxy += qmean[d]*__bfloat162float(km[(size_t(kb)*heads+h)*D+d]);
+      proxy += score[d]*__bfloat162float(km[(size_t(kb)*heads+h)*D+d]);
     const bool take=qlo<prefix || kb*B<prefix || abs(qb-kb)<=1 ||
                     proxy*scale>tau[size_t(qb)*heads+h];
     const int slot=take?atomicAdd(&exact_count,1):atomicAdd(&approx_count,1);
-    (take?exact_ids:approx_ids)[slot]=kb;
+    route_ids[take?slot:MaxBlocks-1-slot]=uint16_t(kb);
     if(route_counts) atomicAdd(route_counts+(take?0:1),1ull);
   }
   __syncthreads();
@@ -106,7 +104,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   for(int base=0;base<approx_count;base+=B) {
     const int count=min(B,approx_count-base);
     for(int x=t;x<count*D;x+=Threads) {
-      const int col=x/D,d=x%D,kb=approx_ids[base+col];
+      const int col=x/D,d=x%D,kb=route_ids[MaxBlocks-1-(base+col)];
       kv[col*D+d]=km[(size_t(kb)*heads+h)*D+d];
     }
     __syncthreads();
@@ -129,51 +127,51 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       const float nm=fmaxf(old_m[t],bm),rs=expf(old_m[t]-nm);
       float sum=0;
       for(int j=0;j<count;++j) {
-        const int kb=approx_ids[base+j],kn=min(B,seq-kb*B);
+        const int kb=route_ids[MaxBlocks-1-(base+j)],kn=min(B,seq-kb*B);
         sum+=kn*expf(score[t*B+j]-nm);
       }
-      ratio[t]=rs;new_m[t]=nm;denom[t]=denom[t]*rs+sum;old_m[t]=nm;
+      ratio[t]=rs;denom[t]=denom[t]*rs+sum;old_m[t]=nm;
     }
     __syncthreads();
-    for(int p=t;p<B*B;p+=Threads)
-      prob[p]=p/B<qn && p%B<count?
-        __float2bfloat16_rn(expf(score[p]-new_m[p/B])):__float2bfloat16_rn(0);
     for(int x=t;x<count*D;x+=Threads) {
-      const int row=x/D,d=x%D,kb=approx_ids[base+row];
+      const int row=x/D,d=x%D,kb=route_ids[MaxBlocks-1-(base+row)];
       kv[row*D+d]=vsm[(size_t(kb)*heads+h)*D+d];
     }
     __syncthreads();
     for(int n=0;n<8;++n) {
-      const int qr0=warp*16,d=n*16;
-      auto& c=o[n];
+      const int qr0=warp*16; auto& c=o[n];
       for(unsigned i=0;i<c.num_elements;++i) {
         const int row=qr0+(t&31)/4+int((i/2)%2)*8;
         if(row<qn)c.x[i]*=ratio[row];
       }
-#pragma unroll
-      for(int j=0;j<B;j+=16) {
-        wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major>a;
-        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major>b;
-        wmma::load_matrix_sync(a,prob+qr0*B+j,B);
-        wmma::load_matrix_sync(b,kv+j*D+d,D);
-        wmma::mma_sync(c,a,b,c);
+    }
+    for(int j=0;j<B;j+=16) {
+      auto* ps=prob_scratch+warp*256;
+      for(int p=(t&31);p<256;p+=32) {
+        const int row=warp*16+p/16,col=j+p%16;
+        ps[p]=(row<qn && col<count)?__float2bfloat16_rn(
+          expf(score[row*B+col]-old_m[row])):__float2bfloat16_rn(0);
       }
+      __syncwarp();
+      wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major>a;
+      wmma::load_matrix_sync(a,ps,16);
+      for(int n=0;n<8;++n) {
+        const int d=n*16;
+        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major>b;
+        wmma::load_matrix_sync(b,kv+j*D+d,D);
+        wmma::mma_sync(o[n],a,b,o[n]);
+      }
+      __syncwarp();
     }
     __syncthreads();
   }
 
-  if(t==0 && exact_count)
-    states[0]=issue(&kmap,kv,h,exact_ids[0]*B,&bars[0]);
-  __syncthreads();
-
   for (int ordinal = 0; ordinal < exact_count; ++ordinal) {
-    const int kb=exact_ids[ordinal], stage = ordinal & 1;
+    const int kb=route_ids[ordinal], stage = 0;
     const int kn=min(B,seq-kb*B);
     if (t == 0) {
-      wait(&bars[stage], states[stage]);
-      if (ordinal + 1 < exact_count)
-        states[stage ^ 1] = issue(&kmap, kv + (stage ^ 1) * B * D, h,
-                                  exact_ids[ordinal+1] * B, &bars[stage ^ 1]);
+      states[0]=issue(&kmap,kv,h,kb*B,&bars[0]);
+      wait(&bars[0],states[0]);
     }
     __syncthreads();
     for (int kr = 0; kr < B; kr += 16) {
@@ -197,11 +195,8 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       for (int j=0;j<B;++j) bm=fmaxf(bm,score[t*B+j]);
       const float nm=fmaxf(old_m[t],bm), rs=expf(old_m[t]-nm);
       float sum=0; for(int j=0;j<B;++j) sum += expf(score[t*B+j]-nm);
-      ratio[t]=rs; new_m[t]=nm; denom[t]=denom[t]*rs+sum; old_m[t]=nm;
+      ratio[t]=rs; denom[t]=denom[t]*rs+sum; old_m[t]=nm;
     }
-    __syncthreads();
-    for (int p=t;p<B*B;p+=Threads)
-      prob[p]=__float2bfloat16_rn(expf(score[p]-new_m[p/B]));
     __syncthreads();
     if (t == 0) {
       states[stage] = issue(&vmap, kv + stage * B * D, h, kb * B, &bars[stage]);
@@ -209,24 +204,32 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     }
     __syncthreads();
     for (int n=0;n<8;++n) {
-      const int qr0=warp*16, d=n*16;
-      auto& c=o[n];
+      const int qr0=warp*16; auto& c=o[n];
 #pragma unroll
       for(unsigned i=0;i<c.num_elements;++i) {
         const int row=qr0+(t&31)/4+int((i/2)%2)*8;
         if(row<qn) c.x[i] *= ratio[row];
       }
-#pragma unroll
-      for(int j=0;j<B;j+=16) {
-        wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
-        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major> b;
-        wmma::load_matrix_sync(a,prob+qr0*B+j,B);
-        wmma::load_matrix_sync(b,kv+stage*B*D+j*D+d,D);
-        wmma::mma_sync(c,a,b,c);
+    }
+    for(int j=0;j<B;j+=16) {
+      auto* ps=prob_scratch+warp*256;
+      for(int p=(t&31);p<256;p+=32) {
+        const int row=warp*16+p/16,col=j+p%16;
+        ps[p]=(row<qn && col<kn)?__float2bfloat16_rn(
+          expf(score[row*B+col]-old_m[row])):__float2bfloat16_rn(0);
       }
+      __syncwarp();
+      wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
+      wmma::load_matrix_sync(a,ps,16);
+      for(int n=0;n<8;++n) {
+        const int d=n*16;
+        wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major> b;
+        wmma::load_matrix_sync(b,kv+stage*B*D+j*D+d,D);
+        wmma::mma_sync(o[n],a,b,o[n]);
+      }
+      __syncwarp();
     }
     __syncthreads();
-    // The next K was issued before QK and occupies the alternate stage.
   }
   const int lane=t&31;
   for(int n=0;n<8;++n) {
