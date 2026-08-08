@@ -15,7 +15,7 @@ namespace vidfab::cuda {
 namespace {
 constexpr int B = 64, D = 128, Threads = 128;
 constexpr int MaxBlocks = 1024;
-constexpr size_t SmemBytes = (B * D + 2 * B * D) * sizeof(__nv_bfloat16) +
+constexpr size_t SmemBytes = 2 * B * D * sizeof(__nv_bfloat16) +
                              B * B * (sizeof(float) + sizeof(__nv_bfloat16));
 
 struct TmaState { uint64_t token[2]; };
@@ -58,14 +58,14 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   const int qlo = qb * B, qn=min(B,seq-qlo), blocks = (seq+B-1)/B, warp = t >> 5;
   extern __shared__ __align__(128) unsigned char raw[];
   auto* q = reinterpret_cast<__nv_bfloat16*>(raw);
-  auto* kv = q + B * D;
-  auto* score = reinterpret_cast<float*>(kv + 2 * B * D);
+  auto* score = reinterpret_cast<float*>(raw);
   auto* prob = reinterpret_cast<__nv_bfloat16*>(score + B * B);
+  auto* kv = prob + B * B;
   __shared__ alignas(8) uint64_t qbar, bars[2];
   __shared__ uint64_t states[2];
   __shared__ float old_m[B], denom[B], ratio[B], new_m[B];
   __shared__ float qmean[D];
-  __shared__ int exact_ids[MaxBlocks], approx_ids[MaxBlocks];
+  __shared__ uint16_t exact_ids[MaxBlocks], approx_ids[MaxBlocks];
   __shared__ int exact_count, approx_count;
   using namespace nvcuda;
 
@@ -75,6 +75,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     exact_count=0; approx_count=0;
   }
   wmma::fragment<wmma::accumulator,16,16,16,float> o[8];
+  wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> qr[8];
 #pragma unroll
   for (int n = 0; n < 8; ++n) wmma::fill_fragment(o[n], 0.0f);
   if (t < B) { old_m[t] = -FLT_MAX; denom[t] = 0.0f; }
@@ -84,6 +85,9 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     float x=0; for(int r=0;r<qn;++r) x+=__bfloat162float(q[r*D+t]);
     qmean[t]=x/float(qn);
   }
+  __syncthreads();
+#pragma unroll
+  for(int d=0;d<D;d+=16) wmma::load_matrix_sync(qr[d/16],q+warp*16*D+d,D);
   __syncthreads();
   for(int kb=t;kb<blocks;kb+=Threads) {
     float proxy=0;
@@ -106,20 +110,17 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       kv[col*D+d]=km[(size_t(kb)*heads+h)*D+d];
     }
     __syncthreads();
-    for(int tile=warp;tile<16;tile+=4) {
-      const int qr=tile/4*16, kr=tile%4*16;
+    for(int kr=0;kr<B;kr+=16) {
       wmma::fragment<wmma::accumulator,16,16,16,float> c;
       wmma::fill_fragment(c,0.0f);
 #pragma unroll
       for(int d=0;d<D;d+=16) {
-        wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
         wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::col_major> b;
-        wmma::load_matrix_sync(a,q+qr*D+d,D);
         wmma::load_matrix_sync(b,kv+kr*D+d,D);
-        wmma::mma_sync(c,a,b,c);
+        wmma::mma_sync(c,qr[d/16],b,c);
       }
       for(unsigned i=0;i<c.num_elements;++i)c.x[i]*=scale;
-      wmma::store_matrix_sync(score+qr*B+kr,c,B,wmma::mem_row_major);
+      wmma::store_matrix_sync(score+warp*16*B+kr,c,B,wmma::mem_row_major);
     }
     __syncthreads();
     if(t<qn) {
@@ -143,17 +144,17 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     }
     __syncthreads();
     for(int n=0;n<8;++n) {
-      const int tile=warp+n*4,qr=tile/8*16,d=tile%8*16;
+      const int qr0=warp*16,d=n*16;
       auto& c=o[n];
       for(unsigned i=0;i<c.num_elements;++i) {
-        const int row=qr+(t&31)/4+int((i/2)%2)*8;
+        const int row=qr0+(t&31)/4+int((i/2)%2)*8;
         if(row<qn)c.x[i]*=ratio[row];
       }
 #pragma unroll
       for(int j=0;j<B;j+=16) {
         wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major>a;
         wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major>b;
-        wmma::load_matrix_sync(a,prob+qr*B+j,B);
+        wmma::load_matrix_sync(a,prob+qr0*B+j,B);
         wmma::load_matrix_sync(b,kv+j*D+d,D);
         wmma::mma_sync(c,a,b,c);
       }
@@ -175,20 +176,17 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
                                   exact_ids[ordinal+1] * B, &bars[stage ^ 1]);
     }
     __syncthreads();
-    for (int tile = warp; tile < 16; tile += 4) {
-      const int qr = tile / 4 * 16, kr = tile % 4 * 16;
+    for (int kr = 0; kr < B; kr += 16) {
       wmma::fragment<wmma::accumulator,16,16,16,float> c;
       wmma::fill_fragment(c, 0.0f);
 #pragma unroll
       for (int d = 0; d < D; d += 16) {
-        wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
         wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::col_major> b;
-        wmma::load_matrix_sync(a, q + qr * D + d, D);
         wmma::load_matrix_sync(b, kv + stage * B * D + kr * D + d, D);
-        wmma::mma_sync(c, a, b, c);
+        wmma::mma_sync(c, qr[d/16], b, c);
       }
       for (unsigned i=0;i<c.num_elements;++i) c.x[i] *= scale;
-      wmma::store_matrix_sync(score + qr * B + kr, c, B, wmma::mem_row_major);
+      wmma::store_matrix_sync(score + warp * 16 * B + kr, c, B, wmma::mem_row_major);
     }
     __syncthreads();
     for(int p=t;p<B*B;p+=Threads)
@@ -211,18 +209,18 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     }
     __syncthreads();
     for (int n=0;n<8;++n) {
-      const int tile=warp+n*4, qr=tile/8*16, d=tile%8*16;
+      const int qr0=warp*16, d=n*16;
       auto& c=o[n];
 #pragma unroll
       for(unsigned i=0;i<c.num_elements;++i) {
-        const int row=qr+(t&31)/4+int((i/2)%2)*8;
+        const int row=qr0+(t&31)/4+int((i/2)%2)*8;
         if(row<qn) c.x[i] *= ratio[row];
       }
 #pragma unroll
       for(int j=0;j<B;j+=16) {
         wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
         wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major> b;
-        wmma::load_matrix_sync(a,prob+qr*B+j,B);
+        wmma::load_matrix_sync(a,prob+qr0*B+j,B);
         wmma::load_matrix_sync(b,kv+stage*B*D+j*D+d,D);
         wmma::mma_sync(c,a,b,c);
       }
@@ -232,10 +230,10 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   }
   const int lane=t&31;
   for(int n=0;n<8;++n) {
-    const int tile=warp+n*4, qr=tile/8*16, d=tile%8*16;
+    const int qr0=warp*16, d=n*16;
 #pragma unroll
     for(unsigned i=0;i<o[n].num_elements;++i) {
-      const int row=qr+lane/4+int((i/2)%2)*8;
+      const int row=qr0+lane/4+int((i/2)%2)*8;
       const int col=d+(lane%4)*2+int(i%2)+int(i/4)*8;
       if(row<qn)
         out[size_t(qlo+row)*heads*D+h*D+col]=
