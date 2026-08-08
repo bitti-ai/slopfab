@@ -145,10 +145,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   }
 
   if (options.source == LatentSource::kDenoise) {
-    if (request.text_encoder_path.empty() || request.tokenizer_path.empty() ||
-        request.transformer_path.empty()) {
+    if (request.text_encoder_path.empty() || request.transformer_path.empty()) {
       result.message =
-          "generate needs --text-encoder, --tokenizer and --transformer (or pass "
+          "generate needs --text-encoder and --transformer (or pass "
           "--synthetic-latents to skip conditioning and denoising)";
       return result;
     }
@@ -226,7 +225,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     {
       const Clock::time_point t0 = Clock::now();
       text::Tokenizer tokenizer;
-      tokenizer.load(request.tokenizer_path);
+      if (request.tokenizer_path.empty()) tokenizer.load_embedded();
+      else tokenizer.load(request.tokenizer_path);
 
       // No chat template, no BOS, no EOS: `hidden_states[50]` of a raw prompt
       // is the conditioning H3 expects, and a special token here would shift

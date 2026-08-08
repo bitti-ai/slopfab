@@ -8,6 +8,11 @@
 
 #include "vidfab/json.h"
 
+#if defined(_WIN32)
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 namespace vidfab::text {
 namespace {
 
@@ -411,8 +416,16 @@ void Tokenizer::load(const std::string& path) {
   std::ostringstream buf;
   buf << in.rdbuf();
   const std::string text = buf.str();
+  load_json(text);
+}
 
-  const json::Value root = json::parse(text);
+void Tokenizer::load_json(std::string_view tokenizer_json) {
+  vocab_.clear();
+  id_to_token_.clear();
+  merge_ranks_.clear();
+  added_tokens_.clear();
+
+  const json::Value root = json::parse(std::string(tokenizer_json));
   const json::Value* model = root.find("model");
   if (model == nullptr) throw std::runtime_error("tokenizer: no \"model\" section");
 
@@ -471,6 +484,23 @@ void Tokenizer::load(const std::string& path) {
       merge_ranks_.emplace(std::move(key), rank++);
     }
   }
+}
+
+void Tokenizer::load_embedded() {
+#if defined(_WIN32)
+  HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(101), MAKEINTRESOURCEW(10));
+  if (resource == nullptr) throw std::runtime_error("tokenizer: embedded resource is missing");
+  HGLOBAL loaded = LoadResource(nullptr, resource);
+  const DWORD size = SizeofResource(nullptr, resource);
+  const void* bytes = loaded == nullptr ? nullptr : LockResource(loaded);
+  if (bytes == nullptr || size == 0) {
+    throw std::runtime_error("tokenizer: cannot read embedded resource");
+  }
+  load_json(std::string_view(static_cast<const char*>(bytes), size));
+#else
+  throw std::runtime_error(
+      "tokenizer: this build has no embedded tokenizer; pass --tokenizer <file>");
+#endif
 }
 
 int32_t Tokenizer::token_to_id(const std::string& token) const {

@@ -146,7 +146,30 @@ endif()
 
 # --- cli --------------------------------------------------------------------
 
-add_executable(vidfab src/main.cpp)
+if(WIN32)
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json")
+    message(FATAL_ERROR "vidfab: ref/text_encoder/tokenizer.json is required to embed the tokenizer")
+  endif()
+  set(VIDFAB_LICENSE_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/minimax_h3_LICENSE")
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  file(DOWNLOAD
+    "https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/LICENSE"
+    "${VIDFAB_LICENSE_RESOURCE}"
+    STATUS VIDFAB_LICENSE_DOWNLOAD_STATUS
+    TLS_VERIFY ON)
+  list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 0 VIDFAB_LICENSE_DOWNLOAD_CODE)
+  if(NOT VIDFAB_LICENSE_DOWNLOAD_CODE EQUAL 0)
+    list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 1 VIDFAB_LICENSE_DOWNLOAD_MESSAGE)
+    message(FATAL_ERROR "vidfab: could not download MiniMax H3 license: ${VIDFAB_LICENSE_DOWNLOAD_MESSAGE}")
+  endif()
+  file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json"
+       VIDFAB_TOKENIZER_RESOURCE)
+  file(TO_CMAKE_PATH "${VIDFAB_LICENSE_RESOURCE}" VIDFAB_LICENSE_RESOURCE)
+  configure_file(src/vidfab_resources.rc.in generated/vidfab_resources.rc @ONLY)
+  add_executable(vidfab src/main.cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_resources.rc")
+else()
+  add_executable(vidfab src/main.cpp)
+endif()
 target_link_libraries(vidfab PRIVATE vidfab_core)
 if(VIDFAB_ENABLE_CUDA)
   target_link_libraries(vidfab PRIVATE vidfab_cuda)
@@ -156,6 +179,31 @@ if(MSVC)
   target_compile_options(vidfab PRIVATE /W4 /permissive- /utf-8)
 else()
   target_compile_options(vidfab PRIVATE -Wall -Wextra)
+endif()
+if(WIN32)
+  target_link_libraries(vidfab PRIVATE winhttp)
+
+  # FFmpeg remains runtime-loaded (and therefore replaceable), but the checked-in
+  # distribution is the default used by local builds. Keep only the libraries
+  # mux.cpp loads, plus swresample which avcodec depends on in this FFmpeg build.
+  set(VIDFAB_FFMPEG_BIN "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
+  set(VIDFAB_FFMPEG_RUNTIME_DLLS
+    avcodec-62.dll
+    avformat-62.dll
+    avutil-60.dll
+    swresample-6.dll
+    swscale-9.dll)
+  foreach(VIDFAB_FFMPEG_DLL IN LISTS VIDFAB_FFMPEG_RUNTIME_DLLS)
+    if(NOT EXISTS "${VIDFAB_FFMPEG_BIN}/${VIDFAB_FFMPEG_DLL}")
+      message(FATAL_ERROR
+        "vidfab: required FFmpeg runtime is missing: ${VIDFAB_FFMPEG_BIN}/${VIDFAB_FFMPEG_DLL}")
+    endif()
+    add_custom_command(TARGET vidfab POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${VIDFAB_FFMPEG_BIN}/${VIDFAB_FFMPEG_DLL}"
+        "$<TARGET_FILE_DIR:vidfab>/${VIDFAB_FFMPEG_DLL}"
+      VERBATIM)
+  endforeach()
 endif()
 
 # --- tools ------------------------------------------------------------------

@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -25,6 +26,14 @@ class Tokenizer {
   // tokens are read from the same file so that <|im_start|> and friends
   // resolve to their reserved ids.
   void load(const std::string& tokenizer_json_path);
+
+  // Loads the same tokenizer directly from JSON bytes. Used by the CLI's
+  // embedded tokenizer resource; keeping parsing here makes file overrides
+  // and the built-in data follow exactly the same code path.
+  void load_json(std::string_view tokenizer_json);
+
+  // Loads tokenizer.json compiled into the vidfab executable.
+  void load_embedded();
 
   bool loaded() const { return !vocab_.empty(); }
   size_t vocab_size() const { return id_to_token_.size(); }
