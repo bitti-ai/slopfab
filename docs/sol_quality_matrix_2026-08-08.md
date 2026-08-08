@@ -100,6 +100,13 @@ The representative `detail`, seed 11 pipeline run was repeated with
 `detail-s11-pipeline-diag.log` contains zero lines with a nonzero `nonfinite`
 count. The repeat exited successfully.
 
+Across the twelve ordinary runs per backend, log-reported 19-step denoising
+time was 18.75 s median for dense (mean 18.842 s, population standard deviation
+0.185 s, range 18.7--19.3 s) and 18.70 s median for pipeline (mean 18.767 s,
+standard deviation 0.184 s, range 18.6--19.3 s). The median ratio is 1.003x,
+within run-to-run dispersion; this short 4.1K-row matrix establishes no
+end-to-end speedup.
+
 `vidfab_chunkprobe stats` computes final-latent metrics directly from the FP32
 safetensors. `tools/media_compare.py` streams FFmpeg-decoded `rgb24` video and
 `f32le` audio and accumulates dot products, centered covariance, absolute and
