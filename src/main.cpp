@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -319,6 +320,19 @@ uint64_t random_seed() {
   return (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
 }
 
+std::string timestamped_output_path() {
+  const std::time_t now = std::time(nullptr);
+  std::tm local{};
+#if defined(_WIN32)
+  localtime_s(&local, &now);
+#else
+  localtime_r(&now, &local);
+#endif
+  char stamp[32];
+  std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
+  return (std::filesystem::path("output") / (std::string("video-") + stamp + ".mp4")).string();
+}
+
 std::filesystem::path find_weights_directory(const char* executable) {
   std::vector<std::filesystem::path> starts = {std::filesystem::current_path()};
   std::error_code ec;
@@ -423,7 +437,7 @@ const CommandHelp kCommands[] = {
      "                               JPEG, BMP, TIFF, GIF and binary PPM on Windows;\n"
      "                               binary PPM elsewhere. Requires Ref2VA transformer\n"
      "                               weights. Files are read only when the run starts\n"
-     "  --out <file>                 output path (default video.mp4)\n"
+     "  --out <file>                 output path (default output/video-<timestamp>.mp4)\n"
      "  --aspect <W:H>               display aspect, 1:4 to 4:1 (overrides 864x480)\n"
      "  --resolution <WxH>           exact canvas instead of an aspect; both axes a\n"
      "                               multiple of 32, ratio 1:4 to 4:1. Not capped to the\n"
@@ -1120,6 +1134,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   int bench_load = 0;
   bool saw_aspect = false;
   bool saw_resolution = false;
+  bool saw_out = false;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -1133,6 +1148,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.prompt = next("--prompt");
     } else if (arg == "--out") {
       req.out_path = next("--out");
+      saw_out = true;
     } else if (arg == "--frames") {
       req.num_frames = std::atoi(next("--frames"));
     } else if (arg == "--steps") {
@@ -1323,6 +1339,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                  "vidfab: --aspect and --resolution set the same thing; pass one or the other\n");
     return 2;
   }
+  if (!saw_out) req.out_path = timestamped_output_path();
   const vidfab::GeneratePlan plan = vidfab::resolve_plan(req);
 
   // After `resolve_plan`, so a canvas that is going to be rejected outright is
@@ -1342,6 +1359,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
   if (dry_run) return 0;
+
+  if (!saw_out) std::filesystem::create_directories(std::filesystem::path(req.out_path).parent_path());
 
   discover_generate_checkpoints(req, executable);
   ensure_generate_models(req, executable);

@@ -28,7 +28,9 @@ namespace vidfab {
 
 struct GenerateRequest {
   std::string prompt;
-  std::string out_path = "video.mp4";
+  // Empty means the CLI will choose output/video-<generation timestamp>.mp4.
+  // Library callers should set this explicitly before running the pipeline.
+  std::string out_path;
 
   // Only the ratio matters; the short edge is fixed at 768 and the area capped
   // at 768*1344, per the released model. Ignored when the canvas is named
