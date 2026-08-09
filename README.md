@@ -73,6 +73,13 @@ vidfab generate --prompt "integrated_multimodal_description: ..." \
                 --audio-vae      weights/vae/minimax_h3_audio_vae_fp32.safetensors \
                 --out cat.mp4
 
+# Without --out, videos go to output/video-YYYYMMDD-HHMMSS.mp4. Generate
+# several variations from one prompt with --count. A supplied seed increments
+# for each video (11, 12, 13 here); without --seed, every video gets a fresh
+# random seed. Multi-video filenames also receive -001, -002, ... suffixes.
+vidfab generate --prompt "three variations of a moonlit forest" \
+                --count 3 --seed 11
+
 # The quantisation of each checkpoint is read out of the file, so there is no
 # flag for it and the pair need not match. `generate.cmd` wraps all of this.
 
