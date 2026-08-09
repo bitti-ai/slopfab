@@ -333,6 +333,14 @@ std::string timestamped_output_path() {
   return (std::filesystem::path("output") / (std::string("video-") + stamp + ".mp4")).string();
 }
 
+std::string counted_output_path(const std::string& base, int index, int count) {
+  if (count == 1) return base;
+  const std::filesystem::path path(base);
+  char suffix[24];
+  std::snprintf(suffix, sizeof(suffix), "-%03d", index + 1);
+  return (path.parent_path() / (path.stem().string() + suffix + path.extension().string())).string();
+}
+
 std::filesystem::path find_weights_directory(const char* executable) {
   std::vector<std::filesystem::path> starts = {std::filesystem::current_path()};
   std::error_code ec;
@@ -447,6 +455,7 @@ const CommandHelp kCommands[] = {
      "  --steps <n>                  sigma grid points, n-1 evaluations (default 15)\n"
      "  --sampler euler|ab2          integrator (default euler)\n"
      "  --seed <n>                   noise seed (default random)\n"
+     "  --count <n>                  generate n videos; explicit seeds increment by one\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
      "  --dry-run                    resolve and print the plan, touch no weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
@@ -1122,7 +1131,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   req.canvas_height = 480;
   req.num_frames = 124;
   req.num_inference_steps = 15;
-  req.seed = random_seed();
+  req.seed = 0;
   bool dry_run = false;
   bool synthetic = false;
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
@@ -1135,6 +1144,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_aspect = false;
   bool saw_resolution = false;
   bool saw_out = false;
+  bool saw_seed = false;
+  int count = 1;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -1155,6 +1166,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.num_inference_steps = std::atoi(next("--steps"));
     } else if (arg == "--seed") {
       req.seed = std::strtoull(next("--seed"), nullptr, 10);
+      saw_seed = true;
+    } else if (arg == "--count") {
+      count = std::atoi(next("--count"));
     } else if (arg == "--sampler") {
       const std::string v = next("--sampler");
       if (v == "euler") {
@@ -1339,7 +1353,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                  "vidfab: --aspect and --resolution set the same thing; pass one or the other\n");
     return 2;
   }
+  if (count <= 0) {
+    std::fprintf(stderr, "vidfab: --count must be a positive integer\n");
+    return 2;
+  }
   if (!saw_out) req.out_path = timestamped_output_path();
+  const std::string base_out_path = req.out_path;
+  const uint64_t base_seed = req.seed;
   const vidfab::GeneratePlan plan = vidfab::resolve_plan(req);
 
   // After `resolve_plan`, so a canvas that is going to be rejected outright is
@@ -1357,8 +1377,15 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                  req.canvas_width, req.canvas_height,
                  static_cast<double>(req.canvas_width) * req.canvas_height / (1344.0 * 768.0));
   }
-  std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
-  if (dry_run) return 0;
+  if (dry_run) {
+    for (int generation = 0; generation < count; ++generation) {
+      req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
+      req.out_path = counted_output_path(base_out_path, generation, count);
+      if (generation > 0) std::printf("\n");
+      std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
+    }
+    return 0;
+  }
 
   if (!saw_out) std::filesystem::create_directories(std::filesystem::path(req.out_path).parent_path());
 
@@ -1421,14 +1448,21 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.sol_schedule = sol_schedule;
   options.init_latents_path = init_latents;
 
-  std::printf("\n");
-  const vidfab::RunResult run = vidfab::run_generate(req, plan, options);
-  if (!run.ok) {
-    std::fprintf(stderr, "\nvidfab: %s\n", run.message.c_str());
-    return 1;
+  for (int generation = 0; generation < count; ++generation) {
+    req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
+    req.out_path = counted_output_path(base_out_path, generation, count);
+    if (generation > 0) std::printf("\n");
+    std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
+    std::printf("\n");
+    const vidfab::RunResult run = vidfab::run_generate(req, plan, options);
+    if (!run.ok) {
+      std::fprintf(stderr, "\nvidfab: generation %d of %d: %s\n", generation + 1, count,
+                   run.message.c_str());
+      return 1;
+    }
+    std::printf("\ndone in %.2f s\n", run.seconds_denoise + run.seconds_video_decode +
+                                          run.seconds_audio_decode + run.seconds_output);
   }
-  std::printf("\ndone in %.2f s\n", run.seconds_denoise + run.seconds_video_decode +
-                                        run.seconds_audio_decode + run.seconds_output);
   return 0;
 #endif
 }
