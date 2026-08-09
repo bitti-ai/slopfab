@@ -5,7 +5,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <memory>
 #include <stdexcept>
 
 #include "vidfab/audio/wav.h"
@@ -85,13 +84,8 @@ std::vector<float> read_stat(const SafeTensors& st, const char* name, int expect
 struct ReusedGenerationModels {
   std::string conditioning_key;
   text::PromptEmbedding prompt;
-  std::string transformer_path;
-  std::unique_ptr<dit::Transformer> transformer;
 
   void clear() {
-    if (transformer) transformer->unload();
-    transformer.reset();
-    transformer_path.clear();
     conditioning_key.clear();
     prompt = {};
   }
@@ -348,38 +342,22 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
     {
       const Clock::time_point t0 = Clock::now();
-      std::unique_ptr<dit::Transformer> one_shot_model;
-      dit::Transformer* model = nullptr;
-      if (options.reuse_models && reuse.transformer &&
-          reuse.transformer_path == request.transformer_path) {
-        model = reuse.transformer.get();
-      } else {
-        SafeTensors dit_file;
-        dit_file.open(request.transformer_path);
-        auto loaded = std::make_unique<dit::Transformer>();
-        loaded->load(dit_file);
-        if (options.reuse_models) {
-          if (reuse.transformer) reuse.transformer->unload();
-          reuse.transformer_path = request.transformer_path;
-          reuse.transformer = std::move(loaded);
-          model = reuse.transformer.get();
-        } else {
-          one_shot_model = std::move(loaded);
-          model = one_shot_model.get();
-        }
-      }
+      SafeTensors dit_file;
+      dit_file.open(request.transformer_path);
+      dit::Transformer model;
+      model.load(dit_file);
       result.seconds_transformer_load = seconds_since(t0);
       if (options.verbose) {
         std::printf("transformer %.2f GiB on device, %d packed rows, loaded in %.2f s\n",
-                    static_cast<double>(model->weight_bytes()) / (1024.0 * 1024.0 * 1024.0),
+                    static_cast<double>(model.weight_bytes()) / (1024.0 * 1024.0 * 1024.0),
                     live.total_rows(), result.seconds_transformer_load);
       }
       const Clock::time_point t_prep = Clock::now();
       // Before prepare_sequence: that is where the per-query-tile key ranges are
       // built, and they depend on the band.
-      model->set_attention_band(options.attention_band);
-      model->set_attention_mode(options.attention_mode);
-      model->set_sol_schedule(options.sol_schedule);
+      model.set_attention_band(options.attention_band);
+      model.set_attention_mode(options.attention_mode);
+      model.set_sol_schedule(options.sol_schedule);
       if (options.attention_band > 0 && options.verbose) {
         std::printf("attention  frame band +/-%d latent frames (lossy, changes the sample)\n",
                     options.attention_band);
@@ -387,8 +365,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (options.verbose) {
         std::printf("attention  backend %s\n", attention_mode_name(options.attention_mode));
       }
-      model->prepare_text(prompt.data.data(), prompt.num_tokens);
-      model->prepare_sequence(live, idx, pos);
+      model.prepare_text(prompt.data.data(), prompt.num_tokens);
+      model.prepare_sequence(live, idx, pos);
       result.seconds_prepare = seconds_since(t_prep);
 
       sampler::FlowScheduler video_sched(12.0f);
@@ -442,7 +420,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         std::fflush(stdout);
       }
       const Clock::time_point loop_start = Clock::now();
-      const dit::DenoiseOutputs out = dit::denoise(*model, in, [&](int step, int steps) {
+      const dit::DenoiseOutputs out = dit::denoise(model, in, [&](int step, int steps) {
         if (options.verbose) {
           const double elapsed = seconds_since(loop_start);
           const double per_step = elapsed / static_cast<double>(step + 1);
@@ -468,7 +446,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
       video_rows = out.video_rows;
       audio_rows = out.audio_rows;
-      if (!options.reuse_models) model->unload();
+      // The video VAE follows immediately and can be ~9 GiB. Keeping the
+      // transformer resident here makes counted runs page GPU memory and can
+      // turn the next generation dramatically slower than the first.
+      model.unload();
 
       // Latent statistics, because a wrong level downstream is ambiguous
       // between "the decoder's gain is off" and "the latents never got

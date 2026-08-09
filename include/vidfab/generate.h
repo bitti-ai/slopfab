@@ -38,9 +38,9 @@ struct RunOptions {
   LatentSource source = LatentSource::kDenoise;
   bool verbose = true;
 
-  // Counted CLI runs share prompt conditioning and keep the transformer on the
-  // device between calls. The final call sets release_reused_models so the
-  // session does not retain GPU memory after the batch completes.
+  // Counted CLI runs share prompt conditioning. Transformer residency cannot
+  // cross the VAE phase: those weights together exceed practical VRAM on
+  // supported cards and trigger paging instead of a speedup.
   bool reuse_models = false;
   bool release_reused_models = false;
 
