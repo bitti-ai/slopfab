@@ -38,6 +38,12 @@ struct RunOptions {
   LatentSource source = LatentSource::kDenoise;
   bool verbose = true;
 
+  // Counted CLI runs share prompt conditioning and keep the transformer on the
+  // device between calls. The final call sets release_reused_models so the
+  // session does not retain GPU memory after the batch completes.
+  bool reuse_models = false;
+  bool release_reused_models = false;
+
   // Which integrator the two schedulers use. Both cost one forward pass per
   // step; the reason to change it is to be able to lower `num_inference_steps`
   // for the same quality, not to make a step cheaper. Defaults to the

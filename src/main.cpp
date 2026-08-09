@@ -1451,6 +1451,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   for (int generation = 0; generation < count; ++generation) {
     req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
     req.out_path = counted_output_path(base_out_path, generation, count);
+    options.reuse_models = count > 1;
+    options.release_reused_models = generation + 1 == count;
     if (generation > 0) std::printf("\n");
     std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
     std::printf("\n");
