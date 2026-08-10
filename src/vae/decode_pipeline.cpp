@@ -7,7 +7,7 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
-
+#include <thread>
 #include <vector>
 
 #include "vidfab/cuda/profile.h"
@@ -414,17 +414,48 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   video.data.assign(static_cast<size_t>(3) * final_frames * frame_pixels, 0.0f);
   s_alloc_out.stop();
 
+  // Roughly six gigabytes of traffic at the heavy config for two flops per
+  // element, so this is bandwidth and not arithmetic, and one core cannot
+  // saturate the memory system. Each (frame, channel) plane reads and writes a
+  // region no other plane touches, so the work is split into contiguous
+  // *static* ranges of planes: every output element is computed by exactly the
+  // same expression from exactly the same inputs as before, in the same order
+  // within a plane. Nothing is reduced and nothing is reordered across
+  // elements, so the result is bit-identical to the serial loop; a dynamic
+  // schedule would be too, but a static one keeps that obvious.
+  const size_t planes = static_cast<size_t>(final_frames) * 3;
   cuda::PhaseSpan s_out("pixel de-normalise");
-  for (int f = 0; f < final_frames; ++f) {
-    for (int c = 0; c < 3; ++c) {
+  const auto plane_range = [&](size_t begin, size_t end) {
+    for (size_t p = begin; p < end; ++p) {
+      const int f = static_cast<int>(p / 3);
+      const int c = static_cast<int>(p % 3);
       const float m = kImagenetMean[c];
       const float s = kImagenetStd[c];
-      const size_t src = (static_cast<size_t>(f) * 3 + c) * frame_pixels;
+      const size_t src = p * frame_pixels;
       const size_t dst = (static_cast<size_t>(c) * final_frames + f) * frame_pixels;
       for (size_t i = 0; i < frame_pixels; ++i) {
         video.data[dst + i] = std::min(1.0f, std::max(0.0f, assembled[src + i] * s + m));
       }
     }
+  };
+
+  unsigned workers = std::thread::hardware_concurrency();
+  if (workers == 0) workers = 1;
+  workers = static_cast<unsigned>(std::min<size_t>(workers, std::max<size_t>(planes, 1)));
+  if (workers <= 1) {
+    plane_range(0, planes);
+  } else {
+    std::vector<std::thread> pool;
+    pool.reserve(workers - 1);
+    const size_t share = (planes + workers - 1) / workers;
+    for (unsigned w = 1; w < workers; ++w) {
+      const size_t begin = std::min(planes, share * w);
+      const size_t end = std::min(planes, begin + share);
+      if (begin == end) break;
+      pool.emplace_back(plane_range, begin, end);
+    }
+    plane_range(0, std::min(planes, share));
+    for (std::thread& t : pool) t.join();
   }
   s_out.stop();
   return video;
