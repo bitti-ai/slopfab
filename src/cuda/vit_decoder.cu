@@ -424,13 +424,14 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
 }
 
 void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector<float>& out) {
-  std::vector<std::vector<float>> batch_out;
-  forward_windows(z, 1, T, H, W, batch_out);
+  std::vector<std::vector<float>> batch_out(1);
+  const size_t slot = 0;
+  forward_windows(z, 1, T, H, W, batch_out, &slot);
   out = std::move(batch_out.front());
 }
 
 void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
-                                 std::vector<std::vector<float>>& out) {
+                                 std::vector<std::vector<float>>& out, const size_t* slots) {
   Impl& d = *impl_;
   if (d.blocks.empty()) throw std::runtime_error("vae: decoder weights not loaded");
   if (batch <= 0) throw std::runtime_error("vae: window batch must be positive");
@@ -494,7 +495,6 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     d.cap_pixels = pixels;
   }
   const int patch_dim = cfg.patch_dim();
-  out.resize(static_cast<size_t>(batch));
   s_grow.stop();
   for (int doc = 0; doc < batch; ++doc) {
     const size_t token0 = static_cast<size_t>(doc) * seq;
@@ -519,8 +519,9 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     // so draining them here costs nothing and adds no synchronise of its own.
     cuda::PhaseProfiler::instance().flush_gpu();
     cuda::PhaseSpan s_copy("forward: output copy");
-    out[static_cast<size_t>(doc)].resize(pixels);
-    std::memcpy(out[static_cast<size_t>(doc)].data(), d.pinned_out.get(), pixels * sizeof(float));
+    std::vector<float>& dst = out[slots[static_cast<size_t>(doc)]];
+    dst.resize(pixels);
+    std::memcpy(dst.data(), d.pinned_out.get(), pixels * sizeof(float));
     s_copy.stop();
   }
 }

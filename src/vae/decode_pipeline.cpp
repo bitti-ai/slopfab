@@ -206,7 +206,8 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
 
   // Tile buffers are hoisted out of the chunk loop and reused: moving out of
   // them each chunk would leave them empty, so forward_window's resize() would
-  // reallocate and zero-fill the whole output on every single call.
+  // reallocate and zero-fill the whole output on every single call. The decoder
+  // writes into these slots directly for the same reason.
   std::vector<std::vector<float>> tiles(ytiles.starts.size() * xtiles.starts.size());
 
   for (int c = 0; c < num_chunks; ++c) {
@@ -275,11 +276,10 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
         }
       }
       s_gather.stop();
-      std::vector<std::vector<float>> batch_tiles;
-      forward_windows(z_batch.data(), static_cast<int>(ids.size()), window, th, tw, batch_tiles);
-      cuda::PhaseSpan s_take("tile handover");
-      for (size_t bi = 0; bi < ids.size(); ++bi) tiles[ids[bi]] = std::move(batch_tiles[bi]);
-      s_take.stop();
+      // Decoded straight into the hoisted slots, so each tile lands in the
+      // buffer it used last chunk and its resize is a no-op.
+      forward_windows(z_batch.data(), static_cast<int>(ids.size()), window, th, tw, tiles,
+                      ids.data());
     }
 
     // Merge tiles into the chunk's pixel buffer.

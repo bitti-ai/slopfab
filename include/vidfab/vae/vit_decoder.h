@@ -89,9 +89,16 @@ class ViTDecoder {
   // Runs equal-shape independent windows together through the token-wise
   // projections. Attention remains document-local: suffix tokens, RoPE and
   // softmax denominators are never shared between batch items. `z` is
-  // [batch, C, T, H, W]; `out` receives one pixel tensor per batch item.
+  // [batch, C, T, H, W].
+  //
+  // Batch item `b` is written to `out[slots[b]]`, so the caller can hand in a
+  // buffer it keeps across calls and have each window land back in the same
+  // slot every time. That matters: a slot that already has the right size is
+  // resized to itself and keeps its contents, whereas a fresh vector would be
+  // zero-filled before the copy overwrites every byte of it. `slots` must have
+  // `batch` entries and index within `out`, which the caller sizes.
   void forward_windows(const float* z, int batch, int T, int H, int W,
-                       std::vector<std::vector<float>>& out);
+                       std::vector<std::vector<float>>& out, const size_t* slots);
 
   // Full decode: latent de-normalisation, temporal chunking, spatial tiling,
   // cross-fade stitching and pixel de-normalisation.
