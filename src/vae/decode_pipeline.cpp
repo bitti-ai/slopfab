@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <memory>
 #include <stdexcept>
+
 #include <vector>
 
 #include "vidfab/cuda/profile.h"
@@ -187,10 +189,19 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   video.frames = num_chunks * frames_per_chunk + schedule.frame_overlap;
 
   // Assembled as [frames][3][H][W] first, then transposed to planar at the end.
+  // Deliberately not a vector: every element is written before it is read —
+  // the chunks' primary blocks tile it exactly and the final carry fills the
+  // tail — so value-initialising it would be a gigabytes-wide memset of values
+  // nothing ever looks at.
   cuda::PhaseSpan s_alloc("alloc assembled");
-  std::vector<float> assembled(static_cast<size_t>(video.frames) * 3 * frame_pixels);
+  const std::unique_ptr<float[]> assembled(
+      new float[static_cast<size_t>(video.frames) * 3 * frame_pixels]);
   s_alloc.stop();
-  std::vector<float> carry;  // trailing overlap frames from the previous chunk
+  // Trailing overlap frames from the previous chunk. Allocated up front and
+  // swapped with `next_carry` each chunk, so `have_carry` rather than
+  // emptiness is what says whether there is a previous chunk to fade against.
+  std::vector<float> carry(static_cast<size_t>(schedule.frame_overlap) * 3 * frame_pixels);
+  bool have_carry = false;
   int written = 0;
 
   const TileLayout ytiles =
@@ -210,6 +221,21 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   // writes into these slots directly for the same reason.
   std::vector<std::vector<float>> tiles(ytiles.starts.size() * xtiles.starts.size());
 
+  // Every per-chunk working buffer is hoisted for the same reason as `tiles`:
+  // each is written in full before it is read, so a fresh allocation per chunk
+  // would only buy a zero-fill of a few hundred megabytes that the next line
+  // overwrites. `chunk_pixels` is fully covered because the tiles' kept
+  // extents sum to exactly H_px by W_px, which is how split_tiles absorbs its
+  // surplus. `blend_lhs`/`blend_rhs` replace the by-value tile copy and the two
+  // `merged` temporaries: blend_axis writes every element of its output, so a
+  // scratch buffer of the right extent is all either side needs, and the raw
+  // neighbour tiles are read straight out of `tiles`.
+  const int out_frames = window * cfg.patch_t;  // 28
+  std::vector<float> chunk_pixels(static_cast<size_t>(3) * out_frames * frame_pixels);
+  std::vector<float> blend_lhs;
+  std::vector<float> blend_rhs;
+  std::vector<float> next_carry(static_cast<size_t>(schedule.frame_overlap) * 3 * frame_pixels);
+
   for (int c = 0; c < num_chunks; ++c) {
     const int t_start = c * chunk;
 
@@ -225,11 +251,6 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     }
 
     s_clip.stop();
-
-    const int out_frames = window * cfg.patch_t;  // 28
-    cuda::PhaseSpan s_cpx("alloc chunk_pixels");
-    std::vector<float> chunk_pixels(static_cast<size_t>(3) * out_frames * frame_pixels);
-    s_cpx.stop();
 
     // Spatial tiling. Tiles are decoded independently, then blended against
     // their raw (unblended) neighbours and trimmed.
@@ -294,25 +315,27 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
         const int keep_w =
             (tj + 1 < xtiles.starts.size()) ? tw - xtiles.overlaps[tj] : tw;
 
-        cuda::PhaseSpan s_tilecopy("tile copy for blend");
-        std::vector<float> tile = tiles[ti * xtiles.starts.size() + tj];
-        s_tilecopy.stop();
+        const std::vector<float>& raw = tiles[ti * xtiles.starts.size() + tj];
         const size_t plane = static_cast<size_t>(th) * tw;
 
+        // `src_tile` walks the scratch buffers as the blends are applied; with
+        // no neighbour on either axis it stays pointing at the raw tile and
+        // nothing is copied at all.
         cuda::PhaseSpan s_blend("tile blend");
+        const float* src_tile = raw.data();
         if (ti > 0) {
           const std::vector<float>& above = tiles[(ti - 1) * xtiles.starts.size() + tj];
-          std::vector<float> merged(tile.size());
-          blend_axis(above.data(), tile.data(), merged.data(), 3 * out_frames,
+          if (blend_lhs.size() < raw.size()) blend_lhs.resize(raw.size());
+          blend_axis(above.data(), src_tile, blend_lhs.data(), 3 * out_frames,
                      ytiles.overlaps[ti - 1], th, tw);
-          tile = std::move(merged);
+          src_tile = blend_lhs.data();
         }
         if (tj > 0) {
           const std::vector<float>& left = tiles[ti * xtiles.starts.size() + (tj - 1)];
-          std::vector<float> merged(tile.size());
-          blend_axis(left.data(), tile.data(), merged.data(), 3 * out_frames * th,
+          if (blend_rhs.size() < raw.size()) blend_rhs.resize(raw.size());
+          blend_axis(left.data(), src_tile, blend_rhs.data(), 3 * out_frames * th,
                      xtiles.overlaps[tj - 1], tw, 1);
-          tile = std::move(merged);
+          src_tile = blend_rhs.data();
         }
         s_blend.stop();
 
@@ -325,7 +348,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
             const size_t dst =
                 (static_cast<size_t>(plane_index) * 3 + channel) * frame_pixels +
                 static_cast<size_t>(y_cursor + y) * W_px + x_cursor;
-            std::copy_n(tile.begin() + static_cast<long long>(src), keep_w,
+            std::copy_n(src_tile + src, keep_w,
                         chunk_pixels.begin() + static_cast<long long>(dst));
           }
         }
@@ -336,15 +359,18 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     }
 
     // Split the 28 decoded frames: [3:20] is the primary block, [23:28] is
-    // carried into the next chunk as overlap.
+    // carried into the next chunk as overlap. The primary block is written
+    // straight to its final place in `assembled` and cross-faded in place: it
+    // used to be staged in a buffer of its own and copied on afterwards, which
+    // is an extra pass over every frame the decode produces, for values that
+    // are the same either way.
     const int pre = schedule.frame_pre_padding;
     const int overlap = schedule.frame_overlap;
     cuda::PhaseSpan s_split("chunk split");
-    std::vector<float> primary(static_cast<size_t>(frames_per_chunk) * 3 * frame_pixels);
+    float* primary = assembled.get() + static_cast<size_t>(written) * 3 * frame_pixels;
     std::copy_n(chunk_pixels.begin() + static_cast<long long>(pre * 3 * frame_pixels),
-                static_cast<size_t>(frames_per_chunk) * 3 * frame_pixels, primary.begin());
+                static_cast<size_t>(frames_per_chunk) * 3 * frame_pixels, primary);
 
-    std::vector<float> next_carry(static_cast<size_t>(overlap) * 3 * frame_pixels);
     std::copy_n(chunk_pixels.begin() +
                     static_cast<long long>((schedule.chunk_dec + pre) * 3 * frame_pixels),
                 static_cast<size_t>(overlap) * 3 * frame_pixels, next_carry.begin());
@@ -352,7 +378,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
 
     // Cross-fade the leading frames against the previous chunk's carry.
     cuda::PhaseSpan s_fade("chunk cross-fade");
-    if (!carry.empty()) {
+    if (have_carry) {
       for (int f = 0; f < overlap; ++f) {
         const float wb = static_cast<float>(f) / static_cast<float>(overlap);
         const float wa = 1.0f - wb;
@@ -362,22 +388,17 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
         }
       }
     }
-
     s_fade.stop();
 
-    cuda::PhaseSpan s_asm("chunk assemble");
-    std::copy_n(primary.begin(), primary.size(),
-                assembled.begin() + static_cast<long long>(static_cast<size_t>(written) * 3 *
-                                                           frame_pixels));
     written += frames_per_chunk;
-    carry = std::move(next_carry);
-    s_asm.stop();
+    // Swapped rather than moved, so both buffers keep their allocation.
+    carry.swap(next_carry);
+    have_carry = true;
   }
 
   // The final carry is appended verbatim.
   std::copy_n(carry.begin(), carry.size(),
-              assembled.begin() +
-                  static_cast<long long>(static_cast<size_t>(written) * 3 * frame_pixels));
+              assembled.get() + static_cast<size_t>(written) * 3 * frame_pixels);
   written += schedule.frame_overlap;
 
   // Drop frames that came only from repeated padding tokens.
@@ -389,8 +410,11 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   video.frames = final_frames;
 
   // (8) Pixel de-normalisation, then transpose to planar [3][T][H][W].
-  cuda::PhaseSpan s_out("pixel de-normalise");
+  cuda::PhaseSpan s_alloc_out("alloc output");
   video.data.assign(static_cast<size_t>(3) * final_frames * frame_pixels, 0.0f);
+  s_alloc_out.stop();
+
+  cuda::PhaseSpan s_out("pixel de-normalise");
   for (int f = 0; f < final_frames; ++f) {
     for (int c = 0; c < 3; ++c) {
       const float m = kImagenetMean[c];
