@@ -1640,11 +1640,23 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   float* fb = ws.alloc_n<float>(s.carve.fbuf);
 
   __nv_bfloat16* x = s.hidden.get();
-  // The three index sets partition [0, S) for a padless sequence, so the
-  // scatters below cover every row. Zeroing first is cheap insurance against a
-  // layout that ever stops being a permutation.
-  s.hidden.zero(s.stream.get());
-  prof.tick("hidden.zero", s.stream.get());
+  // Both index builders partition [0, S) exactly — `build_indices` by
+  // construction from the layout's half-open regions, `build_ref2va_packed_
+  // sequence` by walking one cursor from 0 to S — so the scatters below cover
+  // every row and the zero is dead stores. At the production geometry it is a
+  // 844 MB memset per step.
+  //
+  // Kept, behind VIDFAB_TENSOR_DIAG, as insurance against a layout that ever
+  // stops being a permutation. Note what it does and does not buy: `hidden` is
+  // allocated once in `prepare_sequence` and reused, so from the second step an
+  // uncovered row would hold the previous step's residual — finite, plausible,
+  // and invisible to a non-finite check. Zeroing makes such a row read as zeros
+  // instead, which is what a bisect can actually see. The safety here rests on
+  // the partition, not on the zero.
+  if (s.tensor_diag) {
+    s.hidden.zero(s.stream.get());
+    prof.tick("hidden.zero", s.stream.get());
+  }
 
   if (video_rows > 0) {
     s.d_video_rows.copy_from_host(video_latents, static_cast<size_t>(video_rows) * patch,
