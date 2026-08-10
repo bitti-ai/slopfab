@@ -169,6 +169,13 @@ class PhaseProfiler {
   void bank_pair(const char* label, cudaEvent_t begin, cudaEvent_t end);
   void flush_gpu();
 
+  // Device-wide free memory, sampled inside the timed region. Device-wide is
+  // the point: on a shared card a peer's allocation shows up here and nowhere
+  // else, so a run whose peak is far above the steady-state figure was
+  // contended and its timings are not comparable. Cheaper than the phase it
+  // sits in by three orders of magnitude.
+  void sample_memory();
+
   void report(std::FILE* out) const;
 
  private:
@@ -194,6 +201,10 @@ class PhaseProfiler {
   std::vector<cudaEvent_t> pool_;
   size_t pool_used_ = 0;
   std::vector<Pair> pending_;
+
+  size_t total_bytes_ = 0;
+  size_t peak_used_ = 0;
+  size_t min_free_ = 0;
 };
 
 // Scoped phase timer, the PhaseProfiler counterpart of HostSpan.

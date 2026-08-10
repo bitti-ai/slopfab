@@ -251,6 +251,17 @@ void PhaseProfiler::flush_gpu() {
   pool_used_ = 0;
 }
 
+void PhaseProfiler::sample_memory() {
+  if (!enabled_) return;
+  size_t free_bytes = 0;
+  size_t total_bytes = 0;
+  if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) return;
+  total_bytes_ = total_bytes;
+  const size_t used = total_bytes - free_bytes;
+  if (used > peak_used_) peak_used_ = used;
+  if (min_free_ == 0 || free_bytes < min_free_) min_free_ = free_bytes;
+}
+
 void PhaseProfiler::report(std::FILE* out) const {
   if (!enabled_ || total_ms_ == 0.0) return;
 
@@ -291,6 +302,15 @@ void PhaseProfiler::report(std::FILE* out) const {
   if (any_gpu) {
     std::fprintf(out, "%-24s %12.1f  (%.2f%%)  card with nothing to run\n", "  host-only time",
                  total_ms_ - gpu_sum, 100.0 * (total_ms_ - gpu_sum) / total_ms_);
+  }
+
+  // Sampled device-wide, so this is the contamination check: a peak well above
+  // what this process alone needs means another process was on the card and
+  // the timings above are not comparable with an uncontended run.
+  if (total_bytes_ != 0) {
+    std::fprintf(out, "\n%-24s %.3f GiB of %.3f GiB (device-wide, all processes)\n", "peak VRAM",
+                 to_gib(peak_used_), to_gib(total_bytes_));
+    std::fprintf(out, "%-24s %.3f GiB\n", "min free VRAM", to_gib(min_free_));
   }
   std::fprintf(out, "--- end VIDFAB_PROFILE ---\n");
   std::fflush(out);

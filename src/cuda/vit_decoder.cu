@@ -518,6 +518,7 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     // Every event pair recorded above is now readable, and the stream is idle,
     // so draining them here costs nothing and adds no synchronise of its own.
     cuda::PhaseProfiler::instance().flush_gpu();
+    cuda::PhaseProfiler::instance().sample_memory();
     cuda::PhaseSpan s_copy("forward: output copy");
     std::vector<float>& dst = out[slots[static_cast<size_t>(doc)]];
     dst.resize(pixels);
