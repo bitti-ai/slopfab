@@ -410,8 +410,11 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   video.frames = final_frames;
 
   // (8) Pixel de-normalisation, then transpose to planar [3][T][H][W].
+  // resize, not assign(n, 0): PixelBuffer default-initialises, and the loop
+  // below writes every element of it. Zeroing first was a full-width memset of
+  // the whole decoded video for nothing.
   cuda::PhaseSpan s_alloc_out("alloc output");
-  video.data.assign(static_cast<size_t>(3) * final_frames * frame_pixels, 0.0f);
+  video.data.resize(static_cast<size_t>(3) * final_frames * frame_pixels);
   s_alloc_out.stop();
 
   // Roughly six gigabytes of traffic at the heavy config for two flops per
@@ -439,23 +442,46 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     }
   };
 
+  // Thread count is capped well below the core count on purpose. The pass is
+  // DRAM-bandwidth-bound, and the memory system saturates around eight streams
+  // on this class of machine, so extra workers buy nothing and SMT siblings
+  // actively contend. Spawning is not free either — a create/join pair costs
+  // tens of microseconds, so a wide pool is a fixed tax on a phase that at the
+  // small end only runs for tens of milliseconds. Below a threshold the tax
+  // exceeds the saving outright and the serial path is simply faster.
+  constexpr unsigned kMaxWorkers = 8;
+  constexpr size_t kMinParallelBytes = 32u << 20;  // 32 MiB of output
+
+  const size_t out_bytes = planes * frame_pixels * sizeof(float);
   unsigned workers = std::thread::hardware_concurrency();
   if (workers == 0) workers = 1;
+  workers = std::min(workers, kMaxWorkers);
   workers = static_cast<unsigned>(std::min<size_t>(workers, std::max<size_t>(planes, 1)));
+  if (out_bytes < kMinParallelBytes) workers = 1;
+
   if (workers <= 1) {
     plane_range(0, planes);
   } else {
-    std::vector<std::thread> pool;
-    pool.reserve(workers - 1);
+    // Joins in the destructor as well as on the happy path: if `emplace_back`
+    // throws part-way through, a plain vector of threads would run ~thread on
+    // still-joinable threads and call std::terminate.
+    struct JoiningPool {
+      std::vector<std::thread> threads;
+      ~JoiningPool() {
+        for (std::thread& t : threads) {
+          if (t.joinable()) t.join();
+        }
+      }
+    } pool;
+    pool.threads.reserve(workers - 1);
     const size_t share = (planes + workers - 1) / workers;
     for (unsigned w = 1; w < workers; ++w) {
       const size_t begin = std::min(planes, share * w);
       const size_t end = std::min(planes, begin + share);
       if (begin == end) break;
-      pool.emplace_back(plane_range, begin, end);
+      pool.threads.emplace_back(plane_range, begin, end);
     }
     plane_range(0, std::min(planes, share));
-    for (std::thread& t : pool) t.join();
   }
   s_out.stop();
   return video;

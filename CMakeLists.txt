@@ -86,6 +86,10 @@ if(VIDFAB_ENABLE_CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     find_package(CUDAToolkit REQUIRED)
+    # The VAE decode's final de-normalise is the project's first std::thread
+    # use. MSVC needs nothing for it, but every other toolchain wants -pthread
+    # both to compile and to link, and without this the non-MSVC build breaks.
+    find_package(Threads REQUIRED)
     message(STATUS "vidfab: CUDA ${CMAKE_CUDA_COMPILER_VERSION}, arch ${CMAKE_CUDA_ARCHITECTURES}")
 
     add_library(vidfab_cuda STATIC
@@ -120,7 +124,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/text/encoder.cpp
     )
     target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas CUDA::cuda_driver)
+    target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas CUDA::cuda_driver Threads::Threads)
     # Whole-program compilation: no device code crosses translation units, and
     # -rdc=true would otherwise require an explicit device-link step.
     set_target_properties(vidfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
