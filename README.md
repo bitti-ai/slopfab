@@ -872,8 +872,9 @@ one-tile pipeline replaced a working schedule with a rigid one.
 
 ### Frame-banded attention — `--attn-band`, off by default
 
-The generator exposes `--attention none|flash2|sage2|sol|sol-experimental`. `flash2` is the default
-exact BF16 fused path; `none` is the unfused, memory-bounded cuBLAS reference.
+The generator exposes `--attention none|flash2|sage2|sol|sol-experimental`.
+`sage2` is the default; `flash2` is the exact BF16 fused path and `none` is the
+unfused, memory-bounded cuBLAS reference.
 `sage2` is an explicitly lossy SageAttention2.2 path: smooth-K, per-warp INT8
 Q/K, per-channel FP8 E4M3 V, and the upstream INT8-QK/FP8-PV tensor-core
 kernel. Its transient packed tensors and scales are included in workspace
