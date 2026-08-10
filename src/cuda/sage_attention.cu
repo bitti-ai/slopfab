@@ -201,6 +201,32 @@ void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* o
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
+// Compute capability, cached for the process. A device's capability cannot
+// change, but `cudaGetDeviceProperties` is a host driver round-trip, and
+// `sage2_supported` is on the per-call attention path — one round-trip per
+// block per step, 2500 in a fifty-step generation. A device whose query fails
+// reports 0, which is the same "not supported" the direct call gave.
+int compute_capability(int device) {
+  // Only a successful query is cached. The table latches for the process, so
+  // caching a failure would turn one transient driver error into "this card
+  // does not support sage2" for the rest of the run — a failed query is
+  // retried, and only the answer is permanent.
+  //
+  // A fixed table rather than a growable one on purpose: every write stores the
+  // same value the query always returns for that device, and there is no
+  // reallocation, so two threads racing here cannot observe a torn or moved
+  // entry. A device index past the end simply pays the driver call each time.
+  constexpr int kMaxCached = 64;
+  static int caps[kMaxCached] = {0};
+  if (device < 0) return 0;
+  if (device < kMaxCached && caps[device] != 0) return caps[device];
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) return 0;
+  const int cap = prop.major * 10 + prop.minor;
+  if (device < kMaxCached) caps[device] = cap;
+  return cap;
+}
+
 }  // namespace
 
 bool sage2_supported(const AttentionConfig& cfg, int device, const char** reason) {
@@ -210,11 +236,7 @@ bool sage2_supported(const AttentionConfig& cfg, int device, const char** reason
   const char* why = nullptr;
   if (cfg.head_dim != 64 && cfg.head_dim != 128) why = kDim;
   else if (cfg.band_ranges != nullptr) why = kBand;
-  else {
-    cudaDeviceProp prop{};
-    if (cudaGetDeviceProperties(&prop, device) != cudaSuccess || prop.major * 10 + prop.minor < 89)
-      why = kArch;
-  }
+  else if (compute_capability(device) < 89) why = kArch;
   if (reason) *reason = why;
   return why == nullptr;
 }
