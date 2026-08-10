@@ -155,8 +155,15 @@ size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType comput
 //   - fp32 weight at fp32 compute: the split counts a bf16 copy that nothing
 //     carves. Harmless over-reservation, kept so the dense side never
 //     under-states what a non-bf16 format needs.
-// Everywhere else the two sides sum to it. Size an arena from the sum, never
-// from one side alone.
+//   - nvfp4 weight at bf16 compute with the native path available: that
+//     function takes `max(dense + act, nvfp4_ws)` where the split takes
+//     `dense + max(act, nvfp4_ws)`, which is strictly larger whenever
+//     `nvfp4_ws` exceeds `act` — the normal case, since `act` is zero for a
+//     transformer nvfp4 weight. Necessary rather than wasteful:
+//     `linear_dense_weight_bytes` is not told whether the native path is on,
+//     so it must reserve the dense copy either way.
+// Elsewhere the two sides sum to it, and the split is never smaller. Size an
+// arena from the sum, never from one side alone.
 size_t linear_dense_weight_bytes(const QuantWeight& w);
 size_t linear_activation_workspace_bytes(const QuantWeight& w, int rows, ComputeType compute);
 
