@@ -33,15 +33,28 @@ using cuda::DeviceBuffer;
 
 // Staging for the weight upload path. fp16 tensors go across PCIe as fp16 and
 // are widened on the device: half the bytes on the bus, and no scalar
-// conversion loop on the host. A pinned bounce buffer is used because the
-// safetensors mapping is pageable, and a pageable async copy silently
-// synchronises.
+// conversion loop on the host.
+//
+// When the caller managed to page-lock the mapping, the fp16 bytes are read
+// straight out of it. Otherwise a pinned bounce buffer is used, because a
+// pageable async copy silently synchronises.
 class WeightUploader {
  public:
-  explicit WeightUploader(cudaStream_t stream) : stream_(stream) {
+  WeightUploader(cudaStream_t stream, const cuda::RegisteredMapping& mapping)
+      : stream_(stream), mapping_(mapping) {
     staging_.allocate(kStagingElems);
-    raw_.allocate(kStagingElems * sizeof(uint16_t));
+    // `raw_`, the pinned bounce buffer, is allocated lazily: it only exists
+    // for the path where the source is not page-locked, and when registration
+    // succeeds that path is never taken.
   }
+
+  // The direct path leaves DMAs in flight out of the caller's mapping, which
+  // the caller is about to unregister. It synchronises before that happens;
+  // this is here so the ordering stays safe if it ever stops.
+  ~WeightUploader() { cudaStreamSynchronize(stream_); }
+
+  WeightUploader(const WeightUploader&) = delete;
+  WeightUploader& operator=(const WeightUploader&) = delete;
 
   DeviceBuffer<float> upload(const SafeTensors& ckpt, const std::string& name,
                              size_t expected_elems) {
@@ -56,16 +69,32 @@ class WeightUploader {
     if (view.dtype == DType::kF16) {
       // Chunked so a single tensor larger than the staging buffer still works.
       const auto* src = static_cast<const uint8_t*>(view.data);
+      const bool direct = mapping_.contains(view.data, count * sizeof(uint16_t));
       size_t done = 0;
       while (done < count) {
         const size_t n = std::min(count - done, kStagingElems);
-        std::memcpy(raw_.get(), src + done * sizeof(uint16_t), n * sizeof(uint16_t));
-        VIDFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), raw_.get(), n * sizeof(uint16_t),
-                                          cudaMemcpyHostToDevice, stream_));
-        cuda::launch_widen_f16(staging_.get(), out.get() + done, n, stream_);
-        // The staging buffer is reused next iteration, so the copy and widen
-        // must complete before the next memcpy overwrites it.
-        VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
+        if (direct) {
+          // Straight out of the page-locked mapping: no host copy, and no
+          // synchronise either. The only reused buffer left is `staging_`,
+          // which lives on the device, so stream order already guarantees the
+          // widen of one hop finishes before the next hop overwrites it.
+          VIDFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), src + done * sizeof(uint16_t),
+                                            n * sizeof(uint16_t), cudaMemcpyHostToDevice,
+                                            stream_));
+          cuda::launch_widen_f16(staging_.get(), out.get() + done, n, stream_);
+        } else {
+          // Allocated on first use rather than in the constructor, so the
+          // common registered path never pays for 128 MiB of pinned memory it
+          // will not touch.
+          if (raw_.get() == nullptr) raw_.allocate(kStagingElems * sizeof(uint16_t));
+          std::memcpy(raw_.get(), src + done * sizeof(uint16_t), n * sizeof(uint16_t));
+          VIDFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), raw_.get(), n * sizeof(uint16_t),
+                                            cudaMemcpyHostToDevice, stream_));
+          cuda::launch_widen_f16(staging_.get(), out.get() + done, n, stream_);
+          // The pinned buffer is reused next iteration, so the copy and widen
+          // must complete before the next memcpy overwrites it.
+          VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
         done += n;
       }
     } else {
@@ -80,6 +109,7 @@ class WeightUploader {
   // 64 Mi elements = 128 MiB of fp16 per hop.
   static constexpr size_t kStagingElems = 64ull << 20;
   cudaStream_t stream_;
+  const cuda::RegisteredMapping& mapping_;
   DeviceBuffer<uint16_t> staging_;
   cuda::PinnedBuffer<uint8_t> raw_;
 };
@@ -367,7 +397,17 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
     throw std::runtime_error("vae: heads * head_dim must equal dim");
   }
 
-  WeightUploader uploader(d.stream.get());
+  // Page-locks the checkpoint mapping for the whole of the load below, and is
+  // declared here rather than inside the uploader because the uploader is not
+  // its main beneficiary. Every large tensor — the qkv, out, ff and embedding
+  // weights, which are nearly all of the 4.85 GB — is read by
+  // `F16Weight::load`, which copies straight out of `view.data`. From a
+  // pageable mapping that copy is synchronous and staged through the driver at
+  // about 4.5 GB/s; out of a registered one it is a real DMA at about 44 GB/s.
+  // Destroyed after `uploader` and after the synchronise at the end of this
+  // function, so nothing is still reading the mapping when it is unregistered.
+  const cuda::RegisteredMapping mapping(ckpt.mapping_base(), ckpt.file_size());
+  WeightUploader uploader(d.stream.get(), mapping);
 
   d.x_embed_w.load(ckpt, "decoder.x_embedder.weight", static_cast<size_t>(dim) * ch,
                    d.stream.get(), "video vae");
