@@ -186,6 +186,146 @@ void StepProfiler::report(std::FILE* out) const {
   std::fflush(out);
 }
 
+PhaseProfiler::PhaseProfiler() {
+  const char* v = std::getenv("VIDFAB_PROFILE");
+  enabled_ = v != nullptr && v[0] == '1';
+}
+
+PhaseProfiler& PhaseProfiler::instance() {
+  static PhaseProfiler p;
+  return p;
+}
+
+PhaseProfiler::Total& PhaseProfiler::slot(const char* label, bool gpu) {
+  for (Total& t : totals_) {
+    if (t.label == label && t.gpu == gpu) return t;
+  }
+  Total fresh;
+  fresh.label = label;
+  fresh.gpu = gpu;
+  totals_.push_back(std::move(fresh));
+  return totals_.back();
+}
+
+void PhaseProfiler::add(const char* label, double ms) {
+  if (!enabled_) return;
+  Total& t = slot(label, /*gpu=*/false);
+  t.ms += ms;
+  t.count += 1;
+}
+
+void PhaseProfiler::add_gpu(const char* label, double ms) {
+  if (!enabled_) return;
+  Total& t = slot(label, /*gpu=*/true);
+  t.ms += ms;
+  t.count += 1;
+}
+
+void PhaseProfiler::add_total(const char* stage, double ms) {
+  if (!enabled_) return;
+  stage_ = stage;
+  total_ms_ += ms;
+}
+
+cudaEvent_t PhaseProfiler::lease_event() {
+  if (pool_used_ == pool_.size()) {
+    cudaEvent_t e = nullptr;
+    VIDFAB_CUDA_CHECK(cudaEventCreate(&e));
+    pool_.push_back(e);
+  }
+  return pool_[pool_used_++];
+}
+
+void PhaseProfiler::bank_pair(const char* label, cudaEvent_t begin, cudaEvent_t end) {
+  pending_.push_back(Pair{label, begin, end});
+}
+
+void PhaseProfiler::flush_gpu() {
+  if (!enabled_ || pending_.empty()) return;
+  for (const Pair& p : pending_) {
+    float ms = 0.0f;
+    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, p.begin, p.end));
+    add_gpu(p.label, ms);
+  }
+  pending_.clear();
+  pool_used_ = 0;
+}
+
+void PhaseProfiler::report(std::FILE* out) const {
+  if (!enabled_ || total_ms_ == 0.0) return;
+
+  std::fprintf(out, "\n--- VIDFAB_PROFILE: %s ---\n", stage_.c_str());
+  std::fprintf(out, "%-24s %12s %8s %10s\n", "phase", "ms", "%stage", "calls");
+
+  double host_sum = 0.0;
+  for (const Total& t : totals_) {
+    if (t.gpu) continue;
+    host_sum += t.ms;
+    std::fprintf(out, "%-24s %12.1f %7.2f%% %10lld\n", t.label.c_str(), t.ms,
+                 100.0 * t.ms / total_ms_, t.count);
+  }
+  std::fprintf(out, "%-24s %12.1f %7.2f%%\n", "= accounted", host_sum,
+               100.0 * host_sum / total_ms_);
+
+  // Device rows sit inside the host spans above rather than beside them, so
+  // they are printed apart and their percentage is of the same stage total:
+  // it reads as "the card was busy for this fraction of the stage".
+  bool any_gpu = false;
+  double gpu_sum = 0.0;
+  for (const Total& t : totals_) {
+    if (!t.gpu) continue;
+    if (!any_gpu) {
+      std::fprintf(out, "%-24s\n", "-- device (inside the above) --");
+      any_gpu = true;
+    }
+    gpu_sum += t.ms;
+    std::fprintf(out, "%-24s %12.1f %7.2f%% %10lld\n", t.label.c_str(), t.ms,
+                 100.0 * t.ms / total_ms_, t.count);
+  }
+  if (any_gpu) {
+    std::fprintf(out, "%-24s %12.1f %7.2f%%\n", "= device busy", gpu_sum,
+                 100.0 * gpu_sum / total_ms_);
+  }
+
+  std::fprintf(out, "\n%-24s %12.1f\n", "stage wall clock", total_ms_);
+  if (any_gpu) {
+    std::fprintf(out, "%-24s %12.1f  (%.2f%%)  card with nothing to run\n", "  host-only time",
+                 total_ms_ - gpu_sum, 100.0 * (total_ms_ - gpu_sum) / total_ms_);
+  }
+  std::fprintf(out, "--- end VIDFAB_PROFILE ---\n");
+  std::fflush(out);
+}
+
+PhaseSpan::PhaseSpan(const char* label) : label_(label) {
+  if (!PhaseProfiler::instance().enabled()) return;
+  t0_ = now_ns();
+  running_ = true;
+}
+
+void PhaseSpan::stop() {
+  if (!running_) return;
+  running_ = false;
+  PhaseProfiler::instance().add(label_, static_cast<double>(now_ns() - t0_) / 1.0e6);
+}
+
+PhaseSpan::~PhaseSpan() { stop(); }
+
+PhaseGpuSpan::PhaseGpuSpan(const char* label, cudaStream_t stream)
+    : label_(label), stream_(stream) {
+  PhaseProfiler& p = PhaseProfiler::instance();
+  if (!p.enabled()) return;
+  begin_ = p.lease_event();
+  VIDFAB_CUDA_CHECK(cudaEventRecord(begin_, stream_));
+}
+
+PhaseGpuSpan::~PhaseGpuSpan() {
+  PhaseProfiler& p = PhaseProfiler::instance();
+  if (!p.enabled() || begin_ == nullptr) return;
+  end_ = p.lease_event();
+  VIDFAB_CUDA_CHECK(cudaEventRecord(end_, stream_));
+  p.bank_pair(label_, begin_, end_);
+}
+
 HostSpan::HostSpan(const char* label) : label_(label) {
   if (!StepProfiler::instance().enabled()) return;
   t0_ = now_ns();

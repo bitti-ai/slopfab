@@ -523,10 +523,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
     // Rows back to a latent volume, then de-normalise per channel. The
     // multiply-then-add order is the reference's (decoders.py:107).
+    cuda::PhaseSpan s_unpatch("unpatchify latents");
     std::vector<float> latents(static_cast<size_t>(24) * layout.num_latent_frames *
                                layout.latent_height * layout.latent_width);
     dit::unpatchify_video(video_rows.data(), layout, latents.data());
+    s_unpatch.stop();
 
+    cuda::PhaseSpan s_load("vae weight load");
     SafeTensors vae_file;
     vae_file.open(request.video_vae_path);
     const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
@@ -534,6 +537,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
     vae::ViTDecoder decoder;
     decoder.load(vae_file);
+    s_load.stop();
     if (options.verbose) {
       std::printf("video vae   %.2f GiB on device\n",
                   static_cast<double>(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
@@ -545,6 +549,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       std::printf("video       %d frames of %dx%d in %.2f s\n", video.frames, video.width,
                   video.height, result.seconds_video_decode);
     }
+    // The spans above tile this block, so the elapsed time is their denominator.
+    cuda::PhaseProfiler::instance().add_total("video vae stage",
+                                              result.seconds_video_decode * 1000.0);
+    cuda::PhaseProfiler::instance().report(stdout);
   }
 
   // --- audio ----------------------------------------------------------------

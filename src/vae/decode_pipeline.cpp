@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "vidfab/cuda/profile.h"
 #include "vidfab/vae/vit_decoder.h"
 
 namespace vidfab::vae {
@@ -122,6 +123,8 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
 
   const size_t voxels_per_frame = static_cast<size_t>(H_lat) * W_lat;
 
+  cuda::PhaseSpan s_denorm("latent de-normalise");
+
   // (1) De-normalise: z = z_norm * std + mean, per channel. Done in fp32 from
   // the config literals rather than the fp16 tensors in the checkpoint.
   std::vector<float> z(static_cast<size_t>(ch) * T_lat * voxels_per_frame);
@@ -164,6 +167,8 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     pseudo_total += pad_tokens;
   }
 
+  s_denorm.stop();
+
   const int num_chunks = pseudo_total / chunk - 1;
   if (num_chunks <= 0) {
     throw std::runtime_error("vae: latent is too short to decode (need at least " +
@@ -182,7 +187,9 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   video.frames = num_chunks * frames_per_chunk + schedule.frame_overlap;
 
   // Assembled as [frames][3][H][W] first, then transposed to planar at the end.
+  cuda::PhaseSpan s_alloc("alloc assembled");
   std::vector<float> assembled(static_cast<size_t>(video.frames) * 3 * frame_pixels);
+  s_alloc.stop();
   std::vector<float> carry;  // trailing overlap frames from the previous chunk
   int written = 0;
 
@@ -206,6 +213,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     const int t_start = c * chunk;
 
     // Gather this chunk's latent window.
+    cuda::PhaseSpan s_clip("chunk latent gather");
     for (int ci = 0; ci < ch; ++ci) {
       const size_t src = static_cast<size_t>(ci) * T_padded * voxels_per_frame +
                          static_cast<size_t>(t_start) * voxels_per_frame;
@@ -215,8 +223,12 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
                   clip.begin() + static_cast<long long>(dst));
     }
 
+    s_clip.stop();
+
     const int out_frames = window * cfg.patch_t;  // 28
+    cuda::PhaseSpan s_cpx("alloc chunk_pixels");
     std::vector<float> chunk_pixels(static_cast<size_t>(3) * out_frames * frame_pixels);
+    s_cpx.stop();
 
     // Spatial tiling. Tiles are decoded independently, then blended against
     // their raw (unblended) neighbours and trimmed.
@@ -241,6 +253,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
       const int th = shape.first;
       const int tw = shape.second;
       const size_t tile_voxels = static_cast<size_t>(window) * th * tw;
+      cuda::PhaseSpan s_gather("tile latent gather");
       std::vector<float> z_batch(static_cast<size_t>(ids.size()) * ch * tile_voxels);
       for (size_t bi = 0; bi < ids.size(); ++bi) {
         const size_t id = ids[bi];
@@ -261,9 +274,12 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
           }
         }
       }
+      s_gather.stop();
       std::vector<std::vector<float>> batch_tiles;
       forward_windows(z_batch.data(), static_cast<int>(ids.size()), window, th, tw, batch_tiles);
+      cuda::PhaseSpan s_take("tile handover");
       for (size_t bi = 0; bi < ids.size(); ++bi) tiles[ids[bi]] = std::move(batch_tiles[bi]);
+      s_take.stop();
     }
 
     // Merge tiles into the chunk's pixel buffer.
@@ -278,9 +294,12 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
         const int keep_w =
             (tj + 1 < xtiles.starts.size()) ? tw - xtiles.overlaps[tj] : tw;
 
+        cuda::PhaseSpan s_tilecopy("tile copy for blend");
         std::vector<float> tile = tiles[ti * xtiles.starts.size() + tj];
+        s_tilecopy.stop();
         const size_t plane = static_cast<size_t>(th) * tw;
 
+        cuda::PhaseSpan s_blend("tile blend");
         if (ti > 0) {
           const std::vector<float>& above = tiles[(ti - 1) * xtiles.starts.size() + tj];
           std::vector<float> merged(tile.size());
@@ -295,7 +314,9 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
                      xtiles.overlaps[tj - 1], tw, 1);
           tile = std::move(merged);
         }
+        s_blend.stop();
 
+        cuda::PhaseSpan s_stitch("tile stitch");
         for (int p = 0; p < 3 * out_frames; ++p) {
           for (int y = 0; y < keep_h; ++y) {
             const size_t src = static_cast<size_t>(p) * plane + static_cast<size_t>(y) * tw;
@@ -308,6 +329,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
                         chunk_pixels.begin() + static_cast<long long>(dst));
           }
         }
+        s_stitch.stop();
         x_cursor += keep_w;
       }
       y_cursor += keep_h;
@@ -317,6 +339,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     // carried into the next chunk as overlap.
     const int pre = schedule.frame_pre_padding;
     const int overlap = schedule.frame_overlap;
+    cuda::PhaseSpan s_split("chunk split");
     std::vector<float> primary(static_cast<size_t>(frames_per_chunk) * 3 * frame_pixels);
     std::copy_n(chunk_pixels.begin() + static_cast<long long>(pre * 3 * frame_pixels),
                 static_cast<size_t>(frames_per_chunk) * 3 * frame_pixels, primary.begin());
@@ -325,8 +348,10 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     std::copy_n(chunk_pixels.begin() +
                     static_cast<long long>((schedule.chunk_dec + pre) * 3 * frame_pixels),
                 static_cast<size_t>(overlap) * 3 * frame_pixels, next_carry.begin());
+    s_split.stop();
 
     // Cross-fade the leading frames against the previous chunk's carry.
+    cuda::PhaseSpan s_fade("chunk cross-fade");
     if (!carry.empty()) {
       for (int f = 0; f < overlap; ++f) {
         const float wb = static_cast<float>(f) / static_cast<float>(overlap);
@@ -338,11 +363,15 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
       }
     }
 
+    s_fade.stop();
+
+    cuda::PhaseSpan s_asm("chunk assemble");
     std::copy_n(primary.begin(), primary.size(),
                 assembled.begin() + static_cast<long long>(static_cast<size_t>(written) * 3 *
                                                            frame_pixels));
     written += frames_per_chunk;
     carry = std::move(next_carry);
+    s_asm.stop();
   }
 
   // The final carry is appended verbatim.
@@ -360,6 +389,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   video.frames = final_frames;
 
   // (8) Pixel de-normalisation, then transpose to planar [3][T][H][W].
+  cuda::PhaseSpan s_out("pixel de-normalise");
   video.data.assign(static_cast<size_t>(3) * final_frames * frame_pixels, 0.0f);
   for (int f = 0; f < final_frames; ++f) {
     for (int c = 0; c < 3; ++c) {
@@ -372,6 +402,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
       }
     }
   }
+  s_out.stop();
   return video;
 }
 

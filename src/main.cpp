@@ -41,6 +41,7 @@
 #include <chrono>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/profile.h"
 #include "vidfab/dit/transformer.h"
 #include "vidfab/generate.h"
 #include "vidfab/vae/vit_decoder.h"
@@ -1028,7 +1029,11 @@ int cmd_decode(int argc, char** argv) {
     std::printf("%s %d frames of %dx%d in %.3f s (%.2f fps)\n", label, video.frames, video.width,
                 video.height, seconds,
                 seconds > 0 ? static_cast<double>(video.frames) / seconds : 0.0);
+    // The phase spans inside `decode` tile exactly this interval, so it is
+    // their denominator. With --repeat both sides accumulate together.
+    vidfab::cuda::PhaseProfiler::instance().add_total("video vae decode", seconds * 1000.0);
   }
+  vidfab::cuda::PhaseProfiler::instance().report(stdout);
 
   // Report basic statistics: a decode that silently produced NaN or a constant
   // image should be visible here without opening the file.

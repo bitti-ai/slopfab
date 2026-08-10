@@ -13,6 +13,7 @@
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nf4_weight.cuh"
+#include "vidfab/cuda/profile.h"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/nf4.h"
 #include "vidfab/tensor_convert.h"
@@ -441,13 +442,18 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   const int dim = cfg.dim;
   cudaStream_t s = d.stream.get();
 
+  cuda::PhaseSpan s_prep("forward: prepare");
   d.ensure_scratch(seq, num_patches, batch);
   d.build_rope(T, H, W, seq, num_patches);
+  s_prep.stop();
 
   // Latent arrives channel-first [C, T, H, W]; the ViT wants one token per
   // voxel, channel-last, in (t, h, w) row-major order. The transpose runs on
   // the device — it used to round-trip the same bytes back to the host.
   const size_t voxels = static_cast<size_t>(num_patches);
+  {
+  cuda::PhaseSpan s_embed("forward: issue embed");
+  cuda::PhaseGpuSpan g_embed("forward: embed", s);
   d.d_latent.copy_from_host(z, static_cast<size_t>(batch) * ch * voxels, s);
   for (int doc = 0; doc < batch; ++doc) {
     const size_t latent0 = static_cast<size_t>(doc) * ch * voxels;
@@ -470,12 +476,18 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
         d.d_tokens.get() + (token0 + num_patches + cfg.num_register) * dim, 0,
         static_cast<size_t>(dim) * sizeof(float), s));
   }
+  }
 
+  {
+  cuda::PhaseSpan s_blocks("forward: issue blocks");
+  cuda::PhaseGpuSpan g_blocks("forward: blocks", s);
   for (int i = 0; i < cfg.num_layers; ++i)
     d.run_block(d.blocks[i], seq, num_patches, batch);
+  }
 
   const size_t pixels = static_cast<size_t>(cfg.out_channels) * (T * cfg.patch_t) *
                         (H * cfg.patch) * (W * cfg.patch);
+  cuda::PhaseSpan s_grow("forward: grow output");
   if (pixels > d.cap_pixels) {
     d.d_pixels.allocate(pixels);
     d.pinned_out.allocate(pixels);
@@ -483,21 +495,33 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   }
   const int patch_dim = cfg.patch_dim();
   out.resize(static_cast<size_t>(batch));
+  s_grow.stop();
   for (int doc = 0; doc < batch; ++doc) {
     const size_t token0 = static_cast<size_t>(doc) * seq;
     // The suffix rows between documents mean the final projection is issued
     // per document. It runs once per decode, unlike the 216 projections in
     // the transformer body, and preserves the exact singleton arithmetic.
-    cuda::launch_layernorm(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
-                           d.norm_out_b.get(), d.d_normed.get(), num_patches, dim, cfg.eps, s);
-    d.gemm_nt(d.d_normed.get(), d.proj_out_w, d.d_proj.get(), num_patches, patch_dim, dim);
-    cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
-    cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
-                                cfg.patch_t, cfg.patch, s);
-    d.d_pixels.copy_to_host(d.pinned_out.get(), pixels, s);
+    {
+      cuda::PhaseSpan s_proj("forward: issue project");
+      cuda::PhaseGpuSpan g_proj("forward: project + D2H", s);
+      cuda::launch_layernorm(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
+                             d.norm_out_b.get(), d.d_normed.get(), num_patches, dim, cfg.eps, s);
+      d.gemm_nt(d.d_normed.get(), d.proj_out_w, d.d_proj.get(), num_patches, patch_dim, dim);
+      cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
+      cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
+                                  cfg.patch_t, cfg.patch, s);
+      d.d_pixels.copy_to_host(d.pinned_out.get(), pixels, s);
+    }
+    cuda::PhaseSpan s_sync("forward: sync wait");
     d.stream.synchronize();
+    s_sync.stop();
+    // Every event pair recorded above is now readable, and the stream is idle,
+    // so draining them here costs nothing and adds no synchronise of its own.
+    cuda::PhaseProfiler::instance().flush_gpu();
+    cuda::PhaseSpan s_copy("forward: output copy");
     out[static_cast<size_t>(doc)].resize(pixels);
     std::memcpy(out[static_cast<size_t>(doc)].data(), d.pinned_out.get(), pixels * sizeof(float));
+    s_copy.stop();
   }
 }
 

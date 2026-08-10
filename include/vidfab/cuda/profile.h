@@ -134,4 +134,101 @@ class HostSpan {
   long long t0_ = 0;
 };
 
+// Phase accounting for a stage that is not the denoising loop.
+//
+// The video VAE decode has the opposite shape to a denoising step: it is host
+// code punctuated by GPU work that it immediately waits on, because
+// `forward_windows` synchronises before it can hand a tile back. Nothing
+// overlaps, so a stream timeline would have nothing to interleave and the
+// honest instrument is wall clock. Spans tile the stage; a handful of event
+// pairs nested inside them say how much of a span the card was busy for, which
+// is what separates "the decoder is slow" from "the host around it is slow".
+//
+// Unlike StepProfiler this is not normalised per step — a decode happens once.
+class PhaseProfiler {
+ public:
+  static PhaseProfiler& instance();
+
+  bool enabled() const { return enabled_; }
+
+  // Host wall time. Spans at the same nesting level tile their stage.
+  void add(const char* label, double ms);
+
+  // Device time between two events, always nested inside some host span, so
+  // these are reported separately and are not part of the host 100%.
+  void add_gpu(const char* label, double ms);
+
+  // Wall clock of the whole stage: the denominator for the percentages.
+  void add_total(const char* stage, double ms);
+
+  // Leases a pooled event, and banks a recorded pair. `flush_gpu` reads every
+  // pair banked so far and returns the events to the pool; the caller must
+  // already have synchronised the stream, which is why nothing here ever adds
+  // a synchronise of its own and profiling cannot change the decode's shape.
+  cudaEvent_t lease_event();
+  void bank_pair(const char* label, cudaEvent_t begin, cudaEvent_t end);
+  void flush_gpu();
+
+  void report(std::FILE* out) const;
+
+ private:
+  PhaseProfiler();
+
+  struct Total {
+    std::string label;
+    double ms = 0.0;
+    long long count = 0;
+    bool gpu = false;
+  };
+  struct Pair {
+    const char* label;
+    cudaEvent_t begin;
+    cudaEvent_t end;
+  };
+  Total& slot(const char* label, bool gpu);
+
+  bool enabled_ = false;
+  std::string stage_;
+  double total_ms_ = 0.0;
+  std::vector<Total> totals_;
+  std::vector<cudaEvent_t> pool_;
+  size_t pool_used_ = 0;
+  std::vector<Pair> pending_;
+};
+
+// Scoped phase timer, the PhaseProfiler counterpart of HostSpan.
+class PhaseSpan {
+ public:
+  explicit PhaseSpan(const char* label);
+  ~PhaseSpan();
+  PhaseSpan(const PhaseSpan&) = delete;
+  PhaseSpan& operator=(const PhaseSpan&) = delete;
+
+  // Ends the span early, so a span can cover part of a scope.
+  void stop();
+
+ private:
+  const char* label_;
+  long long t0_ = 0;
+  bool running_ = false;
+};
+
+// Scoped device timer for a phase. Records an event at construction and one at
+// destruction and hands the pair to the profiler; the elapsed time is read at
+// the next `flush_gpu`, after a synchronise the code was doing anyway. So the
+// span costs two stream markers and never blocks the host.
+class PhaseGpuSpan {
+ public:
+  PhaseGpuSpan(const char* label, cudaStream_t stream);
+  ~PhaseGpuSpan();
+  PhaseGpuSpan(const PhaseGpuSpan&) = delete;
+  PhaseGpuSpan& operator=(const PhaseGpuSpan&) = delete;
+
+ private:
+  const char* label_;
+  cudaStream_t stream_ = nullptr;
+  cudaEvent_t begin_ = nullptr;
+  cudaEvent_t end_ = nullptr;
+};
+
 }  // namespace vidfab::cuda
