@@ -264,7 +264,8 @@ std::string shape_string(const std::vector<int64_t>& s) {
 // flight.
 class Uploader {
  public:
-  explicit Uploader(cudaStream_t stream) : stream_(stream) {
+  Uploader(cudaStream_t stream, const cuda::RegisteredMapping* lock)
+      : stream_(stream), lock_(lock) {
     for (int i = 0; i < 2; ++i) {
       slot_[i].allocate(kStageBytes);
       VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&event_[i], cudaEventDisableTiming));
@@ -286,6 +287,15 @@ class Uploader {
   Uploader& operator=(const Uploader&) = delete;
 
   void copy(void* dst, const void* src, size_t bytes) {
+    // Source already page-locked: hand the whole range to the DMA engine and
+    // return. Nothing is written on the host, so there is no staging slot to
+    // wait for, and stream order keeps this correctly sequenced against the
+    // staged copies around it.
+    if (lock_ != nullptr && lock_->contains(src, bytes)) {
+      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream_));
+      return;
+    }
+
     const uint8_t* s = static_cast<const uint8_t*>(src);
     uint8_t* d = static_cast<uint8_t*>(dst);
     while (bytes > 0) {
@@ -305,6 +315,7 @@ class Uploader {
  private:
   static constexpr size_t kStageBytes = 32u << 20;
   cudaStream_t stream_;
+  const cuda::RegisteredMapping* lock_ = nullptr;
   cuda::PinnedBuffer<uint8_t> slot_[2];
   cudaEvent_t event_[2] = {nullptr, nullptr};
   int cur_ = 0;
@@ -1141,7 +1152,11 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   uint8_t* base = s.arena.get();
 
   {
-    Uploader up(s.stream.get());
+    // Declared before the uploader so it outlives it: ~Uploader synchronises
+    // the stream, and the mapping must stay registered until every DMA out of
+    // it has landed.
+    cuda::RegisteredMapping lock(checkpoint.mapping_base(), checkpoint.file_size());
+    Uploader up(s.stream.get(), &lock);
     std::vector<float> wide;
     std::vector<uint16_t> narrow;
     for (const auto& kv : plan.records()) {
