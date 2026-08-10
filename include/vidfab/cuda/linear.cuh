@@ -143,6 +143,23 @@ struct QuantWeight {
 // this over every layer at load time and reserve the maximum once.
 size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType compute);
 
+// `linear_workspace_bytes` split at the boundary a hoisting caller needs: the
+// dense bf16 copy `prepare` carves and holds for a whole loop, and the per-call
+// buffers `forward_prepared` carves and rewinds inside it.
+//
+// The split is not an exact partition of `linear_workspace_bytes`, because that
+// function over-reserves in two cases this one does not:
+//   - bf16 weight at fp32 compute: it counts a bf16 copy that `materialise_bf16`
+//     never allocates, since a bf16 weight is already dense. The split is
+//     smaller here, and the split is the correct number.
+//   - fp32 weight at fp32 compute: the split counts a bf16 copy that nothing
+//     carves. Harmless over-reservation, kept so the dense side never
+//     under-states what a non-bf16 format needs.
+// Everywhere else the two sides sum to it. Size an arena from the sum, never
+// from one side alone.
+size_t linear_dense_weight_bytes(const QuantWeight& w);
+size_t linear_activation_workspace_bytes(const QuantWeight& w, int rows, ComputeType compute);
+
 class LinearRunner {
  public:
   LinearRunner() = default;
@@ -163,12 +180,37 @@ class LinearRunner {
   void forward(const QuantWeight& w, const __nv_bfloat16* x, int rows, __nv_bfloat16* y,
                Workspace& ws);
 
+  // Dequantises `w` into `ws` once, for a caller that is about to run several
+  // `forward`s against it — the row-chunk loops in the transformer block, where
+  // the dense copy is the same every chunk and re-deriving it per chunk is the
+  // single largest piece of redundant memory traffic in a denoise step.
+  //
+  // The returned pointer stays valid until the caller's `Workspace::Scope`
+  // rewinds, and must be passed to `forward_prepared` alongside the same `w`.
+  // Returns null when `w` takes the native low-precision GEMM instead, which
+  // never materialises a dense copy; `forward_prepared` handles that pointer
+  // and is the reason this returns rather than throws.
+  const __nv_bfloat16* prepare(const QuantWeight& w, Workspace& ws);
+
+  // `forward` with the dequantisation already done. `dense_w` must be what
+  // `prepare(w, ...)` returned for this same weight. Null is not "unknown, work
+  // it out": it is the positive statement that `w` takes the native nvfp4 GEMM,
+  // which reads the stored nibbles and has no dense form, and this call goes
+  // straight there. Passing null for a weight that has a dense form throws
+  // rather than silently running the wrong GEMM.
+  void forward_prepared(const QuantWeight& w, const __nv_bfloat16* dense_w, const __nv_bfloat16* x,
+                        int rows, __nv_bfloat16* y, Workspace& ws);
+
   // fp32 in, fp32 out. For the four fp32 tensors in the transformer — the two
   // patch projections and the two output heads — where the reference aligns
   // the activation with the parameter dtype.
   void forward_f32(const QuantWeight& w, const float* x, int rows, float* y, Workspace& ws);
 
  private:
+  // Whether `w` goes to the native nvfp4 GEMM, which consumes the stored
+  // nibbles directly and so has no dense bf16 copy to prepare.
+  bool takes_native_nvfp4(const QuantWeight& w) const;
+
   cublasHandle_t handle_ = nullptr;
   cudaStream_t stream_ = nullptr;
   bool native_ = false;

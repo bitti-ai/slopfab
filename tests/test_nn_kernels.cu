@@ -1165,6 +1165,106 @@ VIDFAB_TEST(linear_bf16_and_fp8) {
   }
 }
 
+// Hoisting the dequantisation out of a row-chunk loop must be BIT-identical to
+// dequantising per chunk, not merely close: it is the whole justification for
+// `prepare` + `forward_prepared`, and a tolerance-based check here would pass
+// on a version that dequantised a stale or mis-sliced weight.
+VIDFAB_TEST(linear_prepared_matches_per_chunk) {
+  CublasScope cb;
+  const int rows = 33;
+  const int chunk = 13;  // 13 + 13 + 7: three chunks, the last one ragged
+  const int in_features = 256;
+  const int out_features = 96;
+
+  const std::vector<float> x = bf16_round(make_data(size_t(rows) * in_features, 271u, 0.1f));
+  BfBuf dx(x);
+  BfBuf dref(size_t(rows) * out_features);
+  BfBuf dgot(size_t(rows) * out_features);
+
+  // fp8, so `prepare` has real dequantisation to do — a bf16 weight would make
+  // the test vacuous by returning the checkpoint pointer both ways.
+  std::vector<uint8_t> raw(size_t(out_features) * in_features);
+  uint32_t s = 99991u;
+  for (size_t i = 0; i < raw.size(); ++i) {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    uint8_t b = uint8_t(s & 0xFFu);
+    if ((b & 0x7F) == 0x7F) b &= 0x7Eu;  // avoid the NaN encodings
+    raw[i] = b;
+  }
+  DeviceBuffer<uint8_t> draw(raw.size());
+  draw.copy_from_host(raw.data(), raw.size());
+  const std::vector<float> sv(1, 8.1264e-3f);
+  DeviceBuffer<float> dscale = to_device(sv);
+  const std::vector<float> bias = make_data(out_features, 272u, 0.5f);
+  DeviceBuffer<float> dbias = to_device(bias);
+
+  vidfab::cuda::QuantWeight qw;
+  qw.format = vidfab::cuda::QuantFormat::kF8E4M3;
+  qw.data = draw.get();
+  qw.out_features = out_features;
+  qw.in_features = in_features;
+  qw.weight_scale = dscale.get();
+  qw.bias = dbias.get();
+  qw.bias_format = vidfab::cuda::QuantFormat::kF32;
+
+  vidfab::cuda::LinearRunner runner;
+  runner.init(cb.h, nullptr);
+
+  Workspace ws;
+  ws.reserve(vidfab::cuda::linear_workspace_bytes(qw, chunk, vidfab::cuda::ComputeType::kBF16) +
+             256);
+
+  // Reference: dequantise inside the loop, once per chunk.
+  for (int start = 0; start < rows; start += chunk) {
+    const int n = std::min(chunk, rows - start);
+    runner.forward(qw, dx.p() + size_t(start) * in_features, n,
+                   dref.p() + size_t(start) * out_features, ws);
+  }
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Hoisted: dequantise once, then run every chunk against that copy. Sized
+  // from the split rather than from `linear_workspace_bytes`, which is the
+  // arithmetic `plan_carve` now relies on.
+  Workspace hw;
+  hw.reserve(vidfab::cuda::linear_dense_weight_bytes(qw) +
+             vidfab::cuda::linear_activation_workspace_bytes(qw, chunk,
+                                                             vidfab::cuda::ComputeType::kBF16) +
+             256);
+  {
+    Workspace::Scope scope(hw);
+    const __nv_bfloat16* dense = runner.prepare(qw, hw);
+    CHECK(dense != nullptr);
+    for (int start = 0; start < rows; start += chunk) {
+      const int n = std::min(chunk, rows - start);
+      runner.forward_prepared(qw, dense, dx.p() + size_t(start) * in_features, n,
+                              dgot.p() + size_t(start) * out_features, hw);
+    }
+  }
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+  const std::vector<uint16_t> want = dref.bits();
+  const std::vector<uint16_t> got = dgot.bits();
+  size_t differing = 0;
+  for (size_t i = 0; i < want.size(); ++i) {
+    if (want[i] != got[i]) ++differing;
+  }
+  CHECK_MSG(differing == 0, "prepared path differs from per-chunk in %zu of %zu bf16 words",
+            differing, want.size());
+
+  // A null dense weight means "this layer takes the native nvfp4 GEMM". This
+  // fp8 weight does not, so passing null is a caller bug and must throw rather
+  // than reach the fp4 GEMM and return plausible nonsense.
+  bool threw = false;
+  try {
+    runner.forward_prepared(qw, nullptr, dx.p(), chunk, dgot.p(), hw);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  CHECK_MSG(threw, "forward_prepared accepted a null dense weight for a non-nvfp4 layer");
+}
+
 // The end-to-end ConvRot path: the stored weight is already rotated, so the
 // activation must be rotated online or the result is `x H W^T`, which is
 // well-scaled noise (docs/convrot_notes.md).

@@ -479,23 +479,38 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
   bytes += align_up(c.normed * sizeof(__nv_bfloat16));  // branch
   bytes += 2 * align_up(c.fbuf * sizeof(float));        // fp32 in/out of the final norm
 
-  // The largest weight any single GEMM has to dequantise, plus attention's
-  // score tile. Both are taken through Workspace::Scope, so they overlap
-  // rather than accumulate.
+  // The largest set of weights any one row-chunk loop has to hold dequantised
+  // at once, plus attention's score tile. All are taken through
+  // Workspace::Scope, so they overlap rather than accumulate.
+  //
+  // `run_block` hoists the dequantisation out of its three loops, so the unit
+  // is the loop, not the GEMM: qkv holds its three thirds together — which is
+  // exactly the fused `qkv_proj` this already sized for — and the FFN loop
+  // holds fc1 and fc2 together, which is the one place the requirement grew.
   size_t scratch = 0;
   {
     QuantWeight probe;
     probe.format = QuantFormat::kF8E4M3;
-    probe.out_features = 2 * cfg.ffn_dim;
-    probe.in_features = hidden;
-    scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kBF16));
-    probe.out_features = hidden;
-    probe.in_features = cfg.ffn_dim;
-    scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kBF16));
-    probe.out_features = 3 * inner;
-    probe.in_features = hidden;
-    scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kBF16));
+    const auto dense = [&](int out, int in) {
+      probe.out_features = out;
+      probe.in_features = in;
+      return cuda::linear_dense_weight_bytes(probe);
+    };
+    const auto act_ws = [&](int out, int in) {
+      probe.out_features = out;
+      probe.in_features = in;
+      return cuda::linear_activation_workspace_bytes(probe, c.chunk, ComputeType::kBF16);
+    };
+    // qkv: three [inner, hidden] thirds live at once.
+    scratch = std::max(scratch, 3 * dense(inner, hidden) + act_ws(inner, hidden));
+    // out_proj on its own.
+    scratch = std::max(scratch, dense(hidden, inner) + act_ws(hidden, inner));
+    // fc1 and fc2 live at once.
+    scratch = std::max(scratch, dense(2 * cfg.ffn_dim, hidden) + dense(hidden, cfg.ffn_dim) +
+                                    std::max(act_ws(2 * cfg.ffn_dim, hidden),
+                                             act_ws(hidden, cfg.ffn_dim)));
     // The fp32 heads widen their weight through bf16, so both copies are live.
+    // They still go through `forward_f32`, one weight at a time.
     probe.format = QuantFormat::kBF16;
     probe.out_features = hidden;
     probe.in_features = cfg.text_dim;
@@ -778,24 +793,41 @@ struct Transformer::Impl {
     const float* scale_mlp = mod_base != nullptr ? mod_base + 4 * stride : nullptr;
     const float* gate_mlp = mod_base != nullptr ? mod_base + 5 * stride : nullptr;
 
-    for (int start = 0; start < rows; start += chunk) {
-      const int n = std::min(chunk, rows - start);
-      const size_t off = static_cast<size_t>(start) * hidden;
-      if (mod_base != nullptr) {
-        cuda::launch_rmsnorm_modulate(x + off, b.norm1, scale_msa, shift_msa, adaln_idx + start,
-                                      normed, n, hidden, eps, stream.get());
-      } else {
-        cuda::launch_rmsnorm(x + off, b.norm1, normed, n, hidden, eps, stream.get());
+    // Dequantised once per block, not once per row-chunk. The dense copy of a
+    // weight does not depend on which rows are being projected, so re-deriving
+    // it inside the loop was the largest single piece of redundant memory
+    // traffic in a step: 771 MB per block per chunk, at ten chunks and fifty
+    // blocks. The scope holds them until the loop ends; `compute_carve` sizes
+    // the arena for the three thirds at once, which is exactly the fused
+    // qkv_proj it already reserved for.
+    {
+      Workspace::Scope qkv_scope(ws);
+      const __nv_bfloat16* dq = linear.prepare(b.wq, ws);
+      const __nv_bfloat16* dk = linear.prepare(b.wk, ws);
+      const __nv_bfloat16* dv = linear.prepare(b.wv, ws);
+      // Its own phase. Billed to `attn.norm1` it would look like a norm that
+      // got slower when the dequantisation moved out of the loop, which is the
+      // opposite of what happened.
+      prof.tick("attn.dequant", stream.get());
+      for (int start = 0; start < rows; start += chunk) {
+        const int n = std::min(chunk, rows - start);
+        const size_t off = static_cast<size_t>(start) * hidden;
+        if (mod_base != nullptr) {
+          cuda::launch_rmsnorm_modulate(x + off, b.norm1, scale_msa, shift_msa, adaln_idx + start,
+                                        normed, n, hidden, eps, stream.get());
+        } else {
+          cuda::launch_rmsnorm(x + off, b.norm1, normed, n, hidden, eps, stream.get());
+        }
+        prof.tick("attn.norm1", stream.get());
+        // Three GEMMs against contiguous thirds of `qkv_proj` rather than one
+        // fused GEMM plus a split: identical arithmetic, and it writes straight
+        // into the full-sequence q/k/v without a [chunk, 21504] staging buffer.
+        const size_t qoff = static_cast<size_t>(start) * inner;
+        linear.forward_prepared(b.wq, dq, normed, n, q + qoff, ws);
+        linear.forward_prepared(b.wk, dk, normed, n, k + qoff, ws);
+        linear.forward_prepared(b.wv, dv, normed, n, v + qoff, ws);
+        prof.tick("attn.qkv_proj", stream.get());
       }
-      prof.tick("attn.norm1", stream.get());
-      // Three GEMMs against contiguous thirds of `qkv_proj` rather than one
-      // fused GEMM plus a split: identical arithmetic, and it writes straight
-      // into the full-sequence q/k/v without a [chunk, 21504] staging buffer.
-      const size_t qoff = static_cast<size_t>(start) * inner;
-      linear.forward(b.wq, normed, n, q + qoff, ws);
-      linear.forward(b.wk, normed, n, k + qoff, ws);
-      linear.forward(b.wv, normed, n, v + qoff, ws);
-      prof.tick("attn.qkv_proj", stream.get());
     }
 
     // QK-norm over the 128-wide head dimension, then RoPE — in that order
@@ -848,51 +880,67 @@ struct Transformer::Impl {
                             "attn.sol.experimental":"attn.sol") : "attn.none";
     prof.tick(label, stream.get());
 
-    for (int start = 0; start < rows; start += chunk) {
-      const int n = std::min(chunk, rows - start);
-      const size_t off = static_cast<size_t>(start) * hidden;
-      linear.forward(b.out_proj, attn_out + static_cast<size_t>(start) * inner, n, branch, ws);
-      diagnose("out_proj",branch,size_t(n)*hidden,layer);
-      prof.tick("attn.out_proj", stream.get());
-      if (mod_base != nullptr) {
-        cuda::launch_add_gated(x + off, branch, gate_msa, adaln_idx + start, n, hidden,
-                               stream.get());
-      } else {
-        cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
+    {
+      Workspace::Scope out_scope(ws);
+      const __nv_bfloat16* dout = linear.prepare(b.out_proj, ws);
+      prof.tick("attn.dequant", stream.get());
+      for (int start = 0; start < rows; start += chunk) {
+        const int n = std::min(chunk, rows - start);
+        const size_t off = static_cast<size_t>(start) * hidden;
+        linear.forward_prepared(b.out_proj, dout, attn_out + static_cast<size_t>(start) * inner, n,
+                                branch, ws);
+        diagnose("out_proj",branch,size_t(n)*hidden,layer);
+        prof.tick("attn.out_proj", stream.get());
+        if (mod_base != nullptr) {
+          cuda::launch_add_gated(x + off, branch, gate_msa, adaln_idx + start, n, hidden,
+                                 stream.get());
+        } else {
+          cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden,
+                                     stream.get());
+        }
+        prof.tick("attn.residual", stream.get());
+        diagnose("attention_residual",x+off,size_t(n)*hidden,layer);
       }
-      prof.tick("attn.residual", stream.get());
-      diagnose("attention_residual",x+off,size_t(n)*hidden,layer);
     }
     emit_stage("attn", x, rows, hidden);
 
-    for (int start = 0; start < rows; start += chunk) {
-      const int n = std::min(chunk, rows - start);
-      const size_t off = static_cast<size_t>(start) * hidden;
-      if (mod_base != nullptr) {
-        cuda::launch_rmsnorm_modulate(x + off, b.norm2, scale_mlp, shift_mlp, adaln_idx + start,
-                                      normed, n, hidden, eps, stream.get());
-      } else {
-        cuda::launch_rmsnorm(x + off, b.norm2, normed, n, hidden, eps, stream.get());
+    {
+      // Both FFN weights stay live across the loop, which is why the arena has
+      // to hold fc1 and fc2 at once rather than the larger of the two.
+      Workspace::Scope mlp_scope(ws);
+      const __nv_bfloat16* d1 = linear.prepare(b.fc1, ws);
+      const __nv_bfloat16* d2 = linear.prepare(b.fc2, ws);
+      prof.tick("mlp.dequant", stream.get());
+      for (int start = 0; start < rows; start += chunk) {
+        const int n = std::min(chunk, rows - start);
+        const size_t off = static_cast<size_t>(start) * hidden;
+        if (mod_base != nullptr) {
+          cuda::launch_rmsnorm_modulate(x + off, b.norm2, scale_mlp, shift_mlp, adaln_idx + start,
+                                        normed, n, hidden, eps, stream.get());
+        } else {
+          cuda::launch_rmsnorm(x + off, b.norm2, normed, n, hidden, eps, stream.get());
+        }
+        prof.tick("mlp.norm2", stream.get());
+        diagnose("adaln_mlp",normed,size_t(n)*hidden,layer);
+        linear.forward_prepared(b.fc1, d1, normed, n, fused, ws);
+        prof.tick("mlp.fc1", stream.get());
+        // Gate first: our checkpoints use the original `mlp.fc1` naming, whose
+        // first half goes through the SiLU (spec 4.4).
+        cuda::launch_swiglu(fused, act, n, cfg.ffn_dim, stream.get());
+        prof.tick("mlp.swiglu", stream.get());
+        linear.forward_prepared(b.fc2, d2, act, n, branch, ws);
+        diagnose("mlp",branch,size_t(n)*hidden,layer);
+        prof.tick("mlp.fc2", stream.get());
+        if (mod_base != nullptr) {
+          cuda::launch_add_gated(x + off, branch, gate_mlp, adaln_idx + start, n, hidden,
+                                 stream.get());
+        } else {
+          cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden,
+                                     stream.get());
+        }
+        prof.tick("mlp.residual", stream.get());
+        diagnose("mlp_residual",x+off,size_t(n)*hidden,layer);
       }
-      prof.tick("mlp.norm2", stream.get());
-      diagnose("adaln_mlp",normed,size_t(n)*hidden,layer);
-      linear.forward(b.fc1, normed, n, fused, ws);
-      prof.tick("mlp.fc1", stream.get());
-      // Gate first: our checkpoints use the original `mlp.fc1` naming, whose
-      // first half goes through the SiLU (spec 4.4).
-      cuda::launch_swiglu(fused, act, n, cfg.ffn_dim, stream.get());
-      prof.tick("mlp.swiglu", stream.get());
-      linear.forward(b.fc2, act, n, branch, ws);
-      diagnose("mlp",branch,size_t(n)*hidden,layer);
-      prof.tick("mlp.fc2", stream.get());
-      if (mod_base != nullptr) {
-        cuda::launch_add_gated(x + off, branch, gate_mlp, adaln_idx + start, n, hidden,
-                               stream.get());
-      } else {
-        cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden, stream.get());
-      }
-      prof.tick("mlp.residual", stream.get());
-      diagnose("mlp_residual",x+off,size_t(n)*hidden,layer);
     }
     emit_stage("ffn", x, rows, hidden);
   }
