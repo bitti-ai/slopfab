@@ -199,20 +199,32 @@ class RegisteredMapping {
   RegisteredMapping& operator=(const RegisteredMapping&) = delete;
 
   void reset() {
-    if (base_ != nullptr) cudaHostUnregister(const_cast<void*>(base_));
+    if (base_ != nullptr) {
+      cudaHostUnregister(const_cast<void*>(base_));
+      // Symmetric with the constructor: do not leave a sticky error behind for
+      // the next unrelated call to be blamed for.
+      cudaGetLastError();
+    }
     base_ = nullptr;
     bytes_ = 0;
   }
 
   bool registered() const { return base_ != nullptr; }
 
-  // Whether `[p, p + n)` lies inside the page-locked range, and so can be used
-  // as a DMA source directly.
+  // Whether `[p, p + n)` lies inside the page-locked range.
+  //
+  // This is a safety net, not a provenance test: a caller must already know
+  // that `p` points into the mapping, because an unrelated heap block can sit
+  // anywhere relative to it. Compared as integers rather than pointers — a
+  // pointer subtraction between unrelated objects is undefined behaviour, and
+  // the obvious `n <= (b + bytes_) - q` spelling also wraps to a huge size_t
+  // for any `q` past the end, which made this answer true for exactly the
+  // pointers it exists to reject.
   bool contains(const void* p, size_t n) const {
     if (base_ == nullptr) return false;
-    const auto* b = static_cast<const unsigned char*>(base_);
-    const auto* q = static_cast<const unsigned char*>(p);
-    return q >= b && n <= static_cast<size_t>((b + bytes_) - q);
+    const auto b = reinterpret_cast<uintptr_t>(base_);
+    const auto q = reinterpret_cast<uintptr_t>(p);
+    return q >= b && q <= b + bytes_ && n <= (b + bytes_) - q;
   }
 
  private:

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -407,6 +408,11 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   // Destroyed after `uploader` and after the synchronise at the end of this
   // function, so nothing is still reading the mapping when it is unregistered.
   const cuda::RegisteredMapping mapping(ckpt.mapping_base(), ckpt.file_size());
+  if (!mapping.registered()) {
+    std::fprintf(stderr,
+                 "vidfab: could not page-lock the video vae mapping; uploading via the staged "
+                 "path, which is slower\n");
+  }
   WeightUploader uploader(d.stream.get(), mapping);
 
   d.x_embed_w.load(ckpt, "decoder.x_embedder.weight", static_cast<size_t>(dim) * ch,

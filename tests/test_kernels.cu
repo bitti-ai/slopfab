@@ -717,7 +717,61 @@ void test_misc() {
   CHECK_CLOSE(want_dn, to_host(ddn), 1e-6, "latent_denorm");
 }
 
-const bool registered = ::vidfab::test::register_test("norms", &test_norms) &&
+// `RegisteredMapping::contains` decides whether a pointer may be used as a
+// DMA source. Saying yes about a pointer that is not in the range is not a
+// missed optimisation, it is silently wrong weights: the caller then copies
+// asynchronously out of pageable scratch memory that is rewritten immediately
+// afterwards. The first version of it compared `n <= (base + bytes) - p`,
+// which for any `p` past the end computes a negative difference, converts it
+// to a huge size_t, and answers yes to precisely the pointers it exists to
+// reject. Whether that happened depended on where the heap landed relative to
+// the mapping, so it reproduced roughly one launch in ten.
+void test_registered_mapping_contains() {
+  // cudaHostRegister wants a page-aligned base, so the region is carved out of
+  // a larger buffer and aligned by hand. It is placed one `kBytes` block in,
+  // so there is addressable memory both below and above it to probe with.
+  constexpr size_t kPage = 4096;
+  constexpr size_t kBytes = 64 * 1024;
+  std::vector<unsigned char> backing(kPage + kBytes * 3);
+  const auto raw = reinterpret_cast<uintptr_t>(backing.data());
+  unsigned char* const aligned =
+      reinterpret_cast<unsigned char*>((raw + kPage - 1) & ~static_cast<uintptr_t>(kPage - 1));
+  unsigned char* const region = aligned + kBytes;
+
+  vidfab::cuda::RegisteredMapping mapping(region, kBytes);
+  if (!mapping.registered()) {
+    // Registration is best-effort, and the predicate is defined to answer no
+    // when there is no range. Still worth asserting rather than skipping.
+    CHECK(!mapping.contains(region, 1));
+    return;
+  }
+
+  // Inside.
+  CHECK(mapping.contains(region, kBytes));
+  CHECK(mapping.contains(region, 1));
+  CHECK(mapping.contains(region + kBytes - 1, 1));
+  CHECK(mapping.contains(region + kBytes / 2, kBytes / 2));
+
+  // Runs off the end.
+  CHECK(!mapping.contains(region, kBytes + 1));
+  CHECK(!mapping.contains(region + kBytes - 1, 2));
+
+  // Below the range.
+  CHECK(!mapping.contains(region - 1, 1));
+  CHECK(!mapping.contains(aligned, 1));
+
+  // Above the range — the case the original arithmetic got wrong. A scratch
+  // buffer that the allocator happened to place after the mapping looks
+  // exactly like this.
+  CHECK(!mapping.contains(region + kBytes, 1));
+  CHECK(!mapping.contains(region + kBytes + 1, 1));
+  CHECK(!mapping.contains(region + kBytes, kBytes));
+  CHECK(!mapping.contains(backing.data() + backing.size() - 1, 1));
+}
+
+const bool registered = ::vidfab::test::register_test("registered_mapping_contains",
+                                                      &test_registered_mapping_contains) &&
+                        ::vidfab::test::register_test("norms", &test_norms) &&
                         ::vidfab::test::register_test("gemm", &test_gemm) &&
                         ::vidfab::test::register_test("swiglu", &test_swiglu) &&
                         ::vidfab::test::register_test("softmax", &test_softmax) &&

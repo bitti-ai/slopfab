@@ -286,12 +286,19 @@ class Uploader {
   Uploader(const Uploader&) = delete;
   Uploader& operator=(const Uploader&) = delete;
 
-  void copy(void* dst, const void* src, size_t bytes) {
+  // `from_mapping` says the source is the checkpoint mapping itself, which
+  // only the caller can know: the alternative sources here are short-lived
+  // `std::vector` scratch buffers, and where the heap puts those relative to a
+  // 12 GB mapping is luck. Taking the direct path for one of those would DMA
+  // out of pageable memory and, worse, return before the scratch buffer is
+  // rewritten by the next record. So provenance is passed in, and the range
+  // check is only a second opinion that must also agree.
+  void copy(void* dst, const void* src, size_t bytes, bool from_mapping) {
     // Source already page-locked: hand the whole range to the DMA engine and
     // return. Nothing is written on the host, so there is no staging slot to
     // wait for, and stream order keeps this correctly sequenced against the
     // staged copies around it.
-    if (lock_ != nullptr && lock_->contains(src, bytes)) {
+    if (from_mapping && lock_ != nullptr && lock_->contains(src, bytes)) {
       VIDFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream_));
       return;
     }
@@ -1152,29 +1159,38 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   uint8_t* base = s.arena.get();
 
   {
-    // Declared before the uploader so it outlives it: ~Uploader synchronises
-    // the stream, and the mapping must stay registered until every DMA out of
-    // it has landed.
+    // Both declared before the uploader so that they outlive it. ~Uploader
+    // synchronises the stream, so anything the stream might still be reading —
+    // the registered mapping, and the scratch buffers the staged path copies
+    // out of — has to still exist when that sync runs.
     cuda::RegisteredMapping lock(checkpoint.mapping_base(), checkpoint.file_size());
-    Uploader up(s.stream.get(), &lock);
+    // Success is the normal path and stays quiet; a failure silently costs
+    // seconds of staged memcpy, so it says so rather than looking like a
+    // mysterious regression later.
+    if (!lock.registered()) {
+      std::fprintf(stderr,
+                   "vidfab: could not page-lock the transformer mapping; uploading via the "
+                   "staged path, which is slower\n");
+    }
     std::vector<float> wide;
     std::vector<uint16_t> narrow;
+    Uploader up(s.stream.get(), &lock);
     for (const auto& kv : plan.records()) {
       const Record& r = kv.second;
       uint8_t* dst = base + r.offset;
       switch (r.store) {
         case Store::kVerbatim:
-          up.copy(dst, r.view->data, r.bytes);
+          up.copy(dst, r.view->data, r.bytes, /*from_mapping=*/true);
           break;
         case Store::kAsF32:
           to_f32(*r.view, wide);
-          up.copy(dst, wide.data(), wide.size() * sizeof(float));
+          up.copy(dst, wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
           break;
         case Store::kAsBF16:
           to_f32(*r.view, wide);
           narrow.resize(wide.size());
           for (size_t i = 0; i < wide.size(); ++i) narrow[i] = f32_to_bf16(wide[i]);
-          up.copy(dst, narrow.data(), narrow.size() * sizeof(uint16_t));
+          up.copy(dst, narrow.data(), narrow.size() * sizeof(uint16_t), /*from_mapping=*/false);
           break;
       }
     }
