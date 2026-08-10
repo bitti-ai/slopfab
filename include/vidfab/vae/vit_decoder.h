@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "vidfab/pixel_buffer.h"
 #include "vidfab/safetensors.h"
 
 namespace vidfab::vae {
@@ -58,7 +59,7 @@ struct DecodedVideo {
   int frames = 0;
   int height = 0;
   int width = 0;
-  std::vector<float> data;  // [3][frames][height][width], contiguous
+  PixelBuffer data;  // [3][frames][height][width], contiguous
 
   size_t frame_stride() const { return static_cast<size_t>(height) * width; }
   size_t plane_stride() const { return frame_stride() * frames; }

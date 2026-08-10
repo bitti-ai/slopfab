@@ -90,9 +90,9 @@ const RiffChunk* find_chunk(const std::vector<RiffChunk>& chunks, const char* id
 // A moving diagonal gradient plus a colour ramp. Deterministic, has content in
 // all three channels, and moves between frames so a muxer that repeats or
 // drops a frame produces a visibly different file.
-std::vector<float> make_clip(int frames, int height, int width) {
+vidfab::PixelBuffer make_clip(int frames, int height, int width) {
   const size_t n = static_cast<size_t>(frames) * height * width;
-  std::vector<float> v(3 * n);
+  vidfab::PixelBuffer v(3 * n);
   for (int f = 0; f < frames; ++f) {
     for (int y = 0; y < height; ++y) {
       for (int x = 0; x < width; ++x) {
@@ -319,7 +319,7 @@ VIDFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
   const int frames = 3;
   const int height = 8;
   const int width = 16;
-  const std::vector<float> clip = make_clip(frames, height, width);
+  const vidfab::PixelBuffer clip = make_clip(frames, height, width);
 
   const std::filesystem::path path = temp_path("vidfab_convert.y4m");
   write_y4m(path.string(), clip, frames, height, width, FrameRate{24, 1});
@@ -436,7 +436,7 @@ VIDFAB_TEST(mp4_video_and_audio_end_to_end) {
   const int frames = 24;
   const int size = 128;
   const int rate = 32000;
-  const std::vector<float> clip = make_clip(frames, size, size);
+  const vidfab::PixelBuffer clip = make_clip(frames, size, size);
   const std::vector<float> tone = make_tone(2, rate, 1.0f, 440.0f);
 
   const std::filesystem::path path = temp_path("vidfab_muxed.mp4");
@@ -495,7 +495,7 @@ VIDFAB_TEST(mp4_video_only_and_bad_requests) {
 
   const int frames = 8;
   const int size = 64;
-  const std::vector<float> clip = make_clip(frames, size, size);
+  const vidfab::PixelBuffer clip = make_clip(frames, size, size);
 
   const std::filesystem::path path = temp_path("vidfab_silent.mp4");
   std::filesystem::remove(path);

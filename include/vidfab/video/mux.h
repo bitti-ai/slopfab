@@ -36,8 +36,10 @@ struct MuxRequest {
   std::string path;
 
   // Planar float RGB in [0,1], shaped [3][frames][height][width] — the same
-  // layout `DecodedVideo::data` and `write_y4m` use.
-  const std::vector<float>* video = nullptr;
+  // layout `DecodedVideo::data` and `write_y4m` use, and the same buffer type,
+  // which is why this is a PixelBuffer where `audio` below is a plain vector:
+  // the video side is gigabytes and must not be zeroed on the way in.
+  const PixelBuffer* video = nullptr;
   int frames = 0;
   int height = 0;
   int width = 0;

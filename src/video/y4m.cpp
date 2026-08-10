@@ -15,7 +15,7 @@ inline uint8_t clamp_u8(float v) {
 
 }  // namespace
 
-void write_y4m(const std::string& path, const std::vector<float>& planar_rgb, int frames,
+void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames,
                int height, int width, FrameRate fps) {
   if (frames <= 0 || height <= 0 || width <= 0) {
     throw std::runtime_error("y4m: frame count and dimensions must be positive");
@@ -96,7 +96,7 @@ void write_y4m(const std::string& path, const std::vector<float>& planar_rgb, in
   if (!out) throw std::runtime_error("y4m: write failed for " + path);
 }
 
-void write_ppm(const std::string& path, const std::vector<float>& planar_rgb, int frames,
+void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frames,
                int height, int width, int frame_index) {
   if (frame_index < 0 || frame_index >= frames) {
     throw std::runtime_error("ppm: frame index out of range");

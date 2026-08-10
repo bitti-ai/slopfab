@@ -1059,11 +1059,12 @@ int cmd_decode(int argc, char** argv) {
 
   if (!dump_path.empty()) {
     // Raw fp32 pixels, so two runs can be diffed with `vidfab compare` at
-    // float precision rather than after 8-bit quantisation.
+    // float precision rather than after 8-bit quantisation. The copy into the
+    // writer's own vector type is what this diagnostic path already did.
     vidfab::write_safetensors(
         dump_path, {{"pixels",
                      {3, video.frames, video.height, video.width},
-                     video.data}});
+                     std::vector<float>(video.data.begin(), video.data.end())}});
     std::printf("wrote      %s\n", dump_path.c_str());
   }
 
