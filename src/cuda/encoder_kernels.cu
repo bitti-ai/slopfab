@@ -32,7 +32,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -533,29 +532,6 @@ LayerWeights layer_weights_from_blob(const uint8_t* base, const LayerLayout& lay
   return w;
 }
 
-// Mirrors `convrot_applies` in linear.cu, which is file-local there. The
-// quantiser skips the rotation when the contraction axis does not divide into
-// whole groups, so this is a per-tensor property and must be read off the
-// tensor rather than inferred from the build (spec section 5.1).
-bool rotation_applies(const QuantWeight& w) {
-  return w.convrot && w.convrot_group > 0 && w.in_features % w.convrot_group == 0;
-}
-
-// Whether `b` consumes the same activation through the same rotation as `a`,
-// so one rotation can feed both.
-//
-// `pre_quant_scale` is part of the test because `LinearRunner::forward` applies
-// it *before* the rotation: two projections that scale the activation
-// differently do not share a rotated input whatever their rotation says. In
-// this checkpoint it is always null on a rotated tensor — nvfp4+AWQ is the
-// build with the scales and it is not rotated — but spec section 5.5 is
-// explicit that this is checked per tensor and never inferred from the build.
-bool shares_rotation(const QuantWeight& a, const QuantWeight& b) {
-  return rotation_applies(a) && rotation_applies(b) && a.in_features == b.in_features &&
-         a.convrot_group == b.convrot_group && a.pre_quant_scale == nullptr &&
-         b.pre_quant_scale == nullptr;
-}
-
 size_t layer_workspace_bytes(const LayerDims& d) {
   if (d.num_tokens <= 0) return 0;
   const size_t L = static_cast<size_t>(d.num_tokens);
@@ -574,21 +550,6 @@ size_t layer_workspace_bytes(const LayerDims& d) {
   activations += align_up(L * d.hidden * bf);       // projection output
   activations += align_up(L * d.intermediate * bf); // gate
   activations += align_up(L * d.intermediate * bf); // up
-  // The shared ConvRot output. q/k/v contract over one activation and
-  // gate/up over another, so two of the five rotations `LinearRunner` would
-  // otherwise do per layer are the same rotation of the same 5120-wide
-  // activation computed three and two times over (spec section 5.3: the
-  // rotation belongs to the activation, not to the GEMM). One buffer serves
-  // both halves, because the MLP's rotation is issued after the attention
-  // half's last reader on the same stream.
-  //
-  // Costs L * hidden * 2 bytes — 84 MB at the 8192-token bound — and only on
-  // the rotated build. `o_proj` and `down_proj` are each the sole consumer of
-  // their activation and keep rotating per call, so the transient above is
-  // unchanged.
-  if (d.format == WeightFormat::kI8ConvRot) {
-    activations += align_up(L * d.hidden * bf);     // shared rotated activation
-  }
 
   // Transient, carved on top: one GEMM's dequantisation scratch, or the
   // attention tiles, whichever is larger. The seven GEMMs are strictly
@@ -624,46 +585,18 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
   __nv_bfloat16* proj = ws.alloc_n<__nv_bfloat16>(L * d.hidden);
   __nv_bfloat16* gate = ws.alloc_n<__nv_bfloat16>(L * d.intermediate);
   __nv_bfloat16* up = ws.alloc_n<__nv_bfloat16>(L * d.intermediate);
-  // Carved only where `layer_workspace_bytes` reserved it. Null means "rotate
-  // per call", which is what this did before and is correct, just slower.
-  __nv_bfloat16* rotated =
-      d.format == WeightFormat::kI8ConvRot ? ws.alloc_n<__nv_bfloat16>(L * d.hidden) : nullptr;
-
-  // Rotates `src` once for a group of projections that share it and returns
-  // the buffer to feed them, having cleared `convrot` on the copies so
-  // `LinearRunner` does not rotate a second time. A doubled rotation is
-  // `x H H Wt` = `x Wt` against a rotated weight — finite, well-scaled and
-  // completely wrong (spec section 9, hazards 1 and 2), which is why the
-  // flag is cleared on a local copy rather than by mutating the layer's
-  // weights or by trusting a call-site convention.
-  auto hoist = [&](const __nv_bfloat16* src, int in_features,
-                   std::initializer_list<QuantWeight*> group) -> const __nv_bfloat16* {
-    if (rotated == nullptr || in_features != d.hidden) return src;
-    const QuantWeight* first = *group.begin();
-    for (const QuantWeight* other : group) {
-      if (!shares_rotation(*first, *other) || other->in_features != in_features) return src;
-    }
-    vidfab::cuda::launch_convrot(src, rotated, rows, in_features, first->convrot_group, stream);
-    for (QuantWeight* member : group) member->convrot = false;
-    return rotated;
-  };
 
   // --- attention half. Pre-norm: the residual carries the *unnormalised*
   // stream and is never gated or scaled (spec section 4.4).
   vidfab::cuda::launch_rmsnorm(x, w.input_layernorm, n, rows, d.hidden, d.rms_norm_eps, stream);
 
   // ConvRot rotates the contraction axis, so it belongs to the activation, not
-  // to the GEMM: q/k/v contract over one and the same `n`, so they share one
-  // rotation of it rather than deriving it three times. The rotation must see
-  // the *complete* RMSNorm output — H does not commute with diag(w) (spec
-  // section 5.3) — which is why it is applied here and not folded anywhere.
-  QuantWeight q_proj = w.q_proj;
-  QuantWeight k_proj = w.k_proj;
-  QuantWeight v_proj = w.v_proj;
-  const __nv_bfloat16* qkv_in = hoist(n, q_proj.in_features, {&q_proj, &k_proj, &v_proj});
-  linear.forward(q_proj, qkv_in, rows, q, ws);
-  linear.forward(k_proj, qkv_in, rows, k, ws);
-  linear.forward(v_proj, qkv_in, rows, v, ws);
+  // to the GEMM: q/k/v share one rotation of `n`, and LinearRunner applies it
+  // per call. The rotation must see the *complete* RMSNorm output — H does not
+  // commute with diag(w) (spec section 5.3).
+  linear.forward(w.q_proj, n, rows, q, ws);
+  linear.forward(w.k_proj, n, rows, k, ws);
+  linear.forward(w.v_proj, n, rows, v, ws);
 
   // QK-norm BEFORE RoPE. Reversing the two is a silent quality bug: RMSNorm
   // scales channel j by w[j], RoPE mixes j with j+64, and those two weights
@@ -686,15 +619,8 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
   // --- MLP half.
   vidfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n, rows, d.hidden, d.rms_norm_eps,
                                stream);
-  // gate/up contract over the same activation, so the same argument applies.
-  // `rotated` is reused: this rotation is issued on `stream` after `v_proj`,
-  // the last reader of the attention half's copy, so stream order already
-  // separates the two.
-  QuantWeight gate_proj = w.gate_proj;
-  QuantWeight up_proj = w.up_proj;
-  const __nv_bfloat16* mlp_in = hoist(n, gate_proj.in_features, {&gate_proj, &up_proj});
-  linear.forward(gate_proj, mlp_in, rows, gate, ws);
-  linear.forward(up_proj, mlp_in, rows, up, ws);
+  linear.forward(w.gate_proj, n, rows, gate, ws);
+  linear.forward(w.up_proj, n, rows, up, ws);
   // gate_proj goes through SiLU; up_proj does not.
   launch_swiglu_split(gate, up, gate, L * d.intermediate, stream);
   linear.forward(w.down_proj, gate, rows, proj, ws);
