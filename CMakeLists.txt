@@ -351,6 +351,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_step_cache.cpp
     tests/test_tile_merge.cpp
     tests/test_tokenizer.cpp
+    tests/test_tokenizer_json.cpp
     tests/test_qwen_vision.cpp
     tests/test_output.cpp
   )

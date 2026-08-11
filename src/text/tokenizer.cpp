@@ -1,12 +1,12 @@
 #include "vidfab/text/tokenizer.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
-
-#include "vidfab/json.h"
+#include <utility>
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -228,6 +228,346 @@ size_t match_contraction(const std::string& s, size_t pos) {
   return 0;
 }
 
+// --- tokenizer.json scanning -------------------------------------------------
+//
+// A structural walk of the tokenizer file that materialises only the strings
+// the tokenizer keeps, instead of building a `json::Value` tree first.
+//
+// `src/core/json.cpp` is deliberately untouched and still parses everything
+// else. It is the right shape for a safetensors header — 100 KB, read once,
+// arbitrary structure. It is the wrong shape for this file: 151643 vocab
+// entries and 151387 merges become ~303000 tree nodes of 80 bytes each, every
+// one owning a `std::string`, about 40 MB of allocation built to be walked
+// once and thrown away. Measured at 147-166 ms against 35-44 ms for this.
+//
+// String decoding below — the escapes, the `\uXXXX` surrogate pairing and the
+// lone-surrogate to U+FFFD fallback — is character for character the same as
+// `json.cpp`'s. A tokenizer that decoded one escape differently would build a
+// perfectly valid vocabulary that silently disagreed with the reference on the
+// tokens containing it.
+class TokenizerScanner {
+ public:
+  explicit TokenizerScanner(std::string_view text) : s_(text) {}
+
+  bool at_object() { return peek_or_null() == '{'; }
+  bool at_array() { return peek_or_null() == '['; }
+  bool at_string() { return peek_or_null() == '"'; }
+
+  // Calls `on_key(key)` for each member of the object at the cursor, with the
+  // cursor left on that member's value. The callback must consume exactly one
+  // value; `skip_value()` is how it declines one.
+  //
+  // `key` is one buffer reused across this object's own members, so a callback
+  // that needs it past its own return must copy. Nested objects get their own.
+  template <typename Fn>
+  void object(Fn&& on_key) {
+    expect('{');
+    ws();
+    if (peek() == '}') {
+      ++pos_;
+      return;
+    }
+    std::string key;
+    for (;;) {
+      ws();
+      string(key);
+      ws();
+      expect(':');
+      on_key(key);
+      ws();
+      const char c = peek();
+      ++pos_;
+      if (c == '}') break;
+      if (c != ',') fail("expected ',' or '}' in object");
+    }
+  }
+
+  // As `object`, for arrays: `on_element()` consumes exactly one value.
+  template <typename Fn>
+  void array(Fn&& on_element) {
+    expect('[');
+    ws();
+    if (peek() == ']') {
+      ++pos_;
+      return;
+    }
+    for (;;) {
+      ws();
+      on_element();
+      ws();
+      const char c = peek();
+      ++pos_;
+      if (c == ']') break;
+      if (c != ',') fail("expected ',' or ']' in array");
+    }
+  }
+
+  // Decodes the string at the cursor into `out`, which is cleared first and
+  // keeps its capacity. Unescaped runs are appended in one go, which is nearly
+  // all of this file.
+  void string(std::string& out) {
+    out.clear();
+    ws();
+    if (pos_ >= s_.size() || s_[pos_] != '"') fail("expected a string");
+    ++pos_;
+    size_t run = pos_;
+    for (;;) {
+      if (pos_ >= s_.size()) fail("unterminated string");
+      const char c = s_[pos_];
+      if (c == '"') {
+        out.append(s_.data() + run, pos_ - run);
+        ++pos_;
+        return;
+      }
+      if (c != '\\') {
+        ++pos_;
+        continue;
+      }
+      out.append(s_.data() + run, pos_ - run);
+      ++pos_;
+      if (pos_ >= s_.size()) fail("unterminated escape");
+      switch (s_[pos_++]) {
+        case '"': out.push_back('"'); break;
+        case '\\': out.push_back('\\'); break;
+        case '/': out.push_back('/'); break;
+        case 'b': out.push_back('\b'); break;
+        case 'f': out.push_back('\f'); break;
+        case 'n': out.push_back('\n'); break;
+        case 'r': out.push_back('\r'); break;
+        case 't': out.push_back('\t'); break;
+        case 'u': {
+          uint32_t cp = hex4();
+          if (cp >= 0xD800 && cp <= 0xDBFF) {
+            if (pos_ + 1 < s_.size() && s_[pos_] == '\\' && s_[pos_ + 1] == 'u') {
+              const size_t save = pos_;
+              pos_ += 2;
+              const uint32_t lo = hex4();
+              if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+              } else {
+                pos_ = save;
+                cp = 0xFFFD;
+              }
+            } else {
+              cp = 0xFFFD;
+            }
+          } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+            cp = 0xFFFD;
+          }
+          utf8_append(out, cp);
+          break;
+        }
+        default: fail("unrecognised escape sequence");
+      }
+      run = pos_;
+    }
+  }
+
+  // The number at the cursor, truncated toward zero. `json::Value::as_int` is
+  // `static_cast<int64_t>` over a `strtod` result, so the plain-integer fast
+  // path below has to agree with that: it does, because every value it accepts
+  // is exactly representable as a double and the cast then truncates nothing.
+  int64_t integer() {
+    ws();
+    const size_t start = pos_;
+    if (pos_ < s_.size() && (s_[pos_] == '-' || s_[pos_] == '+')) ++pos_;
+    while (pos_ < s_.size()) {
+      const char c = s_[pos_];
+      const bool numeric = (c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' ||
+                           c == '+' || c == '-';
+      if (!numeric) break;
+      ++pos_;
+    }
+    if (pos_ == start) fail("expected a number");
+    const std::string_view token = s_.substr(start, pos_ - start);
+
+    size_t i = 0;
+    bool negative = false;
+    if (token[0] == '-') {
+      negative = true;
+      i = 1;
+    } else if (token[0] == '+') {
+      i = 1;
+    }
+    bool plain = i < token.size();
+    int64_t value = 0;
+    for (; plain && i < token.size(); ++i) {
+      if (token[i] < '0' || token[i] > '9') {
+        plain = false;
+        break;
+      }
+      value = value * 10 + (token[i] - '0');
+      // Past 2^53 a double stops representing every integer, so hand those to
+      // strtod rather than quietly disagreeing with the tree parser.
+      if (value > (int64_t{1} << 53)) {
+        plain = false;
+        break;
+      }
+    }
+    if (plain) return negative ? -value : value;
+
+    const std::string text(token);
+    char* end = nullptr;
+    const double d = std::strtod(text.c_str(), &end);
+    if (end != text.c_str() + text.size()) {
+      pos_ = start;
+      fail("malformed number");
+    }
+    return static_cast<int64_t>(d);
+  }
+
+  // Consumes one value of any shape without materialising it.
+  void skip_value(int depth = 0) {
+    if (depth > kMaxDepth) fail("maximum nesting depth exceeded");
+    ws();
+    switch (peek()) {
+      case '{':
+        ++pos_;
+        ws();
+        if (peek() == '}') {
+          ++pos_;
+          return;
+        }
+        for (;;) {
+          ws();
+          skip_string();
+          ws();
+          expect(':');
+          skip_value(depth + 1);
+          ws();
+          {
+            const char c = peek();
+            ++pos_;
+            if (c == '}') return;
+            if (c != ',') fail("expected ',' or '}' in object");
+          }
+        }
+      case '[':
+        ++pos_;
+        ws();
+        if (peek() == ']') {
+          ++pos_;
+          return;
+        }
+        for (;;) {
+          skip_value(depth + 1);
+          ws();
+          {
+            const char c = peek();
+            ++pos_;
+            if (c == ']') return;
+            if (c != ',') fail("expected ',' or ']' in array");
+          }
+        }
+      case '"': skip_string(); return;
+      case 't':
+        if (!literal("true")) fail("invalid literal");
+        return;
+      case 'f':
+        if (!literal("false")) fail("invalid literal");
+        return;
+      case 'n':
+        if (!literal("null")) fail("invalid literal");
+        return;
+      default: integer(); return;
+    }
+  }
+
+  // Same trailing-content check the tree parser performs, so a truncated or
+  // concatenated file fails loudly here too rather than yielding a half-built
+  // vocabulary.
+  void finish() {
+    ws();
+    if (pos_ != s_.size()) fail("trailing content after JSON document");
+  }
+
+ private:
+  static constexpr int kMaxDepth = 64;
+
+  [[noreturn]] void fail(const char* what) const {
+    throw std::runtime_error("tokenizer: json: " + std::string(what) + " at byte " +
+                             std::to_string(pos_));
+  }
+
+  void ws() {
+    while (pos_ < s_.size()) {
+      const char c = s_[pos_];
+      if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+        ++pos_;
+      } else {
+        break;
+      }
+    }
+  }
+
+  char peek() {
+    if (pos_ >= s_.size()) fail("unexpected end of input");
+    return s_[pos_];
+  }
+
+  // For the `at_*` probes, where end of input is simply "not that".
+  char peek_or_null() {
+    ws();
+    return pos_ < s_.size() ? s_[pos_] : '\0';
+  }
+
+  void expect(char c) {
+    ws();
+    if (pos_ >= s_.size() || s_[pos_] != c) fail("expected character");
+    ++pos_;
+  }
+
+  bool literal(std::string_view lit) {
+    if (s_.substr(pos_, lit.size()) != lit) return false;
+    pos_ += lit.size();
+    return true;
+  }
+
+  uint32_t hex4() {
+    if (pos_ + 4 > s_.size()) fail("truncated \\u escape");
+    uint32_t v = 0;
+    for (int i = 0; i < 4; ++i) {
+      const char c = s_[pos_++];
+      v <<= 4;
+      if (c >= '0' && c <= '9') {
+        v |= static_cast<uint32_t>(c - '0');
+      } else if (c >= 'a' && c <= 'f') {
+        v |= static_cast<uint32_t>(c - 'a' + 10);
+      } else if (c >= 'A' && c <= 'F') {
+        v |= static_cast<uint32_t>(c - 'A' + 10);
+      } else {
+        fail("invalid hex digit in \\u escape");
+      }
+    }
+    return v;
+  }
+
+  // Walks a string without decoding it, for the parts of the file the
+  // tokenizer does not read.
+  void skip_string() {
+    ws();
+    if (pos_ >= s_.size() || s_[pos_] != '"') fail("expected a string");
+    ++pos_;
+    for (;;) {
+      if (pos_ >= s_.size()) fail("unterminated string");
+      const char c = s_[pos_++];
+      if (c == '"') return;
+      if (c == '\\') {
+        if (pos_ >= s_.size()) fail("unterminated escape");
+        ++pos_;
+      }
+    }
+  }
+
+  std::string_view s_;
+  size_t pos_ = 0;
+};
+
+// Sizing hints for the two big tables. Wrong in either direction costs one
+// rehash, never correctness, so they are the real counts rather than a bound.
+constexpr size_t kVocabHint = 151643;
+constexpr size_t kMergeHint = 151387;
+
 }  // namespace
 
 std::vector<std::string> Tokenizer::pre_tokenize(const std::string& text) const {
@@ -425,30 +765,135 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
   merge_ranks_.clear();
   added_tokens_.clear();
 
-  const json::Value root = json::parse(std::string(tokenizer_json));
-  const json::Value* model = root.find("model");
-  if (model == nullptr) throw std::runtime_error("tokenizer: no \"model\" section");
-
-  const json::Value* vocab = model->find("vocab");
-  if (vocab == nullptr) throw std::runtime_error("tokenizer: no vocab");
+  // The four things below are collected by one forward scan of the text, but
+  // they are *assembled* in exactly the order the json-tree version assembled
+  // them — base vocab, then added tokens over the top, then the longest-first
+  // sort, then the id table — because that order is what makes <|im_start|>
+  // win over a shorter prefix and what decides which token owns an id. The
+  // scan therefore parks the added tokens rather than applying them where it
+  // finds them: `added_tokens` precedes `model` in the file, and applying them
+  // first would invert the overwrite.
+  std::vector<std::pair<std::string, int32_t>> added;
   int32_t max_id = -1;
-  for (const auto& [token, id] : vocab->as_object()) {
-    const auto value = static_cast<int32_t>(id.as_int());
-    vocab_.emplace(token, value);
-    max_id = std::max(max_id, value);
-  }
+  bool saw_model = false;
+  bool saw_vocab = false;
 
-  const json::Value* added = root.find("added_tokens");
-  if (added != nullptr && added->is_array()) {
-    for (const json::Value& entry : added->as_array()) {
-      const json::Value* content = entry.find("content");
-      const json::Value* id = entry.find("id");
-      if (content == nullptr || id == nullptr) continue;
-      const auto value = static_cast<int32_t>(id->as_int());
-      vocab_[content->as_string()] = value;
-      added_tokens_.emplace_back(content->as_string(), value);
-      max_id = std::max(max_id, value);
+  TokenizerScanner scan(tokenizer_json);
+  if (!scan.at_object()) throw std::runtime_error("tokenizer: no \"model\" section");
+  scan.object([&](const std::string& key) {
+    if (key == "added_tokens") {
+      if (!scan.at_array()) {
+        scan.skip_value();
+        return;
+      }
+      std::string content;
+      scan.array([&] {
+        if (!scan.at_object()) {
+          scan.skip_value();
+          return;
+        }
+        bool have_content = false;
+        bool have_id = false;
+        int32_t id = 0;
+        content.clear();
+        scan.object([&](const std::string& field) {
+          if (field == "content") {
+            scan.string(content);
+            have_content = true;
+          } else if (field == "id") {
+            id = static_cast<int32_t>(scan.integer());
+            have_id = true;
+          } else {
+            scan.skip_value();
+          }
+        });
+        if (!have_content || !have_id) return;
+        added.emplace_back(content, id);
+      });
+      return;
     }
+    if (key != "model") {
+      scan.skip_value();
+      return;
+    }
+    saw_model = true;
+    if (!scan.at_object()) {
+      scan.skip_value();
+      return;
+    }
+    scan.object([&](const std::string& model_key) {
+      if (model_key == "vocab") {
+        saw_vocab = true;
+        if (!scan.at_object()) throw std::runtime_error("tokenizer: vocab is not an object");
+        // 151643 entries. Reserving turns the rehash chain into one allocation.
+        vocab_.reserve(kVocabHint);
+        scan.object([&](const std::string& token) {
+          const auto value = static_cast<int32_t>(scan.integer());
+          vocab_.emplace(token, value);
+          max_id = std::max(max_id, value);
+        });
+        return;
+      }
+      if (model_key != "merges") {
+        scan.skip_value();
+        return;
+      }
+      if (!scan.at_array()) {
+        scan.skip_value();
+        return;
+      }
+      merge_ranks_.reserve(kMergeHint);
+      int32_t rank = 0;
+      std::string entry;
+      std::string key_buf;
+      scan.array([&] {
+        if (scan.at_string()) {
+          // "left right"
+          scan.string(entry);
+          const size_t sp = entry.find(' ');
+          if (sp == std::string::npos) return;
+          key_buf.assign(entry, 0, sp);
+          key_buf.push_back('\x1F');
+          key_buf.append(entry, sp + 1, std::string::npos);
+        } else if (scan.at_array()) {
+          // ["left", "right"], the pair form. An array of any other length is
+          // skipped without consuming a rank, exactly as before; a two-element
+          // array holding something other than strings still throws, because
+          // that is a merge table this cannot read rather than one it can
+          // ignore.
+          int seen = 0;
+          bool strings = true;
+          key_buf.clear();
+          scan.array([&] {
+            if (seen < 2 && scan.at_string()) {
+              scan.string(entry);
+              if (seen == 1) key_buf.push_back('\x1F');
+              key_buf += entry;
+            } else {
+              if (seen < 2) strings = false;
+              scan.skip_value();
+            }
+            ++seen;
+          });
+          if (seen != 2) return;
+          if (!strings) throw std::runtime_error("tokenizer: merge pair is not two strings");
+        } else {
+          scan.skip_value();
+          return;
+        }
+        merge_ranks_.emplace(key_buf, rank++);
+      });
+    });
+  });
+  scan.finish();
+
+  if (!saw_model) throw std::runtime_error("tokenizer: no \"model\" section");
+  if (!saw_vocab) throw std::runtime_error("tokenizer: no vocab");
+
+  for (const auto& [content, value] : added) {
+    vocab_[content] = value;
+    added_tokens_.emplace_back(content, value);
+    max_id = std::max(max_id, value);
   }
   // Longest first so <|im_start|> wins over any shorter prefix.
   std::sort(added_tokens_.begin(), added_tokens_.end(),
@@ -457,32 +902,6 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
   id_to_token_.assign(static_cast<size_t>(max_id) + 1, std::string());
   for (const auto& [token, id] : vocab_) {
     id_to_token_[static_cast<size_t>(id)] = token;
-  }
-
-  const json::Value* merges = model->find("merges");
-  if (merges != nullptr && merges->is_array()) {
-    int32_t rank = 0;
-    for (const json::Value& m : merges->as_array()) {
-      std::string left;
-      std::string right;
-      if (m.is_string()) {
-        // "left right"
-        const std::string& s = m.as_string();
-        const size_t sp = s.find(' ');
-        if (sp == std::string::npos) continue;
-        left = s.substr(0, sp);
-        right = s.substr(sp + 1);
-      } else if (m.is_array() && m.as_array().size() == 2) {
-        left = m.as_array()[0].as_string();
-        right = m.as_array()[1].as_string();
-      } else {
-        continue;
-      }
-      std::string key = left;
-      key.push_back('\x1F');
-      key += right;
-      merge_ranks_.emplace(std::move(key), rank++);
-    }
   }
 }
 

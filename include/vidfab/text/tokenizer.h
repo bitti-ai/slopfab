@@ -54,6 +54,14 @@ class Tokenizer {
   // the stage most likely to diverge from the reference.
   std::vector<std::string> pre_tokenize(const std::string& text) const;
 
+  // Exposed for testing. The merge table is the one piece of loaded state with
+  // no other observable — a dropped or misranked merge only shows up as a
+  // differently but still plausibly tokenised prompt — and the load path has
+  // an old-versus-new differential test that has to compare it exactly.
+  const std::unordered_map<std::string, int32_t>& merge_ranks_for_testing() const {
+    return merge_ranks_;
+  }
+
  private:
   std::unordered_map<std::string, int32_t> vocab_;
   std::vector<std::string> id_to_token_;
