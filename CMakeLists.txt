@@ -281,6 +281,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_pipeline.cpp
     tests/test_sampler.cpp
     tests/test_step_cache.cpp
+    tests/test_tile_merge.cpp
     tests/test_tokenizer.cpp
     tests/test_qwen_vision.cpp
     tests/test_output.cpp

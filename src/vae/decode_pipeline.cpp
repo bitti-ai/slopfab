@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "vidfab/cuda/profile.h"
+#include "vidfab/vae/tile_merge.h"
 #include "vidfab/vae/vit_decoder.h"
 
 namespace vidfab::vae {
@@ -79,32 +80,11 @@ TileLayout split_tiles(int input_len, int tile_size, int overlap_min, int ratio)
   return layout;
 }
 
-// blend(a, b, overlap) (klvae.py:220-250). The result has b's shape: the first
-// `overlap` slices cross-fade from a to b, the rest is b verbatim.
-//
-// The ramp is asymmetric — weight_b runs 0, 1/n, ... (n-1)/n and never reaches
-// 1 — so the last blended slice retains a 1/n contribution from `a`.
-void blend_axis(const float* a, const float* b, float* out, int lead, int overlap, int blend_len,
-                int trail) {
-  // Layout is [lead][blend_len][trail]; `a` supplies its final `overlap`
-  // slices along the blended axis.
-  for (int l = 0; l < lead; ++l) {
-    for (int i = 0; i < blend_len; ++i) {
-      const float wb = (i < overlap) ? static_cast<float>(i) / static_cast<float>(overlap) : 1.0f;
-      const float wa = 1.0f - wb;
-      for (int t = 0; t < trail; ++t) {
-        const size_t bi = (static_cast<size_t>(l) * blend_len + i) * trail + t;
-        if (i < overlap) {
-          const int a_index = blend_len - overlap + i;  // a's tail slice
-          const size_t ai = (static_cast<size_t>(l) * blend_len + a_index) * trail + t;
-          out[bi] = a[ai] * wa + b[bi] * wb;
-        } else {
-          out[bi] = b[bi];
-        }
-      }
-    }
-  }
-}
+// blend(a, b, overlap) (klvae.py:220-250) cross-fades the first `overlap`
+// slices from a to b and leaves the rest of b alone. The ramp is asymmetric —
+// weight_b runs 0, 1/n, ... (n-1)/n and never reaches 1 — so the last blended
+// slice retains a 1/n contribution from `a`. TileMerge in vae/tile_merge.h
+// applies it to a decoded tile without materialising the untouched interior.
 
 }  // namespace
 
@@ -226,14 +206,11 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   // would only buy a zero-fill of a few hundred megabytes that the next line
   // overwrites. `chunk_pixels` is fully covered because the tiles' kept
   // extents sum to exactly H_px by W_px, which is how split_tiles absorbs its
-  // surplus. `blend_lhs`/`blend_rhs` replace the by-value tile copy and the two
-  // `merged` temporaries: blend_axis writes every element of its output, so a
-  // scratch buffer of the right extent is all either side needs, and the raw
-  // neighbour tiles are read straight out of `tiles`.
+  // surplus. `merge` holds the two overlap slabs, which is all the cross-fade
+  // ever changes; the raw neighbour tiles are read straight out of `tiles`.
   const int out_frames = window * cfg.patch_t;  // 28
   std::vector<float> chunk_pixels(static_cast<size_t>(3) * out_frames * frame_pixels);
-  std::vector<float> blend_lhs;
-  std::vector<float> blend_rhs;
+  TileMerge merge;
   std::vector<float> next_carry(static_cast<size_t>(schedule.frame_overlap) * 3 * frame_pixels);
 
   for (int c = 0; c < num_chunks; ++c) {
@@ -316,40 +293,28 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
             (tj + 1 < xtiles.starts.size()) ? tw - xtiles.overlaps[tj] : tw;
 
         const std::vector<float>& raw = tiles[ti * xtiles.starts.size() + tj];
-        const size_t plane = static_cast<size_t>(th) * tw;
 
-        // `src_tile` walks the scratch buffers as the blends are applied; with
-        // no neighbour on either axis it stays pointing at the raw tile and
-        // nothing is copied at all.
+        // Only the overlap slabs are computed; with no neighbour on either axis
+        // nothing is computed at all and the stitch reads the raw tile.
         cuda::PhaseSpan s_blend("tile blend");
-        const float* src_tile = raw.data();
-        if (ti > 0) {
-          const std::vector<float>& above = tiles[(ti - 1) * xtiles.starts.size() + tj];
-          if (blend_lhs.size() < raw.size()) blend_lhs.resize(raw.size());
-          blend_axis(above.data(), src_tile, blend_lhs.data(), 3 * out_frames,
-                     ytiles.overlaps[ti - 1], th, tw);
-          src_tile = blend_lhs.data();
-        }
-        if (tj > 0) {
-          const std::vector<float>& left = tiles[ti * xtiles.starts.size() + (tj - 1)];
-          if (blend_rhs.size() < raw.size()) blend_rhs.resize(raw.size());
-          blend_axis(left.data(), src_tile, blend_rhs.data(), 3 * out_frames * th,
-                     xtiles.overlaps[tj - 1], tw, 1);
-          src_tile = blend_rhs.data();
-        }
+        const float* above =
+            (ti > 0) ? tiles[(ti - 1) * xtiles.starts.size() + tj].data() : nullptr;
+        const float* left =
+            (tj > 0) ? tiles[ti * xtiles.starts.size() + (tj - 1)].data() : nullptr;
+        merge.prepare(raw.data(), above, left, 3 * out_frames, th, tw,
+                      (ti > 0) ? ytiles.overlaps[ti - 1] : 0,
+                      (tj > 0) ? xtiles.overlaps[tj - 1] : 0);
         s_blend.stop();
 
         cuda::PhaseSpan s_stitch("tile stitch");
         for (int p = 0; p < 3 * out_frames; ++p) {
           for (int y = 0; y < keep_h; ++y) {
-            const size_t src = static_cast<size_t>(p) * plane + static_cast<size_t>(y) * tw;
             const int plane_index = p % out_frames;
             const int channel = p / out_frames;
             const size_t dst =
                 (static_cast<size_t>(plane_index) * 3 + channel) * frame_pixels +
                 static_cast<size_t>(y_cursor + y) * W_px + x_cursor;
-            std::copy_n(src_tile + src, keep_w,
-                        chunk_pixels.begin() + static_cast<long long>(dst));
+            merge.copy_row(p, y, keep_w, chunk_pixels.data() + dst);
           }
         }
         s_stitch.stop();
