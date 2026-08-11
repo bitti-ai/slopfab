@@ -8,6 +8,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -145,30 +146,40 @@ class CheckpointPrefetch {
                 paths.end());
     if (paths.empty()) return;
     requested_ = paths.size();
-    worker_ = std::thread([this, paths = std::move(paths)] {
-      for (const std::string& path : paths) {
-        try {
-          // Held open rather than closed here: PrefetchVirtualMemory returns
-          // as soon as the read is *initiated*, so unmapping immediately after
-          // it would race the readahead it just asked for. The mappings are
-          // dropped in `join()`, by which point the loop has had minutes.
-          SafeTensors file;
-          file.open(path);
-          ++opened_;
-          if (file.prefetch()) {
-            ++accepted_;
-            bytes_ += file.file_size();
+    // `std::thread`'s constructor throws `std::system_error` when the process
+    // cannot spawn one. Letting that escape would kill a generation that was
+    // about to denoise perfectly well, for the sake of an optimisation whose
+    // whole contract is that losing it costs only time. Degrade to demand
+    // faulting instead — which is exactly what the run did before this class
+    // existed.
+    try {
+      worker_ = std::thread([this, paths = std::move(paths)] {
+        for (const std::string& path : paths) {
+          try {
+            // Held open rather than closed here: PrefetchVirtualMemory returns
+            // as soon as the read is *initiated*, so unmapping immediately after
+            // it would race the readahead it just asked for. The mappings are
+            // dropped in `join()`, by which point the loop has had minutes.
+            SafeTensors file;
+            file.open(path);
+            ++opened_;
+            if (file.prefetch()) {
+              ++accepted_;
+              bytes_ += file.file_size();
+            }
+            files_.push_back(std::move(file));
+          } catch (...) {
+            // A missing or malformed checkpoint fails on the main path in a
+            // moment, with the message and the exit code the user needs. There
+            // is nothing this thread can usefully add, and throwing out of it
+            // would call std::terminate. The counters above are what makes the
+            // swallow visible rather than silent.
           }
-          files_.push_back(std::move(file));
-        } catch (...) {
-          // A missing or malformed checkpoint fails on the main path in a
-          // moment, with the message and the exit code the user needs. There
-          // is nothing this thread can usefully add, and throwing out of it
-          // would call std::terminate. The counters above are what makes the
-          // swallow visible rather than silent.
         }
-      }
-    });
+      });
+    } catch (const std::system_error&) {
+      requested_ = 0;
+    }
   }
 
   // Reports as well as joins, because the whole value of this class has to be
