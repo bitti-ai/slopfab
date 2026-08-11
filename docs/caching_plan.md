@@ -93,10 +93,16 @@ arithmetic.
    (18 and 64 distinct values). Measured **12.01 ms** for a 2048^2 vision
    table and **12.30 ms** for an L=8192 decoder table, ~90% of it in `pow`.
    `src/cuda/vit_decoder.cu:266-270` already does this correctly.
-7. **The ConvRot activation rotation is computed 5x per decoder layer where 2
-   would do** — `src/cuda/encoder_kernels.cu:597-599` and `:622-623`. The
-   rotation is a property of the activation, not the weight; the comment at
-   `:594-596` says q/k/v share one rotation but the sharing is never taken.
+7. ~~**The ConvRot activation rotation is computed 5x per decoder layer where 2
+   would do**~~ — `src/cuda/encoder_kernels.cu:597-599` and `:622-623`.
+   **Implemented, validated bit-identical, then reverted on VRAM grounds.**
+   Hoisting the rotation needs an `L x hidden` bf16 workspace reserved for
+   `kI8ConvRot` — **84 MB at the 8192-token bound** — to buy ~0.06% of an
+   encode. That is a bad trade on a 32 GB card, and it lands on the live path:
+   `generate.cmd` ships `qwen3vl_32b_int8_convrot.safetensors` as the default
+   text encoder. It was also the riskiest item on the sheet
+   (`docs/text_encoder_spec.md` 5.3 and 9: a skipped or doubled rotation is
+   silent, well-scaled noise). Recorded so nobody re-derives it.
 
 ### Workstream `agent/cache-kernels` — device-side reuse
 
@@ -165,8 +171,17 @@ arithmetic.
    clean rows cache and the noise stays per-generation.
 3. **The tokenizer is rebuilt on every conditioning-cache miss** —
    `src/generate.cpp:270-272`, a local inside the `else` branch. ~150 ms per
-   generation in a prompt sweep, which is exactly what `--reuse-models` exists
-   to serve.
+   generation on a prompt change.
+   **Correction, after review: no shipped CLI path reaches this.** `req.prompt`
+   is assigned once at `src/main.cpp:1166` and the `--count` loop mutates only
+   `seed` and `out_path`, so `conditioning_cache_key` is constant across a
+   counted run, the conditioning cache always hits from generation 2, and the
+   `else` branch containing the tokenizer reuse is entered only on generation 1
+   — where the cache is empty by construction. The change is kept because it is
+   small and correct and serves a library caller that varies the prompt, but it
+   is **dormant for the CLI as it ships** and the ~150 ms is not realised by any
+   command a user can type. Realising it would need a prompt-sweep CLI, which is
+   `src/main.cpp` and was out of scope.
 4. **`conditioning_cache_key` keys reference images by path, not content** —
    `src/generate.cpp:99-110`. Overwrite an image in place between two runs and
    the second silently reuses the first image's conditioning. This is a
@@ -274,6 +289,22 @@ tolerance describes it, and it is strictly dominated by the existing
 **Composing `StepCache` with the AB2 sampler.** Already documented as unsound
 in two places — AB2's `v_{n-1}` would be a reused velocity. Do not "fix" this
 by caching more.
+
+## Found along the way, unrelated to caching
+
+**The golden tokenizer suite has never run in this repository.**
+`tests/test_tokenizer.cpp:31` hard-codes `ref/FL2VA/text_encoder/tokenizer.json`.
+That path does not exist — the tokenizer ships at `ref/text_encoder/tokenizer.json`
+— so both `tokenizer_golden_ids` and `tokenizer_round_trip` take the
+"not present; skipping" branch. On master, `VIDFAB_TEST_FILTER=tokenizer`
+reports **`0 checks, 0 failures`**. With the file placed at the expected path it
+reports **28 checks, 0 failures**, so the tests themselves are fine and have
+simply never been exercised.
+
+This surfaced because the campaign rewrote `Tokenizer::load_json`, and the
+suite that would have caught a regression was the one silently disabled. The
+test now tries both paths. Worth remembering that a skipping test and a passing
+test print almost the same thing.
 
 Also checked and already correct, so left alone: cuBLAS handle and stream
 lifetime, the workspace bump allocator and its high-water sizing, profiler
