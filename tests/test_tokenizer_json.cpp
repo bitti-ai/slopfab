@@ -325,6 +325,46 @@ VIDFAB_TEST(tokenizer_scan_handles_escapes_added_tokens_and_malformed_input) {
   // it is present.
   CHECK(tok.token_to_id("tail") == 8);
 
+  // A negative id used to sign-extend through `static_cast<size_t>` into an
+  // ~1.8e19 index and write past `id_to_token_`. This is the exact shape a
+  // single-byte mutation of the real file produces — one '-' inserted into an
+  // id turns a load into an out-of-bounds store — and it segfaulted the
+  // json-tree loader too, so it is a pre-existing hole rather than a scanner
+  // one. The bound above it is a separate check: an id of 2e9 is in range for
+  // the cast and asks for a 64 GB vector.
+  const char* out_of_range[] = {
+      "{\"model\": {\"vocab\": {\"a\": 0, \"b\": -85018}}}",       // negative in the vocab
+      "{\"model\": {\"vocab\": {\"a\": -1}}}",                     // negative, only entry
+      "{\"added_tokens\": [{\"id\": -7, \"content\": \"x\"}],"
+      " \"model\": {\"vocab\": {\"a\": 0}}}",                      // negative via added_tokens
+      "{\"model\": {\"vocab\": {\"a\": 0, \"b\": 2000000000}}}",   // plausible but absurd
+      // An id that an added token overwrites still sized the vector, so it is
+      // bounded even though it does not survive into `vocab_`.
+      "{\"added_tokens\": [{\"id\": 1, \"content\": \"a\"}],"
+      " \"model\": {\"vocab\": {\"a\": 2000000000}}}",
+  };
+  for (const char* doc_text : out_of_range) {
+    Tokenizer t;
+    bool threw = false;
+    try {
+      t.load_json(doc_text);
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK_MSG(threw, "an out-of-range id was accepted: %s", doc_text);
+  }
+
+  // The bound must not reject the real file, whose control tokens sit in a
+  // reserved block well above the base vocabulary.
+  {
+    const std::string path = find_tokenizer();
+    if (!path.empty()) {
+      Tokenizer real;
+      real.load(path);
+      CHECK(real.vocab_size() > 151000);
+    }
+  }
+
   // Malformed documents are rejected rather than half-loaded.
   const char* bad[] = {
       "{\"model\": {\"vocab\": {\"a\": 0}}} trailing",

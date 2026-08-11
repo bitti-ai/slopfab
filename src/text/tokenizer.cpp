@@ -899,6 +899,40 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
   std::sort(added_tokens_.begin(), added_tokens_.end(),
             [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
 
+  // Every id has to index `id_to_token_` below, and `static_cast<size_t>` on a
+  // negative int32 does not fail, it produces ~1.8e19 and writes there. A
+  // single flipped byte in the file is enough: turning `"ĠEXTI": 85018` into
+  // `"ĠEXTI":-85018` is one character and segfaults the unguarded assembly.
+  //
+  // The upper bound is separate from the sign check and not redundant with it:
+  // a plausible-looking id of 2e9 asks for a 2-billion-entry vector of
+  // std::string, which is a 64 GB allocation rather than a wrong answer. Four
+  // times the vocabulary is far above any real gap between the base vocab and
+  // the reserved control-token block and far below anything that allocates.
+  const auto vocab_entries = static_cast<int64_t>(vocab_.size());
+  const int64_t id_limit = 4 * vocab_entries + 1024;
+  for (const auto& [token, id] : vocab_) {
+    if (id < 0) {
+      throw std::runtime_error("tokenizer: token '" + token + "' has a negative id " +
+                               std::to_string(id));
+    }
+    if (static_cast<int64_t>(id) > id_limit) {
+      throw std::runtime_error("tokenizer: token '" + token + "' has id " + std::to_string(id) +
+                               ", beyond the plausible bound " + std::to_string(id_limit) +
+                               " for a vocabulary of " + std::to_string(vocab_entries));
+    }
+  }
+
+  // `max_id` is taken over every id the file declared, including one that an
+  // added token later overwrote and that therefore no longer appears in
+  // `vocab_`. It sizes the vector, so it is bounded separately rather than
+  // inferred from the survivors.
+  if (max_id > id_limit) {
+    throw std::runtime_error("tokenizer: largest id " + std::to_string(max_id) +
+                             " is beyond the plausible bound " + std::to_string(id_limit) +
+                             " for a vocabulary of " + std::to_string(vocab_entries));
+  }
+
   id_to_token_.assign(static_cast<size_t>(max_id) + 1, std::string());
   for (const auto& [token, id] : vocab_) {
     id_to_token_[static_cast<size_t>(id)] = token;
