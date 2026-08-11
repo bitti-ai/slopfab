@@ -85,13 +85,12 @@ __device__ float warp_sum(float x) {
 // One block computes one (head, channel) sequence mean. K smoothing is exact
 // in fp32 and does not alter softmax output: it subtracts one query-dependent
 // constant from every logit in a row.
-template <int D>
-__global__ void key_mean(const __nv_bfloat16* k, float* mean, int seq, int heads) {
+__global__ void key_mean(const __nv_bfloat16* k, float* mean, int seq, int heads, int dim) {
   const int hd = blockIdx.x;
-  const int h = hd / D, d = hd % D;
+  const int h = hd / dim, d = hd % dim;
   float sum = 0.0f;
   for (int s = threadIdx.x; s < seq; s += blockDim.x)
-    sum += __bfloat162float(k[(static_cast<size_t>(s) * heads + h) * D + d]);
+    sum += __bfloat162float(k[(static_cast<size_t>(s) * heads + h) * dim + d]);
   __shared__ float sm[8];
   sum = warp_sum(sum);
   if ((threadIdx.x & 31) == 0) sm[threadIdx.x >> 5] = sum;
@@ -103,34 +102,18 @@ __global__ void key_mean(const __nv_bfloat16* k, float* mean, int seq, int heads
   }
 }
 
-// `D` is a template parameter, not the runtime `dim` it replaces, for one
-// reason: the flat index has to be split back into (row, channel), and against
-// a runtime divisor nvcc emits a real 32-bit division and remainder per element
-// — two of them, once per pass. Head dim is 64 or 128 here (`sage2_supported`
-// admits nothing else), so as a constant the split is a shift and a mask. The
-// arithmetic on the values is untouched, so the output is bit-identical.
-//
-// The second pass deliberately re-loads and re-widens the same bf16 rather than
-// keeping the fp32 values live across the barrier. That was tried and measured
-// at compile time: `Rows * D / kThreads` is 32 values per thread at Rows=64,
-// D=128, and ptxas puts the register-cached form at **80 registers** against 38
-// for the reload. At 256 threads a block that is 3 resident blocks (768 threads)
-// instead of 6 (1536, the sm_120 ceiling) — half the occupancy on a kernel whose
-// only problem is load latency. The reload it would save is a cache hit anyway:
-// one block's slice is 8-16 KB and the two passes are separated by nothing but a
-// `__syncthreads`.
-template <int Rows, int D, bool Smooth>
+template <int Rows, bool Smooth>
 __global__ void quant_qk(const __nv_bfloat16* in, int8_t* out, float* scales,
-                         const float* mean, int seq, int heads, int groups) {
+                         const float* mean, int seq, int heads, int dim, int groups) {
   const int group = blockIdx.x;
   const int h = blockIdx.y;
   const int s0 = group * Rows;
   float amax = 0.0f;
-  for (int i = threadIdx.x; i < Rows * D; i += blockDim.x) {
-    const int s = s0 + i / D, d = i % D;
+  for (int i = threadIdx.x; i < Rows * dim; i += blockDim.x) {
+    const int s = s0 + i / dim, d = i % dim;
     if (s < seq) {
-      float x = __bfloat162float(in[(static_cast<size_t>(s) * heads + h) * D + d]);
-      if constexpr (Smooth) x -= mean[h * D + d];
+      float x = __bfloat162float(in[(static_cast<size_t>(s) * heads + h) * dim + d]);
+      if constexpr (Smooth) x -= mean[h * dim + d];
       amax = fmaxf(amax, fabsf(x));
     }
   }
@@ -146,12 +129,12 @@ __global__ void quant_qk(const __nv_bfloat16* in, int8_t* out, float* scales,
   __syncthreads();
   const float scale = sm[0];
   if (threadIdx.x == 0) scales[h * groups + group] = scale;
-  for (int i = threadIdx.x; i < Rows * D; i += blockDim.x) {
-    const int s = s0 + i / D, d = i % D;
+  for (int i = threadIdx.x; i < Rows * dim; i += blockDim.x) {
+    const int s = s0 + i / dim, d = i % dim;
     if (s < seq) {
-      float x = __bfloat162float(in[(static_cast<size_t>(s) * heads + h) * D + d]);
-      if constexpr (Smooth) x -= mean[h * D + d];
-      out[(static_cast<size_t>(s) * heads + h) * D + d] =
+      float x = __bfloat162float(in[(static_cast<size_t>(s) * heads + h) * dim + d]);
+      if constexpr (Smooth) x -= mean[h * dim + d];
+      out[(static_cast<size_t>(s) * heads + h) * dim + d] =
           static_cast<int8_t>(__float2int_rn(fminf(127.0f, fmaxf(-127.0f, x / scale))));
     }
   }
@@ -160,14 +143,13 @@ __global__ void quant_qk(const __nv_bfloat16* in, int8_t* out, float* scales,
 // SageAttention2.2's sm120 route uses scale_max=2.25 for its FP32+FP16 PV
 // accumulator. Output is transposed to [D,H,padded_sequence] as the official
 // tensor-core kernel expects.
-template <int D>
 __global__ void quant_v(const __nv_bfloat16* v, int8_t* out, float* scales,
-                        int seq, int padded, int heads) {
+                        int seq, int padded, int heads, int dim) {
   const int hd = blockIdx.x;
-  const int h = hd / D, d = hd % D;
+  const int h = hd / dim, d = hd % dim;
   float amax = 0.0f;
   for (int s = threadIdx.x; s < seq; s += blockDim.x)
-    amax = fmaxf(amax, fabsf(__bfloat162float(v[(static_cast<size_t>(s) * heads + h) * D + d])));
+    amax = fmaxf(amax, fabsf(__bfloat162float(v[(static_cast<size_t>(s) * heads + h) * dim + d])));
   __shared__ float sm[8];
   amax = warp_max(amax);
   if ((threadIdx.x & 31) == 0) sm[threadIdx.x >> 5] = amax;
@@ -182,7 +164,7 @@ __global__ void quant_v(const __nv_bfloat16* v, int8_t* out, float* scales,
   if (threadIdx.x == 0) scales[hd] = scale;
   int8_t* dst = out + (static_cast<size_t>(d) * heads + h) * padded;
   for (int s = threadIdx.x; s < padded; s += blockDim.x) {
-    float x = s < seq ? __bfloat162float(v[(static_cast<size_t>(s) * heads + h) * D + d]) / scale : 0.0f;
+    float x = s < seq ? __bfloat162float(v[(static_cast<size_t>(s) * heads + h) * dim + d]) / scale : 0.0f;
     // The upstream FP8 MMA expects the sequence dimension permuted inside
     // each 16-row group: 0,1,4,5,8,9,12,13,2,3,6,7,10,11,14,15.
     const int base = s & ~15;
@@ -190,32 +172,6 @@ __global__ void quant_v(const __nv_bfloat16* v, int8_t* out, float* scales,
     const int perm = (r / 8) * 2 + ((r / 2) & 3) * 4 + (r & 1);
     dst[base + perm] = static_cast<int8_t>(__nv_fp8_e4m3(x).__x);
   }
-}
-
-// This kernel's dynamic shared memory, which needs **no** opt-in.
-//
-// `cudaFuncSetAttribute(cudaFuncAttributeMaxDynamicSharedMemorySize, ...)` used
-// to run here on every attention call — fifty blocks a step on the default
-// backend. It was not merely hoistable, it was always a no-op: the opt-in is
-// only required above 48 KB, and this is 32 KB at D=128 and 16 KB at D=64. Both
-// branches of the max are equal at each D, which is not a coincidence — the
-// int8 staging (CTA_Q + 2*CTA_K)*D bytes and the fp16 output tile CTA_Q*D*2
-// bytes come out the same for CTA_Q = 2*CTA_K.
-//
-// So the call is gone rather than cached. Caching it would have kept a latent
-// bug for the sake of a no-op: a `static thread_local` latch is per thread, not
-// per device, so a thread that `cudaSetDevice`s after the latch is set would
-// skip the opt-in on the second device — harmless only for as long as the
-// figures below stay under 48 KB.
-static_assert(128 * 128 + 64 * 128 + 64 * 128 <= 48 * 1024,
-              "sage2 D=128 now needs a dynamic shared memory opt-in");
-static_assert(128 * 64 + 64 * 64 + 64 * 64 <= 48 * 1024,
-              "sage2 D=64 now needs a dynamic shared memory opt-in");
-
-template <int D>
-constexpr size_t official_smem() {
-  constexpr int CTA_Q = 128, CTA_K = 64;
-  return std::max<size_t>(CTA_Q * D + CTA_K * D + CTA_K * D, CTA_Q * D * sizeof(__half));
 }
 
 template <int D>
@@ -227,7 +183,10 @@ void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* o
       CTA_Q, CTA_K, WARP_Q, WARP_K, D, DataType::kInt8,
       QuantGranularity::kPerWarp, QuantGranularity::kPerWarp, float, true,
       KernelOut, ComputeUnit::kCudaCore, MaskMode::kNone, false, true, false, true>;
-  constexpr size_t smem = official_smem<D>();
+  const size_t smem = std::max<size_t>(CTA_Q * D + CTA_K * D + CTA_K * D,
+                                      CTA_Q * D * sizeof(__half));
+  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                         static_cast<int>(smem)));
   dim3 grid(ceil_div(c.seq_len, CTA_Q), c.num_heads, 1);
   dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
   const int groups = c.num_heads / kvh;
@@ -240,27 +199,6 @@ void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* o
       c.seq_len * c.num_heads * D, c.num_heads * D, D,
       c.effective_scale());
   VIDFAB_CUDA_CHECK(cudaGetLastError());
-}
-
-// The whole quantise-then-attend sequence under one `D`. Dispatching once here
-// rather than only around the tensor-core launch is what lets the three
-// preparation kernels see head dim as a constant.
-template <int D>
-void quantise_and_run(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
-                      const __nv_bfloat16* v, __nv_bfloat16* out, const AttentionConfig& c,
-                      int kvh, const SageBuffers& b, int padded) {
-  key_mean<D><<<kvh * D, kThreads, 0, stream>>>(k, b.km, c.seq_len, kvh);
-  const int qgroups = ceil_div(c.seq_len, kQBlock) * (kQBlock / kQWarp);
-  dim3 qgrid(qgroups, c.num_heads);
-  quant_qk<kQWarp, D, false><<<qgrid, kThreads, 0, stream>>>(
-      q, b.q, b.qs, nullptr, c.seq_len, c.num_heads, qgroups);
-  const int kgroups = ceil_div(c.seq_len, kKBlock);
-  dim3 kgrid(kgroups, kvh);
-  quant_qk<kKBlock, D, true><<<kgrid, kThreads, 0, stream>>>(
-      k, b.k, b.ks, b.km, c.seq_len, kvh, kgroups);
-  quant_v<D><<<kvh * D, kThreads, 0, stream>>>(v, b.v, b.vs, c.seq_len, padded, kvh);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
-  launch_official<D>(stream, b, out, c, kvh, padded);
 }
 
 // Compute capability, cached for the process. A device's capability cannot
@@ -312,15 +250,6 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
                              const __nv_bfloat16* k, const __nv_bfloat16* v,
                              __nv_bfloat16* out, const AttentionConfig& cfg,
                              int num_kv_heads, Workspace& ws) {
-  // Deliberately *not* cached, unlike the capability it feeds. A device's
-  // capability is a pure function of the device, so latching it is sound; the
-  // *current* device is per-thread mutable state that `cudaSetDevice` can
-  // change between two calls, so a cache here would be a correctness bug the
-  // day this runs on two cards. It is also not the round-trip worth removing:
-  // `cudaGetDevice` reads the runtime's thread-local context, while
-  // `cudaGetDeviceProperties` (cached above) and `cudaFuncSetAttribute`
-  // (hoisted into `ensure_official_smem_optin`) are the calls that enter the
-  // driver.
   int device = 0;
   VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
   const char* reason = nullptr;
@@ -329,8 +258,21 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   Workspace::Scope scope(ws);
   SageBuffers b = carve(ws.alloc(buffer_bytes(cfg, num_kv_heads)), cfg, num_kv_heads);
   const int padded = ceil_div(cfg.seq_len, kKBlock) * kKBlock;
-  if (cfg.head_dim == 64) quantise_and_run<64>(stream, q, k, v, out, cfg, num_kv_heads, b, padded);
-  else quantise_and_run<128>(stream, q, k, v, out, cfg, num_kv_heads, b, padded);
+  key_mean<<<num_kv_heads * cfg.head_dim, kThreads, 0, stream>>>(
+      k, b.km, cfg.seq_len, num_kv_heads, cfg.head_dim);
+  const int qgroups = ceil_div(cfg.seq_len, kQBlock) * (kQBlock / kQWarp);
+  dim3 qgrid(qgroups, cfg.num_heads);
+  quant_qk<kQWarp, false><<<qgrid, kThreads, 0, stream>>>(
+      q, b.q, b.qs, nullptr, cfg.seq_len, cfg.num_heads, cfg.head_dim, qgroups);
+  const int kgroups = ceil_div(cfg.seq_len, kKBlock);
+  dim3 kgrid(kgroups, num_kv_heads);
+  quant_qk<kKBlock, true><<<kgrid, kThreads, 0, stream>>>(
+      k, b.k, b.ks, b.km, cfg.seq_len, num_kv_heads, cfg.head_dim, kgroups);
+  quant_v<<<num_kv_heads * cfg.head_dim, kThreads, 0, stream>>>(
+      v, b.v, b.vs, cfg.seq_len, padded, num_kv_heads, cfg.head_dim);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  if (cfg.head_dim == 64) launch_official<64>(stream, b, out, cfg, num_kv_heads, padded);
+  else launch_official<128>(stream, b, out, cfg, num_kv_heads, padded);
 }
 
 }  // namespace vidfab::cuda
