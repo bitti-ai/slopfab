@@ -34,6 +34,7 @@
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/nvfp4_gemm.cuh"
+#include "vidfab/cuda/sage_attention.cuh"
 #include "vidfab/cuda/workspace.cuh"
 #include "vidfab/dit/packing.h"
 #include "vidfab/dtype.h"
@@ -2268,6 +2269,68 @@ VIDFAB_TEST(attention_sage2) {
     threw = true;
   }
   CHECK(threw);
+}
+
+// sage2's three preparation kernels take head dim as a template parameter and
+// its shared-memory opt-in is latched per instantiation, so the failure modes
+// this guards are (a) an index split that is right at one D and wrong at the
+// other, and (b) a latch shared between the two D's, which would leave the
+// second one launched without its opt-in. Both are invisible unless the two
+// widths run in the same process and interleave, hence the alternating loop.
+//
+// The digest is printed rather than asserted against a constant: it is what
+// establishes that a refactor of these kernels is *bit*-identical rather than
+// merely within tolerance. Run the case before and after and compare the lines.
+VIDFAB_TEST(attention_sage2_head_dims_bit_stable) {
+  const int heads = 8, kv_heads = 2;
+  struct Shape { int seq; int head_dim; };
+  const Shape shapes[] = {{64, 64}, {199, 128}, {130, 64}, {256, 128}, {65, 64}, {321, 128}};
+
+  std::vector<uint16_t> first[6];
+  for (int round = 0; round < 2; ++round) {
+    for (int si = 0; si < 6; ++si) {
+      const int seq = shapes[si].seq, head_dim = shapes[si].head_dim;
+      const size_t qn = size_t(seq) * heads * head_dim;
+      const size_t kn = size_t(seq) * kv_heads * head_dim;
+      const std::vector<float> q = bf16_round(make_data(qn, 4101u + si, 0.3f));
+      const std::vector<float> k = bf16_round(make_data(kn, 4201u + si, 0.3f));
+      const std::vector<float> v = bf16_round(make_data(kn, 4301u + si, 1.0f));
+      BfBuf dq(q), dk(k), dv(v), dout(qn);
+      vidfab::cuda::AttentionConfig cfg;
+      cfg.seq_len = seq;
+      cfg.num_heads = heads;
+      cfg.head_dim = head_dim;
+      Workspace ws;
+      ws.reserve(vidfab::cuda::sage2_workspace_bytes(cfg, kv_heads));
+      vidfab::cuda::sage2_attention_forward(nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                            kv_heads, ws);
+      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      const std::vector<uint16_t> bits = dout.bits();
+
+      if (round == 0) {
+        const std::vector<float> want =
+            cpu_attention(q, k, v, seq, heads, kv_heads, head_dim,
+                          1.0f / std::sqrt(float(head_dim)));
+        CHECK_CLOSE_REL(want, dout.host(), 3.0e-2, 1.2e-1, "sage2 GQA vs dense CPU");
+        first[si] = bits;
+        // FNV-1a over the raw bf16 payload. Two runs of the same build must
+        // print the same value; a bit-identical refactor must not move it.
+        uint64_t h = 1469598103934665603ull;
+        for (uint16_t b : bits) {
+          h = (h ^ (b & 0xffu)) * 1099511628211ull;
+          h = (h ^ (b >> 8)) * 1099511628211ull;
+        }
+        std::printf("  sage2 digest seq=%3d D=%3d kv=%d  %016llx\n", seq, head_dim, kv_heads,
+                    static_cast<unsigned long long>(h));
+      } else {
+        size_t bad = 0;
+        for (size_t i = 0; i < bits.size(); ++i) bad += bits[i] != first[si][i];
+        CHECK_MSG(bad == 0,
+                  "sage2 seq=%d D=%d drifted across interleaved head dims: %zu of %zu bf16 differ",
+                  seq, head_dim, bad, bits.size());
+      }
+    }
+  }
 }
 
 // head_dim 64 is the other instantiation `supported()` accepts, and until this

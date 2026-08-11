@@ -174,6 +174,36 @@ __global__ void quant_v(const __nv_bfloat16* v, int8_t* out, float* scales,
   }
 }
 
+// The official kernel's template arguments, named once so the launcher and the
+// shared-memory opt-in below cannot drift apart.
+template <int D>
+using OfficialKernel = decltype(&qk_int_sv_f8_attn_kernel<
+    128, 64, 32, 64, D, DataType::kInt8, QuantGranularity::kPerWarp,
+    QuantGranularity::kPerWarp, float, true, nv_bfloat16, ComputeUnit::kCudaCore,
+    MaskMode::kNone, false, true, false, true>);
+
+template <int D>
+constexpr size_t official_smem() {
+  constexpr int CTA_Q = 128, CTA_K = 64;
+  return std::max<size_t>(CTA_Q * D + CTA_K * D + CTA_K * D, CTA_Q * D * sizeof(__half));
+}
+
+// >48 KB of dynamic shared memory per block is opt-in, and the opt-in is per
+// function. `smem` depends only on D, so the call is the same every time and
+// the attribute is idempotent — but it is a host driver round-trip, and this
+// sits on the per-block attention path (fifty blocks a step, sage2 being the
+// default backend). Doing it once per (function, thread) mirrors
+// `ensure_smem_optin` in attention.cu:1111; a race between two threads writes
+// the identical value, so it is harmless.
+template <int D>
+void ensure_official_smem_optin(OfficialKernel<D> kernel) {
+  static thread_local bool done = false;
+  if (done) return;
+  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                         static_cast<int>(official_smem<D>())));
+  done = true;
+}
+
 template <int D>
 void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* out,
                      const AttentionConfig& c, int kvh, int padded) {
@@ -183,10 +213,8 @@ void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* o
       CTA_Q, CTA_K, WARP_Q, WARP_K, D, DataType::kInt8,
       QuantGranularity::kPerWarp, QuantGranularity::kPerWarp, float, true,
       KernelOut, ComputeUnit::kCudaCore, MaskMode::kNone, false, true, false, true>;
-  const size_t smem = std::max<size_t>(CTA_Q * D + CTA_K * D + CTA_K * D,
-                                      CTA_Q * D * sizeof(__half));
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                         static_cast<int>(smem)));
+  constexpr size_t smem = official_smem<D>();
+  ensure_official_smem_optin<D>(kernel);
   dim3 grid(ceil_div(c.seq_len, CTA_Q), c.num_heads, 1);
   dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
   const int groups = c.num_heads / kvh;
@@ -250,6 +278,15 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
                              const __nv_bfloat16* k, const __nv_bfloat16* v,
                              __nv_bfloat16* out, const AttentionConfig& cfg,
                              int num_kv_heads, Workspace& ws) {
+  // Deliberately *not* cached, unlike the capability it feeds. A device's
+  // capability is a pure function of the device, so latching it is sound; the
+  // *current* device is per-thread mutable state that `cudaSetDevice` can
+  // change between two calls, so a cache here would be a correctness bug the
+  // day this runs on two cards. It is also not the round-trip worth removing:
+  // `cudaGetDevice` reads the runtime's thread-local context, while
+  // `cudaGetDeviceProperties` (cached above) and `cudaFuncSetAttribute`
+  // (hoisted into `ensure_official_smem_optin`) are the calls that enter the
+  // driver.
   int device = 0;
   VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
   const char* reason = nullptr;
