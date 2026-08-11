@@ -199,9 +199,31 @@ __global__ void dequant_i8_scalar_kernel(const int8_t* __restrict__ src,
 // Eight elements per thread: one 32-bit load of four packed bytes, one 16-byte
 // store, and both nibbles of every pair sit inside the same 16-wide scale
 // block, so the scale is fetched once per thread and its block index is a shift
-// rather than a division. Rows ride grid.y with a stride loop so that no index
-// here needs a 64-bit divide — the same reason add_bias_kernel takes its column
-// off the grid.
+// rather than a division. No index here needs a 64-bit divide — the same reason
+// add_bias_kernel takes its column off the grid.
+//
+// One block per 512-byte scale tile, which is what makes the scale side of this
+// kernel stop wasting memory transactions.
+//
+// The swizzle above is why. Walk `k` along a row and the scale bytes come in
+// runs of four (`k & 3`) and then jump 512 bytes to the next tile, so a warp
+// covering 32 consecutive packs touches four 32-byte sectors to consume sixteen
+// bytes. Restaging that gather does not help — the sectors are dictated by the
+// layout, not by how they are loaded. What helps is covering the *rows* that
+// share each sector: index `(o & 31) * 16 + ((o & 127) >> 5) * 4 + (k & 3)`
+// packs eight different `o` and four different `k` into every 32 bytes, and
+// those eight rows used to be eight different blocks. A block that owns the
+// whole 128-row x 4-block tile reads its 512 scale bytes once, fully coalesced,
+// and every byte it fetches is a byte it uses: 16 sector fetches per 8192
+// elements where the row-wise mapping needed 128.
+//
+// The tile is exactly 128 rows x 64 elements = 1024 packs, so 256 threads take
+// four packs each. `launch_dequant_nvfp4` already refuses any shape that does
+// not divide (out % 128, in % 64), which is what lets every bound here be exact
+// rather than guarded.
+//
+// Per-element arithmetic is untouched, so this is bit-identical to the row-wise
+// form it replaces.
 //
 // `global_scale` multiplies. That direction is not a convention we adopted: at
 // every sampled tensor `6 * 448 * weight_scale_2` reproduces the amax of the
@@ -210,32 +232,54 @@ __global__ void dequant_i8_scalar_kernel(const int8_t* __restrict__ src,
 // lands around 1e6.
 __global__ void dequant_nvfp4_kernel(const uint8_t* __restrict__ src,
                                      const uint8_t* __restrict__ block_scale, float global_scale,
-                                     __nv_bfloat16* __restrict__ dst, int out_features,
-                                     int packs_per_row, int blocks_per_row) {
-  const int pack = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (pack >= packs_per_row) return;
+                                     __nv_bfloat16* __restrict__ dst, int packs_per_row,
+                                     int tiles_o, int tiles_k) {
+  __shared__ uint32_t tile_scale[128];  // 512 bytes: one whole scale tile
+
   const size_t row_bytes = static_cast<size_t>(packs_per_row) * 4;
   const size_t row_elems = static_cast<size_t>(packs_per_row) * 8;
+  const int t = static_cast<int>(threadIdx.x);
+  // Thread t owns packs `t & 7` of rows `(t >> 3) + 32 * j`. Consecutive threads
+  // therefore hold consecutive packs of a row, which keeps both the 4-byte load
+  // and the 16-byte store contiguous in runs of eight.
+  const int row_lo = t >> 3;      // 0..31, and this is also `o & 31`
+  const int pack_lo = t & 7;      // 0..7
+  const int tile_k = static_cast<int>(blockIdx.x);
 
-  for (int o = static_cast<int>(blockIdx.y); o < out_features;
-       o += static_cast<int>(gridDim.y)) {
-    const uint32_t raw = *reinterpret_cast<const uint32_t*>(
-        src + static_cast<size_t>(o) * row_bytes + static_cast<size_t>(pack) * 4);
-    const float s =
-        f8_e4m3_to_f32_dev(block_scale[nvfp4_scale_offset(o, pack >> 1, blocks_per_row)]) *
-        global_scale;
-    float v[8];
-#pragma unroll
-    for (int b = 0; b < 4; ++b) {
-      const uint32_t byte = (raw >> (8 * b)) & 0xFFu;
-      // The even-indexed element is the **high** nibble. Swapping these two
-      // lines leaves the value histogram untouched and the output finite and
-      // well scaled; it drops elementwise correlation against the fp8 build
-      // from 0.995 to 0.00003 and nothing else moves (spec 8.6).
-      v[2 * b] = f4_e2m1_to_f32_dev(byte >> 4) * s;
-      v[2 * b + 1] = f4_e2m1_to_f32_dev(byte & 0x0Fu) * s;
+  for (int tile_o = static_cast<int>(blockIdx.y); tile_o < tiles_o;
+       tile_o += static_cast<int>(gridDim.y)) {
+    const size_t tile = static_cast<size_t>(tile_o) * tiles_k + tile_k;
+    __syncthreads();  // the previous iteration must be done reading the tile
+    if (t < 128) {
+      tile_scale[t] = reinterpret_cast<const uint32_t*>(block_scale + tile * 512)[t];
     }
-    store8_bf16(dst + static_cast<size_t>(o) * row_elems + static_cast<size_t>(pack) * 8, v);
+    __syncthreads();
+    const uint8_t* scales = reinterpret_cast<const uint8_t*>(tile_scale);
+
+    const int pack = tile_k * 8 + pack_lo;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      const int o = tile_o * 128 + row_lo + 32 * j;
+      const uint32_t raw = *reinterpret_cast<const uint32_t*>(
+          src + static_cast<size_t>(o) * row_bytes + static_cast<size_t>(pack) * 4);
+      // `nvfp4_scale_offset(o, pack >> 1, blocks_per_row)` with the tile term
+      // dropped: `o & 31` is row_lo, `(o & 127) >> 5` is j, and `k & 3` is
+      // `pack_lo >> 1` because a tile spans exactly four contraction blocks.
+      const float s = f8_e4m3_to_f32_dev(scales[row_lo * 16 + j * 4 + (pack_lo >> 1)]) *
+                      global_scale;
+      float v[8];
+#pragma unroll
+      for (int b = 0; b < 4; ++b) {
+        const uint32_t byte = (raw >> (8 * b)) & 0xFFu;
+        // The even-indexed element is the **high** nibble. Swapping these two
+        // lines leaves the value histogram untouched and the output finite and
+        // well scaled; it drops elementwise correlation against the fp8 build
+        // from 0.995 to 0.00003 and nothing else moves (spec 8.6).
+        v[2 * b] = f4_e2m1_to_f32_dev(byte >> 4) * s;
+        v[2 * b + 1] = f4_e2m1_to_f32_dev(byte & 0x0Fu) * s;
+      }
+      store8_bf16(dst + static_cast<size_t>(o) * row_elems + static_cast<size_t>(pack) * 8, v);
+    }
   }
 }
 
@@ -897,12 +941,18 @@ void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float 
         "and in_features % 64 == 0");
   }
 
+  // One block per 512-byte scale tile: 128 output rows by four contraction
+  // blocks, which is 8192 elements and so exactly four packs for each of the
+  // 256 threads. Both counts divide exactly — that is what the refusal above
+  // guarantees.
+  static_assert(kThreads == 256, "dequant_nvfp4_kernel's tile walk assumes 256 threads");
   const int packs_per_row = in_features / 8;
-  const int blocks_per_row = in_features / kNVFP4BlockSize;
-  const dim3 grid(static_cast<unsigned>(grid_1d(static_cast<size_t>(packs_per_row), kThreads)),
-                  static_cast<unsigned>(std::min(out_features, 65535)));
+  const int tiles_o = out_features / 128;
+  const int tiles_k = in_features / (4 * kNVFP4BlockSize);
+  const dim3 grid(static_cast<unsigned>(tiles_k),
+                  static_cast<unsigned>(std::min(tiles_o, 65535)));
   dequant_nvfp4_kernel<<<grid, kThreads, 0, stream>>>(src, block_scale, global_scale, dst,
-                                                      out_features, packs_per_row, blocks_per_row);
+                                                      packs_per_row, tiles_o, tiles_k);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

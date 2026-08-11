@@ -1546,6 +1546,64 @@ VIDFAB_TEST(nn_dequant_nvfp4) {
   }
 }
 
+// The kernel above walks a 128-row by four-block scale tile with a fixed
+// 256-thread mapping, so a bug in it is a bug in the *shape* arithmetic: a tile
+// count that is one in a dimension hides a missing tile stride, and a tile count
+// that is a power of two hides a missing multiply. `nn_dequant_nvfp4` pins the
+// layout facts on one shape; this pins the addressing across the tile counts the
+// two hundred quantised linears actually present, including an odd tiles_o and a
+// row that spans eight tiles.
+//
+// Exact equality is the bar, not a tolerance: the reference below is built from
+// the independent tile walk in `nvfp4_scale_slot` and multiplies in the same
+// order the kernel does.
+VIDFAB_TEST(nn_dequant_nvfp4_tile_shapes) {
+  const float global = 1.3580322e-3f;
+  struct Shape { int out; int in; };
+  const Shape shapes[] = {
+      {128, 64},    // exactly one tile, the degenerate case
+      {128, 512},   // one row-tile, eight k-tiles
+      {384, 128},   // three row-tiles: not a power of two
+      {256, 320},   // five k-tiles, likewise
+      {512, 64},    // one k-tile, four row-tiles
+  };
+  for (int i = 0; i < 5; ++i) {
+    const int out_features = shapes[i].out, in_features = shapes[i].in;
+    const Nvfp4Weight w = make_nvfp4(out_features, in_features, global, 90210u + 7u * i);
+    DeviceBuffer<uint8_t> dw(w.packed.size());
+    dw.copy_from_host(w.packed.data(), w.packed.size());
+    DeviceBuffer<uint8_t> dsc(w.stored.size());
+    dsc.copy_from_host(w.stored.data(), w.stored.size());
+    BfBuf ddst(w.codes.size());
+    vidfab::cuda::launch_dequant_nvfp4(dw.get(), dsc.get(), global, ddst.p(), out_features,
+                                       in_features, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    const std::vector<float> got = ddst.host();
+    const std::vector<float> want = nvfp4_reference(w);
+    CHECK_MSG(max_abs_diff(want, got) == 0.0,
+              "dequant nvfp4 %dx%d (tiles %dx%d) is not exact: max diff %.6g", out_features,
+              in_features, out_features / 128, in_features / 64, max_abs_diff(want, got));
+
+    // A scale that lands on the wrong tile still produces plausible output, so
+    // check that this shape can tell the difference at all: perturb one stored
+    // scale byte and require the result to move.
+    if (w.stored.size() > 1) {
+      std::vector<uint8_t> poked = w.stored;
+      const size_t at = poked.size() / 3;
+      poked[at] = uint8_t(poked[at] ^ 0x08u);  // one exponent step
+      DeviceBuffer<uint8_t> dpoke(poked.size());
+      dpoke.copy_from_host(poked.data(), poked.size());
+      BfBuf dalt(w.codes.size());
+      vidfab::cuda::launch_dequant_nvfp4(dw.get(), dpoke.get(), global, dalt.p(), out_features,
+                                         in_features, nullptr);
+      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      CHECK_MSG(max_abs_diff(dalt.host(), got) > 0.0,
+                "dequant nvfp4 %dx%d ignored a perturbed block scale at byte %zu", out_features,
+                in_features, at);
+    }
+  }
+}
+
 struct Nf4Weight {
   int out = 0, in = 0;
   float offset = 0.0f;
