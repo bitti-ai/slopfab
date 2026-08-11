@@ -146,6 +146,20 @@ __device__ inline void store8_bf16(__nv_bfloat16* p, const float* in) {
   *reinterpret_cast<uint4*>(p) = raw;
 }
 
+// The f16 counterpart, written as eight scalar `__float2half_rn` rather than
+// four packed conversions on purpose: it replaces a kernel that used exactly
+// that intrinsic, and the point of the rewrite is that the bits do not move.
+__device__ inline void store8_half(__half* p, const float* in) {
+  uint4 raw;
+  __half* h = reinterpret_cast<__half*>(&raw);
+#pragma unroll
+  for (int i = 0; i < 8; ++i) h[i] = __float2half_rn(in[i]);
+  *reinterpret_cast<uint4*>(p) = raw;
+}
+
+__device__ inline void store8(__nv_bfloat16* p, const float* in) { store8_bf16(p, in); }
+__device__ inline void store8(__half* p, const float* in) { store8_half(p, in); }
+
 // --- dequantisation kernels -------------------------------------------------
 
 __global__ void dequant_f8_kernel(const uint8_t* __restrict__ src, const float* __restrict__ scale,
@@ -281,6 +295,55 @@ __global__ void dequant_nvfp4_kernel(const uint8_t* __restrict__ src,
       store8_bf16(dst + static_cast<size_t>(o) * row_elems + static_cast<size_t>(pack) * 8, v);
     }
   }
+}
+
+// Eight elements per thread, matching `dequant_f8_kernel` and `dequant_i8_kernel`
+// above: one 32-bit load of four packed bytes, one 16-byte store, one scale.
+//
+// The scalar form below moves two elements in two separate 2-byte stores and
+// pays two runtime 64-bit integer divisions per thread to find its block. Both
+// block sizes are powers of two in every checkpoint that ships (64 and 256), so
+// the launcher hands down `log2` and the divisions become shifts; the shape and
+// alignment preconditions that do not hold send the call to the scalar kernel
+// instead of being papered over here.
+//
+// `quant_map` is staged in shared rather than `__constant__`, for the reason
+// spelled out above `f4_e2m1_to_f32_dev`: the nibble *is* the index, so a warp
+// holding sixteen distinct codes would serialise a constant-memory broadcast
+// into sixteen transactions. Sixteen distinct shared words are sixteen distinct
+// banks, which is one.
+//
+// `quant_map[i] * scale` keeps its order, so this is bit-identical to the
+// scalar kernel element for element.
+template <typename T>
+__global__ void dequant_nf4_vec_kernel(const uint8_t* __restrict__ src,
+                                       const uint8_t* __restrict__ absmax,
+                                       const float* __restrict__ quant_map,
+                                       const float* __restrict__ nested_quant_map,
+                                       const float* __restrict__ nested_absmax, int block_shift,
+                                       int nested_shift, float nested_offset,
+                                       T* __restrict__ dst, size_t packs) {
+  __shared__ float lut[16];
+  if (threadIdx.x < 16) lut[threadIdx.x] = quant_map[threadIdx.x];
+  __syncthreads();
+  const size_t p = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (p >= packs) return;
+  const size_t even = p * 8;
+  // One scale for all eight: `block_shift` is at least 3, so a pack never
+  // straddles two blocks. The launcher checks that.
+  const size_t scale_index = even >> block_shift;
+  const float scale = nested_quant_map[absmax[scale_index]] *
+                          nested_absmax[scale_index >> nested_shift] +
+                      nested_offset;
+  const uint32_t raw = reinterpret_cast<const uint32_t*>(src)[p];
+  const uint8_t* b = reinterpret_cast<const uint8_t*>(&raw);
+  float v[8];
+#pragma unroll
+  for (int i = 0; i < 4; ++i) {
+    v[2 * i] = lut[b[i] >> 4] * scale;
+    v[2 * i + 1] = lut[b[i] & 0x0f] * scale;
+  }
+  store8(dst + even, v);
 }
 
 __global__ void dequant_nf4_kernel(const uint8_t* __restrict__ src,
@@ -956,6 +1019,34 @@ void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float 
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
+namespace {
+
+// log2 of a power of two, or -1. The vectorised NF4 kernel needs shifts rather
+// than divisors and refuses to guess.
+int exact_log2(int v) {
+  if (v <= 0 || (v & (v - 1)) != 0) return -1;
+  int s = 0;
+  while ((1 << s) != v) ++s;
+  return s;
+}
+
+// Whether the eight-wide NF4 kernel may run on this call.
+//
+// A pack is eight elements, so it must not straddle a block scale (block_size a
+// multiple of eight, and a power of two so the index is a shift) and it must not
+// run off the end (n a multiple of eight). The two loads it widens also need
+// their natural alignment: `src` is sliced at a byte offset for the qkv thirds
+// in transformer.cpp, and `dst` is whatever workspace the caller passed, so
+// neither is assumed.
+template <typename T>
+bool nf4_vector_eligible(const uint8_t* src, const T* dst, size_t n, int block_shift,
+                         int nested_shift) {
+  return block_shift >= 3 && nested_shift >= 0 && n % 8 == 0 &&
+         reinterpret_cast<uintptr_t>(src) % 4 == 0 && reinterpret_cast<uintptr_t>(dst) % 16 == 0;
+}
+
+}  // namespace
+
 void launch_dequant_nf4(const uint8_t* src, const uint8_t* absmax, const float* quant_map,
                         const float* nested_quant_map, const float* nested_absmax,
                         int block_size, int nested_block_size, float nested_offset,
@@ -969,9 +1060,17 @@ void launch_dequant_nf4(const uint8_t* src, const uint8_t* absmax, const float* 
     throw std::runtime_error("launch_dequant_nf4: block sizes must be positive");
   }
   const size_t n = static_cast<size_t>(out_features) * in_features;
-  dequant_nf4_kernel<<<grid_1d((n + 1) / 2, kThreads), kThreads, 0, stream>>>(
-      src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
-      nested_offset, dst, n);
+  const int block_shift = exact_log2(block_size);
+  const int nested_shift = exact_log2(nested_block_size);
+  if (nf4_vector_eligible(src, dst, n, block_shift, nested_shift)) {
+    dequant_nf4_vec_kernel<<<grid_1d(n / 8, kThreads), kThreads, 0, stream>>>(
+        src, absmax, quant_map, nested_quant_map, nested_absmax, block_shift, nested_shift,
+        nested_offset, dst, n / 8);
+  } else {
+    dequant_nf4_kernel<<<grid_1d((n + 1) / 2, kThreads), kThreads, 0, stream>>>(
+        src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
+        nested_offset, dst, n);
+  }
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -983,9 +1082,17 @@ void launch_dequant_nf4_f16(const uint8_t* src, const uint8_t* absmax, const flo
     throw std::runtime_error("launch_dequant_nf4_f16: null pointer");
   if (block_size <= 0 || nested_block_size <= 0)
     throw std::runtime_error("launch_dequant_nf4_f16: invalid block sizes");
-  dequant_nf4_f16_kernel<<<grid_1d((n + 1) / 2, kThreads), kThreads, 0, stream>>>(
-      src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
-      nested_offset, dst, n);
+  const int block_shift = exact_log2(block_size);
+  const int nested_shift = exact_log2(nested_block_size);
+  if (nf4_vector_eligible(src, dst, n, block_shift, nested_shift)) {
+    dequant_nf4_vec_kernel<<<grid_1d(n / 8, kThreads), kThreads, 0, stream>>>(
+        src, absmax, quant_map, nested_quant_map, nested_absmax, block_shift, nested_shift,
+        nested_offset, dst, n / 8);
+  } else {
+    dequant_nf4_f16_kernel<<<grid_1d((n + 1) / 2, kThreads), kThreads, 0, stream>>>(
+        src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
+        nested_offset, dst, n);
+  }
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

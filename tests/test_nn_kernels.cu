@@ -1664,6 +1664,75 @@ VIDFAB_TEST(nn_dequant_nf4_double_quant) {
             max_abs_diff(nf4_reference(w, true), got.host()));
 }
 
+// NF4 has two kernels now: an eight-wide one that loads four packed bytes at a
+// time and a two-wide fallback for the shapes and alignments it cannot serve.
+// Which one runs is decided entirely by `nf4_vector_eligible` in the launcher,
+// so the two cases below are not guesses: 129x128 is 16512 elements out of two
+// 256-byte-aligned DeviceBuffers with block sizes 64 and 256, which satisfies
+// every clause, and offsetting the destination by one bf16 makes it 2-byte
+// aligned, which fails the 16-byte clause and nothing else.
+//
+// Comparing the raw payloads is the point. The scalar kernel is the reference
+// implementation this replaces; "same to within tolerance" would not establish
+// anything, because the whole claim is that no bit moves.
+VIDFAB_TEST(nn_dequant_nf4_vector_matches_scalar) {
+  const Nf4Weight w = make_nf4(129, 128);
+  const size_t n = size_t(w.out) * w.in;
+  CHECK(n % 8 == 0);
+  DeviceBuffer<uint8_t> dp(w.packed.size()), da(w.absmax.size());
+  dp.copy_from_host(w.packed.data(), w.packed.size());
+  da.copy_from_host(w.absmax.data(), w.absmax.size());
+  auto dm = to_device(w.map), dnm = to_device(w.nested_map), dna = to_device(w.nested_absmax);
+
+  DeviceBuffer<uint16_t> fast(n), slow(n + 8);
+  vidfab::cuda::launch_dequant_nf4(dp.get(), da.get(), dm.get(), dnm.get(), dna.get(), 64, 256,
+                                   w.offset, reinterpret_cast<__nv_bfloat16*>(fast.get()), w.out,
+                                   w.in, nullptr);
+  vidfab::cuda::launch_dequant_nf4(dp.get(), da.get(), dm.get(), dnm.get(), dna.get(), 64, 256,
+                                   w.offset, reinterpret_cast<__nv_bfloat16*>(slow.get() + 1),
+                                   w.out, w.in, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> hf(n), hs(n + 8);
+  fast.copy_to_host(hf.data(), n);
+  slow.copy_to_host(hs.data(), n + 8);
+  size_t bad = 0;
+  for (size_t i = 0; i < n; ++i) bad += hf[i] != hs[i + 1];
+  CHECK_MSG(bad == 0, "NF4 bf16: eight-wide and two-wide kernels differ in %zu of %zu bf16", bad,
+            n);
+
+  // The f16 pair, which had no coverage at all before: same structure, and the
+  // packed store has to round exactly as `__float2half_rn` did.
+  DeviceBuffer<uint16_t> ffast(n), fslow(n + 8);
+  vidfab::cuda::launch_dequant_nf4_f16(dp.get(), da.get(), dm.get(), dnm.get(), dna.get(), 64, 256,
+                                       w.offset, reinterpret_cast<__half*>(ffast.get()), n,
+                                       nullptr);
+  vidfab::cuda::launch_dequant_nf4_f16(dp.get(), da.get(), dm.get(), dnm.get(), dna.get(), 64, 256,
+                                       w.offset, reinterpret_cast<__half*>(fslow.get() + 1), n,
+                                       nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> gf(n), gs(n + 8);
+  ffast.copy_to_host(gf.data(), n);
+  fslow.copy_to_host(gs.data(), n + 8);
+  bad = 0;
+  for (size_t i = 0; i < n; ++i) bad += gf[i] != gs[i + 1];
+  CHECK_MSG(bad == 0, "NF4 f16: eight-wide and two-wide kernels differ in %zu of %zu half", bad, n);
+
+  // A ragged element count cannot use the eight-wide kernel at all, and the
+  // fallback still has to be right -- this is the path a future shape lands on.
+  const Nf4Weight r = make_nf4(3, 44);  // 132 elements, not a multiple of eight
+  const size_t rn = size_t(r.out) * r.in;
+  CHECK(rn % 8 != 0);
+  DeviceBuffer<uint8_t> rp(r.packed.size()), ra(r.absmax.size());
+  rp.copy_from_host(r.packed.data(), r.packed.size());
+  ra.copy_from_host(r.absmax.data(), r.absmax.size());
+  auto rm = to_device(r.map), rnm = to_device(r.nested_map), rna = to_device(r.nested_absmax);
+  BfBuf ragged(rn);
+  vidfab::cuda::launch_dequant_nf4(rp.get(), ra.get(), rm.get(), rnm.get(), rna.get(), 64, 256,
+                                   r.offset, ragged.p(), r.out, r.in, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK_CLOSE(nf4_reference(r), ragged.host(), 0.0, "NF4 ragged tail via the scalar kernel");
+}
+
 VIDFAB_TEST(linear_nf4_double_quant) {
   CublasScope cb;
   const int rows = 7;
