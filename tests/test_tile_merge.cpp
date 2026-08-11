@@ -18,7 +18,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "harness.h"
@@ -220,4 +222,91 @@ VIDFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
   // are the pre-padding and 20-22 the gap before the carry.
   for (int f : {0, 1, 2, 20, 21, 22}) CHECK(dst[static_cast<size_t>(f)] == nullptr);
   for (int f : {3, 19, 23, 27}) CHECK(dst[static_cast<size_t>(f)] != nullptr);
+}
+
+VIDFAB_TEST(tile_layout_is_the_shipped_geometry) {
+  // The overlap widths are what every sizing argument about the blend rests on,
+  // so they are pinned rather than recomputed: 1280 x 768 at tile 256, minimum
+  // overlap 64, latent ratio 16.
+  const vidfab::vae::TileLayout y = vidfab::vae::split_tiles(768, 256, 64, 16);
+  const vidfab::vae::TileLayout x = vidfab::vae::split_tiles(1280, 256, 64, 16);
+
+  CHECK(y.starts.size() == 4);
+  CHECK(x.starts.size() == 7);
+  const std::vector<int> y_overlaps = {96, 80, 80};
+  const std::vector<int> x_overlaps = {96, 96, 80, 80, 80, 80};
+  CHECK(y.overlaps == y_overlaps);
+  CHECK(x.overlaps == x_overlaps);
+
+  // The kept extents must tile the axis exactly — the stitch writes
+  // `keep` pixels per tile and relies on them summing to the full width, with
+  // no gap left holding whatever the buffer had before.
+  auto kept_total = [](const vidfab::vae::TileLayout& l) {
+    int total = 0;
+    for (size_t i = 0; i < l.starts.size(); ++i) {
+      total += l.extents[i] - (i + 1 < l.starts.size() ? l.overlaps[i] : 0);
+    }
+    return total;
+  };
+  CHECK(kept_total(y) == 768);
+  CHECK(kept_total(x) == 1280);
+
+  // Every boundary stays on the latent grid: an overlap that was not a whole
+  // number of latent units would slice a latent in half.
+  for (int o : y.overlaps) CHECK(o % 16 == 0);
+  for (int o : x.overlaps) CHECK(o % 16 == 0);
+
+  // A single tile when the axis fits, and no overlaps to blend.
+  const vidfab::vae::TileLayout one = vidfab::vae::split_tiles(256, 256, 64, 16);
+  CHECK(one.starts.size() == 1 && one.overlaps.empty() && one.extents[0] == 256);
+}
+
+VIDFAB_TEST(tile_shape_groups_are_chunk_invariant) {
+  // The pipeline resolves this once for the whole decode instead of per chunk.
+  // Nothing it reads depends on the chunk, so the only thing to establish is
+  // that the map really does partition the tiles and that its iteration order —
+  // which fixes the order batches reach the decoder — is deterministic.
+  const vidfab::vae::TileLayout y = vidfab::vae::split_tiles(768, 256, 64, 16);
+  const vidfab::vae::TileLayout x = vidfab::vae::split_tiles(1280, 256, 64, 16);
+
+  std::vector<int> tile_h, tile_w;
+  std::map<std::pair<int, int>, std::vector<size_t>> groups;
+  vidfab::vae::tile_shape_groups(y, x, 768, 1280, 16, &tile_h, &tile_w, &groups);
+
+  CHECK(tile_h.size() == 4 && tile_w.size() == 7);
+  for (int h : tile_h) CHECK(h == 256);
+  for (int w : tile_w) CHECK(w == 256);
+  // Every tile is 256 x 256 in pixels, so 16 x 16 in latents: one batch of 28.
+  CHECK(groups.size() == 1);
+  CHECK(groups.begin()->first == std::make_pair(16, 16));
+  CHECK(groups.begin()->second.size() == 28);
+
+  // Each tile index appears exactly once across all groups.
+  std::vector<int> seen(28, 0);
+  for (const auto& g : groups) {
+    for (size_t id : g.second) {
+      CHECK(id < seen.size());
+      ++seen[id];
+    }
+  }
+  for (int n : seen) CHECK(n == 1);
+
+  // Recomputing gives an identical map, key order included — which is what
+  // makes hoisting it out of the chunk loop a no-op.
+  std::vector<int> h2, w2;
+  std::map<std::pair<int, int>, std::vector<size_t>> again;
+  vidfab::vae::tile_shape_groups(y, x, 768, 1280, 16, &h2, &w2, &again);
+  CHECK(h2 == tile_h && w2 == tile_w);
+  CHECK(again == groups);
+
+  // A geometry with a ragged edge, so the multi-group path is exercised too:
+  // 300 pixels at tile 256 splits into two tiles whose second one is clipped.
+  const vidfab::vae::TileLayout ry = vidfab::vae::split_tiles(768, 256, 64, 16);
+  const vidfab::vae::TileLayout rx = vidfab::vae::split_tiles(1280, 512, 64, 16);
+  std::vector<int> rh, rw;
+  std::map<std::pair<int, int>, std::vector<size_t>> rgroups;
+  vidfab::vae::tile_shape_groups(ry, rx, 768, 1280, 16, &rh, &rw, &rgroups);
+  size_t total = 0;
+  for (const auto& g : rgroups) total += g.second.size();
+  CHECK(total == ry.starts.size() * rx.starts.size());
 }

@@ -41,45 +41,6 @@ namespace {
 constexpr float kImagenetMean[3] = {0.485f, 0.456f, 0.406f};
 constexpr float kImagenetStd[3] = {0.229f, 0.224f, 0.225f};
 
-struct TileLayout {
-  std::vector<int> starts;    // tile start position in pixels
-  std::vector<int> extents;   // tile length in pixels
-  std::vector<int> overlaps;  // overlap between tile i and i+1, size = N-1
-};
-
-// Mirrors split_tiles(..., is_decoder=True) (klvae.py:192-218). Positions are
-// computed in pixel space; the caller divides by vae_ratio to slice latents.
-TileLayout split_tiles(int input_len, int tile_size, int overlap_min, int ratio) {
-  TileLayout layout;
-  if (tile_size >= input_len) {
-    layout.starts.push_back(0);
-    layout.extents.push_back(input_len);
-    return layout;
-  }
-
-  int n = (input_len + tile_size - 1) / tile_size;
-  while (tile_size * n - overlap_min * (n - 1) - input_len < 0) ++n;
-
-  std::vector<int> overlaps(static_cast<size_t>(n - 1), overlap_min);
-  int surplus = tile_size * n - overlap_min * (n - 1) - input_len;
-  // The surplus is absorbed by widening overlaps in whole latent units,
-  // round-robin, so every tile boundary stays aligned to the latent grid.
-  for (int i = 0; surplus > 0; i = (i + 1) % (n - 1)) {
-    const int bump = std::min(surplus, ratio);
-    overlaps[static_cast<size_t>(i)] += bump;
-    surplus -= bump;
-  }
-
-  int pos = 0;
-  for (int i = 0; i < n; ++i) {
-    layout.starts.push_back(pos);
-    layout.extents.push_back(tile_size);
-    if (i < n - 1) pos += tile_size - overlaps[static_cast<size_t>(i)];
-  }
-  layout.overlaps = std::move(overlaps);
-  return layout;
-}
-
 // blend(a, b, overlap) (klvae.py:220-250) cross-fades the first `overlap`
 // slices from a to b and leaves the rest of b alone. The ramp is asymmetric —
 // weight_b runs 0, 1/n, ... (n-1)/n and never reaches 1 — so the last blended
@@ -224,6 +185,16 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   // belong nowhere and are marked null; see the comment where it is filled.
   std::vector<float*> frame_dst(static_cast<size_t>(out_frames), nullptr);
 
+  // Spatial tiling. Tiles are decoded independently, then blended against
+  // their raw (unblended) neighbours and trimmed. Every input here — the two
+  // tile layouts, the pixel extents and the patch size — is fixed for the whole
+  // decode, so the geometry and the batching are resolved once rather than
+  // rebuilt, std::map and all, on each of the chunks.
+  std::vector<int> tile_h;
+  std::vector<int> tile_w;
+  std::map<std::pair<int, int>, std::vector<size_t>> shape_groups;
+  tile_shape_groups(ytiles, xtiles, H_px, W_px, cfg.patch, &tile_h, &tile_w, &shape_groups);
+
   for (int c = 0; c < num_chunks; ++c) {
     const int t_start = c * chunk;
 
@@ -239,22 +210,6 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
     }
 
     s_clip.stop();
-
-    // Spatial tiling. Tiles are decoded independently, then blended against
-    // their raw (unblended) neighbours and trimmed.
-    std::vector<int> tile_h(ytiles.starts.size());
-    std::vector<int> tile_w(xtiles.starts.size());
-
-    std::map<std::pair<int, int>, std::vector<size_t>> shape_groups;
-    for (size_t ti = 0; ti < ytiles.starts.size(); ++ti) {
-      for (size_t tj = 0; tj < xtiles.starts.size(); ++tj) {
-        const int th = std::min(ytiles.extents[ti], H_px - ytiles.starts[ti]) / cfg.patch;
-        const int tw = std::min(xtiles.extents[tj], W_px - xtiles.starts[tj]) / cfg.patch;
-        tile_h[ti] = th * cfg.patch;
-        tile_w[tj] = tw * cfg.patch;
-        shape_groups[{th, tw}].push_back(ti * xtiles.starts.size() + tj);
-      }
-    }
 
     // Equal-shape tiles share the weight-heavy token projections. Ragged edge
     // shapes form their own batches so attention geometry and stitching stay

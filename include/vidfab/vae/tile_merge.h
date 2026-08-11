@@ -23,9 +23,76 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <map>
+#include <utility>
 #include <vector>
 
 namespace vidfab::vae {
+
+struct TileLayout {
+  std::vector<int> starts;    // tile start position in pixels
+  std::vector<int> extents;   // tile length in pixels
+  std::vector<int> overlaps;  // overlap between tile i and i+1, size = N-1
+};
+
+// Mirrors split_tiles(..., is_decoder=True) (klvae.py:192-218). Positions are
+// computed in pixel space; the caller divides by vae_ratio to slice latents.
+inline TileLayout split_tiles(int input_len, int tile_size, int overlap_min, int ratio) {
+  TileLayout layout;
+  if (tile_size >= input_len) {
+    layout.starts.push_back(0);
+    layout.extents.push_back(input_len);
+    return layout;
+  }
+
+  int n = (input_len + tile_size - 1) / tile_size;
+  while (tile_size * n - overlap_min * (n - 1) - input_len < 0) ++n;
+
+  std::vector<int> overlaps(static_cast<size_t>(n - 1), overlap_min);
+  int surplus = tile_size * n - overlap_min * (n - 1) - input_len;
+  // The surplus is absorbed by widening overlaps in whole latent units,
+  // round-robin, so every tile boundary stays aligned to the latent grid.
+  for (int i = 0; surplus > 0; i = (i + 1) % (n - 1)) {
+    const int bump = std::min(surplus, ratio);
+    overlaps[static_cast<size_t>(i)] += bump;
+    surplus -= bump;
+  }
+
+  int pos = 0;
+  for (int i = 0; i < n; ++i) {
+    layout.starts.push_back(pos);
+    layout.extents.push_back(tile_size);
+    if (i < n - 1) pos += tile_size - overlaps[static_cast<size_t>(i)];
+  }
+  layout.overlaps = std::move(overlaps);
+  return layout;
+}
+
+// Per-axis tile extents in pixels, and the tiles grouped by latent shape.
+//
+// Equal-shape tiles are decoded in one batch, so they are collected by
+// (latent height, latent width); the ragged edge shapes, if the geometry has
+// any, form batches of their own. Nothing here depends on the temporal chunk,
+// which is why the pipeline resolves it once for the whole decode instead of
+// rebuilding the map — allocations and all — for every chunk. std::map orders
+// its keys, so the batches always reach the decoder in the same order.
+inline void tile_shape_groups(const TileLayout& ytiles, const TileLayout& xtiles, int H_px,
+                              int W_px, int patch, std::vector<int>* tile_h,
+                              std::vector<int>* tile_w,
+                              std::map<std::pair<int, int>, std::vector<size_t>>* groups) {
+  tile_h->assign(ytiles.starts.size(), 0);
+  tile_w->assign(xtiles.starts.size(), 0);
+  groups->clear();
+  for (size_t ti = 0; ti < ytiles.starts.size(); ++ti) {
+    for (size_t tj = 0; tj < xtiles.starts.size(); ++tj) {
+      const int th = std::min(ytiles.extents[ti], H_px - ytiles.starts[ti]) / patch;
+      const int tw = std::min(xtiles.extents[tj], W_px - xtiles.starts[tj]) / patch;
+      (*tile_h)[ti] = th * patch;
+      (*tile_w)[tj] = tw * patch;
+      (*groups)[{th, tw}].push_back(ti * xtiles.starts.size() + tj);
+    }
+  }
+}
 
 // Scratch for one tile's overlap slabs. Reused across tiles and chunks: the
 // buffers only ever grow, so after the first tile every prepare() is
