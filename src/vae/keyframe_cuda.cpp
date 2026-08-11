@@ -24,49 +24,137 @@ using cuda::DeviceBuffer;
 
 struct ConvWeight {
   cuda::F16Weight weight;
-  DeviceBuffer<__half> bias;
+  const __half* bias = nullptr;  // into Loader's affine arena
 };
 
 struct NormWeight {
-  DeviceBuffer<__half> weight;
-  DeviceBuffer<__half> bias;
+  const __half* weight = nullptr;  // into Loader's affine arena
+  const __half* bias = nullptr;
 };
 
-// One upload pass over the checkpoint. Exists so the ~130 tensors share one
-// set of NF4 scratch buffers and one stream synchronise instead of allocating
-// five device buffers and synchronising per tensor: `cudaFree` synchronises
-// the whole device, so the old shape serialised the entire load against itself.
+// Logical element count of an affine (a bias or a norm weight), whether it is
+// stored plainly or as bitsandbytes NF4. Used twice: once to size the arena
+// before any upload, once to place each tensor in it.
+size_t affine_elements(const SafeTensors& ckpt, const std::string& name) {
+  if (!is_nf4_weight(ckpt, name)) return static_cast<size_t>(ckpt.at(name).numel());
+  size_t logical = 1;
+  for (int64_t dim : read_nf4_state(ckpt, name, "keyframe encoder").shape) {
+    logical *= static_cast<size_t>(dim);
+  }
+  return logical;
+}
+
+// The tensor names this encoder loads, in load order. Built before anything is
+// uploaded so every device allocation can be sized from it up front.
+struct WeightPlan {
+  std::vector<std::string> convs;  // ".weight" and ".bias" hang off these
+  std::vector<std::string> norms;  // ".weight" and ".bias" hang off these
+};
+
+WeightPlan plan_weights() {
+  constexpr int channels[] = {128, 256, 256, 512, 512, 1024};
+  constexpr int down[] = {2, 2, 2, 2, 1, 1};
+  WeightPlan plan;
+  plan.convs.emplace_back("encoder.conv_in");
+  int previous = 128;
+  for (int level = 0; level < 6; ++level) {
+    const int output = channels[level];
+    for (int block = 0; block < 2; ++block) {
+      const int input = block == 0 ? previous : output;
+      const std::string p =
+          "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
+      plan.norms.push_back(p + ".norm1");
+      plan.norms.push_back(p + ".norm2");
+      plan.convs.push_back(p + ".conv1");
+      plan.convs.push_back(p + ".conv2");
+      if (input != output) plan.convs.push_back(p + ".nin_shortcut");
+    }
+    if (down[level] == 2) {
+      plan.convs.push_back("encoder.down." + std::to_string(level) + ".downsample.conv");
+    }
+    previous = output;
+  }
+  plan.norms.emplace_back("encoder.norm_out");
+  plan.convs.emplace_back("encoder.conv_out");
+  plan.convs.emplace_back("quant_conv");
+  return plan;
+}
+
+// One upload pass over the checkpoint.
 //
-// Everything the device may still be reading — the retained host conversions
-// below and the scratch — outlives the loader, and the loader outlives the
-// single synchronise at the end of the constructor.
+// Every device buffer it needs is sized from the plan and allocated in the
+// constructor, so the upload loop itself allocates nothing and frees nothing.
+// That matters twice over. It is what lets the whole load run on one stream
+// with a single synchronise at the end — `cudaMalloc` and `cudaFree` are
+// implicit device-wide sync points, so an allocation per tensor serialises the
+// load against itself just as effectively as an explicit synchronise did. And
+// it removes the reallocation hazard: growing a scratch buffer on demand means
+// `DeviceBuffer::allocate` -> `reset` -> `cudaFree` on a pointer an
+// already-enqueued kernel may still be reading, which stream ordering does not
+// make safe. That is benign today only because `cudaFree` synchronises the
+// device, a property of the legacy allocator; under `cudaFreeAsync` it would be
+// a use-after-free no test could catch.
+//
+// What still allocates per tensor is `F16Weight::load`, once for a dense conv
+// weight and five times for an NF4 one — roughly 33 allocations for this graph.
+// Those live in `src/cuda/nf4_weight.cu`, which the video VAE and ViT decoders
+// share, so removing them is not a change this file can make alone.
 class Loader {
  public:
-  Loader(const SafeTensors& checkpoint, cudaStream_t stream)
-      : ckpt_(checkpoint), stream_(stream) {}
+  Loader(const SafeTensors& checkpoint, const WeightPlan& plan, cudaStream_t stream)
+      : ckpt_(checkpoint), stream_(stream) {
+    // Arena for every affine, plus the high-water mark of each NF4 scratch.
+    size_t arena = 0;
+    size_t codes = 0, scales = 0, qmap = 0, nested_map = 0, nested_absmax = 0;
+    auto account = [&](const std::string& name) {
+      arena += align_up(affine_elements(ckpt_, name));
+      if (!is_nf4_weight(ckpt_, name)) return;
+      codes = std::max(codes, ckpt_.at(name).nbytes);
+      scales = std::max(scales, ckpt_.at(name + ".absmax").nbytes);
+      qmap = std::max(qmap, static_cast<size_t>(ckpt_.at(name + ".quant_map").numel()));
+      nested_map =
+          std::max(nested_map, static_cast<size_t>(ckpt_.at(name + ".nested_quant_map").numel()));
+      nested_absmax =
+          std::max(nested_absmax, static_cast<size_t>(ckpt_.at(name + ".nested_absmax").numel()));
+    };
+    for (const std::string& name : plan.convs) account(name + ".bias");
+    for (const std::string& name : plan.norms) {
+      account(name + ".weight");
+      account(name + ".bias");
+    }
+    if (arena != 0) affines_.allocate(arena);
+    if (codes != 0) codes_.allocate(codes);
+    if (scales != 0) scales_.allocate(scales);
+    if (qmap != 0) qmap_.allocate(qmap);
+    if (nested_map != 0) nested_map_.allocate(nested_map);
+    if (nested_absmax != 0) nested_absmax_.allocate(nested_absmax);
+  }
 
   Loader(const Loader&) = delete;
   Loader& operator=(const Loader&) = delete;
 
-  DeviceBuffer<__half> half(const std::string& name) {
+  // Uploads one affine into the arena and returns where it landed. The arena
+  // outlives the loader, so the pointer stays valid for the encoder's life.
+  const __half* half(const std::string& name) {
+    const size_t count = affine_elements(ckpt_, name);
+    __half* out = affines_.get() + cursor_;
+    cursor_ += align_up(count);
+    if (cursor_ > affines_.size()) {
+      throw std::runtime_error("keyframe encoder: affine arena overflow at '" + name + "'");
+    }
+
     const TensorView& view = ckpt_.at(name);
     if (is_nf4_weight(ckpt_, name)) {
       const NF4State state = read_nf4_state(ckpt_, name, "keyframe encoder");
-      size_t logical = 1;
-      for (int64_t dim : state.shape) logical *= static_cast<size_t>(dim);
       const TensorView& absmax = ckpt_.at(name + ".absmax");
       const TensorView& qmap = ckpt_.at(name + ".quant_map");
       const TensorView& nested_map = ckpt_.at(name + ".nested_quant_map");
       const TensorView& nested_absmax = ckpt_.at(name + ".nested_absmax");
-      uint8_t* codes = grow(codes_, view.nbytes);
-      uint8_t* scales = grow(scales_, absmax.nbytes);
-      float* qm = grow(qmap_, static_cast<size_t>(qmap.numel()));
-      float* nm = grow(nested_map_, static_cast<size_t>(nested_map.numel()));
-      float* na = grow(nested_absmax_, static_cast<size_t>(nested_absmax.numel()));
-      DeviceBuffer<__half> out(logical);
-      // Scratch reuse is safe without a synchronise: every copy and the kernel
-      // below are on one stream, so the next tensor's copy into the scratch is
-      // already ordered after this tensor's dequantisation kernel has read it.
+      // Reusing the scratch across tensors needs no synchronise: every copy and
+      // every kernel here is on one stream, so the next tensor's copy into the
+      // scratch is ordered after this tensor's dequantisation has read it. The
+      // scratch is never reallocated — see the constructor for why that is a
+      // different question from reuse.
       codes_.copy_from_host(static_cast<const uint8_t*>(view.data), view.nbytes, stream_);
       scales_.copy_from_host(static_cast<const uint8_t*>(absmax.data), absmax.nbytes, stream_);
       qmap_.copy_from_host(static_cast<const float*>(qmap.data),
@@ -75,36 +163,36 @@ class Loader {
                                  static_cast<size_t>(nested_map.numel()), stream_);
       nested_absmax_.copy_from_host(static_cast<const float*>(nested_absmax.data),
                                     static_cast<size_t>(nested_absmax.numel()), stream_);
-      cuda::launch_dequant_nf4_f16(codes, scales, qm, nm, na, state.block_size,
-                                   state.nested_block_size, state.nested_offset, out.get(),
-                                   logical, stream_);
+      cuda::launch_dequant_nf4_f16(codes_.get(), scales_.get(), qmap_.get(), nested_map_.get(),
+                                   nested_absmax_.get(), state.block_size,
+                                   state.nested_block_size, state.nested_offset, out, count,
+                                   stream_);
       return out;
     }
-    DeviceBuffer<__half> out(static_cast<size_t>(view.numel()));
     if (view.dtype == DType::kF16) {
-      out.copy_from_host(static_cast<const __half*>(view.data), out.size(), stream_);
-    } else {
-      // The converted block is retained rather than left on the stack: without
-      // the per-tensor synchronise there is no point at which it is known to
-      // have been consumed, and these are all one-dimensional affines, so
-      // holding every one of them costs a few hundred kilobytes.
-      const std::vector<float> f = to_f32(view);
-      retained_.emplace_back(f.size());
-      std::vector<__half>& h = retained_.back();
-      for (size_t i = 0; i < f.size(); ++i) h[i] = __float2half_rn(f[i]);
-      out.copy_from_host(h.data(), h.size(), stream_);
+      copy_in(out, static_cast<const __half*>(view.data), count);
+      return out;
     }
+    // `h` is a stack local and the copy below is asynchronous, which is safe
+    // and needs no synchronise: a host-to-device `cudaMemcpyAsync` from
+    // *pageable* memory stages into a driver buffer before it returns, so the
+    // source need not outlive the call. `F16Weight::load` in
+    // src/cuda/nf4_weight.cu relies on exactly this for its own conversion
+    // buffer. It would not hold for pinned or registered memory — the mapping
+    // itself is registered here, which is precisely why *those* copies are real
+    // DMAs and why the mapping must outlive the stream.
+    const std::vector<float> f = to_f32(view);
+    std::vector<__half> h(f.size());
+    for (size_t i = 0; i < f.size(); ++i) h[i] = __float2half_rn(f[i]);
+    copy_in(out, h.data(), count);
     return out;
   }
 
   ConvWeight conv(const std::string& name) {
-    const TensorView& w = ckpt_.at(name + ".weight");
     ConvWeight result;
-    size_t elements = static_cast<size_t>(w.numel());
+    size_t elements = static_cast<size_t>(ckpt_.at(name + ".weight").numel());
     if (is_nf4_weight(ckpt_, name + ".weight")) {
-      elements = 1;
-      for (int64_t dim : read_nf4_state(ckpt_, name + ".weight", "keyframe encoder").shape)
-        elements *= static_cast<size_t>(dim);
+      elements = affine_elements(ckpt_, name + ".weight");
     }
     result.weight.load(ckpt_, name + ".weight", elements, stream_, "keyframe encoder");
     result.bias = half(name + ".bias");
@@ -118,20 +206,55 @@ class Loader {
     return result;
   }
 
+  // Element count of the largest conv weight, for `materialize`'s workspace.
+  static size_t max_conv_elements(const SafeTensors& ckpt, const WeightPlan& plan) {
+    size_t most = 0;
+    for (const std::string& name : plan.convs) {
+      const std::string w = name + ".weight";
+      const size_t n = is_nf4_weight(ckpt, w) ? affine_elements(ckpt, w)
+                                              : static_cast<size_t>(ckpt.at(w).numel());
+      most = std::max(most, n);
+    }
+    return most;
+  }
+
+  // The arena is sized by one walk of the plan and filled by another, in a
+  // different order. Summing `align_up` over the same set is order-independent,
+  // so the two must land on exactly the same total — not merely fit. Checking
+  // equality rather than the bound turns a mis-accounted tensor into a loud
+  // failure on the first real load instead of a silently short arena that
+  // happens to fit because something else was over-counted.
+  //
+  // This matters more than usual here: the graph is fixed but there is no
+  // video-VAE fixture small enough to commit, so this check and
+  // `validate_keyframe_encoder_weights` are what stand in for a unit test.
+  void verify_arena_full() const {
+    if (cursor_ != affines_.size()) {
+      throw std::runtime_error("keyframe encoder: affine arena accounting disagrees — placed " +
+                               std::to_string(cursor_) + " of " +
+                               std::to_string(affines_.size()) + " elements");
+    }
+  }
+
+  DeviceBuffer<__half> release_arena() { return std::move(affines_); }
+
  private:
-  // Grows to the high-water mark and never shrinks, so the common case — every
-  // affine the same 1024 elements or fewer — allocates once.
-  template <typename T>
-  static T* grow(DeviceBuffer<T>& buffer, size_t count) {
-    if (buffer.size() < count) buffer.allocate(count);
-    return buffer.get();
+  // 16-byte slots, so every tensor in the arena starts at an address the
+  // vectorised kernels are happy to read from.
+  static size_t align_up(size_t elements) { return (elements + 7) / 8 * 8; }
+
+  void copy_in(__half* dst, const __half* src, size_t count) {
+    if (count == 0) return;
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, count * sizeof(__half), cudaMemcpyHostToDevice,
+                                      stream_));
   }
 
   const SafeTensors& ckpt_;
   cudaStream_t stream_;
+  DeviceBuffer<__half> affines_;
+  size_t cursor_ = 0;
   DeviceBuffer<uint8_t> codes_, scales_;
   DeviceBuffer<float> qmap_, nested_map_, nested_absmax_;
-  std::vector<std::vector<__half>> retained_;
 };
 
 }  // namespace
@@ -140,6 +263,11 @@ struct KeyframeEncoder::Impl {
   std::map<std::string, ConvWeight> convs;
   std::map<std::string, NormWeight> norms;
   cuda::Stream stream;
+  // Backs every `ConvWeight::bias` and `NormWeight::weight`/`bias` pointer, so
+  // it must outlive them; declared before them would be wrong, but they are
+  // plain pointers and own nothing, so only lifetime matters and this member
+  // lives exactly as long as they do.
+  DeviceBuffer<__half> affines;
   DeviceBuffer<__half> weight_workspace;
   size_t weight_workspace_elements = 0;
 
@@ -166,36 +294,34 @@ struct KeyframeEncoder::Impl {
                    "vidfab: could not page-lock the video vae mapping for the keyframe encoder; "
                    "uploading via the staged path, which is slower\n");
     }
-    Loader load(checkpoint, stream.get());
-
-    constexpr int channels[] = {128, 256, 256, 512, 512, 1024};
-    constexpr int down[] = {2, 2, 2, 2, 1, 1};
-    convs.emplace("encoder.conv_in", load.conv("encoder.conv_in"));
-    int previous = 128;
-    for (int level = 0; level < 6; ++level) {
-      const int output = channels[level];
-      for (int block = 0; block < 2; ++block) {
-        const int input = block == 0 ? previous : output;
-        const std::string p = "encoder.down." + std::to_string(level) + ".block." +
-                              std::to_string(block);
-        norms.emplace(p + ".norm1", load.norm(p + ".norm1"));
-        norms.emplace(p + ".norm2", load.norm(p + ".norm2"));
-        convs.emplace(p + ".conv1", load.conv(p + ".conv1"));
-        convs.emplace(p + ".conv2", load.conv(p + ".conv2"));
-        if (input != output) convs.emplace(p + ".nin_shortcut", load.conv(p + ".nin_shortcut"));
-      }
-      if (down[level] == 2) {
-        const std::string p = "encoder.down." + std::to_string(level) + ".downsample.conv";
-        convs.emplace(p, load.conv(p));
-      }
-      previous = output;
-    }
-    norms.emplace("encoder.norm_out", load.norm("encoder.norm_out"));
-    convs.emplace("encoder.conv_out", load.conv("encoder.conv_out"));
-    convs.emplace("quant_conv", load.conv("quant_conv"));
-    for (const auto& item : convs)
-      weight_workspace_elements = std::max(weight_workspace_elements, item.second.weight.elements());
+    const WeightPlan plan = plan_weights();
+    weight_workspace_elements = Loader::max_conv_elements(checkpoint, plan);
     weight_workspace.allocate(weight_workspace_elements);
+    Loader load(checkpoint, plan, stream.get());
+
+    // Declared last, so it is destroyed first: the stream is drained before
+    // `load` frees its scratch and before `mapping` unregisters. That ordering
+    // only matters on the failure path — an exception out of the loop below
+    // never reaches the explicit synchronise, and unwinding would otherwise run
+    // `cudaFree` and `cudaHostUnregister` with copies still in flight. On the
+    // success path the explicit synchronise has already drained it and this
+    // costs nothing.
+    struct DrainOnExit {
+      cudaStream_t stream;
+      ~DrainOnExit() { cudaStreamSynchronize(stream); }
+    } drain{stream.get()};
+
+    // The affine half of this is pure enqueue: no allocation, no free, no
+    // synchronise, one stream. The conv half is not, and saying so matters —
+    // `F16Weight::load` allocates its own device buffers, so the ~33 conv
+    // weights still cost an implicit device-wide sync each. Removing those
+    // means giving `F16Weight` an arena, and it lives in a file the video VAE
+    // and ViT decoders share.
+    for (const std::string& name : plan.norms) norms.emplace(name, load.norm(name));
+    for (const std::string& name : plan.convs) convs.emplace(name, load.conv(name));
+    load.verify_arena_full();
+    affines = load.release_arena();
+
     // The one synchronise for the whole load. Every upload above was enqueued
     // on this stream and nothing has read a result yet.
     stream.synchronize();
@@ -210,7 +336,7 @@ struct KeyframeEncoder::Impl {
     const ConvWeight& cw = convs.at(name);
     const __half* weight = cw.weight.materialize(weight_workspace.get(), weight_workspace_elements,
                                                  stream.get());
-    cuda::launch_keyframe_conv3d(x.get(), weight, cw.bias.get(), y.get(), cin, cout, h,
+    cuda::launch_keyframe_conv3d(x.get(), weight, cw.bias, y.get(), cin, cout, h,
                                  w, kernel, stride, true, asymmetric, stream.get());
     return y;
   }
@@ -219,7 +345,7 @@ struct KeyframeEncoder::Impl {
                            int h, int w) {
     DeviceBuffer<float> y(static_cast<size_t>(channels) * h * w);
     const NormWeight& nw = norms.at(name);
-    cuda::launch_keyframe_groupnorm_silu(x.get(), nw.weight.get(), nw.bias.get(), y.get(),
+    cuda::launch_keyframe_groupnorm_silu(x.get(), nw.weight, nw.bias, y.get(),
                                          channels, h, w, 32, 1e-6f, stream.get());
     return y;
   }
