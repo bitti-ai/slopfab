@@ -5,7 +5,10 @@
 // request — and the last thing that should silently produce a subtly wrong
 // geometry.
 
+#include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -14,6 +17,24 @@
 #include "vidfab/attention_mode.h"
 
 namespace {
+
+std::filesystem::path scratch_path(const char* name) {
+  return std::filesystem::temp_directory_path() / name;
+}
+
+// Writes `content` and stamps the file with a last-write time `age_seconds`
+// before now, so a rewrite is distinguishable from its predecessor even on a
+// filesystem whose timestamp granularity is coarser than the test.
+void write_file(const std::filesystem::path& path, const std::string& content,
+                int age_seconds) {
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+  }
+  std::error_code ec;
+  std::filesystem::last_write_time(
+      path, std::filesystem::file_time_type::clock::now() - std::chrono::seconds(age_seconds), ec);
+}
 
 // `throws` takes a plain function pointer, so a capturing lambda will not do.
 bool rejects_frame_count(int frames) {
@@ -256,6 +277,99 @@ VIDFAB_TEST(pipeline_reference_image_limit) {
     rejected = true;
   }
   CHECK(rejected);
+}
+
+// The whole point of keying on identity rather than on name: a reference image
+// overwritten in place between two `--reuse-models` generations must not be
+// served from the first image's cache entry. Before this, both runs produced
+// the same key and the second silently rendered the first image's conditioning.
+VIDFAB_TEST(conditioning_cache_key_detects_overwritten_reference_image) {
+  const std::filesystem::path ref = scratch_path("vidfab_cachekey_ref.ppm");
+
+  vidfab::GenerateRequest r = base_request();
+  r.text_encoder_path = "encoder.safetensors";
+  r.tokenizer_path = "tokenizer.json";
+  r.reference_image_paths = {ref.string()};
+
+  write_file(ref, "first image bytes", 120);
+  const std::string before = vidfab::conditioning_cache_key(r);
+
+  // Same path, same request, different content. Different size *and* a
+  // different mtime, which is what any real overwrite produces.
+  write_file(ref, "second image bytes, a different length entirely", 0);
+  const std::string after = vidfab::conditioning_cache_key(r);
+  CHECK(before != after);
+
+  // Same content at the same size but rewritten later is still a new file: an
+  // editor that round-trips an image to the same byte count must invalidate.
+  write_file(ref, "second image bytes, a different length entirely", 60);
+  const std::string rewritten = vidfab::conditioning_cache_key(r);
+  CHECK(rewritten != after);
+
+  // And nothing else moved: asking twice with the file untouched is a hit.
+  CHECK(vidfab::conditioning_cache_key(r) == rewritten);
+
+  // The reference key sees the same overwrite, because the VAE keyframe encode
+  // is cached against it.
+  r.video_vae_path = "video_vae.safetensors";
+  const std::string ref_key = vidfab::reference_cache_key(r);
+  write_file(ref, "third", 0);
+  CHECK(vidfab::reference_cache_key(r) != ref_key);
+
+  // Deleting the file is a change too, rather than "unchanged since last time".
+  const std::string present = vidfab::conditioning_cache_key(r);
+  std::filesystem::remove(ref);
+  CHECK(vidfab::conditioning_cache_key(r) != present);
+}
+
+VIDFAB_TEST(cache_keys_separate_their_inputs) {
+  const std::filesystem::path a = scratch_path("vidfab_cachekey_a.bin");
+  const std::filesystem::path b = scratch_path("vidfab_cachekey_b.bin");
+  write_file(a, "aaaa", 60);
+  write_file(b, "aaaa", 60);
+
+  vidfab::GenerateRequest r = base_request();
+  r.text_encoder_path = a.string();
+  r.tokenizer_path = a.string();
+  r.video_vae_path = a.string();
+  r.reference_image_paths = {a.string()};
+
+  // Two files with identical size and mtime still differ, because the path is
+  // part of the identity.
+  vidfab::GenerateRequest other = r;
+  other.reference_image_paths = {b.string()};
+  CHECK(vidfab::conditioning_cache_key(r) != vidfab::conditioning_cache_key(other));
+
+  // The prompt drives conditioning and nothing else. A prompt sweep must not
+  // invalidate the reference encode or the tokenizer.
+  vidfab::GenerateRequest reworded = r;
+  reworded.prompt = r.prompt + " at night";
+  CHECK(vidfab::conditioning_cache_key(reworded) != vidfab::conditioning_cache_key(r));
+  CHECK(vidfab::reference_cache_key(reworded) == vidfab::reference_cache_key(r));
+  CHECK(vidfab::tokenizer_cache_key(reworded) == vidfab::tokenizer_cache_key(r));
+
+  // The video VAE is an input to the reference encode but not to conditioning.
+  vidfab::GenerateRequest other_vae = r;
+  other_vae.video_vae_path = b.string();
+  CHECK(vidfab::reference_cache_key(other_vae) != vidfab::reference_cache_key(r));
+  CHECK(vidfab::conditioning_cache_key(other_vae) == vidfab::conditioning_cache_key(r));
+
+  // Reference count is part of both: dropping one must not leave a prefix that
+  // compares equal to the longer list.
+  vidfab::GenerateRequest two = r;
+  two.reference_image_paths = {a.string(), b.string()};
+  CHECK(vidfab::reference_cache_key(two) != vidfab::reference_cache_key(r));
+  CHECK(vidfab::conditioning_cache_key(two) != vidfab::conditioning_cache_key(r));
+
+  // An empty tokenizer path is the embedded tokenizer, which cannot go stale
+  // and must key stably rather than looking like a missing file each time.
+  vidfab::GenerateRequest embedded = r;
+  embedded.tokenizer_path.clear();
+  CHECK(vidfab::tokenizer_cache_key(embedded) == vidfab::tokenizer_cache_key(embedded));
+  CHECK(vidfab::tokenizer_cache_key(embedded) != vidfab::tokenizer_cache_key(r));
+
+  std::filesystem::remove(a);
+  std::filesystem::remove(b);
 }
 
 VIDFAB_TEST(sol_schedule_ranges_and_cadence) {

@@ -1,7 +1,9 @@
 #include "vidfab/pipeline.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <stdexcept>
+#include <system_error>
 
 #include "vidfab/sampler/scheduler.h"
 
@@ -97,6 +99,58 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   }
 
   return plan;
+}
+
+void append_file_identity(std::string& key, const std::string& path) {
+  key.push_back('\0');
+  key += path;
+  key.push_back('\0');
+  if (path.empty()) return;
+
+  std::error_code ec;
+  const std::uintmax_t bytes = std::filesystem::file_size(path, ec);
+  if (ec) {
+    // Absent or unreadable. The path is already in the key, so this only has to
+    // be distinguishable from any real (size, time) pair — and it must not
+    // compare equal to the same path once the file exists.
+    key += "missing";
+    return;
+  }
+  key += std::to_string(static_cast<unsigned long long>(bytes));
+  key.push_back('@');
+  const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(path, ec);
+  if (ec) {
+    key += "unknown";
+    return;
+  }
+  key += std::to_string(static_cast<long long>(mtime.time_since_epoch().count()));
+}
+
+std::string conditioning_cache_key(const GenerateRequest& request) {
+  std::string key = "conditioning";
+  append_file_identity(key, request.text_encoder_path);
+  append_file_identity(key, request.tokenizer_path);
+  key.push_back('\0');
+  key += request.prompt;
+  for (const std::string& path : request.reference_image_paths) {
+    append_file_identity(key, path);
+  }
+  return key;
+}
+
+std::string reference_cache_key(const GenerateRequest& request) {
+  std::string key = "reference";
+  append_file_identity(key, request.video_vae_path);
+  for (const std::string& path : request.reference_image_paths) {
+    append_file_identity(key, path);
+  }
+  return key;
+}
+
+std::string tokenizer_cache_key(const GenerateRequest& request) {
+  std::string key = "tokenizer";
+  append_file_identity(key, request.tokenizer_path);
+  return key;
 }
 
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan) {

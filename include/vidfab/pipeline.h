@@ -108,6 +108,41 @@ struct GeneratePlan {
 // ratio, a non-positive frame count, or a schedule shorter than one step.
 GeneratePlan resolve_plan(const GenerateRequest& request);
 
+// --- reuse keys -------------------------------------------------------------
+//
+// `--count` and `--reuse-models` keep expensive per-request work alive across
+// generations in one process. What makes that safe is the key: two requests
+// share a cache entry only if every input the cached value was computed from is
+// identical. A path is *not* such an input — overwriting `ref.png` in place
+// between two generations leaves the path equal and the content different, and
+// keying on the path alone silently reuses the previous image.
+//
+// So every file named by a request contributes its size and last-write time as
+// well as its path. That is the same identity NTFS and POSIX give a build
+// system, and it has the same known blind spot: a replacement that keeps the
+// byte count and lands inside one filesystem timestamp tick is invisible. Real
+// edits move at least one of the two. The alternative — hashing multi-gigabyte
+// checkpoints on every generation — costs more than the work being cached.
+
+// `path`, then its size and last-write time, appended to `key` with NUL
+// separators. A file that cannot be stat'ed contributes a distinct marker
+// rather than being silently treated as unchanged.
+void append_file_identity(std::string& key, const std::string& path);
+
+// Key for a request's prompt conditioning: the encoder and tokenizer files, the
+// prompt text, and every reference image — each by identity, not by name.
+std::string conditioning_cache_key(const GenerateRequest& request);
+
+// Key for the seed-independent reference-image work: decode, Lanczos resize and
+// the VAE keyframe encode. Deliberately narrower than the conditioning key,
+// because none of that work reads the prompt or the text encoder — but wider in
+// one place, because all of it reads the video VAE.
+std::string reference_cache_key(const GenerateRequest& request);
+
+// Key for a loaded tokenizer. Empty `tokenizer_path` means the embedded copy,
+// which is part of the binary and so cannot go stale.
+std::string tokenizer_cache_key(const GenerateRequest& request);
+
 // Human-readable summary of a resolved plan, for `--dry-run` and for the
 // header a real run prints before it starts.
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan);

@@ -96,19 +96,6 @@ ReusedGenerationModels& reused_models() {
   return models;
 }
 
-std::string conditioning_cache_key(const GenerateRequest& request) {
-  std::string key = request.text_encoder_path;
-  key.push_back('\0');
-  key += request.tokenizer_path;
-  key.push_back('\0');
-  key += request.prompt;
-  for (const std::string& path : request.reference_image_paths) {
-    key.push_back('\0');
-    key += path;
-  }
-  return key;
-}
-
 }  // namespace
 
 RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
