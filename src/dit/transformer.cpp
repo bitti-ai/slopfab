@@ -1176,11 +1176,28 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     std::vector<float> wide;
     std::vector<uint16_t> narrow;
     // Landing pad for the fp16 records that are widened on the device rather
-    // than on the host. Grows to the largest of them and no further: on the
-    // real checkpoint that is `blocks.N.adaln_proj.linear.weight`, 774144 fp16
-    // values, so 1.5 MB of VRAM, and it is freed with this scope well before
-    // the first forward pass.
+    // than on the host. On the real checkpoint the largest is
+    // `blocks.N.adaln_proj.linear.weight`, 774144 fp16 values, so 1.5 MB of
+    // VRAM, and it is freed with this scope well before the first forward pass.
+    //
+    // Sized to the maximum up front rather than grown on demand. Growing would
+    // mean `DeviceBuffer::allocate` -> `reset` -> `cudaFree` on a pointer that
+    // an already-enqueued `launch_widen_f16` may still be reading, and stream
+    // ordering does not make that safe — it is safe today only because
+    // `cudaFree` is an implicit device-wide sync point, which is a property of
+    // the legacy allocator and not something this code should depend on. A
+    // future move to `cudaFreeAsync` would turn it into a use-after-free that
+    // no test could catch. One pass over the records costs nothing and removes
+    // the question.
+    size_t widen_max = 0;
+    for (const auto& kv : plan.records()) {
+      const Record& r = kv.second;
+      if (r.store == Store::kAsF32 && r.view->dtype == DType::kF16) {
+        widen_max = std::max(widen_max, static_cast<size_t>(r.view->numel()));
+      }
+    }
     cuda::DeviceBuffer<uint16_t> widen_src;
+    if (widen_max != 0) widen_src.allocate(widen_max);
     Uploader up(s.stream.get(), &lock);
     for (const auto& kv : plan.records()) {
       const Record& r = kv.second;
@@ -1215,9 +1232,11 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
             up.copy(dst, r.view->data, r.bytes, /*from_mapping=*/true);
           } else if (r.view->dtype == DType::kF16) {
             const auto count = static_cast<size_t>(r.view->numel());
-            if (widen_src.size() < count) widen_src.allocate(count);
-            // Both halves are on `s.stream`, so the next record's copy into
-            // `widen_src` is already ordered after this widen has read it.
+            // Reuse across records needs no synchronise: both halves are on
+            // `s.stream`, so the next record's copy into `widen_src` is
+            // ordered after this widen has finished reading it. The buffer is
+            // never reallocated here — see the sizing loop above for why that
+            // distinction matters.
             up.copy(widen_src.get(), r.view->data, count * sizeof(uint16_t),
                     /*from_mapping=*/true);
             cuda::launch_widen_f16(widen_src.get(), reinterpret_cast<float*>(dst), count,
