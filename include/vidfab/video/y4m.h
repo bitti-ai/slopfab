@@ -26,6 +26,21 @@ struct FrameRate {
 void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames,
                int height, int width, FrameRate fps = {});
 
+// Converts one frame of planar float RGB in [0,1] to 8-bit YUV 4:2:0, BT.709
+// limited range, into caller-supplied planes with arbitrary strides — which
+// is what an AVFrame hands us, since ffmpeg pads every row for alignment.
+//
+// This is the *one* implementation of the transform. It used to have a second,
+// byte-identical copy inside write_y4m, kept honest by a test that compared the
+// two outputs; there is no way to keep two copies of a colour transform in step
+// by hand, and a mismatch shows up as a gamma shift when a viewer switches
+// between the .y4m and the .mp4. It lives here rather than in mux.h so the
+// dependency runs the right way: the plain writer owns the colour transform and
+// the muxer borrows it, not the reverse.
+void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int height, int width,
+                         uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
+                         uint8_t* v_plane, int v_stride);
+
 // Writes a single frame as a binary PPM, for eyeballing one image without a
 // video player.
 void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frames,

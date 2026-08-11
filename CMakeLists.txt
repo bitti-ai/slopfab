@@ -45,6 +45,14 @@ add_library(vidfab_core STATIC
 
 target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+# The RGB -> YUV 4:2:0 conversion in src/video/y4m.cpp is threaded. MSVC needs
+# nothing for std::thread, but every other toolchain wants -pthread both to
+# compile and to link, and without this the non-MSVC build breaks. Requested
+# here as well as in the CUDA block below because vidfab_core must build on its
+# own, on a machine with no CUDA toolkit at all.
+find_package(Threads REQUIRED)
+target_link_libraries(vidfab_core PUBLIC Threads::Threads)
+
 if(MSVC)
   # /utf-8 keeps string literals well-defined regardless of the system codepage.
   target_compile_options(vidfab_core PRIVATE /W4 /permissive- /utf-8)

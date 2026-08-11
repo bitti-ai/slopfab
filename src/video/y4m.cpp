@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <fstream>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 namespace vidfab::video {
 namespace {
@@ -13,7 +15,117 @@ inline uint8_t clamp_u8(float v) {
   return static_cast<uint8_t>(std::lround(std::min(255.0f, std::max(0.0f, v))));
 }
 
+// Runs `body(begin, end)` over [0, count) split into contiguous *static*
+// ranges, the first of which runs on the calling thread.
+//
+// Static rather than dynamic on purpose, and the same shape as the VAE's pixel
+// de-normalise (src/vae/decode_pipeline.cpp): every output element is computed
+// by the same expression from the same inputs, in the same order within a
+// range, and nothing is reduced or reordered across ranges — so the result is
+// bit-identical to the serial loop and it is obvious by inspection that it is.
+//
+// The caps mirror that path too. Eight workers, because the work is
+// DRAM-bandwidth-bound and the memory system saturates around eight streams on
+// this class of machine, while SMT siblings actively contend. And a floor,
+// because a create/join pair costs tens of microseconds: below it the spawn tax
+// exceeds the saving and the serial path is simply faster.
+template <typename Body>
+void static_ranges(size_t count, size_t work, size_t min_work, const Body& body) {
+  constexpr unsigned kMaxWorkers = 8;
+  unsigned workers = std::thread::hardware_concurrency();
+  if (workers == 0) workers = 1;
+  workers = std::min(workers, kMaxWorkers);
+  workers = static_cast<unsigned>(std::min<size_t>(workers, std::max<size_t>(count, 1)));
+  if (work < min_work) workers = 1;
+
+  if (workers <= 1) {
+    body(static_cast<size_t>(0), count);
+    return;
+  }
+  // Joins in the destructor as well as on the happy path: if `emplace_back`
+  // throws part-way through, a plain vector of threads would run ~thread on
+  // still-joinable threads and call std::terminate.
+  struct JoiningPool {
+    std::vector<std::thread> threads;
+    ~JoiningPool() {
+      for (std::thread& t : threads) {
+        if (t.joinable()) t.join();
+      }
+    }
+  } pool;
+  pool.threads.reserve(workers - 1);
+  const size_t share = (count + workers - 1) / workers;
+  for (unsigned w = 1; w < workers; ++w) {
+    const size_t begin = std::min(count, share * w);
+    const size_t end = std::min(count, begin + share);
+    if (begin == end) break;
+    pool.threads.emplace_back(body, begin, end);
+  }
+  body(static_cast<size_t>(0), std::min(count, share));
+}
+
 }  // namespace
+
+void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int height, int width,
+                         uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
+                         uint8_t* v_plane, int v_stride) {
+  // BT.709 limited range: Y spans 16..235, chroma 16..240 around 128. The 2x2
+  // block is averaged before conversion, which is standard 4:2:0 downsampling
+  // rather than point-sampling one corner.
+  //
+  // Split by *chroma* row: worker `cy` owns luma rows 2cy and 2cy+1 and chroma
+  // row cy, so one split covers both loops and the frame pays one create/join
+  // rather than two. Both callers validate that height and width are even, so
+  // the chroma rows tile the luma rows exactly. Every output byte is still the
+  // same expression over the same inputs, and the two planes are disjoint, so
+  // doing a worker's luma and chroma together rather than all luma then all
+  // chroma changes nothing but the order of independent stores.
+  const int chroma_w = width / 2;
+  const int chroma_h = height / 2;
+
+  const auto rows = [&](size_t begin, size_t end) {
+    for (size_t cy = begin; cy < end; ++cy) {
+      for (int dy = 0; dy < 2; ++dy) {
+        const size_t y = cy * 2 + static_cast<size_t>(dy);
+        for (int x = 0; x < width; ++x) {
+          const size_t i = y * static_cast<size_t>(width) + x;
+          const float luma = 0.2126f * r[i] + 0.7152f * g[i] + 0.0722f * b[i];
+          y_plane[y * static_cast<size_t>(y_stride) + x] = clamp_u8(16.0f + 219.0f * luma);
+        }
+      }
+      for (int cx = 0; cx < chroma_w; ++cx) {
+        float rs = 0.0f;
+        float gs = 0.0f;
+        float bs = 0.0f;
+        for (int dy = 0; dy < 2; ++dy) {
+          for (int dx = 0; dx < 2; ++dx) {
+            const size_t i =
+                (cy * 2 + static_cast<size_t>(dy)) * static_cast<size_t>(width) + (cx * 2 + dx);
+            rs += r[i];
+            gs += g[i];
+            bs += b[i];
+          }
+        }
+        rs *= 0.25f;
+        gs *= 0.25f;
+        bs *= 0.25f;
+        const float luma = 0.2126f * rs + 0.7152f * gs + 0.0722f * bs;
+        const float u = (bs - luma) / 1.8556f;
+        const float v = (rs - luma) / 1.5748f;
+        u_plane[cy * static_cast<size_t>(u_stride) + cx] = clamp_u8(128.0f + 224.0f * u);
+        v_plane[cy * static_cast<size_t>(v_stride) + cx] = clamp_u8(128.0f + 224.0f * v);
+      }
+    }
+  };
+
+  // Roughly 1.5 lround per pixel plus three plane reads, run once per frame of
+  // the finished video. The floor is in pixels rather than bytes because the
+  // arithmetic, not the traffic, is what dominates here.
+  constexpr size_t kMinParallelPixels = 1u << 18;  // 256k pixels
+  static_ranges(static_cast<size_t>(chroma_h),
+                static_cast<size_t>(height) * static_cast<size_t>(width), kMinParallelPixels,
+                rows);
+}
 
 void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames,
                int height, int width, FrameRate fps) {
@@ -51,40 +163,12 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
   for (int f = 0; f < frames; ++f) {
     const size_t base = static_cast<size_t>(f) * frame_pixels;
 
-    for (size_t i = 0; i < frame_pixels; ++i) {
-      const float r = r_plane[base + i];
-      const float g = g_plane[base + i];
-      const float b = b_plane[base + i];
-      // BT.709 limited range: Y spans 16..235.
-      const float y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-      luma[i] = clamp_u8(16.0f + 219.0f * y);
-    }
-
-    // Average each 2x2 block before converting, matching standard 4:2:0
-    // downsampling rather than point-sampling one corner.
-    for (size_t cy = 0; cy < chroma_h; ++cy) {
-      for (size_t cx = 0; cx < chroma_w; ++cx) {
-        float r = 0.0f;
-        float g = 0.0f;
-        float b = 0.0f;
-        for (int dy = 0; dy < 2; ++dy) {
-          for (int dx = 0; dx < 2; ++dx) {
-            const size_t i = (cy * 2 + dy) * static_cast<size_t>(width) + (cx * 2 + dx);
-            r += r_plane[base + i];
-            g += g_plane[base + i];
-            b += b_plane[base + i];
-          }
-        }
-        r *= 0.25f;
-        g *= 0.25f;
-        b *= 0.25f;
-        const float y = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-        const float u = (b - y) / 1.8556f;
-        const float v = (r - y) / 1.5748f;
-        cb[cy * chroma_w + cx] = clamp_u8(128.0f + 224.0f * u);
-        cr[cy * chroma_w + cx] = clamp_u8(128.0f + 224.0f * v);
-      }
-    }
+    // The same conversion the muxer uses, because it is now literally the same
+    // function; the planes here are simply unpadded, so the strides are the
+    // extents.
+    rgb_frame_to_yuv420(r_plane + base, g_plane + base, b_plane + base, height, width, luma.data(),
+                        width, cb.data(), static_cast<int>(chroma_w), cr.data(),
+                        static_cast<int>(chroma_w));
 
     out << "FRAME\n";
     out.write(reinterpret_cast<const char*>(luma.data()),

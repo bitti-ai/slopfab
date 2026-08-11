@@ -67,16 +67,8 @@ std::string ffmpeg_version();
 // and closed.
 MuxStatus write_mp4(const MuxRequest& request);
 
-// Converts one frame of planar float RGB in [0,1] to 8-bit YUV 4:2:0, BT.709
-// limited range, into caller-supplied planes with arbitrary strides — which
-// is what an AVFrame hands us, since ffmpeg pads every row for alignment.
-//
-// Declared here rather than kept private to mux.cpp so that a test can pin it
-// against `write_y4m`'s output. The .y4m fallback and the .mp4 have to look
-// the same, and the only way to keep two copies of a colour transform honest
-// is to compare them byte for byte.
-void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int height, int width,
-                         uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
-                         uint8_t* v_plane, int v_stride);
+// rgb_frame_to_yuv420 is declared in y4m.h, which this header includes. The
+// muxer and the .y4m fallback share that one implementation; they used to have
+// a copy each.
 
 }  // namespace vidfab::video

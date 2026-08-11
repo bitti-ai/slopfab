@@ -313,6 +313,89 @@ VIDFAB_TEST(wav_rejects_malformed_requests) {
 // the two files. Comparing against the bytes actually in a .y4m, rather than
 // against a formula repeated here, is what keeps the two implementations
 // pinned together as either changes.
+// The RGB -> YUV 4:2:0 conversion as it was: one thread, all luma then all
+// chroma. Copied verbatim from the version of src/video/mux.cpp that shipped it
+// (the copy in y4m.cpp was byte-identical to it by hand, which is exactly the
+// arrangement the shared implementation replaces).
+void rgb_frame_to_yuv420_serial(const float* r, const float* g, const float* b, int height,
+                                int width, uint8_t* y_plane, int y_stride, uint8_t* u_plane,
+                                int u_stride, uint8_t* v_plane, int v_stride) {
+  auto clamp_u8 = [](float v) -> uint8_t {
+    return static_cast<uint8_t>(std::lround(std::min(255.0f, std::max(0.0f, v))));
+  };
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const size_t i = static_cast<size_t>(y) * width + x;
+      const float luma = 0.2126f * r[i] + 0.7152f * g[i] + 0.0722f * b[i];
+      y_plane[static_cast<size_t>(y) * y_stride + x] = clamp_u8(16.0f + 219.0f * luma);
+    }
+  }
+  const int chroma_w = width / 2;
+  const int chroma_h = height / 2;
+  for (int cy = 0; cy < chroma_h; ++cy) {
+    for (int cx = 0; cx < chroma_w; ++cx) {
+      float rs = 0.0f;
+      float gs = 0.0f;
+      float bs = 0.0f;
+      for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+          const size_t i = static_cast<size_t>(cy * 2 + dy) * width + (cx * 2 + dx);
+          rs += r[i];
+          gs += g[i];
+          bs += b[i];
+        }
+      }
+      rs *= 0.25f;
+      gs *= 0.25f;
+      bs *= 0.25f;
+      const float luma = 0.2126f * rs + 0.7152f * gs + 0.0722f * bs;
+      const float u = (bs - luma) / 1.8556f;
+      const float v = (rs - luma) / 1.5748f;
+      u_plane[static_cast<size_t>(cy) * u_stride + cx] = clamp_u8(128.0f + 224.0f * u);
+      v_plane[static_cast<size_t>(cy) * v_stride + cx] = clamp_u8(128.0f + 224.0f * v);
+    }
+  }
+}
+
+VIDFAB_TEST(rgb_to_yuv_threading_is_bit_identical) {
+  using namespace vidfab::video;
+
+  // Above the parallel floor (256k pixels) so the threaded path really runs,
+  // and below it so the serial path is exercised too. A row count that is not
+  // a multiple of the worker count is deliberate: the last worker's short
+  // range is where an off-by-one in the split would land.
+  struct Case {
+    int height, width;
+  };
+  const Case cases[] = {{482, 640}, {8, 16}, {2, 2}, {768, 400}};
+
+  for (const Case& c : cases) {
+    const vidfab::PixelBuffer clip = make_clip(1, c.height, c.width);
+    const size_t plane = static_cast<size_t>(c.height) * c.width;
+    // Over-wide strides again: the split must not confuse stride with extent.
+    const int y_stride = c.width + 7;
+    const int c_stride = c.width / 2 + 3;
+    const size_t y_bytes = static_cast<size_t>(y_stride) * c.height;
+    const size_t c_bytes = static_cast<size_t>(c_stride) * (c.height / 2);
+
+    std::vector<uint8_t> y_a(y_bytes, 0xAB), u_a(c_bytes, 0xAB), v_a(c_bytes, 0xAB);
+    std::vector<uint8_t> y_b(y_bytes, 0xAB), u_b(c_bytes, 0xAB), v_b(c_bytes, 0xAB);
+
+    rgb_frame_to_yuv420_serial(clip.data(), clip.data() + plane, clip.data() + 2 * plane, c.height,
+                               c.width, y_a.data(), y_stride, u_a.data(), c_stride, v_a.data(),
+                               c_stride);
+    rgb_frame_to_yuv420(clip.data(), clip.data() + plane, clip.data() + 2 * plane, c.height,
+                        c.width, y_b.data(), y_stride, u_b.data(), c_stride, v_b.data(), c_stride);
+
+    // Byte equality, not a tolerance: threading reorders independent stores and
+    // must not change one bit of any of them. The padding bytes are compared
+    // too, so a worker writing past its rows is caught.
+    CHECK_MSG(y_a == y_b, "%dx%d: threaded luma differs from serial", c.width, c.height);
+    CHECK_MSG(u_a == u_b, "%dx%d: threaded Cb differs from serial", c.width, c.height);
+    CHECK_MSG(v_a == v_b, "%dx%d: threaded Cr differs from serial", c.width, c.height);
+  }
+}
+
 VIDFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
   using namespace vidfab::video;
 
