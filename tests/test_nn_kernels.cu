@@ -2403,20 +2403,29 @@ VIDFAB_TEST(attention_sage2) {
   CHECK(threw);
 }
 
-// sage2's three preparation kernels take head dim as a template parameter and
-// its shared-memory opt-in is latched per instantiation, so the failure modes
-// this guards are (a) an index split that is right at one D and wrong at the
-// other, and (b) a latch shared between the two D's, which would leave the
-// second one launched without its opt-in. Both are invisible unless the two
-// widths run in the same process and interleave, hence the alternating loop.
+// sage2's three preparation kernels take head dim as a template parameter, so
+// the failure this guards is an index split that is right at one D and wrong at
+// the other — invisible unless both widths run in the same process, hence the
+// alternating loop.
 //
-// The digest is printed rather than asserted against a constant: it is what
-// establishes that a refactor of these kernels is *bit*-identical rather than
-// merely within tolerance. Run the case before and after and compare the lines.
+// **The digests are frozen, not printed.** They were captured by running these
+// six shapes against a build of this file linked to the pre-refactor
+// `sage2_attention_forward` and again against the current one; both produced the
+// values below. Comparing round 1 against round 0 of the same build would only
+// have proved determinism — a deterministic bit change passes that and moves
+// these constants, which is exactly the regression worth catching.
+//
+// A failure here is not necessarily a bug: it means the numerics moved, and the
+// question is whether that was intended. If it was, re-derive the table the same
+// way rather than pasting whatever the new build prints.
 VIDFAB_TEST(attention_sage2_head_dims_bit_stable) {
   const int heads = 8, kv_heads = 2;
-  struct Shape { int seq; int head_dim; };
-  const Shape shapes[] = {{64, 64}, {199, 128}, {130, 64}, {256, 128}, {65, 64}, {321, 128}};
+  struct Shape { int seq; int head_dim; uint64_t digest; };
+  const Shape shapes[] = {
+      {64, 64, 0x3dece381009ce78cull},  {199, 128, 0xc755489173f5999cull},
+      {130, 64, 0x51488ef18c4440adull}, {256, 128, 0xd01e0a63a85a68a9ull},
+      {65, 64, 0x00fca10d10e3d6b9ull},  {321, 128, 0x0a67856f531f85c4ull},
+  };
 
   std::vector<uint16_t> first[6];
   for (int round = 0; round < 2; ++round) {
@@ -2445,15 +2454,16 @@ VIDFAB_TEST(attention_sage2_head_dims_bit_stable) {
                           1.0f / std::sqrt(float(head_dim)));
         CHECK_CLOSE_REL(want, dout.host(), 3.0e-2, 1.2e-1, "sage2 GQA vs dense CPU");
         first[si] = bits;
-        // FNV-1a over the raw bf16 payload. Two runs of the same build must
-        // print the same value; a bit-identical refactor must not move it.
+        // FNV-1a over the raw bf16 payload, against the frozen table above.
         uint64_t h = 1469598103934665603ull;
         for (uint16_t b : bits) {
           h = (h ^ (b & 0xffu)) * 1099511628211ull;
           h = (h ^ (b >> 8)) * 1099511628211ull;
         }
-        std::printf("  sage2 digest seq=%3d D=%3d kv=%d  %016llx\n", seq, head_dim, kv_heads,
-                    static_cast<unsigned long long>(h));
+        CHECK_MSG(h == shapes[si].digest,
+                  "sage2 output moved at seq=%d D=%d kv=%d: digest %016llx, expected %016llx",
+                  seq, head_dim, kv_heads, static_cast<unsigned long long>(h),
+                  static_cast<unsigned long long>(shapes[si].digest));
       } else {
         size_t bad = 0;
         for (size_t i = 0; i < bits.size(); ++i) bad += bits[i] != first[si][i];
