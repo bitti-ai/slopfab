@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "vidfab/audio/wav.h"
 #include "vidfab/image.h"
@@ -81,13 +83,38 @@ std::vector<float> read_stat(const SafeTensors& st, const char* name, int expect
   return out;
 }
 
+// Per-process reuse across the generations of one counted run. Everything here
+// is keyed on the identity of the files it was derived from (pipeline.h), and
+// every entry carries its own key: a prompt sweep changes the conditioning and
+// nothing else, and must not throw away a tokenizer or a reference encode that
+// did not depend on the prompt.
+//
+// Each cache has a `_valid` flag that is cleared *before* it is refilled, so a
+// throw part-way through leaves an entry that is stale-and-unusable rather than
+// stale-and-matching.
 struct ReusedGenerationModels {
   std::string conditioning_key;
   text::PromptEmbedding prompt;
 
+  // The seed-independent half of the reference-image path: decode, Lanczos
+  // resize to the ~2048-pixel short edge, and the six-level Conv3D keyframe
+  // encode at that resolution. The seed-dependent half — one noise draw and one
+  // `scale_noise` at t = 0.999 — stays per generation, so two generations of a
+  // counted run differ exactly where they are supposed to.
+  std::string reference_key;
+  bool reference_valid = false;
+  std::vector<RGBImage> reference_images;
+  std::vector<std::vector<float>> clean_reference_rows;
+  std::vector<dit::ReferenceGeometry> reference_geometry;
+
   void clear() {
     conditioning_key.clear();
     prompt = {};
+    reference_key.clear();
+    reference_valid = false;
+    reference_images.clear();
+    clean_reference_rows.clear();
+    reference_geometry.clear();
   }
 };
 
@@ -109,31 +136,58 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
 
+  ReusedGenerationModels& reuse = reused_models();
+
   // Decode all references before opening a multi-gigabyte checkpoint. Besides
   // giving file errors promptly, this validates the Ref2VA aspect contract at
   // the dimensions actually presented by the decoder.
-  std::vector<RGBImage> reference_images;
-  reference_images.reserve(request.reference_image_paths.size());
-  try {
-    for (const std::string& path : request.reference_image_paths) {
-      RGBImage image = load_reference_image(path);
-      if (static_cast<int64_t>(image.width) > 4LL * image.height ||
-          static_cast<int64_t>(image.height) > 4LL * image.width) {
-        result.message = "reference image '" + path + "' must be within 1:4 and 4:1, got " +
-                         std::to_string(image.width) + "x" + std::to_string(image.height);
-        return result;
-      }
-      if (options.verbose) {
-        std::printf("reference   %s (%dx%d)\n", path.c_str(), image.width, image.height);
-      }
-      int resized_h = 0, resized_w = 0;
-      dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w);
-      image = resize_reference_lanczos(image, resized_w, resized_h);
-      reference_images.push_back(std::move(image));
+  //
+  // `resolve_reference_image_size` targets a 2048-pixel short edge, so this
+  // Lanczos resize runs on up to ~3648x2048x3 in double precision on one
+  // thread. Every generation of a counted run fed it byte-identical input, so
+  // it is cached under the reference key and the storage below is either the
+  // cache's or this call's, never a copy of one into the other.
+  const std::string reference_key = reference_cache_key(request);
+  const bool cache_references = options.reuse_models;
+  std::vector<RGBImage> owned_reference_images;
+  std::vector<RGBImage>& reference_images =
+      cache_references ? reuse.reference_images : owned_reference_images;
+  const bool reference_cache_hit = cache_references && reuse.reference_valid &&
+                                   reuse.reference_key == reference_key &&
+                                   reuse.reference_images.size() ==
+                                       request.reference_image_paths.size();
+  if (!reference_cache_hit) {
+    if (cache_references) {
+      reuse.reference_valid = false;
+      reuse.reference_key.clear();
+      reuse.clean_reference_rows.clear();
+      reuse.reference_geometry.clear();
     }
-  } catch (const std::exception& e) {
-    result.message = e.what();
-    return result;
+    reference_images.clear();
+    reference_images.reserve(request.reference_image_paths.size());
+    try {
+      for (const std::string& path : request.reference_image_paths) {
+        RGBImage image = load_reference_image(path);
+        if (static_cast<int64_t>(image.width) > 4LL * image.height ||
+            static_cast<int64_t>(image.height) > 4LL * image.width) {
+          result.message = "reference image '" + path + "' must be within 1:4 and 4:1, got " +
+                           std::to_string(image.width) + "x" + std::to_string(image.height);
+          return result;
+        }
+        if (options.verbose) {
+          std::printf("reference   %s (%dx%d)\n", path.c_str(), image.width, image.height);
+        }
+        int resized_h = 0, resized_w = 0;
+        dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w);
+        image = resize_reference_lanczos(image, resized_w, resized_h);
+        reference_images.push_back(std::move(image));
+      }
+    } catch (const std::exception& e) {
+      result.message = e.what();
+      return result;
+    }
+  } else if (options.verbose && !reference_images.empty()) {
+    std::printf("references  reusing %zu decoded images\n", reference_images.size());
   }
 
   // --- latents ---------------------------------------------------------------
@@ -197,18 +251,48 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         return result;
       }
       const Clock::time_point t0 = Clock::now();
-      SafeTensors vae_file;
-      vae_file.open(request.video_vae_path);
-      const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
-      const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
-      vae::KeyframeEncoder image_encoder(vae_file);
+
+      // The clean anchors: the six-level Conv3D keyframe encode at the resized
+      // resolution, which reads nothing seed-dependent and so is cached whole.
+      std::vector<std::vector<float>> owned_clean_rows;
+      std::vector<dit::ReferenceGeometry> owned_geometry;
+      std::vector<std::vector<float>>& clean_rows =
+          cache_references ? reuse.clean_reference_rows : owned_clean_rows;
+      std::vector<dit::ReferenceGeometry>& geometry =
+          cache_references ? reuse.reference_geometry : owned_geometry;
+
+      const bool encode_cache_hit = reference_cache_hit && cache_references &&
+                                    clean_rows.size() == reference_images.size();
+      if (!encode_cache_hit) {
+        if (cache_references) reuse.reference_valid = false;
+        clean_rows.clear();
+        geometry.clear();
+        SafeTensors vae_file;
+        vae_file.open(request.video_vae_path);
+        const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
+        const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
+        vae::KeyframeEncoder image_encoder(vae_file);
+        for (const RGBImage& image : reference_images) {
+          clean_rows.push_back(image_encoder.encode_reference_image(image, mean, stddev));
+          geometry.push_back(
+              {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
+        }
+        if (cache_references) {
+          reuse.reference_key = reference_key;
+          reuse.reference_valid = true;
+        }
+      }
+
+      // Released Ref2VA anchors are almost clean, but not quite: the fixed
+      // timestep is 0.999 and the request generator contributes the other
+      // 0.001. That last 0.001 is the only seed-dependent thing here, so it is
+      // reapplied every generation onto a fresh copy of the cached rows. Keep
+      // each ordered reference on its own deterministic stream.
+      reference_geometry = geometry;
       for (size_t reference_index = 0; reference_index < reference_images.size();
            ++reference_index) {
         const RGBImage& image = reference_images[reference_index];
-        std::vector<float> rows = image_encoder.encode_reference_image(image, mean, stddev);
-        // Released Ref2VA anchors are almost clean, but not quite: the fixed
-        // timestep is 0.999 and the request generator contributes the other
-        // 0.001. Keep each ordered reference on its own deterministic stream.
+        std::vector<float> rows = clean_rows[reference_index];
         const int latent_h = image.height / 16;
         const int latent_w = image.width / 16;
         const uint64_t reference_seed =
@@ -220,13 +304,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         sampler::FlowScheduler::scale_noise(rows.data(), noise_rows.data(), 0.999f,
                                             rows.size(), rows.data());
         condition_video_rows.insert(condition_video_rows.end(), rows.begin(), rows.end());
-        reference_geometry.push_back({dit::ReferenceKind::kImage, 1, image.height / 16,
-                                      image.width / 16, 0});
       }
       if (options.verbose)
-        std::printf("references  %zu images -> %zu fixed video rows in %.2f s\n",
+        std::printf("references  %zu images -> %zu fixed video rows in %.2f s%s\n",
                     reference_images.size(), condition_video_rows.size() / 96,
-                    seconds_since(t0));
+                    seconds_since(t0), encode_cache_hit ? " (cached encode)" : "");
     }
 
     // --- conditioning -------------------------------------------------------
@@ -243,7 +325,6 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     // saving would be nothing, and dropping it would make three of the four
     // checkpoint combinations fail at the worst possible moment.
     text::PromptEmbedding prompt;
-    ReusedGenerationModels& reuse = reused_models();
     const std::string prompt_key = conditioning_cache_key(request);
     if (options.reuse_models && reuse.conditioning_key == prompt_key &&
         !reuse.prompt.data.empty()) {
@@ -254,6 +335,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       }
     } else {
       const Clock::time_point t0 = Clock::now();
+
       text::Tokenizer tokenizer;
       if (request.tokenizer_path.empty()) tokenizer.load_embedded();
       else tokenizer.load(request.tokenizer_path);
