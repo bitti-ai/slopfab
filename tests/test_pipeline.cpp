@@ -288,6 +288,16 @@ VIDFAB_TEST(pipeline_describe_plan) {
   CHECK(text.find("768 x 1344") != std::string::npos);
   CHECK(text.find("37710") != std::string::npos);
   CHECK(text.find("49 model evaluations") != std::string::npos);
+
+  // Every number in the summary comes from the plan, not from the request that
+  // produced it. The grid the header prints and the grid the loop integrates
+  // have to be the same object, and a request field read here is the one way
+  // back to two of them.
+  vidfab::GeneratePlan renumbered = p;
+  renumbered.num_inference_steps = 7;
+  const std::string retold = vidfab::describe_plan(r, renumbered);
+  CHECK(retold.find("7 grid points") != std::string::npos);
+  CHECK(retold.find("50 grid points") == std::string::npos);
 }
 
 VIDFAB_TEST(pipeline_reference_image_limit) {

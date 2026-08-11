@@ -189,7 +189,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       plan.canvas_height, plan.canvas_width, provenance,
       request.num_frames, plan.aligned_frames, plan.duration_seconds, kFps,
       l.num_latent_frames, l.latent_height, l.latent_width, l.rows_per_frame(),
-      l.num_audio_latents, l.num_audio_rows, l.total_rows(), request.num_inference_steps,
+      l.num_audio_latents, l.num_audio_rows, l.total_rows(), plan.num_inference_steps,
       plan.num_model_evaluations(), static_cast<double>(plan.video_sigmas.front()),
       static_cast<double>(plan.video_sigmas[plan.video_sigmas.size() - 2]),
       static_cast<double>(plan.video_sigma_shift), static_cast<double>(plan.audio_sigmas.front()),
