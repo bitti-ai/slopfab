@@ -1,3 +1,8 @@
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
 #include "harness.h"
 #include "vidfab/text/qwen_vision.h"
 
@@ -98,4 +103,115 @@ VIDFAB_TEST(qwen_vision_two_axis_rope) {
   CHECK_NEAR(c[72], 1.0, 1e-6);
   CHECK_NEAR(c[72 + 18], std::cos(1.0), 1e-6);
   CHECK_NEAR(c[72 + 18 + 36], c[72 + 18], 1e-6);
+}
+
+// The two RoPE tables used to evaluate `std::pow` once per (row, axis, j),
+// for an answer that depends only on `j`. Hoisting it out of the loops was
+// meant to change nothing at all, and "nothing at all" here means every one of
+// the ~590000 floats in the vision table is the same bit pattern, not close to
+// it: these tables feed attention on every image, and a table that drifted in
+// the last mantissa bit would produce a plausible video conditioned on
+// slightly the wrong geometry.
+//
+// So the pre-hoist expression is written out again below and compared exactly.
+// `docs/text_encoder_spec.md` 6.4 pins the fp64-then-round evaluation, which
+// is why this compares against `std::pow(double, double)` rather than against
+// an `exp2` or reciprocal formulation that would be faster and different.
+namespace {
+
+bool same_bits(float a, float b) {
+  uint32_t x = 0;
+  uint32_t y = 0;
+  std::memcpy(&x, &a, sizeof(x));
+  std::memcpy(&y, &b, sizeof(y));
+  return x == y;
+}
+
+}  // namespace
+
+VIDFAB_TEST(qwen_vision_rope_hoisting_is_bit_identical) {
+  // A grid big enough that the hoist actually matters: 32x32 patches is 1024
+  // rows of 72 channels.
+  const auto p = qwen3vl_vision_positions({1, 32, 32});
+  std::vector<float> cos_got, sin_got;
+  qwen3vl_vision_rope_tables(p, cos_got, sin_got);
+
+  const int head_dim = 72;
+  const int axis_half = head_dim / 4;
+  const float theta = 10000.0f;
+  const size_t rows = p.rotary_thw.size() / 3;
+  CHECK(rows == 1024);
+  CHECK(cos_got.size() == rows * head_dim);
+
+  std::vector<float> cos_want(rows * head_dim), sin_want(rows * head_dim);
+  for (size_t r = 0; r < rows; ++r) {
+    const int coords[2] = {p.rotary_thw[r * 3 + 1], p.rotary_thw[r * 3 + 2]};
+    for (int a = 0; a < 2; ++a) {
+      for (int j = 0; j < axis_half; ++j) {
+        // Verbatim the pre-hoist expression, `pow` inside the inner loop.
+        const double inv = std::pow(static_cast<double>(theta), -2.0 * j / (head_dim / 2));
+        const float angle = static_cast<float>(coords[a] * inv);
+        const int k = a * axis_half + j;
+        cos_want[r * head_dim + k] = cos_want[r * head_dim + k + head_dim / 2] = std::cos(angle);
+        sin_want[r * head_dim + k] = sin_want[r * head_dim + k + head_dim / 2] = std::sin(angle);
+      }
+    }
+  }
+
+  size_t diffs = 0;
+  size_t first = 0;
+  for (size_t i = 0; i < cos_want.size(); ++i) {
+    if (!same_bits(cos_want[i], cos_got[i]) || !same_bits(sin_want[i], sin_got[i])) {
+      if (diffs == 0) first = i;
+      ++diffs;
+    }
+  }
+  CHECK_MSG(diffs == 0, "vision rope: %zu of %zu entries differ, first at %zu (%.9g vs %.9g)",
+            diffs, cos_want.size(), first, static_cast<double>(cos_want[first]),
+            static_cast<double>(cos_got[first]));
+}
+
+VIDFAB_TEST(qwen_decoder_mrope_hoisting_is_bit_identical) {
+  // 512 text tokens with a 4x4 image in the middle, so all three axes carry
+  // non-trivial positions rather than the identity a pure-text plan gives.
+  std::vector<int32_t> ids;
+  for (int i = 0; i < 200; ++i) ids.push_back(1000 + i);
+  ids.push_back(151652);
+  for (int i = 0; i < 16; ++i) ids.push_back(151655);
+  ids.push_back(151653);
+  for (int i = 0; i < 200; ++i) ids.push_back(2000 + i);
+  const auto plan = qwen3vl_multimodal_plan(ids, {{1, 8, 8}});
+  const int tokens = static_cast<int>(ids.size());
+
+  std::vector<float> cos_got, sin_got;
+  qwen3vl_decoder_rope_tables(plan, tokens, cos_got, sin_got);
+
+  const int head_dim = 128;
+  const float theta = 5.0e6f;
+  std::vector<float> cos_want(static_cast<size_t>(tokens) * head_dim), sin_want(cos_want.size());
+  for (int r = 0; r < tokens; ++r) {
+    for (int j = 0; j < head_dim / 2; ++j) {
+      const int axis = j < 60 ? j % 3 : 0;
+      // Verbatim the pre-hoist expression.
+      const double inv = std::pow(static_cast<double>(theta), -2.0 * j / head_dim);
+      const float a =
+          static_cast<float>(plan.position_ids[static_cast<size_t>(axis) * tokens + r] * inv);
+      cos_want[static_cast<size_t>(r) * head_dim + j] =
+          cos_want[static_cast<size_t>(r) * head_dim + j + 64] = std::cos(a);
+      sin_want[static_cast<size_t>(r) * head_dim + j] =
+          sin_want[static_cast<size_t>(r) * head_dim + j + 64] = std::sin(a);
+    }
+  }
+
+  size_t diffs = 0;
+  size_t first = 0;
+  for (size_t i = 0; i < cos_want.size(); ++i) {
+    if (!same_bits(cos_want[i], cos_got[i]) || !same_bits(sin_want[i], sin_got[i])) {
+      if (diffs == 0) first = i;
+      ++diffs;
+    }
+  }
+  CHECK_MSG(diffs == 0, "decoder mrope: %zu of %zu entries differ, first at %zu (%.9g vs %.9g)",
+            diffs, cos_want.size(), first, static_cast<double>(cos_want[first]),
+            static_cast<double>(cos_got[first]));
 }

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace vidfab::text {
 
@@ -133,12 +134,25 @@ void qwen3vl_vision_rope_tables(const QwenVisionPositions& p, std::vector<float>
   const size_t rows = p.rotary_thw.size() / 3;
   const int axis_half = head_dim / 4; // 18 frequencies for a 72-wide head
   cos.resize(rows * head_dim); sin.resize(rows * head_dim);
+  // `inv` depends only on `j` — 18 distinct values for a 72-wide head — but was
+  // evaluated once per (row, axis, j), which is 2 * rows * 18 calls to
+  // `std::pow` for 18 answers. `ViTDecoder::build_rope` and
+  // `text::rope_inv_freq` already hoist theirs.
+  //
+  // Bit-identical, and deliberately so: the same `std::pow(double, double)`
+  // for the same `j`, just evaluated once. `docs/text_encoder_spec.md` 6.4
+  // pins the fp64-then-round evaluation, so this must not become `exp2` or a
+  // running reciprocal — those are faster and give different last bits.
+  std::vector<double> inv_freq(static_cast<size_t>(axis_half));
+  for (int j = 0; j < axis_half; ++j) {
+    inv_freq[static_cast<size_t>(j)] =
+        std::pow(static_cast<double>(theta), -2.0 * j / (head_dim / 2));
+  }
   for (size_t r = 0; r < rows; ++r) {
     const int coords[2] = {p.rotary_thw[r * 3 + 1], p.rotary_thw[r * 3 + 2]};
     for (int a = 0; a < 2; ++a)
       for (int j = 0; j < axis_half; ++j) {
-        const double inv = std::pow(static_cast<double>(theta),
-                                    -2.0 * j / (head_dim / 2));
+        const double inv = inv_freq[static_cast<size_t>(j)];
         const float angle = static_cast<float>(coords[a] * inv);
         const int k = a * axis_half + j;
         cos[r * head_dim + k] = cos[r * head_dim + k + head_dim / 2] = std::cos(angle);
@@ -153,11 +167,18 @@ void qwen3vl_decoder_rope_tables(const QwenMultimodalPlan& p, int tokens,
   if (tokens <= 0 || head_dim != 128 || p.position_ids.size() != static_cast<size_t>(3 * tokens))
     throw std::runtime_error("Qwen vision: invalid decoder rotary plan");
   cos.resize(static_cast<size_t>(tokens) * head_dim); sin.resize(cos.size());
+  // As above: 64 distinct values, previously recomputed for every one of the
+  // `tokens` rows. Same `std::pow` call, same argument, evaluated once.
+  std::vector<double> inv_freq(static_cast<size_t>(head_dim / 2));
+  for (int j = 0; j < head_dim / 2; ++j) {
+    inv_freq[static_cast<size_t>(j)] =
+        std::pow(static_cast<double>(theta), -2.0 * j / head_dim);
+  }
   for (int r = 0; r < tokens; ++r) for (int j = 0; j < head_dim / 2; ++j) {
     // Qwen3-VL interleaves THW for 20 cycles, then assigns four trailing
     // frequencies to T: section counts [24,20,20].
     const int axis = j < 60 ? j % 3 : 0;
-    const double inv = std::pow(static_cast<double>(theta), -2.0 * j / head_dim);
+    const double inv = inv_freq[static_cast<size_t>(j)];
     const float a = static_cast<float>(p.position_ids[static_cast<size_t>(axis) * tokens + r] * inv);
     cos[static_cast<size_t>(r)*head_dim+j]=cos[static_cast<size_t>(r)*head_dim+j+64]=std::cos(a);
     sin[static_cast<size_t>(r)*head_dim+j]=sin[static_cast<size_t>(r)*head_dim+j+64]=std::sin(a);
