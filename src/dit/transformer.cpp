@@ -49,6 +49,7 @@
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/profile.h"
+#include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/cuda/workspace.cuh"
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
@@ -1174,6 +1175,12 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     }
     std::vector<float> wide;
     std::vector<uint16_t> narrow;
+    // Landing pad for the fp16 records that are widened on the device rather
+    // than on the host. Grows to the largest of them and no further: on the
+    // real checkpoint that is `blocks.N.adaln_proj.linear.weight`, 774144 fp16
+    // values, so 1.5 MB of VRAM, and it is freed with this scope well before
+    // the first forward pass.
+    cuda::DeviceBuffer<uint16_t> widen_src;
     Uploader up(s.stream.get(), &lock);
     for (const auto& kv : plan.records()) {
       const Record& r = kv.second;
@@ -1183,8 +1190,35 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
           up.copy(dst, r.view->data, r.bytes, /*from_mapping=*/true);
           break;
         case Store::kAsF32:
-          to_f32(*r.view, wide);
-          up.copy(dst, wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
+          // The arena wants fp32 here, and the two dtypes that actually occur
+          // reach it without a host conversion loop at all.
+          //
+          // fp32 on disk is already the arena's format, so `to_f32` was
+          // copying it element by element into a scratch vector in order to
+          // upload an identical copy. It is a straight DMA out of the mapping.
+          //
+          // fp16 -> fp32 is exact, so sending the fp16 bytes and widening on
+          // the device produces the same arena bytes while halving the traffic
+          // and dropping the single-threaded host loop — 43.6 M elements of
+          // AdaLN projection on the real checkpoint. `ViTDecoder::load` has
+          // done this since the video VAE work; `test_widen_f16` compares the
+          // device kernel against `f16_to_f32` over every finite fp16 bit
+          // pattern.
+          if (r.view->dtype == DType::kF32) {
+            up.copy(dst, r.view->data, r.bytes, /*from_mapping=*/true);
+          } else if (r.view->dtype == DType::kF16) {
+            const auto count = static_cast<size_t>(r.view->numel());
+            if (widen_src.size() < count) widen_src.allocate(count);
+            // Both halves are on `s.stream`, so the next record's copy into
+            // `widen_src` is already ordered after this widen has read it.
+            up.copy(widen_src.get(), r.view->data, count * sizeof(uint16_t),
+                    /*from_mapping=*/true);
+            cuda::launch_widen_f16(widen_src.get(), reinterpret_cast<float*>(dst), count,
+                                   s.stream.get());
+          } else {
+            to_f32(*r.view, wide);
+            up.copy(dst, wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
+          }
           break;
         case Store::kAsBF16:
           to_f32(*r.view, wide);

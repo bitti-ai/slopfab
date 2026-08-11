@@ -1,5 +1,6 @@
-// Reader tests for the mapped safetensors file, focused on the ranged
-// readahead hint used by the Qwen vision tower load.
+// Tests for the mapped safetensors reader and the widening that reads out of
+// it: the ranged readahead hint used by the Qwen vision tower load, and
+// `to_f32`'s output buffer contract.
 //
 // A prefetch hint is invisible when it works and invisible when it does not,
 // so the two things worth asserting are that the *extent* it is given is the
@@ -17,6 +18,7 @@
 
 #include "harness.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/tensor_convert.h"
 
 namespace {
 
@@ -25,20 +27,31 @@ using vidfab::TensorView;
 
 struct Spec {
   std::string name;
-  size_t elements;  // F32
+  size_t elements;
+  const char* dtype = "F32";
 };
 
+// The value tensor `k` holds at index `i`. An integer at most 256 scaled by a
+// power of two, so it is exact in bf16 (8 significand bits) as well as in fp16
+// and fp32 — the widening tests below can then assert equality rather than a
+// tolerance — while still differing enough between tensors and positions that
+// a range read back from the wrong place is obviously wrong.
+float element(size_t k, size_t i) {
+  return static_cast<float>(1 + i % 200) * static_cast<float>(1u << k);
+}
+
 // Writes a minimal but genuinely valid safetensors file: the 8-byte header
-// length, a JSON header, then the tensor data in the declared order. Every
-// element of tensor `k` is written as the float `k * 1000 + i`, so a range that
-// is read back wrong is obvious rather than plausible.
+// length, a JSON header, then the tensor data in the declared order.
 std::string write_file(const std::vector<Spec>& specs, const std::string& stem) {
+  auto width = [](const Spec& s) -> size_t {
+    return std::strcmp(s.dtype, "F32") == 0 ? 4 : 2;
+  };
   std::string header = "{";
   size_t offset = 0;
   for (size_t k = 0; k < specs.size(); ++k) {
-    const size_t bytes = specs[k].elements * 4;
+    const size_t bytes = specs[k].elements * width(specs[k]);
     if (k != 0) header += ",";
-    header += "\"" + specs[k].name + "\":{\"dtype\":\"F32\",\"shape\":[" +
+    header += "\"" + specs[k].name + "\":{\"dtype\":\"" + specs[k].dtype + "\",\"shape\":[" +
               std::to_string(specs[k].elements) + "],\"data_offsets\":[" +
               std::to_string(offset) + "," + std::to_string(offset + bytes) + "]}";
     offset += bytes;
@@ -52,8 +65,14 @@ std::string write_file(const std::vector<Spec>& specs, const std::string& stem) 
   out.write(header.data(), static_cast<std::streamsize>(header.size()));
   for (size_t k = 0; k < specs.size(); ++k) {
     for (size_t i = 0; i < specs[k].elements; ++i) {
-      const float v = static_cast<float>(k) * 1000.0f + static_cast<float>(i);
-      out.write(reinterpret_cast<const char*>(&v), 4);
+      const float v = element(k, i);
+      if (width(specs[k]) == 4) {
+        out.write(reinterpret_cast<const char*>(&v), 4);
+      } else {
+        const uint16_t h = std::strcmp(specs[k].dtype, "BF16") == 0 ? vidfab::f32_to_bf16(v)
+                                                                    : vidfab::f32_to_f16(v);
+        out.write(reinterpret_cast<const char*>(&h), 2);
+      }
     }
   }
   out.close();
@@ -155,7 +174,7 @@ VIDFAB_TEST(safetensors_prefetch_range_is_advisory_and_bounded) {
     const auto* data = static_cast<const float*>(v.data);
     bool ok = v.nbytes == specs[k].elements * 4;
     for (size_t i = 0; ok && i < specs[k].elements; ++i) {
-      ok = data[i] == static_cast<float>(k) * 1000.0f + static_cast<float>(i);
+      ok = data[i] == element(k, i);
     }
     CHECK_MSG(ok, "%s did not read back intact after prefetching", specs[k].name.c_str());
   }
@@ -171,6 +190,70 @@ VIDFAB_TEST(safetensors_prefetch_range_is_advisory_and_bounded) {
   CHECK(begin_closed == nullptr);
   CHECK(bytes_closed == 0);
 
+  std::filesystem::remove(path);
+}
+
+// `to_f32` used to zero its output buffer before overwriting every element of
+// it, which cost a 155 MB memset per AdaLN projection on the real transformer
+// checkpoint. It now resizes instead. That is only equivalent if the buffer
+// ends up the same size with the same contents no matter what it held before,
+// which is exactly what a reused buffer makes easy to get wrong: a shorter
+// tensor followed by a longer one, or a longer one followed by a shorter one,
+// must not leave any element of the previous tensor visible.
+VIDFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
+  const std::vector<Spec> specs = {
+      {"long.f32", 4096, "F32"},
+      {"short.f16", 7, "F16"},
+      {"mid.bf16", 300, "BF16"},
+      {"empty.f32", 0, "F32"},
+      {"tail.f16", 5000, "F16"},
+  };
+  const std::string path = write_file(specs, "vidfab_to_f32_reuse");
+
+  SafeTensors st;
+  st.open(path);
+
+  // The answer each tensor produces into a buffer that has never been used.
+  std::vector<std::vector<float>> fresh(specs.size());
+  for (size_t k = 0; k < specs.size(); ++k) {
+    fresh[k] = vidfab::to_f32(st.at(specs[k].name));
+    CHECK_MSG(fresh[k].size() == specs[k].elements, "%s widened to %zu elements, expected %zu",
+              specs[k].name.c_str(), fresh[k].size(), specs[k].elements);
+  }
+
+  // The same answers out of one buffer walked in every order, so every
+  // grow-then-shrink and shrink-then-grow transition is covered.
+  std::vector<float> reused;
+  size_t diffs = 0;
+  std::string first_bad;
+  for (size_t start = 0; start < specs.size(); ++start) {
+    for (size_t step = 0; step < specs.size(); ++step) {
+      const size_t k = (start + step) % specs.size();
+      vidfab::to_f32(st.at(specs[k].name), reused);
+      if (reused != fresh[k]) {
+        if (diffs == 0) first_bad = specs[k].name;
+        ++diffs;
+      }
+    }
+  }
+  CHECK_MSG(diffs == 0, "%zu reused-buffer conversions differ, first '%s'", diffs,
+            first_bad.c_str());
+
+  // And the values themselves are what was written. fp16 and bf16 hold these
+  // exactly, so this is an equality, not a tolerance.
+  for (size_t k = 0; k < specs.size(); ++k) {
+    bool ok = true;
+    size_t bad = 0;
+    for (size_t i = 0; ok && i < specs[k].elements; ++i) {
+      ok = fresh[k][i] == element(k, i);
+      if (!ok) bad = i;
+    }
+    CHECK_MSG(ok, "%s widened to the wrong values: [%zu] is %.9g, expected %.9g",
+              specs[k].name.c_str(), bad, ok ? 0.0 : static_cast<double>(fresh[k][bad]),
+              static_cast<double>(element(k, bad)));
+  }
+
+  st.close();
   std::filesystem::remove(path);
 }
 

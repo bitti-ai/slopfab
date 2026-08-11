@@ -18,7 +18,13 @@ void widen(const TensorView& view, std::vector<float>& out, Fn convert) {
 
 void to_f32(const TensorView& view, std::vector<float>& out) {
   const auto n = static_cast<size_t>(view.numel());
-  out.assign(n, 0.0f);
+  // `resize`, not `assign`. Every one of these elements is overwritten below,
+  // so zeroing them first is pure cost — 155 MB of memset per AdaLN projection
+  // on the real transformer checkpoint. `resize` only zeroes what it grows,
+  // and the callers that matter reuse one buffer across records, so past the
+  // high-water mark it zeroes nothing at all. The buffer is left the same size
+  // with the same contents either way.
+  out.resize(n);
   if (n == 0) return;
 
   switch (view.dtype) {
