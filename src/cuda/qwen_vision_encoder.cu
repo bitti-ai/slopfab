@@ -4,6 +4,7 @@
 #include <cuda_bf16.h>
 #include <unordered_map>
 
+#include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/qwen_vision.cuh"
@@ -11,12 +12,62 @@
 namespace vidfab::text {
 using cuda::DeviceBuffer;
 namespace {
+constexpr int kHidden = 1152, kHeads = 16, kHeadDim = 72, kIntermediate = 4304;
+constexpr int kMergedDim = 4608, kOutDim = 5120, kPatchDim = 1536, kQkvDim = 3456;
+
 cuda::QuantWeight dense(const DeviceBuffer<uint16_t>& w, int out, int in,
                         const DeviceBuffer<uint16_t>* b = nullptr) {
   cuda::QuantWeight q; q.format = cuda::QuantFormat::kBF16; q.data = w.get();
   q.out_features = out; q.in_features = in;
   if (b) { q.bias = b->get(); q.bias_format = cuda::QuantFormat::kBF16; }
   return q;
+}
+
+// Every activation one image needs, in one place so the sizing pass and the
+// carving pass cannot disagree about what exists.
+struct VisionScratch {
+  __nv_bfloat16 *pixels, *x, *normed, *qkv, *q, *k, *v, *branch, *mlp;
+  __nv_bfloat16 *merger_normed, *merged, *merger_hidden, *out, *deep[3];
+  int32_t* pos_index;
+  float *rope_cos, *rope_sin;
+};
+
+// A bump allocator that either measures or carves, so `carve_vision` is written
+// once and run twice. `Workspace::alloc` rounds to 256, so the measuring pass
+// has to round identically or the reserve comes up short by up to 255 bytes a
+// buffer.
+struct Carver {
+  cuda::Workspace* ws = nullptr;  // null while measuring
+  size_t bytes = 0;
+  template <typename T>
+  T* take(size_t n) {
+    if (ws != nullptr) return ws->alloc_n<T>(n);
+    bytes += (n * sizeof(T) + 255u) & ~size_t(255u);
+    return nullptr;
+  }
+};
+
+VisionScratch carve_vision(Carver& c, int rows, int groups, size_t pos_count, size_t rope_count) {
+  const size_t r = static_cast<size_t>(rows), g = static_cast<size_t>(groups);
+  VisionScratch s{};
+  s.pixels = c.take<__nv_bfloat16>(r * kPatchDim);
+  s.x = c.take<__nv_bfloat16>(r * kHidden);
+  s.normed = c.take<__nv_bfloat16>(r * kHidden);
+  s.qkv = c.take<__nv_bfloat16>(r * kQkvDim);
+  s.q = c.take<__nv_bfloat16>(r * kHidden);
+  s.k = c.take<__nv_bfloat16>(r * kHidden);
+  s.v = c.take<__nv_bfloat16>(r * kHidden);
+  s.branch = c.take<__nv_bfloat16>(r * kHidden);
+  s.mlp = c.take<__nv_bfloat16>(r * kIntermediate);
+  s.merger_normed = c.take<__nv_bfloat16>(r * kHidden);
+  s.merged = c.take<__nv_bfloat16>(g * kMergedDim);
+  s.merger_hidden = c.take<__nv_bfloat16>(g * kMergedDim);
+  s.out = c.take<__nv_bfloat16>(g * kOutDim);
+  for (int i = 0; i < 3; ++i) s.deep[i] = c.take<__nv_bfloat16>(g * kOutDim);
+  s.pos_index = c.take<int32_t>(pos_count);
+  s.rope_cos = c.take<float>(rope_count);
+  s.rope_sin = c.take<float>(rope_count);
+  return s;
 }
 }
 
@@ -74,24 +125,55 @@ QwenVisionEmbedding QwenVisionEncoder::encode(const std::vector<QwenPixelValues>
   std::vector<cuda::QwenVisionBlockWeights> blocks; for(int i=0;i<27;++i) blocks.push_back(s.block(i));
   auto main=s.merger("merger.",true); cuda::QwenVisionMergerWeights deep[3];
   for(int i=0;i<3;++i) deep[i]=s.merger("deepstack_merger_list."+std::to_string(i)+".",false);
+  // Fifteen DeviceBuffers used to be constructed and destroyed per image, and a
+  // cudaFree synchronises the whole device (see the note on vit_decoder.cu's
+  // scratch). They come out of the arena instead. The arena keeps its high-water
+  // mark for the life of the encoder, which is bounded: `unload()` -- called
+  // right after `encode` in encoder_kernels.cu -- replaces it with a fresh one.
+  //
+  // The reserve covers the activations *plus* the attention scratch, because
+  // qwen_vision_attention reserves the arena itself further down the call and a
+  // grow there would free everything carved here. Reserving the sum up front
+  // makes that inner reserve a no-op, which is the whole contract.
   for(const auto& image:images){
     const int rows=static_cast<int>(image.grid.patch_count()), groups=rows/4;
-    if(image.rows.size()!=static_cast<size_t>(rows)*1536) throw std::runtime_error("Qwen vision: pixel row mismatch");
+    if(image.rows.size()!=static_cast<size_t>(rows)*kPatchDim) throw std::runtime_error("Qwen vision: pixel row mismatch");
     std::vector<uint16_t> hp(image.rows.size()); for(size_t i=0;i<hp.size();++i) hp[i]=f32_to_bf16(image.rows[i]);
     auto positions=qwen3vl_vision_positions(image.grid); std::vector<float> hc,hs;
     qwen3vl_vision_rope_tables(positions,hc,hs);
-    DeviceBuffer<uint16_t> pixels(hp.size()),x(static_cast<size_t>(rows)*1152),normed(static_cast<size_t>(rows)*1152),qkv(static_cast<size_t>(rows)*3456),q(static_cast<size_t>(rows)*1152),k(q.size()),v(q.size()),branch(q.size()),mlp(static_cast<size_t>(rows)*4304);
-    DeviceBuffer<int32_t> pi(positions.learned.size()); DeviceBuffer<float> dc(hc.size()),ds(hs.size());
-    DeviceBuffer<uint16_t> mn(static_cast<size_t>(rows)*1152),merged(static_cast<size_t>(groups)*4608),mh(merged.size()),out(static_cast<size_t>(groups)*5120),dout[3]={DeviceBuffer<uint16_t>(out.size()),DeviceBuffer<uint16_t>(out.size()),DeviceBuffer<uint16_t>(out.size())};
-    pixels.copy_from_host(hp.data(),hp.size(),s.stream); pi.copy_from_host(positions.learned.data(),positions.learned.size(),s.stream); dc.copy_from_host(hc.data(),hc.size(),s.stream); ds.copy_from_host(hs.data(),hs.size(),s.stream);
-    auto patch=dense(s.at("patch_embed.proj.weight"),1152,1536,&s.at("patch_embed.proj.bias"));
-    cuda::qwen_vision_patch_embed(s.linear,patch,reinterpret_cast<__nv_bfloat16*>(pixels.get()),reinterpret_cast<__nv_bfloat16*>(s.at("pos_embed.weight").get()),pi.get(),reinterpret_cast<__nv_bfloat16*>(x.get()),rows,s.ws,s.stream);
-    cuda::QwenVisionBlockScratch bs{reinterpret_cast<__nv_bfloat16*>(normed.get()),reinterpret_cast<__nv_bfloat16*>(qkv.get()),reinterpret_cast<__nv_bfloat16*>(q.get()),reinterpret_cast<__nv_bfloat16*>(k.get()),reinterpret_cast<__nv_bfloat16*>(v.get()),reinterpret_cast<__nv_bfloat16*>(branch.get()),reinterpret_cast<__nv_bfloat16*>(mlp.get())};
-    __nv_bfloat16* dp[3]; for(int i=0;i<3;++i)dp[i]=reinterpret_cast<__nv_bfloat16*>(dout[i].get());
-    cuda::qwen_vision_tower_forward(s.handle,s.stream,s.linear,blocks.data(),main,deep,dc.get(),ds.get(),reinterpret_cast<__nv_bfloat16*>(x.get()),rows,bs,reinterpret_cast<__nv_bfloat16*>(mn.get()),reinterpret_cast<__nv_bfloat16*>(merged.get()),reinterpret_cast<__nv_bfloat16*>(mh.get()),reinterpret_cast<__nv_bfloat16*>(out.get()),dp,s.ws);
-    const size_t old=result.main.size(); result.main.resize(old+out.size()); out.copy_to_host(result.main.data()+old,out.size(),s.stream);
-    for(int i=0;i<3;++i){size_t o=result.deepstack[i].size();result.deepstack[i].resize(o+dout[i].size());dout[i].copy_to_host(result.deepstack[i].data()+o,dout[i].size(),s.stream);} result.tokens+=groups;
+
+    cuda::AttentionConfig acfg; acfg.seq_len=rows; acfg.num_heads=kHeads; acfg.head_dim=kHeadDim;
+    const size_t attn_bytes=cuda::attention_workspace_bytes(acfg,cuda::attention_preferred_backend(acfg));
+    Carver measure; carve_vision(measure,rows,groups,positions.learned.size(),hc.size());
+    s.ws.reserve(measure.bytes+attn_bytes);
+    const size_t reserved=s.ws.capacity();
+    cuda::Workspace::Scope scope(s.ws);
+    Carver carver; carver.ws=&s.ws;
+    const VisionScratch b=carve_vision(carver,rows,groups,positions.learned.size(),hc.size());
+
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.pixels,hp.data(),hp.size()*sizeof(uint16_t),cudaMemcpyHostToDevice,s.stream));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.pos_index,positions.learned.data(),positions.learned.size()*sizeof(int32_t),cudaMemcpyHostToDevice,s.stream));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.rope_cos,hc.data(),hc.size()*sizeof(float),cudaMemcpyHostToDevice,s.stream));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.rope_sin,hs.data(),hs.size()*sizeof(float),cudaMemcpyHostToDevice,s.stream));
+    auto patch=dense(s.at("patch_embed.proj.weight"),kHidden,kPatchDim,&s.at("patch_embed.proj.bias"));
+    cuda::qwen_vision_patch_embed(s.linear,patch,b.pixels,reinterpret_cast<__nv_bfloat16*>(s.at("pos_embed.weight").get()),b.pos_index,b.x,rows,s.ws,s.stream);
+    cuda::QwenVisionBlockScratch bs{b.normed,b.qkv,b.q,b.k,b.v,b.branch,b.mlp};
+    __nv_bfloat16* dp[3]; for(int i=0;i<3;++i)dp[i]=b.deep[i];
+    cuda::qwen_vision_tower_forward(s.handle,s.stream,s.linear,blocks.data(),main,deep,b.rope_cos,b.rope_sin,b.x,rows,bs,b.merger_normed,b.merged,b.merger_hidden,b.out,dp,s.ws);
+    const size_t out_n=static_cast<size_t>(groups)*kOutDim;
+    const size_t old=result.main.size(); result.main.resize(old+out_n);
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(result.main.data()+old,b.out,out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));
+    for(int i=0;i<3;++i){size_t o=result.deepstack[i].size();result.deepstack[i].resize(o+out_n);
+      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(result.deepstack[i].data()+o,b.deep[i],out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));}
+    result.tokens+=groups;
     VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream));
+    // If the inner reserve had grown the arena it would have freed everything
+    // carved above and reset the cursor, and the results just copied out would
+    // have come from a dangling pointer -- plausible numbers, no crash. The
+    // reserve is sized so that cannot happen; this says so out loud rather than
+    // leaving it to a comment.
+    if(s.ws.capacity()!=reserved) throw std::runtime_error(
+        "Qwen vision: attention grew the arena under the carved activations");
   } return result;
 }
 } // namespace vidfab::text

@@ -38,6 +38,7 @@
 #include "vidfab/cuda/workspace.cuh"
 #include "vidfab/dit/packing.h"
 #include "vidfab/dtype.h"
+#include "vidfab/text/qwen_vision.h"
 #include "vidfab/safetensors.h"
 
 namespace {
@@ -4226,6 +4227,144 @@ VIDFAB_TEST(qwen_vision_layernorm_and_gelu) {
   BfBuf dg(gx);
   vidfab::cuda::launch_gelu_tanh(dg.p(), gx.size(), nullptr);
   CHECK_CLOSE(gw, dg.host(), 1e-2, "vision gelu tanh");
+}
+
+// The Qwen vision encoder stopped allocating fifteen DeviceBuffers per image
+// and carves them out of its arena instead, which only works because of two
+// Workspace properties that were previously never depended on and never
+// asserted:
+//
+//   - `reserve` below the current capacity is a no-op, pointer-preserving and
+//     cursor-preserving. The encoder reserves activations plus attention scratch
+//     up front precisely so that qwen_vision_attention's own inner reserve
+//     lands in this case;
+//   - `reserve` above it frees the old buffer and resets the cursor, so every
+//     pointer handed out becomes dangling. That is the failure the encoder is
+//     sized to avoid, and it is silent -- the arithmetic downstream keeps
+//     working on freed memory.
+//
+// If the first property ever stops holding, the encoder returns embeddings read
+// out of a freed allocation. Pin both.
+VIDFAB_TEST(workspace_reserve_below_capacity_preserves_carved_pointers) {
+  Workspace ws;
+  ws.reserve(1 << 20);
+  const size_t capacity = ws.capacity();
+  CHECK(capacity >= (1u << 20));
+
+  void* a = ws.alloc(4096);
+  void* b = ws.alloc(4096);
+  const size_t used = ws.used();
+  CHECK(a != nullptr && b != nullptr && a != b);
+  CHECK(reinterpret_cast<uintptr_t>(a) % 256 == 0);
+  CHECK(reinterpret_cast<uintptr_t>(b) % 256 == 0);
+
+  // Exactly the shape of the inner reserve: a smaller request against an arena
+  // that is already big enough.
+  ws.reserve(capacity / 2);
+  CHECK_MSG(ws.capacity() == capacity, "reserve below capacity reallocated: %zu -> %zu", capacity,
+            ws.capacity());
+  CHECK_MSG(ws.used() == used, "reserve below capacity moved the cursor: %zu -> %zu", used,
+            ws.used());
+  void* c = ws.alloc(4096);
+  CHECK_MSG(c != a && c != b, "reserve below capacity handed back a live pointer");
+
+  // And the case the encoder's sizing exists to prevent, so the test states
+  // what "too small a reserve" would actually have done.
+  ws.reserve(capacity * 2);
+  CHECK(ws.capacity() >= capacity * 2);
+  CHECK_MSG(ws.used() == 0, "a growing reserve must reset the cursor, got %zu", ws.used());
+
+  // An over-carve is a loud throw, not a silent overrun -- the other half of
+  // why an under-sized reserve cannot corrupt results quietly.
+  Workspace tight;
+  tight.reserve(1024);
+  bool threw = false;
+  try {
+    tight.alloc(1 << 20);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  CHECK_MSG(threw, "Workspace::alloc past the end must throw");
+}
+
+// The whole vision tower on the shipped weights, twice.
+//
+// `QwenVisionEncoder::encode` used to build fifteen DeviceBuffers per image and
+// free them at the end of the iteration; it now carves them out of its arena,
+// which is a change to *where* every activation lives and to nothing else. The
+// only assertion worth making about that is that the numbers did not move, and
+// the only way to make it is to run the real thing: the tower is 27 blocks of
+// weights that no synthetic fixture reproduces.
+//
+// Two images in one call, so the second one exercises a re-carve against an
+// arena that already has a high-water mark, which the single-image probe in
+// tools/qwenvisionprobe.cpp does not reach. The two are the same picture, so
+// their embeddings must come back bit for bit identical -- that is what a stale
+// or overlapping carve would break, and it is checked on raw bf16 rather than
+// on a norm because a norm survives a permutation.
+VIDFAB_TEST(qwen_vision_encode_reuses_arena_across_images) {
+  std::string path;
+  for (const char* prefix : {"", "../", "../../", "../../../"}) {
+    const std::string p =
+        std::string(prefix) + "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+    if (std::filesystem::exists(p)) {
+      path = p;
+      break;
+    }
+  }
+  if (path.empty()) {
+    std::printf("  qwen vision: text encoder checkpoint absent, skipped\n");
+    return;
+  }
+
+  std::vector<uint8_t> rgb(256 * 256 * 3);
+  for (int y = 0; y < 256; ++y) {
+    for (int x = 0; x < 256; ++x) {
+      const size_t i = (size_t(y) * 256 + x) * 3;
+      rgb[i] = uint8_t((x * 17 + y * 3) & 255);
+      rgb[i + 1] = uint8_t((x * 5 + y * 11) & 255);
+      rgb[i + 2] = uint8_t((x ^ y) & 255);
+    }
+  }
+  const auto pixels = vidfab::text::qwen3vl_patchify_resized_rgb(rgb, 256, 256);
+
+  vidfab::SafeTensors checkpoint;
+  checkpoint.open(path);
+  vidfab::text::QwenVisionEncoder encoder;
+  encoder.load(checkpoint);
+  const vidfab::text::QwenVisionEmbedding out = encoder.encode({pixels, pixels});
+
+  CHECK(out.tokens == 128);
+  CHECK(out.hidden == 5120);
+  CHECK(out.main.size() == 128ull * 5120);
+  const size_t half = out.main.size() / 2;
+  size_t bad = 0;
+  for (size_t i = 0; i < half; ++i) bad += out.main[i] != out.main[half + i];
+  CHECK_MSG(bad == 0, "second image's main embedding differs in %zu of %zu bf16", bad, half);
+  for (int d = 0; d < 3; ++d) {
+    CHECK(out.deepstack[d].size() == out.main.size());
+    size_t dbad = 0;
+    for (size_t i = 0; i < half; ++i) dbad += out.deepstack[d][i] != out.deepstack[d][half + i];
+    CHECK_MSG(dbad == 0, "deepstack %d differs between identical images in %zu of %zu bf16", d,
+              dbad, half);
+  }
+
+  // Every value finite, and the rms printed so a future carve bug that shifts
+  // an activation shows up as a number rather than as silence. These are the
+  // same four figures qwenvisionprobe reports.
+  size_t nonfinite = 0;
+  auto rms = [&](const std::vector<uint16_t>& v) {
+    long double acc = 0;
+    for (uint16_t b : v) {
+      const float x = vidfab::bf16_to_f32(b);
+      nonfinite += !std::isfinite(x);
+      acc += static_cast<long double>(x) * x;
+    }
+    return std::sqrt(double(acc / v.size()));
+  };
+  std::printf("  qwen vision main rms %.9g  deepstack %.9g %.9g %.9g\n", rms(out.main),
+              rms(out.deepstack[0]), rms(out.deepstack[1]), rms(out.deepstack[2]));
+  CHECK_MSG(nonfinite == 0, "qwen vision produced %zu nonfinite values", nonfinite);
 }
 
 VIDFAB_TEST(qwen_vision_merge_and_deepstack_scatter) {
