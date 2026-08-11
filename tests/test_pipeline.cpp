@@ -15,6 +15,7 @@
 #include "harness.h"
 #include "vidfab/pipeline.h"
 #include "vidfab/attention_mode.h"
+#include "vidfab/sampler/scheduler.h"
 
 namespace {
 
@@ -245,6 +246,39 @@ VIDFAB_TEST(pipeline_schedules_stay_paired) {
               p.audio_timesteps.size());
     CHECK_MSG(p.num_model_evaluations() >= 1, "steps=%d collapsed to no evaluations", steps);
   }
+}
+
+// The runner used to rebuild both schedulers from its own copies of 12.0 and
+// 3.0. It now rebuilds them from the plan, so this checks the plan carries
+// everything that reconstruction needs and that doing so reproduces the plan's
+// own grids exactly — not nearly, exactly, because the sample is bit-identical
+// only if the loop steps the identical sigmas.
+VIDFAB_TEST(pipeline_plan_carries_its_schedule_inputs) {
+  for (int steps : {2, 7, 29, 50, 120}) {
+    vidfab::GenerateRequest r = base_request();
+    r.num_inference_steps = steps;
+    const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
+
+    CHECK(p.num_inference_steps == steps);
+    CHECK_NEAR(p.video_sigma_shift, 12.0, 0.0);
+    CHECK_NEAR(p.audio_sigma_shift, 3.0, 0.0);
+
+    vidfab::sampler::FlowScheduler video(p.video_sigma_shift);
+    vidfab::sampler::FlowScheduler audio(p.audio_sigma_shift);
+    video.set_timesteps(p.num_inference_steps);
+    audio.set_timesteps(p.num_inference_steps);
+
+    CHECK(video.sigmas() == p.video_sigmas);
+    CHECK(audio.sigmas() == p.audio_sigmas);
+    CHECK(video.timesteps() == p.video_timesteps);
+    CHECK(audio.timesteps() == p.audio_timesteps);
+  }
+
+  // A plan that never went through resolve_plan still names the shipped shifts
+  // rather than zero, so the defaults cannot quietly become shift-free.
+  const vidfab::GeneratePlan fresh;
+  CHECK_NEAR(fresh.video_sigma_shift, vidfab::kVideoSigmaShift, 0.0);
+  CHECK_NEAR(fresh.audio_sigma_shift, vidfab::kAudioSigmaShift, 0.0);
 }
 
 VIDFAB_TEST(pipeline_describe_plan) {

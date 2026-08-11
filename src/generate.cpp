@@ -356,10 +356,14 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       model.prepare_sequence(live, idx, pos);
       result.seconds_prepare = seconds_since(t_prep);
 
-      sampler::FlowScheduler video_sched(12.0f);
-      sampler::FlowScheduler audio_sched(3.0f);
-      video_sched.set_timesteps(request.num_inference_steps);
-      audio_sched.set_timesteps(request.num_inference_steps);
+      // Rebuilt from the plan rather than from literals, so the loop integrates
+      // on exactly the grid `describe_plan` printed and `plan.video_timesteps`
+      // conditioned on. Same numbers as before; the point is that there is now
+      // only one place they can be changed.
+      sampler::FlowScheduler video_sched(plan.video_sigma_shift);
+      sampler::FlowScheduler audio_sched(plan.audio_sigma_shift);
+      video_sched.set_timesteps(plan.num_inference_steps);
+      audio_sched.set_timesteps(plan.num_inference_steps);
       video_sched.set_sampler(options.sampler);
       audio_sched.set_sampler(options.sampler);
 

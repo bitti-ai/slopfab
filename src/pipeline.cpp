@@ -10,11 +10,6 @@
 namespace vidfab {
 namespace {
 
-// ref/FL2VA/model_index.json -> _minimax_h3.sigma_shift_scales, consumed by
-// convert.py:630-653.
-constexpr float kVideoSigmaShift = 12.0f;
-constexpr float kAudioSigmaShift = 3.0f;
-
 constexpr int kSpatialCompression = 16;
 constexpr int kFps = 24;
 
@@ -73,10 +68,14 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   plan.layout.num_audio_rows = 2 * plan.layout.num_audio_latents;
   plan.layout.num_video_rows = plan.layout.num_latent_frames * plan.layout.rows_per_frame();
 
-  sampler::FlowScheduler video(kVideoSigmaShift);
-  sampler::FlowScheduler audio(kAudioSigmaShift);
-  video.set_timesteps(request.num_inference_steps);
-  audio.set_timesteps(request.num_inference_steps);
+  plan.video_sigma_shift = kVideoSigmaShift;
+  plan.audio_sigma_shift = kAudioSigmaShift;
+  plan.num_inference_steps = request.num_inference_steps;
+
+  sampler::FlowScheduler video(plan.video_sigma_shift);
+  sampler::FlowScheduler audio(plan.audio_sigma_shift);
+  video.set_timesteps(plan.num_inference_steps);
+  audio.set_timesteps(plan.num_inference_steps);
 
   plan.video_sigmas = video.sigmas();
   plan.audio_sigmas = audio.sigmas();
@@ -193,9 +192,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       l.num_audio_latents, l.num_audio_rows, l.total_rows(), request.num_inference_steps,
       plan.num_model_evaluations(), static_cast<double>(plan.video_sigmas.front()),
       static_cast<double>(plan.video_sigmas[plan.video_sigmas.size() - 2]),
-      static_cast<double>(kVideoSigmaShift), static_cast<double>(plan.audio_sigmas.front()),
+      static_cast<double>(plan.video_sigma_shift), static_cast<double>(plan.audio_sigmas.front()),
       static_cast<double>(plan.audio_sigmas[plan.audio_sigmas.size() - 2]),
-      static_cast<double>(kAudioSigmaShift),
+      static_cast<double>(plan.audio_sigma_shift),
       static_cast<unsigned long long>(request.seed), request.out_path.c_str());
   return buf;
 }

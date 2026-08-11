@@ -26,6 +26,18 @@
 
 namespace vidfab {
 
+// ref/FL2VA/model_index.json -> _minimax_h3.sigma_shift_scales, consumed by
+// convert.py:630-653.
+//
+// Named here rather than in pipeline.cpp because the denoise loop has to
+// integrate on the same grid `resolve_plan` built and `describe_plan` printed.
+// These were previously two private constants and two literals in the runner,
+// which is one value written in four places: changing the shift in one of them
+// would have left the loop stepping a schedule nothing else agreed with, and
+// nothing would have said so.
+constexpr float kVideoSigmaShift = 12.0f;
+constexpr float kAudioSigmaShift = 3.0f;
+
 struct GenerateRequest {
   std::string prompt;
   // The CLI replaces this default with output/video-<timestamp>.mp4; the
@@ -99,6 +111,14 @@ struct GeneratePlan {
   std::vector<float> audio_sigmas;
   std::vector<float> video_timesteps;
   std::vector<float> audio_timesteps;
+
+  // The shifts the four lists above were built with, carried so the runner can
+  // reconstruct the identical schedulers instead of naming the numbers again.
+  float video_sigma_shift = kVideoSigmaShift;
+  float audio_sigma_shift = kAudioSigmaShift;
+  // Grid points requested, so a scheduler rebuilt from this plan gets the same
+  // `set_timesteps` argument without consulting the request.
+  int num_inference_steps = 0;
 
   int num_model_evaluations() const { return static_cast<int>(video_timesteps.size()); }
   int sequence_length_without_text() const { return layout.total_rows(); }
