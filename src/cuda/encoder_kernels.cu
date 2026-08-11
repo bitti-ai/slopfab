@@ -807,6 +807,14 @@ void Encoder::unload() {
 }
 
 void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
+  // See the note on `SafeTensors::prefetch`: this loader consumes the whole
+  // file, so it asks for it up front rather than one page fault at a time.
+  // Issued before anything else because it is asynchronous — validation and
+  // the scale reads below run while the OS is already reading the file. It
+  // matters more here than anywhere else: `try_register_mapping` below calls
+  // `cudaHostRegister` over the whole mapping, which must fault every page
+  // resident synchronously, one outstanding request at a time.
+  checkpoint.prefetch();
   unload();
   const auto t0 = std::chrono::steady_clock::now();
 
