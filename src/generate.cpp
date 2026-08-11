@@ -492,11 +492,21 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     } else {
       const Clock::time_point t0 = Clock::now();
 
-      // Reaching here means the conditioning cache missed — which for a prompt
-      // sweep is every generation, and is exactly the case `--reuse-models`
-      // exists to serve. The tokenizer does not depend on the prompt, so it is
-      // kept across those misses and reloaded only when its own file changes.
-      // `encode()` is const and stateless, so one instance serves every caller.
+      // Reaching here means the conditioning cache missed. The tokenizer does
+      // not depend on the prompt, so it is kept across those misses and
+      // reloaded only when its own file changes; `encode()` is const and
+      // stateless, so one instance serves every caller.
+      //
+      // Be clear about who this helps, because today it is nobody who runs the
+      // CLI. `main.cpp` assigns `req.prompt` once and its `--count` loop mutates
+      // only `seed` and `out_path`, so the conditioning key is identical from
+      // generation 2 onward, the cache always hits, and this `else` arm is
+      // entered exactly once — on generation 1, where `tokenizer_valid` is false
+      // by construction and the load is paid regardless. The saving is real only
+      // for a caller that varies the prompt between `run_generate` calls with
+      // `reuse_models` set, which the library API allows and no shipped command
+      // does. It is kept because it is small, correct, and the alternative is a
+      // reload that would be re-paid the moment such a caller exists.
       const std::string tok_key = tokenizer_cache_key(request);
       text::Tokenizer owned_tokenizer;
       text::Tokenizer& tokenizer = options.reuse_models ? reuse.tokenizer : owned_tokenizer;
