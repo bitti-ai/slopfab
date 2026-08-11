@@ -28,16 +28,34 @@
 
 namespace {
 
-const char* kTokenizerPath = "ref/FL2VA/text_encoder/tokenizer.json";
+// Both layouts `ref/` is unpacked in. Only one of these was probed until now,
+// and it was the one the main repo does not use, so this whole file reported
+// "0 checks, 0 failures" and looked like it was passing. A safety net that
+// silently skips is worse than no safety net, because it is also a claim.
+// `test_encoder.cu` already probed both; this now matches it.
+const char* kTokenizerPaths[] = {
+    "ref/text_encoder/tokenizer.json",
+    "ref/FL2VA/text_encoder/tokenizer.json",
+};
 
 // The tests run from the build directory or the repo root depending on how the
-// binary is invoked, so probe both rather than depending on the caller.
+// binary is invoked, so probe the prefixes too rather than depending on the
+// caller.
 std::string find_tokenizer() {
-  for (const char* prefix : {"", "../", "../../"}) {
-    const std::string candidate = std::string(prefix) + kTokenizerPath;
-    if (std::filesystem::exists(candidate)) return candidate;
+  for (const char* path : kTokenizerPaths) {
+    for (const char* prefix : {"", "../", "../../"}) {
+      const std::string candidate = std::string(prefix) + path;
+      if (std::filesystem::exists(candidate)) return candidate;
+    }
   }
   return {};
+}
+
+// Names every path tried, so an absent fixture is a diagnosable skip rather
+// than an invisible one.
+void report_missing_tokenizer() {
+  std::printf("  tokenizer.json not found; skipping. Tried, under \"\", \"../\" and \"../../\":\n");
+  for (const char* path : kTokenizerPaths) std::printf("    %s\n", path);
 }
 
 struct GoldenCase {
@@ -48,7 +66,7 @@ struct GoldenCase {
 VIDFAB_TEST(tokenizer_golden_ids) {
   const std::string path = find_tokenizer();
   if (path.empty()) {
-    std::printf("  ref/ tokenizer.json not present; skipping\n");
+    report_missing_tokenizer();
     return;
   }
 
@@ -104,7 +122,7 @@ VIDFAB_TEST(tokenizer_golden_ids) {
 VIDFAB_TEST(tokenizer_round_trip) {
   const std::string path = find_tokenizer();
   if (path.empty()) {
-    std::printf("  ref/ tokenizer.json not present; skipping\n");
+    report_missing_tokenizer();
     return;
   }
 

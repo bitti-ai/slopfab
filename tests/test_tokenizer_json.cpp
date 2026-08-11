@@ -34,14 +34,27 @@ namespace {
 
 using vidfab::text::Tokenizer;
 
-const char* kTokenizerPath = "ref/FL2VA/text_encoder/tokenizer.json";
+// Both layouts `ref/` is unpacked in, same order as `test_tokenizer.cpp` and
+// `test_encoder.cu`. Probing only one of them is how the golden suite came to
+// report "0 checks, 0 failures" while looking green.
+const char* kTokenizerPaths[] = {
+    "ref/text_encoder/tokenizer.json",
+    "ref/FL2VA/text_encoder/tokenizer.json",
+};
 
 std::string find_tokenizer() {
-  for (const char* prefix : {"", "../", "../../"}) {
-    const std::string candidate = std::string(prefix) + kTokenizerPath;
-    if (std::filesystem::exists(candidate)) return candidate;
+  for (const char* path : kTokenizerPaths) {
+    for (const char* prefix : {"", "../", "../../"}) {
+      const std::string candidate = std::string(prefix) + path;
+      if (std::filesystem::exists(candidate)) return candidate;
+    }
   }
   return {};
+}
+
+void report_missing_tokenizer() {
+  std::printf("  tokenizer.json not found; skipping. Tried, under \"\", \"../\" and \"../../\":\n");
+  for (const char* path : kTokenizerPaths) std::printf("    %s\n", path);
 }
 
 std::string read_file(const std::string& path) {
@@ -149,7 +162,7 @@ std::vector<std::string> corpus(const Tokenizer& tok) {
 VIDFAB_TEST(tokenizer_scan_matches_json_tree_over_the_whole_vocabulary) {
   const std::string path = find_tokenizer();
   if (path.empty()) {
-    std::printf("  ref/ tokenizer.json not present; skipping\n");
+    report_missing_tokenizer();
     return;
   }
   const std::string text = read_file(path);
@@ -203,7 +216,7 @@ VIDFAB_TEST(tokenizer_scan_matches_json_tree_over_the_whole_vocabulary) {
 VIDFAB_TEST(tokenizer_scan_reads_the_same_merges_as_the_json_tree) {
   const std::string path = find_tokenizer();
   if (path.empty()) {
-    std::printf("  ref/ tokenizer.json not present; skipping\n");
+    report_missing_tokenizer();
     return;
   }
   const std::string text = read_file(path);
