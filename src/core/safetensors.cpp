@@ -218,8 +218,20 @@ void SafeTensors::close() {
   size_ = 0;
 }
 
-bool SafeTensors::prefetch() const {
-  if (base_ == nullptr || size_ == 0) return false;
+bool SafeTensors::prefetch() const { return prefetch_range(base_, size_); }
+
+bool SafeTensors::prefetch_range(const void* begin, size_t bytes) const {
+  if (base_ == nullptr || size_ == 0 || begin == nullptr || bytes == 0) return false;
+  // Clamp to the mapping. A caller derives `begin` from a `TensorView`, so it
+  // is inside by construction, but a hint that walks off the end of the view is
+  // the one bug this cannot afford to have.
+  const auto b = reinterpret_cast<uintptr_t>(base_);
+  const auto q = reinterpret_cast<uintptr_t>(begin);
+  if (q < b || q > b + size_) return false;
+  const size_t avail = static_cast<size_t>(b + size_ - q);
+  if (avail == 0) return false;
+  if (bytes > avail) bytes = avail;
+
   // Exists so the same binary can be run both ways. Proving that a readahead
   // hint left the weight arena bit-identical needs an A/B, and an A/B across
   // two builds proves less than one across two runs of one build. Same shape
@@ -238,14 +250,41 @@ bool SafeTensors::prefetch() const {
   }();
   if (prefetch_fn == nullptr) return false;
   WIN32_MEMORY_RANGE_ENTRY range;
-  range.VirtualAddress = base_;
-  range.NumberOfBytes = size_;
+  range.VirtualAddress = const_cast<void*>(begin);
+  range.NumberOfBytes = bytes;
   return prefetch_fn(GetCurrentProcess(), 1, &range, 0) != FALSE;
 #else
   // POSIX spells the same hint MADV_WILLNEED. Same contract: advisory, and the
-  // mapping is correct whether or not the kernel acts on it.
-  return madvise(base_, size_, MADV_WILLNEED) == 0;
+  // mapping is correct whether or not the kernel acts on it. `madvise` wants a
+  // page-aligned start, so round down; the extra bytes are inside the mapping.
+  const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+  const uintptr_t aligned = q - (q % page);
+  return madvise(reinterpret_cast<void*>(aligned), bytes + (q - aligned), MADV_WILLNEED) == 0;
 #endif
+}
+
+void SafeTensors::prefix_extent(std::string_view prefix, const void** begin, size_t* bytes) const {
+  if (begin != nullptr) *begin = nullptr;
+  if (bytes != nullptr) *bytes = 0;
+  if (base_ == nullptr) return;
+
+  // `tensors_` is keyed by name, and name order is not offset order in general,
+  // so this takes a min/max over the matching subset rather than trusting the
+  // first and last key. The map is ordered, so the matching names are one
+  // contiguous run of keys and the scan stops at the first key past the prefix.
+  const uint8_t* lo = nullptr;
+  const uint8_t* hi = nullptr;
+  for (auto it = tensors_.lower_bound(std::string(prefix)); it != tensors_.end(); ++it) {
+    if (it->first.compare(0, prefix.size(), prefix) != 0) break;
+    const TensorView& v = it->second;
+    if (v.data == nullptr) continue;
+    const auto* p = static_cast<const uint8_t*>(v.data);
+    if (lo == nullptr || p < lo) lo = p;
+    if (hi == nullptr || p + v.nbytes > hi) hi = p + v.nbytes;
+  }
+  if (lo == nullptr || hi == nullptr || hi <= lo) return;
+  if (begin != nullptr) *begin = lo;
+  if (bytes != nullptr) *bytes = static_cast<size_t>(hi - lo);
 }
 
 void SafeTensors::parse_header() {

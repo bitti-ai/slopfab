@@ -135,7 +135,16 @@ void QwenVisionEncoder::unload(){ if(impl_->stream) cudaStreamSynchronize(impl_-
   impl_->tensors.clear(); impl_->ws=cuda::Workspace(); impl_->acts=cuda::Workspace();
   impl_->loaded=false; }
 void QwenVisionEncoder::load(const SafeTensors& st){ unload(); auto c=load_qwen3vl_vision_checkpoint(st);
-  auto& s=*impl_; s.prefix=c.prefix; s.open();
+  auto& s=*impl_; s.prefix=c.prefix;
+  // The tower is 1.19 GB of a 27 GB conditioner, so the whole-file `prefetch()`
+  // the other loaders use would pull 22x the bytes this one reads. Hinting just
+  // the tower's extent turns ~290k serialised demand faults into one async
+  // read. Issued before `open()` so the OS is already reading while the device
+  // context comes up. Advisory: the loop below is correct without it.
+  const void* extent=nullptr; size_t extent_bytes=0;
+  st.prefix_extent(s.prefix,&extent,&extent_bytes);
+  st.prefetch_range(extent,extent_bytes);
+  s.open();
   for(const auto& kv:st.tensors()) if(kv.first.rfind(s.prefix,0)==0){
     const TensorView& t=kv.second; DeviceBuffer<uint16_t> d(t.nbytes/2);
     d.copy_from_host(static_cast<const uint16_t*>(t.data),t.nbytes/2,s.stream);

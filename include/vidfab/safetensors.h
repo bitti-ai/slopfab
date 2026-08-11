@@ -78,6 +78,27 @@ class SafeTensors {
   // Returns whether the hint was accepted, for logging; ignoring it is fine.
   bool prefetch() const;
 
+  // The same hint over one byte range of the mapping, for a consumer that reads
+  // a contiguous slice rather than the whole file. The Qwen vision tower is
+  // 1.19 GB of a 27 GB conditioner: whole-file prefetch would pull 22x the
+  // bytes it needs, while demand faulting it costs ~290k serialised 4 KB
+  // faults.
+  //
+  // `begin` must point into the mapping. The range is clamped to the mapping
+  // and an empty or out-of-range one is a no-op returning false, because this
+  // is a hint and refusing to guess is better than hinting at someone else's
+  // memory. Both back ends already take a range — Win32
+  // `PrefetchVirtualMemory` a `WIN32_MEMORY_RANGE_ENTRY`, POSIX `madvise` an
+  // address and a length — so this is the general form and `prefetch()` is the
+  // whole-file case of it.
+  bool prefetch_range(const void* begin, size_t bytes) const;
+
+  // Byte extent of every tensor whose name starts with `prefix`, as
+  // `[begin, begin + bytes)` into the mapping. `bytes` is zero when nothing
+  // matches. Written for `prefetch_range`: it is a bounding extent, not a
+  // promise that the range holds only matching tensors.
+  void prefix_extent(std::string_view prefix, const void** begin, size_t* bytes) const;
+
   // Free-form key/value block stored under "__metadata__". Absent in most
   // checkpoints; ComfyUI writes provenance here.
   const std::map<std::string, std::string>& metadata() const { return metadata_; }
