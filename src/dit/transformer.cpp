@@ -1204,6 +1204,13 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
           // done this since the video VAE work; `test_widen_f16` compares the
           // device kernel against `f16_to_f32` over every finite fp16 bit
           // pattern.
+          //
+          // Note what this does *not* do: the arena still stores these records
+          // as fp32, so it saves no device memory. That is not an oversight,
+          // it is the thing that was verified — `VIDFAB_ARENA_HASH=1` over
+          // fl2va_pruned_fp8_scaled.safetensors gives 21045398272 bytes, 730
+          // records, fnv1a 190cdce19da29c2d both before and after this change.
+          // An arena that got smaller would be a different arena.
           if (r.view->dtype == DType::kF32) {
             up.copy(dst, r.view->data, r.bytes, /*from_mapping=*/true);
           } else if (r.view->dtype == DType::kF16) {
