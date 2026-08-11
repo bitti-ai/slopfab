@@ -409,6 +409,18 @@ VIDFAB_TEST(ffmpeg_probe_is_coherent) {
   if (a) {
     CHECK(!ffmpeg_version().empty());
     std::printf("  ffmpeg: %s\n", ffmpeg_version().c_str());
+    // The library search now tries the pinned majors before sweeping downwards
+    // from 70, because only the pinned ones survive the version gate. That
+    // shortcut is correct exactly as long as a *usable* ffmpeg is always one of
+    // them, so pin it: if these majors ever change, the preference in
+    // open_library has to change with them or the sweep silently comes back.
+    const std::string version = ffmpeg_version();
+    CHECK_MSG(version.find("libavcodec 62.") != std::string::npos,
+              "usable ffmpeg is not libavcodec 62: %s", version.c_str());
+    CHECK_MSG(version.find("libavformat 62.") != std::string::npos,
+              "usable ffmpeg is not libavformat 62: %s", version.c_str());
+    CHECK_MSG(version.find("libavutil 60.") != std::string::npos,
+              "usable ffmpeg is not libavutil 60: %s", version.c_str());
   } else {
     // No assertion on the version string here: it is empty when nothing
     // loaded and populated when something loaded but was the wrong major, and

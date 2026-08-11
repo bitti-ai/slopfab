@@ -124,14 +124,38 @@ struct OpenedLib {
   std::string name;
 };
 
-OpenedLib open_library(const char* base, const std::string& dir, int high = kProbeMajorHigh,
-                       int low = kProbeMajorLow) {
-  for (int major = high; major >= low; --major) {
+// `preferred` is the major this build actually drives. It is tried first, then
+// the downward sweep runs as before.
+//
+// Only the pinned major is usable — anything else is rejected on version a few
+// dozen lines below — so on a correct installation the sweep was ~15 failed
+// LoadLibrary calls per library before reaching the one that works, and about
+// 41 across the four of them. Trying the pinned major first costs one call and
+// changes nothing else: the sweep still finds a newer or older ffmpeg when the
+// pinned one is absent, which is what keeps the "found libavcodec 64, but
+// vidfab drives 62" diagnostic working instead of a bare "not installed".
+//
+// It does reorder one case: a machine with both the pinned major and a newer
+// one now loads the pinned one and works, where before it found the newer one
+// and refused. That is the better answer.
+OpenedLib open_library(const char* base, const std::string& dir, int preferred,
+                       int high = kProbeMajorHigh, int low = kProbeMajorLow) {
+  const auto try_major = [&](int major) -> OpenedLib {
     const std::string file = lib_file(base, major);
     if (!dir.empty()) {
       if (LibHandle h = lib_open(dir + file)) return {h, dir + file};
     }
     if (LibHandle h = lib_open(file)) return {h, file};
+    return {};
+  };
+  if (preferred >= low && preferred <= high) {
+    const OpenedLib hit = try_major(preferred);
+    if (hit.handle != nullptr) return hit;
+  }
+  for (int major = high; major >= low; --major) {
+    if (major == preferred) continue;  // just tried
+    const OpenedLib hit = try_major(major);
+    if (hit.handle != nullptr) return hit;
   }
   // Unversioned last: on Linux this is the -dev symlink, on Windows it is a
   // hand-renamed build. Either is a deliberate act by the user, so honour it,
@@ -164,6 +188,9 @@ bool bind(LibHandle lib, Fn* out, const char* name, std::string* missing) {
 constexpr unsigned kRequiredAvcodecMajor = 62;
 constexpr unsigned kRequiredAvformatMajor = 62;
 constexpr unsigned kRequiredAvutilMajor = 60;
+// libswscale is not version-gated — nothing below reads a struct of its — so
+// this is only the major open_library reaches for first, not a requirement.
+constexpr int kPreferredSwscaleMajor = 9;
 
 std::string version_triple(unsigned v) {
   return std::to_string(v >> 16) + "." + std::to_string((v >> 8) & 0xFF) + "." +
@@ -359,11 +386,14 @@ Loaded probe() {
   Loaded s;
   const std::string dir = ffmpeg_dir();
 
-  const OpenedLib avutil = open_library("avutil", dir);
-  const OpenedLib avcodec = open_library("avcodec", dir);
-  const OpenedLib avformat = open_library("avformat", dir);
+  const OpenedLib avutil =
+      open_library("avutil", dir, static_cast<int>(kRequiredAvutilMajor));
+  const OpenedLib avcodec =
+      open_library("avcodec", dir, static_cast<int>(kRequiredAvcodecMajor));
+  const OpenedLib avformat =
+      open_library("avformat", dir, static_cast<int>(kRequiredAvformatMajor));
   // libswscale has its own much smaller major sequence (9 in FFmpeg 8).
-  const OpenedLib swscale = open_library("swscale", dir, 20, 1);
+  const OpenedLib swscale = open_library("swscale", dir, kPreferredSwscaleMajor, 20, 1);
   if (avutil.handle == nullptr || avcodec.handle == nullptr || avformat.handle == nullptr ||
       swscale.handle == nullptr) {
     s.status = MuxStatus::kLibraryNotFound;
