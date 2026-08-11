@@ -4243,22 +4243,25 @@ VIDFAB_TEST(qwen_vision_layernorm_and_gelu) {
   CHECK_CLOSE(gw, dg.host(), 1e-2, "vision gelu tanh");
 }
 
-// The Qwen vision encoder stopped allocating fifteen DeviceBuffers per image
-// and carves them out of its arena instead, which only works because of two
-// Workspace properties that were previously never depended on and never
-// asserted:
+// Workspace's two reserve behaviours, neither of which was asserted anywhere
+// before the Qwen vision encoder started carving per-image activations:
 //
-//   - `reserve` below the current capacity is a no-op, pointer-preserving and
-//     cursor-preserving. The encoder reserves activations plus attention scratch
-//     up front precisely so that qwen_vision_attention's own inner reserve
-//     lands in this case;
-//   - `reserve` above it frees the old buffer and resets the cursor, so every
-//     pointer handed out becomes dangling. That is the failure the encoder is
-//     sized to avoid, and it is silent -- the arithmetic downstream keeps
-//     working on freed memory.
+//   - `reserve` above the current capacity frees the old buffer and resets the
+//     cursor, so every pointer handed out becomes dangling. Silent: the
+//     arithmetic downstream keeps running on freed memory and returns plausible
+//     numbers;
+//   - `reserve` below it is a no-op, preserving both pointers and cursor.
 //
-// If the first property ever stops holding, the encoder returns embeddings read
-// out of a freed allocation. Pin both.
+// The first is why the encoder keeps its activations in an arena the tower can
+// never reach: qwen_vision.cu reserves the arena it is handed from inside the
+// call, so anything carved in that same arena is one undersized reserve away
+// from being freed underneath the caller. Separating them is what makes the
+// hazard structural rather than arithmetic -- but the property that motivates
+// the separation is worth pinning, because if `reserve` ever stopped resetting
+// the cursor a future reader would conclude the two arenas are redundant.
+//
+// The over-carve check is the other half: an arena that is simply too small
+// throws rather than overruns.
 VIDFAB_TEST(workspace_reserve_below_capacity_preserves_carved_pointers) {
   Workspace ws;
   ws.reserve(1 << 20);

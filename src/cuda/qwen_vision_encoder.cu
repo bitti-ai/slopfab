@@ -4,7 +4,6 @@
 #include <cuda_bf16.h>
 #include <unordered_map>
 
-#include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/qwen_vision.cuh"
@@ -12,8 +11,23 @@
 namespace vidfab::text {
 using cuda::DeviceBuffer;
 namespace {
-constexpr int kHidden = 1152, kHeads = 16, kHeadDim = 72, kIntermediate = 4304;
-constexpr int kMergedDim = 4608, kOutDim = 5120, kPatchDim = 1536, kQkvDim = 3456;
+// Activation widths. Tied to the public config rather than re-typed, because
+// the buffers below are carved out of one arena end to end: a width that is too
+// small here is no longer a short allocation, it is a write into the next
+// buffer. Only the ones the header actually declares can be checked this way —
+// see the note on `kPatchDim`.
+constexpr QwenVisionConfig kCfg{};
+constexpr int kHidden = kCfg.hidden_size;             // 1152
+constexpr int kIntermediate = kCfg.intermediate_size;  // 4304
+constexpr int kOutDim = kCfg.output_size;              // 5120
+constexpr int kMerge = kCfg.merge_size;                // 2, so four rows merge
+constexpr int kQkvDim = 3 * kHidden;                   // 3456
+constexpr int kMergedDim = kMerge * kMerge * kHidden;  // 4608
+// 3 channels x 2 temporal x 16 x 16 spatial, per the `QwenPixelValues::rows`
+// contract in qwen_vision.h. Not derivable from QwenVisionConfig.
+constexpr int kPatchDim = 3 * 2 * 16 * 16;             // 1536
+static_assert(kHidden == 1152 && kIntermediate == 4304 && kOutDim == 5120 && kMerge == 2,
+              "QwenVisionConfig moved; the carved activation widths must move with it");
 
 cuda::QuantWeight dense(const DeviceBuffer<uint16_t>& w, int out, int in,
                         const DeviceBuffer<uint16_t>* b = nullptr) {
@@ -76,7 +90,15 @@ struct QwenVisionEncoder::Impl {
   std::string prefix;
   std::unordered_map<std::string, DeviceBuffer<uint16_t>> tensors;
   cublasHandle_t handle = nullptr; cudaStream_t stream = nullptr;
-  cuda::LinearRunner linear; cuda::Workspace ws;
+  cuda::LinearRunner linear;
+  // Two arenas, deliberately. `ws` is handed down to the tower, and
+  // qwen_vision_attention reserves it from inside that call; a grow there frees
+  // the whole buffer and resets the cursor. `acts` holds this file's per-image
+  // activations, which have to outlive that call, so they live somewhere the
+  // callee cannot reach. Sharing one arena would work only for as long as the
+  // reserve here stayed >= the one the tower computes from its own copies of
+  // the head geometry, and those are separate constants in qwen_vision.cu.
+  cuda::Workspace ws, acts;
 
   DeviceBuffer<uint16_t>& at(const std::string& suffix) { return tensors.at(prefix + suffix); }
   void open() { if (handle) return; if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS)
@@ -110,7 +132,8 @@ struct QwenVisionEncoder::Impl {
 QwenVisionEncoder::QwenVisionEncoder():impl_(new Impl){}
 QwenVisionEncoder::~QwenVisionEncoder(){ unload(); impl_->close(); }
 void QwenVisionEncoder::unload(){ if(impl_->stream) cudaStreamSynchronize(impl_->stream);
-  impl_->tensors.clear(); impl_->ws=cuda::Workspace(); impl_->loaded=false; }
+  impl_->tensors.clear(); impl_->ws=cuda::Workspace(); impl_->acts=cuda::Workspace();
+  impl_->loaded=false; }
 void QwenVisionEncoder::load(const SafeTensors& st){ unload(); auto c=load_qwen3vl_vision_checkpoint(st);
   auto& s=*impl_; s.prefix=c.prefix; s.open();
   for(const auto& kv:st.tensors()) if(kv.first.rfind(s.prefix,0)==0){
@@ -127,14 +150,15 @@ QwenVisionEmbedding QwenVisionEncoder::encode(const std::vector<QwenPixelValues>
   for(int i=0;i<3;++i) deep[i]=s.merger("deepstack_merger_list."+std::to_string(i)+".",false);
   // Fifteen DeviceBuffers used to be constructed and destroyed per image, and a
   // cudaFree synchronises the whole device (see the note on vit_decoder.cu's
-  // scratch). They come out of the arena instead. The arena keeps its high-water
-  // mark for the life of the encoder, which is bounded: `unload()` -- called
-  // right after `encode` in encoder_kernels.cu -- replaces it with a fresh one.
+  // scratch). They come out of `s.acts` instead, which keeps its high-water mark
+  // for the life of the encoder -- bounded, because `unload()` is called right
+  // after `encode` in encoder_kernels.cu and replaces both arenas.
   //
-  // The reserve covers the activations *plus* the attention scratch, because
-  // qwen_vision_attention reserves the arena itself further down the call and a
-  // grow there would free everything carved here. Reserving the sum up front
-  // makes that inner reserve a no-op, which is the whole contract.
+  // `s.acts` is not the arena handed to the tower. It cannot be: qwen_vision.cu
+  // reserves that one from inside the call, sized from its own copies of the
+  // head geometry, and a grow would free every pointer carved here and reset the
+  // cursor -- freed memory, plausible numbers, no crash. Keeping the two
+  // separate makes that structurally impossible rather than true-by-arithmetic.
   for(const auto& image:images){
     const int rows=static_cast<int>(image.grid.patch_count()), groups=rows/4;
     if(image.rows.size()!=static_cast<size_t>(rows)*kPatchDim) throw std::runtime_error("Qwen vision: pixel row mismatch");
@@ -142,13 +166,10 @@ QwenVisionEmbedding QwenVisionEncoder::encode(const std::vector<QwenPixelValues>
     auto positions=qwen3vl_vision_positions(image.grid); std::vector<float> hc,hs;
     qwen3vl_vision_rope_tables(positions,hc,hs);
 
-    cuda::AttentionConfig acfg; acfg.seq_len=rows; acfg.num_heads=kHeads; acfg.head_dim=kHeadDim;
-    const size_t attn_bytes=cuda::attention_workspace_bytes(acfg,cuda::attention_preferred_backend(acfg));
     Carver measure; carve_vision(measure,rows,groups,positions.learned.size(),hc.size());
-    s.ws.reserve(measure.bytes+attn_bytes);
-    const size_t reserved=s.ws.capacity();
-    cuda::Workspace::Scope scope(s.ws);
-    Carver carver; carver.ws=&s.ws;
+    s.acts.reserve(measure.bytes);
+    cuda::Workspace::Scope scope(s.acts);
+    Carver carver; carver.ws=&s.acts;
     const VisionScratch b=carve_vision(carver,rows,groups,positions.learned.size(),hc.size());
 
     VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.pixels,hp.data(),hp.size()*sizeof(uint16_t),cudaMemcpyHostToDevice,s.stream));
@@ -167,13 +188,6 @@ QwenVisionEmbedding QwenVisionEncoder::encode(const std::vector<QwenPixelValues>
       VIDFAB_CUDA_CHECK(cudaMemcpyAsync(result.deepstack[i].data()+o,b.deep[i],out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));}
     result.tokens+=groups;
     VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream));
-    // If the inner reserve had grown the arena it would have freed everything
-    // carved above and reset the cursor, and the results just copied out would
-    // have come from a dangling pointer -- plausible numbers, no crash. The
-    // reserve is sized so that cannot happen; this says so out loud rather than
-    // leaving it to a comment.
-    if(s.ws.capacity()!=reserved) throw std::runtime_error(
-        "Qwen vision: attention grew the arena under the carved activations");
   } return result;
 }
 } // namespace vidfab::text
