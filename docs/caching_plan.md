@@ -350,8 +350,35 @@ simply never been exercised.
 
 This surfaced because the campaign rewrote `Tokenizer::load_json`, and the
 suite that would have caught a regression was the one silently disabled. The
-test now tries both paths. Worth remembering that a skipping test and a passing
-test print almost the same thing.
+test now tries both paths.
+
+**It is not one test — the pass signal is decoupled from coverage across the
+whole suite.** A sweep found **21 silently-skipping sites in 9 files**:
+`test_transformer.cu` (5), `test_encoder.cu` (6), `test_audio_vae.cu` (2),
+`test_output.cpp` (2), `test_tokenizer.cpp` (2), and one each in
+`test_adaln.cpp`, `test_image.cpp`, `test_kernels.cu`, `test_nn_kernels.cu`.
+Each prints a line and returns green, contributing zero checks.
+
+Coverage also varies with **VRAM**, not just fixtures: the resident encoder
+cases need ~23 GB, so a card with less headroom silently runs fewer checks.
+Observed `kernels` totals during this campaign were 1121, 1133, 1158, 1191 and
+1206 — all reported as passing runs. **1191 is the figure on a confirmed-idle
+card with all fixtures present; anything lower means the environment, not the
+code, was different.**
+
+**And a passing golden suite is not proof the golden suite tests what you
+think.** A negative control deliberately removed the tokenizer's longest-first
+added-token sort — the ordering that makes `<|im_start|>` win over a shorter
+prefix — and **all 8 golden cases still passed**, including
+`<|im_start|>system<|im_end|>`. Only the newly added synthetic-document test
+caught it. The golden ids were pinned against a real reference and are worth
+keeping, but they were never sufficient, and for months they were not running
+at all.
+
+The cheap fix is to make skips visible: have the harness count them and print
+`N skipped` beside the check and failure totals, the way `DEFERRED` already is.
+Deferred to after this campaign's merges, because it touches a file every
+workstream is editing.
 
 Also checked and already correct, so left alone: cuBLAS handle and stream
 lifetime, the workspace bump allocator and its high-water sizing, profiler
