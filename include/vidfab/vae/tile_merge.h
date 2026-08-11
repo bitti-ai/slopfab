@@ -113,4 +113,30 @@ class TileMerge {
   int x_ov_ = 0;
 };
 
+// Where each of a chunk's `out_frames` decoded frames belongs.
+//
+// Only two ranges survive a chunk: [pre, pre + frames_per_chunk) is the primary
+// block and belongs at its final place in the assembled video, and
+// [chunk_dec + pre, + overlap) is carried into the next chunk. At the shipped
+// schedule that is frames [3, 20) and [23, 28) of 28 — the other six are read
+// by nothing, so their entry is null and the stitch skips them.
+//
+// The stitch used to write all 28 frames into a staging buffer and two copies
+// afterwards moved the kept ranges out of it. Giving it the destinations
+// directly is the same data with one pass fewer, and `frame_stride` is
+// 3 * height * width, one whole frame of planar RGB.
+inline void chunk_frame_destinations(int out_frames, int pre, int frames_per_chunk, int chunk_dec,
+                                     int overlap, size_t frame_stride, float* primary, float* carry,
+                                     std::vector<float*>* dst) {
+  dst->assign(static_cast<size_t>(out_frames), nullptr);
+  for (int f = 0; f < out_frames; ++f) {
+    if (f >= pre && f - pre < frames_per_chunk) {
+      (*dst)[static_cast<size_t>(f)] = primary + static_cast<size_t>(f - pre) * frame_stride;
+    } else if (f >= chunk_dec + pre && f - chunk_dec - pre < overlap) {
+      (*dst)[static_cast<size_t>(f)] =
+          carry + static_cast<size_t>(f - chunk_dec - pre) * frame_stride;
+    }
+  }
+}
+
 }  // namespace vidfab::vae

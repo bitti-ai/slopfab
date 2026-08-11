@@ -213,14 +213,16 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   // Every per-chunk working buffer is hoisted for the same reason as `tiles`:
   // each is written in full before it is read, so a fresh allocation per chunk
   // would only buy a zero-fill of a few hundred megabytes that the next line
-  // overwrites. `chunk_pixels` is fully covered because the tiles' kept
-  // extents sum to exactly H_px by W_px, which is how split_tiles absorbs its
-  // surplus. `merge` holds the two overlap slabs, which is all the cross-fade
-  // ever changes; the raw neighbour tiles are read straight out of `tiles`.
+  // overwrites. `merge` holds the two overlap slabs, which is all the
+  // cross-fade ever changes; the raw neighbour tiles are read straight out of
+  // `tiles`.
   const int out_frames = window * cfg.patch_t;  // 28
-  std::vector<float> chunk_pixels(static_cast<size_t>(3) * out_frames * frame_pixels);
   TileMerge merge;
   std::vector<float> next_carry(static_cast<size_t>(schedule.frame_overlap) * 3 * frame_pixels);
+  // Where each of the chunk's 28 decoded frames belongs, rebuilt per chunk
+  // because `primary` advances and `next_carry` is swapped. Six of the frames
+  // belong nowhere and are marked null; see the comment where it is filled.
+  std::vector<float*> frame_dst(static_cast<size_t>(out_frames), nullptr);
 
   for (int c = 0; c < num_chunks; ++c) {
     const int t_start = c * chunk;
@@ -289,7 +291,18 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
                       ids.data());
     }
 
-    // Merge tiles into the chunk's pixel buffer.
+    // Where the chunk's 28 decoded frames go. This removes the 330 MiB staging
+    // buffer the stitch used to fill and the two copies that emptied it, and
+    // skips the six frames nothing downstream reads. The cross-fade below then
+    // mutates `assembled` in place, which is what it was always trying to
+    // express.
+    const int pre = schedule.frame_pre_padding;
+    const int overlap = schedule.frame_overlap;
+    float* primary = assembled.get() + static_cast<size_t>(written) * 3 * frame_pixels;
+    chunk_frame_destinations(out_frames, pre, frames_per_chunk, schedule.chunk_dec, overlap,
+                             3 * frame_pixels, primary, next_carry.data(), &frame_dst);
+
+    // Merge tiles into their destination frames.
     int y_cursor = 0;
     for (size_t ti = 0; ti < ytiles.starts.size(); ++ti) {
       const int th = tile_h[ti];
@@ -317,13 +330,13 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
 
         cuda::PhaseSpan s_stitch("tile stitch");
         for (int p = 0; p < 3 * out_frames; ++p) {
+          float* base = frame_dst[static_cast<size_t>(p % out_frames)];
+          if (base == nullptr) continue;  // a frame nothing downstream reads
+          const int channel = p / out_frames;
+          float* row0 = base + static_cast<size_t>(channel) * frame_pixels +
+                        static_cast<size_t>(y_cursor) * W_px + x_cursor;
           for (int y = 0; y < keep_h; ++y) {
-            const int plane_index = p % out_frames;
-            const int channel = p / out_frames;
-            const size_t dst =
-                (static_cast<size_t>(plane_index) * 3 + channel) * frame_pixels +
-                static_cast<size_t>(y_cursor + y) * W_px + x_cursor;
-            merge.copy_row(p, y, keep_w, chunk_pixels.data() + dst);
+            merge.copy_row(p, y, keep_w, row0 + static_cast<size_t>(y) * W_px);
           }
         }
         s_stitch.stop();
@@ -332,25 +345,9 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
       y_cursor += keep_h;
     }
 
-    // Split the 28 decoded frames: [3:20] is the primary block, [23:28] is
-    // carried into the next chunk as overlap. The primary block is written
-    // straight to its final place in `assembled` and cross-faded in place: it
-    // used to be staged in a buffer of its own and copied on afterwards, which
-    // is an extra pass over every frame the decode produces, for values that
-    // are the same either way.
-    const int pre = schedule.frame_pre_padding;
-    const int overlap = schedule.frame_overlap;
-    cuda::PhaseSpan s_split("chunk split");
-    float* primary = assembled.get() + static_cast<size_t>(written) * 3 * frame_pixels;
-    std::copy_n(chunk_pixels.begin() + static_cast<long long>(pre * 3 * frame_pixels),
-                static_cast<size_t>(frames_per_chunk) * 3 * frame_pixels, primary);
-
-    std::copy_n(chunk_pixels.begin() +
-                    static_cast<long long>((schedule.chunk_dec + pre) * 3 * frame_pixels),
-                static_cast<size_t>(overlap) * 3 * frame_pixels, next_carry.begin());
-    s_split.stop();
-
-    // Cross-fade the leading frames against the previous chunk's carry.
+    // Cross-fade the leading frames against the previous chunk's carry. The
+    // stitch has already put them in `assembled`, so this mutates the final
+    // buffer in place.
     cuda::PhaseSpan s_fade("chunk cross-fade");
     if (have_carry) {
       for (int f = 0; f < overlap; ++f) {

@@ -16,6 +16,7 @@
 // and `tile_merge_corner_is_blended_twice` checks it on numbers chosen so the
 // singly-blended answer is a different number.
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -167,4 +168,56 @@ VIDFAB_TEST(tile_merge_corner_is_blended_twice) {
   CHECK_NEAR(row[1], 6.0, 0.0);
   // Interior: the raw tile, untouched.
   CHECK_NEAR(row[ov], 0.0, 0.0);
+}
+
+VIDFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
+  // The shipped schedule: 28 decoded frames per chunk, of which [3, 20) is the
+  // primary block and [23, 28) is the carry. The old code stitched all 28 into
+  // a staging buffer and then copied those two ranges out of it; writing
+  // through the destination table has to put exactly the same bytes in exactly
+  // the same places, and leave the six dead frames unwritten.
+  const int out_frames = 28, pre = 3, frames_per_chunk = 17, chunk_dec = 20, overlap = 5;
+  const size_t stride = 12;  // stand-in for 3 * height * width
+
+  // Distinguishable content: frame f, element i holds f * 1000 + i.
+  std::vector<float> staged(static_cast<size_t>(out_frames) * stride);
+  for (int f = 0; f < out_frames; ++f) {
+    for (size_t i = 0; i < stride; ++i) {
+      staged[static_cast<size_t>(f) * stride + i] = static_cast<float>(f) * 1000.0f +
+                                                    static_cast<float>(i);
+    }
+  }
+
+  // What the two copy_n calls produced.
+  std::vector<float> expect_primary(static_cast<size_t>(frames_per_chunk) * stride);
+  std::vector<float> expect_carry(static_cast<size_t>(overlap) * stride);
+  std::copy_n(staged.begin() + static_cast<ptrdiff_t>(pre * stride),
+              static_cast<size_t>(frames_per_chunk) * stride, expect_primary.begin());
+  std::copy_n(staged.begin() + static_cast<ptrdiff_t>((chunk_dec + pre) * stride),
+              static_cast<size_t>(overlap) * stride, expect_carry.begin());
+
+  // What the table produces. The sentinel proves the six dead frames are never
+  // written: it survives only if nothing points at them.
+  const float sentinel = -12345.0f;
+  std::vector<float> primary(expect_primary.size(), sentinel);
+  std::vector<float> carry(expect_carry.size(), sentinel);
+  std::vector<float*> dst;
+  vidfab::vae::chunk_frame_destinations(out_frames, pre, frames_per_chunk, chunk_dec, overlap,
+                                        stride, primary.data(), carry.data(), &dst);
+  CHECK(dst.size() == static_cast<size_t>(out_frames));
+  int written = 0;
+  for (int f = 0; f < out_frames; ++f) {
+    if (dst[static_cast<size_t>(f)] == nullptr) continue;
+    ++written;
+    std::copy_n(staged.begin() + static_cast<ptrdiff_t>(static_cast<size_t>(f) * stride), stride,
+                dst[static_cast<size_t>(f)]);
+  }
+  CHECK(written == frames_per_chunk + overlap);
+  CHECK_CLOSE(expect_primary, primary, 0.0, "chunk destinations, primary block");
+  CHECK_CLOSE(expect_carry, carry, 0.0, "chunk destinations, carry block");
+
+  // Named explicitly rather than left implicit in the arithmetic: frames 0-2
+  // are the pre-padding and 20-22 the gap before the carry.
+  for (int f : {0, 1, 2, 20, 21, 22}) CHECK(dst[static_cast<size_t>(f)] == nullptr);
+  for (int f : {3, 19, 23, 27}) CHECK(dst[static_cast<size_t>(f)] != nullptr);
 }
