@@ -158,6 +158,31 @@ void append_file_content_identity(std::string& key, const std::string& path) {
   key += std::to_string(static_cast<unsigned long long>(hash));
 }
 
+std::vector<std::string> reference_image_identities(const GenerateRequest& request) {
+  std::vector<std::string> identities;
+  identities.reserve(request.reference_image_paths.size());
+  for (const std::string& path : request.reference_image_paths) {
+    std::string entry;
+    append_file_content_identity(entry, path);
+    identities.push_back(std::move(entry));
+  }
+  return identities;
+}
+
+std::string conditioning_cache_key(const GenerateRequest& request,
+                                   const std::vector<std::string>& reference_identities) {
+  if (reference_identities.size() != request.reference_image_paths.size()) {
+    return conditioning_cache_key(request);
+  }
+  std::string key = "conditioning";
+  append_file_identity(key, request.text_encoder_path);
+  append_file_identity(key, request.tokenizer_path);
+  key.push_back('\0');
+  key += request.prompt;
+  for (const std::string& identity : reference_identities) key += identity;
+  return key;
+}
+
 std::string conditioning_cache_key(const GenerateRequest& request) {
   std::string key = "conditioning";
   append_file_identity(key, request.text_encoder_path);
@@ -167,6 +192,17 @@ std::string conditioning_cache_key(const GenerateRequest& request) {
   for (const std::string& path : request.reference_image_paths) {
     append_file_content_identity(key, path);
   }
+  return key;
+}
+
+std::string reference_cache_key(const GenerateRequest& request,
+                                const std::vector<std::string>& reference_identities) {
+  if (reference_identities.size() != request.reference_image_paths.size()) {
+    return reference_cache_key(request);
+  }
+  std::string key = "reference";
+  append_file_identity(key, request.video_vae_path);
+  for (const std::string& identity : reference_identities) key += identity;
   return key;
 }
 

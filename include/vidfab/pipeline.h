@@ -167,15 +167,33 @@ void append_file_identity(std::string& key, const std::string& path);
 // reference images, which are small enough to afford it.
 void append_file_content_identity(std::string& key, const std::string& path);
 
+// The content identity of each reference image, in request order.
+//
+// Hashing is the expensive part of both keys below and the only part they
+// share, so a caller that wants both should compute this once and hand it to
+// each. Beyond saving the second pass, it makes the two keys one consistent
+// snapshot: read separately, they could straddle a write and disagree about
+// which image the run used.
+std::vector<std::string> reference_image_identities(const GenerateRequest& request);
+
 // Key for a request's prompt conditioning: the encoder and tokenizer files by
 // stat identity, the prompt text, and every reference image by content.
+//
+// The single-argument form hashes the references itself. Prefer the other one
+// wherever both keys are needed; passing a list that does not match
+// `request.reference_image_paths` in length falls back to hashing rather than
+// keying off a stale snapshot.
 std::string conditioning_cache_key(const GenerateRequest& request);
+std::string conditioning_cache_key(const GenerateRequest& request,
+                                   const std::vector<std::string>& reference_identities);
 
 // Key for the seed-independent reference-image work: decode, Lanczos resize and
 // the VAE keyframe encode. Deliberately narrower than the conditioning key,
 // because none of that work reads the prompt or the text encoder — but wider in
 // one place, because all of it reads the video VAE.
 std::string reference_cache_key(const GenerateRequest& request);
+std::string reference_cache_key(const GenerateRequest& request,
+                                const std::vector<std::string>& reference_identities);
 
 // Key for a loaded tokenizer. Empty `tokenizer_path` means the embedded copy,
 // which is part of the binary and so cannot go stale.

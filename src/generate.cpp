@@ -311,8 +311,15 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   // thread. Every generation of a counted run fed it byte-identical input, so
   // it is cached under the reference key and the storage below is either the
   // cache's or this call's, never a copy of one into the other.
-  const std::string reference_key = reference_cache_key(request);
+  //
+  // The reference hashes are taken once and shared by both keys, and only when
+  // reuse is on at all: a cold `--count 1` run consults neither key, and would
+  // otherwise pay to hash every reference twice for nothing.
   const bool cache_references = options.reuse_models;
+  const std::vector<std::string> reference_identities =
+      options.reuse_models ? reference_image_identities(request) : std::vector<std::string>();
+  const std::string reference_key =
+      options.reuse_models ? reference_cache_key(request, reference_identities) : std::string();
   std::vector<RGBImage> owned_reference_images;
   std::vector<RGBImage>& reference_images =
       cache_references ? reuse.reference_images : owned_reference_images;
@@ -489,7 +496,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     // saving would be nothing, and dropping it would make three of the four
     // checkpoint combinations fail at the worst possible moment.
     text::PromptEmbedding prompt;
-    const std::string prompt_key = conditioning_cache_key(request);
+    // Same snapshot of the references as the reference key above, and likewise
+    // skipped outright when nothing will consult it.
+    const std::string prompt_key = options.reuse_models
+                                       ? conditioning_cache_key(request, reference_identities)
+                                       : std::string();
     if (options.reuse_models && reuse.conditioning_key == prompt_key &&
         !reuse.prompt.data.empty()) {
       prompt = reuse.prompt;

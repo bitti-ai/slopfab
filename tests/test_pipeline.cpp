@@ -429,6 +429,53 @@ VIDFAB_TEST(reference_key_detects_overwrite_that_preserves_size_and_mtime) {
   std::filesystem::remove(ref);
 }
 
+// Sharing one hash between the two keys has to be a pure saving: the keys it
+// produces must be the ones the self-hashing form produces, or a run that took
+// the fast path would miss a cache the slow path would have hit.
+VIDFAB_TEST(shared_reference_identities_agree_with_hashing_twice) {
+  const std::filesystem::path one = scratch_path("vidfab_cachekey_share1.ppm");
+  const std::filesystem::path two = scratch_path("vidfab_cachekey_share2.ppm");
+  write_file(one, "first reference payload", 40);
+  write_file(two, "second reference payload, longer", 40);
+
+  vidfab::GenerateRequest r = base_request();
+  r.text_encoder_path = "encoder.safetensors";
+  r.video_vae_path = "video_vae.safetensors";
+  r.reference_image_paths = {one.string(), two.string()};
+
+  const std::vector<std::string> identities = vidfab::reference_image_identities(r);
+  CHECK(identities.size() == 2);
+  CHECK(identities[0] != identities[1]);
+
+  CHECK(vidfab::conditioning_cache_key(r, identities) == vidfab::conditioning_cache_key(r));
+  CHECK(vidfab::reference_cache_key(r, identities) == vidfab::reference_cache_key(r));
+
+  // A list that does not match the request falls back to hashing rather than
+  // keying off a stale snapshot — the failure mode that would otherwise reuse
+  // the wrong image silently, which is the whole bug class this file guards.
+  const std::vector<std::string> truncated{identities[0]};
+  CHECK(vidfab::conditioning_cache_key(r, truncated) == vidfab::conditioning_cache_key(r));
+  CHECK(vidfab::reference_cache_key(r, truncated) == vidfab::reference_cache_key(r));
+  CHECK(vidfab::conditioning_cache_key(r, {}) == vidfab::conditioning_cache_key(r));
+
+  // The empty case is not a special case: no references, and both forms agree.
+  vidfab::GenerateRequest text_only = base_request();
+  text_only.text_encoder_path = "encoder.safetensors";
+  CHECK(vidfab::reference_image_identities(text_only).empty());
+  CHECK(vidfab::conditioning_cache_key(text_only, {}) ==
+        vidfab::conditioning_cache_key(text_only));
+
+  // And the shared snapshot still tracks content: rehashing after an overwrite
+  // gives different identities and therefore different keys.
+  const std::string before = vidfab::conditioning_cache_key(r, identities);
+  write_file(one, "first reference payload, edited", 40);
+  const std::vector<std::string> rehashed = vidfab::reference_image_identities(r);
+  CHECK(vidfab::conditioning_cache_key(r, rehashed) != before);
+
+  std::filesystem::remove(one);
+  std::filesystem::remove(two);
+}
+
 VIDFAB_TEST(cache_keys_separate_their_inputs) {
   const std::filesystem::path a = scratch_path("vidfab_cachekey_a.bin");
   const std::filesystem::path b = scratch_path("vidfab_cachekey_b.bin");
