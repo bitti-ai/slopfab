@@ -166,10 +166,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   // home. Declared *after* `tiles` so it is destroyed *before* it: the locks
   // must go while the memory they cover is still alive, on the throwing path as
   // much as the normal one.
-  struct RegistrationGuard {
-    ViTDecoder* decoder;
-    ~RegistrationGuard() { decoder->release_host_registrations(); }
-  } registration_guard{this};
+  HostRegistrationScope registration_scope(*this);
 
   // Every per-chunk working buffer is hoisted for the same reason as `tiles`:
   // each is written in full before it is read, so a fresh allocation per chunk

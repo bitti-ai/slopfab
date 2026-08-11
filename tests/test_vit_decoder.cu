@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -244,6 +245,30 @@ VIDFAB_TEST(vit_decoder_single_window_releases_its_lock) {
   decoder.forward_windows(z.data(), 1, T, H, W, batched, &slot);
   CHECK_CLOSE(single, batched[0], 0.0, "single vs batched window");
   decoder.release_host_registrations();
+
+  // The lock must also go when the scope unwinds rather than returns. Every
+  // VIDFAB_CUDA_CHECK inside forward_windows can throw after a slot has been
+  // registered — a device out-of-memory is the realistic one — and the buffer
+  // would then be destroyed still page-locked. The throw is raised here rather
+  // than injected into CUDA because what is under test is the guard, not the
+  // failure: the registration is real and the unwind is real.
+  {
+    std::vector<std::vector<float>> unwound(1);
+    try {
+      vidfab::vae::ViTDecoder::HostRegistrationScope scope(decoder);
+      decoder.forward_windows(z.data(), 1, T, H, W, unwound, &slot);
+      throw std::runtime_error("simulated failure after registration");
+    } catch (const std::runtime_error&) {
+      // The guard has run; `unwound` is still alive and must be unlocked.
+    }
+    const cudaError_t rc2 = cudaHostRegister(unwound[0].data(),
+                                             unwound[0].size() * sizeof(float),
+                                             cudaHostRegisterDefault);
+    CHECK_MSG(rc2 != cudaErrorHostMemoryAlreadyRegistered,
+              "an unwind left the output buffer page-locked");
+    if (rc2 == cudaSuccess) cudaHostUnregister(unwound[0].data());
+    cudaGetLastError();
+  }
 
   ckpt.close();
   std::error_code ec;

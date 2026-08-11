@@ -529,11 +529,17 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
 
 void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector<float>& out) {
   std::vector<std::vector<float>> batch_out(1);
+  // Declared after `batch_out` so it destructs first. forward_windows can throw
+  // after it has page-locked the slot — every VIDFAB_CUDA_CHECK in it can, and
+  // a device out-of-memory really does — and without this `batch_out` would die
+  // still locked, leaving an entry pointing at freed memory for ~Impl to
+  // unregister later.
+  HostRegistrationScope registration_scope(*this);
   const size_t slot = 0;
   forward_windows(z, 1, T, H, W, batch_out, &slot);
-  // The move hands the buffer to a vector this class cannot see, and
-  // `batch_out` dies at the closing brace either way, so any page-lock taken on
-  // it has to be released here rather than tracked.
+  // On the normal path the lock still has to go before *ownership* does: the
+  // move hands the buffer to a vector this class cannot see. The guard above
+  // then finds nothing left to release.
   release_host_registrations();
   out = std::move(batch_out.front());
 }

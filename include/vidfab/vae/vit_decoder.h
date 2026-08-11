@@ -110,6 +110,27 @@ class ViTDecoder {
   // it when nothing is registered is free.
   void release_host_registrations();
 
+  // The scope guard that obligation asks for. Declare it *after* the buffer
+  // vector it protects, so it is destroyed *before* that vector and the lock
+  // always goes while the memory it covers is still alive.
+  //
+  // It exists because the throwing path is the easy one to get wrong: every
+  // VIDFAB_CUDA_CHECK inside forward_windows can throw after a slot has been
+  // registered, and a device out-of-memory — which is a routine outcome on a
+  // shared card — lands exactly there. Without the guard the caller's vector
+  // dies page-locked and the eventual cudaHostUnregister addresses freed and
+  // possibly reused memory.
+  class HostRegistrationScope {
+   public:
+    explicit HostRegistrationScope(ViTDecoder& decoder) : decoder_(&decoder) {}
+    ~HostRegistrationScope() { decoder_->release_host_registrations(); }
+    HostRegistrationScope(const HostRegistrationScope&) = delete;
+    HostRegistrationScope& operator=(const HostRegistrationScope&) = delete;
+
+   private:
+    ViTDecoder* decoder_;
+  };
+
   // Full decode: latent de-normalisation, temporal chunking, spatial tiling,
   // cross-fade stitching and pixel de-normalisation.
   // `z_norm` is [24, T_lat, H_lat, W_lat] as produced by the diffusion model.
