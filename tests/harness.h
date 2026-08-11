@@ -84,6 +84,17 @@ int check_count();
 int failure_count();
 int deferred_count();
 
+// Why a case declined to run. The two have different remedies -- one is fixed
+// by fetching a file, the other by freeing the card -- so the summary keeps
+// them apart rather than reporting a single opaque total.
+enum class SkipReason {
+  kMissingFixture,  // a checkpoint, tokenizer or tool the case needs is absent
+  kInsufficientVram,  // the card has less free memory than the case requires
+};
+
+void skip(SkipReason reason, const char* file, int line, const char* fmt, ...);
+int skipped_count();
+
 }  // namespace vidfab::test
 
 #define CHECK(expr) ::vidfab::test::check((expr), #expr, __FILE__, __LINE__)
@@ -97,6 +108,17 @@ int deferred_count();
 // Known-failing on purpose. Reports the number, never fails the run.
 #define CHECK_DEFERRED(ok, ...) \
   ::vidfab::test::check_deferred((ok), __FILE__, __LINE__, __VA_ARGS__)
+
+// Declines to run, and says so in the summary. Use these instead of a bare
+// printf-and-return: a case that prints "skipping" and returns contributes no
+// checks, so the run reports success and the absent coverage is invisible.
+// This suite carried two such cases for months -- the golden tokenizer tests
+// probed a path that did not exist and reported "0 checks, 0 failures".
+#define SKIP_MISSING_FIXTURE(...) \
+  ::vidfab::test::skip(::vidfab::test::SkipReason::kMissingFixture, __FILE__, __LINE__, __VA_ARGS__)
+#define SKIP_INSUFFICIENT_VRAM(...)                                            \
+  ::vidfab::test::skip(::vidfab::test::SkipReason::kInsufficientVram, __FILE__, \
+                       __LINE__, __VA_ARGS__)
 
 // Names the case currently running, for files that register their functions
 // separately rather than through VIDFAB_TEST.

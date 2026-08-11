@@ -24,6 +24,9 @@ std::vector<Case>& cases() {
 int g_checks = 0;
 int g_failures = 0;
 int g_deferred = 0;
+int g_skipped = 0;
+int g_skipped_fixture = 0;
+int g_skipped_vram = 0;
 const char* g_current = "";
 
 // Strips the directory so failures read `test_kernels.cu:412` rather than an
@@ -135,6 +138,24 @@ void check_deferred(bool ok, const char* file, int line, const char* fmt, ...) {
   std::fputc(0x0A, stderr);
 }
 
+void skip(SkipReason reason, const char* file, int line, const char* fmt, ...) {
+  ++g_skipped;
+  if (reason == SkipReason::kMissingFixture) {
+    ++g_skipped_fixture;
+  } else {
+    ++g_skipped_vram;
+  }
+  std::fprintf(stderr, "  SKIP [%s] %s:%d  (%s) ", g_current, basename(file), line,
+               reason == SkipReason::kMissingFixture ? "fixture absent" : "insufficient vram");
+  va_list args;
+  va_start(args, fmt);
+  std::vfprintf(stderr, fmt, args);
+  va_end(args);
+  std::fputc(0x0A, stderr);
+}
+
+int skipped_count() { return g_skipped; }
+
 void check_printf(bool ok, const char* file, int line, const char* fmt, ...) {
   ++g_checks;
   if (ok) return;
@@ -188,12 +209,19 @@ int run_all() {
   // Deferred checks get their own place in the summary. Folding them into
   // "failures" would block unrelated work; folding them into "passes" would
   // make a known defect invisible. They are neither.
-  if (g_deferred == 0) {
-    std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
-  } else {
-    std::printf("\n%d checks, %d failures, %d DEFERRED (known defects, see DEFER lines above)\n",
-                g_checks, g_failures, g_deferred);
+  std::printf("\n%d checks, %d failures", g_checks, g_failures);
+  if (g_deferred != 0) {
+    std::printf(", %d DEFERRED (known defects, see DEFER lines above)", g_deferred);
   }
+  // A skipped case contributes no checks, so without this the run reports
+  // success and the missing coverage is invisible. The split matters: a
+  // fixture skip is fixed by fetching a file, a vram skip by freeing the card,
+  // and only the second makes an otherwise-identical run report fewer checks.
+  if (g_skipped != 0) {
+    std::printf(", %d skipped (%d fixture, %d vram; see SKIP lines above)", g_skipped,
+                g_skipped_fixture, g_skipped_vram);
+  }
+  std::fputc(0x0A, stdout);
   return g_failures == 0 ? 0 : 1;
 }
 
