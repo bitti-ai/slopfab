@@ -179,6 +179,7 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   // `tiles`.
   const int out_frames = window * cfg.patch_t;  // 28
   TileMerge merge;
+  std::vector<float> z_batch;
   std::vector<float> next_carry(static_cast<size_t>(schedule.frame_overlap) * 3 * frame_pixels);
   // Where each of the chunk's 28 decoded frames belongs, rebuilt per chunk
   // because `primary` advances and `next_carry` is swapped. Six of the frames
@@ -219,7 +220,13 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
       const int tw = shape.second;
       const size_t tile_voxels = static_cast<size_t>(window) * th * tw;
       cuda::PhaseSpan s_gather("tile latent gather");
-      std::vector<float> z_batch(static_cast<size_t>(ids.size()) * ch * tile_voxels);
+      // Grown, never value-initialised: the gather below writes every element
+      // of [0, needed) — the loops cover every (batch item, channel, t, y) and
+      // each writes a whole row — so the zero-fill a fresh vector performs is
+      // 14 MiB of stores per shape group per chunk that the next loop
+      // overwrites in full.
+      const size_t needed = static_cast<size_t>(ids.size()) * ch * tile_voxels;
+      if (z_batch.size() < needed) z_batch.resize(needed);
       for (size_t bi = 0; bi < ids.size(); ++bi) {
         const size_t id = ids[bi];
         const size_t ti = id / xtiles.starts.size();

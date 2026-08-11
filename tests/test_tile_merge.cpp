@@ -310,3 +310,35 @@ VIDFAB_TEST(tile_shape_groups_are_chunk_invariant) {
   for (const auto& g : rgroups) total += g.second.size();
   CHECK(total == ry.starts.size() * rx.starts.size());
 }
+VIDFAB_TEST(tile_latent_gather_covers_its_whole_buffer) {
+  // The gather's destination buffer is now reused and grown rather than
+  // value-initialised each shape group, which is only safe because the gather
+  // writes every element of it. The indexing below is the pipeline's, at
+  // src/vae/decode_pipeline.cpp: batch item `bi`, channel `ci`, frame `t`, row
+  // `y`, each copying a whole row of `tw`.
+  const int ch = 24, window = 7, th = 16, tw = 16;
+  const size_t n = 3;  // batch items
+  const size_t tile_voxels = static_cast<size_t>(window) * th * tw;
+  const size_t needed = n * ch * tile_voxels;
+
+  std::vector<int> touched(needed, 0);
+  for (size_t bi = 0; bi < n; ++bi) {
+    for (int ci = 0; ci < ch; ++ci) {
+      for (int t = 0; t < window; ++t) {
+        for (int y = 0; y < th; ++y) {
+          const size_t dst =
+              (bi * ch + ci) * tile_voxels + (static_cast<size_t>(t) * th + y) * tw;
+          CHECK(dst + tw <= needed);
+          for (int k = 0; k < tw; ++k) ++touched[dst + static_cast<size_t>(k)];
+        }
+      }
+    }
+  }
+  size_t unwritten = 0, doubled = 0;
+  for (int c : touched) {
+    if (c == 0) ++unwritten;
+    if (c > 1) ++doubled;
+  }
+  CHECK_MSG(unwritten == 0, "%zu of %zu gather destinations are never written", unwritten, needed);
+  CHECK_MSG(doubled == 0, "%zu gather destinations are written more than once", doubled);
+}
