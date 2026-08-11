@@ -96,6 +96,12 @@ struct ReusedGenerationModels {
   std::string conditioning_key;
   text::PromptEmbedding prompt;
 
+  // The tokenizer is 147-166 ms to load and depends only on its own file, so it
+  // survives the conditioning misses a prompt sweep is made of.
+  std::string tokenizer_key;
+  bool tokenizer_valid = false;
+  text::Tokenizer tokenizer;
+
   // The seed-independent half of the reference-image path: decode, Lanczos
   // resize to the ~2048-pixel short edge, and the six-level Conv3D keyframe
   // encode at that resolution. The seed-dependent half — one noise draw and one
@@ -110,6 +116,9 @@ struct ReusedGenerationModels {
   void clear() {
     conditioning_key.clear();
     prompt = {};
+    tokenizer_key.clear();
+    tokenizer_valid = false;
+    tokenizer = text::Tokenizer();
     reference_key.clear();
     reference_valid = false;
     reference_images.clear();
@@ -336,9 +345,29 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     } else {
       const Clock::time_point t0 = Clock::now();
 
-      text::Tokenizer tokenizer;
-      if (request.tokenizer_path.empty()) tokenizer.load_embedded();
-      else tokenizer.load(request.tokenizer_path);
+      // Reaching here means the conditioning cache missed — which for a prompt
+      // sweep is every generation, and is exactly the case `--reuse-models`
+      // exists to serve. The tokenizer does not depend on the prompt, so it is
+      // kept across those misses and reloaded only when its own file changes.
+      // `encode()` is const and stateless, so one instance serves every caller.
+      const std::string tok_key = tokenizer_cache_key(request);
+      text::Tokenizer owned_tokenizer;
+      text::Tokenizer& tokenizer = options.reuse_models ? reuse.tokenizer : owned_tokenizer;
+      if (!options.reuse_models || !reuse.tokenizer_valid || reuse.tokenizer_key != tok_key) {
+        if (options.reuse_models) {
+          reuse.tokenizer_valid = false;
+          reuse.tokenizer_key.clear();
+          tokenizer = text::Tokenizer();
+        }
+        if (request.tokenizer_path.empty()) tokenizer.load_embedded();
+        else tokenizer.load(request.tokenizer_path);
+        if (options.reuse_models) {
+          reuse.tokenizer_key = tok_key;
+          reuse.tokenizer_valid = true;
+        }
+      } else if (options.verbose) {
+        std::printf("tokenizer   reused (%zu tokens in vocabulary)\n", tokenizer.vocab_size());
+      }
 
       // No chat template, no BOS, no EOS: `hidden_states[50]` of a raw prompt
       // is the conditioning H3 expects, and a special token here would shift
