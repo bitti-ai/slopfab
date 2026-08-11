@@ -404,6 +404,62 @@ VIDFAB_TEST(rgb_to_yuv_threading_is_bit_identical) {
   }
 }
 
+VIDFAB_TEST(y4m_frame_split_writes_frames_in_order) {
+  using namespace vidfab::video;
+
+  // write_y4m converts frames in parallel batches and writes each batch in
+  // order once it has joined. The risk that buys is a file whose frames are
+  // transposed, duplicated or torn — none of which a per-frame conversion test
+  // can see, and none of which changes the file's length.
+  //
+  // Big enough per frame to clear the parallel floor (256k pixels) so the split
+  // really runs, and a frame count that is deliberately not a multiple of the
+  // worker count, so the last batch is short.
+  const int frames = 19;
+  const int height = 512;
+  const int width = 520;
+  const vidfab::PixelBuffer clip = make_clip(frames, height, width);
+
+  const std::filesystem::path path = temp_path("vidfab_frame_split.y4m");
+  write_y4m(path.string(), clip, frames, height, width, FrameRate{24, 1});
+  const std::vector<uint8_t> file = read_file(path);
+  std::filesystem::remove(path);
+
+  size_t off = 0;
+  while (off < file.size() && file[off] != '\n') ++off;
+  ++off;
+
+  const size_t frame_pixels = static_cast<size_t>(height) * width;
+  const size_t chroma_pixels = frame_pixels / 4;
+  const size_t plane = static_cast<size_t>(frames) * frame_pixels;
+
+  std::vector<uint8_t> y(frame_pixels), u(chroma_pixels), v(chroma_pixels);
+  size_t mismatched_frames = 0;
+  for (int f = 0; f < frames; ++f) {
+    CHECK(tag_at(file, off, "FRAM"));
+    while (off < file.size() && file[off] != '\n') ++off;
+    ++off;
+
+    // Frame f of the file must be frame f of the input, converted. A batching
+    // bug that swapped two frames still produces a well-formed file of the
+    // right size, and only this comparison catches it.
+    const size_t base = static_cast<size_t>(f) * frame_pixels;
+    rgb_frame_to_yuv420(clip.data() + base, clip.data() + plane + base,
+                        clip.data() + 2 * plane + base, height, width, y.data(), width, u.data(),
+                        width / 2, v.data(), width / 2);
+
+    const bool luma_ok = std::memcmp(&file[off], y.data(), frame_pixels) == 0;
+    const bool cb_ok = std::memcmp(&file[off + frame_pixels], u.data(), chroma_pixels) == 0;
+    const bool cr_ok =
+        std::memcmp(&file[off + frame_pixels + chroma_pixels], v.data(), chroma_pixels) == 0;
+    if (!luma_ok || !cb_ok || !cr_ok) ++mismatched_frames;
+    off += frame_pixels + 2 * chroma_pixels;
+  }
+  CHECK_MSG(mismatched_frames == 0, "%zu of %d frames in the .y4m are not their own conversion",
+            mismatched_frames, frames);
+  CHECK(off == file.size());
+}
+
 VIDFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
   using namespace vidfab::video;
 

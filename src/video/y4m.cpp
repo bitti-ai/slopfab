@@ -29,30 +29,36 @@ inline uint8_t clamp_u8(float v) {
 // this class of machine, while SMT siblings actively contend. And a floor,
 // because a create/join pair costs tens of microseconds: below it the spawn tax
 // exceeds the saving and the serial path is simply faster.
-template <typename Body>
-void static_ranges(size_t count, size_t work, size_t min_work, const Body& body) {
+unsigned choose_workers(size_t count, size_t work, size_t min_work) {
   constexpr unsigned kMaxWorkers = 8;
   unsigned workers = std::thread::hardware_concurrency();
   if (workers == 0) workers = 1;
   workers = std::min(workers, kMaxWorkers);
   workers = static_cast<unsigned>(std::min<size_t>(workers, std::max<size_t>(count, 1)));
   if (work < min_work) workers = 1;
+  return workers;
+}
 
+// Joins in the destructor as well as on the happy path: if `emplace_back`
+// throws part-way through, a plain vector of threads would run ~thread on
+// still-joinable threads and call std::terminate.
+struct JoiningPool {
+  std::vector<std::thread> threads;
+  ~JoiningPool() {
+    for (std::thread& t : threads) {
+      if (t.joinable()) t.join();
+    }
+  }
+};
+
+template <typename Body>
+void static_ranges(size_t count, size_t work, size_t min_work, const Body& body) {
+  const unsigned workers = choose_workers(count, work, min_work);
   if (workers <= 1) {
     body(static_cast<size_t>(0), count);
     return;
   }
-  // Joins in the destructor as well as on the happy path: if `emplace_back`
-  // throws part-way through, a plain vector of threads would run ~thread on
-  // still-joinable threads and call std::terminate.
-  struct JoiningPool {
-    std::vector<std::thread> threads;
-    ~JoiningPool() {
-      for (std::thread& t : threads) {
-        if (t.joinable()) t.join();
-      }
-    }
-  } pool;
+  JoiningPool pool;
   pool.threads.reserve(workers - 1);
   const size_t share = (count + workers - 1) / workers;
   for (unsigned w = 1; w < workers; ++w) {
@@ -64,21 +70,17 @@ void static_ranges(size_t count, size_t work, size_t min_work, const Body& body)
   body(static_cast<size_t>(0), std::min(count, share));
 }
 
-}  // namespace
+// Roughly 1.5 lround per pixel plus three plane reads. The floor is in pixels
+// rather than bytes because the arithmetic, not the traffic, is what dominates.
+constexpr size_t kMinParallelPixels = 1u << 18;  // 256k pixels
 
-void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int height, int width,
-                         uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
-                         uint8_t* v_plane, int v_stride) {
-  // BT.709 limited range: Y spans 16..235, chroma 16..240 around 128. The 2x2
-  // block is averaged before conversion, which is standard 4:2:0 downsampling
-  // rather than point-sampling one corner.
-  //
-  // Split by *chroma* row: worker `cy` owns luma rows 2cy and 2cy+1 and chroma
-  // row cy, so one split covers both loops and the frame pays one create/join
-  // rather than two. Every output byte is still the same expression over the
-  // same inputs, and the two planes are disjoint, so doing a worker's luma and
-  // chroma together rather than all luma then all chroma changes nothing but
-  // the order of independent stores.
+// One frame's chroma rows [begin, end), serially, plus the odd tail luma row
+// when `end` is the last range. Both the row-split entry point and the .y4m
+// writer's frame-split call this; keeping it a plain function is what stops the
+// two from nesting thread pools inside each other.
+void yuv420_chroma_rows(size_t begin, size_t end, const float* r, const float* g, const float* b,
+                        int height, int width, uint8_t* y_plane, int y_stride, uint8_t* u_plane,
+                        int u_stride, uint8_t* v_plane, int v_stride) {
   const int chroma_w = width / 2;
   const int chroma_h = height / 2;
 
@@ -90,51 +92,63 @@ void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int hei
     }
   };
 
-  const auto rows = [&](size_t begin, size_t end) {
-    for (size_t cy = begin; cy < end; ++cy) {
-      luma_row(cy * 2);
-      luma_row(cy * 2 + 1);
-      for (int cx = 0; cx < chroma_w; ++cx) {
-        float rs = 0.0f;
-        float gs = 0.0f;
-        float bs = 0.0f;
-        for (int dy = 0; dy < 2; ++dy) {
-          for (int dx = 0; dx < 2; ++dx) {
-            const size_t i =
-                (cy * 2 + static_cast<size_t>(dy)) * static_cast<size_t>(width) + (cx * 2 + dx);
-            rs += r[i];
-            gs += g[i];
-            bs += b[i];
-          }
+  for (size_t cy = begin; cy < end; ++cy) {
+    luma_row(cy * 2);
+    luma_row(cy * 2 + 1);
+    for (int cx = 0; cx < chroma_w; ++cx) {
+      float rs = 0.0f;
+      float gs = 0.0f;
+      float bs = 0.0f;
+      for (int dy = 0; dy < 2; ++dy) {
+        for (int dx = 0; dx < 2; ++dx) {
+          const size_t i =
+              (cy * 2 + static_cast<size_t>(dy)) * static_cast<size_t>(width) + (cx * 2 + dx);
+          rs += r[i];
+          gs += g[i];
+          bs += b[i];
         }
-        rs *= 0.25f;
-        gs *= 0.25f;
-        bs *= 0.25f;
-        const float luma = 0.2126f * rs + 0.7152f * gs + 0.0722f * bs;
-        const float u = (bs - luma) / 1.8556f;
-        const float v = (rs - luma) / 1.5748f;
-        u_plane[cy * static_cast<size_t>(u_stride) + cx] = clamp_u8(128.0f + 224.0f * u);
-        v_plane[cy * static_cast<size_t>(v_stride) + cx] = clamp_u8(128.0f + 224.0f * v);
       }
+      rs *= 0.25f;
+      gs *= 0.25f;
+      bs *= 0.25f;
+      const float luma = 0.2126f * rs + 0.7152f * gs + 0.0722f * bs;
+      const float u = (bs - luma) / 1.8556f;
+      const float v = (rs - luma) / 1.5748f;
+      u_plane[cy * static_cast<size_t>(u_stride) + cx] = clamp_u8(128.0f + 224.0f * u);
+      v_plane[cy * static_cast<size_t>(v_stride) + cx] = clamp_u8(128.0f + 224.0f * v);
     }
-    // An odd height leaves a final luma row that no chroma row owns, and the
-    // chroma-row split would skip it — leaving those bytes uninitialised. The
-    // serial version this replaced wrote every luma row, so the last range
-    // writes it here. Both container callers reject odd dimensions today, which
-    // is the only reason this was latent rather than a live bug; it stopped
-    // being merely internal the moment the function moved into a public header.
-    if (end == static_cast<size_t>(chroma_h) && (height & 1) != 0) {
-      luma_row(static_cast<size_t>(height) - 1);
-    }
-  };
+  }
+  // An odd height leaves a final luma row that no chroma row owns, and the
+  // chroma-row split would skip it — leaving those bytes uninitialised. The
+  // serial version this replaced wrote every luma row, so the last range writes
+  // it here. Both container callers reject odd dimensions today, which is the
+  // only reason this was latent rather than a live bug; it stopped being merely
+  // internal the moment the function moved into a public header.
+  if (end == static_cast<size_t>(chroma_h) && (height & 1) != 0) {
+    luma_row(static_cast<size_t>(height) - 1);
+  }
+}
 
-  // Roughly 1.5 lround per pixel plus three plane reads, run once per frame of
-  // the finished video. The floor is in pixels rather than bytes because the
-  // arithmetic, not the traffic, is what dominates here.
-  constexpr size_t kMinParallelPixels = 1u << 18;  // 256k pixels
-  static_ranges(static_cast<size_t>(chroma_h),
+}  // namespace
+
+void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int height, int width,
+                         uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
+                         uint8_t* v_plane, int v_stride) {
+  // BT.709 limited range: Y spans 16..235, chroma 16..240 around 128. The 2x2
+  // block is averaged before conversion, which is standard 4:2:0 downsampling
+  // rather than point-sampling one corner.
+  //
+  // One frame at a time is all the muxer can offer — ffmpeg wants one AVFrame
+  // filled and encoded before the next — so the split here is by *chroma* row:
+  // worker `cy` owns luma rows 2cy and 2cy+1 and chroma row cy, which covers
+  // both loops with one create/join rather than two. write_y4m has whole frames
+  // available and splits those instead; see there.
+  static_ranges(static_cast<size_t>(height / 2),
                 static_cast<size_t>(height) * static_cast<size_t>(width), kMinParallelPixels,
-                rows);
+                [&](size_t begin, size_t end) {
+                  yuv420_chroma_rows(begin, end, r, g, b, height, width, y_plane, y_stride, u_plane,
+                                     u_stride, v_plane, v_stride);
+                });
 }
 
 void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames,
@@ -164,27 +178,58 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
   const float* g_plane = planar_rgb.data() + plane;
   const float* b_plane = planar_rgb.data() + 2 * plane;
 
-  std::vector<uint8_t> luma(frame_pixels);
   const size_t chroma_w = static_cast<size_t>(width) / 2;
   const size_t chroma_h = static_cast<size_t>(height) / 2;
-  std::vector<uint8_t> cb(chroma_w * chroma_h);
-  std::vector<uint8_t> cr(chroma_w * chroma_h);
 
-  for (int f = 0; f < frames; ++f) {
+  // Split by *frame*, not by row. Calling the row-split conversion once per
+  // frame created and joined a pool per frame: at 1280x768 and 124 frames that
+  // is 124 rounds of seven create/join pairs, tens of microseconds each, on a
+  // stage measured in a few hundred milliseconds. Frames are independent, so
+  // each worker takes a whole frame and its own scratch planes, and the pool is
+  // built once per batch of `workers` frames instead.
+  //
+  // The writes stay on this thread, in frame order, after the batch has joined,
+  // so the bytes on disk are exactly what the serial loop wrote. The cost is
+  // `workers` copies of one frame's YUV rather than one — about 12 MiB at
+  // 1280x768 with eight workers.
+  const unsigned workers = choose_workers(static_cast<size_t>(frames), frame_pixels,
+                                          kMinParallelPixels);
+  std::vector<std::vector<uint8_t>> luma(workers), cb(workers), cr(workers);
+  for (unsigned w = 0; w < workers; ++w) {
+    luma[w].resize(frame_pixels);
+    cb[w].resize(chroma_w * chroma_h);
+    cr[w].resize(chroma_w * chroma_h);
+  }
+
+  // The serial whole-frame conversion, so a frame worker never nests a pool
+  // inside itself. Identical arithmetic to rgb_frame_to_yuv420, because it is
+  // the body rgb_frame_to_yuv420 splits.
+  const auto convert = [&](int f, unsigned w) {
     const size_t base = static_cast<size_t>(f) * frame_pixels;
+    yuv420_chroma_rows(0, chroma_h, r_plane + base, g_plane + base, b_plane + base, height, width,
+                       luma[w].data(), width, cb[w].data(), static_cast<int>(chroma_w),
+                       cr[w].data(), static_cast<int>(chroma_w));
+  };
 
-    // The same conversion the muxer uses, because it is now literally the same
-    // function; the planes here are simply unpadded, so the strides are the
-    // extents.
-    rgb_frame_to_yuv420(r_plane + base, g_plane + base, b_plane + base, height, width, luma.data(),
-                        width, cb.data(), static_cast<int>(chroma_w), cr.data(),
-                        static_cast<int>(chroma_w));
-
-    out << "FRAME\n";
-    out.write(reinterpret_cast<const char*>(luma.data()),
-              static_cast<std::streamsize>(luma.size()));
-    out.write(reinterpret_cast<const char*>(cb.data()), static_cast<std::streamsize>(cb.size()));
-    out.write(reinterpret_cast<const char*>(cr.data()), static_cast<std::streamsize>(cr.size()));
+  for (int f0 = 0; f0 < frames; f0 += static_cast<int>(workers)) {
+    const int n = std::min(static_cast<int>(workers), frames - f0);
+    {
+      JoiningPool pool;
+      pool.threads.reserve(static_cast<size_t>(n - 1));
+      for (int k = 1; k < n; ++k) {
+        pool.threads.emplace_back(convert, f0 + k, static_cast<unsigned>(k));
+      }
+      convert(f0, 0);
+    }  // every worker in the batch has joined before a byte of it is written
+    for (int k = 0; k < n; ++k) {
+      out << "FRAME\n";
+      out.write(reinterpret_cast<const char*>(luma[k].data()),
+                static_cast<std::streamsize>(luma[k].size()));
+      out.write(reinterpret_cast<const char*>(cb[k].data()),
+                static_cast<std::streamsize>(cb[k].size()));
+      out.write(reinterpret_cast<const char*>(cr[k].data()),
+                static_cast<std::streamsize>(cr[k].size()));
+    }
   }
 
   if (!out) throw std::runtime_error("y4m: write failed for " + path);
