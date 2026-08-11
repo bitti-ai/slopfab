@@ -127,13 +127,24 @@ class CheckpointPrefetch {
   // Off under the same idiom `prefetch()` itself honours, so the same binary
   // can be run both ways. Checked here as well so the flag also skips the
   // thread and the header reads, not just the hint.
-  void start(std::vector<std::string> paths) {
+  void start(std::vector<std::string> paths, bool verbose) {
     join();
-    if (env_flag("VIDFAB_NO_PREFETCH")) return;
+    verbose_ = verbose;
+    reported_ = false;
+    skipped_ = false;
+    requested_ = 0;
+    opened_ = 0;
+    accepted_ = 0;
+    bytes_ = 0;
+    if (env_flag("VIDFAB_NO_PREFETCH")) {
+      skipped_ = true;
+      return;
+    }
     paths.erase(std::remove_if(paths.begin(), paths.end(),
                                [](const std::string& p) { return p.empty(); }),
                 paths.end());
     if (paths.empty()) return;
+    requested_ = paths.size();
     worker_ = std::thread([this, paths = std::move(paths)] {
       for (const std::string& path : paths) {
         try {
@@ -143,28 +154,54 @@ class CheckpointPrefetch {
           // dropped in `join()`, by which point the loop has had minutes.
           SafeTensors file;
           file.open(path);
-          file.prefetch();
+          ++opened_;
+          if (file.prefetch()) {
+            ++accepted_;
+            bytes_ += file.file_size();
+          }
           files_.push_back(std::move(file));
         } catch (...) {
           // A missing or malformed checkpoint fails on the main path in a
           // moment, with the message and the exit code the user needs. There
           // is nothing this thread can usefully add, and throwing out of it
-          // would call std::terminate.
+          // would call std::terminate. The counters above are what makes the
+          // swallow visible rather than silent.
         }
       }
     });
   }
 
+  // Reports as well as joins, because the whole value of this class has to be
+  // established by an A/B against `VIDFAB_NO_PREFETCH=1` — and without a line
+  // in the log, "the hint was refused", "the file would not open", "the flag
+  // was set" and "it all worked" are four different runs that look identical.
   void join() {
     if (worker_.joinable()) worker_.join();
+    if (verbose_ && !reported_) {
+      reported_ = true;
+      if (skipped_) {
+        std::printf("prefetch    off (VIDFAB_NO_PREFETCH=1); the vae load demand faults\n");
+      } else if (requested_ != 0) {
+        std::printf("prefetch    %zu of %zu vae checkpoints hinted, %.2f GiB, %zu accepted\n",
+                    opened_, requested_,
+                    static_cast<double>(bytes_) / (1024.0 * 1024.0 * 1024.0), accepted_);
+      }
+    }
     files_.clear();
   }
 
  private:
   std::thread worker_;
-  // Touched only by the worker; read by no one. `join()` is the synchronisation
-  // point that makes clearing it safe.
+  // Written by the worker, read by the main thread only after `join()`, which
+  // is the happens-before edge that makes them safe without atomics.
   std::vector<SafeTensors> files_;
+  size_t requested_ = 0;
+  size_t opened_ = 0;
+  size_t accepted_ = 0;
+  uint64_t bytes_ = 0;
+  bool verbose_ = false;
+  bool skipped_ = false;
+  bool reported_ = false;
 };
 
 // Per-process reuse across the generations of one counted run. Everything here
@@ -617,7 +654,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // overlapping the two would only make them queue behind each other on the
       // same drive. From this line to the end of the loop the pipeline touches
       // no disk at all, which is the window this is trying to fill.
-      vae_prefetch.start({request.video_vae_path, request.audio_vae_path});
+      vae_prefetch.start({request.video_vae_path, request.audio_vae_path}, options.verbose);
 
       const Clock::time_point loop_start = Clock::now();
       const dit::DenoiseOutputs out = dit::denoise(model, in, [&](int step, int steps) {
