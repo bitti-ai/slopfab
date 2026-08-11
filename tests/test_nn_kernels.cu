@@ -1547,13 +1547,17 @@ VIDFAB_TEST(nn_dequant_nvfp4) {
   }
 }
 
-// The kernel above walks a 128-row by four-block scale tile with a fixed
-// 256-thread mapping, so a bug in it is a bug in the *shape* arithmetic: a tile
-// count that is one in a dimension hides a missing tile stride, and a tile count
-// that is a power of two hides a missing multiply. `nn_dequant_nvfp4` pins the
-// layout facts on one shape; this pins the addressing across the tile counts the
-// two hundred quantised linears actually present, including an odd tiles_o and a
-// row that spans eight tiles.
+// `nn_dequant_nvfp4` pins the two layout facts on one 256x128 weight. This
+// sweeps the tile counts instead, because the swizzle's address map is the part
+// that varies with shape and the part a rewrite gets wrong: a tile count of one
+// in a dimension hides a missing tile stride, and a count that is a power of two
+// hides a missing multiply.
+//
+// Deliberately written against the launcher rather than any one kernel's
+// indexing, so it survives a change of strategy inside `launch_dequant_nvfp4`.
+// It was added alongside a tile-per-block dequant that was then reverted for
+// being slower, and it passed unchanged across both — which is the property
+// wanted from it.
 //
 // Exact equality is the bar, not a tolerance: the reference below is built from
 // the independent tile walk in `nvfp4_scale_slot` and multiplies in the same
