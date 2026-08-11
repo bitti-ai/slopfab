@@ -481,6 +481,12 @@ VIDFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
   const size_t chroma_pixels = frame_pixels / 4;
   const size_t plane = static_cast<size_t>(frames) * frame_pixels;
 
+  // The colour transform half of this is now true by construction — write_y4m
+  // and the muxer call one function — so what it still earns its keep for is
+  // the *container*: that the .y4m header, FRAME markers and plane order put
+  // those bytes where a player expects them, at strides that are not the
+  // extents. rgb_to_yuv_threading_is_bit_identical is what pins the arithmetic.
+  //
   // Deliberately over-wide strides: ffmpeg pads every AVFrame row for
   // alignment, so a converter that assumes stride == width writes a sheared
   // image into a real encoder while still passing a naive test.
