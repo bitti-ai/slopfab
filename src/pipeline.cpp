@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <system_error>
 
@@ -125,6 +126,38 @@ void append_file_identity(std::string& key, const std::string& path) {
   key += std::to_string(static_cast<long long>(mtime.time_since_epoch().count()));
 }
 
+void append_file_content_identity(std::string& key, const std::string& path) {
+  key.push_back('\0');
+  key += path;
+  key.push_back('\0');
+  if (path.empty()) return;
+
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    key += "unreadable";
+    return;
+  }
+  // FNV-1a, 64-bit. Not a cryptographic hash and does not need to be: the
+  // threat is an honest overwrite the filesystem failed to distinguish, not a
+  // crafted collision. Read in chunks so a large reference costs no more
+  // resident memory than the buffer.
+  uint64_t hash = 14695981039346656037ULL;
+  uint64_t bytes = 0;
+  char buffer[64 * 1024];
+  while (in.read(buffer, sizeof(buffer)) || in.gcount() > 0) {
+    const std::streamsize got = in.gcount();
+    bytes += static_cast<uint64_t>(got);
+    for (std::streamsize i = 0; i < got; ++i) {
+      hash ^= static_cast<unsigned char>(buffer[i]);
+      hash *= 1099511628211ULL;
+    }
+  }
+  // The length goes in alongside the hash so a collision has to match both.
+  key += std::to_string(static_cast<unsigned long long>(bytes));
+  key.push_back('#');
+  key += std::to_string(static_cast<unsigned long long>(hash));
+}
+
 std::string conditioning_cache_key(const GenerateRequest& request) {
   std::string key = "conditioning";
   append_file_identity(key, request.text_encoder_path);
@@ -132,7 +165,7 @@ std::string conditioning_cache_key(const GenerateRequest& request) {
   key.push_back('\0');
   key += request.prompt;
   for (const std::string& path : request.reference_image_paths) {
-    append_file_identity(key, path);
+    append_file_content_identity(key, path);
   }
   return key;
 }
@@ -141,7 +174,7 @@ std::string reference_cache_key(const GenerateRequest& request) {
   std::string key = "reference";
   append_file_identity(key, request.video_vae_path);
   for (const std::string& path : request.reference_image_paths) {
-    append_file_identity(key, path);
+    append_file_content_identity(key, path);
   }
   return key;
 }

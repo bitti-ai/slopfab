@@ -344,11 +344,12 @@ VIDFAB_TEST(conditioning_cache_key_detects_overwritten_reference_image) {
   const std::string after = vidfab::conditioning_cache_key(r);
   CHECK(before != after);
 
-  // Same content at the same size but rewritten later is still a new file: an
-  // editor that round-trips an image to the same byte count must invalidate.
+  // Rewriting the identical bytes at a later mtime is the *same* image, and a
+  // content-keyed entry says so rather than throwing away a valid encode. This
+  // is the direction stat keying gets wrong in the harmless way.
   write_file(ref, "second image bytes, a different length entirely", 60);
   const std::string rewritten = vidfab::conditioning_cache_key(r);
-  CHECK(rewritten != after);
+  CHECK(rewritten == after);
 
   // And nothing else moved: asking twice with the file untouched is a hit.
   CHECK(vidfab::conditioning_cache_key(r) == rewritten);
@@ -364,6 +365,68 @@ VIDFAB_TEST(conditioning_cache_key_detects_overwritten_reference_image) {
   const std::string present = vidfab::conditioning_cache_key(r);
   std::filesystem::remove(ref);
   CHECK(vidfab::conditioning_cache_key(r) != present);
+
+  // Checkpoints keep the cheaper stat identity, and it is live: a rebuilt
+  // encoder at the same path invalidates on mtime alone. Hashing 27 GB here
+  // would cost more than everything the key protects.
+  const std::filesystem::path ckpt = scratch_path("vidfab_cachekey_ckpt.bin");
+  r.reference_image_paths.clear();
+  r.text_encoder_path = ckpt.string();
+  write_file(ckpt, "weights", 300);
+  const std::string old_ckpt = vidfab::conditioning_cache_key(r);
+  write_file(ckpt, "weights", 0);
+  CHECK(vidfab::conditioning_cache_key(r) != old_ckpt);
+  std::filesystem::remove(ckpt);
+}
+
+// The one the previous test cannot prove. `write_file` above manufactures its
+// mtime difference, so it shows the key reads mtime — not that a real in-place
+// overwrite is caught. Here the replacement is same-size and the timestamp is
+// put back exactly, which is what `copy`, `robocopy /COPY:T`, `xcopy /K`,
+// rsync --times and a good deal of image tooling actually do. Only hashing the
+// contents distinguishes these two files.
+VIDFAB_TEST(reference_key_detects_overwrite_that_preserves_size_and_mtime) {
+  const std::filesystem::path ref = scratch_path("vidfab_cachekey_samestamp.ppm");
+
+  vidfab::GenerateRequest r = base_request();
+  r.video_vae_path = "video_vae.safetensors";
+  r.text_encoder_path = "encoder.safetensors";
+  r.reference_image_paths = {ref.string()};
+
+  write_file(ref, "PPM-payload-version-one", 90);
+  const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(ref);
+  const std::string before = vidfab::conditioning_cache_key(r);
+  const std::string before_ref = vidfab::reference_cache_key(r);
+
+  // Same byte count, different bytes, and the timestamp restored to the exact
+  // value it had — so (size, mtime) is identical across the overwrite.
+  {
+    std::ofstream out(ref, std::ios::binary | std::ios::trunc);
+    const std::string replacement = "PPM-payload-version-two";
+    CHECK(replacement.size() == std::string("PPM-payload-version-one").size());
+    out.write(replacement.data(), static_cast<std::streamsize>(replacement.size()));
+  }
+  std::filesystem::last_write_time(ref, stamp);
+
+  // The metadata really is unchanged: this is the case that used to slip past.
+  CHECK(std::filesystem::last_write_time(ref) == stamp);
+  CHECK(std::filesystem::file_size(ref) == std::string("PPM-payload-version-one").size());
+
+  CHECK(vidfab::conditioning_cache_key(r) != before);
+  CHECK(vidfab::reference_cache_key(r) != before_ref);
+
+  // And it is still stable when nothing moves at all, so the hash has not just
+  // made every lookup a miss.
+  const std::string settled = vidfab::conditioning_cache_key(r);
+  CHECK(vidfab::conditioning_cache_key(r) == settled);
+  CHECK(vidfab::reference_cache_key(r) == vidfab::reference_cache_key(r));
+
+  // A byte-for-byte identical rewrite at a different mtime is the same image,
+  // and content keying says so — which stat keying could not.
+  write_file(ref, "PPM-payload-version-two", 5);
+  CHECK(vidfab::conditioning_cache_key(r) == settled);
+
+  std::filesystem::remove(ref);
 }
 
 VIDFAB_TEST(cache_keys_separate_their_inputs) {

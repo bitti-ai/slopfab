@@ -137,20 +137,38 @@ GeneratePlan resolve_plan(const GenerateRequest& request);
 // between two generations leaves the path equal and the content different, and
 // keying on the path alone silently reuses the previous image.
 //
-// So every file named by a request contributes its size and last-write time as
-// well as its path. That is the same identity NTFS and POSIX give a build
-// system, and it has the same known blind spot: a replacement that keeps the
-// byte count and lands inside one filesystem timestamp tick is invisible. Real
-// edits move at least one of the two. The alternative — hashing multi-gigabyte
-// checkpoints on every generation — costs more than the work being cached.
+// The two kinds of file a request names get two different identities, because
+// the cost of being sure is not the same for both.
+//
+// Checkpoints are multi-gigabyte and get (size, last-write time). Hashing them
+// was measured at ~25 s across the 34 GB a run touches, which is far more than
+// any of the work being cached; stat'ing them is ~0.025 ms each. The blind spot
+// is real — a same-size replacement inside one filesystem timestamp tick is
+// invisible — but nobody edits a 12 GB checkpoint in place without moving one
+// of the two, and the alternative is not affordable.
+//
+// Reference images get their contents hashed, because for them that reasoning
+// inverts. They are small, and mtime is *routinely* preserved by exactly the
+// operations that replace them: `copy`, `robocopy /COPY:T`, `xcopy /K`, most
+// image tooling writing through a temp file, rsync with `--times`. exFAT keeps
+// timestamps to 2 s and SMB inherits the server's clock. A same-size
+// mtime-preserving overwrite of `ref.png` is an ordinary event, not a contrived
+// one, and it is the precise case this whole key exists to catch. Hashing 4 MB
+// was measured at 5.57 ms warm — under 1% of the decode, Lanczos resize and
+// keyframe encode it guards.
 
 // `path`, then its size and last-write time, appended to `key` with NUL
 // separators. A file that cannot be stat'ed contributes a distinct marker
-// rather than being silently treated as unchanged.
+// rather than being silently treated as unchanged. For checkpoints.
 void append_file_identity(std::string& key, const std::string& path);
 
-// Key for a request's prompt conditioning: the encoder and tokenizer files, the
-// prompt text, and every reference image — each by identity, not by name.
+// `path`, then its byte count and a 64-bit FNV-1a hash of its contents. Detects
+// any change to the bytes regardless of what the filesystem metadata says. For
+// reference images, which are small enough to afford it.
+void append_file_content_identity(std::string& key, const std::string& path);
+
+// Key for a request's prompt conditioning: the encoder and tokenizer files by
+// stat identity, the prompt text, and every reference image by content.
 std::string conditioning_cache_key(const GenerateRequest& request);
 
 // Key for the seed-independent reference-image work: decode, Lanczos resize and
