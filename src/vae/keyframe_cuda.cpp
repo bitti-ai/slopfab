@@ -3,10 +3,12 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/keyframe_encoder.cuh"
@@ -25,74 +27,112 @@ struct ConvWeight {
   DeviceBuffer<__half> bias;
 };
 
-DeviceBuffer<__half> upload_half(const SafeTensors& checkpoint, const std::string& name,
-                                 cudaStream_t stream) {
-  const TensorView& view = checkpoint.at(name);
-  if (is_nf4_weight(checkpoint, name)) {
-    const NF4State state = read_nf4_state(checkpoint, name, "keyframe encoder");
-    size_t logical = 1;
-    for (int64_t dim : state.shape) logical *= static_cast<size_t>(dim);
-    const TensorView& absmax = checkpoint.at(name + ".absmax");
-    const TensorView& qmap = checkpoint.at(name + ".quant_map");
-    const TensorView& nested_map = checkpoint.at(name + ".nested_quant_map");
-    const TensorView& nested_absmax = checkpoint.at(name + ".nested_absmax");
-    DeviceBuffer<uint8_t> codes(view.nbytes), scales(absmax.nbytes);
-    DeviceBuffer<float> qm(static_cast<size_t>(qmap.numel()));
-    DeviceBuffer<float> nm(static_cast<size_t>(nested_map.numel()));
-    DeviceBuffer<float> na(static_cast<size_t>(nested_absmax.numel()));
-    DeviceBuffer<__half> out(logical);
-    codes.copy_from_host(static_cast<const uint8_t*>(view.data), view.nbytes, stream);
-    scales.copy_from_host(static_cast<const uint8_t*>(absmax.data), absmax.nbytes, stream);
-    qm.copy_from_host(static_cast<const float*>(qmap.data), qm.size(), stream);
-    nm.copy_from_host(static_cast<const float*>(nested_map.data), nm.size(), stream);
-    na.copy_from_host(static_cast<const float*>(nested_absmax.data), na.size(), stream);
-    cuda::launch_dequant_nf4_f16(codes.get(), scales.get(), qm.get(), nm.get(), na.get(),
-                                  state.block_size, state.nested_block_size, state.nested_offset,
-                                  out.get(), logical, stream);
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream));
-    return out;
-  }
-  DeviceBuffer<__half> out(static_cast<size_t>(view.numel()));
-  if (view.dtype == DType::kF16) {
-    out.copy_from_host(static_cast<const __half*>(view.data), out.size(), stream);
-  } else {
-    const std::vector<float> f = to_f32(view);
-    std::vector<__half> h(f.size());
-    for (size_t i = 0; i < f.size(); ++i) h[i] = __float2half_rn(f[i]);
-    out.copy_from_host(h.data(), h.size(), stream);
-  }
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream));
-  return out;
-}
-
-ConvWeight upload_conv(const SafeTensors& checkpoint, const std::string& name,
-                       cudaStream_t stream) {
-  const TensorView& w = checkpoint.at(name + ".weight");
-  ConvWeight result;
-  size_t elements = static_cast<size_t>(w.numel());
-  if (is_nf4_weight(checkpoint, name + ".weight")) {
-    elements = 1;
-    for (int64_t dim : read_nf4_state(checkpoint, name + ".weight", "keyframe encoder").shape)
-      elements *= static_cast<size_t>(dim);
-  }
-  result.weight.load(checkpoint, name + ".weight", elements, stream, "keyframe encoder");
-  result.bias = upload_half(checkpoint, name + ".bias", stream);
-  return result;
-}
-
 struct NormWeight {
   DeviceBuffer<__half> weight;
   DeviceBuffer<__half> bias;
 };
 
-NormWeight upload_norm(const SafeTensors& checkpoint, const std::string& name, cudaStream_t stream) {
-  const TensorView& w = checkpoint.at(name + ".weight");
-  const TensorView& b = checkpoint.at(name + ".bias");
-  NormWeight result;
-  result.weight = upload_half(checkpoint, name + ".weight", stream);
-  result.bias = upload_half(checkpoint, name + ".bias", stream);
-  return result;
-}
+// One upload pass over the checkpoint. Exists so the ~130 tensors share one
+// set of NF4 scratch buffers and one stream synchronise instead of allocating
+// five device buffers and synchronising per tensor: `cudaFree` synchronises
+// the whole device, so the old shape serialised the entire load against itself.
+//
+// Everything the device may still be reading — the retained host conversions
+// below and the scratch — outlives the loader, and the loader outlives the
+// single synchronise at the end of the constructor.
+class Loader {
+ public:
+  Loader(const SafeTensors& checkpoint, cudaStream_t stream)
+      : ckpt_(checkpoint), stream_(stream) {}
+
+  Loader(const Loader&) = delete;
+  Loader& operator=(const Loader&) = delete;
+
+  DeviceBuffer<__half> half(const std::string& name) {
+    const TensorView& view = ckpt_.at(name);
+    if (is_nf4_weight(ckpt_, name)) {
+      const NF4State state = read_nf4_state(ckpt_, name, "keyframe encoder");
+      size_t logical = 1;
+      for (int64_t dim : state.shape) logical *= static_cast<size_t>(dim);
+      const TensorView& absmax = ckpt_.at(name + ".absmax");
+      const TensorView& qmap = ckpt_.at(name + ".quant_map");
+      const TensorView& nested_map = ckpt_.at(name + ".nested_quant_map");
+      const TensorView& nested_absmax = ckpt_.at(name + ".nested_absmax");
+      uint8_t* codes = grow(codes_, view.nbytes);
+      uint8_t* scales = grow(scales_, absmax.nbytes);
+      float* qm = grow(qmap_, static_cast<size_t>(qmap.numel()));
+      float* nm = grow(nested_map_, static_cast<size_t>(nested_map.numel()));
+      float* na = grow(nested_absmax_, static_cast<size_t>(nested_absmax.numel()));
+      DeviceBuffer<__half> out(logical);
+      // Scratch reuse is safe without a synchronise: every copy and the kernel
+      // below are on one stream, so the next tensor's copy into the scratch is
+      // already ordered after this tensor's dequantisation kernel has read it.
+      codes_.copy_from_host(static_cast<const uint8_t*>(view.data), view.nbytes, stream_);
+      scales_.copy_from_host(static_cast<const uint8_t*>(absmax.data), absmax.nbytes, stream_);
+      qmap_.copy_from_host(static_cast<const float*>(qmap.data),
+                           static_cast<size_t>(qmap.numel()), stream_);
+      nested_map_.copy_from_host(static_cast<const float*>(nested_map.data),
+                                 static_cast<size_t>(nested_map.numel()), stream_);
+      nested_absmax_.copy_from_host(static_cast<const float*>(nested_absmax.data),
+                                    static_cast<size_t>(nested_absmax.numel()), stream_);
+      cuda::launch_dequant_nf4_f16(codes, scales, qm, nm, na, state.block_size,
+                                   state.nested_block_size, state.nested_offset, out.get(),
+                                   logical, stream_);
+      return out;
+    }
+    DeviceBuffer<__half> out(static_cast<size_t>(view.numel()));
+    if (view.dtype == DType::kF16) {
+      out.copy_from_host(static_cast<const __half*>(view.data), out.size(), stream_);
+    } else {
+      // The converted block is retained rather than left on the stack: without
+      // the per-tensor synchronise there is no point at which it is known to
+      // have been consumed, and these are all one-dimensional affines, so
+      // holding every one of them costs a few hundred kilobytes.
+      const std::vector<float> f = to_f32(view);
+      retained_.emplace_back(f.size());
+      std::vector<__half>& h = retained_.back();
+      for (size_t i = 0; i < f.size(); ++i) h[i] = __float2half_rn(f[i]);
+      out.copy_from_host(h.data(), h.size(), stream_);
+    }
+    return out;
+  }
+
+  ConvWeight conv(const std::string& name) {
+    const TensorView& w = ckpt_.at(name + ".weight");
+    ConvWeight result;
+    size_t elements = static_cast<size_t>(w.numel());
+    if (is_nf4_weight(ckpt_, name + ".weight")) {
+      elements = 1;
+      for (int64_t dim : read_nf4_state(ckpt_, name + ".weight", "keyframe encoder").shape)
+        elements *= static_cast<size_t>(dim);
+    }
+    result.weight.load(ckpt_, name + ".weight", elements, stream_, "keyframe encoder");
+    result.bias = half(name + ".bias");
+    return result;
+  }
+
+  NormWeight norm(const std::string& name) {
+    NormWeight result;
+    result.weight = half(name + ".weight");
+    result.bias = half(name + ".bias");
+    return result;
+  }
+
+ private:
+  // Grows to the high-water mark and never shrinks, so the common case — every
+  // affine the same 1024 elements or fewer — allocates once.
+  template <typename T>
+  static T* grow(DeviceBuffer<T>& buffer, size_t count) {
+    if (buffer.size() < count) buffer.allocate(count);
+    return buffer.get();
+  }
+
+  const SafeTensors& ckpt_;
+  cudaStream_t stream_;
+  DeviceBuffer<uint8_t> codes_, scales_;
+  DeviceBuffer<float> qmap_, nested_map_, nested_absmax_;
+  std::vector<std::vector<__half>> retained_;
+};
 
 }  // namespace
 
@@ -104,10 +144,33 @@ struct KeyframeEncoder::Impl {
   size_t weight_workspace_elements = 0;
 
   explicit Impl(const SafeTensors& checkpoint) {
+    // See the note on `SafeTensors::prefetch`: issued first because it is
+    // asynchronous, so validation below runs while the OS is already reading.
+    // The whole file rather than the encoder's extent, mirroring
+    // `ViTDecoder::load`: the decoder half of this same video VAE is loaded by
+    // the same pipeline, and this is a hint either way.
+    checkpoint.prefetch();
     validate_keyframe_encoder_weights(checkpoint);
+
+    // Page-locks the mapping for the whole of the load below. Every weight here
+    // is copied straight out of `view.data`, by `F16Weight::load` for the conv
+    // kernels and by `Loader` for the affines; from a pageable mapping each of
+    // those is a synchronous copy staged through the driver, out of a
+    // registered one it is a real DMA. Declared before `load` so that it is
+    // destroyed after it, and after the synchronise at the end of this
+    // constructor — nothing may still be reading the mapping when it is
+    // unregistered.
+    const cuda::RegisteredMapping mapping(checkpoint.mapping_base(), checkpoint.file_size());
+    if (!mapping.registered()) {
+      std::fprintf(stderr,
+                   "vidfab: could not page-lock the video vae mapping for the keyframe encoder; "
+                   "uploading via the staged path, which is slower\n");
+    }
+    Loader load(checkpoint, stream.get());
+
     constexpr int channels[] = {128, 256, 256, 512, 512, 1024};
     constexpr int down[] = {2, 2, 2, 2, 1, 1};
-    convs.emplace("encoder.conv_in", upload_conv(checkpoint, "encoder.conv_in", stream.get()));
+    convs.emplace("encoder.conv_in", load.conv("encoder.conv_in"));
     int previous = 128;
     for (int level = 0; level < 6; ++level) {
       const int output = channels[level];
@@ -115,25 +178,26 @@ struct KeyframeEncoder::Impl {
         const int input = block == 0 ? previous : output;
         const std::string p = "encoder.down." + std::to_string(level) + ".block." +
                               std::to_string(block);
-        norms.emplace(p + ".norm1", upload_norm(checkpoint, p + ".norm1", stream.get()));
-        norms.emplace(p + ".norm2", upload_norm(checkpoint, p + ".norm2", stream.get()));
-        convs.emplace(p + ".conv1", upload_conv(checkpoint, p + ".conv1", stream.get()));
-        convs.emplace(p + ".conv2", upload_conv(checkpoint, p + ".conv2", stream.get()));
-        if (input != output)
-          convs.emplace(p + ".nin_shortcut", upload_conv(checkpoint, p + ".nin_shortcut", stream.get()));
+        norms.emplace(p + ".norm1", load.norm(p + ".norm1"));
+        norms.emplace(p + ".norm2", load.norm(p + ".norm2"));
+        convs.emplace(p + ".conv1", load.conv(p + ".conv1"));
+        convs.emplace(p + ".conv2", load.conv(p + ".conv2"));
+        if (input != output) convs.emplace(p + ".nin_shortcut", load.conv(p + ".nin_shortcut"));
       }
       if (down[level] == 2) {
         const std::string p = "encoder.down." + std::to_string(level) + ".downsample.conv";
-        convs.emplace(p, upload_conv(checkpoint, p, stream.get()));
+        convs.emplace(p, load.conv(p));
       }
       previous = output;
     }
-    norms.emplace("encoder.norm_out", upload_norm(checkpoint, "encoder.norm_out", stream.get()));
-    convs.emplace("encoder.conv_out", upload_conv(checkpoint, "encoder.conv_out", stream.get()));
-    convs.emplace("quant_conv", upload_conv(checkpoint, "quant_conv", stream.get()));
+    norms.emplace("encoder.norm_out", load.norm("encoder.norm_out"));
+    convs.emplace("encoder.conv_out", load.conv("encoder.conv_out"));
+    convs.emplace("quant_conv", load.conv("quant_conv"));
     for (const auto& item : convs)
       weight_workspace_elements = std::max(weight_workspace_elements, item.second.weight.elements());
     weight_workspace.allocate(weight_workspace_elements);
+    // The one synchronise for the whole load. Every upload above was enqueued
+    // on this stream and nothing has read a result yet.
     stream.synchronize();
   }
 
