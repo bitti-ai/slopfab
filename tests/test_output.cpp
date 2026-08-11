@@ -367,7 +367,15 @@ VIDFAB_TEST(rgb_to_yuv_threading_is_bit_identical) {
   struct Case {
     int height, width;
   };
-  const Case cases[] = {{482, 640}, {8, 16}, {2, 2}, {768, 400}};
+  const Case cases[] = {
+      {482, 640}, {8, 16}, {2, 2}, {768, 400},
+      // Odd extents. 4:2:0 is not defined for them and both container writers
+      // reject them, but this is a public function now and a chroma-row split
+      // silently skips the final luma row at an odd height — which is a buffer
+      // the caller sized and we left uninitialised. The frozen serial copy
+      // wrote it, so these cases are what holds the split to that.
+      {9, 16}, {7, 16}, {1, 16}, {483, 640}, {8, 15}, {1, 1},
+  };
 
   for (const Case& c : cases) {
     const vidfab::PixelBuffer clip = make_clip(1, c.height, c.width);

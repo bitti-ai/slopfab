@@ -37,6 +37,12 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
 // between the .y4m and the .mp4. It lives here rather than in mux.h so the
 // dependency runs the right way: the plain writer owns the colour transform and
 // the muxer borrows it, not the reverse.
+//
+// Writes all `height` luma rows and `height/2` by `width/2` chroma samples, so
+// it leaves no byte of the caller's planes untouched at any extent. 4:2:0 is
+// not defined for odd extents — an odd final row or column contributes luma
+// only and is not represented in chroma — and both container writers reject
+// them before calling here.
 void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int height, int width,
                          uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
                          uint8_t* v_plane, int v_stride);

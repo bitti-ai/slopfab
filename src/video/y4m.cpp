@@ -75,24 +75,25 @@ void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int hei
   //
   // Split by *chroma* row: worker `cy` owns luma rows 2cy and 2cy+1 and chroma
   // row cy, so one split covers both loops and the frame pays one create/join
-  // rather than two. Both callers validate that height and width are even, so
-  // the chroma rows tile the luma rows exactly. Every output byte is still the
-  // same expression over the same inputs, and the two planes are disjoint, so
-  // doing a worker's luma and chroma together rather than all luma then all
-  // chroma changes nothing but the order of independent stores.
+  // rather than two. Every output byte is still the same expression over the
+  // same inputs, and the two planes are disjoint, so doing a worker's luma and
+  // chroma together rather than all luma then all chroma changes nothing but
+  // the order of independent stores.
   const int chroma_w = width / 2;
   const int chroma_h = height / 2;
 
+  const auto luma_row = [&](size_t y) {
+    for (int x = 0; x < width; ++x) {
+      const size_t i = y * static_cast<size_t>(width) + x;
+      const float luma = 0.2126f * r[i] + 0.7152f * g[i] + 0.0722f * b[i];
+      y_plane[y * static_cast<size_t>(y_stride) + x] = clamp_u8(16.0f + 219.0f * luma);
+    }
+  };
+
   const auto rows = [&](size_t begin, size_t end) {
     for (size_t cy = begin; cy < end; ++cy) {
-      for (int dy = 0; dy < 2; ++dy) {
-        const size_t y = cy * 2 + static_cast<size_t>(dy);
-        for (int x = 0; x < width; ++x) {
-          const size_t i = y * static_cast<size_t>(width) + x;
-          const float luma = 0.2126f * r[i] + 0.7152f * g[i] + 0.0722f * b[i];
-          y_plane[y * static_cast<size_t>(y_stride) + x] = clamp_u8(16.0f + 219.0f * luma);
-        }
-      }
+      luma_row(cy * 2);
+      luma_row(cy * 2 + 1);
       for (int cx = 0; cx < chroma_w; ++cx) {
         float rs = 0.0f;
         float gs = 0.0f;
@@ -115,6 +116,15 @@ void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int hei
         u_plane[cy * static_cast<size_t>(u_stride) + cx] = clamp_u8(128.0f + 224.0f * u);
         v_plane[cy * static_cast<size_t>(v_stride) + cx] = clamp_u8(128.0f + 224.0f * v);
       }
+    }
+    // An odd height leaves a final luma row that no chroma row owns, and the
+    // chroma-row split would skip it — leaving those bytes uninitialised. The
+    // serial version this replaced wrote every luma row, so the last range
+    // writes it here. Both container callers reject odd dimensions today, which
+    // is the only reason this was latent rather than a live bug; it stopped
+    // being merely internal the moment the function moved into a public header.
+    if (end == static_cast<size_t>(chroma_h) && (height & 1) != 0) {
+      luma_row(static_cast<size_t>(height) - 1);
     }
   };
 
