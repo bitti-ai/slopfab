@@ -614,9 +614,10 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     dst.resize(pixels);
     const bool landed = d.ensure_registered(dst.data(), dst.capacity() * sizeof(float));
     if (!landed && d.pinned_out.size() < pixels) {
-      // Allocated only if the direct landing is unavailable, which on this
-      // machine it never is: an unused staging buffer is 22 MiB of pinned host
-      // memory held for the life of the decoder for nothing.
+      // Allocated only when the direct landing is unavailable — a machine short
+      // of lockable pages, or one whose GPU is already exhausted. Allocating it
+      // up front instead would hold 22 MiB of pinned host memory for the life of
+      // the decoder on every run that never needs it.
       d.pinned_out.allocate(pixels);
     }
     float* host_dst = landed ? dst.data() : d.pinned_out.get();
