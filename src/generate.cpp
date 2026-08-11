@@ -115,6 +115,14 @@ bool env_flag(const char* name) {
 // still correct, just slower. On an already-resident mapping the hint costs a
 // documented 0.4-0.8 s, and here that is paid off the critical path.
 //
+// It is not, however, free of externally visible effects, and one is worth
+// naming. `SafeTensors::open` uses `FILE_SHARE_READ` alone
+// (core/safetensors.cpp:142-143), so holding the mapping across the loop locks
+// both VAE checkpoints against writing and deletion for the whole denoise
+// rather than for the ~1.2 s of the load. Replacing a VAE mid-run was never
+// sensible and the lock arguably protects against it, but the window grew from
+// seconds to minutes and that is a behaviour change, not a no-op.
+//
 // The joiner is RAII rather than a bare `std::thread` because the denoise block
 // can leave by return *or* by exception, and a live thread holding a mapping
 // while the main path unwinds is a crash, not a slow run.
