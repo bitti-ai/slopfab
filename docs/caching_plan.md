@@ -114,10 +114,10 @@ arithmetic.
    `src/cuda/sage_attention.cu:105-141`, `:146-175`. `launch_official` is
    already templated on `D`, so the divisions can become a shift and a mask;
    the amax pass and the quantise pass can share registers.
-3. **nvfp4 scale gather is a per-thread 1-byte scattered read** —
-   `src/cuda/linear.cu:211-240`, `:133-137`. Dequantisation is a measured
-   80.10 ms/step (8.07%) at the quick geometry. Stage a row's scales through
-   shared memory.
+3. ~~**nvfp4 scale gather is a per-thread 1-byte scattered read**~~ —
+   `src/cuda/linear.cu:211-240`, `:133-137`. **Proposed, redesigned,
+   implemented, measured 24% SLOWER, and reverted. Struck — do not re-attempt.**
+   See the rejected section below for the measurement and the reason.
 4. **NF4 dequant does two runtime 64-bit divides per thread and moves 2
    elements** — `src/cuda/linear.cu:242-278`, where the f8/i8 siblings at
    `:151`/`:175` move 8 with a 16-byte store. Both block sizes are powers of
@@ -228,6 +228,53 @@ recorded in the campaign notes: magic + format version + per-source key of
 (size, mtime, header length, FNV-1a of the header bytes) + independently
 checksummed sections, in `%LOCALAPPDATA%\Vidfab\cache\`, temp-file-plus-atomic-
 rename, and silent fallback on any mismatch.
+
+**Restructuring the nvfp4 dequant grid to stop wasting scale sectors. Measured
+24% slower and reverted — the most instructive failure of the campaign.**
+
+The observation was real: for a fixed output row, four consecutive `k` are
+contiguous and then the address jumps 512 B, so a warp touches four scattered
+32-byte sectors to consume 16 bytes, and each 32-byte sector holds scales for
+eight different output rows that the row-wise grid had placed in eight
+different blocks. Regrouping to one block per 512-byte scale tile takes the
+scale traffic from 128 sector fetches per 8192 elements to 16. That arithmetic
+is correct, and the resulting kernel is provably correct: an independent host
+enumerator over ten shapes confirmed every element written exactly once with an
+identical scale byte, no out-of-bounds stage, no bank conflicts, and no
+occupancy change (30 -> 33 registers, still 6 blocks/SM).
+
+It is also 24% slower, measured against the shipped `launch_dequant_nvfp4` in
+each tree, alternating M/B/B/M on an idle card with intra-arm variance below
+0.1%:
+
+| shape | row-wise (master) | tile-wise | delta |
+|---|---|---|---|
+| `attn.qkv_proj` 3072x4096 | 0.0331 ms | 0.0332 ms | +0.4% |
+| `attn.out_proj` 4096x4096 | 0.0529 ms | 0.0536 ms | +1.6% |
+| `mlp.fc1` 14336x4096 | 0.2420 ms | 0.2990 ms | **+23.6%** |
+| `mlp.fc2` 4096x14336 | 0.2430 ms | 0.3011 ms | **+23.8%** |
+
+**The analysis optimised the wrong stream.** Per 8192 elements the kernel reads
+4096 B of packed data, reads 512 B of scales, and *writes* 16384 B of bf16. The
+write is 78% of the traffic; the scales are 2.4%. The row-wise grid emits one
+contiguous 4096-byte store per block (`gy = min(out_features, 65535)` equals
+`out_features` at every real shape, so the stride loop runs once). The tile-wise
+grid emits 128 separate 128-byte stores strided `in_features*2` — 8 KB at fc1,
+28 KB at fc2. Every store stays sector-aligned, which is why the small shapes
+are neutral, but across 117 MB of output the write locality is gone. Meanwhile
+the 128 scale sectors it recovers were nearly all L2 hits: the fc1 scale array
+is 3.7 MB on a card with a large L2.
+
+Two hypotheses died here. Staging the gather through shared memory does not
+work either — the four scattered sectors are dictated by the swizzle layout,
+not by how the load is issued, so restaging the same row changes nothing.
+
+**The lesson worth keeping.** A sector-count argument is not a bandwidth
+argument. Before restructuring a kernel's grid, account for *all* the traffic
+it moves and check which stream dominates; the one being optimised here was
+2.4% of it, and was already absorbed by L2. This was caught only because the
+reviewer measured against the shipped kernel instead of re-deriving the
+arithmetic, which had been checked twice and was right both times.
 
 **A sidecar of validated ffmpeg struct offsets.** There is no offset probing to
 persist. `src/video/ffmpeg_abi.h:173-204` is a compile-time `constexpr Layout`
