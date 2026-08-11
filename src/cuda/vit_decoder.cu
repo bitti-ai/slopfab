@@ -197,6 +197,7 @@ struct ViTDecoder::Impl {
     size_t bytes = 0;
   };
   std::vector<HostRegistration> host_regs;
+  bool warned_no_page_lock = false;
 
   ~Impl() {
     release_host_regs();
@@ -235,8 +236,23 @@ struct ViTDecoder::Impl {
       erase_registration(i);
       break;
     }
-    if (cudaHostRegister(p, bytes, cudaHostRegisterDefault) != cudaSuccess) {
+    const cudaError_t rc = cudaHostRegister(p, bytes, cudaHostRegisterDefault);
+    if (rc != cudaSuccess) {
       cudaGetLastError();
+      // Said once, not once per tile per chunk. Without it the decode silently
+      // reverts to staging every tile through pinned memory and copying it out
+      // — the exact cost this path exists to remove — and the only evidence is
+      // a phase timing nobody is looking at. cudaErrorHostMemoryAlreadyRegistered
+      // matters just as much as an out-of-memory here: it means some other
+      // registration already covers this range, and that tile stays staged for
+      // the whole run.
+      if (!warned_no_page_lock) {
+        warned_no_page_lock = true;
+        std::fprintf(stderr,
+                     "vidfab: could not page-lock a video vae output tile (%s); decoded tiles "
+                     "are being staged through pinned memory and copied, which is slower\n",
+                     cudaGetErrorName(rc));
+      }
       return false;
     }
     host_regs.push_back({p, bytes});
@@ -615,6 +631,12 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     // straight into it and the staging copy below disappears entirely. The
     // registration has to be dropped *before* a resize that reallocates, while
     // the block it locks is still alive.
+    // Timed: page-locking is the one substantial host cost this path adds, and
+    // it is paid on the first chunk only. Left outside every span it would be
+    // the single largest new cost in the stage and invisible to the profiler
+    // this whole effort is steered by — including the case where it fails and
+    // every tile silently reverts to being staged and copied.
+    cuda::PhaseSpan s_lock("forward: page-lock output");
     std::vector<float>& dst = out[slots[static_cast<size_t>(doc)]];
     if (pixels > dst.capacity()) d.unregister_host(dst.data());
     dst.resize(pixels);
@@ -627,6 +649,7 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
       d.pinned_out.allocate(pixels);
     }
     float* host_dst = landed ? dst.data() : d.pinned_out.get();
+    s_lock.stop();
     // The suffix rows between documents mean the final projection is issued
     // per document. It runs once per decode, unlike the 216 projections in
     // the transformer body, and preserves the exact singleton arithmetic.
