@@ -223,8 +223,17 @@ if(WIN32)
     vidfab_check_license("${VIDFAB_LICENSE_RESOURCE}" VIDFAB_LICENSE_PRESENT)
     if(NOT VIDFAB_LICENSE_DOWNLOAD_CODE EQUAL 0 OR NOT VIDFAB_LICENSE_PRESENT)
       if(VIDFAB_LICENSE_DOWNLOAD_CODE EQUAL 0)
-        set(VIDFAB_LICENSE_DOWNLOAD_MESSAGE
-            "the server returned something that is not the MiniMax H3 license")
+        # The transfer succeeded and the body is not the licence. Usually that
+        # means an error page, but it is also what a lawful upstream retitle
+        # looks like from here, and the reader has no way to tell which without
+        # being told where the expectation lives.
+        string(CONCAT VIDFAB_LICENSE_DOWNLOAD_MESSAGE
+          "the server returned something that is not the MiniMax H3 license. "
+          "The transfer itself succeeded, so this is either an error page or a "
+          "document whose text no longer contains VIDFAB_LICENSE_MARKER "
+          "(\"${VIDFAB_LICENSE_MARKER}\"). Fetch the URL by hand to tell which; "
+          "if upstream legitimately retitled the document, update that marker "
+          "in CMakeLists.txt to match")
       else()
         list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 1 VIDFAB_LICENSE_DOWNLOAD_MESSAGE)
       endif()
