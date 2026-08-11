@@ -130,6 +130,13 @@ __device__ inline float f4_e2m1_to_f32_dev(uint32_t nibble) {
 // Tiles are row-major over `o`, which is the reason the qkv split in
 // transformer.cpp may slice this array at a byte offset at all — and it only
 // holds because each third is a whole number of 128-row tiles.
+//
+// Kept as the reference form even though `dequant_nvfp4_kernel` no longer calls
+// it: that kernel owns one whole tile, so the tile term is loop-invariant and
+// the interior collapses to three register constants, and the expression below
+// is what those were derived from. `nn_dequant_nvfp4_tile_shapes` checks the
+// derivation against an independent host walk of the same map rather than
+// against this function, so the two cannot quietly agree on a wrong layout.
 __device__ inline size_t nvfp4_scale_offset(int o, int k, int blocks_per_row) {
   const int tile = (o >> 7) * (blocks_per_row >> 2) + (k >> 2);
   return static_cast<size_t>(tile) * 512 +
