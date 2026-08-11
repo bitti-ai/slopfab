@@ -172,15 +172,38 @@ if(WIN32)
   endif()
   set(VIDFAB_LICENSE_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/minimax_h3_LICENSE")
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
-  file(DOWNLOAD
-    "https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/LICENSE"
-    "${VIDFAB_LICENSE_RESOURCE}"
-    STATUS VIDFAB_LICENSE_DOWNLOAD_STATUS
-    TLS_VERIFY ON)
-  list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 0 VIDFAB_LICENSE_DOWNLOAD_CODE)
-  if(NOT VIDFAB_LICENSE_DOWNLOAD_CODE EQUAL 0)
-    list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 1 VIDFAB_LICENSE_DOWNLOAD_MESSAGE)
-    message(FATAL_ERROR "vidfab: could not download MiniMax H3 license: ${VIDFAB_LICENSE_DOWNLOAD_MESSAGE}")
+  # Fetched once per build tree and then kept. Embedding the licence is a
+  # compliance mechanism and stays, but re-downloading it on every configure
+  # made `cmake -S . -B build` require the network and block on a third-party
+  # host every single time. A missing or truncated copy is still fatal, and a
+  # failed fetch removes its own partial file so the next configure retries
+  # rather than embedding nothing.
+  set(VIDFAB_LICENSE_PRESENT FALSE)
+  if(EXISTS "${VIDFAB_LICENSE_RESOURCE}")
+    file(SIZE "${VIDFAB_LICENSE_RESOURCE}" VIDFAB_LICENSE_BYTES)
+    if(VIDFAB_LICENSE_BYTES GREATER 0)
+      set(VIDFAB_LICENSE_PRESENT TRUE)
+    endif()
+  endif()
+  if(NOT VIDFAB_LICENSE_PRESENT)
+    file(DOWNLOAD
+      "https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/LICENSE"
+      "${VIDFAB_LICENSE_RESOURCE}"
+      STATUS VIDFAB_LICENSE_DOWNLOAD_STATUS
+      TLS_VERIFY ON)
+    list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 0 VIDFAB_LICENSE_DOWNLOAD_CODE)
+    if(VIDFAB_LICENSE_DOWNLOAD_CODE EQUAL 0)
+      file(SIZE "${VIDFAB_LICENSE_RESOURCE}" VIDFAB_LICENSE_BYTES)
+      if(VIDFAB_LICENSE_BYTES EQUAL 0)
+        set(VIDFAB_LICENSE_DOWNLOAD_CODE 1)
+        set(VIDFAB_LICENSE_DOWNLOAD_STATUS "1;the server returned an empty file")
+      endif()
+    endif()
+    if(NOT VIDFAB_LICENSE_DOWNLOAD_CODE EQUAL 0)
+      list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 1 VIDFAB_LICENSE_DOWNLOAD_MESSAGE)
+      file(REMOVE "${VIDFAB_LICENSE_RESOURCE}")
+      message(FATAL_ERROR "vidfab: could not download MiniMax H3 license: ${VIDFAB_LICENSE_DOWNLOAD_MESSAGE}")
+    endif()
   endif()
   file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json"
        VIDFAB_TOKENIZER_RESOURCE)
