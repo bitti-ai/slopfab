@@ -141,6 +141,7 @@ class CheckpointPrefetch {
     verbose_ = verbose;
     reported_ = false;
     skipped_ = false;
+    spawn_failed_ = false;
     requested_ = 0;
     opened_ = 0;
     accepted_ = 0;
@@ -186,20 +187,26 @@ class CheckpointPrefetch {
         }
       });
     } catch (const std::system_error&) {
-      requested_ = 0;
+      // Reported on its own line rather than folded into "nothing to do":
+      // a machine that cannot spawn a thread is a real condition worth seeing,
+      // and it must not look like a run that was given no VAE paths.
+      spawn_failed_ = true;
     }
   }
 
   // Reports as well as joins, because the whole value of this class has to be
   // established by an A/B against `VIDFAB_NO_PREFETCH=1` — and without a line
-  // in the log, "the hint was refused", "the file would not open", "the flag
-  // was set" and "it all worked" are four different runs that look identical.
+  // in the log, "the hint was refused", "the file would not open", "the thread
+  // would not start", "the flag was set" and "it all worked" are five different
+  // runs that look identical.
   void join() {
     if (worker_.joinable()) worker_.join();
     if (verbose_ && !reported_) {
       reported_ = true;
       if (skipped_) {
         std::printf("prefetch    off (VIDFAB_NO_PREFETCH=1); the vae load demand faults\n");
+      } else if (spawn_failed_) {
+        std::printf("prefetch    no worker thread available; the vae load demand faults\n");
       } else if (requested_ != 0) {
         std::printf("prefetch    %zu of %zu vae checkpoints hinted, %.2f GiB, %zu accepted\n",
                     opened_, requested_,
@@ -220,6 +227,7 @@ class CheckpointPrefetch {
   uint64_t bytes_ = 0;
   bool verbose_ = false;
   bool skipped_ = false;
+  bool spawn_failed_ = false;
   bool reported_ = false;
 };
 
