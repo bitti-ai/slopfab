@@ -303,6 +303,7 @@ if(VIDFAB_BUILD_TESTS)
       tests/test_transformer.cu
       tests/test_encoder.cu
       tests/test_keyframe_encoder.cu
+      tests/test_vit_decoder.cu
     )
     target_link_libraries(vidfab_kernel_tests PRIVATE vidfab_cuda)
     add_test(NAME kernels COMMAND vidfab_kernel_tests)

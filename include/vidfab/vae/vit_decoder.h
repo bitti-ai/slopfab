@@ -101,6 +101,15 @@ class ViTDecoder {
   void forward_windows(const float* z, int batch, int T, int H, int W,
                        std::vector<std::vector<float>>& out, const size_t* slots);
 
+  // forward_windows page-locks the `out` slots it writes so the device can DMA
+  // a decoded window straight into the caller's buffer instead of staging it
+  // through pinned memory and memcpy'ing it out. A page-lock outlives the call,
+  // and this class cannot see the caller's buffers die, so **every caller of
+  // forward_windows must call this before those buffers are destroyed** — from
+  // a scope guard, so a throw does not leak a lock onto freed memory. Calling
+  // it when nothing is registered is free.
+  void release_host_registrations();
+
   // Full decode: latent de-normalisation, temporal chunking, spatial tiling,
   // cross-fade stitching and pixel de-normalisation.
   // `z_norm` is [24, T_lat, H_lat, W_lat] as produced by the diffusion model.

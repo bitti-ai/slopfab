@@ -181,8 +181,66 @@ struct ViTDecoder::Impl {
   size_t cap_pixels = 0;
   cuda::PinnedBuffer<float> pinned_out;  // staging for the D2H of decoded pixels
 
+  // Page-locking of the *caller's* tile buffers. The decode hoists one buffer
+  // per tile and hands the same one back every chunk, so registering it once
+  // lets the D2H land the tile in its final home instead of copying it into
+  // `pinned_out` and then memcpy'ing it out again — two crossings of host
+  // memory per tile, 1.2 GiB per decode at the shipped geometry.
+  //
+  // Best-effort, exactly like cuda::RegisteredMapping: if the registration
+  // fails the staged path still runs and is only slower. Registration is not
+  // tracked by the buffer, so the *caller* must call
+  // release_host_registrations() before those buffers are freed, and this class
+  // must drop a registration before a resize reallocates underneath it.
+  struct HostRegistration {
+    void* base = nullptr;
+    size_t bytes = 0;
+  };
+  std::vector<HostRegistration> host_regs;
+
   ~Impl() {
+    release_host_regs();
     if (blas != nullptr) cublasDestroy(blas);
+  }
+
+  void erase_registration(size_t index) {
+    cudaHostUnregister(host_regs[index].base);
+    // Symmetric with the register side: never leave a sticky error behind for
+    // the next unrelated call to be blamed for.
+    cudaGetLastError();
+    host_regs.erase(host_regs.begin() + static_cast<ptrdiff_t>(index));
+  }
+
+  void unregister_host(void* p) {
+    if (p == nullptr) return;
+    for (size_t i = 0; i < host_regs.size(); ++i) {
+      if (host_regs[i].base == p) {
+        erase_registration(i);
+        return;
+      }
+    }
+  }
+
+  void release_host_regs() {
+    while (!host_regs.empty()) erase_registration(host_regs.size() - 1);
+  }
+
+  // True when `[p, p + bytes)` is page-locked on return.
+  bool ensure_registered(void* p, size_t bytes) {
+    if (p == nullptr || bytes == 0) return false;
+    for (size_t i = 0; i < host_regs.size(); ++i) {
+      if (host_regs[i].base != p) continue;
+      if (host_regs[i].bytes == bytes) return true;
+      // Same address, different length: the old lock covers the wrong range.
+      erase_registration(i);
+      break;
+    }
+    if (cudaHostRegister(p, bytes, cudaHostRegisterDefault) != cudaSuccess) {
+      cudaGetLastError();
+      return false;
+    }
+    host_regs.push_back({p, bytes});
+    return true;
   }
 
   void gemm_nt(const float* A, const cuda::F16Weight& weight, float* C, int M, int N, int K) {
@@ -473,6 +531,10 @@ void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector
   std::vector<std::vector<float>> batch_out(1);
   const size_t slot = 0;
   forward_windows(z, 1, T, H, W, batch_out, &slot);
+  // The move hands the buffer to a vector this class cannot see, and
+  // `batch_out` dies at the closing brace either way, so any page-lock taken on
+  // it has to be released here rather than tracked.
+  release_host_registrations();
   out = std::move(batch_out.front());
 }
 
@@ -537,13 +599,27 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   cuda::PhaseSpan s_grow("forward: grow output");
   if (pixels > d.cap_pixels) {
     d.d_pixels.allocate(pixels);
-    d.pinned_out.allocate(pixels);
     d.cap_pixels = pixels;
   }
   const int patch_dim = cfg.patch_dim();
   s_grow.stop();
   for (int doc = 0; doc < batch; ++doc) {
     const size_t token0 = static_cast<size_t>(doc) * seq;
+    // Resolve the destination first: when it can be page-locked the D2H writes
+    // straight into it and the staging copy below disappears entirely. The
+    // registration has to be dropped *before* a resize that reallocates, while
+    // the block it locks is still alive.
+    std::vector<float>& dst = out[slots[static_cast<size_t>(doc)]];
+    if (pixels > dst.capacity()) d.unregister_host(dst.data());
+    dst.resize(pixels);
+    const bool landed = d.ensure_registered(dst.data(), dst.capacity() * sizeof(float));
+    if (!landed && d.pinned_out.size() < pixels) {
+      // Allocated only if the direct landing is unavailable, which on this
+      // machine it never is: an unused staging buffer is 22 MiB of pinned host
+      // memory held for the life of the decoder for nothing.
+      d.pinned_out.allocate(pixels);
+    }
+    float* host_dst = landed ? dst.data() : d.pinned_out.get();
     // The suffix rows between documents mean the final projection is issued
     // per document. It runs once per decode, unlike the 216 projections in
     // the transformer body, and preserves the exact singleton arithmetic.
@@ -556,7 +632,7 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
       cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
       cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
                                   cfg.patch_t, cfg.patch, s);
-      d.d_pixels.copy_to_host(d.pinned_out.get(), pixels, s);
+      d.d_pixels.copy_to_host(host_dst, pixels, s);
     }
     cuda::PhaseSpan s_sync("forward: sync wait");
     d.stream.synchronize();
@@ -565,12 +641,14 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     // so draining them here costs nothing and adds no synchronise of its own.
     cuda::PhaseProfiler::instance().flush_gpu();
     cuda::PhaseProfiler::instance().sample_memory();
-    cuda::PhaseSpan s_copy("forward: output copy");
-    std::vector<float>& dst = out[slots[static_cast<size_t>(doc)]];
-    dst.resize(pixels);
-    std::memcpy(dst.data(), d.pinned_out.get(), pixels * sizeof(float));
-    s_copy.stop();
+    if (!landed) {
+      cuda::PhaseSpan s_copy("forward: output copy");
+      std::memcpy(dst.data(), d.pinned_out.get(), pixels * sizeof(float));
+      s_copy.stop();
+    }
   }
 }
+
+void ViTDecoder::release_host_registrations() { impl_->release_host_regs(); }
 
 }  // namespace vidfab::vae

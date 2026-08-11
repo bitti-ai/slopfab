@@ -201,6 +201,15 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   // writes into these slots directly for the same reason.
   std::vector<std::vector<float>> tiles(ytiles.starts.size() * xtiles.starts.size());
 
+  // forward_windows page-locks those slots so each tile is DMA'd into its final
+  // home. Declared *after* `tiles` so it is destroyed *before* it: the locks
+  // must go while the memory they cover is still alive, on the throwing path as
+  // much as the normal one.
+  struct RegistrationGuard {
+    ViTDecoder* decoder;
+    ~RegistrationGuard() { decoder->release_host_registrations(); }
+  } registration_guard{this};
+
   // Every per-chunk working buffer is hoisted for the same reason as `tiles`:
   // each is written in full before it is read, so a fresh allocation per chunk
   // would only buy a zero-fill of a few hundred megabytes that the next line
