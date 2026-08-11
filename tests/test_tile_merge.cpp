@@ -259,6 +259,17 @@ VIDFAB_TEST(tile_layout_is_the_shipped_geometry) {
   // A single tile when the axis fits, and no overlaps to blend.
   const vidfab::vae::TileLayout one = vidfab::vae::split_tiles(256, 256, 64, 16);
   CHECK(one.starts.size() == 1 && one.overlaps.empty() && one.extents[0] == 256);
+
+  // Degenerate arguments spin forever rather than returning something wrong:
+  // neither loop below the guard makes progress. A hang is the one failure a
+  // caller cannot diagnose, so both are rejected. The single-tile early-out
+  // above runs first, so these need an input longer than the tile.
+  CHECK(vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 256, 16); }));
+  CHECK(vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 300, 16); }));
+  CHECK(vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 64, 0); }));
+  CHECK(vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 64, -16); }));
+  // And the shipped arguments are nowhere near the guard.
+  CHECK(!vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 64, 16); }));
 }
 
 VIDFAB_TEST(tile_shape_groups_are_chunk_invariant) {

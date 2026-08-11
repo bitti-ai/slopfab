@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <map>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -43,6 +45,19 @@ inline TileLayout split_tiles(int input_len, int tile_size, int overlap_min, int
     layout.starts.push_back(0);
     layout.extents.push_back(input_len);
     return layout;
+  }
+
+  // Both of these hang rather than misbehave, which is why they are checked
+  // rather than left to the caller. The loop below grows `n` until
+  // `n * (tile_size - overlap_min) + overlap_min - input_len` turns
+  // non-negative, and that expression does not increase with `n` once the
+  // overlap swallows the tile. The round-robin after it decrements `surplus` by
+  // `min(surplus, ratio)`, which never reaches zero for a non-positive ratio.
+  // Reachable API since this moved into a header, and a spin is a far worse
+  // failure than a thrown message.
+  if (overlap_min >= tile_size || ratio <= 0) {
+    throw std::runtime_error("vae: tile overlap must be smaller than the tile and the latent "
+                             "ratio must be positive");
   }
 
   int n = (input_len + tile_size - 1) / tile_size;
