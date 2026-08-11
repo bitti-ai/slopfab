@@ -4320,8 +4320,15 @@ VIDFAB_TEST(workspace_reserve_below_capacity_preserves_carved_pointers) {
 // or overlapping carve would break, and it is checked on raw bf16 rather than
 // on a norm because a norm survives a permutation.
 VIDFAB_TEST(qwen_vision_encode_reuses_arena_across_images) {
+  // Five levels, because the natural place to run the exe is
+  // build/Release, which is three below the tree root, and a ctest run from
+  // build/ is two. A search that stops short resolves nothing, and a skip that
+  // only printf's is indistinguishable from a pass -- this campaign has already
+  // been bitten once by a fixture-dependent case that quietly skipped for
+  // months. CHECK_DEFERRED reports on every run without failing the suite, and
+  // the resolved path is printed so "found" is never taken on trust either.
   std::string path;
-  for (const char* prefix : {"", "../", "../../", "../../../"}) {
+  for (const char* prefix : {"", "../", "../../", "../../../", "../../../../"}) {
     const std::string p =
         std::string(prefix) + "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
     if (std::filesystem::exists(p)) {
@@ -4330,9 +4337,12 @@ VIDFAB_TEST(qwen_vision_encode_reuses_arena_across_images) {
     }
   }
   if (path.empty()) {
-    std::printf("  qwen vision: text encoder checkpoint absent, skipped\n");
+    CHECK_DEFERRED(false,
+                   "qwen vision: no text encoder checkpoint under any of ./ .. ../.. ../../.. "
+                   "../../../.. -- the whole-tower carve is NOT being exercised");
     return;
   }
+  std::printf("  qwen vision: using %s\n", path.c_str());
 
   std::vector<uint8_t> rgb(256 * 256 * 3);
   for (int y = 0; y < 256; ++y) {
