@@ -192,34 +192,30 @@ __global__ void quant_v(const __nv_bfloat16* v, int8_t* out, float* scales,
   }
 }
 
-// The official kernel's template arguments, named once so the launcher and the
-// shared-memory opt-in below cannot drift apart.
-template <int D>
-using OfficialKernel = decltype(&qk_int_sv_f8_attn_kernel<
-    128, 64, 32, 64, D, DataType::kInt8, QuantGranularity::kPerWarp,
-    QuantGranularity::kPerWarp, float, true, nv_bfloat16, ComputeUnit::kCudaCore,
-    MaskMode::kNone, false, true, false, true>);
+// This kernel's dynamic shared memory, which needs **no** opt-in.
+//
+// `cudaFuncSetAttribute(cudaFuncAttributeMaxDynamicSharedMemorySize, ...)` used
+// to run here on every attention call — fifty blocks a step on the default
+// backend. It was not merely hoistable, it was always a no-op: the opt-in is
+// only required above 48 KB, and this is 32 KB at D=128 and 16 KB at D=64. Both
+// branches of the max are equal at each D, which is not a coincidence — the
+// int8 staging (CTA_Q + 2*CTA_K)*D bytes and the fp16 output tile CTA_Q*D*2
+// bytes come out the same for CTA_Q = 2*CTA_K.
+//
+// So the call is gone rather than cached. Caching it would have kept a latent
+// bug for the sake of a no-op: a `static thread_local` latch is per thread, not
+// per device, so a thread that `cudaSetDevice`s after the latch is set would
+// skip the opt-in on the second device — harmless only for as long as the
+// figures below stay under 48 KB.
+static_assert(128 * 128 + 64 * 128 + 64 * 128 <= 48 * 1024,
+              "sage2 D=128 now needs a dynamic shared memory opt-in");
+static_assert(128 * 64 + 64 * 64 + 64 * 64 <= 48 * 1024,
+              "sage2 D=64 now needs a dynamic shared memory opt-in");
 
 template <int D>
 constexpr size_t official_smem() {
   constexpr int CTA_Q = 128, CTA_K = 64;
   return std::max<size_t>(CTA_Q * D + CTA_K * D + CTA_K * D, CTA_Q * D * sizeof(__half));
-}
-
-// >48 KB of dynamic shared memory per block is opt-in, and the opt-in is per
-// function. `smem` depends only on D, so the call is the same every time and
-// the attribute is idempotent — but it is a host driver round-trip, and this
-// sits on the per-block attention path (fifty blocks a step, sage2 being the
-// default backend). Doing it once per (function, thread) mirrors
-// `ensure_smem_optin` in attention.cu:1111; a race between two threads writes
-// the identical value, so it is harmless.
-template <int D>
-void ensure_official_smem_optin(OfficialKernel<D> kernel) {
-  static thread_local bool done = false;
-  if (done) return;
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                         static_cast<int>(official_smem<D>())));
-  done = true;
 }
 
 template <int D>
@@ -232,7 +228,6 @@ void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* o
       QuantGranularity::kPerWarp, QuantGranularity::kPerWarp, float, true,
       KernelOut, ComputeUnit::kCudaCore, MaskMode::kNone, false, true, false, true>;
   constexpr size_t smem = official_smem<D>();
-  ensure_official_smem_optin<D>(kernel);
   dim3 grid(ceil_div(c.seq_len, CTA_Q), c.num_heads, 1);
   dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
   const int groups = c.num_heads / kvh;
