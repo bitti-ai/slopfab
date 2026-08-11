@@ -56,6 +56,60 @@ Video VAE stage (2780 ms wall) is the opposite shape — **55.86% host-only**,
 with `vae weight load` alone at 1190.8 ms (42.83% of the stage), paid after
 denoising ends while the card sits idle.
 
+## Result — measured
+
+All four workstreams merged. Measured end to end at the quick geometry, both
+arms built from the same tree state and run back to back on an idle card at the
+same 450 W cap with a warm page cache:
+
+| stage | before (`7593a50`) | after | delta |
+|---|---|---|---|
+| prompt encode | 3.17 s | 3.10 s | -0.07 |
+| transformer load | 2.45 s | 2.41 s | -0.04 |
+| denoise (29 steps) | 29.9 s (1.03 s/step) | 29.8 s (1.03 s/step) | -0.1 |
+| video VAE | 2.55 s | 2.42 s | -0.13 |
+| audio VAE | 0.30 s | 0.30 s | 0 |
+| output / mux | 0.79 s | **0.24 s** | **-0.55** |
+| **total** | **36.01 s** | **35.27 s** | **-0.74 s (2.1%)** |
+
+**2.1% is the honest warm-cache number and it is small.** The campaign's largest
+wins are cold-start wins — the text encoder prefetch (28.90 s -> 10.26 s) and the
+vision tower's ranged prefetch (77.4 s of demand faulting) — and a warm page
+cache hides all of them. Dropping the standby list needs a privileged tool that
+was not available, so **the cold-start figures in this document come from the
+survey agents and have not been reproduced end to end on an idle card.** They
+are reported as measured-by-survey, not measured-here.
+
+The one clearly reproduced win is **output/mux, 0.79 s -> 0.24 s (-70%)**, from
+the parallel RGB->YUV conversion and the ffmpeg probe order. The video VAE gains
+5%. The denoise loop is unchanged, which is expected: it was already 99.98%
+device-bound with the host 0.42% idle, so there was never host-side headroom
+there.
+
+Suites on the merged tree, idle card, 31.7 GB free: **`unit` 11036 checks / 0
+failures**, **`kernels` 1262 checks / 0 failures / 11 DEFERRED**. The F16 AdaLN
+device-widen is confirmed bit-identical by arena hash on the fp8 checkpoint:
+`21045398272 bytes, 730 records, fnv1a 190cdce19da29c2d`, identical before and
+after.
+
+### The sage2 regression, caught only by measuring
+
+`attn.sage2` went from 97.34 ms/step to 181.62 ms/step — **86% slower** — when
+the quantiser templating landed. Nothing else in the step moved by more than 1%,
+and restoring that one file recovered the whole 84 ms, taking the run from
+38.29 s back to 35.27 s.
+
+The change was **bit-identical** (the frozen output digests pass either way, and
+still pass after the revert, which is what proves it) and ptxas put both versions
+at 6 blocks/SM, so neither correctness review nor register-pressure analysis had
+any way to see it. It was reviewed twice and shipped, and it was caught by the
+first wall-clock measurement taken after the merge.
+
+Reverted, along with the shared-memory opt-in deletion that rode with it. That
+deletion was correct on its own terms — 32 KB at D=128 is under the 48 KB
+threshold and `static_assert`s prove it — but it is not worth carrying alone for
+a call that was already a no-op.
+
 ## Accepted work
 
 ### Workstream `agent/cache-load` — startup and load path
