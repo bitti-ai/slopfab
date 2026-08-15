@@ -158,6 +158,24 @@ void launch_merge_four_rows(const __nv_bfloat16* src, __nv_bfloat16* dst,
 void launch_add(const float* a, const float* b, float* out, size_t n, cudaStream_t stream);
 void launch_add_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
                      cudaStream_t stream);
+// out = a - b. The block cache's delta capture (dit/block_cache.h): `a` is the
+// residual stream after a span of blocks, `b` the state saved before it.
+//
+// **`out` may alias `b` exactly, and must not alias `a`.** Elementwise at a
+// single index, so writing over `b` is safe and is what the block cache does —
+// it parks the "before" state in the delta buffer and subtracts in place, which
+// is what keeps the feature to one residual-stream-sized buffer instead of two.
+// *Exactly*, not partially: `out == b + k` for nonzero `k` is a genuine
+// cross-thread race, because one thread's write then lands on another's unread
+// input. `a` is the live stream the rest of the stack runs on, is marked
+// `__restrict__`, and aliasing it is undefined rather than merely wrong — so
+// the launcher rejects `out == a` instead of trusting this paragraph.
+//
+// All three pointers must be 16-byte aligned to take the vectorised path; the
+// launcher checks and falls back to a scalar kernel rather than faulting, so a
+// caller passing a row offset gets a slower kernel and not a dead context.
+void launch_sub_bf16(const __nv_bfloat16* a, const __nv_bfloat16* b, __nv_bfloat16* out, size_t n,
+                     cudaStream_t stream);
 void launch_axpby(const float* x, float a, const float* y, float b, float* out, size_t n,
                   cudaStream_t stream);
 

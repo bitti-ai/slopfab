@@ -651,6 +651,27 @@ struct Transformer::Impl {
   DeviceBuffer<int32_t> d_text_idx, d_audio_idx, d_video_idx;
   DeviceBuffer<__nv_bfloat16> text_cache;
   DeviceBuffer<__nv_bfloat16> hidden;
+
+  // Block-span residual cache (dit/block_cache.h). **One** buffer the size of
+  // the residual stream — 844 MB at the production geometry — allocated only
+  // when the feature is on.
+  //
+  // It serves two roles in sequence rather than two buffers in parallel. On a
+  // computed step it first holds `x` as it entered the span, because the span
+  // mutates the stream in place and the delta needs both ends; then
+  // `launch_sub_bf16(x, bc_delta, bc_delta)` overwrites it with the delta
+  // itself. That in-place subtract is safe because the kernel is elementwise at
+  // a single index, and it is worth the subtlety: a second buffer here is 844
+  // MB on a card that already holds 19.6 GiB of weights plus 4.5 GB of q/k/v,
+  // and is the most likely place a production-geometry run runs out.
+  //
+  // `bc_have_delta` says whether the buffer holds a captured span or the
+  // "before" state / uninitialised memory. Adding either to the residual stream
+  // is the one way this feature reaches a NaN rather than merely a drift.
+  BlockCache block_cache;
+  BlockSpan bc_span;
+  DeviceBuffer<__nv_bfloat16> bc_delta;
+  bool bc_have_delta = false;
   DeviceBuffer<float> d_video_rows, d_audio_rows;  // latents in, velocities out
   DeviceBuffer<float> d_video_head, d_audio_head;
 
@@ -981,6 +1002,45 @@ void Transformer::set_attention_mode(AttentionMode mode) { impl_->attention_mode
 AttentionMode Transformer::attention_mode() const { return impl_->attention_mode; }
 void Transformer::set_sol_schedule(const SolSchedule& schedule) { impl_->sol_schedule=schedule; }
 void Transformer::set_denoise_step(int step) { impl_->denoise_step = step; }
+
+void Transformer::set_block_cache(const BlockCacheConfig& config, int num_steps) {
+  Impl& s = *impl_;
+  s.require_loaded("set_block_cache");
+  s.block_cache = BlockCache(config, num_steps);
+  // Resolved against the loaded stack, so this needs `load` to have run. The
+  // number of blocks is the one input the config cannot supply and getting it
+  // from `cfg.num_layers` instead would resolve a span against the *configured*
+  // depth, which the ref2va architectures do not share.
+  s.bc_span = resolve_block_span(config, static_cast<int>(s.blocks.size()));
+  s.bc_have_delta = false;
+  // The forward pass skips the span by assigning `bc_span.end - 1` to a
+  // `size_t` induction variable, so an `end` of 0 would wrap to SIZE_MAX and
+  // the `++` would land on 0 — an infinite loop rather than a fault.
+  // `resolve_block_span` cannot return that today, because `valid()` requires
+  // `end > begin >= 0`. Asserted here, where it costs nothing, because the
+  // guard that makes it true is fourteen lines away from the arithmetic that
+  // depends on it.
+  if (s.bc_span.valid() && s.bc_span.end < 1) {
+    throw std::runtime_error("transformer: resolved block cache span ends before block 1");
+  }
+  if (!s.block_cache.enabled() || !s.bc_span.valid()) {
+    // Enabling and then disabling between requests must not leave 844 MB of
+    // device memory pinned for a feature that is off.
+    s.bc_delta.reset();
+  }
+}
+
+const BlockCacheConfig& Transformer::block_cache_config() const {
+  return impl_->block_cache.config();
+}
+
+BlockSpan Transformer::block_cache_span() const { return impl_->bc_span; }
+
+int Transformer::num_blocks() const { return static_cast<int>(impl_->blocks.size()); }
+
+int Transformer::block_cache_computed() const { return impl_->block_cache.computed(); }
+
+int Transformer::block_cache_reused() const { return impl_->block_cache.reused(); }
 std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
   if (!is_pruned_table_architecture(impl_->architecture)) {
     throw std::runtime_error("transformer: rank-8 adaln_code is unavailable for full-AdaLN architecture");
@@ -1494,6 +1554,18 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
     if (full_scratch > c.scratch) total += align_up(full_scratch) - align_up(c.scratch);
   }
   total += align_up(static_cast<size_t>(seq) * cfg.hidden_size * sizeof(__nv_bfloat16));  // hidden
+  // The block cache's delta, same shape as `hidden`: 844 MB at the production
+  // geometry.
+  //
+  // **This number is reported, not enforced.** Nothing in the generate path
+  // calls this — the only caller in the tree is tests/test_transformer.cu — so
+  // enabling the block cache on a marginal-fit configuration still fails as a
+  // `cudaMalloc` in `prepare_sequence` after the 19.6 GiB load, and the error
+  // does not mention the block cache. Counted here anyway so the accounting is
+  // right if a preflight check is ever added.
+  if (impl_->block_cache.enabled() && impl_->bc_span.valid()) {
+    total += align_up(static_cast<size_t>(seq) * cfg.hidden_size * sizeof(__nv_bfloat16));
+  }
   total += 2 * align_up(static_cast<size_t>(seq) * 96 * sizeof(float));                   // rope
   total += 3 * align_up(static_cast<size_t>(seq) * sizeof(int32_t));                      // indices
   // Modulation at the t2va worst case of two distinct timesteps (spec 7.5).
@@ -1696,6 +1768,21 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   upload_idx(indices.video, s.d_video_idx);
 
   s.hidden.allocate(static_cast<size_t>(seq) * s.cfg.hidden_size);
+  // Cleared before the allocation, not after it. `DeviceBuffer::allocate` calls
+  // `reset()` first, so an allocation that throws leaves the buffer null — and
+  // clearing the flag afterwards would leave it *true* over a null pointer,
+  // from a previous successful run. A caller that caught the out-of-memory and
+  // carried on would then take the reuse path into an async illegal access
+  // instead of a clean throw, and out-of-memory is the likeliest failure this
+  // feature has at the production geometry.
+  s.bc_have_delta = false;
+  // Sized here with `hidden` because it is the same shape and shares its
+  // lifetime. A re-`prepare_sequence` with a different geometry reallocates it,
+  // which invalidates any captured delta — the stream it was captured against
+  // no longer has the same rows.
+  if (s.block_cache.enabled() && s.bc_span.valid()) {
+    s.bc_delta.allocate(static_cast<size_t>(seq) * s.cfg.hidden_size);
+  }
   s.d_adaln.allocate(static_cast<size_t>(seq));
   s.d_ts_video.allocate(std::max<size_t>(indices.video.size(), 1));
   s.d_ts_audio.allocate(std::max<size_t>(indices.audio.size(), 1));
@@ -1828,7 +1915,49 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   prof.tick("proj_in", s.stream.get());
 
   const size_t per_block = s.block_mod_stride();
+  const size_t stream_n = static_cast<size_t>(seq) * hidden;
+  const bool bc_on = s.block_cache.enabled() && s.bc_span.valid();
+  // The ordering requirement — `set_block_cache` before `prepare_sequence` — is
+  // otherwise enforced only by comments at the header and the call site.
+  // Getting it wrong leaves a null buffer with `bc_on` true, and the way that
+  // surfaces depends on which step happens to run first. Checked so it is
+  // always the same error, and one that names the cause.
+  if (bc_on && s.bc_delta.size() != stream_n) {
+    throw std::runtime_error(
+        "transformer: block cache buffer does not match the sequence; set_block_cache must be "
+        "called before prepare_sequence");
+  }
+  // Decided once per forward, not per block: `should_compute` counts its calls
+  // for reporting, so asking it inside the loop would inflate the tally by the
+  // block count and make a reused step look like fifty.
+  const bool bc_compute =
+      !bc_on || s.block_cache.should_compute(s.denoise_step, s.bc_have_delta);
+
   for (size_t b = 0; b < s.blocks.size(); ++b) {
+    if (bc_on && static_cast<int>(b) == s.bc_span.begin) {
+      if (bc_compute) {
+        // The stream as it enters the span, parked in the delta buffer until
+        // the subtract below turns it into the delta. `run_block` works in
+        // place, so without this copy the delta would be `x - x`.
+        VIDFAB_CUDA_CHECK(cudaMemcpyAsync(s.bc_delta.get(), x,
+                                          stream_n * sizeof(__nv_bfloat16),
+                                          cudaMemcpyDeviceToDevice, s.stream.get()));
+        // Cleared for the duration: between here and the capture the buffer
+        // holds the "before" state, and a `forward` that threw in the middle of
+        // the span would otherwise leave it looking like a usable delta.
+        s.bc_have_delta = false;
+        prof.tick("block_cache.snapshot", s.stream.get());
+      } else {
+        // The reuse, and the whole point of the feature: the span's blocks are
+        // never launched. `bc_have_delta` is guaranteed true here because
+        // `should_compute` forces a compute while it is false.
+        cuda::launch_add_bf16(x, s.bc_delta.get(), stream_n, s.stream.get());
+        prof.tick("block_cache.reuse", s.stream.get());
+        b = static_cast<size_t>(s.bc_span.end) - 1;  // the ++ lands on `end`
+        continue;
+      }
+    }
+
     const AttentionMode block_mode =
         is_sol_attention(s.attention_mode) &&
                 !s.sol_schedule.active(s.denoise_step,static_cast<int>(b))
@@ -1837,6 +1966,14 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
     s.run_block(s.blocks[b], s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),
                 s.rope_cos.get(), s.rope_sin.get(), q, k, v, attn_out, normed, fused, act, branch,
                 block_mode, static_cast<int>(b));
+
+    if (bc_on && bc_compute && static_cast<int>(b) == s.bc_span.end - 1) {
+      // In place over the "before" state: `out` aliases `b`, which the kernel
+      // permits and the buffer comment above explains.
+      cuda::launch_sub_bf16(x, s.bc_delta.get(), s.bc_delta.get(), stream_n, s.stream.get());
+      s.bc_have_delta = true;
+      prof.tick("block_cache.capture", s.stream.get());
+    }
   }
 
   // Both heads run over every row in the reference and are selected afterwards.

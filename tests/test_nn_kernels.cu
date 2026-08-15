@@ -759,6 +759,78 @@ VIDFAB_TEST(nn_elementwise) {
   CHECK_CLOSE(want_silu, to_host(dout), 1e-5, "silu");
 }
 
+// `launch_sub_bf16`, and specifically the aliasing contract the block cache
+// depends on (dit/block_cache.h).
+//
+// The block cache holds *one* residual-stream-sized buffer instead of two —
+// 844 MB at the production geometry — by parking the pre-span state in the
+// delta buffer and subtracting in place, `sub(x, delta, delta)`. That is only
+// sound because the kernel is elementwise at a single index: each thread reads
+// and writes the same elements, so no thread reads what another has written.
+// Nothing else in the tree checks it, and an end-to-end byte comparison — which
+// is how it was validated once — would not survive a rewrite of the kernel into
+// a grid-stride or shared-memory-staged form, both of which break `out == b`
+// silently and produce plausible, finite, wrong deltas.
+VIDFAB_TEST(nn_sub_bf16_aliasing_and_tails) {
+  // Deliberately not a multiple of 8, so the vectorised bulk and the scalar
+  // tail split inside the launcher are both exercised. That split is the only
+  // branch in the function with no other coverage.
+  const size_t n = 4099;
+  const std::vector<float> a = bf16_round(make_data(n, 191u, 2.0f));
+  const std::vector<float> b = bf16_round(make_data(n, 192u, 2.0f));
+
+  // Rounded to bf16, because that is what the kernel stores. `a` and `b` are
+  // already bf16 values, so their difference is exact in the fp32 the kernel
+  // subtracts in, and the only error is the single rounding on the way out —
+  // which makes this an exact expectation rather than an approximate one. A
+  // plain fp32 difference here would be off by up to one bf16 ulp (7.8e-3 at
+  // magnitude 2.5) and would need a tolerance loose enough to hide real bugs.
+  std::vector<float> want(n);
+  for (size_t i = 0; i < n; ++i) want[i] = a[i] - b[i];
+  want = bf16_round(want);
+
+  // Out of place first, to establish what the answer is.
+  BfBuf da(a), db(b), dout(n);
+  vidfab::cuda::launch_sub_bf16(da.p(), db.p(), dout.p(), n, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> disjoint = dout.host();
+  CHECK_CLOSE(want, disjoint, 1e-6, "sub_bf16 out of place");
+
+  // In place over `b`, which is what the block cache does. Must agree with the
+  // out-of-place result exactly — not approximately: the same arithmetic on the
+  // same inputs, so any difference is an aliasing bug and not rounding.
+  BfBuf da2(a), db2(b);
+  vidfab::cuda::launch_sub_bf16(da2.p(), db2.p(), db2.p(), n, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK(db2.bits() == dout.bits());
+
+  // `a` must survive the in-place call: it is the live residual stream and the
+  // rest of the stack runs on it.
+  CHECK(da2.bits() == da.bits());
+
+  // The misaligned fallback. Offsetting all three pointers by one bf16 element
+  // puts them 2 bytes off a 16-byte boundary, which would fault on the `uint4`
+  // path; the launcher must notice and take the scalar kernel instead.
+  const size_t m = n - 1;
+  std::vector<float> want_off(m);
+  for (size_t i = 0; i < m; ++i) want_off[i] = a[i + 1] - b[i + 1];
+  want_off = bf16_round(want_off);
+  BfBuf da3(a), db3(b), dout3(n);
+  vidfab::cuda::launch_sub_bf16(da3.p() + 1, db3.p() + 1, dout3.p() + 1, m, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  // `host()` returns by value, so it must be held in a named local: taking
+  // `.begin()` from one call and `.end()` from another walks between two
+  // different temporaries.
+  const std::vector<float> h3 = dout3.host();
+  const std::vector<float> got_off(h3.begin() + 1, h3.end());
+  CHECK_CLOSE(want_off, got_off, 1e-6, "sub_bf16 misaligned fallback");
+
+  // A zero count must be a no-op rather than a launch with a zero grid.
+  vidfab::cuda::launch_sub_bf16(da.p(), db.p(), dout.p(), 0, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK(dout.bits() == BfBuf(disjoint).bits());
+}
+
 // Every e4m3 bit pattern must dequantise to exactly what dtype.h's host
 // reference produces. The two implementations are written out separately, so
 // this is the check that keeps them in step.

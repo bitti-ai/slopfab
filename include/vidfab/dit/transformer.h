@@ -24,6 +24,7 @@
 #include "vidfab/attention_mode.h"
 
 #include "vidfab/dit/adaln.h"
+#include "vidfab/dit/block_cache.h"
 #include "vidfab/dit/checkpoint.h"
 #include "vidfab/dit/packing.h"
 #include "vidfab/safetensors.h"
@@ -82,6 +83,40 @@ class Transformer {
   AttentionMode attention_mode() const;
   void set_sol_schedule(const SolSchedule& schedule);
   void set_denoise_step(int step);
+
+  // Block-span residual caching (block_cache.h). **Lossy, like the attention
+  // band and unlike every other knob here**: it changes the sample.
+  //
+  // `num_steps` is the schedule length, needed because the terminal step is
+  // forced to compute and the class cannot see the loop. Call before
+  // `prepare_sequence` — that is where the `[seq, hidden]` delta buffer is
+  // sized, and enabling it afterwards would find it unallocated. `forward`
+  // checks and throws rather than leaving that to this comment.
+  //
+  // Cannot be combined with the step cache: see the refusal in main.cpp and the
+  // reason in block_cache.h.
+  //
+  // The decision is driven off `set_denoise_step`, which the loop already
+  // calls, rather than pushed in per step: the span boundaries live here
+  // anyway, so splitting the two halves of one policy across the loop boundary
+  // would only create a way for them to disagree.
+  void set_block_cache(const BlockCacheConfig& config, int num_steps);
+  const BlockCacheConfig& block_cache_config() const;
+
+  // The span actually in force, after centring and clamping. Invalid when the
+  // feature is off. For reporting — a run that says which blocks it skipped is
+  // the difference between a reproducible measurement and an anecdote.
+  BlockSpan block_cache_span() const;
+
+  // The loaded stack's depth. This, not `config().num_layers`, is what the span
+  // is resolved against, and the two are not the same for every architecture —
+  // reporting a span out of the configured depth would describe a stack the
+  // span was never placed in.
+  int num_blocks() const;
+
+  // Spans evaluated and spans reused so far, across every step since `load`.
+  int block_cache_computed() const;
+  int block_cache_reused() const;
   // `c(t)` — the 8-vector that is the *entire* timestep conditioning for this
   // checkpoint, shared by all 51 AdaLN consumers (spec 3.4). Goes through the
   // configured lookup mode, so it is exactly the vector `build_modulation`
