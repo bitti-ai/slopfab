@@ -939,12 +939,41 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
   }
 }
 
+#if defined(_WIN32)
+namespace {
+
+// The module this translation unit was linked into, which is where the
+// tokenizer resource lives: the executable in a static build, vidfab_core.dll
+// in a shared one.
+//
+// `FindResourceW(nullptr, ...)` asks for the *process* module instead, i.e.
+// always the executable. That is the same module in a static build and the
+// wrong one in a shared build, where the executable is whatever application
+// loaded the DLL and carries no resource 101 at all — or, worse, carries an
+// unrelated RCDATA 101 of its own, which would be handed to `load_json` as a
+// tokenizer. Anchoring on an address inside this module is correct in both
+// configurations rather than in one of them.
+HMODULE containing_module() {
+  HMODULE module = nullptr;
+  GetModuleHandleExW(
+      GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+      reinterpret_cast<LPCWSTR>(&containing_module), &module);
+  return module;
+}
+
+}  // namespace
+#endif
+
 void Tokenizer::load_embedded() {
 #if defined(_WIN32)
-  HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(101), MAKEINTRESOURCEW(10));
+  const HMODULE module = containing_module();
+  if (module == nullptr) {
+    throw std::runtime_error("tokenizer: cannot identify the module holding the embedded resource");
+  }
+  HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(101), MAKEINTRESOURCEW(10));
   if (resource == nullptr) throw std::runtime_error("tokenizer: embedded resource is missing");
-  HGLOBAL loaded = LoadResource(nullptr, resource);
-  const DWORD size = SizeofResource(nullptr, resource);
+  HGLOBAL loaded = LoadResource(module, resource);
+  const DWORD size = SizeofResource(module, resource);
   const void* bytes = loaded == nullptr ? nullptr : LockResource(loaded);
   if (bytes == nullptr || size == 0) {
     throw std::runtime_error("tokenizer: cannot read embedded resource");

@@ -90,6 +90,14 @@ struct GenerateRequest {
   float cache_threshold = 0.0f;
   int cache_warmup = 3;
   int skip_every = 0;
+
+  // Block-span residual caching (see dit/block_cache.h). Independent of the
+  // step cache above and off by default for the same reason: `span == 0` must
+  // leave the forward pass bit-identical to a build without any of this.
+  int block_cache_span = 0;
+  int block_cache_start = -1;  // negative centres the span in the stack
+  int block_cache_interval = 2;
+  int block_cache_warmup = 3;
 };
 
 // Everything derivable from a request without reading a checkpoint. `num_text`

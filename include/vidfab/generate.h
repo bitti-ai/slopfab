@@ -15,10 +15,46 @@
 #include <vector>
 
 #include "vidfab/attention_mode.h"
+#include "vidfab/pixel_buffer.h"
 #include "vidfab/pipeline.h"
 #include "vidfab/sampler/scheduler.h"
 
 namespace vidfab {
+
+// Where a run is, for `RunOptions::on_progress`. Ordered, and a run may skip
+// several: no references, no audio VAE, synthetic latents. The values are
+// mirrored by VIDFAB_STAGE_* in capi.h and must not be renumbered.
+enum class RunStage {
+  kStarting = 0,
+  kReferences = 1,
+  kConditioning = 2,
+  kTransformerLoad = 3,
+  kDenoising = 4,
+  kVideoDecode = 5,
+  kAudioDecode = 6,
+  kDelivering = 7,
+  kFinished = 8,
+};
+
+// The decoded run, borrowed by `RunOptions::on_samples` for the duration of
+// the call.
+//
+// The two buffers are non-const so a caller that wants to keep them can move
+// out of them rather than copy: at the default geometry the video plane alone
+// is 2.3 GB of float. Returning true from the hook means exactly that the
+// caller took them, and `run_generate` then writes no file and never reads
+// them again.
+struct RunSamples {
+  int channels = 3;
+  int frames = 0;
+  int height = 0;
+  int width = 0;
+  PixelBuffer* video = nullptr;  // [channels][frames][height][width], fp32 in [0,1]
+
+  int audio_channels = 0;
+  int audio_sample_rate = 0;
+  std::vector<float>* audio = nullptr;  // interleaved, may be null or empty
+};
 
 // Where the latents come from. The stages land one at a time, so the runner
 // has to be able to say precisely which one is missing rather than failing
@@ -90,10 +126,36 @@ struct RunOptions {
   // The file is the same shape `--dump-latents` writes: `video_rows` [V, 96]
   // and `audio_rows` [Sa, 32], both fp32, both checked against the layout.
   std::string init_latents_path;
+
+  // --- host hooks -----------------------------------------------------------
+  //
+  // Plain function pointers rather than std::function, because the one caller
+  // that needs them is the C ABI in capi.h and these have to survive the trip
+  // through it. All three default to null, and a run that leaves them null is
+  // byte-for-byte the run it was.
+  //
+  // Called at each stage boundary and after each denoising step, with `step`
+  // -1 outside the loop. Returning false cancels: the run stops at that point
+  // and returns `ok == false`, `cancelled == true`. Cancellation is only as
+  // fine-grained as the checkpoints — a cancel during a multi-gigabyte
+  // checkpoint read is not seen until that read finishes.
+  bool (*on_progress)(RunStage stage, int step, int steps, void* userdata) = nullptr;
+
+  // Called once, after both VAEs and before anything is written. Returning
+  // true means the caller has taken the samples and no output file is
+  // produced — which is how a host gets frames and PCM without the muxer, and
+  // therefore without FFmpeg being loaded at all. Returning false leaves the
+  // normal output stage to run.
+  bool (*on_samples)(RunSamples& samples, void* userdata) = nullptr;
+
+  void* hook_userdata = nullptr;
 };
 
 struct RunResult {
   bool ok = false;
+  // Set when `RunOptions::on_progress` returned false. Distinct from a plain
+  // failure: nothing went wrong and `message` says only where it stopped.
+  bool cancelled = false;
   std::string message;
 
   // Paths actually written. More than one when muxing was unavailable and the

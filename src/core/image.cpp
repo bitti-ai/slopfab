@@ -1,5 +1,8 @@
 #include "vidfab/image.h"
+
+#if VIDFAB_WITH_FFMPEG
 #include "vidfab/video/media.h"
+#endif
 
 #include <cctype>
 #include <fstream>
@@ -68,8 +71,15 @@ RGBImage load_reference_image(const std::string& path) {
   probe.read(magic, 2);
   if (!probe) throw image_error(path, "cannot open or read file");
   if (magic[0] == 'P' && magic[1] == '6') return load_ppm(path);
+#if VIDFAB_WITH_FFMPEG
+  // A video file is a legal reference: its first frame is the image.
   const video::DecodedVideoFrame frame = video::decode_first_video_frame(path);
   return {frame.width, frame.height, frame.rgb24};
+#else
+  // No FFmpeg in this build, so no demuxer either — stills only, through the
+  // platform decoder.
+  return load_platform_image(path);
+#endif
 }
 
 namespace {

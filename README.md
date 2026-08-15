@@ -21,7 +21,7 @@ than approximately.
 
 | Dependency | Why | Linkage |
 |---|---|---|
-| CUDA runtime + cuBLAS | kernels, GEMM | static |
+| CUDA runtime + cuBLAS | kernels, GEMM | static (dynamic under [`VIDFAB_BUILD_SHARED`](#building-as-a-shared-library)) |
 | C++17 standard library | — | — |
 | ffmpeg | MP4/AAC muxing only | **dynamic, resolved at runtime** |
 
@@ -56,6 +56,170 @@ nvfp4. Override with `-DCMAKE_CUDA_ARCHITECTURES=90` for Hopper, which has no
 nvfp4 at all. The core library and CLI build without CUDA; the decoder does
 not.
 
+### Building as a shared library
+
+`-DVIDFAB_BUILD_SHARED=ON` builds `vidfab_core` and `vidfab_cuda` as shared
+libraries instead of static ones, so the pipeline can be driven from another
+program rather than only from `vidfab generate`. `include/vidfab/pipeline.h`
+and `include/vidfab/generate.h` are the two entry points that matter:
+`resolve_plan` turns a `GenerateRequest` into a validated plan without touching
+a weight file, and `run_generate` executes it.
+
+```sh
+cmake -S . -B build-shared -DVIDFAB_BUILD_SHARED=ON
+cmake --build build-shared --config Release
+cmake --install build-shared --config Release --prefix <somewhere>
+```
+
+Both libraries switch together, and the CLI, tools and tests all link the
+shared build when it is on — so `ctest` exercises exactly the configuration
+that gets installed rather than a static twin of it.
+
+Four things are worth knowing before depending on it.
+
+- **It is a C++ ABI with no stability promise.** `std::string` and
+  `std::vector` cross nearly every signature and exceptions propagate out of
+  them, so a consumer must be built with the same compiler and, on MSVC, the
+  same CRT (`/MD`). This is not a C API and does not pretend to be one.
+- **Symbols are exported wholesale**, via `WINDOWS_EXPORT_ALL_SYMBOLS` on
+  Windows and default visibility elsewhere, rather than through an annotation
+  on each declaration. So the export set is whatever `include/` declares. That
+  works because nothing here exports mutable data — every constant is
+  `constexpr` and both profiler singletons are defined out of line in one
+  translation unit. Adding an `extern` to a header would break it silently on
+  Windows, where auto-exported data still needs `dllimport` at the consumer.
+- **The CUDA runtime stays statically linked, in both configurations**, so a
+  shared build adds no DLL beyond the two vidfab ones. Switching it to
+  `CUDA_RUNTIME_LIBRARY=Shared` for the shared build was tried and reverted: on
+  CUDA 13.0.48 `nvcc` reports `'shared' is a deprecated value for option
+  --cudart`, and the resulting `vidfab_cuda.dll` imports no `cudart64_13.dll`,
+  names it nowhere in its image, and carries the runtime embedded exactly as
+  the static setting does. The one thing that attempt did surface was real and
+  is fixed: `vidfab_cuda` now names `CUDA::cudart_static` as a public
+  dependency, because a consumer with no CUDA *sources* of its own used to pick
+  the runtime up from the static archive by accident and cannot across a DLL
+  boundary.
+- **The embedded tokenizer moves into `vidfab_core.dll`.** `load_embedded()`
+  now resolves the resource against the module holding its own code rather than
+  against the process, so it works whether the host program is `vidfab.exe` or
+  something else entirely. The 7 MB payload is in one module, not both.
+
+### The C API
+
+`vidfab_c.dll` is the answer to everything the previous section warns about. It
+exports a flat C ABI — `include/vidfab/capi.h` — that survives a toolchain
+mismatch, so Rust, C#, Python, Go and plain C can drive the pipeline. It is
+built by default; `-DVIDFAB_BUILD_C_API=OFF` turns it off.
+
+```sh
+cmake -S . -B build-dll -DVIDFAB_WITH_FFMPEG=OFF
+cmake --build build-dll --config Release --target vidfab_c
+```
+
+With the default `-DVIDFAB_BUILD_SHARED=OFF`, `vidfab_core` and `vidfab_cuda`
+are static and link *into* `vidfab_c.dll`, so all of this project's own code is
+in one module whose export table is exactly the C entry points — no C++
+symbols, no second vidfab DLL, and no way to reach the unstable interface by
+accident.
+
+It is not dependency-free, though, and the mistake is invisible on a machine
+with the CUDA toolkit installed. The CUDA runtime is embedded, but cuBLAS is
+not: `vidfab_c.dll` imports `cublas64_<major>.dll` at load time, which pulls
+`cublasLt64_<major>.dll` with it. On a development box those resolve off
+`PATH`; on a consumer's machine the process fails at `LoadLibrary` with no
+useful message. `cmake --install` places both beside the DLL — linking them
+statically is not an option, since `cublasLt_static` alone is about 456 MB.
+
+**It produces pixels, not files.** A generation hands back decoded frames as
+planar float RGB and audio as interleaved float PCM, and writes nothing to
+disk. Encoding, muxing and playback belong to the host. That is why the DLL
+needs no FFmpeg at all: the muxer is the only thing in this project that loads
+it, and the C API never reaches the muxer.
+
+Generation is asynchronous — `vidfab_generation_start` returns as soon as the
+request is known to be satisfiable, and the work proceeds on a worker thread,
+so a UI stays responsive across a run that takes minutes. Progress callbacks
+arrive on that worker thread, not the caller's.
+
+```c
+#include <vidfab/capi.h>
+
+vidfab_request* req = vidfab_request_create();
+vidfab_request_set_prompt(req, "a cat playing a piano, warm lamplight");
+vidfab_request_set_model_path(req, VIDFAB_MODEL_TRANSFORMER, "transformer.safetensors");
+vidfab_request_set_model_path(req, VIDFAB_MODEL_TEXT_ENCODER, "text_encoder.safetensors");
+vidfab_request_set_model_path(req, VIDFAB_MODEL_VIDEO_VAE, "video_vae.safetensors");
+vidfab_request_set_frames(req, 124);
+
+/* Reads no weights, so it is instant: validate and cost the request first. */
+vidfab_plan plan;
+if (vidfab_resolve_plan(req, &plan) != VIDFAB_OK) {
+  fprintf(stderr, "%s\n", vidfab_last_error());
+  return 1;
+}
+
+vidfab_generation* gen = NULL;
+if (vidfab_generation_start(req, on_progress, NULL, &gen) == VIDFAB_OK) {
+  if (vidfab_generation_wait(gen, -1) == VIDFAB_OK) {
+    vidfab_output out;
+    vidfab_generation_output(gen, &out);
+    /* out.video is [channels][frames][height][width], fp32 in [0,1], owned by
+       `gen`. One frame as packed RGBA8, for a texture upload: */
+    uint8_t* rgba = malloc((size_t)out.width * out.height * 4);
+    vidfab_generation_frame_rgba8(gen, 0, rgba, (size_t)out.width * out.height * 4);
+  } else {
+    fprintf(stderr, "%s\n", vidfab_generation_error(gen));
+  }
+  vidfab_generation_destroy(gen);  /* the pixels die with the handle */
+}
+vidfab_request_destroy(req);
+```
+
+From Rust the same flow is a `bindgen` run over `capi.h` and a `Drop` impl per
+handle; the destructors all accept null, so the `Drop` needs no guard. Three
+rules carry across every binding:
+
+- **Status codes are plain `int`, not an enum**, so a caller linked against an
+  older header can hold a code this header does not name. Mapping them into a
+  Rust enum needs a catch-all arm.
+- **Every pointer in `vidfab_output` is owned by the generation** and dangles
+  after `vidfab_generation_destroy`. At the default geometry the video plane
+  alone is over 2 GB, so it is handed over by pointer rather than copied — copy
+  it out if it must outlive the handle.
+- **The only pointer you free is the `char*` from `vidfab_describe_plan`**, and
+  it is freed by `vidfab_free_string`. Calling the host's own `free` on it
+  crosses CRTs, which on Windows is a crash often enough to matter.
+
+`vidfab_last_error()` is thread-local and holds the reason the *calling* thread
+last failed. A run's failure message is not there — the run fails on a worker
+thread the caller never enters — so use `vidfab_generation_error()` for that.
+
+### Building without FFmpeg
+
+FFmpeg is loaded at runtime and never linked, so `-DVIDFAB_WITH_FFMPEG=OFF`
+does not change what the binary needs in order to *start*. It changes what is
+compiled in at all: the muxer is replaced by a stub, and reference images are
+decoded by the platform instead of by libavcodec.
+
+|                      | `ON` (default)                     | `OFF`                                  |
+| -------------------- | ---------------------------------- | -------------------------------------- |
+| `vidfab` output      | MP4, falling back to `.y4m`+`.wav` | `.y4m` + `.wav` only                   |
+| Reference images     | anything FFmpeg demuxes, incl. video | PPM, plus WIC formats on Windows     |
+| Shipped beside `.exe`| five FFmpeg DLLs                   | nothing                                |
+
+On Windows the platform decoder is WIC, which is part of the OS and reads PNG,
+JPEG, BMP, GIF and TIFF with nothing shipped or linked beyond
+`windowscodecs.lib`. Elsewhere there is no equivalent single API, so a build
+without FFmpeg reads binary PPM and says so — which is a 15-byte header and the
+bytes, if a host needs to hand over pixels it already holds.
+
+It is one switch for the whole build tree rather than per target. `vidfab_cuda`
+links `vidfab_core`, so an FFmpeg-free DLL beside an MP4-capable exe would need
+a second copy of both libraries, and `vidfab_cuda` costs minutes to compile.
+The C API does not need the distinction anyway — it never reaches the muxer in
+either configuration — so the switch really only decides what `vidfab.exe` can
+write.
+
 ## Usage
 
 ```sh
@@ -75,10 +239,16 @@ vidfab generate --prompt "integrated_multimodal_description: ..." \
 
 # Without --out, videos go to output/video-YYYYMMDD-HHMMSS.mp4. Generate
 # several variations from one prompt with --count. A supplied seed increments
-# for each video (11, 12, 13 here); without --seed, every video gets a fresh
-# random seed. Multi-video filenames also receive -001, -002, ... suffixes.
+# for each video (11, 12, 13 here); without --seed, or with a negative one,
+# every video gets a fresh random seed. Multi-video filenames also receive
+# -001, -002, ... suffixes.
 vidfab generate --prompt "three variations of a moonlit forest" \
                 --count 3 --seed 11
+
+# Long Context-IR prompts do not belong on a command line. --prompt-file reads
+# one out of a UTF-8 text file instead; a BOM, CRLF endings and blank space
+# around the text are stripped. It replaces --prompt and cannot join it.
+vidfab generate --prompt-file prompts/moonlit-forest.txt --steps 30
 
 # The quantisation of each checkpoint is read out of the file, so there is no
 # flag for it and the pair need not match. `generate.cmd` wraps all of this.

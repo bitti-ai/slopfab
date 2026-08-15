@@ -32,7 +32,9 @@ class Tokenizer {
   // and the built-in data follow exactly the same code path.
   void load_json(std::string_view tokenizer_json);
 
-  // Loads tokenizer.json compiled into the vidfab executable.
+  // Loads tokenizer.json compiled into whichever module holds this code — the
+  // vidfab executable in a static build, vidfab_core.dll in a shared one.
+  // Windows only; elsewhere it throws and the caller must pass a file.
   void load_embedded();
 
   bool loaded() const { return !vocab_.empty(); }

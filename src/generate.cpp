@@ -293,6 +293,23 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
 
+  // Host hooks (generate.h). `notify` is the run's only cancellation point:
+  // it says where the run is and returns false when the host wants it
+  // stopped, and every call site below turns that into an early return with
+  // `cancelled` set. With no hooks installed this is one never-taken branch
+  // per stage, and the run is the run it was.
+  auto notify = [&options](RunStage stage, int step, int steps) {
+    if (options.on_progress == nullptr) return true;
+    return options.on_progress(stage, step, steps, options.hook_userdata);
+  };
+  auto stop = [&result](const char* where) {
+    result.ok = false;
+    result.cancelled = true;
+    result.message = std::string("cancelled during ") + where;
+    return result;
+  };
+  if (!notify(RunStage::kStarting, -1, 0)) return stop("startup");
+
   // Declared out here, not inside the denoise block, because it is started
   // under the loop and joined at the VAE load that follows the block. Its
   // destructor joins, so every exit path from this function — the early
@@ -328,6 +345,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                                    reuse.reference_images.size() ==
                                        request.reference_image_paths.size();
   if (!reference_cache_hit) {
+    if (!request.reference_image_paths.empty() && !notify(RunStage::kReferences, -1, 0)) {
+      return stop("reference decode");
+    }
     if (cache_references) {
       reuse.reference_valid = false;
       reuse.reference_key.clear();
@@ -495,6 +515,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     // stays: a resident encode is 0.12 s against a whole denoising run, the
     // saving would be nothing, and dropping it would make three of the four
     // checkpoint combinations fail at the worst possible moment.
+    if (!notify(RunStage::kConditioning, -1, 0)) return stop("conditioning");
     text::PromptEmbedding prompt;
     // Same snapshot of the references as the reference key above, and likewise
     // skipped outright when nothing will consult it.
@@ -614,6 +635,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       pos = std::move(packed.position_ids);
     }
 
+    if (!notify(RunStage::kTransformerLoad, -1, 0)) return stop("transformer load");
     {
       const Clock::time_point t0 = Clock::now();
       SafeTensors dit_file;
@@ -638,6 +660,25 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       }
       if (options.verbose) {
         std::printf("attention  backend %s\n", attention_mode_name(options.attention_mode));
+      }
+      // Also before prepare_sequence, and for the same kind of reason: that is
+      // where the two residual-stream-sized buffers are allocated, so a cache
+      // configured afterwards would run against unallocated memory.
+      {
+        dit::BlockCacheConfig bc;
+        bc.span = request.block_cache_span;
+        bc.start = request.block_cache_start;
+        bc.interval = request.block_cache_interval;
+        bc.warmup = request.block_cache_warmup;
+        model.set_block_cache(bc, plan.num_model_evaluations());
+        if (bc.enabled() && options.verbose) {
+          const dit::BlockSpan span = model.block_cache_span();
+          std::printf(
+              "block cache blocks [%d,%d) of %d reused every %d-th step, warmup %d "
+              "(lossy, changes the sample)\n",
+              span.begin, span.end, model.num_blocks(), bc.interval,
+              std::max(dit::kMinBlockWarmup, bc.warmup));
+        }
       }
       model.prepare_text(prompt.data.data(), prompt.num_tokens);
       model.prepare_sequence(live, idx, pos);
@@ -705,6 +746,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       vae_prefetch.start({request.video_vae_path, request.audio_vae_path}, options.verbose);
 
       const Clock::time_point loop_start = Clock::now();
+      // `denoise` breaks out of the loop when the callback returns false and
+      // returns the rows it had reached, which are a half-denoised latent —
+      // so the decision has to be remembered here rather than inferred from
+      // the output, and the run stopped before either VAE sees it.
+      bool cancel_requested = false;
       const dit::DenoiseOutputs out = dit::denoise(model, in, [&](int step, int steps) {
         if (options.verbose) {
           const double elapsed = seconds_since(loop_start);
@@ -713,9 +759,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                       per_step * (steps - step - 1));
           std::fflush(stdout);
         }
-        return true;
+        if (notify(RunStage::kDenoising, step, steps)) return true;
+        cancel_requested = true;
+        return false;
       });
       if (options.verbose) std::printf("\n");
+      if (cancel_requested) return stop("denoising");
       result.seconds_denoise_loop = seconds_since(loop_start);
       result.steps_computed = out.steps_computed;
       result.steps_skipped = out.steps_skipped;
@@ -727,6 +776,17 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     out.steps_skipped, out.steps_computed + out.steps_skipped, out.steps_computed,
                     100.0 * out.steps_skipped /
                         static_cast<double>(std::max(1, out.steps_computed + out.steps_skipped)));
+      }
+      // Same rule as above: printed whenever anything was reused, so the two
+      // caches are equally visible in a log that is being compared against
+      // another log. The span is repeated here because the reuse count means
+      // nothing without knowing how many blocks each reuse covered.
+      if (model.block_cache_reused() != 0) {
+        const dit::BlockSpan span = model.block_cache_span();
+        const int spans = model.block_cache_computed() + model.block_cache_reused();
+        std::printf("block cache %d of %d spans reused (%d blocks each of %d), %.1f%%\n",
+                    model.block_cache_reused(), spans, span.size(), model.num_blocks(),
+                    100.0 * model.block_cache_reused() / static_cast<double>(std::max(1, spans)));
       }
 
       video_rows = out.video_rows;
@@ -798,6 +858,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
   // --- video ----------------------------------------------------------------
 
+  if (!notify(RunStage::kVideoDecode, -1, 0)) return stop("video decode");
   vae::DecodedVideo video;
   {
     const Clock::time_point t0 = Clock::now();
@@ -850,6 +911,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
   vae::DecodedAudio audio;
   if (!request.audio_vae_path.empty()) {
+    if (!notify(RunStage::kAudioDecode, -1, 0)) return stop("audio decode");
     const Clock::time_point t0 = Clock::now();
 
     // (Sa, 32) rows -> (2, 32, A), then de-normalise per channel.
@@ -889,6 +951,40 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   {
     const Clock::time_point t0 = Clock::now();
     const bool have_audio = !audio.samples.empty();
+
+    // An in-process host takes the samples here and there is nothing left to
+    // write — no MP4, no .y4m, and in particular no call into the muxer,
+    // which is the only thing in this project that loads FFmpeg. That is the
+    // whole reason this hook is before the branch below rather than after it.
+    if (options.on_samples != nullptr) {
+      if (!notify(RunStage::kDelivering, -1, 0)) return stop("delivery");
+      RunSamples samples;
+      samples.channels = video.channels;
+      samples.frames = video.frames;
+      samples.height = video.height;
+      samples.width = video.width;
+      samples.video = &video.data;
+      samples.audio_channels = audio.channels;
+      samples.audio_sample_rate = audio.sample_rate;
+      samples.audio = have_audio ? &audio.samples : nullptr;
+      // Read before the hook, which is entitled to move both buffers out — and
+      // is expected to, since the video plane alone is gigabytes. Afterwards
+      // `audio.num_frames()` is derived from a vector the caller now owns, so
+      // reporting it here would print 0 for every run that delivered audio
+      // perfectly well. The video counts survive only because they are
+      // scalars, which is what made this look right.
+      const long long delivered_audio_frames = static_cast<long long>(audio.num_frames());
+      if (options.on_samples(samples, options.hook_userdata)) {
+        result.seconds_output = seconds_since(t0);
+        if (options.verbose) {
+          std::printf("delivered   %d frames of %dx%d and %lld audio frames in-process\n",
+                      video.frames, video.width, video.height, delivered_audio_frames);
+        }
+        result.ok = true;
+        notify(RunStage::kFinished, -1, 0);
+        return result;
+      }
+    }
 
     bool muxed = false;
     if (!request.raw_output) {
@@ -944,6 +1040,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   }
 
   result.ok = true;
+  notify(RunStage::kFinished, -1, 0);
   return result;
 }
 

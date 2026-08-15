@@ -19,6 +19,11 @@
 #include <string_view>
 #include <vector>
 
+// Included directly rather than picked up from vidfab/generate.h, which is
+// behind the CUDA guard below: the flag parsing that names an attention mode
+// is not, so a build with VIDFAB_ENABLE_CUDA=OFF could not see this type at
+// all. It is a core header and costs a CPU-only build nothing.
+#include "vidfab/attention_mode.h"
 #include "vidfab/dtype.h"
 #include "vidfab/json.h"
 #include "vidfab/dit/step_cache.h"
@@ -442,10 +447,20 @@ struct CommandHelp {
 const CommandHelp kCommands[] = {
     {"generate", "vidfab generate --prompt <text> [options]", "text to video and audio",
      "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
-     "  --reference-image <file>     ordered Ref2VA image; repeat up to 9 times. PNG,\n"
-     "                               JPEG, BMP, TIFF, GIF and binary PPM on Windows;\n"
-     "                               binary PPM elsewhere. Requires Ref2VA transformer\n"
-     "                               weights. Files are read only when the run starts\n"
+     "  --prompt-file <file>         read that same prompt from a UTF-8 text file\n"
+     "                               instead; a BOM and surrounding blank space are\n"
+     "                               stripped. Cannot be combined with --prompt\n"
+     "  --reference-image <file>     ordered Ref2VA image; repeat up to 9 times.\n"
+#if VIDFAB_WITH_FFMPEG
+     "                               Any still or video FFmpeg can decode (a video\n"
+     "                               contributes its first frame), plus binary PPM.\n"
+#else
+     "                               PNG, JPEG, BMP, TIFF, GIF and binary PPM on\n"
+     "                               Windows; binary PPM elsewhere (no FFmpeg in this\n"
+     "                               build).\n"
+#endif
+     "                               Requires Ref2VA transformer weights. Files are\n"
+     "                               read only when the run starts\n"
      "  --out <file>                 output path (default output/video-<timestamp>.mp4)\n"
      "  --aspect <W:H>               display aspect, 1:4 to 4:1 (overrides 864x480)\n"
      "  --resolution <WxH>           exact canvas instead of an aspect; both axes a\n"
@@ -455,8 +470,9 @@ const CommandHelp kCommands[] = {
      "  --frames <n>                 snapped up to 17k+5 (default 124, minimum 6)\n"
      "  --steps <n>                  sigma grid points, n-1 evaluations (default 15)\n"
      "  --sampler euler|ab2          integrator (default euler)\n"
-     "  --seed <n>                   noise seed (default random)\n"
-     "  --count <n>                  generate n videos; explicit seeds increment by one\n"
+     "  --seed <n>                   noise seed; negative or absent draws a random one\n"
+     "  --count <n>                  generate n videos; explicit seeds increment by one,\n"
+     "                               random ones are drawn afresh for each\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
      "  --dry-run                    resolve and print the plan, touch no weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
@@ -509,6 +525,28 @@ const CommandHelp kCommands[] = {
      "  --skip-every <n>             instead of the threshold, evaluate every n-th step.\n"
      "                               0 = off (default). A calibration-free baseline the\n"
      "                               threshold has to beat; the two cannot be combined.\n"
+     "\n"
+     "block caching (off by default; independent of the step cache above):\n"
+     "  --block-cache-span <n>       reuse the combined residual of n consecutive\n"
+     "                               transformer blocks instead of evaluating them.\n"
+     "                               0 = off (default). Saves (n/50) x (reused steps /\n"
+     "                               total steps); measured within 0.1 point of that.\n"
+     "                               Costs one buffer the size of the residual stream\n"
+     "                               while enabled -- 844 MB at the 248-frame geometry,\n"
+     "                               88 MB at 22 frames.\n"
+     "                               Cannot be combined with --cache-threshold or\n"
+     "                               --skip-every: a step those skip is a step this one\n"
+     "                               never sees, so its interval stops counting.\n"
+     "                               LOSSY AND UNCHARACTERISED, like the step cache: the\n"
+     "                               reused residual is added unscaled to a state that\n"
+     "                               has moved since it was captured.\n"
+     "  --block-cache-start <n>      first block of the span. Default -1, which centres\n"
+     "                               it: the first and last blocks carry the fastest-\n"
+     "                               changing residuals and are the worst to reuse.\n"
+     "  --block-cache-interval <n>   evaluate the span every n-th step, reuse it on the\n"
+     "                               others (default 2 = alternate, minimum 2).\n"
+     "  --block-cache-warmup <n>     first n steps always evaluate the span (default 3,\n"
+     "                               floor 1)\n"
      "\n"
      "The first steps and the last step are always evaluated whatever these say.\n"
      "The trajectory is most sensitive early, and at the terminal step the sigma\n"
@@ -1142,6 +1180,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool synthetic = false;
   vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
   std::string dump_latents;
+  std::string prompt_file;
+  bool saw_prompt = false;
   int attn_band = 0;
   vidfab::AttentionMode attention_mode = vidfab::AttentionMode::kSage2;
   vidfab::SolSchedule sol_schedule;
@@ -1163,6 +1203,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     };
     if (arg == "--prompt") {
       req.prompt = next("--prompt");
+      saw_prompt = true;
+    } else if (arg == "--prompt-file") {
+      prompt_file = next("--prompt-file");
     } else if (arg == "--out") {
       req.out_path = next("--out");
       saw_out = true;
@@ -1171,8 +1214,19 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--steps") {
       req.num_inference_steps = std::atoi(next("--steps"));
     } else if (arg == "--seed") {
-      req.seed = std::strtoull(next("--seed"), nullptr, 10);
-      saw_seed = true;
+      // A negative seed asks for a random one, the same as passing no --seed at
+      // all. Checked on the text rather than on the parsed value because
+      // `strtoull` silently wraps "-1" to 2^64-1, which would read as an
+      // ordinary explicit seed. Testing the sign first also keeps the whole
+      // unsigned range usable for seeds that really are meant to be large.
+      const std::string_view value = next("--seed");
+      const size_t first = value.find_first_not_of(" \t");
+      if (first != std::string_view::npos && value[first] == '-') {
+        saw_seed = false;
+      } else {
+        req.seed = std::strtoull(value.data(), nullptr, 10);
+        saw_seed = true;
+      }
     } else if (arg == "--count") {
       count = std::atoi(next("--count"));
     } else if (arg == "--sampler") {
@@ -1232,6 +1286,14 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.cache_warmup = std::atoi(next("--cache-warmup"));
     } else if (arg == "--skip-every") {
       req.skip_every = std::atoi(next("--skip-every"));
+    } else if (arg == "--block-cache-span") {
+      req.block_cache_span = std::atoi(next("--block-cache-span"));
+    } else if (arg == "--block-cache-start") {
+      req.block_cache_start = std::atoi(next("--block-cache-start"));
+    } else if (arg == "--block-cache-interval") {
+      req.block_cache_interval = std::atoi(next("--block-cache-interval"));
+    } else if (arg == "--block-cache-warmup") {
+      req.block_cache_warmup = std::atoi(next("--block-cache-warmup"));
     } else if (arg == "--dry-run") {
       dry_run = true;
     } else if (arg == "--synthetic-latents") {
@@ -1282,10 +1344,42 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     }
   }
 
+  // Both write the same field, so accepting both would mean silently honouring
+  // one of them and dropping the other.
+  if (saw_prompt && !prompt_file.empty()) {
+    std::fprintf(stderr, "vidfab: --prompt and --prompt-file cannot be combined\n");
+    return 2;
+  }
+  if (!prompt_file.empty()) {
+    // Read here rather than at run time: the prompt shapes the plan, so
+    // `--dry-run` has to see it, and a bad path should fail before any weights
+    // are touched. The text is used verbatim apart from a UTF-8 BOM, CRLF line
+    // endings and surrounding blank space -- all things an editor adds and no
+    // prompt wants in its token stream.
+    std::ifstream in(prompt_file, std::ios::binary);
+    if (!in) {
+      std::fprintf(stderr, "vidfab: cannot read --prompt-file '%s'\n", prompt_file.c_str());
+      return 2;
+    }
+    std::ostringstream contents;
+    contents << in.rdbuf();
+    std::string text = contents.str();
+    if (text.rfind("\xEF\xBB\xBF", 0) == 0) text.erase(0, 3);
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    const size_t first = text.find_first_not_of(" \t\n");
+    if (first == std::string::npos) {
+      std::fprintf(stderr, "vidfab: --prompt-file '%s' has no prompt in it\n",
+                   prompt_file.c_str());
+      return 2;
+    }
+    const size_t last = text.find_last_not_of(" \t\n");
+    req.prompt = text.substr(first, last - first + 1);
+  }
+
   // `--synthetic-latents --init-latents <f>` is the decode-an-existing-latent
   // path and needs no prompt; the seeded-noise form still does not either.
   if (req.prompt.empty() && !dry_run && !synthetic) {
-    std::fprintf(stderr, "vidfab: generate needs --prompt \"...\"\n");
+    std::fprintf(stderr, "vidfab: generate needs --prompt \"...\" or --prompt-file <file>\n");
     return 2;
   }
   if (!std::isfinite(sol_schedule.beta)||!std::isfinite(sol_schedule.error_k)||
@@ -1309,6 +1403,44 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   if (req.skip_every < 0) {
     std::fprintf(stderr, "vidfab: --skip-every cannot be negative (0 disables it)\n");
+    return 2;
+  }
+  if (req.block_cache_span < 0) {
+    std::fprintf(stderr, "vidfab: --block-cache-span cannot be negative (0 disables it)\n");
+    return 2;
+  }
+  // Rejected rather than clamped up to 2. An interval of 1 evaluates the span
+  // every step and still pays the snapshot and the subtract, so it is not a
+  // slower setting but a strictly pointless one, and a user who typed it meant
+  // something else.
+  if (req.block_cache_span > 0 && req.block_cache_interval < 2) {
+    std::fprintf(stderr,
+                 "vidfab: --block-cache-interval must be at least 2 (1 would evaluate every "
+                 "step and cache for nothing)\n");
+    return 2;
+  }
+  // Refused, like `--sampler ab2` with step caching above, and for a related
+  // reason: the two caches do not compose the way their flags suggest.
+  //
+  // The step cache skips a step by not calling `forward` at all, and the block
+  // cache's decision lives *inside* `forward`. So a step the step cache skips
+  // is a step the block cache never sees: its interval stops counting real
+  // steps, and a delta it believed was one step old becomes three or more. The
+  // two lossy approximations then compound on the same step, and nothing
+  // records that they did — the printed "N of M spans reused" denominator
+  // silently shrinks to the steps that actually ran, so the log understates the
+  // staleness rather than revealing it.
+  //
+  // That is a quality question nobody has measured, on the two features whose
+  // entire failure mode is drift. Refusing costs a combination nobody has shown
+  // to be useful; allowing it costs a number that looks like a measurement and
+  // is not one. If the combination is ever wanted, the fix is for the denoise
+  // loop to tell the block cache about skipped steps so the phase and the
+  // counters stay defined — not to delete this check.
+  if (req.block_cache_span > 0 && (req.cache_threshold > 0.0f || req.skip_every > 0)) {
+    std::fprintf(stderr,
+                 "vidfab: --block-cache-span cannot be combined with --cache-threshold or "
+                 "--skip-every; a skipped step hides the block cache's schedule from it\n");
     return 2;
   }
   if (attn_band > 0 && attention_mode != vidfab::AttentionMode::kFlash2) {
