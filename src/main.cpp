@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -35,6 +36,11 @@
 #include "vidfab/text/tokenizer.h"
 
 #include "vidfab/video/y4m.h"
+
+#if VIDFAB_WITH_VULKAN
+#include "vidfab/vulkan/runtime.h"
+#include "vidfab/vulkan/yuv_converter.h"
+#endif
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -474,6 +480,9 @@ const CommandHelp kCommands[] = {
      "  --count <n>                  generate n videos; explicit seeds increment by one,\n"
      "                               random ones are drawn afresh for each\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
+     "  --output-accelerator cpu|vulkan\n"
+     "                               RGB-to-YUV output conversion only (default cpu);\n"
+     "                               model inference remains CUDA\n"
      "  --dry-run                    resolve and print the plan, touch no weights\n"
      "  --synthetic-latents          skip conditioning and denoising and decode seeded\n"
      "                               noise, to exercise the VAEs and the muxer\n"
@@ -1192,6 +1201,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_out = false;
   bool saw_seed = false;
   int count = 1;
+  std::string output_accelerator = "cpu";
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -1280,6 +1290,14 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.reference_image_paths.emplace_back(next("--reference-image"));
     } else if (arg == "--raw") {
       req.raw_output = true;
+    } else if (arg == "--output-accelerator") {
+      output_accelerator = next("--output-accelerator");
+      if (output_accelerator != "cpu" && output_accelerator != "vulkan") {
+        std::fprintf(stderr,
+                     "vidfab: --output-accelerator wants cpu or vulkan, got '%s'\n",
+                     output_accelerator.c_str());
+        return 2;
+      }
     } else if (arg == "--cache-threshold") {
       req.cache_threshold = static_cast<float>(std::strtod(next("--cache-threshold"), nullptr));
     } else if (arg == "--cache-warmup") {
@@ -1525,6 +1543,34 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     return 0;
   }
 
+#if !VIDFAB_WITH_CUDA
+  (void)executable;
+  std::fprintf(stderr,
+               "vidfab: built without CUDA support; model inference requires CUDA. "
+               "Vulkan accelerates output conversion only\n");
+  return 1;
+#else
+
+#if VIDFAB_WITH_VULKAN
+  std::unique_ptr<vidfab::vulkan::Yuv420Converter> output_converter;
+  if (output_accelerator == "vulkan") {
+    try {
+      output_converter = std::make_unique<vidfab::vulkan::Yuv420Converter>();
+      std::printf("output      Vulkan RGB-to-YUV on %s (model inference remains CUDA)\n",
+                  output_converter->device_name());
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "vidfab: Vulkan output accelerator unavailable: %s\n", error.what());
+      return 1;
+    }
+  }
+#else
+  if (output_accelerator == "vulkan") {
+    std::fprintf(stderr,
+                 "vidfab: Vulkan output accelerator requested, but this build disabled Vulkan\n");
+    return 1;
+  }
+#endif
+
   if (!saw_out) std::filesystem::create_directories(std::filesystem::path(req.out_path).parent_path());
 
   discover_generate_checkpoints(req, executable);
@@ -1585,6 +1631,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.attention_mode = attention_mode;
   options.sol_schedule = sol_schedule;
   options.init_latents_path = init_latents;
+#if VIDFAB_WITH_VULKAN
+  options.output_frame_converter = output_converter.get();
+#endif
 
   for (int generation = 0; generation < count; ++generation) {
     req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
@@ -1605,17 +1654,16 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   return 0;
 #endif
+#endif  // VIDFAB_WITH_CUDA
 }
 
 int cmd_devices() {
 #if !VIDFAB_WITH_CUDA
-  std::fprintf(stderr, "vidfab: built without CUDA support\n");
-  return 1;
+  std::printf("CUDA inference       unavailable in this build\n");
 #else
   const int count = vidfab::cuda::device_count();
   if (count == 0) {
-    std::fprintf(stderr, "vidfab: no CUDA device is visible\n");
-    return 1;
+    std::printf("CUDA inference       no visible device\n");
   }
   for (int i = 0; i < count; ++i) {
     const vidfab::cuda::DeviceInfo d = vidfab::cuda::query_device(i);
@@ -1628,8 +1676,29 @@ int cmd_devices() {
     std::printf("  numeric support     bf16=%s fp8=%s fp4=%s\n", d.supports_bf16 ? "yes" : "no",
                 d.supports_fp8 ? "yes" : "no", d.supports_fp4 ? "yes" : "no");
   }
-  return 0;
 #endif
+#if VIDFAB_WITH_VULKAN
+  std::string diagnostic;
+  if (!vidfab::vulkan::Instance::available(&diagnostic)) {
+    std::printf("Vulkan output        unavailable: %s\n", diagnostic.c_str());
+  } else {
+    try {
+      auto instance = vidfab::vulkan::Instance::create();
+      const auto devices = instance.enumerate_devices();
+      if (devices.empty()) std::printf("Vulkan output        no compute device\n");
+      for (size_t i = 0; i < devices.size(); ++i) {
+        const auto& d = devices[i].info();
+        std::printf("Vulkan output %zu     %s (timeline=%s)\n", i, d.name.c_str(),
+                    d.timeline_semaphore ? "yes" : "no");
+      }
+    } catch (const std::exception& error) {
+      std::printf("Vulkan output        unavailable: %s\n", error.what());
+    }
+  }
+#else
+  std::printf("Vulkan output        disabled in this build\n");
+#endif
+  return 0;
 }
 
 }  // namespace
