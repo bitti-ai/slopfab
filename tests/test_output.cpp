@@ -18,6 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,16 @@ struct CountingConverter final : vidfab::video::FrameConverter {
                uint8_t* y, int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
     ++calls;
     saw_padded_stride = saw_padded_stride || ys > width || us > width / 2 || vs > width / 2;
+    vidfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
+  }
+};
+
+struct ThrowingConverter final : vidfab::video::FrameConverter {
+  int calls = 0;
+  int throw_after = 1;
+  void convert(const float* r, const float* g, const float* b, int height, int width,
+               uint8_t* y, int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
+    if (++calls > throw_after) throw std::runtime_error("converter sentinel failure");
     vidfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
   }
 };
@@ -570,6 +581,23 @@ VIDFAB_TEST(y4m_uses_frame_converter_hook) {
   std::filesystem::remove(hook_path);
 }
 
+VIDFAB_TEST(y4m_removes_partial_file_when_converter_throws) {
+  using namespace vidfab::video;
+  const auto path = temp_path("vidfab_y4m_converter_failure.y4m");
+  std::filesystem::remove(path);
+  const vidfab::PixelBuffer clip = make_clip(3, 6, 10);
+  ThrowingConverter converter;
+  bool preserved = false;
+  try {
+    write_y4m(path.string(), clip, 3, 6, 10, {}, &converter);
+  } catch (const std::runtime_error& error) {
+    preserved = std::string(error.what()) == "converter sentinel failure";
+  }
+  CHECK(preserved);
+  CHECK(converter.calls == 2);
+  CHECK(!std::filesystem::exists(path));
+}
+
 // --- ffmpeg ----------------------------------------------------------------
 
 VIDFAB_TEST(ffmpeg_probe_is_coherent) {
@@ -735,4 +763,20 @@ VIDFAB_TEST(mp4_video_only_and_bad_requests) {
   bad_audio.audio = &ragged;
   bad_audio.audio_channels = 2;
   CHECK(write_mp4(bad_audio) == MuxStatus::kWriteFailed);
+
+  const std::filesystem::path failed_path = temp_path("vidfab_converter_failure.mp4");
+  std::filesystem::remove(failed_path);
+  ThrowingConverter converter;
+  converter.throw_after = 0;
+  MuxRequest failed = req;
+  failed.path = failed_path.string();
+  failed.frame_converter = &converter;
+  bool preserved = false;
+  try {
+    (void)write_mp4(failed);
+  } catch (const std::runtime_error& error) {
+    preserved = std::string(error.what()) == "converter sentinel failure";
+  }
+  CHECK(preserved);
+  CHECK(!std::filesystem::exists(failed_path));
 }

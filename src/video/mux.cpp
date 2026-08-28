@@ -981,9 +981,14 @@ MuxStatus write_mp4(const MuxRequest& request) {
         const int* linesize = &fld<int>(video.frame, l.frame_linesize);
         const size_t base = static_cast<size_t>(video_index) * frame_pixels;
         if (request.frame_converter != nullptr) {
-          request.frame_converter->convert(
-              r_plane + base, g_plane + base, b_plane + base, request.height, request.width,
-              data[0], linesize[0], data[1], linesize[1], data[2], linesize[2]);
+          try {
+            request.frame_converter->convert(
+                r_plane + base, g_plane + base, b_plane + base, request.height, request.width,
+                data[0], linesize[0], data[1], linesize[1], data[2], linesize[2]);
+          } catch (...) {
+            cleanup();
+            throw;
+          }
         } else {
           rgb_frame_to_yuv420(r_plane + base, g_plane + base, b_plane + base, request.height,
                               request.width, data[0], linesize[0], data[1], linesize[1], data[2],

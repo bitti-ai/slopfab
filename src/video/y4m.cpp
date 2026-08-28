@@ -209,9 +209,15 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
   const auto convert = [&](int f, unsigned w) {
     const size_t base = static_cast<size_t>(f) * frame_pixels;
     if (converter != nullptr) {
-      converter->convert(r_plane + base, g_plane + base, b_plane + base, height, width,
-                         luma[w].data(), width, cb[w].data(), static_cast<int>(chroma_w),
-                         cr[w].data(), static_cast<int>(chroma_w));
+      try {
+        converter->convert(r_plane + base, g_plane + base, b_plane + base, height, width,
+                           luma[w].data(), width, cb[w].data(), static_cast<int>(chroma_w),
+                           cr[w].data(), static_cast<int>(chroma_w));
+      } catch (...) {
+        out.close();
+        std::remove(path.c_str());
+        throw;
+      }
     } else {
       yuv420_chroma_rows(0, chroma_h, r_plane + base, g_plane + base, b_plane + base,
                          height, width, luma[w].data(), width, cb[w].data(),

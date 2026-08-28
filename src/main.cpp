@@ -632,7 +632,7 @@ const CommandHelp kCommands[] = {
      "encode text and round-trip it",
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --pieces                     also print the pre-tokenizer split\n"},
-    {"devices", "vidfab devices", "list visible CUDA devices", ""},
+    {"devices", "vidfab devices", "list CUDA inference and Vulkan output devices", ""},
     {"version", "vidfab version", "print the version and exit", ""},
 };
 
