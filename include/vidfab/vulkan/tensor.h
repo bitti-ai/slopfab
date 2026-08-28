@@ -177,11 +177,14 @@ class TensorContext {
   void require_full_fp32_add_exactness() const {
     require_full_fp32_arithmetic_exactness();
   }
-  // Exact fp32 VAE normalization currently requires an NVIDIA Vulkan device.
+  // Exact normalization currently requires a measured NVIDIA Vulkan tuple and
+  // an explicitly enabled shaderInt64 feature.
   // The contract covers zero and finite normal inputs, affine values,
   // intermediates, epsilon and results. Subnormal and NaN arithmetic is
   // deliberately outside the exact domain; require this capability before
   // recording rms_norm/layer_norm.
+  bool exact_normalization() const noexcept;
+  void require_exact_normalization() const;
   bool exact_fp32_vae_normalization() const noexcept;
   void require_exact_fp32_vae_normalization() const;
   TensorWorkspace& workspace();

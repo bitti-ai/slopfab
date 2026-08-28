@@ -38,10 +38,10 @@ Missing work by pipeline stage:
 
 | Stage | CUDA implementation that has no Vulkan peer | Principal missing operations |
 |---|---|---|
-| Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | device tensors and views, upload/cache lifetime, fp16/bf16/fp8 conversion, dense and NF4/NVFP4 GEMM, bias/activation, RMS/group/layer norm, RoPE, residual and broadcast elementwise operations |
+| Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | dense and NF4/NVFP4 GEMM, fp8, activations, group norm, RoPE, and remaining residual/broadcast elementwise operations; tensor lifetime, fp16/bf16 conversion/layout, add/bias, fp32 VAE norms, BF16 shared RMS/Layer norms and RMSNorm+AdaLN now have Vulkan primitives |
 | Video VAE decode | `vae_kernels.cu` (503), `vit_decoder.cu` (684), `decode_pipeline.cpp` (420) | Conv3D/Conv2D, causal padding, upsample, residual blocks, spatial/temporal attention, tile scheduling and merge |
 | Audio VAE decode | `audio_vae_kernels.cu` (452), `audio_decoder.cpp` (504) | weight-normalized Conv1D/transposed Conv1D, residual units, Snake activation, channel/layout transforms |
-| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | multimodal projections, AdaLN, Q/K normalization, 3-D RoPE, causal/banded attention, fused residual paths, timestep conditioning, scheduler loop integration and caches |
+| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | multimodal projections, 3-D RoPE, causal/banded attention, fused residual paths, timestep conditioning, scheduler loop integration and caches; primitive AdaLN and Q/K RMS normalization are implemented but not wired into this stage |
 | Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | token embedding, decoder attention/MLP, mRoPE, vision patch/merge graph, deep-stack scatter, reference-image VAE encode |
 
 Checkpoint handling also remains CUDA-entangled. A Vulkan backend must preserve
@@ -93,12 +93,15 @@ descriptor/command slots.
 FP32 arithmetic does not promise a NaN payload. Subnormal inputs/results are
 available only when the queried float-control mode supports them; the public
 `require_full_fp32_arithmetic_exactness()` gate fails closed otherwise.
-The VAE normalization reduction tree is CUDA-bit-exact over its zero and
-finite-normal domain on the separately gated, measured RTX 5090/driver 610.88
-tuple. Generic NVIDIA and float-control support are not accepted as proof of
-`InverseSqrt` bit identity. It covers the shipped 2048-wide VAE norms and final
-affine LayerNorm without a host boundary. NaN/subnormal arithmetic is excluded,
-subnormal epsilon is rejected, and unknown driver tuples fail before recording.
+Normalization is CUDA-bit-exact over its zero and finite-normal domain on the
+separately gated RTX 5090/driver 610.88 tuple with shaderInt64 explicitly
+enabled. CUDA and Vulkan use the same integer-RNE division/epsilon addition and
+Q30 reciprocal-square-root algorithm, avoiding the observed one-ULP divergence
+between CUDA `rsqrtf` and SPIR-V `InverseSqrt`. It covers the shipped 2048-wide
+VAE norms, BF16 widths 128/1152/4608/5120/5376, affine LayerNorm, and BF16/fp32
+RMSNorm+AdaLN without a host boundary. NaN tensor arithmetic is excluded,
+subnormal epsilon and dimensions above 2^24 are rejected, and unknown or
+shaderInt64-disabled devices fail before recording.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
@@ -110,8 +113,8 @@ than arbitrary device data. The Vulkan shader also bounds-checks each index to
 prevent an invalid device read or write.
 
 This is a tested operator substrate, not a wired Vulkan model stage. GEMM and
-quantized weights, bf16/head/modulated normalization, group norm, other
-reductions, RoPE, attention, convolutions, and all four model-stage
+quantized weights, group norm, other reductions, RoPE, attention,
+convolutions, primitive call-site wiring, and all four model-stage
 orchestrators remain on the missing list above. Therefore
 `--inference-backend vulkan` continues to fail before weights or output files.
 

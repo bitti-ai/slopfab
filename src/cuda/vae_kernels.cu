@@ -51,6 +51,12 @@ __device__ inline float block_norm_inverse(float sum, uint32_t dim, float eps,
   return shared[0];
 }
 
+__device__ inline float block_mean(float sum, uint32_t dim, float* shared) {
+  if (threadIdx.x == 0) shared[0] = deterministic_divide(sum, dim);
+  __syncthreads();
+  return shared[0];
+}
+
 __device__ inline float block_reduce_max(float value, float* shared) {
   const int lane = threadIdx.x % kWarp;
   const int warp = threadIdx.x / kWarp;
@@ -106,8 +112,8 @@ __global__ void layernorm_kernel(const float* __restrict__ x, const float* __res
 
   float sum = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += xr[i];
-  const float mean = deterministic_divide(block_reduce_sum(sum, shared),
-                                           static_cast<uint32_t>(dim));
+  const float mean = block_mean(block_reduce_sum(sum, shared),
+                                static_cast<uint32_t>(dim), shared);
 
   __syncthreads();
   float sum_sq = 0.0f;

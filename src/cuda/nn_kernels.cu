@@ -62,6 +62,12 @@ __device__ inline float block_norm_inverse(float sum, uint32_t dim, float eps,
   return shared[0];
 }
 
+__device__ inline float block_mean(float sum, uint32_t dim, float* shared) {
+  if (threadIdx.x == 0) shared[0] = deterministic_divide(sum, dim);
+  __syncthreads();
+  return shared[0];
+}
+
 // --- packed load/store ------------------------------------------------------
 //
 // VEC is 8 (one 16-byte transaction) or 1 (scalar tail path). Everything
@@ -190,8 +196,8 @@ __global__ void layernorm_affine_kernel(const __nv_bfloat16* __restrict__ x,
   const size_t base = static_cast<size_t>(blockIdx.x) * dim;
   float sum = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += __bfloat162float(x[base + i]);
-  const float mean = deterministic_divide(block_reduce_sum(sum, shared),
-                                           static_cast<uint32_t>(dim));
+  const float mean = block_mean(block_reduce_sum(sum, shared),
+                                static_cast<uint32_t>(dim), shared);
   __syncthreads();
   float sq = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {

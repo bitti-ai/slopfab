@@ -891,22 +891,35 @@ VIDFAB_TEST(vulkan_tensor_exact_vae_norms) {
       info.max_compute_workgroup_count[0]));
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
+  Device disabled_device = physical.front().create_device(options);
+  TensorContext disabled_tensors(disabled_device);
+  CHECK(!disabled_tensors.exact_normalization());
+  CHECK(disabled_tensors.exact_fp32_vae_normalization() ==
+        disabled_tensors.exact_normalization());
+  bool disabled_rejected = false;
+  try { disabled_tensors.require_exact_normalization(); }
+  catch (const std::runtime_error&) { disabled_rejected = true; }
+  CHECK(disabled_rejected);
+  options.enable_shader_int64 = info.shader_int64;
   Device device = physical.front().create_device(options);
   TensorContext tensors(device);
   const bool expected_capability = detail::known_exact_vae_norm_device(
                                        info.vendor_id, info.device_id,
                                        info.driver_version) &&
-                                   info.fp32_signed_zero_inf_nan_preserve;
+                                   info.fp32_signed_zero_inf_nan_preserve &&
+                                   info.shader_int64;
   CHECK(!detail::known_exact_vae_norm_device(0x10deu, 0x2b85u, 0x98960001u));
   CHECK(!detail::known_exact_vae_norm_device(0x10deu, 0x2b86u, 0x98960000u));
-  CHECK(tensors.exact_fp32_vae_normalization() == expected_capability);
+  CHECK(tensors.exact_normalization() == expected_capability);
+  CHECK(tensors.exact_fp32_vae_normalization() == tensors.exact_normalization());
   if (!expected_capability) {
     bool rejected = false;
-    try { tensors.require_exact_fp32_vae_normalization(); }
+    try { tensors.require_exact_normalization(); }
     catch (const std::runtime_error&) { rejected = true; }
     CHECK(rejected);
     return;
   }
+  tensors.require_exact_normalization();
   tensors.require_exact_fp32_vae_normalization();
 
   const uint64_t extents[] = {2, 8};

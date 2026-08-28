@@ -95,6 +95,7 @@ void decode_positive(uint bits, out uint significand, out int exponent) {
   } else { exponent = int((bits >> 23u) & 0xffu) - 127; significand |= 0x00800000u; }
 }
 
+// Restricted to the nonnegative quotient + normal epsilon norm-base contract.
 uint positive_float_add(uint a_bits, uint b_bits) {
   if ((a_bits & 0x7fffffffu) == 0u) return b_bits;
   if ((b_bits & 0x7fffffffu) == 0u) return a_bits;
@@ -172,6 +173,13 @@ float deterministic_norm_rsqrt(float sum, uint divisor, float epsilon) {
 float block_norm_inverse(float sum, uint divisor, float epsilon) {
   if (gl_LocalInvocationIndex == 0u)
     inverse_bits[0] = floatBitsToUint(deterministic_norm_rsqrt(sum, divisor, epsilon));
+  barrier();
+  return uintBitsToFloat(inverse_bits[0]);
+}
+
+float block_mean(float sum, uint divisor) {
+  if (gl_LocalInvocationIndex == 0u)
+    inverse_bits[0] = floatBitsToUint(deterministic_divide(sum, divisor));
   barrier();
   return uintBitsToFloat(inverse_bits[0]);
 }
@@ -332,7 +340,7 @@ void main() {
   float local_sum = 0.0f;
   for (uint col = tid; col < parameters.dim; col += 256u)
     local_sum = local_sum + load_bf16_input(base + col);
-  float mean = deterministic_divide(block_reduce_sum(local_sum), parameters.dim);
+  float mean = block_mean(block_reduce_sum(local_sum), parameters.dim);
   barrier();
   float local_sq = 0.0f;
   for (uint col = tid; col < parameters.dim; col += 256u) {

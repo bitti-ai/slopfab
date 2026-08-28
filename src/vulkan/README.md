@@ -72,9 +72,9 @@ python tools/add_spirv_float_controls.py --preserve-only tensor_layer_norm.raw.s
 The compiler is Khronos glslang 16.5.0. CMake pins these SHA-256 digests:
 
 ```text
-tensor_norm.comp                    FD333EEE5C6E321793A107FF844C59E62FD53CF8605E8A200BDE785422DBF7D2
-tensor_rms_norm.comp.spv            1B76BCD637A4C35CDC6F5D40E4A5D7855D8F74BC2BFA7E581E4D74C0B4B3EF98
-tensor_layer_norm.comp.spv          2AD2BEC9A188C6839050DB399DC53C316AE95EE111511193D3E6EE8943F1CB1C
+tensor_norm.comp                    F82042E4D335DA14E442ABD2DDE6DF877B832BCCC8C14033D2AA22F7ED03C325
+tensor_rms_norm.comp.spv            160B9D0F6260BC912379C26171DD8D0C60AD6E4D9B81DA57A413B831E513229C
+tensor_layer_norm.comp.spv          516ECC94D93CD829F6F6B208ACFB3FF647861DAAE9DB3017B31729528D8724E5
 ```
 
 The modules declare `SignedZeroInfNanPreserve` but intentionally do not declare
@@ -86,13 +86,52 @@ mode; bisecting the complete RMS module showed SignedZero/Inf/NaN-only and
 Denorm-only variants create successfully while RTE-only reproduces the fault.
 There is no runtime SPIR-V mutation.
 
-Exact VAE normalization is consequently a separate, fail-closed capability:
-`exact_fp32_vae_normalization()` currently recognizes only the measured tuple
+CUDA `rsqrtf` and SPIR-V `InverseSqrt` differ by one ULP on a real AdaLN row,
+and Vulkan's default division also differs from CUDA RNE on a rounding boundary.
+All CUDA and Vulkan norm kernels therefore share a specified integer path:
+binary32 `/dim` and normal epsilon addition use integer RNE, reciprocal square
+root normalizes the mantissa to [1,4), performs six Q30 integer Newton steps
+with ties-even shifts, and constructs the final binary32 value with RNE. One
+lane computes it per row and broadcasts it. Products are proven below 2^62.
+The path maps +/-0 to signed infinity, +infinity to +0, and negative/NaN to
+canonical `0x7fc00000`; positive subnormals are normalized exactly. The private
+addition helper is only defined for the nonnegative quotient plus normal
+epsilon contract and a finite normal result. Dimensions above 2^24 and
+subnormal epsilon are rejected.
+
+Exact normalization is a separate, fail-closed capability:
+`exact_normalization()` currently recognizes only the measured tuple
 RTX 5090 (`deviceID 0x2b85`) with NVIDIA driver 610.88 (`driverVersion
-0x98960000`) and the queried signed-zero/Inf/NaN property. Generic NVIDIA or
-RTE capability is not treated as proof because the executed module does not
-declare RTE and SPIR-V `InverseSqrt` has no CUDA bit-identity guarantee. The
+0x98960000`), the queried signed-zero/Inf/NaN property, and an explicitly
+enabled `shaderInt64` feature. The old fp32-VAE-named gate remains an alias. The
 arithmetic contract covers zero and finite-normal input, affine values,
 epsilon, intermediates and results. NaNs and subnormal arithmetic are excluded;
 host-known subnormal epsilon is rejected before recording. Unknown devices and
 drivers fail before recording a norm; other tensor primitives remain usable.
+
+## Shared transformer normalization shaders
+
+`tensor_shared_norm.comp` adds BF16 RMSNorm (a 32x8 narrow head-128 path and a
+256-lane wide/scalar path), BF16 affine LayerNorm, and BF16/fp32 RMSNorm+AdaLN.
+The wide reduction preserves CUDA's pack-major eight-value FMA order; the
+narrow reduction preserves its 16-active-lane XOR tree. AdaLN rounds `1+scale`
+separately and uses one final FMA. All five cached modules use the deterministic
+normalization path above and are generated with glslang 16.5.0 plus
+`--preserve-only` from `tools/add_spirv_float_controls.py`:
+
+```text
+glslang -V --target-env vulkan1.2 -S comp -D<VARIANT>=1 src/vulkan/tensor_shared_norm.comp -o <variant>.raw.spv
+python tools/add_spirv_float_controls.py --preserve-only <variant>.raw.spv src/vulkan/tensor_<variant-lower>.comp.spv
+```
+
+Variants are `BF16_RMS_BLOCK`, `BF16_RMS_NARROW`, `BF16_LAYER`, `BF16_MOD`,
+and `FP32_MOD`. CMake pins:
+
+```text
+tensor_shared_norm.comp             6435B32E3C0272EA0F20695CA38E993E01BBE8B16688258C2C79BC5845CFA972
+tensor_bf16_rms_block.comp.spv       5784286FC645492FE7F9B68E292F47E1D8B6EFD5FF3BD213BEF003559F5EB49F
+tensor_bf16_rms_narrow.comp.spv      5473B833FF74234C38817535F57B33DE46534AA678E5DCFE0F562A0B4F1779A2
+tensor_bf16_layer.comp.spv           5F33AB2D86663D2611D64CDE7A62F27B13471256C808D067B80CF2BAEAC5C96A
+tensor_bf16_mod.comp.spv             7C6634DF12153142FC0C17D9A7EC89275E9BFDE45EC7C0249E8353B7685F16AE
+tensor_fp32_mod.comp.spv             C744EE45ACF2E34C017A1D1EC83BE5BC83042BA29AAC95C70AE864D55198F5EC
+```

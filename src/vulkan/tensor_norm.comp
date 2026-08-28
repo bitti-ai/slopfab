@@ -51,6 +51,7 @@ uint positive_float_div_uint(uint bits, uint divisor) {
 float deterministic_divide(float value,uint divisor){uint bits=floatBitsToUint(value);uint divided=positive_float_div_uint(bits&0x7fffffffu,divisor);return uintBitsToFloat(divided|(bits&0x80000000u));}
 
 void decode_positive(uint bits,out uint significand,out int exponent){significand=bits&0x007fffffu;if((bits&0x7f800000u)==0u){int top=highest_bit(significand);exponent=top-149;significand<<=uint(23-top);}else{exponent=int((bits>>23u)&0xffu)-127;significand|=0x00800000u;}}
+// Restricted to the nonnegative quotient + normal epsilon norm-base contract.
 uint positive_float_add(uint a_bits,uint b_bits){if((a_bits&0x7fffffffu)==0u)return b_bits;if((b_bits&0x7fffffffu)==0u)return a_bits;uint a,b;int ae,be;decode_positive(a_bits,a,ae);decode_positive(b_bits,b,be);if(ae<be||(ae==be&&a<b)){uint t=a;a=b;b=t;int te=ae;ae=be;be=te;}uint difference=uint(ae-be);uint64_t a_ext=uint64_t(a)<<3u,b_ext=uint64_t(b)<<3u;if(difference!=0u){if(difference>=63u)b_ext=uint64_t(1);else{uint64_t lost=b_ext&((uint64_t(1)<<difference)-uint64_t(1));b_ext=(b_ext>>difference)|uint64_t(lost!=0);}}uint64_t sum=a_ext+b_ext;if(sum>=(uint64_t(1)<<27u)){sum=(sum>>1u)|(sum&uint64_t(1));++ae;}uint64_t rounded=sum>>3u,remainder=sum&uint64_t(7);rounded+=uint64_t(remainder>uint64_t(4)||(remainder==uint64_t(4)&&(rounded&uint64_t(1))!=0));if(rounded==(uint64_t(1)<<24u)){rounded>>=1u;++ae;}return uint(ae+127)<<23u|uint(rounded)&0x007fffffu;}
 
 float deterministic_rsqrt(float value) {
@@ -98,6 +99,7 @@ float deterministic_rsqrt(float value) {
 
 float deterministic_norm_rsqrt(float sum,uint divisor,float epsilon){uint quotient=positive_float_div_uint(floatBitsToUint(sum),divisor);uint base=positive_float_add(quotient,floatBitsToUint(epsilon));return deterministic_rsqrt(uintBitsToFloat(base));}
 float block_norm_inverse(float sum,uint divisor,float epsilon){if(gl_LocalInvocationIndex==0u)inverse_bits=floatBitsToUint(deterministic_norm_rsqrt(sum,divisor,epsilon));barrier();return uintBitsToFloat(inverse_bits);}
+float block_mean(float sum,uint divisor){if(gl_LocalInvocationIndex==0u)inverse_bits=floatBitsToUint(deterministic_divide(sum,divisor));barrier();return uintBitsToFloat(inverse_bits);}
 
 float block_reduce_sum(float value) {
   uint tid = gl_LocalInvocationID.x;
@@ -148,7 +150,7 @@ void main() {
     precise float sum = 0.0f;
     for (uint col = tid; col < parameters.dim; col += 256u)
       sum = sum + uintBitsToFloat(input_data.data[base + col]);
-    float mean = deterministic_divide(block_reduce_sum(sum), parameters.dim);
+    float mean = block_mean(block_reduce_sum(sum), parameters.dim);
     barrier();
     precise float sum_sq = 0.0f;
     for (uint col = tid; col < parameters.dim; col += 256u) {

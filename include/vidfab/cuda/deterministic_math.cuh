@@ -69,6 +69,9 @@ __device__ inline float deterministic_divide(float value, uint32_t divisor) {
   return __uint_as_float(divided | (bits & 0x80000000u));
 }
 
+// Private norm-base add: operands are nonnegative, b is a normal positive
+// epsilon, and the finite result is normal. This is deliberately not a general
+// IEEE-754 addition routine (two-subnormal and overflow cases are out of scope).
 __device__ inline uint32_t positive_float_add(uint32_t a_bits, uint32_t b_bits) {
   if ((a_bits & 0x7fffffffu) == 0u) return b_bits;
   if ((b_bits & 0x7fffffffu) == 0u) return a_bits;

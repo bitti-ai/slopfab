@@ -700,15 +700,21 @@ void TensorContext::require_full_fp32_arithmetic_exactness() const {
         "full CUDA-exact fp32 arithmetic is unavailable");
   }
 }
-bool TensorContext::exact_fp32_vae_normalization() const noexcept {
+bool TensorContext::exact_normalization() const noexcept {
   return impl_ && impl_->exact_vae_norm;
 }
-void TensorContext::require_exact_fp32_vae_normalization() const {
-  if (!exact_fp32_vae_normalization()) {
+void TensorContext::require_exact_normalization() const {
+  if (!exact_normalization()) {
     throw std::runtime_error(
-        "vulkan tensor: exact fp32 VAE normalization requires a compatible "
-        "NVIDIA Vulkan device");
+        "vulkan tensor: exact normalization requires a compatible shaderInt64-enabled "
+        "Vulkan device");
   }
+}
+bool TensorContext::exact_fp32_vae_normalization() const noexcept {
+  return exact_normalization();
+}
+void TensorContext::require_exact_fp32_vae_normalization() const {
+  require_exact_normalization();
 }
 
 TensorWorkspace& TensorContext::workspace() {

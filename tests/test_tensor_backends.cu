@@ -5,16 +5,153 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <type_traits>
 #include <vector>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/deterministic_math.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/vulkan/tensor.h"
+
+__global__ void deterministic_rsqrt_probe(const float* input, float* stable,
+                                           float* native, int count) {
+  int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (index < count) {
+    stable[index] = vidfab::cuda::deterministic_rsqrt(input[index]);
+    native[index] = rsqrtf(input[index]);
+  }
+}
+
+__global__ void native_rmsnorm_probe(const float* input, const float* weight,
+                                     float* output, int dim, float epsilon) {
+  __shared__ float warp_totals[8];
+  const int lane = static_cast<int>(threadIdx.x & 31u);
+  const int warp = static_cast<int>(threadIdx.x >> 5u);
+  const size_t base = static_cast<size_t>(blockIdx.x) * dim;
+  float sum = 0.0f;
+  for (int col = static_cast<int>(threadIdx.x); col < dim; col += 256) {
+    const float value = input[base + col];
+    sum = fmaf(value, value, sum);
+  }
+  for (int offset = 16; offset; offset >>= 1)
+    sum += __shfl_down_sync(0xffffffffu, sum, offset);
+  if (lane == 0) warp_totals[warp] = sum;
+  __syncthreads();
+  sum = threadIdx.x < 8 ? warp_totals[threadIdx.x] : 0.0f;
+  if (warp == 0)
+    for (int offset = 16; offset; offset >>= 1)
+      sum += __shfl_down_sync(0xffffffffu, sum, offset);
+  if (threadIdx.x == 0) warp_totals[0] = sum;
+  __syncthreads();
+  const float inverse = rsqrtf(warp_totals[0] / static_cast<float>(dim) + epsilon);
+  for (int col = static_cast<int>(threadIdx.x); col < dim; col += 256)
+    output[base + col] = input[base + col] * inverse * weight[col];
+}
+
+VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
+  using namespace vidfab;
+  int devices = 0;
+  if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return;
+  std::vector<uint32_t> bits = {
+      0x00000000u, 0x80000000u, 0x00000001u, 0x007fffffu,
+      0x00800000u, 0x3f800000u, 0x7f7fffffu, 0x7f800000u,
+      0xff800000u, 0xbf800000u, 0x7fc12345u};
+  uint32_t state = 0x12345678u;
+  for (uint32_t exponent = 1; exponent < 255; ++exponent) {
+    const uint32_t boundary[] = {0u, 1u, 0x003fffffu, 0x00400000u, 0x007ffffeu,
+                                 0x007fffffu};
+    for (uint32_t mantissa : boundary) bits.push_back(exponent << 23u | mantissa);
+    for (int sample = 0; sample < 32; ++sample) {
+      state = state * 1664525u + 1013904223u;
+      bits.push_back(exponent << 23u | (state & 0x007fffffu));
+    }
+  }
+  std::vector<float> input(bits.size()), stable(bits.size()), native(bits.size());
+  std::memcpy(input.data(), bits.data(), bits.size() * sizeof(uint32_t));
+  cuda::DeviceBuffer<float> d_input(input.size()), d_stable(input.size()),
+      d_native(input.size());
+  d_input.copy_from_host(input.data(), input.size());
+  deterministic_rsqrt_probe<<<static_cast<unsigned>((input.size() + 255) / 256), 256>>>(
+      d_input.get(), d_stable.get(), d_native.get(), static_cast<int>(input.size()));
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  d_stable.copy_to_host(stable.data(), stable.size());
+  d_native.copy_to_host(native.data(), native.size());
+  const struct { size_t index; uint32_t expected; } exceptional[] = {
+      {0, 0x7f800000u}, {1, 0xff800000u}, {7, 0x00000000u},
+      {8, 0x7fc00000u}, {9, 0x7fc00000u}, {10, 0x7fc00000u}};
+  for (const auto& item : exceptional) {
+    uint32_t actual = 0;
+    std::memcpy(&actual, &stable[item.index], sizeof(actual));
+    CHECK_MSG(actual == item.expected, "deterministic rsqrt exceptional %zu: %08x",
+              item.index, actual);
+  }
+  uint32_t max_reference_ulp = 0;
+  uint32_t max_native_ulp = 0;
+  double max_relative_error = 0.0;
+  for (size_t i = 2; i < bits.size(); ++i) {
+    if ((bits[i] & 0x80000000u) != 0u || (bits[i] & 0x7f800000u) == 0x7f800000u)
+      continue;
+    const float reference = static_cast<float>(1.0 / std::sqrt(static_cast<double>(input[i])));
+    uint32_t reference_bits = 0, stable_bits = 0, native_bits = 0;
+    std::memcpy(&reference_bits, &reference, 4);
+    std::memcpy(&stable_bits, &stable[i], 4);
+    std::memcpy(&native_bits, &native[i], 4);
+    max_reference_ulp = std::max(max_reference_ulp,
+        reference_bits > stable_bits ? reference_bits - stable_bits : stable_bits - reference_bits);
+    max_native_ulp = std::max(max_native_ulp,
+        native_bits > stable_bits ? native_bits - stable_bits : stable_bits - native_bits);
+    const double exact = 1.0 / std::sqrt(static_cast<double>(input[i]));
+    max_relative_error = std::max(max_relative_error,
+                                  std::abs(static_cast<double>(stable[i]) - exact) / exact);
+  }
+  CHECK_MSG(max_reference_ulp <= 1u, "deterministic rsqrt max reference error %u ULP",
+            max_reference_ulp);
+  CHECK_MSG(max_native_ulp <= 2u, "deterministic/native rsqrt max difference %u ULP",
+            max_native_ulp);
+  std::printf("  deterministic rsqrt: reference max %u ULP, native max delta %u ULP, "
+              "relative %.3e\n", max_reference_ulp, max_native_ulp,
+              max_relative_error);
+
+  auto benchmark = [](int rows, int dim) {
+    const size_t count = static_cast<size_t>(rows) * dim;
+    std::vector<float> values(count, 0.5f), weights(dim, 1.0f);
+    cuda::DeviceBuffer<float> d_values(count), d_weights(dim), d_output(count);
+    d_values.copy_from_host(values.data(), count);
+    d_weights.copy_from_host(weights.data(), dim);
+    for (int warm = 0; warm < 10; ++warm)
+      cuda::launch_rmsnorm(d_values.get(), d_weights.get(), d_output.get(), rows, dim,
+                           1.0e-6f, nullptr);
+    cudaEvent_t start{}, stop{};
+    VIDFAB_CUDA_CHECK(cudaEventCreate(&start)); VIDFAB_CUDA_CHECK(cudaEventCreate(&stop));
+    VIDFAB_CUDA_CHECK(cudaEventRecord(start));
+    for (int iteration = 0; iteration < 100; ++iteration)
+      cuda::launch_rmsnorm(d_values.get(), d_weights.get(), d_output.get(), rows, dim,
+                           1.0e-6f, nullptr);
+    VIDFAB_CUDA_CHECK(cudaEventRecord(stop)); VIDFAB_CUDA_CHECK(cudaEventSynchronize(stop));
+    float stable_ms = 0.0f; VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&stable_ms, start, stop));
+    for (int warm = 0; warm < 10; ++warm)
+      native_rmsnorm_probe<<<rows, 256>>>(d_values.get(), d_weights.get(), d_output.get(), dim,
+                                         1.0e-6f);
+    VIDFAB_CUDA_CHECK(cudaEventRecord(start));
+    for (int iteration = 0; iteration < 100; ++iteration)
+      native_rmsnorm_probe<<<rows, 256>>>(d_values.get(), d_weights.get(), d_output.get(), dim,
+                                         1.0e-6f);
+    VIDFAB_CUDA_CHECK(cudaEventRecord(stop)); VIDFAB_CUDA_CHECK(cudaEventSynchronize(stop));
+    float native_ms = 0.0f; VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&native_ms, start, stop));
+    cudaEventDestroy(start); cudaEventDestroy(stop);
+    std::printf("  RMS %dx%d CUDA deterministic %.4f ms, native %.4f ms (%+.1f%%)\n",
+                rows, dim, stable_ms / 100.0f, native_ms / 100.0f,
+                (stable_ms / native_ms - 1.0f) * 100.0f);
+  };
+  benchmark(32768, 128);
+  benchmark(2048, 5120);
+  benchmark(2048, 5376);
+}
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   using namespace vidfab;
@@ -398,14 +535,14 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
   options.enable_shader_int64 = physical.front().info().shader_int64;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
-  if (!vk.exact_fp32_vae_normalization()) {
+  if (!vk.exact_normalization()) {
     bool rejected = false;
-    try { vk.require_exact_fp32_vae_normalization(); }
+    try { vk.require_exact_normalization(); }
     catch (const std::runtime_error&) { rejected = true; }
     CHECK(rejected);
     return;
   }
-  vk.require_exact_fp32_vae_normalization();
+  vk.require_exact_normalization();
 
   auto run_case = [&](int rows, int dim, float epsilon, int pattern) {
     const size_t count = static_cast<size_t>(rows) * dim;
@@ -428,6 +565,13 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
         input[i] = (i & 1) ? -1.0e16f : 1.0e16f;
     } else if (pattern == 3) {
       std::fill(input.begin(), input.end(), 0.0f);
+    } else if (pattern == 4) {
+      for (size_t i = 0; i < input.size(); ++i) {
+        const uint32_t exponent = 97u + static_cast<uint32_t>(i % 61u);
+        const uint32_t mantissa = static_cast<uint32_t>(i * 2654435761u) & 0x007fffffu;
+        const uint32_t value_bits = exponent << 23u | mantissa;
+        std::memcpy(&input[i], &value_bits, sizeof(value_bits));
+      }
     }
 
     cuda::DeviceBuffer<float> c_input(count), c_weight(dim), c_bias(dim),
@@ -487,6 +631,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
   run_case(2, 2048, 1.0e-6f, 2);  // shipped video-VAE width
   run_case(2, 7, 1.0e-6f, 1);     // dimension below a warp
   run_case(1, 9, std::numeric_limits<float>::min(), 3);
+  run_case(4099, 1, 1.0e-6f, 4);  // dense exponent/mantissa and dispatch tail
 
   // Host-known values outside the exact domain fail before recording and do
   // not poison an otherwise valid batch.
@@ -555,7 +700,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
   options.enable_shader_int64 = physical.front().info().shader_int64;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
-  if (!vk.exact_fp32_vae_normalization()) return;
+  if (!vk.exact_normalization()) return;
   auto exact_bf16 = [](float value) {
     uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
@@ -669,7 +814,8 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
   run_layer(1, 4608, false);
   run_layer(3, 129, true);
 
-  auto run_mod = [&](bool fp32) {
+  auto run_mod = [&](bool fp32, bool invalid_selectors = false,
+                     bool contraction_fixture = false) {
     constexpr int rows = 3, dim = 5376, mod_rows = 4;
     const size_t count = static_cast<size_t>(rows) * dim;
     auto bf_input = make_bf16_data(count, 0);
@@ -681,13 +827,25 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     std::vector<uint16_t> weight(dim);
     std::vector<float> scale(static_cast<size_t>(mod_rows) * dim);
     std::vector<float> shift(scale.size());
-    const int32_t selectors[] = {3, 0, 2};
+    const int32_t valid_selector_values[] = {3, 0, 2};
+    const int32_t invalid_selector_values[] = {-1, 4, -2};
+    const int32_t* selectors = invalid_selectors ? invalid_selector_values
+                                                 : valid_selector_values;
     for (int i = 0; i < dim; ++i)
       weight[i] = exact_bf16(0.5f + static_cast<float>(i % 8) / 8.0f);
     for (size_t i = 0; i < scale.size(); ++i) {
       scale[i] = static_cast<float>(static_cast<int>(i % 13) - 6) / 32.0f;
       shift[i] = static_cast<float>(static_cast<int>(i % 17) - 8) / 64.0f;
     }
+    if (contraction_fixture) {
+      std::fill(f_input.begin(), f_input.begin() + dim, 0.5f);
+      weight[0] = exact_bf16(1.5f);
+      const uint32_t scale_bits = 0xbebf60eeu;
+      const uint32_t shift_bits = 0x3714c343u;
+      std::memcpy(&scale[static_cast<size_t>(selectors[0]) * dim], &scale_bits, 4);
+      std::memcpy(&shift[static_cast<size_t>(selectors[0]) * dim], &shift_bits, 4);
+    }
+    const float epsilon = contraction_fixture ? 0.75f : 1.0e-5f;
     cuda::DeviceBuffer<uint16_t> c_bf_input(count), c_weight(dim), c_bf_output(count);
     cuda::DeviceBuffer<float> c_f_input(count), c_scale(scale.size()), c_shift(shift.size()),
         c_f_output(count);
@@ -698,12 +856,12 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     c_scale.copy_from_host(scale.data(), scale.size());
     c_shift.copy_from_host(shift.data(), shift.size());
     c_selectors.copy_from_host(selectors, rows);
-    if (fp32) {
+    if (!invalid_selectors && fp32) {
       cuda::launch_rmsnorm_modulate_f32(
           c_f_input.get(), reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
           c_scale.get(), c_shift.get(), c_selectors.get(), c_f_output.get(), rows, dim,
-          1.0e-5f, nullptr);
-    } else {
+          epsilon, nullptr);
+    } else if (!invalid_selectors) {
       cuda::launch_rmsnorm_modulate(
           reinterpret_cast<const __nv_bfloat16*>(c_bf_input.get()),
           reinterpret_cast<const __nv_bfloat16*>(c_weight.get()), c_scale.get(),
@@ -730,17 +888,23 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     vk.upload_bytes(v_weight, weight.data(), weight.size() * sizeof(uint16_t));
     vk.upload(v_scale, scale.data(), scale.size());
     vk.upload(v_shift, shift.data(), shift.size());
-    vk.upload_bytes(v_selectors, selectors, sizeof(selectors));
+    vk.upload_bytes(v_selectors, selectors, rows * sizeof(int32_t));
     TensorBatch batch = vk.begin_batch();
     if (fp32) batch.rms_norm_modulate_f32(v_input, v_weight, v_scale, v_shift,
-                                          v_selectors, v_output, 1.0e-5f);
+                                          v_selectors, v_output, epsilon);
     else batch.rms_norm_modulate_bf16(v_input, v_weight, v_scale, v_shift,
-                                      v_selectors, v_output, 1.0e-5f);
+                                      v_selectors, v_output, epsilon);
     batch.submit().wait();
     if (fp32) {
       std::vector<float> expected(count), actual(count);
-      c_f_output.copy_to_host(expected.data(), count);
+      if (!invalid_selectors) c_f_output.copy_to_host(expected.data(), count);
       vk.download(v_output, actual.data(), count);
+      if (contraction_fixture) {
+        uint32_t fused_bits = 0;
+        std::memcpy(&fused_bits, &expected[0], 4);
+        CHECK_MSG(fused_bits == 0x3ef07877u,
+                  "CUDA AdaLN must select fused result, got %08x", fused_bits);
+      }
       size_t mismatch = count;
       for (size_t i = 0; i < count; ++i) {
         if (std::memcmp(&expected[i], &actual[i], sizeof(float)) != 0) {
@@ -757,13 +921,16 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
                 expected_bits, actual_bits);
     } else {
       std::vector<uint16_t> expected(count), actual(count);
-      c_bf_output.copy_to_host(expected.data(), count);
+      if (!invalid_selectors) c_bf_output.copy_to_host(expected.data(), count);
       vk.download_bytes(v_output, actual.data(), actual.size() * sizeof(uint16_t));
       compare_bf16(expected, actual, "BF16 AdaLN", rows, dim);
     }
   };
   run_mod(false);
   run_mod(true);
+  run_mod(false, true);
+  run_mod(true, true);
+  run_mod(true, false, true);
 }
 
 int main() { return ::vidfab::test::run_all(); }
