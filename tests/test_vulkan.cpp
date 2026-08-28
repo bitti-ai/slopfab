@@ -9,6 +9,8 @@
 
 #include "vidfab/vulkan/runtime.h"
 #include "vidfab/vulkan/compute.h"
+#include "vidfab/vulkan/yuv_converter.h"
+#include "vidfab/video/y4m.h"
 
 namespace {
 
@@ -315,6 +317,81 @@ VIDFAB_TEST(vulkan_compute_submission) {
   CHECK(pool.used_bytes() == 0);
   pool.trim();
   CHECK(pool.reserved_bytes() == 0);
+}
+
+VIDFAB_TEST(vulkan_yuv420_output) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance probe = Instance::create();
+  const auto devices = probe.enumerate_devices();
+  if (devices.empty() || !devices.front().info().timeline_semaphore) return;
+
+  Yuv420Converter converter;
+  struct Extent { int width; int height; };
+  const Extent extents[] = {{2, 2}, {10, 6}, {128, 66}};
+  uint64_t previous_high_water = 0;
+  for (const Extent extent : extents) {
+    const size_t pixels = static_cast<size_t>(extent.width) * extent.height;
+    std::vector<float> r(pixels), g(pixels), b(pixels);
+    for (size_t i = 0; i < pixels; ++i) {
+      r[i] = static_cast<float>((i * 17) % 113) / 97.0f - 0.08f;
+      g[i] = static_cast<float>((i * 29 + 3) % 127) / 109.0f;
+      b[i] = static_cast<float>((i * 43 + 11) % 139) / 101.0f - 0.12f;
+    }
+    const int ys = extent.width + 13;
+    const int cs = extent.width / 2 + 7;
+    std::vector<uint8_t> cpu_y(static_cast<size_t>(ys) * extent.height, 0xa5);
+    std::vector<uint8_t> cpu_u(static_cast<size_t>(cs) * (extent.height / 2), 0xa5);
+    std::vector<uint8_t> cpu_v(cpu_u.size(), 0xa5);
+    std::vector<uint8_t> vk_y(cpu_y.size(), 0xa5), vk_u(cpu_u.size(), 0xa5), vk_v(cpu_v.size(), 0xa5);
+    video::rgb_frame_to_yuv420(r.data(), g.data(), b.data(), extent.height, extent.width,
+                               cpu_y.data(), ys, cpu_u.data(), cs, cpu_v.data(), cs);
+    converter.convert(r.data(), g.data(), b.data(), extent.height, extent.width,
+                      vk_y.data(), ys, vk_u.data(), cs, vk_v.data(), cs);
+
+    int differences = 0;
+    int max_difference = 0;
+    auto compare_plane = [&](const std::vector<uint8_t>& expected,
+                             const std::vector<uint8_t>& actual, int rows, int columns,
+                             int stride) {
+      for (int y = 0; y < rows; ++y) {
+        for (int x = 0; x < columns; ++x) {
+          const int delta = std::abs(static_cast<int>(expected[static_cast<size_t>(y) * stride + x]) -
+                                     static_cast<int>(actual[static_cast<size_t>(y) * stride + x]));
+          if (delta != 0) ++differences;
+          max_difference = std::max(max_difference, delta);
+        }
+        for (int x = columns; x < stride; ++x) {
+          CHECK(actual[static_cast<size_t>(y) * stride + x] == 0xa5);
+        }
+      }
+    };
+    compare_plane(cpu_y, vk_y, extent.height, extent.width, ys);
+    compare_plane(cpu_u, vk_u, extent.height / 2, extent.width / 2, cs);
+    compare_plane(cpu_v, vk_v, extent.height / 2, extent.width / 2, cs);
+    CHECK_MSG(max_difference <= 1,
+              "Vulkan YUV differs by %d (changed samples %d) at %dx%d",
+              max_difference, differences, extent.width, extent.height);
+    CHECK(converter.capacity_pixels() >= pixels);
+    CHECK(converter.high_water_bytes() >= previous_high_water);
+    previous_high_water = converter.high_water_bytes();
+
+    const uint64_t reserved = converter.reserved_bytes();
+    converter.convert(r.data(), g.data(), b.data(), extent.height, extent.width,
+                      vk_y.data(), ys, vk_u.data(), cs, vk_v.data(), cs);
+    CHECK(converter.reserved_bytes() == reserved);
+  }
+
+  bool odd_rejected = false;
+  uint8_t byte = 0;
+  float sample = 0;
+  try {
+    converter.convert(&sample, &sample, &sample, 2, 3, &byte, 3, &byte, 1, &byte, 1);
+  } catch (const std::invalid_argument&) {
+    odd_rejected = true;
+  }
+  CHECK(odd_rejected);
 }
 
 }  // namespace

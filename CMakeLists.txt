@@ -226,10 +226,37 @@ endif()
 # no Vulkan SDK at build time and does not add a load-time dependency to any
 # existing vidfab binary.
 if(VIDFAB_ENABLE_VULKAN)
-  add_library(vidfab_vulkan STATIC src/vulkan/runtime.cpp)
+  set(VIDFAB_YUV_SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp")
+  set(VIDFAB_YUV_SHADER_SPV "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp.spv")
+  file(READ "${VIDFAB_YUV_SHADER_SOURCE}" VIDFAB_YUV_SHADER_TEXT)
+  string(REPLACE "\r\n" "\n" VIDFAB_YUV_SHADER_TEXT "${VIDFAB_YUV_SHADER_TEXT}")
+  string(SHA256 VIDFAB_YUV_SHADER_SOURCE_HASH "${VIDFAB_YUV_SHADER_TEXT}")
+  file(SHA256 "${VIDFAB_YUV_SHADER_SPV}" VIDFAB_YUV_SHADER_SPV_HASH)
+  if(NOT VIDFAB_YUV_SHADER_SOURCE_HASH STREQUAL
+      "71504bf881a3e7140aa8a4c0bac1571679d8d173ae63f1c61d035ee4d88bb83a" OR
+     NOT VIDFAB_YUV_SHADER_SPV_HASH STREQUAL
+      "746063a7ee311855bca4fecb038abc1e7c0835e67d18180133da24154f759bba")
+    message(FATAL_ERROR
+      "vidfab: RGB-to-YUV shader/source hash mismatch; regenerate with glslang 16.5.0 "
+      "and update both pinned hashes")
+  endif()
+  file(READ "${VIDFAB_YUV_SHADER_SPV}" VIDFAB_YUV_SPV_HEX HEX)
+  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," VIDFAB_YUV_SPV_BYTES
+    "${VIDFAB_YUV_SPV_HEX}")
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan")
+  configure_file(src/vulkan/embedded_yuv_spv.h.in
+    generated/vulkan/embedded_yuv_spv.h @ONLY)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${VIDFAB_YUV_SHADER_SOURCE}" "${VIDFAB_YUV_SHADER_SPV}")
+
+  add_library(vidfab_vulkan STATIC
+    src/vulkan/runtime.cpp
+    src/vulkan/yuv_converter.cpp)
   target_include_directories(vidfab_vulkan
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan/include)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan/include
+            ${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan)
+  target_link_libraries(vidfab_vulkan PUBLIC vidfab_core)
   target_compile_definitions(vidfab_vulkan PRIVATE VK_NO_PROTOTYPES)
   if(CMAKE_DL_LIBS)
     target_link_libraries(vidfab_vulkan PRIVATE ${CMAKE_DL_LIBS})

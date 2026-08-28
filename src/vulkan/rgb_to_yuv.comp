@@ -1,0 +1,51 @@
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer PlanarRgb {
+  float samples[];
+} rgb;
+
+layout(set = 0, binding = 1, std430) writeonly buffer PlanarYuv {
+  uint samples[];
+} yuv;
+
+layout(push_constant) uniform Geometry {
+  uint width;
+  uint height;
+  uint pixels;
+} geometry;
+
+uint byte_value(float value) {
+  return uint(floor(clamp(value, 0.0, 255.0) + 0.5));
+}
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (index >= geometry.pixels) return;
+  uint plane = geometry.pixels;
+  float r = rgb.samples[index];
+  float g = rgb.samples[plane + index];
+  float b = rgb.samples[2 * plane + index];
+  float luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  yuv.samples[index] = byte_value(16.0 + 219.0 * luma);
+
+  uint x = index % geometry.width;
+  uint y = index / geometry.width;
+  if ((x & 1) != 0 || (y & 1) != 0) return;
+  uint i1 = index + 1;
+  uint i2 = index + geometry.width;
+  uint i3 = i2 + 1;
+  float rs = (r + rgb.samples[i1] + rgb.samples[i2] + rgb.samples[i3]) * 0.25;
+  float gs = (g + rgb.samples[plane + i1] + rgb.samples[plane + i2] +
+              rgb.samples[plane + i3]) * 0.25;
+  float bs = (b + rgb.samples[2 * plane + i1] + rgb.samples[2 * plane + i2] +
+              rgb.samples[2 * plane + i3]) * 0.25;
+  float block_luma = 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+  uint chroma_index = (y / 2) * (geometry.width / 2) + x / 2;
+  uint chroma_samples = geometry.pixels / 4;
+  yuv.samples[plane + chroma_index] =
+      byte_value(128.0 + 224.0 * ((bs - block_luma) / 1.8556));
+  yuv.samples[plane + chroma_samples + chroma_index] =
+      byte_value(128.0 + 224.0 * ((rs - block_luma) / 1.5748));
+}
