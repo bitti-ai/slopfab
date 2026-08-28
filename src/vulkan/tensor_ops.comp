@@ -138,7 +138,8 @@ void main() {
   } else if (parameters.op == 10u) {  // depth-to-space fp32
     uint out_w = parameters.p2 * parameters.p4;
     uint out_h = parameters.p1 * parameters.p4;
-    uint plane = parameters.p0 * out_h * out_w;
+    uint out_t = parameters.p0 * parameters.p3;
+    uint plane = out_t * out_h * out_w;
     uint channel = i / plane;
     uint rem = i - channel * plane;
     uint ot = rem / (out_h * out_w);

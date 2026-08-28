@@ -187,8 +187,11 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
       c_heads.get(), reinterpret_cast<__nv_bfloat16*>(c_tokens.get()), sequence,
       heads, head_dim, nullptr);
 
-  constexpr int depth_t = 1, depth_h = 2, depth_w = 3, depth_channels = 2;
-  constexpr int patch_t = 1, patch = 2;
+  // Every axis is nontrivial, including temporal patching. 288 output values
+  // leave a 32-invocation workgroup tail and catch an output-plane expression
+  // that accidentally omits patch_t.
+  constexpr int depth_t = 2, depth_h = 2, depth_w = 3, depth_channels = 3;
+  constexpr int patch_t = 2, patch = 2;
   constexpr size_t depth_count = static_cast<size_t>(depth_t) * depth_h * depth_w *
                                  depth_channels * patch_t * patch * patch;
   std::vector<float> depth_input(depth_count);
@@ -305,6 +308,30 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   compare_bytes(c_tokens, v_tokens, heads_count, "heads-to-tokens");
   compare_bytes(c_depth_output, v_depth_output, depth_count, "depth-to-space");
   compare_bytes(c_raw_half_wide, v_raw_half_wide, raw_half_count, "arbitrary-fp16-widen");
+
+  std::vector<float> depth_vulkan(depth_count);
+  vk.download(v_depth_output, depth_vulkan.data(), depth_vulkan.size());
+  const int out_t = depth_t * patch_t;
+  const int out_h = depth_h * patch;
+  const int out_w = depth_w * patch;
+  const int patch_volume = patch_t * patch * patch;
+  for (int channel = 0; channel < depth_channels; ++channel) {
+    for (int ot = 0; ot < out_t; ++ot) {
+      for (int oh = 0; oh < out_h; ++oh) {
+        for (int ow = 0; ow < out_w; ++ow) {
+          const size_t output_index =
+              ((static_cast<size_t>(channel) * out_t + ot) * out_h + oh) * out_w + ow;
+          const int token = ((ot / patch_t) * depth_h + oh / patch) * depth_w + ow / patch;
+          const int feature = channel * patch_volume +
+              ((ot % patch_t) * patch + oh % patch) * patch + ow % patch;
+          const size_t source_index = static_cast<size_t>(token) *
+                                          (depth_channels * patch_volume) +
+                                      feature;
+          CHECK(depth_vulkan[output_index] == depth_input[source_index]);
+        }
+      }
+    }
+  }
 }
 
 int main() { return ::vidfab::test::run_all(); }
