@@ -2,13 +2,27 @@
 
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "vidfab/vulkan/runtime.h"
+#include "vidfab/vulkan/compute.h"
 
 namespace {
+
+std::vector<uint32_t> load_spirv(const char* path) {
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file) throw std::runtime_error(std::string("cannot open SPIR-V: ") + path);
+  const std::streamoff length = file.tellg();
+  if (length <= 0 || (length % 4) != 0) throw std::runtime_error("invalid SPIR-V byte size");
+  file.seekg(0);
+  std::vector<uint32_t> words(static_cast<size_t>(length) / 4);
+  file.read(reinterpret_cast<char*>(words.data()), length);
+  if (!file) throw std::runtime_error("cannot read SPIR-V");
+  return words;
+}
 
 VIDFAB_TEST(vulkan_runtime_and_pool) {
   using namespace vidfab::vulkan;
@@ -136,6 +150,135 @@ VIDFAB_TEST(vulkan_runtime_and_pool) {
   pool.trim();
   CHECK(pool.reserved_bytes() == 0);
   queue.wait_idle();
+}
+
+VIDFAB_TEST(vulkan_compute_submission) {
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  std::vector<PhysicalDevice> physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+
+  DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  Device device = physical.front().create_device(device_options);
+  ComputeContextOptions context_options;
+  context_options.max_in_flight = 2;
+  context_options.max_storage_bindings = 2;
+  ComputeContext context(device, context_options);
+  ComputeContext other_context(device, context_options);
+
+  const std::vector<uint32_t> spirv = load_spirv(VIDFAB_TEST_AFFINE_SPV_PATH);
+  ComputePipelineOptions pipeline_options;
+  pipeline_options.storage_binding_count = 2;
+  pipeline_options.push_constant_bytes = 12;
+  pipeline_options.local_size[0] = 64;
+  ComputePipeline pipeline = ComputePipeline::create(device, spirv, pipeline_options);
+
+  bool local_size_rejected = false;
+  try {
+    ComputePipelineOptions wrong = pipeline_options;
+    wrong.local_size[0] = 32;
+    (void)ComputePipeline::create(device, spirv, wrong);
+  } catch (const std::invalid_argument&) {
+    local_size_rejected = true;
+  }
+  CHECK(local_size_rejected);
+
+  // A list is context-owned and cannot be submitted through a different
+  // timeline. Its destructor safely returns the still-recording slot.
+  bool foreign_rejected = false;
+  {
+    CommandList foreign = other_context.begin();
+    try {
+      (void)context.submit(std::move(foreign));
+    } catch (const std::invalid_argument&) {
+      foreign_rejected = true;
+    }
+  }
+  CHECK(foreign_rejected);
+  CHECK(other_context.in_flight() == 0);
+
+  constexpr uint32_t count = 1003;  // deliberately not a multiple of local_size_x
+  constexpr uint64_t bytes = static_cast<uint64_t>(count) * sizeof(float);
+  BufferPool pool(device, 64 * 1024);
+  const BufferUsage upload_usage = BufferUsage::kTransferSource;
+  const BufferUsage input_usage = BufferUsage::kTransferDestination | BufferUsage::kStorage;
+  const BufferUsage output_usage = BufferUsage::kStorage | BufferUsage::kTransferSource;
+  const BufferUsage readback_usage = BufferUsage::kTransferDestination;
+
+  // Range and usage failures happen before any Vulkan command is emitted and
+  // the abandoned list remains recyclable.
+  {
+    Buffer tiny_src = pool.allocate(16, upload_usage, MemoryUsage::kUpload);
+    Buffer tiny_dst = pool.allocate(16, input_usage, MemoryUsage::kDevice);
+    CommandList invalid = context.begin();
+    bool range_rejected = false;
+    try {
+      invalid.copy_buffer(tiny_src, tiny_dst, 17);
+    } catch (const std::out_of_range&) {
+      range_rejected = true;
+    }
+    CHECK(range_rejected);
+  }
+  CHECK(context.in_flight() == 0);
+
+  struct Parameters { float scale; float bias; uint32_t count; };
+  struct Job {
+    Submission completion;
+    Buffer readback;
+    float scale = 0;
+    float bias = 0;
+  };
+  std::vector<float> input(count);
+  for (uint32_t i = 0; i < count; ++i) input[i] = static_cast<float>(i) * 0.125f - 7.0f;
+  std::vector<Job> jobs;
+
+  for (uint32_t iteration = 0; iteration < 5; ++iteration) {
+    Buffer upload = pool.allocate(bytes, upload_usage, MemoryUsage::kUpload);
+    Buffer device_input = pool.allocate(bytes, input_usage, MemoryUsage::kDevice);
+    Buffer device_output = pool.allocate(bytes, output_usage, MemoryUsage::kDevice);
+    Buffer readback = pool.allocate(bytes, readback_usage, MemoryUsage::kReadback);
+    upload.write(0, input.data(), bytes);
+
+    const Parameters parameters{1.25f + iteration * 0.5f,
+                                -3.0f + static_cast<float>(iteration), count};
+    CommandList commands = context.begin();
+    commands.barrier(upload, BufferAccess::kHostWrite, BufferAccess::kTransferRead);
+    commands.copy_buffer(upload, device_input, bytes);
+    commands.barrier(device_input, BufferAccess::kTransferWrite, BufferAccess::kComputeRead);
+    commands.bind_compute(pipeline, {{0, &device_input, 0, bytes},
+                                     {1, &device_output, 0, bytes}});
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch((count + 63) / 64);
+    commands.barrier(device_output, BufferAccess::kComputeWrite,
+                     BufferAccess::kTransferRead);
+    commands.copy_buffer(device_output, readback, bytes);
+    commands.barrier(readback, BufferAccess::kTransferWrite, BufferAccess::kHostRead);
+    Submission completion = context.submit(std::move(commands));
+    CHECK(completion.value() != 0);
+    CHECK(context.in_flight() <= 2);
+    jobs.push_back({std::move(completion), std::move(readback),
+                    parameters.scale, parameters.bias});
+    // upload/device_input/device_output wrappers die here. The submitted slot
+    // retains their allocations until its exact timeline value completes.
+  }
+  pipeline = ComputePipeline();  // in-flight jobs retain the pipeline too
+
+  uint64_t previous_value = 0;
+  for (Job& job : jobs) {
+    CHECK(job.completion.value() > previous_value);
+    previous_value = job.completion.value();
+    job.completion.wait();
+    context.collect();
+    std::vector<float> output(count);
+    job.readback.read(0, output.data(), bytes);
+    for (uint32_t i = 0; i < count; ++i) {
+      CHECK_NEAR(output[i], input[i] * job.scale + job.bias, 1e-5);
+    }
+  }
+  CHECK(context.in_flight() == 0);
+  pool.trim();
 }
 
 }  // namespace

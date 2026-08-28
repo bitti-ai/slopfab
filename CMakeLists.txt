@@ -598,6 +598,10 @@ if(VIDFAB_BUILD_TESTS)
   if(VIDFAB_ENABLE_VULKAN)
     add_executable(vidfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp)
     target_link_libraries(vidfab_vulkan_tests PRIVATE vidfab_vulkan)
+    file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp.spv"
+      VIDFAB_TEST_AFFINE_SPV_PATH)
+    target_compile_definitions(vidfab_vulkan_tests PRIVATE
+      VIDFAB_TEST_AFFINE_SPV_PATH="${VIDFAB_TEST_AFFINE_SPV_PATH}")
     if(MSVC)
       target_compile_options(vidfab_vulkan_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
     else()
