@@ -253,6 +253,7 @@ VIDFAB_TEST(vulkan_compute_submission) {
     invalid.copy_buffer(self_copy, self_copy, 16, 0, 16);
   }
   CHECK(context.in_flight() == 0);
+  CHECK(pool.used_bytes() == 0);
 
   struct Parameters { float scale; float bias; uint32_t count; };
   struct Job {
@@ -309,7 +310,11 @@ VIDFAB_TEST(vulkan_compute_submission) {
     }
   }
   CHECK(context.in_flight() == 0);
+  jobs.clear();
+  context.collect();
+  CHECK(pool.used_bytes() == 0);
   pool.trim();
+  CHECK(pool.reserved_bytes() == 0);
 }
 
 }  // namespace

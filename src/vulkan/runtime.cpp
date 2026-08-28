@@ -1189,7 +1189,6 @@ struct ComputeSlot {
   std::vector<uint8_t> seen_bindings;
   std::vector<VkDescriptorBufferInfo> descriptor_infos;
   std::vector<VkWriteDescriptorSet> descriptor_writes;
-  std::vector<std::shared_ptr<void>> binding_resources;
 };
 
 struct ComputeState : std::enable_shared_from_this<ComputeState> {
@@ -1507,7 +1506,6 @@ ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions
       slot.seen_bindings.reserve(options.max_storage_bindings);
       slot.descriptor_infos.reserve(options.max_storage_bindings);
       slot.descriptor_writes.reserve(options.max_storage_bindings);
-      slot.binding_resources.reserve(options.max_storage_bindings);
       VkCommandPoolCreateInfo pool_create{};
       pool_create.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
       pool_create.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1754,7 +1752,6 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
   slot.seen_bindings.assign(bindings.size(), 0);
   slot.descriptor_infos.resize(bindings.size());
   slot.descriptor_writes.resize(bindings.size());
-  slot.binding_resources.clear();
   for (size_t i = 0; i < bindings.size(); ++i) {
     const auto& binding = bindings[i];
     if (binding.binding >= bindings.size() || slot.seen_bindings[binding.binding] ||
@@ -1783,10 +1780,11 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
     slot.descriptor_writes[i].descriptorCount = 1;
     slot.descriptor_writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     slot.descriptor_writes[i].pBufferInfo = &slot.descriptor_infos[i];
-    slot.binding_resources.push_back(binding.buffer->impl_);
   }
-  impl_->resources.reserve(impl_->resources.size() + slot.binding_resources.size() + 1);
-  for (const auto& resource : slot.binding_resources) impl_->retain(resource);
+  // Retain only after every binding has validated. This second small pass is
+  // allocation-free because the job vector is pre-reserved from its slot.
+  impl_->resources.reserve(impl_->resources.size() + bindings.size() + 1);
+  for (const auto& binding : bindings) impl_->retain(binding.buffer->impl_);
   impl_->retain(pipeline.impl_);
   if (slot.descriptor_pipeline.get() != pipeline.impl_.get()) {
     detail::check(impl_->state->f.reset_descriptor_pool(impl_->state->device->device,
