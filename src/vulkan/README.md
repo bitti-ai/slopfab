@@ -87,9 +87,12 @@ Denorm-only variants create successfully while RTE-only reproduces the fault.
 There is no runtime SPIR-V mutation.
 
 Exact VAE normalization is consequently a separate, fail-closed capability:
-`exact_fp32_vae_normalization()` currently requires a compatible NVIDIA Vulkan
-device and the queried signed-zero/Inf/NaN and RTE properties. The arithmetic
-contract covers zero and finite-normal input, affine values, epsilon,
-intermediates and results. NaNs and subnormal arithmetic are excluded;
-host-known subnormal epsilon is rejected before recording. Other tensor
-primitives remain available on non-NVIDIA Vulkan devices.
+`exact_fp32_vae_normalization()` currently recognizes only the measured tuple
+RTX 5090 (`deviceID 0x2b85`) with NVIDIA driver 610.88 (`driverVersion
+0x98960000`) and the queried signed-zero/Inf/NaN property. Generic NVIDIA or
+RTE capability is not treated as proof because the executed module does not
+declare RTE and SPIR-V `InverseSqrt` has no CUDA bit-identity guarantee. The
+arithmetic contract covers zero and finite-normal input, affine values,
+epsilon, intermediates and results. NaNs and subnormal arithmetic are excluded;
+host-known subnormal epsilon is rejected before recording. Unknown devices and
+drivers fail before recording a norm; other tensor primitives remain usable.

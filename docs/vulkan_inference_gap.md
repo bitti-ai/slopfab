@@ -94,9 +94,11 @@ FP32 arithmetic does not promise a NaN payload. Subnormal inputs/results are
 available only when the queried float-control mode supports them; the public
 `require_full_fp32_arithmetic_exactness()` gate fails closed otherwise.
 The VAE normalization reduction tree is CUDA-bit-exact over its zero and
-finite-normal domain on the separately gated NVIDIA path. It covers the shipped
-2048-wide VAE norms and final affine LayerNorm without a host boundary.
-NaN/subnormal arithmetic is excluded and subnormal epsilon is rejected.
+finite-normal domain on the separately gated, measured RTX 5090/driver 610.88
+tuple. Generic NVIDIA and float-control support are not accepted as proof of
+`InverseSqrt` bit identity. It covers the shipped 2048-wide VAE norms and final
+affine LayerNorm without a host boundary. NaN/subnormal arithmetic is excluded,
+subnormal epsilon is rejected, and unknown driver tuples fail before recording.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and

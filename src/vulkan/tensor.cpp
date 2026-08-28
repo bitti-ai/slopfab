@@ -117,9 +117,10 @@ struct TensorContext::Impl {
           "and round-to-nearest-even");
     }
     full_arithmetic_exact = input.info().fp32_denorm_preserve;
-    exact_vae_norm = input.info().vendor_id == 0x10deu &&
-                     input.info().fp32_signed_zero_inf_nan_preserve &&
-                     input.info().fp32_rounding_rte;
+    exact_vae_norm = detail::known_exact_vae_norm_device(
+                         input.info().vendor_id, input.info().device_id,
+                         input.info().driver_version) &&
+                     input.info().fp32_signed_zero_inf_nan_preserve;
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
     max_storage_bytes = input.info().max_storage_buffer_bytes;
     const uint8_t* shader = full_arithmetic_exact ? detail::kTensorOpsDenormSpirv

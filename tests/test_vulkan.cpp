@@ -893,9 +893,12 @@ VIDFAB_TEST(vulkan_tensor_exact_vae_norms) {
   options.enable_timeline_semaphore = true;
   Device device = physical.front().create_device(options);
   TensorContext tensors(device);
-  const bool expected_capability = info.vendor_id == 0x10deu &&
-                                   info.fp32_signed_zero_inf_nan_preserve &&
-                                   info.fp32_rounding_rte;
+  const bool expected_capability = detail::known_exact_vae_norm_device(
+                                       info.vendor_id, info.device_id,
+                                       info.driver_version) &&
+                                   info.fp32_signed_zero_inf_nan_preserve;
+  CHECK(!detail::known_exact_vae_norm_device(0x10deu, 0x2b85u, 0x98960001u));
+  CHECK(!detail::known_exact_vae_norm_device(0x10deu, 0x2b86u, 0x98960000u));
   CHECK(tensors.exact_fp32_vae_normalization() == expected_capability);
   if (!expected_capability) {
     bool rejected = false;
