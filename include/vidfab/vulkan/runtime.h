@@ -122,7 +122,8 @@ class Queue {
   uint32_t family_index() const;
   void wait_idle() const;
   // Dispatchable Vulkan handles are pointer-shaped. This escape hatch is for
-  // the later command-submission layer without leaking SDK types here.
+  // the later command-submission layer without leaking SDK types here. Calls
+  // made through it are externally synchronized with Queue methods.
   void* native_handle() const noexcept;
   explicit operator bool() const noexcept;
 

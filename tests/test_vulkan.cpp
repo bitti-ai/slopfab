@@ -58,6 +58,19 @@ VIDFAB_TEST(vulkan_runtime_and_pool) {
   feature_options.enable_descriptor_indexing = info.descriptor_indexing;
   Device feature_device = physical.front().create_device(feature_options);
   CHECK(static_cast<bool>(feature_device));
+  if (info.buffer_device_address) {
+    BufferPool address_pool(feature_device, 64 * 1024);
+    {
+      Buffer addressable = address_pool.allocate(
+          257, BufferUsage::kStorage | BufferUsage::kDeviceAddress,
+          MemoryUsage::kDevice);
+      CHECK(static_cast<bool>(addressable));
+      CHECK(address_pool.used_bytes() >= addressable.size());
+    }
+    CHECK(address_pool.used_bytes() == 0);
+    address_pool.trim();
+    CHECK(address_pool.reserved_bytes() == 0);
+  }
   feature_device.wait_idle();
   feature_device = Device();
 

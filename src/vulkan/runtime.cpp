@@ -291,7 +291,8 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
         features12.descriptorBindingVariableDescriptorCount == VK_TRUE;
     info.storage_buffer_non_uniform_indexing =
         features12.shaderStorageBufferArrayNonUniformIndexing == VK_TRUE;
-    info.descriptor_indexing = info.runtime_descriptor_array &&
+    info.descriptor_indexing = features12.descriptorIndexing == VK_TRUE &&
+                               info.runtime_descriptor_array &&
                                info.descriptor_binding_partially_bound &&
                                info.descriptor_binding_variable_count &&
                                info.storage_buffer_non_uniform_indexing;
@@ -658,6 +659,7 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
     void* mapped = nullptr;
     bool dedicated = false;
     bool addressable = false;
+    bool recycle_failed = false;
     uint64_t used = 0;
     std::vector<Range> free;
     mutable std::mutex mapped_mutex;
@@ -708,6 +710,9 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
           bytes > range.bytes - (aligned - range.offset)) continue;
       const uint64_t prefix = aligned - range.offset;
       const uint64_t suffix = range.bytes - prefix - bytes;
+      // A split grows the vector by one. Reserve before changing the free list
+      // so allocation failure leaves the original span intact.
+      if (prefix != 0 && suffix != 0) block.free.reserve(block.free.size() + 1);
       block.free.erase(block.free.begin() + static_cast<std::ptrdiff_t>(i));
       if (suffix != 0) block.free.insert(block.free.begin() + static_cast<std::ptrdiff_t>(i),
                                         {aligned + bytes, suffix});
@@ -760,26 +765,38 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
     return block;
   }
 
-  void release(const std::shared_ptr<Block>& block, uint64_t offset, uint64_t bytes) {
+  void release(const std::shared_ptr<Block>& block, uint64_t offset, uint64_t bytes) noexcept {
     std::lock_guard<std::mutex> lock(mutex);
     block->used -= bytes;
-    auto pos = std::lower_bound(block->free.begin(), block->free.end(), offset,
-                                [](const Range& range, uint64_t value) {
-                                  return range.offset < value;
-                                });
-    pos = block->free.insert(pos, {offset, bytes});
-    if (pos != block->free.begin()) {
-      auto previous = pos - 1;
-      if (previous->offset + previous->bytes == pos->offset) {
-        previous->bytes += pos->bytes;
-        pos = block->free.erase(pos) - 1;
+    if (!block->recycle_failed) {
+      try {
+        // Reserve before mutation. If metadata allocation fails, retire this
+        // whole block from reuse; its remaining live buffers stay valid and
+        // the block is freed as soon as the last one is released.
+        block->free.reserve(block->free.size() + 1);
+        auto pos = std::lower_bound(block->free.begin(), block->free.end(), offset,
+                                    [](const Range& range, uint64_t value) {
+                                      return range.offset < value;
+                                    });
+        pos = block->free.insert(pos, {offset, bytes});
+        if (pos != block->free.begin()) {
+          auto previous = pos - 1;
+          if (previous->offset + previous->bytes == pos->offset) {
+            previous->bytes += pos->bytes;
+            pos = block->free.erase(pos) - 1;
+          }
+        }
+        if (pos + 1 != block->free.end() &&
+            pos->offset + pos->bytes == (pos + 1)->offset) {
+          pos->bytes += (pos + 1)->bytes;
+          block->free.erase(pos + 1);
+        }
+      } catch (...) {
+        block->recycle_failed = true;
+        block->free.clear();
       }
     }
-    if (pos + 1 != block->free.end() && pos->offset + pos->bytes == (pos + 1)->offset) {
-      pos->bytes += (pos + 1)->bytes;
-      block->free.erase(pos + 1);
-    }
-    if (block->dedicated) {
+    if ((block->dedicated || block->recycle_failed) && block->used == 0) {
       blocks.erase(std::remove(blocks.begin(), blocks.end(), block), blocks.end());
     }
   }
@@ -870,6 +887,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
   std::shared_ptr<Impl::Block> block;
   uint64_t offset = 0;
   uint64_t suballocation_bytes = 0;
+  bool span_reserved = false;
   VkMemoryRequirements requirements{};
   try {
     bool dedicated = false;
@@ -901,10 +919,12 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
       std::lock_guard<std::mutex> lock(impl_->mutex);
       if (!dedicated) {
         for (const auto& candidate : impl_->blocks) {
-          if (!candidate->dedicated && candidate->memory_type == type &&
+          if (!candidate->dedicated && !candidate->recycle_failed &&
+              candidate->memory_type == type &&
               (!addressable || candidate->addressable) &&
               Impl::take_range(*candidate, suballocation_bytes, suballocation_alignment, &offset)) {
             block = candidate;
+            span_reserved = true;
             break;
           }
         }
@@ -923,6 +943,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
         if (!Impl::take_range(*block, suballocation_bytes, suballocation_alignment, &offset)) {
           throw std::logic_error("vulkan: new memory block cannot satisfy its buffer");
         }
+        span_reserved = true;
       }
     }
     detail::check(impl_->device->bind_buffer_memory(impl_->device->device, buffer,
@@ -939,7 +960,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
     return Buffer(std::move(result));
   } catch (...) {
     impl_->device->destroy_buffer(impl_->device->device, buffer, nullptr);
-    if (block) impl_->release(block, offset, suballocation_bytes);
+    if (span_reserved) impl_->release(block, offset, suballocation_bytes);
     throw;
   }
 }
