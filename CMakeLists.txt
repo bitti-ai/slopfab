@@ -682,6 +682,18 @@ if(VIDFAB_BUILD_TESTS)
       WORKING_DIRECTORY "$<TARGET_FILE_DIR:vidfab_vulkan_tests>")
   endif()
 
+  if(VIDFAB_ENABLE_CUDA AND VIDFAB_ENABLE_VULKAN)
+    add_executable(vidfab_tensor_backend_tests
+      tests/harness.cpp tests/test_tensor_backends.cu)
+    target_link_libraries(vidfab_tensor_backend_tests PRIVATE
+      vidfab_cuda vidfab_vulkan)
+    if(MSVC)
+      target_compile_options(vidfab_tensor_backend_tests PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive-;/utf-8;/EHsc>)
+    endif()
+    add_test(NAME tensor_backends COMMAND vidfab_tensor_backend_tests)
+  endif()
+
   if(VIDFAB_ENABLE_CUDA)
     add_executable(vidfab_kernel_tests
       tests/harness.cpp
