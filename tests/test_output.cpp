@@ -28,6 +28,17 @@
 
 namespace {
 
+struct CountingConverter final : vidfab::video::FrameConverter {
+  int calls = 0;
+  bool saw_padded_stride = false;
+  void convert(const float* r, const float* g, const float* b, int height, int width,
+               uint8_t* y, int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
+    ++calls;
+    saw_padded_stride = saw_padded_stride || ys > width || us > width / 2 || vs > width / 2;
+    vidfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
+  }
+};
+
 std::filesystem::path temp_path(const char* name) {
   return std::filesystem::temp_directory_path() / name;
 }
@@ -542,6 +553,23 @@ VIDFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
   std::filesystem::remove(path);
 }
 
+VIDFAB_TEST(y4m_uses_frame_converter_hook) {
+  using namespace vidfab::video;
+  const int frames = 3;
+  const int width = 10;
+  const int height = 6;
+  const vidfab::PixelBuffer clip = make_clip(frames, height, width);
+  const auto cpu_path = temp_path("vidfab_y4m_cpu.y4m");
+  const auto hook_path = temp_path("vidfab_y4m_hook.y4m");
+  write_y4m(cpu_path.string(), clip, frames, height, width);
+  CountingConverter converter;
+  write_y4m(hook_path.string(), clip, frames, height, width, {}, &converter);
+  CHECK(converter.calls == frames);
+  CHECK(read_file(cpu_path) == read_file(hook_path));
+  std::filesystem::remove(cpu_path);
+  std::filesystem::remove(hook_path);
+}
+
 // --- ffmpeg ----------------------------------------------------------------
 
 VIDFAB_TEST(ffmpeg_probe_is_coherent) {
@@ -599,9 +627,10 @@ VIDFAB_TEST(mp4_video_and_audio_end_to_end) {
   }
 
   const int frames = 24;
-  const int size = 128;
+  const int width = 130;
+  const int height = 128;
   const int rate = 32000;
-  const vidfab::PixelBuffer clip = make_clip(frames, size, size);
+  const vidfab::PixelBuffer clip = make_clip(frames, height, width);
   const std::vector<float> tone = make_tone(2, rate, 1.0f, 440.0f);
 
   const std::filesystem::path path = temp_path("vidfab_muxed.mp4");
@@ -611,18 +640,22 @@ VIDFAB_TEST(mp4_video_and_audio_end_to_end) {
   req.path = path.string();
   req.video = &clip;
   req.frames = frames;
-  req.height = size;
-  req.width = size;
+  req.height = height;
+  req.width = width;
   req.fps = FrameRate{24, 1};
   req.audio = &tone;
   req.audio_channels = 2;
   req.audio_sample_rate = rate;
   req.video_bitrate = 2'000'000;
   req.audio_bitrate = 128'000;
+  CountingConverter converter;
+  req.frame_converter = &converter;
 
   const MuxStatus status = write_mp4(req);
   CHECK_MSG(status == MuxStatus::kOk, "write_mp4 returned %s", mux_status_message(status));
   if (status != MuxStatus::kOk) return;
+  CHECK(converter.calls == frames);
+  CHECK(converter.saw_padded_stride);
 
   const std::vector<uint8_t> b = read_file(path);
   // An MP4 opens with an `ftyp` box: a big-endian size, the tag, then a brand.

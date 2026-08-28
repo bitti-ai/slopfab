@@ -24,6 +24,7 @@ than approximately.
 | CUDA runtime + cuBLAS | kernels, GEMM | runtime embedded; cuBLAS dynamic |
 | C++17 standard library | — | — |
 | ffmpeg | MP4/AAC muxing only | **dynamic, resolved at runtime** |
+| Vulkan 1.2 loader | optional RGB-to-YUV output conversion | dynamic, SDK-free |
 
 There is deliberately no JSON library and no test framework — both are
 hand-written and small. Nothing in the decode path allocates through a
@@ -255,6 +256,13 @@ vidfab compare reference.safetensors actual.safetensors --abs-tol 1e-3
 # Report CUDA devices and supported numeric formats
 vidfab devices
 ```
+
+`generate --output-accelerator vulkan` moves the final planar RGB to BT.709
+limited-range YUV420 conversion onto a Vulkan compute device. The default is
+`cpu`. This option accelerates output conversion only: model loading,
+generation, and decoding still require the CUDA inference backend. Vulkan is
+loaded dynamically and an explicit Vulkan request fails clearly when no
+compatible device or loader is available; it never silently falls back.
 
 Both VAE arguments also accept the compact checkpoints in `weights/vae`:
 `video_vae_nf4.safetensors` and `audio_vae_nf4.safetensors`. The video VAE keeps

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -328,6 +329,13 @@ VIDFAB_TEST(vulkan_yuv420_output) {
   if (devices.empty() || !devices.front().info().timeline_semaphore) return;
 
   Yuv420Converter converter;
+  bool unavailable_device_rejected = false;
+  try {
+    Yuv420Converter unavailable(std::numeric_limits<uint32_t>::max());
+  } catch (const std::runtime_error& error) {
+    unavailable_device_rejected = std::string(error.what()).find("unavailable") != std::string::npos;
+  }
+  CHECK(unavailable_device_rejected);
   struct Extent { int width; int height; };
   const Extent extents[] = {{2, 2}, {10, 6}, {128, 66}};
   uint64_t previous_high_water = 0;
@@ -392,6 +400,22 @@ VIDFAB_TEST(vulkan_yuv420_output) {
     odd_rejected = true;
   }
   CHECK(odd_rejected);
+
+  bool null_rejected = false;
+  try {
+    converter.convert(nullptr, &sample, &sample, 2, 2, &byte, 2, &byte, 1, &byte, 1);
+  } catch (const std::invalid_argument&) {
+    null_rejected = true;
+  }
+  CHECK(null_rejected);
+
+  bool stride_rejected = false;
+  try {
+    converter.convert(&sample, &sample, &sample, 2, 2, &byte, 1, &byte, 1, &byte, 1);
+  } catch (const std::invalid_argument&) {
+    stride_rejected = true;
+  }
+  CHECK(stride_rejected);
 }
 
 }  // namespace
