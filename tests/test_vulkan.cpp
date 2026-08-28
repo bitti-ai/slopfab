@@ -239,6 +239,18 @@ VIDFAB_TEST(vulkan_compute_submission) {
       }
       CHECK(descriptor_alignment_rejected);
     }
+    Buffer self_copy = pool.allocate(
+        32, BufferUsage::kTransferSource | BufferUsage::kTransferDestination,
+        MemoryUsage::kUpload);
+    bool overlap_rejected = false;
+    try {
+      invalid.copy_buffer(self_copy, self_copy, 16, 0, 8);
+    } catch (const std::invalid_argument&) {
+      overlap_rejected = true;
+    }
+    CHECK(overlap_rejected);
+    // Non-overlapping regions in one VkBuffer are legal.
+    invalid.copy_buffer(self_copy, self_copy, 16, 0, 16);
   }
   CHECK(context.in_flight() == 0);
 

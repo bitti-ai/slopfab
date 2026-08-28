@@ -598,16 +598,34 @@ if(VIDFAB_BUILD_TESTS)
   if(VIDFAB_ENABLE_VULKAN)
     add_executable(vidfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp)
     target_link_libraries(vidfab_vulkan_tests PRIVATE vidfab_vulkan)
-    file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp.spv"
-      VIDFAB_TEST_AFFINE_SPV_PATH)
+    set(VIDFAB_AFFINE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp")
+    set(VIDFAB_AFFINE_SPV "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp.spv")
+    file(READ "${VIDFAB_AFFINE_SOURCE}" VIDFAB_AFFINE_SOURCE_TEXT)
+    string(REPLACE "\r\n" "\n" VIDFAB_AFFINE_SOURCE_TEXT "${VIDFAB_AFFINE_SOURCE_TEXT}")
+    string(SHA256 VIDFAB_AFFINE_SOURCE_HASH "${VIDFAB_AFFINE_SOURCE_TEXT}")
+    file(SHA256 "${VIDFAB_AFFINE_SPV}" VIDFAB_AFFINE_SPV_HASH)
+    if(NOT VIDFAB_AFFINE_SOURCE_HASH STREQUAL
+        "5ff2705b9c300adbdb476d393226f0dda0a3e23dd7b1eda9ac8095a9165345cd" OR
+       NOT VIDFAB_AFFINE_SPV_HASH STREQUAL
+        "75c8343ac68d52af2c5908db040af9768f6abbce9df0a82268d131afbfc2ede5")
+      message(FATAL_ERROR
+        "vidfab: affine.comp or its checked-in SPIR-V changed. Regenerate with the "
+        "documented glslang command, verify the shader test, and update both hashes")
+    endif()
     target_compile_definitions(vidfab_vulkan_tests PRIVATE
-      VIDFAB_TEST_AFFINE_SPV_PATH="${VIDFAB_TEST_AFFINE_SPV_PATH}")
+      VIDFAB_TEST_AFFINE_SPV_PATH="affine.comp.spv")
+    add_custom_command(TARGET vidfab_vulkan_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${VIDFAB_AFFINE_SPV}" "$<TARGET_FILE_DIR:vidfab_vulkan_tests>/affine.comp.spv"
+      VERBATIM)
     if(MSVC)
       target_compile_options(vidfab_vulkan_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
     else()
       target_compile_options(vidfab_vulkan_tests PRIVATE -Wall -Wextra)
     endif()
     add_test(NAME vulkan COMMAND vidfab_vulkan_tests)
+    set_tests_properties(vulkan PROPERTIES
+      WORKING_DIRECTORY "$<TARGET_FILE_DIR:vidfab_vulkan_tests>")
   endif()
 
   if(VIDFAB_ENABLE_CUDA)
