@@ -367,6 +367,25 @@ VIDFAB_TEST(vulkan_yuv420_output) {
         b[i] = value;
       }
     }
+    size_t boundary_block = 0;
+    for (int by = 0; by < extent.height && boundary_block < 96; by += 2) {
+      for (int bx = 0; bx < extent.width && boundary_block < 96; bx += 2, ++boundary_block) {
+        const float boundary =
+            (static_cast<float>(96 + (boundary_block % 64)) + 0.5f - 128.0f) / 112.0f;
+        const int direction = static_cast<int>(boundary_block % 3) - 1;
+        const float value = direction < 0 ? std::nextafter(boundary, -INFINITY)
+                            : direction > 0 ? std::nextafter(boundary, INFINITY)
+                                            : boundary;
+        for (int dy = 0; dy < 2; ++dy) {
+          for (int dx = 0; dx < 2; ++dx) {
+            const size_t i = static_cast<size_t>(by + dy) * extent.width + bx + dx;
+            r[i] = (boundary_block & 1) != 0 ? value : 0.0f;
+            g[i] = 0.0f;
+            b[i] = (boundary_block & 1) == 0 ? value : 0.0f;
+          }
+        }
+      }
+    }
     const int ys = extent.width + 13;
     const int cs = extent.width / 2 + 7;
     std::vector<uint8_t> cpu_y(static_cast<size_t>(ys) * extent.height, 0xa5);
