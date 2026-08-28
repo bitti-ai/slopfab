@@ -1317,6 +1317,12 @@ struct CommandList::Impl {
   std::shared_ptr<ComputePipeline::Impl> pipeline;
   std::vector<std::shared_ptr<void>> resources;
 
+  void retain(const std::shared_ptr<void>& resource) {
+    if (std::find(resources.begin(), resources.end(), resource) == resources.end()) {
+      resources.push_back(resource);
+    }
+  }
+
   ~Impl() {
     if (!recording || !state) return;
     std::lock_guard<std::mutex> lock(state->mutex);
@@ -1654,11 +1660,12 @@ void CommandList::copy_buffer(Buffer& source, Buffer& destination, uint64_t byte
   source.impl_->check_range(source_offset, bytes);
   destination.impl_->check_range(destination_offset, bytes);
   if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized copy");
+  impl_->resources.reserve(impl_->resources.size() + 2);
+  impl_->retain(source.impl_);
+  impl_->retain(destination.impl_);
   VkBufferCopy region{source_offset, destination_offset, bytes};
   impl_->state->f.cmd_copy_buffer(impl_->state->slots[impl_->slot].commands,
                                   source.impl_->buffer, destination.impl_->buffer, 1, &region);
-  impl_->resources.push_back(source.impl_);
-  impl_->resources.push_back(destination.impl_);
 }
 
 void CommandList::barrier(Buffer& buffer, BufferAccess before, BufferAccess after,
@@ -1672,6 +1679,8 @@ void CommandList::barrier(Buffer& buffer, BufferAccess before, BufferAccess afte
   if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized barrier");
   const auto src = detail::access_info(before);
   const auto dst = detail::access_info(after);
+  impl_->resources.reserve(impl_->resources.size() + 1);
+  impl_->retain(buffer.impl_);
   VkBufferMemoryBarrier barrier{};
   barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
   barrier.srcAccessMask = src.access;
@@ -1684,7 +1693,6 @@ void CommandList::barrier(Buffer& buffer, BufferAccess before, BufferAccess afte
   impl_->state->f.cmd_pipeline_barrier(impl_->state->slots[impl_->slot].commands,
                                        src.stage, dst.stage, 0, 0, nullptr, 1, &barrier,
                                        0, nullptr);
-  impl_->resources.push_back(buffer.impl_);
 }
 
 void CommandList::bind_compute(ComputePipeline& pipeline,
@@ -1701,6 +1709,8 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
   std::vector<bool> seen(bindings.size(), false);
   std::vector<VkDescriptorBufferInfo> infos(bindings.size());
   std::vector<VkWriteDescriptorSet> writes(bindings.size());
+  std::vector<std::shared_ptr<void>> binding_resources;
+  binding_resources.reserve(bindings.size());
   for (size_t i = 0; i < bindings.size(); ++i) {
     const auto& binding = bindings[i];
     if (binding.binding >= bindings.size() || seen[binding.binding] || binding.buffer == nullptr ||
@@ -1724,8 +1734,11 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
     writes[i].descriptorCount = 1;
     writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[i].pBufferInfo = &infos[i];
-    impl_->resources.push_back(binding.buffer->impl_);
+    binding_resources.push_back(binding.buffer->impl_);
   }
+  impl_->resources.reserve(impl_->resources.size() + binding_resources.size() + 1);
+  for (const auto& resource : binding_resources) impl_->retain(resource);
+  impl_->retain(pipeline.impl_);
   VkDescriptorSetAllocateInfo allocate{};
   allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   allocate.descriptorPool = impl_->state->slots[impl_->slot].descriptors;
@@ -1746,7 +1759,6 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
                                            pipeline.impl_->pipeline_layout, 0, 1, &set,
                                            0, nullptr);
   impl_->pipeline = pipeline.impl_;
-  impl_->resources.push_back(pipeline.impl_);
   impl_->compute_bound = true;
 }
 

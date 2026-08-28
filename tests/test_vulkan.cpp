@@ -212,6 +212,7 @@ VIDFAB_TEST(vulkan_compute_submission) {
   {
     Buffer tiny_src = pool.allocate(16, upload_usage, MemoryUsage::kUpload);
     Buffer tiny_dst = pool.allocate(16, input_usage, MemoryUsage::kDevice);
+    Buffer tiny_out = pool.allocate(16, output_usage, MemoryUsage::kDevice);
     CommandList invalid = context.begin();
     bool range_rejected = false;
     try {
@@ -220,6 +221,14 @@ VIDFAB_TEST(vulkan_compute_submission) {
       range_rejected = true;
     }
     CHECK(range_rejected);
+    bool descriptor_range_rejected = false;
+    try {
+      invalid.bind_compute(pipeline, {{0, &tiny_dst, 0, 17},
+                                      {1, &tiny_out, 0, 16}});
+    } catch (const std::out_of_range&) {
+      descriptor_range_rejected = true;
+    }
+    CHECK(descriptor_range_rejected);
   }
   CHECK(context.in_flight() == 0);
 
