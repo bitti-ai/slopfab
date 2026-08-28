@@ -356,11 +356,11 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
   Device device = devices.front().create_device(options);
   TensorContext tensors(device);
   TensorContext other(device);
-  CHECK(tensors.full_fp32_add_exactness() ==
+  CHECK(tensors.full_fp32_arithmetic_exactness() ==
         devices.front().info().fp32_denorm_preserve);
   bool exact_gate_rejected = false;
   try {
-    tensors.require_full_fp32_add_exactness();
+    tensors.require_full_fp32_arithmetic_exactness();
   } catch (const std::runtime_error&) {
     exact_gate_rejected = true;
   }
@@ -455,7 +455,7 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
     }();
     if ((input_bits & 0x7f800000u) == 0x7f800000u &&
         (input_bits & 0x007fffffu) != 0) continue;
-    if (!tensors.full_fp32_add_exactness() && (i == 2 || i == 3)) continue;
+    if (!tensors.full_fp32_arithmetic_exactness() && (i == 2 || i == 3)) continue;
     const float expected = host_a[i] + host_b[i];
     uint32_t expected_bits = 0, actual_bits = 0;
     std::memcpy(&expected_bits, &expected, sizeof(expected_bits));
@@ -634,7 +634,7 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
   TensorContext moved_context = std::move(movable_context);
   CHECK(moved_context.descriptor_set_allocations() == 0);
   CHECK(movable_context.reserved_bytes() == 0);
-  CHECK(!movable_context.full_fp32_add_exactness());
+  CHECK(!movable_context.full_fp32_arithmetic_exactness());
   bool moved_context_rejected = false;
   try {
     (void)movable_context.allocate(layout);

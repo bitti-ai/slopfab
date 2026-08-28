@@ -30,12 +30,14 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   TensorContext vk(device);
   bool full_exact_rejected = false;
   try {
-    vk.require_full_fp32_add_exactness();
+    vk.require_full_fp32_arithmetic_exactness();
   } catch (const std::runtime_error&) {
     full_exact_rejected = true;
   }
   CHECK(full_exact_rejected == !physical.front().info().fp32_denorm_preserve);
-  CHECK(vk.full_fp32_add_exactness() == physical.front().info().fp32_denorm_preserve);
+  CHECK(vk.full_fp32_arithmetic_exactness() ==
+        physical.front().info().fp32_denorm_preserve);
+  CHECK(vk.full_fp32_add_exactness() == vk.full_fp32_arithmetic_exactness());
 
   constexpr uint64_t count = 259;
   const TensorLayout layout = TensorLayout::contiguous(&count, 1);
@@ -96,7 +98,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
     // Indices 2/3 require denormal-preserving arithmetic. On devices without
     // that Vulkan mode, the explicit capability gate above fails rather than
     // claiming those results are CUDA-exact.
-    if (!vk.full_fp32_add_exactness() && (i == 2 || i == 3)) continue;
+    if (!vk.full_fp32_arithmetic_exactness() && (i == 2 || i == 3)) continue;
     uint32_t cuda_bits = 0, vk_bits = 0;
     std::memcpy(&cuda_bits, &cuda_sum_host[i], sizeof(cuda_bits));
     std::memcpy(&vk_bits, &vk_sum_host[i], sizeof(vk_bits));
@@ -134,9 +136,16 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
       0x00800000u, 0x33800000u, 0x33800001u, 0x387fffffu,
       0x38800000u, 0x3f800000u, 0x477fe000u, 0x7f800000u,
       0xff800000u, 0x7fc12345u, 0x7fa54321u, 0xffc12345u,
-      0x33000000u, 0x33000001u, 0x3f808000u, 0x3f808001u};
+      0x33000000u, 0x33000001u, 0x3f808000u, 0x3f808001u,
+      0x00800000u};
   std::memcpy(input.data(), special, sizeof(special));
   for (int i = 0; i < cols; ++i) bias[i] = static_cast<float>((i % 13) - 6) / 32.0f;
+  for (int i = 0; i < 4; ++i) bias[i] = 0.0f;
+  // Two normal operands whose exact sum is the smallest subnormal.
+  const uint32_t normal_above_min = 0x00800001u;
+  const uint32_t negative_min_normal = 0x80800000u;
+  std::memcpy(&input[4], &normal_above_min, sizeof(float));
+  std::memcpy(&bias[4], &negative_min_normal, sizeof(float));
 
   cuda::DeviceBuffer<float> c_input(count), c_bf16_back(count), c_f16_back(count);
   cuda::DeviceBuffer<uint16_t> c_bf16(count), c_f16(count);
@@ -302,12 +311,49 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   compare_bytes(c_f16, v_f16, count, "fp32-to-fp16");
   compare_bytes(c_f16_back, v_f16_back, count, "fp16-to-fp32");
   compare_bytes(c_transpose, v_transpose, count, "transpose");
-  compare_bytes(c_biased, v_biased, count, "add-bias");
   compare_bytes(c_gathered, v_gathered, selected_count, "gather");
   compare_bytes(c_scattered, v_scattered, matrix_count, "scatter");
   compare_bytes(c_tokens, v_tokens, heads_count, "heads-to-tokens");
   compare_bytes(c_depth_output, v_depth_output, depth_count, "depth-to-space");
   compare_bytes(c_raw_half_wide, v_raw_half_wide, raw_half_count, "arbitrary-fp16-widen");
+
+  bool full_arithmetic_gate_rejected = false;
+  try {
+    vk.require_full_fp32_arithmetic_exactness();
+  } catch (const std::runtime_error&) {
+    full_arithmetic_gate_rejected = true;
+  }
+  CHECK(full_arithmetic_gate_rejected == !vk.full_fp32_arithmetic_exactness());
+  std::vector<float> biased_cuda(count), biased_vulkan(count);
+  c_biased.copy_to_host(biased_cuda.data(), biased_cuda.size());
+  vk.download(v_biased, biased_vulkan.data(), biased_vulkan.size());
+  size_t subnormal_cases = 0;
+  auto bits_of = [](float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+  };
+  auto is_nan = [](uint32_t bits) {
+    return (bits & 0x7f800000u) == 0x7f800000u &&
+           (bits & 0x007fffffu) != 0;
+  };
+  auto is_subnormal = [](uint32_t bits) {
+    return (bits & 0x7f800000u) == 0 && (bits & 0x007fffffu) != 0;
+  };
+  for (size_t i = 0; i < count; ++i) {
+    const uint32_t input_bits = bits_of(input[i]);
+    const uint32_t bias_bits = bits_of(bias[i % cols]);
+    const uint32_t cuda_bits = bits_of(biased_cuda[i]);
+    if (is_nan(input_bits) || is_nan(bias_bits) || is_nan(cuda_bits)) continue;
+    const bool uses_subnormal = is_subnormal(input_bits) || is_subnormal(bias_bits) ||
+                                is_subnormal(cuda_bits);
+    if (uses_subnormal) ++subnormal_cases;
+    if (uses_subnormal && !vk.full_fp32_arithmetic_exactness()) continue;
+    CHECK_MSG(cuda_bits == bits_of(biased_vulkan[i]),
+              "CUDA/Vulkan add-bias mismatch at %zu: %08x != %08x", i,
+              cuda_bits, bits_of(biased_vulkan[i]));
+  }
+  CHECK(subnormal_cases >= 3);
 
   std::vector<float> depth_vulkan(depth_count);
   vk.download(v_depth_output, depth_vulkan.data(), depth_vulkan.size());

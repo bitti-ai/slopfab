@@ -47,3 +47,9 @@ round-to-nearest-even execution modes. The denorm variant additionally adds
 properties permit that mode. fp16 and bf16 narrowing use CUDA's canonical NaN
 value (`0x7fff`) and round-to-nearest-even. Thus CMake hashes exactly the
 modules executed by the driver, not an untracked runtime transformation.
+
+The portable CUDA-exact domain for fp32 add and add-bias requires both operands
+and the correctly rounded result to be zero, normal, or infinity; NaN payload
+arithmetic is excluded. Subnormal operands/results are exact only when
+`full_fp32_arithmetic_exactness()` is true. Callers that require that wider
+domain must use `require_full_fp32_arithmetic_exactness()` and fail closed.

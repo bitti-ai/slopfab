@@ -78,7 +78,7 @@ struct TensorContext::Impl {
   Buffer readback_buffer;
   uint64_t staging_capacity = 0;
   std::vector<StorageBinding> bindings;
-  bool full_add_exact = false;
+  bool full_arithmetic_exact = false;
   uint32_t max_dispatch_x = 0;
   uint64_t max_storage_bytes = 0;
   std::atomic<bool> recorder_active{false};
@@ -100,15 +100,15 @@ struct TensorContext::Impl {
     if (!input.info().fp32_signed_zero_inf_nan_preserve ||
         !input.info().fp32_rounding_rte) {
       throw std::runtime_error(
-          "vulkan tensor: fp32 add requires signed-zero/Inf/NaN preservation "
+          "vulkan tensor: fp32 arithmetic requires signed-zero/Inf/NaN preservation "
           "and round-to-nearest-even");
     }
-    full_add_exact = input.info().fp32_denorm_preserve;
+    full_arithmetic_exact = input.info().fp32_denorm_preserve;
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
     max_storage_bytes = input.info().max_storage_buffer_bytes;
-    const uint8_t* shader = full_add_exact ? detail::kTensorOpsDenormSpirv
+    const uint8_t* shader = full_arithmetic_exact ? detail::kTensorOpsDenormSpirv
                                            : detail::kTensorOpsSpirv;
-    const size_t shader_bytes = full_add_exact ? sizeof(detail::kTensorOpsDenormSpirv)
+    const size_t shader_bytes = full_arithmetic_exact ? sizeof(detail::kTensorOpsDenormSpirv)
                                                : sizeof(detail::kTensorOpsSpirv);
     std::vector<uint32_t> spirv(shader_bytes / sizeof(uint32_t));
     std::memcpy(spirv.data(), shader, shader_bytes);
@@ -492,14 +492,14 @@ void TensorContext::add(DeviceTensor& a, DeviceTensor& b, DeviceTensor& output) 
   impl_->commands.collect();
 }
 
-bool TensorContext::full_fp32_add_exactness() const noexcept {
-  return impl_ && impl_->full_add_exact;
+bool TensorContext::full_fp32_arithmetic_exactness() const noexcept {
+  return impl_ && impl_->full_arithmetic_exact;
 }
-void TensorContext::require_full_fp32_add_exactness() const {
-  if (!full_fp32_add_exactness()) {
+void TensorContext::require_full_fp32_arithmetic_exactness() const {
+  if (!full_fp32_arithmetic_exactness()) {
     throw std::runtime_error(
-        "vulkan tensor: device cannot preserve fp32 subnormal inputs/results; "
-        "full CUDA-exact fp32 add is unavailable");
+          "vulkan tensor: device cannot preserve fp32 subnormal inputs/results; "
+        "full CUDA-exact fp32 arithmetic is unavailable");
   }
 }
 

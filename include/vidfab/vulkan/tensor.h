@@ -95,6 +95,7 @@ class TensorBatch {
   // are preserved.
   void scatter_rows(DeviceTensor& source, DeviceTensor& indices,
                     DeviceTensor& destination);
+  // The fp32 arithmetic exactness contract below applies to add-bias too.
   void add_bias(DeviceTensor& input, DeviceTensor& bias, DeviceTensor& output);
   void heads_to_tokens_bf16(DeviceTensor& source, DeviceTensor& destination,
                             uint32_t heads, uint32_t sequence, uint32_t head_dim);
@@ -137,12 +138,20 @@ class TensorContext {
   // Exact self-copy and partial aliasing are rejected.
   void copy(DeviceTensor& source, DeviceTensor& destination);
   // Inputs may alias each other; output must be a distinct allocation.
-  // Results are CUDA-bit-exact when inputs and the correctly rounded result
+  // Add and add-bias results are CUDA-bit-exact when inputs and the correctly rounded result
   // are zero, normal, or infinity. NaN payload arithmetic is not promised.
   void add(DeviceTensor& a, DeviceTensor& b, DeviceTensor& output);
-  // True only when add additionally covers subnormal inputs/results.
-  bool full_fp32_add_exactness() const noexcept;
-  void require_full_fp32_add_exactness() const;
+  // True only when fp32 add/add-bias additionally cover subnormal
+  // inputs/results. Call require_* before relying on that wider domain.
+  bool full_fp32_arithmetic_exactness() const noexcept;
+  void require_full_fp32_arithmetic_exactness() const;
+  // Compatibility aliases for the original single-add primitive API.
+  bool full_fp32_add_exactness() const noexcept {
+    return full_fp32_arithmetic_exactness();
+  }
+  void require_full_fp32_add_exactness() const {
+    require_full_fp32_arithmetic_exactness();
+  }
   TensorWorkspace& workspace();
   uint64_t reserved_bytes() const;
   uint64_t descriptor_set_allocations() const noexcept;

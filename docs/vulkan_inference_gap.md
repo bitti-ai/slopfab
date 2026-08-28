@@ -82,11 +82,16 @@ Vulkan support.
 
 The first dependency slice now has a backend-neutral contiguous tensor/view
 contract and a persistent Vulkan batch path. The Vulkan implementation has
-exact copies, fp32 add/add-bias, fp32-to/from-fp16 and bf16 conversion, fp32
+exact copies, fp32 add/add-bias over zero/normal/infinity operands and results,
+fp32-to/from-fp16 and bf16 conversion, fp32
 2-D transpose, trusted-index row gather/scatter, head-major fp32 to token-major
 bf16, and fp32 depth-to-space. It records up to 32 operations into one command
 buffer, retains tensors through exact timeline completion, and reuses two
 bounded descriptor/command slots.
+
+FP32 arithmetic does not promise a NaN payload. Subnormal inputs/results are
+available only when the queried float-control mode supports them; the public
+`require_full_fp32_arithmetic_exactness()` gate fails closed otherwise.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
