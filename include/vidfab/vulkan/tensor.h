@@ -103,6 +103,14 @@ class TensorBatch {
   void depth_to_space(DeviceTensor& source, DeviceTensor& destination,
                       uint32_t time, uint32_t height, uint32_t width,
                       uint32_t channels, uint32_t patch_time, uint32_t patch);
+  // In-place BF16 rotary operations with explicit canonical fp32 table tensors.
+  // H3 rotates fixed channels [0,96) as 48 half-split pairs and preserves the
+  // tail; NeoX rotates the complete even-width head. Shapes are input
+  // [rows,heads,head_dim], tables [rows,96] or [rows,head_dim].
+  void rope_h3_bf16(DeviceTensor& input, DeviceTensor& cosine,
+                     DeviceTensor& sine);
+  void rope_neox_bf16(DeviceTensor& input, DeviceTensor& cosine,
+                       DeviceTensor& sine);
   // Matches the fp32 video-VAE CUDA reduction tree. Input/output are [rows,
   // dim], weight is [dim], and output may alias input. Epsilon must be finite
   // and positive.
@@ -138,6 +146,8 @@ class TensorBatch {
   explicit operator bool() const noexcept;
 
  private:
+  void rope_bf16(DeviceTensor& input, DeviceTensor& cosine,
+                 DeviceTensor& sine, uint32_t mode);
   struct Impl;
   explicit TensorBatch(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;

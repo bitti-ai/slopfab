@@ -1,0 +1,81 @@
+#version 460
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer DataBuffer { uint words[]; } data_buffer;
+layout(set = 0, binding = 1, std430) readonly buffer CosineBuffer { uint words[]; } cosine_buffer;
+layout(set = 0, binding = 2, std430) readonly buffer SineBuffer { uint words[]; } sine_buffer;
+
+layout(push_constant) uniform Parameters {
+  uint mode;      // 0: H3 fixed partial-96, 1: full GPT-NeoX
+  uint unused;
+  uint rows;
+  uint heads;
+  uint head_dim;
+  uint unused3;
+  uint unused4;
+  uint unused5;
+} p;
+
+shared float head_values[256];
+
+uint bf16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return 0x7fffu;
+  uint rounded = (bits + 0x00007fffu + ((bits >> 16u) & 1u)) >> 16u;
+  return (rounded & 0x7fffu) < 0x0080u ? rounded & 0x8000u : rounded;
+}
+
+float stable_float(float value) {
+  uint bits = floatBitsToUint(value);
+  return (bits & 0x7fffffffu) < 0x00800000u
+      ? uintBitsToFloat(bits & 0x80000000u) : value;
+}
+
+float rotated_value(uint row, uint d) {
+  uint rotary_dim = p.mode == 0u ? 96u : p.head_dim;
+  uint half_dim = rotary_dim >> 1u;
+  uint partner = d < half_dim ? d + half_dim : d - half_dim;
+  uint table_column = p.mode == 0u && d >= half_dim ? d - half_dim : d;
+  uint table_width = p.mode == 0u ? 96u : p.head_dim;
+  float c = stable_float(uintBitsToFloat(
+      cosine_buffer.words[row * table_width + table_column]));
+  float s = stable_float(uintBitsToFloat(
+      sine_buffer.words[row * table_width + table_column]));
+  if (d < half_dim) {
+    precise float left = stable_float(head_values[d] * c);
+    precise float right = stable_float(head_values[partner] * s);
+    precise float result = left - right;
+    return result;
+  }
+  precise float base = stable_float(head_values[d] * c);
+  return fma(head_values[partner], s, base);
+}
+
+void main() {
+  uint group = gl_WorkGroupID.x;
+  uint lane = gl_LocalInvocationIndex;
+  uint row = group / p.heads;
+  uint head = group - row * p.heads;
+  uint element_base = (row * p.heads + head) * p.head_dim;
+  for (uint d = lane; d < p.head_dim; d += 64u) {
+    uint packed = data_buffer.words[(element_base + d) >> 1u];
+    uint bits = (packed >> ((d & 1u) * 16u)) & 0xffffu;
+    head_values[d] = (bits & 0x7fffu) < 0x0080u
+        ? uintBitsToFloat((bits & 0x8000u) << 16u)
+        : uintBitsToFloat(bits << 16u);
+  }
+  barrier();
+  uint rotary_dim = p.mode == 0u ? 96u : p.head_dim;
+  uint words_per_head = p.head_dim >> 1u;
+  for (uint word_in_head = lane; word_in_head < words_per_head;
+       word_in_head += 64u) {
+    uint d0 = word_in_head * 2u;
+    uint d1 = d0 + 1u;
+    uint packed = data_buffer.words[(element_base >> 1u) + word_in_head];
+    if (d0 < rotary_dim) packed = (packed & 0xffff0000u) | bf16_rte(rotated_value(row, d0));
+    if (d1 < rotary_dim) packed = (packed & 0x0000ffffu) |
+        (bf16_rte(rotated_value(row, d1)) << 16u);
+    data_buffer.words[(element_base >> 1u) + word_in_head] = packed;
+  }
+}

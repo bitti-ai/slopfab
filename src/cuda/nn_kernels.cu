@@ -476,6 +476,26 @@ __global__ void merge_four_rows_kernel(const __nv_bfloat16* src, __nv_bfloat16* 
 constexpr int kRopeHalf = 48;
 constexpr int kRopeDim = 2 * kRopeHalf;  // 96 rotary channels of 128
 
+__device__ float rope_bf16_value(__nv_bfloat16 value) {
+  const unsigned short bits = __bfloat16_as_ushort(value);
+  return (bits & 0x7fffu) < 0x0080u
+      ? __uint_as_float(static_cast<unsigned>(bits & 0x8000u) << 16u)
+      : __bfloat162float(value);
+}
+
+__device__ float rope_float_value(float value) {
+  const unsigned bits = __float_as_uint(value);
+  return (bits & 0x7fffffffu) < 0x00800000u
+      ? __uint_as_float(bits & 0x80000000u) : value;
+}
+
+__device__ __nv_bfloat16 rope_bf16_result(float value) {
+  const __nv_bfloat16 rounded = __float2bfloat16(value);
+  const unsigned short bits = __bfloat16_as_ushort(rounded);
+  return (bits & 0x7fffu) < 0x0080u
+      ? __ushort_as_bfloat16(bits & 0x8000u) : rounded;
+}
+
 __global__ void rope_h3_kernel(__nv_bfloat16* __restrict__ x, const float* __restrict__ cos_tab,
                                const float* __restrict__ sin_tab, int rows, int heads,
                                int head_dim) {
@@ -489,12 +509,15 @@ __global__ void rope_h3_kernel(__nv_bfloat16* __restrict__ x, const float* __res
   const float* sin_row = sin_tab + static_cast<size_t>(row) * kRopeDim;
 
   for (int j = lane; j < kRopeHalf; j += blockDim.x) {
-    const float c = cos_row[j];
-    const float s = sin_row[j];
-    const float lo = __bfloat162float(v[j]);
-    const float hi = __bfloat162float(v[j + kRopeHalf]);
-    v[j] = __float2bfloat16(lo * c - hi * s);
-    v[j + kRopeHalf] = __float2bfloat16(hi * c + lo * s);
+    const float c = rope_float_value(cos_row[j]);
+    const float s = rope_float_value(sin_row[j]);
+    const float lo = rope_bf16_value(v[j]);
+    const float hi = rope_bf16_value(v[j + kRopeHalf]);
+    const float left = rope_float_value(lo * c);
+    const float right = rope_float_value(hi * s);
+    const float base = rope_float_value(hi * c);
+    v[j] = rope_bf16_result(left - right);
+    v[j + kRopeHalf] = rope_bf16_result(fmaf(lo, s, base));
   }
 }
 
@@ -515,10 +538,17 @@ __global__ void rope_neox_kernel(__nv_bfloat16* __restrict__ x, const float* __r
   const float* sin_row = sin_tab + static_cast<size_t>(row) * head_dim;
 
   for (int j = lane; j < half; j += blockDim.x) {
-    const float lo = __bfloat162float(v[j]);
-    const float hi = __bfloat162float(v[j + half]);
-    v[j] = __float2bfloat16(lo * cos_row[j] - hi * sin_row[j]);
-    v[j + half] = __float2bfloat16(hi * cos_row[j + half] + lo * sin_row[j + half]);
+    const float lo = rope_bf16_value(v[j]);
+    const float hi = rope_bf16_value(v[j + half]);
+    const float cos_lo = rope_float_value(cos_row[j]);
+    const float sin_lo = rope_float_value(sin_row[j]);
+    const float cos_hi = rope_float_value(cos_row[j + half]);
+    const float sin_hi = rope_float_value(sin_row[j + half]);
+    const float left = rope_float_value(lo * cos_lo);
+    const float right = rope_float_value(hi * sin_lo);
+    const float base = rope_float_value(hi * cos_hi);
+    v[j] = rope_bf16_result(left - right);
+    v[j + half] = rope_bf16_result(fmaf(lo, sin_hi, base));
   }
 }
 

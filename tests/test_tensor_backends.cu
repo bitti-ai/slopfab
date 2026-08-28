@@ -18,6 +18,7 @@
 #include "vidfab/cuda/keyframe_encoder.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
+#include "vidfab/dit/rope.h"
 #include "vidfab/vulkan/tensor.h"
 
 __global__ void deterministic_rsqrt_probe(const float* input, float* stable,
@@ -1391,6 +1392,194 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_group_norm_silu) {
     });
     valid_after_rejection([&](TensorBatch& batch) {
       batch.group_norm_silu_f16_affine(input, weight, bias, outputs[0], 32, 0.0f);
+    });
+  }
+  { TensorBatch collect_completed_slots = vk.begin_batch(); }
+  CHECK(vk.pooled_used_bytes() == used_before_reuse);
+}
+
+VIDFAB_TEST(cuda_vulkan_tensor_exact_bf16_rope) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+
+  auto run = [&](uint32_t mode, uint32_t rows, uint32_t heads,
+                 uint32_t head_dim) {
+    const size_t count = static_cast<size_t>(rows) * heads * head_dim;
+    std::vector<uint16_t> input(count);
+    for (size_t i = 0; i < count; ++i) {
+      if (i < 127) input[i] = static_cast<uint16_t>(i + 1);
+      else if (i < 254) input[i] = static_cast<uint16_t>(0x8000u | (i - 126));
+      else input[i] = static_cast<uint16_t>(
+          ((i * 977u + 0x3c00u) & 0x7fffu) |
+          ((i & 7u) == 0u ? 0x8000u : 0u));
+    }
+    const uint16_t boundaries[] = {0x0000u, 0x8000u, 0x007fu, 0x807fu,
+                                   0x0080u, 0x8080u, 0x0081u, 0x8081u,
+                                   0x7f80u, 0xff80u, 0x7fc1u};
+    for (size_t i = 0; i < std::size(boundaries); ++i) input[254 + i] = boundaries[i];
+    const uint32_t table_width = mode == 0 ? 96u : head_dim;
+    std::vector<float> cosine, sine;
+    if (mode == 0) {
+      std::vector<double> positions(static_cast<size_t>(rows) * 3);
+      for (size_t i = 0; i < positions.size(); ++i)
+        positions[i] = static_cast<double>(static_cast<int>(i * 17u % 101u) - 50) / 8.0;
+      auto tables = dit::build_h3_rope_tables(positions, 10000.0f, 16);
+      cosine = std::move(tables.cosine);
+      sine = std::move(tables.sine);
+    } else {
+      cosine.resize(static_cast<size_t>(rows) * head_dim);
+      sine.resize(cosine.size());
+      const uint32_t half = head_dim / 2;
+      for (uint32_t row = 0; row < rows; ++row) {
+        for (uint32_t j = 0; j < half; ++j) {
+          const float angle = static_cast<float>((row + 1) * (j + 1)) / 37.0f;
+          const float c = std::cos(angle), s = std::sin(angle);
+          cosine[static_cast<size_t>(row) * head_dim + j] =
+              cosine[static_cast<size_t>(row) * head_dim + j + half] = c;
+          sine[static_cast<size_t>(row) * head_dim + j] =
+              sine[static_cast<size_t>(row) * head_dim + j + half] = s;
+        }
+      }
+      // Exact cancellation and an intermediate that underflows fp32 are part
+      // of the backend-stable signed-zero policy.
+      input[0] = input[head_dim / 2] = 0x3f80u;
+      cosine[0] = cosine[head_dim / 2] = 0.5f;
+      sine[0] = sine[head_dim / 2] = 0.5f;
+      if (rows > 1) {
+        const size_t data_row = static_cast<size_t>(heads) * head_dim;
+        input[data_row + 1] = 0x0080u;
+        input[data_row + 1 + head_dim / 2] = 0x0000u;
+        const size_t table_row = head_dim;
+        cosine[table_row + 1] = cosine[table_row + 1 + head_dim / 2] =
+            std::numeric_limits<float>::min();
+        sine[table_row + 1] = sine[table_row + 1 + head_dim / 2] = 0.0f;
+      }
+    }
+    cuda::DeviceBuffer<__nv_bfloat16> cuda_data(count);
+    cuda::DeviceBuffer<float> cuda_cos(cosine.size()), cuda_sin(sine.size());
+    cuda_data.copy_from_host(reinterpret_cast<const __nv_bfloat16*>(input.data()), count);
+    cuda_cos.copy_from_host(cosine.data(), cosine.size());
+    cuda_sin.copy_from_host(sine.data(), sine.size());
+    if (mode == 0)
+      cuda::launch_rope_h3(cuda_data.get(), cuda_cos.get(), cuda_sin.get(), rows,
+                           heads, head_dim, nullptr);
+    else
+      cuda::launch_rope_neox(cuda_data.get(), cuda_cos.get(), cuda_sin.get(), rows,
+                             heads, head_dim, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> expected(count), actual(count);
+    cuda_data.copy_to_host(reinterpret_cast<__nv_bfloat16*>(expected.data()), count);
+
+    const uint64_t data_shape[] = {rows, heads, head_dim};
+    const uint64_t table_shape[] = {rows, table_width};
+    DeviceTensor vk_data = vk.allocate(
+        TensorLayout::contiguous(data_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor vk_cos = vk.allocate(TensorLayout::contiguous(table_shape, 2));
+    DeviceTensor vk_sin = vk.allocate(TensorLayout::contiguous(table_shape, 2));
+    vk.upload_bytes(vk_data, input.data(), input.size() * sizeof(uint16_t));
+    vk.upload(vk_cos, cosine.data(), cosine.size());
+    vk.upload(vk_sin, sine.data(), sine.size());
+    TensorBatch batch = vk.begin_batch();
+    if (mode == 0) batch.rope_h3_bf16(vk_data, vk_cos, vk_sin);
+    else batch.rope_neox_bf16(vk_data, vk_cos, vk_sin);
+    batch.submit().wait();
+    vk.download_bytes(vk_data, actual.data(), actual.size() * sizeof(uint16_t));
+    size_t mismatch = count;
+    for (size_t i = 0; i < count; ++i) {
+      if (expected[i] != actual[i]) { mismatch = i; break; }
+    }
+    CHECK_MSG(mismatch == count,
+              "CUDA/Vulkan BF16 RoPE mode%u %ux%ux%u mismatch at %zu: %04x != %04x",
+              mode, rows, heads, head_dim, mismatch,
+              mismatch == count ? 0 : expected[mismatch],
+              mismatch == count ? 0 : actual[mismatch]);
+    if (mode == 0) {
+      bool tail_preserved = true;
+      for (uint32_t row = 0; row < rows; ++row)
+        for (uint32_t head = 0; head < heads; ++head)
+          for (uint32_t d = 96; d < head_dim; ++d) {
+            const size_t at = (static_cast<size_t>(row) * heads + head) * head_dim + d;
+            tail_preserved &= actual[at] == input[at];
+          }
+      CHECK(tail_preserved);
+    } else {
+      CHECK(actual[0] == 0x0000u);
+      CHECK(actual[static_cast<size_t>(heads) * head_dim + 1] == 0x0000u);
+    }
+  };
+  run(0, 5, 7, 128);
+  run(1, 5, 3, 72);
+  run(1, 3, 5, 128);
+
+  const uint64_t used_before_reuse = vk.pooled_used_bytes();
+  {
+    const uint64_t data_shape[] = {2, 3, 128}, table_shape[] = {2, 96};
+    DeviceTensor first = vk.allocate(
+        TensorLayout::contiguous(data_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor second = vk.allocate(
+        TensorLayout::contiguous(data_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor cosine = vk.allocate(TensorLayout::contiguous(table_shape, 2));
+    DeviceTensor sine = vk.allocate(TensorLayout::contiguous(table_shape, 2));
+    std::vector<uint16_t> zeros(2 * 3 * 128);
+    std::vector<float> ones(2 * 96, 1.0f), table_zeros(2 * 96);
+    vk.upload_bytes(first, zeros.data(), zeros.size() * 2);
+    vk.upload_bytes(second, zeros.data(), zeros.size() * 2);
+    vk.upload(cosine, ones.data(), ones.size());
+    vk.upload(sine, table_zeros.data(), table_zeros.size());
+    auto submit = [&](DeviceTensor& data) {
+      TensorBatch batch = vk.begin_batch();
+      batch.rope_h3_bf16(data, cosine, sine);
+      return batch.submit();
+    };
+    Submission warm_a = submit(first), warm_b = submit(second);
+    warm_a.wait(); warm_b.wait();
+    const uint64_t stable_reserved = vk.reserved_bytes();
+    const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+    for (int repeat = 0; repeat < 4; ++repeat) {
+      Submission a = submit(first), b = submit(second), c = submit(first);
+      CHECK(b.value() > a.value() && c.value() > b.value());
+      a.wait(); b.wait(); c.wait();
+      CHECK(vk.reserved_bytes() == stable_reserved);
+      CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+    }
+    const uint64_t odd_shape[] = {2, 3, 127};
+    const uint64_t short_table_shape[] = {2, 95};
+    DeviceTensor odd = vk.allocate(
+        TensorLayout::contiguous(odd_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor short_table = vk.allocate(
+        TensorLayout::contiguous(short_table_shape, 2));
+    DeviceTensor wrong_type = vk.allocate(
+        TensorLayout::contiguous(table_shape, 2), ScalarType::kBFloat16);
+    auto valid_after_rejection = [&](auto&& invalid) {
+      TensorBatch batch = vk.begin_batch();
+      bool rejected = false;
+      try { invalid(batch); } catch (const std::invalid_argument&) { rejected = true; }
+      CHECK(rejected);
+      batch.rope_h3_bf16(first, cosine, sine);
+      batch.submit().wait();
+    };
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.rope_h3_bf16(odd, cosine, sine);
+    });
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.rope_h3_bf16(first, short_table, sine);
+    });
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.rope_h3_bf16(first, wrong_type, sine);
+    });
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.rope_h3_bf16(first, cosine, cosine);
     });
   }
   { TensorBatch collect_completed_slots = vk.begin_batch(); }

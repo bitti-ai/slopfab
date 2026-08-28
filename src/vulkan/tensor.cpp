@@ -84,6 +84,7 @@ struct TensorContext::Impl {
   BufferPool pool;
   TensorWorkspace scratch;
   ComputePipeline ops_pipeline;
+  ComputePipeline rope_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
   ComputePipeline bf16_rms_block_pipeline;
@@ -145,6 +146,15 @@ struct TensorContext::Impl {
     options.push_constant_bytes = sizeof(Parameters);
     options.local_size[0] = 64;
     ops_pipeline = ComputePipeline::create(input, spirv, options);
+    const uint8_t* rope_shader = full_arithmetic_exact
+        ? detail::kTensorRopeDenormSpirv : detail::kTensorRopeSpirv;
+    const size_t rope_shader_bytes = full_arithmetic_exact
+        ? sizeof(detail::kTensorRopeDenormSpirv) : sizeof(detail::kTensorRopeSpirv);
+    std::vector<uint32_t> rope_spirv(rope_shader_bytes / sizeof(uint32_t));
+    std::memcpy(rope_spirv.data(), rope_shader, rope_shader_bytes);
+    ComputePipelineOptions rope_options = options;
+    rope_options.local_size[0] = 64;
+    rope_pipeline = ComputePipeline::create(input, rope_spirv, rope_options);
     ComputePipelineOptions norm_options;
     norm_options.storage_binding_count = 4;
     norm_options.push_constant_bytes = sizeof(NormParameters);
@@ -319,6 +329,22 @@ struct TensorBatch::Impl {
     owner->ops_bindings[2].buffer = &output->buffer;
     owner->ops_bindings[2].bytes = output->buffer.size();
     commands.bind_compute(owner->ops_pipeline, owner->ops_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups);
+  }
+
+  void dispatch_rope(const TensorContext::Impl::Parameters& parameters,
+                     uint32_t groups,
+                     const std::shared_ptr<DeviceTensor::Impl>& input,
+                     const std::shared_ptr<DeviceTensor::Impl>& cosine,
+                     const std::shared_ptr<DeviceTensor::Impl>& sine) {
+    owner->ops_bindings[0].buffer = &input->buffer;
+    owner->ops_bindings[0].bytes = input->buffer.size();
+    owner->ops_bindings[1].buffer = &cosine->buffer;
+    owner->ops_bindings[1].bytes = cosine->buffer.size();
+    owner->ops_bindings[2].buffer = &sine->buffer;
+    owner->ops_bindings[2].bytes = sine->buffer.size();
+    commands.bind_compute(owner->rope_pipeline, owner->ops_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(groups);
   }
@@ -1035,6 +1061,68 @@ void TensorBatch::depth_to_space(DeviceTensor& source, DeviceTensor& destination
     p.p[0] = time; p.p[1] = height; p.p[2] = width; p.p[3] = patch_time;
     p.p[4] = patch; p.p[5] = channels; impl_->dispatch(p, src, src, dst);
   } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::rope_h3_bf16(DeviceTensor& input, DeviceTensor& cosine,
+                                DeviceTensor& sine) {
+  rope_bf16(input, cosine, sine, 0);
+}
+
+void TensorBatch::rope_neox_bf16(DeviceTensor& input, DeviceTensor& cosine,
+                                  DeviceTensor& sine) {
+  rope_bf16(input, cosine, sine, 1);
+}
+
+void TensorBatch::rope_bf16(DeviceTensor& input, DeviceTensor& cosine,
+                             DeviceTensor& sine, uint32_t mode) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  auto data = impl_->owner->require(input);
+  auto cos_table = impl_->owner->require(cosine);
+  auto sin_table = impl_->owner->require(sine);
+  const auto& shape = data->layout;
+  const uint64_t rows = shape.extent[0];
+  const uint64_t heads = shape.extent[1];
+  const uint64_t head_dim = shape.extent[2];
+  const uint64_t table_width = mode == 0 ? 96 : head_dim;
+  const bool groups_overflow = rows != 0 && heads > UINT64_MAX / rows;
+  const uint64_t groups = groups_overflow ? 0 : rows * heads;
+  if (mode > 1 || shape.rank != 3 || rows == 0 || heads == 0 ||
+      head_dim == 0 || (head_dim & 1u) != 0 || head_dim > 256 ||
+      (mode == 0 && head_dim < 96) || groups_overflow ||
+      groups > std::numeric_limits<uint32_t>::max() ||
+      data.get() == cos_table.get() || data.get() == sin_table.get() ||
+      cos_table.get() == sin_table.get() ||
+      data->type != ScalarType::kBFloat16 ||
+      cos_table->type != ScalarType::kFloat32 ||
+      sin_table->type != ScalarType::kFloat32 ||
+      cos_table->layout.rank != 2 || sin_table->layout.rank != 2 ||
+      cos_table->layout.extent[0] != rows ||
+      sin_table->layout.extent[0] != rows ||
+      cos_table->layout.extent[1] != table_width ||
+      sin_table->layout.extent[1] != table_width ||
+      !shape.is_contiguous() || !cos_table->layout.is_contiguous() ||
+      !sin_table->layout.is_contiguous()) {
+    throw std::invalid_argument("vulkan tensor: invalid BF16 RoPE");
+  }
+  if (!detail::norm_dispatch_fits(groups, impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range("vulkan tensor: RoPE row-head count exceeds dispatch limits");
+  }
+  TensorContext::Impl::Parameters parameters;
+  parameters.op = mode;
+  parameters.p[0] = static_cast<uint32_t>(rows);
+  parameters.p[1] = static_cast<uint32_t>(heads);
+  parameters.p[2] = static_cast<uint32_t>(head_dim);
+  try {
+    impl_->count_operator();
+    impl_->transition(data, BufferAccess::kComputeReadWrite);
+    impl_->transition(cos_table, BufferAccess::kComputeRead);
+    impl_->transition(sin_table, BufferAccess::kComputeRead);
+    impl_->dispatch_rope(parameters, static_cast<uint32_t>(groups), data,
+                         cos_table, sin_table);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
 }
 
 void TensorBatch::rms_norm(DeviceTensor& input, DeviceTensor& weight,

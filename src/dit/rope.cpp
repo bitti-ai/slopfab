@@ -9,7 +9,7 @@ namespace vidfab::dit {
 H3RopeTables build_h3_rope_tables(const std::vector<double>& positions,
                                   float theta, uint32_t frequency_dim) {
   if (positions.empty() || positions.size() % 3 != 0 ||
-      !std::isnormal(theta) || theta <= 0.0f || frequency_dim == 0) {
+      !std::isnormal(theta) || theta < 1.0f || frequency_dim == 0) {
     throw std::invalid_argument("H3 RoPE: invalid table parameters");
   }
   const size_t rows = positions.size() / 3;

@@ -901,6 +901,7 @@ VIDFAB_TEST(h3_rope_tables_are_canonical_serialized_bytes) {
   };
   CHECK(rejects([&] { build_h3_rope_tables({}, 10000.0f, 16); }));
   CHECK(rejects([&] { build_h3_rope_tables({0.0, 0.0, 0.0}, 0.0f, 16); }));
+  CHECK(rejects([&] { build_h3_rope_tables({0.0, 0.0, 0.0}, 0.5f, 16); }));
   CHECK(rejects([&] { build_h3_rope_tables(
       {0.0, std::numeric_limits<double>::infinity(), 0.0}, 10000.0f, 16); }));
   CHECK(rejects([&] { build_h3_rope_tables(
