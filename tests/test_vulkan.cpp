@@ -342,6 +342,15 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
   Device device = devices.front().create_device(options);
   TensorContext tensors(device);
   TensorContext other(device);
+  CHECK(tensors.full_fp32_add_exactness() ==
+        devices.front().info().fp32_denorm_preserve);
+  bool exact_gate_rejected = false;
+  try {
+    tensors.require_full_fp32_add_exactness();
+  } catch (const std::runtime_error&) {
+    exact_gate_rejected = true;
+  }
+  CHECK(exact_gate_rejected == !devices.front().info().fp32_denorm_preserve);
   const uint64_t extent = 257;
   const TensorLayout layout = TensorLayout::contiguous(&extent, 1);
   DeviceTensor a = tensors.allocate(layout);
@@ -355,10 +364,14 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
     host_a[i] = static_cast<float>(static_cast<int>(i % 31) - 15) / 16.0f;
     host_b[i] = static_cast<float>(static_cast<int>(i % 17) - 8) / 32.0f;
   }
-  const uint32_t special_a[] = {0x00000000u, 0x80000000u, 0x00000001u,
-                                0x7f800000u, 0xff800000u, 0x7fc12345u};
-  const uint32_t special_b[] = {0x80000000u, 0x80000000u, 0x00000001u,
-                                0x3f800000u, 0xbf800000u, 0x3f800000u};
+  const uint32_t special_a[] = {
+      0x00000000u, 0x80000000u, 0x00000001u, 0x00800000u,
+      0x3f800000u, 0x3f800000u, 0x7f800000u, 0xff800000u,
+      0x7fc12345u, 0x7fa54321u};
+  const uint32_t special_b[] = {
+      0x80000000u, 0x80000000u, 0x00000001u, 0x807fffffu,
+      0x33800000u, 0x33800001u, 0x3f800000u, 0xbf800000u,
+      0x00000000u, 0x00000000u};
   static_assert(sizeof(float) == sizeof(uint32_t));
   std::memcpy(host_a.data(), special_a, sizeof(special_a));
   std::memcpy(host_b.data(), special_b, sizeof(special_b));
@@ -382,7 +395,15 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
   tensors.download(sum, got_sum.data(), extent);
   tensors.download(copied, got_copy.data(), extent);
   CHECK(std::memcmp(host_a.data(), got_copy.data(), extent * sizeof(float)) == 0);
-  for (size_t i = std::size(special_a); i < host_a.size(); ++i) {
+  for (size_t i = 0; i < host_a.size(); ++i) {
+    const uint32_t input_bits = [&] {
+      uint32_t bits = 0;
+      std::memcpy(&bits, &host_a[i], sizeof(bits));
+      return bits;
+    }();
+    if ((input_bits & 0x7f800000u) == 0x7f800000u &&
+        (input_bits & 0x007fffffu) != 0) continue;
+    if (!tensors.full_fp32_add_exactness() && (i == 2 || i == 3)) continue;
     const float expected = host_a[i] + host_b[i];
     uint32_t expected_bits = 0, actual_bits = 0;
     std::memcpy(&expected_bits, &expected, sizeof(expected_bits));
@@ -413,11 +434,13 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
   CHECK(cross_context_rejected);
   CHECK(a.view().context != other.allocate(layout).view().context);
 
-  DeviceTensorView tail_view = a.view().slice(16, 32, 16);
+  const uint64_t tail_extent = 8;
+  const TensorLayout tail_layout = TensorLayout::contiguous(&tail_extent, 1);
+  DeviceTensorView tail_view = a.view().slice(16, tail_layout, 16);
   CHECK(tail_view.byte_offset == 16);
   bool overflow_rejected = false;
   try {
-    (void)tail_view.slice(std::numeric_limits<uint64_t>::max(), 4, 4);
+    (void)tail_view.slice(std::numeric_limits<uint64_t>::max(), tail_layout, 4);
   } catch (const std::overflow_error&) {
     overflow_rejected = true;
   }
@@ -436,6 +459,137 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
   CHECK(!workspace.valid(old_span));
   CHECK(workspace.generation() != old_span.generation);
   CHECK(tensors.reserved_bytes() > before_workspace);
+
+  // Descriptor sets and pooled buffers reach a fixed high-water after warmup.
+  tensors.add(a, b, sum);
+  const uint64_t warm_reserved = tensors.reserved_bytes();
+  const uint64_t warm_descriptors = tensors.descriptor_set_allocations();
+  for (int repeat = 0; repeat < 8; ++repeat) {
+    TensorBatch repeated = tensors.begin_batch();
+    repeated.add(a, b, sum);
+    repeated.copy(sum, copied);
+    repeated.submit().wait();
+    CHECK(tensors.reserved_bytes() == warm_reserved);
+    CHECK(tensors.descriptor_set_allocations() == warm_descriptors);
+  }
+
+  // The advertised 32-op bound is exact. A rejected 33rd record causes the
+  // whole scope to be abandoned; rollback leaves the next batch usable.
+  bool thirty_third_rejected = false;
+  {
+    TensorBatch bounded = tensors.begin_batch();
+    for (int i = 0; i < 32; ++i) bounded.add(a, b, sum);
+    try {
+      bounded.add(a, b, sum);
+    } catch (const std::logic_error&) {
+      thirty_third_rejected = true;
+    }
+    bool poisoned_submit_rejected = false;
+    try {
+      (void)bounded.submit();
+    } catch (const std::logic_error&) {
+      poisoned_submit_rejected = true;
+    }
+    CHECK(poisoned_submit_rejected);
+  }
+  CHECK(thirty_third_rejected);
+  tensors.add(a, b, sum);
+
+  // Two full graph chunks can be outstanding on separate bounded flight
+  // slots. The second begin neither waits for nor resets the first slot.
+  const uint64_t before_chunks = tensors.reserved_bytes();
+  TensorBatch first_chunk = tensors.begin_batch();
+  for (int i = 0; i < 32; ++i) first_chunk.add(a, b, sum);
+  Submission first_token = first_chunk.submit();
+  TensorBatch second_chunk = tensors.begin_batch();
+  for (int i = 0; i < 32; ++i) second_chunk.add(a, b, copied);
+  Submission second_token = second_chunk.submit();
+  CHECK(second_token.value() > first_token.value());
+  // A third begin applies oldest-slot timeline backpressure, then reuses that
+  // slot and its descriptor cache rather than growing resources.
+  TensorBatch third_chunk = tensors.begin_batch();
+  third_chunk.add(a, b, tail);
+  Submission third_token = third_chunk.submit();
+  first_token.wait();
+  second_token.wait();
+  third_token.wait();
+  CHECK(third_token.value() > second_token.value());
+  CHECK(tensors.reserved_bytes() == before_chunks);
+  const uint64_t descriptor_high_water = tensors.descriptor_set_allocations();
+  TensorBatch reuse_first = tensors.begin_batch();
+  for (int i = 0; i < 32; ++i) reuse_first.add(a, b, sum);
+  Submission reuse_first_token = reuse_first.submit();
+  TensorBatch reuse_second = tensors.begin_batch();
+  for (int i = 0; i < 32; ++i) reuse_second.add(a, b, copied);
+  Submission reuse_second_token = reuse_second.submit();
+  reuse_first_token.wait();
+  reuse_second_token.wait();
+  CHECK(tensors.descriptor_set_allocations() == descriptor_high_water);
+
+  // Numeric identities never recycle even after owners and native handles are
+  // destroyed. This covers both tensor contexts and scratch workspaces.
+  uintptr_t old_tensor_context = 0;
+  {
+    TensorContext temporary(device);
+    DeviceTensor old = temporary.allocate(layout);
+    old_tensor_context = old.view().context;
+  }
+  TensorContext replacement_context(device);
+  CHECK(replacement_context.allocate(layout).view().context != old_tensor_context);
+  uintptr_t old_workspace_context = 0;
+  {
+    TensorWorkspace old_workspace(device, 1024);
+    old_workspace.reserve(64);
+    old_workspace_context = old_workspace.allocate(16, 4).context;
+  }
+  TensorWorkspace replacement_workspace(device, 1024);
+  replacement_workspace.reserve(64);
+  CHECK(replacement_workspace.allocate(16, 4).context != old_workspace_context);
+
+  // Submitted jobs own their tensors and Vulkan resources through completion,
+  // even when every caller wrapper and the TensorContext are dropped.
+  Submission retained;
+  {
+    TensorContext temporary(device);
+    DeviceTensor left = temporary.allocate(layout);
+    DeviceTensor right = temporary.allocate(layout);
+    DeviceTensor output = temporary.allocate(layout);
+    temporary.upload(left, host_a.data(), extent);
+    temporary.upload(right, host_b.data(), extent);
+    TensorBatch live = temporary.begin_batch();
+    live.add(left, right, output);
+    retained = live.submit();
+  }
+  retained.wait();
+
+  TensorWorkspace movable_workspace(device, 1024);
+  TensorWorkspace moved_workspace = std::move(movable_workspace);
+  CHECK(moved_workspace.capacity() == 0);
+  CHECK(movable_workspace.capacity() == 0);
+  CHECK(movable_workspace.used() == 0);
+  CHECK(movable_workspace.generation() == 0);
+  CHECK(movable_workspace.reserved_bytes() == 0);
+  movable_workspace.reset();
+  bool moved_workspace_rejected = false;
+  try {
+    movable_workspace.reserve(16);
+  } catch (const std::logic_error&) {
+    moved_workspace_rejected = true;
+  }
+  CHECK(moved_workspace_rejected);
+
+  TensorContext movable_context(device);
+  TensorContext moved_context = std::move(movable_context);
+  CHECK(moved_context.descriptor_set_allocations() == 0);
+  CHECK(movable_context.reserved_bytes() == 0);
+  CHECK(!movable_context.full_fp32_add_exactness());
+  bool moved_context_rejected = false;
+  try {
+    (void)movable_context.allocate(layout);
+  } catch (const std::logic_error&) {
+    moved_context_rejected = true;
+  }
+  CHECK(moved_context_rejected);
 }
 
 VIDFAB_TEST(vulkan_yuv420_output) {

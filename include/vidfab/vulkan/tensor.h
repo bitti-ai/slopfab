@@ -12,6 +12,12 @@ namespace vidfab::vulkan {
 class TensorContext;
 class TensorBatch;
 
+struct TensorContextOptions {
+  // Two slots let a producer record the next bounded graph chunk while the
+  // previous timeline submission is still executing.
+  uint32_t max_in_flight = 2;
+};
+
 class DeviceTensor {
  public:
   DeviceTensor();
@@ -59,9 +65,9 @@ class TensorWorkspace final : public DeviceWorkspace {
 
 // A bounded device recording scope. Multiple operators record into one Vulkan
 // command buffer and `submit` produces one exact timeline token. Tensor
-// wrappers passed to it must remain alive until submit; submitted buffers are
-// retained internally through completion. Dropping an unsubmitted batch
-// discards commands and restores tensor access tracking.
+// allocations are retained as they are recorded and then through completion.
+// Dropping an unsubmitted batch discards commands and restores tensor access
+// tracking.
 class TensorBatch {
  public:
   TensorBatch();
@@ -88,7 +94,8 @@ class TensorBatch {
 // and do not stage through host memory.
 class TensorContext {
  public:
-  explicit TensorContext(const Device& device);
+  explicit TensorContext(const Device& device,
+                         const TensorContextOptions& options = {});
   ~TensorContext();
   TensorContext(TensorContext&&) noexcept;
   TensorContext& operator=(TensorContext&&) noexcept;
@@ -102,9 +109,15 @@ class TensorContext {
   // Exact self-copy and partial aliasing are rejected.
   void copy(DeviceTensor& source, DeviceTensor& destination);
   // Inputs may alias each other; output must be a distinct allocation.
+  // Results are CUDA-bit-exact when inputs and the correctly rounded result
+  // are zero, normal, or infinity. NaN payload arithmetic is not promised.
   void add(DeviceTensor& a, DeviceTensor& b, DeviceTensor& output);
+  // True only when add additionally covers subnormal inputs/results.
+  bool full_fp32_add_exactness() const noexcept;
+  void require_full_fp32_add_exactness() const;
   TensorWorkspace& workspace();
   uint64_t reserved_bytes() const;
+  uint64_t descriptor_set_allocations() const noexcept;
 
  private:
   struct Impl;

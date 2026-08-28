@@ -119,6 +119,7 @@ class ComputeContext {
   // Reclaims completed slots without waiting. Called automatically by begin.
   void collect();
   uint32_t in_flight() const;
+  uint64_t descriptor_set_allocations() const noexcept;
 
  private:
   struct Impl;

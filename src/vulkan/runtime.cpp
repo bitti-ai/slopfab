@@ -4,6 +4,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -309,11 +310,18 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
   if (state->get_physical_device_properties2 != nullptr) {
     VkPhysicalDeviceVulkan11Properties properties11{};
     properties11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+    VkPhysicalDeviceVulkan12Properties properties12{};
+    properties12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+    properties11.pNext = &properties12;
     VkPhysicalDeviceProperties2 properties2{};
     properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     properties2.pNext = &properties11;
     state->get_physical_device_properties2(physical, &properties2);
     info.max_allocation_bytes = properties11.maxMemoryAllocationSize;
+    info.fp32_denorm_preserve = properties12.shaderDenormPreserveFloat32 == VK_TRUE;
+    info.fp32_signed_zero_inf_nan_preserve =
+        properties12.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
+    info.fp32_rounding_rte = properties12.shaderRoundingModeRTEFloat32 == VK_TRUE;
   }
   return info;
 }
@@ -1197,6 +1205,7 @@ struct ComputeState : std::enable_shared_from_this<ComputeState> {
   VkSemaphore timeline = VK_NULL_HANDLE;
   uint32_t max_bindings = 0;
   uint32_t max_compute_binds = 0;
+  std::atomic<uint64_t> descriptor_allocations{0};
   uint64_t next_value = 1;
   std::vector<ComputeSlot> slots;
   mutable std::mutex mutex;
@@ -1669,6 +1678,9 @@ uint32_t ComputeContext::in_flight() const {
   for (const auto& slot : impl_->state->slots) if (slot.reserved) ++count;
   return count;
 }
+uint64_t ComputeContext::descriptor_set_allocations() const noexcept {
+  return impl_ ? impl_->state->descriptor_allocations.load(std::memory_order_relaxed) : 0;
+}
 
 Submission::Submission() = default;
 Submission::Submission(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -1825,6 +1837,7 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
                       impl_->state->device->device, &allocate,
                       &slot.descriptor_sets[set_index]),
                   "vkAllocateDescriptorSets");
+    impl_->state->descriptor_allocations.fetch_add(1, std::memory_order_relaxed);
     slot.descriptor_pipelines[set_index] = pipeline.impl_;
   }
   for (auto& write : slot.descriptor_writes) {

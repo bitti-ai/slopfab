@@ -27,12 +27,20 @@ tensor command path; copies use Vulkan transfer commands and need no shader.
 The checked-in module was produced with the same Khronos glslang 16.5.0:
 
 ```text
-glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_add.comp -o src/vulkan/tensor_add.comp.spv
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_add.comp -o tensor_add.raw.spv
+python tools/add_spirv_float_controls.py tensor_add.raw.spv src/vulkan/tensor_add.comp.spv src/vulkan/tensor_add_denorm.comp.spv
 ```
 
 Expected SHA-256 digests (also pinned by CMake):
 
 ```text
 tensor_add.comp      4378E3EDC139935EB4F62F64F7934F68242DF5BC07DA77141EDC0D6F1B34BB73
-tensor_add.comp.spv  73F88EB5018B9CACA01CD80A60E5508A72C1A191FDC58318F387F157D73DD15B
+tensor_add.comp.spv          0E52BC03EED7D86E3254489E0F18B491C54857700BAFF2F6B19D89E70DE9B1BE
+tensor_add_denorm.comp.spv   5909864E52688E5ABF9F38765901B693F32EDD995942925EE3A690AC6A5BC12E
 ```
+
+The deterministic postprocessor adds explicit fp32 signed-zero/Inf/NaN and
+round-to-nearest-even execution modes. The denorm variant additionally adds
+`DenormPreserve`; it is selected only when the queried Vulkan 1.2 float-control
+properties permit that mode. Thus CMake hashes exactly the modules executed by
+the driver, not an untracked runtime transformation.

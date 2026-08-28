@@ -25,6 +25,14 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   options.enable_timeline_semaphore = true;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
+  bool full_exact_rejected = false;
+  try {
+    vk.require_full_fp32_add_exactness();
+  } catch (const std::runtime_error&) {
+    full_exact_rejected = true;
+  }
+  CHECK(full_exact_rejected == !physical.front().info().fp32_denorm_preserve);
+  CHECK(vk.full_fp32_add_exactness() == physical.front().info().fp32_denorm_preserve);
 
   constexpr uint64_t count = 259;
   const TensorLayout layout = TensorLayout::contiguous(&count, 1);
@@ -38,12 +46,14 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   // on both APIs. NaN payload preservation is covered by copy: GLSL fp32 add
   // is permitted to canonicalise a NaN and is therefore not advertised as an
   // exact-payload arithmetic operation.
-  const uint32_t copy_special[] = {0x00000000u, 0x80000000u, 0x00000001u,
-                                   0x80000001u, 0x7f800000u, 0xff800000u,
-                                   0x7fc12345u, 0x7fa54321u};
-  const uint32_t add_rhs[] = {0x80000000u, 0x80000000u, 0x3f800000u,
-                              0x3f800000u, 0x3f800000u, 0xbf800000u,
-                              0x00000000u, 0x00000000u};
+  const uint32_t copy_special[] = {
+      0x00000000u, 0x80000000u, 0x00000001u, 0x00800000u,
+      0x3f800000u, 0x3f800000u, 0x7f800000u, 0xff800000u,
+      0x7fc12345u, 0x7fa54321u};
+  const uint32_t add_rhs[] = {
+      0x80000000u, 0x80000000u, 0x00000001u, 0x807fffffu,
+      0x33800000u, 0x33800001u, 0x3f800000u, 0xbf800000u,
+      0x00000000u, 0x00000000u};
   std::memcpy(a.data(), copy_special, sizeof(copy_special));
   std::memcpy(b.data(), add_rhs, sizeof(add_rhs));
 
@@ -80,6 +90,10 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
     uint32_t bits = 0;
     std::memcpy(&bits, &a[i], sizeof(bits));
     if ((bits & 0x7f800000u) == 0x7f800000u && (bits & 0x007fffffu) != 0) continue;
+    // Indices 2/3 require denormal-preserving arithmetic. On devices without
+    // that Vulkan mode, the explicit capability gate above fails rather than
+    // claiming those results are CUDA-exact.
+    if (!vk.full_fp32_add_exactness() && (i == 2 || i == 3)) continue;
     uint32_t cuda_bits = 0, vk_bits = 0;
     std::memcpy(&cuda_bits, &cuda_sum_host[i], sizeof(cuda_bits));
     std::memcpy(&vk_bits, &vk_sum_host[i], sizeof(vk_bits));

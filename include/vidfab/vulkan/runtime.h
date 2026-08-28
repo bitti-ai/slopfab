@@ -54,6 +54,9 @@ struct DeviceInfo {
   bool descriptor_binding_partially_bound = false;
   bool descriptor_binding_variable_count = false;
   bool storage_buffer_non_uniform_indexing = false;
+  bool fp32_denorm_preserve = false;
+  bool fp32_signed_zero_inf_nan_preserve = false;
+  bool fp32_rounding_rte = false;
   std::vector<MemoryHeapInfo> memory_heaps;
   std::vector<std::string> extensions;
 
