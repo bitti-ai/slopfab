@@ -133,7 +133,8 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
       0x00000000u, 0x80000000u, 0x00000001u, 0x007fffffu,
       0x00800000u, 0x33800000u, 0x33800001u, 0x387fffffu,
       0x38800000u, 0x3f800000u, 0x477fe000u, 0x7f800000u,
-      0xff800000u, 0x7fc12345u, 0x7fa54321u};
+      0xff800000u, 0x7fc12345u, 0x7fa54321u, 0xffc12345u,
+      0x33000000u, 0x33000001u, 0x3f808000u, 0x3f808001u};
   std::memcpy(input.data(), special, sizeof(special));
   for (int i = 0; i < cols; ++i) bias[i] = static_cast<float>((i % 13) - 6) / 32.0f;
 

@@ -46,7 +46,7 @@ uint32_t float_bits(float value) {
 uint16_t reference_bf16(float value) {
   uint32_t bits = float_bits(value);
   if ((bits & 0x7fffffffu) > 0x7f800000u) {
-    return static_cast<uint16_t>((bits >> 16) | 0x0040u);
+    return 0x7fffu;
   }
   return static_cast<uint16_t>((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
 }
@@ -783,6 +783,85 @@ VIDFAB_TEST(vulkan_tensor_layout_and_conversion_ops) {
   tensors.download(depth_out, depth_result.data(), depth_elements);
   const float depth_expected[] = {0, 1, 4, 5, 2, 3, 6, 7};
   CHECK(std::memcmp(depth_result.data(), depth_expected, sizeof(depth_expected)) == 0);
+
+  // Deterministic validation happens before access state or command recording,
+  // so a caller may catch it and still submit the earlier valid operation.
+  bool alias_rejected = false;
+  TensorBatch recoverable = tensors.begin_batch();
+  recoverable.convert(input, bf16);
+  try {
+    recoverable.transpose_2d(input, input);
+  } catch (const std::invalid_argument&) {
+    alias_rejected = true;
+  }
+  CHECK(alias_rejected);
+  recoverable.submit().wait();
+
+  TensorContext other(device);
+  DeviceTensor foreign = other.allocate(shape);
+  bool context_rejected = false;
+  try {
+    TensorBatch invalid = tensors.begin_batch();
+    invalid.convert(foreign, bf16);
+  } catch (const std::invalid_argument&) {
+    context_rejected = true;
+  }
+  CHECK(context_rejected);
+
+  bool overflow_rejected = false;
+  try {
+    TensorBatch invalid = tensors.begin_batch();
+    invalid.heads_to_tokens_bf16(input, bf16,
+                                 std::numeric_limits<uint32_t>::max(),
+                                 std::numeric_limits<uint32_t>::max(),
+                                 std::numeric_limits<uint32_t>::max());
+  } catch (const std::overflow_error&) {
+    overflow_rejected = true;
+  }
+  CHECK(overflow_rejected);
+
+  // Invalid trusted device indices are still memory-safe: gather writes zero
+  // and scatter preserves the destination row. Producers remain responsible
+  // for satisfying the documented range/uniqueness contract.
+  const int32_t unsafe_indices[] = {2, -1};
+  tensors.upload_bytes(indices, unsafe_indices, sizeof(unsafe_indices));
+  tensors.upload(scattered, scatter_initial.data(), scatter_initial.size());
+  TensorBatch safe_indexing = tensors.begin_batch();
+  safe_indexing.gather_rows(matrix, indices, gathered);
+  safe_indexing.scatter_rows(gathered, indices, scattered);
+  safe_indexing.submit().wait();
+  tensors.download(gathered, gathered_host.data(), gathered_host.size());
+  tensors.download(scattered, scattered_host.data(), scattered_host.size());
+  for (size_t col = 0; col < 4; ++col) {
+    CHECK(gathered_host[col] == matrix_host[8 + col]);
+    CHECK(float_bits(gathered_host[4 + col]) == 0u);
+    CHECK(scattered_host[8 + col] == matrix_host[8 + col]);
+    CHECK(scattered_host[col] == -99.0f);
+    CHECK(scattered_host[4 + col] == -99.0f);
+  }
+
+  // Warm both bounded flight slots, then prove that repeated conversion and
+  // layout batches reuse descriptor sets and pooled allocations exactly.
+  for (int warm = 0; warm < 2; ++warm) {
+    TensorBatch repeated = tensors.begin_batch();
+    repeated.convert(input, bf16);
+    repeated.convert(bf16, bf16_back);
+    repeated.transpose_2d(input, transposed);
+    repeated.add_bias(input, bias, biased);
+    repeated.submit().wait();
+  }
+  const uint64_t warm_reserved = tensors.reserved_bytes();
+  const uint64_t warm_descriptors = tensors.descriptor_set_allocations();
+  for (int repeat = 0; repeat < 8; ++repeat) {
+    TensorBatch repeated = tensors.begin_batch();
+    repeated.convert(input, bf16);
+    repeated.convert(bf16, bf16_back);
+    repeated.transpose_2d(input, transposed);
+    repeated.add_bias(input, bias, biased);
+    repeated.submit().wait();
+    CHECK(tensors.reserved_bytes() == warm_reserved);
+    CHECK(tensors.descriptor_set_allocations() == warm_descriptors);
+  }
 }
 
 VIDFAB_TEST(vulkan_yuv420_output) {
