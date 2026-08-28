@@ -1,5 +1,6 @@
 #include "harness.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -871,6 +872,93 @@ VIDFAB_TEST(vulkan_tensor_layout_and_conversion_ops) {
     CHECK(tensors.reserved_bytes() == warm_reserved);
     CHECK(tensors.descriptor_set_allocations() == warm_descriptors);
   }
+}
+
+VIDFAB_TEST(vulkan_tensor_exact_vae_norms) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  const DeviceInfo& info = physical.front().info();
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  Device device = physical.front().create_device(options);
+  TensorContext tensors(device);
+  const bool expected_capability = info.vendor_id == 0x10deu &&
+                                   info.fp32_signed_zero_inf_nan_preserve &&
+                                   info.fp32_rounding_rte;
+  CHECK(tensors.exact_fp32_vae_normalization() == expected_capability);
+  if (!expected_capability) {
+    bool rejected = false;
+    try { tensors.require_exact_fp32_vae_normalization(); }
+    catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected);
+    return;
+  }
+  tensors.require_exact_fp32_vae_normalization();
+
+  const uint64_t extents[] = {2, 8};
+  const uint64_t features = 8;
+  const TensorLayout matrix = TensorLayout::contiguous(extents, 2);
+  const TensorLayout vector = TensorLayout::contiguous(&features, 1);
+  DeviceTensor input = tensors.allocate(matrix);
+  DeviceTensor weight = tensors.allocate(vector);
+  DeviceTensor bias = tensors.allocate(vector);
+  DeviceTensor rms = tensors.allocate(matrix);
+  DeviceTensor layer = tensors.allocate(matrix);
+  std::vector<float> values(16), weights(8, 1.0f), biases(8, 0.0f);
+  for (size_t i = 0; i < values.size(); ++i)
+    values[i] = (i & 1) ? -0.5f : 0.5f;
+  tensors.upload(input, values.data(), values.size());
+  tensors.upload(weight, weights.data(), weights.size());
+  tensors.upload(bias, biases.data(), biases.size());
+  TensorBatch exact = tensors.begin_batch();
+  // mean(x^2)+eps = .25+.75 = 1 and mean(x)=0, so both expected
+  // results are exactly the input without relying on host sqrt behavior.
+  exact.rms_norm(input, weight, rms, 0.75f);
+  exact.layer_norm(input, weight, bias, layer, 0.75f);
+  exact.submit().wait();
+  std::vector<float> rms_host(values.size()), layer_host(values.size());
+  tensors.download(rms, rms_host.data(), rms_host.size());
+  tensors.download(layer, layer_host.data(), layer_host.size());
+  CHECK(std::memcmp(rms_host.data(), values.data(), values.size() * sizeof(float)) == 0);
+  CHECK(std::memcmp(layer_host.data(), values.data(), values.size() * sizeof(float)) == 0);
+
+  // RMSNorm preserves signed zero when sqrt(eps) is exactly one.
+  for (size_t i = 0; i < values.size(); ++i)
+    values[i] = (i & 1) ? -0.0f : 0.0f;
+  tensors.upload(input, values.data(), values.size());
+  TensorBatch signed_zero = tensors.begin_batch();
+  signed_zero.rms_norm(input, weight, rms, 1.0f);
+  signed_zero.submit().wait();
+  tensors.download(rms, rms_host.data(), rms_host.size());
+  CHECK(std::memcmp(rms_host.data(), values.data(), values.size() * sizeof(float)) == 0);
+
+  // A zero-variance LayerNorm row maps exactly to its affine bias.
+  std::fill(values.begin(), values.end(), 2.0f);
+  for (size_t i = 0; i < biases.size(); ++i)
+    biases[i] = static_cast<float>(static_cast<int>(i) - 4) * 0.25f;
+  tensors.upload(input, values.data(), values.size());
+  tensors.upload(bias, biases.data(), biases.size());
+  TensorBatch constant = tensors.begin_batch();
+  constant.layer_norm(input, weight, bias, layer, 1.0e-6f);
+  constant.submit().wait();
+  tensors.download(layer, layer_host.data(), layer_host.size());
+  for (size_t row = 0; row < 2; ++row) {
+    CHECK(std::memcmp(layer_host.data() + row * 8, biases.data(),
+                      biases.size() * sizeof(float)) == 0);
+  }
+
+  bool subnormal_epsilon_rejected = false;
+  try {
+    TensorBatch invalid = tensors.begin_batch();
+    invalid.rms_norm(input, weight, rms, std::numeric_limits<float>::denorm_min());
+  } catch (const std::invalid_argument&) {
+    subnormal_epsilon_rejected = true;
+  }
+  CHECK(subnormal_epsilon_rejected);
 }
 
 VIDFAB_TEST(vulkan_yuv420_output) {

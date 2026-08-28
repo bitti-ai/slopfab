@@ -1,0 +1,85 @@
+#version 450
+
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { uint data[]; } input_data;
+layout(set = 0, binding = 1, std430) readonly buffer Weight { uint data[]; } weight_data;
+layout(set = 0, binding = 2, std430) readonly buffer Bias { uint data[]; } bias_data;
+layout(set = 0, binding = 3, std430) buffer Output { uint data[]; } output_data;
+
+layout(push_constant) uniform Parameters {
+  uint rows;
+  uint dim;
+  uint epsilon_bits;
+  uint reserved;
+} parameters;
+
+shared float lane_values[256];
+shared float warp_values[8];
+
+float block_reduce_sum(float value) {
+  uint tid = gl_LocalInvocationID.x;
+  uint lane = tid & 31u;
+  uint warp = tid >> 5u;
+  lane_values[tid] = value;
+  barrier();
+  for (uint offset = 16u; offset != 0u; offset >>= 1u) {
+    if (lane < offset)
+      lane_values[tid] = lane_values[tid] + lane_values[tid + offset];
+    barrier();
+  }
+  if (lane == 0u) warp_values[warp] = lane_values[tid];
+  barrier();
+  lane_values[tid] = tid < 8u ? warp_values[tid] : 0.0f;
+  barrier();
+  for (uint offset = 16u; offset != 0u; offset >>= 1u) {
+    if (warp == 0u && lane < offset)
+      lane_values[tid] = lane_values[tid] + lane_values[tid + offset];
+    barrier();
+  }
+  return lane_values[0];
+}
+
+void main() {
+  uint row = gl_WorkGroupID.x;
+  uint tid = gl_LocalInvocationID.x;
+  uint base = row * parameters.dim;
+  float epsilon = uintBitsToFloat(parameters.epsilon_bits);
+
+#ifdef RMS_NORM
+  {  // VAE fp32 RMSNorm
+    precise float sum_sq = 0.0f;
+    for (uint col = tid; col < parameters.dim; col += 256u) {
+      float value = uintBitsToFloat(input_data.data[base + col]);
+      sum_sq = fma(value, value, sum_sq);
+    }
+    float inv = inversesqrt(block_reduce_sum(sum_sq) / float(parameters.dim) + epsilon);
+    for (uint col = tid; col < parameters.dim; col += 256u) {
+      float value = uintBitsToFloat(input_data.data[base + col]);
+      precise float scaled = value * inv;
+      scaled = scaled * uintBitsToFloat(weight_data.data[col]);
+      output_data.data[base + col] = floatBitsToUint(scaled);
+    }
+  }
+#else
+  {  // VAE fp32 affine LayerNorm
+    precise float sum = 0.0f;
+    for (uint col = tid; col < parameters.dim; col += 256u)
+      sum = sum + uintBitsToFloat(input_data.data[base + col]);
+    float mean = block_reduce_sum(sum) / float(parameters.dim);
+    barrier();
+    precise float sum_sq = 0.0f;
+    for (uint col = tid; col < parameters.dim; col += 256u) {
+      precise float delta = uintBitsToFloat(input_data.data[base + col]) - mean;
+      sum_sq = fma(delta, delta, sum_sq);
+    }
+    float inv = inversesqrt(block_reduce_sum(sum_sq) / float(parameters.dim) + epsilon);
+    for (uint col = tid; col < parameters.dim; col += 256u) {
+      precise float delta = uintBitsToFloat(input_data.data[base + col]) - mean;
+      precise float normal = delta * inv;
+      float result = fma(normal, uintBitsToFloat(weight_data.data[col]),
+                         uintBitsToFloat(bias_data.data[col]));
+      output_data.data[base + col] = floatBitsToUint(result);
+    }
+  }
+#endif
+}

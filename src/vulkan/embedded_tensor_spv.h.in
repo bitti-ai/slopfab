@@ -4,4 +4,6 @@ namespace vidfab::vulkan::detail {
 inline constexpr uint8_t kTensorOpsSpirv[] = {@VIDFAB_TENSOR_OPS_SPV_BYTES@};
 inline constexpr uint8_t kTensorOpsDenormSpirv[] = {
     @VIDFAB_TENSOR_OPS_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorRmsNormSpirv[] = {@VIDFAB_TENSOR_RMS_NORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorLayerNormSpirv[] = {@VIDFAB_TENSOR_LAYER_NORM_SPV_BYTES@};
 }  // namespace vidfab::vulkan::detail

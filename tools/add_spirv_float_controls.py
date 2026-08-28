@@ -2,6 +2,7 @@
 """Add Vulkan 1.2 fp32 control modes to a glslang SPIR-V module.
 
 Usage: add_spirv_float_controls.py INPUT NORMAL_OUTPUT DENORM_OUTPUT
+       add_spirv_float_controls.py --preserve-only INPUT OUTPUT
 NORMAL_OUTPUT requires signed-zero/Inf/NaN preservation and RTE. DENORM_OUTPUT
 adds denormal preservation. The input may equal NORMAL_OUTPUT: it is read fully
 before either output is written.
@@ -11,7 +12,7 @@ import struct
 import sys
 
 
-def transform(raw: bytes, denorm: bool) -> bytes:
+def transform(raw: bytes, denorm: bool, rounding_rte: bool = True) -> bytes:
     if len(raw) % 4:
         raise ValueError("SPIR-V size is not word aligned")
     words = list(struct.unpack("<%dI" % (len(raw) // 4), raw))
@@ -34,9 +35,11 @@ def transform(raw: bytes, denorm: bool) -> bytes:
         at += count
     if not entry or not execution_end:
         raise ValueError("SPIR-V has no entry point")
-    capabilities = [(2 << 16) | 17, 4466, (2 << 16) | 17, 4467]
-    modes = [(4 << 16) | 16, entry, 4461, 32,
-             (4 << 16) | 16, entry, 4462, 32]
+    capabilities = [(2 << 16) | 17, 4467]
+    modes = [(4 << 16) | 16, entry, 4461, 32]
+    if rounding_rte:
+        capabilities[0:0] = [(2 << 16) | 17, 4466]
+        modes.extend([(4 << 16) | 16, entry, 4462, 32])
     if denorm:
         capabilities[0:0] = [(2 << 16) | 17, 4464]
         modes[0:0] = [(4 << 16) | 16, entry, 4459, 32]
@@ -46,6 +49,12 @@ def transform(raw: bytes, denorm: bool) -> bytes:
     return struct.pack("<%dI" % len(words), *words)
 
 
+if len(sys.argv) == 4 and sys.argv[1] == "--preserve-only":
+    with open(sys.argv[2], "rb") as source:
+        input_bytes = source.read()
+    with open(sys.argv[3], "wb") as output:
+        output.write(transform(input_bytes, False, False))
+    raise SystemExit(0)
 if len(sys.argv) != 4:
     raise SystemExit(__doc__)
 with open(sys.argv[1], "rb") as source:

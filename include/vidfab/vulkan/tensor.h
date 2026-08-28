@@ -102,6 +102,14 @@ class TensorBatch {
   void depth_to_space(DeviceTensor& source, DeviceTensor& destination,
                       uint32_t time, uint32_t height, uint32_t width,
                       uint32_t channels, uint32_t patch_time, uint32_t patch);
+  // Matches the fp32 video-VAE CUDA reduction tree. Input/output are [rows,
+  // dim], weight is [dim], and output may alias input. Epsilon must be finite
+  // and positive.
+  void rms_norm(DeviceTensor& input, DeviceTensor& weight, DeviceTensor& output,
+                float epsilon);
+  // As above, with biased variance and affine fp32 weight/bias [dim].
+  void layer_norm(DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
+                  DeviceTensor& output, float epsilon);
   Submission submit();
   explicit operator bool() const noexcept;
 
@@ -152,6 +160,13 @@ class TensorContext {
   void require_full_fp32_add_exactness() const {
     require_full_fp32_arithmetic_exactness();
   }
+  // Exact fp32 VAE normalization currently requires an NVIDIA Vulkan device.
+  // The contract covers zero and finite normal inputs, affine values,
+  // intermediates, epsilon and results. Subnormal and NaN arithmetic is
+  // deliberately outside the exact domain; require this capability before
+  // recording rms_norm/layer_norm.
+  bool exact_fp32_vae_normalization() const noexcept;
+  void require_exact_fp32_vae_normalization() const;
   TensorWorkspace& workspace();
   uint64_t reserved_bytes() const;
   uint64_t descriptor_set_allocations() const noexcept;

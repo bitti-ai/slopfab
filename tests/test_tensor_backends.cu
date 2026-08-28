@@ -2,8 +2,11 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 #include <vector>
 
@@ -12,6 +15,7 @@
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/vulkan/tensor.h"
+
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   using namespace vidfab;
@@ -377,6 +381,163 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
         }
       }
     }
+  }
+}
+
+VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_fp32_vae_normalization()) {
+    bool rejected = false;
+    try { vk.require_exact_fp32_vae_normalization(); }
+    catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected);
+    return;
+  }
+  vk.require_exact_fp32_vae_normalization();
+
+  auto run_case = [&](int rows, int dim, float epsilon, int pattern) {
+    const size_t count = static_cast<size_t>(rows) * dim;
+    std::vector<float> input(count), weight(dim), bias(dim);
+    for (size_t i = 0; i < input.size(); ++i)
+      input[i] = static_cast<float>(static_cast<int>((i * 17) % 251) - 125) / 32.0f;
+    for (int i = 0; i < dim; ++i) {
+      weight[i] = 0.5f + static_cast<float>(i % 29) / 32.0f;
+      bias[i] = static_cast<float>((i % 17) - 8) / 64.0f;
+    }
+    if (pattern == 1) {
+      // Constant/zero-variance row and signed-zero values exercise degenerate
+      // LayerNorm and sign preservation without leaving the advertised domain.
+      for (int col = 0; col < dim; ++col) input[col] = 2.0f;
+      for (int col = 0; col < dim; ++col)
+        input[dim + col] = (col & 1) ? -0.0f : 0.0f;
+    } else if (pattern == 2) {
+      // Large values whose squares and reduction totals remain finite.
+      for (size_t i = 0; i < input.size(); ++i)
+        input[i] = (i & 1) ? -1.0e16f : 1.0e16f;
+    } else if (pattern == 3) {
+      std::fill(input.begin(), input.end(), 0.0f);
+    }
+
+    cuda::DeviceBuffer<float> c_input(count), c_weight(dim), c_bias(dim),
+        c_rms(count), c_layer(count);
+    c_input.copy_from_host(input.data(), input.size());
+    c_weight.copy_from_host(weight.data(), weight.size());
+    c_bias.copy_from_host(bias.data(), bias.size());
+    cuda::launch_rmsnorm(c_input.get(), c_weight.get(), c_rms.get(), rows, dim,
+                         epsilon, nullptr);
+    cuda::launch_layernorm(c_input.get(), c_weight.get(), c_bias.get(), c_layer.get(),
+                           rows, dim, epsilon, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+    const uint64_t shape_extents[] = {static_cast<uint64_t>(rows),
+                                      static_cast<uint64_t>(dim)};
+    const uint64_t feature_extent = static_cast<uint64_t>(dim);
+    DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(shape_extents, 2));
+    DeviceTensor v_weight = vk.allocate(TensorLayout::contiguous(&feature_extent, 1));
+    DeviceTensor v_bias = vk.allocate(TensorLayout::contiguous(&feature_extent, 1));
+    DeviceTensor v_rms = vk.allocate(TensorLayout::contiguous(shape_extents, 2));
+    DeviceTensor v_layer = vk.allocate(TensorLayout::contiguous(shape_extents, 2));
+    vk.upload(v_input, input.data(), input.size());
+    vk.upload(v_weight, weight.data(), weight.size());
+    vk.upload(v_bias, bias.data(), bias.size());
+    TensorBatch batch = vk.begin_batch();
+    batch.rms_norm(v_input, v_weight, v_rms, epsilon);
+    batch.layer_norm(v_input, v_weight, v_bias, v_layer, epsilon);
+    batch.submit().wait();
+
+    auto compare = [&](auto& cuda_buffer, DeviceTensor& vulkan_tensor,
+                       const char* label) {
+      std::vector<float> cuda_host(count), vulkan_host(count);
+      cuda_buffer.copy_to_host(cuda_host.data(), cuda_host.size());
+      vk.download(vulkan_tensor, vulkan_host.data(), vulkan_host.size());
+      size_t mismatch = count;
+      for (size_t i = 0; i < count; ++i) {
+        if (std::memcmp(&cuda_host[i], &vulkan_host[i], sizeof(float)) != 0) {
+          mismatch = i;
+          break;
+        }
+      }
+      uint32_t cuda_bits = 0, vulkan_bits = 0;
+      if (mismatch != count) {
+        std::memcpy(&cuda_bits, &cuda_host[mismatch], sizeof(cuda_bits));
+        std::memcpy(&vulkan_bits, &vulkan_host[mismatch], sizeof(vulkan_bits));
+      }
+      CHECK_MSG(mismatch == count,
+                "CUDA/Vulkan %s %dx%d mismatch at %zu: %08x != %08x", label,
+                rows, dim, mismatch, cuda_bits, vulkan_bits);
+    };
+    compare(c_rms, v_rms, "VAE RMSNorm");
+    compare(c_layer, v_layer, "VAE LayerNorm");
+  };
+
+  run_case(3, 513, 1.0e-6f, 0);   // odd scalar and workgroup tail
+  run_case(2, 128, 1.0e-5f, 1);   // test-model width, signed zero/variance zero
+  run_case(2, 2048, 1.0e-6f, 2);  // shipped video-VAE width
+  run_case(2, 7, 1.0e-6f, 1);     // dimension below a warp
+  run_case(1, 9, std::numeric_limits<float>::min(), 3);
+
+  // Host-known values outside the exact domain fail before recording and do
+  // not poison an otherwise valid batch.
+  const uint64_t extents[] = {2, 7};
+  const uint64_t feature = 7;
+  DeviceTensor input = vk.allocate(TensorLayout::contiguous(extents, 2));
+  DeviceTensor weight = vk.allocate(TensorLayout::contiguous(&feature, 1));
+  DeviceTensor bias = vk.allocate(TensorLayout::contiguous(&feature, 1));
+  DeviceTensor rms_a = vk.allocate(TensorLayout::contiguous(extents, 2));
+  DeviceTensor rms_b = vk.allocate(TensorLayout::contiguous(extents, 2));
+  DeviceTensor layer_a = vk.allocate(TensorLayout::contiguous(extents, 2));
+  DeviceTensor layer_b = vk.allocate(TensorLayout::contiguous(extents, 2));
+  std::vector<float> values(14, 1.0f), affine(7, 1.0f), offsets(7, 0.25f);
+  vk.upload(input, values.data(), values.size());
+  vk.upload(weight, affine.data(), affine.size());
+  vk.upload(bias, offsets.data(), offsets.size());
+  TensorBatch recoverable = vk.begin_batch();
+  bool subnormal_epsilon_rejected = false;
+  try {
+    recoverable.rms_norm(input, weight, rms_a,
+                         std::numeric_limits<float>::denorm_min());
+  } catch (const std::invalid_argument&) {
+    subnormal_epsilon_rejected = true;
+  }
+  CHECK(subnormal_epsilon_rejected);
+  recoverable.rms_norm(input, weight, rms_a, 1.0e-6f);
+  recoverable.submit().wait();
+
+  // Warm both flight slots with the same two-pipeline sequence. Two jobs are
+  // submitted before either token is waited, then a third begin exercises
+  // bounded oldest-slot backpressure without queue/device idle.
+  auto submit_pair = [&](DeviceTensor& rms, DeviceTensor& layer) {
+    TensorBatch batch = vk.begin_batch();
+    batch.rms_norm(input, weight, rms, 1.0e-6f);
+    batch.layer_norm(input, weight, bias, layer, 1.0e-6f);
+    return batch.submit();
+  };
+  Submission first = submit_pair(rms_a, layer_a);
+  Submission second = submit_pair(rms_b, layer_b);
+  CHECK(first.value() != 0 && second.value() > first.value());
+  Submission third = submit_pair(rms_a, layer_a);
+  third.wait();
+  second.wait();
+  const uint64_t warm_reserved = vk.reserved_bytes();
+  const uint64_t warm_descriptors = vk.descriptor_set_allocations();
+  for (int repeat = 0; repeat < 8; ++repeat) {
+    Submission a = submit_pair(rms_a, layer_a);
+    Submission b = submit_pair(rms_b, layer_b);
+    a.wait();
+    b.wait();
+    CHECK(vk.reserved_bytes() == warm_reserved);
+    CHECK(vk.descriptor_set_allocations() == warm_descriptors);
   }
 }
 
