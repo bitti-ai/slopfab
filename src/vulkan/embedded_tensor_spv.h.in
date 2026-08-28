@@ -1,9 +1,6 @@
 #pragma once
 #include <cstdint>
 namespace vidfab::vulkan::detail {
-inline constexpr uint8_t kTensorAddSpirv[] = {@VIDFAB_TENSOR_ADD_SPV_BYTES@};
-inline constexpr uint8_t kTensorAddDenormSpirv[] = {
-    @VIDFAB_TENSOR_ADD_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorOpsSpirv[] = {@VIDFAB_TENSOR_OPS_SPV_BYTES@};
 inline constexpr uint8_t kTensorOpsDenormSpirv[] = {
     @VIDFAB_TENSOR_OPS_DENORM_SPV_BYTES@};

@@ -78,6 +78,30 @@ Each increment depends on the one above. In particular, adding a Vulkan CLI
 label before neural stage implementations would be a silent CUDA fallback, not
 Vulkan support.
 
+### Implemented primitive increment
+
+The first dependency slice now has a backend-neutral contiguous tensor/view
+contract and a persistent Vulkan batch path. The Vulkan implementation has
+exact copies, fp32 add/add-bias, fp32-to/from-fp16 and bf16 conversion, fp32
+2-D transpose, trusted-index row gather/scatter, head-major fp32 to token-major
+bf16, and fp32 depth-to-space. It records up to 32 operations into one command
+buffer, retains tensors through exact timeline completion, and reuses two
+bounded descriptor/command slots.
+
+These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
+`nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
+projection narrowing, video-VAE channel/token layout, attention head packing,
+patch reconstruction, and packed-sequence row selection. Packed row indices
+are generated as unique in-range host sequences by `packing.cpp` and
+`ref2va.cpp`; a future Vulkan stage must pass those generated tensors rather
+than arbitrary device data. The Vulkan shader also bounds-checks each index to
+prevent an invalid device read or write.
+
+This is a tested operator substrate, not a wired Vulkan model stage. GEMM and
+quantized weights, reductions, norms, RoPE, attention, convolutions, and all
+four model-stage orchestrators remain on the missing list above. Therefore
+`--inference-backend vulkan` continues to fail before weights or output files.
+
 ## Current vertical-slice comparison
 
 The intended control holds all neural work constant and changes only output

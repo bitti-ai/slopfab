@@ -661,6 +661,15 @@ VIDFAB_TEST(vulkan_tensor_layout_and_conversion_ops) {
   const uint64_t transposed_data[] = {5, 3};
   const TensorLayout shape = TensorLayout::contiguous(shape_data, 2);
   const TensorLayout transposed_shape = TensorLayout::contiguous(transposed_data, 2);
+  TensorLayout padded_shape = shape;
+  padded_shape.stride[0] = 6;
+  bool noncontiguous_rejected = false;
+  try {
+    (void)tensors.allocate(padded_shape);
+  } catch (const std::invalid_argument&) {
+    noncontiguous_rejected = true;
+  }
+  CHECK(noncontiguous_rejected);
   DeviceTensor input = tensors.allocate(shape);
   DeviceTensor bf16 = tensors.allocate(shape, ScalarType::kBFloat16);
   DeviceTensor fp16 = tensors.allocate(shape, ScalarType::kFloat16);

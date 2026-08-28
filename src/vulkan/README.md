@@ -21,26 +21,29 @@ The runtime and build do not require a shader compiler or Vulkan SDK.
 
 ## Tensor primitive shader
 
-`tensor_add.comp` is the first neural-backend primitive. It performs one
-ordered fp32 addition per element and is used through the reusable batched
-tensor command path; copies use Vulkan transfer commands and need no shader.
-The checked-in module was produced with the same Khronos glslang 16.5.0:
+`tensor_ops.comp` is the bounded neural-primitive module. One cached pipeline
+provides fp32 add/add-bias, exact fp32-to/from-fp16 and bf16 conversion, fp32
+transpose, bounds-safe trusted-index gather/scatter, head-major fp32 to
+token-major bf16, and fp32 depth-to-space. Calls use the reusable batched tensor
+path; exact copies use transfer commands and need no shader. The checked-in
+modules were produced with the same Khronos glslang 16.5.0:
 
 ```text
-glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_add.comp -o tensor_add.raw.spv
-python tools/add_spirv_float_controls.py tensor_add.raw.spv src/vulkan/tensor_add.comp.spv src/vulkan/tensor_add_denorm.comp.spv
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_ops.comp -o tensor_ops.raw.spv
+python tools/add_spirv_float_controls.py tensor_ops.raw.spv src/vulkan/tensor_ops.comp.spv src/vulkan/tensor_ops_denorm.comp.spv
 ```
 
 Expected SHA-256 digests (also pinned by CMake):
 
 ```text
-tensor_add.comp      4378E3EDC139935EB4F62F64F7934F68242DF5BC07DA77141EDC0D6F1B34BB73
-tensor_add.comp.spv          0E52BC03EED7D86E3254489E0F18B491C54857700BAFF2F6B19D89E70DE9B1BE
-tensor_add_denorm.comp.spv   5909864E52688E5ABF9F38765901B693F32EDD995942925EE3A690AC6A5BC12E
+tensor_ops.comp              055DA51ED5271E48DC397255EDDB05D50B4351BA0105ED6B833D1E80EF09C3D4
+tensor_ops.comp.spv          04FC9C874F3CC8C6D52E78BACCF9E43D6D64951368D8D2C289F207447FC26F5D
+tensor_ops_denorm.comp.spv   80837AAAD22256422F92C21515549269E0CECB7F28B9B728628FE6ABEEEE4615
 ```
 
 The deterministic postprocessor adds explicit fp32 signed-zero/Inf/NaN and
 round-to-nearest-even execution modes. The denorm variant additionally adds
 `DenormPreserve`; it is selected only when the queried Vulkan 1.2 float-control
-properties permit that mode. Thus CMake hashes exactly the modules executed by
-the driver, not an untracked runtime transformation.
+properties permit that mode. fp16 and bf16 narrowing use CUDA's canonical NaN
+value (`0x7fff`) and round-to-nearest-even. Thus CMake hashes exactly the
+modules executed by the driver, not an untracked runtime transformation.
