@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,14 @@ VIDFAB_TEST(vulkan_runtime_and_pool) {
   // A deliberately small block makes reuse and trimming observable without
   // reserving meaningful VRAM in the unit suite.
   BufferPool pool(device, 64 * 1024);
+  bool disabled_address_rejected = false;
+  try {
+    (void)pool.allocate(256, BufferUsage::kStorage | BufferUsage::kDeviceAddress,
+                        MemoryUsage::kDevice);
+  } catch (const std::logic_error&) {
+    disabled_address_rejected = true;
+  }
+  CHECK(disabled_address_rejected);
   const BufferUsage transfer = BufferUsage::kTransferSource |
                                BufferUsage::kTransferDestination;
   Buffer first = pool.allocate(4096, transfer, MemoryUsage::kUpload);

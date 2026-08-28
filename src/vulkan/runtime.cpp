@@ -140,6 +140,7 @@ struct DeviceState {
   VkDevice device = VK_NULL_HANDLE;
   VkQueue queue = VK_NULL_HANDLE;
   uint32_t queue_family = 0;
+  bool buffer_device_address_enabled = false;
   VkPhysicalDeviceMemoryProperties memory{};
   uint64_t non_coherent_atom_size = 1;
   PFN_vkDestroyDevice destroy_device = nullptr;
@@ -503,6 +504,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   state->physical = impl_->physical;
   state->device = handle;
   state->queue_family = impl_->info.compute_queue_family;
+  state->buffer_device_address_enabled = options.enable_buffer_device_address;
   impl_->state->get_physical_device_memory_properties(impl_->physical, &state->memory);
   state->non_coherent_atom_size = impl_->info.non_coherent_atom_bytes;
   try {
@@ -589,6 +591,7 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
     VkMemoryPropertyFlags properties = 0;
     void* mapped = nullptr;
     bool dedicated = false;
+    bool addressable = false;
     uint64_t used = 0;
     std::vector<Range> free;
 
@@ -651,19 +654,26 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
   }
 
   std::shared_ptr<Block> make_block(uint64_t bytes, uint32_t memory_type, bool dedicated,
-                                    VkBuffer dedicated_buffer) {
+                                    bool addressable, VkBuffer dedicated_buffer) {
     auto block = std::make_shared<Block>();
     block->device = device;
     block->bytes = bytes;
     block->memory_type = memory_type;
     block->properties = device->memory.memoryTypes[memory_type].propertyFlags;
     block->dedicated = dedicated;
+    block->addressable = addressable;
     VkMemoryDedicatedAllocateInfo dedicated_info{};
     dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
     dedicated_info.buffer = dedicated_buffer;
+    VkMemoryAllocateFlagsInfo flags_info{};
+    flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    flags_info.pNext = dedicated ? &dedicated_info : nullptr;
+    flags_info.flags = addressable ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0;
     VkMemoryAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocate.pNext = dedicated ? &dedicated_info : nullptr;
+    allocate.pNext = addressable ? static_cast<const void*>(&flags_info)
+                                 : (dedicated ? static_cast<const void*>(&dedicated_info)
+                                              : nullptr);
     allocate.allocationSize = bytes;
     allocate.memoryTypeIndex = memory_type;
     detail::check(device->allocate_memory(device->device, &allocate, nullptr, &block->memory),
@@ -759,6 +769,12 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
   if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized buffers are not supported");
   const VkBufferUsageFlags flags = detail::buffer_usage_flags(usage);
   if (flags == 0) throw std::invalid_argument("vulkan: buffer usage is empty");
+  const bool addressable =
+      (static_cast<uint32_t>(usage) & static_cast<uint32_t>(BufferUsage::kDeviceAddress)) != 0;
+  if (addressable && !impl_->device->buffer_device_address_enabled) {
+    throw std::logic_error(
+        "vulkan: kDeviceAddress requires enable_buffer_device_address at device creation");
+  }
 
   VkBufferCreateInfo create{};
   create.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -794,6 +810,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
       if (!dedicated) {
         for (const auto& candidate : impl_->blocks) {
           if (!candidate->dedicated && candidate->memory_type == type &&
+              (!addressable || candidate->addressable) &&
               Impl::take_range(*candidate, requirements.size, requirements.alignment, &offset)) {
             block = candidate;
             break;
@@ -809,7 +826,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
               std::min<uint64_t>(impl_->block_bytes, std::max<uint64_t>(heap_bytes / 8, requirements.size)));
           allocation_bytes = detail::align_up(economical_block, requirements.alignment);
         }
-        block = impl_->make_block(allocation_bytes, type, dedicated, buffer);
+        block = impl_->make_block(allocation_bytes, type, dedicated, addressable, buffer);
         if (!Impl::take_range(*block, requirements.size, requirements.alignment, &offset)) {
           throw std::logic_error("vulkan: new memory block cannot satisfy its buffer");
         }
