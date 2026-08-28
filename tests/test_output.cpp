@@ -627,6 +627,26 @@ VIDFAB_TEST(y4m_exact_comparison_reports_first_byte) {
   CHECK(comparison.expected_byte >= 0);
   CHECK(comparison.actual_byte >= 0);
 
+  write_y4m(actual_path.string(), clip, 2, 6, 10);
+  std::filesystem::resize_file(actual_path, std::filesystem::file_size(actual_path) - 1);
+  comparison = compare_y4m_exact(expected_path.string(), actual_path.string());
+  CHECK(!comparison.equal());
+  CHECK(comparison.first_difference == comparison.actual_size);
+  CHECK(comparison.expected_byte >= 0);
+  CHECK(comparison.actual_byte == -1);
+
+  {
+    std::ofstream malformed(actual_path, std::ios::binary | std::ios::trunc);
+    malformed << "not a y4m\n";
+  }
+  bool header_rejected = false;
+  try {
+    (void)compare_y4m_exact(expected_path.string(), actual_path.string());
+  } catch (const std::runtime_error& error) {
+    header_rejected = std::string(error.what()).find("header") != std::string::npos;
+  }
+  CHECK(header_rejected);
+
   std::filesystem::remove(expected_path);
   std::filesystem::remove(actual_path);
 }

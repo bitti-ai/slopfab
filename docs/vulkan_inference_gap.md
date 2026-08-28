@@ -84,13 +84,28 @@ conversion:
 ```text
 vidfab generate --synthetic-latents --seed 424242 --frames 6 \
   --resolution 32x32 --raw --vae <real-video-vae> \
-  --output-accelerator cpu --out <cpu.mp4>
+  --dump-latents parity-latents.safetensors \
+  --output-accelerator cpu --out parity-fixed-cpu.mp4
 vidfab generate --synthetic-latents --seed 424242 --frames 6 \
   --resolution 32x32 --raw --vae <real-video-vae> \
-  --output-accelerator vulkan --out <vulkan.mp4>
-vidfab compare-y4m <cpu.y4m> <vulkan.y4m>
+  --init-latents parity-latents.safetensors \
+  --output-accelerator vulkan --out parity-fixed-vulkan.mp4
+vidfab compare-y4m parity-fixed-cpu.y4m parity-fixed-vulkan.y4m
 ```
 
-The measured command, checkpoint, runtime, and result are recorded here once
-the CUDA+Vulkan build has completed. This comparison proves the output backend
-only; the neural path is CUDA on both sides by design.
+Measured on 2026-08-28 with CUDA 13.0, Vulkan 1.4.341, and an RTX 5090. The
+checkpoint was the shipped real `weights/vae/video_vae_nf4.safetensors`
+(1,613,201,536 bytes; 1.17 GiB resident). The requested six frames align to 22
+model frames; the latent grid is 7x2x2 and the dumped fp32 video/audio rows are
+12,312 bytes. The second run read those exact rows instead of redrawing them.
+
+`compare-y4m` returned 0: both files were 33,965 bytes with header
+`YUV4MPEG2 W32 H32 F24:1 Ip A1:1 C420jpeg` and SHA-256
+`A38ADCDACC22DED7CA58810CBCA4E19B723E963AB8D8B619CAECA621484C01CC`.
+The independently written WAV files also matched at
+`71F3A8AA31560D6206BDE640769AC568D00FB834A667027B46070457546C48FE`.
+
+This result proves exact parity between CPU and Vulkan output conversion after
+the same real CUDA VAE/audio pipeline. It does not compare CUDA neural
+inference with Vulkan neural inference: every neural stage was CUDA on both
+sides, because the Vulkan implementations enumerated above do not exist.
