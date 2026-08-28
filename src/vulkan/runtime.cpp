@@ -366,11 +366,11 @@ Instance Instance::create(const InstanceOptions& options) {
 
   VkInstance instance = VK_NULL_HANDLE;
   detail::check(create_instance(&create, nullptr, &instance), "vkCreateInstance");
+  auto state = std::make_shared<detail::InstanceState>();
+  state->loader = loader;
+  state->instance = instance;
+  state->loader_api_version = loader_version;
   try {
-    auto state = std::make_shared<detail::InstanceState>();
-    state->loader = std::move(loader);
-    state->instance = instance;
-    state->loader_api_version = loader_version;
     const auto get = state->loader->get_instance_proc_addr();
     state->destroy_instance = detail::load_instance<PFN_vkDestroyInstance>(get, instance, "vkDestroyInstance");
     state->enumerate_physical_devices = detail::load_instance<PFN_vkEnumeratePhysicalDevices>(get, instance, "vkEnumeratePhysicalDevices");
@@ -386,9 +386,14 @@ Instance Instance::create(const InstanceOptions& options) {
     result->state = std::move(state);
     return Instance(std::move(result));
   } catch (...) {
-    const auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(
-        loader->get_instance_proc_addr()(instance, "vkDestroyInstance"));
-    if (destroy != nullptr) destroy(instance, nullptr);
+    if (state->destroy_instance != nullptr) {
+      state.reset();
+    } else {
+      const auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(
+          loader->get_instance_proc_addr()(instance, "vkDestroyInstance"));
+      if (destroy != nullptr) destroy(instance, nullptr);
+      state->instance = VK_NULL_HANDLE;
+    }
     throw;
   }
 }
@@ -493,14 +498,14 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   VkDevice handle = VK_NULL_HANDLE;
   detail::check(impl_->state->create_device(impl_->physical, &create, nullptr, &handle),
                 "vkCreateDevice");
+  auto state = std::make_shared<detail::DeviceState>();
+  state->instance = impl_->state;
+  state->physical = impl_->physical;
+  state->device = handle;
+  state->queue_family = impl_->info.compute_queue_family;
+  impl_->state->get_physical_device_memory_properties(impl_->physical, &state->memory);
+  state->non_coherent_atom_size = impl_->info.non_coherent_atom_bytes;
   try {
-    auto state = std::make_shared<detail::DeviceState>();
-    state->instance = impl_->state;
-    state->physical = impl_->physical;
-    state->device = handle;
-    state->queue_family = impl_->info.compute_queue_family;
-    impl_->state->get_physical_device_memory_properties(impl_->physical, &state->memory);
-    state->non_coherent_atom_size = impl_->info.non_coherent_atom_bytes;
     state->destroy_device = detail::load_device<PFN_vkDestroyDevice>(*impl_->state, handle, "vkDestroyDevice");
     state->device_wait_idle = detail::load_device<PFN_vkDeviceWaitIdle>(*impl_->state, handle, "vkDeviceWaitIdle");
     state->queue_wait_idle = detail::load_device<PFN_vkQueueWaitIdle>(*impl_->state, handle, "vkQueueWaitIdle");
@@ -522,9 +527,14 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
     result->info = impl_->info;
     return Device(std::move(result));
   } catch (...) {
-    const auto destroy = reinterpret_cast<PFN_vkDestroyDevice>(
-        impl_->state->get_device_proc_addr(handle, "vkDestroyDevice"));
-    if (destroy != nullptr) destroy(handle, nullptr);
+    if (state->destroy_device != nullptr) {
+      state.reset();
+    } else {
+      const auto destroy = reinterpret_cast<PFN_vkDestroyDevice>(
+          impl_->state->get_device_proc_addr(handle, "vkDestroyDevice"));
+      if (destroy != nullptr) destroy(handle, nullptr);
+      state->device = VK_NULL_HANDLE;
+    }
     throw;
   }
 }
@@ -758,8 +768,10 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
   VkBuffer buffer = VK_NULL_HANDLE;
   detail::check(impl_->device->create_buffer(impl_->device->device, &create, nullptr, &buffer),
                 "vkCreateBuffer");
+  std::shared_ptr<Impl::Block> block;
+  uint64_t offset = 0;
+  VkMemoryRequirements requirements{};
   try {
-    VkMemoryRequirements requirements{};
     bool dedicated = false;
     if (impl_->device->get_buffer_requirements2 != nullptr) {
       VkBufferMemoryRequirementsInfo2 request{};
@@ -777,8 +789,6 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
       impl_->device->get_buffer_requirements(impl_->device->device, buffer, &requirements);
     }
     const uint32_t type = impl_->choose_memory_type(requirements.memoryTypeBits, memory);
-    std::shared_ptr<Impl::Block> block;
-    uint64_t offset = 0;
     {
       std::lock_guard<std::mutex> lock(impl_->mutex);
       if (!dedicated) {
@@ -818,6 +828,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
     return Buffer(std::move(result));
   } catch (...) {
     impl_->device->destroy_buffer(impl_->device->device, buffer, nullptr);
+    if (block) impl_->release(block, offset, requirements.size);
     throw;
   }
 }
@@ -864,11 +875,12 @@ const void* Buffer::mapped_data() const noexcept {
 void Buffer::flush(uint64_t offset, uint64_t bytes) {
   if (!impl_) throw std::logic_error("vulkan: empty Buffer");
   if (bytes == ~uint64_t{0}) bytes = impl_->bytes - offset;
+  impl_->check_range(offset, bytes);
+  if (bytes == 0) return;
   if (!(impl_->block->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
     throw std::logic_error("vulkan: device-local buffer is not mapped");
   }
   if (impl_->block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
-    impl_->check_range(offset, bytes);
     return;
   }
   const auto range = impl_->mapped_range(offset, bytes);
@@ -878,11 +890,12 @@ void Buffer::flush(uint64_t offset, uint64_t bytes) {
 void Buffer::invalidate(uint64_t offset, uint64_t bytes) const {
   if (!impl_) throw std::logic_error("vulkan: empty Buffer");
   if (bytes == ~uint64_t{0}) bytes = impl_->bytes - offset;
+  impl_->check_range(offset, bytes);
+  if (bytes == 0) return;
   if (!(impl_->block->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
     throw std::logic_error("vulkan: device-local buffer is not mapped");
   }
   if (impl_->block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
-    impl_->check_range(offset, bytes);
     return;
   }
   const auto range = impl_->mapped_range(offset, bytes);
