@@ -1,0 +1,298 @@
+#version 450
+
+#if defined(BF16_RMS_NARROW)
+layout(local_size_x = 32, local_size_y = 8) in;
+#else
+layout(local_size_x = 256) in;
+#endif
+
+layout(set = 0, binding = 0, std430) readonly buffer Input { uint data[]; } input_data;
+layout(set = 0, binding = 1, std430) readonly buffer Weight { uint data[]; } weight_data;
+#if defined(BF16_RMS_BLOCK) || defined(BF16_RMS_NARROW)
+layout(set = 0, binding = 2, std430) buffer Output { uint data[]; } output_data;
+#elif defined(BF16_LAYER)
+layout(set = 0, binding = 2, std430) readonly buffer Bias { uint data[]; } bias_data;
+layout(set = 0, binding = 3, std430) buffer Output { uint data[]; } output_data;
+#else
+layout(set = 0, binding = 2, std430) readonly buffer Scale { uint data[]; } scale_data;
+layout(set = 0, binding = 3, std430) readonly buffer Shift { uint data[]; } shift_data;
+layout(set = 0, binding = 4, std430) readonly buffer Indices { uint data[]; } index_data;
+layout(set = 0, binding = 5, std430) buffer Output { uint data[]; } output_data;
+#endif
+
+layout(push_constant) uniform Parameters {
+  uint rows;
+  uint dim;
+  uint epsilon_bits;
+  uint mod_rows;
+} parameters;
+
+shared float lane_values[256];
+shared float warp_values[8];
+#if defined(BF16_RMS_NARROW)
+shared float xor_values[256];
+shared float xor_next[256];
+#endif
+
+float load_bf16_input(uint index) {
+  uint packed = input_data.data[index >> 1u];
+  return uintBitsToFloat(((packed >> ((index & 1u) * 16u)) & 0xffffu) << 16u);
+}
+float load_bf16_weight(uint index) {
+  uint packed = weight_data.data[index >> 1u];
+  return uintBitsToFloat(((packed >> ((index & 1u) * 16u)) & 0xffffu) << 16u);
+}
+#if defined(BF16_LAYER)
+float load_bf16_bias(uint index) {
+  uint packed = bias_data.data[index >> 1u];
+  return uintBitsToFloat(((packed >> ((index & 1u) * 16u)) & 0xffffu) << 16u);
+}
+#endif
+
+uint bf16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return 0x7fffu;
+  return (bits + 0x00007fffu + ((bits >> 16u) & 1u)) >> 16u;
+}
+
+void store_bf16_atomic(uint index, float value) {
+  uint bits = bf16_rte(value);
+  uint word = index >> 1u;
+  uint shift = (index & 1u) * 16u;
+  uint mask = 0xffffu << shift;
+  uint old_value = output_data.data[word];
+  for (;;) {
+    uint new_value = (old_value & ~mask) | (bits << shift);
+    uint observed = atomicCompSwap(output_data.data[word], old_value, new_value);
+    if (observed == old_value) return;
+    old_value = observed;
+  }
+}
+
+void store_bf16_pair(uint row, uint col, float lo, float hi) {
+  uint index = row * parameters.dim + col;
+  if ((parameters.dim & 1u) == 0u) {
+    output_data.data[index >> 1u] = bf16_rte(lo) | (bf16_rte(hi) << 16u);
+  } else {
+    store_bf16_atomic(index, lo);
+    if (col + 1u < parameters.dim) store_bf16_atomic(index + 1u, hi);
+  }
+}
+
+float block_reduce_sum(float value) {
+  uint tid = gl_LocalInvocationID.x;
+  uint lane = tid & 31u;
+  uint warp = tid >> 5u;
+  lane_values[tid] = value;
+  barrier();
+  for (uint offset = 16u; offset != 0u; offset >>= 1u) {
+    if (lane < offset)
+      lane_values[tid] = lane_values[tid] + lane_values[tid + offset];
+    barrier();
+  }
+  if (lane == 0u) warp_values[warp] = lane_values[tid];
+  barrier();
+  lane_values[tid] = tid < 8u ? warp_values[tid] : 0.0f;
+  barrier();
+  for (uint offset = 16u; offset != 0u; offset >>= 1u) {
+    if (warp == 0u && lane < offset)
+      lane_values[tid] = lane_values[tid] + lane_values[tid + offset];
+    barrier();
+  }
+  return lane_values[0];
+}
+
+float block_local_sum(uint row, uint tid) {
+  float sum_sq = 0.0f;
+  if ((parameters.dim & 7u) == 0u) {
+    uint packs = parameters.dim >> 3u;
+    for (uint pack = tid; pack < packs; pack += 256u) {
+      uint base = row * parameters.dim + pack * 8u;
+      for (uint i = 0u; i < 8u; ++i) {
+        float value = load_bf16_input(base + i);
+        sum_sq = fma(value, value, sum_sq);
+      }
+    }
+  } else {
+    for (uint col = tid; col < parameters.dim; col += 256u) {
+      float value = load_bf16_input(row * parameters.dim + col);
+      sum_sq = fma(value, value, sum_sq);
+    }
+  }
+  return sum_sq;
+}
+
+#if defined(BF16_RMS_NARROW)
+void main() {
+  uint lane = gl_LocalInvocationID.x;
+  uint local_row = gl_LocalInvocationID.y;
+  uint local_index = local_row * 32u + lane;
+  uint row = gl_WorkGroupID.x * 8u + local_row;
+  bool valid_row = row < parameters.rows;
+  float sum_sq = 0.0f;
+  if (valid_row) {
+    if ((parameters.dim & 7u) == 0u) {
+      uint packs = parameters.dim >> 3u;
+      if (lane < packs) {
+        uint base = row * parameters.dim + lane * 8u;
+        for (uint i = 0u; i < 8u; ++i) {
+          float value = load_bf16_input(base + i);
+          sum_sq = fma(value, value, sum_sq);
+        }
+      }
+    } else if (lane < parameters.dim) {
+      float value = load_bf16_input(row * parameters.dim + lane);
+      sum_sq = value * value;
+    }
+  }
+  xor_values[local_index] = sum_sq;
+  barrier();
+  bool source_is_values = true;
+  for (uint offset = 16u; offset != 0u; offset >>= 1u) {
+    float self_value = source_is_values ? xor_values[local_index] : xor_next[local_index];
+    uint peer_index = local_row * 32u + (lane ^ offset);
+    float peer_value = source_is_values ? xor_values[peer_index] : xor_next[peer_index];
+    if (source_is_values) xor_next[local_index] = self_value + peer_value;
+    else xor_values[local_index] = self_value + peer_value;
+    barrier();
+    source_is_values = !source_is_values;
+  }
+  float total = source_is_values ? xor_values[local_row * 32u]
+                                 : xor_next[local_row * 32u];
+  if (!valid_row) return;
+  float inv = inversesqrt(total / float(parameters.dim) +
+                          uintBitsToFloat(parameters.epsilon_bits));
+  uint pairs = (parameters.dim + 1u) >> 1u;
+  for (uint pair = lane; pair < pairs; pair += 32u) {
+    uint col = pair * 2u;
+    uint index = row * parameters.dim + col;
+    precise float lo = load_bf16_input(index) * inv;
+    lo = lo * load_bf16_weight(col);
+    float hi = 0.0f;
+    if (col + 1u < parameters.dim) {
+      hi = load_bf16_input(index + 1u) * inv;
+      hi = hi * load_bf16_weight(col + 1u);
+    }
+    store_bf16_pair(row, col, lo, hi);
+  }
+}
+#else
+void main() {
+  uint row = gl_WorkGroupID.x;
+  uint tid = gl_LocalInvocationID.x;
+  uint base = row * parameters.dim;
+  float epsilon = uintBitsToFloat(parameters.epsilon_bits);
+#if defined(BF16_LAYER)
+  float local_sum = 0.0f;
+  for (uint col = tid; col < parameters.dim; col += 256u)
+    local_sum = local_sum + load_bf16_input(base + col);
+  float mean = block_reduce_sum(local_sum) / float(parameters.dim);
+  barrier();
+  float local_sq = 0.0f;
+  for (uint col = tid; col < parameters.dim; col += 256u) {
+    precise float delta = load_bf16_input(base + col) - mean;
+    local_sq = fma(delta, delta, local_sq);
+  }
+  float inv = inversesqrt(block_reduce_sum(local_sq) / float(parameters.dim) + epsilon);
+  uint pairs = (parameters.dim + 1u) >> 1u;
+  for (uint pair = tid; pair < pairs; pair += 256u) {
+    uint col = pair * 2u;
+    precise float delta0 = load_bf16_input(base + col) - mean;
+    precise float normal0 = delta0 * inv;
+    float lo = fma(normal0, load_bf16_weight(col), load_bf16_bias(col));
+    float hi = 0.0f;
+    if (col + 1u < parameters.dim) {
+      precise float delta1 = load_bf16_input(base + col + 1u) - mean;
+      precise float normal1 = delta1 * inv;
+      hi = fma(normal1, load_bf16_weight(col + 1u), load_bf16_bias(col + 1u));
+    }
+    store_bf16_pair(row, col, lo, hi);
+  }
+#elif defined(BF16_RMS_BLOCK)
+  float inv = inversesqrt(block_reduce_sum(block_local_sum(row, tid)) /
+                          float(parameters.dim) + epsilon);
+  uint pairs = (parameters.dim + 1u) >> 1u;
+  for (uint pair = tid; pair < pairs; pair += 256u) {
+    uint col = pair * 2u;
+    precise float lo = load_bf16_input(base + col) * inv;
+    lo = lo * load_bf16_weight(col);
+    float hi = 0.0f;
+    if (col + 1u < parameters.dim) {
+      hi = load_bf16_input(base + col + 1u) * inv;
+      hi = hi * load_bf16_weight(col + 1u);
+    }
+    store_bf16_pair(row, col, lo, hi);
+  }
+#else
+  uint selector = index_data.data[row];
+  bool valid_selector = selector < parameters.mod_rows;
+  float local_sq = 0.0f;
+#if defined(BF16_MOD)
+  local_sq = block_local_sum(row, tid);
+#else
+  if ((parameters.dim & 7u) == 0u) {
+    uint packs = parameters.dim >> 3u;
+    for (uint pack = tid; pack < packs; pack += 256u) {
+      uint input_base = base + pack * 8u;
+      for (uint i = 0u; i < 8u; ++i) {
+        float value = uintBitsToFloat(input_data.data[input_base + i]);
+        local_sq = fma(value, value, local_sq);
+      }
+    }
+  } else {
+    for (uint col = tid; col < parameters.dim; col += 256u) {
+      float value = uintBitsToFloat(input_data.data[base + col]);
+      local_sq = fma(value, value, local_sq);
+    }
+  }
+#endif
+  float inv = inversesqrt(block_reduce_sum(local_sq) / float(parameters.dim) + epsilon);
+  uint iterations =
+#if defined(BF16_MOD)
+      (parameters.dim + 1u) >> 1u;
+#else
+      parameters.dim;
+#endif
+  for (uint iteration = tid; iteration < iterations; iteration += 256u) {
+    uint col =
+#if defined(BF16_MOD)
+        iteration * 2u;
+#else
+        iteration;
+#endif
+    uint index = base + col;
+    float value =
+#if defined(BF16_MOD)
+        load_bf16_input(index);
+#else
+        uintBitsToFloat(input_data.data[index]);
+#endif
+    precise float normal = value * inv;
+    normal = normal * load_bf16_weight(col);
+    float result = 0.0f;
+    if (valid_selector) {
+      uint mod = selector * parameters.dim + col;
+      precise float factor = 1.0f + uintBitsToFloat(scale_data.data[mod]);
+      result = fma(normal, factor, uintBitsToFloat(shift_data.data[mod]));
+    }
+#if defined(BF16_MOD)
+    float result_hi = 0.0f;
+    if (col + 1u < parameters.dim) {
+      precise float normal_hi = load_bf16_input(index + 1u) * inv;
+      normal_hi = normal_hi * load_bf16_weight(col + 1u);
+      if (valid_selector) {
+        uint mod_hi = selector * parameters.dim + col + 1u;
+        precise float factor_hi = 1.0f + uintBitsToFloat(scale_data.data[mod_hi]);
+        result_hi = fma(normal_hi, factor_hi,
+                        uintBitsToFloat(shift_data.data[mod_hi]));
+      }
+    }
+    store_bf16_pair(row, col, result, result_hi);
+#else
+    output_data.data[index] = floatBitsToUint(result);
+#endif
+  }
+#endif
+}
+#endif

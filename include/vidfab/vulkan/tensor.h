@@ -110,6 +110,23 @@ class TensorBatch {
   // As above, with biased variance and affine fp32 weight/bias [dim].
   void layer_norm(DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
                   DeviceTensor& output, float epsilon);
+  // Shared transformer BF16 normalization. Shapes are [rows,dim] and [dim].
+  // Output may alias input; the exact arithmetic domain is the same gated
+  // zero/finite-normal domain as fp32 VAE normalization.
+  void rms_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
+                     DeviceTensor& output, float epsilon);
+  void layer_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
+                       DeviceTensor& bias, DeviceTensor& output, float epsilon);
+  // scale/shift are fp32 [mod_rows,dim], selectors are int32 [rows]. Invalid
+  // device selectors are memory-safe and produce a zero output row.
+  void rms_norm_modulate_bf16(DeviceTensor& input, DeviceTensor& weight,
+                              DeviceTensor& scale, DeviceTensor& shift,
+                              DeviceTensor& selectors, DeviceTensor& output,
+                              float epsilon);
+  void rms_norm_modulate_f32(DeviceTensor& input, DeviceTensor& weight,
+                             DeviceTensor& scale, DeviceTensor& shift,
+                             DeviceTensor& selectors, DeviceTensor& output,
+                             float epsilon);
   Submission submit();
   explicit operator bool() const noexcept;
 

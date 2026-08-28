@@ -541,4 +541,67 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
   }
 }
 
+VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options; options.enable_timeline_semaphore = true;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_fp32_vae_normalization()) return;
+
+  constexpr int rows = 9;
+  constexpr int dim = 128;
+  constexpr size_t count = static_cast<size_t>(rows) * dim;
+  std::vector<uint16_t> input(count), weight(dim);
+  auto exact_bf16 = [](float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return static_cast<uint16_t>(bits >> 16);
+  };
+  for (size_t i = 0; i < count; ++i)
+    input[i] = exact_bf16(static_cast<float>(static_cast<int>(i % 31) - 15) / 8.0f);
+  for (int i = 0; i < dim; ++i)
+    weight[i] = exact_bf16(0.5f + static_cast<float>(i % 8) / 8.0f);
+  cuda::DeviceBuffer<uint16_t> c_input(count), c_weight(dim), c_output(count);
+  c_input.copy_from_host(input.data(), count);
+  c_weight.copy_from_host(weight.data(), dim);
+  cuda::launch_rmsnorm(reinterpret_cast<const __nv_bfloat16*>(c_input.get()),
+                       reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
+                       reinterpret_cast<__nv_bfloat16*>(c_output.get()), rows, dim,
+                       1.0e-5f, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> cuda_output(count), vulkan_output(count);
+  c_output.copy_to_host(cuda_output.data(), count);
+
+  const uint64_t extents[] = {rows, dim};
+  const uint64_t feature = dim;
+  DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2),
+                                     ScalarType::kBFloat16);
+  DeviceTensor v_weight = vk.allocate(TensorLayout::contiguous(&feature, 1),
+                                      ScalarType::kBFloat16);
+  DeviceTensor v_output = vk.allocate(TensorLayout::contiguous(extents, 2),
+                                      ScalarType::kBFloat16);
+  vk.upload_bytes(v_input, input.data(), input.size() * sizeof(uint16_t));
+  vk.upload_bytes(v_weight, weight.data(), weight.size() * sizeof(uint16_t));
+  TensorBatch batch = vk.begin_batch();
+  batch.rms_norm_bf16(v_input, v_weight, v_output, 1.0e-5f);
+  batch.submit().wait();
+  vk.download_bytes(v_output, vulkan_output.data(),
+                    vulkan_output.size() * sizeof(uint16_t));
+  size_t mismatch = count;
+  for (size_t i = 0; i < count; ++i) {
+    if (cuda_output[i] != vulkan_output[i]) { mismatch = i; break; }
+  }
+  CHECK_MSG(mismatch == count,
+            "CUDA/Vulkan BF16 head RMS mismatch at %zu: %04x != %04x", mismatch,
+            mismatch == count ? 0 : cuda_output[mismatch],
+            mismatch == count ? 0 : vulkan_output[mismatch]);
+}
+
 int main() { return ::vidfab::test::run_all(); }

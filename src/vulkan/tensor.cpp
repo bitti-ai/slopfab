@@ -74,7 +74,7 @@ struct TensorContext::Impl {
     uint32_t rows = 0;
     uint32_t dim = 0;
     uint32_t epsilon_bits = 0;
-    uint32_t reserved = 0;
+    uint32_t mod_rows = 0;
   };
   static constexpr uint32_t kMaxBatchOperators = 32;
 
@@ -84,11 +84,17 @@ struct TensorContext::Impl {
   ComputePipeline ops_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
+  ComputePipeline bf16_rms_block_pipeline;
+  ComputePipeline bf16_rms_narrow_pipeline;
+  ComputePipeline bf16_layer_pipeline;
+  ComputePipeline bf16_mod_pipeline;
+  ComputePipeline fp32_mod_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;
   uint64_t staging_capacity = 0;
   std::vector<StorageBinding> ops_bindings;
   std::vector<StorageBinding> norm_bindings;
+  std::vector<StorageBinding> mod_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   uint32_t max_dispatch_x = 0;
@@ -99,14 +105,15 @@ struct TensorContext::Impl {
       : commands(input, [&] {
           ComputeContextOptions options;
           options.max_in_flight = tensor_options.max_in_flight;
-          options.max_storage_bindings = 4;
+          options.max_storage_bindings = 6;
           options.max_compute_binds_per_job = kMaxBatchOperators;
           return options;
         }()),
         pool(input, 4ull << 20),
         scratch(input),
         ops_bindings(3),
-        norm_bindings(4) {
+        norm_bindings(4),
+        mod_bindings(6) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
     static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
@@ -138,19 +145,38 @@ struct TensorContext::Impl {
     norm_options.storage_binding_count = 4;
     norm_options.push_constant_bytes = sizeof(NormParameters);
     norm_options.local_size[0] = 256;
-    auto make_norm_pipeline = [&](const uint8_t* shader, size_t shader_bytes) {
+    auto make_norm_pipeline = [&](const uint8_t* shader, size_t shader_bytes,
+                                  uint32_t bindings = 4, uint32_t local_x = 256,
+                                  uint32_t local_y = 1) {
       std::vector<uint32_t> module(shader_bytes / sizeof(uint32_t));
       std::memcpy(module.data(), shader, shader_bytes);
-      return ComputePipeline::create(input, module, norm_options);
+      ComputePipelineOptions selected = norm_options;
+      selected.storage_binding_count = bindings;
+      selected.local_size[0] = local_x;
+      selected.local_size[1] = local_y;
+      return ComputePipeline::create(input, module, selected);
     };
     if (exact_vae_norm) {
       rms_norm_pipeline = make_norm_pipeline(detail::kTensorRmsNormSpirv,
                                              sizeof(detail::kTensorRmsNormSpirv));
       layer_norm_pipeline = make_norm_pipeline(detail::kTensorLayerNormSpirv,
                                                sizeof(detail::kTensorLayerNormSpirv));
+      bf16_rms_block_pipeline = make_norm_pipeline(
+          detail::kTensorBf16RmsBlockSpirv,
+          sizeof(detail::kTensorBf16RmsBlockSpirv), 3);
+      bf16_rms_narrow_pipeline = make_norm_pipeline(
+          detail::kTensorBf16RmsNarrowSpirv,
+          sizeof(detail::kTensorBf16RmsNarrowSpirv), 3, 32, 8);
+      bf16_layer_pipeline = make_norm_pipeline(
+          detail::kTensorBf16LayerSpirv, sizeof(detail::kTensorBf16LayerSpirv));
+      bf16_mod_pipeline = make_norm_pipeline(
+          detail::kTensorBf16ModSpirv, sizeof(detail::kTensorBf16ModSpirv), 6);
+      fp32_mod_pipeline = make_norm_pipeline(
+          detail::kTensorFp32ModSpirv, sizeof(detail::kTensorFp32ModSpirv), 6);
     }
     for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
     for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
+    for (uint32_t i = 0; i < mod_bindings.size(); ++i) mod_bindings[i].binding = i;
   }
 
   uintptr_t context_id = next_context_identity();
@@ -235,7 +261,7 @@ struct TensorBatch::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   CommandList commands;
   TensorContext::Impl::RecorderLease recording_lease;
-  std::array<AccessSnapshot, TensorContext::Impl::kMaxBatchOperators * 4> snapshots{};
+  std::array<AccessSnapshot, TensorContext::Impl::kMaxBatchOperators * 6> snapshots{};
   uint32_t snapshot_count = 0;
   uint32_t operator_count = 0;
   bool submitted = false;
@@ -308,6 +334,123 @@ struct TensorBatch::Impl {
     commands.bind_compute(pipeline, owner->norm_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(parameters.rows);
+  }
+
+  void dispatch_shared_rms(ComputePipeline& pipeline,
+                           const TensorContext::Impl::NormParameters& parameters,
+                           uint32_t groups,
+                           const std::shared_ptr<DeviceTensor::Impl>& input,
+                           const std::shared_ptr<DeviceTensor::Impl>& weight,
+                           const std::shared_ptr<DeviceTensor::Impl>& output) {
+    owner->ops_bindings[0].buffer = &input->buffer;
+    owner->ops_bindings[0].bytes = input->buffer.size();
+    owner->ops_bindings[1].buffer = &weight->buffer;
+    owner->ops_bindings[1].bytes = weight->buffer.size();
+    owner->ops_bindings[2].buffer = &output->buffer;
+    owner->ops_bindings[2].bytes = output->buffer.size();
+    commands.bind_compute(pipeline, owner->ops_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups);
+  }
+
+  void dispatch_shared_layer(ComputePipeline& pipeline,
+                             const TensorContext::Impl::NormParameters& parameters,
+                             const std::shared_ptr<DeviceTensor::Impl>& input,
+                             const std::shared_ptr<DeviceTensor::Impl>& weight,
+                             const std::shared_ptr<DeviceTensor::Impl>& bias,
+                             const std::shared_ptr<DeviceTensor::Impl>& output) {
+    owner->norm_bindings[0].buffer = &input->buffer;
+    owner->norm_bindings[0].bytes = input->buffer.size();
+    owner->norm_bindings[1].buffer = &weight->buffer;
+    owner->norm_bindings[1].bytes = weight->buffer.size();
+    owner->norm_bindings[2].buffer = &bias->buffer;
+    owner->norm_bindings[2].bytes = bias->buffer.size();
+    owner->norm_bindings[3].buffer = &output->buffer;
+    owner->norm_bindings[3].bytes = output->buffer.size();
+    commands.bind_compute(pipeline, owner->norm_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(parameters.rows);
+  }
+
+  void dispatch_shared_mod(ComputePipeline& pipeline,
+                           const TensorContext::Impl::NormParameters& parameters,
+                           const std::array<std::shared_ptr<DeviceTensor::Impl>, 6>& resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->mod_bindings[i].buffer = &resources[i]->buffer;
+      owner->mod_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(pipeline, owner->mod_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(parameters.rows);
+  }
+
+  void record_shared_mod(bool fp32, DeviceTensor& input, DeviceTensor& weight,
+                         DeviceTensor& scale, DeviceTensor& shift,
+                         DeviceTensor& selectors, DeviceTensor& output,
+                         float epsilon) {
+    if (!owner->exact_vae_norm) {
+      throw std::runtime_error("vulkan tensor: exact shared RMSNorm modulation is unavailable");
+    }
+    auto src = owner->require(input);
+    auto w = owner->require(weight);
+    auto sc = owner->require(scale);
+    auto sh = owner->require(shift);
+    auto index = owner->require(selectors);
+    auto dst = owner->require(output);
+    const auto& shape = src->layout;
+    const uint64_t rows = shape.extent[0];
+    const uint64_t dim = shape.extent[1];
+    const uint64_t mod_rows = sc->layout.extent[0];
+    const bool aliases_parameters =
+        src.get() == w.get() || src.get() == sc.get() || src.get() == sh.get() ||
+        src.get() == index.get() || w.get() == sc.get() || w.get() == sh.get() ||
+        w.get() == index.get() || sc.get() == sh.get() || sc.get() == index.get() ||
+        sh.get() == index.get() || dst.get() == w.get() || dst.get() == sc.get() ||
+        dst.get() == sh.get() || dst.get() == index.get();
+    if (!std::isnormal(epsilon) || epsilon <= 0.0f || aliases_parameters ||
+        shape.rank != 2 || w->layout.rank != 1 || sc->layout.rank != 2 ||
+        sh->layout.rank != 2 || index->layout.rank != 1 || dst->layout.rank != 2 ||
+        w->layout.extent[0] != dim || sc->layout.extent[1] != dim ||
+        sh->layout.extent != sc->layout.extent || index->layout.extent[0] != rows ||
+        dst->layout.extent != shape.extent || w->type != ScalarType::kBFloat16 ||
+        sc->type != ScalarType::kFloat32 || sh->type != ScalarType::kFloat32 ||
+        index->type != ScalarType::kInt32 ||
+        src->type != (fp32 ? ScalarType::kFloat32 : ScalarType::kBFloat16) ||
+        dst->type != src->type || !shape.is_contiguous() ||
+        !w->layout.is_contiguous() || !sc->layout.is_contiguous() ||
+        !sh->layout.is_contiguous() || !index->layout.is_contiguous() ||
+        !dst->layout.is_contiguous() || rows > std::numeric_limits<uint32_t>::max() ||
+        dim > std::numeric_limits<uint32_t>::max() ||
+        mod_rows > std::numeric_limits<uint32_t>::max() ||
+        shape.elements() > std::numeric_limits<uint32_t>::max() ||
+        sc->layout.elements() > std::numeric_limits<uint32_t>::max()) {
+      throw std::invalid_argument("vulkan tensor: invalid shared RMSNorm modulation");
+    }
+    if (!detail::norm_dispatch_fits(rows, owner->max_dispatch_x)) {
+      throw std::out_of_range("vulkan tensor: modulated RMSNorm rows exceed dispatch limits");
+    }
+    TensorContext::Impl::NormParameters p;
+    p.rows = static_cast<uint32_t>(rows);
+    p.dim = static_cast<uint32_t>(dim);
+    p.mod_rows = static_cast<uint32_t>(mod_rows);
+    std::memcpy(&p.epsilon_bits, &epsilon, sizeof(epsilon));
+    try {
+      count_operator();
+      transition(src, src.get() == dst.get() ? BufferAccess::kComputeReadWrite
+                                              : BufferAccess::kComputeRead);
+      transition(w, BufferAccess::kComputeRead);
+      transition(sc, BufferAccess::kComputeRead);
+      transition(sh, BufferAccess::kComputeRead);
+      transition(index, BufferAccess::kComputeRead);
+      if (src.get() != dst.get()) transition(dst, BufferAccess::kComputeWrite);
+      std::array<std::shared_ptr<DeviceTensor::Impl>, 6> resources{
+          src, w, sc, sh, index, dst};
+      dispatch_shared_mod(fp32 ? owner->fp32_mod_pipeline : owner->bf16_mod_pipeline,
+                          p, resources);
+    } catch (...) {
+      poisoned = true;
+      throw;
+    }
   }
 
   ~Impl() {
@@ -940,6 +1083,121 @@ void TensorBatch::layer_norm(DeviceTensor& input, DeviceTensor& weight,
     impl_->poisoned = true;
     throw;
   }
+}
+
+void TensorBatch::rms_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
+                                DeviceTensor& output, float epsilon) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error("vulkan tensor: exact BF16 RMSNorm is unavailable");
+  }
+  auto src = impl_->owner->require(input);
+  auto w = impl_->owner->require(weight);
+  auto dst = impl_->owner->require(output);
+  const auto& shape = src->layout;
+  const uint64_t rows = shape.extent[0];
+  const uint64_t dim = shape.extent[1];
+  if (!std::isnormal(epsilon) || epsilon <= 0.0f || src.get() == w.get() ||
+      dst.get() == w.get() || src->type != ScalarType::kBFloat16 ||
+      w->type != ScalarType::kBFloat16 || dst->type != ScalarType::kBFloat16 ||
+      shape.rank != 2 || w->layout.rank != 1 || dst->layout.rank != 2 ||
+      dst->layout.extent != shape.extent || w->layout.extent[0] != dim ||
+      !shape.is_contiguous() || !w->layout.is_contiguous() ||
+      !dst->layout.is_contiguous() || rows > std::numeric_limits<uint32_t>::max() ||
+      dim > std::numeric_limits<uint32_t>::max() ||
+      shape.elements() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid BF16 RMSNorm");
+  }
+  const uint64_t vec = (dim & 7u) == 0 ? 8u : 1u;
+  const bool narrow = dim / vec <= 32u;
+  const uint64_t groups = narrow ? (rows + 7u) / 8u : rows;
+  if (!detail::norm_dispatch_fits(groups, impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range("vulkan tensor: BF16 RMSNorm rows exceed dispatch limits");
+  }
+  TensorContext::Impl::NormParameters p;
+  p.rows = static_cast<uint32_t>(rows);
+  p.dim = static_cast<uint32_t>(dim);
+  std::memcpy(&p.epsilon_bits, &epsilon, sizeof(epsilon));
+  try {
+    impl_->count_operator();
+    impl_->transition(src, src.get() == dst.get() ? BufferAccess::kComputeReadWrite
+                                                   : BufferAccess::kComputeRead);
+    impl_->transition(w, BufferAccess::kComputeRead);
+    if (src.get() != dst.get()) impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_shared_rms(narrow ? impl_->owner->bf16_rms_narrow_pipeline
+                                      : impl_->owner->bf16_rms_block_pipeline,
+                               p, static_cast<uint32_t>(groups), src, w, dst);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::layer_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
+                                  DeviceTensor& bias, DeviceTensor& output,
+                                  float epsilon) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error("vulkan tensor: exact BF16 LayerNorm is unavailable");
+  }
+  auto src = impl_->owner->require(input);
+  auto w = impl_->owner->require(weight);
+  auto b = impl_->owner->require(bias);
+  auto dst = impl_->owner->require(output);
+  const auto& shape = src->layout;
+  const uint64_t rows = shape.extent[0];
+  const uint64_t dim = shape.extent[1];
+  if (!std::isnormal(epsilon) || epsilon <= 0.0f || src.get() == w.get() ||
+      src.get() == b.get() || w.get() == b.get() || dst.get() == w.get() ||
+      dst.get() == b.get() || src->type != ScalarType::kBFloat16 ||
+      w->type != ScalarType::kBFloat16 || b->type != ScalarType::kBFloat16 ||
+      dst->type != ScalarType::kBFloat16 || shape.rank != 2 ||
+      w->layout.rank != 1 || b->layout.rank != 1 || dst->layout.rank != 2 ||
+      dst->layout.extent != shape.extent || w->layout.extent[0] != dim ||
+      b->layout.extent[0] != dim || !shape.is_contiguous() ||
+      !w->layout.is_contiguous() || !b->layout.is_contiguous() ||
+      !dst->layout.is_contiguous() || rows > std::numeric_limits<uint32_t>::max() ||
+      dim > std::numeric_limits<uint32_t>::max() ||
+      shape.elements() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid BF16 LayerNorm");
+  }
+  if (!detail::norm_dispatch_fits(rows, impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range("vulkan tensor: BF16 LayerNorm rows exceed dispatch limits");
+  }
+  TensorContext::Impl::NormParameters p;
+  p.rows = static_cast<uint32_t>(rows);
+  p.dim = static_cast<uint32_t>(dim);
+  std::memcpy(&p.epsilon_bits, &epsilon, sizeof(epsilon));
+  try {
+    impl_->count_operator();
+    impl_->transition(src, src.get() == dst.get() ? BufferAccess::kComputeReadWrite
+                                                   : BufferAccess::kComputeRead);
+    impl_->transition(w, BufferAccess::kComputeRead);
+    impl_->transition(b, BufferAccess::kComputeRead);
+    if (src.get() != dst.get()) impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_shared_layer(impl_->owner->bf16_layer_pipeline, p, src, w, b, dst);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::rms_norm_modulate_bf16(DeviceTensor& input, DeviceTensor& weight,
+                                         DeviceTensor& scale, DeviceTensor& shift,
+                                         DeviceTensor& selectors, DeviceTensor& output,
+                                         float epsilon) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  impl_->record_shared_mod(false, input, weight, scale, shift, selectors, output,
+                           epsilon);
+}
+
+void TensorBatch::rms_norm_modulate_f32(DeviceTensor& input, DeviceTensor& weight,
+                                        DeviceTensor& scale, DeviceTensor& shift,
+                                        DeviceTensor& selectors, DeviceTensor& output,
+                                        float epsilon) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  impl_->record_shared_mod(true, input, weight, scale, shift, selectors, output,
+                           epsilon);
 }
 
 Submission TensorBatch::submit() {

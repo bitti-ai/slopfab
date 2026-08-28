@@ -6,4 +6,11 @@ inline constexpr uint8_t kTensorOpsDenormSpirv[] = {
     @VIDFAB_TENSOR_OPS_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorRmsNormSpirv[] = {@VIDFAB_TENSOR_RMS_NORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorLayerNormSpirv[] = {@VIDFAB_TENSOR_LAYER_NORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorBf16RmsBlockSpirv[] = {
+    @VIDFAB_TENSOR_BF16_RMS_BLOCK_SPV_BYTES@};
+inline constexpr uint8_t kTensorBf16RmsNarrowSpirv[] = {
+    @VIDFAB_TENSOR_BF16_RMS_NARROW_SPV_BYTES@};
+inline constexpr uint8_t kTensorBf16LayerSpirv[] = {@VIDFAB_TENSOR_BF16_LAYER_SPV_BYTES@};
+inline constexpr uint8_t kTensorBf16ModSpirv[] = {@VIDFAB_TENSOR_BF16_MOD_SPV_BYTES@};
+inline constexpr uint8_t kTensorFp32ModSpirv[] = {@VIDFAB_TENSOR_FP32_MOD_SPV_BYTES@};
 }  // namespace vidfab::vulkan::detail
