@@ -220,11 +220,11 @@ endif()
 
 # --- vulkan -----------------------------------------------------------------
 
-# Vulkan is intentionally independent of both vidfab_core and CUDA. The
-# Khronos core ABI headers are pinned in-tree, while the platform loader is
-# opened dynamically by runtime.cpp. Consequently enabling this target needs
-# no Vulkan SDK at build time and does not add a load-time dependency to any
-# existing vidfab binary.
+# Vulkan is independent of CUDA and implements the core frame-converter
+# interface. The Khronos core ABI headers are pinned in-tree, while the
+# platform loader is opened dynamically by runtime.cpp. Consequently enabling
+# this target needs no Vulkan SDK at build time or Vulkan loader at process
+# startup.
 if(VIDFAB_ENABLE_VULKAN)
   set(VIDFAB_YUV_SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp")
   set(VIDFAB_YUV_SHADER_SPV "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp.spv")
