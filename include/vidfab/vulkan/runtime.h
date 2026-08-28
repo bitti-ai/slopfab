@@ -39,6 +39,8 @@ struct DeviceInfo {
   uint32_t max_compute_workgroup_size[3] = {};
   uint32_t max_push_constant_bytes = 0;
   uint64_t max_storage_buffer_bytes = 0;
+  uint64_t min_storage_buffer_offset_alignment = 1;
+  uint32_t max_storage_buffer_bindings = 0;
   uint64_t max_allocation_bytes = 0;
   uint64_t non_coherent_atom_bytes = 1;
   bool shader_float16 = false;

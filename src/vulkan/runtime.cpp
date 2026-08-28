@@ -264,6 +264,11 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
   }
   info.max_push_constant_bytes = properties.limits.maxPushConstantsSize;
   info.max_storage_buffer_bytes = properties.limits.maxStorageBufferRange;
+  info.min_storage_buffer_offset_alignment =
+      std::max<VkDeviceSize>(1, properties.limits.minStorageBufferOffsetAlignment);
+  info.max_storage_buffer_bindings = std::min(
+      properties.limits.maxPerStageDescriptorStorageBuffers,
+      properties.limits.maxDescriptorSetStorageBuffers);
   info.non_coherent_atom_bytes = std::max<VkDeviceSize>(1, properties.limits.nonCoherentAtomSize);
   info.extensions = enumerate_extensions(*state, physical);
 
@@ -1357,6 +1362,9 @@ ComputePipeline ComputePipeline::create(const Device& device,
   if (options.storage_binding_count == 0) {
     throw std::invalid_argument("vulkan: compute pipeline has no storage bindings");
   }
+  if (options.storage_binding_count > device.info().max_storage_buffer_bindings) {
+    throw std::invalid_argument("vulkan: storage binding count exceeds device limit");
+  }
   const detail::SpirvShape shape = detail::inspect_spirv(spirv);
   if (!shape.has_local_size) {
     throw std::invalid_argument("vulkan: SPIR-V has no literal LocalSize execution mode");
@@ -1660,6 +1668,9 @@ void CommandList::copy_buffer(Buffer& source, Buffer& destination, uint64_t byte
   source.impl_->check_range(source_offset, bytes);
   destination.impl_->check_range(destination_offset, bytes);
   if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized copy");
+  if (((source_offset | destination_offset | bytes) & 3u) != 0) {
+    throw std::invalid_argument("vulkan: copy offsets and size must be four-byte aligned");
+  }
   impl_->resources.reserve(impl_->resources.size() + 2);
   impl_->retain(source.impl_);
   impl_->retain(destination.impl_);
@@ -1727,6 +1738,9 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
     binding.buffer->impl_->check_range(binding.offset, range);
     if (range == 0 || range > pipeline.impl_->info.max_storage_buffer_bytes) {
       throw std::invalid_argument("vulkan: storage binding range exceeds device limit");
+    }
+    if ((binding.offset % pipeline.impl_->info.min_storage_buffer_offset_alignment) != 0) {
+      throw std::invalid_argument("vulkan: storage binding offset is misaligned");
     }
     infos[i] = {binding.buffer->impl_->buffer, binding.offset, range};
     writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

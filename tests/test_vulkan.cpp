@@ -229,6 +229,16 @@ VIDFAB_TEST(vulkan_compute_submission) {
       descriptor_range_rejected = true;
     }
     CHECK(descriptor_range_rejected);
+    if (physical.front().info().min_storage_buffer_offset_alignment > 1) {
+      bool descriptor_alignment_rejected = false;
+      try {
+        invalid.bind_compute(pipeline, {{0, &tiny_dst, 1, 4},
+                                        {1, &tiny_out, 0, 16}});
+      } catch (const std::invalid_argument&) {
+        descriptor_alignment_rejected = true;
+      }
+      CHECK(descriptor_alignment_rejected);
+    }
   }
   CHECK(context.in_flight() == 0);
 
