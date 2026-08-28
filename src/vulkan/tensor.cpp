@@ -868,7 +868,8 @@ void TensorBatch::rms_norm(DeviceTensor& input, DeviceTensor& weight,
       !shape.is_contiguous() || !w->layout.is_contiguous() ||
       !dst->layout.is_contiguous() ||
       shape.extent[0] > std::numeric_limits<uint32_t>::max() ||
-      shape.extent[1] > std::numeric_limits<uint32_t>::max()) {
+      shape.extent[1] > std::numeric_limits<uint32_t>::max() ||
+      shape.elements() > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: invalid fp32 RMSNorm");
   }
   impl_->owner->validate_dispatch(shape.extent[0]);
@@ -912,7 +913,8 @@ void TensorBatch::layer_norm(DeviceTensor& input, DeviceTensor& weight,
       !shape.is_contiguous() || !w->layout.is_contiguous() ||
       !b->layout.is_contiguous() || !dst->layout.is_contiguous() ||
       shape.extent[0] > std::numeric_limits<uint32_t>::max() ||
-      shape.extent[1] > std::numeric_limits<uint32_t>::max()) {
+      shape.extent[1] > std::numeric_limits<uint32_t>::max() ||
+      shape.elements() > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: invalid fp32 LayerNorm");
   }
   impl_->owner->validate_dispatch(shape.extent[0]);

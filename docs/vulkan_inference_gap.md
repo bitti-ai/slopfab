@@ -85,13 +85,18 @@ contract and a persistent Vulkan batch path. The Vulkan implementation has
 exact copies, fp32 add/add-bias over zero/normal/infinity operands and results,
 fp32-to/from-fp16 and bf16 conversion, fp32
 2-D transpose, trusted-index row gather/scatter, head-major fp32 to token-major
-bf16, and fp32 depth-to-space. It records up to 32 operations into one command
-buffer, retains tensors through exact timeline completion, and reuses two
-bounded descriptor/command slots.
+bf16, fp32 depth-to-space, and the fp32 RMSNorm/affine LayerNorm pair used by
+the video VAE. It records up to 32 operations into one command buffer, retains
+tensors through exact timeline completion, and reuses two bounded
+descriptor/command slots.
 
 FP32 arithmetic does not promise a NaN payload. Subnormal inputs/results are
 available only when the queried float-control mode supports them; the public
 `require_full_fp32_arithmetic_exactness()` gate fails closed otherwise.
+The VAE normalization reduction tree is CUDA-bit-exact over its zero and
+finite-normal domain on the separately gated NVIDIA path. It covers the shipped
+2048-wide VAE norms and final affine LayerNorm without a host boundary.
+NaN/subnormal arithmetic is excluded and subnormal epsilon is rejected.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
@@ -103,8 +108,9 @@ than arbitrary device data. The Vulkan shader also bounds-checks each index to
 prevent an invalid device read or write.
 
 This is a tested operator substrate, not a wired Vulkan model stage. GEMM and
-quantized weights, reductions, norms, RoPE, attention, convolutions, and all
-four model-stage orchestrators remain on the missing list above. Therefore
+quantized weights, bf16/head/modulated normalization, group norm, other
+reductions, RoPE, attention, convolutions, and all four model-stage
+orchestrators remain on the missing list above. Therefore
 `--inference-backend vulkan` continues to fail before weights or output files.
 
 ## Current vertical-slice comparison
