@@ -135,3 +135,31 @@ tensor_bf16_layer.comp.spv           5F33AB2D86663D2611D64CDE7A62F27B13471256C80
 tensor_bf16_mod.comp.spv             7C6634DF12153142FC0C17D9A7EC89275E9BFDE45EC7C0249E8353B7685F16AE
 tensor_fp32_mod.comp.spv             C744EE45ACF2E34C017A1D1EC83BE5BC83042BA29AAC95C70AE864D55198F5EC
 ```
+
+The deterministic integer normalization cost was measured on the validated RTX
+5090/driver tuple against the pre-deterministic production implementation at
+`330e34e`. CUDA medians are seven runs of 10 warmups plus 100 production-kernel
+launches; Vulkan values use the same production APIs in 32-op batches after five
+warmups (30 timed batches). Times are microseconds per complete operator:
+
+| operator/shape | CUDA native | CUDA deterministic | Vulkan native | Vulkan deterministic |
+|---|---:|---:|---:|---:|
+| BF16 RMS 32768x128 | 8.683 | 18.137 | 11.855 | 31.712 |
+| BF16 RMS 2048x5120 | 13.541 | 16.504 | 15.582 | 21.037 |
+| BF16 RMS 2048x5376 | 14.244 | 16.148 | 15.992 | 22.021 |
+| BF16 Layer 2048x1152 | 8.206 | 11.764 | 11.612 | 16.419 |
+| BF16 Layer 1024x4608 | 14.556 | 18.214 | 15.274 | 16.086 |
+| BF16 AdaLN 2048x5376 | 14.353 | 17.582 | 20.546 | 26.276 |
+| fp32 AdaLN 2048x5376 | 30.795 | 31.142 | 29.687 | 33.575 |
+
+These are isolated operator measurements, not an end-to-end generation claim.
+The integer reciprocal square root runs once per logical row and is broadcast;
+it is never recomputed by every lane.
+
+The shipped 50-block DiT invokes two wide modulated norms and two head-128 norms
+per block, plus its final fp32 modulated norm: 201 normalization launches per
+denoising step. Applying the measured CUDA median deltas gives an estimated
+1.27 ms per step, or about 37 ms over 29 steps. This is an arithmetic-kernel
+impact estimate only; it excludes future Vulkan graph submission and every
+other inference stage, and therefore is not presented as an end-to-end speedup
+or regression measurement.
