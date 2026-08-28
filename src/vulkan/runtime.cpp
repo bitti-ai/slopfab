@@ -1,4 +1,5 @@
 #include "vidfab/vulkan/runtime.h"
+#include "vidfab/vulkan/compute.h"
 
 #include <vulkan/vulkan_core.h>
 
@@ -161,6 +162,7 @@ struct DeviceState {
   VkQueue queue = VK_NULL_HANDLE;
   uint32_t queue_family = 0;
   bool buffer_device_address_enabled = false;
+  bool timeline_semaphore_enabled = false;
   VkPhysicalDeviceMemoryProperties memory{};
   uint64_t non_coherent_atom_size = 1;
   PFN_vkDestroyDevice destroy_device = nullptr;
@@ -257,8 +259,10 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
   info.compute_queue_family = choose_compute_queue(*state, physical, &info.compute_queue_count);
   info.max_compute_workgroup_invocations = properties.limits.maxComputeWorkGroupInvocations;
   for (int i = 0; i < 3; ++i) {
+    info.max_compute_workgroup_count[i] = properties.limits.maxComputeWorkGroupCount[i];
     info.max_compute_workgroup_size[i] = properties.limits.maxComputeWorkGroupSize[i];
   }
+  info.max_push_constant_bytes = properties.limits.maxPushConstantsSize;
   info.max_storage_buffer_bytes = properties.limits.maxStorageBufferRange;
   info.non_coherent_atom_bytes = std::max<VkDeviceSize>(1, properties.limits.nonCoherentAtomSize);
   info.extensions = enumerate_extensions(*state, physical);
@@ -578,6 +582,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   state->device = handle;
   state->queue_family = impl_->info.compute_queue_family;
   state->buffer_device_address_enabled = options.enable_buffer_device_address;
+  state->timeline_semaphore_enabled = options.enable_timeline_semaphore;
   state->destroy_device = handle_guard.destroy;
   handle_guard.device = VK_NULL_HANDLE;
   impl_->state->get_physical_device_memory_properties(impl_->physical, &state->memory);
@@ -810,6 +815,7 @@ struct Buffer::Impl {
   uint64_t allocation_bytes = 0;
   uint64_t offset = 0;
   MemoryUsage usage = MemoryUsage::kDevice;
+  BufferUsage buffer_usage = static_cast<BufferUsage>(0);
 
   ~Impl() {
     if (buffer != VK_NULL_HANDLE) pool->device->destroy_buffer(pool->device->device, buffer, nullptr);
@@ -949,7 +955,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
     detail::check(impl_->device->bind_buffer_memory(impl_->device->device, buffer,
                                                     block->memory, offset),
                   "vkBindBufferMemory");
-    auto result = std::make_unique<Buffer::Impl>();
+    auto result = std::make_shared<Buffer::Impl>();
     result->pool = impl_;
     result->block = std::move(block);
     result->buffer = buffer;
@@ -957,6 +963,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
     result->allocation_bytes = suballocation_bytes;
     result->offset = offset;
     result->usage = memory;
+    result->buffer_usage = usage;
     return Buffer(std::move(result));
   } catch (...) {
     impl_->device->destroy_buffer(impl_->device->device, buffer, nullptr);
@@ -1001,8 +1008,11 @@ Buffer::Buffer() = default;
 Buffer::~Buffer() = default;
 Buffer::Buffer(Buffer&&) noexcept = default;
 Buffer& Buffer::operator=(Buffer&&) noexcept = default;
-Buffer::Buffer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Buffer::Buffer(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 uint64_t Buffer::size() const noexcept { return impl_ ? impl_->bytes : 0; }
+BufferUsage Buffer::usage() const noexcept {
+  return impl_ ? impl_->buffer_usage : static_cast<BufferUsage>(0);
+}
 MemoryUsage Buffer::memory_usage() const noexcept {
   return impl_ ? impl_->usage : MemoryUsage::kDevice;
 }
@@ -1069,5 +1079,705 @@ uintptr_t Buffer::native_handle() const noexcept {
 }
 uint64_t Buffer::memory_offset() const noexcept { return impl_ ? impl_->offset : 0; }
 Buffer::operator bool() const noexcept { return impl_ != nullptr; }
+
+// --- reusable compute submission ------------------------------------------
+
+struct ComputePipeline::Impl {
+  std::shared_ptr<detail::DeviceState> device;
+  VkDescriptorSetLayout descriptor_layout = VK_NULL_HANDLE;
+  VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  ComputePipelineOptions options;
+  DeviceInfo info;
+  PFN_vkDestroyDescriptorSetLayout destroy_descriptor_layout = nullptr;
+  PFN_vkDestroyPipelineLayout destroy_pipeline_layout = nullptr;
+  PFN_vkDestroyPipeline destroy_pipeline = nullptr;
+
+  ~Impl() {
+    if (pipeline != VK_NULL_HANDLE) destroy_pipeline(device->device, pipeline, nullptr);
+    if (pipeline_layout != VK_NULL_HANDLE) {
+      destroy_pipeline_layout(device->device, pipeline_layout, nullptr);
+    }
+    if (descriptor_layout != VK_NULL_HANDLE) {
+      destroy_descriptor_layout(device->device, descriptor_layout, nullptr);
+    }
+  }
+};
+
+namespace detail {
+
+struct ComputeFns {
+  PFN_vkCreateCommandPool create_command_pool = nullptr;
+  PFN_vkDestroyCommandPool destroy_command_pool = nullptr;
+  PFN_vkAllocateCommandBuffers allocate_command_buffers = nullptr;
+  PFN_vkResetCommandBuffer reset_command_buffer = nullptr;
+  PFN_vkBeginCommandBuffer begin_command_buffer = nullptr;
+  PFN_vkEndCommandBuffer end_command_buffer = nullptr;
+  PFN_vkCreateDescriptorPool create_descriptor_pool = nullptr;
+  PFN_vkDestroyDescriptorPool destroy_descriptor_pool = nullptr;
+  PFN_vkResetDescriptorPool reset_descriptor_pool = nullptr;
+  PFN_vkAllocateDescriptorSets allocate_descriptor_sets = nullptr;
+  PFN_vkUpdateDescriptorSets update_descriptor_sets = nullptr;
+  PFN_vkCmdCopyBuffer cmd_copy_buffer = nullptr;
+  PFN_vkCmdPipelineBarrier cmd_pipeline_barrier = nullptr;
+  PFN_vkCmdBindPipeline cmd_bind_pipeline = nullptr;
+  PFN_vkCmdBindDescriptorSets cmd_bind_descriptor_sets = nullptr;
+  PFN_vkCmdPushConstants cmd_push_constants = nullptr;
+  PFN_vkCmdDispatch cmd_dispatch = nullptr;
+  PFN_vkCreateSemaphore create_semaphore = nullptr;
+  PFN_vkDestroySemaphore destroy_semaphore = nullptr;
+  PFN_vkGetSemaphoreCounterValue get_semaphore_counter = nullptr;
+  PFN_vkWaitSemaphores wait_semaphores = nullptr;
+  PFN_vkQueueSubmit queue_submit = nullptr;
+};
+
+ComputeFns load_compute_fns(const std::shared_ptr<DeviceState>& device) {
+  ComputeFns f;
+#define VIDFAB_LOAD_DEVICE(member, type, name) \
+  f.member = load_device<type>(*device->instance, device->device, name)
+  VIDFAB_LOAD_DEVICE(create_command_pool, PFN_vkCreateCommandPool, "vkCreateCommandPool");
+  VIDFAB_LOAD_DEVICE(destroy_command_pool, PFN_vkDestroyCommandPool, "vkDestroyCommandPool");
+  VIDFAB_LOAD_DEVICE(allocate_command_buffers, PFN_vkAllocateCommandBuffers,
+                     "vkAllocateCommandBuffers");
+  VIDFAB_LOAD_DEVICE(reset_command_buffer, PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+  VIDFAB_LOAD_DEVICE(begin_command_buffer, PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+  VIDFAB_LOAD_DEVICE(end_command_buffer, PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+  VIDFAB_LOAD_DEVICE(create_descriptor_pool, PFN_vkCreateDescriptorPool,
+                     "vkCreateDescriptorPool");
+  VIDFAB_LOAD_DEVICE(destroy_descriptor_pool, PFN_vkDestroyDescriptorPool,
+                     "vkDestroyDescriptorPool");
+  VIDFAB_LOAD_DEVICE(reset_descriptor_pool, PFN_vkResetDescriptorPool,
+                     "vkResetDescriptorPool");
+  VIDFAB_LOAD_DEVICE(allocate_descriptor_sets, PFN_vkAllocateDescriptorSets,
+                     "vkAllocateDescriptorSets");
+  VIDFAB_LOAD_DEVICE(update_descriptor_sets, PFN_vkUpdateDescriptorSets,
+                     "vkUpdateDescriptorSets");
+  VIDFAB_LOAD_DEVICE(cmd_copy_buffer, PFN_vkCmdCopyBuffer, "vkCmdCopyBuffer");
+  VIDFAB_LOAD_DEVICE(cmd_pipeline_barrier, PFN_vkCmdPipelineBarrier,
+                     "vkCmdPipelineBarrier");
+  VIDFAB_LOAD_DEVICE(cmd_bind_pipeline, PFN_vkCmdBindPipeline, "vkCmdBindPipeline");
+  VIDFAB_LOAD_DEVICE(cmd_bind_descriptor_sets, PFN_vkCmdBindDescriptorSets,
+                     "vkCmdBindDescriptorSets");
+  VIDFAB_LOAD_DEVICE(cmd_push_constants, PFN_vkCmdPushConstants, "vkCmdPushConstants");
+  VIDFAB_LOAD_DEVICE(cmd_dispatch, PFN_vkCmdDispatch, "vkCmdDispatch");
+  VIDFAB_LOAD_DEVICE(create_semaphore, PFN_vkCreateSemaphore, "vkCreateSemaphore");
+  VIDFAB_LOAD_DEVICE(destroy_semaphore, PFN_vkDestroySemaphore, "vkDestroySemaphore");
+  VIDFAB_LOAD_DEVICE(get_semaphore_counter, PFN_vkGetSemaphoreCounterValue,
+                     "vkGetSemaphoreCounterValue");
+  VIDFAB_LOAD_DEVICE(wait_semaphores, PFN_vkWaitSemaphores, "vkWaitSemaphores");
+  VIDFAB_LOAD_DEVICE(queue_submit, PFN_vkQueueSubmit, "vkQueueSubmit");
+#undef VIDFAB_LOAD_DEVICE
+  return f;
+}
+
+struct ComputeSlot {
+  VkCommandBuffer commands = VK_NULL_HANDLE;
+  VkDescriptorPool descriptors = VK_NULL_HANDLE;
+  uint64_t value = 0;
+  bool reserved = false;
+  std::vector<std::shared_ptr<void>> resources;
+};
+
+struct ComputeState : std::enable_shared_from_this<ComputeState> {
+  std::shared_ptr<DeviceState> device;
+  ComputeFns f;
+  VkCommandPool command_pool = VK_NULL_HANDLE;
+  VkSemaphore timeline = VK_NULL_HANDLE;
+  uint32_t max_bindings = 0;
+  uint64_t next_value = 1;
+  std::vector<ComputeSlot> slots;
+  mutable std::mutex mutex;
+
+  ~ComputeState() {
+    if (timeline != VK_NULL_HANDLE && next_value > 1 && f.wait_semaphores != nullptr) {
+      VkSemaphoreWaitInfo wait{};
+      wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+      wait.semaphoreCount = 1;
+      wait.pSemaphores = &timeline;
+      const uint64_t tail = next_value - 1;
+      wait.pValues = &tail;
+      f.wait_semaphores(device->device, &wait, std::numeric_limits<uint64_t>::max());
+    }
+    for (auto& slot : slots) {
+      slot.resources.clear();
+      if (slot.descriptors != VK_NULL_HANDLE) {
+        f.destroy_descriptor_pool(device->device, slot.descriptors, nullptr);
+      }
+    }
+    if (timeline != VK_NULL_HANDLE) f.destroy_semaphore(device->device, timeline, nullptr);
+    if (command_pool != VK_NULL_HANDLE) {
+      f.destroy_command_pool(device->device, command_pool, nullptr);
+    }
+  }
+
+  uint64_t completed() const {
+    uint64_t value = 0;
+    check(f.get_semaphore_counter(device->device, timeline, &value),
+          "vkGetSemaphoreCounterValue");
+    return value;
+  }
+
+  void wait_value(uint64_t value) const {
+    VkSemaphoreWaitInfo wait{};
+    wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    wait.semaphoreCount = 1;
+    wait.pSemaphores = &timeline;
+    wait.pValues = &value;
+    check(f.wait_semaphores(device->device, &wait, std::numeric_limits<uint64_t>::max()),
+          "vkWaitSemaphores");
+  }
+
+  void recycle_locked(uint64_t completed_value) {
+    for (auto& slot : slots) {
+      if (!slot.reserved || slot.value == 0 || slot.value > completed_value) continue;
+      slot.resources.clear();
+      check(f.reset_descriptor_pool(device->device, slot.descriptors, 0),
+            "vkResetDescriptorPool");
+      check(f.reset_command_buffer(slot.commands, 0), "vkResetCommandBuffer");
+      slot.reserved = false;
+      slot.value = 0;
+    }
+  }
+};
+
+struct AccessInfo {
+  VkPipelineStageFlags stage;
+  VkAccessFlags access;
+};
+
+AccessInfo access_info(BufferAccess access) {
+  switch (access) {
+    case BufferAccess::kHostWrite: return {VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT};
+    case BufferAccess::kHostRead: return {VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT};
+    case BufferAccess::kTransferRead:
+      return {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT};
+    case BufferAccess::kTransferWrite:
+      return {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT};
+    case BufferAccess::kComputeRead:
+      return {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT};
+    case BufferAccess::kComputeWrite:
+      return {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT};
+    case BufferAccess::kComputeReadWrite:
+      return {VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+  }
+  throw std::logic_error("vulkan: invalid buffer access");
+}
+
+bool has_usage(BufferUsage value, BufferUsage flag) {
+  return (static_cast<uint32_t>(value) & static_cast<uint32_t>(flag)) != 0;
+}
+
+struct SpirvShape {
+  uint32_t local_size[3] = {};
+  std::vector<uint32_t> bindings;
+  bool has_local_size = false;
+};
+
+SpirvShape inspect_spirv(const std::vector<uint32_t>& words) {
+  SpirvShape shape;
+  for (size_t at = 5; at < words.size();) {
+    const uint16_t count = static_cast<uint16_t>(words[at] >> 16);
+    const uint16_t opcode = static_cast<uint16_t>(words[at] & 0xffffu);
+    if (count == 0 || at + count > words.size()) {
+      throw std::invalid_argument("vulkan: malformed SPIR-V instruction stream");
+    }
+    // OpExecutionMode %entry LocalSize x y z
+    if (opcode == 16 && count >= 6 && words[at + 2] == 17) {
+      shape.local_size[0] = words[at + 3];
+      shape.local_size[1] = words[at + 4];
+      shape.local_size[2] = words[at + 5];
+      shape.has_local_size = true;
+    }
+    // OpDecorate %target Binding binding-number
+    if (opcode == 71 && count >= 4 && words[at + 2] == 33) {
+      shape.bindings.push_back(words[at + 3]);
+    }
+    at += count;
+  }
+  std::sort(shape.bindings.begin(), shape.bindings.end());
+  shape.bindings.erase(std::unique(shape.bindings.begin(), shape.bindings.end()),
+                       shape.bindings.end());
+  return shape;
+}
+
+}  // namespace detail
+
+struct ComputeContext::Impl { std::shared_ptr<detail::ComputeState> state; };
+struct Submission::Impl {
+  std::shared_ptr<detail::ComputeState> state;
+  uint64_t value = 0;
+};
+struct CommandList::Impl {
+  std::shared_ptr<detail::ComputeState> state;
+  size_t slot = 0;
+  bool recording = true;
+  bool compute_bound = false;
+  bool push_constants_set = false;
+  std::shared_ptr<ComputePipeline::Impl> pipeline;
+  std::vector<std::shared_ptr<void>> resources;
+
+  ~Impl() {
+    if (!recording || !state) return;
+    std::lock_guard<std::mutex> lock(state->mutex);
+    auto& owned = state->slots[slot];
+    state->f.reset_descriptor_pool(state->device->device, owned.descriptors, 0);
+    state->f.reset_command_buffer(owned.commands, 0);
+    owned.reserved = false;
+    owned.value = 0;
+  }
+};
+
+ComputePipeline::ComputePipeline() = default;
+ComputePipeline::~ComputePipeline() = default;
+ComputePipeline::ComputePipeline(ComputePipeline&&) noexcept = default;
+ComputePipeline& ComputePipeline::operator=(ComputePipeline&&) noexcept = default;
+ComputePipeline::ComputePipeline(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+ComputePipeline::operator bool() const noexcept { return impl_ != nullptr; }
+uint32_t ComputePipeline::storage_binding_count() const noexcept {
+  return impl_ ? impl_->options.storage_binding_count : 0;
+}
+uint32_t ComputePipeline::push_constant_bytes() const noexcept {
+  return impl_ ? impl_->options.push_constant_bytes : 0;
+}
+
+ComputePipeline ComputePipeline::create(const Device& device,
+                                        const std::vector<uint32_t>& spirv,
+                                        const ComputePipelineOptions& options) {
+  if (!device.impl_) throw std::invalid_argument("vulkan: ComputePipeline requires a device");
+  if (spirv.size() < 5 || spirv[0] != 0x07230203u) {
+    throw std::invalid_argument("vulkan: invalid SPIR-V module");
+  }
+  if (options.storage_binding_count == 0) {
+    throw std::invalid_argument("vulkan: compute pipeline has no storage bindings");
+  }
+  const detail::SpirvShape shape = detail::inspect_spirv(spirv);
+  if (!shape.has_local_size) {
+    throw std::invalid_argument("vulkan: SPIR-V has no literal LocalSize execution mode");
+  }
+  for (int i = 0; i < 3; ++i) {
+    if (shape.local_size[i] != options.local_size[i]) {
+      throw std::invalid_argument("vulkan: declared local size does not match SPIR-V");
+    }
+  }
+  if (shape.bindings.size() != options.storage_binding_count) {
+    throw std::invalid_argument("vulkan: declared storage binding count does not match SPIR-V");
+  }
+  for (uint32_t i = 0; i < options.storage_binding_count; ++i) {
+    if (shape.bindings[i] != i) {
+      throw std::invalid_argument("vulkan: SPIR-V storage bindings must be contiguous from zero");
+    }
+  }
+  if (options.push_constant_bytes > device.info().max_push_constant_bytes ||
+      (options.push_constant_bytes & 3u) != 0) {
+    throw std::invalid_argument("vulkan: invalid push constant size");
+  }
+  uint64_t invocations = 1;
+  for (int i = 0; i < 3; ++i) {
+    if (options.local_size[i] == 0 ||
+        options.local_size[i] > device.info().max_compute_workgroup_size[i]) {
+      throw std::invalid_argument("vulkan: compute local size exceeds device limit");
+    }
+    invocations *= options.local_size[i];
+  }
+  if (invocations > device.info().max_compute_workgroup_invocations) {
+    throw std::invalid_argument("vulkan: compute local invocation count exceeds device limit");
+  }
+
+  auto result = std::make_shared<Impl>();
+  result->device = device.impl_->state;
+  result->options = options;
+  result->info = device.info();
+  const auto& state = *result->device;
+  const auto create_shader = detail::load_device<PFN_vkCreateShaderModule>(
+      *state.instance, state.device, "vkCreateShaderModule");
+  const auto destroy_shader = detail::load_device<PFN_vkDestroyShaderModule>(
+      *state.instance, state.device, "vkDestroyShaderModule");
+  const auto create_descriptor_layout = detail::load_device<PFN_vkCreateDescriptorSetLayout>(
+      *state.instance, state.device, "vkCreateDescriptorSetLayout");
+  result->destroy_descriptor_layout = detail::load_device<PFN_vkDestroyDescriptorSetLayout>(
+      *state.instance, state.device, "vkDestroyDescriptorSetLayout");
+  const auto create_pipeline_layout = detail::load_device<PFN_vkCreatePipelineLayout>(
+      *state.instance, state.device, "vkCreatePipelineLayout");
+  result->destroy_pipeline_layout = detail::load_device<PFN_vkDestroyPipelineLayout>(
+      *state.instance, state.device, "vkDestroyPipelineLayout");
+  const auto create_pipelines = detail::load_device<PFN_vkCreateComputePipelines>(
+      *state.instance, state.device, "vkCreateComputePipelines");
+  result->destroy_pipeline = detail::load_device<PFN_vkDestroyPipeline>(
+      *state.instance, state.device, "vkDestroyPipeline");
+
+  VkShaderModule shader = VK_NULL_HANDLE;
+  VkShaderModuleCreateInfo shader_create{};
+  shader_create.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  shader_create.codeSize = spirv.size() * sizeof(uint32_t);
+  shader_create.pCode = spirv.data();
+  detail::check(create_shader(state.device, &shader_create, nullptr, &shader),
+                "vkCreateShaderModule");
+  try {
+    std::vector<VkDescriptorSetLayoutBinding> bindings(options.storage_binding_count);
+    for (uint32_t i = 0; i < options.storage_binding_count; ++i) {
+      bindings[i].binding = i;
+      bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      bindings[i].descriptorCount = 1;
+      bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo descriptor_create{};
+    descriptor_create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptor_create.bindingCount = static_cast<uint32_t>(bindings.size());
+    descriptor_create.pBindings = bindings.data();
+    detail::check(create_descriptor_layout(state.device, &descriptor_create, nullptr,
+                                           &result->descriptor_layout),
+                  "vkCreateDescriptorSetLayout");
+
+    VkPushConstantRange push{};
+    push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push.size = options.push_constant_bytes;
+    VkPipelineLayoutCreateInfo layout_create{};
+    layout_create.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_create.setLayoutCount = 1;
+    layout_create.pSetLayouts = &result->descriptor_layout;
+    layout_create.pushConstantRangeCount = options.push_constant_bytes == 0 ? 0 : 1;
+    layout_create.pPushConstantRanges = options.push_constant_bytes == 0 ? nullptr : &push;
+    detail::check(create_pipeline_layout(state.device, &layout_create, nullptr,
+                                         &result->pipeline_layout),
+                  "vkCreatePipelineLayout");
+
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = shader;
+    stage.pName = options.entry_point.c_str();
+    VkComputePipelineCreateInfo pipeline_create{};
+    pipeline_create.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipeline_create.stage = stage;
+    pipeline_create.layout = result->pipeline_layout;
+    detail::check(create_pipelines(state.device, VK_NULL_HANDLE, 1, &pipeline_create,
+                                   nullptr, &result->pipeline),
+                  "vkCreateComputePipelines");
+  } catch (...) {
+    destroy_shader(state.device, shader, nullptr);
+    throw;
+  }
+  destroy_shader(state.device, shader, nullptr);
+  return ComputePipeline(std::move(result));
+}
+
+ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions& options) {
+  if (!device.impl_) throw std::invalid_argument("vulkan: ComputeContext requires a device");
+  if (!device.impl_->state->timeline_semaphore_enabled) {
+    throw std::invalid_argument("vulkan: ComputeContext requires timeline semaphores enabled");
+  }
+  if (options.max_in_flight == 0 || options.max_storage_bindings == 0) {
+    throw std::invalid_argument("vulkan: compute context limits must be nonzero");
+  }
+  auto state = std::make_shared<detail::ComputeState>();
+  state->device = device.impl_->state;
+  state->f = detail::load_compute_fns(state->device);
+  state->max_bindings = options.max_storage_bindings;
+
+  VkCommandPoolCreateInfo pool_create{};
+  pool_create.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  pool_create.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pool_create.queueFamilyIndex = state->device->queue_family;
+  detail::check(state->f.create_command_pool(state->device->device, &pool_create, nullptr,
+                                             &state->command_pool),
+                "vkCreateCommandPool");
+  try {
+    state->slots.resize(options.max_in_flight);
+    std::vector<VkCommandBuffer> commands(options.max_in_flight);
+    VkCommandBufferAllocateInfo command_allocate{};
+    command_allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    command_allocate.commandPool = state->command_pool;
+    command_allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    command_allocate.commandBufferCount = options.max_in_flight;
+    detail::check(state->f.allocate_command_buffers(state->device->device, &command_allocate,
+                                                    commands.data()),
+                  "vkAllocateCommandBuffers");
+    for (uint32_t i = 0; i < options.max_in_flight; ++i) {
+      state->slots[i].commands = commands[i];
+      VkDescriptorPoolSize size{};
+      size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      size.descriptorCount = options.max_storage_bindings;
+      VkDescriptorPoolCreateInfo descriptor_create{};
+      descriptor_create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+      descriptor_create.maxSets = 1;
+      descriptor_create.poolSizeCount = 1;
+      descriptor_create.pPoolSizes = &size;
+      detail::check(state->f.create_descriptor_pool(state->device->device, &descriptor_create,
+                                                     nullptr, &state->slots[i].descriptors),
+                    "vkCreateDescriptorPool");
+    }
+    VkSemaphoreTypeCreateInfo timeline_type{};
+    timeline_type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+    timeline_type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    VkSemaphoreCreateInfo semaphore_create{};
+    semaphore_create.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    semaphore_create.pNext = &timeline_type;
+    detail::check(state->f.create_semaphore(state->device->device, &semaphore_create, nullptr,
+                                            &state->timeline),
+                  "vkCreateSemaphore");
+  } catch (...) {
+    state.reset();
+    throw;
+  }
+  impl_ = std::make_shared<Impl>();
+  impl_->state = std::move(state);
+}
+ComputeContext::~ComputeContext() = default;
+ComputeContext::ComputeContext(ComputeContext&&) noexcept = default;
+ComputeContext& ComputeContext::operator=(ComputeContext&&) noexcept = default;
+
+CommandList ComputeContext::begin() {
+  if (!impl_) throw std::logic_error("vulkan: empty ComputeContext");
+  auto state = impl_->state;
+  size_t selected = state->slots.size();
+  for (;;) {
+    uint64_t wait_for = std::numeric_limits<uint64_t>::max();
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->recycle_locked(state->completed());
+      for (size_t i = 0; i < state->slots.size(); ++i) {
+        if (!state->slots[i].reserved) { selected = i; break; }
+        if (state->slots[i].value != 0) wait_for = std::min(wait_for, state->slots[i].value);
+      }
+      if (selected != state->slots.size()) {
+        state->slots[selected].reserved = true;
+        break;
+      }
+    }
+    if (wait_for == std::numeric_limits<uint64_t>::max()) {
+      throw std::logic_error("vulkan: all command slots are being recorded");
+    }
+    state->wait_value(wait_for);  // bounded backpressure: oldest submitted slot
+  }
+  VkCommandBufferBeginInfo begin{};
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  try {
+    detail::check(state->f.begin_command_buffer(state->slots[selected].commands, &begin),
+                  "vkBeginCommandBuffer");
+    auto commands = std::make_unique<CommandList::Impl>();
+    commands->state = std::move(state);
+    commands->slot = selected;
+    return CommandList(std::move(commands));
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->slots[selected].reserved = false;
+    throw;
+  }
+}
+
+Submission ComputeContext::submit(CommandList&& commands) {
+  if (!impl_ || !commands.impl_) throw std::invalid_argument("vulkan: empty command submission");
+  if (commands.impl_->state != impl_->state) {
+    throw std::invalid_argument("vulkan: command list belongs to another context");
+  }
+  auto state = impl_->state;
+  auto& slot = state->slots[commands.impl_->slot];
+  detail::check(state->f.end_command_buffer(slot.commands), "vkEndCommandBuffer");
+  uint64_t value = 0;
+  VkTimelineSemaphoreSubmitInfo timeline{};
+  timeline.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+  timeline.signalSemaphoreValueCount = 1;
+  VkSubmitInfo submit{};
+  submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit.pNext = &timeline;
+  submit.commandBufferCount = 1;
+  submit.pCommandBuffers = &slot.commands;
+  submit.signalSemaphoreCount = 1;
+  submit.pSignalSemaphores = &state->timeline;
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    value = state->next_value;
+    timeline.pSignalSemaphoreValues = &value;
+    std::lock_guard<std::mutex> queue_lock(state->device->queue_mutex);
+    detail::check(state->f.queue_submit(state->device->queue, 1, &submit, VK_NULL_HANDLE),
+                  "vkQueueSubmit");
+    ++state->next_value;
+    slot.value = value;
+    slot.resources = std::move(commands.impl_->resources);
+  }
+  commands.impl_->recording = false;
+  commands.impl_.reset();
+  auto token = std::make_shared<Submission::Impl>();
+  token->state = std::move(state);
+  token->value = value;
+  return Submission(std::move(token));
+}
+
+void ComputeContext::collect() {
+  if (!impl_) return;
+  std::lock_guard<std::mutex> lock(impl_->state->mutex);
+  impl_->state->recycle_locked(impl_->state->completed());
+}
+uint32_t ComputeContext::in_flight() const {
+  if (!impl_) return 0;
+  std::lock_guard<std::mutex> lock(impl_->state->mutex);
+  uint32_t count = 0;
+  for (const auto& slot : impl_->state->slots) if (slot.reserved) ++count;
+  return count;
+}
+
+Submission::Submission() = default;
+Submission::Submission(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Submission::operator bool() const noexcept { return impl_ != nullptr; }
+uint64_t Submission::value() const noexcept { return impl_ ? impl_->value : 0; }
+bool Submission::ready() const {
+  if (!impl_) return false;
+  return impl_->state->completed() >= impl_->value;
+}
+void Submission::wait() const {
+  if (!impl_) throw std::logic_error("vulkan: empty Submission");
+  impl_->state->wait_value(impl_->value);
+}
+
+CommandList::CommandList() = default;
+CommandList::~CommandList() = default;
+CommandList::CommandList(CommandList&&) noexcept = default;
+CommandList& CommandList::operator=(CommandList&&) noexcept = default;
+CommandList::CommandList(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+CommandList::operator bool() const noexcept { return impl_ != nullptr; }
+
+void CommandList::copy_buffer(Buffer& source, Buffer& destination, uint64_t bytes,
+                              uint64_t source_offset, uint64_t destination_offset) {
+  if (!impl_ || !source.impl_ || !destination.impl_) {
+    throw std::invalid_argument("vulkan: copy requires live command list and buffers");
+  }
+  if (source.impl_->pool->device != impl_->state->device ||
+      destination.impl_->pool->device != impl_->state->device) {
+    throw std::invalid_argument("vulkan: copy buffer belongs to another device");
+  }
+  if (!detail::has_usage(source.impl_->buffer_usage, BufferUsage::kTransferSource) ||
+      !detail::has_usage(destination.impl_->buffer_usage, BufferUsage::kTransferDestination)) {
+    throw std::invalid_argument("vulkan: copy buffer lacks transfer usage");
+  }
+  source.impl_->check_range(source_offset, bytes);
+  destination.impl_->check_range(destination_offset, bytes);
+  if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized copy");
+  VkBufferCopy region{source_offset, destination_offset, bytes};
+  impl_->state->f.cmd_copy_buffer(impl_->state->slots[impl_->slot].commands,
+                                  source.impl_->buffer, destination.impl_->buffer, 1, &region);
+  impl_->resources.push_back(source.impl_);
+  impl_->resources.push_back(destination.impl_);
+}
+
+void CommandList::barrier(Buffer& buffer, BufferAccess before, BufferAccess after,
+                          uint64_t offset, uint64_t bytes) {
+  if (!impl_ || !buffer.impl_) throw std::invalid_argument("vulkan: barrier requires buffer");
+  if (buffer.impl_->pool->device != impl_->state->device) {
+    throw std::invalid_argument("vulkan: barrier buffer belongs to another device");
+  }
+  if (bytes == ~uint64_t{0}) bytes = buffer.impl_->bytes - offset;
+  buffer.impl_->check_range(offset, bytes);
+  if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized barrier");
+  const auto src = detail::access_info(before);
+  const auto dst = detail::access_info(after);
+  VkBufferMemoryBarrier barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+  barrier.srcAccessMask = src.access;
+  barrier.dstAccessMask = dst.access;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.buffer = buffer.impl_->buffer;
+  barrier.offset = offset;
+  barrier.size = bytes;
+  impl_->state->f.cmd_pipeline_barrier(impl_->state->slots[impl_->slot].commands,
+                                       src.stage, dst.stage, 0, 0, nullptr, 1, &barrier,
+                                       0, nullptr);
+  impl_->resources.push_back(buffer.impl_);
+}
+
+void CommandList::bind_compute(ComputePipeline& pipeline,
+                               const std::vector<StorageBinding>& bindings) {
+  if (!impl_ || !pipeline.impl_) throw std::invalid_argument("vulkan: bind requires pipeline");
+  if (pipeline.impl_->device != impl_->state->device) {
+    throw std::invalid_argument("vulkan: pipeline belongs to another device");
+  }
+  if (impl_->compute_bound) throw std::logic_error("vulkan: one compute bind is allowed per job");
+  if (bindings.size() != pipeline.impl_->options.storage_binding_count ||
+      bindings.size() > impl_->state->max_bindings) {
+    throw std::invalid_argument("vulkan: storage binding count mismatch");
+  }
+  std::vector<bool> seen(bindings.size(), false);
+  std::vector<VkDescriptorBufferInfo> infos(bindings.size());
+  std::vector<VkWriteDescriptorSet> writes(bindings.size());
+  for (size_t i = 0; i < bindings.size(); ++i) {
+    const auto& binding = bindings[i];
+    if (binding.binding >= bindings.size() || seen[binding.binding] || binding.buffer == nullptr ||
+        !binding.buffer->impl_) {
+      throw std::invalid_argument("vulkan: invalid or duplicate storage binding");
+    }
+    seen[binding.binding] = true;
+    if (binding.buffer->impl_->pool->device != impl_->state->device ||
+        !detail::has_usage(binding.buffer->impl_->buffer_usage, BufferUsage::kStorage)) {
+      throw std::invalid_argument("vulkan: storage binding has wrong device or usage");
+    }
+    uint64_t range = binding.bytes;
+    if (range == ~uint64_t{0}) range = binding.buffer->impl_->bytes - binding.offset;
+    binding.buffer->impl_->check_range(binding.offset, range);
+    if (range == 0 || range > pipeline.impl_->info.max_storage_buffer_bytes) {
+      throw std::invalid_argument("vulkan: storage binding range exceeds device limit");
+    }
+    infos[i] = {binding.buffer->impl_->buffer, binding.offset, range};
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstBinding = binding.binding;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[i].pBufferInfo = &infos[i];
+    impl_->resources.push_back(binding.buffer->impl_);
+  }
+  VkDescriptorSetAllocateInfo allocate{};
+  allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocate.descriptorPool = impl_->state->slots[impl_->slot].descriptors;
+  allocate.descriptorSetCount = 1;
+  allocate.pSetLayouts = &pipeline.impl_->descriptor_layout;
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  detail::check(impl_->state->f.allocate_descriptor_sets(impl_->state->device->device, &allocate,
+                                                         &set),
+                "vkAllocateDescriptorSets");
+  for (auto& write : writes) write.dstSet = set;
+  impl_->state->f.update_descriptor_sets(impl_->state->device->device,
+                                         static_cast<uint32_t>(writes.size()), writes.data(),
+                                         0, nullptr);
+  const VkCommandBuffer commands = impl_->state->slots[impl_->slot].commands;
+  impl_->state->f.cmd_bind_pipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    pipeline.impl_->pipeline);
+  impl_->state->f.cmd_bind_descriptor_sets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                           pipeline.impl_->pipeline_layout, 0, 1, &set,
+                                           0, nullptr);
+  impl_->pipeline = pipeline.impl_;
+  impl_->resources.push_back(pipeline.impl_);
+  impl_->compute_bound = true;
+}
+
+void CommandList::push_constants(const void* data, uint32_t bytes) {
+  if (!impl_ || !impl_->pipeline) throw std::logic_error("vulkan: bind pipeline before push constants");
+  if (bytes != impl_->pipeline->options.push_constant_bytes || (data == nullptr && bytes != 0)) {
+    throw std::invalid_argument("vulkan: push constant size mismatch");
+  }
+  if (bytes != 0) {
+    impl_->state->f.cmd_push_constants(impl_->state->slots[impl_->slot].commands,
+                                       impl_->pipeline->pipeline_layout,
+                                       VK_SHADER_STAGE_COMPUTE_BIT, 0, bytes, data);
+  }
+  impl_->push_constants_set = true;
+}
+
+void CommandList::dispatch(uint32_t groups_x, uint32_t groups_y, uint32_t groups_z) {
+  if (!impl_ || !impl_->pipeline) throw std::logic_error("vulkan: bind pipeline before dispatch");
+  if (impl_->pipeline->options.push_constant_bytes != 0 && !impl_->push_constants_set) {
+    throw std::logic_error("vulkan: set required push constants before dispatch");
+  }
+  const uint32_t groups[3] = {groups_x, groups_y, groups_z};
+  // Group-count limits come from the same physical device retained by the
+  // pipeline; validate nonzero here, while vkCmdDispatch validates no state.
+  for (int i = 0; i < 3; ++i) {
+    if (groups[i] == 0 || groups[i] > impl_->pipeline->info.max_compute_workgroup_count[i]) {
+      throw std::invalid_argument("vulkan: dispatch group count exceeds device limit");
+    }
+  }
+  impl_->state->f.cmd_dispatch(impl_->state->slots[impl_->slot].commands,
+                               groups_x, groups_y, groups_z);
+}
 
 }  // namespace vidfab::vulkan

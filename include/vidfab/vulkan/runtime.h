@@ -35,7 +35,9 @@ struct DeviceInfo {
   uint32_t compute_queue_family = 0;
   uint32_t compute_queue_count = 0;
   uint32_t max_compute_workgroup_invocations = 0;
+  uint32_t max_compute_workgroup_count[3] = {};
   uint32_t max_compute_workgroup_size[3] = {};
+  uint32_t max_push_constant_bytes = 0;
   uint64_t max_storage_buffer_bytes = 0;
   uint64_t max_allocation_bytes = 0;
   uint64_t non_coherent_atom_bytes = 1;
@@ -156,6 +158,8 @@ class Device {
   std::shared_ptr<Impl> impl_;
   friend class PhysicalDevice;
   friend class BufferPool;
+  friend class ComputePipeline;
+  friend class ComputeContext;
 };
 
 enum class BufferUsage : uint32_t {
@@ -187,6 +191,7 @@ class Buffer {
   Buffer& operator=(const Buffer&) = delete;
 
   uint64_t size() const noexcept;
+  BufferUsage usage() const noexcept;
   MemoryUsage memory_usage() const noexcept;
   // Raw mapped access is externally synchronized. Prefer read/write, which
   // serialize per memory block and perform non-coherent cache maintenance.
@@ -207,9 +212,11 @@ class Buffer {
 
  private:
   struct Impl;
-  explicit Buffer(std::unique_ptr<Impl> impl);
-  std::unique_ptr<Impl> impl_;
+  explicit Buffer(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
   friend class BufferPool;
+  friend class CommandList;
+  friend class ComputePipeline;
 };
 
 class BufferPool {
