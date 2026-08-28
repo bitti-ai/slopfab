@@ -543,6 +543,9 @@ bool TensorWorkspace::valid(const WorkspaceSpan& span) const noexcept {
 uint64_t TensorWorkspace::reserved_bytes() const noexcept {
   return impl_ ? impl_->pool.reserved_bytes() : 0;
 }
+uint64_t TensorWorkspace::pooled_used_bytes() const noexcept {
+  return impl_ ? impl_->pool.used_bytes() : 0;
+}
 
 TensorContext::TensorContext(const Device& device, const TensorContextOptions& options)
     : impl_(std::make_unique<Impl>(device, options)) {
@@ -727,6 +730,15 @@ uint64_t TensorContext::reserved_bytes() const {
   [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   const uint64_t primary = impl_->pool.reserved_bytes();
   const uint64_t scratch = impl_->scratch.reserved_bytes();
+  return primary > std::numeric_limits<uint64_t>::max() - scratch
+             ? std::numeric_limits<uint64_t>::max()
+             : primary + scratch;
+}
+uint64_t TensorContext::pooled_used_bytes() const {
+  if (!impl_) return 0;
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
+  const uint64_t primary = impl_->pool.used_bytes();
+  const uint64_t scratch = impl_->scratch.pooled_used_bytes();
   return primary > std::numeric_limits<uint64_t>::max() - scratch
              ? std::numeric_limits<uint64_t>::max()
              : primary + scratch;

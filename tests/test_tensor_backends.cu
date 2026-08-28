@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -27,30 +28,22 @@ __global__ void deterministic_rsqrt_probe(const float* input, float* stable,
   }
 }
 
-__global__ void native_rmsnorm_probe(const float* input, const float* weight,
-                                     float* output, int dim, float epsilon) {
-  __shared__ float warp_totals[8];
-  const int lane = static_cast<int>(threadIdx.x & 31u);
-  const int warp = static_cast<int>(threadIdx.x >> 5u);
-  const size_t base = static_cast<size_t>(blockIdx.x) * dim;
-  float sum = 0.0f;
-  for (int col = static_cast<int>(threadIdx.x); col < dim; col += 256) {
-    const float value = input[base + col];
-    sum = fmaf(value, value, sum);
-  }
-  for (int offset = 16; offset; offset >>= 1)
-    sum += __shfl_down_sync(0xffffffffu, sum, offset);
-  if (lane == 0) warp_totals[warp] = sum;
-  __syncthreads();
-  sum = threadIdx.x < 8 ? warp_totals[threadIdx.x] : 0.0f;
-  if (warp == 0)
-    for (int offset = 16; offset; offset >>= 1)
-      sum += __shfl_down_sync(0xffffffffu, sum, offset);
-  if (threadIdx.x == 0) warp_totals[0] = sum;
-  __syncthreads();
-  const float inverse = rsqrtf(warp_totals[0] / static_cast<float>(dim) + epsilon);
-  for (int col = static_cast<int>(threadIdx.x); col < dim; col += 256)
-    output[base + col] = input[base + col] * inverse * weight[col];
+__global__ void deterministic_divide_add_probe(const uint32_t* input_bits,
+                                                const uint32_t* divisors,
+                                                const uint32_t* epsilon_bits,
+                                                uint32_t* positive_divided,
+                                                uint32_t* signed_divided,
+                                                uint32_t* added, int count) {
+  const int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (index >= count) return;
+  const uint32_t magnitude = input_bits[index] & 0x7fffffffu;
+  positive_divided[index] =
+      vidfab::cuda::positive_float_div_uint(magnitude, divisors[index]);
+  const float signed_value = __uint_as_float(input_bits[index]);
+  signed_divided[index] = __float_as_uint(
+      vidfab::cuda::deterministic_divide(signed_value, divisors[index]));
+  added[index] = vidfab::cuda::positive_float_add(positive_divided[index],
+                                                   epsilon_bits[index]);
 }
 
 VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
@@ -117,40 +110,82 @@ VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
               "relative %.3e\n", max_reference_ulp, max_native_ulp,
               max_relative_error);
 
-  auto benchmark = [](int rows, int dim) {
-    const size_t count = static_cast<size_t>(rows) * dim;
-    std::vector<float> values(count, 0.5f), weights(dim, 1.0f);
-    cuda::DeviceBuffer<float> d_values(count), d_weights(dim), d_output(count);
-    d_values.copy_from_host(values.data(), count);
-    d_weights.copy_from_host(weights.data(), dim);
-    for (int warm = 0; warm < 10; ++warm)
-      cuda::launch_rmsnorm(d_values.get(), d_weights.get(), d_output.get(), rows, dim,
-                           1.0e-6f, nullptr);
-    cudaEvent_t start{}, stop{};
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&start)); VIDFAB_CUDA_CHECK(cudaEventCreate(&stop));
-    VIDFAB_CUDA_CHECK(cudaEventRecord(start));
-    for (int iteration = 0; iteration < 100; ++iteration)
-      cuda::launch_rmsnorm(d_values.get(), d_weights.get(), d_output.get(), rows, dim,
-                           1.0e-6f, nullptr);
-    VIDFAB_CUDA_CHECK(cudaEventRecord(stop)); VIDFAB_CUDA_CHECK(cudaEventSynchronize(stop));
-    float stable_ms = 0.0f; VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&stable_ms, start, stop));
-    for (int warm = 0; warm < 10; ++warm)
-      native_rmsnorm_probe<<<rows, 256>>>(d_values.get(), d_weights.get(), d_output.get(), dim,
-                                         1.0e-6f);
-    VIDFAB_CUDA_CHECK(cudaEventRecord(start));
-    for (int iteration = 0; iteration < 100; ++iteration)
-      native_rmsnorm_probe<<<rows, 256>>>(d_values.get(), d_weights.get(), d_output.get(), dim,
-                                         1.0e-6f);
-    VIDFAB_CUDA_CHECK(cudaEventRecord(stop)); VIDFAB_CUDA_CHECK(cudaEventSynchronize(stop));
-    float native_ms = 0.0f; VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&native_ms, start, stop));
-    cudaEventDestroy(start); cudaEventDestroy(stop);
-    std::printf("  RMS %dx%d CUDA deterministic %.4f ms, native %.4f ms (%+.1f%%)\n",
-                rows, dim, stable_ms / 100.0f, native_ms / 100.0f,
-                (stable_ms / native_ms - 1.0f) * 100.0f);
-  };
-  benchmark(32768, 128);
-  benchmark(2048, 5120);
-  benchmark(2048, 5376);
+  // Independent IEEE-RNE references for the integer division and restricted
+  // norm-base addition. The curated cross product hits sign, tie/carry,
+  // subnormal quotient, mantissa and exponent boundaries; randomized values
+  // sample across the full legal divisor range through 2^24.
+  const uint32_t curated_values[] = {
+      0x00000001u, 0x007fffffu, 0x00800000u, 0x00800001u,
+      0x3effffffu, 0x3f000000u, 0x3f000001u, 0x3f7fffffu,
+      0x3f800000u, 0x3f800001u, 0x4b7fffffu, 0x7f7fffffu};
+  const uint32_t curated_divisors[] = {
+      1u, 2u, 3u, 5u, 7u, 9u, 127u, 255u, 257u, 65535u,
+      0x00ffffffu, 0x01000000u};
+  const uint32_t curated_epsilons[] = {
+      0x00800000u, 0x33800000u, 0x358637bdu, 0x3f000000u, 0x3f800000u};
+  std::vector<uint32_t> divide_inputs, divide_divisors, divide_epsilons;
+  for (uint32_t value : curated_values) {
+    for (uint32_t divisor : curated_divisors) {
+      const size_t index = divide_inputs.size();
+      divide_inputs.push_back(value | ((index & 1u) ? 0x80000000u : 0u));
+      divide_divisors.push_back(divisor);
+      divide_epsilons.push_back(curated_epsilons[index % std::size(curated_epsilons)]);
+    }
+  }
+  state = 0x9e3779b9u;
+  for (int sample = 0; sample < 8192; ++sample) {
+    state = state * 1664525u + 1013904223u;
+    const uint32_t exponent = 1u + state % 254u;
+    const uint32_t value = exponent << 23u | (state & 0x007fffffu);
+    state = state * 1664525u + 1013904223u;
+    divide_inputs.push_back(value | ((state & 1u) << 31u));
+    divide_divisors.push_back(1u + state % 0x01000000u);
+    divide_epsilons.push_back(curated_epsilons[
+        static_cast<size_t>(state) % std::size(curated_epsilons)]);
+  }
+  const size_t arithmetic_count = divide_inputs.size();
+  cuda::DeviceBuffer<uint32_t> d_divide_inputs(arithmetic_count),
+      d_divisors(arithmetic_count), d_epsilons(arithmetic_count),
+      d_positive(arithmetic_count), d_signed(arithmetic_count), d_added(arithmetic_count);
+  d_divide_inputs.copy_from_host(divide_inputs.data(), arithmetic_count);
+  d_divisors.copy_from_host(divide_divisors.data(), arithmetic_count);
+  d_epsilons.copy_from_host(divide_epsilons.data(), arithmetic_count);
+  deterministic_divide_add_probe<<<static_cast<unsigned>((arithmetic_count + 255) / 256), 256>>>(
+      d_divide_inputs.get(), d_divisors.get(), d_epsilons.get(), d_positive.get(),
+      d_signed.get(), d_added.get(), static_cast<int>(arithmetic_count));
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint32_t> positive(arithmetic_count), signed_result(arithmetic_count),
+      add_result(arithmetic_count);
+  d_positive.copy_to_host(positive.data(), arithmetic_count);
+  d_signed.copy_to_host(signed_result.data(), arithmetic_count);
+  d_added.copy_to_host(add_result.data(), arithmetic_count);
+  for (size_t i = 0; i < arithmetic_count; ++i) {
+    const uint32_t magnitude_bits = divide_inputs[i] & 0x7fffffffu;
+    float magnitude = 0.0f, signed_value = 0.0f, epsilon = 0.0f;
+    std::memcpy(&magnitude, &magnitude_bits, sizeof(magnitude));
+    std::memcpy(&signed_value, &divide_inputs[i], sizeof(signed_value));
+    std::memcpy(&epsilon, &divide_epsilons[i], sizeof(epsilon));
+    const float expected_positive = static_cast<float>(
+        static_cast<double>(magnitude) / static_cast<double>(divide_divisors[i]));
+    const float expected_signed = static_cast<float>(
+        static_cast<double>(signed_value) / static_cast<double>(divide_divisors[i]));
+    const float expected_add = static_cast<float>(
+        static_cast<double>(expected_positive) + static_cast<double>(epsilon));
+    uint32_t expected_positive_bits = 0, expected_signed_bits = 0, expected_add_bits = 0;
+    std::memcpy(&expected_positive_bits, &expected_positive, 4);
+    std::memcpy(&expected_signed_bits, &expected_signed, 4);
+    std::memcpy(&expected_add_bits, &expected_add, 4);
+    CHECK_MSG(positive[i] == expected_positive_bits,
+              "RNE positive divide mismatch %zu: %08x != %08x", i,
+              positive[i], expected_positive_bits);
+    CHECK_MSG(signed_result[i] == expected_signed_bits,
+              "RNE signed divide mismatch %zu: %08x != %08x", i,
+              signed_result[i], expected_signed_bits);
+    CHECK_MSG(add_result[i] == expected_add_bits,
+              "RNE norm-base add mismatch %zu: %08x != %08x", i,
+              add_result[i], expected_add_bits);
+  }
+
 }
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
@@ -774,7 +809,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
   run_rms(3, 31, 1, false);   // scalar narrow and odd packed rows
   run_rms(2, 513, 0, false);  // scalar block and odd packed rows
 
-  auto run_layer = [&](int rows, int dim, bool constant_row) {
+  auto run_layer = [&](int rows, int dim, bool constant_row, bool in_place = false) {
     const size_t count = static_cast<size_t>(rows) * dim;
     auto input = make_bf16_data(count, 0);
     if (constant_row) std::fill(input.begin(), input.begin() + dim, exact_bf16(2.0f));
@@ -800,23 +835,29 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2), ScalarType::kBFloat16);
     DeviceTensor v_weight = vk.allocate(TensorLayout::contiguous(&feature, 1), ScalarType::kBFloat16);
     DeviceTensor v_bias = vk.allocate(TensorLayout::contiguous(&feature, 1), ScalarType::kBFloat16);
-    DeviceTensor v_output = vk.allocate(TensorLayout::contiguous(extents, 2), ScalarType::kBFloat16);
+    DeviceTensor v_output = in_place
+                                ? DeviceTensor()
+                                : vk.allocate(TensorLayout::contiguous(extents, 2),
+                                              ScalarType::kBFloat16);
     vk.upload_bytes(v_input, input.data(), input.size() * sizeof(uint16_t));
     vk.upload_bytes(v_weight, weight.data(), weight.size() * sizeof(uint16_t));
     vk.upload_bytes(v_bias, bias.data(), bias.size() * sizeof(uint16_t));
     TensorBatch batch = vk.begin_batch();
-    batch.layer_norm_bf16(v_input, v_weight, v_bias, v_output, 1.0e-6f);
+    batch.layer_norm_bf16(v_input, v_weight, v_bias,
+                          in_place ? v_input : v_output, 1.0e-6f);
     batch.submit().wait();
-    vk.download_bytes(v_output, actual.data(), actual.size() * sizeof(uint16_t));
+    DeviceTensor& result = in_place ? v_input : v_output;
+    vk.download_bytes(result, actual.data(), actual.size() * sizeof(uint16_t));
     compare_bf16(expected, actual, "BF16 LayerNorm", rows, dim);
   };
   run_layer(2, 1152, true);
   run_layer(1, 4608, false);
-  run_layer(3, 129, true);
+  run_layer(3, 129, true, true);
 
   auto run_mod = [&](bool fp32, bool invalid_selectors = false,
-                     bool contraction_fixture = false) {
-    constexpr int rows = 3, dim = 5376, mod_rows = 4;
+                     bool contraction_fixture = false, int rows = 3,
+                     int dim = 5376, bool in_place = false) {
+    constexpr int mod_rows = 4;
     const size_t count = static_cast<size_t>(rows) * dim;
     auto bf_input = make_bf16_data(count, 0);
     std::vector<float> f_input(count);
@@ -827,10 +868,13 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     std::vector<uint16_t> weight(dim);
     std::vector<float> scale(static_cast<size_t>(mod_rows) * dim);
     std::vector<float> shift(scale.size());
-    const int32_t valid_selector_values[] = {3, 0, 2};
-    const int32_t invalid_selector_values[] = {-1, 4, -2};
-    const int32_t* selectors = invalid_selectors ? invalid_selector_values
-                                                 : valid_selector_values;
+    std::vector<int32_t> valid_selectors(rows), invalid_selector_values(rows);
+    for (int row = 0; row < rows; ++row) {
+      valid_selectors[row] = (row * 3 + 1) % mod_rows;
+      invalid_selector_values[row] = (row & 1) ? mod_rows + row : -1 - row;
+    }
+    const int32_t* selectors = invalid_selectors ? invalid_selector_values.data()
+                                                 : valid_selectors.data();
     for (int i = 0; i < dim; ++i)
       weight[i] = exact_bf16(0.5f + static_cast<float>(i % 8) / 8.0f);
     for (size_t i = 0; i < scale.size(); ++i) {
@@ -870,9 +914,10 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
           nullptr);
     }
     VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
-    const uint64_t extents[] = {rows, dim};
+    const uint64_t extents[] = {static_cast<uint64_t>(rows),
+                                static_cast<uint64_t>(dim)};
     const uint64_t feature = dim;
-    const uint64_t mod_extents[] = {mod_rows, dim};
+    const uint64_t mod_extents[] = {mod_rows, static_cast<uint64_t>(dim)};
     const uint64_t selector_extent = rows;
     DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2),
                                        fp32 ? ScalarType::kFloat32 : ScalarType::kBFloat16);
@@ -881,8 +926,11 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     DeviceTensor v_shift = vk.allocate(TensorLayout::contiguous(mod_extents, 2));
     DeviceTensor v_selectors = vk.allocate(TensorLayout::contiguous(&selector_extent, 1),
                                            ScalarType::kInt32);
-    DeviceTensor v_output = vk.allocate(TensorLayout::contiguous(extents, 2),
-                                        fp32 ? ScalarType::kFloat32 : ScalarType::kBFloat16);
+    DeviceTensor v_output = in_place
+                                ? DeviceTensor()
+                                : vk.allocate(TensorLayout::contiguous(extents, 2),
+                                              fp32 ? ScalarType::kFloat32
+                                                   : ScalarType::kBFloat16);
     if (fp32) vk.upload(v_input, f_input.data(), f_input.size());
     else vk.upload_bytes(v_input, bf_input.data(), bf_input.size() * sizeof(uint16_t));
     vk.upload_bytes(v_weight, weight.data(), weight.size() * sizeof(uint16_t));
@@ -891,14 +939,17 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     vk.upload_bytes(v_selectors, selectors, rows * sizeof(int32_t));
     TensorBatch batch = vk.begin_batch();
     if (fp32) batch.rms_norm_modulate_f32(v_input, v_weight, v_scale, v_shift,
-                                          v_selectors, v_output, epsilon);
+                                          v_selectors, in_place ? v_input : v_output,
+                                          epsilon);
     else batch.rms_norm_modulate_bf16(v_input, v_weight, v_scale, v_shift,
-                                      v_selectors, v_output, epsilon);
+                                      v_selectors, in_place ? v_input : v_output,
+                                      epsilon);
     batch.submit().wait();
+    DeviceTensor& result = in_place ? v_input : v_output;
     if (fp32) {
       std::vector<float> expected(count), actual(count);
       if (!invalid_selectors) c_f_output.copy_to_host(expected.data(), count);
-      vk.download(v_output, actual.data(), count);
+      vk.download(result, actual.data(), count);
       if (contraction_fixture) {
         uint32_t fused_bits = 0;
         std::memcpy(&fused_bits, &expected[0], 4);
@@ -922,7 +973,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     } else {
       std::vector<uint16_t> expected(count), actual(count);
       if (!invalid_selectors) c_bf_output.copy_to_host(expected.data(), count);
-      vk.download_bytes(v_output, actual.data(), actual.size() * sizeof(uint16_t));
+      vk.download_bytes(result, actual.data(), actual.size() * sizeof(uint16_t));
       compare_bf16(expected, actual, "BF16 AdaLN", rows, dim);
     }
   };
@@ -931,6 +982,139 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
   run_mod(false, true);
   run_mod(true, true);
   run_mod(true, false, true);
+  run_mod(false, false, false, 5, 31);
+  run_mod(false, false, false, 3, 513, true);
+  run_mod(true, false, false, 5, 31, true);
+  run_mod(true, false, false, 3, 513);
+
+  const uint64_t used_before_mixed = vk.pooled_used_bytes();
+  {
+  // All five shared-normalization pipelines share the same bounded two-slot
+  // submission context. Keep two mixed jobs outstanding, force oldest-slot
+  // reuse with a third, and prove descriptor/pool high-water stays stable.
+  const uint64_t narrow_shape[] = {9, 128};
+  const uint64_t wide_shape[] = {2, 513};
+  const uint64_t layer_shape[] = {2, 129};
+  const uint64_t mod_shape[] = {3, 31};
+  const uint64_t narrow_feature = 128, wide_feature = 513, layer_feature = 129;
+  const uint64_t mod_feature = 31, mod_rows = 4, selector_rows = 3;
+  const uint64_t mod_parameter_shape[] = {mod_rows, mod_feature};
+  DeviceTensor narrow_input = vk.allocate(TensorLayout::contiguous(narrow_shape, 2),
+                                           ScalarType::kBFloat16);
+  DeviceTensor narrow_weight = vk.allocate(TensorLayout::contiguous(&narrow_feature, 1),
+                                            ScalarType::kBFloat16);
+  DeviceTensor wide_input = vk.allocate(TensorLayout::contiguous(wide_shape, 2),
+                                         ScalarType::kBFloat16);
+  DeviceTensor wide_weight = vk.allocate(TensorLayout::contiguous(&wide_feature, 1),
+                                          ScalarType::kBFloat16);
+  DeviceTensor layer_input = vk.allocate(TensorLayout::contiguous(layer_shape, 2),
+                                          ScalarType::kBFloat16);
+  DeviceTensor layer_weight = vk.allocate(TensorLayout::contiguous(&layer_feature, 1),
+                                           ScalarType::kBFloat16);
+  DeviceTensor layer_bias = vk.allocate(TensorLayout::contiguous(&layer_feature, 1),
+                                         ScalarType::kBFloat16);
+  DeviceTensor mod_bf_input = vk.allocate(TensorLayout::contiguous(mod_shape, 2),
+                                           ScalarType::kBFloat16);
+  DeviceTensor mod_f_input = vk.allocate(TensorLayout::contiguous(mod_shape, 2));
+  DeviceTensor mod_weight = vk.allocate(TensorLayout::contiguous(&mod_feature, 1),
+                                         ScalarType::kBFloat16);
+  DeviceTensor mod_scale = vk.allocate(TensorLayout::contiguous(mod_parameter_shape, 2));
+  DeviceTensor mod_shift = vk.allocate(TensorLayout::contiguous(mod_parameter_shape, 2));
+  DeviceTensor mod_selectors = vk.allocate(TensorLayout::contiguous(&selector_rows, 1),
+                                            ScalarType::kInt32);
+  std::array<std::array<DeviceTensor, 5>, 2> mixed_outputs;
+  for (auto& outputs : mixed_outputs) {
+    outputs[0] = vk.allocate(TensorLayout::contiguous(narrow_shape, 2), ScalarType::kBFloat16);
+    outputs[1] = vk.allocate(TensorLayout::contiguous(wide_shape, 2), ScalarType::kBFloat16);
+    outputs[2] = vk.allocate(TensorLayout::contiguous(layer_shape, 2), ScalarType::kBFloat16);
+    outputs[3] = vk.allocate(TensorLayout::contiguous(mod_shape, 2), ScalarType::kBFloat16);
+    outputs[4] = vk.allocate(TensorLayout::contiguous(mod_shape, 2));
+  }
+  std::vector<uint16_t> narrow_zero(9 * 128), narrow_one(128, exact_bf16(1.0f));
+  std::vector<uint16_t> wide_zero(2 * 513), wide_one(513, exact_bf16(1.0f));
+  std::vector<uint16_t> layer_zero(2 * 129), layer_one(129, exact_bf16(1.0f));
+  std::vector<uint16_t> layer_zero_bias(129), mod_bf_zero(3 * 31), mod_one(31, exact_bf16(1.0f));
+  std::vector<float> mod_f_zero(3 * 31), mod_parameter_zero(4 * 31);
+  const int32_t mixed_selectors[] = {3, 1, 0};
+  vk.upload_bytes(narrow_input, narrow_zero.data(), narrow_zero.size() * 2);
+  vk.upload_bytes(narrow_weight, narrow_one.data(), narrow_one.size() * 2);
+  vk.upload_bytes(wide_input, wide_zero.data(), wide_zero.size() * 2);
+  vk.upload_bytes(wide_weight, wide_one.data(), wide_one.size() * 2);
+  vk.upload_bytes(layer_input, layer_zero.data(), layer_zero.size() * 2);
+  vk.upload_bytes(layer_weight, layer_one.data(), layer_one.size() * 2);
+  vk.upload_bytes(layer_bias, layer_zero_bias.data(), layer_zero_bias.size() * 2);
+  vk.upload_bytes(mod_bf_input, mod_bf_zero.data(), mod_bf_zero.size() * 2);
+  vk.upload(mod_f_input, mod_f_zero.data(), mod_f_zero.size());
+  vk.upload_bytes(mod_weight, mod_one.data(), mod_one.size() * 2);
+  vk.upload(mod_scale, mod_parameter_zero.data(), mod_parameter_zero.size());
+  vk.upload(mod_shift, mod_parameter_zero.data(), mod_parameter_zero.size());
+  vk.upload_bytes(mod_selectors, mixed_selectors, sizeof(mixed_selectors));
+  auto submit_mixed = [&](std::array<DeviceTensor, 5>& outputs) {
+    TensorBatch batch = vk.begin_batch();
+    batch.rms_norm_bf16(narrow_input, narrow_weight, outputs[0], 1.0e-5f);
+    batch.rms_norm_bf16(wide_input, wide_weight, outputs[1], 1.0e-5f);
+    batch.layer_norm_bf16(layer_input, layer_weight, layer_bias, outputs[2], 1.0e-6f);
+    batch.rms_norm_modulate_bf16(mod_bf_input, mod_weight, mod_scale, mod_shift,
+                                 mod_selectors, outputs[3], 1.0e-5f);
+    batch.rms_norm_modulate_f32(mod_f_input, mod_weight, mod_scale, mod_shift,
+                                mod_selectors, outputs[4], 1.0e-5f);
+    return batch.submit();
+  };
+  {
+    Submission first = submit_mixed(mixed_outputs[0]);
+    Submission second = submit_mixed(mixed_outputs[1]);
+    CHECK(first.value() != 0 && second.value() > first.value());
+    first.wait(); second.wait();
+  }
+  const uint64_t mixed_reserved = vk.reserved_bytes();
+  const uint64_t mixed_descriptors = vk.descriptor_set_allocations();
+  for (int iteration = 0; iteration < 8; ++iteration) {
+    Submission first = submit_mixed(mixed_outputs[0]);
+    Submission second = submit_mixed(mixed_outputs[1]);
+    Submission third = submit_mixed(mixed_outputs[0]);
+    CHECK(second.value() > first.value() && third.value() > second.value());
+    first.wait(); second.wait(); third.wait();
+    CHECK(vk.reserved_bytes() == mixed_reserved);
+    CHECK(vk.descriptor_set_allocations() == mixed_descriptors);
+  }
+
+  // Every new API rejects invalid metadata before recording. The same batch
+  // remains usable after each rejection, proving no partial descriptor/barrier
+  // mutation was committed.
+  DeviceTensor wrong_type = vk.allocate(TensorLayout::contiguous(&narrow_feature, 1));
+  const uint64_t short_shape[] = {9, 127};
+  DeviceTensor wrong_shape = vk.allocate(TensorLayout::contiguous(short_shape, 2),
+                                          ScalarType::kBFloat16);
+  auto valid_after_rejection = [&](auto&& invalid) {
+    TensorBatch batch = vk.begin_batch();
+    bool rejected = false;
+    try { invalid(batch); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    batch.rms_norm_bf16(narrow_input, narrow_weight, mixed_outputs[0][0], 1.0e-5f);
+    batch.submit().wait();
+  };
+  valid_after_rejection([&](TensorBatch& batch) {
+    batch.rms_norm_bf16(narrow_input, wrong_type, mixed_outputs[0][0], 1.0e-5f);
+  });
+  valid_after_rejection([&](TensorBatch& batch) {
+    batch.rms_norm_bf16(narrow_input, narrow_weight, wrong_shape, 1.0e-5f);
+  });
+  valid_after_rejection([&](TensorBatch& batch) {
+    batch.layer_norm_bf16(layer_input, layer_weight, layer_input, mixed_outputs[0][2],
+                          1.0e-6f);
+  });
+  valid_after_rejection([&](TensorBatch& batch) {
+    batch.rms_norm_bf16(narrow_input, narrow_weight, mixed_outputs[0][0], 0.0f);
+  });
+  }
+  // Submission records retain every referenced tensor until its exact token
+  // completes. Once jobs and caller wrappers are gone, all pooled spans are
+  // returned while the context itself remains alive.
+  { TensorBatch collect_completed_slots = vk.begin_batch(); }
+  CHECK_MSG(vk.pooled_used_bytes() == used_before_mixed,
+            "mixed pooled bytes not released: %llu != %llu",
+            static_cast<unsigned long long>(vk.pooled_used_bytes()),
+            static_cast<unsigned long long>(used_before_mixed));
 }
 
 int main() { return ::vidfab::test::run_all(); }

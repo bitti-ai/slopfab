@@ -58,6 +58,7 @@ class TensorWorkspace final : public DeviceWorkspace {
   uint64_t generation() const noexcept override;
   bool valid(const WorkspaceSpan& span) const noexcept override;
   uint64_t reserved_bytes() const noexcept;
+  uint64_t pooled_used_bytes() const noexcept;
 
  private:
   struct Impl;
@@ -189,6 +190,7 @@ class TensorContext {
   void require_exact_fp32_vae_normalization() const;
   TensorWorkspace& workspace();
   uint64_t reserved_bytes() const;
+  uint64_t pooled_used_bytes() const;
   uint64_t descriptor_set_allocations() const noexcept;
 
  private:
