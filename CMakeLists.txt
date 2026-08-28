@@ -16,7 +16,6 @@ endif()
 option(VIDFAB_ENABLE_CUDA "Build CUDA kernels" ON)
 option(VIDFAB_BUILD_TESTS "Build unit tests" ON)
 option(VIDFAB_BUILD_DEV_TOOLS "Build developer profiling/probe executables" OFF)
-option(VIDFAB_BUILD_SHARED "Build vidfab_core/vidfab_cuda as shared libraries" OFF)
 
 # FFmpeg is loaded at runtime and never linked, so this option does not change
 # what the binary depends on to *start* — it changes what is compiled in at
@@ -35,61 +34,9 @@ option(VIDFAB_BUILD_SHARED "Build vidfab_core/vidfab_cuda as shared libraries" O
 # FFmpeg code in the process at all.
 option(VIDFAB_WITH_FFMPEG "Compile MP4 muxing and FFmpeg-based image decoding" ON)
 
-# --- shared library configuration -------------------------------------------
-
-# The two libraries are built as one pair, static or shared together. Splitting
-# them the other way round was considered and dropped: vidfab_cuda holds host
-# orchestration that calls straight into vidfab_core, so a shared cuda over a
-# static core would bake a second copy of the core into the DLL and leave the
-# executable's copy running alongside it, with two of everything that has file
-# scope. The pair also keeps the one-way dependency intact — a consumer that
-# wants the loaders and no CUDA context links vidfab_core alone, exactly as
-# vidfab_loadprobe does.
-if(VIDFAB_BUILD_SHARED)
-  set(VIDFAB_LIBRARY_TYPE SHARED)
-else()
-  set(VIDFAB_LIBRARY_TYPE STATIC)
-endif()
-
-# Symbols are exported wholesale rather than through a VIDFAB_API macro on ~40
-# headers. That is a real trade and not just less typing: the export set becomes
-# whatever the headers happen to declare, so nothing here defines a supported
-# ABI surface, and a symbol disappearing is a link error at the consumer rather
-# than a compile error here. It is the right trade only because the alternative
-# is annotating a codebase that has no such annotations today, and because
-# nothing in include/ exports mutable data — every constant is `constexpr` and
-# every singleton (`StepProfiler::instance`, `PhaseProfiler::instance`) is
-# defined out of line in exactly one translation unit. Auto-export handles
-# functions correctly; *data* would need `dllimport` on the consumer side to
-# work at all, so that last property is what makes this safe rather than merely
-# convenient. Check it before adding an `extern` to a header.
-function(vidfab_configure_library target)
-  if(NOT VIDFAB_BUILD_SHARED)
-    return()
-  endif()
-  set_target_properties(${target} PROPERTIES
-    WINDOWS_EXPORT_ALL_SYMBOLS ON
-    POSITION_INDEPENDENT_CODE ON
-    VERSION ${PROJECT_VERSION}
-    SOVERSION ${PROJECT_VERSION_MAJOR})
-endfunction()
-
-# Nothing copies DLLs beside the binaries, which is worth stating because the
-# usual `TARGET_RUNTIME_DLLS` POST_BUILD step is the reflex here and was
-# written before being deleted. On Windows a DLL is a RUNTIME artefact, so
-# vidfab_core.dll and vidfab_cuda.dll are already written to the same directory
-# as every executable that links them, and `ctest` therefore runs the test
-# binaries out of the build tree unaided. The CUDA runtime stays embedded in
-# each module rather than becoming a DLL — see the runtime-linkage note in the
-# CUDA section — so it needs no copying either. FFmpeg is handled separately
-# and for its own licensing reasons, further down.
-#
-# A build that overrides CMAKE_RUNTIME_OUTPUT_DIRECTORY per target would break
-# that assumption. Nothing here does.
-
 # --- core -------------------------------------------------------------------
 
-add_library(vidfab_core ${VIDFAB_LIBRARY_TYPE}
+add_library(vidfab_core STATIC
   src/core/json.cpp
   src/core/nf4.cpp
   src/core/safetensors.cpp
@@ -131,7 +78,6 @@ target_compile_definitions(vidfab_core PUBLIC
   VIDFAB_WITH_FFMPEG=$<IF:$<BOOL:${VIDFAB_WITH_FFMPEG}>,1,0>)
 
 target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-vidfab_configure_library(vidfab_core)
 
 # The platform image decoder. Compiled in every configuration — so the two
 # decoders can be compared and the code cannot rot unbuilt — which is why
@@ -195,7 +141,7 @@ if(VIDFAB_ENABLE_CUDA)
     find_package(Threads REQUIRED)
     message(STATUS "vidfab: CUDA ${CMAKE_CUDA_COMPILER_VERSION}, arch ${CMAKE_CUDA_ARCHITECTURES}")
 
-    add_library(vidfab_cuda ${VIDFAB_LIBRARY_TYPE}
+    add_library(vidfab_cuda STATIC
       src/cuda/device.cu
       src/cuda/diagnostics.cu
       src/cuda/profile.cpp
@@ -236,12 +182,8 @@ if(VIDFAB_ENABLE_CUDA)
     )
     target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas CUDA::cuda_driver Threads::Threads)
-    vidfab_configure_library(vidfab_cuda)
     # Whole-program compilation: no device code crosses translation units, and
-    # -rdc=true would otherwise require an explicit device-link step. It is also
-    # what keeps the shared build simple — separable compilation would need
-    # CUDA_RESOLVE_DEVICE_SYMBOLS and a device-link step per shared object, and
-    # it interacts badly with whole-target symbol export.
+    # -rdc=true would otherwise require an explicit device-link step.
     set_target_properties(vidfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
 
     # The CUDA runtime is linked statically, which is deliberate: it keeps the
@@ -254,29 +196,9 @@ if(VIDFAB_ENABLE_CUDA)
     # appeared. Switching to CUDA_RUNTIME_LIBRARY=Shared would silence it at
     # the price of shipping cudart64_*.dll — the wrong trade for this project.
     #
-    # The shared build keeps that choice, which was not the first answer. The
-    # argument for flipping it there is real: `tests/*.cu`, `tools/solbench.cu`
-    # and `tools/qwenvisionprobe.cpp` call cudart directly *and* link
-    # vidfab_cuda, so a static runtime puts one instance in vidfab_cuda.dll and
-    # another in each of those binaries, and two cudart instances in a process
-    # share neither error state nor kernel registration.
-    #
-    # It was tried and it does nothing on CUDA 13. `CUDA_RUNTIME_LIBRARY=Shared`
-    # emits `nvcc warning: 'shared' is a deprecated value for option --cudart`
-    # and produces a vidfab_cuda.dll that imports no cudart64_13.dll, references
-    # that name nowhere in its image, and carries the runtime embedded exactly
-    # as the static setting does. So the setting buys a deprecation warning and
-    # a gratuitous difference between the two configurations, and no shared
-    # runtime. Measured on 13.0.48 with dumpbin; re-measure before reaching for
-    # it again on a newer toolkit.
-    #
-    # What the attempt did surface is a real defect, fixed on the next line.
-    # A consumer with no CUDA *sources* — qwenvisionprobe.cpp is plain C++ that
-    # calls cudaMemGetInfo — used to pick the runtime up from vidfab_cuda's
-    # static archive by accident. Across a DLL boundary it no longer can, and
-    # the link fails on an unresolved cudart symbol. Naming the dependency
-    # PUBLIC states what was previously incidental, and is correct in both
-    # configurations rather than only in the static one.
+    # CUDA::cudart_static is public because plain-C++ consumers such as
+    # qwenvisionprobe call the runtime API without compiling a CUDA source of
+    # their own and therefore do not get its link dependency automatically.
     target_link_libraries(vidfab_cuda PUBLIC vidfab_core CUDA::cudart_static)
 
     add_executable(vidfab_qwenvisionprobe tools/qwenvisionprobe.cpp)
@@ -378,24 +300,11 @@ if(WIN32)
   configure_file(src/vidfab_tokenizer.rc.in generated/vidfab_tokenizer.rc @ONLY)
   configure_file(src/vidfab_license.rc.in generated/vidfab_license.rc @ONLY)
 
-  # The two resources were one script until the shared build split them, and
-  # they are split because they belong to different modules. `Tokenizer::
-  # load_embedded` looks the resource up in the module holding its own code, so
-  # in a shared build the 7 MB tokenizer has to be in vidfab_core.dll; the
-  # licence is read by src/main.cpp and so is always in the executable. Putting
-  # both in both would work and would cost 7 MB of duplicate payload.
-  #
   # A static library cannot usefully carry a .res — the linker has no reference
-  # to pull it in with — so in the static build the tokenizer stays in the
-  # executable, which is the module `load_embedded` resolves to there anyway.
-  if(VIDFAB_BUILD_SHARED)
-    target_sources(vidfab_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_tokenizer.rc")
-    set(VIDFAB_EXE_RESOURCES "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_license.rc")
-  else()
-    set(VIDFAB_EXE_RESOURCES
-      "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_tokenizer.rc"
-      "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_license.rc")
-  endif()
+  # to pull it in with — so the executable embeds both resources itself.
+  set(VIDFAB_EXE_RESOURCES
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_tokenizer.rc"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_license.rc")
   add_executable(vidfab src/main.cpp ${VIDFAB_EXE_RESOURCES})
 else()
   add_executable(vidfab src/main.cpp)
@@ -445,7 +354,7 @@ endif()
 
 # --- c api ------------------------------------------------------------------
 
-# vidfab_c is the stable C ABI: one DLL with a hand-written export set, for
+# vidfab_c builds vidfab.dll, the stable C ABI with a hand-written export set, for
 # Rust, C#, Python and anything else with an FFI. See include/vidfab/capi.h.
 #
 # Dependent on CUDA rather than merely checked against it, because the C API
@@ -465,22 +374,13 @@ if(NOT VIDFAB_BUILD_C_API AND NOT VIDFAB_ENABLE_CUDA)
 endif()
 
 if(VIDFAB_BUILD_C_API)
-  # SHARED unconditionally, and independent of VIDFAB_BUILD_SHARED. Those two
-  # options answer different questions: VIDFAB_BUILD_SHARED asks whether the
-  # *C++* libraries are DLLs, which is a choice about this build tree, while a
-  # C ABI that is not a DLL cannot be loaded by the callers it exists for.
-  #
-  # The default configuration (VIDFAB_BUILD_SHARED=OFF) is the interesting one:
-  # static vidfab_core and vidfab_cuda link *into* vidfab_c.dll, so all of this
-  # project's own code is in one module whose exports are exactly the C entry
-  # points — no C++ symbols, no second vidfab DLL, and no way for a consumer to
-  # reach the unstable interface by accident. With VIDFAB_BUILD_SHARED=ON it
-  # instead links against vidfab_core.dll and vidfab_cuda.dll and must ship
-  # beside them.
+  # The internal core and CUDA libraries are static and link into this target.
+  # Consequently vidfab.dll is the only project DLL, and its exports are exactly
+  # the C entry points — no unstable C++ ABI and no companion vidfab DLLs.
   #
   # It is not, however, dependency-free, and it is worth being exact about that
   # because the mistake is invisible on a developer machine. The CUDA *runtime*
-  # is embedded (see the cudart note above), but cuBLAS is not: vidfab_c.dll
+  # is embedded (see the cudart note above), but cuBLAS is not: vidfab.dll
   # carries a load-time import of cublas64_<major>.dll, which in turn pulls
   # cublasLt64_<major>.dll. On a box with the toolkit installed those resolve
   # off PATH and nothing looks wrong; on a consumer's machine the process fails
@@ -518,7 +418,7 @@ if(VIDFAB_BUILD_C_API)
   # answering different questions — capi.h declares 1.0.0 and tells a binding to
   # refuse a different major, while PROJECT_VERSION is 0.1.0 and moves whenever
   # anything in the project does. Using the latter here would produce a
-  # libvidfab_c.so.0 whose soname says 0 for an ABI that says 1, and would bump
+  # libvidfab.so.0 whose soname says 0 for an ABI that says 1, and would bump
   # it for releases that did not touch the C interface at all.
   set(VIDFAB_CAPI_VERSION_MAJOR 1)
   set(VIDFAB_CAPI_VERSION_MINOR 0)
@@ -527,6 +427,7 @@ if(VIDFAB_BUILD_C_API)
     "${VIDFAB_CAPI_VERSION_MAJOR}.${VIDFAB_CAPI_VERSION_MINOR}.${VIDFAB_CAPI_VERSION_PATCH}")
 
   set_target_properties(vidfab_c PROPERTIES
+    OUTPUT_NAME vidfab
     WINDOWS_EXPORT_ALL_SYMBOLS OFF
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
@@ -537,7 +438,7 @@ if(VIDFAB_BUILD_C_API)
   # The visibility presets above are *compile* properties, so they only cover
   # capi.cpp. vidfab_core and vidfab_cuda are compiled with default visibility,
   # and on ELF their entire C++ symbol table would otherwise be re-exported
-  # from libvidfab_c.so — precisely what WINDOWS_EXPORT_ALL_SYMBOLS OFF
+  # from libvidfab.so — precisely what WINDOWS_EXPORT_ALL_SYMBOLS OFF
   # prevents on the other platform. --exclude-libs makes the two agree.
   if(NOT WIN32 AND NOT APPLE)
     target_link_options(vidfab_c PRIVATE "LINKER:--exclude-libs,ALL")
@@ -577,13 +478,10 @@ if(VIDFAB_BUILD_C_API)
     "${CMAKE_CURRENT_SOURCE_DIR}/include/vidfab/capi.h")
 
   # `Tokenizer::load_embedded` looks the resource up in the module holding its
-  # own code. In the static configuration that code is linked into
-  # vidfab_c.dll, so the 7 MB tokenizer has to be here too or a C caller that
-  # leaves the tokenizer path empty gets "embedded resource is missing". When
-  # VIDFAB_BUILD_SHARED is on, that code lives in vidfab_core.dll, which
-  # already carries the resource — adding it here as well would duplicate the
-  # payload and be looked up by nobody.
-  if(WIN32 AND NOT VIDFAB_BUILD_SHARED)
+  # own code. That code is linked into vidfab.dll, so the 7 MB tokenizer has to
+  # be here too or a C caller that leaves the tokenizer path empty gets
+  # "embedded resource is missing".
+  if(WIN32)
     target_sources(vidfab_c PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_tokenizer.rc")
   endif()
 
@@ -711,50 +609,17 @@ endif()
 
 # --- install ----------------------------------------------------------------
 
-# Only for the shared build, because that is the configuration whose point is
-# being consumed from outside this build tree. The static build has never
-# installed anything and nothing here asks it to start.
-#
-# Headers are installed wholesale rather than as a curated public subset. That
-# is honest about the current state — `include/` is the API, there is no
-# internal/ split — and it matches the export decision above: this ships a C++
-# ABI with no stability promise, so a consumer must be built with the same
-# compiler and, on MSVC, the same CRT. `std::string` and `std::vector` cross
-# every one of these signatures and exceptions propagate out of them, neither
-# of which survives a mismatched runtime.
-if(VIDFAB_BUILD_SHARED)
-  include(GNUInstallDirs)
-  set(VIDFAB_INSTALL_TARGETS vidfab_core)
-  if(VIDFAB_ENABLE_CUDA)
-    list(APPEND VIDFAB_INSTALL_TARGETS vidfab_cuda)
-  endif()
-  install(TARGETS ${VIDFAB_INSTALL_TARGETS}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(DIRECTORY include/vidfab DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-endif()
-
-# vidfab_c installs on its own terms, and unlike the block above it is not
-# conditioned on VIDFAB_BUILD_SHARED. The reason is the same one that makes it
-# unconditionally SHARED: its whole purpose is being consumed from outside this
-# build tree, and in the default static configuration it is the *only* artefact
-# that can be. It also installs one header rather than the directory, because
-# here the public subset genuinely is a subset — capi.h is the supported
-# surface and the C++ headers beside it are not.
+# The DLL installs one header rather than the whole include tree: capi.h is the
+# supported surface and the C++ headers beside it are internal implementation.
 if(VIDFAB_BUILD_C_API)
   include(GNUInstallDirs)
   install(TARGETS vidfab_c
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  # Skipped when the block above already installed the whole directory, which
-  # would otherwise place this same file twice.
-  if(NOT VIDFAB_BUILD_SHARED)
-    install(FILES include/vidfab/capi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vidfab)
-  endif()
+  install(FILES include/vidfab/capi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vidfab)
 
-  # The cuBLAS redistributables vidfab_c.dll imports at load time. Without
+  # The cuBLAS redistributables vidfab.dll imports at load time. Without
   # these an installed DLL fails at LoadLibrary on any machine that has no CUDA
   # toolkit on PATH — which is every machine this is shipped to, and the reason
   # it looks fine here. They are installed rather than copied beside every
@@ -785,5 +650,3 @@ if(VIDFAB_BUILD_C_API)
     endforeach()
   endif()
 endif()
-
-
