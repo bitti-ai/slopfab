@@ -378,6 +378,44 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
   tensors.upload(a, host_a.data(), extent);
   tensors.upload(b, host_b.data(), extent);
 
+  // Access state is speculative during recording, so a context admits exactly
+  // one open recorder/boundary operation. Discard releases the lease and rolls
+  // state back; successful submit releases it before GPU completion.
+  {
+    TensorBatch open = tensors.begin_batch();
+    open.add(a, b, sum);
+    bool second_begin_rejected = false;
+    try {
+      (void)tensors.begin_batch();
+    } catch (const std::logic_error&) {
+      second_begin_rejected = true;
+    }
+    CHECK(second_begin_rejected);
+    bool upload_rejected = false;
+    try {
+      tensors.upload(a, host_a.data(), extent);
+    } catch (const std::logic_error&) {
+      upload_rejected = true;
+    }
+    CHECK(upload_rejected);
+    bool download_rejected = false;
+    try {
+      tensors.download(a, host_a.data(), extent);
+    } catch (const std::logic_error&) {
+      download_rejected = true;
+    }
+    CHECK(download_rejected);
+  }
+  tensors.upload(a, host_a.data(), extent);
+  TensorBatch releasing = tensors.begin_batch();
+  releasing.add(a, b, sum);
+  Submission releasing_token = releasing.submit();
+  TensorBatch after_submit = tensors.begin_batch();
+  after_submit.add(a, b, copied);
+  Submission after_submit_token = after_submit.submit();
+  releasing_token.wait();
+  after_submit_token.wait();
+
   // Four operators, one command buffer, one timeline submission. The first
   // copy covers payload NaNs, signed zero, subnormal and infinities exactly;
   // arithmetic comparisons below use the ordinary finite tail, while the

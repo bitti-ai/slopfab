@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -66,6 +67,7 @@ struct TensorContext::Impl {
   bool full_add_exact = false;
   uint32_t max_dispatch_x = 0;
   uint64_t max_storage_bytes = 0;
+  mutable std::mutex recording_mutex;
 
   explicit Impl(const Device& input, const TensorContextOptions& tensor_options)
       : commands(input, [&] {
@@ -106,6 +108,15 @@ struct TensorContext::Impl {
 
   uintptr_t context_id = next_context_identity();
 
+  std::unique_lock<std::mutex> acquire_recorder() const {
+    std::unique_lock<std::mutex> lock(recording_mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+      throw std::logic_error(
+          "vulkan tensor: another batch or boundary operation is active");
+    }
+    return lock;
+  }
+
   void ensure_staging(uint64_t bytes) {
     if (bytes <= staging_capacity) return;
     Buffer new_upload = pool.allocate(bytes, BufferUsage::kTransferSource, MemoryUsage::kUpload);
@@ -140,6 +151,7 @@ struct TensorBatch::Impl {
 
   std::shared_ptr<TensorContext::Impl> owner;
   CommandList commands;
+  std::unique_lock<std::mutex> recording_lock;
   std::array<AccessSnapshot, TensorContext::Impl::kMaxBatchOperators * 3> snapshots{};
   uint32_t snapshot_count = 0;
   uint32_t operator_count = 0;
@@ -273,6 +285,7 @@ TensorContext& TensorContext::operator=(TensorContext&&) noexcept = default;
 
 DeviceTensor TensorContext::allocate(const TensorLayout& layout) {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   if (!layout.is_contiguous()) throw std::invalid_argument("vulkan tensor: contiguous layout required");
   const uint64_t bytes = layout.bytes(ScalarType::kFloat32);
   if (bytes > impl_->max_storage_bytes) {
@@ -290,14 +303,17 @@ DeviceTensor TensorContext::allocate(const TensorLayout& layout) {
 
 TensorBatch TensorContext::begin_batch() {
   if (!impl_) throw std::logic_error("vulkan tensor: empty context");
+  auto recording_lock = impl_->acquire_recorder();
   auto batch = std::make_unique<TensorBatch::Impl>();
   batch->owner = impl_;
+  batch->recording_lock = std::move(recording_lock);
   batch->commands = impl_->commands.begin();
   return TensorBatch(std::move(batch));
 }
 
 void TensorContext::upload(DeviceTensor& destination, const float* values, uint64_t count) {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   auto dst = impl_->require(destination);
   if (values == nullptr || count != dst->layout.elements()) {
     throw std::invalid_argument("vulkan tensor: upload element count mismatch");
@@ -326,6 +342,7 @@ void TensorContext::upload(DeviceTensor& destination, const float* values, uint6
 
 void TensorContext::download(DeviceTensor& source, float* values, uint64_t count) {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   auto src = impl_->require(source);
   if (values == nullptr || count != src->layout.elements()) {
     throw std::invalid_argument("vulkan tensor: download element count mismatch");
@@ -382,10 +399,12 @@ void TensorContext::require_full_fp32_add_exactness() const {
 
 TensorWorkspace& TensorContext::workspace() {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   return impl_->scratch;
 }
 uint64_t TensorContext::reserved_bytes() const {
   if (!impl_) return 0;
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   const uint64_t primary = impl_->pool.reserved_bytes();
   const uint64_t scratch = impl_->scratch.reserved_bytes();
   return primary > std::numeric_limits<uint64_t>::max() - scratch
@@ -469,6 +488,7 @@ Submission TensorBatch::submit() {
   }
   Submission result = impl_->owner->commands.submit(std::move(impl_->commands));
   impl_->submitted = true;
+  impl_->recording_lock.unlock();
   impl_.reset();
   return result;
 }

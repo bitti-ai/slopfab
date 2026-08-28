@@ -1,5 +1,6 @@
 #include "vidfab/device_tensor.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace vidfab {
@@ -90,6 +91,7 @@ DeviceTensorView DeviceTensorView::slice(uint64_t offset,
     throw std::invalid_argument("tensor: invalid device view slice");
   }
   const uint64_t bytes = slice_layout.storage_bytes(type);
+  const uint64_t effective_alignment = std::max(alignment, scalar_bytes(type));
   if (byte_offset > std::numeric_limits<uint64_t>::max() - offset) {
     throw std::overflow_error("tensor: device view offset overflow");
   }
@@ -100,7 +102,7 @@ DeviceTensorView DeviceTensorView::slice(uint64_t offset,
   if (absolute > std::numeric_limits<uint64_t>::max() - bytes) {
     throw std::overflow_error("tensor: device view end overflow");
   }
-  if ((absolute & (alignment - 1)) != 0) {
+  if ((absolute & (effective_alignment - 1)) != 0) {
     throw std::invalid_argument("tensor: device view slice is misaligned");
   }
   DeviceTensorView result = *this;

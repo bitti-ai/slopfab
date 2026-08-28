@@ -48,6 +48,15 @@ VIDFAB_TEST(device_tensor_layout_contract) {
     alignment_rejected = true;
   }
   CHECK(alignment_rejected);
+  for (uint64_t offset = 1; offset < 4; ++offset) {
+    bool scalar_alignment_rejected = false;
+    try {
+      (void)view.slice(offset, sub_layout);
+    } catch (const std::invalid_argument&) {
+      scalar_alignment_rejected = true;
+    }
+    CHECK(scalar_alignment_rejected);
+  }
 
   vidfab::DeviceTensorView corrupt = view;
   corrupt.byte_offset = std::numeric_limits<uint64_t>::max() - 31;

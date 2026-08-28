@@ -91,7 +91,10 @@ class TensorBatch {
 
 // Persistent Vulkan tensor allocation, staging and elementary operators.
 // Upload/download are explicit boundaries; copy/add operate device-to-device
-// and do not stage through host memory.
+// and do not stage through host memory. One TensorContext instance permits one
+// active CPU recorder/boundary operation at a time; calls from different host
+// threads require external synchronization. Submitted jobs use the configured
+// bounded flight slots independently of that recorder lease.
 class TensorContext {
  public:
   explicit TensorContext(const Device& device,
