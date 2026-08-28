@@ -14,6 +14,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(VIDFAB_ENABLE_CUDA "Build CUDA kernels" ON)
+option(VIDFAB_ENABLE_VULKAN "Build the standalone Vulkan runtime foundation" ON)
 option(VIDFAB_BUILD_TESTS "Build unit tests" ON)
 option(VIDFAB_BUILD_DEV_TOOLS "Build developer profiling/probe executables" OFF)
 
@@ -214,6 +215,29 @@ if(VIDFAB_ENABLE_CUDA)
   else()
     message(WARNING "vidfab: no CUDA compiler found; building CPU-only")
     set(VIDFAB_ENABLE_CUDA OFF)
+  endif()
+endif()
+
+# --- vulkan -----------------------------------------------------------------
+
+# Vulkan is intentionally independent of both vidfab_core and CUDA. The
+# Khronos core ABI headers are pinned in-tree, while the platform loader is
+# opened dynamically by runtime.cpp. Consequently enabling this target needs
+# no Vulkan SDK at build time and does not add a load-time dependency to any
+# existing vidfab binary.
+if(VIDFAB_ENABLE_VULKAN)
+  add_library(vidfab_vulkan STATIC src/vulkan/runtime.cpp)
+  target_include_directories(vidfab_vulkan
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan/include)
+  target_compile_definitions(vidfab_vulkan PRIVATE VK_NO_PROTOTYPES)
+  if(CMAKE_DL_LIBS)
+    target_link_libraries(vidfab_vulkan PRIVATE ${CMAKE_DL_LIBS})
+  endif()
+  if(MSVC)
+    target_compile_options(vidfab_vulkan PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  else()
+    target_compile_options(vidfab_vulkan PRIVATE -Wall -Wextra)
   endif()
 endif()
 
@@ -570,6 +594,17 @@ if(VIDFAB_BUILD_TESTS)
     target_compile_options(vidfab_tests PRIVATE -Wall -Wextra)
   endif()
   add_test(NAME unit COMMAND vidfab_tests)
+
+  if(VIDFAB_ENABLE_VULKAN)
+    add_executable(vidfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp)
+    target_link_libraries(vidfab_vulkan_tests PRIVATE vidfab_vulkan)
+    if(MSVC)
+      target_compile_options(vidfab_vulkan_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    else()
+      target_compile_options(vidfab_vulkan_tests PRIVATE -Wall -Wextra)
+    endif()
+    add_test(NAME vulkan COMMAND vidfab_vulkan_tests)
+  endif()
 
   if(VIDFAB_ENABLE_CUDA)
     add_executable(vidfab_kernel_tests
