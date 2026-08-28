@@ -42,6 +42,7 @@ add_library(vidfab_core STATIC
   src/core/nf4.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
+  src/core/device_tensor.cpp
   src/core/image.cpp
   src/core/image_platform.cpp
   src/core/safetensors_write.cpp
@@ -619,6 +620,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_tokenizer_json.cpp
     tests/test_qwen_vision.cpp
     tests/test_output.cpp
+    tests/test_device_tensor.cpp
   )
   target_link_libraries(vidfab_tests PRIVATE vidfab_core)
   if(MSVC)
