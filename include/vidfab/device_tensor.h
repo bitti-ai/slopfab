@@ -18,6 +18,8 @@ struct TensorLayout {
   static TensorLayout contiguous(const uint64_t* extents, uint32_t rank);
   uint64_t elements() const;
   uint64_t bytes(ScalarType type) const;
+  // Bytes touched by the largest logical index, including stride gaps.
+  uint64_t storage_bytes(ScalarType type) const;
   bool is_contiguous() const;
 };
 
@@ -33,9 +35,10 @@ struct DeviceTensorView {
   uint64_t byte_offset = 0;
   uint64_t byte_size = 0;
 
-  // Returns a checked view into the same allocation. Empty spans and
-  // misaligned/overflowing ranges are rejected before a backend sees them.
-  DeviceTensorView slice(uint64_t offset, uint64_t bytes,
+  // Returns a checked tensor subview into the same allocation. The supplied
+  // layout defines the complete logical contents of the result, including
+  // any stride gaps, keeping its shape and byte range coherent.
+  DeviceTensorView slice(uint64_t offset, const TensorLayout& slice_layout,
                          uint64_t alignment = 1) const;
 };
 

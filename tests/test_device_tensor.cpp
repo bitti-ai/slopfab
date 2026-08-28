@@ -12,6 +12,7 @@ VIDFAB_TEST(device_tensor_layout_contract) {
   CHECK(layout.rank == 3);
   CHECK(layout.elements() == 30);
   CHECK(layout.bytes(vidfab::ScalarType::kFloat32) == 120);
+  CHECK(layout.storage_bytes(vidfab::ScalarType::kFloat32) == 120);
   CHECK(layout.stride[0] == 15);
   CHECK(layout.stride[1] == 5);
   CHECK(layout.stride[2] == 1);
@@ -32,7 +33,9 @@ VIDFAB_TEST(device_tensor_layout_contract) {
   view.resource = 23;
   view.byte_offset = 64;
   view.byte_size = 256;
-  const vidfab::DeviceTensorView slice = view.slice(32, 64, 16);
+  const uint64_t sub_extent = 16;
+  const auto sub_layout = vidfab::TensorLayout::contiguous(&sub_extent, 1);
+  const vidfab::DeviceTensorView slice = view.slice(32, sub_layout, 16);
   CHECK(slice.context == view.context);
   CHECK(slice.resource == view.resource);
   CHECK(slice.byte_offset == 96);
@@ -40,9 +43,25 @@ VIDFAB_TEST(device_tensor_layout_contract) {
 
   bool alignment_rejected = false;
   try {
-    (void)view.slice(1, 8, 4);
+    (void)view.slice(1, sub_layout, 4);
   } catch (const std::invalid_argument&) {
     alignment_rejected = true;
   }
   CHECK(alignment_rejected);
+
+  vidfab::DeviceTensorView corrupt = view;
+  corrupt.byte_offset = std::numeric_limits<uint64_t>::max() - 31;
+  bool end_overflow_rejected = false;
+  try {
+    (void)corrupt.slice(0, sub_layout, 1);
+  } catch (const std::overflow_error&) {
+    end_overflow_rejected = true;
+  }
+  CHECK(end_overflow_rejected);
+
+  vidfab::TensorLayout strided = sub_layout;
+  strided.stride[0] = 2;
+  const auto strided_slice = view.slice(0, strided, 4);
+  CHECK(strided_slice.byte_size == 124);
+  CHECK(strided_slice.layout.storage_bytes(vidfab::ScalarType::kFloat32) == 124);
 }
