@@ -163,3 +163,69 @@ denoising step. Applying the measured CUDA median deltas gives an estimated
 impact estimate only; it excludes future Vulkan graph submission and every
 other inference stage, and therefore is not presented as an end-to-end speedup
 or regression measurement.
+
+## Keyframe-VAE GroupNorm+SiLU shader
+
+`tensor_group_norm.comp` implements the fused GroupNorm+SiLU operation used by
+the keyframe encoder: contiguous fp32 CHW input/output, fp16 channel affine,
+32 groups, and one 256-lane workgroup per group. It preserves the CUDA
+strided accumulation and binary reduction tree, including
+`max(0, E[x^2] - mean^2)`, and reuses the deterministic normalization helpers
+above. The cached four-binding pipeline supports in-place input/output without
+a host boundary or per-dispatch allocation. Dimensions whose group population
+exceeds 2^24 fail before recording.
+
+The production module is generated with Khronos glslang 16.5.0 and the same
+float-control transformer used by the other tensor shaders:
+
+```text
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_group_norm.comp -o tensor_group_norm.raw.spv
+python tools/add_spirv_float_controls.py tensor_group_norm.raw.spv src/vulkan/tensor_group_norm.comp.spv tensor_group_norm.denorm.spv
+```
+
+CMake pins the exact source and executed module:
+
+```text
+tensor_group_norm.comp              988FAEC12F82A744A49CBB5E46AAE35B5563F408A7809E72652E4B67ED1457CA
+tensor_group_norm.comp.spv          57AED42788D1D8CA9A3F6EDE8D6130B2C32FDA2D62C2261FE00F1D3FF2E98D33
+```
+
+Native CUDA `expf` and Vulkan `Exp`/division differed by one ULP in every
+initial exact GroupNorm fixture. Both backends now use the same specified SiLU:
+non-positive range reduction, a fixed degree-10 FMA polynomial, an
+integer-constructed power of two, and an explicitly ordered sigmoid division.
+The CUDA production result intentionally changed. The contract preserves
+signed zero, maps +infinity to +infinity, -infinity to -0, and every NaN to
+canonical `0x7fc00000`. Subnormal inputs and correctly rounded subnormal
+results become signed zero. Inputs at or below -87 also become signed zero;
+this deliberately discards a still-normal true result whose largest magnitude
+at the cutoff is 1.432e-36. Over the continuous tested range (-87, 87), the
+CUDA implementation differs from a double reference by at most two binary32
+ULPs (maximum relative error 2.018e-7). The Vulkan module declares RTE and is
+available only through the existing fail-closed exact-normalization device,
+driver, float-control, and shaderInt64 gate.
+
+Performance was measured on the validated RTX 5090/610.88 tuple with nonzero
+normal input and affine values, three warmups, 10 launches per sample, and four
+samples. CUDA compares the pre-deterministic production implementation at
+`330e34e` with the current complete deterministic GroupNorm+SiLU; Vulkan uses
+the identical current shader/reduction and changes only native versus
+deterministic SiLU. Upload and readback are outside the timed region. The
+largest device-resident operator footprint is 2.0 GiB input, 2.0 GiB output,
+and 512 bytes of affine data with no GroupNorm scratch; the benchmark's
+persistent 2.0 GiB upload buffer is setup infrastructure, not operator memory.
+Times are medians in milliseconds:
+
+| CHW shape | CUDA previous | CUDA deterministic | Vulkan native SiLU | Vulkan deterministic |
+|---|---:|---:|---:|---:|
+| 128x2048x2048 | 52.676 | 58.245 | 34.919 | 41.881 |
+| 256x1024x1024 | 26.358 | 29.154 | 18.298 | 21.198 |
+| 1024x128x128 | 1.577 | 1.754 | 1.084 | 1.269 |
+
+Weighting those measurements by the shipped 25-call encoder topology (four
+calls per two-block level across six levels, plus the final norm) gives a
+GroupNorm-only estimate of 345.9 to 382.6 ms on CUDA (+36.7 ms, 10.6%) and
+233.0 to 276.2 ms on Vulkan (+43.1 ms, 18.5%). Unmeasured intermediate level
+sizes are scaled by the exact per-group element count from the adjacent real
+shape. This is a concrete graph-weighted kernel estimate, not an end-to-end
+encoder benchmark; convolution and every remaining neural stage are excluded.
