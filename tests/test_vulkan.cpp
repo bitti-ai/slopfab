@@ -1,8 +1,11 @@
 #include "harness.h"
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -25,6 +28,12 @@ std::vector<uint32_t> load_spirv(const char* path) {
   file.read(reinterpret_cast<char*>(words.data()), length);
   if (!file) throw std::runtime_error("cannot read SPIR-V");
   return words;
+}
+
+std::vector<uint8_t> read_bytes(const std::filesystem::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  return std::vector<uint8_t>((std::istreambuf_iterator<char>(file)),
+                              std::istreambuf_iterator<char>());
 }
 
 VIDFAB_TEST(vulkan_runtime_and_pool) {
@@ -337,7 +346,7 @@ VIDFAB_TEST(vulkan_yuv420_output) {
   }
   CHECK(unavailable_device_rejected);
   struct Extent { int width; int height; };
-  const Extent extents[] = {{2, 2}, {10, 6}, {128, 66}};
+  const Extent extents[] = {{2, 2}, {10, 6}, {128, 66}, {1280, 768}};
   uint64_t previous_high_water = 0;
   for (const Extent extent : extents) {
     const size_t pixels = static_cast<size_t>(extent.width) * extent.height;
@@ -346,6 +355,17 @@ VIDFAB_TEST(vulkan_yuv420_output) {
       r[i] = static_cast<float>((i * 17) % 113) / 97.0f - 0.08f;
       g[i] = static_cast<float>((i * 29 + 3) % 127) / 109.0f;
       b[i] = static_cast<float>((i * 43 + 11) % 139) / 101.0f - 0.12f;
+      if (i < 192) {
+        const float boundary =
+            (static_cast<float>(16 + (i % 220)) + 0.5f - 16.0f) / 219.0f;
+        const int direction = static_cast<int>(i % 3) - 1;
+        const float value = direction < 0 ? std::nextafter(boundary, -INFINITY)
+                            : direction > 0 ? std::nextafter(boundary, INFINITY)
+                                            : boundary;
+        r[i] = value;
+        g[i] = value;
+        b[i] = value;
+      }
     }
     const int ys = extent.width + 13;
     const int cs = extent.width / 2 + 7;
@@ -378,7 +398,7 @@ VIDFAB_TEST(vulkan_yuv420_output) {
     compare_plane(cpu_y, vk_y, extent.height, extent.width, ys);
     compare_plane(cpu_u, vk_u, extent.height / 2, extent.width / 2, cs);
     compare_plane(cpu_v, vk_v, extent.height / 2, extent.width / 2, cs);
-    CHECK_MSG(max_difference <= 1,
+    CHECK_MSG(differences == 0,
               "Vulkan YUV differs by %d (changed samples %d) at %dx%d",
               max_difference, differences, extent.width, extent.height);
     CHECK(converter.capacity_pixels() >= pixels);
@@ -390,6 +410,24 @@ VIDFAB_TEST(vulkan_yuv420_output) {
                       vk_y.data(), ys, vk_u.data(), cs, vk_v.data(), cs);
     CHECK(converter.reserved_bytes() == reserved);
   }
+  CHECK_MSG(converter.high_water_bytes() <= (48ull << 20),
+            "Vulkan YUV persistent high-water is %llu bytes",
+            static_cast<unsigned long long>(converter.high_water_bytes()));
+
+  const uint64_t capacity_before_reject = converter.capacity_pixels();
+  const uint64_t reserved_before_reject = converter.reserved_bytes();
+  bool index_overflow_rejected = false;
+  uint8_t reject_byte = 0;
+  float reject_sample = 0.0f;
+  try {
+    converter.convert(&reject_sample, &reject_sample, &reject_sample, 32768, 65536,
+                      &reject_byte, 65536, &reject_byte, 32768, &reject_byte, 32768);
+  } catch (const std::overflow_error&) {
+    index_overflow_rejected = true;
+  }
+  CHECK(index_overflow_rejected);
+  CHECK(converter.capacity_pixels() == capacity_before_reject);
+  CHECK(converter.reserved_bytes() == reserved_before_reject);
 
   bool odd_rejected = false;
   uint8_t byte = 0;
@@ -416,6 +454,32 @@ VIDFAB_TEST(vulkan_yuv420_output) {
     stride_rejected = true;
   }
   CHECK(stride_rejected);
+
+  const int frames = 3;
+  const int y4m_width = 10;
+  const int y4m_height = 6;
+  const size_t frame_pixels = static_cast<size_t>(y4m_width) * y4m_height;
+  PixelBuffer clip(static_cast<size_t>(3) * frames * frame_pixels);
+  const size_t plane = static_cast<size_t>(frames) * frame_pixels;
+  for (int frame = 0; frame < frames; ++frame) {
+    for (size_t i = 0; i < frame_pixels; ++i) {
+      const size_t offset = static_cast<size_t>(frame) * frame_pixels + i;
+      clip[offset] = static_cast<float>((i * 11 + frame * 7) % 101) / 100.0f;
+      clip[plane + offset] = static_cast<float>((i * 23 + frame * 5) % 103) / 102.0f;
+      clip[2 * plane + offset] = static_cast<float>((i * 37 + frame * 3) % 107) / 106.0f;
+    }
+  }
+  const auto cpu_path = std::filesystem::temp_directory_path() / "vidfab_vulkan_cpu.y4m";
+  const auto vk_path = std::filesystem::temp_directory_path() / "vidfab_vulkan_output.y4m";
+  std::filesystem::remove(cpu_path);
+  std::filesystem::remove(vk_path);
+  video::write_y4m(cpu_path.string(), clip, frames, y4m_height, y4m_width);
+  const uint64_t before_y4m = converter.reserved_bytes();
+  video::write_y4m(vk_path.string(), clip, frames, y4m_height, y4m_width, {}, &converter);
+  CHECK(read_bytes(cpu_path) == read_bytes(vk_path));
+  CHECK(converter.reserved_bytes() == before_y4m);
+  std::filesystem::remove(cpu_path);
+  std::filesystem::remove(vk_path);
 }
 
 }  // namespace

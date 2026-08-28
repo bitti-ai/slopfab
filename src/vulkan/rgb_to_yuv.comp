@@ -20,32 +20,62 @@ uint byte_value(float value) {
   return uint(floor(clamp(value, 0.0, 255.0) + 0.5));
 }
 
-void main() {
-  uint index = gl_GlobalInvocationID.x;
-  if (index >= geometry.pixels) return;
+uint output_byte(uint index) {
   uint plane = geometry.pixels;
-  float r = rgb.samples[index];
-  float g = rgb.samples[plane + index];
-  float b = rgb.samples[2 * plane + index];
-  float luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  yuv.samples[index] = byte_value(16.0 + 219.0 * luma);
+  if (index < plane) {
+    float r = rgb.samples[index];
+    float g = rgb.samples[plane + index];
+    float b = rgb.samples[2 * plane + index];
+    precise float luma = 0.2126 * r;
+    luma = luma + 0.7152 * g;
+    luma = luma + 0.0722 * b;
+    precise float limited = 16.0 + 219.0 * luma;
+    return byte_value(limited);
+  }
 
-  uint x = index % geometry.width;
-  uint y = index / geometry.width;
-  if ((x & 1) != 0 || (y & 1) != 0) return;
-  uint i1 = index + 1;
-  uint i2 = index + geometry.width;
+  uint chroma_samples = plane / 4;
+  bool cr = index >= plane + chroma_samples;
+  uint chroma_index = index - plane - (cr ? chroma_samples : 0);
+  uint chroma_width = geometry.width / 2;
+  uint x = (chroma_index % chroma_width) * 2;
+  uint y = (chroma_index / chroma_width) * 2;
+  uint i0 = y * geometry.width + x;
+  uint i1 = i0 + 1;
+  uint i2 = i0 + geometry.width;
   uint i3 = i2 + 1;
-  float rs = (r + rgb.samples[i1] + rgb.samples[i2] + rgb.samples[i3]) * 0.25;
-  float gs = (g + rgb.samples[plane + i1] + rgb.samples[plane + i2] +
-              rgb.samples[plane + i3]) * 0.25;
-  float bs = (b + rgb.samples[2 * plane + i1] + rgb.samples[2 * plane + i2] +
-              rgb.samples[2 * plane + i3]) * 0.25;
-  float block_luma = 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
-  uint chroma_index = (y / 2) * (geometry.width / 2) + x / 2;
-  uint chroma_samples = geometry.pixels / 4;
-  yuv.samples[plane + chroma_index] =
-      byte_value(128.0 + 224.0 * ((bs - block_luma) / 1.8556));
-  yuv.samples[plane + chroma_samples + chroma_index] =
-      byte_value(128.0 + 224.0 * ((rs - block_luma) / 1.5748));
+  precise float rs = 0.0;
+  rs = rs + rgb.samples[i0];
+  rs = rs + rgb.samples[i1];
+  rs = rs + rgb.samples[i2];
+  rs = (rs + rgb.samples[i3]) * 0.25;
+  precise float gs = 0.0;
+  gs = gs + rgb.samples[plane + i0];
+  gs = gs + rgb.samples[plane + i1];
+  gs = gs + rgb.samples[plane + i2];
+  gs = (gs + rgb.samples[plane + i3]) * 0.25;
+  precise float bs = 0.0;
+  bs = bs + rgb.samples[2 * plane + i0];
+  bs = bs + rgb.samples[2 * plane + i1];
+  bs = bs + rgb.samples[2 * plane + i2];
+  bs = (bs + rgb.samples[2 * plane + i3]) * 0.25;
+  precise float block_luma = 0.2126 * rs;
+  block_luma = block_luma + 0.7152 * gs;
+  block_luma = block_luma + 0.0722 * bs;
+  precise float chroma = cr ? (rs - block_luma) / 1.5748
+                            : (bs - block_luma) / 1.8556;
+  precise float limited = 128.0 + 224.0 * chroma;
+  return byte_value(limited);
+}
+
+void main() {
+  uint word_index = gl_GlobalInvocationID.x;
+  uint values = geometry.pixels + geometry.pixels / 2;
+  uint first = word_index * 4;
+  if (first >= values) return;
+  uint packed = 0;
+  for (uint lane = 0; lane < 4; ++lane) {
+    uint index = first + lane;
+    if (index < values) packed |= output_byte(index) << (lane * 8);
+  }
+  yuv.samples[word_index] = packed;
 }

@@ -31,6 +31,7 @@ struct Yuv420Converter::Impl {
   Buffer readback;
   std::vector<uint32_t> host_output;
   std::vector<StorageBinding> bindings;
+  DeviceInfo limits;
   uint64_t capacity = 0;
   uint64_t high_water = 0;
   std::string name;
@@ -46,7 +47,8 @@ struct Yuv420Converter::Impl {
     if (!physical[device_index].info().timeline_semaphore) {
       throw std::runtime_error("vulkan output: selected device has no timeline semaphore");
     }
-    name = physical[device_index].info().name;
+    limits = physical[device_index].info();
+    name = limits.name;
     DeviceOptions device_options;
     device_options.enable_timeline_semaphore = true;
     device = physical[device_index].create_device(device_options);
@@ -54,7 +56,7 @@ struct Yuv420Converter::Impl {
     context_options.max_in_flight = 1;
     context_options.max_storage_bindings = 2;
     context = std::make_unique<ComputeContext>(device, context_options);
-    pool = std::make_unique<BufferPool>(device, 64ull << 20);
+    pool = std::make_unique<BufferPool>(device, 4ull << 20);
 
     static_assert(sizeof(detail::kRgbToYuvSpirv) % sizeof(uint32_t) == 0,
                   "embedded SPIR-V must contain whole words");
@@ -74,26 +76,33 @@ struct Yuv420Converter::Impl {
   void ensure_capacity(uint64_t pixels) {
     if (pixels <= capacity) return;
     context->collect();
-    upload = Buffer();
-    input = Buffer();
-    output = Buffer();
-    readback = Buffer();
-    pool->trim();
-
     const uint64_t rgb_bytes = pixels * 3 * sizeof(float);
     const uint64_t yuv_values = pixels + pixels / 2;
-    const uint64_t yuv_bytes = yuv_values * sizeof(uint32_t);
-    upload = pool->allocate(rgb_bytes, BufferUsage::kTransferSource, MemoryUsage::kUpload);
-    input = pool->allocate(rgb_bytes,
-                           BufferUsage::kTransferDestination | BufferUsage::kStorage,
-                           MemoryUsage::kDevice);
-    output = pool->allocate(yuv_bytes,
-                            BufferUsage::kStorage | BufferUsage::kTransferSource,
-                            MemoryUsage::kDevice);
-    readback = pool->allocate(yuv_bytes, BufferUsage::kTransferDestination,
-                              MemoryUsage::kReadback);
-    host_output.resize(static_cast<size_t>(yuv_values));
-    capacity = pixels;
+    const uint64_t yuv_words = (yuv_values + 3) / 4;
+    const uint64_t yuv_bytes = yuv_words * sizeof(uint32_t);
+    try {
+      Buffer new_upload =
+          pool->allocate(rgb_bytes, BufferUsage::kTransferSource, MemoryUsage::kUpload);
+      Buffer new_input = pool->allocate(rgb_bytes,
+                                        BufferUsage::kTransferDestination | BufferUsage::kStorage,
+                                        MemoryUsage::kDevice);
+      Buffer new_output = pool->allocate(yuv_bytes,
+                                         BufferUsage::kStorage | BufferUsage::kTransferSource,
+                                         MemoryUsage::kDevice);
+      Buffer new_readback = pool->allocate(yuv_bytes, BufferUsage::kTransferDestination,
+                                           MemoryUsage::kReadback);
+      std::vector<uint32_t> new_host_output(static_cast<size_t>(yuv_words));
+      upload = std::move(new_upload);
+      input = std::move(new_input);
+      output = std::move(new_output);
+      readback = std::move(new_readback);
+      host_output = std::move(new_host_output);
+      capacity = pixels;
+    } catch (...) {
+      pool->trim();
+      throw;
+    }
+    pool->trim();
     high_water = std::max(high_water, pool->reserved_bytes());
   }
 };
@@ -120,10 +129,25 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
     throw std::invalid_argument("vulkan output: destination stride is smaller than its plane");
   }
   const uint64_t pixels = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
-  if (pixels > std::numeric_limits<uint32_t>::max() ||
-      pixels > std::numeric_limits<uint64_t>::max() / (3 * sizeof(float)) ||
-      pixels + pixels / 2 > std::numeric_limits<size_t>::max() / sizeof(uint32_t)) {
+  const uint64_t rgb_values = pixels * 3;
+  const uint64_t yuv_values = pixels + pixels / 2;
+  const uint64_t yuv_words = (yuv_values + 3) / 4;
+  if (rgb_values > std::numeric_limits<uint32_t>::max() ||
+      yuv_values > std::numeric_limits<uint32_t>::max() ||
+      yuv_words > std::numeric_limits<size_t>::max() / sizeof(uint32_t)) {
     throw std::overflow_error("vulkan output: frame dimensions overflow converter limits");
+  }
+  const uint64_t rgb_bytes = rgb_values * sizeof(float);
+  const uint64_t yuv_bytes = yuv_words * sizeof(uint32_t);
+  const uint64_t dispatch_groups = (yuv_words + 63) / 64;
+  const DeviceInfo& limits = impl_->limits;
+  if ((limits.max_storage_buffer_bytes != 0 &&
+       (rgb_bytes > limits.max_storage_buffer_bytes ||
+        yuv_bytes > limits.max_storage_buffer_bytes)) ||
+      (limits.max_allocation_bytes != 0 &&
+       (rgb_bytes > limits.max_allocation_bytes || yuv_bytes > limits.max_allocation_bytes)) ||
+      dispatch_groups > limits.max_compute_workgroup_count[0]) {
+    throw std::length_error("vulkan output: frame exceeds selected device compute limits");
   }
   impl_->ensure_capacity(pixels);
   const uint64_t plane_bytes = pixels * sizeof(float);
@@ -131,9 +155,6 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
   impl_->upload.write(plane_bytes, g, plane_bytes);
   impl_->upload.write(2 * plane_bytes, b, plane_bytes);
 
-  const uint64_t rgb_bytes = plane_bytes * 3;
-  const uint64_t yuv_values = pixels + pixels / 2;
-  const uint64_t yuv_bytes = yuv_values * sizeof(uint32_t);
   Impl::Geometry geometry{static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                           static_cast<uint32_t>(pixels)};
   CommandList commands = impl_->context->begin();
@@ -146,7 +167,7 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
   impl_->bindings[1].bytes = yuv_bytes;
   commands.bind_compute(impl_->pipeline, impl_->bindings);
   commands.push_constants(&geometry, sizeof(geometry));
-  commands.dispatch(static_cast<uint32_t>((pixels + 63) / 64));
+  commands.dispatch(static_cast<uint32_t>(dispatch_groups));
   commands.barrier(impl_->output, BufferAccess::kComputeWrite, BufferAccess::kTransferRead,
                    0, yuv_bytes);
   commands.copy_buffer(impl_->output, impl_->readback, yuv_bytes);
@@ -157,22 +178,22 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
   impl_->context->collect();
   impl_->readback.read(0, impl_->host_output.data(), yuv_bytes);
 
-  const uint32_t* y = impl_->host_output.data();
-  const uint32_t* u = y + pixels;
-  const uint32_t* v = u + pixels / 4;
+  const auto byte_at = [&](uint64_t index) {
+    const uint32_t word = impl_->host_output[static_cast<size_t>(index / 4)];
+    return static_cast<uint8_t>((word >> ((index % 4) * 8)) & 0xffu);
+  };
   for (int row = 0; row < height; ++row) {
     uint8_t* destination = y_plane + static_cast<size_t>(row) * y_stride;
-    const uint32_t* source = y + static_cast<size_t>(row) * width;
-    for (int x = 0; x < width; ++x) destination[x] = static_cast<uint8_t>(source[x]);
+    const uint64_t source = static_cast<uint64_t>(row) * width;
+    for (int x = 0; x < width; ++x) destination[x] = byte_at(source + x);
   }
   for (int row = 0; row < height / 2; ++row) {
     uint8_t* ud = u_plane + static_cast<size_t>(row) * u_stride;
     uint8_t* vd = v_plane + static_cast<size_t>(row) * v_stride;
-    const uint32_t* us = u + static_cast<size_t>(row) * (width / 2);
-    const uint32_t* vs = v + static_cast<size_t>(row) * (width / 2);
+    const uint64_t chroma_row = static_cast<uint64_t>(row) * (width / 2);
     for (int x = 0; x < width / 2; ++x) {
-      ud[x] = static_cast<uint8_t>(us[x]);
-      vd[x] = static_cast<uint8_t>(vs[x]);
+      ud[x] = byte_at(pixels + chroma_row + x);
+      vd[x] = byte_at(pixels + pixels / 4 + chroma_row + x);
     }
   }
 }

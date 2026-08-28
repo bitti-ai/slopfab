@@ -13,8 +13,8 @@ glslang -V --target-env vulkan1.2 -S comp src/vulkan/rgb_to_yuv.comp -o src/vulk
 Expected SHA-256 digests (also checked by CMake before embedding):
 
 ```text
-rgb_to_yuv.comp      71504BF881A3E7140AA8A4C0BAC1571679D8D173AE63F1C61D035EE4D88BB83A
-rgb_to_yuv.comp.spv  746063A7EE311855BCA4FECB038ABC1E7C0835E67D18180133DA24154F759BBA
+rgb_to_yuv.comp      77FA686E8C2CCCA0B62551211DEFB4D47DD941DD617627EFCE56DF35637D2C37
+rgb_to_yuv.comp.spv  C4CEE251C15F54371387D2DBACB4637C76C0DBC5DC6C0663C1E1269C703E71E6
 ```
 
 The runtime and build do not require a shader compiler or Vulkan SDK.

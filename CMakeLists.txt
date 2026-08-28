@@ -97,7 +97,7 @@ target_link_libraries(vidfab_core PUBLIC Threads::Threads)
 
 if(MSVC)
   # /utf-8 keeps string literals well-defined regardless of the system codepage.
-  target_compile_options(vidfab_core PRIVATE /W4 /permissive- /utf-8)
+  target_compile_options(vidfab_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
 else()
   target_compile_options(vidfab_core PRIVATE -Wall -Wextra)
 endif()
@@ -233,9 +233,9 @@ if(VIDFAB_ENABLE_VULKAN)
   string(SHA256 VIDFAB_YUV_SHADER_SOURCE_HASH "${VIDFAB_YUV_SHADER_TEXT}")
   file(SHA256 "${VIDFAB_YUV_SHADER_SPV}" VIDFAB_YUV_SHADER_SPV_HASH)
   if(NOT VIDFAB_YUV_SHADER_SOURCE_HASH STREQUAL
-      "71504bf881a3e7140aa8a4c0bac1571679d8d173ae63f1c61d035ee4d88bb83a" OR
+      "77fa686e8c2ccca0b62551211defb4d47dd941dd617627efce56df35637d2c37" OR
      NOT VIDFAB_YUV_SHADER_SPV_HASH STREQUAL
-      "746063a7ee311855bca4fecb038abc1e7c0835e67d18180133da24154f759bba")
+      "c4cee251c15f54371387d2dbacb4637c76c0dbc5dc6c0663c1e1269c703e71e6")
     message(FATAL_ERROR
       "vidfab: RGB-to-YUV shader/source hash mismatch; regenerate with glslang 16.5.0 "
       "and update both pinned hashes")
@@ -371,7 +371,7 @@ if(VIDFAB_ENABLE_CUDA)
 endif()
 
 if(MSVC)
-  target_compile_options(vidfab PRIVATE /W4 /permissive- /utf-8)
+  target_compile_options(vidfab PRIVATE /W4 /permissive- /utf-8 /EHsc)
 else()
   target_compile_options(vidfab PRIVATE -Wall -Wextra)
 endif()
@@ -621,7 +621,7 @@ if(VIDFAB_BUILD_TESTS)
   )
   target_link_libraries(vidfab_tests PRIVATE vidfab_core)
   if(MSVC)
-    target_compile_options(vidfab_tests PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(vidfab_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   else()
     target_compile_options(vidfab_tests PRIVATE -Wall -Wextra)
   endif()
