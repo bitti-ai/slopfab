@@ -102,13 +102,33 @@ T load_instance(PFN_vkGetInstanceProcAddr get, VkInstance instance, const char* 
   return fn;
 }
 
+// Stack-only guards close the small OOM window between a successful Vulkan
+// create call and allocation of the shared state that will own its handle.
+struct InstanceHandleGuard {
+  VkInstance instance = VK_NULL_HANDLE;
+  PFN_vkDestroyInstance destroy = nullptr;
+  ~InstanceHandleGuard() {
+    if (instance != VK_NULL_HANDLE && destroy != nullptr) destroy(instance, nullptr);
+  }
+};
+
+struct DeviceHandleGuard {
+  VkDevice device = VK_NULL_HANDLE;
+  PFN_vkDestroyDevice destroy = nullptr;
+  ~DeviceHandleGuard() {
+    if (device != VK_NULL_HANDLE && destroy != nullptr) destroy(device, nullptr);
+  }
+};
+
 struct InstanceState {
   std::shared_ptr<Loader> loader;
   VkInstance instance = VK_NULL_HANDLE;
   uint32_t loader_api_version = VK_API_VERSION_1_0;
+  uint32_t instance_api_version = VK_API_VERSION_1_0;
   PFN_vkDestroyInstance destroy_instance = nullptr;
   PFN_vkEnumeratePhysicalDevices enumerate_physical_devices = nullptr;
   PFN_vkGetPhysicalDeviceProperties get_physical_device_properties = nullptr;
+  PFN_vkGetPhysicalDeviceProperties2 get_physical_device_properties2 = nullptr;
   PFN_vkGetPhysicalDeviceFeatures get_physical_device_features = nullptr;
   PFN_vkGetPhysicalDeviceFeatures2 get_physical_device_features2 = nullptr;
   PFN_vkGetPhysicalDeviceMemoryProperties get_physical_device_memory_properties = nullptr;
@@ -219,6 +239,9 @@ uint32_t choose_compute_queue(const InstanceState& state, VkPhysicalDevice physi
 DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysicalDevice physical) {
   VkPhysicalDeviceProperties properties{};
   state->get_physical_device_properties(physical, &properties);
+  if (properties.apiVersion < VK_API_VERSION_1_2) {
+    throw std::runtime_error("vulkan: compute device requires Vulkan 1.2");
+  }
   VkPhysicalDeviceMemoryProperties memory{};
   state->get_physical_device_memory_properties(physical, &memory);
   VkPhysicalDeviceFeatures base_features{};
@@ -243,24 +266,44 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
   for (uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
     const bool local = (memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
     info.memory_heaps.push_back({memory.memoryHeaps[i].size, local});
-    info.max_allocation_bytes = std::max<uint64_t>(info.max_allocation_bytes,
-                                                   memory.memoryHeaps[i].size);
   }
 
-  const uint32_t api = properties.apiVersion;
-  const bool core_12 = api >= VK_API_VERSION_1_2;
-  if (state->get_physical_device_features2 != nullptr && core_12) {
+  if (state->get_physical_device_features2 != nullptr) {
+    VkPhysicalDeviceVulkan11Features features11{};
+    features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     VkPhysicalDeviceVulkan12Features features12{};
     features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    features11.pNext = &features12;
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features2.pNext = &features12;
+    features2.pNext = &features11;
     state->get_physical_device_features2(physical, &features2);
+    info.storage_buffer_16bit = features11.storageBuffer16BitAccess == VK_TRUE;
+    info.storage_buffer_8bit = features12.storageBuffer8BitAccess == VK_TRUE;
     info.shader_float16 = features12.shaderFloat16 == VK_TRUE;
     info.shader_int8 = features12.shaderInt8 == VK_TRUE;
     info.timeline_semaphore = features12.timelineSemaphore == VK_TRUE;
     info.buffer_device_address = features12.bufferDeviceAddress == VK_TRUE;
-    info.descriptor_indexing = features12.descriptorIndexing == VK_TRUE;
+    info.runtime_descriptor_array = features12.runtimeDescriptorArray == VK_TRUE;
+    info.descriptor_binding_partially_bound =
+        features12.descriptorBindingPartiallyBound == VK_TRUE;
+    info.descriptor_binding_variable_count =
+        features12.descriptorBindingVariableDescriptorCount == VK_TRUE;
+    info.storage_buffer_non_uniform_indexing =
+        features12.shaderStorageBufferArrayNonUniformIndexing == VK_TRUE;
+    info.descriptor_indexing = info.runtime_descriptor_array &&
+                               info.descriptor_binding_partially_bound &&
+                               info.descriptor_binding_variable_count &&
+                               info.storage_buffer_non_uniform_indexing;
+  }
+  if (state->get_physical_device_properties2 != nullptr) {
+    VkPhysicalDeviceVulkan11Properties properties11{};
+    properties11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+    VkPhysicalDeviceProperties2 properties2{};
+    properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties2.pNext = &properties11;
+    state->get_physical_device_properties2(physical, &properties2);
+    info.max_allocation_bytes = properties11.maxMemoryAllocationSize;
   }
   return info;
 }
@@ -350,6 +393,9 @@ Instance Instance::create(const InstanceOptions& options) {
   const uint32_t requested = options.api_version == 0
                                  ? std::min(loader_version, VK_API_VERSION_1_3)
                                  : options.api_version;
+  if (requested < VK_API_VERSION_1_2) {
+    throw std::runtime_error("vulkan: vidfab requires Vulkan instance API 1.2 or newer");
+  }
   if (requested > loader_version) {
     throw std::runtime_error("vulkan: requested instance API exceeds loader API");
   }
@@ -367,15 +413,22 @@ Instance Instance::create(const InstanceOptions& options) {
 
   VkInstance instance = VK_NULL_HANDLE;
   detail::check(create_instance(&create, nullptr, &instance), "vkCreateInstance");
+  const auto get = loader->get_instance_proc_addr();
+  detail::InstanceHandleGuard handle_guard;
+  handle_guard.instance = instance;
+  handle_guard.destroy =
+      detail::load_instance<PFN_vkDestroyInstance>(get, instance, "vkDestroyInstance");
   auto state = std::make_shared<detail::InstanceState>();
   state->loader = loader;
   state->instance = instance;
   state->loader_api_version = loader_version;
+  state->instance_api_version = requested;
+  state->destroy_instance = handle_guard.destroy;
+  handle_guard.instance = VK_NULL_HANDLE;
   try {
-    const auto get = state->loader->get_instance_proc_addr();
-    state->destroy_instance = detail::load_instance<PFN_vkDestroyInstance>(get, instance, "vkDestroyInstance");
     state->enumerate_physical_devices = detail::load_instance<PFN_vkEnumeratePhysicalDevices>(get, instance, "vkEnumeratePhysicalDevices");
     state->get_physical_device_properties = detail::load_instance<PFN_vkGetPhysicalDeviceProperties>(get, instance, "vkGetPhysicalDeviceProperties");
+    state->get_physical_device_properties2 = detail::load_instance<PFN_vkGetPhysicalDeviceProperties2>(get, instance, "vkGetPhysicalDeviceProperties2");
     state->get_physical_device_features = detail::load_instance<PFN_vkGetPhysicalDeviceFeatures>(get, instance, "vkGetPhysicalDeviceFeatures");
     state->get_physical_device_features2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(get(instance, "vkGetPhysicalDeviceFeatures2"));
     state->get_physical_device_memory_properties = detail::load_instance<PFN_vkGetPhysicalDeviceMemoryProperties>(get, instance, "vkGetPhysicalDeviceMemoryProperties");
@@ -387,14 +440,7 @@ Instance Instance::create(const InstanceOptions& options) {
     result->state = std::move(state);
     return Instance(std::move(result));
   } catch (...) {
-    if (state->destroy_instance != nullptr) {
-      state.reset();
-    } else {
-      const auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(
-          loader->get_instance_proc_addr()(instance, "vkDestroyInstance"));
-      if (destroy != nullptr) destroy(instance, nullptr);
-      state->instance = VK_NULL_HANDLE;
-    }
+    state.reset();
     throw;
   }
 }
@@ -402,6 +448,10 @@ Instance Instance::create(const InstanceOptions& options) {
 Version Instance::loader_version() const {
   if (!impl_) throw std::logic_error("vulkan: empty Instance");
   return detail::unpack_version(impl_->state->loader_api_version);
+}
+Version Instance::api_version() const {
+  if (!impl_) throw std::logic_error("vulkan: empty Instance");
+  return detail::unpack_version(impl_->state->instance_api_version);
 }
 
 std::vector<PhysicalDevice> Instance::enumerate_devices() const {
@@ -453,6 +503,10 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   };
   require(options.enable_shader_float16, impl_->info.shader_float16, "shaderFloat16");
   require(options.enable_shader_int8, impl_->info.shader_int8, "shaderInt8");
+  require(options.enable_storage_buffer_16bit, impl_->info.storage_buffer_16bit,
+          "storageBuffer16BitAccess");
+  require(options.enable_storage_buffer_8bit, impl_->info.storage_buffer_8bit,
+          "storageBuffer8BitAccess");
   require(options.enable_timeline_semaphore, impl_->info.timeline_semaphore, "timelineSemaphore");
   require(options.enable_buffer_device_address, impl_->info.buffer_device_address, "bufferDeviceAddress");
   require(options.enable_descriptor_indexing, impl_->info.descriptor_indexing, "descriptorIndexing");
@@ -476,21 +530,32 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   queue.queueCount = 1;
   queue.pQueuePriorities = &priority;
 
+  VkPhysicalDeviceVulkan11Features features11{};
+  features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+  features11.storageBuffer16BitAccess = options.enable_storage_buffer_16bit;
   VkPhysicalDeviceVulkan12Features features12{};
   features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+  features11.pNext = &features12;
+  features12.storageBuffer8BitAccess = options.enable_storage_buffer_8bit;
   features12.shaderFloat16 = options.enable_shader_float16;
   features12.shaderInt8 = options.enable_shader_int8;
   features12.timelineSemaphore = options.enable_timeline_semaphore;
   features12.bufferDeviceAddress = options.enable_buffer_device_address;
   features12.descriptorIndexing = options.enable_descriptor_indexing;
+  features12.runtimeDescriptorArray = options.enable_descriptor_indexing;
+  features12.descriptorBindingPartiallyBound = options.enable_descriptor_indexing;
+  features12.descriptorBindingVariableDescriptorCount = options.enable_descriptor_indexing;
+  features12.shaderStorageBufferArrayNonUniformIndexing = options.enable_descriptor_indexing;
   const bool any_features = options.enable_shader_float16 || options.enable_shader_int8 ||
+                            options.enable_storage_buffer_16bit ||
+                            options.enable_storage_buffer_8bit ||
                             options.enable_timeline_semaphore ||
                             options.enable_buffer_device_address ||
                             options.enable_descriptor_indexing;
 
   VkDeviceCreateInfo create{};
   create.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  create.pNext = any_features ? &features12 : nullptr;
+  create.pNext = any_features ? &features11 : nullptr;
   create.queueCreateInfoCount = 1;
   create.pQueueCreateInfos = &queue;
   create.enabledExtensionCount = static_cast<uint32_t>(extension_names.size());
@@ -499,16 +564,24 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   VkDevice handle = VK_NULL_HANDLE;
   detail::check(impl_->state->create_device(impl_->physical, &create, nullptr, &handle),
                 "vkCreateDevice");
+  detail::DeviceHandleGuard handle_guard;
+  handle_guard.device = handle;
+  handle_guard.destroy = reinterpret_cast<PFN_vkDestroyDevice>(
+      impl_->state->get_device_proc_addr(handle, "vkDestroyDevice"));
+  if (handle_guard.destroy == nullptr) {
+    throw std::runtime_error("vulkan: device has no vkDestroyDevice");
+  }
   auto state = std::make_shared<detail::DeviceState>();
   state->instance = impl_->state;
   state->physical = impl_->physical;
   state->device = handle;
   state->queue_family = impl_->info.compute_queue_family;
   state->buffer_device_address_enabled = options.enable_buffer_device_address;
+  state->destroy_device = handle_guard.destroy;
+  handle_guard.device = VK_NULL_HANDLE;
   impl_->state->get_physical_device_memory_properties(impl_->physical, &state->memory);
   state->non_coherent_atom_size = impl_->info.non_coherent_atom_bytes;
   try {
-    state->destroy_device = detail::load_device<PFN_vkDestroyDevice>(*impl_->state, handle, "vkDestroyDevice");
     state->device_wait_idle = detail::load_device<PFN_vkDeviceWaitIdle>(*impl_->state, handle, "vkDeviceWaitIdle");
     state->queue_wait_idle = detail::load_device<PFN_vkQueueWaitIdle>(*impl_->state, handle, "vkQueueWaitIdle");
     state->create_buffer = detail::load_device<PFN_vkCreateBuffer>(*impl_->state, handle, "vkCreateBuffer");
@@ -529,14 +602,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
     result->info = impl_->info;
     return Device(std::move(result));
   } catch (...) {
-    if (state->destroy_device != nullptr) {
-      state.reset();
-    } else {
-      const auto destroy = reinterpret_cast<PFN_vkDestroyDevice>(
-          impl_->state->get_device_proc_addr(handle, "vkDestroyDevice"));
-      if (destroy != nullptr) destroy(handle, nullptr);
-      state->device = VK_NULL_HANDLE;
-    }
+    state.reset();
     throw;
   }
 }
@@ -594,6 +660,7 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
     bool addressable = false;
     uint64_t used = 0;
     std::vector<Range> free;
+    mutable std::mutex mapped_mutex;
 
     ~Block() {
       if (memory == VK_NULL_HANDLE) return;
@@ -723,12 +790,13 @@ struct Buffer::Impl {
   std::shared_ptr<BufferPool::Impl::Block> block;
   VkBuffer buffer = VK_NULL_HANDLE;
   uint64_t bytes = 0;
+  uint64_t allocation_bytes = 0;
   uint64_t offset = 0;
   MemoryUsage usage = MemoryUsage::kDevice;
 
   ~Impl() {
     if (buffer != VK_NULL_HANDLE) pool->device->destroy_buffer(pool->device->device, buffer, nullptr);
-    if (block) pool->release(block, offset, bytes);
+    if (block) pool->release(block, offset, allocation_bytes);
   }
 
   void check_range(uint64_t range_offset, uint64_t range_bytes) const {
@@ -743,13 +811,28 @@ struct Buffer::Impl {
     const uint64_t absolute = offset + range_offset;
     const uint64_t begin = absolute - absolute % atom;
     const uint64_t end_unaligned = absolute + range_bytes;
-    const uint64_t end = std::min<uint64_t>(block->bytes, detail::align_up(end_unaligned, atom));
+    const uint64_t end = std::min<uint64_t>(offset + allocation_bytes,
+                                            detail::align_up(end_unaligned, atom));
     VkMappedMemoryRange range{};
     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     range.memory = block->memory;
     range.offset = begin;
     range.size = end - begin;
     return range;
+  }
+
+  void flush_range(uint64_t range_offset, uint64_t range_bytes) const {
+    if (block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) return;
+    const auto range = mapped_range(range_offset, range_bytes);
+    detail::check(pool->device->flush_mapped_ranges(pool->device->device, 1, &range),
+                  "vkFlushMappedMemoryRanges");
+  }
+
+  void invalidate_range(uint64_t range_offset, uint64_t range_bytes) const {
+    if (block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) return;
+    const auto range = mapped_range(range_offset, range_bytes);
+    detail::check(pool->device->invalidate_mapped_ranges(pool->device->device, 1, &range),
+                  "vkInvalidateMappedMemoryRanges");
   }
 };
 
@@ -786,6 +869,7 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
                 "vkCreateBuffer");
   std::shared_ptr<Impl::Block> block;
   uint64_t offset = 0;
+  uint64_t suballocation_bytes = 0;
   VkMemoryRequirements requirements{};
   try {
     bool dedicated = false;
@@ -805,29 +889,38 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
       impl_->device->get_buffer_requirements(impl_->device->device, buffer, &requirements);
     }
     const uint32_t type = impl_->choose_memory_type(requirements.memoryTypeBits, memory);
+    const bool host_visible = (impl_->device->memory.memoryTypes[type].propertyFlags &
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+    const uint64_t suballocation_alignment = host_visible
+        ? std::max<uint64_t>(requirements.alignment, impl_->device->non_coherent_atom_size)
+        : requirements.alignment;
+    suballocation_bytes = host_visible
+        ? detail::align_up(requirements.size, impl_->device->non_coherent_atom_size)
+        : requirements.size;
     {
       std::lock_guard<std::mutex> lock(impl_->mutex);
       if (!dedicated) {
         for (const auto& candidate : impl_->blocks) {
           if (!candidate->dedicated && candidate->memory_type == type &&
               (!addressable || candidate->addressable) &&
-              Impl::take_range(*candidate, requirements.size, requirements.alignment, &offset)) {
+              Impl::take_range(*candidate, suballocation_bytes, suballocation_alignment, &offset)) {
             block = candidate;
             break;
           }
         }
       }
       if (!block) {
-        uint64_t allocation_bytes = requirements.size;
+        uint64_t allocation_bytes = suballocation_bytes;
         if (!dedicated) {
           const uint32_t heap_index = impl_->device->memory.memoryTypes[type].heapIndex;
           const uint64_t heap_bytes = impl_->device->memory.memoryHeaps[heap_index].size;
-          const uint64_t economical_block = std::max<uint64_t>(requirements.size,
-              std::min<uint64_t>(impl_->block_bytes, std::max<uint64_t>(heap_bytes / 8, requirements.size)));
-          allocation_bytes = detail::align_up(economical_block, requirements.alignment);
+          const uint64_t economical_block = std::max<uint64_t>(suballocation_bytes,
+              std::min<uint64_t>(impl_->block_bytes,
+                                 std::max<uint64_t>(heap_bytes / 8, suballocation_bytes)));
+          allocation_bytes = detail::align_up(economical_block, suballocation_alignment);
         }
         block = impl_->make_block(allocation_bytes, type, dedicated, addressable, buffer);
-        if (!Impl::take_range(*block, requirements.size, requirements.alignment, &offset)) {
+        if (!Impl::take_range(*block, suballocation_bytes, suballocation_alignment, &offset)) {
           throw std::logic_error("vulkan: new memory block cannot satisfy its buffer");
         }
       }
@@ -840,12 +933,13 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
     result->block = std::move(block);
     result->buffer = buffer;
     result->bytes = bytes;
+    result->allocation_bytes = suballocation_bytes;
     result->offset = offset;
     result->usage = memory;
     return Buffer(std::move(result));
   } catch (...) {
     impl_->device->destroy_buffer(impl_->device->device, buffer, nullptr);
-    if (block) impl_->release(block, offset, requirements.size);
+    if (block) impl_->release(block, offset, suballocation_bytes);
     throw;
   }
 }
@@ -861,14 +955,24 @@ uint64_t BufferPool::reserved_bytes() const {
   if (!impl_) return 0;
   std::lock_guard<std::mutex> lock(impl_->mutex);
   uint64_t total = 0;
-  for (const auto& block : impl_->blocks) total += block->bytes;
+  for (const auto& block : impl_->blocks) {
+    if (block->bytes > std::numeric_limits<uint64_t>::max() - total) {
+      throw std::overflow_error("vulkan: reserved byte count overflow");
+    }
+    total += block->bytes;
+  }
   return total;
 }
 uint64_t BufferPool::used_bytes() const {
   if (!impl_) return 0;
   std::lock_guard<std::mutex> lock(impl_->mutex);
   uint64_t total = 0;
-  for (const auto& block : impl_->blocks) total += block->used;
+  for (const auto& block : impl_->blocks) {
+    if (block->used > std::numeric_limits<uint64_t>::max() - total) {
+      throw std::overflow_error("vulkan: used byte count overflow");
+    }
+    total += block->used;
+  }
   return total;
 }
 
@@ -897,12 +1001,8 @@ void Buffer::flush(uint64_t offset, uint64_t bytes) {
   if (!(impl_->block->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
     throw std::logic_error("vulkan: device-local buffer is not mapped");
   }
-  if (impl_->block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
-    return;
-  }
-  const auto range = impl_->mapped_range(offset, bytes);
-  detail::check(impl_->pool->device->flush_mapped_ranges(impl_->pool->device->device, 1, &range),
-                "vkFlushMappedMemoryRanges");
+  std::lock_guard<std::mutex> lock(impl_->block->mapped_mutex);
+  impl_->flush_range(offset, bytes);
 }
 void Buffer::invalidate(uint64_t offset, uint64_t bytes) const {
   if (!impl_) throw std::logic_error("vulkan: empty Buffer");
@@ -912,28 +1012,36 @@ void Buffer::invalidate(uint64_t offset, uint64_t bytes) const {
   if (!(impl_->block->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
     throw std::logic_error("vulkan: device-local buffer is not mapped");
   }
-  if (impl_->block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
-    return;
-  }
-  const auto range = impl_->mapped_range(offset, bytes);
-  detail::check(impl_->pool->device->invalidate_mapped_ranges(impl_->pool->device->device, 1, &range),
-                "vkInvalidateMappedMemoryRanges");
+  std::lock_guard<std::mutex> lock(impl_->block->mapped_mutex);
+  impl_->invalidate_range(offset, bytes);
 }
 void Buffer::write(uint64_t offset, const void* data, uint64_t bytes) {
   if (data == nullptr && bytes != 0) throw std::invalid_argument("vulkan: null buffer write source");
   if (mapped_data() == nullptr) throw std::logic_error("vulkan: buffer is not host-visible");
   impl_->check_range(offset, bytes);
+  if (bytes == 0) return;
+  std::lock_guard<std::mutex> lock(impl_->block->mapped_mutex);
   std::memcpy(static_cast<unsigned char*>(mapped_data()) + offset, data,
               static_cast<size_t>(bytes));
-  flush(offset, bytes);
+  impl_->flush_range(offset, bytes);
 }
 void Buffer::read(uint64_t offset, void* data, uint64_t bytes) const {
   if (data == nullptr && bytes != 0) throw std::invalid_argument("vulkan: null buffer read destination");
   if (mapped_data() == nullptr) throw std::logic_error("vulkan: buffer is not host-visible");
   impl_->check_range(offset, bytes);
-  invalidate(offset, bytes);
+  if (bytes == 0) return;
+  std::lock_guard<std::mutex> lock(impl_->block->mapped_mutex);
+  impl_->invalidate_range(offset, bytes);
   std::memcpy(data, static_cast<const unsigned char*>(mapped_data()) + offset,
               static_cast<size_t>(bytes));
+}
+void Buffer::reset_after_idle(const Queue& queue) {
+  if (!impl_) return;
+  if (!queue.impl_ || queue.impl_->state != impl_->pool->device) {
+    throw std::invalid_argument("vulkan: buffer and queue belong to different devices");
+  }
+  queue.wait_idle();
+  impl_.reset();
 }
 uintptr_t Buffer::native_handle() const noexcept {
   return impl_ ? reinterpret_cast<uintptr_t>(impl_->buffer) : 0;
