@@ -56,11 +56,11 @@ top-level `run_generate` call.
 1. Define backend-neutral device tensor, workspace, weight-cache, command, and
    stage interfaces. Implement Vulkan fp32/fp16/bf16 conversion, elementwise,
    normalization, RoPE, dense GEMM, and the shipped quantized GEMM formats.
-   Add activation-dump comparisons for every primitive.
+   Add exact activation-dump comparisons for every primitive.
 2. Port video and audio VAE graphs on those primitives. These form the first
    useful neural vertical slice because `--synthetic-latents` bypasses the
-   conditioner and transformer. Require exact decoded fp32 dumps where the
-   arithmetic contract permits it, then exact Y4M/WAV output.
+   conditioner and transformer. Require exact decoded fp32 RGB and PCM dumps,
+   then exact Y4M/WAV output.
 3. Port one transformer block, attention backends, timestep/AdaLN paths, and
    the denoise loop. Compare every block boundary before enabling the 50-block
    graph or its cache modes.
@@ -69,8 +69,10 @@ top-level `run_generate` call.
    and packed conditioning rows.
 5. Enable `--inference-backend vulkan`, retain the current fail-closed
    capability check, and run deterministic full-pipeline CUDA/Vulkan exact
-   comparisons through the streaming `compare-y4m` command. Only this step can
-   establish full pipeline parity.
+   comparisons at every durable boundary: conditioner embeddings, denoiser
+   latents, decoded fp32 RGB, decoded fp32 PCM, Y4M, and WAV. `compare-y4m` is
+   the streaming raw-video check, not a substitute for the earlier activation
+   and sample comparisons. Only this step can establish full pipeline parity.
 
 Each increment depends on the one above. In particular, adding a Vulkan CLI
 label before neural stage implementations would be a silent CUDA fallback, not
@@ -93,11 +95,21 @@ vidfab generate --synthetic-latents --seed 424242 --frames 6 \
 vidfab compare-y4m parity-fixed-cpu.y4m parity-fixed-vulkan.y4m
 ```
 
-Measured on 2026-08-28 with CUDA 13.0, Vulkan 1.4.341, and an RTX 5090. The
-checkpoint was the shipped real `weights/vae/video_vae_nf4.safetensors`
-(1,613,201,536 bytes; 1.17 GiB resident). The requested six frames align to 22
-model frames; the latent grid is 7x2x2 and the dumped fp32 video/audio rows are
-12,312 bytes. The second run read those exact rows instead of redrawing them.
+Measured on 2026-08-28 from build commit
+`c66ee3349c87d39b2a013b5fd71d96316c1726b2`, configured Release with CUDA 13.0,
+`sm_120a`, `VIDFAB_ENABLE_CUDA=ON`, `VIDFAB_ENABLE_VULKAN=ON`, and
+`VIDFAB_WITH_FFMPEG=OFF`, using Vulkan 1.4.341 and an RTX 5090. The real
+checkpoints and inputs were:
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `weights/vae/video_vae_nf4.safetensors` | 1,613,201,536 | `6D0CB4FF02EBB74CC6BCA40018E6EFAE5082CCD7EB066FA1263098C6DBF8F6F1` |
+| `weights/vae/audio_vae_nf4.safetensors` | 284,004,112 | `759662130BA3618B7F196DA8F983F857A1F1EC6AF8110D657796D9792C0D64E5` |
+| `parity-latents.safetensors` | 12,312 | `5FE9F6E048465ADE3695950531727FE850C0E9B23F871AEED7E698956C07FD83` |
+
+The video VAE occupied 1.17 GiB on device. The requested six frames align to
+22 model frames; the latent grid is 7x2x2. The second run read the exact dumped
+fp32 video/audio rows instead of redrawing them.
 
 `compare-y4m` returned 0: both files were 33,965 bytes with header
 `YUV4MPEG2 W32 H32 F24:1 Ip A1:1 C420jpeg` and SHA-256

@@ -612,6 +612,14 @@ VIDFAB_TEST(y4m_exact_comparison_reports_first_byte) {
   CHECK(comparison.expected_size == comparison.actual_size);
   CHECK(comparison.expected_header == comparison.actual_header);
 
+  bool same_file_rejected = false;
+  try {
+    (void)compare_y4m_exact(expected_path.string(), expected_path.string());
+  } catch (const std::invalid_argument& error) {
+    same_file_rejected = std::string(error.what()).find("same file") != std::string::npos;
+  }
+  CHECK(same_file_rejected);
+
   {
     std::fstream actual(actual_path, std::ios::binary | std::ios::in | std::ios::out);
     actual.seekg(-1, std::ios::end);

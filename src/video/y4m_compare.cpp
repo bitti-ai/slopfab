@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
@@ -36,6 +37,10 @@ std::string read_header(std::ifstream& stream, const std::string& path) {
 
 ExactY4mComparison compare_y4m_exact(const std::string& expected_path,
                                      const std::string& actual_path) {
+  std::error_code equivalent_error;
+  if (std::filesystem::equivalent(expected_path, actual_path, equivalent_error)) {
+    throw std::invalid_argument("compare-y4m: expected and actual refer to the same file");
+  }
   std::ifstream expected(expected_path, std::ios::binary);
   if (!expected) throw std::runtime_error("compare-y4m: cannot open " + expected_path);
   std::ifstream actual(actual_path, std::ios::binary);
