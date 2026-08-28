@@ -355,17 +355,6 @@ VIDFAB_TEST(vulkan_yuv420_output) {
       r[i] = static_cast<float>((i * 17) % 113) / 97.0f - 0.08f;
       g[i] = static_cast<float>((i * 29 + 3) % 127) / 109.0f;
       b[i] = static_cast<float>((i * 43 + 11) % 139) / 101.0f - 0.12f;
-      if (i < 192) {
-        const float boundary =
-            (static_cast<float>(16 + (i % 220)) + 0.5f - 16.0f) / 219.0f;
-        const int direction = static_cast<int>(i % 3) - 1;
-        const float value = direction < 0 ? std::nextafter(boundary, -INFINITY)
-                            : direction > 0 ? std::nextafter(boundary, INFINITY)
-                                            : boundary;
-        r[i] = value;
-        g[i] = value;
-        b[i] = value;
-      }
     }
     size_t boundary_block = 0;
     for (int by = 0; by < extent.height && boundary_block < 96; by += 2) {
@@ -384,6 +373,22 @@ VIDFAB_TEST(vulkan_yuv420_output) {
             b[i] = (boundary_block & 1) == 0 ? value : 0.0f;
           }
         }
+      }
+    }
+    // Keep luma half-step fixtures at the opposite end of larger frames so
+    // the chroma-boundary blocks above cannot overwrite them.
+    if (pixels >= 512) {
+      for (size_t fixture = 0; fixture < 192; ++fixture) {
+        const size_t i = pixels - 192 + fixture;
+        const float boundary =
+            (static_cast<float>(16 + (fixture % 220)) + 0.5f - 16.0f) / 219.0f;
+        const int direction = static_cast<int>(fixture % 3) - 1;
+        const float value = direction < 0 ? std::nextafter(boundary, -INFINITY)
+                            : direction > 0 ? std::nextafter(boundary, INFINITY)
+                                            : boundary;
+        r[i] = value;
+        g[i] = value;
+        b[i] = value;
       }
     }
     const int ys = extent.width + 13;
