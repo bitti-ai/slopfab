@@ -198,6 +198,18 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   c_depth_input.copy_from_host(depth_input.data(), depth_input.size());
   cuda::launch_depth_to_space(c_depth_input.get(), c_depth_output.get(), depth_t,
                               depth_h, depth_w, depth_channels, patch_t, patch, nullptr);
+
+  // Widening also has an explicit CUDA NaN policy for arbitrary checkpoint
+  // half bits, independently of values produced by the narrowing kernel.
+  constexpr size_t raw_half_count = 1u << 16;
+  std::vector<uint16_t> raw_half_host(raw_half_count);
+  for (size_t i = 0; i < raw_half_count; ++i)
+    raw_half_host[i] = static_cast<uint16_t>(i);
+  cuda::DeviceBuffer<uint16_t> c_raw_half(raw_half_count);
+  cuda::DeviceBuffer<float> c_raw_half_wide(raw_half_count);
+  c_raw_half.copy_from_host(raw_half_host.data(), raw_half_count);
+  cuda::launch_widen_f16(c_raw_half.get(), c_raw_half_wide.get(), raw_half_count,
+                         nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   const uint64_t shape_extents[] = {rows, cols};
@@ -235,6 +247,12 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   DeviceTensor v_depth_input = vk.allocate(TensorLayout::contiguous(&depth_extent, 1));
   DeviceTensor v_depth_output = vk.allocate(TensorLayout::contiguous(&depth_extent, 1));
   vk.upload(v_depth_input, depth_input.data(), depth_input.size());
+  const uint64_t raw_half_extent = raw_half_count;
+  DeviceTensor v_raw_half = vk.allocate(TensorLayout::contiguous(&raw_half_extent, 1),
+                                        ScalarType::kFloat16);
+  DeviceTensor v_raw_half_wide = vk.allocate(TensorLayout::contiguous(&raw_half_extent, 1));
+  vk.upload_bytes(v_raw_half, raw_half_host.data(),
+                  raw_half_host.size() * sizeof(uint16_t));
 
   // All operators are one device-only Vulkan batch: there is no host boundary
   // between conversion, indexed movement, elementwise, and layout work.
@@ -250,6 +268,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   batch.heads_to_tokens_bf16(v_heads, v_tokens, heads, sequence, head_dim);
   batch.depth_to_space(v_depth_input, v_depth_output, depth_t, depth_h,
                        depth_w, depth_channels, patch_t, patch);
+  batch.convert(v_raw_half, v_raw_half_wide);
   batch.submit().wait();
 
   auto compare_bytes = [&](auto& cuda_buffer, DeviceTensor& vulkan_tensor,
@@ -285,6 +304,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   compare_bytes(c_scattered, v_scattered, matrix_count, "scatter");
   compare_bytes(c_tokens, v_tokens, heads_count, "heads-to-tokens");
   compare_bytes(c_depth_output, v_depth_output, depth_count, "depth-to-space");
+  compare_bytes(c_raw_half_wide, v_raw_half_wide, raw_half_count, "arbitrary-fp16-widen");
 }
 
 int main() { return ::vidfab::test::run_all(); }

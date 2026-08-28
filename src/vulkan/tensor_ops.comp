@@ -24,6 +24,53 @@ uint bf16_rte(float value) {
   return (bits + 0x00007fffu + ((bits >> 16) & 1u)) >> 16;
 }
 
+uint fp16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint sign = (bits >> 16) & 0x8000u;
+  uint exponent_bits = (bits >> 23) & 0xffu;
+  uint mantissa = bits & 0x007fffffu;
+  if (exponent_bits == 0xffu)
+    return mantissa == 0u ? sign | 0x7c00u : 0x7fffu;
+  if (exponent_bits == 0u) return sign;
+
+  int exponent = int(exponent_bits) - 127;
+  if (exponent > 15) return sign | 0x7c00u;
+  if (exponent >= -14) {
+    uint rounded = mantissa + 0x00000fffu + ((mantissa >> 13) & 1u);
+    uint half_exponent = uint(exponent + 15);
+    if ((rounded & 0x00800000u) != 0u) {
+      rounded = 0u;
+      ++half_exponent;
+    }
+    if (half_exponent >= 31u) return sign | 0x7c00u;
+    return sign | (half_exponent << 10) | ((rounded >> 13) & 0x03ffu);
+  }
+  if (exponent < -25) return sign;
+  uint significand = 0x00800000u | mantissa;
+  uint shift = uint(-exponent - 1);
+  uint base = significand >> shift;
+  uint mask = (1u << shift) - 1u;
+  uint remainder = significand & mask;
+  uint halfway = 1u << (shift - 1u);
+  if (remainder > halfway || (remainder == halfway && (base & 1u) != 0u)) ++base;
+  return sign | base;
+}
+
+uint fp16_to_fp32_bits(uint half_bits) {
+  uint sign = (half_bits & 0x8000u) << 16;
+  uint exponent = (half_bits >> 10) & 0x1fu;
+  uint mantissa = half_bits & 0x03ffu;
+  if (exponent == 0x1fu)
+    return mantissa == 0u ? sign | 0x7f800000u : 0x7fffffffu;
+  if (exponent != 0u)
+    return sign | ((exponent + 112u) << 23) | (mantissa << 13);
+  if (mantissa == 0u) return sign;
+  uint leading = findMSB(mantissa);
+  uint normal_exponent = 103u + leading;
+  uint normal_mantissa = (mantissa << (23u - leading)) & 0x007fffffu;
+  return sign | (normal_exponent << 23) | normal_mantissa;
+}
+
 void main() {
   uint i = gl_GlobalInvocationID.x;
   if (i >= parameters.count) return;
@@ -43,10 +90,11 @@ void main() {
     uint e0 = 2u * i;
     float lo = uintBitsToFloat(a.data[e0]);
     float hi = e0 + 1u < parameters.p0 ? uintBitsToFloat(a.data[e0 + 1u]) : 0.0f;
-    output_data.data[i] = packHalf2x16(vec2(lo, hi));
+    output_data.data[i] = fp16_rte(lo) | (fp16_rte(hi) << 16);
   } else if (parameters.op == 4u) {  // fp16 -> fp32
-    vec2 values = unpackHalf2x16(a.data[i >> 1u]);
-    output_data.data[i] = floatBitsToUint(values[i & 1u]);
+    uint packed = a.data[i >> 1u];
+    uint half_bits = (packed >> ((i & 1u) * 16u)) & 0xffffu;
+    output_data.data[i] = fp16_to_fp32_bits(half_bits);
   } else if (parameters.op == 5u) {  // transpose [p0,p1] fp32
     uint row = i / parameters.p1;
     uint col = i - row * parameters.p1;

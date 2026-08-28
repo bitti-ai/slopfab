@@ -36,9 +36,9 @@ python tools/add_spirv_float_controls.py tensor_ops.raw.spv src/vulkan/tensor_op
 Expected SHA-256 digests (also pinned by CMake):
 
 ```text
-tensor_ops.comp              055DA51ED5271E48DC397255EDDB05D50B4351BA0105ED6B833D1E80EF09C3D4
-tensor_ops.comp.spv          04FC9C874F3CC8C6D52E78BACCF9E43D6D64951368D8D2C289F207447FC26F5D
-tensor_ops_denorm.comp.spv   80837AAAD22256422F92C21515549269E0CECB7F28B9B728628FE6ABEEEE4615
+tensor_ops.comp              0BCE01AE93BD3ABA5EDD396B21AF46621BEBFB60309E24BE2440130198BD424C
+tensor_ops.comp.spv          A7D3450A9FE867257D64FF9E8A6824DAA351E36F0AA0E1F733EC13EA8C59926A
+tensor_ops_denorm.comp.spv   2EC0F3B99AB49E055CACFF61DE3E15F6CEAD39F93879DAB24BE2EC6C9AC8B807
 ```
 
 The deterministic postprocessor adds explicit fp32 signed-zero/Inf/NaN and
