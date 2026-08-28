@@ -5,7 +5,6 @@
 #include <atomic>
 #include <cstring>
 #include <limits>
-#include <mutex>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -67,7 +66,7 @@ struct TensorContext::Impl {
   bool full_add_exact = false;
   uint32_t max_dispatch_x = 0;
   uint64_t max_storage_bytes = 0;
-  mutable std::mutex recording_mutex;
+  std::atomic<bool> recorder_active{false};
 
   explicit Impl(const Device& input, const TensorContextOptions& tensor_options)
       : commands(input, [&] {
@@ -108,13 +107,38 @@ struct TensorContext::Impl {
 
   uintptr_t context_id = next_context_identity();
 
-  std::unique_lock<std::mutex> acquire_recorder() const {
-    std::unique_lock<std::mutex> lock(recording_mutex, std::try_to_lock);
-    if (!lock.owns_lock()) {
+  struct RecorderLease {
+    Impl* owner = nullptr;
+    RecorderLease() = default;
+    explicit RecorderLease(Impl* value) : owner(value) {}
+    RecorderLease(RecorderLease&& other) noexcept
+        : owner(std::exchange(other.owner, nullptr)) {}
+    RecorderLease& operator=(RecorderLease&& other) noexcept {
+      if (this != &other) {
+        release();
+        owner = std::exchange(other.owner, nullptr);
+      }
+      return *this;
+    }
+    RecorderLease(const RecorderLease&) = delete;
+    RecorderLease& operator=(const RecorderLease&) = delete;
+    ~RecorderLease() { release(); }
+    void release() noexcept {
+      if (!owner) return;
+      owner->recorder_active.store(false, std::memory_order_release);
+      owner = nullptr;
+    }
+  };
+
+  RecorderLease acquire_recorder() {
+    bool expected = false;
+    if (!recorder_active.compare_exchange_strong(
+            expected, true, std::memory_order_acquire,
+            std::memory_order_relaxed)) {
       throw std::logic_error(
           "vulkan tensor: another batch or boundary operation is active");
     }
-    return lock;
+    return RecorderLease(this);
   }
 
   void ensure_staging(uint64_t bytes) {
@@ -151,7 +175,7 @@ struct TensorBatch::Impl {
 
   std::shared_ptr<TensorContext::Impl> owner;
   CommandList commands;
-  std::unique_lock<std::mutex> recording_lock;
+  TensorContext::Impl::RecorderLease recording_lease;
   std::array<AccessSnapshot, TensorContext::Impl::kMaxBatchOperators * 3> snapshots{};
   uint32_t snapshot_count = 0;
   uint32_t operator_count = 0;
@@ -303,10 +327,10 @@ DeviceTensor TensorContext::allocate(const TensorLayout& layout) {
 
 TensorBatch TensorContext::begin_batch() {
   if (!impl_) throw std::logic_error("vulkan tensor: empty context");
-  auto recording_lock = impl_->acquire_recorder();
+  auto recording_lease = impl_->acquire_recorder();
   auto batch = std::make_unique<TensorBatch::Impl>();
   batch->owner = impl_;
-  batch->recording_lock = std::move(recording_lock);
+  batch->recording_lease = std::move(recording_lease);
   batch->commands = impl_->commands.begin();
   return TensorBatch(std::move(batch));
 }
@@ -488,7 +512,7 @@ Submission TensorBatch::submit() {
   }
   Submission result = impl_->owner->commands.submit(std::move(impl_->commands));
   impl_->submitted = true;
-  impl_->recording_lock.unlock();
+  impl_->recording_lease.release();
   impl_.reset();
   return result;
 }
