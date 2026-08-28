@@ -999,6 +999,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         mux.audio = have_audio ? &audio.samples : nullptr;
         mux.audio_channels = audio.channels;
         mux.audio_sample_rate = audio.sample_rate;
+        mux.frame_converter = options.output_frame_converter;
 
         const video::MuxStatus status = video::write_mp4(mux);
         if (status == video::MuxStatus::kOk) {
@@ -1024,7 +1025,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     if (!muxed) {
       const std::string base = strip_extension(request.out_path);
       const std::string y4m = base + ".y4m";
-      video::write_y4m(y4m, video.data, video.frames, video.height, video.width);
+      video::write_y4m(y4m, video.data, video.frames, video.height, video.width, {},
+                       options.output_frame_converter);
       result.outputs.push_back(y4m);
       if (have_audio) {
         const std::string wav = base + ".wav";

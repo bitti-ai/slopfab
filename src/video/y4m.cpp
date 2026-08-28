@@ -152,7 +152,7 @@ void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int hei
 }
 
 void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames,
-               int height, int width, FrameRate fps) {
+               int height, int width, FrameRate fps, FrameConverter* converter) {
   if (frames <= 0 || height <= 0 || width <= 0) {
     throw std::runtime_error("y4m: frame count and dimensions must be positive");
   }
@@ -192,8 +192,10 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
   // so the bytes on disk are exactly what the serial loop wrote. The cost is
   // `workers` copies of one frame's YUV rather than one — about 12 MiB at
   // 1280x768 with eight workers.
-  const unsigned workers = choose_workers(static_cast<size_t>(frames), frame_pixels,
-                                          kMinParallelPixels);
+  const unsigned workers = converter != nullptr
+                               ? 1u
+                               : choose_workers(static_cast<size_t>(frames), frame_pixels,
+                                                kMinParallelPixels);
   std::vector<std::vector<uint8_t>> luma(workers), cb(workers), cr(workers);
   for (unsigned w = 0; w < workers; ++w) {
     luma[w].resize(frame_pixels);
@@ -206,9 +208,16 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
   // the body rgb_frame_to_yuv420 splits.
   const auto convert = [&](int f, unsigned w) {
     const size_t base = static_cast<size_t>(f) * frame_pixels;
-    yuv420_chroma_rows(0, chroma_h, r_plane + base, g_plane + base, b_plane + base, height, width,
-                       luma[w].data(), width, cb[w].data(), static_cast<int>(chroma_w),
-                       cr[w].data(), static_cast<int>(chroma_w));
+    if (converter != nullptr) {
+      converter->convert(r_plane + base, g_plane + base, b_plane + base, height, width,
+                         luma[w].data(), width, cb[w].data(), static_cast<int>(chroma_w),
+                         cr[w].data(), static_cast<int>(chroma_w));
+    } else {
+      yuv420_chroma_rows(0, chroma_h, r_plane + base, g_plane + base, b_plane + base,
+                         height, width, luma[w].data(), width, cb[w].data(),
+                         static_cast<int>(chroma_w), cr[w].data(),
+                         static_cast<int>(chroma_w));
+    }
   };
 
   for (int f0 = 0; f0 < frames; f0 += static_cast<int>(workers)) {

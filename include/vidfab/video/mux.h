@@ -44,6 +44,7 @@ struct MuxRequest {
   int height = 0;
   int width = 0;
   FrameRate fps;
+  FrameConverter* frame_converter = nullptr;
 
   // Interleaved float samples in [-1, 1]. Optional: a video-only MP4 is
   // written when this is null or empty.

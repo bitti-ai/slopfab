@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "vidfab/attention_mode.h"
+#include "vidfab/video/y4m.h"
 #include "vidfab/pixel_buffer.h"
 #include "vidfab/pipeline.h"
 #include "vidfab/sampler/scheduler.h"
@@ -149,6 +150,8 @@ struct RunOptions {
   bool (*on_samples)(RunSamples& samples, void* userdata) = nullptr;
 
   void* hook_userdata = nullptr;
+  // Output-only acceleration hook. Model inference remains CUDA.
+  video::FrameConverter* output_frame_converter = nullptr;
 };
 
 struct RunResult {
