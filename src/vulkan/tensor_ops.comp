@@ -19,7 +19,8 @@ layout(push_constant) uniform Parameters {
 uint bf16_rte(float value) {
   uint bits = floatBitsToUint(value);
   uint magnitude = bits & 0x7fffffffu;
-  if (magnitude > 0x7f800000u) return (bits >> 16) | 0x0040u;
+  // CUDA __float2bfloat16_rn canonicalises every NaN payload/sign to 0x7fff.
+  if (magnitude > 0x7f800000u) return 0x7fffu;
   return (bits + 0x00007fffu + ((bits >> 16) & 1u)) >> 16;
 }
 
