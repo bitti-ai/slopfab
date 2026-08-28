@@ -168,4 +168,51 @@ __device__ inline float deterministic_norm_rsqrt(float sum, uint32_t divisor,
   return deterministic_rsqrt(__uint_as_float(base));
 }
 
+// Backend-stable SiLU for normalization fusions. The exponential argument is
+// always non-positive: range reduction produces r in [0,ln(2)), a fixed
+// degree-10 Horner polynomial uses explicit FMAs, and 2^n is assembled by
+// integer bits. Values below -87 map to signed zero, keeping the advertised
+// finite-normal/zero result domain independent of denormal modes.
+__device__ inline float deterministic_exp_nonpositive(float value) {
+  if (value <= -87.0f) return 0.0f;
+  const float scaled = value * 1.4426950408889634f;
+  int exponent = static_cast<int>(scaled);
+  if (static_cast<float>(exponent) > scaled) --exponent;
+  float remainder = fmaf(-static_cast<float>(exponent), 0.693145751953125f, value);
+  remainder = fmaf(-static_cast<float>(exponent), 1.428606765330187e-6f, remainder);
+  float polynomial = 2.7557319223985893e-7f;
+  polynomial = fmaf(polynomial, remainder, 2.755731922398589e-6f);
+  polynomial = fmaf(polynomial, remainder, 2.48015873015873e-5f);
+  polynomial = fmaf(polynomial, remainder, 1.984126984126984e-4f);
+  polynomial = fmaf(polynomial, remainder, 1.388888888888889e-3f);
+  polynomial = fmaf(polynomial, remainder, 8.333333333333333e-3f);
+  polynomial = fmaf(polynomial, remainder, 4.166666666666667e-2f);
+  polynomial = fmaf(polynomial, remainder, 1.666666666666667e-1f);
+  polynomial = fmaf(polynomial, remainder, 0.5f);
+  polynomial = fmaf(polynomial, remainder, 1.0f);
+  polynomial = fmaf(polynomial, remainder, 1.0f);
+  const uint32_t scale_bits = static_cast<uint32_t>(exponent + 127) << 23u;
+  return polynomial * __uint_as_float(scale_bits);
+}
+
+__device__ inline float deterministic_silu(float value) {
+  const uint32_t bits = __float_as_uint(value);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return __uint_as_float(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return __uint_as_float(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u ? __uint_as_float(0x80000000u) : value;
+  float result;
+  if (value < 0.0f) {
+    const float exponential = deterministic_exp_nonpositive(value);
+    result = (value * exponential) / (1.0f + exponential);
+  } else {
+    const float exponential = deterministic_exp_nonpositive(-value);
+    result = value / (1.0f + exponential);
+  }
+  const uint32_t result_bits = __float_as_uint(result);
+  return (result_bits & 0x7fffffffu) < 0x00800000u
+             ? __uint_as_float(result_bits & 0x80000000u) : result;
+}
+
 }  // namespace vidfab::cuda

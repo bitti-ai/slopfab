@@ -13,4 +13,6 @@ inline constexpr uint8_t kTensorBf16RmsNarrowSpirv[] = {
 inline constexpr uint8_t kTensorBf16LayerSpirv[] = {@VIDFAB_TENSOR_BF16_LAYER_SPV_BYTES@};
 inline constexpr uint8_t kTensorBf16ModSpirv[] = {@VIDFAB_TENSOR_BF16_MOD_SPV_BYTES@};
 inline constexpr uint8_t kTensorFp32ModSpirv[] = {@VIDFAB_TENSOR_FP32_MOD_SPV_BYTES@};
+inline constexpr uint8_t kTensorGroupNormSpirv[] = {
+    @VIDFAB_TENSOR_GROUP_NORM_SPV_BYTES@};
 }  // namespace vidfab::vulkan::detail

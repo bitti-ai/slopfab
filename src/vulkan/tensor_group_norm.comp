@@ -1,0 +1,243 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer InputBuffer { uint input_words[]; };
+layout(set = 0, binding = 1, std430) readonly buffer WeightBuffer { uint weight_words[]; };
+layout(set = 0, binding = 2, std430) readonly buffer BiasBuffer { uint bias_words[]; };
+layout(set = 0, binding = 3, std430) writeonly buffer OutputBuffer { uint output_words[]; };
+layout(push_constant) uniform Parameters {
+  uint channels;
+  uint spatial;
+  uint epsilon_bits;
+  uint groups;
+} p;
+
+shared float reduction[256];
+shared uint mean_bits;
+shared uint inverse_bits;
+
+uint64_t round_shift_even(uint64_t value, uint shift) {
+  uint64_t quotient = value >> shift;
+  uint64_t remainder = value & ((uint64_t(1) << shift) - uint64_t(1));
+  uint64_t halfway = uint64_t(1) << (shift - 1u);
+  return quotient + uint64_t(remainder > halfway ||
+      (remainder == halfway && (quotient & uint64_t(1)) != uint64_t(0)));
+}
+
+int highest_bit(uint value) {
+  int result = 0;
+  for (uint scan = value; (scan >>= 1u) != 0u;) ++result;
+  return result;
+}
+
+uint positive_float_div_uint(uint bits, uint divisor) {
+  if ((bits & 0x7fffffffu) == 0u) return 0u;
+  if ((bits & 0x7f800000u) == 0x7f800000u) return bits;
+  uint significand = bits & 0x007fffffu;
+  int exponent;
+  if ((bits & 0x7f800000u) == 0u) {
+    int top = highest_bit(significand);
+    exponent = top - 149;
+    significand <<= 23 - top;
+  } else {
+    exponent = int((bits >> 23u) & 0xffu) - 127;
+    significand |= 0x00800000u;
+  }
+  int ratio_exponent = highest_bit(significand) - highest_bit(divisor);
+  bool below = ratio_exponent >= 0
+      ? uint64_t(significand) < (uint64_t(divisor) << ratio_exponent)
+      : (uint64_t(significand) << -ratio_exponent) < uint64_t(divisor);
+  if (below) --ratio_exponent;
+  int output_exponent = exponent - 23 + ratio_exponent;
+  if (output_exponent >= -126) {
+    uint shift = uint(23 - ratio_exponent);
+    uint64_t numerator = uint64_t(significand) << shift;
+    uint64_t rounded = numerator / divisor;
+    uint64_t remainder = numerator % divisor;
+    rounded += uint64_t(remainder > divisor / 2u ||
+        (remainder * uint64_t(2) == divisor && (rounded & uint64_t(1)) != 0));
+    if (rounded == (uint64_t(1) << 24u)) { rounded >>= 1u; ++output_exponent; }
+    return uint(output_exponent + 127) << 23u | uint(rounded) & 0x007fffffu;
+  }
+  int subnormal_shift = exponent - 23 + 149;
+  uint64_t numerator = significand;
+  uint64_t denominator = divisor;
+  if (subnormal_shift >= 0) numerator <<= subnormal_shift;
+  else if (-subnormal_shift < 32) denominator <<= -subnormal_shift;
+  else return 0u;
+  uint64_t rounded = numerator / denominator;
+  uint64_t remainder = numerator % denominator;
+  rounded += uint64_t(remainder > denominator / uint64_t(2) ||
+      (remainder * uint64_t(2) == denominator && (rounded & uint64_t(1)) != 0));
+  return uint(rounded);
+}
+
+float deterministic_divide(float value, uint divisor) {
+  uint bits = floatBitsToUint(value);
+  uint divided = positive_float_div_uint(bits & 0x7fffffffu, divisor);
+  return uintBitsToFloat(divided | (bits & 0x80000000u));
+}
+
+void decode_positive(uint bits, out uint significand, out int exponent) {
+  significand = bits & 0x007fffffu;
+  if ((bits & 0x7f800000u) == 0u) {
+    int top = highest_bit(significand);
+    exponent = top - 149;
+    significand <<= 23 - top;
+  } else {
+    exponent = int((bits >> 23u) & 0xffu) - 127;
+    significand |= 0x00800000u;
+  }
+}
+
+uint positive_float_add(uint a_bits, uint b_bits) {
+  if ((a_bits & 0x7fffffffu) == 0u) return b_bits;
+  if ((b_bits & 0x7fffffffu) == 0u) return a_bits;
+  uint a, b; int ae, be;
+  decode_positive(a_bits, a, ae); decode_positive(b_bits, b, be);
+  if (ae < be || (ae == be && a < b)) {
+    uint t = a; a = b; b = t; int te = ae; ae = be; be = te;
+  }
+  uint difference = uint(ae - be);
+  uint64_t a_ext = uint64_t(a) << 3u;
+  uint64_t b_ext = uint64_t(b) << 3u;
+  if (difference != 0u) {
+    if (difference >= 63u) b_ext = uint64_t(1);
+    else {
+      uint64_t lost = b_ext & ((uint64_t(1) << difference) - uint64_t(1));
+      b_ext = (b_ext >> difference) | uint64_t(lost != uint64_t(0));
+    }
+  }
+  uint64_t sum = a_ext + b_ext;
+  if (sum >= (uint64_t(1) << 27u)) { sum = (sum >> 1u) | (sum & uint64_t(1)); ++ae; }
+  uint64_t rounded = sum >> 3u;
+  uint64_t remainder = sum & uint64_t(7);
+  rounded += uint64_t(remainder > uint64_t(4) ||
+      (remainder == uint64_t(4) && (rounded & uint64_t(1)) != uint64_t(0)));
+  if (rounded == (uint64_t(1) << 24u)) { rounded >>= 1u; ++ae; }
+  return uint(ae + 127) << 23u | uint(rounded) & 0x007fffffu;
+}
+
+float deterministic_rsqrt(float value) {
+  uint bits = floatBitsToUint(value), magnitude = bits & 0x7fffffffu;
+  if (magnitude == 0u) return uintBitsToFloat((bits & 0x80000000u) | 0x7f800000u);
+  if ((bits & 0x80000000u) != 0u || magnitude > 0x7f800000u) return uintBitsToFloat(0x7fc00000u);
+  if (magnitude == 0x7f800000u) return 0.0;
+  uint significand = magnitude & 0x007fffffu; int exponent;
+  if (magnitude < 0x00800000u) {
+    int leading = highest_bit(significand); exponent = leading - 149;
+    significand <<= uint(23 - leading);
+  } else { exponent = int((magnitude >> 23u) & 0xffu) - 127; significand |= 0x00800000u; }
+  int parity = exponent & 1;
+  uint64_t mantissa_q30 = uint64_t(significand) << uint(7 + parity);
+  int scale_exponent = -(exponent - parity) / 2;
+  uint64_t estimate_q30 = parity != 0 ? uint64_t(637534208) : uint64_t(872415232);
+  for (int iteration = 0; iteration < 6; ++iteration) {
+    uint64_t square_q30 = round_shift_even(estimate_q30 * estimate_q30, 30u);
+    uint64_t product_q30 = round_shift_even(mantissa_q30 * square_q30, 30u);
+    uint64_t correction_q30 = uint64_t(3) * (uint64_t(1) << 30u) - product_q30;
+    estimate_q30 = round_shift_even(estimate_q30 * correction_q30, 31u);
+  }
+  int top = 0; for (uint64_t scan = estimate_q30; (scan >>= 1u) != 0u;) ++top;
+  uint shift = uint(top - 23); uint64_t rounded = round_shift_even(estimate_q30, shift);
+  if (rounded == (uint64_t(1) << 24u)) { rounded >>= 1u; ++top; }
+  int output_exponent = top - 30 + scale_exponent;
+  return uintBitsToFloat(uint(output_exponent + 127) << 23u |
+                         uint(rounded) & 0x007fffffu);
+}
+
+float deterministic_exp_nonpositive(float value) {
+  if (value <= -87.0) return 0.0;
+  float scaled = value * 1.4426950408889634;
+  int exponent = int(scaled);
+  if (float(exponent) > scaled) --exponent;
+  float remainder = fma(-float(exponent), 0.693145751953125, value);
+  remainder = fma(-float(exponent), 1.428606765330187e-6, remainder);
+  float polynomial = 2.7557319223985893e-7;
+  polynomial = fma(polynomial, remainder, 2.755731922398589e-6);
+  polynomial = fma(polynomial, remainder, 2.48015873015873e-5);
+  polynomial = fma(polynomial, remainder, 1.984126984126984e-4);
+  polynomial = fma(polynomial, remainder, 1.388888888888889e-3);
+  polynomial = fma(polynomial, remainder, 8.333333333333333e-3);
+  polynomial = fma(polynomial, remainder, 4.166666666666667e-2);
+  polynomial = fma(polynomial, remainder, 1.666666666666667e-1);
+  polynomial = fma(polynomial, remainder, 0.5);
+  polynomial = fma(polynomial, remainder, 1.0);
+  polynomial = fma(polynomial, remainder, 1.0);
+  uint scale_bits = uint(exponent + 127) << 23u;
+  return polynomial * uintBitsToFloat(scale_bits);
+}
+
+float deterministic_silu(float value) {
+  uint bits = floatBitsToUint(value), magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return uintBitsToFloat(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return uintBitsToFloat(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u ? uintBitsToFloat(0x80000000u) : value;
+  float result;
+  if (value < 0.0) {
+    float exponential = deterministic_exp_nonpositive(value);
+    result = (value * exponential) / (1.0 + exponential);
+  } else {
+    float exponential = deterministic_exp_nonpositive(-value);
+    result = value / (1.0 + exponential);
+  }
+  uint result_bits = floatBitsToUint(result);
+  return (result_bits & 0x7fffffffu) < 0x00800000u
+      ? uintBitsToFloat(result_bits & 0x80000000u) : result;
+}
+
+float fp16_value(uint word, uint index) {
+  vec2 values = unpackHalf2x16(word);
+  return (index & 1u) == 0u ? values.x : values.y;
+}
+
+void main() {
+  uint group = gl_WorkGroupID.x;
+  uint lane = gl_LocalInvocationIndex;
+  uint channels_per_group = p.channels / p.groups;
+  uint count = channels_per_group * p.spatial;
+  float sum = 0.0, square_sum = 0.0;
+  for (uint i = lane; i < count; i += 256u) {
+    uint channel = group * channels_per_group + i / p.spatial;
+    uint at = channel * p.spatial + i % p.spatial;
+    float value = uintBitsToFloat(input_words[at]);
+    sum += value;
+    square_sum = fma(value, value, square_sum);
+  }
+  reduction[lane] = sum; barrier();
+  for (uint distance = 128u; distance != 0u; distance >>= 1u) {
+    if (lane < distance) reduction[lane] += reduction[lane + distance];
+    barrier();
+  }
+  if (lane == 0u) mean_bits = floatBitsToUint(deterministic_divide(reduction[0], count));
+  barrier();
+  float mean = uintBitsToFloat(mean_bits);
+  reduction[lane] = square_sum; barrier();
+  for (uint distance = 128u; distance != 0u; distance >>= 1u) {
+    if (lane < distance) reduction[lane] += reduction[lane + distance];
+    barrier();
+  }
+  if (lane == 0u) {
+    float second_moment = deterministic_divide(reduction[0], count);
+    float variance = max(0.0, fma(-mean, mean, second_moment));
+    uint base = positive_float_add(floatBitsToUint(variance), p.epsilon_bits);
+    inverse_bits = floatBitsToUint(deterministic_rsqrt(uintBitsToFloat(base)));
+  }
+  barrier();
+  float inverse = uintBitsToFloat(inverse_bits);
+  for (uint i = lane; i < count; i += 256u) {
+    uint channel = group * channels_per_group + i / p.spatial;
+    uint at = channel * p.spatial + i % p.spatial;
+    float normalized = (uintBitsToFloat(input_words[at]) - mean) * inverse;
+    float affine = fma(normalized, fp16_value(weight_words[channel >> 1u], channel),
+                       fp16_value(bias_words[channel >> 1u], channel));
+#ifdef NATIVE_SILU
+    float result = affine / (1.0 + exp(-affine));
+#else
+    float result = deterministic_silu(affine);
+#endif
+    output_words[at] = floatBitsToUint(result);
+  }
+}

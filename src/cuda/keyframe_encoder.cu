@@ -1,6 +1,9 @@
 #include "vidfab/cuda/keyframe_encoder.cuh"
+#include "vidfab/cuda/deterministic_math.cuh"
 
 #include <cmath>
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
 
 namespace vidfab::cuda {
@@ -48,6 +51,7 @@ __global__ void groupnorm_kernel(const float* x, const __half* weight, const __h
   const int cpg = channels / groups;
   const int count = cpg * spatial;
   __shared__ float scratch[256];
+  __shared__ float group_mean;
   float sum = 0.0f, sq = 0.0f;
   for (int i = threadIdx.x; i < count; i += blockDim.x) {
     const int c = group * cpg + i / spatial;
@@ -61,19 +65,30 @@ __global__ void groupnorm_kernel(const float* x, const __half* weight, const __h
     if (threadIdx.x < d) scratch[threadIdx.x] += scratch[threadIdx.x + d];
     __syncthreads();
   }
-  const float mean = scratch[0] / count;
+  if (threadIdx.x == 0) group_mean = deterministic_divide(scratch[0], count);
+  __syncthreads();
+  const float mean = group_mean;
   scratch[threadIdx.x] = sq;
   __syncthreads();
   for (int d = blockDim.x / 2; d; d >>= 1) {
     if (threadIdx.x < d) scratch[threadIdx.x] += scratch[threadIdx.x + d];
     __syncthreads();
   }
-  const float inv = rsqrtf(fmaxf(0.0f, scratch[0] / count - mean * mean) + eps);
+  if (threadIdx.x == 0) {
+    const float second_moment = deterministic_divide(scratch[0], count);
+    const float variance = fmaxf(0.0f, fmaf(-mean, mean, second_moment));
+    const uint32_t base_bits = positive_float_add(__float_as_uint(variance),
+                                                   __float_as_uint(eps));
+    scratch[0] = deterministic_rsqrt(__uint_as_float(base_bits));
+  }
+  __syncthreads();
+  const float inv = scratch[0];
   for (int i = threadIdx.x; i < count; i += blockDim.x) {
     const int c = group * cpg + i / spatial;
     const size_t at = static_cast<size_t>(c) * spatial + i % spatial;
-    const float v = (x[at] - mean) * inv * __half2float(weight[c]) + __half2float(bias[c]);
-    y[at] = v / (1.0f + expf(-v));
+    const float normalized = (x[at] - mean) * inv;
+    const float v = fmaf(normalized, __half2float(weight[c]), __half2float(bias[c]));
+    y[at] = deterministic_silu(v);
   }
 }
 
@@ -104,10 +119,20 @@ void launch_keyframe_conv3d(const float* x, const __half* weight, const __half* 
 void launch_keyframe_groupnorm_silu(const float* x, const __half* weight, const __half* bias,
                                     float* y, int channels, int height, int width, int groups,
                                     float eps, cudaStream_t stream) {
+  constexpr uint64_t kMaxExactNormElements = uint64_t{1} << 24;
+  const uint64_t spatial = height > 0 && width > 0
+      ? static_cast<uint64_t>(height) * static_cast<uint64_t>(width) : 0;
+  const uint64_t total = channels > 0 ? static_cast<uint64_t>(channels) * spatial : 0;
+  const uint64_t group_count = groups > 0 && channels > 0
+      ? static_cast<uint64_t>(channels / groups) * spatial : 0;
   if (!x || !weight || !bias || !y || channels <= 0 || height <= 0 || width <= 0 ||
-      groups <= 0 || channels % groups)
+      groups <= 0 || channels % groups || !std::isnormal(eps) || eps <= 0.0f ||
+      spatial > std::numeric_limits<int>::max() ||
+      total > std::numeric_limits<uint32_t>::max() ||
+      group_count > kMaxExactNormElements)
     throw std::runtime_error("keyframe groupnorm: invalid arguments");
-  groupnorm_kernel<<<groups, 256, 0, stream>>>(x, weight, bias, y, channels, height * width,
+  groupnorm_kernel<<<groups, 256, 0, stream>>>(x, weight, bias, y, channels,
+                                               static_cast<int>(spatial),
                                                groups, eps);
 }
 

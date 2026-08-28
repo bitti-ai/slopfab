@@ -91,6 +91,7 @@ struct TensorContext::Impl {
   ComputePipeline bf16_layer_pipeline;
   ComputePipeline bf16_mod_pipeline;
   ComputePipeline fp32_mod_pipeline;
+  ComputePipeline group_norm_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;
   uint64_t staging_capacity = 0;
@@ -176,6 +177,8 @@ struct TensorContext::Impl {
           detail::kTensorBf16ModSpirv, sizeof(detail::kTensorBf16ModSpirv), 6);
       fp32_mod_pipeline = make_norm_pipeline(
           detail::kTensorFp32ModSpirv, sizeof(detail::kTensorFp32ModSpirv), 6);
+      group_norm_pipeline = make_norm_pipeline(
+          detail::kTensorGroupNormSpirv, sizeof(detail::kTensorGroupNormSpirv));
     }
     for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
     for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
@@ -373,6 +376,24 @@ struct TensorBatch::Impl {
     commands.bind_compute(pipeline, owner->norm_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(parameters.rows);
+  }
+
+  void dispatch_group_norm(const TensorContext::Impl::NormParameters& parameters,
+                           const std::shared_ptr<DeviceTensor::Impl>& input,
+                           const std::shared_ptr<DeviceTensor::Impl>& weight,
+                           const std::shared_ptr<DeviceTensor::Impl>& bias,
+                           const std::shared_ptr<DeviceTensor::Impl>& output) {
+    owner->norm_bindings[0].buffer = &input->buffer;
+    owner->norm_bindings[0].bytes = input->buffer.size();
+    owner->norm_bindings[1].buffer = &weight->buffer;
+    owner->norm_bindings[1].bytes = weight->buffer.size();
+    owner->norm_bindings[2].buffer = &bias->buffer;
+    owner->norm_bindings[2].bytes = bias->buffer.size();
+    owner->norm_bindings[3].buffer = &output->buffer;
+    owner->norm_bindings[3].bytes = output->buffer.size();
+    commands.bind_compute(owner->group_norm_pipeline, owner->norm_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(parameters.mod_rows);
   }
 
   void dispatch_shared_mod(ComputePipeline& pipeline,
@@ -1219,6 +1240,69 @@ void TensorBatch::rms_norm_modulate_f32(DeviceTensor& input, DeviceTensor& weigh
   if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
   impl_->record_shared_mod(true, input, weight, scale, shift, selectors, output,
                            epsilon);
+}
+
+void TensorBatch::group_norm_silu_f16_affine(DeviceTensor& input,
+                                              DeviceTensor& weight,
+                                              DeviceTensor& bias,
+                                              DeviceTensor& output,
+                                              uint32_t groups, float epsilon) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error("vulkan tensor: exact VAE GroupNorm+SiLU is unavailable");
+  }
+  auto src = impl_->owner->require(input);
+  auto w = impl_->owner->require(weight);
+  auto b = impl_->owner->require(bias);
+  auto dst = impl_->owner->require(output);
+  const auto& shape = src->layout;
+  const uint64_t channels = shape.extent[0];
+  uint64_t spatial = 0;
+  if (shape.rank == 3 &&
+      shape.extent[1] <= std::numeric_limits<uint64_t>::max() / shape.extent[2]) {
+    spatial = shape.extent[1] * shape.extent[2];
+  }
+  const uint64_t channels_per_group = groups == 0 ? 0 : channels / groups;
+  const bool group_count_overflows = spatial != 0 &&
+      channels_per_group > std::numeric_limits<uint64_t>::max() / spatial;
+  const uint64_t group_count = group_count_overflows ? 0 : channels_per_group * spatial;
+  if (!std::isnormal(epsilon) || epsilon <= 0.0f || groups == 0 ||
+      shape.rank != 3 || spatial == 0 || channels == 0 || channels % groups != 0 ||
+      group_count_overflows || channels > std::numeric_limits<uint32_t>::max() ||
+      spatial > std::numeric_limits<uint32_t>::max() ||
+      group_count > kMaxExactNormDimension ||
+      shape.elements() > std::numeric_limits<uint32_t>::max() ||
+      src.get() == w.get() || src.get() == b.get() || w.get() == b.get() ||
+      dst.get() == w.get() || dst.get() == b.get() ||
+      src->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
+      w->type != ScalarType::kFloat16 || b->type != ScalarType::kFloat16 ||
+      w->layout.rank != 1 || b->layout.rank != 1 || dst->layout.rank != 3 ||
+      w->layout.extent[0] != channels || b->layout.extent[0] != channels ||
+      dst->layout.extent != shape.extent || !shape.is_contiguous() ||
+      !w->layout.is_contiguous() || !b->layout.is_contiguous() ||
+      !dst->layout.is_contiguous()) {
+    throw std::invalid_argument("vulkan tensor: invalid VAE GroupNorm+SiLU");
+  }
+  if (!detail::norm_dispatch_fits(groups, impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range("vulkan tensor: GroupNorm group count exceeds dispatch limits");
+  }
+  TensorContext::Impl::NormParameters p;
+  p.rows = static_cast<uint32_t>(channels);
+  p.dim = static_cast<uint32_t>(spatial);
+  p.mod_rows = groups;
+  std::memcpy(&p.epsilon_bits, &epsilon, sizeof(epsilon));
+  try {
+    impl_->count_operator();
+    impl_->transition(src, src.get() == dst.get() ? BufferAccess::kComputeReadWrite
+                                                   : BufferAccess::kComputeRead);
+    impl_->transition(w, BufferAccess::kComputeRead);
+    impl_->transition(b, BufferAccess::kComputeRead);
+    if (src.get() != dst.get()) impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_group_norm(p, src, w, b, dst);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
 }
 
 Submission TensorBatch::submit() {

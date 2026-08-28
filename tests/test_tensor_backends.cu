@@ -15,6 +15,7 @@
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/deterministic_math.cuh"
 #include "vidfab/cuda/linear.cuh"
+#include "vidfab/cuda/keyframe_encoder.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/vulkan/tensor.h"
@@ -44,6 +45,12 @@ __global__ void deterministic_divide_add_probe(const uint32_t* input_bits,
       vidfab::cuda::deterministic_divide(signed_value, divisors[index]));
   added[index] = vidfab::cuda::positive_float_add(positive_divided[index],
                                                    epsilon_bits[index]);
+}
+
+__global__ void deterministic_silu_probe(const float* input, float* output,
+                                         int count) {
+  const int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (index < count) output[index] = vidfab::cuda::deterministic_silu(input[index]);
 }
 
 VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
@@ -186,6 +193,111 @@ VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
               add_result[i], expected_add_bits);
   }
 
+}
+
+VIDFAB_TEST(cuda_deterministic_silu_dense_reference) {
+  using namespace vidfab;
+  int devices = 0;
+  if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return;
+  std::vector<float> input;
+  auto push_bits = [&](uint32_t bits) {
+    float value = 0.0f; std::memcpy(&value, &bits, 4); input.push_back(value);
+  };
+  const uint32_t special[] = {0x00000000u, 0x80000000u, 0x7f800000u,
+                              0xff800000u, 0x7fc12345u};
+  for (uint32_t bits : special) push_bits(bits);
+  for (uint32_t bits : {0x00800000u, 0x80800000u, 0x00ffffffu,
+                        0x80ffffffu, 0x01000000u, 0x81000000u,
+                        0x01000001u, 0x81000001u}) push_bits(bits);
+  for (float anchor : {-87.0f, 87.0f, -16.0f, 16.0f}) {
+    input.push_back(std::nextafter(anchor, -std::numeric_limits<float>::infinity()));
+    input.push_back(anchor);
+    input.push_back(std::nextafter(anchor, std::numeric_limits<float>::infinity()));
+  }
+  constexpr double ln2 = 0.693147180559945309417232121458176568;
+  for (int k = -125; k <= 125; ++k) {
+    const float anchor = static_cast<float>(k * ln2);
+    if (anchor < -87.0f || anchor > 87.0f) continue;
+    input.push_back(std::nextafter(anchor, -std::numeric_limits<float>::infinity()));
+    input.push_back(anchor);
+    input.push_back(std::nextafter(anchor, std::numeric_limits<float>::infinity()));
+  }
+  uint32_t state = 0x31415926u;
+  for (int i = 0; i < 65536; ++i) {
+    state = state * 1664525u + 1013904223u;
+    const double unit = static_cast<double>(state) / 4294967295.0;
+    input.push_back(static_cast<float>(-87.0 + unit * 174.0));
+  }
+  cuda::DeviceBuffer<float> d_input(input.size()), d_output(input.size());
+  d_input.copy_from_host(input.data(), input.size());
+  deterministic_silu_probe<<<static_cast<unsigned>((input.size() + 255) / 256), 256>>>(
+      d_input.get(), d_output.get(), static_cast<int>(input.size()));
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<float> output(input.size()); d_output.copy_to_host(output.data(), output.size());
+  const uint32_t expected_special[] = {0x00000000u, 0x80000000u, 0x7f800000u,
+                                       0x80000000u, 0x7fc00000u};
+  for (size_t i = 0; i < std::size(expected_special); ++i) {
+    uint32_t actual = 0; std::memcpy(&actual, &output[i], 4);
+    CHECK_MSG(actual == expected_special[i], "deterministic SiLU special %zu: %08x", i,
+              actual);
+  }
+  auto ordered = [](float value) {
+    uint32_t bits = 0; std::memcpy(&bits, &value, 4);
+    return (bits & 0x80000000u) != 0u ? ~bits : bits | 0x80000000u;
+  };
+  uint32_t max_ulp = 0;
+  double max_absolute = 0.0, max_relative = 0.0;
+  float worst_relative_input = 0.0f, worst_relative_output = 0.0f;
+  double worst_relative_reference = 0.0;
+  for (size_t i = std::size(expected_special); i < input.size(); ++i) {
+    const double x = input[i];
+    const double reference_double = x < 0.0
+        ? x * std::exp(x) / (1.0 + std::exp(x))
+        : x / (1.0 + std::exp(-x));
+    if (x <= -87.0) {
+      uint32_t actual = 0; std::memcpy(&actual, &output[i], 4);
+      CHECK(actual == 0x80000000u);
+      continue;
+    }
+    const float rounded_reference = static_cast<float>(reference_double);
+    uint32_t rounded_reference_bits = 0;
+    std::memcpy(&rounded_reference_bits, &rounded_reference, 4);
+    if ((rounded_reference_bits & 0x7f800000u) == 0u &&
+        (rounded_reference_bits & 0x007fffffu) != 0u) {
+      uint32_t actual = 0, input_bits = 0;
+      std::memcpy(&actual, &output[i], 4); std::memcpy(&input_bits, &input[i], 4);
+      CHECK(actual == (input_bits & 0x80000000u));
+      continue;
+    }
+    uint32_t input_bits = 0; std::memcpy(&input_bits, &input[i], 4);
+    if ((input_bits & 0x7fffffffu) < 0x00800000u) {
+      uint32_t actual = 0; std::memcpy(&actual, &output[i], 4);
+      CHECK(actual == (input_bits & 0x80000000u));
+      continue;
+    }
+    const float reference = rounded_reference;
+    const uint32_t a = ordered(output[i]), b = ordered(reference);
+    max_ulp = std::max(max_ulp, a > b ? a - b : b - a);
+    const double absolute = std::abs(static_cast<double>(output[i]) - reference_double);
+    max_absolute = std::max(max_absolute, absolute);
+    if (reference_double != 0.0) {
+      const double relative = absolute / std::abs(reference_double);
+      if (relative > max_relative) {
+        max_relative = relative;
+        worst_relative_input = input[i];
+        worst_relative_output = output[i];
+        worst_relative_reference = reference_double;
+      }
+    }
+  }
+  CHECK_MSG(max_ulp <= 3u, "deterministic SiLU max reference error %u ULP", max_ulp);
+  CHECK(max_relative < 2.1e-7);
+  const double cutoff_error = 87.0 * std::exp(-87.0) / (1.0 + std::exp(-87.0));
+  CHECK(cutoff_error < 1.5e-36);
+  std::printf("  deterministic SiLU: max %u ULP, abs %.3e, relative %.3e; "
+              "-87 cutoff %.3e; worst relative x=%g out=%.9g ref=%.9g\n",
+              max_ulp, max_absolute, max_relative, cutoff_error,
+              worst_relative_input, worst_relative_output, worst_relative_reference);
 }
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
@@ -1115,6 +1227,174 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
             "mixed pooled bytes not released: %llu != %llu",
             static_cast<unsigned long long>(vk.pooled_used_bytes()),
             static_cast<unsigned long long>(used_before_mixed));
+}
+
+VIDFAB_TEST(cuda_vulkan_tensor_exact_group_norm_silu) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options; options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_normalization()) return;
+
+  auto run_case = [&](int channels, int height, int width, int groups,
+                      int pattern, bool in_place) {
+    const size_t count = static_cast<size_t>(channels) * height * width;
+    std::vector<float> input(count);
+    for (size_t i = 0; i < count; ++i)
+      input[i] = static_cast<float>(static_cast<int>((i * 29) % 103) - 51) / 16.0f;
+    if (pattern == 1) std::fill(input.begin(), input.end(), 2.0f);
+    if (pattern == 2) {
+      for (size_t i = 0; i < count; ++i)
+        input[i] = 4096.0f + static_cast<float>(static_cast<int>(i % 7) - 3) / 8.0f;
+    }
+    if (pattern == 3) {
+      for (size_t i = 0; i < count; ++i) input[i] = (i & 1) ? -0.0f : 0.0f;
+    }
+    std::vector<__half> weight(channels), bias(channels);
+    std::vector<uint16_t> weight_bits(channels), bias_bits(channels);
+    for (int c = 0; c < channels; ++c) {
+      weight[c] = __float2half(0.5f + static_cast<float>(c % 11) / 16.0f);
+      bias[c] = __float2half(static_cast<float>((c % 13) - 6) / 32.0f);
+      if (pattern == 3 && c < 4) {
+        const float edge_weight[] = {-0.0f, 0.0f, 65504.0f, -65504.0f};
+        const float edge_bias[] = {-0.0f, 0.0f, 1.0f, -1.0f};
+        weight[c] = __float2half(edge_weight[c]); bias[c] = __float2half(edge_bias[c]);
+      }
+      std::memcpy(&weight_bits[c], &weight[c], 2);
+      std::memcpy(&bias_bits[c], &bias[c], 2);
+    }
+    cuda::DeviceBuffer<float> c_input(count), c_output(count);
+    cuda::DeviceBuffer<__half> c_weight(channels), c_bias(channels);
+    c_input.copy_from_host(input.data(), count);
+    c_weight.copy_from_host(weight.data(), channels);
+    c_bias.copy_from_host(bias.data(), channels);
+    cuda::launch_keyframe_groupnorm_silu(c_input.get(), c_weight.get(), c_bias.get(),
+                                         c_output.get(), channels, height, width,
+                                         groups, 1.0e-6f, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> expected(count), actual(count);
+    c_output.copy_to_host(expected.data(), count);
+
+    const uint64_t shape[] = {static_cast<uint64_t>(channels),
+                              static_cast<uint64_t>(height),
+                              static_cast<uint64_t>(width)};
+    const uint64_t feature = channels;
+    DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(shape, 3));
+    DeviceTensor v_weight = vk.allocate(TensorLayout::contiguous(&feature, 1),
+                                         ScalarType::kFloat16);
+    DeviceTensor v_bias = vk.allocate(TensorLayout::contiguous(&feature, 1),
+                                       ScalarType::kFloat16);
+    DeviceTensor v_output = in_place ? DeviceTensor() :
+        vk.allocate(TensorLayout::contiguous(shape, 3));
+    vk.upload(v_input, input.data(), count);
+    vk.upload_bytes(v_weight, weight_bits.data(), weight_bits.size() * 2);
+    vk.upload_bytes(v_bias, bias_bits.data(), bias_bits.size() * 2);
+    TensorBatch batch = vk.begin_batch();
+    batch.group_norm_silu_f16_affine(v_input, v_weight, v_bias,
+                                     in_place ? v_input : v_output,
+                                     static_cast<uint32_t>(groups), 1.0e-6f);
+    batch.submit().wait();
+    DeviceTensor& result = in_place ? v_input : v_output;
+    vk.download(result, actual.data(), count);
+    size_t mismatch = count;
+    for (size_t i = 0; i < count; ++i) {
+      if (std::memcmp(&expected[i], &actual[i], 4) != 0) { mismatch = i; break; }
+    }
+    uint32_t expected_bits = 0, actual_bits = 0;
+    if (mismatch != count) {
+      std::memcpy(&expected_bits, &expected[mismatch], 4);
+      std::memcpy(&actual_bits, &actual[mismatch], 4);
+    }
+    CHECK_MSG(mismatch == count,
+              "CUDA/Vulkan GroupNorm+SiLU %dx%dx%d g%d mismatch at %zu: %08x != %08x",
+              channels, height, width, groups, mismatch, expected_bits, actual_bits);
+  };
+  run_case(128, 17, 19, 32, 0, false);
+  run_case(96, 5, 7, 32, 1, true);
+  run_case(128, 3, 11, 16, 2, false);
+  run_case(128, 4, 13, 32, 3, true);
+
+  bool cuda_limit_rejected = false;
+  try {
+    cuda::launch_keyframe_groupnorm_silu(
+        reinterpret_cast<const float*>(uintptr_t{1}),
+        reinterpret_cast<const __half*>(uintptr_t{1}),
+        reinterpret_cast<const __half*>(uintptr_t{1}),
+        reinterpret_cast<float*>(uintptr_t{1}), 128, 2048, 2049, 32,
+        1.0e-6f, nullptr);
+  } catch (const std::runtime_error&) { cuda_limit_rejected = true; }
+  CHECK(cuda_limit_rejected);
+
+  const uint64_t used_before_reuse = vk.pooled_used_bytes();
+  {
+    const uint64_t shape[] = {128, 3, 5}, feature = 128;
+    DeviceTensor input = vk.allocate(TensorLayout::contiguous(shape, 3));
+    DeviceTensor weight = vk.allocate(TensorLayout::contiguous(&feature, 1),
+                                       ScalarType::kFloat16);
+    DeviceTensor bias = vk.allocate(TensorLayout::contiguous(&feature, 1),
+                                     ScalarType::kFloat16);
+    std::array<DeviceTensor, 2> outputs{
+        vk.allocate(TensorLayout::contiguous(shape, 3)),
+        vk.allocate(TensorLayout::contiguous(shape, 3))};
+    std::vector<float> zeros(128 * 3 * 5);
+    std::vector<uint16_t> affine(128, 0x3c00u), offsets(128);
+    vk.upload(input, zeros.data(), zeros.size());
+    vk.upload_bytes(weight, affine.data(), affine.size() * 2);
+    vk.upload_bytes(bias, offsets.data(), offsets.size() * 2);
+    auto submit = [&](DeviceTensor& output) {
+      TensorBatch batch = vk.begin_batch();
+      batch.group_norm_silu_f16_affine(input, weight, bias, output, 32, 1.0e-6f);
+      return batch.submit();
+    };
+    Submission warm_a = submit(outputs[0]), warm_b = submit(outputs[1]);
+    warm_a.wait(); warm_b.wait();
+    const uint64_t stable_reserved = vk.reserved_bytes();
+    const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+    for (int repeat = 0; repeat < 8; ++repeat) {
+      Submission first = submit(outputs[0]);
+      Submission second = submit(outputs[1]);
+      Submission third = submit(outputs[0]);
+      CHECK(second.value() > first.value() && third.value() > second.value());
+      first.wait(); second.wait(); third.wait();
+      CHECK(vk.reserved_bytes() == stable_reserved);
+      CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+    }
+    DeviceTensor wrong_type = vk.allocate(TensorLayout::contiguous(&feature, 1));
+    const uint64_t short_shape[] = {128, 3, 4};
+    DeviceTensor wrong_shape = vk.allocate(TensorLayout::contiguous(short_shape, 3));
+    auto valid_after_rejection = [&](auto&& invalid) {
+      TensorBatch batch = vk.begin_batch(); bool rejected = false;
+      try { invalid(batch); } catch (const std::invalid_argument&) { rejected = true; }
+      CHECK(rejected);
+      batch.group_norm_silu_f16_affine(input, weight, bias, outputs[0], 32, 1.0e-6f);
+      batch.submit().wait();
+    };
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.group_norm_silu_f16_affine(input, wrong_type, bias, outputs[0], 32, 1.0e-6f);
+    });
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.group_norm_silu_f16_affine(input, weight, bias, wrong_shape, 32, 1.0e-6f);
+    });
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.group_norm_silu_f16_affine(input, weight, bias, outputs[0], 31, 1.0e-6f);
+    });
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.group_norm_silu_f16_affine(input, weight, weight, outputs[0], 32, 1.0e-6f);
+    });
+    valid_after_rejection([&](TensorBatch& batch) {
+      batch.group_norm_silu_f16_affine(input, weight, bias, outputs[0], 32, 0.0f);
+    });
+  }
+  { TensorBatch collect_completed_slots = vk.begin_batch(); }
+  CHECK(vk.pooled_used_bytes() == used_before_reuse);
 }
 
 int main() { return ::vidfab::test::run_all(); }

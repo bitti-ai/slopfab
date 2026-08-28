@@ -128,6 +128,12 @@ class TensorBatch {
                              DeviceTensor& scale, DeviceTensor& shift,
                              DeviceTensor& selectors, DeviceTensor& output,
                              float epsilon);
+  // Video/keyframe-VAE channel-major GroupNorm+SiLU. Input/output are fp32
+  // contiguous [channels,height,width], affine parameters are fp16 [channels],
+  // and output may alias input.
+  void group_norm_silu_f16_affine(DeviceTensor& input, DeviceTensor& weight,
+                                  DeviceTensor& bias, DeviceTensor& output,
+                                  uint32_t groups, float epsilon);
   Submission submit();
   explicit operator bool() const noexcept;
 
