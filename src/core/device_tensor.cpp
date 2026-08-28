@@ -65,4 +65,26 @@ bool TensorLayout::is_contiguous() const {
   return true;
 }
 
+DeviceTensorView DeviceTensorView::slice(uint64_t offset, uint64_t bytes,
+                                         uint64_t alignment) const {
+  if (context == 0 || resource == 0 || bytes == 0 || alignment == 0 ||
+      (alignment & (alignment - 1)) != 0) {
+    throw std::invalid_argument("tensor: invalid device view slice");
+  }
+  if (byte_offset > std::numeric_limits<uint64_t>::max() - offset) {
+    throw std::overflow_error("tensor: device view offset overflow");
+  }
+  if (offset > byte_size || bytes > byte_size - offset) {
+    throw std::out_of_range("tensor: device view slice exceeds allocation");
+  }
+  const uint64_t absolute = byte_offset + offset;
+  if ((absolute & (alignment - 1)) != 0) {
+    throw std::invalid_argument("tensor: device view slice is misaligned");
+  }
+  DeviceTensorView result = *this;
+  result.byte_offset = absolute;
+  result.byte_size = bytes;
+  return result;
+}
+
 }  // namespace vidfab

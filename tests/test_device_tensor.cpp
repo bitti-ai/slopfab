@@ -25,4 +25,24 @@ VIDFAB_TEST(device_tensor_layout_contract) {
     overflow_rejected = true;
   }
   CHECK(overflow_rejected);
+
+  vidfab::DeviceTensorView view;
+  view.backend = vidfab::DeviceBackend::kVulkan;
+  view.context = 17;
+  view.resource = 23;
+  view.byte_offset = 64;
+  view.byte_size = 256;
+  const vidfab::DeviceTensorView slice = view.slice(32, 64, 16);
+  CHECK(slice.context == view.context);
+  CHECK(slice.resource == view.resource);
+  CHECK(slice.byte_offset == 96);
+  CHECK(slice.byte_size == 64);
+
+  bool alignment_rejected = false;
+  try {
+    (void)view.slice(1, 8, 4);
+  } catch (const std::invalid_argument&) {
+    alignment_rejected = true;
+  }
+  CHECK(alignment_rejected);
 }

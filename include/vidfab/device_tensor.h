@@ -28,16 +28,24 @@ struct DeviceTensorView {
   DeviceBackend backend = DeviceBackend::kCuda;
   ScalarType type = ScalarType::kFloat32;
   TensorLayout layout;
+  uintptr_t context = 0;
   uintptr_t resource = 0;
   uint64_t byte_offset = 0;
   uint64_t byte_size = 0;
+
+  // Returns a checked view into the same allocation. Empty spans and
+  // misaligned/overflowing ranges are rejected before a backend sees them.
+  DeviceTensorView slice(uint64_t offset, uint64_t bytes,
+                         uint64_t alignment = 1) const;
 };
 
 struct WorkspaceSpan {
   DeviceBackend backend = DeviceBackend::kCuda;
+  uintptr_t context = 0;
   uintptr_t resource = 0;
   uint64_t byte_offset = 0;
   uint64_t byte_size = 0;
+  uint64_t generation = 0;
 };
 
 // Stack-like scratch contract shared by backend stages. A stage reserves once,
@@ -52,6 +60,8 @@ class DeviceWorkspace {
   virtual void reset() noexcept = 0;
   virtual uint64_t capacity() const noexcept = 0;
   virtual uint64_t used() const noexcept = 0;
+  virtual uint64_t generation() const noexcept = 0;
+  virtual bool valid(const WorkspaceSpan& span) const noexcept = 0;
 };
 
 }  // namespace vidfab
