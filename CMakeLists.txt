@@ -230,6 +230,8 @@ endif()
 if(VIDFAB_ENABLE_VULKAN)
   set(VIDFAB_YUV_SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp")
   set(VIDFAB_YUV_SHADER_SPV "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp.spv")
+  set(VIDFAB_TENSOR_ADD_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_add.comp")
+  set(VIDFAB_TENSOR_ADD_SPV "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_add.comp.spv")
   file(READ "${VIDFAB_YUV_SHADER_SOURCE}" VIDFAB_YUV_SHADER_TEXT)
   string(REPLACE "\r\n" "\n" VIDFAB_YUV_SHADER_TEXT "${VIDFAB_YUV_SHADER_TEXT}")
   string(SHA256 VIDFAB_YUV_SHADER_SOURCE_HASH "${VIDFAB_YUV_SHADER_TEXT}")
@@ -248,11 +250,28 @@ if(VIDFAB_ENABLE_VULKAN)
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan")
   configure_file(src/vulkan/embedded_yuv_spv.h.in
     generated/vulkan/embedded_yuv_spv.h @ONLY)
+  file(READ "${VIDFAB_TENSOR_ADD_SOURCE}" VIDFAB_TENSOR_ADD_TEXT)
+  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_ADD_TEXT "${VIDFAB_TENSOR_ADD_TEXT}")
+  string(SHA256 VIDFAB_TENSOR_ADD_SOURCE_HASH "${VIDFAB_TENSOR_ADD_TEXT}")
+  file(SHA256 "${VIDFAB_TENSOR_ADD_SPV}" VIDFAB_TENSOR_ADD_SPV_HASH)
+  if(NOT VIDFAB_TENSOR_ADD_SOURCE_HASH STREQUAL
+      "4378e3edc139935eb4f62f64f7934f68242df5bc07da77141edc0d6f1b34bb73" OR
+     NOT VIDFAB_TENSOR_ADD_SPV_HASH STREQUAL
+      "73f88eb5018b9caca01cd80a60e5508a72c1a191fdc58318f387f157d73dd15b")
+    message(FATAL_ERROR "vidfab: tensor-add shader/source hash mismatch")
+  endif()
+  file(READ "${VIDFAB_TENSOR_ADD_SPV}" VIDFAB_TENSOR_ADD_SPV_HEX HEX)
+  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," VIDFAB_TENSOR_ADD_SPV_BYTES
+    "${VIDFAB_TENSOR_ADD_SPV_HEX}")
+  configure_file(src/vulkan/embedded_tensor_spv.h.in
+    generated/vulkan/embedded_tensor_spv.h @ONLY)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${VIDFAB_YUV_SHADER_SOURCE}" "${VIDFAB_YUV_SHADER_SPV}")
+    "${VIDFAB_YUV_SHADER_SOURCE}" "${VIDFAB_YUV_SHADER_SPV}"
+    "${VIDFAB_TENSOR_ADD_SOURCE}" "${VIDFAB_TENSOR_ADD_SPV}")
 
   add_library(vidfab_vulkan STATIC
     src/vulkan/runtime.cpp
+    src/vulkan/tensor.cpp
     src/vulkan/yuv_converter.cpp)
   target_include_directories(vidfab_vulkan
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -1,0 +1,5 @@
+#pragma once
+#include <cstdint>
+namespace vidfab::vulkan::detail {
+inline constexpr uint8_t kTensorAddSpirv[] = {@VIDFAB_TENSOR_ADD_SPV_BYTES@};
+}  // namespace vidfab::vulkan::detail

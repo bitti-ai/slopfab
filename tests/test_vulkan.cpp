@@ -13,6 +13,7 @@
 
 #include "vidfab/vulkan/runtime.h"
 #include "vidfab/vulkan/compute.h"
+#include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/video/y4m.h"
 
@@ -327,6 +328,114 @@ VIDFAB_TEST(vulkan_compute_submission) {
   CHECK(pool.used_bytes() == 0);
   pool.trim();
   CHECK(pool.reserved_bytes() == 0);
+}
+
+VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto devices = instance.enumerate_devices();
+  if (devices.empty() || !devices.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  Device device = devices.front().create_device(options);
+  TensorContext tensors(device);
+  TensorContext other(device);
+  const uint64_t extent = 257;
+  const TensorLayout layout = TensorLayout::contiguous(&extent, 1);
+  DeviceTensor a = tensors.allocate(layout);
+  DeviceTensor b = tensors.allocate(layout);
+  DeviceTensor sum = tensors.allocate(layout);
+  DeviceTensor copied = tensors.allocate(layout);
+  DeviceTensor tail = tensors.allocate(layout);
+
+  std::vector<float> host_a(extent), host_b(extent);
+  for (size_t i = 0; i < host_a.size(); ++i) {
+    host_a[i] = static_cast<float>(static_cast<int>(i % 31) - 15) / 16.0f;
+    host_b[i] = static_cast<float>(static_cast<int>(i % 17) - 8) / 32.0f;
+  }
+  const uint32_t special_a[] = {0x00000000u, 0x80000000u, 0x00000001u,
+                                0x7f800000u, 0xff800000u, 0x7fc12345u};
+  const uint32_t special_b[] = {0x80000000u, 0x80000000u, 0x00000001u,
+                                0x3f800000u, 0xbf800000u, 0x3f800000u};
+  static_assert(sizeof(float) == sizeof(uint32_t));
+  std::memcpy(host_a.data(), special_a, sizeof(special_a));
+  std::memcpy(host_b.data(), special_b, sizeof(special_b));
+  tensors.upload(a, host_a.data(), extent);
+  tensors.upload(b, host_b.data(), extent);
+
+  // Four operators, one command buffer, one timeline submission. The first
+  // copy covers payload NaNs, signed zero, subnormal and infinities exactly;
+  // arithmetic comparisons below use the ordinary finite tail, while the
+  // CUDA/Vulkan test covers special-value arithmetic on both devices.
+  TensorBatch batch = tensors.begin_batch();
+  batch.copy(a, copied);
+  batch.add(a, b, sum);
+  batch.copy(sum, tail);
+  batch.add(sum, b, tail);
+  Submission done = batch.submit();
+  CHECK(done.value() != 0);
+  done.wait();
+
+  std::vector<float> got_sum(extent), got_copy(extent);
+  tensors.download(sum, got_sum.data(), extent);
+  tensors.download(copied, got_copy.data(), extent);
+  CHECK(std::memcmp(host_a.data(), got_copy.data(), extent * sizeof(float)) == 0);
+  for (size_t i = std::size(special_a); i < host_a.size(); ++i) {
+    const float expected = host_a[i] + host_b[i];
+    uint32_t expected_bits = 0, actual_bits = 0;
+    std::memcpy(&expected_bits, &expected, sizeof(expected_bits));
+    std::memcpy(&actual_bits, &got_sum[i], sizeof(actual_bits));
+    CHECK_MSG(expected_bits == actual_bits,
+              "fp32 add bit mismatch at %zu: %08x != %08x", i,
+              expected_bits, actual_bits);
+  }
+
+  // An abandoned recording restores speculative access tracking and releases
+  // its command slot; the same tensors remain immediately usable.
+  {
+    TensorBatch abandoned = tensors.begin_batch();
+    abandoned.add(a, b, sum);
+  }
+  tensors.copy(a, copied);
+  tensors.download(copied, got_copy.data(), extent);
+  CHECK(std::memcmp(got_copy.data(), host_a.data(), extent * sizeof(float)) == 0);
+
+  bool cross_context_rejected = false;
+  try {
+    DeviceTensor foreign = other.allocate(layout);
+    TensorBatch invalid = tensors.begin_batch();
+    invalid.copy(a, foreign);
+  } catch (const std::invalid_argument&) {
+    cross_context_rejected = true;
+  }
+  CHECK(cross_context_rejected);
+  CHECK(a.view().context != other.allocate(layout).view().context);
+
+  DeviceTensorView tail_view = a.view().slice(16, 32, 16);
+  CHECK(tail_view.byte_offset == 16);
+  bool overflow_rejected = false;
+  try {
+    (void)tail_view.slice(std::numeric_limits<uint64_t>::max(), 4, 4);
+  } catch (const std::overflow_error&) {
+    overflow_rejected = true;
+  }
+  CHECK(overflow_rejected);
+
+  TensorWorkspace& workspace = tensors.workspace();
+  const uint64_t before_workspace = tensors.reserved_bytes();
+  workspace.reserve(256);
+  WorkspaceSpan old_span = workspace.allocate(64, 32);
+  CHECK(workspace.valid(old_span));
+  TensorWorkspace foreign_workspace(device, 1024);
+  foreign_workspace.reserve(256);
+  CHECK(!foreign_workspace.valid(old_span));
+  workspace.reset();
+  workspace.reserve(512);
+  CHECK(!workspace.valid(old_span));
+  CHECK(workspace.generation() != old_span.generation);
+  CHECK(tensors.reserved_bytes() > before_workspace);
 }
 
 VIDFAB_TEST(vulkan_yuv420_output) {
