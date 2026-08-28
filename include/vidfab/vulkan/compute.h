@@ -61,6 +61,7 @@ struct StorageBinding {
 struct ComputeContextOptions {
   uint32_t max_in_flight = 4;
   uint32_t max_storage_bindings = 8;
+  uint32_t max_compute_binds_per_job = 1;
 };
 
 class Submission {

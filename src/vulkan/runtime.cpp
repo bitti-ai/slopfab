@@ -1180,8 +1180,8 @@ struct ComputeSlot {
   VkCommandPool command_pool = VK_NULL_HANDLE;
   VkCommandBuffer commands = VK_NULL_HANDLE;
   VkDescriptorPool descriptors = VK_NULL_HANDLE;
-  VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-  std::shared_ptr<void> descriptor_pipeline;
+  std::vector<VkDescriptorSet> descriptor_sets;
+  std::vector<std::shared_ptr<void>> descriptor_pipelines;
   uint64_t value = 0;
   bool reserved = false;
   bool poisoned = false;
@@ -1196,6 +1196,7 @@ struct ComputeState : std::enable_shared_from_this<ComputeState> {
   ComputeFns f;
   VkSemaphore timeline = VK_NULL_HANDLE;
   uint32_t max_bindings = 0;
+  uint32_t max_compute_binds = 0;
   uint64_t next_value = 1;
   std::vector<ComputeSlot> slots;
   mutable std::mutex mutex;
@@ -1215,7 +1216,7 @@ struct ComputeState : std::enable_shared_from_this<ComputeState> {
       if (slot.descriptors != VK_NULL_HANDLE) {
         f.destroy_descriptor_pool(device->device, slot.descriptors, nullptr);
       }
-      slot.descriptor_pipeline.reset();
+      slot.descriptor_pipelines.clear();
       if (slot.command_pool != VK_NULL_HANDLE) {
         f.destroy_command_pool(device->device, slot.command_pool, nullptr);
       }
@@ -1323,7 +1324,7 @@ struct CommandList::Impl {
   std::shared_ptr<detail::ComputeState> state;
   size_t slot = 0;
   bool recording = false;
-  bool compute_bound = false;
+  uint32_t compute_bind_count = 0;
   bool push_constants_set = false;
   std::shared_ptr<ComputePipeline::Impl> pipeline;
   std::vector<std::shared_ptr<void>> resources;
@@ -1490,22 +1491,33 @@ ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions
   if (!device.impl_->state->timeline_semaphore_enabled) {
     throw std::invalid_argument("vulkan: ComputeContext requires timeline semaphores enabled");
   }
-  if (options.max_in_flight == 0 || options.max_storage_bindings == 0) {
+  if (options.max_in_flight == 0 || options.max_storage_bindings == 0 ||
+      options.max_compute_binds_per_job == 0) {
     throw std::invalid_argument("vulkan: compute context limits must be nonzero");
+  }
+  const uint64_t descriptor_capacity =
+      static_cast<uint64_t>(options.max_storage_bindings) *
+      options.max_compute_binds_per_job;
+  if (descriptor_capacity > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan: compute descriptor capacity overflows uint32");
   }
   auto state = std::make_shared<detail::ComputeState>();
   state->device = device.impl_->state;
   state->f = detail::load_compute_fns(state->device);
   state->max_bindings = options.max_storage_bindings;
+  state->max_compute_binds = options.max_compute_binds_per_job;
 
   try {
     state->slots.resize(options.max_in_flight);
     for (uint32_t i = 0; i < options.max_in_flight; ++i) {
       auto& slot = state->slots[i];
-      slot.resources.reserve(static_cast<size_t>(options.max_storage_bindings) + 8);
+      slot.resources.reserve(static_cast<size_t>(descriptor_capacity) +
+                             options.max_compute_binds_per_job + 8);
       slot.seen_bindings.reserve(options.max_storage_bindings);
       slot.descriptor_infos.reserve(options.max_storage_bindings);
       slot.descriptor_writes.reserve(options.max_storage_bindings);
+      slot.descriptor_sets.resize(options.max_compute_binds_per_job, VK_NULL_HANDLE);
+      slot.descriptor_pipelines.resize(options.max_compute_binds_per_job);
       VkCommandPoolCreateInfo pool_create{};
       pool_create.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
       pool_create.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1523,10 +1535,10 @@ ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions
                     "vkAllocateCommandBuffers");
       VkDescriptorPoolSize size{};
       size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      size.descriptorCount = options.max_storage_bindings;
+      size.descriptorCount = static_cast<uint32_t>(descriptor_capacity);
       VkDescriptorPoolCreateInfo descriptor_create{};
       descriptor_create.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-      descriptor_create.maxSets = 1;
+      descriptor_create.maxSets = options.max_compute_binds_per_job;
       descriptor_create.poolSizeCount = 1;
       descriptor_create.pPoolSizes = &size;
       detail::check(state->f.create_descriptor_pool(state->device->device, &descriptor_create,
@@ -1743,7 +1755,9 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
   if (pipeline.impl_->device != impl_->state->device) {
     throw std::invalid_argument("vulkan: pipeline belongs to another device");
   }
-  if (impl_->compute_bound) throw std::logic_error("vulkan: one compute bind is allowed per job");
+  if (impl_->compute_bind_count >= impl_->state->max_compute_binds) {
+    throw std::logic_error("vulkan: compute binds exceed per-job limit");
+  }
   if (bindings.size() != pipeline.impl_->options.storage_binding_count ||
       bindings.size() > impl_->state->max_bindings) {
     throw std::invalid_argument("vulkan: storage binding count mismatch");
@@ -1786,23 +1800,36 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
   impl_->resources.reserve(impl_->resources.size() + bindings.size() + 1);
   for (const auto& binding : bindings) impl_->retain(binding.buffer->impl_);
   impl_->retain(pipeline.impl_);
-  if (slot.descriptor_pipeline.get() != pipeline.impl_.get()) {
-    detail::check(impl_->state->f.reset_descriptor_pool(impl_->state->device->device,
-                                                        slot.descriptors, 0),
-                  "vkResetDescriptorPool");
-    slot.descriptor_set = VK_NULL_HANDLE;
-    slot.descriptor_pipeline.reset();
+  const uint32_t set_index = impl_->compute_bind_count;
+  if (slot.descriptor_pipelines[set_index].get() != pipeline.impl_.get()) {
+    if (set_index == 0) {
+      // Safe only before this command list refers to a descriptor set. Stable
+      // operator sequences take the allocation-free path across submissions.
+      detail::check(impl_->state->f.reset_descriptor_pool(impl_->state->device->device,
+                                                          slot.descriptors, 0),
+                    "vkResetDescriptorPool");
+      std::fill(slot.descriptor_sets.begin(), slot.descriptor_sets.end(), VK_NULL_HANDLE);
+      std::fill(slot.descriptor_pipelines.begin(), slot.descriptor_pipelines.end(), nullptr);
+    } else if (slot.descriptor_sets[set_index] != VK_NULL_HANDLE) {
+      throw std::logic_error(
+          "vulkan: compute pipeline sequence changed within cached descriptor capacity");
+    }
+  }
+  if (slot.descriptor_sets[set_index] == VK_NULL_HANDLE) {
     VkDescriptorSetAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocate.descriptorPool = slot.descriptors;
     allocate.descriptorSetCount = 1;
     allocate.pSetLayouts = &pipeline.impl_->descriptor_layout;
     detail::check(impl_->state->f.allocate_descriptor_sets(
-                      impl_->state->device->device, &allocate, &slot.descriptor_set),
+                      impl_->state->device->device, &allocate,
+                      &slot.descriptor_sets[set_index]),
                   "vkAllocateDescriptorSets");
-    slot.descriptor_pipeline = pipeline.impl_;
+    slot.descriptor_pipelines[set_index] = pipeline.impl_;
   }
-  for (auto& write : slot.descriptor_writes) write.dstSet = slot.descriptor_set;
+  for (auto& write : slot.descriptor_writes) {
+    write.dstSet = slot.descriptor_sets[set_index];
+  }
   impl_->state->f.update_descriptor_sets(impl_->state->device->device,
       static_cast<uint32_t>(slot.descriptor_writes.size()), slot.descriptor_writes.data(),
       0, nullptr);
@@ -1811,10 +1838,11 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
                                     pipeline.impl_->pipeline);
   impl_->state->f.cmd_bind_descriptor_sets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
                                            pipeline.impl_->pipeline_layout, 0, 1,
-                                           &slot.descriptor_set,
+                                           &slot.descriptor_sets[set_index],
                                            0, nullptr);
   impl_->pipeline = pipeline.impl_;
-  impl_->compute_bound = true;
+  impl_->push_constants_set = false;
+  ++impl_->compute_bind_count;
 }
 
 void CommandList::push_constants(const void* data, uint32_t bytes) {
