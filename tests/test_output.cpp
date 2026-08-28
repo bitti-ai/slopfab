@@ -26,6 +26,7 @@
 #include "vidfab/audio/wav.h"
 #include "vidfab/video/mux.h"
 #include "vidfab/video/y4m.h"
+#include "vidfab/video/y4m_compare.h"
 
 namespace {
 
@@ -596,6 +597,38 @@ VIDFAB_TEST(y4m_removes_partial_file_when_converter_throws) {
   CHECK(preserved);
   CHECK(converter.calls == 2);
   CHECK(!std::filesystem::exists(path));
+}
+
+VIDFAB_TEST(y4m_exact_comparison_reports_first_byte) {
+  using namespace vidfab::video;
+  const auto expected_path = temp_path("vidfab_compare_expected.y4m");
+  const auto actual_path = temp_path("vidfab_compare_actual.y4m");
+  const vidfab::PixelBuffer clip = make_clip(2, 6, 10);
+  write_y4m(expected_path.string(), clip, 2, 6, 10);
+  write_y4m(actual_path.string(), clip, 2, 6, 10);
+  ExactY4mComparison comparison =
+      compare_y4m_exact(expected_path.string(), actual_path.string());
+  CHECK(comparison.equal());
+  CHECK(comparison.expected_size == comparison.actual_size);
+  CHECK(comparison.expected_header == comparison.actual_header);
+
+  {
+    std::fstream actual(actual_path, std::ios::binary | std::ios::in | std::ios::out);
+    actual.seekg(-1, std::ios::end);
+    char byte = 0;
+    actual.get(byte);
+    byte ^= 0x01;
+    actual.seekp(-1, std::ios::end);
+    actual.put(byte);
+  }
+  comparison = compare_y4m_exact(expected_path.string(), actual_path.string());
+  CHECK(!comparison.equal());
+  CHECK(comparison.first_difference + 1 == comparison.expected_size);
+  CHECK(comparison.expected_byte >= 0);
+  CHECK(comparison.actual_byte >= 0);
+
+  std::filesystem::remove(expected_path);
+  std::filesystem::remove(actual_path);
 }
 
 // --- ffmpeg ----------------------------------------------------------------

@@ -36,6 +36,7 @@
 #include "vidfab/text/tokenizer.h"
 
 #include "vidfab/video/y4m.h"
+#include "vidfab/video/y4m_compare.h"
 
 #if VIDFAB_WITH_VULKAN
 #include "vidfab/vulkan/runtime.h"
@@ -480,6 +481,9 @@ const CommandHelp kCommands[] = {
      "  --count <n>                  generate n videos; explicit seeds increment by one,\n"
      "                               random ones are drawn afresh for each\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
+     "  --inference-backend cuda|vulkan\n"
+     "                               neural model backend (default cuda); Vulkan\n"
+     "                               inference is not implemented and is rejected\n"
      "  --output-accelerator cpu|vulkan\n"
      "                               RGB-to-YUV output conversion only (default cpu);\n"
      "                               model inference remains CUDA\n"
@@ -620,6 +624,10 @@ const CommandHelp kCommands[] = {
      "both sides are finite. Matching global statistics with falling\n"
      "correlation is this project's signature of a different sample rather\n"
      "than a degraded one -- see the README.\n"},
+    {"compare-y4m", "vidfab compare-y4m <expected.y4m> <actual.y4m>",
+     "byte-compare deterministic raw video outputs",
+     "Reports both headers, sizes, and the first differing byte. The command\n"
+     "streams its inputs and returns non-zero for any difference.\n"},
     {"decode", "vidfab decode --vae <f> [--latent <f>] [options]",
      "run the video VAE decoder",
      "  --vae <f>                    video VAE checkpoint\n"
@@ -902,6 +910,38 @@ int cmd_compare(int argc, char** argv) {
     std::printf("worst absolute error %.3e in %s\n", worst_abs, worst_name.c_str());
   }
   return (failed == 0 && missing == 0) ? 0 : 1;
+}
+
+int cmd_compare_y4m(int argc, char** argv) {
+  if (wants_help(argc, argv)) return print_command_help(*find_command("compare-y4m"));
+  if (argc != 2) {
+    std::fprintf(stderr, "vidfab: compare-y4m needs expected and actual paths\n");
+    return 2;
+  }
+  const vidfab::video::ExactY4mComparison result =
+      vidfab::video::compare_y4m_exact(argv[0], argv[1]);
+  std::printf("expected   %s (%llu bytes)\n", argv[0],
+              static_cast<unsigned long long>(result.expected_size));
+  std::printf("           %s\n", result.expected_header.c_str());
+  std::printf("actual     %s (%llu bytes)\n", argv[1],
+              static_cast<unsigned long long>(result.actual_size));
+  std::printf("           %s\n", result.actual_header.c_str());
+  if (result.equal()) {
+    std::printf("exact      yes (all bytes identical)\n");
+    return 0;
+  }
+  std::printf("exact      no; first difference at byte %llu: expected ",
+              static_cast<unsigned long long>(result.first_difference));
+  if (result.expected_byte < 0)
+    std::printf("<EOF>");
+  else
+    std::printf("0x%02x", result.expected_byte);
+  std::printf(", actual ");
+  if (result.actual_byte < 0)
+    std::printf("<EOF>\n");
+  else
+    std::printf("0x%02x\n", result.actual_byte);
+  return 1;
 }
 
 #if VIDFAB_WITH_CUDA
@@ -1201,6 +1241,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_out = false;
   bool saw_seed = false;
   int count = 1;
+  std::string inference_backend = "cuda";
   std::string output_accelerator = "cpu";
 
   for (int i = 0; i < argc; ++i) {
@@ -1290,6 +1331,14 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.reference_image_paths.emplace_back(next("--reference-image"));
     } else if (arg == "--raw") {
       req.raw_output = true;
+    } else if (arg == "--inference-backend") {
+      inference_backend = next("--inference-backend");
+      if (inference_backend != "cuda" && inference_backend != "vulkan") {
+        std::fprintf(stderr,
+                     "vidfab: --inference-backend wants cuda or vulkan, got '%s'\n",
+                     inference_backend.c_str());
+        return 2;
+      }
     } else if (arg == "--output-accelerator") {
       output_accelerator = next("--output-accelerator");
       if (output_accelerator != "cpu" && output_accelerator != "vulkan") {
@@ -1360,6 +1409,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
       return 2;
     }
+  }
+
+  if (inference_backend == "vulkan") {
+    std::fprintf(stderr,
+                 "vidfab: Vulkan neural inference is not implemented; "
+                 "--output-accelerator vulkan accelerates RGB-to-YUV only\n");
+    return 1;
   }
 
   // Both write the same field, so accepting both would mean silently honouring
@@ -1733,6 +1789,7 @@ int main(int argc, char** argv) {
     if (command == "generate") return cmd_generate(argc - 2, argv + 2, argv[0]);
     if (command == "inspect") return cmd_inspect(argc - 2, argv + 2);
     if (command == "compare") return cmd_compare(argc - 2, argv + 2);
+    if (command == "compare-y4m") return cmd_compare_y4m(argc - 2, argv + 2);
     if (command == "devices") return cmd_devices();
     if (command == "tokenize") return cmd_tokenize(argc - 2, argv + 2);
 #if VIDFAB_WITH_CUDA

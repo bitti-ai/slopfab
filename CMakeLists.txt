@@ -59,6 +59,7 @@ add_library(vidfab_core STATIC
   src/text/tokenizer.cpp
   src/text/qwen_vision.cpp
   src/video/y4m.cpp
+  src/video/y4m_compare.cpp
   src/audio/wav.cpp
 )
 
