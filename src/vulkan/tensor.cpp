@@ -16,6 +16,7 @@ namespace vidfab::vulkan {
 struct DeviceTensor::Impl {
   Buffer buffer;
   TensorLayout layout;
+  std::shared_ptr<void> context_owner;
   uintptr_t context = 0;
   bool has_access = false;
   BufferAccess access = BufferAccess::kTransferWrite;
@@ -45,6 +46,7 @@ struct TensorContext::Impl {
   Buffer readback_buffer;
   uint64_t staging_capacity = 0;
   std::vector<StorageBinding> bindings;
+  std::shared_ptr<void> context_identity = std::make_shared<uint8_t>(uint8_t{0});
 
   explicit Impl(const Device& input)
       : commands(input, [] {
@@ -68,7 +70,7 @@ struct TensorContext::Impl {
     options.local_size[0] = 64;
     add_pipeline = ComputePipeline::create(input, spirv, options);
     for (uint32_t i = 0; i < bindings.size(); ++i) bindings[i].binding = i;
-    context_id = reinterpret_cast<uintptr_t>(this);
+    context_id = reinterpret_cast<uintptr_t>(context_identity.get());
   }
 
   uintptr_t context_id = 0;
@@ -85,7 +87,7 @@ struct TensorContext::Impl {
   }
 
   std::shared_ptr<DeviceTensor::Impl> require(DeviceTensor& tensor) const {
-    if (!tensor.impl_ || tensor.impl_->context != context_id) {
+    if (!tensor.impl_ || tensor.impl_->context_owner != context_identity) {
       throw std::invalid_argument("vulkan tensor: tensor belongs to another context");
     }
     return tensor.impl_;
@@ -239,6 +241,7 @@ DeviceTensor TensorContext::allocate(const TensorLayout& layout) {
                  BufferUsage::kTransferDestination,
       MemoryUsage::kDevice);
   tensor->layout = layout;
+  tensor->context_owner = impl_->context_identity;
   tensor->context = impl_->context_id;
   return DeviceTensor(std::move(tensor));
 }
