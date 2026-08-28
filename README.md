@@ -21,7 +21,7 @@ than approximately.
 
 | Dependency | Why | Linkage |
 |---|---|---|
-| CUDA runtime + cuBLAS | kernels, GEMM | static (dynamic under [`VIDFAB_BUILD_SHARED`](#building-as-a-shared-library)) |
+| CUDA runtime + cuBLAS | kernels, GEMM | runtime embedded; cuBLAS dynamic |
 | C++17 standard library | — | — |
 | ffmpeg | MP4/AAC muxing only | **dynamic, resolved at runtime** |
 
@@ -56,75 +56,24 @@ nvfp4. Override with `-DCMAKE_CUDA_ARCHITECTURES=90` for Hopper, which has no
 nvfp4 at all. The core library and CLI build without CUDA; the decoder does
 not.
 
-### Building as a shared library
-
-`-DVIDFAB_BUILD_SHARED=ON` builds `vidfab_core` and `vidfab_cuda` as shared
-libraries instead of static ones, so the pipeline can be driven from another
-program rather than only from `vidfab generate`. `include/vidfab/pipeline.h`
-and `include/vidfab/generate.h` are the two entry points that matter:
-`resolve_plan` turns a `GenerateRequest` into a validated plan without touching
-a weight file, and `run_generate` executes it.
-
-```sh
-cmake -S . -B build-shared -DVIDFAB_BUILD_SHARED=ON
-cmake --build build-shared --config Release
-cmake --install build-shared --config Release --prefix <somewhere>
-```
-
-Both libraries switch together, and the CLI, tools and tests all link the
-shared build when it is on — so `ctest` exercises exactly the configuration
-that gets installed rather than a static twin of it.
-
-Four things are worth knowing before depending on it.
-
-- **It is a C++ ABI with no stability promise.** `std::string` and
-  `std::vector` cross nearly every signature and exceptions propagate out of
-  them, so a consumer must be built with the same compiler and, on MSVC, the
-  same CRT (`/MD`). This is not a C API and does not pretend to be one.
-- **Symbols are exported wholesale**, via `WINDOWS_EXPORT_ALL_SYMBOLS` on
-  Windows and default visibility elsewhere, rather than through an annotation
-  on each declaration. So the export set is whatever `include/` declares. That
-  works because nothing here exports mutable data — every constant is
-  `constexpr` and both profiler singletons are defined out of line in one
-  translation unit. Adding an `extern` to a header would break it silently on
-  Windows, where auto-exported data still needs `dllimport` at the consumer.
-- **The CUDA runtime stays statically linked, in both configurations**, so a
-  shared build adds no DLL beyond the two vidfab ones. Switching it to
-  `CUDA_RUNTIME_LIBRARY=Shared` for the shared build was tried and reverted: on
-  CUDA 13.0.48 `nvcc` reports `'shared' is a deprecated value for option
-  --cudart`, and the resulting `vidfab_cuda.dll` imports no `cudart64_13.dll`,
-  names it nowhere in its image, and carries the runtime embedded exactly as
-  the static setting does. The one thing that attempt did surface was real and
-  is fixed: `vidfab_cuda` now names `CUDA::cudart_static` as a public
-  dependency, because a consumer with no CUDA *sources* of its own used to pick
-  the runtime up from the static archive by accident and cannot across a DLL
-  boundary.
-- **The embedded tokenizer moves into `vidfab_core.dll`.** `load_embedded()`
-  now resolves the resource against the module holding its own code rather than
-  against the process, so it works whether the host program is `vidfab.exe` or
-  something else entirely. The 7 MB payload is in one module, not both.
-
 ### The C API
 
-`vidfab_c.dll` is the answer to everything the previous section warns about. It
-exports a flat C ABI — `include/vidfab/capi.h` — that survives a toolchain
-mismatch, so Rust, C#, Python, Go and plain C can drive the pipeline. It is
-built by default; `-DVIDFAB_BUILD_C_API=OFF` turns it off.
+`vidfab.dll` exports the flat C ABI in `include/vidfab/capi.h`, so Rust, C#,
+Python, Go and plain C can drive the pipeline without depending on a C++ ABI.
+It is built by default; `-DVIDFAB_BUILD_C_API=OFF` turns it off.
 
 ```sh
 cmake -S . -B build-dll -DVIDFAB_WITH_FFMPEG=OFF
 cmake --build build-dll --config Release --target vidfab_c
 ```
 
-With the default `-DVIDFAB_BUILD_SHARED=OFF`, `vidfab_core` and `vidfab_cuda`
-are static and link *into* `vidfab_c.dll`, so all of this project's own code is
-in one module whose export table is exactly the C entry points — no C++
-symbols, no second vidfab DLL, and no way to reach the unstable interface by
-accident.
+`vidfab_core` and `vidfab_cuda` are internal static libraries that link into
+`vidfab.dll`. It is therefore the only vidfab DLL, and its export table contains
+exactly the stable C entry points rather than the internal C++ symbols.
 
 It is not dependency-free, though, and the mistake is invisible on a machine
 with the CUDA toolkit installed. The CUDA runtime is embedded, but cuBLAS is
-not: `vidfab_c.dll` imports `cublas64_<major>.dll` at load time, which pulls
+not: `vidfab.dll` imports `cublas64_<major>.dll` at load time, which pulls
 `cublasLt64_<major>.dll` with it. On a development box those resolve off
 `PATH`; on a consumer's machine the process fails at `LoadLibrary` with no
 useful message. `cmake --install` places both beside the DLL — linking them

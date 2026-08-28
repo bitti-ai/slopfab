@@ -8,8 +8,9 @@
 // wrapped, every throw becomes a status code, and the message goes into
 // thread-local storage for `vidfab_last_error`.
 //
-// This is the only translation unit in vidfab_c, the DLL that carries the C
-// ABI, and it is compiled into that target *alone*. It links vidfab_cuda,
+// This is the only translation unit in vidfab_c, the target that builds
+// vidfab.dll and carries the C ABI, and it is compiled into that target
+// *alone*. It links vidfab_cuda,
 // because `run_generate` is declared in vidfab/generate.h and implemented on
 // the CUDA side — so a consumer that only wants the weight-free plan
 // resolution still pulls the CUDA half in. That is a real cost, and the

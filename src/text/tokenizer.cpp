@@ -943,16 +943,15 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
 namespace {
 
 // The module this translation unit was linked into, which is where the
-// tokenizer resource lives: the executable in a static build, vidfab_core.dll
-// in a shared one.
+// tokenizer resource lives: either vidfab.exe or vidfab.dll.
 //
 // `FindResourceW(nullptr, ...)` asks for the *process* module instead, i.e.
-// always the executable. That is the same module in a static build and the
-// wrong one in a shared build, where the executable is whatever application
-// loaded the DLL and carries no resource 101 at all — or, worse, carries an
-// unrelated RCDATA 101 of its own, which would be handed to `load_json` as a
-// tokenizer. Anchoring on an address inside this module is correct in both
-// configurations rather than in one of them.
+// always the executable. That is correct for the CLI but wrong when an
+// application loads vidfab.dll and carries no resource 101 at all — or, worse,
+// carries an unrelated RCDATA 101 of its own, which would be handed to
+// `load_json` as a
+// tokenizer. Anchoring on an address inside this module is correct for both
+// outputs.
 HMODULE containing_module() {
   HMODULE module = nullptr;
   GetModuleHandleExW(
