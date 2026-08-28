@@ -17,6 +17,7 @@
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/video/y4m.h"
+#include "../src/vulkan/tensor_validation.h"
 
 namespace {
 
@@ -882,6 +883,12 @@ VIDFAB_TEST(vulkan_tensor_exact_vae_norms) {
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) return;
   const DeviceInfo& info = physical.front().info();
+  CHECK(!detail::norm_dispatch_fits(0, info.max_compute_workgroup_count[0]));
+  CHECK(detail::norm_dispatch_fits(info.max_compute_workgroup_count[0],
+                                   info.max_compute_workgroup_count[0]));
+  CHECK(!detail::norm_dispatch_fits(
+      static_cast<uint64_t>(info.max_compute_workgroup_count[0]) + 1,
+      info.max_compute_workgroup_count[0]));
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
   Device device = physical.front().create_device(options);

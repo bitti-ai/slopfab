@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "embedded_tensor_spv.h"
+#include "tensor_validation.h"
 #include "vidfab/vulkan/compute.h"
 
 namespace vidfab::vulkan {
@@ -872,7 +873,9 @@ void TensorBatch::rms_norm(DeviceTensor& input, DeviceTensor& weight,
       shape.elements() > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: invalid fp32 RMSNorm");
   }
-  impl_->owner->validate_dispatch(shape.extent[0]);
+  if (!detail::norm_dispatch_fits(shape.extent[0], impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range("vulkan tensor: RMSNorm row count exceeds dispatch limits");
+  }
   TensorContext::Impl::NormParameters p;
   p.rows = static_cast<uint32_t>(shape.extent[0]);
   p.dim = static_cast<uint32_t>(shape.extent[1]);
@@ -917,7 +920,9 @@ void TensorBatch::layer_norm(DeviceTensor& input, DeviceTensor& weight,
       shape.elements() > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: invalid fp32 LayerNorm");
   }
-  impl_->owner->validate_dispatch(shape.extent[0]);
+  if (!detail::norm_dispatch_fits(shape.extent[0], impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range("vulkan tensor: LayerNorm row count exceeds dispatch limits");
+  }
   TensorContext::Impl::NormParameters p;
   p.rows = static_cast<uint32_t>(shape.extent[0]);
   p.dim = static_cast<uint32_t>(shape.extent[1]);
