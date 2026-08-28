@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
 #if defined(BF16_RMS_NARROW)
 layout(local_size_x = 32, local_size_y = 8) in;
@@ -29,10 +30,151 @@ layout(push_constant) uniform Parameters {
 
 shared float lane_values[256];
 shared float warp_values[8];
+shared uint inverse_bits[8];
 #if defined(BF16_RMS_NARROW)
 shared float xor_values[256];
 shared float xor_next[256];
 #endif
+
+uint64_t round_shift_even(uint64_t value, uint shift) {
+  uint64_t quotient = value >> shift;
+  uint64_t remainder = value & ((uint64_t(1) << shift) - uint64_t(1));
+  uint64_t halfway = uint64_t(1) << (shift - 1u);
+  return quotient + uint64_t(remainder > halfway ||
+                              (remainder == halfway && (quotient & uint64_t(1)) != 0));
+}
+
+int highest_bit(uint value) {
+  int result = 0;
+  for (uint scan = value; (scan >>= 1u) != 0u;) ++result;
+  return result;
+}
+
+uint positive_float_div_uint(uint bits, uint divisor) {
+  if ((bits & 0x7fffffffu) == 0u) return 0u;
+  if ((bits & 0x7f800000u) == 0x7f800000u) return bits;
+  uint significand = bits & 0x007fffffu;
+  int exponent;
+  if ((bits & 0x7f800000u) == 0u) {
+    int top = highest_bit(significand); exponent = top - 149; significand <<= uint(23-top);
+  } else {
+    exponent = int((bits >> 23u) & 0xffu) - 127; significand |= 0x00800000u;
+  }
+  int ratio_exponent = highest_bit(significand) - highest_bit(divisor);
+  bool below = ratio_exponent >= 0
+      ? uint64_t(significand) < (uint64_t(divisor) << uint(ratio_exponent))
+      : (uint64_t(significand) << uint(-ratio_exponent)) < uint64_t(divisor);
+  if (below) --ratio_exponent;
+  int output_exponent = exponent - 23 + ratio_exponent;
+  if (output_exponent >= -126) {
+    uint shift = uint(23 - ratio_exponent);
+    uint64_t numerator = uint64_t(significand) << shift;
+    uint64_t rounded = numerator / uint64_t(divisor);
+    uint64_t remainder = numerator % uint64_t(divisor);
+    rounded += uint64_t(remainder > uint64_t(divisor / 2u) ||
+        (remainder * uint64_t(2) == uint64_t(divisor) && (rounded & uint64_t(1)) != 0));
+    if (rounded == (uint64_t(1) << 24u)) { rounded >>= 1u; ++output_exponent; }
+    return uint(output_exponent + 127) << 23u | uint(rounded) & 0x007fffffu;
+  }
+  int subnormal_shift = exponent - 23 + 149;
+  uint64_t numerator = uint64_t(significand), denominator = uint64_t(divisor);
+  if (subnormal_shift >= 0) numerator <<= uint(subnormal_shift);
+  else if (-subnormal_shift < 32) denominator <<= uint(-subnormal_shift);
+  else return 0u;
+  uint64_t rounded = numerator / denominator;
+  uint64_t remainder = numerator % denominator;
+  rounded += uint64_t(remainder > denominator / uint64_t(2) ||
+      (remainder * uint64_t(2) == denominator && (rounded & uint64_t(1)) != 0));
+  return uint(rounded);
+}
+
+void decode_positive(uint bits, out uint significand, out int exponent) {
+  significand = bits & 0x007fffffu;
+  if ((bits & 0x7f800000u) == 0u) {
+    int top = highest_bit(significand); exponent = top - 149; significand <<= uint(23-top);
+  } else { exponent = int((bits >> 23u) & 0xffu) - 127; significand |= 0x00800000u; }
+}
+
+uint positive_float_add(uint a_bits, uint b_bits) {
+  if ((a_bits & 0x7fffffffu) == 0u) return b_bits;
+  if ((b_bits & 0x7fffffffu) == 0u) return a_bits;
+  uint a, b; int ae, be; decode_positive(a_bits,a,ae); decode_positive(b_bits,b,be);
+  if (ae < be || (ae == be && a < b)) { uint t=a; a=b; b=t; int te=ae; ae=be; be=te; }
+  uint difference = uint(ae-be);
+  uint64_t a_ext = uint64_t(a)<<3u, b_ext = uint64_t(b)<<3u;
+  if (difference != 0u) {
+    if (difference >= 63u) b_ext=uint64_t(1);
+    else { uint64_t lost=b_ext&((uint64_t(1)<<difference)-uint64_t(1)); b_ext=(b_ext>>difference)|uint64_t(lost!=0); }
+  }
+  uint64_t sum=a_ext+b_ext;
+  if (sum >= (uint64_t(1)<<27u)) { sum=(sum>>1u)|(sum&uint64_t(1)); ++ae; }
+  uint64_t rounded=sum>>3u, remainder=sum&uint64_t(7);
+  rounded += uint64_t(remainder>uint64_t(4)||(remainder==uint64_t(4)&&(rounded&uint64_t(1))!=0));
+  if (rounded==(uint64_t(1)<<24u)) { rounded>>=1u; ++ae; }
+  return uint(ae+127)<<23u | uint(rounded)&0x007fffffu;
+}
+
+float deterministic_divide(float value, uint divisor) {
+  uint bits = floatBitsToUint(value);
+  uint divided = positive_float_div_uint(bits & 0x7fffffffu, divisor);
+  return uintBitsToFloat(divided | (bits & 0x80000000u));
+}
+
+float deterministic_rsqrt(float value) {
+  uint bits = floatBitsToUint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude == 0u)
+    return uintBitsToFloat((bits & 0x80000000u) | 0x7f800000u);
+  if ((bits & 0x80000000u) != 0u || magnitude > 0x7f800000u)
+    return uintBitsToFloat(0x7fc00000u);
+  if (magnitude == 0x7f800000u) return 0.0f;
+  uint significand = magnitude & 0x007fffffu;
+  int exponent;
+  if (magnitude < 0x00800000u) {
+    int leading = 0;
+    for (uint scan = significand; (scan >>= 1u) != 0u;) ++leading;
+    exponent = leading - 149;
+    significand <<= uint(23 - leading);
+  } else {
+    exponent = int((magnitude >> 23u) & 0xffu) - 127;
+    significand |= 0x00800000u;
+  }
+  int parity = exponent & 1;
+  uint64_t mantissa_q30 = uint64_t(significand) << uint(7 + parity);
+  int scale_exponent = -(exponent - parity) / 2;
+  uint64_t estimate_q30 = parity != 0 ? uint64_t(637534208) : uint64_t(872415232);
+  for (uint iteration = 0u; iteration < 6u; ++iteration) {
+    uint64_t square_q30 = round_shift_even(estimate_q30 * estimate_q30, 30u);
+    uint64_t product_q30 = round_shift_even(mantissa_q30 * square_q30, 30u);
+    uint64_t correction_q30 = uint64_t(3) * (uint64_t(1) << 30u) - product_q30;
+    estimate_q30 = round_shift_even(estimate_q30 * correction_q30, 31u);
+  }
+  int top = 0;
+  for (uint64_t scan = estimate_q30; (scan >>= 1u) != uint64_t(0);) ++top;
+  uint shift = uint(top - 23);
+  uint64_t rounded = round_shift_even(estimate_q30, shift);
+  if (rounded == (uint64_t(1) << 24u)) {
+    rounded >>= 1u;
+    ++top;
+  }
+  int output_exponent = top - 30 + scale_exponent;
+  uint output_bits = uint(output_exponent + 127) << 23u |
+                     uint(rounded) & 0x007fffffu;
+  return uintBitsToFloat(output_bits);
+}
+
+float deterministic_norm_rsqrt(float sum, uint divisor, float epsilon) {
+  uint quotient = positive_float_div_uint(floatBitsToUint(sum), divisor);
+  uint base = positive_float_add(quotient, floatBitsToUint(epsilon));
+  return deterministic_rsqrt(uintBitsToFloat(base));
+}
+
+float block_norm_inverse(float sum, uint divisor, float epsilon) {
+  if (gl_LocalInvocationIndex == 0u)
+    inverse_bits[0] = floatBitsToUint(deterministic_norm_rsqrt(sum, divisor, epsilon));
+  barrier();
+  return uintBitsToFloat(inverse_bits[0]);
+}
 
 float load_bf16_input(uint index) {
   uint packed = input_data.data[index >> 1u];
@@ -160,9 +302,12 @@ void main() {
   }
   float total = source_is_values ? xor_values[local_row * 32u]
                                  : xor_next[local_row * 32u];
+  if (lane == 0u && valid_row)
+    inverse_bits[local_row] = floatBitsToUint(deterministic_norm_rsqrt(
+        total, parameters.dim, uintBitsToFloat(parameters.epsilon_bits)));
+  barrier();
   if (!valid_row) return;
-  float inv = inversesqrt(total / float(parameters.dim) +
-                          uintBitsToFloat(parameters.epsilon_bits));
+  float inv = uintBitsToFloat(inverse_bits[local_row]);
   uint pairs = (parameters.dim + 1u) >> 1u;
   for (uint pair = lane; pair < pairs; pair += 32u) {
     uint col = pair * 2u;
@@ -187,14 +332,14 @@ void main() {
   float local_sum = 0.0f;
   for (uint col = tid; col < parameters.dim; col += 256u)
     local_sum = local_sum + load_bf16_input(base + col);
-  float mean = block_reduce_sum(local_sum) / float(parameters.dim);
+  float mean = deterministic_divide(block_reduce_sum(local_sum), parameters.dim);
   barrier();
   float local_sq = 0.0f;
   for (uint col = tid; col < parameters.dim; col += 256u) {
     precise float delta = load_bf16_input(base + col) - mean;
     local_sq = fma(delta, delta, local_sq);
   }
-  float inv = inversesqrt(block_reduce_sum(local_sq) / float(parameters.dim) + epsilon);
+  float inv = block_norm_inverse(block_reduce_sum(local_sq), parameters.dim, epsilon);
   uint pairs = (parameters.dim + 1u) >> 1u;
   for (uint pair = tid; pair < pairs; pair += 256u) {
     uint col = pair * 2u;
@@ -210,8 +355,8 @@ void main() {
     store_bf16_pair(row, col, lo, hi);
   }
 #elif defined(BF16_RMS_BLOCK)
-  float inv = inversesqrt(block_reduce_sum(block_local_sum(row, tid)) /
-                          float(parameters.dim) + epsilon);
+  float inv = block_norm_inverse(block_reduce_sum(block_local_sum(row, tid)),
+                                 parameters.dim, epsilon);
   uint pairs = (parameters.dim + 1u) >> 1u;
   for (uint pair = tid; pair < pairs; pair += 256u) {
     uint col = pair * 2u;
@@ -247,7 +392,8 @@ void main() {
     }
   }
 #endif
-  float inv = inversesqrt(block_reduce_sum(local_sq) / float(parameters.dim) + epsilon);
+  float total_sq = block_reduce_sum(local_sq);
+  precise float inv = block_norm_inverse(total_sq, parameters.dim, epsilon);
   uint iterations =
 #if defined(BF16_MOD)
       (parameters.dim + 1u) >> 1u;

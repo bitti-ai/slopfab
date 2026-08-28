@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/deterministic_math.cuh"
 
 namespace vidfab::cuda {
 namespace {
@@ -50,6 +51,13 @@ __device__ inline float block_reduce_sum(float value, float* shared) {
     }
     if (lane == 0) shared[0] = value;
   }
+  __syncthreads();
+  return shared[0];
+}
+
+__device__ inline float block_norm_inverse(float sum, uint32_t dim, float eps,
+                                           float* shared) {
+  if (threadIdx.x == 0) shared[0] = deterministic_norm_rsqrt(sum, dim, eps);
   __syncthreads();
   return shared[0];
 }
@@ -142,7 +150,8 @@ __device__ inline void rmsnorm_body(const XT* xr, const WT* w, OT* outr, int dim
 #pragma unroll
     for (int i = 0; i < VEC; ++i) sum_sq += buf[i] * buf[i];
   }
-  const float inv = rsqrtf(block_reduce_sum(sum_sq, shared) / static_cast<float>(dim) + eps);
+  const float inv = block_norm_inverse(block_reduce_sum(sum_sq, shared),
+                                       static_cast<uint32_t>(dim), eps, shared);
 
   float wbuf[VEC];
   for (int p = threadIdx.x; p < packs; p += blockDim.x) {
@@ -181,13 +190,15 @@ __global__ void layernorm_affine_kernel(const __nv_bfloat16* __restrict__ x,
   const size_t base = static_cast<size_t>(blockIdx.x) * dim;
   float sum = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += __bfloat162float(x[base + i]);
-  const float mean = block_reduce_sum(sum, shared) / dim;
+  const float mean = deterministic_divide(block_reduce_sum(sum, shared),
+                                           static_cast<uint32_t>(dim));
   __syncthreads();
   float sq = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
     const float d = __bfloat162float(x[base + i]) - mean; sq += d * d;
   }
-  const float inv = rsqrtf(block_reduce_sum(sq, shared) / dim + eps);
+  const float inv = block_norm_inverse(block_reduce_sum(sq, shared),
+                                       static_cast<uint32_t>(dim), eps, shared);
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
     const float y = (__bfloat162float(x[base + i]) - mean) * inv * __bfloat162float(w[i]) +
                     __bfloat162float(bias[i]);
@@ -234,7 +245,10 @@ __global__ void rmsnorm_warp_kernel(const XT* __restrict__ x, const WT* __restri
   for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
     sum_sq += __shfl_xor_sync(0xFFFFFFFFu, sum_sq, offset);
   }
-  const float inv = rsqrtf(sum_sq / static_cast<float>(dim) + eps);
+  float inv = lane == 0
+                  ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(dim), eps)
+                  : 0.0f;
+  inv = __shfl_sync(0xFFFFFFFFu, inv, 0);
 
   if (active) {
     float wbuf[VEC];
@@ -271,7 +285,8 @@ __device__ inline void modulate_body(const XT* xr, const WT* w, const float* sca
 #pragma unroll
     for (int i = 0; i < VEC; ++i) sum_sq += buf[i] * buf[i];
   }
-  const float inv = rsqrtf(block_reduce_sum(sum_sq, shared) / static_cast<float>(dim) + eps);
+  const float inv = block_norm_inverse(block_reduce_sum(sum_sq, shared),
+                                       static_cast<uint32_t>(dim), eps, shared);
 
   float wbuf[VEC];
   float sc[VEC];

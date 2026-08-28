@@ -288,6 +288,7 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features2.pNext = &features11;
     state->get_physical_device_features2(physical, &features2);
+    info.shader_int64 = features2.features.shaderInt64 == VK_TRUE;
     info.storage_buffer_16bit = features11.storageBuffer16BitAccess == VK_TRUE;
     info.storage_buffer_8bit = features12.storageBuffer8BitAccess == VK_TRUE;
     info.shader_float16 = features12.shaderFloat16 == VK_TRUE;
@@ -521,6 +522,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   };
   require(options.enable_shader_float16, impl_->info.shader_float16, "shaderFloat16");
   require(options.enable_shader_int8, impl_->info.shader_int8, "shaderInt8");
+  require(options.enable_shader_int64, impl_->info.shader_int64, "shaderInt64");
   require(options.enable_storage_buffer_16bit, impl_->info.storage_buffer_16bit,
           "storageBuffer16BitAccess");
   require(options.enable_storage_buffer_8bit, impl_->info.storage_buffer_8bit,
@@ -564,6 +566,8 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   features12.descriptorBindingPartiallyBound = options.enable_descriptor_indexing;
   features12.descriptorBindingVariableDescriptorCount = options.enable_descriptor_indexing;
   features12.shaderStorageBufferArrayNonUniformIndexing = options.enable_descriptor_indexing;
+  VkPhysicalDeviceFeatures core_features{};
+  core_features.shaderInt64 = options.enable_shader_int64;
   const bool any_features = options.enable_shader_float16 || options.enable_shader_int8 ||
                             options.enable_storage_buffer_16bit ||
                             options.enable_storage_buffer_8bit ||
@@ -574,6 +578,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   VkDeviceCreateInfo create{};
   create.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   create.pNext = any_features ? &features11 : nullptr;
+  create.pEnabledFeatures = options.enable_shader_int64 ? &core_features : nullptr;
   create.queueCreateInfoCount = 1;
   create.pQueueCreateInfos = &queue;
   create.enabledExtensionCount = static_cast<uint32_t>(extension_names.size());
@@ -619,6 +624,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
     auto result = std::make_shared<Device::Impl>();
     result->state = std::move(state);
     result->info = impl_->info;
+    result->info.shader_int64_enabled = options.enable_shader_int64;
     return Device(std::move(result));
   } catch (...) {
     state.reset();

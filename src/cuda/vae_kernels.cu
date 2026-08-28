@@ -13,6 +13,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "vidfab/cuda/deterministic_math.cuh"
+
 namespace vidfab::cuda {
 namespace {
 
@@ -38,6 +40,13 @@ __device__ inline float block_reduce_sum(float value, float* shared) {
     }
     if (lane == 0) shared[0] = value;
   }
+  __syncthreads();
+  return shared[0];
+}
+
+__device__ inline float block_norm_inverse(float sum, uint32_t dim, float eps,
+                                           float* shared) {
+  if (threadIdx.x == 0) shared[0] = deterministic_norm_rsqrt(sum, dim, eps);
   __syncthreads();
   return shared[0];
 }
@@ -79,7 +88,7 @@ __global__ void rmsnorm_kernel(const float* __restrict__ x, const float* __restr
     sum_sq += v * v;
   }
   const float total = block_reduce_sum(sum_sq, shared);
-  const float inv = rsqrtf(total / static_cast<float>(dim) + eps);
+  const float inv = block_norm_inverse(total, static_cast<uint32_t>(dim), eps, shared);
 
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
     outr[i] = xr[i] * inv * weight[i];
@@ -97,7 +106,8 @@ __global__ void layernorm_kernel(const float* __restrict__ x, const float* __res
 
   float sum = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += xr[i];
-  const float mean = block_reduce_sum(sum, shared) / static_cast<float>(dim);
+  const float mean = deterministic_divide(block_reduce_sum(sum, shared),
+                                           static_cast<uint32_t>(dim));
 
   __syncthreads();
   float sum_sq = 0.0f;
@@ -105,8 +115,8 @@ __global__ void layernorm_kernel(const float* __restrict__ x, const float* __res
     const float d = xr[i] - mean;
     sum_sq += d * d;
   }
-  const float var = block_reduce_sum(sum_sq, shared) / static_cast<float>(dim);
-  const float inv = rsqrtf(var + eps);
+  const float inv = block_norm_inverse(block_reduce_sum(sum_sq, shared),
+                                       static_cast<uint32_t>(dim), eps, shared);
 
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
     outr[i] = (xr[i] - mean) * inv * weight[i] + bias[i];
@@ -192,7 +202,10 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
       s1 += __shfl_xor_sync(0xFFFFFFFFu, s1, offset);
     }
     const float sum_sq = s0 + s1;
-    const float inv = rsqrtf(sum_sq / static_cast<float>(head_dim) + eps);
+    float inv = lane == 0
+                    ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(head_dim), eps)
+                    : 0.0f;
+    inv = __shfl_sync(0xFFFFFFFFu, inv, 0);
 
     // Normalise first, then rotate — the reference order. Swapping them
     // changes the result because RMSNorm is not rotation-invariant per pair.

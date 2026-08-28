@@ -45,6 +45,8 @@ struct DeviceInfo {
   uint64_t non_coherent_atom_bytes = 1;
   bool shader_float16 = false;
   bool shader_int8 = false;
+  bool shader_int64 = false;
+  bool shader_int64_enabled = false;
   bool storage_buffer_16bit = false;
   bool storage_buffer_8bit = false;
   bool timeline_semaphore = false;
@@ -75,6 +77,7 @@ struct DeviceOptions {
   std::vector<std::string> extensions;
   bool enable_shader_float16 = false;
   bool enable_shader_int8 = false;
+  bool enable_shader_int64 = false;
   bool enable_storage_buffer_16bit = false;
   bool enable_storage_buffer_8bit = false;
   bool enable_timeline_semaphore = false;

@@ -16,7 +16,6 @@
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/vulkan/tensor.h"
 
-
 VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
@@ -30,6 +29,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   if (physical.empty() || !physical.front().info().timeline_semaphore) return;
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
   bool full_exact_rejected = false;
@@ -395,6 +395,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
   if (physical.empty() || !physical.front().info().timeline_semaphore) return;
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
   if (!vk.exact_fp32_vae_normalization()) {
@@ -551,57 +552,218 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) return;
   DeviceOptions options; options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
   if (!vk.exact_fp32_vae_normalization()) return;
-
-  constexpr int rows = 9;
-  constexpr int dim = 128;
-  constexpr size_t count = static_cast<size_t>(rows) * dim;
-  std::vector<uint16_t> input(count), weight(dim);
   auto exact_bf16 = [](float value) {
     uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     return static_cast<uint16_t>(bits >> 16);
   };
-  for (size_t i = 0; i < count; ++i)
-    input[i] = exact_bf16(static_cast<float>(static_cast<int>(i % 31) - 15) / 8.0f);
-  for (int i = 0; i < dim; ++i)
-    weight[i] = exact_bf16(0.5f + static_cast<float>(i % 8) / 8.0f);
-  cuda::DeviceBuffer<uint16_t> c_input(count), c_weight(dim), c_output(count);
-  c_input.copy_from_host(input.data(), count);
-  c_weight.copy_from_host(weight.data(), dim);
-  cuda::launch_rmsnorm(reinterpret_cast<const __nv_bfloat16*>(c_input.get()),
-                       reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
-                       reinterpret_cast<__nv_bfloat16*>(c_output.get()), rows, dim,
-                       1.0e-5f, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  std::vector<uint16_t> cuda_output(count), vulkan_output(count);
-  c_output.copy_to_host(cuda_output.data(), count);
 
-  const uint64_t extents[] = {rows, dim};
-  const uint64_t feature = dim;
-  DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2),
-                                     ScalarType::kBFloat16);
-  DeviceTensor v_weight = vk.allocate(TensorLayout::contiguous(&feature, 1),
-                                      ScalarType::kBFloat16);
-  DeviceTensor v_output = vk.allocate(TensorLayout::contiguous(extents, 2),
-                                      ScalarType::kBFloat16);
-  vk.upload_bytes(v_input, input.data(), input.size() * sizeof(uint16_t));
-  vk.upload_bytes(v_weight, weight.data(), weight.size() * sizeof(uint16_t));
-  TensorBatch batch = vk.begin_batch();
-  batch.rms_norm_bf16(v_input, v_weight, v_output, 1.0e-5f);
-  batch.submit().wait();
-  vk.download_bytes(v_output, vulkan_output.data(),
-                    vulkan_output.size() * sizeof(uint16_t));
-  size_t mismatch = count;
-  for (size_t i = 0; i < count; ++i) {
-    if (cuda_output[i] != vulkan_output[i]) { mismatch = i; break; }
-  }
-  CHECK_MSG(mismatch == count,
-            "CUDA/Vulkan BF16 head RMS mismatch at %zu: %04x != %04x", mismatch,
-            mismatch == count ? 0 : cuda_output[mismatch],
-            mismatch == count ? 0 : vulkan_output[mismatch]);
+  auto compare_bf16 = [&](const std::vector<uint16_t>& expected,
+                          const std::vector<uint16_t>& actual, const char* label,
+                          int rows, int dim) {
+    size_t mismatch = expected.size();
+    for (size_t i = 0; i < expected.size(); ++i) {
+      if (expected[i] != actual[i]) { mismatch = i; break; }
+    }
+    CHECK_MSG(mismatch == expected.size(),
+              "CUDA/Vulkan %s %dx%d mismatch at %zu: %04x != %04x", label,
+              rows, dim, mismatch,
+              mismatch == expected.size() ? 0 : expected[mismatch],
+              mismatch == expected.size() ? 0 : actual[mismatch]);
+  };
+
+  auto make_bf16_data = [&](size_t count, int pattern) {
+    std::vector<uint16_t> values(count);
+    for (size_t i = 0; i < count; ++i) {
+      float value = static_cast<float>(static_cast<int>((i * 17) % 61) - 30) / 16.0f;
+      if (pattern == 1 && i < 16) value = (i & 1) ? -0.0f : 0.0f;
+      if (pattern == 2) value = (i & 1) ? -1.0e16f : 1.0e16f;
+      values[i] = exact_bf16(value);
+    }
+    return values;
+  };
+
+  auto run_rms = [&](int rows, int dim, int pattern, bool in_place) {
+    const size_t count = static_cast<size_t>(rows) * dim;
+    auto input = make_bf16_data(count, pattern);
+    std::vector<uint16_t> weight(dim);
+    for (int i = 0; i < dim; ++i)
+      weight[i] = exact_bf16(0.5f + static_cast<float>(i % 8) / 8.0f);
+    cuda::DeviceBuffer<uint16_t> c_input(count), c_weight(dim), c_output(count);
+    c_input.copy_from_host(input.data(), count);
+    c_weight.copy_from_host(weight.data(), dim);
+    cuda::launch_rmsnorm(reinterpret_cast<const __nv_bfloat16*>(c_input.get()),
+                         reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
+                         reinterpret_cast<__nv_bfloat16*>(c_output.get()), rows, dim,
+                         1.0e-5f, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> expected(count), actual(count);
+    c_output.copy_to_host(expected.data(), count);
+    const uint64_t extents[] = {static_cast<uint64_t>(rows), static_cast<uint64_t>(dim)};
+    const uint64_t feature = dim;
+    DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2),
+                                       ScalarType::kBFloat16);
+    DeviceTensor v_weight = vk.allocate(TensorLayout::contiguous(&feature, 1),
+                                        ScalarType::kBFloat16);
+    DeviceTensor v_output = in_place
+                                ? DeviceTensor()
+                                : vk.allocate(TensorLayout::contiguous(extents, 2),
+                                              ScalarType::kBFloat16);
+    vk.upload_bytes(v_input, input.data(), input.size() * sizeof(uint16_t));
+    vk.upload_bytes(v_weight, weight.data(), weight.size() * sizeof(uint16_t));
+    TensorBatch batch = vk.begin_batch();
+    batch.rms_norm_bf16(v_input, v_weight, in_place ? v_input : v_output, 1.0e-5f);
+    batch.submit().wait();
+    DeviceTensor& result = in_place ? v_input : v_output;
+    vk.download_bytes(result, actual.data(), actual.size() * sizeof(uint16_t));
+    compare_bf16(expected, actual, "BF16 RMSNorm", rows, dim);
+  };
+
+  run_rms(9, 128, 1, true);   // head path, rows%8 and in-place
+  run_rms(2, 5120, 0, false); // Qwen text width
+  run_rms(3, 5376, 0, false); // DiT width and pack/workgroup tail
+  run_rms(3, 31, 1, false);   // scalar narrow and odd packed rows
+  run_rms(2, 513, 0, false);  // scalar block and odd packed rows
+
+  auto run_layer = [&](int rows, int dim, bool constant_row) {
+    const size_t count = static_cast<size_t>(rows) * dim;
+    auto input = make_bf16_data(count, 0);
+    if (constant_row) std::fill(input.begin(), input.begin() + dim, exact_bf16(2.0f));
+    std::vector<uint16_t> weight(dim), bias(dim);
+    for (int i = 0; i < dim; ++i) {
+      weight[i] = exact_bf16(0.5f + static_cast<float>(i % 4) / 4.0f);
+      bias[i] = exact_bf16(static_cast<float>((i % 9) - 4) / 16.0f);
+    }
+    cuda::DeviceBuffer<uint16_t> c_input(count), c_weight(dim), c_bias(dim), c_output(count);
+    c_input.copy_from_host(input.data(), count);
+    c_weight.copy_from_host(weight.data(), dim);
+    c_bias.copy_from_host(bias.data(), dim);
+    cuda::launch_layernorm_affine(
+        reinterpret_cast<const __nv_bfloat16*>(c_input.get()),
+        reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
+        reinterpret_cast<const __nv_bfloat16*>(c_bias.get()),
+        reinterpret_cast<__nv_bfloat16*>(c_output.get()), rows, dim, 1.0e-6f, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> expected(count), actual(count);
+    c_output.copy_to_host(expected.data(), count);
+    const uint64_t extents[] = {static_cast<uint64_t>(rows), static_cast<uint64_t>(dim)};
+    const uint64_t feature = dim;
+    DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2), ScalarType::kBFloat16);
+    DeviceTensor v_weight = vk.allocate(TensorLayout::contiguous(&feature, 1), ScalarType::kBFloat16);
+    DeviceTensor v_bias = vk.allocate(TensorLayout::contiguous(&feature, 1), ScalarType::kBFloat16);
+    DeviceTensor v_output = vk.allocate(TensorLayout::contiguous(extents, 2), ScalarType::kBFloat16);
+    vk.upload_bytes(v_input, input.data(), input.size() * sizeof(uint16_t));
+    vk.upload_bytes(v_weight, weight.data(), weight.size() * sizeof(uint16_t));
+    vk.upload_bytes(v_bias, bias.data(), bias.size() * sizeof(uint16_t));
+    TensorBatch batch = vk.begin_batch();
+    batch.layer_norm_bf16(v_input, v_weight, v_bias, v_output, 1.0e-6f);
+    batch.submit().wait();
+    vk.download_bytes(v_output, actual.data(), actual.size() * sizeof(uint16_t));
+    compare_bf16(expected, actual, "BF16 LayerNorm", rows, dim);
+  };
+  run_layer(2, 1152, true);
+  run_layer(1, 4608, false);
+  run_layer(3, 129, true);
+
+  auto run_mod = [&](bool fp32) {
+    constexpr int rows = 3, dim = 5376, mod_rows = 4;
+    const size_t count = static_cast<size_t>(rows) * dim;
+    auto bf_input = make_bf16_data(count, 0);
+    std::vector<float> f_input(count);
+    for (size_t i = 0; i < count; ++i) {
+      uint32_t bits = static_cast<uint32_t>(bf_input[i]) << 16u;
+      std::memcpy(&f_input[i], &bits, sizeof(bits));
+    }
+    std::vector<uint16_t> weight(dim);
+    std::vector<float> scale(static_cast<size_t>(mod_rows) * dim);
+    std::vector<float> shift(scale.size());
+    const int32_t selectors[] = {3, 0, 2};
+    for (int i = 0; i < dim; ++i)
+      weight[i] = exact_bf16(0.5f + static_cast<float>(i % 8) / 8.0f);
+    for (size_t i = 0; i < scale.size(); ++i) {
+      scale[i] = static_cast<float>(static_cast<int>(i % 13) - 6) / 32.0f;
+      shift[i] = static_cast<float>(static_cast<int>(i % 17) - 8) / 64.0f;
+    }
+    cuda::DeviceBuffer<uint16_t> c_bf_input(count), c_weight(dim), c_bf_output(count);
+    cuda::DeviceBuffer<float> c_f_input(count), c_scale(scale.size()), c_shift(shift.size()),
+        c_f_output(count);
+    cuda::DeviceBuffer<int32_t> c_selectors(rows);
+    c_bf_input.copy_from_host(bf_input.data(), count);
+    c_f_input.copy_from_host(f_input.data(), count);
+    c_weight.copy_from_host(weight.data(), dim);
+    c_scale.copy_from_host(scale.data(), scale.size());
+    c_shift.copy_from_host(shift.data(), shift.size());
+    c_selectors.copy_from_host(selectors, rows);
+    if (fp32) {
+      cuda::launch_rmsnorm_modulate_f32(
+          c_f_input.get(), reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
+          c_scale.get(), c_shift.get(), c_selectors.get(), c_f_output.get(), rows, dim,
+          1.0e-5f, nullptr);
+    } else {
+      cuda::launch_rmsnorm_modulate(
+          reinterpret_cast<const __nv_bfloat16*>(c_bf_input.get()),
+          reinterpret_cast<const __nv_bfloat16*>(c_weight.get()), c_scale.get(),
+          c_shift.get(), c_selectors.get(),
+          reinterpret_cast<__nv_bfloat16*>(c_bf_output.get()), rows, dim, 1.0e-5f,
+          nullptr);
+    }
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    const uint64_t extents[] = {rows, dim};
+    const uint64_t feature = dim;
+    const uint64_t mod_extents[] = {mod_rows, dim};
+    const uint64_t selector_extent = rows;
+    DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2),
+                                       fp32 ? ScalarType::kFloat32 : ScalarType::kBFloat16);
+    DeviceTensor v_weight = vk.allocate(TensorLayout::contiguous(&feature, 1), ScalarType::kBFloat16);
+    DeviceTensor v_scale = vk.allocate(TensorLayout::contiguous(mod_extents, 2));
+    DeviceTensor v_shift = vk.allocate(TensorLayout::contiguous(mod_extents, 2));
+    DeviceTensor v_selectors = vk.allocate(TensorLayout::contiguous(&selector_extent, 1),
+                                           ScalarType::kInt32);
+    DeviceTensor v_output = vk.allocate(TensorLayout::contiguous(extents, 2),
+                                        fp32 ? ScalarType::kFloat32 : ScalarType::kBFloat16);
+    if (fp32) vk.upload(v_input, f_input.data(), f_input.size());
+    else vk.upload_bytes(v_input, bf_input.data(), bf_input.size() * sizeof(uint16_t));
+    vk.upload_bytes(v_weight, weight.data(), weight.size() * sizeof(uint16_t));
+    vk.upload(v_scale, scale.data(), scale.size());
+    vk.upload(v_shift, shift.data(), shift.size());
+    vk.upload_bytes(v_selectors, selectors, sizeof(selectors));
+    TensorBatch batch = vk.begin_batch();
+    if (fp32) batch.rms_norm_modulate_f32(v_input, v_weight, v_scale, v_shift,
+                                          v_selectors, v_output, 1.0e-5f);
+    else batch.rms_norm_modulate_bf16(v_input, v_weight, v_scale, v_shift,
+                                      v_selectors, v_output, 1.0e-5f);
+    batch.submit().wait();
+    if (fp32) {
+      std::vector<float> expected(count), actual(count);
+      c_f_output.copy_to_host(expected.data(), count);
+      vk.download(v_output, actual.data(), count);
+      size_t mismatch = count;
+      for (size_t i = 0; i < count; ++i) {
+        if (std::memcmp(&expected[i], &actual[i], sizeof(float)) != 0) {
+          mismatch = i; break;
+        }
+      }
+      uint32_t expected_bits = 0, actual_bits = 0;
+      if (mismatch != count) {
+        std::memcpy(&expected_bits, &expected[mismatch], sizeof(expected_bits));
+        std::memcpy(&actual_bits, &actual[mismatch], sizeof(actual_bits));
+      }
+      CHECK_MSG(mismatch == count,
+                "CUDA/Vulkan fp32 AdaLN mismatch at %zu: %08x != %08x", mismatch,
+                expected_bits, actual_bits);
+    } else {
+      std::vector<uint16_t> expected(count), actual(count);
+      c_bf_output.copy_to_host(expected.data(), count);
+      vk.download_bytes(v_output, actual.data(), actual.size() * sizeof(uint16_t));
+      compare_bf16(expected, actual, "BF16 AdaLN", rows, dim);
+    }
+  };
+  run_mod(false);
+  run_mod(true);
 }
 
 int main() { return ::vidfab::test::run_all(); }

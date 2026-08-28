@@ -18,6 +18,8 @@
 namespace vidfab::vulkan {
 namespace {
 
+constexpr uint64_t kMaxExactNormDimension = 1ull << 24;
+
 uint64_t checked_multiply(uint64_t a, uint64_t b, const char* operation) {
   if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) {
     throw std::overflow_error(std::string("vulkan tensor: ") + operation +
@@ -127,7 +129,8 @@ struct TensorContext::Impl {
     exact_vae_norm = detail::known_exact_vae_norm_device(
                          input.info().vendor_id, input.info().device_id,
                          input.info().driver_version) &&
-                     input.info().fp32_signed_zero_inf_nan_preserve;
+                     input.info().fp32_signed_zero_inf_nan_preserve &&
+                     input.info().shader_int64_enabled;
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
     max_storage_bytes = input.info().max_storage_buffer_bytes;
     const uint8_t* shader = full_arithmetic_exact ? detail::kTensorOpsDenormSpirv
@@ -420,7 +423,7 @@ struct TensorBatch::Impl {
         !w->layout.is_contiguous() || !sc->layout.is_contiguous() ||
         !sh->layout.is_contiguous() || !index->layout.is_contiguous() ||
         !dst->layout.is_contiguous() || rows > std::numeric_limits<uint32_t>::max() ||
-        dim > std::numeric_limits<uint32_t>::max() ||
+        dim > kMaxExactNormDimension ||
         mod_rows > std::numeric_limits<uint32_t>::max() ||
         shape.elements() > std::numeric_limits<uint32_t>::max() ||
         sc->layout.elements() > std::numeric_limits<uint32_t>::max()) {
@@ -1013,7 +1016,7 @@ void TensorBatch::rms_norm(DeviceTensor& input, DeviceTensor& weight,
       !shape.is_contiguous() || !w->layout.is_contiguous() ||
       !dst->layout.is_contiguous() ||
       shape.extent[0] > std::numeric_limits<uint32_t>::max() ||
-      shape.extent[1] > std::numeric_limits<uint32_t>::max() ||
+      shape.extent[1] > kMaxExactNormDimension ||
       shape.elements() > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: invalid fp32 RMSNorm");
   }
@@ -1060,7 +1063,7 @@ void TensorBatch::layer_norm(DeviceTensor& input, DeviceTensor& weight,
       !shape.is_contiguous() || !w->layout.is_contiguous() ||
       !b->layout.is_contiguous() || !dst->layout.is_contiguous() ||
       shape.extent[0] > std::numeric_limits<uint32_t>::max() ||
-      shape.extent[1] > std::numeric_limits<uint32_t>::max() ||
+      shape.extent[1] > kMaxExactNormDimension ||
       shape.elements() > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: invalid fp32 LayerNorm");
   }
@@ -1104,7 +1107,7 @@ void TensorBatch::rms_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
       dst->layout.extent != shape.extent || w->layout.extent[0] != dim ||
       !shape.is_contiguous() || !w->layout.is_contiguous() ||
       !dst->layout.is_contiguous() || rows > std::numeric_limits<uint32_t>::max() ||
-      dim > std::numeric_limits<uint32_t>::max() ||
+      dim > kMaxExactNormDimension ||
       shape.elements() > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: invalid BF16 RMSNorm");
   }
@@ -1157,7 +1160,7 @@ void TensorBatch::layer_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
       b->layout.extent[0] != dim || !shape.is_contiguous() ||
       !w->layout.is_contiguous() || !b->layout.is_contiguous() ||
       !dst->layout.is_contiguous() || rows > std::numeric_limits<uint32_t>::max() ||
-      dim > std::numeric_limits<uint32_t>::max() ||
+      dim > kMaxExactNormDimension ||
       shape.elements() > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: invalid BF16 LayerNorm");
   }
