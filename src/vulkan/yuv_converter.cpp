@@ -30,11 +30,12 @@ struct Yuv420Converter::Impl {
   Buffer output;
   Buffer readback;
   std::vector<uint32_t> host_output;
+  std::vector<StorageBinding> bindings;
   uint64_t capacity = 0;
   uint64_t high_water = 0;
   std::string name;
 
-  explicit Impl(uint32_t device_index) {
+  explicit Impl(uint32_t device_index) : bindings(2) {
     instance = Instance::create();
     std::vector<PhysicalDevice> physical = instance.enumerate_devices();
     if (device_index >= physical.size()) {
@@ -64,6 +65,10 @@ struct Yuv420Converter::Impl {
     pipeline_options.push_constant_bytes = sizeof(Geometry);
     pipeline_options.local_size[0] = 64;
     pipeline = ComputePipeline::create(device, spirv, pipeline_options);
+    bindings[0].binding = 0;
+    bindings[0].buffer = &input;
+    bindings[1].binding = 1;
+    bindings[1].buffer = &output;
   }
 
   void ensure_capacity(uint64_t pixels) {
@@ -137,8 +142,9 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
   commands.copy_buffer(impl_->upload, impl_->input, rgb_bytes);
   commands.barrier(impl_->input, BufferAccess::kTransferWrite, BufferAccess::kComputeRead,
                    0, rgb_bytes);
-  commands.bind_compute(impl_->pipeline, {{0, &impl_->input, 0, rgb_bytes},
-                                          {1, &impl_->output, 0, yuv_bytes}});
+  impl_->bindings[0].bytes = rgb_bytes;
+  impl_->bindings[1].bytes = yuv_bytes;
+  commands.bind_compute(impl_->pipeline, impl_->bindings);
   commands.push_constants(&geometry, sizeof(geometry));
   commands.dispatch(static_cast<uint32_t>((pixels + 63) / 64));
   commands.barrier(impl_->output, BufferAccess::kComputeWrite, BufferAccess::kTransferRead,
