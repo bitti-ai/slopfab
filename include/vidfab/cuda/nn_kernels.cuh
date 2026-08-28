@@ -119,9 +119,6 @@ void launch_rope_neox(__nv_bfloat16* x, const float* cos, const float* sin, int 
 // in float64 and casts to fp32 *inside* rope.forward, and the T coordinate
 // reaches a few thousand, where the cast is the reference's own error floor
 // (spec section 9.2). Reproduce the cast at the same point.
-void build_rope_tables_h3(const double* pos, int rows, float rope_theta, int freq_dim,
-                          float* cos_out, float* sin_out, cudaStream_t stream);
-
 // RMSNorm over the head dimension, applied per head to `[rows, heads, dim]`.
 // Used for q_norm/k_norm, which normalise over the 128-wide head dim and not
 // over the 7168-wide concatenation. Applied **before** RoPE — reversing the

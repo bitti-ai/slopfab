@@ -20,6 +20,7 @@
 // and never grows inside the loop.
 
 #include "vidfab/dit/transformer.h"
+#include "vidfab/dit/rope.h"
 
 #include <functional>
 #include <fstream>
@@ -1754,10 +1755,13 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
     s.d_band.copy_from_host(band.ranges.data(), band.ranges.size(), s.stream.get());
   }
 
-  s.rope_cos.allocate(static_cast<size_t>(seq) * 96);
-  s.rope_sin.allocate(static_cast<size_t>(seq) * 96);
-  cuda::build_rope_tables_h3(position_ids.data(), seq, s.cfg.rope_theta, s.cfg.rope_freq_dim,
-                             s.rope_cos.get(), s.rope_sin.get(), s.stream.get());
+  const dit::H3RopeTables rope = dit::build_h3_rope_tables(
+      position_ids, s.cfg.rope_theta, static_cast<uint32_t>(s.cfg.rope_freq_dim));
+  s.rope_cos.allocate(rope.cosine.size());
+  s.rope_sin.allocate(rope.sine.size());
+  s.rope_cos.copy_from_host(rope.cosine.data(), rope.cosine.size(), s.stream.get());
+  s.rope_sin.copy_from_host(rope.sine.data(), rope.sine.size(), s.stream.get());
+  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
 
   auto upload_idx = [&](const std::vector<int32_t>& src, DeviceBuffer<int32_t>& dst) {
     dst.allocate(std::max<size_t>(src.size(), 1));

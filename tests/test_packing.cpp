@@ -15,12 +15,15 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <exception>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <vector>
 
 #include "harness.h"
 #include "vidfab/dit/packing.h"
+#include "vidfab/dit/rope.h"
 #include "vidfab/sampler/scheduler.h"
 
 namespace {
@@ -860,6 +863,48 @@ VIDFAB_TEST(packing_banded_key_ranges) {
     CHECK(b.ranges[size_t(straddle) * 4 + 1] >= S);
     CHECK(b.ranges[size_t(0) * 4 + 1] >= S);
   }
+}
+
+VIDFAB_TEST(h3_rope_tables_are_canonical_serialized_bytes) {
+  const std::vector<double> positions = {
+      0.0, 0.0, 0.0, 1.25, -2.5, 4096.125, 16777217.0, 3.5, -9.75};
+  const H3RopeTables tables = build_h3_rope_tables(positions, 10000.0f, 16);
+  CHECK(tables.rows == 3);
+  CHECK(tables.frequency_dim == 16);
+  CHECK(tables.cosine.size() == 3 * 96);
+  CHECK(tables.sine.size() == tables.cosine.size());
+  bool duplicated = true;
+  for (size_t i = 0; i < tables.cosine.size(); ++i) {
+    const size_t column = i % 96;
+    if (column < 48) {
+      duplicated &= std::memcmp(&tables.cosine[i], &tables.cosine[i + 48], 4) == 0;
+      duplicated &= std::memcmp(&tables.sine[i], &tables.sine[i + 48], 4) == 0;
+    }
+  }
+  CHECK(duplicated);
+  uint64_t hash = 1469598103934665603ull;
+  auto hash_bytes = [&](const std::vector<float>& values) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(values.data());
+    for (size_t i = 0; i < values.size() * sizeof(float); ++i) {
+      hash ^= bytes[i];
+      hash *= 1099511628211ull;
+    }
+  };
+  hash_bytes(tables.cosine);
+  hash_bytes(tables.sine);
+  CHECK_MSG(hash == 0xdfd06ee912173e0full,
+            "H3 RoPE canonical table hash is %016llx",
+            static_cast<unsigned long long>(hash));
+  auto rejects = [](auto&& call) {
+    try { call(); } catch (const std::exception&) { return true; }
+    return false;
+  };
+  CHECK(rejects([&] { build_h3_rope_tables({}, 10000.0f, 16); }));
+  CHECK(rejects([&] { build_h3_rope_tables({0.0, 0.0, 0.0}, 0.0f, 16); }));
+  CHECK(rejects([&] { build_h3_rope_tables(
+      {0.0, std::numeric_limits<double>::infinity(), 0.0}, 10000.0f, 16); }));
+  CHECK(rejects([&] { build_h3_rope_tables(
+      {0.0, std::numeric_limits<double>::max(), 0.0}, 10000.0f, 16); }));
 }
 
 }  // namespace

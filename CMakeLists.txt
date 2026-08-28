@@ -52,6 +52,7 @@ add_library(vidfab_core STATIC
   src/dit/checkpoint.cpp
   src/dit/packing.cpp
   src/dit/ref2va.cpp
+  src/dit/rope.cpp
   src/dit/step_cache.cpp
   src/vae/keyframe_encoder.cpp
   src/pipeline.cpp
