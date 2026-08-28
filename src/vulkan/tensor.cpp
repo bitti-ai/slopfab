@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -14,6 +15,14 @@
 
 namespace vidfab::vulkan {
 namespace {
+
+uint64_t checked_multiply(uint64_t a, uint64_t b, const char* operation) {
+  if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) {
+    throw std::overflow_error(std::string("vulkan tensor: ") + operation +
+                              " shape overflow");
+  }
+  return a * b;
+}
 
 uintptr_t next_context_identity() {
   static std::atomic<uintptr_t> next{1};
@@ -34,6 +43,8 @@ uintptr_t next_context_identity() {
 struct DeviceTensor::Impl {
   Buffer buffer;
   TensorLayout layout;
+  ScalarType type = ScalarType::kFloat32;
+  uint64_t logical_bytes = 0;
   uintptr_t context = 0;
   bool has_access = false;
   BufferAccess access = BufferAccess::kTransferWrite;
@@ -52,13 +63,17 @@ struct TensorWorkspace::Impl {
 };
 
 struct TensorContext::Impl {
-  struct Parameters { uint32_t count; };
+  struct Parameters {
+    uint32_t op = 0;
+    uint32_t count = 0;
+    uint32_t p[6] = {};
+  };
   static constexpr uint32_t kMaxBatchOperators = 32;
 
   ComputeContext commands;
   BufferPool pool;
   TensorWorkspace scratch;
-  ComputePipeline add_pipeline;
+  ComputePipeline ops_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;
   uint64_t staging_capacity = 0;
@@ -81,7 +96,7 @@ struct TensorContext::Impl {
         bindings(3) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
-    static_assert(sizeof(detail::kTensorAddSpirv) % sizeof(uint32_t) == 0);
+    static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
     if (!input.info().fp32_signed_zero_inf_nan_preserve ||
         !input.info().fp32_rounding_rte) {
       throw std::runtime_error(
@@ -91,17 +106,17 @@ struct TensorContext::Impl {
     full_add_exact = input.info().fp32_denorm_preserve;
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
     max_storage_bytes = input.info().max_storage_buffer_bytes;
-    const uint8_t* shader = full_add_exact ? detail::kTensorAddDenormSpirv
-                                           : detail::kTensorAddSpirv;
-    const size_t shader_bytes = full_add_exact ? sizeof(detail::kTensorAddDenormSpirv)
-                                               : sizeof(detail::kTensorAddSpirv);
+    const uint8_t* shader = full_add_exact ? detail::kTensorOpsDenormSpirv
+                                           : detail::kTensorOpsSpirv;
+    const size_t shader_bytes = full_add_exact ? sizeof(detail::kTensorOpsDenormSpirv)
+                                               : sizeof(detail::kTensorOpsSpirv);
     std::vector<uint32_t> spirv(shader_bytes / sizeof(uint32_t));
     std::memcpy(spirv.data(), shader, shader_bytes);
     ComputePipelineOptions options;
     options.storage_binding_count = 3;
     options.push_constant_bytes = sizeof(Parameters);
     options.local_size[0] = 64;
-    add_pipeline = ComputePipeline::create(input, spirv, options);
+    ops_pipeline = ComputePipeline::create(input, spirv, options);
     for (uint32_t i = 0; i < bindings.size(); ++i) bindings[i].binding = i;
   }
 
@@ -164,6 +179,17 @@ struct TensorContext::Impl {
     done.wait();
     commands.collect();
   }
+
+  uint32_t validate_dispatch(uint64_t count) const {
+    if (count == 0 || count > std::numeric_limits<uint32_t>::max()) {
+      throw std::out_of_range("vulkan tensor: operation exceeds uint32 indexing limits");
+    }
+    const uint64_t groups = (count + 63ull) / 64ull;
+    if (groups > max_dispatch_x) {
+      throw std::out_of_range("vulkan tensor: operation exceeds dispatch limits");
+    }
+    return static_cast<uint32_t>(count);
+  }
 };
 
 struct TensorBatch::Impl {
@@ -213,6 +239,25 @@ struct TensorBatch::Impl {
     ++operator_count;
   }
 
+  void dispatch(const TensorContext::Impl::Parameters& parameters,
+                const std::shared_ptr<DeviceTensor::Impl>& a,
+                const std::shared_ptr<DeviceTensor::Impl>& b,
+                const std::shared_ptr<DeviceTensor::Impl>& output) {
+    // Every caller validates this before it mutates access tracking. Widen the
+    // addition anyway so the invariant remains safe if uint32 max is used.
+    const uint32_t groups =
+        static_cast<uint32_t>((static_cast<uint64_t>(parameters.count) + 63ull) / 64ull);
+    owner->bindings[0].buffer = &a->buffer;
+    owner->bindings[0].bytes = a->buffer.size();
+    owner->bindings[1].buffer = &b->buffer;
+    owner->bindings[1].bytes = b->buffer.size();
+    owner->bindings[2].buffer = &output->buffer;
+    owner->bindings[2].bytes = output->buffer.size();
+    commands.bind_compute(owner->ops_pipeline, owner->bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups);
+  }
+
   ~Impl() {
     if (submitted) return;
     // Discard Vulkan recording before making its speculative access state
@@ -234,16 +279,20 @@ DeviceTensorView DeviceTensor::view() const {
   if (!impl_) throw std::logic_error("vulkan tensor: empty tensor");
   DeviceTensorView result;
   result.backend = DeviceBackend::kVulkan;
-  result.type = ScalarType::kFloat32;
+  result.type = impl_->type;
   result.layout = impl_->layout;
   result.context = impl_->context;
   result.resource = impl_->buffer.native_handle();
-  result.byte_size = impl_->buffer.size();
+  result.byte_size = impl_->logical_bytes;
   return result;
 }
 const TensorLayout& DeviceTensor::layout() const {
   if (!impl_) throw std::logic_error("vulkan tensor: empty tensor");
   return impl_->layout;
+}
+ScalarType DeviceTensor::type() const {
+  if (!impl_) throw std::logic_error("vulkan tensor: empty tensor");
+  return impl_->type;
 }
 DeviceTensor::operator bool() const noexcept { return impl_ != nullptr; }
 
@@ -307,11 +356,15 @@ TensorContext::~TensorContext() = default;
 TensorContext::TensorContext(TensorContext&&) noexcept = default;
 TensorContext& TensorContext::operator=(TensorContext&&) noexcept = default;
 
-DeviceTensor TensorContext::allocate(const TensorLayout& layout) {
+DeviceTensor TensorContext::allocate(const TensorLayout& layout, ScalarType type) {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
   [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   if (!layout.is_contiguous()) throw std::invalid_argument("vulkan tensor: contiguous layout required");
-  const uint64_t bytes = layout.bytes(ScalarType::kFloat32);
+  const uint64_t logical_bytes = layout.bytes(type);
+  if (logical_bytes > std::numeric_limits<uint64_t>::max() - 3) {
+    throw std::overflow_error("vulkan tensor: allocation size overflow");
+  }
+  const uint64_t bytes = std::max<uint64_t>(4, (logical_bytes + 3) & ~uint64_t{3});
   if (bytes > impl_->max_storage_bytes) {
     throw std::out_of_range("vulkan tensor: tensor exceeds storage buffer limit");
   }
@@ -321,6 +374,8 @@ DeviceTensor TensorContext::allocate(const TensorLayout& layout) {
                  BufferUsage::kTransferDestination,
       MemoryUsage::kDevice);
   tensor->layout = layout;
+  tensor->type = type;
+  tensor->logical_bytes = logical_bytes;
   tensor->context = impl_->context_id;
   return DeviceTensor(std::move(tensor));
 }
@@ -337,16 +392,32 @@ TensorBatch TensorContext::begin_batch() {
 
 void TensorContext::upload(DeviceTensor& destination, const float* values, uint64_t count) {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
-  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   auto dst = impl_->require(destination);
-  if (values == nullptr || count != dst->layout.elements()) {
+  if (dst->type != ScalarType::kFloat32 || values == nullptr ||
+      count != dst->layout.elements()) {
     throw std::invalid_argument("vulkan tensor: upload element count mismatch");
   }
-  const uint64_t bytes = count * sizeof(float);
-  impl_->ensure_staging(bytes);
+  upload_bytes(destination, values, count * sizeof(float));
+}
+
+void TensorContext::upload_bytes(DeviceTensor& destination, const void* values,
+                                 uint64_t bytes) {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
+  auto dst = impl_->require(destination);
+  if (values == nullptr || bytes != dst->logical_bytes) {
+    throw std::invalid_argument("vulkan tensor: upload byte count mismatch");
+  }
+  const uint64_t physical_bytes = dst->buffer.size();
+  impl_->ensure_staging(physical_bytes);
   impl_->upload_buffer.write(0, values, bytes);
+  if (physical_bytes != bytes) {
+    const uint32_t zero = 0;
+    impl_->upload_buffer.write(bytes, &zero, physical_bytes - bytes);
+  }
   CommandList list = impl_->commands.begin();
-  list.barrier(impl_->upload_buffer, BufferAccess::kHostWrite, BufferAccess::kTransferRead, 0, bytes);
+  list.barrier(impl_->upload_buffer, BufferAccess::kHostWrite,
+               BufferAccess::kTransferRead, 0, physical_bytes);
   const bool old_has_access = dst->has_access;
   const BufferAccess old_access = dst->access;
   try {
@@ -355,7 +426,7 @@ void TensorContext::upload(DeviceTensor& destination, const float* values, uint6
     }
     dst->has_access = true;
     dst->access = BufferAccess::kTransferWrite;
-    list.copy_buffer(impl_->upload_buffer, dst->buffer, bytes);
+    list.copy_buffer(impl_->upload_buffer, dst->buffer, physical_bytes);
     impl_->complete(std::move(list));
   } catch (...) {
     dst->has_access = old_has_access;
@@ -366,13 +437,24 @@ void TensorContext::upload(DeviceTensor& destination, const float* values, uint6
 
 void TensorContext::download(DeviceTensor& source, float* values, uint64_t count) {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
-  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   auto src = impl_->require(source);
-  if (values == nullptr || count != src->layout.elements()) {
+  if (src->type != ScalarType::kFloat32 || values == nullptr ||
+      count != src->layout.elements()) {
     throw std::invalid_argument("vulkan tensor: download element count mismatch");
   }
-  const uint64_t bytes = count * sizeof(float);
-  impl_->ensure_staging(bytes);
+  download_bytes(source, values, count * sizeof(float));
+}
+
+void TensorContext::download_bytes(DeviceTensor& source, void* values,
+                                   uint64_t bytes) {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
+  auto src = impl_->require(source);
+  if (values == nullptr || bytes != src->logical_bytes) {
+    throw std::invalid_argument("vulkan tensor: download byte count mismatch");
+  }
+  const uint64_t physical_bytes = src->buffer.size();
+  impl_->ensure_staging(physical_bytes);
   CommandList list = impl_->commands.begin();
   const bool old_has_access = src->has_access;
   const BufferAccess old_access = src->access;
@@ -382,9 +464,9 @@ void TensorContext::download(DeviceTensor& source, float* values, uint64_t count
     }
     src->has_access = true;
     src->access = BufferAccess::kTransferRead;
-    list.copy_buffer(src->buffer, impl_->readback_buffer, bytes);
+    list.copy_buffer(src->buffer, impl_->readback_buffer, physical_bytes);
     list.barrier(impl_->readback_buffer, BufferAccess::kTransferWrite,
-                 BufferAccess::kHostRead, 0, bytes);
+                 BufferAccess::kHostRead, 0, physical_bytes);
     impl_->complete(std::move(list));
   } catch (...) {
     src->has_access = old_has_access;
@@ -451,8 +533,9 @@ void TensorBatch::copy(DeviceTensor& source, DeviceTensor& destination) {
   if (impl_->poisoned) throw std::logic_error("vulkan tensor: batch is poisoned");
   auto src = impl_->owner->require(source);
   auto dst = impl_->owner->require(destination);
-  const uint64_t bytes = src->layout.bytes(ScalarType::kFloat32);
-  if (src.get() == dst.get() || bytes != dst->layout.bytes(ScalarType::kFloat32)) {
+  const uint64_t bytes = src->buffer.size();
+  if (src.get() == dst.get() || src->type != dst->type ||
+      src->logical_bytes != dst->logical_bytes || bytes != dst->buffer.size()) {
     throw std::invalid_argument("vulkan tensor: copy needs distinct equal-sized tensors");
   }
   try {
@@ -474,33 +557,237 @@ void TensorBatch::add(DeviceTensor& a, DeviceTensor& b, DeviceTensor& output) {
   auto out = impl_->owner->require(output);
   const uint64_t count = av->layout.elements();
   if (out.get() == av.get() || out.get() == bv.get() ||
+      av->type != ScalarType::kFloat32 || bv->type != ScalarType::kFloat32 ||
+      out->type != ScalarType::kFloat32 ||
       count != bv->layout.elements() || count != out->layout.elements() ||
       count == 0 || count > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument("vulkan tensor: add needs distinct equal-sized fp32 tensors");
   }
-  const uint64_t bytes = count * sizeof(float);
-  const uint32_t groups = static_cast<uint32_t>((count + 63) / 64);
-  if (bytes > impl_->owner->max_storage_bytes || groups == 0 ||
-      groups > impl_->owner->max_dispatch_x) {
+  if (count > impl_->owner->max_storage_bytes / sizeof(float)) {
     throw std::out_of_range("vulkan tensor: add exceeds device dispatch limits");
   }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(count);
   try {
     impl_->count_operator();
     impl_->transition(av, BufferAccess::kComputeRead);
     impl_->transition(bv, BufferAccess::kComputeRead);
     impl_->transition(out, BufferAccess::kComputeWrite);
-    impl_->owner->bindings[0].buffer = &av->buffer;
-    impl_->owner->bindings[1].buffer = &bv->buffer;
-    impl_->owner->bindings[2].buffer = &out->buffer;
-    for (StorageBinding& binding : impl_->owner->bindings) binding.bytes = bytes;
-    impl_->commands.bind_compute(impl_->owner->add_pipeline, impl_->owner->bindings);
-    const TensorContext::Impl::Parameters parameters{static_cast<uint32_t>(count)};
-    impl_->commands.push_constants(&parameters, sizeof(parameters));
-    impl_->commands.dispatch(groups);
+    TensorContext::Impl::Parameters parameters;
+    parameters.op = 0;
+    parameters.count = dispatch_count;
+    impl_->dispatch(parameters, av, bv, out);
   } catch (...) {
     impl_->poisoned = true;
     throw;
   }
+}
+
+void TensorBatch::convert(DeviceTensor& source, DeviceTensor& destination) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  auto src = impl_->owner->require(source);
+  auto dst = impl_->owner->require(destination);
+  const uint64_t elements = src->layout.elements();
+  if (src.get() == dst.get() || elements != dst->layout.elements() ||
+      elements > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: conversion shape mismatch");
+  }
+  uint32_t op = 0;
+  bool narrowing = false;
+  if (src->type == ScalarType::kFloat32 && dst->type == ScalarType::kBFloat16) {
+    op = 1; narrowing = true;
+  } else if (src->type == ScalarType::kBFloat16 && dst->type == ScalarType::kFloat32) {
+    op = 2;
+  } else if (src->type == ScalarType::kFloat32 && dst->type == ScalarType::kFloat16) {
+    op = 3; narrowing = true;
+  } else if (src->type == ScalarType::kFloat16 && dst->type == ScalarType::kFloat32) {
+    op = 4;
+  } else {
+    throw std::invalid_argument("vulkan tensor: unsupported dtype conversion");
+  }
+  const uint64_t invocation_count = narrowing ? (elements + 1) / 2 : elements;
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(invocation_count);
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters parameters;
+    parameters.op = op;
+    parameters.count = dispatch_count;
+    parameters.p[0] = static_cast<uint32_t>(elements);
+    impl_->dispatch(parameters, src, src, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::transpose_2d(DeviceTensor& source, DeviceTensor& destination) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  auto src = impl_->owner->require(source);
+  auto dst = impl_->owner->require(destination);
+  const auto& a = src->layout;
+  const auto& o = dst->layout;
+  if (src.get() == dst.get() || src->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kFloat32 || a.rank != 2 || o.rank != 2 ||
+      o.extent[0] != a.extent[1] || o.extent[1] != a.extent[0] ||
+      a.elements() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid fp32 transpose");
+  }
+  if (a.extent[0] > std::numeric_limits<uint32_t>::max() ||
+      a.extent[1] > std::numeric_limits<uint32_t>::max()) {
+    throw std::out_of_range("vulkan tensor: transpose dimensions exceed uint32 limits");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(a.elements());
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters p;
+    p.op = 5; p.count = dispatch_count;
+    p.p[0] = static_cast<uint32_t>(a.extent[0]);
+    p.p[1] = static_cast<uint32_t>(a.extent[1]);
+    impl_->dispatch(p, src, src, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::gather_rows(DeviceTensor& source, DeviceTensor& indices,
+                              DeviceTensor& destination) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  auto src = impl_->owner->require(source);
+  auto idx = impl_->owner->require(indices);
+  auto dst = impl_->owner->require(destination);
+  const auto& a = src->layout; const auto& ix = idx->layout; const auto& o = dst->layout;
+  if (src.get() == dst.get() || src.get() == idx.get() || dst.get() == idx.get() ||
+      src->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
+      idx->type != ScalarType::kInt32 || a.rank != 2 || ix.rank != 1 || o.rank != 2 ||
+      ix.extent[0] != o.extent[0] || a.extent[1] != o.extent[1] ||
+      a.elements() > std::numeric_limits<uint32_t>::max() ||
+      o.elements() > std::numeric_limits<uint32_t>::max() ||
+      a.extent[0] > std::numeric_limits<uint32_t>::max() ||
+      a.extent[1] > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid gather rows");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(o.elements());
+  try {
+    impl_->count_operator(); impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(idx, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters p; p.op = 6;
+    p.count = dispatch_count;
+    p.p[0] = static_cast<uint32_t>(a.extent[0]); p.p[1] = static_cast<uint32_t>(a.extent[1]);
+    impl_->dispatch(p, src, idx, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::scatter_rows(DeviceTensor& source, DeviceTensor& indices,
+                               DeviceTensor& destination) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  auto src = impl_->owner->require(source); auto idx = impl_->owner->require(indices);
+  auto dst = impl_->owner->require(destination);
+  const auto& a = src->layout; const auto& ix = idx->layout; const auto& o = dst->layout;
+  if (src.get() == dst.get() || src.get() == idx.get() || dst.get() == idx.get() ||
+      src->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
+      idx->type != ScalarType::kInt32 || a.rank != 2 || ix.rank != 1 || o.rank != 2 ||
+      ix.extent[0] != a.extent[0] || a.extent[1] != o.extent[1] ||
+      a.elements() > std::numeric_limits<uint32_t>::max() ||
+      o.elements() > std::numeric_limits<uint32_t>::max() ||
+      o.extent[0] > std::numeric_limits<uint32_t>::max() ||
+      a.extent[1] > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid scatter rows");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(a.elements());
+  try {
+    impl_->count_operator(); impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(idx, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters p; p.op = 7;
+    p.count = dispatch_count; p.p[0] = static_cast<uint32_t>(o.extent[0]);
+    p.p[1] = static_cast<uint32_t>(a.extent[1]); impl_->dispatch(p, src, idx, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::add_bias(DeviceTensor& input, DeviceTensor& bias, DeviceTensor& output) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  auto src = impl_->owner->require(input); auto bv = impl_->owner->require(bias);
+  auto dst = impl_->owner->require(output);
+  const auto& a = src->layout; const auto& b = bv->layout; const auto& o = dst->layout;
+  if (src.get() == bv.get() || dst.get() == bv.get() ||
+      src->type != ScalarType::kFloat32 || bv->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kFloat32 || a.rank != 2 || b.rank != 1 || o.rank != 2 ||
+      b.extent[0] != a.extent[1] || o.extent != a.extent ||
+      a.elements() > std::numeric_limits<uint32_t>::max() ||
+      a.extent[1] > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid add-bias");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(a.elements());
+  try {
+    impl_->count_operator();
+    impl_->transition(src, src.get() == dst.get() ? BufferAccess::kComputeReadWrite
+                                                  : BufferAccess::kComputeRead);
+    impl_->transition(bv, BufferAccess::kComputeRead);
+    if (src.get() != dst.get()) impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters p; p.op = 8;
+    p.count = dispatch_count; p.p[1] = static_cast<uint32_t>(a.extent[1]);
+    impl_->dispatch(p, src, bv, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::heads_to_tokens_bf16(DeviceTensor& source, DeviceTensor& destination,
+                                       uint32_t heads, uint32_t sequence,
+                                       uint32_t head_dim) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  auto src = impl_->owner->require(source); auto dst = impl_->owner->require(destination);
+  const uint64_t elements = checked_multiply(
+      checked_multiply(heads, sequence, "heads-to-tokens"), head_dim,
+      "heads-to-tokens");
+  if (heads == 0 || sequence == 0 || head_dim == 0 ||
+      src.get() == dst.get() || src->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kBFloat16 ||
+      src->layout.elements() != elements || dst->layout.elements() != elements ||
+      elements > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid heads-to-tokens conversion");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch((elements + 1) / 2);
+  try {
+    impl_->count_operator(); impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters p; p.op = 9;
+    p.count = dispatch_count;
+    p.p[0] = heads; p.p[1] = head_dim; p.p[2] = sequence;
+    p.p[3] = static_cast<uint32_t>(elements); impl_->dispatch(p, src, src, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::depth_to_space(DeviceTensor& source, DeviceTensor& destination,
+                                 uint32_t time, uint32_t height, uint32_t width,
+                                 uint32_t channels, uint32_t patch_time,
+                                 uint32_t patch) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  auto src = impl_->owner->require(source); auto dst = impl_->owner->require(destination);
+  if (time == 0 || height == 0 || width == 0 || channels == 0 ||
+      patch_time == 0 || patch == 0) {
+    throw std::invalid_argument("vulkan tensor: depth-to-space dimensions must be nonzero");
+  }
+  const uint64_t tokens = checked_multiply(
+      checked_multiply(time, height, "depth-to-space"), width, "depth-to-space");
+  const uint64_t patch_volume = checked_multiply(
+      checked_multiply(patch_time, patch, "depth-to-space"), patch,
+      "depth-to-space");
+  const uint64_t elements = checked_multiply(
+      checked_multiply(tokens, channels, "depth-to-space"), patch_volume,
+      "depth-to-space");
+  if (patch_volume > std::numeric_limits<uint32_t>::max() ||
+      src.get() == dst.get() || src->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kFloat32 ||
+      src->layout.elements() != elements || dst->layout.elements() != elements ||
+      elements > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid depth-to-space tensors");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(elements);
+  try {
+    impl_->count_operator(); impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters p; p.op = 10; p.count = dispatch_count;
+    p.p[0] = time; p.p[1] = height; p.p[2] = width; p.p[3] = patch_time;
+    p.p[4] = patch; p.p[5] = channels; impl_->dispatch(p, src, src, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
 }
 
 Submission TensorBatch::submit() {

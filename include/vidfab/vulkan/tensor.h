@@ -29,6 +29,7 @@ class DeviceTensor {
 
   DeviceTensorView view() const;
   const TensorLayout& layout() const;
+  ScalarType type() const;
   explicit operator bool() const noexcept;
 
  private:
@@ -79,6 +80,27 @@ class TensorBatch {
 
   void copy(DeviceTensor& source, DeviceTensor& destination);
   void add(DeviceTensor& a, DeviceTensor& b, DeviceTensor& output);
+  void convert(DeviceTensor& source, DeviceTensor& destination);
+  void transpose_2d(DeviceTensor& source, DeviceTensor& destination);
+  // `indices` is a trusted device tensor: every int32 value must be in
+  // [0, source.rows). The shader bounds-checks and writes zero for an invalid
+  // value to prevent device memory access, but validation belongs at the
+  // producer/callsite because checking device values here would add a host
+  // synchronization boundary.
+  void gather_rows(DeviceTensor& source, DeviceTensor& indices,
+                   DeviceTensor& destination);
+  // `indices` is trusted: values must be unique and in [0, destination.rows).
+  // The shader bounds-checks invalid values and leaves those rows untouched;
+  // uniqueness must be guaranteed by the producer. Untouched destination rows
+  // are preserved.
+  void scatter_rows(DeviceTensor& source, DeviceTensor& indices,
+                    DeviceTensor& destination);
+  void add_bias(DeviceTensor& input, DeviceTensor& bias, DeviceTensor& output);
+  void heads_to_tokens_bf16(DeviceTensor& source, DeviceTensor& destination,
+                            uint32_t heads, uint32_t sequence, uint32_t head_dim);
+  void depth_to_space(DeviceTensor& source, DeviceTensor& destination,
+                      uint32_t time, uint32_t height, uint32_t width,
+                      uint32_t channels, uint32_t patch_time, uint32_t patch);
   Submission submit();
   explicit operator bool() const noexcept;
 
@@ -105,10 +127,13 @@ class TensorContext {
   TensorContext(const TensorContext&) = delete;
   TensorContext& operator=(const TensorContext&) = delete;
 
-  DeviceTensor allocate(const TensorLayout& layout);
+  DeviceTensor allocate(const TensorLayout& layout,
+                        ScalarType type = ScalarType::kFloat32);
   TensorBatch begin_batch();
   void upload(DeviceTensor& destination, const float* values, uint64_t count);
   void download(DeviceTensor& source, float* values, uint64_t count);
+  void upload_bytes(DeviceTensor& destination, const void* values, uint64_t bytes);
+  void download_bytes(DeviceTensor& source, void* values, uint64_t bytes);
   // Exact self-copy and partial aliasing are rejected.
   void copy(DeviceTensor& source, DeviceTensor& destination);
   // Inputs may alias each other; output must be a distinct allocation.

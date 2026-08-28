@@ -1,0 +1,110 @@
+#version 450
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer A { uint data[]; } a;
+layout(set = 0, binding = 1, std430) readonly buffer B { uint data[]; } b;
+layout(set = 0, binding = 2, std430) buffer Output { uint data[]; } output_data;
+
+layout(push_constant) uniform Parameters {
+  uint op;
+  uint count;
+  uint p0;
+  uint p1;
+  uint p2;
+  uint p3;
+  uint p4;
+  uint p5;
+} parameters;
+
+uint bf16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return (bits >> 16) | 0x0040u;
+  return (bits + 0x00007fffu + ((bits >> 16) & 1u)) >> 16;
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= parameters.count) return;
+
+  if (parameters.op == 0u) {  // fp32 add
+    precise float value = uintBitsToFloat(a.data[i]) + uintBitsToFloat(b.data[i]);
+    output_data.data[i] = floatBitsToUint(value);
+  } else if (parameters.op == 1u) {  // fp32 -> bf16, two outputs per invocation
+    uint e0 = 2u * i;
+    uint lo = bf16_rte(uintBitsToFloat(a.data[e0]));
+    uint hi = e0 + 1u < parameters.p0 ? bf16_rte(uintBitsToFloat(a.data[e0 + 1u])) : 0u;
+    output_data.data[i] = lo | (hi << 16);
+  } else if (parameters.op == 2u) {  // bf16 -> fp32
+    uint packed = a.data[i >> 1u];
+    output_data.data[i] = ((packed >> ((i & 1u) * 16u)) & 0xffffu) << 16;
+  } else if (parameters.op == 3u) {  // fp32 -> fp16, two outputs per invocation
+    uint e0 = 2u * i;
+    float lo = uintBitsToFloat(a.data[e0]);
+    float hi = e0 + 1u < parameters.p0 ? uintBitsToFloat(a.data[e0 + 1u]) : 0.0f;
+    output_data.data[i] = packHalf2x16(vec2(lo, hi));
+  } else if (parameters.op == 4u) {  // fp16 -> fp32
+    vec2 values = unpackHalf2x16(a.data[i >> 1u]);
+    output_data.data[i] = floatBitsToUint(values[i & 1u]);
+  } else if (parameters.op == 5u) {  // transpose [p0,p1] fp32
+    uint row = i / parameters.p1;
+    uint col = i - row * parameters.p1;
+    output_data.data[col * parameters.p0 + row] = a.data[i];
+  } else if (parameters.op == 6u) {  // gather fp32 rows, B is int32 indices
+    uint row = i / parameters.p1;
+    uint col = i - row * parameters.p1;
+    uint source_row = b.data[row];
+    output_data.data[i] = source_row < parameters.p0
+                              ? a.data[source_row * parameters.p1 + col]
+                              : 0u;
+  } else if (parameters.op == 7u) {  // scatter fp32 rows, indices must be unique
+    uint row = i / parameters.p1;
+    uint col = i - row * parameters.p1;
+    uint destination_row = b.data[row];
+    if (destination_row < parameters.p0)
+      output_data.data[destination_row * parameters.p1 + col] = a.data[i];
+  } else if (parameters.op == 8u) {  // fp32 add bias [rows,cols]
+    uint col = i % parameters.p1;
+    precise float value = uintBitsToFloat(a.data[i]) + uintBitsToFloat(b.data[col]);
+    output_data.data[i] = floatBitsToUint(value);
+  } else if (parameters.op == 9u) {  // heads [H,S,D] fp32 -> tokens [S,H,D] bf16
+    uint e0 = 2u * i;
+    uint token0 = e0 / (parameters.p0 * parameters.p1);
+    uint rem0 = e0 - token0 * parameters.p0 * parameters.p1;
+    uint head0 = rem0 / parameters.p1;
+    uint dim0 = rem0 - head0 * parameters.p1;
+    uint src0 = (head0 * parameters.p2 + token0) * parameters.p1 + dim0;
+    uint lo = bf16_rte(uintBitsToFloat(a.data[src0]));
+    uint hi = 0u;
+    if (e0 + 1u < parameters.p3) {
+      uint e1 = e0 + 1u;
+      uint token1 = e1 / (parameters.p0 * parameters.p1);
+      uint rem1 = e1 - token1 * parameters.p0 * parameters.p1;
+      uint head1 = rem1 / parameters.p1;
+      uint dim1 = rem1 - head1 * parameters.p1;
+      uint src1 = (head1 * parameters.p2 + token1) * parameters.p1 + dim1;
+      hi = bf16_rte(uintBitsToFloat(a.data[src1]));
+    }
+    output_data.data[i] = lo | (hi << 16);
+  } else if (parameters.op == 10u) {  // depth-to-space fp32
+    uint out_w = parameters.p2 * parameters.p4;
+    uint out_h = parameters.p1 * parameters.p4;
+    uint plane = parameters.p0 * out_h * out_w;
+    uint channel = i / plane;
+    uint rem = i - channel * plane;
+    uint ot = rem / (out_h * out_w);
+    rem -= ot * out_h * out_w;
+    uint oh = rem / out_w;
+    uint ow = rem - oh * out_w;
+    uint it = ot / parameters.p3;
+    uint ih = oh / parameters.p4;
+    uint iw = ow / parameters.p4;
+    uint pt = ot - it * parameters.p3;
+    uint ph = oh - ih * parameters.p4;
+    uint pw = ow - iw * parameters.p4;
+    uint patch_volume = parameters.p3 * parameters.p4 * parameters.p4;
+    uint feature = channel * patch_volume + (pt * parameters.p4 + ph) * parameters.p4 + pw;
+    uint token = (it * parameters.p1 + ih) * parameters.p2 + iw;
+    output_data.data[i] = a.data[token * (parameters.p5 * patch_volume) + feature];
+  }
+}

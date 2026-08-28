@@ -37,6 +37,20 @@ std::vector<uint8_t> read_bytes(const std::filesystem::path& path) {
                               std::istreambuf_iterator<char>());
 }
 
+uint32_t float_bits(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+uint16_t reference_bf16(float value) {
+  uint32_t bits = float_bits(value);
+  if ((bits & 0x7fffffffu) > 0x7f800000u) {
+    return static_cast<uint16_t>((bits >> 16) | 0x0040u);
+  }
+  return static_cast<uint16_t>((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
+}
+
 VIDFAB_TEST(vulkan_runtime_and_pool) {
   using namespace vidfab::vulkan;
 
@@ -628,6 +642,147 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
     moved_context_rejected = true;
   }
   CHECK(moved_context_rejected);
+}
+
+VIDFAB_TEST(vulkan_tensor_layout_and_conversion_ops) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore ||
+      !physical.front().info().fp32_signed_zero_inf_nan_preserve ||
+      !physical.front().info().fp32_rounding_rte) return;
+  DeviceOptions options; options.enable_timeline_semaphore = true;
+  Device device = physical.front().create_device(options);
+  TensorContext tensors(device);
+
+  const uint64_t shape_data[] = {3, 5};
+  const uint64_t transposed_data[] = {5, 3};
+  const TensorLayout shape = TensorLayout::contiguous(shape_data, 2);
+  const TensorLayout transposed_shape = TensorLayout::contiguous(transposed_data, 2);
+  DeviceTensor input = tensors.allocate(shape);
+  DeviceTensor bf16 = tensors.allocate(shape, ScalarType::kBFloat16);
+  DeviceTensor fp16 = tensors.allocate(shape, ScalarType::kFloat16);
+  DeviceTensor bf16_back = tensors.allocate(shape);
+  DeviceTensor fp16_back = tensors.allocate(shape);
+  DeviceTensor transposed = tensors.allocate(transposed_shape);
+  DeviceTensor biased = tensors.allocate(shape);
+  const uint64_t bias_extent = 5;
+  DeviceTensor bias = tensors.allocate(TensorLayout::contiguous(&bias_extent, 1));
+
+  const uint32_t patterns[] = {
+      0x00000000u, 0x80000000u, 0x3f800000u, 0xc0000000u, 0x477fe000u,
+      0x7f800000u, 0xff800000u, 0x33800000u, 0x33800001u, 0x00000001u,
+      0x7fc12345u, 0x7fa54321u, 0x38800000u, 0x3f000000u, 0xbf000000u};
+  std::vector<float> host(std::size(patterns));
+  std::memcpy(host.data(), patterns, sizeof(patterns));
+  const float host_bias[] = {1.0f, -1.0f, 0.25f, -0.25f, 2.0f};
+  tensors.upload(input, host.data(), host.size());
+  tensors.upload(bias, host_bias, std::size(host_bias));
+
+  TensorBatch batch = tensors.begin_batch();
+  batch.convert(input, bf16);
+  batch.convert(bf16, bf16_back);
+  batch.convert(input, fp16);
+  batch.convert(fp16, fp16_back);
+  batch.transpose_2d(input, transposed);
+  batch.add_bias(input, bias, biased);
+  Submission done = batch.submit();
+  done.wait();
+
+  std::vector<uint16_t> got_bf16(host.size()), got_fp16(host.size());
+  std::vector<float> got_bf16_back(host.size()), got_fp16_back(host.size());
+  std::vector<float> got_transposed(host.size()), got_biased(host.size());
+  tensors.download_bytes(bf16, got_bf16.data(), got_bf16.size() * sizeof(uint16_t));
+  tensors.download_bytes(fp16, got_fp16.data(), got_fp16.size() * sizeof(uint16_t));
+  tensors.download(bf16_back, got_bf16_back.data(), got_bf16_back.size());
+  tensors.download(fp16_back, got_fp16_back.data(), got_fp16_back.size());
+  tensors.download(transposed, got_transposed.data(), got_transposed.size());
+  tensors.download(biased, got_biased.data(), got_biased.size());
+  for (size_t i = 0; i < host.size(); ++i) {
+    CHECK(got_bf16[i] == reference_bf16(host[i]));
+    CHECK(float_bits(got_bf16_back[i]) == (static_cast<uint32_t>(got_bf16[i]) << 16));
+  }
+  const uint16_t expected_half[] = {
+      0x0000u, 0x8000u, 0x3c00u, 0xc000u, 0x7bffu, 0x7c00u, 0xfc00u,
+      0x0001u, 0x0001u, 0x0000u, 0x7fffu, 0x7fffu, 0x0400u, 0x3800u, 0xb800u};
+  for (size_t i = 0; i < host.size(); ++i) {
+    CHECK_MSG(got_fp16[i] == expected_half[i], "fp16 mismatch %zu: %04x != %04x",
+              i, got_fp16[i], expected_half[i]);
+  }
+  for (size_t row = 0; row < 3; ++row) {
+    for (size_t col = 0; col < 5; ++col) {
+      CHECK(float_bits(got_transposed[col * 3 + row]) == float_bits(host[row * 5 + col]));
+      if (std::isfinite(host[row * 5 + col])) {
+        CHECK(float_bits(got_biased[row * 5 + col]) ==
+              float_bits(host[row * 5 + col] + host_bias[col]));
+      }
+    }
+  }
+
+  const uint64_t matrix_shape_data[] = {3, 4};
+  const uint64_t selected_shape_data[] = {2, 4};
+  const TensorLayout matrix_shape = TensorLayout::contiguous(matrix_shape_data, 2);
+  const TensorLayout selected_shape = TensorLayout::contiguous(selected_shape_data, 2);
+  const uint64_t index_count = 2;
+  DeviceTensor matrix = tensors.allocate(matrix_shape);
+  DeviceTensor indices = tensors.allocate(TensorLayout::contiguous(&index_count, 1),
+                                          ScalarType::kInt32);
+  DeviceTensor gathered = tensors.allocate(selected_shape);
+  DeviceTensor scattered = tensors.allocate(matrix_shape);
+  std::vector<float> matrix_host(12), scatter_initial(12, -99.0f);
+  for (size_t i = 0; i < matrix_host.size(); ++i) matrix_host[i] = static_cast<float>(i + 1);
+  const int32_t host_indices[] = {2, 0};
+  tensors.upload(matrix, matrix_host.data(), matrix_host.size());
+  tensors.upload_bytes(indices, host_indices, sizeof(host_indices));
+  tensors.upload(scattered, scatter_initial.data(), scatter_initial.size());
+  TensorBatch indexed = tensors.begin_batch();
+  indexed.gather_rows(matrix, indices, gathered);
+  indexed.scatter_rows(gathered, indices, scattered);
+  indexed.submit().wait();
+  std::vector<float> gathered_host(8), scattered_host(12);
+  tensors.download(gathered, gathered_host.data(), gathered_host.size());
+  tensors.download(scattered, scattered_host.data(), scattered_host.size());
+  for (size_t col = 0; col < 4; ++col) {
+    CHECK(gathered_host[col] == matrix_host[8 + col]);
+    CHECK(gathered_host[4 + col] == matrix_host[col]);
+    CHECK(scattered_host[8 + col] == matrix_host[8 + col]);
+    CHECK(scattered_host[col] == matrix_host[col]);
+    CHECK(scattered_host[4 + col] == -99.0f);
+  }
+
+  const uint64_t heads_elements = 24;
+  DeviceTensor heads_input = tensors.allocate(TensorLayout::contiguous(&heads_elements, 1));
+  DeviceTensor token_bf16 = tensors.allocate(TensorLayout::contiguous(&heads_elements, 1),
+                                             ScalarType::kBFloat16);
+  std::vector<float> heads_host(heads_elements);
+  for (size_t i = 0; i < heads_host.size(); ++i) heads_host[i] = static_cast<float>(i) / 8.0f;
+  tensors.upload(heads_input, heads_host.data(), heads_host.size());
+  TensorBatch layout_batch = tensors.begin_batch();
+  layout_batch.heads_to_tokens_bf16(heads_input, token_bf16, 2, 3, 4);
+  layout_batch.submit().wait();
+  std::vector<uint16_t> token_host(heads_elements);
+  tensors.download_bytes(token_bf16, token_host.data(), token_host.size() * 2);
+  for (uint32_t s = 0; s < 3; ++s) for (uint32_t h = 0; h < 2; ++h)
+    for (uint32_t d = 0; d < 4; ++d) {
+      const size_t out = (s * 2 + h) * 4 + d;
+      const size_t in = (h * 3 + s) * 4 + d;
+      CHECK(token_host[out] == reference_bf16(heads_host[in]));
+    }
+
+  const uint64_t depth_elements = 8;
+  DeviceTensor depth_in = tensors.allocate(TensorLayout::contiguous(&depth_elements, 1));
+  DeviceTensor depth_out = tensors.allocate(TensorLayout::contiguous(&depth_elements, 1));
+  const float depth_values[] = {0, 1, 2, 3, 4, 5, 6, 7};
+  tensors.upload(depth_in, depth_values, depth_elements);
+  TensorBatch depth_batch = tensors.begin_batch();
+  depth_batch.depth_to_space(depth_in, depth_out, 1, 1, 2, 1, 1, 2);
+  depth_batch.submit().wait();
+  std::vector<float> depth_result(depth_elements);
+  tensors.download(depth_out, depth_result.data(), depth_elements);
+  const float depth_expected[] = {0, 1, 4, 5, 2, 3, 6, 7};
+  CHECK(std::memcmp(depth_result.data(), depth_expected, sizeof(depth_expected)) == 0);
 }
 
 VIDFAB_TEST(vulkan_yuv420_output) {

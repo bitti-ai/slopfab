@@ -9,7 +9,11 @@ namespace {
 uint64_t scalar_bytes(ScalarType type) {
   switch (type) {
     case ScalarType::kFloat32:
+    case ScalarType::kInt32:
       return 4;
+    case ScalarType::kFloat16:
+    case ScalarType::kBFloat16:
+      return 2;
   }
   throw std::invalid_argument("tensor: unsupported scalar type");
 }
