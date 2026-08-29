@@ -352,10 +352,16 @@ boundary before the optional fp32/BF16 bias and a second BF16 round. Video-VAE
 fp32 activations are narrowed once per chunk into a caller-owned
 `PreparedF16Activation`; its batch-scoped view can feed distinct FP16-weight
 plans without repeating conversion. FP16 GEMM and FP32 SGEMM produce FP32.
-Every edge path uses the fixed 16x16 shared-load tile and ascending-K fused
-multiply-add order. Full BF16/FP16 tiles use the fastest exact KHR cooperative
-matrix path on the pinned RTX 5090/610.88 tuple; CUDA tests use matching WMMA
-tile/K-call order. No path calls CUDA from the Vulkan backend.
+Every scalar edge path uses the same ascending-K fused multiply-add order:
+Vulkan uses a fixed 16x16 shared-load tile and the CUDA reference loads directly.
+Full BF16/FP16 tiles use the fastest exact KHR cooperative-matrix path on the
+pinned RTX 5090/610.88 tuple; CUDA tests use matching WMMA tile/K-call order.
+No path calls CUDA from the Vulkan backend. Exact tests cover all three scalar
+modes at M3/N11/K19 with row offsets and tails, BF16 fp32 and BF16 bias, a
+K5376 cooperative contraction, cancellation, signed zero, infinity, and output
+padding. The arithmetic contract covers zero, finite-normal, and infinity
+operands/intermediates/results; NaN payload identity and subnormal arithmetic
+require the corresponding explicit capability and are not otherwise claimed.
 
 The cooperative-matrix result order is implementation-defined, so it fails
 closed unless vendor `10de`, device `2b85`, raw driver `98960000`, subgroup 32,
@@ -368,21 +374,24 @@ versus 0.026--0.030 ms cuBLAS for BF16 M64/N5376/K5376.
 
 Release measurements below are batch-divided steady device work on the same
 tuple; uploads are excluded. The FP16 preparation number is a separate exact
-submit/wait and is paid once per changed activation chunk, then amortized
-across its QKV/MLP projections. Root acceptance explicitly permits these
+submit/wait and is paid once per changed activation chunk. The current
+`vit_decoder` call site has fanout one, so the honest comparison includes that
+preparation for every projection. Root acceptance explicitly permits these
 fastest exact native paths despite their current cuBLAS ratio.
 
 | Mode and shape | CUDA cuBLAS | Vulkan | Ratio |
 |---|---:|---:|---:|
 | BF16 M64 N5376 K5376 | 0.026 ms | 0.16 ms | 6.2x |
-| FP16 VAE M64 N6144 K2048 | 0.016 ms | 0.078 ms | 4.9x |
-| FP32 SGEMM M64 N2048 K2048 | 0.045 ms | 0.236 ms | 5.2x |
+| FP16 VAE GEMM only, M64 N6144 K2048 | 0.023 ms | 0.076 ms | 3.30x |
+| FP16 VAE narrow/prepare + GEMM, fanout one | 0.026 ms | 0.111 ms | 4.27x |
+| FP32 SGEMM M64 N2048 K2048 | 0.045 ms | 0.254 ms | 5.6x |
 
-FP32-to-FP16 preparation for M64/K2048 measured 0.040 ms per chunk. Plans,
-prepared slots, descriptors and command resources are persistent and bounded;
-tests cover two outstanding slots, third-slot backpressure, stale/discarded/
-superseded views, wrapper-drop retention, 32/33 operations, stable descriptor
-and memory high-water, row offsets, multi-K tiles and non-tile tails.
+The stable component medians were 0.003 ms CUDA narrowing and 0.035 ms Vulkan
+preparation for M64/K2048. Plans, prepared slots, descriptors and command
+resources are persistent and bounded; tests cover distinct exact outputs in two
+outstanding slots, third-slot backpressure, stale/discarded/superseded views,
+true in-flight wrapper-drop retention and release, 32/33 operations, stable
+descriptor and memory high-water, row offsets, multi-K tiles and non-tile tails.
 
 The HLSL modules use DXC 1.9.2607 and the cooperative modules use Khronos
 glslang 16.5.0. Float-control variants are produced by the repository helper:
@@ -395,6 +404,9 @@ glslang -V --target-env vulkan1.3 -S comp src/vulkan/tensor_gemm_coop.comp -o te
 python tools/add_spirv_float_controls.py tensor_gemm_coop.raw.spv src/vulkan/tensor_gemm_coop.comp.spv src/vulkan/tensor_gemm_coop_denorm.comp.spv
 glslang -V --target-env vulkan1.3 -S comp src/vulkan/tensor_gemm_coop_f16.comp -o tensor_gemm_coop_f16.raw.spv
 python tools/add_spirv_float_controls.py tensor_gemm_coop_f16.raw.spv src/vulkan/tensor_gemm_coop_f16.comp.spv src/vulkan/tensor_gemm_coop_f16_denorm.comp.spv
+
+# CUDA 13.0.48, MSVC 14.44.35207; reproducible SM120a code artifact
+nvcc --fatbin -std=c++17 --generate-code=arch=compute_120a,code=[compute_120a,sm_120a] -Iinclude src/cuda/deterministic_gemm.cu -o deterministic_gemm.fatbin
 ```
 
 ```text
@@ -409,5 +421,7 @@ tensor_gemm_coop_denorm.comp.spv         B5B80AC23262AAB3285AAC2F763910D56D6AAED
 tensor_gemm_coop_f16.comp                11B75EEFEFAEF0EFF8266BAE7D5E4CE0D1B6EBAA43C29F2D0CB9DA5B12E6203F
 tensor_gemm_coop_f16.comp.spv            E76C1A114F177A4EAA48D69A1DF7C102C06E1109EA4512C04B4335E99FEA537D
 tensor_gemm_coop_f16_denorm.comp.spv     9B51BE611B7F6477F6F5D4C82DABA6E1F900F29A06C9811F987126BDA9D23C9A
-src/cuda/deterministic_gemm.cu           08933C82C27942436DBB34549D35CB3D4DBABC3A09C8539ECFF768CC645F35F8
+src/cuda/deterministic_gemm.cu           8504C1A85F511A49B16753BA476500F2A986CC564A036D10F7E0693A532AF7E4
+include/vidfab/cuda/deterministic_gemm.cuh 3C422641C753992CFCC136BFB64327DD85841BC6B7047D1F2091E88686AB6670
+deterministic_gemm.fatbin                E417A406011985FF0D8F518DE0532D7367FA148C2113A1435E6B1ED795DA4A2C
 ```
