@@ -14,9 +14,11 @@
 
 #include "vidfab/vulkan/runtime.h"
 #include "vidfab/vulkan/compute.h"
+#include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/video/y4m.h"
+#include "vidfab/dtype.h"
 #include "../src/vulkan/tensor_validation.h"
 
 namespace {
@@ -51,6 +53,164 @@ uint16_t reference_bf16(float value) {
     return 0x7fffu;
   }
   return static_cast<uint16_t>((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
+}
+
+VIDFAB_TEST(vulkan_linear_weight_cpu_reference) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  auto run = [&](const char* label, const LinearWeightUpload& upload,
+                 const std::vector<uint16_t>& expected) {
+    LinearWeight weight = LinearWeight::upload(context, upload);
+    const uint64_t shape[] = {upload.out_features, upload.in_features};
+    DeviceTensor output = context.allocate(TensorLayout::contiguous(shape, 2),
+                                           ScalarType::kBFloat16);
+    TensorBatch batch = context.begin_batch();
+    weight.materialize_bf16(batch, output);
+    batch.submit().wait();
+    std::vector<uint16_t> actual(expected.size());
+    context.download_bytes(output, actual.data(), actual.size() * 2);
+    size_t mismatch = expected.size();
+    for (size_t i = 0; i < expected.size(); ++i)
+      if (actual[i] != expected[i]) { mismatch = i; break; }
+    CHECK_MSG(mismatch == expected.size(), "%s mismatch at %zu: %04x != %04x",
+              label, mismatch, mismatch == expected.size() ? 0u : expected[mismatch],
+              mismatch == expected.size() ? 0u : actual[mismatch]);
+  };
+
+  const std::vector<float> dense_f32 = {-3.5f, -0.0f, 0.125f, 1.0f, 17.25f};
+  std::vector<uint16_t> dense_expected(dense_f32.size());
+  for (size_t i = 0; i < dense_f32.size(); ++i)
+    dense_expected[i] = reference_bf16(dense_f32[i]);
+  LinearWeightUpload dense;
+  dense.format = LinearWeightFormat::kFloat32;
+  dense.out_features = 1;
+  dense.in_features = static_cast<uint32_t>(dense_f32.size());
+  dense.data = dense_f32.data();
+  dense.data_bytes = dense_f32.size() * 4;
+  run("f32", dense, dense_expected);
+  const std::vector<uint16_t> raw_bf16 = {0x0000, 0x8000, 0x0001, 0x7f80, 0x7fc1};
+  dense.format = LinearWeightFormat::kBFloat16;
+  dense.data = raw_bf16.data();
+  dense.data_bytes = raw_bf16.size() * 2;
+  run("bf16", dense, raw_bf16);
+
+  std::vector<uint8_t> f8(256);
+  std::vector<uint16_t> f8_expected(256);
+  const float f8_scale = 0.75f;
+  for (uint32_t i = 0; i < 256; ++i) {
+    f8[i] = static_cast<uint8_t>(i);
+    f8_expected[i] = reference_bf16(f8_e4m3_to_f32(f8[i]) * f8_scale);
+  }
+  LinearWeightUpload f8_upload;
+  f8_upload.format = LinearWeightFormat::kFloat8E4M3;
+  f8_upload.out_features = 1;
+  f8_upload.in_features = 256;
+  f8_upload.data = f8.data();
+  f8_upload.data_bytes = f8.size();
+  f8_upload.weight_scale = &f8_scale;
+  f8_upload.weight_scale_count = 1;
+  run("f8", f8_upload, f8_expected);
+
+  constexpr uint32_t i8_out = 2, i8_in = 67;
+  std::vector<int8_t> i8(i8_out * i8_in);
+  const float i8_scales[] = {-0.25f, 1.5f};
+  std::vector<uint16_t> i8_expected(i8.size());
+  for (size_t i = 0; i < i8.size(); ++i) {
+    i8[i] = static_cast<int8_t>(i * 71u);
+    i8_expected[i] = reference_bf16(static_cast<float>(i8[i]) *
+                                  i8_scales[i / i8_in]);
+  }
+  LinearWeightUpload i8_upload;
+  i8_upload.format = LinearWeightFormat::kInt8;
+  i8_upload.out_features = i8_out;
+  i8_upload.in_features = i8_in;
+  i8_upload.data = i8.data();
+  i8_upload.data_bytes = i8.size();
+  i8_upload.weight_scale = i8_scales;
+  i8_upload.weight_scale_count = i8_out;
+  run("i8", i8_upload, i8_expected);
+
+  constexpr uint32_t nv_out = 128, nv_in = 64;
+  const size_t nv_count = static_cast<size_t>(nv_out) * nv_in;
+  std::vector<uint8_t> nv_codes(nv_count / 2), nv_scales(nv_count / 16, 0x38);
+  std::vector<uint16_t> nv_expected(nv_count);
+  for (size_t byte = 0; byte < nv_codes.size(); ++byte)
+    nv_codes[byte] = static_cast<uint8_t>(((2 * byte & 15) << 4) |
+                                          ((2 * byte + 1) & 15));
+  const float nv_global = 0.25f;
+  auto scale_slot = [&](uint32_t row, uint32_t block) {
+    const uint32_t blocks_per_row = nv_in / 16;
+    const uint32_t tile = (row >> 7) * (blocks_per_row >> 2) + (block >> 2);
+    return static_cast<size_t>(tile) * 512 + (row & 31) * 16 +
+           ((row & 127) >> 5) * 4 + (block & 3);
+  };
+  for (size_t i = 0; i < nv_count; ++i) {
+    const uint8_t packed = nv_codes[i / 2];
+    const uint8_t code = (i & 1) == 0 ? packed >> 4 : packed & 15;
+    const uint32_t row = static_cast<uint32_t>(i / nv_in);
+    const float scale_value = f8_e4m3_to_f32(
+        nv_scales[scale_slot(row, static_cast<uint32_t>((i % nv_in) / 16))]) *
+        nv_global;
+    nv_expected[i] = reference_bf16(f4_e2m1_to_f32(code) * scale_value);
+  }
+  LinearWeightUpload nv_upload;
+  nv_upload.format = LinearWeightFormat::kNVFloat4;
+  nv_upload.out_features = nv_out;
+  nv_upload.in_features = nv_in;
+  nv_upload.data = nv_codes.data();
+  nv_upload.data_bytes = nv_codes.size();
+  nv_upload.block_scale = nv_scales.data();
+  nv_upload.block_scale_count = nv_scales.size();
+  nv_upload.global_scale = nv_global;
+  run("nvfp4", nv_upload, nv_expected);
+
+  constexpr uint32_t nf_out = 3, nf_in = 45;
+  const size_t nf_count = static_cast<size_t>(nf_out) * nf_in;
+  std::vector<uint8_t> nf_codes((nf_count + 1) / 2), nf_absmax(3);
+  for (size_t i = 0; i < nf_codes.size(); ++i)
+    nf_codes[i] = static_cast<uint8_t>((((i + 3) & 15) << 4) | ((i + 9) & 15));
+  for (size_t i = 0; i < nf_absmax.size(); ++i) nf_absmax[i] = static_cast<uint8_t>(i * 97);
+  std::array<float, 16> nf_map{};
+  std::array<float, 256> nested_map{};
+  for (size_t i = 0; i < nf_map.size(); ++i) nf_map[i] = (float(i) - 7.0f) / 8.0f;
+  for (size_t i = 0; i < nested_map.size(); ++i)
+    nested_map[i] = (float(i) - 127.0f) / 128.0f;
+  const float nested_absmax[] = {0.75f};
+  const float offset = 0.125f;
+  std::vector<uint16_t> nf_expected(nf_count);
+  for (size_t i = 0; i < nf_count; ++i) {
+    const size_t scale_index = i / 64;
+    const float scale_value = nested_map[nf_absmax[scale_index]] *
+                                  nested_absmax[scale_index / 256] + offset;
+    const uint8_t packed = nf_codes[i / 2];
+    const uint8_t code = (i & 1) == 0 ? packed >> 4 : packed & 15;
+    nf_expected[i] = reference_bf16(nf_map[code] * scale_value);
+  }
+  LinearWeightUpload nf_upload;
+  nf_upload.format = LinearWeightFormat::kNF4;
+  nf_upload.out_features = nf_out;
+  nf_upload.in_features = nf_in;
+  nf_upload.data = nf_codes.data();
+  nf_upload.data_bytes = nf_codes.size();
+  nf_upload.nf4_absmax = nf_absmax.data();
+  nf_upload.nf4_absmax_count = nf_absmax.size();
+  nf_upload.nf4_quant_map = nf_map.data();
+  nf_upload.nf4_quant_map_count = nf_map.size();
+  nf_upload.nf4_nested_quant_map = nested_map.data();
+  nf_upload.nf4_nested_quant_map_count = nested_map.size();
+  nf_upload.nf4_nested_absmax = nested_absmax;
+  nf_upload.nf4_nested_absmax_count = 1;
+  nf_upload.nf4_nested_offset = offset;
+  run("nf4", nf_upload, nf_expected);
 }
 
 VIDFAB_TEST(vulkan_runtime_and_pool) {
