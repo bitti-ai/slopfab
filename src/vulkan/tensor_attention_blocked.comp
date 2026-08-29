@@ -195,6 +195,9 @@ void main() {
         ? 0.0f : deterministic_exp_nonpositive(running_max - next_max);
     float exponential = key_row < p.sequence
         ? deterministic_exp_nonpositive(score - next_max) : 0.0f;
+    // All lanes read reduction[0] above; do not let lane 0 reuse it for the
+    // sum reduction until every warp has consumed the tile maximum.
+    barrier();
     score_or_probability[lane] = f16_round(exponential);
     reduction[lane] = exponential;
     barrier();

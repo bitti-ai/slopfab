@@ -450,7 +450,8 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
       CHECK(custom_v->size() == count);
       q = *custom_q; k = *custom_k; v = *custom_v;
     }
-    cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count), co(count);
+    cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count), co(count),
+        co_repeat(sequence == 129 ? count : 0);
     cuda::DeviceBuffer<uint16_t> cq16(count), ck16(count), cv16(count);
     cq.copy_from_host(q.data(), count); ck.copy_from_host(k.data(), count);
     cv.copy_from_host(v.data(), count);
@@ -485,6 +486,18 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
     VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> cuda_output(count);
     co.copy_to_host(cuda_output.data(), count);
+    if (sequence == 129) {
+      cuda::launch_deterministic_blocked_attention_f16(
+          nullptr, reinterpret_cast<const __half*>(cq16.get()),
+          reinterpret_cast<const __half*>(ck16.get()),
+          reinterpret_cast<const __half*>(cv16.get()),
+          reinterpret_cast<__nv_bfloat16*>(co_repeat.get()), sequence, heads,
+          dim, scale);
+      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      std::vector<uint16_t> cuda_repeat(count);
+      co_repeat.copy_to_host(cuda_repeat.data(), count);
+      CHECK(cuda_repeat == cuda_output);
+    }
 
     const uint64_t shape[] = {sequence, heads, dim};
     const TensorLayout layout = TensorLayout::contiguous(shape, 3);
@@ -509,6 +522,16 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
     batch.submit().wait();
     std::vector<uint16_t> vulkan_output(count);
     vk.download_bytes(vo, vulkan_output.data(), count * 2);
+    if (sequence == 129) {
+      TensorBatch repeat = vk.begin_batch();
+      PreparedAttentionView repeat_inputs =
+          prepared.prepare(repeat, vq, vk_tensor, vv);
+      plan.record(repeat, repeat_inputs, vo);
+      repeat.submit().wait();
+      std::vector<uint16_t> vulkan_repeat(count);
+      vk.download_bytes(vo, vulkan_repeat.data(), count * 2);
+      CHECK(vulkan_repeat == vulkan_output);
+    }
     size_t mismatch = count;
     for (size_t i = 0; i < count; ++i) {
       if (cuda_output[i] != vulkan_output[i]) { mismatch = i; break; }
@@ -615,7 +638,7 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
     const uint32_t second_rows = sequence - first_rows;
     const size_t count = size_t(sequence) * heads * dim;
     const int warmups = real_shape ? 0 : 2;
-    const int samples = real_shape ? 1 : 5;
+    const int samples = real_shape ? 2 : 5;
     std::vector<uint16_t> host(count, f32_to_bf16(0.03125f));
     cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count), co(count);
     cuda::DeviceBuffer<uint16_t> cq16(count), ck16(count), cv16(count);
@@ -1022,7 +1045,8 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
     }
 
     cuda::DeviceBuffer<float> c_input(count), c_weight(dim), c_bias(dim),
-        c_rms(count), c_layer(count);
+        c_rms(count), c_layer(count), c_rms_repeat(count),
+        c_layer_repeat(count);
     c_input.copy_from_host(input.data(), input.size());
     c_weight.copy_from_host(weight.data(), weight.size());
     c_bias.copy_from_host(bias.data(), bias.size());
@@ -1030,7 +1054,19 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
                          epsilon, nullptr);
     cuda::launch_layernorm(c_input.get(), c_weight.get(), c_bias.get(), c_layer.get(),
                            rows, dim, epsilon, nullptr);
+    cuda::launch_rmsnorm(c_input.get(), c_weight.get(), c_rms_repeat.get(), rows,
+                         dim, epsilon, nullptr);
+    cuda::launch_layernorm(c_input.get(), c_weight.get(), c_bias.get(),
+                           c_layer_repeat.get(), rows, dim, epsilon, nullptr);
     VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> rms_once(count), rms_twice(count), layer_once(count),
+        layer_twice(count);
+    c_rms.copy_to_host(rms_once.data(), count);
+    c_rms_repeat.copy_to_host(rms_twice.data(), count);
+    c_layer.copy_to_host(layer_once.data(), count);
+    c_layer_repeat.copy_to_host(layer_twice.data(), count);
+    CHECK(std::memcmp(rms_once.data(), rms_twice.data(), count * sizeof(float)) == 0);
+    CHECK(std::memcmp(layer_once.data(), layer_twice.data(), count * sizeof(float)) == 0);
 
     const uint64_t shape_extents[] = {static_cast<uint64_t>(rows),
                                       static_cast<uint64_t>(dim)};
@@ -1185,16 +1221,24 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
     std::vector<uint16_t> weight(dim);
     for (int i = 0; i < dim; ++i)
       weight[i] = exact_bf16(0.5f + static_cast<float>(i % 8) / 8.0f);
-    cuda::DeviceBuffer<uint16_t> c_input(count), c_weight(dim), c_output(count);
+    cuda::DeviceBuffer<uint16_t> c_input(count), c_weight(dim), c_output(count),
+        c_repeat(count);
     c_input.copy_from_host(input.data(), count);
     c_weight.copy_from_host(weight.data(), dim);
     cuda::launch_rmsnorm(reinterpret_cast<const __nv_bfloat16*>(c_input.get()),
                          reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
                          reinterpret_cast<__nv_bfloat16*>(c_output.get()), rows, dim,
                          1.0e-5f, nullptr);
+    cuda::launch_rmsnorm(reinterpret_cast<const __nv_bfloat16*>(c_input.get()),
+                         reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
+                         reinterpret_cast<__nv_bfloat16*>(c_repeat.get()), rows,
+                         dim, 1.0e-5f, nullptr);
     VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> expected(count), actual(count);
     c_output.copy_to_host(expected.data(), count);
+    std::vector<uint16_t> repeated(count);
+    c_repeat.copy_to_host(repeated.data(), count);
+    CHECK(repeated == expected);
     const uint64_t extents[] = {static_cast<uint64_t>(rows), static_cast<uint64_t>(dim)};
     const uint64_t feature = dim;
     DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2),
@@ -1230,7 +1274,8 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
       weight[i] = exact_bf16(0.5f + static_cast<float>(i % 4) / 4.0f);
       bias[i] = exact_bf16(static_cast<float>((i % 9) - 4) / 16.0f);
     }
-    cuda::DeviceBuffer<uint16_t> c_input(count), c_weight(dim), c_bias(dim), c_output(count);
+    cuda::DeviceBuffer<uint16_t> c_input(count), c_weight(dim), c_bias(dim),
+        c_output(count), c_repeat(count);
     c_input.copy_from_host(input.data(), count);
     c_weight.copy_from_host(weight.data(), dim);
     c_bias.copy_from_host(bias.data(), dim);
@@ -1239,9 +1284,18 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
         reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
         reinterpret_cast<const __nv_bfloat16*>(c_bias.get()),
         reinterpret_cast<__nv_bfloat16*>(c_output.get()), rows, dim, 1.0e-6f, nullptr);
+    cuda::launch_layernorm_affine(
+        reinterpret_cast<const __nv_bfloat16*>(c_input.get()),
+        reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
+        reinterpret_cast<const __nv_bfloat16*>(c_bias.get()),
+        reinterpret_cast<__nv_bfloat16*>(c_repeat.get()), rows, dim, 1.0e-6f,
+        nullptr);
     VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> expected(count), actual(count);
     c_output.copy_to_host(expected.data(), count);
+    std::vector<uint16_t> repeated(count);
+    c_repeat.copy_to_host(repeated.data(), count);
+    CHECK(repeated == expected);
     const uint64_t extents[] = {static_cast<uint64_t>(rows), static_cast<uint64_t>(dim)};
     const uint64_t feature = dim;
     DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(extents, 2), ScalarType::kBFloat16);
@@ -1302,9 +1356,10 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
       std::memcpy(&shift[static_cast<size_t>(selectors[0]) * dim], &shift_bits, 4);
     }
     const float epsilon = contraction_fixture ? 0.75f : 1.0e-5f;
-    cuda::DeviceBuffer<uint16_t> c_bf_input(count), c_weight(dim), c_bf_output(count);
+    cuda::DeviceBuffer<uint16_t> c_bf_input(count), c_weight(dim),
+        c_bf_output(count), c_bf_repeat(count);
     cuda::DeviceBuffer<float> c_f_input(count), c_scale(scale.size()), c_shift(shift.size()),
-        c_f_output(count);
+        c_f_output(count), c_f_repeat(count);
     cuda::DeviceBuffer<int32_t> c_selectors(rows);
     c_bf_input.copy_from_host(bf_input.data(), count);
     c_f_input.copy_from_host(f_input.data(), count);
@@ -1317,6 +1372,10 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
           c_f_input.get(), reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
           c_scale.get(), c_shift.get(), c_selectors.get(), c_f_output.get(), rows, dim,
           epsilon, nullptr);
+      cuda::launch_rmsnorm_modulate_f32(
+          c_f_input.get(), reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
+          c_scale.get(), c_shift.get(), c_selectors.get(), c_f_repeat.get(), rows,
+          dim, epsilon, nullptr);
     } else if (!invalid_selectors) {
       cuda::launch_rmsnorm_modulate(
           reinterpret_cast<const __nv_bfloat16*>(c_bf_input.get()),
@@ -1324,8 +1383,27 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
           c_shift.get(), c_selectors.get(),
           reinterpret_cast<__nv_bfloat16*>(c_bf_output.get()), rows, dim, 1.0e-5f,
           nullptr);
+      cuda::launch_rmsnorm_modulate(
+          reinterpret_cast<const __nv_bfloat16*>(c_bf_input.get()),
+          reinterpret_cast<const __nv_bfloat16*>(c_weight.get()), c_scale.get(),
+          c_shift.get(), c_selectors.get(),
+          reinterpret_cast<__nv_bfloat16*>(c_bf_repeat.get()), rows, dim,
+          1.0e-5f, nullptr);
     }
     VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    if (!invalid_selectors) {
+      if (fp32) {
+        std::vector<float> once(count), twice(count);
+        c_f_output.copy_to_host(once.data(), count);
+        c_f_repeat.copy_to_host(twice.data(), count);
+        CHECK(std::memcmp(once.data(), twice.data(), count * sizeof(float)) == 0);
+      } else {
+        std::vector<uint16_t> once(count), twice(count);
+        c_bf_output.copy_to_host(once.data(), count);
+        c_bf_repeat.copy_to_host(twice.data(), count);
+        CHECK(once == twice);
+      }
+    }
     const uint64_t extents[] = {static_cast<uint64_t>(rows),
                                 static_cast<uint64_t>(dim)};
     const uint64_t feature = dim;

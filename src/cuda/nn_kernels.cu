@@ -57,12 +57,16 @@ __device__ inline float block_reduce_sum(float value, float* shared) {
 
 __device__ inline float block_norm_inverse(float sum, uint32_t dim, float eps,
                                            float* shared) {
+  // block_reduce_sum returns shared[0] to every warp. Guard the read-to-reuse
+  // phase boundary before lane 0 overwrites that word with the broadcast.
+  __syncthreads();
   if (threadIdx.x == 0) shared[0] = deterministic_norm_rsqrt(sum, dim, eps);
   __syncthreads();
   return shared[0];
 }
 
 __device__ inline float block_mean(float sum, uint32_t dim, float* shared) {
+  __syncthreads();
   if (threadIdx.x == 0) shared[0] = deterministic_divide(sum, dim);
   __syncthreads();
   return shared[0];

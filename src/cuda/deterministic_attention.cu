@@ -118,6 +118,7 @@ __global__ void blocked_attention_kernel(
         ? 0.0f : deterministic_exp_nonpositive(running_max - next_max);
     const float exponential = key_row < sequence
         ? deterministic_exp_nonpositive(score - next_max) : 0.0f;
+    __syncthreads();
     score_or_probability[lane] = f16_round(exponential);
     reduction[lane] = exponential;
     __syncthreads();
