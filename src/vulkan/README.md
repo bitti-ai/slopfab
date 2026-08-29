@@ -550,9 +550,9 @@ The maximum processor-admitted single-image S65536 shape would require a
 blocks. Quadratic projection from S16384 puts the Vulkan exact attention at
 about 18.8 s/call, or 8.45 minutes for 27 blocks, versus about 62.8 s for the
 production CUDA blocked path. This primitive is not yet wired into
-Qwen/VAE/DiT. Causal GQA, H3 banded/fused attention, Sage2, and SOL remain
-separate features; unsupported modes must fail closed rather than route to
-this unmasked implementation.
+Qwen/VAE/DiT. Causal GQA and exact H3 attention are separate plans described
+below; Sage2 and SOL remain unsupported Vulkan modes and fail closed rather
+than route to this unmasked implementation.
 
 The modules use Khronos glslang 16.5.0. Blocked attention receives the
 repository preserve-only transform; the integer-defined converter does not.
@@ -570,9 +570,94 @@ tensor_attention_blocked.comp             C27A8133AD290D086E1AA0C03418DD87B5F3ED
 tensor_attention_blocked.comp.spv         9C1339B2FD44B9F453BD3974F720E635682130CE9F808411823C3657A97098F2
 tensor_attention_prepare.comp             786295C4E33EEDC7F67317B9ECF6B1BDEA0108B319AE5B5E8D57B6B3CEA4677D
 tensor_attention_prepare.comp.spv         56DC48503F296776CD1C105D0DC44D34E5F8768B35A8FEE6EC73EFAA9D3FF8F4
-src/cuda/deterministic_attention.cu       F22FCCAC89FA1A2707D7078DA568193DEE52477A2B046FB386282A28A3C7FB38
-include/vidfab/cuda/deterministic_attention.cuh EE98F4EB3DC8C15883A327E611BA4392C1CCFFB4BEA93C25221DC7B453F4EBF3
-deterministic_attention.fatbin            42123F5868046BA443DD1F069A315795DFC33714712851004D597AB06F8FCDFE
+src/cuda/deterministic_attention.cu       B834BF15A9207485D5B80CE4CFBA720D2E74448273FED0CD859A428841761D28
+include/vidfab/cuda/deterministic_attention.cuh 6F40E5FC9795A63DD227BA4C94C62661025A96AF60669630A39461DFB067BCA7
+deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
+```
+
+## Exact H3 full and frame-band attention
+
+`H3AttentionPlan` consumes direct token-major BF16 Q/K/V and produces BF16 for
+D64 or D128. Full attention visits every key. Banded attention uses an
+immutable 4,720-byte table with at most two canonical 64-aligned ranges per
+global 128-query tile. Touching/overlapping ranges merge, padded endpoints are
+masked before arithmetic, and both ranges form one continuous ascending
+64-key recurrence. Globally aligned 64-row workgroups mask writes outside the
+requested row chunk, so record splitting and output offsets do not change bits.
+
+CUDA and Vulkan use the same 1024-thread/32-subgroup cooperative contract:
+guarded BF16 Q/K staging, ascending 16-channel BF16-QK/F32 cooperative tiles,
+FP16-rounded probabilities and V, FP16-PV/F32 cooperative tiles, eight
+contiguous eight-key softmax partials combined in order, deterministic exp and
+division, and BF16 RNE output. Cooperative-matrix internal order is the pinned
+WMMA/KHR tuple, not a scalar ascending-channel claim. There is no score tensor,
+host boundary, per-dispatch allocation, operator scratch, scalar fallback, or
+CUDA fallback. Direct Q/K/V/out are the persistent footprint.
+
+The public exact domain requires finite BF16-to-FP16 V conversions, scaled
+scores, positive finite-normal denominators, cooperative/scalar FMA results,
+PV accumulators, and final numerators. Both backends canonicalize BF16-
+subnormal inputs, scaled QK results, online-correction products, cooperative PV
+tile outputs, corrected accumulator sums, and BF16-subnormal outputs to signed
+zero. Tests cover D64/D128 adversarial signed-zero/exponent/cancellation and
+near-rounding operands, single-key/uniform/two- and three-block correction
+anchors, S129/S257 tails, offsets 1/15/16/63/64/65/127/128/129, untouched
+write sentinels, full/wide identity, invalid recovery, 32/33 ops, moved/drop
+retention, two-flight reuse, and 50 alternating full/banded high-water runs.
+The real S37727/prefix431/37x1008/radius9 table pins FNV64
+`32b19bc0895faa6a` with independent accepted-key probes.
+
+The gate is deliberately empirical: RTX 5090 device 2b85, NVIDIA 610.88/raw
+driver `98960000`, pinned driver UUID, subgroup32, required BF16/F16 cooperative
+tuples and arithmetic/storage modes, local size1024, checked modules, pipeline
+creation, and exact goldens. CUDA additionally pins SM120/RTX5090 device UUID,
+CUDA 13.x driver API plus 13.0 runtime, 1024 threads, and 99,328 physical shared
+bytes. Ptxas reports 64 registers/thread and zero spills. GLSL/SPIR-V declares
+99,328 logical bytes across phase-disjoint arrays while Vulkan reports a
+49,152-byte core limit; successful creation/execution implies pinned NVIDIA
+lifetime lowering/overlay, not portable 99,328-byte Vulkan physical usage.
+
+Device-resident Release timings on the pinned tuple (no upload/download) are:
+
+| S37727,H56,D128 | CUDA exact | Vulkan exact | shipped CUDA fused |
+|---|---:|---:|---:|
+| full | 1666.832 ms | 2525.180 ms | 227.233 ms |
+| radius9 band | 782.777 ms | 1260.531 ms | 110.525 ms |
+
+Exact CUDA/Vulkan outputs and wide-band/full outputs are byte-identical. The
+four direct tensors occupy 2,063.20 MiB and exact attention adds zero scratch.
+At 50 blocks and 25 steps, the explicitly accepted fastest-native exception is
+about 26.3 minutes of Vulkan band attention (52.6 minutes full), versus about
+2.30 minutes shipped CUDA band attention. This is not production-speed parity.
+
+A shipped NVFP4 layer0/step0 capture (seed12345, 384x384 reference, 22 frames)
+was S9864/H56/D128/prefix8856. Capture SHA-256 is
+`56C4E55931B83DCECB0596DCB51EB3C7EF5555722910ECE78D06AE87CA055A01`;
+QKV FNV64 is `fc4780b4477f6eed`. Q/K/V maxima were 12.25/13.25/73.5 with zero
+subnormals and nonfinites. Exact output FNV64 `a2fbdde25a6d3787` matched CUDA
+and Vulkan byte-for-byte (117.464/171.984 ms). Shipped fused took 16.369 ms;
+the intentional rebaseline changed 6,368/70,705,152 BF16 words, relative L2
+`2.547692e-5`, max absolute delta `0.0625`.
+
+The modules use Khronos glslang 16.5.0, Vulkan 1.3, and the repository normal
+fp32-control transform (signed-zero/Inf/NaN plus RTE, no DenormPreserve). CUDA
+uses CUDA 13.0.48, MSVC 14.44.35207 and SM120a:
+
+```text
+glslang -V --target-env vulkan1.3 -S comp src/vulkan/tensor_attention_h3.comp -o h3-full.raw.spv
+glslang -V --target-env vulkan1.3 -S comp -DH3_BANDED=1 src/vulkan/tensor_attention_h3.comp -o h3-band.raw.spv
+python tools/add_spirv_float_controls.py h3-full.raw.spv src/vulkan/tensor_attention_h3.comp.spv h3-full.denorm.spv
+python tools/add_spirv_float_controls.py h3-band.raw.spv src/vulkan/tensor_attention_h3_banded.comp.spv h3-band.denorm.spv
+nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,code=[compute_120a,sm_120a] -Iinclude src/cuda/deterministic_attention.cu -o deterministic_attention.fatbin
+```
+
+```text
+tensor_attention_h3.comp                  B9E51135B436DFF97CE6463F4731965E7466530DC1B1E69D3FD7444B3CB6BA2B
+tensor_attention_h3.comp.spv              4FD87FBDBE7AE6EC6C40C67AAD6FD39A0B9EF05F6E3CC1A5ED688A5B17FBB37F
+tensor_attention_h3_banded.comp.spv       9564933F40B33B8C6077CB073F6E0CB78AD40627CD0C973FF16897CAB1764EFB
+src/cuda/deterministic_attention.cu       B834BF15A9207485D5B80CE4CFBA720D2E74448273FED0CD859A428841761D28
+include/vidfab/cuda/deterministic_attention.cuh 6F40E5FC9795A63DD227BA4C94C62661025A96AF60669630A39461DFB067BCA7
+deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
 ```
 
 ## Exact causal GQA text attention
@@ -650,7 +735,7 @@ nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,c
 ```text
 tensor_attention_causal_gqa.comp          DD700E2FDC18ED483973B2E161AEA3F1F43E8F2DB18FC8796F800BE766A79930
 tensor_attention_causal_gqa.comp.spv      9F8B4480179C01CC26A3E467D1F0915D606594388DAB8B5C0856770B2E7E3778
-src/cuda/deterministic_attention.cu       F22FCCAC89FA1A2707D7078DA568193DEE52477A2B046FB386282A28A3C7FB38
-include/vidfab/cuda/deterministic_attention.cuh EE98F4EB3DC8C15883A327E611BA4392C1CCFFB4BEA93C25221DC7B453F4EBF3
-deterministic_attention.fatbin            42123F5868046BA443DD1F069A315795DFC33714712851004D597AB06F8FCDFE
+src/cuda/deterministic_attention.cu       B834BF15A9207485D5B80CE4CFBA720D2E74448273FED0CD859A428841761D28
+include/vidfab/cuda/deterministic_attention.cuh 6F40E5FC9795A63DD227BA4C94C62661025A96AF60669630A39461DFB067BCA7
+deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
 ```
