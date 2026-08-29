@@ -570,9 +570,9 @@ tensor_attention_blocked.comp             C27A8133AD290D086E1AA0C03418DD87B5F3ED
 tensor_attention_blocked.comp.spv         9C1339B2FD44B9F453BD3974F720E635682130CE9F808411823C3657A97098F2
 tensor_attention_prepare.comp             786295C4E33EEDC7F67317B9ECF6B1BDEA0108B319AE5B5E8D57B6B3CEA4677D
 tensor_attention_prepare.comp.spv         56DC48503F296776CD1C105D0DC44D34E5F8768B35A8FEE6EC73EFAA9D3FF8F4
-src/cuda/deterministic_attention.cu       2F33502CE387AB24FFC3C87E3A49E00D0B705AF3DAC33FC62A570BFA3B27DEB1
-include/vidfab/cuda/deterministic_attention.cuh AD32807A94E37A0EE4E8892F5016DF4B68F4C73F5E400FFE358B2D939CEBED02
-deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
+src/cuda/deterministic_attention.cu       143547BB7C6A421C59BDD95B695EE662C6D1B0CE58B63A16E9164226A2C6E82E
+include/vidfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
+deterministic_attention.fatbin            D8C01855993DA931125F2BA06D7683C79C04F0DAC23ECCBA985E5E72A01EC194
 ```
 
 ## Exact H3 full and frame-band attention
@@ -584,6 +584,14 @@ global 128-query tile. Touching/overlapping ranges merge, padded endpoints are
 masked before arithmetic, and both ranges form one continuous ascending
 64-key recurrence. Globally aligned 64-row workgroups mask writes outside the
 requested row chunk, so record splitting and output offsets do not change bits.
+
+The backend-neutral control spelling is `AttentionMode::kExact` / `--attention
+exact`. CUDA transformer main blocks and the token refiner dispatch this
+primitive directly; `kNone` remains the separate blocked reference and no
+other mode is remapped. Vulkan accepts only exact as an attention choice, but
+the complete Vulkan transformer/denoiser orchestrator is still absent, so the
+CLI reports that missing graph after validating the choice and runs neither a
+Vulkan attention pipeline nor a CUDA fallback.
 
 CUDA and Vulkan use the same 1024-thread/32-subgroup cooperative contract:
 guarded BF16 Q/K staging, ascending 16-channel BF16-QK/F32 cooperative tiles,
@@ -657,9 +665,9 @@ nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,c
 tensor_attention_h3.comp                  B9E51135B436DFF97CE6463F4731965E7466530DC1B1E69D3FD7444B3CB6BA2B
 tensor_attention_h3.comp.spv              4FD87FBDBE7AE6EC6C40C67AAD6FD39A0B9EF05F6E3CC1A5ED688A5B17FBB37F
 tensor_attention_h3_banded.comp.spv       9564933F40B33B8C6077CB073F6E0CB78AD40627CD0C973FF16897CAB1764EFB
-src/cuda/deterministic_attention.cu       2F33502CE387AB24FFC3C87E3A49E00D0B705AF3DAC33FC62A570BFA3B27DEB1
-include/vidfab/cuda/deterministic_attention.cuh AD32807A94E37A0EE4E8892F5016DF4B68F4C73F5E400FFE358B2D939CEBED02
-deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
+src/cuda/deterministic_attention.cu       143547BB7C6A421C59BDD95B695EE662C6D1B0CE58B63A16E9164226A2C6E82E
+include/vidfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
+deterministic_attention.fatbin            D8C01855993DA931125F2BA06D7683C79C04F0DAC23ECCBA985E5E72A01EC194
 ```
 
 ## Exact causal GQA text attention
@@ -737,7 +745,7 @@ nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,c
 ```text
 tensor_attention_causal_gqa.comp          DD700E2FDC18ED483973B2E161AEA3F1F43E8F2DB18FC8796F800BE766A79930
 tensor_attention_causal_gqa.comp.spv      9F8B4480179C01CC26A3E467D1F0915D606594388DAB8B5C0856770B2E7E3778
-src/cuda/deterministic_attention.cu       2F33502CE387AB24FFC3C87E3A49E00D0B705AF3DAC33FC62A570BFA3B27DEB1
-include/vidfab/cuda/deterministic_attention.cuh AD32807A94E37A0EE4E8892F5016DF4B68F4C73F5E400FFE358B2D939CEBED02
-deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
+src/cuda/deterministic_attention.cu       143547BB7C6A421C59BDD95B695EE662C6D1B0CE58B63A16E9164226A2C6E82E
+include/vidfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
+deterministic_attention.fatbin            D8C01855993DA931125F2BA06D7683C79C04F0DAC23ECCBA985E5E72A01EC194
 ```

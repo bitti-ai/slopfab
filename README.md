@@ -999,14 +999,23 @@ one-tile pipeline replaced a working schedule with a rigid one.
 
 ### Frame-banded attention — `--attn-band`, off by default
 
-The generator exposes `--attention none|flash2|sage2|sol|sol-experimental`.
-`sage2` is the default; `flash2` is the exact BF16 fused path and `none` is the
-unfused, memory-bounded cuBLAS reference.
+The generator exposes
+`--attention none|flash2|sage2|sol|sol-experimental|exact`.
+`sage2` is the default; `flash2` is the shipped BF16 fused path and `none` is
+the unfused, memory-bounded cuBLAS reference. `exact` is a separate pinned
+CUDA/Vulkan cooperative contract: CUDA transformer main blocks and the token
+refiner call the deterministic H3 primitive directly, with no materialized
+score tensor and no fallback through `flash2` or `none`. It intentionally does
+not promise byte identity with the shipped fused implementation. On the
+qualified RTX 5090 tuple its accepted current cost at S37727/H56/D128 is
+2.525 s full or 1.261 s at the default +/-9 band on Vulkan, and 1.667/0.783 s
+on CUDA; this is the fastest native exact implementation, not the default.
 `sage2` is an explicitly lossy SageAttention2.2 path: smooth-K, per-warp INT8
 Q/K, per-channel FP8 E4M3 V, and the upstream INT8-QK/FP8-PV tensor-core
 kernel. Its transient packed tensors and scales are included in workspace
 sizing. It supports head dimensions 64 and 128 on compute capability 8.9 or
-newer. Frame banding with Sage2 is rejected rather than silently falling back.
+newer. Frame banding is accepted by `flash2` and `exact`; Sage2 is rejected
+rather than silently falling back.
 The vendored primitives retain Apache-2.0 notices under
 `third_party/sageattention`.
 

@@ -336,9 +336,11 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_model_path(vidfab_request* reque
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_add_reference_image(vidfab_request* request,
                                                                 const char* path);
 
-/* "none", "flash2" (the default), "sage2", "sol" or "sol-experimental". Named
- * by string rather than by id so that an attention implementation can be added
- * without a new constant in this header. */
+/* "none", "flash2" (the default), "sage2", "sol", "sol-experimental" or
+ * "exact". Exact selects the pinned deterministic cooperative H3 arithmetic;
+ * it never remaps to another implementation. Named by string rather than by id
+ * so that an attention implementation can be added without a new constant in
+ * this header. */
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_attention(vidfab_request* request,
                                                           const char* mode);
 

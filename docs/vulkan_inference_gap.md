@@ -9,9 +9,12 @@ every required dense NT GEMM mode plus persistent preparation of every shipped
 dense/quantized linear-weight format,
 but generation, conditioning, denoising, and both neural decoders still execute
 through CUDA. `--output-accelerator vulkan` names that narrow output stage.
-`--inference-backend vulkan` is rejected before any
-prompt file, checkpoint, or output is opened; it never routes the request to
-CUDA under a Vulkan name.
+`--inference-backend vulkan` validates attention before any prompt file,
+checkpoint, or output is opened. Vulkan accepts only `--attention exact`;
+`none`, `flash2`, `sage2`, `sol`, and `sol-experimental` are rejected by name
+and are never remapped. An accepted exact selection then fails separately
+because the full Vulkan neural orchestrator is still missing. It never routes
+the request to CUDA under a Vulkan name.
 
 The output converter is byte-exact against the canonical CPU conversion on the
 tested RTX 5090. Its checked shader uses explicit operation order and SPIR-V
@@ -166,6 +169,17 @@ rebaseline against shipped cuBLAS at relative L2 1.38034e-4 (max absolute
 0.0009765625). Exact Vulkan measured 0.321 ms at L132 and 674.861 ms at L8192;
 the latter has 288 MiB of direct tensors and no attention scratch. This is
 still a primitive: text-encoder orchestration remains CUDA-owned.
+
+Exact H3 full and frame-banded attention also exists as a bounded cooperative
+primitive for BF16 D64/D128. Its typed range contract traverses two canonical
+key ranges per global query tile, uses no quadratic score buffer, and is wired
+into CUDA transformer main blocks and the token refiner by the explicit
+`AttentionMode::kExact`. This completes the arithmetic/control seam, not the
+Vulkan transformer: the Vulkan H3 plan is tested independently, while the
+projection, normalization, residual, scheduling, and model-lifetime graph
+around it remains unwired. Consequently `--inference-backend vulkan
+--attention exact` reports the missing orchestrator instead of claiming a
+generation route.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
