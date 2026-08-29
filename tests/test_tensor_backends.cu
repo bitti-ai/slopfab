@@ -2701,7 +2701,7 @@ VIDFAB_TEST(cuda_bf16_gemm_5376_baseline) {
 VIDFAB_TEST(cuda_vulkan_cooperative_bf16_gemm_exact) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
-  constexpr uint32_t m = 64, n = 64, k = 64;
+  constexpr uint32_t m = 64, n = 16, k = 5376;
   constexpr uint32_t input_rows = 128, output_rows = 128;
   constexpr uint32_t input_offset = 64, output_offset = 17;
   std::vector<uint16_t> input(size_t(input_rows) * k), weight(size_t(n) * k);
@@ -2711,6 +2711,17 @@ VIDFAB_TEST(cuda_vulkan_cooperative_bf16_gemm_exact) {
   for (size_t i = 0; i < weight.size(); ++i)
     weight[i] = f32_to_bf16(float(int(i % 23) - 11) / 16.0f);
   for (uint32_t i = 0; i < n; ++i) bias[i] = float(int(i) - 7) / 64.0f;
+  // Long-K cancellation, signed zero, and infinity rows stay inside the
+  // documented non-NaN arithmetic domain.
+  for (uint32_t inner = 0; inner < k; ++inner) {
+    input[size_t(input_offset + 0) * k + inner] =
+        f32_to_bf16((inner & 1) ? -1.0f : 1.0f);
+    input[size_t(input_offset + 1) * k + inner] = 0x8000u;
+    input[size_t(input_offset + 2) * k + inner] = 0;
+  }
+  input[size_t(input_offset + 2) * k] = 0x7f80u;
+  for (uint32_t column = 0; column < n; ++column)
+    weight[size_t(column) * k] = f32_to_bf16(1.0f);
 
   cuda::DeviceBuffer<uint16_t> ci(input.size()), cw(weight.size()),
       co(size_t(output_rows) * n);
@@ -2836,6 +2847,151 @@ VIDFAB_TEST(cuda_vulkan_cooperative_f16_gemm_exact) {
             cuda_output.size());
 }
 
+VIDFAB_TEST(cuda_vulkan_scalar_gemm_modes_exact) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  constexpr uint32_t m = 3, n = 11, k = 19;
+  constexpr uint32_t input_rows = 5, output_rows = 6;
+  constexpr uint32_t input_offset = 1, output_offset = 2;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  CHECK(!physical.empty());
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_cooperative_matrix = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_shader_float16 = true;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  const uint64_t as[] = {input_rows, k}, ws[] = {n, k};
+  const uint64_t os[] = {output_rows, n}, bs[] = {n};
+
+  auto run = [&](DenseGemmMode mode, DenseGemmBias bias_type) {
+    std::vector<float> af(size_t(input_rows) * k), wf(size_t(n) * k);
+    std::vector<float> biasf(n);
+    for (size_t i = 0; i < af.size(); ++i)
+      af[i] = float(int(i % 31) - 15) / 23.0f;
+    for (size_t i = 0; i < wf.size(); ++i)
+      wf[i] = float(int(i % 27) - 13) / 19.0f;
+    for (uint32_t i = 0; i < n; ++i)
+      biasf[i] = float(int(i) - 5) / 37.0f;
+
+    const ScalarType at = mode == DenseGemmMode::kBFloat16
+        ? ScalarType::kBFloat16 : ScalarType::kFloat32;
+    const ScalarType wt = mode == DenseGemmMode::kBFloat16
+        ? ScalarType::kBFloat16 : mode == DenseGemmMode::kFloat16Vae
+            ? ScalarType::kFloat16 : ScalarType::kFloat32;
+    const ScalarType ot = mode == DenseGemmMode::kBFloat16
+        ? ScalarType::kBFloat16 : ScalarType::kFloat32;
+    DeviceTensor va = context.allocate(TensorLayout::contiguous(as, 2), at);
+    DeviceTensor vw = context.allocate(TensorLayout::contiguous(ws, 2), wt);
+    DeviceTensor vo = context.allocate(TensorLayout::contiguous(os, 2), ot);
+    DeviceTensor vb;
+    if (bias_type != DenseGemmBias::kNone) {
+      vb = context.allocate(TensorLayout::contiguous(bs, 1),
+          bias_type == DenseGemmBias::kBFloat16 ? ScalarType::kBFloat16
+                                                : ScalarType::kFloat32);
+    }
+
+    DenseGemmPlan plan = DenseGemmPlan::create(
+        context, {m, n, k, mode, bias_type});
+    if (mode == DenseGemmMode::kBFloat16) {
+      std::vector<uint16_t> ah(af.size()), wh(wf.size()),
+          biash(n), sentinel(size_t(output_rows) * n, 0x3f00u);
+      for (size_t i = 0; i < ah.size(); ++i) ah[i] = f32_to_bf16(af[i]);
+      for (size_t i = 0; i < wh.size(); ++i) wh[i] = f32_to_bf16(wf[i]);
+      for (uint32_t i = 0; i < n; ++i) biash[i] = f32_to_bf16(biasf[i]);
+      cuda::DeviceBuffer<uint16_t> ca(ah.size()), cw(wh.size()),
+          cbh(biash.size()), co(sentinel.size());
+      cuda::DeviceBuffer<float> cbf(biasf.size());
+      ca.copy_from_host(ah.data(), ah.size());
+      cw.copy_from_host(wh.data(), wh.size());
+      co.copy_from_host(sentinel.data(), sentinel.size());
+      const void* cb = nullptr;
+      if (bias_type == DenseGemmBias::kFloat32) {
+        cbf.copy_from_host(biasf.data(), biasf.size()); cb = cbf.get();
+      } else if (bias_type == DenseGemmBias::kBFloat16) {
+        cbh.copy_from_host(biash.data(), biash.size()); cb = cbh.get();
+      }
+      cuda::launch_deterministic_scalar_gemm_nt(
+          ca.get(), cw.get(), cb, co.get(), m, n, k, mode, bias_type,
+          input_offset, output_offset);
+      std::vector<uint16_t> cuda_out(sentinel.size()), vk_out(sentinel.size());
+      co.copy_to_host(cuda_out.data(), cuda_out.size());
+      context.upload_bytes(va, ah.data(), ah.size() * 2);
+      context.upload_bytes(vw, wh.data(), wh.size() * 2);
+      context.upload_bytes(vo, sentinel.data(), sentinel.size() * 2);
+      if (bias_type == DenseGemmBias::kFloat32)
+        context.upload(vb, biasf.data(), biasf.size());
+      else if (bias_type == DenseGemmBias::kBFloat16)
+        context.upload_bytes(vb, biash.data(), biash.size() * 2);
+      TensorBatch batch = context.begin_batch();
+      plan.record(batch, va, vw, vo, m, input_offset, output_offset,
+                  bias_type == DenseGemmBias::kNone ? nullptr : &vb);
+      batch.submit().wait();
+      context.download_bytes(vo, vk_out.data(), vk_out.size() * 2);
+      CHECK(std::memcmp(cuda_out.data(), vk_out.data(), vk_out.size() * 2) == 0);
+    } else {
+      std::vector<float> sentinel(size_t(output_rows) * n, 0.375f);
+      std::vector<uint16_t> ah16, wh16;
+      cuda::DeviceBuffer<float> caf(af.size()), cwf(wf.size()),
+          cbf(biasf.size()), co(sentinel.size());
+      cuda::DeviceBuffer<uint16_t> cah, cwh;
+      const void* ca = nullptr;
+      const void* cw = nullptr;
+      if (mode == DenseGemmMode::kFloat16Vae) {
+        ah16.resize(af.size()); wh16.resize(wf.size());
+        for (size_t i = 0; i < af.size(); ++i) ah16[i] = f32_to_f16(af[i]);
+        for (size_t i = 0; i < wf.size(); ++i) wh16[i] = f32_to_f16(wf[i]);
+        cah.allocate(ah16.size()); cwh.allocate(wh16.size());
+        cah.copy_from_host(ah16.data(), ah16.size());
+        cwh.copy_from_host(wh16.data(), wh16.size());
+        ca = cah.get(); cw = cwh.get();
+        context.upload(va, af.data(), af.size());
+        context.upload_bytes(vw, wh16.data(), wh16.size() * 2);
+      } else {
+        caf.copy_from_host(af.data(), af.size());
+        cwf.copy_from_host(wf.data(), wf.size());
+        ca = caf.get(); cw = cwf.get();
+        context.upload(va, af.data(), af.size());
+        context.upload(vw, wf.data(), wf.size());
+      }
+      if (bias_type == DenseGemmBias::kFloat32) {
+        cbf.copy_from_host(biasf.data(), biasf.size());
+        context.upload(vb, biasf.data(), biasf.size());
+      }
+      co.copy_from_host(sentinel.data(), sentinel.size());
+      cuda::launch_deterministic_scalar_gemm_nt(
+          ca, cw, bias_type == DenseGemmBias::kNone ? nullptr : cbf.get(),
+          co.get(), m, n, k, mode, bias_type, input_offset, output_offset);
+      context.upload(vo, sentinel.data(), sentinel.size());
+      PreparedF16Activation slot;
+      if (mode == DenseGemmMode::kFloat16Vae)
+        slot = PreparedF16Activation::create(context, m, k);
+      TensorBatch batch = context.begin_batch();
+      if (mode == DenseGemmMode::kFloat16Vae) {
+        PreparedF16ActivationView prepared = slot.prepare(
+            batch, va, m, input_offset);
+        plan.record(batch, prepared, vw, vo, output_offset);
+      } else {
+        plan.record(batch, va, vw, vo, m, input_offset, output_offset,
+                    bias_type == DenseGemmBias::kNone ? nullptr : &vb);
+      }
+      batch.submit().wait();
+      std::vector<float> cuda_out(sentinel.size()), vk_out(sentinel.size());
+      co.copy_to_host(cuda_out.data(), cuda_out.size());
+      context.download(vo, vk_out.data(), vk_out.size());
+      CHECK(std::memcmp(cuda_out.data(), vk_out.data(), vk_out.size() * 4) == 0);
+    }
+  };
+  run(DenseGemmMode::kBFloat16, DenseGemmBias::kNone);
+  run(DenseGemmMode::kBFloat16, DenseGemmBias::kFloat32);
+  run(DenseGemmMode::kBFloat16, DenseGemmBias::kBFloat16);
+  run(DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone);
+  run(DenseGemmMode::kFloat32, DenseGemmBias::kNone);
+  run(DenseGemmMode::kFloat32, DenseGemmBias::kFloat32);
+}
+
 VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
@@ -2859,8 +3015,10 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
 
   {
     constexpr uint32_t m = 64, n = 6144, k = 2048;
+    cuda::DeviceBuffer<float> caf(size_t(m) * k);
     cuda::DeviceBuffer<__half> ca(size_t(m) * k), cw(size_t(n) * k);
     cuda::DeviceBuffer<float> co(size_t(m) * n);
+    VIDFAB_CUDA_CHECK(cudaMemset(caf.get(), 0, size_t(m) * k * 4));
     VIDFAB_CUDA_CHECK(cudaMemset(ca.get(), 0, size_t(m) * k * 2));
     VIDFAB_CUDA_CHECK(cudaMemset(cw.get(), 0, size_t(n) * k * 2));
     auto cuda_launch = [&] {
@@ -2877,6 +3035,18 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
     float cuda_ms = 0;
     VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_ms, begin, end));
     cuda_ms /= 20.0f;
+    auto cuda_total_launch = [&] {
+      cuda::launch_narrow_f16(caf.get(), ca.get(), size_t(m) * k, nullptr);
+      cuda_launch();
+    };
+    cuda_total_launch();
+    VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+    for (int i = 0; i < 20; ++i) cuda_total_launch();
+    VIDFAB_CUDA_CHECK(cudaEventRecord(end));
+    VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+    float cuda_total_ms = 0;
+    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_total_ms, begin, end));
+    cuda_total_ms /= 20.0f;
 
     const uint64_t as[] = {m, k}, ws[] = {n, k}, os[] = {m, n};
     DeviceTensor a = context.allocate(TensorLayout::contiguous(as, 2),
@@ -2904,6 +3074,19 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
             std::chrono::steady_clock::now() - start).count();
     }
     prepare_ms /= 10.0;
+    double vulkan_total_ms = 0.0;
+    for (int i = -2; i < 10; ++i) {
+      const auto total_start = std::chrono::steady_clock::now();
+      TensorBatch total_batch = context.begin_batch();
+      PreparedF16ActivationView total_prepared =
+          slot.prepare(total_batch, a, m);
+      plan.record(total_batch, total_prepared, w, o);
+      total_batch.submit().wait();
+      if (i >= 0)
+        vulkan_total_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - total_start).count();
+    }
+    vulkan_total_ms /= 10.0;
     const auto start = std::chrono::steady_clock::now();
     TensorBatch batch = context.begin_batch();
     PreparedF16ActivationView prepared = slot.prepare(batch, a, m);
@@ -2911,8 +3094,9 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
     batch.submit().wait();
     const double vulkan_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start).count() / 16.0;
-    std::printf("  F16 VAE GEMM M64 N6144 K2048: CUDA %.3f ms, Vulkan %.3f ms, "
-                "prepare %.3f ms/chunk\n", cuda_ms, vulkan_ms, prepare_ms);
+    std::printf("  F16 VAE M64 N6144 K2048: GEMM CUDA %.3f ms/Vulkan %.3f ms, "
+                "narrow+GEMM CUDA %.3f ms/Vulkan %.3f ms, prepare %.3f ms\n",
+                cuda_ms, vulkan_ms, cuda_total_ms, vulkan_total_ms, prepare_ms);
   }
 
   {

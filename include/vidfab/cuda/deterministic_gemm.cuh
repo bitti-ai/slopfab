@@ -23,4 +23,13 @@ void launch_deterministic_f16_gemm_nt(
     uint32_t out_features, uint32_t in_features,
     uint32_t output_row_offset = 0, cudaStream_t stream = nullptr);
 
+// Exact ascending-K edge/reference kernel shared with Vulkan's non-full-tile
+// path. F16 input is the already narrowed per-chunk activation slot.
+void launch_deterministic_scalar_gemm_nt(
+    const void* input, const void* weight, const void* bias, void* output,
+    uint32_t rows, uint32_t out_features, uint32_t in_features,
+    DenseGemmMode mode, DenseGemmBias bias_type,
+    uint32_t input_row_offset = 0, uint32_t output_row_offset = 0,
+    cudaStream_t stream = nullptr);
+
 }  // namespace vidfab::cuda
