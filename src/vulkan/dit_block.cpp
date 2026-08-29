@@ -320,16 +320,35 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   Impl& s = *impl_; const H3BlockConfig& c = s.config;
   const uint32_t inner = c.heads * c.head_dim;
   const std::string p = "blocks." + std::to_string(layer) + ".";
+  // Decode every small tensor, including the archive-tail AdaLN tensors,
+  // before reserving device memory.  Apart from producing clearer errors,
+  // this keeps a late corrupt reload from raising the allocator high-water
+  // while the previously loaded weights remain live.
+  const std::vector<uint16_t> host_norm1 =
+      bf16_vector(st, p + "norm1.weight", c.hidden);
+  const std::vector<uint16_t> host_norm2 =
+      bf16_vector(st, p + "norm2.weight", c.hidden);
+  const std::vector<uint16_t> host_q_norm =
+      bf16_vector(st, p + "attn.q_norm.weight", c.head_dim);
+  const std::vector<uint16_t> host_k_norm =
+      bf16_vector(st, p + "attn.k_norm.weight", c.head_dim);
+  const uint64_t adaln_out = checked_product(
+      checked_product(c.modalities, 6, "AdaLN"), c.hidden, "AdaLN");
+  const TensorView& aw = st.at(p + "adaln_proj.linear.weight");
+  const TensorView& ab = st.at(p + "adaln_proj.linear.bias");
+  require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
+  require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
+  const std::vector<float> wide_w = to_f32(aw), wide_b = to_f32(ab);
+
   auto next = std::make_unique<Impl::Weights>();
-  auto upload_bf = [&](const std::string& name, uint32_t n) {
-    std::vector<uint16_t> host = bf16_vector(st, name, n);
-    DeviceTensor result = s.context->allocate(vector(n), ScalarType::kBFloat16);
+  auto upload_bf = [&](const std::vector<uint16_t>& host) {
+    DeviceTensor result = s.context->allocate(vector(host.size()), ScalarType::kBFloat16);
     s.context->upload_bytes(result, host.data(), host.size() * 2); return result;
   };
-  next->norm1 = upload_bf(p + "norm1.weight", c.hidden);
-  next->norm2 = upload_bf(p + "norm2.weight", c.hidden);
-  next->q_norm = upload_bf(p + "attn.q_norm.weight", c.head_dim);
-  next->k_norm = upload_bf(p + "attn.k_norm.weight", c.head_dim);
+  next->norm1 = upload_bf(host_norm1);
+  next->norm2 = upload_bf(host_norm2);
+  next->q_norm = upload_bf(host_q_norm);
+  next->k_norm = upload_bf(host_k_norm);
   const std::string qkv = p + "attn.qkv_proj";
   next->q = load_projection(*s.context, st, qkv, inner, c.hidden, 3 * inner, 0);
   next->k = load_projection(*s.context, st, qkv, inner, c.hidden, 3 * inner, inner);
@@ -337,13 +356,6 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   next->out = load_projection(*s.context, st, p + "attn.out_proj", c.hidden, inner);
   next->fc1 = load_projection(*s.context, st, p + "mlp.fc1", 2 * c.ffn, c.hidden);
   next->fc2 = load_projection(*s.context, st, p + "mlp.fc2", c.hidden, c.ffn);
-  const uint64_t adaln_out = checked_product(
-      checked_product(c.modalities, 6, "AdaLN"), c.hidden, "AdaLN");
-  const TensorView& aw = st.at(p + "adaln_proj.linear.weight");
-  const TensorView& ab = st.at(p + "adaln_proj.linear.bias");
-  require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
-  require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
-  std::vector<float> wide_w = to_f32(aw), wide_b = to_f32(ab);
   next->adaln_w = s.context->allocate(matrix(adaln_out, c.adaln_rank));
   next->adaln_b = s.context->allocate(vector(adaln_out));
   s.context->upload(next->adaln_w, wide_w.data(), wide_w.size());
@@ -360,6 +372,13 @@ void ensure_transforms(TensorContext& context, const Projection& p,
     a = context.allocate(matrix(rows, p.in), ScalarType::kBFloat16);
   if (pre_scale && convrot && !b)
     b = context.allocate(matrix(rows, p.in), ScalarType::kBFloat16);
+}
+bool transforms_ready(const Projection& p, const DeviceTensor& a,
+                      const DeviceTensor& b) {
+  const bool pre_scale = p.weight.has_pre_quant_scale();
+  const bool convrot = p.weight.applies_convrot();
+  return (!(pre_scale || convrot) || static_cast<bool>(a)) &&
+      (!(pre_scale && convrot) || static_cast<bool>(b));
 }
 DeviceTensor& transformed_input(TensorBatch& batch, Projection& p,
                                 DeviceTensor& input, DeviceTensor& a,
@@ -420,6 +439,21 @@ void validate_tap(DeviceTensor* tensor, ScalarType type,
 }
 }
 
+void ExactH3BlockStage::prepare(ExactH3BlockScratch& scratch) const {
+  if (!impl_ || !impl_->weights)
+    throw std::logic_error("Vulkan H3 block: not loaded");
+  if (!scratch.impl_ || scratch.impl_->context != impl_->context)
+    throw std::invalid_argument("Vulkan H3 block: incompatible scratch");
+  auto& s = *scratch.impl_;
+  const auto& w = *impl_->weights;
+  ensure_transforms(*s.context, w.q, impl_->config.sequence, s.hidden_a, s.hidden_b);
+  ensure_transforms(*s.context, w.k, impl_->config.sequence, s.hidden_a, s.hidden_b);
+  ensure_transforms(*s.context, w.v, impl_->config.sequence, s.hidden_a, s.hidden_b);
+  ensure_transforms(*s.context, w.out, impl_->config.sequence, s.inner_a, s.inner_b);
+  ensure_transforms(*s.context, w.fc1, impl_->config.sequence, s.hidden_a, s.hidden_b);
+  ensure_transforms(*s.context, w.fc2, impl_->config.sequence, s.ffn_a, s.ffn_b);
+}
+
 void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
     DeviceTensor& selectors, DeviceTensor& code, DeviceTensor& cosine,
     DeviceTensor& sine, ExactH3BlockScratch& scratch,
@@ -468,6 +502,13 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   if (batch.remaining_operator_capacity() < required_operators(taps))
     throw std::logic_error("Vulkan H3 block: insufficient batch capacity");
   auto& w = *impl_->weights;
+  if (!transforms_ready(w.q, s.hidden_a, s.hidden_b) ||
+      !transforms_ready(w.k, s.hidden_a, s.hidden_b) ||
+      !transforms_ready(w.v, s.hidden_a, s.hidden_b) ||
+      !transforms_ready(w.out, s.inner_a, s.inner_b) ||
+      !transforms_ready(w.fc1, s.hidden_a, s.hidden_b) ||
+      !transforms_ready(w.fc2, s.ffn_a, s.ffn_b))
+    throw std::logic_error("Vulkan H3 block: transformed-weight scratch is not prepared");
   batch.dit_expand_adaln(w.adaln_w, w.adaln_b, code, s.modulation,
                          c.modalities, 6, c.hidden);
   batch.rms_norm_modulate_bf16_table(tokens, w.norm1, s.modulation,

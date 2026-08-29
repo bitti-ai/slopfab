@@ -19,9 +19,11 @@
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/audio_decoder.h"
+#include "vidfab/vulkan/dit_block.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/attention.h"
+#include "vidfab/safetensors_write.h"
 #include "vidfab/video/y4m.h"
 #include "vidfab/dtype.h"
 #include "../src/vulkan/tensor_validation.h"
@@ -2496,6 +2498,188 @@ VIDFAB_TEST(vulkan_audio_vae_decoder_cuda_off_contract) {
     unloaded_decode_rejected = true;
   }
   CHECK(unloaded_decode_rejected);
+}
+
+VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
+      !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  device_options.enable_shader_int64 = true;
+  device_options.enable_shader_float16 = true;
+  device_options.enable_storage_buffer_16bit = true;
+  device_options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(device_options);
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 64;
+  TensorContext context(device, context_options);
+  if (!context.exact_h3_attention() || !context.exact_vae_pointwise() ||
+      !context.exact_fp32_vae_normalization()) return;
+
+  H3BlockConfig config;
+  config.sequence = 65;
+  config.hidden = 128;
+  config.heads = 1;
+  config.head_dim = 128;
+  config.ffn = 128;
+  config.timesteps = 1;
+  config.modalities = 3;
+  config.adaln_rank = 8;
+  auto values = [](size_t count, uint32_t salt, float scale) {
+    std::vector<float> result(count);
+    for (size_t i = 0; i < count; ++i)
+      result[i] = float(int((i * 37 + salt) % 127) - 63) * scale;
+    return result;
+  };
+  auto metadata = [](const std::string& text) {
+    std::vector<float> result((text.size() + 3) / 4, 0.0f);
+    std::memcpy(result.data(), text.data(), text.size());
+    return result;
+  };
+  auto fixture = [&](bool corrupt_tail) {
+    const int64_t h = config.hidden, inner = config.heads * config.head_dim;
+    const int64_t f = config.ffn;
+    const int64_t adaln = int64_t(config.modalities) * 6 * h;
+    std::vector<TensorWrite> tensors{
+      {"blocks.0.norm1.weight", {h}, std::vector<float>(h, 1.0f)},
+      {"blocks.0.norm2.weight", {h}, std::vector<float>(h, 1.0f)},
+      {"blocks.0.attn.q_norm.weight", {config.head_dim},
+       std::vector<float>(config.head_dim, 1.0f)},
+      {"blocks.0.attn.k_norm.weight", {config.head_dim},
+       std::vector<float>(config.head_dim, 1.0f)},
+      {"blocks.0.attn.qkv_proj.weight", {3 * inner, h},
+       values(size_t(3 * inner * h), 3, 1.0f / 4096.0f)},
+      {"blocks.0.attn.out_proj.weight", {h, inner},
+       values(size_t(h * inner), 5, 1.0f / 4096.0f)},
+      // Exactly one AWQ activation pre-scale fixture.
+      {"blocks.0.attn.out_proj.pre_quant_scale", {inner},
+       values(size_t(inner), 71, 1.0f / 256.0f)},
+      {"blocks.0.mlp.fc1.weight", {2 * f, h},
+       values(size_t(2 * f * h), 7, 1.0f / 4096.0f)},
+      {"blocks.0.mlp.fc2.weight", {h, f},
+       values(size_t(h * f), 11, 1.0f / 4096.0f)},
+      // Exactly one regular-H4 ConvRot metadata fixture.
+      {"blocks.0.mlp.fc2.comfy_quant",
+       {static_cast<int64_t>(metadata(
+          "{\"convrot\":true,\"convrot_groupsize\":16}").size())},
+       metadata("{\"convrot\":true,\"convrot_groupsize\":16}")},
+      {"blocks.0.adaln_proj.linear.weight", {adaln, config.adaln_rank},
+       values(size_t(adaln * config.adaln_rank), 13, 1.0f / 8192.0f)},
+      {"blocks.0.adaln_proj.linear.bias",
+       {corrupt_tail ? adaln - 1 : adaln},
+       values(size_t(corrupt_tail ? adaln - 1 : adaln), 17, 1.0f / 64.0f)}};
+    return tensors;
+  };
+  const auto base = std::filesystem::temp_directory_path();
+  const auto valid_path = base / "vidfab_h3_cuda_off_valid.safetensors";
+  const auto corrupt_path = base / "vidfab_h3_cuda_off_corrupt.safetensors";
+  write_safetensors(valid_path.string(), fixture(false));
+  write_safetensors(corrupt_path.string(), fixture(true));
+  SafeTensors valid, corrupt;
+  valid.open(valid_path.string());
+  corrupt.open(corrupt_path.string());
+
+  ExactH3BlockStage first = ExactH3BlockStage::create(context, config);
+  ExactH3BlockStage second = ExactH3BlockStage::create(context, config);
+  first.load(valid, 0);
+  second.load(valid, 0);
+  CHECK(first.required_operators() == 25u);
+  CHECK(second.required_operators() == 25u);
+  ExactH3BlockScratch scratch = ExactH3BlockScratch::create(context, config);
+  first.prepare(scratch);
+  second.prepare(scratch);
+  CHECK(scratch.reserved_bytes() != 0u);
+  const uint64_t token_shape[] = {config.sequence, config.hidden};
+  const uint64_t selector_shape[] = {config.sequence};
+  const uint64_t code_shape[] = {config.timesteps, config.adaln_rank};
+  const uint64_t rope_shape[] = {config.sequence, 96};
+  DeviceTensor tokens = context.allocate(
+      TensorLayout::contiguous(token_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor selectors = context.allocate(
+      TensorLayout::contiguous(selector_shape, 1), ScalarType::kInt32);
+  DeviceTensor code = context.allocate(TensorLayout::contiguous(code_shape, 2));
+  DeviceTensor cosine = context.allocate(TensorLayout::contiguous(rope_shape, 2));
+  DeviceTensor sine = context.allocate(TensorLayout::contiguous(rope_shape, 2));
+  CHECK(static_cast<bool>(sine));
+  std::vector<uint16_t> input(size_t(config.sequence) * config.hidden);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = f32_to_bf16(float(int(i % 47) - 23) / 32.0f);
+  std::vector<int32_t> host_selectors(config.sequence);
+  for (uint32_t i = 0; i < config.sequence; ++i)
+    host_selectors[i] = static_cast<int32_t>(i % config.modalities);
+  std::vector<float> host_code(config.adaln_rank);
+  for (uint32_t i = 0; i < config.adaln_rank; ++i)
+    host_code[i] = float(int(i) - 3) / 16.0f;
+  std::vector<float> host_cos(size_t(config.sequence) * 96);
+  std::vector<float> host_sin(host_cos.size());
+  for (size_t i = 0; i < host_cos.size(); ++i) {
+    const float angle = float((i * 13) % 101) / 997.0f;
+    host_cos[i] = std::cos(angle);
+    host_sin[i] = std::sin(angle);
+  }
+  context.upload_bytes(selectors, host_selectors.data(), host_selectors.size() * 4);
+  context.upload(code, host_code.data(), host_code.size());
+  context.upload(cosine, host_cos.data(), host_cos.size());
+  context.upload(sine, host_sin.data(), host_sin.size());
+  CHECK(true);
+  auto run_chain = [&] {
+    context.upload_bytes(tokens, input.data(), input.size() * 2);
+    TensorBatch batch = context.begin_batch();
+    first.record(batch, tokens, selectors, code, cosine, sine, scratch);
+    second.record(batch, tokens, selectors, code, cosine, sine, scratch);
+    batch.submit().wait();
+    std::vector<uint16_t> output(input.size());
+    context.download_bytes(tokens, output.data(), output.size() * 2);
+    return output;
+  };
+  const std::vector<uint16_t> output = run_chain();
+  uint64_t digest = 1469598103934665603ull;
+  for (uint16_t bits : output) {
+    digest ^= bits & 0xffu; digest *= 1099511628211ull;
+    digest ^= bits >> 8; digest *= 1099511628211ull;
+  }
+  CHECK(digest == 0x70e1eaf01723020bull);
+  const uint64_t stable_used = context.pooled_used_bytes();
+  const uint64_t stable_reserved = context.reserved_bytes();
+  const uint64_t stable_descriptors = context.descriptor_set_allocations();
+  CHECK(run_chain() == output);
+  CHECK(context.pooled_used_bytes() == stable_used);
+  CHECK(context.reserved_bytes() == stable_reserved);
+  CHECK(context.descriptor_set_allocations() == stable_descriptors);
+
+  bool corrupt_rejected = false;
+  try { first.load(corrupt, 0); }
+  catch (const std::exception&) { corrupt_rejected = true; }
+  CHECK(corrupt_rejected && first.loaded());
+  CHECK(context.pooled_used_bytes() == stable_used);
+  CHECK(context.reserved_bytes() == stable_reserved);
+  CHECK(context.descriptor_set_allocations() == stable_descriptors);
+  CHECK(run_chain() == output);
+  const uint64_t persistent = first.persistent_bytes();
+  first.unload();
+  second.unload();
+  CHECK(first.persistent_bytes() == 0u && second.persistent_bytes() == 0u);
+  CHECK(context.pooled_used_bytes() + 2 * persistent <= stable_used);
+  first.load(valid, 0);
+  second.load(valid, 0);
+  CHECK(run_chain() == output);
+  CHECK(first.persistent_bytes() == persistent);
+  std::printf(
+      "  CUDA-off H3 S65 two-stage FNV64 %016llx, persistent/scratch %.2f/%.2f MiB\n",
+      static_cast<unsigned long long>(digest),
+      double(first.persistent_bytes() + second.persistent_bytes()) / 1048576.0,
+      double(scratch.reserved_bytes()) / 1048576.0);
+  std::error_code ignored;
+  std::filesystem::remove(valid_path, ignored);
+  std::filesystem::remove(corrupt_path, ignored);
 }
 
 VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {

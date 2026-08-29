@@ -65,6 +65,9 @@ class ExactH3BlockStage {
   static ExactH3BlockStage create(TensorContext& context,
                                   const H3BlockConfig& config);
   void load(const SafeTensors& checkpoint, uint32_t layer);
+  // Allocate only the optional AWQ/ConvRot activation buffers required by
+  // the loaded weight metadata. Call after load and before opening a batch.
+  void prepare(ExactH3BlockScratch& scratch) const;
   void unload() noexcept;
   bool loaded() const noexcept;
   // tokens [S,H], selectors [S] in [0,T*M), code [T,R], tables [S,96].
