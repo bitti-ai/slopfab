@@ -646,11 +646,161 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
   }
   CHECK(vk.reserved_bytes() == stable_reserved);
   CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+
+  // Full production temporal regime used for a 10.125-second decode. The
+  // transpose and residual convolution share one device-resident batch.
+  constexpr uint32_t production_length = 405;
+  const vae::AudioConv1DDesc production_conv{
+      2, 32, 2048, production_length, production_length, 1, 0, 1};
+  const vae::AudioConvTranspose1DDesc production_transpose{
+      2, 1024, 512, production_length, production_length * 5, 9, 5, 2};
+  const vae::AudioConv1DDesc production_residual{
+      2, 512, 512, production_length * 5, production_length * 5,
+      11, 25, 5};
+  std::vector<float> production_conv_input = values(
+      production_conv.input_elements(), 53, 509, 1.0f / 256.0f);
+  std::vector<float> production_transpose_input = values(
+      production_transpose.input_elements(), 59, 521, 1.0f / 256.0f);
+  cuda::DeviceBuffer<float> c_production_conv_input(
+      production_conv.input_elements());
+  cuda::DeviceBuffer<float> c_production_conv_output(
+      production_conv.output_elements());
+  cuda::DeviceBuffer<float> c_production_transpose_input(
+      production_transpose.input_elements());
+  cuda::DeviceBuffer<float> c_production_transpose_output(
+      production_transpose.output_elements());
+  cuda::DeviceBuffer<float> c_production_residual_output(
+      production_residual.output_elements());
+  c_production_conv_input.copy_from_host(production_conv_input.data(),
+                                         production_conv_input.size());
+  c_production_transpose_input.copy_from_host(
+      production_transpose_input.data(), production_transpose_input.size());
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const auto cuda_conv_begin = std::chrono::steady_clock::now();
+  cuda::launch_conv1d(
+      c_production_conv_input.get(), c_conv_weight.get(), c_conv_bias.get(),
+      c_production_conv_output.get(), production_conv.batch,
+      production_conv.in_channels, production_conv.out_channels,
+      production_conv.length_in, production_conv.length_out,
+      production_conv.kernel, production_conv.padding,
+      production_conv.dilation, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const double cuda_conv_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_conv_begin).count();
+  const auto cuda_stage_begin = std::chrono::steady_clock::now();
+  cuda::launch_conv_transpose1d(
+      c_production_transpose_input.get(), c_transpose_weight.get(),
+      c_transpose_bias.get(), c_production_transpose_output.get(),
+      production_transpose.batch, production_transpose.in_channels,
+      production_transpose.out_channels, production_transpose.length_in,
+      production_transpose.length_out, production_transpose.kernel,
+      production_transpose.stride, production_transpose.padding, nullptr);
+  cuda::launch_conv1d(
+      c_production_transpose_output.get(), c_dilated_weight.get(),
+      c_dilated_bias.get(), c_production_residual_output.get(),
+      production_residual.batch, production_residual.in_channels,
+      production_residual.out_channels, production_residual.length_in,
+      production_residual.length_out, production_residual.kernel,
+      production_residual.padding, production_residual.dilation, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const double cuda_stage_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_stage_begin).count();
+
+  const uint64_t before_production_used = vk.pooled_used_bytes();
+  const uint64_t before_production_reserved = vk.reserved_bytes();
+  vulkan::DeviceTensor v_production_conv_input = upload(
+      layout({2, 32, production_length}), production_conv_input);
+  vulkan::DeviceTensor v_production_conv_output = vk.allocate(
+      layout({2, 2048, production_length}));
+  vulkan::DeviceTensor v_production_transpose_input = upload(
+      layout({2, 1024, production_length}), production_transpose_input);
+  vulkan::DeviceTensor v_production_transpose_output = vk.allocate(
+      layout({2, 512, production_length * 5}));
+  vulkan::DeviceTensor v_production_residual_output = vk.allocate(
+      layout({2, 512, production_length * 5}));
+  const auto vk_conv_begin = std::chrono::steady_clock::now();
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_conv1d(v_production_conv_input, v_conv_weight, &v_conv_bias,
+                       v_production_conv_output, production_conv);
+    batch.submit().wait();
+  }
+  const double vk_conv_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vk_conv_begin).count();
+  const auto vk_stage_begin = std::chrono::steady_clock::now();
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_conv_transpose1d(
+        v_production_transpose_input, v_transpose_weight, &v_transpose_bias,
+        v_production_transpose_output, production_transpose);
+    batch.audio_conv1d(
+        v_production_transpose_output, v_dilated_weight, &v_dilated_bias,
+        v_production_residual_output, production_residual);
+    batch.submit().wait();
+  }
+  const double vk_stage_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vk_stage_begin).count();
+  std::vector<float> cuda_production_conv(production_conv.output_elements()),
+      vk_production_conv(production_conv.output_elements()),
+      cuda_production_transpose(production_transpose.output_elements()),
+      vk_production_transpose(production_transpose.output_elements()),
+      cuda_production_residual(production_residual.output_elements()),
+      vk_production_residual(production_residual.output_elements());
+  c_production_conv_output.copy_to_host(cuda_production_conv.data(),
+                                        cuda_production_conv.size());
+  c_production_transpose_output.copy_to_host(cuda_production_transpose.data(),
+                                             cuda_production_transpose.size());
+  c_production_residual_output.copy_to_host(cuda_production_residual.data(),
+                                            cuda_production_residual.size());
+  vk.download(v_production_conv_output, vk_production_conv.data(),
+              vk_production_conv.size());
+  vk.download(v_production_transpose_output, vk_production_transpose.data(),
+              vk_production_transpose.size());
+  vk.download(v_production_residual_output, vk_production_residual.data(),
+              vk_production_residual.size());
+  check_exact(cuda_production_conv, vk_production_conv,
+              "A405 input projection");
+  check_exact(cuda_production_transpose, vk_production_transpose,
+              "A405 transpose 405->2025");
+  check_exact(cuda_production_residual, vk_production_residual,
+              "A405 stereo residual");
+  const uint64_t production_digest = fnv64(
+      {vk_production_conv, vk_production_transpose, vk_production_residual});
+  CHECK(production_digest == 0x2a3eeba122112082ull);
+  const uint64_t production_logical_bytes = sizeof(float) * (
+      production_conv.input_elements() + production_conv.output_elements() +
+      production_transpose.input_elements() +
+      production_transpose.output_elements() +
+      production_residual.output_elements());
+  const uint64_t production_used_delta =
+      vk.pooled_used_bytes() - before_production_used;
+  CHECK(production_used_delta >= production_logical_bytes);
+  CHECK(production_used_delta <= production_logical_bytes + (8ull << 20));
+  CHECK(vk.reserved_bytes() <= before_production_reserved + (32ull << 20));
+  const uint64_t production_stable_reserved = vk.reserved_bytes();
+  const uint64_t production_stable_descriptors =
+      vk.descriptor_set_allocations();
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_conv_transpose1d(
+        v_production_transpose_input, v_transpose_weight, &v_transpose_bias,
+        v_production_transpose_output, production_transpose);
+    batch.audio_conv1d(
+        v_production_transpose_output, v_dilated_weight, &v_dilated_bias,
+        v_production_residual_output, production_residual);
+    batch.submit().wait();
+  }
+  CHECK(vk.reserved_bytes() == production_stable_reserved);
+  CHECK(vk.descriptor_set_allocations() == production_stable_descriptors);
   std::printf(
-      "  real audio primitives: raw subnormals %zu, FNV64 %016llx, first transpose %.2f ms, dilated k11/d5 %.2f ms, pool %.1f/%.1f MiB, descriptors %llu\n",
+      "  real audio primitives: raw subnormals %zu, FNV64 %016llx, first transpose %.2f ms, dilated k11/d5 %.2f ms, pool %.1f/%.1f MiB, descriptors %llu\n"
+      "  A405 stereo: FNV64 %016llx, input projection CUDA/Vulkan %.2f/%.2f ms, transpose+residual CUDA/Vulkan %.2f/%.2f ms, production delta %.1f MiB\n",
       raw_subnormals, static_cast<unsigned long long>(digest), transpose_ms,
       dilated_ms,
       double(vk.pooled_used_bytes()) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
-      static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+      static_cast<unsigned long long>(vk.descriptor_set_allocations()),
+      static_cast<unsigned long long>(production_digest), cuda_conv_ms,
+      vk_conv_ms, cuda_stage_ms, vk_stage_ms,
+      double(production_used_delta) / 1048576.0);
 }

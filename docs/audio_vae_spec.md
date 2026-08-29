@@ -738,7 +738,12 @@ submission is present. The runtime rejects invalid shape/dtype/alias contracts
 before modifying batch access state. Subnormal operands/results become signed
 zero and NaNs become `0x7fc00000` at the same CUDA/Vulkan boundaries. Padding
 still executes `fma(0, weight, accumulator)`, matching CUDA even for exceptional
-weight bits.
+weight bits. Exact exp maps `-Inf` to zero and `+Inf` to `+Inf`; exact sine
+returns canonical NaN for non-finite input or finite magnitudes at least
+`2^31`, before any float-to-integer conversion. SnakeBeta propagates that
+canonical NaN and treats an infinite beta reciprocal as signed zero. The
+bitwise exceptional matrix covers both signed subnormals, distinct qNaN
+payloads, both infinities, and `+/-1e20` in input, log-alpha, and log-beta.
 
 The embedded shader was generated with Microsoft DirectXShaderCompiler
 v1.9.2607 (`dxcompiler.dll` 1.9.0.5402), downloaded from the official release
@@ -751,8 +756,8 @@ dxc -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 -E main -O3 -Gis \
 ```
 
 Pinned source/SPIR-V SHA-256 values are
-`67A253496870CE022CFEA380B10129864F4BB96B2F5993E5A3B8AE24EB959AE5`
-and `60FC7D704283ED51666FFC534857B869EC9C60D3514821AD536ED7F2D163611F`.
+`C5D8F8D334D64AE5CAD62E8F725BAD1BB818D25718CE3D1B4D723004F738DBEC`
+and `51C0834880118790B70ECCBD5FEF7267C8DFD8BB98256EE2F67D3250A1E90AB5`.
 
 The opt-in real test (`VIDFAB_AUDIO_VAE_REAL=1`) binds replay to
 `minimax_h3_audio_vae_fp32.safetensors`, 605,254,808 bytes, SHA-256
@@ -766,6 +771,17 @@ the measured RTX 5090 the first real transpose and k11/d5 convolution
 record/submit/waits are 0.56 and 0.93 ms. Live tensors plus bounded
 upload/readback staging use 65.5 MiB from a 69.0 MiB pool; repeated replay keeps
 the pool and descriptor count stable.
+
+The production-shape replay uses stereo batch 2 at latent length A=405: the
+input projection is `32->2048` at length 405, the first transpose is
+`1024->512`, length `405->2025`, and the dilation-5 residual convolution is
+`512->512` at length 2025. The transpose and residual are chained in one
+device-resident Vulkan batch. Their combined exact digest is
+`2A3EEBA122112082`. Measured CUDA/Vulkan wall times (including synchronization)
+are 0.13/0.38 ms for the input projection and 4.12/19.42 ms for the chained
+transpose plus residual. Production live tensors add 25.4 MiB; total Vulkan
+pool use is 90.9 MiB of 91.1 MiB and a repeated replay holds descriptor
+allocations at two with no pool growth.
 
 This section establishes the primitive substrate only. It deliberately does
 not claim that the full audio decoder graph is wired to Vulkan; graph
