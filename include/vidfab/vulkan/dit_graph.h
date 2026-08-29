@@ -45,8 +45,19 @@ class ExactH3MainGraph {
               DeviceTensor& cosine, DeviceTensor& sine,
               const H3AttentionRanges* ranges = nullptr,
               const H3MainGraphReplayTaps* taps = nullptr) const;
+  // Records a contiguous stack span into the same caller batch. This is the
+  // seam used by denoise block-cache orchestration to compute or skip its
+  // configured middle span without cloning weights or scratch.
+  void record_layers(TensorBatch& batch, DeviceTensor& tokens,
+                     DeviceTensor& selectors, DeviceTensor& adaln_code,
+                     DeviceTensor& cosine, DeviceTensor& sine,
+                     uint32_t first_layer, uint32_t layer_count,
+                     const H3AttentionRanges* ranges = nullptr,
+                     const H3MainGraphReplayTaps* taps = nullptr) const;
 
   uint32_t required_operators(
+      const H3MainGraphReplayTaps* taps = nullptr) const;
+  uint32_t required_operators(uint32_t first_layer, uint32_t layer_count,
       const H3MainGraphReplayTaps* taps = nullptr) const;
   uint64_t persistent_bytes() const noexcept;
   uint64_t scratch_bytes() const noexcept;

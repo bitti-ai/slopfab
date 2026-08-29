@@ -82,11 +82,20 @@ const H3MainGraphConfig& ExactH3MainGraph::config() const noexcept {
 
 uint32_t ExactH3MainGraph::required_operators(
     const H3MainGraphReplayTaps* taps) const {
+  return required_operators(0, layers(), taps);
+}
+
+uint32_t ExactH3MainGraph::required_operators(
+    uint32_t first_layer, uint32_t layer_count,
+    const H3MainGraphReplayTaps* taps) const {
   if (!loaded()) throw std::logic_error("Vulkan H3 graph: not loaded");
+  if (layer_count == 0 || first_layer > impl_->config.layers ||
+      layer_count > impl_->config.layers - first_layer)
+    throw std::invalid_argument("Vulkan H3 graph: invalid layer span");
   if (taps && (taps->count != impl_->config.layers || !taps->boundaries))
     throw std::invalid_argument("Vulkan H3 graph: invalid boundary taps");
   uint64_t total = 0;
-  for (uint32_t layer = 0; layer < impl_->config.layers; ++layer) {
+  for (uint32_t layer = first_layer; layer < first_layer + layer_count; ++layer) {
     H3BlockReplayTaps block_tap;
     if (taps) block_tap.final_residual = &taps->boundaries[layer];
     total += impl_->stages[layer].required_operators(taps ? &block_tap : nullptr);
@@ -101,7 +110,20 @@ void ExactH3MainGraph::record(
     DeviceTensor& code, DeviceTensor& cosine, DeviceTensor& sine,
     const H3AttentionRanges* ranges,
     const H3MainGraphReplayTaps* taps) const {
+  record_layers(batch, tokens, selectors, code, cosine, sine, 0, layers(),
+                ranges, taps);
+}
+
+void ExactH3MainGraph::record_layers(
+    TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& selectors,
+    DeviceTensor& code, DeviceTensor& cosine, DeviceTensor& sine,
+    uint32_t first_layer, uint32_t layer_count,
+    const H3AttentionRanges* ranges,
+    const H3MainGraphReplayTaps* taps) const {
   if (!loaded()) throw std::logic_error("Vulkan H3 graph: not loaded");
+  if (layer_count == 0 || first_layer > impl_->config.layers ||
+      layer_count > impl_->config.layers - first_layer)
+    throw std::invalid_argument("Vulkan H3 graph: invalid layer span");
   const H3BlockConfig& c = impl_->config.block;
   const auto tv = tokens.view(), sv = selectors.view(), cv = code.view();
   const auto cosv = cosine.view(), sinv = sine.view();
@@ -148,11 +170,11 @@ void ExactH3MainGraph::record(
       resources.push_back(view.resource);
     }
   }
-  const uint32_t operators = required_operators(taps);
+  const uint32_t operators = required_operators(first_layer, layer_count, taps);
   if (batch.remaining_operator_capacity() < operators)
     throw std::logic_error("Vulkan H3 graph: insufficient batch capacity");
 
-  for (uint32_t layer = 0; layer < impl_->config.layers; ++layer) {
+  for (uint32_t layer = first_layer; layer < first_layer + layer_count; ++layer) {
     H3BlockReplayTaps block_tap;
     if (taps) block_tap.final_residual = &taps->boundaries[layer];
     impl_->stages[layer].record(batch, tokens, selectors, code, cosine, sine,

@@ -2862,6 +2862,31 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
       0xc40d66ec8f2b7f26ull, 0x70e1eaf01723020bull,
       0xe9b03bc5e1718291ull}));
   CHECK(digest_bf16(graph_output) == boundary_hashes.back());
+  CHECK(graph.required_operators(0, 1, &graph_taps) == 26u);
+  CHECK(graph.required_operators(1, 2, &graph_taps) == 52u);
+  graph_context.upload_bytes(graph_tokens, input.data(), input.size() * 2);
+  {
+    TensorBatch split = graph_context.begin_batch();
+    graph.record_layers(split, graph_tokens, graph_selectors, graph_code,
+                        graph_cosine, graph_sine, 0, 1, nullptr, &graph_taps);
+    graph.record_layers(split, graph_tokens, graph_selectors, graph_code,
+                        graph_cosine, graph_sine, 1, 2, nullptr, &graph_taps);
+    CHECK(split.remaining_operator_capacity() == 50u);
+    split.submit().wait();
+  }
+  std::vector<uint16_t> split_output(input.size());
+  graph_context.download_bytes(graph_tokens, split_output.data(),
+                               split_output.size() * 2);
+  CHECK(split_output == graph_output);
+  {
+    TensorBatch invalid_span = graph_context.begin_batch();
+    bool rejected = false;
+    try {
+      graph.record_layers(invalid_span, graph_tokens, graph_selectors,
+                          graph_code, graph_cosine, graph_sine, 2, 2);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && invalid_span.remaining_operator_capacity() == 128u);
+  }
   const uint64_t graph_used = graph_context.pooled_used_bytes();
   const uint64_t graph_reserved = graph_context.reserved_bytes();
   const uint64_t graph_descriptors = graph_context.descriptor_set_allocations();
