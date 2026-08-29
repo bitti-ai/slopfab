@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -23,15 +24,28 @@ int round_factor(double value) {
 void check(const SafeTensors& st, const std::string& name, const std::vector<int64_t>& shape) {
   const TensorView* t = st.find(name);
   if (!t) throw std::runtime_error("Qwen vision: missing " + name);
-  if (t->dtype != DType::kBF16 || t->shape != shape)
+  uint64_t elements = 1;
+  for (const int64_t extent : shape) {
+    if (extent <= 0 || elements >
+            std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(extent))
+      throw std::logic_error("Qwen vision: invalid expected manifest shape");
+    elements *= static_cast<uint64_t>(extent);
+  }
+  const uint64_t bytes = elements * sizeof(uint16_t);
+  if (t->dtype != DType::kBF16 || t->shape != shape || t->nbytes != bytes ||
+      t->data == nullptr)
     throw std::runtime_error("Qwen vision: incompatible tensor " + name);
 }
 }  // namespace
 
 QwenVisionCheckpoint load_qwen3vl_vision_checkpoint(const SafeTensors& st) {
   std::string p;
-  if (st.find("visual.patch_embed.proj.weight")) p = "visual.";
-  else if (st.find("model.visual.patch_embed.proj.weight")) p = "model.visual.";
+  const bool flat = st.find("visual.patch_embed.proj.weight") != nullptr;
+  const bool nested = st.find("model.visual.patch_embed.proj.weight") != nullptr;
+  if (flat && nested)
+    throw std::runtime_error("Qwen vision: contradictory visual prefixes");
+  if (flat) p = "visual.";
+  else if (nested) p = "model.visual.";
   else throw std::runtime_error("Qwen vision: visual patch embedding is absent");
 
   check(st, p + "patch_embed.proj.weight", {1152, 3, 2, 16, 16});
