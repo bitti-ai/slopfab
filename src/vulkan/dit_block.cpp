@@ -208,6 +208,31 @@ struct Projection {
   }
 };
 
+void validate_block_archive(const SafeTensors& st, const std::string& p,
+                            const H3BlockConfig& c, bool with_adaln) {
+  const uint32_t inner = c.heads * c.head_dim;
+  (void)bf16_vector(st, p + "norm1.weight", c.hidden);
+  (void)bf16_vector(st, p + "norm2.weight", c.hidden);
+  (void)bf16_vector(st, p + "attn.q_norm.weight", c.head_dim);
+  (void)bf16_vector(st, p + "attn.k_norm.weight", c.head_dim);
+  if (with_adaln) {
+    const uint64_t adaln_out = checked_product(
+        checked_product(c.modalities, 6, "AdaLN"), c.hidden, "AdaLN");
+    const TensorView& aw = st.at(p + "adaln_proj.linear.weight");
+    const TensorView& ab = st.at(p + "adaln_proj.linear.bias");
+    require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
+    require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
+    (void)to_f32(aw); (void)to_f32(ab);
+  }
+  const std::string qkv = p + "attn.qkv_proj";
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 0);
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, inner);
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 2 * inner);
+  validate_projection_archive(st, p + "attn.out_proj", c.hidden, inner);
+  validate_projection_archive(st, p + "mlp.fc1", 2 * c.ffn, c.hidden);
+  validate_projection_archive(st, p + "mlp.fc2", c.hidden, c.ffn);
+}
+
 Projection load_projection(TensorContext& context, const SafeTensors& st,
                            const std::string& name, uint32_t out, uint32_t in,
                            uint32_t source_out = 0, uint32_t row_offset = 0) {
@@ -418,26 +443,16 @@ void ExactH3BlockStage::validate_checkpoint(const SafeTensors& st,
                                             uint32_t layer,
                                             const H3BlockConfig& c) {
   validate_config(c);
-  const uint32_t inner = c.heads * c.head_dim;
   const std::string p = "blocks." + std::to_string(layer) + ".";
-  (void)bf16_vector(st, p + "norm1.weight", c.hidden);
-  (void)bf16_vector(st, p + "norm2.weight", c.hidden);
-  (void)bf16_vector(st, p + "attn.q_norm.weight", c.head_dim);
-  (void)bf16_vector(st, p + "attn.k_norm.weight", c.head_dim);
-  const uint64_t adaln_out = checked_product(
-      checked_product(c.modalities, 6, "AdaLN"), c.hidden, "AdaLN");
-  const TensorView& aw = st.at(p + "adaln_proj.linear.weight");
-  const TensorView& ab = st.at(p + "adaln_proj.linear.bias");
-  require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
-  require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
-  (void)to_f32(aw); (void)to_f32(ab);
-  const std::string qkv = p + "attn.qkv_proj";
-  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 0);
-  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, inner);
-  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 2 * inner);
-  validate_projection_archive(st, p + "attn.out_proj", c.hidden, inner);
-  validate_projection_archive(st, p + "mlp.fc1", 2 * c.ffn, c.hidden);
-  validate_projection_archive(st, p + "mlp.fc2", c.hidden, c.ffn);
+  validate_block_archive(st, p, c, true);
+}
+
+void ExactH3BlockStage::validate_refiner_checkpoint(
+    const SafeTensors& st, uint32_t layer, const H3BlockConfig& c) {
+  validate_config(c);
+  const std::string p =
+      "token_refiner.blocks." + std::to_string(layer) + ".";
+  validate_block_archive(st, p, c, false);
 }
 
 void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
@@ -492,6 +507,73 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   next->adaln_b = s.context->allocate(vector(adaln_out));
   s.context->upload_transient(next->adaln_w, wide_w.data(), wide_w.size());
   s.context->upload_transient(next->adaln_b, wide_b.data(), wide_b.size());
+  s.weights = std::move(next);
+}
+
+void ExactH3BlockStage::load_refiner(const SafeTensors& st, uint32_t layer) {
+  if (!impl_) throw std::logic_error("Vulkan H3 block: empty stage");
+  Impl& s = *impl_; const H3BlockConfig& c = s.config;
+  validate_refiner_checkpoint(st, layer, c);
+  const uint32_t inner = c.heads * c.head_dim;
+  const std::string p =
+      "token_refiner.blocks." + std::to_string(layer) + ".";
+  const std::vector<uint16_t> host_norm1 =
+      bf16_vector(st, p + "norm1.weight", c.hidden);
+  const std::vector<uint16_t> host_norm2 =
+      bf16_vector(st, p + "norm2.weight", c.hidden);
+  const std::vector<uint16_t> host_q_norm =
+      bf16_vector(st, p + "attn.q_norm.weight", c.head_dim);
+  const std::vector<uint16_t> host_k_norm =
+      bf16_vector(st, p + "attn.k_norm.weight", c.head_dim);
+  const std::string qkv = p + "attn.qkv_proj";
+
+  auto next = std::make_unique<Impl::Weights>();
+  auto upload_bf = [&](const std::vector<uint16_t>& host) {
+    DeviceTensor result = s.context->allocate(
+        vector(host.size()), ScalarType::kBFloat16);
+    s.context->upload_transient_bytes(result, host.data(), host.size() * 2);
+    return result;
+  };
+  next->norm1 = upload_bf(host_norm1);
+  next->norm2 = upload_bf(host_norm2);
+  next->q_norm = upload_bf(host_q_norm);
+  next->k_norm = upload_bf(host_k_norm);
+  next->q = load_projection(*s.context, st, qkv, inner, c.hidden,
+                            3 * inner, 0);
+  next->k = load_projection(*s.context, st, qkv, inner, c.hidden,
+                            3 * inner, inner);
+  next->v = load_projection(*s.context, st, qkv, inner, c.hidden,
+                            3 * inner, 2 * inner);
+  next->out = load_projection(*s.context, st, p + "attn.out_proj",
+                              c.hidden, inner);
+  next->fc1 = load_projection(*s.context, st, p + "mlp.fc1",
+                              2 * c.ffn, c.hidden);
+  next->fc2 = load_projection(*s.context, st, p + "mlp.fc2",
+                              c.hidden, c.ffn);
+
+  // Reuse the accepted modulated block implementation without maintaining a
+  // second copy of its arithmetic. Zero shift/scale and unit gates reduce its
+  // two residual fusions exactly to the refiner's unmodulated residual adds.
+  const uint64_t adaln_out = checked_product(
+      checked_product(c.modalities, 6, "refiner identity AdaLN"),
+      c.hidden, "refiner identity AdaLN");
+  std::vector<float> identity_w(
+      checked_product(adaln_out, c.adaln_rank, "refiner identity weight"),
+      0.0f);
+  std::vector<float> identity_b(adaln_out, 0.0f);
+  for (uint32_t modality = 0; modality < c.modalities; ++modality) {
+    for (uint32_t channel = 0; channel < c.hidden; ++channel) {
+      identity_b[(uint64_t(modality) * 6 + 2) * c.hidden + channel] = 1.0f;
+      identity_b[(uint64_t(modality) * 6 + 5) * c.hidden + channel] = 1.0f;
+    }
+  }
+  next->adaln_w = s.context->allocate(
+      matrix(adaln_out, c.adaln_rank));
+  next->adaln_b = s.context->allocate(vector(adaln_out));
+  s.context->upload_transient(next->adaln_w, identity_w.data(),
+                              identity_w.size());
+  s.context->upload_transient(next->adaln_b, identity_b.data(),
+                              identity_b.size());
   s.weights = std::move(next);
 }
 

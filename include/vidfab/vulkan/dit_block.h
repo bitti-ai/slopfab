@@ -69,7 +69,14 @@ class ExactH3BlockStage {
   static void validate_checkpoint(const SafeTensors& checkpoint,
                                   uint32_t layer,
                                   const H3BlockConfig& config);
+  // Token-refiner variant: same exact attention/MLP arithmetic and projection
+  // formats, but weights live under token_refiner.blocks.N and there is no
+  // learned AdaLN module.
+  static void validate_refiner_checkpoint(const SafeTensors& checkpoint,
+                                           uint32_t layer,
+                                           const H3BlockConfig& config);
   void load(const SafeTensors& checkpoint, uint32_t layer);
+  void load_refiner(const SafeTensors& checkpoint, uint32_t layer);
   // Allocate only the optional AWQ/ConvRot activation buffers required by
   // the loaded weight metadata. Call after load and before opening a batch.
   void prepare(ExactH3BlockScratch& scratch) const;
