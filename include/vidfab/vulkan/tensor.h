@@ -287,6 +287,7 @@ class TensorBatch {
   // not poison or otherwise mutate the recording, so the same batch remains
   // usable for a smaller graph.
   void require_operator_capacity(uint32_t operators) const;
+  bool belongs_to(const TensorContext& context) const noexcept;
   explicit operator bool() const noexcept;
 
  private:

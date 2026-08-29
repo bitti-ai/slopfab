@@ -782,6 +782,7 @@ if(VIDFAB_ENABLE_VULKAN)
   add_library(vidfab_vulkan STATIC
     src/vulkan/runtime.cpp
     src/vulkan/tensor.cpp
+    src/vulkan/text_layer.cpp
     src/vulkan/dit_block.cpp
     src/vulkan/dit_denoise.cpp
     src/vulkan/dit_graph.cpp

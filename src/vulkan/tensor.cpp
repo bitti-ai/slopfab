@@ -1978,6 +1978,10 @@ void TensorBatch::require_operator_capacity(uint32_t operators) const {
     throw std::logic_error("vulkan tensor: insufficient operator capacity");
 }
 
+bool TensorBatch::belongs_to(const TensorContext& context) const noexcept {
+  return impl_ && context.impl_ && impl_->owner == context.impl_;
+}
+
 void TensorBatch::copy(DeviceTensor& source, DeviceTensor& destination) {
   if (!impl_) throw std::logic_error("vulkan tensor: empty batch");
   if (impl_->poisoned) throw std::logic_error("vulkan tensor: batch is poisoned");
@@ -3666,9 +3670,14 @@ void TensorBatch::transform_linear_activation(const LinearWeight& weight,
   auto destination = impl_->owner->require(output);
   const auto& shape = source->layout;
   const uint64_t elements = shape.elements();
-  if (source.get() == destination.get() || shape.rank != 2 ||
-      shape.extent[1] != weight.impl_->in_features ||
-      destination->layout.rank != 2 ||
+  const bool matrix = shape.rank == 2 &&
+      shape.extent[1] == weight.impl_->in_features;
+  const bool heads = shape.rank == 3 &&
+      shape.extent[1] <= std::numeric_limits<uint64_t>::max() /
+          shape.extent[2] &&
+      shape.extent[1] * shape.extent[2] == weight.impl_->in_features;
+  if (source.get() == destination.get() || (!matrix && !heads) ||
+      destination->layout.rank != shape.rank ||
       destination->layout.extent != shape.extent ||
       !shape.is_contiguous() || !destination->layout.is_contiguous() ||
       source->type != destination->type ||
@@ -3676,7 +3685,7 @@ void TensorBatch::transform_linear_activation(const LinearWeight& weight,
        source->type != ScalarType::kFloat32) ||
       elements > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument(
-        "vulkan linear weight: transform needs distinct contiguous [rows,in] tensors");
+        "vulkan linear weight: transform needs distinct contiguous row tensors");
   }
 
   std::array<std::shared_ptr<DeviceTensor::Impl>, 6> resources;
@@ -4136,13 +4145,18 @@ void DenseGemmPlan::record_impl(
       (bias_tensor && (bias_tensor.get() == src.get() ||
                        bias_tensor.get() == weight.get() ||
                        bias_tensor.get() == dst.get()));
+  const bool input_matrix = src->layout.rank == 2;
+  const bool input_heads = src->layout.rank == 3 &&
+      src->layout.extent[1] <= std::numeric_limits<uint64_t>::max() /
+                                   src->layout.extent[2] &&
+      src->layout.extent[1] * src->layout.extent[2] == desc.in_features;
   const bool output_matrix = dst->layout.rank == 2;
   const bool output_heads = dst->layout.rank == 3 &&
       dst->layout.extent[1] <= std::numeric_limits<uint64_t>::max() /
                                    dst->layout.extent[2] &&
       dst->layout.extent[1] * dst->layout.extent[2] == desc.out_features;
   const bool row_ranges_valid =
-      src->layout.rank == 2 && (output_matrix || output_heads) &&
+      (input_matrix || input_heads) && (output_matrix || output_heads) &&
       input_row_offset <= src->layout.extent[0] &&
       rows <= src->layout.extent[0] - input_row_offset &&
       output_row_offset <= dst->layout.extent[0] &&
@@ -4152,7 +4166,7 @@ void DenseGemmPlan::record_impl(
        bias_tensor->layout.extent[0] == desc.out_features &&
        bias_tensor->layout.is_contiguous() && bias_tensor->type == bias_type);
   if (aliases || !row_ranges_valid || !bias_valid ||
-      src->layout.extent[1] != desc.in_features ||
+      (input_matrix && src->layout.extent[1] != desc.in_features) ||
       weight->layout.rank != 2 ||
       weight->layout.extent[0] != desc.out_features ||
       weight->layout.extent[1] != desc.in_features ||
