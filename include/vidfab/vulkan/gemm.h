@@ -64,8 +64,8 @@ class PreparedF16ActivationView {
   friend class PreparedF16Activation;
 };
 
-// One bounded BF16 expansion slot shared by streamed NVFP4 weights. Preparing
-// a weight records g1 materialization into the slot and returns a view valid
+// One bounded BF16 expansion slot shared by streamed compressed weights.
+// Preparing a weight records exact materialization into the slot and returns a view valid
 // only for the current batch/generation. A later prepare may overwrite the
 // slot after all previously recorded reads; TensorBatch access transitions
 // provide the queue-ordered W->R/R->W barriers without a device-wide wait.

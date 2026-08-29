@@ -2929,6 +2929,94 @@ void TensorBatch::dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output) {
   } catch (...) { impl_->poisoned = true; throw; }
 }
 
+void TensorBatch::text_add_residual_bf16(DeviceTensor& residual,
+                                         DeviceTensor& branch) {
+  if (!impl_ || impl_->poisoned) {
+    throw std::logic_error("vulkan tensor: invalid batch");
+  }
+  if (!impl_->owner->exact_dit_pointwise) {
+    throw std::runtime_error(
+        "vulkan text: exact pointwise operations are unavailable");
+  }
+  auto x = impl_->owner->require(residual);
+  auto b = impl_->owner->require(branch);
+  const uint64_t rows = x->layout.rank == 2 ? x->layout.extent[0] : 0;
+  const uint64_t dim = x->layout.rank == 2 ? x->layout.extent[1] : 0;
+  const uint64_t count = checked_multiply(rows, dim, "text residual");
+  const uint64_t packed = count == 0 ? 0 : 1 + (count - 1) / 2;
+  if (x.get() == b.get() || x->layout.rank != 2 || rows == 0 || dim == 0 ||
+      b->layout.rank != 2 || b->layout.extent != x->layout.extent ||
+      x->type != ScalarType::kBFloat16 || b->type != ScalarType::kBFloat16 ||
+      !x->layout.is_contiguous() || !b->layout.is_contiguous() ||
+      rows > std::numeric_limits<uint32_t>::max() ||
+      dim > std::numeric_limits<uint32_t>::max() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan text: invalid residual tensors");
+  }
+  TensorContext::Impl::DitParameters p;
+  p.op = 4;
+  p.rows = static_cast<uint32_t>(rows);
+  p.dim = static_cast<uint32_t>(dim);
+  p.count = static_cast<uint32_t>(packed);
+  try {
+    impl_->count_operator();
+    impl_->transition(x, BufferAccess::kComputeReadWrite);
+    impl_->transition(b, BufferAccess::kComputeRead);
+    impl_->dispatch_dit(p, {x, b, b, b, x});
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::text_swiglu_split_bf16(DeviceTensor& gate,
+                                         DeviceTensor& up,
+                                         DeviceTensor& output) {
+  if (!impl_ || impl_->poisoned) {
+    throw std::logic_error("vulkan tensor: invalid batch");
+  }
+  if (!impl_->owner->exact_dit_pointwise) {
+    throw std::runtime_error(
+        "vulkan text: exact pointwise operations are unavailable");
+  }
+  auto g = impl_->owner->require(gate);
+  auto u = impl_->owner->require(up);
+  auto dst = impl_->owner->require(output);
+  const uint64_t rows = g->layout.rank == 2 ? g->layout.extent[0] : 0;
+  const uint64_t dim = g->layout.rank == 2 ? g->layout.extent[1] : 0;
+  const uint64_t count = checked_multiply(rows, dim, "text SwiGLU");
+  const uint64_t packed = count == 0 ? 0 : 1 + (count - 1) / 2;
+  if (g.get() == u.get() || g.get() == dst.get() || u.get() == dst.get() ||
+      g->layout.rank != 2 || rows == 0 || dim == 0 ||
+      u->layout.rank != 2 || u->layout.extent != g->layout.extent ||
+      dst->layout.rank != 2 || dst->layout.extent != g->layout.extent ||
+      g->type != ScalarType::kBFloat16 ||
+      u->type != ScalarType::kBFloat16 ||
+      dst->type != ScalarType::kBFloat16 ||
+      !g->layout.is_contiguous() || !u->layout.is_contiguous() ||
+      !dst->layout.is_contiguous() ||
+      rows > std::numeric_limits<uint32_t>::max() ||
+      dim > std::numeric_limits<uint32_t>::max() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan text: invalid split SwiGLU tensors");
+  }
+  TensorContext::Impl::DitParameters p;
+  p.op = 5;
+  p.rows = static_cast<uint32_t>(rows);
+  p.dim = static_cast<uint32_t>(dim);
+  p.count = static_cast<uint32_t>(packed);
+  try {
+    impl_->count_operator();
+    impl_->transition(g, BufferAccess::kComputeRead);
+    impl_->transition(u, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_dit(p, {g, u, u, u, dst});
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
 void TensorBatch::dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
                                    DeviceTensor& code, DeviceTensor& output,
                                    uint32_t num_modality, uint32_t num_param,
@@ -3802,14 +3890,13 @@ PreparedNVFP4WeightView StreamedNVFP4WeightCache::prepare(
   const uint64_t elements = checked_multiply(
       weight.impl_->out_features, weight.impl_->in_features,
       "nvfp4 streamed weight");
-  if (weight.impl_->format != LinearWeightFormat::kNVFloat4 ||
-      desc.mode != DenseGemmMode::kBFloat16 ||
+  if (desc.mode != DenseGemmMode::kBFloat16 ||
       desc.out_features != weight.impl_->out_features ||
       desc.in_features != weight.impl_->in_features ||
       elements > impl_->capacity_elements ||
       elements > std::numeric_limits<uint32_t>::max()) {
     throw std::invalid_argument(
-        "vulkan nvfp4 stream: weight does not match the BF16 plan/cache");
+        "vulkan linear stream: weight does not match the BF16 plan/cache");
   }
   if (batch.impl_->operator_count == batch.impl_->owner->max_batch_operators) {
     throw std::logic_error("vulkan tensor: batch operator limit exceeded");
@@ -3818,13 +3905,7 @@ PreparedNVFP4WeightView StreamedNVFP4WeightCache::prepare(
     throw std::overflow_error("vulkan nvfp4 stream: generation exhausted");
   }
   impl_->owner->validate_dispatch(1 + (elements - 1) / 2);
-  auto data = impl_->owner->require(weight.impl_->data);
-  auto block_scale = impl_->owner->require(weight.impl_->block_scale);
   auto dense = impl_->owner->require(impl_->dense);
-  if (data.get() == dense.get() || block_scale.get() == dense.get()) {
-    throw std::invalid_argument(
-        "vulkan nvfp4 stream: cache aliases persistent weight storage");
-  }
   const uint64_t shape[] = {weight.impl_->out_features,
                             weight.impl_->in_features};
   const TensorLayout layout = TensorLayout::contiguous(shape, 2);

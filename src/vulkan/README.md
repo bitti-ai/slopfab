@@ -994,8 +994,8 @@ The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
 ```text
 dxc -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 -E main -O3 -Gis src/vulkan/tensor_dit.hlsl -Fo src/vulkan/tensor_dit.comp.spv
 
-tensor_dit.hlsl       96E28D415C631141944419F0C32E716E74F558AEEC6077A6DEA5199C660475CF
-tensor_dit.comp.spv    AF58A6A7DCFC4CF6EB3F69D1B111A2498AC7517B5313C4ADA2877F1E8933A932
+tensor_dit.hlsl       58B49C9A661129569B0E5A959897AD545FF7B5AF7DA672DD995CF3AAE52B0365
+tensor_dit.comp.spv    42CDADDE72D0254116A4E102E49BB2B4F74A940540640B533B2C15FD5E1DDB5A
 ```
 
 ## Exact causal GQA text attention

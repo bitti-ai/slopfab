@@ -372,6 +372,17 @@ void launch_swiglu_split(const __nv_bfloat16* gate, const __nv_bfloat16* up, __n
 void launch_residual_add(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
                          cudaStream_t stream);
 
+// Canonical exact-mode variants shared with the Vulkan text-stage authority.
+// Inputs are canonicalized at the BF16 boundary (subnormals -> signed zero,
+// all NaNs -> one quiet NaN) and results use one RNE BF16 conversion.
+void launch_swiglu_split_exact(const __nv_bfloat16* gate,
+                               const __nv_bfloat16* up,
+                               __nv_bfloat16* out, size_t n,
+                               cudaStream_t stream);
+void launch_residual_add_exact(__nv_bfloat16* x,
+                               const __nv_bfloat16* branch, size_t n,
+                               cudaStream_t stream);
+
 // One decoder layer's weights as device pointers. Nothing is owned here.
 struct LayerWeights {
   vidfab::cuda::QuantWeight q_proj;

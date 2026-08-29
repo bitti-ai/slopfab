@@ -39,6 +39,41 @@ uint bf16_rte(float value) {
   return (bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16;
 }
 
+float canonical_bf16(float value) {
+  const uint bits = asuint(value);
+  const uint magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return asfloat(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return asfloat(0x7fc00000u);
+  return value;
+}
+
+float exact_divide(float numerator_value, float denominator_value);
+float exact_exp(float value);
+
+float exact_silu(float value) {
+  value = canonical_bf16(value);
+  const uint bits = asuint(value);
+  const uint magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return asfloat(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u ? asfloat(0x80000000u) : value;
+  return exact_divide(value, 1.0f + exact_exp(-value));
+}
+
+uint exact_residual_bf16(uint index) {
+  const float left = canonical_bf16(load_bf16(primary, index));
+  const float right = canonical_bf16(load_bf16(secondary, index));
+  precise float sum = left + right;
+  return bf16_rte(canonical_bf16(sum));
+}
+
+uint exact_swiglu_bf16(uint index) {
+  const float gate = canonical_bf16(load_bf16(primary, index));
+  const float up = canonical_bf16(load_bf16(secondary, index));
+  precise float result = exact_silu(gate) * up;
+  return bf16_rte(canonical_bf16(result));
+}
+
 void store_bf16(uint index, uint bits) {
   const uint byte_offset = (index >> 1) * 4;
   uint ignored;
@@ -191,7 +226,7 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     const uint destination = param * table_stride +
         (ti * p.num_modality + modality) * p.dim + channel;
     output_data.Store(destination * 4, asuint(acc));
-  } else { // exact rectified-flow Euler, fp32 in place
+  } else if (p.op == 3u) { // exact rectified-flow Euler, fp32 in place
     // Keep the three reference source expressions separate. In particular,
     // sigma_from_timestep is not reconstructed from the ratio's sigma grid.
     const float sample = euler_canonical(load_f32(primary, index));
@@ -205,5 +240,19 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     const float incoming = euler_multiply(one_minus_ratio, denoised);
     const float next = euler_add(retained, incoming);
     output_data.Store(index * 4u, asuint(next));
+  } else if (p.op == 4u) { // exact in-place BF16 residual, packed pairs
+    const uint first = index * 2u;
+    const uint live_count = p.rows * p.dim;
+    const uint low = exact_residual_bf16(first);
+    const uint high = first + 1u < live_count
+        ? exact_residual_bf16(first + 1u) : 0u;
+    output_data.Store(index * 4u, low | (high << 16u));
+  } else { // exact split-input BF16 SwiGLU, packed pairs
+    const uint first = index * 2u;
+    const uint live_count = p.rows * p.dim;
+    const uint low = exact_swiglu_bf16(first);
+    const uint high = first + 1u < live_count
+        ? exact_swiglu_bf16(first + 1u) : 0u;
+    output_data.Store(index * 4u, low | (high << 16u));
   }
 }

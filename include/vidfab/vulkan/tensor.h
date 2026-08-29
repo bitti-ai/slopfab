@@ -224,6 +224,13 @@ class TensorBatch {
                                 uint32_t gate_table,
                                 DeviceTensor& selectors);
   void dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output);
+  // Qwen text-layer exact pointwise seams. Residual add operates in place on
+  // contiguous BF16 [rows,dim]. Split SwiGLU consumes two distinct BF16
+  // [rows,inner] tensors and writes a third. BF16 subnormals are flushed to
+  // signed zero and NaNs are canonicalized before the final RNE conversion.
+  void text_add_residual_bf16(DeviceTensor& residual, DeviceTensor& branch);
+  void text_swiglu_split_bf16(DeviceTensor& gate, DeviceTensor& up,
+                              DeviceTensor& output);
   // Rank-R checkpoint-native AdaLN expansion. Weight [M*P*C,R], bias
   // [M*P*C], code [T,R]. Output may be canonical [P,T*M,C] or a flat fp32
   // arena with P equal aligned table strides.

@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/deterministic_math.cuh"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
@@ -103,6 +104,57 @@ __global__ void residual_add_kernel(__nv_bfloat16* __restrict__ x,
   const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= n) return;
   x[i] = __float2bfloat16(__bfloat162float(x[i]) + __bfloat162float(branch[i]));
+}
+
+__device__ inline float exact_text_bf16(__nv_bfloat16 value) {
+  const uint16_t bits = __bfloat16_as_ushort(value);
+  const uint16_t magnitude = bits & 0x7fffu;
+  if (magnitude < 0x0080u)
+    return __uint_as_float(static_cast<uint32_t>(bits & 0x8000u) << 16u);
+  if (magnitude > 0x7f80u) return __uint_as_float(0x7fc00000u);
+  return __bfloat162float(value);
+}
+
+__device__ inline __nv_bfloat16 exact_text_bf16_result(float value) {
+  const uint32_t bits = __float_as_uint(value);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return __ushort_as_bfloat16(0x7fffu);
+  const __nv_bfloat16 rounded = __float2bfloat16_rn(value);
+  const uint16_t rounded_bits = __bfloat16_as_ushort(rounded);
+  return (rounded_bits & 0x7fffu) < 0x0080u
+      ? __ushort_as_bfloat16(rounded_bits & 0x8000u) : rounded;
+}
+
+__device__ inline float exact_text_silu(float value) {
+  value = vidfab::cuda::canonicalize_pointwise_float(value);
+  const uint32_t bits = __float_as_uint(value);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return __uint_as_float(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u
+        ? __uint_as_float(0x80000000u) : value;
+  return vidfab::cuda::deterministic_float_divide(
+      value, __fadd_rn(1.0f, vidfab::cuda::deterministic_exp(-value)));
+}
+
+__global__ void swiglu_split_exact_kernel(
+    const __nv_bfloat16* __restrict__ gate,
+    const __nv_bfloat16* __restrict__ up,
+    __nv_bfloat16* __restrict__ out, size_t n) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  const float g = exact_text_bf16(gate[i]);
+  const float u = exact_text_bf16(up[i]);
+  out[i] = exact_text_bf16_result(__fmul_rn(exact_text_silu(g), u));
+}
+
+__global__ void residual_add_exact_kernel(
+    __nv_bfloat16* __restrict__ x,
+    const __nv_bfloat16* __restrict__ branch, size_t n) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  x[i] = exact_text_bf16_result(
+      __fadd_rn(exact_text_bf16(x[i]), exact_text_bf16(branch[i])));
 }
 
 __global__ void fill_kernel(float* __restrict__ dst, float value, size_t n) {
@@ -469,6 +521,25 @@ void launch_residual_add(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n
                          cudaStream_t stream) {
   if (n == 0) return;
   residual_add_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(x, branch, n);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_swiglu_split_exact(const __nv_bfloat16* gate,
+                               const __nv_bfloat16* up,
+                               __nv_bfloat16* out, size_t n,
+                               cudaStream_t stream) {
+  if (n == 0) return;
+  swiglu_split_exact_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(
+      gate, up, out, n);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_residual_add_exact(__nv_bfloat16* x,
+                               const __nv_bfloat16* branch, size_t n,
+                               cudaStream_t stream) {
+  if (n == 0) return;
+  residual_add_exact_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(
+      x, branch, n);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
