@@ -642,10 +642,15 @@ VIDFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
   try { (void)cache.prepare(first, foreign_weight, foreign_shape_plan); }
   catch (const std::invalid_argument&) { foreign_threw = true; }
   CHECK(foreign_threw);
-  bool awq_threw = false;
-  try { (void)cache.prepare(first, awq_weight, plan); }
-  catch (const std::invalid_argument&) { awq_threw = true; }
-  CHECK(awq_threw);
+  // AWQ transforms the activation before GEMM; it does not alter NVFP4
+  // materialization. Preparing such a weight is therefore valid and, like
+  // every successful prepare, supersedes the preceding cache generation.
+  (void)cache.prepare(first, awq_weight, plan);
+  bool awq_superseded_p = false;
+  try { plan.record(first, input, p, output, 1, 0, 0); }
+  catch (const std::invalid_argument&) { awq_superseded_p = true; }
+  CHECK(awq_superseded_p);
+  p = cache.prepare(first, w_positive, plan);
   plan.record(first, input, p, output, 2, 2, 2);
   PreparedNVFP4WeightView m = cache.prepare(first, w_negative, plan);
   CHECK(m.full_precision_matrix_mult());

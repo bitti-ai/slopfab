@@ -847,6 +847,62 @@ include/vidfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB
 deterministic_attention.fatbin            D8C01855993DA931125F2BA06D7683C79C04F0DAC23ECCBA985E5E72A01EC194
 ```
 
+## Exact H3 main-transformer block
+
+`ExactH3BlockStage` is one complete main-stack block at the shipped H3 width:
+rank-8 AdaLN expansion, both modulated RMSNorms, six typed projections, per-head
+Q/K RMSNorm, H3 RoPE, full or caller-supplied banded exact attention, two gated
+residuals, and gate-first SwiGLU. The loader accepts the repository's BF16,
+F16, F32, E4M3, per-row I8, NVFP4 and NF4 contracts, including AWQ pre-scale
+and ConvRot transforms. Loading is transactional. A production record call has
+no host boundary, submission, CUDA dependency, or fallback.
+
+NVFP4 execution keeps the six compressed projections persistent and reuses one
+bounded dense BF16 cache. A non-multiple-of-64 sequence records cooperative
+64-row GEMMs plus one scalar tail against the same prepared view. AWQ/ConvRot
+activation slots are allocated lazily only when a loaded projection needs
+them; the shipped NVFP4 block therefore does not reserve their former 1.01 GiB
+production-geometry high-water. The scratch/cache and all pipelines are reused
+across submissions, and failure, unload, reload, wrapper lifetime, allocator
+and descriptor high-water are checked.
+
+The real block-0 audit used
+`MiniMax_H3_FL2VA_pruned_nvfp4.safetensors` (SHA-256
+`6AB7F0C48141E7919B32F925CA3DEF22E06A6AEBEB9E0B6F5A0BE0FE8409976F`).
+At S65, deterministic finite BF16 residuals, selectors, rank-8 code, and
+identity RoPE tables exercise both the cooperative path and a one-row tail.
+The exact CUDA and Vulkan outputs match all 349,440 BF16 words; output FNV64 is
+`191929c14480e873`. A separate S9864 run, matching the shipped layer-0 capture
+sequence length, matches all 53,028,864 BF16 words with FNV64
+`51e414a3b2556e88`. On RTX 5090/610.88 Release it loaded in 91.4 ms and measured
+465.470 ms warm Vulkan. The CUDA diagnostic measured 411.226 ms but includes
+six host-to-device weight uploads and is evidence of exactness, not a fair
+throughput ratio. Vulkan logical persistent/scratch/peak memory was
+210.06/1845.25/2055.31 MiB; pool used/reserved was 2366.01/2373.85 MiB,
+including test upload/readback staging, with 29 stable descriptor allocations.
+
+Real activation-domain attention evidence is the shipped seed12345,
+384x384-reference, 22-frame layer-0/step-0 capture documented above (capture
+SHA-256 `56C4E55931B83DCECB0596DCB51EB3C7EF5555722910ECE78D06AE87CA055A01`,
+QKV FNV64 `fc4780b4477f6eed`). Its exact attention output FNV64
+`a2fbdde25a6d3787` is byte-identical on CUDA and Vulkan. Together with the
+real-weight complete-block replay, this distinguishes checkpoint-layout
+correctness from a synthetic-only arithmetic test. This increment is one main
+block; orchestration of all 50 blocks, the two-block refiner, final layer and
+denoise scheduler is still intentionally unavailable and must remain
+fail-closed.
+
+The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
+`dxc_2026_07_29.zip` (SHA-256
+`A1DFB116BA3EEAE6A1582291B53A8E7BF65AD760676BD3194685C8F7367CD241`):
+
+```text
+dxc -spirv -T cs_6_6 -E main -fspv-target-env=vulkan1.3 -fvk-use-dx-layout src/vulkan/tensor_dit.hlsl -Fo src/vulkan/tensor_dit.comp.spv
+
+tensor_dit.hlsl       1BE3F199D30BBA7F678340622AAE0678A394DA15162807F64FEC92ADDA27A895
+tensor_dit.comp.spv    1942D8821748036F5E9085F7D1C8DF1760FC41FA4F4271B7843859F4BA4AA055
+```
+
 ## Exact causal GQA text attention
 
 `CausalGQAAttentionPlan` is the bounded Qwen3-VL decoder contract, not a
