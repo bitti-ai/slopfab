@@ -483,8 +483,8 @@ const CommandHelp kCommands[] = {
      "                               random ones are drawn afresh for each\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
      "  --inference-backend cuda|vulkan\n"
-     "                               neural model backend (default cuda); Vulkan\n"
-     "                               inference is not implemented and is rejected\n"
+     "                               neural model backend (default cuda); Vulkan exact\n"
+     "                               denoise requires --prompt-embedding\n"
      "  --output-accelerator cpu|vulkan\n"
      "                               RGB-to-YUV output conversion only (default cpu);\n"
      "                               model inference remains CUDA\n"
@@ -504,8 +504,7 @@ const CommandHelp kCommands[] = {
      "                               as the effect. Judge output before relying on it\n"
      "  --attention <backend>        none, flash2, sage2 (default), sol,\n"
      "                               sol-experimental, or exact. Vulkan neural\n"
-     "                               inference accepts only exact attention, but\n"
-     "                               its full model orchestrator is not complete.\n"
+     "                               inference accepts only exact attention.\n"
      "                               The experimental SM120-only\n"
      "                               path is lossy and fails rather than falling back.\n"
      "  --sol-beta <f>               routing threshold multiplier (default 1)\n"
@@ -525,6 +524,8 @@ const CommandHelp kCommands[] = {
      "                               seeded draw; with --synthetic-latents, decode\n"
      "                               them straight to video and audio. Same shape as\n"
      "                               --dump-latents writes. Off by default.\n"
+     "  --prompt-embedding <f>       F32 prompt_embedding [L,5120] safetensors;\n"
+     "                               required by Vulkan denoise (no CUDA conditioner)\n"
      "\n"
      "step caching (all off by default; each one trades quality for time):\n"
      "  --cache-threshold <x>        reuse the previous step's velocity until the\n"
@@ -1239,6 +1240,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   vidfab::AttentionMode attention_mode = vidfab::AttentionMode::kSage2;
   vidfab::SolSchedule sol_schedule;
   std::string init_latents;
+  std::string prompt_embedding;
   int bench_load = 0;
   bool saw_aspect = false;
   bool saw_resolution = false;
@@ -1401,6 +1403,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       sol_schedule.layer_every = std::atoi(next("--sol-layer-every"));
     } else if (arg == "--init-latents") {
       init_latents = next("--init-latents");
+    } else if (arg == "--prompt-embedding") {
+      prompt_embedding = next("--prompt-embedding");
     } else if (arg == "--bench-load") {
       bench_load = std::atoi(next("--bench-load"));
     } else {
@@ -1410,10 +1414,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 
   if (inference_backend == "vulkan") {
-    if (!synthetic) {
+    if (!synthetic && prompt_embedding.empty()) {
       std::fprintf(stderr,
-                   "vidfab: Vulkan conditioning/denoising is not implemented; "
-                   "use --synthetic-latents for the exact Vulkan video/audio VAE slice. "
+                   "vidfab: Vulkan denoising requires --prompt-embedding; "
                    "No CUDA fallback was used\n");
       return 1;
     }
@@ -1460,7 +1463,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 
   // `--synthetic-latents --init-latents <f>` is the decode-an-existing-latent
   // path and needs no prompt; the seeded-noise form still does not either.
-  if (req.prompt.empty() && !dry_run && !synthetic) {
+  if (req.prompt.empty() && prompt_embedding.empty() && !dry_run && !synthetic) {
     std::fprintf(stderr, "vidfab: generate needs --prompt \"...\" or --prompt-file <file>\n");
     return 2;
   }
@@ -1710,6 +1713,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.attention_mode = attention_mode;
   options.sol_schedule = sol_schedule;
   options.init_latents_path = init_latents;
+  options.prompt_embedding_path = prompt_embedding;
 #if VIDFAB_WITH_VULKAN
   options.output_frame_converter = output_converter.get();
 #endif

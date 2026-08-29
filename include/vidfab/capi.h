@@ -90,7 +90,7 @@ extern "C" {
  * A binding should compare `vidfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define VIDFAB_CAPI_VERSION_MAJOR 1
-#define VIDFAB_CAPI_VERSION_MINOR 1
+#define VIDFAB_CAPI_VERSION_MINOR 2
 #define VIDFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -167,8 +167,8 @@ VIDFAB_C_API void VIDFAB_CALL vidfab_free_string(char* text);
 #define VIDFAB_MODEL_VIDEO_VAE 3
 #define VIDFAB_MODEL_AUDIO_VAE 4
 
-/* Neural decoder backend. Vulkan is currently valid only with synthetic
- * latents; denoising fails closed until its Vulkan graph is implemented. */
+/* Neural backend. Vulkan denoising requires exact attention and an explicit
+ * captured prompt embedding; it never calls the CUDA conditioner. */
 #define VIDFAB_INFERENCE_CUDA 0
 #define VIDFAB_INFERENCE_VULKAN 1
 
@@ -327,6 +327,12 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_seed(vidfab_request* request, ui
  * wants used. */
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_model_path(vidfab_request* request, int32_t which,
                                                            const char* path);
+
+/* Safetensors containing F32 `prompt_embedding` [L,5120]. Required for
+ * Vulkan denoising until the native conditioner lands; also accepted by CUDA
+ * to compare the same captured conditioning without recomputation. */
+VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_prompt_embedding_path(
+    vidfab_request* request, const char* path);
 
 /* Ordered subject/style/scene references; presence selects the Ref2VA task and
  * this order labels the images in the packed sequence. At most nine, and the

@@ -46,9 +46,8 @@ inline bool parse_attention_mode(std::string_view name,
 }
 
 // Backend capability contract, intentionally separate from orchestration.
-// Vulkan has exact attention primitives but still lacks the complete neural
-// model runner; accepting kExact here must not be reported as generation
-// support by a caller.
+// Vulkan's complete exact denoiser accepts kExact; prompt conditioning remains
+// an explicit captured-embedding boundary until its native graph lands.
 inline bool attention_mode_supported(DeviceBackend backend,
                                      AttentionMode mode) noexcept {
   switch (backend) {

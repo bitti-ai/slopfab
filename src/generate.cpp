@@ -35,6 +35,7 @@
 #include "vidfab/video/y4m.h"
 #if VIDFAB_WITH_VULKAN
 #include "vidfab/vulkan/audio_decoder.h"
+#include "vidfab/vulkan/dit_denoise.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #endif
 
@@ -285,8 +286,28 @@ ReusedGenerationModels& reused_models() {
   return models;
 }
 
+text::PromptEmbedding read_prompt_embedding(const std::string& path) {
+  SafeTensors file;
+  file.open(path);
+  const TensorView& view = file.at("prompt_embedding");
+  if (view.dtype != DType::kF32 || view.shape.size() != 2 ||
+      view.shape[0] <= 0 || view.shape[1] != 5120)
+    throw std::runtime_error(
+        "captured prompt: prompt_embedding must be F32 [L,5120]");
+  text::PromptEmbedding result;
+  result.num_tokens = static_cast<int>(view.shape[0]);
+  result.hidden_size = static_cast<int>(view.shape[1]);
+  result.data = to_f32(view);
+  result.modality_tags.assign(static_cast<size_t>(result.num_tokens),
+                              dit::kTagText);
+  for (float value : result.data)
+    if (!std::isfinite(value))
+      throw std::runtime_error("captured prompt: non-finite embedding value");
+  return result;
+}
+
 #if VIDFAB_WITH_VULKAN
-vulkan::Device create_vulkan_inference_device() {
+vulkan::Device create_vulkan_inference_device(bool exact_h3 = false) {
   if (!vulkan::Instance::available())
     throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
   vulkan::Instance instance = vulkan::Instance::create();
@@ -294,12 +315,17 @@ vulkan::Device create_vulkan_inference_device() {
   if (physical.empty())
     throw std::runtime_error("Vulkan inference: no compute device is available");
   const vulkan::DeviceInfo& info = physical.front().info();
-  if (!info.timeline_semaphore || !info.shader_int64)
+  if (!info.timeline_semaphore || !info.shader_int64 ||
+      (exact_h3 && (!info.shader_float16 || !info.storage_buffer_16bit ||
+                    !info.cooperative_matrix_bf16_f32_16x16x16)))
     throw std::runtime_error(
-        "Vulkan inference: device lacks timeline semaphore or shaderInt64");
+        "Vulkan inference: device lacks required exact neural features");
   vulkan::DeviceOptions options;
   options.enable_timeline_semaphore = true;
   options.enable_shader_int64 = true;
+  options.enable_shader_float16 = exact_h3;
+  options.enable_storage_buffer_16bit = exact_h3;
+  options.enable_cooperative_matrix = exact_h3;
   return physical.front().create_device(options);
 }
 #endif
@@ -319,10 +345,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
   if (!generation_backend_supported(options.inference_backend, options.source,
                                     options.attention_mode)) {
-    result.message = options.source != LatentSource::kSyntheticNoise
-        ? "Vulkan conditioning/denoising is not implemented; use synthetic latents "
-          "for the exact Vulkan VAE vertical slice"
-        : "Vulkan VAE inference requires exact arithmetic; select attention mode exact";
+    result.message =
+        "Vulkan neural inference requires exact arithmetic; select attention mode exact";
     return result;
   }
 #if !VIDFAB_WITH_VULKAN
@@ -331,6 +355,24 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     return result;
   }
 #endif
+  if (options.inference_backend == DeviceBackend::kVulkan &&
+      options.source == LatentSource::kDenoise) {
+    if (options.prompt_embedding_path.empty()) {
+      result.message =
+          "Vulkan denoising requires an explicit --prompt-embedding safetensors file; "
+          "no CUDA conditioner fallback was used";
+      return result;
+    }
+    if (!request.reference_image_paths.empty() ||
+        options.sampler != sampler::SamplerKind::kEuler ||
+        request.cache_threshold > 0.0f || request.skip_every > 0 ||
+        request.block_cache_span > 0) {
+      result.message =
+          "Vulkan exact denoising supports T2VA Euler without reference, step, "
+          "or block caches; no CUDA fallback was used";
+      return result;
+    }
+  }
 
   // Validate the explicitly selected exact CUDA artifact before touching any
   // prompt/checkpoint. Synthetic-latent runs never execute a transformer and
@@ -461,10 +503,19 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   }
 
   if (options.source == LatentSource::kDenoise) {
-    if (request.text_encoder_path.empty() || request.transformer_path.empty()) {
+    if (request.transformer_path.empty() ||
+        (options.prompt_embedding_path.empty() &&
+         request.text_encoder_path.empty())) {
       result.message =
-          "generate needs --text-encoder and --transformer (or pass "
+          "generate needs --transformer and either --text-encoder or "
+          "--prompt-embedding (or pass "
           "--synthetic-latents to skip conditioning and denoising)";
+      return result;
+    }
+    if (!options.prompt_embedding_path.empty() && !reference_images.empty()) {
+      result.message =
+          "captured prompt embeddings currently support T2VA only; reference "
+          "modality tags must not be guessed";
       return result;
     }
 
@@ -572,7 +623,20 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     const std::string prompt_key = options.reuse_models
                                        ? conditioning_cache_key(request, reference_identities)
                                        : std::string();
-    if (options.reuse_models && reuse.conditioning_key == prompt_key &&
+    if (!options.prompt_embedding_path.empty()) {
+      const Clock::time_point t0 = Clock::now();
+      try {
+        prompt = read_prompt_embedding(options.prompt_embedding_path);
+      } catch (const std::exception& e) {
+        result.message = e.what();
+        return result;
+      }
+      result.seconds_conditioning = seconds_since(t0);
+      if (options.verbose)
+        std::printf("prompt      captured [%d, %d] from %s (no conditioner)\n",
+                    prompt.num_tokens, prompt.hidden_size,
+                    options.prompt_embedding_path.c_str());
+    } else if (options.reuse_models && reuse.conditioning_key == prompt_key &&
         !reuse.prompt.data.empty()) {
       prompt = reuse.prompt;
       if (options.verbose) {
@@ -686,7 +750,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
 
     if (!notify(RunStage::kTransformerLoad, -1, 0)) return stop("transformer load");
-    {
+    if (options.inference_backend == DeviceBackend::kCuda) {
       const Clock::time_point t0 = Clock::now();
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
@@ -873,6 +937,108 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     result.seconds_denoise_loop / std::max(1, total_steps),
                     result.seconds_transformer_load, result.seconds_prepare);
       }
+    } else {
+#if VIDFAB_WITH_VULKAN
+      const Clock::time_point t0 = Clock::now();
+      SafeTensors dit_file;
+      dit_file.open(request.transformer_path);
+      vulkan::Device device = create_vulkan_inference_device(true);
+      vulkan::TensorContextOptions context_options;
+      context_options.max_batch_operators = 2048;
+      vulkan::TensorContext context(device, context_options);
+      if (!context.exact_h3_attention())
+        throw std::runtime_error(
+            "Vulkan inference: exact H3 attention artifact is unavailable");
+      vulkan::ExactH3DenoiseConfig config;
+      config.transformer.main.layers = 50;
+      config.transformer.main.block.sequence =
+          static_cast<uint32_t>(live.total_rows());
+      config.transformer.main.block.timesteps = 2;
+      config.transformer.text_rows = static_cast<uint32_t>(live.num_text);
+      config.transformer.video_rows = static_cast<uint32_t>(live.num_video_rows);
+      config.transformer.audio_rows = static_cast<uint32_t>(live.num_audio_rows);
+      config.layout = live;
+      config.indices = idx;
+      config.position_ids = pos;
+      config.attention_band = options.attention_band;
+      vulkan::ExactH3Denoiser model =
+          vulkan::ExactH3Denoiser::create(context, config);
+      model.load(dit_file);
+      result.seconds_transformer_load = seconds_since(t0);
+
+      std::vector<float> initial_video;
+      std::vector<float> initial_audio;
+      if (!options.init_latents_path.empty()) {
+        initial_video = init_video;
+        initial_audio = init_audio;
+      } else {
+        const std::vector<float> noise = sampler::video_noise(
+            request.seed, live.num_latent_frames, live.latent_height,
+            live.latent_width);
+        initial_video.resize(static_cast<size_t>(live.num_video_rows) * 96);
+        dit::patchify_video(noise.data(), live, initial_video.data());
+        initial_audio = sampler::audio_noise(
+            request.seed, live.num_audio_latents);
+      }
+      const Clock::time_point t_prep = Clock::now();
+      model.prepare(prompt.data.data(), prompt.data.size(),
+                    initial_video.data(), initial_video.size(),
+                    initial_audio.data(), initial_audio.size());
+      result.seconds_prepare = seconds_since(t_prep);
+      if (options.verbose) {
+        std::printf(
+            "transformer Vulkan %.2f GiB persistent, %.2f GiB peak, %d packed rows, loaded in %.2f s\n",
+            static_cast<double>(model.persistent_bytes()) /
+                (1024.0 * 1024.0 * 1024.0),
+            static_cast<double>(model.peak_device_bytes()) /
+                (1024.0 * 1024.0 * 1024.0),
+            live.total_rows(), result.seconds_transformer_load);
+      }
+
+      sampler::FlowScheduler video_sched(plan.video_sigma_shift);
+      sampler::FlowScheduler audio_sched(plan.audio_sigma_shift);
+      video_sched.set_timesteps(plan.num_inference_steps);
+      audio_sched.set_timesteps(plan.num_inference_steps);
+      const int total_steps = plan.num_model_evaluations();
+      vae_prefetch.start({request.video_vae_path, request.audio_vae_path},
+                         options.verbose);
+      const Clock::time_point loop_start = Clock::now();
+      bool cancel_requested = false;
+      const vulkan::ExactH3DenoiseResult out = model.run(
+          video_sched, audio_sched,
+          [&](uint32_t step, uint32_t steps) {
+            if (options.verbose) {
+              const double elapsed = seconds_since(loop_start);
+              const double per_step = elapsed / static_cast<double>(step + 1);
+              std::printf("\rstep %u/%u  %.1f s/step  eta %.0f s      ",
+                          step + 1, steps, per_step,
+                          per_step * (steps - step - 1));
+              std::fflush(stdout);
+            }
+            if (notify(RunStage::kDenoising, static_cast<int>(step),
+                       static_cast<int>(steps))) return true;
+            cancel_requested = true;
+            return false;
+          });
+      if (options.verbose) std::printf("\n");
+      if (cancel_requested || out.cancelled) return stop("denoising");
+      result.seconds_denoise_loop = seconds_since(loop_start);
+      result.steps_computed = static_cast<int>(out.steps_completed);
+      result.steps_skipped = 0;
+      video_rows = out.video_rows;
+      audio_rows = out.audio_rows;
+      model.unload();
+      result.seconds_denoise = seconds_since(t0);
+      if (options.verbose) {
+        std::printf(
+            "denoised    %d Vulkan exact steps in %.1f s (%.2f s/step); +%.1f s load, +%.1f s prepare\n",
+            total_steps, result.seconds_denoise_loop,
+            result.seconds_denoise_loop / std::max(1, total_steps),
+            result.seconds_transformer_load, result.seconds_prepare);
+      }
+#else
+      throw std::logic_error("Vulkan inference compiled out after validation");
+#endif
     }
   } else if (!options.init_latents_path.empty()) {
     // Decode a latent that already exists. The whole back half — unpatchify,

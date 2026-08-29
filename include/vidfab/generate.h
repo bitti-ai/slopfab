@@ -73,9 +73,9 @@ enum class LatentSource {
 
 struct RunOptions {
   LatentSource source = LatentSource::kDenoise;
-  // Neural decoder backend. CUDA remains the default. Vulkan currently owns
-  // the complete video/audio VAE vertical slice; conditioning and denoising
-  // remain fail-closed until their Vulkan graphs are implemented.
+  // Neural backend. CUDA remains the default. Vulkan denoising requires an
+  // explicitly supplied captured fp32 prompt embedding: the conditioner is a
+  // separate later feature and is never reached through a silent CUDA call.
   DeviceBackend inference_backend = DeviceBackend::kCuda;
   bool verbose = true;
 
@@ -132,6 +132,11 @@ struct RunOptions {
   // and `audio_rows` [Sa, 32], both fp32, both checked against the layout.
   std::string init_latents_path;
 
+  // Safetensors containing `prompt_embedding` [L,5120] F32. Required for a
+  // Vulkan denoise request and ignored by neither backend: CUDA may use it too
+  // for exact vertical-slice comparison without running the conditioner.
+  std::string prompt_embedding_path;
+
   // --- host hooks -----------------------------------------------------------
   //
   // Plain function pointers rather than std::function, because the one caller
@@ -165,7 +170,8 @@ inline bool generation_backend_supported(DeviceBackend backend,
     case DeviceBackend::kCuda:
       return true;
     case DeviceBackend::kVulkan:
-      return source == LatentSource::kSyntheticNoise &&
+      return (source == LatentSource::kSyntheticNoise ||
+              source == LatentSource::kDenoise) &&
              attention == AttentionMode::kExact;
   }
   return false;

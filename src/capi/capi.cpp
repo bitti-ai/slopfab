@@ -481,6 +481,18 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_model_path(vidfab_request* reque
   });
 }
 
+VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_prompt_embedding_path(
+    vidfab_request* request, const char* path) {
+  if (request == nullptr || path == nullptr) {
+    return fail(VIDFAB_ERR_INVALID_ARGUMENT,
+                "vidfab_request_set_prompt_embedding_path: null argument");
+  }
+  return guarded([&] {
+    request->options.prompt_embedding_path = path;
+    return VIDFAB_OK;
+  });
+}
+
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_add_reference_image(vidfab_request* request, const char* path) {
   if (request == nullptr || path == nullptr) {
     return fail(VIDFAB_ERR_INVALID_ARGUMENT, "vidfab_request_add_reference_image: null argument");

@@ -73,6 +73,8 @@ VIDFAB_TEST(capi_rejects_null_handles) {
   CHECK(vidfab_request_set_frames(nullptr, 5) == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_model_path(nullptr, VIDFAB_MODEL_TRANSFORMER, "x") ==
         VIDFAB_ERR_INVALID_ARGUMENT);
+  CHECK(vidfab_request_set_prompt_embedding_path(nullptr, "x") ==
+        VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_resolve_plan(nullptr, nullptr) == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_describe_plan(nullptr, nullptr) == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_generation_start(nullptr, nullptr, nullptr, nullptr) ==
@@ -183,6 +185,10 @@ VIDFAB_TEST(capi_model_paths_and_attention) {
   // to be next in the struct.
   CHECK(vidfab_request_set_model_path(request.handle, 42, "x") == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_model_path(request.handle, VIDFAB_MODEL_TOKENIZER, nullptr) ==
+        VIDFAB_ERR_INVALID_ARGUMENT);
+  CHECK(vidfab_request_set_prompt_embedding_path(request.handle, "prompt.st") ==
+        VIDFAB_OK);
+  CHECK(vidfab_request_set_prompt_embedding_path(request.handle, nullptr) ==
         VIDFAB_ERR_INVALID_ARGUMENT);
 
   for (const char* mode : {"none", "flash2", "sage2", "sol", "sol-experimental", "exact"}) {
