@@ -25,6 +25,7 @@
 #include "vidfab/vulkan/dit_graph.h"
 #include "vidfab/vulkan/dit_transformer.h"
 #include "vidfab/vulkan/text_layer.h"
+#include "vidfab/vulkan/text_encoder.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/attention.h"
@@ -277,6 +278,100 @@ VIDFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
   CHECK(repeat == first);
   CHECK(context.descriptor_set_allocations() == stable_descriptors);
 }
+
+#if !defined(VIDFAB_WITH_CUDA) || !VIDFAB_WITH_CUDA
+VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path source(VIDFAB_TEST_SOURCE_DIR);
+  const std::filesystem::path checkpoint_path = source /
+      "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+  const std::filesystem::path capture_path = source /
+      "tests/data/qwen_layer0_l132.vfqw";
+  if (!std::filesystem::exists(checkpoint_path) ||
+      !std::filesystem::exists(capture_path) || !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 ||
+      !info.shader_float16 || !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(options);
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 37;
+  TensorContext context(device, context_options);
+  const uint64_t cold_baseline = context.pooled_used_bytes();
+
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+  const text::QwenLayerCapture capture =
+      text::read_qwen_layer_capture(capture_path.string());
+  ExactQwenTextEncoder encoder = ExactQwenTextEncoder::create(context);
+  encoder.load(checkpoint);
+  text::EncoderTrace trace;
+  const auto begin = std::chrono::steady_clock::now();
+  const text::PromptEmbedding output = encoder.encode(capture.token_ids, &trace);
+  const double seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - begin).count();
+  constexpr std::array<uint64_t, 50> expected{
+      0xfb3966de636ac098ull,0x16b0e53a0265959dull,
+      0x7e2377403c49f851ull,0xdacca747d7db7ccaull,
+      0xb3de1cdb9248573cull,0xcb7ef7852ef4ce79ull,
+      0xfe09924dff391f53ull,0x0ac372b850d058d8ull,
+      0xe818f084c10d99d5ull,0xeed04e74ca44abcfull,
+      0xe3e63048102b3e14ull,0x6e5647916a5d3586ull,
+      0x1b9a96cd7cb703c2ull,0xe60df16cc8c0390dull,
+      0xcf624f216f397d84ull,0x2e680a56b7030b0aull,
+      0x8b8e97be1f24e88eull,0x61e2e50339318a1eull,
+      0x410a6b1ab0a9c0e4ull,0xaf70d3523ce3a525ull,
+      0xfb6b26f66fc1eb31ull,0x732c1c3ed4d7e6a6ull,
+      0x1b81b2dd36a55f5aull,0x01f09dd599e38e09ull,
+      0xc93c6edb4d56f691ull,0xcb9bd628a2587064ull,
+      0x30c8bbdab894f8cfull,0xd0c82e71b41c4e74ull,
+      0xef88fb29b4c38602ull,0x3b865ed94b23284eull,
+      0x160d4d0750485e84ull,0xa3128750a0466a21ull,
+      0xc1c6ba2884daa0e1ull,0xbf2a42d54c6d336eull,
+      0x7ae8060855d02ab2ull,0x2fe95298685c12c3ull,
+      0x17610f06aabb0ce5ull,0xd09a61dcf57388c9ull,
+      0xc363bc14f4fabe3bull,0xc857cd797d07a823ull,
+      0xb5ba41c7ec13df0bull,0x153186eecfcb34e2ull,
+      0x89792cd842ae3215ull,0x03cbb8ab112884f9ull,
+      0x0d9c0669be4b1818ull,0xc45536c76bfb5268ull,
+      0x465a47fdc0f38a3bull,0xc6c70427de251f9dull,
+      0x2082d9a03b0f2c88ull,0x141e4954a3b02693ull};
+  std::array<uint64_t, 50> actual{};
+  const size_t layer_elements = size_t(132) * 5120;
+  CHECK(trace.layer_residual_bf16.size() == 50 * layer_elements);
+  for (size_t layer = 0; layer < actual.size(); ++layer)
+    actual[layer] = fnv64_bytes(
+        trace.layer_residual_bf16.data() + layer * layer_elements,
+        layer_elements * sizeof(uint16_t));
+  CHECK(actual == expected);
+  CHECK(fnv64_floats(output.data) == 0x579170f52abfc8dbull);
+  const ExactQwenTextEncoderStats stats = encoder.stats();
+  CHECK(stats.peak_device_bytes < 900ull * 1024 * 1024);
+  CHECK(stats.descriptor_set_allocations == 36);
+  encoder.unload();
+  context.collect();
+  CHECK(context.pooled_used_bytes() >= cold_baseline);
+  CHECK(context.pooled_used_bytes() <=
+        cold_baseline + 2 * context.staging_capacity_bytes());
+  std::printf(
+      "  CUDA-off real exact Qwen full50 L132 %.2f s final %016llx peak/reserved %.1f/%.1f MiB descriptors %llu\n",
+      seconds,
+      static_cast<unsigned long long>(fnv64_floats(output.data)),
+      double(stats.peak_device_bytes) / 1048576.0,
+      double(stats.allocator_reserved_bytes) / 1048576.0,
+      static_cast<unsigned long long>(stats.descriptor_set_allocations));
+}
+#endif
 
 VIDFAB_TEST(vulkan_exact_dit_euler_matches_host_scheduler) {
   using namespace vidfab;

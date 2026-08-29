@@ -750,6 +750,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         throw std::logic_error("Vulkan conditioner compiled out after validation");
 #endif
       }
+      result.conditioner_executed = true;
       if (options.reuse_models) {
         reuse.conditioning_key = prompt_key;
         reuse.prompt = prompt;

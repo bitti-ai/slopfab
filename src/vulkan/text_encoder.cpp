@@ -155,7 +155,9 @@ void ExactQwenTextEncoder::load(const SafeTensors& checkpoint,
       std::chrono::duration<double>(Clock::now() - begin).count();
 }
 
-void ExactQwenTextEncoder::unload() noexcept { if (impl_) impl_->reset(); }
+void ExactQwenTextEncoder::unload() noexcept {
+  if (impl_) impl_->reset();
+}
 bool ExactQwenTextEncoder::loaded() const noexcept {
   return impl_ && impl_->checkpoint != nullptr;
 }

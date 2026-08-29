@@ -189,6 +189,9 @@ struct RunResult {
   std::vector<std::string> outputs;
 
   double seconds_conditioning = 0.0;
+  // True only when this run executed a text conditioner. False for an
+  // explicitly supplied prompt embedding and for a conditioning-cache hit.
+  bool conditioner_executed = false;
   // Opening the checkpoint and filling the device arena. Part of
   // `seconds_denoise`, broken out because it is fixed cost and the loop is not.
   double seconds_transformer_load = 0.0;

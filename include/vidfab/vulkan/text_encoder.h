@@ -43,6 +43,8 @@ class ExactQwenTextEncoder {
   static ExactQwenTextEncoder create(TensorContext& context);
   void load(const SafeTensors& checkpoint,
             const text::EncoderConfig& config = {});
+  // Releases the checkpoint, compressed weights and reusable shape arena.
+  // TensorContext may retain bounded staging/pool blocks for later models.
   void unload() noexcept;
   bool loaded() const noexcept;
   const text::EncoderConfig& config() const;

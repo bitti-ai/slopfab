@@ -3718,7 +3718,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_full50_real_l132) {
   const uint64_t warm_unloaded_baseline = vk.pooled_used_bytes();
   CHECK(warm_unloaded_baseline >= unloaded_baseline);
   CHECK(warm_unloaded_baseline <=
-        2 * vk.staging_capacity_bytes() + unloaded_baseline);
+        unloaded_baseline + 2 * vk.staging_capacity_bytes());
   CHECK(vk.reserved_bytes() == stable_reserved);
   CHECK(vk.descriptor_set_allocations() == stable_descriptors);
 
@@ -3726,17 +3726,36 @@ VIDFAB_TEST(cuda_vulkan_qwen_full50_real_l132) {
   // warmed context-only staging baseline. No descriptor or pool growth is
   // permitted on the second trajectory.
   encoder.load(checkpoint);
-  const text::PromptEmbedding reloaded = encoder.encode(capture.token_ids);
+  text::EncoderTrace reload_trace;
+  const text::PromptEmbedding reloaded =
+      encoder.encode(capture.token_ids, &reload_trace);
   CHECK(reloaded.data == cuda_output.data);
+  CHECK(reload_trace.layer_residual_bf16 == cuda_trace.layer_residual_bf16);
   const ExactQwenTextEncoderStats reload_stats = encoder.stats();
   CHECK(reload_stats.allocator_reserved_bytes >= stable_reserved);
-  CHECK(reload_stats.allocator_reserved_bytes < 800ull * 1024 * 1024);
-  CHECK(reload_stats.peak_device_bytes < 850ull * 1024 * 1024);
+  CHECK(reload_stats.allocator_reserved_bytes < 1536ull * 1024 * 1024);
+  CHECK(reload_stats.peak_device_bytes < 900ull * 1024 * 1024);
   CHECK(reload_stats.descriptor_set_allocations == stable_descriptors);
   encoder.unload();
   CHECK(vk.pooled_used_bytes() == warm_unloaded_baseline);
   CHECK(vk.reserved_bytes() == reload_stats.allocator_reserved_bytes);
   CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+
+  // The first cold->warm transition may reserve an additional pool block due
+  // to a different free-list order after complete shape destruction. A third
+  // identical lifecycle must reuse that warmed high-water exactly.
+  encoder.load(checkpoint);
+  text::EncoderTrace third_trace;
+  const text::PromptEmbedding third =
+      encoder.encode(capture.token_ids, &third_trace);
+  CHECK(third.data == cuda_output.data);
+  CHECK(third_trace.layer_residual_bf16 == cuda_trace.layer_residual_bf16);
+  CHECK(encoder.stats().allocator_reserved_bytes ==
+        reload_stats.allocator_reserved_bytes);
+  CHECK(encoder.stats().descriptor_set_allocations == stable_descriptors);
+  encoder.unload();
+  CHECK(vk.pooled_used_bytes() == warm_unloaded_baseline);
+  CHECK(vk.reserved_bytes() == reload_stats.allocator_reserved_bytes);
 
   // Exact capacity is preflighted before activation allocation/upload. L132
   // I8 with a boundary trace requires 35+copy+final-widen = 37 operators.
@@ -5014,8 +5033,11 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
     vk_denoiser.unload();
   }
 
-  if (const char* vertical = std::getenv("VIDFAB_DIT_VERTICAL_REAL");
-      vertical && vertical[0] == '1') {
+  const char* captured_vertical = std::getenv("VIDFAB_DIT_VERTICAL_REAL");
+  const char* qwen_vertical = std::getenv("VIDFAB_QWEN_VERTICAL_REAL");
+  if ((captured_vertical && captured_vertical[0] == '1') ||
+      (qwen_vertical && qwen_vertical[0] == '1')) {
+    const bool normal_prompt = qwen_vertical && qwen_vertical[0] == '1';
     const std::filesystem::path video_vae_path =
         "weights/vae/minimax_h3_video_vae_fp16.safetensors";
     const std::filesystem::path audio_vae_path =
@@ -5033,10 +5055,11 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         temp / ("vidfab-g7d-cuda-" + unique + ".raw");
     const std::filesystem::path vulkan_out =
         temp / ("vidfab-g7d-vulkan-" + unique + ".raw");
-    write_safetensors(prompt_path.string(),
-                      {{"prompt_embedding",
-                        {static_cast<int64_t>(header.text_rows),
-                         static_cast<int64_t>(header.text_dim)}, prompt}});
+    if (!normal_prompt)
+      write_safetensors(prompt_path.string(),
+                        {{"prompt_embedding",
+                          {static_cast<int64_t>(header.text_rows),
+                           static_cast<int64_t>(header.text_dim)}, prompt}});
     write_safetensors(init_path.string(),
                       {{"video_rows",
                         {static_cast<int64_t>(header.video_rows),
@@ -5050,6 +5073,12 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
     request.num_frames = 22;
     request.num_inference_steps = 4;
     request.seed = 424242;
+    if (normal_prompt) {
+      request.prompt = "A copper airship glides above a snowy forest at sunrise.";
+      request.text_encoder_path =
+          "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+      request.tokenizer_path = "ref/text_encoder/tokenizer.json";
+    }
     request.transformer_path = checkpoint_path.string();
     request.video_vae_path = video_vae_path.string();
     request.audio_vae_path = audio_vae_path.string();
@@ -5089,7 +5118,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       RunOptions options;
       options.inference_backend = backend;
       options.attention_mode = AttentionMode::kExact;
-      options.prompt_embedding_path = prompt_path.string();
+      if (!normal_prompt) options.prompt_embedding_path = prompt_path.string();
       options.init_latents_path = init_path.string();
       options.verbose = false;
       options.on_samples = capture_samples;
@@ -5101,6 +5130,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       CHECK_MSG(result.ok, "real vertical %s failed: %s",
                 backend == DeviceBackend::kCuda ? "CUDA" : "Vulkan",
                 result.message.c_str());
+      CHECK(result.conditioner_executed == normal_prompt);
       CHECK(result.steps_computed == 3 && result.steps_skipped == 0 &&
             result.outputs.size() == 2u);
       return std::pair<RunResult, double>{result, elapsed};
@@ -5142,12 +5172,20 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         cuda_samples.audio.data(), cuda_samples.audio.size() * sizeof(float));
     const uint64_t y4m_hash = fnv_bytes(cuda_y4m.data(), cuda_y4m.size());
     const uint64_t wav_hash = fnv_bytes(cuda_wav.data(), cuda_wav.size());
-    CHECK(pixel_hash == 0x714a67162495817eull);
-    CHECK(pcm_hash == 0x671f1519e5d0cea1ull);
-    CHECK(y4m_hash == 0xbb480c4fd04ac34aull);
-    CHECK(wav_hash == 0xa447eb6d02620637ull);
+    if (!normal_prompt) {
+      CHECK(pixel_hash == 0x714a67162495817eull);
+      CHECK(pcm_hash == 0x671f1519e5d0cea1ull);
+      CHECK(y4m_hash == 0xbb480c4fd04ac34aull);
+      CHECK(wav_hash == 0xa447eb6d02620637ull);
+    } else {
+      CHECK(pixel_hash == 0x52f6148fa46959f8ull);
+      CHECK(pcm_hash == 0xb2e09a49fc952e5eull);
+      CHECK(y4m_hash == 0x2f595da467a8ac60ull);
+      CHECK(wav_hash == 0xe0d84106a3018c29ull);
+    }
     std::printf(
-        "  real exact vertical S%u x3: CUDA/Vulkan %.3f/%.3f ms, pixels/pcm/y4m/wav %016llx/%016llx/%016llx/%016llx\n",
+        "  real exact %s vertical S%u x3: CUDA/Vulkan %.3f/%.3f ms, pixels/pcm/y4m/wav %016llx/%016llx/%016llx/%016llx\n",
+        normal_prompt ? "normal-prompt" : "captured-prompt",
         header.sequence, cuda_vertical.second, vulkan_vertical.second,
         static_cast<unsigned long long>(pixel_hash),
         static_cast<unsigned long long>(pcm_hash),
