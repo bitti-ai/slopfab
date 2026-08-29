@@ -18,6 +18,7 @@
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
+#include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/attention.h"
 #include "vidfab/video/y4m.h"
@@ -2341,6 +2342,71 @@ VIDFAB_TEST(vulkan_yuv420_output) {
 }
 
 }  // namespace
+
+VIDFAB_TEST(vulkan_video_vae_decoder_contract) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+
+  vae::ViTConfig shipped;
+  bool shipped_rejected = false;
+  try {
+    (void)VideoVaeDecoder::create(device, shipped);
+  } catch (const std::invalid_argument&) {
+    shipped_rejected = true;
+  }
+  CHECK(shipped_rejected);
+
+  vae::ViTConfig too_many;
+  too_many.transformer_mode = vae::ViTTransformerMode::kExact;
+  too_many.num_layers = 205;  // 15 + 20*205 > the 4096-op transaction.
+  bool capacity_rejected = false;
+  try {
+    (void)VideoVaeDecoder::create(device, too_many);
+  } catch (const std::invalid_argument&) {
+    capacity_rejected = true;
+  }
+  CHECK(capacity_rejected);
+
+  vae::ViTConfig exact;
+  exact.transformer_mode = vae::ViTTransformerMode::kExact;
+  VideoVaeDecoder decoder;
+  try {
+    decoder = VideoVaeDecoder::create(device, exact);
+  } catch (const std::runtime_error&) {
+    // The exact arithmetic allow-list is intentionally narrower than Vulkan
+    // availability. The two validation checks above are device-independent.
+    return;
+  }
+  CHECK(decoder.operators_per_document() == 735);
+
+  std::vector<float> normalized(size_t(exact.in_channels) * 7, 0.0f);
+  bool unloaded_decode_rejected = false;
+  try {
+    (void)decoder.decode(normalized.data(), 7, 1, 1,
+                         vae::default_video_latents_mean(),
+                         vae::default_video_latents_std());
+  } catch (const std::logic_error&) {
+    unloaded_decode_rejected = true;
+  }
+  CHECK(unloaded_decode_rejected);
+
+  vae::ViTConfig one_layer = exact;
+  one_layer.num_layers = 1;
+  VideoVaeDecoder minimum = VideoVaeDecoder::create(device, one_layer);
+  CHECK(minimum.operators_per_document() == 35);
+  vae::ViTConfig boundary = exact;
+  boundary.num_layers = 204;
+  VideoVaeDecoder maximum = VideoVaeDecoder::create(device, boundary);
+  CHECK(maximum.operators_per_document() == 4095);
+}
 
 VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {
   using vidfab::vulkan::detail::GemmDispatchGeometry;

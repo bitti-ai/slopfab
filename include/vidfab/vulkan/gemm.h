@@ -30,6 +30,7 @@ class PreparedF16Activation {
   PreparedF16ActivationView prepare(TensorBatch& batch, DeviceTensor& input,
                                     uint32_t rows,
                                     uint32_t input_row_offset = 0);
+  uint64_t reserved_bytes() const noexcept;
   explicit operator bool() const noexcept;
 
  private:

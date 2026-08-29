@@ -24,7 +24,7 @@ class VideoVaeDecoder final : public vae::VideoVaeWindowBackend {
   VideoVaeDecoder& operator=(const VideoVaeDecoder&) = delete;
 
   static VideoVaeDecoder create(const Device& device,
-                                const vae::ViTConfig& config = {});
+                                const vae::ViTConfig& config);
   void load(const SafeTensors& checkpoint);
   const vae::ViTConfig& config() const override;
 
@@ -49,6 +49,7 @@ class VideoVaeDecoder final : public vae::VideoVaeWindowBackend {
   uint64_t allocator_used_bytes() const noexcept;
   uint64_t descriptor_set_allocations() const noexcept;
   uint32_t cached_shapes() const noexcept;
+  uint32_t operators_per_document() const noexcept;
 
  private:
   struct Impl;

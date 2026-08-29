@@ -2628,6 +2628,9 @@ PreparedF16Activation::PreparedF16Activation(PreparedF16Activation&&) noexcept =
 PreparedF16Activation& PreparedF16Activation::operator=(
     PreparedF16Activation&&) noexcept = default;
 PreparedF16Activation::operator bool() const noexcept { return impl_ != nullptr; }
+uint64_t PreparedF16Activation::reserved_bytes() const noexcept {
+  return impl_ ? impl_->tensor.layout().bytes(impl_->tensor.type()) : 0;
+}
 
 PreparedF16Activation PreparedF16Activation::create(
     TensorContext& context, uint32_t max_rows, uint32_t in_features) {

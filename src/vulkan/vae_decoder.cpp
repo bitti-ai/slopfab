@@ -30,6 +30,27 @@ uint64_t tensor_bytes(const DeviceTensor& tensor) {
   return tensor ? tensor.layout().bytes(tensor.type()) : 0;
 }
 
+constexpr uint32_t kDecoderFixedOperators = 15;
+constexpr uint32_t kBlockOperators = 20;
+constexpr uint32_t kMaxBatchOperators = 4096;
+
+uint32_t decoder_operator_count(const vae::ViTConfig& config) {
+  if (config.transformer_mode != vae::ViTTransformerMode::kExact) {
+    throw std::invalid_argument(
+        "Vulkan video VAE: transformer_mode must be kExact");
+  }
+  if (config.num_layers <= 0) {
+    throw std::invalid_argument("Vulkan video VAE: layer count must be positive");
+  }
+  const uint64_t count = kDecoderFixedOperators +
+      static_cast<uint64_t>(kBlockOperators) * config.num_layers;
+  if (count > kMaxBatchOperators) {
+    throw std::invalid_argument(
+        "Vulkan video VAE: one document exceeds transaction capacity");
+  }
+  return static_cast<uint32_t>(count);
+}
+
 std::vector<float> load_vector(const SafeTensors& checkpoint,
                                const std::string& name, uint64_t count) {
   const TensorView& tensor = checkpoint.at(name);
@@ -74,13 +95,10 @@ void upload_matrix(TensorContext& context, DeviceTensor& destination,
 }  // namespace
 
 struct VideoVaeDecoder::Impl {
-  // transpose + post-quant(3) + embed(3) + suffix scatter(2) + 36 blocks
-  // (20 each) + patch gather + final norm + projection(3) + depth-to-space.
-  static constexpr uint32_t kOperatorsPerDocument = 735;
-  static constexpr uint32_t kMaxBatchOperators = 4096;
   static constexpr uint32_t kShapeCache = 2;
 
   vae::ViTConfig config;
+  uint32_t operators_per_document = 0;
   TensorContext context;
   ExactViTBlockGraph graph;
   bool loaded = false;
@@ -109,7 +127,8 @@ struct VideoVaeDecoder::Impl {
   uint64_t shape_clock = 0;
 
   Impl(const Device& device, const vae::ViTConfig& cfg)
-      : config(cfg), context(device, [] {
+      : config(cfg), operators_per_document(decoder_operator_count(cfg)),
+        context(device, [] {
           TensorContextOptions options;
           options.max_batch_operators = kMaxBatchOperators;
           return options;
@@ -258,7 +277,10 @@ struct VideoVaeDecoder::Impl {
     for (const std::unique_ptr<ShapeSlot>& slot : shapes) {
       total += tensor_bytes(slot->cosine) + tensor_bytes(slot->sine) +
           tensor_bytes(slot->register_indices) + tensor_bytes(slot->zero_index) +
-          tensor_bytes(slot->patch_indices);
+          tensor_bytes(slot->patch_indices) +
+          slot->post_prepared.reserved_bytes() +
+          slot->embed_prepared.reserved_bytes() +
+          slot->proj_prepared.reserved_bytes();
       for (const Document& doc : slot->documents) {
         total += tensor_bytes(doc.latent) + tensor_bytes(doc.patch) +
             tensor_bytes(doc.quantized) + tensor_bytes(doc.tokens) +
@@ -279,6 +301,7 @@ VideoVaeDecoder& VideoVaeDecoder::operator=(VideoVaeDecoder&&) noexcept = defaul
 
 VideoVaeDecoder VideoVaeDecoder::create(const Device& device,
                                         const vae::ViTConfig& config) {
+  (void)decoder_operator_count(config);
   return VideoVaeDecoder(std::make_unique<Impl>(device, config));
 }
 
@@ -370,16 +393,15 @@ void VideoVaeDecoder::forward_windows(
                      latent + static_cast<uint64_t>(i) * latent_words,
                      latent_words);
   }
-  constexpr uint32_t max_documents =
-      Impl::kMaxBatchOperators / Impl::kOperatorsPerDocument;
-  static_assert(max_documents != 0, "one Vulkan VAE document must fit a batch");
+  const uint32_t documents_per_transaction =
+      kMaxBatchOperators / d.operators_per_document;
   for (uint32_t first = 0; first < static_cast<uint32_t>(batch);
-       first += max_documents) {
-    const uint32_t count = std::min(max_documents,
+       first += documents_per_transaction) {
+    const uint32_t count = std::min(documents_per_transaction,
         static_cast<uint32_t>(batch) - first);
     TensorBatch commands = d.context.begin_batch();
     if (commands.remaining_operator_capacity() <
-        count * Impl::kOperatorsPerDocument) {
+        count * d.operators_per_document) {
       throw std::logic_error("Vulkan video VAE: insufficient transaction capacity");
     }
     for (uint32_t i = 0; i < count; ++i)
@@ -419,6 +441,10 @@ uint64_t VideoVaeDecoder::descriptor_set_allocations() const noexcept {
 
 uint32_t VideoVaeDecoder::cached_shapes() const noexcept {
   return impl_ ? static_cast<uint32_t>(impl_->shapes.size()) : 0;
+}
+
+uint32_t VideoVaeDecoder::operators_per_document() const noexcept {
+  return impl_ ? impl_->operators_per_document : 0;
 }
 
 void VideoVaeDecoder::denormalize_latents(
