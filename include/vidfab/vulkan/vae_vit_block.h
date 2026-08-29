@@ -71,6 +71,7 @@ class ExactViTBlockGraph {
   void load(const SafeTensors& checkpoint);
   void load_layer(uint32_t layer,
                   const vae::ViTBlockWeightsView& weights);
+  void prepare_shape(uint32_t sequence, uint32_t num_patches);
   void record(TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& cosine,
               DeviceTensor& sine) const;
   // Verification seam; production uses record() once for the complete stack.
@@ -79,6 +80,7 @@ class ExactViTBlockGraph {
   void forward(const float* tokens, const float* cosine, const float* sine,
                float* output);
   uint32_t layers() const noexcept;
+  uint32_t cached_scratch_shapes() const noexcept;
   uint64_t persistent_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;
  private:

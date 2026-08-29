@@ -1,5 +1,6 @@
 #include "vidfab/vulkan/vae_vit_block.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <utility>
@@ -354,7 +355,14 @@ struct ExactViTBlockGraph::Impl {
   ViTBlockConfig config;
   uint32_t layer_count = 0;
   std::vector<ExactViTBlockStage> blocks;
-  ExactViTBlockScratch scratch;
+  struct ScratchSlot {
+    ViTBlockConfig config;
+    ExactViTBlockScratch scratch;
+    uint64_t stamp = 0;
+  };
+  std::vector<std::unique_ptr<ScratchSlot>> scratch_slots;
+  ScratchSlot* active_slot = nullptr;
+  uint64_t scratch_clock = 0;
 
   struct HostState {
     DeviceTensor tokens, cosine, sine;
@@ -362,11 +370,44 @@ struct ExactViTBlockGraph::Impl {
   std::unique_ptr<HostState> host;
 
   Impl(TensorContext& owner, const ViTBlockConfig& c, uint32_t layers)
-      : context(&owner), config(c), layer_count(layers), scratch(
-            ExactViTBlockScratch::create(owner, c)) {
+      : context(&owner), config(c), layer_count(layers) {
     blocks.reserve(layers);
     for (uint32_t i = 0; i < layers; ++i)
       blocks.push_back(ExactViTBlockStage::create(owner, c));
+    select_shape(c);
+  }
+
+  void select_shape(const ViTBlockConfig& selected) {
+    for (const std::unique_ptr<ScratchSlot>& owned : scratch_slots) {
+      ScratchSlot& slot = *owned;
+      if (slot.config.sequence == selected.sequence &&
+          slot.config.num_patches == selected.num_patches) {
+        slot.stamp = ++scratch_clock;
+        active_slot = &slot;
+        config = selected;
+        for (ExactViTBlockStage& block : blocks) block.impl_->config = selected;
+        host.reset();
+        return;
+      }
+    }
+    if (scratch_slots.size() == 2) {
+      const auto oldest = std::min_element(
+          scratch_slots.begin(), scratch_slots.end(),
+          [](const std::unique_ptr<ScratchSlot>& a,
+             const std::unique_ptr<ScratchSlot>& b) {
+            return a->stamp < b->stamp;
+          });
+      scratch_slots.erase(oldest);
+    }
+    auto slot = std::make_unique<ScratchSlot>();
+    slot->config = selected;
+    slot->scratch = ExactViTBlockScratch::create(*context, selected);
+    slot->stamp = ++scratch_clock;
+    active_slot = slot.get();
+    scratch_slots.push_back(std::move(slot));
+    config = selected;
+    for (ExactViTBlockStage& block : blocks) block.impl_->config = selected;
+    host.reset();
   }
 };
 
@@ -403,6 +444,16 @@ void ExactViTBlockGraph::load_layer(
   impl_->blocks[layer].load(weights);
 }
 
+void ExactViTBlockGraph::prepare_shape(uint32_t sequence,
+                                       uint32_t num_patches) {
+  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+  ViTBlockConfig selected = impl_->config;
+  selected.sequence = sequence;
+  selected.num_patches = num_patches;
+  validate_config(selected);
+  impl_->select_shape(selected);
+}
+
 void ExactViTBlockGraph::record(TensorBatch& batch, DeviceTensor& tokens,
                                 DeviceTensor& cosine,
                                 DeviceTensor& sine) const {
@@ -417,7 +468,7 @@ void ExactViTBlockGraph::record(TensorBatch& batch, DeviceTensor& tokens,
   if (batch.remaining_operator_capacity() < required)
     throw std::logic_error("exact Vulkan VAE ViT graph: insufficient batch capacity");
   for (const ExactViTBlockStage& block : impl_->blocks)
-    block.record(batch, tokens, cosine, sine, impl_->scratch);
+    block.record(batch, tokens, cosine, sine, impl_->active_slot->scratch);
 }
 
 void ExactViTBlockGraph::record_layer(
@@ -426,7 +477,8 @@ void ExactViTBlockGraph::record_layer(
   if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
   if (layer >= impl_->layer_count)
     throw std::out_of_range("exact Vulkan VAE ViT graph: layer out of range");
-  impl_->blocks[layer].record(batch, tokens, cosine, sine, impl_->scratch);
+  impl_->blocks[layer].record(batch, tokens, cosine, sine,
+                              impl_->active_slot->scratch);
 }
 
 void ExactViTBlockGraph::forward(const float* tokens, const float* cosine,
@@ -465,6 +517,10 @@ uint32_t ExactViTBlockGraph::layers() const noexcept {
   return impl_ ? impl_->layer_count : 0;
 }
 
+uint32_t ExactViTBlockGraph::cached_scratch_shapes() const noexcept {
+  return impl_ ? static_cast<uint32_t>(impl_->scratch_slots.size()) : 0;
+}
+
 uint64_t ExactViTBlockGraph::persistent_bytes() const noexcept {
   if (!impl_) return 0;
   uint64_t total = 0;
@@ -475,7 +531,9 @@ uint64_t ExactViTBlockGraph::persistent_bytes() const noexcept {
 
 uint64_t ExactViTBlockGraph::peak_device_bytes() const noexcept {
   if (!impl_) return 0;
-  uint64_t total = persistent_bytes() + impl_->scratch.reserved_bytes();
+  uint64_t total = persistent_bytes();
+  for (const std::unique_ptr<Impl::ScratchSlot>& slot : impl_->scratch_slots)
+    total += slot->scratch.reserved_bytes();
   if (impl_->host)
     total += bytes(impl_->host->tokens) + bytes(impl_->host->cosine) +
              bytes(impl_->host->sine);

@@ -5741,6 +5741,27 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   shape_graph.prepare_shape(93, 88);
   CHECK(shape_graph.cached_scratch_shapes() == 2);
   CHECK(shape_graph.peak_device_bytes() <= two_full_bound);
+  vulkan::ExactViTBlockGraph vk_shape_graph =
+      vulkan::ExactViTBlockGraph::create(context, config, 3);
+  for (uint32_t layer = 0; layer < 3; ++layer)
+    vk_shape_graph.load_layer(layer, weights.view());
+  const uint64_t vk_shape_persistent = vk_shape_graph.persistent_bytes();
+  const uint64_t vk_base_scratch =
+      vk_shape_graph.peak_device_bytes() - vk_shape_persistent;
+  CHECK(vk_shape_graph.cached_scratch_shapes() == 1);
+  vk_shape_graph.prepare_shape(101, 96);
+  const uint64_t vk_full_scratch = vk_shape_graph.peak_device_bytes() -
+      vk_shape_persistent - vk_base_scratch;
+  const uint64_t vk_two_full_bound =
+      vk_shape_persistent + 2 * vk_full_scratch;
+  CHECK(vk_shape_graph.cached_scratch_shapes() == 2);
+  CHECK(vk_shape_graph.peak_device_bytes() <= vk_two_full_bound);
+  vk_shape_graph.prepare_shape(85, 80);
+  CHECK(vk_shape_graph.cached_scratch_shapes() == 2);
+  CHECK(vk_shape_graph.peak_device_bytes() <= vk_two_full_bound);
+  vk_shape_graph.prepare_shape(93, 88);
+  CHECK(vk_shape_graph.cached_scratch_shapes() == 2);
+  CHECK(vk_shape_graph.peak_device_bytes() <= vk_two_full_bound);
 
   // Queue work against the current arena, switch twice so that arena is the
   // eviction victim, and then queue another shape on a second stream. Slot
