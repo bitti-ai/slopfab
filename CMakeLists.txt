@@ -1152,6 +1152,9 @@ if(VIDFAB_BUILD_TESTS)
       tests/harness.cpp tests/test_tensor_backends.cu)
     target_link_libraries(vidfab_tensor_backend_tests PRIVATE
       vidfab_cuda vidfab_vulkan)
+    if(WIN32)
+      target_link_libraries(vidfab_tensor_backend_tests PRIVATE bcrypt)
+    endif()
     if(MSVC)
       target_compile_options(vidfab_tensor_backend_tests PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive-;/utf-8;/EHsc>)

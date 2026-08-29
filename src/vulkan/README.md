@@ -247,10 +247,14 @@ Release qualification used CUDA 13.0.48, MSVC 14.44.35207, Vulkan 1.4.341,
 RTX 5090 / NVIDIA 610.88 and
 `minimax_h3_video_vae_fp16.safetensors` SHA-256
 `7C1F131492E7EDDACAAC9069A61B81BDD39DE5CC96561E677C5EAB1CDCE5E522`.
+The opt-in replay hashes the mapped checkpoint and asserts this complete
+SHA-256 before reading weights. It scans the four raw block-0 matrix
+`TensorView`s and asserts exactly 330,659 fp16 subnormal words, then asserts
+zero fp16 matrix subnormals and zero fp32 vector subnormals after typed load.
 Layer 0 was loaded through the typed name/shape/dtype path and evaluated at the
 real R1797/D2048/I8192 shape using deterministic finite-normal input and
 identity rotary tables. CUDA and Vulkan matched all 3,680,256 final fp32 words;
-FNV64 was `c8a7ac3241effbb7`. The CUDA comparison convenience measured 169.062
+the replay asserts FNV64 `c8a7ac3241effbb7`. The CUDA comparison convenience measured 169.062
 ms including its host boundary; Vulkan record-to-completion measured 64.741 ms
 with upload/download excluded. Vulkan direct stage accounting was 128.1 MiB of
 persistent weights and 507.8 MiB peak including one reusable scratch arena,

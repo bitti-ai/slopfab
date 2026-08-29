@@ -14,9 +14,16 @@
 #include <limits>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 #include <vector>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <bcrypt.h>
+#endif
 
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/attention.cuh"
@@ -40,6 +47,41 @@
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/vae_vit_block.h"
+
+#ifdef _WIN32
+namespace {
+
+std::array<uint8_t, 32> sha256_mapping(const void* data, size_t bytes) {
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  std::array<uint8_t, 32> digest{};
+  auto fail = [&] {
+    if (hash) BCryptDestroyHash(hash);
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+    throw std::runtime_error("CNG SHA-256 failed");
+  };
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM,
+                                  nullptr, 0) < 0 ||
+      BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0) {
+    fail();
+  }
+  const auto* cursor = static_cast<const uint8_t*>(data);
+  while (bytes != 0) {
+    const ULONG chunk = static_cast<ULONG>(
+        std::min<size_t>(bytes, 64ull << 20));
+    if (BCryptHashData(hash, const_cast<PUCHAR>(cursor), chunk, 0) < 0) fail();
+    cursor += chunk;
+    bytes -= chunk;
+  }
+  if (BCryptFinishHash(hash, digest.data(),
+                       static_cast<ULONG>(digest.size()), 0) < 0) fail();
+  BCryptDestroyHash(hash);
+  BCryptCloseAlgorithmProvider(algorithm, 0);
+  return digest;
+}
+
+}  // namespace
+#endif
 
 __global__ void deterministic_rsqrt_probe(const float* input, float* stable,
                                            float* native, int count) {
@@ -5612,6 +5654,30 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   real_config.num_patches = 1792;
   SafeTensors checkpoint;
   checkpoint.open(checkpoint_path.string());
+#ifdef _WIN32
+  const std::array<uint8_t, 32> expected_checkpoint_sha{
+      0x7c, 0x1f, 0x13, 0x14, 0x92, 0xe7, 0xed, 0xda,
+      0xca, 0xac, 0x90, 0x69, 0xa6, 0x1b, 0x81, 0xbd,
+      0xd3, 0x9d, 0xe5, 0xcc, 0x96, 0x56, 0x1e, 0x67,
+      0x7c, 0x5e, 0xab, 0x1c, 0xdc, 0xe5, 0xe5, 0x22};
+  CHECK(sha256_mapping(checkpoint.mapping_base(), checkpoint.file_size()) ==
+        expected_checkpoint_sha);
+#endif
+  const std::array<const char*, 4> real_matrix_names{
+      "decoder.transformer_blocks.0.attn.to_qkv.weight",
+      "decoder.transformer_blocks.0.attn.to_out.weight",
+      "decoder.transformer_blocks.0.ff.w1.weight",
+      "decoder.transformer_blocks.0.ff.w2.weight"};
+  size_t raw_fp16_subnormals = 0;
+  for (const char* name : real_matrix_names) {
+    const TensorView& tensor = checkpoint.at(name);
+    CHECK(tensor.dtype == DType::kF16);
+    const auto* words = static_cast<const uint16_t*>(tensor.data);
+    for (size_t i = 0; i < tensor.nbytes / sizeof(uint16_t); ++i)
+      raw_fp16_subnormals += (words[i] & 0x7c00u) == 0 &&
+                             (words[i] & 0x03ffu) != 0;
+  }
+  CHECK(raw_fp16_subnormals == 330659u);
   vae::ViTBlockWeights real_weights =
       vae::load_vit_block_weights(checkpoint, 0, real_config);
   CHECK(real_weights.bytes() == 134356992ull);
@@ -5633,6 +5699,8 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   scan_float(real_weights.w1_bias); scan_float(real_weights.w2_bias);
   scan_half(real_weights.qkv_weight); scan_half(real_weights.out_weight);
   scan_half(real_weights.w1_weight); scan_half(real_weights.w2_weight);
+  CHECK(fp32_subnormals == 0);
+  CHECK(fp16_subnormals == 0);
   std::printf("  real block weight subnormals fp32=%zu fp16=%zu\n",
               fp32_subnormals, fp16_subnormals);
   std::vector<float> real_input(size_t(real_config.sequence) * real_config.dim),
@@ -5697,6 +5765,7 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
       fnv *= 1099511628211ull;
     }
   }
+  CHECK(fnv == 0xc8a7ac3241effbb7ull);
   std::printf(
       "  real VAE ViT block0 R1797/D2048/I8192: CUDA %.3f ms, Vulkan %.3f ms, exact %zu words, FNV64 %016llx, weights %.1f MiB, Vulkan peak %.1f MiB\n",
       cuda_ms, vk_ms, real_vulkan.size(),
