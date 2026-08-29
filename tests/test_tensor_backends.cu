@@ -3914,6 +3914,111 @@ VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
   std::printf("\n");
 }
 
+VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const bool nv_requested =
+      std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_NV_REAL") != nullptr;
+  if (!nv_requested && !std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_REAL")) return;
+  const std::filesystem::path checkpoint_path =
+      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+      (nv_requested
+          ? "weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+          : "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors");
+  if (!std::filesystem::exists(checkpoint_path) || !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
+      !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  device_options.enable_shader_int64 = true;
+  device_options.enable_shader_float16 = true;
+  device_options.enable_storage_buffer_16bit = true;
+  device_options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(device_options);
+
+  // A 2048x2048 RGB image is the production maximum visual grid: S16384
+  // patches, 4096 merged decoder rows. This run intentionally has no trace
+  // arena, so its high-water is representative of normal inference.
+  std::vector<uint8_t> rgb(size_t(2048) * 2048 * 3);
+  for (size_t i = 0; i < rgb.size(); ++i)
+    rgb[i] = static_cast<uint8_t>((i * 37 + i / 17 + 23) & 255u);
+  const text::QwenPixelValues image =
+      text::qwen3vl_patchify_resized_rgb(rgb, 2048, 2048);
+  CHECK(image.grid.patch_count() == 16384);
+  CHECK(image.grid.merged_token_count() == 4096);
+  std::vector<int32_t> token_ids = {7, 151652};
+  token_ids.insert(token_ids.end(), 4096, 151655);
+  token_ids.push_back(151653);
+  token_ids.push_back(8);
+  CHECK(token_ids.size() == 4100);
+
+  SafeTensors archive;
+  archive.open(checkpoint_path.string());
+  TensorContextOptions options;
+  options.max_batch_operators = 128;
+  TensorContext vk(device, options);
+  ExactQwenTextEncoder encoder = ExactQwenTextEncoder::create(vk);
+  const uint64_t cold_used = vk.pooled_used_bytes();
+  encoder.load(archive);
+  const auto begin = std::chrono::steady_clock::now();
+  const text::PromptEmbedding first = encoder.encode(token_ids, {image});
+  const double first_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - begin).count();
+  const ExactQwenTextEncoderStats first_stats = encoder.stats();
+  CHECK(first_stats.last_num_tokens == 4100);
+  CHECK(first_stats.max_layer_weight_bytes < 500ull * 1024 * 1024);
+  const uint64_t observed_peak = first_stats.allocator_peak_used_bytes >=
+      first_stats.allocator_baseline_bytes
+      ? first_stats.allocator_peak_used_bytes -
+            first_stats.allocator_baseline_bytes
+      : first_stats.allocator_peak_used_bytes;
+  CHECK(first_stats.peak_device_bytes >= observed_peak);
+  CHECK(first_stats.peak_device_bytes - observed_peak < 128ull * 1024 * 1024);
+  CHECK(first_stats.peak_device_bytes < 4ull * 1024 * 1024 * 1024);
+  const uint64_t warm_used = vk.pooled_used_bytes();
+  const uint64_t warm_reserved = vk.reserved_bytes();
+  const uint64_t warm_descriptors = vk.descriptor_set_allocations();
+
+  const auto repeat_begin = std::chrono::steady_clock::now();
+  const text::PromptEmbedding repeat = encoder.encode(token_ids, {image});
+  const double repeat_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - repeat_begin).count();
+  CHECK(repeat.data == first.data);
+  CHECK(vk.pooled_used_bytes() == warm_used);
+  CHECK(vk.reserved_bytes() == warm_reserved);
+  CHECK(vk.descriptor_set_allocations() == warm_descriptors);
+  const ExactQwenTextEncoderStats repeat_stats = encoder.stats();
+  const uint64_t repeat_observed =
+      repeat_stats.allocator_peak_used_bytes >=
+          repeat_stats.allocator_baseline_bytes
+      ? repeat_stats.allocator_peak_used_bytes -
+            repeat_stats.allocator_baseline_bytes
+      : repeat_stats.allocator_peak_used_bytes;
+  CHECK(repeat_stats.peak_device_bytes >= repeat_observed);
+  CHECK(repeat_stats.peak_device_bytes - repeat_observed <
+        128ull * 1024 * 1024);
+  CHECK(repeat_stats.peak_device_bytes <=
+        first_stats.peak_device_bytes + 128ull * 1024 * 1024);
+  encoder.unload();
+  vk.collect();
+  CHECK(vk.pooled_used_bytes() == cold_used + 2 * vk.staging_capacity_bytes());
+  CHECK(vk.descriptor_set_allocations() == warm_descriptors);
+  std::printf("qwen %s multimodal no-tap S16384/L4100 Vulkan %.3f/%.3f s "
+              "logical/allocator %.1f/%.1f MiB weight %.1f MiB "
+              "pool/reserved %.1f/%.1f MiB descriptors %llu\n",
+              nv_requested ? "NVFP4" : "I8", first_seconds, repeat_seconds,
+              first_stats.peak_device_bytes / 1048576.0,
+              observed_peak / 1048576.0,
+              first_stats.max_layer_weight_bytes / 1048576.0,
+              warm_used / 1048576.0, warm_reserved / 1048576.0,
+              static_cast<unsigned long long>(warm_descriptors));
+}
+
 VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
