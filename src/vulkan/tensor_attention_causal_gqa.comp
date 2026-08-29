@@ -36,7 +36,10 @@ uint load_u16(uint source, uint index) {
 }
 
 float load_bf16(uint source, uint index) {
-  return uintBitsToFloat(load_u16(source, index) << 16u);
+  uint bits = load_u16(source, index);
+  if ((bits & 0x7f80u) == 0u)
+    return uintBitsToFloat((bits & 0x8000u) << 16u);
+  return uintBitsToFloat(bits << 16u);
 }
 
 uint bf16_rte(float value) {
@@ -134,11 +137,11 @@ void main() {
     if (key_row < causal_keys) {
       uint k_base = (key_row * p.kv_heads + kv_head) * p.head_dim;
       for (uint d = 0u; d < p.head_dim; ++d) {
-        precise float product = load_bf16(0u, q_base + d) *
-                                load_bf16(1u, k_base + d);
-        score = score + product;
+        precise float product = canonicalize_subnormal(
+            load_bf16(0u, q_base + d) * load_bf16(1u, k_base + d));
+        score = canonicalize_subnormal(score + product);
       }
-      score = score * scale;
+      score = canonicalize_subnormal(score * scale);
     } else {
       score = uintBitsToFloat(0xff800000u);
     }
@@ -169,8 +172,8 @@ void main() {
       output_accumulator = canonicalize_subnormal(output_accumulator * correction);
       for (uint j = 0u; j < 128u && key_base + j < causal_keys; ++j) {
         uint v_index = ((key_base + j) * p.kv_heads + kv_head) * p.head_dim + lane;
-        precise float product = score_or_probability[j] *
-                                load_bf16(2u, v_index);
+        precise float product = canonicalize_subnormal(
+            score_or_probability[j] * load_bf16(2u, v_index));
         output_accumulator = canonicalize_subnormal(
             output_accumulator + product);
       }

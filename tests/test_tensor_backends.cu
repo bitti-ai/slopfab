@@ -754,6 +754,12 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
     hk[i] = f32_to_bf16(float(int(i % 31) - 15) / 32.0f);
     hv[i] = f32_to_bf16(float(int(i % 37) - 18) / 16.0f);
   }
+  hq[0] = 0x0001u;
+  hq[1] = 0x807fu;
+  hk[0] = 0x007fu;
+  hk[1] = 0x8001u;
+  hv[0] = 0x0001u;
+  hv[1] = 0x807fu;
   cuda::DeviceBuffer<uint16_t> cq(q_count), ck(kv_count), cv(kv_count),
       co(q_count), co_repeat(q_count);
   cq.copy_from_host(hq.data(), q_count);
@@ -811,11 +817,19 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
     }
   }
   CHECK(got == expected);
+  CHECK(got[0] == 0x0000u);
+  // The negative subnormal is first canonicalized to -0; adding that product
+  // to the +0 accumulator has the specified round-to-nearest result +0.
+  CHECK(got[1] == 0x0000u);
   // Causal row zero is exactly V row zero from the mapped KV head.
   for (uint32_t h = 0; h < query_heads; ++h) {
     const uint32_t kv = h / (query_heads / kv_heads);
-    for (uint32_t d = 0; d < dim; ++d)
-      CHECK(got[size_t(h) * dim + d] == hv[size_t(kv) * dim + d]);
+    for (uint32_t d = 0; d < dim; ++d) {
+      uint16_t expected_value = hv[size_t(kv) * dim + d];
+      if ((expected_value & 0x7f80u) == 0u)
+        expected_value = 0u;
+      CHECK(got[size_t(h) * dim + d] == expected_value);
+    }
   }
 
   // Exercise both sides of the 128-key recurrence boundary. Future K/V rows

@@ -71,6 +71,13 @@ __device__ inline float canonicalize_subnormal(float value) {
       ? __uint_as_float(bits & 0x80000000u) : value;
 }
 
+__device__ inline float causal_bf16_value(__nv_bfloat16 value) {
+  const uint16_t bits = __bfloat16_as_ushort(value);
+  if ((bits & 0x7f80u) == 0u)
+    return __uint_as_float(static_cast<uint32_t>(bits & 0x8000u) << 16u);
+  return __bfloat162float(value);
+}
+
 template <typename Input>
 __global__ void blocked_attention_kernel(
     const Input* __restrict__ query,
@@ -188,11 +195,12 @@ __global__ void causal_gqa_attention_kernel(
       const size_t k_base =
           (static_cast<size_t>(key_row) * kv_heads + kv_head) * head_dim;
       for (uint32_t d = 0; d < head_dim; ++d) {
-        const float product = __fmul_rn(__bfloat162float(query[q_base + d]),
-                                       __bfloat162float(key[k_base + d]));
-        score = __fadd_rn(score, product);
+        const float product = canonicalize_subnormal(
+            __fmul_rn(causal_bf16_value(query[q_base + d]),
+                      causal_bf16_value(key[k_base + d])));
+        score = canonicalize_subnormal(__fadd_rn(score, product));
       }
-      score *= scale;
+      score = canonicalize_subnormal(__fmul_rn(score, scale));
     } else {
       score = negative_infinity();
     }
@@ -225,8 +233,9 @@ __global__ void causal_gqa_attention_kernel(
         const size_t v_index =
             ((static_cast<size_t>(key_base + j) * kv_heads + kv_head) *
              head_dim) + lane;
-        const float product = __fmul_rn(score_or_probability[j],
-                                       __bfloat162float(value[v_index]));
+        const float product = canonicalize_subnormal(
+            __fmul_rn(score_or_probability[j],
+                      causal_bf16_value(value[v_index])));
         output_accumulator = canonicalize_subnormal(
             __fadd_rn(output_accumulator, product));
       }
