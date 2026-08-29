@@ -56,6 +56,7 @@ add_library(vidfab_core STATIC
   src/dit/step_cache.cpp
   src/vae/keyframe_encoder.cpp
   src/vae/vit_block.cpp
+  src/vae/decode_pipeline.cpp
   src/pipeline.cpp
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
@@ -170,9 +171,6 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/keyframe_encoder.cu
       src/cuda/qwen_vision.cu
       src/cuda/qwen_vision_encoder.cu
-      # Host-side orchestration lives here rather than in vidfab_core so that
-      # the dependency runs one way: cuda -> core, never back.
-  src/vae/decode_pipeline.cpp
       src/vae/keyframe_cuda.cpp
       src/generate.cpp
       # src/capi/capi.cpp is deliberately NOT here. It calls run_generate, so

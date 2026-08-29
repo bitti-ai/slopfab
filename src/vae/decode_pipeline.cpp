@@ -10,7 +10,6 @@
 #include <thread>
 #include <vector>
 
-#include "vidfab/cuda/profile.h"
 #include "vidfab/vae/tile_merge.h"
 #include "vidfab/vae/vit_decoder.h"
 
@@ -36,6 +35,16 @@ const std::vector<float>& default_video_latents_std() {
   return values;
 }
 namespace {
+
+// Scheduling is backend-neutral and lives in vidfab_core. Keep the phase
+// boundaries explicit without importing a CUDA profiler into the common
+// library; a future generic observer can replace this no-op without changing
+// the decode arithmetic or backend interface.
+class ScheduleSpan {
+ public:
+  explicit ScheduleSpan(const char*) noexcept {}
+  void stop() noexcept {}
+};
 
 // ImageNet statistics used by the reference VAEProcessor (normalize.py:9-10).
 constexpr float kImagenetMean[3] = {0.485f, 0.456f, 0.406f};
@@ -67,7 +76,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
 
   const size_t voxels_per_frame = static_cast<size_t>(H_lat) * W_lat;
 
-  cuda::PhaseSpan s_denorm("latent de-normalise");
+  ScheduleSpan s_denorm("latent de-normalise");
 
   // (1) De-normalise: z = z_norm * std + mean, per channel. Done in fp32 from
   // the config literals rather than the fp16 tensors in the checkpoint.
@@ -130,7 +139,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
   // the chunks' primary blocks tile it exactly and the final carry fills the
   // tail — so value-initialising it would be a gigabytes-wide memset of values
   // nothing ever looks at.
-  cuda::PhaseSpan s_alloc("alloc assembled");
+  ScheduleSpan s_alloc("alloc assembled");
   const std::unique_ptr<float[]> assembled(
       new float[static_cast<size_t>(video.frames) * 3 * frame_pixels]);
   s_alloc.stop();
@@ -196,7 +205,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
     const int t_start = c * chunk;
 
     // Gather this chunk's latent window.
-    cuda::PhaseSpan s_clip("chunk latent gather");
+    ScheduleSpan s_clip("chunk latent gather");
     for (int ci = 0; ci < ch; ++ci) {
       const size_t src = static_cast<size_t>(ci) * T_padded * voxels_per_frame +
                          static_cast<size_t>(t_start) * voxels_per_frame;
@@ -215,7 +224,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
       const int th = shape.first;
       const int tw = shape.second;
       const size_t tile_voxels = static_cast<size_t>(window) * th * tw;
-      cuda::PhaseSpan s_gather("tile latent gather");
+      ScheduleSpan s_gather("tile latent gather");
       // Grown, never value-initialised: the gather below writes every element
       // of [0, needed) — the loops cover every (batch item, channel, t, y) and
       // each writes a whole row — so the zero-fill a fresh vector performs is
@@ -276,7 +285,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
 
         // Only the overlap slabs are computed; with no neighbour on either axis
         // nothing is computed at all and the stitch reads the raw tile.
-        cuda::PhaseSpan s_blend("tile blend");
+        ScheduleSpan s_blend("tile blend");
         const float* above =
             (ti > 0) ? tiles[(ti - 1) * xtiles.starts.size() + tj].data() : nullptr;
         const float* left =
@@ -286,7 +295,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
                       (tj > 0) ? xtiles.overlaps[tj - 1] : 0);
         s_blend.stop();
 
-        cuda::PhaseSpan s_stitch("tile stitch");
+        ScheduleSpan s_stitch("tile stitch");
         for (int p = 0; p < 3 * out_frames; ++p) {
           float* base = frame_dst[static_cast<size_t>(p % out_frames)];
           if (base == nullptr) continue;  // a frame nothing downstream reads
@@ -306,7 +315,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
     // Cross-fade the leading frames against the previous chunk's carry. The
     // stitch has already put them in `assembled`, so this mutates the final
     // buffer in place.
-    cuda::PhaseSpan s_fade("chunk cross-fade");
+    ScheduleSpan s_fade("chunk cross-fade");
     if (have_carry) {
       for (int f = 0; f < overlap; ++f) {
         const float wb = static_cast<float>(f) / static_cast<float>(overlap);
@@ -342,7 +351,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
   // resize, not assign(n, 0): PixelBuffer default-initialises, and the loop
   // below writes every element of it. Zeroing first was a full-width memset of
   // the whole decoded video for nothing.
-  cuda::PhaseSpan s_alloc_out("alloc output");
+  ScheduleSpan s_alloc_out("alloc output");
   video.data.resize(static_cast<size_t>(3) * final_frames * frame_pixels);
   s_alloc_out.stop();
 
@@ -356,7 +365,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
   // elements, so the result is bit-identical to the serial loop; a dynamic
   // schedule would be too, but a static one keeps that obvious.
   const size_t planes = static_cast<size_t>(final_frames) * 3;
-  cuda::PhaseSpan s_out("pixel de-normalise");
+  ScheduleSpan s_out("pixel de-normalise");
   const auto plane_range = [&](size_t begin, size_t end) {
     for (size_t p = begin; p < end; ++p) {
       const int f = static_cast<int>(p / 3);
