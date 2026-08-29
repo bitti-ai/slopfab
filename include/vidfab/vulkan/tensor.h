@@ -7,6 +7,11 @@
 #include "vidfab/vulkan/compute.h"
 #include "vidfab/vulkan/runtime.h"
 
+namespace vidfab::vae {
+struct AudioConv1DDesc;
+struct AudioConvTranspose1DDesc;
+}
+
 namespace vidfab::vulkan {
 
 class TensorContext;
@@ -190,6 +195,32 @@ class TensorBatch {
   void group_norm_silu_f16_affine(DeviceTensor& input, DeviceTensor& weight,
                                   DeviceTensor& bias, DeviceTensor& output,
                                   uint32_t groups, float epsilon);
+  // Exact audio-VAE fp32 primitives. Convolution tensors use contiguous NCT
+  // layouts and the checkpoint-native weight layouts documented by the shared
+  // descriptors. A null bias is permitted for bias-free residual convolutions.
+  void audio_conv1d(DeviceTensor& input, DeviceTensor& weight,
+                    DeviceTensor* bias, DeviceTensor& output,
+                    const vae::AudioConv1DDesc& desc);
+  void audio_conv_transpose1d(
+      DeviceTensor& input, DeviceTensor& weight, DeviceTensor* bias,
+      DeviceTensor& output, const vae::AudioConvTranspose1DDesc& desc);
+  void audio_add_inplace(DeviceTensor& input_output, DeviceTensor& branch);
+  void audio_scale_inplace(DeviceTensor& input_output, float scale);
+  void audio_clamp_inplace(DeviceTensor& input_output, float lower, float upper);
+  void audio_interleave(DeviceTensor& planar, DeviceTensor& interleaved,
+                        uint32_t batch, uint32_t frames);
+  void audio_snake_beta_inplace(DeviceTensor& input_output,
+                                DeviceTensor& log_alpha,
+                                DeviceTensor& log_beta, uint32_t batch,
+                                uint32_t channels, uint32_t length);
+  void audio_aa_upsample_snake(
+      DeviceTensor& input, DeviceTensor& filter, DeviceTensor& log_alpha,
+      DeviceTensor& log_beta, DeviceTensor& output, uint32_t batch,
+      uint32_t channels, uint32_t length_in);
+  void audio_aa_downsample(DeviceTensor& input, DeviceTensor& filter,
+                           DeviceTensor& output, uint32_t batch,
+                           uint32_t channels, uint32_t length_in,
+                           uint32_t length_out);
   Submission submit();
   uint32_t remaining_operator_capacity() const noexcept;
   explicit operator bool() const noexcept;
@@ -271,6 +302,10 @@ class TensorContext {
   // Finite normals, infinities and signed zeros retain their IEEE bits.
   bool exact_vae_pointwise() const noexcept;
   void require_exact_vae_pointwise() const;
+  // Exact audio primitives additionally pin deterministic exp/sin/divide and
+  // canonicalize subnormal/NaN values at every CUDA/Vulkan arithmetic seam.
+  bool exact_audio_vae_primitives() const noexcept;
+  void require_exact_audio_vae_primitives() const;
   // Exact blocked attention has its own capability contract even though the
   // currently measured tuple overlaps normalization. It additionally pins the
   // deterministic exp/divide shader and CUDA reference artifacts.

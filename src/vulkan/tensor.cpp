@@ -14,6 +14,7 @@
 #include "embedded_tensor_spv.h"
 #include "tensor_validation.h"
 #include "vidfab/attention.h"
+#include "vidfab/vae/audio_primitives.h"
 #include "vidfab/vulkan/compute.h"
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/linear.h"
@@ -226,6 +227,21 @@ struct TensorContext::Impl {
     uint32_t epsilon_bits = 0;
     uint32_t unused[2] = {};
   };
+  struct AudioParameters {
+    uint32_t op = 0;
+    uint32_t batch = 0;
+    uint32_t in_channels = 0;
+    uint32_t out_channels = 0;
+    uint32_t length_in = 0;
+    uint32_t length_out = 0;
+    uint32_t kernel = 0;
+    uint32_t padding_or_stride = 0;
+    uint32_t dilation_or_padding = 0;
+    uint32_t count = 0;
+    uint32_t groups_x = 0;
+    uint32_t scalar_bits = 0;
+  };
+  static_assert(sizeof(AudioParameters) == 48);
   struct WeightParameters {
     uint32_t op = 0;
     uint32_t count = 0;
@@ -299,6 +315,7 @@ struct TensorContext::Impl {
   ComputePipeline vae_residual_pipeline;
   ComputePipeline vae_swiglu_pipeline;
   ComputePipeline vae_denorm_pipeline;
+  ComputePipeline audio_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;
   uint64_t staging_capacity = 0;
@@ -307,6 +324,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> norm_bindings;
   std::vector<StorageBinding> mod_bindings;
   std::vector<StorageBinding> vae_rope_bindings;
+  std::vector<StorageBinding> audio_bindings;
   std::vector<StorageBinding> weight_bindings;
   std::vector<StorageBinding> gemm_bindings;
   std::vector<StorageBinding> gemm_prepare_bindings;
@@ -318,6 +336,7 @@ struct TensorContext::Impl {
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   bool exact_vae_pointwise = false;
+  bool exact_audio = false;
   bool exact_attention = false;
   bool exact_h3_attention = false;
   bool exact_causal_gqa_attention = false;
@@ -349,6 +368,7 @@ struct TensorContext::Impl {
         norm_bindings(4),
         mod_bindings(6),
         vae_rope_bindings(7),
+        audio_bindings(5),
         weight_bindings(6),
         gemm_bindings(4),
         gemm_prepare_bindings(2),
@@ -378,6 +398,7 @@ struct TensorContext::Impl {
                           input.info().fp32_signed_zero_inf_nan_preserve &&
                           input.info().fp32_rounding_rte &&
                           input.info().shader_int64_enabled;
+    exact_audio = exact_vae_pointwise;
     exact_attention = known_exact_blocked_attention_device(input.info());
     exact_h3_attention = known_exact_h3_attention_device(input.info());
     exact_causal_gqa_attention =
@@ -413,6 +434,17 @@ struct TensorContext::Impl {
       vae_denorm_pipeline = make_pointwise(
           detail::kTensorVaeDenormSpirv,
           sizeof(detail::kTensorVaeDenormSpirv));
+    }
+    if (exact_audio) {
+      std::vector<uint32_t> audio_spirv(
+          sizeof(detail::kTensorAudioSpirv) / sizeof(uint32_t));
+      std::memcpy(audio_spirv.data(), detail::kTensorAudioSpirv,
+                  sizeof(detail::kTensorAudioSpirv));
+      ComputePipelineOptions audio_options;
+      audio_options.storage_binding_count = 5;
+      audio_options.push_constant_bytes = sizeof(AudioParameters);
+      audio_options.local_size[0] = 64;
+      audio_pipeline = ComputePipeline::create(input, audio_spirv, audio_options);
     }
     const uint8_t* rope_shader = full_arithmetic_exact
         ? detail::kTensorRopeDenormSpirv : detail::kTensorRopeSpirv;
@@ -565,6 +597,8 @@ struct TensorContext::Impl {
     for (uint32_t i = 0; i < mod_bindings.size(); ++i) mod_bindings[i].binding = i;
     for (uint32_t i = 0; i < vae_rope_bindings.size(); ++i)
       vae_rope_bindings[i].binding = i;
+    for (uint32_t i = 0; i < audio_bindings.size(); ++i)
+      audio_bindings[i].binding = i;
     for (uint32_t i = 0; i < weight_bindings.size(); ++i)
       weight_bindings[i].binding = i;
     for (uint32_t i = 0; i < gemm_bindings.size(); ++i)
@@ -856,6 +890,32 @@ struct TensorBatch::Impl {
     commands.bind_compute(owner->vae_rope_pipeline, owner->vae_rope_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(groups);
+  }
+
+  void dispatch_audio(
+      TensorContext::Impl::AudioParameters parameters,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 5>& resources) {
+    const uint64_t total_groups =
+        (static_cast<uint64_t>(parameters.count) + 63ull) / 64ull;
+    const uint32_t groups_x = static_cast<uint32_t>(
+        std::min<uint64_t>(total_groups, owner->max_dispatch_x));
+    if (groups_x == 0) {
+      throw std::out_of_range("vulkan audio: device exposes no X dispatch capacity");
+    }
+    const uint64_t groups_y_wide =
+        (total_groups + groups_x - 1ull) / groups_x;
+    if (groups_y_wide > owner->max_dispatch_y) {
+      throw std::out_of_range(
+          "vulkan audio: primitive exceeds two-dimensional dispatch limits");
+    }
+    parameters.groups_x = groups_x;
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->audio_bindings[i].buffer = &resources[i]->buffer;
+      owner->audio_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->audio_pipeline, owner->audio_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups_x, static_cast<uint32_t>(groups_y_wide));
   }
 
   void dispatch_weight(
@@ -1571,6 +1631,16 @@ void TensorContext::require_exact_vae_pointwise() const {
   if (!impl_->exact_vae_pointwise) {
     throw std::runtime_error(
         "vulkan tensor: exact VAE pointwise operations are unavailable on this device/driver");
+  }
+}
+bool TensorContext::exact_audio_vae_primitives() const noexcept {
+  return impl_ && impl_->exact_audio;
+}
+void TensorContext::require_exact_audio_vae_primitives() const {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->exact_audio) {
+    throw std::runtime_error(
+        "vulkan audio: exact primitives are unavailable on this device/driver");
   }
 }
 bool TensorContext::exact_blocked_attention() const noexcept {
@@ -2454,6 +2524,324 @@ void TensorBatch::group_norm_silu_f16_affine(DeviceTensor& input,
     impl_->poisoned = true;
     throw;
   }
+}
+
+void TensorBatch::audio_conv1d(DeviceTensor& input, DeviceTensor& weight,
+                               DeviceTensor* bias, DeviceTensor& output,
+                               const vae::AudioConv1DDesc& desc) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) {
+    throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  }
+  desc.validate();
+  auto src = impl_->owner->require(input);
+  auto w = impl_->owner->require(weight);
+  auto dst = impl_->owner->require(output);
+  auto bv = bias != nullptr ? impl_->owner->require(*bias) : w;
+  const bool valid_bias = bias == nullptr ||
+      (bv->type == ScalarType::kFloat32 && bv->layout.rank == 1 &&
+       bv->layout.extent[0] == desc.out_channels &&
+       bv->layout.is_contiguous());
+  if (src.get() == w.get() || src.get() == dst.get() || w.get() == dst.get() ||
+      (bias != nullptr && (bv.get() == src.get() || bv.get() == w.get() ||
+                           bv.get() == dst.get())) ||
+      src->type != ScalarType::kFloat32 || w->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kFloat32 || !valid_bias ||
+      src->layout.rank != 3 ||
+      src->layout.extent[0] != desc.batch ||
+      src->layout.extent[1] != desc.in_channels ||
+      src->layout.extent[2] != desc.length_in ||
+      w->layout.rank != 3 || w->layout.extent[0] != desc.out_channels ||
+      w->layout.extent[1] != desc.in_channels ||
+      w->layout.extent[2] != desc.kernel || dst->layout.rank != 3 ||
+      dst->layout.extent[0] != desc.batch ||
+      dst->layout.extent[1] != desc.out_channels ||
+      dst->layout.extent[2] != desc.length_out ||
+      !src->layout.is_contiguous() || !w->layout.is_contiguous() ||
+      !dst->layout.is_contiguous() ||
+      desc.input_elements() > std::numeric_limits<uint32_t>::max() ||
+      desc.output_elements() > std::numeric_limits<uint32_t>::max() ||
+      desc.weight_elements() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid Conv1D tensors");
+  }
+  TensorContext::Impl::AudioParameters p;
+  p.op = 0; p.batch = desc.batch; p.in_channels = desc.in_channels;
+  p.out_channels = desc.out_channels; p.length_in = desc.length_in;
+  p.length_out = desc.length_out; p.kernel = desc.kernel;
+  p.padding_or_stride = desc.padding;
+  p.dilation_or_padding = desc.dilation;
+  p.count = static_cast<uint32_t>(desc.output_elements());
+  p.scalar_bits = bias != nullptr ? 1u : 0u;
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(w, BufferAccess::kComputeRead);
+    if (bias != nullptr) impl_->transition(bv, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_audio(p, {src, w, bv, bv, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::audio_conv_transpose1d(
+    DeviceTensor& input, DeviceTensor& weight, DeviceTensor* bias,
+    DeviceTensor& output, const vae::AudioConvTranspose1DDesc& desc) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) {
+    throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  }
+  desc.validate();
+  auto src = impl_->owner->require(input);
+  auto w = impl_->owner->require(weight);
+  auto dst = impl_->owner->require(output);
+  auto bv = bias != nullptr ? impl_->owner->require(*bias) : w;
+  const bool valid_bias = bias == nullptr ||
+      (bv->type == ScalarType::kFloat32 && bv->layout.rank == 1 &&
+       bv->layout.extent[0] == desc.out_channels &&
+       bv->layout.is_contiguous());
+  if (src.get() == w.get() || src.get() == dst.get() || w.get() == dst.get() ||
+      (bias != nullptr && (bv.get() == src.get() || bv.get() == w.get() ||
+                           bv.get() == dst.get())) ||
+      src->type != ScalarType::kFloat32 || w->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kFloat32 || !valid_bias ||
+      src->layout.rank != 3 || src->layout.extent[0] != desc.batch ||
+      src->layout.extent[1] != desc.in_channels ||
+      src->layout.extent[2] != desc.length_in || w->layout.rank != 3 ||
+      w->layout.extent[0] != desc.in_channels ||
+      w->layout.extent[1] != desc.out_channels ||
+      w->layout.extent[2] != desc.kernel || dst->layout.rank != 3 ||
+      dst->layout.extent[0] != desc.batch ||
+      dst->layout.extent[1] != desc.out_channels ||
+      dst->layout.extent[2] != desc.length_out ||
+      !src->layout.is_contiguous() || !w->layout.is_contiguous() ||
+      !dst->layout.is_contiguous() ||
+      desc.input_elements() > std::numeric_limits<uint32_t>::max() ||
+      desc.output_elements() > std::numeric_limits<uint32_t>::max() ||
+      desc.weight_elements() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid ConvTranspose1D tensors");
+  }
+  TensorContext::Impl::AudioParameters p;
+  p.op = 1; p.batch = desc.batch; p.in_channels = desc.in_channels;
+  p.out_channels = desc.out_channels; p.length_in = desc.length_in;
+  p.length_out = desc.length_out; p.kernel = desc.kernel;
+  p.padding_or_stride = desc.stride;
+  p.dilation_or_padding = desc.padding;
+  p.count = static_cast<uint32_t>(desc.output_elements());
+  p.scalar_bits = bias != nullptr ? 1u : 0u;
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(w, BufferAccess::kComputeRead);
+    if (bias != nullptr) impl_->transition(bv, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_audio(p, {src, w, bv, bv, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::audio_add_inplace(DeviceTensor& input_output,
+                                    DeviceTensor& branch) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  auto x = impl_->owner->require(input_output);
+  auto y = impl_->owner->require(branch);
+  const uint64_t count = x->layout.elements();
+  if (x.get() == y.get() || x->type != ScalarType::kFloat32 ||
+      y->type != ScalarType::kFloat32 || x->layout.extent != y->layout.extent ||
+      x->layout.rank != y->layout.rank || !x->layout.is_contiguous() ||
+      !y->layout.is_contiguous() || count == 0 ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid in-place add tensors");
+  }
+  TensorContext::Impl::AudioParameters p; p.op = 2;
+  p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator(); impl_->transition(x, BufferAccess::kComputeReadWrite);
+    impl_->transition(y, BufferAccess::kComputeRead);
+    impl_->dispatch_audio(p, {x, y, y, y, x});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::audio_scale_inplace(DeviceTensor& input_output, float scale) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  auto x = impl_->owner->require(input_output);
+  const uint64_t count = x->layout.elements();
+  if (x->type != ScalarType::kFloat32 || !x->layout.is_contiguous() ||
+      count == 0 || count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid in-place scale tensor");
+  }
+  TensorContext::Impl::AudioParameters p; p.op = 3;
+  p.count = static_cast<uint32_t>(count);
+  std::memcpy(&p.scalar_bits, &scale, sizeof(scale));
+  try {
+    impl_->count_operator(); impl_->transition(x, BufferAccess::kComputeReadWrite);
+    impl_->dispatch_audio(p, {x, x, x, x, x});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::audio_clamp_inplace(DeviceTensor& input_output, float lower,
+                                      float upper) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  auto x = impl_->owner->require(input_output);
+  const uint64_t count = x->layout.elements();
+  if (!std::isfinite(lower) || !std::isfinite(upper) || lower > upper ||
+      x->type != ScalarType::kFloat32 || !x->layout.is_contiguous() ||
+      count == 0 || count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid in-place clamp");
+  }
+  TensorContext::Impl::AudioParameters p; p.op = 4;
+  p.count = static_cast<uint32_t>(count);
+  std::memcpy(&p.kernel, &lower, sizeof(lower));
+  std::memcpy(&p.padding_or_stride, &upper, sizeof(upper));
+  try {
+    impl_->count_operator(); impl_->transition(x, BufferAccess::kComputeReadWrite);
+    impl_->dispatch_audio(p, {x, x, x, x, x});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::audio_interleave(DeviceTensor& planar,
+                                   DeviceTensor& interleaved, uint32_t batch,
+                                   uint32_t frames) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  auto src = impl_->owner->require(planar);
+  auto dst = impl_->owner->require(interleaved);
+  const uint64_t count = checked_multiply(batch, frames, "audio interleave");
+  if (batch == 0 || frames == 0 || src.get() == dst.get() ||
+      src->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
+      src->layout.rank != 3 || src->layout.extent[0] != batch ||
+      src->layout.extent[1] != 1 || src->layout.extent[2] != frames ||
+      dst->layout.rank != 2 || dst->layout.extent[0] != frames ||
+      dst->layout.extent[1] != batch || !src->layout.is_contiguous() ||
+      !dst->layout.is_contiguous() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid planar interleave tensors");
+  }
+  TensorContext::Impl::AudioParameters p; p.op = 5; p.batch = batch;
+  p.length_in = frames; p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator(); impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_audio(p, {src, src, src, src, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::audio_snake_beta_inplace(
+    DeviceTensor& input_output, DeviceTensor& log_alpha,
+    DeviceTensor& log_beta, uint32_t batch, uint32_t channels,
+    uint32_t length) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  auto x = impl_->owner->require(input_output);
+  auto alpha = impl_->owner->require(log_alpha);
+  auto beta = impl_->owner->require(log_beta);
+  const uint64_t count = checked_multiply(
+      checked_multiply(batch, channels, "audio Snake"), length, "audio Snake");
+  if (batch == 0 || channels == 0 || length == 0 || x.get() == alpha.get() ||
+      x.get() == beta.get() || alpha.get() == beta.get() ||
+      x->type != ScalarType::kFloat32 || alpha->type != ScalarType::kFloat32 ||
+      beta->type != ScalarType::kFloat32 || x->layout.rank != 3 ||
+      x->layout.extent[0] != batch || x->layout.extent[1] != channels ||
+      x->layout.extent[2] != length || alpha->layout.rank != 1 ||
+      beta->layout.rank != 1 || alpha->layout.extent[0] != channels ||
+      beta->layout.extent[0] != channels || !x->layout.is_contiguous() ||
+      !alpha->layout.is_contiguous() || !beta->layout.is_contiguous() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid SnakeBeta tensors");
+  }
+  TensorContext::Impl::AudioParameters p; p.op = 6; p.batch = batch;
+  p.out_channels = channels; p.length_in = length;
+  p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator(); impl_->transition(x, BufferAccess::kComputeReadWrite);
+    impl_->transition(alpha, BufferAccess::kComputeRead);
+    impl_->transition(beta, BufferAccess::kComputeRead);
+    impl_->dispatch_audio(p, {x, x, alpha, beta, x});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::audio_aa_upsample_snake(
+    DeviceTensor& input, DeviceTensor& filter, DeviceTensor& log_alpha,
+    DeviceTensor& log_beta, DeviceTensor& output, uint32_t batch,
+    uint32_t channels, uint32_t length_in) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  if (length_in > std::numeric_limits<uint32_t>::max() / 2u) {
+    throw std::out_of_range("vulkan audio: AA upsample length overflow");
+  }
+  const uint32_t length_out = length_in * 2u;
+  auto src = impl_->owner->require(input); auto f = impl_->owner->require(filter);
+  auto alpha = impl_->owner->require(log_alpha);
+  auto beta = impl_->owner->require(log_beta); auto dst = impl_->owner->require(output);
+  const uint64_t count = checked_multiply(
+      checked_multiply(batch, channels, "audio AA upsample"), length_out,
+      "audio AA upsample");
+  if (batch == 0 || channels == 0 || length_in == 0 || src.get() == f.get() ||
+      src.get() == alpha.get() || src.get() == beta.get() || src.get() == dst.get() ||
+      f.get() == alpha.get() || f.get() == beta.get() || f.get() == dst.get() ||
+      alpha.get() == beta.get() || alpha.get() == dst.get() || beta.get() == dst.get() ||
+      src->type != ScalarType::kFloat32 || f->type != ScalarType::kFloat32 ||
+      alpha->type != ScalarType::kFloat32 || beta->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kFloat32 || src->layout.rank != 3 ||
+      src->layout.extent[0] != batch || src->layout.extent[1] != channels ||
+      src->layout.extent[2] != length_in || f->layout.rank != 1 ||
+      f->layout.extent[0] != 12 || alpha->layout.rank != 1 ||
+      beta->layout.rank != 1 || alpha->layout.extent[0] != channels ||
+      beta->layout.extent[0] != channels || dst->layout.rank != 3 ||
+      dst->layout.extent[0] != batch || dst->layout.extent[1] != channels ||
+      dst->layout.extent[2] != length_out || !src->layout.is_contiguous() ||
+      !f->layout.is_contiguous() || !alpha->layout.is_contiguous() ||
+      !beta->layout.is_contiguous() || !dst->layout.is_contiguous() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid AA upsample tensors");
+  }
+  TensorContext::Impl::AudioParameters p; p.op = 7; p.batch = batch;
+  p.out_channels = channels; p.length_in = length_in;
+  p.length_out = length_out; p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator(); impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(f, BufferAccess::kComputeRead);
+    impl_->transition(alpha, BufferAccess::kComputeRead);
+    impl_->transition(beta, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_audio(p, {src, f, alpha, beta, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::audio_aa_downsample(
+    DeviceTensor& input, DeviceTensor& filter, DeviceTensor& output,
+    uint32_t batch, uint32_t channels, uint32_t length_in,
+    uint32_t length_out) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_audio) throw std::runtime_error("vulkan audio: exact primitives are unavailable");
+  auto src = impl_->owner->require(input); auto f = impl_->owner->require(filter);
+  auto dst = impl_->owner->require(output);
+  const uint64_t count = checked_multiply(
+      checked_multiply(batch, channels, "audio AA downsample"), length_out,
+      "audio AA downsample");
+  if (batch == 0 || channels == 0 || length_in == 0 ||
+      length_out != (length_in - 1u) / 2u + 1u || src.get() == f.get() ||
+      src.get() == dst.get() || f.get() == dst.get() ||
+      src->type != ScalarType::kFloat32 || f->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kFloat32 || src->layout.rank != 3 ||
+      src->layout.extent[0] != batch || src->layout.extent[1] != channels ||
+      src->layout.extent[2] != length_in || f->layout.rank != 1 ||
+      f->layout.extent[0] != 12 || dst->layout.rank != 3 ||
+      dst->layout.extent[0] != batch || dst->layout.extent[1] != channels ||
+      dst->layout.extent[2] != length_out || !src->layout.is_contiguous() ||
+      !f->layout.is_contiguous() || !dst->layout.is_contiguous() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan audio: invalid AA downsample tensors");
+  }
+  TensorContext::Impl::AudioParameters p; p.op = 8; p.batch = batch;
+  p.out_channels = channels; p.length_in = length_in;
+  p.length_out = length_out; p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator(); impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(f, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_audio(p, {src, f, f, f, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
 }
 
 void TensorBatch::materialize_linear_weight(const LinearWeight& weight,
