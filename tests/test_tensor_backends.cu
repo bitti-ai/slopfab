@@ -817,6 +817,84 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
     for (uint32_t d = 0; d < dim; ++d)
       CHECK(got[size_t(h) * dim + d] == hv[size_t(kv) * dim + d]);
   }
+
+  // Exercise both sides of the 128-key recurrence boundary. Future K/V rows
+  // carry large sentinels; row zero must still be exactly V[0] for each mapped
+  // KV head, proving that the causal kernel never reads the upper triangle.
+  auto run_boundary = [&](uint32_t boundary_sequence, uint32_t first_rows) {
+    const size_t boundary_q_count =
+        size_t(boundary_sequence) * query_heads * dim;
+    const size_t boundary_kv_count =
+        size_t(boundary_sequence) * kv_heads * dim;
+    std::vector<uint16_t> bq(boundary_q_count, f32_to_bf16(0.0f));
+    std::vector<uint16_t> bk(boundary_kv_count);
+    std::vector<uint16_t> bv(boundary_kv_count);
+    for (uint32_t row = 0; row < boundary_sequence; ++row) {
+      for (uint32_t head = 0; head < kv_heads; ++head) {
+        for (uint32_t d = 0; d < dim; ++d) {
+          const size_t index =
+              (size_t(row) * kv_heads + head) * dim + d;
+          bk[index] = f32_to_bf16(row == 0 ? 0.0f : 31.0f);
+          bv[index] = f32_to_bf16(
+              row == 0 ? float(int(head) - 4) / 8.0f
+                       : float(int((row + head + d) % 15) - 7) / 4.0f);
+        }
+      }
+    }
+    cuda::DeviceBuffer<uint16_t> dcq(boundary_q_count), dck(boundary_kv_count),
+        dcv(boundary_kv_count), dco(boundary_q_count);
+    dcq.copy_from_host(bq.data(), bq.size());
+    dck.copy_from_host(bk.data(), bk.size());
+    dcv.copy_from_host(bv.data(), bv.size());
+    cuda::launch_deterministic_causal_gqa_attention(
+        nullptr, reinterpret_cast<const __nv_bfloat16*>(dcq.get()),
+        reinterpret_cast<const __nv_bfloat16*>(dck.get()),
+        reinterpret_cast<const __nv_bfloat16*>(dcv.get()),
+        reinterpret_cast<__nv_bfloat16*>(dco.get()), boundary_sequence,
+        query_heads, kv_heads, dim, exact_attention_scale(dim));
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> boundary_expected(boundary_q_count);
+    dco.copy_to_host(boundary_expected.data(), boundary_expected.size());
+
+    const uint64_t boundary_q_shape[] = {boundary_sequence, query_heads, dim};
+    const uint64_t boundary_kv_shape[] = {boundary_sequence, kv_heads, dim};
+    DeviceTensor vq_boundary = vk.allocate(
+        TensorLayout::contiguous(boundary_q_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor vk_boundary = vk.allocate(
+        TensorLayout::contiguous(boundary_kv_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor vv_boundary = vk.allocate(
+        TensorLayout::contiguous(boundary_kv_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor vo_boundary = vk.allocate(
+        TensorLayout::contiguous(boundary_q_shape, 3), ScalarType::kBFloat16);
+    vk.upload_bytes(vq_boundary, bq.data(), bq.size() * sizeof(uint16_t));
+    vk.upload_bytes(vk_boundary, bk.data(), bk.size() * sizeof(uint16_t));
+    vk.upload_bytes(vv_boundary, bv.data(), bv.size() * sizeof(uint16_t));
+    CausalGQAAttentionPlan boundary_plan = CausalGQAAttentionPlan::create(
+        vk, {boundary_sequence, query_heads, kv_heads, dim,
+             exact_attention_scale(dim)});
+    TensorBatch boundary_batch = vk.begin_batch();
+    boundary_plan.record(boundary_batch, vq_boundary, vk_boundary, vv_boundary,
+                         vo_boundary, 0, first_rows, 0);
+    if (first_rows < boundary_sequence)
+      boundary_plan.record(boundary_batch, vq_boundary, vk_boundary,
+                           vv_boundary, vo_boundary, first_rows,
+                           boundary_sequence - first_rows, first_rows);
+    boundary_batch.submit().wait();
+    std::vector<uint16_t> boundary_got(boundary_q_count);
+    vk.download_bytes(vo_boundary, boundary_got.data(),
+                      boundary_got.size() * sizeof(uint16_t));
+    CHECK(boundary_got == boundary_expected);
+    for (uint32_t head = 0; head < query_heads; ++head) {
+      const uint32_t mapped = head / (query_heads / kv_heads);
+      for (uint32_t d = 0; d < dim; ++d)
+        CHECK(boundary_got[size_t(head) * dim + d] ==
+              bv[size_t(mapped) * dim + d]);
+    }
+  };
+  run_boundary(1, 1);
+  run_boundary(127, 63);
+  run_boundary(128, 64);
+  run_boundary(257, 129);
 }
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
