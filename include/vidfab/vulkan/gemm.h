@@ -69,6 +69,8 @@ class PreparedF16ActivationView {
 // only for the current batch/generation. A later prepare may overwrite the
 // slot after all previously recorded reads; TensorBatch access transitions
 // provide the queue-ordered W->R/R->W barriers without a device-wide wait.
+// Activation transforms, when present, remain the caller's explicit operation
+// and do not alter the materialized matrix.
 class StreamedNVFP4WeightCache {
  public:
   StreamedNVFP4WeightCache();

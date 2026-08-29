@@ -177,6 +177,12 @@ class TensorBatch {
   // zero/finite-normal domain as fp32 VAE normalization.
   void rms_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
                      DeviceTensor& output, float epsilon);
+  // Same arithmetic over each logical head of token-major [rows,heads*dim].
+  // Input/output retain the projection-friendly 2-D layout while the norm
+  // reduction is independently applied to rows*heads contiguous D-vectors.
+  void rms_norm_heads_bf16(DeviceTensor& input, DeviceTensor& weight,
+                           DeviceTensor& output, uint32_t heads,
+                           uint32_t head_dim, float epsilon);
   void layer_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
                        DeviceTensor& bias, DeviceTensor& output, float epsilon);
   // scale/shift are fp32 [mod_rows,dim], selectors are int32 [rows]. Invalid
@@ -185,6 +191,12 @@ class TensorBatch {
                               DeviceTensor& scale, DeviceTensor& shift,
                               DeviceTensor& selectors, DeviceTensor& output,
                               float epsilon);
+  void rms_norm_modulate_bf16_table(DeviceTensor& input, DeviceTensor& weight,
+                                    DeviceTensor& tables,
+                                    uint32_t scale_table,
+                                    uint32_t shift_table,
+                                    DeviceTensor& selectors,
+                                    DeviceTensor& output, float epsilon);
   void rms_norm_modulate_f32(DeviceTensor& input, DeviceTensor& weight,
                              DeviceTensor& scale, DeviceTensor& shift,
                              DeviceTensor& selectors, DeviceTensor& output,
@@ -195,6 +207,9 @@ class TensorBatch {
   // BF16 [rows,inner]. Invalid selectors leave a residual row unchanged.
   void dit_add_gated_bf16(DeviceTensor& residual, DeviceTensor& branch,
                           DeviceTensor& gate, DeviceTensor& selectors);
+  void dit_add_gated_bf16_table(DeviceTensor& residual, DeviceTensor& branch,
+                                DeviceTensor& tables, uint32_t gate_table,
+                                DeviceTensor& selectors);
   void dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output);
   // Rank-R checkpoint-native AdaLN expansion. Weight [M*P*C,R], bias
   // [M*P*C], code [T,R], output [P,T*M,C], all contiguous fp32.
@@ -501,7 +516,8 @@ class H3AttentionPlan {
                                 const H3AttentionPlanDesc& desc);
   const H3AttentionPlanDesc& description() const;
   // Tensors are distinct, nonoverlapping contiguous token-major BF16
-  // [sequence,heads,head_dim]. Null ranges select full attention; otherwise the range table
+  // [sequence,heads,head_dim] or its projection-native [sequence,heads*head_dim]
+  // flattening. Null ranges select full attention; otherwise the range table
   // is indexed by the global query row, including for row-chunk records.
   // Exact mode requires finite Q/K/V, every BF16->FP16 V conversion to remain
   // finite, and finite scaled scores, online sums (finite-normal denominator),

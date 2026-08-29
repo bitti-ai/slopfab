@@ -901,11 +901,18 @@ struct TensorBatch::Impl {
 
   void dispatch_shared_mod(ComputePipeline& pipeline,
                            const TensorContext::Impl::NormParameters& parameters,
-                           const std::array<std::shared_ptr<DeviceTensor::Impl>, 6>& resources) {
+                           const std::array<std::shared_ptr<DeviceTensor::Impl>, 6>& resources,
+                           uint64_t scale_offset = 0,
+                           uint64_t shift_offset = 0) {
     for (size_t i = 0; i < resources.size(); ++i) {
       owner->mod_bindings[i].buffer = &resources[i]->buffer;
+      owner->mod_bindings[i].offset = 0;
       owner->mod_bindings[i].bytes = resources[i]->buffer.size();
     }
+    owner->mod_bindings[2].offset = scale_offset;
+    owner->mod_bindings[2].bytes -= scale_offset;
+    owner->mod_bindings[3].offset = shift_offset;
+    owner->mod_bindings[3].bytes -= shift_offset;
     commands.bind_compute(pipeline, owner->mod_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(parameters.rows);
@@ -952,7 +959,8 @@ struct TensorBatch::Impl {
 
   void dispatch_dit(
       TensorContext::Impl::DitParameters parameters,
-      const std::array<std::shared_ptr<DeviceTensor::Impl>, 5>& resources) {
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 5>& resources,
+      uint64_t tertiary_offset = 0) {
     const uint64_t total_groups =
         (static_cast<uint64_t>(parameters.count) + 63ull) / 64ull;
     const uint32_t groups_x = static_cast<uint32_t>(
@@ -967,8 +975,11 @@ struct TensorBatch::Impl {
     parameters.groups_x = groups_x;
     for (size_t i = 0; i < resources.size(); ++i) {
       owner->dit_bindings[i].buffer = &resources[i]->buffer;
+      owner->dit_bindings[i].offset = 0;
       owner->dit_bindings[i].bytes = resources[i]->buffer.size();
     }
+    owner->dit_bindings[2].offset = tertiary_offset;
+    owner->dit_bindings[2].bytes -= tertiary_offset;
     commands.bind_compute(owner->dit_pipeline, owner->dit_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(groups_x, static_cast<uint32_t>(groups_y));
@@ -1125,6 +1136,49 @@ struct TensorBatch::Impl {
       poisoned = true;
       throw;
     }
+  }
+
+  void record_shared_mod_table(DeviceTensor& input, DeviceTensor& weight,
+                               DeviceTensor& tables, uint32_t scale_table,
+                               uint32_t shift_table, DeviceTensor& selectors,
+                               DeviceTensor& output, float epsilon) {
+    if (!owner->exact_vae_norm)
+      throw std::runtime_error("vulkan tensor: exact shared RMSNorm modulation is unavailable");
+    auto src=owner->require(input), w=owner->require(weight), table=owner->require(tables);
+    auto index=owner->require(selectors), dst=owner->require(output);
+    const auto& shape=src->layout; const uint64_t rows=shape.rank==2?shape.extent[0]:0;
+    const uint64_t dim=shape.rank==2?shape.extent[1]:0;
+    const uint64_t table_count=table->layout.rank==3?table->layout.extent[0]:0;
+    const uint64_t mod_rows=table->layout.rank==3?table->layout.extent[1]:0;
+    if (!std::isnormal(epsilon)||epsilon<=0.0f||scale_table>=table_count||
+        shift_table>=table_count||src.get()==w.get()||src.get()==table.get()||
+        src.get()==index.get()||w.get()==table.get()||w.get()==index.get()||
+        table.get()==index.get()||dst.get()==w.get()||dst.get()==table.get()||
+        dst.get()==index.get()||shape.rank!=2||w->layout.rank!=1||
+        table->layout.rank!=3||table->layout.extent[2]!=dim||
+        index->layout.rank!=1||index->layout.extent[0]!=rows||
+        dst->layout.rank!=2||dst->layout.extent!=shape.extent||
+        src->type!=ScalarType::kBFloat16||w->type!=ScalarType::kBFloat16||
+        table->type!=ScalarType::kFloat32||index->type!=ScalarType::kInt32||
+        dst->type!=ScalarType::kBFloat16||w->layout.extent[0]!=dim||
+        !shape.is_contiguous()||!w->layout.is_contiguous()||
+        !table->layout.is_contiguous()||!index->layout.is_contiguous()||
+        !dst->layout.is_contiguous()||rows>UINT32_MAX||dim>kMaxExactNormDimension||
+        mod_rows==0||mod_rows>UINT32_MAX||shape.elements()>UINT32_MAX)
+      throw std::invalid_argument("vulkan tensor: invalid shared RMSNorm table modulation");
+    if (!detail::norm_dispatch_fits(rows, owner->max_dispatch_x))
+      throw std::out_of_range("vulkan tensor: modulated RMSNorm rows exceed dispatch limits");
+    const uint64_t table_bytes=checked_multiply(mod_rows,dim,"modulation table")*4;
+    TensorContext::Impl::NormParameters p; p.rows=static_cast<uint32_t>(rows);
+    p.dim=static_cast<uint32_t>(dim);p.mod_rows=static_cast<uint32_t>(mod_rows);
+    std::memcpy(&p.epsilon_bits,&epsilon,sizeof(epsilon));
+    try {
+      count_operator();transition(src,src.get()==dst.get()?BufferAccess::kComputeReadWrite:BufferAccess::kComputeRead);
+      transition(w,BufferAccess::kComputeRead);transition(table,BufferAccess::kComputeRead);
+      transition(index,BufferAccess::kComputeRead);if(src.get()!=dst.get())transition(dst,BufferAccess::kComputeWrite);
+      std::array<std::shared_ptr<DeviceTensor::Impl>,6> r{src,w,table,table,index,dst};
+      dispatch_shared_mod(owner->bf16_mod_pipeline,p,r,scale_table*table_bytes,shift_table*table_bytes);
+    } catch (...) { poisoned=true; throw; }
   }
 
   ~Impl() {
@@ -2455,6 +2509,58 @@ void TensorBatch::rms_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
   }
 }
 
+void TensorBatch::rms_norm_heads_bf16(DeviceTensor& input,
+                                      DeviceTensor& weight,
+                                      DeviceTensor& output, uint32_t heads,
+                                      uint32_t head_dim, float epsilon) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error("vulkan tensor: exact BF16 head RMSNorm is unavailable");
+  }
+  auto src = impl_->owner->require(input); auto w = impl_->owner->require(weight);
+  auto dst = impl_->owner->require(output);
+  const auto& shape = src->layout;
+  const bool rank2 = shape.rank == 2;
+  const bool rank3 = shape.rank == 3;
+  const uint64_t token_rows = (rank2 || rank3) ? shape.extent[0] : 0;
+  const uint64_t rows = checked_multiply(token_rows, heads, "BF16 head RMSNorm");
+  const uint64_t width = checked_multiply(heads, head_dim, "BF16 head RMSNorm");
+  if (!std::isnormal(epsilon) || epsilon <= 0.0f || heads == 0 || head_dim == 0 ||
+      src.get() == w.get() || dst.get() == w.get() ||
+      src->type != ScalarType::kBFloat16 || w->type != ScalarType::kBFloat16 ||
+      dst->type != ScalarType::kBFloat16 || (!rank2 && !rank3) ||
+      (rank2 ? shape.extent[1] != width
+             : (shape.extent[1] != heads || shape.extent[2] != head_dim)) ||
+      w->layout.rank != 1 ||
+      w->layout.extent[0] != head_dim || dst->layout.rank != shape.rank ||
+      dst->layout.extent != shape.extent || !shape.is_contiguous() ||
+      !w->layout.is_contiguous() || !dst->layout.is_contiguous() ||
+      rows > std::numeric_limits<uint32_t>::max() ||
+      head_dim > kMaxExactNormDimension ||
+      shape.elements() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid BF16 head RMSNorm");
+  }
+  const uint64_t vec = (head_dim & 7u) == 0 ? 8u : 1u;
+  const bool narrow = head_dim / vec <= 32u;
+  const uint64_t groups = narrow ? (rows + 7u) / 8u : rows;
+  if (!detail::norm_dispatch_fits(groups, impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range("vulkan tensor: BF16 head RMSNorm rows exceed dispatch limits");
+  }
+  TensorContext::Impl::NormParameters p;
+  p.rows = static_cast<uint32_t>(rows); p.dim = head_dim;
+  std::memcpy(&p.epsilon_bits, &epsilon, sizeof(epsilon));
+  try {
+    impl_->count_operator();
+    impl_->transition(src, src.get() == dst.get() ? BufferAccess::kComputeReadWrite
+                                                   : BufferAccess::kComputeRead);
+    impl_->transition(w, BufferAccess::kComputeRead);
+    if (src.get() != dst.get()) impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_shared_rms(narrow ? impl_->owner->bf16_rms_narrow_pipeline
+                                      : impl_->owner->bf16_rms_block_pipeline,
+                               p, static_cast<uint32_t>(groups), src, w, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
 void TensorBatch::layer_norm_bf16(DeviceTensor& input, DeviceTensor& weight,
                                   DeviceTensor& bias, DeviceTensor& output,
                                   float epsilon) {
@@ -2522,6 +2628,15 @@ void TensorBatch::rms_norm_modulate_f32(DeviceTensor& input, DeviceTensor& weigh
                            epsilon);
 }
 
+void TensorBatch::rms_norm_modulate_bf16_table(
+    DeviceTensor& input, DeviceTensor& weight, DeviceTensor& tables,
+    uint32_t scale_table, uint32_t shift_table, DeviceTensor& selectors,
+    DeviceTensor& output, float epsilon) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  impl_->record_shared_mod_table(input, weight, tables, scale_table,
+                                 shift_table, selectors, output, epsilon);
+}
+
 void TensorBatch::dit_add_gated_bf16(DeviceTensor& residual,
                                      DeviceTensor& branch,
                                      DeviceTensor& gate,
@@ -2568,6 +2683,39 @@ void TensorBatch::dit_add_gated_bf16(DeviceTensor& residual,
     impl_->transition(a, BufferAccess::kComputeRead);
     impl_->dispatch_dit(p, {x, b, g, a, x});
   } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::dit_add_gated_bf16_table(
+    DeviceTensor& residual, DeviceTensor& branch, DeviceTensor& tables,
+    uint32_t gate_table, DeviceTensor& selectors) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_dit_pointwise)
+    throw std::runtime_error("vulkan DiT: exact pointwise operations are unavailable");
+  auto x=impl_->owner->require(residual), b=impl_->owner->require(branch);
+  auto t=impl_->owner->require(tables), a=impl_->owner->require(selectors);
+  const auto& shape=x->layout;const uint64_t rows=shape.rank==2?shape.extent[0]:0;
+  const uint64_t dim=shape.rank==2?shape.extent[1]:0;
+  const uint64_t table_count=t->layout.rank==3?t->layout.extent[0]:0;
+  const uint64_t mod_rows=t->layout.rank==3?t->layout.extent[1]:0;
+  const uint64_t count=shape.elements();
+  if(gate_table>=table_count||x.get()==b.get()||x.get()==t.get()||x.get()==a.get()||
+     b.get()==t.get()||b.get()==a.get()||t.get()==a.get()||shape.rank!=2||
+     b->layout.rank!=2||b->layout.extent!=shape.extent||t->layout.rank!=3||
+     t->layout.extent[2]!=dim||a->layout.rank!=1||a->layout.extent[0]!=rows||
+     x->type!=ScalarType::kBFloat16||b->type!=ScalarType::kBFloat16||
+     t->type!=ScalarType::kFloat32||a->type!=ScalarType::kInt32||
+     !shape.is_contiguous()||!b->layout.is_contiguous()||!t->layout.is_contiguous()||
+     !a->layout.is_contiguous()||rows==0||dim==0||mod_rows==0||rows>UINT32_MAX||
+     dim>UINT32_MAX||mod_rows>UINT32_MAX||count>UINT32_MAX)
+    throw std::invalid_argument("vulkan DiT: invalid gated residual table tensors");
+  TensorContext::Impl::DitParameters p;p.op=0;p.rows=static_cast<uint32_t>(rows);
+  p.dim=static_cast<uint32_t>(dim);p.mod_rows=static_cast<uint32_t>(mod_rows);
+  p.count=static_cast<uint32_t>(count);
+  const uint64_t offset=checked_multiply(mod_rows,dim,"DiT gate table")*4*gate_table;
+  try {impl_->count_operator();impl_->transition(x,BufferAccess::kComputeReadWrite);
+    impl_->transition(b,BufferAccess::kComputeRead);impl_->transition(t,BufferAccess::kComputeRead);
+    impl_->transition(a,BufferAccess::kComputeRead);impl_->dispatch_dit(p,{x,b,t,a,x},offset);
+  } catch (...) {impl_->poisoned=true;throw;}
 }
 
 void TensorBatch::dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output) {
@@ -3438,11 +3586,6 @@ PreparedNVFP4WeightView StreamedNVFP4WeightCache::prepare(
     throw std::invalid_argument(
         "vulkan nvfp4 stream: weight does not match the BF16 plan/cache");
   }
-  if (weight.impl_->pre_quant_scale || weight.impl_->convrot) {
-    throw std::invalid_argument(
-        "vulkan nvfp4 stream: activation transforms require a typed prepared "
-        "activation view and are not accepted by this raw-input path");
-  }
   if (batch.impl_->operator_count == batch.impl_->owner->max_batch_operators) {
     throw std::logic_error("vulkan tensor: batch operator limit exceeded");
   }
@@ -3687,8 +3830,13 @@ void DenseGemmPlan::record_impl(
       (bias_tensor && (bias_tensor.get() == src.get() ||
                        bias_tensor.get() == weight.get() ||
                        bias_tensor.get() == dst.get()));
+  const bool output_matrix = dst->layout.rank == 2;
+  const bool output_heads = dst->layout.rank == 3 &&
+      dst->layout.extent[1] <= std::numeric_limits<uint64_t>::max() /
+                                   dst->layout.extent[2] &&
+      dst->layout.extent[1] * dst->layout.extent[2] == desc.out_features;
   const bool row_ranges_valid =
-      src->layout.rank == 2 && dst->layout.rank == 2 &&
+      src->layout.rank == 2 && (output_matrix || output_heads) &&
       input_row_offset <= src->layout.extent[0] &&
       rows <= src->layout.extent[0] - input_row_offset &&
       output_row_offset <= dst->layout.extent[0] &&
@@ -3702,7 +3850,7 @@ void DenseGemmPlan::record_impl(
       weight->layout.rank != 2 ||
       weight->layout.extent[0] != desc.out_features ||
       weight->layout.extent[1] != desc.in_features ||
-      dst->layout.extent[1] != desc.out_features ||
+      (output_matrix && dst->layout.extent[1] != desc.out_features) ||
       !src->layout.is_contiguous() || !weight->layout.is_contiguous() ||
       !dst->layout.is_contiguous() || src->type != input_type ||
       weight->type != weight_type || dst->type != output_type) {
@@ -4161,10 +4309,13 @@ void H3AttentionPlan::record(
   const uint32_t selected_rows = rows == 0 && query_row_offset <= desc.sequence
       ? desc.sequence - query_row_offset : rows;
   auto valid_layout = [&](const std::shared_ptr<DeviceTensor::Impl>& tensor) {
-    return tensor->type == ScalarType::kBFloat16 && tensor->layout.rank == 3 &&
-        tensor->layout.is_contiguous() && tensor->layout.extent[0] == desc.sequence &&
+    const bool shaped = tensor->layout.rank == 3 &&
         tensor->layout.extent[1] == desc.heads &&
         tensor->layout.extent[2] == desc.head_dim;
+    const bool flat = tensor->layout.rank == 2 &&
+        tensor->layout.extent[1] == static_cast<uint64_t>(desc.heads) * desc.head_dim;
+    return tensor->type == ScalarType::kBFloat16 && (shaped || flat) &&
+        tensor->layout.is_contiguous() && tensor->layout.extent[0] == desc.sequence;
   };
   const uint64_t query_end = static_cast<uint64_t>(query_row_offset) + selected_rows;
   const uint64_t output_end = static_cast<uint64_t>(output_row_offset) + selected_rows;
