@@ -909,13 +909,18 @@ context-owned table selects the same frame band at all layers.
 Loading first performs complete host-only validation of every tensor and all
 six projection metadata sets in all 50 layers. Converted host metadata is
 released after each layer; no dense host checkpoint duplicate is retained.
-Only after all layers validate are replacement weights uploaded, so corruption
-in layer 49's final projection cannot disturb a loaded graph or increase its
-allocator high-water. Synthetic three-layer coverage exercises exact and
-one-less batch capacity, split-span recording, every boundary tap, a corrupt
-last-layer/final-projection reload, unload/reload and stable repeated pool,
-descriptor and output state. A CUDA-disabled executable also loads two real
-NVFP4 layers at S65 and pins final FNV64 `7f940c81104e7471`.
+Scratch is lazy and is allocated only after that validation succeeds, so an
+initial archive corrupted in layer 49's final projection leaves used/reserved
+memory, descriptors and all graph metrics at their pre-load values. Loading an
+already-active graph is explicitly rejected: callers must `unload()` before
+loading another checkpoint, avoiding a transient second 10+ GiB weight set.
+Unload releases both all stages and the shared scratch/cache arena, returning
+pool used bytes to the pre-load baseline and graph memory metrics to zero.
+Synthetic three-layer coverage exercises exact and one-less batch capacity,
+split-span recording, every boundary tap, corrupt initial-load rollback,
+active reload rejection, unload/reload and stable repeated pool, descriptor
+and output state. A CUDA-disabled executable also loads two real NVFP4 layers
+at S65 and pins final FNV64 `7f940c81104e7471`.
 
 The authoritative production capture is seed424242, 256x256, 22 frames,
 step 0, +/-9 frame band, S526. It comes from the actual CUDA

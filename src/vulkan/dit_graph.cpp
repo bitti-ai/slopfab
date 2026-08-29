@@ -29,8 +29,7 @@ struct ExactH3MainGraph::Impl {
   std::vector<ExactH3BlockStage> stages;
 
   Impl(TensorContext& owner, const H3MainGraphConfig& value)
-      : context(&owner), config(value),
-        scratch(ExactH3BlockScratch::create(owner, value.block)) {}
+      : context(&owner), config(value) {}
 };
 
 ExactH3MainGraph::ExactH3MainGraph() = default;
@@ -48,27 +47,40 @@ ExactH3MainGraph ExactH3MainGraph::create(
 
 void ExactH3MainGraph::load(const SafeTensors& checkpoint) {
   if (!impl_) throw std::logic_error("Vulkan H3 graph: empty graph");
+  // A second 50-layer allocation would temporarily double the graph's 10+ GiB
+  // persistent footprint. Make the bounded lifetime policy explicit instead:
+  // callers must unload before loading another checkpoint.
+  if (loaded())
+    throw std::logic_error("Vulkan H3 graph: unload before load");
   // A corrupt archive, including layer 49's final projection metadata, fails
-  // before allocating any replacement weight. Validation is streamed one
+  // before allocating scratch or any weight. Validation is streamed one
   // layer at a time and retains no converted host tensor between calls.
   for (uint32_t layer = 0; layer < impl_->config.layers; ++layer)
     ExactH3BlockStage::validate_checkpoint(
         checkpoint, layer, impl_->config.block);
 
+  ExactH3BlockScratch next_scratch = ExactH3BlockScratch::create(
+      *impl_->context, impl_->config.block);
   std::vector<ExactH3BlockStage> next;
   next.reserve(impl_->config.layers);
   for (uint32_t layer = 0; layer < impl_->config.layers; ++layer) {
     ExactH3BlockStage stage = ExactH3BlockStage::create(
         *impl_->context, impl_->config.block);
     stage.load(checkpoint, layer);
-    stage.prepare(impl_->scratch);
+    stage.prepare(next_scratch);
     next.push_back(std::move(stage));
   }
+  impl_->scratch = std::move(next_scratch);
   impl_->stages = std::move(next);
 }
 
 void ExactH3MainGraph::unload() noexcept {
-  if (impl_) impl_->stages.clear();
+  if (impl_) {
+    // Release weights before the shared arena/cache so no prepared stage can
+    // retain a scratch allocation through its last reference.
+    impl_->stages.clear();
+    impl_->scratch = ExactH3BlockScratch();
+  }
 }
 bool ExactH3MainGraph::loaded() const noexcept {
   return impl_ && impl_->stages.size() == impl_->config.layers;

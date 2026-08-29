@@ -305,8 +305,14 @@ class TensorContext {
                         ScalarType type = ScalarType::kFloat32);
   TensorBatch begin_batch();
   void upload(DeviceTensor& destination, const float* values, uint64_t count);
+  // Loader-oriented upload whose host-visible staging allocation is released
+  // after the synchronous transfer instead of raising retained staging usage.
+  void upload_transient(DeviceTensor& destination, const float* values,
+                        uint64_t count);
   void download(DeviceTensor& source, float* values, uint64_t count);
   void upload_bytes(DeviceTensor& destination, const void* values, uint64_t bytes);
+  void upload_transient_bytes(DeviceTensor& destination, const void* values,
+                              uint64_t bytes);
   void download_bytes(DeviceTensor& source, void* values, uint64_t bytes);
   // Exact self-copy and partial aliasing are rejected.
   void copy(DeviceTensor& source, DeviceTensor& destination);

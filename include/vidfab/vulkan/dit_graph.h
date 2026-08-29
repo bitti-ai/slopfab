@@ -34,7 +34,10 @@ class ExactH3MainGraph {
 
   static ExactH3MainGraph create(TensorContext& context,
                                  const H3MainGraphConfig& config);
+  // Scratch is allocated lazily here. Reloading an active graph is rejected
+  // to avoid a transient second copy of all layer weights; call unload first.
   void load(const SafeTensors& checkpoint);
+  // Releases all layer weights and the shared scratch/cache arena.
   void unload() noexcept;
   bool loaded() const noexcept;
   uint32_t layers() const noexcept;

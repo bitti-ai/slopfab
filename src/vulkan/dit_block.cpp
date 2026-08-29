@@ -475,7 +475,8 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   auto next = std::make_unique<Impl::Weights>();
   auto upload_bf = [&](const std::vector<uint16_t>& host) {
     DeviceTensor result = s.context->allocate(vector(host.size()), ScalarType::kBFloat16);
-    s.context->upload_bytes(result, host.data(), host.size() * 2); return result;
+    s.context->upload_transient_bytes(result, host.data(), host.size() * 2);
+    return result;
   };
   next->norm1 = upload_bf(host_norm1);
   next->norm2 = upload_bf(host_norm2);
@@ -489,8 +490,8 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   next->fc2 = load_projection(*s.context, st, p + "mlp.fc2", c.hidden, c.ffn);
   next->adaln_w = s.context->allocate(matrix(adaln_out, c.adaln_rank));
   next->adaln_b = s.context->allocate(vector(adaln_out));
-  s.context->upload(next->adaln_w, wide_w.data(), wide_w.size());
-  s.context->upload(next->adaln_b, wide_b.data(), wide_b.size());
+  s.context->upload_transient(next->adaln_w, wide_w.data(), wide_w.size());
+  s.context->upload_transient(next->adaln_b, wide_b.data(), wide_b.size());
   s.weights = std::move(next);
 }
 

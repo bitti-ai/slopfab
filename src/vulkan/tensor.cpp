@@ -1620,6 +1620,17 @@ void TensorContext::upload(DeviceTensor& destination, const float* values, uint6
   upload_bytes(destination, values, count * sizeof(float));
 }
 
+void TensorContext::upload_transient(DeviceTensor& destination,
+                                     const float* values, uint64_t count) {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  auto dst = impl_->require(destination);
+  if (dst->type != ScalarType::kFloat32 || values == nullptr ||
+      count != dst->layout.elements()) {
+    throw std::invalid_argument("vulkan tensor: upload element count mismatch");
+  }
+  upload_transient_bytes(destination, values, count * sizeof(float));
+}
+
 void TensorContext::upload_bytes(DeviceTensor& destination, const void* values,
                                  uint64_t bytes) {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
@@ -1653,6 +1664,44 @@ void TensorContext::upload_bytes(DeviceTensor& destination, const void* values,
     dst->access = old_access;
     throw;
   }
+}
+
+void TensorContext::upload_transient_bytes(DeviceTensor& destination,
+                                           const void* values,
+                                           uint64_t bytes) {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
+  auto dst = impl_->require(destination);
+  if (values == nullptr || bytes != dst->logical_bytes) {
+    throw std::invalid_argument("vulkan tensor: upload byte count mismatch");
+  }
+  const uint64_t physical_bytes = dst->buffer.size();
+  Buffer staging = impl_->pool.allocate(
+      physical_bytes, BufferUsage::kTransferSource, MemoryUsage::kUpload);
+  staging.write(0, values, bytes);
+  if (physical_bytes != bytes) {
+    const uint32_t zero = 0;
+    staging.write(bytes, &zero, physical_bytes - bytes);
+  }
+  CommandList list = impl_->commands.begin();
+  list.barrier(staging, BufferAccess::kHostWrite,
+               BufferAccess::kTransferRead, 0, physical_bytes);
+  const bool old_has_access = dst->has_access;
+  const BufferAccess old_access = dst->access;
+  try {
+    if (dst->has_access)
+      list.barrier(dst->buffer, dst->access, BufferAccess::kTransferWrite);
+    dst->has_access = true;
+    dst->access = BufferAccess::kTransferWrite;
+    list.copy_buffer(staging, dst->buffer, physical_bytes);
+    impl_->complete(std::move(list));
+  } catch (...) {
+    dst->has_access = old_has_access;
+    dst->access = old_access;
+    throw;
+  }
+  staging = Buffer();
+  impl_->pool.trim();
 }
 
 void TensorContext::download(DeviceTensor& source, float* values, uint64_t count) {

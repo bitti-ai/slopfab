@@ -2782,11 +2782,29 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   H3MainGraphConfig graph_config;
   graph_config.block = config;
   graph_config.layers = 3;
+  const uint64_t graph_create_used = graph_context.pooled_used_bytes();
+  const uint64_t graph_create_reserved = graph_context.reserved_bytes();
+  const uint64_t graph_create_descriptors =
+      graph_context.descriptor_set_allocations();
   ExactH3MainGraph graph = ExactH3MainGraph::create(
       graph_context, graph_config);
-  graph.load(graph_checkpoint);
-  CHECK(graph.loaded() && graph.layers() == 3u);
-  CHECK(graph.required_operators() == 75u);
+  CHECK(!graph.loaded() && graph.layers() == 3u);
+  CHECK(graph.persistent_bytes() == 0u && graph.scratch_bytes() == 0u &&
+        graph.peak_device_bytes() == 0u);
+  CHECK(graph_context.pooled_used_bytes() == graph_create_used);
+  CHECK(graph_context.reserved_bytes() == graph_create_reserved);
+  CHECK(graph_context.descriptor_set_allocations() == graph_create_descriptors);
+  // Complete validation, including the last layer's fc2 metadata, is host-only
+  // and precedes scratch or weight allocation on an initial load.
+  bool initial_corrupt_rejected = false;
+  try { graph.load(corrupt_graph); }
+  catch (const std::exception&) { initial_corrupt_rejected = true; }
+  CHECK(initial_corrupt_rejected && !graph.loaded());
+  CHECK(graph.persistent_bytes() == 0u && graph.scratch_bytes() == 0u &&
+        graph.peak_device_bytes() == 0u);
+  CHECK(graph_context.pooled_used_bytes() == graph_create_used);
+  CHECK(graph_context.reserved_bytes() == graph_create_reserved);
+  CHECK(graph_context.descriptor_set_allocations() == graph_create_descriptors);
   const uint64_t graph_token_shape[] = {config.sequence, config.hidden};
   const uint64_t graph_selector_shape[] = {config.sequence};
   const uint64_t graph_code_shape[] = {config.timesteps, config.adaln_rank};
@@ -2813,11 +2831,14 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
         TensorLayout::contiguous(graph_token_shape, 2), ScalarType::kBFloat16));
   H3MainGraphReplayTaps graph_taps{boundaries.data(),
                                    static_cast<uint32_t>(boundaries.size())};
-  CHECK(graph.required_operators(&graph_taps) == 78u);
   DeviceTensor graph_dummy = graph_context.allocate(
       TensorLayout::contiguous(graph_token_shape, 2), ScalarType::kBFloat16);
   DeviceTensor graph_dummy_out = graph_context.allocate(
       TensorLayout::contiguous(graph_token_shape, 2), ScalarType::kBFloat16);
+  const uint64_t graph_preload_used = graph_context.pooled_used_bytes();
+  graph.load(graph_checkpoint);
+  CHECK(graph.loaded() && graph.required_operators() == 75u);
+  CHECK(graph.required_operators(&graph_taps) == 78u);
   {
     TensorBatch short_batch = graph_context.begin_batch();
     for (uint32_t i = graph.required_operators(&graph_taps); i <= 128; ++i)
@@ -2894,20 +2915,29 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   CHECK(graph_context.pooled_used_bytes() == graph_used);
   CHECK(graph_context.reserved_bytes() == graph_reserved);
   CHECK(graph_context.descriptor_set_allocations() == graph_descriptors);
-  bool graph_corrupt_rejected = false;
-  try { graph.load(corrupt_graph); }
-  catch (const std::exception&) { graph_corrupt_rejected = true; }
-  CHECK(graph_corrupt_rejected && graph.loaded());
+  const uint64_t graph_peak = graph.peak_device_bytes();
+  bool active_reload_rejected = false;
+  try { graph.load(graph_checkpoint); }
+  catch (const std::logic_error&) { active_reload_rejected = true; }
+  CHECK(active_reload_rejected && graph.loaded());
   CHECK(graph_context.pooled_used_bytes() == graph_used);
   CHECK(graph_context.reserved_bytes() == graph_reserved);
   CHECK(graph_context.descriptor_set_allocations() == graph_descriptors);
+  CHECK(graph.peak_device_bytes() == graph_peak);
   CHECK(run_graph() == graph_output);
   const uint64_t graph_persistent = graph.persistent_bytes();
+  const uint64_t graph_scratch = graph.scratch_bytes();
   graph.unload();
-  CHECK(!graph.loaded() && graph.persistent_bytes() == 0u);
-  CHECK(graph_context.pooled_used_bytes() < graph_used);
+  CHECK(!graph.loaded() && graph.persistent_bytes() == 0u &&
+        graph.scratch_bytes() == 0u && graph.peak_device_bytes() == 0u);
+  CHECK_MSG(graph_context.pooled_used_bytes() == graph_preload_used,
+            "H3 graph unload used %llu, baseline %llu",
+            static_cast<unsigned long long>(graph_context.pooled_used_bytes()),
+            static_cast<unsigned long long>(graph_preload_used));
   graph.load(graph_checkpoint);
-  CHECK(graph.persistent_bytes() == graph_persistent);
+  CHECK(graph.persistent_bytes() == graph_persistent &&
+        graph.scratch_bytes() == graph_scratch &&
+        graph.peak_device_bytes() == graph_peak);
   CHECK(run_graph() == graph_output);
   std::printf(
       "  CUDA-off H3 3-layer graph FNV64 %016llx, ops %u, persistent/scratch %.2f/%.2f MiB\n",
@@ -3009,8 +3039,10 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     H3MainGraphConfig real_graph_config;
     real_graph_config.block = real_config;
     real_graph_config.layers = 2;
+    const uint64_t real_graph_preload = context.pooled_used_bytes();
     ExactH3MainGraph real_graph = ExactH3MainGraph::create(
         context, real_graph_config);
+    CHECK(context.pooled_used_bytes() == real_graph_preload);
     real_graph.load(real_checkpoint);
     CHECK(real_graph.required_operators() == 58u);
     auto run_real_graph = [&] {
@@ -3037,7 +3069,11 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     CHECK(context.descriptor_set_allocations() == real_graph_descriptors);
     const uint64_t real_graph_used = context.pooled_used_bytes();
     real_graph.unload();
-    CHECK(context.pooled_used_bytes() < real_graph_used);
+    CHECK(context.pooled_used_bytes() == real_graph_preload);
+    CHECK(real_graph_used > real_graph_preload);
+    CHECK(real_graph.persistent_bytes() == 0u &&
+          real_graph.scratch_bytes() == 0u &&
+          real_graph.peak_device_bytes() == 0u);
     std::printf("  CUDA-off real H3 main2 S65 FNV64 %016llx\n",
                 static_cast<unsigned long long>(real_graph_digest));
   }
