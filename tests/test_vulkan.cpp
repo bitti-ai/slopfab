@@ -360,11 +360,11 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
   CHECK(stats.peak_device_bytes < 900ull * 1024 * 1024);
   CHECK(stats.descriptor_set_allocations == 36);
   if (std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL")) {
-    text::QwenPixelValues image;
-    image.grid = {1, 16, 16};
-    image.rows.resize(size_t(256) * 1536);
-    for (size_t i = 0; i < image.rows.size(); ++i)
-      image.rows[i] = float(int(i * 37 % 509) - 254) / 254.0f;
+    std::vector<uint8_t> rgb(size_t(256) * 256 * 3);
+    for (size_t i = 0; i < rgb.size(); ++i)
+      rgb[i] = static_cast<uint8_t>((i * 37 + i / 17 + 23) & 255u);
+    const text::QwenPixelValues image =
+        text::qwen3vl_patchify_resized_rgb(rgb, 256, 256);
     std::vector<int32_t> ids = {7, 151652};
     ids.insert(ids.end(), 64, 151655);
     ids.push_back(151653); ids.push_back(8);
@@ -375,31 +375,31 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
     const double multimodal_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - multimodal_begin).count();
     constexpr std::array<uint64_t, 50> multimodal_expected{
-        0xd1bf268f423950cdull,0x7c9a0e911161f05dull,
-        0x8b3671cd4316fe2full,0xa799cdeac29cbbb0ull,
-        0xb0d27145cfd09b88ull,0x3fc6a820a2f2acc6ull,
-        0xdb4c89811f1d3748ull,0x4f64d08b36008174ull,
-        0x81b1e26d606fc40dull,0xd6ee25efa9803b7aull,
-        0x018750ff15a8c80bull,0xe854ed8fffc24bcaull,
-        0x24356a7972fee734ull,0x53f05f97951c13f6ull,
-        0xd6532119520117aeull,0x55a49832d8b54083ull,
-        0xec905ccb06dac7f9ull,0x767abc66701e712dull,
-        0x555807622902d83dull,0xa354ba292adc6ed1ull,
-        0x1561511a51530efdull,0x24e3c5d4365cf892ull,
-        0xee6f2c003229894bull,0x5963c326b8bc181cull,
-        0x6ff70f6dc772a7e8ull,0xa4d4e1a7ecd601aeull,
-        0xeb03c57004e61bd7ull,0xef1da6e9ea96dbebull,
-        0x26d6de354b197b16ull,0x8c32e268c66a09ddull,
-        0x352a41cde5ad5544ull,0x8e4fdf517ed64a65ull,
-        0xd90cbd77c4f177bcull,0x572e7fa02259ca26ull,
-        0x384cb2d992762b3bull,0xce411630607ce3fbull,
-        0x568d620ae7eddb43ull,0x44bb9f3b0cd761c4ull,
-        0x662724b7b83c8d42ull,0x28be2ba9a40152d2ull,
-        0x80123bbcaba21b47ull,0x66c5f71aff9b2397ull,
-        0x26c2791e26db4bd7ull,0x05d7fe243a7b8a36ull,
-        0xcab3ab24f0c78c2full,0x6764ce228190e3acull,
-        0x7c386093805c60bdull,0x05c6d7b93dd82ffbull,
-        0x8df0bd1ec300522dull,0x816ceac7c360e1a4ull};
+        0x9bc6bf41395e5988ull,0xc4d3d076719a2e86ull,
+        0xe4289d1b1a484315ull,0x1de297a17774b2daull,
+        0xaa8e33366da795cdull,0xe617ee114012d5e7ull,
+        0x3b78f59733b170d7ull,0x081ab2230db6d492ull,
+        0xdde573a762aa566bull,0x62e6cc60bb283460ull,
+        0xc294e7e6e0ad7c8dull,0x89bb7aa5fbce690eull,
+        0x7119d1c8da174f22ull,0x63d787697ec85a40ull,
+        0x8399915f68486301ull,0xfa1d8de1d422f176ull,
+        0x58b8abc47facc8c8ull,0x6144a5b72b70cf05ull,
+        0xdc368514a4f73d2bull,0x1c0bddc1b4974754ull,
+        0x6163c26eaf590ab0ull,0xd5ffede93b76c96full,
+        0x5c6162ad0e7c2d26ull,0xc115be698ebd82caull,
+        0xd0ec1146b028af92ull,0x36ddcdf97dcb35dbull,
+        0x906344b8641944b7ull,0xccb1ef009b800e31ull,
+        0xa5cae2f1510da93aull,0xe4acfa2f20f0b6dcull,
+        0x0073b8158369f0a9ull,0xae3c24faa60587feull,
+        0xf96720c37d8c20a6ull,0x00c978b6fd38ec76ull,
+        0x3284573098f8768bull,0x91a355c911609dd1ull,
+        0x13024b4727939ddbull,0x61012e1835da4b67ull,
+        0x35571f785e52f5d7ull,0x647e2a033f951255ull,
+        0xb32089da85204802ull,0x57a50f36bca3fcc1ull,
+        0xd1aaa9ff352d0ed8ull,0x13b2b0a3ea604db5ull,
+        0x319b4e0aef0e459eull,0x548da104d1d5adbcull,
+        0x264608fbf678e286ull,0x2101297dde74a635ull,
+        0x1886e6cedc626cd1ull,0x3021ad7836c55dcdull};
     std::array<uint64_t, 50> multimodal_actual{};
     const size_t multimodal_layer_elements = size_t(68) * 5120;
     for (size_t layer = 0; layer < multimodal_actual.size(); ++layer)
@@ -408,7 +408,7 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
               layer * multimodal_layer_elements,
           multimodal_layer_elements * sizeof(uint16_t));
     CHECK(multimodal_actual == multimodal_expected);
-    CHECK(fnv64_floats(multimodal.data) == 0x21902c10fe4d7ddcull);
+    CHECK(fnv64_floats(multimodal.data) == 0xa875c128aa7a0e9dull);
     CHECK(multimodal.modality_tags.front() == 1 &&
           multimodal.modality_tags.back() == 1);
     for (size_t row = 1; row <= 66; ++row)
