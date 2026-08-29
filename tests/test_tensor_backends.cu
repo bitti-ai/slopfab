@@ -3681,10 +3681,14 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_tower) {
 VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
-  if (!std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL")) return;
+  const bool nv_requested =
+      std::getenv("VIDFAB_QWEN_MULTIMODAL_NV_REAL") != nullptr;
+  if (!nv_requested && !std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL")) return;
   const std::filesystem::path checkpoint_path =
       std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
-      "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+      (nv_requested
+          ? "weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+          : "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors");
   int cuda_devices = 0;
   if (!std::filesystem::exists(checkpoint_path) ||
       cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
@@ -3716,6 +3720,17 @@ VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
   CHECK(token_ids.size() == 68);
   SafeTensors archive;
   archive.open(checkpoint_path.string());
+  const text::WeightFormat expected_format = nv_requested
+      ? text::WeightFormat::kNVFP4Awq : text::WeightFormat::kI8ConvRot;
+  CHECK(text::detect_weight_format(archive) == expected_format);
+  if (nv_requested) {
+    constexpr Sha256Digest nv_sha{
+        0x33,0xe6,0x9e,0x3e,0xda,0xb8,0x46,0xd5,
+        0x29,0x49,0xba,0xfd,0xb0,0x03,0x78,0xbd,
+        0x3f,0x5a,0x93,0xf7,0x81,0x24,0xfc,0x83,
+        0xd5,0xef,0x10,0x9d,0xc4,0xa1,0xfc,0xbb};
+    CHECK(sha256_file(checkpoint_path.string()) == nv_sha);
+  }
 
   text::PromptEmbedding cuda_output;
   text::EncoderTrace cuda_trace;
@@ -3726,6 +3741,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
     config.residency = text::Residency::kStreaming;
     config.arithmetic = text::EncoderArithmetic::kExact;
     encoder.load(archive, config);
+    CHECK(encoder.format() == expected_format);
     const auto begin = std::chrono::steady_clock::now();
     cuda_output = encoder.encode(token_ids, {image}, &cuda_trace);
     cuda_seconds = std::chrono::duration<double>(
@@ -3738,6 +3754,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
   TensorContext vk(device, options);
   ExactQwenTextEncoder encoder = ExactQwenTextEncoder::create(vk);
   encoder.load(archive);
+  CHECK(encoder.format() == expected_format);
   text::EncoderTrace vk_trace;
   const auto vk_begin = std::chrono::steady_clock::now();
   const text::PromptEmbedding vk_output =
@@ -3797,8 +3814,35 @@ VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
       0x319b4e0aef0e459eull,0x548da104d1d5adbcull,
       0x264608fbf678e286ull,0x2101297dde74a635ull,
       0x1886e6cedc626cd1ull,0x3021ad7836c55dcdull};
-  CHECK(hashes == expected_hashes);
-  CHECK(final_hash == 0xa875c128aa7a0e9dull);
+  constexpr std::array<uint64_t, 50> expected_nv_hashes{
+      0x8545c17c86bce206ull,0x246ae2760b600155ull,
+      0xe610e4e8b5d39c4aull,0x9e9cca51ff9f1b31ull,
+      0x3ed8d04b8628e290ull,0x3a045bf327cb0f58ull,
+      0xcc7b4cf6684120cfull,0x1c388d41e29d59e5ull,
+      0xa3e936cc3beb6ba8ull,0xf00c7d0aa0396719ull,
+      0x1fdded58a993f96eull,0x394181b36114011dull,
+      0xfc7f02830d74756bull,0x774e1b387f7b4a88ull,
+      0x2a876f81a6dc117eull,0xd463d9609b57c8adull,
+      0x7a6dfc754330df17ull,0xc5d5f683b706e28cull,
+      0xbd76353651031bc2ull,0x86fbe18fd7a5eaa7ull,
+      0xc819b641361167eaull,0xa40257ea76268b3bull,
+      0x5901f48448c9767full,0xe3dcb2a73978fdc8ull,
+      0x8465406046da627aull,0xbd47d4946aeb6204ull,
+      0x88ae879b09f86bf1ull,0xe70b423dc0aab659ull,
+      0x02d71bb1aa5f0ac8ull,0x05b714cddfac51bdull,
+      0x32511519dd2b3cabull,0x1c7e676f7fa8744dull,
+      0x234672783a2eadbbull,0x9bdf97e5124b239dull,
+      0x82844925d0bab31full,0xc4e42865e8c2efafull,
+      0x4933fa7eadd090cbull,0xd0d58a632fc7b79dull,
+      0x00442d8822d97c6dull,0x14918bf2aed37557ull,
+      0x05f5a206b568e11cull,0x4ccf85806ee0ab05ull,
+      0xfc02df0bb257c9a3ull,0x2674158e28da5b05ull,
+      0x92e1fcbe479e21c1ull,0x051686ffbb7ca9f3ull,
+      0xc2a7ef431fc524fdull,0x38957f3dd0122f65ull,
+      0x1b949a92976536ebull,0x1413a279c62a36c5ull};
+  CHECK(hashes == (nv_requested ? expected_nv_hashes : expected_hashes));
+  CHECK(final_hash == (nv_requested
+      ? 0xebc9e36a30c843cdull : 0xa875c128aa7a0e9dull));
   const ExactQwenTextEncoderStats stats = encoder.stats();
   CHECK(stats.peak_device_bytes < 900ull * 1024 * 1024);
   CHECK(stats.max_layer_weight_bytes < 500ull * 1024 * 1024);
@@ -3807,7 +3851,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
       text::load_qwen3vl_vision_checkpoint(archive);
   const std::filesystem::path corrupt_visual =
       make_sparse_qwen_metadata_corruption(
-          archive, text::WeightFormat::kI8ConvRot,
+          archive, expected_format,
           vision.prefix + "blocks.26.mlp.linear_fc2.weight",
           false, false, true);
   const uint64_t rollback_used = vk.pooled_used_bytes();
@@ -3829,8 +3873,39 @@ VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
   std::filesystem::remove(corrupt_visual);
 #endif
   encoder.unload();
-  std::printf("qwen multimodal full50 L68 CUDA/Vulkan %.3f/%.3f s "
+  vk.collect();
+  const uint64_t warmed_used = vk.pooled_used_bytes();
+  const uint64_t warmed_reserved = vk.reserved_bytes();
+  const uint64_t warmed_descriptors = vk.descriptor_set_allocations();
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    encoder.load(archive);
+    const text::PromptEmbedding repeat = encoder.encode(token_ids, {image});
+    CHECK(repeat.data == cuda_output.data);
+    CHECK(vk.descriptor_set_allocations() == warmed_descriptors);
+    encoder.unload(); vk.collect();
+    CHECK(vk.pooled_used_bytes() == warmed_used);
+    CHECK(vk.reserved_bytes() == warmed_reserved);
+    CHECK(vk.descriptor_set_allocations() == warmed_descriptors);
+  }
+  TensorContextOptions short_options;
+  short_options.max_batch_operators = nv_requested ? 35 : 37;
+  TensorContext short_vk(device, short_options);
+  ExactQwenTextEncoder short_encoder = ExactQwenTextEncoder::create(short_vk);
+  short_encoder.load(archive);
+  const uint64_t short_used = short_vk.pooled_used_bytes();
+  const uint64_t short_reserved = short_vk.reserved_bytes();
+  const uint64_t short_descriptors = short_vk.descriptor_set_allocations();
+  text::EncoderTrace rejected_trace;
+  bool short_rejected = false;
+  try { (void)short_encoder.encode(token_ids, {image}, &rejected_trace); }
+  catch (const std::logic_error&) { short_rejected = true; }
+  CHECK(short_rejected && rejected_trace.layer_residual_bf16.empty());
+  CHECK(short_vk.pooled_used_bytes() == short_used);
+  CHECK(short_vk.reserved_bytes() == short_reserved);
+  CHECK(short_vk.descriptor_set_allocations() == short_descriptors);
+  std::printf("qwen %s multimodal full50 L68 CUDA/Vulkan %.3f/%.3f s "
               "final %016llx peak %.1f MiB boundaries:",
+              nv_requested ? "NVFP4" : "I8",
               cuda_seconds, vk_seconds,
               static_cast<unsigned long long>(final_hash),
               stats.peak_device_bytes / 1048576.0);
