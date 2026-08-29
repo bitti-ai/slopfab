@@ -1204,6 +1204,7 @@ VIDFAB_TEST(vulkan_runtime_and_pool) {
   CHECK(info.api_version.major >= 1);
   CHECK(info.compute_queue_count > 0);
   CHECK(info.max_compute_workgroup_invocations > 0);
+  CHECK(info.max_compute_shared_memory_bytes > 0);
   CHECK(!info.memory_heaps.empty());
 
   DeviceOptions feature_options;

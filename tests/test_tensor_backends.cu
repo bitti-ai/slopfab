@@ -739,6 +739,9 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
   options.enable_shader_int64 = true;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
   if (!vk.exact_h3_attention()) return;
@@ -1004,8 +1007,8 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     H3AttentionRanges vr = H3AttentionRanges::create(
         vk, s, r.data(), static_cast<uint32_t>(r.size()));
     TensorBatch chunks = vk.begin_batch();
-    const uint32_t starts[] = {0, 1, 63, 64, 127, 128, 129};
-    const uint32_t lengths[] = {1, 62, 1, 63, 1, 1, 128};
+    const uint32_t starts[] = {0, 1, 15, 16, 63, 64, 65, 127, 128, 129};
+    const uint32_t lengths[] = {1, 14, 1, 47, 1, 1, 62, 1, 1, 128};
     for (size_t i = 0; i < std::size(starts); ++i)
       p.record(chunks, vq, vkey, vv, vo, &vr, starts[i], lengths[i], starts[i]);
     chunks.submit().wait();
@@ -1065,8 +1068,17 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     try { plan.record(recover, q, k, v, wrong, &bands); }
     catch (const std::invalid_argument&) { rejected = true; }
     CHECK(rejected);
+    rejected = false;
+    try { plan.record(recover, q, k, v, q, &bands); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    rejected = false;
+    try { plan.record(recover, q, k, v, out_full, &bands, sequence, 1, 0); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
     plan.record(recover, q, k, v, out_full, &bands);
-    recover.submit().wait();
+    TensorBatch moved = std::move(recover);
+    moved.submit().wait();
   }
   DeviceTensor second = vk.allocate(layout, ScalarType::kBFloat16);
   auto submit = [&](DeviceTensor& selected) {
@@ -1078,6 +1090,10 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
              third = submit(out_full);
   CHECK(second_job.value() > first.value() && third.value() > second_job.value());
   first.wait(); second_job.wait(); third.wait();
+  std::vector<uint16_t> first_output(count), second_output(count);
+  vk.download_bytes(out_full, first_output.data(), count * 2);
+  vk.download_bytes(second, second_output.data(), count * 2);
+  CHECK(first_output == second_output);
   const uint64_t stable_reserved = vk.reserved_bytes();
   const uint64_t stable_descriptors = vk.descriptor_set_allocations();
   for (int repeat = 0; repeat < 4; ++repeat) {
@@ -1105,6 +1121,36 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     catch (const std::logic_error&) { submit_rejected = true; }
     CHECK(submit_rejected);
   }
+
+  // A discarded recorder releases speculative resources. A submitted job
+  // retains the immutable table, plan and all four tensors after every public
+  // wrapper drops, then releases them after its exact token is collected.
+  const uint64_t used_before_drop = vk.pooled_used_bytes();
+  {
+    DeviceTensor temporary = vk.allocate(layout, ScalarType::kBFloat16);
+    TensorBatch discarded = vk.begin_batch();
+    plan.record(discarded, q, k, v, temporary, &bands, 0, 1, 0);
+  }
+  CHECK(vk.pooled_used_bytes() == used_before_drop);
+  Submission retained;
+  {
+    DeviceTensor tq = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor tk = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor tv = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor tout = vk.allocate(layout, ScalarType::kBFloat16);
+    H3AttentionPlan temporary_plan = H3AttentionPlan::create(
+        vk, {sequence, heads, dim, scale});
+    H3AttentionRanges temporary_ranges = H3AttentionRanges::create(
+        vk, sequence, band.data(), static_cast<uint32_t>(band.size()));
+    TensorBatch keep = vk.begin_batch();
+    temporary_plan.record(keep, tq, tk, tv, tout, &temporary_ranges, 0, 1, 0);
+    retained = keep.submit();
+  }
+  CHECK(vk.pooled_used_bytes() > used_before_drop);
+  retained.wait();
+  retained = Submission{};
+  { TensorBatch collect = vk.begin_batch(); }
+  CHECK(vk.pooled_used_bytes() == used_before_drop);
 }
 
 VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
@@ -1216,6 +1262,9 @@ VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
   options.enable_shader_int64 = true;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
   Device device = physical.front().create_device(options);
   TensorContext vk(device);
   CHECK(vk.exact_h3_attention());
