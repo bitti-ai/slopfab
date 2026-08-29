@@ -2629,7 +2629,26 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   context.upload(code, host_code.data(), host_code.size());
   context.upload(cosine, host_cos.data(), host_cos.size());
   context.upload(sine, host_sin.data(), host_sin.size());
-  CHECK(true);
+  DeviceTensor dummy = context.allocate(
+      TensorLayout::contiguous(token_shape, 2), ScalarType::kBFloat16);
+  {
+    TensorBatch exact_capacity = context.begin_batch();
+    for (uint32_t i = first.required_operators(); i < 64; ++i)
+      exact_capacity.copy(dummy, tokens);
+    first.record(exact_capacity, tokens, selectors, code, cosine, sine, scratch);
+    CHECK(exact_capacity.remaining_operator_capacity() == 0u);
+    exact_capacity.submit().wait();
+  }
+  {
+    TensorBatch short_capacity = context.begin_batch();
+    for (uint32_t i = first.required_operators(); i <= 64; ++i)
+      short_capacity.copy(dummy, tokens);
+    bool rejected = false;
+    try {
+      first.record(short_capacity, tokens, selectors, code, cosine, sine, scratch);
+    } catch (const std::logic_error&) { rejected = true; }
+    CHECK(rejected && short_capacity.remaining_operator_capacity() == 24u);
+  }
   auto run_chain = [&] {
     context.upload_bytes(tokens, input.data(), input.size() * 2);
     TensorBatch batch = context.begin_batch();

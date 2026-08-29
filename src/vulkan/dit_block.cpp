@@ -445,6 +445,13 @@ void ExactH3BlockStage::prepare(ExactH3BlockScratch& scratch) const {
   if (!scratch.impl_ || scratch.impl_->context != impl_->context)
     throw std::invalid_argument("Vulkan H3 block: incompatible scratch");
   auto& s = *scratch.impl_;
+  const H3BlockConfig& a = impl_->config;
+  const H3BlockConfig& b = s.config;
+  if (a.sequence != b.sequence || a.hidden != b.hidden || a.heads != b.heads ||
+      a.head_dim != b.head_dim || a.ffn != b.ffn ||
+      a.timesteps != b.timesteps || a.modalities != b.modalities ||
+      a.adaln_rank != b.adaln_rank)
+    throw std::invalid_argument("Vulkan H3 block: scratch configuration mismatch");
   const auto& w = *impl_->weights;
   ensure_transforms(*s.context, w.q, impl_->config.sequence, s.hidden_a, s.hidden_b);
   ensure_transforms(*s.context, w.k, impl_->config.sequence, s.hidden_a, s.hidden_b);
