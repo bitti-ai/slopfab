@@ -26,6 +26,7 @@
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/attention.h"
 #include "vidfab/safetensors_write.h"
+#include "vidfab/sampler/scheduler.h"
 #include "vidfab/video/y4m.h"
 #include "vidfab/dtype.h"
 #include "../src/vulkan/tensor_validation.h"
@@ -75,6 +76,59 @@ uint16_t reference_bf16(float value) {
     return 0x7fffu;
   }
   return static_cast<uint16_t>((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
+}
+
+VIDFAB_TEST(vulkan_exact_dit_euler_matches_host_scheduler) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  device_options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(device_options);
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 4;
+  TensorContext context(device, context_options);
+  if (!context.exact_vae_pointwise()) return;
+
+  constexpr uint64_t count = 257;
+  const TensorLayout layout = TensorLayout::contiguous(&count, 1);
+  DeviceTensor sample = context.allocate(layout);
+  DeviceTensor velocity = context.allocate(layout);
+  std::vector<float> host_sample(count), host_velocity(count), got(count);
+  for (uint64_t i = 0; i < count; ++i) {
+    host_sample[i] = float(int((i * 37) % 257) - 128) / 64.0f;
+    host_velocity[i] = float(int((i * 53) % 193) - 96) / 128.0f;
+  }
+  context.upload(sample, host_sample.data(), count);
+  context.upload(velocity, host_velocity.data(), count);
+
+  sampler::FlowScheduler schedule(12.0f);
+  schedule.set_timesteps(6);
+  for (size_t step = 0; step < schedule.num_steps(); ++step) {
+    schedule.step(static_cast<int>(step), host_sample.data(),
+                  host_velocity.data(), count, host_sample.data());
+    const float sigma_from_timestep = 1.0f - schedule.timesteps()[step];
+    const float ratio = schedule.sigmas()[step + 1] / schedule.sigmas()[step];
+    TensorBatch batch = context.begin_batch();
+    batch.dit_euler_step_f32(sample, velocity, sigma_from_timestep, ratio);
+    CHECK(batch.remaining_operator_capacity() == 3u);
+    batch.submit().wait();
+    context.download(sample, got.data(), count);
+    CHECK(std::memcmp(host_sample.data(), got.data(), count * sizeof(float)) == 0);
+  }
+
+  // Validation is transactional and the same batch remains usable.
+  TensorBatch transactional = context.begin_batch();
+  bool alias_rejected = false;
+  try { transactional.dit_euler_step_f32(sample, sample, 0.5f, 0.5f); }
+  catch (const std::invalid_argument&) { alias_rejected = true; }
+  CHECK(alias_rejected && transactional.remaining_operator_capacity() == 4u);
+  transactional.dit_euler_step_f32(sample, velocity, 0.5f, 0.0f);
+  transactional.submit().wait();
 }
 
 VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {

@@ -2912,6 +2912,40 @@ void TensorBatch::dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
   } catch (...) { impl_->poisoned = true; throw; }
 }
 
+void TensorBatch::dit_euler_step_f32(DeviceTensor& sample,
+                                     DeviceTensor& velocity,
+                                     float sigma_from_timestep, float ratio) {
+  if (!impl_ || impl_->poisoned)
+    throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_dit_pointwise)
+    throw std::runtime_error("vulkan tensor: exact DiT Euler is unavailable");
+  auto x = impl_->owner->require(sample);
+  auto v = impl_->owner->require(velocity);
+  const auto& layout = x->layout;
+  if (x.get() == v.get() || x->type != ScalarType::kFloat32 ||
+      v->type != ScalarType::kFloat32 || v->layout.extent != layout.extent ||
+      v->layout.rank != layout.rank || !layout.is_contiguous() ||
+      !v->layout.is_contiguous() || layout.elements() == 0 ||
+      layout.elements() > UINT32_MAX || !std::isfinite(sigma_from_timestep) ||
+      sigma_from_timestep < 0.0f || sigma_from_timestep > 1.0f ||
+      !std::isfinite(ratio) || ratio < 0.0f || ratio > 1.0f)
+    throw std::invalid_argument("vulkan tensor: invalid exact DiT Euler inputs");
+  TensorContext::Impl::DitParameters p;
+  p.op = 3;
+  p.count = static_cast<uint32_t>(layout.elements());
+  std::memcpy(&p.unused[0], &sigma_from_timestep, sizeof(float));
+  std::memcpy(&p.unused[1], &ratio, sizeof(float));
+  try {
+    impl_->count_operator();
+    impl_->transition(x, BufferAccess::kComputeReadWrite);
+    impl_->transition(v, BufferAccess::kComputeRead);
+    impl_->dispatch_dit(p, {x, v, x, x, x});
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
 void TensorBatch::group_norm_silu_f16_affine(DeviceTensor& input,
                                               DeviceTensor& weight,
                                               DeviceTensor& bias,

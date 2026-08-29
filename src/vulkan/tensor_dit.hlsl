@@ -147,7 +147,7 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     const float value = load_bf16(primary, base + p.dim);
     const float silu = exact_divide(gate, 1.0f + exact_exp(-gate));
     store_bf16(index, bf16_rte(silu * value));
-  } else { // rank-R AdaLN: [out,R] x [T,R] -> [P,T*M,C]
+  } else if (p.op == 2u) { // rank-R AdaLN: [out,R] x [T,R] -> [P,T*M,C]
     const uint out_features = p.num_modality * p.num_param * p.dim;
     const uint ti = index / out_features;
     const uint feature = index - ti * out_features;
@@ -165,5 +165,18 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     const uint destination = param * table_stride +
         (ti * p.num_modality + modality) * p.dim + channel;
     output_data.Store(destination * 4, asuint(acc));
+  } else { // exact rectified-flow Euler, fp32 in place
+    // Keep the three reference source expressions separate. In particular,
+    // sigma_from_timestep is not reconstructed from the ratio's sigma grid.
+    const float sample = load_f32(primary, index);
+    const float velocity = load_f32(secondary, index);
+    const float sigma_from_timestep = asfloat(p.unused0);
+    const float ratio = asfloat(p.unused1);
+    precise float scaled_velocity = sigma_from_timestep * velocity;
+    precise float denoised = sample + scaled_velocity;
+    precise float retained = ratio * sample;
+    precise float incoming = (1.0f - ratio) * denoised;
+    precise float next = retained + incoming;
+    output_data.Store(index * 4u, asuint(next));
   }
 }

@@ -225,6 +225,10 @@ class TensorBatch {
                         DeviceTensor& code, DeviceTensor& output,
                         uint32_t num_modality, uint32_t num_param,
                         uint32_t channels);
+  // Exact H3 rectified-flow Euler update, in place over a contiguous fp32
+  // tensor. Arithmetic matches FlowScheduler::step(kEuler).
+  void dit_euler_step_f32(DeviceTensor& sample, DeviceTensor& velocity,
+                          float sigma_from_timestep, float ratio);
   // Video/keyframe-VAE channel-major GroupNorm+SiLU. Input/output are fp32
   // contiguous [channels,height,width], affine parameters are fp16 [channels],
   // and output may alias input.
