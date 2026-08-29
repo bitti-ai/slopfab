@@ -2,27 +2,22 @@
 
 ## What exists
 
-Vulkan currently wires only the final planar fp32 RGB to BT.709 limited-range
-YUV420 conversion into generation. A tested Vulkan neural-primitive substrate
-now exists, including tensor/layout operations, normalization, RoPE, and
-every required dense NT GEMM mode plus persistent preparation of every shipped
-dense/quantized linear-weight format,
-but generation, conditioning, denoising, and both neural decoders still execute
-through CUDA. `--output-accelerator vulkan` names that narrow output stage.
-`--inference-backend vulkan` validates attention before any prompt file,
-checkpoint, or output is opened. Vulkan accepts only `--attention exact`;
-`none`, `flash2`, `sage2`, `sol`, and `sol-experimental` are rejected by name
-and are never remapped. An accepted exact selection then fails separately
-because the full Vulkan neural orchestrator is still missing. It never routes
-the request to CUDA under a Vulkan name.
+Vulkan now owns both complete neural decoders used by the synthetic-latent
+vertical slice: the 36-block video VAE and the 779-tensor audio VAE. Generation
+selects them through `RunOptions::inference_backend`, independently of
+`--output-accelerator`. `--inference-backend vulkan` is accepted only together
+with `--synthetic-latents --attention exact`; every other attention mode is
+rejected by name and conditioning/denoising remains fail-closed. No rejected or
+accepted Vulkan request is remapped to CUDA.
 
 The output converter is byte-exact against the canonical CPU conversion on the
 tested RTX 5090. Its checked shader uses explicit operation order and SPIR-V
 `NoContraction`, including adversarial luma/chroma half-step cases, packed tail
 words, padded output strides, and multi-frame Y4M output.
 
-This is not full Vulkan/CUDA pipeline parity. No complete Vulkan neural stage is
-wired yet.
+This is exact decoder/generation-output parity, not full prompt-to-video parity.
+The text/vision conditioners, reference-image encoder, transformer and denoise
+loop still have no Vulkan orchestration.
 
 ## Measured implementation gap
 
@@ -46,8 +41,8 @@ Missing work by pipeline stage:
 | Stage | CUDA implementation that has no Vulkan peer | Principal missing operations |
 |---|---|---|
 | Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | native quantized GEMM, NN/batched attention GEMM, remaining activations, and residual/broadcast operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, used RoPE variants, dense NT GEMM, persistent seven-format weight preparation, AWQ pre-scale and ConvRot now have Vulkan primitives |
-| Video VAE decode | `vae_kernels.cu` (503), `vit_decoder.cu` (684), `decode_pipeline.cpp` (420) | Conv3D/Conv2D, causal padding, upsample, residual blocks, spatial/temporal attention, tile scheduling and merge |
-| Audio VAE decode | `audio_vae_kernels.cu` (452), `audio_decoder.cpp` (504) | weight-normalized Conv1D/transposed Conv1D, residual units, Snake activation, channel/layout transforms |
+| Video VAE decode | Implemented by `vulkan::VideoVaeDecoder` | Exact 36-block graph and shared backend-neutral tile/stitch schedule are complete; shipped tensor-core mode remains CUDA-only |
+| Audio VAE decode | Implemented by `vulkan::AudioDecoder` | All 779 tensors and 497 production operators are device-resident and exact; diagnostics add 13 in-batch boundary copies |
 | Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | multimodal projections, causal/banded/fused attention, residual paths, timestep conditioning, scheduler loop integration and caches; AdaLN, Q/K RMSNorm, H3 RoPE and exact unmasked blocked attention primitives exist but are not wired |
 | Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | token embedding, causal decoder attention/MLP, vision patch/merge graph, deep-stack scatter, reference-image VAE encode; NeoX/mRoPE and exact unmasked D72 attention primitives exist but are not wired |
 
@@ -93,7 +88,7 @@ exact copies, fp32 add/add-bias over zero/normal/infinity operands and results,
 fp32-to/from-fp16 and bf16 conversion, fp32
 2-D transpose, trusted-index row gather/scatter, head-major fp32 to token-major
 bf16, fp32 depth-to-space, and the fp32 RMSNorm/affine LayerNorm pair used by
-the video VAE. It records up to 32 operations into one command buffer, retains
+the video VAE. It records bounded operations into one command buffer, retains
 tensors through exact timeline completion, and reuses two bounded
 descriptor/command slots.
 
@@ -122,8 +117,8 @@ It also implements all three used rotary semantics: BF16 H3 partial-96 with a
 raw 32-channel tail, BF16 full-width GPT-NeoX for Qwen text/vision, and the
 video-VAE fused fp32 split-QKV, head64 RMSNorm and partial-48 rotation with
 suffix bypass. The host canonical H3 builder supplies identical serialized
-fp32 table bits to CUDA and Vulkan. These are device primitives; conditioner,
-DiT and VAE orchestration still calls CUDA.
+fp32 table bits to CUDA and Vulkan. Conditioner and DiT orchestration still
+call CUDA; both VAE decoders now consume the Vulkan primitives directly.
 
 Persistent linear-weight preparation now covers F32/F16/BF16, E4M3 FP8,
 per-output I8, NVFP4 and NF4 without retaining dense copies of every quantized
@@ -190,11 +185,10 @@ are generated as unique in-range host sequences by `packing.cpp` and
 than arbitrary device data. The Vulkan shader also bounds-checks each index to
 prevent an invalid device read or write.
 
-This is a tested operator substrate, not a wired Vulkan model stage. Native
-quantized matrix execution, NN/batched GEMM, remaining activations, causal/fused attention,
-convolutions, primitive call-site wiring, and all four model-stage
-orchestrators remain on the missing list above. Therefore
-`--inference-backend vulkan` continues to fail before weights or output files.
+This is a tested operator substrate with both VAE call sites wired. Native
+quantized matrix execution and conditioner/DiT orchestration remain on the
+missing list above. A Vulkan request that needs those stages fails before
+weights or output files; the exact synthetic-latent decoder slice proceeds.
 
 The full 36-block exact video-VAE transformer stack is now available through a
 device-resident Vulkan graph. It streams all real checkpoint blocks through a
@@ -246,51 +240,34 @@ converter matched the canonical writer byte for byte. Measured Vulkan load and
 was 4625.0/5087.0 MiB, pooled used/reserved was 5215.0/5445.0 MiB, and the final
 descriptor high-water was 3676.
 
-This completes the exact video-VAE decoder component, but does not change the
-top-level Vulkan inference gate: the text/vision conditioners, denoiser, audio
-VAE, and `RunOptions` construction/wiring remain absent. It therefore does not
-claim full Vulkan video generation yet.
+This completes the exact video-VAE decoder component. Together with the audio
+decoder it enables top-level synthetic-latent Vulkan generation, while the
+text/vision conditioners and denoiser remain gated out.
 
 ## Current vertical-slice comparison
 
-The intended control holds all neural work constant and changes only output
-conversion:
+The opt-in `cuda_vulkan_exact_generate_vertical_slice` test writes one
+deterministic fp32 init-latent archive, then invokes real `run_generate` at the
+minimum 32x32/22-frame geometry through CUDA exact and Vulkan exact. It asserts
+the video checkpoint SHA-256
+`7C1F131492E7EDDACAAC9069A61B81BDD39DE5CC96561E677C5EAB1CDCE5E522`
+and audio checkpoint SHA-256
+`8E505D95DD1561D47ABD43D4238FD40D9BB1AE9E147ED0A4CBA778D76AE4DB48`.
 
-```text
-vidfab generate --synthetic-latents --seed 424242 --frames 6 \
-  --resolution 32x32 --raw --vae <real-video-vae> \
-  --dump-latents parity-latents.safetensors \
-  --output-accelerator cpu --out parity-fixed-cpu.mp4
-vidfab generate --synthetic-latents --seed 424242 --frames 6 \
-  --resolution 32x32 --raw --vae <real-video-vae> \
-  --init-latents parity-latents.safetensors \
-  --output-accelerator vulkan --out parity-fixed-vulkan.mp4
-vidfab compare-y4m parity-fixed-cpu.y4m parity-fixed-vulkan.y4m
-```
+The latent FNV64 is `5529904CB8C9DC9E`. Final pinned FNV64 digests are
+`E2CA5273E36E9ED7` for 67,584 PixelBuffer floats, `5933499108CE9C79` for
+59,200 interleaved PCM floats, `D55DBD1D534B8787` for Y4M bytes, and
+`6B066C7CF430117D` for PCM16 WAV bytes. CUDA and Vulkan match bit for bit at
+the float boundaries and byte for byte at both containers.
 
-Measured on 2026-08-28 from build commit
-`c66ee3349c87d39b2a013b5fd71d96316c1726b2`, configured Release with CUDA 13.0,
-`sm_120a`, `VIDFAB_ENABLE_CUDA=ON`, `VIDFAB_ENABLE_VULKAN=ON`, and
-`VIDFAB_WITH_FFMPEG=OFF`, using Vulkan 1.4.341 and an RTX 5090. The real
-checkpoints and inputs were:
+The audio graph test also compares dec-in projection, pre-convolution, all
+seven post-stage averages, final activation, final convolution, clamp and
+interleave. Production remains one 497-operator batch; diagnostic replay adds
+13 device copies inside one 510-operator batch. Production `A=405` is pinned at
+FNV64 `0B9084D3F1C6355A`.
 
-| Artifact | Bytes | SHA-256 |
-|---|---:|---|
-| `weights/vae/video_vae_nf4.safetensors` | 1,613,201,536 | `6D0CB4FF02EBB74CC6BCA40018E6EFAE5082CCD7EB066FA1263098C6DBF8F6F1` |
-| `weights/vae/audio_vae_nf4.safetensors` | 284,004,112 | `759662130BA3618B7F196DA8F983F857A1F1EC6AF8110D657796D9792C0D64E5` |
-| `parity-latents.safetensors` | 12,312 | `5FE9F6E048465ADE3695950531727FE850C0E9B23F871AEED7E698956C07FD83` |
-
-The video VAE occupied 1.17 GiB on device. The requested six frames align to
-22 model frames; the latent grid is 7x2x2. The second run read the exact dumped
-fp32 video/audio rows instead of redrawing them.
-
-`compare-y4m` returned 0: both files were 33,965 bytes with header
-`YUV4MPEG2 W32 H32 F24:1 Ip A1:1 C420jpeg` and SHA-256
-`A38ADCDACC22DED7CA58810CBCA4E19B723E963AB8D8B619CAECA621484C01CC`.
-The independently written WAV files also matched at
-`71F3A8AA31560D6206BDE640769AC568D00FB834A667027B46070457546C48FE`.
-
-This result proves exact parity between CPU and Vulkan output conversion after
-the same real CUDA VAE/audio pipeline. It does not compare CUDA neural
-inference with Vulkan neural inference: every neural stage was CUDA on both
-sides, because the Vulkan implementations enumerated above do not exist.
+The CUDA-off build proves decoder-library purity only. It executes the real
+Vulkan audio decoder without a CUDA target, pins `A=3` at FNV64
+`528F17A83D5EF7EE`, repeats without pool/descriptor growth, and unloads. The
+top-level `run_generate` still lives in `vidfab_cuda`, so a CUDA-disabled CLI
+does not yet expose this slice; this is not a decoder fallback.

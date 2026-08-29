@@ -798,7 +798,10 @@ The real-checkpoint graph test uses the checkpoint identity pinned above. At
 WAV files are byte exact. At the production `A=405` shape on an RTX 5090, the
 complete CUDA/Vulkan decodes measured 131.4/655.6 ms and produced the same
 FNV64 `0B9084D3F1C6355A`. Vulkan holds 247.6 MiB of weights, accounts a 405.9
-MiB direct peak, and uses/reserves 517.8/524.7 MiB from its buffer pool. The 476
+MiB logical peak, reaches 517.9 MiB allocator-used high-water, and uses 517.8
+MiB after decode (524.7 MiB reserved on the clean production path). The
+persistent upload/readback staging pair is 112.0 MiB; the streaming host loader
+peaks at 56.0 MiB, so it never retains a second 247.6 MiB host weight image. The 476
 descriptor allocations and reserved pool size remain unchanged across a
 second `A=405` decode and an `A=3` decode after it. `unload()` releases all
 decoder-owned weights and arenas (direct-accounted bytes return to zero); the
@@ -807,20 +810,33 @@ later load.
 
 Neural backend selection is explicit and separate from the output colour
 converter. `RunOptions::inference_backend` and the C API default to CUDA.
-Vulkan is accepted only for synthetic or caller-supplied latent rows while
-conditioning and denoising remain fail-closed, with no CUDA fallback. Selecting
-exact attention also selects `ViTTransformerMode::kExact` for the CUDA video
+Vulkan requires both synthetic/caller-supplied latent rows and exact attention;
+other attention modes and conditioning/denoising remain fail-closed, with no
+remapping or CUDA fallback. Selecting exact attention also selects
+`ViTTransformerMode::kExact` for the CUDA video
 VAE, so parity runs compare the same deterministic graph. An opt-in real
 `run_generate` test writes one backend-neutral init-latent safetensors archive
 (FNV64 `5529904CB8C9DC9E`) and runs the minimum 32x32, 22-frame vertical slice
-through CUDA exact and Vulkan exact. All 67,584 final PixelBuffer values and
-59,200 interleaved PCM values match bit for bit; the derived Y4M and PCM16 WAV
-files are byte identical.
+through CUDA exact and Vulkan exact. Pinned FNV64 values are
+`E2CA5273E36E9ED7` for all 67,584 PixelBuffer values, `5933499108CE9C79`
+for all 59,200 interleaved PCM values, `D55DBD1D534B8787` for Y4M, and
+`6B066C7CF430117D` for PCM16 WAV. The float buffers match bit for bit and both
+containers are byte identical.
+
+The diagnostic replay copies dec-in projection, pre-convolution, all seven
+post-stage averages, final activation, final convolution, clamp and interleave
+inside the same command buffer and compares every float to CUDA. It adds 13
+copies for a 510-operator diagnostic transaction; production stays one
+497-operator transaction. A deliberately truncated reload fails after the two
+input convolutions without replacing or leaking the old graph. The lifecycle
+test is load -> A3 -> failed reload -> A405 -> A3 -> unload -> reload -> A3.
 
 The Vulkan library and decoder contract test also build and run with CUDA
-disabled. The test constructs the complete audio decoder, verifies the
-497-operator contract and unloaded lifecycle, and links no CUDA target. This
-guards backend purity independently of the CUDA/Vulkan parity executable.
+disabled. It loads the real checkpoint, verifies the 497-operator contract,
+pins A3 FNV64 `528F17A83D5EF7EE`, repeats without pool/descriptor growth and
+unloads, while linking no CUDA target. This guards decoder-library purity. The
+top-level runner still belongs to `vidfab_cuda`, so the CUDA-off CLI does not
+yet expose synthetic Vulkan generation.
 
 ---
 
