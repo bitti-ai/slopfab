@@ -3106,9 +3106,11 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
   using namespace vidfab::vulkan;
   constexpr uint32_t rows=132,hidden=5120,q_heads=64,kv_heads=8,
                      head_dim=128,ffn=25600;
-  const std::filesystem::path checkpoint_path=
+  const std::filesystem::path source(VIDFAB_TEST_SOURCE_DIR);
+  const std::filesystem::path checkpoint_path=source/
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
-  const std::filesystem::path tokenizer_path="ref/text_encoder/tokenizer.json";
+  const std::filesystem::path tokenizer_path=source/
+      "ref/text_encoder/tokenizer.json";
   int cuda_devices=0;
   if(!std::filesystem::exists(checkpoint_path)||
      !std::filesystem::exists(tokenizer_path)||

@@ -47,7 +47,7 @@ Missing work by pipeline stage:
 | Video VAE decode | Implemented by `vulkan::VideoVaeDecoder` | Exact 36-block graph and shared backend-neutral tile/stitch schedule are complete; shipped tensor-core mode remains CUDA-only |
 | Audio VAE decode | Implemented by `vulkan::AudioDecoder` | All 779 tensors and 497 production operators are device-resident and exact; diagnostics add 13 in-batch boundary copies |
 | Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | the exact 50-block main stack is implemented with real every-boundary replay and a block-cache span seam; refiner/final layer, denoise/scheduler integration and non-exact attention modes remain CUDA-only |
-| Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | token embedding, causal decoder attention/MLP, vision patch/merge graph, deep-stack scatter, reference-image VAE encode; NeoX/mRoPE and exact unmasked D72 attention primitives exist but are not wired |
+| Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | one complete exact decoder layer is implemented for both shipped compressed formats; the remaining 49-layer graph, token/final seams, vision patch/merge graph, deep-stack scatter and reference-image VAE encode remain to be wired |
 
 Checkpoint handling also remains CUDA-entangled. A Vulkan backend must preserve
 the existing safetensors tensor names and metadata while supporting the shipped
@@ -166,8 +166,10 @@ post-vision-insertion L132 checkpoint audit found zero subnormal/nonfinite
 Q/K/V values, finite score/PV bounds, and measured the intentional exact-mode
 rebaseline against shipped cuBLAS at relative L2 1.38034e-4 (max absolute
 0.0009765625). Exact Vulkan measured 0.321 ms at L132 and 674.861 ms at L8192;
-the latter has 288 MiB of direct tensors and no attention scratch. This is
-still a primitive: text-encoder orchestration remains CUDA-owned.
+the latter has 288 MiB of direct tensors and no attention scratch. One complete
+decoder-layer orchestration now composes this attention with exact RMSNorm,
+NeoX RoPE, seven streamed compressed projections, BF16 residuals and split
+SwiGLU. Text-encoder graph orchestration beyond one layer remains CUDA-owned.
 
 Exact H3 full and frame-banded attention is part of the complete 50-main-block
 Vulkan graph: typed projection loading, rank-8 AdaLN, normalization, RoPE,

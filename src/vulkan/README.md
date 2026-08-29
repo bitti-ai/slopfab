@@ -998,6 +998,68 @@ tensor_dit.hlsl       58B49C9A661129569B0E5A959897AD545FF7B5AF7DA672DD995CF3AAE5
 tensor_dit.comp.spv    42CDADDE72D0254116A4E102E49BB2B4F74A940540640B533B2C15FD5E1DDB5A
 ```
 
+## Exact Qwen3-VL decoder layer
+
+`ExactQwenTextLayerStage` implements one complete production Qwen3-VL decoder
+layer as a record-only Vulkan stage: input RMSNorm, Q/K/V projections, per-head
+Q/K RMSNorm, full-width NeoX RoPE, causal GQA, output projection and residual,
+post-attention RMSNorm, gate/up projections, split SwiGLU, down projection and
+the final residual. Its loader accepts both shipped contracts, I8+ConvRot and
+NVFP4+AWQ, through the shared typed checkpoint loader. It validates every
+target-layer tensor and transform before allocating and transactionally
+preserves an active layer on a failed replacement.
+
+Only compressed matrices and four BF16 norm vectors are persistent. The caller
+owns one reusable 250 MiB largest-matrix BF16 slot, and every one of the seven
+weights is materialized into that slot immediately before its GEMM. Activation
+and transform buffers live in the same caller-owned scratch object. This keeps
+the stage suitable for a future 50-layer graph: expanded dense matrices are not
+retained per layer, recording allocates and submits nothing, and one shared
+scratch/cache can be reused sequentially across layers. Production I8 L132
+records 38 operators; the every-boundary audit records exactly 49. One-less
+capacity fails before the first stage operator, and load/unload/reload,
+corrupt-reload rollback, stable repeat descriptors and pool high-water are
+covered by the real-checkpoint tests.
+
+The authoritative L132 input is produced by the shipped tokenizer and real
+`model.embed_tokens.weight`, then passed through the shared canonical exact
+CUDA layer rather than cuBLAS. Its packed capture is
+`tests/data/qwen_layer0_l132.vfqw` (1,487,580 bytes, SHA-256
+`EC13AD62A7E253D588BFAC51850B92487B7CB88BA73E7869A2B02CBA791104B3`).
+The capture binds checkpoint SHA-256
+`BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`
+and tokenizer SHA-256
+`A5D85B6DCC535E6B93115A9EF287E6132FDBF30270DA6218194BA742261173C7`.
+Input/RoPE FNV64 are `617329501f3c87a1`/`693c23a9886dd147`.
+CUDA and Vulkan match every BF16 boundary byte exactly; the ordered FNV64 pins
+are:
+
+```text
+input_norm             6ca9b8c5e16917b5
+query                  f9bf6e554a1e84e4
+key                    9c2c264a60b4b8b1
+value                  ec21312eea810e06
+attention              73901fb1cb7f2cfb
+attention_residual     5ab1cc9e26345fe2
+post_attention_norm    9e072ab6646a2a11
+gate                   74d47f5ed650356d
+up                     8292d03af91a2025
+activation             48f99e7549238ece
+final_residual         fb3966de636ac098
+```
+
+On RTX 5090/610.88 Release, canonical exact CUDA measured 11.3 ms and Vulkan
+14.2 ms for L132; Vulkan layer load was 112.0 ms. Logical persistent/scratch
+memory was 465.3/286.4 MiB, including exactly 250 MiB for the single dense
+cache. These timings exclude checkpoint mapping and host capture construction.
+A separately linked CUDA-disabled test loads the real compressed checkpoint,
+replays the capture twice and verifies every boundary plus stable descriptor
+allocation, proving that this stage has no CUDA link or runtime fallback.
+
+This is one decoder layer, not yet the complete 50-layer text conditioner;
+token/final seams, multi-layer scheduling, and Qwen vision/deep-stack remain
+future features.
+
 ## Exact causal GQA text attention
 
 `CausalGQAAttentionPlan` is the bounded Qwen3-VL decoder contract, not a
