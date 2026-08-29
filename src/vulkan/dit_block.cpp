@@ -205,12 +205,6 @@ struct ExactH3BlockScratch::Impl {
     branch = owner.allocate(matrix(c.sequence, c.hidden), ScalarType::kBFloat16);
     fused = owner.allocate(matrix(c.sequence, 2ull * c.ffn), ScalarType::kBFloat16);
     activation = owner.allocate(matrix(c.sequence, c.ffn), ScalarType::kBFloat16);
-    hidden_a = owner.allocate(matrix(c.sequence, c.hidden), ScalarType::kBFloat16);
-    hidden_b = owner.allocate(matrix(c.sequence, c.hidden), ScalarType::kBFloat16);
-    inner_a = owner.allocate(matrix(c.sequence, inner), ScalarType::kBFloat16);
-    inner_b = owner.allocate(matrix(c.sequence, inner), ScalarType::kBFloat16);
-    ffn_a = owner.allocate(matrix(c.sequence, c.ffn), ScalarType::kBFloat16);
-    ffn_b = owner.allocate(matrix(c.sequence, c.ffn), ScalarType::kBFloat16);
     const uint64_t largest = std::max({checked_product(inner, c.hidden, "q"),
         checked_product(c.hidden, inner, "out"),
         checked_product(2ull * c.ffn, c.hidden, "fc1"),
@@ -315,6 +309,15 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
 }
 
 namespace {
+void ensure_transforms(TensorContext& context, const Projection& p,
+                       uint32_t rows, DeviceTensor& a, DeviceTensor& b) {
+  const bool pre_scale = p.weight.has_pre_quant_scale();
+  const bool convrot = p.weight.applies_convrot();
+  if ((pre_scale || convrot) && !a)
+    a = context.allocate(matrix(rows, p.in), ScalarType::kBFloat16);
+  if (pre_scale && convrot && !b)
+    b = context.allocate(matrix(rows, p.in), ScalarType::kBFloat16);
+}
 DeviceTensor& transformed_input(TensorBatch& batch, Projection& p,
                                 DeviceTensor& input, DeviceTensor& a,
                                 DeviceTensor& b) {
@@ -331,7 +334,9 @@ DeviceTensor& transformed_input(TensorBatch& batch, Projection& p,
 void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
                 StreamedNVFP4WeightCache& cache, DeviceTensor& input,
                 DeviceTensor& output, DeviceTensor& transform_a,
-                DeviceTensor& transform_b, uint32_t rows) {
+                DeviceTensor& transform_b, uint32_t rows,
+                TensorContext& context) {
+  ensure_transforms(context, p, rows, transform_a, transform_b);
   DeviceTensor& source = transformed_input(batch, p, input, transform_a, transform_b);
   const uint32_t tiled_rows = rows / 64 * 64;
   auto record = [&](auto& weight) {
@@ -380,27 +385,27 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   batch.rms_norm_modulate_bf16_table(tokens, w.norm1, s.modulation,
                                      s.modulation_rows, 1, 0, selectors, s.normed, c.epsilon);
   projection(batch, w.q, s.q_plan, s.cache, s.normed, s.q,
-             s.hidden_a, s.hidden_b, c.sequence);
+             s.hidden_a, s.hidden_b, c.sequence, *s.context);
   projection(batch, w.k, s.k_plan, s.cache, s.normed, s.k,
-             s.hidden_a, s.hidden_b, c.sequence);
+             s.hidden_a, s.hidden_b, c.sequence, *s.context);
   projection(batch, w.v, s.v_plan, s.cache, s.normed, s.v,
-             s.hidden_a, s.hidden_b, c.sequence);
+             s.hidden_a, s.hidden_b, c.sequence, *s.context);
   batch.rms_norm_heads_bf16(s.q, w.q_norm, s.q, c.heads, c.head_dim, c.epsilon);
   batch.rms_norm_heads_bf16(s.k, w.k_norm, s.k, c.heads, c.head_dim, c.epsilon);
   batch.rope_h3_bf16(s.q, cosine, sine);
   batch.rope_h3_bf16(s.k, cosine, sine);
   s.attention_plan.record(batch, s.q, s.k, s.v, s.attention, ranges);
   projection(batch, w.out, s.out_plan, s.cache, s.attention, s.branch,
-             s.inner_a, s.inner_b, c.sequence);
+             s.inner_a, s.inner_b, c.sequence, *s.context);
   batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation,
                                  s.modulation_rows, 2, selectors);
   batch.rms_norm_modulate_bf16_table(tokens, w.norm2, s.modulation,
                                      s.modulation_rows, 4, 3, selectors, s.normed, c.epsilon);
   projection(batch, w.fc1, s.fc1_plan, s.cache, s.normed, s.fused,
-             s.hidden_a, s.hidden_b, c.sequence);
+             s.hidden_a, s.hidden_b, c.sequence, *s.context);
   batch.dit_swiglu_bf16(s.fused, s.activation);
   projection(batch, w.fc2, s.fc2_plan, s.cache, s.activation, s.branch,
-             s.ffn_a, s.ffn_b, c.sequence);
+             s.ffn_a, s.ffn_b, c.sequence, *s.context);
   batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation,
                                  s.modulation_rows, 5, selectors);
 }
