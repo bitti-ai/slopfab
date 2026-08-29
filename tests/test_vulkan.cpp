@@ -20,6 +20,7 @@
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/audio_decoder.h"
 #include "vidfab/vulkan/dit_block.h"
+#include "vidfab/vulkan/dit_denoise.h"
 #include "vidfab/vulkan/dit_graph.h"
 #include "vidfab/vulkan/dit_transformer.h"
 #include "vidfab/vulkan/vae_decoder.h"
@@ -2686,6 +2687,7 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     constexpr int64_t text_dim = 16, video_dim = 4, audio_dim = 2;
     const int64_t final_adaln = 2 * h;
     all.insert(all.end(), {
+      {"adaln_t_table", {1025, 8}, values(1025 * 8, 97, 1.0f / 4096.0f)},
       {"condition_proj.weight", {h, text_dim},
        values(size_t(h * text_dim), 101, 1.0f / 1024.0f),
        corruption == 2 ? DType::kF32 : DType::kBF16},
@@ -3282,6 +3284,120 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   transformer.prepare_text(prompt);
   CHECK(run_transformer() == transformer_output);
   transformer.unload();
+
+  // Complete CUDA-off T2VA denoise trajectory. Modality rows remain on the
+  // device across every transformer evaluation and Euler update; only final
+  // rows cross back to the host.
+  TensorContextOptions denoise_options;
+  denoise_options.max_batch_operators = 64;
+  TensorContext denoise_context(device, denoise_options);
+  ExactH3DenoiseConfig denoise_config;
+  denoise_config.transformer = transformer_config;
+  denoise_config.transformer.main.block.timesteps = 2;
+  denoise_config.layout.num_text = 3;
+  denoise_config.layout.num_audio_rows = 2;
+  denoise_config.layout.num_video_rows = 60;
+  denoise_config.layout.num_audio_latents = 1;
+  denoise_config.layout.num_latent_frames = 15;
+  denoise_config.layout.latent_height = 4;
+  denoise_config.layout.latent_width = 4;
+  denoise_config.indices = dit::build_indices(denoise_config.layout);
+  denoise_config.position_ids = dit::build_position_ids(denoise_config.layout);
+  denoise_config.attention_band = 1;
+  const uint64_t denoise_baseline = denoise_context.pooled_used_bytes();
+  const uint64_t denoise_baseline_reserved = denoise_context.reserved_bytes();
+  const uint64_t denoise_baseline_descriptors =
+      denoise_context.descriptor_set_allocations();
+  ExactH3Denoiser denoiser = ExactH3Denoiser::create(
+      denoise_context, denoise_config);
+  bool denoise_corrupt_rejected = false;
+  try { denoiser.load(corrupt_transformer_metadata.front()); }
+  catch (const std::exception&) { denoise_corrupt_rejected = true; }
+  CHECK(denoise_corrupt_rejected && !denoiser.loaded());
+  CHECK_MSG(denoise_context.pooled_used_bytes() == denoise_baseline,
+            "corrupt denoise load used %llu baseline %llu",
+            static_cast<unsigned long long>(denoise_context.pooled_used_bytes()),
+            static_cast<unsigned long long>(denoise_baseline));
+  CHECK(denoise_context.reserved_bytes() == denoise_baseline_reserved);
+  CHECK(denoise_context.descriptor_set_allocations() ==
+        denoise_baseline_descriptors);
+  denoiser.load(transformer_checkpoint);
+  CHECK(denoiser.loaded() && !denoiser.prepared());
+  sampler::FlowScheduler denoise_video(12.0f), denoise_audio(3.0f);
+  denoise_video.set_timesteps(4);
+  denoise_audio.set_timesteps(4);
+  denoiser.prepare(prompt_values.data(), prompt_values.size(),
+                   video_values.data(), video_values.size(),
+                   audio_values.data(), audio_values.size());
+  CHECK(denoiser.prepared());
+  const ExactH3DenoiseResult denoise_output = denoiser.run(
+      denoise_video, denoise_audio);
+  CHECK(!denoise_output.cancelled && denoise_output.steps_completed == 3u);
+  std::vector<float> denoise_joined = denoise_output.video_rows;
+  denoise_joined.insert(denoise_joined.end(), denoise_output.audio_rows.begin(),
+                        denoise_output.audio_rows.end());
+  const uint64_t denoise_digest = fnv64_floats(denoise_joined);
+  CHECK(denoise_digest == 0xad06feae77d1c494ull);
+  const uint64_t denoise_used = denoise_context.pooled_used_bytes();
+  const uint64_t denoise_reserved = denoise_context.reserved_bytes();
+  const uint64_t denoise_descriptors =
+      denoise_context.descriptor_set_allocations();
+  denoiser.prepare(prompt_values.data(), prompt_values.size(),
+                   video_values.data(), video_values.size(),
+                   audio_values.data(), audio_values.size());
+  ExactH3DenoiseResult denoise_repeat = denoiser.run(
+      denoise_video, denoise_audio);
+  CHECK(denoise_repeat.video_rows == denoise_output.video_rows &&
+        denoise_repeat.audio_rows == denoise_output.audio_rows);
+  CHECK(denoise_context.pooled_used_bytes() == denoise_used);
+  CHECK(denoise_context.reserved_bytes() == denoise_reserved);
+  CHECK(denoise_context.descriptor_set_allocations() == denoise_descriptors);
+  denoiser.prepare(prompt_values.data(), prompt_values.size(),
+                   video_values.data(), video_values.size(),
+                   audio_values.data(), audio_values.size());
+  ExactH3DenoiseResult cancelled = denoiser.run(
+      denoise_video, denoise_audio,
+      [](uint32_t step, uint32_t) { return step != 0; });
+  CHECK(cancelled.cancelled && cancelled.steps_completed == 1u);
+  sampler::FlowScheduler unsupported_audio = denoise_audio;
+  unsupported_audio.set_sampler(sampler::SamplerKind::kAb2);
+  bool ab2_rejected = false;
+  try { (void)denoiser.run(denoise_video, unsupported_audio); }
+  catch (const std::invalid_argument&) { ab2_rejected = true; }
+  CHECK(ab2_rejected && denoiser.prepared());
+  const uint64_t denoise_persistent = denoiser.persistent_bytes();
+  const uint64_t denoise_scratch = denoiser.scratch_bytes();
+  CHECK(denoise_persistent != 0 && denoise_scratch != 0 &&
+        denoiser.peak_device_bytes() == denoise_persistent + denoise_scratch);
+  denoiser.unload();
+  CHECK(!denoiser.loaded() && !denoiser.prepared() &&
+        denoiser.persistent_bytes() == 0u && denoiser.scratch_bytes() == 0u &&
+        denoiser.peak_device_bytes() == 0u);
+  // The context intentionally keeps its paired upload/readback buffers. Pool
+  // usage includes driver memory-requirement rounding, so use the observed
+  // unloaded watermark and prove it is bounded and stable across reload.
+  const uint64_t denoise_staging_used = denoise_context.pooled_used_bytes();
+  CHECK(denoise_context.staging_capacity_bytes() != 0 &&
+        denoise_staging_used > denoise_baseline &&
+        denoise_staging_used - denoise_baseline < denoise_persistent);
+  denoiser.load(transformer_checkpoint);
+  denoiser.prepare(prompt_values.data(), prompt_values.size(),
+                   video_values.data(), video_values.size(),
+                   audio_values.data(), audio_values.size());
+  ExactH3DenoiseResult after_reload = denoiser.run(
+      denoise_video, denoise_audio);
+  CHECK(after_reload.video_rows == denoise_output.video_rows &&
+        after_reload.audio_rows == denoise_output.audio_rows);
+  CHECK(denoiser.persistent_bytes() == denoise_persistent &&
+        denoiser.scratch_bytes() == denoise_scratch);
+  std::printf(
+      "  CUDA-off H3 denoise S65 x3 FNV64 %016llx, persistent/scratch %.2f/%.2f MiB\n",
+      static_cast<unsigned long long>(denoise_digest),
+      double(denoise_persistent) / 1048576.0,
+      double(denoise_scratch) / 1048576.0);
+  denoiser.unload();
+  CHECK(denoise_context.pooled_used_bytes() == denoise_staging_used);
+
   CHECK(first.persistent_bytes() == 0u && second.persistent_bytes() == 0u);
   CHECK(context.pooled_used_bytes() + 2 * persistent <= stable_used);
   first.load(valid, 0);

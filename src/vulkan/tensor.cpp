@@ -1704,6 +1704,70 @@ void TensorContext::upload_transient_bytes(DeviceTensor& destination,
   impl_->pool.trim();
 }
 
+void TensorContext::upload_batch(const TensorUpload* uploads, uint32_t count) {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  if (!uploads || count == 0)
+    throw std::invalid_argument("vulkan tensor: invalid upload batch");
+  struct Pending {
+    std::shared_ptr<DeviceTensor::Impl> tensor;
+    const void* values = nullptr;
+    uint64_t bytes = 0;
+    uint64_t physical = 0;
+    uint64_t offset = 0;
+    bool old_has_access = false;
+    BufferAccess old_access = BufferAccess::kTransferWrite;
+  };
+  std::vector<Pending> pending;
+  pending.reserve(count);
+  uint64_t total = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!uploads[i].destination || !uploads[i].values)
+      throw std::invalid_argument("vulkan tensor: invalid upload batch item");
+    auto tensor = impl_->require(*uploads[i].destination);
+    for (const Pending& prior : pending)
+      if (prior.tensor.get() == tensor.get())
+        throw std::invalid_argument("vulkan tensor: duplicate upload destination");
+    if (uploads[i].bytes != tensor->logical_bytes)
+      throw std::invalid_argument("vulkan tensor: upload batch byte count mismatch");
+    const uint64_t physical = tensor->buffer.size();
+    if (total > std::numeric_limits<uint64_t>::max() - physical)
+      throw std::overflow_error("vulkan tensor: upload batch size overflow");
+    pending.push_back({tensor, uploads[i].values, uploads[i].bytes, physical,
+                       total, tensor->has_access, tensor->access});
+    total += physical;
+  }
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
+  impl_->ensure_staging(total);
+  const uint32_t zero = 0;
+  for (const Pending& item : pending) {
+    impl_->upload_buffer.write(item.offset, item.values, item.bytes);
+    if (item.physical != item.bytes)
+      impl_->upload_buffer.write(item.offset + item.bytes, &zero,
+                                 item.physical - item.bytes);
+  }
+  CommandList list = impl_->commands.begin();
+  list.barrier(impl_->upload_buffer, BufferAccess::kHostWrite,
+               BufferAccess::kTransferRead, 0, total);
+  try {
+    for (Pending& item : pending) {
+      if (item.tensor->has_access)
+        list.barrier(item.tensor->buffer, item.tensor->access,
+                     BufferAccess::kTransferWrite);
+      item.tensor->has_access = true;
+      item.tensor->access = BufferAccess::kTransferWrite;
+      list.copy_buffer(impl_->upload_buffer, item.tensor->buffer,
+                       item.physical, item.offset, 0);
+    }
+    impl_->complete(std::move(list));
+  } catch (...) {
+    for (Pending& item : pending) {
+      item.tensor->has_access = item.old_has_access;
+      item.tensor->access = item.old_access;
+    }
+    throw;
+  }
+}
+
 void TensorContext::download(DeviceTensor& source, float* values, uint64_t count) {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
   auto src = impl_->require(source);
@@ -1880,6 +1944,11 @@ uint64_t TensorContext::staging_capacity_bytes() const noexcept {
 }
 uint64_t TensorContext::descriptor_set_allocations() const noexcept {
   return impl_ ? impl_->commands.descriptor_set_allocations() : 0;
+}
+
+void TensorContext::collect() {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  impl_->commands.collect();
 }
 uint64_t TensorContext::storage_binding_alignment() const noexcept {
   return impl_ ? impl_->storage_binding_alignment : 1;

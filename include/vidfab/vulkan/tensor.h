@@ -69,6 +69,12 @@ class DeviceTensor {
   friend class StreamedNVFP4WeightCache;
 };
 
+struct TensorUpload {
+  DeviceTensor* destination = nullptr;
+  const void* values = nullptr;
+  uint64_t bytes = 0;
+};
+
 class TensorWorkspace final : public DeviceWorkspace {
  public:
   explicit TensorWorkspace(const Device& device, uint64_t block_bytes = 4ull << 20);
@@ -322,6 +328,10 @@ class TensorContext {
   void upload_bytes(DeviceTensor& destination, const void* values, uint64_t bytes);
   void upload_transient_bytes(DeviceTensor& destination, const void* values,
                               uint64_t bytes);
+  // Several complete tensor uploads in one synchronous transfer submission.
+  // Destinations must be distinct. Persistent staging grows to the packed
+  // high-water once and is then reused without per-call allocation.
+  void upload_batch(const TensorUpload* uploads, uint32_t count);
   void download_bytes(DeviceTensor& source, void* values, uint64_t bytes);
   // Exact self-copy and partial aliasing are rejected.
   void copy(DeviceTensor& source, DeviceTensor& destination);
@@ -380,6 +390,9 @@ class TensorContext {
   // accounted separately from logical device tensors and retained for reuse.
   uint64_t staging_capacity_bytes() const noexcept;
   uint64_t descriptor_set_allocations() const noexcept;
+  // Releases resources retained by already-complete bounded flight slots.
+  // Does not wait for outstanding work.
+  void collect();
   uint64_t storage_binding_alignment() const noexcept;
   bool owns(const DeviceTensor& tensor) const noexcept;
 
