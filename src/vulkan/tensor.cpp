@@ -3896,6 +3896,35 @@ PreparedNVFP4WeightView StreamedNVFP4WeightCache::prepare(
         "vulkan nvfp4 stream: cache, batch and plan contexts differ");
   }
   const DenseGemmPlanDesc& desc = plan.impl_->desc;
+  // Validate the entire materialization transaction before changing the
+  // shared dense tensor's logical shape or cache generation. In particular,
+  // require every format-specific resource through this cache's owner now;
+  // materialize_bf16() must not discover a foreign weight after an older
+  // prepared view has already been made stale.
+  std::array<std::shared_ptr<DeviceTensor::Impl>, 5> sources{};
+  sources[0] = impl_->owner->require(weight.impl_->data);
+  switch (weight.impl_->format) {
+    case LinearWeightFormat::kFloat32:
+    case LinearWeightFormat::kFloat16:
+    case LinearWeightFormat::kBFloat16:
+      break;
+    case LinearWeightFormat::kFloat8E4M3:
+    case LinearWeightFormat::kInt8:
+      sources[1] = impl_->owner->require(weight.impl_->weight_scale);
+      break;
+    case LinearWeightFormat::kNVFloat4:
+      sources[1] = impl_->owner->require(weight.impl_->block_scale);
+      break;
+    case LinearWeightFormat::kNF4:
+      sources[1] = impl_->owner->require(weight.impl_->nf4_absmax);
+      sources[2] = impl_->owner->require(weight.impl_->nf4_quant_map);
+      sources[3] = impl_->owner->require(weight.impl_->nf4_nested_quant_map);
+      sources[4] = impl_->owner->require(weight.impl_->nf4_nested_absmax);
+      break;
+    default:
+      throw std::invalid_argument(
+          "vulkan linear stream: unsupported weight format");
+  }
   const uint64_t elements = checked_multiply(
       weight.impl_->out_features, weight.impl_->in_features,
       "nvfp4 streamed weight");
@@ -3915,6 +3944,12 @@ PreparedNVFP4WeightView StreamedNVFP4WeightCache::prepare(
   }
   impl_->owner->validate_dispatch(1 + (elements - 1) / 2);
   auto dense = impl_->owner->require(impl_->dense);
+  for (const auto& source : sources) {
+    if (source && source.get() == dense.get()) {
+      throw std::invalid_argument(
+          "vulkan linear stream: cache aliases persistent weight storage");
+    }
+  }
   const uint64_t shape[] = {weight.impl_->out_features,
                             weight.impl_->in_features};
   const TensorLayout layout = TensorLayout::contiguous(shape, 2);

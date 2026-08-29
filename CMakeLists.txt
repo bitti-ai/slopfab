@@ -1216,7 +1216,8 @@ if(VIDFAB_BUILD_TESTS)
 
   if(VIDFAB_ENABLE_CUDA AND VIDFAB_ENABLE_VULKAN)
     add_executable(vidfab_tensor_backend_tests
-      tests/harness.cpp tests/test_tensor_backends.cu tests/test_audio_vulkan.cu)
+      tests/harness.cpp tests/allocation_guard.cpp
+      tests/test_tensor_backends.cu tests/test_audio_vulkan.cu)
     target_link_libraries(vidfab_tensor_backend_tests PRIVATE
       vidfab_cuda vidfab_vulkan)
     target_compile_definitions(vidfab_tensor_backend_tests PRIVATE

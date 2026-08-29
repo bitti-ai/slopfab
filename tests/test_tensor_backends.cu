@@ -1,4 +1,5 @@
 #include "harness.h"
+#include "allocation_guard.h"
 
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
@@ -2876,8 +2877,25 @@ VIDFAB_TEST(cuda_vulkan_dit_exact_pointwise) {
     direct.submit().wait();}
   StreamedNVFP4WeightCache stream_cache=StreamedNVFP4WeightCache::create(
       vk,uint64_t(stream_out)*stream_in);
+  TensorContext foreign_vk(device);
+  LinearWeight foreign_i8_weight=LinearWeight::upload(foreign_vk,i8_upload);
+  DenseGemmPlan wrong_stream_plan=DenseGemmPlan::create(vk,
+      {stream_rows,stream_out,stream_in+1,DenseGemmMode::kBFloat16,
+       DenseGemmBias::kNone});
   {TensorBatch streamed=vk.begin_batch();
     PreparedNVFP4WeightView prepared=stream_cache.prepare(streamed,i8_weight,stream_plan);
+    const uint32_t capacity=streamed.remaining_operator_capacity();
+    bool foreign_rejected=false;
+    try{(void)stream_cache.prepare(streamed,foreign_i8_weight,stream_plan);}
+    catch(const std::invalid_argument&){foreign_rejected=true;}
+    CHECK(foreign_rejected);
+    CHECK(streamed.remaining_operator_capacity()==capacity);
+    bool shape_rejected=false;
+    try{(void)stream_cache.prepare(streamed,i8_weight,wrong_stream_plan);}
+    catch(const std::invalid_argument&){shape_rejected=true;}
+    CHECK(shape_rejected);
+    CHECK(streamed.remaining_operator_capacity()==capacity);
+    // Rejections preserve the exact generation/layout/access state.
     stream_plan.record(streamed,stream_i,prepared,stream_actual,stream_rows);
     streamed.submit().wait();}
   std::vector<uint16_t> stream_expected_bits(size_t(stream_rows)*stream_out),
@@ -2978,7 +2996,10 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
     vk.upload_bytes(tokens, input.data(), input.size() * 2);
     const auto begin = std::chrono::steady_clock::now();
     TensorBatch batch = vk.begin_batch();
-    stage.record(batch, tokens, cos_tensor, sin_tensor, scratch, &taps);
+    {
+      test::HostAllocationGuard allocation_guard;
+      stage.record(batch, tokens, cos_tensor, sin_tensor, scratch, &taps);
+    }
     CHECK(batch.remaining_operator_capacity() ==
           context_options.max_batch_operators - stage.required_operators(&taps));
     batch.submit().wait();

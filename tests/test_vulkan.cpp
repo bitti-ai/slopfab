@@ -912,11 +912,20 @@ VIDFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
 
   TensorBatch first = context.begin_batch();
   PreparedNVFP4WeightView p = cache.prepare(first, w_positive, plan);
-  plan.record(first, input, p, output, 2, 0, 0);
+  const uint32_t capacity_after_prepare = first.remaining_operator_capacity();
   bool foreign_threw = false;
   try { (void)cache.prepare(first, foreign_weight, foreign_shape_plan); }
   catch (const std::invalid_argument&) { foreign_threw = true; }
   CHECK(foreign_threw);
+  CHECK(first.remaining_operator_capacity() == capacity_after_prepare);
+  bool shape_threw = false;
+  try { (void)cache.prepare(first, w_positive, foreign_shape_plan); }
+  catch (const std::invalid_argument&) { shape_threw = true; }
+  CHECK(shape_threw);
+  CHECK(first.remaining_operator_capacity() == capacity_after_prepare);
+  // Both failures leave the prior generation, dense layout and access state
+  // intact: it remains immediately recordable in this same batch.
+  plan.record(first, input, p, output, 2, 0, 0);
   // AWQ transforms the activation before GEMM; it does not alter NVFP4
   // materialization. Preparing such a weight is therefore valid and, like
   // every successful prepare, supersedes the preceding cache generation.

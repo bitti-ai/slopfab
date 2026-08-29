@@ -1,13 +1,13 @@
 #include "vidfab/vulkan/text_layer.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include "vidfab/attention.h"
 #include "vidfab/tensor_convert.h"
@@ -223,7 +223,9 @@ uint32_t projection_operators(const Projection& projection, uint32_t rows) {
 
 void validate_tap(TensorContext& context, DeviceTensor* tensor,
                   ScalarType type, const TensorLayout& layout,
-                  const char* name, std::vector<DeviceTensorView>& views) {
+                  const char* name,
+                  std::array<DeviceTensorView, 14>& views,
+                  size_t& view_count) {
   if (!tensor) return;
   if (!context.owns(*tensor)) {
     throw std::invalid_argument(std::string("Vulkan Qwen layer: foreign ") +
@@ -235,12 +237,15 @@ void validate_tap(TensorContext& context, DeviceTensor* tensor,
     throw std::invalid_argument(std::string("Vulkan Qwen layer: invalid ") +
                                 name + " tap");
   }
-  for (const DeviceTensorView& other : views) {
-    if (other.resource == view.resource) {
+  for (size_t i = 0; i < view_count; ++i) {
+    if (views[i].resource == view.resource) {
       throw std::invalid_argument("Vulkan Qwen layer: aliased replay tap");
     }
   }
-  views.push_back(view);
+  if (view_count == views.size()) {
+    throw std::logic_error("Vulkan Qwen layer: tap validation overflow");
+  }
+  views[view_count++] = view;
 }
 
 }  // namespace
@@ -525,30 +530,41 @@ void ExactQwenTextLayerStage::record(
   auto& s = *scratch.impl_;
   const auto& c = impl_->config.encoder;
   const uint32_t ffn = static_cast<uint32_t>(c.intermediate_size);
-  std::vector<DeviceTensorView> tap_views{token_view, cosine_view, sine_view};
+  std::array<DeviceTensorView, 14> tap_views{};
+  tap_views[0] = token_view;
+  tap_views[1] = cosine_view;
+  tap_views[2] = sine_view;
+  size_t tap_view_count = 3;
   if (taps) {
     validate_tap(*impl_->context, taps->input_norm, ScalarType::kBFloat16,
-                 matrix(rows, hidden), "input norm", tap_views);
+                 matrix(rows, hidden), "input norm", tap_views, tap_view_count);
     validate_tap(*impl_->context, taps->query, ScalarType::kBFloat16,
-                 three(rows, c.num_attention_heads, c.head_dim), "query", tap_views);
+                 three(rows, c.num_attention_heads, c.head_dim), "query",
+                 tap_views, tap_view_count);
     validate_tap(*impl_->context, taps->key, ScalarType::kBFloat16,
-                 three(rows, c.num_key_value_heads, c.head_dim), "key", tap_views);
+                 three(rows, c.num_key_value_heads, c.head_dim), "key",
+                 tap_views, tap_view_count);
     validate_tap(*impl_->context, taps->value, ScalarType::kBFloat16,
-                 three(rows, c.num_key_value_heads, c.head_dim), "value", tap_views);
+                 three(rows, c.num_key_value_heads, c.head_dim), "value",
+                 tap_views, tap_view_count);
     validate_tap(*impl_->context, taps->attention, ScalarType::kBFloat16,
-                 three(rows, c.num_attention_heads, c.head_dim), "attention", tap_views);
+                 three(rows, c.num_attention_heads, c.head_dim), "attention",
+                 tap_views, tap_view_count);
     validate_tap(*impl_->context, taps->attention_residual, ScalarType::kBFloat16,
-                 matrix(rows, hidden), "attention residual", tap_views);
+                 matrix(rows, hidden), "attention residual", tap_views,
+                 tap_view_count);
     validate_tap(*impl_->context, taps->post_attention_norm, ScalarType::kBFloat16,
-                 matrix(rows, hidden), "post-attention norm", tap_views);
+                 matrix(rows, hidden), "post-attention norm", tap_views,
+                 tap_view_count);
     validate_tap(*impl_->context, taps->gate, ScalarType::kBFloat16,
-                 matrix(rows, ffn), "gate", tap_views);
+                 matrix(rows, ffn), "gate", tap_views, tap_view_count);
     validate_tap(*impl_->context, taps->up, ScalarType::kBFloat16,
-                 matrix(rows, ffn), "up", tap_views);
+                 matrix(rows, ffn), "up", tap_views, tap_view_count);
     validate_tap(*impl_->context, taps->activation, ScalarType::kBFloat16,
-                 matrix(rows, ffn), "activation", tap_views);
+                 matrix(rows, ffn), "activation", tap_views, tap_view_count);
     validate_tap(*impl_->context, taps->final_residual, ScalarType::kBFloat16,
-                 matrix(rows, hidden), "final residual", tap_views);
+                 matrix(rows, hidden), "final residual", tap_views,
+                 tap_view_count);
   }
   if (!batch.belongs_to(*impl_->context)) {
     throw std::invalid_argument("Vulkan Qwen layer: batch belongs to another context");
