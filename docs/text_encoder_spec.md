@@ -1615,13 +1615,18 @@ The authorities use the production I8+ConvRot archive SHA-256
 and NVFP4+AWQ SHA-256
 `33E69E3EDAB846D52949BAFDB00378BD3F5A93F78124FC83D5EF109DC4A1FCBB`
 with a deterministic 256x256 RGB image passed through the real patchifier.
-CUDA and Vulkan match every one of 27 visual and 50 decoder BF16 boundaries
-exactly for both archives; final FP32 embedding FNV64 values are respectively
-`A875C128AA7A0E9D` and `EBC9E36A30C843CD`. A CUDA-disabled replay pins the I8
-result. At the trace-free production maximum S16384/L4100, I8 and NVFP4 both
-measure a 2790.5 MiB logical and allocator-observed peak; cold/warm Vulkan times
-are 60.34/55.14 s and 54.86/51.36 s. Repeat pool/reservation/descriptor counts
-are exact and unload returns pooled-used memory to the staging-only baseline.
+CUDA and Vulkan match every one of 27 I8 visual BF16 boundaries and all 50
+decoder boundaries for both archives; final FP32 embedding FNV64 values are
+respectively `A875C128AA7A0E9D` and `EBC9E36A30C843CD`. A CUDA-disabled replay
+pins the I8 result. At the trace-free production maximum S16384/L4100, the
+actual-SHA I8 and NV runs pin visual main/DeepStack FNV64 values
+`63A7DD4533D82D51`, `DA837B598AE29C53`, `0EDF2B1389F62CE2`, and
+`D8F970E5016F22B7`; all 351 `visual.*` metadata and payloads are also compared
+byte-for-byte between archives. Final I8/NV hashes are `EDE491026C069661` and
+`4435938303E77287`. Both measure a 2676.3 MiB logical and non-staging allocator
+peak; cold/warm Vulkan times are 60.79/54.96 s and 54.52/51.65 s. Repeat
+pool/reservation/descriptor counts are exact and unload returns pooled-used
+memory to the staging-only baseline.
 Top-level Ref2VA is still rejected because keyframe
 video-VAE *encoding* is a separate unported component, not because conditioner
 vision semantics remain unknown.

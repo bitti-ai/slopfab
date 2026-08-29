@@ -1245,8 +1245,9 @@ The exact Vulkan conditioner now implements this same visual topology. It
 streams one BF16 visual block or merger at a time, extracts DeepStack features
 after visual blocks 8/16/24, and injects them after text decoder layers 0/1/2.
 On the pinned 256x256 production-grid fixture, CUDA and Vulkan matched all 27
-visual residual boundaries, all 50 multimodal decoder boundaries, and the final
-FP32 prompt embedding byte-for-byte for both shipped formats. The I8+ConvRot
+visual residual boundaries for the I8 authority, and all 50 multimodal decoder
+boundaries plus the final FP32 prompt embedding byte-for-byte for both shipped
+formats. The I8+ConvRot
 final FNV64 is `A875C128AA7A0E9D` (CUDA/Vulkan 4.51/6.99 s, 771.8 MiB peak);
 the NVFP4+AWQ final is `EBC9E36A30C843CD` (2.92/4.04 s, 569.9 MiB peak).
 CUDA-disabled I8 replay took 8.24 s. The checkpoint authorities are SHA-256
@@ -1254,11 +1255,17 @@ CUDA-disabled I8 replay took 8.24 s. The checkpoint authorities are SHA-256
 and `33E69E3EDAB846D52949BAFDB00378BD3F5A93F78124FC83D5EF109DC4A1FCBB`;
 the normal-prompt tokenizer provenance remains
 `A5D85B6DCC535E6B93115A9EF287E6132FDBF30270DA6218194BA742261173C7`.
-The trace-free production maximum (S16384 visual patches, L4100 decoder rows)
-took 60.34/55.14 s cold/warm for I8 and 54.86/51.36 s for NVFP4. Both formats
-reported a 2790.5 MiB logical and observed allocator peak; maximum streamed
+At the trace-free production maximum (S16384 visual patches, L4100 decoder
+rows), actual-SHA I8 and NV runs pin visual main/DeepStack FNV64 values
+`63A7DD4533D82D51`, `DA837B598AE29C53`, `0EDF2B1389F62CE2`, and
+`D8F970E5016F22B7`; the final I8/NV embeddings pin `EDE491026C069661` and
+`4435938303E77287`. The runs took 60.79/54.96 s cold/warm for I8 and
+54.52/51.65 s for NVFP4. Both formats reported a 2676.3 MiB logical and
+non-staging allocator peak; maximum streamed
 weights were 465.3/261.6 MiB, with stable repeat pool/reservation/descriptor
-counts and a return to the staging-only used baseline after unload.
+counts and a return to the staging-only used baseline after unload. The test
+also verifies all 351 `visual.*` tensor names, dtypes, shapes, byte counts, and
+payload bytes are identical between the two independently SHA-pinned archives.
 
 The checked-in exact tensor shader provenance is source SHA-256
 `67D485F5818226DAE9D95FCB7B9DD0D208F767DF60B014981AECEDB2FFC1EC7E`
