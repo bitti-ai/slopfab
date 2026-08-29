@@ -436,9 +436,9 @@ if(VIDFAB_ENABLE_VULKAN)
   string(SHA256 VIDFAB_TENSOR_AUDIO_SOURCE_HASH "${VIDFAB_TENSOR_AUDIO_TEXT}")
   file(SHA256 "${VIDFAB_TENSOR_AUDIO_SPV}" VIDFAB_TENSOR_AUDIO_SPV_HASH)
   if(NOT VIDFAB_TENSOR_AUDIO_SOURCE_HASH STREQUAL
-      "7feee6ad6848991940dd52241a87b90640f79dcf732564131dc2992a9974d6c5" OR
+      "6e272dd0a477f70eb26bd9bcfa90087151173dd63f9f16026a99a4fb96f202eb" OR
      NOT VIDFAB_TENSOR_AUDIO_SPV_HASH STREQUAL
-      "c44acc360e186f81791326d71a8ca25f7fee2756420643204a773aa1e163c712")
+      "59a11f98da8f065e470e52a9f40d25130c728055716046a1f1aae8f69321555e")
     message(FATAL_ERROR
       "vidfab: audio shader/source hash mismatch; regenerate with Microsoft DXC "
       "1.9.2607 using -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 -E main "
@@ -1172,7 +1172,7 @@ if(VIDFAB_BUILD_TESTS)
 
   if(VIDFAB_ENABLE_CUDA AND VIDFAB_ENABLE_VULKAN)
     add_executable(vidfab_tensor_backend_tests
-      tests/harness.cpp tests/test_tensor_backends.cu)
+      tests/harness.cpp tests/test_tensor_backends.cu tests/test_audio_vulkan.cu)
     target_link_libraries(vidfab_tensor_backend_tests PRIVATE
       vidfab_cuda vidfab_vulkan)
     if(WIN32)

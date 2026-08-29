@@ -37,6 +37,14 @@ float canonical(float value) {
   if (magnitude > 0x7f800000u) return asfloat(0x7fc00000u);
   return value;
 }
+float exact_mad(float a, float b, float c) {
+  a = canonical(a); b = canonical(b); c = canonical(c);
+  if ((asuint(a) & 0x7fffffffu) > 0x7f800000u ||
+      (asuint(b) & 0x7fffffffu) > 0x7f800000u ||
+      (asuint(c) & 0x7fffffffu) > 0x7f800000u)
+    return asfloat(0x7fc00000u);
+  return canonical(mad(a, b, c));
+}
 
 uint64_t round_quotient_even(uint64_t numerator, uint64_t denominator) {
   uint64_t quotient = numerator / denominator;
@@ -115,19 +123,19 @@ float exp_nonpositive(float value) {
   float scaled = value * 1.4426950408889634f;
   int exponent = int(scaled);
   if (float(exponent) > scaled) --exponent;
-  float remainder = mad(-float(exponent), 0.693145751953125f, value);
-  remainder = mad(-float(exponent), 1.428606765330187e-6f, remainder);
+  float remainder = exact_mad(-float(exponent), 0.693145751953125f, value);
+  remainder = exact_mad(-float(exponent), 1.428606765330187e-6f, remainder);
   float polynomial = 2.7557319223985893e-7f;
-  polynomial = mad(polynomial, remainder, 2.755731922398589e-6f);
-  polynomial = mad(polynomial, remainder, 2.48015873015873e-5f);
-  polynomial = mad(polynomial, remainder, 1.984126984126984e-4f);
-  polynomial = mad(polynomial, remainder, 1.388888888888889e-3f);
-  polynomial = mad(polynomial, remainder, 8.333333333333333e-3f);
-  polynomial = mad(polynomial, remainder, 4.166666666666667e-2f);
-  polynomial = mad(polynomial, remainder, 1.666666666666667e-1f);
-  polynomial = mad(polynomial, remainder, 0.5f);
-  polynomial = mad(polynomial, remainder, 1.0f);
-  polynomial = mad(polynomial, remainder, 1.0f);
+  polynomial = exact_mad(polynomial, remainder, 2.755731922398589e-6f);
+  polynomial = exact_mad(polynomial, remainder, 2.48015873015873e-5f);
+  polynomial = exact_mad(polynomial, remainder, 1.984126984126984e-4f);
+  polynomial = exact_mad(polynomial, remainder, 1.388888888888889e-3f);
+  polynomial = exact_mad(polynomial, remainder, 8.333333333333333e-3f);
+  polynomial = exact_mad(polynomial, remainder, 4.166666666666667e-2f);
+  polynomial = exact_mad(polynomial, remainder, 1.666666666666667e-1f);
+  polynomial = exact_mad(polynomial, remainder, 0.5f);
+  polynomial = exact_mad(polynomial, remainder, 1.0f);
+  polynomial = exact_mad(polynomial, remainder, 1.0f);
   return polynomial * asfloat(uint(exponent + 127) << 23u);
 }
 float exact_exp(float value) {
@@ -141,15 +149,15 @@ float exact_sin(float value) {
     return asfloat(0x7fc00000u);
   float scaled = value * 0.3183098861837907f;
   int quadrant = scaled >= 0.0f ? int(scaled + 0.5f) : int(scaled - 0.5f);
-  float reduced = mad(-float(quadrant), 3.141592502593994140625f, value);
-  reduced = mad(-float(quadrant), 1.5099579909783764e-7f, reduced);
+  float reduced = exact_mad(-float(quadrant), 3.141592502593994140625f, value);
+  reduced = exact_mad(-float(quadrant), 1.5099579909783764e-7f, reduced);
   float square = reduced * reduced;
   float polynomial = -2.505210838544172e-8f;
-  polynomial = mad(polynomial, square, 2.7557319223985893e-6f);
-  polynomial = mad(polynomial, square, -1.9841269841269841e-4f);
-  polynomial = mad(polynomial, square, 8.3333333333333332e-3f);
-  polynomial = mad(polynomial, square, -1.6666666666666666e-1f);
-  polynomial = mad(polynomial, square, 1.0f);
+  polynomial = exact_mad(polynomial, square, 2.7557319223985893e-6f);
+  polynomial = exact_mad(polynomial, square, -1.9841269841269841e-4f);
+  polynomial = exact_mad(polynomial, square, 8.3333333333333332e-3f);
+  polynomial = exact_mad(polynomial, square, -1.6666666666666666e-1f);
+  polynomial = exact_mad(polynomial, square, 1.0f);
   float result = reduced * polynomial;
   if ((quadrant & 1) != 0) result = -result;
   return canonical(result);
@@ -179,12 +187,13 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     for (uint ci = 0; ci < p.in_channels; ++ci) {
       for (uint k = 0; k < p.kernel; ++k) {
         int t = int(n + k * p.dilation_or_padding) - int(p.padding_or_stride);
-        if (t < 0 || t >= int(p.length_in)) continue;
-        float x = canonical(load_f32(primary,
-            (b * p.in_channels + ci) * p.length_in + uint(t)));
+        float x = 0.0f;
+        if (t >= 0 && t < int(p.length_in))
+          x = canonical(load_f32(primary,
+              (b * p.in_channels + ci) * p.length_in + uint(t)));
         float w = canonical(load_f32(secondary,
             (co * p.in_channels + ci) * p.kernel + k));
-        accumulator = canonical(mad(x, w, accumulator));
+        accumulator = exact_mad(x, w, accumulator);
       }
     }
     store_f32(i, accumulator);
@@ -210,7 +219,7 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
             (b * p.in_channels + ci) * p.length_in + uint(j)));
         float w = canonical(load_f32(secondary,
             (ci * p.out_channels + co) * p.kernel + k));
-        accumulator = canonical(mad(x, w, accumulator));
+        accumulator = exact_mad(x, w, accumulator);
       }
     }
     store_f32(i, accumulator);
@@ -246,7 +255,7 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
       float x = canonical(load_f32(primary,
           (b * p.out_channels + channel) * p.length_in + uint(source)));
       float w = canonical(load_f32(secondary, parity + 2u * tap));
-      accumulator = canonical(mad(x, w, accumulator));
+      accumulator = exact_mad(x, w, accumulator);
     }
     store_f32(i, snake(canonical(accumulator * 2.0f), channel));
   } else { // 12-tap AA downsample
@@ -261,7 +270,7 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
       float x = canonical(load_f32(primary,
           (b * p.out_channels + channel) * p.length_in + uint(source)));
       float w = canonical(load_f32(secondary, k));
-      accumulator = canonical(mad(x, w, accumulator));
+      accumulator = exact_mad(x, w, accumulator);
     }
     store_f32(i, accumulator);
   }
