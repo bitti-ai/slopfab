@@ -14,6 +14,7 @@ class TensorBatch;
 class LinearWeight;
 class DenseGemmPlan;
 class BlockedAttentionPlan;
+class CausalGQAAttentionPlan;
 class PreparedAttentionInputs;
 class PreparedAttentionView;
 class PreparedF16Activation;
@@ -49,6 +50,7 @@ class DeviceTensor {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
@@ -179,6 +181,7 @@ class TensorBatch {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
@@ -243,6 +246,8 @@ class TensorContext {
   // deterministic exp/divide shader and CUDA reference artifacts.
   bool exact_blocked_attention() const noexcept;
   void require_exact_blocked_attention() const;
+  bool exact_causal_gqa_attention() const noexcept;
+  void require_exact_causal_gqa_attention() const;
   // Native block-scaled E2M1 cooperative MMA is deliberately separate from
   // streamed NVFP4->BF16 execution. It remains false until Vulkan exposes and
   // this backend implements an exact FP4 component/scale operand contract.
@@ -260,6 +265,7 @@ class TensorContext {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
@@ -348,6 +354,44 @@ class BlockedAttentionPlan {
  private:
   struct Impl;
   explicit BlockedAttentionPlan(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
+};
+
+// Exact full-sequence causal grouped-query attention for Qwen text. This is a
+// separate arithmetic contract from BlockedAttentionPlan: Q/K/V remain BF16,
+// probabilities are rounded to BF16, and K/V have fewer heads than Q.
+struct CausalGQAAttentionPlanDesc {
+  uint32_t sequence = 0;
+  uint32_t query_heads = 64;
+  uint32_t kv_heads = 8;
+  uint32_t head_dim = 128;
+  float scale = 0.0f;
+};
+
+class CausalGQAAttentionPlan {
+ public:
+  CausalGQAAttentionPlan();
+  ~CausalGQAAttentionPlan();
+  CausalGQAAttentionPlan(CausalGQAAttentionPlan&&) noexcept;
+  CausalGQAAttentionPlan& operator=(CausalGQAAttentionPlan&&) noexcept;
+  CausalGQAAttentionPlan(const CausalGQAAttentionPlan&) = delete;
+  CausalGQAAttentionPlan& operator=(const CausalGQAAttentionPlan&) = delete;
+
+  static CausalGQAAttentionPlan create(
+      TensorContext& context, const CausalGQAAttentionPlanDesc& desc);
+  const CausalGQAAttentionPlanDesc& description() const;
+  // Q is contiguous BF16 [sequence,query_heads,head_dim], K/V are
+  // [sequence,kv_heads,head_dim], and output is Q-shaped and distinct. Global
+  // query row q reads keys [0,q], including across row-range records.
+  void record(TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
+              DeviceTensor& value, DeviceTensor& output,
+              uint32_t query_row_offset = 0, uint32_t rows = 0,
+              uint32_t output_row_offset = 0) const;
+  explicit operator bool() const noexcept;
+
+ private:
+  struct Impl;
+  explicit CausalGQAAttentionPlan(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
 

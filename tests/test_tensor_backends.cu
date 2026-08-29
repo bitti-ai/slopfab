@@ -715,7 +715,107 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
     std::printf("  exact D72 attention S%u H16, 2 query chunks: CUDA prepare %.3f ms + attention %.3f ms, Vulkan total %.3f ms, FP16 slot %.2f MiB\n",
                 sequence, cuda_prepare_ms / samples,
                 cuda_attention_ms / samples, vulkan_total_ms / samples,
-                prepared.reserved_bytes() / (1024.0 * 1024.0));
+        prepared.reserved_bytes() / (1024.0 * 1024.0));
+    if (real_shape) {
+      std::vector<uint16_t> cuda_real(count), vulkan_real(count);
+      co.copy_to_host(cuda_real.data(), count);
+      vk.download_bytes(out, vulkan_real.data(), count * sizeof(uint16_t));
+      CHECK(cuda_real == vulkan_real);
+    }
+  }
+}
+
+VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_causal_gqa_attention()) return;
+
+  constexpr uint32_t sequence = 129;
+  constexpr uint32_t query_heads = 64;
+  constexpr uint32_t kv_heads = 8;
+  constexpr uint32_t dim = 128;
+  const size_t q_count = size_t(sequence) * query_heads * dim;
+  const size_t kv_count = size_t(sequence) * kv_heads * dim;
+  std::vector<uint16_t> hq(q_count), hk(kv_count), hv(kv_count);
+  for (size_t i = 0; i < q_count; ++i)
+    hq[i] = f32_to_bf16(float(int(i % 29) - 14) / 32.0f);
+  for (size_t i = 0; i < kv_count; ++i) {
+    hk[i] = f32_to_bf16(float(int(i % 31) - 15) / 32.0f);
+    hv[i] = f32_to_bf16(float(int(i % 37) - 18) / 16.0f);
+  }
+  cuda::DeviceBuffer<uint16_t> cq(q_count), ck(kv_count), cv(kv_count),
+      co(q_count), co_repeat(q_count);
+  cq.copy_from_host(hq.data(), q_count);
+  ck.copy_from_host(hk.data(), kv_count);
+  cv.copy_from_host(hv.data(), kv_count);
+  cuda::launch_deterministic_causal_gqa_attention(
+      nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+      reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+      reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, query_heads,
+      kv_heads, dim, exact_attention_scale(dim));
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> expected(q_count);
+  co.copy_to_host(expected.data(), q_count);
+  cuda::launch_deterministic_causal_gqa_attention(
+      nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+      reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+      reinterpret_cast<__nv_bfloat16*>(co_repeat.get()), sequence, query_heads,
+      kv_heads, dim, exact_attention_scale(dim));
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> expected_repeat(q_count);
+  co_repeat.copy_to_host(expected_repeat.data(), q_count);
+  CHECK(expected_repeat == expected);
+
+  const uint64_t q_shape[] = {sequence, query_heads, dim};
+  const uint64_t kv_shape[] = {sequence, kv_heads, dim};
+  DeviceTensor q = vk.allocate(TensorLayout::contiguous(q_shape, 3),
+                               ScalarType::kBFloat16);
+  DeviceTensor k = vk.allocate(TensorLayout::contiguous(kv_shape, 3),
+                               ScalarType::kBFloat16);
+  DeviceTensor v = vk.allocate(TensorLayout::contiguous(kv_shape, 3),
+                               ScalarType::kBFloat16);
+  DeviceTensor out = vk.allocate(TensorLayout::contiguous(q_shape, 3),
+                                 ScalarType::kBFloat16);
+  vk.upload_bytes(q, hq.data(), q_count * sizeof(uint16_t));
+  vk.upload_bytes(k, hk.data(), kv_count * sizeof(uint16_t));
+  vk.upload_bytes(v, hv.data(), kv_count * sizeof(uint16_t));
+  CausalGQAAttentionPlanDesc desc{sequence, query_heads, kv_heads, dim,
+                                  exact_attention_scale(dim)};
+  CausalGQAAttentionPlan plan = CausalGQAAttentionPlan::create(vk, desc);
+  TensorBatch batch = vk.begin_batch();
+  plan.record(batch, q, k, v, out, 0, 65, 0);
+  plan.record(batch, q, k, v, out, 65, sequence - 65, 65);
+  batch.submit().wait();
+  std::vector<uint16_t> got(q_count);
+  vk.download_bytes(out, got.data(), got.size() * sizeof(uint16_t));
+  if (got != expected) {
+    for (size_t i = 0; i < got.size(); ++i) {
+      if (got[i] != expected[i]) {
+        std::printf("  causal GQA mismatch %zu: CUDA %04x Vulkan %04x\n",
+                    i, expected[i], got[i]);
+        break;
+      }
+    }
+  }
+  CHECK(got == expected);
+  // Causal row zero is exactly V row zero from the mapped KV head.
+  for (uint32_t h = 0; h < query_heads; ++h) {
+    const uint32_t kv = h / (query_heads / kv_heads);
+    for (uint32_t d = 0; d < dim; ++d)
+      CHECK(got[size_t(h) * dim + d] == hv[size_t(kv) * dim + d]);
   }
 }
 

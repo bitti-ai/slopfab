@@ -40,4 +40,6 @@ inline constexpr uint8_t kTensorAttentionBlockedSpirv[] = {
     @VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_BYTES@};
 inline constexpr uint8_t kTensorAttentionPrepareSpirv[] = {
     @VIDFAB_TENSOR_ATTENTION_PREPARE_SPV_BYTES@};
+inline constexpr uint8_t kTensorAttentionCausalGqaSpirv[] = {
+    @VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_BYTES@};
 }  // namespace vidfab::vulkan::detail

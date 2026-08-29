@@ -73,6 +73,10 @@ bool known_exact_blocked_attention_device(const DeviceInfo& info) {
       info.fp32_signed_zero_inf_nan_preserve && info.shader_int64_enabled;
 }
 
+bool known_exact_causal_gqa_attention_device(const DeviceInfo& info) {
+  return known_exact_blocked_attention_device(info);
+}
+
 }  // namespace
 
 struct DeviceTensor::Impl {
@@ -119,6 +123,11 @@ struct DenseGemmPlan::Impl {
 struct BlockedAttentionPlan::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   BlockedAttentionPlanDesc desc;
+};
+
+struct CausalGQAAttentionPlan::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  CausalGQAAttentionPlanDesc desc;
 };
 
 struct PreparedAttentionInputs::Impl {
@@ -219,6 +228,16 @@ struct TensorContext::Impl {
     uint32_t rows = 0;
     uint32_t reserved = 0;
   };
+  struct CausalGQAAttentionParameters {
+    uint32_t sequence = 0;
+    uint32_t query_heads = 0;
+    uint32_t kv_heads = 0;
+    uint32_t head_dim = 0;
+    uint32_t scale_bits = 0;
+    uint32_t query_row_offset = 0;
+    uint32_t output_row_offset = 0;
+    uint32_t rows = 0;
+  };
   static constexpr uint32_t kMaxBatchOperators = 32;
 
   ComputeContext commands;
@@ -234,6 +253,7 @@ struct TensorContext::Impl {
   ComputePipeline gemm_coop_f16_pipeline;
   ComputePipeline attention_blocked_pipeline;
   ComputePipeline attention_prepare_pipeline;
+  ComputePipeline attention_causal_gqa_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
   ComputePipeline bf16_rms_block_pipeline;
@@ -254,9 +274,11 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> gemm_prepare_bindings;
   std::vector<StorageBinding> attention_bindings;
   std::vector<StorageBinding> attention_prepare_bindings;
+  std::vector<StorageBinding> attention_causal_gqa_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   bool exact_attention = false;
+  bool exact_causal_gqa_attention = false;
   bool cooperative_gemm = false;
   bool cooperative_f16_gemm = false;
   uint32_t max_dispatch_x = 0;
@@ -282,7 +304,8 @@ struct TensorContext::Impl {
         gemm_bindings(4),
         gemm_prepare_bindings(2),
         attention_bindings(4),
-        attention_prepare_bindings(6) {
+        attention_prepare_bindings(6),
+        attention_causal_gqa_bindings(4) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
     static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
@@ -299,6 +322,8 @@ struct TensorContext::Impl {
                      input.info().fp32_signed_zero_inf_nan_preserve &&
                      input.info().shader_int64_enabled;
     exact_attention = known_exact_blocked_attention_device(input.info());
+    exact_causal_gqa_attention =
+        known_exact_causal_gqa_attention_device(input.info());
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
     max_dispatch_y = input.info().max_compute_workgroup_count[1];
     max_storage_bytes = input.info().max_storage_buffer_bytes;
@@ -439,6 +464,12 @@ struct TensorContext::Impl {
           sizeof(detail::kTensorAttentionPrepareSpirv), 6, 64, 1,
           sizeof(uint32_t));
     }
+    if (exact_causal_gqa_attention) {
+      attention_causal_gqa_pipeline = make_norm_pipeline(
+          detail::kTensorAttentionCausalGqaSpirv,
+          sizeof(detail::kTensorAttentionCausalGqaSpirv), 4, 128, 1,
+          sizeof(CausalGQAAttentionParameters));
+    }
     for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
     for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
     for (uint32_t i = 0; i < mod_bindings.size(); ++i) mod_bindings[i].binding = i;
@@ -454,6 +485,8 @@ struct TensorContext::Impl {
       attention_bindings[i].binding = i;
     for (uint32_t i = 0; i < attention_prepare_bindings.size(); ++i)
       attention_prepare_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_causal_gqa_bindings.size(); ++i)
+      attention_causal_gqa_bindings[i].binding = i;
   }
 
   uintptr_t context_id = next_context_identity();
@@ -746,6 +779,19 @@ struct TensorBatch::Impl {
                           owner->attention_prepare_bindings);
     commands.push_constants(&words, sizeof(words));
     commands.dispatch(static_cast<uint32_t>((static_cast<uint64_t>(words) + 63) / 64));
+  }
+
+  void dispatch_causal_gqa_attention(
+      const TensorContext::Impl::CausalGQAAttentionParameters& parameters,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 4>& resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->attention_causal_gqa_bindings[i].buffer = &resources[i]->buffer;
+      owner->attention_causal_gqa_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->attention_causal_gqa_pipeline,
+                          owner->attention_causal_gqa_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(parameters.rows, parameters.query_heads);
   }
 
   void record_shared_mod(bool fp32, DeviceTensor& input, DeviceTensor& weight,
@@ -1376,6 +1422,16 @@ void TensorContext::require_exact_blocked_attention() const {
   if (!impl_->exact_attention) {
     throw std::runtime_error(
         "vulkan attention: exact blocked attention is unavailable on this device/driver");
+  }
+}
+bool TensorContext::exact_causal_gqa_attention() const noexcept {
+  return impl_ && impl_->exact_causal_gqa_attention;
+}
+void TensorContext::require_exact_causal_gqa_attention() const {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->exact_causal_gqa_attention) {
+    throw std::runtime_error(
+        "vulkan attention: exact causal GQA attention is unavailable on this device/driver");
   }
 }
 
@@ -2984,6 +3040,133 @@ void BlockedAttentionPlan::record(
     batch.impl_->transition(out, BufferAccess::kComputeWrite);
     std::array<std::shared_ptr<DeviceTensor::Impl>, 4> resources{q, k, v, out};
     batch.impl_->dispatch_attention(parameters, resources);
+  } catch (...) {
+    batch.impl_->poisoned = true;
+    throw;
+  }
+}
+
+CausalGQAAttentionPlan::CausalGQAAttentionPlan() = default;
+CausalGQAAttentionPlan::~CausalGQAAttentionPlan() = default;
+CausalGQAAttentionPlan::CausalGQAAttentionPlan(
+    CausalGQAAttentionPlan&&) noexcept = default;
+CausalGQAAttentionPlan& CausalGQAAttentionPlan::operator=(
+    CausalGQAAttentionPlan&&) noexcept = default;
+CausalGQAAttentionPlan::CausalGQAAttentionPlan(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+CausalGQAAttentionPlan::operator bool() const noexcept {
+  return impl_ != nullptr;
+}
+
+CausalGQAAttentionPlan CausalGQAAttentionPlan::create(
+    TensorContext& context, const CausalGQAAttentionPlanDesc& desc) {
+  if (!context.impl_) {
+    throw std::invalid_argument("vulkan causal GQA attention: empty context");
+  }
+  if (!context.impl_->exact_causal_gqa_attention) {
+    throw std::runtime_error(
+        "vulkan causal GQA attention: exact mode is unavailable on this device/driver");
+  }
+  // This plan names the shipped Qwen3-VL text contract rather than advertising
+  // an unverified generic GQA family.
+  if (desc.sequence == 0 || desc.sequence > 8192 ||
+      desc.query_heads != 64 || desc.kv_heads != 8 || desc.head_dim != 128 ||
+      !is_exact_attention_scale(desc.head_dim, desc.scale)) {
+    throw std::invalid_argument(
+        "vulkan causal GQA attention: invalid Qwen text plan");
+  }
+  uint64_t query_elements =
+      checked_multiply(desc.sequence, desc.query_heads, "causal GQA attention");
+  query_elements = checked_multiply(query_elements, desc.head_dim,
+                                    "causal GQA attention");
+  uint64_t kv_elements =
+      checked_multiply(desc.sequence, desc.kv_heads, "causal GQA attention");
+  kv_elements = checked_multiply(kv_elements, desc.head_dim,
+                                 "causal GQA attention");
+  if (query_elements > std::numeric_limits<uint32_t>::max() ||
+      kv_elements > std::numeric_limits<uint32_t>::max() ||
+      desc.sequence > context.impl_->max_dispatch_x ||
+      desc.query_heads > context.impl_->max_dispatch_y ||
+      checked_multiply(query_elements, sizeof(uint16_t),
+                       "causal GQA attention") > context.impl_->max_storage_bytes ||
+      checked_multiply(kv_elements, sizeof(uint16_t),
+                       "causal GQA attention") > context.impl_->max_storage_bytes) {
+    throw std::out_of_range(
+        "vulkan causal GQA attention: plan exceeds device/index limits");
+  }
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_;
+  result->desc = desc;
+  return CausalGQAAttentionPlan(std::move(result));
+}
+
+const CausalGQAAttentionPlanDesc& CausalGQAAttentionPlan::description() const {
+  if (!impl_) throw std::logic_error("vulkan causal GQA attention: empty plan");
+  return impl_->desc;
+}
+
+void CausalGQAAttentionPlan::record(
+    TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
+    DeviceTensor& value, DeviceTensor& output, uint32_t query_row_offset,
+    uint32_t rows, uint32_t output_row_offset) const {
+  if (!impl_ || !batch.impl_ || batch.impl_->poisoned) {
+    throw std::logic_error("vulkan causal GQA attention: empty plan or batch");
+  }
+  if (batch.impl_->owner != impl_->owner) {
+    throw std::invalid_argument(
+        "vulkan causal GQA attention: plan belongs to another context");
+  }
+  auto q = impl_->owner->require(query);
+  auto k = impl_->owner->require(key);
+  auto v = impl_->owner->require(value);
+  auto out = impl_->owner->require(output);
+  const auto& desc = impl_->desc;
+  if (query_row_offset > desc.sequence) {
+    throw std::invalid_argument(
+        "vulkan causal GQA attention: query row offset is out of range");
+  }
+  const uint32_t selected_rows =
+      rows == 0 ? desc.sequence - query_row_offset : rows;
+  const uint64_t query_end =
+      static_cast<uint64_t>(query_row_offset) + selected_rows;
+  const uint64_t output_end =
+      static_cast<uint64_t>(output_row_offset) + selected_rows;
+  auto valid_layout = [&](const std::shared_ptr<DeviceTensor::Impl>& tensor,
+                          uint32_t heads) {
+    return tensor->type == ScalarType::kBFloat16 &&
+        tensor->layout.rank == 3 && tensor->layout.is_contiguous() &&
+        tensor->layout.extent[0] == desc.sequence &&
+        tensor->layout.extent[1] == heads &&
+        tensor->layout.extent[2] == desc.head_dim;
+  };
+  if (selected_rows == 0 || query_end > desc.sequence ||
+      output_end > desc.sequence || selected_rows > impl_->owner->max_dispatch_x ||
+      desc.query_heads > impl_->owner->max_dispatch_y ||
+      !valid_layout(q, desc.query_heads) || !valid_layout(k, desc.kv_heads) ||
+      !valid_layout(v, desc.kv_heads) || !valid_layout(out, desc.query_heads) ||
+      q->identity == k->identity || q->identity == v->identity ||
+      q->identity == out->identity || k->identity == v->identity ||
+      k->identity == out->identity || v->identity == out->identity) {
+    throw std::invalid_argument(
+        "vulkan causal GQA attention: invalid tensor/range/alias");
+  }
+  TensorContext::Impl::CausalGQAAttentionParameters parameters;
+  parameters.sequence = desc.sequence;
+  parameters.query_heads = desc.query_heads;
+  parameters.kv_heads = desc.kv_heads;
+  parameters.head_dim = desc.head_dim;
+  std::memcpy(&parameters.scale_bits, &desc.scale, sizeof(desc.scale));
+  parameters.query_row_offset = query_row_offset;
+  parameters.output_row_offset = output_row_offset;
+  parameters.rows = selected_rows;
+  try {
+    batch.impl_->count_operator();
+    batch.impl_->transition(q, BufferAccess::kComputeRead);
+    batch.impl_->transition(k, BufferAccess::kComputeRead);
+    batch.impl_->transition(v, BufferAccess::kComputeRead);
+    batch.impl_->transition(out, BufferAccess::kComputeWrite);
+    std::array<std::shared_ptr<DeviceTensor::Impl>, 4> resources{q, k, v, out};
+    batch.impl_->dispatch_causal_gqa_attention(parameters, resources);
   } catch (...) {
     batch.impl_->poisoned = true;
     throw;

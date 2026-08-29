@@ -1,0 +1,192 @@
+#version 460
+#extension GL_ARB_gpu_shader_int64 : require
+#extension GL_EXT_scalar_block_layout : require
+
+// Exact causal grouped-query attention for Qwen text. One workgroup owns one
+// (global query row, query head). The causal limit is derived from the global
+// row, so splitting query rows across command-buffer records cannot expose a
+// future key. Q/K/V remain BF16: this is deliberately a different arithmetic
+// boundary from the FP16-prepared unmasked vision reference.
+layout(local_size_x = 128) in;
+layout(set = 0, binding = 0, std430) readonly buffer QueryData { uint words[]; } query_data;
+layout(set = 0, binding = 1, std430) readonly buffer KeyData { uint words[]; } key_data;
+layout(set = 0, binding = 2, std430) readonly buffer ValueData { uint words[]; } value_data;
+layout(set = 0, binding = 3, std430) buffer OutputData { uint words[]; } output_data;
+
+layout(push_constant) uniform Parameters {
+  uint sequence;
+  uint query_heads;
+  uint kv_heads;
+  uint head_dim;
+  uint scale_bits;
+  uint query_row_offset;
+  uint output_row_offset;
+  uint rows;
+} p;
+
+shared float score_or_probability[128];
+shared float reduction[128];
+shared uint output_bits[128];
+
+uint load_u16(uint source, uint index) {
+  uint packed = source == 0u ? query_data.words[index >> 1u]
+      : source == 1u ? key_data.words[index >> 1u]
+                     : value_data.words[index >> 1u];
+  return (packed >> (16u * (index & 1u))) & 0xffffu;
+}
+
+float load_bf16(uint source, uint index) {
+  return uintBitsToFloat(load_u16(source, index) << 16u);
+}
+
+uint bf16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  if ((bits & 0x7fffffffu) > 0x7f800000u) return 0x7fffu;
+  return (bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u;
+}
+
+float bf16_round(float value) {
+  return uintBitsToFloat(bf16_rte(value) << 16u);
+}
+
+float canonicalize_subnormal(float value) {
+  uint bits = floatBitsToUint(value);
+  return (bits & 0x7fffffffu) < 0x00800000u
+      ? uintBitsToFloat(bits & 0x80000000u) : value;
+}
+
+float deterministic_exp_nonpositive(float value) {
+  if (value <= -87.0f) return 0.0f;
+  precise float scaled = value * 1.4426950408889634f;
+  int exponent = int(scaled);
+  if (float(exponent) > scaled) --exponent;
+  precise float remainder = fma(-float(exponent), 0.693145751953125f, value);
+  remainder = fma(-float(exponent), 1.428606765330187e-6f, remainder);
+  precise float polynomial = 2.7557319223985893e-7f;
+  polynomial = fma(polynomial, remainder, 2.755731922398589e-6f);
+  polynomial = fma(polynomial, remainder, 2.48015873015873e-5f);
+  polynomial = fma(polynomial, remainder, 1.984126984126984e-4f);
+  polynomial = fma(polynomial, remainder, 1.388888888888889e-3f);
+  polynomial = fma(polynomial, remainder, 8.333333333333333e-3f);
+  polynomial = fma(polynomial, remainder, 4.166666666666667e-2f);
+  polynomial = fma(polynomial, remainder, 1.666666666666667e-1f);
+  polynomial = fma(polynomial, remainder, 0.5f);
+  polynomial = fma(polynomial, remainder, 1.0f);
+  polynomial = fma(polynomial, remainder, 1.0f);
+  return polynomial * uintBitsToFloat(uint(exponent + 127) << 23u);
+}
+
+uint64_t round_quotient_even(uint64_t numerator, uint64_t denominator) {
+  uint64_t quotient = numerator / denominator;
+  uint64_t remainder = numerator - quotient * denominator;
+  uint64_t complement = denominator - remainder;
+  if (remainder > complement ||
+      (remainder == complement && (quotient & 1ul) != 0ul)) ++quotient;
+  return quotient;
+}
+
+float deterministic_divide(float numerator_value, float denominator_value) {
+  uint numerator_bits = floatBitsToUint(numerator_value);
+  uint denominator_bits = floatBitsToUint(denominator_value);
+  uint sign = (numerator_bits ^ denominator_bits) & 0x80000000u;
+  uint numerator_magnitude = numerator_bits & 0x7fffffffu;
+  uint denominator_magnitude = denominator_bits & 0x7fffffffu;
+  if (numerator_magnitude < 0x00800000u) return uintBitsToFloat(sign);
+  uint a = (numerator_magnitude & 0x007fffffu) | 0x00800000u;
+  uint b = (denominator_magnitude & 0x007fffffu) | 0x00800000u;
+  int exponent = int(numerator_magnitude >> 23u) -
+                 int(denominator_magnitude >> 23u) + 127;
+  uint shift = 23u;
+  if (a < b) { --exponent; shift = 24u; }
+  uint64_t significand = round_quotient_even(uint64_t(a) << shift, uint64_t(b));
+  if (significand == (1ul << 24u)) { significand >>= 1u; ++exponent; }
+  if (exponent >= 255) return uintBitsToFloat(sign | 0x7f800000u);
+  if (exponent <= 0) {
+    uint sub_shift = uint(1 - exponent);
+    if (sub_shift >= 64u) return uintBitsToFloat(sign);
+    uint64_t base = significand >> sub_shift;
+    uint64_t lost = significand & ((1ul << sub_shift) - 1ul);
+    uint64_t halfway = 1ul << (sub_shift - 1u);
+    if (lost > halfway || (lost == halfway && (base & 1ul) != 0ul)) ++base;
+    return uintBitsToFloat(sign | uint(base));
+  }
+  return uintBitsToFloat(sign | (uint(exponent) << 23u) |
+                         (uint(significand) & 0x007fffffu));
+}
+
+void main() {
+  uint lane = gl_LocalInvocationID.x;
+  uint local_row = gl_WorkGroupID.x;
+  uint query_head = gl_WorkGroupID.y;
+  if (local_row >= p.rows || query_head >= p.query_heads) return;
+  uint query_row = p.query_row_offset + local_row;
+  uint kv_head = query_head / (p.query_heads / p.kv_heads);
+  uint q_base = (query_row * p.query_heads + query_head) * p.head_dim;
+  uint causal_keys = query_row + 1u;
+  float scale = uintBitsToFloat(p.scale_bits);
+  precise float running_max = uintBitsToFloat(0xff800000u);
+  precise float running_sum = 0.0f;
+  precise float output_accumulator = 0.0f;
+
+  for (uint key_base = 0u; key_base < causal_keys; key_base += 128u) {
+    uint key_row = key_base + lane;
+    precise float score = 0.0f;
+    if (key_row < causal_keys) {
+      uint k_base = (key_row * p.kv_heads + kv_head) * p.head_dim;
+      for (uint d = 0u; d < p.head_dim; ++d) {
+        precise float product = load_bf16(0u, q_base + d) *
+                                load_bf16(1u, k_base + d);
+        score = score + product;
+      }
+      score = score * scale;
+    } else {
+      score = uintBitsToFloat(0xff800000u);
+    }
+    score_or_probability[lane] = score;
+    reduction[lane] = score;
+    barrier();
+    for (uint width = 64u; width != 0u; width >>= 1u) {
+      if (lane < width) reduction[lane] = max(reduction[lane], reduction[lane + width]);
+      barrier();
+    }
+    float tile_max = reduction[0];
+    float next_max = max(running_max, tile_max);
+    float correction = running_max == uintBitsToFloat(0xff800000u)
+        ? 0.0f : deterministic_exp_nonpositive(running_max - next_max);
+    float exponential = key_row < causal_keys
+        ? deterministic_exp_nonpositive(score - next_max) : 0.0f;
+    // Every lane reads reduction[0] above. Do not let lane 0 reuse that shared
+    // word for the sum reduction until all warps have consumed the tile max.
+    barrier();
+    score_or_probability[lane] = bf16_round(exponential);
+    reduction[lane] = exponential;
+    barrier();
+    for (uint width = 64u; width != 0u; width >>= 1u) {
+      if (lane < width) reduction[lane] = reduction[lane] + reduction[lane + width];
+      barrier();
+    }
+    if (lane < p.head_dim) {
+      output_accumulator = canonicalize_subnormal(output_accumulator * correction);
+      for (uint j = 0u; j < 128u && key_base + j < causal_keys; ++j) {
+        uint v_index = ((key_base + j) * p.kv_heads + kv_head) * p.head_dim + lane;
+        precise float product = score_or_probability[j] *
+                                load_bf16(2u, v_index);
+        output_accumulator = canonicalize_subnormal(
+            output_accumulator + product);
+      }
+    }
+    running_sum = fma(running_sum, correction, reduction[0]);
+    running_max = next_max;
+    barrier();
+  }
+
+  if (lane < p.head_dim)
+    output_bits[lane] = bf16_rte(deterministic_divide(output_accumulator, running_sum));
+  barrier();
+  if (lane < p.head_dim && (lane & 1u) == 0u) {
+    uint output_index = ((p.output_row_offset + local_row) * p.query_heads +
+                         query_head) * p.head_dim + lane;
+    uint high = lane + 1u < p.head_dim ? output_bits[lane + 1u] : 0u;
+    output_data.words[output_index >> 1u] = output_bits[lane] | (high << 16u);
+  }
+}
