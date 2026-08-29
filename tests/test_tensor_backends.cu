@@ -3971,6 +3971,23 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
       0xd5,0xef,0x10,0x9d,0xc4,0xa1,0xfc,0xbb};
   CHECK(sha256_file(checkpoint_path.string()) ==
         (nv_requested ? nv_sha : i8_sha));
+  if (nv_requested) {
+    SafeTensors i8_archive;
+    i8_archive.open((std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+        "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors").string());
+    size_t visual_tensor_count = 0;
+    for (const auto& entry : archive.tensors()) {
+      if (entry.first.rfind("visual.", 0) != 0) continue;
+      const TensorView& nv_view = entry.second;
+      const TensorView& i8_view = i8_archive.at(entry.first);
+      CHECK(nv_view.dtype == i8_view.dtype);
+      CHECK(nv_view.shape == i8_view.shape);
+      CHECK(nv_view.nbytes == i8_view.nbytes);
+      CHECK(std::memcmp(nv_view.data, i8_view.data, nv_view.nbytes) == 0);
+      ++visual_tensor_count;
+    }
+    CHECK(visual_tensor_count == 351);
+  }
   TensorContextOptions options;
   options.max_batch_operators = 128;
   TensorContext vk(device, options);
