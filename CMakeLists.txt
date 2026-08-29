@@ -463,9 +463,9 @@ if(VIDFAB_ENABLE_VULKAN)
   string(SHA256 VIDFAB_TENSOR_DIT_SOURCE_HASH "${VIDFAB_TENSOR_DIT_TEXT}")
   file(SHA256 "${VIDFAB_TENSOR_DIT_SPV}" VIDFAB_TENSOR_DIT_SPV_HASH)
   if(NOT VIDFAB_TENSOR_DIT_SOURCE_HASH STREQUAL
-      "d6583a8fa767c5eff01598561facf53c76bd86229c3b298131d1fe4a8978102d" OR
+      "f7466ce9122848e31dfa372b3ac236b1c6d77b2558008b5ddd1cb3addbcbd0ae" OR
      NOT VIDFAB_TENSOR_DIT_SPV_HASH STREQUAL
-      "59cdeea6292f78043eaeda9955ae38ea7c1bf99db1d4de2f8ee819f9dadbac3e")
+      "62d09f44971ae01263557d8595c8051e250e3991a0fc313889c1fbf1d7fccd19")
     message(FATAL_ERROR
       "vidfab: DiT shader/source hash mismatch; regenerate with Microsoft DXC "
       "1.9.2607 using -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 -E main "

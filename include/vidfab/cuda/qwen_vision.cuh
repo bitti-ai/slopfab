@@ -8,6 +8,21 @@
 
 namespace vidfab::cuda {
 
+// Canonical exact-mode pointwise/layout seams shared with the Vulkan vision
+// stage. The shipped tower functions below retain their historical fast path.
+void qwen_vision_add_positions_exact(__nv_bfloat16* x,
+                                     const __nv_bfloat16* position_table,
+                                     const int32_t* position_index, int rows,
+                                     int hidden, cudaStream_t stream);
+void qwen_vision_split_qkv_exact(const __nv_bfloat16* fused,
+                                 __nv_bfloat16* query, __nv_bfloat16* key,
+                                 __nv_bfloat16* value, int rows, int hidden,
+                                 cudaStream_t stream);
+void qwen_vision_scatter_add_exact(const __nv_bfloat16* source,
+                                   const int32_t* row_index,
+                                   __nv_bfloat16* destination, int rows,
+                                   int hidden, cudaStream_t stream);
+
 // Splits the fused [S,3*H] QKV projection, applies the vision tower's 2-D
 // half-split RoPE to Q/K, and runs unmasked bidirectional self-attention.
 // Scratch q/k/v/out are each [S,H].

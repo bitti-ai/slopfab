@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "vidfab/cuda/attention.cuh"
+#include "vidfab/cuda/deterministic_math.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/nn_kernels.cuh"
 
@@ -29,7 +30,88 @@ __global__ void add_positions_kernel(__nv_bfloat16* x, const __nv_bfloat16* tabl
                             __bfloat162float(table[static_cast<size_t>(index[r]) * hidden + d]));
   }
 }
+
+__device__ inline float exact_vision_bf16(__nv_bfloat16 value) {
+  const uint16_t bits = __bfloat16_as_ushort(value);
+  const uint16_t magnitude = bits & 0x7fffu;
+  if (magnitude < 0x0080u)
+    return __uint_as_float(static_cast<uint32_t>(bits & 0x8000u) << 16u);
+  if (magnitude > 0x7f80u) return __uint_as_float(0x7fc00000u);
+  return __bfloat162float(value);
+}
+
+__device__ inline __nv_bfloat16 exact_vision_bf16_result(float value) {
+  value = canonicalize_pointwise_float(value);
+  if ((__float_as_uint(value) & 0x7fffffffu) > 0x7f800000u)
+    return __ushort_as_bfloat16(0x7fffu);
+  const __nv_bfloat16 rounded = __float2bfloat16_rn(value);
+  const uint16_t bits = __bfloat16_as_ushort(rounded);
+  return (bits & 0x7fffu) < 0x0080u
+      ? __ushort_as_bfloat16(bits & 0x8000u) : rounded;
+}
+
+__global__ void add_positions_exact_kernel(
+    __nv_bfloat16* x, const __nv_bfloat16* table,
+    const int32_t* index, int rows, int hidden) {
+  const size_t at = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t count = static_cast<size_t>(rows) * hidden;
+  if (at >= count) return;
+  const int row = static_cast<int>(at / hidden);
+  const int column = static_cast<int>(at - static_cast<size_t>(row) * hidden);
+  x[at] = exact_vision_bf16_result(__fadd_rn(
+      exact_vision_bf16(x[at]),
+      exact_vision_bf16(table[static_cast<size_t>(index[row]) * hidden + column])));
+}
+
+__global__ void scatter_add_exact_kernel(
+    const __nv_bfloat16* source, const int32_t* index,
+    __nv_bfloat16* destination, int rows, int hidden) {
+  const size_t at = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t count = static_cast<size_t>(rows) * hidden;
+  if (at >= count) return;
+  const int row = static_cast<int>(at / hidden);
+  const int column = static_cast<int>(at - static_cast<size_t>(row) * hidden);
+  const size_t dst = static_cast<size_t>(index[row]) * hidden + column;
+  destination[dst] = exact_vision_bf16_result(__fadd_rn(
+      exact_vision_bf16(destination[dst]), exact_vision_bf16(source[at])));
+}
 }  // namespace
+
+void qwen_vision_add_positions_exact(__nv_bfloat16* x,
+                                     const __nv_bfloat16* table,
+                                     const int32_t* index, int rows,
+                                     int hidden, cudaStream_t stream) {
+  if (!x || !table || !index || rows <= 0 || hidden <= 0)
+    throw std::invalid_argument("qwen vision exact position: invalid input");
+  const size_t count = static_cast<size_t>(rows) * hidden;
+  add_positions_exact_kernel<<<static_cast<unsigned>((count + 255) / 256), 256,
+                               0, stream>>>(x, table, index, rows, hidden);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void qwen_vision_split_qkv_exact(const __nv_bfloat16* fused,
+                                 __nv_bfloat16* query, __nv_bfloat16* key,
+                                 __nv_bfloat16* value, int rows, int hidden,
+                                 cudaStream_t stream) {
+  if (!fused || !query || !key || !value || rows <= 0 || hidden <= 0)
+    throw std::invalid_argument("qwen vision exact QKV: invalid input");
+  split_qkv_kernel<<<dim3(rows, (hidden + 255) / 256), 256, 0, stream>>>(
+      fused, query, key, value, hidden);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void qwen_vision_scatter_add_exact(const __nv_bfloat16* source,
+                                   const int32_t* index,
+                                   __nv_bfloat16* destination, int rows,
+                                   int hidden, cudaStream_t stream) {
+  if (!source || !index || !destination || rows <= 0 || hidden <= 0)
+    throw std::invalid_argument("qwen vision exact scatter: invalid input");
+  const size_t count = static_cast<size_t>(rows) * hidden;
+  scatter_add_exact_kernel<<<static_cast<unsigned>((count + 255) / 256), 256,
+                             0, stream>>>(source, index, destination, rows,
+                                         hidden);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
 
 void qwen_vision_attention(cublasHandle_t handle, cudaStream_t stream,
                            const __nv_bfloat16* qkv, const float* cos,

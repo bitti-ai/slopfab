@@ -283,12 +283,59 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     const uint high = first + 1u < live_count
         ? exact_swiglu_bf16(first + 1u) : 0u;
     output_data.Store(index * 4u, low | (high << 16u));
-  } else { // exact Qwen vision GELU-tanh, packed pairs in place
+  } else if (p.op == 6u) { // exact Qwen vision GELU-tanh, packed pairs in place
     const uint first = index * 2u;
     const uint live_count = p.rows * p.dim;
     const uint low = bf16_rte(exact_gelu_tanh(load_bf16(primary, first)));
     const uint high = first + 1u < live_count
         ? bf16_rte(exact_gelu_tanh(load_bf16(primary, first + 1u))) : 0u;
     output_data.Store(index * 4u, low | (high << 16u));
+  } else if (p.op == 7u) { // exact learned-position add, packed pairs
+    const uint first = index * 2u;
+    const uint live_count = p.rows * p.dim;
+    uint packed = 0u;
+    [unroll]
+    for (uint lane = 0u; lane < 2u; ++lane) {
+      const uint at = first + lane;
+      if (at < live_count) {
+        const uint row = at / p.dim;
+        const uint column = at - row * p.dim;
+        const uint position = tertiary.Load(row * 4u);
+        if (position < p.mod_rows) {
+          precise float sum = canonical_bf16(load_bf16(primary, at)) +
+                              canonical_bf16(load_bf16(
+                                  secondary, position * p.dim + column));
+          packed |= bf16_rte(canonical_bf16(sum)) << (lane * 16u);
+        }
+      }
+    }
+    output_data.Store(index * 4u, packed);
+  } else if (p.op == 8u) { // raw fused-QKV part copy, packed pairs
+    const uint first = index * 2u;
+    const uint live_count = p.rows * p.dim;
+    uint packed = 0u;
+    [unroll]
+    for (uint lane = 0u; lane < 2u; ++lane) {
+      const uint at = first + lane;
+      if (at < live_count) {
+        const uint row = at / p.dim;
+        const uint column = at - row * p.dim;
+        const uint source = row * (3u * p.dim) + p.unused0 * p.dim + column;
+        packed |= (primary.Load((source >> 1u) * 4u) >>
+                   ((source & 1u) * 16u) & 0xffffu) << (lane * 16u);
+      }
+    }
+    output_data.Store(index * 4u, packed);
+  } else if (p.op == 9u) { // raw merge-four reshape-copy, packed words
+    output_data.Store(index * 4u, primary.Load(index * 4u));
+  } else { // exact DeepStack scatter-add; row indices must be unique
+    const uint row = index / p.dim;
+    const uint column = index - row * p.dim;
+    const uint destination_row = tertiary.Load(row * 4u);
+    if (destination_row >= p.mod_rows) return;
+    const uint destination = destination_row * p.dim + column;
+    precise float sum = canonical_bf16(load_bf16(primary, destination)) +
+                        canonical_bf16(load_bf16(secondary, index));
+    store_bf16(destination, bf16_rte(canonical_bf16(sum)));
   }
 }

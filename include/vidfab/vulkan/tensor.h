@@ -235,6 +235,20 @@ class TensorBatch {
   // Arithmetic, exceptional values, and the packed-pair tail are pinned to
   // launch_gelu_tanh_exact; the shipped CUDA fast GELU remains unchanged.
   void vision_gelu_tanh_bf16(DeviceTensor& activation);
+  // Remaining exact vision layout seams. Position indices address table rows;
+  // QKV splits fused [rows,3*dim] into three [rows,dim] tensors; merge-four is
+  // the checkpoint's row-major [rows,dim] -> [rows/4,4*dim] reshape-copy.
+  // Scatter-add requires unique nonnegative row indices, as produced by the
+  // multimodal prompt layout.
+  void vision_add_positions_bf16(DeviceTensor& activation,
+                                 DeviceTensor& position_table,
+                                 DeviceTensor& position_index);
+  void vision_split_qkv_bf16(DeviceTensor& fused, DeviceTensor& query,
+                             DeviceTensor& key, DeviceTensor& value);
+  void vision_merge_four_bf16(DeviceTensor& input, DeviceTensor& output);
+  void vision_scatter_add_bf16(DeviceTensor& source,
+                               DeviceTensor& destination,
+                               DeviceTensor& row_index);
   // Rank-R checkpoint-native AdaLN expansion. Weight [M*P*C,R], bias
   // [M*P*C], code [T,R]. Output may be canonical [P,T*M,C] or a flat fp32
   // arena with P equal aligned table strides.
