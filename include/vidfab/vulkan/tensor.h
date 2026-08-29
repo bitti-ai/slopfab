@@ -417,12 +417,14 @@ class H3AttentionPlan {
   static H3AttentionPlan create(TensorContext& context,
                                 const H3AttentionPlanDesc& desc);
   const H3AttentionPlanDesc& description() const;
-  // Tensors are contiguous token-major BF16 [sequence,heads,head_dim]. Output
-  // is distinct. Null ranges select full attention; otherwise the range table
+  // Tensors are distinct, nonoverlapping contiguous token-major BF16
+  // [sequence,heads,head_dim]. Null ranges select full attention; otherwise the range table
   // is indexed by the global query row, including for row-chunk records.
-  // Exact mode requires finite Q/K/V, scaled scores, PV accumulators and final
-  // numerators. BF16/FP32 subnormal arithmetic is canonicalized identically by
-  // the paired CUDA/Vulkan implementations.
+  // Exact mode requires finite Q/K/V, every BF16->FP16 V conversion to remain
+  // finite, and finite scaled scores, online sums (finite-normal denominator),
+  // PV FMA results/accumulators and final numerators. BF16-subnormal inputs and
+  // FP32-subnormal products/FMA results/accumulators are explicitly
+  // canonicalized to signed zero in both CUDA and Vulkan.
   void record(TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
               DeviceTensor& value, DeviceTensor& output,
               const H3AttentionRanges* ranges = nullptr,

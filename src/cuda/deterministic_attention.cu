@@ -503,10 +503,13 @@ void launch_deterministic_h3_attention(
     throw std::out_of_range("deterministic H3 attention: uint32 indexing overflow");
   }
   const uint64_t bytes = elements * sizeof(__nv_bfloat16);
-  if (ranges_overlap(query, bytes, output, bytes) ||
+  if (ranges_overlap(query, bytes, key, bytes) ||
+      ranges_overlap(query, bytes, value, bytes) ||
+      ranges_overlap(key, bytes, value, bytes) ||
+      ranges_overlap(query, bytes, output, bytes) ||
       ranges_overlap(key, bytes, output, bytes) ||
       ranges_overlap(value, bytes, output, bytes)) {
-    throw std::invalid_argument("deterministic H3 attention: output must be distinct");
+    throw std::invalid_argument("deterministic H3 attention: all tensors must be distinct");
   }
   const GridLimits limits = cached_grid_limits();
   if (!deterministic_attention_grid_fits(

@@ -42,6 +42,8 @@ void launch_deterministic_blocked_attention(
 // device range table has four canonical int32 endpoints per global 128-row
 // query tile and is traversed in ordered 64-key blocks. This fixed scalar
 // contract intentionally does not claim byte identity with CUDA fused MMA.
+// Inputs must satisfy the same finite BF16->FP16-V, score, denominator and PV
+// accumulator domain documented by H3AttentionPlan.
 void launch_deterministic_h3_attention(
     cudaStream_t stream, const __nv_bfloat16* query,
     const __nv_bfloat16* key, const __nv_bfloat16* value,

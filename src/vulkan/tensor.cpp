@@ -77,6 +77,12 @@ bool known_exact_causal_gqa_attention_device(const DeviceInfo& info) {
   return known_exact_blocked_attention_device(info);
 }
 
+bool known_exact_h3_attention_device(const DeviceInfo& info) {
+  // Named separately because H3's direct-BF16/FP16-V contract and checked
+  // shader artifacts can evolve independently of the prepared-FP16 plan.
+  return known_exact_blocked_attention_device(info);
+}
+
 }  // namespace
 
 struct DeviceTensor::Impl {
@@ -343,7 +349,7 @@ struct TensorContext::Impl {
                      input.info().fp32_signed_zero_inf_nan_preserve &&
                      input.info().shader_int64_enabled;
     exact_attention = known_exact_blocked_attention_device(input.info());
-    exact_h3_attention = known_exact_blocked_attention_device(input.info());
+    exact_h3_attention = known_exact_h3_attention_device(input.info());
     exact_causal_gqa_attention =
         known_exact_causal_gqa_attention_device(input.info());
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
