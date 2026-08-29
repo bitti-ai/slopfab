@@ -163,7 +163,7 @@ workspace and preserves global causality across recorded row chunks. A real
 post-vision-insertion L132 checkpoint audit found zero subnormal/nonfinite
 Q/K/V values, finite score/PV bounds, and measured the intentional exact-mode
 rebaseline against shipped cuBLAS at relative L2 1.38034e-4 (max absolute
-0.0009765625). Exact Vulkan measured 0.320 ms at L132 and 673.904 ms at L8192;
+0.0009765625). Exact Vulkan measured 0.321 ms at L132 and 674.861 ms at L8192;
 the latter has 288 MiB of direct tensors and no attention scratch. This is
 still a primitive: text-encoder orchestration remains CUDA-owned.
 

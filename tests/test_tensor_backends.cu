@@ -1083,8 +1083,9 @@ VIDFAB_TEST(cuda_vulkan_causal_gqa_real_timing) {
     const uint64_t direct_bytes =
         (uint64_t(q_count) * 2 + uint64_t(kv_count) * 2) * sizeof(uint16_t);
     std::printf("  causal GQA L%u H64/KV8/D128: CUDA %.3f ms, Vulkan %.3f ms, "
-                "direct Q/K/V/out %.2f MiB, context reserved %.2f MiB, descriptors %llu\n",
+                "direct Q/K/V/out %.2f MiB, pool used %.2f MiB, context reserved %.2f MiB, descriptors %llu\n",
                 sequence, cuda_ms, vulkan_ms, direct_bytes / (1024.0 * 1024.0),
+                vk.pooled_used_bytes() / (1024.0 * 1024.0),
                 vk.reserved_bytes() / (1024.0 * 1024.0),
                 static_cast<unsigned long long>(vk.descriptor_set_allocations()));
   }

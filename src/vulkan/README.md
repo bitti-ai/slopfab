@@ -621,29 +621,35 @@ The shipped path measured 59.585 ms cold and 0.152 ms warm; exact CUDA measured
 0.650 ms in the same audit. A separate device-resident constant-input benchmark
 (one warmup, one measured launch; uploads/downloads excluded) gave:
 
-| Causal shape | CUDA exact | Vulkan exact | direct Q/K/V/out | context pool high-water | descriptors |
+| Causal shape | CUDA exact | Vulkan exact | direct Q/K/V/out | pool used / reserved | descriptors |
 |---|---:|---:|---:|---:|---:|
-| L132,H64/KV8,D128 | 0.206 ms | 0.320 ms | 4.64 MiB | 16.00 MiB | 1 |
-| L8192,H64/KV8,D128 | 671.584 ms | 673.904 ms | 288.00 MiB | 544.00 MiB | 1 |
+| L132,H64/KV8,D128 | 0.209 ms | 0.321 ms | 4.64 MiB | 8.77 / 16.00 MiB | 1 |
+| L8192,H64/KV8,D128 | 674.870 ms | 674.861 ms | 288.00 MiB | 544.00 / 544.00 MiB | 1 |
 
-The L8192 pool figure includes bounded allocator block rounding and retained
-smaller-shape high-water; it is not attention scratch. Fifty max-length decoder
-layers would spend about 33.7 seconds in exact Vulkan attention. Sage2/SOL and
-the shipped cuBLAS route are not silently selected by this plan.
+The L8192 reserved figure is the 288 MiB live tensor pool plus benchmark-grown
+persistent upload and readback staging at the largest 128 MiB Q/output boundary
+each (544 MiB total). Those staging buffers exist only because the benchmark
+crosses a host boundary; a production device-only chain does not need them.
+The attention operator itself has zero scratch. Fifty max-length decoder layers
+would spend about 33.7 seconds in exact Vulkan attention. Sage2/SOL and the
+shipped cuBLAS route are not silently selected by this plan.
 
 The causal shader was built with Khronos glslang 16.5.0 and then the repository
-normal+denormal fp32-control transform; the CUDA artifact uses CUDA 13.0.48,
+normal fp32-control transform (signed-zero/Inf/NaN preservation plus RTE, with
+no `DenormPreserve` execution mode). Subnormals are explicitly canonicalized,
+so the capability gate does not claim or require denormal preservation. The
+CUDA artifact uses CUDA 13.0.48,
 MSVC 14.44.35207, and SM120a:
 
 ```text
 glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_attention_causal_gqa.comp -o causal.raw.spv
-python tools/add_spirv_float_controls.py causal.raw.spv causal.normal.spv src/vulkan/tensor_attention_causal_gqa.comp.spv
+python tools/add_spirv_float_controls.py causal.raw.spv src/vulkan/tensor_attention_causal_gqa.comp.spv causal.denorm.spv
 nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,code=[compute_120a,sm_120a] -Iinclude src/cuda/deterministic_attention.cu -o deterministic_attention.fatbin
 ```
 
 ```text
 tensor_attention_causal_gqa.comp          DD700E2FDC18ED483973B2E161AEA3F1F43E8F2DB18FC8796F800BE766A79930
-tensor_attention_causal_gqa.comp.spv      F6FFCAE291363A63CC5ABF11EA62BA77EF154D950F586D8C6E2F6C0937075BEF
+tensor_attention_causal_gqa.comp.spv      9F8B4480179C01CC26A3E467D1F0915D606594388DAB8B5C0856770B2E7E3778
 src/cuda/deterministic_attention.cu       F22FCCAC89FA1A2707D7078DA568193DEE52477A2B046FB386282A28A3C7FB38
 include/vidfab/cuda/deterministic_attention.cuh EE98F4EB3DC8C15883A327E611BA4392C1CCFFB4BEA93C25221DC7B453F4EBF3
 deterministic_attention.fatbin            42123F5868046BA443DD1F069A315795DFC33714712851004D597AB06F8FCDFE
