@@ -3113,6 +3113,14 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   vk.download_bytes(tokens, unchanged.data(), unchanged.size() * 2);
   CHECK(unchanged == input);
 
+  // Establish the exact non-weight pool baseline with caller scratch,
+  // activations and taps retained. Every unload below must return here.
+  stage.unload();
+  const uint64_t unloaded_pool_baseline = vk.pooled_used_bytes();
+  const uint64_t unloaded_descriptor_baseline =
+      vk.descriptor_set_allocations();
+  stage.load(checkpoint, 0);
+
   const auto first = run();
   const uint64_t stable_descriptors = vk.descriptor_set_allocations();
   const auto repeat = run();
@@ -3135,7 +3143,9 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   // weights, pool high-water and the executable output.
   const std::filesystem::path bad_path =
       std::filesystem::temp_directory_path() /
-      "vidfab_qwen_layer_bad_reload.safetensors";
+      ("vidfab_qwen_layer_bad_reload_" + std::to_string(
+          std::chrono::high_resolution_clock::now().time_since_epoch().count()) +
+       ".safetensors");
   write_safetensors(bad_path.string(),
       {{"unrelated", {1}, {0.0f}, DType::kF32}});
   const uint64_t before_bad_persistent = stage.persistent_bytes();
@@ -3178,12 +3188,16 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   CHECK(run().first == first.first);
   std::filesystem::remove(late_i8_path);
 
+  const uint64_t i8_high_water = vk.reserved_bytes();
   stage.unload();
   CHECK(!stage.loaded());
   CHECK(stage.persistent_bytes() == 0);
+  CHECK(vk.pooled_used_bytes() == unloaded_pool_baseline);
+  CHECK(vk.descriptor_set_allocations() >= unloaded_descriptor_baseline);
   stage.load(checkpoint, 0);
   const auto reloaded = run();
   CHECK(reloaded.first == first.first);
+  CHECK(vk.reserved_bytes() == i8_high_water);
 
   // The same stage/scratch executes the shipped NVFP4+AWQ contract. Only the
   // two declared AWQ transforms record; all seven matrices still use the one
@@ -3193,6 +3207,8 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   SafeTensors nvfp4;
   nvfp4.open(nvfp4_path.string());
   stage.unload();
+  CHECK(vk.pooled_used_bytes() == unloaded_pool_baseline);
+  CHECK(vk.reserved_bytes() == i8_high_water);
   const auto nv_load_begin = std::chrono::steady_clock::now();
   stage.load(nvfp4, 0);
   const double nv_load_ms = std::chrono::duration<double, std::milli>(
@@ -3200,8 +3216,10 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   CHECK(stage.format() == text::WeightFormat::kNVFP4Awq);
   CHECK(stage.required_operators(&taps) == 37);
   const auto nv_first = run();
+  const uint64_t nv_stable_descriptors = vk.descriptor_set_allocations();
   const auto nv_repeat = run();
   CHECK(nv_first.first == nv_repeat.first);
+  CHECK(vk.descriptor_set_allocations() == nv_stable_descriptors);
   const std::filesystem::path late_nv_path =
       make_sparse_qwen_metadata_corruption(
           nvfp4, text::WeightFormat::kNVFP4Awq,
@@ -3228,14 +3246,27 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
     nv_digest ^= value >> 8u; nv_digest *= 1099511628211ull;
   }
   CHECK(nv_digest == 0x935104aeb9432d6aull);
-  CHECK(stage.persistent_bytes() < 270ull * 1024 * 1024);
+  const uint64_t nv_persistent = stage.persistent_bytes();
+  CHECK(nv_persistent < 270ull * 1024 * 1024);
+  const uint64_t nv_high_water = vk.reserved_bytes();
+  stage.unload();
+  CHECK(vk.pooled_used_bytes() == unloaded_pool_baseline);
+  CHECK(vk.reserved_bytes() == nv_high_water);
+  stage.load(nvfp4, 0);
+  CHECK(run().first == nv_first.first);
+  CHECK(vk.reserved_bytes() == nv_high_water);
+  CHECK(vk.descriptor_set_allocations() == nv_stable_descriptors);
+  stage.unload();
+  CHECK(stage.persistent_bytes() == 0);
+  CHECK(vk.pooled_used_bytes() == unloaded_pool_baseline);
+  CHECK(vk.reserved_bytes() == nv_high_water);
   std::printf(
       "  exact Vulkan Qwen layer0 S3: I8 load/first/repeat %.1f/%.1f/%.1f ms FNV64 %016llx persistent %.1f MiB; NVFP4 load/first/repeat %.1f/%.1f/%.1f ms FNV64 %016llx persistent %.1f MiB; shared scratch %.1f MiB, pool %.1f MiB, descriptors %llu\n",
       load_ms, first.second, repeat.second,
       static_cast<unsigned long long>(digest), double(persistent) / 1048576.0,
       nv_load_ms, nv_first.second, nv_repeat.second,
       static_cast<unsigned long long>(nv_digest),
-      double(stage.persistent_bytes()) / 1048576.0,
+      double(nv_persistent) / 1048576.0,
       double(scratch_bytes) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(stable_descriptors));
