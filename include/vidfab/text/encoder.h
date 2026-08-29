@@ -136,6 +136,15 @@ struct PromptEmbedding {
   std::vector<int32_t> modality_tags;
 };
 
+// Optional exact-mode diagnostic. All 50 BF16 residual boundaries are copied
+// device-to-device while the graph runs and downloaded together after layer
+// 49, so enabling it does not introduce a per-layer host seam.
+struct EncoderTrace {
+  int num_tokens = 0;
+  int hidden_size = 5120;
+  std::vector<uint16_t> layer_residual_bf16;
+};
+
 // Measured, not estimated. Reported so a caller can choose a residency mode on
 // evidence and so the two modes can be compared without external tooling.
 struct EncoderStats {
@@ -180,7 +189,8 @@ class Encoder {
   // Runs the 50 layers over `token_ids` and returns the unnormalised residual
   // stream. `token_ids` must come from `Tokenizer::encode` with no special
   // tokens added.
-  PromptEmbedding encode(const std::vector<int32_t>& token_ids);
+  PromptEmbedding encode(const std::vector<int32_t>& token_ids,
+                         EncoderTrace* trace = nullptr);
   PromptEmbedding encode(const std::vector<int32_t>& token_ids,
                          const std::vector<QwenPixelValues>& images);
 

@@ -1184,7 +1184,8 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
   }
 }
 
-PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
+PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
+                                EncoderTrace* trace) {
   Impl& s = *impl_;
   require(s.loaded, "encode: load() has not been called");
   require(!token_ids.empty(),
@@ -1221,6 +1222,12 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
     s.vision.unload();
   }
   DeviceBuffer<uint16_t> x(stream_elems);
+  DeviceBuffer<uint16_t> trace_device;
+  if (trace != nullptr) {
+    require(s.cfg.arithmetic == EncoderArithmetic::kExact,
+            "encode: boundary trace requires exact conditioner arithmetic");
+    trace_device.allocate(static_cast<size_t>(s.cfg.num_layers) * stream_elems);
+  }
   x.copy_from_host(host_embed.data(), host_embed.size(), s.compute);
   __nv_bfloat16* xp = reinterpret_cast<__nv_bfloat16*>(x.get());
 
@@ -1278,6 +1285,12 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   };
 
   const int N = s.cfg.num_layers;
+  auto capture_layer = [&](int layer) {
+    if (trace_device.get() == nullptr) return;
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
+        trace_device.get() + static_cast<size_t>(layer) * stream_elems, x.get(),
+        stream_elems * sizeof(uint16_t), cudaMemcpyDeviceToDevice, s.compute));
+  };
   if (s.mode == Residency::kResident) {
     for (int i = 0; i < N; ++i) {
       const LayerWeights w =
@@ -1285,6 +1298,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
                                   s.globals[static_cast<size_t>(i)]);
       forward_layer(w);
       inject(i);
+      capture_layer(i);
     }
   } else {
     s.stage_upload(0, 0, s.ping[0].get());
@@ -1295,6 +1309,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
                                                     s.globals[static_cast<size_t>(i)]);
       forward_layer(w);
       inject(i);
+      capture_layer(i);
       VIDFAB_CUDA_CHECK(cudaEventRecord(s.compute_done[slot], s.compute));
 
       if (i + 1 < N) {
@@ -1329,7 +1344,17 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
     }
   }
   out.copy_to_host(result.data.data(), stream_elems, s.compute);
+  std::vector<uint16_t> trace_host;
+  if (trace_device.get() != nullptr) {
+    trace_host.resize(static_cast<size_t>(N) * stream_elems);
+    trace_device.copy_to_host(trace_host.data(), trace_host.size(), s.compute);
+  }
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.compute));
+  if (trace != nullptr) {
+    trace->num_tokens = L;
+    trace->hidden_size = hidden;
+    trace->layer_residual_bf16 = std::move(trace_host);
+  }
 
   s.stats.workspace_bytes = s.ws.capacity();
   s.stats.activation_bytes = x.nbytes() + cos.nbytes() + sin.nbytes() + out.nbytes();

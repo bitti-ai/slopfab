@@ -19,6 +19,8 @@ struct ExactQwenTextEncoderStats {
   uint64_t scratch_bytes = 0;
   uint64_t activation_bytes = 0;
   uint64_t peak_device_bytes = 0;
+  uint64_t allocator_baseline_bytes = 0;
+  uint64_t allocator_peak_used_bytes = 0;
   uint64_t allocator_used_bytes = 0;
   uint64_t allocator_reserved_bytes = 0;
   uint64_t descriptor_set_allocations = 0;
@@ -46,7 +48,8 @@ class ExactQwenTextEncoder {
   const text::EncoderConfig& config() const;
   text::WeightFormat format() const noexcept;
 
-  text::PromptEmbedding encode(const std::vector<int32_t>& token_ids);
+  text::PromptEmbedding encode(const std::vector<int32_t>& token_ids,
+                               text::EncoderTrace* trace = nullptr);
   text::PromptEmbedding encode(const text::Tokenizer& tokenizer,
                                const std::string& prompt);
   const ExactQwenTextEncoderStats& stats() const noexcept;

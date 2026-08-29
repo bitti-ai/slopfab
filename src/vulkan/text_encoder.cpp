@@ -79,8 +79,10 @@ struct ExactQwenTextEncoder::Impl {
   text::EncoderConfig config;
   std::unique_ptr<ShapeState> shape;
   ExactQwenTextEncoderStats stats;
+  uint64_t allocator_baseline = 0;
 
-  explicit Impl(TensorContext& owner) : context(&owner) {}
+  explicit Impl(TensorContext& owner)
+      : context(&owner), allocator_baseline(owner.pooled_used_bytes()) {}
 
   void reset() noexcept {
     shape.reset();
@@ -152,7 +154,7 @@ text::WeightFormat ExactQwenTextEncoder::format() const noexcept {
 }
 
 text::PromptEmbedding ExactQwenTextEncoder::encode(
-    const std::vector<int32_t>& token_ids) {
+    const std::vector<int32_t>& token_ids, text::EncoderTrace* trace) {
   if (!loaded()) throw std::logic_error("Vulkan Qwen encoder: not loaded");
   if (token_ids.empty() ||
       token_ids.size() > static_cast<size_t>(impl_->config.max_prompt_tokens)) {
@@ -161,6 +163,12 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   const Clock::time_point begin = Clock::now();
   const uint32_t sequence = static_cast<uint32_t>(token_ids.size());
   Impl::ShapeState& state = impl_->ensure_shape(sequence);
+  DeviceTensor trace_device;
+  if (trace != nullptr) {
+    trace_device = impl_->context->allocate(
+        matrix(uint64_t(sequence) * 50, impl_->config.hidden_size),
+        ScalarType::kBFloat16);
+  }
   std::vector<uint16_t> embedding;
   text::gather_embedding_rows(*impl_->embedding, impl_->embedding_scale,
                               token_ids, embedding);
@@ -185,6 +193,9 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
       TensorBatch batch = impl_->context->begin_batch();
       state.stage.record(batch, state.tokens, state.cosine, state.sine,
                          state.scratch);
+      if (trace != nullptr)
+        batch.copy_rows(state.tokens, trace_device, 0, layer * sequence,
+                        sequence);
       if (layer == 49) batch.convert(state.tokens, state.output);
       batch.submit().wait();
     }
@@ -200,12 +211,26 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   result.data.resize(static_cast<size_t>(sequence) * impl_->config.hidden_size);
   result.modality_tags.assign(sequence, 1);
   impl_->context->download(state.output, result.data.data(), result.data.size());
+  if (trace != nullptr) {
+    std::vector<uint16_t> boundaries(
+        static_cast<size_t>(50) * sequence * impl_->config.hidden_size);
+    impl_->context->download_bytes(trace_device, boundaries.data(),
+                                   boundaries.size() * sizeof(uint16_t));
+    trace->num_tokens = static_cast<int>(sequence);
+    trace->hidden_size = impl_->config.hidden_size;
+    trace->layer_residual_bf16 = std::move(boundaries);
+  }
 
   impl_->stats.last_num_tokens = sequence;
   impl_->stats.max_layer_weight_bytes = max_weight;
   impl_->stats.scratch_bytes = state.scratch.reserved_bytes();
   impl_->stats.activation_bytes = state.activation_bytes();
-  impl_->stats.peak_device_bytes = peak_used;
+  const uint64_t trace_bytes = trace_device
+      ? trace_device.layout().bytes(trace_device.type()) : 0;
+  impl_->stats.peak_device_bytes = max_weight + state.scratch.reserved_bytes() +
+      state.activation_bytes() + trace_bytes;
+  impl_->stats.allocator_baseline_bytes = impl_->allocator_baseline;
+  impl_->stats.allocator_peak_used_bytes = peak_used;
   impl_->stats.allocator_used_bytes = impl_->context->pooled_used_bytes();
   impl_->stats.allocator_reserved_bytes = impl_->context->reserved_bytes();
   impl_->stats.descriptor_set_allocations =
