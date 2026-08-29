@@ -20,6 +20,7 @@
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/audio_decoder.h"
 #include "vidfab/vulkan/dit_block.h"
+#include "vidfab/vulkan/dit_graph.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/attention.h"
@@ -2593,6 +2594,27 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   corrupt.open(corrupt_path.string());
   corrupt_fc2.open(corrupt_fc2_path.string());
 
+  auto graph_fixture = [&](bool corrupt_last) {
+    std::vector<TensorWrite> all;
+    for (uint32_t layer = 0; layer < 3; ++layer) {
+      std::vector<TensorWrite> one = fixture(corrupt_last && layer == 2 ? 2 : 0);
+      for (TensorWrite& tensor : one) {
+        tensor.name.replace(0, std::strlen("blocks.0"),
+                            "blocks." + std::to_string(layer));
+        all.push_back(std::move(tensor));
+      }
+    }
+    return all;
+  };
+  const auto graph_path = base / "vidfab_h3_cuda_off_graph.safetensors";
+  const auto corrupt_graph_path =
+      base / "vidfab_h3_cuda_off_corrupt_graph.safetensors";
+  write_safetensors(graph_path.string(), graph_fixture(false));
+  write_safetensors(corrupt_graph_path.string(), graph_fixture(true));
+  SafeTensors graph_checkpoint, corrupt_graph;
+  graph_checkpoint.open(graph_path.string());
+  corrupt_graph.open(corrupt_graph_path.string());
+
   ExactH3BlockStage first = ExactH3BlockStage::create(context, config);
   ExactH3BlockStage second = ExactH3BlockStage::create(context, config);
   first.load(valid, 0);
@@ -2750,6 +2772,124 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   const uint64_t persistent = first.persistent_bytes();
   first.unload();
   second.unload();
+
+  // Multi-layer graph: one batch, one shared transformed-activation scratch,
+  // exact capacity boundary, every device-only block boundary, transactional
+  // corruption in the last projection of the last layer, and repeat reuse.
+  TensorContextOptions graph_options;
+  graph_options.max_batch_operators = 128;
+  TensorContext graph_context(device, graph_options);
+  H3MainGraphConfig graph_config;
+  graph_config.block = config;
+  graph_config.layers = 3;
+  ExactH3MainGraph graph = ExactH3MainGraph::create(
+      graph_context, graph_config);
+  graph.load(graph_checkpoint);
+  CHECK(graph.loaded() && graph.layers() == 3u);
+  CHECK(graph.required_operators() == 75u);
+  const uint64_t graph_token_shape[] = {config.sequence, config.hidden};
+  const uint64_t graph_selector_shape[] = {config.sequence};
+  const uint64_t graph_code_shape[] = {config.timesteps, config.adaln_rank};
+  const uint64_t graph_rope_shape[] = {config.sequence, 96};
+  DeviceTensor graph_tokens = graph_context.allocate(
+      TensorLayout::contiguous(graph_token_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor graph_selectors = graph_context.allocate(
+      TensorLayout::contiguous(graph_selector_shape, 1), ScalarType::kInt32);
+  DeviceTensor graph_code = graph_context.allocate(
+      TensorLayout::contiguous(graph_code_shape, 2));
+  DeviceTensor graph_cosine = graph_context.allocate(
+      TensorLayout::contiguous(graph_rope_shape, 2));
+  DeviceTensor graph_sine = graph_context.allocate(
+      TensorLayout::contiguous(graph_rope_shape, 2));
+  graph_context.upload_bytes(graph_selectors, host_selectors.data(),
+                             host_selectors.size() * 4);
+  graph_context.upload(graph_code, host_code.data(), host_code.size());
+  graph_context.upload(graph_cosine, host_cos.data(), host_cos.size());
+  graph_context.upload(graph_sine, host_sin.data(), host_sin.size());
+  std::vector<DeviceTensor> boundaries;
+  boundaries.reserve(graph_config.layers);
+  for (uint32_t layer = 0; layer < graph_config.layers; ++layer)
+    boundaries.push_back(graph_context.allocate(
+        TensorLayout::contiguous(graph_token_shape, 2), ScalarType::kBFloat16));
+  H3MainGraphReplayTaps graph_taps{boundaries.data(),
+                                   static_cast<uint32_t>(boundaries.size())};
+  CHECK(graph.required_operators(&graph_taps) == 78u);
+  DeviceTensor graph_dummy = graph_context.allocate(
+      TensorLayout::contiguous(graph_token_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor graph_dummy_out = graph_context.allocate(
+      TensorLayout::contiguous(graph_token_shape, 2), ScalarType::kBFloat16);
+  {
+    TensorBatch short_batch = graph_context.begin_batch();
+    for (uint32_t i = graph.required_operators(&graph_taps); i <= 128; ++i)
+      short_batch.copy(graph_dummy, graph_dummy_out);
+    bool rejected = false;
+    try {
+      graph.record(short_batch, graph_tokens, graph_selectors, graph_code,
+                   graph_cosine, graph_sine, nullptr, &graph_taps);
+    } catch (const std::logic_error&) { rejected = true; }
+    CHECK(rejected && short_batch.remaining_operator_capacity() == 77u);
+  }
+  auto run_graph = [&] {
+    graph_context.upload_bytes(graph_tokens, input.data(), input.size() * 2);
+    TensorBatch batch = graph_context.begin_batch();
+    for (uint32_t i = graph.required_operators(&graph_taps); i < 128; ++i)
+      batch.copy(graph_dummy, graph_dummy_out);
+    graph.record(batch, graph_tokens, graph_selectors, graph_code,
+                 graph_cosine, graph_sine, nullptr, &graph_taps);
+    CHECK(batch.remaining_operator_capacity() == 0u);
+    batch.submit().wait();
+    std::vector<uint16_t> result(input.size());
+    graph_context.download_bytes(graph_tokens, result.data(), result.size() * 2);
+    return result;
+  };
+  const std::vector<uint16_t> graph_output = run_graph();
+  auto digest_bf16 = [](const std::vector<uint16_t>& values) {
+    uint64_t hash = 1469598103934665603ull;
+    for (uint16_t bits : values) {
+      hash ^= bits & 0xffu; hash *= 1099511628211ull;
+      hash ^= bits >> 8; hash *= 1099511628211ull;
+    }
+    return hash;
+  };
+  std::vector<uint64_t> boundary_hashes;
+  for (DeviceTensor& boundary : boundaries) {
+    std::vector<uint16_t> boundary_values(input.size());
+    graph_context.download_bytes(boundary, boundary_values.data(),
+                                 boundary_values.size() * 2);
+    boundary_hashes.push_back(digest_bf16(boundary_values));
+  }
+  CHECK(boundary_hashes == std::vector<uint64_t>({
+      0xc40d66ec8f2b7f26ull, 0x70e1eaf01723020bull,
+      0xe9b03bc5e1718291ull}));
+  CHECK(digest_bf16(graph_output) == boundary_hashes.back());
+  const uint64_t graph_used = graph_context.pooled_used_bytes();
+  const uint64_t graph_reserved = graph_context.reserved_bytes();
+  const uint64_t graph_descriptors = graph_context.descriptor_set_allocations();
+  CHECK(run_graph() == graph_output);
+  CHECK(graph_context.pooled_used_bytes() == graph_used);
+  CHECK(graph_context.reserved_bytes() == graph_reserved);
+  CHECK(graph_context.descriptor_set_allocations() == graph_descriptors);
+  bool graph_corrupt_rejected = false;
+  try { graph.load(corrupt_graph); }
+  catch (const std::exception&) { graph_corrupt_rejected = true; }
+  CHECK(graph_corrupt_rejected && graph.loaded());
+  CHECK(graph_context.pooled_used_bytes() == graph_used);
+  CHECK(graph_context.reserved_bytes() == graph_reserved);
+  CHECK(graph_context.descriptor_set_allocations() == graph_descriptors);
+  CHECK(run_graph() == graph_output);
+  const uint64_t graph_persistent = graph.persistent_bytes();
+  graph.unload();
+  CHECK(!graph.loaded() && graph.persistent_bytes() == 0u);
+  CHECK(graph_context.pooled_used_bytes() < graph_used);
+  graph.load(graph_checkpoint);
+  CHECK(graph.persistent_bytes() == graph_persistent);
+  CHECK(run_graph() == graph_output);
+  std::printf(
+      "  CUDA-off H3 3-layer graph FNV64 %016llx, ops %u, persistent/scratch %.2f/%.2f MiB\n",
+      static_cast<unsigned long long>(digest_bf16(graph_output)),
+      graph.required_operators(), double(graph.persistent_bytes()) / 1048576.0,
+      double(graph.scratch_bytes()) / 1048576.0);
+  graph.unload();
   CHECK(first.persistent_bytes() == 0u && second.persistent_bytes() == 0u);
   CHECK(context.pooled_used_bytes() + 2 * persistent <= stable_used);
   first.load(valid, 0);
@@ -2845,6 +2985,8 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   std::filesystem::remove(valid_path, ignored);
   std::filesystem::remove(corrupt_path, ignored);
   std::filesystem::remove(corrupt_fc2_path, ignored);
+  std::filesystem::remove(graph_path, ignored);
+  std::filesystem::remove(corrupt_graph_path, ignored);
 }
 
 VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {
