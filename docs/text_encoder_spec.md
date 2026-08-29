@@ -1610,12 +1610,19 @@ rows, builds the non-degenerate interleaved THW mRoPE table, then injects those
 three features after decoder layers 0/1/2 respectively. All activation traffic
 between these stages is device-to-device in the Vulkan implementation.
 
-The authority uses the production I8+ConvRot archive SHA-256
+The authorities use the production I8+ConvRot archive SHA-256
 `BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`
-and a deterministic 256x256 RGB image passed through the real patchifier. CUDA
-and Vulkan match every one of 27 visual and 50 decoder BF16 boundaries exactly;
-the final FP32 embedding FNV64 is `A875C128AA7A0E9D`. A CUDA-disabled replay
-pins the same result. Top-level Ref2VA is still rejected because keyframe
+and NVFP4+AWQ SHA-256
+`33E69E3EDAB846D52949BAFDB00378BD3F5A93F78124FC83D5EF109DC4A1FCBB`
+with a deterministic 256x256 RGB image passed through the real patchifier.
+CUDA and Vulkan match every one of 27 visual and 50 decoder BF16 boundaries
+exactly for both archives; final FP32 embedding FNV64 values are respectively
+`A875C128AA7A0E9D` and `EBC9E36A30C843CD`. A CUDA-disabled replay pins the I8
+result. At the trace-free production maximum S16384/L4100, I8 and NVFP4 both
+measure a 2790.5 MiB logical and allocator-observed peak; cold/warm Vulkan times
+are 60.34/55.14 s and 54.86/51.36 s. Repeat pool/reservation/descriptor counts
+are exact and unload returns pooled-used memory to the staging-only baseline.
+Top-level Ref2VA is still rejected because keyframe
 video-VAE *encoding* is a separate unported component, not because conditioner
 vision semantics remain unknown.
 

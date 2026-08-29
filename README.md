@@ -1246,13 +1246,25 @@ streams one BF16 visual block or merger at a time, extracts DeepStack features
 after visual blocks 8/16/24, and injects them after text decoder layers 0/1/2.
 On the pinned 256x256 production-grid fixture, CUDA and Vulkan matched all 27
 visual residual boundaries, all 50 multimodal decoder boundaries, and the final
-FP32 prompt embedding byte-for-byte. The final multimodal FNV64 is
-`A875C128AA7A0E9D`; CUDA/Vulkan conditioner time was 4.51/6.99 s and Vulkan
-peak device accounting was 771.8 MiB. CUDA-disabled replay took 7.67 s. The
-authority is the I8+ConvRot checkpoint SHA-256
-`BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`;
+FP32 prompt embedding byte-for-byte for both shipped formats. The I8+ConvRot
+final FNV64 is `A875C128AA7A0E9D` (CUDA/Vulkan 4.51/6.99 s, 771.8 MiB peak);
+the NVFP4+AWQ final is `EBC9E36A30C843CD` (2.92/4.04 s, 569.9 MiB peak).
+CUDA-disabled I8 replay took 8.24 s. The checkpoint authorities are SHA-256
+`BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`
+and `33E69E3EDAB846D52949BAFDB00378BD3F5A93F78124FC83D5EF109DC4A1FCBB`;
 the normal-prompt tokenizer provenance remains
 `A5D85B6DCC535E6B93115A9EF287E6132FDBF30270DA6218194BA742261173C7`.
+The trace-free production maximum (S16384 visual patches, L4100 decoder rows)
+took 60.34/55.14 s cold/warm for I8 and 54.86/51.36 s for NVFP4. Both formats
+reported a 2790.5 MiB logical and observed allocator peak; maximum streamed
+weights were 465.3/261.6 MiB, with stable repeat pool/reservation/descriptor
+counts and a return to the staging-only used baseline after unload.
+
+The checked-in exact tensor shader provenance is source SHA-256
+`67D485F5818226DAE9D95FCB7B9DD0D208F767DF60B014981AECEDB2FFC1EC7E`
+and SPIR-V SHA-256
+`08AB6BBA63C121EAAE8348CB62328F9C7337D21E9E6DE5C62292DA8BE47F1E9B`,
+matching the mandatory configure-time checks in `CMakeLists.txt`.
 Top-level reference generation still fails closed until the separate keyframe
 video-VAE encoder is ported; no reference request crosses into CUDA silently.
 
