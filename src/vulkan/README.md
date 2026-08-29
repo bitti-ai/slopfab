@@ -136,8 +136,10 @@ The three persistent pipelines share a four-binding layout but declare only
 the accesses used by their fixed operation. They use one dispatch, zero
 operator scratch, no host scan/copy, and no steady-state allocation. Recording
 validates type, rank, exact dimensions, nonzero extents, uint32 shader indices,
-checked products/dispatch, context and all partial overlaps before access-state
-mutation. Tests cover 3x67 tails, normal cancellation to a subnormal, output
+checked products/dispatch, context and allocation identity before access-state
+mutation. DeviceTensor exposes whole allocations rather than offset subviews,
+so overlap validation is allocation-identity rejection. Tests cover 3x67
+tails, normal cancellation to a subnormal, output
 underflow, signed zeros, Inf/NaN combinations, the -87 ULP neighbors, CUDA null
 bias, rejection rollback, mixed 32/33-op batches, two in-flight submissions
 plus third-slot reuse, wrapper drop, and stable pool/descriptor high-water. The
