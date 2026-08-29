@@ -411,4 +411,12 @@ uint32_t VideoVaeDecoder::cached_shapes() const noexcept {
   return impl_ ? static_cast<uint32_t>(impl_->shapes.size()) : 0;
 }
 
+vae::DecodedVideo VideoVaeDecoder::decode(
+    const float* normalized_latent, int time, int height, int width,
+    const std::vector<float>& mean, const std::vector<float>& std_dev,
+    const vae::DecodeSchedule& schedule) {
+  return vae::decode_video(*this, normalized_latent, time, height, width, mean,
+                           std_dev, schedule);
+}
+
 }  // namespace vidfab::vulkan

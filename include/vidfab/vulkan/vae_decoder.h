@@ -14,7 +14,7 @@ namespace vidfab::vulkan {
 // Complete exact Vulkan window decoder around the 36-block video-VAE graph.
 // It owns no CUDA resource and fails during construction when the exact Vulkan
 // arithmetic contract is unavailable.
-class VideoVaeDecoder {
+class VideoVaeDecoder final : public vae::VideoVaeWindowBackend {
  public:
   VideoVaeDecoder();
   ~VideoVaeDecoder();
@@ -26,13 +26,18 @@ class VideoVaeDecoder {
   static VideoVaeDecoder create(const Device& device,
                                 const vae::ViTConfig& config = {});
   void load(const SafeTensors& checkpoint);
-  const vae::ViTConfig& config() const;
+  const vae::ViTConfig& config() const override;
 
   void forward_window(const float* latent, int time, int height, int width,
                       std::vector<float>& output);
   void forward_windows(const float* latent, int batch, int time, int height,
                        int width, std::vector<std::vector<float>>& output,
-                       const size_t* slots);
+                       const size_t* slots) override;
+  void release_host_registrations() override {}
+  vae::DecodedVideo decode(
+      const float* normalized_latent, int time, int height, int width,
+      const std::vector<float>& mean, const std::vector<float>& std_dev,
+      const vae::DecodeSchedule& schedule = {});
 
   uint64_t persistent_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;

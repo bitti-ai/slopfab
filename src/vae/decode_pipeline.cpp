@@ -49,11 +49,12 @@ constexpr float kImagenetStd[3] = {0.229f, 0.224f, 0.225f};
 
 }  // namespace
 
-DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W_lat,
-                                const std::vector<float>& latents_mean,
-                                const std::vector<float>& latents_std,
-                                const DecodeSchedule& schedule) {
-  const ViTConfig& cfg = config();
+DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
+                          int T_lat, int H_lat, int W_lat,
+                          const std::vector<float>& latents_mean,
+                          const std::vector<float>& latents_std,
+                          const DecodeSchedule& schedule) {
+  const ViTConfig& cfg = backend.config();
   const int ch = cfg.in_channels;
   if (static_cast<int>(latents_mean.size()) != ch ||
       static_cast<int>(latents_std.size()) != ch) {
@@ -166,7 +167,10 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   // home. Declared *after* `tiles` so it is destroyed *before* it: the locks
   // must go while the memory they cover is still alive, on the throwing path as
   // much as the normal one.
-  HostRegistrationScope registration_scope(*this);
+  struct RegistrationScope {
+    VideoVaeWindowBackend* backend;
+    ~RegistrationScope() { backend->release_host_registrations(); }
+  } registration_scope{&backend};
 
   // Every per-chunk working buffer is hoisted for the same reason as `tiles`:
   // each is written in full before it is read, so a fresh allocation per chunk
@@ -246,8 +250,8 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
       s_gather.stop();
       // Decoded straight into the hoisted slots, so each tile lands in the
       // buffer it used last chunk and its resize is a no-op.
-      forward_windows(z_batch.data(), static_cast<int>(ids.size()), window, th, tw, tiles,
-                      ids.data());
+      backend.forward_windows(z_batch.data(), static_cast<int>(ids.size()),
+                              window, th, tw, tiles, ids.data());
     }
 
     // Where the chunk's 28 decoded frames go. This removes the 330 MiB staging
@@ -415,6 +419,15 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W
   }
   s_out.stop();
   return video;
+}
+
+DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat,
+                                int W_lat,
+                                const std::vector<float>& latents_mean,
+                                const std::vector<float>& latents_std,
+                                const DecodeSchedule& schedule) {
+  return decode_video(*this, z_norm, T_lat, H_lat, W_lat, latents_mean,
+                      latents_std, schedule);
 }
 
 }  // namespace vidfab::vae

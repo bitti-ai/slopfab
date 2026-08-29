@@ -73,7 +73,26 @@ struct DecodedVideo {
   size_t plane_stride() const { return frame_stride() * frames; }
 };
 
-class ViTDecoder {
+// Backend-neutral window seam used by the shared temporal/spatial decode
+// scheduler. Implementations own device policy; orchestration owns only host
+// tiling, stitching, cross-fades and final pixel de-normalization.
+class VideoVaeWindowBackend {
+ public:
+  virtual ~VideoVaeWindowBackend() = default;
+  virtual const ViTConfig& config() const = 0;
+  virtual void forward_windows(const float* z, int batch, int T, int H, int W,
+                               std::vector<std::vector<float>>& out,
+                               const size_t* slots) = 0;
+  virtual void release_host_registrations() = 0;
+};
+
+DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
+                          int T_lat, int H_lat, int W_lat,
+                          const std::vector<float>& latents_mean,
+                          const std::vector<float>& latents_std,
+                          const DecodeSchedule& schedule = {});
+
+class ViTDecoder final : public VideoVaeWindowBackend {
  public:
   ViTDecoder();
   ~ViTDecoder();
@@ -85,7 +104,7 @@ class ViTDecoder {
   // buffers stay fp32.
   void load(const SafeTensors& checkpoint, const ViTConfig& config = {});
 
-  const ViTConfig& config() const;
+  const ViTConfig& config() const override;
 
   // Device memory currently held by weights, in bytes.
   size_t weight_bytes() const;
@@ -107,7 +126,8 @@ class ViTDecoder {
   // zero-filled before the copy overwrites every byte of it. `slots` must have
   // `batch` entries and index within `out`, which the caller sizes.
   void forward_windows(const float* z, int batch, int T, int H, int W,
-                       std::vector<std::vector<float>>& out, const size_t* slots);
+                       std::vector<std::vector<float>>& out,
+                       const size_t* slots) override;
 
   // forward_windows page-locks the `out` slots it writes so the device can DMA
   // a decoded window straight into the caller's buffer instead of staging it
@@ -116,7 +136,7 @@ class ViTDecoder {
   // forward_windows must call this before those buffers are destroyed** — from
   // a scope guard, so a throw does not leak a lock onto freed memory. Calling
   // it when nothing is registered is free.
-  void release_host_registrations();
+  void release_host_registrations() override;
 
   // The scope guard that obligation asks for. Declare it *after* the buffer
   // vector it protects, so it is destroyed *before* that vector and the lock
