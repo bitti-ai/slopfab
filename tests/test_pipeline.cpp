@@ -136,14 +136,25 @@ VIDFAB_TEST(attention_mode_parse_name_and_backend_contract) {
 VIDFAB_TEST(generation_backend_contract) {
   using vidfab::DeviceBackend;
   using vidfab::LatentSource;
+  using vidfab::AttentionMode;
   CHECK(vidfab::generation_backend_supported(DeviceBackend::kCuda,
-                                              LatentSource::kDenoise));
+                                              LatentSource::kDenoise,
+                                              AttentionMode::kFlash2));
   CHECK(vidfab::generation_backend_supported(DeviceBackend::kCuda,
-                                              LatentSource::kSyntheticNoise));
+                                              LatentSource::kSyntheticNoise,
+                                              AttentionMode::kSage2));
   CHECK(!vidfab::generation_backend_supported(DeviceBackend::kVulkan,
-                                               LatentSource::kDenoise));
+                                               LatentSource::kDenoise,
+                                               AttentionMode::kExact));
   CHECK(vidfab::generation_backend_supported(DeviceBackend::kVulkan,
-                                              LatentSource::kSyntheticNoise));
+                                              LatentSource::kSyntheticNoise,
+                                              AttentionMode::kExact));
+  CHECK(!vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+                                               LatentSource::kSyntheticNoise,
+                                               AttentionMode::kFlash2));
+  CHECK(!vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+                                               LatentSource::kSyntheticNoise,
+                                               AttentionMode::kSage2));
   vidfab::RunOptions defaults;
   CHECK(defaults.inference_backend == DeviceBackend::kCuda);
 }

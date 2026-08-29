@@ -1417,6 +1417,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                    "No CUDA fallback was used\n");
       return 1;
     }
+    if (attention_mode != vidfab::AttentionMode::kExact) {
+      std::fprintf(stderr,
+                   "vidfab: Vulkan VAE inference requires --attention exact; mode '%s' "
+                   "will not be remapped and no CUDA fallback was used\n",
+                   vidfab::attention_mode_name(attention_mode));
+      return 1;
+    }
   }
 
   // Both write the same field, so accepting both would mean silently honouring

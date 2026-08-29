@@ -159,12 +159,14 @@ struct RunOptions {
 };
 
 inline bool generation_backend_supported(DeviceBackend backend,
-                                         LatentSource source) noexcept {
+                                         LatentSource source,
+                                         AttentionMode attention) noexcept {
   switch (backend) {
     case DeviceBackend::kCuda:
       return true;
     case DeviceBackend::kVulkan:
-      return source == LatentSource::kSyntheticNoise;
+      return source == LatentSource::kSyntheticNoise &&
+             attention == AttentionMode::kExact;
   }
   return false;
 }

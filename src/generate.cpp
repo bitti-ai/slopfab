@@ -317,10 +317,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
 
-  if (!generation_backend_supported(options.inference_backend, options.source)) {
-    result.message =
-        "Vulkan conditioning/denoising is not implemented; use synthetic latents "
-        "for the exact Vulkan VAE vertical slice";
+  if (!generation_backend_supported(options.inference_backend, options.source,
+                                    options.attention_mode)) {
+    result.message = options.source != LatentSource::kSyntheticNoise
+        ? "Vulkan conditioning/denoising is not implemented; use synthetic latents "
+          "for the exact Vulkan VAE vertical slice"
+        : "Vulkan VAE inference requires exact arithmetic; select attention mode exact";
     return result;
   }
 #if !VIDFAB_WITH_VULKAN

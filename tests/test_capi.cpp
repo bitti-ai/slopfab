@@ -196,6 +196,7 @@ VIDFAB_TEST(capi_model_paths_and_attention) {
             request.handle, VIDFAB_INFERENCE_CUDA) == VIDFAB_OK);
   CHECK(vidfab_request_set_inference_backend(
             request.handle, VIDFAB_INFERENCE_VULKAN) == VIDFAB_OK);
+  CHECK(vidfab_request_set_attention(request.handle, "exact") == VIDFAB_OK);
   CHECK(vidfab_request_set_inference_backend(request.handle, 42) ==
         VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(std::string(vidfab_last_error()).find("42") != std::string::npos);
