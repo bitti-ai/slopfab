@@ -200,6 +200,72 @@ VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
   CHECK(thirty_third_rejected);
 }
 
+VIDFAB_TEST(vulkan_attention_prepare_exhaustive_bf16) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  Device device = physical.front().create_device(options);
+  ComputeContext context(device, {2, 6, 1});
+  ComputePipelineOptions pipeline_options;
+  pipeline_options.storage_binding_count = 6;
+  pipeline_options.push_constant_bytes = sizeof(uint32_t);
+  pipeline_options.local_size[0] = 64;
+  ComputePipeline pipeline = ComputePipeline::create(
+      device, load_spirv(VIDFAB_TEST_ATTENTION_PREPARE_SPV_PATH),
+      pipeline_options);
+
+  constexpr uint32_t patterns = 1u << 16;
+  constexpr uint64_t bytes = uint64_t{patterns} * sizeof(uint16_t);
+  constexpr uint32_t words = patterns / 2;
+  BufferPool pool(device, 1024 * 1024);
+  Buffer upload = pool.allocate(bytes, BufferUsage::kTransferSource,
+                                MemoryUsage::kUpload);
+  Buffer source = pool.allocate(bytes, BufferUsage::kTransferDestination |
+                                         BufferUsage::kStorage,
+                                MemoryUsage::kDevice);
+  Buffer output0 = pool.allocate(bytes, BufferUsage::kStorage |
+                                          BufferUsage::kTransferSource,
+                                 MemoryUsage::kDevice);
+  Buffer output1 = pool.allocate(bytes, BufferUsage::kStorage,
+                                 MemoryUsage::kDevice);
+  Buffer output2 = pool.allocate(bytes, BufferUsage::kStorage,
+                                 MemoryUsage::kDevice);
+  Buffer readback = pool.allocate(bytes, BufferUsage::kTransferDestination,
+                                  MemoryUsage::kReadback);
+  std::vector<uint16_t> input(patterns), actual(patterns);
+  for (uint32_t i = 0; i < patterns; ++i) input[i] = static_cast<uint16_t>(i);
+  upload.write(0, input.data(), bytes);
+  CommandList commands = context.begin();
+  commands.barrier(upload, BufferAccess::kHostWrite, BufferAccess::kTransferRead);
+  commands.copy_buffer(upload, source, bytes);
+  commands.barrier(source, BufferAccess::kTransferWrite, BufferAccess::kComputeRead);
+  commands.bind_compute(pipeline, {{0, &source, 0, bytes},
+                                   {1, &source, 0, bytes},
+                                   {2, &source, 0, bytes},
+                                   {3, &output0, 0, bytes},
+                                   {4, &output1, 0, bytes},
+                                   {5, &output2, 0, bytes}});
+  commands.push_constants(&words, sizeof(words));
+  commands.dispatch((words + 63) / 64);
+  commands.barrier(output0, BufferAccess::kComputeWrite,
+                   BufferAccess::kTransferRead);
+  commands.copy_buffer(output0, readback, bytes);
+  commands.barrier(readback, BufferAccess::kTransferWrite,
+                   BufferAccess::kHostRead);
+  context.submit(std::move(commands)).wait();
+  readback.read(0, actual.data(), bytes);
+  for (uint32_t i = 0; i < patterns; ++i) {
+    const uint16_t expected = (input[i] & 0x7fffu) > 0x7f80u
+        ? 0x7fffu : f32_to_f16(bf16_to_f32(input[i]));
+    CHECK(actual[i] == expected);
+  }
+}
+
 VIDFAB_TEST(vulkan_linear_weight_cpu_reference) {
   using namespace vidfab;
   using namespace vidfab::vulkan;

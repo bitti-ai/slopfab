@@ -13,6 +13,7 @@
 
 #include "embedded_tensor_spv.h"
 #include "tensor_validation.h"
+#include "vidfab/attention.h"
 #include "vidfab/vulkan/compute.h"
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/linear.h"
@@ -2783,7 +2784,7 @@ BlockedAttentionPlan BlockedAttentionPlan::create(
   }
   if (desc.sequence == 0 || desc.heads == 0 ||
       (desc.head_dim != 64 && desc.head_dim != 72 && desc.head_dim != 128) ||
-      !std::isnormal(desc.scale) || desc.scale <= 0.0f) {
+      !is_exact_attention_scale(desc.head_dim, desc.scale)) {
     throw std::invalid_argument("vulkan attention: invalid exact blocked plan");
   }
   uint64_t elements = checked_multiply(desc.sequence, desc.heads, "attention");

@@ -501,9 +501,9 @@ if(VIDFAB_ENABLE_VULKAN)
   file(SHA256 "${VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV}"
     VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_HASH)
   if(NOT VIDFAB_TENSOR_ATTENTION_BLOCKED_SOURCE_HASH STREQUAL
-      "157fd3bcb7c2e789f97ca32cdb0e16c624b48dae92396a4868f4a5eac96c18fe" OR
+      "f8724078fe6502ae2d46380341c7cf580508b5aba9b7a5c08450c9d32bc5cf2b" OR
      NOT VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_HASH STREQUAL
-      "c80d7178136486f761fe7fea09592cc7dd6590e3497020718ce4088656fa6c6c")
+      "3a61dd5e86e8d398ce8de0e352c3a753ef2caafb0b1ed2df821f28e4df46343f")
     message(FATAL_ERROR "vidfab: blocked-attention shader/source hash mismatch")
   endif()
   file(READ "${VIDFAB_TENSOR_ATTENTION_PREPARE_SOURCE}"
@@ -1026,10 +1026,14 @@ if(VIDFAB_BUILD_TESTS)
         "documented glslang command, verify the shader test, and update both hashes")
     endif()
     target_compile_definitions(vidfab_vulkan_tests PRIVATE
-      VIDFAB_TEST_AFFINE_SPV_PATH="affine.comp.spv")
+      VIDFAB_TEST_AFFINE_SPV_PATH="affine.comp.spv"
+      VIDFAB_TEST_ATTENTION_PREPARE_SPV_PATH="tensor_attention_prepare.comp.spv")
     add_custom_command(TARGET vidfab_vulkan_tests POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${VIDFAB_AFFINE_SPV}" "$<TARGET_FILE_DIR:vidfab_vulkan_tests>/affine.comp.spv"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${VIDFAB_TENSOR_ATTENTION_PREPARE_SPV}"
+        "$<TARGET_FILE_DIR:vidfab_vulkan_tests>/tensor_attention_prepare.comp.spv"
       VERBATIM)
     if(MSVC)
       target_compile_options(vidfab_vulkan_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)

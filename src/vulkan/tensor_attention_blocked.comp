@@ -80,6 +80,12 @@ float f16_round(float value) {
   return uintBitsToFloat(fp16_to_fp32_bits(fp16_rte(value)));
 }
 
+float canonicalize_subnormal(float value) {
+  uint bits = floatBitsToUint(value);
+  return (bits & 0x7fffffffu) < 0x00800000u
+      ? uintBitsToFloat(bits & 0x80000000u) : value;
+}
+
 uint bf16_rte(float value) {
   uint bits = floatBitsToUint(value);
   if ((bits & 0x7fffffffu) > 0x7f800000u) return 0x7fffu;
@@ -126,8 +132,8 @@ float deterministic_divide(float numerator_value, float denominator_value) {
   uint sign = (numerator_bits ^ denominator_bits) & 0x80000000u;
   uint numerator_magnitude = numerator_bits & 0x7fffffffu;
   uint denominator_magnitude = denominator_bits & 0x7fffffffu;
-  // running_sum is >= 1, so an fp32-subnormal numerator can only round to a
-  // signed BF16 zero. Canonicalize before decoding an implicit leading bit.
+  // The shared CUDA/Vulkan attention contract deliberately flushes every
+  // subnormal PV accumulator to signed zero before this helper.
   if (numerator_magnitude < 0x00800000u) return uintBitsToFloat(sign);
 
   uint a = (numerator_magnitude & 0x007fffffu) | 0x00800000u;
@@ -197,12 +203,13 @@ void main() {
       barrier();
     }
     if (lane < p.head_dim) {
-      output_accumulator = output_accumulator * correction;
+      output_accumulator = canonicalize_subnormal(
+          output_accumulator * correction);
       for (uint j = 0u; j < 128u && key_base + j < p.sequence; ++j) {
         uint v_index = ((key_base + j) * p.heads + head) * p.head_dim + lane;
-        output_accumulator = fma(score_or_probability[j],
-                                 load_f16(2u, v_index),
-                                 output_accumulator);
+        output_accumulator = canonicalize_subnormal(
+            fma(score_or_probability[j], load_f16(2u, v_index),
+                output_accumulator));
       }
     }
     running_sum = fma(running_sum, correction, reduction[0]);

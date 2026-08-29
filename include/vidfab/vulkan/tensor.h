@@ -334,9 +334,11 @@ class BlockedAttentionPlan {
   static BlockedAttentionPlan create(TensorContext& context,
                                      const BlockedAttentionPlanDesc& desc);
   const BlockedAttentionPlanDesc& description() const;
-  // Tensors are contiguous token-major [sequence,heads,head_dim] BF16. The
-  // output must be distinct. A row range allows callers to split a long
-  // sequence over bounded batches without changing the fixed key traversal.
+  // Original tensors are contiguous token-major [sequence,heads,head_dim]
+  // finite BF16 and scale is exact_attention_scale(head_dim). NaN/Inf inputs
+  // are outside this exact contract. Output must be distinct from all original
+  // and prepared tensors. A row range allows multiple consumers in the same
+  // bounded batch without repeating Q/K/V conversion.
   void record(TensorBatch& batch, PreparedAttentionView& inputs,
               DeviceTensor& output,
               uint32_t query_row_offset = 0, uint32_t rows = 0,

@@ -25,6 +25,7 @@
 #include "vidfab/cuda/keyframe_encoder.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
+#include "vidfab/attention.h"
 #include "vidfab/dit/rope.h"
 #include "vidfab/dtype.h"
 #include "vidfab/nf4.h"
@@ -440,15 +441,37 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
       v[0] = 0x8000u; v[1] = f32_to_bf16(1.0f);
     }
     cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count), co(count);
+    cuda::DeviceBuffer<uint16_t> cq16(count), ck16(count), cv16(count);
     cq.copy_from_host(q.data(), count); ck.copy_from_host(k.data(), count);
     cv.copy_from_host(v.data(), count);
     const float scale = dim == 64 ? 0.125f : dim == 128 ? 0.0883883461356163f
                                                          : 0.11785113019775793f;
-    cuda::launch_deterministic_blocked_attention(
+    cuda::launch_prepare_deterministic_attention_inputs(
         nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
         reinterpret_cast<const __nv_bfloat16*>(ck.get()),
         reinterpret_cast<const __nv_bfloat16*>(cv.get()),
-        reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim, scale);
+        reinterpret_cast<__half*>(cq16.get()), reinterpret_cast<__half*>(ck16.get()),
+        reinterpret_cast<__half*>(cv16.get()), count);
+    if (sequence == 129) {
+      cuda::launch_deterministic_blocked_attention_f16(
+          nullptr, reinterpret_cast<const __half*>(cq16.get()),
+          reinterpret_cast<const __half*>(ck16.get()),
+          reinterpret_cast<const __half*>(cv16.get()),
+          reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim,
+          scale, 0, 65, 0);
+      cuda::launch_deterministic_blocked_attention_f16(
+          nullptr, reinterpret_cast<const __half*>(cq16.get()),
+          reinterpret_cast<const __half*>(ck16.get()),
+          reinterpret_cast<const __half*>(cv16.get()),
+          reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim,
+          scale, 65, 64, 65);
+    } else {
+      cuda::launch_deterministic_blocked_attention_f16(
+          nullptr, reinterpret_cast<const __half*>(cq16.get()),
+          reinterpret_cast<const __half*>(ck16.get()),
+          reinterpret_cast<const __half*>(cv16.get()),
+          reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim, scale);
+    }
     VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> cuda_output(count);
     co.copy_to_host(cuda_output.data(), count);
@@ -467,7 +490,12 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
     PreparedAttentionInputs prepared = PreparedAttentionInputs::create(vk, desc);
     TensorBatch batch = vk.begin_batch();
     PreparedAttentionView inputs = prepared.prepare(batch, vq, vk_tensor, vv);
-    plan.record(batch, inputs, vo);
+    if (sequence == 129) {
+      plan.record(batch, inputs, vo, 0, 65, 0);
+      plan.record(batch, inputs, vo, 65, 64, 65);
+    } else {
+      plan.record(batch, inputs, vo);
+    }
     batch.submit().wait();
     std::vector<uint16_t> vulkan_output(count);
     vk.download_bytes(vo, vulkan_output.data(), count * 2);
@@ -481,6 +509,66 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
               mismatch == count ? 0u : cuda_output[mismatch],
               mismatch == count ? 0u : vulkan_output[mismatch]);
   };
+  CHECK(cuda::deterministic_attention_grid_fits(1, 1, 1, 1));
+  CHECK(cuda::deterministic_attention_grid_fits(65535, 65535, 65535, 65535));
+  CHECK(!cuda::deterministic_attention_grid_fits(0, 1, 65535, 65535));
+  CHECK(!cuda::deterministic_attention_grid_fits(65536, 1, 65535, 65535));
+  CHECK(!cuda::deterministic_attention_grid_fits(1, 65536, 65535, 65535));
+
+  // CUDA hardware and the canonical host conversion agree for every BF16
+  // bit pattern. Vulkan's word-owned conversion is checked separately by the
+  // Vulkan shader test, so a duplicated conversion bug cannot hide in final
+  // attention equality.
+  {
+    constexpr size_t patterns = 1u << 16;
+    std::vector<uint16_t> bits(patterns), got(patterns);
+    for (size_t i = 0; i < patterns; ++i) bits[i] = static_cast<uint16_t>(i);
+    cuda::DeviceBuffer<uint16_t> source0(patterns), source1(patterns),
+        source2(patterns), prepared0(patterns), prepared1(patterns),
+        prepared2(patterns);
+    source0.copy_from_host(bits.data(), patterns);
+    source1.copy_from_host(bits.data(), patterns);
+    source2.copy_from_host(bits.data(), patterns);
+    bool prepare_alias_rejected = false;
+    try {
+      cuda::launch_prepare_deterministic_attention_inputs(
+          nullptr, reinterpret_cast<const __nv_bfloat16*>(source0.get()),
+          reinterpret_cast<const __nv_bfloat16*>(source0.get()),
+          reinterpret_cast<const __nv_bfloat16*>(source2.get()),
+          reinterpret_cast<__half*>(prepared0.get()),
+          reinterpret_cast<__half*>(prepared1.get()),
+          reinterpret_cast<__half*>(prepared2.get()), patterns);
+    } catch (const std::invalid_argument&) {
+      prepare_alias_rejected = true;
+    }
+    CHECK(prepare_alias_rejected);
+    cuda::launch_prepare_deterministic_attention_inputs(
+        nullptr, reinterpret_cast<const __nv_bfloat16*>(source0.get()),
+        reinterpret_cast<const __nv_bfloat16*>(source1.get()),
+        reinterpret_cast<const __nv_bfloat16*>(source2.get()),
+        reinterpret_cast<__half*>(prepared0.get()),
+        reinterpret_cast<__half*>(prepared1.get()),
+        reinterpret_cast<__half*>(prepared2.get()), patterns);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    prepared0.copy_to_host(got.data(), patterns);
+    for (size_t i = 0; i < patterns; ++i) {
+      const uint16_t expected = (bits[i] & 0x7fffu) > 0x7f80u
+          ? 0x7fffu : f32_to_f16(bf16_to_f32(bits[i]));
+      CHECK(got[i] == expected);
+    }
+    bool output_alias_rejected = false;
+    try {
+      cuda::launch_deterministic_blocked_attention_f16(
+          nullptr, reinterpret_cast<const __half*>(prepared0.get()),
+          reinterpret_cast<const __half*>(prepared1.get()),
+          reinterpret_cast<const __half*>(prepared2.get()),
+          reinterpret_cast<__nv_bfloat16*>(prepared0.get()), 1, 1, 64,
+          exact_attention_scale(64));
+    } catch (const std::invalid_argument&) {
+      output_alias_rejected = true;
+    }
+    CHECK(output_alias_rejected);
+  }
   run(1, 2, 64);
   run(17, 3, 72);
   run(129, 2, 128);
