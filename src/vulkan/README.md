@@ -1007,7 +1007,12 @@ post-attention RMSNorm, gate/up projections, split SwiGLU, down projection and
 the final residual. Its loader accepts both shipped contracts, I8+ConvRot and
 NVFP4+AWQ, through the shared typed checkpoint loader. It validates every
 target-layer tensor and transform before allocating and transactionally
-preserves an active layer on a failed replacement.
+preserves an active layer on a failed replacement. Validation is an exact
+25-tensor I8 or 34-tensor NVFP4 target-layer manifest: every name,
+dtype/rank/shape/byte count, rank-0 global, pre-scale placement and raw
+72/55-byte canonical `comfy_quant` descriptor must match. Late corruption of
+the final down-projection descriptor in either real format leaves pool usage,
+reserved high-water, descriptors and the active output unchanged.
 
 Only compressed matrices and four BF16 norm vectors are persistent. The caller
 owns one reusable 250 MiB largest-matrix BF16 slot, and every one of the seven
@@ -1015,11 +1020,16 @@ weights is materialized into that slot immediately before its GEMM. Activation
 and transform buffers live in the same caller-owned scratch object. This keeps
 the stage suitable for a future 50-layer graph: expanded dense matrices are not
 retained per layer, recording allocates and submits nothing, and one shared
-scratch/cache can be reused sequentially across layers. Production I8 L132
-records 38 operators; the every-boundary audit records exactly 49. One-less
+scratch/cache can be reused sequentially across layers. I8 q/k/v share one
+identical ConvRot activation, as do gate/up, saving three transforms and
+descriptors per layer. Production I8 L132 records 35 operators; the
+every-boundary audit records exactly 46. One-less
 capacity fails before the first stage operator, and load/unload/reload,
-corrupt-reload rollback, stable repeat descriptors and pool high-water are
-covered by the real-checkpoint tests.
+corrupt-reload rollback, allocation-guarded recording, stable repeat
+descriptors and pool high-water are covered by the real-checkpoint tests. With
+caller scratch/activations retained, both formats return pooled used bytes to
+the exact 251.6 MiB unloaded baseline; unload/reload stays within the warmed
+528.9 MiB reserved high-water and reproduces the same output.
 
 The authoritative L132 input is produced by the shipped tokenizer and real
 `model.embed_tokens.weight`, then passed through the shared canonical exact
@@ -1032,7 +1042,7 @@ and tokenizer SHA-256
 `A5D85B6DCC535E6B93115A9EF287E6132FDBF30270DA6218194BA742261173C7`.
 Input/RoPE FNV64 are `617329501f3c87a1`/`693c23a9886dd147`.
 CUDA and Vulkan match every BF16 boundary byte exactly; the ordered FNV64 pins
-are:
+for I8+ConvRot are:
 
 ```text
 input_norm             6ca9b8c5e16917b5
@@ -1048,13 +1058,43 @@ activation             48f99e7549238ece
 final_residual         fb3966de636ac098
 ```
 
-On RTX 5090/610.88 Release, canonical exact CUDA measured 11.3 ms and Vulkan
-14.2 ms for L132; Vulkan layer load was 112.0 ms. Logical persistent/scratch
-memory was 465.3/286.4 MiB, including exactly 250 MiB for the single dense
+The identical captured input also runs through the real NVFP4+AWQ checkpoint
+(SHA-256
+`33E69E3EDAB846D52949BAFDB00378BD3F5A93F78124FC83D5EF109DC4A1FCBB`).
+This exercises both o/down AWQ pre-scales and the L132 GEMM's 128+4 row tail.
+All 11 canonical exact CUDA/Vulkan boundaries match byte-for-byte:
+
+```text
+input_norm             395ca0928bc2fe96
+query                  be792d7f50dffcd8
+key                    abf4d02a691c93fe
+value                  a7c505fccf740093
+attention              3c771911cbcbba19
+attention_residual     afcdcae26c9edd26
+post_attention_norm    503531dfaee1b283
+gate                   241abe4e317283c4
+up                     b3f789dffb6d190c
+activation             dd56acc48480841e
+final_residual         a389ed1f9e8067e8
+```
+
+On RTX 5090/610.88 Release, I8 canonical exact CUDA/Vulkan measured
+11.5/15.0 ms and NVFP4+AWQ measured 9.0/14.2 ms for L132. I8 Vulkan layer load
+was 105.7 ms. Logical I8/NVFP4 persistent memory was 465.3/261.6 MiB and shared
+L132 scratch was 286.4 MiB, including exactly 250 MiB for the single dense
 cache. These timings exclude checkpoint mapping and host capture construction.
 A separately linked CUDA-disabled test loads the real compressed checkpoint,
 replays the capture twice and verifies every boundary plus stable descriptor
-allocation, proving that this stage has no CUDA link or runtime fallback.
+allocation, proving that this stage has no CUDA link or runtime fallback. That
+authority uses the portable SHA API to verify the actual 27.1 GB checkpoint,
+7 MB tokenizer and capture; the Windows CNG-backed streaming pass measured
+113.3 s and is deliberately not repeated in the CUDA-enabled test.
+
+The durable capture reader accepts only exact production dimensions and
+`1 <= L <= 8192`, validates token range plus input/RoPE digests, and checks the
+exact payload byte size before allocation. Tests cover corrupt header/payload,
+token, truncation, trailing bytes, an oversized sparse L8193 declaration and
+max-`uint32_t` overflow input.
 
 This is one decoder layer, not yet the complete 50-layer text conditioner;
 token/final seams, multi-layer scheduling, and Qwen vision/deep-stack remain

@@ -169,7 +169,10 @@ rebaseline against shipped cuBLAS at relative L2 1.38034e-4 (max absolute
 the latter has 288 MiB of direct tensors and no attention scratch. One complete
 decoder-layer orchestration now composes this attention with exact RMSNorm,
 NeoX RoPE, seven streamed compressed projections, BF16 residuals and split
-SwiGLU. Text-encoder graph orchestration beyond one layer remains CUDA-owned.
+SwiGLU for both shipped I8+ConvRot and NVFP4+AWQ manifests. It shares repeated
+I8 activation rotations and has real all-boundary CUDA/Vulkan replay plus a
+CUDA-disabled checkpoint/capture provenance replay. Text-encoder graph
+orchestration beyond one layer remains CUDA-owned.
 
 Exact H3 full and frame-banded attention is part of the complete 50-main-block
 Vulkan graph: typed projection loading, rank-8 AdaLN, normalization, RoPE,

@@ -3261,13 +3261,14 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   CHECK(vk.pooled_used_bytes() == unloaded_pool_baseline);
   CHECK(vk.reserved_bytes() == nv_high_water);
   std::printf(
-      "  exact Vulkan Qwen layer0 S3: I8 load/first/repeat %.1f/%.1f/%.1f ms FNV64 %016llx persistent %.1f MiB; NVFP4 load/first/repeat %.1f/%.1f/%.1f ms FNV64 %016llx persistent %.1f MiB; shared scratch %.1f MiB, pool %.1f MiB, descriptors %llu\n",
+      "  exact Vulkan Qwen layer0 S3: I8 load/first/repeat %.1f/%.1f/%.1f ms FNV64 %016llx persistent %.1f MiB; NVFP4 load/first/repeat %.1f/%.1f/%.1f ms FNV64 %016llx persistent %.1f MiB; shared scratch %.1f MiB, unloaded pool baseline/reserved HWM %.1f/%.1f MiB, descriptors %llu\n",
       load_ms, first.second, repeat.second,
       static_cast<unsigned long long>(digest), double(persistent) / 1048576.0,
       nv_load_ms, nv_first.second, nv_repeat.second,
       static_cast<unsigned long long>(nv_digest),
       double(nv_persistent) / 1048576.0,
       double(scratch_bytes) / 1048576.0,
+      double(unloaded_pool_baseline) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(stable_descriptors));
 }
