@@ -215,13 +215,23 @@ canonical RoPE, final affine norm/projection, and depth-to-space. CUDA and
 Vulkan implement the same `VideoVaeWindowBackend` interface and consume one
 shared host temporal-chunk/spatial-tile/stitch/cross-fade/pixel-de-normalize
 schedule, which is the backend-selection seam intended for `RunOptions`.
-There are no CUDA calls or resources in the Vulkan decoder.
+That schedule is compiled into `vidfab_core` and has no CUDA profiler or link
+dependency; a CUDA-disabled Vulkan build links and runs the decoder contract
+test. There are no CUDA calls or resources in the Vulkan decoder. Construction
+requires an explicit `ViTTransformerMode::kExact` configuration; `kShipped` is
+rejected before allocation because Vulkan has no shipped-mode implementation.
 
-One Vulkan window records 735 operators. Equal-shape groups are split into at
+One Vulkan window records `15 + 20*num_layers` operators (735 for the shipped
+36-layer checkpoint). A configuration whose single document exceeds 4096
+operators is rejected before context allocation; tests cover 1 layer (35), the
+204-layer boundary (4095), and 205-layer rejection. Equal-shape groups split into at
 most five documents per 4096-operator transaction, so a large tiled group
 cannot overflow the command batch. Checkpoint matrices stay fp16 and
 device-resident; the graph and decoder retain at most two shape-keyed scratch
-sets. The real-checkpoint test explicitly runs six equal 7x1x1 windows as 5+1,
+sets. Peak accounting includes all three prepared-fp16 activation buffers in
+each decoder shape; the real replay checks one- and two-shape accounted deltas
+against Vulkan allocator-used deltas. The real-checkpoint test explicitly runs
+six equal 7x1x1 windows as 5+1,
 then switches through the full and ragged shapes without reloading weights.
 
 Real-checkpoint provenance is
@@ -233,7 +243,7 @@ matched CUDA bit for bit at FNV64 `4d84e832e07db0a8`. A complete normalized
 FNV64 `f455f77e718d9c21` (22 frames, 16x16), and Y4M written through the Vulkan
 converter matched the canonical writer byte for byte. Measured Vulkan load and
 7x16x16 forward times were 5.0 s and 2.4 s; persistent/peak device accounting
-was 4625.0/5079.8 MiB, pooled used/reserved was 5215.0/5445.0 MiB, and the final
+was 4625.0/5087.0 MiB, pooled used/reserved was 5215.0/5445.0 MiB, and the final
 descriptor high-water was 3676.
 
 This completes the exact video-VAE decoder component, but does not change the

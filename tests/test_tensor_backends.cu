@@ -6232,12 +6232,32 @@ VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
       vk_decoder.load(checkpoint);
       const double vk_load_ms = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - vk_load_begin).count();
+      const uint64_t loaded_accounted = vk_decoder.peak_device_bytes();
+      const uint64_t loaded_used = vk_decoder.allocator_used_bytes();
       std::vector<float> vk_first, vk_ragged, vk_first_again;
       const auto vk_forward_begin = std::chrono::steady_clock::now();
       vk_decoder.forward_window(latent.data(), 7, 16, 16, vk_first);
       const double vk_forward_ms = std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - vk_forward_begin).count();
+      const uint64_t one_shape_accounted = vk_decoder.peak_device_bytes();
+      const uint64_t one_shape_used = vk_decoder.allocator_used_bytes();
       vk_decoder.forward_window(ragged_latent.data(), 7, 8, 16, vk_ragged);
+      const uint64_t two_shape_accounted = vk_decoder.peak_device_bytes();
+      const uint64_t two_shape_used = vk_decoder.allocator_used_bytes();
+      const uint64_t one_accounted_delta = one_shape_accounted - loaded_accounted;
+      const uint64_t one_used_delta = one_shape_used - loaded_used;
+      const uint64_t two_accounted_delta = two_shape_accounted - loaded_accounted;
+      const uint64_t two_used_delta = two_shape_used - loaded_used;
+      CHECK(one_accounted_delta <= one_used_delta);
+      CHECK(two_accounted_delta <= two_used_delta);
+      CHECK_MSG(one_used_delta <= one_accounted_delta + (32ull << 20),
+                "one-shape allocator delta exceeds accounting by %.1f MiB",
+                double(one_used_delta) / 1048576.0 -
+                    double(one_accounted_delta) / 1048576.0);
+      CHECK_MSG(two_used_delta <= two_accounted_delta + (32ull << 20),
+                "two-shape allocator delta exceeds accounting by %.1f MiB",
+                double(two_used_delta) / 1048576.0 -
+                    double(two_accounted_delta) / 1048576.0);
       vk_decoder.forward_window(latent.data(), 7, 16, 16, vk_first_again);
       size_t window_mismatch = first.size();
       for (size_t i = 0; i < first.size(); ++i) {
