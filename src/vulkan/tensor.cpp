@@ -252,6 +252,21 @@ struct TensorContext::Impl {
     uint32_t scalar_bits = 0;
   };
   static_assert(sizeof(AudioParameters) == 48);
+  struct KeyframeParameters {
+    uint32_t in_channels = 0;
+    uint32_t out_channels = 0;
+    uint32_t input_height = 0;
+    uint32_t input_width = 0;
+    uint32_t output_height = 0;
+    uint32_t output_width = 0;
+    uint32_t kernel = 0;
+    uint32_t stride = 0;
+    uint32_t reflect_padding = 0;
+    uint32_t asymmetric_padding = 0;
+    uint32_t count = 0;
+    uint32_t groups_x = 0;
+  };
+  static_assert(sizeof(KeyframeParameters) == 48);
   struct DitParameters {
     uint32_t op = 0;
     uint32_t rows = 0;
@@ -340,6 +355,7 @@ struct TensorContext::Impl {
   ComputePipeline vae_swiglu_pipeline;
   ComputePipeline vae_denorm_pipeline;
   ComputePipeline audio_pipeline;
+  ComputePipeline keyframe_pipeline;
   ComputePipeline dit_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;
@@ -350,6 +366,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> mod_bindings;
   std::vector<StorageBinding> vae_rope_bindings;
   std::vector<StorageBinding> audio_bindings;
+  std::vector<StorageBinding> keyframe_bindings;
   std::vector<StorageBinding> dit_bindings;
   std::vector<StorageBinding> weight_bindings;
   std::vector<StorageBinding> gemm_bindings;
@@ -397,6 +414,7 @@ struct TensorContext::Impl {
         mod_bindings(6),
         vae_rope_bindings(7),
         audio_bindings(5),
+        keyframe_bindings(4),
         dit_bindings(5),
         weight_bindings(6),
         gemm_bindings(4),
@@ -476,6 +494,18 @@ struct TensorContext::Impl {
       audio_options.push_constant_bytes = sizeof(AudioParameters);
       audio_options.local_size[0] = 64;
       audio_pipeline = ComputePipeline::create(input, audio_spirv, audio_options);
+    }
+    if (exact_vae_pointwise) {
+      std::vector<uint32_t> keyframe_spirv(
+          sizeof(detail::kTensorKeyframeSpirv) / sizeof(uint32_t));
+      std::memcpy(keyframe_spirv.data(), detail::kTensorKeyframeSpirv,
+                  sizeof(detail::kTensorKeyframeSpirv));
+      ComputePipelineOptions keyframe_options;
+      keyframe_options.storage_binding_count = 4;
+      keyframe_options.push_constant_bytes = sizeof(KeyframeParameters);
+      keyframe_options.local_size[0] = 64;
+      keyframe_pipeline =
+          ComputePipeline::create(input, keyframe_spirv, keyframe_options);
     }
     if (exact_dit_pointwise) {
       std::vector<uint32_t> dit_spirv(
@@ -641,6 +671,8 @@ struct TensorContext::Impl {
       vae_rope_bindings[i].binding = i;
     for (uint32_t i = 0; i < audio_bindings.size(); ++i)
       audio_bindings[i].binding = i;
+    for (uint32_t i = 0; i < keyframe_bindings.size(); ++i)
+      keyframe_bindings[i].binding = i;
     for (uint32_t i = 0; i < dit_bindings.size(); ++i)
       dit_bindings[i].binding = i;
     for (uint32_t i = 0; i < weight_bindings.size(); ++i)
@@ -965,6 +997,33 @@ struct TensorBatch::Impl {
       owner->audio_bindings[i].bytes = resources[i]->buffer.size();
     }
     commands.bind_compute(owner->audio_pipeline, owner->audio_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups_x, static_cast<uint32_t>(groups_y_wide));
+  }
+
+  void dispatch_keyframe(
+      TensorContext::Impl::KeyframeParameters parameters,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 4>& resources) {
+    const uint64_t total_groups =
+        (static_cast<uint64_t>(parameters.count) + 63ull) / 64ull;
+    const uint32_t groups_x = static_cast<uint32_t>(
+        std::min<uint64_t>(total_groups, owner->max_dispatch_x));
+    if (groups_x == 0) {
+      throw std::out_of_range(
+          "vulkan keyframe: device exposes no X dispatch capacity");
+    }
+    const uint64_t groups_y_wide =
+        (total_groups + groups_x - 1ull) / groups_x;
+    if (groups_y_wide > owner->max_dispatch_y) {
+      throw std::out_of_range(
+          "vulkan keyframe: convolution exceeds two-dimensional dispatch limits");
+    }
+    parameters.groups_x = groups_x;
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->keyframe_bindings[i].buffer = &resources[i]->buffer;
+      owner->keyframe_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->keyframe_pipeline, owner->keyframe_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(groups_x, static_cast<uint32_t>(groups_y_wide));
   }
@@ -3385,6 +3444,98 @@ void TensorBatch::group_norm_silu_f16_affine(DeviceTensor& input,
     impl_->transition(b, BufferAccess::kComputeRead);
     if (src.get() != dst.get()) impl_->transition(dst, BufferAccess::kComputeWrite);
     impl_->dispatch_group_norm(p, src, w, b, dst);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::keyframe_conv3d_f16(
+    DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
+    DeviceTensor& output, uint32_t in_channels, uint32_t out_channels,
+    uint32_t input_height, uint32_t input_width, uint32_t kernel,
+    uint32_t stride, bool reflect_padding, bool asymmetric_padding) {
+  if (!impl_ || impl_->poisoned) {
+    throw std::logic_error("vulkan tensor: invalid batch");
+  }
+  if (!impl_->owner->exact_vae_pointwise) {
+    throw std::runtime_error(
+        "vulkan keyframe: exact Conv3D is unavailable");
+  }
+  auto src = impl_->owner->require(input);
+  auto w = impl_->owner->require(weight);
+  auto b = impl_->owner->require(bias);
+  auto dst = impl_->owner->require(output);
+  const uint32_t output_height = stride == 2 ? input_height / 2 : input_height;
+  const uint32_t output_width = stride == 2 ? input_width / 2 : input_width;
+  uint64_t input_count = 0, output_count = 0, weight_count = 0;
+  try {
+    input_count = checked_multiply(
+        in_channels, checked_multiply(input_height, input_width, "keyframe input"),
+        "keyframe input");
+    output_count = checked_multiply(
+        out_channels,
+        checked_multiply(output_height, output_width, "keyframe output"),
+        "keyframe output");
+    weight_count = checked_multiply(
+        checked_multiply(out_channels, in_channels, "keyframe weight"),
+        checked_multiply(kernel, checked_multiply(kernel, kernel, "keyframe weight"),
+                         "keyframe weight"),
+        "keyframe weight");
+  } catch (const std::overflow_error&) {
+    throw std::invalid_argument("vulkan keyframe: convolution shape overflow");
+  }
+  const bool valid_input = src->layout.rank == 3 &&
+      src->layout.extent[0] == in_channels &&
+      src->layout.extent[1] == input_height &&
+      src->layout.extent[2] == input_width;
+  const bool valid_weight = w->layout.rank == 5 &&
+      w->layout.extent[0] == out_channels &&
+      w->layout.extent[1] == in_channels &&
+      w->layout.extent[2] == kernel && w->layout.extent[3] == kernel &&
+      w->layout.extent[4] == kernel;
+  const bool valid_output = dst->layout.rank == 3 &&
+      dst->layout.extent[0] == out_channels &&
+      dst->layout.extent[1] == output_height &&
+      dst->layout.extent[2] == output_width;
+  if (in_channels == 0 || out_channels == 0 || input_height == 0 ||
+      input_width == 0 || (kernel != 1 && kernel != 3) ||
+      (stride != 1 && stride != 2) ||
+      (asymmetric_padding && (stride != 2 || reflect_padding)) ||
+      output_height == 0 || output_width == 0 ||
+      output_count > std::numeric_limits<uint32_t>::max() ||
+      src.get() == w.get() || src.get() == b.get() || src.get() == dst.get() ||
+      w.get() == b.get() || w.get() == dst.get() || b.get() == dst.get() ||
+      src->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
+      w->type != ScalarType::kFloat16 || b->type != ScalarType::kFloat16 ||
+      !valid_input || !valid_weight || !valid_output ||
+      b->layout.rank != 1 || b->layout.extent[0] != out_channels ||
+      src->layout.elements() != input_count ||
+      w->layout.elements() != weight_count ||
+      dst->layout.elements() != output_count ||
+      !src->layout.is_contiguous() || !w->layout.is_contiguous() ||
+      !b->layout.is_contiguous() || !dst->layout.is_contiguous()) {
+    throw std::invalid_argument("vulkan keyframe: invalid Conv3D tensors");
+  }
+  TensorContext::Impl::KeyframeParameters p;
+  p.in_channels = in_channels;
+  p.out_channels = out_channels;
+  p.input_height = input_height;
+  p.input_width = input_width;
+  p.output_height = output_height;
+  p.output_width = output_width;
+  p.kernel = kernel;
+  p.stride = stride;
+  p.reflect_padding = reflect_padding ? 1u : 0u;
+  p.asymmetric_padding = asymmetric_padding ? 1u : 0u;
+  p.count = static_cast<uint32_t>(output_count);
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(w, BufferAccess::kComputeRead);
+    impl_->transition(b, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_keyframe(p, {src, w, b, dst});
   } catch (...) {
     impl_->poisoned = true;
     throw;

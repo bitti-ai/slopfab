@@ -271,6 +271,14 @@ class TensorBatch {
   void group_norm_silu_f16_affine(DeviceTensor& input, DeviceTensor& weight,
                                   DeviceTensor& bias, DeviceTensor& output,
                                   uint32_t groups, float epsilon);
+  // Exact T=1 H3 keyframe-encoder Conv3D. Weight is checkpoint-native fp16
+  // [Cout,Cin,Kt,Kh,Kw], while input/output are contiguous fp32 CHW. The
+  // asymmetric stride-2 form uses constant-zero right/bottom padding.
+  void keyframe_conv3d_f16(
+      DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
+      DeviceTensor& output, uint32_t in_channels, uint32_t out_channels,
+      uint32_t input_height, uint32_t input_width, uint32_t kernel,
+      uint32_t stride, bool reflect_padding, bool asymmetric_padding);
   // Exact audio-VAE fp32 primitives. Convolution tensors use contiguous NCT
   // layouts and the checkpoint-native weight layouts documented by the shared
   // descriptors. A null bias is permitted for bias-free residual convolutions.

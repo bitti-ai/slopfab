@@ -23,6 +23,8 @@ inline constexpr uint8_t kTensorVaeDenormSpirv[] = {
     @VIDFAB_TENSOR_VAE_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorAudioSpirv[] = {
     @VIDFAB_TENSOR_AUDIO_SPV_BYTES@};
+inline constexpr uint8_t kTensorKeyframeSpirv[] = {
+    @VIDFAB_TENSOR_KEYFRAME_SPV_BYTES@};
 inline constexpr uint8_t kTensorDitSpirv[] = {
     @VIDFAB_TENSOR_DIT_SPV_BYTES@};
 inline constexpr uint8_t kTensorRopeSpirv[] = {@VIDFAB_TENSOR_ROPE_SPV_BYTES@};

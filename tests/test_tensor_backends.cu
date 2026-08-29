@@ -10186,6 +10186,125 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   std::printf("\n");
 }
 
+VIDFAB_TEST(cuda_vulkan_keyframe_conv3d_exact) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_vae_pointwise()) return;
+
+  auto run_case = [&](uint32_t cin, uint32_t cout, uint32_t height,
+                      uint32_t width, uint32_t kernel, uint32_t stride,
+                      bool reflect, bool asymmetric) {
+    const uint32_t oh = stride == 2 ? height / 2 : height;
+    const uint32_t ow = stride == 2 ? width / 2 : width;
+    const size_t input_count = static_cast<size_t>(cin) * height * width;
+    const size_t weight_count = static_cast<size_t>(cout) * cin * kernel * kernel * kernel;
+    const size_t output_count = static_cast<size_t>(cout) * oh * ow;
+    std::vector<float> input(input_count);
+    std::vector<__half> weight(weight_count), bias(cout);
+    std::vector<uint16_t> weight_bits(weight_count), bias_bits(cout);
+    for (size_t i = 0; i < input_count; ++i)
+      input[i] = static_cast<float>(static_cast<int>((i * 17) % 71) - 35) / 32.0f;
+    for (size_t i = 0; i < weight_count; ++i) {
+      weight[i] = __float2half(
+          static_cast<float>(static_cast<int>((i * 13) % 37) - 18) / 128.0f);
+      std::memcpy(&weight_bits[i], &weight[i], 2);
+    }
+    for (uint32_t i = 0; i < cout; ++i) {
+      bias[i] = __float2half(static_cast<float>(static_cast<int>(i) - 2) / 16.0f);
+      std::memcpy(&bias_bits[i], &bias[i], 2);
+    }
+
+    cuda::DeviceBuffer<float> c_input(input_count), c_output(output_count);
+    cuda::DeviceBuffer<__half> c_weight(weight_count), c_bias(cout);
+    c_input.copy_from_host(input.data(), input_count);
+    c_weight.copy_from_host(weight.data(), weight_count);
+    c_bias.copy_from_host(bias.data(), cout);
+    cuda::launch_keyframe_conv3d(
+        c_input.get(), c_weight.get(), c_bias.get(), c_output.get(),
+        static_cast<int>(cin), static_cast<int>(cout), static_cast<int>(height),
+        static_cast<int>(width), static_cast<int>(kernel), static_cast<int>(stride),
+        reflect, asymmetric, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<float> expected(output_count), actual(output_count);
+    c_output.copy_to_host(expected.data(), output_count);
+
+    const uint64_t input_shape[] = {cin, height, width};
+    const uint64_t weight_shape[] = {cout, cin, kernel, kernel, kernel};
+    const uint64_t bias_shape[] = {cout};
+    const uint64_t output_shape[] = {cout, oh, ow};
+    DeviceTensor v_input = vk.allocate(TensorLayout::contiguous(input_shape, 3));
+    DeviceTensor v_weight = vk.allocate(
+        TensorLayout::contiguous(weight_shape, 5), ScalarType::kFloat16);
+    DeviceTensor v_bias = vk.allocate(
+        TensorLayout::contiguous(bias_shape, 1), ScalarType::kFloat16);
+    DeviceTensor v_output = vk.allocate(TensorLayout::contiguous(output_shape, 3));
+    vk.upload(v_input, input.data(), input_count);
+    vk.upload_bytes(v_weight, weight_bits.data(), weight_bits.size() * 2);
+    vk.upload_bytes(v_bias, bias_bits.data(), bias_bits.size() * 2);
+    TensorBatch batch = vk.begin_batch();
+    batch.keyframe_conv3d_f16(v_input, v_weight, v_bias, v_output,
+                              cin, cout, height, width, kernel, stride,
+                              reflect, asymmetric);
+    batch.submit().wait();
+    vk.download(v_output, actual.data(), actual.size());
+    size_t mismatch = output_count;
+    for (size_t i = 0; i < output_count; ++i) {
+      if (std::memcmp(&expected[i], &actual[i], 4) != 0) {
+        mismatch = i;
+        break;
+      }
+    }
+    uint32_t eb = 0, ab = 0;
+    if (mismatch != output_count) {
+      std::memcpy(&eb, &expected[mismatch], 4);
+      std::memcpy(&ab, &actual[mismatch], 4);
+    }
+    CHECK_MSG(mismatch == output_count,
+              "keyframe Conv3D C%u->%u %ux%u k%u/s%u mismatch at %zu: %08x != %08x",
+              cin, cout, height, width, kernel, stride, mismatch, eb, ab);
+  };
+
+  run_case(3, 5, 5, 7, 3, 1, true, false);    // 175-element tail.
+  run_case(5, 7, 6, 10, 3, 2, false, true);   // constant right/bottom pad.
+  run_case(7, 3, 3, 5, 1, 1, true, false);    // checkpoint 1x1 shortcut.
+
+  // Reject contradictory asymmetric+reflect semantics without consuming the
+  // batch; the same batch remains recordable and exact afterward.
+  const uint64_t input_shape[] = {1, 4, 6};
+  const uint64_t weight_shape[] = {1, 1, 3, 3, 3};
+  const uint64_t bias_shape[] = {1};
+  const uint64_t output_shape[] = {1, 2, 3};
+  DeviceTensor input = vk.allocate(TensorLayout::contiguous(input_shape, 3));
+  DeviceTensor weight = vk.allocate(
+      TensorLayout::contiguous(weight_shape, 5), ScalarType::kFloat16);
+  DeviceTensor bias = vk.allocate(
+      TensorLayout::contiguous(bias_shape, 1), ScalarType::kFloat16);
+  DeviceTensor output = vk.allocate(TensorLayout::contiguous(output_shape, 3));
+  TensorBatch batch = vk.begin_batch();
+  bool rejected = false;
+  try {
+    batch.keyframe_conv3d_f16(input, weight, bias, output, 1, 1, 4, 6,
+                              3, 2, true, true);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  batch.keyframe_conv3d_f16(input, weight, bias, output, 1, 1, 4, 6,
+                            3, 2, false, true);
+  batch.submit().wait();
+}
+
 VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
   using namespace vidfab;
   vae::ViTConfig default_config;

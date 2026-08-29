@@ -337,7 +337,7 @@ struct KeyframeEncoder::Impl {
     const __half* weight = cw.weight.materialize(weight_workspace.get(), weight_workspace_elements,
                                                  stream.get());
     cuda::launch_keyframe_conv3d(x.get(), weight, cw.bias, y.get(), cin, cout, h,
-                                 w, kernel, stride, true, asymmetric, stream.get());
+                                 w, kernel, stride, !asymmetric, asymmetric, stream.get());
     return y;
   }
 
