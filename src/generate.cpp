@@ -615,9 +615,17 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     text::PromptEmbedding prompt;
     // Same snapshot of the references as the reference key above, and likewise
     // skipped outright when nothing will consult it.
-    const std::string prompt_key = options.reuse_models
-                                       ? conditioning_cache_key(request, reference_identities)
-                                       : std::string();
+    const ConditionerAuthority conditioner_authority =
+        options.inference_backend == DeviceBackend::kVulkan
+            ? ConditionerAuthority::kVulkanExact
+            : (options.attention_mode == AttentionMode::kExact
+                   ? ConditionerAuthority::kCudaExact
+                   : ConditionerAuthority::kCudaShipped);
+    const std::string prompt_key =
+        options.reuse_models
+            ? conditioning_cache_key_for_authority(
+                  request, reference_identities, conditioner_authority)
+            : std::string();
     if (!options.prompt_embedding_path.empty()) {
       const Clock::time_point t0 = Clock::now();
       try {

@@ -184,6 +184,16 @@ void append_file_content_identity(std::string& key, const std::string& path);
 // which image the run used.
 std::vector<std::string> reference_image_identities(const GenerateRequest& request);
 
+// The conditioner arithmetic is part of the cached value's identity. Exact
+// CUDA and Vulkan intentionally have the same bytes today, but keeping their
+// authorities distinct prevents a backend run from being silently satisfied
+// by another backend (and makes that invariant survive future rebaselines).
+enum class ConditionerAuthority : uint8_t {
+  kCudaShipped = 0,
+  kCudaExact = 1,
+  kVulkanExact = 2,
+};
+
 // Key for a request's prompt conditioning: the encoder and tokenizer files by
 // stat identity, the prompt text, and every reference image by content.
 //
@@ -194,6 +204,12 @@ std::vector<std::string> reference_image_identities(const GenerateRequest& reque
 std::string conditioning_cache_key(const GenerateRequest& request);
 std::string conditioning_cache_key(const GenerateRequest& request,
                                    const std::vector<std::string>& reference_identities);
+std::string conditioning_cache_key_for_authority(
+    const GenerateRequest& request, ConditionerAuthority authority);
+std::string conditioning_cache_key_for_authority(
+    const GenerateRequest& request,
+    const std::vector<std::string>& reference_identities,
+    ConditionerAuthority authority);
 
 // Key for the seed-independent reference-image work: decode, Lanczos resize and
 // the VAE keyframe encode. Deliberately narrower than the conditioning key,

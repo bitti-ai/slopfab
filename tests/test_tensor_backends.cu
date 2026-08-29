@@ -5089,6 +5089,41 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
           vertical_plan.layout.num_audio_rows ==
               static_cast<int>(header.audio_rows) &&
           vertical_plan.num_model_evaluations() == 3);
+    if (normal_prompt) {
+      // A conditioner cache hit is allowed only within one explicit execution
+      // authority. Cancel at the next stage so this exercises the public
+      // run_generate cache without loading the transformer or either VAE.
+      auto stop_after_conditioning = +[](RunStage stage, int, int, void*) {
+        return stage != RunStage::kTransformerLoad;
+      };
+      auto conditioning_only = [&](DeviceBackend backend,
+                                   AttentionMode arithmetic,
+                                   bool release) {
+        RunOptions options;
+        options.inference_backend = backend;
+        options.attention_mode = arithmetic;
+        options.reuse_models = true;
+        options.release_reused_models = release;
+        options.verbose = false;
+        options.on_progress = stop_after_conditioning;
+        const RunResult result = run_generate(request, vertical_plan, options);
+        CHECK(result.cancelled && !result.ok);
+        return result.conditioner_executed;
+      };
+      CHECK(conditioning_only(DeviceBackend::kCuda,
+                              AttentionMode::kFlash2, false));
+      CHECK(conditioning_only(DeviceBackend::kVulkan,
+                              AttentionMode::kExact, false));
+      CHECK(!conditioning_only(DeviceBackend::kVulkan,
+                               AttentionMode::kExact, true));
+
+      CHECK(conditioning_only(DeviceBackend::kCuda,
+                              AttentionMode::kExact, false));
+      CHECK(conditioning_only(DeviceBackend::kVulkan,
+                              AttentionMode::kExact, false));
+      CHECK(!conditioning_only(DeviceBackend::kVulkan,
+                               AttentionMode::kExact, true));
+    }
     struct CapturedSamples {
       PixelBuffer video;
       std::vector<float> audio;

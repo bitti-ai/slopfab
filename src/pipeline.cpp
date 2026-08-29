@@ -183,6 +183,25 @@ std::string conditioning_cache_key(const GenerateRequest& request,
   return key;
 }
 
+namespace {
+
+void append_conditioner_authority(std::string& key, ConditionerAuthority authority) {
+  key.push_back('\0');
+  key += "conditioner-authority:";
+  key.push_back(static_cast<char>(authority));
+}
+
+}  // namespace
+
+std::string conditioning_cache_key_for_authority(
+    const GenerateRequest& request,
+    const std::vector<std::string>& reference_identities,
+    ConditionerAuthority authority) {
+  std::string key = conditioning_cache_key(request, reference_identities);
+  append_conditioner_authority(key, authority);
+  return key;
+}
+
 std::string conditioning_cache_key(const GenerateRequest& request) {
   std::string key = "conditioning";
   append_file_identity(key, request.text_encoder_path);
@@ -192,6 +211,13 @@ std::string conditioning_cache_key(const GenerateRequest& request) {
   for (const std::string& path : request.reference_image_paths) {
     append_file_content_identity(key, path);
   }
+  return key;
+}
+
+std::string conditioning_cache_key_for_authority(
+    const GenerateRequest& request, ConditionerAuthority authority) {
+  std::string key = conditioning_cache_key(request);
+  append_conditioner_authority(key, authority);
   return key;
 }
 

@@ -560,6 +560,20 @@ VIDFAB_TEST(cache_keys_separate_their_inputs) {
   CHECK(vidfab::reference_cache_key(other_vae) != vidfab::reference_cache_key(r));
   CHECK(vidfab::conditioning_cache_key(other_vae) == vidfab::conditioning_cache_key(r));
 
+  // A cached embedding never crosses conditioner implementation or arithmetic
+  // authority, even when the exact implementations currently agree bytewise.
+  const auto cuda_shipped = vidfab::ConditionerAuthority::kCudaShipped;
+  const auto cuda_exact = vidfab::ConditionerAuthority::kCudaExact;
+  const auto vulkan_exact = vidfab::ConditionerAuthority::kVulkanExact;
+  CHECK(vidfab::conditioning_cache_key_for_authority(r, cuda_shipped) ==
+        vidfab::conditioning_cache_key_for_authority(r, cuda_shipped));
+  CHECK(vidfab::conditioning_cache_key_for_authority(r, cuda_shipped) !=
+        vidfab::conditioning_cache_key_for_authority(r, cuda_exact));
+  CHECK(vidfab::conditioning_cache_key_for_authority(r, cuda_exact) !=
+        vidfab::conditioning_cache_key_for_authority(r, vulkan_exact));
+  CHECK(vidfab::conditioning_cache_key_for_authority(r, cuda_shipped) !=
+        vidfab::conditioning_cache_key_for_authority(r, vulkan_exact));
+
   // Reference count is part of both: dropping one must not leave a prefix that
   // compares equal to the longer list.
   vidfab::GenerateRequest two = r;
