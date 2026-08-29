@@ -125,6 +125,7 @@ struct ExactQwenVisionStats {
   uint64_t activation_bytes = 0;
   uint64_t max_streamed_weight_bytes = 0;
   uint64_t allocator_peak_used_bytes = 0;
+  uint64_t allocator_peak_nonstaging_bytes = 0;
   uint64_t allocator_used_bytes = 0;
   uint64_t allocator_reserved_bytes = 0;
   uint64_t descriptor_set_allocations = 0;

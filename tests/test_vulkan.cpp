@@ -358,6 +358,14 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
   CHECK(fnv64_floats(output.data) == 0x579170f52abfc8dbull);
   const ExactQwenTextEncoderStats stats = encoder.stats();
   CHECK(stats.peak_device_bytes < 900ull * 1024 * 1024);
+  CHECK(stats.allocator_peak_nonstaging_bytes >=
+        stats.allocator_baseline_bytes);
+  CHECK(stats.peak_device_bytes >=
+        stats.allocator_peak_nonstaging_bytes -
+            stats.allocator_baseline_bytes);
+  CHECK(stats.allocator_peak_used_bytes <=
+        stats.allocator_peak_nonstaging_bytes +
+            2 * context.staging_capacity_bytes());
   CHECK(stats.descriptor_set_allocations == 36);
   if (std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL")) {
     std::vector<uint8_t> rgb(size_t(256) * 256 * 3);
@@ -413,7 +421,16 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
           multimodal.modality_tags.back() == 1);
     for (size_t row = 1; row <= 66; ++row)
       CHECK(multimodal.modality_tags[row] == 0);
-    CHECK(encoder.stats().peak_device_bytes < 900ull * 1024 * 1024);
+    const ExactQwenTextEncoderStats multimodal_stats = encoder.stats();
+    CHECK(multimodal_stats.peak_device_bytes < 900ull * 1024 * 1024);
+    CHECK(multimodal_stats.allocator_peak_nonstaging_bytes >=
+          multimodal_stats.allocator_baseline_bytes);
+    CHECK(multimodal_stats.peak_device_bytes >=
+          multimodal_stats.allocator_peak_nonstaging_bytes -
+              multimodal_stats.allocator_baseline_bytes);
+    CHECK(multimodal_stats.allocator_peak_used_bytes <=
+          multimodal_stats.allocator_peak_nonstaging_bytes +
+              2 * context.staging_capacity_bytes());
     std::printf("  CUDA-off multimodal exact Qwen full50 L68 %.2f s final %016llx\n",
                 multimodal_seconds,
                 static_cast<unsigned long long>(fnv64_floats(multimodal.data)));

@@ -21,6 +21,7 @@ struct ExactQwenTextEncoderStats {
   uint64_t peak_device_bytes = 0;
   uint64_t allocator_baseline_bytes = 0;
   uint64_t allocator_peak_used_bytes = 0;
+  uint64_t allocator_peak_nonstaging_bytes = 0;
   uint64_t allocator_used_bytes = 0;
   uint64_t allocator_reserved_bytes = 0;
   uint64_t descriptor_set_allocations = 0;

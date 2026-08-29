@@ -21,6 +21,13 @@ TensorLayout matrix(uint64_t rows, uint64_t columns) {
 uint64_t tensor_bytes(const DeviceTensor& tensor) {
   return tensor ? tensor.layout().bytes(tensor.type()) : 0;
 }
+uint64_t nonstaging_used_bytes(const TensorContext& context) {
+  const uint64_t capacity = context.staging_capacity_bytes();
+  const uint64_t staging = capacity > std::numeric_limits<uint64_t>::max() / 2
+      ? std::numeric_limits<uint64_t>::max() : capacity * 2;
+  const uint64_t used = context.pooled_used_bytes();
+  return used >= staging ? used - staging : 0;
+}
 
 text::EncoderConfig resolved_config(const SafeTensors& checkpoint,
                                     const text::EncoderConfig& requested) {
@@ -95,11 +102,21 @@ struct ExactQwenTextEncoder::Impl {
   std::unique_ptr<ShapeState> shape;
   ExactQwenTextEncoderStats stats;
   ExactQwenVisionEncoder vision;
-  uint64_t allocator_baseline = 0;
 
   explicit Impl(TensorContext& owner)
-      : context(&owner), allocator_baseline(owner.pooled_used_bytes()),
-        vision(ExactQwenVisionEncoder::create(owner)) {}
+      : context(&owner), vision(ExactQwenVisionEncoder::create(owner)) {}
+
+  // Return the allocator bytes not owned by this encoder at an encode
+  // boundary. This excludes context staging and allocations owned by callers,
+  // while subtracting a retained shape so a text->multimodal shape switch does
+  // not hide model memory in the baseline. Exact logical accounting below
+  // remains the authority for tensor bytes when pool alignment differs.
+  uint64_t external_used_bytes() const noexcept {
+    const uint64_t used = nonstaging_used_bytes(*context);
+    const uint64_t owned = shape
+        ? shape->scratch.reserved_bytes() + shape->activation_bytes() : 0;
+    return used >= owned ? used - owned : 0;
+  }
 
   void reset() noexcept {
     shape.reset();
@@ -108,10 +125,6 @@ struct ExactQwenTextEncoder::Impl {
     // slots may still retain shared tensor owners until collection. Retire
     // them here so unload releases the complete model-owned working set.
     try { context->collect(); } catch (...) {}
-    // Staging buffers are context-owned and may be created lazily by the first
-    // encode. A subsequent load must measure model high-water above that warm
-    // context baseline rather than charging persistent staging to the model.
-    allocator_baseline = context->pooled_used_bytes();
     checkpoint = nullptr;
     embedding = nullptr;
     embedding_scale = nullptr;
@@ -200,6 +213,7 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   }
   const Clock::time_point begin = Clock::now();
   const uint32_t sequence = static_cast<uint32_t>(token_ids.size());
+  const uint64_t allocator_baseline = impl_->external_used_bytes();
   // Validate the largest layer transaction before shape allocation, uploads,
   // or residual mutation. The final layer additionally widens the output and
   // an enabled trace adds its device-only boundary copy.
@@ -230,12 +244,15 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
 
   uint64_t max_weight = 0;
   uint64_t peak_used = impl_->context->pooled_used_bytes();
+  uint64_t peak_nonstaging = nonstaging_used_bytes(*impl_->context);
   try {
     for (uint32_t layer = 0; layer < 50; ++layer) {
       state.stage.unload();
       state.stage.load(*impl_->checkpoint, layer);
       max_weight = std::max(max_weight, state.stage.persistent_bytes());
       peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+      peak_nonstaging = std::max(
+          peak_nonstaging, nonstaging_used_bytes(*impl_->context));
       TensorBatch batch = impl_->context->begin_batch();
       batch.require_operator_capacity(state.stage.required_operators() +
           (trace != nullptr ? 1u : 0u) + (layer == 49 ? 1u : 0u));
@@ -276,14 +293,15 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   impl_->stats.max_layer_weight_bytes = max_weight;
   impl_->stats.scratch_bytes = state.scratch.reserved_bytes();
   impl_->stats.activation_bytes = state.activation_bytes();
-  const uint64_t observed_peak = peak_used >= impl_->allocator_baseline
-      ? peak_used - impl_->allocator_baseline : peak_used;
+  const uint64_t observed_peak = peak_nonstaging >= allocator_baseline
+      ? peak_nonstaging - allocator_baseline : peak_nonstaging;
   impl_->stats.peak_device_bytes = std::max(
       max_weight + state.scratch.reserved_bytes() + state.activation_bytes() +
           trace_bytes,
       observed_peak);
-  impl_->stats.allocator_baseline_bytes = impl_->allocator_baseline;
+  impl_->stats.allocator_baseline_bytes = allocator_baseline;
   impl_->stats.allocator_peak_used_bytes = peak_used;
+  impl_->stats.allocator_peak_nonstaging_bytes = peak_nonstaging;
   impl_->stats.allocator_used_bytes = impl_->context->pooled_used_bytes();
   impl_->stats.allocator_reserved_bytes = impl_->context->reserved_bytes();
   impl_->stats.descriptor_set_allocations =
@@ -304,6 +322,7 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
     throw std::invalid_argument("Vulkan Qwen encoder: invalid multimodal prompt length");
   const Clock::time_point begin = Clock::now();
   const uint32_t sequence = static_cast<uint32_t>(token_ids.size());
+  const uint64_t allocator_baseline = impl_->external_used_bytes();
   std::vector<text::QwenImageGrid> grids;
   grids.reserve(images.size());
   uint64_t visual_tokens_wide = 0;
@@ -344,6 +363,7 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
       multimodal.image_rows.size() * sizeof(int32_t));
   uint32_t visual_offset = 0;
   uint64_t vision_peak_used = 0;
+  uint64_t vision_peak_nonstaging = 0;
   uint64_t vision_phase_bytes = 0;
   try {
     impl_->vision.load(*impl_->checkpoint);
@@ -352,6 +372,8 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
       const ExactQwenVisionStats& vision_stats = impl_->vision.stats();
       vision_peak_used = std::max(
           vision_peak_used, vision_stats.allocator_peak_used_bytes);
+      vision_peak_nonstaging = std::max(vision_peak_nonstaging,
+          vision_stats.allocator_peak_nonstaging_bytes);
       vision_phase_bytes = std::max(
           vision_phase_bytes, vision_stats.scratch_bytes +
               vision_stats.activation_bytes +
@@ -398,12 +420,16 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   uint64_t max_weight = 0;
   uint64_t peak_used = std::max(
       vision_peak_used, impl_->context->pooled_used_bytes());
+  uint64_t peak_nonstaging = std::max(
+      vision_peak_nonstaging, nonstaging_used_bytes(*impl_->context));
   try {
     for (uint32_t layer = 0; layer < 50; ++layer) {
       state.stage.unload();
       state.stage.load(*impl_->checkpoint, layer);
       max_weight = std::max(max_weight, state.stage.persistent_bytes());
       peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+      peak_nonstaging = std::max(
+          peak_nonstaging, nonstaging_used_bytes(*impl_->context));
       TensorBatch batch = impl_->context->begin_batch();
       const int deep_slot = text::qwen3vl_deepstack_slot(layer);
       batch.require_operator_capacity(state.stage.required_operators() +
@@ -460,14 +486,15 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   impl_->stats.activation_bytes = state.activation_bytes() + visual_bytes;
   const uint64_t decoder_live_bytes = state.scratch.reserved_bytes() +
       state.activation_bytes();
-  const uint64_t observed_peak = peak_used >= impl_->allocator_baseline
-      ? peak_used - impl_->allocator_baseline : peak_used;
+  const uint64_t observed_peak = peak_nonstaging >= allocator_baseline
+      ? peak_nonstaging - allocator_baseline : peak_nonstaging;
   impl_->stats.peak_device_bytes = std::max({
       max_weight + decoder_live_bytes + visual_bytes + trace_bytes,
       decoder_live_bytes + vision_phase_bytes + visual_bytes,
       observed_peak});
-  impl_->stats.allocator_baseline_bytes = impl_->allocator_baseline;
+  impl_->stats.allocator_baseline_bytes = allocator_baseline;
   impl_->stats.allocator_peak_used_bytes = peak_used;
+  impl_->stats.allocator_peak_nonstaging_bytes = peak_nonstaging;
   impl_->stats.allocator_used_bytes = impl_->context->pooled_used_bytes();
   impl_->stats.allocator_reserved_bytes = impl_->context->reserved_bytes();
   impl_->stats.descriptor_set_allocations =

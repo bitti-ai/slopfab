@@ -13,6 +13,14 @@
 namespace vidfab::vulkan {
 namespace {
 
+uint64_t nonstaging_used_bytes(const TensorContext& context) {
+  const uint64_t capacity = context.staging_capacity_bytes();
+  const uint64_t staging = capacity > std::numeric_limits<uint64_t>::max() / 2
+      ? std::numeric_limits<uint64_t>::max() : capacity * 2;
+  const uint64_t used = context.pooled_used_bytes();
+  return used >= staging ? used - staging : 0;
+}
+
 TensorLayout matrix(uint64_t rows, uint64_t columns) {
   const uint64_t shape[] = {rows, columns};
   return TensorLayout::contiguous(shape, 2);
@@ -641,11 +649,14 @@ void ExactQwenVisionEncoder::encode(const text::QwenPixelValues& image,
   impl_->context->upload_batch(uploads, 4);
   const auto begin = std::chrono::steady_clock::now();
   uint64_t peak_used = impl_->context->pooled_used_bytes();
+  uint64_t peak_nonstaging = nonstaging_used_bytes(*impl_->context);
   uint64_t max_weight = 0;
   try {
     s.patch.load(impl_->validated);
     max_weight = std::max(max_weight, s.patch.persistent_bytes());
     peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+    peak_nonstaging = std::max(
+        peak_nonstaging, nonstaging_used_bytes(*impl_->context));
     { TensorBatch batch = impl_->context->begin_batch();
       s.patch.record(batch, s.pixels, s.learned_index, s.residual, s.scratch);
       batch.submit().wait(); }
@@ -654,6 +665,8 @@ void ExactQwenVisionEncoder::encode(const text::QwenPixelValues& image,
       s.block.load(impl_->validated, layer);
       max_weight = std::max(max_weight, s.block.persistent_bytes());
       peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+      peak_nonstaging = std::max(
+          peak_nonstaging, nonstaging_used_bytes(*impl_->context));
       { TensorBatch batch = impl_->context->begin_batch();
         s.block.record(batch, s.residual, s.cosine, s.sine, s.scratch);
         if (trace)
@@ -665,6 +678,8 @@ void ExactQwenVisionEncoder::encode(const text::QwenPixelValues& image,
         s.merger.load(impl_->validated, deep_slot);
         max_weight = std::max(max_weight, s.merger.persistent_bytes());
         peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+        peak_nonstaging = std::max(
+            peak_nonstaging, nonstaging_used_bytes(*impl_->context));
         TensorBatch batch = impl_->context->begin_batch();
         s.merger.record(batch, s.residual, s.deep[deep_slot], s.scratch);
         batch.submit().wait();
@@ -674,6 +689,8 @@ void ExactQwenVisionEncoder::encode(const text::QwenPixelValues& image,
     s.merger.load(impl_->validated, -1);
     max_weight = std::max(max_weight, s.merger.persistent_bytes());
     peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+    peak_nonstaging = std::max(
+        peak_nonstaging, nonstaging_used_bytes(*impl_->context));
     { TensorBatch batch = impl_->context->begin_batch();
       s.merger.record(batch, s.residual, s.main, s.scratch);
       batch.submit().wait(); }
@@ -698,6 +715,7 @@ void ExactQwenVisionEncoder::encode(const text::QwenPixelValues& image,
   impl_->stats.activation_bytes = s.activation_bytes();
   impl_->stats.max_streamed_weight_bytes = max_weight;
   impl_->stats.allocator_peak_used_bytes = peak_used;
+  impl_->stats.allocator_peak_nonstaging_bytes = peak_nonstaging;
   impl_->stats.allocator_used_bytes = impl_->context->pooled_used_bytes();
   impl_->stats.allocator_reserved_bytes = impl_->context->reserved_bytes();
   impl_->stats.descriptor_set_allocations =

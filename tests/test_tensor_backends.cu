@@ -3972,11 +3972,12 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
   const ExactQwenTextEncoderStats first_stats = encoder.stats();
   CHECK(first_stats.last_num_tokens == 4100);
   CHECK(first_stats.max_layer_weight_bytes < 500ull * 1024 * 1024);
-  const uint64_t observed_peak = first_stats.allocator_peak_used_bytes >=
+  const uint64_t observed_peak =
+      first_stats.allocator_peak_nonstaging_bytes >=
       first_stats.allocator_baseline_bytes
-      ? first_stats.allocator_peak_used_bytes -
+      ? first_stats.allocator_peak_nonstaging_bytes -
             first_stats.allocator_baseline_bytes
-      : first_stats.allocator_peak_used_bytes;
+      : first_stats.allocator_peak_nonstaging_bytes;
   CHECK(first_stats.peak_device_bytes >= observed_peak);
   CHECK(first_stats.peak_device_bytes - observed_peak < 128ull * 1024 * 1024);
   CHECK(first_stats.peak_device_bytes < 4ull * 1024 * 1024 * 1024);
@@ -3994,11 +3995,11 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
   CHECK(vk.descriptor_set_allocations() == warm_descriptors);
   const ExactQwenTextEncoderStats repeat_stats = encoder.stats();
   const uint64_t repeat_observed =
-      repeat_stats.allocator_peak_used_bytes >=
+      repeat_stats.allocator_peak_nonstaging_bytes >=
           repeat_stats.allocator_baseline_bytes
-      ? repeat_stats.allocator_peak_used_bytes -
+      ? repeat_stats.allocator_peak_nonstaging_bytes -
             repeat_stats.allocator_baseline_bytes
-      : repeat_stats.allocator_peak_used_bytes;
+      : repeat_stats.allocator_peak_nonstaging_bytes;
   CHECK(repeat_stats.peak_device_bytes >= repeat_observed);
   CHECK(repeat_stats.peak_device_bytes - repeat_observed <
         128ull * 1024 * 1024);
