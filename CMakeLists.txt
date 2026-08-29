@@ -55,6 +55,7 @@ add_library(vidfab_core STATIC
   src/dit/rope.cpp
   src/dit/step_cache.cpp
   src/vae/keyframe_encoder.cpp
+  src/vae/vit_block.cpp
   src/pipeline.cpp
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
@@ -161,6 +162,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/sol_attention.cu
       src/cuda/sol_attention_pipeline.cu
       src/cuda/vae_kernels.cu
+      src/cuda/vae_vit_block.cu
       src/cuda/vit_decoder.cu
       src/cuda/audio_vae_kernels.cu
       src/cuda/dit_kernels.cu
@@ -170,7 +172,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/qwen_vision_encoder.cu
       # Host-side orchestration lives here rather than in vidfab_core so that
       # the dependency runs one way: cuda -> core, never back.
-      src/vae/decode_pipeline.cpp
+  src/vae/decode_pipeline.cpp
       src/vae/keyframe_cuda.cpp
       src/generate.cpp
       # src/capi/capi.cpp is deliberately NOT here. It calls run_generate, so
@@ -730,6 +732,7 @@ if(VIDFAB_ENABLE_VULKAN)
   add_library(vidfab_vulkan STATIC
     src/vulkan/runtime.cpp
     src/vulkan/tensor.cpp
+    src/vulkan/vae_vit_block.cpp
     src/vulkan/yuv_converter.cpp)
   target_include_directories(vidfab_vulkan
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
