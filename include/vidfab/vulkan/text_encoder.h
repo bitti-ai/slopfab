@@ -52,6 +52,10 @@ class ExactQwenTextEncoder {
 
   text::PromptEmbedding encode(const std::vector<int32_t>& token_ids,
                                text::EncoderTrace* trace = nullptr);
+  text::PromptEmbedding encode(
+      const std::vector<int32_t>& token_ids,
+      const std::vector<text::QwenPixelValues>& images,
+      text::EncoderTrace* trace = nullptr);
   text::PromptEmbedding encode(const text::Tokenizer& tokenizer,
                                const std::string& prompt);
   const ExactQwenTextEncoderStats& stats() const noexcept;

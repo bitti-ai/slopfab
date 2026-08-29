@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
 #include "vidfab/vulkan/text_layer.h"
+#include "vidfab/vulkan/vision_stage.h"
 
 namespace vidfab::vulkan {
 namespace {
@@ -15,6 +17,9 @@ using Clock = std::chrono::steady_clock;
 TensorLayout matrix(uint64_t rows, uint64_t columns) {
   const uint64_t shape[] = {rows, columns};
   return TensorLayout::contiguous(shape, 2);
+}
+uint64_t tensor_bytes(const DeviceTensor& tensor) {
+  return tensor ? tensor.layout().bytes(tensor.type()) : 0;
 }
 
 text::EncoderConfig resolved_config(const SafeTensors& checkpoint,
@@ -89,13 +94,16 @@ struct ExactQwenTextEncoder::Impl {
   text::EncoderConfig config;
   std::unique_ptr<ShapeState> shape;
   ExactQwenTextEncoderStats stats;
+  ExactQwenVisionEncoder vision;
   uint64_t allocator_baseline = 0;
 
   explicit Impl(TensorContext& owner)
-      : context(&owner), allocator_baseline(owner.pooled_used_bytes()) {}
+      : context(&owner), allocator_baseline(owner.pooled_used_bytes()),
+        vision(ExactQwenVisionEncoder::create(owner)) {}
 
   void reset() noexcept {
     shape.reset();
+    vision.unload();
     // Submitted work is synchronously waited by encode(), but command flight
     // slots may still retain shared tensor owners until collection. Retire
     // them here so unload releases the complete model-owned working set.
@@ -144,6 +152,11 @@ void ExactQwenTextEncoder::load(const SafeTensors& checkpoint,
   validation_config.sequence = 1;
   validation_config.encoder = next;
   ExactQwenTextLayerStage::validate_archive(checkpoint, validation_config);
+  // The same production archives contain the complete visual tower. Validate
+  // its exact 351-tensor manifest in the same pre-commit transaction, even for
+  // a text-only encode, so a later multimodal request cannot discover a corrupt
+  // layer after allocating its activation graph.
+  (void)text::load_qwen3vl_vision_checkpoint(checkpoint);
   const TensorView* embedding = &checkpoint.at("model.embed_tokens.weight");
   const TensorView* embedding_scale =
       checkpoint.find("model.embed_tokens.weight_scale");
@@ -269,6 +282,183 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
       impl_->context->descriptor_set_allocations();
   impl_->stats.last_encode_seconds =
       std::chrono::duration<double>(Clock::now() - begin).count();
+  return result;
+}
+
+text::PromptEmbedding ExactQwenTextEncoder::encode(
+    const std::vector<int32_t>& token_ids,
+    const std::vector<text::QwenPixelValues>& images,
+    text::EncoderTrace* trace) {
+  if (!loaded()) throw std::logic_error("Vulkan Qwen encoder: not loaded");
+  if (images.empty()) return encode(token_ids, trace);
+  if (token_ids.empty() ||
+      token_ids.size() > static_cast<size_t>(impl_->config.max_prompt_tokens))
+    throw std::invalid_argument("Vulkan Qwen encoder: invalid multimodal prompt length");
+  const Clock::time_point begin = Clock::now();
+  const uint32_t sequence = static_cast<uint32_t>(token_ids.size());
+  std::vector<text::QwenImageGrid> grids;
+  grids.reserve(images.size());
+  uint64_t visual_tokens_wide = 0;
+  for (const auto& image : images) {
+    const size_t patches = image.grid.patch_count();
+    if (patches == 0 || patches > 16384 || patches % 4 != 0 ||
+        image.rows.size() != patches * 1536)
+      throw std::invalid_argument("Vulkan Qwen encoder: invalid visual rows");
+    grids.push_back(image.grid);
+    visual_tokens_wide += image.grid.merged_token_count();
+  }
+  const text::QwenMultimodalPlan multimodal =
+      text::qwen3vl_multimodal_plan(token_ids, grids);
+  if (visual_tokens_wide == 0 ||
+      visual_tokens_wide != multimodal.image_rows.size() ||
+      visual_tokens_wide > std::numeric_limits<uint32_t>::max())
+    throw std::invalid_argument("Vulkan Qwen encoder: visual token mismatch");
+  const uint32_t visual_tokens = static_cast<uint32_t>(visual_tokens_wide);
+  {
+    TensorBatch capacity = impl_->context->begin_batch();
+    capacity.require_operator_capacity(layer_operators(impl_->config.format,
+        sequence) + 2u + (trace != nullptr ? 1u : 0u));
+  }
+  Impl::ShapeState& state = impl_->ensure_shape(sequence);
+  DeviceTensor visual_main = impl_->context->allocate(
+      matrix(visual_tokens, impl_->config.hidden_size), ScalarType::kBFloat16);
+  DeviceTensor visual_deep[3];
+  for (auto& tensor : visual_deep)
+    tensor = impl_->context->allocate(
+        matrix(visual_tokens, impl_->config.hidden_size), ScalarType::kBFloat16);
+  const uint64_t image_row_count = visual_tokens;
+  DeviceTensor image_rows = impl_->context->allocate(
+      TensorLayout::contiguous(&image_row_count, 1), ScalarType::kInt32);
+  impl_->context->upload_bytes(image_rows, multimodal.image_rows.data(),
+      multimodal.image_rows.size() * sizeof(int32_t));
+  uint32_t visual_offset = 0;
+  uint64_t vision_peak_used = 0;
+  uint64_t vision_phase_bytes = 0;
+  try {
+    impl_->vision.load(*impl_->checkpoint);
+    for (const auto& image : images) {
+      impl_->vision.encode(image);
+      const ExactQwenVisionStats& vision_stats = impl_->vision.stats();
+      vision_peak_used = std::max(
+          vision_peak_used, vision_stats.allocator_peak_used_bytes);
+      vision_phase_bytes = std::max(
+          vision_phase_bytes, vision_stats.scratch_bytes +
+              vision_stats.activation_bytes +
+              vision_stats.max_streamed_weight_bytes);
+      const uint32_t count = impl_->vision.output_tokens();
+      TensorBatch copy = impl_->context->begin_batch();
+      copy.require_operator_capacity(4);
+      copy.copy_rows(impl_->vision.main_output(), visual_main, 0,
+                     visual_offset, count);
+      for (uint32_t slot = 0; slot < 3; ++slot)
+        copy.copy_rows(impl_->vision.deepstack_output(slot), visual_deep[slot],
+                       0, visual_offset, count);
+      copy.submit().wait();
+      visual_offset += count;
+    }
+    impl_->vision.unload();
+  } catch (...) {
+    impl_->vision.unload();
+    throw;
+  }
+  if (visual_offset != visual_tokens)
+    throw std::logic_error("Vulkan Qwen encoder: incomplete visual output");
+
+  std::vector<uint16_t> embedding;
+  text::gather_embedding_rows(*impl_->embedding, impl_->embedding_scale,
+                              token_ids, embedding);
+  std::vector<float> cosine, sine;
+  text::qwen3vl_decoder_rope_tables(multimodal, sequence, cosine, sine,
+      impl_->config.head_dim, impl_->config.rope_theta);
+  const TensorUpload uploads[] = {
+      {&state.tokens, embedding.data(), embedding.size() * sizeof(uint16_t)},
+      {&state.cosine, cosine.data(), cosine.size() * sizeof(float)},
+      {&state.sine, sine.data(), sine.size() * sizeof(float)}};
+  impl_->context->upload_batch(uploads, 3);
+  { TensorBatch scatter = impl_->context->begin_batch();
+    scatter.vision_scatter_bf16(visual_main, state.tokens, image_rows);
+    scatter.submit().wait(); }
+
+  DeviceTensor trace_device;
+  if (trace != nullptr)
+    trace_device = impl_->context->allocate(
+        matrix(uint64_t(sequence) * 50, impl_->config.hidden_size),
+        ScalarType::kBFloat16);
+  uint64_t max_weight = 0;
+  uint64_t peak_used = std::max(
+      vision_peak_used, impl_->context->pooled_used_bytes());
+  try {
+    for (uint32_t layer = 0; layer < 50; ++layer) {
+      state.stage.unload();
+      state.stage.load(*impl_->checkpoint, layer);
+      max_weight = std::max(max_weight, state.stage.persistent_bytes());
+      peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+      TensorBatch batch = impl_->context->begin_batch();
+      const int deep_slot = text::qwen3vl_deepstack_slot(layer);
+      batch.require_operator_capacity(state.stage.required_operators() +
+          (deep_slot >= 0 ? 1u : 0u) + (trace != nullptr ? 1u : 0u) +
+          (layer == 49 ? 1u : 0u));
+      state.stage.record(batch, state.tokens, state.cosine, state.sine,
+                         state.scratch);
+      if (deep_slot >= 0)
+        batch.vision_scatter_add_bf16(visual_deep[deep_slot], state.tokens,
+                                      image_rows);
+      if (trace != nullptr)
+        batch.copy_rows(state.tokens, trace_device, 0, layer * sequence,
+                        sequence);
+      if (layer == 49) batch.convert(state.tokens, state.output);
+      batch.submit().wait();
+    }
+  } catch (...) {
+    state.stage.unload();
+    throw;
+  }
+  state.stage.unload();
+
+  text::PromptEmbedding result;
+  result.num_tokens = static_cast<int>(sequence);
+  result.hidden_size = impl_->config.hidden_size;
+  result.data.resize(static_cast<size_t>(sequence) * impl_->config.hidden_size);
+  result.modality_tags.assign(sequence, 1);
+  size_t image_at = 0;
+  for (const auto& image : images) {
+    const size_t count = image.grid.merged_token_count();
+    const int first = multimodal.image_rows[image_at];
+    for (size_t row = 0; row < count + 2; ++row)
+      result.modality_tags[static_cast<size_t>(first - 1) + row] = 0;
+    image_at += count;
+  }
+  impl_->context->download(state.output, result.data.data(), result.data.size());
+  const uint64_t trace_bytes = trace_device
+      ? trace_device.layout().bytes(trace_device.type()) : 0;
+  if (trace != nullptr) {
+    std::vector<uint16_t> boundaries(
+        static_cast<size_t>(50) * sequence * impl_->config.hidden_size);
+    impl_->context->download_bytes(trace_device, boundaries.data(),
+                                   boundaries.size() * sizeof(uint16_t));
+    trace->num_tokens = static_cast<int>(sequence);
+    trace->hidden_size = impl_->config.hidden_size;
+    trace->layer_residual_bf16 = std::move(boundaries);
+  }
+  const uint64_t visual_bytes = tensor_bytes(visual_main) +
+      tensor_bytes(visual_deep[0]) + tensor_bytes(visual_deep[1]) +
+      tensor_bytes(visual_deep[2]) + tensor_bytes(image_rows);
+  impl_->stats.last_num_tokens = sequence;
+  impl_->stats.max_layer_weight_bytes = max_weight;
+  impl_->stats.scratch_bytes = state.scratch.reserved_bytes();
+  impl_->stats.activation_bytes = state.activation_bytes() + visual_bytes;
+  impl_->stats.peak_device_bytes = std::max(
+      max_weight + state.scratch.reserved_bytes() + state.activation_bytes() +
+          visual_bytes + trace_bytes,
+      vision_phase_bytes + visual_bytes);
+  impl_->stats.allocator_baseline_bytes = impl_->allocator_baseline;
+  impl_->stats.allocator_peak_used_bytes = peak_used;
+  impl_->stats.allocator_used_bytes = impl_->context->pooled_used_bytes();
+  impl_->stats.allocator_reserved_bytes = impl_->context->reserved_bytes();
+  impl_->stats.descriptor_set_allocations =
+      impl_->context->descriptor_set_allocations();
+  impl_->stats.last_encode_seconds = std::chrono::duration<double>(
+      Clock::now() - begin).count();
   return result;
 }
 

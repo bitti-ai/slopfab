@@ -9,7 +9,9 @@
 //
 // Ref2VA also runs the checkpoint's complete `visual.*` tower, replaces the
 // image-pad embeddings, and injects its three DeepStack outputs at decoder
-// layers 8, 16 and 24.
+// vision layers 8, 16 and 24. Canonical decoder injection is after decoder
+// layers 0, 1 and 2 respectively; those similarly numbered stages must not be
+// conflated.
 //
 // Consequences that shape the interface:
 //
@@ -192,7 +194,8 @@ class Encoder {
   PromptEmbedding encode(const std::vector<int32_t>& token_ids,
                          EncoderTrace* trace = nullptr);
   PromptEmbedding encode(const std::vector<int32_t>& token_ids,
-                         const std::vector<QwenPixelValues>& images);
+                         const std::vector<QwenPixelValues>& images,
+                         EncoderTrace* trace = nullptr);
 
   // Convenience: tokenise then encode.
   PromptEmbedding encode(const Tokenizer& tokenizer, const std::string& prompt);

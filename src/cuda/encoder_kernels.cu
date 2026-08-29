@@ -1209,7 +1209,9 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
   QwenMultimodalPlan mm_plan;
   if (s.pending_images && !s.pending_images->empty()) {
     s.vision.load(*s.checkpoint);
-    visual = s.vision.encode(*s.pending_images);
+    visual = s.cfg.arithmetic == EncoderArithmetic::kExact
+        ? s.vision.encode_exact(*s.pending_images)
+        : s.vision.encode(*s.pending_images);
     std::vector<QwenImageGrid> grids; grids.reserve(s.pending_images->size());
     for (const auto& im : *s.pending_images) grids.push_back(im.grid);
     mm_plan = qwen3vl_multimodal_plan(token_ids, grids);
@@ -1367,12 +1369,13 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
 }
 
 PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
-                                const std::vector<QwenPixelValues>& images) {
+                                const std::vector<QwenPixelValues>& images,
+                                EncoderTrace* trace) {
   Impl& s = *impl_;
   require(!images.empty(), "encode: multimodal overload requires at least one image");
   s.pending_images = &images;
   try {
-    PromptEmbedding out = encode(token_ids);
+    PromptEmbedding out = encode(token_ids, trace);
     s.pending_images = nullptr;
     return out;
   } catch (...) {
