@@ -503,6 +503,11 @@ VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
     Submission third_token = third.submit();
     CHECK(third_token.value() > second_token.value());
     first_token.wait(); second_token.wait(); third_token.wait();
+    std::vector<float> got0(size_t(lm) * ln0), got1(size_t(lm) * ln1);
+    context.download(o0, got0.data(), got0.size());
+    context.download(o1, got1.data(), got1.size());
+    for (float value : got0) CHECK(value == 4.0f);
+    for (float value : got1) CHECK(value == -2.0f);
     const uint64_t warm_reserved = context.reserved_bytes();
     const uint64_t warm_descriptors = context.descriptor_set_allocations();
 
@@ -549,6 +554,32 @@ VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
   // A boundary operation collects completed jobs. All wrappers above were
   // dropped while the context stayed alive; no GEMM-owned device allocation
   // remains pinned.
+  context.upload_bytes(input, input_bits.data(), input_bits.size() * 2);
+  CHECK(context.pooled_used_bytes() == gemm_lifetime_baseline);
+
+  // Drop every caller wrapper immediately after submit. The job retains all
+  // four tensors, the prepared slot and plan context until its exact token is
+  // collected; afterward the pool returns to the pre-job live-byte baseline.
+  Submission wrapper_drop_token;
+  {
+    constexpr uint32_t dm = 64, dn = 16, dk = 32;
+    const uint64_t das[] = {dm, dk}, dws[] = {dn, dk}, dos[] = {dm, dn};
+    DeviceTensor da = context.allocate(TensorLayout::contiguous(das, 2));
+    DeviceTensor dw = context.allocate(TensorLayout::contiguous(dws, 2),
+                                       ScalarType::kFloat16);
+    DeviceTensor dout = context.allocate(TensorLayout::contiguous(dos, 2));
+    PreparedF16Activation dslot =
+        PreparedF16Activation::create(context, dm, dk);
+    DenseGemmPlan dplan = DenseGemmPlan::create(
+        context, {dm, dn, dk, DenseGemmMode::kFloat16Vae,
+                  DenseGemmBias::kNone});
+    TensorBatch drop_batch = context.begin_batch();
+    PreparedF16ActivationView dview = dslot.prepare(drop_batch, da, dm);
+    dplan.record(drop_batch, dview, dw, dout);
+    wrapper_drop_token = drop_batch.submit();
+  }
+  CHECK(context.pooled_used_bytes() > gemm_lifetime_baseline);
+  wrapper_drop_token.wait();
   context.upload_bytes(input, input_bits.data(), input_bits.size() * 2);
   CHECK(context.pooled_used_bytes() == gemm_lifetime_baseline);
 
