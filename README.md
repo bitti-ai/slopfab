@@ -1241,6 +1241,21 @@ Ref2VA loads the conditioner checkpoint's vision tower on demand, runs all 27
 visual blocks and the main/DeepStack mergers, then releases those weights after
 the one conditioning pass. Text-only generation never pays that 1.19 GB cost.
 
+The exact Vulkan conditioner now implements this same visual topology. It
+streams one BF16 visual block or merger at a time, extracts DeepStack features
+after visual blocks 8/16/24, and injects them after text decoder layers 0/1/2.
+On the pinned 256x256 production-grid fixture, CUDA and Vulkan matched all 27
+visual residual boundaries, all 50 multimodal decoder boundaries, and the final
+FP32 prompt embedding byte-for-byte. The final multimodal FNV64 is
+`A875C128AA7A0E9D`; CUDA/Vulkan conditioner time was 4.51/6.99 s and Vulkan
+peak device accounting was 771.8 MiB. CUDA-disabled replay took 7.67 s. The
+authority is the I8+ConvRot checkpoint SHA-256
+`BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`;
+the normal-prompt tokenizer provenance remains
+`A5D85B6DCC535E6B93115A9EF287E6132FDBF30270DA6218194BA742261173C7`.
+Top-level reference generation still fails closed until the separate keyframe
+video-VAE encoder is ported; no reference request crosses into CUDA silently.
+
 ## Licence
 
 The code in this repository is the author's. Model weights, configuration files

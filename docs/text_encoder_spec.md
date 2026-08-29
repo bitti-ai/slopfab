@@ -1185,7 +1185,7 @@ Byte budget, measured from the header (payload sums exactly to
 ```
 model.layers.*             24 394 802 800 B  = 24.39 GB     <- load
 model.embed_tokens.weight   1 555 824 640 B  =  1.56 GB     <- host only
-visual.*                    1 190 533 600 B  =  1.19 GB     <- DO NOT LOAD
+visual.*                    1 190 533 600 B  =  1.19 GB     <- stream only for images
                            --------------
                            27 141 161 040 B  = 27.14 GB
 ```
@@ -1409,10 +1409,11 @@ one). All 350 `weight_scale` tensors are `[out, 1]`. All 350 int8 weights are
 ConvRot-rotated, because every `in_features ∈ {5120, 8192, 25600}` is divisible
 by 256.
 
-### 8.4 `visual.*` — 351 tensors, **NONE loaded**
+### 8.4 `visual.*` — 351 tensors
 
-Enumerated for coverage only. The `t2va` path never touches any of these; see
-§0.1 and §7.3.
+The text-only CUDA path does not upload these tensors. The exact Vulkan archive
+boundary validates all 351 tensors transactionally, and its multimodal overload
+streams them on demand without keeping expanded copies.
 
 | key pattern | count | dtype |
 |---|---|---|
@@ -1447,8 +1448,9 @@ Bytes:
 27 141 161 040 + 181 104 (header) + 8 (length prefix) = 27 141 342 152  ✓  = file size
 ```
 
-Loaded by this port: **1251 tensors, 25.95 GB on disk, 24.39 GB uploaded**
-(the embedding stays on the host).
+Text-only CUDA loads **1251 tensors, 25.95 GB on disk, 24.39 GB uploaded**
+(the embedding stays on the host). Vulkan validates the full archive and
+streams only one compressed text layer or BF16 visual component at a time.
 
 ---
 
@@ -1598,23 +1600,24 @@ only to `rope_type ∈ {"dynamic", "longrope", "llama3", ...}` — not `"default
 
 **Risk:** none. **Default to implement:** omit the multiply.
 
-### 10.5 UNRESOLVED (out of scope, flagged) — `fl2va` / `ref2va` conditioning
+### 10.5 RESOLVED for conditioning — `fl2va` / `ref2va`
 
-**What is unknown:** everything about the vision path — the ViT tower's
-patchification, the `spatial_merge_size = 2` merger, DeepStack injection into
-layers 0-2, the `"<Picture i>: "` label convention, and — critically — the
-**3-D mrope, which does *not* degenerate once a vision block is present**.
+The backend-neutral image processor supplies merge-group-major 16x16 patches,
+learned position indices and exact THW coordinates. The visual tower is patch
+projection plus learned position, 27 exact blocks, DeepStack extraction after
+visual blocks 8/16/24, and main/deep mergers. The decoder replaces image-pad
+rows, builds the non-degenerate interleaved THW mRoPE table, then injects those
+three features after decoder layers 0/1/2 respectively. All activation traffic
+between these stages is device-to-device in the Vulkan implementation.
 
-**What was checked:** `encoders.py:153-166` (the `fl2va` token construction) and
-`encoders.py:399-424` (`ref2va`) were read and are excluded by §0.1. The `visual.*`
-tensors are enumerated in §8.4 but nothing beyond their names and shapes was
-established. `get_rope_index`'s image/video branches were not analysed.
-
-**Risk:** none today — `t2va` is the only supported path and the code should
-`assert` that no images were supplied. **The risk is future:** §2's degeneracy
-is a property of the input, and anyone adding keyframes must reopen §2.2 and
-implement the real 3-D interleaved mrope, plus DeepStack, plus the ViT. Put that
-warning in the code next to the RoPE builder, not only here.
+The authority uses the production I8+ConvRot archive SHA-256
+`BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`
+and a deterministic 256x256 RGB image passed through the real patchifier. CUDA
+and Vulkan match every one of 27 visual and 50 decoder BF16 boundaries exactly;
+the final FP32 embedding FNV64 is `A875C128AA7A0E9D`. A CUDA-disabled replay
+pins the same result. Top-level Ref2VA is still rejected because keyframe
+video-VAE *encoding* is a separate unported component, not because conditioner
+vision semantics remain unknown.
 
 ### 10.6 UNRESOLVED (very low risk) — exact prompt length limits
 

@@ -18,9 +18,10 @@ tested RTX 5090. Its checked shader uses explicit operation order and SPIR-V
 `NoContraction`, including adversarial luma/chroma half-step cases, packed tail
 words, padded output strides, and multi-frame Y4M output.
 
-This is full native-text-prompt-to-video/audio parity. Qwen vision/deep-stack
-conditioning and the reference-image encoder remain CUDA-only; Vulkan rejects
-those requests before model execution.
+This is full native-text-prompt-to-video/audio parity. The exact Qwen
+vision/DeepStack conditioner is also implemented as a public device-resident
+encoder, but top-level reference-image generation remains rejected because the
+keyframe video-VAE encoder is still CUDA-only. There is no mixed CUDA fallback.
 
 ## Measured implementation gap
 
@@ -47,7 +48,7 @@ Missing work by pipeline stage:
 | Video VAE decode | Implemented by `vulkan::VideoVaeDecoder` | Exact 36-block graph and shared backend-neutral tile/stitch schedule are complete; shipped tensor-core mode remains CUDA-only |
 | Audio VAE decode | Implemented by `vulkan::AudioDecoder` | All 779 tensors and 497 production operators are device-resident and exact; diagnostics add 13 in-batch boundary copies |
 | Transformer and denoise | Exact full transformer/refiner/endpoints and Euler denoiser implemented in Vulkan; CUDA retains non-exact attention families | non-exact Flash/Sage/SOL attention, AB2, and step/block caches remain CUDA-only and Vulkan rejects them |
-| Qwen text/vision conditioner | Text-only 50-layer decoder implemented by `vulkan::ExactQwenTextEncoder`; `qwen_vision*.cu` and keyframe CUDA remain | vision patch/merge graph, deep-stack scatter and reference-image VAE encode remain to be wired |
+| Qwen text/vision conditioner | Exact 27-block visual tower and multimodal 50-layer decoder implemented by `vulkan::ExactQwenVisionEncoder` and `vulkan::ExactQwenTextEncoder`; keyframe CUDA remains | reference-image video-VAE encode remains to be wired |
 
 The implemented Vulkan graphs preserve the shipped safetensors names and typed
 metadata for their fp16/bf16, int8 ConvRot, and NVFP4/AWQ contracts. Remaining
@@ -68,9 +69,9 @@ top-level `run_generate` call.
 3. The exact 50-block main graph, token refiner, final layer, and Euler denoise
    loop are complete with every-boundary checks. Non-exact attention backends
    remain separate and are never silently substituted with exact attention.
-4. The Qwen text conditioner is complete with tokenizer/checkpoint behavior
-   and every-layer comparisons. Vision/deep-stack conditioning and the
-   reference-image encoder remain.
+4. The Qwen text and vision/DeepStack conditioner is complete with strict
+   checkpoint behavior and every-layer comparisons. The reference-image
+   video-VAE encoder remains.
 5. `--inference-backend vulkan` is enabled with fail-closed capability checks
    and deterministic full-pipeline CUDA/Vulkan exact
    comparisons at every durable boundary: conditioner embeddings, denoiser
@@ -169,8 +170,9 @@ decoder-layer orchestration now composes this attention with exact RMSNorm,
 NeoX RoPE, seven streamed compressed projections, BF16 residuals and split
 SwiGLU for both shipped I8+ConvRot and NVFP4+AWQ manifests. It shares repeated
 I8 activation rotations and has real all-boundary CUDA/Vulkan replay plus a
-CUDA-disabled checkpoint/capture provenance replay. Text-encoder graph
-orchestration beyond one layer remains CUDA-owned.
+CUDA-disabled checkpoint/capture provenance replay. The same streamed substrate
+now runs the complete 50-layer text graph and complete 27-block visual graph
+without retaining expanded dense weights.
 
 Exact H3 full and frame-banded attention is part of the complete 50-main-block
 Vulkan graph: typed projection loading, rank-8 AdaLN, normalization, RoPE,
@@ -191,9 +193,10 @@ are generated as unique in-range host sequences by `packing.cpp` and
 than arbitrary device data. The Vulkan shader also bounds-checks each index to
 prevent an invalid device read or write.
 
-This is a tested operator substrate with the T2VA DiT and both VAE call sites
-wired. Native text/vision conditioning and Ref2VA remain on the missing list.
-A Vulkan request needing either fails before weights or output files.
+This is a tested operator substrate with the Qwen multimodal conditioner, T2VA
+DiT and both decoder call sites wired. Ref2VA remains on the missing list only
+because Vulkan keyframe video-VAE encode is not implemented; such a request
+fails before weights or output files.
 
 The full 36-block exact video-VAE transformer stack is now available through a
 device-resident Vulkan graph. It streams all real checkpoint blocks through a
@@ -247,8 +250,8 @@ descriptor high-water was 3676.
 
 This completes the exact video-VAE decoder component. Together with the audio
 decoder and exact denoiser it enables top-level captured-conditioning or
-synthetic-latent Vulkan generation. Native text/vision conditioning and
-Ref2VA remain gated out.
+synthetic-latent Vulkan generation. Multimodal conditioner APIs are available;
+top-level Ref2VA remains gated out until keyframe encode is native Vulkan.
 
 ## Current vertical-slice comparison
 
