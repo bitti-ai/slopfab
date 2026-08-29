@@ -10,6 +10,7 @@
 // tile over time. See docs/audio_vae_spec.md §13.
 
 #include "vidfab/cuda/audio_vae_kernels.cuh"
+#include "vidfab/cuda/deterministic_math.cuh"
 
 #include <cmath>
 #include <stdexcept>
@@ -58,7 +59,8 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
 #pragma unroll
     for (int o = 0; o < kConvOut; ++o) {
       const int co = co0 + o;
-      acc[u][o] = (bias != nullptr && co < out_ch) ? bias[co] : 0.0f;
+      acc[u][o] = (bias != nullptr && co < out_ch)
+          ? canonicalize_pointwise_float(bias[co]) : 0.0f;
     }
   }
 
@@ -73,7 +75,9 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
       const int ci = ci0 + c;
       const int t = t0 + s - pad;
       float v = 0.0f;
-      if (ci < in_ch && t >= 0 && t < len_in) v = x[x_batch + static_cast<size_t>(ci) * len_in + t];
+      if (ci < in_ch && t >= 0 && t < len_in)
+        v = canonicalize_pointwise_float(
+            x[x_batch + static_cast<size_t>(ci) * len_in + t]);
       sx[idx] = v;
     }
     for (int idx = tid; idx < weights_per_pass; idx += kConvThreads) {
@@ -83,8 +87,10 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
       const int k = rem - o * kernel;
       const int ci = ci0 + c;
       const int co = co0 + o;
-      sw[idx] =
-          (ci < in_ch && co < out_ch) ? w[(static_cast<size_t>(co) * in_ch + ci) * kernel + k] : 0.0f;
+      sw[idx] = (ci < in_ch && co < out_ch)
+          ? canonicalize_pointwise_float(
+                w[(static_cast<size_t>(co) * in_ch + ci) * kernel + k])
+          : 0.0f;
     }
     __syncthreads();
 
@@ -100,7 +106,9 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
         for (int u = 0; u < kConvUnroll; ++u) {
           const float xv = sxc[base + u * kConvThreads];
 #pragma unroll
-          for (int o = 0; o < kConvOut; ++o) acc[u][o] = fmaf(xv, wv[o], acc[u][o]);
+          for (int o = 0; o < kConvOut; ++o)
+            acc[u][o] = canonicalize_pointwise_float(
+                fmaf(xv, wv[o], acc[u][o]));
         }
       }
     }
@@ -145,7 +153,8 @@ __global__ void conv_transpose1d_kernel(const float* __restrict__ x, const float
 #pragma unroll
   for (int o = 0; o < kUpOut; ++o) {
     const int co = co0 + o;
-    acc[o] = (bias != nullptr && co < out_ch) ? bias[co] : 0.0f;
+    acc[o] = (bias != nullptr && co < out_ch)
+        ? canonicalize_pointwise_float(bias[co]) : 0.0f;
   }
 
   // The phase is per thread, not per block: kUpThreads is not a multiple of a
@@ -166,8 +175,10 @@ __global__ void conv_transpose1d_kernel(const float* __restrict__ x, const float
       const int k = rem - o * kernel;
       const int ci = ci0 + c;
       const int co = co0 + o;
-      sw[idx] =
-          (ci < in_ch && co < out_ch) ? w[(static_cast<size_t>(ci) * out_ch + co) * kernel + k] : 0.0f;
+      sw[idx] = (ci < in_ch && co < out_ch)
+          ? canonicalize_pointwise_float(
+                w[(static_cast<size_t>(ci) * out_ch + co) * kernel + k])
+          : 0.0f;
     }
     __syncthreads();
     // Every thread keeps iterating the (uniform) ci0 loop so the barriers above
@@ -182,9 +193,11 @@ __global__ void conv_transpose1d_kernel(const float* __restrict__ x, const float
         const int j = j0 - t;
         if (j < 0) break;
         if (j >= len_in) continue;
-        const float xv = x[x_row + j];
+        const float xv = canonicalize_pointwise_float(x[x_row + j]);
 #pragma unroll
-        for (int o = 0; o < kUpOut; ++o) acc[o] = fmaf(xv, swc[o * kernel + k], acc[o]);
+        for (int o = 0; o < kUpOut; ++o)
+          acc[o] = canonicalize_pointwise_float(
+              fmaf(xv, swc[o * kernel + k], acc[o]));
       }
     }
   }
@@ -200,26 +213,16 @@ __global__ void conv_transpose1d_kernel(const float* __restrict__ x, const float
 
 // --- SnakeBeta and the anti-alias resamplers --------------------------------
 
-// sinf, not __sinf: the argument is alpha*x with alpha up to 4.4 and x up to
-// ~3.5, and the fast intrinsic's relative error would eat most of the 1e-3
-// absolute budget after 127 activations.
-__device__ __forceinline__ float snake(float v, float alpha, float beta_recip) {
-  const float s = sinf(alpha * v);
-  return fmaf(s * s, beta_recip, v);
-}
-
 __global__ void snake_beta_kernel(float* __restrict__ x, const float* __restrict__ log_alpha,
                                   const float* __restrict__ log_beta, int channels, int len) {
   const int c = static_cast<int>(blockIdx.y);
   const int b = static_cast<int>(blockIdx.z);
-  const float alpha = expf(log_alpha[c]);
-  const float beta_recip = 1.0f / (expf(log_beta[c]) + 1e-9f);
   float* row = x + (static_cast<size_t>(b) * channels + c) * len;
   const int stride = static_cast<int>(gridDim.x) * static_cast<int>(blockDim.x);
   for (int n = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) +
                static_cast<int>(threadIdx.x);
        n < len; n += stride) {
-    row[n] = snake(row[n], alpha, beta_recip);
+    row[n] = deterministic_snake(row[n], log_alpha[c], log_beta[c]);
   }
 }
 
@@ -237,8 +240,6 @@ __global__ void aa_upsample_snake_kernel(const float* __restrict__ x,
 
   const int c = static_cast<int>(blockIdx.y);
   const int b = static_cast<int>(blockIdx.z);
-  const float alpha = expf(log_alpha[c]);
-  const float beta_recip = 1.0f / (expf(log_beta[c]) + 1e-9f);
 
   const int len_out = kAudioAARatio * len_in;
   const float* row = x + (static_cast<size_t>(b) * channels + c) * len_in;
@@ -260,9 +261,14 @@ __global__ void aa_upsample_snake_kernel(const float* __restrict__ x,
     for (int i = 0; i < kHalfTaps; ++i) {
       int s = j - i;
       s = s < 0 ? 0 : (s >= len_in ? len_in - 1 : s);
-      sum = fmaf(row[s], f[parity + 2 * i], sum);
+      sum = canonicalize_pointwise_float(fmaf(
+          canonicalize_pointwise_float(row[s]),
+          canonicalize_pointwise_float(f[parity + 2 * i]), sum));
     }
-    out[n] = snake(sum * static_cast<float>(kAudioAARatio), alpha, beta_recip);
+    out[n] = deterministic_snake(
+        canonicalize_pointwise_float(
+            __fmul_rn(sum, static_cast<float>(kAudioAARatio))),
+        log_alpha[c], log_beta[c]);
   }
 }
 
@@ -288,7 +294,9 @@ __global__ void aa_downsample_kernel(const float* __restrict__ x, const float* _
     for (int k = 0; k < kAudioAAKernel; ++k) {
       int s = kAudioAARatio * n + k - 5;
       s = s < 0 ? 0 : (s >= len_in ? len_in - 1 : s);
-      sum = fmaf(row[s], f[k], sum);
+      sum = canonicalize_pointwise_float(fmaf(
+          canonicalize_pointwise_float(row[s]),
+          canonicalize_pointwise_float(f[k]), sum));
     }
     out[n] = sum;
   }
@@ -301,7 +309,9 @@ __global__ void add_inplace_kernel(float* __restrict__ x, const float* __restric
   const size_t stride = static_cast<size_t>(gridDim.x) * blockDim.x;
   for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < count;
        i += stride) {
-    x[i] += y[i];
+    x[i] = canonicalize_pointwise_float(
+        canonicalize_pointwise_float(x[i]) +
+        canonicalize_pointwise_float(y[i]));
   }
 }
 
@@ -309,7 +319,9 @@ __global__ void scale_inplace_kernel(float* __restrict__ x, float scale, size_t 
   const size_t stride = static_cast<size_t>(gridDim.x) * blockDim.x;
   for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < count;
        i += stride) {
-    x[i] *= scale;
+    x[i] = canonicalize_pointwise_float(__fmul_rn(
+        canonicalize_pointwise_float(x[i]),
+        canonicalize_pointwise_float(scale)));
   }
 }
 
@@ -317,7 +329,8 @@ __global__ void clamp_inplace_kernel(float* __restrict__ x, float lo, float hi, 
   const size_t stride = static_cast<size_t>(gridDim.x) * blockDim.x;
   for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < count;
        i += stride) {
-    x[i] = fminf(fmaxf(x[i], lo), hi);
+    const float value = canonicalize_pointwise_float(x[i]);
+    x[i] = fminf(fmaxf(value, lo), hi);
   }
 }
 
@@ -329,7 +342,8 @@ __global__ void interleave_kernel(const float* __restrict__ planar, float* __res
        i += stride) {
     const int b = static_cast<int>(i / static_cast<size_t>(frames));
     const int t = static_cast<int>(i - static_cast<size_t>(b) * frames);
-    out[static_cast<size_t>(t) * batch + b] = planar[i];
+    out[static_cast<size_t>(t) * batch + b] =
+        canonicalize_pointwise_float(planar[i]);
   }
 }
 

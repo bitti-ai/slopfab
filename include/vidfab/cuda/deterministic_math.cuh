@@ -195,6 +195,62 @@ __device__ inline float deterministic_exp_nonpositive(float value) {
   return polynomial * __uint_as_float(scale_bits);
 }
 
+__device__ inline float deterministic_float_divide(float numerator_value,
+                                                    float denominator_value);
+__device__ inline float canonicalize_pointwise_float(float value);
+
+// General finite-range exponential for audio Snake parameters. Positive
+// arguments are the exactly-rounded reciprocal of the shared negative-domain
+// polynomial, so CUDA and Vulkan never call vendor exp implementations.
+__device__ inline float deterministic_exp(float value) {
+  if (value <= 0.0f) return deterministic_exp_nonpositive(value);
+  if (value >= 87.0f) return __uint_as_float(0x7f800000u);
+  return deterministic_float_divide(1.0f,
+                                    deterministic_exp_nonpositive(-value));
+}
+
+// Backend-stable sine for the finite Snake input domain. Range reduction uses
+// nearest multiples of pi and a fixed odd degree-11 Horner polynomial. The
+// split pi constant and every contraction are explicit FMAs.
+__device__ inline float deterministic_sin(float value) {
+  value = canonicalize_pointwise_float(value);
+  if (!isfinite(value)) return __uint_as_float(0x7fc00000u);
+  const float scaled = value * 0.3183098861837907f;
+  const int quadrant = scaled >= 0.0f
+      ? static_cast<int>(scaled + 0.5f)
+      : static_cast<int>(scaled - 0.5f);
+  float reduced = fmaf(-static_cast<float>(quadrant),
+                       3.141592502593994140625f, value);
+  reduced = fmaf(-static_cast<float>(quadrant),
+                 1.5099579909783764e-7f, reduced);
+  const float square = __fmul_rn(reduced, reduced);
+  float polynomial = -2.505210838544172e-8f;
+  polynomial = fmaf(polynomial, square, 2.7557319223985893e-6f);
+  polynomial = fmaf(polynomial, square, -1.9841269841269841e-4f);
+  polynomial = fmaf(polynomial, square, 8.3333333333333332e-3f);
+  polynomial = fmaf(polynomial, square, -1.6666666666666666e-1f);
+  polynomial = fmaf(polynomial, square, 1.0f);
+  float result = __fmul_rn(reduced, polynomial);
+  if ((quadrant & 1) != 0) result = -result;
+  return canonicalize_pointwise_float(result);
+}
+
+__device__ inline float deterministic_snake(float value, float log_alpha,
+                                            float log_beta) {
+  value = canonicalize_pointwise_float(value);
+  const float alpha = deterministic_exp(
+      canonicalize_pointwise_float(log_alpha));
+  const float beta = deterministic_exp(
+      canonicalize_pointwise_float(log_beta));
+  const float angle = canonicalize_pointwise_float(__fmul_rn(alpha, value));
+  const float sine = deterministic_sin(angle);
+  const float square = canonicalize_pointwise_float(__fmul_rn(sine, sine));
+  const float denominator = __uint_as_float(positive_float_add(
+      __float_as_uint(beta), __float_as_uint(1.0e-9f)));
+  const float periodic = deterministic_float_divide(square, denominator);
+  return canonicalize_pointwise_float(value + periodic);
+}
+
 __device__ inline uint64_t deterministic_round_quotient_even(uint64_t numerator,
                                                               uint64_t denominator) {
   uint64_t quotient = numerator / denominator;
