@@ -305,7 +305,8 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
   options.enable_cooperative_matrix = true;
   Device device = physical.front().create_device(options);
   TensorContextOptions context_options;
-  context_options.max_batch_operators = 37;
+  context_options.max_batch_operators =
+      std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL") ? 128 : 37;
   TensorContext context(device, context_options);
   const uint64_t cold_baseline = context.pooled_used_bytes();
 
@@ -358,6 +359,65 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
   const ExactQwenTextEncoderStats stats = encoder.stats();
   CHECK(stats.peak_device_bytes < 900ull * 1024 * 1024);
   CHECK(stats.descriptor_set_allocations == 36);
+  if (std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL")) {
+    text::QwenPixelValues image;
+    image.grid = {1, 16, 16};
+    image.rows.resize(size_t(256) * 1536);
+    for (size_t i = 0; i < image.rows.size(); ++i)
+      image.rows[i] = float(int(i * 37 % 509) - 254) / 254.0f;
+    std::vector<int32_t> ids = {7, 151652};
+    ids.insert(ids.end(), 64, 151655);
+    ids.push_back(151653); ids.push_back(8);
+    text::EncoderTrace multimodal_trace;
+    const auto multimodal_begin = std::chrono::steady_clock::now();
+    const text::PromptEmbedding multimodal =
+        encoder.encode(ids, {image}, &multimodal_trace);
+    const double multimodal_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - multimodal_begin).count();
+    constexpr std::array<uint64_t, 50> multimodal_expected{
+        0xd1bf268f423950cdull,0x7c9a0e911161f05dull,
+        0x8b3671cd4316fe2full,0xa799cdeac29cbbb0ull,
+        0xb0d27145cfd09b88ull,0x3fc6a820a2f2acc6ull,
+        0xdb4c89811f1d3748ull,0x4f64d08b36008174ull,
+        0x81b1e26d606fc40dull,0xd6ee25efa9803b7aull,
+        0x018750ff15a8c80bull,0xe854ed8fffc24bcaull,
+        0x24356a7972fee734ull,0x53f05f97951c13f6ull,
+        0xd6532119520117aeull,0x55a49832d8b54083ull,
+        0xec905ccb06dac7f9ull,0x767abc66701e712dull,
+        0x555807622902d83dull,0xa354ba292adc6ed1ull,
+        0x1561511a51530efdull,0x24e3c5d4365cf892ull,
+        0xee6f2c003229894bull,0x5963c326b8bc181cull,
+        0x6ff70f6dc772a7e8ull,0xa4d4e1a7ecd601aeull,
+        0xeb03c57004e61bd7ull,0xef1da6e9ea96dbebull,
+        0x26d6de354b197b16ull,0x8c32e268c66a09ddull,
+        0x352a41cde5ad5544ull,0x8e4fdf517ed64a65ull,
+        0xd90cbd77c4f177bcull,0x572e7fa02259ca26ull,
+        0x384cb2d992762b3bull,0xce411630607ce3fbull,
+        0x568d620ae7eddb43ull,0x44bb9f3b0cd761c4ull,
+        0x662724b7b83c8d42ull,0x28be2ba9a40152d2ull,
+        0x80123bbcaba21b47ull,0x66c5f71aff9b2397ull,
+        0x26c2791e26db4bd7ull,0x05d7fe243a7b8a36ull,
+        0xcab3ab24f0c78c2full,0x6764ce228190e3acull,
+        0x7c386093805c60bdull,0x05c6d7b93dd82ffbull,
+        0x8df0bd1ec300522dull,0x816ceac7c360e1a4ull};
+    std::array<uint64_t, 50> multimodal_actual{};
+    const size_t multimodal_layer_elements = size_t(68) * 5120;
+    for (size_t layer = 0; layer < multimodal_actual.size(); ++layer)
+      multimodal_actual[layer] = fnv64_bytes(
+          multimodal_trace.layer_residual_bf16.data() +
+              layer * multimodal_layer_elements,
+          multimodal_layer_elements * sizeof(uint16_t));
+    CHECK(multimodal_actual == multimodal_expected);
+    CHECK(fnv64_floats(multimodal.data) == 0x21902c10fe4d7ddcull);
+    CHECK(multimodal.modality_tags.front() == 1 &&
+          multimodal.modality_tags.back() == 1);
+    for (size_t row = 1; row <= 66; ++row)
+      CHECK(multimodal.modality_tags[row] == 0);
+    CHECK(encoder.stats().peak_device_bytes < 900ull * 1024 * 1024);
+    std::printf("  CUDA-off multimodal exact Qwen full50 L68 %.2f s final %016llx\n",
+                multimodal_seconds,
+                static_cast<unsigned long long>(fnv64_floats(multimodal.data)));
+  }
   encoder.unload();
   context.collect();
   CHECK(context.pooled_used_bytes() >= cold_baseline);
