@@ -100,6 +100,105 @@ ProjectionTag projection_tag(const SafeTensors& st, const std::string& name,
   return tag;
 }
 
+// Validate every archive view and decode every host-side metadata value used
+// by load_projection, without touching the Vulkan allocator.  Stage::load
+// runs this for all six logical projections before it uploads the first byte,
+// so even corruption in the final fc2 metadata is allocation-transactional.
+void validate_projection_archive(const SafeTensors& st,
+                                 const std::string& name, uint32_t out,
+                                 uint32_t in, uint32_t source_out = 0,
+                                 uint32_t row_offset = 0) {
+  if (source_out == 0) source_out = out;
+  if (row_offset > source_out || out > source_out - row_offset)
+    throw std::invalid_argument("Vulkan H3 block: invalid projection slice");
+  const TensorView& w = st.at(name + ".weight");
+  const uint64_t elements = checked_product(out, in, "projection elements");
+  const uint64_t source_elements =
+      checked_product(source_out, in, "projection source");
+  const uint64_t element_offset =
+      checked_product(row_offset, in, "projection offset");
+  const TensorView* block_scale = st.find(name + ".weight_scale");
+  const bool nvfp4 = w.dtype == DType::kU8 && block_scale &&
+      block_scale->dtype == DType::kF8E4M3 && in % 64 == 0;
+  if (is_nf4_weight(st, name)) {
+    const NF4State state = read_nf4_state(st, name, "Vulkan H3 block");
+    if (state.shape != std::vector<int64_t>{source_out, in} ||
+        element_offset % 16384 != 0 || elements % 16384 != 0 ||
+        w.dtype != DType::kU8 || w.nbytes != (source_elements + 1) / 2)
+      throw std::runtime_error(
+          "Vulkan H3 block: invalid NF4 projection slice");
+    const TensorView& absmax = st.at(name + ".weight.absmax");
+    const TensorView& qmap = st.at(name + ".weight.quant_map");
+    const TensorView& nested_map = st.at(name + ".weight.nested_quant_map");
+    const TensorView& nested_absmax = st.at(name + ".weight.nested_absmax");
+    const std::vector<float> map = to_f32(qmap);
+    const std::vector<float> nested = to_f32(nested_map);
+    const std::vector<float> nested_abs = to_f32(nested_absmax);
+    const uint64_t expected_absmax = (source_elements + 63) / 64;
+    const uint64_t expected_nested = (expected_absmax + 255) / 256;
+    if (absmax.dtype != DType::kU8 || absmax.nbytes != expected_absmax ||
+        map.size() != 16 || nested.size() != 256 ||
+        nested_abs.size() != expected_nested ||
+        element_offset / 16384 + elements / 16384 > nested_abs.size())
+      throw std::runtime_error("Vulkan H3 block: invalid NF4 metadata");
+  } else if (nvfp4) {
+    require_shape(w, {source_out, static_cast<int64_t>(in / 2)},
+                  name + ".weight");
+    require_shape(*block_scale,
+                  {source_out, static_cast<int64_t>(in / 16)},
+                  name + ".weight_scale");
+    if (row_offset % 128 != 0 || out % 128 != 0)
+      throw std::runtime_error(
+          "Vulkan H3 block: NVFP4 row slice is not 128-row aligned");
+    const TensorView* global = st.find(name + ".weight_scale_2");
+    if (!global)
+      throw std::runtime_error("Vulkan H3 block: NVFP4 weight lacks scale_2");
+    (void)scalar(*global, name + ".weight_scale_2");
+  } else {
+    require_shape(w, {source_out, in}, name + ".weight");
+    uint64_t element_bytes = 0;
+    switch (w.dtype) {
+      case DType::kF32: element_bytes = 4; break;
+      case DType::kF16:
+      case DType::kBF16: element_bytes = 2; break;
+      case DType::kF8E4M3:
+      case DType::kI8: element_bytes = 1; break;
+      default:
+        throw std::runtime_error("Vulkan H3 block: unsupported dtype for '" +
+                                 name + "'");
+    }
+    if (w.nbytes != source_elements * element_bytes)
+      throw std::runtime_error("Vulkan H3 block: projection byte count mismatch");
+    if (w.dtype == DType::kF8E4M3) {
+      const TensorView* scale = st.find(name + ".weight_scale");
+      if (!scale)
+        throw std::runtime_error("Vulkan H3 block: FP8 weight lacks scalar scale");
+      (void)scalar(*scale, name + ".weight_scale");
+      if (const TensorView* input_scale = st.find(name + ".input_scale")) {
+        const float value = scalar(*input_scale, name + ".input_scale");
+        if (!std::isnormal(value) || value <= 0.0f)
+          throw std::runtime_error("Vulkan H3 block: invalid FP8 input scale");
+      }
+    } else if (w.dtype == DType::kI8) {
+      const TensorView& scale = st.at(name + ".weight_scale");
+      if (to_f32(scale).size() != source_out)
+        throw std::runtime_error("Vulkan H3 block: INT8 scale shape mismatch");
+    }
+  }
+  if (const TensorView* pre = st.find(name + ".pre_quant_scale")) {
+    require_shape(*pre, {in}, name + ".pre_quant_scale");
+    if (to_f32(*pre).size() != in)
+      throw std::runtime_error("Vulkan H3 block: invalid AWQ pre-scale");
+  }
+  const ProjectionTag tag = projection_tag(st, name, in);
+  uint32_t power = 1;
+  while (power < tag.convrot_group && power <= UINT32_MAX / 4) power *= 4;
+  if (tag.convrot && (tag.convrot_group < 4 || tag.convrot_group > 256 ||
+                      power != tag.convrot_group ||
+                      in % tag.convrot_group != 0))
+    throw std::runtime_error("Vulkan H3 block: invalid ConvRot metadata");
+}
+
 struct Projection {
   LinearWeight weight;
   DeviceTensor dense;
@@ -339,6 +438,13 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
   require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
   const std::vector<float> wide_w = to_f32(aw), wide_b = to_f32(ab);
+  const std::string qkv = p + "attn.qkv_proj";
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 0);
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, inner);
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 2 * inner);
+  validate_projection_archive(st, p + "attn.out_proj", c.hidden, inner);
+  validate_projection_archive(st, p + "mlp.fc1", 2 * c.ffn, c.hidden);
+  validate_projection_archive(st, p + "mlp.fc2", c.hidden, c.ffn);
 
   auto next = std::make_unique<Impl::Weights>();
   auto upload_bf = [&](const std::vector<uint16_t>& host) {
@@ -349,7 +455,6 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   next->norm2 = upload_bf(host_norm2);
   next->q_norm = upload_bf(host_q_norm);
   next->k_norm = upload_bf(host_k_norm);
-  const std::string qkv = p + "attn.qkv_proj";
   next->q = load_projection(*s.context, st, qkv, inner, c.hidden, 3 * inner, 0);
   next->k = load_projection(*s.context, st, qkv, inner, c.hidden, 3 * inner, inner);
   next->v = load_projection(*s.context, st, qkv, inner, c.hidden, 3 * inner, 2 * inner);
@@ -482,6 +587,8 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
       av.layout.extent[0] != c.sequence || cv.type != ScalarType::kFloat32 ||
       cv.layout.rank != 2 || cv.layout.extent[0] != c.timesteps ||
       cv.layout.extent[1] != c.adaln_rank ||
+      !tv.layout.is_contiguous() || !av.layout.is_contiguous() ||
+      !cv.layout.is_contiguous() ||
       cosv.type != ScalarType::kFloat32 || sinv.type != ScalarType::kFloat32 ||
       cosv.layout.rank != 2 || sinv.layout.rank != 2 ||
       cosv.layout.extent[0] != c.sequence || sinv.layout.extent[0] != c.sequence ||
@@ -489,7 +596,9 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
       !cosv.layout.is_contiguous() || !sinv.layout.is_contiguous() ||
       cosv.resource == sinv.resource || tv.resource == cosv.resource ||
       tv.resource == sinv.resource || av.resource == tv.resource ||
-      cv.resource == tv.resource || (ranges && ranges->sequence() != c.sequence))
+      cv.resource == tv.resource ||
+      (ranges && (ranges->sequence() != c.sequence ||
+                  !ranges->belongs_to(*impl_->context))))
     throw std::invalid_argument("Vulkan H3 block: invalid activation tensors");
   std::vector<DeviceTensorView> tap_views{tv, av, cv, cosv, sinv};
   if (taps) {

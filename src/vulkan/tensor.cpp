@@ -4259,6 +4259,9 @@ uint64_t H3AttentionRanges::content_hash() const {
   if (!impl_) throw std::logic_error("vulkan H3 attention: empty range table");
   return impl_->content_hash;
 }
+bool H3AttentionRanges::belongs_to(const TensorContext& context) const noexcept {
+  return impl_ && context.impl_ && impl_->owner == context.impl_;
+}
 
 H3AttentionPlan::H3AttentionPlan() = default;
 H3AttentionPlan::~H3AttentionPlan() = default;

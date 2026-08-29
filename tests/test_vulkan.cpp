@@ -2544,7 +2544,7 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     std::memcpy(result.data(), text.data(), text.size());
     return result;
   };
-  auto fixture = [&](bool corrupt_tail) {
+  auto fixture = [&](uint32_t corruption) {
     const int64_t h = config.hidden, inner = config.heads * config.head_dim;
     const int64_t f = config.ffn;
     const int64_t adaln = int64_t(config.modalities) * 6 * h;
@@ -2569,23 +2569,29 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
       // Exactly one regular-H4 ConvRot metadata fixture.
       {"blocks.0.mlp.fc2.comfy_quant",
        {static_cast<int64_t>(metadata(
+          corruption == 2 ? "{bad fc2 metadata" :
           "{\"convrot\":true,\"convrot_groupsize\":16}").size())},
-       metadata("{\"convrot\":true,\"convrot_groupsize\":16}")},
+       metadata(corruption == 2 ? "{bad fc2 metadata" :
+                "{\"convrot\":true,\"convrot_groupsize\":16}")},
       {"blocks.0.adaln_proj.linear.weight", {adaln, config.adaln_rank},
        values(size_t(adaln * config.adaln_rank), 13, 1.0f / 8192.0f)},
       {"blocks.0.adaln_proj.linear.bias",
-       {corrupt_tail ? adaln - 1 : adaln},
-       values(size_t(corrupt_tail ? adaln - 1 : adaln), 17, 1.0f / 64.0f)}};
+       {corruption == 1 ? adaln - 1 : adaln},
+       values(size_t(corruption == 1 ? adaln - 1 : adaln), 17, 1.0f / 64.0f)}};
     return tensors;
   };
   const auto base = std::filesystem::temp_directory_path();
   const auto valid_path = base / "vidfab_h3_cuda_off_valid.safetensors";
   const auto corrupt_path = base / "vidfab_h3_cuda_off_corrupt.safetensors";
-  write_safetensors(valid_path.string(), fixture(false));
-  write_safetensors(corrupt_path.string(), fixture(true));
-  SafeTensors valid, corrupt;
+  const auto corrupt_fc2_path =
+      base / "vidfab_h3_cuda_off_corrupt_fc2.safetensors";
+  write_safetensors(valid_path.string(), fixture(0));
+  write_safetensors(corrupt_path.string(), fixture(1));
+  write_safetensors(corrupt_fc2_path.string(), fixture(2));
+  SafeTensors valid, corrupt, corrupt_fc2;
   valid.open(valid_path.string());
   corrupt.open(corrupt_path.string());
+  corrupt_fc2.open(corrupt_fc2_path.string());
 
   ExactH3BlockStage first = ExactH3BlockStage::create(context, config);
   ExactH3BlockStage second = ExactH3BlockStage::create(context, config);
@@ -2649,6 +2655,53 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     } catch (const std::logic_error&) { rejected = true; }
     CHECK(rejected && short_capacity.remaining_operator_capacity() == 24u);
   }
+  TensorLayout bad_token_layout = TensorLayout::contiguous(token_shape, 2);
+  bad_token_layout.stride[0] = config.hidden + 1;
+  TensorLayout bad_selector_layout = TensorLayout::contiguous(selector_shape, 1);
+  bad_selector_layout.stride[0] = 2;
+  TensorLayout bad_code_layout = TensorLayout::contiguous(code_shape, 2);
+  bad_code_layout.stride[0] = config.adaln_rank + 1;
+  const uint64_t token_backing_shape[] = {config.sequence + 1, config.hidden};
+  const uint64_t selector_backing_shape[] = {config.sequence * 2};
+  const uint64_t code_backing_shape[] = {config.timesteps,
+                                         config.adaln_rank + 1};
+  DeviceTensor bad_tokens = context.allocate(
+      TensorLayout::contiguous(token_backing_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor bad_selectors = context.allocate(
+      TensorLayout::contiguous(selector_backing_shape, 1), ScalarType::kInt32);
+  DeviceTensor bad_code = context.allocate(
+      TensorLayout::contiguous(code_backing_shape, 2));
+  // DeviceTensor intentionally exposes only validated contiguous allocation;
+  // mutate test-only metadata on oversized backing allocations to inject the
+  // otherwise-unconstructible adversarial views into stage preflight.
+  const_cast<TensorLayout&>(bad_tokens.layout()) = bad_token_layout;
+  const_cast<TensorLayout&>(bad_selectors.layout()) = bad_selector_layout;
+  const_cast<TensorLayout&>(bad_code.layout()) = bad_code_layout;
+  TensorContext foreign_context(device, context_options);
+  const int32_t full_range[] = {0, 128, 0, 0};
+  H3AttentionRanges foreign_ranges = H3AttentionRanges::create(
+      foreign_context, config.sequence, full_range, 4);
+  {
+    TensorBatch invalid = context.begin_batch();
+    auto rejected = [&](DeviceTensor& token_arg, DeviceTensor& selector_arg,
+                        DeviceTensor& code_arg,
+                        const H3AttentionRanges* ranges = nullptr) {
+      bool threw = false;
+      try {
+        first.record(invalid, token_arg, selector_arg, code_arg, cosine, sine,
+                     scratch, ranges);
+      } catch (const std::invalid_argument&) { threw = true; }
+      CHECK(threw && invalid.remaining_operator_capacity() == 64u);
+    };
+    rejected(bad_tokens, selectors, code);
+    rejected(tokens, bad_selectors, code);
+    rejected(tokens, selectors, bad_code);
+    rejected(tokens, selectors, code, &foreign_ranges);
+    // None of the rejected calls poisoned access tracking or consumed an op.
+    first.record(invalid, tokens, selectors, code, cosine, sine, scratch);
+    CHECK(invalid.remaining_operator_capacity() == 39u);
+    invalid.submit().wait();
+  }
   auto run_chain = [&] {
     context.upload_bytes(tokens, input.data(), input.size() * 2);
     TensorBatch batch = context.begin_batch();
@@ -2673,6 +2726,18 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   CHECK(context.pooled_used_bytes() == stable_used);
   CHECK(context.reserved_bytes() == stable_reserved);
   CHECK(context.descriptor_set_allocations() == stable_descriptors);
+
+  // Corruption in the sixth and final logical projection is decoded before
+  // the first Vulkan allocation. The active stage and allocator HWM remain
+  // exactly unchanged.
+  bool fc2_rejected = false;
+  try { first.load(corrupt_fc2, 0); }
+  catch (const std::exception&) { fc2_rejected = true; }
+  CHECK(fc2_rejected && first.loaded());
+  CHECK(context.pooled_used_bytes() == stable_used);
+  CHECK(context.reserved_bytes() == stable_reserved);
+  CHECK(context.descriptor_set_allocations() == stable_descriptors);
+  CHECK(run_chain() == output);
 
   bool corrupt_rejected = false;
   try { first.load(corrupt, 0); }
@@ -2779,6 +2844,7 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   std::error_code ignored;
   std::filesystem::remove(valid_path, ignored);
   std::filesystem::remove(corrupt_path, ignored);
+  std::filesystem::remove(corrupt_fc2_path, ignored);
 }
 
 VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {
