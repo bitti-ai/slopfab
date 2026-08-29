@@ -350,6 +350,12 @@ void VideoVaeDecoder::forward_windows(
     throw std::logic_error("Vulkan video VAE: weights not loaded");
   if (!latent || !slots || batch <= 0 || time <= 0 || height <= 0 || width <= 0)
     throw std::invalid_argument("Vulkan video VAE: invalid window input");
+  // Validate the whole call before shape allocation, uploads, or command
+  // recording. A bad later slot must leave the decoder unchanged.
+  for (int i = 0; i < batch; ++i) {
+    if (slots[i] >= output.size())
+      throw std::out_of_range("Vulkan video VAE: output slot out of range");
+  }
   Impl& d = *impl_;
   Impl::ShapeSlot& shape = d.select_shape(
       static_cast<uint32_t>(time), static_cast<uint32_t>(height),
@@ -359,12 +365,6 @@ void VideoVaeDecoder::forward_windows(
       shape.patches;
   const uint64_t pixel_words = static_cast<uint64_t>(d.config.out_channels) *
       time * d.config.patch_t * height * d.config.patch * width * d.config.patch;
-  // Validate the whole call before uploads or command recording. A bad later
-  // slot must not leave a partially-mutated shape/document set visible.
-  for (int i = 0; i < batch; ++i) {
-    if (slots[i] >= output.size())
-      throw std::out_of_range("Vulkan video VAE: output slot out of range");
-  }
   for (int i = 0; i < batch; ++i) {
     d.context.upload(shape.documents[static_cast<size_t>(i)].latent,
                      latent + static_cast<uint64_t>(i) * latent_words,

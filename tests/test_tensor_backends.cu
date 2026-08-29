@@ -48,7 +48,10 @@
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/vae_vit_block.h"
 #include "vidfab/vulkan/vae_decoder.h"
+#include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/vae/vit_decoder.h"
+#include "vidfab/video/y4m.h"
+#include "vidfab/video/y4m_compare.h"
 
 #ifdef _WIN32
 namespace {
@@ -6260,14 +6263,107 @@ VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
       vk_decoder.forward_window(latent.data(), 7, 16, 16, vk_first_again);
       CHECK(vk_decoder.allocator_reserved_bytes() == stable_reserved);
       CHECK(vk_decoder.descriptor_set_allocations() == stable_descriptors);
+
+      // Six equal-shape documents exceed one 4096-op transaction (735 ops per
+      // document), so this exercises the production 5+1 split and nontrivial
+      // output-slot mapping against the exact CUDA implementation.
+      constexpr int kSplitBatch = 6;
+      std::vector<float> split_latent(size_t(kSplitBatch) * config.in_channels * 7);
+      for (size_t i = 0; i < split_latent.size(); ++i)
+        split_latent[i] = float(int((i * 53) % 251) - 125) / 256.0f;
+      const std::array<size_t, kSplitBatch> split_slots{5, 0, 4, 1, 3, 2};
+      std::vector<std::vector<float>> cuda_split(kSplitBatch), vk_split(kSplitBatch);
+      const uint64_t before_bad_peak = vk_decoder.peak_device_bytes();
+      const uint64_t before_bad_reserved = vk_decoder.allocator_reserved_bytes();
+      const uint64_t before_bad_descriptors =
+          vk_decoder.descriptor_set_allocations();
+      const uint32_t before_bad_shapes = vk_decoder.cached_shapes();
+      const std::array<size_t, 2> bad_slots{0, kSplitBatch};
+      bool rejected_bad_slots = false;
+      try {
+        vk_decoder.forward_windows(split_latent.data(), 2, 7, 2, 2,
+                                   vk_split, bad_slots.data());
+      } catch (const std::out_of_range&) {
+        rejected_bad_slots = true;
+      }
+      CHECK(rejected_bad_slots);
+      CHECK(vk_decoder.peak_device_bytes() == before_bad_peak);
+      CHECK(vk_decoder.allocator_reserved_bytes() == before_bad_reserved);
+      CHECK(vk_decoder.descriptor_set_allocations() == before_bad_descriptors);
+      CHECK(vk_decoder.cached_shapes() == before_bad_shapes);
+      decoder.forward_windows(split_latent.data(), kSplitBatch, 7, 1, 1,
+                              cuda_split, split_slots.data());
+      decoder.release_host_registrations();
+      vk_decoder.forward_windows(split_latent.data(), kSplitBatch, 7, 1, 1,
+                                 vk_split, split_slots.data());
+      for (size_t slot = 0; slot < kSplitBatch; ++slot) {
+        CHECK(cuda_split[slot].size() == vk_split[slot].size());
+        CHECK(std::memcmp(cuda_split[slot].data(), vk_split[slot].data(),
+                          cuda_split[slot].size() * sizeof(float)) == 0);
+      }
+      CHECK(vk_decoder.cached_shapes() == 2);
+
+      // Exercise the shared temporal scheduler, device latent de-normalize,
+      // stitch/pixel de-normalize, and the exact Y4M output boundary.
+      std::vector<float> normalized(size_t(config.in_channels) * 7);
+      for (size_t i = 0; i < normalized.size(); ++i)
+        normalized[i] = float(int((i * 29) % 127) - 63) / 128.0f;
+      vae::DecodeSchedule decode_schedule;
+      decode_schedule.tiling_enabled = false;
+      const vae::DecodedVideo cuda_video = decoder.decode(
+          normalized.data(), 7, 1, 1, vae::default_video_latents_mean(),
+          vae::default_video_latents_std(), decode_schedule);
+      const vae::DecodedVideo vk_video = vk_decoder.decode(
+          normalized.data(), 7, 1, 1, vae::default_video_latents_mean(),
+          vae::default_video_latents_std(), decode_schedule);
+      CHECK(cuda_video.channels == vk_video.channels);
+      CHECK(cuda_video.frames == vk_video.frames);
+      CHECK(cuda_video.height == vk_video.height);
+      CHECK(cuda_video.width == vk_video.width);
+      CHECK(cuda_video.data.size() == vk_video.data.size());
+      CHECK(std::memcmp(cuda_video.data.data(), vk_video.data.data(),
+                        cuda_video.data.size() * sizeof(float)) == 0);
+      uint64_t pixel_digest = 1469598103934665603ull;
+      for (float value : vk_video.data) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        for (int byte = 0; byte < 4; ++byte) {
+          pixel_digest ^= (bits >> (8 * byte)) & 0xffu;
+          pixel_digest *= 1099511628211ull;
+        }
+      }
+      CHECK(pixel_digest == 0xf455f77e718d9c21ull);
+      const std::filesystem::path cuda_y4m =
+          std::filesystem::temp_directory_path() / "vidfab_exact_vae_cuda.y4m";
+      const std::filesystem::path vk_y4m =
+          std::filesystem::temp_directory_path() / "vidfab_exact_vae_vulkan.y4m";
+      std::filesystem::remove(cuda_y4m);
+      std::filesystem::remove(vk_y4m);
+      video::write_y4m(cuda_y4m.string(), cuda_video.data, cuda_video.frames,
+                       cuda_video.height, cuda_video.width);
+      vulkan::Yuv420Converter yuv_converter;
+      video::write_y4m(vk_y4m.string(), vk_video.data, vk_video.frames,
+                       vk_video.height, vk_video.width, {}, &yuv_converter);
+      const video::ExactY4mComparison y4m_comparison =
+          video::compare_y4m_exact(cuda_y4m.string(), vk_y4m.string());
+      CHECK(y4m_comparison.equal());
+      std::filesystem::remove(cuda_y4m);
+      std::filesystem::remove(vk_y4m);
+      const uint64_t final_peak = vk_decoder.peak_device_bytes();
+      const uint64_t final_reserved = vk_decoder.allocator_reserved_bytes();
+      const uint64_t final_descriptors = vk_decoder.descriptor_set_allocations();
+      CHECK(vk_decoder.cached_shapes() == 2);
+      CHECK(final_peak <= 5700ull * 1024 * 1024);
       std::printf(
-          "  exact Vulkan ViTDecoder: load %.1f ms, forward %.1f ms, persistent/peak %.1f/%.1f MiB, pool used/reserved %.1f/%.1f MiB, descriptors %llu\n",
+          "  exact Vulkan ViTDecoder: load %.1f ms, forward %.1f ms, persistent/peak %.1f/%.1f MiB, pool used/reserved %.1f/%.1f MiB, descriptors %llu, final %dx%dx%d FNV64 %016llx and Y4M exact\n",
           vk_load_ms, vk_forward_ms,
           double(vk_decoder.persistent_bytes()) / 1048576.0,
-          double(vk_decoder.peak_device_bytes()) / 1048576.0,
+          double(final_peak) / 1048576.0,
           double(vk_decoder.allocator_used_bytes()) / 1048576.0,
-          double(vk_decoder.allocator_reserved_bytes()) / 1048576.0,
-          static_cast<unsigned long long>(stable_descriptors));
+          double(final_reserved) / 1048576.0,
+          static_cast<unsigned long long>(final_descriptors),
+          vk_video.frames, vk_video.height, vk_video.width,
+          static_cast<unsigned long long>(pixel_digest));
     }
   }
   std::printf(
