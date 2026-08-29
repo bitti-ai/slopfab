@@ -2811,7 +2811,13 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
   if (!vk.exact_h3_attention() || !vk.exact_vae_pointwise() ||
       !vk.exact_fp32_vae_normalization()) return;
 
-  constexpr uint32_t sequence = 64;
+  uint32_t sequence = 65;
+  if (const char* requested = std::getenv("VIDFAB_DIT_BLOCK_SEQUENCE")) {
+    const unsigned long parsed = std::strtoul(requested, nullptr, 10);
+    if (parsed == 0 || parsed > UINT32_MAX)
+      throw std::invalid_argument("VIDFAB_DIT_BLOCK_SEQUENCE is invalid");
+    sequence = static_cast<uint32_t>(parsed);
+  }
   H3BlockConfig config;
   config.sequence = sequence;
   SafeTensors checkpoint;
@@ -2962,11 +2968,20 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
     cuda::launch_dequant_nvfp4(
         cuda_stored.get(), cuda_scale.get(), global_values.front(),
         reinterpret_cast<__nv_bfloat16*>(cuda_dense.get()), out, in, nullptr);
-    cuda::launch_deterministic_bf16_gemm_nt(
-        reinterpret_cast<const __nv_bfloat16*>(source),
-        reinterpret_cast<const __nv_bfloat16*>(cuda_dense.get()), nullptr,
-        reinterpret_cast<__nv_bfloat16*>(output), sequence, out, in,
-        DenseGemmBias::kNone);
+    const uint32_t tiled_rows = sequence / 64 * 64;
+    if (tiled_rows != 0) {
+      cuda::launch_deterministic_bf16_gemm_nt(
+          reinterpret_cast<const __nv_bfloat16*>(source),
+          reinterpret_cast<const __nv_bfloat16*>(cuda_dense.get()), nullptr,
+          reinterpret_cast<__nv_bfloat16*>(output), tiled_rows, out, in,
+          DenseGemmBias::kNone);
+    }
+    if (tiled_rows != sequence) {
+      cuda::launch_deterministic_scalar_gemm_nt(
+          source, cuda_dense.get(), nullptr, output,
+          sequence - tiled_rows, out, in, DenseGemmMode::kBFloat16,
+          DenseGemmBias::kNone, tiled_rows, tiled_rows);
+    }
   };
   const auto cuda_begin = std::chrono::steady_clock::now();
   cuda::launch_adaln_expand(
@@ -3051,7 +3066,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
     digest ^= bits & 0xffu; digest *= 1099511628211ull;
     digest ^= bits >> 8; digest *= 1099511628211ull;
   }
-  CHECK(digest == 0x520f8ca5ad3f3773ull);
+  if (sequence == 65) CHECK(digest == 0x191929c14480e873ull);
   const uint64_t persistent = stage.persistent_bytes();
   bool failed_reload = false;
   try { stage.load(checkpoint, 50); }

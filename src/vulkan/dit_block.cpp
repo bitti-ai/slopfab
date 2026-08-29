@@ -333,11 +333,19 @@ void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
                 DeviceTensor& output, DeviceTensor& transform_a,
                 DeviceTensor& transform_b, uint32_t rows) {
   DeviceTensor& source = transformed_input(batch, p, input, transform_a, transform_b);
+  const uint32_t tiled_rows = rows / 64 * 64;
+  auto record = [&](auto& weight) {
+    if (tiled_rows != 0)
+      plan.record(batch, source, weight, output, tiled_rows);
+    if (tiled_rows != rows)
+      plan.record(batch, source, weight, output, rows - tiled_rows,
+                  tiled_rows, tiled_rows);
+  };
   if (p.weight.format() == LinearWeightFormat::kNVFloat4) {
     PreparedNVFP4WeightView prepared = cache.prepare(batch, p.weight, plan);
-    plan.record(batch, source, prepared, output, rows);
+    record(prepared);
   } else {
-    plan.record(batch, source, p.dense, output, rows);
+    record(p.dense);
   }
 }
 }
