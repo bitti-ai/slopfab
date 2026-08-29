@@ -484,7 +484,7 @@ const CommandHelp kCommands[] = {
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
      "  --inference-backend cuda|vulkan\n"
      "                               neural model backend (default cuda); Vulkan exact\n"
-     "                               supports native text-only conditioning\n"
+     "                               supports native text and reference conditioning\n"
      "  --output-accelerator cpu|vulkan\n"
      "                               RGB-to-YUV output conversion only (default cpu);\n"
      "                               model inference remains CUDA\n"
@@ -1414,12 +1414,6 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 
   if (inference_backend == "vulkan") {
-    if (!synthetic && !req.reference_image_paths.empty()) {
-      std::fprintf(stderr,
-                   "vidfab: Vulkan conditioning is text-only; reference vision "
-                   "is unavailable and no CUDA fallback was used\n");
-      return 1;
-    }
     if (attention_mode != vidfab::AttentionMode::kExact) {
       std::fprintf(stderr,
                    "vidfab: Vulkan VAE inference requires --attention exact; mode '%s' "

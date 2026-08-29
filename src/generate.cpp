@@ -36,6 +36,7 @@
 #if VIDFAB_WITH_VULKAN
 #include "vidfab/vulkan/audio_decoder.h"
 #include "vidfab/vulkan/dit_denoise.h"
+#include "vidfab/vulkan/keyframe_encoder.h"
 #include "vidfab/vulkan/text_encoder.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #endif
@@ -358,13 +359,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 #endif
   if (options.inference_backend == DeviceBackend::kVulkan &&
       options.source == LatentSource::kDenoise) {
-    if (!request.reference_image_paths.empty() ||
-        options.sampler != sampler::SamplerKind::kEuler ||
+    if (options.sampler != sampler::SamplerKind::kEuler ||
         request.cache_threshold > 0.0f || request.skip_every > 0 ||
         request.block_cache_span > 0) {
       result.message =
-          "Vulkan exact generation supports text-only T2VA Euler without "
-          "reference, step, or block caches; no CUDA fallback was used";
+          "Vulkan exact generation supports Euler without step or block "
+          "caches; no CUDA fallback was used";
       return result;
     }
   }
@@ -558,11 +558,42 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         vae_file.open(request.video_vae_path);
         const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
         const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
-        vae::KeyframeEncoder image_encoder(vae_file);
-        for (const RGBImage& image : reference_images) {
-          clean_rows.push_back(image_encoder.encode_reference_image(image, mean, stddev));
-          geometry.push_back(
-              {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
+        if (options.inference_backend == DeviceBackend::kCuda) {
+          vae::KeyframeEncoder image_encoder(vae_file);
+          for (const RGBImage& image : reference_images) {
+            clean_rows.push_back(
+                image_encoder.encode_reference_image(image, mean, stddev));
+            geometry.push_back({dit::ReferenceKind::kImage, 1,
+                                image.height / 16, image.width / 16, 0});
+          }
+        } else {
+#if VIDFAB_WITH_VULKAN
+          vulkan::Device keyframe_device = create_vulkan_inference_device();
+          vulkan::KeyframeEncoder image_encoder =
+              vulkan::KeyframeEncoder::create(keyframe_device);
+          image_encoder.load(vae_file);
+          for (const RGBImage& image : reference_images) {
+            clean_rows.push_back(
+                image_encoder.encode_reference_image(image, mean, stddev));
+            geometry.push_back({dit::ReferenceKind::kImage, 1,
+                                image.height / 16, image.width / 16, 0});
+          }
+          if (options.verbose) {
+            const auto& stats = image_encoder.stats();
+            std::printf(
+                "keyframes   Vulkan exact peak/reserved %.2f/%.2f GiB, %llu descriptors\n",
+                static_cast<double>(stats.allocator_peak_used_bytes) /
+                    (1024.0 * 1024.0 * 1024.0),
+                static_cast<double>(stats.allocator_reserved_bytes) /
+                    (1024.0 * 1024.0 * 1024.0),
+                static_cast<unsigned long long>(
+                    stats.descriptor_set_allocations));
+          }
+          image_encoder.unload();
+#else
+          throw std::logic_error(
+              "Vulkan keyframe encoder compiled out after validation");
+#endif
         }
         if (cache_references) {
           reuse.reference_key = reference_key;
@@ -728,12 +759,6 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         encoder.unload();
       } else {
 #if VIDFAB_WITH_VULKAN
-        if (!qwen_images.empty()) {
-          result.message =
-              "Vulkan conditioner is text-only; reference vision is not yet "
-              "implemented and no CUDA fallback was used";
-          return result;
-        }
         vulkan::Device device = create_vulkan_inference_device(true);
         vulkan::TensorContextOptions tensor_options;
         tensor_options.max_batch_operators = 64;
@@ -741,7 +766,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         vulkan::ExactQwenTextEncoder encoder =
             vulkan::ExactQwenTextEncoder::create(context);
         encoder.load(encoder_file);
-        prompt = encoder.encode(ids);
+        prompt = qwen_images.empty() ? encoder.encode(ids)
+                                     : encoder.encode(ids, qwen_images);
         if (options.verbose) {
           const auto& stats = encoder.stats();
           std::printf(
@@ -995,10 +1021,24 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       config.transformer.main.layers = 50;
       config.transformer.main.block.sequence =
           static_cast<uint32_t>(live.total_rows());
-      config.transformer.main.block.timesteps = 2;
+      const bool conditioned = live.num_condition_video != 0 ||
+                               live.num_condition_audio != 0;
+      config.transformer.main.block.timesteps = conditioned ? 4u : 2u;
       config.transformer.text_rows = static_cast<uint32_t>(live.num_text);
-      config.transformer.video_rows = static_cast<uint32_t>(live.num_video_rows);
-      config.transformer.audio_rows = static_cast<uint32_t>(live.num_audio_rows);
+      config.transformer.video_rows = static_cast<uint32_t>(
+          live.num_condition_video + live.num_video_rows);
+      config.transformer.audio_rows = static_cast<uint32_t>(
+          live.num_condition_audio + live.num_audio_rows);
+      if (conditioned) {
+        config.transformer.video_output_rows =
+            static_cast<uint32_t>(live.num_video_rows);
+        config.transformer.audio_output_rows =
+            static_cast<uint32_t>(live.num_audio_rows);
+        config.transformer.video_output_start =
+            static_cast<uint32_t>(live.video_start());
+        config.transformer.audio_output_start =
+            static_cast<uint32_t>(live.audio_start());
+      }
       config.layout = live;
       config.indices = idx;
       config.position_ids = pos;
@@ -1021,6 +1061,17 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         dit::patchify_video(noise.data(), live, initial_video.data());
         initial_audio = sampler::audio_noise(
             request.seed, live.num_audio_latents);
+      }
+      if (conditioned) {
+        if (condition_video_rows.size() !=
+            static_cast<size_t>(live.num_condition_video) * 96u ||
+            live.num_condition_audio != 0) {
+          throw std::runtime_error(
+              "Vulkan Ref2VA: condition row payload does not match packed layout");
+        }
+        initial_video.insert(initial_video.begin(),
+                             condition_video_rows.begin(),
+                             condition_video_rows.end());
       }
       const Clock::time_point t_prep = Clock::now();
       model.prepare(prompt.data.data(), prompt.data.size(),
