@@ -895,6 +895,96 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
   run_boundary(127, 63);
   run_boundary(128, 64);
   run_boundary(257, 129);
+
+  DeviceTensor out_second = vk.allocate(TensorLayout::contiguous(q_shape, 3),
+                                        ScalarType::kBFloat16);
+  auto submit_full = [&](DeviceTensor& selected_output) {
+    TensorBatch selected = vk.begin_batch();
+    plan.record(selected, q, k, v, selected_output);
+    return selected.submit();
+  };
+  Submission first_job = submit_full(out);
+  Submission second_job = submit_full(out_second);
+  CHECK(second_job.value() > first_job.value());
+  Submission third_job = submit_full(out);
+  CHECK(third_job.value() > second_job.value());
+  first_job.wait();
+  second_job.wait();
+  third_job.wait();
+  std::vector<uint16_t> second_got(q_count);
+  vk.download_bytes(out_second, second_got.data(), second_got.size() * 2);
+  CHECK(second_got == expected);
+  vk.download_bytes(out, got.data(), got.size() * 2);
+  CHECK(got == expected);
+  const uint64_t stable_reserved = vk.reserved_bytes();
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  for (int repeat = 0; repeat < 4; ++repeat) {
+    Submission a = submit_full(out), b = submit_full(out_second),
+               c = submit_full(out);
+    CHECK(b.value() > a.value() && c.value() > b.value());
+    a.wait(); b.wait(); c.wait();
+    CHECK(vk.reserved_bytes() == stable_reserved);
+    CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  }
+
+  // Validation happens before recording and a rejected call leaves the batch
+  // usable. By contrast, exceeding the bounded 32-op command list poisons it.
+  DeviceTensor wrong_type =
+      vk.allocate(TensorLayout::contiguous(q_shape, 3), ScalarType::kFloat32);
+  {
+    TensorBatch recover = vk.begin_batch();
+    bool rejected = false;
+    try { plan.record(recover, q, k, v, wrong_type); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    rejected = false;
+    try { plan.record(recover, q, k, v, q); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    plan.record(recover, q, k, v, out);
+    recover.submit().wait();
+  }
+  {
+    TensorBatch full = vk.begin_batch();
+    for (int op = 0; op < 32; ++op)
+      plan.record(full, q, k, v, out, 0, 1, 0);
+    full.submit().wait();
+  }
+  const uint64_t saturated_reserved = vk.reserved_bytes();
+  const uint64_t saturated_descriptors = vk.descriptor_set_allocations();
+  {
+    TensorBatch overflow = vk.begin_batch();
+    for (int op = 0; op < 32; ++op)
+      plan.record(overflow, q, k, v, out, 0, 1, 0);
+    bool rejected = false;
+    try { plan.record(overflow, q, k, v, out, 0, 1, 0); }
+    catch (const std::logic_error&) { rejected = true; }
+    CHECK(rejected);
+    bool submit_rejected = false;
+    try { (void)overflow.submit(); }
+    catch (const std::logic_error&) { submit_rejected = true; }
+    CHECK(submit_rejected);
+  }
+  CHECK(vk.reserved_bytes() == saturated_reserved);
+  CHECK(vk.descriptor_set_allocations() == saturated_descriptors);
+  {
+    TensorBatch full = vk.begin_batch();
+    for (int op = 0; op < 32; ++op)
+      plan.record(full, q, k, v, out, 0, 1, 0);
+    full.submit().wait();
+  }
+  CHECK(vk.reserved_bytes() == saturated_reserved);
+  CHECK(vk.descriptor_set_allocations() == saturated_descriptors);
+
+  // The submitted job retains input allocations after all caller wrappers are
+  // dropped. The kept output remains readable after token completion.
+  Submission retained = submit_full(out);
+  q = DeviceTensor();
+  k = DeviceTensor();
+  v = DeviceTensor();
+  retained.wait();
+  vk.download_bytes(out, got.data(), got.size() * 2);
+  CHECK(got == expected);
 }
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
