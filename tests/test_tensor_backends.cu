@@ -2354,6 +2354,11 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
   x[3] = 1.0f; y[3] = from_bits(0x7fc12345u);
   residual_bias[3] = 0.0f; scale[3] = 1.0f;
   x[4] = -0.0f; y[4] = -0.0f; residual_bias[4] = -0.0f; scale[4] = 1.0f;
+  x[5] = std::numeric_limits<float>::infinity(); y[5] = 1.0f;
+  residual_bias[5] = 0.0f; scale[5] = 1.0f;
+  x[6] = std::numeric_limits<float>::infinity();
+  y[6] = -std::numeric_limits<float>::infinity();
+  residual_bias[6] = 0.0f; scale[6] = 1.0f;
 
   swiglu_input[0] = from_bits(0x00800001u);
   swiglu_bias[0] = from_bits(0x80800000u);
@@ -2366,11 +2371,34 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
   swiglu_input[inner + 2] = 1.0f; swiglu_bias[inner + 2] = 0.0f;
   swiglu_input[3] = -0.0f; swiglu_bias[3] = -0.0f;
   swiglu_input[inner + 3] = 2.0f; swiglu_bias[inner + 3] = 0.0f;
-  swiglu_input[inner + 10] = 1.0f; swiglu_bias[inner + 10] = 0.0f;
+  swiglu_input[4] = std::numeric_limits<float>::infinity();
+  swiglu_input[inner + 4] = 1.0f;
+  swiglu_input[5] = -std::numeric_limits<float>::infinity();
+  swiglu_input[inner + 5] = 1.0f;
+  swiglu_input[6] = std::numeric_limits<float>::infinity();
+  swiglu_input[inner + 6] = 0.0f;
+  swiglu_input[7] = -std::numeric_limits<float>::infinity();
+  swiglu_input[inner + 7] = std::numeric_limits<float>::infinity();
+  for (int index = 4; index <= 10; ++index) {
+    swiglu_bias[index] = 0.0f;
+    swiglu_bias[inner + index] = 0.0f;
+  }
+  swiglu_input[8] = std::nextafter(-87.0f,
+                                   -std::numeric_limits<float>::infinity());
+  swiglu_input[9] = -87.0f;
+  swiglu_input[10] = std::nextafter(-87.0f,
+                                    std::numeric_limits<float>::infinity());
+  swiglu_input[inner + 8] = 1.0f;
+  swiglu_input[inner + 9] = 1.0f;
+  swiglu_input[inner + 10] = 1.0f;
 
   latent[0] = from_bits(0x00800000u); std_dev[0] = 0.5f; mean[0] = 0.0f;
   latent[voxels] = from_bits(0x00000001u); std_dev[1] = 1.0f; mean[1] = -0.0f;
-  latent[2 * voxels] = from_bits(0x7fc01234u); std_dev[2] = 1.0f; mean[2] = 0.0f;
+  latent[5] = std::numeric_limits<float>::infinity();
+  latent[6] = -std::numeric_limits<float>::infinity();
+  latent[2 * voxels] = from_bits(0x7fc01234u);
+  latent[2 * voxels + 1] = std::numeric_limits<float>::infinity();
+  std_dev[2] = 0.0f; mean[2] = 1.0f;
 
   cuda::DeviceBuffer<float> cx(matrix_count), cy(matrix_count),
       crb(columns), cs(columns), csi(swiglu_input_count), csb(2 * inner),
@@ -2388,6 +2416,41 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
   cuda::launch_swiglu(csi.get(), csb.get(), cso.get(), rows, inner, nullptr);
   cuda::launch_latent_denorm(cl.get(), cm.get(), csd.get(), clo.get(),
                              channels, voxels, nullptr);
+
+  // The legacy CUDA ABI permits nullable biases. Its null branch must remain
+  // exactly equivalent to a present all-zero bias after the semantic rebase.
+  cuda::DeviceBuffer<float> c_zero_residual_bias(columns),
+      c_null_residual(matrix_count), c_zero_residual(matrix_count),
+      c_nullable_y(matrix_count), c_zero_swiglu_bias(2 * inner),
+      c_nullable_swiglu_input(swiglu_input_count),
+      c_null_swiglu(swiglu_output_count), c_zero_swiglu(swiglu_output_count);
+  std::vector<float> zero_residual_bias(columns, 0.0f),
+      zero_swiglu_bias(2 * inner, 0.0f), nullable_x(matrix_count),
+      nullable_y(matrix_count), nullable_swiglu_input(swiglu_input_count);
+  for (size_t index = 0; index < matrix_count; ++index) {
+    nullable_x[index] = 0.25f + static_cast<float>(index % 7) / 16.0f;
+    nullable_y[index] = -0.5f + static_cast<float>(index % 11) / 32.0f;
+  }
+  for (size_t index = 0; index < swiglu_input_count; ++index)
+    nullable_swiglu_input[index] =
+        -1.0f + static_cast<float>(index % 23) / 16.0f;
+  c_zero_residual_bias.copy_from_host(zero_residual_bias.data(), columns);
+  c_zero_swiglu_bias.copy_from_host(zero_swiglu_bias.data(), 2 * inner);
+  c_null_residual.copy_from_host(nullable_x.data(), nullable_x.size());
+  c_zero_residual.copy_from_host(nullable_x.data(), nullable_x.size());
+  c_nullable_y.copy_from_host(nullable_y.data(), nullable_y.size());
+  c_nullable_swiglu_input.copy_from_host(nullable_swiglu_input.data(),
+                                         nullable_swiglu_input.size());
+  cuda::launch_layerscale_residual(c_null_residual.get(), c_nullable_y.get(), nullptr,
+                                   cs.get(), rows, columns, nullptr);
+  cuda::launch_layerscale_residual(c_zero_residual.get(), c_nullable_y.get(),
+                                   c_zero_residual_bias.get(), cs.get(), rows,
+                                   columns, nullptr);
+  cuda::launch_swiglu(c_nullable_swiglu_input.get(), nullptr,
+                      c_null_swiglu.get(), rows, inner, nullptr);
+  cuda::launch_swiglu(c_nullable_swiglu_input.get(),
+                      c_zero_swiglu_bias.get(), c_zero_swiglu.get(), rows,
+                      inner, nullptr);
 
   const uint64_t matrix_shape[] = {rows, columns};
   const uint64_t column_shape = columns;
@@ -2450,12 +2513,37 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
   CHECK((bits_of(residual[1]) & 0x7fffffffu) == 0u);
   CHECK((bits_of(residual[2]) & 0x7fffffffu) == 0u);
   CHECK(bits_of(residual[3]) == 0x7fc00000u);
+  CHECK(bits_of(residual[4]) == 0x80000000u);
+  CHECK(bits_of(residual[5]) == 0x7f800000u);
+  CHECK(bits_of(residual[6]) == 0x7fc00000u);
   CHECK(bits_of(swiglu[0]) == 0x00000000u);
   CHECK((bits_of(swiglu[1]) & 0x7fffffffu) == 0u);
   CHECK(bits_of(swiglu[2]) == 0x7fc00000u);
+  CHECK(bits_of(swiglu[3]) == 0x80000000u);
+  CHECK(bits_of(swiglu[4]) == 0x7f800000u);
+  CHECK(bits_of(swiglu[5]) == 0x80000000u);
+  CHECK(bits_of(swiglu[6]) == 0x7fc00000u);
+  CHECK(bits_of(swiglu[7]) == 0x7fc00000u);
+  CHECK(bits_of(swiglu[8]) == 0x80000000u);
+  CHECK(bits_of(swiglu[9]) == 0x80000000u);
+  CHECK((bits_of(swiglu[10]) & 0x7fffffffu) != 0u);
   CHECK((bits_of(denorm[0]) & 0x7fffffffu) == 0u);
-  CHECK((bits_of(denorm[voxels]) & 0x7fffffffu) == 0u);
+  CHECK(bits_of(denorm[5]) == 0x7f800000u);
+  CHECK(bits_of(denorm[6]) == 0xff800000u);
+  CHECK(bits_of(denorm[voxels]) == 0x00000000u);
   CHECK(bits_of(denorm[2 * voxels]) == 0x7fc00000u);
+  CHECK(bits_of(denorm[2 * voxels + 1]) == 0x7fc00000u);
+
+  std::vector<float> null_residual(matrix_count), zero_residual(matrix_count),
+      null_swiglu(swiglu_output_count), zero_swiglu(swiglu_output_count);
+  c_null_residual.copy_to_host(null_residual.data(), null_residual.size());
+  c_zero_residual.copy_to_host(zero_residual.data(), zero_residual.size());
+  c_null_swiglu.copy_to_host(null_swiglu.data(), null_swiglu.size());
+  c_zero_swiglu.copy_to_host(zero_swiglu.data(), zero_swiglu.size());
+  CHECK(std::memcmp(null_residual.data(), zero_residual.data(),
+                    null_residual.size() * sizeof(float)) == 0);
+  CHECK(std::memcmp(null_swiglu.data(), zero_swiglu.data(),
+                    null_swiglu.size() * sizeof(float)) == 0);
 
   // Every rejection below happens before access tracking/command mutation, so
   // the same batch remains usable and proves transactional validation.
