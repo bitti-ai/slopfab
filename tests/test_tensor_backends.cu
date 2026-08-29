@@ -53,6 +53,7 @@
 #include "vidfab/nf4.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/safetensors_write.h"
+#include "vidfab/sha256.h"
 #include "vidfab/sol_capture.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/text/encoder.h"
@@ -3505,6 +3506,12 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
       "weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors";
   const uint64_t i8_persistent_bytes=stage.persistent_bytes();
   CHECK(std::filesystem::exists(nv_path));
+  constexpr Sha256Digest nv_checkpoint_sha{
+      0x33,0xe6,0x9e,0x3e,0xda,0xb8,0x46,0xd5,
+      0x29,0x49,0xba,0xfd,0xb0,0x03,0x78,0xbd,
+      0x3f,0x5a,0x93,0xf7,0x81,0x24,0xfc,0x83,
+      0xd5,0xef,0x10,0x9d,0xc4,0xa1,0xfc,0xbb};
+  CHECK(sha256_file(nv_path.string())==nv_checkpoint_sha);
   SafeTensors nv_checkpoint;nv_checkpoint.open(nv_path.string());
   text::EncoderConfig nv_config;
   nv_config.format=text::detect_weight_format(nv_checkpoint);
