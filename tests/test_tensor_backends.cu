@@ -39,6 +39,8 @@
 #include "vidfab/cuda/vae_vit_block.h"
 #include "vidfab/attention.h"
 #include "vidfab/dit/rope.h"
+#include "vidfab/dit/denoise.h"
+#include "vidfab/dit/transformer.h"
 #include "vidfab/dit/block_capture.h"
 #include "vidfab/dit/graph_capture.h"
 #include "vidfab/dit/packing.h"
@@ -51,6 +53,7 @@
 #include "vidfab/vulkan/dit_block.h"
 #include "vidfab/vulkan/dit_graph.h"
 #include "vidfab/vulkan/dit_transformer.h"
+#include "vidfab/vulkan/dit_denoise.h"
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/vae_vit_block.h"
@@ -3900,6 +3903,138 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
   CHECK(std::memcmp(actual_audio.data(), expected_audio.data(),
                     actual_audio.size() * 4) == 0);
   transformer.unload();
+
+  if (const char* real_denoise = std::getenv("VIDFAB_DIT_DENOISE_REAL");
+      real_denoise && real_denoise[0] == '1') {
+    SequenceLayout denoise_layout;
+    denoise_layout.num_text = static_cast<int>(header.text_rows);
+    denoise_layout.num_audio_rows = static_cast<int>(header.audio_rows);
+    denoise_layout.num_video_rows = static_cast<int>(header.video_rows);
+    denoise_layout.num_audio_latents = static_cast<int>(header.audio_rows / 2);
+    denoise_layout.num_latent_frames = 7;
+    denoise_layout.latent_height = 16;
+    denoise_layout.latent_width = 16;
+    CHECK(denoise_layout.total_rows() == static_cast<int>(header.sequence) &&
+          denoise_layout.num_latent_frames * denoise_layout.rows_per_frame() ==
+              static_cast<int>(header.video_rows));
+    const PackedIndices denoise_indices = build_indices(denoise_layout);
+    const std::vector<double> denoise_positions =
+        build_position_ids(denoise_layout);
+
+    auto joined_hash = [&](const std::vector<float>& video_rows,
+                           const std::vector<float>& audio_rows) {
+      uint64_t hash = 1469598103934665603ull;
+      auto append = [&](const std::vector<float>& rows) {
+        const auto* bytes = reinterpret_cast<const uint8_t*>(rows.data());
+        for (size_t i = 0; i < rows.size() * sizeof(float); ++i) {
+          hash ^= bytes[i];
+          hash *= 1099511628211ull;
+        }
+      };
+      append(video_rows);
+      append(audio_rows);
+      return hash;
+    };
+    struct Boundary {
+      std::vector<float> video;
+      std::vector<float> audio;
+    };
+    std::vector<Boundary> cuda_boundaries;
+
+    dit::Transformer cuda_model;
+    const auto cuda_load_begin = std::chrono::steady_clock::now();
+    cuda_model.load(checkpoint);
+    cuda_model.set_attention_mode(AttentionMode::kExact);
+    cuda_model.set_attention_band(0);
+    cuda_model.prepare_text(prompt.data(), static_cast<int>(header.text_rows));
+    cuda_model.prepare_sequence(
+        denoise_layout, denoise_indices, denoise_positions);
+    const double cuda_load_prepare_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - cuda_load_begin).count();
+    sampler::FlowScheduler cuda_video_schedule(12.0f);
+    sampler::FlowScheduler cuda_audio_schedule(3.0f);
+    cuda_video_schedule.set_timesteps(4);
+    cuda_audio_schedule.set_timesteps(4);
+    DenoiseInputs cuda_inputs;
+    cuda_inputs.layout = &denoise_layout;
+    cuda_inputs.indices = &denoise_indices;
+    cuda_inputs.video_timesteps = &cuda_video_schedule.timesteps();
+    cuda_inputs.audio_timesteps = &cuda_audio_schedule.timesteps();
+    cuda_inputs.video_scheduler = &cuda_video_schedule;
+    cuda_inputs.audio_scheduler = &cuda_audio_schedule;
+    cuda_inputs.init_video_rows = &video;
+    cuda_inputs.init_audio_rows = &audio;
+    cuda_inputs.boundary = [&](int, const std::vector<float>& video_rows,
+                               const std::vector<float>& audio_rows) {
+      cuda_boundaries.push_back({video_rows, audio_rows});
+    };
+    const auto cuda_run_begin = std::chrono::steady_clock::now();
+    const DenoiseOutputs cuda_result = denoise(cuda_model, cuda_inputs);
+    const double cuda_run_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - cuda_run_begin).count();
+    CHECK(cuda_result.steps_computed == 3 &&
+          cuda_result.steps_skipped == 0 && cuda_boundaries.size() == 3u);
+    cuda_model.unload();
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+    ExactH3DenoiseConfig denoise_config;
+    denoise_config.transformer = config;
+    denoise_config.transformer.main.block.timesteps = 2;
+    denoise_config.layout = denoise_layout;
+    denoise_config.indices = denoise_indices;
+    denoise_config.position_ids = denoise_positions;
+    denoise_config.attention_ranges = ranges_data;
+    ExactH3Denoiser vk_denoiser = ExactH3Denoiser::create(vk, denoise_config);
+    const auto vk_load_begin = std::chrono::steady_clock::now();
+    vk_denoiser.load(checkpoint);
+    vk_denoiser.prepare(prompt.data(), prompt.size(), video.data(), video.size(),
+                        audio.data(), audio.size());
+    const double vk_load_prepare_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - vk_load_begin).count();
+    sampler::FlowScheduler vk_video_schedule(12.0f);
+    sampler::FlowScheduler vk_audio_schedule(3.0f);
+    vk_video_schedule.set_timesteps(4);
+    vk_audio_schedule.set_timesteps(4);
+    std::vector<uint64_t> boundary_hashes;
+    size_t boundary_index = 0;
+    const auto vk_run_begin = std::chrono::steady_clock::now();
+    const ExactH3DenoiseResult vk_result = vk_denoiser.run(
+        vk_video_schedule, vk_audio_schedule, {},
+        [&](uint32_t step, const std::vector<float>& video_rows,
+            const std::vector<float>& audio_rows) {
+          CHECK(step == boundary_index && boundary_index < cuda_boundaries.size());
+          if (boundary_index < cuda_boundaries.size()) {
+            CHECK(video_rows == cuda_boundaries[boundary_index].video);
+            CHECK(audio_rows == cuda_boundaries[boundary_index].audio);
+          }
+          boundary_hashes.push_back(joined_hash(video_rows, audio_rows));
+          ++boundary_index;
+        });
+    const double vk_run_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - vk_run_begin).count();
+    CHECK(!vk_result.cancelled && vk_result.steps_completed == 3u &&
+          boundary_index == cuda_boundaries.size());
+    CHECK(vk_result.video_rows == cuda_result.video_rows &&
+          vk_result.audio_rows == cuda_result.audio_rows);
+    CHECK(boundary_hashes.size() == 3u);
+    const std::array<uint64_t, 3> expected_denoise_hashes{
+        0x2472491d7573a692ull, 0x3343aa4828944315ull,
+        0xbfc3aec499e7b836ull};
+    CHECK(std::equal(boundary_hashes.begin(), boundary_hashes.end(),
+                     expected_denoise_hashes.begin()));
+    std::printf(
+        "  real exact denoise S%u x3: CUDA load+prep/run %.3f/%.3f ms, Vulkan %.3f/%.3f ms, boundaries %016llx/%016llx/%016llx, persistent/scratch/peak %.2f/%.2f/%.2f MiB\n",
+        header.sequence, cuda_load_prepare_ms, cuda_run_ms,
+        vk_load_prepare_ms, vk_run_ms,
+        static_cast<unsigned long long>(boundary_hashes[0]),
+        static_cast<unsigned long long>(boundary_hashes[1]),
+        static_cast<unsigned long long>(boundary_hashes[2]),
+        double(vk_denoiser.persistent_bytes()) / 1048576.0,
+        double(vk_denoiser.scratch_bytes()) / 1048576.0,
+        double(vk_denoiser.peak_device_bytes()) / 1048576.0);
+    vk_denoiser.unload();
+  }
 
   if (const char* production = std::getenv("VIDFAB_DIT_TRANSFORMER_PRODUCTION");
       production && production[0] == '1') {

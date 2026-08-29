@@ -38,6 +38,16 @@ uint64_t checked_multiply(uint64_t a, uint64_t b, const char* operation) {
   return a * b;
 }
 
+void write_zero_bytes(Buffer& buffer, uint64_t offset, uint64_t bytes) {
+  static constexpr std::array<uint8_t, 256> zeros{};
+  while (bytes != 0) {
+    const uint64_t chunk = std::min<uint64_t>(bytes, zeros.size());
+    buffer.write(offset, zeros.data(), chunk);
+    offset += chunk;
+    bytes -= chunk;
+  }
+}
+
 uintptr_t next_context_identity() {
   static std::atomic<uintptr_t> next{1};
   uintptr_t result = next.load(std::memory_order_relaxed);
@@ -1479,10 +1489,9 @@ LinearWeight LinearWeight::upload(TensorContext& context,
     Buffer buffer = context.impl_->pool.allocate(
         physical, BufferUsage::kTransferSource, MemoryUsage::kUpload);
     buffer.write(0, item.values, item.logical_bytes);
-    if (physical != item.logical_bytes) {
-      const uint32_t zero = 0;
-      buffer.write(item.logical_bytes, &zero, physical - item.logical_bytes);
-    }
+    if (physical != item.logical_bytes)
+      write_zero_bytes(buffer, item.logical_bytes,
+                       physical - item.logical_bytes);
     staging.push_back(std::move(buffer));
   }
   [[maybe_unused]] auto recording_lock = context.impl_->acquire_recorder();
@@ -1642,10 +1651,8 @@ void TensorContext::upload_bytes(DeviceTensor& destination, const void* values,
   const uint64_t physical_bytes = dst->buffer.size();
   impl_->ensure_staging(physical_bytes);
   impl_->upload_buffer.write(0, values, bytes);
-  if (physical_bytes != bytes) {
-    const uint32_t zero = 0;
-    impl_->upload_buffer.write(bytes, &zero, physical_bytes - bytes);
-  }
+  if (physical_bytes != bytes)
+    write_zero_bytes(impl_->upload_buffer, bytes, physical_bytes - bytes);
   CommandList list = impl_->commands.begin();
   list.barrier(impl_->upload_buffer, BufferAccess::kHostWrite,
                BufferAccess::kTransferRead, 0, physical_bytes);
@@ -1679,10 +1686,8 @@ void TensorContext::upload_transient_bytes(DeviceTensor& destination,
   Buffer staging = impl_->pool.allocate(
       physical_bytes, BufferUsage::kTransferSource, MemoryUsage::kUpload);
   staging.write(0, values, bytes);
-  if (physical_bytes != bytes) {
-    const uint32_t zero = 0;
-    staging.write(bytes, &zero, physical_bytes - bytes);
-  }
+  if (physical_bytes != bytes)
+    write_zero_bytes(staging, bytes, physical_bytes - bytes);
   CommandList list = impl_->commands.begin();
   list.barrier(staging, BufferAccess::kHostWrite,
                BufferAccess::kTransferRead, 0, physical_bytes);
@@ -1738,12 +1743,11 @@ void TensorContext::upload_batch(const TensorUpload* uploads, uint32_t count) {
   }
   [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
   impl_->ensure_staging(total);
-  const uint32_t zero = 0;
   for (const Pending& item : pending) {
     impl_->upload_buffer.write(item.offset, item.values, item.bytes);
     if (item.physical != item.bytes)
-      impl_->upload_buffer.write(item.offset + item.bytes, &zero,
-                                 item.physical - item.bytes);
+      write_zero_bytes(impl_->upload_buffer, item.offset + item.bytes,
+                       item.physical - item.bytes);
   }
   CommandList list = impl_->commands.begin();
   list.barrier(impl_->upload_buffer, BufferAccess::kHostWrite,
@@ -4449,6 +4453,10 @@ uint32_t H3AttentionRanges::sequence() const {
 uint32_t H3AttentionRanges::query_tiles() const {
   if (!impl_) throw std::logic_error("vulkan H3 attention: empty range table");
   return impl_->query_tiles;
+}
+uint64_t H3AttentionRanges::resident_bytes() const noexcept {
+  return impl_ && impl_->tensor
+      ? impl_->tensor.layout().bytes(impl_->tensor.type()) : 0;
 }
 uint64_t H3AttentionRanges::content_hash() const {
   if (!impl_) throw std::logic_error("vulkan H3 attention: empty range table");

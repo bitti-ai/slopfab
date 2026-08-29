@@ -45,6 +45,7 @@ void validate_config(const ExactH3DenoiseConfig& c) {
       c.transformer.main.block.adaln_rank != dit::AdaLNTable::kRank ||
       c.transformer.video_dim == 0 || c.transformer.audio_dim == 0 ||
       c.attention_band < 0 ||
+      (c.attention_band != 0 && !c.attention_ranges.empty()) ||
       c.position_ids.size() != static_cast<size_t>(sequence) * 3 ||
       c.indices.tags.size() != sequence ||
       c.indices.text.size() != c.transformer.text_rows ||
@@ -52,6 +53,11 @@ void validate_config(const ExactH3DenoiseConfig& c) {
       c.indices.video.size() != c.transformer.video_rows) {
     throw std::invalid_argument("Vulkan H3 denoise: unsupported sequence config");
   }
+  const uint64_t range_values =
+      uint64_t((sequence + 127u) / 128u) * 4u;
+  if (!c.attention_ranges.empty() &&
+      c.attention_ranges.size() != range_values)
+    throw std::invalid_argument("Vulkan H3 denoise: invalid captured ranges");
   uint32_t cursor = 0;
   auto require_range = [&](const std::vector<int32_t>& indices,
                            uint32_t expected_tag) {
@@ -151,12 +157,16 @@ void ExactH3Denoiser::load(const SafeTensors& checkpoint) {
         vector(c.transformer.audio_rows), ScalarType::kInt32);
     context.upload_transient(next->cosine, rope.cosine.data(), rope.cosine.size());
     context.upload_transient(next->sine, rope.sine.data(), rope.sine.size());
-    if (c.attention_band > 0) {
-      const dit::BandedKeyRanges band = dit::build_banded_key_ranges(
-          c.layout, c.attention_band, 128, 64);
+    if (c.attention_band > 0 || !c.attention_ranges.empty()) {
+      std::vector<int32_t> range_values = c.attention_ranges;
+      if (range_values.empty()) {
+        const dit::BandedKeyRanges band = dit::build_banded_key_ranges(
+            c.layout, c.attention_band, 128, 64);
+        range_values = band.ranges;
+      }
       next->ranges = H3AttentionRanges::create(
-          context, c.transformer.main.block.sequence, band.ranges.data(),
-          static_cast<uint32_t>(band.ranges.size()));
+          context, c.transformer.main.block.sequence, range_values.data(),
+          static_cast<uint32_t>(range_values.size()));
     }
   } catch (...) {
     next->transformer.unload();
@@ -212,7 +222,8 @@ void ExactH3Denoiser::prepare(
 ExactH3DenoiseResult ExactH3Denoiser::run(
     const sampler::FlowScheduler& video,
     const sampler::FlowScheduler& audio,
-    const ExactH3DenoiseProgress& progress) {
+    const ExactH3DenoiseProgress& progress,
+    const ExactH3DenoiseBoundary& boundary) {
   if (!prepared()) throw std::logic_error("Vulkan H3 denoise: not prepared");
   if (impl_->running) throw std::logic_error("Vulkan H3 denoise: run is active");
   if (video.sampler() != sampler::SamplerKind::kEuler ||
@@ -278,6 +289,17 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
                              audio_sigma, audio_ratio);
     batch.submit().wait();
     result.steps_completed = step + 1;
+    if (boundary) {
+      result.video_rows.resize(uint64_t(c.transformer.video_rows) *
+                               c.transformer.video_dim);
+      result.audio_rows.resize(uint64_t(c.transformer.audio_rows) *
+                               c.transformer.audio_dim);
+      impl_->context->download(s.video, result.video_rows.data(),
+                               result.video_rows.size());
+      impl_->context->download(s.audio, result.audio_rows.data(),
+                               result.audio_rows.size());
+      boundary(step, result.video_rows, result.audio_rows);
+    }
     if (progress && !progress(step, steps)) {
       result.cancelled = true;
       break;
@@ -310,6 +332,10 @@ uint64_t ExactH3Denoiser::scratch_bytes() const noexcept {
       return std::numeric_limits<uint64_t>::max();
     total += bytes;
   }
+  const uint64_t range_bytes = s.ranges.resident_bytes();
+  if (range_bytes > std::numeric_limits<uint64_t>::max() - total)
+    return std::numeric_limits<uint64_t>::max();
+  total += range_bytes;
   return total;
 }
 uint64_t ExactH3Denoiser::peak_device_bytes() const noexcept {

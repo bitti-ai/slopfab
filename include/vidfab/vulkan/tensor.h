@@ -527,6 +527,7 @@ class H3AttentionRanges {
                                   const int32_t* values, uint32_t value_count);
   uint32_t sequence() const;
   uint32_t query_tiles() const;
+  uint64_t resident_bytes() const noexcept;
   uint64_t content_hash() const;
   bool belongs_to(const TensorContext& context) const noexcept;
   explicit operator bool() const noexcept;

@@ -22,6 +22,10 @@ struct ExactH3DenoiseConfig {
   dit::PackedIndices indices;
   std::vector<double> position_ids;
   int attention_band = 0;
+  // Optional canonical four-int range record per global 128-query tile.
+  // Captured replay can supply the CUDA table verbatim; production normally
+  // derives it from attention_band. The two forms are exclusive.
+  std::vector<int32_t> attention_ranges;
 };
 
 struct ExactH3DenoiseResult {
@@ -33,6 +37,9 @@ struct ExactH3DenoiseResult {
 
 using ExactH3DenoiseProgress = std::function<bool(uint32_t step,
                                                   uint32_t total_steps)>;
+using ExactH3DenoiseBoundary = std::function<void(
+    uint32_t step, const std::vector<float>& video_rows,
+    const std::vector<float>& audio_rows)>;
 
 class ExactH3Denoiser {
  public:
@@ -62,7 +69,8 @@ class ExactH3Denoiser {
   // false returns the current, consistently updated device trajectory.
   ExactH3DenoiseResult run(const sampler::FlowScheduler& video,
                            const sampler::FlowScheduler& audio,
-                           const ExactH3DenoiseProgress& progress = {});
+                           const ExactH3DenoiseProgress& progress = {},
+                           const ExactH3DenoiseBoundary& boundary = {});
 
   uint64_t persistent_bytes() const noexcept;
   uint64_t scratch_bytes() const noexcept;

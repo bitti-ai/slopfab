@@ -23,6 +23,9 @@ namespace vidfab::dit {
 using VelocityFn = std::function<void(int step, const RowTimesteps& row_timesteps,
                                       const float* video_rows, const float* audio_rows,
                                       float* video_velocity, float* audio_velocity)>;
+using DenoiseBoundaryFn = std::function<void(
+    int step, const std::vector<float>& video_rows,
+    const std::vector<float>& audio_rows)>;
 
 struct DenoiseInputs {
   const SequenceLayout* layout = nullptr;
@@ -77,6 +80,11 @@ struct DenoiseInputs {
   // They are projected by every transformer evaluation but never stepped.
   const std::vector<float>* condition_video_rows = nullptr;
   const std::vector<float>* condition_audio_rows = nullptr;
+
+  // Optional verification hook after both modality updates. Production leaves
+  // this null; it never changes the trajectory and exists to pin every durable
+  // scheduler boundary without duplicating the canonical loop in a test.
+  DenoiseBoundaryFn boundary;
 };
 
 struct DenoiseOutputs {

@@ -181,6 +181,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);
     }
 
+    if (inputs.boundary) inputs.boundary(i, out.video_rows, out.audio_rows);
+
     if (progress && !progress(i, steps)) break;
   }
 
