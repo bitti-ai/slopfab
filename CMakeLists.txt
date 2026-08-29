@@ -55,6 +55,7 @@ add_library(vidfab_core STATIC
   src/dit/rope.cpp
   src/dit/step_cache.cpp
   src/vae/keyframe_encoder.cpp
+  src/vae/audio_primitives.cpp
   src/vae/vit_block.cpp
   src/vae/decode_pipeline.cpp
   src/pipeline.cpp
@@ -1083,6 +1084,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/harness.cpp
     tests/test_main.cpp
     tests/test_adaln.cpp
+    tests/test_audio_primitives.cpp
     tests/test_chunking.cpp
     tests/test_compare_metrics.cpp
     tests/test_image.cpp
