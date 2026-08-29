@@ -3922,7 +3922,10 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
   using namespace vidfab::vulkan;
   const bool nv_requested =
       std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_NV_REAL") != nullptr;
-  if (!nv_requested && !std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_REAL")) return;
+  const bool cuda_authority =
+      std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_CUDA_REAL") != nullptr;
+  if (!nv_requested && !cuda_authority &&
+      !std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_REAL")) return;
   const std::filesystem::path checkpoint_path =
       std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
       (nv_requested
@@ -4003,6 +4006,22 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
     return hash;
   };
 
+  text::PromptEmbedding cuda_max_output;
+  double cuda_max_seconds = 0.0;
+  if (cuda_authority) {
+    text::Encoder cuda_encoder;
+    text::EncoderConfig cuda_config;
+    cuda_config.residency = text::Residency::kStreaming;
+    cuda_config.arithmetic = text::EncoderArithmetic::kExact;
+    cuda_encoder.load(archive, cuda_config);
+    const auto cuda_begin = std::chrono::steady_clock::now();
+    cuda_max_output = cuda_encoder.encode(token_ids, {image});
+    cuda_max_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - cuda_begin).count();
+    cuda_encoder.unload();
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  }
+
   // Pin the four no-trace vision outputs at the same maximum grid. The visual
   // archive is shared by both shipped conditioner formats; these digests bind
   // the production patchifier, tower, and merger outputs to the file SHA.
@@ -4032,6 +4051,10 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
   encoder.load(archive);
   const auto begin = std::chrono::steady_clock::now();
   const text::PromptEmbedding first = encoder.encode(token_ids, {image});
+  if (cuda_authority) {
+    CHECK(first.modality_tags == cuda_max_output.modality_tags);
+    CHECK(first.data == cuda_max_output.data);
+  }
   const uint64_t final_hash = fnv64(
       first.data.data(), first.data.size() * sizeof(float));
   CHECK(final_hash == (nv_requested
@@ -4093,6 +4116,9 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
               static_cast<unsigned long long>(vision_hashes[1]),
               static_cast<unsigned long long>(vision_hashes[2]),
               static_cast<unsigned long long>(vision_hashes[3]));
+  if (cuda_authority)
+    std::printf("  qwen max direct CUDA/Vulkan %.3f/%.3f s exact\n",
+                cuda_max_seconds, first_seconds);
 }
 
 VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
