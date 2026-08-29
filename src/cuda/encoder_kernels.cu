@@ -1263,7 +1263,19 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
   dims.head_dim = s.cfg.head_dim;
   dims.intermediate = s.cfg.intermediate_size;
   dims.rms_norm_eps = s.cfg.rms_norm_eps;
-  s.ws.reserve(layer_workspace_bytes(dims));
+  if (s.cfg.arithmetic == EncoderArithmetic::kShipped)
+    s.ws.reserve(layer_workspace_bytes(dims));
+
+  auto forward_layer = [&](const LayerWeights& weights) {
+    if (s.cfg.arithmetic == EncoderArithmetic::kExact) {
+      s.ws.reserve(exact_layer_workspace_bytes(weights, dims));
+      encoder_layer_forward_exact(s.compute, weights, dims, cos.get(),
+                                  sin.get(), xp, s.ws);
+    } else {
+      encoder_layer_forward(s.cublas, s.compute, s.linear, weights, dims,
+                            cos.get(), sin.get(), xp, s.ws);
+    }
+  };
 
   const int N = s.cfg.num_layers;
   if (s.mode == Residency::kResident) {
@@ -1271,8 +1283,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
       const LayerWeights w =
           layer_weights_from_blob(s.resident[static_cast<size_t>(i)].get(), s.layout, s.cfg,
                                   s.globals[static_cast<size_t>(i)]);
-      encoder_layer_forward(s.cublas, s.compute, s.linear, w, dims, cos.get(), sin.get(), xp,
-                            s.ws);
+      forward_layer(w);
       inject(i);
     }
   } else {
@@ -1282,8 +1293,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
       VIDFAB_CUDA_CHECK(cudaStreamWaitEvent(s.compute, s.upload_done[slot], 0));
       const LayerWeights w = layer_weights_from_blob(s.ping[slot].get(), s.layout, s.cfg,
                                                     s.globals[static_cast<size_t>(i)]);
-      encoder_layer_forward(s.cublas, s.compute, s.linear, w, dims, cos.get(), sin.get(), xp,
-                            s.ws);
+      forward_layer(w);
       inject(i);
       VIDFAB_CUDA_CHECK(cudaEventRecord(s.compute_done[slot], s.compute));
 
