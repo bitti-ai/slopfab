@@ -1414,10 +1414,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 
   if (inference_backend == "vulkan") {
-    if (!synthetic && prompt_embedding.empty()) {
+    if (!synthetic && !req.reference_image_paths.empty()) {
       std::fprintf(stderr,
-                   "vidfab: Vulkan denoising requires --prompt-embedding; "
-                   "No CUDA fallback was used\n");
+                   "vidfab: Vulkan conditioning is text-only; reference vision "
+                   "is unavailable and no CUDA fallback was used\n");
       return 1;
     }
     if (attention_mode != vidfab::AttentionMode::kExact) {

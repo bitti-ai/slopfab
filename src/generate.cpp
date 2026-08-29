@@ -36,6 +36,7 @@
 #if VIDFAB_WITH_VULKAN
 #include "vidfab/vulkan/audio_decoder.h"
 #include "vidfab/vulkan/dit_denoise.h"
+#include "vidfab/vulkan/text_encoder.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #endif
 
@@ -357,19 +358,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 #endif
   if (options.inference_backend == DeviceBackend::kVulkan &&
       options.source == LatentSource::kDenoise) {
-    if (options.prompt_embedding_path.empty()) {
-      result.message =
-          "Vulkan denoising requires an explicit --prompt-embedding safetensors file; "
-          "no CUDA conditioner fallback was used";
-      return result;
-    }
     if (!request.reference_image_paths.empty() ||
         options.sampler != sampler::SamplerKind::kEuler ||
         request.cache_threshold > 0.0f || request.skip_every > 0 ||
         request.block_cache_span > 0) {
       result.message =
-          "Vulkan exact denoising supports T2VA Euler without reference, step, "
-          "or block caches; no CUDA fallback was used";
+          "Vulkan exact generation supports text-only T2VA Euler without "
+          "reference, step, or block caches; no CUDA fallback was used";
       return result;
     }
   }
@@ -710,22 +705,60 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         result.message = e.what();
         return result;
       }
-      text::Encoder encoder;
-      text::EncoderConfig ecfg;
-      ecfg.residency = text::Residency::kStreaming;
-      encoder.load(encoder_file, ecfg);
-      prompt = qwen_images.empty() ? encoder.encode(ids) : encoder.encode(ids, qwen_images);
-      encoder.unload();
+      const char* conditioner_mode = nullptr;
+      if (options.inference_backend == DeviceBackend::kCuda) {
+        text::Encoder encoder;
+        text::EncoderConfig ecfg;
+        ecfg.residency = text::Residency::kStreaming;
+        if (options.attention_mode == AttentionMode::kExact)
+          ecfg.arithmetic = text::EncoderArithmetic::kExact;
+        encoder.load(encoder_file, ecfg);
+        prompt = qwen_images.empty() ? encoder.encode(ids)
+                                     : encoder.encode(ids, qwen_images);
+        conditioner_mode = ecfg.arithmetic == text::EncoderArithmetic::kExact
+            ? "CUDA streaming exact" : "CUDA streaming shipped";
+        encoder.unload();
+      } else {
+#if VIDFAB_WITH_VULKAN
+        if (!qwen_images.empty()) {
+          result.message =
+              "Vulkan conditioner is text-only; reference vision is not yet "
+              "implemented and no CUDA fallback was used";
+          return result;
+        }
+        vulkan::Device device = create_vulkan_inference_device(true);
+        vulkan::TensorContextOptions tensor_options;
+        tensor_options.max_batch_operators = 64;
+        vulkan::TensorContext context(device, tensor_options);
+        vulkan::ExactQwenTextEncoder encoder =
+            vulkan::ExactQwenTextEncoder::create(context);
+        encoder.load(encoder_file);
+        prompt = encoder.encode(ids);
+        if (options.verbose) {
+          const auto& stats = encoder.stats();
+          std::printf(
+              "conditioner Vulkan exact peak/reserved %.2f/%.2f GiB, %llu descriptors\n",
+              static_cast<double>(stats.peak_device_bytes) /
+                  (1024.0 * 1024.0 * 1024.0),
+              static_cast<double>(stats.allocator_reserved_bytes) /
+                  (1024.0 * 1024.0 * 1024.0),
+              static_cast<unsigned long long>(stats.descriptor_set_allocations));
+        }
+        encoder.unload();
+        conditioner_mode = "Vulkan streaming exact";
+#else
+        throw std::logic_error("Vulkan conditioner compiled out after validation");
+#endif
+      }
       if (options.reuse_models) {
         reuse.conditioning_key = prompt_key;
         reuse.prompt = prompt;
       }
       result.seconds_conditioning = seconds_since(t0);
       if (options.verbose) {
-        std::printf("prompt      %d tokens -> [%d, %d] in %.2f s (%s residency)\n",
+        std::printf("prompt      %d tokens -> [%d, %d] in %.2f s (%s)\n",
                     static_cast<int>(ids.size()), prompt.num_tokens, prompt.hidden_size,
-                    result.seconds_conditioning,
-                    encoder.residency() == text::Residency::kStreaming ? "streaming" : "resident");
+                    result.seconds_conditioning, conditioner_mode);
       }
     }
 
