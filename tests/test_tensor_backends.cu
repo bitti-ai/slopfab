@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/deterministic_math.cuh"
 #include "vidfab/cuda/deterministic_gemm.cuh"
 #include "vidfab/cuda/deterministic_attention.cuh"
@@ -28,6 +29,7 @@
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/attention.h"
 #include "vidfab/dit/rope.h"
+#include "vidfab/dit/packing.h"
 #include "vidfab/dtype.h"
 #include "vidfab/nf4.h"
 #include "vidfab/safetensors.h"
@@ -741,6 +743,72 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
   TensorContext vk(device);
   if (!vk.exact_h3_attention()) return;
 
+  // The production 124-frame table is built by the same backend-neutral host
+  // path used by the transformer. Boundary probes independently derive each
+  // tile's selected prefix/frame band rather than trusting the flattened table.
+  {
+    dit::SequenceLayout real;
+    real.num_text = 17;
+    real.num_audio_rows = 414;
+    real.num_latent_frames = 37;
+    real.latent_height = 48;
+    real.latent_width = 84;
+    real.num_video_rows = real.num_latent_frames * real.rows_per_frame();
+    CHECK(real.total_rows() == 37727);
+    CHECK(real.video_start() == 431);
+    CHECK(real.rows_per_frame() == 1008);
+    const dit::BandedKeyRanges table =
+        dit::build_banded_key_ranges(real, 9, 128, 64);
+    CHECK(table.query_tile == 128 && table.num_query_tiles == 295);
+    auto round_down = [](int value) { return value / 64 * 64; };
+    auto round_up = [](int value) { return (value + 63) / 64 * 64; };
+    const int seq_end = round_up(real.total_rows());
+    for (int tile = 0; tile < table.num_query_tiles; ++tile) {
+      const int q0 = tile * 128;
+      const int qlast = std::min(q0 + 128, real.total_rows()) - 1;
+      int expected_lo0 = 0, expected_hi0 = seq_end;
+      int expected_lo1 = 0, expected_hi1 = 0;
+      if (q0 >= real.video_start()) {
+        const int first = (q0 - real.video_start()) / real.rows_per_frame();
+        const int last = (qlast - real.video_start()) / real.rows_per_frame();
+        expected_hi0 = round_up(real.video_start());
+        expected_lo1 = round_down(real.video_start() +
+                                  std::max(0, first - 9) * real.rows_per_frame());
+        expected_hi1 = std::min(seq_end, round_up(
+            real.video_start() + std::min(real.num_latent_frames, last + 10) *
+                                     real.rows_per_frame()));
+        if (expected_lo1 <= expected_hi0) {
+          expected_hi0 = std::max(expected_hi0, expected_hi1);
+          expected_lo1 = expected_hi1 = 0;
+        }
+      }
+      const int32_t* got = table.ranges.data() + size_t(tile) * 4;
+      CHECK(got[0] == expected_lo0 && got[1] == expected_hi0 &&
+            got[2] == expected_lo1 && got[3] == expected_hi1);
+      const int probes[] = {0, real.video_start() - 1, real.video_start(),
+                            expected_lo1 - 1, expected_lo1,
+                            expected_hi1 - 1, expected_hi1,
+                            real.total_rows() - 1, real.total_rows()};
+      for (int row : probes) {
+        if (row < 0 || row >= real.total_rows()) continue;
+        const bool selected =
+            (row >= got[0] && row < got[1]) ||
+            (row >= got[2] && row < got[3]);
+        const bool expected =
+            (row >= expected_lo0 && row < expected_hi0) ||
+            (row >= expected_lo1 && row < expected_hi1);
+        CHECK(selected == expected);
+      }
+    }
+    H3AttentionRanges uploaded = H3AttentionRanges::create(
+        vk, real.total_rows(), table.ranges.data(),
+        static_cast<uint32_t>(table.ranges.size()));
+    std::printf("  H3 production +/-9 range table: %u tiles, %zu bytes, FNV64 %016llx\n",
+                uploaded.query_tiles(), table.ranges.size() * sizeof(int32_t),
+                static_cast<unsigned long long>(uploaded.content_hash()));
+    CHECK(uploaded.content_hash() == 0x32b19bc0895faa6aull);
+  }
+
   constexpr uint32_t sequence = 129, heads = 2, dim = 64;
   const size_t count = size_t(sequence) * heads * dim;
   std::vector<uint16_t> hq(count), hk(count), hv(count);
@@ -858,6 +926,40 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
   vk.download_bytes(out_band, got_band.data(), count * 2);
   for (uint32_t i = 0; i < heads * dim; ++i)
     CHECK(got_band[i] == f32_to_bf16(1.0f));
+  const std::vector<int32_t> single_values{
+      128, 192, 0, 0, 128, 192, 0, 0};
+  H3AttentionRanges single = H3AttentionRanges::create(
+      vk, sequence, single_values.data(),
+      static_cast<uint32_t>(single_values.size()));
+  std::fill(hv.begin(), hv.end(), f32_to_bf16(-7.0f));
+  for (uint32_t h = 0; h < heads; ++h)
+    for (uint32_t d = 0; d < dim; ++d)
+      hv[(size_t(128) * heads + h) * dim + d] = f32_to_bf16(1.5f);
+  vk.upload_bytes(v, hv.data(), count * 2);
+  TensorBatch one_key = vk.begin_batch();
+  plan.record(one_key, q, k, v, out_band, &single, 0, 1, 0);
+  one_key.submit().wait();
+  vk.download_bytes(out_band, got_band.data(), count * 2);
+  for (uint32_t i = 0; i < heads * dim; ++i)
+    CHECK(got_band[i] == f32_to_bf16(1.5f));
+
+  const std::vector<int32_t> uniform_values{
+      0, 64, 0, 0, 0, 64, 0, 0};
+  H3AttentionRanges uniform = H3AttentionRanges::create(
+      vk, sequence, uniform_values.data(),
+      static_cast<uint32_t>(uniform_values.size()));
+  for (uint32_t row = 0; row < 64; ++row)
+    for (uint32_t h = 0; h < heads; ++h)
+      for (uint32_t d = 0; d < dim; ++d)
+        hv[(size_t(row) * heads + h) * dim + d] =
+            f32_to_bf16(row < 32 ? 1.0f : 3.0f);
+  vk.upload_bytes(v, hv.data(), count * 2);
+  TensorBatch average = vk.begin_batch();
+  plan.record(average, q, k, v, out_band, &uniform, 0, 1, 0);
+  average.submit().wait();
+  vk.download_bytes(out_band, got_band.data(), count * 2);
+  for (uint32_t i = 0; i < heads * dim; ++i)
+    CHECK(got_band[i] == f32_to_bf16(2.0f));
 
   // D128, three global query tiles, every tile/64-key boundary, row chunks,
   // and a nonzero output offset. The CUDA full launch is the exact oracle;
@@ -916,6 +1018,26 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     vk.download_bytes(vo, got.data(), n * 2);
     CHECK(std::memcmp(got.data(), expected.data() + size_t(128) * d,
                       d * sizeof(uint16_t)) == 0);
+
+    // Independent two-range/two-block recurrence anchor. The second range's
+    // score is >87 above the first, so the specified exp cutoff makes the old
+    // block correction exactly zero and every output is exactly V=3.
+    std::fill(qh.begin(), qh.end(), f32_to_bf16(1.0f));
+    std::fill(kh.begin(), kh.end(), f32_to_bf16(0.0f));
+    std::fill(vh.begin(), vh.end(), f32_to_bf16(1.0f));
+    for (uint32_t column = 0; column < d; ++column) {
+      kh[size_t(128) * d + column] = f32_to_bf16(8.0f);
+      vh[size_t(128) * d + column] = f32_to_bf16(3.0f);
+    }
+    vk.upload_bytes(vq, qh.data(), n * 2);
+    vk.upload_bytes(vkey, kh.data(), n * 2);
+    vk.upload_bytes(vv, vh.data(), n * 2);
+    TensorBatch seam = vk.begin_batch();
+    p.record(seam, vq, vkey, vv, vo, &vr, 0, 1, 0);
+    seam.submit().wait();
+    vk.download_bytes(vo, got.data(), n * 2);
+    for (uint32_t column = 0; column < d; ++column)
+      CHECK(got[column] == f32_to_bf16(3.0f));
   }
 
   // Range validation is a setup boundary and cannot mutate a recorder. Empty,
@@ -983,6 +1105,162 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     catch (const std::logic_error&) { submit_rejected = true; }
     CHECK(submit_rejected);
   }
+}
+
+VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!std::getenv("VIDFAB_H3_ATTENTION_REAL_BENCH")) return;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  constexpr uint32_t sequence = 37727, heads = 56, dim = 128;
+  const size_t count = size_t(sequence) * heads * dim;
+  dit::SequenceLayout layout;
+  layout.num_text = 17;
+  layout.num_audio_rows = 414;
+  layout.num_latent_frames = 37;
+  layout.latent_height = 48;
+  layout.latent_width = 84;
+  layout.num_video_rows = layout.num_latent_frames * layout.rows_per_frame();
+  const dit::BandedKeyRanges band =
+      dit::build_banded_key_ranges(layout, 9, 128, 64);
+  const dit::BandedKeyRanges wide =
+      dit::build_banded_key_ranges(layout, 64, 128, 64);
+  std::vector<uint16_t> host(count);
+  for (size_t i = 0; i < count; ++i)
+    host[i] = f32_to_bf16(float(int(i % 31) - 15) / 64.0f);
+  std::vector<uint16_t> expected_full(count), expected_band(count);
+  float cuda_full_ms = 0.0f, cuda_band_ms = 0.0f;
+  float shipped_full_ms = 0.0f, shipped_band_ms = 0.0f;
+  size_t shipped_differences = 0;
+  float shipped_max_abs = 0.0f;
+  {
+    cuda::DeviceBuffer<uint16_t> q(count), k(count), v(count), out(count);
+    cuda::DeviceBuffer<int32_t> ranges(band.ranges.size());
+    q.copy_from_host(host.data(), count);
+    k.copy_from_host(host.data(), count);
+    v.copy_from_host(host.data(), count);
+    ranges.copy_from_host(band.ranges.data(), band.ranges.size());
+    auto timed = [&](auto&& launch) {
+      cudaEvent_t begin{}, end{};
+      VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
+      VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
+      VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+      launch();
+      VIDFAB_CUDA_CHECK(cudaEventRecord(end));
+      VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+      float ms = 0.0f;
+      VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, begin, end));
+      cudaEventDestroy(begin); cudaEventDestroy(end);
+      return ms;
+    };
+    cuda_full_ms = timed([&] {
+      cuda::launch_deterministic_h3_attention(
+          nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
+          reinterpret_cast<const __nv_bfloat16*>(k.get()),
+          reinterpret_cast<const __nv_bfloat16*>(v.get()),
+          reinterpret_cast<__nv_bfloat16*>(out.get()), nullptr,
+          sequence, heads, dim, exact_attention_scale(dim));
+    });
+    out.copy_to_host(expected_full.data(), count);
+    cuda_band_ms = timed([&] {
+      cuda::launch_deterministic_h3_attention(
+          nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
+          reinterpret_cast<const __nv_bfloat16*>(k.get()),
+          reinterpret_cast<const __nv_bfloat16*>(v.get()),
+          reinterpret_cast<__nv_bfloat16*>(out.get()), ranges.get(),
+          sequence, heads, dim, exact_attention_scale(dim));
+    });
+    out.copy_to_host(expected_band.data(), count);
+    cublasHandle_t handle = nullptr;
+    VIDFAB_CUBLAS_CHECK(cublasCreate(&handle));
+    cuda::Workspace workspace;
+    cuda::AttentionConfig config;
+    config.seq_len = sequence;
+    config.num_heads = heads;
+    config.head_dim = dim;
+    config.scale = exact_attention_scale(dim);
+    config.band_ranges = nullptr;
+    shipped_full_ms = timed([&] {
+      cuda::attention_forward(
+          handle, nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
+          reinterpret_cast<const __nv_bfloat16*>(k.get()),
+          reinterpret_cast<const __nv_bfloat16*>(v.get()),
+          reinterpret_cast<__nv_bfloat16*>(out.get()), config,
+          cuda::AttentionBackend::kFused, workspace);
+    });
+    std::vector<uint16_t> shipped(count);
+    out.copy_to_host(shipped.data(), count);
+    for (size_t i = 0; i < count; ++i) {
+      if (shipped[i] != expected_full[i]) ++shipped_differences;
+      shipped_max_abs = std::max(
+          shipped_max_abs,
+          std::abs(bf16_to_f32(shipped[i]) - bf16_to_f32(expected_full[i])));
+    }
+    config.band_ranges = ranges.get();
+    shipped_band_ms = timed([&] {
+      cuda::attention_forward(
+          handle, nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
+          reinterpret_cast<const __nv_bfloat16*>(k.get()),
+          reinterpret_cast<const __nv_bfloat16*>(v.get()),
+          reinterpret_cast<__nv_bfloat16*>(out.get()), config,
+          cuda::AttentionBackend::kFused, workspace);
+    });
+    cublasDestroy(handle);
+  }
+
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  CHECK(!physical.empty());
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  CHECK(vk.exact_h3_attention());
+  const uint64_t shape[] = {sequence, heads, dim};
+  const TensorLayout tensor_layout = TensorLayout::contiguous(shape, 3);
+  DeviceTensor q = vk.allocate(tensor_layout, ScalarType::kBFloat16);
+  DeviceTensor k = vk.allocate(tensor_layout, ScalarType::kBFloat16);
+  DeviceTensor v = vk.allocate(tensor_layout, ScalarType::kBFloat16);
+  DeviceTensor out = vk.allocate(tensor_layout, ScalarType::kBFloat16);
+  vk.upload_bytes(q, host.data(), count * sizeof(uint16_t));
+  vk.upload_bytes(k, host.data(), count * sizeof(uint16_t));
+  vk.upload_bytes(v, host.data(), count * sizeof(uint16_t));
+  H3AttentionPlan plan = H3AttentionPlan::create(
+      vk, {sequence, heads, dim, exact_attention_scale(dim)});
+  H3AttentionRanges band_table = H3AttentionRanges::create(
+      vk, sequence, band.ranges.data(),
+      static_cast<uint32_t>(band.ranges.size()));
+  H3AttentionRanges wide_table = H3AttentionRanges::create(
+      vk, sequence, wide.ranges.data(),
+      static_cast<uint32_t>(wide.ranges.size()));
+  auto timed_vk = [&](const H3AttentionRanges* selected) {
+    const auto begin = std::chrono::steady_clock::now();
+    TensorBatch batch = vk.begin_batch();
+    plan.record(batch, q, k, v, out, selected);
+    batch.submit().wait();
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - begin).count();
+  };
+  const double vulkan_full_ms = timed_vk(nullptr);
+  std::vector<uint16_t> got(count);
+  vk.download_bytes(out, got.data(), count * sizeof(uint16_t));
+  CHECK(got == expected_full);
+  const double vulkan_band_ms = timed_vk(&band_table);
+  vk.download_bytes(out, got.data(), count * sizeof(uint16_t));
+  CHECK(got == expected_band);
+  const double vulkan_wide_ms = timed_vk(&wide_table);
+  vk.download_bytes(out, got.data(), count * sizeof(uint16_t));
+  CHECK(got == expected_full);
+  const double direct_mib = double(count * sizeof(uint16_t) * 4) / 1048576.0;
+  std::printf(
+      "  H3 real S37727 H56 D128: exact CUDA full %.3f ms/band %.3f ms; Vulkan full %.3f ms/band %.3f ms/wide %.3f ms; shipped fused full %.3f ms/band %.3f ms; shipped drift %zu/%zu maxabs %.7g; direct QKV/out %.2f MiB, range %zu bytes, scratch 0\n",
+      cuda_full_ms, cuda_band_ms, vulkan_full_ms, vulkan_band_ms,
+      vulkan_wide_ms, shipped_full_ms, shipped_band_ms,
+      shipped_differences, count, shipped_max_abs, direct_mib,
+      band.ranges.size() * sizeof(int32_t));
 }
 
 VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
