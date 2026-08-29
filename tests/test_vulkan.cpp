@@ -85,6 +85,17 @@ VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
     const float value = static_cast<float>(static_cast<int>(i % 17) - 8) / 8.0f;
     values[i] = reference_bf16(value);
   }
+  const uint16_t conversion_edges[] = {
+      0x0000u, 0x8000u, 0x0001u, 0x007fu, 0x0080u, 0x387fu,
+      0x3880u, 0x7f7fu, 0x7f80u, 0xff80u, 0x3f80u, 0x3f81u};
+  std::copy(std::begin(conversion_edges), std::end(conversion_edges),
+            values.begin());
+  std::vector<uint16_t> expected(values.size());
+  for (size_t i = 0; i < values.size(); ++i) {
+    expected[i] = f32_to_bf16(f16_to_f32(f32_to_f16(bf16_to_f32(values[i]))));
+  }
+  // The fixed PV FMA starts from +0, so (-0 * 1) + +0 is +0.
+  expected[1] = 0;
   context.upload_bytes(q, zeros.data(), zeros.size() * sizeof(uint16_t));
   context.upload_bytes(k, zeros.data(), zeros.size() * sizeof(uint16_t));
   context.upload_bytes(v, values.data(), values.size() * sizeof(uint16_t));
@@ -101,7 +112,92 @@ VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
   batch.submit().wait();
   std::vector<uint16_t> actual(values.size());
   context.download_bytes(out, actual.data(), actual.size() * sizeof(uint16_t));
-  CHECK(std::memcmp(values.data(), actual.data(), values.size() * sizeof(uint16_t)) == 0);
+  size_t edge_mismatch = expected.size();
+  for (size_t i = 0; i < expected.size(); ++i) {
+    if (expected[i] != actual[i]) { edge_mismatch = i; break; }
+  }
+  CHECK_MSG(edge_mismatch == expected.size(),
+            "attention conversion edge %zu: %04x != %04x",
+            edge_mismatch,
+            edge_mismatch == expected.size() ? 0u : expected[edge_mismatch],
+            edge_mismatch == expected.size() ? 0u : actual[edge_mismatch]);
+
+  CHECK(prepared.reserved_bytes() == values.size() * sizeof(uint16_t) * 3);
+  DeviceTensor out2 = context.allocate(layout, ScalarType::kBFloat16);
+  PreparedAttentionInputs prepared2 = PreparedAttentionInputs::create(context, desc);
+  TensorBatch first = context.begin_batch();
+  PreparedAttentionView first_view = prepared.prepare(first, q, k, v);
+  plan.record(first, first_view, out);
+  Submission first_token = first.submit();
+  TensorBatch second = context.begin_batch();
+  PreparedAttentionView second_view = prepared2.prepare(second, q, k, v);
+  plan.record(second, second_view, out2);
+  Submission second_token = second.submit();
+  TensorBatch third = context.begin_batch();
+  PreparedAttentionView third_view = prepared.prepare(third, q, k, v);
+  plan.record(third, third_view, out);
+  Submission third_token = third.submit();
+  CHECK(first_token.value() < second_token.value());
+  CHECK(second_token.value() < third_token.value());
+  first_token.wait(); second_token.wait(); third_token.wait();
+  const uint64_t stable_reserved = context.reserved_bytes();
+  const uint64_t stable_descriptors = context.descriptor_set_allocations();
+  for (int repeat = 0; repeat < 3; ++repeat) {
+    TensorBatch stable = context.begin_batch();
+    PreparedAttentionView stable_view = prepared.prepare(stable, q, k, v);
+    plan.record(stable, stable_view, out);
+    stable.submit().wait();
+    CHECK(context.reserved_bytes() == stable_reserved);
+    CHECK(context.descriptor_set_allocations() == stable_descriptors);
+  }
+
+  TensorBatch after_submit = context.begin_batch();
+  bool stale_rejected = false;
+  try { plan.record(after_submit, third_view, out); }
+  catch (const std::invalid_argument&) { stale_rejected = true; }
+  CHECK(stale_rejected);
+  PreparedAttentionView fresh = prepared.prepare(after_submit, q, k, v);
+  plan.record(after_submit, fresh, out);
+  after_submit.submit().wait();
+
+  {
+    TensorBatch superseded = context.begin_batch();
+    PreparedAttentionView old = prepared.prepare(superseded, q, k, v);
+    PreparedAttentionView newest = prepared.prepare(superseded, q, k, v);
+    bool old_rejected = false;
+    try { plan.record(superseded, old, out); }
+    catch (const std::invalid_argument&) { old_rejected = true; }
+    CHECK(old_rejected);
+    plan.record(superseded, newest, out);
+    superseded.submit().wait();
+  }
+  PreparedAttentionView discarded;
+  {
+    TensorBatch abandoned = context.begin_batch();
+    discarded = prepared.prepare(abandoned, q, k, v);
+  }
+  TensorBatch recovery = context.begin_batch();
+  bool discarded_rejected = false;
+  try { plan.record(recovery, discarded, out); }
+  catch (const std::invalid_argument&) { discarded_rejected = true; }
+  CHECK(discarded_rejected);
+  PreparedAttentionView recovery_view = prepared.prepare(recovery, q, k, v);
+  bool alias_rejected = false;
+  try { plan.record(recovery, recovery_view, q); }
+  catch (const std::invalid_argument&) { alias_rejected = true; }
+  CHECK(alias_rejected);
+  plan.record(recovery, recovery_view, out);
+  recovery.submit().wait();
+
+  bool thirty_third_rejected = false;
+  {
+    TensorBatch bounded = context.begin_batch();
+    PreparedAttentionView bounded_view = prepared.prepare(bounded, q, k, v);
+    for (int i = 0; i < 31; ++i) plan.record(bounded, bounded_view, out);
+    try { plan.record(bounded, bounded_view, out); }
+    catch (const std::logic_error&) { thirty_third_rejected = true; }
+  }
+  CHECK(thirty_third_rejected);
 }
 
 VIDFAB_TEST(vulkan_linear_weight_cpu_reference) {
