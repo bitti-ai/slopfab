@@ -22,6 +22,16 @@ struct ViTBlockConfig {
   float epsilon = 1.0e-5f;
 };
 
+struct ViTRopeTables {
+  std::vector<float> cosine;
+  std::vector<float> sine;
+};
+
+// Canonical video-VAE T/H/W rotary tables, including identity suffix rows.
+ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height,
+                                    uint32_t width, uint32_t suffix,
+                                    uint32_t rope_dim, float theta);
+
 // Non-owning host views. Linear matrices are checkpoint-native row-major
 // fp16 [out_features,in_features]; all other arrays are fp32.
 struct ViTBlockWeightsView {

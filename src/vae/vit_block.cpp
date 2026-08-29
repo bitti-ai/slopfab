@@ -1,5 +1,6 @@
 #include "vidfab/vae/vit_block.h"
 
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -51,6 +52,54 @@ std::vector<float> load_vector(const SafeTensors& checkpoint,
 }
 
 }  // namespace
+
+ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height,
+                                    uint32_t width, uint32_t suffix,
+                                    uint32_t rope_dim, float theta) {
+  if (time == 0 || height == 0 || width == 0 || rope_dim == 0 ||
+      rope_dim % 6 != 0 || !std::isfinite(theta) || theta <= 0.0f) {
+    throw std::invalid_argument("video VAE RoPE: invalid configuration");
+  }
+  const uint64_t patches64 = static_cast<uint64_t>(time) * height * width;
+  const uint64_t sequence64 = patches64 + suffix;
+  if (sequence64 > UINT32_MAX || sequence64 * rope_dim > SIZE_MAX)
+    throw std::overflow_error("video VAE RoPE: table size overflow");
+  const uint32_t sequence = static_cast<uint32_t>(sequence64);
+  const uint32_t half = rope_dim / 2;
+  const uint32_t per_axis = half / 3;
+  std::vector<float> inv_freq(per_axis);
+  for (uint32_t f = 0; f < per_axis; ++f)
+    inv_freq[f] = 1.0f / std::pow(theta, float(f) / float(per_axis));
+  ViTRopeTables result;
+  result.cosine.assign(static_cast<size_t>(sequence) * rope_dim, 1.0f);
+  result.sine.assign(static_cast<size_t>(sequence) * rope_dim, 0.0f);
+  constexpr double kTwoPi = 6.283185307179586476925286766559;
+  auto coordinate = [](uint32_t index, uint32_t extent) {
+    return 2.0f * ((float(index) + 0.5f) / float(extent)) - 1.0f;
+  };
+  for (uint32_t t = 0; t < time; ++t) {
+    for (uint32_t h = 0; h < height; ++h) {
+      for (uint32_t w = 0; w < width; ++w) {
+        const size_t token = (static_cast<size_t>(t) * height + h) * width + w;
+        const float coords[3] = {coordinate(t, time), coordinate(h, height),
+                                 coordinate(w, width)};
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+          for (uint32_t f = 0; f < per_axis; ++f) {
+            const uint32_t j = axis * per_axis + f;
+            const double angle = kTwoPi * double(coords[axis]) * inv_freq[f];
+            const float c = static_cast<float>(std::cos(angle));
+            const float s = static_cast<float>(std::sin(angle));
+            result.cosine[token * rope_dim + j] = c;
+            result.sine[token * rope_dim + j] = s;
+            result.cosine[token * rope_dim + j + half] = c;
+            result.sine[token * rope_dim + j + half] = s;
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
 
 ViTBlockWeightsView ViTBlockWeights::view() const noexcept {
   return {norm1.data(), norm2.data(), scale1.data(), scale2.data(),

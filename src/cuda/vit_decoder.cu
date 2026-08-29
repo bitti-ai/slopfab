@@ -11,6 +11,7 @@
 
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/attention.cuh"
+#include "vidfab/cuda/deterministic_gemm.cuh"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nf4_weight.cuh"
@@ -265,6 +266,14 @@ struct ViTDecoder::Impl {
   void gemm_nt(const float* A, const cuda::F16Weight& weight, float* C, int M, int N, int K) {
     const __half* B = weight.materialize(d_weight.get(), cap_weight, stream.get());
     cuda::launch_narrow_f16(A, d_gemm_in.get(), static_cast<size_t>(M) * K, stream.get());
+    if (cfg.transformer_mode == ViTTransformerMode::kExact) {
+      cuda::launch_deterministic_scalar_gemm_nt(
+          d_gemm_in.get(), B, nullptr, C, static_cast<uint32_t>(M),
+          static_cast<uint32_t>(N), static_cast<uint32_t>(K),
+          DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone, 0, 0,
+          stream.get());
+      return;
+    }
     const float alpha = 1.0f, beta = 0.0f;
     CUBLAS_CHECK(cublasGemmEx(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F,
                               K, d_gemm_in.get(), CUDA_R_16F, K, &beta, C, CUDA_R_32F, N,
@@ -349,50 +358,14 @@ struct ViTDecoder::Impl {
   // 24 unique angles are ordered T(8), H(8), W(8) and then duplicated to 48.
   void build_rope(int T, int H, int W, int seq, int num_patches) {
     if (T == rope_T && H == rope_H && W == rope_W) return;
-    const int rope_dim = cfg.rope_dim;
-    const int half = rope_dim / 2;  // 24 unique angles
-    const int per_axis = half / 3;  // 8 frequencies per axis
-
-    std::vector<float> inv_freq(per_axis);
-    for (int f = 0; f < per_axis; ++f) {
-      inv_freq[f] = 1.0f / std::pow(cfg.rope_theta,
-                                    static_cast<float>(f) / static_cast<float>(per_axis));
-    }
-
-    auto axis_coord = [](int index, int extent) {
-      const float c = (static_cast<float>(index) + 0.5f) / static_cast<float>(extent);
-      return 2.0f * c - 1.0f;
-    };
-
-    std::vector<float> cos_tab(static_cast<size_t>(seq) * rope_dim, 1.0f);
-    std::vector<float> sin_tab(static_cast<size_t>(seq) * rope_dim, 0.0f);
-
-    const double two_pi = 6.283185307179586476925286766559;
-    for (int t = 0; t < T; ++t) {
-      for (int h = 0; h < H; ++h) {
-        for (int w = 0; w < W; ++w) {
-          const size_t token = (static_cast<size_t>(t) * H + h) * W + w;
-          if (token >= static_cast<size_t>(num_patches)) continue;
-          const float coord[3] = {axis_coord(t, T), axis_coord(h, H), axis_coord(w, W)};
-          for (int axis = 0; axis < 3; ++axis) {
-            for (int f = 0; f < per_axis; ++f) {
-              const int j = axis * per_axis + f;
-              const double angle = two_pi * static_cast<double>(coord[axis]) *
-                                   static_cast<double>(inv_freq[f]);
-              const float c = static_cast<float>(std::cos(angle));
-              const float s = static_cast<float>(std::sin(angle));
-              cos_tab[token * rope_dim + j] = c;
-              sin_tab[token * rope_dim + j] = s;
-              // tile(2): the second half repeats the first.
-              cos_tab[token * rope_dim + j + half] = c;
-              sin_tab[token * rope_dim + j + half] = s;
-            }
-          }
-        }
-      }
-    }
-    d_cos.copy_from_host(cos_tab.data(), cos_tab.size(), stream);
-    d_sin.copy_from_host(sin_tab.data(), sin_tab.size(), stream);
+    if (seq != num_patches + cfg.num_suffix)
+      throw std::runtime_error("vae: invalid RoPE sequence");
+    vae::ViTRopeTables tables = vae::build_vit_rope_tables(
+        static_cast<uint32_t>(T), static_cast<uint32_t>(H),
+        static_cast<uint32_t>(W), static_cast<uint32_t>(cfg.num_suffix),
+        static_cast<uint32_t>(cfg.rope_dim), cfg.rope_theta);
+    d_cos.copy_from_host(tables.cosine.data(), tables.cosine.size(), stream);
+    d_sin.copy_from_host(tables.sine.data(), tables.sine.size(), stream);
     stream.synchronize();  // host vectors die at scope exit
     rope_T = T;
     rope_H = H;
