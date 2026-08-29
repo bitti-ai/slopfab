@@ -1144,6 +1144,45 @@ activation allocation or upload, and unload/reload converges to a bounded
 allocator high-water while returning pooled used bytes to the context-only
 staging baseline.
 
+The independent NVFP4+AWQ full-50 authority uses checkpoint SHA-256
+`33E69E3EDAB846D52949BAFDB00378BD3F5A93F78124FC83D5EF109DC4A1FCBB`
+and the same real L132 token sequence. Canonical exact CUDA and Vulkan match
+all 50 device-traced BF16 boundaries and final FP32 output byte-for-byte; the
+final FNV64 is `dd3fec8f152ad2d4`. Ordered boundary FNV64 pins are:
+
+```text
+4f3d7ee0a06b9a5b 2ee44051eafbfded 2136eeec9028bd54 164957ffaa8dfc07
+60e0255905821d34 a3c509b5bb9d7733 a6bf9965df0ceb31 52114b3f7892944e
+b52a193f42f11ed7 da67497cf617fb45 6545b2d448a8e549 73f278547b874f26
+0c8f262349910885 3e7996fc911ffac1 eccd4e5fe5b9ac6e 2b7f444af528ec2d
+1fe608b480868fe3 d8b7dbefaf13e2f5 570cb9290ed47326 c7741961b064baaa
+5df16682b0973a7a 2f0d7aaca3e8b7ca f70b206829d93c90 54b02d3cd01f502d
+6bfe9e2b6fe1f02e 753267523cabf7b6 22c7fea96d78d582 bf17535d9b74b199
+4765ec9c7e13c669 d801f4ec20927ed8 745e20ab4fe38a5e a40ba39ab8bb10af
+c23561b38823b552 5c572ce2f9ca1b89 d08baefb73e43576 2f420dbe4ae671b2
+c503a9ae05447391 d756d351b5d417e6 b5c6a94bb94ba95f 4183dffacb74d57d
+af1051484be3604b 0d584ab455e75775 758502e066122398 17bdba736d540226
+ed068eb30c58681a 8c24098d6ccb1dd9 b1fc7633590ec60a defffc251f98309f
+95171c7e3779b64c f3c5845b91289f24
+```
+
+Release CUDA/Vulkan measured 2.79/4.04 seconds. Vulkan logical peak was
+616.4 MiB, active pooled used/reserved were 419.3/485.1 MiB, and 34 descriptor
+sets were allocated. Exact traced L132 capacity is 35 operators; capacity 34
+fails before activation allocation. Rank-1 and zero-valued layer-49 global
+scales and a corrupt canonical descriptor all fail transactionally with the
+active output and allocator state unchanged. Unload/reload returns pooled used
+bytes to the warmed context staging baseline, bounds reserved high-water below
+1 GiB, keeps descriptor count fixed, and reproduces all pins.
+
+Full archive validation performs one aggregate manifest scan followed by keyed
+strict checks for the embedding contract and all 50 layers. It rejects
+non-canonical descriptors and invalid NVFP4 global/embedding scales before
+committing encoder state. Conditioning cache entries additionally carry their
+CUDA-shipped, CUDA-exact, or Vulkan-exact authority; captured embeddings are
+never inserted, so neither a foreign backend nor a replay capture can bypass
+the requested native conditioner.
+
 The normal-prompt vertical authority runs public `run_generate` for CUDA and
 Vulkan with the same I8 conditioner, seed-424242 256x256/22-frame initial
 latents and three evaluations, then both real VAEs. Float PixelBuffer and PCM,
