@@ -28,6 +28,10 @@ class ExactViTBlockGraph {
   void load(const SafeTensors& checkpoint);
   void load_layer(uint32_t layer,
                   const vae::ViTBlockWeightsView& weights);
+  // Selects a shape-specific shared arena without touching immutable weights.
+  // Two recent shapes are cached for ragged tiled decode; older arenas are
+  // evicted, bounding activation residency independently of layer count.
+  void prepare_shape(uint32_t sequence, uint32_t num_patches);
   void forward_device(float* tokens, const float* cosine, const float* sine,
                       cudaStream_t stream) const;
   // Verification seam. Production uses forward_device() for the whole stack.

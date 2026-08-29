@@ -47,6 +47,7 @@
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/vae_vit_block.h"
+#include "vidfab/vae/vit_decoder.h"
 
 #ifdef _WIN32
 namespace {
@@ -6024,6 +6025,72 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   for (uint64_t digest : boundary_fnv)
     std::printf(" %016llx", static_cast<unsigned long long>(digest));
   std::printf("\n");
+}
+
+VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
+  using namespace vidfab;
+  vae::ViTConfig default_config;
+  CHECK(default_config.transformer_mode == vae::ViTTransformerMode::kShipped);
+  if (!std::getenv("VIDFAB_VAE_VIT_DECODER_REAL")) return;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0)
+    return;
+  const std::filesystem::path checkpoint_path =
+      "weights/vae/minimax_h3_video_vae_fp16.safetensors";
+  if (!std::filesystem::exists(checkpoint_path)) return;
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+#ifdef _WIN32
+  const std::array<uint8_t, 32> expected_checkpoint_sha{
+      0x7c, 0x1f, 0x13, 0x14, 0x92, 0xe7, 0xed, 0xda,
+      0xca, 0xac, 0x90, 0x69, 0xa6, 0x1b, 0x81, 0xbd,
+      0xd3, 0x9d, 0xe5, 0xcc, 0x96, 0x56, 0x1e, 0x67,
+      0x7c, 0x5e, 0xab, 0x1c, 0xdc, 0xe5, 0xe5, 0x22};
+  CHECK(sha256_mapping(checkpoint.mapping_base(), checkpoint.file_size()) ==
+        expected_checkpoint_sha);
+#endif
+  vae::ViTConfig config;
+  config.transformer_mode = vae::ViTTransformerMode::kExact;
+  vae::ViTDecoder decoder;
+  const auto load_begin = std::chrono::steady_clock::now();
+  decoder.load(checkpoint, config);
+  const double load_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - load_begin).count();
+  CHECK(decoder.config().transformer_mode == vae::ViTTransformerMode::kExact);
+  std::vector<float> latent(size_t(config.in_channels) * 7 * 16 * 16);
+  for (size_t i = 0; i < latent.size(); ++i)
+    latent[i] = float(int((i * 37) % 509) - 254) / 512.0f;
+  std::vector<float> first, repeat;
+  const auto forward_begin = std::chrono::steady_clock::now();
+  decoder.forward_window(latent.data(), 7, 16, 16, first);
+  const double forward_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - forward_begin).count();
+  decoder.forward_window(latent.data(), 7, 16, 16, repeat);
+  CHECK(first == repeat);
+  const size_t loaded_weight_bytes = decoder.weight_bytes();
+  std::vector<float> ragged_latent(size_t(config.in_channels) * 7 * 8 * 16);
+  for (size_t i = 0; i < ragged_latent.size(); ++i)
+    ragged_latent[i] = float(int((i * 41) % 509) - 254) / 512.0f;
+  std::vector<float> ragged, first_after_ragged;
+  decoder.forward_window(ragged_latent.data(), 7, 8, 16, ragged);
+  decoder.forward_window(latent.data(), 7, 16, 16, first_after_ragged);
+  CHECK(first == first_after_ragged);
+  CHECK(decoder.weight_bytes() == loaded_weight_bytes);
+  uint64_t digest = 1469598103934665603ull;
+  for (float value : first) {
+    uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits));
+    for (int byte = 0; byte < 4; ++byte) {
+      digest ^= (bits >> (8 * byte)) & 0xffu;
+      digest *= 1099511628211ull;
+    }
+  }
+  CHECK(first.size() == 5505024u);
+  CHECK(ragged.size() == 2752512u);
+  CHECK(digest == 0x2fe12b519f537f14ull);
+  std::printf(
+      "  exact ViTDecoder: load %.1f ms, forward %.1f ms, weights %.1f MiB, output %zu words, ragged output %zu words, FNV64 %016llx\n",
+      load_ms, forward_ms, double(decoder.weight_bytes()) / 1048576.0,
+      first.size(), ragged.size(), static_cast<unsigned long long>(digest));
 }
 
 int main() { return ::vidfab::test::run_all(); }

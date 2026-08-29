@@ -490,10 +490,6 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   if (config.heads * config.head_dim != dim) {
     throw std::runtime_error("vae: heads * head_dim must equal dim");
   }
-  if (config.transformer_mode == ViTTransformerMode::kExact &&
-      config.exact_num_patches <= 0) {
-    throw std::runtime_error("vae: exact_num_patches must be positive in exact mode");
-  }
 
   // Page-locks the checkpoint mapping for the whole of the load below, and is
   // declared here rather than inside the uploader because the uploader is not
@@ -528,9 +524,10 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
 
   if (config.transformer_mode == ViTTransformerMode::kExact) {
     vae::ViTBlockConfig exact_config;
-    exact_config.sequence = static_cast<uint32_t>(config.exact_num_patches +
-                                                   config.num_suffix);
-    exact_config.num_patches = static_cast<uint32_t>(config.exact_num_patches);
+    // Weights are shape-independent. Start with the suffix-only shape and let
+    // forward_windows select/cache real ragged tile shapes without reloading.
+    exact_config.sequence = static_cast<uint32_t>(config.num_suffix);
+    exact_config.num_patches = 0;
     exact_config.dim = static_cast<uint32_t>(config.dim);
     exact_config.heads = static_cast<uint32_t>(config.heads);
     exact_config.head_dim = static_cast<uint32_t>(config.head_dim);
@@ -621,12 +618,9 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   const int seq = num_patches + cfg.num_suffix;
   const int dim = cfg.dim;
   cudaStream_t s = d.stream.get();
-  if (cfg.transformer_mode == ViTTransformerMode::kExact &&
-      num_patches != cfg.exact_num_patches) {
-    throw std::runtime_error(
-        "vae: exact transformer window has " + std::to_string(num_patches) +
-        " patch tokens, expected " + std::to_string(cfg.exact_num_patches));
-  }
+  if (cfg.transformer_mode == ViTTransformerMode::kExact)
+    d.exact_blocks->prepare_shape(static_cast<uint32_t>(seq),
+                                  static_cast<uint32_t>(num_patches));
 
   cuda::PhaseSpan s_prep("forward: prepare");
   d.ensure_scratch(seq, num_patches, batch);

@@ -3,6 +3,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -237,14 +238,52 @@ struct ExactViTBlockGraph::Impl {
   uint32_t layer_count = 0;
   Stream stream;
   std::vector<BlockWeightsDevice> blocks;
-  mutable BlockScratchDevice scratch;
+  struct ScratchSlot {
+    ViTBlockConfig config;
+    std::unique_ptr<BlockScratchDevice> scratch;
+    uint64_t stamp = 0;
+  };
+  std::vector<ScratchSlot> scratch_slots;
+  BlockScratchDevice* active_scratch = nullptr;
+  uint64_t scratch_clock = 0;
   struct HostState {
     DeviceBuffer<float> tokens, cosine, sine;
   };
   std::unique_ptr<HostState> host;
 
   Impl(const ViTBlockConfig& c, uint32_t layers)
-      : config(c), layer_count(layers), blocks(layers), scratch(c) {}
+      : config(c), layer_count(layers), blocks(layers) {
+    select_shape(c);
+  }
+
+  void select_shape(const ViTBlockConfig& selected) {
+    for (ScratchSlot& slot : scratch_slots) {
+      if (slot.config.sequence == selected.sequence &&
+          slot.config.num_patches == selected.num_patches) {
+        slot.stamp = ++scratch_clock;
+        active_scratch = slot.scratch.get();
+        config = selected;
+        host.reset();
+        return;
+      }
+    }
+    if (scratch_slots.size() == 2) {
+      auto oldest = std::min_element(
+          scratch_slots.begin(), scratch_slots.end(),
+          [](const ScratchSlot& a, const ScratchSlot& b) {
+            return a.stamp < b.stamp;
+          });
+      scratch_slots.erase(oldest);
+    }
+    ScratchSlot slot;
+    slot.config = selected;
+    slot.scratch = std::make_unique<BlockScratchDevice>(selected);
+    slot.stamp = ++scratch_clock;
+    scratch_slots.push_back(std::move(slot));
+    active_scratch = scratch_slots.back().scratch.get();
+    config = selected;
+    host.reset();
+  }
 };
 
 ExactViTBlockGraph::ExactViTBlockGraph() = default;
@@ -282,6 +321,16 @@ void ExactViTBlockGraph::load_layer(
   impl_->stream.synchronize();
 }
 
+void ExactViTBlockGraph::prepare_shape(uint32_t sequence,
+                                       uint32_t num_patches) {
+  if (!impl_) throw std::logic_error("exact CUDA VAE ViT graph: empty graph");
+  ViTBlockConfig selected = impl_->config;
+  selected.sequence = sequence;
+  selected.num_patches = num_patches;
+  validate_config(selected);
+  impl_->select_shape(selected);
+}
+
 void ExactViTBlockGraph::forward_device(float* tokens, const float* cosine,
                                         const float* sine,
                                         cudaStream_t stream) const {
@@ -291,7 +340,8 @@ void ExactViTBlockGraph::forward_device(float* tokens, const float* cosine,
   for (const BlockWeightsDevice& block : impl_->blocks) {
     if (!block.loaded)
       throw std::logic_error("exact CUDA VAE ViT graph: weights not loaded");
-    run_exact_block(impl_->config, block, impl_->scratch, tokens, cosine, sine,
+    run_exact_block(impl_->config, block, *impl_->active_scratch,
+                    tokens, cosine, sine,
                     stream);
   }
 }
@@ -307,7 +357,8 @@ void ExactViTBlockGraph::forward_layer_device(
   const BlockWeightsDevice& block = impl_->blocks[layer];
   if (!block.loaded)
     throw std::logic_error("exact CUDA VAE ViT graph: weights not loaded");
-  run_exact_block(impl_->config, block, impl_->scratch, tokens, cosine, sine,
+  run_exact_block(impl_->config, block, *impl_->active_scratch,
+                  tokens, cosine, sine,
                   stream);
 }
 
@@ -351,7 +402,9 @@ uint64_t ExactViTBlockGraph::persistent_bytes() const noexcept {
 
 uint64_t ExactViTBlockGraph::peak_device_bytes() const noexcept {
   if (!impl_) return 0;
-  uint64_t total = persistent_bytes() + impl_->scratch.bytes();
+  uint64_t total = persistent_bytes();
+  for (const Impl::ScratchSlot& slot : impl_->scratch_slots)
+    total += slot.scratch->bytes();
   if (impl_->host) {
     total += impl_->host->tokens.nbytes() + impl_->host->cosine.nbytes() +
              impl_->host->sine.nbytes();

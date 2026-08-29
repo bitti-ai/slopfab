@@ -41,10 +41,6 @@ struct ViTConfig {
   float rope_theta = 100.0f;
   float eps = 1e-5f;
   ViTTransformerMode transformer_mode = ViTTransformerMode::kShipped;
-  // Exact block scratch is shape-specific and remains resident across windows.
-  // The shipped tiled window is 7*16*16 = 1792 patch tokens. Exact mode
-  // rejects other shapes instead of silently selecting the shipped kernels.
-  int exact_num_patches = 1792;
 
   // Flat width of proj_out: out_channels * patch_t * patch * patch.
   int patch_dim() const { return out_channels * patch_t * patch * patch; }

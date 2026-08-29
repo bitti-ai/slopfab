@@ -217,9 +217,11 @@ blocked D64 attention, BF16 conversion, layer-scale residual and biased SwiGLU
 primitives. Its production `record` entry point updates an external fp32 token
 tensor in place inside the caller's `TensorBatch`. `ExactViTBlockScratch` owns
 the activation arena and prepared slots separately from immutable block
-weights, so a future 36-block graph can share one scratch object and record all
-blocks without a host boundary, per-block allocation, or per-block submission.
-The host `forward` method is only a parity convenience.
+weights. `vulkan::ExactViTBlockGraph` owns all 36 immutable stages and shares
+one scratch object while recording the complete 720-operator stack into one
+caller-owned batch without a host boundary, per-block allocation, or per-block
+submission. It preflights full capacity transactionally. The host `forward`
+method and per-layer record entry point are parity conveniences only.
 
 The common loader pins the shipped names
 `decoder.transformer_blocks.{i}.{norm1.weight,norm2.weight,scale1,scale2,
@@ -238,8 +240,8 @@ canonicalization, real values through cooperative matrices differed at the
 final block boundary. The scalar mode is explicit in `DenseGemmPlanDesc` and
 does not change existing cooperative plans. One exact block records 20 bounded
 operators. `TensorContextOptions::max_batch_operators` makes graph capacity an
-explicit bounded choice (default 32, maximum 4096); a 36-block graph will use
-at least 720 and conventionally reserve 1024. Stage validation checks all
+explicit bounded choice (default 32, maximum 4096); a 36-block graph uses 720
+and conventionally reserves 1024. Stage validation checks all
 tensor shapes/identity, scratch compatibility and remaining capacity before it
 records the first operation.
 
@@ -259,8 +261,30 @@ ms including its host boundary; Vulkan record-to-completion measured 64.741 ms
 with upload/download excluded. Vulkan direct stage accounting was 128.1 MiB of
 persistent weights and 507.8 MiB peak including one reusable scratch arena,
 tokens and rotary tables; operator scratch is bounded by the prepared slots
-and there is no quadratic attention buffer. This is one block, not the wired
-36-block decoder.
+and there is no quadratic attention buffer.
+
+The 36-layer replay streams one typed host layer at a time into both backends
+and retains no host weight duplicate. Across all four matrices in all layers it
+asserts 8,495,330 raw fp16 subnormals and zero fp16/fp32 subnormals after load.
+Every R1797/D2048/I8192 token boundary is compared bitwise and has a pinned
+FNV64; the final digest is `50d92f167ac90922`. A reset production run compares
+the single Vulkan 720-op batch against CUDA again. Measured times were 6,016.5
+ms CUDA and 2,350.2 ms Vulkan. Vulkan retained 4,612.8 MiB of weights, reported
+a 4,977.8 MiB graph peak, and measured 5,120.5/5,123.1 MiB allocator
+used/reserved with 720 descriptor sets. A repeat run kept all three high-water
+values fixed. On the qualified 32-GiB RTX 5090, retaining weights avoids 4.6
+GiB of PCIe traffic per window and leaves ample residency for the remaining
+VAE seams; no host duplicate is retained.
+
+The existing CUDA `ViTDecoder` exposes explicit
+`ViTTransformerMode::kExact` selection while `kShipped` remains the default.
+Exact mode loads only the shared exact block graph, runs it directly on the
+decoder stream between existing embedding and final projection seams, and
+supports ragged tiles without reloading weights. Two recent sequence shapes
+have bounded reusable scratch arenas; older arenas are evicted independently
+of immutable weights. The real integration replay ran 7x16x16, 7x8x16, then
+7x16x16 again with stable weights and identical repeated output; its full-size
+output digest is `2fe12b519f537f14`.
 
 ## Shared transformer normalization shaders
 

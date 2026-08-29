@@ -196,14 +196,21 @@ convolutions, primitive call-site wiring, and all four model-stage
 orchestrators remain on the missing list above. Therefore
 `--inference-backend vulkan` continues to fail before weights or output files.
 
-One complete exact video-VAE ViT decoder block is now also available through a
-device-resident Vulkan stage. It uses typed real-checkpoint weight loading,
-records 20 operations into a caller-owned batch, updates tokens in place and
-shares one external activation arena across future blocks. A production-shaped
-block-0 replay at R1797/D2048/I8192 matched CUDA in all 3,680,256 fp32 output
-words after the shared exact-mode fp16-subnormal/scalar-GEMM rebaseline. The
-remaining 35 blocks, embedding/final projection and decode scheduler are not
-wired; this increment therefore does not change the Vulkan inference gate.
+The full 36-block exact video-VAE transformer stack is now available through a
+device-resident Vulkan graph. It streams all real checkpoint blocks through a
+shared typed loader, retains fp16 matrices only on device, and records 720
+operations into one caller-owned batch with one shared activation arena. CUDA
+and Vulkan matched every block boundary and the final 3,680,256-word token
+tensor exactly; the pinned final FNV64 is `50d92f167ac90922`. Vulkan allocator
+used/reserved high-water was 5,120.5/5,123.1 MiB and remained stable on repeat.
+
+The existing CUDA `ViTDecoder` can explicitly select the shared exact graph
+implementation for its transformer body, including two bounded reusable
+scratch shapes for ragged tiled windows; the shipped path remains the default.
+Vulkan x-embedding/register-token assembly, final norm/projection,
+depth-to-space, post-quant handling, scheduler integration and backend/CLI
+selection are still absent. This increment therefore does not change the
+Vulkan inference gate and does not claim full Vulkan video generation.
 
 ## Current vertical-slice comparison
 
