@@ -108,6 +108,10 @@ struct ExactQwenTextEncoder::Impl {
     // slots may still retain shared tensor owners until collection. Retire
     // them here so unload releases the complete model-owned working set.
     try { context->collect(); } catch (...) {}
+    // Staging buffers are context-owned and may be created lazily by the first
+    // encode. A subsequent load must measure model high-water above that warm
+    // context baseline rather than charging persistent staging to the model.
+    allocator_baseline = context->pooled_used_bytes();
     checkpoint = nullptr;
     embedding = nullptr;
     embedding_scale = nullptr;
