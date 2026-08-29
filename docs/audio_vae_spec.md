@@ -783,9 +783,44 @@ transpose plus residual. Production live tensors add 25.4 MiB; total Vulkan
 pool use is 90.9 MiB of 91.1 MiB and a repeated replay holds descriptor
 allocations at two with no pool growth.
 
-This section establishes the primitive substrate only. It deliberately does
-not claim that the full audio decoder graph is wired to Vulkan; graph
-orchestration and whole-waveform parity remain the next feature.
+### 13.5 Complete Vulkan decoder and generation routing
+
+`vulkan::AudioDecoder` now owns the entire decode path described in this
+document. It loads all 779 decode tensors, keeps them resident, and records the
+two channels, seven upsample stages, 21 residual blocks, 126 activations, final
+convolution, clamp, and channel interleave as one bounded 497-operator Vulkan
+transaction. Six flat activation arenas and one double-width anti-alias arena
+are reused across every stage; there is no allocation, upload, readback,
+submission, or descriptor creation between individual graph operators.
+
+The real-checkpoint graph test uses the checkpoint identity pinned above. At
+`A=3`, final float samples are bit exact against the CUDA decoder and the PCM16
+WAV files are byte exact. At the production `A=405` shape on an RTX 5090, the
+complete CUDA/Vulkan decodes measured 131.4/655.6 ms and produced the same
+FNV64 `0B9084D3F1C6355A`. Vulkan holds 247.6 MiB of weights, accounts a 405.9
+MiB direct peak, and uses/reserves 517.8/524.7 MiB from its buffer pool. The 476
+descriptor allocations and reserved pool size remain unchanged across a
+second `A=405` decode and an `A=3` decode after it. `unload()` releases all
+decoder-owned weights and arenas (direct-accounted bytes return to zero); the
+context retains only bounded runtime metadata plus its allocator pages for a
+later load.
+
+Neural backend selection is explicit and separate from the output colour
+converter. `RunOptions::inference_backend` and the C API default to CUDA.
+Vulkan is accepted only for synthetic or caller-supplied latent rows while
+conditioning and denoising remain fail-closed, with no CUDA fallback. Selecting
+exact attention also selects `ViTTransformerMode::kExact` for the CUDA video
+VAE, so parity runs compare the same deterministic graph. An opt-in real
+`run_generate` test writes one backend-neutral init-latent safetensors archive
+(FNV64 `5529904CB8C9DC9E`) and runs the minimum 32x32, 22-frame vertical slice
+through CUDA exact and Vulkan exact. All 67,584 final PixelBuffer values and
+59,200 interleaved PCM values match bit for bit; the derived Y4M and PCM16 WAV
+files are byte identical.
+
+The Vulkan library and decoder contract test also build and run with CUDA
+disabled. The test constructs the complete audio decoder, verifies the
+497-operator contract and unloaded lifecycle, and links no CUDA target. This
+guards backend purity independently of the CUDA/Vulkan parity executable.
 
 ---
 

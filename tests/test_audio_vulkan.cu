@@ -864,6 +864,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
   vae::AudioDecoder cuda_decoder;
   cuda_decoder.load(checkpoint);
   vulkan::AudioDecoder vk_decoder = vulkan::AudioDecoder::create(device);
+  const uint64_t empty_decoder_used = vk_decoder.allocator_used_bytes();
   const auto load_begin = std::chrono::steady_clock::now();
   vk_decoder.load(checkpoint);
   const double load_ms = std::chrono::duration<double, std::milli>(
@@ -927,6 +928,12 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
               "repeated A405 audio decoder");
   CHECK(vk_decoder.allocator_reserved_bytes() == stable_reserved);
   CHECK(vk_decoder.descriptor_set_allocations() == stable_descriptors);
+  const vae::DecodedAudio vk_small_after_production = vk_decoder.decode(
+      latent.data(), latent_length);
+  check_exact(cuda_audio.samples, vk_small_after_production.samples,
+              "A3 audio decoder after A405");
+  CHECK(vk_decoder.allocator_reserved_bytes() == stable_reserved);
+  CHECK(vk_decoder.descriptor_set_allocations() == stable_descriptors);
   CHECK(vk_decoder.allocator_used_bytes() >= vk_decoder.peak_device_bytes());
   CHECK(vk_decoder.allocator_used_bytes() <=
         vk_decoder.peak_device_bytes() + (128ull << 20));
@@ -940,6 +947,21 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
       double(vk_decoder.allocator_used_bytes()) / 1048576.0,
       double(vk_decoder.allocator_reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk_decoder.descriptor_set_allocations()));
+  const uint64_t reserved_before_unload = vk_decoder.allocator_reserved_bytes();
+  const uint64_t used_before_unload = vk_decoder.allocator_used_bytes();
+  vk_decoder.unload();
+  CHECK(vk_decoder.weight_bytes() == 0u);
+  CHECK(vk_decoder.peak_device_bytes() == 0u);
+  CHECK(vk_decoder.allocator_used_bytes() < used_before_unload);
+  CHECK(vk_decoder.allocator_used_bytes() <= empty_decoder_used + (128ull << 20));
+  CHECK(vk_decoder.allocator_reserved_bytes() == reserved_before_unload);
+  bool unloaded_decode_rejected = false;
+  try {
+    (void)vk_decoder.decode(latent.data(), latent_length);
+  } catch (const std::logic_error&) {
+    unloaded_decode_rejected = true;
+  }
+  CHECK(unloaded_decode_rejected);
 }
 
 VIDFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {

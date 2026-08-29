@@ -18,6 +18,7 @@
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
+#include "vidfab/vulkan/audio_decoder.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/attention.h"
@@ -2406,6 +2407,35 @@ VIDFAB_TEST(vulkan_video_vae_decoder_contract) {
   boundary.num_layers = 204;
   VideoVaeDecoder maximum = VideoVaeDecoder::create(device, boundary);
   CHECK(maximum.operators_per_document() == 4095);
+}
+
+VIDFAB_TEST(vulkan_audio_vae_decoder_cuda_off_contract) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore ||
+      !physical.front().info().shader_int64) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  Device device = physical.front().create_device(options);
+
+  AudioDecoder decoder = AudioDecoder::create(device);
+  CHECK(decoder.recorded_operators() == 497u);
+  CHECK(decoder.weight_bytes() == 0u);
+  CHECK(decoder.peak_device_bytes() == 0u);
+  std::vector<float> latent(64, 0.0f);
+  bool unloaded_decode_rejected = false;
+  try {
+    (void)decoder.decode(latent.data(), 1);
+  } catch (const std::logic_error&) {
+    unloaded_decode_rejected = true;
+  }
+  CHECK(unloaded_decode_rejected);
+  decoder.unload();
+  CHECK(decoder.weight_bytes() == 0u);
 }
 
 VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {
