@@ -34,6 +34,14 @@ enum class SamplerKind {
   kAb2,
 };
 
+// Canonical fp32 arithmetic used by the production Euler path on both CUDA
+// (through FlowScheduler) and Vulkan. Subnormal operands and results become
+// signed zero. Any NaN, infinity, or non-finite arithmetic result becomes the
+// canonical quiet NaN 0x7fc00000. The association is deliberately fixed to
+// the H3 reference expression; endpoint controls do not elide dead branches.
+float exact_euler_value(float sample, float velocity,
+                        float sigma_from_timestep, float ratio) noexcept;
+
 class FlowScheduler {
  public:
   // `shift` is the exponential sigma shift: sigma' = s*sigma / (1 + (s-1)*sigma).

@@ -1,9 +1,70 @@
 #include "vidfab/sampler/scheduler.h"
 
+#include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
 namespace vidfab::sampler {
+namespace {
+
+uint32_t float_bits(float value) noexcept {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+float bits_float(uint32_t bits) noexcept {
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+float euler_canonical(float value) noexcept {
+  const uint32_t bits = float_bits(value);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return bits_float(bits & 0x80000000u);
+  if (magnitude >= 0x7f800000u) return bits_float(0x7fc00000u);
+  return value;
+}
+
+float euler_multiply(float left, float right) noexcept {
+  left = euler_canonical(left);
+  right = euler_canonical(right);
+  if (float_bits(left) == 0x7fc00000u ||
+      float_bits(right) == 0x7fc00000u)
+    return bits_float(0x7fc00000u);
+  // The volatile boundary pins a separately-rounded multiply and prevents an
+  // optimizer from fusing it with the following reference addition.
+  volatile float product = left * right;
+  return euler_canonical(product);
+}
+
+float euler_add(float left, float right) noexcept {
+  left = euler_canonical(left);
+  right = euler_canonical(right);
+  if (float_bits(left) == 0x7fc00000u ||
+      float_bits(right) == 0x7fc00000u)
+    return bits_float(0x7fc00000u);
+  volatile float sum = left + right;
+  return euler_canonical(sum);
+}
+
+}  // namespace
+
+float exact_euler_value(float sample, float velocity,
+                        float sigma_from_timestep, float ratio) noexcept {
+  sample = euler_canonical(sample);
+  velocity = euler_canonical(velocity);
+  sigma_from_timestep = euler_canonical(sigma_from_timestep);
+  ratio = euler_canonical(ratio);
+  const float scaled_velocity = euler_multiply(sigma_from_timestep, velocity);
+  const float denoised = euler_add(sample, scaled_velocity);
+  const float retained = euler_multiply(ratio, sample);
+  const float one_minus_ratio = euler_add(1.0f, -ratio);
+  const float incoming = euler_multiply(one_minus_ratio, denoised);
+  return euler_add(retained, incoming);
+}
 
 FlowScheduler::FlowScheduler(float shift) : shift_(shift) {
   if (shift <= 0.0f) {
@@ -109,9 +170,8 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
     // first step lands here too, because there is no v_{n-1} to extrapolate
     // from and a second-order start would have to invent one.
     for (size_t i = 0; i < count; ++i) {
-      // Data-ward velocity: x0 = x_t + sigma*v, a plus.
-      const float denoised = sample[i] + sigma_from_timestep * velocity[i];
-      out[i] = ratio * sample[i] + (1.0f - ratio) * denoised;
+      out[i] = exact_euler_value(sample[i], velocity[i],
+                                 sigma_from_timestep, ratio);
     }
   } else {
     // AB2 in this scheduler's ratio parameterisation. The working:

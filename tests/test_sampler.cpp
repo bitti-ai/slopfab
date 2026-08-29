@@ -20,7 +20,10 @@
 //      demands bit equality over whole trajectories at both live shifts.
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
+#include <limits>
 #include <vector>
 
 #include "harness.h"
@@ -31,6 +34,18 @@ using vidfab::sampler::FlowScheduler;
 using vidfab::sampler::SamplerKind;
 
 namespace {
+
+float from_bits(uint32_t bits) {
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+uint32_t to_bits(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
 
 // The update as it stood before the sampler existed, transcribed from
 // scheduler.cpp at 2480c82 rather than refactored out of it — a copy is the
@@ -91,6 +106,42 @@ double linear_ode_wrong(float shift, int grid_points, float k, float c_now, floa
 }
 
 }  // namespace
+
+VIDFAB_TEST(exact_euler_has_total_canonical_fp32_semantics) {
+  using vidfab::sampler::exact_euler_value;
+  const float qnan_a = from_bits(0x7fc12345u);
+  const float qnan_b = from_bits(0xffdabcdeu);
+  const float pos_inf = from_bits(0x7f800000u);
+  const float neg_inf = from_bits(0xff800000u);
+  const float pos_sub = from_bits(0x00000001u);
+  const float neg_sub = from_bits(0x80000001u);
+  const float max_finite = std::numeric_limits<float>::max();
+
+  CHECK(to_bits(exact_euler_value(-0.0f, -0.0f, 1.0f, 1.0f)) ==
+        0x80000000u);
+  CHECK(to_bits(exact_euler_value(pos_sub, neg_sub, 0.0f, 0.0f)) == 0u);
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, pos_sub, 0.0f)) ==
+        to_bits(1.0f));
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, neg_sub, 1.0f)) ==
+        to_bits(1.0f));
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 1.0f, 0.0f)) ==
+        to_bits(2.0f));
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 1.0f, 1.0f)) ==
+        to_bits(1.0f));
+  for (float exceptional : {qnan_a, qnan_b, pos_inf, neg_inf}) {
+    CHECK(to_bits(exact_euler_value(exceptional, 1.0f, 0.5f, 0.5f)) ==
+          0x7fc00000u);
+    CHECK(to_bits(exact_euler_value(1.0f, exceptional, 0.5f, 0.5f)) ==
+          0x7fc00000u);
+  }
+  CHECK(to_bits(exact_euler_value(max_finite, max_finite, 1.0f, 0.5f)) ==
+        0x7fc00000u);
+  CHECK(to_bits(exact_euler_value(max_finite, -max_finite, 1.0f, 0.0f)) == 0u);
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, qnan_a, 0.5f)) ==
+        0x7fc00000u);
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 0.5f, pos_inf)) ==
+        0x7fc00000u);
+}
 
 // The campaign lead's required test, in its exact form: AB2 with a first-order
 // first step reproduces Euler on a linear ODE with a constant velocity field.

@@ -1,6 +1,7 @@
 #include "harness.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <chrono>
 #include <cstdint>
@@ -56,6 +57,12 @@ uint32_t float_bits(float value) {
   uint32_t bits = 0;
   std::memcpy(&bits, &value, sizeof(bits));
   return bits;
+}
+
+float float_from_bits(uint32_t bits) {
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
 }
 
 uint64_t fnv64_floats(const std::vector<float>& values) {
@@ -130,6 +137,43 @@ VIDFAB_TEST(vulkan_exact_dit_euler_matches_host_scheduler) {
   CHECK(alias_rejected && transactional.remaining_operator_capacity() == 4u);
   transactional.dit_euler_step_f32(sample, velocity, 0.5f, 0.0f);
   transactional.submit().wait();
+
+  // Total-domain parity, including a one-element dispatch and a 64-thread
+  // tail. Exceptional source values are canonicalized on device, never read
+  // back for graph-owned validation.
+  const std::vector<float> exceptional_samples{
+      0.0f, -0.0f, float_from_bits(0x00000001u),
+      float_from_bits(0x80000001u), float_from_bits(0x7fc12345u),
+      float_from_bits(0xffdabcdeu), float_from_bits(0x7f800000u),
+      float_from_bits(0xff800000u), std::numeric_limits<float>::max(),
+      -std::numeric_limits<float>::max(), 1.0f, -1.0f};
+  auto run_exceptional = [&](uint64_t elements, float sigma, float ratio) {
+    const TensorLayout test_layout = TensorLayout::contiguous(&elements, 1);
+    DeviceTensor test_sample = context.allocate(test_layout);
+    DeviceTensor test_velocity = context.allocate(test_layout);
+    std::vector<float> x(elements), v(elements), expected(elements), actual(elements);
+    for (uint64_t i = 0; i < elements; ++i) {
+      x[i] = exceptional_samples[i % exceptional_samples.size()];
+      v[i] = exceptional_samples[(i * 5u + 1u) % exceptional_samples.size()];
+      expected[i] = sampler::exact_euler_value(x[i], v[i], sigma, ratio);
+    }
+    context.upload(test_sample, x.data(), elements);
+    context.upload(test_velocity, v.data(), elements);
+    TensorBatch batch = context.begin_batch();
+    batch.dit_euler_step_f32(test_sample, test_velocity, sigma, ratio);
+    batch.submit().wait();
+    context.download(test_sample, actual.data(), elements);
+    CHECK(std::memcmp(expected.data(), actual.data(), elements * sizeof(float)) == 0);
+  };
+  run_exceptional(1u, 1.0f, 1.0f);
+  for (const auto controls : {std::array<float, 2>{0.0f, 0.0f},
+                              std::array<float, 2>{1.0f, 0.0f},
+                              std::array<float, 2>{0.0f, 1.0f},
+                              std::array<float, 2>{1.0f, 1.0f},
+                              std::array<float, 2>{float_from_bits(1u),
+                                                   float_from_bits(1u)},
+                              std::array<float, 2>{0.5f, 0.5f}})
+    run_exceptional(65u, controls[0], controls[1]);
 }
 
 VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {

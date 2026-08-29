@@ -124,6 +124,32 @@ float exact_exp(float value) {
   return exact_divide(1.0f, exp_nonpositive(-value));
 }
 
+float euler_canonical(float value) {
+  const uint bits = asuint(value);
+  const uint magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return asfloat(bits & 0x80000000u);
+  if (magnitude >= 0x7f800000u) return asfloat(0x7fc00000u);
+  return value;
+}
+
+float euler_multiply(float left, float right) {
+  left = euler_canonical(left);
+  right = euler_canonical(right);
+  if (asuint(left) == 0x7fc00000u || asuint(right) == 0x7fc00000u)
+    return asfloat(0x7fc00000u);
+  precise float product = left * right;
+  return euler_canonical(product);
+}
+
+float euler_add(float left, float right) {
+  left = euler_canonical(left);
+  right = euler_canonical(right);
+  if (asuint(left) == 0x7fc00000u || asuint(right) == 0x7fc00000u)
+    return asfloat(0x7fc00000u);
+  precise float sum = left + right;
+  return euler_canonical(sum);
+}
+
 [numthreads(64, 1, 1)]
 void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
   const uint group = group_id.y * p.groups_x + group_id.x;
@@ -168,15 +194,16 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
   } else { // exact rectified-flow Euler, fp32 in place
     // Keep the three reference source expressions separate. In particular,
     // sigma_from_timestep is not reconstructed from the ratio's sigma grid.
-    const float sample = load_f32(primary, index);
-    const float velocity = load_f32(secondary, index);
-    const float sigma_from_timestep = asfloat(p.unused0);
-    const float ratio = asfloat(p.unused1);
-    precise float scaled_velocity = sigma_from_timestep * velocity;
-    precise float denoised = sample + scaled_velocity;
-    precise float retained = ratio * sample;
-    precise float incoming = (1.0f - ratio) * denoised;
-    precise float next = retained + incoming;
+    const float sample = euler_canonical(load_f32(primary, index));
+    const float velocity = euler_canonical(load_f32(secondary, index));
+    const float sigma_from_timestep = euler_canonical(asfloat(p.unused0));
+    const float ratio = euler_canonical(asfloat(p.unused1));
+    const float scaled_velocity = euler_multiply(sigma_from_timestep, velocity);
+    const float denoised = euler_add(sample, scaled_velocity);
+    const float retained = euler_multiply(ratio, sample);
+    const float one_minus_ratio = euler_add(1.0f, -ratio);
+    const float incoming = euler_multiply(one_minus_ratio, denoised);
+    const float next = euler_add(retained, incoming);
     output_data.Store(index * 4u, asuint(next));
   }
 }
