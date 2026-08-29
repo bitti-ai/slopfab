@@ -477,3 +477,81 @@ src/cuda/nvfp4_gemm.cu                  1266CF8EB2F18E1E30A54C1472BB89DAB2EDA873
 src/cuda/linear.cu                      B92E7D44D184ECC4C7DA466855FEEFF30063FB4591770A44D43B55CD3A23137D
 src/vulkan/tensor_weight.comp           55FADB68982ABCDB0079C8D9B0A84E77F64D268E63E7227F2A2BC770ED60307F
 ```
+
+## Exact unmasked blocked attention
+
+`BlockedAttentionPlan` is the first bounded attention slice: unmasked,
+token-major BF16 Q/K/V with production head widths 64, 72, or 128. A persistent
+`PreparedAttentionInputs` slot converts Q/K/V to three FP16 tensors in one
+device pass. Its nonreusable batch/generation view may feed several query-row
+ranges in the same command buffer, so K/V are not converted again when output
+rows are chunked. Submitted jobs retain all resources through the exact
+timeline token; no queue/device idle or per-dispatch Vulkan object allocation
+is used.
+
+CUDA and Vulkan share an explicit reference algorithm rather than claiming
+equivalence to cuBLAS: ascending-D score FMA, FP16 score round, fixed 128-lane
+max/sum trees, deterministic non-positive exp, FP16 probability round,
+ascending-key PV FMA with online correction, integer-RNE final division, and
+BF16 output round. The accepted scale values are the serialized fp32
+`1/sqrt(D)` bits `3e000000`, `3df15bef`, and `3db504f3`. The exact input domain
+requires every prepared FP16 Q/K/V value and every scaled score to be finite;
+NaN/Inf input arithmetic and NaN payload identity are outside it. PV
+accumulator subnormals after correction or FMA are a stated rebaseline: both
+backends flush them to signed zero immediately. A two-tile score-jump fixture
+constructs this path and asserts an exact `+0` result.
+
+Preparation is independently exhaustive over all 65,536 BF16 bit patterns on
+both backends. It uses RNE, preserves signed zero/Inf, and maps every NaN to
+FP16 `0x7fff`. Exact final tests cover S1/D64, S17/D72, S129/D128, output-row
+offsets, non-128 tails, one preparation feeding two row chunks, conversion
+edges, failure recovery, stale/discarded/superseded views, 32/33 operations,
+two outstanding submissions plus oldest-slot reuse, true in-flight wrapper
+drop, and stable allocator/descriptor high-water. Alternating plans with
+3/17/5/33 rows and then the reverse reuse the pool without growth.
+
+The real-domain audit used `qwen3vl_32b_int8_convrot.safetensors` (SHA-256
+`BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`)
+and `reference2.png` (1024x1024, SHA-256
+`B759B58BADD00E3D4C897EF7D1749CE97A52284886181CE622E136F8E385F565`),
+seed 1. The first post-RoPE Qwen vision block had S16384/H16/D72 and
+18,874,368 values in each Q/K/V stream. All had zero BF16 subnormals, zero
+nonfinite values and zero nonfinite FP16 conversions. Minimum nonzero values
+were Q=2^-22, K=2^-24 and V=2^-21; maxima were 7.8125, 7.59375 and 3.265625.
+The conservative `D*max(|Q|)*max(|K|)/sqrt(D)` score bound was 503.399.
+
+Release device-resident measurements on the pinned RTX 5090/610.88 tuple use
+one preparation and two query-row dispatches; uploads/downloads are excluded.
+S257 uses two warmups and five samples. S16384 is one full real-shape sample:
+
+| D72 shape | CUDA exact prepare | CUDA exact attention | Vulkan total | three-FP16 slot |
+|---|---:|---:|---:|---:|
+| S257, H16 | 0.008 ms | 0.328 ms | 0.988 ms | 1.69 MiB |
+| S16384, H16 | 0.220 ms | 853.297 ms | 1166.565 ms | 108.00 MiB |
+
+These compare the shared exact path, not the old cuBLAS blocked implementation.
+The maximum processor-admitted single-image S65536 shape would require a
+432 MiB slot; it is per active invocation, not multiplied by the 27 vision
+blocks. This primitive is not yet wired into Qwen/VAE/DiT. Causal GQA, H3
+banded/fused attention, Sage2, and SOL remain separate features.
+
+The modules use Khronos glslang 16.5.0. Blocked attention receives the
+repository preserve-only transform; the integer-defined converter does not.
+CUDA provenance is CUDA 13.0.48, MSVC 14.44.35207 and SM120a:
+
+```text
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_attention_blocked.comp -o attention.raw.spv
+python tools/add_spirv_float_controls.py --preserve-only attention.raw.spv src/vulkan/tensor_attention_blocked.comp.spv
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_attention_prepare.comp -o src/vulkan/tensor_attention_prepare.comp.spv
+nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,code=[compute_120a,sm_120a] -Iinclude src/cuda/deterministic_attention.cu -o deterministic_attention.fatbin
+```
+
+```text
+tensor_attention_blocked.comp             F8724078FE6502AE2D46380341C7CF580508B5ABA9B7A5C08450C9D32BC5CF2B
+tensor_attention_blocked.comp.spv         3A61DD5E86E8D398CE8DE0E352C3A753EF2CAAFB0B1ED2DF821F28E4DF46343F
+tensor_attention_prepare.comp             786295C4E33EEDC7F67317B9ECF6B1BDEA0108B319AE5B5E8D57B6B3CEA4677D
+tensor_attention_prepare.comp.spv         56DC48503F296776CD1C105D0DC44D34E5F8768B35A8FEE6EC73EFAA9D3FF8F4
+src/cuda/deterministic_attention.cu       6FCB4B54B436A3B03E968E347D896178C516E955AFA0A1D6D067902B4D2597A9
+include/vidfab/cuda/deterministic_attention.cuh 32C7A581FE13113F46E5583C25124E0BAFCC7B511939BBDD84FB11B08BC398C9
+deterministic_attention.fatbin            2EDE05415F9E080C123223F66056B734B7DD609D327787E973F80B11A35FBCB1
+```

@@ -45,8 +45,8 @@ Missing work by pipeline stage:
 | Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | native quantized GEMM, NN/batched attention GEMM, remaining activations, and residual/broadcast operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, used RoPE variants, dense NT GEMM, persistent seven-format weight preparation, AWQ pre-scale and ConvRot now have Vulkan primitives |
 | Video VAE decode | `vae_kernels.cu` (503), `vit_decoder.cu` (684), `decode_pipeline.cpp` (420) | Conv3D/Conv2D, causal padding, upsample, residual blocks, spatial/temporal attention, tile scheduling and merge |
 | Audio VAE decode | `audio_vae_kernels.cu` (452), `audio_decoder.cpp` (504) | weight-normalized Conv1D/transposed Conv1D, residual units, Snake activation, channel/layout transforms |
-| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | multimodal projections, causal/banded attention, fused residual paths, timestep conditioning, scheduler loop integration and caches; AdaLN, Q/K RMSNorm, canonical H3 tables and H3 RoPE primitives exist but are not wired |
-| Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | token embedding, decoder attention/MLP, vision patch/merge graph, deep-stack scatter, reference-image VAE encode; NeoX/mRoPE application exists but is not wired |
+| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | multimodal projections, causal/banded/fused attention, residual paths, timestep conditioning, scheduler loop integration and caches; AdaLN, Q/K RMSNorm, H3 RoPE and exact unmasked blocked attention primitives exist but are not wired |
+| Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | token embedding, causal decoder attention/MLP, vision patch/merge graph, deep-stack scatter, reference-image VAE encode; NeoX/mRoPE and exact unmasked D72 attention primitives exist but are not wired |
 
 Checkpoint handling also remains CUDA-entangled. A Vulkan backend must preserve
 the existing safetensors tensor names and metadata while supporting the shipped
@@ -144,6 +144,15 @@ so native NVFP4 requests fail closed. AWQ pre-scale/ConvRot weights also remain
 outside this raw-input seam until a typed transformed-activation view binds the
 transformation provenance to the weight.
 
+Exact unmasked blocked attention now exists as a bounded device primitive for
+BF16 D64/D72/D128. It prepares Q/K/V once into a persistent three-FP16 slot,
+supports multiple query-row consumers in one batch, and mirrors a pinned CUDA
+reference byte-for-byte. A real Qwen vision S16384/H16/D72 activation audit
+proved finite prepared values and scaled scores; its slot is 108 MiB. This is
+not orchestration: causal GQA, H3 banding/fusion, Sage2/SOL, and all attention
+call-site wiring remain missing and may not silently route to the unmasked
+primitive.
+
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
 projection narrowing, video-VAE channel/token layout, attention head packing,
@@ -154,7 +163,7 @@ than arbitrary device data. The Vulkan shader also bounds-checks each index to
 prevent an invalid device read or write.
 
 This is a tested operator substrate, not a wired Vulkan model stage. Native
-quantized matrix execution, NN/batched GEMM, remaining activations, attention,
+quantized matrix execution, NN/batched GEMM, remaining activations, causal/fused attention,
 convolutions, primitive call-site wiring, and all four model-stage
 orchestrators remain on the missing list above. Therefore
 `--inference-backend vulkan` continues to fail before weights or output files.
