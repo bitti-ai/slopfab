@@ -168,16 +168,16 @@ rebaseline against shipped cuBLAS at relative L2 1.38034e-4 (max absolute
 the latter has 288 MiB of direct tensors and no attention scratch. This is
 still a primitive: text-encoder orchestration remains CUDA-owned.
 
-Exact H3 full and frame-banded attention also exists as a bounded cooperative
-primitive for BF16 D64/D128. Its typed range contract traverses two canonical
-key ranges per global query tile, uses no quadratic score buffer, and is wired
-into CUDA transformer main blocks and the token refiner by the explicit
-`AttentionMode::kExact`. This completes the arithmetic/control seam, not the
-Vulkan transformer: the Vulkan H3 plan is tested independently, while the
-projection, normalization, residual, scheduling, and model-lifetime graph
-around it remains unwired. Consequently `--inference-backend vulkan
---attention exact` reports the missing orchestrator instead of claiming a
-generation route.
+Exact H3 full and frame-banded attention is part of a complete single-main-
+block Vulkan stage: typed projection loading, rank-8 AdaLN, normalization,
+RoPE, attention, residuals and SwiGLU remain device-resident in one caller
+batch. The production CUDA exact path captures the real block input and all
+durable metadata; its S538 block-0 replay matches Vulkan byte-for-byte at QKV,
+attention, attention-residual and final-residual boundaries. A CUDA-disabled
+test also loads the shipped NVFP4 block and pins the real S65 output. This is
+still one block, not denoise orchestration: the 50-block stack, refiner, final
+layer and scheduler remain unavailable, so non-synthetic Vulkan generation
+continues to fail before execution.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and

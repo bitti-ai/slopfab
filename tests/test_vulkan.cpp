@@ -2677,6 +2677,86 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
       static_cast<unsigned long long>(digest),
       double(first.persistent_bytes() + second.persistent_bytes()) / 1048576.0,
       double(scratch.reserved_bytes()) / 1048576.0);
+  first.unload();
+  second.unload();
+
+  // This executable links no CUDA code.  When the shipped checkpoint is
+  // present, additionally load its real NVFP4 block 0 and pin the canonical
+  // S65 result used by the CUDA-enabled replay suite.
+  const std::filesystem::path real_path = std::filesystem::path(
+      VIDFAB_TEST_SOURCE_DIR) /
+      "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
+  if (std::filesystem::exists(real_path)) {
+    H3BlockConfig real_config;
+    real_config.sequence = 65;
+    SafeTensors real_checkpoint;
+    real_checkpoint.open(real_path.string());
+    ExactH3BlockStage real_stage = ExactH3BlockStage::create(context, real_config);
+    real_stage.load(real_checkpoint, 0);
+    ExactH3BlockScratch real_scratch =
+        ExactH3BlockScratch::create(context, real_config);
+    real_stage.prepare(real_scratch);
+    const uint64_t real_token_shape[] = {real_config.sequence, real_config.hidden};
+    const uint64_t real_selector_shape[] = {real_config.sequence};
+    const uint64_t real_code_shape[] = {real_config.timesteps,
+                                        real_config.adaln_rank};
+    const uint64_t real_rope_shape[] = {real_config.sequence, 96};
+    DeviceTensor real_tokens = context.allocate(
+        TensorLayout::contiguous(real_token_shape, 2), ScalarType::kBFloat16);
+    DeviceTensor real_selectors = context.allocate(
+        TensorLayout::contiguous(real_selector_shape, 1), ScalarType::kInt32);
+    DeviceTensor real_code = context.allocate(
+        TensorLayout::contiguous(real_code_shape, 2));
+    DeviceTensor real_cosine = context.allocate(
+        TensorLayout::contiguous(real_rope_shape, 2));
+    DeviceTensor real_sine = context.allocate(
+        TensorLayout::contiguous(real_rope_shape, 2));
+    std::vector<uint16_t> real_input(
+        size_t(real_config.sequence) * real_config.hidden);
+    for (size_t i = 0; i < real_input.size(); ++i)
+      real_input[i] = f32_to_bf16(float(int(i % 61) - 30) / 64.0f);
+    std::vector<int32_t> real_selector_values(real_config.sequence);
+    for (uint32_t i = 0; i < real_config.sequence; ++i)
+      real_selector_values[i] = static_cast<int32_t>(i % real_config.modalities);
+    std::vector<float> real_code_values(
+        size_t(real_config.timesteps) * real_config.adaln_rank);
+    for (size_t i = 0; i < real_code_values.size(); ++i)
+      real_code_values[i] = float(int(i % 7) - 3) / 16.0f;
+    std::vector<float> real_cosine_values(size_t(real_config.sequence) * 96, 1.0f);
+    std::vector<float> real_sine_values(real_cosine_values.size(), 0.0f);
+    context.upload_bytes(real_selectors, real_selector_values.data(),
+                         real_selector_values.size() * 4);
+    context.upload(real_code, real_code_values.data(), real_code_values.size());
+    context.upload(real_cosine, real_cosine_values.data(), real_cosine_values.size());
+    context.upload(real_sine, real_sine_values.data(), real_sine_values.size());
+    auto run_real = [&] {
+      context.upload_bytes(real_tokens, real_input.data(), real_input.size() * 2);
+      TensorBatch batch = context.begin_batch();
+      real_stage.record(batch, real_tokens, real_selectors, real_code,
+                        real_cosine, real_sine, real_scratch);
+      batch.submit().wait();
+      std::vector<uint16_t> result(real_input.size());
+      context.download_bytes(real_tokens, result.data(), result.size() * 2);
+      return result;
+    };
+    const std::vector<uint16_t> real_output = run_real();
+    uint64_t real_digest = 1469598103934665603ull;
+    for (uint16_t bits : real_output) {
+      real_digest ^= bits & 0xffu; real_digest *= 1099511628211ull;
+      real_digest ^= bits >> 8; real_digest *= 1099511628211ull;
+    }
+    CHECK(real_digest == 0x191929c14480e873ull);
+    const uint64_t real_reserved = context.reserved_bytes();
+    const uint64_t real_descriptors = context.descriptor_set_allocations();
+    CHECK(run_real() == real_output);
+    CHECK(context.reserved_bytes() == real_reserved);
+    CHECK(context.descriptor_set_allocations() == real_descriptors);
+    const uint64_t real_used = context.pooled_used_bytes();
+    real_stage.unload();
+    CHECK(context.pooled_used_bytes() < real_used);
+    std::printf("  CUDA-off real H3 block0 S65 FNV64 %016llx\n",
+                static_cast<unsigned long long>(real_digest));
+  }
   std::error_code ignored;
   std::filesystem::remove(valid_path, ignored);
   std::filesystem::remove(corrupt_path, ignored);

@@ -860,37 +860,39 @@ no host boundary, submission, CUDA dependency, or fallback.
 NVFP4 execution keeps the six compressed projections persistent and reuses one
 bounded dense BF16 cache. A non-multiple-of-64 sequence records cooperative
 64-row GEMMs plus one scalar tail against the same prepared view. AWQ/ConvRot
-activation slots are allocated lazily only when a loaded projection needs
-them; the shipped NVFP4 block therefore does not reserve their former 1.01 GiB
+activation slots are allocated only by the explicit pre-batch `prepare` seam
+when a loaded projection needs them; recording never allocates. The shipped
+NVFP4 block therefore does not reserve their former 1.01 GiB
 production-geometry high-water. The scratch/cache and all pipelines are reused
-across submissions, and failure, unload, reload, wrapper lifetime, allocator
-and descriptor high-water are checked.
+across submissions. A two-stage/one-batch S65 test uses one shared scratch,
+exactly one AWQ pre-scale and one ConvRot transform, and records the exact
+50-operator bound. Repeat, late-corrupt transactional reload, unload/reload,
+allocator and descriptor high-water are checked.
 
 The real block-0 audit used
 `MiniMax_H3_FL2VA_pruned_nvfp4.safetensors` (SHA-256
 `6AB7F0C48141E7919B32F925CA3DEF22E06A6AEBEB9E0B6F5A0BE0FE8409976F`).
 At S65, deterministic finite BF16 residuals, selectors, rank-8 code, and
 identity RoPE tables exercise both the cooperative path and a one-row tail.
-The exact CUDA and Vulkan outputs match all 349,440 BF16 words; output FNV64 is
-`191929c14480e873`. A separate S9864 run, matching the shipped layer-0 capture
-sequence length, matches all 53,028,864 BF16 words with FNV64
-`51e414a3b2556e88`. On RTX 5090/610.88 Release it loaded in 91.4 ms and measured
-465.470 ms warm Vulkan. The CUDA diagnostic measured 411.226 ms but includes
-six host-to-device weight uploads and is evidence of exactness, not a fair
-throughput ratio. Vulkan logical persistent/scratch/peak memory was
-210.06/1845.25/2055.31 MiB; pool used/reserved was 2366.01/2373.85 MiB,
-including test upload/readback staging, with 29 stable descriptor allocations.
+Output FNV64 is `191929c14480e873`; the same real checkpoint load/forward pin
+runs in `vidfab_vulkan_tests`, whose executable is built and linked with CUDA
+disabled.
 
-Real activation-domain attention evidence is the shipped seed12345,
-384x384-reference, 22-frame layer-0/step-0 capture documented above (capture
-SHA-256 `56C4E55931B83DCECB0596DCB51EB3C7EF5555722910ECE78D06AE87CA055A01`,
-QKV FNV64 `fc4780b4477f6eed`). Its exact attention output FNV64
-`a2fbdde25a6d3787` is byte-identical on CUDA and Vulkan. Together with the
-real-weight complete-block replay, this distinguishes checkpoint-layout
-correctness from a synthetic-only arithmetic test. This increment is one main
-block; orchestration of all 50 blocks, the two-block refiner, final layer and
-denoise scheduler is still intentionally unavailable and must remain
-fail-closed.
+The authoritative full-block replay is captured by the production CUDA exact
+block path, rather than reconstructed by test-only kernel orchestration. It is
+real seed424242, 256x256, 22-frame, denoise step 0, main layer 0 execution at
+S538, with non-identity RoPE and the production band-range table. Capture
+`tests/data/h3_block0_step0_seed424242_256.vfh3` has SHA-256
+`E09E297B8DC73006F6757B0A1A5BF0A60553F00592EAF2A2F0484D2E11038275`.
+CUDA exact mode uses the same deterministic cooperative-64/scalar-tail
+projection arithmetic as Vulkan. CUDA and Vulkan are byte-identical at every
+pinned boundary: input `7c9f5a55cc5266eb`, post-RoPE QKV
+`0ce5a1f4d191bdd1`, attention `550f1253844cd657`, attention residual
+`e8a9ee4dfec51636`, and final residual `2fd91fe15c281f00` (FNV64). The replay
+also pins the checkpoint and capture SHA-256 values before loading either.
+This increment is one main block; orchestration of all 50 blocks, the
+two-block refiner, final layer and denoise scheduler is still intentionally
+unavailable and must remain fail-closed.
 
 The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
 `dxc_2026_07_29.zip` (SHA-256

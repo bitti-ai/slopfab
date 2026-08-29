@@ -1182,7 +1182,8 @@ if(VIDFAB_BUILD_TESTS)
     endif()
     target_compile_definitions(vidfab_vulkan_tests PRIVATE
       VIDFAB_TEST_AFFINE_SPV_PATH="affine.comp.spv"
-      VIDFAB_TEST_ATTENTION_PREPARE_SPV_PATH="tensor_attention_prepare.comp.spv")
+      VIDFAB_TEST_ATTENTION_PREPARE_SPV_PATH="tensor_attention_prepare.comp.spv"
+      VIDFAB_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     add_custom_command(TARGET vidfab_vulkan_tests POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${VIDFAB_AFFINE_SPV}" "$<TARGET_FILE_DIR:vidfab_vulkan_tests>/affine.comp.spv"
