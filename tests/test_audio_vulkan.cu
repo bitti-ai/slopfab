@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <vector>
 
@@ -21,8 +22,11 @@
 
 #include "vidfab/cuda/audio_vae_kernels.cuh"
 #include "vidfab/cuda/device.h"
+#include "vidfab/audio/wav.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/vae/audio_decoder.h"
 #include "vidfab/vae/audio_primitives.h"
+#include "vidfab/vulkan/audio_decoder.h"
 #include "vidfab/vulkan/tensor.h"
 
 namespace {
@@ -803,4 +807,75 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
       static_cast<unsigned long long>(production_digest), cuda_conv_ms,
       vk_conv_ms, cuda_stage_ms, vk_stage_ms,
       double(production_used_delta) / 1048576.0);
+}
+
+VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
+  using namespace vidfab;
+  if (!std::getenv("VIDFAB_AUDIO_DECODER_REAL")) return;
+  const std::filesystem::path checkpoint_path =
+      "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
+  if (!std::filesystem::exists(checkpoint_path)) return;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !vulkan::Instance::available()) return;
+  vulkan::Instance instance = vulkan::Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore ||
+      !physical.front().info().shader_int64) return;
+  vulkan::DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  vulkan::Device device = physical.front().create_device(options);
+
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+  vae::AudioDecoder cuda_decoder;
+  cuda_decoder.load(checkpoint);
+  vulkan::AudioDecoder vk_decoder = vulkan::AudioDecoder::create(device);
+  const auto load_begin = std::chrono::steady_clock::now();
+  vk_decoder.load(checkpoint);
+  const double load_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - load_begin).count();
+  CHECK(cuda_decoder.weight_bytes() == vk_decoder.weight_bytes());
+  CHECK(vk_decoder.weight_bytes() == 259672032u);
+  CHECK(vk_decoder.recorded_operators() == 497u);
+  CHECK(cuda_decoder.latents_mean() == vk_decoder.latents_mean());
+  CHECK(cuda_decoder.latents_std() == vk_decoder.latents_std());
+
+  constexpr int latent_length = 3;
+  std::vector<float> latent = values(size_t(2) * 32 * latent_length,
+                                     67, 607, 1.0f / 128.0f);
+  const vae::DecodedAudio cuda_audio = cuda_decoder.decode(
+      latent.data(), latent_length);
+  const auto forward_begin = std::chrono::steady_clock::now();
+  const vae::DecodedAudio vk_audio = vk_decoder.decode(
+      latent.data(), latent_length);
+  const double forward_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - forward_begin).count();
+  CHECK(cuda_audio.channels == vk_audio.channels);
+  CHECK(cuda_audio.sample_rate == vk_audio.sample_rate);
+  check_exact(cuda_audio.samples, vk_audio.samples, "complete audio decoder");
+
+  const auto cuda_wav = std::filesystem::temp_directory_path() /
+      "vidfab_cuda_audio_exact.wav";
+  const auto vk_wav = std::filesystem::temp_directory_path() /
+      "vidfab_vulkan_audio_exact.wav";
+  audio::write_wav(cuda_wav.string(), cuda_audio.samples, cuda_audio.channels,
+                   cuda_audio.sample_rate, audio::SampleFormat::kPcm16);
+  audio::write_wav(vk_wav.string(), vk_audio.samples, vk_audio.channels,
+                   vk_audio.sample_rate, audio::SampleFormat::kPcm16);
+  auto read_file = [](const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::vector<uint8_t>(std::istreambuf_iterator<char>(stream), {});
+  };
+  CHECK(read_file(cuda_wav) == read_file(vk_wav));
+  std::filesystem::remove(cuda_wav);
+  std::filesystem::remove(vk_wav);
+  std::printf(
+      "  exact Vulkan audio decoder: load %.1f ms, A3 forward %.1f ms, weights/peak %.1f/%.1f MiB, pool %.1f/%.1f MiB, descriptors %llu\n",
+      load_ms, forward_ms, double(vk_decoder.weight_bytes()) / 1048576.0,
+      double(vk_decoder.peak_device_bytes()) / 1048576.0,
+      double(vk_decoder.allocator_used_bytes()) / 1048576.0,
+      double(vk_decoder.allocator_reserved_bytes()) / 1048576.0,
+      static_cast<unsigned long long>(vk_decoder.descriptor_set_allocations()));
 }

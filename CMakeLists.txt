@@ -753,6 +753,7 @@ if(VIDFAB_ENABLE_VULKAN)
   add_library(vidfab_vulkan STATIC
     src/vulkan/runtime.cpp
     src/vulkan/tensor.cpp
+    src/vulkan/audio_decoder.cpp
     src/vulkan/vae_decoder.cpp
     src/vulkan/vae_vit_block.cpp
     src/vulkan/yuv_converter.cpp)
