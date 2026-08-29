@@ -21,6 +21,18 @@ struct H3BlockConfig {
   float epsilon = 1.0e-5f;
 };
 
+// Optional device-only diagnostic taps. Each non-null destination must match
+// the corresponding contiguous BF16 stage tensor and be distinct from every
+// input and other tap. Production passes null and records no copies.
+struct H3BlockReplayTaps {
+  DeviceTensor* q = nullptr;
+  DeviceTensor* k = nullptr;
+  DeviceTensor* v = nullptr;
+  DeviceTensor* attention = nullptr;
+  DeviceTensor* attention_residual = nullptr;
+  DeviceTensor* final_residual = nullptr;
+};
+
 class ExactH3BlockScratch {
  public:
   ExactH3BlockScratch();
@@ -60,10 +72,12 @@ class ExactH3BlockStage {
               DeviceTensor& selectors, DeviceTensor& adaln_code,
               DeviceTensor& cosine, DeviceTensor& sine,
               ExactH3BlockScratch& scratch,
-              const H3AttentionRanges* ranges = nullptr) const;
+              const H3AttentionRanges* ranges = nullptr,
+              const H3BlockReplayTaps* taps = nullptr) const;
   const H3BlockConfig& config() const noexcept;
   uint64_t persistent_bytes() const noexcept;
   uint64_t peak_device_bytes(const ExactH3BlockScratch& scratch) const noexcept;
+  uint32_t required_operators(const H3BlockReplayTaps* taps = nullptr) const;
  private:
   struct Impl;
   explicit ExactH3BlockStage(std::shared_ptr<Impl> impl);

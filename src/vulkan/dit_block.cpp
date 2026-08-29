@@ -11,6 +11,7 @@
 
 #include "vidfab/attention.h"
 #include "vidfab/dtype.h"
+#include "vidfab/json.h"
 #include "vidfab/nf4.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vulkan/linear.h"
@@ -34,9 +35,10 @@ uint64_t checked_product(uint64_t a, uint64_t b, const char* what) {
   return a * b;
 }
 void validate_config(const H3BlockConfig& c) {
+  const uint64_t inner = uint64_t(c.heads) * c.head_dim;
   if (c.sequence == 0 || c.hidden == 0 || c.heads == 0 ||
-      c.head_dim != 128 || c.heads * c.head_dim == 0 ||
-      c.heads * c.head_dim > std::numeric_limits<uint32_t>::max() ||
+      c.head_dim != 128 || inner == 0 ||
+      inner > std::numeric_limits<uint32_t>::max() ||
       c.ffn == 0 || c.timesteps == 0 || c.modalities == 0 ||
       c.adaln_rank == 0 || !std::isnormal(c.epsilon) || c.epsilon <= 0.0f) {
     throw std::invalid_argument("Vulkan H3 block: invalid configuration");
@@ -59,6 +61,43 @@ float scalar(const TensorView& v, const std::string& name) {
   if (values.size() != 1 || !std::isfinite(values[0]))
     throw std::runtime_error("Vulkan H3 block: invalid scalar '" + name + "'");
   return values[0];
+}
+
+struct ProjectionTag {
+  bool full_precision = false;
+  bool convrot = false;
+  uint32_t convrot_group = 256;
+};
+
+ProjectionTag projection_tag(const SafeTensors& st, const std::string& name,
+                             uint32_t in) {
+  ProjectionTag tag;
+  const TensorView* view = st.find(name + ".comfy_quant");
+  if (!view) return tag;
+  std::string text(static_cast<const char*>(view->data), view->nbytes);
+  while (!text.empty() && (text.back() == '\0' || text.back() == ' ' ||
+                           text.back() == '\n')) text.pop_back();
+  if (text.empty()) return tag;
+  json::Value root;
+  try { root = json::parse(text); }
+  catch (const std::exception& error) {
+    throw std::runtime_error("Vulkan H3 block: invalid comfy_quant for '" +
+                             name + "' (" + error.what() + ")");
+  }
+  if (const json::Value* full = root.find("full_precision_matrix_mult"))
+    tag.full_precision = full->as_bool();
+  if (const json::Value* convrot = root.find("convrot"))
+    tag.convrot = convrot->as_bool();
+  if (const json::Value* group = root.find("convrot_groupsize")) {
+    const int64_t value = group->as_int();
+    if (value <= 0 || value > UINT32_MAX)
+      throw std::runtime_error("Vulkan H3 block: invalid ConvRot group for '" +
+                               name + "'");
+    tag.convrot_group = static_cast<uint32_t>(value);
+  }
+  // The checkpoint contract skips ConvRot when K is not group-aligned.
+  tag.convrot = tag.convrot && in % tag.convrot_group == 0;
+  return tag;
 }
 
 struct Projection {
@@ -168,6 +207,10 @@ Projection load_projection(TensorContext& context, const SafeTensors& st,
     for (uint32_t i = 0; i < in; ++i) pre_scale_storage[i] = f32_to_bf16(wide[i]);
     u.pre_quant_scale_bf16 = pre_scale_storage.data(); u.pre_quant_scale_count = in;
   }
+  const ProjectionTag tag = projection_tag(st, name, in);
+  u.full_precision_matrix_mult = tag.full_precision;
+  u.convrot = tag.convrot;
+  u.convrot_group = tag.convrot_group;
   Projection result; result.out = out; result.in = in;
   result.weight = LinearWeight::upload(context, u);
   if (result.weight.format() != LinearWeightFormat::kNVFloat4) {
@@ -353,12 +396,34 @@ void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
     record(p.dense);
   }
 }
+
+uint32_t projection_operators(const Projection& projection, uint32_t rows) {
+  return (projection.weight.has_pre_quant_scale() ? 1u : 0u) +
+      (projection.weight.applies_convrot() ? 1u : 0u) +
+      (projection.weight.format() == LinearWeightFormat::kNVFloat4 ? 1u : 0u) +
+      (rows >= 64 ? 1u : 0u) + (rows % 64 ? 1u : 0u);
+}
+
+void validate_tap(DeviceTensor* tensor, ScalarType type,
+                  const TensorLayout& layout, const char* name,
+                  std::vector<DeviceTensorView>& views) {
+  if (!tensor) return;
+  const DeviceTensorView view = tensor->view();
+  if (view.type != type || view.layout.rank != layout.rank ||
+      view.layout.extent != layout.extent || !view.layout.is_contiguous())
+    throw std::invalid_argument(std::string("Vulkan H3 block: invalid ") + name + " tap");
+  for (const DeviceTensorView& other : views) {
+    if (view.resource == other.resource)
+      throw std::invalid_argument("Vulkan H3 block: aliased replay tap");
+  }
+  views.push_back(view);
+}
 }
 
 void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
     DeviceTensor& selectors, DeviceTensor& code, DeviceTensor& cosine,
     DeviceTensor& sine, ExactH3BlockScratch& scratch,
-    const H3AttentionRanges* ranges) const {
+    const H3AttentionRanges* ranges, const H3BlockReplayTaps* taps) const {
   if (!impl_ || !impl_->weights) throw std::logic_error("Vulkan H3 block: not loaded");
   if (!scratch.impl_ || scratch.impl_->context != impl_->context)
     throw std::invalid_argument("Vulkan H3 block: incompatible scratch");
@@ -369,15 +434,38 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
       s.config.modalities != c.modalities || s.config.adaln_rank != c.adaln_rank)
     throw std::invalid_argument("Vulkan H3 block: scratch configuration mismatch");
   const auto tv = tokens.view(), av = selectors.view(), cv = code.view();
+  const auto cosv = cosine.view(), sinv = sine.view();
   if (tv.type != ScalarType::kBFloat16 || tv.layout.rank != 2 ||
       tv.layout.extent[0] != c.sequence || tv.layout.extent[1] != c.hidden ||
       av.type != ScalarType::kInt32 || av.layout.rank != 1 ||
       av.layout.extent[0] != c.sequence || cv.type != ScalarType::kFloat32 ||
       cv.layout.rank != 2 || cv.layout.extent[0] != c.timesteps ||
-      cv.layout.extent[1] != c.adaln_rank)
+      cv.layout.extent[1] != c.adaln_rank ||
+      cosv.type != ScalarType::kFloat32 || sinv.type != ScalarType::kFloat32 ||
+      cosv.layout.rank != 2 || sinv.layout.rank != 2 ||
+      cosv.layout.extent[0] != c.sequence || sinv.layout.extent[0] != c.sequence ||
+      cosv.layout.extent[1] != 96 || sinv.layout.extent[1] != 96 ||
+      !cosv.layout.is_contiguous() || !sinv.layout.is_contiguous() ||
+      cosv.resource == sinv.resource || tv.resource == cosv.resource ||
+      tv.resource == sinv.resource || av.resource == tv.resource ||
+      cv.resource == tv.resource || (ranges && ranges->sequence() != c.sequence))
     throw std::invalid_argument("Vulkan H3 block: invalid activation tensors");
-  constexpr uint32_t kOperators = 40;
-  if (batch.remaining_operator_capacity() < kOperators)
+  std::vector<DeviceTensorView> tap_views{tv, av, cv, cosv, sinv};
+  if (taps) {
+    validate_tap(taps->q, ScalarType::kBFloat16,
+                 three(c.sequence, c.heads, c.head_dim), "Q", tap_views);
+    validate_tap(taps->k, ScalarType::kBFloat16,
+                 three(c.sequence, c.heads, c.head_dim), "K", tap_views);
+    validate_tap(taps->v, ScalarType::kBFloat16,
+                 three(c.sequence, c.heads, c.head_dim), "V", tap_views);
+    validate_tap(taps->attention, ScalarType::kBFloat16,
+                 matrix(c.sequence, c.heads * c.head_dim), "attention", tap_views);
+    validate_tap(taps->attention_residual, ScalarType::kBFloat16,
+                 matrix(c.sequence, c.hidden), "attention residual", tap_views);
+    validate_tap(taps->final_residual, ScalarType::kBFloat16,
+                 matrix(c.sequence, c.hidden), "final residual", tap_views);
+  }
+  if (batch.remaining_operator_capacity() < required_operators(taps))
     throw std::logic_error("Vulkan H3 block: insufficient batch capacity");
   auto& w = *impl_->weights;
   batch.dit_expand_adaln(w.adaln_w, w.adaln_b, code, s.modulation,
@@ -394,11 +482,19 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   batch.rms_norm_heads_bf16(s.k, w.k_norm, s.k, c.heads, c.head_dim, c.epsilon);
   batch.rope_h3_bf16(s.q, cosine, sine);
   batch.rope_h3_bf16(s.k, cosine, sine);
+  if (taps) {
+    if (taps->q) batch.copy(s.q, *taps->q);
+    if (taps->k) batch.copy(s.k, *taps->k);
+    if (taps->v) batch.copy(s.v, *taps->v);
+  }
   s.attention_plan.record(batch, s.q, s.k, s.v, s.attention, ranges);
+  if (taps && taps->attention) batch.copy(s.attention, *taps->attention);
   projection(batch, w.out, s.out_plan, s.cache, s.attention, s.branch,
              s.inner_a, s.inner_b, c.sequence, *s.context);
   batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation,
                                  s.modulation_rows, 2, selectors);
+  if (taps && taps->attention_residual)
+    batch.copy(tokens, *taps->attention_residual);
   batch.rms_norm_modulate_bf16_table(tokens, w.norm2, s.modulation,
                                      s.modulation_rows, 4, 3, selectors, s.normed, c.epsilon);
   projection(batch, w.fc1, s.fc1_plan, s.cache, s.normed, s.fused,
@@ -408,6 +504,27 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
              s.ffn_a, s.ffn_b, c.sequence, *s.context);
   batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation,
                                  s.modulation_rows, 5, selectors);
+  if (taps && taps->final_residual) batch.copy(tokens, *taps->final_residual);
+}
+
+uint32_t ExactH3BlockStage::required_operators(
+    const H3BlockReplayTaps* taps) const {
+  if (!impl_ || !impl_->weights)
+    throw std::logic_error("Vulkan H3 block: not loaded");
+  const auto& w = *impl_->weights;
+  uint32_t count = 11 + projection_operators(w.q, impl_->config.sequence) +
+      projection_operators(w.k, impl_->config.sequence) +
+      projection_operators(w.v, impl_->config.sequence) +
+      projection_operators(w.out, impl_->config.sequence) +
+      projection_operators(w.fc1, impl_->config.sequence) +
+      projection_operators(w.fc2, impl_->config.sequence);
+  if (taps) {
+    count += taps->q != nullptr; count += taps->k != nullptr;
+    count += taps->v != nullptr; count += taps->attention != nullptr;
+    count += taps->attention_residual != nullptr;
+    count += taps->final_residual != nullptr;
+  }
+  return count;
 }
 
 void ExactH3BlockStage::unload() noexcept { if (impl_) impl_->weights.reset(); }
