@@ -622,6 +622,9 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
   put(t, "audio_patch_proj.bias", {hidden}, make_data(hidden, seed++, 0.05f));
   put(t, "condition_proj.weight", {hidden, cfg.text_dim},
       fan_in_weights(hidden, cfg.text_dim, seed++));
+  // Exact mode's canonical endpoint is checkpoint-native BF16 with a runtime
+  // fp32 bias. Keep the synthetic archive on that same typed contract.
+  t["condition_proj.weight"].dtype = vidfab::DType::kBF16;
   put(t, "condition_proj.bias", {hidden}, make_data(hidden, seed++, 0.05f));
 
   // A smooth table, as the real one is: linear interpolation only means
