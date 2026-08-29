@@ -272,8 +272,12 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   impl_->stats.max_layer_weight_bytes = max_weight;
   impl_->stats.scratch_bytes = state.scratch.reserved_bytes();
   impl_->stats.activation_bytes = state.activation_bytes();
-  impl_->stats.peak_device_bytes = max_weight + state.scratch.reserved_bytes() +
-      state.activation_bytes() + trace_bytes;
+  const uint64_t observed_peak = peak_used >= impl_->allocator_baseline
+      ? peak_used - impl_->allocator_baseline : peak_used;
+  impl_->stats.peak_device_bytes = std::max(
+      max_weight + state.scratch.reserved_bytes() + state.activation_bytes() +
+          trace_bytes,
+      observed_peak);
   impl_->stats.allocator_baseline_bytes = impl_->allocator_baseline;
   impl_->stats.allocator_peak_used_bytes = peak_used;
   impl_->stats.allocator_used_bytes = impl_->context->pooled_used_bytes();
@@ -301,7 +305,10 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   uint64_t visual_tokens_wide = 0;
   for (const auto& image : images) {
     const size_t patches = image.grid.patch_count();
-    if (patches == 0 || patches > 16384 || patches % 4 != 0 ||
+    if (image.grid.temporal <= 0 || image.grid.height <= 0 ||
+        image.grid.width <= 0 || (image.grid.height & 1) != 0 ||
+        (image.grid.width & 1) != 0 || patches == 0 || patches > 16384 ||
+        patches % 4 != 0 ||
         image.rows.size() != patches * 1536)
       throw std::invalid_argument("Vulkan Qwen encoder: invalid visual rows");
     grids.push_back(image.grid);
@@ -447,10 +454,14 @@ text::PromptEmbedding ExactQwenTextEncoder::encode(
   impl_->stats.max_layer_weight_bytes = max_weight;
   impl_->stats.scratch_bytes = state.scratch.reserved_bytes();
   impl_->stats.activation_bytes = state.activation_bytes() + visual_bytes;
-  impl_->stats.peak_device_bytes = std::max(
-      max_weight + state.scratch.reserved_bytes() + state.activation_bytes() +
-          visual_bytes + trace_bytes,
-      vision_phase_bytes + visual_bytes);
+  const uint64_t decoder_live_bytes = state.scratch.reserved_bytes() +
+      state.activation_bytes();
+  const uint64_t observed_peak = peak_used >= impl_->allocator_baseline
+      ? peak_used - impl_->allocator_baseline : peak_used;
+  impl_->stats.peak_device_bytes = std::max({
+      max_weight + decoder_live_bytes + visual_bytes + trace_bytes,
+      decoder_live_bytes + vision_phase_bytes + visual_bytes,
+      observed_peak});
   impl_->stats.allocator_baseline_bytes = impl_->allocator_baseline;
   impl_->stats.allocator_peak_used_bytes = peak_used;
   impl_->stats.allocator_used_bytes = impl_->context->pooled_used_bytes();

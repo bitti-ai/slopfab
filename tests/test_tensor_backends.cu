@@ -3615,6 +3615,34 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_tower) {
   CHECK(stats.patch_rows == 256 && stats.max_streamed_weight_bytes <
         96ull * 1024 * 1024);
   CHECK(stats.descriptor_set_allocations <= 128);
+  const uint64_t valid_used = vk.pooled_used_bytes();
+  const uint64_t valid_reserved = vk.reserved_bytes();
+  const uint64_t valid_descriptors = vk.descriptor_set_allocations();
+  const std::array<text::QwenImageGrid, 5> invalid_grids{{
+      {0, 16, 16}, {1, -2, 16}, {1, 15, 16},
+      {std::numeric_limits<int>::max(), std::numeric_limits<int>::max(),
+       std::numeric_limits<int>::max()},
+      {1, 16, 16}}};
+  for (size_t invalid_index = 0; invalid_index < invalid_grids.size();
+       ++invalid_index) {
+    text::QwenPixelValues invalid;
+    invalid.grid = invalid_grids[invalid_index];
+    if (invalid_index == invalid_grids.size() - 1) invalid.rows.resize(1);
+    bool rejected = false;
+    try { vk_encoder.encode(invalid); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    CHECK(vk_encoder.output_tokens() == 64);
+    CHECK(vk.pooled_used_bytes() == valid_used);
+    CHECK(vk.reserved_bytes() == valid_reserved);
+    CHECK(vk.descriptor_set_allocations() == valid_descriptors);
+  }
+  std::vector<uint16_t> preserved_main(vk_main.size());
+  vk.download_bytes(vk_encoder.main_output(), preserved_main.data(),
+                    preserved_main.size() * sizeof(uint16_t));
+  CHECK(preserved_main == vk_main);
+  { TensorBatch capacity = vk.begin_batch();
+    CHECK(capacity.remaining_operator_capacity() == 128); }
   vk_encoder.unload();
   vk.collect();
   const uint64_t warmed_used = vk.pooled_used_bytes();
@@ -3630,7 +3658,17 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_tower) {
   vk.collect();
   CHECK(vk.pooled_used_bytes() == warmed_used);
   CHECK(vk.reserved_bytes() == stable_reserved);
-  CHECK(vk.descriptor_set_allocations() <= stable_descriptors + 128);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  vk_encoder.load(archive);
+  text::QwenVisionTrace third_trace;
+  vk_encoder.encode(image, &third_trace);
+  CHECK(third_trace.block_residuals == cuda_trace.block_residuals);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  vk_encoder.unload();
+  vk.collect();
+  CHECK(vk.pooled_used_bytes() == warmed_used);
+  CHECK(vk.reserved_bytes() == stable_reserved);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
   std::printf("qwen vision full27 S256 exact CUDA/Vulkan %.3f/%.3f s "
               "peak/scratch/activation/weight %.1f/%.1f/%.1f/%.1f MiB\n",
               cuda_seconds, vk_seconds,

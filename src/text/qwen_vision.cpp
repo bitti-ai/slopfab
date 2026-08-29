@@ -79,11 +79,13 @@ QwenVisionCheckpoint load_qwen3vl_vision_checkpoint(const SafeTensors& st) {
 }
 
 QwenVisionPositions qwen3vl_vision_positions(const QwenImageGrid& g, int side, int merge) {
+  const size_t patches = g.patch_count();
   if (g.temporal <= 0 || g.height <= 0 || g.width <= 0 || side <= 0 || merge <= 0 ||
-      g.height % merge || g.width % merge)
+      g.height % merge || g.width % merge || patches == 0 ||
+      patches > std::numeric_limits<size_t>::max() / 3)
     throw std::runtime_error("Qwen vision: invalid position grid");
   QwenVisionPositions out;
-  out.learned.reserve(g.patch_count()); out.rotary_thw.reserve(g.patch_count() * 3);
+  out.learned.reserve(patches); out.rotary_thw.reserve(patches * 3);
   auto bucket = [side](int x, int extent) {
     // torch.linspace(0, side-1, extent).long(): conversion truncates.
     return extent == 1 ? 0 : static_cast<int>((static_cast<int64_t>(x) * (side - 1)) / (extent - 1));
@@ -105,6 +107,11 @@ QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& ids,
                                            int32_t vs, int32_t pad, int32_t ve) {
   QwenMultimodalPlan out;
   const size_t L = ids.size();
+  if (L > std::numeric_limits<size_t>::max() / 3)
+    throw std::runtime_error("Qwen vision: multimodal prompt is too large");
+  for (const QwenImageGrid& grid : grids)
+    if (grid.merged_token_count() == 0)
+      throw std::runtime_error("Qwen vision: invalid multimodal grid");
   out.position_ids.resize(3 * L);
   size_t cursor = 0, image = 0;
   int32_t next = 0;
@@ -200,10 +207,22 @@ void qwen3vl_decoder_rope_tables(const QwenMultimodalPlan& p, int tokens,
 }
 
 size_t QwenImageGrid::patch_count() const {
-  return static_cast<size_t>(temporal) * height * width;
+  if (temporal <= 0 || height <= 0 || width <= 0) return 0;
+  const size_t t = static_cast<size_t>(temporal);
+  const size_t h = static_cast<size_t>(height);
+  const size_t w = static_cast<size_t>(width);
+  if (t > std::numeric_limits<size_t>::max() / h) return 0;
+  const size_t th = t * h;
+  if (th > std::numeric_limits<size_t>::max() / w) return 0;
+  return th * w;
 }
 
-size_t QwenImageGrid::merged_token_count() const { return patch_count() / 4; }
+size_t QwenImageGrid::merged_token_count() const {
+  if (height <= 0 || width <= 0 || (height & 1) != 0 || (width & 1) != 0)
+    return 0;
+  const size_t patches = patch_count();
+  return patches == 0 ? 0 : patches / 4;
+}
 
 QwenImageGrid qwen3vl_image_grid(int width, int height) {
   if (width <= 0 || height <= 0) throw std::runtime_error("Qwen image: invalid size");

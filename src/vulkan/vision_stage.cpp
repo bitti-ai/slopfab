@@ -604,7 +604,10 @@ void ExactQwenVisionEncoder::encode(const text::QwenPixelValues& image,
                                     text::QwenVisionTrace* trace) {
   if (!loaded()) throw std::logic_error("Vulkan Qwen vision encoder: not loaded");
   const size_t patch_count = image.grid.patch_count();
-  if (patch_count == 0 || patch_count > 16384 || patch_count % 4 != 0 ||
+  if (image.grid.temporal <= 0 || image.grid.height <= 0 ||
+      image.grid.width <= 0 || (image.grid.height & 1) != 0 ||
+      (image.grid.width & 1) != 0 || patch_count == 0 ||
+      patch_count > 16384 || patch_count % 4 != 0 ||
       image.rows.size() != patch_count * 1536)
     throw std::invalid_argument("Vulkan Qwen vision encoder: invalid image rows");
   const uint32_t rows = static_cast<uint32_t>(patch_count);

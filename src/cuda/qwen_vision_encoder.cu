@@ -174,8 +174,13 @@ QwenVisionEmbedding QwenVisionEncoder::Impl::run(
   // cursor -- freed memory, plausible numbers, no crash. Keeping the two
   // separate makes that structurally impossible rather than true-by-arithmetic.
   for(const auto& image:images){
-    const int rows=static_cast<int>(image.grid.patch_count()), groups=rows/4;
-    if(image.rows.size()!=static_cast<size_t>(rows)*kPatchDim) throw std::runtime_error("Qwen vision: pixel row mismatch");
+    const size_t patch_count=image.grid.patch_count();
+    if(image.grid.temporal<=0||image.grid.height<=0||image.grid.width<=0||
+       (image.grid.height&1)!=0||(image.grid.width&1)!=0||patch_count==0||
+       patch_count>16384||patch_count%4!=0||
+       image.rows.size()!=patch_count*kPatchDim)
+      throw std::runtime_error("Qwen vision: pixel row mismatch");
+    const int rows=static_cast<int>(patch_count), groups=rows/4;
     std::vector<uint16_t> hp(image.rows.size()); for(size_t i=0;i<hp.size();++i) hp[i]=f32_to_bf16(image.rows[i]);
     auto positions=qwen3vl_vision_positions(image.grid); std::vector<float> hc,hs;
     qwen3vl_vision_rope_tables(positions,hc,hs);
