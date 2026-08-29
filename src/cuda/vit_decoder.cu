@@ -16,6 +16,7 @@
 #include "vidfab/cuda/nf4_weight.cuh"
 #include "vidfab/cuda/profile.h"
 #include "vidfab/cuda/vae_kernels.cuh"
+#include "vidfab/cuda/vae_vit_block.h"
 #include "vidfab/nf4.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/vit_decoder.h"
@@ -139,6 +140,8 @@ struct ViTDecoder::Impl {
   size_t weight_bytes = 0;
 
   std::vector<BlockWeights> blocks;
+  std::unique_ptr<cuda::ExactViTBlockGraph> exact_blocks;
+  bool loaded = false;
   cuda::F16Weight x_embed_w;          // [dim, in_channels]
   DeviceBuffer<float> x_embed_b;      // [dim]
   DeviceBuffer<float> register_tokens;  // [num_register, dim]
@@ -300,6 +303,19 @@ struct ViTDecoder::Impl {
     d_quantised.allocate(static_cast<size_t>(batch) * num_patches * ch);
     d_tokens.allocate(s * dim);
     d_normed.allocate(s * dim);
+    if (cfg.transformer_mode == ViTTransformerMode::kExact) {
+      // The exact graph owns one shape-specific block arena shared by all 36
+      // layers. Keep only embedding/output scratch here; retaining the shipped
+      // block arena as well would waste hundreds of MiB.
+      d_proj.allocate(s * static_cast<size_t>(cfg.patch_dim()));
+      d_gemm_in.allocate(s * static_cast<size_t>(dim));
+      d_cos.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
+      d_sin.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
+      cap_seq = seq;
+      cap_batch = batch;
+      rope_T = rope_H = rope_W = -1;
+      return;
+    }
     d_qkv.allocate(s * 3 * dim);
     // Attention is deliberately serialized by document. Replicating the
     // quadratic score buffer for every spatial tile would erase batching's
@@ -458,6 +474,9 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   const int dim = config.dim;
   const int inner = config.ffn_inner;
   const int ch = config.in_channels;
+  d.loaded = false;
+  d.blocks.clear();
+  d.exact_blocks.reset();
 
   // Shape constraints the kernels rely on. Checked once here rather than in the
   // launcher, which runs 36 times per window.
@@ -470,6 +489,10 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   }
   if (config.heads * config.head_dim != dim) {
     throw std::runtime_error("vae: heads * head_dim must equal dim");
+  }
+  if (config.transformer_mode == ViTTransformerMode::kExact &&
+      config.exact_num_patches <= 0) {
+    throw std::runtime_error("vae: exact_num_patches must be positive in exact mode");
   }
 
   // Page-locks the checkpoint mapping for the whole of the load below, and is
@@ -503,26 +526,50 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
                       d.stream.get(), "video vae");
   d.post_quant_b = uploader.upload(ckpt, "post_quant_conv.bias", ch);
 
-  d.blocks.resize(config.num_layers);
-  for (int i = 0; i < config.num_layers; ++i) {
-    const std::string p = "decoder.transformer_blocks." + std::to_string(i) + ".";
-    BlockWeights& b = d.blocks[i];
-    b.norm1 = uploader.upload(ckpt, p + "norm1.weight", dim);
-    b.norm2 = uploader.upload(ckpt, p + "norm2.weight", dim);
-    b.scale1 = uploader.upload(ckpt, p + "scale1", dim);
-    b.scale2 = uploader.upload(ckpt, p + "scale2", dim);
-    b.qkv_w.load(ckpt, p + "attn.to_qkv.weight", static_cast<size_t>(3) * dim * dim,
-                 d.stream.get(), "video vae");
-    b.qkv_b = uploader.upload(ckpt, p + "attn.to_qkv.bias", static_cast<size_t>(3) * dim);
-    b.out_w.load(ckpt, p + "attn.to_out.weight", static_cast<size_t>(dim) * dim,
-                 d.stream.get(), "video vae");
-    b.out_b = uploader.upload(ckpt, p + "attn.to_out.bias", dim);
-    b.w1.load(ckpt, p + "ff.w1.weight", static_cast<size_t>(2) * inner * dim,
-              d.stream.get(), "video vae");
-    b.w1_b = uploader.upload(ckpt, p + "ff.w1.bias", static_cast<size_t>(2) * inner);
-    b.w2.load(ckpt, p + "ff.w2.weight", static_cast<size_t>(dim) * inner,
-              d.stream.get(), "video vae");
-    b.w2_b = uploader.upload(ckpt, p + "ff.w2.bias", dim);
+  if (config.transformer_mode == ViTTransformerMode::kExact) {
+    vae::ViTBlockConfig exact_config;
+    exact_config.sequence = static_cast<uint32_t>(config.exact_num_patches +
+                                                   config.num_suffix);
+    exact_config.num_patches = static_cast<uint32_t>(config.exact_num_patches);
+    exact_config.dim = static_cast<uint32_t>(config.dim);
+    exact_config.heads = static_cast<uint32_t>(config.heads);
+    exact_config.head_dim = static_cast<uint32_t>(config.head_dim);
+    exact_config.ffn_inner = static_cast<uint32_t>(config.ffn_inner);
+    exact_config.rope_dim = static_cast<uint32_t>(config.rope_dim);
+    exact_config.epsilon = config.eps;
+    auto graph = std::make_unique<cuda::ExactViTBlockGraph>(
+        cuda::ExactViTBlockGraph::create(exact_config,
+                                         static_cast<uint32_t>(config.num_layers)));
+    graph->load(ckpt);
+    d.exact_blocks = std::move(graph);
+  } else {
+    d.blocks.resize(config.num_layers);
+    for (int i = 0; i < config.num_layers; ++i) {
+      const std::string p =
+          "decoder.transformer_blocks." + std::to_string(i) + ".";
+      BlockWeights& b = d.blocks[i];
+      b.norm1 = uploader.upload(ckpt, p + "norm1.weight", dim);
+      b.norm2 = uploader.upload(ckpt, p + "norm2.weight", dim);
+      b.scale1 = uploader.upload(ckpt, p + "scale1", dim);
+      b.scale2 = uploader.upload(ckpt, p + "scale2", dim);
+      b.qkv_w.load(ckpt, p + "attn.to_qkv.weight",
+                   static_cast<size_t>(3) * dim * dim, d.stream.get(),
+                   "video vae");
+      b.qkv_b = uploader.upload(ckpt, p + "attn.to_qkv.bias",
+                                static_cast<size_t>(3) * dim);
+      b.out_w.load(ckpt, p + "attn.to_out.weight",
+                   static_cast<size_t>(dim) * dim, d.stream.get(),
+                   "video vae");
+      b.out_b = uploader.upload(ckpt, p + "attn.to_out.bias", dim);
+      b.w1.load(ckpt, p + "ff.w1.weight",
+                static_cast<size_t>(2) * inner * dim, d.stream.get(),
+                "video vae");
+      b.w1_b = uploader.upload(ckpt, p + "ff.w1.bias",
+                               static_cast<size_t>(2) * inner);
+      b.w2.load(ckpt, p + "ff.w2.weight",
+                static_cast<size_t>(dim) * inner, d.stream.get(), "video vae");
+      b.w2_b = uploader.upload(ckpt, p + "ff.w2.bias", dim);
+    }
   }
 
   size_t max_weight = std::max({d.x_embed_w.elements(), d.proj_out_w.elements(),
@@ -537,10 +584,12 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
     max_weight = std::max({max_weight, b.qkv_w.elements(), b.out_w.elements(), b.w1.elements(),
                            b.w2.elements()});
   }
+  if (d.exact_blocks) total += d.exact_blocks->persistent_bytes();
   d.cap_weight = max_weight;
   d.d_weight.allocate(max_weight);
   d.weight_bytes = total;
   d.stream.synchronize();
+  d.loaded = true;
 }
 
 void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector<float>& out) {
@@ -563,7 +612,7 @@ void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector
 void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
                                  std::vector<std::vector<float>>& out, const size_t* slots) {
   Impl& d = *impl_;
-  if (d.blocks.empty()) throw std::runtime_error("vae: decoder weights not loaded");
+  if (!d.loaded) throw std::runtime_error("vae: decoder weights not loaded");
   if (batch <= 0) throw std::runtime_error("vae: window batch must be positive");
 
   const ViTConfig& cfg = d.cfg;
@@ -572,6 +621,12 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   const int seq = num_patches + cfg.num_suffix;
   const int dim = cfg.dim;
   cudaStream_t s = d.stream.get();
+  if (cfg.transformer_mode == ViTTransformerMode::kExact &&
+      num_patches != cfg.exact_num_patches) {
+    throw std::runtime_error(
+        "vae: exact transformer window has " + std::to_string(num_patches) +
+        " patch tokens, expected " + std::to_string(cfg.exact_num_patches));
+  }
 
   cuda::PhaseSpan s_prep("forward: prepare");
   d.ensure_scratch(seq, num_patches, batch);
@@ -612,8 +667,16 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   {
   cuda::PhaseSpan s_blocks("forward: issue blocks");
   cuda::PhaseGpuSpan g_blocks("forward: blocks", s);
-  for (int i = 0; i < cfg.num_layers; ++i)
-    d.run_block(d.blocks[i], seq, num_patches, batch);
+  if (cfg.transformer_mode == ViTTransformerMode::kExact) {
+    for (int doc = 0; doc < batch; ++doc) {
+      d.exact_blocks->forward_device(
+          d.d_tokens.get() + static_cast<size_t>(doc) * seq * dim,
+          d.d_cos.get(), d.d_sin.get(), s);
+    }
+  } else {
+    for (int i = 0; i < cfg.num_layers; ++i)
+      d.run_block(d.blocks[i], seq, num_patches, batch);
+  }
   }
 
   const size_t pixels = static_cast<size_t>(cfg.out_channels) * (T * cfg.patch_t) *

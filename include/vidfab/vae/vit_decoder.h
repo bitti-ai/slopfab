@@ -18,6 +18,13 @@ namespace vidfab::vae {
 const std::vector<float>& default_video_latents_mean();
 const std::vector<float>& default_video_latents_std();
 
+enum class ViTTransformerMode {
+  // Existing tensor-core/cuBLAS path. This remains the default.
+  kShipped,
+  // Deterministic scalar-order block graph used for CUDA/Vulkan bit parity.
+  kExact,
+};
+
 struct ViTConfig {
   int num_layers = 36;
   int dim = 2048;
@@ -33,6 +40,11 @@ struct ViTConfig {
   int rope_dim = 48;      // of head_dim; the remaining 16 dims pass through
   float rope_theta = 100.0f;
   float eps = 1e-5f;
+  ViTTransformerMode transformer_mode = ViTTransformerMode::kShipped;
+  // Exact block scratch is shape-specific and remains resident across windows.
+  // The shipped tiled window is 7*16*16 = 1792 patch tokens. Exact mode
+  // rejects other shapes instead of silently selecting the shipped kernels.
+  int exact_num_patches = 1792;
 
   // Flat width of proj_out: out_channels * patch_t * patch * patch.
   int patch_dim() const { return out_channels * patch_t * patch * patch; }
