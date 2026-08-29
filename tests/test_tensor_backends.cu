@@ -5645,6 +5645,50 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   CHECK(context.reserved_bytes() == stable_reserved);
   CHECK(context.descriptor_set_allocations() == stable_descriptors);
 
+  // Three real graph nodes share one scratch arena. Vulkan records all sixty
+  // operators into a single submission and exactly matches the CUDA graph.
+  cuda::ExactViTBlockGraph cuda_graph =
+      cuda::ExactViTBlockGraph::create(config, 3);
+  vulkan::ExactViTBlockGraph vk_graph =
+      vulkan::ExactViTBlockGraph::create(context, config, 3);
+  for (uint32_t layer = 0; layer < 3; ++layer) {
+    cuda_graph.load_layer(layer, weights.view());
+    vk_graph.load_layer(layer, weights.view());
+  }
+  std::vector<float> cuda_graph_output(token_count),
+      vk_graph_output(token_count);
+  cuda_graph.forward(input.data(), cosine.data(), sine.data(),
+                     cuda_graph_output.data());
+  vk_graph.forward(input.data(), cosine.data(), sine.data(),
+                   vk_graph_output.data());
+  CHECK(std::memcmp(cuda_graph_output.data(), vk_graph_output.data(),
+                    token_count * sizeof(float)) == 0);
+  CHECK(cuda_graph.layers() == 3 && vk_graph.layers() == 3);
+  CHECK(cuda_graph.persistent_bytes() == 3 * weights.bytes());
+  CHECK(vk_graph.persistent_bytes() == 3 * weights.bytes());
+  CHECK(cuda_graph.peak_device_bytes() < 3 * cuda_stage->peak_device_bytes());
+  CHECK(vk_graph.peak_device_bytes() < 3 * vk_stage.peak_device_bytes());
+  const uint64_t graph_reserved = context.reserved_bytes();
+  const uint64_t graph_descriptors = context.descriptor_set_allocations();
+  vk_graph.forward(input.data(), cosine.data(), sine.data(),
+                   vk_graph_output.data());
+  CHECK(context.reserved_bytes() == graph_reserved);
+  CHECK(context.descriptor_set_allocations() == graph_descriptors);
+
+  vulkan::ExactViTBlockGraph oversized_graph =
+      vulkan::ExactViTBlockGraph::create(context, config, 4);
+  vulkan::TensorBatch insufficient = context.begin_batch();
+  const uint32_t insufficient_capacity =
+      insufficient.remaining_operator_capacity();
+  bool capacity_rejected = false;
+  try {
+    oversized_graph.record(insufficient, tokens, vk_cosine, vk_sine);
+  } catch (const std::logic_error&) {
+    capacity_rejected = true;
+  }
+  CHECK(capacity_rejected);
+  CHECK(insufficient.remaining_operator_capacity() == insufficient_capacity);
+
   if (!std::getenv("VIDFAB_VAE_VIT_BLOCK_REAL")) return;
   const std::filesystem::path checkpoint_path =
       "weights/vae/minimax_h3_video_vae_fp16.safetensors";
