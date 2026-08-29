@@ -368,6 +368,40 @@ VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
   run_float_mode(DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone);
   run_float_mode(DenseGemmMode::kFloat32, DenseGemmBias::kFloat32);
 
+  // Explicit fp32->fp16 boundary values exercise ties, signed zero,
+  // subnormal-half results, carry into infinity, and both signs.
+  {
+    const std::vector<float> edge = {
+        0.0f, -0.0f, std::ldexp(1.0f, -24), std::ldexp(1.0f, -25),
+        std::nextafter(std::ldexp(1.0f, -25), 1.0f), 65504.0f,
+        65520.0f, -65520.0f};
+    const uint64_t es[] = {edge.size(), 1}, ews[] = {1, 1};
+    DeviceTensor ei = context.allocate(TensorLayout::contiguous(es, 2));
+    DeviceTensor ew = context.allocate(TensorLayout::contiguous(ews, 2),
+                                       ScalarType::kFloat16);
+    DeviceTensor eo = context.allocate(TensorLayout::contiguous(es, 2));
+    const uint16_t one = f32_to_f16(1.0f);
+    context.upload(ei, edge.data(), edge.size());
+    context.upload_bytes(ew, &one, sizeof(one));
+    PreparedF16Activation slot = PreparedF16Activation::create(
+        context, static_cast<uint32_t>(edge.size()), 1);
+    DenseGemmPlan edge_plan = DenseGemmPlan::create(
+        context, {static_cast<uint32_t>(edge.size()), 1, 1,
+                  DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone});
+    TensorBatch edge_batch = context.begin_batch();
+    PreparedF16ActivationView prepared = slot.prepare(
+        edge_batch, ei, static_cast<uint32_t>(edge.size()));
+    edge_plan.record(edge_batch, prepared, ew, eo);
+    edge_batch.submit().wait();
+    std::vector<float> got(edge.size());
+    context.download(eo, got.data(), got.size());
+    for (size_t i = 0; i < edge.size(); ++i) {
+      const float narrowed = f16_to_f32(f32_to_f16(edge[i]));
+      const float expected = std::fma(narrowed, 1.0f, 0.0f);
+      CHECK(std::memcmp(&got[i], &expected, sizeof(float)) == 0);
+    }
+  }
+
   bool invalid_mode_rejected = false;
   try {
     DenseGemmPlanDesc invalid{rows, n, k,
@@ -380,6 +414,191 @@ VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
   // Invalid plan construction is entirely pre-record and cannot poison a
   // subsequent valid batch.
   run_float_mode(DenseGemmMode::kFloat32, DenseGemmBias::kNone);
+  bool invalid_bias_rejected = false;
+  try {
+    (void)DenseGemmPlan::create(
+        context, {rows, n, k, DenseGemmMode::kFloat16Vae,
+                  DenseGemmBias::kFloat32});
+  } catch (const std::invalid_argument&) {
+    invalid_bias_rejected = true;
+  }
+  CHECK(invalid_bias_rejected);
+  TensorBatch validation_batch = context.begin_batch();
+  bool alias_rejected = false, range_rejected = false, missing_bias_rejected = false;
+  try {
+    plan.record(validation_batch, input, weight, input, rows, 1, 0, &bias);
+  } catch (const std::invalid_argument&) {
+    alias_rejected = true;
+  }
+  try {
+    plan.record(validation_batch, input, weight, output, desc.max_rows + 1,
+                0, 0, &bias);
+  } catch (const std::invalid_argument&) {
+    range_rejected = true;
+  }
+  try {
+    plan.record(validation_batch, input, weight, output, rows, 1, 0, nullptr);
+  } catch (const std::invalid_argument&) {
+    missing_bias_rejected = true;
+  }
+  CHECK(alias_rejected); CHECK(range_rejected); CHECK(missing_bias_rejected);
+  plan.record(validation_batch, input, weight, output, rows, 1, 0, &bias);
+  validation_batch.submit().wait();
+
+  // Prepared fp16 activations are batch-scoped, shared by distinct
+  // projections, and retained exactly through their submission token.
+  const uint64_t staging_warm_shape[] = {64, 32};
+  {
+    DeviceTensor staging_warm = context.allocate(
+        TensorLayout::contiguous(staging_warm_shape, 2));
+    std::vector<float> staging_warm_values(64 * 32, 0.0f);
+    context.upload(staging_warm, staging_warm_values.data(),
+                   staging_warm_values.size());
+  }
+  context.upload_bytes(input, input_bits.data(), input_bits.size() * 2);
+  const uint64_t gemm_lifetime_baseline = context.pooled_used_bytes();
+  {
+    constexpr uint32_t lm = 64, lk = 32, ln0 = 16, ln1 = 32;
+    const uint64_t ais[] = {lm, lk}, w0s[] = {ln0, lk}, w1s[] = {ln1, lk};
+    const uint64_t o0s[] = {lm, ln0}, o1s[] = {lm, ln1};
+    DeviceTensor ai = context.allocate(TensorLayout::contiguous(ais, 2));
+    DeviceTensor w0 = context.allocate(TensorLayout::contiguous(w0s, 2),
+                                       ScalarType::kFloat16);
+    DeviceTensor w1 = context.allocate(TensorLayout::contiguous(w1s, 2),
+                                       ScalarType::kFloat16);
+    DeviceTensor o0 = context.allocate(TensorLayout::contiguous(o0s, 2));
+    DeviceTensor o1 = context.allocate(TensorLayout::contiguous(o1s, 2));
+    std::vector<float> ah(size_t(lm) * lk, 0.25f);
+    std::vector<uint16_t> w0h(size_t(ln0) * lk, f32_to_f16(0.5f));
+    std::vector<uint16_t> w1h(size_t(ln1) * lk, f32_to_f16(-0.25f));
+    context.upload(ai, ah.data(), ah.size());
+    context.upload_bytes(w0, w0h.data(), w0h.size() * 2);
+    context.upload_bytes(w1, w1h.data(), w1h.size() * 2);
+    PreparedF16Activation slot0 = PreparedF16Activation::create(context, lm, lk);
+    PreparedF16Activation slot1 = PreparedF16Activation::create(context, lm, lk);
+    DenseGemmPlan p0 = DenseGemmPlan::create(
+        context, {lm, ln0, lk, DenseGemmMode::kFloat16Vae,
+                  DenseGemmBias::kNone});
+    DenseGemmPlan p1 = DenseGemmPlan::create(
+        context, {lm, ln1, lk, DenseGemmMode::kFloat16Vae,
+                  DenseGemmBias::kNone});
+
+    TensorBatch first = context.begin_batch();
+    PreparedF16ActivationView first_view = slot0.prepare(first, ai, lm);
+    TensorBatch moved = std::move(first);
+    p0.record(moved, first_view, w0, o0);
+    p1.record(moved, first_view, w1, o1);
+    Submission first_token = moved.submit();
+    TensorBatch second = context.begin_batch();
+    PreparedF16ActivationView second_view = slot1.prepare(second, ai, lm);
+    p0.record(second, second_view, w0, o0);
+    p1.record(second, second_view, w1, o1);
+    Submission second_token = second.submit();
+    CHECK(second_token.value() > first_token.value());
+    // The third begin waits for/reuses the oldest bounded command slot before
+    // slot0 is overwritten; it does not allocate a third command arena.
+    TensorBatch third = context.begin_batch();
+    PreparedF16ActivationView third_view = slot0.prepare(third, ai, lm);
+    p0.record(third, third_view, w0, o0);
+    Submission third_token = third.submit();
+    CHECK(third_token.value() > second_token.value());
+    first_token.wait(); second_token.wait(); third_token.wait();
+    const uint64_t warm_reserved = context.reserved_bytes();
+    const uint64_t warm_descriptors = context.descriptor_set_allocations();
+
+    // A submitted view is permanently stale, even if allocator addresses are
+    // reused. Its rejection is pre-record, so a fresh view continues in the
+    // same batch.
+    TensorBatch after_submit = context.begin_batch();
+    bool submitted_stale_rejected = false;
+    try {
+      p0.record(after_submit, third_view, w0, o0);
+    } catch (const std::invalid_argument&) {
+      submitted_stale_rejected = true;
+    }
+    CHECK(submitted_stale_rejected);
+    PreparedF16ActivationView fresh = slot1.prepare(after_submit, ai, lm);
+    p0.record(after_submit, fresh, w0, o0);
+    after_submit.submit().wait();
+
+    for (int repeat = 0; repeat < 4; ++repeat) {
+      TensorBatch stable = context.begin_batch();
+      PreparedF16ActivationView stable_view = slot0.prepare(stable, ai, lm);
+      p0.record(stable, stable_view, w0, o0);
+      p1.record(stable, stable_view, w1, o1);
+      stable.submit().wait();
+      CHECK(context.reserved_bytes() == warm_reserved);
+      CHECK(context.descriptor_set_allocations() == warm_descriptors);
+    }
+
+    // Preparation is one logical operator: 31 consumers reach the exact
+    // 32-op bound and the 32nd consumer poisons/rejects submission.
+    bool thirty_third_gemm_rejected = false;
+    {
+      TensorBatch bounded = context.begin_batch();
+      PreparedF16ActivationView bounded_view = slot0.prepare(bounded, ai, lm);
+      for (int i = 0; i < 31; ++i) p0.record(bounded, bounded_view, w0, o0);
+      try {
+        p0.record(bounded, bounded_view, w0, o0);
+      } catch (const std::logic_error&) {
+        thirty_third_gemm_rejected = true;
+      }
+    }
+    CHECK(thirty_third_gemm_rejected);
+  }
+  // A boundary operation collects completed jobs. All wrappers above were
+  // dropped while the context stayed alive; no GEMM-owned device allocation
+  // remains pinned.
+  context.upload_bytes(input, input_bits.data(), input_bits.size() * 2);
+  CHECK(context.pooled_used_bytes() == gemm_lifetime_baseline);
+
+  auto check_isolated_view_contract = [&](bool supersession) {
+    TensorContext isolated(device);
+    constexpr uint32_t im = 1, in = 1, ik = 1;
+    const uint64_t is[] = {im, ik}, ws[] = {in, ik}, os[] = {im, in};
+    DeviceTensor ii = isolated.allocate(TensorLayout::contiguous(is, 2));
+    DeviceTensor iw = isolated.allocate(TensorLayout::contiguous(ws, 2),
+                                        ScalarType::kFloat16);
+    DeviceTensor io = isolated.allocate(TensorLayout::contiguous(os, 2));
+    PreparedF16Activation slot =
+        PreparedF16Activation::create(isolated, im, ik);
+    DenseGemmPlan plan = DenseGemmPlan::create(
+        isolated, {im, in, ik, DenseGemmMode::kFloat16Vae,
+                   DenseGemmBias::kNone});
+    if (supersession) {
+      TensorBatch batch = isolated.begin_batch();
+      PreparedF16ActivationView old = slot.prepare(batch, ii, im);
+      PreparedF16ActivationView newest = slot.prepare(batch, ii, im);
+      bool rejected = false;
+      try {
+        plan.record(batch, old, iw, io);
+      } catch (const std::invalid_argument&) {
+        rejected = true;
+      }
+      CHECK(rejected);
+      plan.record(batch, newest, iw, io);
+      batch.submit().wait();
+    } else {
+      PreparedF16ActivationView discarded;
+      {
+        TensorBatch abandoned = isolated.begin_batch();
+        discarded = slot.prepare(abandoned, ii, im);
+      }
+      TensorBatch next = isolated.begin_batch();
+      bool rejected = false;
+      try {
+        plan.record(next, discarded, iw, io);
+      } catch (const std::invalid_argument&) {
+        rejected = true;
+      }
+      CHECK(rejected);
+      PreparedF16ActivationView fresh = slot.prepare(next, ii, im);
+      plan.record(next, fresh, iw, io);
+      next.submit().wait();
+    }
+  };
+  check_isolated_view_contract(true);
+  check_isolated_view_contract(false);
 
   // Temporary development measurement; retained as a visible performance
   // guard until the production-shape suite supplies the same metric.
