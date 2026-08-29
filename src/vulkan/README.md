@@ -512,9 +512,11 @@ drop, and stable allocator/descriptor high-water. Alternating plans with
 
 The real-domain audit used `qwen3vl_32b_int8_convrot.safetensors` (SHA-256
 `BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`)
-and `reference2.png` (1024x1024, SHA-256
+and `reference2.png` (decoded as 1024x1024, SHA-256
 `B759B58BADD00E3D4C897EF7D1749CE97A52284886181CE622E136F8E385F565`),
-seed 1. The first post-RoPE Qwen vision block had S16384/H16/D72 and
+seed 1. Generation applies the Ref2VA reference-size contract before Qwen:
+the square is resized to 2048x2048, then 16x16 patchification gives a 128x128
+grid, so the first post-RoPE Qwen vision block had S16384/H16/D72 and
 18,874,368 values in each Q/K/V stream. All had zero BF16 subnormals, zero
 nonfinite values and zero nonfinite FP16 conversions. Minimum nonzero values
 were Q=2^-22, K=2^-24 and V=2^-21; maxima were 7.8125, 7.59375 and 3.265625.
