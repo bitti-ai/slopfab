@@ -343,3 +343,71 @@ flattened 16384x2048, materialized FP16 in 0.225 ms Vulkan versus 0.037 ms CUDA;
 upload was 30.03 ms, persistent payload 16.51 MiB and prepared FP16 64 MiB.
 Both full prepared payloads matched CUDA byte-for-byte. These are preparation
 costs, not GEMM or end-to-end model timings.
+
+## Deterministic dense GEMM
+
+`DenseGemmPlan` implements the row-major NT contractions used by dense model
+weights. BF16 activation/weight produces BF16, with an explicit BF16 rounding
+boundary before the optional fp32/BF16 bias and a second BF16 round. Video-VAE
+fp32 activations are narrowed once per chunk into a caller-owned
+`PreparedF16Activation`; its batch-scoped view can feed distinct FP16-weight
+plans without repeating conversion. FP16 GEMM and FP32 SGEMM produce FP32.
+Every edge path uses the fixed 16x16 shared-load tile and ascending-K fused
+multiply-add order. Full BF16/FP16 tiles use the fastest exact KHR cooperative
+matrix path on the pinned RTX 5090/610.88 tuple; CUDA tests use matching WMMA
+tile/K-call order. No path calls CUDA from the Vulkan backend.
+
+The cooperative-matrix result order is implementation-defined, so it fails
+closed unless vendor `10de`, device `2b85`, raw driver `98960000`, subgroup 32,
+driver UUID `8690f1c80a3f54999bf6ea2aee515602`, and the required nonsaturating
+16x16x16 BF16/F32 or FP16/F32 tuple all match. BF16 and FP16 gates are
+independent. An experimental `VK_NV_cooperative_matrix2` workgroup path was
+exact but slower (about 0.19 ms for the 64x5376x5376 probe) and is neither
+embedded nor created at runtime. The retained KHR path measured about 0.16 ms
+versus 0.026--0.030 ms cuBLAS for BF16 M64/N5376/K5376.
+
+Release measurements below are batch-divided steady device work on the same
+tuple; uploads are excluded. The FP16 preparation number is a separate exact
+submit/wait and is paid once per changed activation chunk, then amortized
+across its QKV/MLP projections. Root acceptance explicitly permits these
+fastest exact native paths despite their current cuBLAS ratio.
+
+| Mode and shape | CUDA cuBLAS | Vulkan | Ratio |
+|---|---:|---:|---:|
+| BF16 M64 N5376 K5376 | 0.026 ms | 0.16 ms | 6.2x |
+| FP16 VAE M64 N6144 K2048 | 0.016 ms | 0.078 ms | 4.9x |
+| FP32 SGEMM M64 N2048 K2048 | 0.045 ms | 0.236 ms | 5.2x |
+
+FP32-to-FP16 preparation for M64/K2048 measured 0.040 ms per chunk. Plans,
+prepared slots, descriptors and command resources are persistent and bounded;
+tests cover two outstanding slots, third-slot backpressure, stale/discarded/
+superseded views, wrapper-drop retention, 32/33 operations, stable descriptor
+and memory high-water, row offsets, multi-K tiles and non-tile tails.
+
+The HLSL modules use DXC 1.9.2607 and the cooperative modules use Khronos
+glslang 16.5.0. Float-control variants are produced by the repository helper:
+
+```text
+dxc -spirv -T cs_6_6 -E main -fspv-target-env=vulkan1.3 -fvk-use-dx-layout src/vulkan/tensor_gemm.hlsl -Fo tensor_gemm.raw.spv
+python tools/add_spirv_float_controls.py tensor_gemm.raw.spv src/vulkan/tensor_gemm.comp.spv src/vulkan/tensor_gemm_denorm.comp.spv
+dxc -spirv -T cs_6_6 -E main -fspv-target-env=vulkan1.3 -fvk-use-dx-layout src/vulkan/tensor_gemm_prepare.hlsl -Fo src/vulkan/tensor_gemm_prepare.comp.spv
+glslang -V --target-env vulkan1.3 -S comp src/vulkan/tensor_gemm_coop.comp -o tensor_gemm_coop.raw.spv
+python tools/add_spirv_float_controls.py tensor_gemm_coop.raw.spv src/vulkan/tensor_gemm_coop.comp.spv src/vulkan/tensor_gemm_coop_denorm.comp.spv
+glslang -V --target-env vulkan1.3 -S comp src/vulkan/tensor_gemm_coop_f16.comp -o tensor_gemm_coop_f16.raw.spv
+python tools/add_spirv_float_controls.py tensor_gemm_coop_f16.raw.spv src/vulkan/tensor_gemm_coop_f16.comp.spv src/vulkan/tensor_gemm_coop_f16_denorm.comp.spv
+```
+
+```text
+tensor_gemm.hlsl                         86E608B81BA51DD0F827AA53A07D91CC8B2C0542C764DEC3D16C937AFCDB2F31
+tensor_gemm.comp.spv                     F91563D2DE7553C84059A416812E2A4241C3F500206D57FA1655AF0E3D3061B1
+tensor_gemm_denorm.comp.spv              D606A8E6EE510B8D32DE4341AF977D478121E0101CB8274C23640FEABE1C83F9
+tensor_gemm_prepare.hlsl                 C8914CF9427FD5A904B7C503DE1F5F1B63E2BB9EC37DCA46AA6823B96ACC8063
+tensor_gemm_prepare.comp.spv             D716981E9734554C9E18E9587959FA70770E768DF94F1AA88478192B4727AA59
+tensor_gemm_coop.comp                    76589B0446B567F2FDAD655CC337EE96CDC2E22F909994815891F84A3E4C5691
+tensor_gemm_coop.comp.spv                B9719969312C4962006CD0877DBDADB2AAB8E4C8232BE84D593F4267F7597CF9
+tensor_gemm_coop_denorm.comp.spv         B5B80AC23262AAB3285AAC2F763910D56D6AAED256DA920274FD6D7778AC4EA9
+tensor_gemm_coop_f16.comp                11B75EEFEFAEF0EFF8266BAE7D5E4CE0D1B6EBAA43C29F2D0CB9DA5B12E6203F
+tensor_gemm_coop_f16.comp.spv            E76C1A114F177A4EAA48D69A1DF7C102C06E1109EA4512C04B4335E99FEA537D
+tensor_gemm_coop_f16_denorm.comp.spv     9B51BE611B7F6477F6F5D4C82DABA6E1F900F29A06C9811F987126BDA9D23C9A
+src/cuda/deterministic_gemm.cu           08933C82C27942436DBB34549D35CB3D4DBABC3A09C8539ECFF768CC645F35F8
+```

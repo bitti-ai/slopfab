@@ -5,7 +5,8 @@
 Vulkan currently wires only the final planar fp32 RGB to BT.709 limited-range
 YUV420 conversion into generation. A tested Vulkan neural-primitive substrate
 now exists, including tensor/layout operations, normalization, RoPE, and
-persistent preparation of every shipped dense/quantized linear-weight format,
+every required dense NT GEMM mode plus persistent preparation of every shipped
+dense/quantized linear-weight format,
 but generation, conditioning, denoising, and both neural decoders still execute
 through CUDA. `--output-accelerator vulkan` names that narrow output stage.
 `--inference-backend vulkan` is rejected before any
@@ -41,7 +42,7 @@ Missing work by pipeline stage:
 
 | Stage | CUDA implementation that has no Vulkan peer | Principal missing operations |
 |---|---|---|
-| Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | dense and native NVFP4 GEMM, attention batched GEMM, remaining activations, and residual/broadcast operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, used RoPE variants, persistent seven-format weight preparation, AWQ pre-scale and ConvRot now have Vulkan primitives |
+| Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | native quantized GEMM, NN/batched attention GEMM, remaining activations, and residual/broadcast operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, used RoPE variants, dense NT GEMM, persistent seven-format weight preparation, AWQ pre-scale and ConvRot now have Vulkan primitives |
 | Video VAE decode | `vae_kernels.cu` (503), `vit_decoder.cu` (684), `decode_pipeline.cpp` (420) | Conv3D/Conv2D, causal padding, upsample, residual blocks, spatial/temporal attention, tile scheduling and merge |
 | Audio VAE decode | `audio_vae_kernels.cu` (452), `audio_decoder.cpp` (504) | weight-normalized Conv1D/transposed Conv1D, residual units, Snake activation, channel/layout transforms |
 | Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | multimodal projections, causal/banded attention, fused residual paths, timestep conditioning, scheduler loop integration and caches; AdaLN, Q/K RMSNorm, canonical H3 tables and H3 RoPE primitives exist but are not wired |
@@ -127,8 +128,12 @@ matrix. Caller-owned BF16/FP16 prepared storage is reusable over chunks; one
 batched upload retains immutable compressed bytes and all auxiliary metadata.
 The device batch also provides BF16/fp32 AWQ pre-scale and regular-H4 ConvRot.
 Real NVFP4 and video-VAE NF4 tensors match CUDA materialization byte-for-byte.
-This deliberately stops before GEMM: equivalent reduction formulas cannot be
-assumed bit-identical to cuBLAS or native NVFP4 execution.
+Dense NT execution now covers BF16/BF16 to BF16 with its separate bias round,
+fp32 activations prepared once to FP16 for FP16-weight VAE linears, and FP32
+SGEMM. CUDA and Vulkan use pinned matching WMMA/cooperative tiles or the same
+ascending-K scalar edge order. Native NVFP4/NF4 execution, NN and batched GEMM
+remain separate work because equivalent formulas cannot be assumed
+bit-identical to cuBLAS or native quantized execution.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
@@ -139,8 +144,8 @@ are generated as unique in-range host sequences by `packing.cpp` and
 than arbitrary device data. The Vulkan shader also bounds-checks each index to
 prevent an invalid device read or write.
 
-This is a tested operator substrate, not a wired Vulkan model stage. GEMM and
-native quantized matrix execution, remaining activations, attention,
+This is a tested operator substrate, not a wired Vulkan model stage. Native
+quantized matrix execution, NN/batched GEMM, remaining activations, attention,
 convolutions, primitive call-site wiring, and all four model-stage
 orchestrators remain on the missing list above. Therefore
 `--inference-backend vulkan` continues to fail before weights or output files.
