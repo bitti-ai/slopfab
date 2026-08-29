@@ -632,6 +632,19 @@ struct Transformer::Impl {
     std::vector<int32_t> ranges;
     bool active = false;
   } graph_capture;
+  std::string transformer_capture_path;
+  int transformer_capture_step = 0;
+  bool transformer_capture_done = false;
+  struct ActiveTransformerCapture {
+    H3TransformerCaptureHeader header{};
+    std::vector<float> prompt, video, audio, code, cosine, sine;
+    std::vector<int32_t> selectors, ranges, video_ts, audio_ts;
+    std::vector<uint16_t> text_cache, packed_input, main_final;
+    std::vector<float> video_output, audio_output;
+    uint32_t text_stage = 0;
+    bool text_active = false;
+    bool forward_active = false;
+  } transformer_capture;
   bool tensor_diag = false;
   bool sol_pipeline_diag = false;
   DeviceBuffer<cuda::TensorScan> d_tensor_diag;
@@ -861,6 +874,158 @@ struct Transformer::Impl {
           "transformer: stopped after requested H3 graph capture");
   }
 
+  void begin_transformer_text_capture(const float* prompt, int rows) {
+    if (transformer_capture_done || transformer_capture_path.empty()) return;
+    if (attention_mode != AttentionMode::kExact || blocks.size() != 50 ||
+        refiner.size() != 2)
+      throw std::runtime_error(
+          "transformer: full capture requires exact 2-refiner/50-main graph");
+    ActiveTransformerCapture next;
+    std::memcpy(next.header.magic, "VFH3FWD\0", 8);
+    next.header.version = 1;
+    next.header.header_bytes = sizeof(H3TransformerCaptureHeader);
+    next.header.hidden = static_cast<uint32_t>(cfg.hidden_size);
+    next.header.heads = static_cast<uint32_t>(cfg.num_attention_heads);
+    next.header.head_dim = static_cast<uint32_t>(cfg.attention_head_dim);
+    next.header.ffn = static_cast<uint32_t>(cfg.ffn_dim);
+    next.header.modalities = kNumModalities;
+    next.header.adaln_rank = static_cast<uint32_t>(cfg.adaln_rank);
+    next.header.layers = static_cast<uint32_t>(blocks.size());
+    next.header.text_rows = static_cast<uint32_t>(rows);
+    next.header.text_dim = static_cast<uint32_t>(cfg.text_dim);
+    next.header.video_dim = static_cast<uint32_t>(cfg.video_patch_dim());
+    next.header.audio_dim = static_cast<uint32_t>(cfg.audio_in_channels);
+    next.header.refiner_layers = static_cast<uint32_t>(refiner.size());
+    next.header.prompt_elements = static_cast<uint64_t>(rows) * cfg.text_dim;
+    next.header.text_elements = static_cast<uint64_t>(rows) * cfg.hidden_size;
+    next.prompt.assign(prompt, prompt + next.header.prompt_elements);
+    next.text_active = true;
+    transformer_capture = std::move(next);
+  }
+
+  void capture_transformer_text_stage(const __nv_bfloat16* values,
+                                      int rows, int dim) {
+    if (!transformer_capture.text_active) return;
+    if (rows != static_cast<int>(transformer_capture.header.text_rows) ||
+        dim != cfg.hidden_size || transformer_capture.text_stage >= 6)
+      throw std::runtime_error("transformer: unexpected full-capture text stage");
+    transformer_capture.header.text_boundary_fnv64[
+        transformer_capture.text_stage++] = capture_hash(
+            values, static_cast<size_t>(rows) * dim);
+  }
+
+  void begin_transformer_forward_capture(const float* video_latents,
+                                         const float* audio_latents,
+                                         int video_rows, int audio_rows) {
+    auto& cap = transformer_capture;
+    cap.forward_active = false;
+    if (transformer_capture_done || transformer_capture_path.empty() ||
+        denoise_step != transformer_capture_step) return;
+    if (cap.text_stage != 6 || cap.text_active)
+      throw std::runtime_error(
+          "transformer: full capture is missing completed text preparation");
+    if (layout.num_condition_video != 0 || layout.num_condition_audio != 0 ||
+        layout.total_rows() != num_text + video_rows + audio_rows)
+      throw std::runtime_error(
+          "transformer: full capture currently requires canonical t2va packing");
+    cap.header.sequence = static_cast<uint32_t>(layout.total_rows());
+    cap.header.timesteps = static_cast<uint32_t>(mod_timesteps);
+    cap.header.video_rows = static_cast<uint32_t>(video_rows);
+    cap.header.audio_rows = static_cast<uint32_t>(audio_rows);
+    cap.header.range_values = static_cast<uint32_t>(host_band.size());
+    cap.header.denoise_step = denoise_step;
+    cap.header.video_elements = static_cast<uint64_t>(video_rows) *
+        cfg.video_patch_dim();
+    cap.header.audio_elements = static_cast<uint64_t>(audio_rows) *
+        cfg.audio_in_channels;
+    cap.header.rope_elements = static_cast<uint64_t>(layout.total_rows()) * 96;
+    cap.header.packed_elements = static_cast<uint64_t>(layout.total_rows()) *
+        cfg.hidden_size;
+    cap.video.assign(video_latents, video_latents + cap.header.video_elements);
+    cap.audio.assign(audio_latents, audio_latents + cap.header.audio_elements);
+    cap.selectors = std::vector<int32_t>();
+    cap.code = host_code;
+    cap.cosine = host_rope_cos;
+    cap.sine = host_rope_sin;
+    cap.ranges = host_band;
+    cap.video_ts.assign(host_ts.begin(), host_ts.begin() + video_rows);
+    cap.audio_ts.assign(host_ts.begin() + video_rows, host_ts.end());
+    cap.selectors.resize(layout.total_rows());
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(cap.selectors.data(), d_adaln.get(),
+        cap.selectors.size() * sizeof(int32_t), cudaMemcpyDeviceToHost,
+        stream.get()));
+    cap.text_cache.resize(static_cast<size_t>(cap.header.text_elements));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(cap.text_cache.data(), text_cache.get(),
+        cap.text_cache.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost,
+        stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    cap.forward_active = true;
+  }
+
+  void capture_transformer_packed_input(const __nv_bfloat16* values) {
+    auto& cap = transformer_capture;
+    if (!cap.forward_active) return;
+    cap.packed_input.resize(static_cast<size_t>(cap.header.packed_elements));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(cap.packed_input.data(), values,
+        cap.packed_input.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost,
+        stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    cap.header.packed_input_fnv64 = fnv64_append(1469598103934665603ull,
+        cap.packed_input.data(), cap.packed_input.size() * sizeof(uint16_t));
+  }
+
+  void capture_transformer_main_final(const __nv_bfloat16* values) {
+    auto& cap = transformer_capture;
+    if (!cap.forward_active) return;
+    cap.main_final.resize(static_cast<size_t>(cap.header.packed_elements));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(cap.main_final.data(), values,
+        cap.main_final.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost,
+        stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    cap.header.main_final_fnv64 = fnv64_append(1469598103934665603ull,
+        cap.main_final.data(), cap.main_final.size() * sizeof(uint16_t));
+  }
+
+  void finish_transformer_capture(const float* video_velocity,
+                                  const float* audio_velocity) {
+    auto& cap = transformer_capture;
+    if (!cap.forward_active) return;
+    cap.video_output.assign(video_velocity,
+        video_velocity + cap.header.video_elements);
+    cap.audio_output.assign(audio_velocity,
+        audio_velocity + cap.header.audio_elements);
+    cap.header.video_output_fnv64 = fnv64_append(1469598103934665603ull,
+        cap.video_output.data(), cap.video_output.size() * sizeof(float));
+    cap.header.audio_output_fnv64 = fnv64_append(1469598103934665603ull,
+        cap.audio_output.data(), cap.audio_output.size() * sizeof(float));
+    std::ofstream output(transformer_capture_path,
+                         std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error(
+        "transformer: cannot create full H3 capture: " +
+        transformer_capture_path);
+    output.write(reinterpret_cast<const char*>(&cap.header), sizeof(cap.header));
+    auto write = [&](const auto& values) {
+      output.write(reinterpret_cast<const char*>(values.data()),
+          static_cast<std::streamsize>(values.size() * sizeof(values[0])));
+    };
+    write(cap.prompt); write(cap.video); write(cap.audio);
+    write(cap.selectors); write(cap.code); write(cap.cosine); write(cap.sine);
+    write(cap.ranges); write(cap.video_ts); write(cap.audio_ts);
+    write(cap.text_cache); write(cap.packed_input); write(cap.main_final);
+    write(cap.video_output); write(cap.audio_output);
+    if (!output) throw std::runtime_error(
+        "transformer: failed writing full H3 capture: " +
+        transformer_capture_path);
+    cap.forward_active = false;
+    transformer_capture_done = true;
+    std::fprintf(stderr, "vidfab: captured exact H3 transformer step %d to %s\n",
+                 denoise_step, transformer_capture_path.c_str());
+    const char* stop = std::getenv("VIDFAB_H3_TRANSFORMER_CAPTURE_EXIT");
+    if (stop && stop[0] == '1')
+      throw std::runtime_error(
+          "transformer: stopped after requested full H3 capture");
+  }
+
   void capture_sol_inputs(const __nv_bfloat16* q, const __nv_bfloat16* k,
                           const __nv_bfloat16* v, int rows, int layer) {
     if (sol_capture_done) return;
@@ -898,6 +1063,7 @@ struct Transformer::Impl {
   DeviceBuffer<int32_t> d_band;
   std::vector<int32_t> host_band;
   DeviceBuffer<float> rope_cos, rope_sin;
+  std::vector<float> host_rope_cos, host_rope_sin;
   DeviceBuffer<int32_t> d_text_idx, d_audio_idx, d_video_idx;
   DeviceBuffer<__nv_bfloat16> text_cache;
   DeviceBuffer<__nv_bfloat16> hidden;
@@ -957,6 +1123,8 @@ struct Transformer::Impl {
     const char* capture = std::getenv("VIDFAB_SOL_CAPTURE");
     const char* block_capture_env = std::getenv("VIDFAB_H3_BLOCK_CAPTURE");
     const char* graph_capture_env = std::getenv("VIDFAB_H3_GRAPH_CAPTURE");
+    const char* transformer_capture_env =
+        std::getenv("VIDFAB_H3_TRANSFORMER_CAPTURE");
     const char* diag = std::getenv("VIDFAB_TENSOR_DIAG");
     tensor_diag=diag!=nullptr&&diag[0]=='1';
     if(tensor_diag)d_tensor_diag.allocate(1);
@@ -980,6 +1148,11 @@ struct Transformer::Impl {
       graph_capture_path = graph_capture_env;
       const char* step = std::getenv("VIDFAB_H3_GRAPH_CAPTURE_STEP");
       if (step && *step) graph_capture_step = std::atoi(step);
+    }
+    if (transformer_capture_env && *transformer_capture_env) {
+      transformer_capture_path = transformer_capture_env;
+      const char* step = std::getenv("VIDFAB_H3_TRANSFORMER_CAPTURE_STEP");
+      if (step && *step) transformer_capture_step = std::atoi(step);
     }
   }
   ~Impl() {
@@ -1069,6 +1242,8 @@ struct Transformer::Impl {
   std::function<void(const char*, const __nv_bfloat16*, int, int)> stage_hook;
 
   void emit_stage(const char* label, const __nv_bfloat16* x, int rows, int dim) {
+    (void)label;
+    capture_transformer_text_stage(x, rows, dim);
     if (!stage_hook) return;
     VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     stage_hook(label, x, rows, dim);
@@ -2006,6 +2181,7 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
     s.text_cache.reset();
     return;
   }
+  s.begin_transformer_text_capture(prompt_embeds, num_tokens);
 
   const int hidden = s.cfg.hidden_size;
   const int inner = s.cfg.inner_dim();
@@ -2066,6 +2242,7 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
                                     cudaMemcpyDeviceToDevice, s.stream.get()));
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   s.emit_stage("final_norm", x, num_tokens, hidden);
+  s.transformer_capture.text_active = false;
   ws.clear();
   s.attention_configuration_locked = true;
 }
@@ -2129,6 +2306,8 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
 
   const dit::H3RopeTables rope = dit::build_h3_rope_tables(
       position_ids, s.cfg.rope_theta, static_cast<uint32_t>(s.cfg.rope_freq_dim));
+  s.host_rope_cos = rope.cosine;
+  s.host_rope_sin = rope.sine;
   s.rope_cos.allocate(rope.cosine.size());
   s.rope_sin.allocate(rope.sine.size());
   s.rope_cos.copy_from_host(rope.cosine.data(), rope.cosine.size(), s.stream.get());
@@ -2227,6 +2406,8 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
     s.d_ts_audio.copy_from_host(s.host_ts.data() + video_rows, audio_rows, s.stream.get());
   }
   prof.tick("mod.index_h2d", s.stream.get());
+  s.begin_transformer_forward_capture(video_latents, audio_latents,
+                                      video_rows, audio_rows);
 
   s.ws.clear();
   Workspace& ws = s.ws;
@@ -2290,6 +2471,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
                               s.stream.get());
   }
   prof.tick("proj_in", s.stream.get());
+  s.capture_transformer_packed_input(x);
 
   const size_t per_block = s.block_mod_stride();
   const size_t stream_n = static_cast<size_t>(seq) * hidden;
@@ -2352,6 +2534,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
       prof.tick("block_cache.capture", s.stream.get());
     }
   }
+  s.capture_transformer_main_final(x);
 
   // Both heads run over every row in the reference and are selected afterwards.
   // Gathering first is mathematically identical, because `norm_out` is per-row,
@@ -2393,6 +2576,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   // been the slow side it would arrive late and wait for nothing.
   const std::chrono::steady_clock::time_point t_issued = std::chrono::steady_clock::now();
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  s.finish_transformer_capture(video_velocity, audio_velocity);
   const std::chrono::steady_clock::time_point t_exit = std::chrono::steady_clock::now();
   prof.end_step();
   prof.sample_memory();
