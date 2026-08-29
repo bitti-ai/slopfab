@@ -758,13 +758,14 @@ The opt-in real test (`VIDFAB_AUDIO_VAE_REAL=1`) binds replay to
 `minimax_h3_audio_vae_fp32.safetensors`, 605,254,808 bytes, SHA-256
 `8E505D95DD1561D47ABD43D4238FD40D9BB1AE9E147ED0A4CBA778D76AE4DB48`.
 It exercises the production `[2048,32,1]` input projection, the
-`[1024,512,9]` first transposed convolution, and shipped activation-post
-Snake/anti-alias tensors. CUDA/Vulkan results are byte exact with aggregate
-FNV64 `A44D1909C30B36BB`; the selected raw weights contain zero fp32
-subnormals. On the measured RTX 5090 the first real transposed-convolution
-record/submit/wait is 0.56 ms. Live tensors plus bounded upload/readback staging
-use 54.4 MiB from a 58.0 MiB pool; repeated replay keeps the pool and descriptor
-count stable.
+`[1024,512,9]` first transposed convolution, a `[512,512,11]` dilation-5
+residual convolution, and shipped activation-post Snake/anti-alias tensors.
+CUDA/Vulkan results are byte exact with aggregate FNV64
+`2F78225C9577A73B`; the selected raw weights contain zero fp32 subnormals. On
+the measured RTX 5090 the first real transpose and k11/d5 convolution
+record/submit/waits are 0.56 and 0.93 ms. Live tensors plus bounded
+upload/readback staging use 65.5 MiB from a 69.0 MiB pool; repeated replay keeps
+the pool and descriptor count stable.
 
 This section establishes the primitive substrate only. It deliberately does
 not claim that the full audio decoder graph is wired to Vulkan; graph

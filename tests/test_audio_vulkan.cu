@@ -270,6 +270,10 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
   constexpr uint32_t frames = 259;
   std::vector<float> element_x = values(size_t(2) * frames, 19, 113, 1.0f / 32.0f);
   std::vector<float> element_y = values(size_t(2) * frames, 37, 109, 1.0f / 64.0f);
+  const uint32_t element_exceptions[] = {
+      0x00000001u, 0x807fffffu, 0x7fc12345u, 0x7f800000u, 0xff800000u};
+  std::memcpy(element_x.data(), element_exceptions,
+              sizeof(element_exceptions));
   cuda::DeviceBuffer<float> c_element_x(element_x.size()), c_element_y(element_y.size()),
       c_interleaved(element_x.size());
   c_element_x.copy_from_host(element_x.data(), element_x.size());
@@ -357,8 +361,12 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
       checkpoint, "dec_in_proj", {2048, 32, 1}, 2048, true);
   vae::AudioConvWeights transpose_weights = vae::load_audio_conv_weights(
       checkpoint, "decoder.ups.0.0", {1024, 512, 9}, 512, true);
+  vae::AudioConvWeights dilated_weights = vae::load_audio_conv_weights(
+      checkpoint, "decoder.resblocks.2.convs1.2", {512, 512, 11}, 512,
+      true);
   CHECK(!conv_weights.folded_weight_norm);
   CHECK(!transpose_weights.folded_weight_norm);
+  CHECK(!dilated_weights.folded_weight_norm);
   std::vector<float> log_alpha = vae::load_audio_f32_tensor(
       checkpoint, "decoder.activation_post.act.alpha", {8});
   std::vector<float> log_beta = vae::load_audio_f32_tensor(
@@ -372,7 +380,9 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
       count_subnormals(conv_weights.weight) +
       count_subnormals(conv_weights.bias) +
       count_subnormals(transpose_weights.weight) +
-      count_subnormals(transpose_weights.bias) + count_subnormals(log_alpha) +
+      count_subnormals(transpose_weights.bias) +
+      count_subnormals(dilated_weights.weight) +
+      count_subnormals(dilated_weights.bias) + count_subnormals(log_alpha) +
       count_subnormals(log_beta) + count_subnormals(up_filter) +
       count_subnormals(down_filter);
   CHECK(raw_subnormals == 0u);
@@ -455,6 +465,40 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
   const double transpose_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - transpose_begin).count();
 
+  const vae::AudioConv1DDesc dilated{1, 512, 512, 15, 15, 11, 25, 5};
+  std::vector<float> dilated_input = values(
+      dilated.input_elements(), 47, 263, 1.0f / 256.0f);
+  cuda::DeviceBuffer<float> c_dilated_input(dilated.input_elements()),
+      c_dilated_weight(dilated.weight_elements()), c_dilated_bias(512),
+      c_dilated_output(dilated.output_elements());
+  c_dilated_input.copy_from_host(dilated_input.data(), dilated_input.size());
+  c_dilated_weight.copy_from_host(dilated_weights.weight.data(),
+                                  dilated_weights.weight.size());
+  c_dilated_bias.copy_from_host(dilated_weights.bias.data(),
+                                dilated_weights.bias.size());
+  cuda::launch_conv1d(
+      c_dilated_input.get(), c_dilated_weight.get(), c_dilated_bias.get(),
+      c_dilated_output.get(), dilated.batch, dilated.in_channels,
+      dilated.out_channels, dilated.length_in, dilated.length_out,
+      dilated.kernel, dilated.padding, dilated.dilation, nullptr);
+  vulkan::DeviceTensor v_dilated_input =
+      upload(layout({1, 512, 15}), dilated_input);
+  vulkan::DeviceTensor v_dilated_weight =
+      upload(layout({512, 512, 11}), dilated_weights.weight);
+  vulkan::DeviceTensor v_dilated_bias =
+      upload(layout({512}), dilated_weights.bias);
+  vulkan::DeviceTensor v_dilated_output =
+      vk.allocate(layout({1, 512, 15}));
+  const auto dilated_begin = std::chrono::steady_clock::now();
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_conv1d(v_dilated_input, v_dilated_weight, &v_dilated_bias,
+                       v_dilated_output, dilated);
+    batch.submit().wait();
+  }
+  const double dilated_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - dilated_begin).count();
+
   constexpr uint32_t aa_batch = 2, aa_channels = 8, aa_length = 259;
   const size_t aa_count = size_t(aa_batch) * aa_channels * aa_length;
   std::vector<float> aa_input = values(aa_count, 43, 311, 1.0f / 128.0f);
@@ -495,31 +539,39 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
   std::vector<float> cuda_conv(conv.output_elements()),
       vk_conv(conv.output_elements()),
       cuda_transpose(transpose.output_elements()),
-      vk_transpose(transpose.output_elements()), cuda_up(aa_count * 2),
+      vk_transpose(transpose.output_elements()),
+      cuda_dilated(dilated.output_elements()),
+      vk_dilated(dilated.output_elements()), cuda_up(aa_count * 2),
       vk_up(aa_count * 2), cuda_down(aa_count), vk_down(aa_count);
   c_conv_output.copy_to_host(cuda_conv.data(), cuda_conv.size());
   c_transpose_output.copy_to_host(cuda_transpose.data(), cuda_transpose.size());
+  c_dilated_output.copy_to_host(cuda_dilated.data(), cuda_dilated.size());
   c_aa_up.copy_to_host(cuda_up.data(), cuda_up.size());
   c_aa_down.copy_to_host(cuda_down.data(), cuda_down.size());
   vk.download(v_conv_output, vk_conv.data(), vk_conv.size());
   vk.download(v_transpose_output, vk_transpose.data(), vk_transpose.size());
+  vk.download(v_dilated_output, vk_dilated.data(), vk_dilated.size());
   vk.download(v_aa_up, vk_up.data(), vk_up.size());
   vk.download(v_aa_down, vk_down.data(), vk_down.size());
   check_exact(cuda_conv, vk_conv, "real dec_in_proj");
   check_exact(cuda_transpose, vk_transpose, "real upsample transpose");
+  check_exact(cuda_dilated, vk_dilated, "real dilated Conv1D");
   check_exact(cuda_up, vk_up, "real activation up+SnakeBeta");
   check_exact(cuda_down, vk_down, "real activation downsample");
-  const uint64_t digest = fnv64({vk_conv, vk_transpose, vk_up, vk_down});
-  CHECK(digest == 0xa44d1909c30b36bbull);
+  const uint64_t digest = fnv64(
+      {vk_conv, vk_transpose, vk_dilated, vk_up, vk_down});
+  CHECK(digest == 0x2f78225c9577a73bull);
   const uint64_t logical_bytes = sizeof(float) * (
       conv.input_elements() + conv.weight_elements() + conv.out_channels +
       conv.output_elements() + transpose.input_elements() +
       transpose.weight_elements() + transpose.out_channels +
-      transpose.output_elements() + aa_count + 12u + 12u + 8u + 8u +
+      transpose.output_elements() + dilated.input_elements() +
+      dilated.weight_elements() + dilated.out_channels +
+      dilated.output_elements() + aa_count + 12u + 12u + 8u + 8u +
       aa_count * 2u + aa_count);
   CHECK(vk.pooled_used_bytes() >= logical_bytes);
   CHECK(vk.pooled_used_bytes() <= logical_bytes + (40ull << 20));
-  CHECK(vk.reserved_bytes() <= (64ull << 20));
+  CHECK(vk.reserved_bytes() <= (80ull << 20));
   const uint64_t stable_reserved = vk.reserved_bytes();
   const uint64_t stable_descriptors = vk.descriptor_set_allocations();
   {
@@ -532,8 +584,9 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
   CHECK(vk.reserved_bytes() == stable_reserved);
   CHECK(vk.descriptor_set_allocations() == stable_descriptors);
   std::printf(
-      "  real audio primitives: raw subnormals %zu, FNV64 %016llx, first transpose %.2f ms, pool %.1f/%.1f MiB, descriptors %llu\n",
+      "  real audio primitives: raw subnormals %zu, FNV64 %016llx, first transpose %.2f ms, dilated k11/d5 %.2f ms, pool %.1f/%.1f MiB, descriptors %llu\n",
       raw_subnormals, static_cast<unsigned long long>(digest), transpose_ms,
+      dilated_ms,
       double(vk.pooled_used_bytes()) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk.descriptor_set_allocations()));
