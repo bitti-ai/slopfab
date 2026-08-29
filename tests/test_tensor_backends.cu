@@ -66,6 +66,7 @@
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/text_layer.h"
+#include "vidfab/vulkan/text_encoder.h"
 #include "vidfab/vulkan/vae_vit_block.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
@@ -3579,6 +3580,194 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
       nv_cuda_ms,nv_vk_ms);
   for(uint64_t hash:nv_hashes)
     std::printf(" %016llx",static_cast<unsigned long long>(hash));
+  std::printf("\n");
+}
+
+VIDFAB_TEST(cuda_vulkan_qwen_full50_real_l132) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path source(VIDFAB_TEST_SOURCE_DIR);
+  const std::filesystem::path checkpoint_path = source /
+      "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+  const std::filesystem::path capture_path = source /
+      "tests/data/qwen_layer0_l132.vfqw";
+  int cuda_devices = 0;
+  if (!std::filesystem::exists(checkpoint_path) ||
+      !std::filesystem::exists(capture_path) ||
+      cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 ||
+      !info.shader_float16 || !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  device_options.enable_shader_int64 = true;
+  device_options.enable_shader_float16 = true;
+  device_options.enable_storage_buffer_16bit = true;
+  device_options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(device_options);
+
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+  const text::QwenLayerCapture capture =
+      text::read_qwen_layer_capture(capture_path.string());
+  CHECK(capture.header.sequence == 132);
+  CHECK(capture.token_ids.size() == 132);
+
+  text::PromptEmbedding cuda_output;
+  text::EncoderTrace cuda_trace;
+  double cuda_seconds = 0.0;
+  {
+    text::Encoder encoder;
+    text::EncoderConfig config;
+    config.residency = text::Residency::kStreaming;
+    config.arithmetic = text::EncoderArithmetic::kExact;
+    encoder.load(checkpoint, config);
+    const auto begin = std::chrono::steady_clock::now();
+    cuda_output = encoder.encode(capture.token_ids, &cuda_trace);
+    cuda_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - begin).count();
+    CHECK(encoder.format() == text::WeightFormat::kI8ConvRot);
+    CHECK(encoder.residency() == text::Residency::kStreaming);
+    encoder.unload();
+  }
+
+  TensorContextOptions context_options;
+  // I8 L132 records 35 layer operators, one trace copy and the final widen.
+  context_options.max_batch_operators = 37;
+  TensorContext vk(device, context_options);
+  const uint64_t unloaded_baseline = vk.pooled_used_bytes();
+  ExactQwenTextEncoder encoder = ExactQwenTextEncoder::create(vk);
+  encoder.load(checkpoint);
+  text::EncoderTrace vk_trace;
+  const auto vk_begin = std::chrono::steady_clock::now();
+  const text::PromptEmbedding vk_output =
+      encoder.encode(capture.token_ids, &vk_trace);
+  const double vk_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - vk_begin).count();
+
+  CHECK(cuda_output.num_tokens == vk_output.num_tokens);
+  CHECK(cuda_output.hidden_size == vk_output.hidden_size);
+  CHECK(cuda_output.modality_tags == vk_output.modality_tags);
+  CHECK(cuda_output.data == vk_output.data);
+  CHECK(cuda_trace.num_tokens == vk_trace.num_tokens);
+  CHECK(cuda_trace.hidden_size == vk_trace.hidden_size);
+  CHECK(cuda_trace.layer_residual_bf16 == vk_trace.layer_residual_bf16);
+  CHECK(vk_trace.layer_residual_bf16.size() ==
+        size_t(50) * 132 * 5120);
+
+  auto fnv64 = [](const void* values, size_t bytes) {
+    const auto* data = static_cast<const uint8_t*>(values);
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < bytes; ++i) {
+      hash ^= data[i]; hash *= 1099511628211ull;
+    }
+    return hash;
+  };
+  std::array<uint64_t, 50> hashes{};
+  const size_t layer_elements = size_t(132) * 5120;
+  for (size_t layer = 0; layer < hashes.size(); ++layer) {
+    hashes[layer] = fnv64(
+        vk_trace.layer_residual_bf16.data() + layer * layer_elements,
+        layer_elements * sizeof(uint16_t));
+  }
+  const uint64_t final_f32 =
+      fnv64(vk_output.data.data(), vk_output.data.size() * sizeof(float));
+  constexpr std::array<uint64_t, 50> expected_hashes{
+      0xfb3966de636ac098ull,0x16b0e53a0265959dull,
+      0x7e2377403c49f851ull,0xdacca747d7db7ccaull,
+      0xb3de1cdb9248573cull,0xcb7ef7852ef4ce79ull,
+      0xfe09924dff391f53ull,0x0ac372b850d058d8ull,
+      0xe818f084c10d99d5ull,0xeed04e74ca44abcfull,
+      0xe3e63048102b3e14ull,0x6e5647916a5d3586ull,
+      0x1b9a96cd7cb703c2ull,0xe60df16cc8c0390dull,
+      0xcf624f216f397d84ull,0x2e680a56b7030b0aull,
+      0x8b8e97be1f24e88eull,0x61e2e50339318a1eull,
+      0x410a6b1ab0a9c0e4ull,0xaf70d3523ce3a525ull,
+      0xfb6b26f66fc1eb31ull,0x732c1c3ed4d7e6a6ull,
+      0x1b81b2dd36a55f5aull,0x01f09dd599e38e09ull,
+      0xc93c6edb4d56f691ull,0xcb9bd628a2587064ull,
+      0x30c8bbdab894f8cfull,0xd0c82e71b41c4e74ull,
+      0xef88fb29b4c38602ull,0x3b865ed94b23284eull,
+      0x160d4d0750485e84ull,0xa3128750a0466a21ull,
+      0xc1c6ba2884daa0e1ull,0xbf2a42d54c6d336eull,
+      0x7ae8060855d02ab2ull,0x2fe95298685c12c3ull,
+      0x17610f06aabb0ce5ull,0xd09a61dcf57388c9ull,
+      0xc363bc14f4fabe3bull,0xc857cd797d07a823ull,
+      0xb5ba41c7ec13df0bull,0x153186eecfcb34e2ull,
+      0x89792cd842ae3215ull,0x03cbb8ab112884f9ull,
+      0x0d9c0669be4b1818ull,0xc45536c76bfb5268ull,
+      0x465a47fdc0f38a3bull,0xc6c70427de251f9dull,
+      0x2082d9a03b0f2c88ull,0x141e4954a3b02693ull};
+  CHECK(hashes == expected_hashes);
+  CHECK(final_f32 == 0x579170f52abfc8dbull);
+  const ExactQwenTextEncoderStats stats = encoder.stats();
+  CHECK(stats.last_num_tokens == 132);
+  CHECK(stats.max_layer_weight_bytes < 500ull * 1024 * 1024);
+  CHECK(stats.peak_device_bytes < 900ull * 1024 * 1024);
+  CHECK(stats.allocator_peak_used_bytes >= stats.allocator_baseline_bytes);
+  CHECK(stats.descriptor_set_allocations <= 40);
+  const uint64_t stable_reserved = stats.allocator_reserved_bytes;
+  const uint64_t stable_descriptors = stats.descriptor_set_allocations;
+  encoder.unload();
+  const uint64_t warm_unloaded_baseline = vk.pooled_used_bytes();
+  CHECK(warm_unloaded_baseline >= unloaded_baseline);
+  CHECK(warm_unloaded_baseline <=
+        2 * vk.staging_capacity_bytes() + unloaded_baseline);
+  CHECK(vk.reserved_bytes() == stable_reserved);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+
+  // A complete unload/reload preserves exact output and returns to the same
+  // warmed context-only staging baseline. No descriptor or pool growth is
+  // permitted on the second trajectory.
+  encoder.load(checkpoint);
+  const text::PromptEmbedding reloaded = encoder.encode(capture.token_ids);
+  CHECK(reloaded.data == cuda_output.data);
+  const ExactQwenTextEncoderStats reload_stats = encoder.stats();
+  CHECK(reload_stats.allocator_reserved_bytes >= stable_reserved);
+  CHECK(reload_stats.allocator_reserved_bytes < 800ull * 1024 * 1024);
+  CHECK(reload_stats.peak_device_bytes < 850ull * 1024 * 1024);
+  CHECK(reload_stats.descriptor_set_allocations == stable_descriptors);
+  encoder.unload();
+  CHECK(vk.pooled_used_bytes() == warm_unloaded_baseline);
+  CHECK(vk.reserved_bytes() == reload_stats.allocator_reserved_bytes);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+
+  // Exact capacity is preflighted before activation allocation/upload. L132
+  // I8 with a boundary trace requires 35+copy+final-widen = 37 operators.
+  TensorContextOptions short_options;
+  short_options.max_batch_operators = 36;
+  TensorContext short_vk(device, short_options);
+  const uint64_t short_used = short_vk.pooled_used_bytes();
+  const uint64_t short_reserved = short_vk.reserved_bytes();
+  ExactQwenTextEncoder short_encoder =
+      ExactQwenTextEncoder::create(short_vk);
+  short_encoder.load(checkpoint);
+  text::EncoderTrace rejected_trace;
+  bool short_rejected = false;
+  try { (void)short_encoder.encode(capture.token_ids, &rejected_trace); }
+  catch (const std::logic_error&) { short_rejected = true; }
+  CHECK(short_rejected);
+  CHECK(rejected_trace.layer_residual_bf16.empty());
+  CHECK(short_vk.pooled_used_bytes() == short_used);
+  CHECK(short_vk.reserved_bytes() == short_reserved);
+  CHECK(short_vk.descriptor_set_allocations() == 0);
+
+  std::printf(
+      "  real exact Qwen full50 L132 CUDA/Vulkan %.2f/%.2f s final FNV64 %016llx, peak/used/reserved %.1f/%.1f/%.1f MiB descriptors %llu, boundaries:",
+      cuda_seconds, vk_seconds,
+      static_cast<unsigned long long>(final_f32),
+      double(stats.peak_device_bytes) / 1048576.0,
+      double(stats.allocator_used_bytes) / 1048576.0,
+      double(stats.allocator_reserved_bytes) / 1048576.0,
+      static_cast<unsigned long long>(stats.descriptor_set_allocations));
+  for (uint64_t hash : hashes)
+    std::printf(" %016llx", static_cast<unsigned long long>(hash));
   std::printf("\n");
 }
 
