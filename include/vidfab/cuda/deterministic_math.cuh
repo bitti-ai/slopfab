@@ -195,6 +195,57 @@ __device__ inline float deterministic_exp_nonpositive(float value) {
   return polynomial * __uint_as_float(scale_bits);
 }
 
+__device__ inline uint64_t deterministic_round_quotient_even(uint64_t numerator,
+                                                              uint64_t denominator) {
+  uint64_t quotient = numerator / denominator;
+  const uint64_t remainder = numerator - quotient * denominator;
+  const uint64_t complement = denominator - remainder;
+  if (remainder > complement ||
+      (remainder == complement && (quotient & 1ull) != 0ull)) {
+    ++quotient;
+  }
+  return quotient;
+}
+
+// Backend-stable IEEE round-to-nearest-even division for the finite-normal
+// denominator domain used by exact attention normalization. Zero numerators
+// preserve their sign; overflow and subnormal outputs are constructed by bits.
+__device__ inline float deterministic_float_divide(float numerator_value,
+                                                    float denominator_value) {
+  const uint32_t numerator_bits = __float_as_uint(numerator_value);
+  const uint32_t denominator_bits = __float_as_uint(denominator_value);
+  const uint32_t sign = (numerator_bits ^ denominator_bits) & 0x80000000u;
+  const uint32_t numerator_magnitude = numerator_bits & 0x7fffffffu;
+  const uint32_t denominator_magnitude = denominator_bits & 0x7fffffffu;
+  // Any fp32-subnormal numerator remains below the minimum BF16 result after
+  // division by attention's running sum (which is >= 1). Canonicalize it to a
+  // signed zero before decoding the implicit significand bit.
+  if (numerator_magnitude < 0x00800000u) return __uint_as_float(sign);
+
+  const uint32_t a = (numerator_magnitude & 0x007fffffu) | 0x00800000u;
+  const uint32_t b = (denominator_magnitude & 0x007fffffu) | 0x00800000u;
+  int exponent = static_cast<int>(numerator_magnitude >> 23u) -
+                 static_cast<int>(denominator_magnitude >> 23u) + 127;
+  unsigned shift = 23;
+  if (a < b) { --exponent; shift = 24; }
+  uint64_t significand = deterministic_round_quotient_even(
+      static_cast<uint64_t>(a) << shift, static_cast<uint64_t>(b));
+  if (significand == (1ull << 24u)) { significand >>= 1u; ++exponent; }
+  if (exponent >= 255) return __uint_as_float(sign | 0x7f800000u);
+  if (exponent <= 0) {
+    const unsigned sub_shift = static_cast<unsigned>(1 - exponent);
+    if (sub_shift >= 64) return __uint_as_float(sign);
+    uint64_t base = significand >> sub_shift;
+    const uint64_t lost_mask = (1ull << sub_shift) - 1ull;
+    const uint64_t lost = significand & lost_mask;
+    const uint64_t halfway = 1ull << (sub_shift - 1u);
+    if (lost > halfway || (lost == halfway && (base & 1ull) != 0ull)) ++base;
+    return __uint_as_float(sign | static_cast<uint32_t>(base));
+  }
+  return __uint_as_float(sign | (static_cast<uint32_t>(exponent) << 23u) |
+                         (static_cast<uint32_t>(significand) & 0x007fffffu));
+}
+
 __device__ inline float deterministic_silu(float value) {
   const uint32_t bits = __float_as_uint(value);
   const uint32_t magnitude = bits & 0x7fffffffu;

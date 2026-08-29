@@ -153,6 +153,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/nn_kernels.cu
       src/cuda/linear.cu
       src/cuda/deterministic_gemm.cu
+      src/cuda/deterministic_attention.cu
       src/cuda/nf4_weight.cu
       src/cuda/nvfp4_gemm.cu
       src/cuda/attention.cu
@@ -496,9 +497,9 @@ if(VIDFAB_ENABLE_VULKAN)
   file(SHA256 "${VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV}"
     VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_HASH)
   if(NOT VIDFAB_TENSOR_ATTENTION_BLOCKED_SOURCE_HASH STREQUAL
-      "ad35bc6fbda510f09800a1705e4fb21f7a70f6832b12aad98e841a5fd5dcdb3e" OR
+      "474c8eccfe156153befcbdaf4c7acef6163d32eabca1d79a988cdd88eae84fd8" OR
      NOT VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_HASH STREQUAL
-      "379e57e9bb9a70a54b24cd5da91dc58c649e05727ebc08c5aa046a7eb630a86b")
+      "fe2b390f769e1f221ad0e97bf6dea5ce04cdbe6ca34780971ad7250bb78ffb52")
     message(FATAL_ERROR "vidfab: blocked-attention shader/source hash mismatch")
   endif()
   file(READ "${VIDFAB_TENSOR_OPS_SPV}" VIDFAB_TENSOR_OPS_SPV_HEX HEX)

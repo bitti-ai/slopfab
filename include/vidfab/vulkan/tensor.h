@@ -234,6 +234,11 @@ class TensorContext {
   void require_exact_normalization() const;
   bool exact_fp32_vae_normalization() const noexcept;
   void require_exact_fp32_vae_normalization() const;
+  // Exact blocked attention has its own capability contract even though the
+  // currently measured tuple overlaps normalization. It additionally pins the
+  // deterministic exp/divide shader and CUDA reference artifacts.
+  bool exact_blocked_attention() const noexcept;
+  void require_exact_blocked_attention() const;
   // Native block-scaled E2M1 cooperative MMA is deliberately separate from
   // streamed NVFP4->BF16 execution. It remains false until Vulkan exposes and
   // this backend implements an exact FP4 component/scale operand contract.

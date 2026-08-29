@@ -66,6 +66,12 @@ bool known_exact_cooperative_f16_gemm_device(const DeviceInfo& info) {
       info.cooperative_matrix_f16_f32_16x16x16;
 }
 
+bool known_exact_blocked_attention_device(const DeviceInfo& info) {
+  return detail::known_exact_vae_norm_device(
+             info.vendor_id, info.device_id, info.driver_version) &&
+      info.fp32_signed_zero_inf_nan_preserve && info.shader_int64_enabled;
+}
+
 }  // namespace
 
 struct DeviceTensor::Impl {
@@ -234,6 +240,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> attention_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
+  bool exact_attention = false;
   bool cooperative_gemm = false;
   bool cooperative_f16_gemm = false;
   uint32_t max_dispatch_x = 0;
@@ -274,6 +281,7 @@ struct TensorContext::Impl {
                          input.info().driver_version) &&
                      input.info().fp32_signed_zero_inf_nan_preserve &&
                      input.info().shader_int64_enabled;
+    exact_attention = known_exact_blocked_attention_device(input.info());
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
     max_dispatch_y = input.info().max_compute_workgroup_count[1];
     max_storage_bytes = input.info().max_storage_buffer_bytes;
@@ -403,6 +411,8 @@ struct TensorContext::Impl {
       vae_rope_pipeline = make_norm_pipeline(
           detail::kTensorVaeRopeSpirv, sizeof(detail::kTensorVaeRopeSpirv), 7,
           32, 1, sizeof(VaeRopeParameters));
+    }
+    if (exact_attention) {
       attention_blocked_pipeline = make_norm_pipeline(
           detail::kTensorAttentionBlockedSpirv,
           sizeof(detail::kTensorAttentionBlockedSpirv), 4, 128, 1,
@@ -1321,6 +1331,16 @@ bool TensorContext::exact_fp32_vae_normalization() const noexcept {
 }
 void TensorContext::require_exact_fp32_vae_normalization() const {
   require_exact_normalization();
+}
+bool TensorContext::exact_blocked_attention() const noexcept {
+  return impl_ && impl_->exact_attention;
+}
+void TensorContext::require_exact_blocked_attention() const {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->exact_attention) {
+    throw std::runtime_error(
+        "vulkan attention: exact blocked attention is unavailable on this device/driver");
+  }
 }
 
 bool TensorContext::native_nvfp4_gemm_available() const noexcept {
@@ -2722,7 +2742,7 @@ BlockedAttentionPlan::operator bool() const noexcept { return impl_ != nullptr; 
 BlockedAttentionPlan BlockedAttentionPlan::create(
     TensorContext& context, const BlockedAttentionPlanDesc& desc) {
   if (!context.impl_) throw std::invalid_argument("vulkan attention: empty context");
-  if (!context.impl_->exact_vae_norm) {
+  if (!context.impl_->exact_attention) {
     throw std::runtime_error(
         "vulkan attention: exact blocked attention is unavailable on this device/driver");
   }

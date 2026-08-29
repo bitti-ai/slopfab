@@ -19,6 +19,7 @@
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/deterministic_math.cuh"
 #include "vidfab/cuda/deterministic_gemm.cuh"
+#include "vidfab/cuda/deterministic_attention.cuh"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/keyframe_encoder.cuh"
@@ -406,6 +407,81 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
               "CUDA/Vulkan fp32 add mismatch at %zu: %08x != %08x", i,
               cuda_bits, vk_bits);
   }
+}
+
+VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore ||
+      !physical.front().info().shader_int64) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_blocked_attention()) return;
+
+  auto run = [&](uint32_t sequence, uint32_t heads, uint32_t dim) {
+    const size_t count = static_cast<size_t>(sequence) * heads * dim;
+    std::vector<uint16_t> q(count), k(count), v(count);
+    for (size_t i = 0; i < count; ++i) {
+      q[i] = f32_to_bf16(static_cast<float>(static_cast<int>(i * 17 % 41) - 20) / 32.0f);
+      k[i] = f32_to_bf16(static_cast<float>(static_cast<int>(i * 13 % 37) - 18) / 32.0f);
+      v[i] = f32_to_bf16(static_cast<float>(static_cast<int>(i * 19 % 43) - 21) / 16.0f);
+    }
+    if (count >= 8) {
+      q[0] = 0x8000u; q[1] = f32_to_bf16(1.0f);
+      k[0] = f32_to_bf16(1.0f); k[1] = f32_to_bf16(-1.0f);
+      v[0] = 0x8000u; v[1] = f32_to_bf16(1.0f);
+    }
+    cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count), co(count);
+    cq.copy_from_host(q.data(), count); ck.copy_from_host(k.data(), count);
+    cv.copy_from_host(v.data(), count);
+    const float scale = dim == 64 ? 0.125f : dim == 128 ? 0.0883883461356163f
+                                                         : 0.11785113019775793f;
+    cuda::launch_deterministic_blocked_attention(
+        nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+        reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+        reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+        reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim, scale);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> cuda_output(count);
+    co.copy_to_host(cuda_output.data(), count);
+
+    const uint64_t shape[] = {sequence, heads, dim};
+    const TensorLayout layout = TensorLayout::contiguous(shape, 3);
+    DeviceTensor vq = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor vk_tensor = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor vv = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor vo = vk.allocate(layout, ScalarType::kBFloat16);
+    vk.upload_bytes(vq, q.data(), count * 2);
+    vk.upload_bytes(vk_tensor, k.data(), count * 2);
+    vk.upload_bytes(vv, v.data(), count * 2);
+    BlockedAttentionPlanDesc desc{sequence, heads, dim, scale};
+    BlockedAttentionPlan plan = BlockedAttentionPlan::create(vk, desc);
+    TensorBatch batch = vk.begin_batch();
+    plan.record(batch, vq, vk_tensor, vv, vo);
+    batch.submit().wait();
+    std::vector<uint16_t> vulkan_output(count);
+    vk.download_bytes(vo, vulkan_output.data(), count * 2);
+    size_t mismatch = count;
+    for (size_t i = 0; i < count; ++i) {
+      if (cuda_output[i] != vulkan_output[i]) { mismatch = i; break; }
+    }
+    CHECK_MSG(mismatch == count,
+              "CUDA/Vulkan exact attention S%u H%u D%u mismatch at %zu: %04x != %04x",
+              sequence, heads, dim, mismatch,
+              mismatch == count ? 0u : cuda_output[mismatch],
+              mismatch == count ? 0u : vulkan_output[mismatch]);
+  };
+  run(1, 2, 64);
+  run(17, 3, 72);
+  run(129, 2, 128);
 }
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {

@@ -127,7 +127,9 @@ float deterministic_divide(float numerator_value, float denominator_value) {
   uint sign = (numerator_bits ^ denominator_bits) & 0x80000000u;
   uint numerator_magnitude = numerator_bits & 0x7fffffffu;
   uint denominator_magnitude = denominator_bits & 0x7fffffffu;
-  if (numerator_magnitude == 0u) return uintBitsToFloat(sign);
+  // running_sum is >= 1, so an fp32-subnormal numerator can only round to a
+  // signed BF16 zero. Canonicalize before decoding an implicit leading bit.
+  if (numerator_magnitude < 0x00800000u) return uintBitsToFloat(sign);
 
   uint a = (numerator_magnitude & 0x007fffffu) | 0x00800000u;
   uint b = (denominator_magnitude & 0x007fffffu) | 0x00800000u;
