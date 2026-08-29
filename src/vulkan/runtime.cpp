@@ -265,6 +265,7 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
     info.max_compute_workgroup_count[i] = properties.limits.maxComputeWorkGroupCount[i];
     info.max_compute_workgroup_size[i] = properties.limits.maxComputeWorkGroupSize[i];
   }
+  info.max_compute_shared_memory_bytes = properties.limits.maxComputeSharedMemorySize;
   info.max_push_constant_bytes = properties.limits.maxPushConstantsSize;
   info.max_storage_buffer_bytes = properties.limits.maxStorageBufferRange;
   info.min_storage_buffer_offset_alignment =

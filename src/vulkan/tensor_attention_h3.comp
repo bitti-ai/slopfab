@@ -1,12 +1,18 @@
 #version 460
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_EXT_bfloat16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_memory_scope_semantics : require
 #extension GL_ARB_gpu_shader_int64 : require
 #extension GL_EXT_scalar_block_layout : require
 
-// Shared exact-mode H3 attention. This is intentionally a direct-BF16,
-// fixed-order reference rather than a claim about implementation-defined MMA
-// accumulation. A workgroup owns one (query row, head), and selected keys are
-// consumed in ordered 64-row blocks with one continuous online recurrence.
-layout(local_size_x = 128) in;
+// Shared exact-mode H3 attention. One four-subgroup workgroup owns sixteen
+// globally aligned query rows and one head. Ragged BF16 Q/K and FP16 V tiles
+// are staged and zero padded before fixed 16x16x16 cooperative operations.
+// Selected keys remain ordered 64-row blocks with one continuous recurrence.
+layout(local_size_x = 1024) in;
 layout(set = 0, binding = 0, std430) readonly buffer QueryData { uint words[]; } query_data;
 layout(set = 0, binding = 1, std430) readonly buffer KeyData { uint words[]; } key_data;
 layout(set = 0, binding = 2, std430) readonly buffer ValueData { uint words[]; } value_data;
@@ -26,9 +32,17 @@ layout(push_constant) uniform Parameters {
   uint reserved;
 } p;
 
-shared float score_or_probability[128];
-shared float reduction[128];
-shared uint output_bits[128];
+shared bfloat16_t query_stage[8192];
+shared bfloat16_t key_stage[8192];
+shared float16_t value_stage[2048];
+shared float scores[4096];
+shared float16_t probabilities[4096];
+shared float output_accumulators[8192];
+shared float soft_partial[1024];
+shared float next_maximum[64];
+shared float running_max[64];
+shared float running_sum[64];
+shared float correction[64];
 
 uint load_u16(uint source, uint index) {
   uint packed = source == 0u ? query_data.words[index >> 1u]
@@ -157,7 +171,8 @@ float deterministic_divide(float numerator_value, float denominator_value) {
                          (uint(significand) & 0x007fffffu));
 }
 
-void main() {
+#if 0
+void scalar_reference() {
   uint lane = gl_LocalInvocationID.x;
   uint local_row = gl_WorkGroupID.x;
   uint head = gl_WorkGroupID.y;
@@ -245,5 +260,365 @@ void main() {
                         p.head_dim + lane;
     uint high = lane + 1u < p.head_dim ? output_bits[lane + 1u] : 0u;
     output_data.words[output_index >> 1u] = output_bits[lane] | (high << 16u);
+  }
+}
+#endif
+
+#if 0
+void coop16_reference() {
+  uint tid = gl_LocalInvocationID.x;
+  uint subgroup = gl_SubgroupID;
+  uint aligned_first = p.query_row_offset & ~15u;
+  uint query_base = aligned_first + gl_WorkGroupID.x * 16u;
+  uint request_end = p.query_row_offset + p.rows;
+  uint head = gl_WorkGroupID.y;
+  float scale = uintBitsToFloat(p.scale_bits);
+  for (uint i = tid; i < 16u * p.head_dim; i += 128u)
+    output_accumulators[i] = 0.0f;
+  if (tid < 16u) {
+    running_max[tid] = uintBitsToFloat(0xff800000u);
+    running_sum[tid] = 0.0f;
+  }
+  for (uint i = tid; i < 16u * p.head_dim; i += 128u) {
+    uint row = i / p.head_dim;
+    uint d = i - row * p.head_dim;
+    uint query_row = query_base + row;
+    stage_a[i] = bfloat16_t(query_row < p.sequence
+        ? load_bf16(0u, (query_row * p.heads + head) * p.head_dim + d)
+        : 0.0f);
+  }
+  barrier();
+
+#ifdef H3_BANDED
+  uint range_base = (query_base / 128u) * 4u;
+  int range_values[4] = int[4](range_data.bounds[range_base],
+      range_data.bounds[range_base + 1u], range_data.bounds[range_base + 2u],
+      range_data.bounds[range_base + 3u]);
+  const uint range_count = 2u;
+#else
+  int range_values[4] = int[4](0, int(p.sequence), 0, 0);
+  const uint range_count = 1u;
+#endif
+
+  for (uint range_index = 0u; range_index < range_count; ++range_index) {
+    uint range_start = uint(max(range_values[range_index * 2u], 0));
+    uint range_stop = uint(max(range_values[range_index * 2u + 1u], 0));
+    for (uint key_base = range_start; key_base < range_stop; key_base += 64u) {
+      for (uint i = tid; i < 64u * p.head_dim; i += 128u) {
+        uint key_in_block = i / p.head_dim;
+        uint d = i - key_in_block * p.head_dim;
+        uint key_row = key_base + key_in_block;
+        stage_b_bf16[i] = bfloat16_t(
+            key_row < range_stop && key_row < p.sequence
+                ? load_bf16(1u, (key_row * p.heads + head) * p.head_dim + d)
+                : 0.0f);
+      }
+      barrier();
+      coopmat<float, gl_ScopeSubgroup, 16, 16,
+              gl_MatrixUseAccumulator> score_fragment =
+          coopmat<float, gl_ScopeSubgroup, 16, 16,
+                  gl_MatrixUseAccumulator>(0.0f);
+      for (uint d_base = 0u; d_base < p.head_dim; d_base += 16u) {
+        coopmat<bfloat16_t, gl_ScopeSubgroup, 16, 16,
+                gl_MatrixUseA> a;
+        coopmat<bfloat16_t, gl_ScopeSubgroup, 16, 16,
+                gl_MatrixUseB> b;
+        coopMatLoad(a, stage_a, d_base, p.head_dim,
+                    gl_CooperativeMatrixLayoutRowMajor);
+        coopMatLoad(b, stage_b_bf16,
+                    subgroup * 16u * p.head_dim + d_base, p.head_dim,
+                    gl_CooperativeMatrixLayoutColumnMajor);
+        score_fragment = coopMatMulAdd(a, b, score_fragment);
+      }
+      coopMatStore(score_fragment, scores, subgroup * 16u, 64u,
+                   gl_CooperativeMatrixLayoutRowMajor);
+      barrier();
+      for (uint i = tid; i < 1024u; i += 128u) {
+        uint key_row = key_base + (i & 63u);
+        scores[i] = key_row < range_stop && key_row < p.sequence
+            ? canonicalize_subnormal(scores[i] * scale)
+            : uintBitsToFloat(0xff800000u);
+      }
+      barrier();
+
+      if (tid < 16u) {
+        precise float next_max = running_max[tid];
+        for (uint j = 0u; j < 64u; ++j)
+          next_max = max(next_max, scores[tid * 64u + j]);
+        precise float row_correction =
+            running_max[tid] == uintBitsToFloat(0xff800000u)
+                ? 0.0f
+                : deterministic_exp_nonpositive(running_max[tid] - next_max);
+        precise float tile_sum = 0.0f;
+        for (uint j = 0u; j < 64u; ++j) {
+          float score = scores[tid * 64u + j];
+          float exponential = score == uintBitsToFloat(0xff800000u)
+              ? 0.0f : deterministic_exp_nonpositive(score - next_max);
+          probabilities[tid * 64u + j] = float16_t(f16_round(exponential));
+          tile_sum = tile_sum + exponential;
+        }
+        correction[tid] = row_correction;
+        running_sum[tid] = fma(running_sum[tid], row_correction, tile_sum);
+        running_max[tid] = next_max;
+      }
+      barrier();
+
+      for (uint i = tid; i < 64u * p.head_dim; i += 128u) {
+        uint key_in_block = i / p.head_dim;
+        uint d = i - key_in_block * p.head_dim;
+        uint key_row = key_base + key_in_block;
+        stage_b_f16[i] = float16_t(
+            key_row < range_stop && key_row < p.sequence
+                ? f16_round(load_bf16(
+                      2u, (key_row * p.heads + head) * p.head_dim + d))
+                : 0.0f);
+      }
+      barrier();
+
+      for (uint d_wave = 0u; d_wave < p.head_dim; d_wave += 64u) {
+        uint d_column = d_wave + subgroup * 16u;
+        coopmat<float, gl_ScopeSubgroup, 16, 16,
+                gl_MatrixUseAccumulator> pv_fragment =
+            coopmat<float, gl_ScopeSubgroup, 16, 16,
+                    gl_MatrixUseAccumulator>(0.0f);
+        for (uint key_part = 0u; key_part < 64u; key_part += 16u) {
+          coopmat<float16_t, gl_ScopeSubgroup, 16, 16,
+                  gl_MatrixUseA> a;
+          coopmat<float16_t, gl_ScopeSubgroup, 16, 16,
+                  gl_MatrixUseB> b;
+          coopMatLoad(a, probabilities, key_part, 64u,
+                      gl_CooperativeMatrixLayoutRowMajor);
+          coopMatLoad(b, stage_b_f16,
+                      key_part * p.head_dim + d_column, p.head_dim,
+                      gl_CooperativeMatrixLayoutRowMajor);
+          pv_fragment = coopMatMulAdd(a, b, pv_fragment);
+        }
+        coopMatStore(pv_fragment, tile_output, d_column, p.head_dim,
+                     gl_CooperativeMatrixLayoutRowMajor);
+        barrier();
+      }
+      for (uint i = tid; i < 16u * p.head_dim; i += 128u) {
+        uint row = i / p.head_dim;
+        precise float corrected = canonicalize_subnormal(
+            output_accumulators[i] * correction[row]);
+        output_accumulators[i] = canonicalize_subnormal(
+            corrected + canonicalize_subnormal(tile_output[i]));
+      }
+      barrier();
+    }
+  }
+
+  uint pairs_per_row = p.head_dim >> 1u;
+  for (uint pair = tid; pair < 16u * pairs_per_row; pair += 128u) {
+    uint row = pair / pairs_per_row;
+    uint d = (pair - row * pairs_per_row) * 2u;
+    uint query_row = query_base + row;
+    if (query_row >= p.query_row_offset && query_row < request_end &&
+        query_row < p.sequence) {
+      uint item = row * p.head_dim + d;
+      uint lo = bf16_rte(deterministic_divide(
+          output_accumulators[item], running_sum[row]));
+      uint hi = bf16_rte(deterministic_divide(
+          output_accumulators[item + 1u], running_sum[row]));
+      uint output_row = p.output_row_offset + query_row - p.query_row_offset;
+      uint output_index = (output_row * p.heads + head) * p.head_dim + d;
+      output_data.words[output_index >> 1u] = lo | (hi << 16u);
+    }
+  }
+}
+#endif
+
+void main() {
+  uint tid = gl_LocalInvocationID.x;
+  uint subgroup = gl_SubgroupID;
+  uint aligned_first = p.query_row_offset & ~63u;
+  uint query_base = aligned_first + gl_WorkGroupID.x * 64u;
+  uint request_end = p.query_row_offset + p.rows;
+  uint head = gl_WorkGroupID.y;
+  float scale = uintBitsToFloat(p.scale_bits);
+  for (uint i = tid; i < 64u * p.head_dim; i += gl_WorkGroupSize.x) {
+    uint row = i / p.head_dim;
+    uint d = i - row * p.head_dim;
+    uint query_row = query_base + row;
+    query_stage[i] = bfloat16_t(query_row < p.sequence
+        ? load_bf16(0u, (query_row * p.heads + head) * p.head_dim + d)
+        : 0.0f);
+    output_accumulators[i] = 0.0f;
+  }
+  if (tid < 64u) {
+    running_max[tid] = uintBitsToFloat(0xff800000u);
+    running_sum[tid] = 0.0f;
+  }
+  barrier();
+
+#ifdef H3_BANDED
+  uint range_base = (query_base / 128u) * 4u;
+  int range_values[4] = int[4](range_data.bounds[range_base],
+      range_data.bounds[range_base + 1u], range_data.bounds[range_base + 2u],
+      range_data.bounds[range_base + 3u]);
+  const uint range_count = 2u;
+#else
+  int range_values[4] = int[4](0, int(p.sequence), 0, 0);
+  const uint range_count = 1u;
+#endif
+  for (uint range_index = 0u; range_index < range_count; ++range_index) {
+    uint range_start = uint(max(range_values[range_index * 2u], 0));
+    uint range_stop = uint(max(range_values[range_index * 2u + 1u], 0));
+    for (uint key_base = range_start; key_base < range_stop; key_base += 64u) {
+      for (uint i = tid; i < 64u * p.head_dim; i += gl_WorkGroupSize.x) {
+        uint key_in_block = i / p.head_dim;
+        uint d = i - key_in_block * p.head_dim;
+        uint key_row = key_base + key_in_block;
+        key_stage[i] = bfloat16_t(
+            key_row < range_stop && key_row < p.sequence
+                ? load_bf16(1u, (key_row * p.heads + head) * p.head_dim + d)
+                : 0.0f);
+      }
+      barrier();
+      if (subgroup < 16u) {
+        uint query_tile = subgroup >> 2u;
+        uint key_tile = subgroup & 3u;
+        coopmat<float, gl_ScopeSubgroup, 16, 16,
+                gl_MatrixUseAccumulator> score_fragment =
+            coopmat<float, gl_ScopeSubgroup, 16, 16,
+                    gl_MatrixUseAccumulator>(0.0f);
+        for (uint d_base = 0u; d_base < p.head_dim; d_base += 16u) {
+          coopmat<bfloat16_t, gl_ScopeSubgroup, 16, 16,
+                  gl_MatrixUseA> a;
+          coopMatLoad(a, query_stage,
+                      query_tile * 16u * p.head_dim + d_base, p.head_dim,
+                      gl_CooperativeMatrixLayoutRowMajor);
+          coopmat<bfloat16_t, gl_ScopeSubgroup, 16, 16,
+                  gl_MatrixUseB> b;
+          coopMatLoad(b, key_stage, key_tile * 16u * p.head_dim + d_base,
+                      p.head_dim, gl_CooperativeMatrixLayoutColumnMajor);
+          score_fragment = coopMatMulAdd(a, b, score_fragment);
+        }
+        coopMatStore(score_fragment, scores,
+                     query_tile * 16u * 64u + key_tile * 16u, 64u,
+                     gl_CooperativeMatrixLayoutRowMajor);
+      }
+      barrier();
+      for (uint i = tid; i < 4096u; i += gl_WorkGroupSize.x) {
+        uint key_row = key_base + (i & 63u);
+        scores[i] = key_row < range_stop && key_row < p.sequence
+            ? canonicalize_subnormal(scores[i] * scale)
+            : uintBitsToFloat(0xff800000u);
+      }
+      barrier();
+
+      uint row = tid >> 4u;
+      uint part = tid & 15u;
+      precise float part_max = uintBitsToFloat(0xff800000u);
+      for (uint j = part * 4u; j < part * 4u + 4u; ++j)
+        part_max = max(part_max, scores[row * 64u + j]);
+      soft_partial[tid] = part_max;
+      barrier();
+      if (part == 0u) {
+        float tile_max = soft_partial[tid];
+        for (uint i = 1u; i < 16u; ++i)
+          tile_max = max(tile_max, soft_partial[tid + i]);
+        float next = max(running_max[row], tile_max);
+        correction[row] = running_max[row] == uintBitsToFloat(0xff800000u)
+            ? 0.0f
+            : deterministic_exp_nonpositive(running_max[row] - next);
+        next_maximum[row] = next;
+      }
+      barrier();
+      for (uint j = part * 4u; j < part * 4u + 4u; ++j) {
+        float score = scores[row * 64u + j];
+        float exponential = score == uintBitsToFloat(0xff800000u)
+            ? 0.0f : deterministic_exp_nonpositive(score - next_maximum[row]);
+        probabilities[row * 64u + j] = float16_t(f16_round(exponential));
+        scores[row * 64u + j] = exponential;
+      }
+      barrier();
+      if (part < 8u) {
+        precise float chunk_sum = 0.0f;
+        for (uint j = part * 8u; j < part * 8u + 8u; ++j)
+          chunk_sum = chunk_sum + scores[row * 64u + j];
+        soft_partial[row * 8u + part] = chunk_sum;
+      }
+      barrier();
+      if (part == 0u) {
+        float tile_sum = soft_partial[row * 8u];
+        for (uint i = 1u; i < 8u; ++i)
+          tile_sum = tile_sum + soft_partial[row * 8u + i];
+        running_sum[row] = fma(running_sum[row], correction[row], tile_sum);
+        running_max[row] = next_maximum[row];
+      }
+      barrier();
+
+      for (uint i = tid; i < 64u * p.head_dim; i += gl_WorkGroupSize.x) {
+        uint output_row = i / p.head_dim;
+        output_accumulators[i] = canonicalize_subnormal(
+            output_accumulators[i] * correction[output_row]);
+      }
+      barrier();
+      coopmat<float, gl_ScopeSubgroup, 16, 16,
+              gl_MatrixUseAccumulator> pv_fragment;
+      uint d_tiles = p.head_dim / 16u;
+      uint total_tiles = 4u * d_tiles;
+      if (subgroup < total_tiles) {
+        uint tile_query = subgroup / d_tiles;
+        uint d_tile = subgroup - tile_query * d_tiles;
+        coopMatLoad(pv_fragment, output_accumulators,
+                    tile_query * 16u * p.head_dim + d_tile * 16u,
+                    p.head_dim, gl_CooperativeMatrixLayoutRowMajor);
+      }
+      for (uint key_part = 0u; key_part < 64u; key_part += 16u) {
+        for (uint i = tid; i < 16u * p.head_dim; i += gl_WorkGroupSize.x) {
+          uint key_in_part = i / p.head_dim;
+          uint d = i - key_in_part * p.head_dim;
+          uint key_row = key_base + key_part + key_in_part;
+          value_stage[i] = float16_t(
+              key_row < range_stop && key_row < p.sequence
+                  ? f16_round(load_bf16(
+                        2u, (key_row * p.heads + head) * p.head_dim + d))
+                  : 0.0f);
+        }
+        barrier();
+        if (subgroup < total_tiles) {
+            uint tile_query = subgroup / d_tiles;
+            uint d_tile = subgroup - tile_query * d_tiles;
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16,
+                    gl_MatrixUseA> a;
+            coopMatLoad(a, probabilities,
+                        tile_query * 16u * 64u + key_part, 64u,
+                        gl_CooperativeMatrixLayoutRowMajor);
+            coopmat<float16_t, gl_ScopeSubgroup, 16, 16,
+                    gl_MatrixUseB> b;
+            coopMatLoad(b, value_stage, d_tile * 16u, p.head_dim,
+                        gl_CooperativeMatrixLayoutRowMajor);
+            pv_fragment = coopMatMulAdd(a, b, pv_fragment);
+        }
+        barrier();
+      }
+      if (subgroup < total_tiles) {
+          uint tile_query = subgroup / d_tiles;
+          uint d_tile = subgroup - tile_query * d_tiles;
+          coopMatStore(pv_fragment, output_accumulators,
+                       tile_query * 16u * p.head_dim + d_tile * 16u,
+                       p.head_dim, gl_CooperativeMatrixLayoutRowMajor);
+      }
+      barrier();
+    }
+  }
+  uint pairs_per_row = p.head_dim >> 1u;
+  for (uint pair = tid; pair < 64u * pairs_per_row; pair += gl_WorkGroupSize.x) {
+    uint row = pair / pairs_per_row;
+    uint d = (pair - row * pairs_per_row) * 2u;
+    uint query_row = query_base + row;
+    if (query_row >= p.query_row_offset && query_row < request_end &&
+        query_row < p.sequence) {
+      uint item = row * p.head_dim + d;
+      uint lo = bf16_rte(deterministic_divide(
+          output_accumulators[item], running_sum[row]));
+      uint hi = bf16_rte(deterministic_divide(
+          output_accumulators[item + 1u], running_sum[row]));
+      uint output_row = p.output_row_offset + query_row - p.query_row_offset;
+      uint output_index = (output_row * p.heads + head) * p.head_dim + d;
+      output_data.words[output_index >> 1u] = lo | (hi << 16u);
+    }
   }
 }

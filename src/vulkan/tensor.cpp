@@ -22,6 +22,11 @@ namespace vidfab::vulkan {
 namespace {
 
 constexpr uint64_t kMaxExactNormDimension = 1ull << 24;
+constexpr uint32_t kH3AttentionLocalSize = 1024;
+// The pinned module declares 99,328 bytes across phase-aliased workgroup
+// arrays. NVIDIA 610.88 lowers those nonoverlapping phases under its reported
+// 48 KiB core limit; pipeline creation remains the final module-resource gate.
+constexpr uint32_t kH3AttentionMinReportedSharedBytes = 49152;
 
 uint64_t checked_multiply(uint64_t a, uint64_t b, const char* operation) {
   if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) {
@@ -80,7 +85,15 @@ bool known_exact_causal_gqa_attention_device(const DeviceInfo& info) {
 bool known_exact_h3_attention_device(const DeviceInfo& info) {
   // Named separately because H3's direct-BF16/FP16-V contract and checked
   // shader artifacts can evolve independently of the prepared-FP16 plan.
-  return known_exact_blocked_attention_device(info);
+  return known_exact_blocked_attention_device(info) &&
+      info.cooperative_matrix_enabled && info.shader_float16_enabled &&
+      info.storage_buffer_16bit_enabled &&
+      info.shader_bfloat16_type && info.shader_bfloat16_cooperative_matrix &&
+      info.cooperative_matrix_bf16_f32_16x16x16 &&
+      info.cooperative_matrix_f16_f32_16x16x16 &&
+      info.max_compute_workgroup_invocations >= kH3AttentionLocalSize &&
+      info.max_compute_workgroup_size[0] >= kH3AttentionLocalSize &&
+      info.max_compute_shared_memory_bytes >= kH3AttentionMinReportedSharedBytes;
 }
 
 }  // namespace
@@ -495,11 +508,13 @@ struct TensorContext::Impl {
     if (exact_h3_attention) {
       attention_h3_pipeline = make_norm_pipeline(
           detail::kTensorAttentionH3Spirv,
-          sizeof(detail::kTensorAttentionH3Spirv), 4, 128, 1,
+          sizeof(detail::kTensorAttentionH3Spirv), 4,
+          kH3AttentionLocalSize, 1,
           sizeof(AttentionParameters));
       attention_h3_banded_pipeline = make_norm_pipeline(
           detail::kTensorAttentionH3BandedSpirv,
-          sizeof(detail::kTensorAttentionH3BandedSpirv), 5, 128, 1,
+          sizeof(detail::kTensorAttentionH3BandedSpirv), 5,
+          kH3AttentionLocalSize, 1,
           sizeof(AttentionParameters));
     }
     if (exact_causal_gqa_attention) {
@@ -820,7 +835,10 @@ struct TensorBatch::Impl {
     commands.bind_compute(owner->attention_h3_pipeline,
                           owner->attention_h3_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
-    commands.dispatch(parameters.rows, parameters.heads);
+    const uint32_t aligned_first = parameters.query_row_offset & ~63u;
+    const uint32_t groups =
+        (parameters.query_row_offset + parameters.rows - aligned_first + 63u) / 64u;
+    commands.dispatch(groups, parameters.heads);
   }
 
   void dispatch_h3_banded_attention(
@@ -833,7 +851,10 @@ struct TensorBatch::Impl {
     commands.bind_compute(owner->attention_h3_banded_pipeline,
                           owner->attention_h3_banded_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
-    commands.dispatch(parameters.rows, parameters.heads);
+    const uint32_t aligned_first = parameters.query_row_offset & ~63u;
+    const uint32_t groups =
+        (parameters.query_row_offset + parameters.rows - aligned_first + 63u) / 64u;
+    commands.dispatch(groups, parameters.heads);
   }
 
   void dispatch_attention_prepare(
