@@ -49,6 +49,7 @@
 #include "vidfab/dit/block_capture.h"
 #include "vidfab/dit/graph_capture.h"
 #include "vidfab/dit/packing.h"
+#include "vidfab/dit/ref2va.h"
 #include "vidfab/dtype.h"
 #include "vidfab/generate.h"
 #include "vidfab/nf4.h"
@@ -6400,6 +6401,203 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         double(vk_denoiser.scratch_bytes()) / 1048576.0,
         double(vk_denoiser.peak_device_bytes()) / 1048576.0);
     vk_denoiser.unload();
+
+    if (const char* ref2va_real = std::getenv("VIDFAB_REF2VA_DENOISE_REAL");
+        ref2va_real && ref2va_real[0] == '1') {
+      const std::filesystem::path ref_checkpoint_path =
+          "weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors";
+      const std::filesystem::path video_vae_path =
+          "weights/vae/minimax_h3_video_vae_fp16.safetensors";
+      CHECK(std::filesystem::exists(ref_checkpoint_path) &&
+            std::filesystem::exists(video_vae_path));
+      const Sha256Digest ref_checkpoint_sha{
+          0x8e,0xea,0x02,0xf4,0x39,0x02,0xe6,0x99,
+          0x04,0x99,0x0c,0x44,0x05,0x96,0x8d,0x01,
+          0xa1,0x3c,0x66,0x56,0xaa,0x39,0x2d,0x37,
+          0xab,0x80,0x33,0x1e,0x79,0xb5,0xdf,0x2f};
+      CHECK(sha256_file(ref_checkpoint_path.string()) == ref_checkpoint_sha);
+
+      SafeTensors video_vae;
+      video_vae.open(video_vae_path.string());
+      const std::vector<float> latent_mean =
+          to_f32(video_vae.at("latents_mean"));
+      const std::vector<float> latent_std =
+          to_f32(video_vae.at("latents_std"));
+      CHECK(latent_mean.size() == 24u && latent_std.size() == 24u);
+      RGBImage reference;
+      reference.width = 96;
+      reference.height = 64;
+      reference.pixels.resize(size_t(reference.width) * reference.height * 3u);
+      for (size_t i = 0; i < reference.pixels.size(); ++i)
+        reference.pixels[i] = static_cast<uint8_t>((i * 37u + 19u) % 251u);
+      vae::KeyframeEncoder cuda_keyframe(video_vae);
+      const std::vector<float> cuda_condition =
+          cuda_keyframe.encode_reference_image(
+              reference, latent_mean, latent_std);
+      vulkan::KeyframeEncoder vk_keyframe =
+          vulkan::KeyframeEncoder::create(device);
+      vk_keyframe.load(video_vae);
+      const std::vector<float> vk_condition =
+          vk_keyframe.encode_reference_image(
+              reference, latent_mean, latent_std);
+      CHECK(vk_condition == cuda_condition);
+      CHECK(cuda_condition.size() == 6u * header.video_dim);
+      vk_keyframe.unload();
+
+      const std::vector<int32_t> ref_text_tags(
+          header.text_rows, kTagText);
+      const std::vector<ReferenceGeometry> ref_geometries{
+          {ReferenceKind::kImage, 1, 4, 6, 0}};
+      const Ref2VAPackedSequence ref_packed =
+          build_ref2va_packed_sequence(
+              ref_text_tags, ref_geometries, 7, 16, 16,
+              static_cast<int>(header.audio_rows / 2));
+      CHECK(ref_packed.layout.num_condition_video == 6 &&
+            ref_packed.layout.num_condition_audio == 0 &&
+            ref_packed.layout.num_video_rows ==
+                static_cast<int>(header.video_rows) &&
+            ref_packed.layout.num_audio_rows ==
+                static_cast<int>(header.audio_rows) &&
+            ref_packed.layout.total_rows() ==
+                static_cast<int>(header.sequence + 6));
+
+      SafeTensors ref_checkpoint;
+      ref_checkpoint.open(ref_checkpoint_path.string());
+      dit::Transformer ref_cuda_model;
+      const auto ref_cuda_load_begin = std::chrono::steady_clock::now();
+      ref_cuda_model.load(ref_checkpoint);
+      ref_cuda_model.set_attention_mode(AttentionMode::kExact);
+      ref_cuda_model.set_attention_band(0);
+      ref_cuda_model.prepare_text(
+          prompt.data(), static_cast<int>(header.text_rows));
+      ref_cuda_model.prepare_sequence(
+          ref_packed.layout, ref_packed.indices, ref_packed.position_ids);
+      const double ref_cuda_load_ms =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - ref_cuda_load_begin).count();
+      sampler::FlowScheduler ref_cuda_video(12.0f), ref_cuda_audio(3.0f);
+      ref_cuda_video.set_timesteps(4);
+      ref_cuda_audio.set_timesteps(4);
+      std::vector<Boundary> ref_cuda_boundaries;
+      DenoiseInputs ref_cuda_inputs;
+      ref_cuda_inputs.layout = &ref_packed.layout;
+      ref_cuda_inputs.indices = &ref_packed.indices;
+      ref_cuda_inputs.video_timesteps = &ref_cuda_video.timesteps();
+      ref_cuda_inputs.audio_timesteps = &ref_cuda_audio.timesteps();
+      ref_cuda_inputs.video_scheduler = &ref_cuda_video;
+      ref_cuda_inputs.audio_scheduler = &ref_cuda_audio;
+      ref_cuda_inputs.condition_video_rows = &cuda_condition;
+      ref_cuda_inputs.init_video_rows = &video;
+      ref_cuda_inputs.init_audio_rows = &audio;
+      ref_cuda_inputs.boundary =
+          [&](int, const std::vector<float>& video_rows,
+              const std::vector<float>& audio_rows) {
+            ref_cuda_boundaries.push_back({video_rows, audio_rows});
+          };
+      const auto ref_cuda_run_begin = std::chrono::steady_clock::now();
+      const DenoiseOutputs ref_cuda_result =
+          denoise(ref_cuda_model, ref_cuda_inputs);
+      const double ref_cuda_run_ms =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - ref_cuda_run_begin).count();
+      CHECK(ref_cuda_result.steps_computed == 3 &&
+            ref_cuda_result.steps_skipped == 0 &&
+            ref_cuda_boundaries.size() == 3u);
+      ref_cuda_model.unload();
+      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+      ExactH3DenoiseConfig ref_vk_config;
+      ref_vk_config.transformer = config;
+      ref_vk_config.transformer.main.block.sequence =
+          static_cast<uint32_t>(ref_packed.layout.total_rows());
+      ref_vk_config.transformer.main.block.timesteps = 4;
+      ref_vk_config.transformer.video_rows =
+          static_cast<uint32_t>(ref_packed.indices.video.size());
+      ref_vk_config.transformer.audio_rows =
+          static_cast<uint32_t>(ref_packed.indices.audio.size());
+      ref_vk_config.transformer.video_output_rows =
+          static_cast<uint32_t>(ref_packed.layout.num_video_rows);
+      ref_vk_config.transformer.audio_output_rows =
+          static_cast<uint32_t>(ref_packed.layout.num_audio_rows);
+      ref_vk_config.transformer.video_output_start =
+          static_cast<uint32_t>(ref_packed.layout.video_start());
+      ref_vk_config.transformer.audio_output_start =
+          static_cast<uint32_t>(ref_packed.layout.audio_start());
+      ref_vk_config.layout = ref_packed.layout;
+      ref_vk_config.indices = ref_packed.indices;
+      ref_vk_config.position_ids = ref_packed.position_ids;
+      ExactH3Denoiser ref_vk = ExactH3Denoiser::create(vk, ref_vk_config);
+      const auto ref_vk_load_begin = std::chrono::steady_clock::now();
+      ref_vk.load(ref_checkpoint);
+      std::vector<float> ref_video = cuda_condition;
+      ref_video.insert(ref_video.end(), video.begin(), video.end());
+      ref_vk.prepare(prompt.data(), prompt.size(),
+                     ref_video.data(), ref_video.size(),
+                     audio.data(), audio.size());
+      const double ref_vk_load_ms =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - ref_vk_load_begin).count();
+      sampler::FlowScheduler ref_vk_video(12.0f), ref_vk_audio(3.0f);
+      ref_vk_video.set_timesteps(4);
+      ref_vk_audio.set_timesteps(4);
+      std::vector<uint64_t> ref_hashes;
+      size_t ref_boundary = 0;
+      const auto ref_vk_run_begin = std::chrono::steady_clock::now();
+      const ExactH3DenoiseResult ref_vk_result = ref_vk.run(
+          ref_vk_video, ref_vk_audio, {},
+          [&](uint32_t step, const std::vector<float>& video_rows,
+              const std::vector<float>& audio_rows) {
+            CHECK(step == ref_boundary &&
+                  ref_boundary < ref_cuda_boundaries.size());
+            if (ref_boundary < ref_cuda_boundaries.size()) {
+              CHECK(video_rows == ref_cuda_boundaries[ref_boundary].video);
+              CHECK(audio_rows == ref_cuda_boundaries[ref_boundary].audio);
+            }
+            ref_hashes.push_back(joined_hash(video_rows, audio_rows));
+            ++ref_boundary;
+          });
+      const double ref_vk_run_ms =
+          std::chrono::duration<double, std::milli>(
+              std::chrono::steady_clock::now() - ref_vk_run_begin).count();
+      CHECK(ref_boundary == 3u && ref_hashes.size() == 3u &&
+            ref_vk_result.video_rows == ref_cuda_result.video_rows &&
+            ref_vk_result.audio_rows == ref_cuda_result.audio_rows);
+      const std::array<uint64_t, 3> expected_ref_hashes{
+          0x74f3fe411d378300ull, 0x2703fe32812c4f7dull,
+          0xdd3cc78b26122404ull};
+      CHECK(std::equal(ref_hashes.begin(), ref_hashes.end(),
+                       expected_ref_hashes.begin()));
+      const uint64_t ref_used = vk.pooled_used_bytes();
+      const uint64_t ref_reserved = vk.reserved_bytes();
+      const uint64_t ref_descriptors = vk.descriptor_set_allocations();
+      ref_vk.prepare(prompt.data(), prompt.size(),
+                     ref_video.data(), ref_video.size(),
+                     audio.data(), audio.size());
+      const ExactH3DenoiseResult ref_repeat =
+          ref_vk.run(ref_vk_video, ref_vk_audio);
+      CHECK(ref_repeat.video_rows == ref_vk_result.video_rows &&
+            ref_repeat.audio_rows == ref_vk_result.audio_rows);
+      CHECK(vk.pooled_used_bytes() == ref_used &&
+            vk.reserved_bytes() == ref_reserved &&
+            vk.descriptor_set_allocations() == ref_descriptors);
+      std::printf(
+          "  real Ref2VA exact S%u x3: CUDA load/run %.3f/%.3f ms, Vulkan %.3f/%.3f ms, boundaries %016llx/%016llx/%016llx, persistent/scratch/peak %.2f/%.2f/%.2f MiB, desc %llu\n",
+          ref_vk_config.transformer.main.block.sequence,
+          ref_cuda_load_ms, ref_cuda_run_ms, ref_vk_load_ms, ref_vk_run_ms,
+          static_cast<unsigned long long>(ref_hashes[0]),
+          static_cast<unsigned long long>(ref_hashes[1]),
+          static_cast<unsigned long long>(ref_hashes[2]),
+          double(ref_vk.persistent_bytes()) / 1048576.0,
+          double(ref_vk.scratch_bytes()) / 1048576.0,
+          double(ref_vk.peak_device_bytes()) / 1048576.0,
+          static_cast<unsigned long long>(ref_descriptors));
+      ref_vk.unload();
+      CHECK(!ref_vk.loaded() && !ref_vk.prepared() &&
+            ref_vk.persistent_bytes() == 0u &&
+            ref_vk.scratch_bytes() == 0u &&
+            ref_vk.peak_device_bytes() == 0u &&
+            vk.pooled_used_bytes() < ref_used);
+    }
   }
 
   const char* captured_vertical = std::getenv("VIDFAB_DIT_VERTICAL_REAL");
@@ -7607,7 +7805,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_group_norm_silu) {
         reinterpret_cast<const float*>(uintptr_t{1}),
         reinterpret_cast<const __half*>(uintptr_t{1}),
         reinterpret_cast<const __half*>(uintptr_t{1}),
-        reinterpret_cast<float*>(uintptr_t{1}), 128, 2048, 2049, 32,
+        reinterpret_cast<float*>(uintptr_t{1}), 128, 32768, 32768, 32,
         1.0e-6f, nullptr);
   } catch (const std::runtime_error&) { cuda_limit_rejected = true; }
   CHECK(cuda_limit_rejected);
