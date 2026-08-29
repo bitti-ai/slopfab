@@ -207,10 +207,39 @@ used/reserved high-water was 5,120.5/5,123.1 MiB and remained stable on repeat.
 The existing CUDA `ViTDecoder` can explicitly select the shared exact graph
 implementation for its transformer body, including two bounded reusable
 scratch shapes for ragged tiled windows; the shipped path remains the default.
-Vulkan x-embedding/register-token assembly, final norm/projection,
-depth-to-space, post-quant handling, scheduler integration and backend/CLI
-selection are still absent. This increment therefore does not change the
-Vulkan inference gate and does not claim full Vulkan video generation.
+
+The video-VAE decoder around that graph is now implemented as
+`vulkan::VideoVaeDecoder`. It has native Vulkan latent de-normalization,
+post-quant projection, CHW/token embedding, register/zero suffix assembly,
+canonical RoPE, final affine norm/projection, and depth-to-space. CUDA and
+Vulkan implement the same `VideoVaeWindowBackend` interface and consume one
+shared host temporal-chunk/spatial-tile/stitch/cross-fade/pixel-de-normalize
+schedule, which is the backend-selection seam intended for `RunOptions`.
+There are no CUDA calls or resources in the Vulkan decoder.
+
+One Vulkan window records 735 operators. Equal-shape groups are split into at
+most five documents per 4096-operator transaction, so a large tiled group
+cannot overflow the command batch. Checkpoint matrices stay fp16 and
+device-resident; the graph and decoder retain at most two shape-keyed scratch
+sets. The real-checkpoint test explicitly runs six equal 7x1x1 windows as 5+1,
+then switches through the full and ragged shapes without reloading weights.
+
+Real-checkpoint provenance is
+`weights/vae/minimax_h3_video_vae_fp16.safetensors`, SHA-256
+`7C1F131492E7EDDACAAC9069A61B81BDD39DE5CC96561E677C5EAB1CDCE5E522`.
+On an RTX 5090 the exact 7x16x16 final window
+matched CUDA bit for bit at FNV64 `4d84e832e07db0a8`. A complete normalized
+7x1x1 latent decode matched the CUDA final fp32 `PixelBuffer` bit for bit at
+FNV64 `f455f77e718d9c21` (22 frames, 16x16), and Y4M written through the Vulkan
+converter matched the canonical writer byte for byte. Measured Vulkan load and
+7x16x16 forward times were 5.0 s and 2.4 s; persistent/peak device accounting
+was 4625.0/5079.8 MiB, pooled used/reserved was 5215.0/5445.0 MiB, and the final
+descriptor high-water was 3676.
+
+This completes the exact video-VAE decoder component, but does not change the
+top-level Vulkan inference gate: the text/vision conditioners, denoiser, audio
+VAE, and `RunOptions` construction/wiring remain absent. It therefore does not
+claim full Vulkan video generation yet.
 
 ## Current vertical-slice comparison
 

@@ -7,9 +7,9 @@
 
 namespace vidfab::vulkan {
 
-// Vulkan accelerates output colour conversion only. Model inference remains
-// CUDA and this class does not provide a Vulkan inference backend. One instance
-// is reusable across frames but conversion calls must be serialized.
+// This class accelerates output colour conversion only; model inference is
+// selected independently. One instance is reusable across frames but
+// conversion calls must be serialized.
 class Yuv420Converter final : public video::FrameConverter {
  public:
   explicit Yuv420Converter(uint32_t device_index = 0);
