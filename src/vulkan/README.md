@@ -209,6 +209,55 @@ operator scratch:
 The shipped-to-exact SwiGLU rebaseline changed 4,213,488 of 14,721,024 words
 on the deterministic benchmark corpus with maximum absolute delta 1.788139e-7.
 
+## Exact video-VAE ViT block stage
+
+`vulkan::ExactViTBlockStage` composes one complete pre-norm decoder block from
+the exact fp32 VAE norms, fp16 preparation/GEMM, fused split-QKV/norm/RoPE,
+blocked D64 attention, BF16 conversion, layer-scale residual and biased SwiGLU
+primitives. Its production `record` entry point updates an external fp32 token
+tensor in place inside the caller's `TensorBatch`. `ExactViTBlockScratch` owns
+the activation arena and prepared slots separately from immutable block
+weights, so a future 36-block graph can share one scratch object and record all
+blocks without a host boundary, per-block allocation, or per-block submission.
+The host `forward` method is only a parity convenience.
+
+The common loader pins the shipped names
+`decoder.transformer_blocks.{i}.{norm1.weight,norm2.weight,scale1,scale2,
+attn.to_qkv.weight,attn.to_qkv.bias,attn.to_out.weight,attn.to_out.bias,
+ff.w1.weight,ff.w1.bias,ff.w2.weight,ff.w2.bias}`. Matrices must be rank-2 fp16
+`[out,in]`; vectors must be rank-1 fp16/fp32. It keeps matrices compressed at
+fp16 and widens only vectors. The real block-0 audit found 330,659 fp16
+subnormal matrix words. CUDA WMMA and Vulkan cooperative matrices did not
+share their treatment (the first final result differed by two ULP), so exact
+mode canonicalizes those checkpoint words to signed zero and raw weight views
+with uncanonicalized fp16 subnormals fail before allocation/upload.
+
+The block forces the shared ascending-K scalar fp32-FMA GEMM order. This is an
+intentional exact-mode performance rebaseline: even after weight
+canonicalization, real values through cooperative matrices differed at the
+final block boundary. The scalar mode is explicit in `DenseGemmPlanDesc` and
+does not change existing cooperative plans. One exact block records 20 bounded
+operators. `TensorContextOptions::max_batch_operators` makes graph capacity an
+explicit bounded choice (default 32, maximum 4096); a 36-block graph will use
+at least 720 and conventionally reserve 1024. Stage validation checks all
+tensor shapes/identity, scratch compatibility and remaining capacity before it
+records the first operation.
+
+Release qualification used CUDA 13.0.48, MSVC 14.44.35207, Vulkan 1.4.341,
+RTX 5090 / NVIDIA 610.88 and
+`minimax_h3_video_vae_fp16.safetensors` SHA-256
+`7C1F131492E7EDDACAAC9069A61B81BDD39DE5CC96561E677C5EAB1CDCE5E522`.
+Layer 0 was loaded through the typed name/shape/dtype path and evaluated at the
+real R1797/D2048/I8192 shape using deterministic finite-normal input and
+identity rotary tables. CUDA and Vulkan matched all 3,680,256 final fp32 words;
+FNV64 was `c8a7ac3241effbb7`. The CUDA comparison convenience measured 169.062
+ms including its host boundary; Vulkan record-to-completion measured 64.741 ms
+with upload/download excluded. Vulkan direct stage accounting was 128.1 MiB of
+persistent weights and 507.8 MiB peak including one reusable scratch arena,
+tokens and rotary tables; operator scratch is bounded by the prepared slots
+and there is no quadratic attention buffer. This is one block, not the wired
+36-block decoder.
+
 ## Shared transformer normalization shaders
 
 `tensor_shared_norm.comp` adds BF16 RMSNorm (a 32x8 narrow head-128 path and a

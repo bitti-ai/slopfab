@@ -28,6 +28,7 @@
 #include "vidfab/cuda/keyframe_encoder.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
+#include "vidfab/cuda/vae_vit_block.h"
 #include "vidfab/attention.h"
 #include "vidfab/dit/rope.h"
 #include "vidfab/dit/packing.h"
@@ -38,6 +39,7 @@
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
+#include "vidfab/vulkan/vae_vit_block.h"
 
 __global__ void deterministic_rsqrt_probe(const float* input, float* stable,
                                            float* native, int count) {
@@ -5465,6 +5467,244 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
   cudaEventDestroy(begin);
   cudaEventDestroy(end);
   cublasDestroy(handle);
+}
+
+VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
+  using namespace vidfab;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !vulkan::Instance::available()) return;
+  vulkan::Instance instance = vulkan::Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  vulkan::DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  device_options.enable_shader_int64 = physical.front().info().shader_int64;
+  vulkan::Device device = physical.front().create_device(device_options);
+  vulkan::TensorContextOptions context_options;
+  context_options.max_batch_operators = 64;
+  vulkan::TensorContext context(device, context_options);
+  if (!context.exact_fp32_vae_normalization() || !context.exact_vae_pointwise() ||
+      !context.exact_blocked_attention()) return;
+
+  vae::ViTBlockConfig config;
+  config.sequence = 69;
+  config.num_patches = 64;
+  config.dim = 64;
+  config.heads = 1;
+  config.head_dim = 64;
+  config.ffn_inner = 128;
+  config.rope_dim = 48;
+  vae::ViTBlockWeights weights;
+  weights.norm1.resize(config.dim); weights.norm2.resize(config.dim);
+  weights.scale1.resize(config.dim); weights.scale2.resize(config.dim);
+  weights.qkv_weight.resize(size_t(3) * config.dim * config.dim);
+  weights.qkv_bias.resize(3 * config.dim);
+  weights.out_weight.resize(size_t(config.dim) * config.dim);
+  weights.out_bias.resize(config.dim);
+  weights.w1_weight.resize(size_t(2) * config.ffn_inner * config.dim);
+  weights.w1_bias.resize(2 * config.ffn_inner);
+  weights.w2_weight.resize(size_t(config.dim) * config.ffn_inner);
+  weights.w2_bias.resize(config.dim);
+  for (uint32_t i = 0; i < config.dim; ++i) {
+    weights.norm1[i] = 0.75f + float(i % 11) / 32.0f;
+    weights.norm2[i] = 0.875f + float(i % 7) / 32.0f;
+    weights.scale1[i] = 0.01f + float(i % 5) / 1024.0f;
+    weights.scale2[i] = 0.0125f + float(i % 3) / 1024.0f;
+    weights.out_bias[i] = float(int(i % 13) - 6) / 512.0f;
+    weights.w2_bias[i] = float(int(i % 17) - 8) / 512.0f;
+  }
+  auto fill_half = [](std::vector<uint16_t>& values, uint32_t multiplier) {
+    for (size_t i = 0; i < values.size(); ++i) {
+      const float value = float(int((i * multiplier) % 31) - 15) / 512.0f;
+      values[i] = f32_to_f16(value);
+    }
+  };
+  fill_half(weights.qkv_weight, 7); fill_half(weights.out_weight, 11);
+  fill_half(weights.w1_weight, 13); fill_half(weights.w2_weight, 17);
+  for (size_t i = 0; i < weights.qkv_bias.size(); ++i)
+    weights.qkv_bias[i] = float(int(i % 19) - 9) / 512.0f;
+  for (size_t i = 0; i < weights.w1_bias.size(); ++i)
+    weights.w1_bias[i] = float(int(i % 23) - 11) / 512.0f;
+
+  const size_t token_count = size_t(config.sequence) * config.dim;
+  const size_t rope_count = size_t(config.sequence) * config.rope_dim;
+  std::vector<float> input(token_count), cosine(rope_count, 1.0f),
+      sine(rope_count, 0.0f), cuda_once(token_count), vulkan_once(token_count),
+      cuda_twice(token_count), vulkan_twice(token_count);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = float(int((i * 29) % 251) - 125) / 128.0f;
+
+  auto cuda_stage = cuda::create_exact_vae_vit_block_stage(config);
+  cuda_stage->load(weights.view());
+  vulkan::ExactViTBlockStage vk_stage =
+      vulkan::ExactViTBlockStage::create(context, config);
+  vk_stage.load(weights.view());
+  CHECK(cuda_stage->backend() == DeviceBackend::kCuda);
+  CHECK(vk_stage.backend() == DeviceBackend::kVulkan);
+  CHECK(cuda_stage->persistent_bytes() == weights.bytes());
+  CHECK(vk_stage.persistent_bytes() == weights.bytes());
+  {
+    vae::ViTBlockWeights noncanonical = weights;
+    noncanonical.qkv_weight[0] = 0x0001u;
+    bool cuda_rejected = false, vulkan_rejected = false;
+    try {
+      auto bad = cuda::create_exact_vae_vit_block_stage(config);
+      bad->load(noncanonical.view());
+    } catch (const std::invalid_argument&) { cuda_rejected = true; }
+    try {
+      vulkan::ExactViTBlockStage bad =
+          vulkan::ExactViTBlockStage::create(context, config);
+      bad.load(noncanonical.view());
+    } catch (const std::invalid_argument&) { vulkan_rejected = true; }
+    CHECK(cuda_rejected && vulkan_rejected);
+  }
+  cuda_stage->forward(input.data(), cosine.data(), sine.data(), cuda_once.data());
+  vk_stage.forward(input.data(), cosine.data(), sine.data(), vulkan_once.data());
+  CHECK(std::memcmp(cuda_once.data(), vulkan_once.data(), token_count * 4) == 0);
+
+  // The production seam chains two block records through one device tensor,
+  // one command buffer and one shared scratch arena. No host boundary occurs.
+  const uint64_t token_shape[] = {config.sequence, config.dim};
+  const uint64_t rope_shape[] = {config.sequence, config.rope_dim};
+  vulkan::DeviceTensor tokens = context.allocate(
+      TensorLayout::contiguous(token_shape, 2));
+  vulkan::DeviceTensor vk_cosine = context.allocate(
+      TensorLayout::contiguous(rope_shape, 2));
+  vulkan::DeviceTensor vk_sine = context.allocate(
+      TensorLayout::contiguous(rope_shape, 2));
+  context.upload(tokens, input.data(), input.size());
+  context.upload(vk_cosine, cosine.data(), cosine.size());
+  context.upload(vk_sine, sine.data(), sine.size());
+  vulkan::ExactViTBlockScratch scratch =
+      vulkan::ExactViTBlockScratch::create(context, config);
+  const uint64_t wrong_rope_shape[] = {config.sequence, config.rope_dim - 1};
+  vulkan::DeviceTensor wrong_cosine = context.allocate(
+      TensorLayout::contiguous(wrong_rope_shape, 2));
+  vulkan::TensorBatch chained = context.begin_batch();
+  const uint32_t capacity_before_rejection =
+      chained.remaining_operator_capacity();
+  bool shape_rejected = false;
+  try { vk_stage.record(chained, tokens, wrong_cosine, vk_sine, scratch); }
+  catch (const std::invalid_argument&) { shape_rejected = true; }
+  CHECK(shape_rejected);
+  CHECK(chained.remaining_operator_capacity() == capacity_before_rejection);
+  vk_stage.record(chained, tokens, vk_cosine, vk_sine, scratch);
+  vk_stage.record(chained, tokens, vk_cosine, vk_sine, scratch);
+  chained.submit().wait();
+  context.download(tokens, vulkan_twice.data(), vulkan_twice.size());
+  cuda_stage->forward(cuda_once.data(), cosine.data(), sine.data(), cuda_twice.data());
+  CHECK(std::memcmp(cuda_twice.data(), vulkan_twice.data(), token_count * 4) == 0);
+
+  const uint64_t stable_reserved = context.reserved_bytes();
+  const uint64_t stable_descriptors = context.descriptor_set_allocations();
+  vk_stage.forward(input.data(), cosine.data(), sine.data(), vulkan_twice.data());
+  CHECK(std::memcmp(cuda_once.data(), vulkan_twice.data(), token_count * 4) == 0);
+  CHECK(context.reserved_bytes() == stable_reserved);
+  CHECK(context.descriptor_set_allocations() == stable_descriptors);
+
+  if (!std::getenv("VIDFAB_VAE_VIT_BLOCK_REAL")) return;
+  const std::filesystem::path checkpoint_path =
+      "weights/vae/minimax_h3_video_vae_fp16.safetensors";
+  if (!std::filesystem::exists(checkpoint_path)) return;
+  vae::ViTBlockConfig real_config;
+  real_config.sequence = 1797;
+  real_config.num_patches = 1792;
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+  vae::ViTBlockWeights real_weights =
+      vae::load_vit_block_weights(checkpoint, 0, real_config);
+  CHECK(real_weights.bytes() == 134356992ull);
+  size_t fp32_subnormals = 0, fp16_subnormals = 0;
+  auto scan_float = [&](const std::vector<float>& values) {
+    for (float value : values) {
+      uint32_t bits = 0; std::memcpy(&bits, &value, 4);
+      fp32_subnormals += (bits & 0x7f800000u) == 0 &&
+                         (bits & 0x007fffffu) != 0;
+    }
+  };
+  auto scan_half = [&](const std::vector<uint16_t>& values) {
+    for (uint16_t bits : values)
+      fp16_subnormals += (bits & 0x7c00u) == 0 && (bits & 0x03ffu) != 0;
+  };
+  scan_float(real_weights.norm1); scan_float(real_weights.norm2);
+  scan_float(real_weights.scale1); scan_float(real_weights.scale2);
+  scan_float(real_weights.qkv_bias); scan_float(real_weights.out_bias);
+  scan_float(real_weights.w1_bias); scan_float(real_weights.w2_bias);
+  scan_half(real_weights.qkv_weight); scan_half(real_weights.out_weight);
+  scan_half(real_weights.w1_weight); scan_half(real_weights.w2_weight);
+  std::printf("  real block weight subnormals fp32=%zu fp16=%zu\n",
+              fp32_subnormals, fp16_subnormals);
+  std::vector<float> real_input(size_t(real_config.sequence) * real_config.dim),
+      real_cosine(size_t(real_config.sequence) * real_config.rope_dim, 1.0f),
+      real_sine(real_cosine.size(), 0.0f), real_cuda(real_input.size()),
+      real_vulkan(real_input.size());
+  for (size_t i = 0; i < real_input.size(); ++i)
+    real_input[i] = float(int((i * 29) % 509) - 254) / 512.0f;
+  auto real_cuda_stage = cuda::create_exact_vae_vit_block_stage(real_config);
+  real_cuda_stage->load(real_weights.view());
+  vulkan::ExactViTBlockStage real_vk_stage =
+      vulkan::ExactViTBlockStage::create(context, real_config);
+  real_vk_stage.load(real_weights.view());
+  const auto cuda_begin = std::chrono::steady_clock::now();
+  real_cuda_stage->forward(real_input.data(), real_cosine.data(), real_sine.data(),
+                           real_cuda.data());
+  const double cuda_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_begin).count();
+  const uint64_t real_token_shape[] = {real_config.sequence, real_config.dim};
+  const uint64_t real_rope_shape[] = {real_config.sequence, real_config.rope_dim};
+  vulkan::DeviceTensor real_tokens = context.allocate(
+      TensorLayout::contiguous(real_token_shape, 2));
+  vulkan::DeviceTensor real_vk_cosine = context.allocate(
+      TensorLayout::contiguous(real_rope_shape, 2));
+  vulkan::DeviceTensor real_vk_sine = context.allocate(
+      TensorLayout::contiguous(real_rope_shape, 2));
+  vulkan::ExactViTBlockScratch real_scratch =
+      vulkan::ExactViTBlockScratch::create(context, real_config);
+  context.upload(real_tokens, real_input.data(), real_input.size());
+  context.upload(real_vk_cosine, real_cosine.data(), real_cosine.size());
+  context.upload(real_vk_sine, real_sine.data(), real_sine.size());
+  const auto vk_begin = std::chrono::steady_clock::now();
+  vulkan::TensorBatch real_batch = context.begin_batch();
+  real_vk_stage.record(real_batch, real_tokens, real_vk_cosine, real_vk_sine,
+                       real_scratch);
+  real_batch.submit().wait();
+  const double vk_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vk_begin).count();
+  context.download(real_tokens, real_vulkan.data(), real_vulkan.size());
+  size_t mismatch = real_input.size();
+  for (size_t i = 0; i < real_input.size(); ++i) {
+    if (std::memcmp(&real_cuda[i], &real_vulkan[i], 4) != 0) {
+      mismatch = i;
+      break;
+    }
+  }
+  if (mismatch != real_input.size()) {
+    uint32_t cb = 0, vb = 0;
+    std::memcpy(&cb, &real_cuda[mismatch], 4);
+    std::memcpy(&vb, &real_vulkan[mismatch], 4);
+    std::printf("  first real block mismatch %zu: CUDA %08x Vulkan %08x\n",
+                mismatch, cb, vb);
+  }
+  CHECK_MSG(mismatch == real_input.size(),
+            "real VAE ViT block mismatch at %zu/%zu", mismatch,
+            real_input.size());
+  uint64_t fnv = 1469598103934665603ull;
+  for (float value : real_vulkan) {
+    uint32_t bits = 0; std::memcpy(&bits, &value, 4);
+    for (int byte = 0; byte < 4; ++byte) {
+      fnv ^= (bits >> (byte * 8)) & 0xffu;
+      fnv *= 1099511628211ull;
+    }
+  }
+  std::printf(
+      "  real VAE ViT block0 R1797/D2048/I8192: CUDA %.3f ms, Vulkan %.3f ms, exact %zu words, FNV64 %016llx, weights %.1f MiB, Vulkan peak %.1f MiB\n",
+      cuda_ms, vk_ms, real_vulkan.size(),
+      static_cast<unsigned long long>(fnv),
+      double(real_weights.bytes()) / 1048576.0,
+      double(real_vk_stage.persistent_bytes() + real_scratch.reserved_bytes() +
+             real_input.size() * sizeof(float) +
+             2 * real_cosine.size() * sizeof(float)) / 1048576.0);
 }
 
 int main() { return ::vidfab::test::run_all(); }

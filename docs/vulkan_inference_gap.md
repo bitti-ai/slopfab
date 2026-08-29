@@ -196,6 +196,15 @@ convolutions, primitive call-site wiring, and all four model-stage
 orchestrators remain on the missing list above. Therefore
 `--inference-backend vulkan` continues to fail before weights or output files.
 
+One complete exact video-VAE ViT decoder block is now also available through a
+device-resident Vulkan stage. It uses typed real-checkpoint weight loading,
+records 20 operations into a caller-owned batch, updates tokens in place and
+shares one external activation arena across future blocks. A production-shaped
+block-0 replay at R1797/D2048/I8192 matched CUDA in all 3,680,256 fp32 output
+words after the shared exact-mode fp16-subnormal/scalar-GEMM rebaseline. The
+remaining 35 blocks, embedding/final projection and decode scheduler are not
+wired; this increment therefore does not change the Vulkan inference gate.
+
 ## Current vertical-slice comparison
 
 The intended control holds all neural work constant and changes only output
