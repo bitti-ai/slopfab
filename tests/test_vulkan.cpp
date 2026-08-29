@@ -3726,7 +3726,8 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   // Ref2VA conditions are interleaved in packed order, while each modality
   // list is condition-prefix then generated suffix. Validate that schema
   // transactionally before any checkpoint or device allocation is touched.
-  const std::vector<int32_t> ref_text_tags(3, dit::kTagText);
+  const std::vector<int32_t> ref_text_tags{
+      dit::kTagText, dit::kTagVideo, dit::kTagText};
   const std::vector<dit::ReferenceGeometry> ref_geometries = {
       {dit::ReferenceKind::kImage, 1, 4, 4, 0},
       {dit::ReferenceKind::kAudio, 0, 0, 0, 1}};
@@ -3785,6 +3786,9 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   reject_ref_config(invalid_ref);
   invalid_ref = ref_config;
   ++invalid_ref.transformer.video_output_start;
+  reject_ref_config(invalid_ref);
+  invalid_ref = ref_config;
+  invalid_ref.transformer.main.block.timesteps = 3;
   reject_ref_config(invalid_ref);
   invalid_ref = ref_config;
   invalid_ref.layout.num_condition_video = std::numeric_limits<int>::max();

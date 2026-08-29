@@ -64,8 +64,7 @@ void validate_config(const ExactH3DenoiseConfig& c) {
       c.transformer.text_rows != static_cast<uint32_t>(l.num_text) ||
       c.transformer.video_rows != total_video ||
       c.transformer.audio_rows != total_audio ||
-      c.transformer.main.block.timesteps < 2 ||
-      c.transformer.main.block.timesteps > 4 ||
+      c.transformer.main.block.timesteps != (conditioned ? 4u : 2u) ||
       c.transformer.main.block.modalities != 3 ||
       c.transformer.main.block.adaln_rank != dit::AdaLNTable::kRank ||
       c.transformer.video_dim == 0 || c.transformer.audio_dim == 0 ||
@@ -90,18 +89,24 @@ void validate_config(const ExactH3DenoiseConfig& c) {
     throw std::invalid_argument("Vulkan H3 denoise: invalid captured ranges");
   std::vector<uint8_t> covered(sequence, 0);
   auto require_indices = [&](const std::vector<int32_t>& indices,
-                             uint32_t expected_tag) {
+                             int32_t expected_tag) {
     for (int32_t index : indices) {
+      const int32_t actual_tag = index >= 0 &&
+          static_cast<uint32_t>(index) < sequence
+          ? c.indices.tags[static_cast<uint32_t>(index)] : -1;
       if (index < 0 || static_cast<uint32_t>(index) >= sequence ||
           covered[static_cast<uint32_t>(index)] != 0 ||
-          c.indices.tags[static_cast<uint32_t>(index)] !=
-              static_cast<int32_t>(expected_tag))
+          (expected_tag >= 0 ? actual_tag != expected_tag
+                             : actual_tag < dit::kTagVideo ||
+                                   actual_tag > dit::kTagAudio))
         throw std::invalid_argument(
             "Vulkan H3 denoise: indices are not a unique tagged cover");
       covered[static_cast<uint32_t>(index)] = 1;
     }
   };
-  require_indices(c.indices.text, dit::kTagText);
+  // Multimodal Qwen residual rows still use the text input projection, while
+  // image-pad rows retain kTagVideo for AdaLN selection.
+  require_indices(c.indices.text, -1);
   require_indices(c.indices.audio, dit::kTagAudio);
   require_indices(c.indices.video, dit::kTagVideo);
   if (std::find(covered.begin(), covered.end(), uint8_t{0}) != covered.end())
