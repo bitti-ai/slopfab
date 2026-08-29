@@ -20,6 +20,7 @@
 // and never grows inside the loop.
 
 #include "vidfab/dit/transformer.h"
+#include "vidfab/dit/block_capture.h"
 #include "vidfab/dit/rope.h"
 
 #include <functional>
@@ -45,6 +46,7 @@
 
 #include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/deterministic_attention.cuh"
+#include "vidfab/cuda/deterministic_gemm.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/diagnostics.cuh"
 #include "vidfab/cuda/gemm.cuh"
@@ -606,6 +608,18 @@ struct Transformer::Impl {
   int sol_capture_step = 0;
   int sol_capture_layer = 0;
   bool sol_capture_done = false;
+  std::string block_capture_path;
+  int block_capture_step = 0;
+  int block_capture_layer = 0;
+  bool block_capture_done = false;
+  struct ActiveBlockCapture {
+    H3BlockCaptureHeader header{};
+    std::vector<uint16_t> input;
+    std::vector<int32_t> selectors;
+    std::vector<float> code, cosine, sine;
+    std::vector<int32_t> ranges;
+    bool active = false;
+  } block_capture;
   bool tensor_diag = false;
   bool sol_pipeline_diag = false;
   DeviceBuffer<cuda::TensorScan> d_tensor_diag;
@@ -620,6 +634,127 @@ struct Transformer::Impl {
     std::fprintf(stderr,"vidfab tensor step=%d layer=%d stage=%s nonfinite=%llu max=%.7g\n",
                  denoise_step,layer,stage,h.nonfinite,mx);
     if(h.nonfinite)throw std::runtime_error("transformer: first non-finite tensor at "+std::string(stage));
+  }
+
+  static uint64_t fnv64_append(uint64_t hash, const void* data, size_t bytes) {
+    const auto* cursor = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < bytes; ++i) {
+      hash ^= cursor[i]; hash *= 1099511628211ull;
+    }
+    return hash;
+  }
+
+  uint64_t capture_hash(const __nv_bfloat16* data, size_t elements,
+                        uint64_t seed = 1469598103934665603ull) {
+    std::vector<uint16_t> host(elements);
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(host.data(), data, elements * 2,
+                                      cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    return fnv64_append(seed, host.data(), host.size() * 2);
+  }
+
+  void begin_block_capture(const __nv_bfloat16* residual,
+                           const int32_t* selectors, const float* cosine,
+                           const float* sine, int rows, int layer,
+                           AttentionMode mode) {
+    block_capture.active = false;
+    if (block_capture_done || block_capture_path.empty() ||
+        denoise_step != block_capture_step || layer != block_capture_layer)
+      return;
+    if (mode != AttentionMode::kExact)
+      throw std::runtime_error("transformer: H3 block capture requires exact attention");
+    if (mod_timesteps <= 0 || host_code.size() !=
+        static_cast<size_t>(mod_timesteps) * cfg.adaln_rank)
+      throw std::runtime_error("transformer: H3 block capture lacks rank-8 timestep code");
+    ActiveBlockCapture next;
+    std::memcpy(next.header.magic, "VFH3BLK\0", 8);
+    next.header.version = 1;
+    next.header.header_bytes = sizeof(H3BlockCaptureHeader);
+    next.header.sequence = static_cast<uint32_t>(rows);
+    next.header.hidden = static_cast<uint32_t>(cfg.hidden_size);
+    next.header.heads = static_cast<uint32_t>(cfg.num_attention_heads);
+    next.header.head_dim = static_cast<uint32_t>(cfg.attention_head_dim);
+    next.header.ffn = static_cast<uint32_t>(cfg.ffn_dim);
+    next.header.timesteps = static_cast<uint32_t>(mod_timesteps);
+    next.header.modalities = kNumModalities;
+    next.header.adaln_rank = static_cast<uint32_t>(cfg.adaln_rank);
+    next.header.denoise_step = denoise_step;
+    next.header.layer = layer;
+    next.header.range_values = static_cast<uint32_t>(host_band.size());
+    next.header.residual_elements = static_cast<uint64_t>(rows) * cfg.hidden_size;
+    next.header.qkv_elements = static_cast<uint64_t>(rows) * cfg.inner_dim();
+    next.header.rope_elements = static_cast<uint64_t>(rows) * 96;
+    next.input.resize(static_cast<size_t>(next.header.residual_elements));
+    next.selectors.resize(rows);
+    next.code = host_code;
+    next.cosine.resize(static_cast<size_t>(next.header.rope_elements));
+    next.sine.resize(static_cast<size_t>(next.header.rope_elements));
+    next.ranges = host_band;
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.input.data(), residual,
+        next.input.size() * 2, cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.selectors.data(), selectors,
+        next.selectors.size() * sizeof(int32_t), cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.cosine.data(), cosine,
+        next.cosine.size() * sizeof(float), cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.sine.data(), sine,
+        next.sine.size() * sizeof(float), cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    next.header.input_fnv64 = fnv64_append(1469598103934665603ull,
+        next.input.data(), next.input.size() * 2);
+    next.active = true;
+    block_capture = std::move(next);
+  }
+
+  void capture_block_qkv(const __nv_bfloat16* q, const __nv_bfloat16* k,
+                         const __nv_bfloat16* v) {
+    if (!block_capture.active) return;
+    uint64_t hash = capture_hash(q, block_capture.header.qkv_elements);
+    hash = capture_hash(k, block_capture.header.qkv_elements, hash);
+    block_capture.header.qkv_fnv64 =
+        capture_hash(v, block_capture.header.qkv_elements, hash);
+  }
+
+  void capture_block_attention(const __nv_bfloat16* attention) {
+    if (block_capture.active)
+      block_capture.header.attention_fnv64 = capture_hash(
+          attention, block_capture.header.qkv_elements);
+  }
+
+  void capture_block_attention_residual(const __nv_bfloat16* residual) {
+    if (block_capture.active)
+      block_capture.header.attention_residual_fnv64 = capture_hash(
+          residual, block_capture.header.residual_elements);
+  }
+
+  void finish_block_capture(const __nv_bfloat16* residual) {
+    if (!block_capture.active) return;
+    std::vector<uint16_t> final(
+        static_cast<size_t>(block_capture.header.residual_elements));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(final.data(), residual, final.size() * 2,
+                                      cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    block_capture.header.final_fnv64 = fnv64_append(1469598103934665603ull,
+        final.data(), final.size() * 2);
+    std::ofstream output(block_capture_path, std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error(
+        "transformer: cannot create H3 block capture: " + block_capture_path);
+    output.write(reinterpret_cast<const char*>(&block_capture.header),
+                 sizeof(block_capture.header));
+    auto write = [&](const auto& values) {
+      output.write(reinterpret_cast<const char*>(values.data()),
+          static_cast<std::streamsize>(values.size() * sizeof(values[0])));
+    };
+    write(block_capture.input); write(block_capture.selectors);
+    write(block_capture.code); write(block_capture.cosine);
+    write(block_capture.sine); write(block_capture.ranges); write(final);
+    if (!output) throw std::runtime_error(
+        "transformer: failed writing H3 block capture: " + block_capture_path);
+    block_capture.active = false; block_capture_done = true;
+    std::fprintf(stderr, "vidfab: captured exact H3 block step %d layer %d to %s\n",
+                 denoise_step, block_capture_layer, block_capture_path.c_str());
+    const char* stop = std::getenv("VIDFAB_H3_BLOCK_CAPTURE_EXIT");
+    if (stop && stop[0] == '1')
+      throw std::runtime_error("transformer: stopped after requested H3 block capture");
   }
 
   void capture_sol_inputs(const __nv_bfloat16* q, const __nv_bfloat16* k,
@@ -657,6 +792,7 @@ struct Transformer::Impl {
       throw std::runtime_error("transformer: stopped after requested Sol capture");
   }
   DeviceBuffer<int32_t> d_band;
+  std::vector<int32_t> host_band;
   DeviceBuffer<float> rope_cos, rope_sin;
   DeviceBuffer<int32_t> d_text_idx, d_audio_idx, d_video_idx;
   DeviceBuffer<__nv_bfloat16> text_cache;
@@ -715,6 +851,7 @@ struct Transformer::Impl {
     const char* native = std::getenv("VIDFAB_NATIVE_NVFP4");
     if (native != nullptr && native[0] == '1') linear.set_native(true);
     const char* capture = std::getenv("VIDFAB_SOL_CAPTURE");
+    const char* block_capture_env = std::getenv("VIDFAB_H3_BLOCK_CAPTURE");
     const char* diag = std::getenv("VIDFAB_TENSOR_DIAG");
     tensor_diag=diag!=nullptr&&diag[0]=='1';
     if(tensor_diag)d_tensor_diag.allocate(1);
@@ -726,6 +863,13 @@ struct Transformer::Impl {
       const char* layer = std::getenv("VIDFAB_SOL_CAPTURE_LAYER");
       if (step != nullptr && *step != '\0') sol_capture_step = std::atoi(step);
       if (layer != nullptr && *layer != '\0') sol_capture_layer = std::atoi(layer);
+    }
+    if (block_capture_env && *block_capture_env) {
+      block_capture_path = block_capture_env;
+      const char* step = std::getenv("VIDFAB_H3_BLOCK_CAPTURE_STEP");
+      const char* layer = std::getenv("VIDFAB_H3_BLOCK_CAPTURE_LAYER");
+      if (step && *step) block_capture_step = std::atoi(step);
+      if (layer && *layer) block_capture_layer = std::atoi(layer);
     }
   }
   ~Impl() {
@@ -842,6 +986,41 @@ struct Transformer::Impl {
     const float* shift_mlp = mod_base != nullptr ? mod_base + 3 * stride : nullptr;
     const float* scale_mlp = mod_base != nullptr ? mod_base + 4 * stride : nullptr;
     const float* gate_mlp = mod_base != nullptr ? mod_base + 5 * stride : nullptr;
+    if (layer >= 0)
+      begin_block_capture(x, adaln_idx, cos, sin, rows, layer,
+                          block_attention_mode);
+    auto project = [&](const QuantWeight& weight,
+                       const __nv_bfloat16* dense,
+                       const __nv_bfloat16* input, int count,
+                       __nv_bfloat16* output) {
+      if (block_attention_mode != AttentionMode::kExact) {
+        linear.forward_prepared(weight, dense, input, count, output, ws);
+        return;
+      }
+      const bool transformed = weight.pre_quant_scale != nullptr ||
+          (weight.convrot && weight.convrot_group > 0 &&
+           weight.in_features % weight.convrot_group == 0);
+      if (weight.bias != nullptr || transformed)
+        throw std::runtime_error(
+            "transformer: exact H3 projection requires bias-free untransformed weights");
+      const uint32_t tiled = static_cast<uint32_t>(count) / 64 * 64;
+      if (tiled != 0) {
+        cuda::launch_deterministic_bf16_gemm_nt(
+            input, dense, nullptr, output, tiled,
+            static_cast<uint32_t>(weight.out_features),
+            static_cast<uint32_t>(weight.in_features), DenseGemmBias::kNone,
+            0, 0, stream.get());
+      }
+      if (tiled != static_cast<uint32_t>(count)) {
+        cuda::launch_deterministic_scalar_gemm_nt(
+            input, dense, nullptr, output,
+            static_cast<uint32_t>(count) - tiled,
+            static_cast<uint32_t>(weight.out_features),
+            static_cast<uint32_t>(weight.in_features),
+            DenseGemmMode::kBFloat16, DenseGemmBias::kNone,
+            tiled, tiled, stream.get());
+      }
+    };
 
     // Dequantised once per block, not once per row-chunk. The dense copy of a
     // weight does not depend on which rows are being projected, so re-deriving
@@ -873,9 +1052,9 @@ struct Transformer::Impl {
         // fused GEMM plus a split: identical arithmetic, and it writes straight
         // into the full-sequence q/k/v without a [chunk, 21504] staging buffer.
         const size_t qoff = static_cast<size_t>(start) * inner;
-        linear.forward_prepared(b.wq, dq, normed, n, q + qoff, ws);
-        linear.forward_prepared(b.wk, dk, normed, n, k + qoff, ws);
-        linear.forward_prepared(b.wv, dv, normed, n, v + qoff, ws);
+        project(b.wq, dq, normed, n, q + qoff);
+        project(b.wk, dk, normed, n, k + qoff);
+        project(b.wv, dv, normed, n, v + qoff);
         prof.tick("attn.qkv_proj", stream.get());
       }
     }
@@ -892,6 +1071,7 @@ struct Transformer::Impl {
       cuda::launch_rope_h3(k, cos, sin, rows, cfg.num_attention_heads, cfg.attention_head_dim,
                            stream.get());
     }
+    if (layer >= 0) capture_block_qkv(q, k, v);
     prof.tick("attn.qknorm_rope", stream.get());
 
     AttentionConfig acfg;
@@ -938,6 +1118,7 @@ struct Transformer::Impl {
       if (layer < 0) ++attention_routes.generic_refiner;
       else ++attention_routes.generic_main;
     }
+    if (layer >= 0) capture_block_attention(attn_out);
     diagnose("attention",attn_out,size_t(rows)*inner,layer);
     const char* label = block_attention_mode == AttentionMode::kExact ? "attn.exact" :
                         backend == AttentionBackend::kFused ? "attn.flash2" :
@@ -954,8 +1135,8 @@ struct Transformer::Impl {
       for (int start = 0; start < rows; start += chunk) {
         const int n = std::min(chunk, rows - start);
         const size_t off = static_cast<size_t>(start) * hidden;
-        linear.forward_prepared(b.out_proj, dout, attn_out + static_cast<size_t>(start) * inner, n,
-                                branch, ws);
+        project(b.out_proj, dout,
+                attn_out + static_cast<size_t>(start) * inner, n, branch);
         diagnose("out_proj",branch,size_t(n)*hidden,layer);
         prof.tick("attn.out_proj", stream.get());
         if (mod_base != nullptr) {
@@ -969,6 +1150,7 @@ struct Transformer::Impl {
         diagnose("attention_residual",x+off,size_t(n)*hidden,layer);
       }
     }
+    if (layer >= 0) capture_block_attention_residual(x);
     emit_stage("attn", x, rows, hidden);
 
     {
@@ -989,7 +1171,7 @@ struct Transformer::Impl {
         }
         prof.tick("mlp.norm2", stream.get());
         diagnose("adaln_mlp",normed,size_t(n)*hidden,layer);
-        linear.forward_prepared(b.fc1, d1, normed, n, fused, ws);
+        project(b.fc1, d1, normed, n, fused);
         prof.tick("mlp.fc1", stream.get());
         // Gate first: our checkpoints use the original `mlp.fc1` naming, whose
         // first half goes through the SiLU (spec 4.4).
@@ -999,7 +1181,7 @@ struct Transformer::Impl {
           cuda::launch_swiglu(fused, act, n, cfg.ffn_dim, stream.get());
         }
         prof.tick("mlp.swiglu", stream.get());
-        linear.forward_prepared(b.fc2, d2, act, n, branch, ws);
+        project(b.fc2, d2, act, n, branch);
         diagnose("mlp",branch,size_t(n)*hidden,layer);
         prof.tick("mlp.fc2", stream.get());
         if (mod_base != nullptr) {
@@ -1013,6 +1195,7 @@ struct Transformer::Impl {
         diagnose("mlp_residual",x+off,size_t(n)*hidden,layer);
       }
     }
+    if (layer >= 0) finish_block_capture(x);
     emit_stage("ffn", x, rows, hidden);
   }
 };
@@ -1813,6 +1996,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   // band subtly misaligned with the loop, which is a wrong model rather than an
   // error.
   s.d_band.reset();
+  s.host_band.clear();
   if (s.attn_band > 0) {
     const int query_tile = s.attention_mode == AttentionMode::kExact
         ? static_cast<int>(cuda::deterministic_h3_query_tile())
@@ -1822,6 +2006,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
         : cuda::attention_fused_key_align();
     const dit::BandedKeyRanges band = dit::build_banded_key_ranges(
         layout, s.attn_band, query_tile, key_align);
+    s.host_band = band.ranges;
     s.d_band.allocate(band.ranges.size());
     s.d_band.copy_from_host(band.ranges.data(), band.ranges.size(), s.stream.get());
   }

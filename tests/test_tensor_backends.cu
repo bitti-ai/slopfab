@@ -38,6 +38,7 @@
 #include "vidfab/cuda/vae_vit_block.h"
 #include "vidfab/attention.h"
 #include "vidfab/dit/rope.h"
+#include "vidfab/dit/block_capture.h"
 #include "vidfab/dit/packing.h"
 #include "vidfab/dtype.h"
 #include "vidfab/nf4.h"
@@ -3097,6 +3098,213 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
       double(vk.pooled_used_bytes()) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+}
+
+VIDFAB_TEST(cuda_vulkan_dit_real_capture_replay) {
+  using namespace vidfab;
+  using namespace vidfab::dit;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path checkpoint_path =
+      "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
+  const std::filesystem::path capture_path =
+      "tests/data/h3_block0_step0_seed424242_256.vfh3";
+  if (!std::filesystem::exists(checkpoint_path) ||
+      !std::filesystem::exists(capture_path) || !Instance::available()) return;
+  std::ifstream stream(capture_path, std::ios::binary | std::ios::ate);
+  const std::streamsize capture_bytes = stream.tellg();
+  stream.seekg(0);
+  std::vector<uint8_t> capture(static_cast<size_t>(capture_bytes));
+  CHECK(static_cast<bool>(stream.read(
+      reinterpret_cast<char*>(capture.data()), capture_bytes)));
+#ifdef _WIN32
+  const std::array<uint8_t, 32> capture_sha =
+      sha256_mapping(capture.data(), capture.size());
+  const std::array<uint8_t, 32> expected_capture_sha{
+      0xe0,0x9e,0x29,0x7b,0x8d,0xc7,0x30,0x06,0xf6,0x75,0x7b,0x0a,0x1a,0x5b,0xf0,0xa6,
+      0x05,0x53,0xf0,0x05,0x92,0xea,0xf2,0xa2,0xf0,0x48,0x4d,0x2e,0x11,0x03,0x82,0x75};
+  CHECK(capture_sha == expected_capture_sha);
+#endif
+  if (capture.size() < sizeof(H3BlockCaptureHeader))
+    throw std::runtime_error("truncated H3 block capture");
+  H3BlockCaptureHeader header{};
+  std::memcpy(&header, capture.data(), sizeof(header));
+  CHECK(std::memcmp(header.magic, "VFH3BLK\0", 8) == 0);
+  CHECK(header.version == 1 && header.header_bytes == sizeof(header));
+  CHECK(header.sequence == 538 && header.hidden == 5376 &&
+        header.heads == 56 && header.head_dim == 128 && header.ffn == 14336);
+  CHECK(header.timesteps == 1 && header.modalities == 3 &&
+        header.adaln_rank == 8 && header.denoise_step == 0 &&
+        header.layer == 0 && header.range_values == 20);
+  CHECK(header.input_fnv64 == 0x7c9f5a55cc5266ebull);
+  CHECK(header.qkv_fnv64 == 0x0ce5a1f4d191bdd1ull);
+  CHECK(header.attention_fnv64 == 0x550f1253844cd657ull);
+  CHECK(header.attention_residual_fnv64 == 0xe8a9ee4dfec51636ull);
+  CHECK(header.final_fnv64 == 0x2fd91fe15c281f00ull);
+  size_t cursor = sizeof(header);
+  auto take = [&](auto& values, size_t count) {
+    using Value = typename std::decay_t<decltype(values)>::value_type;
+    if (count > (capture.size() - cursor) / sizeof(Value))
+      throw std::runtime_error("truncated H3 block capture payload");
+    values.resize(count);
+    std::memcpy(values.data(), capture.data() + cursor, count * sizeof(Value));
+    cursor += count * sizeof(Value);
+  };
+  std::vector<uint16_t> input, expected_final;
+  std::vector<int32_t> selectors, range_values;
+  std::vector<float> code, cosine, sine;
+  take(input, static_cast<size_t>(header.residual_elements));
+  take(selectors, header.sequence);
+  take(code, size_t(header.timesteps) * header.adaln_rank);
+  take(cosine, static_cast<size_t>(header.rope_elements));
+  take(sine, static_cast<size_t>(header.rope_elements));
+  take(range_values, header.range_values);
+  take(expected_final, static_cast<size_t>(header.residual_elements));
+  CHECK(cursor == capture.size());
+  CHECK(std::any_of(cosine.begin(), cosine.end(), [](float x) { return x != 1.0f; }));
+  CHECK(std::any_of(sine.begin(), sine.end(), [](float x) { return x != 0.0f; }));
+  CHECK(std::all_of(selectors.begin(), selectors.end(), [](int32_t x) {
+    return x >= 0 && x < 3;
+  }));
+
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+#ifdef _WIN32
+  const std::array<uint8_t, 32> checkpoint_sha = sha256_mapping(
+      checkpoint.mapping_base(), checkpoint.file_size());
+  const std::array<uint8_t, 32> expected_checkpoint_sha{
+      0x6a,0xb7,0xf0,0xc4,0x81,0x41,0xe7,0x91,0x9b,0x32,0xf9,0x25,0xca,0x3d,0xef,0x22,
+      0xe0,0x6a,0x6a,0xeb,0xeb,0x9e,0x0b,0x6f,0x5a,0x0b,0xe0,0xfe,0x84,0x09,0x97,0x6f};
+  CHECK(checkpoint_sha == expected_checkpoint_sha);
+#endif
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
+      !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(options);
+  TensorContextOptions context_options; context_options.max_batch_operators = 64;
+  TensorContext vk(device, context_options);
+  if (!vk.exact_h3_attention()) return;
+  H3BlockConfig config;
+  config.sequence = header.sequence; config.hidden = header.hidden;
+  config.heads = header.heads; config.head_dim = header.head_dim;
+  config.ffn = header.ffn; config.timesteps = header.timesteps;
+  config.modalities = header.modalities; config.adaln_rank = header.adaln_rank;
+  ExactH3BlockStage stage = ExactH3BlockStage::create(vk, config);
+  stage.load(checkpoint, header.layer);
+  ExactH3BlockScratch scratch = ExactH3BlockScratch::create(vk, config);
+  const uint64_t residual_shape[] = {header.sequence, header.hidden};
+  const uint64_t selector_shape[] = {header.sequence};
+  const uint64_t code_shape[] = {header.timesteps, header.adaln_rank};
+  const uint64_t rope_shape[] = {header.sequence, 96};
+  const uint64_t qkv_shape[] = {header.sequence, header.heads, header.head_dim};
+  const uint64_t attention_shape[] = {header.sequence, header.heads * header.head_dim};
+  auto bf = [&](const uint64_t* shape, uint32_t rank) {
+    return vk.allocate(TensorLayout::contiguous(shape, rank), ScalarType::kBFloat16);
+  };
+  DeviceTensor tokens = bf(residual_shape, 2);
+  DeviceTensor selector_tensor = vk.allocate(
+      TensorLayout::contiguous(selector_shape, 1), ScalarType::kInt32);
+  DeviceTensor code_tensor = vk.allocate(TensorLayout::contiguous(code_shape, 2));
+  DeviceTensor cosine_tensor = vk.allocate(TensorLayout::contiguous(rope_shape, 2));
+  DeviceTensor sine_tensor = vk.allocate(TensorLayout::contiguous(rope_shape, 2));
+  DeviceTensor q_tap = bf(qkv_shape, 3), k_tap = bf(qkv_shape, 3),
+      v_tap = bf(qkv_shape, 3), attention_tap = bf(attention_shape, 2),
+      attention_residual_tap = bf(residual_shape, 2), final_tap = bf(residual_shape, 2);
+  vk.upload_bytes(tokens, input.data(), input.size() * 2);
+  vk.upload_bytes(selector_tensor, selectors.data(), selectors.size() * 4);
+  vk.upload(code_tensor, code.data(), code.size());
+  vk.upload(cosine_tensor, cosine.data(), cosine.size());
+  vk.upload(sine_tensor, sine.data(), sine.size());
+  H3AttentionRanges ranges = H3AttentionRanges::create(
+      vk, header.sequence, range_values.data(), header.range_values);
+  H3BlockReplayTaps taps{&q_tap, &k_tap, &v_tap, &attention_tap,
+                         &attention_residual_tap, &final_tap};
+  CHECK(stage.required_operators(&taps) == 35);
+  // Fill exactly the spare capacity. A one-operation larger prefix below is
+  // rejected before the stage changes tokens or the batch's access state.
+  DeviceTensor dummy_a = bf(residual_shape, 2), dummy_b = bf(residual_shape, 2);
+  TensorBatch exact = vk.begin_batch();
+  for (uint32_t i = stage.required_operators(&taps); i < 64; ++i)
+    exact.copy(dummy_a, dummy_b);
+  stage.record(exact, tokens, selector_tensor, code_tensor, cosine_tensor,
+               sine_tensor, scratch, &ranges, &taps);
+  CHECK(exact.remaining_operator_capacity() == 0);
+  exact.submit().wait();
+  auto fnv = [](const std::vector<uint16_t>& values,
+                uint64_t hash = 1469598103934665603ull) {
+    for (uint16_t bits : values) {
+      hash ^= bits & 0xffu; hash *= 1099511628211ull;
+      hash ^= bits >> 8; hash *= 1099511628211ull;
+    }
+    return hash;
+  };
+  std::vector<uint16_t> q(header.qkv_elements), k(header.qkv_elements),
+      v(header.qkv_elements), attention(header.qkv_elements),
+      attention_residual(header.residual_elements), final(header.residual_elements),
+      tokens_final(header.residual_elements);
+  vk.download_bytes(q_tap, q.data(), q.size() * 2);
+  vk.download_bytes(k_tap, k.data(), k.size() * 2);
+  vk.download_bytes(v_tap, v.data(), v.size() * 2);
+  vk.download_bytes(attention_tap, attention.data(), attention.size() * 2);
+  vk.download_bytes(attention_residual_tap, attention_residual.data(), attention_residual.size() * 2);
+  vk.download_bytes(final_tap, final.data(), final.size() * 2);
+  vk.download_bytes(tokens, tokens_final.data(), tokens_final.size() * 2);
+  uint64_t qkv_hash = fnv(q); qkv_hash = fnv(k, qkv_hash); qkv_hash = fnv(v, qkv_hash);
+  CHECK(qkv_hash == header.qkv_fnv64);
+  CHECK(fnv(attention) == header.attention_fnv64);
+  CHECK(fnv(attention_residual) == header.attention_residual_fnv64);
+  CHECK(fnv(final) == header.final_fnv64);
+  CHECK(final == expected_final && tokens_final == expected_final);
+
+  // Late-shape and range faults are transactional and consume no operator.
+  const uint64_t bad_rope_shape[] = {header.sequence, 95};
+  DeviceTensor bad_sine = vk.allocate(TensorLayout::contiguous(bad_rope_shape, 2));
+  std::vector<int32_t> wrong_values(4 * ((header.sequence + 127) / 128), 0);
+  for (size_t i = 0; i < wrong_values.size(); i += 4)
+    wrong_values[i + 1] = 576;
+  H3AttentionRanges wrong_ranges = H3AttentionRanges::create(
+      vk, header.sequence + 1, wrong_values.data(),
+      static_cast<uint32_t>(wrong_values.size()));
+  {
+  TensorBatch invalid = vk.begin_batch();
+  bool bad_rope_threw = false;
+  try { stage.record(invalid, tokens, selector_tensor, code_tensor, cosine_tensor,
+                     bad_sine, scratch, &ranges); }
+  catch (const std::invalid_argument&) { bad_rope_threw = true; }
+  CHECK(bad_rope_threw && invalid.remaining_operator_capacity() == 64);
+  bool bad_ranges_threw = false;
+  try { stage.record(invalid, tokens, selector_tensor, code_tensor, cosine_tensor,
+                     sine_tensor, scratch, &wrong_ranges); }
+  catch (const std::invalid_argument&) { bad_ranges_threw = true; }
+  CHECK(bad_ranges_threw && invalid.remaining_operator_capacity() == 64);
+  }
+  {
+  TensorBatch short_capacity = vk.begin_batch();
+  for (uint32_t i = stage.required_operators(); i <= 64; ++i)
+    short_capacity.copy(dummy_a, dummy_b);
+  bool capacity_threw = false;
+  try { stage.record(short_capacity, tokens, selector_tensor, code_tensor,
+                     cosine_tensor, sine_tensor, scratch, &ranges); }
+  catch (const std::logic_error&) { capacity_threw = true; }
+  CHECK(capacity_threw && short_capacity.remaining_operator_capacity() ==
+        stage.required_operators() - 1);
+  }
+
+  bool overflow_threw = false;
+  try {
+    H3BlockConfig overflow = config; overflow.heads = UINT32_MAX;
+    (void)ExactH3BlockStage::create(vk, overflow);
+  } catch (const std::invalid_argument&) { overflow_threw = true; }
+  CHECK(overflow_threw);
 }
 
 VIDFAB_TEST(cuda_vulkan_vae_pointwise_real_timing) {
