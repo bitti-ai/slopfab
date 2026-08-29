@@ -937,7 +937,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
     if (options.inference_backend == DeviceBackend::kCuda) {
       vae::ViTDecoder decoder;
-      decoder.load(vae_file);
+      vae::ViTConfig config;
+      if (options.attention_mode == AttentionMode::kExact)
+        config.transformer_mode = vae::ViTTransformerMode::kExact;
+      decoder.load(vae_file, config);
       s_load.stop();
       if (options.verbose) {
         std::printf("video vae   CUDA %.2f GiB on device\n",

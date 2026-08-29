@@ -23,9 +23,12 @@
 #include "vidfab/cuda/audio_vae_kernels.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/audio/wav.h"
+#include "vidfab/generate.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/safetensors_write.h"
 #include "vidfab/vae/audio_decoder.h"
 #include "vidfab/vae/audio_primitives.h"
+#include "vidfab/video/y4m.h"
 #include "vidfab/vulkan/audio_decoder.h"
 #include "vidfab/vulkan/tensor.h"
 
@@ -80,6 +83,35 @@ uint64_t fnv64(const std::vector<std::vector<float>>& tensors) {
     }
   }
   return hash;
+}
+
+struct CapturedGeneration {
+  int channels = 0;
+  int frames = 0;
+  int height = 0;
+  int width = 0;
+  int audio_channels = 0;
+  int audio_sample_rate = 0;
+  vidfab::PixelBuffer video;
+  std::vector<float> audio;
+};
+
+bool capture_generation(vidfab::RunSamples& samples, void* userdata) {
+  auto& captured = *static_cast<CapturedGeneration*>(userdata);
+  captured.channels = samples.channels;
+  captured.frames = samples.frames;
+  captured.height = samples.height;
+  captured.width = samples.width;
+  captured.audio_channels = samples.audio_channels;
+  captured.audio_sample_rate = samples.audio_sample_rate;
+  captured.video = std::move(*samples.video);
+  if (samples.audio != nullptr) captured.audio = std::move(*samples.audio);
+  return true;
+}
+
+std::vector<uint8_t> read_bytes(const std::filesystem::path& path) {
+  std::ifstream stream(path, std::ios::binary);
+  return std::vector<uint8_t>(std::istreambuf_iterator<char>(stream), {});
 }
 
 #ifdef _WIN32
@@ -908,4 +940,102 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
       double(vk_decoder.allocator_used_bytes()) / 1048576.0,
       double(vk_decoder.allocator_reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk_decoder.descriptor_set_allocations()));
+}
+
+VIDFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {
+  using namespace vidfab;
+  if (!std::getenv("VIDFAB_GENERATE_VULKAN_REAL")) return;
+  const std::filesystem::path video_checkpoint =
+      "weights/vae/minimax_h3_video_vae_fp16.safetensors";
+  const std::filesystem::path audio_checkpoint =
+      "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
+  if (!std::filesystem::exists(video_checkpoint) ||
+      !std::filesystem::exists(audio_checkpoint)) return;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !vulkan::Instance::available()) return;
+
+  GenerateRequest request;
+  request.canvas_width = 32;
+  request.canvas_height = 32;
+  request.num_frames = 6;  // Aligns to the minimum 22-frame / 7-latent window.
+  request.num_inference_steps = 2;
+  request.seed = 0x564b414e45584143ull;
+  request.video_vae_path = video_checkpoint.string();
+  request.audio_vae_path = audio_checkpoint.string();
+  const GeneratePlan plan = resolve_plan(request);
+
+  // A durable backend-neutral latent archive makes both runs consume the same
+  // bytes, independently of RNG implementation and without conditioning or a
+  // denoiser entering the comparison.
+  const std::vector<float> video_rows = values(
+      size_t(plan.layout.num_video_rows) * 96, 83, 1021, 1.0f / 512.0f);
+  const std::vector<float> audio_rows = values(
+      size_t(plan.layout.num_audio_rows) * 32, 89, 1013, 1.0f / 512.0f);
+  const std::filesystem::path base = std::filesystem::temp_directory_path();
+  const std::filesystem::path latent_path =
+      base / "vidfab_cuda_vulkan_exact_latents.safetensors";
+  write_safetensors(
+      latent_path.string(),
+      {{"video_rows", {plan.layout.num_video_rows, 96}, video_rows},
+       {"audio_rows", {plan.layout.num_audio_rows, 32}, audio_rows}});
+
+  CapturedGeneration cuda_capture, vk_capture;
+  RunOptions cuda_options;
+  cuda_options.source = LatentSource::kSyntheticNoise;
+  cuda_options.inference_backend = DeviceBackend::kCuda;
+  cuda_options.attention_mode = AttentionMode::kExact;
+  cuda_options.init_latents_path = latent_path.string();
+  cuda_options.verbose = false;
+  cuda_options.on_samples = &capture_generation;
+  cuda_options.hook_userdata = &cuda_capture;
+  const RunResult cuda_result = run_generate(request, plan, cuda_options);
+  CHECK_MSG(cuda_result.ok, "CUDA exact generation failed: %s",
+            cuda_result.message.c_str());
+
+  RunOptions vk_options = cuda_options;
+  vk_options.inference_backend = DeviceBackend::kVulkan;
+  vk_options.hook_userdata = &vk_capture;
+  const RunResult vk_result = run_generate(request, plan, vk_options);
+  CHECK_MSG(vk_result.ok, "Vulkan exact generation failed: %s",
+            vk_result.message.c_str());
+
+  CHECK(cuda_capture.channels == vk_capture.channels);
+  CHECK(cuda_capture.frames == vk_capture.frames);
+  CHECK(cuda_capture.height == vk_capture.height);
+  CHECK(cuda_capture.width == vk_capture.width);
+  CHECK(cuda_capture.audio_channels == vk_capture.audio_channels);
+  CHECK(cuda_capture.audio_sample_rate == vk_capture.audio_sample_rate);
+  CHECK(cuda_capture.video == vk_capture.video);
+  check_exact(cuda_capture.audio, vk_capture.audio,
+              "run_generate interleaved PCM");
+
+  const std::filesystem::path cuda_y4m = base / "vidfab_generate_cuda_exact.y4m";
+  const std::filesystem::path vk_y4m = base / "vidfab_generate_vulkan_exact.y4m";
+  const std::filesystem::path cuda_wav = base / "vidfab_generate_cuda_exact.wav";
+  const std::filesystem::path vk_wav = base / "vidfab_generate_vulkan_exact.wav";
+  video::write_y4m(cuda_y4m.string(), cuda_capture.video,
+                   cuda_capture.frames, cuda_capture.height,
+                   cuda_capture.width);
+  video::write_y4m(vk_y4m.string(), vk_capture.video, vk_capture.frames,
+                   vk_capture.height, vk_capture.width);
+  audio::write_wav(cuda_wav.string(), cuda_capture.audio,
+                   cuda_capture.audio_channels, cuda_capture.audio_sample_rate,
+                   audio::SampleFormat::kPcm16);
+  audio::write_wav(vk_wav.string(), vk_capture.audio,
+                   vk_capture.audio_channels, vk_capture.audio_sample_rate,
+                   audio::SampleFormat::kPcm16);
+  CHECK(read_bytes(cuda_y4m) == read_bytes(vk_y4m));
+  CHECK(read_bytes(cuda_wav) == read_bytes(vk_wav));
+
+  std::printf(
+      "  exact run_generate slice: latent FNV64 %016llx, %zu pixels, %zu interleaved PCM samples, Y4M/WAV byte exact\n",
+      static_cast<unsigned long long>(fnv64({video_rows, audio_rows})),
+      cuda_capture.video.size(), cuda_capture.audio.size());
+  std::error_code ignored;
+  std::filesystem::remove(latent_path, ignored);
+  std::filesystem::remove(cuda_y4m, ignored);
+  std::filesystem::remove(vk_y4m, ignored);
+  std::filesystem::remove(cuda_wav, ignored);
+  std::filesystem::remove(vk_wav, ignored);
 }
