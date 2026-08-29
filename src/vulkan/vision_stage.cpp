@@ -62,9 +62,11 @@ struct ExactQwenVisionScratch::Impl {
   TensorContext* context = nullptr;
   QwenVisionStageConfig config;
   DeviceTensor normed, qkv, query, key, value, attention, branch, mlp;
+  DeviceTensor merged, merger_normed, merger_hidden;
   PreparedAttentionInputs prepared_attention;
   BlockedAttentionPlan attention_plan;
   DenseGemmPlan qkv_plan, projection_plan, fc1_plan, fc2_plan;
+  DenseGemmPlan patch_plan, merger_fc1_plan, merger_fc2_plan;
 
   Impl(TensorContext& owner, const QwenVisionStageConfig& c)
       : context(&owner), config(c) {
@@ -82,6 +84,13 @@ struct ExactQwenVisionScratch::Impl {
     attention = owner.allocate(three(rows, heads, head_dim), ScalarType::kBFloat16);
     branch = owner.allocate(matrix(rows, hidden), ScalarType::kBFloat16);
     mlp = owner.allocate(matrix(rows, intermediate), ScalarType::kBFloat16);
+    const uint32_t groups = rows / 4u;
+    constexpr uint32_t merged_width = 4608;
+    merged = owner.allocate(matrix(groups, merged_width), ScalarType::kBFloat16);
+    merger_normed = owner.allocate(
+        matrix(groups, merged_width), ScalarType::kBFloat16);
+    merger_hidden = owner.allocate(
+        matrix(groups, merged_width), ScalarType::kBFloat16);
     const BlockedAttentionPlanDesc attention_desc{
         rows, heads, head_dim, exact_attention_scale(head_dim)};
     prepared_attention = PreparedAttentionInputs::create(owner, attention_desc);
@@ -94,14 +103,116 @@ struct ExactQwenVisionScratch::Impl {
     projection_plan = plan(hidden, hidden);
     fc1_plan = plan(intermediate, hidden);
     fc2_plan = plan(hidden, intermediate);
+    patch_plan = DenseGemmPlan::create(owner, {rows, hidden, 1536,
+        DenseGemmMode::kBFloat16, DenseGemmBias::kBFloat16, false});
+    auto merger_plan = [&](uint32_t out, uint32_t in) {
+      return DenseGemmPlan::create(owner, {groups, out, in,
+          DenseGemmMode::kBFloat16, DenseGemmBias::kBFloat16, false});
+    };
+    merger_fc1_plan = merger_plan(merged_width, merged_width);
+    merger_fc2_plan = merger_plan(5120, merged_width);
   }
 
   uint64_t reserved() const noexcept {
     return bytes(normed) + bytes(qkv) + bytes(query) + bytes(key) +
         bytes(value) + bytes(attention) + bytes(branch) + bytes(mlp) +
+        bytes(merged) + bytes(merger_normed) + bytes(merger_hidden) +
         prepared_attention.reserved_bytes();
   }
 };
+
+struct ExactQwenVisionPatchStage::Impl {
+  TensorContext* context = nullptr;
+  QwenVisionStageConfig config;
+  DeviceTensor weight, bias, position_table;
+  Impl(TensorContext& owner, const QwenVisionStageConfig& c)
+      : context(&owner), config(c) {}
+  uint64_t resident() const noexcept {
+    return bytes(weight) + bytes(bias) + bytes(position_table);
+  }
+};
+
+ExactQwenVisionPatchStage::ExactQwenVisionPatchStage() = default;
+ExactQwenVisionPatchStage::~ExactQwenVisionPatchStage() = default;
+ExactQwenVisionPatchStage::ExactQwenVisionPatchStage(
+    std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+ExactQwenVisionPatchStage::ExactQwenVisionPatchStage(
+    ExactQwenVisionPatchStage&&) noexcept = default;
+ExactQwenVisionPatchStage& ExactQwenVisionPatchStage::operator=(
+    ExactQwenVisionPatchStage&&) noexcept = default;
+ExactQwenVisionPatchStage ExactQwenVisionPatchStage::create(
+    TensorContext& context, const QwenVisionStageConfig& config) {
+  validate_config(config);
+  context.require_exact_vae_pointwise();
+  return ExactQwenVisionPatchStage(std::make_shared<Impl>(context, config));
+}
+void ExactQwenVisionPatchStage::load(
+    const text::QwenVisionCheckpoint& checkpoint) {
+  if (!impl_ || !checkpoint.checkpoint ||
+      checkpoint.config.hidden_size != impl_->config.vision.hidden_size)
+    throw std::invalid_argument("Vulkan Qwen vision patch: invalid archive");
+  const SafeTensors& archive = *checkpoint.checkpoint;
+  const std::string& p = checkpoint.prefix;
+  Impl next(*impl_->context, impl_->config);
+  next.weight = upload_bf16(*impl_->context,
+      archive.at(p + "patch_embed.proj.weight"), matrix(1152, 1536),
+      "patch weight");
+  next.bias = upload_bf16(*impl_->context,
+      archive.at(p + "patch_embed.proj.bias"), vector(1152), "patch bias");
+  next.position_table = upload_bf16(*impl_->context,
+      archive.at(p + "pos_embed.weight"), matrix(2304, 1152),
+      "position table");
+  impl_->weight = std::move(next.weight);
+  impl_->bias = std::move(next.bias);
+  impl_->position_table = std::move(next.position_table);
+}
+void ExactQwenVisionPatchStage::unload() noexcept {
+  if (impl_) {
+    impl_->weight = DeviceTensor(); impl_->bias = DeviceTensor();
+    impl_->position_table = DeviceTensor();
+  }
+}
+bool ExactQwenVisionPatchStage::loaded() const noexcept {
+  return impl_ && impl_->weight && impl_->bias && impl_->position_table;
+}
+uint32_t ExactQwenVisionPatchStage::required_operators() const noexcept {
+  return impl_ ? row_gemm_operators(impl_->config.sequence) + 1u : 0u;
+}
+uint64_t ExactQwenVisionPatchStage::persistent_bytes() const noexcept {
+  return loaded() ? impl_->resident() : 0;
+}
+void ExactQwenVisionPatchStage::record(
+    TensorBatch& batch, DeviceTensor& pixel_rows, DeviceTensor& learned_index,
+    DeviceTensor& output, ExactQwenVisionScratch& scratch) const {
+  if (!loaded()) throw std::logic_error("Vulkan Qwen vision patch: not loaded");
+  if (!scratch.impl_ || scratch.impl_->context != impl_->context ||
+      !same_config(scratch.impl_->config, impl_->config) ||
+      !batch.belongs_to(*impl_->context))
+    throw std::invalid_argument("Vulkan Qwen vision patch: incompatible scratch");
+  const uint32_t rows = impl_->config.sequence;
+  const DeviceTensorView pixels = pixel_rows.view(), index = learned_index.view();
+  const DeviceTensorView out = output.view();
+  if (!impl_->context->owns(pixel_rows) || !impl_->context->owns(learned_index) ||
+      !impl_->context->owns(output) || pixels.type != ScalarType::kBFloat16 ||
+      pixels.layout.rank != 2 || pixels.layout.extent[0] != rows ||
+      pixels.layout.extent[1] != 1536 || !pixels.layout.is_contiguous() ||
+      index.type != ScalarType::kInt32 || index.layout.rank != 1 ||
+      index.layout.extent[0] != rows || !index.layout.is_contiguous() ||
+      out.type != ScalarType::kBFloat16 || out.layout.rank != 2 ||
+      out.layout.extent[0] != rows || out.layout.extent[1] != 1152 ||
+      !out.layout.is_contiguous() || pixels.resource == index.resource ||
+      pixels.resource == out.resource || index.resource == out.resource)
+    throw std::invalid_argument("Vulkan Qwen vision patch: invalid inputs");
+  batch.require_operator_capacity(required_operators());
+  const uint32_t tiled = rows / 64u * 64u;
+  if (tiled != 0)
+    scratch.impl_->patch_plan.record(batch, pixel_rows, impl_->weight, output,
+                                     tiled, 0, 0, &impl_->bias);
+  if (tiled != rows)
+    scratch.impl_->patch_plan.record(batch, pixel_rows, impl_->weight, output,
+        rows - tiled, tiled, tiled, &impl_->bias);
+  batch.vision_add_positions_bf16(output, impl_->position_table, learned_index);
+}
 
 struct ExactQwenVisionBlockStage::Impl {
   struct Weights {
@@ -115,6 +226,23 @@ struct ExactQwenVisionBlockStage::Impl {
           bytes(projection_weight) + bytes(projection_bias) +
           bytes(fc1_weight) + bytes(fc1_bias) + bytes(fc2_weight) +
           bytes(fc2_bias);
+    }
+  };
+  TensorContext* context = nullptr;
+  QwenVisionStageConfig config;
+  std::unique_ptr<Weights> weights;
+  Impl(TensorContext& owner, const QwenVisionStageConfig& c)
+      : context(&owner), config(c) {}
+};
+
+struct ExactQwenVisionMergerStage::Impl {
+  struct Weights {
+    int slot = -2;
+    DeviceTensor norm_weight, norm_bias, fc1_weight, fc1_bias,
+        fc2_weight, fc2_bias;
+    uint64_t resident() const noexcept {
+      return bytes(norm_weight) + bytes(norm_bias) + bytes(fc1_weight) +
+          bytes(fc1_bias) + bytes(fc2_weight) + bytes(fc2_bias);
     }
   };
   TensorContext* context = nullptr;
@@ -283,6 +411,115 @@ void ExactQwenVisionBlockStage::record(
   batch.vision_gelu_tanh_bf16(s.mlp);
   gemm(s.fc2_plan, s.mlp, w.fc2_weight, w.fc2_bias, s.branch);
   batch.text_add_residual_bf16(residual, s.branch);
+}
+
+ExactQwenVisionMergerStage::ExactQwenVisionMergerStage() = default;
+ExactQwenVisionMergerStage::~ExactQwenVisionMergerStage() = default;
+ExactQwenVisionMergerStage::ExactQwenVisionMergerStage(
+    std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+ExactQwenVisionMergerStage::ExactQwenVisionMergerStage(
+    ExactQwenVisionMergerStage&&) noexcept = default;
+ExactQwenVisionMergerStage& ExactQwenVisionMergerStage::operator=(
+    ExactQwenVisionMergerStage&&) noexcept = default;
+ExactQwenVisionMergerStage ExactQwenVisionMergerStage::create(
+    TensorContext& context, const QwenVisionStageConfig& config) {
+  validate_config(config);
+  context.require_exact_fp32_vae_normalization();
+  context.require_exact_vae_pointwise();
+  return ExactQwenVisionMergerStage(std::make_shared<Impl>(context, config));
+}
+void ExactQwenVisionMergerStage::load(
+    const text::QwenVisionCheckpoint& checkpoint, int merger_slot) {
+  if (!impl_ || !checkpoint.checkpoint || merger_slot < -1 || merger_slot > 2 ||
+      checkpoint.config.hidden_size != impl_->config.vision.hidden_size ||
+      checkpoint.config.output_size != impl_->config.vision.output_size)
+    throw std::invalid_argument("Vulkan Qwen vision merger: invalid archive/slot");
+  const SafeTensors& archive = *checkpoint.checkpoint;
+  const std::string p = merger_slot < 0
+      ? checkpoint.prefix + "merger."
+      : checkpoint.prefix + "deepstack_merger_list." +
+            std::to_string(merger_slot) + ".";
+  const uint32_t norm_width = merger_slot < 0 ? 1152u : 4608u;
+  auto next = std::make_unique<Impl::Weights>();
+  next->slot = merger_slot;
+  next->norm_weight = upload_bf16(*impl_->context, archive.at(p + "norm.weight"),
+                                  vector(norm_width), "merger norm weight");
+  next->norm_bias = upload_bf16(*impl_->context, archive.at(p + "norm.bias"),
+                                vector(norm_width), "merger norm bias");
+  next->fc1_weight = upload_bf16(*impl_->context,
+      archive.at(p + "linear_fc1.weight"), matrix(4608, 4608),
+      "merger fc1 weight");
+  next->fc1_bias = upload_bf16(*impl_->context,
+      archive.at(p + "linear_fc1.bias"), vector(4608), "merger fc1 bias");
+  next->fc2_weight = upload_bf16(*impl_->context,
+      archive.at(p + "linear_fc2.weight"), matrix(5120, 4608),
+      "merger fc2 weight");
+  next->fc2_bias = upload_bf16(*impl_->context,
+      archive.at(p + "linear_fc2.bias"), vector(5120), "merger fc2 bias");
+  impl_->weights = std::move(next);
+}
+void ExactQwenVisionMergerStage::unload() noexcept {
+  if (impl_) impl_->weights.reset();
+}
+bool ExactQwenVisionMergerStage::loaded() const noexcept {
+  return impl_ && impl_->weights;
+}
+int ExactQwenVisionMergerStage::slot() const {
+  if (!loaded()) throw std::logic_error("Vulkan Qwen vision merger: not loaded");
+  return impl_->weights->slot;
+}
+uint32_t ExactQwenVisionMergerStage::required_operators() const noexcept {
+  return impl_ ? 3u + 2u * row_gemm_operators(impl_->config.sequence / 4u) : 0u;
+}
+uint64_t ExactQwenVisionMergerStage::persistent_bytes() const noexcept {
+  return loaded() ? impl_->weights->resident() : 0;
+}
+void ExactQwenVisionMergerStage::record(
+    TensorBatch& batch, DeviceTensor& visual_residual, DeviceTensor& output,
+    ExactQwenVisionScratch& scratch) const {
+  if (!loaded()) throw std::logic_error("Vulkan Qwen vision merger: not loaded");
+  if (!scratch.impl_ || scratch.impl_->context != impl_->context ||
+      !same_config(scratch.impl_->config, impl_->config) ||
+      !batch.belongs_to(*impl_->context))
+    throw std::invalid_argument("Vulkan Qwen vision merger: incompatible scratch");
+  const uint32_t rows = impl_->config.sequence, groups = rows / 4u;
+  const DeviceTensorView input = visual_residual.view(), out = output.view();
+  if (!impl_->context->owns(visual_residual) || !impl_->context->owns(output) ||
+      input.type != ScalarType::kBFloat16 || input.layout.rank != 2 ||
+      input.layout.extent[0] != rows || input.layout.extent[1] != 1152 ||
+      !input.layout.is_contiguous() || out.type != ScalarType::kBFloat16 ||
+      out.layout.rank != 2 || out.layout.extent[0] != groups ||
+      out.layout.extent[1] != 5120 || !out.layout.is_contiguous() ||
+      input.resource == out.resource)
+    throw std::invalid_argument("Vulkan Qwen vision merger: invalid inputs");
+  batch.require_operator_capacity(required_operators());
+  auto& s = *scratch.impl_;
+  auto& w = *impl_->weights;
+  DeviceTensor* merged_input = &s.merged;
+  if (w.slot < 0) {
+    batch.layer_norm_bf16(visual_residual, w.norm_weight, w.norm_bias,
+                          s.normed, 1.0e-6f);
+    batch.vision_merge_four_bf16(s.normed, s.merged);
+  } else {
+    batch.vision_merge_four_bf16(visual_residual, s.merged);
+    batch.layer_norm_bf16(s.merged, w.norm_weight, w.norm_bias,
+                          s.merger_normed, 1.0e-6f);
+    merged_input = &s.merger_normed;
+  }
+  const uint32_t tiled = groups / 64u * 64u;
+  auto gemm = [&](const DenseGemmPlan& plan, DeviceTensor& source,
+                  DeviceTensor& weight, DeviceTensor& bias,
+                  DeviceTensor& destination) {
+    if (tiled != 0)
+      plan.record(batch, source, weight, destination, tiled, 0, 0, &bias);
+    if (tiled != groups)
+      plan.record(batch, source, weight, destination, groups - tiled,
+                  tiled, tiled, &bias);
+  };
+  gemm(s.merger_fc1_plan, *merged_input, w.fc1_weight, w.fc1_bias,
+       s.merger_hidden);
+  batch.vision_gelu_tanh_bf16(s.merger_hidden);
+  gemm(s.merger_fc2_plan, s.merger_hidden, w.fc2_weight, w.fc2_bias, output);
 }
 
 }  // namespace vidfab::vulkan

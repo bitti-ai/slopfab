@@ -3406,6 +3406,113 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
   vk.collect();
   CHECK(!stage.loaded() && stage.persistent_bytes() == 0);
   CHECK(vk.pooled_used_bytes() == unloaded_used);
+
+  // Patch embedding and both merger norm orders use the same strict archive
+  // and shared arena. They are checked against explicit exact CUDA, not the
+  // shipped cuBLAS/native-tanh tower.
+  std::vector<uint16_t> pixels(size_t(rows) * 1536);
+  for (size_t i = 0; i < pixels.size(); ++i)
+    pixels[i] = f32_to_bf16(float(int(i * 17 % 193) - 96) / 96.0f);
+  const TensorView& patch_w_view =
+      archive.at(vision.prefix + "patch_embed.proj.weight");
+  const TensorView& patch_b_view =
+      archive.at(vision.prefix + "patch_embed.proj.bias");
+  const TensorView& position_view = archive.at(vision.prefix + "pos_embed.weight");
+  cuda::DeviceBuffer<uint16_t> cpatch_w(patch_w_view.nbytes / 2),
+      cpatch_b(patch_b_view.nbytes / 2), cposition(position_view.nbytes / 2),
+      cpixels(pixels.size()), cpatch_out(size_t(rows) * hidden);
+  cuda::DeviceBuffer<int32_t> cposition_index(positions.learned.size());
+  cpatch_w.copy_from_host(static_cast<const uint16_t*>(patch_w_view.data),
+                          patch_w_view.nbytes / 2);
+  cpatch_b.copy_from_host(static_cast<const uint16_t*>(patch_b_view.data),
+                          patch_b_view.nbytes / 2);
+  cposition.copy_from_host(static_cast<const uint16_t*>(position_view.data),
+                           position_view.nbytes / 2);
+  cpixels.copy_from_host(pixels.data(), pixels.size());
+  cposition_index.copy_from_host(positions.learned.data(), positions.learned.size());
+  cuda::QuantWeight patch_weight = dense(cpatch_w, cpatch_b, hidden, 1536);
+  cuda::qwen_vision_patch_embed_exact(
+      nullptr, patch_weight, reinterpret_cast<const __nv_bfloat16*>(cpixels.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cposition.get()),
+      cposition_index.get(), reinterpret_cast<__nv_bfloat16*>(cpatch_out.get()), rows);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> expected_patch(size_t(rows) * hidden);
+  cpatch_out.copy_to_host(expected_patch.data(), expected_patch.size());
+
+  DeviceTensor vpixels = vk.allocate(mat(rows, 1536), ScalarType::kBFloat16);
+  const uint64_t index_shape[] = {rows};
+  DeviceTensor vposition_index = vk.allocate(
+      TensorLayout::contiguous(index_shape, 1), ScalarType::kInt32);
+  DeviceTensor vpatch_out = vk.allocate(mat(rows, hidden), ScalarType::kBFloat16);
+  vk.upload_bytes(vpixels, pixels.data(), pixels.size() * 2);
+  vk.upload_bytes(vposition_index, positions.learned.data(),
+                  positions.learned.size() * sizeof(int32_t));
+  ExactQwenVisionPatchStage patch_stage =
+      ExactQwenVisionPatchStage::create(vk, config);
+  patch_stage.load(vision);
+  CHECK(patch_stage.required_operators() == 2);
+  TensorBatch patch_batch = vk.begin_batch();
+  { test::HostAllocationGuard no_alloc;
+    patch_stage.record(patch_batch, vpixels, vposition_index, vpatch_out, scratch); }
+  patch_batch.submit().wait();
+  std::vector<uint16_t> actual_patch(expected_patch.size());
+  vk.download_bytes(vpatch_out, actual_patch.data(), actual_patch.size() * 2);
+  CHECK(actual_patch == expected_patch);
+
+  ExactQwenVisionMergerStage merger_stage =
+      ExactQwenVisionMergerStage::create(vk, config);
+  DeviceTensor vmerged_out = vk.allocate(mat(rows / 4, 5120),
+                                          ScalarType::kBFloat16);
+  auto exact_cuda_merger = [&](int slot_index) {
+    const std::string base = slot_index < 0
+        ? vision.prefix + "merger."
+        : vision.prefix + "deepstack_merger_list." +
+              std::to_string(slot_index) + ".";
+    auto component = [&](const char* suffix) {
+      const TensorView& view = archive.at(base + suffix);
+      cuda::DeviceBuffer<uint16_t> result(view.nbytes / 2);
+      result.copy_from_host(static_cast<const uint16_t*>(view.data), view.nbytes / 2);
+      return result;
+    };
+    cuda::DeviceBuffer<uint16_t> nw = component("norm.weight"),
+        nb = component("norm.bias"), mw1 = component("linear_fc1.weight"),
+        mb1 = component("linear_fc1.bias"), mw2 = component("linear_fc2.weight"),
+        mb2 = component("linear_fc2.bias");
+    cuda::DeviceBuffer<uint16_t> mn(size_t(rows) * hidden),
+        mm(size_t(rows / 4) * 4608), mh(size_t(rows / 4) * 4608),
+        mo(size_t(rows / 4) * 5120);
+    cuda::QwenVisionMergerWeights weights;
+    weights.norm_weight = reinterpret_cast<__nv_bfloat16*>(nw.get());
+    weights.norm_bias = reinterpret_cast<__nv_bfloat16*>(nb.get());
+    weights.fc1 = dense(mw1, mb1, 4608, 4608);
+    weights.fc2 = dense(mw2, mb2, 5120, 4608);
+    weights.norm_before_merge = slot_index < 0;
+    cuda::qwen_vision_merger_forward_exact(
+        nullptr, weights, reinterpret_cast<const __nv_bfloat16*>(cpatch_out.get()),
+        reinterpret_cast<__nv_bfloat16*>(mn.get()),
+        reinterpret_cast<__nv_bfloat16*>(mm.get()),
+        reinterpret_cast<__nv_bfloat16*>(mh.get()),
+        reinterpret_cast<__nv_bfloat16*>(mo.get()), rows);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> result(size_t(rows / 4) * 5120);
+    mo.copy_to_host(result.data(), result.size());
+    return result;
+  };
+  for (const int merger_slot : {-1, 0}) {
+    const std::vector<uint16_t> expected_merger = exact_cuda_merger(merger_slot);
+    merger_stage.load(vision, merger_slot);
+    CHECK(merger_stage.slot() == merger_slot);
+    CHECK(merger_stage.required_operators() == 5);
+    CHECK(merger_stage.persistent_bytes() < 96ull * 1024 * 1024);
+    TensorBatch merger_batch = vk.begin_batch();
+    { test::HostAllocationGuard no_alloc;
+      merger_stage.record(merger_batch, vpatch_out, vmerged_out, scratch); }
+    merger_batch.submit().wait();
+    std::vector<uint16_t> actual_merger(expected_merger.size());
+    vk.download_bytes(vmerged_out, actual_merger.data(), actual_merger.size() * 2);
+    CHECK(actual_merger == expected_merger);
+  }
+  patch_stage.unload(); merger_stage.unload();
   std::printf("qwen vision real block0 S64 CUDA %.3f ms Vulkan %.3f ms "
               "scratch %llu bytes\n", cuda_ms, vk_ms,
               static_cast<unsigned long long>(scratch.reserved_bytes()));

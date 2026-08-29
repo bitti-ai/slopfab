@@ -33,6 +33,33 @@ class ExactQwenVisionScratch {
   explicit ExactQwenVisionScratch(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
   friend class ExactQwenVisionBlockStage;
+  friend class ExactQwenVisionPatchStage;
+  friend class ExactQwenVisionMergerStage;
+};
+
+class ExactQwenVisionPatchStage {
+ public:
+  ExactQwenVisionPatchStage();
+  ~ExactQwenVisionPatchStage();
+  ExactQwenVisionPatchStage(ExactQwenVisionPatchStage&&) noexcept;
+  ExactQwenVisionPatchStage& operator=(ExactQwenVisionPatchStage&&) noexcept;
+  ExactQwenVisionPatchStage(const ExactQwenVisionPatchStage&) = delete;
+  ExactQwenVisionPatchStage& operator=(const ExactQwenVisionPatchStage&) = delete;
+  static ExactQwenVisionPatchStage create(
+      TensorContext& context, const QwenVisionStageConfig& config);
+  void load(const text::QwenVisionCheckpoint& checkpoint);
+  void unload() noexcept;
+  bool loaded() const noexcept;
+  uint32_t required_operators() const noexcept;
+  uint64_t persistent_bytes() const noexcept;
+  // pixel_rows [S,1536], learned_index [S], output [S,1152].
+  void record(TensorBatch& batch, DeviceTensor& pixel_rows,
+              DeviceTensor& learned_index, DeviceTensor& output,
+              ExactQwenVisionScratch& scratch) const;
+ private:
+  struct Impl;
+  explicit ExactQwenVisionPatchStage(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
 };
 
 // One streamed visual transformer block. load() consumes a descriptor returned
@@ -62,6 +89,32 @@ class ExactQwenVisionBlockStage {
  private:
   struct Impl;
   explicit ExactQwenVisionBlockStage(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
+};
+
+// slot -1 is the main merger (norm before merge); slots 0..2 are the three
+// DeepStack mergers (merge before norm).
+class ExactQwenVisionMergerStage {
+ public:
+  ExactQwenVisionMergerStage();
+  ~ExactQwenVisionMergerStage();
+  ExactQwenVisionMergerStage(ExactQwenVisionMergerStage&&) noexcept;
+  ExactQwenVisionMergerStage& operator=(ExactQwenVisionMergerStage&&) noexcept;
+  ExactQwenVisionMergerStage(const ExactQwenVisionMergerStage&) = delete;
+  ExactQwenVisionMergerStage& operator=(const ExactQwenVisionMergerStage&) = delete;
+  static ExactQwenVisionMergerStage create(
+      TensorContext& context, const QwenVisionStageConfig& config);
+  void load(const text::QwenVisionCheckpoint& checkpoint, int slot);
+  void unload() noexcept;
+  bool loaded() const noexcept;
+  int slot() const;
+  uint32_t required_operators() const noexcept;
+  uint64_t persistent_bytes() const noexcept;
+  void record(TensorBatch& batch, DeviceTensor& visual_residual,
+              DeviceTensor& output, ExactQwenVisionScratch& scratch) const;
+ private:
+  struct Impl;
+  explicit ExactQwenVisionMergerStage(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
 

@@ -223,6 +223,33 @@ void qwen_vision_patch_embed(LinearRunner& linear, const QuantWeight& projection
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
+void qwen_vision_patch_embed_exact(
+    cudaStream_t stream, const QuantWeight& projection,
+    const __nv_bfloat16* pixels, const __nv_bfloat16* position_table,
+    const int32_t* position_index, __nv_bfloat16* output, int rows) {
+  if (rows <= 0 || !pixels || !position_table || !position_index || !output ||
+      projection.format != QuantFormat::kBF16 ||
+      projection.out_features != 1152 || projection.in_features != 1536 ||
+      projection.bias == nullptr ||
+      projection.bias_format != QuantFormat::kBF16)
+    throw std::invalid_argument("qwen vision exact patch: invalid input");
+  const uint32_t count = static_cast<uint32_t>(rows);
+  const uint32_t tiled = count / 64u * 64u;
+  if (tiled != 0)
+    launch_deterministic_bf16_gemm_nt(
+        pixels, static_cast<const __nv_bfloat16*>(projection.data),
+        projection.bias, output, tiled, projection.out_features,
+        projection.in_features, DenseGemmBias::kBFloat16, 0, 0, stream);
+  if (tiled != count)
+    launch_deterministic_scalar_gemm_nt(
+        pixels, projection.data, projection.bias, output, count - tiled,
+        projection.out_features, projection.in_features,
+        DenseGemmMode::kBFloat16, DenseGemmBias::kBFloat16, tiled, tiled,
+        stream);
+  qwen_vision_add_positions_exact(output, position_table, position_index, rows,
+                                  1152, stream);
+}
+
 void qwen_vision_merger_forward(cudaStream_t stream, LinearRunner& linear,
                                 const QwenVisionMergerWeights& w, const __nv_bfloat16* x,
                                 __nv_bfloat16* normed, __nv_bfloat16* merged,
@@ -243,6 +270,49 @@ void qwen_vision_merger_forward(cudaStream_t stream, LinearRunner& linear,
   linear.forward(w.fc1, merged, groups, hidden, ws);
   launch_gelu_tanh(hidden, static_cast<size_t>(groups) * merged_dim, stream);
   linear.forward(w.fc2, hidden, groups, output, ws);
+}
+
+void qwen_vision_merger_forward_exact(
+    cudaStream_t stream, const QwenVisionMergerWeights& w,
+    const __nv_bfloat16* x, __nv_bfloat16* normed,
+    __nv_bfloat16* merged, __nv_bfloat16* hidden,
+    __nv_bfloat16* output, int rows, float eps) {
+  constexpr uint32_t dim = 1152, merged_dim = 4608;
+  if (rows <= 0 || rows % 4 != 0 || !x || !normed || !merged || !hidden ||
+      !output || w.fc1.format != QuantFormat::kBF16 ||
+      w.fc2.format != QuantFormat::kBF16)
+    throw std::invalid_argument("qwen vision exact merger: invalid input");
+  const uint32_t groups = static_cast<uint32_t>(rows / 4);
+  const __nv_bfloat16* source = merged;
+  if (w.norm_before_merge) {
+    launch_layernorm_affine(x, w.norm_weight, w.norm_bias, normed, rows, dim,
+                            eps, stream);
+    launch_merge_four_rows(normed, merged, groups, dim, stream);
+  } else {
+    launch_merge_four_rows(x, merged, groups, dim, stream);
+    launch_layernorm_affine(merged, w.norm_weight, w.norm_bias, normed, groups,
+                            merged_dim, eps, stream);
+    source = normed;
+  }
+  auto projection = [&](const QuantWeight& weight,
+                        const __nv_bfloat16* input,
+                        __nv_bfloat16* destination) {
+    const uint32_t tiled = groups / 64u * 64u;
+    if (tiled != 0)
+      launch_deterministic_bf16_gemm_nt(
+          input, static_cast<const __nv_bfloat16*>(weight.data), weight.bias,
+          destination, tiled, weight.out_features, weight.in_features,
+          DenseGemmBias::kBFloat16, 0, 0, stream);
+    if (tiled != groups)
+      launch_deterministic_scalar_gemm_nt(
+          input, weight.data, weight.bias, destination, groups - tiled,
+          weight.out_features, weight.in_features, DenseGemmMode::kBFloat16,
+          DenseGemmBias::kBFloat16, tiled, tiled, stream);
+  };
+  projection(w.fc1, source, hidden);
+  launch_gelu_tanh_exact(hidden, static_cast<size_t>(groups) * merged_dim,
+                         stream);
+  projection(w.fc2, hidden, output);
 }
 
 void qwen_vision_tower_forward(cublasHandle_t handle, cudaStream_t stream,
