@@ -487,6 +487,27 @@ __device__ float rope_bf16_value(__nv_bfloat16 value) {
       : __bfloat162float(value);
 }
 
+__device__ inline __nv_bfloat16 exact_vision_bf16_result(float value) {
+  value = canonicalize_pointwise_float(value);
+  const uint32_t magnitude = __float_as_uint(value) & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return __ushort_as_bfloat16(0x7fffu);
+  const __nv_bfloat16 rounded = __float2bfloat16_rn(value);
+  const uint16_t rounded_bits = __bfloat16_as_ushort(rounded);
+  return (rounded_bits & 0x7fffu) < 0x0080u
+      ? __ushort_as_bfloat16(rounded_bits & 0x8000u) : rounded;
+}
+
+__global__ void gelu_tanh_exact_kernel(__nv_bfloat16* x, size_t n) {
+  const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  const uint16_t input_bits = __bfloat16_as_ushort(x[i]);
+  float value = __bfloat162float(x[i]);
+  if ((input_bits & 0x7fffu) < 0x0080u)
+    value = __uint_as_float(static_cast<uint32_t>(input_bits & 0x8000u) << 16u);
+  if ((input_bits & 0x7fffu) > 0x7f80u) value = __uint_as_float(0x7fc00000u);
+  x[i] = exact_vision_bf16_result(deterministic_pointwise_gelu_tanh(value));
+}
+
 template <int VEC>
 __global__ void swiglu_exact_kernel(const __nv_bfloat16* __restrict__ fused,
                                     __nv_bfloat16* __restrict__ out, int inner) {
@@ -815,6 +836,13 @@ void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream) {
 void launch_gelu_tanh(__nv_bfloat16* x, size_t n, cudaStream_t stream) {
   if (!n) return;
   gelu_tanh_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, n);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_gelu_tanh_exact(__nv_bfloat16* x, size_t n,
+                            cudaStream_t stream) {
+  if (!n) return;
+  gelu_tanh_exact_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, n);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

@@ -3003,6 +3003,98 @@ VIDFAB_TEST(cuda_vulkan_dit_exact_pointwise) {
   CHECK(stream_expected_bits==stream_actual_bits);
 }
 
+VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_gelu) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 1;
+  TensorContext vk(device, context_options);
+
+  // Odd count pins the packed-pair tail.  Exceptional BF16 values define a
+  // total contract: signed subnormals flush, NaNs canonicalize, -Inf maps to
+  // -0, and +Inf remains +Inf.  Huge finite values also avoid native tanh.
+  std::vector<uint16_t> input = {
+      0x0000u, 0x8000u, 0x0001u, 0x8001u, 0x7f81u, 0x7fc1u,
+      0x7f80u, 0xff80u, 0x7f7fu, 0xff7fu, f32_to_bf16(-12.0f),
+      f32_to_bf16(-1.0f), f32_to_bf16(-0.125f), f32_to_bf16(0.125f),
+      f32_to_bf16(1.0f), f32_to_bf16(6.0f), f32_to_bf16(12.0f)};
+  cuda::DeviceBuffer<uint16_t> cuda_bits(input.size());
+  cuda_bits.copy_from_host(input.data(), input.size());
+  cuda::launch_gelu_tanh_exact(
+      reinterpret_cast<__nv_bfloat16*>(cuda_bits.get()), input.size(), nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> expected(input.size());
+  cuda_bits.copy_to_host(expected.data(), expected.size());
+
+  const uint64_t shape[] = {1, input.size()};
+  DeviceTensor activation = vk.allocate(
+      TensorLayout::contiguous(shape, 2), ScalarType::kBFloat16);
+  vk.upload_bytes(activation, input.data(), input.size() * sizeof(uint16_t));
+  TensorBatch batch = vk.begin_batch();
+  CHECK(batch.remaining_operator_capacity() == 1);
+  {
+    test::HostAllocationGuard no_host_allocations;
+    batch.vision_gelu_tanh_bf16(activation);
+  }
+  CHECK(batch.remaining_operator_capacity() == 0);
+  batch.submit().wait();
+  std::vector<uint16_t> actual(input.size());
+  vk.download_bytes(activation, actual.data(), actual.size() * sizeof(uint16_t));
+  CHECK(std::memcmp(expected.data(), actual.data(), actual.size() * 2) == 0);
+  CHECK(actual[0] == 0x0000u);
+  CHECK(actual[1] == 0x8000u);
+  CHECK(actual[2] == 0x0000u);
+  CHECK(actual[3] == 0x8000u);
+  CHECK(actual[4] == 0x7fffu && actual[5] == 0x7fffu);
+  CHECK(actual[6] == 0x7f80u && actual[7] == 0x8000u);
+
+  // Production S=16384, intermediate=4304 is opt-in because each authority
+  // buffer is 134.5 MiB.  It is deliberately one packed dispatch, including
+  // a non-multiple-of-64 pair count, rather than a synthetic extrapolation.
+  if (std::getenv("VIDFAB_RUN_QWEN_VISION_REAL")) {
+    constexpr uint64_t rows = 16384, dim = 4304;
+    const uint64_t count = rows * dim;
+    std::vector<uint16_t> host(count);
+    for (uint64_t i = 0; i < count; ++i)
+      host[i] = f32_to_bf16(static_cast<float>(static_cast<int>(i % 257) - 128) /
+                            32.0f);
+    cuda::DeviceBuffer<uint16_t> cuda_production(count);
+    cuda_production.copy_from_host(host.data(), host.size());
+    const auto cuda_start = std::chrono::steady_clock::now();
+    cuda::launch_gelu_tanh_exact(
+        reinterpret_cast<__nv_bfloat16*>(cuda_production.get()), count, nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    const auto cuda_end = std::chrono::steady_clock::now();
+    const uint64_t production_shape[] = {rows, dim};
+    DeviceTensor vk_production = vk.allocate(
+        TensorLayout::contiguous(production_shape, 2), ScalarType::kBFloat16);
+    vk.upload_bytes(vk_production, host.data(), host.size() * 2);
+    const auto vk_start = std::chrono::steady_clock::now();
+    TensorBatch production_batch = vk.begin_batch();
+    production_batch.vision_gelu_tanh_bf16(vk_production);
+    production_batch.submit().wait();
+    const auto vk_end = std::chrono::steady_clock::now();
+    std::vector<uint16_t> cuda_out(count), vk_out(count);
+    cuda_production.copy_to_host(cuda_out.data(), cuda_out.size());
+    vk.download_bytes(vk_production, vk_out.data(), vk_out.size() * 2);
+    CHECK(std::memcmp(cuda_out.data(), vk_out.data(), count * 2) == 0);
+    std::printf("qwen vision GELU S16384 CUDA %.3f ms Vulkan %.3f ms bytes %llu\n",
+                std::chrono::duration<double, std::milli>(cuda_end - cuda_start).count(),
+                std::chrono::duration<double, std::milli>(vk_end - vk_start).count(),
+                static_cast<unsigned long long>(count * 2));
+  }
+}
+
 VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   using namespace vidfab;
   using namespace vidfab::vulkan;

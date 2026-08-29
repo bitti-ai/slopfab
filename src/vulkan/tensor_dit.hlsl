@@ -49,6 +49,7 @@ float canonical_bf16(float value) {
 
 float exact_divide(float numerator_value, float denominator_value);
 float exact_exp(float value);
+float exp_nonpositive(float value);
 
 float exact_silu(float value) {
   value = canonical_bf16(value);
@@ -58,6 +59,34 @@ float exact_silu(float value) {
   if (magnitude == 0x7f800000u)
     return (bits & 0x80000000u) != 0u ? asfloat(0x80000000u) : value;
   return exact_divide(value, 1.0f + exact_exp(-value));
+}
+
+float exact_gelu_tanh(float value) {
+  value = canonical_bf16(value);
+  const uint bits = asuint(value);
+  const uint magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return asfloat(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u ? asfloat(0x80000000u) : value;
+  precise float square = canonical_bf16(value * value);
+  precise float cubic = canonical_bf16(square * value);
+  precise float inner = canonical_bf16(value + 0.044715f * cubic);
+  precise float angle = canonical_bf16(0.7978845608028654f * inner);
+  const uint angle_bits = asuint(angle);
+  const uint angle_magnitude = angle_bits & 0x7fffffffu;
+  float tanh_value;
+  if (angle_magnitude == 0x7f800000u) {
+    tanh_value = (angle_bits & 0x80000000u) != 0u ? -1.0f : 1.0f;
+  } else {
+    precise float exponential = exp_nonpositive(-2.0f * abs(angle));
+    precise float numerator = canonical_bf16(1.0f - exponential);
+    precise float denominator = canonical_bf16(1.0f + exponential);
+    tanh_value = exact_divide(numerator, denominator);
+    if ((angle_bits & 0x80000000u) != 0u) tanh_value = -tanh_value;
+  }
+  precise float half_value = canonical_bf16(0.5f * value);
+  precise float one_plus_tanh = canonical_bf16(1.0f + tanh_value);
+  return canonical_bf16(half_value * one_plus_tanh);
 }
 
 uint exact_residual_bf16(uint index) {
@@ -247,12 +276,19 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     const uint high = first + 1u < live_count
         ? exact_residual_bf16(first + 1u) : 0u;
     output_data.Store(index * 4u, low | (high << 16u));
-  } else { // exact split-input BF16 SwiGLU, packed pairs
+  } else if (p.op == 5u) { // exact split-input BF16 SwiGLU, packed pairs
     const uint first = index * 2u;
     const uint live_count = p.rows * p.dim;
     const uint low = exact_swiglu_bf16(first);
     const uint high = first + 1u < live_count
         ? exact_swiglu_bf16(first + 1u) : 0u;
+    output_data.Store(index * 4u, low | (high << 16u));
+  } else { // exact Qwen vision GELU-tanh, packed pairs in place
+    const uint first = index * 2u;
+    const uint live_count = p.rows * p.dim;
+    const uint low = bf16_rte(exact_gelu_tanh(load_bf16(primary, first)));
+    const uint high = first + 1u < live_count
+        ? bf16_rte(exact_gelu_tanh(load_bf16(primary, first + 1u))) : 0u;
     output_data.Store(index * 4u, low | (high << 16u));
   }
 }

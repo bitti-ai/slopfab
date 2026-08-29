@@ -86,6 +86,10 @@ void launch_swiglu_exact(const __nv_bfloat16* fused, __nv_bfloat16* out,
 
 void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream);
 void launch_gelu_tanh(__nv_bfloat16* x, size_t n, cudaStream_t stream);
+// Canonical exact-mode GELU paired with TensorBatch::vision_gelu_tanh_bf16.
+// Unlike the shipped fast path above, this defines NaN/Inf/subnormal behavior.
+void launch_gelu_tanh_exact(__nv_bfloat16* x, size_t n,
+                            cudaStream_t stream);
 
 // --- rotary -----------------------------------------------------------------
 

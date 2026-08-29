@@ -231,6 +231,10 @@ class TensorBatch {
   void text_add_residual_bf16(DeviceTensor& residual, DeviceTensor& branch);
   void text_swiglu_split_bf16(DeviceTensor& gate, DeviceTensor& up,
                               DeviceTensor& output);
+  // Exact Qwen vision GELU-tanh in place over contiguous BF16 [rows,dim].
+  // Arithmetic, exceptional values, and the packed-pair tail are pinned to
+  // launch_gelu_tanh_exact; the shipped CUDA fast GELU remains unchanged.
+  void vision_gelu_tanh_bf16(DeviceTensor& activation);
   // Rank-R checkpoint-native AdaLN expansion. Weight [M*P*C,R], bias
   // [M*P*C], code [T,R]. Output may be canonical [P,T*M,C] or a flat fp32
   // arena with P equal aligned table strides.

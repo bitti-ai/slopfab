@@ -379,4 +379,48 @@ __device__ inline float deterministic_pointwise_silu(float value) {
   return canonicalize_pointwise_float(result);
 }
 
+// Backend-stable Qwen vision GELU-tanh.  The input is checkpoint BF16, but
+// spelling out every fp32 operation is still necessary: native tanh differs
+// between CUDA and SPIR-V and (-Inf) * 0 otherwise produces an implementation
+// dependent NaN.  Subnormals are flushed at every arithmetic boundary and all
+// NaNs use the shared canonical payload.
+__device__ inline float deterministic_pointwise_gelu_tanh(float value) {
+  value = canonicalize_pointwise_float(value);
+  const uint32_t bits = __float_as_uint(value);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return __uint_as_float(0x7fc00000u);
+  if (magnitude == 0x7f800000u) {
+    return (bits & 0x80000000u) != 0u
+        ? __uint_as_float(0x80000000u) : value;
+  }
+
+  const float square = canonicalize_pointwise_float(__fmul_rn(value, value));
+  const float cubic = canonicalize_pointwise_float(__fmul_rn(square, value));
+  const float inner = canonicalize_pointwise_float(
+      __fadd_rn(value, __fmul_rn(0.044715f, cubic)));
+  const float angle = canonicalize_pointwise_float(
+      __fmul_rn(0.7978845608028654f, inner));
+  const uint32_t angle_bits = __float_as_uint(angle);
+  const uint32_t angle_magnitude = angle_bits & 0x7fffffffu;
+  float tanh_value;
+  if (angle_magnitude == 0x7f800000u) {
+    tanh_value = (angle_bits & 0x80000000u) != 0u ? -1.0f : 1.0f;
+  } else {
+    const float exponential = deterministic_exp_nonpositive(
+        __fmul_rn(-2.0f, fabsf(angle)));
+    const float numerator = canonicalize_pointwise_float(
+        __fadd_rn(1.0f, -exponential));
+    const float denominator = canonicalize_pointwise_float(
+        __fadd_rn(1.0f, exponential));
+    tanh_value = deterministic_float_divide(numerator, denominator);
+    if ((angle_bits & 0x80000000u) != 0u) tanh_value = -tanh_value;
+  }
+  const float half_value = canonicalize_pointwise_float(
+      __fmul_rn(0.5f, value));
+  const float one_plus_tanh = canonicalize_pointwise_float(
+      __fadd_rn(1.0f, tanh_value));
+  return canonicalize_pointwise_float(
+      __fmul_rn(half_value, one_plus_tanh));
+}
+
 }  // namespace vidfab::cuda

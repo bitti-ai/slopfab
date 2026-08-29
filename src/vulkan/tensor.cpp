@@ -3021,6 +3021,38 @@ void TensorBatch::text_swiglu_split_bf16(DeviceTensor& gate,
   }
 }
 
+void TensorBatch::vision_gelu_tanh_bf16(DeviceTensor& activation) {
+  if (!impl_ || impl_->poisoned)
+    throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_dit_pointwise)
+    throw std::runtime_error("vulkan vision: exact GELU is unavailable");
+  auto x = impl_->owner->require(activation);
+  const uint64_t rows = x->layout.rank == 2 ? x->layout.extent[0] : 0;
+  const uint64_t dim = x->layout.rank == 2 ? x->layout.extent[1] : 0;
+  const uint64_t count = checked_multiply(rows, dim, "vision GELU");
+  const uint64_t packed = count == 0 ? 0 : 1 + (count - 1) / 2;
+  if (x->layout.rank != 2 || rows == 0 || dim == 0 ||
+      x->type != ScalarType::kBFloat16 || !x->layout.is_contiguous() ||
+      rows > std::numeric_limits<uint32_t>::max() ||
+      dim > std::numeric_limits<uint32_t>::max() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan vision: invalid GELU tensor");
+  }
+  TensorContext::Impl::DitParameters p;
+  p.op = 6;
+  p.rows = static_cast<uint32_t>(rows);
+  p.dim = static_cast<uint32_t>(dim);
+  p.count = static_cast<uint32_t>(packed);
+  try {
+    impl_->count_operator();
+    impl_->transition(x, BufferAccess::kComputeReadWrite);
+    impl_->dispatch_dit(p, {x, x, x, x, x});
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
 void TensorBatch::dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
                                    DeviceTensor& code, DeviceTensor& output,
                                    uint32_t num_modality, uint32_t num_param,
