@@ -982,9 +982,10 @@ by the CUDA-free lifecycle fixture. A CUDA-disabled build loads the real full
 checkpoint, runs all 50 blocks plus refiner/endpoints at S65 twice without
 growth, and pins combined fp32 output FNV64 `42764ebbb3850be4`.
 
-The scheduler/denoise-loop integration remains the next transformer feature;
-this endpoint is one reusable evaluation and does not yet enable Vulkan
-conditioning or denoising in the public generation plan.
+`ExactH3Denoiser` composes this endpoint with the shared flow schedule and two
+device Euler updates per evaluation. Video/audio rows stay resident for the
+whole trajectory and public Vulkan generation accepts an explicit captured
+prompt embedding; native conditioning remains a separate feature.
 
 The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
 `dxc_2026_07_29.zip` (SHA-256
@@ -993,8 +994,8 @@ The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
 ```text
 dxc -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 -E main -O3 -Gis src/vulkan/tensor_dit.hlsl -Fo src/vulkan/tensor_dit.comp.spv
 
-tensor_dit.hlsl       09CB2BEF9E313D9353C9142E13C1C75EF40C9E4FE4E3F06960D6F89C9B5A790E
-tensor_dit.comp.spv    D55ED5CDD6439A293A5FF9FCF19ABCDB85BB6BF6484C146DBEAA6398C831251F
+tensor_dit.hlsl       96E28D415C631141944419F0C32E716E74F558AEEC6077A6DEA5199C660475CF
+tensor_dit.comp.spv    AF58A6A7DCFC4CF6EB3F69D1B111A2498AC7517B5313C4ADA2877F1E8933A932
 ```
 
 ## Exact causal GQA text attention

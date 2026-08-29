@@ -258,6 +258,16 @@ passes no observer. The optional replay observer downloads post-update rows only
 for verification. AB2, Ref2VA and both cache families are rejected rather than
 silently changing their semantics.
 
+The complete step is transactionally preflighted as
+`required_forward_operators()+2` before any operator is recorded. Exact and
+one-short capacity fixtures prove that failure consumes no capacity and the
+same batch remains usable. The shared host/CUDA and Vulkan Euler contract is
+total over fp32 bits: operands and results flush subnormals to signed zero, and
+all NaNs, infinities and non-finite intermediates become canonical
+`0x7fc00000`. Arithmetic retains the literal reference association even at
+ratio/sigma endpoints. Count-one, dispatch-tail, signed-zero, subnormal,
+maximum-finite, NaN-payload and infinity cases match bitwise.
+
 The signed real replay uses
 `tests/data/h3_transformer_step0_seed424242_256.vfh3f` (SHA-256
 `3E3476E397FCEE203737332D171D4650F55433471231A7FD4FF24F8E0F84F8E7`)
