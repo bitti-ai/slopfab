@@ -33,6 +33,7 @@
 #include "vidfab/video/y4m.h"
 #include "vidfab/dtype.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/sha256.h"
 #include "vidfab/text/layer_capture.h"
 #include "../src/vulkan/tensor_validation.h"
 
@@ -124,8 +125,27 @@ VIDFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
   const std::filesystem::path capture_path = source /
       "tests/data/qwen_layer0_l132.vfqw";
+  const std::filesystem::path tokenizer_path = source /
+      "ref/text_encoder/tokenizer.json";
   if (!std::filesystem::exists(checkpoint_path) ||
-      !std::filesystem::exists(capture_path) || !Instance::available()) return;
+      !std::filesystem::exists(capture_path) ||
+      !std::filesystem::exists(tokenizer_path) || !Instance::available()) return;
+
+#if !defined(VIDFAB_WITH_CUDA) || !VIDFAB_WITH_CUDA
+  constexpr Sha256Digest capture_sha{
+      0xec,0x13,0xad,0x62,0xa7,0xe2,0x53,0xd5,
+      0x88,0xbf,0xac,0x51,0x85,0x0b,0x92,0x48,
+      0x7b,0x7c,0xb8,0x8b,0xa7,0x3e,0x78,0x69,
+      0xa2,0xb0,0x2c,0xba,0x79,0x11,0x04,0xb3};
+  const auto provenance_begin = std::chrono::steady_clock::now();
+  CHECK(sha256_file(checkpoint_path.string()) == checkpoint_sha);
+  CHECK(sha256_file(tokenizer_path.string()) == tokenizer_sha);
+  CHECK(sha256_file(capture_path.string()) == capture_sha);
+  const double provenance_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - provenance_begin).count();
+  std::printf("  portable Qwen checkpoint/tokenizer/capture SHA-256 %.1f ms\n",
+              provenance_ms);
+#endif
 
   const text::QwenLayerCapture capture =
       text::read_qwen_layer_capture(capture_path.string());

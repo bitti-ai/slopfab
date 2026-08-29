@@ -1,5 +1,6 @@
 #include "vidfab/text/layer_capture.h"
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -24,12 +25,28 @@ uint64_t checked_sum(uint64_t left, uint64_t right) {
 void validate_header(const QwenLayerCaptureHeader& h) {
   const char expected[8] = {'V','F','Q','W','E','N','L','1'};
   if (std::memcmp(h.magic, expected, sizeof(expected)) != 0 ||
-      h.version != 1 || h.sequence == 0 || h.hidden == 0 ||
-      h.query_heads == 0 || h.kv_heads == 0 || h.head_dim == 0 ||
-      h.intermediate == 0 || h.kv_heads > h.query_heads ||
-      (h.query_heads % h.kv_heads) != 0 || (h.head_dim & 1u) != 0) {
+      h.version != 1 || h.sequence == 0 || h.sequence > 8192 ||
+      h.hidden != 5120 || h.query_heads != 64 || h.kv_heads != 8 ||
+      h.head_dim != 128 || h.intermediate != 25600 ||
+      h.input_fnv64 == 0 || h.rope_fnv64 == 0 ||
+      std::all_of(h.checkpoint_sha256.begin(), h.checkpoint_sha256.end(),
+                  [](uint8_t value) { return value == 0; }) ||
+      std::all_of(h.tokenizer_sha256.begin(), h.tokenizer_sha256.end(),
+                  [](uint8_t value) { return value == 0; }) ||
+      std::any_of(h.boundary_fnv64.begin(), h.boundary_fnv64.end(),
+                  [](uint64_t value) { return value == 0; })) {
     throw std::runtime_error("Qwen capture: invalid header");
   }
+}
+
+uint64_t fnv64(const void* data, size_t bytes,
+               uint64_t hash = 1469598103934665603ull) {
+  const auto* cursor = static_cast<const uint8_t*>(data);
+  for (size_t i = 0; i < bytes; ++i) {
+    hash ^= cursor[i];
+    hash *= 1099511628211ull;
+  }
+  return hash;
 }
 
 void validate(const QwenLayerCapture& capture) {
@@ -41,6 +58,20 @@ void validate(const QwenLayerCapture& capture) {
       capture.sine.size() != capture.cosine.size()) {
     throw std::runtime_error("Qwen capture: invalid header or payload shape");
   }
+  if (std::any_of(capture.token_ids.begin(), capture.token_ids.end(),
+                  [](int32_t id) { return id < 0 || id >= 151936; })) {
+    throw std::runtime_error("Qwen capture: token id is out of range");
+  }
+  if (fnv64(capture.input_bf16.data(),
+            capture.input_bf16.size() * sizeof(uint16_t)) != h.input_fnv64) {
+    throw std::runtime_error("Qwen capture: input digest mismatch");
+  }
+  uint64_t rope_hash = fnv64(
+      capture.cosine.data(), capture.cosine.size() * sizeof(float));
+  rope_hash = fnv64(capture.sine.data(),
+                    capture.sine.size() * sizeof(float), rope_hash);
+  if (rope_hash != h.rope_fnv64)
+    throw std::runtime_error("Qwen capture: RoPE digest mismatch");
 }
 
 template <typename T>

@@ -46,6 +46,7 @@ add_library(vidfab_core STATIC
   src/core/image.cpp
   src/core/image_platform.cpp
   src/core/safetensors_write.cpp
+  src/core/sha256.cpp
   src/dit/adaln.cpp
   src/dit/block_cache.cpp
   src/dit/chunking.cpp
@@ -92,7 +93,7 @@ target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/includ
 # decoders can be compared and the code cannot rot unbuilt — which is why
 # these are linked whether or not FFmpeg is on. Both ship with Windows.
 if(WIN32)
-  target_link_libraries(vidfab_core PRIVATE windowscodecs ole32)
+  target_link_libraries(vidfab_core PRIVATE windowscodecs ole32 bcrypt)
 endif()
 
 # The RGB -> YUV 4:2:0 conversion in src/video/y4m.cpp is threaded. MSVC needs
