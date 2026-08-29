@@ -2753,4 +2753,67 @@ VIDFAB_TEST(cuda_vulkan_cooperative_bf16_gemm_exact) {
             differences, cuda_output.size());
 }
 
+VIDFAB_TEST(cuda_vulkan_cooperative_f16_gemm_exact) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  constexpr uint32_t m = 64, n = 64, k = 32;
+  std::vector<float> input_f32(size_t(m) * k);
+  std::vector<uint16_t> input_f16(input_f32.size()), weight(size_t(n) * k);
+  for (size_t i = 0; i < input_f32.size(); ++i) {
+    input_f32[i] = float(int(i % 37) - 18) / 29.0f;
+    input_f16[i] = f32_to_f16(input_f32[i]);
+  }
+  for (size_t i = 0; i < weight.size(); ++i)
+    weight[i] = f32_to_f16(float(int(i % 29) - 14) / 23.0f);
+
+  cuda::DeviceBuffer<uint16_t> ci(input_f16.size()), cw(weight.size());
+  cuda::DeviceBuffer<float> co(size_t(m) * n);
+  ci.copy_from_host(input_f16.data(), input_f16.size());
+  cw.copy_from_host(weight.data(), weight.size());
+  cuda::launch_deterministic_f16_gemm_nt(
+      reinterpret_cast<const __half*>(ci.get()),
+      reinterpret_cast<const __half*>(cw.get()), co.get(), m, n, k);
+  std::vector<float> cuda_output(size_t(m) * n);
+  co.copy_to_host(cuda_output.data(), cuda_output.size());
+
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  CHECK(!physical.empty());
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_cooperative_matrix = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_shader_float16 = true;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  const uint64_t is[] = {m, k}, ws[] = {n, k}, os[] = {m, n};
+  DeviceTensor vi = context.allocate(TensorLayout::contiguous(is, 2),
+                                     ScalarType::kFloat32);
+  DeviceTensor vw = context.allocate(TensorLayout::contiguous(ws, 2),
+                                     ScalarType::kFloat16);
+  DeviceTensor vo = context.allocate(TensorLayout::contiguous(os, 2),
+                                     ScalarType::kFloat32);
+  context.upload(vi, input_f32.data(), input_f32.size());
+  context.upload_bytes(vw, weight.data(), weight.size() * 2);
+  PreparedF16Activation slot = PreparedF16Activation::create(context, m, k);
+  DenseGemmPlanDesc desc{m, n, k, DenseGemmMode::kFloat16Vae,
+                         DenseGemmBias::kNone};
+  DenseGemmPlan plan = DenseGemmPlan::create(context, desc);
+  TensorBatch batch = context.begin_batch();
+  PreparedF16ActivationView prepared = slot.prepare(batch, vi, m);
+  plan.record(batch, prepared, vw, vo);
+  // A second projection consumes the same batch-scoped conversion.
+  plan.record(batch, prepared, vw, vo);
+  batch.submit().wait();
+  std::vector<float> vulkan_output(cuda_output.size());
+  context.download(vo, vulkan_output.data(), vulkan_output.size());
+  size_t differences = 0;
+  for (size_t i = 0; i < cuda_output.size(); ++i)
+    differences += std::memcmp(&cuda_output[i], &vulkan_output[i],
+                               sizeof(float)) != 0;
+  CHECK_MSG(differences == 0,
+            "cooperative F16 GEMM differs in %zu/%zu values", differences,
+            cuda_output.size());
+}
+
 int main() { return ::vidfab::test::run_all(); }

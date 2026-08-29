@@ -50,9 +50,13 @@ class PreparedF16ActivationView {
   explicit operator bool() const noexcept;
 
  private:
-  struct Impl;
-  explicit PreparedF16ActivationView(std::unique_ptr<Impl> impl);
-  std::unique_ptr<Impl> impl_;
+  explicit PreparedF16ActivationView(std::shared_ptr<void> slot,
+                                     uintptr_t batch_id, uint32_t rows,
+                                     uint64_t generation) noexcept;
+  std::shared_ptr<void> slot_;
+  uintptr_t batch_id_ = 0;
+  uint32_t rows_ = 0;
+  uint64_t generation_ = 0;
   friend class DenseGemmPlan;
   friend class PreparedF16Activation;
 };

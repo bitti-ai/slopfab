@@ -51,7 +51,11 @@ bool known_exact_cooperative_gemm_device(const DeviceInfo& info) {
   return info.vendor_id == 0x10de && info.device_id == 0x2b85 &&
       info.driver_version == 0x98960000 && info.subgroup_size == 32 &&
       std::memcmp(info.driver_uuid, kDriverUuid, sizeof(kDriverUuid)) == 0 &&
-      info.cooperative_matrix_enabled && info.storage_buffer_16bit_enabled &&
+      info.cooperative_matrix_enabled && info.storage_buffer_16bit_enabled;
+}
+
+bool known_exact_cooperative_bf16_gemm_device(const DeviceInfo& info) {
+  return known_exact_cooperative_gemm_device(info) &&
       info.shader_bfloat16_type && info.shader_bfloat16_cooperative_matrix &&
       info.cooperative_matrix_bf16_f32_16x16x16;
 }
@@ -109,13 +113,6 @@ struct PreparedF16Activation::Impl {
   DeviceTensor tensor;
   uint32_t max_rows = 0;
   uint32_t in_features = 0;
-  uint64_t generation = 0;
-};
-
-struct PreparedF16ActivationView::Impl {
-  std::shared_ptr<PreparedF16Activation::Impl> slot;
-  const void* batch_identity = nullptr;
-  uint32_t prepared_rows = 0;
   uint64_t generation = 0;
 };
 
@@ -296,7 +293,7 @@ struct TensorContext::Impl {
     gemm_options.local_size[0] = 8;
     gemm_options.local_size[1] = 8;
     gemm_pipeline = ComputePipeline::create(input, gemm_spirv, gemm_options);
-    cooperative_gemm = known_exact_cooperative_gemm_device(input.info());
+    cooperative_gemm = known_exact_cooperative_bf16_gemm_device(input.info());
     if (cooperative_gemm) {
       const uint8_t* cooperative_shader = full_arithmetic_exact
           ? detail::kTensorGemmCoopDenormSpirv : detail::kTensorGemmCoopSpirv;
@@ -472,6 +469,7 @@ struct TensorBatch::Impl {
   };
 
   std::shared_ptr<TensorContext::Impl> owner;
+  uintptr_t batch_id = 0;
   CommandList commands;
   TensorContext::Impl::RecorderLease recording_lease;
   std::array<AccessSnapshot, TensorContext::Impl::kMaxBatchOperators * 7> snapshots{};
@@ -1143,6 +1141,7 @@ TensorBatch TensorContext::begin_batch() {
   auto recording_lease = impl_->acquire_recorder();
   auto batch = std::make_unique<TensorBatch::Impl>();
   batch->owner = impl_;
+  batch->batch_id = next_context_identity();
   batch->recording_lease = std::move(recording_lease);
   batch->commands = impl_->commands.begin();
   return TensorBatch(std::move(batch));
@@ -2216,6 +2215,8 @@ PreparedF16ActivationView PreparedF16Activation::prepare(
   parameters.in_features = impl_->in_features;
   parameters.input_row_offset = input_row_offset;
   parameters.groups_x = static_cast<uint32_t>(gx);
+  PreparedF16ActivationView view(
+      impl_, batch.impl_->batch_id, rows, impl_->generation + 1);
   try {
     batch.impl_->count_operator();
     batch.impl_->transition(source, BufferAccess::kComputeRead);
@@ -2234,26 +2235,25 @@ PreparedF16ActivationView PreparedF16Activation::prepare(
     batch.impl_->poisoned = true;
     throw;
   }
-  auto view = std::make_unique<PreparedF16ActivationView::Impl>();
-  view->slot = impl_;
-  view->batch_identity = batch.impl_.get();
-  view->prepared_rows = rows;
-  view->generation = ++impl_->generation;
-  return PreparedF16ActivationView(std::move(view));
+  ++impl_->generation;
+  return view;
 }
 
 PreparedF16ActivationView::PreparedF16ActivationView() = default;
 PreparedF16ActivationView::~PreparedF16ActivationView() = default;
-PreparedF16ActivationView::PreparedF16ActivationView(std::unique_ptr<Impl> impl)
-    : impl_(std::move(impl)) {}
+PreparedF16ActivationView::PreparedF16ActivationView(
+    std::shared_ptr<void> slot, uintptr_t batch_id, uint32_t rows,
+    uint64_t generation) noexcept
+    : slot_(std::move(slot)), batch_id_(batch_id), rows_(rows),
+      generation_(generation) {}
 PreparedF16ActivationView::PreparedF16ActivationView(
     PreparedF16ActivationView&&) noexcept = default;
 PreparedF16ActivationView& PreparedF16ActivationView::operator=(
     PreparedF16ActivationView&&) noexcept = default;
 uint32_t PreparedF16ActivationView::rows() const noexcept {
-  return impl_ ? impl_->prepared_rows : 0;
+  return slot_ ? rows_ : 0;
 }
-PreparedF16ActivationView::operator bool() const noexcept { return impl_ != nullptr; }
+PreparedF16ActivationView::operator bool() const noexcept { return slot_ != nullptr; }
 
 DenseGemmPlan::DenseGemmPlan() = default;
 DenseGemmPlan::~DenseGemmPlan() = default;
@@ -2336,22 +2336,23 @@ void DenseGemmPlan::record(TensorBatch& batch, PreparedF16ActivationView& input,
                            DeviceTensor& prepared_weight, DeviceTensor& output,
                            uint32_t output_row_offset, DeviceTensor* bias) const {
   if (!impl_) throw std::logic_error("vulkan gemm: empty plan");
-  if (!input.impl_) throw std::logic_error("vulkan gemm: empty prepared fp16 view");
-  if (!batch.impl_ || input.impl_->batch_identity != batch.impl_.get()) {
+  if (!input.slot_) throw std::logic_error("vulkan gemm: empty prepared fp16 view");
+  if (!batch.impl_ || input.batch_id_ != batch.impl_->batch_id) {
     throw std::invalid_argument(
         "vulkan gemm: prepared fp16 view belongs to another batch");
   }
-  if (input.impl_->generation != input.impl_->slot->generation) {
+  auto slot = std::static_pointer_cast<PreparedF16Activation::Impl>(input.slot_);
+  if (input.generation_ != slot->generation) {
     throw std::invalid_argument("vulkan gemm: prepared fp16 view was superseded");
   }
   if (impl_->desc.mode != DenseGemmMode::kFloat16Vae ||
-      input.impl_->slot->owner.get() != impl_->owner.get() ||
-      input.impl_->slot->in_features != impl_->desc.in_features) {
+      slot->owner.get() != impl_->owner.get() ||
+      slot->in_features != impl_->desc.in_features) {
     throw std::invalid_argument(
         "vulkan gemm: prepared fp16 view does not match the plan");
   }
-  record_impl(batch, input.impl_->slot->tensor, prepared_weight, output,
-              input.impl_->prepared_rows, 0, output_row_offset, bias, true);
+  record_impl(batch, slot->tensor, prepared_weight, output,
+              input.rows_, 0, output_row_offset, bias, true);
 }
 
 void DenseGemmPlan::record_impl(

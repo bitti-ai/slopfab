@@ -58,6 +58,33 @@ __global__ void deterministic_bf16_gemm_kernel(
   }
 }
 
+__global__ void deterministic_f16_gemm_kernel(
+    const __half* input, const __half* weight, float* output,
+    uint32_t out_features, uint32_t in_features,
+    uint32_t output_row_offset) {
+  const uint32_t warp = threadIdx.x >> 5;
+  const uint32_t row = blockIdx.y * 64 + warp * 16;
+  const uint32_t column = blockIdx.x * 16;
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
+  wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> b;
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> sum;
+  wmma::fill_fragment(sum, 0.0f);
+  for (uint32_t base = 0; base < in_features; base += 16) {
+    wmma::load_matrix_sync(a, input + row * in_features + base, in_features);
+    wmma::load_matrix_sync(b, weight + column * in_features + base, in_features);
+    wmma::mma_sync(sum, a, b, sum);
+  }
+  __shared__ float accumulator[4][256];
+  wmma::store_matrix_sync(accumulator[warp], sum, 16, wmma::mem_row_major);
+  __syncwarp();
+  for (uint32_t item = threadIdx.x & 31; item < 256; item += 32) {
+    const uint32_t tile_row = item >> 4;
+    const uint32_t tile_column = item & 15;
+    output[(output_row_offset + row + tile_row) * out_features +
+           column + tile_column] = accumulator[warp][item];
+  }
+}
+
 }  // namespace
 
 void launch_deterministic_bf16_gemm_nt(
@@ -81,6 +108,23 @@ void launch_deterministic_bf16_gemm_nt(
       dim3(out_features / 16, rows / 64), 128, 0, stream>>>(
           input, weight, bias, output, rows, out_features, in_features,
           static_cast<uint32_t>(bias_type), input_row_offset,
+          output_row_offset);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_deterministic_f16_gemm_nt(
+    const __half* input, const __half* weight, float* output, uint32_t rows,
+    uint32_t out_features, uint32_t in_features,
+    uint32_t output_row_offset, cudaStream_t stream) {
+  if (!input || !weight || !output || rows == 0 || rows % 64 != 0 ||
+      out_features == 0 || out_features % 16 != 0 ||
+      in_features == 0 || in_features % 16 != 0) {
+    throw std::invalid_argument(
+        "deterministic CUDA F16 GEMM: invalid full-tile arguments");
+  }
+  deterministic_f16_gemm_kernel<<<
+      dim3(out_features / 16, rows / 64), 128, 0, stream>>>(
+          input, weight, output, out_features, in_features,
           output_row_offset);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
