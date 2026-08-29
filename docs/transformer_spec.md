@@ -996,13 +996,15 @@ Three things to get exactly right:
 At the last step `sigma_next = 0` ⇒ `ratio = 0` ⇒ `x_next = denoised`.
 
 The exact native implementation defines accelerator-independent behavior for
-the reference's otherwise-unspecified exceptional fp32 domain. Each operand
-and each multiply/add result flushes a subnormal to signed zero; NaNs,
+the reference's otherwise-unspecified exceptional activation domain. Each
+operand and each multiply/add result flushes a subnormal to signed zero; NaNs,
 infinities, and non-finite arithmetic results become canonical quiet NaN
-`0x7fc00000`. It still evaluates the displayed expression in that association,
-including at ratio 0/1, so a mathematically dead exceptional branch is not
-silently elided. Production CUDA reaches this through `FlowScheduler`; Vulkan
-mirrors it in the device Euler kernel.
+`0x7fc00000`. Public Vulkan sigma/ratio controls are separately validated as
+finite `[0,1]`; accepted signed zero and positive subnormal controls are then
+canonicalized. The update still evaluates the displayed expression in that
+association, including at ratio 0/1, so a mathematically dead exceptional
+branch is not silently elided. Production CUDA reaches this through
+`FlowScheduler`; Vulkan mirrors it in the device Euler kernel.
 
 `eta = 0`: **no noise is ever re-injected**, despite the reference class being
 named "euler ancestral" (`scheduler.py:33-34`).

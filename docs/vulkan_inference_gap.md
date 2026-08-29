@@ -261,12 +261,15 @@ silently changing their semantics.
 The complete step is transactionally preflighted as
 `required_forward_operators()+2` before any operator is recorded. Exact and
 one-short capacity fixtures prove that failure consumes no capacity and the
-same batch remains usable. The shared host/CUDA and Vulkan Euler contract is
-total over fp32 bits: operands and results flush subnormals to signed zero, and
-all NaNs, infinities and non-finite intermediates become canonical
-`0x7fc00000`. Arithmetic retains the literal reference association even at
-ratio/sigma endpoints. Count-one, dispatch-tail, signed-zero, subnormal,
-maximum-finite, NaN-payload and infinity cases match bitwise.
+same batch remains usable. The shared host/CUDA and Vulkan Euler arithmetic is
+total over activation fp32 bits: operands and results flush subnormals to
+signed zero, and all NaNs, infinities and non-finite intermediates become
+canonical `0x7fc00000`. Public Vulkan controls still fail closed unless finite
+and in `[0,1]`; accepted signed zero and positive-subnormal controls are
+canonicalized by the same helper. Arithmetic retains the literal reference
+association even
+at ratio/sigma endpoints. Count-one, dispatch-tail, signed-zero, subnormal,
+maximum-finite, NaN-payload and infinity activation cases match bitwise.
 
 The signed real replay uses
 `tests/data/h3_transformer_step0_seed424242_256.vfh3f` (SHA-256

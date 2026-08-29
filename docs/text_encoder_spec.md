@@ -1298,9 +1298,17 @@ pageable memory serialises and falls back to a staging copy. Allocate two pinned
 host buffers of 488 MB, `memcpy` from the mapping into one while the other
 uploads.
 
-Choose between the two at runtime on free VRAM: resident if
-`cudaMemGetInfo` reports ≳ 27 GB free, streaming otherwise. Both produce
-identical results; only the schedule differs.
+Choose between the two at runtime from the complete peak, not weights alone.
+The native loader adds the exact `max_prompt_tokens` layer workspace and
+persistent activation/RoPE buffers to the packed weights, then preserves the
+larger of 2 GiB or 20% of total VRAM for WDDM/driver commitment. This matters
+because WDDM may accept a large `cudaMalloc` reservation and report OOM only
+when an asynchronous upload first commits its pages. Auto mode streams when
+that bound is not free; explicit resident mode fails synchronously before
+mapping registration, allocation, or upload. Both modes produce identical
+results; only the schedule differs. Any later load failure is transactionally
+drained and releases partial buffers, mapping registration, events, streams,
+and cuBLAS before the error is rethrown.
 
 ### 7.3 Skipping `visual.*` on load
 
