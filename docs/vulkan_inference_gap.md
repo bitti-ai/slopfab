@@ -151,7 +151,11 @@ reference byte-for-byte. A real Qwen vision S16384/H16/D72 activation audit
 proved finite prepared values and scaled scores; its slot is 108 MiB. This is
 not orchestration: causal GQA, H3 banding/fusion, Sage2/SOL, and all attention
 call-site wiring remain missing and may not silently route to the unmasked
-primitive.
+primitive. The exact Vulkan kernel is also an accepted performance exception:
+1.160 s/call and about 31.3 s for 27 Qwen vision blocks at S16384, versus
+145.276 ms/call and 3.922 s/27 for the shipped CUDA cuBLAS blocked path.
+S65536 projects to roughly 8.35 minutes/27 on Vulkan. A cooperative-matrix
+semantic rebaseline remains a future optimization, not an implicit fallback.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and

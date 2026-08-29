@@ -531,11 +531,26 @@ S257 uses two warmups and five samples. S16384 is one full real-shape sample:
 | S257, H16 | 0.008 ms | 0.328 ms | 0.988 ms | 1.69 MiB |
 | S16384, H16 | 0.220 ms | 853.297 ms | 1166.565 ms | 108.00 MiB |
 
-These compare the shared exact path, not the old cuBLAS blocked implementation.
+The table compares the shared exact path. A separate device-resident run of
+the shipped CUDA cuBLAS `kBlocked` implementation on the same S16384 shape was
+145.276 ms/call, or 3.922 s across Qwen vision's 27 blocks. In that same run,
+CUDA exact was 854.669 ms (+0.224 ms preparation) and Vulkan exact was
+1160.176 ms/call: the Vulkan exact path is 7.99x the current production CUDA
+blocked call and accounts for about 31.3 s/reference image before the rest of
+the vision tower. This is an explicitly accepted exact-mode performance
+exception, not a claim of production-speed parity. Its scalar recurrence is
+already parallelized over independent keys and head dimensions; a material
+speedup requires a separately reviewed CUDA-WMMA/Vulkan-cooperative-matrix
+semantic rebaseline and new exact goldens.
+
 The maximum processor-admitted single-image S65536 shape would require a
 432 MiB slot; it is per active invocation, not multiplied by the 27 vision
-blocks. This primitive is not yet wired into Qwen/VAE/DiT. Causal GQA, H3
-banded/fused attention, Sage2, and SOL remain separate features.
+blocks. Quadratic projection from S16384 puts the Vulkan exact attention at
+about 18.6 s/call, or 8.35 minutes for 27 blocks, versus about 62.8 s for the
+production CUDA blocked path. This primitive is not yet wired into
+Qwen/VAE/DiT. Causal GQA, H3 banded/fused attention, Sage2, and SOL remain
+separate features; unsupported modes must fail closed rather than route to
+this unmasked implementation.
 
 The modules use Khronos glslang 16.5.0. Blocked attention receives the
 repository preserve-only transform; the integer-defined converter does not.
