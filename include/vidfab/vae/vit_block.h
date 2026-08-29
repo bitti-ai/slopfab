@@ -40,7 +40,9 @@ struct ViTBlockWeightsView {
 };
 
 // Owning host representation used by checkpoint loaders and parity tools.
-// It deliberately retains fp16 matrix bits instead of widening a second copy.
+// It retains fp16 matrices instead of widening a second copy. Checkpoint fp16
+// subnormals are canonically flushed to signed zero because CUDA/Vulkan matrix
+// instructions do not share a portable subnormal-input contract.
 struct ViTBlockWeights {
   std::vector<float> norm1, norm2, scale1, scale2;
   std::vector<uint16_t> qkv_weight;
@@ -56,7 +58,8 @@ struct ViTBlockWeights {
 };
 
 // Loads one real decoder block using the shipped checkpoint naming/layout
-// contract. Matrices must be rank-2 fp16 in [out,in] order; affine tensors may
+// contract. Matrices must be rank-2 fp16 in [out,in] order; their subnormals
+// are canonicalized to signed zero. Affine tensors may
 // be fp16/fp32 and are converted to the exact fp32 stage boundary.
 ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint,
                                        uint32_t layer,

@@ -83,16 +83,16 @@ struct ExactViTBlockScratch::Impl {
     attention_plan = BlockedAttentionPlan::create(owner, attention_desc);
     qkv_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{
         c.sequence, 3 * c.dim, c.dim, DenseGemmMode::kFloat16Vae,
-        DenseGemmBias::kNone});
+        DenseGemmBias::kNone, true});
     out_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{
         c.sequence, c.dim, c.dim, DenseGemmMode::kFloat16Vae,
-        DenseGemmBias::kNone});
+        DenseGemmBias::kNone, true});
     w1_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{
         c.sequence, 2 * c.ffn_inner, c.dim, DenseGemmMode::kFloat16Vae,
-        DenseGemmBias::kNone});
+        DenseGemmBias::kNone, true});
     w2_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{
         c.sequence, c.dim, c.ffn_inner, DenseGemmMode::kFloat16Vae,
-        DenseGemmBias::kNone});
+        DenseGemmBias::kNone, true});
   }
 
   uint64_t direct_bytes() const noexcept {
@@ -176,8 +176,20 @@ void ExactViTBlockStage::load(const ViTBlockWeightsView& w) {
   if (!impl_) throw std::logic_error("exact Vulkan VAE ViT block: empty stage");
   validate_weights(w);
   Impl& s = *impl_;
+  s.loaded = false;
   TensorContext& context = *s.context;
   const uint64_t d = s.config.dim, inner = s.config.ffn_inner;
+  auto require_canonical_half = [](const uint16_t* values, uint64_t count) {
+    for (uint64_t i = 0; i < count; ++i) {
+      if ((values[i] & 0x7c00u) == 0 && (values[i] & 0x03ffu) != 0)
+        throw std::invalid_argument(
+            "exact Vulkan VAE ViT block: fp16 subnormal weight is not canonicalized");
+    }
+  };
+  require_canonical_half(w.qkv_weight, 3 * d * d);
+  require_canonical_half(w.out_weight, d * d);
+  require_canonical_half(w.w1_weight, 2 * inner * d);
+  require_canonical_half(w.w2_weight, d * inner);
   s.norm1 = context.allocate(vector(d)); s.norm2 = context.allocate(vector(d));
   s.scale1 = context.allocate(vector(d)); s.scale2 = context.allocate(vector(d));
   s.qkv_weight = context.allocate(matrix(3 * d, d), ScalarType::kFloat16);
@@ -207,6 +219,11 @@ void record_gemm_chunks(TensorBatch& batch, DeviceTensor& input,
                         PreparedF16Activation& prepared,
                         const DenseGemmPlan& plan, DeviceTensor& weight,
                         DeviceTensor& output, uint32_t rows) {
+  if (plan.description().force_scalar_order) {
+    PreparedF16ActivationView view = prepared.prepare(batch, input, rows, 0);
+    plan.record(batch, view, weight, output, 0);
+    return;
+  }
   const uint32_t tiled = rows / 64u * 64u;
   if (tiled != 0) {
     PreparedF16ActivationView view = prepared.prepare(batch, input, tiled, 0);
@@ -236,6 +253,36 @@ void ExactViTBlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
     throw std::invalid_argument("exact Vulkan VAE ViT block: incompatible scratch");
   }
   const ViTBlockConfig& c = impl_->config;
+  const DeviceTensorView token_view = tokens.view();
+  const DeviceTensorView cosine_view = cosine.view();
+  const DeviceTensorView sine_view = sine.view();
+  const bool token_shape = token_view.type == ScalarType::kFloat32 &&
+      token_view.layout.rank == 2 && token_view.layout.extent[0] == c.sequence &&
+      token_view.layout.extent[1] == c.dim && token_view.layout.is_contiguous();
+  const bool cosine_shape = cosine_view.type == ScalarType::kFloat32 &&
+      cosine_view.layout.rank == 2 && cosine_view.layout.extent[0] == c.sequence &&
+      cosine_view.layout.extent[1] == c.rope_dim &&
+      cosine_view.layout.is_contiguous();
+  const bool sine_shape = sine_view.type == ScalarType::kFloat32 &&
+      sine_view.layout.rank == 2 && sine_view.layout.extent[0] == c.sequence &&
+      sine_view.layout.extent[1] == c.rope_dim && sine_view.layout.is_contiguous();
+  if (!token_shape || !cosine_shape || !sine_shape ||
+      token_view.backend != DeviceBackend::kVulkan ||
+      cosine_view.backend != DeviceBackend::kVulkan ||
+      sine_view.backend != DeviceBackend::kVulkan ||
+      token_view.context != cosine_view.context ||
+      token_view.context != sine_view.context ||
+      token_view.resource == cosine_view.resource ||
+      token_view.resource == sine_view.resource ||
+      cosine_view.resource == sine_view.resource) {
+    throw std::invalid_argument(
+        "exact Vulkan VAE ViT block: invalid activation tensors");
+  }
+  constexpr uint32_t kRecordedOperators = 20;
+  if (batch.remaining_operator_capacity() < kRecordedOperators) {
+    throw std::logic_error(
+        "exact Vulkan VAE ViT block: insufficient batch capacity");
+  }
   Impl& w = *impl_;
   ExactViTBlockScratch::Impl& s = *scratch.impl_;
   batch.rms_norm(tokens, w.norm1, s.normed, c.epsilon);

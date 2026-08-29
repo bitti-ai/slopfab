@@ -271,8 +271,7 @@ struct TensorContext::Impl {
     uint32_t output_row_offset = 0;
     uint32_t rows = 0;
   };
-  static constexpr uint32_t kMaxBatchOperators = 32;
-
+  uint32_t max_batch_operators = 0;
   ComputeContext commands;
   BufferPool pool;
   TensorWorkspace scratch;
@@ -330,11 +329,17 @@ struct TensorContext::Impl {
   std::atomic<bool> recorder_active{false};
 
   explicit Impl(const Device& input, const TensorContextOptions& tensor_options)
-      : commands(input, [&] {
+      : max_batch_operators(tensor_options.max_batch_operators),
+        commands(input, [&] {
+          if (tensor_options.max_batch_operators == 0 ||
+              tensor_options.max_batch_operators > 4096) {
+            throw std::invalid_argument(
+                "vulkan tensor: max_batch_operators must be in [1,4096]");
+          }
           ComputeContextOptions options;
           options.max_in_flight = tensor_options.max_in_flight;
           options.max_storage_bindings = 7;
-          options.max_compute_binds_per_job = kMaxBatchOperators * 2;
+          options.max_compute_binds_per_job = tensor_options.max_batch_operators * 2;
           return options;
         }()),
         pool(input, 4ull << 20),
@@ -661,7 +666,7 @@ struct TensorBatch::Impl {
   uintptr_t batch_id = 0;
   CommandList commands;
   TensorContext::Impl::RecorderLease recording_lease;
-  std::array<AccessSnapshot, TensorContext::Impl::kMaxBatchOperators * 7> snapshots{};
+  std::vector<AccessSnapshot> snapshots;
   uint32_t snapshot_count = 0;
   uint32_t operator_count = 0;
   bool submitted = false;
@@ -692,7 +697,7 @@ struct TensorBatch::Impl {
   }
 
   void count_operator() {
-    if (operator_count == TensorContext::Impl::kMaxBatchOperators) {
+    if (operator_count == owner->max_batch_operators) {
       throw std::logic_error("vulkan tensor: batch operator limit exceeded");
     }
     ++operator_count;
@@ -1423,6 +1428,7 @@ TensorBatch TensorContext::begin_batch() {
   auto recording_lease = impl_->acquire_recorder();
   auto batch = std::make_unique<TensorBatch::Impl>();
   batch->owner = impl_;
+  batch->snapshots.resize(static_cast<size_t>(impl_->max_batch_operators) * 7u);
   batch->batch_id = next_context_identity();
   batch->recording_lease = std::move(recording_lease);
   batch->commands = impl_->commands.begin();
@@ -1642,6 +1648,12 @@ TensorBatch::TensorBatch(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 TensorBatch::TensorBatch(TensorBatch&&) noexcept = default;
 TensorBatch& TensorBatch::operator=(TensorBatch&&) noexcept = default;
 TensorBatch::operator bool() const noexcept { return impl_ != nullptr; }
+
+uint32_t TensorBatch::remaining_operator_capacity() const noexcept {
+  if (!impl_ || !impl_->owner ||
+      impl_->operator_count >= impl_->owner->max_batch_operators) return 0;
+  return impl_->owner->max_batch_operators - impl_->operator_count;
+}
 
 void TensorBatch::copy(DeviceTensor& source, DeviceTensor& destination) {
   if (!impl_) throw std::logic_error("vulkan tensor: empty batch");
@@ -2113,16 +2125,24 @@ void TensorBatch::split_qkv_norm_rope_f32(
   }
   const auto& input_shape = resources[0]->layout;
   const uint64_t sequence = input_shape.extent[0];
-  const uint64_t heads = input_shape.extent[1];
+  const bool flattened = input_shape.rank == 2;
+  const uint64_t heads = flattened
+      ? resources[4]->layout.extent[0] : input_shape.extent[1];
+  const bool flattened_width_overflow =
+      flattened && heads > std::numeric_limits<uint64_t>::max() / 192u;
   const bool groups_overflow = sequence != 0 && heads > UINT64_MAX / sequence;
   const uint64_t groups = groups_overflow ? 0 : sequence * heads;
   if (aliases || !std::isnormal(epsilon) || epsilon <= 0.0f ||
-      input_shape.rank != 3 || sequence == 0 || heads == 0 ||
-      input_shape.extent[2] != 192 || num_patches > sequence ||
+      (input_shape.rank != 3 && input_shape.rank != 2) || sequence == 0 || heads == 0 ||
+      flattened_width_overflow ||
+      (flattened ? input_shape.extent[1] != heads * 192
+                 : input_shape.extent[2] != 192) || num_patches > sequence ||
       groups_overflow || groups > std::numeric_limits<uint32_t>::max() ||
-      resources[1]->layout.rank != 2 ||
-      resources[1]->layout.extent[0] != heads ||
-      resources[1]->layout.extent[1] != 192 ||
+      (flattened ? (resources[1]->layout.rank != 1 ||
+                    resources[1]->layout.extent[0] != heads * 192)
+                 : (resources[1]->layout.rank != 2 ||
+                    resources[1]->layout.extent[0] != heads ||
+                    resources[1]->layout.extent[1] != 192)) ||
       resources[2]->layout.rank != 2 || resources[3]->layout.rank != 2 ||
       resources[2]->layout.extent[0] != sequence ||
       resources[3]->layout.extent[0] != sequence ||
@@ -2774,7 +2794,7 @@ PreparedNVFP4WeightView StreamedNVFP4WeightCache::prepare(
         "vulkan nvfp4 stream: activation transforms require a typed prepared "
         "activation view and are not accepted by this raw-input path");
   }
-  if (batch.impl_->operator_count == TensorContext::Impl::kMaxBatchOperators) {
+  if (batch.impl_->operator_count == batch.impl_->owner->max_batch_operators) {
     throw std::logic_error("vulkan tensor: batch operator limit exceeded");
   }
   if (impl_->generation == std::numeric_limits<uint64_t>::max()) {
@@ -3064,7 +3084,7 @@ void DenseGemmPlan::record_impl(
   }
   const bool cooperative_shape = (rows % 64u) == 0u &&
       (desc.out_features % 16u) == 0u && (desc.in_features % 16u) == 0u;
-  const bool use_cooperative = cooperative_shape &&
+  const bool use_cooperative = !desc.force_scalar_order && cooperative_shape &&
       ((desc.mode == DenseGemmMode::kBFloat16 && impl_->owner->cooperative_gemm) ||
        (desc.mode == DenseGemmMode::kFloat16Vae &&
         impl_->owner->cooperative_f16_gemm));

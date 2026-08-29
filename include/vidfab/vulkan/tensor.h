@@ -27,6 +27,10 @@ struct TensorContextOptions {
   // Two slots let a producer record the next bounded graph chunk while the
   // previous timeline submission is still executing.
   uint32_t max_in_flight = 2;
+  // Bounded command/rollback capacity for one device-resident graph chunk.
+  // The default preserves the small primitive-test footprint; the 36-block
+  // video-VAE graph requests 1024 so it can record without per-block submits.
+  uint32_t max_batch_operators = 32;
 };
 
 class DeviceTensor {
@@ -146,7 +150,8 @@ class TensorBatch {
   void rope_neox_bf16(DeviceTensor& input, DeviceTensor& cosine,
                        DeviceTensor& sine);
   // Video-VAE fused split-QKV, bias, head-width-64 RMSNorm and partial-width-48
-  // RoPE. QKV is [sequence,heads,192], bias [heads,192], tables
+  // RoPE. QKV is [sequence,heads,192] or its GEMM-native contiguous flattening
+  // [sequence,heads*192]; bias is correspondingly [heads,192] or [heads*192]. Tables
   // [sequence,48], and outputs [heads,sequence,64]. Tokens at and beyond
   // num_patches bypass rotation. All tensors are contiguous fp32 and distinct.
   void split_qkv_norm_rope_f32(DeviceTensor& qkv, DeviceTensor& bias,
@@ -186,6 +191,7 @@ class TensorBatch {
                                   DeviceTensor& bias, DeviceTensor& output,
                                   uint32_t groups, float epsilon);
   Submission submit();
+  uint32_t remaining_operator_capacity() const noexcept;
   explicit operator bool() const noexcept;
 
  private:

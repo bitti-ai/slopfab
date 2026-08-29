@@ -25,6 +25,10 @@ struct DenseGemmPlanDesc {
   uint32_t in_features = 0;
   DenseGemmMode mode = DenseGemmMode::kBFloat16;
   DenseGemmBias bias = DenseGemmBias::kNone;
+  // Preserve strict ascending-K fp32 FMA semantics even for full cooperative
+  // tiles. Required when the value domain can produce subnormal intermediate
+  // products, whose cooperative-matrix handling is not portable.
+  bool force_scalar_order = false;
 };
 
 }  // namespace vidfab

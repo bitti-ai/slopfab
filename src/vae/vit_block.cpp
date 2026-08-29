@@ -1,7 +1,6 @@
 #include "vidfab/vae/vit_block.h"
 
 #include <cstring>
-#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -30,6 +29,10 @@ std::vector<uint16_t> load_f16_matrix(const SafeTensors& checkpoint,
   }
   std::vector<uint16_t> result(static_cast<size_t>(rows * columns));
   std::memcpy(result.data(), tensor.data, tensor.nbytes);
+  for (uint16_t& bits : result) {
+    if ((bits & 0x7c00u) == 0 && (bits & 0x03ffu) != 0)
+      bits &= 0x8000u;
+  }
   return result;
 }
 
@@ -68,8 +71,7 @@ ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint,
                                        const ViTBlockConfig& config) {
   if (!checkpoint.is_open())
     throw std::invalid_argument("video VAE block: checkpoint is not open");
-  if (config.dim == 0 || config.ffn_inner == 0 ||
-      layer >= std::numeric_limits<uint32_t>::max()) {
+  if (config.dim == 0 || config.ffn_inner == 0) {
     throw std::invalid_argument("video VAE block: invalid load configuration");
   }
   const int64_t d = config.dim, inner = config.ffn_inner;

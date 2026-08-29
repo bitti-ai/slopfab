@@ -72,8 +72,20 @@ class CudaExactViTBlockStage final : public vae::ExactViTBlockStage {
   const ViTBlockConfig& config() const noexcept override { return config_; }
 
   void load(const ViTBlockWeightsView& w) override {
+    loaded_ = false;
     validate_weights(w);
     const size_t d = config_.dim, inner = config_.ffn_inner;
+    auto require_canonical_half = [](const uint16_t* values, size_t count) {
+      for (size_t i = 0; i < count; ++i) {
+        if ((values[i] & 0x7c00u) == 0 && (values[i] & 0x03ffu) != 0)
+          throw std::invalid_argument(
+              "exact CUDA VAE ViT block: fp16 subnormal weight is not canonicalized");
+      }
+    };
+    require_canonical_half(w.qkv_weight, 3 * d * d);
+    require_canonical_half(w.out_weight, d * d);
+    require_canonical_half(w.w1_weight, 2 * inner * d);
+    require_canonical_half(w.w2_weight, d * inner);
     norm1_.allocate(d); norm2_.allocate(d); scale1_.allocate(d); scale2_.allocate(d);
     qkv_weight_.allocate(3 * d * d); qkv_bias_.allocate(3 * d);
     out_weight_.allocate(d * d); out_bias_.allocate(d);
@@ -181,21 +193,11 @@ class CudaExactViTBlockStage final : public vae::ExactViTBlockStage {
     const uint32_t rows = config_.sequence;
     launch_narrow_f16(input.get(), prepared.get(),
                       static_cast<size_t>(rows) * in_features, stream_.get());
-    const uint32_t tiled = rows / 64u * 64u;
-    if (tiled != 0) {
-      launch_deterministic_f16_gemm_nt(
-          reinterpret_cast<const __half*>(prepared.get()),
-          reinterpret_cast<const __half*>(weight.get()), output.get(), tiled,
-          out_features, in_features, 0, stream_.get());
-    }
-    if (tiled != rows) {
-      launch_deterministic_scalar_gemm_nt(
-          reinterpret_cast<const __half*>(prepared.get()) +
-              static_cast<size_t>(tiled) * in_features,
-          reinterpret_cast<const __half*>(weight.get()), nullptr, output.get(),
-          rows - tiled, out_features, in_features, DenseGemmMode::kFloat16Vae,
-          DenseGemmBias::kNone, 0, tiled, stream_.get());
-    }
+    launch_deterministic_scalar_gemm_nt(
+        reinterpret_cast<const __half*>(prepared.get()),
+        reinterpret_cast<const __half*>(weight.get()), nullptr, output.get(),
+        rows, out_features, in_features, DenseGemmMode::kFloat16Vae,
+        DenseGemmBias::kNone, 0, 0, stream_.get());
   }
 
   ViTBlockConfig config_;
