@@ -464,8 +464,10 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
     vk.upload_bytes(vv, v.data(), count * 2);
     BlockedAttentionPlanDesc desc{sequence, heads, dim, scale};
     BlockedAttentionPlan plan = BlockedAttentionPlan::create(vk, desc);
+    PreparedAttentionInputs prepared = PreparedAttentionInputs::create(vk, desc);
     TensorBatch batch = vk.begin_batch();
-    plan.record(batch, vq, vk_tensor, vv, vo);
+    PreparedAttentionView inputs = prepared.prepare(batch, vq, vk_tensor, vv);
+    plan.record(batch, inputs, vo);
     batch.submit().wait();
     std::vector<uint16_t> vulkan_output(count);
     vk.download_bytes(vo, vulkan_output.data(), count * 2);

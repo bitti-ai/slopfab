@@ -72,9 +72,8 @@ uint fp16_to_fp32_bits(uint bits) {
          ((mantissa << (23u - leading)) & 0x007fffffu);
 }
 
-float bf16_as_f16(uint source, uint index) {
-  float widened = uintBitsToFloat(load_u16(source, index) << 16u);
-  return uintBitsToFloat(fp16_to_fp32_bits(fp16_rte(widened)));
+float load_f16(uint source, uint index) {
+  return uintBitsToFloat(fp16_to_fp32_bits(load_u16(source, index)));
 }
 
 float f16_round(float value) {
@@ -171,8 +170,8 @@ void main() {
     if (key_row < p.sequence) {
       uint k_base = (key_row * p.heads + head) * p.head_dim;
       for (uint d = 0u; d < p.head_dim; ++d)
-        score = fma(bf16_as_f16(0u, q_base + d),
-                    bf16_as_f16(1u, k_base + d), score);
+        score = fma(load_f16(0u, q_base + d),
+                    load_f16(1u, k_base + d), score);
       score = f16_round(score * scale);
     } else {
       score = uintBitsToFloat(0xff800000u);
@@ -202,7 +201,7 @@ void main() {
       for (uint j = 0u; j < 128u && key_base + j < p.sequence; ++j) {
         uint v_index = ((key_base + j) * p.heads + head) * p.head_dim + lane;
         output_accumulator = fma(score_or_probability[j],
-                                 bf16_as_f16(2u, v_index),
+                                 load_f16(2u, v_index),
                                  output_accumulator);
       }
     }

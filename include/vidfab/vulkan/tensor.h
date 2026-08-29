@@ -14,6 +14,8 @@ class TensorBatch;
 class LinearWeight;
 class DenseGemmPlan;
 class BlockedAttentionPlan;
+class PreparedAttentionInputs;
+class PreparedAttentionView;
 class PreparedF16Activation;
 class PreparedNVFP4WeightView;
 class StreamedNVFP4WeightCache;
@@ -47,6 +49,7 @@ class DeviceTensor {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
 };
@@ -176,6 +179,7 @@ class TensorBatch {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
   struct Impl;
@@ -256,6 +260,7 @@ class TensorContext {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
 };
@@ -270,6 +275,51 @@ struct BlockedAttentionPlanDesc {
   // Required finite-normal positive bit pattern. Callers pin the model's host
   // scale calculation instead of asking a shader to reproduce host sqrt.
   float scale = 0.0f;
+};
+
+// One bounded Q/K/V FP16 preparation slot. Preparing records one device-only
+// BF16->FP16 pass for all three tensors; its view is scoped to that batch so a
+// discarded or superseded recording can never be consumed accidentally.
+class PreparedAttentionInputs {
+ public:
+  PreparedAttentionInputs();
+  ~PreparedAttentionInputs();
+  PreparedAttentionInputs(PreparedAttentionInputs&&) noexcept;
+  PreparedAttentionInputs& operator=(PreparedAttentionInputs&&) noexcept;
+  PreparedAttentionInputs(const PreparedAttentionInputs&) = delete;
+  PreparedAttentionInputs& operator=(const PreparedAttentionInputs&) = delete;
+  static PreparedAttentionInputs create(TensorContext& context,
+                                        const BlockedAttentionPlanDesc& desc);
+  PreparedAttentionView prepare(TensorBatch& batch, DeviceTensor& query,
+                                DeviceTensor& key, DeviceTensor& value);
+  uint64_t reserved_bytes() const noexcept;
+  explicit operator bool() const noexcept;
+ private:
+  struct Impl;
+  explicit PreparedAttentionInputs(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
+  friend class PreparedAttentionView;
+  friend class BlockedAttentionPlan;
+};
+
+class PreparedAttentionView {
+ public:
+  PreparedAttentionView();
+  ~PreparedAttentionView();
+  PreparedAttentionView(PreparedAttentionView&&) noexcept;
+  PreparedAttentionView& operator=(PreparedAttentionView&&) noexcept;
+  PreparedAttentionView(const PreparedAttentionView&) = delete;
+  PreparedAttentionView& operator=(const PreparedAttentionView&) = delete;
+  explicit operator bool() const noexcept;
+ private:
+  explicit PreparedAttentionView(std::shared_ptr<void> slot,
+                                 uintptr_t batch_id,
+                                 uint64_t generation) noexcept;
+  std::shared_ptr<void> slot_;
+  uintptr_t batch_id_ = 0;
+  uint64_t generation_ = 0;
+  friend class PreparedAttentionInputs;
+  friend class BlockedAttentionPlan;
 };
 
 class BlockedAttentionPlan {
@@ -287,8 +337,8 @@ class BlockedAttentionPlan {
   // Tensors are contiguous token-major [sequence,heads,head_dim] BF16. The
   // output must be distinct. A row range allows callers to split a long
   // sequence over bounded batches without changing the fixed key traversal.
-  void record(TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
-              DeviceTensor& value, DeviceTensor& output,
+  void record(TensorBatch& batch, PreparedAttentionView& inputs,
+              DeviceTensor& output,
               uint32_t query_row_offset = 0, uint32_t rows = 0,
               uint32_t output_row_offset = 0) const;
   explicit operator bool() const noexcept;

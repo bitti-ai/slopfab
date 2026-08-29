@@ -80,6 +80,7 @@ struct DeviceTensor::Impl {
   ScalarType type = ScalarType::kFloat32;
   uint64_t logical_bytes = 0;
   uintptr_t context = 0;
+  uintptr_t identity = next_context_identity();
   bool has_access = false;
   BufferAccess access = BufferAccess::kTransferWrite;
 };
@@ -117,6 +118,18 @@ struct DenseGemmPlan::Impl {
 struct BlockedAttentionPlan::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   BlockedAttentionPlanDesc desc;
+};
+
+struct PreparedAttentionInputs::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  DeviceTensor query;
+  DeviceTensor key;
+  DeviceTensor value;
+  BlockedAttentionPlanDesc desc;
+  uintptr_t batch_id = 0;
+  uint64_t generation = 0;
+  uint64_t reserved_bytes = 0;
+  std::array<uintptr_t, 3> source_id{};
 };
 
 struct PreparedF16Activation::Impl {
@@ -219,6 +232,7 @@ struct TensorContext::Impl {
   ComputePipeline gemm_prepare_pipeline;
   ComputePipeline gemm_coop_f16_pipeline;
   ComputePipeline attention_blocked_pipeline;
+  ComputePipeline attention_prepare_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
   ComputePipeline bf16_rms_block_pipeline;
@@ -238,6 +252,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> gemm_bindings;
   std::vector<StorageBinding> gemm_prepare_bindings;
   std::vector<StorageBinding> attention_bindings;
+  std::vector<StorageBinding> attention_prepare_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   bool exact_attention = false;
@@ -265,7 +280,8 @@ struct TensorContext::Impl {
         weight_bindings(6),
         gemm_bindings(4),
         gemm_prepare_bindings(2),
-        attention_bindings(4) {
+        attention_bindings(4),
+        attention_prepare_bindings(6) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
     static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
@@ -417,6 +433,10 @@ struct TensorContext::Impl {
           detail::kTensorAttentionBlockedSpirv,
           sizeof(detail::kTensorAttentionBlockedSpirv), 4, 128, 1,
           sizeof(AttentionParameters));
+      attention_prepare_pipeline = make_norm_pipeline(
+          detail::kTensorAttentionPrepareSpirv,
+          sizeof(detail::kTensorAttentionPrepareSpirv), 6, 64, 1,
+          sizeof(uint32_t));
     }
     for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
     for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
@@ -431,6 +451,8 @@ struct TensorContext::Impl {
       gemm_prepare_bindings[i].binding = i;
     for (uint32_t i = 0; i < attention_bindings.size(); ++i)
       attention_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_prepare_bindings.size(); ++i)
+      attention_prepare_bindings[i].binding = i;
   }
 
   uintptr_t context_id = next_context_identity();
@@ -710,6 +732,19 @@ struct TensorBatch::Impl {
                           owner->attention_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(parameters.rows, parameters.heads);
+  }
+
+  void dispatch_attention_prepare(
+      uint32_t words,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 6>& resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->attention_prepare_bindings[i].buffer = &resources[i]->buffer;
+      owner->attention_prepare_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->attention_prepare_pipeline,
+                          owner->attention_prepare_bindings);
+    commands.push_constants(&words, sizeof(words));
+    commands.dispatch(static_cast<uint32_t>((static_cast<uint64_t>(words) + 63) / 64));
   }
 
   void record_shared_mod(bool fp32, DeviceTensor& input, DeviceTensor& weight,
@@ -2770,9 +2805,118 @@ const BlockedAttentionPlanDesc& BlockedAttentionPlan::description() const {
   return impl_->desc;
 }
 
-void BlockedAttentionPlan::record(
+PreparedAttentionInputs::PreparedAttentionInputs() = default;
+PreparedAttentionInputs::~PreparedAttentionInputs() = default;
+PreparedAttentionInputs::PreparedAttentionInputs(PreparedAttentionInputs&&) noexcept = default;
+PreparedAttentionInputs& PreparedAttentionInputs::operator=(
+    PreparedAttentionInputs&&) noexcept = default;
+PreparedAttentionInputs::PreparedAttentionInputs(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+PreparedAttentionInputs::operator bool() const noexcept { return impl_ != nullptr; }
+uint64_t PreparedAttentionInputs::reserved_bytes() const noexcept {
+  return impl_ ? impl_->reserved_bytes : 0;
+}
+
+PreparedAttentionInputs PreparedAttentionInputs::create(
+    TensorContext& context, const BlockedAttentionPlanDesc& desc) {
+  // Reuse the plan's complete capability/shape validation before allocating.
+  (void)BlockedAttentionPlan::create(context, desc);
+  const uint64_t shape[] = {desc.sequence, desc.heads, desc.head_dim};
+  DeviceTensor query = context.allocate(
+      TensorLayout::contiguous(shape, 3), ScalarType::kFloat16);
+  DeviceTensor key = context.allocate(
+      TensorLayout::contiguous(shape, 3), ScalarType::kFloat16);
+  DeviceTensor value = context.allocate(
+      TensorLayout::contiguous(shape, 3), ScalarType::kFloat16);
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_;
+  result->desc = desc;
+  result->query = std::move(query);
+  result->key = std::move(key);
+  result->value = std::move(value);
+  result->reserved_bytes = checked_multiply(
+      checked_multiply(checked_multiply(desc.sequence, desc.heads,
+                                        "attention preparation"),
+                       desc.head_dim, "attention preparation"),
+      3 * sizeof(uint16_t), "attention preparation");
+  return PreparedAttentionInputs(std::move(result));
+}
+
+PreparedAttentionView PreparedAttentionInputs::prepare(
     TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
-    DeviceTensor& value, DeviceTensor& output, uint32_t query_row_offset,
+    DeviceTensor& value) {
+  if (!impl_ || !batch.impl_ || batch.impl_->poisoned) {
+    throw std::logic_error("vulkan attention: empty/poisoned preparation");
+  }
+  if (batch.impl_->owner != impl_->owner) {
+    throw std::invalid_argument("vulkan attention: preparation belongs to another context");
+  }
+  auto q = impl_->owner->require(query);
+  auto k = impl_->owner->require(key);
+  auto v = impl_->owner->require(value);
+  auto q16 = impl_->owner->require(impl_->query);
+  auto k16 = impl_->owner->require(impl_->key);
+  auto v16 = impl_->owner->require(impl_->value);
+  const auto& desc = impl_->desc;
+  auto valid_input = [&](const std::shared_ptr<DeviceTensor::Impl>& tensor) {
+    return tensor->type == ScalarType::kBFloat16 && tensor->layout.rank == 3 &&
+        tensor->layout.is_contiguous() && tensor->layout.extent[0] == desc.sequence &&
+        tensor->layout.extent[1] == desc.heads &&
+        tensor->layout.extent[2] == desc.head_dim;
+  };
+  if (!valid_input(q) || !valid_input(k) || !valid_input(v) ||
+      q.get() == k.get() || q.get() == v.get() || k.get() == v.get()) {
+    throw std::invalid_argument("vulkan attention: invalid preparation inputs");
+  }
+  const uint64_t elements = checked_multiply(
+      checked_multiply(desc.sequence, desc.heads, "attention prepare"),
+      desc.head_dim, "attention prepare");
+  const uint64_t word_count = (elements + 1) / 2;
+  if (word_count == 0 || word_count > std::numeric_limits<uint32_t>::max()) {
+    throw std::out_of_range("vulkan attention: preparation indexing overflow");
+  }
+  impl_->owner->validate_dispatch(word_count);
+  if (impl_->generation == std::numeric_limits<uint64_t>::max()) {
+    throw std::overflow_error("vulkan attention: preparation generation exhausted");
+  }
+  PreparedAttentionView result(
+      impl_, batch.impl_->batch_id, impl_->generation + 1);
+  try {
+    batch.impl_->count_operator();
+    batch.impl_->transition(q, BufferAccess::kComputeRead);
+    batch.impl_->transition(k, BufferAccess::kComputeRead);
+    batch.impl_->transition(v, BufferAccess::kComputeRead);
+    batch.impl_->transition(q16, BufferAccess::kComputeWrite);
+    batch.impl_->transition(k16, BufferAccess::kComputeWrite);
+    batch.impl_->transition(v16, BufferAccess::kComputeWrite);
+    std::array<std::shared_ptr<DeviceTensor::Impl>, 6> resources{
+        q, k, v, q16, k16, v16};
+    batch.impl_->dispatch_attention_prepare(
+        static_cast<uint32_t>(word_count), resources);
+  } catch (...) {
+    batch.impl_->poisoned = true;
+    throw;
+  }
+  impl_->batch_id = batch.impl_->batch_id;
+  impl_->source_id = {q->identity, k->identity, v->identity};
+  ++impl_->generation;
+  return result;
+}
+
+PreparedAttentionView::PreparedAttentionView() = default;
+PreparedAttentionView::~PreparedAttentionView() = default;
+PreparedAttentionView::PreparedAttentionView(
+    std::shared_ptr<void> slot, uintptr_t batch_id,
+    uint64_t generation) noexcept
+    : slot_(std::move(slot)), batch_id_(batch_id), generation_(generation) {}
+PreparedAttentionView::PreparedAttentionView(PreparedAttentionView&&) noexcept = default;
+PreparedAttentionView& PreparedAttentionView::operator=(
+    PreparedAttentionView&&) noexcept = default;
+PreparedAttentionView::operator bool() const noexcept { return slot_ != nullptr; }
+
+void BlockedAttentionPlan::record(
+    TensorBatch& batch, PreparedAttentionView& inputs,
+    DeviceTensor& output, uint32_t query_row_offset,
     uint32_t rows, uint32_t output_row_offset) const {
   if (!impl_ || !batch.impl_ || batch.impl_->poisoned) {
     throw std::logic_error("vulkan attention: empty plan or batch");
@@ -2780,9 +2924,19 @@ void BlockedAttentionPlan::record(
   if (batch.impl_->owner != impl_->owner) {
     throw std::invalid_argument("vulkan attention: plan belongs to another context");
   }
-  auto q = impl_->owner->require(query);
-  auto k = impl_->owner->require(key);
-  auto v = impl_->owner->require(value);
+  auto prepared = std::static_pointer_cast<PreparedAttentionInputs::Impl>(inputs.slot_);
+  if (!prepared || prepared->owner != impl_->owner ||
+      inputs.batch_id_ != batch.impl_->batch_id ||
+      inputs.batch_id_ != prepared->batch_id ||
+      inputs.generation_ != prepared->generation ||
+      prepared->desc.sequence != impl_->desc.sequence ||
+      prepared->desc.heads != impl_->desc.heads ||
+      prepared->desc.head_dim != impl_->desc.head_dim) {
+    throw std::invalid_argument("vulkan attention: stale/incompatible prepared inputs");
+  }
+  auto q = impl_->owner->require(prepared->query);
+  auto k = impl_->owner->require(prepared->key);
+  auto v = impl_->owner->require(prepared->value);
   auto out = impl_->owner->require(output);
   const auto& desc = impl_->desc;
   if (query_row_offset > desc.sequence) {
@@ -2792,7 +2946,7 @@ void BlockedAttentionPlan::record(
   const std::array<uint64_t, 4> expected{
       desc.sequence, desc.heads, desc.head_dim, 0};
   auto valid_layout = [&](const std::shared_ptr<DeviceTensor::Impl>& tensor) {
-    return tensor->type == ScalarType::kBFloat16 &&
+    return tensor->type == ScalarType::kFloat16 &&
         tensor->layout.rank == 3 && tensor->layout.is_contiguous() &&
         tensor->layout.extent[0] == expected[0] &&
         tensor->layout.extent[1] == expected[1] &&
@@ -2803,9 +2957,14 @@ void BlockedAttentionPlan::record(
   if (selected_rows == 0 || query_end > desc.sequence || output_end > desc.sequence ||
       selected_rows > impl_->owner->max_dispatch_x ||
       desc.heads > impl_->owner->max_dispatch_y || !valid_layout(q) ||
-      !valid_layout(k) || !valid_layout(v) || !valid_layout(out) ||
+      !valid_layout(k) || !valid_layout(v) ||
+      out->type != ScalarType::kBFloat16 || out->layout.rank != 3 ||
+      !out->layout.is_contiguous() || out->layout.extent[0] != expected[0] ||
+      out->layout.extent[1] != expected[1] || out->layout.extent[2] != expected[2] ||
       q.get() == k.get() || q.get() == v.get() || k.get() == v.get() ||
-      out.get() == q.get() || out.get() == k.get() || out.get() == v.get()) {
+      out->identity == prepared->source_id[0] ||
+      out->identity == prepared->source_id[1] ||
+      out->identity == prepared->source_id[2]) {
     throw std::invalid_argument("vulkan attention: invalid tensor/range/alias");
   }
   TensorContext::Impl::AttentionParameters parameters;

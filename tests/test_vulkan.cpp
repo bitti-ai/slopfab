@@ -94,8 +94,10 @@ VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
   desc.head_dim = dim;
   desc.scale = 0.125f;
   BlockedAttentionPlan plan = BlockedAttentionPlan::create(context, desc);
+  PreparedAttentionInputs prepared = PreparedAttentionInputs::create(context, desc);
   TensorBatch batch = context.begin_batch();
-  plan.record(batch, q, k, v, out);
+  PreparedAttentionView inputs = prepared.prepare(batch, q, k, v);
+  plan.record(batch, inputs, out);
   batch.submit().wait();
   std::vector<uint16_t> actual(values.size());
   context.download_bytes(out, actual.data(), actual.size() * sizeof(uint16_t));

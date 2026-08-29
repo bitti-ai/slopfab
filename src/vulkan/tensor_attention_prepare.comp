@@ -1,0 +1,50 @@
+#version 450
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer QueryInput { uint words[]; } query_input;
+layout(set = 0, binding = 1, std430) readonly buffer KeyInput { uint words[]; } key_input;
+layout(set = 0, binding = 2, std430) readonly buffer ValueInput { uint words[]; } value_input;
+layout(set = 0, binding = 3, std430) buffer QueryOutput { uint words[]; } query_output;
+layout(set = 0, binding = 4, std430) buffer KeyOutput { uint words[]; } key_output;
+layout(set = 0, binding = 5, std430) buffer ValueOutput { uint words[]; } value_output;
+layout(push_constant) uniform Parameters { uint words; } p;
+
+uint fp16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint sign = (bits >> 16u) & 0x8000u;
+  uint exponent_bits = (bits >> 23u) & 0xffu;
+  uint mantissa = bits & 0x007fffffu;
+  if (exponent_bits == 0xffu) return mantissa == 0u ? sign | 0x7c00u : 0x7fffu;
+  if (exponent_bits == 0u) return sign;
+  int exponent = int(exponent_bits) - 127;
+  if (exponent > 15) return sign | 0x7c00u;
+  if (exponent >= -14) {
+    uint rounded = mantissa + 0x00000fffu + ((mantissa >> 13u) & 1u);
+    uint half_exponent = uint(exponent + 15);
+    if ((rounded & 0x00800000u) != 0u) { rounded = 0u; ++half_exponent; }
+    if (half_exponent >= 31u) return sign | 0x7c00u;
+    return sign | (half_exponent << 10u) | ((rounded >> 13u) & 0x03ffu);
+  }
+  if (exponent < -25) return sign;
+  uint significand = 0x00800000u | mantissa;
+  uint shift = uint(-exponent - 1);
+  uint base = significand >> shift;
+  uint remainder = significand & ((1u << shift) - 1u);
+  uint halfway = 1u << (shift - 1u);
+  if (remainder > halfway || (remainder == halfway && (base & 1u) != 0u)) ++base;
+  return sign | base;
+}
+
+uint prepare_word(uint packed) {
+  float lo = uintBitsToFloat((packed & 0xffffu) << 16u);
+  float hi = uintBitsToFloat(packed & 0xffff0000u);
+  return fp16_rte(lo) | (fp16_rte(hi) << 16u);
+}
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  if (index >= p.words) return;
+  query_output.words[index] = prepare_word(query_input.words[index]);
+  key_output.words[index] = prepare_word(key_input.words[index]);
+  value_output.words[index] = prepare_word(value_input.words[index]);
+}
