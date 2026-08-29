@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -14,6 +15,7 @@
 
 #include "vidfab/vulkan/runtime.h"
 #include "vidfab/vulkan/compute.h"
+#include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/yuv_converter.h"
@@ -211,6 +213,184 @@ VIDFAB_TEST(vulkan_linear_weight_cpu_reference) {
   nf_upload.nf4_nested_absmax_count = 1;
   nf_upload.nf4_nested_offset = offset;
   run("nf4", nf_upload, nf_expected);
+}
+
+VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_cooperative_matrix = physical.front().info().cooperative_matrix;
+  options.enable_storage_buffer_16bit = options.enable_cooperative_matrix;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  constexpr uint32_t rows = 3, total_input_rows = 5, total_output_rows = 6;
+  constexpr uint32_t n = 11, k = 19;
+  const uint64_t input_shape[] = {total_input_rows, k};
+  const uint64_t weight_shape[] = {n, k};
+  const uint64_t output_shape[] = {total_output_rows, n};
+  const uint64_t bias_shape[] = {n};
+  DeviceTensor input = context.allocate(TensorLayout::contiguous(input_shape, 2),
+                                        ScalarType::kBFloat16);
+  DeviceTensor weight = context.allocate(TensorLayout::contiguous(weight_shape, 2),
+                                         ScalarType::kBFloat16);
+  DeviceTensor output = context.allocate(TensorLayout::contiguous(output_shape, 2),
+                                         ScalarType::kBFloat16);
+  DeviceTensor bias = context.allocate(TensorLayout::contiguous(bias_shape, 1),
+                                       ScalarType::kFloat32);
+  std::vector<uint16_t> input_bits(total_input_rows * k);
+  std::vector<uint16_t> weight_bits(n * k);
+  std::vector<uint16_t> output_bits(total_output_rows * n, 0x3e80u);
+  std::vector<float> bias_values(n);
+  for (size_t i = 0; i < input_bits.size(); ++i)
+    input_bits[i] = reference_bf16(static_cast<float>(static_cast<int>(i % 17) - 8) / 16.0f);
+  for (size_t i = 0; i < weight_bits.size(); ++i)
+    weight_bits[i] = reference_bf16(static_cast<float>(static_cast<int>(i % 13) - 6) / 8.0f);
+  for (uint32_t i = 0; i < n; ++i)
+    bias_values[i] = static_cast<float>(static_cast<int>(i) - 5) / 32.0f;
+  context.upload_bytes(input, input_bits.data(), input_bits.size() * 2);
+  context.upload_bytes(weight, weight_bits.data(), weight_bits.size() * 2);
+  context.upload_bytes(output, output_bits.data(), output_bits.size() * 2);
+  context.upload(bias, bias_values.data(), bias_values.size());
+
+  DenseGemmPlanDesc desc;
+  desc.max_rows = 4;
+  desc.out_features = n;
+  desc.in_features = k;
+  desc.mode = DenseGemmMode::kBFloat16;
+  desc.bias = DenseGemmBias::kFloat32;
+  DenseGemmPlan plan = DenseGemmPlan::create(context, desc);
+  TensorBatch batch = context.begin_batch();
+  plan.record(batch, input, weight, output, rows, 1, 2, &bias);
+  batch.submit().wait();
+  std::vector<uint16_t> actual(output_bits.size());
+  context.download_bytes(output, actual.data(), actual.size() * 2);
+  for (uint32_t row = 0; row < rows; ++row) {
+    for (uint32_t column = 0; column < n; ++column) {
+      float sum = 0.0f;
+      for (uint32_t inner = 0; inner < k; ++inner) {
+        float a = 0.0f, w = 0.0f;
+        const uint32_t ab = uint32_t(input_bits[(row + 1) * k + inner]) << 16;
+        const uint32_t wb = uint32_t(weight_bits[column * k + inner]) << 16;
+        std::memcpy(&a, &ab, 4); std::memcpy(&w, &wb, 4);
+        sum = std::fma(a, w, sum);
+      }
+      const uint16_t rounded = reference_bf16(sum);
+      const uint32_t rounded_bits = uint32_t(rounded) << 16;
+      std::memcpy(&sum, &rounded_bits, 4);
+      const uint16_t expected = reference_bf16(sum + bias_values[column]);
+      const size_t index = size_t(row + 2) * n + column;
+      CHECK_MSG(actual[index] == expected,
+                "gemm tail [%u,%u]: %04x != %04x", row, column,
+                actual[index], expected);
+    }
+  }
+  for (size_t i = 0; i < actual.size(); ++i) {
+    const size_t row = i / n;
+    if (row < 2 || row >= 5) CHECK(actual[i] == 0x3e80u);
+  }
+
+  auto run_float_mode = [&](DenseGemmMode mode, DenseGemmBias bias_mode) {
+    const uint64_t fs[] = {rows, k}, fws[] = {n, k}, fos[] = {rows, n};
+    DeviceTensor fi = context.allocate(TensorLayout::contiguous(fs, 2),
+                                       ScalarType::kFloat32);
+    DeviceTensor fw = context.allocate(
+        TensorLayout::contiguous(fws, 2),
+        mode == DenseGemmMode::kFloat16Vae ? ScalarType::kFloat16
+                                           : ScalarType::kFloat32);
+    DeviceTensor fo = context.allocate(TensorLayout::contiguous(fos, 2),
+                                       ScalarType::kFloat32);
+    std::vector<float> host_input(rows * k), host_output(rows * n);
+    std::vector<float> host_weight_f32;
+    std::vector<uint16_t> host_weight_f16;
+    for (size_t i = 0; i < host_input.size(); ++i)
+      host_input[i] = static_cast<float>(static_cast<int>(i % 29) - 14) / 17.0f;
+    context.upload(fi, host_input.data(), host_input.size());
+    if (mode == DenseGemmMode::kFloat16Vae) {
+      host_weight_f16.resize(n * k);
+      for (size_t i = 0; i < host_weight_f16.size(); ++i)
+        host_weight_f16[i] = f32_to_f16(
+            static_cast<float>(static_cast<int>(i % 23) - 11) / 19.0f);
+      context.upload_bytes(fw, host_weight_f16.data(), host_weight_f16.size() * 2);
+    } else {
+      host_weight_f32.resize(n * k);
+      for (size_t i = 0; i < host_weight_f32.size(); ++i)
+        host_weight_f32[i] =
+            static_cast<float>(static_cast<int>(i % 23) - 11) / 19.0f;
+      context.upload(fw, host_weight_f32.data(), host_weight_f32.size());
+    }
+    DenseGemmPlanDesc float_desc{rows, n, k, mode, bias_mode};
+    DenseGemmPlan float_plan = DenseGemmPlan::create(context, float_desc);
+    TensorBatch float_batch = context.begin_batch();
+    float_plan.record(float_batch, fi, fw, fo, rows, 0, 0,
+                      bias_mode == DenseGemmBias::kNone ? nullptr : &bias);
+    float_batch.submit().wait();
+    context.download(fo, host_output.data(), host_output.size());
+    for (uint32_t row = 0; row < rows; ++row) {
+      for (uint32_t column = 0; column < n; ++column) {
+        float expected = 0.0f;
+        for (uint32_t inner = 0; inner < k; ++inner) {
+          const float a = mode == DenseGemmMode::kFloat16Vae
+              ? f16_to_f32(f32_to_f16(host_input[row * k + inner]))
+              : host_input[row * k + inner];
+          const float w = mode == DenseGemmMode::kFloat16Vae
+              ? f16_to_f32(host_weight_f16[column * k + inner])
+              : host_weight_f32[column * k + inner];
+          expected = std::fma(a, w, expected);
+        }
+        if (bias_mode == DenseGemmBias::kFloat32)
+          expected += bias_values[column];
+        CHECK_MSG(float_bits(host_output[row * n + column]) == float_bits(expected),
+                  "gemm float mode %u [%u,%u] differs", unsigned(mode), row,
+                  column);
+      }
+    }
+  };
+  run_float_mode(DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone);
+  run_float_mode(DenseGemmMode::kFloat32, DenseGemmBias::kFloat32);
+
+  // Temporary development measurement; retained as a visible performance
+  // guard until the production-shape suite supplies the same metric.
+  {
+    constexpr uint32_t bm = 64, bn = 5376, bk = 5376;
+    const uint64_t as[] = {bm, bk}, ws[] = {bn, bk}, os[] = {bm, bn};
+    DeviceTensor ai = context.allocate(TensorLayout::contiguous(as, 2),
+                                       ScalarType::kBFloat16);
+    DeviceTensor wi = context.allocate(TensorLayout::contiguous(ws, 2),
+                                       ScalarType::kBFloat16);
+    DeviceTensor oi = context.allocate(TensorLayout::contiguous(os, 2),
+                                       ScalarType::kBFloat16);
+    std::vector<uint16_t> az(size_t(bm) * bk, reference_bf16(0.25f));
+    std::vector<uint16_t> wz(size_t(bn) * bk, reference_bf16(0.001f));
+    context.upload_bytes(ai, az.data(), az.size() * 2);
+    context.upload_bytes(wi, wz.data(), wz.size() * 2);
+    DenseGemmPlanDesc bd{bm, bn, bk, DenseGemmMode::kBFloat16,
+                         DenseGemmBias::kNone};
+    DenseGemmPlan bp = DenseGemmPlan::create(context, bd);
+    for (int iteration = -1; iteration < 3; ++iteration) {
+      const auto start = std::chrono::steady_clock::now();
+      TensorBatch b = context.begin_batch();
+      bp.record(b, ai, wi, oi, bm);
+      b.submit().wait();
+      if (iteration >= 0) {
+        const double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        std::printf("  deterministic Vulkan BF16 GEMM 64x5376x5376: %.3f ms\n", ms);
+      }
+    }
+    const auto batched_start = std::chrono::steady_clock::now();
+    TensorBatch repeated = context.begin_batch();
+    for (int i = 0; i < 16; ++i) bp.record(repeated, ai, wi, oi, bm);
+    repeated.submit().wait();
+    const double batched_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - batched_start).count() / 16.0;
+    std::printf("  deterministic Vulkan BF16 GEMM batched device time proxy: %.3f ms\n",
+                batched_ms);
+  }
 }
 
 VIDFAB_TEST(vulkan_runtime_and_pool) {
@@ -1322,5 +1502,29 @@ VIDFAB_TEST(vulkan_yuv420_output) {
 }
 
 }  // namespace
+
+VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {
+  using vidfab::vulkan::detail::GemmDispatchGeometry;
+  using vidfab::vulkan::detail::gemm_dispatch_geometry;
+  GemmDispatchGeometry geometry{99, 99};
+  CHECK(!gemm_dispatch_geometry(0, 1, 16, 16, 8, 8, &geometry));
+  CHECK(!gemm_dispatch_geometry(1, 0, 16, 16, 8, 8, &geometry));
+  CHECK(gemm_dispatch_geometry(1, 1, 16, 16, 8, 8, &geometry));
+  CHECK(geometry.x == 1 && geometry.y == 1);
+  CHECK(gemm_dispatch_geometry(15, 15, 16, 16, 8, 8, &geometry));
+  CHECK(geometry.x == 1 && geometry.y == 1);
+  CHECK(gemm_dispatch_geometry(16, 16, 16, 16, 8, 8, &geometry));
+  CHECK(geometry.x == 1 && geometry.y == 1);
+  CHECK(gemm_dispatch_geometry(17, 17, 16, 16, 8, 8, &geometry));
+  CHECK(geometry.x == 2 && geometry.y == 2);
+  CHECK(gemm_dispatch_geometry(128, 128, 16, 16, 8, 8, &geometry));
+  CHECK(geometry.x == 8 && geometry.y == 8);
+  CHECK(!gemm_dispatch_geometry(129, 128, 16, 16, 8, 8, &geometry));
+  CHECK(!gemm_dispatch_geometry(128, 129, 16, 16, 8, 8, &geometry));
+  CHECK(!gemm_dispatch_geometry(UINT64_MAX, UINT64_MAX, 16, 16,
+                                UINT32_MAX, UINT32_MAX, &geometry));
+  CHECK(!gemm_dispatch_geometry(1, 1, 0, 16, 8, 8, &geometry));
+  CHECK(!gemm_dispatch_geometry(1, 1, 16, 16, 8, 8, nullptr));
+}
 
 int main() { return ::vidfab::test::run_all(); }

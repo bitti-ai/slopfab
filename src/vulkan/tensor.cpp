@@ -2098,10 +2098,11 @@ DenseGemmPlan DenseGemmPlan::create(TensorContext& context,
   if (desc.max_rows == 0 || desc.out_features == 0 || desc.in_features == 0) {
     throw std::invalid_argument("vulkan gemm: dimensions must be nonzero");
   }
-  const uint64_t groups_x = (static_cast<uint64_t>(desc.out_features) + 15) / 16;
-  const uint64_t groups_y = (static_cast<uint64_t>(desc.max_rows) + 15) / 16;
-  if (groups_x > context.impl_->max_dispatch_x ||
-      groups_y > context.impl_->max_dispatch_y) {
+  detail::GemmDispatchGeometry plan_geometry;
+  if (!detail::gemm_dispatch_geometry(
+          desc.max_rows, desc.out_features, 16, 16,
+          context.impl_->max_dispatch_x, context.impl_->max_dispatch_y,
+          &plan_geometry)) {
     throw std::out_of_range("vulkan gemm: plan exceeds device dispatch limits");
   }
   const uint64_t weight_elements = checked_multiply(
@@ -2202,8 +2203,14 @@ void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
       weight->type != weight_type || dst->type != output_type) {
     throw std::invalid_argument("vulkan gemm: tensors do not match the plan");
   }
-  uint32_t groups_x = (desc.out_features + 15u) / 16u;
-  uint32_t groups_y = (rows + 15u) / 16u;
+  detail::GemmDispatchGeometry geometry;
+  if (!detail::gemm_dispatch_geometry(
+          rows, desc.out_features, 16, 16, impl_->owner->max_dispatch_x,
+          impl_->owner->max_dispatch_y, &geometry)) {
+    throw std::out_of_range("vulkan gemm: dispatch exceeds device limits");
+  }
+  uint32_t groups_x = geometry.x;
+  uint32_t groups_y = geometry.y;
   TensorContext::Impl::GemmParameters parameters;
   parameters.rows = rows;
   parameters.out_features = desc.out_features;
@@ -2222,7 +2229,13 @@ void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
       desc.mode == DenseGemmMode::kBFloat16 && (rows % 64u) == 0u &&
       (desc.out_features % 16u) == 0u && (desc.in_features % 16u) == 0u;
   if (use_cooperative) {
-    groups_x = desc.out_features / 16u;
+    if (!detail::gemm_dispatch_geometry(
+            rows, desc.out_features, 64, 16, impl_->owner->max_dispatch_x,
+            impl_->owner->max_dispatch_y, &geometry)) {
+      throw std::out_of_range("vulkan gemm: cooperative dispatch exceeds device limits");
+    }
+    groups_x = geometry.x;
+    groups_y = geometry.y;
   }
   try {
     batch.impl_->count_operator();
@@ -2239,7 +2252,6 @@ void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
     bindings[2].bytes = bias_tensor ? bias_tensor->buffer.size() : src->buffer.size();
     bindings[3].buffer = &dst->buffer;
     bindings[3].bytes = dst->buffer.size();
-    if (use_cooperative) groups_y = rows / 64u;
     batch.impl_->commands.bind_compute(
         use_cooperative ? impl_->owner->gemm_coop_pipeline
                         : impl_->owner->gemm_pipeline,

@@ -8,6 +8,31 @@ constexpr bool norm_dispatch_fits(uint64_t rows, uint32_t max_workgroups_x) noex
   return rows != 0 && rows <= max_workgroups_x;
 }
 
+struct GemmDispatchGeometry {
+  uint32_t x = 0;
+  uint32_t y = 0;
+};
+
+// Checked ceil-division for a two-dimensional output grid. The quotient form
+// avoids the conventional value + tile - 1 overflow at API boundaries.
+constexpr bool gemm_dispatch_geometry(
+    uint64_t rows, uint64_t columns, uint32_t tile_rows,
+    uint32_t tile_columns, uint32_t max_x, uint32_t max_y,
+    GemmDispatchGeometry* result) noexcept {
+  if (rows == 0 || columns == 0 || tile_rows == 0 || tile_columns == 0 ||
+      max_x == 0 || max_y == 0 || result == nullptr) {
+    return false;
+  }
+  const uint64_t x = columns / tile_columns +
+                     (columns % tile_columns != 0 ? 1u : 0u);
+  const uint64_t y = rows / tile_rows +
+                     (rows % tile_rows != 0 ? 1u : 0u);
+  if (x > max_x || y > max_y) return false;
+  result->x = static_cast<uint32_t>(x);
+  result->y = static_cast<uint32_t>(y);
+  return true;
+}
+
 // Exact rsqrt behavior is not a portable Vulkan capability. This tuple is the
 // only device/driver combination on which the checked-in norm modules have
 // completed the CUDA bit-parity matrix. Extend only with recorded evidence.

@@ -1,6 +1,7 @@
 #include "harness.h"
 
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 
 #include <algorithm>
 #include <array>
@@ -17,6 +18,8 @@
 
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/deterministic_math.cuh"
+#include "vidfab/cuda/deterministic_gemm.cuh"
+#include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/keyframe_encoder.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
@@ -26,6 +29,7 @@
 #include "vidfab/nf4.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/vulkan/linear.h"
+#include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 
 __global__ void deterministic_rsqrt_probe(const float* input, float* stable,
@@ -2665,6 +2669,88 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_real_nf4_conv) {
               out, in, upload_ms, cuda_ms, vulkan_ms,
               static_cast<double>(weight.resident_bytes()) / 1048576.0,
               static_cast<double>(elements * 2) / 1048576.0);
+}
+
+VIDFAB_TEST(cuda_bf16_gemm_5376_baseline) {
+  constexpr int m = 64, n = 5376, k = 5376;
+  vidfab::cuda::DeviceBuffer<__nv_bfloat16> a(size_t(m) * k), w(size_t(n) * k), c(size_t(m) * n);
+  VIDFAB_CUDA_CHECK(cudaMemset(a.get(), 0, size_t(m) * k * sizeof(__nv_bfloat16)));
+  VIDFAB_CUDA_CHECK(cudaMemset(w.get(), 0, size_t(n) * k * sizeof(__nv_bfloat16)));
+  cublasHandle_t handle = nullptr;
+  VIDFAB_CUBLAS_CHECK(cublasCreate(&handle));
+  const float alpha = 1.0f, beta = 0.0f;
+  auto launch = [&] {
+    VIDFAB_CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
+                                     &alpha, w.get(), CUDA_R_16BF, k,
+                                     a.get(), CUDA_R_16BF, k, &beta,
+                                     c.get(), CUDA_R_16BF, n,
+                                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+  };
+  launch();
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  cudaEvent_t begin = nullptr, end = nullptr;
+  VIDFAB_CUDA_CHECK(cudaEventCreate(&begin)); VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
+  VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+  for (int i = 0; i < 20; ++i) launch();
+  VIDFAB_CUDA_CHECK(cudaEventRecord(end)); VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+  float elapsed = 0.0f; VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&elapsed, begin, end));
+  std::printf("  cuBLAS BF16 GEMM 64x5376x5376: %.3f ms\n", elapsed / 20.0f);
+  cudaEventDestroy(begin); cudaEventDestroy(end); cublasDestroy(handle);
+}
+
+VIDFAB_TEST(cuda_vulkan_cooperative_bf16_gemm_exact) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  constexpr uint32_t m = 64, n = 64, k = 32;
+  std::vector<uint16_t> input(size_t(m) * k), weight(size_t(n) * k);
+  std::vector<float> bias(n);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = f32_to_bf16(float(int(i % 31) - 15) / 32.0f);
+  for (size_t i = 0; i < weight.size(); ++i)
+    weight[i] = f32_to_bf16(float(int(i % 23) - 11) / 16.0f);
+  for (uint32_t i = 0; i < n; ++i) bias[i] = float(int(i) - 7) / 64.0f;
+
+  cuda::DeviceBuffer<uint16_t> ci(input.size()), cw(weight.size()), co(size_t(m) * n);
+  cuda::DeviceBuffer<float> cb(bias.size());
+  ci.copy_from_host(input.data(), input.size()); cw.copy_from_host(weight.data(), weight.size());
+  cb.copy_from_host(bias.data(), bias.size());
+  cuda::launch_deterministic_bf16_gemm_nt(
+      reinterpret_cast<const __nv_bfloat16*>(ci.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cw.get()), cb.get(),
+      reinterpret_cast<__nv_bfloat16*>(co.get()), m, n, k,
+      DenseGemmBias::kFloat32);
+  std::vector<uint16_t> cuda_output(size_t(m) * n);
+  co.copy_to_host(cuda_output.data(), cuda_output.size());
+
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  CHECK(!physical.empty());
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_cooperative_matrix = true;
+  options.enable_storage_buffer_16bit = true;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  const uint64_t is[] = {m, k}, ws[] = {n, k}, os[] = {m, n}, bs[] = {n};
+  DeviceTensor vi = context.allocate(TensorLayout::contiguous(is, 2), ScalarType::kBFloat16);
+  DeviceTensor vw = context.allocate(TensorLayout::contiguous(ws, 2), ScalarType::kBFloat16);
+  DeviceTensor vo = context.allocate(TensorLayout::contiguous(os, 2), ScalarType::kBFloat16);
+  DeviceTensor vb = context.allocate(TensorLayout::contiguous(bs, 1), ScalarType::kFloat32);
+  context.upload_bytes(vi, input.data(), input.size() * 2);
+  context.upload_bytes(vw, weight.data(), weight.size() * 2);
+  context.upload(vb, bias.data(), bias.size());
+  DenseGemmPlanDesc desc{m, n, k, DenseGemmMode::kBFloat16,
+                         DenseGemmBias::kFloat32};
+  DenseGemmPlan plan = DenseGemmPlan::create(context, desc);
+  TensorBatch batch = context.begin_batch();
+  plan.record(batch, vi, vw, vo, m, 0, 0, &vb);
+  batch.submit().wait();
+  std::vector<uint16_t> vulkan_output(cuda_output.size());
+  context.download_bytes(vo, vulkan_output.data(), vulkan_output.size() * 2);
+  size_t differences = 0;
+  for (size_t i = 0; i < cuda_output.size(); ++i) differences += cuda_output[i] != vulkan_output[i];
+  CHECK_MSG(differences == 0, "cooperative BF16 GEMM differs in %zu/%zu values",
+            differences, cuda_output.size());
 }
 
 int main() { return ::vidfab::test::run_all(); }
