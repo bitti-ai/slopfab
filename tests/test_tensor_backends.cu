@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -3100,6 +3101,98 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
       double(vk.pooled_used_bytes()) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+
+  if (const char* production = std::getenv("VIDFAB_DIT_GRAPH_PRODUCTION");
+      production && production[0] == '1') {
+    TensorContextOptions prod_context_options;
+    prod_context_options.max_batch_operators = 2048;
+    TensorContext prod_vk(device, prod_context_options);
+    H3MainGraphConfig prod_config;
+    prod_config.layers = 50;
+    prod_config.block.sequence = 9864;
+    ExactH3MainGraph prod = ExactH3MainGraph::create(prod_vk, prod_config);
+    const auto prod_load_begin = std::chrono::steady_clock::now();
+    prod.load(checkpoint);
+    const double prod_load_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - prod_load_begin).count();
+    const uint64_t prod_token_shape[] = {prod_config.block.sequence,
+                                         prod_config.block.hidden};
+    const uint64_t prod_selector_shape[] = {prod_config.block.sequence};
+    const uint64_t prod_code_shape[] = {prod_config.block.timesteps,
+                                        prod_config.block.adaln_rank};
+    const uint64_t prod_rope_shape[] = {prod_config.block.sequence, 96};
+    DeviceTensor prod_tokens = prod_vk.allocate(
+        TensorLayout::contiguous(prod_token_shape, 2), ScalarType::kBFloat16);
+    DeviceTensor prod_selectors = prod_vk.allocate(
+        TensorLayout::contiguous(prod_selector_shape, 1), ScalarType::kInt32);
+    DeviceTensor prod_code = prod_vk.allocate(
+        TensorLayout::contiguous(prod_code_shape, 2));
+    DeviceTensor prod_cosine = prod_vk.allocate(
+        TensorLayout::contiguous(prod_rope_shape, 2));
+    DeviceTensor prod_sine = prod_vk.allocate(
+        TensorLayout::contiguous(prod_rope_shape, 2));
+    std::vector<uint16_t> prod_input(
+        size_t(prod_config.block.sequence) * prod_config.block.hidden);
+    for (size_t i = 0; i < prod_input.size(); ++i)
+      prod_input[i] = f32_to_bf16(float(int(i % 61) - 30) / 64.0f);
+    std::vector<int32_t> prod_selector_values(prod_config.block.sequence);
+    for (uint32_t i = 0; i < prod_config.block.sequence; ++i)
+      prod_selector_values[i] = static_cast<int32_t>(i % prod_config.block.modalities);
+    std::vector<float> prod_code_values(
+        size_t(prod_config.block.timesteps) * prod_config.block.adaln_rank);
+    for (size_t i = 0; i < prod_code_values.size(); ++i)
+      prod_code_values[i] = float(int(i % 7) - 3) / 16.0f;
+    std::vector<float> prod_cosine_values(
+        size_t(prod_config.block.sequence) * 96, 1.0f);
+    std::vector<float> prod_sine_values(prod_cosine_values.size(), 0.0f);
+    prod_vk.upload_bytes(prod_selectors, prod_selector_values.data(),
+                    prod_selector_values.size() * 4);
+    prod_vk.upload(prod_code, prod_code_values.data(), prod_code_values.size());
+    prod_vk.upload(prod_cosine, prod_cosine_values.data(), prod_cosine_values.size());
+    prod_vk.upload(prod_sine, prod_sine_values.data(), prod_sine_values.size());
+    auto run_prod = [&] {
+      prod_vk.upload_bytes(prod_tokens, prod_input.data(), prod_input.size() * 2);
+      const auto begin = std::chrono::steady_clock::now();
+      TensorBatch prod_batch = prod_vk.begin_batch();
+      prod.record(prod_batch, prod_tokens, prod_selectors, prod_code,
+                  prod_cosine, prod_sine);
+      CHECK(prod_batch.remaining_operator_capacity() == 598u);
+      prod_batch.submit().wait();
+      const double elapsed = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - begin).count();
+      std::vector<uint16_t> output(prod_input.size());
+      prod_vk.download_bytes(prod_tokens, output.data(), output.size() * 2);
+      return std::pair<std::vector<uint16_t>, double>(std::move(output), elapsed);
+    };
+    auto prod_first = run_prod();
+    uint64_t prod_digest = 1469598103934665603ull;
+    for (uint16_t bits : prod_first.first) {
+      prod_digest ^= bits & 0xffu; prod_digest *= 1099511628211ull;
+      prod_digest ^= bits >> 8; prod_digest *= 1099511628211ull;
+    }
+    // This durable pin follows the separately asserted CUDA/Vulkan block-0
+    // S9864 boundary `51e414a3b2556e88`; the full CUDA 50-block capture at
+    // S526 remains the cross-backend authority for every graph boundary.
+    CHECK(prod_digest == 0x3d59d01afa11ba77ull);
+    const uint64_t prod_used = prod_vk.pooled_used_bytes();
+    const uint64_t prod_reserved = prod_vk.reserved_bytes();
+    const uint64_t prod_descriptors = prod_vk.descriptor_set_allocations();
+    auto prod_repeat = run_prod();
+    CHECK(prod_repeat.first == prod_first.first);
+    CHECK(prod_vk.pooled_used_bytes() == prod_used);
+    CHECK(prod_vk.reserved_bytes() == prod_reserved);
+    CHECK(prod_vk.descriptor_set_allocations() == prod_descriptors);
+    std::printf(
+        "  production H3 main50 S9864: load %.3f ms, first/repeat %.3f/%.3f ms, final %016llx, persistent/scratch/peak %.2f/%.2f/%.2f MiB, pool %.2f/%.2f MiB, descriptors %llu\n",
+        prod_load_ms, prod_first.second, prod_repeat.second,
+        static_cast<unsigned long long>(prod_digest),
+        double(prod.persistent_bytes()) / 1048576.0,
+        double(prod.scratch_bytes()) / 1048576.0,
+        double(prod.peak_device_bytes()) / 1048576.0,
+        double(prod_vk.pooled_used_bytes()) / 1048576.0,
+        double(prod_vk.reserved_bytes()) / 1048576.0,
+        static_cast<unsigned long long>(prod_vk.descriptor_set_allocations()));
+  }
 }
 
 VIDFAB_TEST(cuda_vulkan_dit_real_capture_replay) {
