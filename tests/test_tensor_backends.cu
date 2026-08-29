@@ -19,6 +19,7 @@
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/dit/rope.h"
+#include "vidfab/dtype.h"
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
 
@@ -1399,6 +1400,29 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_group_norm_silu) {
   CHECK(vk.pooled_used_bytes() == used_before_reuse);
 }
 
+__global__ void fp32_pre_quant_scale_probe(const float* input,
+                                            const __nv_bfloat16* scale,
+                                            float* output, int count, int dim) {
+  const int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (index < count) output[index] = input[index] * __bfloat162float(scale[index % dim]);
+}
+
+__global__ void dense_weight_convert_probe(const void* input, uint16_t* output,
+                                            int count, int source_type,
+                                            bool output_fp16) {
+  const int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (index >= count) return;
+  float value = source_type == 0 ? static_cast<const float*>(input)[index]
+      : source_type == 1 ? __half2float(reinterpret_cast<const __half*>(input)[index])
+                         : __bfloat162float(
+                               reinterpret_cast<const __nv_bfloat16*>(input)[index]);
+  if (output_fp16) {
+    reinterpret_cast<__half*>(output)[index] = __float2half_rn(value);
+  } else {
+    reinterpret_cast<__nv_bfloat16*>(output)[index] = __float2bfloat16_rn(value);
+  }
+}
+
 VIDFAB_TEST(cuda_vulkan_tensor_exact_bf16_rope) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
@@ -1956,6 +1980,62 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
   };
   raw_dense_case(LinearWeightFormat::kFloat16, ScalarType::kFloat16);
   raw_dense_case(LinearWeightFormat::kBFloat16, ScalarType::kBFloat16);
+
+  auto cross_dense_case = [&](LinearWeightFormat format, ScalarType source_type,
+                              const void* input, uint64_t count,
+                              bool output_fp16) {
+    const uint64_t input_bytes = count *
+        (source_type == ScalarType::kFloat32 ? 4ull : 2ull);
+    cuda::DeviceBuffer<uint8_t> cuda_input(input_bytes);
+    cuda::DeviceBuffer<uint16_t> cuda_output(count);
+    cuda_input.copy_from_host(static_cast<const uint8_t*>(input), input_bytes);
+    const int source_op = source_type == ScalarType::kFloat32 ? 0
+        : source_type == ScalarType::kFloat16 ? 1 : 2;
+    dense_weight_convert_probe<<<static_cast<unsigned>((count + 255) / 256), 256>>>(
+        cuda_input.get(), cuda_output.get(), static_cast<int>(count), source_op,
+        output_fp16);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> expected(count), actual(count);
+    cuda_output.copy_to_host(expected.data(), count);
+    LinearWeightUpload upload;
+    upload.format = format;
+    upload.out_features = 1;
+    upload.in_features = static_cast<uint32_t>(count);
+    upload.data = input;
+    upload.data_bytes = input_bytes;
+    LinearWeight weight = LinearWeight::upload(vk, upload);
+    const uint64_t shape[] = {1, count};
+    DeviceTensor dense = vk.allocate(TensorLayout::contiguous(shape, 2),
+        output_fp16 ? ScalarType::kFloat16 : ScalarType::kBFloat16);
+    TensorBatch batch = vk.begin_batch();
+    if (output_fp16) weight.materialize_f16(batch, dense);
+    else weight.materialize_bf16(batch, dense);
+    batch.submit().wait();
+    vk.download_bytes(dense, actual.data(), count * sizeof(uint16_t));
+    CHECK(std::memcmp(expected.data(), actual.data(), count * 2) == 0);
+  };
+  std::vector<uint16_t> all_half(65536), all_bf16(65536);
+  for (uint32_t i = 0; i < 65536; ++i) {
+    all_half[i] = static_cast<uint16_t>(i);
+    all_bf16[i] = static_cast<uint16_t>(i);
+  }
+  cross_dense_case(LinearWeightFormat::kFloat16, ScalarType::kFloat16,
+                   all_half.data(), all_half.size(), false);
+  cross_dense_case(LinearWeightFormat::kBFloat16, ScalarType::kBFloat16,
+                   all_bf16.data(), all_bf16.size(), true);
+  std::vector<uint32_t> f32_bits(4099);
+  uint32_t state = 0x31415926u;
+  for (size_t i = 0; i < f32_bits.size(); ++i) {
+    state = state * 1664525u + 1013904223u;
+    f32_bits[i] = state;
+  }
+  const uint32_t special_f32[] = {0u, 0x80000000u, 1u, 0x007fffffu,
+      0x00800000u, 0x7f7fffffu, 0x7f800000u, 0xff800000u, 0x7fc12345u};
+  std::copy(std::begin(special_f32), std::end(special_f32), f32_bits.begin());
+  cross_dense_case(LinearWeightFormat::kFloat32, ScalarType::kFloat32,
+                   f32_bits.data(), f32_bits.size(), false);
+  cross_dense_case(LinearWeightFormat::kFloat32, ScalarType::kFloat32,
+                   f32_bits.data(), f32_bits.size(), true);
 }
 
 VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
@@ -2112,6 +2192,102 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
                     nf_count * sizeof(uint16_t)) == 0);
   CHECK(std::memcmp(nf_f16_expected.data(), nf_f16_actual.data(),
                     nf_count * sizeof(uint16_t)) == 0);
+}
+
+VIDFAB_TEST(cuda_vulkan_linear_weight_activation_transforms_exact) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+
+  constexpr uint32_t rows = 3, dim = 256;
+  constexpr size_t count = static_cast<size_t>(rows) * dim;
+  std::vector<float> values(count), scales(dim);
+  for (size_t i = 0; i < count; ++i)
+    values[i] = static_cast<float>(static_cast<int>(i * 37 % 257) - 128) / 64.0f;
+  for (size_t i = 0; i < dim; ++i)
+    scales[i] = static_cast<float>(static_cast<int>(i * 19 % 61) - 30) / 32.0f;
+  std::vector<uint16_t> bf_values(count), bf_scales(dim), zero_weight(dim);
+  for (size_t i = 0; i < count; ++i) bf_values[i] = f32_to_bf16(values[i]);
+  for (size_t i = 0; i < dim; ++i) bf_scales[i] = f32_to_bf16(scales[i]);
+
+  LinearWeightUpload upload;
+  upload.format = LinearWeightFormat::kBFloat16;
+  upload.out_features = 1;
+  upload.in_features = dim;
+  upload.data = zero_weight.data();
+  upload.data_bytes = zero_weight.size() * sizeof(uint16_t);
+  upload.pre_quant_scale_bf16 = bf_scales.data();
+  upload.pre_quant_scale_count = bf_scales.size();
+  upload.convrot = true;
+  upload.convrot_group = dim;
+  LinearWeight weight = LinearWeight::upload(vk, upload);
+
+  cuda::DeviceBuffer<uint16_t> d_bf_input(count), d_scale(dim),
+      d_bf_scaled(count), d_bf_rotated(count);
+  cuda::DeviceBuffer<float> d_f32_input(count), d_f32_scaled(count),
+      d_f32_rotated(count);
+  d_bf_input.copy_from_host(bf_values.data(), count);
+  d_scale.copy_from_host(bf_scales.data(), dim);
+  d_f32_input.copy_from_host(values.data(), count);
+  cuda::launch_pre_quant_scale(
+      reinterpret_cast<const __nv_bfloat16*>(d_bf_input.get()),
+      reinterpret_cast<const __nv_bfloat16*>(d_scale.get()),
+      reinterpret_cast<__nv_bfloat16*>(d_bf_scaled.get()), rows, dim, nullptr);
+  fp32_pre_quant_scale_probe<<<static_cast<unsigned>((count + 255) / 256), 256>>>(
+      d_f32_input.get(), reinterpret_cast<const __nv_bfloat16*>(d_scale.get()),
+      d_f32_scaled.get(), static_cast<int>(count), dim);
+  cuda::launch_convrot(
+      reinterpret_cast<const __nv_bfloat16*>(d_bf_input.get()),
+      reinterpret_cast<__nv_bfloat16*>(d_bf_rotated.get()), rows, dim, dim,
+      nullptr);
+  cuda::launch_convrot_f32(d_f32_input.get(), d_f32_rotated.get(), rows, dim,
+                           dim, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> bf_scaled_expected(count), bf_rotated_expected(count);
+  std::vector<float> f32_scaled_expected(count), f32_rotated_expected(count);
+  d_bf_scaled.copy_to_host(bf_scaled_expected.data(), count);
+  d_bf_rotated.copy_to_host(bf_rotated_expected.data(), count);
+  d_f32_scaled.copy_to_host(f32_scaled_expected.data(), count);
+  d_f32_rotated.copy_to_host(f32_rotated_expected.data(), count);
+
+  const uint64_t shape[] = {rows, dim};
+  DeviceTensor bf_input = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                      ScalarType::kBFloat16);
+  DeviceTensor bf_scaled = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                       ScalarType::kBFloat16);
+  DeviceTensor bf_rotated = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                        ScalarType::kBFloat16);
+  DeviceTensor f32_input = vk.allocate(TensorLayout::contiguous(shape, 2));
+  DeviceTensor f32_scaled = vk.allocate(TensorLayout::contiguous(shape, 2));
+  DeviceTensor f32_rotated = vk.allocate(TensorLayout::contiguous(shape, 2));
+  vk.upload_bytes(bf_input, bf_values.data(), bf_values.size() * 2);
+  vk.upload(f32_input, values.data(), values.size());
+  TensorBatch batch = vk.begin_batch();
+  weight.apply_pre_quant_scale(batch, bf_input, bf_scaled);
+  weight.apply_pre_quant_scale(batch, f32_input, f32_scaled);
+  weight.apply_convrot(batch, bf_input, bf_rotated);
+  weight.apply_convrot(batch, f32_input, f32_rotated);
+  batch.submit().wait();
+  std::vector<uint16_t> bf_scaled_actual(count), bf_rotated_actual(count);
+  std::vector<float> f32_scaled_actual(count), f32_rotated_actual(count);
+  vk.download_bytes(bf_scaled, bf_scaled_actual.data(), count * 2);
+  vk.download_bytes(bf_rotated, bf_rotated_actual.data(), count * 2);
+  vk.download(f32_scaled, f32_scaled_actual.data(), count);
+  vk.download(f32_rotated, f32_rotated_actual.data(), count);
+  CHECK(std::memcmp(bf_scaled_expected.data(), bf_scaled_actual.data(), count * 2) == 0);
+  CHECK(std::memcmp(bf_rotated_expected.data(), bf_rotated_actual.data(), count * 2) == 0);
+  CHECK(std::memcmp(f32_scaled_expected.data(), f32_scaled_actual.data(), count * 4) == 0);
+  CHECK(std::memcmp(f32_rotated_expected.data(), f32_rotated_actual.data(), count * 4) == 0);
 }
 
 int main() { return ::vidfab::test::run_all(); }
