@@ -5675,19 +5675,21 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   CHECK(context.reserved_bytes() == graph_reserved);
   CHECK(context.descriptor_set_allocations() == graph_descriptors);
 
-  vulkan::ExactViTBlockGraph oversized_graph =
-      vulkan::ExactViTBlockGraph::create(context, config, 4);
-  vulkan::TensorBatch insufficient = context.begin_batch();
-  const uint32_t insufficient_capacity =
-      insufficient.remaining_operator_capacity();
-  bool capacity_rejected = false;
-  try {
-    oversized_graph.record(insufficient, tokens, vk_cosine, vk_sine);
-  } catch (const std::logic_error&) {
-    capacity_rejected = true;
+  {
+    vulkan::ExactViTBlockGraph oversized_graph =
+        vulkan::ExactViTBlockGraph::create(context, config, 4);
+    vulkan::TensorBatch insufficient = context.begin_batch();
+    const uint32_t insufficient_capacity =
+        insufficient.remaining_operator_capacity();
+    bool capacity_rejected = false;
+    try {
+      oversized_graph.record(insufficient, tokens, vk_cosine, vk_sine);
+    } catch (const std::logic_error&) {
+      capacity_rejected = true;
+    }
+    CHECK(capacity_rejected);
+    CHECK(insufficient.remaining_operator_capacity() == insufficient_capacity);
   }
-  CHECK(capacity_rejected);
-  CHECK(insufficient.remaining_operator_capacity() == insufficient_capacity);
 
   if (!std::getenv("VIDFAB_VAE_VIT_BLOCK_REAL")) return;
   const std::filesystem::path checkpoint_path =
@@ -5818,6 +5820,210 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
       double(real_vk_stage.persistent_bytes() + real_scratch.reserved_bytes() +
              real_input.size() * sizeof(float) +
              2 * real_cosine.size() * sizeof(float)) / 1048576.0);
+
+  if (!std::getenv("VIDFAB_VAE_VIT_GRAPH_REAL")) return;
+  vulkan::TensorContextOptions graph_options;
+  graph_options.max_batch_operators = 1024;
+  vulkan::TensorContext graph_context(device, graph_options);
+  if (!graph_context.exact_fp32_vae_normalization() ||
+      !graph_context.exact_vae_pointwise() ||
+      !graph_context.exact_blocked_attention()) return;
+  constexpr uint32_t kGraphLayers = 36;
+  cuda::ExactViTBlockGraph real_cuda_graph =
+      cuda::ExactViTBlockGraph::create(real_config, kGraphLayers);
+  vulkan::ExactViTBlockGraph real_vk_graph =
+      vulkan::ExactViTBlockGraph::create(graph_context, real_config,
+                                         kGraphLayers);
+  size_t graph_raw_subnormals = 0, graph_loaded_subnormals = 0,
+      graph_loaded_fp32_subnormals = 0;
+  const auto graph_load_begin = std::chrono::steady_clock::now();
+  for (uint32_t layer = 0; layer < kGraphLayers; ++layer) {
+    const std::array<std::string, 4> names{
+        "decoder.transformer_blocks." + std::to_string(layer) +
+            ".attn.to_qkv.weight",
+        "decoder.transformer_blocks." + std::to_string(layer) +
+            ".attn.to_out.weight",
+        "decoder.transformer_blocks." + std::to_string(layer) +
+            ".ff.w1.weight",
+        "decoder.transformer_blocks." + std::to_string(layer) +
+            ".ff.w2.weight"};
+    for (const std::string& name : names) {
+      const TensorView& tensor = checkpoint.at(name);
+      CHECK(tensor.dtype == DType::kF16);
+      const auto* words = static_cast<const uint16_t*>(tensor.data);
+      for (size_t i = 0; i < tensor.nbytes / sizeof(uint16_t); ++i)
+        graph_raw_subnormals += (words[i] & 0x7c00u) == 0 &&
+                                (words[i] & 0x03ffu) != 0;
+    }
+    vae::ViTBlockWeights layer_weights =
+        vae::load_vit_block_weights(checkpoint, layer, real_config);
+    auto count_loaded = [&](const std::vector<uint16_t>& values) {
+      for (uint16_t word : values)
+        graph_loaded_subnormals += (word & 0x7c00u) == 0 &&
+                                   (word & 0x03ffu) != 0;
+    };
+    count_loaded(layer_weights.qkv_weight);
+    count_loaded(layer_weights.out_weight);
+    count_loaded(layer_weights.w1_weight);
+    count_loaded(layer_weights.w2_weight);
+    auto count_loaded_float = [&](const std::vector<float>& values) {
+      for (float value : values) {
+        uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits));
+        graph_loaded_fp32_subnormals += (bits & 0x7f800000u) == 0 &&
+                                        (bits & 0x007fffffu) != 0;
+      }
+    };
+    count_loaded_float(layer_weights.norm1);
+    count_loaded_float(layer_weights.norm2);
+    count_loaded_float(layer_weights.scale1);
+    count_loaded_float(layer_weights.scale2);
+    count_loaded_float(layer_weights.qkv_bias);
+    count_loaded_float(layer_weights.out_bias);
+    count_loaded_float(layer_weights.w1_bias);
+    count_loaded_float(layer_weights.w2_bias);
+    real_cuda_graph.load_layer(layer, layer_weights.view());
+    real_vk_graph.load_layer(layer, layer_weights.view());
+  }
+  const double graph_load_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - graph_load_begin).count();
+  CHECK(graph_raw_subnormals == 8495330u);
+  CHECK(graph_loaded_subnormals == 0);
+  CHECK(graph_loaded_fp32_subnormals == 0);
+  CHECK(real_cuda_graph.persistent_bytes() ==
+        uint64_t(kGraphLayers) * real_weights.bytes());
+  CHECK(real_vk_graph.persistent_bytes() ==
+        uint64_t(kGraphLayers) * real_weights.bytes());
+
+  cuda::Stream graph_cuda_stream;
+  cuda::DeviceBuffer<float> graph_cuda_tokens(real_input.size()),
+      graph_cuda_cosine(real_cosine.size()), graph_cuda_sine(real_sine.size());
+  graph_cuda_tokens.copy_from_host(real_input.data(), real_input.size(),
+                                   graph_cuda_stream.get());
+  graph_cuda_cosine.copy_from_host(real_cosine.data(), real_cosine.size(),
+                                   graph_cuda_stream.get());
+  graph_cuda_sine.copy_from_host(real_sine.data(), real_sine.size(),
+                                 graph_cuda_stream.get());
+  const uint64_t graph_token_shape[] = {real_config.sequence, real_config.dim};
+  const uint64_t graph_rope_shape[] = {real_config.sequence,
+                                       real_config.rope_dim};
+  vulkan::DeviceTensor graph_vk_tokens = graph_context.allocate(
+      TensorLayout::contiguous(graph_token_shape, 2));
+  vulkan::DeviceTensor graph_vk_cosine = graph_context.allocate(
+      TensorLayout::contiguous(graph_rope_shape, 2));
+  vulkan::DeviceTensor graph_vk_sine = graph_context.allocate(
+      TensorLayout::contiguous(graph_rope_shape, 2));
+  graph_context.upload(graph_vk_tokens, real_input.data(), real_input.size());
+  graph_context.upload(graph_vk_cosine, real_cosine.data(), real_cosine.size());
+  graph_context.upload(graph_vk_sine, real_sine.data(), real_sine.size());
+  std::vector<float> graph_cuda_boundary(real_input.size()),
+      graph_vk_boundary(real_input.size());
+  std::array<uint64_t, kGraphLayers> boundary_fnv{};
+  auto fnv_words = [](const std::vector<float>& values) {
+    uint64_t digest = 1469598103934665603ull;
+    for (float value : values) {
+      uint32_t bits = 0; std::memcpy(&bits, &value, 4);
+      for (int byte = 0; byte < 4; ++byte) {
+        digest ^= (bits >> (byte * 8)) & 0xffu;
+        digest *= 1099511628211ull;
+      }
+    }
+    return digest;
+  };
+  const auto boundary_begin = std::chrono::steady_clock::now();
+  for (uint32_t layer = 0; layer < kGraphLayers; ++layer) {
+    real_cuda_graph.forward_layer_device(
+        layer, graph_cuda_tokens.get(), graph_cuda_cosine.get(),
+        graph_cuda_sine.get(), graph_cuda_stream.get());
+    graph_cuda_tokens.copy_to_host(graph_cuda_boundary.data(),
+                                   graph_cuda_boundary.size(),
+                                   graph_cuda_stream.get());
+    graph_cuda_stream.synchronize();
+    vulkan::TensorBatch boundary_batch = graph_context.begin_batch();
+    real_vk_graph.record_layer(layer, boundary_batch, graph_vk_tokens,
+                               graph_vk_cosine, graph_vk_sine);
+    boundary_batch.submit().wait();
+    graph_context.download(graph_vk_tokens, graph_vk_boundary.data(),
+                           graph_vk_boundary.size());
+    CHECK_MSG(std::memcmp(graph_cuda_boundary.data(), graph_vk_boundary.data(),
+                          graph_vk_boundary.size() * sizeof(float)) == 0,
+              "real VAE ViT graph boundary %u mismatch", layer);
+    boundary_fnv[layer] = fnv_words(graph_vk_boundary);
+  }
+  constexpr std::array<uint64_t, kGraphLayers> kExpectedBoundaryFnv{
+      0xc8a7ac3241effbb7ull, 0xe6bdd67a8d48bff8ull,
+      0xfe02227922d69136ull, 0x4a4e37dbdc31d38eull,
+      0x904f376dd2c88994ull, 0x38f3a254dcaa4b58ull,
+      0x1adf972aa1b5ad86ull, 0xcf07b32f966af880ull,
+      0x41216b0be919cf32ull, 0xde0123fcd7230526ull,
+      0x768a973a476b9f3dull, 0x39f8eec6518d09ecull,
+      0xd96137acfd15c70bull, 0x258870835106c183ull,
+      0x2b9269a616840b60ull, 0x2f80754cca866626ull,
+      0xfa59d4e2bb5827fcull, 0x9fce240021df0759ull,
+      0x569c14bf07d8f02full, 0x72148c477fbd0555ull,
+      0xc2e6327af72e9180ull, 0x866d0f23de08c438ull,
+      0xa4af356bb581aa36ull, 0x9115b305a680b5a3ull,
+      0x5d2f5f5b25608da1ull, 0x7dba3acd266c90d6ull,
+      0x1bf5ac0ceb451f2aull, 0xf3f0972ba2242d72ull,
+      0xa00df63f64401882ull, 0x44c2c7fbe814ef3full,
+      0xf408320a5e9c4dc4ull, 0xbb6a8a106ede9fdbull,
+      0x2b0694c284a43fdfull, 0x5ece5abf0e1457b4ull,
+      0x5cfe899e8a5da408ull, 0x50d92f167ac90922ull};
+  CHECK(boundary_fnv == kExpectedBoundaryFnv);
+  const double boundary_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - boundary_begin).count();
+
+  graph_cuda_tokens.copy_from_host(real_input.data(), real_input.size(),
+                                   graph_cuda_stream.get());
+  graph_context.upload(graph_vk_tokens, real_input.data(), real_input.size());
+  const auto cuda_graph_begin = std::chrono::steady_clock::now();
+  real_cuda_graph.forward_device(
+      graph_cuda_tokens.get(), graph_cuda_cosine.get(), graph_cuda_sine.get(),
+      graph_cuda_stream.get());
+  graph_cuda_tokens.copy_to_host(graph_cuda_boundary.data(),
+                                 graph_cuda_boundary.size(),
+                                 graph_cuda_stream.get());
+  graph_cuda_stream.synchronize();
+  const double cuda_graph_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_graph_begin).count();
+  const auto vk_graph_begin = std::chrono::steady_clock::now();
+  vulkan::TensorBatch graph_batch = graph_context.begin_batch();
+  real_vk_graph.record(graph_batch, graph_vk_tokens, graph_vk_cosine,
+                       graph_vk_sine);
+  graph_batch.submit().wait();
+  const double vk_graph_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vk_graph_begin).count();
+  graph_context.download(graph_vk_tokens, graph_vk_boundary.data(),
+                         graph_vk_boundary.size());
+  CHECK(std::memcmp(graph_cuda_boundary.data(), graph_vk_boundary.data(),
+                    graph_vk_boundary.size() * sizeof(float)) == 0);
+  CHECK(fnv_words(graph_vk_boundary) == boundary_fnv.back());
+
+  const uint64_t full_graph_reserved = graph_context.reserved_bytes();
+  const uint64_t full_graph_used = graph_context.pooled_used_bytes();
+  const uint64_t full_graph_descriptors =
+      graph_context.descriptor_set_allocations();
+  graph_context.upload(graph_vk_tokens, real_input.data(), real_input.size());
+  vulkan::TensorBatch repeat_batch = graph_context.begin_batch();
+  real_vk_graph.record(repeat_batch, graph_vk_tokens, graph_vk_cosine,
+                       graph_vk_sine);
+  repeat_batch.submit().wait();
+  CHECK(graph_context.reserved_bytes() == full_graph_reserved);
+  CHECK(graph_context.pooled_used_bytes() == full_graph_used);
+  CHECK(graph_context.descriptor_set_allocations() == full_graph_descriptors);
+  std::printf(
+      "  real 36-block graph: load %.1f ms, boundary replay %.1f ms, CUDA %.1f ms, Vulkan %.1f ms, raw subnormals %zu, final FNV64 %016llx, persistent %.1f MiB, Vulkan peak %.1f MiB, pool used/reserved %.1f/%.1f MiB, descriptors %llu\n",
+      graph_load_ms, boundary_ms, cuda_graph_ms, vk_graph_ms,
+      graph_raw_subnormals,
+      static_cast<unsigned long long>(boundary_fnv.back()),
+      double(real_vk_graph.persistent_bytes()) / 1048576.0,
+      double(real_vk_graph.peak_device_bytes()) / 1048576.0,
+      double(full_graph_used) / 1048576.0,
+      double(full_graph_reserved) / 1048576.0,
+      static_cast<unsigned long long>(full_graph_descriptors));
+  std::printf("  graph boundary FNV64:");
+  for (uint64_t digest : boundary_fnv)
+    std::printf(" %016llx", static_cast<unsigned long long>(digest));
+  std::printf("\n");
 }
 
 int main() { return ::vidfab::test::run_all(); }

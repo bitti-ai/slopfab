@@ -268,8 +268,6 @@ void ExactViTBlockGraph::load(const SafeTensors& checkpoint) {
     vae::ViTBlockWeights weights =
         vae::load_vit_block_weights(checkpoint, layer, impl_->config);
     load_layer(layer, weights.view());
-    // The temporary owns pageable vectors used by async copies.
-    impl_->stream.synchronize();
   }
 }
 
@@ -279,6 +277,9 @@ void ExactViTBlockGraph::load_layer(
   if (layer >= impl_->layer_count)
     throw std::out_of_range("exact CUDA VAE ViT graph: layer out of range");
   impl_->blocks[layer].load(weights, impl_->config, impl_->stream.get());
+  // The view may be backed by a temporary typed-loader result. Complete every
+  // copy before returning so load_layer never extends the host view's lifetime.
+  impl_->stream.synchronize();
 }
 
 void ExactViTBlockGraph::forward_device(float* tokens, const float* cosine,
