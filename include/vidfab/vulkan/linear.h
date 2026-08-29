@@ -28,6 +28,8 @@ class LinearWeight {
   uint32_t out_features() const;
   uint32_t in_features() const;
   uint64_t stored_bytes() const noexcept;
+  // Sum of logical persistent tensor bytes. Allocator page/block rounding is
+  // reported by TensorContext::reserved_bytes(), not charged per weight here.
   uint64_t resident_bytes() const noexcept;
   bool has_fp8_input_scale() const noexcept;
   float fp8_input_scale() const;

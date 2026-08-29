@@ -802,7 +802,7 @@ LinearWeight LinearWeight::upload(TensorContext& context,
                                            expected_absmax == 0
       ? 0 : 1 + (expected_absmax - 1) / source.nf4_nested_block_size;
   if (source.format == LinearWeightFormat::kNF4 &&
-      (source.nf4_block_size == 0 || source.nf4_nested_block_size == 0 ||
+      (source.nf4_block_size != 64 || source.nf4_nested_block_size != 256 ||
        source.nf4_absmax == nullptr || source.nf4_absmax_count != expected_absmax ||
        source.nf4_quant_map == nullptr || source.nf4_quant_map_count != 16 ||
        source.nf4_nested_quant_map == nullptr ||

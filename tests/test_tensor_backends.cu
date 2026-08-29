@@ -2068,7 +2068,9 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
     return result;
   };
 
-  constexpr uint32_t nv_out = 128, nv_in = 64;
+  // Three row tiles by five contraction tiles catches both physical scale-tile
+  // strides; the previous one-tile shape could not distinguish a flat layout.
+  constexpr uint32_t nv_out = 384, nv_in = 320;
   constexpr size_t nv_count = static_cast<size_t>(nv_out) * nv_in;
   std::vector<uint8_t> nv_packed((nv_count + 1) / 2);
   for (size_t i = 0; i < nv_packed.size(); ++i) {
@@ -2171,6 +2173,15 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
   {
     LinearWeightUpload invalid = nf_upload;
     invalid.nf4_quant_map_count = 15;
+    bool rejected = false;
+    try { (void)LinearWeight::upload(vk, invalid); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    CHECK(vk.pooled_used_bytes() == before_invalid);
+  }
+  {
+    LinearWeightUpload invalid = nf_upload;
+    invalid.nf4_block_size = 63;
     bool rejected = false;
     try { (void)LinearWeight::upload(vk, invalid); }
     catch (const std::invalid_argument&) { rejected = true; }
@@ -2288,6 +2299,141 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_activation_transforms_exact) {
   CHECK(std::memcmp(bf_rotated_expected.data(), bf_rotated_actual.data(), count * 2) == 0);
   CHECK(std::memcmp(f32_scaled_expected.data(), f32_scaled_actual.data(), count * 4) == 0);
   CHECK(std::memcmp(f32_rotated_expected.data(), f32_rotated_actual.data(), count * 4) == 0);
+}
+
+VIDFAB_TEST(vulkan_linear_weight_bounded_reuse_and_lifetime) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  constexpr uint32_t out = 3, in = 131;
+  constexpr size_t count = static_cast<size_t>(out) * in;
+  std::vector<int8_t> codes(count);
+  for (size_t i = 0; i < count; ++i) codes[i] = static_cast<int8_t>(i * 29u);
+  const float scales[] = {0.5f, -0.25f, 1.5f};
+  LinearWeightUpload upload;
+  upload.format = LinearWeightFormat::kInt8;
+  upload.out_features = out;
+  upload.in_features = in;
+  upload.data = codes.data();
+  upload.data_bytes = codes.size();
+  upload.weight_scale = scales;
+  upload.weight_scale_count = out;
+  const uint64_t shape[] = {out, in};
+
+  LinearWeight weight = LinearWeight::upload(vk, upload);
+  DeviceTensor first = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                   ScalarType::kBFloat16);
+  DeviceTensor second = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                    ScalarType::kBFloat16);
+  auto submit = [&](DeviceTensor& output) {
+    TensorBatch batch = vk.begin_batch();
+    weight.materialize_bf16(batch, output);
+    return batch.submit();
+  };
+  Submission warm_a = submit(first), warm_b = submit(second);
+  warm_a.wait(); warm_b.wait();
+  { TensorBatch collect = vk.begin_batch(); }
+  const uint64_t stable_reserved = vk.reserved_bytes();
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  for (int repeat = 0; repeat < 6; ++repeat) {
+    Submission a = submit(first), b = submit(second), c = submit(first);
+    CHECK(b.value() > a.value() && c.value() > b.value());
+    a.wait(); b.wait(); c.wait();
+    CHECK(vk.reserved_bytes() == stable_reserved);
+    CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  }
+  {
+    TensorBatch full = vk.begin_batch();
+    for (int op = 0; op < 32; ++op) weight.materialize_bf16(full, first);
+    full.submit().wait();
+  }
+  {
+    TensorBatch overflow = vk.begin_batch();
+    for (int op = 0; op < 32; ++op) weight.materialize_bf16(overflow, first);
+    bool rejected = false;
+    try { weight.materialize_bf16(overflow, first); }
+    catch (const std::logic_error&) { rejected = true; }
+    CHECK(rejected);
+    bool submit_rejected = false;
+    try { (void)overflow.submit(); }
+    catch (const std::logic_error&) { submit_rejected = true; }
+    CHECK(submit_rejected);
+  }
+  CHECK(vk.reserved_bytes() == stable_reserved);
+  const uint64_t saturated_descriptors = vk.descriptor_set_allocations();
+  CHECK(saturated_descriptors >= stable_descriptors);
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    TensorBatch full = vk.begin_batch();
+    for (int op = 0; op < 32; ++op) weight.materialize_bf16(full, first);
+    full.submit().wait();
+    CHECK(vk.reserved_bytes() == stable_reserved);
+    CHECK(vk.descriptor_set_allocations() == saturated_descriptors);
+  }
+
+  auto valid_after_rejection = [&](auto&& invalid) {
+    TensorBatch batch = vk.begin_batch();
+    bool rejected = false;
+    try { invalid(batch); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    weight.materialize_bf16(batch, first);
+    batch.submit().wait();
+  };
+  DeviceTensor wrong_type = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                        ScalarType::kFloat32);
+  const uint64_t short_shape[] = {out, in - 1};
+  DeviceTensor wrong_shape = vk.allocate(TensorLayout::contiguous(short_shape, 2),
+                                         ScalarType::kBFloat16);
+  valid_after_rejection([&](TensorBatch& batch) {
+    weight.materialize_bf16(batch, wrong_type);
+  });
+  valid_after_rejection([&](TensorBatch& batch) {
+    weight.materialize_bf16(batch, wrong_shape);
+  });
+  Device other_device = physical.front().create_device(options);
+  TensorContext other(other_device);
+  DeviceTensor foreign = other.allocate(TensorLayout::contiguous(shape, 2),
+                                        ScalarType::kBFloat16);
+  valid_after_rejection([&](TensorBatch& batch) {
+    weight.materialize_bf16(batch, foreign);
+  });
+
+  // Discarded recording releases its speculative references immediately.
+  const uint64_t used_before_discard = vk.pooled_used_bytes();
+  {
+    LinearWeight temporary = LinearWeight::upload(vk, upload);
+    DeviceTensor output = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                      ScalarType::kBFloat16);
+    { TensorBatch discarded = vk.begin_batch();
+      temporary.materialize_bf16(discarded, output); }
+  }
+  CHECK(vk.pooled_used_bytes() == used_before_discard);
+
+  // A submitted job retains compressed storage, scales, and dense output even
+  // after every public wrapper drops, then releases them after its exact token
+  // and slot collection.
+  const uint64_t used_before_submit = vk.pooled_used_bytes();
+  Submission retained;
+  {
+    LinearWeight temporary = LinearWeight::upload(vk, upload);
+    DeviceTensor output = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                      ScalarType::kBFloat16);
+    TensorBatch batch = vk.begin_batch();
+    temporary.materialize_bf16(batch, output);
+    retained = batch.submit();
+  }
+  CHECK(vk.pooled_used_bytes() > used_before_submit);
+  retained.wait();
+  retained = Submission{};
+  { TensorBatch collect = vk.begin_batch(); }
+  CHECK(vk.pooled_used_bytes() == used_before_submit);
 }
 
 int main() { return ::vidfab::test::run_all(); }
