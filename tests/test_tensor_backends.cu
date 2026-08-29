@@ -1692,6 +1692,26 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_fused_rope) {
               mismatch == output_count ? 0u : [&] { uint32_t x; std::memcpy(&x, &expected[output][mismatch], 4); return x; }(),
               mismatch == output_count ? 0u : [&] { uint32_t x; std::memcpy(&x, &actual[mismatch], 4); return x; }());
   }
+  // Independent head-major V layout reference: V is bias-only and bypasses
+  // both normalization and rotation.
+  for (uint32_t token = 0; token < sequence; ++token) {
+    for (uint32_t head = 0; head < heads; ++head) {
+      for (uint32_t d = 0; d < head_dim; ++d) {
+        const size_t source = (static_cast<size_t>(token) * heads + head) *
+                                  (3 * head_dim) +
+                              2 * head_dim + d;
+        const size_t destination =
+            (static_cast<size_t>(head) * sequence + token) * head_dim + d;
+        const float reference = input[source] +
+            bias_values[static_cast<size_t>(head) * 3 * head_dim + 2 * head_dim + d];
+        uint32_t want = 0, got = 0;
+        std::memcpy(&want, &reference, 4);
+        std::memcpy(&got, &actual_outputs[2][destination], 4);
+        CHECK_MSG(want == got, "fused V layout mismatch token%u head%u dim%u", token,
+                  head, d);
+      }
+    }
+  }
 
   std::array<DeviceTensor, 3> second_outputs{
       vk.allocate(TensorLayout::contiguous(output_shape, 3)),
@@ -1703,6 +1723,32 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_fused_rope) {
                                  selected[1], selected[2], num_patches, epsilon);
     return next.submit();
   };
+  std::vector<float> suffix_cosine = cosine, suffix_sine = sine;
+  for (uint32_t token = num_patches; token < sequence; ++token) {
+    for (uint32_t d = 0; d < rope_dim; ++d) {
+      suffix_cosine[static_cast<size_t>(token) * rope_dim + d] =
+          static_cast<float>(17 + token + d);
+      suffix_sine[static_cast<size_t>(token) * rope_dim + d] =
+          static_cast<float>(-31 - static_cast<int>(token) - static_cast<int>(d));
+    }
+  }
+  vk.upload(v_cos, suffix_cosine.data(), suffix_cosine.size());
+  vk.upload(v_sin, suffix_sine.data(), suffix_sine.size());
+  submit(second_outputs).wait();
+  for (size_t output = 0; output < 2; ++output) {
+    std::vector<float> suffix_actual(output_count);
+    vk.download(second_outputs[output], suffix_actual.data(), suffix_actual.size());
+    for (uint32_t head = 0; head < heads; ++head) {
+      for (uint32_t token = num_patches; token < sequence; ++token) {
+        const size_t begin = (static_cast<size_t>(head) * sequence + token) * head_dim;
+        CHECK(std::memcmp(suffix_actual.data() + begin,
+                          actual_outputs[output].data() + begin,
+                          head_dim * sizeof(float)) == 0);
+      }
+    }
+  }
+  vk.upload(v_cos, cosine.data(), cosine.size());
+  vk.upload(v_sin, sine.data(), sine.size());
   Submission warm_a = submit(outputs), warm_b = submit(second_outputs);
   warm_a.wait(); warm_b.wait();
   const uint64_t stable_reserved = vk.reserved_bytes();
@@ -1753,6 +1799,34 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_fused_rope) {
                                  outputs[0], outputs[1], outputs[2],
                                  num_patches, 0.0f);
   });
+
+  // A submitted job owns all seven buffers after every public wrapper drops.
+  // Once the exact token completes and the slot is collected, no hidden
+  // descriptor/scratch reference may keep any of them alive.
+  const uint64_t used_before_drop = vk.pooled_used_bytes();
+  Submission retained;
+  {
+    const uint64_t tiny_qkv_shape[] = {2, 1, 192};
+    const uint64_t tiny_bias_shape[] = {1, 192};
+    const uint64_t tiny_table_shape[] = {2, 48};
+    const uint64_t tiny_output_shape[] = {1, 2, 64};
+    DeviceTensor in = vk.allocate(TensorLayout::contiguous(tiny_qkv_shape, 3));
+    DeviceTensor bv = vk.allocate(TensorLayout::contiguous(tiny_bias_shape, 2));
+    DeviceTensor cv = vk.allocate(TensorLayout::contiguous(tiny_table_shape, 2));
+    DeviceTensor sv = vk.allocate(TensorLayout::contiguous(tiny_table_shape, 2));
+    DeviceTensor qv = vk.allocate(TensorLayout::contiguous(tiny_output_shape, 3));
+    DeviceTensor kv = vk.allocate(TensorLayout::contiguous(tiny_output_shape, 3));
+    DeviceTensor vv = vk.allocate(TensorLayout::contiguous(tiny_output_shape, 3));
+    TensorBatch next = vk.begin_batch();
+    next.split_qkv_norm_rope_f32(in, bv, cv, sv, qv, kv, vv, 1, epsilon);
+    retained = next.submit();
+  }
+  CHECK(vk.pooled_used_bytes() > used_before_drop);
+  retained.wait();
+  retained = Submission{};
+  { TensorBatch collect_completed_slot = vk.begin_batch(); }
+  CHECK(vk.pooled_used_bytes() == used_before_drop);
+
 }
 
 int main() { return ::vidfab::test::run_all(); }

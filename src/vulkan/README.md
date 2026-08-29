@@ -229,3 +229,68 @@ GroupNorm-only estimate of 345.9 to 382.6 ms on CUDA (+36.7 ms, 10.6%) and
 sizes are scaled by the exact per-group element count from the adjacent real
 shape. This is a concrete graph-weighted kernel estimate, not an end-to-end
 encoder benchmark; convolution and every remaining neural stage are excluded.
+
+## RoPE shaders and canonical H3 tables
+
+`tensor_rope.comp` contains two distinct in-place BF16 operators: H3 rotates
+channels 0..95 as half-split pairs and preserves channels 96..127 byte-for-byte,
+while GPT-NeoX rotates the complete even-width head (128 for Qwen text and 72
+for Qwen vision). `tensor_vae_rope.comp` is the separate fp32 video-VAE
+operation: split interleaved QKV, add bias, reproduce the 32-lane head-width-64
+RMS reduction, rotate only the leading 48 channels, and write head-major Q/K/V.
+Its seven bindings remain owned by the bounded job until timeline completion.
+
+H3 tables have one canonical implementation, `build_h3_rope_tables`, on the
+host. It performs double `pow`, rounds inverse frequency to fp32, converts each
+position to fp32 before fp32 multiplication, then serializes host `cos`/`sin`
+bits in row-major interleaved T/H/W order. CUDA and Vulkan upload those bytes
+unchanged; no shader has a second trig builder. The small-fixture FNV-1a hash
+is pinned to `dfd06ee912173e0f`.
+
+Both BF16 backends canonicalize subnormal BF16 operands, fp32 table operands,
+rounded products, internal high-half FMA products, and rounded BF16 results to
+signed zero. Exact-zero operands retain the FMA path for signed-zero addition.
+NaNs canonicalize on BF16 output. Tests enumerate all 254 signed nonzero BF16
+subnormal patterns, minimum-normal neighbors, cancellation, result underflow,
+and an underflowed internal product with a normal FMA base.
+
+The production modules use Khronos glslang 16.5.0. BF16 RoPE uses the normal
+and denorm float-control variants; the barrier/int64 VAE module uses the
+validated preserve-only norm policy:
+
+```text
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_rope.comp -o tensor_rope.raw.spv
+python tools/add_spirv_float_controls.py tensor_rope.raw.spv src/vulkan/tensor_rope.comp.spv src/vulkan/tensor_rope_denorm.comp.spv
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_vae_rope.comp -o tensor_vae_rope.raw.spv
+python tools/add_spirv_float_controls.py --preserve-only tensor_vae_rope.raw.spv src/vulkan/tensor_vae_rope.comp.spv
+```
+
+```text
+tensor_rope.comp                    B98E96DEBC46548AC25065F4BA75037EBDA95B92F43303EDC625E50E4FDC6347
+tensor_rope.comp.spv                FB36A5238C64DFFD756D65471E0BB492B4FE59910BB676F1D8A4109715391A90
+tensor_rope_denorm.comp.spv         E15674264A7CF898C286CC4E9110F8D7A5918732682120010EE02272D73E1734
+tensor_vae_rope.comp                57F4761647D8F8F1775CD8EDCE0156FF5A89B6E19ADF99B51330D78056B9C8FD
+tensor_vae_rope.comp.spv            E51AE5F500A65B87B5FD1AF440E0B60DB375A75DC7021620FAE40379812A8196
+```
+
+An instrumented real-checkpoint audit used seed 424242, 256x256, 22 aligned
+frames, one denoiser evaluation, and 526 packed rows. Checkpoints were
+`qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` (SHA-256
+`33E69E3EDAB846D52949BAFDB00378BD3F5A93F78124FC83D5EF109DC4A1FCBB`)
+and `MiniMax_H3_FL2VA_pruned_nvfp4.safetensors` (SHA-256
+`6AB7F0C48141E7919B32F925CA3DEF22E06A6AEBEB9E0B6F5A0BE0FE8409976F`).
+Actual conditioner and DiT RoPE input/table/product/result subnormal counts
+were all zero. Minimum nonzero magnitudes were `0x32300000` (1.02445483e-8),
+`0x3488a34f` (2.54507967e-7), `0x2b60b915` (7.98376393e-13), and
+`0x32370000` (1.06520019e-8), respectively. Audit hooks were removed.
+
+Steady-state RTX 5090/610.88 Release measurements used five warmups and 20
+iterations, excluding upload/readback. H3 rows37710/heads56/dim128 uses a
+27.620 MiB table pair built once in 15.746 ms and uploaded once in 7.143 ms
+to CUDA or 3.279 ms to Vulkan. Local size 64 measured 1.037 ms per Vulkan
+apply versus 1.249 ms at 128, so 64 is retained; CUDA measured 0.563 ms.
+Qwen rows190/dim128 Q56+K8 combined measured 0.0149 ms CUDA and 0.0475 ms
+Vulkan. Fused VAE seq1797/heads32 measured 0.0412 ms CUDA and 0.1282 ms
+Vulkan. Fifty DiT blocks perform Q and K RoPE: 103.7 ms Vulkan versus 56.3 ms
+CUDA per denoiser evaluation, a 47.4 ms delta or about 1.37 seconds over 29
+evaluations. These are operator measurements, not an unwired-backend claim.

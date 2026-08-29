@@ -38,11 +38,11 @@ Missing work by pipeline stage:
 
 | Stage | CUDA implementation that has no Vulkan peer | Principal missing operations |
 |---|---|---|
-| Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | dense and NF4/NVFP4 GEMM, fp8, remaining activations, RoPE, and residual/broadcast elementwise operations; tensor lifetime, fp16/bf16 conversion/layout, add/bias, fp32 VAE norms, BF16 shared RMS/Layer norms, RMSNorm+AdaLN, and keyframe-VAE GroupNorm+SiLU now have Vulkan primitives |
+| Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | dense and NF4/NVFP4 GEMM, fp8, remaining activations, and residual/broadcast elementwise operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, and used RoPE variants now have Vulkan primitives |
 | Video VAE decode | `vae_kernels.cu` (503), `vit_decoder.cu` (684), `decode_pipeline.cpp` (420) | Conv3D/Conv2D, causal padding, upsample, residual blocks, spatial/temporal attention, tile scheduling and merge |
 | Audio VAE decode | `audio_vae_kernels.cu` (452), `audio_decoder.cpp` (504) | weight-normalized Conv1D/transposed Conv1D, residual units, Snake activation, channel/layout transforms |
-| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | multimodal projections, 3-D RoPE, causal/banded attention, fused residual paths, timestep conditioning, scheduler loop integration and caches; primitive AdaLN and Q/K RMS normalization are implemented but not wired into this stage |
-| Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | token embedding, decoder attention/MLP, mRoPE, vision patch/merge graph, deep-stack scatter, reference-image VAE encode |
+| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | multimodal projections, causal/banded attention, fused residual paths, timestep conditioning, scheduler loop integration and caches; AdaLN, Q/K RMSNorm, canonical H3 tables and H3 RoPE primitives exist but are not wired |
+| Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | token embedding, decoder attention/MLP, vision patch/merge graph, deep-stack scatter, reference-image VAE encode; NeoX/mRoPE application exists but is not wired |
 
 Checkpoint handling also remains CUDA-entangled. A Vulkan backend must preserve
 the existing safetensors tensor names and metadata while supporting the shipped
@@ -111,6 +111,13 @@ maps values at or below -87 to signed zero. The production 32-group,
 256-thread reduction tree is preserved exactly. This primitive is not yet
 wired into a Vulkan keyframe encoder graph.
 
+It also implements all three used rotary semantics: BF16 H3 partial-96 with a
+raw 32-channel tail, BF16 full-width GPT-NeoX for Qwen text/vision, and the
+video-VAE fused fp32 split-QKV, head64 RMSNorm and partial-48 rotation with
+suffix bypass. The host canonical H3 builder supplies identical serialized
+fp32 table bits to CUDA and Vulkan. These are device primitives; conditioner,
+DiT and VAE orchestration still calls CUDA.
+
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
 projection narrowing, video-VAE channel/token layout, attention head packing,
@@ -121,7 +128,7 @@ than arbitrary device data. The Vulkan shader also bounds-checks each index to
 prevent an invalid device read or write.
 
 This is a tested operator substrate, not a wired Vulkan model stage. GEMM and
-quantized weights, remaining reductions, RoPE, attention,
+quantized weights, remaining activations, attention,
 convolutions, primitive call-site wiring, and all four model-stage
 orchestrators remain on the missing list above. Therefore
 `--inference-backend vulkan` continues to fail before weights or output files.
