@@ -5055,11 +5055,10 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         temp / ("vidfab-g7d-cuda-" + unique + ".raw");
     const std::filesystem::path vulkan_out =
         temp / ("vidfab-g7d-vulkan-" + unique + ".raw");
-    if (!normal_prompt)
-      write_safetensors(prompt_path.string(),
-                        {{"prompt_embedding",
-                          {static_cast<int64_t>(header.text_rows),
-                           static_cast<int64_t>(header.text_dim)}, prompt}});
+    write_safetensors(prompt_path.string(),
+                      {{"prompt_embedding",
+                        {static_cast<int64_t>(header.text_rows),
+                         static_cast<int64_t>(header.text_dim)}, prompt}});
     write_safetensors(init_path.string(),
                       {{"video_rows",
                         {static_cast<int64_t>(header.video_rows),
@@ -5096,20 +5095,32 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       auto stop_after_conditioning = +[](RunStage stage, int, int, void*) {
         return stage != RunStage::kTransformerLoad;
       };
+      GenerateRequest cache_request = request;
+      cache_request.prompt += " cache-authority-" + unique;
+      const GeneratePlan cache_plan = resolve_plan(cache_request);
       auto conditioning_only = [&](DeviceBackend backend,
                                    AttentionMode arithmetic,
-                                   bool release) {
+                                   bool release,
+                                   bool captured = false) {
         RunOptions options;
         options.inference_backend = backend;
         options.attention_mode = arithmetic;
         options.reuse_models = true;
         options.release_reused_models = release;
+        if (captured) options.prompt_embedding_path = prompt_path.string();
         options.verbose = false;
         options.on_progress = stop_after_conditioning;
-        const RunResult result = run_generate(request, vertical_plan, options);
+        const RunResult result = run_generate(cache_request, cache_plan, options);
         CHECK(result.cancelled && !result.ok);
         return result.conditioner_executed;
       };
+      CHECK(!conditioning_only(DeviceBackend::kVulkan,
+                               AttentionMode::kExact, false, true));
+      CHECK(conditioning_only(DeviceBackend::kVulkan,
+                              AttentionMode::kExact, false));
+      CHECK(!conditioning_only(DeviceBackend::kVulkan,
+                               AttentionMode::kExact, true));
+
       CHECK(conditioning_only(DeviceBackend::kCuda,
                               AttentionMode::kFlash2, false));
       CHECK(conditioning_only(DeviceBackend::kVulkan,
