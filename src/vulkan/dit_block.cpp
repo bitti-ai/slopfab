@@ -182,6 +182,7 @@ Projection load_projection(TensorContext& context, const SafeTensors& st,
 
 struct ExactH3BlockScratch::Impl {
   TensorContext* context = nullptr; H3BlockConfig config;
+  uint32_t modulation_rows = 0;
   DeviceTensor modulation, normed, q, k, v, attention, branch, fused, activation;
   DeviceTensor hidden_a, hidden_b, inner_a, inner_b, ffn_a, ffn_b;
   StreamedNVFP4WeightCache cache;
@@ -190,7 +191,11 @@ struct ExactH3BlockScratch::Impl {
   explicit Impl(TensorContext& owner, const H3BlockConfig& c)
       : context(&owner), config(c) {
     const uint32_t inner = c.heads * c.head_dim;
-    modulation = owner.allocate(three(6, c.timesteps * c.modalities, c.hidden));
+    modulation_rows = c.timesteps * c.modalities;
+    const uint64_t logical_table = checked_product(modulation_rows, c.hidden, "modulation");
+    const uint64_t align_elements = std::max<uint64_t>(1, owner.storage_binding_alignment() / 4);
+    const uint64_t table_stride = ((logical_table + align_elements - 1) / align_elements) * align_elements;
+    modulation = owner.allocate(vector(checked_product(6, table_stride, "modulation arena")));
     normed = owner.allocate(matrix(c.sequence, c.hidden), ScalarType::kBFloat16);
     q = owner.allocate(three(c.sequence, c.heads, c.head_dim), ScalarType::kBFloat16);
     k = owner.allocate(three(c.sequence, c.heads, c.head_dim), ScalarType::kBFloat16);
@@ -364,7 +369,7 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   batch.dit_expand_adaln(w.adaln_w, w.adaln_b, code, s.modulation,
                          c.modalities, 6, c.hidden);
   batch.rms_norm_modulate_bf16_table(tokens, w.norm1, s.modulation,
-                                     1, 0, selectors, s.normed, c.epsilon);
+                                     s.modulation_rows, 1, 0, selectors, s.normed, c.epsilon);
   projection(batch, w.q, s.q_plan, s.cache, s.normed, s.q,
              s.hidden_a, s.hidden_b, c.sequence);
   projection(batch, w.k, s.k_plan, s.cache, s.normed, s.k,
@@ -378,15 +383,17 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   s.attention_plan.record(batch, s.q, s.k, s.v, s.attention, ranges);
   projection(batch, w.out, s.out_plan, s.cache, s.attention, s.branch,
              s.inner_a, s.inner_b, c.sequence);
-  batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation, 2, selectors);
+  batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation,
+                                 s.modulation_rows, 2, selectors);
   batch.rms_norm_modulate_bf16_table(tokens, w.norm2, s.modulation,
-                                     4, 3, selectors, s.normed, c.epsilon);
+                                     s.modulation_rows, 4, 3, selectors, s.normed, c.epsilon);
   projection(batch, w.fc1, s.fc1_plan, s.cache, s.normed, s.fused,
              s.hidden_a, s.hidden_b, c.sequence);
   batch.dit_swiglu_bf16(s.fused, s.activation);
   projection(batch, w.fc2, s.fc2_plan, s.cache, s.activation, s.branch,
              s.ffn_a, s.ffn_b, c.sequence);
-  batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation, 5, selectors);
+  batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation,
+                                 s.modulation_rows, 5, selectors);
 }
 
 void ExactH3BlockStage::unload() noexcept { if (impl_) impl_->weights.reset(); }

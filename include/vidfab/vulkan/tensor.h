@@ -193,6 +193,7 @@ class TensorBatch {
                               float epsilon);
   void rms_norm_modulate_bf16_table(DeviceTensor& input, DeviceTensor& weight,
                                     DeviceTensor& tables,
+                                    uint32_t mod_rows,
                                     uint32_t scale_table,
                                     uint32_t shift_table,
                                     DeviceTensor& selectors,
@@ -208,11 +209,13 @@ class TensorBatch {
   void dit_add_gated_bf16(DeviceTensor& residual, DeviceTensor& branch,
                           DeviceTensor& gate, DeviceTensor& selectors);
   void dit_add_gated_bf16_table(DeviceTensor& residual, DeviceTensor& branch,
-                                DeviceTensor& tables, uint32_t gate_table,
+                                DeviceTensor& tables, uint32_t mod_rows,
+                                uint32_t gate_table,
                                 DeviceTensor& selectors);
   void dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output);
   // Rank-R checkpoint-native AdaLN expansion. Weight [M*P*C,R], bias
-  // [M*P*C], code [T,R], output [P,T*M,C], all contiguous fp32.
+  // [M*P*C], code [T,R]. Output may be canonical [P,T*M,C] or a flat fp32
+  // arena with P equal aligned table strides.
   void dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
                         DeviceTensor& code, DeviceTensor& output,
                         uint32_t num_modality, uint32_t num_param,
@@ -362,6 +365,7 @@ class TensorContext {
   // accounted separately from logical device tensors and retained for reuse.
   uint64_t staging_capacity_bytes() const noexcept;
   uint64_t descriptor_set_allocations() const noexcept;
+  uint64_t storage_binding_alignment() const noexcept;
 
  private:
   struct Impl;

@@ -160,8 +160,10 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     const uint rest = feature / p.dim;
     const uint param = rest % p.num_param;
     const uint modality = rest / p.num_param;
-    const uint destination =
-        ((param * p.num_t + ti) * p.num_modality + modality) * p.dim + channel;
+    const uint table_stride = p.unused0 != 0u
+        ? p.unused0 : p.num_t * p.num_modality * p.dim;
+    const uint destination = param * table_stride +
+        (ti * p.num_modality + modality) * p.dim + channel;
     output_data.Store(destination * 4, asuint(acc));
   }
 }
