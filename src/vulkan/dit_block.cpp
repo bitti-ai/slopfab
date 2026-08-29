@@ -193,7 +193,8 @@ struct ExactH3BlockScratch::Impl {
     const uint32_t inner = c.heads * c.head_dim;
     modulation_rows = c.timesteps * c.modalities;
     const uint64_t logical_table = checked_product(modulation_rows, c.hidden, "modulation");
-    const uint64_t align_elements = std::max<uint64_t>(1, owner.storage_binding_alignment() / 4);
+    const uint64_t align_elements = std::max<uint64_t>(
+        1, (owner.storage_binding_alignment() + 3) / 4);
     const uint64_t table_stride = ((logical_table + align_elements - 1) / align_elements) * align_elements;
     modulation = owner.allocate(vector(checked_product(6, table_stride, "modulation arena")));
     normed = owner.allocate(matrix(c.sequence, c.hidden), ScalarType::kBFloat16);

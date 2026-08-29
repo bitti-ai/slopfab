@@ -18,7 +18,7 @@ struct H3BlockConfig {
   uint32_t timesteps = 1;
   uint32_t modalities = 3;
   uint32_t adaln_rank = 8;
-  float epsilon = 1.0e-6f;
+  float epsilon = 1.0e-5f;
 };
 
 class ExactH3BlockScratch {

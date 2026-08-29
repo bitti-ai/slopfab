@@ -43,7 +43,9 @@
 #include "vidfab/nf4.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/sol_capture.h"
+#include "vidfab/tensor_convert.h"
 #include "vidfab/vulkan/linear.h"
+#include "vidfab/vulkan/dit_block.h"
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/vae_vit_block.h"
@@ -2781,6 +2783,305 @@ VIDFAB_TEST(cuda_vulkan_dit_exact_pointwise) {
   CHECK(std::memcmp(cuda_x.data(),vk_x.data(),cuda_x.size()*2)==0);
   CHECK(std::memcmp(cuda_n.data(),vk_n.data(),cuda_n.size()*2)==0);
   CHECK(std::memcmp(cuda_s.data(),vk_s.data(),cuda_s.size()*2)==0);
+}
+
+VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path path =
+      "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
+  if (!std::filesystem::exists(path) || !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 ||
+      !info.shader_float16 || !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(options);
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 64;
+  TensorContext vk(device, context_options);
+  if (!vk.exact_h3_attention() || !vk.exact_vae_pointwise() ||
+      !vk.exact_fp32_vae_normalization()) return;
+
+  constexpr uint32_t sequence = 64;
+  H3BlockConfig config;
+  config.sequence = sequence;
+  SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  const auto load_begin = std::chrono::steady_clock::now();
+  ExactH3BlockStage stage = ExactH3BlockStage::create(vk, config);
+  stage.load(checkpoint, 0);
+  const double load_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - load_begin).count();
+  ExactH3BlockScratch scratch = ExactH3BlockScratch::create(vk, config);
+
+  std::vector<uint16_t> token_bits(size_t(sequence) * config.hidden);
+  for (size_t i = 0; i < token_bits.size(); ++i)
+    token_bits[i] = f32_to_bf16(float(int(i % 61) - 30) / 64.0f);
+  std::vector<int32_t> selectors(sequence);
+  for (uint32_t i = 0; i < sequence; ++i)
+    selectors[i] = static_cast<int32_t>(i % config.modalities);
+  std::vector<float> code(size_t(config.timesteps) * config.adaln_rank);
+  for (size_t i = 0; i < code.size(); ++i)
+    code[i] = float(int(i % 7) - 3) / 16.0f;
+  std::vector<float> cosine(size_t(sequence) * 96, 1.0f);
+  std::vector<float> sine(size_t(sequence) * 96, 0.0f);
+  const uint64_t token_shape[] = {sequence, config.hidden};
+  const uint64_t selector_shape[] = {sequence};
+  const uint64_t code_shape[] = {config.timesteps, config.adaln_rank};
+  const uint64_t rope_shape[] = {sequence, 96};
+  DeviceTensor tokens = vk.allocate(
+      TensorLayout::contiguous(token_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor selector_tensor = vk.allocate(
+      TensorLayout::contiguous(selector_shape, 1), ScalarType::kInt32);
+  DeviceTensor code_tensor = vk.allocate(
+      TensorLayout::contiguous(code_shape, 2));
+  DeviceTensor cosine_tensor = vk.allocate(
+      TensorLayout::contiguous(rope_shape, 2));
+  DeviceTensor sine_tensor = vk.allocate(
+      TensorLayout::contiguous(rope_shape, 2));
+  vk.upload_bytes(tokens, token_bits.data(), token_bits.size() * 2);
+  vk.upload_bytes(selector_tensor, selectors.data(), selectors.size() * 4);
+  vk.upload(code_tensor, code.data(), code.size());
+  vk.upload(cosine_tensor, cosine.data(), cosine.size());
+  vk.upload(sine_tensor, sine.data(), sine.size());
+
+  auto run = [&] {
+    const auto begin = std::chrono::steady_clock::now();
+    TensorBatch batch = vk.begin_batch();
+    stage.record(batch, tokens, selector_tensor, code_tensor, cosine_tensor,
+                 sine_tensor, scratch);
+    batch.submit().wait();
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - begin).count();
+  };
+  const double first_ms = run();
+  std::vector<uint16_t> first(token_bits.size()), repeated(token_bits.size());
+  vk.download_bytes(tokens, first.data(), first.size() * 2);
+  vk.upload_bytes(tokens, token_bits.data(), token_bits.size() * 2);
+  const uint64_t descriptors = vk.descriptor_set_allocations();
+  const uint64_t reserved = vk.reserved_bytes();
+  const double repeat_ms = run();
+  vk.download_bytes(tokens, repeated.data(), repeated.size() * 2);
+  CHECK(first == repeated);
+  CHECK(vk.descriptor_set_allocations() == descriptors);
+  CHECK(vk.reserved_bytes() == reserved);
+
+  if (!cuda::deterministic_h3_attention_available()) return;
+  const uint32_t hidden = config.hidden;
+  const uint32_t inner = config.heads * config.head_dim;
+  const uint32_t ffn = config.ffn;
+  const uint32_t modulation_rows = config.timesteps * config.modalities;
+  auto bf16_host = [&](const std::string& name, uint32_t count) {
+    std::vector<float> wide = to_f32(checkpoint.at(name));
+    CHECK(wide.size() == count);
+    std::vector<uint16_t> bits(count);
+    for (uint32_t i = 0; i < count; ++i) bits[i] = f32_to_bf16(wide[i]);
+    return bits;
+  };
+  const std::vector<uint16_t> norm1 = bf16_host("blocks.0.norm1.weight", hidden);
+  const std::vector<uint16_t> norm2 = bf16_host("blocks.0.norm2.weight", hidden);
+  const std::vector<uint16_t> q_norm = bf16_host("blocks.0.attn.q_norm.weight", config.head_dim);
+  const std::vector<uint16_t> k_norm = bf16_host("blocks.0.attn.k_norm.weight", config.head_dim);
+  std::vector<float> adaln_w = to_f32(checkpoint.at("blocks.0.adaln_proj.linear.weight"));
+  std::vector<float> adaln_b = to_f32(checkpoint.at("blocks.0.adaln_proj.linear.bias"));
+  const size_t largest_weight = std::max({
+      size_t(inner) * hidden, size_t(hidden) * inner,
+      size_t(2) * ffn * hidden, size_t(hidden) * ffn});
+  const uint32_t largest_input = std::max({hidden, inner, ffn});
+  cuda::DeviceBuffer<uint8_t> cuda_stored(largest_weight / 2),
+      cuda_scale(largest_weight / 16);
+  cuda::DeviceBuffer<uint16_t> cuda_dense(largest_weight),
+      cuda_pre(largest_input), cuda_transform(size_t(sequence) * largest_input);
+  cuda::DeviceBuffer<uint16_t> cuda_tokens(token_bits.size()),
+      cuda_normed(size_t(sequence) * hidden), cuda_q(size_t(sequence) * inner),
+      cuda_k(size_t(sequence) * inner), cuda_v(size_t(sequence) * inner),
+      cuda_attention(size_t(sequence) * inner), cuda_branch(size_t(sequence) * hidden),
+      cuda_fused(size_t(sequence) * 2 * ffn),
+      cuda_activation(size_t(sequence) * ffn), cuda_norm1(hidden),
+      cuda_norm2(hidden), cuda_q_norm(config.head_dim), cuda_k_norm(config.head_dim);
+  cuda::DeviceBuffer<float> cuda_adaln_w(adaln_w.size()),
+      cuda_adaln_b(adaln_b.size()), cuda_code(code.size()),
+      cuda_modulation(size_t(6) * modulation_rows * hidden),
+      cuda_cosine(cosine.size()), cuda_sine(sine.size());
+  cuda::DeviceBuffer<int32_t> cuda_selectors(selectors.size());
+  cuda_tokens.copy_from_host(token_bits.data(), token_bits.size());
+  cuda_norm1.copy_from_host(norm1.data(), norm1.size());
+  cuda_norm2.copy_from_host(norm2.data(), norm2.size());
+  cuda_q_norm.copy_from_host(q_norm.data(), q_norm.size());
+  cuda_k_norm.copy_from_host(k_norm.data(), k_norm.size());
+  cuda_adaln_w.copy_from_host(adaln_w.data(), adaln_w.size());
+  cuda_adaln_b.copy_from_host(adaln_b.data(), adaln_b.size());
+  cuda_code.copy_from_host(code.data(), code.size());
+  cuda_cosine.copy_from_host(cosine.data(), cosine.size());
+  cuda_sine.copy_from_host(sine.data(), sine.size());
+  cuda_selectors.copy_from_host(selectors.data(), selectors.size());
+
+  auto cuda_projection = [&](const std::string& name, uint32_t out,
+                             uint32_t in, uint32_t source_out,
+                             uint32_t row_offset, const uint16_t* input,
+                             uint16_t* output) {
+    const TensorView& weight = checkpoint.at(name + ".weight");
+    const TensorView& scale = checkpoint.at(name + ".weight_scale");
+    CHECK(weight.dtype == DType::kU8 && scale.dtype == DType::kF8E4M3);
+    CHECK(weight.shape == std::vector<int64_t>({source_out, in / 2}));
+    CHECK(scale.shape == std::vector<int64_t>({source_out, in / 16}));
+    const size_t elements = size_t(out) * in;
+    const size_t element_offset = size_t(row_offset) * in;
+    cuda_stored.copy_from_host(
+        static_cast<const uint8_t*>(weight.data) + element_offset / 2,
+        elements / 2);
+    cuda_scale.copy_from_host(
+        static_cast<const uint8_t*>(scale.data) + element_offset / 16,
+        elements / 16);
+    const std::vector<float> global_values =
+        to_f32(checkpoint.at(name + ".weight_scale_2"));
+    CHECK(global_values.size() == 1);
+    const uint16_t* source = input;
+    if (const TensorView* pre = checkpoint.find(name + ".pre_quant_scale")) {
+      std::vector<float> wide = to_f32(*pre);
+      CHECK(wide.size() == in);
+      std::vector<uint16_t> bits(in);
+      for (uint32_t i = 0; i < in; ++i) bits[i] = f32_to_bf16(wide[i]);
+      cuda_pre.copy_from_host(bits.data(), bits.size());
+      cuda::launch_pre_quant_scale(
+          reinterpret_cast<const __nv_bfloat16*>(input),
+          reinterpret_cast<const __nv_bfloat16*>(cuda_pre.get()),
+          reinterpret_cast<__nv_bfloat16*>(cuda_transform.get()),
+          sequence, in, nullptr);
+      source = cuda_transform.get();
+    }
+    cuda::launch_dequant_nvfp4(
+        cuda_stored.get(), cuda_scale.get(), global_values.front(),
+        reinterpret_cast<__nv_bfloat16*>(cuda_dense.get()), out, in, nullptr);
+    cuda::launch_deterministic_bf16_gemm_nt(
+        reinterpret_cast<const __nv_bfloat16*>(source),
+        reinterpret_cast<const __nv_bfloat16*>(cuda_dense.get()), nullptr,
+        reinterpret_cast<__nv_bfloat16*>(output), sequence, out, in,
+        DenseGemmBias::kNone);
+  };
+  const auto cuda_begin = std::chrono::steady_clock::now();
+  cuda::launch_adaln_expand(
+      cuda_adaln_w.get(), cuda_adaln_b.get(), cuda_code.get(),
+      cuda_modulation.get(), config.timesteps, config.modalities, 6, hidden,
+      config.adaln_rank, nullptr);
+  const size_t table = size_t(modulation_rows) * hidden;
+  cuda::launch_rmsnorm_modulate(
+      reinterpret_cast<const __nv_bfloat16*>(cuda_tokens.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cuda_norm1.get()),
+      cuda_modulation.get() + table, cuda_modulation.get(),
+      cuda_selectors.get(),
+      reinterpret_cast<__nv_bfloat16*>(cuda_normed.get()), sequence, hidden,
+      config.epsilon, nullptr);
+  const std::string qkv = "blocks.0.attn.qkv_proj";
+  cuda_projection(qkv, inner, hidden, 3 * inner, 0, cuda_normed.get(), cuda_q.get());
+  cuda_projection(qkv, inner, hidden, 3 * inner, inner, cuda_normed.get(), cuda_k.get());
+  cuda_projection(qkv, inner, hidden, 3 * inner, 2 * inner, cuda_normed.get(), cuda_v.get());
+  cuda::launch_head_rmsnorm(
+      reinterpret_cast<__nv_bfloat16*>(cuda_q.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cuda_q_norm.get()), sequence,
+      config.heads, config.head_dim, config.epsilon, nullptr);
+  cuda::launch_head_rmsnorm(
+      reinterpret_cast<__nv_bfloat16*>(cuda_k.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cuda_k_norm.get()), sequence,
+      config.heads, config.head_dim, config.epsilon, nullptr);
+  cuda::launch_rope_h3(
+      reinterpret_cast<__nv_bfloat16*>(cuda_q.get()), cuda_cosine.get(),
+      cuda_sine.get(), sequence, config.heads, config.head_dim, nullptr);
+  cuda::launch_rope_h3(
+      reinterpret_cast<__nv_bfloat16*>(cuda_k.get()), cuda_cosine.get(),
+      cuda_sine.get(), sequence, config.heads, config.head_dim, nullptr);
+  cuda::launch_deterministic_h3_attention(
+      nullptr, reinterpret_cast<const __nv_bfloat16*>(cuda_q.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cuda_k.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cuda_v.get()),
+      reinterpret_cast<__nv_bfloat16*>(cuda_attention.get()), nullptr,
+      sequence, config.heads, config.head_dim,
+      exact_attention_scale(config.head_dim));
+  cuda_projection("blocks.0.attn.out_proj", hidden, inner, hidden, 0,
+                  cuda_attention.get(), cuda_branch.get());
+  cuda::launch_add_gated(
+      reinterpret_cast<__nv_bfloat16*>(cuda_tokens.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cuda_branch.get()),
+      cuda_modulation.get() + 2 * table, cuda_selectors.get(), sequence,
+      hidden, nullptr);
+  cuda::launch_rmsnorm_modulate(
+      reinterpret_cast<const __nv_bfloat16*>(cuda_tokens.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cuda_norm2.get()),
+      cuda_modulation.get() + 4 * table,
+      cuda_modulation.get() + 3 * table, cuda_selectors.get(),
+      reinterpret_cast<__nv_bfloat16*>(cuda_normed.get()), sequence, hidden,
+      config.epsilon, nullptr);
+  cuda_projection("blocks.0.mlp.fc1", 2 * ffn, hidden, 2 * ffn, 0,
+                  cuda_normed.get(), cuda_fused.get());
+  cuda::launch_swiglu_exact(
+      reinterpret_cast<const __nv_bfloat16*>(cuda_fused.get()),
+      reinterpret_cast<__nv_bfloat16*>(cuda_activation.get()), sequence, ffn,
+      nullptr);
+  cuda_projection("blocks.0.mlp.fc2", hidden, ffn, hidden, 0,
+                  cuda_activation.get(), cuda_branch.get());
+  cuda::launch_add_gated(
+      reinterpret_cast<__nv_bfloat16*>(cuda_tokens.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cuda_branch.get()),
+      cuda_modulation.get() + 5 * table, cuda_selectors.get(), sequence,
+      hidden, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const double cuda_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_begin).count();
+  std::vector<uint16_t> cuda_output(token_bits.size());
+  cuda_tokens.copy_to_host(cuda_output.data(), cuda_output.size());
+  size_t mismatch = first.size();
+  for (size_t i = 0; i < first.size(); ++i) {
+    if (first[i] != cuda_output[i]) { mismatch = i; break; }
+  }
+  CHECK_MSG(mismatch == first.size(),
+            "real H3 block0 CUDA/Vulkan mismatch at %zu: %04x != %04x",
+            mismatch, mismatch == first.size() ? 0 : cuda_output[mismatch],
+            mismatch == first.size() ? 0 : first[mismatch]);
+  uint64_t digest = 1469598103934665603ull;
+  for (uint16_t bits : first) {
+    digest ^= bits & 0xffu; digest *= 1099511628211ull;
+    digest ^= bits >> 8; digest *= 1099511628211ull;
+  }
+  CHECK(digest == 0x520f8ca5ad3f3773ull);
+  const uint64_t persistent = stage.persistent_bytes();
+  bool failed_reload = false;
+  try { stage.load(checkpoint, 50); }
+  catch (const std::exception&) { failed_reload = true; }
+  CHECK(failed_reload && stage.loaded());
+  CHECK(stage.persistent_bytes() == persistent);
+  vk.upload_bytes(tokens, token_bits.data(), token_bits.size() * 2);
+  (void)run();
+  std::vector<uint16_t> after_failure(first.size());
+  vk.download_bytes(tokens, after_failure.data(), after_failure.size() * 2);
+  CHECK(after_failure == first);
+  stage.unload();
+  CHECK(!stage.loaded() && stage.persistent_bytes() == 0);
+  stage.load(checkpoint, 0);
+  CHECK(stage.loaded() && stage.persistent_bytes() == persistent);
+  vk.upload_bytes(tokens, token_bits.data(), token_bits.size() * 2);
+  (void)run();
+  std::vector<uint16_t> after_reload(first.size());
+  vk.download_bytes(tokens, after_reload.data(), after_reload.size() * 2);
+  CHECK(after_reload == first);
+  std::printf(
+      "  real H3 block0 S%u: load %.3f ms, CUDA %.3f ms, Vulkan first/repeat %.3f/%.3f ms, FNV64 %016llx, persistent/scratch/peak %.2f/%.2f/%.2f MiB, pool used/reserved %.2f/%.2f MiB, descriptors %llu\n",
+      sequence, load_ms, cuda_ms, first_ms, repeat_ms,
+      static_cast<unsigned long long>(digest),
+      double(stage.persistent_bytes()) / 1048576.0,
+      double(scratch.reserved_bytes()) / 1048576.0,
+      double(stage.peak_device_bytes(scratch)) / 1048576.0,
+      double(vk.pooled_used_bytes()) / 1048576.0,
+      double(vk.reserved_bytes()) / 1048576.0,
+      static_cast<unsigned long long>(vk.descriptor_set_allocations()));
 }
 
 VIDFAB_TEST(cuda_vulkan_vae_pointwise_real_timing) {
