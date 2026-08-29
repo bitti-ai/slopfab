@@ -148,6 +148,16 @@ void materialize_or_scale() {
     output_data.words[word] = floatBitsToUint(value);
     return;
   }
+  // Native dense storage is already in the requested arithmetic format. Copy
+  // its bits rather than round-tripping through fp32 so NaN payloads, signed
+  // zero and every subnormal payload remain byte-exact.
+  if ((p.op == 1u && p.out_features != 0u) ||
+      (p.op == 2u && p.out_features == 0u)) {
+    uint first = word * 2u;
+    if (first >= p.count) return;
+    output_data.words[word] = in0.words[word];
+    return;
+  }
   uint first = word * 2u;
   if (first >= p.count) return;
   float lo, hi;

@@ -1889,7 +1889,16 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
   f8_upload.data_bytes = f8.size();
   f8_upload.weight_scale = &f8_scale;
   f8_upload.weight_scale_count = 1;
+  f8_upload.has_fp8_input_scale = true;
+  f8_upload.fp8_input_scale = 0.125f;
+  f8_upload.full_precision_matrix_mult = true;
   exact_case(f8_upload, f8_expected);
+  {
+    LinearWeight metadata = LinearWeight::upload(vk, f8_upload);
+    CHECK(metadata.has_fp8_input_scale());
+    CHECK(metadata.fp8_input_scale() == f8_upload.fp8_input_scale);
+    CHECK(metadata.full_precision_matrix_mult());
+  }
 
   constexpr uint32_t i8_rows = 3, i8_columns = 131;
   std::vector<int8_t> i8(static_cast<size_t>(i8_rows) * i8_columns);
@@ -1919,6 +1928,190 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
   i8_upload.weight_scale = i8_scale;
   i8_upload.weight_scale_count = i8_rows;
   exact_case(i8_upload, i8_expected);
+
+  // Native dense formats are immutable checkpoint payloads. Every possible
+  // 16-bit pattern, including all NaN payloads and subnormals, must survive a
+  // same-format materialization without a floating-point round trip.
+  auto raw_dense_case = [&](LinearWeightFormat format, ScalarType type) {
+    std::vector<uint16_t> patterns(65536);
+    for (uint32_t i = 0; i < patterns.size(); ++i)
+      patterns[i] = static_cast<uint16_t>(i);
+    LinearWeightUpload upload;
+    upload.format = format;
+    upload.out_features = 256;
+    upload.in_features = 256;
+    upload.data = patterns.data();
+    upload.data_bytes = patterns.size() * sizeof(uint16_t);
+    LinearWeight weight = LinearWeight::upload(vk, upload);
+    const uint64_t shape[] = {256, 256};
+    DeviceTensor dense = vk.allocate(TensorLayout::contiguous(shape, 2), type);
+    TensorBatch batch = vk.begin_batch();
+    if (type == ScalarType::kFloat16) weight.materialize_f16(batch, dense);
+    else weight.materialize_bf16(batch, dense);
+    batch.submit().wait();
+    std::vector<uint16_t> actual(patterns.size());
+    vk.download_bytes(dense, actual.data(), actual.size() * sizeof(uint16_t));
+    CHECK(std::memcmp(patterns.data(), actual.data(),
+                      patterns.size() * sizeof(uint16_t)) == 0);
+  };
+  raw_dense_case(LinearWeightFormat::kFloat16, ScalarType::kFloat16);
+  raw_dense_case(LinearWeightFormat::kBFloat16, ScalarType::kBFloat16);
+}
+
+VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+
+  auto materialize = [&](const LinearWeightUpload& upload, bool fp16) {
+    LinearWeight weight = LinearWeight::upload(vk, upload);
+    const uint64_t shape[] = {upload.out_features, upload.in_features};
+    DeviceTensor dense = vk.allocate(TensorLayout::contiguous(shape, 2),
+        fp16 ? ScalarType::kFloat16 : ScalarType::kBFloat16);
+    TensorBatch batch = vk.begin_batch();
+    if (fp16) weight.materialize_f16(batch, dense);
+    else weight.materialize_bf16(batch, dense);
+    batch.submit().wait();
+    std::vector<uint16_t> result(
+        static_cast<size_t>(upload.out_features) * upload.in_features);
+    vk.download_bytes(dense, result.data(), result.size() * sizeof(uint16_t));
+    return result;
+  };
+
+  constexpr uint32_t nv_out = 128, nv_in = 64;
+  constexpr size_t nv_count = static_cast<size_t>(nv_out) * nv_in;
+  std::vector<uint8_t> nv_packed((nv_count + 1) / 2);
+  for (size_t i = 0; i < nv_packed.size(); ++i) {
+    nv_packed[i] = static_cast<uint8_t>(((2 * i & 15u) << 4u) |
+                                        ((2 * i + 1u) & 15u));
+  }
+  std::vector<uint8_t> nv_scales(nv_count / 16);
+  for (size_t i = 0; i < nv_scales.size(); ++i) {
+    // Covers every E4M3 bit pattern twice in the checkpoint's already-swizzled
+    // physical scale array.
+    nv_scales[i] = static_cast<uint8_t>(i);
+  }
+  const float nv_global = 1.3580322e-3f;
+  cuda::DeviceBuffer<uint8_t> d_nv(nv_packed.size()), d_nv_scales(nv_scales.size());
+  cuda::DeviceBuffer<__nv_bfloat16> d_nv_output(nv_count);
+  d_nv.copy_from_host(nv_packed.data(), nv_packed.size());
+  d_nv_scales.copy_from_host(nv_scales.data(), nv_scales.size());
+  cuda::launch_dequant_nvfp4(d_nv.get(), d_nv_scales.get(), nv_global,
+                             d_nv_output.get(), nv_out, nv_in, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> nv_expected(nv_count);
+  VIDFAB_CUDA_CHECK(cudaMemcpy(nv_expected.data(), d_nv_output.get(),
+                              nv_count * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+  LinearWeightUpload nv_upload;
+  nv_upload.format = LinearWeightFormat::kNVFloat4;
+  nv_upload.out_features = nv_out;
+  nv_upload.in_features = nv_in;
+  nv_upload.data = nv_packed.data();
+  nv_upload.data_bytes = nv_packed.size();
+  nv_upload.block_scale = nv_scales.data();
+  nv_upload.block_scale_count = nv_scales.size();
+  nv_upload.global_scale = nv_global;
+  const auto nv_actual = materialize(nv_upload, false);
+  CHECK(std::memcmp(nv_expected.data(), nv_actual.data(),
+                    nv_count * sizeof(uint16_t)) == 0);
+
+  constexpr uint32_t nf_out = 129, nf_in = 129;
+  constexpr size_t nf_count = static_cast<size_t>(nf_out) * nf_in;
+  constexpr uint32_t block = 64, nested_block = 256;
+  const size_t nf_blocks = 1 + (nf_count - 1) / block;
+  const size_t nf_nested_blocks = 1 + (nf_blocks - 1) / nested_block;
+  std::vector<uint8_t> nf_packed((nf_count + 1) / 2), nf_absmax(nf_blocks);
+  for (size_t i = 0; i < nf_packed.size(); ++i) {
+    nf_packed[i] = static_cast<uint8_t>((((i * 5 + 3) & 15) << 4) |
+                                        ((i * 11 + 9) & 15));
+  }
+  for (size_t i = 0; i < nf_absmax.size(); ++i)
+    nf_absmax[i] = static_cast<uint8_t>((i * 73 + 19) & 255);
+  const std::array<float, 16> nf_map = {
+      -1.0f, -0.6961928f, -0.52507305f, -0.39491749f,
+      -0.28444138f, -0.18477343f, -0.09105004f, 0.0f,
+       0.07958030f, 0.16093020f, 0.24611230f, 0.33791524f,
+       0.44070983f, 0.56261700f, 0.72295684f, 1.0f};
+  std::array<float, 256> nf_nested_map{};
+  for (size_t i = 0; i < nf_nested_map.size(); ++i)
+    nf_nested_map[i] = (static_cast<float>(i) - 127.0f) / 128.0f;
+  std::vector<float> nf_nested_absmax(nf_nested_blocks);
+  for (size_t i = 0; i < nf_nested_absmax.size(); ++i)
+    nf_nested_absmax[i] = 0.75f + static_cast<float>(i) * 1.25f;
+  const float nf_offset = 0.21360844373703003f;
+  cuda::DeviceBuffer<uint8_t> d_nf(nf_packed.size()), d_nf_absmax(nf_absmax.size());
+  cuda::DeviceBuffer<float> d_nf_map(nf_map.size()),
+      d_nf_nested_map(nf_nested_map.size()),
+      d_nf_nested_absmax(nf_nested_absmax.size());
+  cuda::DeviceBuffer<uint16_t> d_nf_bf16(nf_count), d_nf_f16(nf_count);
+  d_nf.copy_from_host(nf_packed.data(), nf_packed.size());
+  d_nf_absmax.copy_from_host(nf_absmax.data(), nf_absmax.size());
+  d_nf_map.copy_from_host(nf_map.data(), nf_map.size());
+  d_nf_nested_map.copy_from_host(nf_nested_map.data(), nf_nested_map.size());
+  d_nf_nested_absmax.copy_from_host(nf_nested_absmax.data(), nf_nested_absmax.size());
+  cuda::launch_dequant_nf4(d_nf.get(), d_nf_absmax.get(), d_nf_map.get(),
+      d_nf_nested_map.get(), d_nf_nested_absmax.get(), block, nested_block,
+      nf_offset, reinterpret_cast<__nv_bfloat16*>(d_nf_bf16.get()), nf_out,
+      nf_in, nullptr);
+  cuda::launch_dequant_nf4_f16(d_nf.get(), d_nf_absmax.get(), d_nf_map.get(),
+      d_nf_nested_map.get(), d_nf_nested_absmax.get(), block, nested_block,
+      nf_offset, reinterpret_cast<__half*>(d_nf_f16.get()), nf_count, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> nf_bf16_expected(nf_count), nf_f16_expected(nf_count);
+  d_nf_bf16.copy_to_host(nf_bf16_expected.data(), nf_count);
+  d_nf_f16.copy_to_host(nf_f16_expected.data(), nf_count);
+  LinearWeightUpload nf_upload;
+  nf_upload.format = LinearWeightFormat::kNF4;
+  nf_upload.out_features = nf_out;
+  nf_upload.in_features = nf_in;
+  nf_upload.data = nf_packed.data();
+  nf_upload.data_bytes = nf_packed.size();
+  nf_upload.nf4_absmax = nf_absmax.data();
+  nf_upload.nf4_absmax_count = nf_absmax.size();
+  nf_upload.nf4_quant_map = nf_map.data();
+  nf_upload.nf4_quant_map_count = nf_map.size();
+  nf_upload.nf4_nested_quant_map = nf_nested_map.data();
+  nf_upload.nf4_nested_quant_map_count = nf_nested_map.size();
+  nf_upload.nf4_nested_absmax = nf_nested_absmax.data();
+  nf_upload.nf4_nested_absmax_count = nf_nested_absmax.size();
+  nf_upload.nf4_block_size = block;
+  nf_upload.nf4_nested_block_size = nested_block;
+  nf_upload.nf4_nested_offset = nf_offset;
+  const uint64_t before_invalid = vk.pooled_used_bytes();
+  {
+    LinearWeightUpload invalid = nf_upload;
+    invalid.nf4_quant_map_count = 15;
+    bool rejected = false;
+    try { (void)LinearWeight::upload(vk, invalid); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    CHECK(vk.pooled_used_bytes() == before_invalid);
+  }
+  {
+    LinearWeightUpload invalid = nf_upload;
+    invalid.nf4_nested_quant_map_count = 255;
+    bool rejected = false;
+    try { (void)LinearWeight::upload(vk, invalid); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    CHECK(vk.pooled_used_bytes() == before_invalid);
+  }
+  const auto nf_bf16_actual = materialize(nf_upload, false);
+  const auto nf_f16_actual = materialize(nf_upload, true);
+  CHECK(std::memcmp(nf_bf16_expected.data(), nf_bf16_actual.data(),
+                    nf_count * sizeof(uint16_t)) == 0);
+  CHECK(std::memcmp(nf_f16_expected.data(), nf_f16_actual.data(),
+                    nf_count * sizeof(uint16_t)) == 0);
 }
 
 int main() { return ::vidfab::test::run_all(); }

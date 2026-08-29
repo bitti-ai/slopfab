@@ -28,6 +28,13 @@ struct LinearWeightUpload {
   const float* weight_scale = nullptr;
   uint64_t weight_scale_count = 0;
 
+  // FP8 activation calibration is presence-sensitive. An absent scalar and a
+  // numeric zero are not interchangeable. The checkpoint's native-matrix flag
+  // is likewise retained verbatim for later GEMM plan selection.
+  bool has_fp8_input_scale = false;
+  float fp8_input_scale = 0.0f;
+  bool full_precision_matrix_mult = false;
+
   // NVFP4: one raw E4M3 byte per 16 weights in the checkpoint's 128x4
   // swizzle, plus the host second-level multiplier.
   const uint8_t* block_scale = nullptr;
@@ -37,8 +44,10 @@ struct LinearWeightUpload {
   // NF4 double-quant state. Codes use high-even nibble order.
   const uint8_t* nf4_absmax = nullptr;
   uint64_t nf4_absmax_count = 0;
-  const float* nf4_quant_map = nullptr;         // exactly 16
-  const float* nf4_nested_quant_map = nullptr;  // exactly 256
+  const float* nf4_quant_map = nullptr;
+  uint64_t nf4_quant_map_count = 0;  // exactly 16
+  const float* nf4_nested_quant_map = nullptr;
+  uint64_t nf4_nested_quant_map_count = 0;  // exactly 256
   const float* nf4_nested_absmax = nullptr;
   uint64_t nf4_nested_absmax_count = 0;
   uint32_t nf4_block_size = 64;

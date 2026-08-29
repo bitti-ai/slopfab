@@ -29,6 +29,9 @@ class LinearWeight {
   uint32_t in_features() const;
   uint64_t stored_bytes() const noexcept;
   uint64_t resident_bytes() const noexcept;
+  bool has_fp8_input_scale() const noexcept;
+  float fp8_input_scale() const;
+  bool full_precision_matrix_mult() const noexcept;
   bool has_pre_quant_scale() const noexcept;
   bool applies_convrot() const noexcept;
   uint32_t convrot_group() const noexcept;

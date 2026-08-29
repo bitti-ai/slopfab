@@ -61,6 +61,9 @@ struct LinearWeight::Impl {
   uint32_t in_features = 0;
   uint64_t stored_bytes = 0;
   uint64_t resident_bytes = 0;
+  bool has_fp8_input_scale = false;
+  float fp8_input_scale = 0.0f;
+  bool full_precision_matrix_mult = false;
   float global_scale = 1.0f;
   float nf4_nested_offset = 0.0f;
   uint32_t nf4_block_size = 64;
@@ -697,6 +700,9 @@ LinearWeight& LinearWeight::operator=(LinearWeight&&) noexcept = default;
 
 LinearWeight LinearWeight::upload(TensorContext& context,
                                   const LinearWeightUpload& source) {
+  if (!context.impl_) {
+    throw std::logic_error("vulkan linear weight: moved-from tensor context");
+  }
   if (source.out_features == 0 || source.in_features == 0 || source.data == nullptr) {
     throw std::invalid_argument("vulkan linear weight: nonzero shape and data required");
   }
@@ -730,6 +736,37 @@ LinearWeight LinearWeight::upload(TensorContext& context,
   }
   if (source.data_bytes != expected_bytes) {
     throw std::invalid_argument("vulkan linear weight: stored byte count mismatch");
+  }
+  const bool scale_pair_valid = (source.weight_scale == nullptr) ==
+                                (source.weight_scale_count == 0);
+  const bool block_pair_valid = (source.block_scale == nullptr) ==
+                                (source.block_scale_count == 0);
+  const bool absmax_pair_valid = (source.nf4_absmax == nullptr) ==
+                                 (source.nf4_absmax_count == 0);
+  const bool map_pair_valid = (source.nf4_quant_map == nullptr) ==
+                              (source.nf4_quant_map_count == 0);
+  const bool nested_map_pair_valid = (source.nf4_nested_quant_map == nullptr) ==
+                                     (source.nf4_nested_quant_map_count == 0);
+  const bool nested_absmax_pair_valid =
+      (source.nf4_nested_absmax == nullptr) ==
+      (source.nf4_nested_absmax_count == 0);
+  const bool pre_scale_pair_valid =
+      (source.pre_quant_scale_bf16 == nullptr) ==
+      (source.pre_quant_scale_count == 0);
+  if (!scale_pair_valid || !block_pair_valid || !absmax_pair_valid ||
+      !map_pair_valid || !nested_map_pair_valid ||
+      !nested_absmax_pair_valid || !pre_scale_pair_valid) {
+    throw std::invalid_argument(
+        "vulkan linear weight: auxiliary pointer/count mismatch");
+  }
+  if (source.has_fp8_input_scale &&
+      (source.format != LinearWeightFormat::kFloat8E4M3 ||
+       !std::isnormal(source.fp8_input_scale) || source.fp8_input_scale <= 0.0f)) {
+    throw std::invalid_argument("vulkan linear weight: invalid FP8 input scale");
+  }
+  if (!source.has_fp8_input_scale && source.fp8_input_scale != 0.0f) {
+    throw std::invalid_argument(
+        "vulkan linear weight: absent FP8 input scale must retain zero value");
   }
   if (source.pre_quant_scale_count != 0 &&
       (source.pre_quant_scale_bf16 == nullptr ||
@@ -767,11 +804,26 @@ LinearWeight LinearWeight::upload(TensorContext& context,
   if (source.format == LinearWeightFormat::kNF4 &&
       (source.nf4_block_size == 0 || source.nf4_nested_block_size == 0 ||
        source.nf4_absmax == nullptr || source.nf4_absmax_count != expected_absmax ||
-       source.nf4_quant_map == nullptr || source.nf4_nested_quant_map == nullptr ||
+       source.nf4_quant_map == nullptr || source.nf4_quant_map_count != 16 ||
+       source.nf4_nested_quant_map == nullptr ||
+       source.nf4_nested_quant_map_count != 256 ||
        source.nf4_nested_absmax == nullptr ||
        source.nf4_nested_absmax_count != expected_nested ||
        !std::isfinite(source.nf4_nested_offset))) {
     throw std::invalid_argument("vulkan linear weight: invalid NF4 metadata");
+  }
+  const bool has_nf4_aux = source.nf4_absmax_count != 0 ||
+      source.nf4_quant_map_count != 0 ||
+      source.nf4_nested_quant_map_count != 0 ||
+      source.nf4_nested_absmax_count != 0;
+  if ((source.format != LinearWeightFormat::kFloat8E4M3 &&
+       source.format != LinearWeightFormat::kInt8 &&
+       source.weight_scale_count != 0) ||
+      (source.format != LinearWeightFormat::kNVFloat4 &&
+       source.block_scale_count != 0) ||
+      (source.format != LinearWeightFormat::kNF4 && has_nf4_aux)) {
+    throw std::invalid_argument(
+        "vulkan linear weight: auxiliary metadata does not match format");
   }
 
   auto result = std::make_unique<Impl>();
@@ -779,47 +831,93 @@ LinearWeight LinearWeight::upload(TensorContext& context,
   result->out_features = source.out_features;
   result->in_features = source.in_features;
   result->stored_bytes = expected_bytes;
+  result->has_fp8_input_scale = source.has_fp8_input_scale;
+  result->fp8_input_scale = source.fp8_input_scale;
+  result->full_precision_matrix_mult = source.full_precision_matrix_mult;
   result->global_scale = source.global_scale;
   result->nf4_nested_offset = source.nf4_nested_offset;
   result->nf4_block_size = source.nf4_block_size;
   result->nf4_nested_block_size = source.nf4_nested_block_size;
   result->convrot = source.convrot;
   result->convrot_group = source.convrot_group;
-  auto upload = [&](DeviceTensor& destination, ScalarType type, uint64_t count,
-                    const void* values) {
+  struct PendingUpload {
+    DeviceTensor* destination = nullptr;
+    const void* values = nullptr;
+    uint64_t logical_bytes = 0;
+  };
+  std::vector<PendingUpload> pending;
+  pending.reserve(9);
+  auto allocate = [&](DeviceTensor& destination, ScalarType type, uint64_t count,
+                      const void* values) {
     TensorLayout layout = TensorLayout::contiguous(&count, 1);
     DeviceTensor replacement = context.allocate(layout, type);
-    context.upload_bytes(replacement, values, layout.bytes(type));
     const uint64_t bytes = layout.bytes(type);
     if (result->resident_bytes > std::numeric_limits<uint64_t>::max() - bytes) {
       throw std::overflow_error("vulkan linear weight: resident byte count overflow");
     }
     result->resident_bytes += bytes;
     destination = std::move(replacement);
+    pending.push_back({&destination, values, bytes});
   };
   const uint64_t data_count = data_type == ScalarType::kFloat32 ? elements
       : (data_type == ScalarType::kFloat16 || data_type == ScalarType::kBFloat16)
           ? elements : expected_bytes;
-  upload(result->data, data_type, data_count, source.data);
+  allocate(result->data, data_type, data_count, source.data);
   if (source.weight_scale_count != 0)
-    upload(result->weight_scale, ScalarType::kFloat32,
-           source.weight_scale_count, source.weight_scale);
+    allocate(result->weight_scale, ScalarType::kFloat32,
+             source.weight_scale_count, source.weight_scale);
   if (source.block_scale_count != 0)
-    upload(result->block_scale, ScalarType::kUInt8,
-           source.block_scale_count, source.block_scale);
+    allocate(result->block_scale, ScalarType::kUInt8,
+             source.block_scale_count, source.block_scale);
   if (source.format == LinearWeightFormat::kNF4) {
-    upload(result->nf4_absmax, ScalarType::kUInt8, source.nf4_absmax_count,
-           source.nf4_absmax);
-    upload(result->nf4_quant_map, ScalarType::kFloat32, 16,
-           source.nf4_quant_map);
-    upload(result->nf4_nested_quant_map, ScalarType::kFloat32, 256,
-           source.nf4_nested_quant_map);
-    upload(result->nf4_nested_absmax, ScalarType::kFloat32,
-           source.nf4_nested_absmax_count, source.nf4_nested_absmax);
+    allocate(result->nf4_absmax, ScalarType::kUInt8, source.nf4_absmax_count,
+             source.nf4_absmax);
+    allocate(result->nf4_quant_map, ScalarType::kFloat32,
+             source.nf4_quant_map_count, source.nf4_quant_map);
+    allocate(result->nf4_nested_quant_map, ScalarType::kFloat32,
+             source.nf4_nested_quant_map_count, source.nf4_nested_quant_map);
+    allocate(result->nf4_nested_absmax, ScalarType::kFloat32,
+             source.nf4_nested_absmax_count, source.nf4_nested_absmax);
   }
   if (source.pre_quant_scale_count != 0)
-    upload(result->pre_quant_scale, ScalarType::kBFloat16,
-           source.pre_quant_scale_count, source.pre_quant_scale_bf16);
+    allocate(result->pre_quant_scale, ScalarType::kBFloat16,
+             source.pre_quant_scale_count, source.pre_quant_scale_bf16);
+
+  // All immutable components of one weight cross the queue in one job. Host-
+  // visible staging is temporary and released immediately after the exact
+  // submission completes; steady-state residency contains compressed bytes
+  // and auxiliaries only.
+  std::vector<Buffer> staging;
+  staging.reserve(pending.size());
+  for (const auto& item : pending) {
+    const uint64_t physical = item.destination->impl_->buffer.size();
+    Buffer buffer = context.impl_->pool.allocate(
+        physical, BufferUsage::kTransferSource, MemoryUsage::kUpload);
+    buffer.write(0, item.values, item.logical_bytes);
+    if (physical != item.logical_bytes) {
+      const uint32_t zero = 0;
+      buffer.write(item.logical_bytes, &zero, physical - item.logical_bytes);
+    }
+    staging.push_back(std::move(buffer));
+  }
+  [[maybe_unused]] auto recording_lock = context.impl_->acquire_recorder();
+  CommandList list = context.impl_->commands.begin();
+  for (size_t i = 0; i < pending.size(); ++i) {
+    DeviceTensor::Impl& destination = *pending[i].destination->impl_;
+    const uint64_t physical = destination.buffer.size();
+    list.barrier(staging[i], BufferAccess::kHostWrite,
+                 BufferAccess::kTransferRead, 0, physical);
+    list.copy_buffer(staging[i], destination.buffer, physical);
+  }
+  Submission uploaded = context.impl_->commands.submit(std::move(list));
+  uploaded.wait();
+  context.impl_->commands.collect();
+  for (const auto& item : pending) {
+    item.destination->impl_->has_access = true;
+    item.destination->impl_->access = BufferAccess::kTransferWrite;
+  }
+  staging.clear();
+  context.impl_->pool.trim();
   return LinearWeight(std::move(result));
 }
 
@@ -840,6 +938,18 @@ uint64_t LinearWeight::stored_bytes() const noexcept {
 }
 uint64_t LinearWeight::resident_bytes() const noexcept {
   return impl_ ? impl_->resident_bytes : 0;
+}
+bool LinearWeight::has_fp8_input_scale() const noexcept {
+  return impl_ && impl_->has_fp8_input_scale;
+}
+float LinearWeight::fp8_input_scale() const {
+  if (!impl_ || !impl_->has_fp8_input_scale) {
+    throw std::logic_error("vulkan linear weight: FP8 input scale is absent");
+  }
+  return impl_->fp8_input_scale;
+}
+bool LinearWeight::full_precision_matrix_mult() const noexcept {
+  return impl_ && impl_->full_precision_matrix_mult;
 }
 bool LinearWeight::has_pre_quant_scale() const noexcept {
   return impl_ && static_cast<bool>(impl_->pre_quant_scale);

@@ -39,6 +39,7 @@ class DeviceTensor {
   std::shared_ptr<Impl> impl_;
   friend class TensorContext;
   friend class TensorBatch;
+  friend class LinearWeight;
 };
 
 class TensorWorkspace final : public DeviceWorkspace {
@@ -229,6 +230,7 @@ class TensorContext {
   struct Impl;
   std::shared_ptr<Impl> impl_;
   friend class TensorBatch;
+  friend class LinearWeight;
 };
 
 }  // namespace vidfab::vulkan
