@@ -78,6 +78,15 @@ struct TensorContext::Impl {
     uint32_t epsilon_bits = 0;
     uint32_t mod_rows = 0;
   };
+  struct VaeRopeParameters {
+    uint32_t sequence = 0;
+    uint32_t heads = 0;
+    uint32_t head_dim = 64;
+    uint32_t rope_dim = 48;
+    uint32_t num_patches = 0;
+    uint32_t epsilon_bits = 0;
+    uint32_t unused[2] = {};
+  };
   static constexpr uint32_t kMaxBatchOperators = 32;
 
   ComputeContext commands;
@@ -85,6 +94,7 @@ struct TensorContext::Impl {
   TensorWorkspace scratch;
   ComputePipeline ops_pipeline;
   ComputePipeline rope_pipeline;
+  ComputePipeline vae_rope_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
   ComputePipeline bf16_rms_block_pipeline;
@@ -99,6 +109,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> ops_bindings;
   std::vector<StorageBinding> norm_bindings;
   std::vector<StorageBinding> mod_bindings;
+  std::vector<StorageBinding> vae_rope_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   uint32_t max_dispatch_x = 0;
@@ -109,7 +120,7 @@ struct TensorContext::Impl {
       : commands(input, [&] {
           ComputeContextOptions options;
           options.max_in_flight = tensor_options.max_in_flight;
-          options.max_storage_bindings = 6;
+          options.max_storage_bindings = 7;
           options.max_compute_binds_per_job = kMaxBatchOperators;
           return options;
         }()),
@@ -117,7 +128,8 @@ struct TensorContext::Impl {
         scratch(input),
         ops_bindings(3),
         norm_bindings(4),
-        mod_bindings(6) {
+        mod_bindings(6),
+        vae_rope_bindings(7) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
     static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
@@ -161,13 +173,15 @@ struct TensorContext::Impl {
     norm_options.local_size[0] = 256;
     auto make_norm_pipeline = [&](const uint8_t* shader, size_t shader_bytes,
                                   uint32_t bindings = 4, uint32_t local_x = 256,
-                                  uint32_t local_y = 1) {
+                                  uint32_t local_y = 1,
+                                  uint32_t push_bytes = sizeof(NormParameters)) {
       std::vector<uint32_t> module(shader_bytes / sizeof(uint32_t));
       std::memcpy(module.data(), shader, shader_bytes);
       ComputePipelineOptions selected = norm_options;
       selected.storage_binding_count = bindings;
       selected.local_size[0] = local_x;
       selected.local_size[1] = local_y;
+      selected.push_constant_bytes = push_bytes;
       return ComputePipeline::create(input, module, selected);
     };
     if (exact_vae_norm) {
@@ -189,10 +203,15 @@ struct TensorContext::Impl {
           detail::kTensorFp32ModSpirv, sizeof(detail::kTensorFp32ModSpirv), 6);
       group_norm_pipeline = make_norm_pipeline(
           detail::kTensorGroupNormSpirv, sizeof(detail::kTensorGroupNormSpirv));
+      vae_rope_pipeline = make_norm_pipeline(
+          detail::kTensorVaeRopeSpirv, sizeof(detail::kTensorVaeRopeSpirv), 7,
+          32, 1, sizeof(VaeRopeParameters));
     }
     for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
     for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
     for (uint32_t i = 0; i < mod_bindings.size(); ++i) mod_bindings[i].binding = i;
+    for (uint32_t i = 0; i < vae_rope_bindings.size(); ++i)
+      vae_rope_bindings[i].binding = i;
   }
 
   uintptr_t context_id = next_context_identity();
@@ -277,7 +296,7 @@ struct TensorBatch::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   CommandList commands;
   TensorContext::Impl::RecorderLease recording_lease;
-  std::array<AccessSnapshot, TensorContext::Impl::kMaxBatchOperators * 6> snapshots{};
+  std::array<AccessSnapshot, TensorContext::Impl::kMaxBatchOperators * 7> snapshots{};
   uint32_t snapshot_count = 0;
   uint32_t operator_count = 0;
   bool submitted = false;
@@ -432,6 +451,19 @@ struct TensorBatch::Impl {
     commands.bind_compute(pipeline, owner->mod_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(parameters.rows);
+  }
+
+  void dispatch_vae_rope(
+      const TensorContext::Impl::VaeRopeParameters& parameters,
+      uint32_t groups,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 7>& resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->vae_rope_bindings[i].buffer = &resources[i]->buffer;
+      owner->vae_rope_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->vae_rope_pipeline, owner->vae_rope_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups);
   }
 
   void record_shared_mod(bool fp32, DeviceTensor& input, DeviceTensor& weight,
@@ -1119,6 +1151,85 @@ void TensorBatch::rope_bf16(DeviceTensor& input, DeviceTensor& cosine,
     impl_->transition(sin_table, BufferAccess::kComputeRead);
     impl_->dispatch_rope(parameters, static_cast<uint32_t>(groups), data,
                          cos_table, sin_table);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::split_qkv_norm_rope_f32(
+    DeviceTensor& qkv, DeviceTensor& bias, DeviceTensor& cosine,
+    DeviceTensor& sine, DeviceTensor& q, DeviceTensor& k, DeviceTensor& v,
+    uint32_t num_patches, float epsilon) {
+  if (!impl_ || impl_->poisoned) {
+    throw std::logic_error("vulkan tensor: invalid batch");
+  }
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error(
+        "vulkan tensor: exact video-VAE fused RoPE is unavailable");
+  }
+  std::array<std::shared_ptr<DeviceTensor::Impl>, 7> resources{
+      impl_->owner->require(qkv), impl_->owner->require(bias),
+      impl_->owner->require(cosine), impl_->owner->require(sine),
+      impl_->owner->require(q), impl_->owner->require(k),
+      impl_->owner->require(v)};
+  bool aliases = false;
+  for (size_t i = 0; i < resources.size(); ++i) {
+    for (size_t j = i + 1; j < resources.size(); ++j) {
+      aliases = aliases || resources[i].get() == resources[j].get();
+    }
+  }
+  const auto& input_shape = resources[0]->layout;
+  const uint64_t sequence = input_shape.extent[0];
+  const uint64_t heads = input_shape.extent[1];
+  const bool groups_overflow = sequence != 0 && heads > UINT64_MAX / sequence;
+  const uint64_t groups = groups_overflow ? 0 : sequence * heads;
+  if (aliases || !std::isnormal(epsilon) || epsilon <= 0.0f ||
+      input_shape.rank != 3 || sequence == 0 || heads == 0 ||
+      input_shape.extent[2] != 192 || num_patches > sequence ||
+      groups_overflow || groups > std::numeric_limits<uint32_t>::max() ||
+      resources[1]->layout.rank != 2 ||
+      resources[1]->layout.extent[0] != heads ||
+      resources[1]->layout.extent[1] != 192 ||
+      resources[2]->layout.rank != 2 || resources[3]->layout.rank != 2 ||
+      resources[2]->layout.extent[0] != sequence ||
+      resources[3]->layout.extent[0] != sequence ||
+      resources[2]->layout.extent[1] != 48 ||
+      resources[3]->layout.extent[1] != 48) {
+    throw std::invalid_argument("vulkan tensor: invalid video-VAE fused RoPE");
+  }
+  for (size_t i = 0; i < resources.size(); ++i) {
+    if (resources[i]->type != ScalarType::kFloat32 ||
+        !resources[i]->layout.is_contiguous()) {
+      throw std::invalid_argument("vulkan tensor: invalid video-VAE fused RoPE");
+    }
+    if (i >= 4 &&
+        (resources[i]->layout.rank != 3 ||
+         resources[i]->layout.extent[0] != heads ||
+         resources[i]->layout.extent[1] != sequence ||
+         resources[i]->layout.extent[2] != 64)) {
+      throw std::invalid_argument("vulkan tensor: invalid video-VAE fused RoPE");
+    }
+  }
+  if (!detail::norm_dispatch_fits(groups, impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range(
+        "vulkan tensor: video-VAE fused RoPE row-head count exceeds dispatch limits");
+  }
+  TensorContext::Impl::VaeRopeParameters parameters;
+  parameters.sequence = static_cast<uint32_t>(sequence);
+  parameters.heads = static_cast<uint32_t>(heads);
+  parameters.num_patches = num_patches;
+  std::memcpy(&parameters.epsilon_bits, &epsilon, sizeof(epsilon));
+  try {
+    impl_->count_operator();
+    for (size_t i = 0; i < 4; ++i) {
+      impl_->transition(resources[i], BufferAccess::kComputeRead);
+    }
+    for (size_t i = 4; i < resources.size(); ++i) {
+      impl_->transition(resources[i], BufferAccess::kComputeWrite);
+    }
+    impl_->dispatch_vae_rope(parameters, static_cast<uint32_t>(groups),
+                             resources);
   } catch (...) {
     impl_->poisoned = true;
     throw;

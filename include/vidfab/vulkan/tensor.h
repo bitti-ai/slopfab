@@ -111,6 +111,15 @@ class TensorBatch {
                      DeviceTensor& sine);
   void rope_neox_bf16(DeviceTensor& input, DeviceTensor& cosine,
                        DeviceTensor& sine);
+  // Video-VAE fused split-QKV, bias, head-width-64 RMSNorm and partial-width-48
+  // RoPE. QKV is [sequence,heads,192], bias [heads,192], tables
+  // [sequence,48], and outputs [heads,sequence,64]. Tokens at and beyond
+  // num_patches bypass rotation. All tensors are contiguous fp32 and distinct.
+  void split_qkv_norm_rope_f32(DeviceTensor& qkv, DeviceTensor& bias,
+                               DeviceTensor& cosine, DeviceTensor& sine,
+                               DeviceTensor& q, DeviceTensor& k,
+                               DeviceTensor& v, uint32_t num_patches,
+                               float epsilon);
   // Matches the fp32 video-VAE CUDA reduction tree. Input/output are [rows,
   // dim], weight is [dim], and output may alias input. Epsilon must be finite
   // and positive.

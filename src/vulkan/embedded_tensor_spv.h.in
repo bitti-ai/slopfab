@@ -18,4 +18,6 @@ inline constexpr uint8_t kTensorGroupNormSpirv[] = {
 inline constexpr uint8_t kTensorRopeSpirv[] = {@VIDFAB_TENSOR_ROPE_SPV_BYTES@};
 inline constexpr uint8_t kTensorRopeDenormSpirv[] = {
     @VIDFAB_TENSOR_ROPE_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorVaeRopeSpirv[] = {
+    @VIDFAB_TENSOR_VAE_ROPE_SPV_BYTES@};
 }  // namespace vidfab::vulkan::detail

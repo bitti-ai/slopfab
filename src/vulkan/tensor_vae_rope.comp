@@ -1,0 +1,226 @@
+#version 460
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 32) in;
+layout(set = 0, binding = 0, std430) readonly buffer QkvBuffer { uint data[]; } qkv;
+layout(set = 0, binding = 1, std430) readonly buffer BiasBuffer { uint data[]; } bias_data;
+layout(set = 0, binding = 2, std430) readonly buffer CosBuffer { uint data[]; } cos_data;
+layout(set = 0, binding = 3, std430) readonly buffer SinBuffer { uint data[]; } sin_data;
+layout(set = 0, binding = 4, std430) writeonly buffer QBuffer { uint data[]; } q_out;
+layout(set = 0, binding = 5, std430) writeonly buffer KBuffer { uint data[]; } k_out;
+layout(set = 0, binding = 6, std430) writeonly buffer VBuffer { uint data[]; } v_out;
+
+layout(push_constant) uniform Parameters {
+  uint sequence;
+  uint heads;
+  uint head_dim;
+  uint rope_dim;
+  uint num_patches;
+  uint epsilon_bits;
+  uint unused0;
+  uint unused1;
+} p;
+
+shared float reduce_lo[32];
+shared float reduce_hi[32];
+shared float normalized[64];
+shared uint inverse_bits;
+
+uint64_t round_shift_even(uint64_t value, uint shift) {
+  uint64_t quotient = value >> shift;
+  uint64_t remainder = value & ((uint64_t(1) << shift) - uint64_t(1));
+  uint64_t halfway = uint64_t(1) << (shift - 1u);
+  return quotient + uint64_t(remainder > halfway ||
+      (remainder == halfway && (quotient & uint64_t(1)) != uint64_t(0)));
+}
+
+int highest_bit(uint value) {
+  int result = 0;
+  for (uint scan = value; (scan >>= 1u) != 0u;) ++result;
+  return result;
+}
+
+uint positive_float_div_uint(uint bits, uint divisor) {
+  if ((bits & 0x7fffffffu) == 0u) return 0u;
+  if ((bits & 0x7f800000u) == 0x7f800000u) return bits;
+  uint significand = bits & 0x007fffffu;
+  int exponent;
+  if ((bits & 0x7f800000u) == 0u) {
+    int top = highest_bit(significand);
+    exponent = top - 149;
+    significand <<= 23 - top;
+  } else {
+    exponent = int((bits >> 23u) & 0xffu) - 127;
+    significand |= 0x00800000u;
+  }
+  int ratio_exponent = highest_bit(significand) - highest_bit(divisor);
+  bool below = ratio_exponent >= 0
+      ? uint64_t(significand) < (uint64_t(divisor) << ratio_exponent)
+      : (uint64_t(significand) << -ratio_exponent) < uint64_t(divisor);
+  if (below) --ratio_exponent;
+  int output_exponent = exponent - 23 + ratio_exponent;
+  if (output_exponent >= -126) {
+    uint shift = uint(23 - ratio_exponent);
+    uint64_t numerator = uint64_t(significand) << shift;
+    uint64_t rounded = numerator / divisor;
+    uint64_t remainder = numerator % divisor;
+    rounded += uint64_t(remainder > divisor / 2u ||
+        (remainder * uint64_t(2) == divisor && (rounded & uint64_t(1)) != 0));
+    if (rounded == (uint64_t(1) << 24u)) { rounded >>= 1u; ++output_exponent; }
+    return uint(output_exponent + 127) << 23u | uint(rounded) & 0x007fffffu;
+  }
+  int subnormal_shift = exponent - 23 + 149;
+  uint64_t numerator = significand;
+  uint64_t denominator = divisor;
+  if (subnormal_shift >= 0) numerator <<= subnormal_shift;
+  else if (-subnormal_shift < 32) denominator <<= -subnormal_shift;
+  else return 0u;
+  uint64_t rounded = numerator / denominator;
+  uint64_t remainder = numerator % denominator;
+  rounded += uint64_t(remainder > denominator / uint64_t(2) ||
+      (remainder * uint64_t(2) == denominator && (rounded & uint64_t(1)) != 0));
+  return uint(rounded);
+}
+
+void decode_positive(uint bits, out uint significand, out int exponent) {
+  significand = bits & 0x007fffffu;
+  if ((bits & 0x7f800000u) == 0u) {
+    int top = highest_bit(significand);
+    exponent = top - 149;
+    significand <<= 23 - top;
+  } else {
+    exponent = int((bits >> 23u) & 0xffu) - 127;
+    significand |= 0x00800000u;
+  }
+}
+
+uint positive_float_add(uint a_bits, uint b_bits) {
+  if ((a_bits & 0x7fffffffu) == 0u) return b_bits;
+  if ((b_bits & 0x7fffffffu) == 0u) return a_bits;
+  uint a, b; int ae, be;
+  decode_positive(a_bits, a, ae); decode_positive(b_bits, b, be);
+  if (ae < be || (ae == be && a < b)) {
+    uint t = a; a = b; b = t; int te = ae; ae = be; be = te;
+  }
+  uint difference = uint(ae - be);
+  uint64_t a_ext = uint64_t(a) << 3u;
+  uint64_t b_ext = uint64_t(b) << 3u;
+  if (difference != 0u) {
+    if (difference >= 63u) b_ext = uint64_t(1);
+    else {
+      uint64_t lost = b_ext & ((uint64_t(1) << difference) - uint64_t(1));
+      b_ext = (b_ext >> difference) | uint64_t(lost != uint64_t(0));
+    }
+  }
+  uint64_t sum = a_ext + b_ext;
+  if (sum >= (uint64_t(1) << 27u)) { sum = (sum >> 1u) | (sum & uint64_t(1)); ++ae; }
+  uint64_t rounded = sum >> 3u;
+  uint64_t remainder = sum & uint64_t(7);
+  rounded += uint64_t(remainder > uint64_t(4) ||
+      (remainder == uint64_t(4) && (rounded & uint64_t(1)) != uint64_t(0)));
+  if (rounded == (uint64_t(1) << 24u)) { rounded >>= 1u; ++ae; }
+  return uint(ae + 127) << 23u | uint(rounded) & 0x007fffffu;
+}
+
+float deterministic_rsqrt(float value) {
+  uint bits = floatBitsToUint(value), magnitude = bits & 0x7fffffffu;
+  if (magnitude == 0u) return uintBitsToFloat((bits & 0x80000000u) | 0x7f800000u);
+  if ((bits & 0x80000000u) != 0u || magnitude > 0x7f800000u)
+    return uintBitsToFloat(0x7fc00000u);
+  if (magnitude == 0x7f800000u) return 0.0;
+  uint significand = magnitude & 0x007fffffu; int exponent;
+  if (magnitude < 0x00800000u) {
+    int leading = highest_bit(significand); exponent = leading - 149;
+    significand <<= uint(23 - leading);
+  } else {
+    exponent = int((magnitude >> 23u) & 0xffu) - 127;
+    significand |= 0x00800000u;
+  }
+  int parity = exponent & 1;
+  uint64_t mantissa_q30 = uint64_t(significand) << uint(7 + parity);
+  int scale_exponent = -(exponent - parity) / 2;
+  uint64_t estimate_q30 = parity != 0 ? uint64_t(637534208) : uint64_t(872415232);
+  for (int iteration = 0; iteration < 6; ++iteration) {
+    uint64_t square_q30 = round_shift_even(estimate_q30 * estimate_q30, 30u);
+    uint64_t product_q30 = round_shift_even(mantissa_q30 * square_q30, 30u);
+    uint64_t correction_q30 = uint64_t(3) * (uint64_t(1) << 30u) - product_q30;
+    estimate_q30 = round_shift_even(estimate_q30 * correction_q30, 31u);
+  }
+  int top = 0; for (uint64_t scan = estimate_q30; (scan >>= 1u) != 0u;) ++top;
+  uint shift = uint(top - 23); uint64_t rounded = round_shift_even(estimate_q30, shift);
+  if (rounded == (uint64_t(1) << 24u)) { rounded >>= 1u; ++top; }
+  int output_exponent = top - 30 + scale_exponent;
+  return uintBitsToFloat(uint(output_exponent + 127) << 23u |
+                         uint(rounded) & 0x007fffffu);
+}
+
+float normalized_inverse(float sum) {
+  uint quotient = positive_float_div_uint(floatBitsToUint(sum), p.head_dim);
+  uint base = positive_float_add(quotient, p.epsilon_bits);
+  return deterministic_rsqrt(uintBitsToFloat(base));
+}
+
+float rotate_value(uint token, uint d) {
+  float value = normalized[d];
+  if (token >= p.num_patches || d >= p.rope_dim) return value;
+  uint half_dim = p.rope_dim >> 1u;
+  uint partner_index = d < half_dim ? d + half_dim : d - half_dim;
+  float partner = d < half_dim ? -normalized[partner_index]
+                               : normalized[partner_index];
+  float c = uintBitsToFloat(cos_data.data[token * p.rope_dim + d]);
+  float s = uintBitsToFloat(sin_data.data[token * p.rope_dim + d]);
+  precise float product = partner * s;
+  return fma(value, c, product);
+}
+
+void main() {
+  uint pair = gl_WorkGroupID.x;
+  uint lane = gl_LocalInvocationIndex;
+  uint token = pair / p.heads;
+  uint head = pair - token * p.heads;
+  uint input_base = (token * p.heads + head) * (3u * p.head_dim);
+  uint output_base = (head * p.sequence + token) * p.head_dim;
+
+  float v0 = uintBitsToFloat(qkv.data[input_base + 2u * p.head_dim + lane]) +
+      uintBitsToFloat(bias_data.data[head * 3u * p.head_dim + 2u * p.head_dim + lane]);
+  float v1 = uintBitsToFloat(qkv.data[input_base + 2u * p.head_dim + lane + 32u]) +
+      uintBitsToFloat(bias_data.data[head * 3u * p.head_dim + 2u * p.head_dim + lane + 32u]);
+  v_out.data[output_base + lane] = floatBitsToUint(v0);
+  v_out.data[output_base + lane + 32u] = floatBitsToUint(v1);
+
+  for (uint which = 0u; which < 2u; ++which) {
+    precise float x0 = uintBitsToFloat(qkv.data[input_base + which * p.head_dim + lane]) +
+        uintBitsToFloat(bias_data.data[head * 3u * p.head_dim + which * p.head_dim + lane]);
+    precise float x1 = uintBitsToFloat(qkv.data[input_base + which * p.head_dim + lane + 32u]) +
+        uintBitsToFloat(bias_data.data[head * 3u * p.head_dim + which * p.head_dim + lane + 32u]);
+    precise float sum0 = x0 * x0;
+    precise float sum1 = x1 * x1;
+    reduce_lo[lane] = sum0; reduce_hi[lane] = sum1; barrier();
+    for (uint offset = 16u; offset != 0u; offset >>= 1u) {
+      float partner0 = reduce_lo[lane ^ offset];
+      float partner1 = reduce_hi[lane ^ offset];
+      barrier();
+      precise float next0 = sum0 + partner0;
+      precise float next1 = sum1 + partner1;
+      sum0 = next0; sum1 = next1;
+      reduce_lo[lane] = sum0; reduce_hi[lane] = sum1;
+      barrier();
+    }
+    if (lane == 0u) inverse_bits = floatBitsToUint(normalized_inverse(sum0 + sum1));
+    barrier();
+    float inverse = uintBitsToFloat(inverse_bits);
+    normalized[lane] = x0 * inverse;
+    normalized[lane + 32u] = x1 * inverse;
+    barrier();
+    float out0 = rotate_value(token, lane);
+    float out1 = rotate_value(token, lane + 32u);
+    if (which == 0u) {
+      q_out.data[output_base + lane] = floatBitsToUint(out0);
+      q_out.data[output_base + lane + 32u] = floatBitsToUint(out1);
+    } else {
+      k_out.data[output_base + lane] = floatBitsToUint(out0);
+      k_out.data[output_base + lane + 32u] = floatBitsToUint(out1);
+    }
+    barrier();
+  }
+}
