@@ -19,6 +19,7 @@
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/yuv_converter.h"
+#include "vidfab/attention.h"
 #include "vidfab/video/y4m.h"
 #include "vidfab/dtype.h"
 #include "../src/vulkan/tensor_validation.h"
@@ -198,6 +199,69 @@ VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
     catch (const std::logic_error&) { thirty_third_rejected = true; }
   }
   CHECK(thirty_third_rejected);
+
+  // Qwen image grids vary between requests. Recreating shape-specific plans
+  // and slots must reuse the pool and the bounded descriptor arenas rather
+  // than accumulating one allocation set per observed grid.
+  auto run_shape = [&](uint32_t variable_sequence) {
+    const uint64_t variable_extent[] = {variable_sequence, 1, dim};
+    const TensorLayout variable_layout =
+        TensorLayout::contiguous(variable_extent, 3);
+    const size_t variable_count = size_t(variable_sequence) * dim;
+    std::vector<uint16_t> data(variable_count, 0);
+    DeviceTensor variable_q = context.allocate(variable_layout, ScalarType::kBFloat16);
+    DeviceTensor variable_k = context.allocate(variable_layout, ScalarType::kBFloat16);
+    DeviceTensor variable_v = context.allocate(variable_layout, ScalarType::kBFloat16);
+    DeviceTensor variable_out = context.allocate(variable_layout, ScalarType::kBFloat16);
+    context.upload_bytes(variable_q, data.data(), data.size() * 2);
+    context.upload_bytes(variable_k, data.data(), data.size() * 2);
+    context.upload_bytes(variable_v, data.data(), data.size() * 2);
+    BlockedAttentionPlanDesc variable_desc{
+        variable_sequence, 1, dim, exact_attention_scale(dim)};
+    BlockedAttentionPlan variable_plan =
+        BlockedAttentionPlan::create(context, variable_desc);
+    PreparedAttentionInputs variable_prepared =
+        PreparedAttentionInputs::create(context, variable_desc);
+    TensorBatch variable_batch = context.begin_batch();
+    PreparedAttentionView variable_inputs = variable_prepared.prepare(
+        variable_batch, variable_q, variable_k, variable_v);
+    variable_plan.record(variable_batch, variable_inputs, variable_out);
+    variable_batch.submit().wait();
+  };
+  for (uint32_t variable_sequence : {3u, 17u, 5u, 33u}) run_shape(variable_sequence);
+  context.upload_bytes(q, zeros.data(), zeros.size() * sizeof(uint16_t));
+  const uint64_t varied_reserved = context.reserved_bytes();
+  const uint64_t varied_descriptors = context.descriptor_set_allocations();
+  for (uint32_t variable_sequence : {33u, 5u, 17u, 3u}) run_shape(variable_sequence);
+  context.upload_bytes(q, zeros.data(), zeros.size() * sizeof(uint16_t));
+  CHECK(context.reserved_bytes() == varied_reserved);
+  CHECK(context.descriptor_set_allocations() == varied_descriptors);
+
+  const uint64_t attention_live_baseline = context.pooled_used_bytes();
+  Submission dropped_wrappers;
+  {
+    constexpr uint32_t drop_sequence = 3;
+    const uint64_t drop_extent[] = {drop_sequence, 1, dim};
+    const TensorLayout drop_layout = TensorLayout::contiguous(drop_extent, 3);
+    DeviceTensor drop_q = context.allocate(drop_layout, ScalarType::kBFloat16);
+    DeviceTensor drop_k = context.allocate(drop_layout, ScalarType::kBFloat16);
+    DeviceTensor drop_v = context.allocate(drop_layout, ScalarType::kBFloat16);
+    DeviceTensor drop_out = context.allocate(drop_layout, ScalarType::kBFloat16);
+    BlockedAttentionPlanDesc drop_desc{
+        drop_sequence, 1, dim, exact_attention_scale(dim)};
+    PreparedAttentionInputs drop_prepared =
+        PreparedAttentionInputs::create(context, drop_desc);
+    BlockedAttentionPlan drop_plan = BlockedAttentionPlan::create(context, drop_desc);
+    TensorBatch drop_batch = context.begin_batch();
+    PreparedAttentionView drop_inputs = drop_prepared.prepare(
+        drop_batch, drop_q, drop_k, drop_v);
+    drop_plan.record(drop_batch, drop_inputs, drop_out);
+    dropped_wrappers = drop_batch.submit();
+  }
+  CHECK(context.pooled_used_bytes() > attention_live_baseline);
+  dropped_wrappers.wait();
+  context.upload_bytes(q, zeros.data(), zeros.size() * sizeof(uint16_t));
+  CHECK(context.pooled_used_bytes() == attention_live_baseline);
 }
 
 VIDFAB_TEST(vulkan_attention_prepare_exhaustive_bf16) {

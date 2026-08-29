@@ -427,7 +427,10 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
   TensorContext vk(device);
   if (!vk.exact_blocked_attention()) return;
 
-  auto run = [&](uint32_t sequence, uint32_t heads, uint32_t dim) {
+  auto run = [&](uint32_t sequence, uint32_t heads, uint32_t dim,
+                 const std::vector<uint16_t>* custom_q = nullptr,
+                 const std::vector<uint16_t>* custom_k = nullptr,
+                 const std::vector<uint16_t>* custom_v = nullptr) {
     const size_t count = static_cast<size_t>(sequence) * heads * dim;
     std::vector<uint16_t> q(count), k(count), v(count);
     for (size_t i = 0; i < count; ++i) {
@@ -439,6 +442,12 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
       q[0] = 0x8000u; q[1] = f32_to_bf16(1.0f);
       k[0] = f32_to_bf16(1.0f); k[1] = f32_to_bf16(-1.0f);
       v[0] = 0x8000u; v[1] = f32_to_bf16(1.0f);
+    }
+    if (custom_q && custom_k && custom_v) {
+      CHECK(custom_q->size() == count);
+      CHECK(custom_k->size() == count);
+      CHECK(custom_v->size() == count);
+      q = *custom_q; k = *custom_k; v = *custom_v;
     }
     cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count), co(count);
     cuda::DeviceBuffer<uint16_t> cq16(count), ck16(count), cv16(count);
@@ -572,6 +581,109 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
   run(1, 2, 64);
   run(17, 3, 72);
   run(129, 2, 128);
+  {
+    constexpr uint32_t sequence = 129, heads = 1, dim = 64;
+    constexpr size_t count = size_t(sequence) * heads * dim;
+    std::vector<uint16_t> q(count, f32_to_bf16(1.0f));
+    std::vector<uint16_t> k(count, f32_to_bf16(0.0f));
+    std::vector<uint16_t> v(count, f32_to_bf16(0.0f));
+    for (uint32_t d = 0; d < dim; ++d) {
+      k[(sequence - 1) * dim + d] = f32_to_bf16(10.75f);
+    }
+    for (uint32_t row = 0; row + 1 < sequence; ++row) {
+      v[size_t(row) * dim] = f32_to_bf16(0x1p-24f);
+    }
+    // The first tile accumulates 128*2^-24=2^-17. The next tile raises the
+    // score maximum by exactly 86, so its correction makes that old value an
+    // fp32 subnormal. Both backends deliberately flush it to signed zero.
+    CHECK(std::ldexp(1.0, -17) * std::exp(-86.0) <
+          std::numeric_limits<float>::min());
+    run(sequence, heads, dim, &q, &k, &v);
+  }
+
+  // A Qwen-vision-shaped D72 tail: preparation is once, then two query-row
+  // consumers share it. Uploads/downloads are outside both timings.
+  {
+    constexpr uint32_t sequence = 257, heads = 16, dim = 72;
+    constexpr size_t count = size_t(sequence) * heads * dim;
+    std::vector<uint16_t> host(count, f32_to_bf16(0.03125f));
+    cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count), co(count);
+    cuda::DeviceBuffer<uint16_t> cq16(count), ck16(count), cv16(count);
+    cq.copy_from_host(host.data(), count); ck.copy_from_host(host.data(), count);
+    cv.copy_from_host(host.data(), count);
+    cudaEvent_t begin{}, end{};
+    VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
+    VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
+    float cuda_prepare_ms = 0.0f, cuda_attention_ms = 0.0f;
+    for (int iteration = -2; iteration < 5; ++iteration) {
+      VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+      cuda::launch_prepare_deterministic_attention_inputs(
+          nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+          reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+          reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+          reinterpret_cast<__half*>(cq16.get()),
+          reinterpret_cast<__half*>(ck16.get()),
+          reinterpret_cast<__half*>(cv16.get()), count);
+      VIDFAB_CUDA_CHECK(cudaEventRecord(end));
+      VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+      float prepare_ms = 0.0f;
+      VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&prepare_ms, begin, end));
+      VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+      cuda::launch_deterministic_blocked_attention_f16(
+          nullptr, reinterpret_cast<const __half*>(cq16.get()),
+          reinterpret_cast<const __half*>(ck16.get()),
+          reinterpret_cast<const __half*>(cv16.get()),
+          reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim,
+          exact_attention_scale(dim), 0, 129, 0);
+      cuda::launch_deterministic_blocked_attention_f16(
+          nullptr, reinterpret_cast<const __half*>(cq16.get()),
+          reinterpret_cast<const __half*>(ck16.get()),
+          reinterpret_cast<const __half*>(cv16.get()),
+          reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim,
+          exact_attention_scale(dim), 129, 128, 129);
+      VIDFAB_CUDA_CHECK(cudaEventRecord(end));
+      VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+      float attention_ms = 0.0f;
+      VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&attention_ms, begin, end));
+      if (iteration >= 0) {
+        cuda_prepare_ms += prepare_ms;
+        cuda_attention_ms += attention_ms;
+      }
+    }
+    VIDFAB_CUDA_CHECK(cudaEventDestroy(begin));
+    VIDFAB_CUDA_CHECK(cudaEventDestroy(end));
+
+    const uint64_t shape[] = {sequence, heads, dim};
+    const TensorLayout layout = TensorLayout::contiguous(shape, 3);
+    DeviceTensor q = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor k = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor v = vk.allocate(layout, ScalarType::kBFloat16);
+    DeviceTensor out = vk.allocate(layout, ScalarType::kBFloat16);
+    vk.upload_bytes(q, host.data(), count * 2);
+    vk.upload_bytes(k, host.data(), count * 2);
+    vk.upload_bytes(v, host.data(), count * 2);
+    BlockedAttentionPlanDesc desc{sequence, heads, dim,
+                                  exact_attention_scale(dim)};
+    BlockedAttentionPlan plan = BlockedAttentionPlan::create(vk, desc);
+    PreparedAttentionInputs prepared = PreparedAttentionInputs::create(vk, desc);
+    double vulkan_total_ms = 0.0;
+    for (int iteration = -2; iteration < 5; ++iteration) {
+      const auto start = std::chrono::steady_clock::now();
+      TensorBatch batch = vk.begin_batch();
+      PreparedAttentionView inputs = prepared.prepare(batch, q, k, v);
+      plan.record(batch, inputs, out, 0, 129, 0);
+      plan.record(batch, inputs, out, 129, 128, 129);
+      batch.submit().wait();
+      if (iteration >= 0) {
+        vulkan_total_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+      }
+    }
+    std::printf("  exact D72 attention S257 H16, 2 query chunks: CUDA prepare %.3f ms + attention %.3f ms, Vulkan total %.3f ms, FP16 slot %.2f MiB\n",
+                cuda_prepare_ms / 5.0f, cuda_attention_ms / 5.0f,
+                vulkan_total_ms / 5.0,
+                prepared.reserved_bytes() / (1024.0 * 1024.0));
+  }
 }
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
