@@ -16,9 +16,10 @@ tested RTX 5090. Its checked shader uses explicit operation order and SPIR-V
 words, padded output strides, and multi-frame Y4M output.
 
 This is exact decoder/generation-output parity, not full prompt-to-video parity.
-One complete main H3 transformer block now has a device-resident Vulkan stage
-and exact real-checkpoint CUDA replay, but the 50-block stack, refiner, final
-layer and denoise loop have no Vulkan orchestration. The text/vision
+The complete 50-main-block H3 transformer stack now has a device-resident
+Vulkan graph and exact production-path CUDA replay at every block boundary,
+but the two-block refiner, final layer and denoise loop have no Vulkan
+orchestration. The text/vision
 conditioners and reference-image encoder also remain CUDA-only.
 
 ## Measured implementation gap
@@ -45,7 +46,7 @@ Missing work by pipeline stage:
 | Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | native quantized GEMM, NN/batched attention GEMM, remaining activations, and residual/broadcast operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, used RoPE variants, dense NT GEMM, persistent seven-format weight preparation, AWQ pre-scale and ConvRot now have Vulkan primitives |
 | Video VAE decode | Implemented by `vulkan::VideoVaeDecoder` | Exact 36-block graph and shared backend-neutral tile/stitch schedule are complete; shipped tensor-core mode remains CUDA-only |
 | Audio VAE decode | Implemented by `vulkan::AudioDecoder` | All 779 tensors and 497 production operators are device-resident and exact; diagnostics add 13 in-batch boundary copies |
-| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | one exact main H3 block is implemented with real checkpoint replay; the 50-block stack, refiner/final layer, scheduler integration, caches and non-exact attention modes remain CUDA-only |
+| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | the exact 50-block main stack is implemented with real every-boundary replay and a block-cache span seam; refiner/final layer, denoise/scheduler integration and non-exact attention modes remain CUDA-only |
 | Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | token embedding, causal decoder attention/MLP, vision patch/merge graph, deep-stack scatter, reference-image VAE encode; NeoX/mRoPE and exact unmasked D72 attention primitives exist but are not wired |
 
 Checkpoint handling also remains CUDA-entangled. A Vulkan backend must preserve
@@ -65,9 +66,9 @@ top-level `run_generate` call.
    useful neural vertical slice because `--synthetic-latents` bypasses the
    conditioner and transformer. Require exact decoded fp32 RGB and PCM dumps,
    then exact Y4M/WAV output.
-3. Extend the implemented exact main transformer block into the full 50-block
-   stack, refiner/final layer and denoise loop. Compare every block boundary
-   before enabling the graph or its cache modes; port non-exact attention
+3. Extend the implemented exact 50-block main graph into the token refiner,
+   final layer and denoise loop. Preserve its every-block boundary gate and
+   wire the existing cache span through `record_layers`; port non-exact attention
    backends separately rather than silently substituting exact attention.
 4. Port Qwen text/vision conditioning and reference-image encoding, retaining
    tokenizer and checkpoint behavior. Compare embeddings, deep-stack outputs,
@@ -168,15 +169,14 @@ rebaseline against shipped cuBLAS at relative L2 1.38034e-4 (max absolute
 the latter has 288 MiB of direct tensors and no attention scratch. This is
 still a primitive: text-encoder orchestration remains CUDA-owned.
 
-Exact H3 full and frame-banded attention is part of a complete single-main-
-block Vulkan stage: typed projection loading, rank-8 AdaLN, normalization,
-RoPE, attention, residuals and SwiGLU remain device-resident in one caller
-batch. The production CUDA exact path captures the real block input and all
-durable metadata; its S538 block-0 replay matches Vulkan byte-for-byte at QKV,
-attention, attention-residual and final-residual boundaries. A CUDA-disabled
-test also loads the shipped NVFP4 block and pins the real S65 output. This is
-still one block, not denoise orchestration: the 50-block stack, refiner, final
-layer and scheduler remain unavailable, so non-synthetic Vulkan generation
+Exact H3 full and frame-banded attention is part of the complete 50-main-block
+Vulkan graph: typed projection loading, rank-8 AdaLN, normalization, RoPE,
+attention, residuals and SwiGLU remain device-resident in one caller batch.
+The production CUDA exact loop supplies a real S526 capture whose input,
+metadata, 50 block-boundary digests and final residual all match Vulkan
+exactly. A CUDA-disabled test independently loads and executes two shipped
+NVFP4 layers. This is still not denoise orchestration: the refiner, final layer
+and scheduler remain unavailable, so non-synthetic Vulkan generation
 continues to fail before execution.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and

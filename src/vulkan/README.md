@@ -890,9 +890,57 @@ pinned boundary: input `7c9f5a55cc5266eb`, post-RoPE QKV
 `0ce5a1f4d191bdd1`, attention `550f1253844cd657`, attention residual
 `e8a9ee4dfec51636`, and final residual `2fd91fe15c281f00` (FNV64). The replay
 also pins the checkpoint and capture SHA-256 values before loading either.
-This increment is one main block; orchestration of all 50 blocks, the
-two-block refiner, final layer and denoise scheduler is still intentionally
-unavailable and must remain fail-closed.
+The single-stage evidence above is the arithmetic unit used by the complete
+main graph below; the two-block refiner, final layer and denoise scheduler
+remain intentionally unavailable and fail-closed.
+
+### Exact 50-block H3 main graph
+
+`ExactH3MainGraph` composes the accepted stage into the complete 50-layer main
+stack. It owns 50 immutable typed weight sets and one shared activation arena,
+NVFP4 dense cache and pipeline set. A production forward is one preflighted
+1,450-operator caller batch (1,500 when all diagnostic boundaries are copied),
+with no per-layer allocation, host boundary, submission or CUDA route.
+`record_layers` can record contiguous subspans into that same batch so the
+future denoise orchestrator can compute or skip a block-cache span without
+cloning weights or scratch. Null ranges select full attention; one immutable
+context-owned table selects the same frame band at all layers.
+
+Loading first performs complete host-only validation of every tensor and all
+six projection metadata sets in all 50 layers. Converted host metadata is
+released after each layer; no dense host checkpoint duplicate is retained.
+Only after all layers validate are replacement weights uploaded, so corruption
+in layer 49's final projection cannot disturb a loaded graph or increase its
+allocator high-water. Synthetic three-layer coverage exercises exact and
+one-less batch capacity, split-span recording, every boundary tap, a corrupt
+last-layer/final-projection reload, unload/reload and stable repeated pool,
+descriptor and output state. A CUDA-disabled executable also loads two real
+NVFP4 layers at S65 and pins final FNV64 `7f940c81104e7471`.
+
+The authoritative production capture is seed424242, 256x256, 22 frames,
+step 0, +/-9 frame band, S526. It comes from the actual CUDA
+`Transformer::run_block` loop in exact mode. The durable capture
+`h3_main50_step0_seed424242_256.vfh3g` is 11,717,800 bytes with SHA-256
+`BB15689283669496C5614EC30FAAF088129D8CB897CB340AE536373AD42CB362`;
+checkpoint SHA-256 remains
+`6AB7F0C48141E7919B32F925CA3DEF22E06A6AEBEB9E0B6F5A0BE0FE8409976F`.
+It stores the real input, selectors, rank-8 code, nontrivial RoPE, band table,
+all 50 CUDA boundary digests and final residual bytes. Vulkan matches every
+boundary digest and the complete final residual exactly: input/final FNV64 are
+`8e130a074619290f`/`94d7dfcfcef6f4ce`.
+
+On RTX 5090/610.88 Debug, S526 load was 6.510 s and the full graph measured
+1.271 s with 50 taps and 1.193 s without taps. Logical
+persistent/scratch/peak memory was 10,503.10/377.07/10,880.17 MiB; pool
+used/reserved was 11,166.42/11,539.12 MiB with 1,450 stable production
+descriptor allocations. The explicit unbanded S9864 production-scale audit
+measured 23.396/23.760 s first/repeat, final FNV64
+`3d59d01afa11ba77`, and 10,503.10/1,845.25/12,348.35 MiB logical
+persistent/scratch/peak (12,659.05/13,032.88 MiB pool used/reserved). At the
+default 14 model evaluations this main-stack measurement alone projects to
+about 5.54 minutes; it excludes the refiner, final heads and VAE decoders and
+is not a claim of end-to-end runtime parity. The two-block token refiner,
+final head and denoise-loop integration remain the next features.
 
 The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
 `dxc_2026_07_29.zip` (SHA-256
