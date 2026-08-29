@@ -858,6 +858,131 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
   vk.download_bytes(out_band, got_band.data(), count * 2);
   for (uint32_t i = 0; i < heads * dim; ++i)
     CHECK(got_band[i] == f32_to_bf16(1.0f));
+
+  // D128, three global query tiles, every tile/64-key boundary, row chunks,
+  // and a nonzero output offset. The CUDA full launch is the exact oracle;
+  // Vulkan consumes the same immutable table across all chunk records.
+  {
+    constexpr uint32_t s = 257, h = 1, d = 128;
+    const size_t n = size_t(s) * h * d;
+    std::vector<uint16_t> qh(n), kh(n), vh(n);
+    for (size_t i = 0; i < n; ++i) {
+      qh[i] = f32_to_bf16(float(int(i % 23) - 11) / 32.0f);
+      kh[i] = f32_to_bf16(float(int(i % 27) - 13) / 32.0f);
+      vh[i] = f32_to_bf16(float(int(i % 33) - 16) / 16.0f);
+    }
+    const std::vector<int32_t> r{
+        0, 64, 128, 192,
+        0, 128, 192, 256,
+        0, 320, 0, 0};
+    cuda::DeviceBuffer<uint16_t> dq(n), dk(n), dv(n), dout(n);
+    cuda::DeviceBuffer<int32_t> dr(r.size());
+    dq.copy_from_host(qh.data(), n); dk.copy_from_host(kh.data(), n);
+    dv.copy_from_host(vh.data(), n); dr.copy_from_host(r.data(), r.size());
+    cuda::launch_deterministic_h3_attention(
+        nullptr, reinterpret_cast<const __nv_bfloat16*>(dq.get()),
+        reinterpret_cast<const __nv_bfloat16*>(dk.get()),
+        reinterpret_cast<const __nv_bfloat16*>(dv.get()),
+        reinterpret_cast<__nv_bfloat16*>(dout.get()), dr.get(), s, h, d,
+        exact_attention_scale(d));
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> expected(n);
+    dout.copy_to_host(expected.data(), n);
+    const uint64_t sshape[] = {s, h, d};
+    TensorLayout slayout = TensorLayout::contiguous(sshape, 3);
+    DeviceTensor vq = vk.allocate(slayout, ScalarType::kBFloat16);
+    DeviceTensor vkey = vk.allocate(slayout, ScalarType::kBFloat16);
+    DeviceTensor vv = vk.allocate(slayout, ScalarType::kBFloat16);
+    DeviceTensor vo = vk.allocate(slayout, ScalarType::kBFloat16);
+    vk.upload_bytes(vq, qh.data(), n * 2);
+    vk.upload_bytes(vkey, kh.data(), n * 2);
+    vk.upload_bytes(vv, vh.data(), n * 2);
+    H3AttentionPlan p = H3AttentionPlan::create(
+        vk, {s, h, d, exact_attention_scale(d)});
+    H3AttentionRanges vr = H3AttentionRanges::create(
+        vk, s, r.data(), static_cast<uint32_t>(r.size()));
+    TensorBatch chunks = vk.begin_batch();
+    const uint32_t starts[] = {0, 1, 63, 64, 127, 128, 129};
+    const uint32_t lengths[] = {1, 62, 1, 63, 1, 1, 128};
+    for (size_t i = 0; i < std::size(starts); ++i)
+      p.record(chunks, vq, vkey, vv, vo, &vr, starts[i], lengths[i], starts[i]);
+    chunks.submit().wait();
+    std::vector<uint16_t> got(n);
+    vk.download_bytes(vo, got.data(), n * 2);
+    CHECK(got == expected);
+    TensorBatch offset = vk.begin_batch();
+    p.record(offset, vq, vkey, vv, vo, &vr, 128, 1, 0);
+    offset.submit().wait();
+    vk.download_bytes(vo, got.data(), n * 2);
+    CHECK(std::memcmp(got.data(), expected.data() + size_t(128) * d,
+                      d * sizeof(uint16_t)) == 0);
+  }
+
+  // Range validation is a setup boundary and cannot mutate a recorder. Empty,
+  // misaligned, reversed, padding-only and wrong-count tables fail closed.
+  auto range_rejected = [&](const std::vector<int32_t>& bad) {
+    bool rejected = false;
+    try {
+      (void)H3AttentionRanges::create(
+          vk, sequence, bad.data(), static_cast<uint32_t>(bad.size()));
+    } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+  };
+  range_rejected({0, 0, 0, 0, 0, 128, 0, 0});
+  range_rejected({1, 64, 0, 0, 0, 128, 0, 0});
+  range_rejected({64, 0, 0, 0, 0, 128, 0, 0});
+  range_rejected({192, 192, 0, 0, 0, 128, 0, 0});
+  range_rejected({0, 64, 0, 0});
+
+  // Rejected record calls leave the batch usable; operator overflow poisons
+  // the recording. Repeated two-flight/oldest-slot reuse stays bounded.
+  DeviceTensor wrong = vk.allocate(layout, ScalarType::kFloat32);
+  {
+    TensorBatch recover = vk.begin_batch();
+    bool rejected = false;
+    try { plan.record(recover, q, k, v, wrong, &bands); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    plan.record(recover, q, k, v, out_full, &bands);
+    recover.submit().wait();
+  }
+  DeviceTensor second = vk.allocate(layout, ScalarType::kBFloat16);
+  auto submit = [&](DeviceTensor& selected) {
+    TensorBatch selected_batch = vk.begin_batch();
+    plan.record(selected_batch, q, k, v, selected, &bands);
+    return selected_batch.submit();
+  };
+  Submission first = submit(out_full), second_job = submit(second),
+             third = submit(out_full);
+  CHECK(second_job.value() > first.value() && third.value() > second_job.value());
+  first.wait(); second_job.wait(); third.wait();
+  const uint64_t stable_reserved = vk.reserved_bytes();
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  for (int repeat = 0; repeat < 4; ++repeat) {
+    Submission a = submit(out_full), b = submit(second), c = submit(out_full);
+    a.wait(); b.wait(); c.wait();
+    CHECK(vk.reserved_bytes() == stable_reserved);
+    CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  }
+  {
+    TensorBatch full = vk.begin_batch();
+    for (int op = 0; op < 32; ++op)
+      plan.record(full, q, k, v, out_full, &bands, 0, 1, 0);
+    full.submit().wait();
+  }
+  {
+    TensorBatch overflow = vk.begin_batch();
+    for (int op = 0; op < 32; ++op)
+      plan.record(overflow, q, k, v, out_full, &bands, 0, 1, 0);
+    bool rejected = false;
+    try { plan.record(overflow, q, k, v, out_full, &bands, 0, 1, 0); }
+    catch (const std::logic_error&) { rejected = true; }
+    CHECK(rejected);
+    bool submit_rejected = false;
+    try { (void)overflow.submit(); }
+    catch (const std::logic_error&) { submit_rejected = true; }
+    CHECK(submit_rejected);
+  }
 }
 
 VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
