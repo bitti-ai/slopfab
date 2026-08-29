@@ -1027,6 +1027,13 @@ if(VIDFAB_BUILD_C_API)
     VISIBILITY_INLINES_HIDDEN ON
     VERSION ${VIDFAB_CAPI_VERSION}
     SOVERSION ${VIDFAB_CAPI_VERSION_MAJOR})
+  if(WIN32)
+    # The DLL and CLI intentionally share the runtime basename, but an MSVC
+    # executable with exported symbols can also emit vidfab.lib. Give the DLL
+    # import archive its own name so parallel aggregate builds cannot overwrite
+    # the library C-API tests are about to link.
+    set_target_properties(vidfab_c PROPERTIES ARCHIVE_OUTPUT_NAME vidfab_c)
+  endif()
 
   # The visibility presets above are *compile* properties, so they only cover
   # capi.cpp. vidfab_core and vidfab_cuda are compiled with default visibility,
