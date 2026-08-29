@@ -1001,6 +1001,95 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
   CHECK(got == expected);
 }
 
+VIDFAB_TEST(cuda_vulkan_causal_gqa_real_timing) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!std::getenv("VIDFAB_CAUSAL_GQA_BENCH")) return;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_causal_gqa_attention()) return;
+
+  for (uint32_t sequence : {132u, 8192u}) {
+    constexpr uint32_t query_heads = 64, kv_heads = 8, dim = 128;
+    const size_t q_count = size_t(sequence) * query_heads * dim;
+    const size_t kv_count = size_t(sequence) * kv_heads * dim;
+    std::vector<uint16_t> hq(q_count, f32_to_bf16(0.03125f));
+    std::vector<uint16_t> hk(kv_count, f32_to_bf16(-0.015625f));
+    std::vector<uint16_t> hv(kv_count, f32_to_bf16(0.0625f));
+    cuda::DeviceBuffer<uint16_t> cq(q_count), ck(kv_count), cv(kv_count),
+        co(q_count);
+    cq.copy_from_host(hq.data(), hq.size());
+    ck.copy_from_host(hk.data(), hk.size());
+    cv.copy_from_host(hv.data(), hv.size());
+    const uint64_t q_shape[] = {sequence, query_heads, dim};
+    const uint64_t kv_shape[] = {sequence, kv_heads, dim};
+    DeviceTensor q = vk.allocate(TensorLayout::contiguous(q_shape, 3),
+                                 ScalarType::kBFloat16);
+    DeviceTensor k = vk.allocate(TensorLayout::contiguous(kv_shape, 3),
+                                 ScalarType::kBFloat16);
+    DeviceTensor v = vk.allocate(TensorLayout::contiguous(kv_shape, 3),
+                                 ScalarType::kBFloat16);
+    DeviceTensor out = vk.allocate(TensorLayout::contiguous(q_shape, 3),
+                                   ScalarType::kBFloat16);
+    vk.upload_bytes(q, hq.data(), hq.size() * 2);
+    vk.upload_bytes(k, hk.data(), hk.size() * 2);
+    vk.upload_bytes(v, hv.data(), hv.size() * 2);
+    CausalGQAAttentionPlan plan = CausalGQAAttentionPlan::create(
+        vk, {sequence, query_heads, kv_heads, dim, exact_attention_scale(dim)});
+    auto submit_vulkan = [&] {
+      TensorBatch batch = vk.begin_batch();
+      plan.record(batch, q, k, v, out);
+      return batch.submit();
+    };
+    auto launch_cuda = [&] {
+      cuda::launch_deterministic_causal_gqa_attention(
+          nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+          reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+          reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+          reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, query_heads,
+          kv_heads, dim, exact_attention_scale(dim));
+    };
+    launch_cuda();
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    submit_vulkan().wait();
+    cudaEvent_t start = nullptr, stop = nullptr;
+    VIDFAB_CUDA_CHECK(cudaEventCreate(&start));
+    VIDFAB_CUDA_CHECK(cudaEventCreate(&stop));
+    VIDFAB_CUDA_CHECK(cudaEventRecord(start));
+    launch_cuda();
+    VIDFAB_CUDA_CHECK(cudaEventRecord(stop));
+    VIDFAB_CUDA_CHECK(cudaEventSynchronize(stop));
+    float cuda_ms = 0.0f;
+    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_ms, start, stop));
+    VIDFAB_CUDA_CHECK(cudaEventDestroy(start));
+    VIDFAB_CUDA_CHECK(cudaEventDestroy(stop));
+    const auto begin = std::chrono::steady_clock::now();
+    submit_vulkan().wait();
+    const double vulkan_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - begin).count();
+    std::vector<uint16_t> cuda_out(q_count), vulkan_out(q_count);
+    co.copy_to_host(cuda_out.data(), cuda_out.size());
+    vk.download_bytes(out, vulkan_out.data(), vulkan_out.size() * 2);
+    CHECK(cuda_out == vulkan_out);
+    const uint64_t direct_bytes =
+        (uint64_t(q_count) * 2 + uint64_t(kv_count) * 2) * sizeof(uint16_t);
+    std::printf("  causal GQA L%u H64/KV8/D128: CUDA %.3f ms, Vulkan %.3f ms, "
+                "direct Q/K/V/out %.2f MiB, context reserved %.2f MiB, descriptors %llu\n",
+                sequence, cuda_ms, vulkan_ms, direct_bytes / (1024.0 * 1024.0),
+                vk.reserved_bytes() / (1024.0 * 1024.0),
+                static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+  }
+}
+
 VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
