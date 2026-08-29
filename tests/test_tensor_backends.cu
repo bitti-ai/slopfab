@@ -2541,6 +2541,140 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_real_nvfp4_slab) {
               static_cast<double>(elements * 2) / 1048576.0);
 }
 
+VIDFAB_TEST(cuda_vulkan_streamed_nvfp4_gemm_real_slab) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path path =
+      "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
+  int cuda_devices = 0;
+  if (!std::filesystem::exists(path) ||
+      cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore ||
+      !physical.front().info().cooperative_matrix_bf16_f32_16x16x16) return;
+  SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  const std::string prefix = "blocks.0.attn.qkv_proj";
+  const TensorView& stored = checkpoint.at(prefix + ".weight");
+  const TensorView& scale = checkpoint.at(prefix + ".weight_scale");
+  const TensorView& global_view = checkpoint.at(prefix + ".weight_scale_2");
+  constexpr uint32_t n = 384, k = 5376, rows = 66, output_rows = 68;
+  const size_t weight_elements = size_t(n) * k;
+  const size_t stored_bytes = weight_elements / 2;
+  const size_t scale_bytes = weight_elements / 16;
+  CHECK(stored.nbytes >= stored_bytes && scale.nbytes >= scale_bytes);
+  float global = 0.0f;
+  std::memcpy(&global, global_view.data, sizeof(global));
+
+  std::vector<uint16_t> input(size_t(rows) * k), bias(n);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = f32_to_bf16(float(int(i % 29) - 14) / 32.0f);
+  for (uint32_t i = 0; i < n; ++i)
+    bias[i] = f32_to_bf16(float(int(i % 17) - 8) / 64.0f);
+  constexpr uint16_t sentinel = 0x7fc1;
+  std::vector<uint16_t> initial(size_t(output_rows) * n, sentinel);
+
+  cuda::DeviceBuffer<uint8_t> cw(stored_bytes), cs(scale_bytes);
+  cuda::DeviceBuffer<uint16_t> cdense(weight_elements), ci(input.size()),
+      cbias(bias.size()), co(initial.size());
+  cw.copy_from_host(static_cast<const uint8_t*>(stored.data), stored_bytes);
+  cs.copy_from_host(static_cast<const uint8_t*>(scale.data), scale_bytes);
+  ci.copy_from_host(input.data(), input.size());
+  cbias.copy_from_host(bias.data(), bias.size());
+  co.copy_from_host(initial.data(), initial.size());
+  auto cuda_run = [&] {
+    cuda::launch_dequant_nvfp4(
+        cw.get(), cs.get(), global,
+        reinterpret_cast<__nv_bfloat16*>(cdense.get()), n, k, nullptr);
+    cuda::launch_deterministic_bf16_gemm_nt(
+        reinterpret_cast<const __nv_bfloat16*>(ci.get()),
+        reinterpret_cast<const __nv_bfloat16*>(cdense.get()), cbias.get(),
+        reinterpret_cast<__nv_bfloat16*>(co.get()), 64, n, k,
+        DenseGemmBias::kBFloat16);
+    cuda::launch_deterministic_scalar_gemm_nt(
+        ci.get(), cdense.get(), cbias.get(), co.get(), 2, n, k,
+        DenseGemmMode::kBFloat16, DenseGemmBias::kBFloat16, 64, 64);
+  };
+  cuda_run();
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> cuda_output(initial.size());
+  co.copy_to_host(cuda_output.data(), cuda_output.size());
+
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_cooperative_matrix = true;
+  options.enable_storage_buffer_16bit = true;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  LinearWeightUpload upload;
+  upload.format = LinearWeightFormat::kNVFloat4;
+  upload.out_features = n;
+  upload.in_features = k;
+  upload.data = stored.data;
+  upload.data_bytes = stored_bytes;
+  upload.block_scale = static_cast<const uint8_t*>(scale.data);
+  upload.block_scale_count = scale_bytes;
+  upload.global_scale = global;
+  LinearWeight weight = LinearWeight::upload(context, upload);
+  const uint64_t input_shape[] = {rows, k}, output_shape[] = {output_rows, n};
+  const uint64_t bias_shape[] = {n};
+  DeviceTensor vi = context.allocate(TensorLayout::contiguous(input_shape, 2),
+                                     ScalarType::kBFloat16);
+  DeviceTensor vo = context.allocate(TensorLayout::contiguous(output_shape, 2),
+                                     ScalarType::kBFloat16);
+  DeviceTensor vb = context.allocate(TensorLayout::contiguous(bias_shape, 1),
+                                     ScalarType::kBFloat16);
+  context.upload_bytes(vi, input.data(), input.size() * 2);
+  context.upload_bytes(vo, initial.data(), initial.size() * 2);
+  context.upload_bytes(vb, bias.data(), bias.size() * 2);
+  DenseGemmPlan plan = DenseGemmPlan::create(
+      context, {64, n, k, DenseGemmMode::kBFloat16,
+                DenseGemmBias::kBFloat16});
+  StreamedNVFP4WeightCache cache =
+      StreamedNVFP4WeightCache::create(context, weight_elements);
+  auto vulkan_run = [&] {
+    TensorBatch batch = context.begin_batch();
+    PreparedNVFP4WeightView prepared = cache.prepare(batch, weight, plan);
+    plan.record(batch, vi, prepared, vo, 64, 0, 0, &vb);
+    plan.record(batch, vi, prepared, vo, 2, 64, 64, &vb);
+    return batch.submit();
+  };
+  vulkan_run().wait();
+  std::vector<uint16_t> vulkan_output(initial.size());
+  context.download_bytes(vo, vulkan_output.data(), vulkan_output.size() * 2);
+  size_t mismatch = vulkan_output.size();
+  for (size_t i = 0; i < vulkan_output.size(); ++i) {
+    if (cuda_output[i] != vulkan_output[i]) { mismatch = i; break; }
+  }
+  CHECK_MSG(mismatch == vulkan_output.size(),
+            "streamed real NVFP4 GEMM mismatch at %zu: %04x != %04x",
+            mismatch, mismatch == vulkan_output.size() ? 0u : cuda_output[mismatch],
+            mismatch == vulkan_output.size() ? 0u : vulkan_output[mismatch]);
+
+  constexpr int iterations = 10;
+  cudaEvent_t begin = nullptr, end = nullptr;
+  VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
+  VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
+  VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+  for (int i = 0; i < iterations; ++i) cuda_run();
+  VIDFAB_CUDA_CHECK(cudaEventRecord(end));
+  VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+  float cuda_elapsed = 0.0f;
+  VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_elapsed, begin, end));
+  cudaEventDestroy(begin); cudaEventDestroy(end);
+  const auto vk_begin = std::chrono::steady_clock::now();
+  for (int i = 0; i < iterations; ++i) vulkan_run().wait();
+  const double vulkan_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vk_begin).count() / iterations;
+  std::printf("  streamed real NVFP4 dequant+GEMM %ux%ux%u: CUDA %.3f ms, "
+              "Vulkan %.3f ms, compressed %.2f MiB, one dense slot %.2f MiB\n",
+              rows, n, k, cuda_elapsed / iterations, vulkan_ms,
+              double(weight.resident_bytes()) / 1048576.0,
+              double(cache.dense_bytes()) / 1048576.0);
+}
+
 VIDFAB_TEST(cuda_vulkan_linear_weight_real_nf4_conv) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
