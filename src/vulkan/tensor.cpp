@@ -3485,19 +3485,23 @@ void TensorBatch::keyframe_conv3d_f16(
   } catch (const std::overflow_error&) {
     throw std::invalid_argument("vulkan keyframe: convolution shape overflow");
   }
-  const bool valid_input = src->layout.rank == 3 &&
+  const bool shaped_input = src->layout.rank == 3 &&
       src->layout.extent[0] == in_channels &&
       src->layout.extent[1] == input_height &&
       src->layout.extent[2] == input_width;
+  const bool valid_input = shaped_input ||
+      (src->layout.rank == 1 && src->layout.elements() >= input_count);
   const bool valid_weight = w->layout.rank == 5 &&
       w->layout.extent[0] == out_channels &&
       w->layout.extent[1] == in_channels &&
       w->layout.extent[2] == kernel && w->layout.extent[3] == kernel &&
       w->layout.extent[4] == kernel;
-  const bool valid_output = dst->layout.rank == 3 &&
+  const bool shaped_output = dst->layout.rank == 3 &&
       dst->layout.extent[0] == out_channels &&
       dst->layout.extent[1] == output_height &&
       dst->layout.extent[2] == output_width;
+  const bool valid_output = shaped_output ||
+      (dst->layout.rank == 1 && dst->layout.elements() >= output_count);
   if (in_channels == 0 || out_channels == 0 || input_height == 0 ||
       input_width == 0 || (kernel != 1 && kernel != 3) ||
       (stride != 1 && stride != 2) ||
@@ -3510,9 +3514,9 @@ void TensorBatch::keyframe_conv3d_f16(
       w->type != ScalarType::kFloat16 || b->type != ScalarType::kFloat16 ||
       !valid_input || !valid_weight || !valid_output ||
       b->layout.rank != 1 || b->layout.extent[0] != out_channels ||
-      src->layout.elements() != input_count ||
+      src->layout.elements() < input_count ||
       w->layout.elements() != weight_count ||
-      dst->layout.elements() != output_count ||
+      dst->layout.elements() < output_count ||
       !src->layout.is_contiguous() || !w->layout.is_contiguous() ||
       !b->layout.is_contiguous() || !dst->layout.is_contiguous()) {
     throw std::invalid_argument("vulkan keyframe: invalid Conv3D tensors");
@@ -3536,6 +3540,98 @@ void TensorBatch::keyframe_conv3d_f16(
     impl_->transition(b, BufferAccess::kComputeRead);
     impl_->transition(dst, BufferAccess::kComputeWrite);
     impl_->dispatch_keyframe(p, {src, w, b, dst});
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::keyframe_group_norm_silu_f16_affine(
+    DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
+    DeviceTensor& output, uint32_t channels, uint32_t height,
+    uint32_t width, uint32_t groups, float epsilon) {
+  if (!impl_ || impl_->poisoned) {
+    throw std::logic_error("vulkan tensor: invalid batch");
+  }
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error(
+        "vulkan keyframe: exact GroupNorm+SiLU is unavailable");
+  }
+  auto src = impl_->owner->require(input);
+  auto w = impl_->owner->require(weight);
+  auto b = impl_->owner->require(bias);
+  auto dst = impl_->owner->require(output);
+  const uint64_t spatial = static_cast<uint64_t>(height) * width;
+  const uint64_t count = static_cast<uint64_t>(channels) * spatial;
+  const uint64_t group_count = groups == 0 ? 0 :
+      static_cast<uint64_t>(channels / groups) * spatial;
+  if (!std::isnormal(epsilon) || epsilon <= 0.0f || channels == 0 ||
+      height == 0 || width == 0 || groups == 0 || channels % groups != 0 ||
+      spatial > std::numeric_limits<uint32_t>::max() ||
+      count > std::numeric_limits<uint32_t>::max() ||
+      group_count > std::numeric_limits<uint32_t>::max() ||
+      src.get() == dst.get() ||
+      src.get() == w.get() || src.get() == b.get() || dst.get() == w.get() ||
+      dst.get() == b.get() || w.get() == b.get() ||
+      src->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
+      w->type != ScalarType::kFloat16 || b->type != ScalarType::kFloat16 ||
+      src->layout.rank != 1 || dst->layout.rank != 1 ||
+      src->layout.elements() < count || dst->layout.elements() < count ||
+      w->layout.rank != 1 || b->layout.rank != 1 ||
+      w->layout.extent[0] != channels || b->layout.extent[0] != channels ||
+      !src->layout.is_contiguous() || !dst->layout.is_contiguous() ||
+      !w->layout.is_contiguous() || !b->layout.is_contiguous()) {
+    throw std::invalid_argument("vulkan keyframe: invalid flat GroupNorm+SiLU");
+  }
+  if (!detail::norm_dispatch_fits(groups, impl_->owner->max_dispatch_x)) {
+    throw std::out_of_range(
+        "vulkan keyframe: GroupNorm group count exceeds dispatch limits");
+  }
+  TensorContext::Impl::NormParameters p;
+  p.rows = channels;
+  p.dim = static_cast<uint32_t>(spatial);
+  p.mod_rows = groups;
+  std::memcpy(&p.epsilon_bits, &epsilon, sizeof(epsilon));
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(w, BufferAccess::kComputeRead);
+    impl_->transition(b, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_group_norm(p, src, w, b, dst);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::keyframe_add_f32(DeviceTensor& a, DeviceTensor& b,
+                                    DeviceTensor& output, uint64_t count) {
+  if (!impl_ || impl_->poisoned) {
+    throw std::logic_error("vulkan tensor: invalid batch");
+  }
+  auto av = impl_->owner->require(a);
+  auto bv = impl_->owner->require(b);
+  auto out = impl_->owner->require(output);
+  if (count == 0 || count > std::numeric_limits<uint32_t>::max() ||
+      av.get() == bv.get() || av.get() == out.get() || bv.get() == out.get() ||
+      av->type != ScalarType::kFloat32 || bv->type != ScalarType::kFloat32 ||
+      out->type != ScalarType::kFloat32 || av->layout.rank != 1 ||
+      bv->layout.rank != 1 || out->layout.rank != 1 ||
+      av->layout.elements() < count || bv->layout.elements() < count ||
+      out->layout.elements() < count || !av->layout.is_contiguous() ||
+      !bv->layout.is_contiguous() || !out->layout.is_contiguous()) {
+    throw std::invalid_argument("vulkan keyframe: invalid flat residual add");
+  }
+  TensorContext::Impl::Parameters p;
+  p.op = 0;
+  p.count = impl_->owner->validate_dispatch(count);
+  try {
+    impl_->count_operator();
+    impl_->transition(av, BufferAccess::kComputeRead);
+    impl_->transition(bv, BufferAccess::kComputeRead);
+    impl_->transition(out, BufferAccess::kComputeWrite);
+    impl_->dispatch(p, av, bv, out);
   } catch (...) {
     impl_->poisoned = true;
     throw;

@@ -119,7 +119,6 @@ void launch_keyframe_conv3d(const float* x, const __half* weight, const __half* 
 void launch_keyframe_groupnorm_silu(const float* x, const __half* weight, const __half* bias,
                                     float* y, int channels, int height, int width, int groups,
                                     float eps, cudaStream_t stream) {
-  constexpr uint64_t kMaxExactNormElements = uint64_t{1} << 24;
   const uint64_t spatial = height > 0 && width > 0
       ? static_cast<uint64_t>(height) * static_cast<uint64_t>(width) : 0;
   const uint64_t total = channels > 0 ? static_cast<uint64_t>(channels) * spatial : 0;
@@ -129,7 +128,7 @@ void launch_keyframe_groupnorm_silu(const float* x, const __half* weight, const 
       groups <= 0 || channels % groups || !std::isnormal(eps) || eps <= 0.0f ||
       spatial > std::numeric_limits<int>::max() ||
       total > std::numeric_limits<uint32_t>::max() ||
-      group_count > kMaxExactNormElements)
+      group_count > std::numeric_limits<uint32_t>::max())
     throw std::runtime_error("keyframe groupnorm: invalid arguments");
   groupnorm_kernel<<<groups, 256, 0, stream>>>(x, weight, bias, y, channels,
                                                static_cast<int>(spatial),

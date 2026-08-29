@@ -279,6 +279,15 @@ class TensorBatch {
       DeviceTensor& output, uint32_t in_channels, uint32_t out_channels,
       uint32_t input_height, uint32_t input_width, uint32_t kernel,
       uint32_t stride, bool reflect_padding, bool asymmetric_padding);
+  // Flat-arena forms used by the allocation-free complete keyframe graph.
+  // Only the live CHW prefix participates; the three reusable arenas may be
+  // larger than the current level.
+  void keyframe_group_norm_silu_f16_affine(
+      DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
+      DeviceTensor& output, uint32_t channels, uint32_t height,
+      uint32_t width, uint32_t groups, float epsilon);
+  void keyframe_add_f32(DeviceTensor& a, DeviceTensor& b,
+                        DeviceTensor& output, uint64_t count);
   // Exact audio-VAE fp32 primitives. Convolution tensors use contiguous NCT
   // layouts and the checkpoint-native weight layouts documented by the shared
   // descriptors. A null bias is permitted for bias-free residual convolutions.

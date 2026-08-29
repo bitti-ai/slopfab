@@ -817,6 +817,7 @@ if(VIDFAB_ENABLE_VULKAN)
     src/vulkan/dit_graph.cpp
     src/vulkan/dit_transformer.cpp
     src/vulkan/audio_decoder.cpp
+    src/vulkan/keyframe_encoder.cpp
     src/vulkan/vae_decoder.cpp
     src/vulkan/vae_vit_block.cpp
     src/vulkan/yuv_converter.cpp)

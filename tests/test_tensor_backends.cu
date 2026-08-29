@@ -60,6 +60,7 @@
 #include "vidfab/text/encoder.h"
 #include "vidfab/text/layer_capture.h"
 #include "vidfab/vulkan/linear.h"
+#include "vidfab/vulkan/keyframe_encoder.h"
 #include "vidfab/vulkan/dit_block.h"
 #include "vidfab/vulkan/dit_graph.h"
 #include "vidfab/vulkan/dit_transformer.h"
@@ -73,6 +74,7 @@
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/vae/vit_decoder.h"
+#include "vidfab/vae/keyframe_encoder.h"
 #include "vidfab/video/y4m.h"
 #include "vidfab/video/y4m_compare.h"
 
@@ -10303,6 +10305,165 @@ VIDFAB_TEST(cuda_vulkan_keyframe_conv3d_exact) {
   batch.keyframe_conv3d_f16(input, weight, bias, output, 1, 1, 4, 6,
                             3, 2, false, true);
   batch.submit().wait();
+}
+
+VIDFAB_TEST(cuda_vulkan_keyframe_groupnorm_large_divisor) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_fp32_vae_normalization()) return;
+
+  constexpr uint32_t channels = 4, height = 4097, width = 1024, groups = 1;
+  constexpr size_t count = size_t(channels) * height * width;
+  static_assert(count > (size_t{1} << 24));
+  std::vector<float> values(count), expected(count), actual(count);
+  for (size_t i = 0; i < count; ++i)
+    values[i] = float(int((i * 23) % 257) - 128) / 64.0f;
+  std::vector<__half> affine(channels, __float2half(1.0f));
+  std::vector<__half> offsets(channels, __float2half(0.0f));
+  std::vector<uint16_t> affine_bits(channels), offset_bits(channels);
+  std::memcpy(affine_bits.data(), affine.data(), channels * 2);
+  std::memcpy(offset_bits.data(), offsets.data(), channels * 2);
+  cuda::DeviceBuffer<float> c_input(count), c_output(count);
+  cuda::DeviceBuffer<__half> c_weight(channels), c_bias(channels);
+  c_input.copy_from_host(values.data(), count);
+  c_weight.copy_from_host(affine.data(), channels);
+  c_bias.copy_from_host(offsets.data(), channels);
+  cuda::launch_keyframe_groupnorm_silu(
+      c_input.get(), c_weight.get(), c_bias.get(), c_output.get(), channels,
+      height, width, groups, 1.0e-6f, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  c_output.copy_to_host(expected.data(), count);
+
+  const uint64_t flat = count, feature = channels;
+  DeviceTensor input = vk.allocate(TensorLayout::contiguous(&flat, 1));
+  DeviceTensor output = vk.allocate(TensorLayout::contiguous(&flat, 1));
+  DeviceTensor weight = vk.allocate(
+      TensorLayout::contiguous(&feature, 1), ScalarType::kFloat16);
+  DeviceTensor bias = vk.allocate(
+      TensorLayout::contiguous(&feature, 1), ScalarType::kFloat16);
+  vk.upload_transient(input, values.data(), values.size());
+  vk.upload_transient_bytes(weight, affine_bits.data(), channels * 2);
+  vk.upload_transient_bytes(bias, offset_bits.data(), channels * 2);
+  TensorBatch batch = vk.begin_batch();
+  batch.keyframe_group_norm_silu_f16_affine(
+      input, weight, bias, output, channels, height, width, groups, 1.0e-6f);
+  batch.submit().wait();
+  vk.download(output, actual.data(), actual.size());
+  size_t mismatch = count;
+  for (size_t i = 0; i < count; ++i) {
+    if (std::memcmp(&expected[i], &actual[i], 4) != 0) {
+      mismatch = i;
+      break;
+    }
+  }
+  CHECK_MSG(mismatch == count,
+            "large keyframe GroupNorm mismatch at %zu of %zu", mismatch, count);
+}
+
+VIDFAB_TEST(cuda_vulkan_keyframe_encoder_real_graph) {
+  using namespace vidfab;
+  if (!std::getenv("VIDFAB_KEYFRAME_ENCODER_REAL")) return;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !vulkan::Instance::available()) return;
+  const std::filesystem::path path =
+      "weights/vae/minimax_h3_video_vae_fp16.safetensors";
+  if (!std::filesystem::exists(path)) return;
+  const Sha256Digest expected_sha{
+      0x7c, 0x1f, 0x13, 0x14, 0x92, 0xe7, 0xed, 0xda,
+      0xca, 0xac, 0x90, 0x69, 0xa6, 0x1b, 0x81, 0xbd,
+      0xd3, 0x9d, 0xe5, 0xcc, 0x96, 0x56, 0x1e, 0x67,
+      0x7c, 0x5e, 0xab, 0x1c, 0xdc, 0xe5, 0xe5, 0x22};
+  CHECK(sha256_file(path.string()) == expected_sha);
+  SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  const vae::EncoderWeightSummary weight_summary =
+      vae::validate_keyframe_encoder_weights(checkpoint);
+  CHECK(weight_summary.tensors == 118);
+
+  vulkan::Instance instance = vulkan::Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  vulkan::DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  vulkan::Device device = physical.front().create_device(options);
+  vulkan::KeyframeEncoder vk = vulkan::KeyframeEncoder::create(device);
+  const auto vk_load_begin = std::chrono::steady_clock::now();
+  vk.load(checkpoint);
+  const double vk_load_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - vk_load_begin).count();
+  vae::KeyframeEncoder cu(checkpoint);
+
+  constexpr int height = 64;
+  constexpr int width = 96;
+  std::vector<float> pixels(size_t(3) * height * width);
+  for (size_t i = 0; i < pixels.size(); ++i)
+    pixels[i] = float(int((i * 31) % 509) - 254) / 128.0f;
+  const auto cu_begin = std::chrono::steady_clock::now();
+  const std::vector<float> expected = cu.encode_moments(pixels.data(), height, width);
+  const double cu_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - cu_begin).count();
+  const auto vk_begin = std::chrono::steady_clock::now();
+  const std::vector<float> actual = vk.encode_moments(pixels.data(), height, width);
+  const double vk_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - vk_begin).count();
+  CHECK(expected.size() == actual.size());
+  size_t mismatch = expected.size();
+  for (size_t i = 0; i < expected.size(); ++i) {
+    if (std::memcmp(&expected[i], &actual[i], 4) != 0) {
+      mismatch = i;
+      break;
+    }
+  }
+  uint32_t cb = 0, vb = 0;
+  if (mismatch != expected.size()) {
+    std::memcpy(&cb, &expected[mismatch], 4);
+    std::memcpy(&vb, &actual[mismatch], 4);
+  }
+  CHECK_MSG(mismatch == expected.size(),
+            "real keyframe graph mismatch at %zu: CUDA=%08x Vulkan=%08x",
+            mismatch, cb, vb);
+  uint64_t hash = 1469598103934665603ull;
+  for (float value : actual) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, 4);
+    for (int byte = 0; byte < 4; ++byte) {
+      hash ^= (bits >> (8 * byte)) & 0xffu;
+      hash *= 1099511628211ull;
+    }
+  }
+  const vulkan::KeyframeEncoderStats stats = vk.stats();
+  CHECK(hash == 0xcfd864f091297976ull);
+  CHECK(stats.operators == 72);
+  CHECK(stats.persistent_bytes == weight_summary.bytes);
+  const uint64_t stable_reserved = stats.allocator_reserved_bytes;
+  const uint64_t stable_descriptors = stats.descriptor_set_allocations;
+  const std::vector<float> repeat = vk.encode_moments(pixels.data(), height, width);
+  CHECK(repeat == actual);
+  CHECK(vk.stats().allocator_reserved_bytes == stable_reserved);
+  CHECK(vk.stats().descriptor_set_allocations == stable_descriptors);
+  std::printf("  keyframe real 64x96 fnv=%016llx load=%.3fs CUDA=%.3fs Vulkan=%.3fs "
+              "persistent=%.1fMiB activation=%.1fMiB used=%.1fMiB reserved=%.1fMiB desc=%llu\n",
+              static_cast<unsigned long long>(hash), vk_load_seconds,
+              cu_seconds, vk_seconds, stats.persistent_bytes / 1048576.0,
+              stats.activation_bytes / 1048576.0,
+              stats.allocator_used_bytes / 1048576.0,
+              stats.allocator_reserved_bytes / 1048576.0,
+              static_cast<unsigned long long>(stats.descriptor_set_allocations));
+  vk.unload();
+  CHECK(!vk.loaded());
 }
 
 VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
