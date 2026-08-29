@@ -38,6 +38,7 @@
 #include "vidfab/dit/denoise.h"
 #include "vidfab/dit/packing.h"
 #include "vidfab/dit/transformer.h"
+#include "vidfab/cuda/deterministic_attention.cuh"
 #include "vidfab/dtype.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/safetensors_write.h"
@@ -911,6 +912,138 @@ VIDFAB_TEST(transformer_refiner_bisect) {
                   e.max_abs, 100.0 * e.max_rel(), e.signed_mean);
     }
   }
+}
+
+VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
+  if (!vidfab::cuda::deterministic_h3_attention_available()) {
+    std::printf("  skipped: exact H3 CUDA tuple unavailable\n");
+    return;
+  }
+
+  const TransformerConfig cfg = tiny_config();
+  const Tensors tensors = build_synthetic(cfg);
+  const std::string path = write_synthetic(tensors);
+  vidfab::SafeTensors st;
+  st.open(path);
+  Case c = make_case(cfg, 5, 0.31f);
+  // Four video frames make +/-1 a genuinely restricted range; the ordinary
+  // two-frame tiny fixture would make that band indistinguishable from full.
+  c.layout.num_latent_frames = 4;
+  c.layout.num_video_rows = c.layout.num_latent_frames * c.layout.rows_per_frame();
+  c.idx = vidfab::dit::build_indices(c.layout);
+  c.pos = vidfab::dit::build_position_ids(c.layout);
+  c.video_rows = make_data(
+      c.idx.video.size() * static_cast<size_t>(cfg.video_patch_dim()), 9002, 1.0f);
+  c.audio_rows = make_data(
+      c.idx.audio.size() * static_cast<size_t>(cfg.audio_in_channels), 9003, 1.0f);
+  c.rt = vidfab::dit::build_row_timesteps(c.layout, c.idx, 0.62f, 0.31f);
+
+  // A failed preparation must not lock a half-recorded mode into the object.
+  // Null host input is rejected by the CUDA copy before any attention work.
+  {
+    Transformer failed;
+    failed.load(st, cfg);
+    bool rejected = false;
+    try {
+      failed.prepare_text(nullptr, 1);
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    CHECK(rejected);
+    failed.set_attention_mode(vidfab::AttentionMode::kExact);
+    CHECK(failed.attention_mode() == vidfab::AttentionMode::kExact);
+  }
+
+  struct Evidence {
+    Transformer::DebugAttentionRoutes routes;
+    std::vector<float> video;
+    std::vector<float> audio;
+  };
+
+  auto run = [&](vidfab::AttentionMode mode, int band) {
+    Transformer model;
+    model.load(st, cfg);
+    model.set_attention_mode(mode);
+    model.set_attention_band(band);
+    CHECK(model.attention_mode() == mode);
+
+    // This executes both refiner blocks before the main sequence exists. It
+    // must therefore be the full exact path even when the requested main
+    // sequence below is banded.
+    const std::vector<Transformer::DebugStage> refiner =
+        model.debug_text_stages(c.prompt.data(), c.layout.num_text);
+    CHECK(refiner.size() == static_cast<size_t>(2 * cfg.num_refiner_layers + 2));
+    for (const Transformer::DebugStage& stage : refiner) CHECK(all_finite(stage.data));
+
+    // Preparation locks the arithmetic and range-table contract. Repeating
+    // the selected values is harmless; changing either is rejected rather
+    // than reusing a carve/table built for another implementation.
+    model.set_attention_mode(mode);
+    model.set_attention_band(band);
+    bool mode_rejected = false;
+    try {
+      model.set_attention_mode(vidfab::AttentionMode::kFlash2);
+    } catch (const std::exception&) {
+      mode_rejected = true;
+    }
+    CHECK(mode == vidfab::AttentionMode::kFlash2 || mode_rejected);
+    bool band_rejected = false;
+    try {
+      model.set_attention_band(band == 0 ? 1 : 0);
+    } catch (const std::exception&) {
+      band_rejected = true;
+    }
+    CHECK(band_rejected);
+
+    model.prepare_sequence(c.layout, c.idx, c.pos);
+    std::vector<float> video(c.video_rows.size());
+    std::vector<float> audio(c.audio_rows.size());
+    model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt,
+                  video.data(), audio.data());
+    CHECK(all_finite(video));
+    CHECK(all_finite(audio));
+    Evidence out;
+    out.routes = model.debug_attention_routes();
+    out.video = std::move(video);
+    out.audio = std::move(audio);
+    return out;
+  };
+
+  const Evidence exact_full = run(vidfab::AttentionMode::kExact, 0);
+  const Evidence exact_banded = run(vidfab::AttentionMode::kExact, 1);
+  const Evidence flash_full = run(vidfab::AttentionMode::kFlash2, 0);
+  CHECK(exact_full.routes.exact_refiner_full == 2);
+  CHECK(exact_full.routes.exact_main_full == 2);
+  CHECK(exact_full.routes.exact_main_banded == 0);
+  CHECK(exact_full.routes.generic_refiner == 0);
+  CHECK(exact_full.routes.generic_main == 0);
+  CHECK(exact_banded.routes.exact_refiner_full == 2);
+  CHECK(exact_banded.routes.exact_main_full == 0);
+  CHECK(exact_banded.routes.exact_main_banded == 2);
+  CHECK(exact_banded.routes.generic_refiner == 0);
+  CHECK(exact_banded.routes.generic_main == 0);
+  CHECK(flash_full.routes.exact_refiner_full == 0);
+  CHECK(flash_full.routes.exact_main_full == 0);
+  CHECK(flash_full.routes.exact_main_banded == 0);
+  CHECK(flash_full.routes.generic_refiner == 2);
+  CHECK(flash_full.routes.generic_main == 2);
+  CHECK(exact_full.video.size() == exact_banded.video.size());
+  CHECK(exact_full.audio.size() == exact_banded.audio.size());
+
+  // Exact contributes no attention workspace. The blocked reference does;
+  // both retain the same Q/K/V/output tensors and linear high-water.
+  Transformer exact_size;
+  exact_size.load(st, cfg);
+  exact_size.set_attention_mode(vidfab::AttentionMode::kExact);
+  CHECK(exact_size.debug_attention_scratch_bytes(c.layout) == 0);
+  Transformer blocked_size;
+  blocked_size.load(st, cfg);
+  blocked_size.set_attention_mode(vidfab::AttentionMode::kNone);
+  CHECK(blocked_size.debug_attention_scratch_bytes(c.layout) > 0);
+
+  st.close();
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
 }
 
 VIDFAB_TEST(transformer_forward_vs_cpu_reference) {

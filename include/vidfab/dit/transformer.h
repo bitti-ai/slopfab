@@ -158,6 +158,10 @@ class Transformer {
   // given sequence length. Lets the pipeline fail fast with a useful message
   // rather than mid-run.
   size_t activation_bytes(const SequenceLayout& layout) const;
+  // Attention-only contribution to the shared activation arena. Exact H3 is
+  // operator-bounded and returns zero; the linear high-water may otherwise
+  // mask that fact in activation_bytes().
+  size_t debug_attention_scratch_bytes(const SequenceLayout& layout) const;
 
   // The rank-8 modulation of one block, evaluated at `timesteps` and copied
   // back to the host as `[6 params][T*3 modality rows][hidden]` — the layout
@@ -185,6 +189,14 @@ class Transformer {
     int dim = 0;
     std::vector<float> data;
   };
+  struct DebugAttentionRoutes {
+    uint64_t exact_refiner_full = 0;
+    uint64_t exact_main_full = 0;
+    uint64_t exact_main_banded = 0;
+    uint64_t generic_refiner = 0;
+    uint64_t generic_main = 0;
+  };
+  DebugAttentionRoutes debug_attention_routes() const;
 
   // Re-runs `prepare_text` capturing the residual stream at every stage
   // boundary, in order: condition_proj, then attn/ffn for each refiner block,

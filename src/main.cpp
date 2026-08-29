@@ -505,7 +505,7 @@ const CommandHelp kCommands[] = {
      "  --attention <backend>        none, flash2, sage2 (default), sol,\n"
      "                               sol-experimental, or exact. Vulkan neural\n"
      "                               inference accepts only exact attention, but\n"
-     "                               its full model orchestrator is not complete\n"
+     "                               its full model orchestrator is not complete.\n"
      "                               The experimental SM120-only\n"
      "                               path is lossy and fails rather than falling back.\n"
      "  --sol-beta <f>               routing threshold multiplier (default 1)\n"
@@ -1419,19 +1419,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       return 1;
     }
     std::fprintf(stderr,
-                 "vidfab: Vulkan exact attention is available, but Vulkan neural "
-                 "inference orchestration is not implemented; no CUDA fallback was used\n");
+                 "vidfab: --attention exact is the only defined Vulkan attention choice, "
+                 "but Vulkan neural inference orchestration is not implemented; "
+                 "no attention pipeline ran and no CUDA fallback was used\n");
     return 1;
   }
-
-#if VIDFAB_WITH_CUDA
-  if (attention_mode == vidfab::AttentionMode::kExact &&
-      !vidfab::cuda::deterministic_h3_attention_available()) {
-    std::fprintf(stderr,
-                 "vidfab: --attention exact is unavailable on this CUDA device/runtime tuple\n");
-    return 1;
-  }
-#endif
 
   // Both write the same field, so accepting both would mean silently honouring
   // one of them and dropping the other.
@@ -1614,6 +1606,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     }
     return 0;
   }
+
+#if VIDFAB_WITH_CUDA
+  // Dry-run above is deliberately device-free. Synthetic latents skip the
+  // transformer, so only a real denoise run needs the pinned exact tuple.
+  if (!synthetic && attention_mode == vidfab::AttentionMode::kExact &&
+      !vidfab::cuda::deterministic_h3_attention_available()) {
+    std::fprintf(stderr,
+                 "vidfab: --attention exact is unavailable on this CUDA device/runtime tuple\n");
+    return 1;
+  }
+#endif
 
 #if !VIDFAB_WITH_CUDA
   (void)executable;

@@ -15,6 +15,7 @@
 #include "vidfab/audio/wav.h"
 #include "vidfab/image.h"
 #include "vidfab/cuda/profile.h"
+#include "vidfab/cuda/deterministic_attention.cuh"
 #include "vidfab/dit/denoise.h"
 #include "vidfab/dit/checkpoint.h"
 #include "vidfab/dit/packing.h"
@@ -292,6 +293,16 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   } release_guard{options.release_reused_models};
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
+
+  // Validate the explicitly selected exact CUDA artifact before touching any
+  // prompt/checkpoint. Synthetic-latent runs never execute a transformer and
+  // therefore do not require this tuple.
+  if (options.source == LatentSource::kDenoise &&
+      options.attention_mode == AttentionMode::kExact &&
+      !cuda::deterministic_h3_attention_available()) {
+    result.message = "exact attention is unavailable on this CUDA device/runtime tuple";
+    return result;
+  }
 
   // Host hooks (generate.h). `notify` is the run's only cancellation point:
   // it says where the run is and returns false when the host wants it

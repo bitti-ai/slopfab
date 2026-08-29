@@ -470,6 +470,7 @@ struct Carve {
   size_t fused = 0;
   size_t act = 0;
   size_t fbuf = 0;      // elements of one fp32 [chunk, hidden] buffer
+  size_t attention_scratch = 0;
   size_t scratch = 0;   // bytes left for LinearRunner and attention
   size_t total = 0;     // bytes
 };
@@ -477,6 +478,20 @@ struct Carve {
 // `chunk_override` exists for the token refiner, which runs the whole text
 // stream in one pass: its attention is over all L rows anyway, so chunking the
 // row-wise stages around it would buy nothing and complicate the carve.
+size_t attention_scratch_for_mode(const TransformerConfig& cfg, int sequence,
+                                  AttentionMode mode) {
+  if (mode == AttentionMode::kExact) return 0;
+  AttentionConfig acfg;
+  acfg.seq_len = std::max(sequence, 1);
+  acfg.num_heads = cfg.num_attention_heads;
+  acfg.head_dim = cfg.attention_head_dim;
+  AttentionBackend backend = AttentionBackend::kFused;
+  if (mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
+  if (mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
+  if (is_sol_attention(mode)) backend = AttentionBackend::kSol;
+  return cuda::attention_workspace_bytes(acfg, backend);
+}
+
 Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
                  int chunk_override = 0,
                  AttentionMode attention_mode = AttentionMode::kFlash2) {
@@ -537,22 +552,8 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     probe.in_features = cfg.text_dim;
     scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kF32));
   }
-  {
-    AttentionConfig acfg;
-    acfg.seq_len = std::max(seq, 1);
-    acfg.num_heads = cfg.num_attention_heads;
-    acfg.head_dim = cfg.attention_head_dim;
-    // Exact H3 is an operator-bounded cooperative kernel with no workspace.
-    // Spell that out rather than accidentally relying on kFused also being
-    // zero today; exact never dispatches through attention_forward below.
-    if (attention_mode != AttentionMode::kExact) {
-      AttentionBackend backend = AttentionBackend::kFused;
-      if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
-      if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
-      if (is_sol_attention(attention_mode)) backend = AttentionBackend::kSol;
-      scratch = std::max(scratch, cuda::attention_workspace_bytes(acfg, backend));
-    }
-  }
+  c.attention_scratch = attention_scratch_for_mode(cfg, seq, attention_mode);
+  scratch = std::max(scratch, c.attention_scratch);
   c.scratch = scratch;
   c.total = bytes + align_up(scratch);
   return c;
@@ -591,6 +592,7 @@ struct Transformer::Impl {
   PackedIndices indices;
   bool has_sequence = false;
   bool attention_configuration_locked = false;
+  Transformer::DebugAttentionRoutes attention_routes;
   int num_text = 0;
   Carve carve;
   // Frame-banded attention. `attn_band` is a request-level setting; `d_band`
@@ -909,7 +911,11 @@ struct Transformer::Impl {
       backend = AttentionBackend::kSol;
     // Empty unless this request asked for a band, so the default path hands the
     // kernel a null pointer and gets the unbanded instantiation.
-    acfg.band_ranges = d_band.size() > 0 ? d_band.get() : nullptr;
+    // The text refiner is always full attention. On a reused model `d_band`
+    // may still hold the preceding main sequence's table, so key this on the
+    // block kind as well as buffer presence rather than relying on first-run
+    // allocation order.
+    acfg.band_ranges = layer >= 0 && d_band.size() > 0 ? d_band.get() : nullptr;
     if (backend == AttentionBackend::kSol && rows == layout.total_rows()) {
       acfg.exact_prefix = layout.video_start();
       acfg.sol_beta = sol_schedule.beta;
@@ -924,8 +930,13 @@ struct Transformer::Impl {
           stream.get(), q, k, v, attn_out, acfg.band_ranges,
           static_cast<uint32_t>(rows), static_cast<uint32_t>(cfg.num_attention_heads),
           static_cast<uint32_t>(cfg.attention_head_dim), acfg.effective_scale());
+      if (layer < 0) ++attention_routes.exact_refiner_full;
+      else if (acfg.band_ranges == nullptr) ++attention_routes.exact_main_full;
+      else ++attention_routes.exact_main_banded;
     } else {
       cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
+      if (layer < 0) ++attention_routes.generic_refiner;
+      else ++attention_routes.generic_main;
     }
     diagnose("attention",attn_out,size_t(rows)*inner,layer);
     const char* label = block_attention_mode == AttentionMode::kExact ? "attn.exact" :
@@ -1091,6 +1102,7 @@ void Transformer::unload() {
   impl_->arena_bytes = 0;
   impl_->has_sequence = false;
   impl_->attention_configuration_locked = false;
+  impl_->attention_routes = {};
 }
 
 void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config) {
@@ -1615,6 +1627,14 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   return total;
 }
 
+size_t Transformer::debug_attention_scratch_bytes(const SequenceLayout& layout) const {
+  return plan_carve(impl_->cfg, layout, 0, impl_->attention_mode).attention_scratch;
+}
+
+Transformer::DebugAttentionRoutes Transformer::debug_attention_routes() const {
+  return impl_->attention_routes;
+}
+
 std::vector<float> Transformer::debug_modulation(int block_index,
                                                  const std::vector<float>& timesteps) {
   Impl& s = *impl_;
@@ -1678,8 +1698,6 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   s.require_loaded("prepare_text");
   if (num_tokens < 0) throw std::runtime_error("transformer: negative token count");
 
-  s.attention_configuration_locked = true;
-
   s.num_text = num_tokens;
   if (num_tokens == 0) {
     s.text_cache.reset();
@@ -1730,8 +1748,12 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   s.carve.chunk = num_tokens;
   for (const BlockWeights& b : s.refiner) {
     // No AdaLN, no RoPE, no mask: `mod_base` and `cos` are null.
+    // Preserve every legacy mode's historical Flash2 refiner. Exact is the
+    // only selection whose contract deliberately covers both stacks.
+    const AttentionMode refiner_mode = s.attention_mode == AttentionMode::kExact
+        ? AttentionMode::kExact : AttentionMode::kFlash2;
     s.run_block(b, nullptr, num_tokens, x, nullptr, nullptr, nullptr, q, k, v, attn_out, normed,
-                fused, act, branch, s.attention_mode);
+                fused, act, branch, refiner_mode);
   }
   s.carve = saved;
 
@@ -1742,13 +1764,13 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   s.emit_stage("final_norm", x, num_tokens, hidden);
   ws.clear();
+  s.attention_configuration_locked = true;
 }
 
 void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedIndices& indices,
                                    const std::vector<double>& position_ids) {
   Impl& s = *impl_;
   s.require_loaded("prepare_sequence");
-  s.attention_configuration_locked = true;
 
   const int seq = layout.total_rows();
   if (seq <= 0) throw std::runtime_error("transformer: empty packed sequence");
@@ -1844,6 +1866,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   s.ws.reserve(s.carve.total);
   s.has_sequence = true;
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  s.attention_configuration_locked = true;
 }
 
 // ---------------------------------------------------------------------------
