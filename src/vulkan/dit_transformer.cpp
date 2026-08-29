@@ -370,9 +370,8 @@ uint32_t ExactH3Transformer::required_forward_operators(
 
 void ExactH3Transformer::record_forward(
     TensorBatch& batch, DeviceTensor& video_latents,
-    DeviceTensor& audio_latents, DeviceTensor& text_indices,
-    DeviceTensor& video_indices, DeviceTensor& audio_indices,
-    DeviceTensor& main_selectors, DeviceTensor& code,
+    DeviceTensor& audio_latents, DeviceTensor& main_selectors,
+    DeviceTensor& code,
     DeviceTensor& cosine, DeviceTensor& sine,
     DeviceTensor& video_timestep_indices,
     DeviceTensor& audio_timestep_indices,
@@ -388,12 +387,6 @@ void ExactH3Transformer::record_forward(
                 c.video_rows, c.video_dim) &&
       tensor_is(*impl_->context, audio_latents, ScalarType::kFloat32,
                 c.audio_rows, c.audio_dim) &&
-      tensor_is(*impl_->context, text_indices, ScalarType::kInt32,
-                c.text_rows) &&
-      tensor_is(*impl_->context, video_indices, ScalarType::kInt32,
-                c.video_rows) &&
-      tensor_is(*impl_->context, audio_indices, ScalarType::kInt32,
-                c.audio_rows) &&
       tensor_is(*impl_->context, main_selectors, ScalarType::kInt32,
                 b.sequence) &&
       tensor_is(*impl_->context, code, ScalarType::kFloat32,
@@ -421,13 +414,15 @@ void ExactH3Transformer::record_forward(
                          s.video_projected, c.video_rows, 0, 0,
                          &s.video_in_bias);
   batch.convert(s.video_projected, s.video_projected_bf16);
-  batch.scatter_rows(s.video_projected_bf16, video_indices, s.hidden);
+  batch.copy_rows(s.video_projected_bf16, s.hidden, 0,
+                  c.text_rows + c.audio_rows, c.video_rows);
   s.audio_in_plan.record(batch, audio_latents, s.audio_in_weight,
                          s.audio_projected, c.audio_rows, 0, 0,
                          &s.audio_in_bias);
   batch.convert(s.audio_projected, s.audio_projected_bf16);
-  batch.scatter_rows(s.audio_projected_bf16, audio_indices, s.hidden);
-  batch.scatter_rows(s.text_cache, text_indices, s.hidden);
+  batch.copy_rows(s.audio_projected_bf16, s.hidden, 0,
+                  c.text_rows, c.audio_rows);
+  batch.copy_rows(s.text_cache, s.hidden, 0, 0, c.text_rows);
   s.main.record(batch, s.hidden, main_selectors, code, cosine, sine,
                 ranges, main_taps);
 
@@ -435,7 +430,8 @@ void ExactH3Transformer::record_forward(
                          s.final_shift, 1, 1, b.hidden);
   batch.dit_expand_adaln(s.final_scale_weight, s.final_scale_bias, code,
                          s.final_scale, 1, 1, b.hidden);
-  batch.gather_rows(s.hidden, video_indices, s.video_gather_bf16);
+  batch.copy_rows(s.hidden, s.video_gather_bf16,
+                  c.text_rows + c.audio_rows, 0, c.video_rows);
   batch.convert(s.video_gather_bf16, s.video_gather);
   batch.rms_norm_modulate_f32(s.video_gather, s.final_norm,
       s.final_scale, s.final_shift, video_timestep_indices,
@@ -443,7 +439,8 @@ void ExactH3Transformer::record_forward(
   s.video_out_plan.record(batch, s.video_normed, s.video_out_weight,
                           video_velocity, c.video_rows, 0, 0,
                           &s.video_out_bias);
-  batch.gather_rows(s.hidden, audio_indices, s.audio_gather_bf16);
+  batch.copy_rows(s.hidden, s.audio_gather_bf16,
+                  c.text_rows, 0, c.audio_rows);
   batch.convert(s.audio_gather_bf16, s.audio_gather);
   batch.rms_norm_modulate_f32(s.audio_gather, s.final_norm,
       s.final_scale, s.final_shift, audio_timestep_indices,

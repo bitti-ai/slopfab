@@ -44,15 +44,14 @@ class ExactH3Transformer {
   void prepare_text(DeviceTensor& prompt);
   uint32_t required_prepare_text_operators() const;
 
-  // Inputs/outputs are contiguous fp32 modality rows. Indices are the trusted
-  // backend-neutral packed permutation. main_selectors are [S] AdaLN table
-  // rows, code is [T,rank], and final selectors are timestep-only [V]/[A].
+  // Inputs/outputs are contiguous fp32 modality rows. The backend-neutral H3
+  // packing invariant is [text|audio|video]; exact row-range transfers build
+  // and gather that packed stream without a shader or host boundary.
+  // main_selectors are [S] AdaLN table rows, code is [T,rank], and final
+  // selectors are timestep-only [V]/[A].
   void record_forward(TensorBatch& batch,
                       DeviceTensor& video_latents,
                       DeviceTensor& audio_latents,
-                      DeviceTensor& text_indices,
-                      DeviceTensor& video_indices,
-                      DeviceTensor& audio_indices,
                       DeviceTensor& main_selectors,
                       DeviceTensor& code,
                       DeviceTensor& cosine,

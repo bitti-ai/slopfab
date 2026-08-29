@@ -1919,6 +1919,42 @@ void TensorBatch::copy(DeviceTensor& source, DeviceTensor& destination) {
   }
 }
 
+void TensorBatch::copy_rows(DeviceTensor& source, DeviceTensor& destination,
+                            uint32_t source_row, uint32_t destination_row,
+                            uint32_t rows) {
+  if (!impl_) throw std::logic_error("vulkan tensor: empty batch");
+  if (impl_->poisoned) throw std::logic_error("vulkan tensor: batch is poisoned");
+  auto src = impl_->owner->require(source);
+  auto dst = impl_->owner->require(destination);
+  const auto& a = src->layout; const auto& o = dst->layout;
+  const uint64_t scalar_bytes =
+      src->type == ScalarType::kFloat32 || src->type == ScalarType::kInt32 ? 4u :
+      src->type == ScalarType::kFloat16 || src->type == ScalarType::kBFloat16 ? 2u : 1u;
+  const uint64_t row_bytes = a.rank == 2
+      ? a.extent[1] * scalar_bytes : 0;
+  if (src.get() == dst.get() || src->type != dst->type ||
+      a.rank != 2 || o.rank != 2 || !a.is_contiguous() ||
+      !o.is_contiguous() || a.extent[1] != o.extent[1] || rows == 0 ||
+      source_row > a.extent[0] || rows > a.extent[0] - source_row ||
+      destination_row > o.extent[0] || rows > o.extent[0] - destination_row ||
+      row_bytes == 0 || (row_bytes & 3u) != 0 ||
+      row_bytes > std::numeric_limits<uint64_t>::max() / rows) {
+    throw std::invalid_argument("vulkan tensor: invalid row-range copy");
+  }
+  const uint64_t copy_bytes = row_bytes * rows;
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kTransferRead);
+    impl_->transition(dst, BufferAccess::kTransferWrite);
+    impl_->commands.copy_buffer(src->buffer, dst->buffer, copy_bytes,
+                                row_bytes * source_row,
+                                row_bytes * destination_row);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
 void TensorBatch::add(DeviceTensor& a, DeviceTensor& b, DeviceTensor& output) {
   if (!impl_) throw std::logic_error("vulkan tensor: empty batch");
   if (impl_->poisoned) throw std::logic_error("vulkan tensor: batch is poisoned");
@@ -2836,6 +2872,9 @@ void TensorBatch::dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
       dst->layout.extent[0] == num_param &&
       dst->layout.extent[1] == timesteps * num_modality &&
       dst->layout.extent[2] == channels;
+  const bool single_table_output = num_param == 1 && dst->layout.rank == 2 &&
+      dst->layout.extent[0] == timesteps * num_modality &&
+      dst->layout.extent[1] == channels;
   const uint64_t flat_stride = dst->layout.rank == 1 && num_param != 0 &&
       dst->layout.extent[0] % num_param == 0
           ? dst->layout.extent[0] / num_param : 0;
@@ -2847,7 +2886,8 @@ void TensorBatch::dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
       w->layout.rank != 2 || w->layout.extent[0] != features ||
       w->layout.extent[1] != rank || b->layout.rank != 1 ||
       b->layout.extent[0] != features || c->layout.rank != 2 ||
-      timesteps == 0 || rank == 0 || (!canonical_output && !flat_output) ||
+      timesteps == 0 || rank == 0 ||
+      (!canonical_output && !single_table_output && !flat_output) ||
       w->type != ScalarType::kFloat32 || b->type != ScalarType::kFloat32 ||
       c->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
       !w->layout.is_contiguous() || !b->layout.is_contiguous() ||

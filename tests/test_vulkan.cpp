@@ -21,6 +21,7 @@
 #include "vidfab/vulkan/audio_decoder.h"
 #include "vidfab/vulkan/dit_block.h"
 #include "vidfab/vulkan/dit_graph.h"
+#include "vidfab/vulkan/dit_transformer.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/attention.h"
@@ -2615,6 +2616,59 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   graph_checkpoint.open(graph_path.string());
   corrupt_graph.open(corrupt_graph_path.string());
 
+  auto transformer_fixture = [&](bool corrupt_endpoint) {
+    std::vector<TensorWrite> all = fixture(0);
+    std::vector<TensorWrite> refiner = fixture(0);
+    for (TensorWrite& tensor : refiner) {
+      if (tensor.name.find(".adaln_proj.") != std::string::npos) continue;
+      tensor.name.replace(0, std::strlen("blocks.0"),
+                          "token_refiner.blocks.0");
+      all.push_back(std::move(tensor));
+    }
+    const int64_t h = config.hidden;
+    constexpr int64_t text_dim = 16, video_dim = 4, audio_dim = 2;
+    const int64_t final_adaln = 2 * h;
+    all.insert(all.end(), {
+      {"condition_proj.weight", {h, text_dim},
+       values(size_t(h * text_dim), 101, 1.0f / 1024.0f)},
+      {"condition_proj.bias", {h}, values(h, 103, 1.0f / 128.0f)},
+      {"video_patch_proj.weight", {h, video_dim},
+       values(size_t(h * video_dim), 107, 1.0f / 1024.0f)},
+      {"video_patch_proj.bias", {h}, values(h, 109, 1.0f / 128.0f)},
+      {"audio_patch_proj.weight", {h, audio_dim},
+       values(size_t(h * audio_dim), 113, 1.0f / 1024.0f)},
+      {"audio_patch_proj.bias", {h}, values(h, 127, 1.0f / 128.0f)},
+      {"token_refiner.final_norm.weight", {h}, std::vector<float>(h, 1.0f)},
+      {"final_layer.norm.weight", {h}, std::vector<float>(h, 1.0f)},
+      {"final_layer.adaln_proj.linear.weight",
+       {final_adaln, config.adaln_rank},
+       values(size_t(final_adaln * config.adaln_rank), 131, 1.0f / 8192.0f)},
+      {"final_layer.adaln_proj.linear.bias", {final_adaln},
+       values(final_adaln, 137, 1.0f / 128.0f)},
+      {"final_layer.video_out.weight", {video_dim, h},
+       values(size_t(video_dim * h), 139, 1.0f / 1024.0f)},
+      {"final_layer.video_out.bias", {video_dim},
+       values(video_dim, 149, 1.0f / 128.0f)},
+      {"final_layer.audio_out.weight", {audio_dim, h},
+       values(size_t(audio_dim * h), 151, 1.0f / 1024.0f)},
+      {"final_layer.audio_out.bias",
+       {corrupt_endpoint ? audio_dim - 1 : audio_dim},
+       values(size_t(corrupt_endpoint ? audio_dim - 1 : audio_dim),
+              157, 1.0f / 128.0f)}
+    });
+    return all;
+  };
+  const auto transformer_path =
+      base / "vidfab_h3_cuda_off_transformer.safetensors";
+  const auto corrupt_transformer_path =
+      base / "vidfab_h3_cuda_off_corrupt_transformer.safetensors";
+  write_safetensors(transformer_path.string(), transformer_fixture(false));
+  write_safetensors(corrupt_transformer_path.string(),
+                    transformer_fixture(true));
+  SafeTensors transformer_checkpoint, corrupt_transformer;
+  transformer_checkpoint.open(transformer_path.string());
+  corrupt_transformer.open(corrupt_transformer_path.string());
+
   ExactH3BlockStage first = ExactH3BlockStage::create(context, config);
   ExactH3BlockStage second = ExactH3BlockStage::create(context, config);
   first.load(valid, 0);
@@ -2945,6 +2999,138 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
       graph.required_operators(), double(graph.persistent_bytes()) / 1048576.0,
       double(graph.scratch_bytes()) / 1048576.0);
   graph.unload();
+
+  // Complete small/tail transformer evaluation: refiner cache, endpoint
+  // projections/scatters, main graph and final modality heads.
+  ExactH3TransformerConfig transformer_config;
+  transformer_config.main.block = config;
+  transformer_config.main.layers = 1;
+  transformer_config.text_rows = 3;
+  transformer_config.video_rows = 60;
+  transformer_config.audio_rows = 2;
+  transformer_config.text_dim = 16;
+  transformer_config.video_dim = 4;
+  transformer_config.audio_dim = 2;
+  transformer_config.refiner_layers = 1;
+  const uint64_t prompt_shape[] = {3, 16};
+  const uint64_t video_input_shape[] = {60, 4};
+  const uint64_t audio_input_shape[] = {2, 2};
+  DeviceTensor prompt = graph_context.allocate(
+      TensorLayout::contiguous(prompt_shape, 2));
+  DeviceTensor transformer_video = graph_context.allocate(
+      TensorLayout::contiguous(video_input_shape, 2));
+  DeviceTensor transformer_audio = graph_context.allocate(
+      TensorLayout::contiguous(audio_input_shape, 2));
+  DeviceTensor transformer_video_out = graph_context.allocate(
+      TensorLayout::contiguous(video_input_shape, 2));
+  DeviceTensor transformer_audio_out = graph_context.allocate(
+      TensorLayout::contiguous(audio_input_shape, 2));
+  DeviceTensor transformer_text_idx = graph_context.allocate(
+      TensorLayout::contiguous(prompt_shape, 1), ScalarType::kInt32);
+  const uint64_t video_index_shape[] = {60};
+  const uint64_t audio_index_shape[] = {2};
+  DeviceTensor transformer_video_idx = graph_context.allocate(
+      TensorLayout::contiguous(video_index_shape, 1), ScalarType::kInt32);
+  DeviceTensor transformer_audio_idx = graph_context.allocate(
+      TensorLayout::contiguous(audio_index_shape, 1), ScalarType::kInt32);
+  DeviceTensor transformer_selectors = graph_context.allocate(
+      TensorLayout::contiguous(selector_shape, 1), ScalarType::kInt32);
+  DeviceTensor transformer_code = graph_context.allocate(
+      TensorLayout::contiguous(code_shape, 2));
+  DeviceTensor transformer_cosine = graph_context.allocate(
+      TensorLayout::contiguous(rope_shape, 2));
+  DeviceTensor transformer_sine = graph_context.allocate(
+      TensorLayout::contiguous(rope_shape, 2));
+  DeviceTensor transformer_video_ts = graph_context.allocate(
+      TensorLayout::contiguous(video_index_shape, 1), ScalarType::kInt32);
+  DeviceTensor transformer_audio_ts = graph_context.allocate(
+      TensorLayout::contiguous(audio_index_shape, 1), ScalarType::kInt32);
+  const std::vector<float> prompt_values = values(3 * 16, 163, 1.0f / 32.0f);
+  const std::vector<float> video_values = values(60 * 4, 167, 1.0f / 32.0f);
+  const std::vector<float> audio_values = values(2 * 2, 173, 1.0f / 32.0f);
+  std::vector<int32_t> text_idx{0, 1, 2}, audio_idx{3, 4}, video_idx(60);
+  for (int32_t i = 0; i < 60; ++i) video_idx[i] = i + 5;
+  std::vector<int32_t> zero_video_ts(60, 0), zero_audio_ts(2, 0);
+  graph_context.upload(prompt, prompt_values.data(), prompt_values.size());
+  graph_context.upload(transformer_video, video_values.data(), video_values.size());
+  graph_context.upload(transformer_audio, audio_values.data(), audio_values.size());
+  graph_context.upload_bytes(transformer_text_idx, text_idx.data(), text_idx.size() * 4);
+  graph_context.upload_bytes(transformer_video_idx, video_idx.data(), video_idx.size() * 4);
+  graph_context.upload_bytes(transformer_audio_idx, audio_idx.data(), audio_idx.size() * 4);
+  graph_context.upload_bytes(transformer_selectors, host_selectors.data(),
+                             host_selectors.size() * 4);
+  graph_context.upload(transformer_code, host_code.data(), host_code.size());
+  graph_context.upload(transformer_cosine, host_cos.data(), host_cos.size());
+  graph_context.upload(transformer_sine, host_sin.data(), host_sin.size());
+  graph_context.upload_bytes(transformer_video_ts, zero_video_ts.data(),
+                             zero_video_ts.size() * 4);
+  graph_context.upload_bytes(transformer_audio_ts, zero_audio_ts.data(),
+                             zero_audio_ts.size() * 4);
+  const uint64_t transformer_baseline = graph_context.pooled_used_bytes();
+  ExactH3Transformer transformer = ExactH3Transformer::create(
+      graph_context, transformer_config);
+  CHECK(!transformer.loaded() && transformer.persistent_bytes() == 0u &&
+        transformer.scratch_bytes() == 0u);
+  bool transformer_corrupt_rejected = false;
+  try { transformer.load(corrupt_transformer); }
+  catch (const std::exception&) { transformer_corrupt_rejected = true; }
+  CHECK(transformer_corrupt_rejected && !transformer.loaded());
+  CHECK(graph_context.pooled_used_bytes() == transformer_baseline);
+  transformer.load(transformer_checkpoint);
+  CHECK(transformer.loaded() && !transformer.text_prepared());
+  transformer.prepare_text(prompt);
+  CHECK(transformer.text_prepared());
+  CHECK(transformer.required_forward_operators() == 42u);
+  auto run_transformer = [&] {
+    TensorBatch batch = graph_context.begin_batch();
+    transformer.record_forward(
+        batch, transformer_video, transformer_audio, transformer_selectors,
+        transformer_code, transformer_cosine, transformer_sine,
+        transformer_video_ts, transformer_audio_ts, transformer_video_out,
+        transformer_audio_out);
+    CHECK(batch.remaining_operator_capacity() == 86u);
+    batch.submit().wait();
+    std::vector<float> video_result(60 * 4), audio_result(2 * 2);
+    graph_context.download(transformer_video_out, video_result.data(),
+                           video_result.size());
+    graph_context.download(transformer_audio_out, audio_result.data(),
+                           audio_result.size());
+    video_result.insert(video_result.end(), audio_result.begin(), audio_result.end());
+    return video_result;
+  };
+  const std::vector<float> transformer_output = run_transformer();
+  const uint64_t transformer_digest = fnv64_floats(transformer_output);
+  CHECK(transformer_digest == 0x30dec4598d352f88ull);
+  std::printf("  CUDA-off H3 transformer S65 FNV64 %016llx, ops %u, persistent/scratch %.2f/%.2f MiB\n",
+      static_cast<unsigned long long>(transformer_digest),
+      transformer.required_forward_operators(),
+      double(transformer.persistent_bytes()) / 1048576.0,
+      double(transformer.scratch_bytes()) / 1048576.0);
+  CHECK(run_transformer() == transformer_output);
+  const uint64_t transformer_persistent = transformer.persistent_bytes();
+  const uint64_t transformer_scratch = transformer.scratch_bytes();
+  const uint64_t transformer_live_used = graph_context.pooled_used_bytes();
+  const uint64_t transformer_reserved = graph_context.reserved_bytes();
+  const uint64_t transformer_descriptors =
+      graph_context.descriptor_set_allocations();
+  bool transformer_reload_rejected = false;
+  try { transformer.load(transformer_checkpoint); }
+  catch (const std::logic_error&) { transformer_reload_rejected = true; }
+  CHECK(transformer_reload_rejected && transformer.text_prepared());
+  CHECK(graph_context.pooled_used_bytes() == transformer_live_used);
+  CHECK(graph_context.reserved_bytes() == transformer_reserved);
+  CHECK(graph_context.descriptor_set_allocations() == transformer_descriptors);
+  transformer.unload();
+  CHECK(!transformer.loaded() && transformer.persistent_bytes() == 0u &&
+        transformer.scratch_bytes() == 0u &&
+        transformer.peak_device_bytes() == 0u);
+  CHECK(graph_context.pooled_used_bytes() == transformer_baseline);
+  transformer.load(transformer_checkpoint);
+  CHECK(transformer.persistent_bytes() == transformer_persistent &&
+        transformer.scratch_bytes() == transformer_scratch);
+  transformer.prepare_text(prompt);
+  CHECK(run_transformer() == transformer_output);
+  transformer.unload();
   CHECK(first.persistent_bytes() == 0u && second.persistent_bytes() == 0u);
   CHECK(context.pooled_used_bytes() + 2 * persistent <= stable_used);
   first.load(valid, 0);
@@ -3083,6 +3269,8 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   std::filesystem::remove(corrupt_fc2_path, ignored);
   std::filesystem::remove(graph_path, ignored);
   std::filesystem::remove(corrupt_graph_path, ignored);
+  std::filesystem::remove(transformer_path, ignored);
+  std::filesystem::remove(corrupt_transformer_path, ignored);
 }
 
 VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {

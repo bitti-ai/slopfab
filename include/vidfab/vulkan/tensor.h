@@ -109,6 +109,11 @@ class TensorBatch {
   TensorBatch& operator=(const TensorBatch&) = delete;
 
   void copy(DeviceTensor& source, DeviceTensor& destination);
+  // Contiguous 2-D row-range transfer. Source/destination must have the same
+  // scalar type and column count; ranges are in rows and must not overlap.
+  void copy_rows(DeviceTensor& source, DeviceTensor& destination,
+                 uint32_t source_row, uint32_t destination_row,
+                 uint32_t rows);
   void add(DeviceTensor& a, DeviceTensor& b, DeviceTensor& output);
   void convert(DeviceTensor& source, DeviceTensor& destination);
   void transpose_2d(DeviceTensor& source, DeviceTensor& destination);
