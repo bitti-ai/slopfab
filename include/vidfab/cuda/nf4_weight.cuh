@@ -20,7 +20,8 @@ class F16Weight {
   F16Weight& operator=(const F16Weight&) = delete;
 
   void load(const SafeTensors& checkpoint, const std::string& name, size_t expected_elements,
-            cudaStream_t stream, const char* consumer);
+            cudaStream_t stream, const char* consumer,
+            bool canonicalize_f16_subnormals = false);
   const __half* materialize(__half* workspace, size_t workspace_elements,
                             cudaStream_t stream) const;
   size_t elements() const { return elements_; }

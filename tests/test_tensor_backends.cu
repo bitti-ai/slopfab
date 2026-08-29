@@ -47,6 +47,7 @@
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/vae_vit_block.h"
+#include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vae/vit_decoder.h"
 
 #ifdef _WIN32
@@ -6213,7 +6214,62 @@ VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
   }
   CHECK(first.size() == 5505024u);
   CHECK(ragged.size() == 2752512u);
-  CHECK(digest == 0x2fe12b519f537f14ull);
+  CHECK(digest == 0x4d84e832e07db0a8ull);
+  if (vulkan::Instance::available()) {
+    vulkan::Instance instance = vulkan::Instance::create();
+    const auto physical = instance.enumerate_devices();
+    if (!physical.empty() && physical.front().info().timeline_semaphore) {
+      vulkan::DeviceOptions options;
+      options.enable_timeline_semaphore = true;
+      options.enable_shader_int64 = physical.front().info().shader_int64;
+      vulkan::Device device = physical.front().create_device(options);
+      vulkan::VideoVaeDecoder vk_decoder =
+          vulkan::VideoVaeDecoder::create(device, config);
+      const auto vk_load_begin = std::chrono::steady_clock::now();
+      vk_decoder.load(checkpoint);
+      const double vk_load_ms = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - vk_load_begin).count();
+      std::vector<float> vk_first, vk_ragged, vk_first_again;
+      const auto vk_forward_begin = std::chrono::steady_clock::now();
+      vk_decoder.forward_window(latent.data(), 7, 16, 16, vk_first);
+      const double vk_forward_ms = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - vk_forward_begin).count();
+      vk_decoder.forward_window(ragged_latent.data(), 7, 8, 16, vk_ragged);
+      vk_decoder.forward_window(latent.data(), 7, 16, 16, vk_first_again);
+      size_t window_mismatch = first.size();
+      for (size_t i = 0; i < first.size(); ++i) {
+        if (std::memcmp(&first[i], &vk_first[i], sizeof(float)) != 0) {
+          window_mismatch = i;
+          break;
+        }
+      }
+      if (window_mismatch != first.size()) {
+        uint32_t cb = 0, vb = 0;
+        std::memcpy(&cb, &first[window_mismatch], 4);
+        std::memcpy(&vb, &vk_first[window_mismatch], 4);
+        std::printf("  window mismatch %zu CUDA=%08x Vulkan=%08x\n",
+                    window_mismatch, cb, vb);
+      }
+      CHECK(std::memcmp(first.data(), vk_first.data(), first.size() * 4) == 0);
+      CHECK(std::memcmp(ragged.data(), vk_ragged.data(), ragged.size() * 4) == 0);
+      CHECK(vk_first == vk_first_again);
+      CHECK(vk_decoder.cached_shapes() == 2);
+      const uint64_t stable_reserved = vk_decoder.allocator_reserved_bytes();
+      const uint64_t stable_descriptors =
+          vk_decoder.descriptor_set_allocations();
+      vk_decoder.forward_window(latent.data(), 7, 16, 16, vk_first_again);
+      CHECK(vk_decoder.allocator_reserved_bytes() == stable_reserved);
+      CHECK(vk_decoder.descriptor_set_allocations() == stable_descriptors);
+      std::printf(
+          "  exact Vulkan ViTDecoder: load %.1f ms, forward %.1f ms, persistent/peak %.1f/%.1f MiB, pool used/reserved %.1f/%.1f MiB, descriptors %llu\n",
+          vk_load_ms, vk_forward_ms,
+          double(vk_decoder.persistent_bytes()) / 1048576.0,
+          double(vk_decoder.peak_device_bytes()) / 1048576.0,
+          double(vk_decoder.allocator_used_bytes()) / 1048576.0,
+          double(vk_decoder.allocator_reserved_bytes()) / 1048576.0,
+          static_cast<unsigned long long>(stable_descriptors));
+    }
+  }
   std::printf(
       "  exact ViTDecoder: load %.1f ms, forward %.1f ms, weights %.1f MiB, output %zu words, ragged output %zu words, FNV64 %016llx\n",
       load_ms, forward_ms, double(decoder.weight_bytes()) / 1048576.0,

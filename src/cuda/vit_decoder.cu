@@ -482,17 +482,20 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   WeightUploader uploader(d.stream.get(), mapping);
 
   d.x_embed_w.load(ckpt, "decoder.x_embedder.weight", static_cast<size_t>(dim) * ch,
-                   d.stream.get(), "video vae");
+                   d.stream.get(), "video vae",
+                   config.transformer_mode == ViTTransformerMode::kExact);
   d.x_embed_b = uploader.upload(ckpt, "decoder.x_embedder.bias", dim);
   d.register_tokens = uploader.upload(ckpt, "decoder.register_tokens",
                                       static_cast<size_t>(config.num_register) * dim);
   d.norm_out_w = uploader.upload(ckpt, "decoder.norm_out.weight", dim);
   d.norm_out_b = uploader.upload(ckpt, "decoder.norm_out.bias", dim);
   d.proj_out_w.load(ckpt, "decoder.proj_out.weight",
-                    static_cast<size_t>(config.patch_dim()) * dim, d.stream.get(), "video vae");
+                    static_cast<size_t>(config.patch_dim()) * dim, d.stream.get(), "video vae",
+                    config.transformer_mode == ViTTransformerMode::kExact);
   d.proj_out_b = uploader.upload(ckpt, "decoder.proj_out.bias", config.patch_dim());
   d.post_quant_w.load(ckpt, "post_quant_conv.weight", static_cast<size_t>(ch) * ch,
-                      d.stream.get(), "video vae");
+                      d.stream.get(), "video vae",
+                      config.transformer_mode == ViTTransformerMode::kExact);
   d.post_quant_b = uploader.upload(ckpt, "post_quant_conv.bias", ch);
 
   if (config.transformer_mode == ViTTransformerMode::kExact) {

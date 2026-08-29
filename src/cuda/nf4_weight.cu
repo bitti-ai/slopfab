@@ -1,5 +1,6 @@
 #include "vidfab/cuda/nf4_weight.cuh"
 
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -10,7 +11,8 @@
 namespace vidfab::cuda {
 
 void F16Weight::load(const SafeTensors& checkpoint, const std::string& name,
-                     size_t expected_elements, cudaStream_t stream, const char* consumer) {
+                     size_t expected_elements, cudaStream_t stream,
+                     const char* consumer, bool canonicalize_f16_subnormals) {
   const TensorView& view = checkpoint.at(name);
   elements_ = expected_elements;
   if (is_nf4_weight(checkpoint, name)) {
@@ -44,7 +46,20 @@ void F16Weight::load(const SafeTensors& checkpoint, const std::string& name,
       throw std::runtime_error(std::string(consumer) + ": shape mismatch for '" + name + "'");
     dense_.allocate(expected_elements);
     if (view.dtype == DType::kF16) {
-      dense_.copy_from_host(static_cast<const __half*>(view.data), expected_elements, stream);
+      if (canonicalize_f16_subnormals) {
+        std::vector<uint16_t> canonical(expected_elements);
+        std::memcpy(canonical.data(), view.data, expected_elements * 2);
+        for (uint16_t& word : canonical) {
+          if ((word & 0x7c00u) == 0 && (word & 0x03ffu) != 0)
+            word &= 0x8000u;
+        }
+        dense_.copy_from_host(reinterpret_cast<const __half*>(canonical.data()),
+                              expected_elements, stream);
+        VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream));
+      } else {
+        dense_.copy_from_host(static_cast<const __half*>(view.data),
+                              expected_elements, stream);
+      }
     } else {
       const std::vector<float> f = to_f32(view);
       std::vector<__half> h(f.size());
