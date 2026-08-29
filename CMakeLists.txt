@@ -63,6 +63,7 @@ add_library(vidfab_core STATIC
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
   src/text/encoder.cpp
+  src/text/layer_capture.cpp
   src/text/qwen_vision.cpp
   src/video/y4m.cpp
   src/video/y4m_compare.cpp
@@ -1218,6 +1219,8 @@ if(VIDFAB_BUILD_TESTS)
       tests/harness.cpp tests/test_tensor_backends.cu tests/test_audio_vulkan.cu)
     target_link_libraries(vidfab_tensor_backend_tests PRIVATE
       vidfab_cuda vidfab_vulkan)
+    target_compile_definitions(vidfab_tensor_backend_tests PRIVATE
+      VIDFAB_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(WIN32)
       target_link_libraries(vidfab_tensor_backend_tests PRIVATE bcrypt)
     endif()

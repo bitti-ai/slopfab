@@ -14,6 +14,7 @@
 #include <limits>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -52,6 +53,7 @@
 #include "vidfab/sol_capture.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/text/encoder.h"
+#include "vidfab/text/layer_capture.h"
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/dit_block.h"
 #include "vidfab/vulkan/dit_graph.h"
@@ -3097,6 +3099,236 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
       double(scratch_bytes) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(stable_descriptors));
+}
+
+VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  constexpr uint32_t rows=132,hidden=5120,q_heads=64,kv_heads=8,
+                     head_dim=128,ffn=25600;
+  const std::filesystem::path checkpoint_path=
+      "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+  const std::filesystem::path tokenizer_path="ref/text_encoder/tokenizer.json";
+  int cuda_devices=0;
+  if(!std::filesystem::exists(checkpoint_path)||
+     !std::filesystem::exists(tokenizer_path)||
+     cudaGetDeviceCount(&cuda_devices)!=cudaSuccess||cuda_devices==0||
+     !Instance::available()) return;
+  SafeTensors checkpoint;checkpoint.open(checkpoint_path.string());
+  text::EncoderConfig encoder_config;
+  encoder_config.format=text::detect_weight_format(checkpoint);
+  CHECK(encoder_config.format==text::WeightFormat::kI8ConvRot);
+  text::Tokenizer tokenizer;tokenizer.load(tokenizer_path.string());
+  std::string prompt;
+  const std::string sentence=
+      "A cinematic tracking shot follows a copper airship over snowy forests, "
+      "with warm sunrise reflections and natural motion. ";
+  while(tokenizer.encode(prompt).size()<rows) prompt+=sentence;
+  std::vector<int32_t> token_ids=tokenizer.encode(prompt);
+  token_ids.resize(rows);
+  std::vector<uint16_t> input;
+  text::gather_embedding_rows(checkpoint.at("model.embed_tokens.weight"),
+                              nullptr,token_ids,input);
+  CHECK(input.size()==size_t(rows)*hidden);
+  std::vector<float> cosine,sine;
+  text::build_rope_tables(rows,text::rope_inv_freq(head_dim,5.0e6f),cosine,sine);
+
+  // Upload the checkpoint-native packed layer once and invoke the reusable
+  // canonical exact CUDA path. This is the authority, not shipped cuBLAS.
+  const text::LayerLayout layer_layout=text::make_layer_layout(encoder_config);
+  cuda::DeviceBuffer<uint8_t> cuda_layer(layer_layout.total_bytes);
+  text::upload_layer_direct(checkpoint,encoder_config,0,layer_layout,
+                            cuda_layer.get(),nullptr);
+  const text::LayerGlobalScales globals=
+      text::read_global_scales(checkpoint,encoder_config,0);
+  const text::LayerWeights cuda_weights=text::layer_weights_from_blob(
+      cuda_layer.get(),layer_layout,encoder_config,globals);
+  text::LayerDims dims;dims.format=encoder_config.format;dims.num_tokens=rows;
+  dims.hidden=hidden;dims.num_heads=q_heads;dims.num_kv_heads=kv_heads;
+  dims.head_dim=head_dim;dims.intermediate=ffn;dims.rms_norm_eps=1.0e-6f;
+  cuda::Workspace cuda_workspace;
+  cuda_workspace.reserve(text::exact_layer_workspace_bytes(cuda_weights,dims));
+  cuda::DeviceBuffer<uint16_t> cuda_tokens(input.size());
+  cuda::DeviceBuffer<float> cuda_cosine(cosine.size()),cuda_sine(sine.size());
+  cuda_tokens.copy_from_host(input.data(),input.size());
+  cuda_cosine.copy_from_host(cosine.data(),cosine.size());
+  cuda_sine.copy_from_host(sine.data(),sine.size());
+  cuda::DeviceBuffer<uint16_t> c_norm(size_t(rows)*hidden),
+      c_q(size_t(rows)*q_heads*head_dim),c_k(size_t(rows)*kv_heads*head_dim),
+      c_v(size_t(rows)*kv_heads*head_dim),
+      c_attention(size_t(rows)*q_heads*head_dim),
+      c_attention_residual(size_t(rows)*hidden),c_post_norm(size_t(rows)*hidden),
+      c_gate(size_t(rows)*ffn),c_up(size_t(rows)*ffn),
+      c_activation(size_t(rows)*ffn),c_final(size_t(rows)*hidden);
+  text::ExactLayerTaps cuda_taps{
+      reinterpret_cast<__nv_bfloat16*>(c_norm.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_q.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_k.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_v.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_attention.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_attention_residual.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_post_norm.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_gate.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_up.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_activation.get()),
+      reinterpret_cast<__nv_bfloat16*>(c_final.get())};
+  const auto cuda_begin=std::chrono::steady_clock::now();
+  text::encoder_layer_forward_exact(nullptr,cuda_weights,dims,
+      cuda_cosine.get(),cuda_sine.get(),
+      reinterpret_cast<__nv_bfloat16*>(cuda_tokens.get()),cuda_workspace,
+      &cuda_taps);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const double cuda_ms=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-cuda_begin).count();
+
+  Instance instance=Instance::create();const auto physical=instance.enumerate_devices();
+  if(physical.empty())return;const DeviceInfo& info=physical.front().info();
+  if(!info.timeline_semaphore||!info.shader_int64)return;
+  DeviceOptions options;options.enable_timeline_semaphore=true;
+  options.enable_shader_int64=true;options.enable_shader_float16=info.shader_float16;
+  options.enable_storage_buffer_16bit=info.storage_buffer_16bit;
+  options.enable_cooperative_matrix=info.cooperative_matrix_bf16_f32_16x16x16;
+  Device device=physical.front().create_device(options);
+  TensorContextOptions context_options;context_options.max_batch_operators=49;
+  TensorContext vk(device,context_options);
+  if(!vk.exact_causal_gqa_attention()||!vk.exact_fp32_vae_normalization()||
+     !vk.exact_vae_pointwise())return;
+  QwenTextLayerConfig config;config.sequence=rows;
+  ExactQwenTextLayerStage stage=ExactQwenTextLayerStage::create(vk,config);
+  const auto load_begin=std::chrono::steady_clock::now();stage.load(checkpoint,0);
+  const double load_ms=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-load_begin).count();
+  ExactQwenTextLayerScratch scratch=ExactQwenTextLayerScratch::create(vk,config);
+  auto mat=[&](uint64_t a,uint64_t b){const uint64_t s[]={a,b};return TensorLayout::contiguous(s,2);};
+  auto three=[&](uint64_t a,uint64_t b,uint64_t c){const uint64_t s[]={a,b,c};return TensorLayout::contiguous(s,3);};
+  DeviceTensor v_tokens=vk.allocate(mat(rows,hidden),ScalarType::kBFloat16),
+      v_cos=vk.allocate(mat(rows,head_dim)),v_sin=vk.allocate(mat(rows,head_dim)),
+      v_norm=vk.allocate(mat(rows,hidden),ScalarType::kBFloat16),
+      v_q=vk.allocate(three(rows,q_heads,head_dim),ScalarType::kBFloat16),
+      v_k=vk.allocate(three(rows,kv_heads,head_dim),ScalarType::kBFloat16),
+      v_v=vk.allocate(three(rows,kv_heads,head_dim),ScalarType::kBFloat16),
+      v_attention=vk.allocate(three(rows,q_heads,head_dim),ScalarType::kBFloat16),
+      v_attention_residual=vk.allocate(mat(rows,hidden),ScalarType::kBFloat16),
+      v_post_norm=vk.allocate(mat(rows,hidden),ScalarType::kBFloat16),
+      v_gate=vk.allocate(mat(rows,ffn),ScalarType::kBFloat16),
+      v_up=vk.allocate(mat(rows,ffn),ScalarType::kBFloat16),
+      v_activation=vk.allocate(mat(rows,ffn),ScalarType::kBFloat16),
+      v_final=vk.allocate(mat(rows,hidden),ScalarType::kBFloat16);
+  vk.upload_bytes(v_tokens,input.data(),input.size()*2);vk.upload(v_cos,cosine.data(),cosine.size());
+  vk.upload(v_sin,sine.data(),sine.size());
+  QwenTextLayerTaps vk_taps{&v_norm,&v_q,&v_k,&v_v,&v_attention,
+      &v_attention_residual,&v_post_norm,&v_gate,&v_up,&v_activation,&v_final};
+  CHECK(stage.required_operators(&vk_taps)==49);
+  const auto vk_begin=std::chrono::steady_clock::now();TensorBatch batch=vk.begin_batch();
+  stage.record(batch,v_tokens,v_cos,v_sin,scratch,&vk_taps);CHECK(batch.remaining_operator_capacity()==0);
+  batch.submit().wait();const double vk_ms=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-vk_begin).count();
+
+  auto compare=[&](const char* name,cuda::DeviceBuffer<uint16_t>& expected_buffer,
+                   DeviceTensor& actual_tensor,size_t count){
+    std::vector<uint16_t> expected(count),actual(count);
+    expected_buffer.copy_to_host(expected.data(),count);
+    vk.download_bytes(actual_tensor,actual.data(),count*2);
+    size_t mismatch=count;for(size_t i=0;i<count;++i)if(expected[i]!=actual[i]){mismatch=i;break;}
+    CHECK_MSG(mismatch==count,"Qwen L132 %s mismatch at %zu: CUDA %04x Vulkan %04x",
+        name,mismatch,mismatch==count?0u:expected[mismatch],mismatch==count?0u:actual[mismatch]);
+    uint64_t hash=1469598103934665603ull;for(uint16_t value:actual){
+      hash^=value&0xffu;hash*=1099511628211ull;hash^=value>>8u;hash*=1099511628211ull;}
+    return hash;
+  };
+  std::array<uint64_t,11> hashes{
+      compare("input norm",c_norm,v_norm,size_t(rows)*hidden),
+      compare("query",c_q,v_q,size_t(rows)*q_heads*head_dim),
+      compare("key",c_k,v_k,size_t(rows)*kv_heads*head_dim),
+      compare("value",c_v,v_v,size_t(rows)*kv_heads*head_dim),
+      compare("attention",c_attention,v_attention,size_t(rows)*q_heads*head_dim),
+      compare("attention residual",c_attention_residual,v_attention_residual,size_t(rows)*hidden),
+      compare("post norm",c_post_norm,v_post_norm,size_t(rows)*hidden),
+      compare("gate",c_gate,v_gate,size_t(rows)*ffn),
+      compare("up",c_up,v_up,size_t(rows)*ffn),
+      compare("activation",c_activation,v_activation,size_t(rows)*ffn),
+      compare("final",c_final,v_final,size_t(rows)*hidden)};
+  constexpr std::array<uint64_t,11> expected_hashes{
+      0x6ca9b8c5e16917b5ull,0xf9bf6e554a1e84e4ull,
+      0x9c2c264a60b4b8b1ull,0xec21312eea810e06ull,
+      0x73901fb1cb7f2cfbull,0x5ab1cc9e26345fe2ull,
+      0x9e072ab6646a2a11ull,0x74d47f5ed650356dull,
+      0x8292d03af91a2025ull,0x48f99e7549238eceull,
+      0xfb3966de636ac098ull};
+  CHECK(hashes==expected_hashes);
+
+  auto fnv_bytes=[](const void* data,size_t bytes,uint64_t hash=1469598103934665603ull){
+    const auto* cursor=static_cast<const uint8_t*>(data);
+    for(size_t i=0;i<bytes;++i){hash^=cursor[i];hash*=1099511628211ull;}
+    return hash;
+  };
+  const uint64_t input_hash=fnv_bytes(input.data(),input.size()*sizeof(uint16_t));
+  uint64_t rope_hash=fnv_bytes(cosine.data(),cosine.size()*sizeof(float));
+  rope_hash=fnv_bytes(sine.data(),sine.size()*sizeof(float),rope_hash);
+  CHECK(input_hash==0x617329501f3c87a1ull);
+  CHECK(rope_hash==0x693c23a9886dd147ull);
+  constexpr std::array<uint8_t,32> checkpoint_sha{
+      0xbc,0x2c,0xed,0x0f,0xbe,0xa6,0x47,0x57,
+      0xfa,0x9a,0xcd,0xdc,0xcf,0xc0,0xb3,0xf4,
+      0x81,0x9d,0x1d,0xcf,0x1d,0xa6,0xc1,0x24,
+      0xd6,0x90,0xd3,0x68,0xbe,0x28,0x39,0x23};
+  constexpr std::array<uint8_t,32> tokenizer_sha{
+      0xa5,0xd8,0x5b,0x6d,0xcc,0x53,0x5e,0x6b,
+      0x93,0x11,0x5a,0x9e,0xf2,0x87,0xe6,0x13,
+      0x2f,0xdb,0xf3,0x02,0x70,0xda,0x62,0x18,
+      0x19,0x4b,0xa7,0x42,0x26,0x11,0x73,0xc7};
+  text::QwenLayerCapture generated;
+  generated.header.sequence=rows;generated.header.hidden=hidden;
+  generated.header.query_heads=q_heads;generated.header.kv_heads=kv_heads;
+  generated.header.head_dim=head_dim;generated.header.intermediate=ffn;
+  generated.header.checkpoint_sha256=checkpoint_sha;
+  generated.header.tokenizer_sha256=tokenizer_sha;
+  generated.header.input_fnv64=input_hash;generated.header.rope_fnv64=rope_hash;
+  generated.header.boundary_fnv64=hashes;generated.token_ids=token_ids;
+  generated.input_bf16=input;generated.cosine=cosine;generated.sine=sine;
+  const std::filesystem::path capture_path=
+      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR)/
+      "tests/data/qwen_layer0_l132.vfqw";
+  if(const char* write=std::getenv("VIDFAB_WRITE_QWEN_LAYER_CAPTURE");
+     write&&std::strcmp(write,"1")==0){
+    text::write_qwen_layer_capture(capture_path.string(),generated);
+  }
+  CHECK(std::filesystem::exists(capture_path));
+#ifdef _WIN32
+  std::ifstream capture_stream(capture_path,std::ios::binary);
+  const std::vector<uint8_t> capture_bytes{
+      std::istreambuf_iterator<char>(capture_stream),
+      std::istreambuf_iterator<char>()};
+  constexpr std::array<uint8_t,32> capture_sha{
+      0xec,0x13,0xad,0x62,0xa7,0xe2,0x53,0xd5,
+      0x88,0xbf,0xac,0x51,0x85,0x0b,0x92,0x48,
+      0x7b,0x7c,0xb8,0x8b,0xa7,0x3e,0x78,0x69,
+      0xa2,0xb0,0x2c,0xba,0x79,0x11,0x04,0xb3};
+  CHECK(sha256_mapping(capture_bytes.data(),capture_bytes.size())==capture_sha);
+#endif
+  const text::QwenLayerCapture captured=
+      text::read_qwen_layer_capture(capture_path.string());
+  CHECK(captured.header.sequence==rows);
+  CHECK(captured.header.hidden==hidden);
+  CHECK(captured.header.query_heads==q_heads);
+  CHECK(captured.header.kv_heads==kv_heads);
+  CHECK(captured.header.head_dim==head_dim);
+  CHECK(captured.header.intermediate==ffn);
+  CHECK(captured.header.checkpoint_sha256==checkpoint_sha);
+  CHECK(captured.header.tokenizer_sha256==tokenizer_sha);
+  CHECK(captured.header.input_fnv64==input_hash);
+  CHECK(captured.header.rope_fnv64==rope_hash);
+  CHECK(captured.header.boundary_fnv64==expected_hashes);
+  CHECK(captured.token_ids==token_ids);
+  CHECK(captured.input_bf16==input);
+  CHECK(captured.cosine==cosine);
+  CHECK(captured.sine==sine);
+  std::printf("  real Qwen layer0 L132 exact CUDA %.1f ms Vulkan %.1f ms load %.1f ms, persistent/scratch %.1f/%.1f MiB, boundary FNV64:",cuda_ms,vk_ms,load_ms,
+      double(stage.persistent_bytes())/1048576.0,double(scratch.reserved_bytes())/1048576.0);
+  for(uint64_t hash:hashes)std::printf(" %016llx",static_cast<unsigned long long>(hash));
+  std::printf("; input/rope %016llx/%016llx\n",
+      static_cast<unsigned long long>(input_hash),
+      static_cast<unsigned long long>(rope_hash));
 }
 
 VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
