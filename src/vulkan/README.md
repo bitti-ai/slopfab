@@ -766,9 +766,10 @@ The backend-neutral control spelling is `AttentionMode::kExact` / `--attention
 exact`. CUDA transformer main blocks and the token refiner dispatch this
 primitive directly; `kNone` remains the separate blocked reference and no
 other mode is remapped. Vulkan accepts only exact and the complete denoiser
-keeps packed video/audio rows resident across evaluations. Until native
-conditioning lands, the CLI requires `--prompt-embedding` and runs neither a
-CUDA conditioner nor any CUDA fallback.
+keeps packed video/audio rows resident across evaluations. Text-only CLI runs
+use the native exact Vulkan conditioner; captured prompt embeddings remain an
+optional replay seam. Reference vision fails closed and no CUDA conditioner is
+called by a Vulkan request.
 
 CUDA and Vulkan use the same 1024-thread/32-subgroup cooperative contract:
 guarded BF16 Q/K staging, ascending 16-channel BF16-QK/F32 cooperative tiles,
@@ -984,8 +985,8 @@ growth, and pins combined fp32 output FNV64 `42764ebbb3850be4`.
 
 `ExactH3Denoiser` composes this endpoint with the shared flow schedule and two
 device Euler updates per evaluation. Video/audio rows stay resident for the
-whole trajectory and public Vulkan generation accepts an explicit captured
-prompt embedding; native conditioning remains a separate feature.
+whole trajectory. Public Vulkan generation accepts either a normal text prompt
+through `ExactQwenTextEncoder` or an explicit captured prompt embedding.
 
 The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
 `dxc_2026_07_29.zip` (SHA-256
@@ -1017,10 +1018,10 @@ reserved high-water, descriptors and the active output unchanged.
 Only compressed matrices and four BF16 norm vectors are persistent. The caller
 owns one reusable 250 MiB largest-matrix BF16 slot, and every one of the seven
 weights is materialized into that slot immediately before its GEMM. Activation
-and transform buffers live in the same caller-owned scratch object. This keeps
-the stage suitable for a future 50-layer graph: expanded dense matrices are not
-retained per layer, recording allocates and submits nothing, and one shared
-scratch/cache can be reused sequentially across layers. I8 q/k/v share one
+and transform buffers live in the same caller-owned scratch object. The complete
+50-layer encoder therefore retains no expanded dense matrices per layer:
+recording allocates and submits nothing, and one shared scratch/cache is reused
+sequentially across layers. I8 q/k/v share one
 identical ConvRot activation, as do gate/up, saving three transforms and
 descriptors per layer. Production I8 L132 records 35 operators; the
 every-boundary audit records exactly 46. One-less
@@ -1096,9 +1097,60 @@ exact payload byte size before allocation. Tests cover corrupt header/payload,
 token, truncation, trailing bytes, an oversized sparse L8193 declaration and
 max-`uint32_t` overflow input.
 
-This is one decoder layer, not yet the complete 50-layer text conditioner;
-token/final seams, multi-layer scheduling, and Qwen vision/deep-stack remain
-future features.
+`ExactQwenTextEncoder` composes this stage into the complete text-only 50-layer
+conditioner. It validates the full archive transactionally, gathers only the
+requested host embedding rows, builds canonical text RoPE, uploads both once,
+and keeps the BF16 residual stream device-resident through layer 49. One
+compressed layer is resident at a time; one shared dense slot and activation
+arena serve all 50 layers. The public result is the widened FP32 raw residual,
+with no final norm or LM head. Unload releases the shape and weight working set;
+the context retains only bounded allocator/staging high-water for reuse.
+
+The real I8 L132 authority runs the opt-in canonical CUDA encoder and Vulkan
+encoder on the same tokenizer/capture input. It is bound to capture SHA-256
+`EC13AD62A7E253D588BFAC51850B92487B7CB88BA73E7869A2B02CBA791104B3`,
+checkpoint SHA-256
+`BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`,
+and tokenizer SHA-256
+`A5D85B6DCC535E6B93115A9EF287E6132FDBF30270DA6218194BA742261173C7`.
+All 50 BF16 residual boundaries
+are copied into one device trace arena per backend and downloaded only after
+layer 49. Every byte matches; final FP32 FNV64 is `579170f52abfc8db`. The
+ordered layer-residual FNV64 pins are:
+
+```text
+fb3966de636ac098 16b0e53a0265959d 7e2377403c49f851 dacca747d7db7cca
+b3de1cdb9248573c cb7ef7852ef4ce79 fe09924dff391f53 0ac372b850d058d8
+e818f084c10d99d5 eed04e74ca44abcf e3e63048102b3e14 6e5647916a5d3586
+1b9a96cd7cb703c2 e60df16cc8c0390d cf624f216f397d84 2e680a56b7030b0a
+8b8e97be1f24e88e 61e2e50339318a1e 410a6b1ab0a9c0e4 af70d3523ce3a525
+fb6b26f66fc1eb31 732c1c3ed4d7e6a6 1b81b2dd36a55f5a 01f09dd599e38e09
+c93c6edb4d56f691 cb9bd628a2587064 30c8bbdab894f8cf d0c82e71b41c4e74
+ef88fb29b4c38602 3b865ed94b23284e 160d4d0750485e84 a3128750a0466a21
+c1c6ba2884daa0e1 bf2a42d54c6d336e 7ae8060855d02ab2 2fe95298685c12c3
+17610f06aabb0ce5 d09a61dcf57388c9 c363bc14f4fabe3b c857cd797d07a823
+b5ba41c7ec13df0b 153186eecfcb34e2 89792cd842ae3215 03cbb8ab112884f9
+0d9c0669be4b1818 c45536c76bfb5268 465a47fdc0f38a3b c6c70427de251f9d
+2082d9a03b0f2c88 141e4954a3b02693
+```
+
+Release CUDA/Vulkan measured 5.73/8.68 seconds. The traced Vulkan logical peak
+was 820.1 MiB, of which 64.5 MiB is the diagnostic trace; the production
+untraced logical peak is therefore 755.6 MiB. Initial allocator reserved
+high-water was 485.1 MiB with 36 descriptors. The CUDA-disabled real replay
+measured 15.25 seconds and produced the same 50 pins/final digest without a
+CUDA link or runtime. Exact/one-short capacity is preflighted before
+activation allocation or upload, and unload/reload converges to a bounded
+allocator high-water while returning pooled used bytes to the context-only
+staging baseline.
+
+The normal-prompt vertical authority runs public `run_generate` for CUDA and
+Vulkan with the same I8 conditioner, seed-424242 256x256/22-frame initial
+latents and three evaluations, then both real VAEs. Float PixelBuffer and PCM,
+and final Y4M/WAV bytes, are exactly equal. Their FNV64 pins are respectively
+`52f6148fa46959f8`, `b2e09a49fc952e5e`, `2f595da467a8ac60`, and
+`e0d84106a3018c29`; total CUDA/Vulkan time measured 29.669/40.644 seconds.
+Qwen vision/deep-stack conditioning remains future work and fails closed.
 
 ## Exact causal GQA text attention
 

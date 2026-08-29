@@ -167,8 +167,8 @@ VIDFAB_C_API void VIDFAB_CALL vidfab_free_string(char* text);
 #define VIDFAB_MODEL_VIDEO_VAE 3
 #define VIDFAB_MODEL_AUDIO_VAE 4
 
-/* Neural backend. Vulkan denoising requires exact attention and an explicit
- * captured prompt embedding; it never calls the CUDA conditioner. */
+/* Neural backend. Vulkan denoising requires exact attention, supports native
+ * text-only conditioning, and never calls the CUDA conditioner. */
 #define VIDFAB_INFERENCE_CUDA 0
 #define VIDFAB_INFERENCE_VULKAN 1
 
@@ -328,9 +328,8 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_seed(vidfab_request* request, ui
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_model_path(vidfab_request* request, int32_t which,
                                                            const char* path);
 
-/* Safetensors containing F32 `prompt_embedding` [L,5120]. Required for
- * Vulkan denoising until the native conditioner lands; also accepted by CUDA
- * to compare the same captured conditioning without recomputation. */
+/* Optional safetensors containing F32 `prompt_embedding` [L,5120]. Accepted by
+ * either backend to compare captured conditioning without recomputation. */
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_prompt_embedding_path(
     vidfab_request* request, const char* path);
 

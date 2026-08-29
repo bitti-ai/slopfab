@@ -2,25 +2,25 @@
 
 ## What exists
 
-Vulkan now owns the complete exact T2VA denoiser and both neural decoders: the
+Vulkan now owns the complete exact text-only conditioner, T2VA denoiser and
+both neural decoders: the 50-layer Qwen3-VL decoder, the
 50-block H3 graph with its two-block text refiner and endpoint projections, the
 36-block video VAE, and the 779-tensor audio VAE. Generation selects them
 through `RunOptions::inference_backend`, independently of
 `--output-accelerator`. `--inference-backend vulkan --attention exact` accepts
-either synthetic latents or an explicit F32 `prompt_embedding` `[L,5120]`
-safetensors capture. The latter is the temporary conditioner seam: Vulkan
-never invokes the CUDA text encoder. Other attention modes, Ref2VA, AB2 and
-step/block caches fail before model execution. No rejected or accepted Vulkan
-request is remapped to CUDA.
+a normal text prompt, synthetic latents, or an optional F32 `prompt_embedding`
+`[L,5120]` replay capture. Vulkan never invokes the CUDA text encoder. Other
+attention modes, Ref2VA, AB2 and step/block caches fail before model execution.
+No rejected or accepted Vulkan request is remapped to CUDA.
 
 The output converter is byte-exact against the canonical CPU conversion on the
 tested RTX 5090. Its checked shader uses explicit operation order and SPIR-V
 `NoContraction`, including adversarial luma/chroma half-step cases, packed tail
 words, padded output strides, and multi-frame Y4M output.
 
-This is full captured-prompt-to-video/audio parity, not native text/vision
-conditioning parity. The text/vision conditioners and reference-image encoder
-remain CUDA-only and are not reached by a Vulkan request.
+This is full native-text-prompt-to-video/audio parity. Qwen vision/deep-stack
+conditioning and the reference-image encoder remain CUDA-only; Vulkan rejects
+those requests before model execution.
 
 ## Measured implementation gap
 
@@ -46,14 +46,13 @@ Missing work by pipeline stage:
 | Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | native quantized GEMM, NN/batched attention GEMM, remaining activations, and residual/broadcast operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, used RoPE variants, dense NT GEMM, persistent seven-format weight preparation, AWQ pre-scale and ConvRot now have Vulkan primitives |
 | Video VAE decode | Implemented by `vulkan::VideoVaeDecoder` | Exact 36-block graph and shared backend-neutral tile/stitch schedule are complete; shipped tensor-core mode remains CUDA-only |
 | Audio VAE decode | Implemented by `vulkan::AudioDecoder` | All 779 tensors and 497 production operators are device-resident and exact; diagnostics add 13 in-batch boundary copies |
-| Transformer and denoise | `dit_kernels.cu` (139), `transformer.cpp` (2,027), `denoise.cpp` (192), attention family (`attention.cu`, Sage and SOL: 2,282 lines) | the exact 50-block main stack is implemented with real every-boundary replay and a block-cache span seam; refiner/final layer, denoise/scheduler integration and non-exact attention modes remain CUDA-only |
-| Qwen text/vision conditioner | `encoder_kernels.cu` (1,080), `encoder.cpp` (595), `qwen_vision*.cu` (332), keyframe CUDA path (547) | one complete exact decoder layer is implemented for both shipped compressed formats; the remaining 49-layer graph, token/final seams, vision patch/merge graph, deep-stack scatter and reference-image VAE encode remain to be wired |
+| Transformer and denoise | Exact full transformer/refiner/endpoints and Euler denoiser implemented in Vulkan; CUDA retains non-exact attention families | non-exact Flash/Sage/SOL attention, AB2, and step/block caches remain CUDA-only and Vulkan rejects them |
+| Qwen text/vision conditioner | Text-only 50-layer decoder implemented by `vulkan::ExactQwenTextEncoder`; `qwen_vision*.cu` and keyframe CUDA remain | vision patch/merge graph, deep-stack scatter and reference-image VAE encode remain to be wired |
 
-Checkpoint handling also remains CUDA-entangled. A Vulkan backend must preserve
-the existing safetensors tensor names and metadata while supporting the shipped
-fp16/bf16, fp8, int8 ConvRot, bitsandbytes NF4, and NVFP4/AWQ layouts. CUDA
-handles and `cudaStream_t` appear in the present tensor/workspace and stage
-interfaces, so backend selection cannot be added safely by switching only the
+The implemented Vulkan graphs preserve the shipped safetensors names and typed
+metadata for their fp16/bf16, int8 ConvRot, and NVFP4/AWQ contracts. Remaining
+vision/reference and non-exact paths still contain CUDA-specific graph and
+workspace interfaces; they cannot be enabled safely by switching only the
 top-level `run_generate` call.
 
 ## Dependency-ordered implementation plan
@@ -66,15 +65,14 @@ top-level `run_generate` call.
    useful neural vertical slice because `--synthetic-latents` bypasses the
    conditioner and transformer. Require exact decoded fp32 RGB and PCM dumps,
    then exact Y4M/WAV output.
-3. Extend the implemented exact 50-block main graph into the token refiner,
-   final layer and denoise loop. Preserve its every-block boundary gate and
-   wire the existing cache span through `record_layers`; port non-exact attention
-   backends separately rather than silently substituting exact attention.
-4. Port Qwen text/vision conditioning and reference-image encoding, retaining
-   tokenizer and checkpoint behavior. Compare embeddings, deep-stack outputs,
-   and packed conditioning rows.
-5. Enable `--inference-backend vulkan`, retain the current fail-closed
-   capability check, and run deterministic full-pipeline CUDA/Vulkan exact
+3. The exact 50-block main graph, token refiner, final layer, and Euler denoise
+   loop are complete with every-boundary checks. Non-exact attention backends
+   remain separate and are never silently substituted with exact attention.
+4. The Qwen text conditioner is complete with tokenizer/checkpoint behavior
+   and every-layer comparisons. Vision/deep-stack conditioning and the
+   reference-image encoder remain.
+5. `--inference-backend vulkan` is enabled with fail-closed capability checks
+   and deterministic full-pipeline CUDA/Vulkan exact
    comparisons at every durable boundary: conditioner embeddings, denoiser
    latents, decoded fp32 RGB, decoded fp32 PCM, Y4M, and WAV. `compare-y4m` is
    the streaming raw-video check, not a substitute for the earlier activation
