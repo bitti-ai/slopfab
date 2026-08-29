@@ -21,6 +21,7 @@
 
 #include "vidfab/dit/transformer.h"
 #include "vidfab/dit/block_capture.h"
+#include "vidfab/dit/graph_capture.h"
 #include "vidfab/dit/rope.h"
 
 #include <functional>
@@ -620,6 +621,17 @@ struct Transformer::Impl {
     std::vector<int32_t> ranges;
     bool active = false;
   } block_capture;
+  std::string graph_capture_path;
+  int graph_capture_step = 0;
+  bool graph_capture_done = false;
+  struct ActiveGraphCapture {
+    H3MainGraphCaptureHeader header{};
+    std::vector<uint16_t> input;
+    std::vector<int32_t> selectors;
+    std::vector<float> code, cosine, sine;
+    std::vector<int32_t> ranges;
+    bool active = false;
+  } graph_capture;
   bool tensor_diag = false;
   bool sol_pipeline_diag = false;
   DeviceBuffer<cuda::TensorScan> d_tensor_diag;
@@ -757,6 +769,98 @@ struct Transformer::Impl {
       throw std::runtime_error("transformer: stopped after requested H3 block capture");
   }
 
+  void begin_graph_capture(const __nv_bfloat16* residual,
+                           const int32_t* selectors, const float* cosine,
+                           const float* sine, int rows, int layer,
+                           AttentionMode mode) {
+    if (graph_capture_done || graph_capture_path.empty() ||
+        denoise_step != graph_capture_step || layer != 0) return;
+    if (mode != AttentionMode::kExact || blocks.size() != kH3MainCaptureLayers)
+      throw std::runtime_error(
+          "transformer: H3 graph capture requires exact 50-layer main stack");
+    if (mod_timesteps <= 0 || host_code.size() !=
+        static_cast<size_t>(mod_timesteps) * cfg.adaln_rank)
+      throw std::runtime_error(
+          "transformer: H3 graph capture lacks rank-8 timestep code");
+    ActiveGraphCapture next;
+    std::memcpy(next.header.magic, "VFH3GRF\0", 8);
+    next.header.version = 1;
+    next.header.header_bytes = sizeof(H3MainGraphCaptureHeader);
+    next.header.sequence = static_cast<uint32_t>(rows);
+    next.header.hidden = static_cast<uint32_t>(cfg.hidden_size);
+    next.header.heads = static_cast<uint32_t>(cfg.num_attention_heads);
+    next.header.head_dim = static_cast<uint32_t>(cfg.attention_head_dim);
+    next.header.ffn = static_cast<uint32_t>(cfg.ffn_dim);
+    next.header.timesteps = static_cast<uint32_t>(mod_timesteps);
+    next.header.modalities = kNumModalities;
+    next.header.adaln_rank = static_cast<uint32_t>(cfg.adaln_rank);
+    next.header.layers = static_cast<uint32_t>(blocks.size());
+    next.header.range_values = static_cast<uint32_t>(host_band.size());
+    next.header.denoise_step = denoise_step;
+    next.header.residual_elements = static_cast<uint64_t>(rows) * cfg.hidden_size;
+    next.header.rope_elements = static_cast<uint64_t>(rows) * 96;
+    next.input.resize(static_cast<size_t>(next.header.residual_elements));
+    next.selectors.resize(rows);
+    next.code = host_code;
+    next.cosine.resize(static_cast<size_t>(next.header.rope_elements));
+    next.sine.resize(static_cast<size_t>(next.header.rope_elements));
+    next.ranges = host_band;
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.input.data(), residual,
+        next.input.size() * 2, cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.selectors.data(), selectors,
+        next.selectors.size() * sizeof(int32_t), cudaMemcpyDeviceToHost,
+        stream.get()));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.cosine.data(), cosine,
+        next.cosine.size() * sizeof(float), cudaMemcpyDeviceToHost,
+        stream.get()));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.sine.data(), sine,
+        next.sine.size() * sizeof(float), cudaMemcpyDeviceToHost,
+        stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    next.header.input_fnv64 = fnv64_append(1469598103934665603ull,
+        next.input.data(), next.input.size() * 2);
+    next.active = true;
+    graph_capture = std::move(next);
+  }
+
+  void capture_graph_boundary(const __nv_bfloat16* residual, int layer) {
+    if (!graph_capture.active) return;
+    if (layer < 0 || static_cast<uint32_t>(layer) >= graph_capture.header.layers)
+      throw std::runtime_error("transformer: H3 graph capture layer escaped stack");
+    graph_capture.header.boundary_fnv64[layer] = capture_hash(
+        residual, graph_capture.header.residual_elements);
+    if (static_cast<uint32_t>(layer + 1) != graph_capture.header.layers) return;
+    std::vector<uint16_t> final(
+        static_cast<size_t>(graph_capture.header.residual_elements));
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(final.data(), residual, final.size() * 2,
+                                      cudaMemcpyDeviceToHost, stream.get()));
+    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    graph_capture.header.final_fnv64 = fnv64_append(1469598103934665603ull,
+        final.data(), final.size() * 2);
+    std::ofstream output(graph_capture_path, std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error(
+        "transformer: cannot create H3 graph capture: " + graph_capture_path);
+    output.write(reinterpret_cast<const char*>(&graph_capture.header),
+                 sizeof(graph_capture.header));
+    auto write = [&](const auto& values) {
+      output.write(reinterpret_cast<const char*>(values.data()),
+          static_cast<std::streamsize>(values.size() * sizeof(values[0])));
+    };
+    write(graph_capture.input); write(graph_capture.selectors);
+    write(graph_capture.code); write(graph_capture.cosine);
+    write(graph_capture.sine); write(graph_capture.ranges); write(final);
+    if (!output) throw std::runtime_error(
+        "transformer: failed writing H3 graph capture: " + graph_capture_path);
+    graph_capture.active = false;
+    graph_capture_done = true;
+    std::fprintf(stderr, "vidfab: captured exact H3 50-layer graph step %d to %s\n",
+                 denoise_step, graph_capture_path.c_str());
+    const char* stop = std::getenv("VIDFAB_H3_GRAPH_CAPTURE_EXIT");
+    if (stop && stop[0] == '1')
+      throw std::runtime_error(
+          "transformer: stopped after requested H3 graph capture");
+  }
+
   void capture_sol_inputs(const __nv_bfloat16* q, const __nv_bfloat16* k,
                           const __nv_bfloat16* v, int rows, int layer) {
     if (sol_capture_done) return;
@@ -852,6 +956,7 @@ struct Transformer::Impl {
     if (native != nullptr && native[0] == '1') linear.set_native(true);
     const char* capture = std::getenv("VIDFAB_SOL_CAPTURE");
     const char* block_capture_env = std::getenv("VIDFAB_H3_BLOCK_CAPTURE");
+    const char* graph_capture_env = std::getenv("VIDFAB_H3_GRAPH_CAPTURE");
     const char* diag = std::getenv("VIDFAB_TENSOR_DIAG");
     tensor_diag=diag!=nullptr&&diag[0]=='1';
     if(tensor_diag)d_tensor_diag.allocate(1);
@@ -870,6 +975,11 @@ struct Transformer::Impl {
       const char* layer = std::getenv("VIDFAB_H3_BLOCK_CAPTURE_LAYER");
       if (step && *step) block_capture_step = std::atoi(step);
       if (layer && *layer) block_capture_layer = std::atoi(layer);
+    }
+    if (graph_capture_env && *graph_capture_env) {
+      graph_capture_path = graph_capture_env;
+      const char* step = std::getenv("VIDFAB_H3_GRAPH_CAPTURE_STEP");
+      if (step && *step) graph_capture_step = std::atoi(step);
     }
   }
   ~Impl() {
@@ -988,6 +1098,9 @@ struct Transformer::Impl {
     const float* gate_mlp = mod_base != nullptr ? mod_base + 5 * stride : nullptr;
     if (layer >= 0)
       begin_block_capture(x, adaln_idx, cos, sin, rows, layer,
+                          block_attention_mode);
+    if (layer >= 0)
+      begin_graph_capture(x, adaln_idx, cos, sin, rows, layer,
                           block_attention_mode);
     auto project = [&](const QuantWeight& weight,
                        const __nv_bfloat16* dense,
@@ -1195,7 +1308,10 @@ struct Transformer::Impl {
         diagnose("mlp_residual",x+off,size_t(n)*hidden,layer);
       }
     }
-    if (layer >= 0) finish_block_capture(x);
+    if (layer >= 0) {
+      finish_block_capture(x);
+      capture_graph_boundary(x, layer);
+    }
     emit_stage("ffn", x, rows, hidden);
   }
 };
