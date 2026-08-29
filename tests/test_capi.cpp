@@ -185,7 +185,7 @@ VIDFAB_TEST(capi_model_paths_and_attention) {
   CHECK(vidfab_request_set_model_path(request.handle, VIDFAB_MODEL_TOKENIZER, nullptr) ==
         VIDFAB_ERR_INVALID_ARGUMENT);
 
-  for (const char* mode : {"none", "flash2", "sage2", "sol", "sol-experimental"}) {
+  for (const char* mode : {"none", "flash2", "sage2", "sol", "sol-experimental", "exact"}) {
     CHECK(vidfab_request_set_attention(request.handle, mode) == VIDFAB_OK);
   }
   CHECK(vidfab_request_set_attention(request.handle, "flash3") == VIDFAB_ERR_INVALID_ARGUMENT);

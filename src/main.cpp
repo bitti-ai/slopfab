@@ -53,6 +53,7 @@
 #include <chrono>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/deterministic_attention.cuh"
 #include "vidfab/cuda/profile.h"
 #include "vidfab/dit/transformer.h"
 #include "vidfab/generate.h"
@@ -501,8 +502,11 @@ const CommandHelp kCommands[] = {
      "                               The audio cost is NOT characterised -- one seed\n"
      "                               per point leaves its noise floor moving as much\n"
      "                               as the effect. Judge output before relying on it\n"
-     "  --attention <backend>        none, flash2, sage2 (default), sol, or\n"
-     "                               sol-experimental. The experimental SM120-only\n"
+     "  --attention <backend>        none, flash2, sage2 (default), sol,\n"
+     "                               sol-experimental, or exact. Vulkan neural\n"
+     "                               inference accepts only exact attention, but\n"
+     "                               its full model orchestrator is not complete\n"
+     "                               The experimental SM120-only\n"
      "                               path is lossy and fails rather than falling back.\n"
      "  --sol-beta <f>               routing threshold multiplier (default 1)\n"
      "  --sol-error-k/v <f>           experimental K-residual/V-dispersion weights\n"
@@ -1371,16 +1375,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       attn_band = std::atoi(next("--attn-band"));
     } else if (arg == "--attention") {
       const std::string v = next("--attention");
-      if (v == "none") attention_mode = vidfab::AttentionMode::kNone;
-      else if (v == "flash2") attention_mode = vidfab::AttentionMode::kFlash2;
-      else if (v == "sage2") attention_mode = vidfab::AttentionMode::kSage2;
-      else if (v == "sol") attention_mode = vidfab::AttentionMode::kSol;
-      else if (v == "sol-experimental")
-        attention_mode = vidfab::AttentionMode::kSolExperimental;
-      else {
+      if (!vidfab::parse_attention_mode(v, &attention_mode)) {
         std::fprintf(stderr,
-                     "vidfab: --attention wants none, flash2, sage2, sol, or "
-                     "sol-experimental, got '%s'\n", v.c_str());
+                     "vidfab: --attention wants none, flash2, sage2, sol, "
+                     "sol-experimental, or exact, got '%s'\n", v.c_str());
         return 2;
       }
     } else if (arg == "--sol-beta") {
@@ -1412,11 +1410,28 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 
   if (inference_backend == "vulkan") {
+    if (!vidfab::attention_mode_supported(vidfab::DeviceBackend::kVulkan,
+                                          attention_mode)) {
+      std::fprintf(stderr,
+                   "vidfab: Vulkan inference supports only --attention exact; "
+                   "mode '%s' is unavailable and will not be remapped\n",
+                   vidfab::attention_mode_name(attention_mode));
+      return 1;
+    }
     std::fprintf(stderr,
-                 "vidfab: Vulkan neural inference is not implemented; "
-                 "--output-accelerator vulkan accelerates RGB-to-YUV only\n");
+                 "vidfab: Vulkan exact attention is available, but Vulkan neural "
+                 "inference orchestration is not implemented; no CUDA fallback was used\n");
     return 1;
   }
+
+#if VIDFAB_WITH_CUDA
+  if (attention_mode == vidfab::AttentionMode::kExact &&
+      !vidfab::cuda::deterministic_h3_attention_available()) {
+    std::fprintf(stderr,
+                 "vidfab: --attention exact is unavailable on this CUDA device/runtime tuple\n");
+    return 1;
+  }
+#endif
 
   // Both write the same field, so accepting both would mean silently honouring
   // one of them and dropping the other.
@@ -1517,9 +1532,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                  "--skip-every; a skipped step hides the block cache's schedule from it\n");
     return 2;
   }
-  if (attn_band > 0 && attention_mode != vidfab::AttentionMode::kFlash2) {
+  if (attn_band > 0 && attention_mode != vidfab::AttentionMode::kFlash2 &&
+      attention_mode != vidfab::AttentionMode::kExact) {
     std::fprintf(stderr,
-                 "vidfab: --attn-band currently requires --attention flash2\n");
+                 "vidfab: --attn-band currently requires --attention flash2 or exact\n");
     return 2;
   }
   // Rejected rather than silently resolved. A fixed interval and an adaptive

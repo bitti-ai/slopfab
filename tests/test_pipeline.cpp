@@ -107,6 +107,31 @@ VIDFAB_TEST(pipeline_plan_default) {
   CHECK(last_video > last_audio);
 }
 
+VIDFAB_TEST(attention_mode_parse_name_and_backend_contract) {
+  using vidfab::AttentionMode;
+  using vidfab::DeviceBackend;
+  const AttentionMode modes[] = {
+      AttentionMode::kNone, AttentionMode::kFlash2, AttentionMode::kSage2,
+      AttentionMode::kSol, AttentionMode::kSolExperimental, AttentionMode::kExact};
+  for (AttentionMode mode : modes) {
+    AttentionMode parsed = AttentionMode::kNone;
+    CHECK(vidfab::parse_attention_mode(vidfab::attention_mode_name(mode), &parsed));
+    CHECK(parsed == mode);
+    CHECK(vidfab::attention_mode_supported(DeviceBackend::kCuda, mode));
+    CHECK(vidfab::attention_mode_supported(DeviceBackend::kVulkan, mode) ==
+          (mode == AttentionMode::kExact));
+  }
+
+  AttentionMode unchanged = AttentionMode::kSol;
+  CHECK(!vidfab::parse_attention_mode("flash3", &unchanged));
+  CHECK(unchanged == AttentionMode::kSol);
+  CHECK(!vidfab::parse_attention_mode("exact ", &unchanged));
+  CHECK(!vidfab::parse_attention_mode("exact", nullptr));
+  CHECK(std::string(vidfab::attention_mode_name(static_cast<AttentionMode>(999))) == "unknown");
+  CHECK(!vidfab::attention_mode_supported(DeviceBackend::kVulkan,
+                                           static_cast<AttentionMode>(999)));
+}
+
 VIDFAB_TEST(pipeline_plan_aspect_and_frames) {
   vidfab::GenerateRequest r = base_request();
   r.aspect_w = 9;

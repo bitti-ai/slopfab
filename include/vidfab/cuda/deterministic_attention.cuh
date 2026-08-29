@@ -21,6 +21,17 @@ bool deterministic_attention_grid_fits(uint64_t rows, uint64_t heads,
                                        uint64_t max_grid_x,
                                        uint64_t max_grid_y) noexcept;
 
+// Runtime qualification for the pinned cooperative H3 implementation. This
+// includes the reusable CUDA device/runtime/artifact tuple and its launch
+// resources, and is intentionally available before any model weights load.
+bool deterministic_h3_attention_available();
+
+// These belong to the exact contract, not the independent Flash2 kernel.
+// A band table built for exact attention must not borrow another backend's
+// implementation constants even when the current values happen to match.
+constexpr uint32_t deterministic_h3_query_tile() noexcept { return 128; }
+constexpr uint32_t deterministic_h3_key_align() noexcept { return 64; }
+
 // Converts Q/K/V once per invocation. Multiple row-range launches may consume
 // the resulting FP16 tensors without repeating the conversion.
 void launch_prepare_deterministic_attention_inputs(

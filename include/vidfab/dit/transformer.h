@@ -79,6 +79,9 @@ class Transformer {
   // where the per-query-tile key ranges are built.
   void set_attention_band(int frames);
   int attention_band() const;
+  // Set before prepare_text/prepare_sequence. Exact mode uses the pinned
+  // deterministic cooperative H3 operator for both the text refiner and main
+  // blocks; changing the mode after either preparation is rejected.
   void set_attention_mode(AttentionMode mode);
   AttentionMode attention_mode() const;
   void set_sol_schedule(const SolSchedule& schedule);

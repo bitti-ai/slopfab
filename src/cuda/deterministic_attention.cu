@@ -551,6 +551,13 @@ void launch_attention_impl(
 
 }  // namespace
 
+bool deterministic_h3_attention_available() {
+  const GridLimits limits = cached_grid_limits();
+  return limits.exact_h3_tuple &&
+         limits.max_threads_per_block >= kH3AttentionThreads &&
+         limits.max_shared_bytes_per_block >= kH3AttentionSharedBytes;
+}
+
 bool deterministic_h3_cuda_tuple_fits(
     int major, int minor, const char* model, int driver_api_version,
     int runtime_version, uint32_t max_threads_per_block,

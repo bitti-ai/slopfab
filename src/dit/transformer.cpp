@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "vidfab/cuda/attention.cuh"
+#include "vidfab/cuda/deterministic_attention.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/diagnostics.cuh"
 #include "vidfab/cuda/gemm.cuh"
@@ -541,11 +542,16 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     acfg.seq_len = std::max(seq, 1);
     acfg.num_heads = cfg.num_attention_heads;
     acfg.head_dim = cfg.attention_head_dim;
-    AttentionBackend backend = AttentionBackend::kFused;
-    if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
-    if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
-    if (is_sol_attention(attention_mode)) backend = AttentionBackend::kSol;
-    scratch = std::max(scratch, cuda::attention_workspace_bytes(acfg, backend));
+    // Exact H3 is an operator-bounded cooperative kernel with no workspace.
+    // Spell that out rather than accidentally relying on kFused also being
+    // zero today; exact never dispatches through attention_forward below.
+    if (attention_mode != AttentionMode::kExact) {
+      AttentionBackend backend = AttentionBackend::kFused;
+      if (attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
+      if (attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
+      if (is_sol_attention(attention_mode)) backend = AttentionBackend::kSol;
+      scratch = std::max(scratch, cuda::attention_workspace_bytes(acfg, backend));
+    }
   }
   c.scratch = scratch;
   c.total = bytes + align_up(scratch);
@@ -584,6 +590,7 @@ struct Transformer::Impl {
   SequenceLayout layout;
   PackedIndices indices;
   bool has_sequence = false;
+  bool attention_configuration_locked = false;
   int num_text = 0;
   Carve carve;
   // Frame-banded attention. `attn_band` is a request-level setting; `d_band`
@@ -912,9 +919,17 @@ struct Transformer::Impl {
                           sol_pipeline_diag;
     }
     if (layer >= 0 && !sol_capture_path.empty()) capture_sol_inputs(q, k, v, rows, layer);
-    cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
+    if (block_attention_mode == AttentionMode::kExact) {
+      cuda::launch_deterministic_h3_attention(
+          stream.get(), q, k, v, attn_out, acfg.band_ranges,
+          static_cast<uint32_t>(rows), static_cast<uint32_t>(cfg.num_attention_heads),
+          static_cast<uint32_t>(cfg.attention_head_dim), acfg.effective_scale());
+    } else {
+      cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
+    }
     diagnose("attention",attn_out,size_t(rows)*inner,layer);
-    const char* label = backend == AttentionBackend::kFused ? "attn.flash2" :
+    const char* label = block_attention_mode == AttentionMode::kExact ? "attn.exact" :
+                        backend == AttentionBackend::kFused ? "attn.flash2" :
                         backend == AttentionBackend::kSage2 ? "attn.sage2" :
                         backend == AttentionBackend::kSol ?
                           (block_attention_mode==AttentionMode::kSolExperimental?
@@ -997,9 +1012,29 @@ size_t Transformer::weight_bytes() const { return impl_->arena_bytes; }
 void Transformer::set_adaln_lookup(AdaLNLookup mode) { impl_->lookup = mode; }
 AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
 
-void Transformer::set_attention_band(int frames) { impl_->attn_band = frames > 0 ? frames : 0; }
+void Transformer::set_attention_band(int frames) {
+  const int requested = frames > 0 ? frames : 0;
+  if (impl_->attention_configuration_locked && requested != impl_->attn_band) {
+    throw std::runtime_error(
+        "transformer: attention band cannot change after attention preparation");
+  }
+  impl_->attn_band = requested;
+}
 int Transformer::attention_band() const { return impl_->attn_band; }
-void Transformer::set_attention_mode(AttentionMode mode) { impl_->attention_mode = mode; }
+void Transformer::set_attention_mode(AttentionMode mode) {
+  if (!attention_mode_supported(DeviceBackend::kCuda, mode)) {
+    throw std::invalid_argument("transformer: invalid CUDA attention mode");
+  }
+  if (impl_->attention_configuration_locked && mode != impl_->attention_mode) {
+    throw std::runtime_error(
+        "transformer: attention mode cannot change after attention preparation");
+  }
+  if (mode == AttentionMode::kExact && !cuda::deterministic_h3_attention_available()) {
+    throw std::runtime_error(
+        "transformer: exact attention is unavailable on this CUDA tuple");
+  }
+  impl_->attention_mode = mode;
+}
 AttentionMode Transformer::attention_mode() const { return impl_->attention_mode; }
 void Transformer::set_sol_schedule(const SolSchedule& schedule) { impl_->sol_schedule=schedule; }
 void Transformer::set_denoise_step(int step) { impl_->denoise_step = step; }
@@ -1055,6 +1090,7 @@ void Transformer::unload() {
   impl_->arena.reset();
   impl_->arena_bytes = 0;
   impl_->has_sequence = false;
+  impl_->attention_configuration_locked = false;
 }
 
 void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config) {
@@ -1642,6 +1678,8 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   s.require_loaded("prepare_text");
   if (num_tokens < 0) throw std::runtime_error("transformer: negative token count");
 
+  s.attention_configuration_locked = true;
+
   s.num_text = num_tokens;
   if (num_tokens == 0) {
     s.text_cache.reset();
@@ -1693,7 +1731,7 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   for (const BlockWeights& b : s.refiner) {
     // No AdaLN, no RoPE, no mask: `mod_base` and `cos` are null.
     s.run_block(b, nullptr, num_tokens, x, nullptr, nullptr, nullptr, q, k, v, attn_out, normed,
-                fused, act, branch, AttentionMode::kFlash2);
+                fused, act, branch, s.attention_mode);
   }
   s.carve = saved;
 
@@ -1710,6 +1748,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
                                    const std::vector<double>& position_ids) {
   Impl& s = *impl_;
   s.require_loaded("prepare_sequence");
+  s.attention_configuration_locked = true;
 
   const int seq = layout.total_rows();
   if (seq <= 0) throw std::runtime_error("transformer: empty packed sequence");
@@ -1749,8 +1788,14 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   // error.
   s.d_band.reset();
   if (s.attn_band > 0) {
+    const int query_tile = s.attention_mode == AttentionMode::kExact
+        ? static_cast<int>(cuda::deterministic_h3_query_tile())
+        : cuda::attention_fused_query_tile();
+    const int key_align = s.attention_mode == AttentionMode::kExact
+        ? static_cast<int>(cuda::deterministic_h3_key_align())
+        : cuda::attention_fused_key_align();
     const dit::BandedKeyRanges band = dit::build_banded_key_ranges(
-        layout, s.attn_band, cuda::attention_fused_query_tile(), cuda::attention_fused_key_align());
+        layout, s.attn_band, query_tile, key_align);
     s.d_band.allocate(band.ranges.size());
     s.d_band.copy_from_host(band.ranges.data(), band.ranges.size(), s.stream.get());
   }

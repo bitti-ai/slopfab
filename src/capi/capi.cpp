@@ -503,16 +503,10 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_attention(vidfab_request* reques
   // reporting path allocates.
   return guarded([&] {
     const std::string name = mode;
-    if (name == "none") request->options.attention_mode = vidfab::AttentionMode::kNone;
-    else if (name == "flash2") request->options.attention_mode = vidfab::AttentionMode::kFlash2;
-    else if (name == "sage2") request->options.attention_mode = vidfab::AttentionMode::kSage2;
-    else if (name == "sol") request->options.attention_mode = vidfab::AttentionMode::kSol;
-    else if (name == "sol-experimental")
-      request->options.attention_mode = vidfab::AttentionMode::kSolExperimental;
-    else {
+    if (!vidfab::parse_attention_mode(name, &request->options.attention_mode)) {
       return fail(VIDFAB_ERR_INVALID_ARGUMENT,
                   "unknown attention mode '" + name +
-                      "'; expected none, flash2, sage2, sol or sol-experimental");
+                      "'; expected none, flash2, sage2, sol, sol-experimental or exact");
     }
     return VIDFAB_OK;
   });
