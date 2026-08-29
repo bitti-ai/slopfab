@@ -161,7 +161,29 @@ void materialize_or_scale() {
   uint first = word * 2u;
   if (first >= p.count) return;
   float lo, hi;
-  if (p.op <= 6u) {
+  if (p.op == 5u) {
+    uint packed = load_byte(0u, word);
+    uint row = first / p.in_features;
+    uint block = (first - row * p.in_features) >> 4u;
+    precise float block_value = decode_e4m3(load_byte(
+        1u, nvfp4_scale_offset(row, block, p.in_features >> 4u)));
+    precise float scale = block_value * uintBitsToFloat(p.scalar_bits);
+    precise float lo_value = decode_e2m1(packed >> 4u) * scale;
+    precise float hi_value = decode_e2m1(packed & 15u) * scale;
+    lo = lo_value;
+    hi = first + 1u < p.count ? hi_value : 0.0;
+  } else if (p.op == 6u) {
+    uint packed = load_byte(0u, word);
+    uint scale_index = first / p.block_size;
+    uint nested_code = load_byte(1u, scale_index);
+    float scale = fma(load_float(3u, nested_code),
+                      load_float(4u, scale_index / p.nested_block_size),
+                      uintBitsToFloat(p.scalar_bits));
+    precise float lo_value = load_float(2u, packed >> 4u) * scale;
+    precise float hi_value = load_float(2u, packed & 15u) * scale;
+    lo = lo_value;
+    hi = first + 1u < p.count ? hi_value : 0.0;
+  } else if (p.op <= 4u) {
     lo = materialized_value(first);
     hi = first + 1u < p.count ? materialized_value(first + 1u) : 0.0;
   } else {

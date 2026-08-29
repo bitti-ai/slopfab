@@ -4,11 +4,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <filesystem>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -20,6 +23,8 @@
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/dit/rope.h"
 #include "vidfab/dtype.h"
+#include "vidfab/nf4.h"
+#include "vidfab/safetensors.h"
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
 
@@ -2434,6 +2439,232 @@ VIDFAB_TEST(vulkan_linear_weight_bounded_reuse_and_lifetime) {
   retained = Submission{};
   { TensorBatch collect = vk.begin_batch(); }
   CHECK(vk.pooled_used_bytes() == used_before_submit);
+}
+
+VIDFAB_TEST(cuda_vulkan_linear_weight_real_nvfp4_slab) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path path =
+      "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
+  int cuda_devices = 0;
+  if (!std::filesystem::exists(path) ||
+      cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  const std::string prefix = "blocks.0.attn.qkv_proj";
+  const TensorView& stored = checkpoint.at(prefix + ".weight");
+  const TensorView& scale = checkpoint.at(prefix + ".weight_scale");
+  const TensorView& global_view = checkpoint.at(prefix + ".weight_scale_2");
+  CHECK(stored.shape.size() == 2);
+  constexpr uint32_t slab_out = 384;
+  const uint32_t full_out = static_cast<uint32_t>(stored.shape[0]);
+  const uint32_t in = static_cast<uint32_t>(stored.shape[1] * 2);
+  CHECK(full_out >= slab_out && full_out % 128 == 0 && in % 64 == 0);
+  const size_t elements = static_cast<size_t>(slab_out) * in;
+  const size_t stored_bytes = elements / 2;
+  const size_t scale_bytes = elements / 16;
+  CHECK(stored.nbytes >= stored_bytes && scale.nbytes >= scale_bytes);
+  float global = 0.0f;
+  std::memcpy(&global, global_view.data, sizeof(global));
+
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  LinearWeightUpload upload;
+  upload.format = LinearWeightFormat::kNVFloat4;
+  upload.out_features = slab_out;
+  upload.in_features = in;
+  upload.data = stored.data;
+  upload.data_bytes = stored_bytes;
+  upload.block_scale = static_cast<const uint8_t*>(scale.data);
+  upload.block_scale_count = scale_bytes;
+  upload.global_scale = global;
+  const auto upload_begin = std::chrono::steady_clock::now();
+  LinearWeight weight = LinearWeight::upload(vk, upload);
+  const double upload_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - upload_begin).count();
+  CHECK(weight.stored_bytes() == stored_bytes);
+  CHECK(weight.resident_bytes() == stored_bytes + scale_bytes);
+  const uint64_t shape[] = {slab_out, in};
+  DeviceTensor dense = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                   ScalarType::kBFloat16);
+
+  cuda::DeviceBuffer<uint8_t> cuda_stored(stored_bytes), cuda_scale(scale_bytes);
+  cuda::DeviceBuffer<uint16_t> cuda_dense(elements);
+  cuda_stored.copy_from_host(static_cast<const uint8_t*>(stored.data), stored_bytes);
+  cuda_scale.copy_from_host(static_cast<const uint8_t*>(scale.data), scale_bytes);
+  cuda::launch_dequant_nvfp4(cuda_stored.get(), cuda_scale.get(), global,
+      reinterpret_cast<__nv_bfloat16*>(cuda_dense.get()), slab_out, in, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  {
+    TensorBatch batch = vk.begin_batch();
+    weight.materialize_bf16(batch, dense);
+    batch.submit().wait();
+  }
+  std::vector<uint16_t> cuda_bits(elements), vulkan_bits(elements);
+  cuda_dense.copy_to_host(cuda_bits.data(), elements);
+  vk.download_bytes(dense, vulkan_bits.data(), elements * sizeof(uint16_t));
+  CHECK(std::memcmp(cuda_bits.data(), vulkan_bits.data(),
+                    elements * sizeof(uint16_t)) == 0);
+
+  constexpr int iterations = 20;
+  auto cuda_begin = std::chrono::steady_clock::now();
+  for (int i = 0; i < iterations; ++i) {
+    cuda::launch_dequant_nvfp4(cuda_stored.get(), cuda_scale.get(), global,
+        reinterpret_cast<__nv_bfloat16*>(cuda_dense.get()), slab_out, in, nullptr);
+  }
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const double cuda_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_begin).count() / iterations;
+  auto vulkan_begin = std::chrono::steady_clock::now();
+  for (int i = 0; i < iterations; ++i) {
+    TensorBatch batch = vk.begin_batch();
+    weight.materialize_bf16(batch, dense);
+    batch.submit().wait();
+  }
+  const double vulkan_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vulkan_begin).count() / iterations;
+  std::printf("  real NVFP4 slab %ux%u: upload %.3f ms, CUDA %.3f ms, "
+              "Vulkan %.3f ms, persistent %.2f MiB, dense %.2f MiB\n",
+              slab_out, in, upload_ms, cuda_ms, vulkan_ms,
+              static_cast<double>(weight.resident_bytes()) / 1048576.0,
+              static_cast<double>(elements * 2) / 1048576.0);
+}
+
+VIDFAB_TEST(cuda_vulkan_linear_weight_real_nf4_conv) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path path = "weights/vae/video_vae_nf4.safetensors";
+  int cuda_devices = 0;
+  if (!std::filesystem::exists(path) ||
+      cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  constexpr std::string_view state_suffix =
+      ".quant_state.bitsandbytes__nf4";
+  std::string name;
+  uint64_t largest_elements = 0;
+  for (const auto& entry : checkpoint.tensors()) {
+    const std::string& candidate = entry.first;
+    if (candidate.size() <= state_suffix.size() ||
+        candidate.compare(candidate.size() - state_suffix.size(),
+                          state_suffix.size(), state_suffix) != 0) continue;
+    const std::string weight_name =
+        candidate.substr(0, candidate.size() - state_suffix.size());
+    const NF4State candidate_state =
+        read_nf4_state(checkpoint, weight_name, "Vulkan weight test");
+    uint64_t candidate_elements = 1;
+    for (int64_t extent : candidate_state.shape)
+      candidate_elements *= static_cast<uint64_t>(extent);
+    if (candidate_elements > largest_elements) {
+      largest_elements = candidate_elements;
+      name = weight_name;
+    }
+  }
+  CHECK(!name.empty());
+  if (name.empty()) return;
+  const TensorView& stored = checkpoint.at(name);
+  const TensorView& absmax = checkpoint.at(name + ".absmax");
+  const TensorView& map = checkpoint.at(name + ".quant_map");
+  const TensorView& nested_map = checkpoint.at(name + ".nested_quant_map");
+  const TensorView& nested_absmax = checkpoint.at(name + ".nested_absmax");
+  const NF4State state = read_nf4_state(checkpoint, name, "Vulkan weight test");
+  CHECK(state.shape.size() >= 2 && state.shape[0] > 0);
+  uint64_t elements = 1;
+  for (int64_t extent : state.shape) elements *= static_cast<uint64_t>(extent);
+  const uint32_t out = static_cast<uint32_t>(state.shape[0]);
+  const uint32_t in = static_cast<uint32_t>(elements / out);
+  CHECK(elements == static_cast<uint64_t>(out) * in && stored.nbytes * 2 == elements);
+
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  LinearWeightUpload upload;
+  upload.format = LinearWeightFormat::kNF4;
+  upload.out_features = out;
+  upload.in_features = in;
+  upload.data = stored.data;
+  upload.data_bytes = stored.nbytes;
+  upload.nf4_absmax = static_cast<const uint8_t*>(absmax.data);
+  upload.nf4_absmax_count = absmax.nbytes;
+  upload.nf4_quant_map = static_cast<const float*>(map.data);
+  upload.nf4_quant_map_count = static_cast<uint64_t>(map.numel());
+  upload.nf4_nested_quant_map = static_cast<const float*>(nested_map.data);
+  upload.nf4_nested_quant_map_count = static_cast<uint64_t>(nested_map.numel());
+  upload.nf4_nested_absmax = static_cast<const float*>(nested_absmax.data);
+  upload.nf4_nested_absmax_count = static_cast<uint64_t>(nested_absmax.numel());
+  upload.nf4_block_size = state.block_size;
+  upload.nf4_nested_block_size = state.nested_block_size;
+  upload.nf4_nested_offset = state.nested_offset;
+  const auto upload_begin = std::chrono::steady_clock::now();
+  LinearWeight weight = LinearWeight::upload(vk, upload);
+  const double upload_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - upload_begin).count();
+  const uint64_t shape[] = {out, in};
+  DeviceTensor dense = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                   ScalarType::kFloat16);
+
+  cuda::DeviceBuffer<uint8_t> d_stored(stored.nbytes), d_absmax(absmax.nbytes);
+  cuda::DeviceBuffer<float> d_map(map.numel()), d_nested_map(nested_map.numel()),
+      d_nested_absmax(nested_absmax.numel());
+  cuda::DeviceBuffer<uint16_t> d_dense(elements);
+  d_stored.copy_from_host(static_cast<const uint8_t*>(stored.data), stored.nbytes);
+  d_absmax.copy_from_host(static_cast<const uint8_t*>(absmax.data), absmax.nbytes);
+  d_map.copy_from_host(static_cast<const float*>(map.data), map.numel());
+  d_nested_map.copy_from_host(static_cast<const float*>(nested_map.data), nested_map.numel());
+  d_nested_absmax.copy_from_host(static_cast<const float*>(nested_absmax.data),
+                                 nested_absmax.numel());
+  cuda::launch_dequant_nf4_f16(d_stored.get(), d_absmax.get(), d_map.get(),
+      d_nested_map.get(), d_nested_absmax.get(), state.block_size,
+      state.nested_block_size, state.nested_offset,
+      reinterpret_cast<__half*>(d_dense.get()), elements, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  {
+    TensorBatch batch = vk.begin_batch();
+    weight.materialize_f16(batch, dense);
+    batch.submit().wait();
+  }
+  std::vector<uint16_t> cuda_bits(elements), vulkan_bits(elements);
+  d_dense.copy_to_host(cuda_bits.data(), elements);
+  vk.download_bytes(dense, vulkan_bits.data(), elements * sizeof(uint16_t));
+  CHECK(std::memcmp(cuda_bits.data(), vulkan_bits.data(), elements * 2) == 0);
+
+  constexpr int iterations = 10;
+  auto cuda_begin = std::chrono::steady_clock::now();
+  for (int i = 0; i < iterations; ++i) {
+    cuda::launch_dequant_nf4_f16(d_stored.get(), d_absmax.get(), d_map.get(),
+        d_nested_map.get(), d_nested_absmax.get(), state.block_size,
+        state.nested_block_size, state.nested_offset,
+        reinterpret_cast<__half*>(d_dense.get()), elements, nullptr);
+  }
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const double cuda_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_begin).count() / iterations;
+  auto vulkan_begin = std::chrono::steady_clock::now();
+  for (int i = 0; i < iterations; ++i) {
+    TensorBatch batch = vk.begin_batch();
+    weight.materialize_f16(batch, dense);
+    batch.submit().wait();
+  }
+  const double vulkan_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vulkan_begin).count() / iterations;
+  std::printf("  real NF4 conv %ux%u: upload %.3f ms, CUDA %.3f ms, "
+              "Vulkan %.3f ms, persistent %.2f MiB, dense %.2f MiB\n",
+              out, in, upload_ms, cuda_ms, vulkan_ms,
+              static_cast<double>(weight.resident_bytes()) / 1048576.0,
+              static_cast<double>(elements * 2) / 1048576.0);
 }
 
 int main() { return ::vidfab::test::run_all(); }

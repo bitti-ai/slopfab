@@ -294,3 +294,52 @@ Vulkan. Fused VAE seq1797/heads32 measured 0.0412 ms CUDA and 0.1282 ms
 Vulkan. Fifty DiT blocks perform Q and K RoPE: 103.7 ms Vulkan versus 56.3 ms
 CUDA per denoiser evaluation, a 47.4 ms delta or about 1.37 seconds over 29
 evaluations. These are operator measurements, not an unwired-backend claim.
+
+## Persistent linear-weight preparation
+
+`vidfab::vulkan::LinearWeight` retains immutable checkpoint metadata and only
+the compressed/native bytes and auxiliaries on device. It supports F32, F16,
+BF16, E4M3 FP8, per-output I8, NVFP4 and bitsandbytes NF4. Dense BF16/FP16 is a
+caller-owned prepared tensor, so an orchestrator can reuse one bounded buffer
+for the active weight/chunk rather than expanding every resident quantized
+matrix. Upload allocates every component first and copies them in one timeline
+submission; temporary host-visible buffers are released after exact completion.
+`resident_bytes()` is the logical persistent payload; allocator rounding remains
+visible through `TensorContext::reserved_bytes()`.
+
+The implementation preserves the NVFP4 high-even nibble convention, 128x4
+block-scale swizzle and `(block_scale * global_scale)` then E2M1 multiply. NF4
+is deliberately restricted to the shipped 64/256 double-quant block contract;
+its nested scale is fused multiply-add, followed by the quant-map multiply.
+FP8 input-scale presence/value and `full_precision_matrix_mult` remain immutable
+metadata for the later native-GEMM planner. AWQ BF16/fp32 pre-scale and regular-
+H4 ConvRot are separate batched device operations. This slice prepares weights
+only: it does not claim or select a Vulkan GEMM.
+
+The checked modules are generated with Khronos glslang 16.5.0:
+
+```text
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_weight.comp -o tensor_weight.raw.spv
+python tools/add_spirv_float_controls.py tensor_weight.raw.spv src/vulkan/tensor_weight.comp.spv src/vulkan/tensor_weight_denorm.comp.spv
+
+tensor_weight.comp                    55FADB68982ABCDB0079C8D9B0A84E77F64D268E63E7227F2A2BC770ED60307F
+tensor_weight.comp.spv                DA6454D969F13F02F6571EAA5850E7CD757E9AB0DF68E005557B277C4D73F30E
+tensor_weight_denorm.comp.spv         D67D8F272B694181A350760C29C4ADACCAFF692B043E6FA8A619D0A8CB807DAE
+```
+
+Exact tests cover all 256 E4M3 patterns, all 16 E2M1 values, I8 extremes and
+odd row tails, every 65,536-bit F16/BF16 same- and cross-format input, a 3x5
+NVFP4 scale-tile grid, NF4 high-even/nested-boundary/odd tails, both activation
+types, 32/33-operation bounds, two submitted slots and wrapper-drop retention.
+On RTX 5090/610.88 Release, device-resident steady-state measurements excluded
+upload/readback. A real 384x5376 NVFP4 slab from
+`MiniMax_H3_FL2VA_pruned_nvfp4.safetensors` (SHA-256
+`6AB7F0C48141E7919B32F925CA3DEF22E06A6AEBEB9E0B6F5A0BE0FE8409976F`)
+materialized in 0.051 ms Vulkan versus 0.012 ms CUDA; one-time Vulkan upload
+was 1.37 ms, persistent payload 1.11 MiB and prepared BF16 3.94 MiB. The
+largest NF4 tensor selected from `video_vae_nf4.safetensors` (SHA-256
+`6D0CB4FF02EBB74CC6BCA40018E6EFAE5082CCD7EB066FA1263098C6DBF8F6F1`),
+flattened 16384x2048, materialized FP16 in 0.225 ms Vulkan versus 0.037 ms CUDA;
+upload was 30.03 ms, persistent payload 16.51 MiB and prepared FP16 64 MiB.
+Both full prepared payloads matched CUDA byte-for-byte. These are preparation
+costs, not GEMM or end-to-end model timings.
