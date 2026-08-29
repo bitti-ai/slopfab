@@ -704,20 +704,71 @@ RTX 5090 (sm_120), CUDA 13.0, `A = 405` (10.125 s of stereo at 32 kHz,
 324,000 samples per channel):
 
 ```
-decode wall time      51.4 ms      (both stereo channels, one call)
+decode wall time      127.3 ms     (both stereo channels, exact math, one call)
 weights               247.64 MiB
 peak device memory    408.00 MiB   (weights + activation pool, cudaMemGetInfo delta)
 ```
 
-That is ~950 GFLOP of convolution in 51 ms, i.e. about 18 TFLOP/s fp32 — roughly
-a fifth of the card's peak, which is what a shared-memory-tiled direct
-convolution gets at these channel counts.
+The exact baseline canonicalizes subnormal/NaN operands and every convolution
+FMA boundary, and uses shared fixed-polynomial exp/sin implementations for
+SnakeBeta instead of vendor transcendental instructions.
 
 Accuracy against the float64 NumPy transcription of §2 driven by the same
-checkpoint, `A = 3`: **worst absolute deviation 2.15e-7** over the sampled
-output, four orders of magnitude inside the project's 1e-3 tolerance. At that
+checkpoint, `A = 3`: **worst absolute deviation 4.14e-7** over the sampled
+output, three orders of magnitude inside the project's 1e-3 tolerance. At that
 margin the two implementations are running the same arithmetic, not merely
 agreeing to tolerance.
+
+### 13.4 Exact CUDA/Vulkan primitive substrate
+
+`audio_primitives.h` owns backend-neutral Conv1D/ConvTranspose1D shape
+arithmetic and typed checkpoint loading. The loader accepts the shipped folded
+`name.weight` layout and legacy `weight_g`/`weight_v`; legacy folding uses a
+double-precision ascending square sum, one host `sqrt`, and a pinned float
+scale. The shipped decoder uses 779 fp32 tensors (247.64 MiB), and the
+primitive loader does not retain a second host copy after upload.
+
+Vulkan records Conv1D, transposed Conv1D, residual add, `/3`, clamp,
+interleave, SnakeBeta, and the asymmetric anti-alias up/down operations through
+one persistent five-binding pipeline. Each invocation owns one output and
+convolution reductions visit channels then taps in ascending order. Buffers
+stay device-resident and multiple primitives can share one `TensorBatch`; no
+CUDA fallback, host round-trip, per-operator allocation, or per-operator
+submission is present. The runtime rejects invalid shape/dtype/alias contracts
+before modifying batch access state. Subnormal operands/results become signed
+zero and NaNs become `0x7fc00000` at the same CUDA/Vulkan boundaries. Padding
+still executes `fma(0, weight, accumulator)`, matching CUDA even for exceptional
+weight bits.
+
+The embedded shader was generated with Microsoft DirectXShaderCompiler
+v1.9.2607 (`dxcompiler.dll` 1.9.0.5402), downloaded from the official release
+asset `dxc_2026_07_29.zip` (SHA-256
+`A1DFB116BA3EEAE6A1582291B53A8E7BF65AD760676BD3194685C8F7367CD241`):
+
+```
+dxc -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 -E main -O3 -Gis \
+    -Fo tensor_audio.comp.spv tensor_audio.hlsl
+```
+
+Pinned source/SPIR-V SHA-256 values are
+`67A253496870CE022CFEA380B10129864F4BB96B2F5993E5A3B8AE24EB959AE5`
+and `60FC7D704283ED51666FFC534857B869EC9C60D3514821AD536ED7F2D163611F`.
+
+The opt-in real test (`VIDFAB_AUDIO_VAE_REAL=1`) binds replay to
+`minimax_h3_audio_vae_fp32.safetensors`, 605,254,808 bytes, SHA-256
+`8E505D95DD1561D47ABD43D4238FD40D9BB1AE9E147ED0A4CBA778D76AE4DB48`.
+It exercises the production `[2048,32,1]` input projection, the
+`[1024,512,9]` first transposed convolution, and shipped activation-post
+Snake/anti-alias tensors. CUDA/Vulkan results are byte exact with aggregate
+FNV64 `A44D1909C30B36BB`; the selected raw weights contain zero fp32
+subnormals. On the measured RTX 5090 the first real transposed-convolution
+record/submit/wait is 0.56 ms. Live tensors plus bounded upload/readback staging
+use 54.4 MiB from a 58.0 MiB pool; repeated replay keeps the pool and descriptor
+count stable.
+
+This section establishes the primitive substrate only. It deliberately does
+not claim that the full audio decoder graph is wired to Vulkan; graph
+orchestration and whole-waveform parity remain the next feature.
 
 ---
 

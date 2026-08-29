@@ -3,14 +3,25 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <stdexcept>
 #include <vector>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <bcrypt.h>
+#endif
 
 #include "vidfab/cuda/audio_vae_kernels.cuh"
 #include "vidfab/cuda/device.h"
+#include "vidfab/safetensors.h"
 #include "vidfab/vae/audio_primitives.h"
 #include "vidfab/vulkan/tensor.h"
 
@@ -43,6 +54,55 @@ std::vector<float> values(size_t count, uint32_t multiplier, uint32_t modulus,
     result[i] = float(int((i * multiplier) % modulus) - int(modulus / 2)) * scale;
   return result;
 }
+
+size_t count_subnormals(const std::vector<float>& values) {
+  size_t count = 0;
+  for (float value : values) {
+    uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits));
+    count += (bits & 0x7f800000u) == 0u && (bits & 0x007fffffu) != 0u;
+  }
+  return count;
+}
+
+uint64_t fnv64(const std::vector<std::vector<float>>& tensors) {
+  uint64_t hash = 1469598103934665603ull;
+  for (const auto& tensor : tensors) {
+    for (float value : tensor) {
+      uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits));
+      for (unsigned byte = 0; byte < 4; ++byte) {
+        hash ^= (bits >> (8u * byte)) & 0xffu;
+        hash *= 1099511628211ull;
+      }
+    }
+  }
+  return hash;
+}
+
+#ifdef _WIN32
+std::array<uint8_t, 32> mapping_sha256(const void* mapping, size_t bytes) {
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  std::array<uint8_t, 32> digest{};
+  auto fail = [&] {
+    if (hash) BCryptDestroyHash(hash);
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+    throw std::runtime_error("audio primitive checkpoint SHA-256 failed");
+  };
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM,
+                                  nullptr, 0) < 0 ||
+      BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0) fail();
+  const auto* cursor = static_cast<const uint8_t*>(mapping);
+  while (bytes != 0) {
+    const ULONG chunk = static_cast<ULONG>(std::min<size_t>(bytes, 64ull << 20));
+    if (BCryptHashData(hash, const_cast<PUCHAR>(cursor), chunk, 0) < 0) fail();
+    cursor += chunk; bytes -= chunk;
+  }
+  if (BCryptFinishHash(hash, digest.data(),
+                       static_cast<ULONG>(digest.size()), 0) < 0) fail();
+  BCryptDestroyHash(hash); BCryptCloseAlgorithmProvider(algorithm, 0);
+  return digest;
+}
+#endif
 
 }  // namespace
 
@@ -263,4 +323,218 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
   std::printf("  exact audio primitives: persistent/reserved %.1f MiB, descriptors %llu\n",
               double(vk.pooled_used_bytes()) / 1048576.0,
               static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+}
+
+VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
+  using namespace vidfab;
+  if (!std::getenv("VIDFAB_AUDIO_VAE_REAL")) return;
+  const std::filesystem::path path =
+      "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
+  if (!std::filesystem::exists(path)) return;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !vulkan::Instance::available()) return;
+  vulkan::Instance instance = vulkan::Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore ||
+      !physical.front().info().shader_int64) return;
+
+  SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  CHECK(checkpoint.file_size() == 605254808u);
+  CHECK(checkpoint.tensor_count() == 917u);
+#ifdef _WIN32
+  const std::array<uint8_t, 32> expected_sha{
+      0x8e, 0x50, 0x5d, 0x95, 0xdd, 0x15, 0x61, 0xd4,
+      0x7a, 0xbd, 0x43, 0xd4, 0x23, 0x8f, 0xd4, 0x0d,
+      0x9b, 0xb1, 0xae, 0x9e, 0x14, 0x7e, 0xd0, 0xa4,
+      0xcb, 0xa7, 0x78, 0xd7, 0x6a, 0xe4, 0xdb, 0x48};
+  CHECK(mapping_sha256(checkpoint.mapping_base(), checkpoint.file_size()) ==
+        expected_sha);
+#endif
+
+  vae::AudioConvWeights conv_weights = vae::load_audio_conv_weights(
+      checkpoint, "dec_in_proj", {2048, 32, 1}, 2048, true);
+  vae::AudioConvWeights transpose_weights = vae::load_audio_conv_weights(
+      checkpoint, "decoder.ups.0.0", {1024, 512, 9}, 512, true);
+  CHECK(!conv_weights.folded_weight_norm);
+  CHECK(!transpose_weights.folded_weight_norm);
+  std::vector<float> log_alpha = vae::load_audio_f32_tensor(
+      checkpoint, "decoder.activation_post.act.alpha", {8});
+  std::vector<float> log_beta = vae::load_audio_f32_tensor(
+      checkpoint, "decoder.activation_post.act.beta", {8});
+  std::vector<float> up_filter = vae::load_audio_f32_tensor(
+      checkpoint, "decoder.activation_post.upsample.filter", {1, 1, 12});
+  std::vector<float> down_filter = vae::load_audio_f32_tensor(
+      checkpoint, "decoder.activation_post.downsample.lowpass.filter",
+      {1, 1, 12});
+  const size_t raw_subnormals =
+      count_subnormals(conv_weights.weight) +
+      count_subnormals(conv_weights.bias) +
+      count_subnormals(transpose_weights.weight) +
+      count_subnormals(transpose_weights.bias) + count_subnormals(log_alpha) +
+      count_subnormals(log_beta) + count_subnormals(up_filter) +
+      count_subnormals(down_filter);
+  CHECK(raw_subnormals == 0u);
+
+  vulkan::DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  device_options.enable_shader_int64 = true;
+  vulkan::Device device = physical.front().create_device(device_options);
+  vulkan::TensorContext vk(device);
+  if (!vk.exact_audio_vae_primitives()) return;
+
+  auto upload = [&](const TensorLayout& tensor_layout,
+                    const std::vector<float>& host) {
+    vulkan::DeviceTensor tensor = vk.allocate(tensor_layout);
+    vk.upload(tensor, host.data(), host.size());
+    return tensor;
+  };
+
+  const vae::AudioConv1DDesc conv{2, 32, 2048, 3, 3, 1, 0, 1};
+  std::vector<float> conv_input = values(conv.input_elements(), 37, 509,
+                                         1.0f / 256.0f);
+  cuda::DeviceBuffer<float> c_conv_input(conv.input_elements()),
+      c_conv_weight(conv.weight_elements()), c_conv_bias(2048),
+      c_conv_output(conv.output_elements());
+  c_conv_input.copy_from_host(conv_input.data(), conv_input.size());
+  c_conv_weight.copy_from_host(conv_weights.weight.data(),
+                               conv_weights.weight.size());
+  c_conv_bias.copy_from_host(conv_weights.bias.data(), conv_weights.bias.size());
+  cuda::launch_conv1d(
+      c_conv_input.get(), c_conv_weight.get(), c_conv_bias.get(),
+      c_conv_output.get(), conv.batch, conv.in_channels, conv.out_channels,
+      conv.length_in, conv.length_out, conv.kernel, conv.padding,
+      conv.dilation, nullptr);
+  vulkan::DeviceTensor v_conv_input = upload(layout({2, 32, 3}), conv_input);
+  vulkan::DeviceTensor v_conv_weight =
+      upload(layout({2048, 32, 1}), conv_weights.weight);
+  vulkan::DeviceTensor v_conv_bias = upload(layout({2048}), conv_weights.bias);
+  vulkan::DeviceTensor v_conv_output = vk.allocate(layout({2, 2048, 3}));
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_conv1d(v_conv_input, v_conv_weight, &v_conv_bias,
+                       v_conv_output, conv);
+    batch.submit().wait();
+  }
+
+  const vae::AudioConvTranspose1DDesc transpose{
+      1, 1024, 512, 3, 15, 9, 5, 2};
+  std::vector<float> transpose_input = values(
+      transpose.input_elements(), 41, 257, 1.0f / 256.0f);
+  cuda::DeviceBuffer<float> c_transpose_input(transpose.input_elements()),
+      c_transpose_weight(transpose.weight_elements()), c_transpose_bias(512),
+      c_transpose_output(transpose.output_elements());
+  c_transpose_input.copy_from_host(transpose_input.data(),
+                                   transpose_input.size());
+  c_transpose_weight.copy_from_host(transpose_weights.weight.data(),
+                                    transpose_weights.weight.size());
+  c_transpose_bias.copy_from_host(transpose_weights.bias.data(),
+                                  transpose_weights.bias.size());
+  cuda::launch_conv_transpose1d(
+      c_transpose_input.get(), c_transpose_weight.get(), c_transpose_bias.get(),
+      c_transpose_output.get(), transpose.batch, transpose.in_channels,
+      transpose.out_channels, transpose.length_in, transpose.length_out,
+      transpose.kernel, transpose.stride, transpose.padding, nullptr);
+  vulkan::DeviceTensor v_transpose_input =
+      upload(layout({1, 1024, 3}), transpose_input);
+  vulkan::DeviceTensor v_transpose_weight =
+      upload(layout({1024, 512, 9}), transpose_weights.weight);
+  vulkan::DeviceTensor v_transpose_bias =
+      upload(layout({512}), transpose_weights.bias);
+  vulkan::DeviceTensor v_transpose_output =
+      vk.allocate(layout({1, 512, 15}));
+  const auto transpose_begin = std::chrono::steady_clock::now();
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_conv_transpose1d(
+        v_transpose_input, v_transpose_weight, &v_transpose_bias,
+        v_transpose_output, transpose);
+    batch.submit().wait();
+  }
+  const double transpose_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - transpose_begin).count();
+
+  constexpr uint32_t aa_batch = 2, aa_channels = 8, aa_length = 259;
+  const size_t aa_count = size_t(aa_batch) * aa_channels * aa_length;
+  std::vector<float> aa_input = values(aa_count, 43, 311, 1.0f / 128.0f);
+  cuda::DeviceBuffer<float> c_aa_input(aa_count), c_up_filter(12),
+      c_down_filter(12), c_alpha(8), c_beta(8), c_aa_up(aa_count * 2),
+      c_aa_down(aa_count);
+  c_aa_input.copy_from_host(aa_input.data(), aa_input.size());
+  c_up_filter.copy_from_host(up_filter.data(), up_filter.size());
+  c_down_filter.copy_from_host(down_filter.data(), down_filter.size());
+  c_alpha.copy_from_host(log_alpha.data(), log_alpha.size());
+  c_beta.copy_from_host(log_beta.data(), log_beta.size());
+  cuda::launch_aa_upsample_snake(
+      c_aa_input.get(), c_up_filter.get(), c_alpha.get(), c_beta.get(),
+      c_aa_up.get(), aa_batch, aa_channels, aa_length, nullptr);
+  cuda::launch_aa_downsample(c_aa_up.get(), c_down_filter.get(),
+                             c_aa_down.get(), aa_batch, aa_channels,
+                             aa_length * 2, aa_length, nullptr);
+  vulkan::DeviceTensor v_aa_input =
+      upload(layout({aa_batch, aa_channels, aa_length}), aa_input);
+  vulkan::DeviceTensor v_up_filter = upload(layout({12}), up_filter);
+  vulkan::DeviceTensor v_down_filter = upload(layout({12}), down_filter);
+  vulkan::DeviceTensor v_alpha = upload(layout({8}), log_alpha);
+  vulkan::DeviceTensor v_beta = upload(layout({8}), log_beta);
+  vulkan::DeviceTensor v_aa_up =
+      vk.allocate(layout({aa_batch, aa_channels, aa_length * 2}));
+  vulkan::DeviceTensor v_aa_down =
+      vk.allocate(layout({aa_batch, aa_channels, aa_length}));
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_aa_upsample_snake(v_aa_input, v_up_filter, v_alpha, v_beta,
+                                  v_aa_up, aa_batch, aa_channels, aa_length);
+    batch.audio_aa_downsample(v_aa_up, v_down_filter, v_aa_down, aa_batch,
+                              aa_channels, aa_length * 2, aa_length);
+    batch.submit().wait();
+  }
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+  std::vector<float> cuda_conv(conv.output_elements()),
+      vk_conv(conv.output_elements()),
+      cuda_transpose(transpose.output_elements()),
+      vk_transpose(transpose.output_elements()), cuda_up(aa_count * 2),
+      vk_up(aa_count * 2), cuda_down(aa_count), vk_down(aa_count);
+  c_conv_output.copy_to_host(cuda_conv.data(), cuda_conv.size());
+  c_transpose_output.copy_to_host(cuda_transpose.data(), cuda_transpose.size());
+  c_aa_up.copy_to_host(cuda_up.data(), cuda_up.size());
+  c_aa_down.copy_to_host(cuda_down.data(), cuda_down.size());
+  vk.download(v_conv_output, vk_conv.data(), vk_conv.size());
+  vk.download(v_transpose_output, vk_transpose.data(), vk_transpose.size());
+  vk.download(v_aa_up, vk_up.data(), vk_up.size());
+  vk.download(v_aa_down, vk_down.data(), vk_down.size());
+  check_exact(cuda_conv, vk_conv, "real dec_in_proj");
+  check_exact(cuda_transpose, vk_transpose, "real upsample transpose");
+  check_exact(cuda_up, vk_up, "real activation up+SnakeBeta");
+  check_exact(cuda_down, vk_down, "real activation downsample");
+  const uint64_t digest = fnv64({vk_conv, vk_transpose, vk_up, vk_down});
+  CHECK(digest == 0xa44d1909c30b36bbull);
+  const uint64_t logical_bytes = sizeof(float) * (
+      conv.input_elements() + conv.weight_elements() + conv.out_channels +
+      conv.output_elements() + transpose.input_elements() +
+      transpose.weight_elements() + transpose.out_channels +
+      transpose.output_elements() + aa_count + 12u + 12u + 8u + 8u +
+      aa_count * 2u + aa_count);
+  CHECK(vk.pooled_used_bytes() >= logical_bytes);
+  CHECK(vk.pooled_used_bytes() <= logical_bytes + (40ull << 20));
+  CHECK(vk.reserved_bytes() <= (64ull << 20));
+  const uint64_t stable_reserved = vk.reserved_bytes();
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_conv_transpose1d(
+        v_transpose_input, v_transpose_weight, &v_transpose_bias,
+        v_transpose_output, transpose);
+    batch.submit().wait();
+  }
+  CHECK(vk.reserved_bytes() == stable_reserved);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  std::printf(
+      "  real audio primitives: raw subnormals %zu, FNV64 %016llx, first transpose %.2f ms, pool %.1f/%.1f MiB, descriptors %llu\n",
+      raw_subnormals, static_cast<unsigned long long>(digest), transpose_ms,
+      double(vk.pooled_used_bytes()) / 1048576.0,
+      double(vk.reserved_bytes()) / 1048576.0,
+      static_cast<unsigned long long>(vk.descriptor_set_allocations()));
 }
