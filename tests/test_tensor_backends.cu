@@ -1017,12 +1017,16 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     std::vector<uint16_t> got(n);
     vk.download_bytes(vo, got.data(), n * 2);
     CHECK(got == expected);
+    const uint16_t sentinel_bits = f32_to_bf16(-123.0f);
+    std::fill(got.begin(), got.end(), sentinel_bits);
+    vk.upload_bytes(vo, got.data(), n * 2);
     TensorBatch offset = vk.begin_batch();
     p.record(offset, vq, vkey, vv, vo, &vr, 128, 1, 0);
     offset.submit().wait();
     vk.download_bytes(vo, got.data(), n * 2);
     CHECK(std::memcmp(got.data(), expected.data() + size_t(128) * d,
                       d * sizeof(uint16_t)) == 0);
+    for (size_t i = d; i < n; ++i) CHECK(got[i] == sentinel_bits);
 
     // Independent two-range/two-block recurrence anchor. The second range's
     // score is >87 above the first, so the specified exp cutoff makes the old
@@ -1043,6 +1047,121 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     vk.download_bytes(vo, got.data(), n * 2);
     for (uint32_t column = 0; column < d; ++column)
       CHECK(got[column] == f32_to_bf16(3.0f));
+
+    // Three ordered blocks with successively larger finite maxima force two
+    // strictly-between-zero-and-one online corrections. This stresses a
+    // nonzero cooperative C tile rather than only the first-block/zero-cutoff
+    // cases; CUDA and Vulkan must repeat exactly and the independent bound
+    // excludes either dropped-old-state or reset-at-range-seam outcomes.
+    const std::vector<int32_t> correction_values{
+        0, 128, 192, 256, 0, 128, 192, 256, 0, 256, 0, 0};
+    cuda::DeviceBuffer<int32_t> correction_device(correction_values.size());
+    correction_device.copy_from_host(correction_values.data(),
+                                     correction_values.size());
+    H3AttentionRanges correction_ranges = H3AttentionRanges::create(
+        vk, s, correction_values.data(),
+        static_cast<uint32_t>(correction_values.size()));
+    std::fill(qh.begin(), qh.end(), f32_to_bf16(1.0f));
+    std::fill(kh.begin(), kh.end(), f32_to_bf16(0.0f));
+    std::fill(vh.begin(), vh.end(), f32_to_bf16(1.0f));
+    for (uint32_t row = 64; row < 128; ++row) {
+      for (uint32_t column = 0; column < d; ++column) {
+        kh[size_t(row) * d + column] = f32_to_bf16(1.0f / 64.0f);
+        vh[size_t(row) * d + column] = f32_to_bf16(2.0f);
+      }
+    }
+    for (uint32_t row = 192; row < 256; ++row) {
+      for (uint32_t column = 0; column < d; ++column) {
+        kh[size_t(row) * d + column] = f32_to_bf16(1.0f / 32.0f);
+        vh[size_t(row) * d + column] = f32_to_bf16(3.0f);
+      }
+    }
+    dq.copy_from_host(qh.data(), n); dk.copy_from_host(kh.data(), n);
+    dv.copy_from_host(vh.data(), n);
+    cuda::launch_deterministic_h3_attention(
+        nullptr, reinterpret_cast<const __nv_bfloat16*>(dq.get()),
+        reinterpret_cast<const __nv_bfloat16*>(dk.get()),
+        reinterpret_cast<const __nv_bfloat16*>(dv.get()),
+        reinterpret_cast<__nv_bfloat16*>(dout.get()), correction_device.get(),
+        s, h, d, exact_attention_scale(d), 0, 1, 0);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    dout.copy_to_host(expected.data(), n);
+    vk.upload_bytes(vq, qh.data(), n * 2);
+    vk.upload_bytes(vkey, kh.data(), n * 2);
+    vk.upload_bytes(vv, vh.data(), n * 2);
+    TensorBatch correction_batch = vk.begin_batch();
+    p.record(correction_batch, vq, vkey, vv, vo, &correction_ranges, 0, 1, 0);
+    correction_batch.submit().wait();
+    vk.download_bytes(vo, got.data(), n * 2);
+    for (uint32_t column = 0; column < d; ++column) {
+      CHECK(got[column] == expected[column]);
+      CHECK(bf16_to_f32(got[column]) > 1.0f &&
+            bf16_to_f32(got[column]) < 3.0f);
+    }
+  }
+
+  // Cooperative-MMA tuple corpus: signed zeros, the minimum normal boundary,
+  // mixed exponents, cancellation and one-ULP-neighbor operands exercise QK
+  // and PV rounding for both supported head widths. Repeated independent
+  // submissions pin the empirically qualified WMMA/KHR internal semantics.
+  for (uint32_t adversarial_dim : {64u, 128u}) {
+    constexpr uint32_t adversarial_sequence = 65;
+    const size_t adversarial_count =
+        size_t(adversarial_sequence) * adversarial_dim;
+    const uint16_t patterns[] = {
+        0x0000u, 0x8000u, 0x0080u, 0x8080u, 0x3f80u, 0xbf80u,
+        0x3f81u, 0xbf81u, 0x3f00u, 0xbf00u, 0x4000u, 0xc000u,
+        0x3c00u, 0xbc00u, 0x3eabu, 0xbeabu};
+    std::vector<uint16_t> aq(adversarial_count), ak(adversarial_count),
+        av(adversarial_count);
+    for (size_t i = 0; i < adversarial_count; ++i) {
+      aq[i] = patterns[i % std::size(patterns)];
+      ak[i] = patterns[(i * 5 + (i / adversarial_dim)) % std::size(patterns)];
+      av[i] = patterns[(i * 7 + 3) % std::size(patterns)];
+    }
+    cuda::DeviceBuffer<uint16_t> daq(adversarial_count), dak(adversarial_count),
+        dav(adversarial_count), dao(adversarial_count), dar(adversarial_count);
+    daq.copy_from_host(aq.data(), adversarial_count);
+    dak.copy_from_host(ak.data(), adversarial_count);
+    dav.copy_from_host(av.data(), adversarial_count);
+    auto launch_adversarial = [&](cuda::DeviceBuffer<uint16_t>& selected) {
+      cuda::launch_deterministic_h3_attention(
+          nullptr, reinterpret_cast<const __nv_bfloat16*>(daq.get()),
+          reinterpret_cast<const __nv_bfloat16*>(dak.get()),
+          reinterpret_cast<const __nv_bfloat16*>(dav.get()),
+          reinterpret_cast<__nv_bfloat16*>(selected.get()), nullptr,
+          adversarial_sequence, 1, adversarial_dim,
+          exact_attention_scale(adversarial_dim));
+    };
+    launch_adversarial(dao); launch_adversarial(dar);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> adversarial_expected(adversarial_count),
+        adversarial_repeat(adversarial_count);
+    dao.copy_to_host(adversarial_expected.data(), adversarial_count);
+    dar.copy_to_host(adversarial_repeat.data(), adversarial_count);
+    CHECK(adversarial_repeat == adversarial_expected);
+    const uint64_t ashape[] = {adversarial_sequence, 1, adversarial_dim};
+    const TensorLayout alayout = TensorLayout::contiguous(ashape, 3);
+    DeviceTensor vaq = vk.allocate(alayout, ScalarType::kBFloat16);
+    DeviceTensor vak = vk.allocate(alayout, ScalarType::kBFloat16);
+    DeviceTensor vav = vk.allocate(alayout, ScalarType::kBFloat16);
+    DeviceTensor vao = vk.allocate(alayout, ScalarType::kBFloat16);
+    DeviceTensor var = vk.allocate(alayout, ScalarType::kBFloat16);
+    vk.upload_bytes(vaq, aq.data(), adversarial_count * 2);
+    vk.upload_bytes(vak, ak.data(), adversarial_count * 2);
+    vk.upload_bytes(vav, av.data(), adversarial_count * 2);
+    H3AttentionPlan adversarial_plan = H3AttentionPlan::create(
+        vk, {adversarial_sequence, 1, adversarial_dim,
+             exact_attention_scale(adversarial_dim)});
+    TensorBatch adversarial_batch = vk.begin_batch();
+    adversarial_plan.record(adversarial_batch, vaq, vak, vav, vao);
+    adversarial_plan.record(adversarial_batch, vaq, vak, vav, var);
+    adversarial_batch.submit().wait();
+    std::vector<uint16_t> adversarial_got(adversarial_count);
+    vk.download_bytes(vao, adversarial_got.data(), adversarial_count * 2);
+    CHECK(adversarial_got == adversarial_expected);
+    vk.download_bytes(var, adversarial_got.data(), adversarial_count * 2);
+    CHECK(adversarial_got == adversarial_expected);
   }
 
   // Range validation is a setup boundary and cannot mutate a recorder. Empty,
@@ -1083,23 +1202,31 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     moved.submit().wait();
   }
   DeviceTensor second = vk.allocate(layout, ScalarType::kBFloat16);
-  auto submit = [&](DeviceTensor& selected) {
+  auto submit = [&](DeviceTensor& selected,
+                    const H3AttentionRanges* selected_ranges) {
     TensorBatch selected_batch = vk.begin_batch();
-    plan.record(selected_batch, q, k, v, selected, &bands);
+    plan.record(selected_batch, q, k, v, selected, selected_ranges);
     return selected_batch.submit();
   };
-  Submission first = submit(out_full), second_job = submit(second),
-             third = submit(out_full);
+  Submission first = submit(out_full, &bands),
+             second_job = submit(second, &bands),
+             third = submit(out_full, &bands);
   CHECK(second_job.value() > first.value() && third.value() > second_job.value());
   first.wait(); second_job.wait(); third.wait();
   std::vector<uint16_t> first_output(count), second_output(count);
   vk.download_bytes(out_full, first_output.data(), count * 2);
   vk.download_bytes(second, second_output.data(), count * 2);
   CHECK(first_output == second_output);
+  Submission full_a = submit(out_full, nullptr),
+             full_b = submit(second, nullptr),
+             full_c = submit(out_full, nullptr);
+  full_a.wait(); full_b.wait(); full_c.wait();
   const uint64_t stable_reserved = vk.reserved_bytes();
   const uint64_t stable_descriptors = vk.descriptor_set_allocations();
-  for (int repeat = 0; repeat < 4; ++repeat) {
-    Submission a = submit(out_full), b = submit(second), c = submit(out_full);
+  for (int repeat = 0; repeat < 50; ++repeat) {
+    const H3AttentionRanges* selected = (repeat & 1) ? &bands : nullptr;
+    Submission a = submit(out_full, selected), b = submit(second, selected),
+               c = submit(out_full, selected);
     a.wait(); b.wait(); c.wait();
     CHECK(vk.reserved_bytes() == stable_reserved);
     CHECK(vk.descriptor_set_allocations() == stable_descriptors);
@@ -1140,6 +1267,9 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
     DeviceTensor tk = vk.allocate(layout, ScalarType::kBFloat16);
     DeviceTensor tv = vk.allocate(layout, ScalarType::kBFloat16);
     DeviceTensor tout = vk.allocate(layout, ScalarType::kBFloat16);
+    vk.upload_bytes(tq, hq.data(), count * 2);
+    vk.upload_bytes(tk, hk.data(), count * 2);
+    vk.upload_bytes(tv, hv.data(), count * 2);
     H3AttentionPlan temporary_plan = H3AttentionPlan::create(
         vk, {sequence, heads, dim, scale});
     H3AttentionRanges temporary_ranges = H3AttentionRanges::create(

@@ -40,8 +40,8 @@ void launch_deterministic_blocked_attention(
 // Exact-mode H3 reference paired with Vulkan H3AttentionPlan. Q/K/V and output
 // are token-major BF16 [sequence,heads,head_dim], D is 64 or 128. A non-null
 // device range table has four canonical int32 endpoints per global 128-row
-// query tile and is traversed in ordered 64-key blocks. This fixed scalar
-// contract intentionally does not claim byte identity with CUDA fused MMA.
+// query tile and is traversed in ordered 64-key blocks. This pinned cooperative
+// contract intentionally does not claim byte identity with shipped fused MMA.
 // Inputs must satisfy the same finite BF16->FP16-V, score, denominator and PV
 // accumulator domain documented by H3AttentionPlan.
 void launch_deterministic_h3_attention(

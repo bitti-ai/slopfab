@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <iterator>
 #include <mutex>
@@ -36,6 +37,7 @@ struct GridLimits {
   uint64_t y = 0;
   uint32_t max_threads_per_block = 0;
   uint32_t max_shared_bytes_per_block = 0;
+  bool exact_h3_tuple = false;
 };
 
 GridLimits cached_grid_limits() {
@@ -53,12 +55,24 @@ GridLimits cached_grid_limits() {
     int optin_shared = 0;
     VIDFAB_CUDA_CHECK(cudaDeviceGetAttribute(
         &optin_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
+    int driver_version = 0, runtime_version = 0;
+    VIDFAB_CUDA_CHECK(cudaDriverGetVersion(&driver_version));
+    VIDFAB_CUDA_CHECK(cudaRuntimeGetVersion(&runtime_version));
+    static constexpr unsigned char kDeviceUuid[16] = {
+        0x41, 0x9e, 0x3b, 0x2a, 0x96, 0x4d, 0xf9, 0xcc,
+        0xb0, 0x82, 0x07, 0xbf, 0x7d, 0x00, 0x06, 0xcd};
+    const bool exact_h3_tuple = properties.major == 12 && properties.minor == 0 &&
+        std::strcmp(properties.name, "NVIDIA GeForce RTX 5090") == 0 &&
+        std::memcmp(properties.uuid.bytes, kDeviceUuid, sizeof(kDeviceUuid)) == 0 &&
+        driver_version >= 13000 && driver_version < 14000 &&
+        runtime_version == 13000;
     limits[device] = {
         static_cast<uint64_t>(properties.maxGridSize[0]),
         static_cast<uint64_t>(properties.maxGridSize[1]),
         static_cast<uint32_t>(properties.maxThreadsPerBlock),
         static_cast<uint32_t>(std::max<int>(
-            static_cast<int>(properties.sharedMemPerBlock), optin_shared))};
+            static_cast<int>(properties.sharedMemPerBlock), optin_shared)),
+        exact_h3_tuple};
   });
   return limits[device];
 }
@@ -184,285 +198,6 @@ __global__ void blocked_attention_kernel(
   }
 }
 
-template <bool Banded>
-__global__ void h3_attention_kernel(
-    const __nv_bfloat16* __restrict__ query,
-    const __nv_bfloat16* __restrict__ key,
-    const __nv_bfloat16* __restrict__ value,
-    __nv_bfloat16* __restrict__ output,
-    const int32_t* __restrict__ ranges, uint32_t sequence, uint32_t heads,
-    uint32_t head_dim, float scale, uint32_t query_row_offset,
-    uint32_t output_row_offset, uint32_t rows) {
-  __shared__ float score_or_probability[128];
-  __shared__ float reduction[128];
-  __shared__ uint32_t output_bits[128];
-  const uint32_t lane = threadIdx.x;
-  const uint32_t local_row = blockIdx.x;
-  const uint32_t head = blockIdx.y;
-  if (local_row >= rows || head >= heads) return;
-  const uint32_t query_row = query_row_offset + local_row;
-  const size_t q_base =
-      (static_cast<size_t>(query_row) * heads + head) * head_dim;
-  float running_max = negative_infinity();
-  float running_sum = 0.0f;
-  float output_accumulator = 0.0f;
-
-  int range_values[4] = {0, static_cast<int>(sequence), 0, 0};
-  int range_count = 1;
-  if constexpr (Banded) {
-    const int32_t* selected = ranges + static_cast<size_t>(query_row / 128) * 4;
-    range_values[0] = selected[0];
-    range_values[1] = selected[1];
-    range_values[2] = selected[2];
-    range_values[3] = selected[3];
-    range_count = 2;
-  }
-  for (int range_index = 0; range_index < range_count; ++range_index) {
-    const uint32_t range_start = static_cast<uint32_t>(range_values[range_index * 2]);
-    const uint32_t range_stop = static_cast<uint32_t>(range_values[range_index * 2 + 1]);
-    for (uint32_t key_base = range_start; key_base < range_stop; key_base += 64) {
-      const uint32_t key_row = key_base + lane;
-      const bool live = lane < 64 && key_row < range_stop && key_row < sequence;
-      float score = 0.0f;
-      if (live) {
-        const size_t k_base =
-            (static_cast<size_t>(key_row) * heads + head) * head_dim;
-        for (uint32_t d = 0; d < head_dim; ++d) {
-          score = canonicalize_subnormal(fmaf(
-              causal_bf16_value(query[q_base + d]),
-              causal_bf16_value(key[k_base + d]), score));
-        }
-        score = canonicalize_subnormal(__fmul_rn(score, scale));
-      } else {
-        score = negative_infinity();
-      }
-      score_or_probability[lane] = score;
-      reduction[lane] = score;
-      __syncthreads();
-      for (uint32_t width = 64; width != 0; width >>= 1) {
-        if (lane < width)
-          reduction[lane] = fmaxf(reduction[lane], reduction[lane + width]);
-        __syncthreads();
-      }
-      const float tile_max = reduction[0];
-      const float next_max = fmaxf(running_max, tile_max);
-      const float correction = running_max == negative_infinity()
-          ? 0.0f : deterministic_exp_nonpositive(running_max - next_max);
-      const float exponential = live
-          ? deterministic_exp_nonpositive(score - next_max) : 0.0f;
-      __syncthreads();
-      score_or_probability[lane] = f16_round(exponential);
-      reduction[lane] = exponential;
-      __syncthreads();
-      for (uint32_t width = 64; width != 0; width >>= 1) {
-        if (lane < width) reduction[lane] += reduction[lane + width];
-        __syncthreads();
-      }
-      if (lane < head_dim) {
-        output_accumulator = canonicalize_subnormal(
-            __fmul_rn(output_accumulator, correction));
-        for (uint32_t j = 0; j < 64 && key_base + j < range_stop &&
-             key_base + j < sequence; ++j) {
-          const size_t v_index =
-              ((static_cast<size_t>(key_base + j) * heads + head) *
-               head_dim) + lane;
-          output_accumulator = canonicalize_subnormal(fmaf(
-              score_or_probability[j], prepared_value(value, v_index),
-              output_accumulator));
-        }
-      }
-      running_sum = fmaf(running_sum, correction, reduction[0]);
-      running_max = next_max;
-      __syncthreads();
-    }
-  }
-
-  if (lane < head_dim) {
-    output_bits[lane] = static_cast<uint32_t>(__bfloat16_as_ushort(
-        __float2bfloat16_rn(deterministic_float_divide(output_accumulator,
-                                                       running_sum))));
-  }
-  __syncthreads();
-  if (lane < head_dim && (lane & 1u) == 0u) {
-    const size_t output_index =
-        ((static_cast<size_t>(output_row_offset + local_row) * heads + head) *
-         head_dim) + lane;
-    const uint32_t high = lane + 1 < head_dim ? output_bits[lane + 1] : 0u;
-    reinterpret_cast<uint32_t*>(output)[output_index >> 1] =
-        output_bits[lane] | (high << 16u);
-  }
-}
-
-// Cooperative exact-mode contract. A workgroup owns 16 globally aligned
-// query rows and one head. Ragged Q/K/V operands are staged and zero padded;
-// four warps issue identical 16x16x16 QK/PV MMA sequences. The scalar kernel
-// above remains an independent oracle and is never dispatched in production.
-template <bool Banded>
-__global__ void h3_attention_coop_kernel(
-    const __nv_bfloat16* __restrict__ query,
-    const __nv_bfloat16* __restrict__ key,
-    const __nv_bfloat16* __restrict__ value,
-    __nv_bfloat16* __restrict__ output,
-    const int32_t* __restrict__ ranges, uint32_t sequence, uint32_t heads,
-    uint32_t head_dim, float scale, uint32_t query_row_offset,
-    uint32_t output_row_offset, uint32_t rows) {
-  __shared__ __align__(16) __nv_bfloat16 stage_a[16 * 128];
-  __shared__ __align__(16) __nv_bfloat16 stage_b_bf16[64 * 128];
-  __shared__ __align__(16) __half stage_b_f16[64 * 128];
-  __shared__ __align__(16) float scores[16 * 64];
-  __shared__ __align__(16) __half probabilities[16 * 64];
-  __shared__ __align__(16) float output_accumulators[16 * 128];
-  __shared__ __align__(16) float tile_output[16 * 128];
-  __shared__ float running_max[16], running_sum[16], correction[16];
-
-  const uint32_t tid = threadIdx.x;
-  const uint32_t warp = tid >> 5;
-  const uint32_t aligned_first = query_row_offset & ~15u;
-  const uint32_t query_base = aligned_first + blockIdx.x * 16u;
-  const uint32_t request_end = query_row_offset + rows;
-  const uint32_t head = blockIdx.y;
-
-  for (uint32_t i = tid; i < 16u * head_dim; i += 128u)
-    output_accumulators[i] = 0.0f;
-  if (tid < 16u) {
-    running_max[tid] = negative_infinity();
-    running_sum[tid] = 0.0f;
-  }
-  for (uint32_t i = tid; i < 16u * head_dim; i += 128u) {
-    const uint32_t row = i / head_dim;
-    const uint32_t d = i - row * head_dim;
-    const uint32_t query_row = query_base + row;
-    stage_a[i] = query_row < sequence
-        ? __float2bfloat16_rn(causal_bf16_value(query[
-              (static_cast<size_t>(query_row) * heads + head) * head_dim + d]))
-        : __float2bfloat16_rn(0.0f);
-  }
-  __syncthreads();
-
-  int range_values[4] = {0, static_cast<int>(sequence), 0, 0};
-  int range_count = 1;
-  if constexpr (Banded) {
-    const int32_t* selected = ranges + static_cast<size_t>(query_base / 128u) * 4u;
-    range_values[0] = selected[0];
-    range_values[1] = selected[1];
-    range_values[2] = selected[2];
-    range_values[3] = selected[3];
-    range_count = 2;
-  }
-
-  for (int range_index = 0; range_index < range_count; ++range_index) {
-    const uint32_t range_start = static_cast<uint32_t>(range_values[range_index * 2]);
-    const uint32_t range_stop = static_cast<uint32_t>(range_values[range_index * 2 + 1]);
-    for (uint32_t key_base = range_start; key_base < range_stop; key_base += 64u) {
-      for (uint32_t i = tid; i < 64u * head_dim; i += 128u) {
-        const uint32_t key_in_block = i / head_dim;
-        const uint32_t d = i - key_in_block * head_dim;
-        const uint32_t key_row = key_base + key_in_block;
-        stage_b_bf16[i] = key_row < range_stop && key_row < sequence
-            ? __float2bfloat16_rn(causal_bf16_value(key[
-                  (static_cast<size_t>(key_row) * heads + head) * head_dim + d]))
-            : __float2bfloat16_rn(0.0f);
-      }
-      __syncthreads();
-      wmma::fragment<wmma::accumulator, 16, 16, 16, float> score_fragment;
-      wmma::fill_fragment(score_fragment, 0.0f);
-      for (uint32_t d_base = 0; d_base < head_dim; d_base += 16u) {
-        wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16,
-                       wmma::row_major> a;
-        wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16,
-                       wmma::col_major> b;
-        wmma::load_matrix_sync(a, stage_a + d_base, head_dim);
-        wmma::load_matrix_sync(
-            b, stage_b_bf16 + warp * 16u * head_dim + d_base, head_dim);
-        wmma::mma_sync(score_fragment, a, b, score_fragment);
-      }
-      wmma::store_matrix_sync(scores + warp * 16u, score_fragment, 64,
-                              wmma::mem_row_major);
-      __syncthreads();
-      for (uint32_t i = tid; i < 1024u; i += 128u) {
-        const uint32_t key_in_block = i & 63u;
-        const uint32_t key_row = key_base + key_in_block;
-        scores[i] = key_row < range_stop && key_row < sequence
-            ? canonicalize_subnormal(__fmul_rn(scores[i], scale))
-            : negative_infinity();
-      }
-      __syncthreads();
-
-      // One lane owns each row and scans the canonical 64-key block in strict
-      // ascending order. This avoids implementation-defined subgroup sums.
-      if (tid < 16u) {
-        float next_max = running_max[tid];
-        for (uint32_t j = 0; j < 64u; ++j)
-          next_max = fmaxf(next_max, scores[tid * 64u + j]);
-        const float row_correction = running_max[tid] == negative_infinity()
-            ? 0.0f
-            : deterministic_exp_nonpositive(running_max[tid] - next_max);
-        float tile_sum = 0.0f;
-        for (uint32_t j = 0; j < 64u; ++j) {
-          const float score = scores[tid * 64u + j];
-          const float exponential = score == negative_infinity()
-              ? 0.0f : deterministic_exp_nonpositive(score - next_max);
-          probabilities[tid * 64u + j] = __float2half_rn(exponential);
-          tile_sum = __fadd_rn(tile_sum, exponential);
-        }
-        correction[tid] = row_correction;
-        running_sum[tid] = fmaf(running_sum[tid], row_correction, tile_sum);
-        running_max[tid] = next_max;
-      }
-      __syncthreads();
-
-      for (uint32_t i = tid; i < 64u * head_dim; i += 128u) {
-        const uint32_t key_in_block = i / head_dim;
-        const uint32_t d = i - key_in_block * head_dim;
-        const uint32_t key_row = key_base + key_in_block;
-        stage_b_f16[i] = key_row < range_stop && key_row < sequence
-            ? __float2half_rn(causal_bf16_value(value[
-                  (static_cast<size_t>(key_row) * heads + head) * head_dim + d]))
-            : __float2half_rn(0.0f);
-      }
-      __syncthreads();
-
-      for (uint32_t d_wave = 0; d_wave < head_dim; d_wave += 64u) {
-        const uint32_t d_column = d_wave + warp * 16u;
-        wmma::fragment<wmma::accumulator, 16, 16, 16, float> pv_fragment;
-        wmma::fill_fragment(pv_fragment, 0.0f);
-        for (uint32_t key_part = 0; key_part < 64u; key_part += 16u) {
-          wmma::fragment<wmma::matrix_a, 16, 16, 16, __half,
-                         wmma::row_major> a;
-          wmma::fragment<wmma::matrix_b, 16, 16, 16, __half,
-                         wmma::row_major> b;
-          wmma::load_matrix_sync(a, probabilities + key_part, 64);
-          wmma::load_matrix_sync(
-              b, stage_b_f16 + key_part * head_dim + d_column, head_dim);
-          wmma::mma_sync(pv_fragment, a, b, pv_fragment);
-        }
-        wmma::store_matrix_sync(tile_output + d_column, pv_fragment, head_dim,
-                                wmma::mem_row_major);
-        __syncthreads();
-      }
-      for (uint32_t i = tid; i < 16u * head_dim; i += 128u) {
-        const uint32_t row = i / head_dim;
-        output_accumulators[i] = canonicalize_subnormal(__fadd_rn(
-            canonicalize_subnormal(__fmul_rn(output_accumulators[i], correction[row])),
-            canonicalize_subnormal(tile_output[i])));
-      }
-      __syncthreads();
-    }
-  }
-
-  for (uint32_t i = tid; i < 16u * head_dim; i += 128u) {
-    const uint32_t row = i / head_dim;
-    const uint32_t d = i - row * head_dim;
-    const uint32_t query_row = query_base + row;
-    if (query_row >= query_row_offset && query_row < request_end &&
-        query_row < sequence) {
-      const uint32_t output_row = output_row_offset + query_row - query_row_offset;
-      output[(static_cast<size_t>(output_row) * heads + head) * head_dim + d] =
-          __float2bfloat16_rn(deterministic_float_divide(
-              output_accumulators[i], running_sum[row]));
-    }
-  }
-}
 
 template <bool Banded>
 __global__ __launch_bounds__(1024, 1) void h3_attention_coop64_kernel(
@@ -913,9 +648,10 @@ void launch_deterministic_h3_attention(
     throw std::out_of_range("deterministic H3 attention: CUDA grid limit exceeded");
   }
   if (limits.max_threads_per_block < kH3AttentionThreads ||
-      limits.max_shared_bytes_per_block < kH3AttentionSharedBytes) {
+      limits.max_shared_bytes_per_block < kH3AttentionSharedBytes ||
+      !limits.exact_h3_tuple) {
     throw std::runtime_error(
-        "deterministic H3 attention: CUDA 1024-thread/99328-byte kernel is unsupported");
+        "deterministic H3 attention: unqualified CUDA tuple or resources");
   }
   const uint32_t aligned_first = query_row_offset & ~63u;
   const uint32_t query_end = query_row_offset + selected_rows;

@@ -264,6 +264,58 @@ VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
   CHECK(context.pooled_used_bytes() == attention_live_baseline);
 }
 
+VIDFAB_TEST(vulkan_exact_h3_attention_single_key) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  DeviceOptions disabled_options;
+  disabled_options.enable_timeline_semaphore = info.timeline_semaphore;
+  disabled_options.enable_shader_int64 = info.shader_int64;
+  disabled_options.enable_shader_float16 = info.shader_float16;
+  disabled_options.enable_storage_buffer_16bit = info.storage_buffer_16bit;
+  Device disabled_device = physical.front().create_device(disabled_options);
+  TensorContext disabled(disabled_device);
+  CHECK(!disabled.exact_h3_attention());
+  bool unavailable_rejected = false;
+  try {
+    (void)H3AttentionPlan::create(
+        disabled, {1, 1, 64, exact_attention_scale(64)});
+  } catch (const std::runtime_error&) { unavailable_rejected = true; }
+  CHECK(unavailable_rejected);
+  if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
+      !info.storage_buffer_16bit || !info.cooperative_matrix) return;
+  DeviceOptions options = disabled_options;
+  options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  if (!context.exact_h3_attention()) return;
+  constexpr uint32_t dim = 64;
+  const uint64_t shape[] = {1, 1, dim};
+  const TensorLayout layout = TensorLayout::contiguous(shape, 3);
+  DeviceTensor q = context.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor k = context.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor v = context.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor out = context.allocate(layout, ScalarType::kBFloat16);
+  std::vector<uint16_t> zeros(dim, 0), values(dim);
+  for (uint32_t i = 0; i < dim; ++i)
+    values[i] = reference_bf16(float(int(i % 15) - 7) / 8.0f);
+  context.upload_bytes(q, zeros.data(), zeros.size() * 2);
+  context.upload_bytes(k, zeros.data(), zeros.size() * 2);
+  context.upload_bytes(v, values.data(), values.size() * 2);
+  H3AttentionPlan plan = H3AttentionPlan::create(
+      context, {1, 1, dim, exact_attention_scale(dim)});
+  TensorBatch batch = context.begin_batch();
+  plan.record(batch, q, k, v, out);
+  batch.submit().wait();
+  std::vector<uint16_t> actual(dim);
+  context.download_bytes(out, actual.data(), actual.size() * 2);
+  CHECK(actual == values);
+}
+
 VIDFAB_TEST(vulkan_attention_prepare_exhaustive_bf16) {
   using namespace vidfab;
   using namespace vidfab::vulkan;

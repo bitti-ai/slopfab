@@ -86,8 +86,7 @@ bool known_exact_h3_attention_device(const DeviceInfo& info) {
   // Named separately because H3's direct-BF16/FP16-V contract and checked
   // shader artifacts can evolve independently of the prepared-FP16 plan.
   return known_exact_blocked_attention_device(info) &&
-      info.cooperative_matrix_enabled && info.shader_float16_enabled &&
-      info.storage_buffer_16bit_enabled &&
+      known_exact_cooperative_gemm_device(info) && info.shader_float16_enabled &&
       info.shader_bfloat16_type && info.shader_bfloat16_cooperative_matrix &&
       info.cooperative_matrix_bf16_f32_16x16x16 &&
       info.cooperative_matrix_f16_f32_16x16x16 &&

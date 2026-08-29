@@ -367,11 +367,11 @@ class BlockedAttentionPlan {
 };
 
 // Exact H3 full/frame-banded attention is deliberately separate from the
-// blocked FP16 plan. Q/K/V remain direct BF16 tensors; QK is accumulated in
-// ascending channel order, probabilities and V operands are rounded to FP16,
-// and selected keys are visited in 64-row blocks. This is the shared
-// CUDA/Vulkan exact-mode rebaseline, not a byte-identity claim for the shipped
-// CUDA fused-MMA kernel.
+// blocked FP16 plan. Q/K/V remain direct BF16 tensors; QK follows ascending
+// 16-channel cooperative tiles with empirically pinned CUDA-WMMA/Vulkan-KHR
+// internal semantics, probabilities and V operands are rounded to FP16, and
+// selected keys are visited in 64-row blocks. This is the shared CUDA/Vulkan
+// exact-mode rebaseline, not byte identity with the shipped fused-MMA kernel.
 struct H3AttentionPlanDesc {
   uint32_t sequence = 0;
   uint32_t heads = 0;
@@ -422,9 +422,11 @@ class H3AttentionPlan {
   // is indexed by the global query row, including for row-chunk records.
   // Exact mode requires finite Q/K/V, every BF16->FP16 V conversion to remain
   // finite, and finite scaled scores, online sums (finite-normal denominator),
-  // PV FMA results/accumulators and final numerators. BF16-subnormal inputs and
-  // FP32-subnormal products/FMA results/accumulators are explicitly
-  // canonicalized to signed zero in both CUDA and Vulkan.
+  // PV FMA results/accumulators and final numerators. Both backends explicitly
+  // canonicalize BF16-subnormal inputs, scaled QK results, online-correction
+  // products, cooperative PV tile outputs, corrected accumulator sums, and
+  // BF16-subnormal outputs to signed zero. Internal cooperative products obey
+  // the pinned hardware tuple rather than a portable scalar ordering.
   void record(TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
               DeviceTensor& value, DeviceTensor& output,
               const H3AttentionRanges* ranges = nullptr,
