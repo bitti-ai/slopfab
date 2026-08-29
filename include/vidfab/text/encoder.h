@@ -84,6 +84,15 @@ enum class WeightFormat {
   kNVFP4Awq,
 };
 
+// The shipped path preserves the original high-throughput cuBLAS arithmetic.
+// Exact uses the canonical scalar/materialized layer contract shared with the
+// Vulkan conditioner. It is opt-in so existing callers do not silently trade
+// throughput for cross-backend byte identity.
+enum class EncoderArithmetic {
+  kShipped,
+  kExact,
+};
+
 // Reads the format out of `model.layers.0.*.comfy_quant`. Never returns kAuto;
 // throws if the blobs do not describe either shipped build.
 WeightFormat detect_weight_format(const SafeTensors& checkpoint);
@@ -108,6 +117,7 @@ struct EncoderConfig {
   int vocab_size = 151936;
 
   Residency residency = Residency::kAuto;
+  EncoderArithmetic arithmetic = EncoderArithmetic::kShipped;
 
   // The reference truncates nothing (spec section 10.6), so neither do we: a
   // silently shortened prompt is worse than a hard error. Buffers are sized for
