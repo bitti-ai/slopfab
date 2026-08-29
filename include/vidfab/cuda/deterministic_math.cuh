@@ -203,6 +203,13 @@ __device__ inline float canonicalize_pointwise_float(float value);
 // arguments are the exactly-rounded reciprocal of the shared negative-domain
 // polynomial, so CUDA and Vulkan never call vendor exp implementations.
 __device__ inline float deterministic_exp(float value) {
+  const uint32_t bits = __float_as_uint(value);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u)
+    value = __uint_as_float(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return __uint_as_float(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u ? 0.0f : value;
   if (value <= 0.0f) return deterministic_exp_nonpositive(value);
   if (value >= 87.0f) return __uint_as_float(0x7f800000u);
   return deterministic_float_divide(1.0f,
@@ -215,6 +222,11 @@ __device__ inline float deterministic_exp(float value) {
 __device__ inline float deterministic_sin(float value) {
   value = canonicalize_pointwise_float(value);
   if (!isfinite(value)) return __uint_as_float(0x7fc00000u);
+  // Keep the float-to-int conversion total. Inputs outside this explicit
+  // finite range are not representable with useful phase precision in fp32;
+  // return the same canonical NaN used for non-finite angles.
+  if ((__float_as_uint(value) & 0x7fffffffu) >= 0x4f000000u)
+    return __uint_as_float(0x7fc00000u);
   const float scaled = value * 0.3183098861837907f;
   const int quadrant = scaled >= 0.0f
       ? static_cast<int>(scaled + 0.5f)
@@ -238,16 +250,24 @@ __device__ inline float deterministic_sin(float value) {
 __device__ inline float deterministic_snake(float value, float log_alpha,
                                             float log_beta) {
   value = canonicalize_pointwise_float(value);
+  if ((__float_as_uint(value) & 0x7fffffffu) > 0x7f800000u)
+    return __uint_as_float(0x7fc00000u);
   const float alpha = deterministic_exp(
       canonicalize_pointwise_float(log_alpha));
   const float beta = deterministic_exp(
       canonicalize_pointwise_float(log_beta));
+  if ((__float_as_uint(alpha) & 0x7fffffffu) > 0x7f800000u ||
+      (__float_as_uint(beta) & 0x7fffffffu) > 0x7f800000u)
+    return __uint_as_float(0x7fc00000u);
   const float angle = canonicalize_pointwise_float(__fmul_rn(alpha, value));
   const float sine = deterministic_sin(angle);
+  if ((__float_as_uint(sine) & 0x7fffffffu) > 0x7f800000u)
+    return __uint_as_float(0x7fc00000u);
   const float square = canonicalize_pointwise_float(__fmul_rn(sine, sine));
   const float denominator = __uint_as_float(positive_float_add(
       __float_as_uint(beta), __float_as_uint(1.0e-9f)));
-  const float periodic = deterministic_float_divide(square, denominator);
+  const float periodic = (__float_as_uint(beta) & 0x7fffffffu) == 0x7f800000u
+      ? 0.0f : deterministic_float_divide(square, denominator);
   return canonicalize_pointwise_float(value + periodic);
 }
 

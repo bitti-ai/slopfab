@@ -139,6 +139,12 @@ float exp_nonpositive(float value) {
   return polynomial * asfloat(uint(exponent + 127) << 23u);
 }
 float exact_exp(float value) {
+  uint bits = asuint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) value = asfloat(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return asfloat(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u ? 0.0f : value;
   if (value <= 0.0f) return exp_nonpositive(value);
   if (value >= 87.0f) return asfloat(0x7f800000u);
   return exact_divide(1.0f, exp_nonpositive(-value));
@@ -146,6 +152,8 @@ float exact_exp(float value) {
 float exact_sin(float value) {
   value = canonical(value);
   if ((asuint(value) & 0x7fffffffu) >= 0x7f800000u)
+    return asfloat(0x7fc00000u);
+  if ((asuint(value) & 0x7fffffffu) >= 0x4f000000u)
     return asfloat(0x7fc00000u);
   float scaled = value * 0.3183098861837907f;
   int quadrant = scaled >= 0.0f ? int(scaled + 0.5f) : int(scaled - 0.5f);
@@ -164,12 +172,21 @@ float exact_sin(float value) {
 }
 float snake(float value, uint channel) {
   value = canonical(value);
+  if ((asuint(value) & 0x7fffffffu) > 0x7f800000u)
+    return asfloat(0x7fc00000u);
   float alpha = exact_exp(canonical(load_f32(tertiary, channel)));
   float beta = exact_exp(canonical(load_f32(quaternary, channel)));
+  if ((asuint(alpha) & 0x7fffffffu) > 0x7f800000u ||
+      (asuint(beta) & 0x7fffffffu) > 0x7f800000u)
+    return asfloat(0x7fc00000u);
   float sine = exact_sin(canonical(alpha * value));
+  if ((asuint(sine) & 0x7fffffffu) > 0x7f800000u)
+    return asfloat(0x7fc00000u);
   float square = canonical(sine * sine);
   float denominator = asfloat(positive_add(asuint(beta), asuint(1.0e-9f)));
-  return canonical(value + exact_divide(square, denominator));
+  float periodic = (asuint(beta) & 0x7fffffffu) == 0x7f800000u
+      ? 0.0f : exact_divide(square, denominator);
+  return canonical(value + periodic);
 }
 
 [numthreads(64, 1, 1)]

@@ -226,6 +226,69 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
   vk.download(v_snake, vk_snake.data(), snake_count);
   check_exact(cuda_snake, vk_snake, "SnakeBeta");
 
+  // Totality probes: no exceptional value may reach an undefined float-to-int
+  // conversion in exp/sin range reduction, and all NaNs use one payload.
+  constexpr uint32_t exceptional_channels = 10, exceptional_length = 6;
+  std::vector<float> exceptional_x(exceptional_channels * exceptional_length);
+  for (size_t i = 0; i < exceptional_x.size(); ++i)
+    exceptional_x[i] = float(int(i % 13) - 6) / 8.0f;
+  const uint32_t x_bits[] = {
+      0x00000001u, 0x807fffffu, 0x7fc12345u,
+      0x7f800000u, 0xff800000u, 0x60ad78ecu};
+  std::memcpy(exceptional_x.data(), x_bits, sizeof(x_bits));
+  const uint32_t alpha_bits[] = {
+      0x00000001u, 0x7fa54321u, 0x00000000u, 0x7f800000u,
+      0xff800000u, 0x60ad78ecu, 0xe0ad78ecu, 0x3e800000u,
+      0x3e800000u, 0x3e800000u};
+  const uint32_t beta_bits[] = {
+      0x80000001u, 0x3e800000u, 0x7fcabcdeu, 0x3e800000u,
+      0x3e800000u, 0x3e800000u, 0x3e800000u, 0x7f800000u,
+      0xff800000u, 0x60ad78ecu};
+  std::vector<float> exceptional_alpha(exceptional_channels),
+      exceptional_beta(exceptional_channels);
+  std::memcpy(exceptional_alpha.data(), alpha_bits, sizeof(alpha_bits));
+  std::memcpy(exceptional_beta.data(), beta_bits, sizeof(beta_bits));
+  cuda::DeviceBuffer<float> c_exceptional(exceptional_x.size()),
+      c_exceptional_alpha(exceptional_channels),
+      c_exceptional_beta(exceptional_channels);
+  c_exceptional.copy_from_host(exceptional_x.data(), exceptional_x.size());
+  c_exceptional_alpha.copy_from_host(exceptional_alpha.data(), exceptional_channels);
+  c_exceptional_beta.copy_from_host(exceptional_beta.data(), exceptional_channels);
+  cuda::launch_snake_beta(
+      c_exceptional.get(), c_exceptional_alpha.get(), c_exceptional_beta.get(),
+      1, exceptional_channels, exceptional_length, nullptr);
+  vulkan::DeviceTensor v_exceptional =
+      vk.allocate(layout({1, exceptional_channels, exceptional_length}));
+  vulkan::DeviceTensor v_exceptional_alpha =
+      vk.allocate(layout({exceptional_channels}));
+  vulkan::DeviceTensor v_exceptional_beta =
+      vk.allocate(layout({exceptional_channels}));
+  vk.upload(v_exceptional, exceptional_x.data(), exceptional_x.size());
+  vk.upload(v_exceptional_alpha, exceptional_alpha.data(), exceptional_channels);
+  vk.upload(v_exceptional_beta, exceptional_beta.data(), exceptional_channels);
+  {
+    vulkan::TensorBatch batch = vk.begin_batch();
+    batch.audio_snake_beta_inplace(
+        v_exceptional, v_exceptional_alpha, v_exceptional_beta, 1,
+        exceptional_channels, exceptional_length);
+    batch.submit().wait();
+  }
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<float> cuda_exceptional(exceptional_x.size()),
+      vk_exceptional(exceptional_x.size());
+  c_exceptional.copy_to_host(cuda_exceptional.data(), cuda_exceptional.size());
+  vk.download(v_exceptional, vk_exceptional.data(), vk_exceptional.size());
+  check_exact(cuda_exceptional, vk_exceptional, "exceptional SnakeBeta");
+  for (float output : vk_exceptional) {
+    uint32_t bits = 0; std::memcpy(&bits, &output, sizeof(bits));
+    if ((bits & 0x7fffffffu) > 0x7f800000u) CHECK(bits == 0x7fc00000u);
+  }
+  for (uint32_t index : {2u, 3u, 4u, 5u}) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &vk_exceptional[index], sizeof(bits));
+    CHECK(bits == 0x7fc00000u);
+  }
+
   constexpr uint32_t aa_batch = 1, aa_channels = 3, aa_length = 19;
   const size_t aa_input_count = size_t(aa_batch) * aa_channels * aa_length;
   const size_t aa_up_count = aa_input_count * 2;
