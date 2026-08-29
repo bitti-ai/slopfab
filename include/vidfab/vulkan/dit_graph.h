@@ -58,6 +58,20 @@ class ExactH3MainGraph {
                      const H3AttentionRanges* ranges = nullptr,
                      const H3MainGraphReplayTaps* taps = nullptr) const;
 
+  // Complete non-recording validation for orchestrators that must reject a
+  // malformed graph call before recording any surrounding endpoint op.
+  uint32_t preflight(DeviceTensor& tokens, DeviceTensor& selectors,
+                     DeviceTensor& adaln_code, DeviceTensor& cosine,
+                     DeviceTensor& sine,
+                     const H3AttentionRanges* ranges = nullptr,
+                     const H3MainGraphReplayTaps* taps = nullptr) const;
+  uint32_t preflight_layers(DeviceTensor& tokens, DeviceTensor& selectors,
+                     DeviceTensor& adaln_code, DeviceTensor& cosine,
+                     DeviceTensor& sine, uint32_t first_layer,
+                     uint32_t layer_count,
+                     const H3AttentionRanges* ranges = nullptr,
+                     const H3MainGraphReplayTaps* taps = nullptr) const;
+
   uint32_t required_operators(
       const H3MainGraphReplayTaps* taps = nullptr) const;
   uint32_t required_operators(uint32_t first_layer, uint32_t layer_count,

@@ -2582,7 +2582,10 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
        values(size_t(corruption == 1 ? adaln - 1 : adaln), 17, 1.0f / 64.0f)}};
     return tensors;
   };
-  const auto base = std::filesystem::temp_directory_path();
+  const auto base = std::filesystem::temp_directory_path() /
+      ("vidfab_h3_cuda_off_" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+  std::filesystem::create_directories(base);
   const auto valid_path = base / "vidfab_h3_cuda_off_valid.safetensors";
   const auto corrupt_path = base / "vidfab_h3_cuda_off_corrupt.safetensors";
   const auto corrupt_fc2_path =
@@ -2616,7 +2619,7 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   graph_checkpoint.open(graph_path.string());
   corrupt_graph.open(corrupt_graph_path.string());
 
-  auto transformer_fixture = [&](bool corrupt_endpoint) {
+  auto transformer_fixture = [&](uint32_t corruption) {
     std::vector<TensorWrite> all = fixture(0);
     std::vector<TensorWrite> refiner = fixture(0);
     for (TensorWrite& tensor : refiner) {
@@ -2630,21 +2633,26 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     const int64_t final_adaln = 2 * h;
     all.insert(all.end(), {
       {"condition_proj.weight", {h, text_dim},
-       values(size_t(h * text_dim), 101, 1.0f / 1024.0f)},
-      {"condition_proj.bias", {h}, values(h, 103, 1.0f / 128.0f)},
+       values(size_t(h * text_dim), 101, 1.0f / 1024.0f),
+       corruption == 2 ? DType::kF32 : DType::kBF16},
+      {"condition_proj.bias", {h}, values(h, 103, 1.0f / 128.0f),
+       DType::kBF16},
       {"video_patch_proj.weight", {h, video_dim},
        values(size_t(h * video_dim), 107, 1.0f / 1024.0f)},
       {"video_patch_proj.bias", {h}, values(h, 109, 1.0f / 128.0f)},
       {"audio_patch_proj.weight", {h, audio_dim},
        values(size_t(h * audio_dim), 113, 1.0f / 1024.0f)},
       {"audio_patch_proj.bias", {h}, values(h, 127, 1.0f / 128.0f)},
-      {"token_refiner.final_norm.weight", {h}, std::vector<float>(h, 1.0f)},
-      {"final_layer.norm.weight", {h}, std::vector<float>(h, 1.0f)},
+      {"token_refiner.final_norm.weight", {h}, std::vector<float>(h, 1.0f),
+       DType::kBF16},
+      {"final_layer.norm.weight", {h}, std::vector<float>(h, 1.0f),
+       DType::kBF16},
       {"final_layer.adaln_proj.linear.weight",
        {final_adaln, config.adaln_rank},
-       values(size_t(final_adaln * config.adaln_rank), 131, 1.0f / 8192.0f)},
+       values(size_t(final_adaln * config.adaln_rank), 131, 1.0f / 8192.0f),
+       DType::kF16},
       {"final_layer.adaln_proj.linear.bias", {final_adaln},
-       values(final_adaln, 137, 1.0f / 128.0f)},
+       values(final_adaln, 137, 1.0f / 128.0f), DType::kF16},
       {"final_layer.video_out.weight", {video_dim, h},
        values(size_t(video_dim * h), 139, 1.0f / 1024.0f)},
       {"final_layer.video_out.bias", {video_dim},
@@ -2652,22 +2660,37 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
       {"final_layer.audio_out.weight", {audio_dim, h},
        values(size_t(audio_dim * h), 151, 1.0f / 1024.0f)},
       {"final_layer.audio_out.bias",
-       {corrupt_endpoint ? audio_dim - 1 : audio_dim},
-       values(size_t(corrupt_endpoint ? audio_dim - 1 : audio_dim),
+       {corruption == 1 ? audio_dim - 1 : audio_dim},
+       values(size_t(corruption == 1 ? audio_dim - 1 : audio_dim),
               157, 1.0f / 128.0f)}
     });
+    if (corruption == 3) {
+      all.push_back({"condition_proj.pre_quant_scale", {text_dim},
+                     std::vector<float>(text_dim, 1.0f)});
+    }
     return all;
   };
   const auto transformer_path =
       base / "vidfab_h3_cuda_off_transformer.safetensors";
   const auto corrupt_transformer_path =
       base / "vidfab_h3_cuda_off_corrupt_transformer.safetensors";
-  write_safetensors(transformer_path.string(), transformer_fixture(false));
+  const auto corrupt_transformer_dtype_path =
+      base / "vidfab_h3_cuda_off_corrupt_transformer_dtype.safetensors";
+  const auto corrupt_transformer_metadata_path =
+      base / "vidfab_h3_cuda_off_corrupt_transformer_metadata.safetensors";
+  write_safetensors(transformer_path.string(), transformer_fixture(0));
   write_safetensors(corrupt_transformer_path.string(),
-                    transformer_fixture(true));
-  SafeTensors transformer_checkpoint, corrupt_transformer;
+                    transformer_fixture(1));
+  write_safetensors(corrupt_transformer_dtype_path.string(),
+                    transformer_fixture(2));
+  write_safetensors(corrupt_transformer_metadata_path.string(),
+                    transformer_fixture(3));
+  SafeTensors transformer_checkpoint, corrupt_transformer,
+      corrupt_transformer_dtype, corrupt_transformer_metadata;
   transformer_checkpoint.open(transformer_path.string());
   corrupt_transformer.open(corrupt_transformer_path.string());
+  corrupt_transformer_dtype.open(corrupt_transformer_dtype_path.string());
+  corrupt_transformer_metadata.open(corrupt_transformer_metadata_path.string());
 
   ExactH3BlockStage first = ExactH3BlockStage::create(context, config);
   ExactH3BlockStage second = ExactH3BlockStage::create(context, config);
@@ -3066,7 +3089,12 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
                              zero_video_ts.size() * 4);
   graph_context.upload_bytes(transformer_audio_ts, zero_audio_ts.data(),
                              zero_audio_ts.size() * 4);
+  DeviceTensor shared_forward_tap = graph_context.allocate(
+      TensorLayout::contiguous(token_shape, 2), ScalarType::kBFloat16);
   const uint64_t transformer_baseline = graph_context.pooled_used_bytes();
+  const uint64_t transformer_baseline_reserved = graph_context.reserved_bytes();
+  const uint64_t transformer_baseline_descriptors =
+      graph_context.descriptor_set_allocations();
   ExactH3Transformer transformer = ExactH3Transformer::create(
       graph_context, transformer_config);
   CHECK(!transformer.loaded() && transformer.persistent_bytes() == 0u &&
@@ -3076,11 +3104,63 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   catch (const std::exception&) { transformer_corrupt_rejected = true; }
   CHECK(transformer_corrupt_rejected && !transformer.loaded());
   CHECK(graph_context.pooled_used_bytes() == transformer_baseline);
+  for (SafeTensors* invalid : {&corrupt_transformer_dtype,
+                               &corrupt_transformer_metadata}) {
+    bool rejected = false;
+    try { transformer.load(*invalid); }
+    catch (const std::exception&) { rejected = true; }
+    CHECK(rejected && !transformer.loaded());
+    CHECK(graph_context.pooled_used_bytes() == transformer_baseline);
+    CHECK(graph_context.reserved_bytes() == transformer_baseline_reserved);
+    CHECK(graph_context.descriptor_set_allocations() ==
+          transformer_baseline_descriptors);
+  }
   transformer.load(transformer_checkpoint);
   CHECK(transformer.loaded() && !transformer.text_prepared());
+  H3TransformerTextReplayTaps null_text_taps{nullptr, 6};
+  H3TransformerTextReplayTaps short_text_taps{&prompt, 5};
+  for (const H3TransformerTextReplayTaps* invalid :
+       {&null_text_taps, &short_text_taps}) {
+    bool rejected = false;
+    try { transformer.prepare_text(prompt, invalid); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && !transformer.text_prepared());
+  }
   transformer.prepare_text(prompt);
   CHECK(transformer.text_prepared());
   CHECK(transformer.required_forward_operators() == 42u);
+  H3MainGraphReplayTaps null_main_taps{nullptr, 1};
+  H3TransformerForwardReplayTaps null_forward_taps{
+      nullptr, nullptr, &null_main_taps};
+  H3MainGraphReplayTaps aliased_main_taps{&shared_forward_tap, 1};
+  H3TransformerForwardReplayTaps aliased_forward_taps{
+      &shared_forward_tap, nullptr, &aliased_main_taps};
+  {
+    TensorBatch transactional = graph_context.begin_batch();
+    auto reject_forward = [&](const H3AttentionRanges* test_ranges,
+                              const H3TransformerForwardReplayTaps* test_taps) {
+      bool rejected = false;
+      try {
+        transformer.record_forward(
+            transactional, transformer_video, transformer_audio,
+            transformer_selectors, transformer_code, transformer_cosine,
+            transformer_sine, transformer_video_ts, transformer_audio_ts,
+            transformer_video_out, transformer_audio_out, test_ranges,
+            test_taps);
+      } catch (const std::invalid_argument&) { rejected = true; }
+      CHECK(rejected && transactional.remaining_operator_capacity() == 128u);
+    };
+    reject_forward(&foreign_ranges, nullptr);
+    reject_forward(nullptr, &null_forward_taps);
+    reject_forward(nullptr, &aliased_forward_taps);
+    transformer.record_forward(
+        transactional, transformer_video, transformer_audio,
+        transformer_selectors, transformer_code, transformer_cosine,
+        transformer_sine, transformer_video_ts, transformer_audio_ts,
+        transformer_video_out, transformer_audio_out);
+    CHECK(transactional.remaining_operator_capacity() == 86u);
+    transactional.submit().wait();
+  }
   auto run_transformer = [&] {
     TensorBatch batch = graph_context.begin_batch();
     transformer.record_forward(
@@ -3114,12 +3194,13 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   const uint64_t transformer_descriptors =
       graph_context.descriptor_set_allocations();
   bool transformer_reload_rejected = false;
-  try { transformer.load(transformer_checkpoint); }
+  try { transformer.load(corrupt_transformer_metadata); }
   catch (const std::logic_error&) { transformer_reload_rejected = true; }
   CHECK(transformer_reload_rejected && transformer.text_prepared());
   CHECK(graph_context.pooled_used_bytes() == transformer_live_used);
   CHECK(graph_context.reserved_bytes() == transformer_reserved);
   CHECK(graph_context.descriptor_set_allocations() == transformer_descriptors);
+  CHECK(run_transformer() == transformer_output);
   transformer.unload();
   CHECK(!transformer.loaded() && transformer.persistent_bytes() == 0u &&
         transformer.scratch_bytes() == 0u &&
@@ -3372,6 +3453,9 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   std::filesystem::remove(corrupt_graph_path, ignored);
   std::filesystem::remove(transformer_path, ignored);
   std::filesystem::remove(corrupt_transformer_path, ignored);
+  std::filesystem::remove(corrupt_transformer_dtype_path, ignored);
+  std::filesystem::remove(corrupt_transformer_metadata_path, ignored);
+  std::filesystem::remove(base, ignored);
 }
 
 VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {

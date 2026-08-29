@@ -37,7 +37,11 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
   for (const TensorWrite& t : tensors) {
     int64_t elems = 1;
     for (int64_t d : t.shape) elems *= d;
-    const size_t bytes = static_cast<size_t>(elems) * sizeof(float);
+    if (t.dtype != DType::kF32 && t.dtype != DType::kBF16 &&
+        t.dtype != DType::kF16)
+      throw std::runtime_error(
+          "safetensors write: only F32, F16 and BF16 fixtures are supported");
+    const size_t bytes = static_cast<size_t>(elems) * dtype_size(t.dtype);
     if (t.data.size() != static_cast<size_t>(elems)) {
       throw std::runtime_error("safetensors write: tensor '" + t.name + "' has " +
                                std::to_string(t.data.size()) + " values but shape implies " +
@@ -45,7 +49,8 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
     }
     if (!first) header += ",";
     first = false;
-    header += "\"" + t.name + "\":{\"dtype\":\"F32\",\"shape\":" + shape_to_json(t.shape) +
+    header += "\"" + t.name + "\":{\"dtype\":\"" + dtype_name(t.dtype) +
+              "\",\"shape\":" + shape_to_json(t.shape) +
               ",\"data_offsets\":[" + std::to_string(offset) + "," +
               std::to_string(offset + bytes) + "]}";
     offset += bytes;
@@ -63,8 +68,17 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
   out.write(reinterpret_cast<const char*>(&header_len), sizeof(header_len));
   out.write(header.data(), static_cast<std::streamsize>(header.size()));
   for (const TensorWrite& t : tensors) {
-    out.write(reinterpret_cast<const char*>(t.data.data()),
-              static_cast<std::streamsize>(t.data.size() * sizeof(float)));
+    if (t.dtype == DType::kF32) {
+      out.write(reinterpret_cast<const char*>(t.data.data()),
+                static_cast<std::streamsize>(t.data.size() * sizeof(float)));
+    } else {
+      std::vector<uint16_t> bits(t.data.size());
+      for (size_t i = 0; i < bits.size(); ++i)
+        bits[i] = t.dtype == DType::kBF16 ? f32_to_bf16(t.data[i])
+                                          : f32_to_f16(t.data[i]);
+      out.write(reinterpret_cast<const char*>(bits.data()),
+                static_cast<std::streamsize>(bits.size() * sizeof(uint16_t)));
+    }
   }
   if (!out) throw std::runtime_error("safetensors write: failed writing " + path);
 }

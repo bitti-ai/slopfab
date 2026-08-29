@@ -36,6 +36,23 @@ void require_shape(const TensorView& view,
     throw std::runtime_error("Vulkan H3 transformer: '" + name +
                              "' has wrong shape");
 }
+void require_dtype(const TensorView& view, DType dtype,
+                   const std::string& name) {
+  if (view.dtype != dtype)
+    throw std::runtime_error("Vulkan H3 transformer: '" + name +
+                             "' has dtype " + dtype_name(view.dtype) +
+                             ", expected " + dtype_name(dtype));
+}
+void require_plain_weight(const SafeTensors& st, const std::string& name) {
+  for (const char* suffix : {".weight_scale", ".weight_scale_2",
+                            ".input_scale", ".pre_quant_scale",
+                            ".comfy_quant"}) {
+    if (st.find(name + suffix))
+      throw std::runtime_error("Vulkan H3 transformer: exact endpoint '" +
+                               name + "' has unsupported metadata '" +
+                               suffix + "'");
+  }
+}
 void validate_config(const ExactH3TransformerConfig& c) {
   const H3BlockConfig& b = c.main.block;
   const uint64_t packed = uint64_t(c.text_rows) + c.video_rows + c.audio_rows;
@@ -53,33 +70,30 @@ void validate_endpoint_archive(const SafeTensors& st,
                                const ExactH3TransformerConfig& c) {
   const uint32_t h = c.main.block.hidden;
   const uint32_t r = c.main.block.adaln_rank;
-  require_shape(st.at("condition_proj.weight"), {h, c.text_dim},
-                "condition_proj.weight");
-  require_shape(st.at("condition_proj.bias"), {h}, "condition_proj.bias");
-  require_shape(st.at("video_patch_proj.weight"), {h, c.video_dim},
-                "video_patch_proj.weight");
-  require_shape(st.at("video_patch_proj.bias"), {h},
-                "video_patch_proj.bias");
-  require_shape(st.at("audio_patch_proj.weight"), {h, c.audio_dim},
-                "audio_patch_proj.weight");
-  require_shape(st.at("audio_patch_proj.bias"), {h},
-                "audio_patch_proj.bias");
-  require_shape(st.at("token_refiner.final_norm.weight"), {h},
-                "token_refiner.final_norm.weight");
-  require_shape(st.at("final_layer.norm.weight"), {h},
-                "final_layer.norm.weight");
-  require_shape(st.at("final_layer.adaln_proj.linear.weight"), {2 * h, r},
-                "final_layer.adaln_proj.linear.weight");
-  require_shape(st.at("final_layer.adaln_proj.linear.bias"), {2 * h},
-                "final_layer.adaln_proj.linear.bias");
-  require_shape(st.at("final_layer.video_out.weight"), {c.video_dim, h},
-                "final_layer.video_out.weight");
-  require_shape(st.at("final_layer.video_out.bias"), {c.video_dim},
-                "final_layer.video_out.bias");
-  require_shape(st.at("final_layer.audio_out.weight"), {c.audio_dim, h},
-                "final_layer.audio_out.weight");
-  require_shape(st.at("final_layer.audio_out.bias"), {c.audio_dim},
-                "final_layer.audio_out.bias");
+  auto require = [&](const char* name, std::initializer_list<int64_t> shape,
+                     DType dtype) {
+    const TensorView& view = st.at(name);
+    require_shape(view, shape, name);
+    require_dtype(view, dtype, name);
+  };
+  require("condition_proj.weight", {h, c.text_dim}, DType::kBF16);
+  require("condition_proj.bias", {h}, DType::kBF16);
+  require("video_patch_proj.weight", {h, c.video_dim}, DType::kF32);
+  require("video_patch_proj.bias", {h}, DType::kF32);
+  require("audio_patch_proj.weight", {h, c.audio_dim}, DType::kF32);
+  require("audio_patch_proj.bias", {h}, DType::kF32);
+  require("token_refiner.final_norm.weight", {h}, DType::kBF16);
+  require("final_layer.norm.weight", {h}, DType::kBF16);
+  require("final_layer.adaln_proj.linear.weight", {2 * h, r}, DType::kF16);
+  require("final_layer.adaln_proj.linear.bias", {2 * h}, DType::kF16);
+  require("final_layer.video_out.weight", {c.video_dim, h}, DType::kF32);
+  require("final_layer.video_out.bias", {c.video_dim}, DType::kF32);
+  require("final_layer.audio_out.weight", {c.audio_dim, h}, DType::kF32);
+  require("final_layer.audio_out.bias", {c.audio_dim}, DType::kF32);
+  for (const char* name : {"condition_proj", "video_patch_proj",
+                          "audio_patch_proj", "final_layer.video_out",
+                          "final_layer.audio_out"})
+    require_plain_weight(st, name);
   // Decode now, before a Vulkan allocation, so malformed dtypes/non-finite
   // conversion paths are part of the host-only initial-load transaction.
   (void)to_f32(st.at("condition_proj.weight"));
@@ -348,15 +362,20 @@ void ExactH3Transformer::prepare_text(
                  c.text_rows, c.text_dim))
     throw std::invalid_argument("Vulkan H3 transformer: invalid prompt tensor");
   if (taps) {
+    if (taps->count != 6 || !taps->boundaries)
+      throw std::invalid_argument("Vulkan H3 transformer: invalid text taps");
+    std::vector<uintptr_t> resources{prompt.view().resource};
+    resources.reserve(7);
     for (uint32_t i = 0; i < taps->count; ++i) {
       if (!tensor_is(*impl_->context, taps->boundaries[i],
                      ScalarType::kBFloat16, c.text_rows,
                      c.main.block.hidden))
         throw std::invalid_argument("Vulkan H3 transformer: invalid text tap");
-      for (uint32_t j = 0; j < i; ++j)
-        if (taps->boundaries[i].view().resource ==
-            taps->boundaries[j].view().resource)
+      const uintptr_t resource = taps->boundaries[i].view().resource;
+      for (uintptr_t prior : resources)
+        if (resource == prior)
           throw std::invalid_argument("Vulkan H3 transformer: aliased text taps");
+      resources.push_back(resource);
     }
   }
   const uint32_t need = required_prepare_text_operators(taps);
@@ -434,19 +453,45 @@ void ExactH3Transformer::record_forward(
                 c.video_rows, c.video_dim) &&
       tensor_is(*impl_->context, audio_velocity, ScalarType::kFloat32,
                 c.audio_rows, c.audio_dim);
-  if (!valid || video_velocity.view().resource == video_latents.view().resource ||
-      audio_velocity.view().resource == audio_latents.view().resource)
+  if (!valid)
     throw std::invalid_argument("Vulkan H3 transformer: invalid forward tensors");
+  std::vector<uintptr_t> resources;
+  resources.reserve(12 + c.main.layers);
+  auto add_unique = [&](DeviceTensor& tensor, const char* error) {
+    const uintptr_t resource = tensor.view().resource;
+    if (std::find(resources.begin(), resources.end(), resource) != resources.end())
+      throw std::invalid_argument(error);
+    resources.push_back(resource);
+  };
+  for (DeviceTensor* tensor : {&video_latents, &audio_latents,
+      &main_selectors, &code, &cosine, &sine, &video_timestep_indices,
+      &audio_timestep_indices, &video_velocity, &audio_velocity})
+    add_unique(*tensor, "Vulkan H3 transformer: aliased forward tensors");
+  const H3MainGraphReplayTaps* main_taps =
+      taps ? taps->main_boundaries : nullptr;
   if (taps) {
     for (DeviceTensor* tap : {taps->packed_input, taps->main_final}) {
       if (tap && !tensor_is(*impl_->context, *tap, ScalarType::kBFloat16,
                             b.sequence, b.hidden))
         throw std::invalid_argument("Vulkan H3 transformer: invalid forward tap");
+      if (tap) add_unique(*tap, "Vulkan H3 transformer: aliased forward tap");
     }
-    if (taps->packed_input && taps->main_final &&
-        taps->packed_input->view().resource == taps->main_final->view().resource)
-      throw std::invalid_argument("Vulkan H3 transformer: aliased forward taps");
+    if (main_taps) {
+      if (main_taps->count != c.main.layers || !main_taps->boundaries)
+        throw std::invalid_argument("Vulkan H3 transformer: invalid main taps");
+      for (uint32_t layer = 0; layer < main_taps->count; ++layer) {
+        DeviceTensor& tap = main_taps->boundaries[layer];
+        if (!tensor_is(*impl_->context, tap, ScalarType::kBFloat16,
+                       b.sequence, b.hidden))
+          throw std::invalid_argument("Vulkan H3 transformer: invalid main tap");
+        add_unique(tap, "Vulkan H3 transformer: aliased main tap");
+      }
+    }
   }
+  // This validates range ownership/sequence and every main tap without
+  // touching the caller batch. It must precede the first endpoint record.
+  (void)s.main.preflight(s.hidden, main_selectors, code, cosine, sine,
+                         ranges, main_taps);
   const uint32_t need = required_forward_operators(taps);
   if (batch.remaining_operator_capacity() < need)
     throw std::logic_error("Vulkan H3 transformer: insufficient forward capacity");

@@ -5,12 +5,15 @@
 #include <string>
 #include <vector>
 
+#include "vidfab/dtype.h"
+
 namespace vidfab {
 
 struct TensorWrite {
   std::string name;
   std::vector<int64_t> shape;
   std::vector<float> data;
+  DType dtype = DType::kF32;
 };
 
 // Writes `tensors` as an fp32 safetensors archive. Throws if any tensor's

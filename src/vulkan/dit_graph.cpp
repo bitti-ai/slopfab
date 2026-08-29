@@ -1,5 +1,6 @@
 #include "vidfab/vulkan/dit_graph.h"
 
+#include <array>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -126,8 +127,17 @@ void ExactH3MainGraph::record(
                 ranges, taps);
 }
 
-void ExactH3MainGraph::record_layers(
-    TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& selectors,
+uint32_t ExactH3MainGraph::preflight(
+    DeviceTensor& tokens, DeviceTensor& selectors, DeviceTensor& code,
+    DeviceTensor& cosine, DeviceTensor& sine,
+    const H3AttentionRanges* ranges,
+    const H3MainGraphReplayTaps* taps) const {
+  return preflight_layers(tokens, selectors, code, cosine, sine, 0, layers(),
+                          ranges, taps);
+}
+
+uint32_t ExactH3MainGraph::preflight_layers(
+    DeviceTensor& tokens, DeviceTensor& selectors,
     DeviceTensor& code, DeviceTensor& cosine, DeviceTensor& sine,
     uint32_t first_layer, uint32_t layer_count,
     const H3AttentionRanges* ranges,
@@ -154,21 +164,23 @@ void ExactH3MainGraph::record_layers(
       cosv.layout.extent[0] != c.sequence || sinv.layout.extent[0] != c.sequence ||
       cosv.layout.extent[1] != 96 || sinv.layout.extent[1] != 96 ||
       !cosv.layout.is_contiguous() || !sinv.layout.is_contiguous() ||
-      tv.resource == sv.resource || tv.resource == cv.resource ||
-      tv.resource == cosv.resource || tv.resource == sinv.resource ||
-      cosv.resource == sinv.resource ||
       (ranges && (ranges->sequence() != c.sequence ||
                   !ranges->belongs_to(*impl_->context))))
     throw std::invalid_argument("Vulkan H3 graph: invalid activation inputs");
+  const std::array<uintptr_t, 5> input_resources{
+      tv.resource, sv.resource, cv.resource, cosv.resource, sinv.resource};
+  for (size_t i = 0; i < input_resources.size(); ++i)
+    for (size_t j = 0; j < i; ++j)
+      if (input_resources[i] == input_resources[j])
+        throw std::invalid_argument("Vulkan H3 graph: aliased activation inputs");
 
   if (taps) {
     if (taps->count != impl_->config.layers || !taps->boundaries)
       throw std::invalid_argument("Vulkan H3 graph: invalid boundary taps");
     std::vector<uintptr_t> resources;
     resources.reserve(taps->count + 5);
-    resources.push_back(tv.resource); resources.push_back(sv.resource);
-    resources.push_back(cv.resource); resources.push_back(cosv.resource);
-    resources.push_back(sinv.resource);
+    resources.insert(resources.end(), input_resources.begin(),
+                     input_resources.end());
     for (uint32_t layer = 0; layer < taps->count; ++layer) {
       DeviceTensor& tensor = taps->boundaries[layer];
       const DeviceTensorView view = tensor.view();
@@ -182,7 +194,18 @@ void ExactH3MainGraph::record_layers(
       resources.push_back(view.resource);
     }
   }
-  const uint32_t operators = required_operators(first_layer, layer_count, taps);
+  return required_operators(first_layer, layer_count, taps);
+}
+
+void ExactH3MainGraph::record_layers(
+    TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& selectors,
+    DeviceTensor& code, DeviceTensor& cosine, DeviceTensor& sine,
+    uint32_t first_layer, uint32_t layer_count,
+    const H3AttentionRanges* ranges,
+    const H3MainGraphReplayTaps* taps) const {
+  const uint32_t operators = preflight_layers(
+      tokens, selectors, code, cosine, sine, first_layer, layer_count,
+      ranges, taps);
   if (batch.remaining_operator_capacity() < operators)
     throw std::logic_error("Vulkan H3 graph: insufficient batch capacity");
 
