@@ -109,6 +109,104 @@ epsilon, intermediates and results. NaNs and subnormal arithmetic are excluded;
 host-known subnormal epsilon is rejected before recording. Unknown devices and
 drivers fail before recording a norm; other tensor primitives remain usable.
 
+## Video-VAE pointwise shaders
+
+Three fixed-operation modules cover the remaining pointwise seams in the ViT
+decoder without a second full-tensor pass: in-place fp32 layer-scale residual,
+fused biased fp32 SwiGLU, and channel-major fp32 latent denormalization. The
+production ViT shape is 36 blocks at D2048/I8192: every block records two
+residual fusions and one SwiGLU. Existing `transpose_2d`, `heads_to_tokens`,
+`split_qkv`, and `depth_to_space` primitives already cover its layout changes;
+there is deliberately no duplicate pointwise layout API. Latent denormalization
+is a future device-residency seam: the current CUDA decode pipeline still
+performs that step on the host before invoking the Video-VAE.
+
+All APIs require contiguous, distinct fp32 allocations. Residual is
+`canon(fma(canon(canon(y)+canon(bias)),canon(scale),canon(x)))` and updates x in
+place. Denormalization is `canon(fma(canon(z),canon(std),canon(mean)))`.
+SwiGLU separately canonicalizes both bias adds, evaluates the accepted
+deterministic SiLU polynomial, and canonicalizes the final explicit-RN
+multiplication. At every boundary a binary32 subnormal becomes signed zero and
+every NaN becomes `0x7fc00000`; signed zero, normals, and infinity retain their
+canonical bits until arithmetic combines them. The SiLU cutoff `x<=-87` maps to
+signed zero. CUDA's historical nullable-bias launch ABI remains available and
+preserves its no-add branch, while the Vulkan production API requires bias.
+
+The three persistent pipelines share a four-binding layout but declare only
+the accesses used by their fixed operation. They use one dispatch, zero
+operator scratch, no host scan/copy, and no steady-state allocation. Recording
+validates type, rank, exact dimensions, nonzero extents, uint32 shader indices,
+checked products/dispatch, context and all partial overlaps before access-state
+mutation. Tests cover 3x67 tails, normal cancellation to a subnormal, output
+underflow, signed zeros, Inf/NaN combinations, the -87 ULP neighbors, CUDA null
+bias, rejection rollback, mixed 32/33-op batches, two in-flight submissions
+plus third-slot reuse, wrapper drop, and stable pool/descriptor high-water. The
+65k-plus dense SiLU corpus measures maximum 2 ULP, absolute error 1.249e-6 and
+relative error 2.018e-7 against double precision.
+
+Pointwise capability is deliberately separate from normalization even though
+the first qualified tuple is the same RTX 5090 (`2b85`), NVIDIA 610.88
+(`98960000`). It additionally requires shaderInt64, fp32 RTE, and
+signed-zero/Inf/NaN preservation. This prevents a future normalization tuple
+from silently enabling independently compiled pointwise modules.
+
+Compiler isolation on that tuple found a driver compiler breakpoint
+`0x80000003`: the combined dynamic-operation raw and preserve-only probes
+created, while their RTE-only/normal variants failed; the specialized residual
+normal module created, but the specialized SwiGLU normal module failed. The
+committed residual therefore carries RTE plus preserve modes. SwiGLU is
+preserve-only plus Int64 and defines both positive denominator addition and
+division with live integer RNE arithmetic. Denormalization is preserve-only.
+There is no runtime SPIR-V mutation and no dead capability-perturbing code.
+
+The modules use Khronos glslang 16.5.0 and the repository float-control tool:
+
+```text
+glslang -V --target-env vulkan1.2 -S comp -DVAE_RESIDUAL=1 src/vulkan/tensor_vae_pointwise.comp -o residual.raw.spv
+python tools/add_spirv_float_controls.py residual.raw.spv src/vulkan/tensor_vae_residual.comp.spv residual.denorm.spv
+glslang -V --target-env vulkan1.2 -S comp -DVAE_SWIGLU=1 src/vulkan/tensor_vae_pointwise.comp -o swiglu.raw.spv
+python tools/add_spirv_float_controls.py --preserve-only swiglu.raw.spv src/vulkan/tensor_vae_swiglu.comp.spv
+glslang -V --target-env vulkan1.2 -S comp -DVAE_DENORM=1 src/vulkan/tensor_vae_pointwise.comp -o denorm.raw.spv
+python tools/add_spirv_float_controls.py --preserve-only denorm.raw.spv src/vulkan/tensor_vae_denorm.comp.spv
+nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,code=[compute_120a,sm_120a] -Iinclude src/cuda/vae_kernels.cu -o vae_kernels.fatbin
+```
+
+```text
+tensor_vae_pointwise.comp                 C0D3CA5A113AB83C08A12D2F06A63D127D2858FE72D96DF8E58F4F6AF559B83D
+tensor_vae_residual.comp.spv              8B64D04CB5B579F787148FB546D77AFB1ED6B1A1782BDE8D6573B28EA9408C92
+tensor_vae_swiglu.comp.spv                E4F51A55B55D7888FC264C1FA2F547BBC8930D9D7DB5F627D0356220B92CB453
+tensor_vae_denorm.comp.spv                E295EDCAD9058D8581007B4776F0BC7DB95A10C99AA9DF4FB149947AAE9519F2
+src/cuda/vae_kernels.cu                   48D1B0281E6D4A1B5AF915BA394E964701FE6C0CBBFFC03B09F4BF00AD40FE8C
+include/vidfab/cuda/deterministic_math.cuh F84F74E46D0EA32E5F2A2B6FF5E87F16C71A86B97D1379C96768C022D84F1913
+vae_kernels.fatbin                        17AA0AD0176D273716E2403E3F8B6599BD1D8BD9C62FEC55A06108BE8F5A3F02
+```
+
+A real-weight audit used `minimax_h3_video_vae_fp16.safetensors` SHA-256
+`7C1F131492E7EDDACAAC9069A61B81BDD39DE5CC96561E677C5EAB1CDCE5E522`,
+seed123 synthetic latents, and a 256x256/22-frame decode. The first real block
+was R1797/D2048/I8192. Its 29,442,048 raw and biased FFN values had zero
+subnormals/nonfinites; minima were 4.191e-9/6.985e-9 and maxima
+33.4604/33.5927, with zero gate values at or below -87. The 14,721,024 SwiGLU
+outputs had zero subnormals/nonfinites, minimum nonzero 5.015e-13 and maximum
+64.1191. Residual x/y/biased/output each had 3,680,256 values and zero
+subnormals/nonfinites; maxima were 0.5391/20.8282/20.8779/0.8486 and final
+minimum nonzero was 4.961e-9.
+
+Device-resident Release timing on the pinned tuple excludes upload/download
+and averages eight launches. Direct benchmark tensors occupy 197.0 MiB;
+425.2 MiB reserved includes persistent benchmark upload/readback staging, not
+operator scratch:
+
+| R1797 real decoder shape | shipped CUDA | exact CUDA | exact Vulkan |
+|---|---:|---:|---:|
+| biased SwiGLU I8192 | 0.092 ms | 0.136 ms | 0.139 ms |
+| 36 SwiGLU calls | 3.3 ms | 4.9 ms | 5.0 ms |
+| layer residual D2048 | - | 0.012 ms | 0.034 ms |
+| latent denorm C24/V1792 | - | 0.005 ms | 0.007 ms |
+
+The shipped-to-exact SwiGLU rebaseline changed 4,213,488 of 14,721,024 words
+on the deterministic benchmark corpus with maximum absolute delta 1.788139e-7.
+
 ## Shared transformer normalization shaders
 
 `tensor_shared_norm.comp` adds BF16 RMSNorm (a 32x8 narrow head-128 path and a
