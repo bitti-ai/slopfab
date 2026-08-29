@@ -99,6 +99,15 @@ struct QwenVisionEmbedding {
   std::vector<uint16_t> deepstack[3];
 };
 
+// Optional exact-mode authority trace. All visual-block residuals are captured
+// into one device arena and copied to this host vector only after the tower has
+// completed; enabling a trace therefore does not add host seams between blocks.
+struct QwenVisionTrace {
+  int tokens = 0;
+  int hidden = 1152;
+  std::vector<uint16_t> block_residuals;
+};
+
 class QwenVisionEncoder {
  public:
   QwenVisionEncoder();
@@ -108,6 +117,8 @@ class QwenVisionEncoder {
   void load(const SafeTensors& checkpoint);
   void unload();
   QwenVisionEmbedding encode(const std::vector<QwenPixelValues>& images);
+  QwenVisionEmbedding encode_exact(const std::vector<QwenPixelValues>& images,
+                                   QwenVisionTrace* trace = nullptr);
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

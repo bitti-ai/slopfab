@@ -118,4 +118,43 @@ class ExactQwenVisionMergerStage {
   std::shared_ptr<Impl> impl_;
 };
 
+struct ExactQwenVisionStats {
+  double last_encode_seconds = 0.0;
+  uint32_t patch_rows = 0;
+  uint64_t scratch_bytes = 0;
+  uint64_t activation_bytes = 0;
+  uint64_t max_streamed_weight_bytes = 0;
+  uint64_t allocator_peak_used_bytes = 0;
+  uint64_t allocator_used_bytes = 0;
+  uint64_t allocator_reserved_bytes = 0;
+  uint64_t descriptor_set_allocations = 0;
+};
+
+// Complete one-image visual tower. Host patchification/BF16 conversion and
+// canonical position/RoPE construction are one input boundary; residual and
+// all four outputs remain device-resident through the 27 streamed blocks.
+class ExactQwenVisionEncoder {
+ public:
+  ExactQwenVisionEncoder();
+  ~ExactQwenVisionEncoder();
+  ExactQwenVisionEncoder(ExactQwenVisionEncoder&&) noexcept;
+  ExactQwenVisionEncoder& operator=(ExactQwenVisionEncoder&&) noexcept;
+  ExactQwenVisionEncoder(const ExactQwenVisionEncoder&) = delete;
+  ExactQwenVisionEncoder& operator=(const ExactQwenVisionEncoder&) = delete;
+  static ExactQwenVisionEncoder create(TensorContext& context);
+  void load(const SafeTensors& checkpoint);
+  void unload() noexcept;
+  bool loaded() const noexcept;
+  void encode(const text::QwenPixelValues& image,
+              text::QwenVisionTrace* trace = nullptr);
+  DeviceTensor& main_output();
+  DeviceTensor& deepstack_output(uint32_t slot);
+  uint32_t output_tokens() const noexcept;
+  const ExactQwenVisionStats& stats() const noexcept;
+ private:
+  struct Impl;
+  explicit ExactQwenVisionEncoder(std::unique_ptr<Impl> impl);
+  std::unique_ptr<Impl> impl_;
+};
+
 }  // namespace vidfab::vulkan

@@ -127,6 +127,8 @@ struct QwenVisionEncoder::Impl {
     m.fc2=dense(at(p+"linear_fc2.weight"),5120,4608,&at(p+"linear_fc2.bias"));
     m.norm_before_merge=main; return m;
   }
+  QwenVisionEmbedding run(const std::vector<QwenPixelValues>& images,
+                          bool exact, QwenVisionTrace* trace);
 };
 
 QwenVisionEncoder::QwenVisionEncoder():impl_(new Impl){}
@@ -151,9 +153,12 @@ void QwenVisionEncoder::load(const SafeTensors& st){ unload(); auto c=load_qwen3
     s.tensors.emplace(kv.first,std::move(d)); }
   VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream)); s.loaded=true; }
 
-QwenVisionEmbedding QwenVisionEncoder::encode(const std::vector<QwenPixelValues>& images){
-  auto& s=*impl_; if(!s.loaded) throw std::runtime_error("Qwen vision: load first");
+QwenVisionEmbedding QwenVisionEncoder::Impl::run(
+    const std::vector<QwenPixelValues>& images, bool exact,
+    QwenVisionTrace* trace) {
+  auto& s=*this; if(!s.loaded) throw std::runtime_error("Qwen vision: load first");
   QwenVisionEmbedding result;
+  if (trace) *trace = {};
   std::vector<cuda::QwenVisionBlockWeights> blocks; for(int i=0;i<27;++i) blocks.push_back(s.block(i));
   auto main=s.merger("merger.",true); cuda::QwenVisionMergerWeights deep[3];
   for(int i=0;i<3;++i) deep[i]=s.merger("deepstack_merger_list."+std::to_string(i)+".",false);
@@ -186,17 +191,68 @@ QwenVisionEmbedding QwenVisionEncoder::encode(const std::vector<QwenPixelValues>
     VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.rope_cos,hc.data(),hc.size()*sizeof(float),cudaMemcpyHostToDevice,s.stream));
     VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.rope_sin,hs.data(),hs.size()*sizeof(float),cudaMemcpyHostToDevice,s.stream));
     auto patch=dense(s.at("patch_embed.proj.weight"),kHidden,kPatchDim,&s.at("patch_embed.proj.bias"));
-    cuda::qwen_vision_patch_embed(s.linear,patch,b.pixels,reinterpret_cast<__nv_bfloat16*>(s.at("pos_embed.weight").get()),b.pos_index,b.x,rows,s.ws,s.stream);
+    if (exact) {
+      cuda::qwen_vision_patch_embed_exact(
+          s.stream, patch, b.pixels,
+          reinterpret_cast<__nv_bfloat16*>(s.at("pos_embed.weight").get()),
+          b.pos_index, b.x, rows);
+    } else {
+      cuda::qwen_vision_patch_embed(s.linear,patch,b.pixels,reinterpret_cast<__nv_bfloat16*>(s.at("pos_embed.weight").get()),b.pos_index,b.x,rows,s.ws,s.stream);
+    }
     cuda::QwenVisionBlockScratch bs{b.normed,b.qkv,b.q,b.k,b.v,b.branch,b.mlp};
     __nv_bfloat16* dp[3]; for(int i=0;i<3;++i)dp[i]=b.deep[i];
-    cuda::qwen_vision_tower_forward(s.handle,s.stream,s.linear,blocks.data(),main,deep,b.rope_cos,b.rope_sin,b.x,rows,bs,b.merger_normed,b.merged,b.merger_hidden,b.out,dp,s.ws);
+    DeviceBuffer<uint16_t> trace_device;
+    if (exact) {
+      if (trace) trace_device.allocate(static_cast<size_t>(27) * rows * kHidden);
+      int deep_slot = 0;
+      for (int layer = 0; layer < 27; ++layer) {
+        cuda::qwen_vision_block_forward_exact(
+            s.stream, blocks[layer], b.rope_cos, b.rope_sin, b.x, rows, bs);
+        if (trace) {
+          VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
+              trace_device.get() + static_cast<size_t>(layer) * rows * kHidden,
+              b.x, static_cast<size_t>(rows) * kHidden * sizeof(uint16_t),
+              cudaMemcpyDeviceToDevice, s.stream));
+        }
+        if (layer == 8 || layer == 16 || layer == 24) {
+          cuda::qwen_vision_merger_forward_exact(
+              s.stream, deep[deep_slot], b.x, b.merger_normed, b.merged,
+              b.merger_hidden, b.deep[deep_slot], rows);
+          ++deep_slot;
+        }
+      }
+      cuda::qwen_vision_merger_forward_exact(
+          s.stream, main, b.x, b.merger_normed, b.merged, b.merger_hidden,
+          b.out, rows);
+    } else {
+      cuda::qwen_vision_tower_forward(s.handle,s.stream,s.linear,blocks.data(),main,deep,b.rope_cos,b.rope_sin,b.x,rows,bs,b.merger_normed,b.merged,b.merger_hidden,b.out,dp,s.ws);
+    }
     const size_t out_n=static_cast<size_t>(groups)*kOutDim;
     const size_t old=result.main.size(); result.main.resize(old+out_n);
     VIDFAB_CUDA_CHECK(cudaMemcpyAsync(result.main.data()+old,b.out,out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));
     for(int i=0;i<3;++i){size_t o=result.deepstack[i].size();result.deepstack[i].resize(o+out_n);
       VIDFAB_CUDA_CHECK(cudaMemcpyAsync(result.deepstack[i].data()+o,b.deep[i],out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));}
+    if (trace) {
+      const size_t old_trace = trace->block_residuals.size();
+      const size_t trace_count = static_cast<size_t>(27) * rows * kHidden;
+      trace->block_residuals.resize(old_trace + trace_count);
+      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
+          trace->block_residuals.data() + old_trace, trace_device.get(),
+          trace_count * sizeof(uint16_t), cudaMemcpyDeviceToHost, s.stream));
+      trace->tokens += rows;
+    }
     result.tokens+=groups;
     VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream));
   } return result;
+}
+
+QwenVisionEmbedding QwenVisionEncoder::encode(
+    const std::vector<QwenPixelValues>& images) {
+  return impl_->run(images, false, nullptr);
+}
+
+QwenVisionEmbedding QwenVisionEncoder::encode_exact(
+    const std::vector<QwenPixelValues>& images, QwenVisionTrace* trace) {
+  return impl_->run(images, true, trace);
 }
 } // namespace vidfab::text

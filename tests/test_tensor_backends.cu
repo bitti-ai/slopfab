@@ -3518,6 +3518,109 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
               static_cast<unsigned long long>(scratch.reserved_bytes()));
 }
 
+VIDFAB_TEST(cuda_vulkan_qwen_vision_real_tower) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!std::getenv("VIDFAB_QWEN_VISION_TOWER_REAL")) return;
+  const std::filesystem::path checkpoint_path =
+      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+      "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+  int cuda_devices = 0;
+  if (!std::filesystem::exists(checkpoint_path) ||
+      cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
+      !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  device_options.enable_shader_int64 = true;
+  device_options.enable_shader_float16 = true;
+  device_options.enable_storage_buffer_16bit = true;
+  device_options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(device_options);
+
+  // 256x256 is the processor's minimum production image. Its 16x16 patch grid
+  // exercises S256 and produces 64 decoder tokens.
+  text::QwenPixelValues image;
+  image.grid = {1, 16, 16};
+  image.rows.resize(size_t(256) * 1536);
+  for (size_t i = 0; i < image.rows.size(); ++i)
+    image.rows[i] = float(int(i * 37 % 509) - 254) / 254.0f;
+  SafeTensors archive;
+  archive.open(checkpoint_path.string());
+
+  text::QwenVisionEncoder cuda_encoder;
+  cuda_encoder.load(archive);
+  text::QwenVisionTrace cuda_trace;
+  const auto cuda_begin = std::chrono::steady_clock::now();
+  const text::QwenVisionEmbedding cuda_output =
+      cuda_encoder.encode_exact({image}, &cuda_trace);
+  const double cuda_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - cuda_begin).count();
+  cuda_encoder.unload();
+  CHECK(cuda_trace.tokens == 256 && cuda_trace.hidden == 1152);
+  CHECK(cuda_trace.block_residuals.size() == size_t(27) * 256 * 1152);
+  CHECK(cuda_output.tokens == 64 && cuda_output.hidden == 5120);
+
+  TensorContextOptions options;
+  options.max_batch_operators = 128;
+  TensorContext vk(device, options);
+  ExactQwenVisionEncoder vk_encoder = ExactQwenVisionEncoder::create(vk);
+  const uint64_t unloaded_used = vk.pooled_used_bytes();
+  vk_encoder.load(archive);
+  text::QwenVisionTrace vk_trace;
+  const auto vk_begin = std::chrono::steady_clock::now();
+  vk_encoder.encode(image, &vk_trace);
+  const double vk_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - vk_begin).count();
+  std::vector<uint16_t> vk_main(cuda_output.main.size());
+  std::array<std::vector<uint16_t>, 3> vk_deep;
+  vk.download_bytes(vk_encoder.main_output(), vk_main.data(), vk_main.size() * 2);
+  for (uint32_t slot = 0; slot < 3; ++slot) {
+    vk_deep[slot].resize(cuda_output.deepstack[slot].size());
+    vk.download_bytes(vk_encoder.deepstack_output(slot), vk_deep[slot].data(),
+                      vk_deep[slot].size() * 2);
+  }
+  CHECK(vk_trace.tokens == cuda_trace.tokens &&
+        vk_trace.hidden == cuda_trace.hidden);
+  CHECK(vk_trace.block_residuals == cuda_trace.block_residuals);
+  CHECK(vk_main == cuda_output.main);
+  for (uint32_t slot = 0; slot < 3; ++slot)
+    CHECK(vk_deep[slot] == cuda_output.deepstack[slot]);
+  const ExactQwenVisionStats stats = vk_encoder.stats();
+  CHECK(stats.patch_rows == 256 && stats.max_streamed_weight_bytes <
+        96ull * 1024 * 1024);
+  CHECK(stats.descriptor_set_allocations <= 128);
+  vk_encoder.unload();
+  vk.collect();
+  const uint64_t warmed_used = vk.pooled_used_bytes();
+  CHECK(unloaded_used == 0);
+  CHECK(warmed_used == 2 * vk.staging_capacity_bytes());
+  const uint64_t stable_reserved = vk.reserved_bytes();
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  vk_encoder.load(archive);
+  text::QwenVisionTrace repeat_trace;
+  vk_encoder.encode(image, &repeat_trace);
+  CHECK(repeat_trace.block_residuals == cuda_trace.block_residuals);
+  vk_encoder.unload();
+  vk.collect();
+  CHECK(vk.pooled_used_bytes() == warmed_used);
+  CHECK(vk.reserved_bytes() == stable_reserved);
+  CHECK(vk.descriptor_set_allocations() <= stable_descriptors + 128);
+  std::printf("qwen vision full27 S256 exact CUDA/Vulkan %.3f/%.3f s "
+              "peak/scratch/activation/weight %.1f/%.1f/%.1f/%.1f MiB\n",
+              cuda_seconds, vk_seconds,
+              stats.allocator_peak_used_bytes / 1048576.0,
+              stats.scratch_bytes / 1048576.0,
+              stats.activation_bytes / 1048576.0,
+              stats.max_streamed_weight_bytes / 1048576.0);
+}
+
 VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   using namespace vidfab;
   using namespace vidfab::vulkan;

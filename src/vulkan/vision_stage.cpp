@@ -1,12 +1,14 @@
 #include "vidfab/vulkan/vision_stage.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 #include "vidfab/attention.h"
+#include "vidfab/tensor_convert.h"
 
 namespace vidfab::vulkan {
 namespace {
@@ -520,6 +522,200 @@ void ExactQwenVisionMergerStage::record(
        s.merger_hidden);
   batch.vision_gelu_tanh_bf16(s.merger_hidden);
   gemm(s.merger_fc2_plan, s.merger_hidden, w.fc2_weight, w.fc2_bias, output);
+}
+
+struct ExactQwenVisionEncoder::Impl {
+  struct Shape {
+    QwenVisionStageConfig config;
+    ExactQwenVisionScratch scratch;
+    ExactQwenVisionPatchStage patch;
+    ExactQwenVisionBlockStage block;
+    ExactQwenVisionMergerStage merger;
+    DeviceTensor pixels, learned_index, cosine, sine, residual, main, deep[3];
+
+    Shape(TensorContext& context, uint32_t rows) {
+      config.sequence = rows;
+      scratch = ExactQwenVisionScratch::create(context, config);
+      patch = ExactQwenVisionPatchStage::create(context, config);
+      block = ExactQwenVisionBlockStage::create(context, config);
+      merger = ExactQwenVisionMergerStage::create(context, config);
+      pixels = context.allocate(matrix(rows, 1536), ScalarType::kBFloat16);
+      learned_index = context.allocate(vector(rows), ScalarType::kInt32);
+      cosine = context.allocate(matrix(rows, 72), ScalarType::kFloat32);
+      sine = context.allocate(matrix(rows, 72), ScalarType::kFloat32);
+      residual = context.allocate(matrix(rows, 1152), ScalarType::kBFloat16);
+      main = context.allocate(matrix(rows / 4u, 5120), ScalarType::kBFloat16);
+      for (auto& tensor : deep)
+        tensor = context.allocate(matrix(rows / 4u, 5120),
+                                  ScalarType::kBFloat16);
+    }
+    uint64_t activation_bytes() const noexcept {
+      uint64_t result = bytes(pixels) + bytes(learned_index) + bytes(cosine) +
+          bytes(sine) + bytes(residual) + bytes(main);
+      for (const auto& tensor : deep) result += bytes(tensor);
+      return result;
+    }
+  };
+  TensorContext* context = nullptr;
+  const SafeTensors* checkpoint = nullptr;
+  text::QwenVisionCheckpoint validated;
+  std::unique_ptr<Shape> shape;
+  ExactQwenVisionStats stats;
+  uint32_t output_tokens = 0;
+  explicit Impl(TensorContext& owner) : context(&owner) {}
+};
+
+ExactQwenVisionEncoder::ExactQwenVisionEncoder() = default;
+ExactQwenVisionEncoder::~ExactQwenVisionEncoder() = default;
+ExactQwenVisionEncoder::ExactQwenVisionEncoder(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+ExactQwenVisionEncoder::ExactQwenVisionEncoder(
+    ExactQwenVisionEncoder&&) noexcept = default;
+ExactQwenVisionEncoder& ExactQwenVisionEncoder::operator=(
+    ExactQwenVisionEncoder&&) noexcept = default;
+ExactQwenVisionEncoder ExactQwenVisionEncoder::create(TensorContext& context) {
+  context.require_exact_fp32_vae_normalization();
+  context.require_exact_vae_pointwise();
+  context.require_exact_blocked_attention();
+  return ExactQwenVisionEncoder(std::make_unique<Impl>(context));
+}
+void ExactQwenVisionEncoder::load(const SafeTensors& checkpoint) {
+  if (!impl_) throw std::logic_error("Vulkan Qwen vision encoder: empty");
+  const text::QwenVisionCheckpoint validated =
+      text::load_qwen3vl_vision_checkpoint(checkpoint);
+  impl_->checkpoint = &checkpoint;
+  impl_->validated = validated;
+  impl_->stats = ExactQwenVisionStats{};
+  impl_->output_tokens = 0;
+}
+void ExactQwenVisionEncoder::unload() noexcept {
+  if (!impl_) return;
+  impl_->shape.reset();
+  try { impl_->context->collect(); } catch (...) {}
+  impl_->checkpoint = nullptr;
+  impl_->validated = {};
+  impl_->stats = {};
+  impl_->output_tokens = 0;
+}
+bool ExactQwenVisionEncoder::loaded() const noexcept {
+  return impl_ && impl_->checkpoint != nullptr;
+}
+void ExactQwenVisionEncoder::encode(const text::QwenPixelValues& image,
+                                    text::QwenVisionTrace* trace) {
+  if (!loaded()) throw std::logic_error("Vulkan Qwen vision encoder: not loaded");
+  const size_t patch_count = image.grid.patch_count();
+  if (patch_count == 0 || patch_count > 16384 || patch_count % 4 != 0 ||
+      image.rows.size() != patch_count * 1536)
+    throw std::invalid_argument("Vulkan Qwen vision encoder: invalid image rows");
+  const uint32_t rows = static_cast<uint32_t>(patch_count);
+  const uint32_t max_operators = std::max(
+      12u + 4u * row_gemm_operators(rows) + (trace ? 1u : 0u),
+      3u + 2u * row_gemm_operators(rows / 4u));
+  { TensorBatch preflight = impl_->context->begin_batch();
+    preflight.require_operator_capacity(max_operators); }
+  if (!impl_->shape || impl_->shape->config.sequence != rows)
+    impl_->shape = std::make_unique<Impl::Shape>(*impl_->context, rows);
+  auto& s = *impl_->shape;
+  DeviceTensor trace_device;
+  if (trace) {
+    *trace = {};
+    trace_device = impl_->context->allocate(
+        matrix(27u * rows, 1152), ScalarType::kBFloat16);
+  }
+  std::vector<uint16_t> pixels(image.rows.size());
+  for (size_t i = 0; i < pixels.size(); ++i)
+    pixels[i] = f32_to_bf16(image.rows[i]);
+  const text::QwenVisionPositions positions =
+      text::qwen3vl_vision_positions(image.grid);
+  std::vector<float> cosine, sine;
+  text::qwen3vl_vision_rope_tables(positions, cosine, sine);
+  const TensorUpload uploads[] = {
+      {&s.pixels, pixels.data(), pixels.size() * sizeof(uint16_t)},
+      {&s.learned_index, positions.learned.data(),
+       positions.learned.size() * sizeof(int32_t)},
+      {&s.cosine, cosine.data(), cosine.size() * sizeof(float)},
+      {&s.sine, sine.data(), sine.size() * sizeof(float)}};
+  impl_->context->upload_batch(uploads, 4);
+  const auto begin = std::chrono::steady_clock::now();
+  uint64_t peak_used = impl_->context->pooled_used_bytes();
+  uint64_t max_weight = 0;
+  try {
+    s.patch.load(impl_->validated);
+    max_weight = std::max(max_weight, s.patch.persistent_bytes());
+    peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+    { TensorBatch batch = impl_->context->begin_batch();
+      s.patch.record(batch, s.pixels, s.learned_index, s.residual, s.scratch);
+      batch.submit().wait(); }
+    s.patch.unload();
+    for (uint32_t layer = 0; layer < 27; ++layer) {
+      s.block.load(impl_->validated, layer);
+      max_weight = std::max(max_weight, s.block.persistent_bytes());
+      peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+      { TensorBatch batch = impl_->context->begin_batch();
+        s.block.record(batch, s.residual, s.cosine, s.sine, s.scratch);
+        if (trace)
+          batch.copy_rows(s.residual, trace_device, 0, layer * rows, rows);
+        batch.submit().wait(); }
+      s.block.unload();
+      int deep_slot = layer == 8 ? 0 : layer == 16 ? 1 : layer == 24 ? 2 : -1;
+      if (deep_slot >= 0) {
+        s.merger.load(impl_->validated, deep_slot);
+        max_weight = std::max(max_weight, s.merger.persistent_bytes());
+        peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+        TensorBatch batch = impl_->context->begin_batch();
+        s.merger.record(batch, s.residual, s.deep[deep_slot], s.scratch);
+        batch.submit().wait();
+        s.merger.unload();
+      }
+    }
+    s.merger.load(impl_->validated, -1);
+    max_weight = std::max(max_weight, s.merger.persistent_bytes());
+    peak_used = std::max(peak_used, impl_->context->pooled_used_bytes());
+    { TensorBatch batch = impl_->context->begin_batch();
+      s.merger.record(batch, s.residual, s.main, s.scratch);
+      batch.submit().wait(); }
+    s.merger.unload();
+    if (trace) {
+      trace->tokens = static_cast<int>(rows);
+      trace->block_residuals.resize(
+          static_cast<size_t>(27) * rows * 1152u);
+      impl_->context->download_bytes(
+          trace_device, trace->block_residuals.data(),
+          trace->block_residuals.size() * sizeof(uint16_t));
+    }
+  } catch (...) {
+    s.patch.unload(); s.block.unload(); s.merger.unload();
+    throw;
+  }
+  impl_->output_tokens = rows / 4u;
+  impl_->stats.last_encode_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - begin).count();
+  impl_->stats.patch_rows = rows;
+  impl_->stats.scratch_bytes = s.scratch.reserved_bytes();
+  impl_->stats.activation_bytes = s.activation_bytes();
+  impl_->stats.max_streamed_weight_bytes = max_weight;
+  impl_->stats.allocator_peak_used_bytes = peak_used;
+  impl_->stats.allocator_used_bytes = impl_->context->pooled_used_bytes();
+  impl_->stats.allocator_reserved_bytes = impl_->context->reserved_bytes();
+  impl_->stats.descriptor_set_allocations =
+      impl_->context->descriptor_set_allocations();
+}
+DeviceTensor& ExactQwenVisionEncoder::main_output() {
+  if (!impl_ || !impl_->shape || impl_->output_tokens == 0)
+    throw std::logic_error("Vulkan Qwen vision encoder: no output");
+  return impl_->shape->main;
+}
+DeviceTensor& ExactQwenVisionEncoder::deepstack_output(uint32_t slot_index) {
+  if (!impl_ || !impl_->shape || impl_->output_tokens == 0 || slot_index >= 3)
+    throw std::logic_error("Vulkan Qwen vision encoder: no DeepStack output");
+  return impl_->shape->deep[slot_index];
+}
+uint32_t ExactQwenVisionEncoder::output_tokens() const noexcept {
+  return impl_ ? impl_->output_tokens : 0;
+}
+const ExactQwenVisionStats& ExactQwenVisionEncoder::stats() const noexcept {
+  static const ExactQwenVisionStats empty{};
+  return impl_ ? impl_->stats : empty;
 }
 
 }  // namespace vidfab::vulkan
