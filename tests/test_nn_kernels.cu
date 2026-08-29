@@ -578,6 +578,7 @@ VIDFAB_TEST(nn_rope_h3) {
             tail_diffs);
 }
 
+#if 0  // Removed: canonical H3 tables are host-built and tested in test_packing.cpp.
 VIDFAB_TEST(nn_rope_tables_h3) {
   const int rows = 9;
   const int freq_dim = 16;
@@ -640,6 +641,8 @@ VIDFAB_TEST(nn_rope_tables_h3) {
   CHECK_NEAR(gc[freq_dim], std::cos(double(float(pos[1]))), 1e-5);
   CHECK_NEAR(gc[2 * freq_dim], std::cos(double(float(pos[2]))), 1e-5);
 }
+
+#endif
 
 VIDFAB_TEST(nn_rope_neox) {
   const int rows = 7;
