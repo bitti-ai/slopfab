@@ -59,6 +59,7 @@
 #include "vidfab/vulkan/dit_denoise.h"
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
+#include "vidfab/vulkan/text_layer.h"
 #include "vidfab/vulkan/vae_vit_block.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
@@ -2882,6 +2883,220 @@ VIDFAB_TEST(cuda_vulkan_dit_exact_pointwise) {
   vk.download_bytes(stream_expected,stream_expected_bits.data(),stream_expected_bits.size()*2);
   vk.download_bytes(stream_actual,stream_actual_bits.data(),stream_actual_bits.size()*2);
   CHECK(stream_expected_bits==stream_actual_bits);
+}
+
+VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path checkpoint_path =
+      "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+  if (!std::filesystem::exists(checkpoint_path) || !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  options.enable_shader_float16 = info.shader_float16;
+  options.enable_storage_buffer_16bit = info.storage_buffer_16bit;
+  options.enable_cooperative_matrix =
+      info.cooperative_matrix_bf16_f32_16x16x16;
+  Device device = physical.front().create_device(options);
+  TensorContextOptions context_options;
+  // S3 I8: 10 fixed + seven*(ConvRot + materialize + one GEMM), plus
+  // eleven requested diagnostic copies.
+  context_options.max_batch_operators = 42;
+  TensorContext vk(device, context_options);
+  if (!vk.exact_causal_gqa_attention() ||
+      !vk.exact_fp32_vae_normalization() || !vk.exact_vae_pointwise()) return;
+
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+  QwenTextLayerConfig config;
+  config.sequence = 3;
+  const auto load_begin = std::chrono::steady_clock::now();
+  ExactQwenTextLayerStage stage = ExactQwenTextLayerStage::create(vk, config);
+  stage.load(checkpoint, 0);
+  const double load_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - load_begin).count();
+  ExactQwenTextLayerScratch scratch =
+      ExactQwenTextLayerScratch::create(vk, config);
+  CHECK(stage.loaded());
+  CHECK(stage.format() == text::WeightFormat::kI8ConvRot);
+  CHECK(scratch.dense_cache_bytes() == 250ull * 1024 * 1024);
+
+  constexpr uint32_t rows = 3, hidden = 5120, q_heads = 64, kv_heads = 8,
+                     head_dim = 128, ffn = 25600;
+  std::vector<uint16_t> input(size_t(rows) * hidden);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = f32_to_bf16(float(int((i * 19) % 101) - 50) / 64.0f);
+  std::vector<float> cosine, sine;
+  text::build_rope_tables(rows, text::rope_inv_freq(head_dim, 5.0e6f),
+                          cosine, sine);
+  const uint64_t token_shape[] = {rows, hidden};
+  const uint64_t rope_shape[] = {rows, head_dim};
+  DeviceTensor tokens = vk.allocate(
+      TensorLayout::contiguous(token_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor cos_tensor = vk.allocate(
+      TensorLayout::contiguous(rope_shape, 2), ScalarType::kFloat32);
+  DeviceTensor sin_tensor = vk.allocate(
+      TensorLayout::contiguous(rope_shape, 2), ScalarType::kFloat32);
+  vk.upload(cos_tensor, cosine.data(), cosine.size());
+  vk.upload(sin_tensor, sine.data(), sine.size());
+
+  auto mat = [&](uint64_t a, uint64_t b) {
+    const uint64_t shape[] = {a, b}; return TensorLayout::contiguous(shape, 2);
+  };
+  auto three = [&](uint64_t a, uint64_t b, uint64_t c) {
+    const uint64_t shape[] = {a, b, c}; return TensorLayout::contiguous(shape, 3);
+  };
+  DeviceTensor tap_norm = vk.allocate(mat(rows, hidden), ScalarType::kBFloat16);
+  DeviceTensor tap_q = vk.allocate(three(rows, q_heads, head_dim), ScalarType::kBFloat16);
+  DeviceTensor tap_k = vk.allocate(three(rows, kv_heads, head_dim), ScalarType::kBFloat16);
+  DeviceTensor tap_v = vk.allocate(three(rows, kv_heads, head_dim), ScalarType::kBFloat16);
+  DeviceTensor tap_attention = vk.allocate(
+      three(rows, q_heads, head_dim), ScalarType::kBFloat16);
+  DeviceTensor tap_attention_residual = vk.allocate(
+      mat(rows, hidden), ScalarType::kBFloat16);
+  DeviceTensor tap_post_norm = vk.allocate(
+      mat(rows, hidden), ScalarType::kBFloat16);
+  DeviceTensor tap_gate = vk.allocate(mat(rows, ffn), ScalarType::kBFloat16);
+  DeviceTensor tap_up = vk.allocate(mat(rows, ffn), ScalarType::kBFloat16);
+  DeviceTensor tap_activation = vk.allocate(
+      mat(rows, ffn), ScalarType::kBFloat16);
+  DeviceTensor tap_final = vk.allocate(mat(rows, hidden), ScalarType::kBFloat16);
+  QwenTextLayerTaps taps{&tap_norm, &tap_q, &tap_k, &tap_v,
+      &tap_attention, &tap_attention_residual, &tap_post_norm, &tap_gate,
+      &tap_up, &tap_activation, &tap_final};
+  CHECK(stage.required_operators(&taps) == 42);
+
+  auto run = [&] {
+    vk.upload_bytes(tokens, input.data(), input.size() * 2);
+    const auto begin = std::chrono::steady_clock::now();
+    TensorBatch batch = vk.begin_batch();
+    stage.record(batch, tokens, cos_tensor, sin_tensor, scratch, &taps);
+    CHECK(batch.remaining_operator_capacity() ==
+          context_options.max_batch_operators - stage.required_operators(&taps));
+    batch.submit().wait();
+    const double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - begin).count();
+    std::vector<uint16_t> result(input.size());
+    vk.download_bytes(tokens, result.data(), result.size() * 2);
+    std::vector<uint16_t> tapped(result.size());
+    vk.download_bytes(tap_final, tapped.data(), tapped.size() * 2);
+    CHECK(result == tapped);
+    return std::pair<std::vector<uint16_t>, double>(std::move(result), elapsed);
+  };
+
+  // One-short capacity is rejected before the first stage operator. The
+  // caller can still submit its preceding copy and the tokens remain intact.
+  const uint64_t one_shape[] = {1};
+  DeviceTensor dummy_a = vk.allocate(
+      TensorLayout::contiguous(one_shape, 1), ScalarType::kBFloat16);
+  DeviceTensor dummy_b = vk.allocate(
+      TensorLayout::contiguous(one_shape, 1), ScalarType::kBFloat16);
+  const uint16_t dummy = f32_to_bf16(1.0f);
+  vk.upload_bytes(dummy_a, &dummy, sizeof(dummy));
+  vk.upload_bytes(tokens, input.data(), input.size() * 2);
+  TensorBatch short_batch = vk.begin_batch();
+  short_batch.copy(dummy_a, dummy_b);
+  bool short_rejected = false;
+  try {
+    stage.record(short_batch, tokens, cos_tensor, sin_tensor, scratch, &taps);
+  } catch (const std::logic_error&) {
+    short_rejected = true;
+  }
+  CHECK(short_rejected);
+  CHECK(short_batch.remaining_operator_capacity() == 41);
+  short_batch.submit().wait();
+  std::vector<uint16_t> unchanged(input.size());
+  vk.download_bytes(tokens, unchanged.data(), unchanged.size() * 2);
+  CHECK(unchanged == input);
+
+  const auto first = run();
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  const auto repeat = run();
+  CHECK(first.first == repeat.first);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+
+  uint64_t digest = 1469598103934665603ull;
+  for (uint16_t value : first.first) {
+    digest ^= value & 0xffu; digest *= 1099511628211ull;
+    digest ^= value >> 8u; digest *= 1099511628211ull;
+  }
+  CHECK(digest == 0x42a875f728d707f3ull);
+  const uint64_t persistent = stage.persistent_bytes();
+  const uint64_t scratch_bytes = scratch.reserved_bytes();
+  CHECK(stage.peak_device_bytes(scratch) == persistent + scratch_bytes);
+  CHECK(persistent < 500ull * 1024 * 1024);
+  CHECK(scratch_bytes < 270ull * 1024 * 1024);
+
+  // A malformed replacement fails during host validation, preserving active
+  // weights, pool high-water and the executable output.
+  const std::filesystem::path bad_path =
+      std::filesystem::temp_directory_path() /
+      "vidfab_qwen_layer_bad_reload.safetensors";
+  write_safetensors(bad_path.string(),
+      {{"unrelated", {1}, {0.0f}, DType::kF32}});
+  const uint64_t before_bad_persistent = stage.persistent_bytes();
+  const uint64_t before_bad_reserved = vk.reserved_bytes();
+  bool bad_rejected = false;
+  {
+    SafeTensors bad;
+    bad.open(bad_path.string());
+    try { stage.load(bad, 0); }
+    catch (const std::exception&) { bad_rejected = true; }
+  }
+  CHECK(bad_rejected);
+  CHECK(stage.persistent_bytes() == before_bad_persistent);
+  CHECK(vk.reserved_bytes() == before_bad_reserved);
+  const auto after_bad = run();
+  CHECK(after_bad.first == first.first);
+  std::filesystem::remove(bad_path);
+
+  stage.unload();
+  CHECK(!stage.loaded());
+  CHECK(stage.persistent_bytes() == 0);
+  stage.load(checkpoint, 0);
+  const auto reloaded = run();
+  CHECK(reloaded.first == first.first);
+
+  // The same stage/scratch executes the shipped NVFP4+AWQ contract. Only the
+  // two declared AWQ transforms record; all seven matrices still use the one
+  // shared dense slot.
+  const std::filesystem::path nvfp4_path =
+      "weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors";
+  SafeTensors nvfp4;
+  nvfp4.open(nvfp4_path.string());
+  stage.unload();
+  const auto nv_load_begin = std::chrono::steady_clock::now();
+  stage.load(nvfp4, 0);
+  const double nv_load_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - nv_load_begin).count();
+  CHECK(stage.format() == text::WeightFormat::kNVFP4Awq);
+  CHECK(stage.required_operators(&taps) == 37);
+  const auto nv_first = run();
+  const auto nv_repeat = run();
+  CHECK(nv_first.first == nv_repeat.first);
+  uint64_t nv_digest = 1469598103934665603ull;
+  for (uint16_t value : nv_first.first) {
+    nv_digest ^= value & 0xffu; nv_digest *= 1099511628211ull;
+    nv_digest ^= value >> 8u; nv_digest *= 1099511628211ull;
+  }
+  CHECK(nv_digest == 0x935104aeb9432d6aull);
+  CHECK(stage.persistent_bytes() < 270ull * 1024 * 1024);
+  std::printf(
+      "  exact Vulkan Qwen layer0 S3: I8 load/first/repeat %.1f/%.1f/%.1f ms FNV64 %016llx persistent %.1f MiB; NVFP4 load/first/repeat %.1f/%.1f/%.1f ms FNV64 %016llx persistent %.1f MiB; shared scratch %.1f MiB, pool %.1f MiB, descriptors %llu\n",
+      load_ms, first.second, repeat.second,
+      static_cast<unsigned long long>(digest), double(persistent) / 1048576.0,
+      nv_load_ms, nv_first.second, nv_repeat.second,
+      static_cast<unsigned long long>(nv_digest),
+      double(stage.persistent_bytes()) / 1048576.0,
+      double(scratch_bytes) / 1048576.0,
+      double(vk.reserved_bytes()) / 1048576.0,
+      static_cast<unsigned long long>(stable_descriptors));
 }
 
 VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
