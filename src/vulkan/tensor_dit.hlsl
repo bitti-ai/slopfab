@@ -328,7 +328,7 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     output_data.Store(index * 4u, packed);
   } else if (p.op == 9u) { // raw merge-four reshape-copy, packed words
     output_data.Store(index * 4u, primary.Load(index * 4u));
-  } else { // exact DeepStack scatter-add; row indices must be unique
+  } else if (p.op == 10u) { // exact DeepStack scatter-add; unique row indices
     const uint row = index / p.dim;
     const uint column = index - row * p.dim;
     const uint destination_row = tertiary.Load(row * 4u);
@@ -337,5 +337,14 @@ void main(uint3 local_id : SV_GroupThreadID, uint3 group_id : SV_GroupID) {
     precise float sum = canonical_bf16(load_bf16(primary, destination)) +
                         canonical_bf16(load_bf16(secondary, index));
     store_bf16(destination, bf16_rte(canonical_bf16(sum)));
+  } else { // raw BF16 image-pad scatter-copy; row indices must be unique
+    const uint row = index / p.dim;
+    const uint column = index - row * p.dim;
+    const uint destination_row = tertiary.Load(row * 4u);
+    if (destination_row >= p.mod_rows) return;
+    const uint destination = destination_row * p.dim + column;
+    const uint source_word = secondary.Load((index >> 1u) * 4u);
+    const uint bits = (source_word >> ((index & 1u) * 16u)) & 0xffffu;
+    store_bf16(destination, bits);
   }
 }

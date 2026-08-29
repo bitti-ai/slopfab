@@ -3198,6 +3198,39 @@ void TensorBatch::vision_scatter_add_bf16(DeviceTensor& source,
   } catch (...) { impl_->poisoned = true; throw; }
 }
 
+void TensorBatch::vision_scatter_bf16(DeviceTensor& source,
+                                      DeviceTensor& destination,
+                                      DeviceTensor& row_index) {
+  if (!impl_ || impl_->poisoned)
+    throw std::logic_error("vulkan tensor: invalid batch");
+  auto src = impl_->owner->require(source), dst = impl_->owner->require(destination);
+  auto index = impl_->owner->require(row_index);
+  const uint64_t rows = src->layout.rank == 2 ? src->layout.extent[0] : 0;
+  const uint64_t dim = src->layout.rank == 2 ? src->layout.extent[1] : 0;
+  const uint64_t count = checked_multiply(rows, dim, "vision scatter");
+  if (src.get() == dst.get() || src.get() == index.get() || dst.get() == index.get() ||
+      src->layout.rank != 2 || rows == 0 || dim == 0 || dst->layout.rank != 2 ||
+      dst->layout.extent[0] < rows || dst->layout.extent[1] != dim ||
+      index->layout.rank != 1 || index->layout.extent[0] != rows ||
+      src->type != ScalarType::kBFloat16 || dst->type != ScalarType::kBFloat16 ||
+      index->type != ScalarType::kInt32 || !src->layout.is_contiguous() ||
+      !dst->layout.is_contiguous() || !index->layout.is_contiguous() ||
+      rows > UINT32_MAX || dim > UINT32_MAX ||
+      dst->layout.extent[0] > UINT32_MAX || count > UINT32_MAX)
+    throw std::invalid_argument("vulkan vision: invalid scatter tensors");
+  TensorContext::Impl::DitParameters p;
+  p.op = 11; p.rows = static_cast<uint32_t>(rows);
+  p.dim = static_cast<uint32_t>(dim);
+  p.mod_rows = static_cast<uint32_t>(dst->layout.extent[0]);
+  p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator(); impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->transition(index, BufferAccess::kComputeRead);
+    impl_->dispatch_dit(p, {dst, src, index, src, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
 void TensorBatch::dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
                                    DeviceTensor& code, DeviceTensor& output,
                                    uint32_t num_modality, uint32_t num_param,

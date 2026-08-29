@@ -246,6 +246,11 @@ class TensorBatch {
   void vision_split_qkv_bf16(DeviceTensor& fused, DeviceTensor& query,
                              DeviceTensor& key, DeviceTensor& value);
   void vision_merge_four_bf16(DeviceTensor& input, DeviceTensor& output);
+  // Raw BF16 row replacement used for image-pad embeddings. Unlike generic
+  // scatter_rows (FP32), this preserves all source payload bits exactly.
+  void vision_scatter_bf16(DeviceTensor& source,
+                           DeviceTensor& destination,
+                           DeviceTensor& row_index);
   void vision_scatter_add_bf16(DeviceTensor& source,
                                DeviceTensor& destination,
                                DeviceTensor& row_index);
