@@ -135,6 +135,15 @@ ascending-K scalar edge order. Native NVFP4/NF4 execution, NN and batched GEMM
 remain separate work because equivalent formulas cannot be assumed
 bit-identical to cuBLAS or native quantized execution.
 
+NVFP4 weights can now execute through one bounded streamed BF16 slot: g1
+materializes the active checkpoint matrix and g2 reuses it across all row
+chunks/fanout before the next weight overwrites it. CUDA exact comparison uses
+the same dequantization boundary. This is not native FP4 MMA. The pinned
+RTX 5090/610.88 Vulkan driver lacks the E2M1/microscaling extension and tuple,
+so native NVFP4 requests fail closed. AWQ pre-scale/ConvRot weights also remain
+outside this raw-input seam until a typed transformed-activation view binds the
+transformation provenance to the weight.
+
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
 projection narrowing, video-VAE channel/token layout, attention head packing,

@@ -425,3 +425,55 @@ src/cuda/deterministic_gemm.cu           8504C1A85F511A49B16753BA476500F2A986CC5
 include/vidfab/cuda/deterministic_gemm.cuh 3C422641C753992CFCC136BFB64327DD85841BC6B7047D1F2091E88686AB6670
 deterministic_gemm.fatbin                E417A406011985FF0D8F518DE0532D7367FA148C2113A1435E6B1ED795DA4A2C
 ```
+
+## Streamed NVFP4 execution
+
+`StreamedNVFP4WeightCache` is the honest executable bridge between the g1
+checkpoint representation and g2 GEMM. It owns one fixed-capacity BF16 device
+slot, records the exact NVFP4 materialization once, and returns a nonreusable
+batch/generation view consumed by any number of row chunks or fanout GEMMs
+before the next weight overwrites the slot. Tensor access transitions emit the
+required write-to-read and read-to-write barriers even across two queued
+submissions; there is no queue/device idle. Descriptor sets are cached by the
+bounded `(bind position, compatible storage-binding count)` pair, so mixed
+materialize/GEMM sequences allocate only during warmup. The 32-operation batch
+limit allows one materialization plus 31 chunk/fanout GEMMs and splits only at
+a weight boundary.
+
+This is deliberately **not** called native NVFP4 MMA. The measured RTX 5090,
+610.88 driver exposes `VK_KHR_cooperative_matrix` revision 2 and
+`VK_NV_cooperative_matrix2` revision 1, but exposes neither
+`VK_EXT_shader_ocp_microscaling_types` (`shaderFloat4`/E2M1) nor
+`VK_EXT_cooperative_matrix_maintenance1`; none of its legacy cooperative
+tuples has an E2M1 operand. Decoding FP4 into a BF16 cooperative matrix would
+still be BF16 execution. `native_nvfp4_gemm_available()` therefore returns
+false and `require_native_nvfp4_gemm()` fails with an explicit diagnostic.
+CUDA parity uses the same checkpoint NVFP4-to-BF16 boundary followed by the
+deterministic g2 GEMM, not CUDA's opt-in block-scaled instruction.
+
+The streamed raw-input path accepts the transform-free H3 transformer weights,
+including their immutable `full_precision_matrix_mult` value. It rejects AWQ
+pre-scale or ConvRot weights before recording; those require a future typed
+prepared-activation view bound to the weight identity, rather than an unsafe
+caller boolean. CUDA likewise keeps its native transformer path opt-in behind
+`VIDFAB_NATIVE_NVFP4=1`; default generation does not require native FP4 MMA.
+
+The real `blocks.0.attn.qkv_proj` 384x5376 slab, including high-even nibbles,
+128x4 scale swizzle, global-scale multiply order, BF16 boundary, BF16 bias,
+64-row cooperative chunk, two-row scalar tail, output offsets and sentinels,
+matches CUDA byte-for-byte. Release total measurements were 0.188 ms CUDA and
+0.546 ms Vulkan for materialization plus the 66x384x5376 GEMMs. The compressed
+slab is 1.11 MiB and its single dense cache is 3.94 MiB. At the largest shipped
+H3 matrix (28672x5376), the same one-slot policy is 294 MiB logical rather than
+retaining dense copies for all model weights. Two-flight overwrite, true
+wrapper drop, 32/33 operations and 50 sequential prepares keep allocator and
+descriptor high-water stable and release every non-context allocation after
+the exact completion token.
+
+Additional pinned sources used by this composed path:
+
+```text
+src/cuda/nvfp4_gemm.cu                  1266CF8EB2F18E1E30A54C1472BB89DAB2EDA873C0F305FB4BA9B6339E3F1B82
+src/cuda/linear.cu                      B92E7D44D184ECC4C7DA466855FEEFF30063FB4591770A44D43B55CD3A23137D
+src/vulkan/tensor_weight.comp           55FADB68982ABCDB0079C8D9B0A84E77F64D268E63E7227F2A2BC770ED60307F
+```
