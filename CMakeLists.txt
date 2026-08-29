@@ -62,6 +62,7 @@ add_library(vidfab_core STATIC
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
+  src/text/encoder.cpp
   src/text/qwen_vision.cpp
   src/video/y4m.cpp
   src/video/y4m_compare.cpp
@@ -185,7 +186,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/vae/audio_decoder.cpp
       src/dit/transformer.cpp
       src/dit/denoise.cpp
-      src/text/encoder.cpp
+      src/cuda/encoder_checkpoint_upload.cpp
     )
     target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas CUDA::cuda_driver Threads::Threads)
