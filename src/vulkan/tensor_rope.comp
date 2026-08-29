@@ -32,6 +32,16 @@ float stable_float(float value) {
       ? uintBitsToFloat(bits & 0x80000000u) : value;
 }
 
+float stable_fma_product(float a, float b, float base) {
+  precise float product = a * b;
+  uint magnitude = floatBitsToUint(product) & 0x7fffffffu;
+  uint a_magnitude = floatBitsToUint(a) & 0x7fffffffu;
+  uint b_magnitude = floatBitsToUint(b) & 0x7fffffffu;
+  if (magnitude < 0x00800000u && a_magnitude != 0u && b_magnitude != 0u)
+    return base;
+  return fma(a, b, base);
+}
+
 float rotated_value(uint row, uint d) {
   uint rotary_dim = p.mode == 0u ? 96u : p.head_dim;
   uint half_dim = rotary_dim >> 1u;
@@ -49,7 +59,7 @@ float rotated_value(uint row, uint d) {
     return result;
   }
   precise float base = stable_float(head_values[d] * c);
-  return fma(head_values[partner], s, base);
+  return stable_fma_product(head_values[partner], s, base);
 }
 
 void main() {

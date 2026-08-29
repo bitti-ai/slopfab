@@ -1464,6 +1464,14 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_bf16_rope) {
         cosine[table_row + 1] = cosine[table_row + 1 + head_dim / 2] =
             std::numeric_limits<float>::min();
         sine[table_row + 1] = sine[table_row + 1 + head_dim / 2] = 0.0f;
+        // The high-half FMA has a nonzero product that rounds into the fp32
+        // subnormal range. Both backends canonicalize that internal product
+        // before it can contribute to an otherwise normal result.
+        input[data_row + 2] = 0x0080u;
+        input[data_row + 2 + head_dim / 2] = 0x3f80u;
+        cosine[table_row + 2 + head_dim / 2] = 0.75f;
+        sine[table_row + 2 + head_dim / 2] =
+            std::numeric_limits<float>::min();
       }
     }
     cuda::DeviceBuffer<__nv_bfloat16> cuda_data(count);
@@ -1516,6 +1524,8 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_bf16_rope) {
     } else {
       CHECK(actual[0] == 0x0000u);
       CHECK(actual[static_cast<size_t>(heads) * head_dim + 1] == 0x0000u);
+      CHECK(actual[static_cast<size_t>(heads) * head_dim + 2 + head_dim / 2] ==
+            0x3f40u);
     }
   };
   run(0, 5, 7, 128);

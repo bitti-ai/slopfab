@@ -496,6 +496,22 @@ __device__ __nv_bfloat16 rope_bf16_result(float value) {
       ? __ushort_as_bfloat16(bits & 0x8000u) : rounded;
 }
 
+// The portable RoPE domain canonicalizes a rounded subnormal multiply to
+// signed zero before the high-half fused add. This makes the internal product
+// independent of fp32 FTZ behavior while retaining the CUDA FMA sequence for
+// every normal product. Exact zero operands still use FMA so IEEE signed-zero
+// addition semantics are preserved.
+__device__ float rope_fma_product(float a, float b, float base) {
+  const float product = a * b;
+  const unsigned magnitude = __float_as_uint(product) & 0x7fffffffu;
+  const unsigned a_magnitude = __float_as_uint(a) & 0x7fffffffu;
+  const unsigned b_magnitude = __float_as_uint(b) & 0x7fffffffu;
+  if (magnitude < 0x00800000u && a_magnitude != 0u && b_magnitude != 0u) {
+    return base;
+  }
+  return fmaf(a, b, base);
+}
+
 __global__ void rope_h3_kernel(__nv_bfloat16* __restrict__ x, const float* __restrict__ cos_tab,
                                const float* __restrict__ sin_tab, int rows, int heads,
                                int head_dim) {
@@ -517,7 +533,7 @@ __global__ void rope_h3_kernel(__nv_bfloat16* __restrict__ x, const float* __res
     const float right = rope_float_value(hi * s);
     const float base = rope_float_value(hi * c);
     v[j] = rope_bf16_result(left - right);
-    v[j + kRopeHalf] = rope_bf16_result(fmaf(lo, s, base));
+    v[j + kRopeHalf] = rope_bf16_result(rope_fma_product(lo, s, base));
   }
 }
 
@@ -548,7 +564,7 @@ __global__ void rope_neox_kernel(__nv_bfloat16* __restrict__ x, const float* __r
     const float right = rope_float_value(hi * sin_lo);
     const float base = rope_float_value(hi * cos_hi);
     v[j] = rope_bf16_result(left - right);
-    v[j + half] = rope_bf16_result(fmaf(lo, sin_hi, base));
+    v[j + half] = rope_bf16_result(rope_fma_product(lo, sin_hi, base));
   }
 }
 
