@@ -5676,6 +5676,112 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   CHECK(context.reserved_bytes() == graph_reserved);
   CHECK(context.descriptor_set_allocations() == graph_descriptors);
 
+  // A full graph is transactional with respect to load state: neither backend
+  // may execute its loaded prefix when a later layer is missing.
+  cuda::ExactViTBlockGraph partial_cuda =
+      cuda::ExactViTBlockGraph::create(config, 3);
+  vulkan::ExactViTBlockGraph partial_vk =
+      vulkan::ExactViTBlockGraph::create(context, config, 3);
+  partial_cuda.load_layer(0, weights.view());
+  partial_vk.load_layer(0, weights.view());
+  cuda::DeviceBuffer<float> partial_tokens(token_count),
+      partial_cosine(rope_count), partial_sine(rope_count);
+  cuda::Stream partial_stream;
+  partial_tokens.copy_from_host(input.data(), input.size(), partial_stream.get());
+  partial_cosine.copy_from_host(cosine.data(), cosine.size(), partial_stream.get());
+  partial_sine.copy_from_host(sine.data(), sine.size(), partial_stream.get());
+  partial_stream.synchronize();
+  bool partial_cuda_rejected = false;
+  try {
+    partial_cuda.forward_device(partial_tokens.get(), partial_cosine.get(),
+                                partial_sine.get(), partial_stream.get());
+  } catch (const std::logic_error&) {
+    partial_cuda_rejected = true;
+  }
+  CHECK(partial_cuda_rejected);
+  CHECK(cudaStreamQuery(partial_stream.get()) == cudaSuccess);
+  std::vector<float> partial_after(token_count);
+  partial_tokens.copy_to_host(partial_after.data(), partial_after.size(),
+                              partial_stream.get());
+  partial_stream.synchronize();
+  CHECK(std::memcmp(input.data(), partial_after.data(), token_count * 4) == 0);
+  {
+    vulkan::TensorBatch partial_batch = context.begin_batch();
+    const uint32_t partial_capacity =
+        partial_batch.remaining_operator_capacity();
+    bool partial_vk_rejected = false;
+    try {
+      partial_vk.record(partial_batch, tokens, vk_cosine, vk_sine);
+    } catch (const std::logic_error&) {
+      partial_vk_rejected = true;
+    }
+    CHECK(partial_vk_rejected);
+    CHECK(partial_batch.remaining_operator_capacity() == partial_capacity);
+  }
+
+  // The CUDA ragged-shape cache is hard-bounded to two arenas. The largest
+  // shape below supplies a monotonic upper bound for every transition.
+  cuda::ExactViTBlockGraph shape_graph =
+      cuda::ExactViTBlockGraph::create(config, 3);
+  for (uint32_t layer = 0; layer < 3; ++layer)
+    shape_graph.load_layer(layer, weights.view());
+  const uint64_t shape_persistent = shape_graph.persistent_bytes();
+  const uint64_t base_peak = shape_graph.peak_device_bytes();
+  const uint64_t base_scratch = base_peak - shape_persistent;
+  CHECK(shape_graph.cached_scratch_shapes() == 1);
+  shape_graph.prepare_shape(101, 96);
+  const uint64_t full_peak = shape_graph.peak_device_bytes();
+  const uint64_t full_scratch = full_peak - shape_persistent - base_scratch;
+  CHECK(shape_graph.cached_scratch_shapes() == 2);
+  const uint64_t two_full_bound = shape_persistent + 2 * full_scratch;
+  CHECK(full_peak <= two_full_bound);
+  shape_graph.prepare_shape(85, 80);
+  CHECK(shape_graph.cached_scratch_shapes() == 2);
+  CHECK(shape_graph.peak_device_bytes() <= two_full_bound);
+  shape_graph.prepare_shape(93, 88);
+  CHECK(shape_graph.cached_scratch_shapes() == 2);
+  CHECK(shape_graph.peak_device_bytes() <= two_full_bound);
+
+  // Queue work against the current arena, switch twice so that arena is the
+  // eviction victim, and then queue another shape on a second stream. Slot
+  // completion events make both reuse and eviction safe without a device-wide
+  // synchronization in the execution path.
+  auto make_cuda_activation = [&](uint32_t sequence) {
+    return cuda::DeviceBuffer<float>(size_t(sequence) * config.dim);
+  };
+  auto make_cuda_rope = [&](uint32_t sequence) {
+    return cuda::DeviceBuffer<float>(size_t(sequence) * config.rope_dim);
+  };
+  cuda::DeviceBuffer<float> queued_tokens = make_cuda_activation(93);
+  cuda::DeviceBuffer<float> queued_cosine = make_cuda_rope(93);
+  cuda::DeviceBuffer<float> queued_sine = make_cuda_rope(93);
+  cuda::DeviceBuffer<float> base_tokens = make_cuda_activation(69);
+  cuda::DeviceBuffer<float> base_cosine = make_cuda_rope(69);
+  cuda::DeviceBuffer<float> base_sine = make_cuda_rope(69);
+  cuda::Stream queued_stream, switched_stream;
+  VIDFAB_CUDA_CHECK(cudaMemsetAsync(queued_tokens.get(), 0,
+      queued_tokens.nbytes(), queued_stream.get()));
+  VIDFAB_CUDA_CHECK(cudaMemsetAsync(queued_cosine.get(), 0,
+      queued_cosine.nbytes(), queued_stream.get()));
+  VIDFAB_CUDA_CHECK(cudaMemsetAsync(queued_sine.get(), 0,
+      queued_sine.nbytes(), queued_stream.get()));
+  shape_graph.forward_device(queued_tokens.get(), queued_cosine.get(),
+                             queued_sine.get(), queued_stream.get());
+  shape_graph.prepare_shape(69, 64);
+  VIDFAB_CUDA_CHECK(cudaMemsetAsync(base_tokens.get(), 0, base_tokens.nbytes(),
+                                    switched_stream.get()));
+  VIDFAB_CUDA_CHECK(cudaMemsetAsync(base_cosine.get(), 0, base_cosine.nbytes(),
+                                    switched_stream.get()));
+  VIDFAB_CUDA_CHECK(cudaMemsetAsync(base_sine.get(), 0, base_sine.nbytes(),
+                                    switched_stream.get()));
+  shape_graph.forward_device(base_tokens.get(), base_cosine.get(),
+                             base_sine.get(), switched_stream.get());
+  shape_graph.prepare_shape(101, 96);  // evicts and fences queued R93
+  queued_stream.synchronize();
+  switched_stream.synchronize();
+  CHECK(shape_graph.cached_scratch_shapes() == 2);
+  CHECK(shape_graph.peak_device_bytes() <= two_full_bound);
+
   {
     vulkan::ExactViTBlockGraph oversized_graph =
         vulkan::ExactViTBlockGraph::create(context, config, 4);

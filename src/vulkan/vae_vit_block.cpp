@@ -410,6 +410,10 @@ void ExactViTBlockGraph::record(TensorBatch& batch, DeviceTensor& tokens,
   constexpr uint32_t kOperatorsPerLayer = 20;
   const uint32_t required = impl_->layer_count * kOperatorsPerLayer;
   // Reject transactionally before a single layer mutates the caller's batch.
+  for (const ExactViTBlockStage& block : impl_->blocks) {
+    if (!block.impl_ || !block.impl_->loaded)
+      throw std::logic_error("exact Vulkan VAE ViT graph: weights not loaded");
+  }
   if (batch.remaining_operator_capacity() < required)
     throw std::logic_error("exact Vulkan VAE ViT graph: insufficient batch capacity");
   for (const ExactViTBlockStage& block : impl_->blocks)
@@ -430,6 +434,10 @@ void ExactViTBlockGraph::forward(const float* tokens, const float* cosine,
   if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
   if (!tokens || !cosine || !sine || !output)
     throw std::invalid_argument("exact Vulkan VAE ViT graph: null activation");
+  for (const ExactViTBlockStage& block : impl_->blocks) {
+    if (!block.impl_ || !block.impl_->loaded)
+      throw std::logic_error("exact Vulkan VAE ViT graph: weights not loaded");
+  }
   if (!impl_->host) {
     auto host = std::make_unique<Impl::HostState>();
     host->tokens = impl_->context->allocate(

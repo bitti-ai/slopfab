@@ -242,9 +242,33 @@ struct ExactViTBlockGraph::Impl {
     ViTBlockConfig config;
     std::unique_ptr<BlockScratchDevice> scratch;
     uint64_t stamp = 0;
+    cudaEvent_t completion = nullptr;
+    bool has_work = false;
+
+    ScratchSlot() {
+      VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&completion,
+                                                  cudaEventDisableTiming));
+    }
+    ~ScratchSlot() {
+      if (completion != nullptr) {
+        if (has_work) cudaEventSynchronize(completion);
+        cudaEventDestroy(completion);
+      }
+    }
+    ScratchSlot(const ScratchSlot&) = delete;
+    ScratchSlot& operator=(const ScratchSlot&) = delete;
+
+    void wait(cudaStream_t stream) const {
+      if (has_work)
+        VIDFAB_CUDA_CHECK(cudaStreamWaitEvent(stream, completion, 0));
+    }
+    void mark(cudaStream_t stream) {
+      VIDFAB_CUDA_CHECK(cudaEventRecord(completion, stream));
+      has_work = true;
+    }
   };
-  std::vector<ScratchSlot> scratch_slots;
-  BlockScratchDevice* active_scratch = nullptr;
+  std::vector<std::unique_ptr<ScratchSlot>> scratch_slots;
+  ScratchSlot* active_slot = nullptr;
   uint64_t scratch_clock = 0;
   struct HostState {
     DeviceBuffer<float> tokens, cosine, sine;
@@ -257,11 +281,12 @@ struct ExactViTBlockGraph::Impl {
   }
 
   void select_shape(const ViTBlockConfig& selected) {
-    for (ScratchSlot& slot : scratch_slots) {
+    for (const std::unique_ptr<ScratchSlot>& owned : scratch_slots) {
+      ScratchSlot& slot = *owned;
       if (slot.config.sequence == selected.sequence &&
           slot.config.num_patches == selected.num_patches) {
         slot.stamp = ++scratch_clock;
-        active_scratch = slot.scratch.get();
+        active_slot = &slot;
         config = selected;
         host.reset();
         return;
@@ -270,19 +295,27 @@ struct ExactViTBlockGraph::Impl {
     if (scratch_slots.size() == 2) {
       auto oldest = std::min_element(
           scratch_slots.begin(), scratch_slots.end(),
-          [](const ScratchSlot& a, const ScratchSlot& b) {
-            return a.stamp < b.stamp;
+          [](const std::unique_ptr<ScratchSlot>& a,
+             const std::unique_ptr<ScratchSlot>& b) {
+            return a->stamp < b->stamp;
           });
       scratch_slots.erase(oldest);
     }
-    ScratchSlot slot;
-    slot.config = selected;
-    slot.scratch = std::make_unique<BlockScratchDevice>(selected);
-    slot.stamp = ++scratch_clock;
+    auto slot = std::make_unique<ScratchSlot>();
+    slot->config = selected;
+    slot->scratch = std::make_unique<BlockScratchDevice>(selected);
+    slot->stamp = ++scratch_clock;
+    active_slot = slot.get();
     scratch_slots.push_back(std::move(slot));
-    active_scratch = scratch_slots.back().scratch.get();
     config = selected;
     host.reset();
+  }
+
+  void require_loaded() const {
+    for (const BlockWeightsDevice& block : blocks) {
+      if (!block.loaded)
+        throw std::logic_error("exact CUDA VAE ViT graph: weights not loaded");
+    }
   }
 };
 
@@ -337,13 +370,15 @@ void ExactViTBlockGraph::forward_device(float* tokens, const float* cosine,
   if (!impl_) throw std::logic_error("exact CUDA VAE ViT graph: empty graph");
   if (!tokens || !cosine || !sine)
     throw std::invalid_argument("exact CUDA VAE ViT graph: null activation");
+  impl_->require_loaded();
+  Impl::ScratchSlot& slot = *impl_->active_slot;
+  slot.wait(stream);
   for (const BlockWeightsDevice& block : impl_->blocks) {
-    if (!block.loaded)
-      throw std::logic_error("exact CUDA VAE ViT graph: weights not loaded");
-    run_exact_block(impl_->config, block, *impl_->active_scratch,
+    run_exact_block(impl_->config, block, *slot.scratch,
                     tokens, cosine, sine,
                     stream);
   }
+  slot.mark(stream);
 }
 
 void ExactViTBlockGraph::forward_layer_device(
@@ -357,9 +392,12 @@ void ExactViTBlockGraph::forward_layer_device(
   const BlockWeightsDevice& block = impl_->blocks[layer];
   if (!block.loaded)
     throw std::logic_error("exact CUDA VAE ViT graph: weights not loaded");
-  run_exact_block(impl_->config, block, *impl_->active_scratch,
+  Impl::ScratchSlot& slot = *impl_->active_slot;
+  slot.wait(stream);
+  run_exact_block(impl_->config, block, *slot.scratch,
                   tokens, cosine, sine,
                   stream);
+  slot.mark(stream);
 }
 
 void ExactViTBlockGraph::forward(const float* tokens, const float* cosine,
@@ -367,6 +405,9 @@ void ExactViTBlockGraph::forward(const float* tokens, const float* cosine,
   if (!impl_) throw std::logic_error("exact CUDA VAE ViT graph: empty graph");
   if (!tokens || !cosine || !sine || !output)
     throw std::invalid_argument("exact CUDA VAE ViT graph: null activation");
+  // Preserve the no-enqueue guarantee of forward_device for this convenience
+  // boundary: do not upload host activations for a partial graph.
+  impl_->require_loaded();
   if (!impl_->host) {
     impl_->host = std::make_unique<Impl::HostState>();
     impl_->host->tokens.allocate(static_cast<size_t>(impl_->config.sequence) *
@@ -393,6 +434,10 @@ uint32_t ExactViTBlockGraph::layers() const noexcept {
   return impl_ ? impl_->layer_count : 0;
 }
 
+uint32_t ExactViTBlockGraph::cached_scratch_shapes() const noexcept {
+  return impl_ ? static_cast<uint32_t>(impl_->scratch_slots.size()) : 0;
+}
+
 uint64_t ExactViTBlockGraph::persistent_bytes() const noexcept {
   if (!impl_) return 0;
   uint64_t total = 0;
@@ -403,8 +448,8 @@ uint64_t ExactViTBlockGraph::persistent_bytes() const noexcept {
 uint64_t ExactViTBlockGraph::peak_device_bytes() const noexcept {
   if (!impl_) return 0;
   uint64_t total = persistent_bytes();
-  for (const Impl::ScratchSlot& slot : impl_->scratch_slots)
-    total += slot.scratch->bytes();
+  for (const std::unique_ptr<Impl::ScratchSlot>& slot : impl_->scratch_slots)
+    total += slot->scratch->bytes();
   if (impl_->host) {
     total += impl_->host->tokens.nbytes() + impl_->host->cosine.nbytes() +
              impl_->host->sine.nbytes();

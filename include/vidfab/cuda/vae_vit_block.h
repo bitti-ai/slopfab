@@ -41,6 +41,7 @@ class ExactViTBlockGraph {
   void forward(const float* tokens, const float* cosine, const float* sine,
                float* output);
   uint32_t layers() const noexcept;
+  uint32_t cached_scratch_shapes() const noexcept;
   uint64_t persistent_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;
  private:

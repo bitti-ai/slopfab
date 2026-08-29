@@ -54,6 +54,7 @@ class ExactViTBlockStage final : public vae::ExactViTBlockStage {
   struct Impl;
   explicit ExactViTBlockStage(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
+  friend class ExactViTBlockGraph;
 };
 
 class ExactViTBlockGraph {
