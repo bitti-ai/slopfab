@@ -157,6 +157,16 @@ primitive. The exact Vulkan kernel is also an accepted performance exception:
 S65536 projects to roughly 8.45 minutes/27 on Vulkan. A cooperative-matrix
 semantic rebaseline remains a future optimization, not an implicit fallback.
 
+Exact Qwen causal GQA now exists as a second, distinct primitive for
+BF16 `[L,64,128]` Q and `[L,8,128]` K/V through L8192. It uses no quadratic
+workspace and preserves global causality across recorded row chunks. A real
+post-vision-insertion L132 checkpoint audit found zero subnormal/nonfinite
+Q/K/V values, finite score/PV bounds, and measured the intentional exact-mode
+rebaseline against shipped cuBLAS at relative L2 1.38034e-4 (max absolute
+0.0009765625). Exact Vulkan measured 0.320 ms at L132 and 673.904 ms at L8192;
+the latter has 288 MiB of direct tensors and no attention scratch. This is
+still a primitive: text-encoder orchestration remains CUDA-owned.
+
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
 projection narrowing, video-VAE channel/token layout, attention head packing,

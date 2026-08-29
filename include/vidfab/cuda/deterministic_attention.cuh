@@ -41,6 +41,9 @@ void launch_deterministic_blocked_attention(
 // text plan. Q is [sequence,query_heads,128], K/V are
 // [sequence,kv_heads,128], and query head h reads kv h/(H/Hkv). Every global
 // query row sees keys [0,row] inclusive, including when rows are chunked.
+// Exact mode requires finite Q/K/V, finite scaled scores, and finite PV
+// accumulators/final numerators throughout the recurrence. The caller can use
+// `causal_keys * max(abs(V)) <= max_finite_fp32` as a conservative proof.
 void launch_deterministic_causal_gqa_attention(
     cudaStream_t stream, const __nv_bfloat16* query,
     const __nv_bfloat16* key, const __nv_bfloat16* value,

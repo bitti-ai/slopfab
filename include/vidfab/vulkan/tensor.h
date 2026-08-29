@@ -383,7 +383,10 @@ class CausalGQAAttentionPlan {
   // Q is contiguous BF16 [sequence,query_heads,head_dim], K/V are
   // [sequence,kv_heads,head_dim], and output is Q-shaped and distinct. Global
   // query row q reads keys [0,q], including across row-range records. Exact
-  // mode requires finite post-conversion inputs and finite scaled scores.
+  // mode requires finite post-conversion inputs, finite scaled scores, and a
+  // finite PV accumulator/final numerator at every step. A sufficient bound is
+  // `causal_keys * max(abs(V)) <= max_finite_fp32`; this value-domain promise
+  // belongs to the caller because record() cannot scan a device tensor.
   // BF16-subnormal inputs and FP32-subnormal products/accumulators are a shared
   // CUDA/Vulkan rebaseline to signed zero. Its sign is retained at the
   // canonicalization boundary; subsequent IEEE arithmetic may combine zeros.

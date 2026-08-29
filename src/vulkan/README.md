@@ -570,7 +570,81 @@ tensor_attention_blocked.comp             C27A8133AD290D086E1AA0C03418DD87B5F3ED
 tensor_attention_blocked.comp.spv         9C1339B2FD44B9F453BD3974F720E635682130CE9F808411823C3657A97098F2
 tensor_attention_prepare.comp             786295C4E33EEDC7F67317B9ECF6B1BDEA0108B319AE5B5E8D57B6B3CEA4677D
 tensor_attention_prepare.comp.spv         56DC48503F296776CD1C105D0DC44D34E5F8768B35A8FEE6EC73EFAA9D3FF8F4
-src/cuda/deterministic_attention.cu       F14CA586A8DC9076E67DE7964F4BBDD77476AB54D01D59DAA22EB1555C22553A
-include/vidfab/cuda/deterministic_attention.cuh 4E870543DCFF34F090712E7662E3E0476FEEB8E9878E0A80B331CDDD07B84FEB
-deterministic_attention.fatbin            A9A44FA0EA88FB58F64EE8F9CFE5B96DD01B443B69ED801D86B8ECA77C85081F
+src/cuda/deterministic_attention.cu       F22FCCAC89FA1A2707D7078DA568193DEE52477A2B046FB386282A28A3C7FB38
+include/vidfab/cuda/deterministic_attention.cuh EE98F4EB3DC8C15883A327E611BA4392C1CCFFB4BEA93C25221DC7B453F4EBF3
+deterministic_attention.fatbin            42123F5868046BA443DD1F069A315795DFC33714712851004D597AB06F8FCDFE
+```
+
+## Exact causal GQA text attention
+
+`CausalGQAAttentionPlan` is the bounded Qwen3-VL decoder contract, not a
+generic mask mode: BF16 Q is `[L,64,128]`, BF16 K/V are `[L,8,128]`, query head
+`h` maps to KV head `h/8`, and global row `r` reads only keys `0..r` even when
+the output is recorded in row chunks. It dispatches one 128-lane workgroup per
+query row/head and keeps only its online-softmax state, so there is no `L x L`
+score tensor, auxiliary device workspace, host boundary, or per-call Vulkan
+allocation. The four direct tensors are the complete device-resident
+footprint.
+
+CUDA and Vulkan share ascending-D nonfused score multiply/add, a fixed
+128-lane max/sum tree, deterministic exp, BF16 probability rounding,
+ascending-key PV multiply/add, integer-RNE division, and BF16 output rounding.
+BF16-subnormal inputs and fp32-subnormal products/accumulators are deliberately
+canonicalized to signed zero on both backends; later IEEE zero arithmetic may
+combine signs. The exact value domain requires finite Q/K/V, finite scaled
+scores, and finite PV accumulators/final numerators. The conservative caller
+check `causal_keys * max(abs(V)) <= max_finite_fp32` is sufficient; recording
+cannot scan device values. Tests cover the signed-subnormal boundary,
+S1/127/128/129/257, the 128-key recurrence tail, all 64 heads/eight KV groups,
+global row chunks, independent row-zero/future-sentinel causality, invalid
+type/alias recovery, 32/33 operation poisoning, two in-flight submissions plus
+oldest-slot reuse, submitted-wrapper retention, and stable allocator/descriptor
+high-water.
+
+The real-domain audit used
+`qwen3vl_32b_int8_convrot.safetensors` (SHA-256
+`BC2CED0FBEA64757FA9ACDDCCFC0B3F4819D1DCF1DA6C124D690D368BE283923`)
+with one synthetic 256x256 image through the real vision tower and decoder
+layer 0. Its post-insertion sequence was exactly L132: label rows 0-1,
+vision-start row 2, 64 merged image-pad rows 3-66, vision-end row 67, and prompt
+rows 68-131. The causal boundary therefore covers both the pad run and the
+vision-end-to-prompt transition. Q had 1,081,344 values (min nonzero
+3.56230885e-8, max 18.75), K/V each had 135,168 values (K min
+3.96743417e-7/max 122.5; V min 4.76837158e-7/max 0.3359375); every stream had
+zero subnormals and zero nonfinite values. The conservative scaled-score bound
+was 25,986.1742 and the PV bound `L*max(abs(V))` was 44.34375, both finite.
+
+This exact recurrence intentionally rebaselines the shipped cuBLAS attention.
+On that real L132 activation, 2,618 of 1,081,344 BF16 output words changed;
+relative L2 was 1.38034211e-4 and maximum absolute delta was 0.0009765625.
+The shipped path measured 59.585 ms cold and 0.152 ms warm; exact CUDA measured
+0.650 ms in the same audit. A separate device-resident constant-input benchmark
+(one warmup, one measured launch; uploads/downloads excluded) gave:
+
+| Causal shape | CUDA exact | Vulkan exact | direct Q/K/V/out | context pool high-water | descriptors |
+|---|---:|---:|---:|---:|---:|
+| L132,H64/KV8,D128 | 0.206 ms | 0.320 ms | 4.64 MiB | 16.00 MiB | 1 |
+| L8192,H64/KV8,D128 | 671.584 ms | 673.904 ms | 288.00 MiB | 544.00 MiB | 1 |
+
+The L8192 pool figure includes bounded allocator block rounding and retained
+smaller-shape high-water; it is not attention scratch. Fifty max-length decoder
+layers would spend about 33.7 seconds in exact Vulkan attention. Sage2/SOL and
+the shipped cuBLAS route are not silently selected by this plan.
+
+The causal shader was built with Khronos glslang 16.5.0 and then the repository
+normal+denormal fp32-control transform; the CUDA artifact uses CUDA 13.0.48,
+MSVC 14.44.35207, and SM120a:
+
+```text
+glslang -V --target-env vulkan1.2 -S comp src/vulkan/tensor_attention_causal_gqa.comp -o causal.raw.spv
+python tools/add_spirv_float_controls.py causal.raw.spv causal.normal.spv src/vulkan/tensor_attention_causal_gqa.comp.spv
+nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,code=[compute_120a,sm_120a] -Iinclude src/cuda/deterministic_attention.cu -o deterministic_attention.fatbin
+```
+
+```text
+tensor_attention_causal_gqa.comp          DD700E2FDC18ED483973B2E161AEA3F1F43E8F2DB18FC8796F800BE766A79930
+tensor_attention_causal_gqa.comp.spv      F6FFCAE291363A63CC5ABF11EA62BA77EF154D950F586D8C6E2F6C0937075BEF
+src/cuda/deterministic_attention.cu       F22FCCAC89FA1A2707D7078DA568193DEE52477A2B046FB386282A28A3C7FB38
+include/vidfab/cuda/deterministic_attention.cuh EE98F4EB3DC8C15883A327E611BA4392C1CCFFB4BEA93C25221DC7B453F4EBF3
+deterministic_attention.fatbin            42123F5868046BA443DD1F069A315795DFC33714712851004D597AB06F8FCDFE
 ```
