@@ -3959,14 +3959,63 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
 
   SafeTensors archive;
   archive.open(checkpoint_path.string());
+  constexpr Sha256Digest i8_sha{
+      0xbc,0x2c,0xed,0x0f,0xbe,0xa6,0x47,0x57,
+      0xfa,0x9a,0xcd,0xdc,0xcf,0xc0,0xb3,0xf4,
+      0x81,0x9d,0x1d,0xcf,0x1d,0xa6,0xc1,0x24,
+      0xd6,0x90,0xd3,0x68,0xbe,0x28,0x39,0x23};
+  constexpr Sha256Digest nv_sha{
+      0x33,0xe6,0x9e,0x3e,0xda,0xb8,0x46,0xd5,
+      0x29,0x49,0xba,0xfd,0xb0,0x03,0x78,0xbd,
+      0x3f,0x5a,0x93,0xf7,0x81,0x24,0xfc,0x83,
+      0xd5,0xef,0x10,0x9d,0xc4,0xa1,0xfc,0xbb};
+  CHECK(sha256_file(checkpoint_path.string()) ==
+        (nv_requested ? nv_sha : i8_sha));
   TensorContextOptions options;
   options.max_batch_operators = 128;
   TensorContext vk(device, options);
+  auto fnv64 = [](const void* values, size_t bytes) {
+    const auto* data = static_cast<const uint8_t*>(values);
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < bytes; ++i) {
+      hash ^= data[i]; hash *= 1099511628211ull;
+    }
+    return hash;
+  };
+
+  // Pin the four no-trace vision outputs at the same maximum grid. The visual
+  // archive is shared by both shipped conditioner formats; these digests bind
+  // the production patchifier, tower, and merger outputs to the file SHA.
+  ExactQwenVisionEncoder vision = ExactQwenVisionEncoder::create(vk);
+  vision.load(archive);
+  vision.encode(image);
+  std::array<uint64_t, 4> vision_hashes{};
+  std::vector<uint16_t> vision_download(size_t(4096) * 5120);
+  vk.download_bytes(vision.main_output(), vision_download.data(),
+                    vision_download.size() * sizeof(uint16_t));
+  vision_hashes[0] = fnv64(vision_download.data(),
+                           vision_download.size() * sizeof(uint16_t));
+  for (uint32_t slot = 0; slot < 3; ++slot) {
+    vk.download_bytes(vision.deepstack_output(slot), vision_download.data(),
+                      vision_download.size() * sizeof(uint16_t));
+    vision_hashes[slot + 1] = fnv64(
+        vision_download.data(), vision_download.size() * sizeof(uint16_t));
+  }
+  constexpr std::array<uint64_t, 4> expected_vision_hashes{
+      0x63a7dd4533d82d51ull,0xda837b598ae29c53ull,
+      0x0edf2b1389f62ce2ull,0xd8f970e5016f22b7ull};
+  CHECK(vision_hashes == expected_vision_hashes);
+  vision.unload();
+  vk.collect();
   ExactQwenTextEncoder encoder = ExactQwenTextEncoder::create(vk);
-  const uint64_t cold_used = vk.pooled_used_bytes();
+  CHECK(vk.pooled_used_bytes() == 2 * vk.staging_capacity_bytes());
   encoder.load(archive);
   const auto begin = std::chrono::steady_clock::now();
   const text::PromptEmbedding first = encoder.encode(token_ids, {image});
+  const uint64_t final_hash = fnv64(
+      first.data.data(), first.data.size() * sizeof(float));
+  CHECK(final_hash == (nv_requested
+      ? 0x4435938303e77287ull : 0xede491026c069661ull));
   const double first_seconds = std::chrono::duration<double>(
       std::chrono::steady_clock::now() - begin).count();
   const ExactQwenTextEncoderStats first_stats = encoder.stats();
@@ -4007,17 +4056,23 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
         first_stats.peak_device_bytes + 128ull * 1024 * 1024);
   encoder.unload();
   vk.collect();
-  CHECK(vk.pooled_used_bytes() == cold_used + 2 * vk.staging_capacity_bytes());
+  CHECK(vk.pooled_used_bytes() == 2 * vk.staging_capacity_bytes());
   CHECK(vk.descriptor_set_allocations() == warm_descriptors);
   std::printf("qwen %s multimodal no-tap S16384/L4100 Vulkan %.3f/%.3f s "
               "logical/allocator %.1f/%.1f MiB weight %.1f MiB "
-              "pool/reserved %.1f/%.1f MiB descriptors %llu\n",
+              "pool/reserved %.1f/%.1f MiB descriptors %llu final %016llx "
+              "vision %016llx/%016llx/%016llx/%016llx\n",
               nv_requested ? "NVFP4" : "I8", first_seconds, repeat_seconds,
               first_stats.peak_device_bytes / 1048576.0,
               observed_peak / 1048576.0,
               first_stats.max_layer_weight_bytes / 1048576.0,
               warm_used / 1048576.0, warm_reserved / 1048576.0,
-              static_cast<unsigned long long>(warm_descriptors));
+              static_cast<unsigned long long>(warm_descriptors),
+              static_cast<unsigned long long>(final_hash),
+              static_cast<unsigned long long>(vision_hashes[0]),
+              static_cast<unsigned long long>(vision_hashes[1]),
+              static_cast<unsigned long long>(vision_hashes[2]),
+              static_cast<unsigned long long>(vision_hashes[3]));
 }
 
 VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
