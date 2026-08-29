@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winioctl.h>
 #include <bcrypt.h>
 #endif
 
@@ -105,6 +107,79 @@ std::array<uint8_t, 32> sha256_mapping(const void* data, size_t bytes) {
   BCryptDestroyHash(hash);
   BCryptCloseAlgorithmProvider(algorithm, 0);
   return digest;
+}
+
+std::filesystem::path make_sparse_qwen_metadata_corruption(
+    const vidfab::SafeTensors& source, vidfab::text::WeightFormat format,
+    const std::string& corrupt_name) {
+  static std::atomic<uint32_t> serial{0};
+  const std::filesystem::path path = std::filesystem::temp_directory_path() /
+      ("vidfab_qwen_corrupt_" + std::to_string(GetCurrentProcessId()) + "_" +
+       std::to_string(serial.fetch_add(1)) + ".safetensors");
+  HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE)
+    throw std::runtime_error("cannot create sparse Qwen corruption fixture");
+  auto close_and_fail = [&](const char* message) {
+    CloseHandle(file);
+    std::filesystem::remove(path);
+    throw std::runtime_error(message);
+  };
+  DWORD ignored = 0;
+  if (!DeviceIoControl(file, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0,
+                       &ignored, nullptr)) {
+    close_and_fail("cannot mark Qwen corruption fixture sparse");
+  }
+  LARGE_INTEGER end{};
+  end.QuadPart = static_cast<LONGLONG>(source.file_size());
+  if (!SetFilePointerEx(file, end, nullptr, FILE_BEGIN) || !SetEndOfFile(file))
+    close_and_fail("cannot size Qwen corruption fixture");
+  auto write_at = [&](uint64_t offset, const void* data, uint64_t bytes) {
+    LARGE_INTEGER position{};
+    position.QuadPart = static_cast<LONGLONG>(offset);
+    if (!SetFilePointerEx(file, position, nullptr, FILE_BEGIN))
+      close_and_fail("cannot seek Qwen corruption fixture");
+    const auto* cursor = static_cast<const uint8_t*>(data);
+    while (bytes != 0) {
+      const DWORD chunk = static_cast<DWORD>(std::min<uint64_t>(bytes, 1u << 20));
+      DWORD written = 0;
+      if (!WriteFile(file, cursor, chunk, &written, nullptr) || written != chunk)
+        close_and_fail("cannot write Qwen corruption fixture");
+      cursor += chunk;
+      bytes -= chunk;
+    }
+  };
+  uint64_t header_bytes = 0;
+  std::memcpy(&header_bytes, source.mapping_base(), sizeof(header_bytes));
+  header_bytes += sizeof(header_bytes);
+  write_at(0, source.mapping_base(), header_bytes);
+  const std::string prefix = "model.layers.0.";
+  static constexpr const char* linears[] = {
+      "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+      "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"};
+  const auto* base = static_cast<const uint8_t*>(source.mapping_base());
+  for (const char* linear : linears) {
+    for (const char* suffix : {".comfy_quant", ".weight_scale_2"}) {
+      if (suffix[1] == 'w' &&
+          format != vidfab::text::WeightFormat::kNVFP4Awq) continue;
+      const std::string name = prefix + linear + suffix;
+      const vidfab::TensorView& view = source.at(name);
+      const uint64_t offset = static_cast<const uint8_t*>(view.data) - base;
+      if (name == corrupt_name) {
+        std::vector<uint8_t> corrupted(view.nbytes);
+        std::memcpy(corrupted.data(), view.data, view.nbytes);
+        corrupted.back() ^= 1u;
+        write_at(offset, corrupted.data(), corrupted.size());
+      } else {
+        write_at(offset, view.data, view.nbytes);
+      }
+    }
+  }
+  if (!CloseHandle(file)) {
+    std::filesystem::remove(path);
+    throw std::runtime_error("cannot close Qwen corruption fixture");
+  }
+  return path;
 }
 
 }  // namespace
@@ -3079,6 +3154,30 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   CHECK(after_bad.first == first.first);
   std::filesystem::remove(bad_path);
 
+  // A valid full manifest whose final projection descriptor is corrupted is
+  // rejected just as transactionally. The sparse fixture retains the real
+  // archive header/offset contract without duplicating a 27 GiB checkpoint.
+  const std::filesystem::path late_i8_path =
+      make_sparse_qwen_metadata_corruption(
+          checkpoint, text::WeightFormat::kI8ConvRot,
+          "model.layers.0.mlp.down_proj.comfy_quant");
+  const uint64_t before_late_i8_used = vk.pooled_used_bytes();
+  const uint64_t before_late_i8_reserved = vk.reserved_bytes();
+  const uint64_t before_late_i8_descriptors = vk.descriptor_set_allocations();
+  bool late_i8_rejected = false;
+  {
+    SafeTensors bad;
+    bad.open(late_i8_path.string());
+    try { stage.load(bad, 0); }
+    catch (const std::exception&) { late_i8_rejected = true; }
+  }
+  CHECK(late_i8_rejected);
+  CHECK(vk.pooled_used_bytes() == before_late_i8_used);
+  CHECK(vk.reserved_bytes() == before_late_i8_reserved);
+  CHECK(vk.descriptor_set_allocations() == before_late_i8_descriptors);
+  CHECK(run().first == first.first);
+  std::filesystem::remove(late_i8_path);
+
   stage.unload();
   CHECK(!stage.loaded());
   CHECK(stage.persistent_bytes() == 0);
@@ -3103,6 +3202,26 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   const auto nv_first = run();
   const auto nv_repeat = run();
   CHECK(nv_first.first == nv_repeat.first);
+  const std::filesystem::path late_nv_path =
+      make_sparse_qwen_metadata_corruption(
+          nvfp4, text::WeightFormat::kNVFP4Awq,
+          "model.layers.0.mlp.down_proj.comfy_quant");
+  const uint64_t before_late_nv_used = vk.pooled_used_bytes();
+  const uint64_t before_late_nv_reserved = vk.reserved_bytes();
+  const uint64_t before_late_nv_descriptors = vk.descriptor_set_allocations();
+  bool late_nv_rejected = false;
+  {
+    SafeTensors bad;
+    bad.open(late_nv_path.string());
+    try { stage.load(bad, 0); }
+    catch (const std::exception&) { late_nv_rejected = true; }
+  }
+  CHECK(late_nv_rejected);
+  CHECK(vk.pooled_used_bytes() == before_late_nv_used);
+  CHECK(vk.reserved_bytes() == before_late_nv_reserved);
+  CHECK(vk.descriptor_set_allocations() == before_late_nv_descriptors);
+  CHECK(run().first == nv_first.first);
+  std::filesystem::remove(late_nv_path);
   uint64_t nv_digest = 1469598103934665603ull;
   for (uint16_t value : nv_first.first) {
     nv_digest ^= value & 0xffu; nv_digest *= 1099511628211ull;

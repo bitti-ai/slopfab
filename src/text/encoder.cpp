@@ -294,8 +294,9 @@ LayerGlobalScales read_global_scales(const SafeTensors& checkpoint, const Encode
   for (int i = 0; i < 7; ++i) {
     const std::string name = prefix + kQuantSuffixes[i] + ".weight_scale_2";
     const TensorView& view = checkpoint.at(name);
-    require(view.dtype == DType::kF32 && view.nbytes == sizeof(float),
-            name + " is not a single F32; weight_scale_2 is one scalar per tensor");
+    require(view.dtype == DType::kF32 && view.shape.empty() &&
+                view.nbytes == sizeof(float),
+            name + " is not a rank-0 single F32; weight_scale_2 is one scalar per tensor");
     std::memcpy(&out.value[i], view.data, sizeof(float));
     require(std::isfinite(out.value[i]) && out.value[i] > 0.0f,
             name + " is not a positive finite float");

@@ -72,33 +72,30 @@ text::EncoderConfig resolved_encoder(const SafeTensors& checkpoint,
   return result;
 }
 
-std::string squeeze_metadata(const TensorView& view) {
-  const char* data = static_cast<const char*>(view.data);
-  std::string result;
-  result.reserve(view.nbytes);
-  for (uint64_t i = 0; i < view.nbytes && data[i] != '\0'; ++i) {
-    const char value = data[i];
-    if (value != ' ' && value != '\t' && value != '\r' && value != '\n')
-      result.push_back(value);
-  }
-  return result;
-}
-
 void validate_target_layer(const SafeTensors& checkpoint,
                            const text::EncoderConfig& config,
                            uint32_t layer) {
   const std::string prefix =
       "model.layers." + std::to_string(layer) + ".";
+  size_t expected_count = 0;
   for (int i = 0; i < text::kLayerTensorCount; ++i) {
     const text::TensorSpec spec = text::layer_tensor_spec(
         config, static_cast<text::LayerTensor>(i));
     if (!spec.present()) continue;
+    ++expected_count;
     const std::string name = prefix + spec.suffix;
     const TensorView& view = checkpoint.at(name);
     const std::vector<int64_t> expected = spec.dim1 == 0
         ? std::vector<int64_t>{spec.dim0}
         : std::vector<int64_t>{spec.dim0, spec.dim1};
-    if (view.dtype != spec.dtype || view.shape != expected) {
+    const uint64_t elements = spec.dim1 == 0
+        ? static_cast<uint64_t>(spec.dim0)
+        : checked_product(static_cast<uint64_t>(spec.dim0),
+                          static_cast<uint64_t>(spec.dim1), "tensor elements");
+    const uint64_t expected_bytes = checked_product(
+        elements, dtype_size(spec.dtype), "tensor bytes");
+    if (view.dtype != spec.dtype || view.shape != expected ||
+        view.nbytes != expected_bytes) {
       throw std::runtime_error("Vulkan Qwen layer: invalid tensor '" + name + "'");
     }
   }
@@ -107,38 +104,55 @@ void validate_target_layer(const SafeTensors& checkpoint,
       "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj",
       "mlp.down_proj"};
   const bool nvfp4 = config.format == text::WeightFormat::kNVFP4Awq;
+  const char* canonical_metadata = nvfp4
+      ? "{\"format\": \"nvfp4\", \"full_precision_matrix_mult\": true}"
+      : "{\"format\": \"int8_tensorwise\", \"convrot\": true, "
+        "\"convrot_groupsize\": 256}";
+  const size_t canonical_metadata_bytes = std::strlen(canonical_metadata);
   for (const char* linear : kLinears) {
     const std::string name = prefix + linear;
-    const std::string metadata =
-        squeeze_metadata(checkpoint.at(name + ".comfy_quant"));
-    if (nvfp4) {
-      if (metadata.find("\"format\":\"nvfp4\"") == std::string::npos ||
-          metadata.find("\"full_precision_matrix_mult\":true") ==
-              std::string::npos ||
-          metadata.find("\"convrot\":true") != std::string::npos) {
-        throw std::runtime_error("Vulkan Qwen layer: invalid NVFP4 metadata for '" +
-                                 name + "'");
-      }
-    } else {
-      if (metadata.find("\"format\":\"int8_tensorwise\"") ==
-              std::string::npos ||
-          metadata.find("\"convrot\":true") == std::string::npos ||
-          metadata.find("\"convrot_groupsize\":256") ==
-              std::string::npos) {
-        throw std::runtime_error("Vulkan Qwen layer: invalid I8 metadata for '" +
-                                 name + "'");
-      }
-    }
-  }
-  if (!nvfp4) {
-    if (checkpoint.find(prefix + "self_attn.o_proj.pre_quant_scale") ||
-        checkpoint.find(prefix + "mlp.down_proj.pre_quant_scale")) {
+    const TensorView& metadata = checkpoint.at(name + ".comfy_quant");
+    ++expected_count;
+    if (metadata.dtype != DType::kU8 ||
+        metadata.shape != std::vector<int64_t>{
+            static_cast<int64_t>(canonical_metadata_bytes)} ||
+        metadata.nbytes != canonical_metadata_bytes ||
+        std::memcmp(metadata.data, canonical_metadata,
+                    canonical_metadata_bytes) != 0) {
       throw std::runtime_error(
-          "Vulkan Qwen layer: I8 layer unexpectedly carries AWQ scales");
+          "Vulkan Qwen layer: non-canonical comfy_quant for '" + name + "'");
     }
-  } else {
+    if (nvfp4) ++expected_count;
+  }
+  if (nvfp4) {
     (void)text::read_global_scales(checkpoint, config,
                                    static_cast<int>(layer));
+  }
+
+  size_t actual_count = 0;
+  for (const auto& entry : checkpoint.tensors()) {
+    if (entry.first.rfind(prefix, 0) != 0) continue;
+    ++actual_count;
+    const std::string suffix = entry.first.substr(prefix.size());
+    bool expected = false;
+    for (int i = 0; i < text::kLayerTensorCount && !expected; ++i) {
+      const text::TensorSpec spec = text::layer_tensor_spec(
+          config, static_cast<text::LayerTensor>(i));
+      expected = spec.present() && suffix == spec.suffix;
+    }
+    for (const char* linear : kLinears) {
+      expected = expected || suffix == std::string(linear) + ".comfy_quant";
+      expected = expected || (nvfp4 &&
+          suffix == std::string(linear) + ".weight_scale_2");
+    }
+    if (!expected) {
+      throw std::runtime_error(
+          "Vulkan Qwen layer: unexpected target tensor '" + entry.first + "'");
+    }
+  }
+  if (actual_count != expected_count) {
+    throw std::runtime_error(
+        "Vulkan Qwen layer: incomplete target-layer tensor manifest");
   }
 }
 
