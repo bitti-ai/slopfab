@@ -83,6 +83,10 @@ class VideoVaeWindowBackend {
   virtual void forward_windows(const float* z, int batch, int T, int H, int W,
                                std::vector<std::vector<float>>& out,
                                const size_t* slots) = 0;
+  virtual void denormalize_latents(
+      const float* normalized, int channels, uint64_t voxels,
+      const std::vector<float>& mean, const std::vector<float>& std_dev,
+      std::vector<float>& output) = 0;
   virtual void release_host_registrations() = 0;
 };
 
@@ -137,6 +141,10 @@ class ViTDecoder final : public VideoVaeWindowBackend {
   // a scope guard, so a throw does not leak a lock onto freed memory. Calling
   // it when nothing is registered is free.
   void release_host_registrations() override;
+  void denormalize_latents(const float* normalized, int channels,
+                           uint64_t voxels, const std::vector<float>& mean,
+                           const std::vector<float>& std_dev,
+                           std::vector<float>& output) override;
 
   // The scope guard that obligation asks for. Declare it *after* the buffer
   // vector it protects, so it is destroyed *before* that vector and the lock

@@ -71,15 +71,10 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
 
   // (1) De-normalise: z = z_norm * std + mean, per channel. Done in fp32 from
   // the config literals rather than the fp16 tensors in the checkpoint.
-  std::vector<float> z(static_cast<size_t>(ch) * T_lat * voxels_per_frame);
-  for (int c = 0; c < ch; ++c) {
-    const float m = latents_mean[static_cast<size_t>(c)];
-    const float s = latents_std[static_cast<size_t>(c)];
-    const size_t base = static_cast<size_t>(c) * T_lat * voxels_per_frame;
-    for (size_t i = 0; i < static_cast<size_t>(T_lat) * voxels_per_frame; ++i) {
-      z[base + i] = z_norm[base + i] * s + m;
-    }
-  }
+  std::vector<float> z;
+  backend.denormalize_latents(
+      z_norm, ch, static_cast<uint64_t>(T_lat) * voxels_per_frame,
+      latents_mean, latents_std, z);
 
   // (2) Temporal padding: repeat the final latent frame until the pseudo token
   // count is a multiple of tokens_chunk_size.

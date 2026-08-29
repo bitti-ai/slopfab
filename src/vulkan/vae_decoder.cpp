@@ -74,7 +74,9 @@ void upload_matrix(TensorContext& context, DeviceTensor& destination,
 }  // namespace
 
 struct VideoVaeDecoder::Impl {
-  static constexpr uint32_t kOperatorsPerDocument = 732;
+  // transpose + post-quant(3) + embed(3) + suffix scatter(2) + 36 blocks
+  // (20 each) + patch gather + final norm + projection(3) + depth-to-space.
+  static constexpr uint32_t kOperatorsPerDocument = 735;
   static constexpr uint32_t kMaxBatchOperators = 4096;
   static constexpr uint32_t kShapeCache = 2;
 
@@ -87,6 +89,8 @@ struct VideoVaeDecoder::Impl {
   DeviceTensor post_weight, post_bias, embed_weight, embed_bias,
       register_tokens, zero_token, norm_weight, norm_bias, proj_weight,
       proj_bias;
+  DeviceTensor denorm_input, denorm_mean, denorm_std, denorm_output;
+  uint64_t denorm_capacity = 0;
 
   struct Document {
     DeviceTensor latent, patch, quantized, tokens, patch_tokens, normed,
@@ -355,9 +359,13 @@ void VideoVaeDecoder::forward_windows(
       shape.patches;
   const uint64_t pixel_words = static_cast<uint64_t>(d.config.out_channels) *
       time * d.config.patch_t * height * d.config.patch * width * d.config.patch;
+  // Validate the whole call before uploads or command recording. A bad later
+  // slot must not leave a partially-mutated shape/document set visible.
   for (int i = 0; i < batch; ++i) {
     if (slots[i] >= output.size())
       throw std::out_of_range("Vulkan video VAE: output slot out of range");
+  }
+  for (int i = 0; i < batch; ++i) {
     d.context.upload(shape.documents[static_cast<size_t>(i)].latent,
                      latent + static_cast<uint64_t>(i) * latent_words,
                      latent_words);
@@ -392,7 +400,9 @@ uint64_t VideoVaeDecoder::persistent_bytes() const noexcept {
 
 uint64_t VideoVaeDecoder::peak_device_bytes() const noexcept {
   return impl_ ? impl_->common_weight_bytes + impl_->graph.peak_device_bytes() +
-      impl_->shape_bytes() : 0;
+      impl_->shape_bytes() + tensor_bytes(impl_->denorm_input) +
+      tensor_bytes(impl_->denorm_mean) + tensor_bytes(impl_->denorm_std) +
+      tensor_bytes(impl_->denorm_output) : 0;
 }
 
 uint64_t VideoVaeDecoder::allocator_reserved_bytes() const noexcept {
@@ -409,6 +419,35 @@ uint64_t VideoVaeDecoder::descriptor_set_allocations() const noexcept {
 
 uint32_t VideoVaeDecoder::cached_shapes() const noexcept {
   return impl_ ? static_cast<uint32_t>(impl_->shapes.size()) : 0;
+}
+
+void VideoVaeDecoder::denormalize_latents(
+    const float* normalized, int channels, uint64_t voxels,
+    const std::vector<float>& mean, const std::vector<float>& std_dev,
+    std::vector<float>& output) {
+  if (!impl_ || !normalized || channels != impl_->config.in_channels ||
+      voxels == 0 || mean.size() != size_t(channels) ||
+      std_dev.size() != size_t(channels)) {
+    throw std::invalid_argument("Vulkan video VAE: invalid latent denormalization");
+  }
+  Impl& d = *impl_;
+  if (voxels > d.denorm_capacity) {
+    d.denorm_input = d.context.allocate(matrix(channels, voxels));
+    d.denorm_output = d.context.allocate(matrix(channels, voxels));
+    d.denorm_mean = d.context.allocate(vector(channels));
+    d.denorm_std = d.context.allocate(vector(channels));
+    d.denorm_capacity = voxels;
+  }
+  d.context.upload(d.denorm_input, normalized,
+                   static_cast<uint64_t>(channels) * voxels);
+  d.context.upload(d.denorm_mean, mean.data(), mean.size());
+  d.context.upload(d.denorm_std, std_dev.data(), std_dev.size());
+  TensorBatch batch = d.context.begin_batch();
+  batch.latent_denorm_f32(d.denorm_input, d.denorm_mean, d.denorm_std,
+                          d.denorm_output);
+  batch.submit().wait();
+  output.resize(static_cast<size_t>(channels) * voxels);
+  d.context.download(d.denorm_output, output.data(), output.size());
 }
 
 vae::DecodedVideo VideoVaeDecoder::decode(

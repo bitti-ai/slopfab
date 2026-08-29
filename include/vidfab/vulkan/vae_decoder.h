@@ -34,6 +34,10 @@ class VideoVaeDecoder final : public vae::VideoVaeWindowBackend {
                        int width, std::vector<std::vector<float>>& output,
                        const size_t* slots) override;
   void release_host_registrations() override {}
+  void denormalize_latents(
+      const float* normalized, int channels, uint64_t voxels,
+      const std::vector<float>& mean, const std::vector<float>& std_dev,
+      std::vector<float>& output) override;
   vae::DecodedVideo decode(
       const float* normalized_latent, int time, int height, int width,
       const std::vector<float>& mean, const std::vector<float>& std_dev,

@@ -183,6 +183,9 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_quantised;  // [N, in_channels] after post_quant_conv
   DeviceBuffer<float> d_pixels;     // [3, T*4, H*16, W*16]
   size_t cap_pixels = 0;
+  DeviceBuffer<float> d_denorm_input, d_denorm_output, d_denorm_mean,
+      d_denorm_std;
+  uint64_t cap_denorm_voxels = 0;
   cuda::PinnedBuffer<float> pinned_out;  // staging for the D2H of decoded pixels
 
   // Page-locking of the *caller's* tile buffers. The decode hoists one buffer
@@ -713,5 +716,44 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
 }
 
 void ViTDecoder::release_host_registrations() { impl_->release_host_regs(); }
+
+void ViTDecoder::denormalize_latents(
+    const float* normalized, int channels, uint64_t voxels,
+    const std::vector<float>& mean, const std::vector<float>& std_dev,
+    std::vector<float>& output) {
+  if (!normalized || channels <= 0 || mean.size() != size_t(channels) ||
+      std_dev.size() != size_t(channels)) {
+    throw std::invalid_argument("vae: invalid latent denormalization input");
+  }
+  output.resize(static_cast<size_t>(channels) * voxels);
+  if (impl_->cfg.transformer_mode == ViTTransformerMode::kExact) {
+    if (voxels > impl_->cap_denorm_voxels) {
+      impl_->d_denorm_input.allocate(static_cast<size_t>(channels) * voxels);
+      impl_->d_denorm_output.allocate(static_cast<size_t>(channels) * voxels);
+      impl_->d_denorm_mean.allocate(channels);
+      impl_->d_denorm_std.allocate(channels);
+      impl_->cap_denorm_voxels = voxels;
+    }
+    impl_->d_denorm_input.copy_from_host(
+        normalized, static_cast<size_t>(channels) * voxels, impl_->stream.get());
+    impl_->d_denorm_mean.copy_from_host(mean.data(), mean.size(),
+                                        impl_->stream.get());
+    impl_->d_denorm_std.copy_from_host(std_dev.data(), std_dev.size(),
+                                       impl_->stream.get());
+    cuda::launch_latent_denorm(
+        impl_->d_denorm_input.get(), impl_->d_denorm_mean.get(),
+        impl_->d_denorm_std.get(), impl_->d_denorm_output.get(), channels,
+        static_cast<uint32_t>(voxels), impl_->stream.get());
+    impl_->d_denorm_output.copy_to_host(
+        output.data(), output.size(), impl_->stream.get());
+    impl_->stream.synchronize();
+    return;
+  }
+  for (int channel = 0; channel < channels; ++channel) {
+    const size_t base = static_cast<size_t>(channel) * voxels;
+    for (uint64_t i = 0; i < voxels; ++i)
+      output[base + i] = normalized[base + i] * std_dev[channel] + mean[channel];
+  }
+}
 
 }  // namespace vidfab::vae
