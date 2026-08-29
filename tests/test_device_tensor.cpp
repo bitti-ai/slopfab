@@ -12,6 +12,8 @@ VIDFAB_TEST(device_tensor_layout_contract) {
   CHECK(layout.rank == 3);
   CHECK(layout.elements() == 30);
   CHECK(layout.bytes(vidfab::ScalarType::kFloat32) == 120);
+  CHECK(layout.bytes(vidfab::ScalarType::kUInt8) == 30);
+  CHECK(layout.bytes(vidfab::ScalarType::kInt8) == 30);
   CHECK(layout.storage_bytes(vidfab::ScalarType::kFloat32) == 120);
   CHECK(layout.stride[0] == 15);
   CHECK(layout.stride[1] == 5);

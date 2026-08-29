@@ -19,6 +19,7 @@
 #include "vidfab/cuda/nn_kernels.cuh"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/dit/rope.h"
+#include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/tensor.h"
 
 __global__ void deterministic_rsqrt_probe(const float* input, float* stable,
@@ -1827,6 +1828,97 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_fused_rope) {
   { TensorBatch collect_completed_slot = vk.begin_batch(); }
   CHECK(vk.pooled_used_bytes() == used_before_drop);
 
+}
+
+VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+
+  auto exact_case = [&](const LinearWeightUpload& upload,
+                        const std::vector<uint16_t>& expected) {
+    LinearWeight weight = LinearWeight::upload(vk, upload);
+    const uint64_t shape[] = {upload.out_features, upload.in_features};
+    DeviceTensor dense = vk.allocate(TensorLayout::contiguous(shape, 2),
+                                     ScalarType::kBFloat16);
+    TensorBatch batch = vk.begin_batch();
+    weight.materialize_bf16(batch, dense);
+    batch.submit().wait();
+    std::vector<uint16_t> actual(expected.size());
+    vk.download_bytes(dense, actual.data(), actual.size() * sizeof(uint16_t));
+    size_t mismatch = expected.size();
+    for (size_t i = 0; i < expected.size(); ++i) {
+      if (expected[i] != actual[i]) { mismatch = i; break; }
+    }
+    CHECK_MSG(mismatch == expected.size(),
+              "CUDA/Vulkan linear weight mismatch at %zu: %04x != %04x",
+              mismatch, mismatch == expected.size() ? 0u : expected[mismatch],
+              mismatch == expected.size() ? 0u : actual[mismatch]);
+  };
+
+  std::vector<uint8_t> f8(256);
+  for (uint32_t i = 0; i < 256; ++i) f8[i] = static_cast<uint8_t>(i);
+  const float f8_scale = 0.75f;
+  cuda::DeviceBuffer<uint8_t> cuda_f8(f8.size());
+  cuda::DeviceBuffer<float> cuda_f8_scale(1);
+  cuda::DeviceBuffer<__nv_bfloat16> cuda_f8_output(f8.size());
+  cuda_f8.copy_from_host(f8.data(), f8.size());
+  cuda_f8_scale.copy_from_host(&f8_scale, 1);
+  cuda::launch_dequant_f8e4m3(cuda_f8.get(), cuda_f8_scale.get(),
+                              cuda_f8_output.get(), f8.size(), nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> f8_expected(f8.size());
+  VIDFAB_CUDA_CHECK(cudaMemcpy(f8_expected.data(), cuda_f8_output.get(),
+                              f8_expected.size() * sizeof(uint16_t),
+                              cudaMemcpyDeviceToHost));
+  LinearWeightUpload f8_upload;
+  f8_upload.format = LinearWeightFormat::kFloat8E4M3;
+  f8_upload.out_features = 1;
+  f8_upload.in_features = static_cast<uint32_t>(f8.size());
+  f8_upload.data = f8.data();
+  f8_upload.data_bytes = f8.size();
+  f8_upload.weight_scale = &f8_scale;
+  f8_upload.weight_scale_count = 1;
+  exact_case(f8_upload, f8_expected);
+
+  constexpr uint32_t i8_rows = 3, i8_columns = 131;
+  std::vector<int8_t> i8(static_cast<size_t>(i8_rows) * i8_columns);
+  for (size_t i = 0; i < i8.size(); ++i) {
+    i8[i] = static_cast<int8_t>((i * 73u + 128u) & 0xffu);
+  }
+  const float i8_scale[] = {0.5f, -0.25f, 1.5f};
+  cuda::DeviceBuffer<int8_t> cuda_i8(i8.size());
+  cuda::DeviceBuffer<float> cuda_i8_scale(i8_rows);
+  cuda::DeviceBuffer<__nv_bfloat16> cuda_i8_output(i8.size());
+  cuda_i8.copy_from_host(i8.data(), i8.size());
+  cuda_i8_scale.copy_from_host(i8_scale, i8_rows);
+  cuda::launch_dequant_i8_per_channel(cuda_i8.get(), cuda_i8_scale.get(),
+                                      cuda_i8_output.get(), i8_rows, i8_columns,
+                                      nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> i8_expected(i8.size());
+  VIDFAB_CUDA_CHECK(cudaMemcpy(i8_expected.data(), cuda_i8_output.get(),
+                              i8_expected.size() * sizeof(uint16_t),
+                              cudaMemcpyDeviceToHost));
+  LinearWeightUpload i8_upload;
+  i8_upload.format = LinearWeightFormat::kInt8;
+  i8_upload.out_features = i8_rows;
+  i8_upload.in_features = i8_columns;
+  i8_upload.data = i8.data();
+  i8_upload.data_bytes = i8.size();
+  i8_upload.weight_scale = i8_scale;
+  i8_upload.weight_scale_count = i8_rows;
+  exact_case(i8_upload, i8_expected);
 }
 
 int main() { return ::vidfab::test::run_all(); }

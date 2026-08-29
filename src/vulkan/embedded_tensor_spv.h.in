@@ -20,4 +20,7 @@ inline constexpr uint8_t kTensorRopeDenormSpirv[] = {
     @VIDFAB_TENSOR_ROPE_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorVaeRopeSpirv[] = {
     @VIDFAB_TENSOR_VAE_ROPE_SPV_BYTES@};
+inline constexpr uint8_t kTensorWeightSpirv[] = {@VIDFAB_TENSOR_WEIGHT_SPV_BYTES@};
+inline constexpr uint8_t kTensorWeightDenormSpirv[] = {
+    @VIDFAB_TENSOR_WEIGHT_DENORM_SPV_BYTES@};
 }  // namespace vidfab::vulkan::detail

@@ -11,6 +11,7 @@ namespace vidfab::vulkan {
 
 class TensorContext;
 class TensorBatch;
+class LinearWeight;
 
 struct TensorContextOptions {
   // Two slots let a producer record the next bounded graph chunk while the
@@ -157,6 +158,12 @@ class TensorBatch {
  private:
   void rope_bf16(DeviceTensor& input, DeviceTensor& cosine,
                  DeviceTensor& sine, uint32_t mode);
+  void materialize_linear_weight(const LinearWeight& weight,
+                                 DeviceTensor& dense, bool fp16);
+  void transform_linear_activation(const LinearWeight& weight,
+                                   DeviceTensor& input, DeviceTensor& output,
+                                   bool convrot);
+  friend class LinearWeight;
   struct Impl;
   explicit TensorBatch(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;

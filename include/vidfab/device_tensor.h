@@ -8,7 +8,14 @@
 namespace vidfab {
 
 enum class DeviceBackend { kCuda, kVulkan };
-enum class ScalarType { kFloat32, kFloat16, kBFloat16, kInt32 };
+enum class ScalarType {
+  kFloat32,
+  kFloat16,
+  kBFloat16,
+  kInt32,
+  kUInt8,
+  kInt8,
+};
 
 struct TensorLayout {
   uint32_t rank = 0;

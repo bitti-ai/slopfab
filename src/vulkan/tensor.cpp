@@ -14,6 +14,7 @@
 #include "embedded_tensor_spv.h"
 #include "tensor_validation.h"
 #include "vidfab/vulkan/compute.h"
+#include "vidfab/vulkan/linear.h"
 
 namespace vidfab::vulkan {
 namespace {
@@ -54,6 +55,28 @@ struct DeviceTensor::Impl {
   BufferAccess access = BufferAccess::kTransferWrite;
 };
 
+struct LinearWeight::Impl {
+  LinearWeightFormat format = LinearWeightFormat::kBFloat16;
+  uint32_t out_features = 0;
+  uint32_t in_features = 0;
+  uint64_t stored_bytes = 0;
+  uint64_t resident_bytes = 0;
+  float global_scale = 1.0f;
+  float nf4_nested_offset = 0.0f;
+  uint32_t nf4_block_size = 64;
+  uint32_t nf4_nested_block_size = 256;
+  bool convrot = false;
+  uint32_t convrot_group = 256;
+  DeviceTensor data;
+  DeviceTensor weight_scale;
+  DeviceTensor block_scale;
+  DeviceTensor nf4_absmax;
+  DeviceTensor nf4_quant_map;
+  DeviceTensor nf4_nested_quant_map;
+  DeviceTensor nf4_nested_absmax;
+  DeviceTensor pre_quant_scale;
+};
+
 struct TensorWorkspace::Impl {
   BufferPool pool;
   Buffer buffer;
@@ -87,6 +110,16 @@ struct TensorContext::Impl {
     uint32_t epsilon_bits = 0;
     uint32_t unused[2] = {};
   };
+  struct WeightParameters {
+    uint32_t op = 0;
+    uint32_t count = 0;
+    uint32_t out_features = 0;
+    uint32_t in_features = 0;
+    uint32_t block_size = 0;
+    uint32_t nested_block_size = 0;
+    uint32_t scalar_bits = 0;
+    uint32_t group = 0;
+  };
   static constexpr uint32_t kMaxBatchOperators = 32;
 
   ComputeContext commands;
@@ -95,6 +128,7 @@ struct TensorContext::Impl {
   ComputePipeline ops_pipeline;
   ComputePipeline rope_pipeline;
   ComputePipeline vae_rope_pipeline;
+  ComputePipeline weight_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
   ComputePipeline bf16_rms_block_pipeline;
@@ -110,6 +144,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> norm_bindings;
   std::vector<StorageBinding> mod_bindings;
   std::vector<StorageBinding> vae_rope_bindings;
+  std::vector<StorageBinding> weight_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   uint32_t max_dispatch_x = 0;
@@ -129,7 +164,8 @@ struct TensorContext::Impl {
         ops_bindings(3),
         norm_bindings(4),
         mod_bindings(6),
-        vae_rope_bindings(7) {
+        vae_rope_bindings(7),
+        weight_bindings(6) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
     static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
@@ -167,6 +203,18 @@ struct TensorContext::Impl {
     ComputePipelineOptions rope_options = options;
     rope_options.local_size[0] = 64;
     rope_pipeline = ComputePipeline::create(input, rope_spirv, rope_options);
+    const uint8_t* weight_shader = full_arithmetic_exact
+        ? detail::kTensorWeightDenormSpirv : detail::kTensorWeightSpirv;
+    const size_t weight_shader_bytes = full_arithmetic_exact
+        ? sizeof(detail::kTensorWeightDenormSpirv)
+        : sizeof(detail::kTensorWeightSpirv);
+    std::vector<uint32_t> weight_spirv(weight_shader_bytes / sizeof(uint32_t));
+    std::memcpy(weight_spirv.data(), weight_shader, weight_shader_bytes);
+    ComputePipelineOptions weight_options;
+    weight_options.storage_binding_count = 6;
+    weight_options.push_constant_bytes = sizeof(WeightParameters);
+    weight_options.local_size[0] = 64;
+    weight_pipeline = ComputePipeline::create(input, weight_spirv, weight_options);
     ComputePipelineOptions norm_options;
     norm_options.storage_binding_count = 4;
     norm_options.push_constant_bytes = sizeof(NormParameters);
@@ -212,6 +260,8 @@ struct TensorContext::Impl {
     for (uint32_t i = 0; i < mod_bindings.size(); ++i) mod_bindings[i].binding = i;
     for (uint32_t i = 0; i < vae_rope_bindings.size(); ++i)
       vae_rope_bindings[i].binding = i;
+    for (uint32_t i = 0; i < weight_bindings.size(); ++i)
+      weight_bindings[i].binding = i;
   }
 
   uintptr_t context_id = next_context_identity();
@@ -466,6 +516,19 @@ struct TensorBatch::Impl {
     commands.dispatch(groups);
   }
 
+  void dispatch_weight(
+      const TensorContext::Impl::WeightParameters& parameters,
+      uint32_t groups,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 6>& resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->weight_bindings[i].buffer = &resources[i]->buffer;
+      owner->weight_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->weight_pipeline, owner->weight_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups);
+  }
+
   void record_shared_mod(bool fp32, DeviceTensor& input, DeviceTensor& weight,
                          DeviceTensor& scale, DeviceTensor& shift,
                          DeviceTensor& selectors, DeviceTensor& output,
@@ -624,6 +687,186 @@ uint64_t TensorWorkspace::reserved_bytes() const noexcept {
 }
 uint64_t TensorWorkspace::pooled_used_bytes() const noexcept {
   return impl_ ? impl_->pool.used_bytes() : 0;
+}
+
+LinearWeight::LinearWeight() = default;
+LinearWeight::~LinearWeight() = default;
+LinearWeight::LinearWeight(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+LinearWeight::LinearWeight(LinearWeight&&) noexcept = default;
+LinearWeight& LinearWeight::operator=(LinearWeight&&) noexcept = default;
+
+LinearWeight LinearWeight::upload(TensorContext& context,
+                                  const LinearWeightUpload& source) {
+  if (source.out_features == 0 || source.in_features == 0 || source.data == nullptr) {
+    throw std::invalid_argument("vulkan linear weight: nonzero shape and data required");
+  }
+  const uint64_t elements = checked_multiply(source.out_features,
+                                              source.in_features, "linear weight");
+  uint64_t expected_bytes = 0;
+  ScalarType data_type = ScalarType::kUInt8;
+  switch (source.format) {
+    case LinearWeightFormat::kFloat32:
+      expected_bytes = checked_multiply(elements, 4, "linear weight");
+      data_type = ScalarType::kFloat32;
+      break;
+    case LinearWeightFormat::kFloat16:
+      expected_bytes = checked_multiply(elements, 2, "linear weight");
+      data_type = ScalarType::kFloat16;
+      break;
+    case LinearWeightFormat::kBFloat16:
+      expected_bytes = checked_multiply(elements, 2, "linear weight");
+      data_type = ScalarType::kBFloat16;
+      break;
+    case LinearWeightFormat::kFloat8E4M3:
+    case LinearWeightFormat::kInt8:
+      expected_bytes = elements;
+      data_type = source.format == LinearWeightFormat::kInt8
+          ? ScalarType::kInt8 : ScalarType::kUInt8;
+      break;
+    case LinearWeightFormat::kNVFloat4:
+    case LinearWeightFormat::kNF4:
+      expected_bytes = (elements + 1) / 2;
+      break;
+  }
+  if (source.data_bytes != expected_bytes) {
+    throw std::invalid_argument("vulkan linear weight: stored byte count mismatch");
+  }
+  if (source.pre_quant_scale_count != 0 &&
+      (source.pre_quant_scale_bf16 == nullptr ||
+       source.pre_quant_scale_count != source.in_features)) {
+    throw std::invalid_argument("vulkan linear weight: invalid AWQ pre-scale");
+  }
+  uint32_t power = 1;
+  while (power < source.convrot_group && power <= UINT32_MAX / 4) power *= 4;
+  if (source.convrot && (source.convrot_group < 4 || source.convrot_group > 256 ||
+                         power != source.convrot_group ||
+                         source.in_features % source.convrot_group != 0)) {
+    throw std::invalid_argument("vulkan linear weight: invalid ConvRot group");
+  }
+  if (source.format == LinearWeightFormat::kFloat8E4M3 &&
+      (source.weight_scale == nullptr || source.weight_scale_count != 1)) {
+    throw std::invalid_argument("vulkan linear weight: FP8 scalar scale required");
+  }
+  if (source.format == LinearWeightFormat::kInt8 &&
+      (source.weight_scale == nullptr ||
+       source.weight_scale_count != source.out_features)) {
+    throw std::invalid_argument("vulkan linear weight: INT8 per-row scales required");
+  }
+  if (source.format == LinearWeightFormat::kNVFloat4 &&
+      (source.in_features % 64 != 0 || source.out_features % 128 != 0 ||
+       source.block_scale == nullptr ||
+       source.block_scale_count != elements / 16 ||
+       !std::isfinite(source.global_scale))) {
+    throw std::invalid_argument("vulkan linear weight: invalid NVFP4 metadata");
+  }
+  const uint64_t expected_absmax = source.nf4_block_size == 0
+      ? 0 : 1 + (elements - 1) / source.nf4_block_size;
+  const uint64_t expected_nested = source.nf4_nested_block_size == 0 ||
+                                           expected_absmax == 0
+      ? 0 : 1 + (expected_absmax - 1) / source.nf4_nested_block_size;
+  if (source.format == LinearWeightFormat::kNF4 &&
+      (source.nf4_block_size == 0 || source.nf4_nested_block_size == 0 ||
+       source.nf4_absmax == nullptr || source.nf4_absmax_count != expected_absmax ||
+       source.nf4_quant_map == nullptr || source.nf4_nested_quant_map == nullptr ||
+       source.nf4_nested_absmax == nullptr ||
+       source.nf4_nested_absmax_count != expected_nested ||
+       !std::isfinite(source.nf4_nested_offset))) {
+    throw std::invalid_argument("vulkan linear weight: invalid NF4 metadata");
+  }
+
+  auto result = std::make_unique<Impl>();
+  result->format = source.format;
+  result->out_features = source.out_features;
+  result->in_features = source.in_features;
+  result->stored_bytes = expected_bytes;
+  result->global_scale = source.global_scale;
+  result->nf4_nested_offset = source.nf4_nested_offset;
+  result->nf4_block_size = source.nf4_block_size;
+  result->nf4_nested_block_size = source.nf4_nested_block_size;
+  result->convrot = source.convrot;
+  result->convrot_group = source.convrot_group;
+  auto upload = [&](DeviceTensor& destination, ScalarType type, uint64_t count,
+                    const void* values) {
+    TensorLayout layout = TensorLayout::contiguous(&count, 1);
+    DeviceTensor replacement = context.allocate(layout, type);
+    context.upload_bytes(replacement, values, layout.bytes(type));
+    const uint64_t bytes = layout.bytes(type);
+    if (result->resident_bytes > std::numeric_limits<uint64_t>::max() - bytes) {
+      throw std::overflow_error("vulkan linear weight: resident byte count overflow");
+    }
+    result->resident_bytes += bytes;
+    destination = std::move(replacement);
+  };
+  const uint64_t data_count = data_type == ScalarType::kFloat32 ? elements
+      : (data_type == ScalarType::kFloat16 || data_type == ScalarType::kBFloat16)
+          ? elements : expected_bytes;
+  upload(result->data, data_type, data_count, source.data);
+  if (source.weight_scale_count != 0)
+    upload(result->weight_scale, ScalarType::kFloat32,
+           source.weight_scale_count, source.weight_scale);
+  if (source.block_scale_count != 0)
+    upload(result->block_scale, ScalarType::kUInt8,
+           source.block_scale_count, source.block_scale);
+  if (source.format == LinearWeightFormat::kNF4) {
+    upload(result->nf4_absmax, ScalarType::kUInt8, source.nf4_absmax_count,
+           source.nf4_absmax);
+    upload(result->nf4_quant_map, ScalarType::kFloat32, 16,
+           source.nf4_quant_map);
+    upload(result->nf4_nested_quant_map, ScalarType::kFloat32, 256,
+           source.nf4_nested_quant_map);
+    upload(result->nf4_nested_absmax, ScalarType::kFloat32,
+           source.nf4_nested_absmax_count, source.nf4_nested_absmax);
+  }
+  if (source.pre_quant_scale_count != 0)
+    upload(result->pre_quant_scale, ScalarType::kBFloat16,
+           source.pre_quant_scale_count, source.pre_quant_scale_bf16);
+  return LinearWeight(std::move(result));
+}
+
+LinearWeightFormat LinearWeight::format() const {
+  if (!impl_) throw std::logic_error("vulkan linear weight: empty weight");
+  return impl_->format;
+}
+uint32_t LinearWeight::out_features() const {
+  if (!impl_) throw std::logic_error("vulkan linear weight: empty weight");
+  return impl_->out_features;
+}
+uint32_t LinearWeight::in_features() const {
+  if (!impl_) throw std::logic_error("vulkan linear weight: empty weight");
+  return impl_->in_features;
+}
+uint64_t LinearWeight::stored_bytes() const noexcept {
+  return impl_ ? impl_->stored_bytes : 0;
+}
+uint64_t LinearWeight::resident_bytes() const noexcept {
+  return impl_ ? impl_->resident_bytes : 0;
+}
+bool LinearWeight::has_pre_quant_scale() const noexcept {
+  return impl_ && static_cast<bool>(impl_->pre_quant_scale);
+}
+bool LinearWeight::applies_convrot() const noexcept {
+  return impl_ && impl_->convrot;
+}
+uint32_t LinearWeight::convrot_group() const noexcept {
+  return impl_ ? impl_->convrot_group : 0;
+}
+void LinearWeight::materialize_bf16(TensorBatch& batch, DeviceTensor& dense) const {
+  if (!impl_) throw std::logic_error("vulkan linear weight: empty weight");
+  batch.materialize_linear_weight(*this, dense, false);
+}
+void LinearWeight::materialize_f16(TensorBatch& batch, DeviceTensor& dense) const {
+  if (!impl_) throw std::logic_error("vulkan linear weight: empty weight");
+  batch.materialize_linear_weight(*this, dense, true);
+}
+void LinearWeight::apply_pre_quant_scale(TensorBatch& batch, DeviceTensor& input,
+                                         DeviceTensor& output) const {
+  if (!impl_) throw std::logic_error("vulkan linear weight: empty weight");
+  batch.transform_linear_activation(*this, input, output, false);
+}
+void LinearWeight::apply_convrot(TensorBatch& batch, DeviceTensor& input,
+                                 DeviceTensor& output) const {
+  if (!impl_) throw std::logic_error("vulkan linear weight: empty weight");
+  batch.transform_linear_activation(*this, input, output, true);
 }
 
 TensorContext::TensorContext(const Device& device, const TensorContextOptions& options)
@@ -1498,6 +1741,170 @@ void TensorBatch::group_norm_silu_f16_affine(DeviceTensor& input,
     impl_->transition(b, BufferAccess::kComputeRead);
     if (src.get() != dst.get()) impl_->transition(dst, BufferAccess::kComputeWrite);
     impl_->dispatch_group_norm(p, src, w, b, dst);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::materialize_linear_weight(const LinearWeight& weight,
+                                             DeviceTensor& dense, bool fp16) {
+  if (!impl_ || impl_->poisoned) {
+    throw std::logic_error("vulkan tensor: invalid batch");
+  }
+  if (!weight.impl_) {
+    throw std::logic_error("vulkan linear weight: empty weight");
+  }
+  auto output = impl_->owner->require(dense);
+  auto data = impl_->owner->require(weight.impl_->data);
+  const uint64_t elements = checked_multiply(weight.impl_->out_features,
+                                              weight.impl_->in_features,
+                                              "linear materialization");
+  const ScalarType output_type = fp16 ? ScalarType::kFloat16
+                                      : ScalarType::kBFloat16;
+  if (dense.layout().rank != 2 ||
+      dense.layout().extent[0] != weight.impl_->out_features ||
+      dense.layout().extent[1] != weight.impl_->in_features ||
+      !dense.layout().is_contiguous() || output->type != output_type ||
+      elements > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument(
+        "vulkan linear weight: dense target must be contiguous [out,in]");
+  }
+
+  std::array<std::shared_ptr<DeviceTensor::Impl>, 6> resources;
+  resources.fill(data);
+  resources[5] = output;
+  uint32_t op = 0;
+  switch (weight.impl_->format) {
+    case LinearWeightFormat::kFloat32: op = 0; break;
+    case LinearWeightFormat::kFloat16: op = 1; break;
+    case LinearWeightFormat::kBFloat16: op = 2; break;
+    case LinearWeightFormat::kFloat8E4M3:
+      op = 3;
+      resources[1] = impl_->owner->require(weight.impl_->weight_scale);
+      break;
+    case LinearWeightFormat::kInt8:
+      op = 4;
+      resources[1] = impl_->owner->require(weight.impl_->weight_scale);
+      break;
+    case LinearWeightFormat::kNVFloat4:
+      op = 5;
+      resources[1] = impl_->owner->require(weight.impl_->block_scale);
+      break;
+    case LinearWeightFormat::kNF4:
+      op = 6;
+      resources[1] = impl_->owner->require(weight.impl_->nf4_absmax);
+      resources[2] = impl_->owner->require(weight.impl_->nf4_quant_map);
+      resources[3] = impl_->owner->require(weight.impl_->nf4_nested_quant_map);
+      resources[4] = impl_->owner->require(weight.impl_->nf4_nested_absmax);
+      break;
+  }
+  for (size_t i = 0; i + 1 < resources.size(); ++i) {
+    if (resources[i].get() == output.get()) {
+      throw std::invalid_argument(
+          "vulkan linear weight: dense target aliases persistent storage");
+    }
+  }
+  const uint64_t invocations = 1 + (elements - 1) / 2;
+  impl_->owner->validate_dispatch(invocations);
+
+  TensorContext::Impl::WeightParameters parameters;
+  parameters.op = op;
+  parameters.count = static_cast<uint32_t>(elements);
+  parameters.out_features = fp16 ? 1u : 0u;
+  parameters.in_features = weight.impl_->in_features;
+  parameters.block_size = weight.impl_->nf4_block_size;
+  parameters.nested_block_size = weight.impl_->nf4_nested_block_size;
+  const float scalar = op == 5 ? weight.impl_->global_scale
+                               : weight.impl_->nf4_nested_offset;
+  std::memcpy(&parameters.scalar_bits, &scalar, sizeof(scalar));
+  const uint32_t groups = static_cast<uint32_t>((invocations + 63) / 64);
+  try {
+    impl_->count_operator();
+    for (size_t i = 0; i + 1 < resources.size(); ++i) {
+      bool duplicate = false;
+      for (size_t j = 0; j < i; ++j) {
+        duplicate = duplicate || resources[j].get() == resources[i].get();
+      }
+      if (!duplicate) impl_->transition(resources[i], BufferAccess::kComputeRead);
+    }
+    impl_->transition(output, BufferAccess::kComputeWrite);
+    impl_->dispatch_weight(parameters, groups, resources);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void TensorBatch::transform_linear_activation(const LinearWeight& weight,
+                                               DeviceTensor& input,
+                                               DeviceTensor& output,
+                                               bool convrot) {
+  if (!impl_ || impl_->poisoned) {
+    throw std::logic_error("vulkan tensor: invalid batch");
+  }
+  if (!weight.impl_) {
+    throw std::logic_error("vulkan linear weight: empty weight");
+  }
+  auto source = impl_->owner->require(input);
+  auto destination = impl_->owner->require(output);
+  const auto& shape = source->layout;
+  const uint64_t elements = shape.elements();
+  if (source.get() == destination.get() || shape.rank != 2 ||
+      shape.extent[1] != weight.impl_->in_features ||
+      destination->layout.rank != 2 ||
+      destination->layout.extent != shape.extent ||
+      !shape.is_contiguous() || !destination->layout.is_contiguous() ||
+      source->type != destination->type ||
+      (source->type != ScalarType::kBFloat16 &&
+       source->type != ScalarType::kFloat32) ||
+      elements > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument(
+        "vulkan linear weight: transform needs distinct contiguous [rows,in] tensors");
+  }
+
+  std::array<std::shared_ptr<DeviceTensor::Impl>, 6> resources;
+  resources.fill(source);
+  resources[5] = destination;
+  TensorContext::Impl::WeightParameters parameters;
+  parameters.count = static_cast<uint32_t>(elements);
+  parameters.in_features = weight.impl_->in_features;
+  uint32_t groups = 0;
+  if (convrot) {
+    if (!weight.impl_->convrot) {
+      throw std::invalid_argument("vulkan linear weight: ConvRot is not enabled");
+    }
+    parameters.op = source->type == ScalarType::kFloat32 ? 10u : 9u;
+    parameters.group = weight.impl_->convrot_group;
+    const uint64_t group_count = elements / weight.impl_->convrot_group;
+    if (group_count == 0 || group_count > impl_->owner->max_dispatch_x) {
+      throw std::out_of_range(
+          "vulkan linear weight: ConvRot exceeds dispatch limits");
+    }
+    groups = static_cast<uint32_t>(group_count);
+    const float normalization =
+        1.0f / std::sqrt(static_cast<float>(weight.impl_->convrot_group));
+    std::memcpy(&parameters.scalar_bits, &normalization, sizeof(normalization));
+  } else {
+    if (!weight.impl_->pre_quant_scale) {
+      throw std::invalid_argument(
+          "vulkan linear weight: AWQ pre-scale is not present");
+    }
+    resources[1] = impl_->owner->require(weight.impl_->pre_quant_scale);
+    parameters.op = source->type == ScalarType::kFloat32 ? 8u : 7u;
+    const uint64_t invocations = source->type == ScalarType::kFloat32
+        ? elements : 1 + (elements - 1) / 2;
+    impl_->owner->validate_dispatch(invocations);
+    groups = static_cast<uint32_t>((invocations + 63) / 64);
+  }
+  try {
+    impl_->count_operator();
+    impl_->transition(source, BufferAccess::kComputeRead);
+    if (!convrot) {
+      impl_->transition(resources[1], BufferAccess::kComputeRead);
+    }
+    impl_->transition(destination, BufferAccess::kComputeWrite);
+    impl_->dispatch_weight(parameters, groups, resources);
   } catch (...) {
     impl_->poisoned = true;
     throw;

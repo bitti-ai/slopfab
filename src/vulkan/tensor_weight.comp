@@ -1,0 +1,224 @@
+#version 460
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input0 { uint words[]; } in0;
+layout(set = 0, binding = 1, std430) readonly buffer Input1 { uint words[]; } in1;
+layout(set = 0, binding = 2, std430) readonly buffer Input2 { uint words[]; } in2;
+layout(set = 0, binding = 3, std430) readonly buffer Input3 { uint words[]; } in3;
+layout(set = 0, binding = 4, std430) readonly buffer Input4 { uint words[]; } in4;
+layout(set = 0, binding = 5, std430) writeonly buffer Output { uint words[]; } output_data;
+
+layout(push_constant) uniform Parameters {
+  uint op;
+  uint count;
+  uint out_features;
+  uint in_features;
+  uint block_size;
+  uint nested_block_size;
+  uint scalar_bits;
+  uint group;
+} p;
+
+shared float convrot_values[320];
+
+uint byte_at(const uint word, uint byte_index) {
+  return (word >> (8u * byte_index)) & 0xffu;
+}
+uint load_byte(const uint binding, uint index) {
+  uint word = binding == 0u ? in0.words[index >> 2u]
+      : binding == 1u ? in1.words[index >> 2u]
+      : binding == 2u ? in2.words[index >> 2u]
+      : binding == 3u ? in3.words[index >> 2u]
+      : in4.words[index >> 2u];
+  return byte_at(word, index & 3u);
+}
+float load_float(const uint binding, uint index) {
+  return uintBitsToFloat(binding == 1u ? in1.words[index]
+      : binding == 2u ? in2.words[index]
+      : binding == 3u ? in3.words[index] : in4.words[index]);
+}
+float load_bf16(uint index) {
+  uint packed = in0.words[index >> 1u];
+  return uintBitsToFloat(((packed >> (16u * (index & 1u))) & 0xffffu) << 16u);
+}
+float load_bf16_scale(uint index) {
+  uint packed = in1.words[index >> 1u];
+  uint bits = (packed >> (16u * (index & 1u))) & 0xffffu;
+  return uintBitsToFloat(bits << 16u);
+}
+float load_half(uint index) {
+  uint packed = in0.words[index >> 1u];
+  vec2 values = unpackHalf2x16(packed);
+  return (index & 1u) == 0u ? values.x : values.y;
+}
+
+float decode_e4m3(uint value) {
+  uint sign = (value & 0x80u) << 24u;
+  uint exponent = (value >> 3u) & 0x0fu;
+  uint mantissa = value & 7u;
+  uint bits;
+  if (exponent == 0u) {
+    if (mantissa == 0u) bits = sign;
+    else {
+      uint e = 1u, m = mantissa;
+      while ((m & 8u) == 0u) { m <<= 1u; --e; }
+      bits = sign | ((e + 120u) << 23u) | ((m & 7u) << 20u);
+    }
+  } else if (exponent == 15u && mantissa == 7u) {
+    bits = sign | 0x7fc00000u;
+  } else {
+    bits = sign | ((exponent + 120u) << 23u) | (mantissa << 20u);
+  }
+  return uintBitsToFloat(bits);
+}
+
+float decode_e2m1(uint value) {
+  uint magnitude = value & 7u;
+  uint bits = magnitude == 0u ? 0u : magnitude == 1u ? 0x3f000000u
+      : ((126u + (magnitude >> 1u)) << 23u) | ((magnitude & 1u) << 22u);
+  return uintBitsToFloat(bits | ((value & 8u) << 28u));
+}
+
+uint bf16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return 0x7fffu;
+  return (bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u;
+}
+
+uint nvfp4_scale_offset(uint row, uint block, uint blocks_per_row) {
+  uint tile = (row >> 7u) * (blocks_per_row >> 2u) + (block >> 2u);
+  return tile * 512u + (row & 31u) * 16u + ((row & 127u) >> 5u) * 4u +
+      (block & 3u);
+}
+
+float materialized_value(uint index) {
+  if (p.op == 0u) return uintBitsToFloat(in0.words[index]);
+  if (p.op == 1u) return load_half(index);
+  if (p.op == 2u) return load_bf16(index);
+  if (p.op == 3u) {
+    precise float decoded = decode_e4m3(load_byte(0u, index));
+    precise float result = decoded * load_float(1u, 0u);
+    return result;
+  }
+  if (p.op == 4u) {
+    int code = int(load_byte(0u, index));
+    if (code >= 128) code -= 256;
+    precise float result = float(code) * load_float(1u, index / p.in_features);
+    return result;
+  }
+  if (p.op == 5u) {
+    uint packed = load_byte(0u, index >> 1u);
+    uint code = (index & 1u) == 0u ? packed >> 4u : packed & 15u;
+    uint row = index / p.in_features;
+    uint block = (index - row * p.in_features) >> 4u;
+    precise float block_value = decode_e4m3(load_byte(
+        1u, nvfp4_scale_offset(row, block, p.in_features >> 4u)));
+    precise float scale = block_value * uintBitsToFloat(p.scalar_bits);
+    precise float result = decode_e2m1(code) * scale;
+    return result;
+  }
+  uint packed = load_byte(0u, index >> 1u);
+  uint code = (index & 1u) == 0u ? packed >> 4u : packed & 15u;
+  uint scale_index = index / p.block_size;
+  uint nested_code = load_byte(1u, scale_index);
+  float scale = fma(load_float(3u, nested_code),
+                    load_float(4u, scale_index / p.nested_block_size),
+                    uintBitsToFloat(p.scalar_bits));
+  precise float result = load_float(2u, code) * scale;
+  return result;
+}
+
+uint packed_output(float lo, float hi) {
+  if (p.out_features != 0u) return packHalf2x16(vec2(lo, hi));
+  return bf16_rte(lo) | (bf16_rte(hi) << 16u);
+}
+
+float activation_value(uint index) {
+  return p.op == 7u ? load_bf16(index) : uintBitsToFloat(in0.words[index]);
+}
+
+void materialize_or_scale() {
+  uint word = gl_GlobalInvocationID.x;
+  if (p.op == 8u) {
+    if (word >= p.count) return;
+    uint column = word % p.in_features;
+    precise float value = uintBitsToFloat(in0.words[word]) *
+        load_bf16_scale(column);
+    output_data.words[word] = floatBitsToUint(value);
+    return;
+  }
+  uint first = word * 2u;
+  if (first >= p.count) return;
+  float lo, hi;
+  if (p.op <= 6u) {
+    lo = materialized_value(first);
+    hi = first + 1u < p.count ? materialized_value(first + 1u) : 0.0;
+  } else {
+    uint column0 = first % p.in_features;
+    uint column1 = (first + 1u) % p.in_features;
+    precise float scale0 = load_bf16_scale(column0);
+    precise float scale1 = load_bf16_scale(column1);
+    precise float value0 = activation_value(first) * scale0;
+    precise float value1 = first + 1u < p.count ? activation_value(first + 1u) * scale1 : 0.0;
+    lo = value0; hi = value1;
+  }
+  output_data.words[word] = packed_output(lo, hi);
+}
+
+uint convrot_pad(uint index) { return index + (index >> 2u); }
+
+void convrot() {
+  uint lane = gl_LocalInvocationIndex;
+  uint row_group = gl_WorkGroupID.x;
+  uint base = row_group * p.group;
+  bool fp32 = p.op == 10u;
+  for (uint i = lane; i < p.group; i += 64u)
+    convrot_values[convrot_pad(i)] = fp32
+        ? uintBitsToFloat(in0.words[base + i]) : load_bf16(base + i);
+  barrier();
+  uint quarter = p.group >> 2u;
+  uint stride = 1u;
+  while (stride < p.group) {
+    float r0 = 0.0, r1 = 0.0, r2 = 0.0, r3 = 0.0;
+    uint index = 0u;
+    if (lane < quarter) {
+      index = (lane / stride) * 4u * stride + lane % stride;
+      float a = convrot_values[convrot_pad(index)];
+      float b = convrot_values[convrot_pad(index + stride)];
+      float c = convrot_values[convrot_pad(index + 2u * stride)];
+      float d = convrot_values[convrot_pad(index + 3u * stride)];
+      precise float t0 = a + b; t0 = t0 + c; r0 = t0 - d;
+      precise float t1 = a + b; t1 = t1 - c; r1 = t1 + d;
+      precise float t2 = a - b; t2 = t2 + c; r2 = t2 + d;
+      precise float t3 = -a + b; t3 = t3 + c; r3 = t3 + d;
+    }
+    barrier();
+    if (lane < quarter) {
+      convrot_values[convrot_pad(index)] = r0;
+      convrot_values[convrot_pad(index + stride)] = r1;
+      convrot_values[convrot_pad(index + 2u * stride)] = r2;
+      convrot_values[convrot_pad(index + 3u * stride)] = r3;
+    }
+    barrier();
+    stride *= 4u;
+  }
+  float norm = uintBitsToFloat(p.scalar_bits);
+  if (fp32) {
+    for (uint i = lane; i < p.group; i += 64u) {
+      precise float value = convrot_values[convrot_pad(i)] * norm;
+      output_data.words[base + i] = floatBitsToUint(value);
+    }
+  } else {
+    for (uint word = lane; word < p.group / 2u; word += 64u) {
+      uint i = word * 2u;
+      precise float lo = convrot_values[convrot_pad(i)] * norm;
+      precise float hi = convrot_values[convrot_pad(i + 1u)] * norm;
+      output_data.words[(base >> 1u) + word] = packed_output(lo, hi);
+    }
+  }
+}
+
+void main() {
+  if (p.op >= 9u) convrot(); else materialize_or_scale();
+}

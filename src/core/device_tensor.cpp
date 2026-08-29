@@ -14,6 +14,9 @@ uint64_t scalar_bytes(ScalarType type) {
     case ScalarType::kFloat16:
     case ScalarType::kBFloat16:
       return 2;
+    case ScalarType::kUInt8:
+    case ScalarType::kInt8:
+      return 1;
   }
   throw std::invalid_argument("tensor: unsupported scalar type");
 }
