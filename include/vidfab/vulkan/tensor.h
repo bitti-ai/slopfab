@@ -204,9 +204,16 @@ class TensorBatch {
   void audio_conv_transpose1d(
       DeviceTensor& input, DeviceTensor& weight, DeviceTensor* bias,
       DeviceTensor& output, const vae::AudioConvTranspose1DDesc& desc);
-  void audio_add_inplace(DeviceTensor& input_output, DeviceTensor& branch);
-  void audio_scale_inplace(DeviceTensor& input_output, float scale);
-  void audio_clamp_inplace(DeviceTensor& input_output, float lower, float upper);
+  // Decoder-owned flat arenas may be larger than the current logical tensor.
+  // `count` selects their live prefix; zero preserves the shaped primitive API.
+  void audio_copy_prefix(DeviceTensor& source, DeviceTensor& destination,
+                         uint64_t count);
+  void audio_add_inplace(DeviceTensor& input_output, DeviceTensor& branch,
+                         uint64_t count = 0);
+  void audio_scale_inplace(DeviceTensor& input_output, float scale,
+                           uint64_t count = 0);
+  void audio_clamp_inplace(DeviceTensor& input_output, float lower, float upper,
+                           uint64_t count = 0);
   void audio_interleave(DeviceTensor& planar, DeviceTensor& interleaved,
                         uint32_t batch, uint32_t frames);
   void audio_snake_beta_inplace(DeviceTensor& input_output,
