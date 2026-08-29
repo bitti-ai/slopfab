@@ -267,10 +267,18 @@ void ExactViTBlockGraph::load(const SafeTensors& checkpoint) {
   for (uint32_t layer = 0; layer < impl_->layer_count; ++layer) {
     vae::ViTBlockWeights weights =
         vae::load_vit_block_weights(checkpoint, layer, impl_->config);
-    impl_->blocks[layer].load(weights.view(), impl_->config, impl_->stream.get());
+    load_layer(layer, weights.view());
     // The temporary owns pageable vectors used by async copies.
     impl_->stream.synchronize();
   }
+}
+
+void ExactViTBlockGraph::load_layer(
+    uint32_t layer, const vae::ViTBlockWeightsView& weights) {
+  if (!impl_) throw std::logic_error("exact CUDA VAE ViT graph: empty graph");
+  if (layer >= impl_->layer_count)
+    throw std::out_of_range("exact CUDA VAE ViT graph: layer out of range");
+  impl_->blocks[layer].load(weights, impl_->config, impl_->stream.get());
 }
 
 void ExactViTBlockGraph::forward_device(float* tokens, const float* cosine,
@@ -285,6 +293,21 @@ void ExactViTBlockGraph::forward_device(float* tokens, const float* cosine,
     run_exact_block(impl_->config, block, impl_->scratch, tokens, cosine, sine,
                     stream);
   }
+}
+
+void ExactViTBlockGraph::forward_layer_device(
+    uint32_t layer, float* tokens, const float* cosine, const float* sine,
+    cudaStream_t stream) const {
+  if (!impl_) throw std::logic_error("exact CUDA VAE ViT graph: empty graph");
+  if (layer >= impl_->layer_count)
+    throw std::out_of_range("exact CUDA VAE ViT graph: layer out of range");
+  if (!tokens || !cosine || !sine)
+    throw std::invalid_argument("exact CUDA VAE ViT graph: null activation");
+  const BlockWeightsDevice& block = impl_->blocks[layer];
+  if (!block.loaded)
+    throw std::logic_error("exact CUDA VAE ViT graph: weights not loaded");
+  run_exact_block(impl_->config, block, impl_->scratch, tokens, cosine, sine,
+                  stream);
 }
 
 void ExactViTBlockGraph::forward(const float* tokens, const float* cosine,

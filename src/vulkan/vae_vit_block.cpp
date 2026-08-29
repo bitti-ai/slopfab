@@ -3,6 +3,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include "vidfab/gemm.h"
 #include "vidfab/vulkan/gemm.h"
@@ -346,6 +347,131 @@ uint64_t ExactViTBlockStage::peak_device_bytes() const noexcept {
         bytes(impl_->host->tokens) + bytes(impl_->host->cosine) + bytes(impl_->host->sine);
   }
   return impl_->weight_bytes();
+}
+
+struct ExactViTBlockGraph::Impl {
+  TensorContext* context = nullptr;
+  ViTBlockConfig config;
+  uint32_t layer_count = 0;
+  std::vector<ExactViTBlockStage> blocks;
+  ExactViTBlockScratch scratch;
+
+  struct HostState {
+    DeviceTensor tokens, cosine, sine;
+  };
+  std::unique_ptr<HostState> host;
+
+  Impl(TensorContext& owner, const ViTBlockConfig& c, uint32_t layers)
+      : context(&owner), config(c), layer_count(layers), scratch(
+            ExactViTBlockScratch::create(owner, c)) {
+    blocks.reserve(layers);
+    for (uint32_t i = 0; i < layers; ++i)
+      blocks.push_back(ExactViTBlockStage::create(owner, c));
+  }
+};
+
+ExactViTBlockGraph::ExactViTBlockGraph() = default;
+ExactViTBlockGraph::~ExactViTBlockGraph() = default;
+ExactViTBlockGraph::ExactViTBlockGraph(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+ExactViTBlockGraph::ExactViTBlockGraph(ExactViTBlockGraph&&) noexcept = default;
+ExactViTBlockGraph& ExactViTBlockGraph::operator=(ExactViTBlockGraph&&) noexcept =
+    default;
+
+ExactViTBlockGraph ExactViTBlockGraph::create(
+    TensorContext& context, const ViTBlockConfig& config, uint32_t layers) {
+  validate_config(config);
+  if (layers == 0 || layers > 204)
+    throw std::invalid_argument("exact Vulkan VAE ViT graph: invalid layer count");
+  return ExactViTBlockGraph(std::make_shared<Impl>(context, config, layers));
+}
+
+void ExactViTBlockGraph::load(const SafeTensors& checkpoint) {
+  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+  for (uint32_t layer = 0; layer < impl_->layer_count; ++layer) {
+    vae::ViTBlockWeights weights =
+        vae::load_vit_block_weights(checkpoint, layer, impl_->config);
+    load_layer(layer, weights.view());
+  }
+}
+
+void ExactViTBlockGraph::load_layer(
+    uint32_t layer, const ViTBlockWeightsView& weights) {
+  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+  if (layer >= impl_->layer_count)
+    throw std::out_of_range("exact Vulkan VAE ViT graph: layer out of range");
+  impl_->blocks[layer].load(weights);
+}
+
+void ExactViTBlockGraph::record(TensorBatch& batch, DeviceTensor& tokens,
+                                DeviceTensor& cosine,
+                                DeviceTensor& sine) const {
+  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+  constexpr uint32_t kOperatorsPerLayer = 20;
+  const uint32_t required = impl_->layer_count * kOperatorsPerLayer;
+  // Reject transactionally before a single layer mutates the caller's batch.
+  if (batch.remaining_operator_capacity() < required)
+    throw std::logic_error("exact Vulkan VAE ViT graph: insufficient batch capacity");
+  for (const ExactViTBlockStage& block : impl_->blocks)
+    block.record(batch, tokens, cosine, sine, impl_->scratch);
+}
+
+void ExactViTBlockGraph::record_layer(
+    uint32_t layer, TensorBatch& batch, DeviceTensor& tokens,
+    DeviceTensor& cosine, DeviceTensor& sine) const {
+  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+  if (layer >= impl_->layer_count)
+    throw std::out_of_range("exact Vulkan VAE ViT graph: layer out of range");
+  impl_->blocks[layer].record(batch, tokens, cosine, sine, impl_->scratch);
+}
+
+void ExactViTBlockGraph::forward(const float* tokens, const float* cosine,
+                                 const float* sine, float* output) {
+  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+  if (!tokens || !cosine || !sine || !output)
+    throw std::invalid_argument("exact Vulkan VAE ViT graph: null activation");
+  if (!impl_->host) {
+    auto host = std::make_unique<Impl::HostState>();
+    host->tokens = impl_->context->allocate(
+        matrix(impl_->config.sequence, impl_->config.dim));
+    host->cosine = impl_->context->allocate(
+        matrix(impl_->config.sequence, impl_->config.rope_dim));
+    host->sine = impl_->context->allocate(
+        matrix(impl_->config.sequence, impl_->config.rope_dim));
+    impl_->host = std::move(host);
+  }
+  const uint64_t token_count =
+      static_cast<uint64_t>(impl_->config.sequence) * impl_->config.dim;
+  const uint64_t rope_count =
+      static_cast<uint64_t>(impl_->config.sequence) * impl_->config.rope_dim;
+  impl_->context->upload(impl_->host->tokens, tokens, token_count);
+  impl_->context->upload(impl_->host->cosine, cosine, rope_count);
+  impl_->context->upload(impl_->host->sine, sine, rope_count);
+  TensorBatch batch = impl_->context->begin_batch();
+  record(batch, impl_->host->tokens, impl_->host->cosine, impl_->host->sine);
+  batch.submit().wait();
+  impl_->context->download(impl_->host->tokens, output, token_count);
+}
+
+uint32_t ExactViTBlockGraph::layers() const noexcept {
+  return impl_ ? impl_->layer_count : 0;
+}
+
+uint64_t ExactViTBlockGraph::persistent_bytes() const noexcept {
+  if (!impl_) return 0;
+  uint64_t total = 0;
+  for (const ExactViTBlockStage& block : impl_->blocks)
+    total += block.persistent_bytes();
+  return total;
+}
+
+uint64_t ExactViTBlockGraph::peak_device_bytes() const noexcept {
+  if (!impl_) return 0;
+  uint64_t total = persistent_bytes() + impl_->scratch.reserved_bytes();
+  if (impl_->host)
+    total += bytes(impl_->host->tokens) + bytes(impl_->host->cosine) +
+             bytes(impl_->host->sine);
+  return total;
 }
 
 }  // namespace vidfab::vulkan

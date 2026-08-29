@@ -26,8 +26,14 @@ class ExactViTBlockGraph {
   static ExactViTBlockGraph create(const vae::ViTBlockConfig& config,
                                    uint32_t layers);
   void load(const SafeTensors& checkpoint);
+  void load_layer(uint32_t layer,
+                  const vae::ViTBlockWeightsView& weights);
   void forward_device(float* tokens, const float* cosine, const float* sine,
                       cudaStream_t stream) const;
+  // Verification seam. Production uses forward_device() for the whole stack.
+  void forward_layer_device(uint32_t layer, float* tokens,
+                            const float* cosine, const float* sine,
+                            cudaStream_t stream) const;
   void forward(const float* tokens, const float* cosine, const float* sine,
                float* output);
   uint32_t layers() const noexcept;

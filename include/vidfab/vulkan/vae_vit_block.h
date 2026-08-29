@@ -56,4 +56,34 @@ class ExactViTBlockStage final : public vae::ExactViTBlockStage {
   std::shared_ptr<Impl> impl_;
 };
 
+class ExactViTBlockGraph {
+ public:
+  ExactViTBlockGraph();
+  ~ExactViTBlockGraph();
+  ExactViTBlockGraph(ExactViTBlockGraph&&) noexcept;
+  ExactViTBlockGraph& operator=(ExactViTBlockGraph&&) noexcept;
+  ExactViTBlockGraph(const ExactViTBlockGraph&) = delete;
+  ExactViTBlockGraph& operator=(const ExactViTBlockGraph&) = delete;
+  static ExactViTBlockGraph create(TensorContext& context,
+                                   const vae::ViTBlockConfig& config,
+                                   uint32_t layers);
+  void load(const SafeTensors& checkpoint);
+  void load_layer(uint32_t layer,
+                  const vae::ViTBlockWeightsView& weights);
+  void record(TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& cosine,
+              DeviceTensor& sine) const;
+  // Verification seam; production uses record() once for the complete stack.
+  void record_layer(uint32_t layer, TensorBatch& batch, DeviceTensor& tokens,
+                    DeviceTensor& cosine, DeviceTensor& sine) const;
+  void forward(const float* tokens, const float* cosine, const float* sine,
+               float* output);
+  uint32_t layers() const noexcept;
+  uint64_t persistent_bytes() const noexcept;
+  uint64_t peak_device_bytes() const noexcept;
+ private:
+  struct Impl;
+  explicit ExactViTBlockGraph(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
+};
+
 }  // namespace vidfab::vulkan
