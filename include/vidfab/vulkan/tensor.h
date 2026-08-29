@@ -118,6 +118,20 @@ class TensorBatch {
                     DeviceTensor& destination);
   // The fp32 arithmetic exactness contract below applies to add-bias too.
   void add_bias(DeviceTensor& input, DeviceTensor& bias, DeviceTensor& output);
+  // Production Video-VAE pointwise fusions. All tensors are contiguous fp32.
+  // Residual is deliberately in-place: x/y are [rows,columns], bias/scale are
+  // [columns], and all four allocations are distinct. Arithmetic is a
+  // separately rounded bias add followed by fma(biased_y, scale, x).
+  void layer_scale_residual_f32(DeviceTensor& x, DeviceTensor& y,
+                                DeviceTensor& bias, DeviceTensor& scale);
+  // Input [rows,2*inner] stores the gate first and value second; bias has the
+  // same doubled width and output is a distinct [rows,inner] allocation.
+  void swiglu_bias_f32(DeviceTensor& input, DeviceTensor& bias,
+                       DeviceTensor& output);
+  // Channel-major [channels,voxels] input/output with mean/std [channels].
+  // All four allocations are distinct; the operation is fma(z,std,mean).
+  void latent_denorm_f32(DeviceTensor& input, DeviceTensor& mean,
+                         DeviceTensor& std_dev, DeviceTensor& output);
   void heads_to_tokens_bf16(DeviceTensor& source, DeviceTensor& destination,
                             uint32_t heads, uint32_t sequence, uint32_t head_dim);
   void depth_to_space(DeviceTensor& source, DeviceTensor& destination,
@@ -246,6 +260,11 @@ class TensorContext {
   void require_exact_normalization() const;
   bool exact_fp32_vae_normalization() const noexcept;
   void require_exact_fp32_vae_normalization() const;
+  // Exact video-VAE pointwise operations canonicalize every subnormal
+  // operand/intermediate/result to signed zero and every NaN to 0x7fc00000.
+  // Finite normals, infinities and signed zeros retain their IEEE bits.
+  bool exact_vae_pointwise() const noexcept;
+  void require_exact_vae_pointwise() const;
   // Exact blocked attention has its own capability contract even though the
   // currently measured tuple overlaps normalization. It additionally pins the
   // deterministic exp/divide shader and CUDA reference artifacts.

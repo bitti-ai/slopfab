@@ -1,0 +1,200 @@
+#version 450
+#ifdef VAE_SWIGLU
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#endif
+
+#if !defined(VAE_RESIDUAL) && !defined(VAE_SWIGLU) && !defined(VAE_DENORM)
+#error select one VAE pointwise operation
+#endif
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer Primary { uint words[]; } primary;
+layout(set = 0, binding = 1, std430) readonly buffer Secondary { uint words[]; } secondary;
+layout(set = 0, binding = 2, std430) readonly buffer Tertiary { uint words[]; } tertiary;
+layout(set = 0, binding = 3, std430) buffer Quaternary { uint words[]; } quaternary;
+
+layout(push_constant) uniform Parameters {
+  uint op;
+  uint count;
+  uint columns;
+  uint unused0;
+  uint unused1;
+  uint unused2;
+  uint unused3;
+  uint unused4;
+} p;
+
+float canonicalize_pointwise_float(float value) {
+  uint bits = floatBitsToUint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return uintBitsToFloat(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return uintBitsToFloat(0x7fc00000u);
+  return value;
+}
+
+#ifdef VAE_SWIGLU
+float deterministic_exp_nonpositive(float value) {
+  if (value <= -87.0) return 0.0;
+  float scaled = value * 1.4426950408889634;
+  int exponent = int(scaled);
+  if (float(exponent) > scaled) --exponent;
+  float remainder = fma(-float(exponent), 0.693145751953125, value);
+  remainder = fma(-float(exponent), 1.428606765330187e-6, remainder);
+  float polynomial = 2.7557319223985893e-7;
+  polynomial = fma(polynomial, remainder, 2.755731922398589e-6);
+  polynomial = fma(polynomial, remainder, 2.48015873015873e-5);
+  polynomial = fma(polynomial, remainder, 1.984126984126984e-4);
+  polynomial = fma(polynomial, remainder, 1.388888888888889e-3);
+  polynomial = fma(polynomial, remainder, 8.333333333333333e-3);
+  polynomial = fma(polynomial, remainder, 4.166666666666667e-2);
+  polynomial = fma(polynomial, remainder, 1.666666666666667e-1);
+  polynomial = fma(polynomial, remainder, 0.5);
+  polynomial = fma(polynomial, remainder, 1.0);
+  polynomial = fma(polynomial, remainder, 1.0);
+  uint scale_bits = uint(exponent + 127) << 23u;
+  return polynomial * uintBitsToFloat(scale_bits);
+}
+
+uint64_t round_quotient_even(uint64_t numerator, uint64_t denominator) {
+  uint64_t quotient = numerator / denominator;
+  uint64_t remainder = numerator - quotient * denominator;
+  uint64_t complement = denominator - remainder;
+  if (remainder > complement ||
+      (remainder == complement && (quotient & uint64_t(1)) != uint64_t(0))) ++quotient;
+  return quotient;
+}
+
+void decode_positive(uint bits, out uint significand, out int exponent) {
+  significand = bits & 0x007fffffu;
+  if ((bits & 0x7f800000u) == 0u) {
+    int top = findMSB(significand);
+    exponent = top - 149;
+    significand <<= uint(23 - top);
+  } else {
+    exponent = int((bits >> 23u) & 0xffu) - 127;
+    significand |= 0x00800000u;
+  }
+}
+
+uint positive_float_add(uint a_bits, uint b_bits) {
+  if ((a_bits & 0x7fffffffu) == 0u) return b_bits;
+  if ((b_bits & 0x7fffffffu) == 0u) return a_bits;
+  uint a, b; int ae, be;
+  decode_positive(a_bits, a, ae); decode_positive(b_bits, b, be);
+  if (ae < be || (ae == be && a < b)) {
+    uint t = a; a = b; b = t; int te = ae; ae = be; be = te;
+  }
+  uint difference = uint(ae - be);
+  uint64_t a_ext = uint64_t(a) << 3u;
+  uint64_t b_ext = uint64_t(b) << 3u;
+  if (difference != 0u) {
+    if (difference >= 63u) b_ext = uint64_t(1);
+    else {
+      uint64_t lost = b_ext & ((uint64_t(1) << difference) - uint64_t(1));
+      b_ext = (b_ext >> difference) | uint64_t(lost != uint64_t(0));
+    }
+  }
+  uint64_t sum = a_ext + b_ext;
+  if (sum >= (uint64_t(1) << 27u)) {
+    sum = (sum >> 1u) | (sum & uint64_t(1)); ++ae;
+  }
+  uint64_t rounded = sum >> 3u;
+  uint64_t remainder = sum & uint64_t(7);
+  rounded += uint64_t(remainder > uint64_t(4) ||
+      (remainder == uint64_t(4) && (rounded & uint64_t(1)) != uint64_t(0)));
+  if (rounded == (uint64_t(1) << 24u)) { rounded >>= 1u; ++ae; }
+  return uint(ae + 127) << 23u | uint(rounded) & 0x007fffffu;
+}
+
+float deterministic_divide(float numerator_value, float denominator_value) {
+  uint numerator_bits = floatBitsToUint(numerator_value);
+  uint denominator_bits = floatBitsToUint(denominator_value);
+  uint sign = (numerator_bits ^ denominator_bits) & 0x80000000u;
+  uint numerator_magnitude = numerator_bits & 0x7fffffffu;
+  uint denominator_magnitude = denominator_bits & 0x7fffffffu;
+  if (numerator_magnitude < 0x00800000u) return uintBitsToFloat(sign);
+  uint a = (numerator_magnitude & 0x007fffffu) | 0x00800000u;
+  uint b = (denominator_magnitude & 0x007fffffu) | 0x00800000u;
+  int exponent = int(numerator_magnitude >> 23u) -
+                 int(denominator_magnitude >> 23u) + 127;
+  uint shift = 23u;
+  if (a < b) { --exponent; shift = 24u; }
+  uint64_t significand = round_quotient_even(uint64_t(a) << shift, uint64_t(b));
+  if (significand == (uint64_t(1) << 24u)) { significand >>= 1u; ++exponent; }
+  if (exponent >= 255) return uintBitsToFloat(sign | 0x7f800000u);
+  if (exponent <= 0) {
+    uint sub_shift = uint(1 - exponent);
+    if (sub_shift >= 64u) return uintBitsToFloat(sign);
+    uint64_t base = significand >> sub_shift;
+    uint64_t lost_mask = (uint64_t(1) << sub_shift) - uint64_t(1);
+    uint64_t lost = significand & lost_mask;
+    uint64_t halfway = uint64_t(1) << (sub_shift - 1u);
+    if (lost > halfway ||
+        (lost == halfway && (base & uint64_t(1)) != uint64_t(0))) ++base;
+    return uintBitsToFloat(sign | uint(base));
+  }
+  return uintBitsToFloat(sign | (uint(exponent) << 23u) |
+                         (uint(significand) & 0x007fffffu));
+}
+
+float deterministic_silu(float value) {
+  uint bits = floatBitsToUint(value), magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return uintBitsToFloat(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return uintBitsToFloat(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u ? uintBitsToFloat(0x80000000u) : value;
+  float result;
+  if (value < 0.0) {
+    float exponential = deterministic_exp_nonpositive(value);
+    precise float numerator = value * exponential;
+    float denominator = uintBitsToFloat(
+        positive_float_add(floatBitsToUint(exponential), 0x3f800000u));
+    result = deterministic_divide(numerator, denominator);
+  } else {
+    float exponential = deterministic_exp_nonpositive(-value);
+    float denominator = uintBitsToFloat(
+        positive_float_add(floatBitsToUint(exponential), 0x3f800000u));
+    result = deterministic_divide(value, denominator);
+  }
+  return canonicalize_pointwise_float(result);
+}
+#endif
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= p.count) return;
+#ifdef VAE_RESIDUAL
+  uint column = i % p.columns;
+  float y_value = canonicalize_pointwise_float(uintBitsToFloat(secondary.words[i]));
+  float bias_value = canonicalize_pointwise_float(uintBitsToFloat(tertiary.words[column]));
+  precise float biased = y_value + bias_value;
+  biased = canonicalize_pointwise_float(biased);
+  float result = fma(biased,
+                     canonicalize_pointwise_float(uintBitsToFloat(quaternary.words[column])),
+                     canonicalize_pointwise_float(uintBitsToFloat(primary.words[i])));
+  primary.words[i] = floatBitsToUint(canonicalize_pointwise_float(result));
+#elif defined(VAE_SWIGLU)
+  uint row = i / p.columns;
+  uint column = i - row * p.columns;
+  // The pinned NVIDIA tuple compiles the RTE deterministic-SiLU module through
+  // the same shaderInt64 path as GroupNorm. A widened row product also makes
+  // the already host-validated uint32 indexing contract explicit in SPIR-V.
+  uint row_base = uint(uint64_t(row) * uint64_t(2u * p.columns));
+  float gate_input = canonicalize_pointwise_float(uintBitsToFloat(primary.words[row_base + column]));
+  float gate_bias = canonicalize_pointwise_float(uintBitsToFloat(secondary.words[column]));
+  precise float gate = gate_input + gate_bias;
+  gate = canonicalize_pointwise_float(gate);
+  float value_input = canonicalize_pointwise_float(uintBitsToFloat(primary.words[row_base + p.columns + column]));
+  float value_bias = canonicalize_pointwise_float(uintBitsToFloat(secondary.words[p.columns + column]));
+  precise float value = value_input + value_bias;
+  value = canonicalize_pointwise_float(value);
+  precise float result = deterministic_silu(gate) * value;
+  quaternary.words[i] = floatBitsToUint(canonicalize_pointwise_float(result));
+#else
+  uint channel = i / p.columns;
+  float result = fma(canonicalize_pointwise_float(uintBitsToFloat(primary.words[i])),
+                     canonicalize_pointwise_float(uintBitsToFloat(tertiary.words[channel])),
+                     canonicalize_pointwise_float(uintBitsToFloat(secondary.words[channel])));
+  quaternary.words[i] = floatBitsToUint(canonicalize_pointwise_float(result));
+#endif
+}

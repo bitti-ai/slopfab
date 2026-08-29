@@ -15,6 +15,12 @@ inline constexpr uint8_t kTensorBf16ModSpirv[] = {@VIDFAB_TENSOR_BF16_MOD_SPV_BY
 inline constexpr uint8_t kTensorFp32ModSpirv[] = {@VIDFAB_TENSOR_FP32_MOD_SPV_BYTES@};
 inline constexpr uint8_t kTensorGroupNormSpirv[] = {
     @VIDFAB_TENSOR_GROUP_NORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorVaeResidualSpirv[] = {
+    @VIDFAB_TENSOR_VAE_RESIDUAL_SPV_BYTES@};
+inline constexpr uint8_t kTensorVaeSwigluSpirv[] = {
+    @VIDFAB_TENSOR_VAE_SWIGLU_SPV_BYTES@};
+inline constexpr uint8_t kTensorVaeDenormSpirv[] = {
+    @VIDFAB_TENSOR_VAE_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorRopeSpirv[] = {@VIDFAB_TENSOR_ROPE_SPV_BYTES@};
 inline constexpr uint8_t kTensorRopeDenormSpirv[] = {
     @VIDFAB_TENSOR_ROPE_DENORM_SPV_BYTES@};

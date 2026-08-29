@@ -266,4 +266,41 @@ __device__ inline float deterministic_silu(float value) {
              ? __uint_as_float(result_bits & 0x80000000u) : result;
 }
 
+// Exact pointwise VAE operations deliberately make the device's denormal and
+// NaN behavior irrelevant. Subnormal operands/results become signed zero and
+// every NaN becomes the same quiet-NaN payload; finite normals, infinities and
+// signed zeros retain their bits. Call at each documented arithmetic boundary.
+__device__ inline float canonicalize_pointwise_float(float value) {
+  const uint32_t bits = __float_as_uint(value);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return __uint_as_float(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return __uint_as_float(0x7fc00000u);
+  return value;
+}
+
+// Pointwise SwiGLU uses the accepted deterministic exponential polynomial but
+// defines the sigmoid division with the integer IEEE-RNE helper. This avoids a
+// backend-native divide while retaining a single fused tensor pass.
+__device__ inline float deterministic_pointwise_silu(float value) {
+  const uint32_t bits = __float_as_uint(value);
+  const uint32_t magnitude = bits & 0x7fffffffu;
+  if (magnitude < 0x00800000u) return __uint_as_float(bits & 0x80000000u);
+  if (magnitude > 0x7f800000u) return __uint_as_float(0x7fc00000u);
+  if (magnitude == 0x7f800000u)
+    return (bits & 0x80000000u) != 0u ? __uint_as_float(0x80000000u) : value;
+  float result;
+  if (value < 0.0f) {
+    const float exponential = deterministic_exp_nonpositive(value);
+    result = deterministic_float_divide(
+        __fmul_rn(value, exponential),
+        __uint_as_float(positive_float_add(__float_as_uint(exponential), 0x3f800000u)));
+  } else {
+    const float exponential = deterministic_exp_nonpositive(-value);
+    result = deterministic_float_divide(
+        value,
+        __uint_as_float(positive_float_add(__float_as_uint(exponential), 0x3f800000u)));
+  }
+  return canonicalize_pointwise_float(result);
+}
+
 }  // namespace vidfab::cuda

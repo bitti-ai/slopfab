@@ -22,6 +22,7 @@ namespace vidfab::vulkan {
 namespace {
 
 constexpr uint64_t kMaxExactNormDimension = 1ull << 24;
+enum class VaePointwiseOperation : uint32_t { kResidual, kSwiglu, kDenorm };
 constexpr uint32_t kH3AttentionLocalSize = 1024;
 // The pinned module declares 99,328 bytes across phase-aliased workgroup
 // arrays. NVIDIA 610.88 lowers those nonoverlapping phases under its reported
@@ -296,10 +297,14 @@ struct TensorContext::Impl {
   ComputePipeline bf16_mod_pipeline;
   ComputePipeline fp32_mod_pipeline;
   ComputePipeline group_norm_pipeline;
+  ComputePipeline vae_residual_pipeline;
+  ComputePipeline vae_swiglu_pipeline;
+  ComputePipeline vae_denorm_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;
   uint64_t staging_capacity = 0;
   std::vector<StorageBinding> ops_bindings;
+  std::vector<StorageBinding> vae_pointwise_bindings;
   std::vector<StorageBinding> norm_bindings;
   std::vector<StorageBinding> mod_bindings;
   std::vector<StorageBinding> vae_rope_bindings;
@@ -334,6 +339,7 @@ struct TensorContext::Impl {
         pool(input, 4ull << 20),
         scratch(input),
         ops_bindings(3),
+        vae_pointwise_bindings(4),
         norm_bindings(4),
         mod_bindings(6),
         vae_rope_bindings(7),
@@ -378,6 +384,24 @@ struct TensorContext::Impl {
     options.push_constant_bytes = sizeof(Parameters);
     options.local_size[0] = 64;
     ops_pipeline = ComputePipeline::create(input, spirv, options);
+    if (exact_vae_norm) {
+      ComputePipelineOptions pointwise_options = options;
+      pointwise_options.storage_binding_count = 4;
+      auto make_pointwise = [&](const uint8_t* bytes, size_t byte_count) {
+        std::vector<uint32_t> module(byte_count / sizeof(uint32_t));
+        std::memcpy(module.data(), bytes, byte_count);
+        return ComputePipeline::create(input, module, pointwise_options);
+      };
+      vae_residual_pipeline = make_pointwise(
+          detail::kTensorVaeResidualSpirv,
+          sizeof(detail::kTensorVaeResidualSpirv));
+      vae_swiglu_pipeline = make_pointwise(
+          detail::kTensorVaeSwigluSpirv,
+          sizeof(detail::kTensorVaeSwigluSpirv));
+      vae_denorm_pipeline = make_pointwise(
+          detail::kTensorVaeDenormSpirv,
+          sizeof(detail::kTensorVaeDenormSpirv));
+    }
     const uint8_t* rope_shader = full_arithmetic_exact
         ? detail::kTensorRopeDenormSpirv : detail::kTensorRopeSpirv;
     const size_t rope_shader_bytes = full_arithmetic_exact
@@ -523,6 +547,8 @@ struct TensorContext::Impl {
           sizeof(CausalGQAAttentionParameters));
     }
     for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
+    for (uint32_t i = 0; i < vae_pointwise_bindings.size(); ++i)
+      vae_pointwise_bindings[i].binding = i;
     for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
     for (uint32_t i = 0; i < mod_bindings.size(); ++i) mod_bindings[i].binding = i;
     for (uint32_t i = 0; i < vae_rope_bindings.size(); ++i)
@@ -680,6 +706,28 @@ struct TensorBatch::Impl {
     owner->ops_bindings[2].buffer = &output->buffer;
     owner->ops_bindings[2].bytes = output->buffer.size();
     commands.bind_compute(owner->ops_pipeline, owner->ops_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups);
+  }
+
+  void dispatch_vae_pointwise(
+      VaePointwiseOperation operation,
+      const TensorContext::Impl::Parameters& parameters,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 4>& resources) {
+    const uint32_t groups = static_cast<uint32_t>(
+        (static_cast<uint64_t>(parameters.count) + 63ull) / 64ull);
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->vae_pointwise_bindings[i].buffer = &resources[i]->buffer;
+      owner->vae_pointwise_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    ComputePipeline* pipeline = nullptr;
+    switch (operation) {
+      case VaePointwiseOperation::kResidual: pipeline = &owner->vae_residual_pipeline; break;
+      case VaePointwiseOperation::kSwiglu: pipeline = &owner->vae_swiglu_pipeline; break;
+      case VaePointwiseOperation::kDenorm: pipeline = &owner->vae_denorm_pipeline; break;
+    }
+    if (pipeline == nullptr) throw std::logic_error("vulkan tensor: invalid VAE pointwise op");
+    commands.bind_compute(*pipeline, owner->vae_pointwise_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(groups);
   }
@@ -1502,6 +1550,16 @@ bool TensorContext::exact_fp32_vae_normalization() const noexcept {
 void TensorContext::require_exact_fp32_vae_normalization() const {
   require_exact_normalization();
 }
+bool TensorContext::exact_vae_pointwise() const noexcept {
+  return impl_ && impl_->exact_vae_norm;
+}
+void TensorContext::require_exact_vae_pointwise() const {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->exact_vae_norm) {
+    throw std::runtime_error(
+        "vulkan tensor: exact VAE pointwise operations are unavailable on this device/driver");
+  }
+}
 bool TensorContext::exact_blocked_attention() const noexcept {
   return impl_ && impl_->exact_attention;
 }
@@ -1776,6 +1834,128 @@ void TensorBatch::add_bias(DeviceTensor& input, DeviceTensor& bias, DeviceTensor
     TensorContext::Impl::Parameters p; p.op = 8;
     p.count = dispatch_count; p.p[1] = static_cast<uint32_t>(a.extent[1]);
     impl_->dispatch(p, src, bv, dst);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::layer_scale_residual_f32(DeviceTensor& x, DeviceTensor& y,
+                                           DeviceTensor& bias,
+                                           DeviceTensor& scale) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
+  }
+  auto xv = impl_->owner->require(x);
+  auto yv = impl_->owner->require(y);
+  auto bv = impl_->owner->require(bias);
+  auto sv = impl_->owner->require(scale);
+  const auto& shape = xv->layout;
+  const uint64_t columns = shape.rank == 2 ? shape.extent[1] : 0;
+  const uint64_t count = shape.elements();
+  if (xv.get() == yv.get() || xv.get() == bv.get() || xv.get() == sv.get() ||
+      yv.get() == bv.get() || yv.get() == sv.get() || bv.get() == sv.get() ||
+      xv->type != ScalarType::kFloat32 || yv->type != ScalarType::kFloat32 ||
+      bv->type != ScalarType::kFloat32 || sv->type != ScalarType::kFloat32 ||
+      shape.rank != 2 || yv->layout.extent != shape.extent ||
+      bv->layout.rank != 1 || sv->layout.rank != 1 ||
+      bv->layout.extent[0] != columns || sv->layout.extent[0] != columns ||
+      !shape.is_contiguous() || !yv->layout.is_contiguous() ||
+      !bv->layout.is_contiguous() || !sv->layout.is_contiguous() ||
+      shape.extent[0] == 0 || columns == 0 ||
+      columns > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid fp32 layer-scale residual");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(count);
+  try {
+    impl_->count_operator();
+    impl_->transition(xv, BufferAccess::kComputeReadWrite);
+    impl_->transition(yv, BufferAccess::kComputeRead);
+    impl_->transition(bv, BufferAccess::kComputeRead);
+    impl_->transition(sv, BufferAccess::kComputeRead);
+    TensorContext::Impl::Parameters p;
+    p.op = 0; p.count = dispatch_count; p.p[0] = static_cast<uint32_t>(columns);
+    impl_->dispatch_vae_pointwise(VaePointwiseOperation::kResidual, p,
+                                  {xv, yv, bv, sv});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::swiglu_bias_f32(DeviceTensor& input, DeviceTensor& bias,
+                                  DeviceTensor& output) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
+  }
+  auto src = impl_->owner->require(input);
+  auto bv = impl_->owner->require(bias);
+  auto dst = impl_->owner->require(output);
+  const auto& in_shape = src->layout;
+  const auto& out_shape = dst->layout;
+  const uint64_t inner = out_shape.rank == 2 ? out_shape.extent[1] : 0;
+  const uint64_t count = out_shape.elements();
+  const bool doubled_fits = inner <= std::numeric_limits<uint64_t>::max() / 2;
+  if (src.get() == bv.get() || src.get() == dst.get() || bv.get() == dst.get() ||
+      src->type != ScalarType::kFloat32 || bv->type != ScalarType::kFloat32 ||
+      dst->type != ScalarType::kFloat32 || in_shape.rank != 2 ||
+      out_shape.rank != 2 || bv->layout.rank != 1 || inner == 0 ||
+      !doubled_fits || in_shape.extent[0] != out_shape.extent[0] ||
+      in_shape.extent[1] != 2 * inner || bv->layout.extent[0] != 2 * inner ||
+      !in_shape.is_contiguous() || !out_shape.is_contiguous() ||
+      !bv->layout.is_contiguous() || out_shape.extent[0] == 0 ||
+      inner > std::numeric_limits<uint32_t>::max() ||
+      in_shape.elements() > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid fp32 SwiGLU with bias");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(count);
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(bv, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters p;
+    p.op = 1; p.count = dispatch_count; p.p[0] = static_cast<uint32_t>(inner);
+    impl_->dispatch_vae_pointwise(VaePointwiseOperation::kSwiglu, p,
+                                  {src, bv, bv, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::latent_denorm_f32(DeviceTensor& input, DeviceTensor& mean,
+                                    DeviceTensor& std_dev,
+                                    DeviceTensor& output) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_vae_norm) {
+    throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
+  }
+  auto src = impl_->owner->require(input);
+  auto mv = impl_->owner->require(mean);
+  auto sv = impl_->owner->require(std_dev);
+  auto dst = impl_->owner->require(output);
+  const auto& shape = src->layout;
+  const uint64_t channels = shape.rank == 2 ? shape.extent[0] : 0;
+  const uint64_t voxels = shape.rank == 2 ? shape.extent[1] : 0;
+  const uint64_t count = shape.elements();
+  if (src.get() == mv.get() || src.get() == sv.get() || src.get() == dst.get() ||
+      mv.get() == sv.get() || mv.get() == dst.get() || sv.get() == dst.get() ||
+      src->type != ScalarType::kFloat32 || mv->type != ScalarType::kFloat32 ||
+      sv->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
+      shape.rank != 2 || dst->layout.extent != shape.extent ||
+      mv->layout.rank != 1 || sv->layout.rank != 1 ||
+      mv->layout.extent[0] != channels || sv->layout.extent[0] != channels ||
+      !shape.is_contiguous() || !dst->layout.is_contiguous() ||
+      !mv->layout.is_contiguous() || !sv->layout.is_contiguous() ||
+      channels == 0 || voxels == 0 ||
+      voxels > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan tensor: invalid fp32 latent denormalization");
+  }
+  const uint32_t dispatch_count = impl_->owner->validate_dispatch(count);
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(mv, BufferAccess::kComputeRead);
+    impl_->transition(sv, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    TensorContext::Impl::Parameters p;
+    p.op = 2; p.count = dispatch_count; p.p[0] = static_cast<uint32_t>(voxels);
+    impl_->dispatch_vae_pointwise(VaePointwiseOperation::kDenorm, p,
+                                  {src, mv, sv, dst});
   } catch (...) { impl_->poisoned = true; throw; }
 }
 

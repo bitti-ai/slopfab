@@ -296,8 +296,13 @@ __global__ void layerscale_residual_kernel(float* __restrict__ x, const float* _
   const int c = blockIdx.x * blockDim.x + threadIdx.x;
   if (c >= cols) return;
   const size_t idx = static_cast<size_t>(blockIdx.y) * cols + c;
-  const float v = (bias != nullptr) ? (y[idx] + bias[c]) : y[idx];
-  x[idx] += v * scale[c];
+  const float y_value = canonicalize_pointwise_float(y[idx]);
+  const float v = bias != nullptr
+      ? canonicalize_pointwise_float(
+            __fadd_rn(y_value, canonicalize_pointwise_float(bias[c])))
+      : y_value;
+  x[idx] = canonicalize_pointwise_float(__fmaf_rn(
+      v, canonicalize_pointwise_float(scale[c]), canonicalize_pointwise_float(x[idx])));
 }
 
 // SwiGLU: gate is the FIRST half of w1's output, value the second.
@@ -311,13 +316,18 @@ __global__ void swiglu_kernel(const float* __restrict__ in, const float* __restr
   if (c >= inner) return;
   const size_t row = blockIdx.y;
   const float* r = in + row * 2 * inner;
-  float gate = r[c];
-  float value = r[inner + c];
-  if (bias != nullptr) {
-    gate += bias[c];
-    value += bias[inner + c];
-  }
-  out[row * inner + c] = (gate / (1.0f + __expf(-gate))) * value;
+  const float gate_input = canonicalize_pointwise_float(r[c]);
+  const float value_input = canonicalize_pointwise_float(r[inner + c]);
+  const float gate = bias != nullptr
+      ? canonicalize_pointwise_float(
+            __fadd_rn(gate_input, canonicalize_pointwise_float(bias[c])))
+      : gate_input;
+  const float value = bias != nullptr
+      ? canonicalize_pointwise_float(__fadd_rn(
+            value_input, canonicalize_pointwise_float(bias[inner + c])))
+      : value_input;
+  out[row * inner + c] = canonicalize_pointwise_float(
+      __fmul_rn(deterministic_pointwise_silu(gate), value));
 }
 
 // Widens fp16 checkpoint bytes to fp32 on the device, so the host never has to
@@ -405,7 +415,10 @@ __global__ void latent_denorm_kernel(const float* __restrict__ z_norm,
   const size_t total = static_cast<size_t>(channels) * voxels;
   if (idx >= total) return;
   const int c = static_cast<int>(idx / voxels);
-  out[idx] = z_norm[idx] * std_dev[c] + mean[c];
+  out[idx] = canonicalize_pointwise_float(__fmaf_rn(
+      canonicalize_pointwise_float(z_norm[idx]),
+      canonicalize_pointwise_float(std_dev[c]),
+      canonicalize_pointwise_float(mean[c])));
 }
 
 }  // namespace

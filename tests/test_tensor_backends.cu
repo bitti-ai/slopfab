@@ -2254,6 +2254,177 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   }
 }
 
+VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_vae_pointwise()) {
+    bool rejected = false;
+    try { vk.require_exact_vae_pointwise(); }
+    catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected);
+    return;
+  }
+  vk.require_exact_vae_pointwise();
+
+  auto from_bits = [](uint32_t bits) {
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+  };
+  constexpr int rows = 3, columns = 67, inner = 67;
+  constexpr int channels = 3, voxels = 67;
+  const size_t matrix_count = static_cast<size_t>(rows) * columns;
+  const size_t swiglu_input_count = static_cast<size_t>(rows) * 2 * inner;
+  const size_t swiglu_output_count = static_cast<size_t>(rows) * inner;
+  const size_t latent_count = static_cast<size_t>(channels) * voxels;
+  std::vector<float> x(matrix_count), y(matrix_count), residual_bias(columns),
+      scale(columns), swiglu_input(swiglu_input_count), swiglu_bias(2 * inner),
+      latent(latent_count), mean(channels), std_dev(channels);
+  for (size_t i = 0; i < matrix_count; ++i) {
+    x[i] = static_cast<float>(static_cast<int>(i % 31) - 15) / 16.0f;
+    y[i] = static_cast<float>(static_cast<int>(i % 37) - 18) / 32.0f;
+  }
+  for (int i = 0; i < columns; ++i) {
+    residual_bias[i] = static_cast<float>((i % 11) - 5) / 64.0f;
+    scale[i] = 0.25f + static_cast<float>(i % 7) / 16.0f;
+  }
+  for (size_t i = 0; i < swiglu_input.size(); ++i)
+    swiglu_input[i] = static_cast<float>(static_cast<int>(i % 101) - 50) / 16.0f;
+  for (size_t i = 0; i < swiglu_bias.size(); ++i)
+    swiglu_bias[i] = static_cast<float>(static_cast<int>(i % 13) - 6) / 32.0f;
+  for (size_t i = 0; i < latent.size(); ++i)
+    latent[i] = static_cast<float>(static_cast<int>(i % 47) - 23) / 16.0f;
+  mean = {-0.25f, 0.0f, 0.375f};
+  std_dev = {0.5f, -0.75f, 1.25f};
+
+  // Each operation has an input-subnormal case, a normal cancellation whose
+  // correctly rounded intermediate is subnormal, an output-underflow case,
+  // signed zeros and exceptional values. The policy is asserted below rather
+  // than merely comparing two backends with the same bug.
+  x[0] = 0.0f; y[0] = from_bits(0x00800001u);
+  residual_bias[0] = from_bits(0x80800000u); scale[0] = from_bits(0x7e800000u);
+  x[1] = -0.0f; y[1] = from_bits(0x00800000u);
+  residual_bias[1] = 0.0f; scale[1] = 0.5f;
+  x[2] = from_bits(0x00000001u); y[2] = -0.0f;
+  residual_bias[2] = 0.0f; scale[2] = 1.0f;
+  x[3] = 1.0f; y[3] = from_bits(0x7fc12345u);
+  residual_bias[3] = 0.0f; scale[3] = 1.0f;
+  x[4] = -0.0f; y[4] = -0.0f; residual_bias[4] = -0.0f; scale[4] = 1.0f;
+
+  swiglu_input[0] = from_bits(0x00800001u);
+  swiglu_bias[0] = from_bits(0x80800000u);
+  swiglu_input[inner] = from_bits(0x7e800000u);
+  swiglu_bias[inner] = 0.0f;
+  swiglu_input[1] = 1.0f; swiglu_bias[1] = 0.0f;
+  swiglu_input[inner + 1] = from_bits(0x00800000u);
+  swiglu_bias[inner + 1] = 0.0f;
+  swiglu_input[2] = from_bits(0x7fc12345u); swiglu_bias[2] = 0.0f;
+  swiglu_input[inner + 2] = 1.0f; swiglu_bias[inner + 2] = 0.0f;
+  swiglu_input[3] = -0.0f; swiglu_bias[3] = -0.0f;
+  swiglu_input[inner + 3] = 2.0f; swiglu_bias[inner + 3] = 0.0f;
+  swiglu_input[inner + 10] = 1.0f; swiglu_bias[inner + 10] = 0.0f;
+
+  latent[0] = from_bits(0x00800000u); std_dev[0] = 0.5f; mean[0] = 0.0f;
+  latent[voxels] = from_bits(0x00000001u); std_dev[1] = 1.0f; mean[1] = -0.0f;
+  latent[2 * voxels] = from_bits(0x7fc01234u); std_dev[2] = 1.0f; mean[2] = 0.0f;
+
+  cuda::DeviceBuffer<float> cx(matrix_count), cy(matrix_count),
+      crb(columns), cs(columns), csi(swiglu_input_count), csb(2 * inner),
+      cso(swiglu_output_count), cl(latent_count), cm(channels), csd(channels),
+      clo(latent_count);
+  cx.copy_from_host(x.data(), x.size()); cy.copy_from_host(y.data(), y.size());
+  crb.copy_from_host(residual_bias.data(), residual_bias.size());
+  cs.copy_from_host(scale.data(), scale.size());
+  csi.copy_from_host(swiglu_input.data(), swiglu_input.size());
+  csb.copy_from_host(swiglu_bias.data(), swiglu_bias.size());
+  cl.copy_from_host(latent.data(), latent.size()); cm.copy_from_host(mean.data(), mean.size());
+  csd.copy_from_host(std_dev.data(), std_dev.size());
+  cuda::launch_layerscale_residual(cx.get(), cy.get(), crb.get(), cs.get(),
+                                   rows, columns, nullptr);
+  cuda::launch_swiglu(csi.get(), csb.get(), cso.get(), rows, inner, nullptr);
+  cuda::launch_latent_denorm(cl.get(), cm.get(), csd.get(), clo.get(),
+                             channels, voxels, nullptr);
+
+  const uint64_t matrix_shape[] = {rows, columns};
+  const uint64_t column_shape = columns;
+  const uint64_t swiglu_in_shape[] = {rows, 2 * inner};
+  const uint64_t swiglu_out_shape[] = {rows, inner};
+  const uint64_t swiglu_bias_shape = 2 * inner;
+  const uint64_t latent_shape[] = {channels, voxels};
+  const uint64_t channel_shape = channels;
+  DeviceTensor vx = vk.allocate(TensorLayout::contiguous(matrix_shape, 2));
+  DeviceTensor vy = vk.allocate(TensorLayout::contiguous(matrix_shape, 2));
+  DeviceTensor vrb = vk.allocate(TensorLayout::contiguous(&column_shape, 1));
+  DeviceTensor vs = vk.allocate(TensorLayout::contiguous(&column_shape, 1));
+  DeviceTensor vsi = vk.allocate(TensorLayout::contiguous(swiglu_in_shape, 2));
+  DeviceTensor vsb = vk.allocate(TensorLayout::contiguous(&swiglu_bias_shape, 1));
+  DeviceTensor vso = vk.allocate(TensorLayout::contiguous(swiglu_out_shape, 2));
+  DeviceTensor vl = vk.allocate(TensorLayout::contiguous(latent_shape, 2));
+  DeviceTensor vm = vk.allocate(TensorLayout::contiguous(&channel_shape, 1));
+  DeviceTensor vsd = vk.allocate(TensorLayout::contiguous(&channel_shape, 1));
+  DeviceTensor vlo = vk.allocate(TensorLayout::contiguous(latent_shape, 2));
+  vk.upload(vx, x.data(), x.size()); vk.upload(vy, y.data(), y.size());
+  vk.upload(vrb, residual_bias.data(), residual_bias.size());
+  vk.upload(vs, scale.data(), scale.size());
+  vk.upload(vsi, swiglu_input.data(), swiglu_input.size());
+  vk.upload(vsb, swiglu_bias.data(), swiglu_bias.size());
+  vk.upload(vl, latent.data(), latent.size()); vk.upload(vm, mean.data(), mean.size());
+  vk.upload(vsd, std_dev.data(), std_dev.size());
+  TensorBatch batch = vk.begin_batch();
+  batch.layer_scale_residual_f32(vx, vy, vrb, vs);
+  batch.swiglu_bias_f32(vsi, vsb, vso);
+  batch.latent_denorm_f32(vl, vm, vsd, vlo);
+  batch.submit().wait();
+
+  auto compare = [&](auto& cuda_buffer, DeviceTensor& vulkan_tensor, size_t count,
+                     const char* label) {
+    std::vector<float> cuda_host(count), vulkan_host(count);
+    cuda_buffer.copy_to_host(cuda_host.data(), count);
+    vk.download(vulkan_tensor, vulkan_host.data(), count);
+    size_t mismatch = count;
+    for (size_t i = 0; i < count; ++i) {
+      if (std::memcmp(&cuda_host[i], &vulkan_host[i], sizeof(float)) != 0) {
+        mismatch = i; break;
+      }
+    }
+    uint32_t cb = 0, vb = 0;
+    if (mismatch != count) {
+      std::memcpy(&cb, &cuda_host[mismatch], 4);
+      std::memcpy(&vb, &vulkan_host[mismatch], 4);
+    }
+    CHECK_MSG(mismatch == count, "%s mismatch at %zu: %08x != %08x",
+              label, mismatch, cb, vb);
+    return cuda_host;
+  };
+  const auto residual = compare(cx, vx, matrix_count, "VAE residual");
+  const auto swiglu = compare(cso, vso, swiglu_output_count, "VAE SwiGLU");
+  const auto denorm = compare(clo, vlo, latent_count, "VAE latent denorm");
+  auto bits_of = [](float value) {
+    uint32_t bits = 0; std::memcpy(&bits, &value, 4); return bits;
+  };
+  CHECK(bits_of(residual[0]) == 0x00000000u);
+  CHECK((bits_of(residual[1]) & 0x7fffffffu) == 0u);
+  CHECK((bits_of(residual[2]) & 0x7fffffffu) == 0u);
+  CHECK(bits_of(residual[3]) == 0x7fc00000u);
+  CHECK(bits_of(swiglu[0]) == 0x00000000u);
+  CHECK((bits_of(swiglu[1]) & 0x7fffffffu) == 0u);
+  CHECK(bits_of(swiglu[2]) == 0x7fc00000u);
+  CHECK((bits_of(denorm[0]) & 0x7fffffffu) == 0u);
+  CHECK((bits_of(denorm[voxels]) & 0x7fffffffu) == 0u);
+  CHECK(bits_of(denorm[2 * voxels]) == 0x7fc00000u);
+}
+
 VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
@@ -3006,7 +3177,10 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_group_norm_silu) {
       CHECK(second.value() > first.value() && third.value() > second.value());
       first.wait(); second.wait(); third.wait();
       CHECK(vk.reserved_bytes() == stable_reserved);
-      CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+      CHECK_MSG(vk.descriptor_set_allocations() == stable_descriptors,
+                "GroupNorm descriptors grew: %llu != %llu",
+                static_cast<unsigned long long>(vk.descriptor_set_allocations()),
+                static_cast<unsigned long long>(stable_descriptors));
     }
     DeviceTensor wrong_type = vk.allocate(TensorLayout::contiguous(&feature, 1));
     const uint64_t short_shape[] = {128, 3, 4};
