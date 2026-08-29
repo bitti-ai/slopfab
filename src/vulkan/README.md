@@ -524,19 +524,21 @@ The conservative `D*max(|Q|)*max(|K|)/sqrt(D)` score bound was 503.399.
 
 Release device-resident measurements on the pinned RTX 5090/610.88 tuple use
 one preparation and two query-row dispatches; uploads/downloads are excluded.
-S257 uses two warmups and five samples. S16384 is one full real-shape sample:
+S257 uses two warmups and five samples. S16384 uses two full real-shape
+samples; each run downloads the final CUDA and Vulkan tensors and requires
+byte equality:
 
 | D72 shape | CUDA exact prepare | CUDA exact attention | Vulkan total | three-FP16 slot |
 |---|---:|---:|---:|---:|
 | S257, H16 | 0.008 ms | 0.328 ms | 0.988 ms | 1.69 MiB |
-| S16384, H16 | 0.220 ms | 853.297 ms | 1166.565 ms | 108.00 MiB |
+| S16384, H16 | 0.200 ms | 854.549 ms | 1174.155 ms | 108.00 MiB |
 
 The table compares the shared exact path. A separate device-resident run of
 the shipped CUDA cuBLAS `kBlocked` implementation on the same S16384 shape was
 145.276 ms/call, or 3.922 s across Qwen vision's 27 blocks. In that same run,
-CUDA exact was 854.669 ms (+0.224 ms preparation) and Vulkan exact was
-1160.176 ms/call: the Vulkan exact path is 7.99x the current production CUDA
-blocked call and accounts for about 31.3 s/reference image before the rest of
+CUDA exact was 854.549 ms (+0.200 ms preparation) and Vulkan exact was
+1174.155 ms/call: the Vulkan exact path is 8.08x the current production CUDA
+blocked call and accounts for about 31.7 s/reference image before the rest of
 the vision tower. This is an explicitly accepted exact-mode performance
 exception, not a claim of production-speed parity. Its scalar recurrence is
 already parallelized over independent keys and head dimensions; a material
@@ -546,7 +548,7 @@ semantic rebaseline and new exact goldens.
 The maximum processor-admitted single-image S65536 shape would require a
 432 MiB slot; it is per active invocation, not multiplied by the 27 vision
 blocks. Quadratic projection from S16384 puts the Vulkan exact attention at
-about 18.6 s/call, or 8.35 minutes for 27 blocks, versus about 62.8 s for the
+about 18.8 s/call, or 8.45 minutes for 27 blocks, versus about 62.8 s for the
 production CUDA blocked path. This primitive is not yet wired into
 Qwen/VAE/DiT. Causal GQA, H3 banded/fused attention, Sage2, and SOL remain
 separate features; unsupported modes must fail closed rather than route to
@@ -564,11 +566,11 @@ nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,c
 ```
 
 ```text
-tensor_attention_blocked.comp             F8724078FE6502AE2D46380341C7CF580508B5ABA9B7A5C08450C9D32BC5CF2B
-tensor_attention_blocked.comp.spv         3A61DD5E86E8D398CE8DE0E352C3A753EF2CAAFB0B1ED2DF821F28E4DF46343F
+tensor_attention_blocked.comp             C27A8133AD290D086E1AA0C03418DD87B5F3EDA924E69F0959AC3D9562F840B7
+tensor_attention_blocked.comp.spv         9C1339B2FD44B9F453BD3974F720E635682130CE9F808411823C3657A97098F2
 tensor_attention_prepare.comp             786295C4E33EEDC7F67317B9ECF6B1BDEA0108B319AE5B5E8D57B6B3CEA4677D
 tensor_attention_prepare.comp.spv         56DC48503F296776CD1C105D0DC44D34E5F8768B35A8FEE6EC73EFAA9D3FF8F4
-src/cuda/deterministic_attention.cu       6FCB4B54B436A3B03E968E347D896178C516E955AFA0A1D6D067902B4D2597A9
-include/vidfab/cuda/deterministic_attention.cuh 32C7A581FE13113F46E5583C25124E0BAFCC7B511939BBDD84FB11B08BC398C9
-deterministic_attention.fatbin            2EDE05415F9E080C123223F66056B734B7DD609D327787E973F80B11A35FBCB1
+src/cuda/deterministic_attention.cu       F14CA586A8DC9076E67DE7964F4BBDD77476AB54D01D59DAA22EB1555C22553A
+include/vidfab/cuda/deterministic_attention.cuh 4E870543DCFF34F090712E7662E3E0476FEEB8E9878E0A80B331CDDD07B84FEB
+deterministic_attention.fatbin            A9A44FA0EA88FB58F64EE8F9CFE5B96DD01B443B69ED801D86B8ECA77C85081F
 ```
