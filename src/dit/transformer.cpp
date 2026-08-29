@@ -993,7 +993,11 @@ struct Transformer::Impl {
         prof.tick("mlp.fc1", stream.get());
         // Gate first: our checkpoints use the original `mlp.fc1` naming, whose
         // first half goes through the SiLU (spec 4.4).
-        cuda::launch_swiglu(fused, act, n, cfg.ffn_dim, stream.get());
+        if (block_attention_mode == AttentionMode::kExact) {
+          cuda::launch_swiglu_exact(fused, act, n, cfg.ffn_dim, stream.get());
+        } else {
+          cuda::launch_swiglu(fused, act, n, cfg.ffn_dim, stream.get());
+        }
         prof.tick("mlp.swiglu", stream.get());
         linear.forward_prepared(b.fc2, d2, act, n, branch, ws);
         diagnose("mlp",branch,size_t(n)*hidden,layer);

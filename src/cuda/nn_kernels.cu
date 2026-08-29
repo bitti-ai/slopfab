@@ -487,6 +487,26 @@ __device__ float rope_bf16_value(__nv_bfloat16 value) {
       : __bfloat162float(value);
 }
 
+template <int VEC>
+__global__ void swiglu_exact_kernel(const __nv_bfloat16* __restrict__ fused,
+                                    __nv_bfloat16* __restrict__ out, int inner) {
+  const size_t row = blockIdx.x;
+  const int packs = inner / VEC;
+  const int p = blockIdx.y * blockDim.x + threadIdx.x;
+  if (p >= packs) return;
+  const __nv_bfloat16* src = fused + row * (2 * static_cast<size_t>(inner)) + p * VEC;
+  float gate[VEC];
+  float value[VEC];
+  BfPack<VEC>::load(src, gate);
+  BfPack<VEC>::load(src + inner, value);
+#pragma unroll
+  for (int i = 0; i < VEC; ++i) {
+    const float denominator = 1.0f + deterministic_exp(-gate[i]);
+    gate[i] = deterministic_float_divide(gate[i], denominator) * value[i];
+  }
+  BfPack<VEC>::store(out + row * static_cast<size_t>(inner) + p * VEC, gate);
+}
+
 __device__ float rope_float_value(float value) {
   const unsigned bits = __float_as_uint(value);
   return (bits & 0x7fffffffu) < 0x00800000u
@@ -769,6 +789,19 @@ void launch_swiglu(const __nv_bfloat16* fused, __nv_bfloat16* out, int rows, int
     swiglu_kernel<8><<<grid, kRowThreads, 0, stream>>>(fused, out, inner);
   } else {
     swiglu_kernel<1><<<grid, kRowThreads, 0, stream>>>(fused, out, inner);
+  }
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_swiglu_exact(const __nv_bfloat16* fused, __nv_bfloat16* out,
+                         int rows, int inner, cudaStream_t stream) {
+  require_positive(rows, inner, "launch_swiglu_exact");
+  const int vec = vectorisable(inner) ? 8 : 1;
+  const dim3 grid(rows, grid_1d(static_cast<size_t>(inner / vec), kRowThreads));
+  if (vec == 8) {
+    swiglu_exact_kernel<8><<<grid, kRowThreads, 0, stream>>>(fused, out, inner);
+  } else {
+    swiglu_exact_kernel<1><<<grid, kRowThreads, 0, stream>>>(fused, out, inner);
   }
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }

@@ -242,6 +242,20 @@ struct TensorContext::Impl {
     uint32_t scalar_bits = 0;
   };
   static_assert(sizeof(AudioParameters) == 48);
+  struct DitParameters {
+    uint32_t op = 0;
+    uint32_t rows = 0;
+    uint32_t dim = 0;
+    uint32_t mod_rows = 0;
+    uint32_t num_t = 0;
+    uint32_t num_modality = 0;
+    uint32_t num_param = 0;
+    uint32_t rank = 0;
+    uint32_t count = 0;
+    uint32_t groups_x = 0;
+    uint32_t unused[2] = {};
+  };
+  static_assert(sizeof(DitParameters) == 48);
   struct WeightParameters {
     uint32_t op = 0;
     uint32_t count = 0;
@@ -316,6 +330,7 @@ struct TensorContext::Impl {
   ComputePipeline vae_swiglu_pipeline;
   ComputePipeline vae_denorm_pipeline;
   ComputePipeline audio_pipeline;
+  ComputePipeline dit_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;
   uint64_t staging_capacity = 0;
@@ -325,6 +340,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> mod_bindings;
   std::vector<StorageBinding> vae_rope_bindings;
   std::vector<StorageBinding> audio_bindings;
+  std::vector<StorageBinding> dit_bindings;
   std::vector<StorageBinding> weight_bindings;
   std::vector<StorageBinding> gemm_bindings;
   std::vector<StorageBinding> gemm_prepare_bindings;
@@ -337,6 +353,7 @@ struct TensorContext::Impl {
   bool exact_vae_norm = false;
   bool exact_vae_pointwise = false;
   bool exact_audio = false;
+  bool exact_dit_pointwise = false;
   bool exact_attention = false;
   bool exact_h3_attention = false;
   bool exact_causal_gqa_attention = false;
@@ -369,6 +386,7 @@ struct TensorContext::Impl {
         mod_bindings(6),
         vae_rope_bindings(7),
         audio_bindings(5),
+        dit_bindings(5),
         weight_bindings(6),
         gemm_bindings(4),
         gemm_prepare_bindings(2),
@@ -399,6 +417,7 @@ struct TensorContext::Impl {
                           input.info().fp32_rounding_rte &&
                           input.info().shader_int64_enabled;
     exact_audio = exact_vae_pointwise;
+    exact_dit_pointwise = exact_vae_pointwise;
     exact_attention = known_exact_blocked_attention_device(input.info());
     exact_h3_attention = known_exact_h3_attention_device(input.info());
     exact_causal_gqa_attention =
@@ -445,6 +464,17 @@ struct TensorContext::Impl {
       audio_options.push_constant_bytes = sizeof(AudioParameters);
       audio_options.local_size[0] = 64;
       audio_pipeline = ComputePipeline::create(input, audio_spirv, audio_options);
+    }
+    if (exact_dit_pointwise) {
+      std::vector<uint32_t> dit_spirv(
+          sizeof(detail::kTensorDitSpirv) / sizeof(uint32_t));
+      std::memcpy(dit_spirv.data(), detail::kTensorDitSpirv,
+                  sizeof(detail::kTensorDitSpirv));
+      ComputePipelineOptions dit_options;
+      dit_options.storage_binding_count = 5;
+      dit_options.push_constant_bytes = sizeof(DitParameters);
+      dit_options.local_size[0] = 64;
+      dit_pipeline = ComputePipeline::create(input, dit_spirv, dit_options);
     }
     const uint8_t* rope_shader = full_arithmetic_exact
         ? detail::kTensorRopeDenormSpirv : detail::kTensorRopeSpirv;
@@ -599,6 +629,8 @@ struct TensorContext::Impl {
       vae_rope_bindings[i].binding = i;
     for (uint32_t i = 0; i < audio_bindings.size(); ++i)
       audio_bindings[i].binding = i;
+    for (uint32_t i = 0; i < dit_bindings.size(); ++i)
+      dit_bindings[i].binding = i;
     for (uint32_t i = 0; i < weight_bindings.size(); ++i)
       weight_bindings[i].binding = i;
     for (uint32_t i = 0; i < gemm_bindings.size(); ++i)
@@ -916,6 +948,30 @@ struct TensorBatch::Impl {
     commands.bind_compute(owner->audio_pipeline, owner->audio_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(groups_x, static_cast<uint32_t>(groups_y_wide));
+  }
+
+  void dispatch_dit(
+      TensorContext::Impl::DitParameters parameters,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 5>& resources) {
+    const uint64_t total_groups =
+        (static_cast<uint64_t>(parameters.count) + 63ull) / 64ull;
+    const uint32_t groups_x = static_cast<uint32_t>(
+        std::min<uint64_t>(total_groups, owner->max_dispatch_x));
+    if (groups_x == 0) {
+      throw std::out_of_range("vulkan DiT: device exposes no X dispatch capacity");
+    }
+    const uint64_t groups_y = (total_groups + groups_x - 1ull) / groups_x;
+    if (groups_y > owner->max_dispatch_y) {
+      throw std::out_of_range("vulkan DiT: operation exceeds dispatch limits");
+    }
+    parameters.groups_x = groups_x;
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->dit_bindings[i].buffer = &resources[i]->buffer;
+      owner->dit_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->dit_pipeline, owner->dit_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(groups_x, static_cast<uint32_t>(groups_y));
   }
 
   void dispatch_weight(
@@ -2464,6 +2520,137 @@ void TensorBatch::rms_norm_modulate_f32(DeviceTensor& input, DeviceTensor& weigh
   if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
   impl_->record_shared_mod(true, input, weight, scale, shift, selectors, output,
                            epsilon);
+}
+
+void TensorBatch::dit_add_gated_bf16(DeviceTensor& residual,
+                                     DeviceTensor& branch,
+                                     DeviceTensor& gate,
+                                     DeviceTensor& selectors) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_dit_pointwise) {
+    throw std::runtime_error("vulkan DiT: exact pointwise operations are unavailable");
+  }
+  auto x = impl_->owner->require(residual);
+  auto b = impl_->owner->require(branch);
+  auto g = impl_->owner->require(gate);
+  auto a = impl_->owner->require(selectors);
+  const auto& shape = x->layout;
+  const uint64_t rows = shape.rank == 2 ? shape.extent[0] : 0;
+  const uint64_t dim = shape.rank == 2 ? shape.extent[1] : 0;
+  const uint64_t mod_rows = g->layout.rank == 2 ? g->layout.extent[0] : 0;
+  const uint64_t count = shape.elements();
+  if (x.get() == b.get() || x.get() == g.get() || x.get() == a.get() ||
+      b.get() == g.get() || b.get() == a.get() || g.get() == a.get() ||
+      shape.rank != 2 || b->layout.rank != 2 || b->layout.extent != shape.extent ||
+      g->layout.rank != 2 || g->layout.extent[1] != dim ||
+      a->layout.rank != 1 || a->layout.extent[0] != rows ||
+      x->type != ScalarType::kBFloat16 || b->type != ScalarType::kBFloat16 ||
+      g->type != ScalarType::kFloat32 || a->type != ScalarType::kInt32 ||
+      !shape.is_contiguous() || !b->layout.is_contiguous() ||
+      !g->layout.is_contiguous() || !a->layout.is_contiguous() ||
+      rows == 0 || dim == 0 || mod_rows == 0 ||
+      rows > std::numeric_limits<uint32_t>::max() ||
+      dim > std::numeric_limits<uint32_t>::max() ||
+      mod_rows > std::numeric_limits<uint32_t>::max() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan DiT: invalid gated residual tensors");
+  }
+  TensorContext::Impl::DitParameters p;
+  p.op = 0; p.rows = static_cast<uint32_t>(rows);
+  p.dim = static_cast<uint32_t>(dim);
+  p.mod_rows = static_cast<uint32_t>(mod_rows);
+  p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator();
+    impl_->transition(x, BufferAccess::kComputeReadWrite);
+    impl_->transition(b, BufferAccess::kComputeRead);
+    impl_->transition(g, BufferAccess::kComputeRead);
+    impl_->transition(a, BufferAccess::kComputeRead);
+    impl_->dispatch_dit(p, {x, b, g, a, x});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_dit_pointwise) {
+    throw std::runtime_error("vulkan DiT: exact pointwise operations are unavailable");
+  }
+  auto src = impl_->owner->require(fused);
+  auto dst = impl_->owner->require(output);
+  const uint64_t rows = src->layout.rank == 2 ? src->layout.extent[0] : 0;
+  const uint64_t doubled = src->layout.rank == 2 ? src->layout.extent[1] : 0;
+  const uint64_t inner = doubled / 2;
+  const uint64_t count = checked_multiply(rows, inner, "DiT SwiGLU");
+  if (src.get() == dst.get() || src->layout.rank != 2 ||
+      (doubled & 1u) != 0 || rows == 0 || inner == 0 ||
+      dst->layout.rank != 2 || dst->layout.extent[0] != rows ||
+      dst->layout.extent[1] != inner ||
+      src->type != ScalarType::kBFloat16 || dst->type != ScalarType::kBFloat16 ||
+      !src->layout.is_contiguous() || !dst->layout.is_contiguous() ||
+      rows > std::numeric_limits<uint32_t>::max() ||
+      inner > std::numeric_limits<uint32_t>::max() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan DiT: invalid SwiGLU tensors");
+  }
+  TensorContext::Impl::DitParameters p;
+  p.op = 1; p.rows = static_cast<uint32_t>(rows);
+  p.dim = static_cast<uint32_t>(inner);
+  p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator();
+    impl_->transition(src, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_dit(p, {src, src, src, src, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
+void TensorBatch::dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
+                                   DeviceTensor& code, DeviceTensor& output,
+                                   uint32_t num_modality, uint32_t num_param,
+                                   uint32_t channels) {
+  if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
+  if (!impl_->owner->exact_dit_pointwise) {
+    throw std::runtime_error("vulkan DiT: exact pointwise operations are unavailable");
+  }
+  auto w = impl_->owner->require(weight); auto b = impl_->owner->require(bias);
+  auto c = impl_->owner->require(code); auto dst = impl_->owner->require(output);
+  const uint64_t timesteps = c->layout.rank == 2 ? c->layout.extent[0] : 0;
+  const uint64_t rank = c->layout.rank == 2 ? c->layout.extent[1] : 0;
+  const uint64_t features = checked_multiply(
+      checked_multiply(num_modality, num_param, "DiT AdaLN"), channels,
+      "DiT AdaLN");
+  const uint64_t count = checked_multiply(timesteps, features, "DiT AdaLN");
+  if (w.get() == b.get() || w.get() == c.get() || w.get() == dst.get() ||
+      b.get() == c.get() || b.get() == dst.get() || c.get() == dst.get() ||
+      num_modality == 0 || num_param == 0 || channels == 0 ||
+      w->layout.rank != 2 || w->layout.extent[0] != features ||
+      w->layout.extent[1] != rank || b->layout.rank != 1 ||
+      b->layout.extent[0] != features || c->layout.rank != 2 ||
+      timesteps == 0 || rank == 0 || dst->layout.rank != 3 ||
+      dst->layout.extent[0] != num_param ||
+      dst->layout.extent[1] != timesteps * num_modality ||
+      dst->layout.extent[2] != channels ||
+      w->type != ScalarType::kFloat32 || b->type != ScalarType::kFloat32 ||
+      c->type != ScalarType::kFloat32 || dst->type != ScalarType::kFloat32 ||
+      !w->layout.is_contiguous() || !b->layout.is_contiguous() ||
+      !c->layout.is_contiguous() || !dst->layout.is_contiguous() ||
+      timesteps > std::numeric_limits<uint32_t>::max() ||
+      rank > std::numeric_limits<uint32_t>::max() ||
+      count > std::numeric_limits<uint32_t>::max()) {
+    throw std::invalid_argument("vulkan DiT: invalid AdaLN tensors");
+  }
+  TensorContext::Impl::DitParameters p;
+  p.op = 2; p.rows = static_cast<uint32_t>(timesteps); p.dim = channels;
+  p.num_t = static_cast<uint32_t>(timesteps); p.num_modality = num_modality;
+  p.num_param = num_param; p.rank = static_cast<uint32_t>(rank);
+  p.count = static_cast<uint32_t>(count);
+  try {
+    impl_->count_operator(); impl_->transition(w, BufferAccess::kComputeRead);
+    impl_->transition(b, BufferAccess::kComputeRead);
+    impl_->transition(c, BufferAccess::kComputeRead);
+    impl_->transition(dst, BufferAccess::kComputeWrite);
+    impl_->dispatch_dit(p, {w, b, c, c, dst});
+  } catch (...) { impl_->poisoned = true; throw; }
 }
 
 void TensorBatch::group_norm_silu_f16_affine(DeviceTensor& input,

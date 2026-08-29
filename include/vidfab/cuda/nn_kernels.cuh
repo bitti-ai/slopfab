@@ -79,6 +79,10 @@ void launch_add_gated(__nv_bfloat16* x, const __nv_bfloat16* branch, const float
 // `ff.net.0.proj` has the halves swapped. Spec section 4.4.
 void launch_swiglu(const __nv_bfloat16* fused, __nv_bfloat16* out, int rows, int inner,
                    cudaStream_t stream);
+// Backend-stable DiT exact-mode baseline paired with Vulkan. Normal attention
+// modes retain the checkpoint's historical fast __expf implementation.
+void launch_swiglu_exact(const __nv_bfloat16* fused, __nv_bfloat16* out,
+                         int rows, int inner, cudaStream_t stream);
 
 void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream);
 void launch_gelu_tanh(__nv_bfloat16* x, size_t n, cudaStream_t stream);

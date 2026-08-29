@@ -189,6 +189,19 @@ class TensorBatch {
                              DeviceTensor& scale, DeviceTensor& shift,
                              DeviceTensor& selectors, DeviceTensor& output,
                              float epsilon);
+  // H3 DiT exact-mode pointwise seam. Residual and branch are BF16
+  // [rows,dim], gate is fp32 [mod_rows,dim], and selectors is int32 [rows].
+  // SwiGLU consumes BF16 [rows,2*inner] with gate first and writes a distinct
+  // BF16 [rows,inner]. Invalid selectors leave a residual row unchanged.
+  void dit_add_gated_bf16(DeviceTensor& residual, DeviceTensor& branch,
+                          DeviceTensor& gate, DeviceTensor& selectors);
+  void dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output);
+  // Rank-R checkpoint-native AdaLN expansion. Weight [M*P*C,R], bias
+  // [M*P*C], code [T,R], output [P,T*M,C], all contiguous fp32.
+  void dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias,
+                        DeviceTensor& code, DeviceTensor& output,
+                        uint32_t num_modality, uint32_t num_param,
+                        uint32_t channels);
   // Video/keyframe-VAE channel-major GroupNorm+SiLU. Input/output are fp32
   // contiguous [channels,height,width], affine parameters are fp16 [channels],
   // and output may alias input.
