@@ -226,6 +226,8 @@ VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
   options.enable_timeline_semaphore = true;
   options.enable_cooperative_matrix = physical.front().info().cooperative_matrix;
   options.enable_storage_buffer_16bit = options.enable_cooperative_matrix;
+  options.enable_shader_float16 = options.enable_cooperative_matrix &&
+      physical.front().info().shader_float16;
   Device device = physical.front().create_device(options);
   TensorContext context(device);
   constexpr uint32_t rows = 3, total_input_rows = 5, total_output_rows = 6;
@@ -325,9 +327,22 @@ VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
     }
     DenseGemmPlanDesc float_desc{rows, n, k, mode, bias_mode};
     DenseGemmPlan float_plan = DenseGemmPlan::create(context, float_desc);
+    PreparedF16Activation slot;
+    if (mode == DenseGemmMode::kFloat16Vae)
+      slot = PreparedF16Activation::create(context, rows, k);
     TensorBatch float_batch = context.begin_batch();
-    float_plan.record(float_batch, fi, fw, fo, rows, 0, 0,
-                      bias_mode == DenseGemmBias::kNone ? nullptr : &bias);
+    if (mode == DenseGemmMode::kFloat16Vae) {
+      PreparedF16ActivationView prepared = slot.prepare(float_batch, fi, rows);
+      float_plan.record(float_batch, prepared, fw, fo, 0,
+                        bias_mode == DenseGemmBias::kNone ? nullptr : &bias);
+      // A single conversion is shared by multiple projections in the same
+      // chunk; recording a second consumer must not re-run preparation.
+      float_plan.record(float_batch, prepared, fw, fo, 0,
+                        bias_mode == DenseGemmBias::kNone ? nullptr : &bias);
+    } else {
+      float_plan.record(float_batch, fi, fw, fo, rows, 0, 0,
+                        bias_mode == DenseGemmBias::kNone ? nullptr : &bias);
+    }
     float_batch.submit().wait();
     context.download(fo, host_output.data(), host_output.size());
     for (uint32_t row = 0; row < rows; ++row) {
@@ -352,6 +367,19 @@ VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
   };
   run_float_mode(DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone);
   run_float_mode(DenseGemmMode::kFloat32, DenseGemmBias::kFloat32);
+
+  bool invalid_mode_rejected = false;
+  try {
+    DenseGemmPlanDesc invalid{rows, n, k,
+        static_cast<DenseGemmMode>(0xffffffffu), DenseGemmBias::kNone};
+    (void)DenseGemmPlan::create(context, invalid);
+  } catch (const std::invalid_argument&) {
+    invalid_mode_rejected = true;
+  }
+  CHECK(invalid_mode_rejected);
+  // Invalid plan construction is entirely pre-record and cannot poison a
+  // subsequent valid batch.
+  run_float_mode(DenseGemmMode::kFloat32, DenseGemmBias::kNone);
 
   // Temporary development measurement; retained as a visible performance
   // guard until the production-shape suite supplies the same metric.

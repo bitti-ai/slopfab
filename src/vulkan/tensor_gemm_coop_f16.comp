@@ -1,0 +1,59 @@
+#version 460
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_KHR_shader_subgroup_basic : require
+
+// Four subgroup tiles consume the persistent fp16 activation slot and fp16
+// prepared weight directly. Output remains fp32 for the VAE/ViT epilogues.
+layout(local_size_x = 128) in;
+layout(set = 0, binding = 0, scalar) readonly buffer InputData {
+  float16_t values[];
+} input_data;
+layout(set = 0, binding = 1, scalar) readonly buffer WeightData {
+  float16_t values[];
+} weight_data;
+layout(set = 0, binding = 2, std430) readonly buffer UnusedData { uint words[]; } unused_data;
+layout(set = 0, binding = 3, std430) buffer OutputData { float values[]; } output_data;
+
+layout(push_constant) uniform Parameters {
+  uint rows;
+  uint out_features;
+  uint in_features;
+  uint input_row_offset;
+  uint output_row_offset;
+  uint mode;
+  uint unused0;
+  uint unused1;
+} p;
+
+shared float accumulator[1024];
+
+void main() {
+  uint subgroup = gl_SubgroupID;
+  uint row = gl_WorkGroupID.y * 64u + subgroup * 16u;
+  uint column = gl_WorkGroupID.x * 16u;
+  coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> sum =
+      coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+  for (uint base = 0u; base < p.in_features; base += 16u) {
+    coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> a;
+    coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> b;
+    coopMatLoad(a, input_data.values, row * p.in_features + base,
+                p.in_features, gl_CooperativeMatrixLayoutRowMajor);
+    coopMatLoad(b, weight_data.values, column * p.in_features + base,
+                p.in_features, gl_CooperativeMatrixLayoutColumnMajor);
+    sum = coopMatMulAdd(a, b, sum);
+  }
+  coopMatStore(sum, accumulator, subgroup * 256u, 16,
+               gl_CooperativeMatrixLayoutRowMajor);
+  subgroupMemoryBarrierShared();
+  subgroupBarrier();
+  for (uint item = gl_SubgroupInvocationID; item < 256u; item += 32u) {
+    uint tile_row = item >> 4u;
+    uint tile_column = item & 15u;
+    output_data.values[(p.output_row_offset + row + tile_row) *
+                           p.out_features + column + tile_column] =
+        accumulator[subgroup * 256u + item];
+  }
+}

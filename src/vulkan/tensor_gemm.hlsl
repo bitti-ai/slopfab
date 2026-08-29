@@ -51,8 +51,7 @@ float round_f16(float value) {
 
 float load_input(uint index) {
   if (p.mode <= 2) return load_bf16(input_data, index);
-  const float value = load_f32(input_data, index);
-  return p.mode == 3 ? round_f16(value) : value;
+  return p.mode == 3 ? load_f16(input_data, index) : load_f32(input_data, index);
 }
 
 float load_weight(uint index) {

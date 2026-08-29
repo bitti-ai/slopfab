@@ -689,6 +689,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
     auto result = std::make_shared<Device::Impl>();
     result->state = std::move(state);
     result->info = impl_->info;
+    result->info.shader_float16_enabled = options.enable_shader_float16;
     result->info.shader_int64_enabled = options.enable_shader_int64;
     result->info.storage_buffer_16bit_enabled = options.enable_storage_buffer_16bit;
     result->info.cooperative_matrix_enabled = options.enable_cooperative_matrix;

@@ -30,4 +30,10 @@ inline constexpr uint8_t kTensorGemmCoopSpirv[] = {
     @VIDFAB_TENSOR_GEMM_COOP_SPV_BYTES@};
 inline constexpr uint8_t kTensorGemmCoopDenormSpirv[] = {
     @VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorGemmPrepareSpirv[] = {
+    @VIDFAB_TENSOR_GEMM_PREPARE_SPV_BYTES@};
+inline constexpr uint8_t kTensorGemmCoopF16Spirv[] = {
+    @VIDFAB_TENSOR_GEMM_COOP_F16_SPV_BYTES@};
+inline constexpr uint8_t kTensorGemmCoopF16DenormSpirv[] = {
+    @VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_BYTES@};
 }  // namespace vidfab::vulkan::detail

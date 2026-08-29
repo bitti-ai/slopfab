@@ -44,6 +44,7 @@ struct DeviceInfo {
   uint64_t max_allocation_bytes = 0;
   uint64_t non_coherent_atom_bytes = 1;
   bool shader_float16 = false;
+  bool shader_float16_enabled = false;
   bool shader_int8 = false;
   bool shader_int64 = false;
   bool shader_int64_enabled = false;

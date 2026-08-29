@@ -13,6 +13,7 @@ class TensorContext;
 class TensorBatch;
 class LinearWeight;
 class DenseGemmPlan;
+class PreparedF16Activation;
 
 struct TensorContextOptions {
   // Two slots let a producer record the next bounded graph chunk while the
@@ -42,6 +43,7 @@ class DeviceTensor {
   friend class TensorBatch;
   friend class LinearWeight;
   friend class DenseGemmPlan;
+  friend class PreparedF16Activation;
 };
 
 class TensorWorkspace final : public DeviceWorkspace {
@@ -168,6 +170,7 @@ class TensorBatch {
                                    bool convrot);
   friend class LinearWeight;
   friend class DenseGemmPlan;
+  friend class PreparedF16Activation;
   struct Impl;
   explicit TensorBatch(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
@@ -235,6 +238,7 @@ class TensorContext {
   friend class TensorBatch;
   friend class LinearWeight;
   friend class DenseGemmPlan;
+  friend class PreparedF16Activation;
 };
 
 }  // namespace vidfab::vulkan

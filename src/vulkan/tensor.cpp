@@ -53,7 +53,12 @@ bool known_exact_cooperative_gemm_device(const DeviceInfo& info) {
       std::memcmp(info.driver_uuid, kDriverUuid, sizeof(kDriverUuid)) == 0 &&
       info.cooperative_matrix_enabled && info.storage_buffer_16bit_enabled &&
       info.shader_bfloat16_type && info.shader_bfloat16_cooperative_matrix &&
-      info.cooperative_matrix_bf16_f32_16x16x16 &&
+      info.cooperative_matrix_bf16_f32_16x16x16;
+}
+
+bool known_exact_cooperative_f16_gemm_device(const DeviceInfo& info) {
+  return known_exact_cooperative_gemm_device(info) &&
+      info.shader_float16_enabled &&
       info.cooperative_matrix_f16_f32_16x16x16;
 }
 
@@ -97,6 +102,21 @@ struct LinearWeight::Impl {
 struct DenseGemmPlan::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   DenseGemmPlanDesc desc;
+};
+
+struct PreparedF16Activation::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  DeviceTensor tensor;
+  uint32_t max_rows = 0;
+  uint32_t in_features = 0;
+  uint64_t generation = 0;
+};
+
+struct PreparedF16ActivationView::Impl {
+  std::shared_ptr<PreparedF16Activation::Impl> slot;
+  const void* batch_identity = nullptr;
+  uint32_t prepared_rows = 0;
+  uint64_t generation = 0;
 };
 
 struct TensorWorkspace::Impl {
@@ -151,6 +171,12 @@ struct TensorContext::Impl {
     uint32_t mode = 0;
     uint32_t unused[2] = {};
   };
+  struct GemmPrepareParameters {
+    uint32_t rows = 0;
+    uint32_t in_features = 0;
+    uint32_t input_row_offset = 0;
+    uint32_t groups_x = 0;
+  };
   static constexpr uint32_t kMaxBatchOperators = 32;
 
   ComputeContext commands;
@@ -162,6 +188,8 @@ struct TensorContext::Impl {
   ComputePipeline weight_pipeline;
   ComputePipeline gemm_pipeline;
   ComputePipeline gemm_coop_pipeline;
+  ComputePipeline gemm_prepare_pipeline;
+  ComputePipeline gemm_coop_f16_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
   ComputePipeline bf16_rms_block_pipeline;
@@ -179,9 +207,11 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> vae_rope_bindings;
   std::vector<StorageBinding> weight_bindings;
   std::vector<StorageBinding> gemm_bindings;
+  std::vector<StorageBinding> gemm_prepare_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   bool cooperative_gemm = false;
+  bool cooperative_f16_gemm = false;
   uint32_t max_dispatch_x = 0;
   uint32_t max_dispatch_y = 0;
   uint64_t max_storage_bytes = 0;
@@ -192,7 +222,7 @@ struct TensorContext::Impl {
           ComputeContextOptions options;
           options.max_in_flight = tensor_options.max_in_flight;
           options.max_storage_bindings = 7;
-          options.max_compute_binds_per_job = kMaxBatchOperators;
+          options.max_compute_binds_per_job = kMaxBatchOperators * 2;
           return options;
         }()),
         pool(input, 4ull << 20),
@@ -202,7 +232,8 @@ struct TensorContext::Impl {
         mod_bindings(6),
         vae_rope_bindings(7),
         weight_bindings(6),
-        gemm_bindings(4) {
+        gemm_bindings(4),
+        gemm_prepare_bindings(2) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
     static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
@@ -280,6 +311,34 @@ struct TensorContext::Impl {
       gemm_coop_pipeline = ComputePipeline::create(
           input, cooperative_spirv, cooperative_options);
     }
+    {
+      std::vector<uint32_t> prepare_spirv(
+          sizeof(detail::kTensorGemmPrepareSpirv) / sizeof(uint32_t));
+      std::memcpy(prepare_spirv.data(), detail::kTensorGemmPrepareSpirv,
+                  sizeof(detail::kTensorGemmPrepareSpirv));
+      ComputePipelineOptions prepare_options;
+      prepare_options.storage_binding_count = 2;
+      prepare_options.push_constant_bytes = sizeof(GemmPrepareParameters);
+      prepare_options.local_size[0] = 64;
+      gemm_prepare_pipeline = ComputePipeline::create(
+          input, prepare_spirv, prepare_options);
+    }
+    cooperative_f16_gemm = known_exact_cooperative_f16_gemm_device(input.info());
+    if (cooperative_f16_gemm) {
+      const uint8_t* cooperative_shader = full_arithmetic_exact
+          ? detail::kTensorGemmCoopF16DenormSpirv
+          : detail::kTensorGemmCoopF16Spirv;
+      const size_t cooperative_bytes = full_arithmetic_exact
+          ? sizeof(detail::kTensorGemmCoopF16DenormSpirv)
+          : sizeof(detail::kTensorGemmCoopF16Spirv);
+      std::vector<uint32_t> cooperative_spirv(cooperative_bytes / sizeof(uint32_t));
+      std::memcpy(cooperative_spirv.data(), cooperative_shader, cooperative_bytes);
+      ComputePipelineOptions cooperative_options = gemm_options;
+      cooperative_options.local_size[0] = 128;
+      cooperative_options.local_size[1] = 1;
+      gemm_coop_f16_pipeline = ComputePipeline::create(
+          input, cooperative_spirv, cooperative_options);
+    }
     ComputePipelineOptions norm_options;
     norm_options.storage_binding_count = 4;
     norm_options.push_constant_bytes = sizeof(NormParameters);
@@ -329,6 +388,8 @@ struct TensorContext::Impl {
       weight_bindings[i].binding = i;
     for (uint32_t i = 0; i < gemm_bindings.size(); ++i)
       gemm_bindings[i].binding = i;
+    for (uint32_t i = 0; i < gemm_prepare_bindings.size(); ++i)
+      gemm_prepare_bindings[i].binding = i;
   }
 
   uintptr_t context_id = next_context_identity();
@@ -2085,6 +2146,115 @@ void TensorBatch::transform_linear_activation(const LinearWeight& weight,
   }
 }
 
+PreparedF16Activation::PreparedF16Activation() = default;
+PreparedF16Activation::~PreparedF16Activation() = default;
+PreparedF16Activation::PreparedF16Activation(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+PreparedF16Activation::PreparedF16Activation(PreparedF16Activation&&) noexcept = default;
+PreparedF16Activation& PreparedF16Activation::operator=(
+    PreparedF16Activation&&) noexcept = default;
+PreparedF16Activation::operator bool() const noexcept { return impl_ != nullptr; }
+
+PreparedF16Activation PreparedF16Activation::create(
+    TensorContext& context, uint32_t max_rows, uint32_t in_features) {
+  if (!context.impl_) {
+    throw std::logic_error("vulkan gemm: moved-from tensor context");
+  }
+  if (max_rows == 0 || in_features == 0) {
+    throw std::invalid_argument(
+        "vulkan gemm: fp16 activation dimensions must be nonzero");
+  }
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_;
+  result->max_rows = max_rows;
+  result->in_features = in_features;
+  const uint64_t shape[] = {max_rows, in_features};
+  result->tensor = context.allocate(
+      TensorLayout::contiguous(shape, 2), ScalarType::kFloat16);
+  return PreparedF16Activation(std::move(result));
+}
+
+PreparedF16ActivationView PreparedF16Activation::prepare(
+    TensorBatch& batch, DeviceTensor& input, uint32_t rows,
+    uint32_t input_row_offset) {
+  if (!impl_) throw std::logic_error("vulkan gemm: empty fp16 activation slot");
+  if (!batch.impl_) throw std::logic_error("vulkan gemm: empty batch");
+  if (batch.impl_->poisoned) throw std::logic_error("vulkan gemm: batch is poisoned");
+  if (batch.impl_->owner.get() != impl_->owner.get()) {
+    throw std::invalid_argument(
+        "vulkan gemm: fp16 activation slot and batch contexts differ");
+  }
+  auto source = impl_->owner->require(input);
+  auto destination = impl_->owner->require(impl_->tensor);
+  const bool valid_range = rows != 0 && rows <= impl_->max_rows &&
+      source->layout.rank == 2 && source->layout.extent[1] == impl_->in_features &&
+      input_row_offset <= source->layout.extent[0] &&
+      rows <= source->layout.extent[0] - input_row_offset;
+  if (!valid_range || source->type != ScalarType::kFloat32 ||
+      !source->layout.is_contiguous() || source.get() == destination.get()) {
+    throw std::invalid_argument(
+        "vulkan gemm: fp16 activation source does not match the slot");
+  }
+  const uint64_t elements = checked_multiply(rows, impl_->in_features,
+                                             "gemm fp16 prepare");
+  const uint64_t pairs = (elements + 1) / 2;
+  const uint64_t groups = (pairs + 63) / 64;
+  if (groups == 0 || impl_->owner->max_dispatch_x == 0) {
+    throw std::out_of_range("vulkan gemm: fp16 preparation dispatch is invalid");
+  }
+  const uint64_t gx = std::min<uint64_t>(groups, impl_->owner->max_dispatch_x);
+  const uint64_t gy = (groups + gx - 1) / gx;
+  if (gy > impl_->owner->max_dispatch_y) {
+    throw std::out_of_range(
+        "vulkan gemm: fp16 preparation exceeds dispatch limits");
+  }
+  if (impl_->generation == std::numeric_limits<uint64_t>::max()) {
+    throw std::overflow_error("vulkan gemm: fp16 activation generation exhausted");
+  }
+  TensorContext::Impl::GemmPrepareParameters parameters;
+  parameters.rows = rows;
+  parameters.in_features = impl_->in_features;
+  parameters.input_row_offset = input_row_offset;
+  parameters.groups_x = static_cast<uint32_t>(gx);
+  try {
+    batch.impl_->count_operator();
+    batch.impl_->transition(source, BufferAccess::kComputeRead);
+    batch.impl_->transition(destination, BufferAccess::kComputeWrite);
+    auto& bindings = impl_->owner->gemm_prepare_bindings;
+    bindings[0].buffer = &source->buffer;
+    bindings[0].bytes = source->buffer.size();
+    bindings[1].buffer = &destination->buffer;
+    bindings[1].bytes = destination->buffer.size();
+    batch.impl_->commands.bind_compute(
+        impl_->owner->gemm_prepare_pipeline, bindings);
+    batch.impl_->commands.push_constants(&parameters, sizeof(parameters));
+    batch.impl_->commands.dispatch(static_cast<uint32_t>(gx),
+                                   static_cast<uint32_t>(gy));
+  } catch (...) {
+    batch.impl_->poisoned = true;
+    throw;
+  }
+  auto view = std::make_unique<PreparedF16ActivationView::Impl>();
+  view->slot = impl_;
+  view->batch_identity = batch.impl_.get();
+  view->prepared_rows = rows;
+  view->generation = ++impl_->generation;
+  return PreparedF16ActivationView(std::move(view));
+}
+
+PreparedF16ActivationView::PreparedF16ActivationView() = default;
+PreparedF16ActivationView::~PreparedF16ActivationView() = default;
+PreparedF16ActivationView::PreparedF16ActivationView(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+PreparedF16ActivationView::PreparedF16ActivationView(
+    PreparedF16ActivationView&&) noexcept = default;
+PreparedF16ActivationView& PreparedF16ActivationView::operator=(
+    PreparedF16ActivationView&&) noexcept = default;
+uint32_t PreparedF16ActivationView::rows() const noexcept {
+  return impl_ ? impl_->prepared_rows : 0;
+}
+PreparedF16ActivationView::operator bool() const noexcept { return impl_ != nullptr; }
+
 DenseGemmPlan::DenseGemmPlan() = default;
 DenseGemmPlan::~DenseGemmPlan() = default;
 DenseGemmPlan::DenseGemmPlan(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -2095,6 +2265,14 @@ DenseGemmPlan::operator bool() const noexcept { return impl_ != nullptr; }
 DenseGemmPlan DenseGemmPlan::create(TensorContext& context,
                                     const DenseGemmPlanDesc& desc) {
   if (!context.impl_) throw std::logic_error("vulkan gemm: moved-from context");
+  switch (desc.mode) {
+    case DenseGemmMode::kBFloat16:
+    case DenseGemmMode::kFloat16Vae:
+    case DenseGemmMode::kFloat32:
+      break;
+    default:
+      throw std::invalid_argument("vulkan gemm: invalid execution mode");
+  }
   if (desc.max_rows == 0 || desc.out_features == 0 || desc.in_features == 0) {
     throw std::invalid_argument("vulkan gemm: dimensions must be nonzero");
   }
@@ -2150,6 +2328,37 @@ void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
                            DeviceTensor& prepared_weight, DeviceTensor& output,
                            uint32_t rows, uint32_t input_row_offset,
                            uint32_t output_row_offset, DeviceTensor* bias) const {
+  record_impl(batch, input, prepared_weight, output, rows, input_row_offset,
+              output_row_offset, bias, false);
+}
+
+void DenseGemmPlan::record(TensorBatch& batch, PreparedF16ActivationView& input,
+                           DeviceTensor& prepared_weight, DeviceTensor& output,
+                           uint32_t output_row_offset, DeviceTensor* bias) const {
+  if (!impl_) throw std::logic_error("vulkan gemm: empty plan");
+  if (!input.impl_) throw std::logic_error("vulkan gemm: empty prepared fp16 view");
+  if (!batch.impl_ || input.impl_->batch_identity != batch.impl_.get()) {
+    throw std::invalid_argument(
+        "vulkan gemm: prepared fp16 view belongs to another batch");
+  }
+  if (input.impl_->generation != input.impl_->slot->generation) {
+    throw std::invalid_argument("vulkan gemm: prepared fp16 view was superseded");
+  }
+  if (impl_->desc.mode != DenseGemmMode::kFloat16Vae ||
+      input.impl_->slot->owner.get() != impl_->owner.get() ||
+      input.impl_->slot->in_features != impl_->desc.in_features) {
+    throw std::invalid_argument(
+        "vulkan gemm: prepared fp16 view does not match the plan");
+  }
+  record_impl(batch, input.impl_->slot->tensor, prepared_weight, output,
+              input.impl_->prepared_rows, 0, output_row_offset, bias, true);
+}
+
+void DenseGemmPlan::record_impl(
+    TensorBatch& batch, DeviceTensor& input, DeviceTensor& prepared_weight,
+    DeviceTensor& output, uint32_t rows, uint32_t input_row_offset,
+    uint32_t output_row_offset, DeviceTensor* bias,
+    bool input_is_prepared_f16) const {
   if (!impl_) throw std::logic_error("vulkan gemm: empty plan");
   if (!batch.impl_) throw std::logic_error("vulkan gemm: empty batch");
   if (batch.impl_->poisoned) throw std::logic_error("vulkan gemm: batch is poisoned");
@@ -2157,6 +2366,10 @@ void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
     throw std::invalid_argument("vulkan gemm: plan and batch contexts differ");
   }
   const DenseGemmPlanDesc& desc = impl_->desc;
+  if (desc.mode == DenseGemmMode::kFloat16Vae && !input_is_prepared_f16) {
+    throw std::invalid_argument(
+        "vulkan gemm: fp16 VAE mode requires a prepared activation view");
+  }
   if (rows == 0 || rows > desc.max_rows) {
     throw std::invalid_argument("vulkan gemm: row count is outside the plan");
   }
@@ -2168,8 +2381,10 @@ void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
   if ((desc.bias == DenseGemmBias::kNone) != (bias == nullptr)) {
     throw std::invalid_argument("vulkan gemm: bias presence differs from plan");
   }
-  const ScalarType input_type = desc.mode == DenseGemmMode::kBFloat16
-      ? ScalarType::kBFloat16 : ScalarType::kFloat32;
+  const ScalarType input_type = input_is_prepared_f16
+      ? ScalarType::kFloat16
+      : desc.mode == DenseGemmMode::kBFloat16
+          ? ScalarType::kBFloat16 : ScalarType::kFloat32;
   const ScalarType weight_type = desc.mode == DenseGemmMode::kBFloat16
       ? ScalarType::kBFloat16 : desc.mode == DenseGemmMode::kFloat16Vae
           ? ScalarType::kFloat16 : ScalarType::kFloat32;
@@ -2222,12 +2437,16 @@ void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
         : desc.bias == DenseGemmBias::kFloat32 ? 1u : 2u;
   } else if (desc.mode == DenseGemmMode::kFloat16Vae) {
     parameters.mode = 3u;
+    parameters.input_row_offset = 0;
   } else {
     parameters.mode = desc.bias == DenseGemmBias::kNone ? 4u : 5u;
   }
-  const bool use_cooperative = impl_->owner->cooperative_gemm &&
-      desc.mode == DenseGemmMode::kBFloat16 && (rows % 64u) == 0u &&
+  const bool cooperative_shape = (rows % 64u) == 0u &&
       (desc.out_features % 16u) == 0u && (desc.in_features % 16u) == 0u;
+  const bool use_cooperative = cooperative_shape &&
+      ((desc.mode == DenseGemmMode::kBFloat16 && impl_->owner->cooperative_gemm) ||
+       (desc.mode == DenseGemmMode::kFloat16Vae &&
+        impl_->owner->cooperative_f16_gemm));
   if (use_cooperative) {
     if (!detail::gemm_dispatch_geometry(
             rows, desc.out_features, 64, 16, impl_->owner->max_dispatch_x,
@@ -2249,12 +2468,16 @@ void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
     bindings[1].buffer = &weight->buffer;
     bindings[1].bytes = weight->buffer.size();
     bindings[2].buffer = bias_tensor ? &bias_tensor->buffer : &src->buffer;
-    bindings[2].bytes = bias_tensor ? bias_tensor->buffer.size() : src->buffer.size();
+    bindings[2].bytes = bias_tensor ? bias_tensor->buffer.size()
+                                    : src->buffer.size();
     bindings[3].buffer = &dst->buffer;
     bindings[3].bytes = dst->buffer.size();
     batch.impl_->commands.bind_compute(
-        use_cooperative ? impl_->owner->gemm_coop_pipeline
-                        : impl_->owner->gemm_pipeline,
+        use_cooperative
+            ? (desc.mode == DenseGemmMode::kFloat16Vae
+                   ? impl_->owner->gemm_coop_f16_pipeline
+                   : impl_->owner->gemm_coop_pipeline)
+            : impl_->owner->gemm_pipeline,
         bindings);
     batch.impl_->commands.push_constants(&parameters, sizeof(parameters));
     batch.impl_->commands.dispatch(groups_x, groups_y);
