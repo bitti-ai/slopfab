@@ -52,6 +52,13 @@ struct DecodedAudio {
   }
 };
 
+// Opt-in diagnostic snapshots in graph order: dec_in_proj, conv_pre, seven
+// post-stage averages, activation_post, conv_post, clamp, interleave. Normal
+// production decode passes null and performs no snapshot allocation or copy.
+struct AudioDecodeTrace {
+  std::vector<std::vector<float>> boundaries;
+};
+
 class AudioDecoder {
  public:
   AudioDecoder();
@@ -71,7 +78,8 @@ class AudioDecoder {
 
   // `latents` is `[2, 32, A]` fp32, already de-normalised
   // (`z * latents_std + latents_mean`). Returns interleaved stereo.
-  DecodedAudio decode(const float* latents, int num_latents);
+  DecodedAudio decode(const float* latents, int num_latents,
+                      AudioDecodeTrace* trace = nullptr);
 
  private:
   struct Impl;

@@ -380,7 +380,8 @@ void AudioDecoder::unload() {
 const std::vector<float>& AudioDecoder::latents_mean() const { return impl_->latents_mean; }
 const std::vector<float>& AudioDecoder::latents_std() const { return impl_->latents_std; }
 
-DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
+DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
+                                  AudioDecodeTrace* trace) {
   Impl& im = *impl_;
   if (im.weight_floats == 0) throw std::runtime_error("audio vae: decode before load");
   if (latents == nullptr || num_latents <= 0) {
@@ -422,6 +423,17 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
   float* t1 = im.pool[4].get();
   float* t2 = im.pool[5].get();
   float* scratch = im.aa_scratch.get();
+  if (trace != nullptr) {
+    trace->boundaries.clear();
+    trace->boundaries.reserve(13);
+  }
+  auto capture = [&](const float* source, size_t count) {
+    if (trace == nullptr) return;
+    trace->boundaries.emplace_back(count);
+    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(trace->boundaries.back().data(), source,
+                                      count * sizeof(float),
+                                      cudaMemcpyDeviceToHost, im.stream.get()));
+  };
 
   // Upload [2, 32, A] and project it up to the BigVGAN input width.
   const size_t latent_floats = static_cast<size_t>(batch) * zc * num_latents;
@@ -429,7 +441,9 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
   z.copy_from_host(latents, latent_floats, im.stream.get());
 
   im.run_conv(im.dec_in_proj, z.get(), buf_a, batch, num_latents, num_latents, 0, 1);
+  capture(buf_a, static_cast<size_t>(batch) * cfg.latent_dim * num_latents);
   im.run_conv(im.conv_pre, buf_a, buf_b, batch, num_latents, num_latents, 3, 1);
+  capture(buf_b, static_cast<size_t>(batch) * cfg.decoder_dim * num_latents);
 
   float* cur = buf_b;
   float* spare = buf_a;
@@ -455,6 +469,7 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
     // BigVGAN averages the three resblocks; it does not sum them
     // (dac_bigvgan.py:195). Dropping this is 3x too loud and then clips.
     cuda::launch_scale_inplace(acc, 1.0f / 3.0f, elems, im.stream.get());
+    capture(acc, elems);
 
     // Rotate: the averaged result becomes the next stage's input, and the
     // buffer it displaces becomes the next scratch.
@@ -464,14 +479,18 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
   }
 
   im.run_activation(im.activation_post, cur, spare, batch, len, scratch);
+  capture(spare, static_cast<size_t>(batch) * im.activation_post.channels * len);
   im.run_conv(im.conv_post, spare, cur, batch, len, len, 3, 1);
+  capture(cur, static_cast<size_t>(batch) * len);
 
   const size_t frames = static_cast<size_t>(len);
   const size_t samples = frames * static_cast<size_t>(batch);
   // use_tanh_at_final is false, so the output is bounded by a clamp
   // (dac_bigvgan.py:204), not compressed by a tanh.
   cuda::launch_clamp_inplace(cur, -1.0f, 1.0f, samples, im.stream.get());
+  capture(cur, samples);
   cuda::launch_interleave(cur, spare, batch, len, im.stream.get());
+  capture(spare, samples);
 
   DecodedAudio out;
   out.channels = batch;
@@ -480,6 +499,8 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
   VIDFAB_CUDA_CHECK(cudaMemcpyAsync(out.samples.data(), spare, samples * sizeof(float),
                                     cudaMemcpyDeviceToHost, im.stream.get()));
   im.stream.synchronize();
+  if (trace != nullptr && trace->boundaries.size() != 13)
+    throw std::logic_error("audio vae: diagnostic boundary count drift");
 
   if (len != num_latents * total_upsample) {
     throw std::runtime_error("audio vae: decoded " + std::to_string(len) + " samples, expected " +

@@ -1708,6 +1708,9 @@ uint64_t TensorContext::pooled_used_bytes() const {
              ? std::numeric_limits<uint64_t>::max()
              : primary + scratch;
 }
+uint64_t TensorContext::staging_capacity_bytes() const noexcept {
+  return impl_ ? impl_->staging_capacity : 0;
+}
 uint64_t TensorContext::descriptor_set_allocations() const noexcept {
   return impl_ ? impl_->commands.descriptor_set_allocations() : 0;
 }

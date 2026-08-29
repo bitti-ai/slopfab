@@ -52,6 +52,19 @@ uint32_t float_bits(float value) {
   return bits;
 }
 
+uint64_t fnv64_floats(const std::vector<float>& values) {
+  uint64_t hash = 1469598103934665603ull;
+  for (float value : values) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    for (unsigned byte = 0; byte < 4; ++byte) {
+      hash ^= (bits >> (8u * byte)) & 0xffu;
+      hash *= 1099511628211ull;
+    }
+  }
+  return hash;
+}
+
 uint16_t reference_bf16(float value) {
   uint32_t bits = float_bits(value);
   if ((bits & 0x7fffffffu) > 0x7f800000u) {
@@ -2436,6 +2449,48 @@ VIDFAB_TEST(vulkan_audio_vae_decoder_cuda_off_contract) {
   CHECK(unloaded_decode_rejected);
   decoder.unload();
   CHECK(decoder.weight_bytes() == 0u);
+
+  if (!std::getenv("VIDFAB_AUDIO_DECODER_REAL")) return;
+  const char* configured_path = std::getenv("VIDFAB_AUDIO_VAE_PATH");
+  const std::filesystem::path checkpoint_path = configured_path != nullptr
+      ? configured_path
+      : "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
+  if (!std::filesystem::exists(checkpoint_path)) return;
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+  CHECK(checkpoint.file_size() == 605254808u);
+  CHECK(checkpoint.tensor_count() == 917u);
+  decoder.load(checkpoint);
+  CHECK(decoder.recorded_operators() == 497u);
+  CHECK(decoder.weight_bytes() == 259672032u);
+  constexpr int latent_length = 3;
+  std::vector<float> real_latent(size_t(2) * 32 * latent_length);
+  for (size_t i = 0; i < real_latent.size(); ++i)
+    real_latent[i] = float(int((i * 67) % 607) - 303) / 128.0f;
+  const vae::DecodedAudio first = decoder.decode(real_latent.data(),
+                                                  latent_length);
+  const uint64_t first_digest = fnv64_floats(first.samples);
+  CHECK(first_digest == 0x528f17a83d5ef7eeull);
+  const uint64_t stable_reserved = decoder.allocator_reserved_bytes();
+  const uint64_t stable_descriptors = decoder.descriptor_set_allocations();
+  const vae::DecodedAudio repeat = decoder.decode(real_latent.data(),
+                                                   latent_length);
+  CHECK(first.samples == repeat.samples);
+  CHECK(fnv64_floats(repeat.samples) == first_digest);
+  CHECK(decoder.allocator_reserved_bytes() == stable_reserved);
+  CHECK(decoder.descriptor_set_allocations() == stable_descriptors);
+  std::printf("  CUDA-off real Vulkan audio A3 FNV64 %016llx\n",
+              static_cast<unsigned long long>(first_digest));
+  decoder.unload();
+  CHECK(decoder.weight_bytes() == 0u);
+  CHECK(decoder.peak_device_bytes() == 0u);
+  unloaded_decode_rejected = false;
+  try {
+    (void)decoder.decode(real_latent.data(), latent_length);
+  } catch (const std::logic_error&) {
+    unloaded_decode_rejected = true;
+  }
+  CHECK(unloaded_decode_rejected);
 }
 
 VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {

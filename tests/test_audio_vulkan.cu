@@ -26,6 +26,7 @@
 #include "vidfab/generate.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/safetensors_write.h"
+#include "vidfab/tensor_convert.h"
 #include "vidfab/vae/audio_decoder.h"
 #include "vidfab/vae/audio_primitives.h"
 #include "vidfab/video/y4m.h"
@@ -81,6 +82,28 @@ uint64_t fnv64(const std::vector<std::vector<float>>& tensors) {
         hash *= 1099511628211ull;
       }
     }
+  }
+  return hash;
+}
+
+uint64_t fnv64_floats(const float* data, size_t count) {
+  uint64_t hash = 1469598103934665603ull;
+  for (size_t i = 0; i < count; ++i) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &data[i], sizeof(bits));
+    for (unsigned byte = 0; byte < 4; ++byte) {
+      hash ^= (bits >> (8u * byte)) & 0xffu;
+      hash *= 1099511628211ull;
+    }
+  }
+  return hash;
+}
+
+uint64_t fnv64_bytes(const std::vector<uint8_t>& data) {
+  uint64_t hash = 1469598103934665603ull;
+  for (uint8_t byte : data) {
+    hash ^= byte;
+    hash *= 1099511628211ull;
   }
   return hash;
 }
@@ -872,14 +895,25 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
   CHECK(cuda_decoder.weight_bytes() == vk_decoder.weight_bytes());
   CHECK(vk_decoder.weight_bytes() == 259672032u);
   CHECK(vk_decoder.recorded_operators() == 497u);
+  const uint64_t largest_host_tensor =
+      (uint64_t(1024) * 2048 * 7 + 1024) * sizeof(float);
+  CHECK(vk_decoder.host_loader_peak_bytes() == largest_host_tensor);
+  CHECK(vk_decoder.host_loader_peak_bytes() < vk_decoder.weight_bytes() / 4);
+  CHECK(vk_decoder.staging_capacity_bytes() ==
+        uint64_t(1024) * 2048 * 7 * sizeof(float));
+  CHECK(vk_decoder.load_pool_high_water_bytes() >= vk_decoder.weight_bytes());
+  CHECK(vk_decoder.load_pool_high_water_bytes() <=
+        vk_decoder.weight_bytes() + 2 * vk_decoder.staging_capacity_bytes() +
+            (4ull << 20));
   CHECK(cuda_decoder.latents_mean() == vk_decoder.latents_mean());
   CHECK(cuda_decoder.latents_std() == vk_decoder.latents_std());
 
   constexpr int latent_length = 3;
   std::vector<float> latent = values(size_t(2) * 32 * latent_length,
                                      67, 607, 1.0f / 128.0f);
+  vae::AudioDecodeTrace cuda_trace;
   const vae::DecodedAudio cuda_audio = cuda_decoder.decode(
-      latent.data(), latent_length);
+      latent.data(), latent_length, &cuda_trace);
   const auto forward_begin = std::chrono::steady_clock::now();
   const vae::DecodedAudio vk_audio = vk_decoder.decode(
       latent.data(), latent_length);
@@ -904,6 +938,42 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
   CHECK(read_file(cuda_wav) == read_file(vk_wav));
   std::filesystem::remove(cuda_wav);
   std::filesystem::remove(vk_wav);
+
+  // A mid-graph reload failure must preserve the complete old graph. This
+  // archive gets through both input convolutions and then fails at stage 0.
+  const std::filesystem::path partial_path =
+      std::filesystem::temp_directory_path() /
+      "vidfab_vulkan_audio_partial_reload.safetensors";
+  write_safetensors(
+      partial_path.string(),
+      {{"dec_in_proj.weight", {2048, 32, 1},
+        to_f32(checkpoint.at("dec_in_proj.weight"))},
+       {"dec_in_proj.bias", {2048},
+        to_f32(checkpoint.at("dec_in_proj.bias"))},
+       {"decoder.conv_pre.weight", {1024, 2048, 7},
+        to_f32(checkpoint.at("decoder.conv_pre.weight"))},
+       {"decoder.conv_pre.bias", {1024},
+        to_f32(checkpoint.at("decoder.conv_pre.bias"))}});
+  const uint64_t before_failed_reload_used =
+      vk_decoder.allocator_used_bytes();
+  const uint64_t before_failed_reload_weights = vk_decoder.weight_bytes();
+  bool partial_reload_rejected = false;
+  {
+    SafeTensors partial;
+    partial.open(partial_path.string());
+    try {
+      vk_decoder.load(partial);
+    } catch (const std::exception&) {
+      partial_reload_rejected = true;
+    }
+  }
+  CHECK(partial_reload_rejected);
+  CHECK(vk_decoder.weight_bytes() == before_failed_reload_weights);
+  CHECK(vk_decoder.allocator_used_bytes() == before_failed_reload_used);
+  check_exact(cuda_audio.samples,
+              vk_decoder.decode(latent.data(), latent_length).samples,
+              "A3 after transactional reload failure");
+  std::filesystem::remove(partial_path);
 
   constexpr int production_length = 405;
   std::vector<float> production = values(
@@ -937,15 +1007,24 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
   CHECK(vk_decoder.allocator_used_bytes() >= vk_decoder.peak_device_bytes());
   CHECK(vk_decoder.allocator_used_bytes() <=
         vk_decoder.peak_device_bytes() + (128ull << 20));
+  CHECK(vk_decoder.decode_pool_high_water_bytes() >=
+        vk_decoder.allocator_used_bytes());
+  CHECK(vk_decoder.decode_pool_high_water_bytes() <=
+        vk_decoder.peak_device_bytes() +
+            2 * vk_decoder.staging_capacity_bytes() + (4ull << 20));
   const uint64_t production_digest = fnv64({vk_production.samples});
+  CHECK(production_digest == 0x0b9084d3f1c6355aull);
   std::printf(
-      "  exact Vulkan audio decoder: load %.1f ms, A3 forward %.1f ms, A405 CUDA/Vulkan %.1f/%.1f ms, FNV64 %016llx, weights/peak %.1f/%.1f MiB, pool %.1f/%.1f MiB, descriptors %llu\n",
+      "  exact Vulkan audio decoder: load %.1f ms, A3 forward %.1f ms, A405 CUDA/Vulkan %.1f/%.1f ms, FNV64 %016llx, weights/logical %.1f/%.1f MiB, pool used/reserved/decode-HWM %.1f/%.1f/%.1f MiB, staging-pair %.1f MiB, host-loader peak %.1f MiB, descriptors %llu\n",
       load_ms, forward_ms, cuda_ms, vk_ms,
       static_cast<unsigned long long>(production_digest),
       double(vk_decoder.weight_bytes()) / 1048576.0,
       double(vk_decoder.peak_device_bytes()) / 1048576.0,
       double(vk_decoder.allocator_used_bytes()) / 1048576.0,
       double(vk_decoder.allocator_reserved_bytes()) / 1048576.0,
+      double(vk_decoder.decode_pool_high_water_bytes()) / 1048576.0,
+      double(2 * vk_decoder.staging_capacity_bytes()) / 1048576.0,
+      double(vk_decoder.host_loader_peak_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk_decoder.descriptor_set_allocations()));
   const uint64_t reserved_before_unload = vk_decoder.allocator_reserved_bytes();
   const uint64_t used_before_unload = vk_decoder.allocator_used_bytes();
@@ -962,6 +1041,38 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
     unloaded_decode_rejected = true;
   }
   CHECK(unloaded_decode_rejected);
+
+  // Reload the same object and use the extra in-batch diagnostic copies to
+  // compare every meaningful graph boundary. Production above stayed the
+  // original 497-operator transaction; diagnostics add 13 copies but remain
+  // one 510-operator transaction under the same 512 cap.
+  vk_decoder.load(checkpoint);
+  CHECK(vk_decoder.weight_bytes() == before_failed_reload_weights);
+  vae::AudioDecodeTrace vk_trace;
+  const vae::DecodedAudio vk_reloaded = vk_decoder.decode(
+      latent.data(), latent_length, &vk_trace);
+  check_exact(cuda_audio.samples, vk_reloaded.samples,
+              "A3 after unload and reload");
+  const std::array<const char*, 13> boundary_names{
+      "dec_in_proj", "conv_pre", "stage0 average", "stage1 average",
+      "stage2 average", "stage3 average", "stage4 average",
+      "stage5 average", "stage6 average", "activation_post", "conv_post",
+      "clamp", "interleave"};
+  CHECK(cuda_trace.boundaries.size() == boundary_names.size());
+  CHECK(vk_trace.boundaries.size() == boundary_names.size());
+  for (size_t index = 0; index < boundary_names.size(); ++index)
+    check_exact(cuda_trace.boundaries[index], vk_trace.boundaries[index],
+                boundary_names[index]);
+  CHECK(cuda_trace.boundaries.back() == cuda_audio.samples);
+  CHECK(vk_trace.boundaries.back() == vk_reloaded.samples);
+  const uint64_t reload_reserved = vk_decoder.allocator_reserved_bytes();
+  const uint64_t reload_descriptors = vk_decoder.descriptor_set_allocations();
+  check_exact(cuda_audio.samples,
+              vk_decoder.decode(latent.data(), latent_length).samples,
+              "repeated A3 after reload");
+  CHECK(vk_decoder.allocator_reserved_bytes() == reload_reserved);
+  CHECK(vk_decoder.descriptor_set_allocations() == reload_descriptors);
+  vk_decoder.unload();
 }
 
 VIDFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {
@@ -976,6 +1087,27 @@ VIDFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !vulkan::Instance::available()) return;
+
+#ifdef _WIN32
+  SafeTensors video_provenance;
+  video_provenance.open(video_checkpoint.string());
+  const std::array<uint8_t, 32> expected_video_sha{
+      0x7c, 0x1f, 0x13, 0x14, 0x92, 0xe7, 0xed, 0xda,
+      0xca, 0xac, 0x90, 0x69, 0xa6, 0x1b, 0x81, 0xbd,
+      0xd3, 0x9d, 0xe5, 0xcc, 0x96, 0x56, 0x1e, 0x67,
+      0x7c, 0x5e, 0xab, 0x1c, 0xdc, 0xe5, 0xe5, 0x22};
+  CHECK(mapping_sha256(video_provenance.mapping_base(),
+                       video_provenance.file_size()) == expected_video_sha);
+  SafeTensors audio_provenance;
+  audio_provenance.open(audio_checkpoint.string());
+  const std::array<uint8_t, 32> expected_audio_sha{
+      0x8e, 0x50, 0x5d, 0x95, 0xdd, 0x15, 0x61, 0xd4,
+      0x7a, 0xbd, 0x43, 0xd4, 0x23, 0x8f, 0xd4, 0x0d,
+      0x9b, 0xb1, 0xae, 0x9e, 0x14, 0x7e, 0xd0, 0xa4,
+      0xcb, 0xa7, 0x78, 0xd7, 0x6a, 0xe4, 0xdb, 0x48};
+  CHECK(mapping_sha256(audio_provenance.mapping_base(),
+                       audio_provenance.file_size()) == expected_audio_sha);
+#endif
 
   GenerateRequest request;
   request.canvas_width = 32;
@@ -1047,12 +1179,31 @@ VIDFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {
   audio::write_wav(vk_wav.string(), vk_capture.audio,
                    vk_capture.audio_channels, vk_capture.audio_sample_rate,
                    audio::SampleFormat::kPcm16);
-  CHECK(read_bytes(cuda_y4m) == read_bytes(vk_y4m));
-  CHECK(read_bytes(cuda_wav) == read_bytes(vk_wav));
+  const std::vector<uint8_t> cuda_y4m_bytes = read_bytes(cuda_y4m);
+  const std::vector<uint8_t> vk_y4m_bytes = read_bytes(vk_y4m);
+  const std::vector<uint8_t> cuda_wav_bytes = read_bytes(cuda_wav);
+  const std::vector<uint8_t> vk_wav_bytes = read_bytes(vk_wav);
+  CHECK(cuda_y4m_bytes == vk_y4m_bytes);
+  CHECK(cuda_wav_bytes == vk_wav_bytes);
+
+  const uint64_t pixel_digest = fnv64_floats(
+      cuda_capture.video.data(), cuda_capture.video.size());
+  const uint64_t pcm_digest = fnv64_floats(
+      cuda_capture.audio.data(), cuda_capture.audio.size());
+  const uint64_t y4m_digest = fnv64_bytes(cuda_y4m_bytes);
+  const uint64_t wav_digest = fnv64_bytes(cuda_wav_bytes);
+  CHECK(pixel_digest == 0xe2ca5273e36e9ed7ull);
+  CHECK(pcm_digest == 0x5933499108ce9c79ull);
+  CHECK(y4m_digest == 0xd55dbd1d534b8787ull);
+  CHECK(wav_digest == 0x6b066c7cf430117dull);
 
   std::printf(
-      "  exact run_generate slice: latent FNV64 %016llx, %zu pixels, %zu interleaved PCM samples, Y4M/WAV byte exact\n",
+      "  exact run_generate slice: latent/pixels/PCM/Y4M/WAV FNV64 %016llx/%016llx/%016llx/%016llx/%016llx, %zu pixels, %zu interleaved PCM samples\n",
       static_cast<unsigned long long>(fnv64({video_rows, audio_rows})),
+      static_cast<unsigned long long>(pixel_digest),
+      static_cast<unsigned long long>(pcm_digest),
+      static_cast<unsigned long long>(y4m_digest),
+      static_cast<unsigned long long>(wav_digest),
       cuda_capture.video.size(), cuda_capture.audio.size());
   std::error_code ignored;
   std::filesystem::remove(latent_path, ignored);

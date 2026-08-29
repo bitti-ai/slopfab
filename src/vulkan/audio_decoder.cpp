@@ -112,6 +112,11 @@ struct AudioDecoder::Impl {
   DeviceTensor aa_scratch;
   uint64_t arena_elements = 0;
   uint64_t last_transient_bytes = 0;
+  uint64_t last_load_pool_high_water = 0;
+  uint64_t last_decode_pool_high_water = 0;
+  uint64_t last_host_loader_peak = 0;
+  uint64_t current_load_pool_high_water = 0;
+  uint64_t current_host_loader_peak = 0;
 
   explicit Impl(const Device& device)
       : context(device, [] {
@@ -125,7 +130,11 @@ struct AudioDecoder::Impl {
   DeviceTensor upload(const std::vector<float>& host,
                       std::initializer_list<uint64_t> extents) {
     DeviceTensor result = context.allocate(layout(extents));
+    current_load_pool_high_water = std::max(
+        current_load_pool_high_water, context.pooled_used_bytes());
     context.upload(result, host.data(), host.size());
+    current_load_pool_high_water = std::max(
+        current_load_pool_high_water, context.pooled_used_bytes());
     return result;
   }
 
@@ -137,6 +146,9 @@ struct AudioDecoder::Impl {
         : std::vector<int64_t>{out_channels, in_channels, kernel};
     vae::AudioConvWeights host = vae::load_audio_conv_weights(
         checkpoint, name, shape, require_bias ? out_channels : 0, require_bias);
+    current_host_loader_peak = std::max(
+        current_host_loader_peak,
+        (host.weight.size() + host.bias.size()) * sizeof(float));
     Conv result;
     result.out_channels = out_channels;
     result.in_channels = in_channels;
@@ -164,6 +176,8 @@ struct AudioDecoder::Impl {
                     std::initializer_list<uint64_t> extents) {
       std::vector<float> host = vae::load_audio_f32_tensor(
           checkpoint, prefix + name, shape);
+      current_host_loader_peak = std::max(
+          current_host_loader_peak, host.size() * sizeof(float));
       destination.bytes += host.size() * sizeof(float);
       ++destination.tensors;
       return upload(host, extents);
@@ -263,7 +277,8 @@ void AudioDecoder::load(const SafeTensors& checkpoint,
     throw std::invalid_argument("Vulkan audio VAE: checkpoint is not open");
   validate_config(config);
   Impl& d = *impl_;
-  d.loaded = false;
+  d.current_load_pool_high_water = d.context.pooled_used_bytes();
+  d.current_host_loader_peak = 0;
   Weights next;
   next.dec_in_proj = d.load_conv(checkpoint, "dec_in_proj", config.latent_dim,
                                  config.latent_channels, 1, false, true, next);
@@ -319,11 +334,16 @@ void AudioDecoder::load(const SafeTensors& checkpoint,
       checkpoint, "latents_mean", {config.latent_channels});
   std::vector<float> next_std = vae::load_audio_f32_tensor(
       checkpoint, "latents_std", {config.latent_channels});
+  d.current_host_loader_peak = std::max(
+      d.current_host_loader_peak,
+      std::max(next_mean.size(), next_std.size()) * sizeof(float));
   d.config = config;
   d.weights = std::move(next);
   d.mean = std::move(next_mean);
   d.std_dev = std::move(next_std);
   d.loaded = true;
+  d.last_load_pool_high_water = d.current_load_pool_high_water;
+  d.last_host_loader_peak = d.current_host_loader_peak;
 }
 
 void AudioDecoder::unload() {
@@ -351,13 +371,15 @@ const std::vector<float>& AudioDecoder::latents_std() const {
   return impl_->std_dev;
 }
 
-vae::DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
+vae::DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
+                                       vae::AudioDecodeTrace* trace) {
   if (!impl_ || !impl_->loaded)
     throw std::logic_error("Vulkan audio VAE: decode before load");
   if (latents == nullptr || num_latents <= 0)
     throw std::invalid_argument("Vulkan audio VAE: invalid latent input");
   Impl& d = *impl_;
   d.ensure_arena(num_latents);
+  d.last_decode_pool_high_water = d.context.pooled_used_bytes();
   const uint32_t batch_size = static_cast<uint32_t>(d.config.output_channels);
   const uint32_t latent_length = static_cast<uint32_t>(num_latents);
   const uint64_t latent_count = static_cast<uint64_t>(batch_size) *
@@ -368,11 +390,53 @@ vae::DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
       static_cast<uint32_t>(d.config.total_upsample());
   DeviceTensor interleaved = d.context.allocate(
       layout({output_length, batch_size}));
+  d.last_decode_pool_high_water = std::max(
+      d.last_decode_pool_high_water, d.context.pooled_used_bytes());
   d.last_transient_bytes = (latent_count +
       static_cast<uint64_t>(output_length) * batch_size) * sizeof(float);
   d.context.upload(input, latents, latent_count);
+  d.last_decode_pool_high_water = std::max(
+      d.last_decode_pool_high_water, d.context.pooled_used_bytes());
+
+  std::vector<uint64_t> diagnostic_counts;
+  std::vector<DeviceTensor> diagnostic_tensors;
+  if (trace != nullptr) {
+    trace->boundaries.clear();
+    diagnostic_counts.reserve(13);
+    diagnostic_counts.push_back(static_cast<uint64_t>(batch_size) *
+                                d.config.latent_dim * latent_length);
+    diagnostic_counts.push_back(static_cast<uint64_t>(batch_size) *
+                                d.config.decoder_dim * latent_length);
+    uint64_t diagnostic_length = latent_length;
+    for (const Stage& stage : d.weights.stages) {
+      diagnostic_length *= stage.rate;
+      diagnostic_counts.push_back(static_cast<uint64_t>(batch_size) *
+          stage.up.out_channels * diagnostic_length);
+    }
+    diagnostic_counts.push_back(static_cast<uint64_t>(batch_size) *
+        d.weights.activation_post.channels * diagnostic_length);
+    for (int index = 0; index < 3; ++index)
+      diagnostic_counts.push_back(static_cast<uint64_t>(batch_size) *
+                                  diagnostic_length);
+    if (diagnostic_counts.size() != 13)
+      throw std::logic_error("Vulkan audio VAE: diagnostic shape drift");
+    diagnostic_tensors.reserve(diagnostic_counts.size());
+    for (uint64_t count : diagnostic_counts)
+      diagnostic_tensors.push_back(d.context.allocate(layout({count})));
+    d.last_decode_pool_high_water = std::max(
+        d.last_decode_pool_high_water, d.context.pooled_used_bytes());
+  }
 
   TensorBatch commands = d.context.begin_batch();
+  size_t diagnostic_index = 0;
+  auto capture = [&](DeviceTensor& source, uint64_t count) {
+    if (trace == nullptr) return;
+    if (diagnostic_index >= diagnostic_tensors.size() ||
+        diagnostic_counts[diagnostic_index] != count)
+      throw std::logic_error("Vulkan audio VAE: diagnostic boundary drift");
+    commands.audio_copy_prefix(source, diagnostic_tensors[diagnostic_index], count);
+    ++diagnostic_index;
+  };
   DeviceTensor* a = &d.arena[0];
   DeviceTensor* b = &d.arena[1];
   DeviceTensor* accumulator = &d.arena[2];
@@ -381,8 +445,12 @@ vae::DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
   DeviceTensor* t2 = &d.arena[5];
   d.record_conv(commands, d.weights.dec_in_proj, input, *a, batch_size,
                 latent_length, latent_length, 0, 1);
+  capture(*a, static_cast<uint64_t>(batch_size) * d.config.latent_dim *
+                  latent_length);
   d.record_conv(commands, d.weights.conv_pre, *a, *b, batch_size,
                 latent_length, latent_length, 3, 1);
+  capture(*b, static_cast<uint64_t>(batch_size) * d.config.decoder_dim *
+                  latent_length);
   DeviceTensor* current = b;
   DeviceTensor* spare = a;
   uint32_t length = latent_length;
@@ -407,26 +475,48 @@ vae::DecodedAudio AudioDecoder::decode(const float* latents, int num_latents) {
         commands.audio_add_inplace(*accumulator, *work, count);
     }
     commands.audio_scale_inplace(*accumulator, 1.0f / 3.0f, count);
+    capture(*accumulator, count);
     DeviceTensor* next_spare = current;
     current = accumulator;
     accumulator = next_spare;
   }
   d.record_activation(commands, d.weights.activation_post, *current, *spare,
                       batch_size, length);
+  capture(*spare, static_cast<uint64_t>(batch_size) *
+                      d.weights.activation_post.channels * length);
   d.record_conv(commands, d.weights.conv_post, *spare, *current, batch_size,
                 length, length, 3, 1);
   const uint64_t samples = static_cast<uint64_t>(batch_size) * length;
+  capture(*current, samples);
   commands.audio_clamp_inplace(*current, -1.0f, 1.0f, samples);
+  capture(*current, samples);
   commands.audio_interleave(*current, interleaved, batch_size, length);
-  if (commands.remaining_operator_capacity() != kGraphCapacity - kGraphOperators)
+  capture(interleaved, samples);
+  const uint32_t expected_operators = kGraphOperators +
+      (trace != nullptr ? static_cast<uint32_t>(diagnostic_counts.size()) : 0u);
+  if (diagnostic_index != diagnostic_tensors.size() ||
+      commands.remaining_operator_capacity() != kGraphCapacity - expected_operators)
     throw std::logic_error("Vulkan audio VAE: graph operator count drift");
   commands.submit().wait();
+  d.last_decode_pool_high_water = std::max(
+      d.last_decode_pool_high_water, d.context.pooled_used_bytes());
 
   vae::DecodedAudio result;
   result.channels = batch_size;
   result.sample_rate = d.config.sample_rate;
   result.samples.resize(samples);
   d.context.download(interleaved, result.samples.data(), samples);
+  if (trace != nullptr) {
+    trace->boundaries.resize(diagnostic_tensors.size());
+    for (size_t index = 0; index < diagnostic_tensors.size(); ++index) {
+      trace->boundaries[index].resize(diagnostic_counts[index]);
+      d.context.download(diagnostic_tensors[index],
+                         trace->boundaries[index].data(),
+                         diagnostic_counts[index]);
+    }
+  }
+  d.last_decode_pool_high_water = std::max(
+      d.last_decode_pool_high_water, d.context.pooled_used_bytes());
   if (length != latent_length * static_cast<uint32_t>(d.config.total_upsample()))
     throw std::logic_error("Vulkan audio VAE: output length drift");
   return result;
@@ -444,6 +534,18 @@ uint64_t AudioDecoder::allocator_used_bytes() const noexcept {
 }
 uint64_t AudioDecoder::allocator_reserved_bytes() const noexcept {
   return impl_ ? impl_->context.reserved_bytes() : 0;
+}
+uint64_t AudioDecoder::load_pool_high_water_bytes() const noexcept {
+  return impl_ ? impl_->last_load_pool_high_water : 0;
+}
+uint64_t AudioDecoder::decode_pool_high_water_bytes() const noexcept {
+  return impl_ ? impl_->last_decode_pool_high_water : 0;
+}
+uint64_t AudioDecoder::staging_capacity_bytes() const noexcept {
+  return impl_ ? impl_->context.staging_capacity_bytes() : 0;
+}
+uint64_t AudioDecoder::host_loader_peak_bytes() const noexcept {
+  return impl_ ? impl_->last_host_loader_peak : 0;
 }
 uint64_t AudioDecoder::descriptor_set_allocations() const noexcept {
   return impl_ ? impl_->context.descriptor_set_allocations() : 0;

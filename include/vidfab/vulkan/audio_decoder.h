@@ -30,12 +30,17 @@ class AudioDecoder {
   const vae::AudioVAEConfig& config() const;
   const std::vector<float>& latents_mean() const;
   const std::vector<float>& latents_std() const;
-  vae::DecodedAudio decode(const float* latents, int num_latents);
+  vae::DecodedAudio decode(const float* latents, int num_latents,
+                           vae::AudioDecodeTrace* trace = nullptr);
 
   uint64_t weight_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;
   uint64_t allocator_used_bytes() const noexcept;
   uint64_t allocator_reserved_bytes() const noexcept;
+  uint64_t load_pool_high_water_bytes() const noexcept;
+  uint64_t decode_pool_high_water_bytes() const noexcept;
+  uint64_t staging_capacity_bytes() const noexcept;
+  uint64_t host_loader_peak_bytes() const noexcept;
   uint64_t descriptor_set_allocations() const noexcept;
   uint32_t recorded_operators() const noexcept;
 

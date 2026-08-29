@@ -330,6 +330,9 @@ class TensorContext {
   TensorWorkspace& workspace();
   uint64_t reserved_bytes() const;
   uint64_t pooled_used_bytes() const;
+  // Persistent upload and readback buffers each have this capacity. They are
+  // accounted separately from logical device tensors and retained for reuse.
+  uint64_t staging_capacity_bytes() const noexcept;
   uint64_t descriptor_set_allocations() const noexcept;
 
  private:
