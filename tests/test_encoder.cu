@@ -1261,6 +1261,19 @@ VIDFAB_TEST(encoder_real_encode) {
       loaded = false;
       std::printf("  resident load failed (%s); the card cannot hold 24.4 GB right now\n",
                   e.what());
+      // load() owns every queued upload. A failed resident transaction must
+      // drain and free it immediately, not leave the next streaming encoder to
+      // discover a stale async OOM at cublasCreate.
+      CHECK(cudaGetLastError() == cudaSuccess);
+      size_t free_after_failed_load = 0;
+      size_t ignored_total = 0;
+      CHECK(cudaMemGetInfo(&free_after_failed_load, &ignored_total) == cudaSuccess);
+      constexpr size_t kRollbackTolerance = size_t(512) << 20;
+      const size_t retained = free_before > free_after_failed_load
+          ? free_before - free_after_failed_load : 0;
+      CHECK_MSG(free_after_failed_load + kRollbackTolerance >= free_before,
+                "failed resident load retained %.2f GB of device memory",
+                double(retained) / (1 << 30));
     }
 
     if (loaded) {

@@ -58,7 +58,9 @@ enum class Residency {
   // working set, streaming otherwise. The default.
   kAuto,
   // All 50 layers uploaded once. Fastest encode; 24.4 GB held until unload()
-  // on the int8 build, 12.6 GB on the nvfp4 one.
+  // on the int8 build, 12.6 GB on the nvfp4 one. load() also reserves the
+  // maximum-request graph footprint and a driver budget; explicit resident
+  // mode fails synchronously when that complete peak does not fit.
   kResident,
   // Each layer staged through pinned host memory and uploaded just before use,
   // double-buffered against compute. ~1 GB of layer buffers.

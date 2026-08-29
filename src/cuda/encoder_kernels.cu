@@ -566,6 +566,37 @@ size_t layer_workspace_bytes(const LayerDims& d) {
   return activations + transient;
 }
 
+size_t resident_request_bytes(const EncoderConfig& cfg, size_t weight_bytes,
+                              size_t total_device_bytes) {
+  LayerDims dims;
+  dims.format = cfg.format;
+  dims.num_tokens = cfg.max_prompt_tokens;
+  dims.hidden = cfg.hidden_size;
+  dims.num_heads = cfg.num_attention_heads;
+  dims.num_kv_heads = cfg.num_key_value_heads;
+  dims.head_dim = cfg.head_dim;
+  dims.intermediate = cfg.intermediate_size;
+  dims.rms_norm_eps = cfg.rms_norm_eps;
+
+  const size_t rows = static_cast<size_t>(cfg.max_prompt_tokens);
+  const size_t stream = rows * static_cast<size_t>(cfg.hidden_size);
+  const size_t rope = rows * static_cast<size_t>(cfg.head_dim);
+  const size_t persistent = stream * (sizeof(__nv_bfloat16) + sizeof(float)) +
+                            2 * rope * sizeof(float);
+  // WDDM can accept large cudaMalloc reservations and fail later when the
+  // first DMA commits their pages. Preserve a device/driver budget in addition
+  // to the exact max-request graph footprint so load fails synchronously.
+  const size_t driver_reserve = std::max<size_t>(2ull << 30,
+                                                  total_device_bytes / 5u);
+  const size_t workspace = layer_workspace_bytes(dims);
+  if (weight_bytes > std::numeric_limits<size_t>::max() - workspace ||
+      weight_bytes + workspace > std::numeric_limits<size_t>::max() - persistent ||
+      weight_bytes + workspace + persistent >
+          std::numeric_limits<size_t>::max() - driver_reserve)
+    return std::numeric_limits<size_t>::max();
+  return weight_bytes + workspace + persistent + driver_reserve;
+}
+
 void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
                            vidfab::cuda::LinearRunner& linear, const LayerWeights& w,
                            const LayerDims& d, const float* cos, const float* sin,
@@ -776,6 +807,29 @@ struct Encoder::Impl {
       staging[i].reset();
     }
   }
+
+  // Returns the encoder to a reusable unloaded state even after an asynchronous
+  // upload or a partially-created CUDA object failed. Cleanup is deliberately
+  // best-effort/noexcept: the original load error is the useful one to report.
+  void reset_runtime_state(bool close_handles) noexcept {
+    if (transfer != nullptr) (void)cudaStreamSynchronize(transfer);
+    if (compute != nullptr) (void)cudaStreamSynchronize(compute);
+    vision.unload();
+    free_weights();
+    ws = Workspace();
+    loaded = false;
+    checkpoint = nullptr;
+    embed = nullptr;
+    embed_scale = nullptr;
+    globals.clear();
+    pending_images = nullptr;
+    stats = EncoderStats();
+    if (close_handles) close_device();
+    // cudaStreamSynchronize and resource destruction may each report the same
+    // deferred upload failure. Consume it only after all owned work is gone so
+    // a subsequent encoder does not misattribute the old error to cublasCreate.
+    (void)cudaGetLastError();
+  }
 };
 
 Encoder::Encoder() : impl_(new Impl()) {}
@@ -796,14 +850,7 @@ WeightFormat Encoder::format() const { return impl_->cfg.format; }
 const EncoderStats& Encoder::stats() const { return impl_->stats; }
 
 void Encoder::unload() {
-  if (impl_->compute != nullptr) cudaStreamSynchronize(impl_->compute);
-  if (impl_->transfer != nullptr) cudaStreamSynchronize(impl_->transfer);
-  impl_->free_weights();
-  impl_->ws = Workspace();
-  impl_->loaded = false;
-  impl_->checkpoint = nullptr;
-  impl_->embed = nullptr;
-  impl_->stats = EncoderStats();
+  impl_->reset_runtime_state(false);
 }
 
 void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
@@ -819,6 +866,7 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
   const auto t0 = std::chrono::steady_clock::now();
 
   Impl& s = *impl_;
+  try {
   s.cfg = config;
   // Detection is per file and there is no flag: the two builds differ in tensor
   // count, dtype and shape, so validation catches a mismatch rather than
@@ -838,22 +886,29 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
   for (int i = 0; i < s.cfg.num_layers; ++i) {
     s.globals[static_cast<size_t>(i)] = read_global_scales(checkpoint, s.cfg, i);
   }
-  s.open_device();
-
   const size_t layer_bytes = s.layout.total_bytes;
   const size_t weight_bytes = layer_bytes * static_cast<size_t>(s.cfg.num_layers);
 
   Residency mode = config.residency;
-  if (mode == Residency::kAuto) {
+  if (mode == Residency::kAuto || mode == Residency::kResident) {
     size_t free_bytes = 0;
     size_t total_bytes = 0;
     VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
-    // The working set at the 8192-token bound is ~2.4 GB of activations plus
-    // the 262 MB dequantisation scratch; ask for 3 GB of room on top of the
-    // weights before committing to residency.
-    const size_t headroom = 3ull << 30;
-    mode = (free_bytes > weight_bytes + headroom) ? Residency::kResident : Residency::kStreaming;
+    const size_t required = resident_request_bytes(s.cfg, weight_bytes, total_bytes);
+    if (free_bytes < required) {
+      if (mode == Residency::kResident) {
+        throw std::runtime_error(
+            "text encoder: resident mode requires " +
+            std::to_string(required / (size_t(1) << 20)) +
+            " MiB free for weights, the maximum request, and the driver reserve; only " +
+            std::to_string(free_bytes / (size_t(1) << 20)) + " MiB is free");
+      }
+      mode = Residency::kStreaming;
+    } else {
+      mode = Residency::kResident;
+    }
   }
+  s.open_device();
 
   // Page-lock the mapping if we can, which removes the host copy from every
   // upload in both modes. Best effort: if it fails we fall back to staging.
@@ -905,6 +960,14 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
   s.stats.load_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   s.loaded = true;
+  } catch (...) {
+    // A resident load queues many uploads before the final synchronization.
+    // Roll every allocation, registration, event, stream and handle back now;
+    // waiting for the Encoder destructor leaves the CUDA thread in a failed
+    // state and can make an unrelated streaming encoder's cublasCreate fail.
+    s.reset_runtime_state(true);
+    throw;
+  }
 }
 
 PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids) {
