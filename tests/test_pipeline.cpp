@@ -14,6 +14,7 @@
 
 #include "harness.h"
 #include "vidfab/pipeline.h"
+#include "vidfab/generate.h"
 #include "vidfab/attention_mode.h"
 #include "vidfab/sampler/scheduler.h"
 
@@ -130,6 +131,21 @@ VIDFAB_TEST(attention_mode_parse_name_and_backend_contract) {
   CHECK(std::string(vidfab::attention_mode_name(static_cast<AttentionMode>(999))) == "unknown");
   CHECK(!vidfab::attention_mode_supported(DeviceBackend::kVulkan,
                                            static_cast<AttentionMode>(999)));
+}
+
+VIDFAB_TEST(generation_backend_contract) {
+  using vidfab::DeviceBackend;
+  using vidfab::LatentSource;
+  CHECK(vidfab::generation_backend_supported(DeviceBackend::kCuda,
+                                              LatentSource::kDenoise));
+  CHECK(vidfab::generation_backend_supported(DeviceBackend::kCuda,
+                                              LatentSource::kSyntheticNoise));
+  CHECK(!vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+                                               LatentSource::kDenoise));
+  CHECK(vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+                                              LatentSource::kSyntheticNoise));
+  vidfab::RunOptions defaults;
+  CHECK(defaults.inference_backend == DeviceBackend::kCuda);
 }
 
 VIDFAB_TEST(pipeline_plan_aspect_and_frames) {

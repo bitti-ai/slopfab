@@ -512,6 +512,26 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_attention(vidfab_request* reques
   });
 }
 
+VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_inference_backend(
+    vidfab_request* request, int32_t backend) {
+  if (request == nullptr) {
+    return fail(VIDFAB_ERR_INVALID_ARGUMENT,
+                "vidfab_request_set_inference_backend: null request");
+  }
+  switch (backend) {
+    case VIDFAB_INFERENCE_CUDA:
+      request->options.inference_backend = vidfab::DeviceBackend::kCuda;
+      return VIDFAB_OK;
+    case VIDFAB_INFERENCE_VULKAN:
+      request->options.inference_backend = vidfab::DeviceBackend::kVulkan;
+      return VIDFAB_OK;
+    default:
+      return fail(VIDFAB_ERR_INVALID_ARGUMENT,
+                  "vidfab_request_set_inference_backend: unknown backend " +
+                      std::to_string(backend));
+  }
+}
+
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_synthetic_latents(vidfab_request* request, int32_t enable) {
   if (request == nullptr) {
     return fail(VIDFAB_ERR_INVALID_ARGUMENT, "vidfab_request_set_synthetic_latents: null request");

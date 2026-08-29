@@ -207,6 +207,12 @@ if(VIDFAB_ENABLE_CUDA)
     # qwenvisionprobe call the runtime API without compiling a CUDA source of
     # their own and therefore do not get its link dependency automatically.
     target_link_libraries(vidfab_cuda PUBLIC vidfab_core CUDA::cudart_static)
+    if(VIDFAB_ENABLE_VULKAN)
+      target_link_libraries(vidfab_cuda PUBLIC vidfab_vulkan)
+      target_compile_definitions(vidfab_cuda PRIVATE VIDFAB_WITH_VULKAN=1)
+    else()
+      target_compile_definitions(vidfab_cuda PRIVATE VIDFAB_WITH_VULKAN=0)
+    endif()
 
     add_executable(vidfab_qwenvisionprobe tools/qwenvisionprobe.cpp)
     target_link_libraries(vidfab_qwenvisionprobe PRIVATE vidfab_cuda)
@@ -976,13 +982,13 @@ if(VIDFAB_BUILD_C_API)
   # instead of failing.
   #
   # The version is the *C ABI's*, not the project's. They are different numbers
-  # answering different questions — capi.h declares 1.0.0 and tells a binding to
+  # answering different questions — capi.h declares 1.1.0 and tells a binding to
   # refuse a different major, while PROJECT_VERSION is 0.1.0 and moves whenever
   # anything in the project does. Using the latter here would produce a
   # libvidfab.so.0 whose soname says 0 for an ABI that says 1, and would bump
   # it for releases that did not touch the C interface at all.
   set(VIDFAB_CAPI_VERSION_MAJOR 1)
-  set(VIDFAB_CAPI_VERSION_MINOR 0)
+  set(VIDFAB_CAPI_VERSION_MINOR 1)
   set(VIDFAB_CAPI_VERSION_PATCH 0)
   set(VIDFAB_CAPI_VERSION
     "${VIDFAB_CAPI_VERSION_MAJOR}.${VIDFAB_CAPI_VERSION_MINOR}.${VIDFAB_CAPI_VERSION_PATCH}")

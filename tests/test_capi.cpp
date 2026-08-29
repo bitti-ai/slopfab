@@ -192,6 +192,14 @@ VIDFAB_TEST(capi_model_paths_and_attention) {
   // The message has to name what was wrong, since there is no enum to consult.
   CHECK(std::string(vidfab_last_error()).find("flash3") != std::string::npos);
 
+  CHECK(vidfab_request_set_inference_backend(
+            request.handle, VIDFAB_INFERENCE_CUDA) == VIDFAB_OK);
+  CHECK(vidfab_request_set_inference_backend(
+            request.handle, VIDFAB_INFERENCE_VULKAN) == VIDFAB_OK);
+  CHECK(vidfab_request_set_inference_backend(request.handle, 42) ==
+        VIDFAB_ERR_INVALID_ARGUMENT);
+  CHECK(std::string(vidfab_last_error()).find("42") != std::string::npos);
+
   CHECK(vidfab_request_set_synthetic_latents(request.handle, 1) == VIDFAB_OK);
   CHECK(vidfab_request_set_verbose(request.handle, 0) == VIDFAB_OK);
 }

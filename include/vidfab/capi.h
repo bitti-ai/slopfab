@@ -90,7 +90,7 @@ extern "C" {
  * A binding should compare `vidfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define VIDFAB_CAPI_VERSION_MAJOR 1
-#define VIDFAB_CAPI_VERSION_MINOR 0
+#define VIDFAB_CAPI_VERSION_MINOR 1
 #define VIDFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -166,6 +166,11 @@ VIDFAB_C_API void VIDFAB_CALL vidfab_free_string(char* text);
 #define VIDFAB_MODEL_TOKENIZER 2
 #define VIDFAB_MODEL_VIDEO_VAE 3
 #define VIDFAB_MODEL_AUDIO_VAE 4
+
+/* Neural decoder backend. Vulkan is currently valid only with synthetic
+ * latents; denoising fails closed until its Vulkan graph is implemented. */
+#define VIDFAB_INFERENCE_CUDA 0
+#define VIDFAB_INFERENCE_VULKAN 1
 
 /* Where a run is, in `vidfab_progress::stage`. Ordered, and a run may skip
  * several of them: no references, no audio VAE, synthetic latents. These
@@ -342,7 +347,11 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_add_reference_image(vidfab_request* 
  * so that an attention implementation can be added without a new constant in
  * this header. */
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_attention(vidfab_request* request,
-                                                          const char* mode);
+                                                           const char* mode);
+
+/* Selects the neural inference backend. Default is VIDFAB_INFERENCE_CUDA. */
+VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_inference_backend(
+    vidfab_request* request, int32_t backend);
 
 /* Skip conditioning and denoising and feed the decoders seeded noise. Not a
  * useful video, but it exercises both VAEs and the colour transform against

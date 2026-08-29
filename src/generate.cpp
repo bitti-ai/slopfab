@@ -33,6 +33,10 @@
 #include "vidfab/vae/keyframe_encoder.h"
 #include "vidfab/video/mux.h"
 #include "vidfab/video/y4m.h"
+#if VIDFAB_WITH_VULKAN
+#include "vidfab/vulkan/audio_decoder.h"
+#include "vidfab/vulkan/vae_decoder.h"
+#endif
 
 namespace vidfab {
 namespace {
@@ -281,6 +285,25 @@ ReusedGenerationModels& reused_models() {
   return models;
 }
 
+#if VIDFAB_WITH_VULKAN
+vulkan::Device create_vulkan_inference_device() {
+  if (!vulkan::Instance::available())
+    throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
+  vulkan::Instance instance = vulkan::Instance::create();
+  const std::vector<vulkan::PhysicalDevice> physical = instance.enumerate_devices();
+  if (physical.empty())
+    throw std::runtime_error("Vulkan inference: no compute device is available");
+  const vulkan::DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64)
+    throw std::runtime_error(
+        "Vulkan inference: device lacks timeline semaphore or shaderInt64");
+  vulkan::DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  return physical.front().create_device(options);
+}
+#endif
+
 }  // namespace
 
 RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
@@ -294,10 +317,24 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
 
+  if (!generation_backend_supported(options.inference_backend, options.source)) {
+    result.message =
+        "Vulkan conditioning/denoising is not implemented; use synthetic latents "
+        "for the exact Vulkan VAE vertical slice";
+    return result;
+  }
+#if !VIDFAB_WITH_VULKAN
+  if (options.inference_backend == DeviceBackend::kVulkan) {
+    result.message = "Vulkan inference requested, but this build disabled Vulkan";
+    return result;
+  }
+#endif
+
   // Validate the explicitly selected exact CUDA artifact before touching any
   // prompt/checkpoint. Synthetic-latent runs never execute a transformer and
   // therefore do not require this tuple.
-  if (options.source == LatentSource::kDenoise &&
+  if (options.inference_backend == DeviceBackend::kCuda &&
+      options.source == LatentSource::kDenoise &&
       options.attention_mode == AttentionMode::kExact &&
       !cuda::deterministic_h3_attention_available()) {
     result.message = "exact attention is unavailable on this CUDA device/runtime tuple";
@@ -898,15 +935,39 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
     const std::vector<float> std_dev = read_stat(vae_file, "latents_std", 24);
 
-    vae::ViTDecoder decoder;
-    decoder.load(vae_file);
-    s_load.stop();
-    if (options.verbose) {
-      std::printf("video vae   %.2f GiB on device\n",
-                  static_cast<double>(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
+    if (options.inference_backend == DeviceBackend::kCuda) {
+      vae::ViTDecoder decoder;
+      decoder.load(vae_file);
+      s_load.stop();
+      if (options.verbose) {
+        std::printf("video vae   CUDA %.2f GiB on device\n",
+                    static_cast<double>(decoder.weight_bytes()) /
+                        (1024.0 * 1024.0 * 1024.0));
+      }
+      video = decoder.decode(latents.data(), layout.num_latent_frames,
+                             layout.latent_height, layout.latent_width, mean,
+                             std_dev);
+    } else {
+#if VIDFAB_WITH_VULKAN
+      vulkan::Device device = create_vulkan_inference_device();
+      vae::ViTConfig config;
+      config.transformer_mode = vae::ViTTransformerMode::kExact;
+      vulkan::VideoVaeDecoder decoder =
+          vulkan::VideoVaeDecoder::create(device, config);
+      decoder.load(vae_file);
+      s_load.stop();
+      if (options.verbose) {
+        std::printf("video vae   Vulkan %.2f GiB on device\n",
+                    static_cast<double>(decoder.persistent_bytes()) /
+                        (1024.0 * 1024.0 * 1024.0));
+      }
+      video = decoder.decode(latents.data(), layout.num_latent_frames,
+                             layout.latent_height, layout.latent_width, mean,
+                             std_dev);
+#else
+      throw std::logic_error("Vulkan inference compiled out after validation");
+#endif
     }
-    video = decoder.decode(latents.data(), layout.num_latent_frames, layout.latent_height,
-                           layout.latent_width, mean, std_dev);
     result.seconds_video_decode = seconds_since(t0);
     if (options.verbose) {
       std::printf("video       %d frames of %dx%d in %.2f s\n", video.frames, video.width,
@@ -931,22 +992,35 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
     SafeTensors audio_file;
     audio_file.open(request.audio_vae_path);
-    vae::AudioDecoder decoder;
-    decoder.load(audio_file);
-
-    const std::vector<float>& mean = decoder.latents_mean();
-    const std::vector<float>& std_dev = decoder.latents_std();
     const int A = layout.num_audio_latents;
-    for (int c = 0; c < 2; ++c) {
-      for (int ch = 0; ch < 32; ++ch) {
-        const float m = mean[static_cast<size_t>(ch)];
-        const float s = std_dev[static_cast<size_t>(ch)];
-        float* row = audio_latents.data() + (static_cast<size_t>(c) * 32 + ch) * A;
-        for (int a = 0; a < A; ++a) row[a] = row[a] * s + m;
+    auto denormalize = [&](const std::vector<float>& mean,
+                           const std::vector<float>& std_dev) {
+      for (int c = 0; c < 2; ++c) {
+        for (int ch = 0; ch < 32; ++ch) {
+          const float m = mean[static_cast<size_t>(ch)];
+          const float s = std_dev[static_cast<size_t>(ch)];
+          float* row = audio_latents.data() +
+              (static_cast<size_t>(c) * 32 + ch) * A;
+          for (int a = 0; a < A; ++a) row[a] = row[a] * s + m;
+        }
       }
+    };
+    if (options.inference_backend == DeviceBackend::kCuda) {
+      vae::AudioDecoder decoder;
+      decoder.load(audio_file);
+      denormalize(decoder.latents_mean(), decoder.latents_std());
+      audio = decoder.decode(audio_latents.data(), A);
+    } else {
+#if VIDFAB_WITH_VULKAN
+      vulkan::Device device = create_vulkan_inference_device();
+      vulkan::AudioDecoder decoder = vulkan::AudioDecoder::create(device);
+      decoder.load(audio_file);
+      denormalize(decoder.latents_mean(), decoder.latents_std());
+      audio = decoder.decode(audio_latents.data(), A);
+#else
+      throw std::logic_error("Vulkan inference compiled out after validation");
+#endif
     }
-
-    audio = decoder.decode(audio_latents.data(), A);
     result.seconds_audio_decode = seconds_since(t0);
     if (options.verbose) {
       std::printf("audio       %lld frames at %d Hz in %.2f s\n",

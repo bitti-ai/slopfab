@@ -1410,19 +1410,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 
   if (inference_backend == "vulkan") {
-    if (!vidfab::attention_mode_supported(vidfab::DeviceBackend::kVulkan,
-                                          attention_mode)) {
+    if (!synthetic) {
       std::fprintf(stderr,
-                   "vidfab: Vulkan inference supports only --attention exact; "
-                   "mode '%s' is unavailable and will not be remapped\n",
-                   vidfab::attention_mode_name(attention_mode));
+                   "vidfab: Vulkan conditioning/denoising is not implemented; "
+                   "use --synthetic-latents for the exact Vulkan video/audio VAE slice. "
+                   "No CUDA fallback was used\n");
       return 1;
     }
-    std::fprintf(stderr,
-                 "vidfab: --attention exact is the only defined Vulkan attention choice, "
-                 "but Vulkan neural inference orchestration is not implemented; "
-                 "no attention pipeline ran and no CUDA fallback was used\n");
-    return 1;
   }
 
   // Both write the same field, so accepting both would mean silently honouring
@@ -1610,7 +1604,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 #if VIDFAB_WITH_CUDA
   // Dry-run above is deliberately device-free. Synthetic latents skip the
   // transformer, so only a real denoise run needs the pinned exact tuple.
-  if (!synthetic && attention_mode == vidfab::AttentionMode::kExact &&
+  if (inference_backend == "cuda" && !synthetic &&
+      attention_mode == vidfab::AttentionMode::kExact &&
       !vidfab::cuda::deterministic_h3_attention_available()) {
     std::fprintf(stderr,
                  "vidfab: --attention exact is unavailable on this CUDA device/runtime tuple\n");
@@ -1631,7 +1626,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (output_accelerator == "vulkan") {
     try {
       output_converter = std::make_unique<vidfab::vulkan::Yuv420Converter>();
-      std::printf("output      Vulkan RGB-to-YUV on %s (model inference remains CUDA)\n",
+      std::printf("output      Vulkan RGB-to-YUV on %s (independent output backend)\n",
                   output_converter->device_name());
     } catch (const std::exception& error) {
       std::fprintf(stderr, "vidfab: Vulkan output accelerator unavailable: %s\n", error.what());
@@ -1700,6 +1695,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   vidfab::RunOptions options;
   options.source =
       synthetic ? vidfab::LatentSource::kSyntheticNoise : vidfab::LatentSource::kDenoise;
+  options.inference_backend = inference_backend == "vulkan"
+      ? vidfab::DeviceBackend::kVulkan : vidfab::DeviceBackend::kCuda;
   options.sampler = sampler_kind;
   options.dump_latents_path = dump_latents;
   options.attention_band = attn_band;

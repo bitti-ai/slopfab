@@ -73,6 +73,10 @@ enum class LatentSource {
 
 struct RunOptions {
   LatentSource source = LatentSource::kDenoise;
+  // Neural decoder backend. CUDA remains the default. Vulkan currently owns
+  // the complete video/audio VAE vertical slice; conditioning and denoising
+  // remain fail-closed until their Vulkan graphs are implemented.
+  DeviceBackend inference_backend = DeviceBackend::kCuda;
   bool verbose = true;
 
   // Counted CLI runs share prompt conditioning. Transformer residency cannot
@@ -150,9 +154,20 @@ struct RunOptions {
   bool (*on_samples)(RunSamples& samples, void* userdata) = nullptr;
 
   void* hook_userdata = nullptr;
-  // Output-only acceleration hook. Model inference remains CUDA.
+  // Output-only acceleration hook, independent of `inference_backend`.
   video::FrameConverter* output_frame_converter = nullptr;
 };
+
+inline bool generation_backend_supported(DeviceBackend backend,
+                                         LatentSource source) noexcept {
+  switch (backend) {
+    case DeviceBackend::kCuda:
+      return true;
+    case DeviceBackend::kVulkan:
+      return source == LatentSource::kSyntheticNoise;
+  }
+  return false;
+}
 
 struct RunResult {
   bool ok = false;
