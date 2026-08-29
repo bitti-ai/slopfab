@@ -8,6 +8,15 @@
 
 namespace vidfab::cuda {
 
+// Pure reusable qualification predicate for the checked SM120a cooperative
+// H3 artifact. Physical UUID is deliberately not part of eligibility; the
+// parameter exists so regression tests pin that board identities are ignored.
+bool deterministic_h3_cuda_tuple_fits(
+    int major, int minor, const char* model, int driver_api_version,
+    int runtime_version, uint32_t max_threads_per_block,
+    uint32_t max_shared_bytes_per_block,
+    const unsigned char physical_uuid[16]) noexcept;
+
 bool deterministic_attention_grid_fits(uint64_t rows, uint64_t heads,
                                        uint64_t max_grid_x,
                                        uint64_t max_grid_y) noexcept;

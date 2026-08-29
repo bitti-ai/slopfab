@@ -570,8 +570,8 @@ tensor_attention_blocked.comp             C27A8133AD290D086E1AA0C03418DD87B5F3ED
 tensor_attention_blocked.comp.spv         9C1339B2FD44B9F453BD3974F720E635682130CE9F808411823C3657A97098F2
 tensor_attention_prepare.comp             786295C4E33EEDC7F67317B9ECF6B1BDEA0108B319AE5B5E8D57B6B3CEA4677D
 tensor_attention_prepare.comp.spv         56DC48503F296776CD1C105D0DC44D34E5F8768B35A8FEE6EC73EFAA9D3FF8F4
-src/cuda/deterministic_attention.cu       B834BF15A9207485D5B80CE4CFBA720D2E74448273FED0CD859A428841761D28
-include/vidfab/cuda/deterministic_attention.cuh 6F40E5FC9795A63DD227BA4C94C62661025A96AF60669630A39461DFB067BCA7
+src/cuda/deterministic_attention.cu       2F33502CE387AB24FFC3C87E3A49E00D0B705AF3DAC33FC62A570BFA3B27DEB1
+include/vidfab/cuda/deterministic_attention.cuh AD32807A94E37A0EE4E8892F5016DF4B68F4C73F5E400FFE358B2D939CEBED02
 deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
 ```
 
@@ -610,9 +610,11 @@ The real S37727/prefix431/37x1008/radius9 table pins FNV64
 The gate is deliberately empirical: RTX 5090 device 2b85, NVIDIA 610.88/raw
 driver `98960000`, pinned driver UUID, subgroup32, required BF16/F16 cooperative
 tuples and arithmetic/storage modes, local size1024, checked modules, pipeline
-creation, and exact goldens. CUDA additionally pins SM120/RTX5090 device UUID,
-CUDA 13.x driver API plus 13.0 runtime, 1024 threads, and 99,328 physical shared
-bytes. Ptxas reports 64 registers/thread and zero spills. GLSL/SPIR-V declares
+creation, and exact goldens. CUDA qualifies reusable RTX5090/SM120a model and
+resource properties, CUDA 13.x driver API plus 13.0 runtime, and the pinned
+compiled artifact; it deliberately does not pin a board-unique physical UUID.
+CUDA requires 1024 threads and 99,328 physical shared bytes. Ptxas reports 64
+registers/thread and zero spills. GLSL/SPIR-V declares
 99,328 logical bytes across phase-disjoint arrays while Vulkan reports a
 49,152-byte core limit; successful creation/execution implies pinned NVIDIA
 lifetime lowering/overlay, not portable 99,328-byte Vulkan physical usage.
@@ -655,8 +657,8 @@ nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,c
 tensor_attention_h3.comp                  B9E51135B436DFF97CE6463F4731965E7466530DC1B1E69D3FD7444B3CB6BA2B
 tensor_attention_h3.comp.spv              4FD87FBDBE7AE6EC6C40C67AAD6FD39A0B9EF05F6E3CC1A5ED688A5B17FBB37F
 tensor_attention_h3_banded.comp.spv       9564933F40B33B8C6077CB073F6E0CB78AD40627CD0C973FF16897CAB1764EFB
-src/cuda/deterministic_attention.cu       B834BF15A9207485D5B80CE4CFBA720D2E74448273FED0CD859A428841761D28
-include/vidfab/cuda/deterministic_attention.cuh 6F40E5FC9795A63DD227BA4C94C62661025A96AF60669630A39461DFB067BCA7
+src/cuda/deterministic_attention.cu       2F33502CE387AB24FFC3C87E3A49E00D0B705AF3DAC33FC62A570BFA3B27DEB1
+include/vidfab/cuda/deterministic_attention.cuh AD32807A94E37A0EE4E8892F5016DF4B68F4C73F5E400FFE358B2D939CEBED02
 deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
 ```
 
@@ -735,7 +737,7 @@ nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,c
 ```text
 tensor_attention_causal_gqa.comp          DD700E2FDC18ED483973B2E161AEA3F1F43E8F2DB18FC8796F800BE766A79930
 tensor_attention_causal_gqa.comp.spv      9F8B4480179C01CC26A3E467D1F0915D606594388DAB8B5C0856770B2E7E3778
-src/cuda/deterministic_attention.cu       B834BF15A9207485D5B80CE4CFBA720D2E74448273FED0CD859A428841761D28
-include/vidfab/cuda/deterministic_attention.cuh 6F40E5FC9795A63DD227BA4C94C62661025A96AF60669630A39461DFB067BCA7
+src/cuda/deterministic_attention.cu       2F33502CE387AB24FFC3C87E3A49E00D0B705AF3DAC33FC62A570BFA3B27DEB1
+include/vidfab/cuda/deterministic_attention.cuh AD32807A94E37A0EE4E8892F5016DF4B68F4C73F5E400FFE358B2D939CEBED02
 deterministic_attention.fatbin            89B66FDBB13617A41DCB74B6495DA6C1006D326388812957E3324D3449FB8C89
 ```

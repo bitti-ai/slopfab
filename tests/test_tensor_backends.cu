@@ -732,6 +732,26 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
 VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
   using namespace vidfab;
   using namespace vidfab::vulkan;
+  const unsigned char board_a[16] = {};
+  const unsigned char board_b[16] = {1, 2, 3, 4};
+  CHECK(cuda::deterministic_h3_cuda_tuple_fits(
+      12, 0, "NVIDIA GeForce RTX 5090", 13010, 13000, 1024, 99328,
+      board_a));
+  CHECK(cuda::deterministic_h3_cuda_tuple_fits(
+      12, 0, "NVIDIA GeForce RTX 5090", 13010, 13000, 1024, 99328,
+      board_b));
+  CHECK(!cuda::deterministic_h3_cuda_tuple_fits(
+      12, 0, "NVIDIA GeForce RTX 5080", 13010, 13000, 1024, 99328,
+      board_a));
+  CHECK(!cuda::deterministic_h3_cuda_tuple_fits(
+      10, 0, "NVIDIA GeForce RTX 5090", 13010, 13000, 1024, 99328,
+      board_a));
+  CHECK(!cuda::deterministic_h3_cuda_tuple_fits(
+      12, 0, "NVIDIA GeForce RTX 5090", 13010, 12090, 1024, 99328,
+      board_a));
+  CHECK(!cuda::deterministic_h3_cuda_tuple_fits(
+      12, 0, "NVIDIA GeForce RTX 5090", 13010, 13000, 512, 99328,
+      board_a));
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;

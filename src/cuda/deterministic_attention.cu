@@ -58,14 +58,12 @@ GridLimits cached_grid_limits() {
     int driver_version = 0, runtime_version = 0;
     VIDFAB_CUDA_CHECK(cudaDriverGetVersion(&driver_version));
     VIDFAB_CUDA_CHECK(cudaRuntimeGetVersion(&runtime_version));
-    static constexpr unsigned char kDeviceUuid[16] = {
-        0x41, 0x9e, 0x3b, 0x2a, 0x96, 0x4d, 0xf9, 0xcc,
-        0xb0, 0x82, 0x07, 0xbf, 0x7d, 0x00, 0x06, 0xcd};
-    const bool exact_h3_tuple = properties.major == 12 && properties.minor == 0 &&
-        std::strcmp(properties.name, "NVIDIA GeForce RTX 5090") == 0 &&
-        std::memcmp(properties.uuid.bytes, kDeviceUuid, sizeof(kDeviceUuid)) == 0 &&
-        driver_version >= 13000 && driver_version < 14000 &&
-        runtime_version == 13000;
+    const bool exact_h3_tuple = deterministic_h3_cuda_tuple_fits(
+        properties.major, properties.minor, properties.name, driver_version,
+        runtime_version, static_cast<uint32_t>(properties.maxThreadsPerBlock),
+        static_cast<uint32_t>(std::max<int>(
+            static_cast<int>(properties.sharedMemPerBlock), optin_shared)),
+        reinterpret_cast<const unsigned char*>(properties.uuid.bytes));
     limits[device] = {
         static_cast<uint64_t>(properties.maxGridSize[0]),
         static_cast<uint64_t>(properties.maxGridSize[1]),
@@ -552,6 +550,20 @@ void launch_attention_impl(
 }
 
 }  // namespace
+
+bool deterministic_h3_cuda_tuple_fits(
+    int major, int minor, const char* model, int driver_api_version,
+    int runtime_version, uint32_t max_threads_per_block,
+    uint32_t max_shared_bytes_per_block,
+    const unsigned char physical_uuid[16]) noexcept {
+  (void)physical_uuid;  // Board identity must not exclude another RTX 5090.
+  return major == 12 && minor == 0 && model != nullptr &&
+      std::strcmp(model, "NVIDIA GeForce RTX 5090") == 0 &&
+      driver_api_version >= 13000 && driver_api_version < 14000 &&
+      runtime_version == 13000 &&
+      max_threads_per_block >= kH3AttentionThreads &&
+      max_shared_bytes_per_block >= kH3AttentionSharedBytes;
+}
 
 bool deterministic_attention_grid_fits(uint64_t rows, uint64_t heads,
                                        uint64_t max_grid_x,
