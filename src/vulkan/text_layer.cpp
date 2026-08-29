@@ -74,7 +74,8 @@ text::EncoderConfig resolved_encoder(const SafeTensors& checkpoint,
 
 void validate_target_layer(const SafeTensors& checkpoint,
                            const text::EncoderConfig& config,
-                           uint32_t layer) {
+                           uint32_t layer,
+                           bool verify_manifest) {
   const std::string prefix =
       "model.layers." + std::to_string(layer) + ".";
   size_t expected_count = 0;
@@ -129,6 +130,7 @@ void validate_target_layer(const SafeTensors& checkpoint,
                                    static_cast<int>(layer));
   }
 
+  if (!verify_manifest) return;
   size_t actual_count = 0;
   for (const auto& entry : checkpoint.tensors()) {
     if (entry.first.rfind(prefix, 0) != 0) continue;
@@ -153,6 +155,58 @@ void validate_target_layer(const SafeTensors& checkpoint,
   if (actual_count != expected_count) {
     throw std::runtime_error(
         "Vulkan Qwen layer: incomplete target-layer tensor manifest");
+  }
+}
+
+void validate_embedding_manifest(const SafeTensors& checkpoint,
+                                 const text::EncoderConfig& config) {
+  const TensorView& weight = checkpoint.at("model.embed_tokens.weight");
+  const uint64_t elements = checked_product(
+      static_cast<uint64_t>(config.vocab_size),
+      static_cast<uint64_t>(config.hidden_size), "embedding elements");
+  const bool nvfp4 = config.format == text::WeightFormat::kNVFP4Awq;
+  const DType expected_dtype = nvfp4 ? DType::kI8 : DType::kBF16;
+  const uint64_t expected_bytes = checked_product(
+      elements, dtype_size(expected_dtype), "embedding bytes");
+  if (weight.dtype != expected_dtype ||
+      weight.shape != std::vector<int64_t>{config.vocab_size,
+                                           config.hidden_size} ||
+      weight.nbytes != expected_bytes) {
+    throw std::runtime_error(
+        "Vulkan Qwen encoder: invalid model.embed_tokens.weight");
+  }
+  if (!nvfp4) return;
+
+  const TensorView& scale = checkpoint.at("model.embed_tokens.weight_scale");
+  const uint64_t scale_bytes = checked_product(
+      static_cast<uint64_t>(config.vocab_size), sizeof(float),
+      "embedding scale bytes");
+  if (scale.dtype != DType::kF32 ||
+      scale.shape != std::vector<int64_t>{config.vocab_size, 1} ||
+      scale.nbytes != scale_bytes) {
+    throw std::runtime_error(
+        "Vulkan Qwen encoder: invalid model.embed_tokens.weight_scale");
+  }
+  const auto* values = static_cast<const float*>(scale.data);
+  for (int64_t row = 0; row < config.vocab_size; ++row) {
+    if (!std::isfinite(values[row]) || values[row] <= 0.0f) {
+      throw std::runtime_error(
+          "Vulkan Qwen encoder: non-positive embedding weight_scale");
+    }
+  }
+
+  static constexpr char kEmbeddingMetadata[] =
+      "{\"format\": \"int8_tensorwise\"}";
+  const TensorView& metadata =
+      checkpoint.at("model.embed_tokens.comfy_quant");
+  constexpr size_t kMetadataBytes = sizeof(kEmbeddingMetadata) - 1;
+  if (metadata.dtype != DType::kU8 ||
+      metadata.shape != std::vector<int64_t>{
+          static_cast<int64_t>(kMetadataBytes)} ||
+      metadata.nbytes != kMetadataBytes ||
+      std::memcmp(metadata.data, kEmbeddingMetadata, kMetadataBytes) != 0) {
+    throw std::runtime_error(
+        "Vulkan Qwen encoder: non-canonical embedding comfy_quant");
   }
 }
 
@@ -403,7 +457,22 @@ void ExactQwenTextLayerStage::validate_checkpoint(
     throw std::out_of_range("Vulkan Qwen layer: layer is out of range");
   }
   text::EncoderConfig resolved = resolved_encoder(checkpoint, config);
-  validate_target_layer(checkpoint, resolved, layer);
+  validate_target_layer(checkpoint, resolved, layer, true);
+}
+
+void ExactQwenTextLayerStage::validate_archive(
+    const SafeTensors& checkpoint, const QwenTextLayerConfig& config) {
+  validate_config(config);
+  text::EncoderConfig resolved = resolved_encoder(checkpoint, config);
+  text::validate_checkpoint(checkpoint, resolved);
+  validate_embedding_manifest(checkpoint, resolved);
+  // validate_checkpoint() has already made the aggregate layer manifest exact,
+  // so these strict canonical checks need only keyed lookups. In particular,
+  // they do not rescan a vision-heavy archive 50 times.
+  for (uint32_t layer = 0;
+       layer < static_cast<uint32_t>(resolved.num_layers); ++layer) {
+    validate_target_layer(checkpoint, resolved, layer, false);
+  }
 }
 
 void ExactQwenTextLayerStage::load(const SafeTensors& checkpoint,

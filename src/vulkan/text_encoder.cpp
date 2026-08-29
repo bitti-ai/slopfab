@@ -137,8 +137,13 @@ void ExactQwenTextEncoder::load(const SafeTensors& checkpoint,
   if (!impl_) throw std::logic_error("Vulkan Qwen encoder: empty encoder");
   const Clock::time_point begin = Clock::now();
   text::EncoderConfig next = resolved_config(checkpoint, requested);
-  // Validate the complete archive before changing the active model.
-  text::validate_checkpoint(checkpoint, next);
+  // Strictly validate the complete archive before changing the active model.
+  // This includes every canonical quant descriptor/global scalar and the
+  // embedding contract, in one aggregate manifest scan.
+  QwenTextLayerConfig validation_config;
+  validation_config.sequence = 1;
+  validation_config.encoder = next;
+  ExactQwenTextLayerStage::validate_archive(checkpoint, validation_config);
   const TensorView* embedding = &checkpoint.at("model.embed_tokens.weight");
   const TensorView* embedding_scale =
       checkpoint.find("model.embed_tokens.weight_scale");

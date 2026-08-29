@@ -73,6 +73,11 @@ class ExactQwenTextLayerStage {
   static void validate_checkpoint(const SafeTensors& checkpoint,
                                   uint32_t layer,
                                   const QwenTextLayerConfig& config);
+  // Validates the exact embedding/global manifest and every layer in one
+  // archive pass. Unlike calling validate_checkpoint() 50 times, this does
+  // not rescan all visual and layer names once per target layer.
+  static void validate_archive(const SafeTensors& checkpoint,
+                               const QwenTextLayerConfig& config);
   void load(const SafeTensors& checkpoint, uint32_t layer);
   void unload() noexcept;
   bool loaded() const noexcept;

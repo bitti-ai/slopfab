@@ -113,7 +113,8 @@ std::array<uint8_t, 32> sha256_mapping(const void* data, size_t bytes) {
 
 std::filesystem::path make_sparse_qwen_metadata_corruption(
     const vidfab::SafeTensors& source, vidfab::text::WeightFormat format,
-    const std::string& corrupt_name) {
+    const std::string& corrupt_name, bool rank_one = false,
+    bool zero_scalar = false) {
   static std::atomic<uint32_t> serial{0};
   const std::filesystem::path path = std::filesystem::temp_directory_path() /
       ("vidfab_qwen_corrupt_" + std::to_string(GetCurrentProcessId()) + "_" +
@@ -151,30 +152,50 @@ std::filesystem::path make_sparse_qwen_metadata_corruption(
       bytes -= chunk;
     }
   };
-  uint64_t header_bytes = 0;
-  std::memcpy(&header_bytes, source.mapping_base(), sizeof(header_bytes));
-  header_bytes += sizeof(header_bytes);
-  write_at(0, source.mapping_base(), header_bytes);
-  const std::string prefix = "model.layers.0.";
-  static constexpr const char* linears[] = {
-      "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
-      "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"};
+  uint64_t json_bytes = 0;
+  std::memcpy(&json_bytes, source.mapping_base(), sizeof(json_bytes));
+  const uint64_t header_bytes = json_bytes + sizeof(json_bytes);
+  std::vector<uint8_t> header(static_cast<size_t>(header_bytes));
+  std::memcpy(header.data(), source.mapping_base(), header.size());
+  if (rank_one) {
+    std::string json(reinterpret_cast<const char*>(header.data() + 8),
+                     static_cast<size_t>(json_bytes));
+    const size_t tensor = json.find("\"" + corrupt_name + "\"");
+    const size_t shape = tensor == std::string::npos
+        ? std::string::npos : json.find("\"shape\":[]", tensor);
+    if (shape == std::string::npos || json.empty() || json.back() != ' ')
+      close_and_fail("cannot mutate Qwen scalar rank in header");
+    json.replace(shape, std::strlen("\"shape\":[]"), "\"shape\":[1]");
+    json.pop_back();
+    if (json.size() != json_bytes)
+      close_and_fail("Qwen scalar rank mutation changed header size");
+    std::memcpy(header.data() + 8, json.data(), json.size());
+  }
+  write_at(0, header.data(), header.size());
   const auto* base = static_cast<const uint8_t*>(source.mapping_base());
-  for (const char* linear : linears) {
-    for (const char* suffix : {".comfy_quant", ".weight_scale_2"}) {
-      if (suffix[1] == 'w' &&
-          format != vidfab::text::WeightFormat::kNVFP4Awq) continue;
-      const std::string name = prefix + linear + suffix;
-      const vidfab::TensorView& view = source.at(name);
-      const uint64_t offset = static_cast<const uint8_t*>(view.data) - base;
-      if (name == corrupt_name) {
-        std::vector<uint8_t> corrupted(view.nbytes);
-        std::memcpy(corrupted.data(), view.data, view.nbytes);
-        corrupted.back() ^= 1u;
-        write_at(offset, corrupted.data(), corrupted.size());
-      } else {
-        write_at(offset, view.data, view.nbytes);
-      }
+  auto ends_with = [](const std::string& value, const char* suffix) {
+    const size_t n = std::strlen(suffix);
+    return value.size() >= n && value.compare(value.size() - n, n, suffix) == 0;
+  };
+  for (const auto& entry : source.tensors()) {
+    const std::string& name = entry.first;
+    const bool copy = ends_with(name, ".comfy_quant") ||
+        (format == vidfab::text::WeightFormat::kNVFP4Awq &&
+         (ends_with(name, ".weight_scale_2") ||
+          name == "model.embed_tokens.weight_scale"));
+    if (!copy) continue;
+    const vidfab::TensorView& view = entry.second;
+    const uint64_t offset = static_cast<const uint8_t*>(view.data) - base;
+    if (name == corrupt_name && zero_scalar) {
+      const float zero = 0.0f;
+      write_at(offset, &zero, sizeof(zero));
+    } else if (name == corrupt_name && !rank_one) {
+      std::vector<uint8_t> corrupted(view.nbytes);
+      std::memcpy(corrupted.data(), view.data, view.nbytes);
+      corrupted.back() ^= 1u;
+      write_at(offset, corrupted.data(), corrupted.size());
+    } else {
+      write_at(offset, view.data, view.nbytes);
     }
   }
   if (!CloseHandle(file)) {
@@ -3753,6 +3774,36 @@ VIDFAB_TEST(cuda_vulkan_qwen_full50_real_l132) {
   CHECK(encoder.stats().allocator_reserved_bytes ==
         reload_stats.allocator_reserved_bytes);
   CHECK(encoder.stats().descriptor_set_allocations == stable_descriptors);
+#ifdef _WIN32
+  // Aggregate load validation reaches the actual last layer before changing
+  // the active archive or allocating. A corrupt canonical descriptor must
+  // leave the loaded I8 model immediately usable and every allocator metric
+  // unchanged.
+  const std::filesystem::path corrupt_i8_path =
+      make_sparse_qwen_metadata_corruption(
+          checkpoint, text::WeightFormat::kI8ConvRot,
+          "model.layers.49.mlp.down_proj.comfy_quant");
+  const uint64_t rollback_used = vk.pooled_used_bytes();
+  const uint64_t rollback_reserved = vk.reserved_bytes();
+  const uint64_t rollback_descriptors = vk.descriptor_set_allocations();
+  bool corrupt_i8_rejected = false;
+  {
+    SafeTensors corrupt_i8;
+    corrupt_i8.open(corrupt_i8_path.string());
+    try { encoder.load(corrupt_i8); }
+    catch (const std::runtime_error&) { corrupt_i8_rejected = true; }
+  }
+  CHECK(corrupt_i8_rejected && encoder.loaded());
+  CHECK(vk.pooled_used_bytes() == rollback_used);
+  CHECK(vk.reserved_bytes() == rollback_reserved);
+  CHECK(vk.descriptor_set_allocations() == rollback_descriptors);
+  text::EncoderTrace rollback_trace;
+  const text::PromptEmbedding rollback_output =
+      encoder.encode(capture.token_ids, &rollback_trace);
+  CHECK(rollback_output.data == cuda_output.data);
+  CHECK(rollback_trace.layer_residual_bf16 == cuda_trace.layer_residual_bf16);
+  std::filesystem::remove(corrupt_i8_path);
+#endif
   encoder.unload();
   CHECK(vk.pooled_used_bytes() == warm_unloaded_baseline);
   CHECK(vk.reserved_bytes() == reload_stats.allocator_reserved_bytes);
