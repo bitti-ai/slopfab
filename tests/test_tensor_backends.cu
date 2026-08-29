@@ -3612,6 +3612,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_main50_capture_replay) {
       double(vk.pooled_used_bytes()) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+
 }
 
 VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
@@ -3878,6 +3879,126 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       double(vk.pooled_used_bytes()) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+
+  const uint64_t loaded_used = vk.pooled_used_bytes();
+  transformer.unload();
+  CHECK(!transformer.loaded() && transformer.persistent_bytes() == 0u &&
+        transformer.scratch_bytes() == 0u &&
+        transformer.peak_device_bytes() == 0u);
+  CHECK(vk.pooled_used_bytes() < loaded_used);
+  transformer.load(checkpoint);
+  transformer.prepare_text(prompt_tensor);
+  TensorBatch reloaded = vk.begin_batch();
+  transformer.record_forward(reloaded, video_tensor, audio_tensor,
+      selector_tensor, code_tensor, cosine_tensor, sine_tensor,
+      video_ts_tensor, audio_ts_tensor, video_output, audio_output, &ranges);
+  reloaded.submit().wait();
+  vk.download(video_output, actual_video.data(), actual_video.size());
+  vk.download(audio_output, actual_audio.data(), actual_audio.size());
+  CHECK(std::memcmp(actual_video.data(), expected_video.data(),
+                    actual_video.size() * 4) == 0);
+  CHECK(std::memcmp(actual_audio.data(), expected_audio.data(),
+                    actual_audio.size() * 4) == 0);
+  transformer.unload();
+
+  if (const char* production = std::getenv("VIDFAB_DIT_TRANSFORMER_PRODUCTION");
+      production && production[0] == '1') {
+    constexpr uint32_t prod_sequence = 9864;
+    constexpr uint32_t prod_audio_rows = 74;
+    constexpr uint32_t prod_video_rows = prod_sequence - 4 - prod_audio_rows;
+    ExactH3TransformerConfig prod_config = config;
+    prod_config.main.block.sequence = prod_sequence;
+    prod_config.video_rows = prod_video_rows;
+    prod_config.audio_rows = prod_audio_rows;
+    ExactH3Transformer prod = ExactH3Transformer::create(vk, prod_config);
+    const auto prod_load_begin = std::chrono::steady_clock::now();
+    prod.load(checkpoint);
+    const double prod_load_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - prod_load_begin).count();
+    DeviceTensor prod_prompt = tensor2(4, 5120);
+    DeviceTensor prod_video = tensor2(prod_video_rows, 96);
+    DeviceTensor prod_audio = tensor2(prod_audio_rows, 32);
+    DeviceTensor prod_selectors = tensor1(prod_sequence, ScalarType::kInt32);
+    DeviceTensor prod_code = tensor2(1, 8);
+    DeviceTensor prod_cosine = tensor2(prod_sequence, 96);
+    DeviceTensor prod_sine = tensor2(prod_sequence, 96);
+    DeviceTensor prod_video_ts = tensor1(prod_video_rows, ScalarType::kInt32);
+    DeviceTensor prod_audio_ts = tensor1(prod_audio_rows, ScalarType::kInt32);
+    DeviceTensor prod_video_out = tensor2(prod_video_rows, 96);
+    DeviceTensor prod_audio_out = tensor2(prod_audio_rows, 32);
+    std::vector<float> prod_video_values(size_t(prod_video_rows) * 96);
+    std::vector<float> prod_audio_values(size_t(prod_audio_rows) * 32);
+    for (size_t i = 0; i < prod_video_values.size(); ++i)
+      prod_video_values[i] = float(int(i % 251) - 125) / 128.0f;
+    for (size_t i = 0; i < prod_audio_values.size(); ++i)
+      prod_audio_values[i] = float(int(i % 127) - 63) / 64.0f;
+    std::vector<int32_t> prod_selector_values(prod_sequence, 0);
+    std::vector<int32_t> prod_video_ts_values(prod_video_rows, 0);
+    std::vector<int32_t> prod_audio_ts_values(prod_audio_rows, 0);
+    std::vector<float> prod_cos_values(size_t(prod_sequence) * 96, 1.0f);
+    std::vector<float> prod_sin_values(prod_cos_values.size(), 0.0f);
+    vk.upload(prod_prompt, prompt.data(), prompt.size());
+    vk.upload(prod_video, prod_video_values.data(), prod_video_values.size());
+    vk.upload(prod_audio, prod_audio_values.data(), prod_audio_values.size());
+    vk.upload_bytes(prod_selectors, prod_selector_values.data(),
+                    prod_selector_values.size() * 4);
+    vk.upload(prod_code, code.data(), code.size());
+    vk.upload(prod_cosine, prod_cos_values.data(), prod_cos_values.size());
+    vk.upload(prod_sine, prod_sin_values.data(), prod_sin_values.size());
+    vk.upload_bytes(prod_video_ts, prod_video_ts_values.data(),
+                    prod_video_ts_values.size() * 4);
+    vk.upload_bytes(prod_audio_ts, prod_audio_ts_values.data(),
+                    prod_audio_ts_values.size() * 4);
+    prod.prepare_text(prod_prompt);
+    auto run_prod = [&] {
+      const auto begin = std::chrono::steady_clock::now();
+      TensorBatch batch = vk.begin_batch();
+      prod.record_forward(batch, prod_video, prod_audio, prod_selectors,
+          prod_code, prod_cosine, prod_sine, prod_video_ts, prod_audio_ts,
+          prod_video_out, prod_audio_out);
+      CHECK(batch.remaining_operator_capacity() == 581u);
+      batch.submit().wait();
+      return std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - begin).count();
+    };
+    const double prod_first_ms = run_prod();
+    std::vector<float> prod_video_result(prod_video_values.size());
+    std::vector<float> prod_audio_result(prod_audio_values.size());
+    vk.download(prod_video_out, prod_video_result.data(), prod_video_result.size());
+    vk.download(prod_audio_out, prod_audio_result.data(), prod_audio_result.size());
+    uint64_t prod_hash = 1469598103934665603ull;
+    auto append_hash = [&](const void* data, size_t bytes) {
+      const auto* p = static_cast<const uint8_t*>(data);
+      for (size_t i = 0; i < bytes; ++i) {
+        prod_hash ^= p[i]; prod_hash *= 1099511628211ull;
+      }
+    };
+    append_hash(prod_video_result.data(), prod_video_result.size() * 4);
+    append_hash(prod_audio_result.data(), prod_audio_result.size() * 4);
+    CHECK(prod_hash == 0xa998bb5ff7a03383ull);
+    const uint64_t prod_used = vk.pooled_used_bytes();
+    const uint64_t prod_reserved = vk.reserved_bytes();
+    const uint64_t prod_descriptors = vk.descriptor_set_allocations();
+    const double prod_repeat_ms = run_prod();
+    std::vector<float> repeated_video(prod_video_values.size());
+    std::vector<float> repeated_audio(prod_audio_values.size());
+    vk.download(prod_video_out, repeated_video.data(), repeated_video.size());
+    vk.download(prod_audio_out, repeated_audio.data(), repeated_audio.size());
+    CHECK(repeated_video == prod_video_result && repeated_audio == prod_audio_result);
+    CHECK(vk.pooled_used_bytes() == prod_used &&
+          vk.reserved_bytes() == prod_reserved &&
+          vk.descriptor_set_allocations() == prod_descriptors);
+    std::printf(
+        "  production H3 transformer S9864: load %.3f ms, Vulkan first/repeat %.3f/%.3f ms, final %016llx, persistent/scratch/peak %.2f/%.2f/%.2f MiB, pool %.2f/%.2f MiB, descriptors %llu\n",
+        prod_load_ms, prod_first_ms, prod_repeat_ms,
+        static_cast<unsigned long long>(prod_hash),
+        double(prod.persistent_bytes()) / 1048576.0,
+        double(prod.scratch_bytes()) / 1048576.0,
+        double(prod.peak_device_bytes()) / 1048576.0,
+        double(vk.pooled_used_bytes()) / 1048576.0,
+        double(vk.reserved_bytes()) / 1048576.0,
+        static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+  }
 }
 
 VIDFAB_TEST(cuda_vulkan_vae_pointwise_real_timing) {

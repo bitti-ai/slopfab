@@ -3262,6 +3262,107 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
           real_graph.peak_device_bytes() == 0u);
     std::printf("  CUDA-off real H3 main2 S65 FNV64 %016llx\n",
                 static_cast<unsigned long long>(real_graph_digest));
+
+    {
+    TensorContextOptions real_transformer_options;
+    real_transformer_options.max_batch_operators = 2048;
+    TensorContext context(device, real_transformer_options);
+    ExactH3TransformerConfig real_transformer_config;
+    real_transformer_config.main.block = real_config;
+    real_transformer_config.main.layers = 50;
+    real_transformer_config.text_rows = 3;
+    real_transformer_config.video_rows = 60;
+    real_transformer_config.audio_rows = 2;
+    real_transformer_config.refiner_layers = 2;
+    const uint64_t real_prompt_shape[] = {3, 5120};
+    const uint64_t real_video_shape[] = {60, 96};
+    const uint64_t real_audio_shape[] = {2, 32};
+    const uint64_t real_video_index_shape[] = {60};
+    const uint64_t real_audio_index_shape[] = {2};
+    DeviceTensor real_prompt = context.allocate(
+        TensorLayout::contiguous(real_prompt_shape, 2));
+    DeviceTensor real_video = context.allocate(
+        TensorLayout::contiguous(real_video_shape, 2));
+    DeviceTensor real_audio = context.allocate(
+        TensorLayout::contiguous(real_audio_shape, 2));
+    DeviceTensor real_video_out = context.allocate(
+        TensorLayout::contiguous(real_video_shape, 2));
+    DeviceTensor real_audio_out = context.allocate(
+        TensorLayout::contiguous(real_audio_shape, 2));
+    DeviceTensor real_transformer_selectors = context.allocate(
+        TensorLayout::contiguous(real_selector_shape, 1), ScalarType::kInt32);
+    DeviceTensor real_transformer_code = context.allocate(
+        TensorLayout::contiguous(real_code_shape, 2));
+    DeviceTensor real_transformer_cosine = context.allocate(
+        TensorLayout::contiguous(real_rope_shape, 2));
+    DeviceTensor real_transformer_sine = context.allocate(
+        TensorLayout::contiguous(real_rope_shape, 2));
+    DeviceTensor real_video_ts = context.allocate(
+        TensorLayout::contiguous(real_video_index_shape, 1), ScalarType::kInt32);
+    DeviceTensor real_audio_ts = context.allocate(
+        TensorLayout::contiguous(real_audio_index_shape, 1), ScalarType::kInt32);
+    std::vector<float> real_prompt_values(3 * 5120);
+    std::vector<float> real_video_values(60 * 96);
+    std::vector<float> real_audio_values(2 * 32);
+    for (size_t i = 0; i < real_prompt_values.size(); ++i)
+      real_prompt_values[i] = float(int(i % 251) - 125) / 128.0f;
+    for (size_t i = 0; i < real_video_values.size(); ++i)
+      real_video_values[i] = float(int(i % 127) - 63) / 64.0f;
+    for (size_t i = 0; i < real_audio_values.size(); ++i)
+      real_audio_values[i] = float(int(i % 61) - 30) / 32.0f;
+    std::vector<int32_t> real_video_ts_values(60, 0),
+        real_audio_ts_values(2, 0);
+    context.upload(real_prompt, real_prompt_values.data(), real_prompt_values.size());
+    context.upload(real_video, real_video_values.data(), real_video_values.size());
+    context.upload(real_audio, real_audio_values.data(), real_audio_values.size());
+    context.upload_bytes(real_transformer_selectors, real_selector_values.data(),
+                         real_selector_values.size() * 4);
+    context.upload(real_transformer_code, real_code_values.data(),
+                   real_code_values.size());
+    context.upload(real_transformer_cosine, real_cosine_values.data(),
+                   real_cosine_values.size());
+    context.upload(real_transformer_sine, real_sine_values.data(),
+                   real_sine_values.size());
+    context.upload_bytes(real_video_ts, real_video_ts_values.data(),
+                         real_video_ts_values.size() * 4);
+    context.upload_bytes(real_audio_ts, real_audio_ts_values.data(),
+                         real_audio_ts_values.size() * 4);
+    const uint64_t real_transformer_baseline = context.pooled_used_bytes();
+    ExactH3Transformer real_transformer = ExactH3Transformer::create(
+        context, real_transformer_config);
+    real_transformer.load(real_checkpoint);
+    real_transformer.prepare_text(real_prompt);
+    auto run_real_transformer = [&] {
+      TensorBatch batch = context.begin_batch();
+      real_transformer.record_forward(
+          batch, real_video, real_audio, real_transformer_selectors,
+          real_transformer_code, real_transformer_cosine,
+          real_transformer_sine, real_video_ts, real_audio_ts,
+          real_video_out, real_audio_out);
+      batch.submit().wait();
+      std::vector<float> result(real_video_values.size() + real_audio_values.size());
+      context.download(real_video_out, result.data(), real_video_values.size());
+      context.download(real_audio_out, result.data() + real_video_values.size(),
+                       real_audio_values.size());
+      return result;
+    };
+    const std::vector<float> real_transformer_output = run_real_transformer();
+    const uint64_t real_transformer_digest =
+        fnv64_floats(real_transformer_output);
+    CHECK(real_transformer_digest == 0x42764ebbb3850be4ull);
+    const uint64_t real_transformer_reserved = context.reserved_bytes();
+    const uint64_t real_transformer_descriptors =
+        context.descriptor_set_allocations();
+    CHECK(run_real_transformer() == real_transformer_output);
+    CHECK(context.reserved_bytes() == real_transformer_reserved);
+    CHECK(context.descriptor_set_allocations() == real_transformer_descriptors);
+    real_transformer.unload();
+    CHECK(context.pooled_used_bytes() == real_transformer_baseline);
+    CHECK(real_transformer.persistent_bytes() == 0u &&
+          real_transformer.scratch_bytes() == 0u);
+    std::printf("  CUDA-off real H3 transformer S65 FNV64 %016llx\n",
+                static_cast<unsigned long long>(real_transformer_digest));
+    }
   }
   std::error_code ignored;
   std::filesystem::remove(valid_path, ignored);

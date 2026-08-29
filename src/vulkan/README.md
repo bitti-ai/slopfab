@@ -944,8 +944,47 @@ measured 23.396/23.760 s first/repeat, final FNV64
 persistent/scratch/peak (12,659.05/13,032.88 MiB pool used/reserved). At the
 default 14 model evaluations this main-stack measurement alone projects to
 about 5.54 minutes; it excludes the refiner, final heads and VAE decoders and
-is not a claim of end-to-end runtime parity. The two-block token refiner,
-final head and denoise-loop integration remain the next features.
+is not a claim of end-to-end runtime parity.
+
+`ExactH3Transformer` now completes one exact transformer evaluation around
+that main stack: deterministic fp32 condition/video/audio projections, the two
+exact token-refiner blocks and final norm, canonical `[text|audio|video]`
+packing, main50, final AdaLN/RMS normalization, and separate video/audio heads.
+The cached text stream and every activation remain device-resident. Text
+preparation is one bounded submission per prompt and a forward is one caller
+batch with 1,467 operators; there is no per-block host boundary, allocation,
+submission, CUDA call, or fallback. CUDA exact mode uses the same deterministic
+condition/input/head projection arithmetic rather than cuBLAS, while all
+non-exact CUDA modes retain their previous path.
+
+The full-forward production capture is the actual seed424242, 256x256,
+22-frame, step-0, +/-9-band CUDA execution at S526. The durable
+`h3_transformer_step0_seed424242_256.vfh3f` artifact is 12,207,824 bytes with
+SHA-256
+`3E3476E397FCEE203737332D171D4650F55433471231A7FD4FF24F8E0F84F8E7`;
+the checkpoint SHA-256 is the value above. Vulkan exactly matches all six text
+boundaries, packed input, main50 output, and every final fp32 video/audio byte.
+Pinned FNV64 values are
+`6d891a14ee2a38bd,cc91d0e61a56bd7b,d5ddff8656b1d581,af5733d914839cf2,d510022f4c0e9032,1e4af4a0c48fffc7`
+for text, then `54c4e5ce3af6d0de` packed, `da1038eb60eea19f`
+main, `7d7af2480929ae03` video, and `58197cbc23da3ab3` audio.
+
+On RTX 5090/610.88 Debug, S526 load/text/tapped-forward/repeat measured
+6.180 s/18.2 ms/1.230 s/1.203 s. Logical persistent/scratch/peak was
+13,501.84/720.16/14,222.00 MiB; pool used/reserved was
+14,244.63/14,611.48 MiB with 1,494 stable descriptors. The no-tap S9864 full
+transformer audit measured 22.617/23.080 s first/repeat, pinned combined final
+FNV64 `a998bb5ff7a03383`, and 13,501.84/3,050.10/16,551.94 MiB logical
+persistent/scratch/peak (16,589.13/16,957.42 MiB pool used/reserved and 1,544
+stable descriptors). Real unload/reload reproduces final bytes and releases
+owned pool usage; active reload and corrupt initial-load rollback are covered
+by the CUDA-free lifecycle fixture. A CUDA-disabled build loads the real full
+checkpoint, runs all 50 blocks plus refiner/endpoints at S65 twice without
+growth, and pins combined fp32 output FNV64 `42764ebbb3850be4`.
+
+The scheduler/denoise-loop integration remains the next transformer feature;
+this endpoint is one reusable evaluation and does not yet enable Vulkan
+conditioning or denoising in the public generation plan.
 
 The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
 `dxc_2026_07_29.zip` (SHA-256
