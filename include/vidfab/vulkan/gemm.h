@@ -104,8 +104,6 @@ class PreparedNVFP4WeightView {
   PreparedNVFP4WeightView& operator=(const PreparedNVFP4WeightView&) = delete;
   uint32_t out_features() const noexcept;
   uint32_t in_features() const noexcept;
-  bool requires_pre_quant_scale() const noexcept;
-  bool requires_convrot() const noexcept;
   bool full_precision_matrix_mult() const noexcept;
   explicit operator bool() const noexcept;
 
@@ -114,15 +112,12 @@ class PreparedNVFP4WeightView {
                                    uintptr_t batch_id, uint64_t generation,
                                    uint32_t out_features,
                                    uint32_t in_features,
-                                   bool pre_quant_scale, bool convrot,
                                    bool full_precision) noexcept;
   std::shared_ptr<void> cache_;
   uintptr_t batch_id_ = 0;
   uint64_t generation_ = 0;
   uint32_t out_features_ = 0;
   uint32_t in_features_ = 0;
-  bool pre_quant_scale_ = false;
-  bool convrot_ = false;
   bool full_precision_ = false;
   friend class DenseGemmPlan;
   friend class StreamedNVFP4WeightCache;
@@ -159,9 +154,7 @@ class DenseGemmPlan {
               DeviceTensor& output, uint32_t rows,
               uint32_t input_row_offset = 0,
               uint32_t output_row_offset = 0,
-              DeviceTensor* bias = nullptr,
-              bool pre_quant_scale_applied = false,
-              bool convrot_applied = false) const;
+              DeviceTensor* bias = nullptr) const;
   explicit operator bool() const noexcept;
 
  private:

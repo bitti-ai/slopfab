@@ -250,7 +250,13 @@ VIDFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
   upload.data = positive.data();
   LinearWeight w_positive = LinearWeight::upload(context, upload);
   upload.data = negative.data();
+  upload.full_precision_matrix_mult = true;
   LinearWeight w_negative = LinearWeight::upload(context, upload);
+  std::vector<uint16_t> pre_scale(k, reference_bf16(1.0f));
+  upload.data = positive.data();
+  upload.pre_quant_scale_bf16 = pre_scale.data();
+  upload.pre_quant_scale_count = pre_scale.size();
+  LinearWeight awq_weight = LinearWeight::upload(context, upload);
 
   const uint64_t input_shape[] = {rows, k};
   const uint64_t output_shape[] = {rows, n};
@@ -267,15 +273,42 @@ VIDFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
       context, {rows, n, k, DenseGemmMode::kBFloat16,
                 DenseGemmBias::kNone});
   StreamedNVFP4WeightCache cache =
-      StreamedNVFP4WeightCache::create(context, weight_elements);
-  CHECK(cache.capacity_elements() == weight_elements);
-  CHECK(cache.dense_bytes() == weight_elements * 2);
+      StreamedNVFP4WeightCache::create(context, weight_elements * 2);
+  CHECK(cache.capacity_elements() == weight_elements * 2);
+  CHECK(cache.dense_bytes() == weight_elements * 4);
+
+  // A foreign weight with a different valid shape must fail before it changes
+  // the shared slot metadata or invalidates the current W1 generation.
+  TensorContext foreign_context(device);
+  std::vector<uint8_t> foreign_codes(weight_elements, 0x22);
+  std::vector<uint8_t> foreign_scales(weight_elements / 8, 0x38);
+  LinearWeightUpload foreign_upload = upload;
+  foreign_upload.in_features = 128;
+  foreign_upload.pre_quant_scale_bf16 = nullptr;
+  foreign_upload.pre_quant_scale_count = 0;
+  foreign_upload.data = foreign_codes.data();
+  foreign_upload.data_bytes = foreign_codes.size();
+  foreign_upload.block_scale = foreign_scales.data();
+  foreign_upload.block_scale_count = foreign_scales.size();
+  LinearWeight foreign_weight = LinearWeight::upload(foreign_context, foreign_upload);
+  DenseGemmPlan foreign_shape_plan = DenseGemmPlan::create(
+      context, {rows, n, 128, DenseGemmMode::kBFloat16,
+                DenseGemmBias::kNone});
 
   TensorBatch first = context.begin_batch();
   PreparedNVFP4WeightView p = cache.prepare(first, w_positive, plan);
   plan.record(first, input, p, output, 2, 0, 0);
+  bool foreign_threw = false;
+  try { (void)cache.prepare(first, foreign_weight, foreign_shape_plan); }
+  catch (const std::invalid_argument&) { foreign_threw = true; }
+  CHECK(foreign_threw);
+  bool awq_threw = false;
+  try { (void)cache.prepare(first, awq_weight, plan); }
+  catch (const std::invalid_argument&) { awq_threw = true; }
+  CHECK(awq_threw);
   plan.record(first, input, p, output, 2, 2, 2);
   PreparedNVFP4WeightView m = cache.prepare(first, w_negative, plan);
+  CHECK(m.full_precision_matrix_mult());
   bool stale_threw = false;
   try { plan.record(first, input, p, output, 1, 0, 0); }
   catch (const std::invalid_argument&) { stale_threw = true; }
@@ -307,6 +340,103 @@ VIDFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
       CHECK(got_second[static_cast<size_t>(row) * n + col] == plus);
     }
   }
+
+  // A materialize plus 31 chunk/fanout reads exactly fills the bounded
+  // 32-operation schedule. The 33rd operation is rejected, and discarding the
+  // poisoned recording leaves the following batch usable.
+  Submission warm_flights[2];
+  for (int flight = 0; flight < 2; ++flight) {
+    TensorBatch full = context.begin_batch();
+    PreparedNVFP4WeightView prepared = cache.prepare(full, w_positive, plan);
+    for (int i = 0; i < 31; ++i)
+      plan.record(full, input, prepared, output, rows);
+    warm_flights[flight] = full.submit();
+  }
+  warm_flights[0].wait(); warm_flights[1].wait();
+  const uint64_t high_reserved = context.reserved_bytes();
+  const uint64_t high_descriptors = context.descriptor_set_allocations();
+  {
+    TensorBatch overflow = context.begin_batch();
+    PreparedNVFP4WeightView prepared = cache.prepare(overflow, w_positive, plan);
+    for (int i = 0; i < 31; ++i)
+      plan.record(overflow, input, prepared, output, rows);
+    bool threw = false;
+    try { plan.record(overflow, input, prepared, output, rows); }
+    catch (const std::logic_error&) { threw = true; }
+    CHECK(threw);
+  }
+  Submission tail;
+  for (int i = 0; i < 50; ++i) {
+    TensorBatch repeat = context.begin_batch();
+    PreparedNVFP4WeightView prepared = cache.prepare(repeat, w_positive, plan);
+    plan.record(repeat, input, prepared, output, rows);
+    tail = repeat.submit();
+  }
+  tail.wait();
+  CHECK(context.reserved_bytes() == high_reserved);
+  CHECK(context.descriptor_set_allocations() == high_descriptors);
+}
+
+VIDFAB_TEST(vulkan_streamed_nvfp4_wrapper_drop) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_cooperative_matrix = physical.front().info().cooperative_matrix;
+  options.enable_storage_buffer_16bit = options.enable_cooperative_matrix;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  {
+    const uint64_t warm_shape[] = {2, 64};
+    DeviceTensor warm = context.allocate(
+        TensorLayout::contiguous(warm_shape, 2), ScalarType::kBFloat16);
+    std::vector<uint16_t> zeros(128);
+    context.upload_bytes(warm, zeros.data(), zeros.size() * 2);
+  }
+  { TensorBatch collect = context.begin_batch(); }
+  const uint64_t baseline = context.pooled_used_bytes();
+  Submission token;
+  {
+    constexpr uint32_t rows = 2, n = 128, k = 64;
+    const size_t elements = size_t(n) * k;
+    std::vector<uint8_t> codes(elements / 2, 0x22);
+    std::vector<uint8_t> scales(elements / 16, 0x38);
+    LinearWeightUpload upload;
+    upload.format = LinearWeightFormat::kNVFloat4;
+    upload.out_features = n; upload.in_features = k;
+    upload.data = codes.data(); upload.data_bytes = codes.size();
+    upload.block_scale = scales.data();
+    upload.block_scale_count = scales.size();
+    LinearWeight weight = LinearWeight::upload(context, upload);
+    const uint64_t is[] = {rows, k}, os[] = {rows, n};
+    DeviceTensor input = context.allocate(TensorLayout::contiguous(is, 2),
+                                          ScalarType::kBFloat16);
+    DeviceTensor output = context.allocate(TensorLayout::contiguous(os, 2),
+                                           ScalarType::kBFloat16);
+    std::vector<uint16_t> bits(size_t(rows) * k, reference_bf16(1.0f));
+    context.upload_bytes(input, bits.data(), bits.size() * 2);
+    DenseGemmPlan plan = DenseGemmPlan::create(
+        context, {rows, n, k, DenseGemmMode::kBFloat16,
+                  DenseGemmBias::kNone});
+    StreamedNVFP4WeightCache cache =
+        StreamedNVFP4WeightCache::create(context, elements);
+    TensorBatch batch = context.begin_batch();
+    PreparedNVFP4WeightView prepared = cache.prepare(batch, weight, plan);
+    plan.record(batch, input, prepared, output, rows);
+    token = batch.submit();
+  }
+  CHECK(context.pooled_used_bytes() > baseline);
+  token.wait();
+  token = Submission{};
+  { TensorBatch collect = context.begin_batch(); }
+  CHECK_MSG(context.pooled_used_bytes() == baseline,
+            "streamed wrapper drop retained %llu bytes (baseline %llu)",
+            static_cast<unsigned long long>(context.pooled_used_bytes()),
+            static_cast<unsigned long long>(baseline));
 }
 
 VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
