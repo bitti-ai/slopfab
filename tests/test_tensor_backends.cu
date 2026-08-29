@@ -3465,12 +3465,82 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
   CHECK(captured.input_bf16==input);
   CHECK(captured.cosine==cosine);
   CHECK(captured.sine==sine);
+
+  // Run the identical captured activation through the shipped NVFP4+AWQ
+  // layer. L132 exercises the 128-row cooperative tile plus a four-row GEMM
+  // tail, while o/down execute their checkpoint-declared AWQ pre-scales.
+  const std::filesystem::path nv_path=source/
+      "weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors";
+  const uint64_t i8_persistent_bytes=stage.persistent_bytes();
+  CHECK(std::filesystem::exists(nv_path));
+  SafeTensors nv_checkpoint;nv_checkpoint.open(nv_path.string());
+  text::EncoderConfig nv_config;
+  nv_config.format=text::detect_weight_format(nv_checkpoint);
+  CHECK(nv_config.format==text::WeightFormat::kNVFP4Awq);
+  const text::LayerLayout nv_layout=text::make_layer_layout(nv_config);
+  cuda::DeviceBuffer<uint8_t> nv_cuda_layer(nv_layout.total_bytes);
+  text::upload_layer_direct(nv_checkpoint,nv_config,0,nv_layout,
+                            nv_cuda_layer.get(),nullptr);
+  const text::LayerGlobalScales nv_globals=
+      text::read_global_scales(nv_checkpoint,nv_config,0);
+  const text::LayerWeights nv_cuda_weights=text::layer_weights_from_blob(
+      nv_cuda_layer.get(),nv_layout,nv_config,nv_globals);
+  dims.format=nv_config.format;
+  cuda_tokens.copy_from_host(input.data(),input.size());
+  const auto nv_cuda_begin=std::chrono::steady_clock::now();
+  text::encoder_layer_forward_exact(nullptr,nv_cuda_weights,dims,
+      cuda_cosine.get(),cuda_sine.get(),
+      reinterpret_cast<__nv_bfloat16*>(cuda_tokens.get()),cuda_workspace,
+      &cuda_taps);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const double nv_cuda_ms=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-nv_cuda_begin).count();
+
+  stage.load(nv_checkpoint,0);
+  CHECK(stage.format()==text::WeightFormat::kNVFP4Awq);
+  CHECK(stage.required_operators(&vk_taps)==44);
+  vk.upload_bytes(v_tokens,input.data(),input.size()*sizeof(uint16_t));
+  const auto nv_vk_begin=std::chrono::steady_clock::now();
+  TensorBatch nv_batch=vk.begin_batch();
+  {
+    test::HostAllocationGuard allocation_guard;
+    stage.record(nv_batch,v_tokens,v_cos,v_sin,scratch,&vk_taps);
+  }
+  CHECK(nv_batch.remaining_operator_capacity()==5);
+  nv_batch.submit().wait();
+  const double nv_vk_ms=std::chrono::duration<double,std::milli>(
+      std::chrono::steady_clock::now()-nv_vk_begin).count();
+  std::array<uint64_t,11> nv_hashes{
+      compare("NV input norm",c_norm,v_norm,size_t(rows)*hidden),
+      compare("NV query",c_q,v_q,size_t(rows)*q_heads*head_dim),
+      compare("NV key",c_k,v_k,size_t(rows)*kv_heads*head_dim),
+      compare("NV value",c_v,v_v,size_t(rows)*kv_heads*head_dim),
+      compare("NV attention",c_attention,v_attention,size_t(rows)*q_heads*head_dim),
+      compare("NV attention residual",c_attention_residual,v_attention_residual,size_t(rows)*hidden),
+      compare("NV post norm",c_post_norm,v_post_norm,size_t(rows)*hidden),
+      compare("NV gate",c_gate,v_gate,size_t(rows)*ffn),
+      compare("NV up",c_up,v_up,size_t(rows)*ffn),
+      compare("NV activation",c_activation,v_activation,size_t(rows)*ffn),
+      compare("NV final",c_final,v_final,size_t(rows)*hidden)};
+  constexpr std::array<uint64_t,11> expected_nv_hashes{
+      0x395ca0928bc2fe96ull,0xbe792d7f50dffcd8ull,
+      0xabf4d02a691c93feull,0xa7c505fccf740093ull,
+      0x3c771911cbcbba19ull,0xafcdcae26c9edd26ull,
+      0x503531dfaee1b283ull,0x241abe4e317283c4ull,
+      0xb3f789dffb6d190cull,0xdd56acc48480841eull,
+      0xa389ed1f9e8067e8ull};
+  CHECK(nv_hashes==expected_nv_hashes);
   std::printf("  real Qwen layer0 L132 exact CUDA %.1f ms Vulkan %.1f ms load %.1f ms, persistent/scratch %.1f/%.1f MiB, boundary FNV64:",cuda_ms,vk_ms,load_ms,
-      double(stage.persistent_bytes())/1048576.0,double(scratch.reserved_bytes())/1048576.0);
+      double(i8_persistent_bytes)/1048576.0,double(scratch.reserved_bytes())/1048576.0);
   for(uint64_t hash:hashes)std::printf(" %016llx",static_cast<unsigned long long>(hash));
   std::printf("; input/rope %016llx/%016llx\n",
       static_cast<unsigned long long>(input_hash),
       static_cast<unsigned long long>(rope_hash));
+  std::printf("  real NVFP4+AWQ Qwen layer0 L132 exact CUDA %.1f ms Vulkan %.1f ms, boundary FNV64:",
+      nv_cuda_ms,nv_vk_ms);
+  for(uint64_t hash:nv_hashes)
+    std::printf(" %016llx",static_cast<unsigned long long>(hash));
+  std::printf("\n");
 }
 
 VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
