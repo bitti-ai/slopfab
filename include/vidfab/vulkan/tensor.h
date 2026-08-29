@@ -14,6 +14,8 @@ class TensorBatch;
 class LinearWeight;
 class DenseGemmPlan;
 class BlockedAttentionPlan;
+class H3AttentionPlan;
+class H3AttentionRanges;
 class CausalGQAAttentionPlan;
 class PreparedAttentionInputs;
 class PreparedAttentionView;
@@ -50,6 +52,8 @@ class DeviceTensor {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class H3AttentionPlan;
+  friend class H3AttentionRanges;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
@@ -181,6 +185,7 @@ class TensorBatch {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class H3AttentionPlan;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
@@ -246,6 +251,8 @@ class TensorContext {
   // deterministic exp/divide shader and CUDA reference artifacts.
   bool exact_blocked_attention() const noexcept;
   void require_exact_blocked_attention() const;
+  bool exact_h3_attention() const noexcept;
+  void require_exact_h3_attention() const;
   bool exact_causal_gqa_attention() const noexcept;
   void require_exact_causal_gqa_attention() const;
   // Native block-scaled E2M1 cooperative MMA is deliberately separate from
@@ -265,6 +272,8 @@ class TensorContext {
   friend class LinearWeight;
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
+  friend class H3AttentionPlan;
+  friend class H3AttentionRanges;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
@@ -354,6 +363,76 @@ class BlockedAttentionPlan {
  private:
   struct Impl;
   explicit BlockedAttentionPlan(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
+};
+
+// Exact H3 full/frame-banded attention is deliberately separate from the
+// blocked FP16 plan. Q/K/V remain direct BF16 tensors; QK is accumulated in
+// ascending channel order, probabilities and V operands are rounded to FP16,
+// and selected keys are visited in 64-row blocks. This is the shared
+// CUDA/Vulkan exact-mode rebaseline, not a byte-identity claim for the shipped
+// CUDA fused-MMA kernel.
+struct H3AttentionPlanDesc {
+  uint32_t sequence = 0;
+  uint32_t heads = 0;
+  uint32_t head_dim = 0;
+  float scale = 0.0f;
+};
+
+// Immutable device-resident ranges for one packed H3 sequence. There are four
+// int32 values per global 128-query-row tile: two ordered half-open ranges.
+// Endpoints are 64-row aligned and may extend to align_up(sequence,64); the
+// kernel clamps those padded rows. Construction merges touching/overlapping
+// ranges and rejects an empty selected set.
+class H3AttentionRanges {
+ public:
+  H3AttentionRanges();
+  ~H3AttentionRanges();
+  H3AttentionRanges(H3AttentionRanges&&) noexcept;
+  H3AttentionRanges& operator=(H3AttentionRanges&&) noexcept;
+  H3AttentionRanges(const H3AttentionRanges&) = delete;
+  H3AttentionRanges& operator=(const H3AttentionRanges&) = delete;
+  static H3AttentionRanges create(TensorContext& context, uint32_t sequence,
+                                  const int32_t* values, uint32_t value_count);
+  uint32_t sequence() const;
+  uint32_t query_tiles() const;
+  uint64_t content_hash() const;
+  explicit operator bool() const noexcept;
+
+ private:
+  struct Impl;
+  explicit H3AttentionRanges(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
+  friend class H3AttentionPlan;
+};
+
+class H3AttentionPlan {
+ public:
+  H3AttentionPlan();
+  ~H3AttentionPlan();
+  H3AttentionPlan(H3AttentionPlan&&) noexcept;
+  H3AttentionPlan& operator=(H3AttentionPlan&&) noexcept;
+  H3AttentionPlan(const H3AttentionPlan&) = delete;
+  H3AttentionPlan& operator=(const H3AttentionPlan&) = delete;
+  static H3AttentionPlan create(TensorContext& context,
+                                const H3AttentionPlanDesc& desc);
+  const H3AttentionPlanDesc& description() const;
+  // Tensors are contiguous token-major BF16 [sequence,heads,head_dim]. Output
+  // is distinct. Null ranges select full attention; otherwise the range table
+  // is indexed by the global query row, including for row-chunk records.
+  // Exact mode requires finite Q/K/V, scaled scores, PV accumulators and final
+  // numerators. BF16/FP32 subnormal arithmetic is canonicalized identically by
+  // the paired CUDA/Vulkan implementations.
+  void record(TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
+              DeviceTensor& value, DeviceTensor& output,
+              const H3AttentionRanges* ranges = nullptr,
+              uint32_t query_row_offset = 0, uint32_t rows = 0,
+              uint32_t output_row_offset = 0) const;
+  explicit operator bool() const noexcept;
+
+ private:
+  struct Impl;
+  explicit H3AttentionPlan(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
 

@@ -165,6 +165,115 @@ __global__ void blocked_attention_kernel(
   }
 }
 
+template <bool Banded>
+__global__ void h3_attention_kernel(
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    __nv_bfloat16* __restrict__ output,
+    const int32_t* __restrict__ ranges, uint32_t sequence, uint32_t heads,
+    uint32_t head_dim, float scale, uint32_t query_row_offset,
+    uint32_t output_row_offset, uint32_t rows) {
+  __shared__ float score_or_probability[128];
+  __shared__ float reduction[128];
+  __shared__ uint32_t output_bits[128];
+  const uint32_t lane = threadIdx.x;
+  const uint32_t local_row = blockIdx.x;
+  const uint32_t head = blockIdx.y;
+  if (local_row >= rows || head >= heads) return;
+  const uint32_t query_row = query_row_offset + local_row;
+  const size_t q_base =
+      (static_cast<size_t>(query_row) * heads + head) * head_dim;
+  float running_max = negative_infinity();
+  float running_sum = 0.0f;
+  float output_accumulator = 0.0f;
+
+  int range_values[4] = {0, static_cast<int>(sequence), 0, 0};
+  int range_count = 1;
+  if constexpr (Banded) {
+    const int32_t* selected = ranges + static_cast<size_t>(query_row / 128) * 4;
+    range_values[0] = selected[0];
+    range_values[1] = selected[1];
+    range_values[2] = selected[2];
+    range_values[3] = selected[3];
+    range_count = 2;
+  }
+  for (int range_index = 0; range_index < range_count; ++range_index) {
+    const uint32_t range_start = static_cast<uint32_t>(range_values[range_index * 2]);
+    const uint32_t range_stop = static_cast<uint32_t>(range_values[range_index * 2 + 1]);
+    for (uint32_t key_base = range_start; key_base < range_stop; key_base += 64) {
+      const uint32_t key_row = key_base + lane;
+      const bool live = lane < 64 && key_row < range_stop && key_row < sequence;
+      float score = 0.0f;
+      if (live) {
+        const size_t k_base =
+            (static_cast<size_t>(key_row) * heads + head) * head_dim;
+        for (uint32_t d = 0; d < head_dim; ++d) {
+          score = canonicalize_subnormal(fmaf(
+              causal_bf16_value(query[q_base + d]),
+              causal_bf16_value(key[k_base + d]), score));
+        }
+        score = canonicalize_subnormal(__fmul_rn(score, scale));
+      } else {
+        score = negative_infinity();
+      }
+      score_or_probability[lane] = score;
+      reduction[lane] = score;
+      __syncthreads();
+      for (uint32_t width = 64; width != 0; width >>= 1) {
+        if (lane < width)
+          reduction[lane] = fmaxf(reduction[lane], reduction[lane + width]);
+        __syncthreads();
+      }
+      const float tile_max = reduction[0];
+      const float next_max = fmaxf(running_max, tile_max);
+      const float correction = running_max == negative_infinity()
+          ? 0.0f : deterministic_exp_nonpositive(running_max - next_max);
+      const float exponential = live
+          ? deterministic_exp_nonpositive(score - next_max) : 0.0f;
+      __syncthreads();
+      score_or_probability[lane] = f16_round(exponential);
+      reduction[lane] = exponential;
+      __syncthreads();
+      for (uint32_t width = 64; width != 0; width >>= 1) {
+        if (lane < width) reduction[lane] += reduction[lane + width];
+        __syncthreads();
+      }
+      if (lane < head_dim) {
+        output_accumulator = canonicalize_subnormal(
+            __fmul_rn(output_accumulator, correction));
+        for (uint32_t j = 0; j < 64 && key_base + j < range_stop &&
+             key_base + j < sequence; ++j) {
+          const size_t v_index =
+              ((static_cast<size_t>(key_base + j) * heads + head) *
+               head_dim) + lane;
+          output_accumulator = canonicalize_subnormal(fmaf(
+              score_or_probability[j], prepared_value(value, v_index),
+              output_accumulator));
+        }
+      }
+      running_sum = fmaf(running_sum, correction, reduction[0]);
+      running_max = next_max;
+      __syncthreads();
+    }
+  }
+
+  if (lane < head_dim) {
+    output_bits[lane] = static_cast<uint32_t>(__bfloat16_as_ushort(
+        __float2bfloat16_rn(deterministic_float_divide(output_accumulator,
+                                                       running_sum))));
+  }
+  __syncthreads();
+  if (lane < head_dim && (lane & 1u) == 0u) {
+    const size_t output_index =
+        ((static_cast<size_t>(output_row_offset + local_row) * heads + head) *
+         head_dim) + lane;
+    const uint32_t high = lane + 1 < head_dim ? output_bits[lane + 1] : 0u;
+    reinterpret_cast<uint32_t*>(output)[output_index >> 1] =
+        output_bits[lane] | (high << 16u);
+  }
+}
+
 __global__ void causal_gqa_attention_kernel(
     const __nv_bfloat16* __restrict__ query,
     const __nv_bfloat16* __restrict__ key,
@@ -364,6 +473,56 @@ void launch_deterministic_blocked_attention(
   launch_attention_impl(stream, query, key, value, output, sequence, heads,
                         head_dim, scale, query_row_offset, rows,
                         output_row_offset);
+}
+
+void launch_deterministic_h3_attention(
+    cudaStream_t stream, const __nv_bfloat16* query,
+    const __nv_bfloat16* key, const __nv_bfloat16* value,
+    __nv_bfloat16* output, const int32_t* ranges, uint32_t sequence,
+    uint32_t heads, uint32_t head_dim, float scale,
+    uint32_t query_row_offset, uint32_t rows,
+    uint32_t output_row_offset) {
+  if (!query || !key || !value || !output || query == key || query == value ||
+      key == value || sequence == 0 || heads == 0 ||
+      (head_dim != 64 && head_dim != 128) ||
+      !is_exact_attention_scale(head_dim, scale) ||
+      query_row_offset > sequence) {
+    throw std::invalid_argument(
+        "deterministic H3 attention: invalid tensor/configuration");
+  }
+  const uint32_t selected_rows =
+      rows == 0 ? sequence - query_row_offset : rows;
+  if (selected_rows == 0 ||
+      static_cast<uint64_t>(query_row_offset) + selected_rows > sequence ||
+      static_cast<uint64_t>(output_row_offset) + selected_rows > sequence) {
+    throw std::invalid_argument("deterministic H3 attention: invalid row range");
+  }
+  const uint64_t elements =
+      static_cast<uint64_t>(sequence) * heads * head_dim;
+  if (elements > std::numeric_limits<uint32_t>::max()) {
+    throw std::out_of_range("deterministic H3 attention: uint32 indexing overflow");
+  }
+  const uint64_t bytes = elements * sizeof(__nv_bfloat16);
+  if (ranges_overlap(query, bytes, output, bytes) ||
+      ranges_overlap(key, bytes, output, bytes) ||
+      ranges_overlap(value, bytes, output, bytes)) {
+    throw std::invalid_argument("deterministic H3 attention: output must be distinct");
+  }
+  const GridLimits limits = cached_grid_limits();
+  if (!deterministic_attention_grid_fits(
+          selected_rows, heads, limits.x, limits.y)) {
+    throw std::out_of_range("deterministic H3 attention: CUDA grid limit exceeded");
+  }
+  if (ranges) {
+    h3_attention_kernel<true><<<dim3(selected_rows, heads), 128, 0, stream>>>(
+        query, key, value, output, ranges, sequence, heads, head_dim, scale,
+        query_row_offset, output_row_offset, selected_rows);
+  } else {
+    h3_attention_kernel<false><<<dim3(selected_rows, heads), 128, 0, stream>>>(
+        query, key, value, output, nullptr, sequence, heads, head_dim, scale,
+        query_row_offset, output_row_offset, selected_rows);
+  }
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_deterministic_causal_gqa_attention(

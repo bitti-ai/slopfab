@@ -725,6 +725,141 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
   }
 }
 
+VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  int cuda_devices = 0;
+  if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  Device device = physical.front().create_device(options);
+  TensorContext vk(device);
+  if (!vk.exact_h3_attention()) return;
+
+  constexpr uint32_t sequence = 129, heads = 2, dim = 64;
+  const size_t count = size_t(sequence) * heads * dim;
+  std::vector<uint16_t> hq(count), hk(count), hv(count);
+  for (size_t i = 0; i < count; ++i) {
+    hq[i] = f32_to_bf16(float(int(i % 29) - 14) / 32.0f);
+    hk[i] = f32_to_bf16(float(int(i % 31) - 15) / 32.0f);
+    hv[i] = f32_to_bf16(float(int(i % 37) - 18) / 16.0f);
+  }
+  hq[0] = 0x0001u; hq[1] = 0x807fu;
+  hk[0] = 0x007fu; hk[1] = 0x8001u;
+  hv[0] = 0x0001u; hv[1] = 0x807fu;
+  const std::vector<int32_t> band{
+      0, 64, 128, 192,
+      0, 128, 0, 0};
+  const std::vector<int32_t> wide{
+      0, 192, 0, 0,
+      0, 192, 0, 0};
+  cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count),
+      co_full(count), co_band(count), co_wide(count);
+  cuda::DeviceBuffer<int32_t> cband(band.size()), cwide(wide.size());
+  cq.copy_from_host(hq.data(), hq.size());
+  ck.copy_from_host(hk.data(), hk.size());
+  cv.copy_from_host(hv.data(), hv.size());
+  cband.copy_from_host(band.data(), band.size());
+  cwide.copy_from_host(wide.data(), wide.size());
+  const float scale = exact_attention_scale(dim);
+  cuda::launch_deterministic_h3_attention(
+      nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+      reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+      reinterpret_cast<__nv_bfloat16*>(co_full.get()), nullptr,
+      sequence, heads, dim, scale);
+  cuda::launch_deterministic_h3_attention(
+      nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+      reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+      reinterpret_cast<__nv_bfloat16*>(co_band.get()), cband.get(),
+      sequence, heads, dim, scale, 0, 65, 0);
+  cuda::launch_deterministic_h3_attention(
+      nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+      reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+      reinterpret_cast<__nv_bfloat16*>(co_band.get()), cband.get(),
+      sequence, heads, dim, scale, 65, 64, 65);
+  cuda::launch_deterministic_h3_attention(
+      nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+      reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+      reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+      reinterpret_cast<__nv_bfloat16*>(co_wide.get()), cwide.get(),
+      sequence, heads, dim, scale);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> expected_full(count), expected_band(count), expected_wide(count);
+  co_full.copy_to_host(expected_full.data(), count);
+  co_band.copy_to_host(expected_band.data(), count);
+  co_wide.copy_to_host(expected_wide.data(), count);
+  CHECK(expected_wide == expected_full);
+
+  const uint64_t shape[] = {sequence, heads, dim};
+  const TensorLayout layout = TensorLayout::contiguous(shape, 3);
+  DeviceTensor q = vk.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor k = vk.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor v = vk.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor out_full = vk.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor out_band = vk.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor out_wide = vk.allocate(layout, ScalarType::kBFloat16);
+  vk.upload_bytes(q, hq.data(), count * 2);
+  vk.upload_bytes(k, hk.data(), count * 2);
+  vk.upload_bytes(v, hv.data(), count * 2);
+  H3AttentionPlan plan = H3AttentionPlan::create(
+      vk, {sequence, heads, dim, scale});
+  H3AttentionRanges bands = H3AttentionRanges::create(
+      vk, sequence, band.data(), static_cast<uint32_t>(band.size()));
+  H3AttentionRanges wide_ranges = H3AttentionRanges::create(
+      vk, sequence, wide.data(), static_cast<uint32_t>(wide.size()));
+  // Touching ranges canonicalize to the same immutable table as full coverage.
+  const std::vector<int32_t> touching{
+      0, 64, 64, 192,
+      0, 128, 128, 192};
+  H3AttentionRanges touching_ranges = H3AttentionRanges::create(
+      vk, sequence, touching.data(), static_cast<uint32_t>(touching.size()));
+  CHECK(touching_ranges.content_hash() == wide_ranges.content_hash());
+  TensorBatch batch = vk.begin_batch();
+  plan.record(batch, q, k, v, out_full);
+  plan.record(batch, q, k, v, out_band, &bands, 0, 65, 0);
+  plan.record(batch, q, k, v, out_band, &bands, 65, 64, 65);
+  plan.record(batch, q, k, v, out_wide, &wide_ranges);
+  batch.submit().wait();
+  std::vector<uint16_t> got_full(count), got_band(count), got_wide(count);
+  vk.download_bytes(out_full, got_full.data(), count * 2);
+  vk.download_bytes(out_band, got_band.data(), count * 2);
+  vk.download_bytes(out_wide, got_wide.data(), count * 2);
+  CHECK(got_full == expected_full);
+  CHECK(got_band == expected_band);
+  CHECK(got_wide == expected_wide);
+  CHECK(got_wide == got_full);
+
+  // Q/K are zero, so selected values average exactly. Excluded sentinels must
+  // not affect the banded result, including across the padded final block.
+  std::fill(hq.begin(), hq.end(), f32_to_bf16(0.0f));
+  std::fill(hk.begin(), hk.end(), f32_to_bf16(0.0f));
+  std::fill(hv.begin(), hv.end(), f32_to_bf16(16.0f));
+  for (uint32_t row = 0; row < 64; ++row)
+    for (uint32_t h = 0; h < heads; ++h)
+      for (uint32_t d = 0; d < dim; ++d)
+        hv[(size_t(row) * heads + h) * dim + d] = f32_to_bf16(1.0f);
+  for (uint32_t h = 0; h < heads; ++h)
+    for (uint32_t d = 0; d < dim; ++d)
+      hv[(size_t(128) * heads + h) * dim + d] = f32_to_bf16(1.0f);
+  vk.upload_bytes(q, hq.data(), count * 2);
+  vk.upload_bytes(k, hk.data(), count * 2);
+  vk.upload_bytes(v, hv.data(), count * 2);
+  TensorBatch sentinel = vk.begin_batch();
+  plan.record(sentinel, q, k, v, out_band, &bands, 0, 1, 0);
+  sentinel.submit().wait();
+  vk.download_bytes(out_band, got_band.data(), count * 2);
+  for (uint32_t i = 0; i < heads * dim; ++i)
+    CHECK(got_band[i] == f32_to_bf16(1.0f));
+}
+
 VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
   using namespace vidfab;
   using namespace vidfab::vulkan;

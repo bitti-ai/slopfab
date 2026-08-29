@@ -125,6 +125,20 @@ struct BlockedAttentionPlan::Impl {
   BlockedAttentionPlanDesc desc;
 };
 
+struct H3AttentionRanges::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  DeviceTensor tensor;
+  uint32_t sequence = 0;
+  uint32_t query_tiles = 0;
+  uint64_t content_hash = 0;
+  uintptr_t generation = next_context_identity();
+};
+
+struct H3AttentionPlan::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  H3AttentionPlanDesc desc;
+};
+
 struct CausalGQAAttentionPlan::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   CausalGQAAttentionPlanDesc desc;
@@ -252,6 +266,8 @@ struct TensorContext::Impl {
   ComputePipeline gemm_prepare_pipeline;
   ComputePipeline gemm_coop_f16_pipeline;
   ComputePipeline attention_blocked_pipeline;
+  ComputePipeline attention_h3_pipeline;
+  ComputePipeline attention_h3_banded_pipeline;
   ComputePipeline attention_prepare_pipeline;
   ComputePipeline attention_causal_gqa_pipeline;
   ComputePipeline rms_norm_pipeline;
@@ -273,11 +289,14 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> gemm_bindings;
   std::vector<StorageBinding> gemm_prepare_bindings;
   std::vector<StorageBinding> attention_bindings;
+  std::vector<StorageBinding> attention_h3_bindings;
+  std::vector<StorageBinding> attention_h3_banded_bindings;
   std::vector<StorageBinding> attention_prepare_bindings;
   std::vector<StorageBinding> attention_causal_gqa_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   bool exact_attention = false;
+  bool exact_h3_attention = false;
   bool exact_causal_gqa_attention = false;
   bool cooperative_gemm = false;
   bool cooperative_f16_gemm = false;
@@ -304,6 +323,8 @@ struct TensorContext::Impl {
         gemm_bindings(4),
         gemm_prepare_bindings(2),
         attention_bindings(4),
+        attention_h3_bindings(4),
+        attention_h3_banded_bindings(5),
         attention_prepare_bindings(6),
         attention_causal_gqa_bindings(4) {
     // Device is move-only; the opaque handle is sufficient for identity and
@@ -322,6 +343,7 @@ struct TensorContext::Impl {
                      input.info().fp32_signed_zero_inf_nan_preserve &&
                      input.info().shader_int64_enabled;
     exact_attention = known_exact_blocked_attention_device(input.info());
+    exact_h3_attention = known_exact_blocked_attention_device(input.info());
     exact_causal_gqa_attention =
         known_exact_causal_gqa_attention_device(input.info());
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
@@ -464,6 +486,16 @@ struct TensorContext::Impl {
           sizeof(detail::kTensorAttentionPrepareSpirv), 6, 64, 1,
           sizeof(uint32_t));
     }
+    if (exact_h3_attention) {
+      attention_h3_pipeline = make_norm_pipeline(
+          detail::kTensorAttentionH3Spirv,
+          sizeof(detail::kTensorAttentionH3Spirv), 4, 128, 1,
+          sizeof(AttentionParameters));
+      attention_h3_banded_pipeline = make_norm_pipeline(
+          detail::kTensorAttentionH3BandedSpirv,
+          sizeof(detail::kTensorAttentionH3BandedSpirv), 5, 128, 1,
+          sizeof(AttentionParameters));
+    }
     if (exact_causal_gqa_attention) {
       attention_causal_gqa_pipeline = make_norm_pipeline(
           detail::kTensorAttentionCausalGqaSpirv,
@@ -483,6 +515,10 @@ struct TensorContext::Impl {
       gemm_prepare_bindings[i].binding = i;
     for (uint32_t i = 0; i < attention_bindings.size(); ++i)
       attention_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_h3_bindings.size(); ++i)
+      attention_h3_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_h3_banded_bindings.size(); ++i)
+      attention_h3_banded_bindings[i].binding = i;
     for (uint32_t i = 0; i < attention_prepare_bindings.size(); ++i)
       attention_prepare_bindings[i].binding = i;
     for (uint32_t i = 0; i < attention_causal_gqa_bindings.size(); ++i)
@@ -764,6 +800,32 @@ struct TensorBatch::Impl {
     }
     commands.bind_compute(owner->attention_blocked_pipeline,
                           owner->attention_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(parameters.rows, parameters.heads);
+  }
+
+  void dispatch_h3_attention(
+      const TensorContext::Impl::AttentionParameters& parameters,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 4>& resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->attention_h3_bindings[i].buffer = &resources[i]->buffer;
+      owner->attention_h3_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->attention_h3_pipeline,
+                          owner->attention_h3_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(parameters.rows, parameters.heads);
+  }
+
+  void dispatch_h3_banded_attention(
+      const TensorContext::Impl::AttentionParameters& parameters,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 5>& resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->attention_h3_banded_bindings[i].buffer = &resources[i]->buffer;
+      owner->attention_h3_banded_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->attention_h3_banded_pipeline,
+                          owner->attention_h3_banded_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(parameters.rows, parameters.heads);
   }
@@ -1422,6 +1484,16 @@ void TensorContext::require_exact_blocked_attention() const {
   if (!impl_->exact_attention) {
     throw std::runtime_error(
         "vulkan attention: exact blocked attention is unavailable on this device/driver");
+  }
+}
+bool TensorContext::exact_h3_attention() const noexcept {
+  return impl_ && impl_->exact_h3_attention;
+}
+void TensorContext::require_exact_h3_attention() const {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->exact_h3_attention) {
+    throw std::runtime_error(
+        "vulkan attention: exact H3 attention is unavailable on this device/driver");
   }
 }
 bool TensorContext::exact_causal_gqa_attention() const noexcept {
@@ -3040,6 +3112,212 @@ void BlockedAttentionPlan::record(
     batch.impl_->transition(out, BufferAccess::kComputeWrite);
     std::array<std::shared_ptr<DeviceTensor::Impl>, 4> resources{q, k, v, out};
     batch.impl_->dispatch_attention(parameters, resources);
+  } catch (...) {
+    batch.impl_->poisoned = true;
+    throw;
+  }
+}
+
+H3AttentionRanges::H3AttentionRanges() = default;
+H3AttentionRanges::~H3AttentionRanges() = default;
+H3AttentionRanges::H3AttentionRanges(H3AttentionRanges&&) noexcept = default;
+H3AttentionRanges& H3AttentionRanges::operator=(H3AttentionRanges&&) noexcept = default;
+H3AttentionRanges::H3AttentionRanges(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+H3AttentionRanges::operator bool() const noexcept { return impl_ != nullptr; }
+
+H3AttentionRanges H3AttentionRanges::create(
+    TensorContext& context, uint32_t sequence, const int32_t* values,
+    uint32_t value_count) {
+  if (!context.impl_) throw std::invalid_argument("vulkan H3 attention: empty context");
+  if (!context.impl_->exact_h3_attention) {
+    throw std::runtime_error(
+        "vulkan H3 attention: exact mode is unavailable on this device/driver");
+  }
+  if (sequence == 0 || !values) {
+    throw std::invalid_argument("vulkan H3 attention: invalid range table");
+  }
+  const uint64_t tiles64 = (static_cast<uint64_t>(sequence) + 127) / 128;
+  const uint64_t count64 = checked_multiply(tiles64, 4, "H3 range table");
+  const uint64_t aligned_end64 =
+      ((static_cast<uint64_t>(sequence) + 63) / 64) * 64;
+  if (tiles64 > std::numeric_limits<uint32_t>::max() ||
+      count64 != value_count ||
+      aligned_end64 > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+    throw std::invalid_argument("vulkan H3 attention: invalid range table size");
+  }
+  const int32_t aligned_end = static_cast<int32_t>(aligned_end64);
+  std::vector<int32_t> canonical(values, values + value_count);
+  for (uint32_t tile = 0; tile < static_cast<uint32_t>(tiles64); ++tile) {
+    int32_t& lo0 = canonical[static_cast<size_t>(tile) * 4];
+    int32_t& hi0 = canonical[static_cast<size_t>(tile) * 4 + 1];
+    int32_t& lo1 = canonical[static_cast<size_t>(tile) * 4 + 2];
+    int32_t& hi1 = canonical[static_cast<size_t>(tile) * 4 + 3];
+    auto valid_endpoint = [&](int32_t endpoint) {
+      return endpoint >= 0 && endpoint <= aligned_end && endpoint % 64 == 0;
+    };
+    if (!valid_endpoint(lo0) || !valid_endpoint(hi0) ||
+        !valid_endpoint(lo1) || !valid_endpoint(hi1) || lo0 >= hi0 ||
+        lo0 >= static_cast<int32_t>(sequence) ||
+        std::min<uint32_t>(static_cast<uint32_t>(hi0), sequence) <=
+            static_cast<uint32_t>(lo0)) {
+      throw std::invalid_argument("vulkan H3 attention: invalid primary range");
+    }
+    if (lo1 == 0 && hi1 == 0) continue;
+    if (lo1 >= hi1 || lo1 < lo0 || lo1 >= static_cast<int32_t>(sequence) ||
+        !valid_endpoint(lo1) || !valid_endpoint(hi1) ||
+        std::min<uint32_t>(static_cast<uint32_t>(hi1), sequence) <=
+            static_cast<uint32_t>(lo1)) {
+      throw std::invalid_argument("vulkan H3 attention: invalid secondary range");
+    }
+    if (lo1 <= hi0) {
+      hi0 = std::max(hi0, hi1);
+      lo1 = 0;
+      hi1 = 0;
+    }
+  }
+  uint64_t hash = 1469598103934665603ull;
+  for (int32_t value : canonical) {
+    uint32_t word = 0;
+    std::memcpy(&word, &value, sizeof(word));
+    for (uint32_t byte = 0; byte < 4; ++byte) {
+      hash ^= (word >> (byte * 8)) & 0xffu;
+      hash *= 1099511628211ull;
+    }
+  }
+  const uint64_t shape[] = {tiles64, 4};
+  DeviceTensor tensor = context.allocate(
+      TensorLayout::contiguous(shape, 2), ScalarType::kInt32);
+  context.upload_bytes(tensor, canonical.data(), count64 * sizeof(int32_t));
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_;
+  result->tensor = std::move(tensor);
+  result->sequence = sequence;
+  result->query_tiles = static_cast<uint32_t>(tiles64);
+  result->content_hash = hash;
+  return H3AttentionRanges(std::move(result));
+}
+
+uint32_t H3AttentionRanges::sequence() const {
+  if (!impl_) throw std::logic_error("vulkan H3 attention: empty range table");
+  return impl_->sequence;
+}
+uint32_t H3AttentionRanges::query_tiles() const {
+  if (!impl_) throw std::logic_error("vulkan H3 attention: empty range table");
+  return impl_->query_tiles;
+}
+uint64_t H3AttentionRanges::content_hash() const {
+  if (!impl_) throw std::logic_error("vulkan H3 attention: empty range table");
+  return impl_->content_hash;
+}
+
+H3AttentionPlan::H3AttentionPlan() = default;
+H3AttentionPlan::~H3AttentionPlan() = default;
+H3AttentionPlan::H3AttentionPlan(H3AttentionPlan&&) noexcept = default;
+H3AttentionPlan& H3AttentionPlan::operator=(H3AttentionPlan&&) noexcept = default;
+H3AttentionPlan::H3AttentionPlan(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+H3AttentionPlan::operator bool() const noexcept { return impl_ != nullptr; }
+
+H3AttentionPlan H3AttentionPlan::create(
+    TensorContext& context, const H3AttentionPlanDesc& desc) {
+  if (!context.impl_) throw std::invalid_argument("vulkan H3 attention: empty context");
+  if (!context.impl_->exact_h3_attention) {
+    throw std::runtime_error(
+        "vulkan H3 attention: exact mode is unavailable on this device/driver");
+  }
+  if (desc.sequence == 0 || desc.heads == 0 ||
+      (desc.head_dim != 64 && desc.head_dim != 128) ||
+      !is_exact_attention_scale(desc.head_dim, desc.scale)) {
+    throw std::invalid_argument("vulkan H3 attention: invalid exact plan");
+  }
+  uint64_t elements = checked_multiply(desc.sequence, desc.heads, "H3 attention");
+  elements = checked_multiply(elements, desc.head_dim, "H3 attention");
+  if (elements > std::numeric_limits<uint32_t>::max() ||
+      desc.sequence > context.impl_->max_dispatch_x ||
+      desc.heads > context.impl_->max_dispatch_y ||
+      checked_multiply(elements, 2, "H3 attention") > context.impl_->max_storage_bytes) {
+    throw std::out_of_range("vulkan H3 attention: plan exceeds device/index limits");
+  }
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_;
+  result->desc = desc;
+  return H3AttentionPlan(std::move(result));
+}
+
+const H3AttentionPlanDesc& H3AttentionPlan::description() const {
+  if (!impl_) throw std::logic_error("vulkan H3 attention: empty plan");
+  return impl_->desc;
+}
+
+void H3AttentionPlan::record(
+    TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
+    DeviceTensor& value, DeviceTensor& output, const H3AttentionRanges* ranges,
+    uint32_t query_row_offset, uint32_t rows,
+    uint32_t output_row_offset) const {
+  if (!impl_ || !batch.impl_ || batch.impl_->poisoned) {
+    throw std::logic_error("vulkan H3 attention: empty plan or batch");
+  }
+  if (batch.impl_->owner != impl_->owner) {
+    throw std::invalid_argument("vulkan H3 attention: plan belongs to another context");
+  }
+  auto q = impl_->owner->require(query);
+  auto k = impl_->owner->require(key);
+  auto v = impl_->owner->require(value);
+  auto out = impl_->owner->require(output);
+  std::shared_ptr<DeviceTensor::Impl> range_tensor;
+  if (ranges) {
+    if (!ranges->impl_ || ranges->impl_->owner != impl_->owner ||
+        ranges->impl_->sequence != impl_->desc.sequence ||
+        ranges->impl_->query_tiles !=
+            (static_cast<uint64_t>(impl_->desc.sequence) + 127) / 128) {
+      throw std::invalid_argument("vulkan H3 attention: incompatible range table");
+    }
+    range_tensor = impl_->owner->require(ranges->impl_->tensor);
+  }
+  const auto& desc = impl_->desc;
+  const uint32_t selected_rows = rows == 0 && query_row_offset <= desc.sequence
+      ? desc.sequence - query_row_offset : rows;
+  auto valid_layout = [&](const std::shared_ptr<DeviceTensor::Impl>& tensor) {
+    return tensor->type == ScalarType::kBFloat16 && tensor->layout.rank == 3 &&
+        tensor->layout.is_contiguous() && tensor->layout.extent[0] == desc.sequence &&
+        tensor->layout.extent[1] == desc.heads &&
+        tensor->layout.extent[2] == desc.head_dim;
+  };
+  const uint64_t query_end = static_cast<uint64_t>(query_row_offset) + selected_rows;
+  const uint64_t output_end = static_cast<uint64_t>(output_row_offset) + selected_rows;
+  if (query_row_offset > desc.sequence || selected_rows == 0 ||
+      query_end > desc.sequence || output_end > desc.sequence ||
+      selected_rows > impl_->owner->max_dispatch_x ||
+      desc.heads > impl_->owner->max_dispatch_y || !valid_layout(q) ||
+      !valid_layout(k) || !valid_layout(v) || !valid_layout(out) ||
+      q.get() == k.get() || q.get() == v.get() || k.get() == v.get() ||
+      out.get() == q.get() || out.get() == k.get() || out.get() == v.get()) {
+    throw std::invalid_argument("vulkan H3 attention: invalid tensor/range/alias");
+  }
+  TensorContext::Impl::AttentionParameters parameters;
+  parameters.sequence = desc.sequence;
+  parameters.heads = desc.heads;
+  parameters.head_dim = desc.head_dim;
+  std::memcpy(&parameters.scale_bits, &desc.scale, sizeof(desc.scale));
+  parameters.query_row_offset = query_row_offset;
+  parameters.output_row_offset = output_row_offset;
+  parameters.rows = selected_rows;
+  try {
+    batch.impl_->count_operator();
+    batch.impl_->transition(q, BufferAccess::kComputeRead);
+    batch.impl_->transition(k, BufferAccess::kComputeRead);
+    batch.impl_->transition(v, BufferAccess::kComputeRead);
+    batch.impl_->transition(out, BufferAccess::kComputeWrite);
+    if (range_tensor) {
+      batch.impl_->transition(range_tensor, BufferAccess::kComputeRead);
+      std::array<std::shared_ptr<DeviceTensor::Impl>, 5> resources{
+          q, k, v, out, range_tensor};
+      batch.impl_->dispatch_h3_banded_attention(parameters, resources);
+    } else {
+      std::array<std::shared_ptr<DeviceTensor::Impl>, 4> resources{q, k, v, out};
+      batch.impl_->dispatch_h3_attention(parameters, resources);
+    }
   } catch (...) {
     batch.impl_->poisoned = true;
     throw;

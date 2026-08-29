@@ -37,6 +37,19 @@ void launch_deterministic_blocked_attention(
     uint32_t head_dim, float scale, uint32_t query_row_offset = 0,
     uint32_t rows = 0, uint32_t output_row_offset = 0);
 
+// Exact-mode H3 reference paired with Vulkan H3AttentionPlan. Q/K/V and output
+// are token-major BF16 [sequence,heads,head_dim], D is 64 or 128. A non-null
+// device range table has four canonical int32 endpoints per global 128-row
+// query tile and is traversed in ordered 64-key blocks. This fixed scalar
+// contract intentionally does not claim byte identity with CUDA fused MMA.
+void launch_deterministic_h3_attention(
+    cudaStream_t stream, const __nv_bfloat16* query,
+    const __nv_bfloat16* key, const __nv_bfloat16* value,
+    __nv_bfloat16* output, const int32_t* ranges, uint32_t sequence,
+    uint32_t heads, uint32_t head_dim, float scale,
+    uint32_t query_row_offset = 0, uint32_t rows = 0,
+    uint32_t output_row_offset = 0);
+
 // Exact causal grouped-query reference paired with Vulkan's dedicated Qwen
 // text plan. Q is [sequence,query_heads,128], K/V are
 // [sequence,kv_heads,128], and query head h reads kv h/(H/Hkv). Every global
