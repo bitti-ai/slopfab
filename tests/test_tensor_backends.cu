@@ -68,6 +68,7 @@
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/text_layer.h"
 #include "vidfab/vulkan/text_encoder.h"
+#include "vidfab/vulkan/vision_stage.h"
 #include "vidfab/vulkan/vae_vit_block.h"
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
@@ -3221,6 +3222,193 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_layout) {
   catch (const std::invalid_argument&) { short_rejected = true; }
   CHECK(short_rejected);
   CHECK(short_batch.remaining_operator_capacity() == 2);
+}
+
+VIDFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path checkpoint_path =
+      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+      "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
+  int cuda_devices = 0;
+  if (!std::filesystem::exists(checkpoint_path) ||
+      cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
+      !Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
+      !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions device_options;
+  device_options.enable_timeline_semaphore = true;
+  device_options.enable_shader_int64 = true;
+  device_options.enable_shader_float16 = true;
+  device_options.enable_storage_buffer_16bit = true;
+  device_options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(device_options);
+
+  SafeTensors archive;
+  archive.open(checkpoint_path.string());
+  const text::QwenVisionCheckpoint vision =
+      text::load_qwen3vl_vision_checkpoint(archive);
+  constexpr uint32_t rows = 64, hidden = 1152, head_dim = 72;
+  constexpr uint32_t intermediate = 4304;
+  const std::string p = vision.prefix + "blocks.0.";
+  auto upload_cuda = [&](const std::string& suffix) {
+    const TensorView& view = archive.at(p + suffix);
+    cuda::DeviceBuffer<uint16_t> result(view.nbytes / 2);
+    result.copy_from_host(static_cast<const uint16_t*>(view.data), view.nbytes / 2);
+    return result;
+  };
+  cuda::DeviceBuffer<uint16_t> n1w = upload_cuda("norm1.weight"),
+      n1b = upload_cuda("norm1.bias"), n2w = upload_cuda("norm2.weight"),
+      n2b = upload_cuda("norm2.bias"), qw = upload_cuda("attn.qkv.weight"),
+      qb = upload_cuda("attn.qkv.bias"), ow = upload_cuda("attn.proj.weight"),
+      ob = upload_cuda("attn.proj.bias"), f1w = upload_cuda("mlp.linear_fc1.weight"),
+      f1b = upload_cuda("mlp.linear_fc1.bias"),
+      f2w = upload_cuda("mlp.linear_fc2.weight"),
+      f2b = upload_cuda("mlp.linear_fc2.bias");
+  auto dense = [](cuda::DeviceBuffer<uint16_t>& weight,
+                  cuda::DeviceBuffer<uint16_t>& bias, int out, int in) {
+    cuda::QuantWeight result;
+    result.format = cuda::QuantFormat::kBF16;
+    result.data = weight.get(); result.bias = bias.get();
+    result.bias_format = cuda::QuantFormat::kBF16;
+    result.out_features = out; result.in_features = in;
+    return result;
+  };
+  cuda::QwenVisionBlockWeights cuda_weights;
+  cuda_weights.norm1_weight = reinterpret_cast<__nv_bfloat16*>(n1w.get());
+  cuda_weights.norm1_bias = reinterpret_cast<__nv_bfloat16*>(n1b.get());
+  cuda_weights.norm2_weight = reinterpret_cast<__nv_bfloat16*>(n2w.get());
+  cuda_weights.norm2_bias = reinterpret_cast<__nv_bfloat16*>(n2b.get());
+  cuda_weights.qkv = dense(qw, qb, 3 * hidden, hidden);
+  cuda_weights.attention_out = dense(ow, ob, hidden, hidden);
+  cuda_weights.mlp_fc1 = dense(f1w, f1b, intermediate, hidden);
+  cuda_weights.mlp_fc2 = dense(f2w, f2b, hidden, intermediate);
+
+  std::vector<uint16_t> input(size_t(rows) * hidden);
+  for (size_t i = 0; i < input.size(); ++i)
+    input[i] = f32_to_bf16(float(int(i * 29 % 257) - 128) / 128.0f);
+  const text::QwenVisionPositions positions =
+      text::qwen3vl_vision_positions({1, 8, 8});
+  std::vector<float> cosine, sine;
+  text::qwen3vl_vision_rope_tables(positions, cosine, sine);
+  cuda::DeviceBuffer<uint16_t> cx(input.size()), cn(size_t(rows) * hidden),
+      cqkv(size_t(rows) * 3 * hidden), cq(size_t(rows) * hidden),
+      ck(size_t(rows) * hidden), cv(size_t(rows) * hidden),
+      cbranch(size_t(rows) * hidden), cmlp(size_t(rows) * intermediate);
+  cuda::DeviceBuffer<float> cc(cosine.size()), cs(sine.size());
+  cx.copy_from_host(input.data(), input.size());
+  cc.copy_from_host(cosine.data(), cosine.size());
+  cs.copy_from_host(sine.data(), sine.size());
+  cuda::QwenVisionBlockScratch cuda_scratch{
+      reinterpret_cast<__nv_bfloat16*>(cn.get()),
+      reinterpret_cast<__nv_bfloat16*>(cqkv.get()),
+      reinterpret_cast<__nv_bfloat16*>(cq.get()),
+      reinterpret_cast<__nv_bfloat16*>(ck.get()),
+      reinterpret_cast<__nv_bfloat16*>(cv.get()),
+      reinterpret_cast<__nv_bfloat16*>(cbranch.get()),
+      reinterpret_cast<__nv_bfloat16*>(cmlp.get())};
+  const auto cuda_begin = std::chrono::steady_clock::now();
+  cuda::qwen_vision_block_forward_exact(
+      nullptr, cuda_weights, cc.get(), cs.get(),
+      reinterpret_cast<__nv_bfloat16*>(cx.get()), rows, cuda_scratch);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const double cuda_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_begin).count();
+  std::vector<uint16_t> expected(input.size());
+  cx.copy_to_host(expected.data(), expected.size());
+
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 20;
+  TensorContext vk(device, context_options);
+  QwenVisionStageConfig config;
+  config.sequence = rows;
+  ExactQwenVisionScratch scratch = ExactQwenVisionScratch::create(vk, config);
+  ExactQwenVisionBlockStage stage = ExactQwenVisionBlockStage::create(vk, config);
+  auto mat = [](uint64_t a, uint64_t b) {
+    const uint64_t shape[] = {a, b}; return TensorLayout::contiguous(shape, 2);
+  };
+  DeviceTensor residual = vk.allocate(mat(rows, hidden), ScalarType::kBFloat16);
+  DeviceTensor vc = vk.allocate(mat(rows, head_dim), ScalarType::kFloat32);
+  DeviceTensor vs = vk.allocate(mat(rows, head_dim), ScalarType::kFloat32);
+  vk.upload_bytes(residual, input.data(), input.size() * 2);
+  vk.upload(vc, cosine.data(), cosine.size()); vk.upload(vs, sine.data(), sine.size());
+  const uint64_t unloaded_used = vk.pooled_used_bytes();
+  stage.load(vision, 0);
+  CHECK(stage.loaded() && stage.block() == 0);
+  CHECK(stage.required_operators() == 16);
+  CHECK(stage.persistent_bytes() < 32ull * 1024 * 1024);
+
+  // One-short preflight leaves the same batch usable and does not touch the
+  // residual. Five harmless preceding copies reduce cap20 to cap15.
+  const uint64_t scalar_shape[] = {1};
+  DeviceTensor dummy_a = vk.allocate(
+      TensorLayout::contiguous(scalar_shape, 1), ScalarType::kBFloat16);
+  DeviceTensor dummy_b = vk.allocate(
+      TensorLayout::contiguous(scalar_shape, 1), ScalarType::kBFloat16);
+  vk.upload_bytes(residual, input.data(), input.size() * 2);
+  TensorBatch short_batch = vk.begin_batch();
+  short_batch.copy(dummy_a, dummy_b); short_batch.copy(dummy_b, dummy_a);
+  short_batch.copy(dummy_a, dummy_b); short_batch.copy(dummy_b, dummy_a);
+  short_batch.copy(dummy_a, dummy_b);
+  CHECK(short_batch.remaining_operator_capacity() == 15);
+  bool short_rejected = false;
+  try { stage.record(short_batch, residual, vc, vs, scratch); }
+  catch (const std::logic_error&) { short_rejected = true; }
+  CHECK(short_rejected && short_batch.remaining_operator_capacity() == 15);
+  short_batch.submit().wait();
+  std::vector<uint16_t> unchanged(input.size());
+  vk.download_bytes(residual, unchanged.data(), unchanged.size() * 2);
+  CHECK(unchanged == input);
+
+  const auto vk_begin = std::chrono::steady_clock::now();
+  TensorBatch batch = vk.begin_batch();
+  {
+    test::HostAllocationGuard no_host_allocations;
+    stage.record(batch, residual, vc, vs, scratch);
+  }
+  CHECK(batch.remaining_operator_capacity() == 4);
+  batch.submit().wait();
+  const double vk_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vk_begin).count();
+  std::vector<uint16_t> actual(input.size());
+  vk.download_bytes(residual, actual.data(), actual.size() * 2);
+  CHECK(std::memcmp(expected.data(), actual.data(), actual.size() * 2) == 0);
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  const uint64_t stable_used = vk.pooled_used_bytes();
+  const uint64_t stable_reserved = vk.reserved_bytes();
+  const uint64_t stable_persistent = stage.persistent_bytes();
+  text::QwenVisionCheckpoint invalid = vision;
+  invalid.prefix = "missing.visual.";
+  bool reload_rejected = false;
+  try { stage.load(invalid, 26); }
+  catch (const std::exception&) { reload_rejected = true; }
+  CHECK(reload_rejected);
+  CHECK(stage.loaded() && stage.block() == 0 &&
+        stage.persistent_bytes() == stable_persistent);
+  CHECK(vk.pooled_used_bytes() == stable_used &&
+        vk.reserved_bytes() == stable_reserved &&
+        vk.descriptor_set_allocations() == stable_descriptors);
+  vk.upload_bytes(residual, input.data(), input.size() * 2);
+  TensorBatch repeat = vk.begin_batch();
+  stage.record(repeat, residual, vc, vs, scratch);
+  repeat.submit().wait();
+  vk.download_bytes(residual, actual.data(), actual.size() * 2);
+  CHECK(actual == expected);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  dummy_a = DeviceTensor(); dummy_b = DeviceTensor();
+  vk.collect();
+  stage.unload();
+  vk.collect();
+  CHECK(!stage.loaded() && stage.persistent_bytes() == 0);
+  CHECK(vk.pooled_used_bytes() == unloaded_used);
+  std::printf("qwen vision real block0 S64 CUDA %.3f ms Vulkan %.3f ms "
+              "scratch %llu bytes\n", cuda_ms, vk_ms,
+              static_cast<unsigned long long>(scratch.reserved_bytes()));
 }
 
 VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {

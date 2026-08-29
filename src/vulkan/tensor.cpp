@@ -3104,8 +3104,13 @@ void TensorBatch::vision_split_qkv_bf16(DeviceTensor& fused,
   const uint64_t count = checked_multiply(rows, dim, "vision QKV split");
   const uint64_t packed = count == 0 ? 0 : 1 + (count - 1) / 2;
   const auto output_valid = [&](const std::shared_ptr<DeviceTensor::Impl>& out) {
-    return out->layout.rank == 2 && out->layout.extent[0] == rows &&
-        out->layout.extent[1] == dim && out->type == ScalarType::kBFloat16 &&
+    const bool flat = out->layout.rank == 2 &&
+        out->layout.extent[0] == rows && out->layout.extent[1] == dim;
+    const bool headed = out->layout.rank == 3 &&
+        out->layout.extent[0] == rows && out->layout.extent[1] != 0 &&
+        out->layout.extent[2] == dim / out->layout.extent[1] &&
+        dim % out->layout.extent[1] == 0;
+    return (flat || headed) && out->type == ScalarType::kBFloat16 &&
         out->layout.is_contiguous();
   };
   if (src.get() == q.get() || src.get() == k.get() || src.get() == v.get() ||

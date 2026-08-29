@@ -2,10 +2,14 @@
 
 #include <stdexcept>
 
+#include "vidfab/attention.h"
 #include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/deterministic_math.cuh"
+#include "vidfab/cuda/deterministic_attention.cuh"
+#include "vidfab/cuda/deterministic_gemm.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/nn_kernels.cuh"
+#include "vidfab/text/encoder.h"
 
 namespace vidfab::cuda {
 namespace {
@@ -153,6 +157,60 @@ void qwen_vision_block_forward(cublasHandle_t handle, cudaStream_t stream,
   launch_gelu_tanh(s.mlp, static_cast<size_t>(rows) * intermediate, stream);
   linear.forward(w.mlp_fc2, s.mlp, rows, s.normed, ws);
   launch_add_bf16(x, s.normed, static_cast<size_t>(rows) * hidden, stream);
+}
+
+void qwen_vision_block_forward_exact(
+    cudaStream_t stream, const QwenVisionBlockWeights& w,
+    const float* cos, const float* sin, __nv_bfloat16* x, int rows,
+    QwenVisionBlockScratch s, float eps) {
+  constexpr uint32_t hidden = 1152, heads = 16, head_dim = 72;
+  constexpr uint32_t intermediate = 4304;
+  if (rows <= 0 || !x || !cos || !sin || !s.normed || !s.qkv || !s.q ||
+      !s.k || !s.v || !s.branch || !s.mlp ||
+      w.qkv.format != QuantFormat::kBF16 ||
+      w.attention_out.format != QuantFormat::kBF16 ||
+      w.mlp_fc1.format != QuantFormat::kBF16 ||
+      w.mlp_fc2.format != QuantFormat::kBF16) {
+    throw std::invalid_argument("qwen vision exact block: invalid input");
+  }
+  auto projection = [&](const QuantWeight& weight,
+                        const __nv_bfloat16* input,
+                        __nv_bfloat16* output) {
+    const uint32_t count = static_cast<uint32_t>(rows);
+    const uint32_t tiled = count / 64u * 64u;
+    if (tiled != 0) {
+      launch_deterministic_bf16_gemm_nt(
+          input, static_cast<const __nv_bfloat16*>(weight.data), weight.bias,
+          output, tiled, weight.out_features, weight.in_features,
+          DenseGemmBias::kBFloat16, 0, 0, stream);
+    }
+    if (tiled != count) {
+      launch_deterministic_scalar_gemm_nt(
+          input, weight.data, weight.bias, output, count - tiled,
+          weight.out_features, weight.in_features, DenseGemmMode::kBFloat16,
+          DenseGemmBias::kBFloat16, tiled, tiled, stream);
+    }
+  };
+  launch_layernorm_affine(x, w.norm1_weight, w.norm1_bias, s.normed, rows,
+                          hidden, eps, stream);
+  projection(w.qkv, s.normed, s.qkv);
+  qwen_vision_split_qkv_exact(s.qkv, s.q, s.k, s.v, rows, hidden, stream);
+  launch_rope_neox(s.q, cos, sin, rows, heads, head_dim, stream);
+  launch_rope_neox(s.k, cos, sin, rows, heads, head_dim, stream);
+  launch_deterministic_blocked_attention(
+      stream, s.q, s.k, s.v, s.branch, static_cast<uint32_t>(rows), heads,
+      head_dim, exact_attention_scale(head_dim));
+  projection(w.attention_out, s.branch, s.normed);
+  text::launch_residual_add_exact(x, s.normed,
+                                  static_cast<size_t>(rows) * hidden, stream);
+  launch_layernorm_affine(x, w.norm2_weight, w.norm2_bias, s.normed, rows,
+                          hidden, eps, stream);
+  projection(w.mlp_fc1, s.normed, s.mlp);
+  launch_gelu_tanh_exact(s.mlp, static_cast<size_t>(rows) * intermediate,
+                         stream);
+  projection(w.mlp_fc2, s.mlp, s.normed);
+  text::launch_residual_add_exact(x, s.normed,
+                                  static_cast<size_t>(rows) * hidden, stream);
 }
 
 void qwen_vision_patch_embed(LinearRunner& linear, const QuantWeight& projection,

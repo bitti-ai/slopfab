@@ -786,6 +786,7 @@ if(VIDFAB_ENABLE_VULKAN)
     src/vulkan/tensor.cpp
     src/vulkan/text_layer.cpp
     src/vulkan/text_encoder.cpp
+    src/vulkan/vision_stage.cpp
     src/vulkan/dit_block.cpp
     src/vulkan/dit_denoise.cpp
     src/vulkan/dit_graph.cpp

@@ -64,6 +64,14 @@ void qwen_vision_block_forward(cublasHandle_t handle, cudaStream_t stream,
                                int rows, QwenVisionBlockScratch scratch, Workspace& ws,
                                float layernorm_eps = 1e-6f);
 
+// Canonical exact-mode authority paired with ExactQwenVisionBlockStage. It
+// uses deterministic dense GEMM/blocked attention/GELU/residual arithmetic;
+// the existing shipped cuBLAS/native-tanh path above remains the default.
+void qwen_vision_block_forward_exact(
+    cudaStream_t stream, const QwenVisionBlockWeights& weights,
+    const float* cos, const float* sin, __nv_bfloat16* x, int rows,
+    QwenVisionBlockScratch scratch, float layernorm_eps = 1e-6f);
+
 void qwen_vision_patch_embed(LinearRunner& linear, const QuantWeight& projection,
                              const __nv_bfloat16* pixel_rows,
                              const __nv_bfloat16* position_table,
