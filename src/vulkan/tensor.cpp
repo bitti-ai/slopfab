@@ -116,6 +116,16 @@ struct PreparedF16Activation::Impl {
   uint64_t generation = 0;
 };
 
+struct StreamedNVFP4WeightCache::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  DeviceTensor dense;
+  uint64_t capacity_elements = 0;
+  uint64_t generation = 0;
+  uintptr_t batch_id = 0;
+  uint32_t out_features = 0;
+  uint32_t in_features = 0;
+};
+
 struct TensorWorkspace::Impl {
   BufferPool pool;
   Buffer buffer;
@@ -1276,6 +1286,17 @@ void TensorContext::require_exact_fp32_vae_normalization() const {
   require_exact_normalization();
 }
 
+bool TensorContext::native_nvfp4_gemm_available() const noexcept {
+  return false;
+}
+void TensorContext::require_native_nvfp4_gemm() const {
+  if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
+  throw std::runtime_error(
+      "vulkan tensor: native NVFP4 GEMM is unavailable; this device/runtime "
+      "does not expose an implemented E2M1 block-scaled cooperative-matrix "
+      "contract (use streamed NVFP4-to-BF16 execution)");
+}
+
 TensorWorkspace& TensorContext::workspace() {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
   [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
@@ -2255,6 +2276,135 @@ uint32_t PreparedF16ActivationView::rows() const noexcept {
 }
 PreparedF16ActivationView::operator bool() const noexcept { return slot_ != nullptr; }
 
+StreamedNVFP4WeightCache::StreamedNVFP4WeightCache() = default;
+StreamedNVFP4WeightCache::~StreamedNVFP4WeightCache() = default;
+StreamedNVFP4WeightCache::StreamedNVFP4WeightCache(
+    std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+StreamedNVFP4WeightCache::StreamedNVFP4WeightCache(
+    StreamedNVFP4WeightCache&&) noexcept = default;
+StreamedNVFP4WeightCache& StreamedNVFP4WeightCache::operator=(
+    StreamedNVFP4WeightCache&&) noexcept = default;
+StreamedNVFP4WeightCache::operator bool() const noexcept {
+  return impl_ != nullptr;
+}
+
+StreamedNVFP4WeightCache StreamedNVFP4WeightCache::create(
+    TensorContext& context, uint64_t max_weight_elements) {
+  if (!context.impl_) {
+    throw std::logic_error("vulkan nvfp4 stream: moved-from tensor context");
+  }
+  if (max_weight_elements == 0 ||
+      max_weight_elements > std::numeric_limits<uint64_t>::max() / 2) {
+    throw std::invalid_argument(
+        "vulkan nvfp4 stream: cache capacity is invalid");
+  }
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_;
+  result->capacity_elements = max_weight_elements;
+  const uint64_t shape[] = {max_weight_elements};
+  result->dense = context.allocate(
+      TensorLayout::contiguous(shape, 1), ScalarType::kBFloat16);
+  return StreamedNVFP4WeightCache(std::move(result));
+}
+
+PreparedNVFP4WeightView StreamedNVFP4WeightCache::prepare(
+    TensorBatch& batch, const LinearWeight& weight,
+    const DenseGemmPlan& plan) {
+  if (!impl_) throw std::logic_error("vulkan nvfp4 stream: empty cache");
+  if (!batch.impl_) throw std::logic_error("vulkan nvfp4 stream: empty batch");
+  if (!weight.impl_) throw std::logic_error("vulkan nvfp4 stream: empty weight");
+  if (!plan.impl_) throw std::logic_error("vulkan nvfp4 stream: empty GEMM plan");
+  if (batch.impl_->poisoned) {
+    throw std::logic_error("vulkan nvfp4 stream: batch is poisoned");
+  }
+  if (batch.impl_->owner.get() != impl_->owner.get() ||
+      plan.impl_->owner.get() != impl_->owner.get()) {
+    throw std::invalid_argument(
+        "vulkan nvfp4 stream: cache, batch and plan contexts differ");
+  }
+  const DenseGemmPlanDesc& desc = plan.impl_->desc;
+  const uint64_t elements = checked_multiply(
+      weight.impl_->out_features, weight.impl_->in_features,
+      "nvfp4 streamed weight");
+  if (weight.impl_->format != LinearWeightFormat::kNVFloat4 ||
+      desc.mode != DenseGemmMode::kBFloat16 ||
+      desc.out_features != weight.impl_->out_features ||
+      desc.in_features != weight.impl_->in_features ||
+      elements > impl_->capacity_elements) {
+    throw std::invalid_argument(
+        "vulkan nvfp4 stream: weight does not match the BF16 plan/cache");
+  }
+  if (batch.impl_->operator_count == TensorContext::Impl::kMaxBatchOperators) {
+    throw std::logic_error("vulkan tensor: batch operator limit exceeded");
+  }
+  if (impl_->generation == std::numeric_limits<uint64_t>::max()) {
+    throw std::overflow_error("vulkan nvfp4 stream: generation exhausted");
+  }
+  auto dense = impl_->owner->require(impl_->dense);
+  const uint64_t shape[] = {weight.impl_->out_features,
+                            weight.impl_->in_features};
+  const TensorLayout layout = TensorLayout::contiguous(shape, 2);
+  const uint64_t logical_bytes = checked_multiply(
+      elements, 2, "nvfp4 streamed BF16 bytes");
+  if (logical_bytes > dense->buffer.size()) {
+    throw std::out_of_range(
+        "vulkan nvfp4 stream: weight exceeds the cache allocation");
+  }
+  PreparedNVFP4WeightView view(
+      impl_, batch.impl_->batch_id, impl_->generation + 1,
+      weight.impl_->out_features, weight.impl_->in_features,
+      static_cast<bool>(weight.impl_->pre_quant_scale),
+      weight.impl_->convrot, weight.impl_->full_precision_matrix_mult);
+  dense->layout = layout;
+  dense->logical_bytes = logical_bytes;
+  weight.materialize_bf16(batch, impl_->dense);
+  impl_->batch_id = batch.impl_->batch_id;
+  impl_->out_features = weight.impl_->out_features;
+  impl_->in_features = weight.impl_->in_features;
+  ++impl_->generation;
+  return view;
+}
+
+uint64_t StreamedNVFP4WeightCache::capacity_elements() const noexcept {
+  return impl_ ? impl_->capacity_elements : 0;
+}
+uint64_t StreamedNVFP4WeightCache::dense_bytes() const noexcept {
+  return impl_ ? impl_->capacity_elements * 2 : 0;
+}
+
+PreparedNVFP4WeightView::PreparedNVFP4WeightView() = default;
+PreparedNVFP4WeightView::~PreparedNVFP4WeightView() = default;
+PreparedNVFP4WeightView::PreparedNVFP4WeightView(
+    std::shared_ptr<void> cache, uintptr_t batch_id, uint64_t generation,
+    uint32_t out_features, uint32_t in_features, bool pre_quant_scale,
+    bool convrot, bool full_precision) noexcept
+    : cache_(std::move(cache)), batch_id_(batch_id), generation_(generation),
+      out_features_(out_features), in_features_(in_features),
+      pre_quant_scale_(pre_quant_scale), convrot_(convrot),
+      full_precision_(full_precision) {}
+PreparedNVFP4WeightView::PreparedNVFP4WeightView(
+    PreparedNVFP4WeightView&&) noexcept = default;
+PreparedNVFP4WeightView& PreparedNVFP4WeightView::operator=(
+    PreparedNVFP4WeightView&&) noexcept = default;
+uint32_t PreparedNVFP4WeightView::out_features() const noexcept {
+  return cache_ ? out_features_ : 0;
+}
+uint32_t PreparedNVFP4WeightView::in_features() const noexcept {
+  return cache_ ? in_features_ : 0;
+}
+bool PreparedNVFP4WeightView::requires_pre_quant_scale() const noexcept {
+  return cache_ && pre_quant_scale_;
+}
+bool PreparedNVFP4WeightView::requires_convrot() const noexcept {
+  return cache_ && convrot_;
+}
+bool PreparedNVFP4WeightView::full_precision_matrix_mult() const noexcept {
+  return cache_ && full_precision_;
+}
+PreparedNVFP4WeightView::operator bool() const noexcept {
+  return cache_ != nullptr;
+}
+
 DenseGemmPlan::DenseGemmPlan() = default;
 DenseGemmPlan::~DenseGemmPlan() = default;
 DenseGemmPlan::DenseGemmPlan(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -2353,6 +2503,43 @@ void DenseGemmPlan::record(TensorBatch& batch, PreparedF16ActivationView& input,
   }
   record_impl(batch, slot->tensor, prepared_weight, output,
               input.rows_, 0, output_row_offset, bias, true);
+}
+
+void DenseGemmPlan::record(
+    TensorBatch& batch, DeviceTensor& input,
+    PreparedNVFP4WeightView& prepared_weight, DeviceTensor& output,
+    uint32_t rows, uint32_t input_row_offset, uint32_t output_row_offset,
+    DeviceTensor* bias, bool pre_quant_scale_applied,
+    bool convrot_applied) const {
+  if (!impl_) throw std::logic_error("vulkan gemm: empty plan");
+  if (!prepared_weight.cache_) {
+    throw std::logic_error("vulkan gemm: empty streamed NVFP4 view");
+  }
+  if (!batch.impl_ || prepared_weight.batch_id_ != batch.impl_->batch_id) {
+    throw std::invalid_argument(
+        "vulkan gemm: streamed NVFP4 view belongs to another batch");
+  }
+  auto cache = std::static_pointer_cast<StreamedNVFP4WeightCache::Impl>(
+      prepared_weight.cache_);
+  if (prepared_weight.generation_ != cache->generation ||
+      prepared_weight.batch_id_ != cache->batch_id) {
+    throw std::invalid_argument(
+        "vulkan gemm: streamed NVFP4 view was superseded");
+  }
+  if (cache->owner.get() != impl_->owner.get() ||
+      impl_->desc.mode != DenseGemmMode::kBFloat16 ||
+      prepared_weight.out_features_ != impl_->desc.out_features ||
+      prepared_weight.in_features_ != impl_->desc.in_features) {
+    throw std::invalid_argument(
+        "vulkan gemm: streamed NVFP4 view does not match the plan");
+  }
+  if (prepared_weight.pre_quant_scale_ != pre_quant_scale_applied ||
+      prepared_weight.convrot_ != convrot_applied) {
+    throw std::invalid_argument(
+        "vulkan gemm: activation transform state does not match the weight");
+  }
+  record_impl(batch, input, cache->dense, output, rows, input_row_offset,
+              output_row_offset, bias, false);
 }
 
 void DenseGemmPlan::record_impl(

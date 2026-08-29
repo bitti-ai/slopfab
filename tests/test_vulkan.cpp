@@ -215,6 +215,100 @@ VIDFAB_TEST(vulkan_linear_weight_cpu_reference) {
   run("nf4", nf_upload, nf_expected);
 }
 
+VIDFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_cooperative_matrix = physical.front().info().cooperative_matrix;
+  options.enable_storage_buffer_16bit = options.enable_cooperative_matrix;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  CHECK(!context.native_nvfp4_gemm_available());
+  bool native_threw = false;
+  try { context.require_native_nvfp4_gemm(); }
+  catch (const std::runtime_error&) { native_threw = true; }
+  CHECK(native_threw);
+
+  constexpr uint32_t rows = 6, n = 128, k = 64;
+  const size_t weight_elements = static_cast<size_t>(n) * k;
+  std::vector<uint8_t> positive(weight_elements / 2, 0x22);
+  std::vector<uint8_t> negative(weight_elements / 2, 0xaa);
+  std::vector<uint8_t> scales(weight_elements / 16, 0x38);
+  LinearWeightUpload upload;
+  upload.format = LinearWeightFormat::kNVFloat4;
+  upload.out_features = n;
+  upload.in_features = k;
+  upload.data_bytes = positive.size();
+  upload.block_scale = scales.data();
+  upload.block_scale_count = scales.size();
+  upload.global_scale = 1.0f;
+  upload.data = positive.data();
+  LinearWeight w_positive = LinearWeight::upload(context, upload);
+  upload.data = negative.data();
+  LinearWeight w_negative = LinearWeight::upload(context, upload);
+
+  const uint64_t input_shape[] = {rows, k};
+  const uint64_t output_shape[] = {rows, n};
+  DeviceTensor input = context.allocate(
+      TensorLayout::contiguous(input_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor output = context.allocate(
+      TensorLayout::contiguous(output_shape, 2), ScalarType::kBFloat16);
+  std::vector<uint16_t> input_bits(static_cast<size_t>(rows) * k,
+                                   reference_bf16(1.0f));
+  std::vector<uint16_t> sentinel(static_cast<size_t>(rows) * n, 0x7fc1);
+  context.upload_bytes(input, input_bits.data(), input_bits.size() * 2);
+  context.upload_bytes(output, sentinel.data(), sentinel.size() * 2);
+  DenseGemmPlan plan = DenseGemmPlan::create(
+      context, {rows, n, k, DenseGemmMode::kBFloat16,
+                DenseGemmBias::kNone});
+  StreamedNVFP4WeightCache cache =
+      StreamedNVFP4WeightCache::create(context, weight_elements);
+  CHECK(cache.capacity_elements() == weight_elements);
+  CHECK(cache.dense_bytes() == weight_elements * 2);
+
+  TensorBatch first = context.begin_batch();
+  PreparedNVFP4WeightView p = cache.prepare(first, w_positive, plan);
+  plan.record(first, input, p, output, 2, 0, 0);
+  plan.record(first, input, p, output, 2, 2, 2);
+  PreparedNVFP4WeightView m = cache.prepare(first, w_negative, plan);
+  bool stale_threw = false;
+  try { plan.record(first, input, p, output, 1, 0, 0); }
+  catch (const std::invalid_argument&) { stale_threw = true; }
+  CHECK(stale_threw);
+  plan.record(first, input, m, output, 2, 4, 4);
+  Submission first_token = first.submit();
+
+  // Overwrite the same cache in a second queued submission. The queue-ordered
+  // R->W barrier protects the first job without a CPU/device-wide wait.
+  DeviceTensor second_output = context.allocate(
+      TensorLayout::contiguous(output_shape, 2), ScalarType::kBFloat16);
+  context.upload_bytes(second_output, sentinel.data(), sentinel.size() * 2);
+  TensorBatch second = context.begin_batch();
+  PreparedNVFP4WeightView again = cache.prepare(second, w_positive, plan);
+  plan.record(second, input, again, second_output, rows);
+  Submission second_token = second.submit();
+  first_token.wait();
+  second_token.wait();
+
+  std::vector<uint16_t> got(sentinel.size()), got_second(sentinel.size());
+  context.download_bytes(output, got.data(), got.size() * 2);
+  context.download_bytes(second_output, got_second.data(), got_second.size() * 2);
+  const uint16_t plus = reference_bf16(64.0f);
+  const uint16_t minus = reference_bf16(-64.0f);
+  for (uint32_t row = 0; row < rows; ++row) {
+    for (uint32_t col = 0; col < n; ++col) {
+      CHECK(got[static_cast<size_t>(row) * n + col] ==
+            (row < 4 ? plus : minus));
+      CHECK(got_second[static_cast<size_t>(row) * n + col] == plus);
+    }
+  }
+}
+
 VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
   using namespace vidfab;
   using namespace vidfab::vulkan;

@@ -56,6 +56,7 @@ class LinearWeight {
   explicit LinearWeight(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
   friend class TensorBatch;
+  friend class StreamedNVFP4WeightCache;
 };
 
 }  // namespace vidfab::vulkan
