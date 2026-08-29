@@ -19,6 +19,13 @@ struct ExactH3TransformerConfig {
   uint32_t video_dim = 96;
   uint32_t audio_dim = 32;
   uint32_t refiner_layers = 2;
+  // Total projected modality rows may include fixed Ref2VA anchors. Final
+  // heads emit only the generated contiguous suffix at these packed offsets.
+  // Zero output rows preserves the text-to-video/audio all-row contract.
+  uint32_t video_output_rows = 0;
+  uint32_t audio_output_rows = 0;
+  uint32_t video_output_start = 0;
+  uint32_t audio_output_start = 0;
 };
 
 struct H3TransformerTextReplayTaps {
@@ -76,7 +83,9 @@ class ExactH3Transformer {
                       DeviceTensor& video_velocity,
                       DeviceTensor& audio_velocity,
                       const H3AttentionRanges* ranges = nullptr,
-                      const H3TransformerForwardReplayTaps* taps = nullptr);
+                      const H3TransformerForwardReplayTaps* taps = nullptr,
+                      DeviceTensor* video_row_indices = nullptr,
+                      DeviceTensor* audio_row_indices = nullptr);
   uint32_t required_forward_operators(
       const H3TransformerForwardReplayTaps* taps = nullptr) const;
 

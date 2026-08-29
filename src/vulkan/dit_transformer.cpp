@@ -56,6 +56,12 @@ void require_plain_weight(const SafeTensors& st, const std::string& name) {
 void validate_config(const ExactH3TransformerConfig& c) {
   const H3BlockConfig& b = c.main.block;
   const uint64_t packed = uint64_t(c.text_rows) + c.video_rows + c.audio_rows;
+  const uint32_t video_output = c.video_output_rows ? c.video_output_rows : c.video_rows;
+  const uint32_t audio_output = c.audio_output_rows ? c.audio_output_rows : c.audio_rows;
+  const uint32_t video_start = c.video_output_rows ? c.video_output_start
+      : c.text_rows + c.audio_rows;
+  const uint32_t audio_start = c.audio_output_rows ? c.audio_output_start
+      : c.text_rows;
   if (c.main.layers == 0 || c.main.layers > 50 ||
       c.refiner_layers == 0 || c.refiner_layers > 2 || c.text_rows == 0 ||
       c.video_rows == 0 || c.audio_rows == 0 || packed != b.sequence ||
@@ -63,7 +69,11 @@ void validate_config(const ExactH3TransformerConfig& c) {
       b.hidden == 0 || b.heads == 0 || b.head_dim != 128 ||
       uint64_t(b.heads) * b.head_dim > UINT32_MAX || b.ffn == 0 ||
       b.adaln_rank == 0 || b.modalities != 3 ||
-      b.timesteps == 0 || !std::isnormal(b.epsilon) || b.epsilon <= 0.0f)
+      b.timesteps == 0 || video_output == 0 || audio_output == 0 ||
+      video_output > c.video_rows || audio_output > c.audio_rows ||
+      video_start > b.sequence || video_output > b.sequence - video_start ||
+      audio_start > b.sequence || audio_output > b.sequence - audio_start ||
+      !std::isnormal(b.epsilon) || b.epsilon <= 0.0f)
     throw std::invalid_argument("Vulkan H3 transformer: invalid exact configuration");
 }
 void validate_endpoint_archive(const SafeTensors& st,
@@ -211,6 +221,8 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
   const uint32_t h = c.main.block.hidden;
   const uint32_t rank = c.main.block.adaln_rank;
   const uint32_t timesteps = c.main.block.timesteps;
+  const uint32_t video_output = c.video_output_rows ? c.video_output_rows : c.video_rows;
+  const uint32_t audio_output = c.audio_output_rows ? c.audio_output_rows : c.audio_rows;
   H3BlockConfig ref_cfg = c.main.block;
   ref_cfg.sequence = c.text_rows;
   ref_cfg.timesteps = 1;
@@ -278,10 +290,10 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
       {c.audio_rows, h, c.audio_dim, DenseGemmMode::kFloat32,
        DenseGemmBias::kFloat32, false});
   next->video_out_plan = DenseGemmPlan::create(context,
-      {c.video_rows, c.video_dim, h, DenseGemmMode::kFloat32,
+      {video_output, c.video_dim, h, DenseGemmMode::kFloat32,
        DenseGemmBias::kFloat32, false});
   next->audio_out_plan = DenseGemmPlan::create(context,
-      {c.audio_rows, c.audio_dim, h, DenseGemmMode::kFloat32,
+      {audio_output, c.audio_dim, h, DenseGemmMode::kFloat32,
        DenseGemmBias::kFloat32, false});
 
   next->text_input = context.allocate(matrix(c.text_rows, c.text_dim),
@@ -314,13 +326,13 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
   next->final_shift = context.allocate(matrix(timesteps, h));
   next->final_scale = context.allocate(matrix(timesteps, h));
   next->video_gather_bf16 = context.allocate(
-      matrix(c.video_rows, h), ScalarType::kBFloat16);
-  next->video_gather = context.allocate(matrix(c.video_rows, h));
-  next->video_normed = context.allocate(matrix(c.video_rows, h));
+      matrix(video_output, h), ScalarType::kBFloat16);
+  next->video_gather = context.allocate(matrix(video_output, h));
+  next->video_normed = context.allocate(matrix(video_output, h));
   next->audio_gather_bf16 = context.allocate(
-      matrix(c.audio_rows, h), ScalarType::kBFloat16);
-  next->audio_gather = context.allocate(matrix(c.audio_rows, h));
-  next->audio_normed = context.allocate(matrix(c.audio_rows, h));
+      matrix(audio_output, h), ScalarType::kBFloat16);
+  next->audio_gather = context.allocate(matrix(audio_output, h));
+  next->audio_normed = context.allocate(matrix(audio_output, h));
   impl_->state = std::move(next);
   impl_->text_ready = false;
 }
@@ -428,11 +440,20 @@ void ExactH3Transformer::record_forward(
     DeviceTensor& audio_timestep_indices,
     DeviceTensor& video_velocity, DeviceTensor& audio_velocity,
     const H3AttentionRanges* ranges,
-    const H3TransformerForwardReplayTaps* taps) {
+    const H3TransformerForwardReplayTaps* taps,
+    DeviceTensor* video_row_indices,
+    DeviceTensor* audio_row_indices) {
   if (!text_prepared())
     throw std::logic_error("Vulkan H3 transformer: text is not prepared");
   const auto& c = impl_->config; auto& s = *impl_->state;
   const H3BlockConfig& b = c.main.block;
+  const uint32_t video_output = c.video_output_rows ? c.video_output_rows : c.video_rows;
+  const uint32_t audio_output = c.audio_output_rows ? c.audio_output_rows : c.audio_rows;
+  const uint32_t video_start = c.video_output_rows ? c.video_output_start
+      : c.text_rows + c.audio_rows;
+  const uint32_t audio_start = c.audio_output_rows ? c.audio_output_start
+      : c.text_rows;
+  const bool indexed = video_row_indices != nullptr || audio_row_indices != nullptr;
   const bool valid =
       tensor_is(*impl_->context, video_latents, ScalarType::kFloat32,
                 c.video_rows, c.video_dim) &&
@@ -447,13 +468,18 @@ void ExactH3Transformer::record_forward(
       tensor_is(*impl_->context, sine, ScalarType::kFloat32,
                 b.sequence, 96) &&
       tensor_is(*impl_->context, video_timestep_indices, ScalarType::kInt32,
-                c.video_rows) &&
+                video_output) &&
       tensor_is(*impl_->context, audio_timestep_indices, ScalarType::kInt32,
-                c.audio_rows) &&
+                audio_output) &&
       tensor_is(*impl_->context, video_velocity, ScalarType::kFloat32,
-                c.video_rows, c.video_dim) &&
+                video_output, c.video_dim) &&
       tensor_is(*impl_->context, audio_velocity, ScalarType::kFloat32,
-                c.audio_rows, c.audio_dim);
+                audio_output, c.audio_dim) &&
+      (!indexed || (video_row_indices && audio_row_indices &&
+        tensor_is(*impl_->context, *video_row_indices, ScalarType::kInt32,
+                  c.video_rows) &&
+        tensor_is(*impl_->context, *audio_row_indices, ScalarType::kInt32,
+                  c.audio_rows)));
   if (!valid)
     throw std::invalid_argument("Vulkan H3 transformer: invalid forward tensors");
   std::vector<uintptr_t> resources;
@@ -468,6 +494,12 @@ void ExactH3Transformer::record_forward(
       &main_selectors, &code, &cosine, &sine, &video_timestep_indices,
       &audio_timestep_indices, &video_velocity, &audio_velocity})
     add_unique(*tensor, "Vulkan H3 transformer: aliased forward tensors");
+  if (indexed) {
+    add_unique(*video_row_indices,
+               "Vulkan H3 transformer: aliased video row indices");
+    add_unique(*audio_row_indices,
+               "Vulkan H3 transformer: aliased audio row indices");
+  }
   const H3MainGraphReplayTaps* main_taps =
       taps ? taps->main_boundaries : nullptr;
   if (taps) {
@@ -501,14 +533,22 @@ void ExactH3Transformer::record_forward(
                          s.video_projected, c.video_rows, 0, 0,
                          &s.video_in_bias);
   batch.convert(s.video_projected, s.video_projected_bf16);
-  batch.copy_rows(s.video_projected_bf16, s.hidden, 0,
-                  c.text_rows + c.audio_rows, c.video_rows);
+  if (indexed)
+    batch.vision_scatter_bf16(s.video_projected_bf16, s.hidden,
+                              *video_row_indices);
+  else
+    batch.copy_rows(s.video_projected_bf16, s.hidden, 0,
+                    c.text_rows + c.audio_rows, c.video_rows);
   s.audio_in_plan.record(batch, audio_latents, s.audio_in_weight,
                          s.audio_projected, c.audio_rows, 0, 0,
                          &s.audio_in_bias);
   batch.convert(s.audio_projected, s.audio_projected_bf16);
-  batch.copy_rows(s.audio_projected_bf16, s.hidden, 0,
-                  c.text_rows, c.audio_rows);
+  if (indexed)
+    batch.vision_scatter_bf16(s.audio_projected_bf16, s.hidden,
+                              *audio_row_indices);
+  else
+    batch.copy_rows(s.audio_projected_bf16, s.hidden, 0,
+                    c.text_rows, c.audio_rows);
   batch.copy_rows(s.text_cache, s.hidden, 0, 0, c.text_rows);
   if (taps && taps->packed_input) batch.copy(s.hidden, *taps->packed_input);
   s.main.record(batch, s.hidden, main_selectors, code, cosine, sine,
@@ -520,22 +560,22 @@ void ExactH3Transformer::record_forward(
   batch.dit_expand_adaln(s.final_scale_weight, s.final_scale_bias, code,
                          s.final_scale, 1, 1, b.hidden);
   batch.copy_rows(s.hidden, s.video_gather_bf16,
-                  c.text_rows + c.audio_rows, 0, c.video_rows);
+                  video_start, 0, video_output);
   batch.convert(s.video_gather_bf16, s.video_gather);
   batch.rms_norm_modulate_f32(s.video_gather, s.final_norm,
       s.final_scale, s.final_shift, video_timestep_indices,
       s.video_normed, b.epsilon);
   s.video_out_plan.record(batch, s.video_normed, s.video_out_weight,
-                          video_velocity, c.video_rows, 0, 0,
+                          video_velocity, video_output, 0, 0,
                           &s.video_out_bias);
   batch.copy_rows(s.hidden, s.audio_gather_bf16,
-                  c.text_rows, 0, c.audio_rows);
+                  audio_start, 0, audio_output);
   batch.convert(s.audio_gather_bf16, s.audio_gather);
   batch.rms_norm_modulate_f32(s.audio_gather, s.final_norm,
       s.final_scale, s.final_shift, audio_timestep_indices,
       s.audio_normed, b.epsilon);
   s.audio_out_plan.record(batch, s.audio_normed, s.audio_out_weight,
-                          audio_velocity, c.audio_rows, 0, 0,
+                          audio_velocity, audio_output, 0, 0,
                           &s.audio_out_bias);
 }
 

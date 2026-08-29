@@ -29,6 +29,7 @@
 #include "vidfab/vulkan/vae_decoder.h"
 #include "vidfab/vulkan/yuv_converter.h"
 #include "vidfab/attention.h"
+#include "vidfab/dit/ref2va.h"
 #include "vidfab/safetensors_write.h"
 #include "vidfab/sampler/scheduler.h"
 #include "vidfab/video/y4m.h"
@@ -3721,6 +3722,75 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   denoise_config.indices = dit::build_indices(denoise_config.layout);
   denoise_config.position_ids = dit::build_position_ids(denoise_config.layout);
   denoise_config.attention_band = 1;
+
+  // Ref2VA conditions are interleaved in packed order, while each modality
+  // list is condition-prefix then generated suffix. Validate that schema
+  // transactionally before any checkpoint or device allocation is touched.
+  const std::vector<int32_t> ref_text_tags(3, dit::kTagText);
+  const std::vector<dit::ReferenceGeometry> ref_geometries = {
+      {dit::ReferenceKind::kImage, 1, 4, 4, 0},
+      {dit::ReferenceKind::kAudio, 0, 0, 0, 1}};
+  const dit::Ref2VAPackedSequence ref_packed =
+      dit::build_ref2va_packed_sequence(
+          ref_text_tags, ref_geometries, 1, 4, 4, 1);
+  ExactH3DenoiseConfig ref_config = denoise_config;
+  ref_config.layout = ref_packed.layout;
+  ref_config.indices = ref_packed.indices;
+  ref_config.position_ids = ref_packed.position_ids;
+  ref_config.attention_band = 0;
+  ref_config.transformer.text_rows =
+      static_cast<uint32_t>(ref_config.layout.num_text);
+  ref_config.transformer.video_rows =
+      static_cast<uint32_t>(ref_config.indices.video.size());
+  ref_config.transformer.audio_rows =
+      static_cast<uint32_t>(ref_config.indices.audio.size());
+  ref_config.transformer.video_output_rows =
+      static_cast<uint32_t>(ref_config.layout.num_video_rows);
+  ref_config.transformer.audio_output_rows =
+      static_cast<uint32_t>(ref_config.layout.num_audio_rows);
+  ref_config.transformer.video_output_start =
+      static_cast<uint32_t>(ref_config.layout.video_start());
+  ref_config.transformer.audio_output_start =
+      static_cast<uint32_t>(ref_config.layout.audio_start());
+  ref_config.transformer.main.block.sequence =
+      static_cast<uint32_t>(ref_config.layout.total_rows());
+  ref_config.transformer.main.block.timesteps = 4;
+  const uint64_t ref_validate_used = denoise_context.pooled_used_bytes();
+  const uint64_t ref_validate_reserved = denoise_context.reserved_bytes();
+  const uint64_t ref_validate_descriptors =
+      denoise_context.descriptor_set_allocations();
+  {
+    ExactH3Denoiser ref_denoiser = ExactH3Denoiser::create(
+        denoise_context, ref_config);
+    CHECK(!ref_denoiser.loaded());
+  }
+  auto reject_ref_config = [&](const ExactH3DenoiseConfig& invalid) {
+    bool rejected = false;
+    try {
+      ExactH3Denoiser candidate = ExactH3Denoiser::create(
+          denoise_context, invalid);
+    } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    CHECK(denoise_context.pooled_used_bytes() == ref_validate_used);
+    CHECK(denoise_context.reserved_bytes() == ref_validate_reserved);
+    CHECK(denoise_context.descriptor_set_allocations() ==
+          ref_validate_descriptors);
+  };
+  ExactH3DenoiseConfig invalid_ref = ref_config;
+  invalid_ref.indices.audio[0] = invalid_ref.indices.video[0];
+  reject_ref_config(invalid_ref);
+  invalid_ref = ref_config;
+  std::swap(invalid_ref.indices.video.front(),
+            invalid_ref.indices.video.back());
+  reject_ref_config(invalid_ref);
+  invalid_ref = ref_config;
+  ++invalid_ref.transformer.video_output_start;
+  reject_ref_config(invalid_ref);
+  invalid_ref = ref_config;
+  invalid_ref.layout.num_condition_video = std::numeric_limits<int>::max();
+  invalid_ref.layout.num_condition_audio = std::numeric_limits<int>::max();
+  reject_ref_config(invalid_ref);
+
   const uint64_t denoise_baseline = denoise_context.pooled_used_bytes();
   const uint64_t denoise_baseline_reserved = denoise_context.reserved_bytes();
   const uint64_t denoise_baseline_descriptors =
@@ -3753,7 +3823,8 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     for (uint32_t i = denoiser.required_step_operators(); i < 64u; ++i)
       exact_capacity.copy(capacity_source, capacity_destination);
     exact_capacity.require_operator_capacity(denoiser.required_step_operators());
-    CHECK(exact_capacity.remaining_operator_capacity() == 44u);
+    CHECK(exact_capacity.remaining_operator_capacity() ==
+          denoiser.required_step_operators());
     exact_capacity.copy(capacity_source, capacity_destination);
     exact_capacity.submit().wait();
   }
@@ -3766,7 +3837,8 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
       short_capacity.require_operator_capacity(
           denoiser.required_step_operators());
     } catch (const std::logic_error&) { rejected = true; }
-    CHECK(rejected && short_capacity.remaining_operator_capacity() == 43u);
+    CHECK(rejected && short_capacity.remaining_operator_capacity() + 1u ==
+                          denoiser.required_step_operators());
     short_capacity.copy(capacity_source, capacity_destination);
     short_capacity.submit().wait();
   }
