@@ -45,8 +45,10 @@
 #include "vidfab/dit/graph_capture.h"
 #include "vidfab/dit/packing.h"
 #include "vidfab/dtype.h"
+#include "vidfab/generate.h"
 #include "vidfab/nf4.h"
 #include "vidfab/safetensors.h"
+#include "vidfab/safetensors_write.h"
 #include "vidfab/sol_capture.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vulkan/linear.h"
@@ -4034,6 +4036,155 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         double(vk_denoiser.scratch_bytes()) / 1048576.0,
         double(vk_denoiser.peak_device_bytes()) / 1048576.0);
     vk_denoiser.unload();
+  }
+
+  if (const char* vertical = std::getenv("VIDFAB_DIT_VERTICAL_REAL");
+      vertical && vertical[0] == '1') {
+    const std::filesystem::path video_vae_path =
+        "weights/vae/minimax_h3_video_vae_fp16.safetensors";
+    const std::filesystem::path audio_vae_path =
+        "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
+    CHECK(std::filesystem::exists(video_vae_path) &&
+          std::filesystem::exists(audio_vae_path));
+    const std::string unique = std::to_string(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    const std::filesystem::path temp = std::filesystem::temp_directory_path();
+    const std::filesystem::path prompt_path =
+        temp / ("vidfab-g7d-prompt-" + unique + ".safetensors");
+    const std::filesystem::path init_path =
+        temp / ("vidfab-g7d-init-" + unique + ".safetensors");
+    const std::filesystem::path cuda_out =
+        temp / ("vidfab-g7d-cuda-" + unique + ".raw");
+    const std::filesystem::path vulkan_out =
+        temp / ("vidfab-g7d-vulkan-" + unique + ".raw");
+    write_safetensors(prompt_path.string(),
+                      {{"prompt_embedding",
+                        {static_cast<int64_t>(header.text_rows),
+                         static_cast<int64_t>(header.text_dim)}, prompt}});
+    write_safetensors(init_path.string(),
+                      {{"video_rows",
+                        {static_cast<int64_t>(header.video_rows),
+                         static_cast<int64_t>(header.video_dim)}, video},
+                       {"audio_rows",
+                        {static_cast<int64_t>(header.audio_rows),
+                         static_cast<int64_t>(header.audio_dim)}, audio}});
+    GenerateRequest request;
+    request.canvas_width = 256;
+    request.canvas_height = 256;
+    request.num_frames = 22;
+    request.num_inference_steps = 4;
+    request.seed = 424242;
+    request.transformer_path = checkpoint_path.string();
+    request.video_vae_path = video_vae_path.string();
+    request.audio_vae_path = audio_vae_path.string();
+    request.raw_output = true;
+    const GeneratePlan vertical_plan = resolve_plan(request);
+    CHECK(vertical_plan.layout.num_video_rows ==
+              static_cast<int>(header.video_rows) &&
+          vertical_plan.layout.num_audio_rows ==
+              static_cast<int>(header.audio_rows) &&
+          vertical_plan.num_model_evaluations() == 3);
+    struct CapturedSamples {
+      PixelBuffer video;
+      std::vector<float> audio;
+      int channels = 0;
+      int frames = 0;
+      int height = 0;
+      int width = 0;
+      int audio_channels = 0;
+      int sample_rate = 0;
+    } cuda_samples, vulkan_samples;
+    auto capture_samples = +[](RunSamples& samples, void* userdata) {
+      auto* captured = static_cast<CapturedSamples*>(userdata);
+      captured->channels = samples.channels;
+      captured->frames = samples.frames;
+      captured->height = samples.height;
+      captured->width = samples.width;
+      captured->audio_channels = samples.audio_channels;
+      captured->sample_rate = samples.audio_sample_rate;
+      if (samples.video) captured->video = *samples.video;
+      if (samples.audio) captured->audio = *samples.audio;
+      return false;
+    };
+    auto run_vertical = [&](DeviceBackend backend,
+                            const std::filesystem::path& output,
+                            CapturedSamples& samples) {
+      request.out_path = output.string();
+      RunOptions options;
+      options.inference_backend = backend;
+      options.attention_mode = AttentionMode::kExact;
+      options.prompt_embedding_path = prompt_path.string();
+      options.init_latents_path = init_path.string();
+      options.verbose = false;
+      options.on_samples = capture_samples;
+      options.hook_userdata = &samples;
+      const auto begin = std::chrono::steady_clock::now();
+      const RunResult result = run_generate(request, vertical_plan, options);
+      const double elapsed = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - begin).count();
+      CHECK_MSG(result.ok, "real vertical %s failed: %s",
+                backend == DeviceBackend::kCuda ? "CUDA" : "Vulkan",
+                result.message.c_str());
+      CHECK(result.steps_computed == 3 && result.steps_skipped == 0 &&
+            result.outputs.size() == 2u);
+      return std::pair<RunResult, double>{result, elapsed};
+    };
+    const auto cuda_vertical =
+        run_vertical(DeviceBackend::kCuda, cuda_out, cuda_samples);
+    const auto vulkan_vertical =
+        run_vertical(DeviceBackend::kVulkan, vulkan_out, vulkan_samples);
+    CHECK(cuda_samples.channels == vulkan_samples.channels &&
+          cuda_samples.frames == vulkan_samples.frames &&
+          cuda_samples.height == vulkan_samples.height &&
+          cuda_samples.width == vulkan_samples.width &&
+          cuda_samples.audio_channels == vulkan_samples.audio_channels &&
+          cuda_samples.sample_rate == vulkan_samples.sample_rate);
+    CHECK(cuda_samples.video == vulkan_samples.video);
+    CHECK(cuda_samples.audio == vulkan_samples.audio);
+    auto read_file = [](const std::string& path) {
+      std::ifstream input(path, std::ios::binary | std::ios::ate);
+      if (!input) throw std::runtime_error("cannot open vertical output " + path);
+      const std::streamsize bytes = input.tellg();
+      input.seekg(0);
+      std::vector<uint8_t> result(static_cast<size_t>(bytes));
+      if (!input.read(reinterpret_cast<char*>(result.data()), bytes))
+        throw std::runtime_error("cannot read vertical output " + path);
+      return result;
+    };
+    const std::vector<uint8_t> cuda_y4m =
+        read_file(cuda_vertical.first.outputs[0]);
+    const std::vector<uint8_t> cuda_wav =
+        read_file(cuda_vertical.first.outputs[1]);
+    const std::vector<uint8_t> vulkan_y4m =
+        read_file(vulkan_vertical.first.outputs[0]);
+    const std::vector<uint8_t> vulkan_wav =
+        read_file(vulkan_vertical.first.outputs[1]);
+    CHECK(cuda_y4m == vulkan_y4m && cuda_wav == vulkan_wav);
+    const uint64_t pixel_hash = fnv_bytes(
+        cuda_samples.video.data(), cuda_samples.video.size() * sizeof(float));
+    const uint64_t pcm_hash = fnv_bytes(
+        cuda_samples.audio.data(), cuda_samples.audio.size() * sizeof(float));
+    const uint64_t y4m_hash = fnv_bytes(cuda_y4m.data(), cuda_y4m.size());
+    const uint64_t wav_hash = fnv_bytes(cuda_wav.data(), cuda_wav.size());
+    CHECK(pixel_hash == 0x714a67162495817eull);
+    CHECK(pcm_hash == 0x671f1519e5d0cea1ull);
+    CHECK(y4m_hash == 0xbb480c4fd04ac34aull);
+    CHECK(wav_hash == 0xa447eb6d02620637ull);
+    std::printf(
+        "  real exact vertical S%u x3: CUDA/Vulkan %.3f/%.3f ms, pixels/pcm/y4m/wav %016llx/%016llx/%016llx/%016llx\n",
+        header.sequence, cuda_vertical.second, vulkan_vertical.second,
+        static_cast<unsigned long long>(pixel_hash),
+        static_cast<unsigned long long>(pcm_hash),
+        static_cast<unsigned long long>(y4m_hash),
+        static_cast<unsigned long long>(wav_hash));
+    std::error_code ignored;
+    for (const std::filesystem::path& path : {
+             prompt_path, init_path,
+             std::filesystem::path(cuda_vertical.first.outputs[0]),
+             std::filesystem::path(cuda_vertical.first.outputs[1]),
+             std::filesystem::path(vulkan_vertical.first.outputs[0]),
+             std::filesystem::path(vulkan_vertical.first.outputs[1])})
+      std::filesystem::remove(path, ignored);
   }
 
   if (const char* production = std::getenv("VIDFAB_DIT_TRANSFORMER_PRODUCTION");

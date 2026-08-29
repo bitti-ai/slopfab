@@ -810,9 +810,9 @@ later load.
 
 Neural backend selection is explicit and separate from the output colour
 converter. `RunOptions::inference_backend` and the C API default to CUDA.
-Vulkan requires both synthetic/caller-supplied latent rows and exact attention;
-other attention modes and conditioning/denoising remain fail-closed, with no
-remapping or CUDA fallback. Selecting exact attention also selects
+Vulkan requires exact attention and either synthetic rows or an explicit F32
+captured prompt embedding. Native conditioning, Ref2VA, AB2 and caches remain
+fail-closed, with no remapping or CUDA fallback. Selecting exact attention also selects
 `ViTTransformerMode::kExact` for the CUDA video
 VAE, so parity runs compare the same deterministic graph. An opt-in real
 `run_generate` test writes one backend-neutral init-latent safetensors archive

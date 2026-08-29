@@ -2,25 +2,25 @@
 
 ## What exists
 
-Vulkan now owns both complete neural decoders used by the synthetic-latent
-vertical slice: the 36-block video VAE and the 779-tensor audio VAE. Generation
-selects them through `RunOptions::inference_backend`, independently of
-`--output-accelerator`. `--inference-backend vulkan` is accepted only together
-with `--synthetic-latents --attention exact`; every other attention mode is
-rejected by name and conditioning/denoising remains fail-closed. No rejected or
-accepted Vulkan request is remapped to CUDA.
+Vulkan now owns the complete exact T2VA denoiser and both neural decoders: the
+50-block H3 graph with its two-block text refiner and endpoint projections, the
+36-block video VAE, and the 779-tensor audio VAE. Generation selects them
+through `RunOptions::inference_backend`, independently of
+`--output-accelerator`. `--inference-backend vulkan --attention exact` accepts
+either synthetic latents or an explicit F32 `prompt_embedding` `[L,5120]`
+safetensors capture. The latter is the temporary conditioner seam: Vulkan
+never invokes the CUDA text encoder. Other attention modes, Ref2VA, AB2 and
+step/block caches fail before model execution. No rejected or accepted Vulkan
+request is remapped to CUDA.
 
 The output converter is byte-exact against the canonical CPU conversion on the
 tested RTX 5090. Its checked shader uses explicit operation order and SPIR-V
 `NoContraction`, including adversarial luma/chroma half-step cases, packed tail
 words, padded output strides, and multi-frame Y4M output.
 
-This is exact decoder/generation-output parity, not full prompt-to-video parity.
-The complete 50-main-block H3 transformer stack now has a device-resident
-Vulkan graph and exact production-path CUDA replay at every block boundary,
-but the two-block refiner, final layer and denoise loop have no Vulkan
-orchestration. The text/vision
-conditioners and reference-image encoder also remain CUDA-only.
+This is full captured-prompt-to-video/audio parity, not native text/vision
+conditioning parity. The text/vision conditioners and reference-image encoder
+remain CUDA-only and are not reached by a Vulkan request.
 
 ## Measured implementation gap
 
@@ -175,9 +175,9 @@ attention, residuals and SwiGLU remain device-resident in one caller batch.
 The production CUDA exact loop supplies a real S526 capture whose input,
 metadata, 50 block-boundary digests and final residual all match Vulkan
 exactly. A CUDA-disabled test independently loads and executes two shipped
-NVFP4 layers. This is still not denoise orchestration: the refiner, final layer
-and scheduler remain unavailable, so non-synthetic Vulkan generation
-continues to fail before execution.
+NVFP4 layers. The accepted denoiser now composes the refiner, full graph,
+final layer and exact device-side Euler updates while video/audio rows remain
+resident for the whole trajectory.
 
 These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 `nn_kernels.cu`. Current CUDA uses include transformer checkpoint widening and
@@ -188,10 +188,9 @@ are generated as unique in-range host sequences by `packing.cpp` and
 than arbitrary device data. The Vulkan shader also bounds-checks each index to
 prevent an invalid device read or write.
 
-This is a tested operator substrate with both VAE call sites wired. Native
-quantized matrix execution and conditioner/DiT orchestration remain on the
-missing list above. A Vulkan request that needs those stages fails before
-weights or output files; the exact synthetic-latent decoder slice proceeds.
+This is a tested operator substrate with the T2VA DiT and both VAE call sites
+wired. Native text/vision conditioning and Ref2VA remain on the missing list.
+A Vulkan request needing either fails before weights or output files.
 
 The full 36-block exact video-VAE transformer stack is now available through a
 device-resident Vulkan graph. It streams all real checkpoint blocks through a
@@ -244,10 +243,43 @@ was 4625.0/5087.0 MiB, pooled used/reserved was 5215.0/5445.0 MiB, and the final
 descriptor high-water was 3676.
 
 This completes the exact video-VAE decoder component. Together with the audio
-decoder it enables top-level synthetic-latent Vulkan generation, while the
-text/vision conditioners and denoiser remain gated out.
+decoder and exact denoiser it enables top-level captured-conditioning or
+synthetic-latent Vulkan generation. Native text/vision conditioning and
+Ref2VA remain gated out.
 
 ## Current vertical-slice comparison
+
+`vulkan::ExactH3Denoiser` owns the prompt-refiner cache, packed video/audio
+latents, velocity rows, canonical RoPE, attention ranges and small timestep
+controls for a complete trajectory. The activation rows cross the host boundary
+only at `prepare` and the final result; each evaluation records the 50-block
+transformer and two exact Euler updates in one bounded submission. Production
+passes no observer. The optional replay observer downloads post-update rows only
+for verification. AB2, Ref2VA and both cache families are rejected rather than
+silently changing their semantics.
+
+The signed real replay uses
+`tests/data/h3_transformer_step0_seed424242_256.vfh3f` (SHA-256
+`3E3476E397FCEE203737332D171D4650F55433471231A7FD4FF24F8E0F84F8E7`)
+and `weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors`
+(SHA-256 `6AB7F0C48141E7919B32F925CA3DEF22E06A6AEBEB9E0B6F5A0BE0FE8409976F`).
+At S526 with four sigma points (three evaluations), video shift 12 and audio
+shift 3, production `dit::denoise`/CUDA exact and Vulkan matched every fp32
+post-Euler boundary. Joined video/audio FNV64 values were
+`2472491D7573A692`, `3343AA4828944315`, and `BFC3AEC499E7B836` (final).
+Measured CUDA/Vulkan loop times were 3.313/3.612 s; Vulkan
+persistent/scratch/peak device accounting was
+13,501.84/721.31/14,223.14 MiB. CUDA-off synthetic S65 coverage pins three
+evaluations at `AD06FEAE77D1C494`, repeats without allocation growth, cancels
+after a complete update, rejects AB2, unloads to the retained staging
+watermark, and reloads byte-exactly.
+
+The public `run_generate` replay then feeds the same captured prompt and
+initial rows through the real transformer, video VAE and audio VAE at
+256x256/22 frames. CUDA/Vulkan total times were 19.895/20.404 s. The final
+FNV64 pins are `714A67162495817E` for fp32 PixelBuffer,
+`671F1519E5D0CEA1` for fp32 PCM, `BB480C4FD04AC34A` for Y4M and
+`A447EB6D02620637` for WAV; both backends match byte for byte.
 
 The opt-in `cuda_vulkan_exact_generate_vertical_slice` test writes one
 deterministic fp32 init-latent archive, then invokes real `run_generate` at the

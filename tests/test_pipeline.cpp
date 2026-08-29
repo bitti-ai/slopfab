@@ -143,9 +143,9 @@ VIDFAB_TEST(generation_backend_contract) {
   CHECK(vidfab::generation_backend_supported(DeviceBackend::kCuda,
                                               LatentSource::kSyntheticNoise,
                                               AttentionMode::kSage2));
-  CHECK(!vidfab::generation_backend_supported(DeviceBackend::kVulkan,
-                                               LatentSource::kDenoise,
-                                               AttentionMode::kExact));
+  CHECK(vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+                                              LatentSource::kDenoise,
+                                              AttentionMode::kExact));
   CHECK(vidfab::generation_backend_supported(DeviceBackend::kVulkan,
                                               LatentSource::kSyntheticNoise,
                                               AttentionMode::kExact));

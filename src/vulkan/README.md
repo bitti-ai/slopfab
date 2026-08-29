@@ -765,10 +765,10 @@ requested row chunk, so record splitting and output offsets do not change bits.
 The backend-neutral control spelling is `AttentionMode::kExact` / `--attention
 exact`. CUDA transformer main blocks and the token refiner dispatch this
 primitive directly; `kNone` remains the separate blocked reference and no
-other mode is remapped. Vulkan accepts only exact as an attention choice, but
-the complete Vulkan transformer/denoiser orchestrator is still absent, so the
-CLI reports that missing graph after validating the choice and runs neither a
-Vulkan attention pipeline nor a CUDA fallback.
+other mode is remapped. Vulkan accepts only exact and the complete denoiser
+keeps packed video/audio rows resident across evaluations. Until native
+conditioning lands, the CLI requires `--prompt-embedding` and runs neither a
+CUDA conditioner nor any CUDA fallback.
 
 CUDA and Vulkan use the same 1024-thread/32-subgroup cooperative contract:
 guarded BF16 Q/K staging, ascending 16-channel BF16-QK/F32 cooperative tiles,
