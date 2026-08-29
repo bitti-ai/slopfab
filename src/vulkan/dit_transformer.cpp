@@ -92,7 +92,8 @@ void validate_endpoint_archive(const SafeTensors& st,
   require("final_layer.audio_out.bias", {c.audio_dim}, DType::kF32);
   for (const char* name : {"condition_proj", "video_patch_proj",
                           "audio_patch_proj", "final_layer.video_out",
-                          "final_layer.audio_out"})
+                          "final_layer.audio_out",
+                          "final_layer.adaln_proj.linear"})
     require_plain_weight(st, name);
   // Decode now, before a Vulkan allocation, so malformed dtypes/non-finite
   // conversion paths are part of the host-only initial-load transaction.
