@@ -10660,6 +10660,39 @@ VIDFAB_TEST(cuda_vulkan_keyframe_encoder_real_graph) {
               stats.allocator_used_bytes / 1048576.0,
               stats.allocator_reserved_bytes / 1048576.0,
               static_cast<unsigned long long>(stats.descriptor_set_allocations));
+  if (const char* max_shape = std::getenv("VIDFAB_KEYFRAME_ENCODER_MAX");
+      max_shape && max_shape[0] == '1') {
+    constexpr int max_height = 2048;
+    constexpr int max_width = 2048;
+    std::vector<float> max_pixels(
+        size_t(3) * max_height * max_width);
+    for (size_t i = 0; i < max_pixels.size(); ++i)
+      max_pixels[i] = float(int((i * 29) % 509) - 254) / 128.0f;
+    const auto max_cuda_begin = std::chrono::steady_clock::now();
+    const std::vector<float> max_expected = cu.encode_moments(
+        max_pixels.data(), max_height, max_width);
+    const double max_cuda_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - max_cuda_begin).count();
+    const auto max_vk_begin = std::chrono::steady_clock::now();
+    const std::vector<float> max_actual = vk.encode_moments(
+        max_pixels.data(), max_height, max_width);
+    const double max_vk_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - max_vk_begin).count();
+    CHECK(max_actual == max_expected);
+    uint64_t max_hash = 1469598103934665603ull;
+    const auto* max_bytes = reinterpret_cast<const uint8_t*>(max_actual.data());
+    for (size_t i = 0; i < max_actual.size() * sizeof(float); ++i) {
+      max_hash ^= max_bytes[i];
+      max_hash *= 1099511628211ull;
+    }
+    std::printf(
+        "  keyframe public 2048x2048 CUDA/Vulkan %.3f/%.3fs fnv=%016llx activation/used/reserved %.1f/%.1f/%.1fMiB\n",
+        max_cuda_seconds, max_vk_seconds,
+        static_cast<unsigned long long>(max_hash),
+        vk.stats().activation_bytes / 1048576.0,
+        vk.stats().allocator_used_bytes / 1048576.0,
+        vk.stats().allocator_reserved_bytes / 1048576.0);
+  }
   vk.unload();
   CHECK(!vk.loaded());
 }
