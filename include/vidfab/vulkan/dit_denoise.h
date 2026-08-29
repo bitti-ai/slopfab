@@ -75,6 +75,7 @@ class ExactH3Denoiser {
   uint64_t persistent_bytes() const noexcept;
   uint64_t scratch_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;
+  uint32_t required_step_operators() const;
 
  private:
   struct Impl;

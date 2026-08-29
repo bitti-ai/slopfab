@@ -1971,6 +1971,13 @@ uint32_t TensorBatch::remaining_operator_capacity() const noexcept {
   return impl_->owner->max_batch_operators - impl_->operator_count;
 }
 
+void TensorBatch::require_operator_capacity(uint32_t operators) const {
+  if (!impl_ || impl_->poisoned)
+    throw std::logic_error("vulkan tensor: invalid batch");
+  if (operators == 0 || remaining_operator_capacity() < operators)
+    throw std::logic_error("vulkan tensor: insufficient operator capacity");
+}
+
 void TensorBatch::copy(DeviceTensor& source, DeviceTensor& destination) {
   if (!impl_) throw std::logic_error("vulkan tensor: empty batch");
   if (impl_->poisoned) throw std::logic_error("vulkan tensor: batch is poisoned");

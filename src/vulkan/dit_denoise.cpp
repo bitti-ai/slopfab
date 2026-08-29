@@ -278,6 +278,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
     const float video_ratio = video.sigmas()[step + 1] / video.sigmas()[step];
     const float audio_ratio = audio.sigmas()[step + 1] / audio.sigmas()[step];
     TensorBatch batch = impl_->context->begin_batch();
+    batch.require_operator_capacity(required_step_operators());
     s.transformer.record_forward(
         batch, s.video, s.audio, s.selectors, s.code, s.cosine, s.sine,
         s.video_timestep_indices, s.audio_timestep_indices,
@@ -343,6 +344,14 @@ uint64_t ExactH3Denoiser::peak_device_bytes() const noexcept {
   const uint64_t scratch = scratch_bytes();
   return scratch > std::numeric_limits<uint64_t>::max() - persistent
       ? std::numeric_limits<uint64_t>::max() : persistent + scratch;
+}
+
+uint32_t ExactH3Denoiser::required_step_operators() const {
+  if (!loaded()) throw std::logic_error("Vulkan H3 denoise: not loaded");
+  const uint32_t forward = impl_->state->transformer.required_forward_operators();
+  if (forward > UINT32_MAX - 2u)
+    throw std::overflow_error("Vulkan H3 denoise: step operator overflow");
+  return forward + 2u;
 }
 
 }  // namespace vidfab::vulkan

@@ -276,6 +276,10 @@ class TensorBatch {
                            uint32_t length_out);
   Submission submit();
   uint32_t remaining_operator_capacity() const noexcept;
+  // Host-only transactional preflight for graph orchestrators. Failure does
+  // not poison or otherwise mutate the recording, so the same batch remains
+  // usable for a smaller graph.
+  void require_operator_capacity(uint32_t operators) const;
   explicit operator bool() const noexcept;
 
  private:

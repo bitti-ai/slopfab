@@ -3323,6 +3323,36 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
         denoise_baseline_descriptors);
   denoiser.load(transformer_checkpoint);
   CHECK(denoiser.loaded() && !denoiser.prepared());
+  CHECK(denoiser.required_step_operators() == 44u);
+  const uint64_t capacity_shape[] = {1};
+  DeviceTensor capacity_source = denoise_context.allocate(
+      TensorLayout::contiguous(capacity_shape, 1));
+  DeviceTensor capacity_destination = denoise_context.allocate(
+      TensorLayout::contiguous(capacity_shape, 1));
+  {
+    // The complete transformer + two Euler updates fits exactly. Preflight is
+    // observational: the same recording can still accept a smaller graph.
+    TensorBatch exact_capacity = denoise_context.begin_batch();
+    for (uint32_t i = denoiser.required_step_operators(); i < 64u; ++i)
+      exact_capacity.copy(capacity_source, capacity_destination);
+    exact_capacity.require_operator_capacity(denoiser.required_step_operators());
+    CHECK(exact_capacity.remaining_operator_capacity() == 44u);
+    exact_capacity.copy(capacity_source, capacity_destination);
+    exact_capacity.submit().wait();
+  }
+  {
+    TensorBatch short_capacity = denoise_context.begin_batch();
+    for (uint32_t i = denoiser.required_step_operators(); i <= 64u; ++i)
+      short_capacity.copy(capacity_source, capacity_destination);
+    bool rejected = false;
+    try {
+      short_capacity.require_operator_capacity(
+          denoiser.required_step_operators());
+    } catch (const std::logic_error&) { rejected = true; }
+    CHECK(rejected && short_capacity.remaining_operator_capacity() == 43u);
+    short_capacity.copy(capacity_source, capacity_destination);
+    short_capacity.submit().wait();
+  }
   sampler::FlowScheduler denoise_video(12.0f), denoise_audio(3.0f);
   denoise_video.set_timesteps(4);
   denoise_audio.set_timesteps(4);
