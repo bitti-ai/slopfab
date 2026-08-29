@@ -176,9 +176,9 @@ void main() {
 #elif defined(VAE_SWIGLU)
   uint row = i / p.columns;
   uint column = i - row * p.columns;
-  // The pinned NVIDIA tuple compiles the RTE deterministic-SiLU module through
-  // the same shaderInt64 path as GroupNorm. A widened row product also makes
-  // the already host-validated uint32 indexing contract explicit in SPIR-V.
+  // The RTE execution-mode form triggers NVIDIA compiler breakpoint 0x80000003.
+  // This preserve-only module instead defines denominator addition and division
+  // with live shaderInt64 arithmetic; the widened product also pins indexing.
   uint row_base = uint(uint64_t(row) * uint64_t(2u * p.columns));
   float gate_input = canonicalize_pointwise_float(uintBitsToFloat(primary.words[row_base + column]));
   float gate_bias = canonicalize_pointwise_float(uintBitsToFloat(secondary.words[column]));

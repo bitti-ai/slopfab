@@ -67,9 +67,12 @@ __global__ void deterministic_divide_add_probe(const uint32_t* input_bits,
 }
 
 __global__ void deterministic_silu_probe(const float* input, float* output,
-                                         int count) {
+                                         float* pointwise_output, int count) {
   const int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (index < count) output[index] = vidfab::cuda::deterministic_silu(input[index]);
+  if (index < count) {
+    output[index] = vidfab::cuda::deterministic_silu(input[index]);
+    pointwise_output[index] = vidfab::cuda::deterministic_pointwise_silu(input[index]);
+  }
 }
 
 VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
@@ -247,25 +250,34 @@ VIDFAB_TEST(cuda_deterministic_silu_dense_reference) {
     const double unit = static_cast<double>(state) / 4294967295.0;
     input.push_back(static_cast<float>(-87.0 + unit * 174.0));
   }
-  cuda::DeviceBuffer<float> d_input(input.size()), d_output(input.size());
+  cuda::DeviceBuffer<float> d_input(input.size()), d_output(input.size()),
+      d_pointwise_output(input.size());
   d_input.copy_from_host(input.data(), input.size());
   deterministic_silu_probe<<<static_cast<unsigned>((input.size() + 255) / 256), 256>>>(
-      d_input.get(), d_output.get(), static_cast<int>(input.size()));
+      d_input.get(), d_output.get(), d_pointwise_output.get(),
+      static_cast<int>(input.size()));
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  std::vector<float> output(input.size()); d_output.copy_to_host(output.data(), output.size());
+  std::vector<float> output(input.size()), pointwise_output(input.size());
+  d_output.copy_to_host(output.data(), output.size());
+  d_pointwise_output.copy_to_host(pointwise_output.data(), pointwise_output.size());
   const uint32_t expected_special[] = {0x00000000u, 0x80000000u, 0x7f800000u,
                                        0x80000000u, 0x7fc00000u};
   for (size_t i = 0; i < std::size(expected_special); ++i) {
     uint32_t actual = 0; std::memcpy(&actual, &output[i], 4);
     CHECK_MSG(actual == expected_special[i], "deterministic SiLU special %zu: %08x", i,
               actual);
+    uint32_t pointwise_actual = 0;
+    std::memcpy(&pointwise_actual, &pointwise_output[i], 4);
+    CHECK_MSG(pointwise_actual == expected_special[i],
+              "pointwise SiLU special %zu: %08x", i, pointwise_actual);
   }
   auto ordered = [](float value) {
     uint32_t bits = 0; std::memcpy(&bits, &value, 4);
     return (bits & 0x80000000u) != 0u ? ~bits : bits | 0x80000000u;
   };
-  uint32_t max_ulp = 0;
+  uint32_t max_ulp = 0, pointwise_max_ulp = 0;
   double max_absolute = 0.0, max_relative = 0.0;
+  double pointwise_max_absolute = 0.0, pointwise_max_relative = 0.0;
   float worst_relative_input = 0.0f, worst_relative_output = 0.0f;
   double worst_relative_reference = 0.0;
   for (size_t i = std::size(expected_special); i < input.size(); ++i) {
@@ -275,6 +287,8 @@ VIDFAB_TEST(cuda_deterministic_silu_dense_reference) {
         : x / (1.0 + std::exp(-x));
     if (x <= -87.0) {
       uint32_t actual = 0; std::memcpy(&actual, &output[i], 4);
+      CHECK(actual == 0x80000000u);
+      std::memcpy(&actual, &pointwise_output[i], 4);
       CHECK(actual == 0x80000000u);
       continue;
     }
@@ -286,21 +300,33 @@ VIDFAB_TEST(cuda_deterministic_silu_dense_reference) {
       uint32_t actual = 0, input_bits = 0;
       std::memcpy(&actual, &output[i], 4); std::memcpy(&input_bits, &input[i], 4);
       CHECK(actual == (input_bits & 0x80000000u));
+      std::memcpy(&actual, &pointwise_output[i], 4);
+      CHECK(actual == (input_bits & 0x80000000u));
       continue;
     }
     uint32_t input_bits = 0; std::memcpy(&input_bits, &input[i], 4);
     if ((input_bits & 0x7fffffffu) < 0x00800000u) {
       uint32_t actual = 0; std::memcpy(&actual, &output[i], 4);
       CHECK(actual == (input_bits & 0x80000000u));
+      std::memcpy(&actual, &pointwise_output[i], 4);
+      CHECK(actual == (input_bits & 0x80000000u));
       continue;
     }
     const float reference = rounded_reference;
     const uint32_t a = ordered(output[i]), b = ordered(reference);
     max_ulp = std::max(max_ulp, a > b ? a - b : b - a);
+    const uint32_t pa = ordered(pointwise_output[i]);
+    pointwise_max_ulp = std::max(pointwise_max_ulp,
+                                 pa > b ? pa - b : b - pa);
     const double absolute = std::abs(static_cast<double>(output[i]) - reference_double);
     max_absolute = std::max(max_absolute, absolute);
+    const double pointwise_absolute =
+        std::abs(static_cast<double>(pointwise_output[i]) - reference_double);
+    pointwise_max_absolute = std::max(pointwise_max_absolute, pointwise_absolute);
     if (reference_double != 0.0) {
       const double relative = absolute / std::abs(reference_double);
+      const double pointwise_relative = pointwise_absolute / std::abs(reference_double);
+      pointwise_max_relative = std::max(pointwise_max_relative, pointwise_relative);
       if (relative > max_relative) {
         max_relative = relative;
         worst_relative_input = input[i];
@@ -311,12 +337,19 @@ VIDFAB_TEST(cuda_deterministic_silu_dense_reference) {
   }
   CHECK_MSG(max_ulp <= 3u, "deterministic SiLU max reference error %u ULP", max_ulp);
   CHECK(max_relative < 2.1e-7);
+  CHECK_MSG(pointwise_max_ulp <= 3u,
+            "pointwise deterministic SiLU max reference error %u ULP",
+            pointwise_max_ulp);
+  CHECK(pointwise_max_relative < 2.1e-7);
   const double cutoff_error = 87.0 * std::exp(-87.0) / (1.0 + std::exp(-87.0));
   CHECK(cutoff_error < 1.5e-36);
   std::printf("  deterministic SiLU: max %u ULP, abs %.3e, relative %.3e; "
               "-87 cutoff %.3e; worst relative x=%g out=%.9g ref=%.9g\n",
               max_ulp, max_absolute, max_relative, cutoff_error,
               worst_relative_input, worst_relative_output, worst_relative_reference);
+  std::printf("  pointwise SiLU: max %u ULP, abs %.3e, relative %.3e\n",
+              pointwise_max_ulp, pointwise_max_absolute,
+              pointwise_max_relative);
 }
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
@@ -2423,6 +2456,82 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
   CHECK((bits_of(denorm[0]) & 0x7fffffffu) == 0u);
   CHECK((bits_of(denorm[voxels]) & 0x7fffffffu) == 0u);
   CHECK(bits_of(denorm[2 * voxels]) == 0x7fc00000u);
+
+  // Every rejection below happens before access tracking/command mutation, so
+  // the same batch remains usable and proves transactional validation.
+  const uint64_t wrong_output_shape[] = {rows, inner + 1};
+  DeviceTensor wrong_output = vk.allocate(
+      TensorLayout::contiguous(wrong_output_shape, 2));
+  {
+    TensorBatch valid_after_rejection = vk.begin_batch();
+    bool alias_rejected = false, shape_rejected = false;
+    try { valid_after_rejection.layer_scale_residual_f32(vx, vx, vrb, vs); }
+    catch (const std::invalid_argument&) { alias_rejected = true; }
+    try { valid_after_rejection.swiglu_bias_f32(vsi, vsb, wrong_output); }
+    catch (const std::invalid_argument&) { shape_rejected = true; }
+    CHECK(alias_rejected && shape_rejected);
+    valid_after_rejection.latent_denorm_f32(vl, vm, vsd, vlo);
+    valid_after_rejection.submit().wait();
+  }
+
+  auto record_mixed = [&] {
+    TensorBatch mixed = vk.begin_batch();
+    for (int operation = 0; operation < 32; ++operation) {
+      switch (operation % 3) {
+        case 0: mixed.layer_scale_residual_f32(vx, vy, vrb, vs); break;
+        case 1: mixed.swiglu_bias_f32(vsi, vsb, vso); break;
+        default: mixed.latent_denorm_f32(vl, vm, vsd, vlo); break;
+      }
+    }
+    return mixed.submit();
+  };
+  Submission warm_first = record_mixed(), warm_second = record_mixed();
+  warm_first.wait(); warm_second.wait();
+  const uint64_t stable_reserved = vk.reserved_bytes();
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  for (int repeat = 0; repeat < 6; ++repeat) {
+    Submission first = record_mixed(), second = record_mixed();
+    Submission third = record_mixed();
+    CHECK(first.value() < second.value() && second.value() < third.value());
+    first.wait(); second.wait(); third.wait();
+    CHECK(vk.reserved_bytes() == stable_reserved);
+    CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  }
+  {
+    TensorBatch too_many = vk.begin_batch();
+    bool rejected = false;
+    try {
+      for (int operation = 0; operation < 33; ++operation)
+        too_many.latent_denorm_f32(vl, vm, vsd, vlo);
+    } catch (const std::logic_error&) { rejected = true; }
+    CHECK(rejected);
+    bool poisoned_submit_rejected = false;
+    try { (void)too_many.submit(); }
+    catch (const std::logic_error&) { poisoned_submit_rejected = true; }
+    CHECK(poisoned_submit_rejected);
+  }
+
+  // Submitted jobs retain all four resources even when every public wrapper
+  // is dropped before completion, and release them after the token is done.
+  const uint64_t used_before_drop = vk.pooled_used_bytes();
+  Submission dropped;
+  {
+    DeviceTensor ti = vk.allocate(TensorLayout::contiguous(latent_shape, 2));
+    DeviceTensor tm = vk.allocate(TensorLayout::contiguous(&channel_shape, 1));
+    DeviceTensor ts = vk.allocate(TensorLayout::contiguous(&channel_shape, 1));
+    DeviceTensor to = vk.allocate(TensorLayout::contiguous(latent_shape, 2));
+    vk.upload(ti, latent.data(), latent.size());
+    vk.upload(tm, mean.data(), mean.size());
+    vk.upload(ts, std_dev.data(), std_dev.size());
+    TensorBatch retained = vk.begin_batch();
+    retained.latent_denorm_f32(ti, tm, ts, to);
+    dropped = retained.submit();
+  }
+  dropped.wait();
+  dropped = Submission{};
+  Submission collected = record_mixed();
+  collected.wait();
+  CHECK(vk.pooled_used_bytes() == used_before_drop);
 }
 
 VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {

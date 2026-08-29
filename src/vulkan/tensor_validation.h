@@ -42,4 +42,14 @@ constexpr bool known_exact_vae_norm_device(uint32_t vendor_id, uint32_t device_i
          driver_version == 0x98960000u;  // RTX 5090, NVIDIA 610.88
 }
 
+// Kept distinct from normalization even while the first qualified tuple is
+// the same. Pointwise exactness pins three independently generated modules and
+// must not silently broaden when a future normalization tuple is added.
+constexpr bool known_exact_vae_pointwise_device(uint32_t vendor_id,
+                                                uint32_t device_id,
+                                                uint32_t driver_version) noexcept {
+  return vendor_id == 0x10deu && device_id == 0x2b85u &&
+         driver_version == 0x98960000u;  // RTX 5090, NVIDIA 610.88
+}
+
 }  // namespace vidfab::vulkan::detail

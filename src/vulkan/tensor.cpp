@@ -318,6 +318,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> attention_causal_gqa_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
+  bool exact_vae_pointwise = false;
   bool exact_attention = false;
   bool exact_h3_attention = false;
   bool exact_causal_gqa_attention = false;
@@ -366,6 +367,12 @@ struct TensorContext::Impl {
                          input.info().driver_version) &&
                      input.info().fp32_signed_zero_inf_nan_preserve &&
                      input.info().shader_int64_enabled;
+    exact_vae_pointwise = detail::known_exact_vae_pointwise_device(
+                              input.info().vendor_id, input.info().device_id,
+                              input.info().driver_version) &&
+                          input.info().fp32_signed_zero_inf_nan_preserve &&
+                          input.info().fp32_rounding_rte &&
+                          input.info().shader_int64_enabled;
     exact_attention = known_exact_blocked_attention_device(input.info());
     exact_h3_attention = known_exact_h3_attention_device(input.info());
     exact_causal_gqa_attention =
@@ -384,7 +391,7 @@ struct TensorContext::Impl {
     options.push_constant_bytes = sizeof(Parameters);
     options.local_size[0] = 64;
     ops_pipeline = ComputePipeline::create(input, spirv, options);
-    if (exact_vae_norm) {
+    if (exact_vae_pointwise) {
       ComputePipelineOptions pointwise_options = options;
       pointwise_options.storage_binding_count = 4;
       auto make_pointwise = [&](const uint8_t* bytes, size_t byte_count) {
@@ -1551,11 +1558,11 @@ void TensorContext::require_exact_fp32_vae_normalization() const {
   require_exact_normalization();
 }
 bool TensorContext::exact_vae_pointwise() const noexcept {
-  return impl_ && impl_->exact_vae_norm;
+  return impl_ && impl_->exact_vae_pointwise;
 }
 void TensorContext::require_exact_vae_pointwise() const {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
-  if (!impl_->exact_vae_norm) {
+  if (!impl_->exact_vae_pointwise) {
     throw std::runtime_error(
         "vulkan tensor: exact VAE pointwise operations are unavailable on this device/driver");
   }
@@ -1841,7 +1848,7 @@ void TensorBatch::layer_scale_residual_f32(DeviceTensor& x, DeviceTensor& y,
                                            DeviceTensor& bias,
                                            DeviceTensor& scale) {
   if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->exact_vae_pointwise) {
     throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
   }
   auto xv = impl_->owner->require(x);
@@ -1881,7 +1888,7 @@ void TensorBatch::layer_scale_residual_f32(DeviceTensor& x, DeviceTensor& y,
 void TensorBatch::swiglu_bias_f32(DeviceTensor& input, DeviceTensor& bias,
                                   DeviceTensor& output) {
   if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->exact_vae_pointwise) {
     throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
   }
   auto src = impl_->owner->require(input);
@@ -1921,7 +1928,7 @@ void TensorBatch::latent_denorm_f32(DeviceTensor& input, DeviceTensor& mean,
                                     DeviceTensor& std_dev,
                                     DeviceTensor& output) {
   if (!impl_ || impl_->poisoned) throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->exact_vae_pointwise) {
     throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
   }
   auto src = impl_->owner->require(input);
