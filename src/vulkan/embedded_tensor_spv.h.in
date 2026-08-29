@@ -23,4 +23,11 @@ inline constexpr uint8_t kTensorVaeRopeSpirv[] = {
 inline constexpr uint8_t kTensorWeightSpirv[] = {@VIDFAB_TENSOR_WEIGHT_SPV_BYTES@};
 inline constexpr uint8_t kTensorWeightDenormSpirv[] = {
     @VIDFAB_TENSOR_WEIGHT_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorGemmSpirv[] = {@VIDFAB_TENSOR_GEMM_SPV_BYTES@};
+inline constexpr uint8_t kTensorGemmDenormSpirv[] = {
+    @VIDFAB_TENSOR_GEMM_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorGemmCoopSpirv[] = {
+    @VIDFAB_TENSOR_GEMM_COOP_SPV_BYTES@};
+inline constexpr uint8_t kTensorGemmCoopDenormSpirv[] = {
+    @VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV_BYTES@};
 }  // namespace vidfab::vulkan::detail

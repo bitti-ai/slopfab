@@ -133,6 +133,8 @@ struct InstanceState {
   PFN_vkGetPhysicalDeviceProperties2 get_physical_device_properties2 = nullptr;
   PFN_vkGetPhysicalDeviceFeatures get_physical_device_features = nullptr;
   PFN_vkGetPhysicalDeviceFeatures2 get_physical_device_features2 = nullptr;
+  PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR
+      get_cooperative_matrix_properties = nullptr;
   PFN_vkGetPhysicalDeviceMemoryProperties get_physical_device_memory_properties = nullptr;
   PFN_vkGetPhysicalDeviceQueueFamilyProperties get_queue_family_properties = nullptr;
   PFN_vkEnumerateDeviceExtensionProperties enumerate_device_extensions = nullptr;
@@ -284,9 +286,19 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
     VkPhysicalDeviceVulkan12Features features12{};
     features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     features11.pNext = &features12;
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative{};
+    cooperative.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+    VkPhysicalDeviceShaderBfloat16FeaturesKHR bfloat16{};
+    bfloat16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR;
+    if (info.supports_extension(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) {
+      cooperative.pNext = info.supports_extension(VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME)
+          ? static_cast<void*>(&bfloat16) : static_cast<void*>(&features11);
+      bfloat16.pNext = &features11;
+    }
     VkPhysicalDeviceFeatures2 features2{};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features2.pNext = &features11;
+    features2.pNext = info.supports_extension(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)
+        ? static_cast<void*>(&cooperative) : static_cast<void*>(&features11);
     state->get_physical_device_features2(physical, &features2);
     info.shader_int64 = features2.features.shaderInt64 == VK_TRUE;
     info.storage_buffer_16bit = features11.storageBuffer16BitAccess == VK_TRUE;
@@ -307,6 +319,10 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
                                info.descriptor_binding_partially_bound &&
                                info.descriptor_binding_variable_count &&
                                info.storage_buffer_non_uniform_indexing;
+    info.cooperative_matrix = cooperative.cooperativeMatrix == VK_TRUE;
+    info.shader_bfloat16_type = bfloat16.shaderBFloat16Type == VK_TRUE;
+    info.shader_bfloat16_cooperative_matrix =
+        bfloat16.shaderBFloat16CooperativeMatrix == VK_TRUE;
   }
   if (state->get_physical_device_properties2 != nullptr) {
     VkPhysicalDeviceVulkan11Properties properties11{};
@@ -319,10 +335,36 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
     properties2.pNext = &properties11;
     state->get_physical_device_properties2(physical, &properties2);
     info.max_allocation_bytes = properties11.maxMemoryAllocationSize;
+    info.subgroup_size = properties11.subgroupSize;
+    std::memcpy(info.driver_uuid, properties11.driverUUID, VK_UUID_SIZE);
     info.fp32_denorm_preserve = properties12.shaderDenormPreserveFloat32 == VK_TRUE;
     info.fp32_signed_zero_inf_nan_preserve =
         properties12.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
     info.fp32_rounding_rte = properties12.shaderRoundingModeRTEFloat32 == VK_TRUE;
+  }
+  if (info.cooperative_matrix && state->get_cooperative_matrix_properties) {
+    uint32_t count = 0;
+    if (state->get_cooperative_matrix_properties(physical, &count, nullptr) == VK_SUCCESS) {
+      std::vector<VkCooperativeMatrixPropertiesKHR> tuples(count);
+      for (auto& tuple : tuples) {
+        tuple.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+      }
+      if (state->get_cooperative_matrix_properties(physical, &count, tuples.data()) == VK_SUCCESS) {
+        for (const auto& tuple : tuples) {
+          const bool common = tuple.MSize == 16 && tuple.NSize == 16 &&
+              tuple.KSize == 16 && tuple.scope == VK_SCOPE_SUBGROUP_KHR &&
+              tuple.CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+              tuple.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+              tuple.saturatingAccumulation == VK_FALSE;
+          info.cooperative_matrix_bf16_f32_16x16x16 |= common &&
+              tuple.AType == VK_COMPONENT_TYPE_BFLOAT16_KHR &&
+              tuple.BType == VK_COMPONENT_TYPE_BFLOAT16_KHR;
+          info.cooperative_matrix_f16_f32_16x16x16 |= common &&
+              tuple.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+              tuple.BType == VK_COMPONENT_TYPE_FLOAT16_KHR;
+        }
+      }
+    }
   }
   return info;
 }
@@ -450,6 +492,9 @@ Instance Instance::create(const InstanceOptions& options) {
     state->get_physical_device_properties2 = detail::load_instance<PFN_vkGetPhysicalDeviceProperties2>(get, instance, "vkGetPhysicalDeviceProperties2");
     state->get_physical_device_features = detail::load_instance<PFN_vkGetPhysicalDeviceFeatures>(get, instance, "vkGetPhysicalDeviceFeatures");
     state->get_physical_device_features2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(get(instance, "vkGetPhysicalDeviceFeatures2"));
+    state->get_cooperative_matrix_properties =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
+            get(instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
     state->get_physical_device_memory_properties = detail::load_instance<PFN_vkGetPhysicalDeviceMemoryProperties>(get, instance, "vkGetPhysicalDeviceMemoryProperties");
     state->get_queue_family_properties = detail::load_instance<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(get, instance, "vkGetPhysicalDeviceQueueFamilyProperties");
     state->enumerate_device_extensions = detail::load_instance<PFN_vkEnumerateDeviceExtensionProperties>(get, instance, "vkEnumerateDeviceExtensionProperties");
@@ -530,8 +575,17 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   require(options.enable_timeline_semaphore, impl_->info.timeline_semaphore, "timelineSemaphore");
   require(options.enable_buffer_device_address, impl_->info.buffer_device_address, "bufferDeviceAddress");
   require(options.enable_descriptor_indexing, impl_->info.descriptor_indexing, "descriptorIndexing");
+  require(options.enable_cooperative_matrix, impl_->info.cooperative_matrix,
+          "cooperativeMatrix");
+  require(options.enable_cooperative_matrix, impl_->info.shader_bfloat16_type &&
+              impl_->info.shader_bfloat16_cooperative_matrix,
+          "shaderBFloat16CooperativeMatrix");
 
   std::vector<std::string> names = options.extensions;
+  if (options.enable_cooperative_matrix) {
+    names.emplace_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+    names.emplace_back(VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME);
+  }
   std::sort(names.begin(), names.end());
   names.erase(std::unique(names.begin(), names.end()), names.end());
   for (const auto& name : names) {
@@ -566,6 +620,15 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   features12.descriptorBindingPartiallyBound = options.enable_descriptor_indexing;
   features12.descriptorBindingVariableDescriptorCount = options.enable_descriptor_indexing;
   features12.shaderStorageBufferArrayNonUniformIndexing = options.enable_descriptor_indexing;
+  VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative{};
+  cooperative.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+  cooperative.cooperativeMatrix = options.enable_cooperative_matrix;
+  VkPhysicalDeviceShaderBfloat16FeaturesKHR bfloat16{};
+  bfloat16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR;
+  bfloat16.shaderBFloat16Type = options.enable_cooperative_matrix;
+  bfloat16.shaderBFloat16CooperativeMatrix = options.enable_cooperative_matrix;
+  bfloat16.pNext = &features11;
+  cooperative.pNext = &bfloat16;
   VkPhysicalDeviceFeatures core_features{};
   core_features.shaderInt64 = options.enable_shader_int64;
   const bool any_features = options.enable_shader_float16 || options.enable_shader_int8 ||
@@ -573,11 +636,13 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
                             options.enable_storage_buffer_8bit ||
                             options.enable_timeline_semaphore ||
                             options.enable_buffer_device_address ||
-                            options.enable_descriptor_indexing;
+                            options.enable_descriptor_indexing ||
+                            options.enable_cooperative_matrix;
 
   VkDeviceCreateInfo create{};
   create.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  create.pNext = any_features ? &features11 : nullptr;
+  create.pNext = !any_features ? nullptr : options.enable_cooperative_matrix
+      ? static_cast<void*>(&cooperative) : static_cast<void*>(&features11);
   create.pEnabledFeatures = options.enable_shader_int64 ? &core_features : nullptr;
   create.queueCreateInfoCount = 1;
   create.pQueueCreateInfos = &queue;
@@ -625,6 +690,8 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
     result->state = std::move(state);
     result->info = impl_->info;
     result->info.shader_int64_enabled = options.enable_shader_int64;
+    result->info.storage_buffer_16bit_enabled = options.enable_storage_buffer_16bit;
+    result->info.cooperative_matrix_enabled = options.enable_cooperative_matrix;
     return Device(std::move(result));
   } catch (...) {
     state.reset();

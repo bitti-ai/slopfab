@@ -1,0 +1,88 @@
+#version 460
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_bfloat16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_KHR_shader_subgroup_basic : require
+
+// Four independent subgroup tiles share a workgroup only for launch density.
+// Full cooperative loads come directly from immutable aligned BF16 storage;
+// edge matrices take the scalar reference pipeline, so robust cooperative
+// buffer access is neither requested nor assumed.
+layout(local_size_x = 128) in;
+layout(set = 0, binding = 0, scalar) readonly buffer InputData {
+  bfloat16_t values[];
+} input_data;
+layout(set = 0, binding = 1, scalar) readonly buffer WeightData {
+  bfloat16_t values[];
+} weight_data;
+layout(set = 0, binding = 2, std430) readonly buffer BiasData { uint words[]; } bias_data;
+layout(set = 0, binding = 3, std430) buffer OutputData { uint words[]; } output_data;
+
+layout(push_constant) uniform Parameters {
+  uint rows;
+  uint out_features;
+  uint in_features;
+  uint input_row_offset;
+  uint output_row_offset;
+  uint mode;
+  uint unused0;
+  uint unused1;
+} p;
+
+shared float accumulator[1024];
+
+float load_bf16_bias(uint index) {
+  uint packed = bias_data.words[index >> 1u];
+  return uintBitsToFloat(((packed >> (16u * (index & 1u))) & 0xffffu) << 16u);
+}
+uint bf16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return 0x7fffu;
+  return (bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u;
+}
+float apply_bias(float value, uint column) {
+  if (p.mode == 1u) return value + uintBitsToFloat(bias_data.words[column]);
+  if (p.mode == 2u) return value + load_bf16_bias(column);
+  return value;
+}
+
+void main() {
+  uint subgroup = gl_SubgroupID;
+  uint row = gl_WorkGroupID.y * 64u + subgroup * 16u;
+  uint column = gl_WorkGroupID.x * 16u;
+  coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> sum =
+      coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+  for (uint base = 0u; base < p.in_features; base += 16u) {
+    coopmat<bfloat16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> a;
+    coopmat<bfloat16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> b;
+    coopMatLoad(a, input_data.values,
+                (p.input_row_offset + row) * p.in_features + base,
+                p.in_features, gl_CooperativeMatrixLayoutRowMajor);
+    // W is [N,K] row-major, hence logical B[K,N] is column-major with stride K.
+    coopMatLoad(b, weight_data.values, column * p.in_features + base,
+                p.in_features, gl_CooperativeMatrixLayoutColumnMajor);
+    sum = coopMatMulAdd(a, b, sum);
+  }
+  coopMatStore(sum, accumulator, subgroup * 256u, 16,
+               gl_CooperativeMatrixLayoutRowMajor);
+  subgroupMemoryBarrierShared();
+  subgroupBarrier();
+  for (uint pair = gl_SubgroupInvocationID; pair < 128u; pair += 32u) {
+    uint tile_row = pair >> 3u;
+    uint tile_column = (pair & 7u) * 2u;
+    uint output_row = p.output_row_offset + row + tile_row;
+    uint output_column = column + tile_column;
+    uint output_index = output_row * p.out_features + output_column;
+    uint item = tile_row * 16u + tile_column;
+    float lo = uintBitsToFloat(
+        bf16_rte(accumulator[subgroup * 256u + item]) << 16u);
+    float hi = uintBitsToFloat(
+        bf16_rte(accumulator[subgroup * 256u + item + 1u]) << 16u);
+    uint lo_bits = bf16_rte(apply_bias(lo, output_column));
+    uint hi_bits = bf16_rte(apply_bias(hi, output_column + 1u));
+    output_data.words[output_index >> 1u] = lo_bits | (hi_bits << 16u);
+  }
+}

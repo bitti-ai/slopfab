@@ -14,6 +14,7 @@
 #include "embedded_tensor_spv.h"
 #include "tensor_validation.h"
 #include "vidfab/vulkan/compute.h"
+#include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/linear.h"
 
 namespace vidfab::vulkan {
@@ -41,6 +42,19 @@ uintptr_t next_context_identity() {
       return result;
     }
   }
+}
+
+bool known_exact_cooperative_gemm_device(const DeviceInfo& info) {
+  static constexpr uint8_t kDriverUuid[16] = {
+      0x86, 0x90, 0xf1, 0xc8, 0x0a, 0x3f, 0x54, 0x99,
+      0x9b, 0xf6, 0xea, 0x2a, 0xee, 0x51, 0x56, 0x02};
+  return info.vendor_id == 0x10de && info.device_id == 0x2b85 &&
+      info.driver_version == 0x98960000 && info.subgroup_size == 32 &&
+      std::memcmp(info.driver_uuid, kDriverUuid, sizeof(kDriverUuid)) == 0 &&
+      info.cooperative_matrix_enabled && info.storage_buffer_16bit_enabled &&
+      info.shader_bfloat16_type && info.shader_bfloat16_cooperative_matrix &&
+      info.cooperative_matrix_bf16_f32_16x16x16 &&
+      info.cooperative_matrix_f16_f32_16x16x16;
 }
 
 }  // namespace
@@ -78,6 +92,11 @@ struct LinearWeight::Impl {
   DeviceTensor nf4_nested_quant_map;
   DeviceTensor nf4_nested_absmax;
   DeviceTensor pre_quant_scale;
+};
+
+struct DenseGemmPlan::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  DenseGemmPlanDesc desc;
 };
 
 struct TensorWorkspace::Impl {
@@ -123,6 +142,15 @@ struct TensorContext::Impl {
     uint32_t scalar_bits = 0;
     uint32_t group = 0;
   };
+  struct GemmParameters {
+    uint32_t rows = 0;
+    uint32_t out_features = 0;
+    uint32_t in_features = 0;
+    uint32_t input_row_offset = 0;
+    uint32_t output_row_offset = 0;
+    uint32_t mode = 0;
+    uint32_t unused[2] = {};
+  };
   static constexpr uint32_t kMaxBatchOperators = 32;
 
   ComputeContext commands;
@@ -132,6 +160,8 @@ struct TensorContext::Impl {
   ComputePipeline rope_pipeline;
   ComputePipeline vae_rope_pipeline;
   ComputePipeline weight_pipeline;
+  ComputePipeline gemm_pipeline;
+  ComputePipeline gemm_coop_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
   ComputePipeline bf16_rms_block_pipeline;
@@ -148,9 +178,12 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> mod_bindings;
   std::vector<StorageBinding> vae_rope_bindings;
   std::vector<StorageBinding> weight_bindings;
+  std::vector<StorageBinding> gemm_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
+  bool cooperative_gemm = false;
   uint32_t max_dispatch_x = 0;
+  uint32_t max_dispatch_y = 0;
   uint64_t max_storage_bytes = 0;
   std::atomic<bool> recorder_active{false};
 
@@ -168,7 +201,8 @@ struct TensorContext::Impl {
         norm_bindings(4),
         mod_bindings(6),
         vae_rope_bindings(7),
-        weight_bindings(6) {
+        weight_bindings(6),
+        gemm_bindings(4) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
     static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
@@ -185,6 +219,7 @@ struct TensorContext::Impl {
                      input.info().fp32_signed_zero_inf_nan_preserve &&
                      input.info().shader_int64_enabled;
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
+    max_dispatch_y = input.info().max_compute_workgroup_count[1];
     max_storage_bytes = input.info().max_storage_buffer_bytes;
     const uint8_t* shader = full_arithmetic_exact ? detail::kTensorOpsDenormSpirv
                                            : detail::kTensorOpsSpirv;
@@ -218,6 +253,33 @@ struct TensorContext::Impl {
     weight_options.push_constant_bytes = sizeof(WeightParameters);
     weight_options.local_size[0] = 64;
     weight_pipeline = ComputePipeline::create(input, weight_spirv, weight_options);
+    const uint8_t* gemm_shader = full_arithmetic_exact
+        ? detail::kTensorGemmDenormSpirv : detail::kTensorGemmSpirv;
+    const size_t gemm_shader_bytes = full_arithmetic_exact
+        ? sizeof(detail::kTensorGemmDenormSpirv) : sizeof(detail::kTensorGemmSpirv);
+    std::vector<uint32_t> gemm_spirv(gemm_shader_bytes / sizeof(uint32_t));
+    std::memcpy(gemm_spirv.data(), gemm_shader, gemm_shader_bytes);
+    ComputePipelineOptions gemm_options;
+    gemm_options.storage_binding_count = 4;
+    gemm_options.push_constant_bytes = sizeof(GemmParameters);
+    gemm_options.local_size[0] = 8;
+    gemm_options.local_size[1] = 8;
+    gemm_pipeline = ComputePipeline::create(input, gemm_spirv, gemm_options);
+    cooperative_gemm = known_exact_cooperative_gemm_device(input.info());
+    if (cooperative_gemm) {
+      const uint8_t* cooperative_shader = full_arithmetic_exact
+          ? detail::kTensorGemmCoopDenormSpirv : detail::kTensorGemmCoopSpirv;
+      const size_t cooperative_bytes = full_arithmetic_exact
+          ? sizeof(detail::kTensorGemmCoopDenormSpirv)
+          : sizeof(detail::kTensorGemmCoopSpirv);
+      std::vector<uint32_t> cooperative_spirv(cooperative_bytes / sizeof(uint32_t));
+      std::memcpy(cooperative_spirv.data(), cooperative_shader, cooperative_bytes);
+      ComputePipelineOptions cooperative_options = gemm_options;
+      cooperative_options.local_size[0] = 128;
+      cooperative_options.local_size[1] = 1;
+      gemm_coop_pipeline = ComputePipeline::create(
+          input, cooperative_spirv, cooperative_options);
+    }
     ComputePipelineOptions norm_options;
     norm_options.storage_binding_count = 4;
     norm_options.push_constant_bytes = sizeof(NormParameters);
@@ -265,6 +327,8 @@ struct TensorContext::Impl {
       vae_rope_bindings[i].binding = i;
     for (uint32_t i = 0; i < weight_bindings.size(); ++i)
       weight_bindings[i].binding = i;
+    for (uint32_t i = 0; i < gemm_bindings.size(); ++i)
+      gemm_bindings[i].binding = i;
   }
 
   uintptr_t context_id = next_context_identity();
@@ -2017,6 +2081,173 @@ void TensorBatch::transform_linear_activation(const LinearWeight& weight,
     impl_->dispatch_weight(parameters, groups, resources);
   } catch (...) {
     impl_->poisoned = true;
+    throw;
+  }
+}
+
+DenseGemmPlan::DenseGemmPlan() = default;
+DenseGemmPlan::~DenseGemmPlan() = default;
+DenseGemmPlan::DenseGemmPlan(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+DenseGemmPlan::DenseGemmPlan(DenseGemmPlan&&) noexcept = default;
+DenseGemmPlan& DenseGemmPlan::operator=(DenseGemmPlan&&) noexcept = default;
+DenseGemmPlan::operator bool() const noexcept { return impl_ != nullptr; }
+
+DenseGemmPlan DenseGemmPlan::create(TensorContext& context,
+                                    const DenseGemmPlanDesc& desc) {
+  if (!context.impl_) throw std::logic_error("vulkan gemm: moved-from context");
+  if (desc.max_rows == 0 || desc.out_features == 0 || desc.in_features == 0) {
+    throw std::invalid_argument("vulkan gemm: dimensions must be nonzero");
+  }
+  const uint64_t groups_x = (static_cast<uint64_t>(desc.out_features) + 15) / 16;
+  const uint64_t groups_y = (static_cast<uint64_t>(desc.max_rows) + 15) / 16;
+  if (groups_x > context.impl_->max_dispatch_x ||
+      groups_y > context.impl_->max_dispatch_y) {
+    throw std::out_of_range("vulkan gemm: plan exceeds device dispatch limits");
+  }
+  const uint64_t weight_elements = checked_multiply(
+      desc.out_features, desc.in_features, "gemm weight");
+  const uint64_t input_elements = checked_multiply(
+      desc.max_rows, desc.in_features, "gemm input");
+  const uint64_t output_elements = checked_multiply(
+      desc.max_rows, desc.out_features, "gemm output");
+  const uint64_t input_bytes = checked_multiply(
+      input_elements, desc.mode == DenseGemmMode::kBFloat16 ? 2u : 4u,
+      "gemm input bytes");
+  const uint64_t weight_bytes = checked_multiply(
+      weight_elements, desc.mode == DenseGemmMode::kFloat32 ? 4u : 2u,
+      "gemm weight bytes");
+  const uint64_t output_bytes = checked_multiply(
+      output_elements, desc.mode == DenseGemmMode::kBFloat16 ? 2u : 4u,
+      "gemm output bytes");
+  if (input_bytes > context.impl_->max_storage_bytes ||
+      weight_bytes > context.impl_->max_storage_bytes ||
+      output_bytes > context.impl_->max_storage_bytes) {
+    throw std::out_of_range("vulkan gemm: matrix exceeds storage-buffer limits");
+  }
+  const bool valid_bias =
+      desc.bias == DenseGemmBias::kNone ||
+      (desc.mode == DenseGemmMode::kBFloat16 &&
+       (desc.bias == DenseGemmBias::kFloat32 ||
+        desc.bias == DenseGemmBias::kBFloat16)) ||
+      (desc.mode == DenseGemmMode::kFloat32 &&
+       desc.bias == DenseGemmBias::kFloat32);
+  if (!valid_bias) {
+    throw std::invalid_argument("vulkan gemm: bias is invalid for this mode");
+  }
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_;
+  result->desc = desc;
+  return DenseGemmPlan(std::move(result));
+}
+
+const DenseGemmPlanDesc& DenseGemmPlan::description() const {
+  if (!impl_) throw std::logic_error("vulkan gemm: empty plan");
+  return impl_->desc;
+}
+
+void DenseGemmPlan::record(TensorBatch& batch, DeviceTensor& input,
+                           DeviceTensor& prepared_weight, DeviceTensor& output,
+                           uint32_t rows, uint32_t input_row_offset,
+                           uint32_t output_row_offset, DeviceTensor* bias) const {
+  if (!impl_) throw std::logic_error("vulkan gemm: empty plan");
+  if (!batch.impl_) throw std::logic_error("vulkan gemm: empty batch");
+  if (batch.impl_->poisoned) throw std::logic_error("vulkan gemm: batch is poisoned");
+  if (batch.impl_->owner.get() != impl_->owner.get()) {
+    throw std::invalid_argument("vulkan gemm: plan and batch contexts differ");
+  }
+  const DenseGemmPlanDesc& desc = impl_->desc;
+  if (rows == 0 || rows > desc.max_rows) {
+    throw std::invalid_argument("vulkan gemm: row count is outside the plan");
+  }
+  auto src = impl_->owner->require(input);
+  auto weight = impl_->owner->require(prepared_weight);
+  auto dst = impl_->owner->require(output);
+  std::shared_ptr<DeviceTensor::Impl> bias_tensor;
+  if (bias != nullptr) bias_tensor = impl_->owner->require(*bias);
+  if ((desc.bias == DenseGemmBias::kNone) != (bias == nullptr)) {
+    throw std::invalid_argument("vulkan gemm: bias presence differs from plan");
+  }
+  const ScalarType input_type = desc.mode == DenseGemmMode::kBFloat16
+      ? ScalarType::kBFloat16 : ScalarType::kFloat32;
+  const ScalarType weight_type = desc.mode == DenseGemmMode::kBFloat16
+      ? ScalarType::kBFloat16 : desc.mode == DenseGemmMode::kFloat16Vae
+          ? ScalarType::kFloat16 : ScalarType::kFloat32;
+  const ScalarType output_type = desc.mode == DenseGemmMode::kBFloat16
+      ? ScalarType::kBFloat16 : ScalarType::kFloat32;
+  const ScalarType bias_type = desc.bias == DenseGemmBias::kBFloat16
+      ? ScalarType::kBFloat16 : ScalarType::kFloat32;
+  const bool aliases = src.get() == weight.get() || src.get() == dst.get() ||
+      weight.get() == dst.get() ||
+      (bias_tensor && (bias_tensor.get() == src.get() ||
+                       bias_tensor.get() == weight.get() ||
+                       bias_tensor.get() == dst.get()));
+  const bool row_ranges_valid =
+      src->layout.rank == 2 && dst->layout.rank == 2 &&
+      input_row_offset <= src->layout.extent[0] &&
+      rows <= src->layout.extent[0] - input_row_offset &&
+      output_row_offset <= dst->layout.extent[0] &&
+      rows <= dst->layout.extent[0] - output_row_offset;
+  const bool bias_valid = !bias_tensor ||
+      (bias_tensor->layout.rank == 1 &&
+       bias_tensor->layout.extent[0] == desc.out_features &&
+       bias_tensor->layout.is_contiguous() && bias_tensor->type == bias_type);
+  if (aliases || !row_ranges_valid || !bias_valid ||
+      src->layout.extent[1] != desc.in_features ||
+      weight->layout.rank != 2 ||
+      weight->layout.extent[0] != desc.out_features ||
+      weight->layout.extent[1] != desc.in_features ||
+      dst->layout.extent[1] != desc.out_features ||
+      !src->layout.is_contiguous() || !weight->layout.is_contiguous() ||
+      !dst->layout.is_contiguous() || src->type != input_type ||
+      weight->type != weight_type || dst->type != output_type) {
+    throw std::invalid_argument("vulkan gemm: tensors do not match the plan");
+  }
+  uint32_t groups_x = (desc.out_features + 15u) / 16u;
+  uint32_t groups_y = (rows + 15u) / 16u;
+  TensorContext::Impl::GemmParameters parameters;
+  parameters.rows = rows;
+  parameters.out_features = desc.out_features;
+  parameters.in_features = desc.in_features;
+  parameters.input_row_offset = input_row_offset;
+  parameters.output_row_offset = output_row_offset;
+  if (desc.mode == DenseGemmMode::kBFloat16) {
+    parameters.mode = desc.bias == DenseGemmBias::kNone ? 0u
+        : desc.bias == DenseGemmBias::kFloat32 ? 1u : 2u;
+  } else if (desc.mode == DenseGemmMode::kFloat16Vae) {
+    parameters.mode = 3u;
+  } else {
+    parameters.mode = desc.bias == DenseGemmBias::kNone ? 4u : 5u;
+  }
+  const bool use_cooperative = impl_->owner->cooperative_gemm &&
+      desc.mode == DenseGemmMode::kBFloat16 && (rows % 64u) == 0u &&
+      (desc.out_features % 16u) == 0u && (desc.in_features % 16u) == 0u;
+  if (use_cooperative) {
+    groups_x = desc.out_features / 16u;
+  }
+  try {
+    batch.impl_->count_operator();
+    batch.impl_->transition(src, BufferAccess::kComputeRead);
+    batch.impl_->transition(weight, BufferAccess::kComputeRead);
+    if (bias_tensor) batch.impl_->transition(bias_tensor, BufferAccess::kComputeRead);
+    batch.impl_->transition(dst, BufferAccess::kComputeWrite);
+    auto& bindings = impl_->owner->gemm_bindings;
+    bindings[0].buffer = &src->buffer;
+    bindings[0].bytes = src->buffer.size();
+    bindings[1].buffer = &weight->buffer;
+    bindings[1].bytes = weight->buffer.size();
+    bindings[2].buffer = bias_tensor ? &bias_tensor->buffer : &src->buffer;
+    bindings[2].bytes = bias_tensor ? bias_tensor->buffer.size() : src->buffer.size();
+    bindings[3].buffer = &dst->buffer;
+    bindings[3].bytes = dst->buffer.size();
+    if (use_cooperative) groups_y = rows / 64u;
+    batch.impl_->commands.bind_compute(
+        use_cooperative ? impl_->owner->gemm_coop_pipeline
+                        : impl_->owner->gemm_pipeline,
+        bindings);
+    batch.impl_->commands.push_constants(&parameters, sizeof(parameters));
+    batch.impl_->commands.dispatch(groups_x, groups_y);
+  } catch (...) {
+    batch.impl_->poisoned = true;
     throw;
   }
 }

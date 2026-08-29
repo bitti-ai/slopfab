@@ -48,6 +48,7 @@ struct DeviceInfo {
   bool shader_int64 = false;
   bool shader_int64_enabled = false;
   bool storage_buffer_16bit = false;
+  bool storage_buffer_16bit_enabled = false;
   bool storage_buffer_8bit = false;
   bool timeline_semaphore = false;
   bool buffer_device_address = false;
@@ -59,6 +60,14 @@ struct DeviceInfo {
   bool fp32_denorm_preserve = false;
   bool fp32_signed_zero_inf_nan_preserve = false;
   bool fp32_rounding_rte = false;
+  uint32_t subgroup_size = 0;
+  uint8_t driver_uuid[16] = {};
+  bool cooperative_matrix = false;
+  bool cooperative_matrix_enabled = false;
+  bool cooperative_matrix_bf16_f32_16x16x16 = false;
+  bool cooperative_matrix_f16_f32_16x16x16 = false;
+  bool shader_bfloat16_type = false;
+  bool shader_bfloat16_cooperative_matrix = false;
   std::vector<MemoryHeapInfo> memory_heaps;
   std::vector<std::string> extensions;
 
@@ -83,6 +92,7 @@ struct DeviceOptions {
   bool enable_timeline_semaphore = false;
   bool enable_buffer_device_address = false;
   bool enable_descriptor_indexing = false;
+  bool enable_cooperative_matrix = false;
 };
 
 class Device;
