@@ -432,6 +432,31 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
                            const LayerDims& dims, const float* cos, const float* sin,
                            __nv_bfloat16* x, vidfab::cuda::Workspace& ws);
 
+struct ExactLayerTaps {
+  __nv_bfloat16* input_norm = nullptr;
+  __nv_bfloat16* query = nullptr;
+  __nv_bfloat16* key = nullptr;
+  __nv_bfloat16* value = nullptr;
+  __nv_bfloat16* attention = nullptr;
+  __nv_bfloat16* attention_residual = nullptr;
+  __nv_bfloat16* post_attention_norm = nullptr;
+  __nv_bfloat16* gate = nullptr;
+  __nv_bfloat16* up = nullptr;
+  __nv_bfloat16* activation = nullptr;
+  __nv_bfloat16* final_residual = nullptr;
+};
+
+// Canonical exact layer used as the CUDA authority for the device-resident
+// Vulkan stage. It sequentially materializes every compressed projection into
+// one caller-owned dense slot and never invokes cuBLAS/vendor attention.
+size_t exact_layer_workspace_bytes(const LayerWeights& weights,
+                                   const LayerDims& dims);
+void encoder_layer_forward_exact(cudaStream_t stream, const LayerWeights& weights,
+                                 const LayerDims& dims, const float* cosine,
+                                 const float* sine, __nv_bfloat16* tokens,
+                                 vidfab::cuda::Workspace& workspace,
+                                 const ExactLayerTaps* taps = nullptr);
+
 }  // namespace vidfab::text
 
 #endif  // __CUDACC__

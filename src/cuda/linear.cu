@@ -1077,4 +1077,10 @@ void launch_narrow_to_bf16(const float* src, __nv_bfloat16* dst, size_t n, cudaS
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
+const __nv_bfloat16* materialize_bf16_exact(const QuantWeight& weight,
+                                            Workspace& workspace,
+                                            cudaStream_t stream) {
+  return materialise_bf16(weight, workspace, stream);
+}
+
 }  // namespace vidfab::cuda

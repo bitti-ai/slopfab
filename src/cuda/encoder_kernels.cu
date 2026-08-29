@@ -27,6 +27,7 @@
 //      and everything below needs nvcc.
 
 #include "vidfab/text/encoder.h"
+#include "vidfab/attention.h"
 
 #include <algorithm>
 #include <chrono>
@@ -39,6 +40,8 @@
 
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/deterministic_math.cuh"
+#include "vidfab/cuda/deterministic_gemm.cuh"
+#include "vidfab/cuda/deterministic_attention.cuh"
 #include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/nn_kernels.cuh"
@@ -727,6 +730,146 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
   launch_swiglu_split(gate, up, gate, L * d.intermediate, stream);
   linear.forward(w.down_proj, gate, rows, proj, ws);
   launch_residual_add(x, proj, L * d.hidden, stream);
+}
+
+size_t exact_layer_workspace_bytes(const LayerWeights& w,
+                                   const LayerDims& d) {
+  require(d.num_tokens > 0, "exact layer workspace: num_tokens must be positive");
+  const size_t rows = static_cast<size_t>(d.num_tokens);
+  const size_t q_width = static_cast<size_t>(d.num_heads) * d.head_dim;
+  const size_t kv_width = static_cast<size_t>(d.num_kv_heads) * d.head_dim;
+  const size_t bf = sizeof(__nv_bfloat16);
+  size_t activations = 0;
+  for (size_t elements : {rows * d.hidden, rows * q_width,
+                          rows * kv_width, rows * kv_width,
+                          rows * q_width, rows * d.hidden,
+                          rows * d.intermediate, rows * d.intermediate,
+                          rows * d.intermediate}) {
+    activations += align_up(elements * bf);
+  }
+  size_t transient = 0;
+  for (const vidfab::cuda::QuantWeight* weight : {
+           &w.q_proj, &w.k_proj, &w.v_proj, &w.o_proj,
+           &w.gate_proj, &w.up_proj, &w.down_proj}) {
+    const size_t dense = align_up(static_cast<size_t>(weight->out_features) *
+                                  weight->in_features * bf);
+    const bool transform = weight->pre_quant_scale != nullptr ||
+        (weight->convrot && weight->in_features % weight->convrot_group == 0);
+    const size_t transformed = transform
+        ? align_up(rows * weight->in_features * bf) : 0;
+    transient = std::max(transient, dense + transformed);
+  }
+  return activations + transient;
+}
+
+void encoder_layer_forward_exact(cudaStream_t stream, const LayerWeights& w,
+                                 const LayerDims& d, const float* cos,
+                                 const float* sin, __nv_bfloat16* x,
+                                 Workspace& ws, const ExactLayerTaps* taps) {
+  require(d.num_tokens > 0 && d.hidden == 5120 && d.num_heads == 64 &&
+              d.num_kv_heads == 8 && d.head_dim == 128 &&
+              d.intermediate > 0 && d.rms_norm_eps == 1.0e-6f,
+          "encoder_layer_forward_exact: invalid Qwen production dimensions");
+  const size_t L = static_cast<size_t>(d.num_tokens);
+  const uint32_t rows = static_cast<uint32_t>(d.num_tokens);
+  const uint32_t q_width = static_cast<uint32_t>(d.num_heads * d.head_dim);
+  const uint32_t kv_width = static_cast<uint32_t>(d.num_kv_heads * d.head_dim);
+  Workspace::Scope scope(ws);
+  __nv_bfloat16* n = ws.alloc_n<__nv_bfloat16>(L * d.hidden);
+  __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(L * q_width);
+  __nv_bfloat16* k = ws.alloc_n<__nv_bfloat16>(L * kv_width);
+  __nv_bfloat16* v = ws.alloc_n<__nv_bfloat16>(L * kv_width);
+  __nv_bfloat16* attention = ws.alloc_n<__nv_bfloat16>(L * q_width);
+  __nv_bfloat16* branch = ws.alloc_n<__nv_bfloat16>(L * d.hidden);
+  __nv_bfloat16* gate = ws.alloc_n<__nv_bfloat16>(L * d.intermediate);
+  __nv_bfloat16* up = ws.alloc_n<__nv_bfloat16>(L * d.intermediate);
+  __nv_bfloat16* activation = ws.alloc_n<__nv_bfloat16>(L * d.intermediate);
+  auto copy_tap = [&](const __nv_bfloat16* source, __nv_bfloat16* destination,
+                      size_t count) {
+    if (destination != nullptr) {
+      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(destination, source,
+          count * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, stream));
+    }
+  };
+  auto projection = [&](const vidfab::cuda::QuantWeight& weight,
+                        const __nv_bfloat16* input, __nv_bfloat16* output) {
+    Workspace::Scope projection_scope(ws);
+    const __nv_bfloat16* source = input;
+    if (weight.pre_quant_scale != nullptr) {
+      __nv_bfloat16* transformed = ws.alloc_n<__nv_bfloat16>(
+          L * weight.in_features);
+      vidfab::cuda::launch_pre_quant_scale(
+          input, weight.pre_quant_scale, transformed, d.num_tokens,
+          weight.in_features, stream);
+      source = transformed;
+    } else if (weight.convrot &&
+               weight.in_features % weight.convrot_group == 0) {
+      __nv_bfloat16* transformed = ws.alloc_n<__nv_bfloat16>(
+          L * weight.in_features);
+      vidfab::cuda::launch_convrot(input, transformed, d.num_tokens,
+                                   weight.in_features,
+                                   weight.convrot_group, stream);
+      source = transformed;
+    }
+    const __nv_bfloat16* dense =
+        vidfab::cuda::materialize_bf16_exact(weight, ws, stream);
+    const uint32_t tiled = rows / 64u * 64u;
+    if (tiled != 0) {
+      vidfab::cuda::launch_deterministic_bf16_gemm_nt(
+          source, dense, nullptr, output, tiled, weight.out_features,
+          weight.in_features, DenseGemmBias::kNone, 0, 0, stream);
+    }
+    if (tiled != rows) {
+      vidfab::cuda::launch_deterministic_scalar_gemm_nt(
+          source, dense, nullptr, output, rows - tiled,
+          weight.out_features, weight.in_features,
+          DenseGemmMode::kBFloat16, DenseGemmBias::kNone,
+          tiled, tiled, stream);
+    }
+  };
+
+  vidfab::cuda::launch_rmsnorm(x, w.input_layernorm, n, d.num_tokens,
+                               d.hidden, d.rms_norm_eps, stream);
+  if (taps) copy_tap(n, taps->input_norm, L * d.hidden);
+  projection(w.q_proj, n, q);
+  projection(w.k_proj, n, k);
+  projection(w.v_proj, n, v);
+  vidfab::cuda::launch_head_rmsnorm(q, w.q_norm, d.num_tokens, d.num_heads,
+                                    d.head_dim, d.rms_norm_eps, stream);
+  vidfab::cuda::launch_head_rmsnorm(k, w.k_norm, d.num_tokens,
+                                    d.num_kv_heads, d.head_dim,
+                                    d.rms_norm_eps, stream);
+  vidfab::cuda::launch_rope_neox(q, cos, sin, d.num_tokens, d.num_heads,
+                                 d.head_dim, stream);
+  vidfab::cuda::launch_rope_neox(k, cos, sin, d.num_tokens,
+                                 d.num_kv_heads, d.head_dim, stream);
+  if (taps) {
+    copy_tap(q, taps->query, L * q_width);
+    copy_tap(k, taps->key, L * kv_width);
+    copy_tap(v, taps->value, L * kv_width);
+  }
+  vidfab::cuda::launch_deterministic_causal_gqa_attention(
+      stream, q, k, v, attention, rows, d.num_heads, d.num_kv_heads,
+      d.head_dim, exact_attention_scale(d.head_dim));
+  if (taps) copy_tap(attention, taps->attention, L * q_width);
+  projection(w.o_proj, attention, branch);
+  launch_residual_add_exact(x, branch, L * d.hidden, stream);
+  if (taps) copy_tap(x, taps->attention_residual, L * d.hidden);
+  vidfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n,
+                               d.num_tokens, d.hidden, d.rms_norm_eps, stream);
+  if (taps) copy_tap(n, taps->post_attention_norm, L * d.hidden);
+  projection(w.gate_proj, n, gate);
+  projection(w.up_proj, n, up);
+  if (taps) {
+    copy_tap(gate, taps->gate, L * d.intermediate);
+    copy_tap(up, taps->up, L * d.intermediate);
+  }
+  launch_swiglu_split_exact(gate, up, activation,
+                             L * d.intermediate, stream);
+  if (taps) copy_tap(activation, taps->activation, L * d.intermediate);
+  projection(w.down_proj, activation, branch);
+  launch_residual_add_exact(x, branch, L * d.hidden, stream);
+  if (taps) copy_tap(x, taps->final_residual, L * d.hidden);
 }
 
 // --- Encoder ------------------------------------------------------------------

@@ -295,4 +295,11 @@ void launch_quantize_f8e4m3(const __nv_bfloat16* src, float input_scale, uint8_t
 void launch_widen_bf16(const __nv_bfloat16* src, float* dst, size_t n, cudaStream_t stream);
 void launch_narrow_to_bf16(const float* src, __nv_bfloat16* dst, size_t n, cudaStream_t stream);
 
+// Canonical exact-mode dense view. Non-BF16 formats carve one [out,in] BF16
+// matrix from caller-owned workspace and use the same materialization kernels
+// as LinearRunner; native BF16 returns its immutable device pointer.
+const __nv_bfloat16* materialize_bf16_exact(const QuantWeight& weight,
+                                            Workspace& workspace,
+                                            cudaStream_t stream);
+
 }  // namespace vidfab::cuda
