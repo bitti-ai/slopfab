@@ -1,0 +1,222 @@
+#version 460
+#extension GL_ARB_gpu_shader_int64 : require
+#extension GL_EXT_scalar_block_layout : require
+
+// Deterministic, memory-bounded reference attention. One workgroup owns one
+// (query row, head); keys are visited in fixed 128-row tiles. The public plan
+// restricts head_dim to <=128 so one lane owns one output component and keeps
+// its fp32 accumulator in a register for the whole sequence.
+layout(local_size_x = 128) in;
+layout(set = 0, binding = 0, std430) readonly buffer QueryData { uint words[]; } query_data;
+layout(set = 0, binding = 1, std430) readonly buffer KeyData { uint words[]; } key_data;
+layout(set = 0, binding = 2, std430) readonly buffer ValueData { uint words[]; } value_data;
+layout(set = 0, binding = 3, std430) buffer OutputData { uint words[]; } output_data;
+
+layout(push_constant) uniform Parameters {
+  uint sequence;
+  uint heads;
+  uint head_dim;
+  uint scale_bits;
+  uint query_row_offset;
+  uint output_row_offset;
+  uint rows;
+  uint reserved;
+} p;
+
+shared float score_or_probability[128];
+shared float reduction[128];
+shared uint output_bits[128];
+
+uint load_u16(uint source, uint index) {
+  uint packed = source == 0u ? query_data.words[index >> 1u]
+      : source == 1u ? key_data.words[index >> 1u]
+                     : value_data.words[index >> 1u];
+  return (packed >> (16u * (index & 1u))) & 0xffffu;
+}
+
+uint fp16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint sign = (bits >> 16u) & 0x8000u;
+  uint exponent_bits = (bits >> 23u) & 0xffu;
+  uint mantissa = bits & 0x007fffffu;
+  if (exponent_bits == 0xffu) return mantissa == 0u ? sign | 0x7c00u : 0x7fffu;
+  if (exponent_bits == 0u) return sign;
+  int exponent = int(exponent_bits) - 127;
+  if (exponent > 15) return sign | 0x7c00u;
+  if (exponent >= -14) {
+    uint rounded = mantissa + 0x00000fffu + ((mantissa >> 13u) & 1u);
+    uint half_exponent = uint(exponent + 15);
+    if ((rounded & 0x00800000u) != 0u) { rounded = 0u; ++half_exponent; }
+    if (half_exponent >= 31u) return sign | 0x7c00u;
+    return sign | (half_exponent << 10u) | ((rounded >> 13u) & 0x03ffu);
+  }
+  if (exponent < -25) return sign;
+  uint significand = 0x00800000u | mantissa;
+  uint shift = uint(-exponent - 1);
+  uint base = significand >> shift;
+  uint remainder = significand & ((1u << shift) - 1u);
+  uint halfway = 1u << (shift - 1u);
+  if (remainder > halfway || (remainder == halfway && (base & 1u) != 0u)) ++base;
+  return sign | base;
+}
+
+uint fp16_to_fp32_bits(uint bits) {
+  uint sign = (bits & 0x8000u) << 16u;
+  uint exponent = (bits >> 10u) & 0x1fu;
+  uint mantissa = bits & 0x03ffu;
+  if (exponent == 0x1fu) return mantissa == 0u ? sign | 0x7f800000u : 0x7fffffffu;
+  if (exponent != 0u) return sign | ((exponent + 112u) << 23u) | (mantissa << 13u);
+  if (mantissa == 0u) return sign;
+  uint leading = uint(findMSB(mantissa));
+  return sign | ((103u + leading) << 23u) |
+         ((mantissa << (23u - leading)) & 0x007fffffu);
+}
+
+float bf16_as_f16(uint source, uint index) {
+  float widened = uintBitsToFloat(load_u16(source, index) << 16u);
+  return uintBitsToFloat(fp16_to_fp32_bits(fp16_rte(widened)));
+}
+
+float f16_round(float value) {
+  return uintBitsToFloat(fp16_to_fp32_bits(fp16_rte(value)));
+}
+
+uint bf16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  if ((bits & 0x7fffffffu) > 0x7f800000u) return 0x7fffu;
+  return (bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u;
+}
+
+// Identical fixed range reduction/polynomial to deterministic_math.cuh.
+float deterministic_exp_nonpositive(float value) {
+  if (value <= -87.0f) return 0.0f;
+  precise float scaled = value * 1.4426950408889634f;
+  int exponent = int(scaled);
+  if (float(exponent) > scaled) --exponent;
+  precise float remainder = fma(-float(exponent), 0.693145751953125f, value);
+  remainder = fma(-float(exponent), 1.428606765330187e-6f, remainder);
+  precise float polynomial = 2.7557319223985893e-7f;
+  polynomial = fma(polynomial, remainder, 2.755731922398589e-6f);
+  polynomial = fma(polynomial, remainder, 2.48015873015873e-5f);
+  polynomial = fma(polynomial, remainder, 1.984126984126984e-4f);
+  polynomial = fma(polynomial, remainder, 1.388888888888889e-3f);
+  polynomial = fma(polynomial, remainder, 8.333333333333333e-3f);
+  polynomial = fma(polynomial, remainder, 4.166666666666667e-2f);
+  polynomial = fma(polynomial, remainder, 1.666666666666667e-1f);
+  polynomial = fma(polynomial, remainder, 0.5f);
+  polynomial = fma(polynomial, remainder, 1.0f);
+  polynomial = fma(polynomial, remainder, 1.0f);
+  return polynomial * uintBitsToFloat(uint(exponent + 127) << 23u);
+}
+
+uint64_t round_quotient_even(uint64_t numerator, uint64_t denominator) {
+  uint64_t quotient = numerator / denominator;
+  uint64_t remainder = numerator - quotient * denominator;
+  uint64_t complement = denominator - remainder;
+  if (remainder > complement || (remainder == complement && (quotient & 1ul) != 0ul))
+    ++quotient;
+  return quotient;
+}
+
+// IEEE RNE for the finite-normal/zero attention domain. The host gate rejects
+// devices without shaderInt64, so no implementation-defined fp32 division is
+// part of the exact result contract.
+float deterministic_divide(float numerator_value, float denominator_value) {
+  uint numerator_bits = floatBitsToUint(numerator_value);
+  uint denominator_bits = floatBitsToUint(denominator_value);
+  uint sign = (numerator_bits ^ denominator_bits) & 0x80000000u;
+  uint numerator_magnitude = numerator_bits & 0x7fffffffu;
+  uint denominator_magnitude = denominator_bits & 0x7fffffffu;
+  if (numerator_magnitude == 0u) return uintBitsToFloat(sign);
+
+  uint a = (numerator_magnitude & 0x007fffffu) | 0x00800000u;
+  uint b = (denominator_magnitude & 0x007fffffu) | 0x00800000u;
+  int exponent = int(numerator_magnitude >> 23u) - int(denominator_magnitude >> 23u) + 127;
+  uint shift = 23u;
+  if (a < b) { --exponent; shift = 24u; }
+  uint64_t significand = round_quotient_even(uint64_t(a) << shift, uint64_t(b));
+  if (significand == (1ul << 24u)) { significand >>= 1u; ++exponent; }
+  if (exponent >= 255) return uintBitsToFloat(sign | 0x7f800000u);
+  if (exponent <= 0) {
+    uint sub_shift = uint(1 - exponent);
+    if (sub_shift >= 64u) return uintBitsToFloat(sign);
+    uint64_t base = significand >> sub_shift;
+    uint64_t lost_mask = (1ul << sub_shift) - 1ul;
+    uint64_t lost = significand & lost_mask;
+    uint64_t halfway = 1ul << (sub_shift - 1u);
+    if (lost > halfway || (lost == halfway && (base & 1ul) != 0ul)) ++base;
+    return uintBitsToFloat(sign | uint(base));
+  }
+  return uintBitsToFloat(sign | (uint(exponent) << 23u) |
+                         (uint(significand) & 0x007fffffu));
+}
+
+void main() {
+  uint lane = gl_LocalInvocationID.x;
+  uint local_row = gl_WorkGroupID.x;
+  uint head = gl_WorkGroupID.y;
+  if (local_row >= p.rows || head >= p.heads) return;
+  uint query_row = p.query_row_offset + local_row;
+  uint q_base = (query_row * p.heads + head) * p.head_dim;
+  float scale = uintBitsToFloat(p.scale_bits);
+  precise float running_max = uintBitsToFloat(0xff800000u);
+  precise float running_sum = 0.0f;
+  precise float output_accumulator = 0.0f;
+
+  for (uint key_base = 0u; key_base < p.sequence; key_base += 128u) {
+    uint key_row = key_base + lane;
+    precise float score = 0.0f;
+    if (key_row < p.sequence) {
+      uint k_base = (key_row * p.heads + head) * p.head_dim;
+      for (uint d = 0u; d < p.head_dim; ++d)
+        score = fma(bf16_as_f16(0u, q_base + d),
+                    bf16_as_f16(1u, k_base + d), score);
+      score = f16_round(score * scale);
+    } else {
+      score = uintBitsToFloat(0xff800000u);
+    }
+    score_or_probability[lane] = score;
+    reduction[lane] = score;
+    barrier();
+    for (uint width = 64u; width != 0u; width >>= 1u) {
+      if (lane < width) reduction[lane] = max(reduction[lane], reduction[lane + width]);
+      barrier();
+    }
+    float tile_max = reduction[0];
+    float next_max = max(running_max, tile_max);
+    float correction = running_max == uintBitsToFloat(0xff800000u)
+        ? 0.0f : deterministic_exp_nonpositive(running_max - next_max);
+    float exponential = key_row < p.sequence
+        ? deterministic_exp_nonpositive(score - next_max) : 0.0f;
+    score_or_probability[lane] = f16_round(exponential);
+    reduction[lane] = exponential;
+    barrier();
+    for (uint width = 64u; width != 0u; width >>= 1u) {
+      if (lane < width) reduction[lane] = reduction[lane] + reduction[lane + width];
+      barrier();
+    }
+    if (lane < p.head_dim) {
+      output_accumulator = output_accumulator * correction;
+      for (uint j = 0u; j < 128u && key_base + j < p.sequence; ++j) {
+        uint v_index = ((key_base + j) * p.heads + head) * p.head_dim + lane;
+        output_accumulator = fma(score_or_probability[j],
+                                 bf16_as_f16(2u, v_index),
+                                 output_accumulator);
+      }
+    }
+    running_sum = fma(running_sum, correction, reduction[0]);
+    running_max = next_max;
+    barrier();
+  }
+
+  if (lane < p.head_dim) {
+    uint output_index = ((p.output_row_offset + local_row) * p.heads + head) * p.head_dim + lane;
+    output_bits[lane] = bf16_rte(deterministic_divide(output_accumulator, running_sum));
+  }
+  barrier();
+  if (lane < p.head_dim && (lane & 1u) == 0u) {
+    uint output_index = ((p.output_row_offset + local_row) * p.heads + head) * p.head_dim + lane;
+    uint high = lane + 1u < p.head_dim ? output_bits[lane + 1u] : 0u;
+    output_data.words[output_index >> 1u] = output_bits[lane] | (high << 16u);
+  }
+}

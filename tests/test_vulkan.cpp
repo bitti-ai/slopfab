@@ -57,6 +57,51 @@ uint16_t reference_bf16(float value) {
   return static_cast<uint16_t>((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
 }
 
+VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
+  using namespace vidfab;
+  using namespace vidfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore ||
+      !physical.front().info().shader_int64) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  if (!context.exact_normalization()) return;
+
+  constexpr uint32_t sequence = 1, heads = 2, dim = 64;
+  const uint64_t extent[] = {sequence, heads, dim};
+  const TensorLayout layout = TensorLayout::contiguous(extent, 3);
+  DeviceTensor q = context.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor k = context.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor v = context.allocate(layout, ScalarType::kBFloat16);
+  DeviceTensor out = context.allocate(layout, ScalarType::kBFloat16);
+  std::vector<uint16_t> zeros(heads * dim, 0);
+  std::vector<uint16_t> values(heads * dim);
+  for (size_t i = 0; i < values.size(); ++i) {
+    const float value = static_cast<float>(static_cast<int>(i % 17) - 8) / 8.0f;
+    values[i] = reference_bf16(value);
+  }
+  context.upload_bytes(q, zeros.data(), zeros.size() * sizeof(uint16_t));
+  context.upload_bytes(k, zeros.data(), zeros.size() * sizeof(uint16_t));
+  context.upload_bytes(v, values.data(), values.size() * sizeof(uint16_t));
+  BlockedAttentionPlanDesc desc;
+  desc.sequence = sequence;
+  desc.heads = heads;
+  desc.head_dim = dim;
+  desc.scale = 0.125f;
+  BlockedAttentionPlan plan = BlockedAttentionPlan::create(context, desc);
+  TensorBatch batch = context.begin_batch();
+  plan.record(batch, q, k, v, out);
+  batch.submit().wait();
+  std::vector<uint16_t> actual(values.size());
+  context.download_bytes(out, actual.data(), actual.size() * sizeof(uint16_t));
+  CHECK(std::memcmp(values.data(), actual.data(), values.size() * sizeof(uint16_t)) == 0);
+}
+
 VIDFAB_TEST(vulkan_linear_weight_cpu_reference) {
   using namespace vidfab;
   using namespace vidfab::vulkan;

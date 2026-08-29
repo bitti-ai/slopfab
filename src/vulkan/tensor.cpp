@@ -108,6 +108,11 @@ struct DenseGemmPlan::Impl {
   DenseGemmPlanDesc desc;
 };
 
+struct BlockedAttentionPlan::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  BlockedAttentionPlanDesc desc;
+};
+
 struct PreparedF16Activation::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   DeviceTensor tensor;
@@ -184,6 +189,16 @@ struct TensorContext::Impl {
     uint32_t input_row_offset = 0;
     uint32_t groups_x = 0;
   };
+  struct AttentionParameters {
+    uint32_t sequence = 0;
+    uint32_t heads = 0;
+    uint32_t head_dim = 0;
+    uint32_t scale_bits = 0;
+    uint32_t query_row_offset = 0;
+    uint32_t output_row_offset = 0;
+    uint32_t rows = 0;
+    uint32_t reserved = 0;
+  };
   static constexpr uint32_t kMaxBatchOperators = 32;
 
   ComputeContext commands;
@@ -197,6 +212,7 @@ struct TensorContext::Impl {
   ComputePipeline gemm_coop_pipeline;
   ComputePipeline gemm_prepare_pipeline;
   ComputePipeline gemm_coop_f16_pipeline;
+  ComputePipeline attention_blocked_pipeline;
   ComputePipeline rms_norm_pipeline;
   ComputePipeline layer_norm_pipeline;
   ComputePipeline bf16_rms_block_pipeline;
@@ -215,6 +231,7 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> weight_bindings;
   std::vector<StorageBinding> gemm_bindings;
   std::vector<StorageBinding> gemm_prepare_bindings;
+  std::vector<StorageBinding> attention_bindings;
   bool full_arithmetic_exact = false;
   bool exact_vae_norm = false;
   bool cooperative_gemm = false;
@@ -240,7 +257,8 @@ struct TensorContext::Impl {
         vae_rope_bindings(7),
         weight_bindings(6),
         gemm_bindings(4),
-        gemm_prepare_bindings(2) {
+        gemm_prepare_bindings(2),
+        attention_bindings(4) {
     // Device is move-only; the opaque handle is sufficient for identity and
     // every owned Vulkan object already retains the shared device state.
     static_assert(sizeof(detail::kTensorOpsSpirv) % sizeof(uint32_t) == 0);
@@ -385,6 +403,10 @@ struct TensorContext::Impl {
       vae_rope_pipeline = make_norm_pipeline(
           detail::kTensorVaeRopeSpirv, sizeof(detail::kTensorVaeRopeSpirv), 7,
           32, 1, sizeof(VaeRopeParameters));
+      attention_blocked_pipeline = make_norm_pipeline(
+          detail::kTensorAttentionBlockedSpirv,
+          sizeof(detail::kTensorAttentionBlockedSpirv), 4, 128, 1,
+          sizeof(AttentionParameters));
     }
     for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
     for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
@@ -397,6 +419,8 @@ struct TensorContext::Impl {
       gemm_bindings[i].binding = i;
     for (uint32_t i = 0; i < gemm_prepare_bindings.size(); ++i)
       gemm_prepare_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_bindings.size(); ++i)
+      attention_bindings[i].binding = i;
   }
 
   uintptr_t context_id = next_context_identity();
@@ -663,6 +687,19 @@ struct TensorBatch::Impl {
     commands.bind_compute(owner->weight_pipeline, owner->weight_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch(groups);
+  }
+
+  void dispatch_attention(
+      const TensorContext::Impl::AttentionParameters& parameters,
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 4>& resources) {
+    for (size_t i = 0; i < resources.size(); ++i) {
+      owner->attention_bindings[i].buffer = &resources[i]->buffer;
+      owner->attention_bindings[i].bytes = resources[i]->buffer.size();
+    }
+    commands.bind_compute(owner->attention_blocked_pipeline,
+                          owner->attention_bindings);
+    commands.push_constants(&parameters, sizeof(parameters));
+    commands.dispatch(parameters.rows, parameters.heads);
   }
 
   void record_shared_mod(bool fp32, DeviceTensor& input, DeviceTensor& weight,
@@ -2668,6 +2705,105 @@ void DenseGemmPlan::record_impl(
         bindings);
     batch.impl_->commands.push_constants(&parameters, sizeof(parameters));
     batch.impl_->commands.dispatch(groups_x, groups_y);
+  } catch (...) {
+    batch.impl_->poisoned = true;
+    throw;
+  }
+}
+
+BlockedAttentionPlan::BlockedAttentionPlan() = default;
+BlockedAttentionPlan::~BlockedAttentionPlan() = default;
+BlockedAttentionPlan::BlockedAttentionPlan(BlockedAttentionPlan&&) noexcept = default;
+BlockedAttentionPlan& BlockedAttentionPlan::operator=(BlockedAttentionPlan&&) noexcept = default;
+BlockedAttentionPlan::BlockedAttentionPlan(std::shared_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+BlockedAttentionPlan::operator bool() const noexcept { return impl_ != nullptr; }
+
+BlockedAttentionPlan BlockedAttentionPlan::create(
+    TensorContext& context, const BlockedAttentionPlanDesc& desc) {
+  if (!context.impl_) throw std::invalid_argument("vulkan attention: empty context");
+  if (!context.impl_->exact_vae_norm) {
+    throw std::runtime_error(
+        "vulkan attention: exact blocked attention is unavailable on this device/driver");
+  }
+  if (desc.sequence == 0 || desc.heads == 0 ||
+      (desc.head_dim != 64 && desc.head_dim != 72 && desc.head_dim != 128) ||
+      !std::isnormal(desc.scale) || desc.scale <= 0.0f) {
+    throw std::invalid_argument("vulkan attention: invalid exact blocked plan");
+  }
+  uint64_t elements = checked_multiply(desc.sequence, desc.heads, "attention");
+  elements = checked_multiply(elements, desc.head_dim, "attention");
+  if (elements > std::numeric_limits<uint32_t>::max() ||
+      desc.sequence > context.impl_->max_dispatch_x ||
+      desc.heads > context.impl_->max_dispatch_y ||
+      checked_multiply(elements, 2, "attention") > context.impl_->max_storage_bytes) {
+    throw std::out_of_range("vulkan attention: plan exceeds device/index limits");
+  }
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_;
+  result->desc = desc;
+  return BlockedAttentionPlan(std::move(result));
+}
+
+const BlockedAttentionPlanDesc& BlockedAttentionPlan::description() const {
+  if (!impl_) throw std::logic_error("vulkan attention: empty plan");
+  return impl_->desc;
+}
+
+void BlockedAttentionPlan::record(
+    TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
+    DeviceTensor& value, DeviceTensor& output, uint32_t query_row_offset,
+    uint32_t rows, uint32_t output_row_offset) const {
+  if (!impl_ || !batch.impl_ || batch.impl_->poisoned) {
+    throw std::logic_error("vulkan attention: empty plan or batch");
+  }
+  if (batch.impl_->owner != impl_->owner) {
+    throw std::invalid_argument("vulkan attention: plan belongs to another context");
+  }
+  auto q = impl_->owner->require(query);
+  auto k = impl_->owner->require(key);
+  auto v = impl_->owner->require(value);
+  auto out = impl_->owner->require(output);
+  const auto& desc = impl_->desc;
+  if (query_row_offset > desc.sequence) {
+    throw std::invalid_argument("vulkan attention: query row offset is out of range");
+  }
+  const uint32_t selected_rows = rows == 0 ? desc.sequence - query_row_offset : rows;
+  const std::array<uint64_t, 4> expected{
+      desc.sequence, desc.heads, desc.head_dim, 0};
+  auto valid_layout = [&](const std::shared_ptr<DeviceTensor::Impl>& tensor) {
+    return tensor->type == ScalarType::kBFloat16 &&
+        tensor->layout.rank == 3 && tensor->layout.is_contiguous() &&
+        tensor->layout.extent[0] == expected[0] &&
+        tensor->layout.extent[1] == expected[1] &&
+        tensor->layout.extent[2] == expected[2];
+  };
+  const uint64_t query_end = static_cast<uint64_t>(query_row_offset) + selected_rows;
+  const uint64_t output_end = static_cast<uint64_t>(output_row_offset) + selected_rows;
+  if (selected_rows == 0 || query_end > desc.sequence || output_end > desc.sequence ||
+      selected_rows > impl_->owner->max_dispatch_x ||
+      desc.heads > impl_->owner->max_dispatch_y || !valid_layout(q) ||
+      !valid_layout(k) || !valid_layout(v) || !valid_layout(out) ||
+      q.get() == k.get() || q.get() == v.get() || k.get() == v.get() ||
+      out.get() == q.get() || out.get() == k.get() || out.get() == v.get()) {
+    throw std::invalid_argument("vulkan attention: invalid tensor/range/alias");
+  }
+  TensorContext::Impl::AttentionParameters parameters;
+  parameters.sequence = desc.sequence;
+  parameters.heads = desc.heads;
+  parameters.head_dim = desc.head_dim;
+  std::memcpy(&parameters.scale_bits, &desc.scale, sizeof(desc.scale));
+  parameters.query_row_offset = query_row_offset;
+  parameters.output_row_offset = output_row_offset;
+  parameters.rows = selected_rows;
+  try {
+    batch.impl_->count_operator();
+    batch.impl_->transition(q, BufferAccess::kComputeRead);
+    batch.impl_->transition(k, BufferAccess::kComputeRead);
+    batch.impl_->transition(v, BufferAccess::kComputeRead);
+    batch.impl_->transition(out, BufferAccess::kComputeWrite);
+    std::array<std::shared_ptr<DeviceTensor::Impl>, 4> resources{q, k, v, out};
+    batch.impl_->dispatch_attention(parameters, resources);
   } catch (...) {
     batch.impl_->poisoned = true;
     throw;

@@ -13,6 +13,7 @@ class TensorContext;
 class TensorBatch;
 class LinearWeight;
 class DenseGemmPlan;
+class BlockedAttentionPlan;
 class PreparedF16Activation;
 class PreparedNVFP4WeightView;
 class StreamedNVFP4WeightCache;
@@ -45,6 +46,7 @@ class DeviceTensor {
   friend class TensorBatch;
   friend class LinearWeight;
   friend class DenseGemmPlan;
+  friend class BlockedAttentionPlan;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
 };
@@ -173,6 +175,7 @@ class TensorBatch {
                                    bool convrot);
   friend class LinearWeight;
   friend class DenseGemmPlan;
+  friend class BlockedAttentionPlan;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
   struct Impl;
@@ -247,8 +250,48 @@ class TensorContext {
   friend class TensorBatch;
   friend class LinearWeight;
   friend class DenseGemmPlan;
+  friend class BlockedAttentionPlan;
   friend class PreparedF16Activation;
   friend class StreamedNVFP4WeightCache;
+};
+
+// Exact, unmasked, memory-bounded BF16 attention reference. This deliberately
+// excludes causal/GQA masks, frame bands, Sage2 and Sol routing; those are
+// distinct arithmetic contracts rather than flags on this plan.
+struct BlockedAttentionPlanDesc {
+  uint32_t sequence = 0;
+  uint32_t heads = 0;
+  uint32_t head_dim = 0;
+  // Required finite-normal positive bit pattern. Callers pin the model's host
+  // scale calculation instead of asking a shader to reproduce host sqrt.
+  float scale = 0.0f;
+};
+
+class BlockedAttentionPlan {
+ public:
+  BlockedAttentionPlan();
+  ~BlockedAttentionPlan();
+  BlockedAttentionPlan(BlockedAttentionPlan&&) noexcept;
+  BlockedAttentionPlan& operator=(BlockedAttentionPlan&&) noexcept;
+  BlockedAttentionPlan(const BlockedAttentionPlan&) = delete;
+  BlockedAttentionPlan& operator=(const BlockedAttentionPlan&) = delete;
+
+  static BlockedAttentionPlan create(TensorContext& context,
+                                     const BlockedAttentionPlanDesc& desc);
+  const BlockedAttentionPlanDesc& description() const;
+  // Tensors are contiguous token-major [sequence,heads,head_dim] BF16. The
+  // output must be distinct. A row range allows callers to split a long
+  // sequence over bounded batches without changing the fixed key traversal.
+  void record(TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
+              DeviceTensor& value, DeviceTensor& output,
+              uint32_t query_row_offset = 0, uint32_t rows = 0,
+              uint32_t output_row_offset = 0) const;
+  explicit operator bool() const noexcept;
+
+ private:
+  struct Impl;
+  explicit BlockedAttentionPlan(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace vidfab::vulkan
