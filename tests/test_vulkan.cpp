@@ -2980,6 +2980,41 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     CHECK(context.pooled_used_bytes() < real_used);
     std::printf("  CUDA-off real H3 block0 S65 FNV64 %016llx\n",
                 static_cast<unsigned long long>(real_digest));
+
+    H3MainGraphConfig real_graph_config;
+    real_graph_config.block = real_config;
+    real_graph_config.layers = 2;
+    ExactH3MainGraph real_graph = ExactH3MainGraph::create(
+        context, real_graph_config);
+    real_graph.load(real_checkpoint);
+    CHECK(real_graph.required_operators() == 58u);
+    auto run_real_graph = [&] {
+      context.upload_bytes(real_tokens, real_input.data(), real_input.size() * 2);
+      TensorBatch batch = context.begin_batch();
+      real_graph.record(batch, real_tokens, real_selectors, real_code,
+                        real_cosine, real_sine);
+      batch.submit().wait();
+      std::vector<uint16_t> result(real_input.size());
+      context.download_bytes(real_tokens, result.data(), result.size() * 2);
+      return result;
+    };
+    const std::vector<uint16_t> real_graph_output = run_real_graph();
+    uint64_t real_graph_digest = 1469598103934665603ull;
+    for (uint16_t bits : real_graph_output) {
+      real_graph_digest ^= bits & 0xffu; real_graph_digest *= 1099511628211ull;
+      real_graph_digest ^= bits >> 8; real_graph_digest *= 1099511628211ull;
+    }
+    CHECK(real_graph_digest == 0x7f940c81104e7471ull);
+    const uint64_t real_graph_reserved = context.reserved_bytes();
+    const uint64_t real_graph_descriptors = context.descriptor_set_allocations();
+    CHECK(run_real_graph() == real_graph_output);
+    CHECK(context.reserved_bytes() == real_graph_reserved);
+    CHECK(context.descriptor_set_allocations() == real_graph_descriptors);
+    const uint64_t real_graph_used = context.pooled_used_bytes();
+    real_graph.unload();
+    CHECK(context.pooled_used_bytes() < real_graph_used);
+    std::printf("  CUDA-off real H3 main2 S65 FNV64 %016llx\n",
+                static_cast<unsigned long long>(real_graph_digest));
   }
   std::error_code ignored;
   std::filesystem::remove(valid_path, ignored);
