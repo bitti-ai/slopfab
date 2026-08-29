@@ -871,9 +871,39 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
   CHECK(read_file(cuda_wav) == read_file(vk_wav));
   std::filesystem::remove(cuda_wav);
   std::filesystem::remove(vk_wav);
+
+  constexpr int production_length = 405;
+  std::vector<float> production = values(
+      size_t(2) * 32 * production_length, 71, 613, 1.0f / 256.0f);
+  const auto cuda_begin = std::chrono::steady_clock::now();
+  const vae::DecodedAudio cuda_production = cuda_decoder.decode(
+      production.data(), production_length);
+  const double cuda_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - cuda_begin).count();
+  const vae::DecodedAudio vk_warm = vk_decoder.decode(
+      production.data(), production_length);
+  check_exact(cuda_production.samples, vk_warm.samples,
+              "complete A405 audio decoder");
+  const uint64_t stable_reserved = vk_decoder.allocator_reserved_bytes();
+  const uint64_t stable_descriptors = vk_decoder.descriptor_set_allocations();
+  const auto vk_begin = std::chrono::steady_clock::now();
+  const vae::DecodedAudio vk_production = vk_decoder.decode(
+      production.data(), production_length);
+  const double vk_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - vk_begin).count();
+  check_exact(cuda_production.samples, vk_production.samples,
+              "repeated A405 audio decoder");
+  CHECK(vk_decoder.allocator_reserved_bytes() == stable_reserved);
+  CHECK(vk_decoder.descriptor_set_allocations() == stable_descriptors);
+  CHECK(vk_decoder.allocator_used_bytes() >= vk_decoder.peak_device_bytes());
+  CHECK(vk_decoder.allocator_used_bytes() <=
+        vk_decoder.peak_device_bytes() + (128ull << 20));
+  const uint64_t production_digest = fnv64({vk_production.samples});
   std::printf(
-      "  exact Vulkan audio decoder: load %.1f ms, A3 forward %.1f ms, weights/peak %.1f/%.1f MiB, pool %.1f/%.1f MiB, descriptors %llu\n",
-      load_ms, forward_ms, double(vk_decoder.weight_bytes()) / 1048576.0,
+      "  exact Vulkan audio decoder: load %.1f ms, A3 forward %.1f ms, A405 CUDA/Vulkan %.1f/%.1f ms, FNV64 %016llx, weights/peak %.1f/%.1f MiB, pool %.1f/%.1f MiB, descriptors %llu\n",
+      load_ms, forward_ms, cuda_ms, vk_ms,
+      static_cast<unsigned long long>(production_digest),
+      double(vk_decoder.weight_bytes()) / 1048576.0,
       double(vk_decoder.peak_device_bytes()) / 1048576.0,
       double(vk_decoder.allocator_used_bytes()) / 1048576.0,
       double(vk_decoder.allocator_reserved_bytes()) / 1048576.0,
