@@ -2211,7 +2211,32 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
 
   s.text_cache.allocate(rows * hidden);
   __nv_bfloat16* x = s.text_cache.get();
-  s.linear.forward(s.condition_proj, xin, num_tokens, x, ws);
+  if (s.attention_mode == AttentionMode::kExact) {
+    if (s.condition_proj.format != QuantFormat::kBF16 ||
+        s.condition_proj.bias_format != QuantFormat::kF32 ||
+        s.condition_proj.pre_quant_scale != nullptr || s.condition_proj.convrot) {
+      throw std::runtime_error(
+          "transformer: exact condition projection requires plain BF16 weight and fp32 bias");
+    }
+    const uint32_t tiled = static_cast<uint32_t>(num_tokens) / 64 * 64;
+    if (tiled != 0) {
+      cuda::launch_deterministic_bf16_gemm_nt(
+          xin, static_cast<const __nv_bfloat16*>(s.condition_proj.data),
+          s.condition_proj.bias, x, tiled, static_cast<uint32_t>(hidden),
+          static_cast<uint32_t>(s.cfg.text_dim), DenseGemmBias::kFloat32,
+          0, 0, s.stream.get());
+    }
+    if (tiled != static_cast<uint32_t>(num_tokens)) {
+      cuda::launch_deterministic_scalar_gemm_nt(
+          xin, s.condition_proj.data, s.condition_proj.bias, x,
+          static_cast<uint32_t>(num_tokens) - tiled,
+          static_cast<uint32_t>(hidden), static_cast<uint32_t>(s.cfg.text_dim),
+          DenseGemmMode::kBFloat16, DenseGemmBias::kFloat32,
+          tiled, tiled, s.stream.get());
+    }
+  } else {
+    s.linear.forward(s.condition_proj, xin, num_tokens, x, ws);
+  }
   s.emit_stage("condition_proj", x, num_tokens, hidden);
 
   __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(rows * inner);
@@ -2459,7 +2484,20 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
                         const int32_t* index) {
     for (int start = 0; start < rows; start += chunk) {
       const int n = std::min(chunk, rows - start);
-      s.linear.forward_f32(w, src + static_cast<size_t>(start) * in_dim, n, fa, ws);
+      if (s.attention_mode == AttentionMode::kExact) {
+        if (w.format != QuantFormat::kF32 || w.bias_format != QuantFormat::kF32 ||
+            w.pre_quant_scale != nullptr || w.convrot) {
+          throw std::runtime_error(
+              "transformer: exact input projection requires plain fp32 weight and bias");
+        }
+        cuda::launch_deterministic_scalar_gemm_nt(
+            src, w.data, w.bias, fa, static_cast<uint32_t>(n),
+            static_cast<uint32_t>(hidden), static_cast<uint32_t>(in_dim),
+            DenseGemmMode::kFloat32, DenseGemmBias::kFloat32,
+            static_cast<uint32_t>(start), 0, s.stream.get());
+      } else {
+        s.linear.forward_f32(w, src + static_cast<size_t>(start) * in_dim, n, fa, ws);
+      }
       cuda::launch_narrow_to_bf16(fa, normed, static_cast<size_t>(n) * hidden, s.stream.get());
       cuda::launch_scatter_rows(normed, index + start, x, n, hidden, s.stream.get());
     }
@@ -2552,7 +2590,20 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
       cuda::launch_rmsnorm_modulate_f32(fa, s.final_norm, final_scale, final_shift,
                                         ts_index + start, fb, n, hidden, cfg.norm_eps,
                                         s.stream.get());
-      s.linear.forward_f32(w, fb, n, dst + static_cast<size_t>(start) * out_dim, ws);
+      if (s.attention_mode == AttentionMode::kExact) {
+        if (w.format != QuantFormat::kF32 || w.bias_format != QuantFormat::kF32 ||
+            w.pre_quant_scale != nullptr || w.convrot) {
+          throw std::runtime_error(
+              "transformer: exact output head requires plain fp32 weight and bias");
+        }
+        cuda::launch_deterministic_scalar_gemm_nt(
+            fb, w.data, w.bias, dst, static_cast<uint32_t>(n),
+            static_cast<uint32_t>(out_dim), static_cast<uint32_t>(hidden),
+            DenseGemmMode::kFloat32, DenseGemmBias::kFloat32,
+            0, static_cast<uint32_t>(start), s.stream.get());
+      } else {
+        s.linear.forward_f32(w, fb, n, dst + static_cast<size_t>(start) * out_dim, ws);
+      }
     }
   };
   run_head(s.video_out, patch, video_rows, s.d_video_idx.get(), s.d_ts_video.get(),

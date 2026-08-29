@@ -50,6 +50,7 @@
 #include "vidfab/vulkan/linear.h"
 #include "vidfab/vulkan/dit_block.h"
 #include "vidfab/vulkan/dit_graph.h"
+#include "vidfab/vulkan/dit_transformer.h"
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/vae_vit_block.h"
@@ -3608,6 +3609,272 @@ VIDFAB_TEST(cuda_vulkan_dit_real_main50_capture_replay) {
       double(graph.persistent_bytes()) / 1048576.0,
       double(graph.scratch_bytes()) / 1048576.0,
       double(graph.peak_device_bytes()) / 1048576.0,
+      double(vk.pooled_used_bytes()) / 1048576.0,
+      double(vk.reserved_bytes()) / 1048576.0,
+      static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+}
+
+VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
+  using namespace vidfab;
+  using namespace vidfab::dit;
+  using namespace vidfab::vulkan;
+  const std::filesystem::path checkpoint_path =
+      "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
+  const std::filesystem::path capture_path =
+      "tests/data/h3_transformer_step0_seed424242_256.vfh3f";
+  if (!std::filesystem::exists(checkpoint_path) ||
+      !std::filesystem::exists(capture_path) || !Instance::available()) return;
+  std::ifstream stream(capture_path, std::ios::binary | std::ios::ate);
+  const std::streamsize capture_bytes = stream.tellg();
+  stream.seekg(0);
+  std::vector<uint8_t> capture(static_cast<size_t>(capture_bytes));
+  CHECK(static_cast<bool>(stream.read(
+      reinterpret_cast<char*>(capture.data()), capture_bytes)));
+#ifdef _WIN32
+  const std::array<uint8_t, 32> expected_capture_sha{
+      0x3e,0x34,0x76,0xe3,0x97,0xfc,0xee,0x20,0x37,0x37,0x33,0x2d,0x17,0x1d,0x46,0x50,
+      0xf5,0x54,0x33,0x47,0x12,0x31,0xa7,0xfd,0x4f,0xf2,0x4f,0x8e,0x0f,0x84,0xf8,0xe7};
+  CHECK(sha256_mapping(capture.data(), capture.size()) == expected_capture_sha);
+#endif
+  if (capture.size() < sizeof(H3TransformerCaptureHeader))
+    throw std::runtime_error("truncated H3 transformer capture");
+  H3TransformerCaptureHeader header{};
+  std::memcpy(&header, capture.data(), sizeof(header));
+  CHECK(std::memcmp(header.magic, "VFH3FWD\0", 8) == 0);
+  CHECK(header.version == 1 && header.header_bytes == sizeof(header));
+  CHECK(header.sequence == 526 && header.hidden == 5376 &&
+        header.heads == 56 && header.head_dim == 128 && header.ffn == 14336);
+  CHECK(header.timesteps == 1 && header.modalities == 3 &&
+        header.adaln_rank == 8 && header.layers == 50 &&
+        header.text_rows == 4 && header.video_rows == 448 &&
+        header.audio_rows == 74 && header.text_dim == 5120 &&
+        header.video_dim == 96 && header.audio_dim == 32 &&
+        header.refiner_layers == 2 && header.range_values == 20 &&
+        header.denoise_step == 0);
+  const std::array<uint64_t, 6> expected_text_hashes{
+      0x6d891a14ee2a38bdull, 0xcc91d0e61a56bd7bull,
+      0xd5ddff8656b1d581ull, 0xaf5733d914839cf2ull,
+      0xd510022f4c0e9032ull, 0x1e4af4a0c48fffc7ull};
+  for (uint32_t stage = 0; stage < expected_text_hashes.size(); ++stage)
+    CHECK(header.text_boundary_fnv64[stage] == expected_text_hashes[stage]);
+  CHECK(header.packed_input_fnv64 == 0x54c4e5ce3af6d0deull);
+  CHECK(header.main_final_fnv64 == 0xda1038eb60eea19full);
+  CHECK(header.video_output_fnv64 == 0x7d7af2480929ae03ull);
+  CHECK(header.audio_output_fnv64 == 0x58197cbc23da3ab3ull);
+
+  size_t cursor = sizeof(header);
+  auto take = [&](auto& values, size_t count) {
+    using Value = typename std::decay_t<decltype(values)>::value_type;
+    if (count > (capture.size() - cursor) / sizeof(Value))
+      throw std::runtime_error("truncated H3 transformer capture payload");
+    values.resize(count);
+    std::memcpy(values.data(), capture.data() + cursor, count * sizeof(Value));
+    cursor += count * sizeof(Value);
+  };
+  std::vector<float> prompt, video, audio, code, cosine, sine,
+      expected_video, expected_audio;
+  std::vector<int32_t> selectors, ranges_data, video_ts, audio_ts;
+  std::vector<uint16_t> expected_text, expected_packed, expected_main;
+  take(prompt, header.prompt_elements);
+  take(video, header.video_elements);
+  take(audio, header.audio_elements);
+  take(selectors, header.sequence);
+  take(code, size_t(header.timesteps) * header.adaln_rank);
+  take(cosine, header.rope_elements);
+  take(sine, header.rope_elements);
+  take(ranges_data, header.range_values);
+  take(video_ts, header.video_rows);
+  take(audio_ts, header.audio_rows);
+  take(expected_text, header.text_elements);
+  take(expected_packed, header.packed_elements);
+  take(expected_main, header.packed_elements);
+  take(expected_video, header.video_elements);
+  take(expected_audio, header.audio_elements);
+  CHECK(cursor == capture.size());
+  CHECK(std::any_of(cosine.begin(), cosine.end(), [](float x) { return x != 1.0f; }));
+  CHECK(std::any_of(sine.begin(), sine.end(), [](float x) { return x != 0.0f; }));
+  auto fnv_bytes = [](const void* data, size_t bytes) {
+    uint64_t hash = 1469598103934665603ull;
+    const auto* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < bytes; ++i) { hash ^= p[i]; hash *= 1099511628211ull; }
+    return hash;
+  };
+  CHECK(fnv_bytes(expected_text.data(), expected_text.size() * 2) ==
+        header.text_boundary_fnv64[5]);
+  CHECK(fnv_bytes(expected_packed.data(), expected_packed.size() * 2) ==
+        header.packed_input_fnv64);
+  CHECK(fnv_bytes(expected_main.data(), expected_main.size() * 2) ==
+        header.main_final_fnv64);
+  CHECK(fnv_bytes(expected_video.data(), expected_video.size() * 4) ==
+        header.video_output_fnv64);
+  CHECK(fnv_bytes(expected_audio.data(), expected_audio.size() * 4) ==
+        header.audio_output_fnv64);
+
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+#ifdef _WIN32
+  const std::array<uint8_t, 32> expected_checkpoint_sha{
+      0x6a,0xb7,0xf0,0xc4,0x81,0x41,0xe7,0x91,0x9b,0x32,0xf9,0x25,0xca,0x3d,0xef,0x22,
+      0xe0,0x6a,0x6a,0xeb,0xeb,0x9e,0x0b,0x6f,0x5a,0x0b,0xe0,0xfe,0x84,0x09,0x97,0x6f};
+  CHECK(sha256_mapping(checkpoint.mapping_base(), checkpoint.file_size()) ==
+        expected_checkpoint_sha);
+#endif
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
+      !info.storage_buffer_16bit ||
+      !info.cooperative_matrix_bf16_f32_16x16x16) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(options);
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 2048;
+  TensorContext vk(device, context_options);
+  if (!vk.exact_h3_attention()) return;
+  ExactH3TransformerConfig config;
+  config.main.layers = header.layers;
+  config.main.block.sequence = header.sequence;
+  config.main.block.hidden = header.hidden;
+  config.main.block.heads = header.heads;
+  config.main.block.head_dim = header.head_dim;
+  config.main.block.ffn = header.ffn;
+  config.main.block.timesteps = header.timesteps;
+  config.main.block.modalities = header.modalities;
+  config.main.block.adaln_rank = header.adaln_rank;
+  config.text_rows = header.text_rows;
+  config.video_rows = header.video_rows;
+  config.audio_rows = header.audio_rows;
+  config.text_dim = header.text_dim;
+  config.video_dim = header.video_dim;
+  config.audio_dim = header.audio_dim;
+  config.refiner_layers = header.refiner_layers;
+
+  auto tensor2 = [&](uint64_t rows, uint64_t columns,
+                     ScalarType type = ScalarType::kFloat32) {
+    const uint64_t shape[] = {rows, columns};
+    return vk.allocate(TensorLayout::contiguous(shape, 2), type);
+  };
+  auto tensor1 = [&](uint64_t rows, ScalarType type) {
+    const uint64_t shape[] = {rows};
+    return vk.allocate(TensorLayout::contiguous(shape, 1), type);
+  };
+  DeviceTensor prompt_tensor = tensor2(header.text_rows, header.text_dim);
+  DeviceTensor video_tensor = tensor2(header.video_rows, header.video_dim);
+  DeviceTensor audio_tensor = tensor2(header.audio_rows, header.audio_dim);
+  DeviceTensor selector_tensor = tensor1(header.sequence, ScalarType::kInt32);
+  DeviceTensor code_tensor = tensor2(header.timesteps, header.adaln_rank);
+  DeviceTensor cosine_tensor = tensor2(header.sequence, 96);
+  DeviceTensor sine_tensor = tensor2(header.sequence, 96);
+  DeviceTensor video_ts_tensor = tensor1(header.video_rows, ScalarType::kInt32);
+  DeviceTensor audio_ts_tensor = tensor1(header.audio_rows, ScalarType::kInt32);
+  DeviceTensor video_output = tensor2(header.video_rows, header.video_dim);
+  DeviceTensor audio_output = tensor2(header.audio_rows, header.audio_dim);
+  vk.upload(prompt_tensor, prompt.data(), prompt.size());
+  vk.upload(video_tensor, video.data(), video.size());
+  vk.upload(audio_tensor, audio.data(), audio.size());
+  vk.upload_bytes(selector_tensor, selectors.data(), selectors.size() * 4);
+  vk.upload(code_tensor, code.data(), code.size());
+  vk.upload(cosine_tensor, cosine.data(), cosine.size());
+  vk.upload(sine_tensor, sine.data(), sine.size());
+  vk.upload_bytes(video_ts_tensor, video_ts.data(), video_ts.size() * 4);
+  vk.upload_bytes(audio_ts_tensor, audio_ts.data(), audio_ts.size() * 4);
+  H3AttentionRanges ranges = H3AttentionRanges::create(
+      vk, header.sequence, ranges_data.data(), header.range_values);
+
+  std::vector<DeviceTensor> text_boundaries;
+  for (uint32_t i = 0; i < 6; ++i)
+    text_boundaries.push_back(tensor2(header.text_rows, header.hidden,
+                                     ScalarType::kBFloat16));
+  DeviceTensor packed_tap = tensor2(header.sequence, header.hidden,
+                                    ScalarType::kBFloat16);
+  DeviceTensor main_tap = tensor2(header.sequence, header.hidden,
+                                  ScalarType::kBFloat16);
+  H3TransformerTextReplayTaps text_taps{text_boundaries.data(), 6};
+  H3TransformerForwardReplayTaps forward_taps{&packed_tap, &main_tap, nullptr};
+  const auto load_begin = std::chrono::steady_clock::now();
+  ExactH3Transformer transformer = ExactH3Transformer::create(vk, config);
+  transformer.load(checkpoint);
+  const double load_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - load_begin).count();
+  const uint32_t text_ops =
+      transformer.required_prepare_text_operators(&text_taps);
+  CHECK_MSG(text_ops == 43u, "real H3 transformer text ops %u != 43", text_ops);
+  const auto text_begin = std::chrono::steady_clock::now();
+  transformer.prepare_text(prompt_tensor, &text_taps);
+  const double text_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - text_begin).count();
+  for (uint32_t stage = 0; stage < 6; ++stage) {
+    std::vector<uint16_t> actual(header.text_elements);
+    vk.download_bytes(text_boundaries[stage], actual.data(), actual.size() * 2);
+    CHECK_MSG(fnv_bytes(actual.data(), actual.size() * 2) ==
+                  header.text_boundary_fnv64[stage],
+              "real H3 transformer text boundary %u mismatch: %016llx != %016llx",
+              stage, static_cast<unsigned long long>(
+                  fnv_bytes(actual.data(), actual.size() * 2)),
+              static_cast<unsigned long long>(header.text_boundary_fnv64[stage]));
+    if (stage == 5) CHECK(actual == expected_text);
+  }
+  CHECK(transformer.required_forward_operators(&forward_taps) == 1469u);
+  const auto first_begin = std::chrono::steady_clock::now();
+  TensorBatch first = vk.begin_batch();
+  transformer.record_forward(first, video_tensor, audio_tensor,
+      selector_tensor, code_tensor, cosine_tensor, sine_tensor,
+      video_ts_tensor, audio_ts_tensor, video_output, audio_output,
+      &ranges, &forward_taps);
+  CHECK(first.remaining_operator_capacity() == 579u);
+  first.submit().wait();
+  const double first_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - first_begin).count();
+  std::vector<uint16_t> actual_packed(header.packed_elements),
+      actual_main(header.packed_elements);
+  std::vector<float> actual_video(header.video_elements),
+      actual_audio(header.audio_elements);
+  vk.download_bytes(packed_tap, actual_packed.data(), actual_packed.size() * 2);
+  vk.download_bytes(main_tap, actual_main.data(), actual_main.size() * 2);
+  vk.download(video_output, actual_video.data(), actual_video.size());
+  vk.download(audio_output, actual_audio.data(), actual_audio.size());
+  CHECK(actual_packed == expected_packed);
+  CHECK(actual_main == expected_main);
+  CHECK(std::memcmp(actual_video.data(), expected_video.data(),
+                    actual_video.size() * 4) == 0);
+  CHECK(std::memcmp(actual_audio.data(), expected_audio.data(),
+                    actual_audio.size() * 4) == 0);
+  const uint64_t stable_used = vk.pooled_used_bytes();
+  const uint64_t stable_reserved = vk.reserved_bytes();
+  const uint64_t stable_descriptors = vk.descriptor_set_allocations();
+  const auto repeat_begin = std::chrono::steady_clock::now();
+  TensorBatch repeat = vk.begin_batch();
+  transformer.record_forward(repeat, video_tensor, audio_tensor,
+      selector_tensor, code_tensor, cosine_tensor, sine_tensor,
+      video_ts_tensor, audio_ts_tensor, video_output, audio_output, &ranges);
+  repeat.submit().wait();
+  const double repeat_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - repeat_begin).count();
+  vk.download(video_output, actual_video.data(), actual_video.size());
+  vk.download(audio_output, actual_audio.data(), actual_audio.size());
+  CHECK(std::memcmp(actual_video.data(), expected_video.data(),
+                    actual_video.size() * 4) == 0);
+  CHECK(std::memcmp(actual_audio.data(), expected_audio.data(),
+                    actual_audio.size() * 4) == 0);
+  CHECK(vk.pooled_used_bytes() == stable_used);
+  CHECK(vk.reserved_bytes() == stable_reserved);
+  CHECK(vk.descriptor_set_allocations() == stable_descriptors);
+  std::printf(
+      "  real H3 transformer S%u: load/text %.3f/%.3f ms, Vulkan taps/repeat %.3f/%.3f ms, packed/main/video/audio %016llx/%016llx/%016llx/%016llx, persistent/scratch/peak %.2f/%.2f/%.2f MiB, pool %.2f/%.2f MiB, descriptors %llu\n",
+      header.sequence, load_ms, text_ms, first_ms, repeat_ms,
+      static_cast<unsigned long long>(header.packed_input_fnv64),
+      static_cast<unsigned long long>(header.main_final_fnv64),
+      static_cast<unsigned long long>(header.video_output_fnv64),
+      static_cast<unsigned long long>(header.audio_output_fnv64),
+      double(transformer.persistent_bytes()) / 1048576.0,
+      double(transformer.scratch_bytes()) / 1048576.0,
+      double(transformer.peak_device_bytes()) / 1048576.0,
       double(vk.pooled_used_bytes()) / 1048576.0,
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk.descriptor_set_allocations()));

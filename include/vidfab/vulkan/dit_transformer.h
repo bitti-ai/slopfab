@@ -21,6 +21,19 @@ struct ExactH3TransformerConfig {
   uint32_t refiner_layers = 2;
 };
 
+struct H3TransformerTextReplayTaps {
+  // Six distinct BF16 [text_rows,hidden] tensors: condition, refiner0
+  // attention/final, refiner1 attention/final, final norm.
+  DeviceTensor* boundaries = nullptr;
+  uint32_t count = 0;
+};
+
+struct H3TransformerForwardReplayTaps {
+  DeviceTensor* packed_input = nullptr;
+  DeviceTensor* main_final = nullptr;
+  const H3MainGraphReplayTaps* main_boundaries = nullptr;
+};
+
 class ExactH3Transformer {
  public:
   ExactH3Transformer();
@@ -41,8 +54,10 @@ class ExactH3Transformer {
   // prompt is contiguous fp32 [text_rows,text_dim]. The cached final-refiner
   // BF16 stream remains device-resident for every subsequent evaluation.
   // One bounded submission; marks the cache ready only after completion.
-  void prepare_text(DeviceTensor& prompt);
-  uint32_t required_prepare_text_operators() const;
+  void prepare_text(DeviceTensor& prompt,
+      const H3TransformerTextReplayTaps* taps = nullptr);
+  uint32_t required_prepare_text_operators(
+      const H3TransformerTextReplayTaps* taps = nullptr) const;
 
   // Inputs/outputs are contiguous fp32 modality rows. The backend-neutral H3
   // packing invariant is [text|audio|video]; exact row-range transfers build
@@ -61,9 +76,9 @@ class ExactH3Transformer {
                       DeviceTensor& video_velocity,
                       DeviceTensor& audio_velocity,
                       const H3AttentionRanges* ranges = nullptr,
-                      const H3MainGraphReplayTaps* main_taps = nullptr);
+                      const H3TransformerForwardReplayTaps* taps = nullptr);
   uint32_t required_forward_operators(
-      const H3MainGraphReplayTaps* main_taps = nullptr) const;
+      const H3TransformerForwardReplayTaps* taps = nullptr) const;
 
   uint64_t persistent_bytes() const noexcept;
   uint64_t scratch_bytes() const noexcept;

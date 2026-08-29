@@ -326,23 +326,40 @@ const ExactH3TransformerConfig& ExactH3Transformer::config() const noexcept {
   return impl_->config;
 }
 
-uint32_t ExactH3Transformer::required_prepare_text_operators() const {
+uint32_t ExactH3Transformer::required_prepare_text_operators(
+    const H3TransformerTextReplayTaps* taps) const {
   if (!loaded()) throw std::logic_error("Vulkan H3 transformer: not loaded");
+  if (taps && (taps->count != 6 || !taps->boundaries))
+    throw std::invalid_argument("Vulkan H3 transformer: invalid text taps");
   uint64_t count = 3;  // narrow, condition projection, final norm
   for (const ExactH3BlockStage& stage : impl_->state->refiner)
     count += stage.required_operators();
+  if (taps) count += 6;
   if (count > UINT32_MAX) throw std::overflow_error(
       "Vulkan H3 transformer: prepare operator overflow");
   return static_cast<uint32_t>(count);
 }
 
-void ExactH3Transformer::prepare_text(DeviceTensor& prompt) {
+void ExactH3Transformer::prepare_text(
+    DeviceTensor& prompt, const H3TransformerTextReplayTaps* taps) {
   if (!loaded()) throw std::logic_error("Vulkan H3 transformer: not loaded");
   const auto& c = impl_->config; auto& s = *impl_->state;
   if (!tensor_is(*impl_->context, prompt, ScalarType::kFloat32,
                  c.text_rows, c.text_dim))
     throw std::invalid_argument("Vulkan H3 transformer: invalid prompt tensor");
-  const uint32_t need = required_prepare_text_operators();
+  if (taps) {
+    for (uint32_t i = 0; i < taps->count; ++i) {
+      if (!tensor_is(*impl_->context, taps->boundaries[i],
+                     ScalarType::kBFloat16, c.text_rows,
+                     c.main.block.hidden))
+        throw std::invalid_argument("Vulkan H3 transformer: invalid text tap");
+      for (uint32_t j = 0; j < i; ++j)
+        if (taps->boundaries[i].view().resource ==
+            taps->boundaries[j].view().resource)
+          throw std::invalid_argument("Vulkan H3 transformer: aliased text taps");
+    }
+  }
+  const uint32_t need = required_prepare_text_operators(taps);
   TensorBatch batch = impl_->context->begin_batch();
   if (batch.remaining_operator_capacity() < need)
     throw std::logic_error("Vulkan H3 transformer: insufficient prepare capacity");
@@ -350,19 +367,33 @@ void ExactH3Transformer::prepare_text(DeviceTensor& prompt) {
   s.condition_plan.record(batch, s.text_input, s.condition_weight,
                           s.text_cache, c.text_rows, 0, 0,
                           &s.condition_bias);
-  for (ExactH3BlockStage& stage : s.refiner)
+  if (taps) batch.copy(s.text_cache, taps->boundaries[0]);
+  for (uint32_t layer = 0; layer < s.refiner.size(); ++layer) {
+    H3BlockReplayTaps block_taps;
+    if (taps) {
+      block_taps.attention_residual = &taps->boundaries[1 + layer * 2];
+      block_taps.final_residual = &taps->boundaries[2 + layer * 2];
+    }
+    ExactH3BlockStage& stage = s.refiner[layer];
     stage.record(batch, s.text_cache, s.refiner_selectors, s.refiner_code,
-                 s.refiner_cosine, s.refiner_sine, s.refiner_scratch);
+                 s.refiner_cosine, s.refiner_sine, s.refiner_scratch, nullptr,
+                 taps ? &block_taps : nullptr);
+  }
   batch.rms_norm_bf16(s.text_cache, s.refiner_norm, s.text_cache,
                       c.main.block.epsilon);
+  if (taps) batch.copy(s.text_cache, taps->boundaries[5]);
   batch.submit().wait();
   impl_->text_ready = true;
 }
 
 uint32_t ExactH3Transformer::required_forward_operators(
-    const H3MainGraphReplayTaps* taps) const {
+    const H3TransformerForwardReplayTaps* taps) const {
   if (!loaded()) throw std::logic_error("Vulkan H3 transformer: not loaded");
-  const uint64_t count = uint64_t(17) + impl_->state->main.required_operators(taps);
+  const H3MainGraphReplayTaps* main_taps = taps ? taps->main_boundaries : nullptr;
+  const uint64_t count = uint64_t(17) +
+      impl_->state->main.required_operators(main_taps) +
+      (taps && taps->packed_input ? 1u : 0u) +
+      (taps && taps->main_final ? 1u : 0u);
   if (count > UINT32_MAX) throw std::overflow_error(
       "Vulkan H3 transformer: forward operator overflow");
   return static_cast<uint32_t>(count);
@@ -377,7 +408,7 @@ void ExactH3Transformer::record_forward(
     DeviceTensor& audio_timestep_indices,
     DeviceTensor& video_velocity, DeviceTensor& audio_velocity,
     const H3AttentionRanges* ranges,
-    const H3MainGraphReplayTaps* main_taps) {
+    const H3TransformerForwardReplayTaps* taps) {
   if (!text_prepared())
     throw std::logic_error("Vulkan H3 transformer: text is not prepared");
   const auto& c = impl_->config; auto& s = *impl_->state;
@@ -406,7 +437,17 @@ void ExactH3Transformer::record_forward(
   if (!valid || video_velocity.view().resource == video_latents.view().resource ||
       audio_velocity.view().resource == audio_latents.view().resource)
     throw std::invalid_argument("Vulkan H3 transformer: invalid forward tensors");
-  const uint32_t need = required_forward_operators(main_taps);
+  if (taps) {
+    for (DeviceTensor* tap : {taps->packed_input, taps->main_final}) {
+      if (tap && !tensor_is(*impl_->context, *tap, ScalarType::kBFloat16,
+                            b.sequence, b.hidden))
+        throw std::invalid_argument("Vulkan H3 transformer: invalid forward tap");
+    }
+    if (taps->packed_input && taps->main_final &&
+        taps->packed_input->view().resource == taps->main_final->view().resource)
+      throw std::invalid_argument("Vulkan H3 transformer: aliased forward taps");
+  }
+  const uint32_t need = required_forward_operators(taps);
   if (batch.remaining_operator_capacity() < need)
     throw std::logic_error("Vulkan H3 transformer: insufficient forward capacity");
 
@@ -423,8 +464,10 @@ void ExactH3Transformer::record_forward(
   batch.copy_rows(s.audio_projected_bf16, s.hidden, 0,
                   c.text_rows, c.audio_rows);
   batch.copy_rows(s.text_cache, s.hidden, 0, 0, c.text_rows);
+  if (taps && taps->packed_input) batch.copy(s.hidden, *taps->packed_input);
   s.main.record(batch, s.hidden, main_selectors, code, cosine, sine,
-                ranges, main_taps);
+                ranges, taps ? taps->main_boundaries : nullptr);
+  if (taps && taps->main_final) batch.copy(s.hidden, *taps->main_final);
 
   batch.dit_expand_adaln(s.final_shift_weight, s.final_shift_bias, code,
                          s.final_shift, 1, 1, b.hidden);
