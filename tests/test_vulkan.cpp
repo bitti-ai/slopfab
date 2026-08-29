@@ -186,7 +186,7 @@ VIDFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
       info.cooperative_matrix_bf16_f32_16x16x16;
   Device device = physical.front().create_device(options);
   TensorContextOptions context_options;
-  context_options.max_batch_operators = 49;
+  context_options.max_batch_operators = 46;
   TensorContext context(device, context_options);
   if (!context.exact_causal_gqa_attention() ||
       !context.exact_fp32_vae_normalization() ||
@@ -242,7 +242,7 @@ VIDFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
   context.upload(sine, capture.sine.data(), capture.sine.size());
   QwenTextLayerTaps taps{&norm, &query, &key, &value, &attention,
       &attention_residual, &post_norm, &gate, &up, &activation, &final};
-  CHECK(stage.required_operators(&taps) == 49);
+  CHECK(stage.required_operators(&taps) == 46);
 
   std::array<DeviceTensor*, 11> outputs{&norm, &query, &key, &value,
       &attention, &attention_residual, &post_norm, &gate, &up, &activation,

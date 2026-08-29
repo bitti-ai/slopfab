@@ -479,13 +479,21 @@ template <typename Scratch>
 void record_projection(TensorBatch& batch, Projection& projection,
                        const DenseGemmPlan& plan, Scratch& scratch,
                        DeviceTensor& input, DeviceTensor& output,
-                       uint32_t rows) {
-  DeviceTensor* source = &input;
+                       uint32_t rows,
+                       DeviceTensor* shared_transformed_input = nullptr) {
+  DeviceTensor* source = shared_transformed_input
+      ? shared_transformed_input : &input;
   if (projection.weight.has_pre_quant_scale() &&
       projection.weight.applies_convrot()) {
     throw std::logic_error("Vulkan Qwen layer: unsupported combined transform");
   }
-  if (projection.weight.has_pre_quant_scale()) {
+  if (shared_transformed_input) {
+    if (!projection.weight.applies_convrot() ||
+        projection.weight.has_pre_quant_scale()) {
+      throw std::logic_error(
+          "Vulkan Qwen layer: invalid shared projection transform");
+    }
+  } else if (projection.weight.has_pre_quant_scale()) {
     DeviceTensor& transformed = transform_for(scratch, projection.in);
     projection.weight.apply_pre_quant_scale(batch, input, transformed);
     source = &transformed;
@@ -589,9 +597,18 @@ void ExactQwenTextLayerStage::record(
   auto& w = *impl_->weights;
   batch.rms_norm_bf16(tokens, w.input_norm, s.normed, c.rms_norm_eps);
   if (taps && taps->input_norm) batch.copy(s.normed, *taps->input_norm);
-  record_projection(batch, w.q, s.q_plan, s, s.normed, s.query, rows);
-  record_projection(batch, w.k, s.k_plan, s, s.normed, s.key, rows);
-  record_projection(batch, w.v, s.v_plan, s, s.normed, s.value, rows);
+  DeviceTensor* shared_qkv = nullptr;
+  if (w.q.weight.applies_convrot() && w.k.weight.applies_convrot() &&
+      w.v.weight.applies_convrot()) {
+    w.q.weight.apply_convrot(batch, s.normed, s.hidden_transform);
+    shared_qkv = &s.hidden_transform;
+  }
+  record_projection(batch, w.q, s.q_plan, s, s.normed, s.query, rows,
+                    shared_qkv);
+  record_projection(batch, w.k, s.k_plan, s, s.normed, s.key, rows,
+                    shared_qkv);
+  record_projection(batch, w.v, s.v_plan, s, s.normed, s.value, rows,
+                    shared_qkv);
   batch.rms_norm_heads_bf16(s.query, w.q_norm, s.query,
       c.num_attention_heads, c.head_dim, c.rms_norm_eps);
   batch.rms_norm_heads_bf16(s.key, w.k_norm, s.key,
@@ -612,8 +629,15 @@ void ExactQwenTextLayerStage::record(
   batch.rms_norm_bf16(tokens, w.post_norm, s.normed, c.rms_norm_eps);
   if (taps && taps->post_attention_norm)
     batch.copy(s.normed, *taps->post_attention_norm);
-  record_projection(batch, w.gate, s.gate_plan, s, s.normed, s.gate, rows);
-  record_projection(batch, w.up, s.up_plan, s, s.normed, s.up, rows);
+  DeviceTensor* shared_gate_up = nullptr;
+  if (w.gate.weight.applies_convrot() && w.up.weight.applies_convrot()) {
+    w.gate.weight.apply_convrot(batch, s.normed, s.hidden_transform);
+    shared_gate_up = &s.hidden_transform;
+  }
+  record_projection(batch, w.gate, s.gate_plan, s, s.normed, s.gate, rows,
+                    shared_gate_up);
+  record_projection(batch, w.up, s.up_plan, s, s.normed, s.up, rows,
+                    shared_gate_up);
   if (taps) {
     if (taps->gate) batch.copy(s.gate, *taps->gate);
     if (taps->up) batch.copy(s.up, *taps->up);
@@ -640,6 +664,13 @@ uint32_t ExactQwenTextLayerStage::required_operators(
       projection_operators(w.gate, impl_->config.sequence) +
       projection_operators(w.up, impl_->config.sequence) +
       projection_operators(w.down, impl_->config.sequence);
+  if (w.q.weight.applies_convrot() && w.k.weight.applies_convrot() &&
+      w.v.weight.applies_convrot()) {
+    count -= 2;  // one shared activation transform instead of three
+  }
+  if (w.gate.weight.applies_convrot() && w.up.weight.applies_convrot()) {
+    count -= 1;  // one shared activation transform instead of two
+  }
   if (taps) {
     count += taps->input_norm != nullptr;
     count += taps->query != nullptr;

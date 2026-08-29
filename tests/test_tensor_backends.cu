@@ -3000,9 +3000,9 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
       info.cooperative_matrix_bf16_f32_16x16x16;
   Device device = physical.front().create_device(options);
   TensorContextOptions context_options;
-  // S3 I8: 10 fixed + seven*(ConvRot + materialize + one GEMM), plus
-  // eleven requested diagnostic copies.
-  context_options.max_batch_operators = 42;
+  // S3 I8: q/k/v and gate/up share their identical ConvRot activation, saving
+  // three operators, plus eleven requested diagnostic copies.
+  context_options.max_batch_operators = 39;
   TensorContext vk(device, context_options);
   if (!vk.exact_causal_gqa_attention() ||
       !vk.exact_fp32_vae_normalization() || !vk.exact_vae_pointwise()) return;
@@ -3065,7 +3065,7 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   QwenTextLayerTaps taps{&tap_norm, &tap_q, &tap_k, &tap_v,
       &tap_attention, &tap_attention_residual, &tap_post_norm, &tap_gate,
       &tap_up, &tap_activation, &tap_final};
-  CHECK(stage.required_operators(&taps) == 42);
+  CHECK(stage.required_operators(&taps) == 39);
 
   auto run = [&] {
     vk.upload_bytes(tokens, input.data(), input.size() * 2);
@@ -3107,7 +3107,7 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
     short_rejected = true;
   }
   CHECK(short_rejected);
-  CHECK(short_batch.remaining_operator_capacity() == 41);
+  CHECK(short_batch.remaining_operator_capacity() == 38);
   short_batch.submit().wait();
   std::vector<uint16_t> unchanged(input.size());
   vk.download_bytes(tokens, unchanged.data(), unchanged.size() * 2);
@@ -3362,7 +3362,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
   options.enable_storage_buffer_16bit=info.storage_buffer_16bit;
   options.enable_cooperative_matrix=info.cooperative_matrix_bf16_f32_16x16x16;
   Device device=physical.front().create_device(options);
-  TensorContextOptions context_options;context_options.max_batch_operators=49;
+  TensorContextOptions context_options;context_options.max_batch_operators=46;
   TensorContext vk(device,context_options);
   if(!vk.exact_causal_gqa_attention()||!vk.exact_fp32_vae_normalization()||
      !vk.exact_vae_pointwise())return;
@@ -3391,7 +3391,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
   vk.upload(v_sin,sine.data(),sine.size());
   QwenTextLayerTaps vk_taps{&v_norm,&v_q,&v_k,&v_v,&v_attention,
       &v_attention_residual,&v_post_norm,&v_gate,&v_up,&v_activation,&v_final};
-  CHECK(stage.required_operators(&vk_taps)==49);
+  CHECK(stage.required_operators(&vk_taps)==46);
   const auto vk_begin=std::chrono::steady_clock::now();TensorBatch batch=vk.begin_batch();
   stage.record(batch,v_tokens,v_cos,v_sin,scratch,&vk_taps);CHECK(batch.remaining_operator_capacity()==0);
   batch.submit().wait();const double vk_ms=std::chrono::duration<double,std::milli>(
@@ -3537,7 +3537,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
     test::HostAllocationGuard allocation_guard;
     stage.record(nv_batch,v_tokens,v_cos,v_sin,scratch,&vk_taps);
   }
-  CHECK(nv_batch.remaining_operator_capacity()==5);
+  CHECK(nv_batch.remaining_operator_capacity()==2);
   nv_batch.submit().wait();
   const double nv_vk_ms=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-nv_vk_begin).count();
