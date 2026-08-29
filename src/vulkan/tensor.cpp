@@ -1823,6 +1823,9 @@ uint64_t TensorContext::pooled_used_bytes() const {
              ? std::numeric_limits<uint64_t>::max()
              : primary + scratch;
 }
+bool TensorContext::owns(const DeviceTensor& tensor) const noexcept {
+  return impl_ && tensor.impl_ && tensor.impl_->context == impl_->context_id;
+}
 uint64_t TensorContext::staging_capacity_bytes() const noexcept {
   return impl_ ? impl_->staging_capacity : 0;
 }

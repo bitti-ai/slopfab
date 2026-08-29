@@ -414,6 +414,32 @@ ExactH3BlockStage ExactH3BlockStage::create(TensorContext& context,
   return ExactH3BlockStage(std::make_shared<Impl>(context, config));
 }
 
+void ExactH3BlockStage::validate_checkpoint(const SafeTensors& st,
+                                            uint32_t layer,
+                                            const H3BlockConfig& c) {
+  validate_config(c);
+  const uint32_t inner = c.heads * c.head_dim;
+  const std::string p = "blocks." + std::to_string(layer) + ".";
+  (void)bf16_vector(st, p + "norm1.weight", c.hidden);
+  (void)bf16_vector(st, p + "norm2.weight", c.hidden);
+  (void)bf16_vector(st, p + "attn.q_norm.weight", c.head_dim);
+  (void)bf16_vector(st, p + "attn.k_norm.weight", c.head_dim);
+  const uint64_t adaln_out = checked_product(
+      checked_product(c.modalities, 6, "AdaLN"), c.hidden, "AdaLN");
+  const TensorView& aw = st.at(p + "adaln_proj.linear.weight");
+  const TensorView& ab = st.at(p + "adaln_proj.linear.bias");
+  require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
+  require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
+  (void)to_f32(aw); (void)to_f32(ab);
+  const std::string qkv = p + "attn.qkv_proj";
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 0);
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, inner);
+  validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 2 * inner);
+  validate_projection_archive(st, p + "attn.out_proj", c.hidden, inner);
+  validate_projection_archive(st, p + "mlp.fc1", 2 * c.ffn, c.hidden);
+  validate_projection_archive(st, p + "mlp.fc2", c.hidden, c.ffn);
+}
+
 void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   if (!impl_) throw std::logic_error("Vulkan H3 block: empty stage");
   Impl& s = *impl_; const H3BlockConfig& c = s.config;

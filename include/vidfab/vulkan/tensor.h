@@ -366,6 +366,7 @@ class TensorContext {
   uint64_t staging_capacity_bytes() const noexcept;
   uint64_t descriptor_set_allocations() const noexcept;
   uint64_t storage_binding_alignment() const noexcept;
+  bool owns(const DeviceTensor& tensor) const noexcept;
 
  private:
   struct Impl;

@@ -782,6 +782,7 @@ if(VIDFAB_ENABLE_VULKAN)
     src/vulkan/runtime.cpp
     src/vulkan/tensor.cpp
     src/vulkan/dit_block.cpp
+    src/vulkan/dit_graph.cpp
     src/vulkan/audio_decoder.cpp
     src/vulkan/vae_decoder.cpp
     src/vulkan/vae_vit_block.cpp

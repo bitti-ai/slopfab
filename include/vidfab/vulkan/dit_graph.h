@@ -1,0 +1,61 @@
+#pragma once
+
+#include <cstdint>
+#include <memory>
+
+#include "vidfab/vulkan/dit_block.h"
+
+namespace vidfab::vulkan {
+
+struct H3MainGraphConfig {
+  H3BlockConfig block;
+  uint32_t layers = 50;
+};
+
+// Optional device-only final residual after every recorded layer. `boundaries`
+// points to `count` distinct contiguous BF16 [S,H] tensors. Production passes
+// null and pays no copy operations.
+struct H3MainGraphReplayTaps {
+  DeviceTensor* boundaries = nullptr;
+  uint32_t count = 0;
+};
+
+// Complete exact main transformer stack. The graph owns immutable per-layer
+// weights and one reusable activation/cache arena. It records into a caller's
+// batch without allocation, submission, staging, or CUDA fallback.
+class ExactH3MainGraph {
+ public:
+  ExactH3MainGraph();
+  ~ExactH3MainGraph();
+  ExactH3MainGraph(ExactH3MainGraph&&) noexcept;
+  ExactH3MainGraph& operator=(ExactH3MainGraph&&) noexcept;
+  ExactH3MainGraph(const ExactH3MainGraph&) = delete;
+  ExactH3MainGraph& operator=(const ExactH3MainGraph&) = delete;
+
+  static ExactH3MainGraph create(TensorContext& context,
+                                 const H3MainGraphConfig& config);
+  void load(const SafeTensors& checkpoint);
+  void unload() noexcept;
+  bool loaded() const noexcept;
+  uint32_t layers() const noexcept;
+  const H3MainGraphConfig& config() const noexcept;
+
+  void record(TensorBatch& batch, DeviceTensor& tokens,
+              DeviceTensor& selectors, DeviceTensor& adaln_code,
+              DeviceTensor& cosine, DeviceTensor& sine,
+              const H3AttentionRanges* ranges = nullptr,
+              const H3MainGraphReplayTaps* taps = nullptr) const;
+
+  uint32_t required_operators(
+      const H3MainGraphReplayTaps* taps = nullptr) const;
+  uint64_t persistent_bytes() const noexcept;
+  uint64_t scratch_bytes() const noexcept;
+  uint64_t peak_device_bytes() const noexcept;
+
+ private:
+  struct Impl;
+  explicit ExactH3MainGraph(std::shared_ptr<Impl> impl);
+  std::shared_ptr<Impl> impl_;
+};
+
+}  // namespace vidfab::vulkan

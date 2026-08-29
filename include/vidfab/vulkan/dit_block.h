@@ -64,6 +64,11 @@ class ExactH3BlockStage {
   ExactH3BlockStage& operator=(const ExactH3BlockStage&) = delete;
   static ExactH3BlockStage create(TensorContext& context,
                                   const H3BlockConfig& config);
+  // Complete host-only archive validation. Performs no context allocation or
+  // upload and is used by multi-layer graphs before transactional loading.
+  static void validate_checkpoint(const SafeTensors& checkpoint,
+                                  uint32_t layer,
+                                  const H3BlockConfig& config);
   void load(const SafeTensors& checkpoint, uint32_t layer);
   // Allocate only the optional AWQ/ConvRot activation buffers required by
   // the loaded weight metadata. Call after load and before opening a batch.
