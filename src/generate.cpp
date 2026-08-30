@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -405,13 +406,41 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   CheckpointPrefetch vae_prefetch;
 
   ReusedGenerationModels& reuse = reused_models();
+  text::Tokenizer owned_conditioning_tokenizer;
+  text::Tokenizer* conditioning_tokenizer_instance = nullptr;
+  auto conditioning_tokenizer = [&]() -> text::Tokenizer& {
+    if (conditioning_tokenizer_instance) return *conditioning_tokenizer_instance;
+    if (!options.reuse_models) {
+      if (request.tokenizer_path.empty())
+        owned_conditioning_tokenizer.load_embedded();
+      else
+        owned_conditioning_tokenizer.load(request.tokenizer_path);
+      conditioning_tokenizer_instance = &owned_conditioning_tokenizer;
+      return *conditioning_tokenizer_instance;
+    }
+    const std::string key = tokenizer_cache_key(request);
+    if (!reuse.tokenizer_valid || reuse.tokenizer_key != key) {
+      reuse.tokenizer_valid = false;
+      reuse.tokenizer_key.clear();
+      reuse.tokenizer = text::Tokenizer();
+      if (request.tokenizer_path.empty()) reuse.tokenizer.load_embedded();
+      else reuse.tokenizer.load(request.tokenizer_path);
+      reuse.tokenizer_key = key;
+      reuse.tokenizer_valid = true;
+    } else if (options.verbose) {
+      std::printf("tokenizer   reused (%zu tokens in vocabulary)\n",
+                  reuse.tokenizer.vocab_size());
+    }
+    conditioning_tokenizer_instance = &reuse.tokenizer;
+    return *conditioning_tokenizer_instance;
+  };
 
   // Decode all references before opening a multi-gigabyte checkpoint. Besides
   // giving file errors promptly, this validates the Ref2VA aspect contract at
   // the dimensions actually presented by the decoder.
   //
   // `resolve_reference_image_size` targets a 2048-pixel short edge, so this
-  // Lanczos resize runs on up to ~3648x2048x3 in double precision on one
+  // Lanczos resize runs on up to 8192x2048x3 in double precision on one
   // thread. Every generation of a counted run fed it byte-identical input, so
   // it is cached under the reference key and the storage below is either the
   // cache's or this call's, never a copy of one into the other.
@@ -468,6 +497,61 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     std::printf("references  reusing %zu decoded images\n", reference_images.size());
   }
 
+  // The keyframe VAE intentionally keeps the 2048-short-edge geometry. Qwen
+  // has a separate 16,384-patch exact capacity, so derive its bounded
+  // presentation and the complete decoder token stream before opening either
+  // neural checkpoint or allocating a keyframe arena. This also makes an
+  // impossible multi-reference/prompt aggregate a cheap transactional error.
+  std::vector<text::QwenImageGrid> reference_conditioning_grids;
+  std::vector<int32_t> reference_conditioning_ids;
+  if (options.source == LatentSource::kDenoise && !reference_images.empty()) {
+    if (!options.prompt_embedding_path.empty()) {
+      result.message =
+          "captured prompt embeddings currently support T2VA only; reference "
+          "modality tags must not be guessed";
+      return result;
+    }
+    try {
+      text::Tokenizer& tokenizer = conditioning_tokenizer();
+      reference_conditioning_grids.reserve(reference_images.size());
+      std::vector<std::vector<int32_t>> labels;
+      labels.reserve(reference_images.size());
+      size_t nonvision_tokens = 0;
+      for (size_t i = 0; i < reference_images.size(); ++i) {
+        reference_conditioning_grids.push_back(
+            text::qwen3vl_conditioning_grid(reference_images[i].width,
+                                            reference_images[i].height));
+        labels.push_back(tokenizer.encode(
+            "<Picture " + std::to_string(i + 1) + ">: "));
+        if (labels.back().size() > std::numeric_limits<size_t>::max() -
+                                     nonvision_tokens)
+          throw std::overflow_error("reference conditioning token overflow");
+        nonvision_tokens += labels.back().size();
+      }
+      const std::vector<int32_t> prompt_ids = tokenizer.encode(request.prompt);
+      if (prompt_ids.size() > std::numeric_limits<size_t>::max() -
+                                  nonvision_tokens)
+        throw std::overflow_error("reference conditioning token overflow");
+      nonvision_tokens += prompt_ids.size();
+      const size_t total = text::qwen3vl_conditioning_token_count(
+          reference_conditioning_grids, nonvision_tokens);
+      reference_conditioning_ids.reserve(total);
+      for (size_t i = 0; i < labels.size(); ++i) {
+        const std::vector<int32_t> block = text::qwen3vl_image_block(
+            labels[i], reference_conditioning_grids[i].merged_token_count());
+        reference_conditioning_ids.insert(reference_conditioning_ids.end(),
+                                          block.begin(), block.end());
+      }
+      reference_conditioning_ids.insert(reference_conditioning_ids.end(),
+                                        prompt_ids.begin(), prompt_ids.end());
+      if (reference_conditioning_ids.size() != total)
+        throw std::logic_error("reference conditioning token count drift");
+    } catch (const std::exception& e) {
+      result.message = e.what();
+      return result;
+    }
+  }
+
   // --- latents ---------------------------------------------------------------
 
   std::vector<float> video_rows;  // [V, 96]
@@ -507,13 +591,6 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
           "--synthetic-latents to skip conditioning and denoising)";
       return result;
     }
-    if (!options.prompt_embedding_path.empty() && !reference_images.empty()) {
-      result.message =
-          "captured prompt embeddings currently support T2VA only; reference "
-          "modality tags must not be guessed";
-      return result;
-    }
-
     // Ref2VA and the pruned T2VA/FL2VA transformer share most tensor names but
     // have incompatible timestep/AdaLN graphs. Check the cheap header contract
     // before loading the 15+ GiB conditioner so a wrong --transformer fails in
@@ -684,53 +761,33 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // not depend on the prompt, so it is kept across those misses and
       // reloaded only when its own file changes; `encode()` is const and
       // stateless, so one instance serves every caller.
-      //
-      // Be clear about who this helps, because today it is nobody who runs the
-      // CLI. `main.cpp` assigns `req.prompt` once and its `--count` loop mutates
-      // only `seed` and `out_path`, so the conditioning key is identical from
-      // generation 2 onward, the cache always hits, and this `else` arm is
-      // entered exactly once — on generation 1, where `tokenizer_valid` is false
-      // by construction and the load is paid regardless. The saving is real only
-      // for a caller that varies the prompt between `run_generate` calls with
-      // `reuse_models` set, which the library API allows and no shipped command
-      // does. It is kept because it is small, correct, and the alternative is a
-      // reload that would be re-paid the moment such a caller exists.
-      const std::string tok_key = tokenizer_cache_key(request);
-      text::Tokenizer owned_tokenizer;
-      text::Tokenizer& tokenizer = options.reuse_models ? reuse.tokenizer : owned_tokenizer;
-      if (!options.reuse_models || !reuse.tokenizer_valid || reuse.tokenizer_key != tok_key) {
-        if (options.reuse_models) {
-          reuse.tokenizer_valid = false;
-          reuse.tokenizer_key.clear();
-          tokenizer = text::Tokenizer();
-        }
-        if (request.tokenizer_path.empty()) tokenizer.load_embedded();
-        else tokenizer.load(request.tokenizer_path);
-        if (options.reuse_models) {
-          reuse.tokenizer_key = tok_key;
-          reuse.tokenizer_valid = true;
-        }
-      } else if (options.verbose) {
-        std::printf("tokenizer   reused (%zu tokens in vocabulary)\n", tokenizer.vocab_size());
-      }
+      // The early reference preflight and the actual conditioner deliberately
+      // share this instance. Besides avoiding a second tokenizer load, that
+      // guarantees the IDs validated before the keyframe checkpoint opens are
+      // exactly the IDs consumed here.
+      text::Tokenizer& tokenizer = conditioning_tokenizer();
 
       // No chat template, no BOS, no EOS: `hidden_states[50]` of a raw prompt
       // is the conditioning H3 expects, and a special token here would shift
       // every rotary position downstream (spec 1.2).
       std::vector<int32_t> ids;
       std::vector<text::QwenPixelValues> qwen_images;
+      if (!reference_images.empty()) {
+        if (reference_conditioning_grids.size() != reference_images.size() ||
+            reference_conditioning_ids.empty())
+          throw std::logic_error("reference conditioning preflight is absent");
+        ids = reference_conditioning_ids;
+      }
       for (size_t i = 0; i < reference_images.size(); ++i) {
-        const auto grid = text::qwen3vl_image_grid(reference_images[i].width,
-                                                    reference_images[i].height);
+        const auto& grid = reference_conditioning_grids[i];
         const int rw = grid.width * 16, rh = grid.height * 16;
         auto rgb = resize_rgb_bilinear(reference_images[i], rw, rh);
         qwen_images.push_back(text::qwen3vl_patchify_resized_rgb(rgb, rw, rh));
-        const auto label = tokenizer.encode("<Picture " + std::to_string(i + 1) + ">: ");
-        const auto block = text::qwen3vl_image_block(label, grid.merged_token_count());
-        ids.insert(ids.end(), block.begin(), block.end());
       }
-      const auto prompt_ids = tokenizer.encode(request.prompt);
-      ids.insert(ids.end(), prompt_ids.begin(), prompt_ids.end());
+      if (reference_images.empty()) {
+        const auto prompt_ids = tokenizer.encode(request.prompt);
+        ids.insert(ids.end(), prompt_ids.begin(), prompt_ids.end());
+      }
       if (ids.empty()) {
         result.message = "the prompt tokenised to zero tokens";
         return result;
