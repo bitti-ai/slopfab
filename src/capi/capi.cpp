@@ -123,7 +123,16 @@ int classify(const std::string& message) {
 template <typename Fn>
 int guarded(Fn&& body) {
   try {
-    return body();
+    const int status = body();
+    if (status == VIDFAB_OK) {
+      // clear() is noexcept and releases no storage, so success cannot turn
+      // into an allocation failure while retiring the previous diagnosis.
+      // Centralising this here keeps every guarded C entry point consistent
+      // with capi.h: last_error describes the most recent call, not an older
+      // failure on the same thread.
+      g_last_error.clear();
+    }
+    return status;
   } catch (const std::bad_alloc&) {
     // First, and it allocates nothing: the handler for running out of memory
     // must not be the thing that needs memory.

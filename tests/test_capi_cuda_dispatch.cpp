@@ -16,12 +16,19 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "%s\n", vidfab_last_error());
     return 6;
   }
+  if (vidfab_last_error()[0] != '\0') return 10;
+
+  // Seed another thread-local failure so the successful query has stale
+  // state to retire independently of the successful setter above.
+  if (vidfab_cuda_loaded_major(nullptr) != VIDFAB_ERR_INVALID_ARGUMENT) return 11;
+  if (vidfab_last_error()[0] == '\0') return 12;
 
   int32_t loaded = 0;
   if (vidfab_cuda_loaded_major(&loaded) != VIDFAB_OK) {
     std::fprintf(stderr, "%s\n", vidfab_last_error());
     return 7;
   }
+  if (vidfab_last_error()[0] != '\0') return 13;
   if (loaded != expected) return 8;
 
   // Even an identical request is rejected after initialization: silently
