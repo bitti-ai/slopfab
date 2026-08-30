@@ -7163,13 +7163,17 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       CHECK(pcm_hash == 0xb2e09a49fc952e5eull);
       CHECK(y4m_hash == 0x2f595da467a8ac60ull);
       CHECK(wav_hash == 0xe0d84106a3018c29ull);
+    } else {
+      CHECK(pixel_hash == 0x821ea69c8412d682ull);
+      CHECK(pcm_hash == 0xb92888172863f265ull);
+      CHECK(y4m_hash == 0x6b6a71322a7033cfull);
+      CHECK(wav_hash == 0xce580a62a54051d2ull);
     }
     std::printf(
-        "  real exact %s vertical S%u x3: CUDA/Vulkan %.3f/%.3f ms, pixels/pcm/y4m/wav %016llx/%016llx/%016llx/%016llx\n",
+        "  real exact %s vertical x3: CUDA/Vulkan %.3f/%.3f ms, pixels/pcm/y4m/wav %016llx/%016llx/%016llx/%016llx\n",
         reference_prompt ? "reference-prompt" :
             (normal_prompt ? "normal-prompt" : "captured-prompt"),
-        vertical_plan.layout.total_rows(), cuda_vertical.second,
-        vulkan_vertical.second,
+        cuda_vertical.second, vulkan_vertical.second,
         static_cast<unsigned long long>(pixel_hash),
         static_cast<unsigned long long>(pcm_hash),
         static_cast<unsigned long long>(y4m_hash),

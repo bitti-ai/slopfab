@@ -2,26 +2,26 @@
 
 ## What exists
 
-Vulkan now owns the complete exact text-only conditioner, T2VA denoiser and
-both neural decoders: the 50-layer Qwen3-VL decoder, the
+Vulkan now owns the complete exact multimodal conditioner, Ref2VA/T2VA
+denoiser, keyframe encoder, and both neural decoders: the 27-block Qwen3-VL
+vision tower with DeepStack, the 50-layer Qwen3-VL decoder, the
 50-block H3 graph with its two-block text refiner and endpoint projections, the
 36-block video VAE, and the 779-tensor audio VAE. Generation selects them
 through `RunOptions::inference_backend`, independently of
 `--output-accelerator`. `--inference-backend vulkan --attention exact` accepts
-a normal text prompt, synthetic latents, or an optional F32 `prompt_embedding`
-`[L,5120]` replay capture. Vulkan never invokes the CUDA text encoder. Other
-attention modes, Ref2VA, AB2 and step/block caches fail before model execution.
-No rejected or accepted Vulkan request is remapped to CUDA.
+a normal text prompt, Ref2VA reference images, synthetic latents, or an
+optional F32 `prompt_embedding` `[L,5120]` replay capture. Vulkan never invokes
+a CUDA conditioner, keyframe encoder, transformer, or decoder. Other attention
+modes, AB2 and step/block caches fail before model execution. No rejected or
+accepted Vulkan request is remapped to CUDA.
 
 The output converter is byte-exact against the canonical CPU conversion on the
 tested RTX 5090. Its checked shader uses explicit operation order and SPIR-V
 `NoContraction`, including adversarial luma/chroma half-step cases, packed tail
 words, padded output strides, and multi-frame Y4M output.
 
-This is full native-text-prompt-to-video/audio parity. The exact Qwen
-vision/DeepStack conditioner is also implemented as a public device-resident
-encoder, but top-level reference-image generation remains rejected because the
-keyframe video-VAE encoder is still CUDA-only. There is no mixed CUDA fallback.
+This is full native prompt/reference-to-video/audio parity. Public real
+Ref2VA CUDA/Vulkan runs match final fp32 pixels, fp32 PCM, Y4M and WAV bytes.
 
 ## Measured implementation gap
 
@@ -40,21 +40,20 @@ The host count covers `src/vae/decode_pipeline.cpp`, `keyframe_cuda.cpp`,
 commit `1e1c300`; they quantify code to audit and de-entangle, not a prediction
 that a Vulkan port needs the same line count.
 
-Missing work by pipeline stage:
+Implementation status by pipeline stage:
 
-| Stage | CUDA implementation that has no Vulkan peer | Principal missing operations |
+| Stage | Vulkan status | Remaining unsupported modes |
 |---|---|---|
 | Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | native quantized GEMM, NN/batched attention GEMM, remaining activations, and residual/broadcast operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, used RoPE variants, dense NT GEMM, persistent seven-format weight preparation, AWQ pre-scale and ConvRot now have Vulkan primitives |
 | Video VAE decode | Implemented by `vulkan::VideoVaeDecoder` | Exact 36-block graph and shared backend-neutral tile/stitch schedule are complete; shipped tensor-core mode remains CUDA-only |
 | Audio VAE decode | Implemented by `vulkan::AudioDecoder` | All 779 tensors and 497 production operators are device-resident and exact; diagnostics add 13 in-batch boundary copies |
 | Transformer and denoise | Exact full transformer/refiner/endpoints and Euler denoiser implemented in Vulkan; CUDA retains non-exact attention families | non-exact Flash/Sage/SOL attention, AB2, and step/block caches remain CUDA-only and Vulkan rejects them |
-| Qwen text/vision conditioner | Exact 27-block visual tower and multimodal 50-layer decoder implemented by `vulkan::ExactQwenVisionEncoder` and `vulkan::ExactQwenTextEncoder`; keyframe CUDA remains | reference-image video-VAE encode remains to be wired |
+| Qwen text/vision conditioner and keyframe encode | Implemented by `vulkan::ExactQwenVisionEncoder`, `vulkan::ExactQwenTextEncoder`, and `vulkan::KeyframeEncoder` | non-exact conditioner arithmetic remains CUDA-only and is rejected by the Vulkan route |
 
 The implemented Vulkan graphs preserve the shipped safetensors names and typed
 metadata for their fp16/bf16, int8 ConvRot, and NVFP4/AWQ contracts. Remaining
-vision/reference and non-exact paths still contain CUDA-specific graph and
-workspace interfaces; they cannot be enabled safely by switching only the
-top-level `run_generate` call.
+non-exact paths still contain CUDA-specific graph and workspace interfaces and
+fail closed when Vulkan is selected.
 
 ## Dependency-ordered implementation plan
 
@@ -69,12 +68,12 @@ top-level `run_generate` call.
 3. The exact 50-block main graph, token refiner, final layer, and Euler denoise
    loop are complete with every-boundary checks. Non-exact attention backends
    remain separate and are never silently substituted with exact attention.
-4. The Qwen text and vision/DeepStack conditioner is complete with strict
-   checkpoint behavior and every-layer comparisons. The reference-image
-   video-VAE encoder remains.
+4. The Qwen text and vision/DeepStack conditioner and exact keyframe video-VAE
+   encoder are complete with strict checkpoint behavior and boundary checks.
 5. `--inference-backend vulkan` is enabled with fail-closed capability checks
    and deterministic full-pipeline CUDA/Vulkan exact
-   comparisons at every durable boundary: conditioner embeddings, denoiser
+   comparisons at every durable boundary: keyframe latents, conditioner
+   embeddings, denoiser
    latents, decoded fp32 RGB, decoded fp32 PCM, Y4M, and WAV. `compare-y4m` is
    the streaming raw-video check, not a substitute for the earlier activation
    and sample comparisons. Only this step can establish full pipeline parity.
@@ -113,15 +112,15 @@ fp16-affine GroupNorm+SiLU primitive. CUDA and Vulkan share deterministic
 integer division/epsilon/reciprocal-square-root and a fixed polynomial SiLU;
 the latter deliberately canonicalizes NaNs and subnormal inputs/results and
 maps values at or below -87 to signed zero. The production 32-group,
-256-thread reduction tree is preserved exactly. This primitive is not yet
-wired into a Vulkan keyframe encoder graph.
+256-thread reduction tree is preserved exactly and is wired into the complete
+72-operator Vulkan keyframe encoder graph.
 
 It also implements all three used rotary semantics: BF16 H3 partial-96 with a
 raw 32-channel tail, BF16 full-width GPT-NeoX for Qwen text/vision, and the
 video-VAE fused fp32 split-QKV, head64 RMSNorm and partial-48 rotation with
 suffix bypass. The host canonical H3 builder supplies identical serialized
-fp32 table bits to CUDA and Vulkan. Conditioner and DiT orchestration still
-call CUDA; both VAE decoders now consume the Vulkan primitives directly.
+fp32 table bits to CUDA and Vulkan. The native conditioner, DiT and both VAE
+decoders consume these Vulkan primitives directly.
 
 Persistent linear-weight preparation now covers F32/F16/BF16, E4M3 FP8,
 per-output I8, NVFP4 and NF4 without retaining dense copies of every quantized
@@ -149,10 +148,11 @@ Exact unmasked blocked attention now exists as a bounded device primitive for
 BF16 D64/D72/D128. It prepares Q/K/V once into a persistent three-FP16 slot,
 supports multiple query-row consumers in one batch, and mirrors a pinned CUDA
 reference byte-for-byte. A real Qwen vision S16384/H16/D72 activation audit
-proved finite prepared values and scaled scores; its slot is 108 MiB. This is
-not orchestration: causal GQA, H3 banding/fusion, Sage2/SOL, and all attention
-call-site wiring remain missing and may not silently route to the unmasked
-primitive. The exact Vulkan kernel is also an accepted performance exception:
+proved finite prepared values and scaled scores; its slot is 108 MiB. The
+complete Qwen vision graph now consumes this primitive; causal GQA and H3
+attention are separate exact, wired implementations. Sage2/SOL remain
+unsupported and may not silently route to the unmasked primitive. The exact
+Vulkan kernel is also an accepted performance exception:
 1.174 s/call and about 31.7 s for 27 Qwen vision blocks at S16384, versus
 145.276 ms/call and 3.922 s/27 for the shipped CUDA cuBLAS blocked path.
 S65536 projects to roughly 8.45 minutes/27 on Vulkan. A cooperative-matrix
@@ -189,14 +189,12 @@ These operations correspond to launchers in `linear.cu`, `vae_kernels.cu`, and
 projection narrowing, video-VAE channel/token layout, attention head packing,
 patch reconstruction, and packed-sequence row selection. Packed row indices
 are generated as unique in-range host sequences by `packing.cpp` and
-`ref2va.cpp`; a future Vulkan stage must pass those generated tensors rather
-than arbitrary device data. The Vulkan shader also bounds-checks each index to
+`ref2va.cpp`; the Vulkan Ref2VA stage uploads and uses those generated tensors
+rather than arbitrary device data. The shader also bounds-checks each index to
 prevent an invalid device read or write.
 
-This is a tested operator substrate with the Qwen multimodal conditioner, T2VA
-DiT and both decoder call sites wired. Ref2VA remains on the missing list only
-because Vulkan keyframe video-VAE encode is not implemented; such a request
-fails before weights or output files.
+This is a tested operator substrate with the Qwen multimodal conditioner,
+Ref2VA/T2VA DiT, keyframe encoder, and both decoder call sites wired.
 
 The full 36-block exact video-VAE transformer stack is now available through a
 device-resident Vulkan graph. It streams all real checkpoint blocks through a
@@ -249,9 +247,8 @@ was 4625.0/5087.0 MiB, pooled used/reserved was 5215.0/5445.0 MiB, and the final
 descriptor high-water was 3676.
 
 This completes the exact video-VAE decoder component. Together with the audio
-decoder and exact denoiser it enables top-level captured-conditioning or
-synthetic-latent Vulkan generation. Multimodal conditioner APIs are available;
-top-level Ref2VA remains gated out until keyframe encode is native Vulkan.
+decoder, exact denoiser, multimodal conditioner and keyframe encoder it enables
+top-level native text and Ref2VA Vulkan generation.
 
 ## Current vertical-slice comparison
 
@@ -261,7 +258,8 @@ controls for a complete trajectory. The activation rows cross the host boundary
 only at `prepare` and the final result; each evaluation records the 50-block
 transformer and two exact Euler updates in one bounded submission. Production
 passes no observer. The optional replay observer downloads post-update rows only
-for verification. AB2, Ref2VA and both cache families are rejected rather than
+for verification. Ref2VA uses indexed condition/target packing and updates only
+the generated suffix. AB2 and both cache families are rejected rather than
 silently changing their semantics.
 
 The complete step is transactionally preflighted as
@@ -299,6 +297,26 @@ initial rows through the real transformer, video VAE and audio VAE at
 FNV64 pins are `714A67162495817E` for fp32 PixelBuffer,
 `671F1519E5D0CEA1` for fp32 PCM, `BB480C4FD04AC34A` for Y4M and
 `A447EB6D02620637` for WAV; both backends match byte for byte.
+
+The Ref2VA authority uses
+`minimax_h3_ref2va_pruned_nvfp4.safetensors` (SHA-256
+`8EEA02F43902E69904990C4405968D01A13C6656AA392D37AB80331E79B5DF2F`)
+and the video-VAE checkpoint above. At the public square reference shape the
+keyframe encoder processes fp32 CHW 2048x2048 in three reusable flat arenas;
+CUDA and Vulkan moments are byte-identical. The actual conditioned transformer
+case has 4,100 text rows, 4,096 fixed video rows, 74 generated audio rows and
+448 generated video rows (S8718). Its six refiner boundaries, packed input,
+all 50 main boundaries, final main residual and generated target rows match
+CUDA exactly. Vulkan load/run measured 8.475/19.542 s with
+13,501.84/2,956.86/16,458.70 MiB persistent/scratch/logical peak and 2,716
+descriptors.
+
+The public normal-prompt reference test feeds a deterministic PPM through the
+real Qwen multimodal conditioner, keyframe encoder, Ref2VA denoiser and both
+VAEs for three evaluations. CUDA/Vulkan total times were 144.523/272.172 s.
+Final FNV64 pins are `821EA69C8412D682` for fp32 PixelBuffer,
+`B92888172863F265` for fp32 PCM, `6B6A71322A7033CF` for Y4M, and
+`CE580A62A54051D2` for WAV; both backends match byte for byte.
 
 The opt-in `cuda_vulkan_exact_generate_vertical_slice` test writes one
 deterministic fp32 init-latent archive, then invokes real `run_generate` at the

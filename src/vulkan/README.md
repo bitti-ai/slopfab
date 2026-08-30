@@ -1,8 +1,7 @@
 # Embedded output shader
 
 `rgb_to_yuv.comp` converts planar fp32 RGB into packed BT.709 limited-range
-YUV420 values. It is used only for output colour conversion; model inference
-remains CUDA.
+YUV420 values. It is the output converter for CUDA and native Vulkan inference.
 
 The checked-in SPIR-V was produced with Khronos glslang 16.5.0:
 
@@ -117,9 +116,9 @@ fused biased fp32 SwiGLU, and channel-major fp32 latent denormalization. The
 production ViT shape is 36 blocks at D2048/I8192: every block records two
 residual fusions and one SwiGLU. Existing `transpose_2d`, `heads_to_tokens`,
 `split_qkv`, and `depth_to_space` primitives already cover its layout changes;
-there is deliberately no duplicate pointwise layout API. Latent denormalization
-is a future device-residency seam: the current CUDA decode pipeline still
-performs that step on the host before invoking the Video-VAE.
+there is deliberately no duplicate pointwise layout API. The native
+`VideoVaeDecoder` records latent denormalization on-device before its post-quant
+projection; CUDA exact mode uses the same arithmetic contract.
 
 All APIs require contiguous, distinct fp32 allocations. Residual is
 `canon(fma(canon(canon(y)+canon(bias)),canon(scale),canon(x)))` and updates x in
@@ -349,8 +348,9 @@ the keyframe encoder: contiguous fp32 CHW input/output, fp16 channel affine,
 strided accumulation and binary reduction tree, including
 `max(0, E[x^2] - mean^2)`, and reuses the deterministic normalization helpers
 above. The cached four-binding pipeline supports in-place input/output without
-a host boundary or per-dispatch allocation. Dimensions whose group population
-exceeds 2^24 fail before recording.
+a host boundary or per-dispatch allocation. Keyframe group populations above
+2^24 use the same uint32 integer-divider contract; checked total elements and
+dispatch dimensions must remain representable before recording.
 
 The production module is generated with Khronos glslang 16.5.0 and the same
 float-control transformer used by the other tensor shaders:
@@ -768,8 +768,8 @@ primitive directly; `kNone` remains the separate blocked reference and no
 other mode is remapped. Vulkan accepts only exact and the complete denoiser
 keeps packed video/audio rows resident across evaluations. Text-only CLI runs
 use the native exact Vulkan conditioner; captured prompt embeddings remain an
-optional replay seam. Reference vision fails closed and no CUDA conditioner is
-called by a Vulkan request.
+optional replay seam. Reference vision and keyframe encoding are native Vulkan
+stages in exact mode, and no CUDA conditioner is called by a Vulkan request.
 
 CUDA and Vulkan use the same 1024-thread/32-subgroup cooperative contract:
 guarded BF16 Q/K staging, ascending 16-channel BF16-QK/F32 cooperative tiles,
@@ -892,8 +892,7 @@ pinned boundary: input `7c9f5a55cc5266eb`, post-RoPE QKV
 `e8a9ee4dfec51636`, and final residual `2fd91fe15c281f00` (FNV64). The replay
 also pins the checkpoint and capture SHA-256 values before loading either.
 The single-stage evidence above is the arithmetic unit used by the complete
-main graph below; the two-block refiner, final layer and denoise scheduler
-remain intentionally unavailable and fail-closed.
+main graph, two-block refiner, final layer and denoise scheduler below.
 
 ### Exact 50-block H3 main graph
 
@@ -902,9 +901,9 @@ stack. It owns 50 immutable typed weight sets and one shared activation arena,
 NVFP4 dense cache and pipeline set. A production forward is one preflighted
 1,450-operator caller batch (1,500 when all diagnostic boundaries are copied),
 with no per-layer allocation, host boundary, submission or CUDA route.
-`record_layers` can record contiguous subspans into that same batch so the
-future denoise orchestrator can compute or skip a block-cache span without
-cloning weights or scratch. Null ranges select full attention; one immutable
+`record_layers` can record contiguous subspans into that same batch without
+cloning weights or scratch. The current denoiser records the complete span;
+unsupported block-cache modes fail closed. Null ranges select full attention; one immutable
 context-owned table selects the same frame band at all layers.
 
 Loading first performs complete host-only validation of every tensor and all
@@ -986,7 +985,50 @@ growth, and pins combined fp32 output FNV64 `42764ebbb3850be4`.
 `ExactH3Denoiser` composes this endpoint with the shared flow schedule and two
 device Euler updates per evaluation. Video/audio rows stay resident for the
 whole trajectory. Public Vulkan generation accepts either a normal text prompt
-through `ExactQwenTextEncoder` or an explicit captured prompt embedding.
+through `ExactQwenTextEncoder`, Ref2VA reference images, or an explicit captured
+prompt embedding.
+
+## Exact keyframe encoder and Ref2VA vertical
+
+`vulkan::KeyframeEncoder` implements the complete causal video-VAE encoder
+used for Ref2VA: conv-in, six two-block levels with exact fp16-weight Conv3D,
+GroupNorm+SiLU and residual shortcuts, five asymmetric downsamplers, final
+norm/conv, and quant-conv. A 72-operator graph rotates through three flat fp32
+activation arenas. Shape changes release the old arena before allocating the
+new one; weights are uploaded once, active reload is rejected, and unload
+releases graph-owned pool usage. Posterior normal generation, sampling,
+normalization and 2x2 patchification remain the shared canonical host seam used
+by CUDA and Vulkan.
+
+The actual video-VAE archive is
+`minimax_h3_video_vae_fp16.safetensors`, SHA-256
+`7C1F131492E7EDDACAAC9069A61B81BDD39DE5CC96561E677C5EAB1CDCE5E522`.
+Real 64x96 and public 2048x2048 CUDA/Vulkan graph outputs match every fp32 byte;
+the small fixture pins FNV64 `cfd864f091297976`. The public square graph owns
+three 2 GiB activation arenas plus 48 MiB input and 3 MiB moments. The same
+flat contract admits the resolver's 2048x8192 maximum aspect without a
+shape-keyed cache, though that worst aspect requires three 8 GiB arenas and is
+therefore subject to normal device-memory availability.
+
+Ref2VA packing is `[text | interleaved reference rows | generated audio |
+generated video]`. Vulkan projects and scatters each modality by the canonical
+indices, preserves condition prefixes over every evaluation, and applies Euler
+only to the generated suffix. The real production authority uses
+`minimax_h3_ref2va_pruned_nvfp4.safetensors`, SHA-256
+`8EEA02F43902E69904990C4405968D01A13C6656AA392D37AB80331E79B5DF2F`.
+At text/condition/target-a/target-v rows 4100/4096/74/448 (S8718), all six text
+boundaries, packed input, all 50 main boundaries, final main residual and final
+fp32 target rows are CUDA exact. Vulkan load/run measured 8.475/19.542 s;
+logical persistent/scratch/peak was 13,501.84/2,956.86/16,458.70 MiB with
+2,716 descriptors.
+
+The public normal-prompt reference run uses a deterministic PPM, the real Qwen
+multimodal conditioner, keyframe encoder, three Ref2VA evaluations and both
+real VAEs. CUDA/Vulkan total times were 144.523/272.172 s. Final FNV64 values
+match byte-for-byte: fp32 PixelBuffer `821ea69c8412d682`, fp32 PCM
+`b92888172863f265`, Y4M `6b6a71322a7033cf`, and WAV
+`ce580a62a54051d2`. Vulkan rejects non-exact attention, AB2 and cache modes; no
+accepted or rejected reference request falls back to CUDA.
 
 The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from
 `dxc_2026_07_29.zip` (SHA-256
@@ -1189,7 +1231,9 @@ latents and three evaluations, then both real VAEs. Float PixelBuffer and PCM,
 and final Y4M/WAV bytes, are exactly equal. Their FNV64 pins are respectively
 `52f6148fa46959f8`, `b2e09a49fc952e5e`, `2f595da467a8ac60`, and
 `e0d84106a3018c29`; total CUDA/Vulkan time measured 29.669/40.644 seconds.
-Qwen vision/deep-stack conditioning remains future work and fails closed.
+The 27-block vision tower, merger/projector and DeepStack injection at decoder
+layers 8/16/24 are now exact Vulkan stages; the Ref2VA authority above extends
+this vertical through keyframe encode and reference-conditioned denoise.
 
 ## Exact causal GQA text attention
 
