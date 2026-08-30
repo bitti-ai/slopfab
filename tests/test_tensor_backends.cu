@@ -106,7 +106,9 @@ VIDFAB_TEST(reference_conditioning_aggregate_fails_before_model_load) {
   request.num_frames = 22;
   request.num_inference_steps = 4;
   request.reference_image_paths = {image_path.string(), image_path.string()};
-  request.tokenizer_path = "ref/text_encoder/tokenizer.json";
+  request.tokenizer_path =
+      (std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+       "ref/text_encoder/tokenizer.json").string();
   request.text_encoder_path = "missing-text-encoder.safetensors";
   request.transformer_path = "missing-transformer.safetensors";
   request.video_vae_path = "missing-video-vae.safetensors";
