@@ -3609,8 +3609,9 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   CHECK(transformer.loaded() && !transformer.text_prepared());
   H3TransformerTextReplayTaps null_text_taps{nullptr, 6};
   H3TransformerTextReplayTaps short_text_taps{&prompt, 5};
+  H3TransformerTextReplayTaps wrong_text_taps{&prompt, 6};
   for (const H3TransformerTextReplayTaps* invalid :
-       {&null_text_taps, &short_text_taps}) {
+       {&null_text_taps, &short_text_taps, &wrong_text_taps}) {
     bool rejected = false;
     try { transformer.prepare_text(prompt, invalid); }
     catch (const std::invalid_argument&) { rejected = true; }
@@ -3625,6 +3626,10 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   H3MainGraphReplayTaps aliased_main_taps{&shared_forward_tap, 1};
   H3TransformerForwardReplayTaps aliased_forward_taps{
       &shared_forward_tap, nullptr, &aliased_main_taps};
+  H3TransformerForwardReplayTaps valid_forward_taps{
+      &shared_forward_tap, nullptr, nullptr};
+  CHECK(transformer.required_forward_operators(nullptr) == 42u);
+  CHECK(transformer.required_forward_operators(&valid_forward_taps) == 43u);
   {
     TensorBatch transactional = graph_context.begin_batch();
     auto reject_forward = [&](const H3AttentionRanges* test_ranges,
@@ -3650,6 +3655,33 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
         transformer_video_out, transformer_audio_out);
     CHECK(transactional.remaining_operator_capacity() == 86u);
     transactional.submit().wait();
+  }
+  {
+    // A tapped forward that is exactly one operator short must not append any
+    // work. The same batch remains usable by the untapped production path.
+    TensorBatch one_short = graph_context.begin_batch();
+    const uint32_t tapped_need =
+        transformer.required_forward_operators(&valid_forward_taps);
+    for (uint32_t i = tapped_need - 1; i < 128u; ++i)
+      one_short.copy(transformer_video, transformer_video_out);
+    const uint32_t remaining = one_short.remaining_operator_capacity();
+    bool rejected = false;
+    try {
+      transformer.record_forward(
+          one_short, transformer_video, transformer_audio,
+          transformer_selectors, transformer_code, transformer_cosine,
+          transformer_sine, transformer_video_ts, transformer_audio_ts,
+          transformer_video_out, transformer_audio_out, nullptr,
+          &valid_forward_taps);
+    } catch (const std::logic_error&) { rejected = true; }
+    CHECK(rejected && one_short.remaining_operator_capacity() == remaining);
+    transformer.record_forward(
+        one_short, transformer_video, transformer_audio,
+        transformer_selectors, transformer_code, transformer_cosine,
+        transformer_sine, transformer_video_ts, transformer_audio_ts,
+        transformer_video_out, transformer_audio_out);
+    CHECK(one_short.remaining_operator_capacity() == 0u);
+    one_short.submit().wait();
   }
   auto run_transformer = [&] {
     TensorBatch batch = graph_context.begin_batch();

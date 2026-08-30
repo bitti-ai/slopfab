@@ -1,6 +1,7 @@
 #include "vidfab/vulkan/dit_transformer.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -358,7 +359,12 @@ uint32_t ExactH3Transformer::required_prepare_text_operators(
   if (!loaded()) throw std::logic_error("Vulkan H3 transformer: not loaded");
   if (taps && (taps->count != 6 || !taps->boundaries))
     throw std::invalid_argument("Vulkan H3 transformer: invalid text taps");
-  uint64_t count = 3;  // narrow, condition projection, final norm
+  const uint32_t tiled_rows = (impl_->config.text_rows / 64u) * 64u;
+  const uint32_t condition_operators =
+      tiled_rows != 0 && tiled_rows != impl_->config.text_rows ? 2u : 1u;
+  uint64_t count = uint64_t(2) + condition_operators;
+  // Narrow, one cooperative condition-projection record plus an exact scalar
+  // tail when ragged, and final norm.
   for (const ExactH3BlockStage& stage : impl_->state->refiner)
     count += stage.required_operators();
   if (taps) count += 6;
@@ -377,18 +383,19 @@ void ExactH3Transformer::prepare_text(
   if (taps) {
     if (taps->count != 6 || !taps->boundaries)
       throw std::invalid_argument("Vulkan H3 transformer: invalid text taps");
-    std::vector<uintptr_t> resources{prompt.view().resource};
-    resources.reserve(7);
+    std::array<uintptr_t, 7> resources{};
+    uint32_t resource_count = 1;
+    resources[0] = prompt.view().resource;
     for (uint32_t i = 0; i < taps->count; ++i) {
       if (!tensor_is(*impl_->context, taps->boundaries[i],
                      ScalarType::kBFloat16, c.text_rows,
                      c.main.block.hidden))
         throw std::invalid_argument("Vulkan H3 transformer: invalid text tap");
       const uintptr_t resource = taps->boundaries[i].view().resource;
-      for (uintptr_t prior : resources)
-        if (resource == prior)
+      for (uint32_t prior = 0; prior < resource_count; ++prior)
+        if (resource == resources[prior])
           throw std::invalid_argument("Vulkan H3 transformer: aliased text taps");
-      resources.push_back(resource);
+      resources[resource_count++] = resource;
     }
   }
   const uint32_t need = required_prepare_text_operators(taps);
@@ -396,9 +403,15 @@ void ExactH3Transformer::prepare_text(
   if (batch.remaining_operator_capacity() < need)
     throw std::logic_error("Vulkan H3 transformer: insufficient prepare capacity");
   batch.convert(prompt, s.text_input);
-  s.condition_plan.record(batch, s.text_input, s.condition_weight,
-                          s.text_cache, c.text_rows, 0, 0,
-                          &s.condition_bias);
+  const uint32_t tiled_rows = (c.text_rows / 64u) * 64u;
+  if (tiled_rows != 0)
+    s.condition_plan.record(batch, s.text_input, s.condition_weight,
+                            s.text_cache, tiled_rows, 0, 0,
+                            &s.condition_bias);
+  if (tiled_rows != c.text_rows)
+    s.condition_plan.record(batch, s.text_input, s.condition_weight,
+                            s.text_cache, c.text_rows - tiled_rows,
+                            tiled_rows, tiled_rows, &s.condition_bias);
   if (taps) batch.copy(s.text_cache, taps->boundaries[0]);
   for (uint32_t layer = 0; layer < s.refiner.size(); ++layer) {
     H3BlockReplayTaps block_taps;
@@ -482,13 +495,15 @@ void ExactH3Transformer::record_forward(
                   c.audio_rows)));
   if (!valid)
     throw std::invalid_argument("Vulkan H3 transformer: invalid forward tensors");
-  std::vector<uintptr_t> resources;
-  resources.reserve(12 + c.main.layers);
+  // Config validation caps the main graph at 50 layers. Keep preflight
+  // allocation-free so a record call cannot fail after mutating its batch.
+  std::array<uintptr_t, 64> resources{};
+  uint32_t resource_count = 0;
   auto add_unique = [&](DeviceTensor& tensor, const char* error) {
     const uintptr_t resource = tensor.view().resource;
-    if (std::find(resources.begin(), resources.end(), resource) != resources.end())
-      throw std::invalid_argument(error);
-    resources.push_back(resource);
+    for (uint32_t prior = 0; prior < resource_count; ++prior)
+      if (resources[prior] == resource) throw std::invalid_argument(error);
+    resources[resource_count++] = resource;
   };
   for (DeviceTensor* tensor : {&video_latents, &audio_latents,
       &main_selectors, &code, &cosine, &sine, &video_timestep_indices,

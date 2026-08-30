@@ -62,7 +62,8 @@ class ExactH3Denoiser {
   // This is the only input activation boundary in a trajectory.
   void prepare(const float* prompt, uint64_t prompt_elements,
                const float* video_rows, uint64_t video_elements,
-               const float* audio_rows, uint64_t audio_elements);
+               const float* audio_rows, uint64_t audio_elements,
+               const H3TransformerTextReplayTaps* taps = nullptr);
 
   // Only exact Euler is accepted. The two schedules must describe the same
   // number of evaluations. Progress is called after each completed update;
@@ -70,12 +71,14 @@ class ExactH3Denoiser {
   ExactH3DenoiseResult run(const sampler::FlowScheduler& video,
                            const sampler::FlowScheduler& audio,
                            const ExactH3DenoiseProgress& progress = {},
-                           const ExactH3DenoiseBoundary& boundary = {});
+                           const ExactH3DenoiseBoundary& boundary = {},
+                           const H3TransformerForwardReplayTaps* taps = nullptr);
 
   uint64_t persistent_bytes() const noexcept;
   uint64_t scratch_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;
-  uint32_t required_step_operators() const;
+  uint32_t required_step_operators(
+      const H3TransformerForwardReplayTaps* taps = nullptr) const;
 
  private:
   struct Impl;

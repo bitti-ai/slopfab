@@ -277,7 +277,8 @@ const ExactH3DenoiseConfig& ExactH3Denoiser::config() const noexcept {
 void ExactH3Denoiser::prepare(
     const float* prompt, uint64_t prompt_elements,
     const float* video_rows, uint64_t video_elements,
-    const float* audio_rows, uint64_t audio_elements) {
+    const float* audio_rows, uint64_t audio_elements,
+    const H3TransformerTextReplayTaps* taps) {
   if (!loaded()) throw std::logic_error("Vulkan H3 denoise: not loaded");
   if (impl_->running) throw std::logic_error("Vulkan H3 denoise: run is active");
   const auto& c = impl_->config.transformer;
@@ -315,7 +316,7 @@ void ExactH3Denoiser::prepare(
          uint64_t(audio_output) * c.audio_dim * sizeof(float)}};
     impl_->context->upload_batch(result_uploads, 2);
   }
-  s.transformer.prepare_text(prompt_tensor);
+  s.transformer.prepare_text(prompt_tensor, taps);
   impl_->ready = true;
 }
 
@@ -323,7 +324,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
     const sampler::FlowScheduler& video,
     const sampler::FlowScheduler& audio,
     const ExactH3DenoiseProgress& progress,
-    const ExactH3DenoiseBoundary& boundary) {
+    const ExactH3DenoiseBoundary& boundary,
+    const H3TransformerForwardReplayTaps* taps) {
   if (!prepared()) throw std::logic_error("Vulkan H3 denoise: not prepared");
   if (impl_->running) throw std::logic_error("Vulkan H3 denoise: run is active");
   if (video.sampler() != sampler::SamplerKind::kEuler ||
@@ -390,7 +392,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
     const float video_ratio = video.sigmas()[step + 1] / video.sigmas()[step];
     const float audio_ratio = audio.sigmas()[step + 1] / audio.sigmas()[step];
     TensorBatch batch = impl_->context->begin_batch();
-    batch.require_operator_capacity(required_step_operators());
+    batch.require_operator_capacity(required_step_operators(taps));
     if (conditioned) {
       batch.copy_rows(s.video_result, s.video, 0, condition_video, video_output);
       batch.copy_rows(s.audio_result, s.audio, 0, condition_audio, audio_output);
@@ -399,7 +401,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
         batch, s.video, s.audio, s.selectors, s.code, s.cosine, s.sine,
         s.video_timestep_indices, s.audio_timestep_indices,
         s.video_velocity, s.audio_velocity,
-        s.ranges ? &s.ranges : nullptr, nullptr,
+        s.ranges ? &s.ranges : nullptr, taps,
         conditioned ? &s.video_row_indices : nullptr,
         conditioned ? &s.audio_row_indices : nullptr);
     DeviceTensor& video_state = conditioned ? s.video_result : s.video;
@@ -470,9 +472,11 @@ uint64_t ExactH3Denoiser::peak_device_bytes() const noexcept {
       ? std::numeric_limits<uint64_t>::max() : persistent + scratch;
 }
 
-uint32_t ExactH3Denoiser::required_step_operators() const {
+uint32_t ExactH3Denoiser::required_step_operators(
+    const H3TransformerForwardReplayTaps* taps) const {
   if (!loaded()) throw std::logic_error("Vulkan H3 denoise: not loaded");
-  const uint32_t forward = impl_->state->transformer.required_forward_operators();
+  const uint32_t forward =
+      impl_->state->transformer.required_forward_operators(taps);
   const bool conditioned = impl_->config.layout.num_condition_video != 0 ||
                            impl_->config.layout.num_condition_audio != 0;
   const uint32_t tail = conditioned ? 4u : 2u;
