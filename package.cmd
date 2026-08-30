@@ -4,9 +4,9 @@ setlocal
 rem Build one CUDA 12.8 static-runtime core shared by vidfab.exe and vidfab.dll.
 rem cuBLAS is resolved in-process from an installed CUDA 13 or CUDA 12 toolkit;
 rem no CUDA DLL is copied into the archive.
-set "ROOT=%~dp0"
-set "DIST=%ROOT%dist"
-set "BUILD=%ROOT%build-cuda12"
+for %%I in ("%~dp0.") do set "ROOT=%%~fI"
+set "DIST=%ROOT%\dist"
+set "BUILD=%ROOT%\build-package-cuda12"
 
 set "CUDA12=%CUDA_PATH_V12_8%"
 if not defined CUDA12 set "CUDA12=%ProgramFiles%\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
@@ -23,7 +23,7 @@ if not exist "%CUDA13%\include\cublas_v2.h" (
 
 echo package: configuring CUDA 12.8 core...
 cmake -S "%ROOT%" -B "%BUILD%" -G "Visual Studio 17 2022" -A x64 ^
-  -DCMAKE_CUDA_COMPILER="%CUDA12%\bin\nvcc.exe" ^
+  -T "cuda=%CUDA12%" ^
   "-DCMAKE_CUDA_ARCHITECTURES=86;120a" ^
   -DVIDFAB_BUILD_C_API=ON
 if errorlevel 1 exit /b 1
@@ -31,7 +31,7 @@ cmake --build "%BUILD%" --config Release --target vidfab vidfab_c
 if errorlevel 1 exit /b 1
 
 set "VERSION="
-for /f "tokens=5" %%V in ('findstr /b /c:"project(vidfab " "%ROOT%CMakeLists.txt"') do for /f "delims=)" %%W in ("%%V") do set "VERSION=%%W"
+for /f "tokens=5" %%V in ('findstr /b /c:"project(vidfab " "%ROOT%\CMakeLists.txt"') do for /f "delims=)" %%W in ("%%V") do set "VERSION=%%W"
 if not defined VERSION (
   echo package: could not read the project version
   exit /b 1
@@ -53,25 +53,25 @@ copy /y "%BUILD%\Release\vidfab.dll" "%STAGE%\vidfab.dll" >nul
 if errorlevel 1 exit /b 1
 mkdir "%STAGE%\include\vidfab"
 if errorlevel 1 exit /b 1
-copy /y "%ROOT%include\vidfab\capi.h" "%STAGE%\include\vidfab\capi.h" >nul
+copy /y "%ROOT%\include\vidfab\capi.h" "%STAGE%\include\vidfab\capi.h" >nul
 if errorlevel 1 exit /b 1
 mkdir "%STAGE%\lib"
 if errorlevel 1 exit /b 1
 copy /y "%BUILD%\Release\vidfab_c.lib" "%STAGE%\lib\vidfab_c.lib" >nul
 if errorlevel 1 exit /b 1
-copy /y "%ROOT%README.md" "%STAGE%\README.md" >nul
+copy /y "%ROOT%\README.md" "%STAGE%\README.md" >nul
 if errorlevel 1 exit /b 1
-copy /y "%ROOT%third_party\sageattention\LICENSE" "%STAGE%\SAGEATTENTION-LICENSE.txt" >nul
+copy /y "%ROOT%\third_party\sageattention\LICENSE" "%STAGE%\SAGEATTENTION-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
-copy /y "%ROOT%external\ffmpeg\LICENSE" "%STAGE%\FFMPEG-LICENSE.txt" >nul
+copy /y "%ROOT%\external\ffmpeg\LICENSE" "%STAGE%\FFMPEG-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 
 for %%F in (avcodec-62.dll avformat-62.dll avutil-60.dll swresample-6.dll swscale-9.dll) do (
-  if not exist "%ROOT%external\ffmpeg\bin\%%F" (
-    echo package: required FFmpeg runtime not found at %ROOT%external\ffmpeg\bin\%%F
+  if not exist "%ROOT%\external\ffmpeg\bin\%%F" (
+    echo package: required FFmpeg runtime not found at %ROOT%\external\ffmpeg\bin\%%F
     exit /b 1
   )
-  copy /y "%ROOT%external\ffmpeg\bin\%%F" "%STAGE%\%%F" >nul
+  copy /y "%ROOT%\external\ffmpeg\bin\%%F" "%STAGE%\%%F" >nul
   if errorlevel 1 exit /b 1
 )
 
