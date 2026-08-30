@@ -1,6 +1,7 @@
 #include "vidfab/cuda/cublas_dispatch.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cwchar>
 #include <mutex>
 #include <stdexcept>
@@ -272,11 +273,24 @@ const CublasApi& api() {
     }
 #if defined(_WIN32)
     request = cuda_version_request(request, environment(L"VIDFAB_CUDA_VERSION"));
+#else
+    std::wstring environment_request;
+    if (const char* value = std::getenv("VIDFAB_CUDA_VERSION"); value != nullptr)
+      environment_request.assign(value, value + std::char_traits<char>::length(value));
+    request = cuda_version_request(request, environment_request);
+#endif
     if (request != L"auto" && request != L"13" && request != L"12")
       throw std::runtime_error("cuBLAS: VIDFAB_CUDA_VERSION must be auto, 13, or 12");
+#if defined(_WIN32)
     load_windows(current.api, request);
 #else
-    (void)request;
+    constexpr int linked_major = CUDART_VERSION / 1000;
+    if (!cuda_version_matches_linked_toolkit(request, linked_major)) {
+      throw std::runtime_error(
+          "cuBLAS: requested CUDA " + std::string(request.begin(), request.end()) +
+          " but this non-Windows build is linked to CUDA " +
+          std::to_string(linked_major));
+    }
     current.api.create = &::cublasCreate_v2;
     current.api.destroy = &::cublasDestroy_v2;
     current.api.set_stream = &::cublasSetStream_v2;
@@ -286,7 +300,7 @@ const CublasApi& api() {
     current.api.gemm_ex = static_cast<GemmEx>(&::cublasGemmEx);
     current.api.gemm_strided_batched_ex =
         static_cast<GemmStridedBatchedEx>(&::cublasGemmStridedBatchedEx);
-    current.api.major = CUDART_VERSION / 1000;
+    current.api.major = linked_major;
 #endif
   });
   return current.api;

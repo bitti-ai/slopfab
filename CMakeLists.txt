@@ -1340,6 +1340,31 @@ if(VIDFAB_BUILD_TESTS)
         COMMAND vidfab_cublas_dispatch_tests auto-fallback)
       add_test(NAME cublas_explicit_load_failure
         COMMAND vidfab_cublas_dispatch_tests broken-13)
+    else()
+      add_executable(vidfab_cublas_linked_dispatch_tests
+        tests/test_cublas_linked_dispatch.cpp)
+      target_link_libraries(vidfab_cublas_linked_dispatch_tests PRIVATE vidfab_cuda)
+      add_test(NAME cublas_linked_auto
+        COMMAND vidfab_cublas_linked_dispatch_tests auto success)
+      add_test(NAME cublas_linked_matching
+        COMMAND vidfab_cublas_linked_dispatch_tests
+          ${CUDAToolkit_VERSION_MAJOR} success)
+      if(CUDAToolkit_VERSION_MAJOR EQUAL 12)
+        set(VIDFAB_CUBLAS_MISMATCH_MAJOR 13)
+      else()
+        set(VIDFAB_CUBLAS_MISMATCH_MAJOR 12)
+      endif()
+      add_test(NAME cublas_linked_mismatch
+        COMMAND vidfab_cublas_linked_dispatch_tests
+          ${VIDFAB_CUBLAS_MISMATCH_MAJOR} failure)
+      add_test(NAME cublas_linked_environment_matching
+        COMMAND vidfab_cublas_linked_dispatch_tests environment success)
+      set_tests_properties(cublas_linked_environment_matching PROPERTIES
+        ENVIRONMENT "VIDFAB_CUDA_VERSION=${CUDAToolkit_VERSION_MAJOR}")
+      add_test(NAME cublas_linked_environment_mismatch
+        COMMAND vidfab_cublas_linked_dispatch_tests environment failure)
+      set_tests_properties(cublas_linked_environment_mismatch PROPERTIES
+        ENVIRONMENT "VIDFAB_CUDA_VERSION=${VIDFAB_CUBLAS_MISMATCH_MAJOR}")
     endif()
 
     add_executable(vidfab_kernel_tests

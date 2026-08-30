@@ -28,4 +28,9 @@ inline const CudaToolkitCandidate* select_cuda_toolkit(
   return nullptr;
 }
 
+inline bool cuda_version_matches_linked_toolkit(const std::wstring& requested,
+                                                int linked_major) {
+  return requested == L"auto" || requested == std::to_wstring(linked_major);
+}
+
 }  // namespace vidfab::cuda

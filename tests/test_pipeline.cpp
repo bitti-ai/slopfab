@@ -627,6 +627,10 @@ VIDFAB_TEST(cuda_toolkit_selection) {
   const auto* environment_override = vidfab::cuda::select_cuda_toolkit(
       vidfab::cuda::cuda_version_request(L"", L"12"), both);
   CHECK(environment_override != nullptr && environment_override->major == 12);
+
+  CHECK(vidfab::cuda::cuda_version_matches_linked_toolkit(L"auto", 12));
+  CHECK(vidfab::cuda::cuda_version_matches_linked_toolkit(L"12", 12));
+  CHECK(!vidfab::cuda::cuda_version_matches_linked_toolkit(L"13", 12));
 }
 
 }  // namespace

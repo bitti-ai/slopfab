@@ -76,6 +76,8 @@ NVIDIA promises cuBLAS ABI compatibility within a major, not across majors.
 The project therefore late-binds only the eight exports it uses and compiles a
 neutral signature and enum contract against the installed CUDA 13.0 headers
 at configure time. CUDA 12.8 supplies the declarations used to build the core.
+Non-Windows builds retain their link-time cuBLAS major: `auto` or that same
+major is accepted, while an explicit different major fails with a clear error.
 
 ### The C API
 
