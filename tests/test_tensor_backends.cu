@@ -6996,11 +6996,18 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
   const char* captured_vertical = std::getenv("VIDFAB_DIT_VERTICAL_REAL");
   const char* qwen_vertical = std::getenv("VIDFAB_QWEN_VERTICAL_REAL");
   const char* ref2va_vertical = std::getenv("VIDFAB_REF2VA_VERTICAL_REAL");
+  const char* ref2va_nonsquare_vertical =
+      std::getenv("VIDFAB_REF2VA_NONSQUARE_VERTICAL_REAL");
   if ((captured_vertical && captured_vertical[0] == '1') ||
       (qwen_vertical && qwen_vertical[0] == '1') ||
-      (ref2va_vertical && ref2va_vertical[0] == '1')) {
+      (ref2va_vertical && ref2va_vertical[0] == '1') ||
+      (ref2va_nonsquare_vertical &&
+       ref2va_nonsquare_vertical[0] == '1')) {
+    const bool nonsquare_reference = ref2va_nonsquare_vertical &&
+                                     ref2va_nonsquare_vertical[0] == '1';
     const bool reference_prompt =
-        ref2va_vertical && ref2va_vertical[0] == '1';
+        (ref2va_vertical && ref2va_vertical[0] == '1') ||
+        nonsquare_reference;
     const bool normal_prompt = reference_prompt ||
         (qwen_vertical && qwen_vertical[0] == '1');
     const std::filesystem::path video_vae_path =
@@ -7053,9 +7060,33 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
     request.raw_output = true;
     if (reference_prompt) {
       std::ofstream ppm(reference_path, std::ios::binary);
-      const std::array<uint8_t, 3> pixel{0x31, 0x97, 0xe3};
-      ppm << "P6\n1 1\n255\n";
-      ppm.write(reinterpret_cast<const char*>(pixel.data()), pixel.size());
+      if (nonsquare_reference) {
+        constexpr int source_width = 16;
+        constexpr int source_height = 9;
+        std::vector<uint8_t> pixels(source_width * source_height * 3);
+        for (int y = 0; y < source_height; ++y) {
+          for (int x = 0; x < source_width; ++x) {
+            const size_t offset = size_t(y * source_width + x) * 3;
+            pixels[offset + 0] = static_cast<uint8_t>(17 * x + 11 * y + 3);
+            pixels[offset + 1] = static_cast<uint8_t>(7 * x + 23 * y + 41);
+            pixels[offset + 2] = static_cast<uint8_t>(29 * x + 5 * y + 97);
+          }
+        }
+        ppm << "P6\n" << source_width << " " << source_height << "\n255\n";
+        ppm.write(reinterpret_cast<const char*>(pixels.data()), pixels.size());
+        int keyframe_h = 0, keyframe_w = 0;
+        resolve_reference_image_size(source_width, source_height,
+                                     &keyframe_h, &keyframe_w);
+        CHECK(keyframe_w == 3648 && keyframe_h == 2048);
+        const auto qwen_grid =
+            text::qwen3vl_conditioning_grid(keyframe_w, keyframe_h);
+        CHECK(qwen_grid.width == 170 && qwen_grid.height == 94 &&
+              qwen_grid.patch_count() == 15980);
+      } else {
+        const std::array<uint8_t, 3> pixel{0x31, 0x97, 0xe3};
+        ppm << "P6\n1 1\n255\n";
+        ppm.write(reinterpret_cast<const char*>(pixel.data()), pixel.size());
+      }
       CHECK(static_cast<bool>(ppm));
       request.reference_image_paths.push_back(reference_path.string());
     }
@@ -7143,7 +7174,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       options.attention_mode = AttentionMode::kExact;
       if (!normal_prompt) options.prompt_embedding_path = prompt_path.string();
       options.init_latents_path = init_path.string();
-      options.verbose = false;
+      options.verbose = nonsquare_reference;
       options.on_samples = capture_samples;
       options.hook_userdata = &samples;
       const auto begin = std::chrono::steady_clock::now();
@@ -7205,16 +7236,22 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       CHECK(pcm_hash == 0xb2e09a49fc952e5eull);
       CHECK(y4m_hash == 0x2f595da467a8ac60ull);
       CHECK(wav_hash == 0xe0d84106a3018c29ull);
-    } else {
+    } else if (!nonsquare_reference) {
       CHECK(pixel_hash == 0x821ea69c8412d682ull);
       CHECK(pcm_hash == 0xb92888172863f265ull);
       CHECK(y4m_hash == 0x6b6a71322a7033cfull);
       CHECK(wav_hash == 0xce580a62a54051d2ull);
+    } else {
+      CHECK(pixel_hash == 0xb47a2b3e91e9c744ull);
+      CHECK(pcm_hash == 0x334e7829e92a479full);
+      CHECK(y4m_hash == 0xdc958cbd7468dd84ull);
+      CHECK(wav_hash == 0xec54a7c6ac251e5full);
     }
     std::printf(
         "  real exact %s vertical x3: CUDA/Vulkan %.3f/%.3f ms, pixels/pcm/y4m/wav %016llx/%016llx/%016llx/%016llx\n",
-        reference_prompt ? "reference-prompt" :
-            (normal_prompt ? "normal-prompt" : "captured-prompt"),
+        nonsquare_reference ? "nonsquare-reference-prompt" :
+            (reference_prompt ? "reference-prompt" :
+             (normal_prompt ? "normal-prompt" : "captured-prompt")),
         cuda_vertical.second, vulkan_vertical.second,
         static_cast<unsigned long long>(pixel_hash),
         static_cast<unsigned long long>(pcm_hash),
