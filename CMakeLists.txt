@@ -1333,6 +1333,9 @@ if(VIDFAB_BUILD_TESTS)
       add_test(NAME cublas_cuda13 COMMAND vidfab_cublas_dispatch_tests 13)
       set_tests_properties(cublas_cuda13 PROPERTIES
         ENVIRONMENT "VIDFAB_CUDA_VERSION=13")
+      add_test(NAME cublas_auto_prefer13 COMMAND vidfab_cublas_dispatch_tests auto)
+      set_tests_properties(cublas_auto_prefer13 PROPERTIES
+        ENVIRONMENT "VIDFAB_CUDA_VERSION=auto")
       add_test(NAME cublas_auto_load_fallback
         COMMAND vidfab_cublas_dispatch_tests auto-fallback)
       add_test(NAME cublas_explicit_load_failure

@@ -14,9 +14,10 @@
 int main(int argc, char** argv) {
   if (argc != 2) return 2;
   const std::string mode = argv[1];
+  const bool auto_preference = mode == "auto";
   const bool fallback = mode == "auto-fallback";
   const bool broken_explicit = mode == "broken-13";
-  const int expected = fallback ? 12 : std::atoi(argv[1]);
+  const int expected = auto_preference ? 13 : (fallback ? 12 : std::atoi(argv[1]));
   std::filesystem::path fake_root;
 #if defined(_WIN32)
   if (fallback || broken_explicit) {
