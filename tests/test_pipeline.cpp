@@ -631,6 +631,15 @@ VIDFAB_TEST(cuda_toolkit_selection) {
   CHECK(vidfab::cuda::cuda_version_matches_linked_toolkit(L"auto", 12));
   CHECK(vidfab::cuda::cuda_version_matches_linked_toolkit(L"12", 12));
   CHECK(!vidfab::cuda::cuda_version_matches_linked_toolkit(L"13", 12));
+
+  CHECK(!vidfab::cuda::cuda_driver_supports_toolkit(12999, 13));
+  CHECK(vidfab::cuda::cuda_driver_supports_toolkit(12999, 12));
+  CHECK(vidfab::cuda::cuda_driver_supports_toolkit(13000, 13));
+  const auto* driver_fallback = vidfab::cuda::select_cuda_toolkit_for_driver(
+      L"auto", both, 12999);
+  CHECK(driver_fallback != nullptr && driver_fallback->major == 12);
+  CHECK(vidfab::cuda::select_cuda_toolkit_for_driver(L"13", both, 12999) ==
+        nullptr);
 }
 
 }  // namespace

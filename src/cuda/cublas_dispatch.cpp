@@ -231,6 +231,13 @@ void load_candidate(CublasApi& api, const CudaToolkitCandidate& selected) {
 
 void load_windows(CublasApi& api, const std::wstring& requested) {
   const std::vector<CudaToolkitCandidate> found = candidates();
+  int driver_version = 0;
+  const cudaError_t driver_status = cudaDriverGetVersion(&driver_version);
+  if (driver_status != cudaSuccess) {
+    throw std::runtime_error(
+        "cuBLAS: cannot query NVIDIA driver capability without a context: " +
+        std::string(cudaGetErrorString(driver_status)));
+  }
   std::string failures;
   bool matched = false;
   for (const CudaToolkitCandidate& candidate : found) {
@@ -238,6 +245,18 @@ void load_windows(CublasApi& api, const std::wstring& requested) {
     if (requested != L"auto" && requested != std::to_wstring(candidate.major))
       continue;
     matched = true;
+    if (!cuda_driver_supports_toolkit(driver_version, candidate.major)) {
+      const std::string reason =
+          "CUDA " + std::to_string(candidate.major) +
+          " cuBLAS requires driver API >= " +
+          std::to_string(candidate.major * 1000) +
+          "; installed driver reports " + std::to_string(driver_version);
+      if (!failures.empty()) failures += "; ";
+      failures += reason;
+      if (requested != L"auto")
+        throw std::runtime_error("cuBLAS: " + reason);
+      continue;
+    }
     try {
       CublasApi loaded;
       load_candidate(loaded, candidate);
