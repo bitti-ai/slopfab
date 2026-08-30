@@ -128,6 +128,7 @@ __global__ void sol(const __grid_constant__ CUtensorMap q_map,
   __shared__ alignas(8) uint64_t q_barrier;
 
   if (t == 0) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
     const uint32_t dst = static_cast<uint32_t>(__cvta_generic_to_shared(staged_q));
     uint32_t bar = static_cast<uint32_t>(__cvta_generic_to_shared(&q_barrier));
     uint64_t state;
@@ -146,6 +147,7 @@ __global__ void sol(const __grid_constant__ CUtensorMap q_map,
                    "selp.b32 %0, 1, 0, p; }"
                    : "=r"(ready) : "r"(bar), "l"(state) : "memory");
     } while (!ready);
+#endif
   }
   __syncthreads();
   if (t < D) {
@@ -339,6 +341,13 @@ size_t sol_attention_workspace_bytes(const AttentionConfig& c) {
 void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
                            const __nv_bfloat16* k, const __nv_bfloat16* v,
                            __nv_bfloat16* out, const AttentionConfig& c, Workspace& ws) {
+  int device = 0;
+  cudaDeviceProp properties{};
+  VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
+  VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
+  if (properties.major < 9) {
+    throw std::runtime_error("Sol-Attn requires a Hopper or newer GPU (sm_90+)");
+  }
   validate(c);
   Workspace::Scope scope(ws);
   const int nb = (c.seq_len + B - 1) / B;

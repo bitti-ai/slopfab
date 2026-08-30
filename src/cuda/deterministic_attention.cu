@@ -206,6 +206,7 @@ __global__ __launch_bounds__(1024, 1) void h3_attention_coop64_kernel(
     const int32_t* __restrict__ ranges, uint32_t sequence, uint32_t heads,
     uint32_t head_dim, float scale, uint32_t query_row_offset,
     uint32_t output_row_offset, uint32_t rows) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
   __shared__ __align__(16) __nv_bfloat16 query_stage[64 * 128];
   __shared__ __align__(16) __nv_bfloat16 key_stage[64 * 128];
   __shared__ __align__(16) __half value_stage[16 * 128];
@@ -401,6 +402,22 @@ __global__ __launch_bounds__(1024, 1) void h3_attention_coop64_kernel(
           static_cast<uint32_t>(lo) | (static_cast<uint32_t>(hi) << 16u);
     }
   }
+#else
+  // Exact H3 is qualified only on Blackwell. The empty SM86 specialization
+  // keeps CUDA 12's Ampere image free of its 97 KiB static shared allocation.
+  (void)query;
+  (void)key;
+  (void)value;
+  (void)output;
+  (void)ranges;
+  (void)sequence;
+  (void)heads;
+  (void)head_dim;
+  (void)scale;
+  (void)query_row_offset;
+  (void)output_row_offset;
+  (void)rows;
+#endif
 }
 
 __global__ void causal_gqa_attention_kernel(

@@ -29,6 +29,7 @@ __device__ __forceinline__ float fast_exp(float x) {
 
 __device__ uint64_t issue(const CUtensorMap* map, void* dst, int h, int row,
                           uint64_t* barrier) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
   uint32_t bar = uint32_t(__cvta_generic_to_shared(barrier));
   const uint32_t ptr = uint32_t(__cvta_generic_to_shared(dst));
   uint64_t state;
@@ -41,9 +42,18 @@ __device__ uint64_t issue(const CUtensorMap* map, void* dst, int h, int row,
                : "r"(B * D * int(sizeof(__nv_bfloat16))), "r"(ptr), "l"(map),
                  "r"(0), "r"(h), "r"(row) : "memory");
   return state;
+#else
+  (void)map;
+  (void)dst;
+  (void)h;
+  (void)row;
+  (void)barrier;
+  return 0;
+#endif
 }
 
 __device__ void wait(uint64_t* barrier, uint64_t state) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
   const uint32_t bar = uint32_t(__cvta_generic_to_shared(barrier));
   uint32_t ready;
   do {
@@ -51,6 +61,10 @@ __device__ void wait(uint64_t* barrier, uint64_t state) {
                  "selp.b32 %0, 1, 0, p; }"
                  : "=r"(ready) : "r"(bar), "l"(state) : "memory");
   } while (!ready);
+#else
+  (void)barrier;
+  (void)state;
+#endif
 }
 
 __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
@@ -336,6 +350,11 @@ bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const float* tau, __nv_bfloat16* out,
                           const AttentionConfig& c) {
   if (c.head_dim != D || (c.seq_len+B-1)/B > MaxBlocks) return false;
+  int device = 0;
+  cudaDeviceProp properties{};
+  if (cudaGetDevice(&device) != cudaSuccess ||
+      cudaGetDeviceProperties(&properties, device) != cudaSuccess ||
+      properties.major < 12) return false;
   CUtensorMap q_map{},k_map{},v_map{};
   // Misaligned or otherwise unsupported K/V layouts are valid inputs for the
   // scalar Sol kernel. Never launch TMA with a zero/invalid descriptor.

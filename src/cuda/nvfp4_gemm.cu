@@ -216,12 +216,23 @@ static_assert(kRowWords % 4 == 0 && (kRowWords / 4) % 2 == 1,
 
 __device__ inline void mma_nvfp4(float (&d)[4], const uint32_t (&a)[4], const uint32_t (&b)[2],
                                  uint32_t sa, uint32_t sb) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
   asm volatile(
       "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
       ".f32.e2m1.e2m1.f32.ue4m3 "
       "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
       : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
       : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(sa), "r"(sb));
+#else
+  // This translation unit is part of CUDA 12's sm_86/sm_120a fat binary.
+  // Runtime dispatch rejects this path below sm_120; keeping a device stub
+  // prevents ptxas from seeing Blackwell-only block-scaled MMA on Ampere.
+  (void)d;
+  (void)a;
+  (void)b;
+  (void)sa;
+  (void)sb;
+#endif
 }
 
 // One staged operand's worth of global reads, held in registers so the loads
@@ -468,7 +479,13 @@ bool nvfp4_gemm_supported(int out_features, int in_features) {
   // `in % 64` is this kernel's own staging requirement -- it is what makes a
   // packed row 32-byte aligned and a scale row 4-byte aligned -- and it happens
   // to subsume the swizzle's `Kb % 4`. `out % 128` is the swizzle's.
-  return in_features > 0 && out_features > 0 && in_features % 64 == 0 && out_features % 128 == 0;
+  int device = 0;
+  cudaDeviceProp properties{};
+  const bool native_fp4 = cudaGetDevice(&device) == cudaSuccess &&
+                          cudaGetDeviceProperties(&properties, device) == cudaSuccess &&
+                          properties.major >= 12;
+  return native_fp4 && in_features > 0 && out_features > 0 &&
+         in_features % 64 == 0 && out_features % 128 == 0;
 }
 
 size_t nvfp4_gemm_workspace_bytes(int rows, int in_features) {
@@ -501,7 +518,8 @@ void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w
   // project keeps being bitten by. A file that needs it should say so on the
   // day it appears.
   if (!nvfp4_gemm_supported(out_features, in_features)) {
-    throw std::runtime_error("nvfp4_gemm: " + std::to_string(out_features) + "x" +
+    throw std::runtime_error("nvfp4_gemm: native NVFP4 requires a Blackwell (sm_120) GPU and " +
+                             std::to_string(out_features) + "x" +
                              std::to_string(in_features) +
                              " needs out % 128 == 0 and in % 64 == 0; the padded block-scale "
                              "layout has never been observed and is not guessed at");
@@ -525,7 +543,8 @@ void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const u
                         int in_features, Workspace& ws, cudaStream_t stream) {
   if (rows <= 0 || out_features <= 0) return;
   if (!nvfp4_gemm_supported(out_features, in_features)) {
-    throw std::runtime_error("nvfp4_gemm: " + std::to_string(out_features) + "x" +
+    throw std::runtime_error("nvfp4_gemm: native NVFP4 requires a Blackwell (sm_120) GPU and " +
+                             std::to_string(out_features) + "x" +
                              std::to_string(in_features) +
                              " needs out % 128 == 0 and in % 64 == 0; the padded block-scale "
                              "layout has never been observed and is not guessed at");
