@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "vidfab/attention_mode.h"
+#include "vidfab/cuda/cublas_dispatch.h"
 #include "vidfab/generate.h"
 #include "vidfab/pipeline.h"
 #include "vidfab/pixel_buffer.h"
@@ -356,6 +357,31 @@ VIDFAB_C_API const char* VIDFAB_CALL vidfab_capi_version_string(void) {
 VIDFAB_C_API const char* VIDFAB_CALL vidfab_last_error(void) { return g_last_error.c_str(); }
 
 VIDFAB_C_API void VIDFAB_CALL vidfab_free_string(char* text) { std::free(text); }
+
+VIDFAB_C_API int VIDFAB_CALL vidfab_cuda_set_version(const char* version) {
+  if (version == nullptr)
+    return fail(VIDFAB_ERR_INVALID_ARGUMENT,
+                "vidfab_cuda_set_version: null version");
+  if (std::strcmp(version, "auto") != 0 && std::strcmp(version, "13") != 0 &&
+      std::strcmp(version, "12") != 0)
+    return fail(VIDFAB_ERR_INVALID_ARGUMENT,
+                "vidfab_cuda_set_version: expected auto, 13, or 12");
+  return guarded([&] {
+    vidfab::cuda::set_cublas_version_request(version);
+    return VIDFAB_OK;
+  });
+}
+
+VIDFAB_C_API int VIDFAB_CALL vidfab_cuda_loaded_major(int32_t* out_major) {
+  if (out_major == nullptr)
+    return fail(VIDFAB_ERR_INVALID_ARGUMENT,
+                "vidfab_cuda_loaded_major: null out_major");
+  *out_major = 0;
+  return guarded([&] {
+    *out_major = vidfab::cuda::cublas_loaded_major();
+    return VIDFAB_OK;
+  });
+}
 
 VIDFAB_C_API vidfab_request* VIDFAB_CALL vidfab_request_create(void) {
   try {

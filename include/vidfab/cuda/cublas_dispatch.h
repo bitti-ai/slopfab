@@ -7,7 +7,7 @@
 namespace vidfab::cuda {
 
 // Must be called before the first cuBLAS operation. The CLI uses this for
-// --cuda-version; library consumers use VIDFAB_CUDA_VERSION instead.
+// --cuda-version; the C ABI exposes it as vidfab_cuda_set_version.
 void set_cublas_version_request(const std::string& requested);
 
 // Loads cuBLAS if necessary and reports the selected toolkit major/path.

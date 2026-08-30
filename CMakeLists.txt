@@ -157,6 +157,19 @@ if(VIDFAB_ENABLE_CUDA)
           "vidfab: Windows release/core builds require CUDA 12.8; got ${CUDAToolkit_VERSION}")
       endif()
 
+      try_compile(VIDFAB_CUBLAS12_ABI_OK
+        "${CMAKE_CURRENT_BINARY_DIR}/cublas12-abi-probe"
+        SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cublas_abi_probe.cpp"
+        CMAKE_FLAGS
+          "-DINCLUDE_DIRECTORIES=${CUDAToolkit_INCLUDE_DIRS}"
+          "-DCMAKE_CXX_STANDARD=17"
+          "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
+        OUTPUT_VARIABLE VIDFAB_CUBLAS12_ABI_OUTPUT)
+      if(NOT VIDFAB_CUBLAS12_ABI_OK)
+        message(FATAL_ERROR
+          "vidfab: CUDA 12.8 cuBLAS ABI does not match the late-bound adapter:\n${VIDFAB_CUBLAS12_ABI_OUTPUT}")
+      endif()
+
       # NVIDIA guarantees ABI compatibility within a major, not across one.
       # Our eight-call adapter supports the exact locally validated CUDA 13.0
       # ABI, so compile its neutral signature/enum contract against 13.0's own
@@ -183,7 +196,7 @@ if(VIDFAB_ENABLE_CUDA)
         message(FATAL_ERROR
           "vidfab: CUDA 13.0 cuBLAS ABI does not match the late-bound adapter:\n${VIDFAB_CUBLAS13_ABI_OUTPUT}")
       endif()
-      message(STATUS "vidfab: validated late-bound cuBLAS ABI against CUDA 13.0 headers")
+      message(STATUS "vidfab: validated late-bound cuBLAS ABI against CUDA 12.8 and 13.0 headers")
     endif()
     # The VAE decode's final de-normalise is the project's first std::thread
     # use. MSVC needs nothing for it, but every other toolchain wants -pthread
@@ -1057,15 +1070,10 @@ if(VIDFAB_BUILD_C_API)
   # Consequently vidfab.dll is the only project DLL, and its exports are exactly
   # the C entry points — no unstable C++ ABI and no companion vidfab DLLs.
   #
-  # It is not, however, dependency-free, and it is worth being exact about that
-  # because the mistake is invisible on a developer machine. The CUDA *runtime*
-  # is embedded (see the cudart note above), but cuBLAS is not: vidfab.dll
-  # carries a load-time import of cublas64_<major>.dll, which in turn pulls
-  # cublasLt64_<major>.dll. On a box with the toolkit installed those resolve
-  # off PATH and nothing looks wrong; on a consumer's machine the process fails
-  # at LoadLibrary with no useful message. Linking them statically is not the
-  # answer — cublasLt_static alone is ~456 MB — so the application host must
-  # expose the matching installed toolkit on PATH. The CLI launcher does this.
+  # Static cudart is embedded (see above), while the shared in-process loader
+  # resolves CUDA 13/12 cuBLAS by absolute toolkit path on first use. Thus the
+  # DLL and CLI have identical selection/error behavior and neither has a
+  # fixed cublas64_<major>.dll import.
   add_library(vidfab_c SHARED src/capi/capi.cpp)
   # vidfab_cuda carries vidfab_core with it as a PUBLIC dependency, so naming
   # the one target is naming both.
@@ -1094,13 +1102,13 @@ if(VIDFAB_BUILD_C_API)
   # instead of failing.
   #
   # The version is the *C ABI's*, not the project's. They are different numbers
-  # answering different questions — capi.h declares 1.1.0 and tells a binding to
-  # refuse a different major, while PROJECT_VERSION is 0.1.0 and moves whenever
-  # anything in the project does. Using the latter here would produce a
-  # libvidfab.so.0 whose soname says 0 for an ABI that says 1, and would bump
-  # it for releases that did not touch the C interface at all.
+  # answering different questions — capi.h declares its own version and tells
+  # a binding to refuse a different major, while PROJECT_VERSION is 0.1.0 and
+  # moves whenever anything in the project does. Using the latter here would
+  # produce a libvidfab.so.0 whose soname says 0 for an ABI that says 1, and
+  # would bump it for releases that did not touch the C interface at all.
   set(VIDFAB_CAPI_VERSION_MAJOR 1)
-  set(VIDFAB_CAPI_VERSION_MINOR 3)
+  set(VIDFAB_CAPI_VERSION_MINOR 4)
   set(VIDFAB_CAPI_VERSION_PATCH 0)
   set(VIDFAB_CAPI_VERSION
     "${VIDFAB_CAPI_VERSION_MAJOR}.${VIDFAB_CAPI_VERSION_MINOR}.${VIDFAB_CAPI_VERSION_PATCH}")
@@ -1316,6 +1324,21 @@ if(VIDFAB_BUILD_TESTS)
   endif()
 
   if(VIDFAB_ENABLE_CUDA)
+    add_executable(vidfab_cublas_dispatch_tests tests/test_cublas_dispatch.cpp)
+    target_link_libraries(vidfab_cublas_dispatch_tests PRIVATE vidfab_cuda)
+    if(WIN32)
+      add_test(NAME cublas_cuda12 COMMAND vidfab_cublas_dispatch_tests 12)
+      set_tests_properties(cublas_cuda12 PROPERTIES
+        ENVIRONMENT "VIDFAB_CUDA_VERSION=12")
+      add_test(NAME cublas_cuda13 COMMAND vidfab_cublas_dispatch_tests 13)
+      set_tests_properties(cublas_cuda13 PROPERTIES
+        ENVIRONMENT "VIDFAB_CUDA_VERSION=13")
+      add_test(NAME cublas_auto_load_fallback
+        COMMAND vidfab_cublas_dispatch_tests auto-fallback)
+      add_test(NAME cublas_explicit_load_failure
+        COMMAND vidfab_cublas_dispatch_tests broken-13)
+    endif()
+
     add_executable(vidfab_kernel_tests
       tests/harness.cpp
       tests/test_kernels.cu
@@ -1330,11 +1353,11 @@ if(VIDFAB_BUILD_TESTS)
     add_test(NAME kernels COMMAND vidfab_kernel_tests)
 
     if(WIN32)
-      add_test(NAME cuda_launcher_explicit
-        COMMAND vidfab --cuda-version=${CUDAToolkit_VERSION_MAJOR} --help)
-      add_test(NAME cuda_launcher_invalid
+      add_test(NAME cuda_version_option
+        COMMAND vidfab --cuda-version=12 --help)
+      add_test(NAME cuda_version_invalid
         COMMAND vidfab --cuda-version=invalid --help)
-      set_tests_properties(cuda_launcher_invalid PROPERTIES WILL_FAIL TRUE)
+      set_tests_properties(cuda_version_invalid PROPERTIES WILL_FAIL TRUE)
     endif()
   endif()
 
@@ -1356,6 +1379,21 @@ if(VIDFAB_BUILD_TESTS)
       target_compile_options(vidfab_capi_tests PRIVATE -Wall -Wextra)
     endif()
     add_test(NAME capi COMMAND vidfab_capi_tests)
+
+    add_executable(vidfab_capi_cuda_dispatch_tests tests/test_capi_cuda_dispatch.cpp)
+    target_link_libraries(vidfab_capi_cuda_dispatch_tests PRIVATE vidfab_c)
+    target_include_directories(vidfab_capi_cuda_dispatch_tests PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    if(MSVC)
+      target_compile_options(vidfab_capi_cuda_dispatch_tests PRIVATE
+        /W4 /permissive- /utf-8)
+    else()
+      target_compile_options(vidfab_capi_cuda_dispatch_tests PRIVATE -Wall -Wextra)
+    endif()
+    if(WIN32)
+      add_test(NAME capi_cublas_cuda12 COMMAND vidfab_capi_cuda_dispatch_tests 12)
+      add_test(NAME capi_cublas_cuda13 COMMAND vidfab_capi_cuda_dispatch_tests 13)
+    endif()
   endif()
 endif()
 
@@ -1371,6 +1409,6 @@ if(VIDFAB_BUILD_C_API)
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
   install(FILES include/vidfab/capi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vidfab)
 
-  # CUDA and cuBLAS DLLs are intentionally not installed. Applications loading
-  # vidfab.dll must expose the matching CUDA toolkit bin directory on PATH.
+  # CUDA and cuBLAS DLLs are intentionally not installed. vidfab.dll discovers
+  # the selected installed toolkit itself; consumers do not modify PATH.
 endif()

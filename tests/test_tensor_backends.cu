@@ -1651,7 +1651,7 @@ VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
     });
     out.copy_to_host(expected_band.data(), count);
     cublasHandle_t handle = nullptr;
-    VIDFAB_CUBLAS_CHECK(cublasCreate(&handle));
+    VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&handle));
     cuda::Workspace workspace;
     cuda::AttentionConfig config;
     config.seq_len = sequence;
@@ -1684,7 +1684,7 @@ VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
           reinterpret_cast<__nv_bfloat16*>(out.get()), config,
           cuda::AttentionBackend::kFused, workspace);
     });
-    cublasDestroy(handle);
+    vidfab::cuda::cublas_destroy(handle);
   }
 
   Instance instance = Instance::create();
@@ -1813,7 +1813,7 @@ VIDFAB_TEST(cuda_vulkan_h3_capture_replay) {
         header.seq_len, header.num_heads, header.head_dim, scale);
   });
   cublasHandle_t blas{};
-  VIDFAB_CUBLAS_CHECK(cublasCreate(&blas));
+  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&blas));
   cuda::Workspace workspace;
   cuda::AttentionConfig config;
   config.seq_len = header.seq_len;
@@ -1828,7 +1828,7 @@ VIDFAB_TEST(cuda_vulkan_h3_capture_replay) {
         reinterpret_cast<__nv_bfloat16*>(shipped_output.get()), config,
         cuda::AttentionBackend::kFused, workspace);
   });
-  cublasDestroy(blas);
+  vidfab::cuda::cublas_destroy(blas);
   std::vector<uint16_t> expected(count), shipped(count);
   exact_output.copy_to_host(expected.data(), count);
   shipped_output.copy_to_host(shipped.data(), count);
@@ -9742,10 +9742,10 @@ VIDFAB_TEST(cuda_bf16_gemm_5376_baseline) {
   VIDFAB_CUDA_CHECK(cudaMemset(a.get(), 0, size_t(m) * k * sizeof(__nv_bfloat16)));
   VIDFAB_CUDA_CHECK(cudaMemset(w.get(), 0, size_t(n) * k * sizeof(__nv_bfloat16)));
   cublasHandle_t handle = nullptr;
-  VIDFAB_CUBLAS_CHECK(cublasCreate(&handle));
+  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&handle));
   const float alpha = 1.0f, beta = 0.0f;
   auto launch = [&] {
-    VIDFAB_CUBLAS_CHECK(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
+    VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
                                      &alpha, w.get(), CUDA_R_16BF, k,
                                      a.get(), CUDA_R_16BF, k, &beta,
                                      c.get(), CUDA_R_16BF, n,
@@ -9760,7 +9760,7 @@ VIDFAB_TEST(cuda_bf16_gemm_5376_baseline) {
   VIDFAB_CUDA_CHECK(cudaEventRecord(end)); VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
   float elapsed = 0.0f; VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&elapsed, begin, end));
   std::printf("  cuBLAS BF16 GEMM 64x5376x5376: %.3f ms\n", elapsed / 20.0f);
-  cudaEventDestroy(begin); cudaEventDestroy(end); cublasDestroy(handle);
+  cudaEventDestroy(begin); cudaEventDestroy(end); vidfab::cuda::cublas_destroy(handle);
 }
 
 VIDFAB_TEST(cuda_vulkan_cooperative_bf16_gemm_exact) {
@@ -10072,7 +10072,7 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
   TensorContext context(device);
 
   cublasHandle_t handle = nullptr;
-  VIDFAB_CUBLAS_CHECK(cublasCreate(&handle));
+  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&handle));
   cudaEvent_t begin = nullptr, end = nullptr;
   VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
   VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
@@ -10087,7 +10087,7 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
     VIDFAB_CUDA_CHECK(cudaMemset(ca.get(), 0, size_t(m) * k * 2));
     VIDFAB_CUDA_CHECK(cudaMemset(cw.get(), 0, size_t(n) * k * 2));
     auto cuda_launch = [&] {
-      VIDFAB_CUBLAS_CHECK(cublasGemmEx(
+      VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(
           handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k, &alpha, cw.get(),
           CUDA_R_16F, k, ca.get(), CUDA_R_16F, k, &beta, co.get(),
           CUDA_R_32F, n, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
@@ -10171,7 +10171,7 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
     VIDFAB_CUDA_CHECK(cudaMemset(ca.get(), 0, size_t(m) * k * 4));
     VIDFAB_CUDA_CHECK(cudaMemset(cw.get(), 0, size_t(n) * k * 4));
     auto cuda_launch = [&] {
-      VIDFAB_CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+      VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_sgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                                       n, m, k, &alpha, cw.get(), k,
                                       ca.get(), k, &beta, co.get(), n));
     };
@@ -10204,7 +10204,7 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
   }
   cudaEventDestroy(begin);
   cudaEventDestroy(end);
-  cublasDestroy(handle);
+  vidfab::cuda::cublas_destroy(handle);
 }
 
 VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {

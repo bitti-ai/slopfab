@@ -72,8 +72,8 @@ struct BfBuf {
 
 struct CublasScope {
   cublasHandle_t h = nullptr;
-  CublasScope() { VIDFAB_CUBLAS_CHECK(cublasCreate(&h)); }
-  ~CublasScope() { cublasDestroy(h); }
+  CublasScope() { VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&h)); }
+  ~CublasScope() { vidfab::cuda::cublas_destroy(h); }
 };
 
 std::vector<float> bf16_round(const std::vector<float>& v) {

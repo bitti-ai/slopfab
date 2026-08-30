@@ -1126,8 +1126,8 @@ VIDFAB_TEST(nn_convrot_matches_regular_hadamard) {
 
 struct CublasScope {
   cublasHandle_t h = nullptr;
-  CublasScope() { VIDFAB_CUBLAS_CHECK(cublasCreate(&h)); }
-  ~CublasScope() { cublasDestroy(h); }
+  CublasScope() { VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&h)); }
+  ~CublasScope() { vidfab::cuda::cublas_destroy(h); }
 };
 
 VIDFAB_TEST(linear_bf16_and_fp8) {
@@ -4328,7 +4328,7 @@ VIDFAB_TEST(nvfp4_gemm_production_timings) {
                                       vidfab::cuda::launch_dequant_nvfp4(dw.get(), dws.get(), 1.0f,
                                                                          wb, s.out, s.in, nullptr);
                                       const float alpha = 1.0f, beta = 0.0f;
-                                      VIDFAB_CUBLAS_CHECK(cublasGemmEx(
+                                      VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(
                                           cb.h, CUBLAS_OP_T, CUBLAS_OP_N, s.out, rows, s.in,
                                           &alpha, wb, CUDA_R_16BF, s.in, dx.p(), CUDA_R_16BF, s.in,
                                           &beta, dy.p(), CUDA_R_16BF, s.out, CUBLAS_COMPUTE_32F,

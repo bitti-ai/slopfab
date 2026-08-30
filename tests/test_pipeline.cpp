@@ -16,7 +16,7 @@
 #include "vidfab/pipeline.h"
 #include "vidfab/generate.h"
 #include "vidfab/attention_mode.h"
-#include "vidfab/cuda_launcher.h"
+#include "vidfab/cuda/cuda_toolkit.h"
 #include "vidfab/sampler/scheduler.h"
 
 namespace {
@@ -609,29 +609,24 @@ VIDFAB_TEST(sol_schedule_ranges_and_cadence) {
   CHECK(!s.active(12,11));
 }
 
-VIDFAB_TEST(cuda_launcher_selection_and_command_line) {
-  const std::vector<vidfab::CudaLaunchCandidate> both = {
-      {13, L"C:\\app\\vidfab-cuda13.exe", L"C:\\CUDA\\v13\\bin\\x64"},
-      {12, L"C:\\app\\vidfab-cuda12.exe", L"C:\\CUDA\\v12\\bin"},
+VIDFAB_TEST(cuda_toolkit_selection) {
+  const std::vector<vidfab::cuda::CudaToolkitCandidate> both = {
+      {13, L"C:\\CUDA\\v13\\bin\\x64"},
+      {12, L"C:\\CUDA\\v12\\bin"},
   };
-  const auto* preferred = vidfab::select_cuda_launch(L"auto", both);
+  const auto* preferred = vidfab::cuda::select_cuda_toolkit(L"auto", both);
   CHECK(preferred != nullptr && preferred->major == 13);
 
-  std::vector<vidfab::CudaLaunchCandidate> fallback = both;
-  fallback[0].toolkit_bin.clear();
-  const auto* selected_fallback = vidfab::select_cuda_launch(L"auto", fallback);
+  std::vector<vidfab::cuda::CudaToolkitCandidate> fallback = both;
+  fallback[0].bin.clear();
+  const auto* selected_fallback = vidfab::cuda::select_cuda_toolkit(L"auto", fallback);
   CHECK(selected_fallback != nullptr && selected_fallback->major == 12);
 
-  CHECK(vidfab::cuda_version_request(L"", L"12") == L"12");
-  CHECK(vidfab::cuda_version_request(L"13", L"12") == L"13");
-  const auto* environment_override = vidfab::select_cuda_launch(
-      vidfab::cuda_version_request(L"", L"12"), both);
+  CHECK(vidfab::cuda::cuda_version_request(L"", L"12") == L"12");
+  CHECK(vidfab::cuda::cuda_version_request(L"13", L"12") == L"13");
+  const auto* environment_override = vidfab::cuda::select_cuda_toolkit(
+      vidfab::cuda::cuda_version_request(L"", L"12"), both);
   CHECK(environment_override != nullptr && environment_override->major == 12);
-
-  CHECK(vidfab::quote_windows_argument(L"") == L"\"\"");
-  CHECK(vidfab::cuda_launch_command(
-            L"C:\\Program Files\\vidfab-cuda13.exe", {L"generate", L"", L"a b"}) ==
-        L"\"C:\\Program Files\\vidfab-cuda13.exe\" generate \"\" \"a b\"");
 }
 
 }  // namespace

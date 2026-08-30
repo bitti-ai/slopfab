@@ -90,14 +90,14 @@ extern "C" {
  * A binding should compare `vidfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define VIDFAB_CAPI_VERSION_MAJOR 1
-#define VIDFAB_CAPI_VERSION_MINOR 3
+#define VIDFAB_CAPI_VERSION_MINOR 4
 #define VIDFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
  *
- * The 12-bit minor field is not generosity: minor bumps for every function
- * added, an 8-bit field would have run out at 255 of them, and widening the
- * packing after the fact is itself the ABI break this number exists to
+ * The 12-bit minor field is not generosity: minor bumps whenever functions
+ * are added, an 8-bit field would have run out at 255 revisions, and widening
+ * the packing after the fact is itself the ABI break this number exists to
  * report. */
 VIDFAB_C_API uint32_t VIDFAB_CALL vidfab_capi_version(void);
 
@@ -152,6 +152,25 @@ VIDFAB_C_API const char* VIDFAB_CALL vidfab_last_error(void);
 /* Frees a string this library allocated — only ever the `char*` out-parameter
  * of `vidfab_describe_plan`. Null is a no-op. */
 VIDFAB_C_API void VIDFAB_CALL vidfab_free_string(char* text);
+
+/* --- CUDA runtime selection ------------------------------------------------
+ *
+ * Windows builds contain one CUDA 12.8 static-runtime fat binary and resolve
+ * cuBLAS from an installed CUDA 13 or CUDA 12 toolkit on first use. The
+ * default is "auto" (13, then 12); VIDFAB_CUDA_VERSION provides the same
+ * process-wide setting for hosts that prefer environment configuration.
+ *
+ * This setter is the DLL equivalent of vidfab.exe's --cuda-version option.
+ * Call it before the first CUDA/cuBLAS operation. `version` is "auto", "13"
+ * or "12". Selection is immutable after initialization, including if another
+ * thread initialized it first.
+ */
+VIDFAB_C_API int VIDFAB_CALL vidfab_cuda_set_version(const char* version);
+
+/* Initializes cuBLAS if necessary and writes the selected toolkit major (12
+ * or 13). This is also a cheap host-side installation check before starting a
+ * generation. `out_major` must not be null. */
+VIDFAB_C_API int VIDFAB_CALL vidfab_cuda_loaded_major(int32_t* out_major);
 
 /* --- ids -------------------------------------------------------------------
  *

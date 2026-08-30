@@ -89,6 +89,13 @@ void add_root(std::vector<std::wstring>& roots, std::wstring root) {
 std::vector<std::wstring> toolkit_roots(int major) {
   std::vector<std::wstring> roots;
   const std::wstring prefix = major == 13 ? L"CUDA_PATH_V13_" : L"CUDA_PATH_V12_";
+  // Prefer the highest installed point release within the requested ABI
+  // major. Environment-block enumeration order is unspecified and otherwise
+  // made a machine with both 12.4 and 12.8 choose whichever was listed first.
+  for (int minor = 9; minor >= 0; --minor) {
+    const std::wstring name = prefix + std::to_wstring(minor);
+    add_root(roots, environment(name.c_str()));
+  }
   const wchar_t* block = GetEnvironmentStringsW();
   if (block != nullptr) {
     for (const wchar_t* entry = block; *entry; entry += std::wcslen(entry) + 1) {
@@ -116,6 +123,27 @@ bool file_exists(const std::wstring& path) {
   return attributes != INVALID_FILE_ATTRIBUTES &&
          (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
+
+class ScopedLoaderErrorMode {
+ public:
+  ScopedLoaderErrorMode() {
+    changed_ = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX,
+                                  &previous_) != 0;
+  }
+  ~ScopedLoaderErrorMode() {
+    if (changed_) {
+      DWORD ignored = 0;
+      SetThreadErrorMode(previous_, &ignored);
+    }
+  }
+
+  ScopedLoaderErrorMode(const ScopedLoaderErrorMode&) = delete;
+  ScopedLoaderErrorMode& operator=(const ScopedLoaderErrorMode&) = delete;
+
+ private:
+  DWORD previous_ = 0;
+  bool changed_ = false;
+};
 
 std::vector<CudaToolkitCandidate> candidates() {
   std::vector<CudaToolkitCandidate> out;
@@ -163,6 +191,10 @@ void load_candidate(CublasApi& api, const CudaToolkitCandidate& selected) {
   const std::wstring blas_path = selected.bin + L"\\cublas64_" + suffix;
   constexpr DWORD flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
                           LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+  // A corrupt toolkit DLL must become an exception/fallback, never a modal
+  // "Bad Image" dialog that deadlocks a service or an unattended DLL host.
+  // Thread-local mode avoids changing the embedding application's policy.
+  ScopedLoaderErrorMode error_mode;
   HMODULE lt = LoadLibraryExW(lt_path.c_str(), nullptr, flags);
   if (lt == nullptr)
     throw std::runtime_error("cuBLAS: cannot load " + narrow(lt_path) +

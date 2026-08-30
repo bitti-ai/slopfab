@@ -53,6 +53,7 @@
 #include <chrono>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/cublas_dispatch.h"
 #include "vidfab/cuda/deterministic_attention.cuh"
 #include "vidfab/cuda/profile.h"
 #include "vidfab/dit/transformer.h"
@@ -676,7 +677,7 @@ void print_usage() {
   std::printf(
       "vidfab %s - MiniMax H3 video generation\n"
       "\n"
-      "usage: vidfab <command> [options]\n"
+      "usage: vidfab [--cuda-version=auto|13|12] <command> [options]\n"
       "       vidfab <command> --help\n"
       "\n"
       "commands:\n",
@@ -684,8 +685,33 @@ void print_usage() {
   for (const CommandHelp& c : kCommands) {
     std::printf("  %-9s %s\n", c.name, c.summary);
   }
-  std::printf("\nRun `vidfab <command> --help` for that command's options.\n");
+  std::printf("\nRun `vidfab <command> --help` for that command's options.\n"
+              "CUDA defaults to installed version 13, then 12; "
+              "VIDFAB_CUDA_VERSION provides the same override.\n");
 }
+
+#if VIDFAB_WITH_CUDA
+void consume_cuda_version_option(int& argc, char** argv) {
+  std::string requested;
+  int write = 1;
+  for (int read = 1; read < argc; ++read) {
+    const std::string_view argument = argv[read];
+    constexpr std::string_view prefix = "--cuda-version=";
+    if (argument.rfind(prefix, 0) == 0) {
+      requested = std::string(argument.substr(prefix.size()));
+    } else if (argument == "--cuda-version") {
+      if (++read >= argc)
+        throw std::invalid_argument("--cuda-version requires auto, 13, or 12");
+      requested = argv[read];
+    } else {
+      argv[write++] = argv[read];
+    }
+  }
+  argc = write;
+  argv[argc] = nullptr;
+  if (!requested.empty()) vidfab::cuda::set_cublas_version_request(requested);
+}
+#endif
 
 std::string format_shape(const std::vector<int64_t>& shape) {
   if (shape.empty()) return "scalar";
@@ -1786,6 +1812,9 @@ int main(int argc, char** argv) {
   SetConsoleCP(CP_UTF8);
 #endif
   try {
+#if VIDFAB_WITH_CUDA
+    consume_cuda_version_option(argc, argv);
+#endif
     if (!ensure_license_acceptance()) return 3;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "vidfab: %s\n", e.what());

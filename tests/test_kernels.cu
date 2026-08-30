@@ -157,8 +157,8 @@ void test_norms() {
 void test_gemm() {
   TEST("gemm");
   cublasHandle_t h = nullptr;
-  VIDFAB_CUBLAS_CHECK(cublasCreate(&h));
-  VIDFAB_CUBLAS_CHECK(cublasSetMathMode(h, CUBLAS_PEDANTIC_MATH));
+  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&h));
+  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_set_math_mode(h, CUBLAS_PEDANTIC_MATH));
 
   // Non-square and mutually distinct dimensions, so a transposed wrapper
   // cannot accidentally pass.
@@ -212,7 +212,7 @@ void test_gemm() {
                                    got.begin() + static_cast<long long>(b + 1) * M * N);
     CHECK_CLOSE(want, slice, 1e-3, ("gemm_nt_batched b" + std::to_string(b)).c_str());
   }
-  cublasDestroy(h);
+  vidfab::cuda::cublas_destroy(h);
 }
 
 void test_swiglu() {
@@ -442,7 +442,7 @@ void test_qkv_rope() {
 void test_gemm_scatter() {
   TEST("gemm_nn_batched_ld");
   cublasHandle_t h = nullptr;
-  VIDFAB_CUBLAS_CHECK(cublasCreate(&h));
+  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&h));
 
   const int seq = 1797;  // production: 7*16*16 patches + 5 suffix tokens
   const int heads = 32;
@@ -517,7 +517,7 @@ void test_gemm_scatter() {
   }
   CHECK_CLOSE(permuted, got, 1e-4, "gemm_nn_batched_ld full scatter layout");
 
-  cublasDestroy(h);
+  vidfab::cuda::cublas_destroy(h);
 }
 
 // The weight path now widens fp16 on the device instead of on the host. That
