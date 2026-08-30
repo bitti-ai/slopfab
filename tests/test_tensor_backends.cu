@@ -84,6 +84,48 @@ void launch_adaln_expand(const float*, const float*, const float*, float*,
                          int, int, int, int, int, cudaStream_t);
 }
 
+VIDFAB_TEST(reference_conditioning_aggregate_fails_before_model_load) {
+  using namespace vidfab;
+  const std::string unique = std::to_string(
+      std::chrono::high_resolution_clock::now().time_since_epoch().count());
+  const std::filesystem::path image_path =
+      std::filesystem::temp_directory_path() /
+      ("vidfab-reference-preflight-" + unique + ".ppm");
+  {
+    std::ofstream ppm(image_path, std::ios::binary);
+    const std::array<uint8_t, 3> pixel{0x17, 0x83, 0xd1};
+    ppm << "P6\n1 1\n255\n";
+    ppm.write(reinterpret_cast<const char*>(pixel.data()), pixel.size());
+    CHECK(static_cast<bool>(ppm));
+  }
+
+  GenerateRequest request;
+  request.prompt = "two references must fail before any model opens";
+  request.canvas_width = 256;
+  request.canvas_height = 256;
+  request.num_frames = 22;
+  request.num_inference_steps = 4;
+  request.reference_image_paths = {image_path.string(), image_path.string()};
+  request.tokenizer_path = "ref/text_encoder/tokenizer.json";
+  request.text_encoder_path = "missing-text-encoder.safetensors";
+  request.transformer_path = "missing-transformer.safetensors";
+  request.video_vae_path = "missing-video-vae.safetensors";
+  request.audio_vae_path = "missing-audio-vae.safetensors";
+  const GeneratePlan plan = resolve_plan(request);
+  RunOptions options;
+  options.inference_backend = DeviceBackend::kVulkan;
+  options.attention_mode = AttentionMode::kExact;
+  options.verbose = false;
+  const RunResult result = run_generate(request, plan, options);
+  CHECK(!result.ok && !result.cancelled);
+  CHECK(result.message.find("conditioning exceeds max prompt tokens") !=
+        std::string::npos);
+  CHECK(result.seconds_conditioning == 0.0 && result.steps_computed == 0);
+
+  std::error_code ignored;
+  std::filesystem::remove(image_path, ignored);
+}
+
 #ifdef _WIN32
 namespace {
 
