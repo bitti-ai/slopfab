@@ -44,8 +44,9 @@ of corrupting memory.
 
 ## Build
 
-Requires CMake 3.24+, a C++17 compiler, and CUDA toolkit 12 or 13. CUDA and
-cuBLAS DLLs are not shipped with vidfab.
+Requires CMake 3.24+, a C++17 compiler, CUDA toolkit 12.8 for the Windows
+build, and CUDA 13.0 headers for the build-time cross-major cuBLAS ABI check.
+CUDA and cuBLAS DLLs are not shipped with vidfab.
 
 ```sh
 cmake -S . -B build
@@ -59,15 +60,22 @@ does not have, and that operand is the whole of native NVFP4. Ampere runs the
 BF16 materialization path instead. SM89 / RTX 40-series specialization is
 planned but not part of this build yet.
 
-On Windows, a CUDA build produces a CUDA-free `vidfab.exe` launcher and either
-`vidfab-cuda12.exe` or `vidfab-cuda13.exe`. A release contains both backends.
-The launcher prefers an installed CUDA 13 toolkit and falls back to CUDA 12,
-requiring the matching `cublas64_<major>.dll` and `cublasLt64_<major>.dll` in
-that toolkit's `bin` directory. Override selection with
-`--cuda-version=auto|13|12` or `VIDFAB_CUDA_VERSION`. The launcher removes its
-own option before forwarding the normal vidfab CLI, and each backend can also
-be invoked directly. The GPU architecture is selected independently by the
-backend fat binary after launch.
+On Windows, one CUDA 12.8-built fat binary serves both toolkit installations.
+Static cudart and the SM86/SM120a SASS talk to NVIDIA's backward-compatible
+driver ABI; cuBLAS is intentionally separate and is resolved in-process from
+an installed toolkit. Both `vidfab.exe` and `vidfab.dll` prefer CUDA 13 and
+fall back to CUDA 12, loading `cublas64_<major>.dll` and
+`cublasLt64_<major>.dll` by absolute toolkit path. They do not depend on the
+host's `PATH` ordering and carry no fixed cuBLAS import. Override the CLI with
+`--cuda-version=auto|13|12`; `VIDFAB_CUDA_VERSION` provides the same process
+setting. C API hosts may use either the environment or
+`vidfab_cuda_set_version` before first use. Automatic mode falls back to CUDA
+12 even when a discovered CUDA 13 installation is incomplete.
+
+NVIDIA promises cuBLAS ABI compatibility within a major, not across majors.
+The project therefore late-binds only the eight exports it uses and compiles a
+neutral signature and enum contract against the installed CUDA 13.0 headers
+at configure time. CUDA 12.8 supplies the declarations used to build the core.
 
 ### The C API
 
@@ -83,15 +91,17 @@ cmake --build build-dll --config Release --target vidfab_c
 `vidfab_core` and `vidfab_cuda` are internal static libraries that link into
 `vidfab.dll`. It is therefore the only vidfab DLL, and its export table contains
 exactly the stable C entry points rather than the internal C++ symbols.
+The Windows archive includes `include/vidfab/capi.h` and the MSVC import
+library `lib/vidfab_c.lib` alongside the DLL.
 
-It is not dependency-free, though, and the mistake is invisible on a machine
-with the CUDA toolkit installed. The CUDA runtime is embedded, but cuBLAS is
-not: `vidfab.dll` imports `cublas64_<major>.dll` at load time, which pulls
-`cublasLt64_<major>.dll` with it. On a development box those resolve off
-`PATH`; on a consumer's machine the process fails at `LoadLibrary` with no
-useful message. They are intentionally not installed or packaged by vidfab.
-Hosts using the C API must prepend the matching toolkit `bin` directory to
-`PATH`, just as the CLI launcher does.
+The CUDA runtime is embedded, while cuBLAS is not installed or packaged by
+vidfab. Loading `vidfab.dll` itself needs no cuBLAS DLL: the first operation
+that creates a cuBLAS handle discovers CUDA 13 then 12 and reports the exact
+absolute DLL path or a clear discovery/load error. A C API host can call
+`vidfab_cuda_set_version("12")` or `("13")`, or set `VIDFAB_CUDA_VERSION`,
+before its first generation to force a major. `vidfab_cuda_loaded_major`
+initializes the loader and lets the host validate its installation early.
+Selection is process-wide and immutable after initialization.
 
 **It produces pixels, not files.** A generation hands back decoded frames as
 planar float RGB and audio as interleaved float PCM, and writes nothing to
