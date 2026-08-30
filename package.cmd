@@ -1,44 +1,66 @@
 @echo off
 setlocal
 
-rem Build and package the current Release executable. The staging directory is
-rem populated from an explicit allow-list, so weights and developer artifacts
-rem cannot be included accidentally.
-
+rem Build both toolkit ABIs. The archive contains the CUDA-free launcher and
+rem two fat-binary backends, but no CUDA/cuBLAS DLLs; target machines provide
+rem those through an installed CUDA 12 or CUDA 13 toolkit.
 set "ROOT=%~dp0"
-set "BUILD=%ROOT%build"
-set "EXE=%BUILD%\Release\vidfab.exe"
 set "DIST=%ROOT%dist"
+set "BUILD12=%ROOT%build-cuda12"
+set "BUILD13=%ROOT%build-cuda13"
 
-echo package: building latest Release configuration...
-cmake --build "%BUILD%" --config Release --target vidfab
-if errorlevel 1 exit /b 1
+set "CUDA12=%CUDA_PATH_V12_8%"
+if not defined CUDA12 set "CUDA12=%ProgramFiles%\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+set "CUDA13=%CUDA_PATH_V13_0%"
+if not defined CUDA13 set "CUDA13=%ProgramFiles%\NVIDIA GPU Computing Toolkit\CUDA\v13.0"
 
-if not exist "%EXE%" (
-  echo package: Release executable not found at %EXE%
+if not exist "%CUDA12%\bin\nvcc.exe" (
+  echo package: CUDA 12.8 compiler not found; set CUDA_PATH_V12_8
   exit /b 1
 )
+if not exist "%CUDA13%\bin\nvcc.exe" (
+  echo package: CUDA 13.0 compiler not found; set CUDA_PATH_V13_0
+  exit /b 1
+)
+
+echo package: configuring CUDA 12...
+cmake -S "%ROOT%" -B "%BUILD12%" -G "Visual Studio 17 2022" -A x64 ^
+  -DCMAKE_CUDA_COMPILER="%CUDA12%\bin\nvcc.exe" ^
+  "-DCMAKE_CUDA_ARCHITECTURES=86;120a"
+if errorlevel 1 exit /b 1
+cmake --build "%BUILD12%" --config Release --target vidfab vidfab_cuda_backend
+if errorlevel 1 exit /b 1
+
+echo package: configuring CUDA 13...
+cmake -S "%ROOT%" -B "%BUILD13%" -G "Visual Studio 17 2022" -A x64 ^
+  -DCMAKE_CUDA_COMPILER="%CUDA13%\bin\nvcc.exe" ^
+  "-DCMAKE_CUDA_ARCHITECTURES=86;120a"
+if errorlevel 1 exit /b 1
+cmake --build "%BUILD13%" --config Release --target vidfab vidfab_cuda_backend
+if errorlevel 1 exit /b 1
 
 set "VERSION="
 for /f "tokens=5" %%V in ('findstr /b /c:"project(vidfab " "%ROOT%CMakeLists.txt"') do for /f "delims=)" %%W in ("%%V") do set "VERSION=%%W"
 if not defined VERSION (
-  echo package: could not read the version from %EXE%
+  echo package: could not read the project version
   exit /b 1
 )
 
 set "NAME=vidfab-%VERSION%-windows-x64"
 set "STAGE=%DIST%\%NAME%"
 set "ZIP=%DIST%\%NAME%.zip"
-
 if not exist "%DIST%" mkdir "%DIST%"
 if errorlevel 1 exit /b 1
-
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
 if exist "%ZIP%" del /q "%ZIP%"
 mkdir "%STAGE%"
 if errorlevel 1 exit /b 1
 
-copy /y "%EXE%" "%STAGE%\vidfab.exe" >nul
+copy /y "%BUILD13%\Release\vidfab.exe" "%STAGE%\vidfab.exe" >nul
+if errorlevel 1 exit /b 1
+copy /y "%BUILD13%\Release\vidfab-cuda13.exe" "%STAGE%\vidfab-cuda13.exe" >nul
+if errorlevel 1 exit /b 1
+copy /y "%BUILD12%\Release\vidfab-cuda12.exe" "%STAGE%\vidfab-cuda12.exe" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%README.md" "%STAGE%\README.md" >nul
 if errorlevel 1 exit /b 1
@@ -57,10 +79,9 @@ for %%F in (avcodec-62.dll avformat-62.dll avutil-60.dll swresample-6.dll swscal
 powershell -NoLogo -NoProfile -NonInteractive -Command ^
   "Compress-Archive -LiteralPath '%STAGE%' -DestinationPath '%ZIP%' -CompressionLevel Optimal"
 if errorlevel 1 exit /b 1
-
 rmdir /s /q "%STAGE%"
 
 echo.
 echo package: wrote %ZIP%
-echo package: weights are not included.
+echo package: CUDA and model weights are not included.
 exit /b 0

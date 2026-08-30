@@ -1,7 +1,8 @@
 # vidfab
 
 A from-scratch C++/CUDA implementation of [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3),
-targeting a single RTX 5090 with no Python at runtime.
+targeting Ampere RTX 30-series and Blackwell RTX 50-series GPUs with no Python
+at runtime.
 
 **Status: `vidfab generate` works end to end.** A text prompt goes in and a
 real MP4 comes out — Qwen3-VL conditioner, 50-block transformer, flow-matching
@@ -13,15 +14,15 @@ coherent, prompt-faithful video. See [Roadmap](#roadmap) and
 
 H3 is a 33B omni-modal video model with open weights. The reference stack is
 diffusers + PyTorch. This is a dependency-light native implementation: the goal
-is to generate video from a single binary, with the CUDA runtime as the only
-hard dependency, and to match the reference within a stated tolerance rather
-than approximately.
+is to generate video from native executables, with an installed CUDA toolkit as
+the only accelerator dependency, and to match the reference within a stated
+tolerance rather than approximately.
 
 ## Dependencies
 
 | Dependency | Why | Linkage |
 |---|---|---|
-| CUDA runtime + cuBLAS | kernels, GEMM | runtime embedded; cuBLAS dynamic |
+| CUDA 12 or 13 toolkit | kernels, GEMM | runtime embedded; installed cuBLAS dynamic |
 | C++17 standard library | — | — |
 | ffmpeg | MP4/AAC muxing only | **dynamic, resolved at runtime** |
 | Vulkan 1.2 loader | optional exact neural inference and RGB-to-YUV conversion | dynamic, SDK-free |
@@ -43,19 +44,30 @@ of corrupting memory.
 
 ## Build
 
-Requires CMake 3.24+, a C++17 compiler, and the CUDA toolkit.
+Requires CMake 3.24+, a C++17 compiler, and CUDA toolkit 12 or 13. CUDA and
+cuBLAS DLLs are not shipped with vidfab.
 
 ```sh
 cmake -S . -B build
 cmake --build build --config Release
 ```
 
-The default CUDA architecture is `120a` (Blackwell / RTX 50 series). The `a`
-is load-bearing rather than decorative: `ptxas` rejects the `.block_scale`
-operand plain `sm_120` does not have, and that operand is the whole of native
-nvfp4. Override with `-DCMAKE_CUDA_ARCHITECTURES=90` for Hopper, which has no
-nvfp4 at all. The core library and CLI build without CUDA; the decoder does
-not.
+The default is a `86;120a` fat binary. SM86 serves Ampere / RTX 30-series GPUs;
+SM120a serves Blackwell / RTX 50-series GPUs. The `a` is load-bearing rather
+than decorative: `ptxas` rejects the `.block_scale` operand plain `sm_120`
+does not have, and that operand is the whole of native NVFP4. Ampere runs the
+BF16 materialization path instead. SM89 / RTX 40-series specialization is
+planned but not part of this build yet.
+
+On Windows, a CUDA build produces a CUDA-free `vidfab.exe` launcher and either
+`vidfab-cuda12.exe` or `vidfab-cuda13.exe`. A release contains both backends.
+The launcher prefers an installed CUDA 13 toolkit and falls back to CUDA 12,
+requiring the matching `cublas64_<major>.dll` and `cublasLt64_<major>.dll` in
+that toolkit's `bin` directory. Override selection with
+`--cuda-version=auto|13|12` or `VIDFAB_CUDA_VERSION`. The launcher removes its
+own option before forwarding the normal vidfab CLI, and each backend can also
+be invoked directly. The GPU architecture is selected independently by the
+backend fat binary after launch.
 
 ### The C API
 
@@ -77,8 +89,9 @@ with the CUDA toolkit installed. The CUDA runtime is embedded, but cuBLAS is
 not: `vidfab.dll` imports `cublas64_<major>.dll` at load time, which pulls
 `cublasLt64_<major>.dll` with it. On a development box those resolve off
 `PATH`; on a consumer's machine the process fails at `LoadLibrary` with no
-useful message. `cmake --install` places both beside the DLL — linking them
-statically is not an option, since `cublasLt_static` alone is about 456 MB.
+useful message. They are intentionally not installed or packaged by vidfab.
+Hosts using the C API must prepend the matching toolkit `bin` directory to
+`PATH`, just as the CLI launcher does.
 
 **It produces pixels, not files.** A generation hands back decoded frames as
 planar float RGB and audio as interleaved float PCM, and writes nothing to
@@ -448,7 +461,7 @@ than only at seams.
 | Qwen3-VL-32B text encoder (int8 ConvRot, 50 layers) | done |
 | Qwen3-VL-32B text encoder (nvfp4 AWQ, 50 layers) | done |
 | Fused attention (FlashAttention-2, `mma.sync`) | done |
-| SageAttention2.2 (INT8 Q/K, FP8 P/V) | done; opt-in |
+| SageAttention2.2 (SM86 FP16 P/V, SM120 FP8 P/V) | done; default |
 | `cp.async` double-buffered K/V staging | not started |
 | Native nvfp4 GEMM (`mma.sync` block-scaled) | landed, **off by default** |
 | Native fp8/int4 GEMM | not started |
@@ -1013,12 +1026,15 @@ not promise byte identity with the shipped fused implementation. On the
 qualified RTX 5090 tuple its accepted current cost at S37727/H56/D128 is
 2.525 s full or 1.261 s at the default +/-9 band on Vulkan, and 1.667/0.783 s
 on CUDA; this is the fastest native exact implementation, not the default.
-`sage2` is an explicitly lossy SageAttention2.2 path: smooth-K, per-warp INT8
-Q/K, per-channel FP8 E4M3 V, and the upstream INT8-QK/FP8-PV tensor-core
-kernel. Its transient packed tensors and scales are included in workspace
-sizing. It supports head dimensions 64 and 128 on compute capability 8.9 or
-newer. Frame banding is accepted by `flash2` and `exact`; Sage2 is rejected
-rather than silently falling back.
+`sage2` is an explicitly lossy SageAttention2.2 path: smooth-K and per-warp
+INT8 Q/K on every supported GPU. SM86 uses the upstream INT8-QK/FP16-PV kernel
+with FP32 accumulation because Ampere has no FP8 tensor cores. Blackwell
+retains the existing per-channel FP8 E4M3 V kernel. Workspace sizing follows
+the selected device, so Blackwell's allocation and launch path are unchanged;
+Ampere uses twice the packed-V storage and no V-scale preparation. Head
+dimensions 64 and 128 are supported on compute capability 8.0 or newer. Frame
+banding is accepted by `flash2` and `exact`; Sage2 is rejected rather than
+silently falling back.
 The vendored primitives retain Apache-2.0 notices under
 `third_party/sageattention`.
 

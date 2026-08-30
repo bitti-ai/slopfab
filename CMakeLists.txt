@@ -1033,8 +1033,8 @@ if(VIDFAB_BUILD_C_API)
   # cublasLt64_<major>.dll. On a box with the toolkit installed those resolve
   # off PATH and nothing looks wrong; on a consumer's machine the process fails
   # at LoadLibrary with no useful message. Linking them statically is not the
-  # answer — cublasLt_static alone is ~456 MB — so they are named in the
-  # install rule below instead, and a build tree simply relies on PATH.
+  # answer — cublasLt_static alone is ~456 MB — so the application host must
+  # expose the matching installed toolkit on PATH. The CLI launcher does this.
   add_library(vidfab_c SHARED src/capi/capi.cpp)
   # vidfab_cuda carries vidfab_core with it as a PUBLIC dependency, so naming
   # the one target is naming both.
@@ -1297,6 +1297,14 @@ if(VIDFAB_BUILD_TESTS)
     )
     target_link_libraries(vidfab_kernel_tests PRIVATE vidfab_cuda)
     add_test(NAME kernels COMMAND vidfab_kernel_tests)
+
+    if(WIN32)
+      add_test(NAME cuda_launcher_explicit
+        COMMAND vidfab --cuda-version=${CUDAToolkit_VERSION_MAJOR} --help)
+      add_test(NAME cuda_launcher_invalid
+        COMMAND vidfab --cuda-version=invalid --help)
+      set_tests_properties(cuda_launcher_invalid PROPERTIES WILL_FAIL TRUE)
+    endif()
   endif()
 
   # The C ABI is tested through the DLL rather than by compiling capi.cpp into
