@@ -207,14 +207,29 @@ __global__ __launch_bounds__(1024, 1) void h3_attention_coop64_kernel(
     uint32_t head_dim, float scale, uint32_t query_row_offset,
     uint32_t output_row_offset, uint32_t rows) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
-  __shared__ __align__(16) __nv_bfloat16 query_stage[64 * 128];
-  __shared__ __align__(16) __nv_bfloat16 key_stage[64 * 128];
-  __shared__ __align__(16) __half value_stage[16 * 128];
-  __shared__ __align__(16) float scores[64 * 64];
-  __shared__ __align__(16) __half probabilities[64 * 64];
-  __shared__ __align__(16) float output_accumulators[64 * 128];
-  __shared__ float soft_partial[1024], next_maximum[64];
-  __shared__ float running_max[64], running_sum[64], correction[64];
+  extern __shared__ __align__(16) unsigned char shared_arena[];
+  unsigned char* shared_cursor = shared_arena;
+  auto* query_stage = reinterpret_cast<__nv_bfloat16*>(shared_cursor);
+  shared_cursor += 64 * 128 * sizeof(__nv_bfloat16);
+  auto* key_stage = reinterpret_cast<__nv_bfloat16*>(shared_cursor);
+  shared_cursor += 64 * 128 * sizeof(__nv_bfloat16);
+  auto* value_stage = reinterpret_cast<__half*>(shared_cursor);
+  shared_cursor += 16 * 128 * sizeof(__half);
+  auto* scores = reinterpret_cast<float*>(shared_cursor);
+  shared_cursor += 64 * 64 * sizeof(float);
+  auto* probabilities = reinterpret_cast<__half*>(shared_cursor);
+  shared_cursor += 64 * 64 * sizeof(__half);
+  auto* output_accumulators = reinterpret_cast<float*>(shared_cursor);
+  shared_cursor += 64 * 128 * sizeof(float);
+  auto* soft_partial = reinterpret_cast<float*>(shared_cursor);
+  shared_cursor += 1024 * sizeof(float);
+  auto* next_maximum = reinterpret_cast<float*>(shared_cursor);
+  shared_cursor += 64 * sizeof(float);
+  auto* running_max = reinterpret_cast<float*>(shared_cursor);
+  shared_cursor += 64 * sizeof(float);
+  auto* running_sum = reinterpret_cast<float*>(shared_cursor);
+  shared_cursor += 64 * sizeof(float);
+  auto* correction = reinterpret_cast<float*>(shared_cursor);
 
   const uint32_t tid = threadIdx.x;
   const uint32_t warp = tid >> 5;
@@ -418,6 +433,22 @@ __global__ __launch_bounds__(1024, 1) void h3_attention_coop64_kernel(
   (void)output_row_offset;
   (void)rows;
 #endif
+}
+
+template <bool Banded>
+void ensure_h3_shared_optin() {
+  constexpr int kCachedDevices = 32;
+  static std::once_flag once[kCachedDevices];
+  int device = 0;
+  VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
+  if (device < 0 || device >= kCachedDevices)
+    throw std::out_of_range("deterministic H3 attention: CUDA device index is out of cache range");
+  std::call_once(once[device], [] {
+    VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(
+        h3_attention_coop64_kernel<Banded>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        static_cast<int>(kH3AttentionSharedBytes)));
+  });
 }
 
 __global__ void causal_gqa_attention_kernel(
@@ -693,13 +724,15 @@ void launch_deterministic_h3_attention(
   const uint32_t query_end = query_row_offset + selected_rows;
   const uint32_t query_groups = (query_end - aligned_first + 63u) / 64u;
   if (ranges) {
+    ensure_h3_shared_optin<true>();
     h3_attention_coop64_kernel<true><<<dim3(query_groups, heads),
-        kH3AttentionThreads, 0, stream>>>(
+        kH3AttentionThreads, kH3AttentionSharedBytes, stream>>>(
         query, key, value, output, ranges, sequence, heads, head_dim, scale,
         query_row_offset, output_row_offset, selected_rows);
   } else {
+    ensure_h3_shared_optin<false>();
     h3_attention_coop64_kernel<false><<<dim3(query_groups, heads),
-        kH3AttentionThreads, 0, stream>>>(
+        kH3AttentionThreads, kH3AttentionSharedBytes, stream>>>(
         query, key, value, output, nullptr, sequence, heads, head_dim, scale,
         query_row_offset, output_row_offset, selected_rows);
   }
