@@ -31,6 +31,13 @@ bool ranges_overlap(const void* a, uint64_t a_bytes,
 
 constexpr uint32_t kH3AttentionThreads = 1024;
 constexpr uint32_t kH3AttentionSharedBytes = 99328;
+constexpr uint32_t kH3AttentionSharedLayoutBytes =
+    2u * 64u * 128u * sizeof(__nv_bfloat16) +
+    16u * 128u * sizeof(__half) + 64u * 64u * sizeof(float) +
+    64u * 64u * sizeof(__half) + 64u * 128u * sizeof(float) +
+    1024u * sizeof(float) + 4u * 64u * sizeof(float);
+static_assert(kH3AttentionSharedLayoutBytes == kH3AttentionSharedBytes,
+              "H3 attention dynamic shared-memory layout size changed");
 
 struct GridLimits {
   uint64_t x = 0;

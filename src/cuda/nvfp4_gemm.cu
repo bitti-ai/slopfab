@@ -53,6 +53,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <stdexcept>
 #include <string>
 
@@ -64,6 +65,23 @@ namespace {
 constexpr int kWarp = 32;
 
 inline size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
+
+bool native_nvfp4_device_supported() {
+  constexpr int kMaxCached = 64;
+  static std::atomic<int> capabilities[kMaxCached]{};
+  int device = 0;
+  if (cudaGetDevice(&device) != cudaSuccess || device < 0) return false;
+  if (device < kMaxCached) {
+    const int cached = capabilities[device].load(std::memory_order_relaxed);
+    if (cached != 0) return cached >= 120;
+  }
+  cudaDeviceProp properties{};
+  if (cudaGetDeviceProperties(&properties, device) != cudaSuccess) return false;
+  const int capability = properties.major * 10 + properties.minor;
+  if (device < kMaxCached)
+    capabilities[device].store(capability, std::memory_order_relaxed);
+  return capability >= 120;
+}
 
 // --- activation quantisation -------------------------------------------------
 //
@@ -479,12 +497,7 @@ bool nvfp4_gemm_supported(int out_features, int in_features) {
   // `in % 64` is this kernel's own staging requirement -- it is what makes a
   // packed row 32-byte aligned and a scale row 4-byte aligned -- and it happens
   // to subsume the swizzle's `Kb % 4`. `out % 128` is the swizzle's.
-  int device = 0;
-  cudaDeviceProp properties{};
-  const bool native_fp4 = cudaGetDevice(&device) == cudaSuccess &&
-                          cudaGetDeviceProperties(&properties, device) == cudaSuccess &&
-                          properties.major >= 12;
-  return native_fp4 && in_features > 0 && out_features > 0 &&
+  return native_nvfp4_device_supported() && in_features > 0 && out_features > 0 &&
          in_features % 64 == 0 && out_features % 128 == 0;
 }
 

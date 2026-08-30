@@ -8,6 +8,7 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -59,8 +60,8 @@ size_t buffer_bytes(const AttentionConfig& c, int kvh, bool fp16_v) {
   const size_t ksn = static_cast<size_t>(kvh) * ceil_div(c.seq_len, kKBlock);
   const size_t channel = static_cast<size_t>(kvh) * c.head_dim;
   return align256(qn) + align256(kn) + align256(vn * (fp16_v ? sizeof(__half) : 1)) +
-         align256(qsn * sizeof(float)) +
-         align256(ksn * sizeof(float)) + 2 * align256(channel * sizeof(float));
+         align256(qsn * sizeof(float)) + align256(ksn * sizeof(float)) +
+         (fp16_v ? 1u : 2u) * align256(channel * sizeof(float));
 }
 
 SageBuffers carve(void* base, const AttentionConfig& c, int kvh, bool fp16_v) {
@@ -79,7 +80,7 @@ SageBuffers carve(void* base, const AttentionConfig& c, int kvh, bool fp16_v) {
   b.v = take(vn * (fp16_v ? sizeof(__half) : 1));
   b.qs = static_cast<float*>(take(qsn * sizeof(float)));
   b.ks = static_cast<float*>(take(ksn * sizeof(float)));
-  b.vs = static_cast<float*>(take(channel * sizeof(float)));
+  if (!fp16_v) b.vs = static_cast<float*>(take(channel * sizeof(float)));
   b.km = static_cast<float*>(take(channel * sizeof(float)));
   return b;
 }
@@ -266,13 +267,16 @@ int compute_capability(int device) {
   // reallocation, so two threads racing here cannot observe a torn or moved
   // entry. A device index past the end simply pays the driver call each time.
   constexpr int kMaxCached = 64;
-  static int caps[kMaxCached] = {0};
+  static std::atomic<int> caps[kMaxCached]{};
   if (device < 0) return 0;
-  if (device < kMaxCached && caps[device] != 0) return caps[device];
+  if (device < kMaxCached) {
+    const int cached = caps[device].load(std::memory_order_relaxed);
+    if (cached != 0) return cached;
+  }
   cudaDeviceProp prop{};
   if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) return 0;
   const int cap = prop.major * 10 + prop.minor;
-  if (device < kMaxCached) caps[device] = cap;
+  if (device < kMaxCached) caps[device].store(cap, std::memory_order_relaxed);
   return cap;
 }
 
@@ -281,19 +285,29 @@ int compute_capability(int device) {
 bool sage2_supported(const AttentionConfig& cfg, int device, const char** reason) {
   static const char* kDim = "head_dim must be 64 or 128";
   static const char* kBand = "frame-banded attention is not implemented for SageAttention2";
-  static const char* kArch = "requires compute capability 8.0 or newer";
+  static const char* kArch =
+      "supports SM80-SM88 Ampere and SM120 Blackwell; SM89 is not enabled yet";
   const char* why = nullptr;
   if (cfg.head_dim != 64 && cfg.head_dim != 128) why = kDim;
   else if (cfg.band_ranges != nullptr) why = kBand;
-  else if (compute_capability(device) < 80) why = kArch;
+  else if (sage2_variant_for_compute_capability(compute_capability(device)) ==
+           Sage2KernelVariant::kUnsupported) why = kArch;
   if (reason) *reason = why;
   return why == nullptr;
+}
+
+Sage2KernelVariant sage2_variant_for_compute_capability(int capability) noexcept {
+  if (capability >= 80 && capability < 89) return Sage2KernelVariant::kAmpereFp16;
+  if (capability >= 120) return Sage2KernelVariant::kBlackwellFp8;
+  return Sage2KernelVariant::kUnsupported;
 }
 
 size_t sage2_workspace_bytes(const AttentionConfig& cfg, int num_kv_heads) {
   if (cfg.seq_len <= 0 || cfg.num_heads <= 0 || cfg.head_dim <= 0) return 0;
   int device = 0;
-  const bool fp16_v = cudaGetDevice(&device) == cudaSuccess && compute_capability(device) < 89;
+  const bool fp16_v = cudaGetDevice(&device) == cudaSuccess &&
+      sage2_variant_for_compute_capability(compute_capability(device)) ==
+          Sage2KernelVariant::kAmpereFp16;
   return buffer_bytes(cfg, num_kv_heads, fp16_v);
 }
 
@@ -308,7 +322,8 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
     throw std::runtime_error(std::string("attention: sage2 ") + reason);
   Workspace::Scope scope(ws);
   const int capability = compute_capability(device);
-  const bool ampere = capability < 89;
+  const bool ampere = sage2_variant_for_compute_capability(capability) ==
+                      Sage2KernelVariant::kAmpereFp16;
   SageBuffers b = carve(ws.alloc(buffer_bytes(cfg, num_kv_heads, ampere)), cfg,
                         num_kv_heads, ampere);
   const int padded = ceil_div(cfg.seq_len, kKBlock) * kKBlock;
@@ -324,8 +339,10 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
       k, b.k, b.ks, b.km, cfg.seq_len, num_kv_heads, cfg.head_dim, kgroups);
   if (ampere) {
     const size_t vn = static_cast<size_t>(cfg.seq_len) * num_kv_heads * cfg.head_dim;
-    convert_v_f16<<<std::min<size_t>(ceil_div(static_cast<int>(vn), kThreads), 65535),
-                    kThreads, 0, stream>>>(v, static_cast<__half*>(b.v), vn);
+    const int blocks = static_cast<int>(
+        std::min<size_t>((vn + kThreads - 1) / kThreads, 65535));
+    convert_v_f16<<<blocks, kThreads, 0, stream>>>(
+        v, static_cast<__half*>(b.v), vn);
   } else {
     quant_v<<<num_kv_heads * cfg.head_dim, kThreads, 0, stream>>>(
         v, static_cast<int8_t*>(b.v), b.vs, cfg.seq_len, padded, num_kv_heads,

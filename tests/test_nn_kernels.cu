@@ -2014,6 +2014,7 @@ __global__ void nvfp4_mma_kernel(const uint32_t* a, const uint32_t* b, const uin
   const uint32_t s_a = sa[lane];
   const uint32_t s_b = 0x38383838u;  // four e4m3 1.0 scales
   float c[4] = {0, 0, 0, 0};
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
   asm volatile(
       "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
       ".f32.e2m1.e2m1.f32.ue4m3 "
@@ -2021,6 +2022,7 @@ __global__ void nvfp4_mma_kernel(const uint32_t* a, const uint32_t* b, const uin
       : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
       : "r"(ra[0]), "r"(ra[1]), "r"(ra[2]), "r"(ra[3]), "r"(rb[0]), "r"(rb[1]), "r"(s_a),
         "r"(s_b));
+#endif
   const int gid = lane >> 2, tig = lane & 3;
   out[gid * 8 + tig * 2] = c[0];
   out[gid * 8 + tig * 2 + 1] = c[1];
@@ -2429,6 +2431,17 @@ VIDFAB_TEST(attention_sol_zero_error_weight_ignores_infinite_residual) {
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   size_t bad=0;for(float x:dout.host())bad+=!std::isfinite(x);
   CHECK_MSG(bad==0,"zero Sol error weights consumed infinite residual: %zu nonfinite",bad);
+}
+
+VIDFAB_TEST(attention_sage2_architecture_dispatch) {
+  using Variant = vidfab::cuda::Sage2KernelVariant;
+  CHECK(vidfab::cuda::sage2_variant_for_compute_capability(79) == Variant::kUnsupported);
+  CHECK(vidfab::cuda::sage2_variant_for_compute_capability(80) == Variant::kAmpereFp16);
+  CHECK(vidfab::cuda::sage2_variant_for_compute_capability(86) == Variant::kAmpereFp16);
+  CHECK(vidfab::cuda::sage2_variant_for_compute_capability(88) == Variant::kAmpereFp16);
+  CHECK(vidfab::cuda::sage2_variant_for_compute_capability(89) == Variant::kUnsupported);
+  CHECK(vidfab::cuda::sage2_variant_for_compute_capability(90) == Variant::kUnsupported);
+  CHECK(vidfab::cuda::sage2_variant_for_compute_capability(120) == Variant::kBlackwellFp8);
 }
 
 VIDFAB_TEST(attention_sage2) {
@@ -3704,6 +3717,7 @@ __global__ void nvfp4_mma_bscale_kernel(const uint32_t* a, const uint32_t* b, co
   const uint32_t s_a = sa[lane];
   const uint32_t s_b = sb[lane];
   float c[4] = {0, 0, 0, 0};
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
   asm volatile(
       "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
       ".f32.e2m1.e2m1.f32.ue4m3 "
@@ -3711,6 +3725,7 @@ __global__ void nvfp4_mma_bscale_kernel(const uint32_t* a, const uint32_t* b, co
       : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
       : "r"(ra[0]), "r"(ra[1]), "r"(ra[2]), "r"(ra[3]), "r"(rb[0]), "r"(rb[1]), "r"(s_a),
         "r"(s_b));
+#endif
   const int gid = lane >> 2, tig = lane & 3;
   out[gid * 8 + tig * 2] = c[0];
   out[gid * 8 + tig * 2 + 1] = c[1];
