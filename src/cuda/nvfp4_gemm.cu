@@ -53,7 +53,6 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
-#include <atomic>
 #include <stdexcept>
 #include <string>
 
@@ -67,20 +66,7 @@ constexpr int kWarp = 32;
 inline size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
 
 bool native_nvfp4_device_supported() {
-  constexpr int kMaxCached = 64;
-  static std::atomic<int> capabilities[kMaxCached]{};
-  int device = 0;
-  if (cudaGetDevice(&device) != cudaSuccess || device < 0) return false;
-  if (device < kMaxCached) {
-    const int cached = capabilities[device].load(std::memory_order_relaxed);
-    if (cached != 0) return cached >= 120;
-  }
-  cudaDeviceProp properties{};
-  if (cudaGetDeviceProperties(&properties, device) != cudaSuccess) return false;
-  const int capability = properties.major * 10 + properties.minor;
-  if (device < kMaxCached)
-    capabilities[device].store(capability, std::memory_order_relaxed);
-  return capability >= 120;
+  return current_device_compute_capability() == 120;
 }
 
 // --- activation quantisation -------------------------------------------------
@@ -491,14 +477,32 @@ __global__ __launch_bounds__(kThreads, 2) void nvfp4_gemm_kernel(
   }
 }
 
+void launch_nvfp4_gemm_q(const uint8_t* xq, const uint8_t* xs,
+                         const uint8_t* w_packed, const uint8_t* w_scale,
+                         float global_scale, __nv_bfloat16* y, int rows,
+                         int out_features, int in_features,
+                         cudaStream_t stream) {
+  const dim3 grid(static_cast<unsigned>((rows + kBM - 1) / kBM),
+                  static_cast<unsigned>((out_features + kBN - 1) / kBN));
+  nvfp4_gemm_kernel<<<grid, kThreads, 0, stream>>>(
+      xq, xs, w_packed, w_scale, y, rows, out_features, in_features / 2,
+      in_features / 16, (in_features + kBK - 1) / kBK, global_scale);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
 }  // namespace
+
+bool nvfp4_gemm_shape_supported(int out_features, int in_features) noexcept {
+  return in_features > 0 && out_features > 0 && in_features % 64 == 0 &&
+         out_features % 128 == 0;
+}
 
 bool nvfp4_gemm_supported(int out_features, int in_features) {
   // `in % 64` is this kernel's own staging requirement -- it is what makes a
   // packed row 32-byte aligned and a scale row 4-byte aligned -- and it happens
   // to subsume the swizzle's `Kb % 4`. `out % 128` is the swizzle's.
-  return native_nvfp4_device_supported() && in_features > 0 && out_features > 0 &&
-         in_features % 64 == 0 && out_features % 128 == 0;
+  return native_nvfp4_device_supported() &&
+         nvfp4_gemm_shape_supported(out_features, in_features);
 }
 
 size_t nvfp4_gemm_workspace_bytes(int rows, int in_features) {
@@ -543,12 +547,8 @@ void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w
   // the weight -- 344 KB at qkv_proj -- and sweep the activation together.
   // Swapping them would put the larger of the two streams in the reused
   // position and spill it out of L2.
-  const dim3 grid(static_cast<unsigned>((rows + kBM - 1) / kBM),
-                  static_cast<unsigned>((out_features + kBN - 1) / kBN));
-  nvfp4_gemm_kernel<<<grid, kThreads, 0, stream>>>(
-      xq, xs, w_packed, w_scale, y, rows, out_features, in_features / 2, in_features / 16,
-      (in_features + kBK - 1) / kBK, global_scale);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  launch_nvfp4_gemm_q(xq, xs, w_packed, w_scale, global_scale, y, rows,
+                       out_features, in_features, stream);
 }
 
 void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
@@ -562,6 +562,15 @@ void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const u
                              " needs out % 128 == 0 and in % 64 == 0; the padded block-scale "
                              "layout has never been observed and is not guessed at");
   }
+  nvfp4_gemm_forward_prevalidated(x, w_packed, w_scale, global_scale, y, rows,
+                                  out_features, in_features, ws, stream);
+}
+
+void nvfp4_gemm_forward_prevalidated(
+    const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
+    float global_scale, __nv_bfloat16* y, int rows, int out_features,
+    int in_features, Workspace& ws, cudaStream_t stream) {
+  if (rows <= 0 || out_features <= 0) return;
 
   // Rows are processed in bounded passes so the activation buffer does not
   // scale with the batch. Every call the transformer makes is already inside
@@ -579,9 +588,9 @@ void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const u
 
     launch_quantize_nvfp4_activations(x + static_cast<size_t>(start) * in_features, xq, xs, n,
                                       in_features, stream);
-    nvfp4_gemm_forward_q(xq, xs, w_packed, w_scale, global_scale,
-                         y + static_cast<size_t>(start) * out_features, n, out_features,
-                         in_features, stream);
+    launch_nvfp4_gemm_q(xq, xs, w_packed, w_scale, global_scale,
+                        y + static_cast<size_t>(start) * out_features, n,
+                        out_features, in_features, stream);
   }
 }
 

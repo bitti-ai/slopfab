@@ -350,11 +350,9 @@ bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
                           const float* tau, __nv_bfloat16* out,
                           const AttentionConfig& c) {
   if (c.head_dim != D || (c.seq_len+B-1)/B > MaxBlocks) return false;
-  int device = 0;
-  cudaDeviceProp properties{};
-  if (cudaGetDevice(&device) != cudaSuccess ||
-      cudaGetDeviceProperties(&properties, device) != cudaSuccess ||
-      properties.major < 12) return false;
+  // `sol_attention_forward` validates the current device once before any Sol
+  // work. This helper is internal to that path; querying again here would put
+  // a CUDA runtime call inside every attention invocation.
   CUtensorMap q_map{},k_map{},v_map{};
   // Misaligned or otherwise unsupported K/V layouts are valid inputs for the
   // scalar Sol kernel. Never launch TMA with a zero/invalid descriptor.

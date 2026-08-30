@@ -221,6 +221,7 @@ class LinearRunner {
   cublasHandle_t handle_ = nullptr;
   cudaStream_t stream_ = nullptr;
   bool native_ = false;
+  bool native_nvfp4_device_ = false;
 };
 
 // --- ConvRot ----------------------------------------------------------------

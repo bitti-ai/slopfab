@@ -341,12 +341,8 @@ size_t sol_attention_workspace_bytes(const AttentionConfig& c) {
 void sol_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
                            const __nv_bfloat16* k, const __nv_bfloat16* v,
                            __nv_bfloat16* out, const AttentionConfig& c, Workspace& ws) {
-  int device = 0;
-  cudaDeviceProp properties{};
-  VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
-  VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
-  if (properties.major < 9) {
-    throw std::runtime_error("Sol-Attn requires a Hopper or newer GPU (sm_90+)");
+  if (current_device_compute_capability() != 120) {
+    throw std::runtime_error("Sol-Attn requires the shipped Blackwell sm_120 image");
   }
   validate(c);
   Workspace::Scope scope(ws);

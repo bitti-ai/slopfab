@@ -8,7 +8,6 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -231,8 +230,8 @@ void launch_ampere(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* out
   using KernelOut = nv_bfloat16;
   auto kernel = qk_int_sv_f16_attn_kernel<
       CTA_Q, CTA_K, WARP_Q, WARP_K, D, DataType::kInt8,
-      QuantGranularity::kPerWarp, QuantGranularity::kPerWarp, float, true,
-      KernelOut, ComputeUnit::kCudaCore, MaskMode::kNone, false, false>;
+      QuantGranularity::kPerWarp, QuantGranularity::kPerWarp, float, false,
+      KernelOut, ComputeUnit::kTensorCore, MaskMode::kNone, false, false>;
   const size_t smem = std::max<size_t>((CTA_Q + CTA_K) * D,
                                       CTA_K * D * sizeof(__half));
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -251,54 +250,25 @@ void launch_ampere(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* out
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-// Compute capability, cached for the process. A device's capability cannot
-// change, but `cudaGetDeviceProperties` is a host driver round-trip, and
-// `sage2_supported` is on the per-call attention path — one round-trip per
-// block per step, 2500 in a fifty-step generation. A device whose query fails
-// reports 0, which is the same "not supported" the direct call gave.
-int compute_capability(int device) {
-  // Only a successful query is cached. The table latches for the process, so
-  // caching a failure would turn one transient driver error into "this card
-  // does not support sage2" for the rest of the run — a failed query is
-  // retried, and only the answer is permanent.
-  //
-  // A fixed table rather than a growable one on purpose: every write stores the
-  // same value the query always returns for that device, and there is no
-  // reallocation, so two threads racing here cannot observe a torn or moved
-  // entry. A device index past the end simply pays the driver call each time.
-  constexpr int kMaxCached = 64;
-  static std::atomic<int> caps[kMaxCached]{};
-  if (device < 0) return 0;
-  if (device < kMaxCached) {
-    const int cached = caps[device].load(std::memory_order_relaxed);
-    if (cached != 0) return cached;
-  }
-  cudaDeviceProp prop{};
-  if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) return 0;
-  const int cap = prop.major * 10 + prop.minor;
-  if (device < kMaxCached) caps[device].store(cap, std::memory_order_relaxed);
-  return cap;
-}
-
 }  // namespace
 
 bool sage2_supported(const AttentionConfig& cfg, int device, const char** reason) {
   static const char* kDim = "head_dim must be 64 or 128";
   static const char* kBand = "frame-banded attention is not implemented for SageAttention2";
   static const char* kArch =
-      "supports SM80-SM88 Ampere and SM120 Blackwell; SM89 is not enabled yet";
+      "supports the shipped SM86-SM88 Ampere and SM120 Blackwell images";
   const char* why = nullptr;
   if (cfg.head_dim != 64 && cfg.head_dim != 128) why = kDim;
   else if (cfg.band_ranges != nullptr) why = kBand;
-  else if (sage2_variant_for_compute_capability(compute_capability(device)) ==
+  else if (sage2_variant_for_compute_capability(device_compute_capability(device)) ==
            Sage2KernelVariant::kUnsupported) why = kArch;
   if (reason) *reason = why;
   return why == nullptr;
 }
 
 Sage2KernelVariant sage2_variant_for_compute_capability(int capability) noexcept {
-  if (capability >= 80 && capability < 89) return Sage2KernelVariant::kAmpereFp16;
-  if (capability >= 120) return Sage2KernelVariant::kBlackwellFp8;
+  if (capability >= 86 && capability <= 88) return Sage2KernelVariant::kAmpereFp16;
+  if (capability == 120) return Sage2KernelVariant::kBlackwellFp8;
   return Sage2KernelVariant::kUnsupported;
 }
 
@@ -306,7 +276,7 @@ size_t sage2_workspace_bytes(const AttentionConfig& cfg, int num_kv_heads) {
   if (cfg.seq_len <= 0 || cfg.num_heads <= 0 || cfg.head_dim <= 0) return 0;
   int device = 0;
   const bool fp16_v = cudaGetDevice(&device) == cudaSuccess &&
-      sage2_variant_for_compute_capability(compute_capability(device)) ==
+      sage2_variant_for_compute_capability(device_compute_capability(device)) ==
           Sage2KernelVariant::kAmpereFp16;
   return buffer_bytes(cfg, num_kv_heads, fp16_v);
 }
@@ -321,7 +291,7 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   if (!sage2_supported(cfg, device, &reason))
     throw std::runtime_error(std::string("attention: sage2 ") + reason);
   Workspace::Scope scope(ws);
-  const int capability = compute_capability(device);
+  const int capability = device_compute_capability(device);
   const bool ampere = sage2_variant_for_compute_capability(capability) ==
                       Sage2KernelVariant::kAmpereFp16;
   SageBuffers b = carve(ws.alloc(buffer_bytes(cfg, num_kv_heads, ampere)), cfg,

@@ -2,6 +2,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <mutex>
 
 namespace vidfab::cuda {
 
@@ -62,6 +63,30 @@ DeviceInfo query_device(int index) {
 }
 
 void set_device(int index) { VIDFAB_CUDA_CHECK(cudaSetDevice(index)); }
+
+int device_compute_capability(int index) {
+  constexpr int kCachedDevices = 64;
+  static std::once_flag once[kCachedDevices];
+  static int capabilities[kCachedDevices]{};
+  if (index < 0) throw std::out_of_range("CUDA device index must be non-negative");
+  if (index >= kCachedDevices) {
+    cudaDeviceProp properties{};
+    VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, index));
+    return properties.major * 10 + properties.minor;
+  }
+  std::call_once(once[index], [index] {
+    cudaDeviceProp properties{};
+    VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, index));
+    capabilities[index] = properties.major * 10 + properties.minor;
+  });
+  return capabilities[index];
+}
+
+int current_device_compute_capability() {
+  int device = 0;
+  VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
+  return device_compute_capability(device);
+}
 
 Stream::Stream() {
   // Non-blocking: a default stream would implicitly synchronise against the

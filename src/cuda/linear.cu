@@ -692,7 +692,7 @@ size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType comput
   // to be bigger" is a coincidence, not an invariant, and a caller with many
   // rows and few output features would otherwise throw from Workspace::alloc.
   if (w.format == QuantFormat::kNVFP4 && compute == ComputeType::kBF16 &&
-      nvfp4_gemm_supported(w.out_features, w.in_features)) {
+      nvfp4_gemm_shape_supported(w.out_features, w.in_features)) {
     total = std::max(total, nvfp4_gemm_workspace_bytes(rows, w.in_features));
   }
   return total;
@@ -724,7 +724,7 @@ size_t linear_activation_workspace_bytes(const QuantWeight& w, int rows, Compute
   // `prepare` carves nothing and the quantised activation copy is the whole
   // requirement, so it belongs on this side of the split.
   if (w.format == QuantFormat::kNVFP4 && compute == ComputeType::kBF16 &&
-      nvfp4_gemm_supported(w.out_features, w.in_features)) {
+      nvfp4_gemm_shape_supported(w.out_features, w.in_features)) {
     total = std::max(total, nvfp4_gemm_workspace_bytes(rows, w.in_features));
   }
   return total;
@@ -735,6 +735,7 @@ size_t linear_activation_workspace_bytes(const QuantWeight& w, int rows, Compute
 void LinearRunner::init(cublasHandle_t handle, cudaStream_t stream) {
   handle_ = handle;
   stream_ = stream;
+  native_nvfp4_device_ = current_device_compute_capability() == 120;
   VIDFAB_CUBLAS_CHECK(cublasSetStream(handle_, stream_));
 }
 
@@ -754,9 +755,10 @@ bool LinearRunner::takes_native_nvfp4(const QuantWeight& w) const {
   // `full_precision` already excludes, and `nvfp4_gemm_supported` is the
   // block-scale swizzle's no-padding precondition. Each falls through to the
   // reference path, which is always correct, never to something approximate.
-  return native_path && w.format == QuantFormat::kNVFP4 && w.block_scale != nullptr &&
+  return native_path && native_nvfp4_device_ && w.format == QuantFormat::kNVFP4 &&
+         w.block_scale != nullptr &&
          !convrot_applies(w) && w.pre_quant_scale == nullptr &&
-         nvfp4_gemm_supported(w.out_features, w.in_features);
+         nvfp4_gemm_shape_supported(w.out_features, w.in_features);
 }
 
 const __nv_bfloat16* LinearRunner::prepare(const QuantWeight& w, Workspace& ws) {
@@ -797,8 +799,9 @@ void LinearRunner::forward_prepared(const QuantWeight& w, const __nv_bfloat16* w
         "native nvfp4 GEMM — call prepare() and pass what it returns");
   }
   if (weight == nullptr) {
-    nvfp4_gemm_forward(x, static_cast<const uint8_t*>(w.data), w.block_scale, w.global_scale, y,
-                       rows, w.out_features, w.in_features, ws, stream_);
+    nvfp4_gemm_forward_prevalidated(
+        x, static_cast<const uint8_t*>(w.data), w.block_scale, w.global_scale, y,
+        rows, w.out_features, w.in_features, ws, stream_);
     add_bias(y, /*y_is_f32=*/false, w, rows, stream_);
     return;
   }

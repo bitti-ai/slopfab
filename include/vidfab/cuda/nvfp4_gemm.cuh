@@ -69,6 +69,7 @@ constexpr int kNVFP4RowChunk = 8192;
 // Every quantised tensor in both checkpoints satisfies both, so the padded case
 // has never been observed and its convention is not guessed at: it throws.
 bool nvfp4_gemm_supported(int out_features, int in_features);
+bool nvfp4_gemm_shape_supported(int out_features, int in_features) noexcept;
 
 // Workspace the GEMM carves for the quantised activation and its scales.
 size_t nvfp4_gemm_workspace_bytes(int rows, int in_features);
@@ -88,6 +89,14 @@ void launch_quantize_nvfp4_activations(const __nv_bfloat16* x, uint8_t* packed, 
 void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
                         float global_scale, __nv_bfloat16* y, int rows, int out_features,
                         int in_features, Workspace& ws, cudaStream_t stream);
+
+// Same operation after a long-lived caller has already established that its
+// current device is SM120 and the shape satisfies `nvfp4_gemm_shape_supported`.
+// This keeps device queries out of every transformer linear invocation.
+void nvfp4_gemm_forward_prevalidated(
+    const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
+    float global_scale, __nv_bfloat16* y, int rows, int out_features,
+    int in_features, Workspace& ws, cudaStream_t stream);
 
 // As above, but against an activation the caller has already quantised with
 // `launch_quantize_nvfp4_activations`.

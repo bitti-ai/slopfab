@@ -44,6 +44,11 @@ int device_count();
 DeviceInfo query_device(int index);
 void set_device(int index);
 
+// Cached immutable hardware capability. The cache is indexed by CUDA device,
+// so callers may switch devices without reusing another GPU's answer.
+int device_compute_capability(int index);
+int current_device_compute_capability();
+
 // Owning device allocation. Move-only; freeing is best-effort in the
 // destructor because throwing from one would terminate.
 template <typename T>
