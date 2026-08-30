@@ -1030,7 +1030,27 @@ multimodal conditioner, keyframe encoder, three Ref2VA evaluations and both
 real VAEs. CUDA/Vulkan total times were 144.523/272.172 s. Final FNV64 values
 match byte-for-byte: fp32 PixelBuffer `821ea69c8412d682`, fp32 PCM
 `b92888172863f265`, Y4M `6b6a71322a7033cf`, and WAV
-`ce580a62a54051d2`. Vulkan rejects non-exact attention, AB2 and cache modes; no
+`ce580a62a54051d2`.
+
+Reference geometry has two intentional contracts. The keyframe VAE keeps the
+public 2048-pixel short edge, up to 8192x2048. Qwen independently applies the
+same factor-32/aspect-preserving resize with a 4,194,304-pixel ceiling, so one
+image never exceeds its exact 16,384-patch capacity. The complete image-pad
+and prompt token stream is built and checked against L8192 before either neural
+checkpoint opens or a keyframe arena is allocated. Impossible multi-image
+aggregates therefore fail transactionally, and CUDA/Vulkan consume the same
+prevalidated token IDs and bounded RGB presentation.
+
+The real non-square authority uses a deterministic 16x9 PPM. Its keyframe
+geometry is 3648x2048 (7,296 fixed Ref2VA rows), while Qwen uses 2720x1504
+(170x94 = 15,980 patches); the conditioner has 4,016 rows and the denoiser is
+S11,834. CUDA/Vulkan total times were 177.698/319.159 s. Vulkan keyframe
+peak/reserved was 11.12/11.13 GiB with 71 descriptors, conditioner
+peak/reserved was 2.56/2.21 GiB with 56 descriptors, and the transformer
+reported 13.19 GiB persistent / 16.67 GiB peak. Final exact FNV64 pins are
+fp32 PixelBuffer `b47a2b3e91e9c744`, fp32 PCM `334e7829e92a479f`, Y4M
+`dc958cbd7468dd84`, and WAV `ec54a7c6ac251e5f`. Vulkan rejects non-exact
+attention, AB2 and cache modes; no
 accepted or rejected reference request falls back to CUDA.
 
 The AdaLN/gated/SwiGLU module was built with official DXC 1.9.2607 from

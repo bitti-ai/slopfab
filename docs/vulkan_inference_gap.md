@@ -320,6 +320,19 @@ Final FNV64 pins are `821EA69C8412D682` for fp32 PixelBuffer,
 `B92888172863F265` for fp32 PCM, `6B6A71322A7033CF` for Y4M, and
 `CE580A62A54051D2` for WAV; both backends match byte for byte.
 
+Non-square references preserve the keyframe VAE's 2048-short-edge geometry,
+but use a separate canonical factor-32 Qwen presentation capped at 16,384
+patches. The exact image-pad plus prompt token stream is validated against
+L8192 before either neural checkpoint opens. The real 16:9 authority therefore
+uses 3648x2048 for keyframe encoding and 2720x1504 (15,980 patches) for Qwen,
+then runs 4,016 conditioner rows and Ref2VA S11,834 for three evaluations.
+CUDA/Vulkan total time was 177.698/319.159 s. Vulkan measured 11.12/11.13 GiB
+keyframe peak/reserved (71 descriptors), 2.56/2.21 GiB conditioner
+peak/reserved (56 descriptors), and 13.19/16.67 GiB transformer
+persistent/peak. Exact final FNV64 pins are `B47A2B3E91E9C744` PixelBuffer,
+`334E7829E92A479F` PCM, `DC958CBD7468DD84` Y4M and `EC54A7C6AC251E5F`
+WAV.
+
 A CUDA-disabled/Vulkan-enabled Release build links the keyframe, multimodal
 conditioner, transformer and decoder stages without CUDA and passes its unit
 and Vulkan suites. The current top-level `run_generate` translation unit is
