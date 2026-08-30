@@ -139,7 +139,10 @@ if(VIDFAB_ENABLE_CUDA)
     # here -- this project targets one RTX 5090 -- but it is a real constraint,
     # not a free upgrade.
     if(NOT CMAKE_CUDA_ARCHITECTURES)
-      set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architectures" FORCE)
+      # One toolkit-specific executable serves both supported GPU families.
+      # Runtime dispatch keeps Ampere on SM86 kernels and Blackwell on the
+      # architecture-specific SM120a image required by native NVFP4.
+      set(CMAKE_CUDA_ARCHITECTURES "86;120a" CACHE STRING "CUDA architectures" FORCE)
     endif()
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
@@ -925,27 +928,47 @@ if(WIN32)
   set(VIDFAB_EXE_RESOURCES
     "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_tokenizer.rc"
     "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_license.rc")
-  add_executable(vidfab src/main.cpp ${VIDFAB_EXE_RESOURCES})
+  set(VIDFAB_CLI_SOURCES src/main.cpp ${VIDFAB_EXE_RESOURCES})
 else()
-  add_executable(vidfab src/main.cpp)
+  set(VIDFAB_CLI_SOURCES src/main.cpp)
 endif()
-target_link_libraries(vidfab PRIVATE vidfab_core)
-target_compile_definitions(vidfab PRIVATE
+
+# Windows CUDA distributions contain a CUDA-free launcher plus one executable
+# per toolkit ABI. Separate build trees produce vidfab-cuda12.exe and
+# vidfab-cuda13.exe; package.cmd places both beside this launcher. Direct
+# backend invocation remains supported for development and diagnostics.
+if(WIN32 AND VIDFAB_ENABLE_CUDA)
+  if(NOT CUDAToolkit_VERSION_MAJOR MATCHES "^(12|13)$")
+    message(FATAL_ERROR "vidfab: Windows launcher supports CUDA toolkit 12 or 13")
+  endif()
+  add_executable(vidfab_cuda_backend ${VIDFAB_CLI_SOURCES})
+  set_target_properties(vidfab_cuda_backend PROPERTIES
+    OUTPUT_NAME "vidfab-cuda${CUDAToolkit_VERSION_MAJOR}")
+  set(VIDFAB_CLI_TARGET vidfab_cuda_backend)
+  add_executable(vidfab src/cuda_launcher_windows.cpp)
+  target_compile_options(vidfab PRIVATE /W4 /permissive- /utf-8 /EHsc)
+else()
+  add_executable(vidfab ${VIDFAB_CLI_SOURCES})
+  set(VIDFAB_CLI_TARGET vidfab)
+endif()
+
+target_link_libraries(${VIDFAB_CLI_TARGET} PRIVATE vidfab_core)
+target_compile_definitions(${VIDFAB_CLI_TARGET} PRIVATE
   VIDFAB_WITH_VULKAN=$<IF:$<BOOL:${VIDFAB_ENABLE_VULKAN}>,1,0>)
 if(VIDFAB_ENABLE_VULKAN)
-  target_link_libraries(vidfab PRIVATE vidfab_vulkan)
+  target_link_libraries(${VIDFAB_CLI_TARGET} PRIVATE vidfab_vulkan)
 endif()
 if(VIDFAB_ENABLE_CUDA)
-  target_link_libraries(vidfab PRIVATE vidfab_cuda)
+  target_link_libraries(${VIDFAB_CLI_TARGET} PRIVATE vidfab_cuda)
 endif()
 
 if(MSVC)
-  target_compile_options(vidfab PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  target_compile_options(${VIDFAB_CLI_TARGET} PRIVATE /W4 /permissive- /utf-8 /EHsc)
 else()
-  target_compile_options(vidfab PRIVATE -Wall -Wextra)
+  target_compile_options(${VIDFAB_CLI_TARGET} PRIVATE -Wall -Wextra)
 endif()
 if(WIN32)
-  target_link_libraries(vidfab PRIVATE winhttp)
+  target_link_libraries(${VIDFAB_CLI_TARGET} PRIVATE winhttp)
 endif()
 
 # Staging the FFmpeg runtime beside the executable, which only a build that
@@ -969,7 +992,7 @@ if(WIN32 AND VIDFAB_WITH_FFMPEG)
       message(FATAL_ERROR
         "vidfab: required FFmpeg runtime is missing: ${VIDFAB_FFMPEG_BIN}/${VIDFAB_FFMPEG_DLL}")
     endif()
-    add_custom_command(TARGET vidfab POST_BUILD
+    add_custom_command(TARGET ${VIDFAB_CLI_TARGET} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${VIDFAB_FFMPEG_BIN}/${VIDFAB_FFMPEG_DLL}"
         "$<TARGET_FILE_DIR:vidfab>/${VIDFAB_FFMPEG_DLL}"
@@ -1309,34 +1332,6 @@ if(VIDFAB_BUILD_C_API)
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
   install(FILES include/vidfab/capi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vidfab)
 
-  # The cuBLAS redistributables vidfab.dll imports at load time. Without
-  # these an installed DLL fails at LoadLibrary on any machine that has no CUDA
-  # toolkit on PATH — which is every machine this is shipped to, and the reason
-  # it looks fine here. They are installed rather than copied beside every
-  # build because they are half a gigabyte and a build tree can rely on PATH.
-  #
-  # Located by name rather than through $<TARGET_FILE:CUDA::cublas>, whose
-  # imported location is the import library on Windows. Both layouts CUDA has
-  # used are searched, and a miss is a warning rather than an error: it makes
-  # the install incomplete, not the build wrong, and saying which file was not
-  # found is more useful than refusing to install anything.
-  if(WIN32)
-    foreach(VIDFAB_CUDA_DLL cublas cublasLt)
-      set(VIDFAB_CUDA_DLL_NAME "${VIDFAB_CUDA_DLL}64_${CUDAToolkit_VERSION_MAJOR}.dll")
-      unset(VIDFAB_CUDA_DLL_PATH)
-      foreach(VIDFAB_CUDA_DLL_DIR "${CUDAToolkit_BIN_DIR}/x64" "${CUDAToolkit_BIN_DIR}")
-        if(NOT DEFINED VIDFAB_CUDA_DLL_PATH AND
-           EXISTS "${VIDFAB_CUDA_DLL_DIR}/${VIDFAB_CUDA_DLL_NAME}")
-          set(VIDFAB_CUDA_DLL_PATH "${VIDFAB_CUDA_DLL_DIR}/${VIDFAB_CUDA_DLL_NAME}")
-        endif()
-      endforeach()
-      if(DEFINED VIDFAB_CUDA_DLL_PATH)
-        install(FILES "${VIDFAB_CUDA_DLL_PATH}" DESTINATION ${CMAKE_INSTALL_BINDIR})
-      else()
-        message(WARNING
-          "vidfab: ${VIDFAB_CUDA_DLL_NAME} was not found under ${CUDAToolkit_BIN_DIR}; "
-          "an installed vidfab_c will not load unless it is supplied separately")
-      endif()
-    endforeach()
-  endif()
+  # CUDA and cuBLAS DLLs are intentionally not installed. Applications loading
+  # vidfab.dll must expose the matching CUDA toolkit bin directory on PATH.
 endif()
