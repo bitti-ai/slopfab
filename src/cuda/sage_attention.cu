@@ -5,6 +5,7 @@
 #include "vidfab/cuda/sage_attention.cuh"
 
 #include <cuda_fp8.h>
+#include <cuda_fp16.h>
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,16 @@
 #include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/device.h"
 #include "vidfab/cuda/workspace.cuh"
+#include "../../third_party/sageattention/qattn/qk_int_sv_f16_cuda_sm80.cuh"
+#undef PACK_SIZE_QK
+#undef PACK_SIZE_V
+#undef PACK_SIZE_O
+#undef MMA_QK_M
+#undef MMA_QK_N
+#undef MMA_QK_K
+#undef MMA_SV_M
+#undef MMA_SV_N
+#undef MMA_SV_K
 #include "../../third_party/sageattention/qattn/qk_int_sv_f8_cuda_sm89.cuh"
 
 namespace vidfab::cuda {
@@ -31,14 +42,14 @@ int ceil_div(int a, int b) { return (a + b - 1) / b; }
 struct SageBuffers {
   int8_t* q;
   int8_t* k;
-  int8_t* v;
+  void* v;
   float* qs;
   float* ks;
   float* vs;
   float* km;
 };
 
-size_t buffer_bytes(const AttentionConfig& c, int kvh) {
+size_t buffer_bytes(const AttentionConfig& c, int kvh, bool fp16_v) {
   const size_t qn = static_cast<size_t>(c.seq_len) * c.num_heads * c.head_dim;
   const size_t kn = static_cast<size_t>(c.seq_len) * kvh * c.head_dim;
   const size_t padded = static_cast<size_t>(ceil_div(c.seq_len, kKBlock)) * kKBlock;
@@ -47,11 +58,12 @@ size_t buffer_bytes(const AttentionConfig& c, int kvh) {
                      (kQBlock / kQWarp);
   const size_t ksn = static_cast<size_t>(kvh) * ceil_div(c.seq_len, kKBlock);
   const size_t channel = static_cast<size_t>(kvh) * c.head_dim;
-  return align256(qn) + align256(kn) + align256(vn) + align256(qsn * sizeof(float)) +
+  return align256(qn) + align256(kn) + align256(vn * (fp16_v ? sizeof(__half) : 1)) +
+         align256(qsn * sizeof(float)) +
          align256(ksn * sizeof(float)) + 2 * align256(channel * sizeof(float));
 }
 
-SageBuffers carve(void* base, const AttentionConfig& c, int kvh) {
+SageBuffers carve(void* base, const AttentionConfig& c, int kvh, bool fp16_v) {
   auto* p = static_cast<uint8_t*>(base);
   auto take = [&](size_t n) { void* r = p; p += align256(n); return r; };
   const size_t qn = static_cast<size_t>(c.seq_len) * c.num_heads * c.head_dim;
@@ -64,7 +76,7 @@ SageBuffers carve(void* base, const AttentionConfig& c, int kvh) {
   SageBuffers b{};
   b.q = static_cast<int8_t*>(take(qn));
   b.k = static_cast<int8_t*>(take(kn));
-  b.v = static_cast<int8_t*>(take(vn));
+  b.v = take(vn * (fp16_v ? sizeof(__half) : 1));
   b.qs = static_cast<float*>(take(qsn * sizeof(float)));
   b.ks = static_cast<float*>(take(ksn * sizeof(float)));
   b.vs = static_cast<float*>(take(channel * sizeof(float)));
@@ -174,6 +186,16 @@ __global__ void quant_v(const __nv_bfloat16* v, int8_t* out, float* scales,
   }
 }
 
+// Ampere has INT8 and FP16 tensor cores but no FP8 tensor cores. Keep V in
+// ordinary sequence-major FP16 for SageAttention's SM80 P*V kernel. Unlike the
+// Blackwell preparation above this needs neither per-channel scales nor the
+// FP8 lane permutation.
+__global__ void convert_v_f16(const __nv_bfloat16* v, __half* out, size_t n) {
+  for (size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       i < n; i += static_cast<size_t>(blockDim.x) * gridDim.x)
+    out[i] = __float2half(__bfloat162float(v[i]));
+}
+
 template <int D>
 void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* out,
                      const AttentionConfig& c, int kvh, int padded) {
@@ -191,11 +213,38 @@ void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* o
   dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
   const int groups = c.num_heads / kvh;
   kernel<<<grid, block, smem, stream>>>(
-      b.q, b.k, b.v, out, nullptr, b.qs, b.ks, b.vs, nullptr,
+      b.q, b.k, static_cast<int8_t*>(b.v), out, nullptr, b.qs, b.ks, b.vs, nullptr,
       c.seq_len, c.seq_len, groups,
       c.seq_len * c.num_heads * D, c.num_heads * D, D,
       c.seq_len * kvh * D, kvh * D, D,
       padded * kvh * D, padded, padded * kvh,
+      c.seq_len * c.num_heads * D, c.num_heads * D, D,
+      c.effective_scale());
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+template <int D>
+void launch_ampere(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* out,
+                   const AttentionConfig& c, int kvh) {
+  constexpr int CTA_Q = 128, CTA_K = 64, WARP_Q = 32, WARP_K = 64;
+  using KernelOut = nv_bfloat16;
+  auto kernel = qk_int_sv_f16_attn_kernel<
+      CTA_Q, CTA_K, WARP_Q, WARP_K, D, DataType::kInt8,
+      QuantGranularity::kPerWarp, QuantGranularity::kPerWarp, float, true,
+      KernelOut, ComputeUnit::kCudaCore, MaskMode::kNone, false, false>;
+  const size_t smem = std::max<size_t>((CTA_Q + CTA_K) * D,
+                                      CTA_K * D * sizeof(__half));
+  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                         static_cast<int>(smem)));
+  dim3 grid(ceil_div(c.seq_len, CTA_Q), c.num_heads, 1);
+  dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
+  const int groups = c.num_heads / kvh;
+  kernel<<<grid, block, smem, stream>>>(
+      b.q, b.k, static_cast<__half*>(b.v), out, nullptr, b.qs, b.ks, nullptr,
+      c.seq_len, c.seq_len, groups,
+      c.seq_len * c.num_heads * D, c.num_heads * D, D,
+      c.seq_len * kvh * D, kvh * D, D,
+      c.seq_len * kvh * D, kvh * D, D,
       c.seq_len * c.num_heads * D, c.num_heads * D, D,
       c.effective_scale());
   VIDFAB_CUDA_CHECK(cudaGetLastError());
@@ -232,18 +281,20 @@ int compute_capability(int device) {
 bool sage2_supported(const AttentionConfig& cfg, int device, const char** reason) {
   static const char* kDim = "head_dim must be 64 or 128";
   static const char* kBand = "frame-banded attention is not implemented for SageAttention2";
-  static const char* kArch = "requires compute capability 8.9 or newer";
+  static const char* kArch = "requires compute capability 8.0 or newer";
   const char* why = nullptr;
   if (cfg.head_dim != 64 && cfg.head_dim != 128) why = kDim;
   else if (cfg.band_ranges != nullptr) why = kBand;
-  else if (compute_capability(device) < 89) why = kArch;
+  else if (compute_capability(device) < 80) why = kArch;
   if (reason) *reason = why;
   return why == nullptr;
 }
 
 size_t sage2_workspace_bytes(const AttentionConfig& cfg, int num_kv_heads) {
   if (cfg.seq_len <= 0 || cfg.num_heads <= 0 || cfg.head_dim <= 0) return 0;
-  return buffer_bytes(cfg, num_kv_heads);
+  int device = 0;
+  const bool fp16_v = cudaGetDevice(&device) == cudaSuccess && compute_capability(device) < 89;
+  return buffer_bytes(cfg, num_kv_heads, fp16_v);
 }
 
 void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
@@ -256,7 +307,10 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   if (!sage2_supported(cfg, device, &reason))
     throw std::runtime_error(std::string("attention: sage2 ") + reason);
   Workspace::Scope scope(ws);
-  SageBuffers b = carve(ws.alloc(buffer_bytes(cfg, num_kv_heads)), cfg, num_kv_heads);
+  const int capability = compute_capability(device);
+  const bool ampere = capability < 89;
+  SageBuffers b = carve(ws.alloc(buffer_bytes(cfg, num_kv_heads, ampere)), cfg,
+                        num_kv_heads, ampere);
   const int padded = ceil_div(cfg.seq_len, kKBlock) * kKBlock;
   key_mean<<<num_kv_heads * cfg.head_dim, kThreads, 0, stream>>>(
       k, b.km, cfg.seq_len, num_kv_heads, cfg.head_dim);
@@ -268,11 +322,23 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   dim3 kgrid(kgroups, num_kv_heads);
   quant_qk<kKBlock, true><<<kgrid, kThreads, 0, stream>>>(
       k, b.k, b.ks, b.km, cfg.seq_len, num_kv_heads, cfg.head_dim, kgroups);
-  quant_v<<<num_kv_heads * cfg.head_dim, kThreads, 0, stream>>>(
-      v, b.v, b.vs, cfg.seq_len, padded, num_kv_heads, cfg.head_dim);
+  if (ampere) {
+    const size_t vn = static_cast<size_t>(cfg.seq_len) * num_kv_heads * cfg.head_dim;
+    convert_v_f16<<<std::min<size_t>(ceil_div(static_cast<int>(vn), kThreads), 65535),
+                    kThreads, 0, stream>>>(v, static_cast<__half*>(b.v), vn);
+  } else {
+    quant_v<<<num_kv_heads * cfg.head_dim, kThreads, 0, stream>>>(
+        v, static_cast<int8_t*>(b.v), b.vs, cfg.seq_len, padded, num_kv_heads,
+        cfg.head_dim);
+  }
   VIDFAB_CUDA_CHECK(cudaGetLastError());
-  if (cfg.head_dim == 64) launch_official<64>(stream, b, out, cfg, num_kv_heads, padded);
-  else launch_official<128>(stream, b, out, cfg, num_kv_heads, padded);
+  if (ampere) {
+    if (cfg.head_dim == 64) launch_ampere<64>(stream, b, out, cfg, num_kv_heads);
+    else launch_ampere<128>(stream, b, out, cfg, num_kv_heads);
+  } else {
+    if (cfg.head_dim == 64) launch_official<64>(stream, b, out, cfg, num_kv_heads, padded);
+    else launch_official<128>(stream, b, out, cfg, num_kv_heads, padded);
+  }
 }
 
 }  // namespace vidfab::cuda
