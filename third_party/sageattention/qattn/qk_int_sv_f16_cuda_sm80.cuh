@@ -146,7 +146,7 @@ __global__ void qk_int_sv_f16_attn_kernel(int8_t *__restrict__ Q, int8_t *__rest
       {
 #pragma unroll
         for (uint32_t k = 0; k < 8; k++)
-        {        
+        {
           RO[fq][fv][k] = 0.0f;
         }
       }
@@ -344,7 +344,7 @@ __global__ void qk_int_sv_f16_attn_kernel(int8_t *__restrict__ Q, int8_t *__rest
     else
     {
       compute_fp16_sv_permuted_inst_buf<num_warps_q, num_warps_k, num_tiles_q, num_tiles_k, num_tiles_v, swizzle_mode_V, V_SMEM_STRIDE / PACK_SIZE_V, 4>(
-        smem_V, RS_f16, RO, d, V_smem_offset_mma); 
+        smem_V, RS_f16, RO, d, V_smem_offset_mma);
     }
 
     __syncthreads();
@@ -355,7 +355,7 @@ __global__ void qk_int_sv_f16_attn_kernel(int8_t *__restrict__ Q, int8_t *__rest
     K_load_idx_lane_base += CTA_K;
     V_load_idx_lane_base += CTA_K;
   }
-  
+
   // second last iter, apply causal mask
   if (num_iterations > 1)
   {
@@ -599,7 +599,7 @@ __global__ void qk_int_sv_f16_attn_kernel(int8_t *__restrict__ Q, int8_t *__rest
         uint32_t RO_f16[4];
 #pragma unroll
         for (uint32_t k = 0; k < 4; k++)
-        { 
+        {
           if constexpr (std::is_same<DTypeOut, half>::value)
           {
             ((half2*)RO_f16)[k] = __float22half2_rn(((float2*)RO[fq][fv])[k]);
@@ -624,7 +624,7 @@ __global__ void qk_int_sv_f16_attn_kernel(int8_t *__restrict__ Q, int8_t *__rest
 
         // ! permuted, make sure you know what you are doing
         ((uint32_t*)(smem_O.base + (offset_O ^ 0x1)))[lane_id % 4] = ((uint32_t*)RO[fq][fv])[2];
-        ((uint32_t*)(smem_O.base + (offset_O ^ 0x1) + 8 * (O_SMEM_STRIDE / PACK_SIZE_O)))[lane_id % 4] = ((uint32_t*)RO[fq][fv])[3]; 
+        ((uint32_t*)(smem_O.base + (offset_O ^ 0x1) + 8 * (O_SMEM_STRIDE / PACK_SIZE_O)))[lane_id % 4] = ((uint32_t*)RO[fq][fv])[3];
       }
     }
   }
@@ -657,7 +657,7 @@ __global__ void qk_int_sv_f16_attn_kernel(int8_t *__restrict__ Q, int8_t *__rest
   }
 
   if constexpr (return_lse)
-  { 
+  {
     uint32_t lse_idx = bx * CTA_Q + lane_id / 4 + 8 * (lane_id % 4) + WARP_Q * get_warp_idx_q<num_warps_q, num_warps_k>();
     float *lse_lane_ptr = Lse + batch_id * (qo_len * num_qo_heads) + head_id * qo_len + lse_idx;
     uint32_t fq = (lane_id % 4) / 2;
