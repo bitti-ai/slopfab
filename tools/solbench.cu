@@ -15,6 +15,7 @@
 
 #include "vidfab/cuda/attention.cuh"
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/workspace.cuh"
 #include "vidfab/sol_capture.h"
 
@@ -189,7 +190,7 @@ int main(int argc, char** argv) {
     }
     captured.clear();
   }
-  cublasHandle_t blas{}; cublasCreate(&blas);
+  cublasHandle_t blas{}; vidfab::cuda::cublas_create(&blas);
   vidfab::cuda::AttentionConfig cfg;
   cfg.seq_len = seq; cfg.num_heads = heads; cfg.head_dim = 128; cfg.exact_prefix = prefix;
   cfg.sol_beta = beta;
@@ -263,6 +264,6 @@ int main(int argc, char** argv) {
     float max_abs=0; std::memcpy(&max_abs,&max_bits,sizeof(max_abs));
     std::printf("output finite max_abs=%.7g\n",max_abs);
   }
-  cublasDestroy(blas);
+  vidfab::cuda::cublas_destroy(blas);
   return 0;
 }

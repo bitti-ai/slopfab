@@ -438,7 +438,7 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
   float* m_run = ws.alloc_n<float>(static_cast<size_t>(H) * bq_max);
   float* l_run = ws.alloc_n<float>(static_cast<size_t>(H) * bq_max);
 
-  VIDFAB_CUBLAS_CHECK(cublasSetStream(handle, stream));
+  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_set_stream(handle, stream));
   const float one = 1.0f;
   const float zero = 0.0f;
 
@@ -462,7 +462,7 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
       // S_tile[h] (row-major [bq, bk]) = Q[h] K[h]^T * scale.
       // Column-major: C[bk, bq] = op_T(K[D, bk]) * op_N(Q[D, bq]).
       if (G == 1) {
-        VIDFAB_CUBLAS_CHECK(cublasGemmStridedBatchedEx(
+        VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_strided_batched_ex(
             handle, CUBLAS_OP_T, CUBLAS_OP_N, bk, bq, D, &scale,
             k + static_cast<size_t>(k0) * kvld, CUDA_R_16BF, kvld, D,
             q + static_cast<size_t>(q0) * qld, CUDA_R_16BF, qld, D, &zero, scores, CUDA_R_32F, bk,
@@ -472,7 +472,7 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
         // (spec section 4.2), which is exactly what makes each kv head one
         // batched call with a zero stride on K.
         for (int kv = 0; kv < cfg.num_kv_heads; ++kv) {
-          VIDFAB_CUBLAS_CHECK(cublasGemmStridedBatchedEx(
+          VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_strided_batched_ex(
               handle, CUBLAS_OP_T, CUBLAS_OP_N, bk, bq, D, &scale,
               k + static_cast<size_t>(k0) * kvld + static_cast<size_t>(kv) * D, CUDA_R_16BF, kvld,
               0, q + static_cast<size_t>(q0) * qld + static_cast<size_t>(kv) * G * D, CUDA_R_16BF,
@@ -487,14 +487,14 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
 
       // acc[h] (row-major [bq, D]) += P[h] V[h], beta = 1.
       if (G == 1) {
-        VIDFAB_CUBLAS_CHECK(cublasGemmStridedBatchedEx(
+        VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_strided_batched_ex(
             handle, CUBLAS_OP_N, CUBLAS_OP_N, D, bq, bk, &one,
             v + static_cast<size_t>(k0) * kvld, CUDA_R_16BF, kvld, D, probs, CUDA_R_16BF, bk,
             static_cast<long long>(bq) * bk, &one, acc, CUDA_R_32F, D,
             static_cast<long long>(bq) * D, H, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
       } else {
         for (int kv = 0; kv < cfg.num_kv_heads; ++kv) {
-          VIDFAB_CUBLAS_CHECK(cublasGemmStridedBatchedEx(
+          VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_strided_batched_ex(
               handle, CUBLAS_OP_N, CUBLAS_OP_N, D, bq, bk, &one,
               v + static_cast<size_t>(k0) * kvld + static_cast<size_t>(kv) * D, CUDA_R_16BF, kvld,
               0, probs + static_cast<size_t>(kv) * G * bq * bk, CUDA_R_16BF, bk,
@@ -914,7 +914,7 @@ struct Encoder::Impl {
 
   void open_device() {
     if (cublas != nullptr) return;
-    VIDFAB_CUBLAS_CHECK(cublasCreate(&cublas));
+    VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&cublas));
     // Non-blocking rather than the legacy default stream: the streaming path
     // needs the upload stream to run concurrently with compute, and the legacy
     // default stream serialises against every other blocking stream.
@@ -936,7 +936,7 @@ struct Encoder::Impl {
     }
     if (transfer != nullptr) cudaStreamDestroy(transfer);
     if (compute != nullptr) cudaStreamDestroy(compute);
-    if (cublas != nullptr) cublasDestroy(cublas);
+    if (cublas != nullptr) vidfab::cuda::cublas_destroy(cublas);
     transfer = nullptr;
     compute = nullptr;
     cublas = nullptr;

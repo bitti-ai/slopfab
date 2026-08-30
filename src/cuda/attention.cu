@@ -419,7 +419,7 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
   // one stream, which is the only configuration this project has; if attention
   // and a linear ever share a handle across two streams, this line silently
   // moves the linear's work as well. Give each stream its own handle then.
-  VIDFAB_CUBLAS_CHECK(cublasSetStream(handle, stream));
+  VIDFAB_CUBLAS_CHECK(cublas_set_stream(handle, stream));
 
   convert_bf16_to_f16(k, k16, static_cast<size_t>(S) * kvld, stream);
   convert_bf16_to_f16(v, v16, static_cast<size_t>(S) * kvld, stream);
@@ -453,7 +453,7 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
       // S_tile[h] (row-major [bq, bk]) = Q[h] K[h]^T * scale.
       // Column-major: C[bk, bq] = op_T(K[D, bk]) * op_N(Q[D, bq]).
       if (G == 1) {
-        VIDFAB_CUBLAS_CHECK(cublasGemmStridedBatchedEx(
+        VIDFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
             handle, CUBLAS_OP_T, CUBLAS_OP_N, bk, bq, D, &scale,
             k16 + static_cast<size_t>(k0) * kvld, CUDA_R_16F, kvld, D, q16, CUDA_R_16F, qld, D,
             &zero, tile_buf, CUDA_R_16F, bk, static_cast<long long>(bq) * bk, H,
@@ -462,7 +462,7 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
         // Grouped-query: the G query heads sharing a kv head are contiguous, so
         // each kv head is one batched call with a zero stride on K.
         for (int kv = 0; kv < num_kv_heads; ++kv) {
-          VIDFAB_CUBLAS_CHECK(cublasGemmStridedBatchedEx(
+          VIDFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
               handle, CUBLAS_OP_T, CUBLAS_OP_N, bk, bq, D, &scale,
               k16 + static_cast<size_t>(k0) * kvld + static_cast<size_t>(kv) * D, CUDA_R_16F, kvld,
               0, q16 + static_cast<size_t>(kv) * G * D, CUDA_R_16F, qld, D, &zero,
@@ -477,14 +477,14 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
       // acc[h] (row-major [bq, D]) += P[h] V[h].
       // Column-major: C[D, bq] = op_N(V[D, bk]) * op_N(P[bk, bq]).
       if (G == 1) {
-        VIDFAB_CUBLAS_CHECK(cublasGemmStridedBatchedEx(
+        VIDFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
             handle, CUBLAS_OP_N, CUBLAS_OP_N, D, bq, bk, &one,
             v16 + static_cast<size_t>(k0) * kvld, CUDA_R_16F, kvld, D, tile_buf, CUDA_R_16F, bk,
             static_cast<long long>(bq) * bk, pv_beta, acc, CUDA_R_32F, D,
             static_cast<long long>(bq) * D, H, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
       } else {
         for (int kv = 0; kv < num_kv_heads; ++kv) {
-          VIDFAB_CUBLAS_CHECK(cublasGemmStridedBatchedEx(
+          VIDFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
               handle, CUBLAS_OP_N, CUBLAS_OP_N, D, bq, bk, &one,
               v16 + static_cast<size_t>(k0) * kvld + static_cast<size_t>(kv) * D, CUDA_R_16F, kvld,
               0, tile_buf + static_cast<size_t>(kv) * G * bq * bk, CUDA_R_16F, bk,

@@ -1108,7 +1108,7 @@ struct Transformer::Impl {
   std::vector<int32_t> host_ts;
 
   Impl() {
-    VIDFAB_CUBLAS_CHECK(cublasCreate(&blas));
+    VIDFAB_CUBLAS_CHECK(cuda::cublas_create(&blas));
     linear.init(blas, stream.get());
 
     // The native nvfp4 GEMM is 2.6-4.1x the dequantise-then-cuBLAS path and is
@@ -1156,7 +1156,7 @@ struct Transformer::Impl {
     }
   }
   ~Impl() {
-    if (blas != nullptr) cublasDestroy(blas);
+    if (blas != nullptr) cuda::cublas_destroy(blas);
   }
 
   bool loaded() const { return !blocks.empty(); }

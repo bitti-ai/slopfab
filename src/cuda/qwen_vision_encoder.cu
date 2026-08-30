@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "vidfab/cuda/device.h"
+#include "vidfab/cuda/gemm.cuh"
 #include "vidfab/cuda/linear.cuh"
 #include "vidfab/cuda/qwen_vision.cuh"
 
@@ -101,10 +102,10 @@ struct QwenVisionEncoder::Impl {
   cuda::Workspace ws, acts;
 
   DeviceBuffer<uint16_t>& at(const std::string& suffix) { return tensors.at(prefix + suffix); }
-  void open() { if (handle) return; if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS)
+  void open() { if (handle) return; if (vidfab::cuda::cublas_create(&handle) != CUBLAS_STATUS_SUCCESS)
       throw std::runtime_error("Qwen vision: cublasCreate failed");
     VIDFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking)); linear.init(handle, stream); }
-  void close() { if (stream) cudaStreamDestroy(stream); if (handle) cublasDestroy(handle);
+  void close() { if (stream) cudaStreamDestroy(stream); if (handle) vidfab::cuda::cublas_destroy(handle);
     stream = nullptr; handle = nullptr; }
   cuda::QwenVisionBlockWeights block(int i) {
     const std::string p = "blocks." + std::to_string(i) + ".";

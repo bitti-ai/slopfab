@@ -7,11 +7,12 @@
 // that are wrong but entirely plausible.
 #pragma once
 
-#include <cublas_v2.h>
 #include <cuda_runtime.h>
 
 #include <stdexcept>
 #include <string>
+
+#include "vidfab/cuda/cublas_dispatch.h"
 
 namespace vidfab::cuda {
 
@@ -30,7 +31,7 @@ inline void gemm_nt(cublasHandle_t h, const float* A, const float* B, float* C, 
   const float alpha = 1.0f;
   const float beta = 0.0f;
   VIDFAB_CUBLAS_CHECK(
-      cublasSgemm(h, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, K, A, K, &beta, C, N));
+      cublas_sgemm(h, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, K, A, K, &beta, C, N));
 }
 
 // C[M,N] = A[M,K] * B[K,N]
@@ -39,7 +40,7 @@ inline void gemm_nn(cublasHandle_t h, const float* A, const float* B, float* C, 
   const float alpha = 1.0f;
   const float beta = 0.0f;
   VIDFAB_CUBLAS_CHECK(
-      cublasSgemm(h, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N, A, K, &beta, C, N));
+      cublas_sgemm(h, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N, A, K, &beta, C, N));
 }
 
 // Batched C[b][M,N] = A[b][M,K] * B[b][N,K]^T
@@ -48,9 +49,9 @@ inline void gemm_nt_batched(cublasHandle_t h, const float* A, const float* B, fl
                             long long strideC) {
   const float alpha = 1.0f;
   const float beta = 0.0f;
-  VIDFAB_CUBLAS_CHECK(cublasSgemmStridedBatched(h, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, K,
-                                                strideB, A, K, strideA, &beta, C, N, strideC,
-                                                batch));
+  VIDFAB_CUBLAS_CHECK(cublas_sgemm_strided_batched(
+      h, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, K, strideB, A, K,
+      strideA, &beta, C, N, strideC, batch));
 }
 
 // Batched C[b][M,N] = A[b][M,K] * B[b][K,N]
@@ -59,9 +60,9 @@ inline void gemm_nn_batched(cublasHandle_t h, const float* A, const float* B, fl
                             long long strideC) {
   const float alpha = 1.0f;
   const float beta = 0.0f;
-  VIDFAB_CUBLAS_CHECK(cublasSgemmStridedBatched(h, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N,
-                                                strideB, A, K, strideA, &beta, C, N, strideC,
-                                                batch));
+  VIDFAB_CUBLAS_CHECK(cublas_sgemm_strided_batched(
+      h, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N, strideB, A, K,
+      strideA, &beta, C, N, strideC, batch));
 }
 
 // As gemm_nn_batched, but with an explicit row stride for C. Setting ldc wider
@@ -74,9 +75,9 @@ inline void gemm_nn_batched_ld(cublasHandle_t h, const float* A, const float* B,
                                long long strideC, int ldc) {
   const float alpha = 1.0f;
   const float beta = 0.0f;
-  VIDFAB_CUBLAS_CHECK(cublasSgemmStridedBatched(h, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N,
-                                                strideB, A, K, strideA, &beta, C, ldc, strideC,
-                                                batch));
+  VIDFAB_CUBLAS_CHECK(cublas_sgemm_strided_batched(
+      h, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, B, N, strideB, A, K,
+      strideA, &beta, C, ldc, strideC, batch));
 }
 
 }  // namespace vidfab::cuda

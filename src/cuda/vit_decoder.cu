@@ -208,7 +208,7 @@ struct ViTDecoder::Impl {
 
   ~Impl() {
     release_host_regs();
-    if (blas != nullptr) cublasDestroy(blas);
+    if (blas != nullptr) vidfab::cuda::cublas_destroy(blas);
   }
 
   void erase_registration(size_t index) {
@@ -278,7 +278,7 @@ struct ViTDecoder::Impl {
       return;
     }
     const float alpha = 1.0f, beta = 0.0f;
-    CUBLAS_CHECK(cublasGemmEx(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F,
+    CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F,
                               K, d_gemm_in.get(), CUDA_R_16F, K, &beta, C, CUDA_R_32F, N,
                               CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
   }
@@ -435,8 +435,8 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   // file, so it asks for it up front rather than one page fault at a time.
   ckpt.prefetch();
   d.cfg = config;
-  CUBLAS_CHECK(cublasCreate(&d.blas));
-  CUBLAS_CHECK(cublasSetStream(d.blas, d.stream.get()));
+  CUBLAS_CHECK(vidfab::cuda::cublas_create(&d.blas));
+  CUBLAS_CHECK(vidfab::cuda::cublas_set_stream(d.blas, d.stream.get()));
   // DEFAULT already refuses to drop mantissa bits for an fp32 compute type —
   // TF32 requires an explicitly TF32 math mode or compute type, neither of
   // which we ask for. PEDANTIC additionally forbids optimisations that do not
@@ -444,7 +444,7 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   // the correctness harness via VIDFAB_CUBLAS_PEDANTIC=1.
   const char* pedantic = std::getenv("VIDFAB_CUBLAS_PEDANTIC");
   const bool want_pedantic = pedantic != nullptr && pedantic[0] == '1';
-  CUBLAS_CHECK(cublasSetMathMode(d.blas,
+  CUBLAS_CHECK(vidfab::cuda::cublas_set_math_mode(d.blas,
                                  want_pedantic ? CUBLAS_PEDANTIC_MATH : CUBLAS_DEFAULT_MATH));
 
   const int dim = config.dim;

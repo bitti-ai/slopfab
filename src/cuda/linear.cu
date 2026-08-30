@@ -736,7 +736,7 @@ void LinearRunner::init(cublasHandle_t handle, cudaStream_t stream) {
   handle_ = handle;
   stream_ = stream;
   native_nvfp4_device_ = current_device_compute_capability() == 120;
-  VIDFAB_CUBLAS_CHECK(cublasSetStream(handle_, stream_));
+  VIDFAB_CUBLAS_CHECK(cublas_set_stream(handle_, stream_));
 }
 
 bool LinearRunner::takes_native_nvfp4(const QuantWeight& w) const {
@@ -828,7 +828,7 @@ void LinearRunner::forward_prepared(const QuantWeight& w, const __nv_bfloat16* w
   // [in,out] and x as [in,rows]; op_T on W then gives [out,in] * [in,rows].
   const float alpha = 1.0f;
   const float beta = 0.0f;
-  VIDFAB_CUBLAS_CHECK(cublasGemmEx(handle_, CUBLAS_OP_T, CUBLAS_OP_N, w.out_features, rows,
+  VIDFAB_CUBLAS_CHECK(cublas_gemm_ex(handle_, CUBLAS_OP_T, CUBLAS_OP_N, w.out_features, rows,
                                    w.in_features, &alpha, weight, CUDA_R_16BF, w.in_features, xin,
                                    CUDA_R_16BF, w.in_features, &beta, y, CUDA_R_16BF,
                                    w.out_features, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
