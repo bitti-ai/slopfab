@@ -129,6 +129,19 @@ class QwenVisionEncoder {
 // Throws for invalid sizes and aspect ratios greater than 200:1.
 QwenImageGrid qwen3vl_image_grid(int width, int height);
 
+// Public H3 reference images keep their 2048-short-edge keyframe geometry,
+// which can exceed the exact vision tower's 16,384-patch capacity at a
+// non-square aspect. This separate presentation grid preserves the source
+// aspect on the processor's factor-32 lattice while bounding unmerged patches.
+QwenImageGrid qwen3vl_conditioning_grid(int width, int height);
+
+// Returns decoder token count after adding all merged image pads and their
+// start/end sentinels to already-tokenized labels/prompt. Every grid and the
+// aggregate are validated with checked arithmetic before model allocation.
+size_t qwen3vl_conditioning_token_count(
+    const std::vector<QwenImageGrid>& grids, size_t nonvision_tokens,
+    size_t max_prompt_tokens = 8192);
+
 // Patchifies an image already resized to the grid selected above. Keeping
 // interpolation outside this primitive makes its byte-to-row mapping exact
 // and independently testable. A still is repeated for the temporal size 2.

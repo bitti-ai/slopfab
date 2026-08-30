@@ -34,6 +34,41 @@ VIDFAB_TEST(qwen_vision_smart_resize_and_merge) {
   CHECK(::vidfab::test::throws([] { (void)qwen3vl_image_grid(201, 1); }));
 }
 
+VIDFAB_TEST(qwen_reference_conditioning_grid_is_bounded) {
+  const auto square = qwen3vl_conditioning_grid(2048, 2048);
+  CHECK(square.height == 128 && square.width == 128);
+  CHECK(square.patch_count() == 16384);
+
+  const auto landscape = qwen3vl_conditioning_grid(3648, 2048);
+  const auto portrait = qwen3vl_conditioning_grid(2048, 3648);
+  CHECK(landscape.height == 94 && landscape.width == 170);
+  CHECK(portrait.height == 170 && portrait.width == 94);
+  CHECK(landscape.patch_count() == 15980);
+  CHECK(portrait.patch_count() == landscape.patch_count());
+
+  const auto wide = qwen3vl_conditioning_grid(8192, 2048);
+  const auto tall = qwen3vl_conditioning_grid(2048, 8192);
+  CHECK(wide.height == 64 && wide.width == 256);
+  CHECK(tall.height == 256 && tall.width == 64);
+  CHECK(wide.patch_count() == 16384 && tall.patch_count() == 16384);
+
+  CHECK(qwen3vl_conditioning_token_count({wide}, 4094) == 8192);
+  CHECK(::vidfab::test::throws([] {
+    const auto grid = qwen3vl_conditioning_grid(8192, 2048);
+    (void)qwen3vl_conditioning_token_count({grid}, 4095);
+  }));
+  CHECK(::vidfab::test::throws([] {
+    const auto grid = qwen3vl_conditioning_grid(8192, 2048);
+    (void)qwen3vl_conditioning_token_count({grid, grid}, 0);
+  }));
+  CHECK(::vidfab::test::throws([] {
+    (void)qwen3vl_conditioning_token_count({{1, 128, 130}}, 0);
+  }));
+  CHECK(::vidfab::test::throws([] {
+    (void)qwen3vl_conditioning_grid(0, 2048);
+  }));
+}
+
 VIDFAB_TEST(qwen_vision_minimax_presentation) {
   const auto ids = qwen3vl_image_block({10, 11}, 3);
   CHECK(ids.size() == 7);

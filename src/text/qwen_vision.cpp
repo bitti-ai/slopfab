@@ -16,9 +16,37 @@ namespace {
 constexpr int kFactor = 32;
 constexpr double kMinPixels = 65536.0;
 constexpr double kMaxPixels = 16777216.0;
+constexpr double kConditioningMaxPixels = 4194304.0;
+constexpr size_t kConditioningMaxPatches = 16384;
 
 int round_factor(double value) {
   return std::max(kFactor, static_cast<int>(std::round(value / kFactor)) * kFactor);
+}
+
+QwenImageGrid smart_grid(int width, int height, double max_pixels) {
+  if (width <= 0 || height <= 0)
+    throw std::runtime_error("Qwen image: invalid size");
+  const double ratio = std::max(width, height) /
+      static_cast<double>(std::min(width, height));
+  if (ratio > 200.0)
+    throw std::runtime_error("Qwen image: aspect ratio exceeds 200:1");
+
+  int resized_h = round_factor(height);
+  int resized_w = round_factor(width);
+  const double source_pixels = static_cast<double>(height) * width;
+  const double rounded_pixels = static_cast<double>(resized_h) * resized_w;
+  if (rounded_pixels > max_pixels) {
+    const double beta = std::sqrt(source_pixels / max_pixels);
+    resized_h = std::max(kFactor,
+        static_cast<int>(std::floor(height / beta / kFactor)) * kFactor);
+    resized_w = std::max(kFactor,
+        static_cast<int>(std::floor(width / beta / kFactor)) * kFactor);
+  } else if (rounded_pixels < kMinPixels) {
+    const double beta = std::sqrt(kMinPixels / source_pixels);
+    resized_h = static_cast<int>(std::ceil(height * beta / kFactor)) * kFactor;
+    resized_w = static_cast<int>(std::ceil(width * beta / kFactor)) * kFactor;
+  }
+  return {1, resized_h / 16, resized_w / 16};
 }
 
 void check(const SafeTensors& st, const std::string& name, const std::vector<int64_t>& shape) {
@@ -225,23 +253,36 @@ size_t QwenImageGrid::merged_token_count() const {
 }
 
 QwenImageGrid qwen3vl_image_grid(int width, int height) {
-  if (width <= 0 || height <= 0) throw std::runtime_error("Qwen image: invalid size");
-  const double ratio = std::max(width, height) / static_cast<double>(std::min(width, height));
-  if (ratio > 200.0) throw std::runtime_error("Qwen image: aspect ratio exceeds 200:1");
+  return smart_grid(width, height, kMaxPixels);
+}
 
-  int resized_h = round_factor(height);
-  int resized_w = round_factor(width);
-  double pixels = static_cast<double>(resized_h) * resized_w;
-  if (pixels > kMaxPixels) {
-    const double beta = std::sqrt(static_cast<double>(height) * width / kMaxPixels);
-    resized_h = std::max(kFactor, static_cast<int>(std::floor(height / beta / kFactor)) * kFactor);
-    resized_w = std::max(kFactor, static_cast<int>(std::floor(width / beta / kFactor)) * kFactor);
-  } else if (pixels < kMinPixels) {
-    const double beta = std::sqrt(kMinPixels / (static_cast<double>(height) * width));
-    resized_h = static_cast<int>(std::ceil(height * beta / kFactor)) * kFactor;
-    resized_w = static_cast<int>(std::ceil(width * beta / kFactor)) * kFactor;
+QwenImageGrid qwen3vl_conditioning_grid(int width, int height) {
+  QwenImageGrid grid = smart_grid(width, height, kConditioningMaxPixels);
+  if (grid.patch_count() == 0 ||
+      grid.patch_count() > kConditioningMaxPatches ||
+      grid.merged_token_count() == 0) {
+    throw std::runtime_error("Qwen image: conditioning grid exceeds exact capacity");
   }
-  return {1, resized_h / 16, resized_w / 16};
+  return grid;
+}
+
+size_t qwen3vl_conditioning_token_count(
+    const std::vector<QwenImageGrid>& grids, size_t nonvision_tokens,
+    size_t max_prompt_tokens) {
+  if (max_prompt_tokens == 0 || nonvision_tokens > max_prompt_tokens)
+    throw std::runtime_error("Qwen image: conditioning exceeds max prompt tokens");
+  size_t total = nonvision_tokens;
+  for (const QwenImageGrid& grid : grids) {
+    const size_t patches = grid.patch_count();
+    const size_t merged = grid.merged_token_count();
+    if (patches == 0 || patches > kConditioningMaxPatches || merged == 0)
+      throw std::runtime_error("Qwen image: invalid conditioning grid");
+    if (merged > max_prompt_tokens - total ||
+        size_t(2) > max_prompt_tokens - total - merged)
+      throw std::runtime_error("Qwen image: conditioning exceeds max prompt tokens");
+    total += merged + 2;
+  }
+  return total;
 }
 
 QwenPixelValues qwen3vl_patchify_resized_rgb(const std::vector<uint8_t>& rgb,
