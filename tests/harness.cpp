@@ -223,7 +223,7 @@ int run_all() {
   // A skipped case contributes no checks, so without this the run reports
   // success and the missing coverage is invisible. The split matters: a
   // fixture skip is fixed by fetching a file, a vram skip by freeing the card,
-  // and only the second makes an otherwise-identical run report fewer checks.
+  // and a hardware skip by running the matching compiled image on its GPU.
   if (g_skipped != 0) {
     std::printf(", %d skipped (%d fixture, %d vram, %d hardware; see SKIP lines above)",
                 g_skipped, g_skipped_fixture, g_skipped_vram, g_skipped_hardware);

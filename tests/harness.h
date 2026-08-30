@@ -84,8 +84,8 @@ int check_count();
 int failure_count();
 int deferred_count();
 
-// Why a case declined to run. The two have different remedies -- one is fixed
-// by fetching a file, the other by freeing the card -- so the summary keeps
+// Why a case declined to run. These have different remedies -- fetching a
+// file, freeing the card, or using a supported GPU -- so the summary keeps
 // them apart rather than reporting a single opaque total.
 enum class SkipReason {
   kMissingFixture,  // a checkpoint, tokenizer or tool the case needs is absent
