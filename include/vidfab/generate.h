@@ -213,4 +213,8 @@ struct RunResult {
 RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                        const RunOptions& options = {});
 
+// Releases tokenizer, conditioning and prepared-reference state retained by
+// `RunOptions::reuse_models`. The host must serialize this with run_generate.
+void clear_reused_generation_models();
+
 }  // namespace vidfab

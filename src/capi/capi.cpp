@@ -561,6 +561,16 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_verbose(vidfab_request* request,
   return VIDFAB_OK;
 }
 
+VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_reuse_models(vidfab_request* request,
+                                                             int32_t enable) {
+  if (request == nullptr) {
+    return fail(VIDFAB_ERR_INVALID_ARGUMENT,
+                "vidfab_request_set_reuse_models: null request");
+  }
+  request->options.reuse_models = enable != 0;
+  return VIDFAB_OK;
+}
+
 VIDFAB_C_API int VIDFAB_CALL vidfab_resolve_plan(const vidfab_request* request, vidfab_plan* out_plan) {
   if (request == nullptr || out_plan == nullptr) {
     return fail(VIDFAB_ERR_INVALID_ARGUMENT, "vidfab_resolve_plan: null argument");
@@ -608,6 +618,21 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_describe_plan(const vidfab_request* request,
     char* text = dup_string(vidfab::describe_plan(request->request, plan));
     if (text == nullptr) return fail(VIDFAB_ERR_OUT_OF_MEMORY, "out of memory");
     *out_text = text;
+    return VIDFAB_OK;
+  });
+}
+
+VIDFAB_C_API int VIDFAB_CALL vidfab_reused_models_clear(void) {
+  bool expected = false;
+  if (!g_generation_active.compare_exchange_strong(expected, true)) {
+    return fail(VIDFAB_ERR_BUSY,
+                "cannot clear reused models while a generation is running");
+  }
+  struct ActiveClaim {
+    ~ActiveClaim() { g_generation_active.store(false); }
+  } claim;
+  return guarded([] {
+    vidfab::clear_reused_generation_models();
     return VIDFAB_OK;
   });
 }

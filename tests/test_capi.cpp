@@ -63,6 +63,11 @@ VIDFAB_TEST(capi_version) {
   CHECK(text == expected);
 }
 
+VIDFAB_TEST(capi_reused_models_can_be_cleared_while_idle) {
+  CHECK(vidfab_reused_models_clear() == VIDFAB_OK);
+  CHECK(vidfab_reused_models_clear() == VIDFAB_OK);
+}
+
 // Every entry point takes a null handle without crashing and says so. This is
 // the failure a binding hits first — an uninitialised or already-freed pointer
 // — and the answer has to be a status code rather than an access violation
@@ -71,6 +76,7 @@ VIDFAB_TEST(capi_rejects_null_handles) {
   CHECK(vidfab_request_set_prompt(nullptr, "x") == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_seed(nullptr, 1) == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_frames(nullptr, 5) == VIDFAB_ERR_INVALID_ARGUMENT);
+  CHECK(vidfab_request_set_reuse_models(nullptr, 1) == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_model_path(nullptr, VIDFAB_MODEL_TRANSFORMER, "x") ==
         VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_prompt_embedding_path(nullptr, "x") ==
@@ -190,6 +196,8 @@ VIDFAB_TEST(capi_model_paths_and_attention) {
         VIDFAB_OK);
   CHECK(vidfab_request_set_prompt_embedding_path(request.handle, nullptr) ==
         VIDFAB_ERR_INVALID_ARGUMENT);
+  CHECK(vidfab_request_set_reuse_models(request.handle, 1) == VIDFAB_OK);
+  CHECK(vidfab_request_set_reuse_models(request.handle, 0) == VIDFAB_OK);
 
   for (const char* mode : {"none", "flash2", "sage2", "sol", "sol-experimental", "exact"}) {
     CHECK(vidfab_request_set_attention(request.handle, mode) == VIDFAB_OK);

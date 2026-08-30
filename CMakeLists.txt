@@ -1046,7 +1046,7 @@ if(VIDFAB_BUILD_C_API)
   # libvidfab.so.0 whose soname says 0 for an ABI that says 1, and would bump
   # it for releases that did not touch the C interface at all.
   set(VIDFAB_CAPI_VERSION_MAJOR 1)
-  set(VIDFAB_CAPI_VERSION_MINOR 2)
+  set(VIDFAB_CAPI_VERSION_MINOR 3)
   set(VIDFAB_CAPI_VERSION_PATCH 0)
   set(VIDFAB_CAPI_VERSION
     "${VIDFAB_CAPI_VERSION_MAJOR}.${VIDFAB_CAPI_VERSION_MINOR}.${VIDFAB_CAPI_VERSION_PATCH}")

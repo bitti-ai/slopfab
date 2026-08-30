@@ -335,6 +335,8 @@ vulkan::Device create_vulkan_inference_device(bool exact_h3 = false) {
 
 }  // namespace
 
+void clear_reused_generation_models() { reused_models().clear(); }
+
 RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                        const RunOptions& options) {
   struct ReuseReleaseGuard {

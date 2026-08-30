@@ -90,7 +90,7 @@ extern "C" {
  * A binding should compare `vidfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define VIDFAB_CAPI_VERSION_MAJOR 1
-#define VIDFAB_CAPI_VERSION_MINOR 2
+#define VIDFAB_CAPI_VERSION_MINOR 3
 #define VIDFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -369,6 +369,12 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_synthetic_latents(vidfab_request
  * default is on; a GUI host wants it off and the progress callback instead. */
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_verbose(vidfab_request* request, int32_t enable);
 
+/* Retains reusable tokenizer, conditioning and reference preparation between
+ * serial generations. The host controls the lifetime with
+ * `vidfab_reused_models_clear`; overlapping generations remain forbidden. */
+VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_reuse_models(vidfab_request* request,
+                                                             int32_t enable);
+
 /* --- plan ------------------------------------------------------------------ */
 
 /* Resolves `request` into `out_plan`. Reads no weights.
@@ -398,6 +404,13 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_describe_plan(const vidfab_request* request,
  * claim until it finishes, not until its handle is destroyed — so a caller may
  * start the next generation while still reading the previous one's pixels.
  * Serialise in the host if you want a queue; this only refuses to overlap. */
+
+/* Releases everything retained by requests with reuse enabled. Returns
+ * VIDFAB_ERR_BUSY if a generation is active, so the cache can never be freed
+ * while its worker is reading it. Finished generation pixel buffers are
+ * independent and remain valid. */
+VIDFAB_C_API int VIDFAB_CALL vidfab_reused_models_clear(void);
+
 VIDFAB_C_API int VIDFAB_CALL vidfab_generation_start(const vidfab_request* request,
                                                      vidfab_progress_fn callback, void* userdata,
                                                      vidfab_generation** out_generation);
