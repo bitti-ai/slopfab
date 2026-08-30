@@ -47,6 +47,18 @@ using vidfab::cuda::DeviceBuffer;
 using vidfab::cuda::Workspace;
 using vidfab::test::make_data;
 
+bool test_is_sm120() {
+  return vidfab::cuda::current_device_compute_capability() == 120;
+}
+
+#define REQUIRE_SM120_TEST(feature)                                      \
+  do {                                                                    \
+    if (!test_is_sm120()) {                                               \
+      SKIP_UNSUPPORTED_HARDWARE("%s requires the shipped SM120 image", feature); \
+      return;                                                             \
+    }                                                                     \
+  } while (false)
+
 // --- host/device plumbing ---------------------------------------------------
 
 // bf16 is carried around as raw uint16 so the host side uses the already-tested
@@ -1945,19 +1957,25 @@ VIDFAB_TEST(linear_nvfp4) {
   // distance properly, across three distributions and four values of K;
   // `nvfp4_gemm_exact_fp4_activations` is the control that separates the two.
   const std::vector<float> got = dy.host();
-  runner.set_native(true);
-  runner.forward(qw, dx.p(), rows, dy.p(), ws);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  const std::vector<float> native = dy.host();
-  runner.set_native(false);
-  CHECK_CLOSE_REL(cpu_matmul_nt(host_quantise_act(x, rows, in_features), wdq, rows, out_features,
-                                in_features),
-                  native, 1e-3, 1e-2, "linear nvfp4 native vs an fp4-activation reference");
-  std::printf("  linear nvfp4 native vs dequantised: rms_rel %.4f (4-bit activations)\n",
-              rms_rel(got, native));
-  // Still the same matrix, and still the same one the dequantised path
-  // computes: a layout error would take the correlation to ~0, not to 0.99.
-  CHECK(correlation(got, native) > 0.99);
+  if (test_is_sm120()) {
+    runner.set_native(true);
+    runner.forward(qw, dx.p(), rows, dy.p(), ws);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    const std::vector<float> native = dy.host();
+    runner.set_native(false);
+    CHECK_CLOSE_REL(cpu_matmul_nt(host_quantise_act(x, rows, in_features), wdq, rows,
+                                  out_features, in_features),
+                    native, 1e-3, 1e-2,
+                    "linear nvfp4 native vs an fp4-activation reference");
+    std::printf("  linear nvfp4 native vs dequantised: rms_rel %.4f (4-bit activations)\n",
+                rms_rel(got, native));
+    // Still the same matrix, and still the same one the dequantised path
+    // computes: a layout error would take the correlation to ~0, not to 0.99.
+    CHECK(correlation(got, native) > 0.99);
+  } else {
+    SKIP_UNSUPPORTED_HARDWARE(
+        "native half of linear_nvfp4 requires the shipped SM120 image");
+  }
 
   // With an AWQ activation scale the runner must scale the activation, not the
   // weight — the two differ because the GEMM is not symmetric in them.
@@ -2036,6 +2054,7 @@ __global__ void nvfp4_mma_kernel(const uint32_t* a, const uint32_t* b, const uin
 int scale_lane_for_row(int r) { return r < 8 ? 4 * r : 4 * (r - 8) + 1; }
 
 VIDFAB_TEST(nvfp4_mma_operand_layout) {
+  REQUIRE_SM120_TEST("NVFP4 MMA operand-layout test");
   uint8_t A[16][64], B[64][8];
   for (int r = 0; r < 16; ++r)
     for (int k = 0; k < 64; ++k) A[r][k] = static_cast<uint8_t>((r * 7 + k * 3) % 15);
@@ -2209,6 +2228,7 @@ VIDFAB_TEST(attention_fused_ragged_tail) {
 }
 
 VIDFAB_TEST(attention_sol) {
+  REQUIRE_SM120_TEST("Sol attention");
   CublasScope cb;
   const int seq = 263;  // four full blocks, local routes, and a ragged tail
   const int heads = 2;
@@ -2294,6 +2314,7 @@ VIDFAB_TEST(attention_sol) {
 }
 
 VIDFAB_TEST(attention_sol_pipeline_exact) {
+  REQUIRE_SM120_TEST("Sol TMA pipeline");
   CublasScope cb;
   const int seq = 128, heads = 1, dim = 128;
   const auto q = bf16_round(make_data(size_t(seq) * dim, 921u, 0.3f));
@@ -2316,6 +2337,7 @@ VIDFAB_TEST(attention_sol_pipeline_exact) {
 }
 
 VIDFAB_TEST(attention_sol_pipeline_mixed) {
+  REQUIRE_SM120_TEST("Sol TMA pipeline");
   CublasScope cb;
   const int seq=384, dim=128;
   const auto q=bf16_round(make_data(size_t(seq)*dim,931u,0.8f));
@@ -2338,6 +2360,7 @@ VIDFAB_TEST(attention_sol_pipeline_mixed) {
 }
 
 VIDFAB_TEST(attention_sol_pipeline_real_scale_finite) {
+  REQUIRE_SM120_TEST("Sol TMA pipeline");
   CublasScope cb;
   // More than 64 physical blocks exercises multiple compacted approximate
   // groups and a ragged tail with activation ranges observed in H3 captures.
@@ -2361,6 +2384,7 @@ VIDFAB_TEST(attention_sol_pipeline_real_scale_finite) {
 }
 
 VIDFAB_TEST(attention_sol_pipeline_large_pooled_v) {
+  REQUIRE_SM120_TEST("Sol TMA pipeline");
   CublasScope cb;
   // A 64-row pooled V sum is ~131k here: well beyond BF16's finite range,
   // while the corrected attention result remains a perfectly finite ~2k.
@@ -2395,6 +2419,7 @@ VIDFAB_TEST(attention_sol_pipeline_large_pooled_v) {
 }
 
 VIDFAB_TEST(attention_sol_rejects_invalid_error_weights) {
+  REQUIRE_SM120_TEST("Sol attention");
   vidfab::cuda::AttentionConfig cfg;
   cfg.seq_len=64;cfg.num_heads=1;cfg.head_dim=128;
   vidfab::cuda::Workspace ws;
@@ -2411,6 +2436,7 @@ VIDFAB_TEST(attention_sol_rejects_invalid_error_weights) {
 }
 
 VIDFAB_TEST(attention_sol_zero_error_weight_ignores_infinite_residual) {
+  REQUIRE_SM120_TEST("Sol attention");
   CublasScope cb;
   const int seq=321,dim=128;
   std::vector<float> q(size_t(seq)*dim,0.0f),k(size_t(seq)*dim),v;
@@ -2510,6 +2536,11 @@ VIDFAB_TEST(attention_sage2) {
 // way rather than pasting whatever the new build prints.
 VIDFAB_TEST(attention_sage2_head_dims_bit_stable) {
   const int heads = 8, kv_heads = 2;
+  const bool check_blackwell_hashes = test_is_sm120();
+  if (!check_blackwell_hashes) {
+    SKIP_UNSUPPORTED_HARDWARE(
+        "Blackwell Sage hashes are SM120-specific; dense-reference and determinism still run");
+  }
   struct Shape { int seq; int head_dim; uint64_t digest; };
   const Shape shapes[] = {
       {64, 64, 0x3dece381009ce78cull},  {199, 128, 0xc755489173f5999cull},
@@ -2550,10 +2581,12 @@ VIDFAB_TEST(attention_sage2_head_dims_bit_stable) {
           h = (h ^ (b & 0xffu)) * 1099511628211ull;
           h = (h ^ (b >> 8)) * 1099511628211ull;
         }
-        CHECK_MSG(h == shapes[si].digest,
-                  "sage2 output moved at seq=%d D=%d kv=%d: digest %016llx, expected %016llx",
-                  seq, head_dim, kv_heads, static_cast<unsigned long long>(h),
-                  static_cast<unsigned long long>(shapes[si].digest));
+        if (check_blackwell_hashes) {
+          CHECK_MSG(h == shapes[si].digest,
+                    "sage2 output moved at seq=%d D=%d kv=%d: digest %016llx, expected %016llx",
+                    seq, head_dim, kv_heads, static_cast<unsigned long long>(h),
+                    static_cast<unsigned long long>(shapes[si].digest));
+        }
       } else {
         size_t bad = 0;
         for (size_t i = 0; i < bits.size(); ++i) bad += bits[i] != first[si][i];
@@ -3746,6 +3779,7 @@ __global__ void nvfp4_mma_bscale_kernel(const uint32_t* a, const uint32_t* b, co
 // the instruction ignores. It does not crash and does not produce zeros. It
 // produces a well-formed matrix with four of its eight columns scaled wrong.
 VIDFAB_TEST(nvfp4_mma_b_scale_operand_layout) {
+  REQUIRE_SM120_TEST("NVFP4 MMA block-scale test");
   const std::vector<uint32_t> ones(32 * 4, 0x22222222u), onesb(32 * 2, 0x22222222u);
   DeviceBuffer<uint32_t> da(ones.size()), db(onesb.size()), dsa(32), dsb(32);
   da.copy_from_host(ones.data(), ones.size());
@@ -3902,6 +3936,7 @@ VIDFAB_TEST(nvfp4_activation_quantisation) {
 // --- the GEMM against a CPU reference ---------------------------------------
 
 VIDFAB_TEST(nvfp4_gemm_matches_cpu_reference) {
+  REQUIRE_SM120_TEST("native NVFP4 GEMM");
   struct Shape {
     int rows, out, in;
   };
@@ -3929,6 +3964,7 @@ VIDFAB_TEST(nvfp4_gemm_matches_cpu_reference) {
 // every way of getting it wrong is silent. Each wrong form is constructed here
 // and the kernel required not to match it.
 VIDFAB_TEST(nvfp4_gemm_disk_layout) {
+  REQUIRE_SM120_TEST("native NVFP4 GEMM");
   const int rows = 64, out = 128, in = 192;
   const std::vector<float> x = bf16_round(make_gaussian(size_t(rows) * in, 515u, 0.8f));
   const std::vector<float> wd = make_gaussian(size_t(out) * in, 616u, 0.05f);
@@ -3976,6 +4012,7 @@ VIDFAB_TEST(nvfp4_gemm_disk_layout) {
 // so it has to appear exactly once. Twice, or not at all, still gives a
 // well-formed matrix.
 VIDFAB_TEST(nvfp4_gemm_global_scale) {
+  REQUIRE_SM120_TEST("native NVFP4 GEMM");
   const int rows = 32, out = 128, in = 128;
   const std::vector<float> x = bf16_round(make_gaussian(size_t(rows) * in, 808u, 0.8f));
   const std::vector<float> wd = make_gaussian(size_t(out) * in, 909u, 0.05f);
@@ -4022,6 +4059,7 @@ VIDFAB_TEST(nvfp4_gemm_global_scale) {
 // quantisation is the entire story and the load path is correct. That is the
 // one measurement that tells a numerical limit apart from a layout bug.
 VIDFAB_TEST(nvfp4_gemm_exact_fp4_activations) {
+  REQUIRE_SM120_TEST("native NVFP4 GEMM");
   const int rows = 128, out = 256, in = 512;
   const float grid[8] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
 
@@ -4069,6 +4107,7 @@ VIDFAB_TEST(nvfp4_gemm_exact_fp4_activations) {
 // the assertion that the operand path is right; this is the cost of the format
 // on top of it, and whether that cost is acceptable is a modelling decision.
 VIDFAB_TEST(nvfp4_activation_cost) {
+  REQUIRE_SM120_TEST("native NVFP4 GEMM");
   const int rows = 128, out = 256;
   const std::vector<float> wd_full = make_gaussian(size_t(out) * 5376, 2468u, 0.05f);
 
@@ -4148,6 +4187,7 @@ VIDFAB_TEST(nvfp4_activation_cost) {
 // The same measurement on a real tensor. Synthetic weights cannot say whether
 // the shipped block scales are benign; these are the bytes the model ships.
 VIDFAB_TEST(nvfp4_activation_cost_real_weights) {
+  REQUIRE_SM120_TEST("native NVFP4 GEMM");
   std::string path;
   for (const char* prefix : {"", "../", "../../", "../../../"}) {
     const std::string p =
@@ -4224,6 +4264,7 @@ VIDFAB_TEST(nvfp4_activation_cost_real_weights) {
 // --- timings ----------------------------------------------------------------
 
 VIDFAB_TEST(nvfp4_gemm_production_timings) {
+  REQUIRE_SM120_TEST("native NVFP4 GEMM timings");
   CublasScope cb;
   cudaDeviceProp prop{};
   VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));

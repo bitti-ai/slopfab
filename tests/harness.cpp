@@ -27,6 +27,7 @@ int g_deferred = 0;
 int g_skipped = 0;
 int g_skipped_fixture = 0;
 int g_skipped_vram = 0;
+int g_skipped_hardware = 0;
 const char* g_current = "";
 
 // Strips the directory so failures read `test_kernels.cu:412` rather than an
@@ -142,11 +143,17 @@ void skip(SkipReason reason, const char* file, int line, const char* fmt, ...) {
   ++g_skipped;
   if (reason == SkipReason::kMissingFixture) {
     ++g_skipped_fixture;
-  } else {
+  } else if (reason == SkipReason::kInsufficientVram) {
     ++g_skipped_vram;
+  } else {
+    ++g_skipped_hardware;
   }
+  const char* label = reason == SkipReason::kMissingFixture
+      ? "fixture absent"
+      : reason == SkipReason::kInsufficientVram ? "insufficient vram"
+                                                 : "unsupported hardware";
   std::fprintf(stderr, "  SKIP [%s] %s:%d  (%s) ", g_current, basename(file), line,
-               reason == SkipReason::kMissingFixture ? "fixture absent" : "insufficient vram");
+               label);
   va_list args;
   va_start(args, fmt);
   std::vfprintf(stderr, fmt, args);
@@ -218,8 +225,8 @@ int run_all() {
   // fixture skip is fixed by fetching a file, a vram skip by freeing the card,
   // and only the second makes an otherwise-identical run report fewer checks.
   if (g_skipped != 0) {
-    std::printf(", %d skipped (%d fixture, %d vram; see SKIP lines above)", g_skipped,
-                g_skipped_fixture, g_skipped_vram);
+    std::printf(", %d skipped (%d fixture, %d vram, %d hardware; see SKIP lines above)",
+                g_skipped, g_skipped_fixture, g_skipped_vram, g_skipped_hardware);
   }
   std::fputc(0x0A, stdout);
   return g_failures == 0 ? 0 : 1;

@@ -1001,6 +1001,14 @@ __global__ void legacy_vae_swiglu_probe(const float* input, const float* bias,
 }
 
 VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
+  if (vidfab::cuda::current_device_compute_capability() != 120) {
+    SKIP_UNSUPPORTED_HARDWARE("exact H3 attention requires the shipped SM120 image");
+    return;
+  }
+  if (!vidfab::cuda::deterministic_h3_attention_available()) {
+    SKIP_UNSUPPORTED_HARDWARE("exact H3 CUDA driver/runtime tuple is not qualified");
+    return;
+  }
   using namespace vidfab;
   using namespace vidfab::vulkan;
   const unsigned char board_a[16] = {};

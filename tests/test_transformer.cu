@@ -39,6 +39,7 @@
 #include "vidfab/dit/packing.h"
 #include "vidfab/dit/transformer.h"
 #include "vidfab/cuda/deterministic_attention.cuh"
+#include "vidfab/cuda/device.h"
 #include "vidfab/dtype.h"
 #include "vidfab/safetensors.h"
 #include "vidfab/safetensors_write.h"
@@ -918,8 +919,12 @@ VIDFAB_TEST(transformer_refiner_bisect) {
 }
 
 VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
+  if (vidfab::cuda::current_device_compute_capability() != 120) {
+    SKIP_UNSUPPORTED_HARDWARE("exact H3 attention requires the shipped SM120 image");
+    return;
+  }
   if (!vidfab::cuda::deterministic_h3_attention_available()) {
-    std::printf("  skipped: exact H3 CUDA tuple unavailable\n");
+    SKIP_UNSUPPORTED_HARDWARE("exact H3 CUDA driver/runtime tuple is not qualified");
     return;
   }
 

@@ -90,6 +90,7 @@ int deferred_count();
 enum class SkipReason {
   kMissingFixture,  // a checkpoint, tokenizer or tool the case needs is absent
   kInsufficientVram,  // the card has less free memory than the case requires
+  kUnsupportedHardware,  // the case targets an instruction/image this GPU lacks
 };
 
 void skip(SkipReason reason, const char* file, int line, const char* fmt, ...);
@@ -119,6 +120,9 @@ int skipped_count();
 #define SKIP_INSUFFICIENT_VRAM(...)                                            \
   ::vidfab::test::skip(::vidfab::test::SkipReason::kInsufficientVram, __FILE__, \
                        __LINE__, __VA_ARGS__)
+#define SKIP_UNSUPPORTED_HARDWARE(...)                                      \
+  ::vidfab::test::skip(::vidfab::test::SkipReason::kUnsupportedHardware,     \
+                       __FILE__, __LINE__, __VA_ARGS__)
 
 // Names the case currently running, for files that register their functions
 // separately rather than through VIDFAB_TEST.
