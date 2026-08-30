@@ -1036,7 +1036,8 @@ dimensions 64 and 128 are supported by the shipped SM86-SM88 and SM120 images;
 SM89 remains an explicit future dispatch case. Frame banding is accepted by `flash2` and
 `exact`; Sage2 is rejected rather than silently falling back.
 The vendored primitives retain Apache-2.0 notices under
-`third_party/sageattention`.
+`third_party/sageattention`; Windows packages include the same license as
+`SAGEATTENTION-LICENSE.txt`.
 
 `sol` is the scalar training-free block-routing reference. `sol-experimental`
 selects the separate SM120 TMA/WMMA pipeline evaluated in

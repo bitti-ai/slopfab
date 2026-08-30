@@ -64,6 +64,8 @@ copy /y "%BUILD12%\Release\vidfab-cuda12.exe" "%STAGE%\vidfab-cuda12.exe" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%README.md" "%STAGE%\README.md" >nul
 if errorlevel 1 exit /b 1
+copy /y "%ROOT%third_party\sageattention\LICENSE" "%STAGE%\SAGEATTENTION-LICENSE.txt" >nul
+if errorlevel 1 exit /b 1
 copy /y "%ROOT%external\ffmpeg\LICENSE" "%STAGE%\FFMPEG-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 
