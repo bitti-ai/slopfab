@@ -5799,6 +5799,63 @@ VIDFAB_TEST(cuda_vulkan_dit_real_capture_replay) {
   CHECK(overflow_threw);
 }
 
+VIDFAB_TEST(cuda_ref2va_text_l4100_authority) {
+  using namespace vidfab;
+  using namespace vidfab::dit;
+  const char* enabled = std::getenv("VIDFAB_REF2VA_TEXT_CUDA_REAL");
+  if (!enabled || enabled[0] != '1') return;
+  const std::filesystem::path checkpoint_path =
+      "weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors";
+  const std::filesystem::path source_capture =
+      "tests/data/h3_transformer_step0_seed424242_256.vfh3f";
+  if (!std::filesystem::exists(checkpoint_path) ||
+      !std::filesystem::exists(source_capture)) return;
+  std::ifstream input(source_capture, std::ios::binary);
+  H3TransformerCaptureHeader source{};
+  CHECK(static_cast<bool>(input.read(reinterpret_cast<char*>(&source),
+                                     sizeof(source))));
+  CHECK(std::memcmp(source.magic, "VFH3FWD\0", 8) == 0 &&
+        source.text_rows == 4 && source.text_dim == 5120 &&
+        source.prompt_elements == uint64_t(source.text_rows) * source.text_dim);
+  std::vector<float> base_prompt(source.prompt_elements);
+  CHECK(static_cast<bool>(input.read(
+      reinterpret_cast<char*>(base_prompt.data()),
+      static_cast<std::streamsize>(base_prompt.size() * sizeof(float)))));
+  constexpr uint32_t text_rows = 4100;
+  std::vector<float> prompt(uint64_t(text_rows) * source.text_dim);
+  for (size_t i = 0; i < prompt.size(); ++i)
+    prompt[i] = base_prompt[i % base_prompt.size()];
+  SafeTensors checkpoint;
+  checkpoint.open(checkpoint_path.string());
+  Transformer transformer;
+  transformer.load(checkpoint);
+  transformer.set_attention_mode(AttentionMode::kExact);
+  const auto begin = std::chrono::steady_clock::now();
+  const std::vector<Transformer::DebugStage> stages =
+      transformer.debug_text_stages(prompt.data(), text_rows);
+  const double milliseconds = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - begin).count();
+  CHECK(stages.size() == 6u);
+  std::array<uint64_t, 6> hashes{};
+  for (size_t stage = 0; stage < stages.size(); ++stage) {
+    CHECK(stages[stage].rows == static_cast<int>(text_rows) &&
+          stages[stage].dim == 5376 &&
+          stages[stage].data.size() == uint64_t(text_rows) * 5376);
+    uint64_t hash = 1469598103934665603ull;
+    for (float value : stages[stage].data) {
+      const uint16_t bits = f32_to_bf16(value);
+      hash ^= bits & 0xffu; hash *= 1099511628211ull;
+      hash ^= bits >> 8; hash *= 1099511628211ull;
+    }
+    hashes[stage] = hash;
+  }
+  std::printf("  Ref2VA CUDA text L4100 %.3f ms stage FNV64:", milliseconds);
+  for (uint64_t hash : hashes)
+    std::printf(" %016llx", static_cast<unsigned long long>(hash));
+  std::printf("\n");
+  transformer.unload();
+}
+
 VIDFAB_TEST(cuda_vulkan_dit_real_main50_capture_replay) {
   using namespace vidfab;
   using namespace vidfab::dit;
@@ -6457,8 +6514,23 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         double(vk_denoiser.peak_device_bytes()) / 1048576.0);
     vk_denoiser.unload();
 
-    if (const char* ref2va_real = std::getenv("VIDFAB_REF2VA_DENOISE_REAL");
-        ref2va_real && ref2va_real[0] == '1') {
+    const char* ref2va_real = std::getenv("VIDFAB_REF2VA_DENOISE_REAL");
+    const char* ref2va_production =
+        std::getenv("VIDFAB_REF2VA_DENOISE_PRODUCTION_REAL");
+    if ((ref2va_real && ref2va_real[0] == '1') ||
+        (ref2va_production && ref2va_production[0] == '1')) {
+      const bool production_shape =
+          ref2va_production && ref2va_production[0] == '1';
+      const char* ref_graph_capture_env = production_shape
+          ? std::getenv("VIDFAB_REF2VA_GRAPH_CAPTURE") : nullptr;
+      const std::string ref_graph_capture = ref_graph_capture_env
+          ? ref_graph_capture_env : "";
+      const char* ref_graph_reuse_env =
+          std::getenv("VIDFAB_REF2VA_GRAPH_CAPTURE_REUSE");
+      const bool reuse_ref_graph = !ref_graph_capture.empty() &&
+          ref_graph_reuse_env && ref_graph_reuse_env[0] == '1';
+      if (reuse_ref_graph)
+        CHECK(std::filesystem::exists(ref_graph_capture));
       const std::filesystem::path ref_checkpoint_path =
           "weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors";
       const std::filesystem::path video_vae_path =
@@ -6480,60 +6552,101 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
           to_f32(video_vae.at("latents_std"));
       CHECK(latent_mean.size() == 24u && latent_std.size() == 24u);
       RGBImage reference;
-      reference.width = 96;
-      reference.height = 64;
+      reference.width = production_shape ? 2048 : 96;
+      reference.height = production_shape ? 2048 : 64;
       reference.pixels.resize(size_t(reference.width) * reference.height * 3u);
       for (size_t i = 0; i < reference.pixels.size(); ++i)
         reference.pixels[i] = static_cast<uint8_t>((i * 37u + 19u) % 251u);
-      vae::KeyframeEncoder cuda_keyframe(video_vae);
-      const std::vector<float> cuda_condition =
-          cuda_keyframe.encode_reference_image(
-              reference, latent_mean, latent_std);
+      std::vector<float> cuda_condition;
+      if (!reuse_ref_graph) {
+        vae::KeyframeEncoder cuda_keyframe(video_vae);
+        cuda_condition = cuda_keyframe.encode_reference_image(
+            reference, latent_mean, latent_std);
+      }
       vulkan::KeyframeEncoder vk_keyframe =
           vulkan::KeyframeEncoder::create(device);
       vk_keyframe.load(video_vae);
       const std::vector<float> vk_condition =
           vk_keyframe.encode_reference_image(
               reference, latent_mean, latent_std);
+      if (reuse_ref_graph) cuda_condition = vk_condition;
       CHECK(vk_condition == cuda_condition);
-      CHECK(cuda_condition.size() == 6u * header.video_dim);
+      const uint32_t condition_rows = production_shape ? 4096u : 6u;
+      CHECK(cuda_condition.size() ==
+            uint64_t(condition_rows) * header.video_dim);
       vk_keyframe.unload();
 
-      const std::vector<int32_t> ref_text_tags(
-          header.text_rows, kTagText);
+      const uint32_t ref_text_rows = production_shape ? 4100u : header.text_rows;
+      std::vector<float> ref_prompt(
+          uint64_t(ref_text_rows) * header.text_dim);
+      for (size_t i = 0; i < ref_prompt.size(); ++i)
+        ref_prompt[i] = prompt[i % prompt.size()];
+      std::vector<int32_t> ref_text_tags(ref_text_rows, kTagText);
+      if (production_shape)
+        std::fill(ref_text_tags.begin() + 2,
+                  ref_text_tags.begin() + 4098, kTagVideo);
       const std::vector<ReferenceGeometry> ref_geometries{
-          {ReferenceKind::kImage, 1, 4, 6, 0}};
+          {ReferenceKind::kImage, 1,
+           production_shape ? 128 : 4,
+           production_shape ? 128 : 6, 0}};
       const Ref2VAPackedSequence ref_packed =
           build_ref2va_packed_sequence(
               ref_text_tags, ref_geometries, 7, 16, 16,
               static_cast<int>(header.audio_rows / 2));
-      CHECK(ref_packed.layout.num_condition_video == 6 &&
+      CHECK(ref_packed.layout.num_condition_video ==
+                static_cast<int>(condition_rows) &&
             ref_packed.layout.num_condition_audio == 0 &&
             ref_packed.layout.num_video_rows ==
                 static_cast<int>(header.video_rows) &&
             ref_packed.layout.num_audio_rows ==
                 static_cast<int>(header.audio_rows) &&
             ref_packed.layout.total_rows() ==
-                static_cast<int>(header.sequence + 6));
+                static_cast<int>(ref_text_rows + condition_rows +
+                                 header.audio_rows + header.video_rows));
 
       SafeTensors ref_checkpoint;
       ref_checkpoint.open(ref_checkpoint_path.string());
+      double ref_cuda_load_ms = 0.0;
+      double ref_cuda_run_ms = 0.0;
+      const int ref_schedule_points = production_shape ? 2 : 4;
+      const size_t ref_expected_steps =
+          static_cast<size_t>(ref_schedule_points - 1);
+      std::vector<Boundary> ref_cuda_boundaries;
+      DenoiseOutputs ref_cuda_result;
+      if (!reuse_ref_graph) {
+      if (!ref_graph_capture.empty()) {
+#ifdef _WIN32
+        _putenv_s("VIDFAB_H3_GRAPH_CAPTURE", ref_graph_capture.c_str());
+        _putenv_s("VIDFAB_H3_GRAPH_CAPTURE_STEP", "0");
+#else
+        setenv("VIDFAB_H3_GRAPH_CAPTURE", ref_graph_capture.c_str(), 1);
+        setenv("VIDFAB_H3_GRAPH_CAPTURE_STEP", "0", 1);
+#endif
+      }
       dit::Transformer ref_cuda_model;
       const auto ref_cuda_load_begin = std::chrono::steady_clock::now();
       ref_cuda_model.load(ref_checkpoint);
+      if (!ref_graph_capture.empty()) {
+#ifdef _WIN32
+        _putenv_s("VIDFAB_H3_GRAPH_CAPTURE", "");
+        _putenv_s("VIDFAB_H3_GRAPH_CAPTURE_STEP", "");
+#else
+        unsetenv("VIDFAB_H3_GRAPH_CAPTURE");
+        unsetenv("VIDFAB_H3_GRAPH_CAPTURE_STEP");
+#endif
+      }
       ref_cuda_model.set_attention_mode(AttentionMode::kExact);
       ref_cuda_model.set_attention_band(0);
       ref_cuda_model.prepare_text(
-          prompt.data(), static_cast<int>(header.text_rows));
+          ref_prompt.data(), static_cast<int>(ref_text_rows));
       ref_cuda_model.prepare_sequence(
           ref_packed.layout, ref_packed.indices, ref_packed.position_ids);
-      const double ref_cuda_load_ms =
+      ref_cuda_load_ms =
           std::chrono::duration<double, std::milli>(
               std::chrono::steady_clock::now() - ref_cuda_load_begin).count();
       sampler::FlowScheduler ref_cuda_video(12.0f), ref_cuda_audio(3.0f);
-      ref_cuda_video.set_timesteps(4);
-      ref_cuda_audio.set_timesteps(4);
-      std::vector<Boundary> ref_cuda_boundaries;
+      ref_cuda_video.set_timesteps(ref_schedule_points);
+      ref_cuda_audio.set_timesteps(ref_schedule_points);
       DenoiseInputs ref_cuda_inputs;
       ref_cuda_inputs.layout = &ref_packed.layout;
       ref_cuda_inputs.indices = &ref_packed.indices;
@@ -6550,22 +6663,24 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
             ref_cuda_boundaries.push_back({video_rows, audio_rows});
           };
       const auto ref_cuda_run_begin = std::chrono::steady_clock::now();
-      const DenoiseOutputs ref_cuda_result =
-          denoise(ref_cuda_model, ref_cuda_inputs);
-      const double ref_cuda_run_ms =
+      ref_cuda_result = denoise(ref_cuda_model, ref_cuda_inputs);
+      ref_cuda_run_ms =
           std::chrono::duration<double, std::milli>(
               std::chrono::steady_clock::now() - ref_cuda_run_begin).count();
-      CHECK(ref_cuda_result.steps_computed == 3 &&
+      CHECK(ref_cuda_result.steps_computed ==
+                static_cast<int>(ref_expected_steps) &&
             ref_cuda_result.steps_skipped == 0 &&
-            ref_cuda_boundaries.size() == 3u);
+            ref_cuda_boundaries.size() == ref_expected_steps);
       ref_cuda_model.unload();
       VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      }
 
       ExactH3DenoiseConfig ref_vk_config;
       ref_vk_config.transformer = config;
       ref_vk_config.transformer.main.block.sequence =
           static_cast<uint32_t>(ref_packed.layout.total_rows());
       ref_vk_config.transformer.main.block.timesteps = 4;
+      ref_vk_config.transformer.text_rows = ref_text_rows;
       ref_vk_config.transformer.video_rows =
           static_cast<uint32_t>(ref_packed.indices.video.size());
       ref_vk_config.transformer.audio_rows =
@@ -6586,66 +6701,247 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       ref_vk.load(ref_checkpoint);
       std::vector<float> ref_video = cuda_condition;
       ref_video.insert(ref_video.end(), video.begin(), video.end());
-      ref_vk.prepare(prompt.data(), prompt.size(),
+      std::vector<DeviceTensor> ref_text_tap_tensors;
+      H3TransformerTextReplayTaps ref_text_taps{};
+      const H3TransformerTextReplayTaps* ref_text_taps_ptr = nullptr;
+      if (!ref_graph_capture.empty()) {
+        const uint64_t text_tap_shape[]{ref_text_rows,
+            static_cast<uint64_t>(config.main.block.hidden)};
+        const TensorLayout text_tap_layout =
+            TensorLayout::contiguous(text_tap_shape, 2);
+        ref_text_tap_tensors.reserve(6);
+        for (uint32_t stage = 0; stage < 6; ++stage)
+          ref_text_tap_tensors.push_back(
+              vk.allocate(text_tap_layout, ScalarType::kBFloat16));
+        ref_text_taps = {ref_text_tap_tensors.data(), 6};
+        ref_text_taps_ptr = &ref_text_taps;
+      }
+      ref_vk.prepare(ref_prompt.data(), ref_prompt.size(),
                      ref_video.data(), ref_video.size(),
-                     audio.data(), audio.size());
+                     audio.data(), audio.size(), ref_text_taps_ptr);
+      if (ref_text_taps_ptr) {
+        const std::array<uint64_t, 6> expected_ref_text_hashes{
+            0x969fa5eb28da8046ull, 0xb0175bdeb4cb4ba7ull,
+            0x0ccd4df69b2a2ee0ull, 0x81a6a4bbc794f16dull,
+            0xc12674b992f4bf38ull, 0xad26e13685a40043ull};
+        std::printf("    Ref2VA Vulkan text L4100 stage FNV64:");
+        for (uint32_t stage = 0; stage < 6; ++stage) {
+          std::vector<uint16_t> values(
+              uint64_t(ref_text_rows) * config.main.block.hidden);
+          vk.download_bytes(ref_text_tap_tensors[stage], values.data(),
+                            values.size() * sizeof(uint16_t));
+          uint64_t hash = 1469598103934665603ull;
+          for (uint16_t value : values) {
+            hash ^= value & 0xffu; hash *= 1099511628211ull;
+            hash ^= value >> 8; hash *= 1099511628211ull;
+          }
+          std::printf(" %016llx", static_cast<unsigned long long>(hash));
+          CHECK(hash == expected_ref_text_hashes[stage]);
+        }
+        std::printf("\n");
+        std::fflush(stdout);
+      }
       const double ref_vk_load_ms =
           std::chrono::duration<double, std::milli>(
               std::chrono::steady_clock::now() - ref_vk_load_begin).count();
       sampler::FlowScheduler ref_vk_video(12.0f), ref_vk_audio(3.0f);
-      ref_vk_video.set_timesteps(4);
-      ref_vk_audio.set_timesteps(4);
+      ref_vk_video.set_timesteps(ref_schedule_points);
+      ref_vk_audio.set_timesteps(ref_schedule_points);
       std::vector<uint64_t> ref_hashes;
       size_t ref_boundary = 0;
+      DeviceTensor ref_packed_tap;
+      DeviceTensor ref_main_tap;
+      H3TransformerForwardReplayTaps ref_forward_taps{};
+      const H3TransformerForwardReplayTaps* ref_forward_taps_ptr = nullptr;
+      if (!ref_graph_capture.empty()) {
+        const uint64_t tap_shape[]{
+            static_cast<uint64_t>(ref_packed.layout.total_rows()),
+            static_cast<uint64_t>(config.main.block.hidden)};
+        const TensorLayout tap_layout =
+            TensorLayout::contiguous(tap_shape, 2);
+        ref_packed_tap = vk.allocate(tap_layout, ScalarType::kBFloat16);
+        ref_main_tap = vk.allocate(tap_layout, ScalarType::kBFloat16);
+        ref_forward_taps.packed_input = &ref_packed_tap;
+        ref_forward_taps.main_final = &ref_main_tap;
+        ref_forward_taps_ptr = &ref_forward_taps;
+        CHECK(ref_vk.required_step_operators(ref_forward_taps_ptr) ==
+              ref_vk.required_step_operators() + 2u);
+      }
       const auto ref_vk_run_begin = std::chrono::steady_clock::now();
       const ExactH3DenoiseResult ref_vk_result = ref_vk.run(
           ref_vk_video, ref_vk_audio, {},
           [&](uint32_t step, const std::vector<float>& video_rows,
               const std::vector<float>& audio_rows) {
-            CHECK(step == ref_boundary &&
-                  ref_boundary < ref_cuda_boundaries.size());
-            if (ref_boundary < ref_cuda_boundaries.size()) {
+            CHECK(step == ref_boundary);
+            if (!reuse_ref_graph)
+              CHECK(ref_boundary < ref_cuda_boundaries.size());
+            if (!reuse_ref_graph &&
+                ref_boundary < ref_cuda_boundaries.size()) {
+              if (production_shape) {
+                const Boundary& cuda_boundary =
+                    ref_cuda_boundaries[ref_boundary];
+                auto report_first_difference = [](const char* name,
+                                                  const std::vector<float>& a,
+                                                  const std::vector<float>& b,
+                                                  size_t row_width) {
+                  auto bits = [](float value) {
+                    uint32_t result = 0;
+                    std::memcpy(&result, &value, sizeof(result));
+                    return result;
+                  };
+                  const size_t common = std::min(a.size(), b.size());
+                  size_t index = 0;
+                  while (index < common && bits(a[index]) == bits(b[index]))
+                    ++index;
+                  if (index != common || a.size() != b.size()) {
+                    std::printf(
+                        "    Ref2VA %s first difference element %zu row %zu "
+                        "column %zu CUDA %.9g (0x%08x) Vulkan %.9g (0x%08x); "
+                        "sizes %zu/%zu\n",
+                        name, index, index / row_width, index % row_width,
+                        index < a.size() ? a[index] : 0.0f,
+                        index < a.size() ? bits(a[index]) : 0,
+                        index < b.size() ? b[index] : 0.0f,
+                        index < b.size() ? bits(b[index]) : 0,
+                        a.size(), b.size());
+                  }
+                };
+                std::printf(
+                    "    Ref2VA boundary %zu CUDA/Vulkan FNV64 "
+                    "%016llx/%016llx\n",
+                    ref_boundary,
+                    static_cast<unsigned long long>(joined_hash(
+                        cuda_boundary.video, cuda_boundary.audio)),
+                    static_cast<unsigned long long>(joined_hash(video_rows,
+                                                                audio_rows)));
+                report_first_difference("video", cuda_boundary.video,
+                                        video_rows, 96);
+                report_first_difference("audio", cuda_boundary.audio,
+                                        audio_rows, 32);
+              }
               CHECK(video_rows == ref_cuda_boundaries[ref_boundary].video);
               CHECK(audio_rows == ref_cuda_boundaries[ref_boundary].audio);
             }
             ref_hashes.push_back(joined_hash(video_rows, audio_rows));
             ++ref_boundary;
-          });
+          }, ref_forward_taps_ptr);
       const double ref_vk_run_ms =
           std::chrono::duration<double, std::milli>(
               std::chrono::steady_clock::now() - ref_vk_run_begin).count();
-      CHECK(ref_boundary == 3u && ref_hashes.size() == 3u &&
-            ref_vk_result.video_rows == ref_cuda_result.video_rows &&
-            ref_vk_result.audio_rows == ref_cuda_result.audio_rows);
+      CHECK(ref_boundary == ref_expected_steps &&
+            ref_hashes.size() == ref_expected_steps);
+      if (!reuse_ref_graph)
+        CHECK(ref_vk_result.video_rows == ref_cuda_result.video_rows &&
+              ref_vk_result.audio_rows == ref_cuda_result.audio_rows);
+      if (ref_forward_taps_ptr) {
+        H3MainGraphCaptureHeader captured{};
+        std::ifstream capture_stream(ref_graph_capture, std::ios::binary);
+        CHECK(static_cast<bool>(capture_stream.read(
+            reinterpret_cast<char*>(&captured), sizeof(captured))));
+        CHECK(std::memcmp(captured.magic, "VFH3GRF\0", 8) == 0 &&
+              captured.version == 1 &&
+              captured.sequence == static_cast<uint32_t>(
+                  ref_packed.layout.total_rows()) &&
+              captured.residual_elements ==
+                  uint64_t(ref_packed.layout.total_rows()) *
+                      config.main.block.hidden);
+        std::vector<uint16_t> native_packed(captured.residual_elements);
+        std::vector<uint16_t> native_main(captured.residual_elements);
+        vk.download_bytes(ref_packed_tap, native_packed.data(),
+                          native_packed.size() * sizeof(uint16_t));
+        vk.download_bytes(ref_main_tap, native_main.data(),
+                          native_main.size() * sizeof(uint16_t));
+        auto bf16_hash = [](const std::vector<uint16_t>& values) {
+          uint64_t hash = 1469598103934665603ull;
+          for (uint16_t value : values) {
+            hash ^= value & 0xffu; hash *= 1099511628211ull;
+            hash ^= value >> 8; hash *= 1099511628211ull;
+          }
+          return hash;
+        };
+        const uint64_t packed_hash = bf16_hash(native_packed);
+        const uint64_t main_hash = bf16_hash(native_main);
+        std::printf("    Ref2VA native packed/main CUDA/Vulkan FNV64 "
+                    "%016llx/%016llx %016llx/%016llx\n",
+                    static_cast<unsigned long long>(captured.input_fnv64),
+                    static_cast<unsigned long long>(packed_hash),
+                    static_cast<unsigned long long>(captured.final_fnv64),
+                    static_cast<unsigned long long>(main_hash));
+        if (packed_hash != captured.input_fnv64) {
+          std::vector<uint16_t> cuda_packed(captured.residual_elements);
+          CHECK(static_cast<bool>(capture_stream.read(
+              reinterpret_cast<char*>(cuda_packed.data()),
+              static_cast<std::streamsize>(cuda_packed.size() *
+                                           sizeof(uint16_t)))));
+          size_t element = 0;
+          while (element < cuda_packed.size() &&
+                 cuda_packed[element] == native_packed[element])
+            ++element;
+          const uint32_t row = static_cast<uint32_t>(
+              element / config.main.block.hidden);
+          const uint32_t column = static_cast<uint32_t>(
+              element % config.main.block.hidden);
+          const char* category = "uncovered";
+          int32_t tag = -1;
+          for (size_t i = 0; i < ref_packed.indices.text.size(); ++i)
+            if (ref_packed.indices.text[i] == static_cast<int32_t>(row)) {
+              category = "text";
+              tag = ref_text_tags[i];
+              break;
+            }
+          if (tag == -1 && std::find(ref_packed.indices.audio.begin(),
+                                     ref_packed.indices.audio.end(),
+                                     static_cast<int32_t>(row)) !=
+                               ref_packed.indices.audio.end())
+            category = "audio";
+          if (tag == -1 && std::find(ref_packed.indices.video.begin(),
+                                     ref_packed.indices.video.end(),
+                                     static_cast<int32_t>(row)) !=
+                               ref_packed.indices.video.end())
+            category = "video";
+          std::printf("    Ref2VA packed first difference row %u column %u "
+                      "category %s tag %d CUDA/Vulkan 0x%04x/0x%04x\n",
+                      row, column, category, tag,
+                      element < cuda_packed.size() ? cuda_packed[element] : 0,
+                      element < native_packed.size() ? native_packed[element]
+                                                     : 0);
+        }
+        CHECK(packed_hash == captured.input_fnv64);
+        CHECK(main_hash == captured.final_fnv64);
+      }
       const std::array<uint64_t, 3> expected_ref_hashes{
           0x74f3fe411d378300ull, 0x2703fe32812c4f7dull,
           0xdd3cc78b26122404ull};
-      CHECK(std::equal(ref_hashes.begin(), ref_hashes.end(),
-                       expected_ref_hashes.begin()));
+      if (!production_shape)
+        CHECK(std::equal(ref_hashes.begin(), ref_hashes.end(),
+                         expected_ref_hashes.begin()));
       const uint64_t ref_used = vk.pooled_used_bytes();
       const uint64_t ref_reserved = vk.reserved_bytes();
       const uint64_t ref_descriptors = vk.descriptor_set_allocations();
-      ref_vk.prepare(prompt.data(), prompt.size(),
-                     ref_video.data(), ref_video.size(),
-                     audio.data(), audio.size());
-      const ExactH3DenoiseResult ref_repeat =
-          ref_vk.run(ref_vk_video, ref_vk_audio);
-      CHECK(ref_repeat.video_rows == ref_vk_result.video_rows &&
-            ref_repeat.audio_rows == ref_vk_result.audio_rows);
-      CHECK(vk.pooled_used_bytes() == ref_used &&
-            vk.reserved_bytes() == ref_reserved &&
-            vk.descriptor_set_allocations() == ref_descriptors);
+      if (!production_shape) {
+        ref_vk.prepare(ref_prompt.data(), ref_prompt.size(),
+                       ref_video.data(), ref_video.size(),
+                       audio.data(), audio.size());
+        const ExactH3DenoiseResult ref_repeat =
+            ref_vk.run(ref_vk_video, ref_vk_audio);
+        CHECK(ref_repeat.video_rows == ref_vk_result.video_rows &&
+              ref_repeat.audio_rows == ref_vk_result.audio_rows);
+        CHECK(vk.pooled_used_bytes() == ref_used &&
+              vk.reserved_bytes() == ref_reserved &&
+              vk.descriptor_set_allocations() == ref_descriptors);
+      }
       std::printf(
-          "  real Ref2VA exact S%u x3: CUDA load/run %.3f/%.3f ms, Vulkan %.3f/%.3f ms, boundaries %016llx/%016llx/%016llx, persistent/scratch/peak %.2f/%.2f/%.2f MiB, desc %llu\n",
+          "  real Ref2VA exact S%u x%zu: CUDA load/run %.3f/%.3f ms, Vulkan %.3f/%.3f ms, first %016llx, persistent/scratch/peak %.2f/%.2f/%.2f MiB, desc %llu; text/condition/target-a/target-v %u/%u/%u/%u\n",
           ref_vk_config.transformer.main.block.sequence,
+          ref_expected_steps,
           ref_cuda_load_ms, ref_cuda_run_ms, ref_vk_load_ms, ref_vk_run_ms,
           static_cast<unsigned long long>(ref_hashes[0]),
-          static_cast<unsigned long long>(ref_hashes[1]),
-          static_cast<unsigned long long>(ref_hashes[2]),
           double(ref_vk.persistent_bytes()) / 1048576.0,
           double(ref_vk.scratch_bytes()) / 1048576.0,
           double(ref_vk.peak_device_bytes()) / 1048576.0,
-          static_cast<unsigned long long>(ref_descriptors));
+          static_cast<unsigned long long>(ref_descriptors),
+          ref_text_rows, condition_rows, header.audio_rows,
+          header.video_rows);
       ref_vk.unload();
       CHECK(!ref_vk.loaded() && !ref_vk.prepared() &&
             ref_vk.persistent_bytes() == 0u &&
@@ -6657,9 +6953,14 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
 
   const char* captured_vertical = std::getenv("VIDFAB_DIT_VERTICAL_REAL");
   const char* qwen_vertical = std::getenv("VIDFAB_QWEN_VERTICAL_REAL");
+  const char* ref2va_vertical = std::getenv("VIDFAB_REF2VA_VERTICAL_REAL");
   if ((captured_vertical && captured_vertical[0] == '1') ||
-      (qwen_vertical && qwen_vertical[0] == '1')) {
-    const bool normal_prompt = qwen_vertical && qwen_vertical[0] == '1';
+      (qwen_vertical && qwen_vertical[0] == '1') ||
+      (ref2va_vertical && ref2va_vertical[0] == '1')) {
+    const bool reference_prompt =
+        ref2va_vertical && ref2va_vertical[0] == '1';
+    const bool normal_prompt = reference_prompt ||
+        (qwen_vertical && qwen_vertical[0] == '1');
     const std::filesystem::path video_vae_path =
         "weights/vae/minimax_h3_video_vae_fp16.safetensors";
     const std::filesystem::path audio_vae_path =
@@ -6677,6 +6978,8 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         temp / ("vidfab-g7d-cuda-" + unique + ".raw");
     const std::filesystem::path vulkan_out =
         temp / ("vidfab-g7d-vulkan-" + unique + ".raw");
+    const std::filesystem::path reference_path =
+        temp / ("vidfab-g9-reference-" + unique + ".ppm");
     write_safetensors(prompt_path.string(),
                       {{"prompt_embedding",
                         {static_cast<int64_t>(header.text_rows),
@@ -6700,17 +7003,27 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
           "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
       request.tokenizer_path = "ref/text_encoder/tokenizer.json";
     }
-    request.transformer_path = checkpoint_path.string();
+    request.transformer_path = reference_prompt
+        ? "weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors"
+        : checkpoint_path.string();
     request.video_vae_path = video_vae_path.string();
     request.audio_vae_path = audio_vae_path.string();
     request.raw_output = true;
+    if (reference_prompt) {
+      std::ofstream ppm(reference_path, std::ios::binary);
+      const std::array<uint8_t, 3> pixel{0x31, 0x97, 0xe3};
+      ppm << "P6\n1 1\n255\n";
+      ppm.write(reinterpret_cast<const char*>(pixel.data()), pixel.size());
+      CHECK(static_cast<bool>(ppm));
+      request.reference_image_paths.push_back(reference_path.string());
+    }
     const GeneratePlan vertical_plan = resolve_plan(request);
     CHECK(vertical_plan.layout.num_video_rows ==
               static_cast<int>(header.video_rows) &&
           vertical_plan.layout.num_audio_rows ==
               static_cast<int>(header.audio_rows) &&
           vertical_plan.num_model_evaluations() == 3);
-    if (normal_prompt) {
+    if (normal_prompt && !reference_prompt) {
       // A conditioner cache hit is allowed only within one explicit execution
       // authority. Cancel at the next stage so this exercises the public
       // run_generate cache without loading the transformer or either VAE.
@@ -6845,7 +7158,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       CHECK(pcm_hash == 0x671f1519e5d0cea1ull);
       CHECK(y4m_hash == 0xbb480c4fd04ac34aull);
       CHECK(wav_hash == 0xa447eb6d02620637ull);
-    } else {
+    } else if (!reference_prompt) {
       CHECK(pixel_hash == 0x52f6148fa46959f8ull);
       CHECK(pcm_hash == 0xb2e09a49fc952e5eull);
       CHECK(y4m_hash == 0x2f595da467a8ac60ull);
@@ -6853,15 +7166,17 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
     }
     std::printf(
         "  real exact %s vertical S%u x3: CUDA/Vulkan %.3f/%.3f ms, pixels/pcm/y4m/wav %016llx/%016llx/%016llx/%016llx\n",
-        normal_prompt ? "normal-prompt" : "captured-prompt",
-        header.sequence, cuda_vertical.second, vulkan_vertical.second,
+        reference_prompt ? "reference-prompt" :
+            (normal_prompt ? "normal-prompt" : "captured-prompt"),
+        vertical_plan.layout.total_rows(), cuda_vertical.second,
+        vulkan_vertical.second,
         static_cast<unsigned long long>(pixel_hash),
         static_cast<unsigned long long>(pcm_hash),
         static_cast<unsigned long long>(y4m_hash),
         static_cast<unsigned long long>(wav_hash));
     std::error_code ignored;
     for (const std::filesystem::path& path : {
-             prompt_path, init_path,
+             prompt_path, init_path, reference_path,
              std::filesystem::path(cuda_vertical.first.outputs[0]),
              std::filesystem::path(cuda_vertical.first.outputs[1]),
              std::filesystem::path(vulkan_vertical.first.outputs[0]),
