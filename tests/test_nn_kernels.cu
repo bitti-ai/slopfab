@@ -2032,7 +2032,7 @@ __global__ void nvfp4_mma_kernel(const uint32_t* a, const uint32_t* b, const uin
   const uint32_t s_a = sa[lane];
   const uint32_t s_b = 0x38383838u;  // four e4m3 1.0 scales
   float c[4] = {0, 0, 0, 0};
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
   asm volatile(
       "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
       ".f32.e2m1.e2m1.f32.ue4m3 "
@@ -3752,7 +3752,7 @@ __global__ void nvfp4_mma_bscale_kernel(const uint32_t* a, const uint32_t* b, co
   const uint32_t s_a = sa[lane];
   const uint32_t s_b = sb[lane];
   float c[4] = {0, 0, 0, 0};
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
   asm volatile(
       "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
       ".f32.e2m1.e2m1.f32.ue4m3 "

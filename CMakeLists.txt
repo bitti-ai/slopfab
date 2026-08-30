@@ -118,8 +118,8 @@ if(VIDFAB_ENABLE_CUDA)
   check_language(CUDA)
   if(CMAKE_CUDA_COMPILER)
     # Must be set before enable_language(CUDA), which otherwise picks a
-    # conservative default. 90 = Hopper, 120 = Blackwell (RTX 50 series), which
-    # is the primary target and the only one of the two with native fp4.
+    # conservative default. 86 = Ampere (RTX 30 series), while 120 = Blackwell
+    # (RTX 50 series) and is the only supported family with native fp4.
     #
     # **120a, not 120.** The trailing `a` selects the architecture-specific
     # target, and it is required rather than preferred: the block-scaled fp4
@@ -135,9 +135,9 @@ if(VIDFAB_ENABLE_CUDA)
     # blocks and UE8M0 scales.
     #
     # The cost is that an `a` target emits no forward-compatible PTX, so the
-    # binary runs on sm_120 hardware and nothing later. That is the right trade
-    # here -- this project targets one RTX 5090 -- but it is a real constraint,
-    # not a free upgrade.
+    # image runs on sm_120 hardware and nothing later. The separate sm_86 image
+    # serves RTX 30-series cards; later architectures need their own image and
+    # runtime dispatch entry rather than inheriting Blackwell's native-fp4 path.
     if(NOT CMAKE_CUDA_ARCHITECTURES)
       # One toolkit-specific executable serves both supported GPU families.
       # Runtime dispatch keeps Ampere on SM86 kernels and Blackwell on the
@@ -199,8 +199,9 @@ if(VIDFAB_ENABLE_CUDA)
     # -rdc=true would otherwise require an explicit device-link step.
     set_target_properties(vidfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
 
-    # The CUDA runtime is linked statically, which is deliberate: it keeps the
-    # binary's runtime dependencies to the driver alone. The cost is a
+    # The CUDA runtime is linked statically, which is deliberate: it avoids an
+    # additional cudart DLL dependency. cuBLAS remains a dynamic dependency
+    # supplied by the selected installed toolkit. The cost is a
     # cosmetic `LNK4098: defaultlib 'LIBCMT' conflicts` on MSVC, because
     # cudart_static.lib is built against the static CRT while this project uses
     # the dynamic one. The linker resolves it correctly and NVIDIA's own

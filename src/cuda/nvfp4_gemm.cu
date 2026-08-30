@@ -220,7 +220,7 @@ static_assert(kRowWords % 4 == 0 && (kRowWords / 4) % 2 == 1,
 
 __device__ inline void mma_nvfp4(float (&d)[4], const uint32_t (&a)[4], const uint32_t (&b)[2],
                                  uint32_t sa, uint32_t sb) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
   asm volatile(
       "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
       ".f32.e2m1.e2m1.f32.ue4m3 "

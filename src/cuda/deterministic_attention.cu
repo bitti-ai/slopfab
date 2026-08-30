@@ -213,7 +213,7 @@ __global__ __launch_bounds__(1024, 1) void h3_attention_coop64_kernel(
     const int32_t* __restrict__ ranges, uint32_t sequence, uint32_t heads,
     uint32_t head_dim, float scale, uint32_t query_row_offset,
     uint32_t output_row_offset, uint32_t rows) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
   extern __shared__ __align__(16) unsigned char shared_arena[];
   unsigned char* shared_cursor = shared_arena;
   auto* query_stage = reinterpret_cast<__nv_bfloat16*>(shared_cursor);
