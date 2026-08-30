@@ -90,10 +90,15 @@ std::vector<std::wstring> toolkit_roots(int major) {
 std::wstring find_toolkit_bin(int major) {
   const std::wstring suffix = std::to_wstring(major) + L".dll";
   for (const std::wstring& root : toolkit_roots(major)) {
-    const std::wstring bin = root + L"\\bin";
-    if (file_exists(bin + L"\\cublas64_" + suffix) &&
-        file_exists(bin + L"\\cublasLt64_" + suffix))
-      return bin;
+    // CUDA 13's Windows installer places runtime DLLs in bin\x64, whereas
+    // CUDA 12 uses bin. Accept both layouts for either major so the launcher
+    // remains compatible if NVIDIA changes a point release's layout.
+    const std::wstring bins[] = {root + L"\\bin\\x64", root + L"\\bin"};
+    for (const std::wstring& bin : bins) {
+      if (file_exists(bin + L"\\cublas64_" + suffix) &&
+          file_exists(bin + L"\\cublasLt64_" + suffix))
+        return bin;
+    }
   }
   return {};
 }
