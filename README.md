@@ -1032,9 +1032,9 @@ with FP32 accumulation because Ampere has no FP8 tensor cores. Blackwell
 retains the existing per-channel FP8 E4M3 V kernel. Workspace sizing follows
 the selected device, so Blackwell's allocation and launch path are unchanged;
 Ampere uses twice the packed-V storage and no V-scale preparation. Head
-dimensions 64 and 128 are supported on compute capability 8.0 or newer. Frame
-banding is accepted by `flash2` and `exact`; Sage2 is rejected rather than
-silently falling back.
+dimensions 64 and 128 are supported on SM80-SM88 and SM120; SM89 remains an
+explicit future dispatch case. Frame banding is accepted by `flash2` and
+`exact`; Sage2 is rejected rather than silently falling back.
 The vendored primitives retain Apache-2.0 notices under
 `third_party/sageattention`.
 
