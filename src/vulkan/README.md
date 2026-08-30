@@ -1004,8 +1004,11 @@ The actual video-VAE archive is
 `minimax_h3_video_vae_fp16.safetensors`, SHA-256
 `7C1F131492E7EDDACAAC9069A61B81BDD39DE5CC96561E677C5EAB1CDCE5E522`.
 Real 64x96 and public 2048x2048 CUDA/Vulkan graph outputs match every fp32 byte;
-the small fixture pins FNV64 `cfd864f091297976`. The public square graph owns
-three 2 GiB activation arenas plus 48 MiB input and 3 MiB moments. The same
+the fixtures pin FNV64 `cfd864f091297976` and `0afec53595c5874d` respectively.
+The 2048 CUDA/Vulkan graph measured 6.544/6.683 s with
+6,195.0/6,545.0/6,555.8 MiB logical activation/pool-used/reserved. The public
+square graph owns three 2 GiB activation arenas plus 48 MiB input and 3 MiB
+moments. The same
 flat contract admits the resolver's 2048x8192 maximum aspect without a
 shape-keyed cache, though that worst aspect requires three 8 GiB arenas and is
 therefore subject to normal device-memory availability.

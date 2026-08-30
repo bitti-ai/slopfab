@@ -303,7 +303,9 @@ The Ref2VA authority uses
 `8EEA02F43902E69904990C4405968D01A13C6656AA392D37AB80331E79B5DF2F`)
 and the video-VAE checkpoint above. At the public square reference shape the
 keyframe encoder processes fp32 CHW 2048x2048 in three reusable flat arenas;
-CUDA and Vulkan moments are byte-identical. The actual conditioned transformer
+CUDA and Vulkan moments are byte-identical at FNV64 `0AFEC53595C5874D` and
+measured 6.544/6.683 s. Logical activation/pool-used/reserved was
+6,195.0/6,545.0/6,555.8 MiB. The actual conditioned transformer
 case has 4,100 text rows, 4,096 fixed video rows, 74 generated audio rows and
 448 generated video rows (S8718). Its six refiner boundaries, packed input,
 all 50 main boundaries, final main residual and generated target rows match
@@ -317,6 +319,12 @@ VAEs for three evaluations. CUDA/Vulkan total times were 144.523/272.172 s.
 Final FNV64 pins are `821EA69C8412D682` for fp32 PixelBuffer,
 `B92888172863F265` for fp32 PCM, `6B6A71322A7033CF` for Y4M, and
 `CE580A62A54051D2` for WAV; both backends match byte for byte.
+
+A CUDA-disabled/Vulkan-enabled Release build links the keyframe, multimodal
+conditioner, transformer and decoder stages without CUDA and passes its unit
+and Vulkan suites. The current top-level `run_generate` translation unit is
+still owned by the CUDA target, so the CUDA-off CLI does not expose generation;
+this is a build-layout limitation, not a Vulkan-stage fallback.
 
 The opt-in `cuda_vulkan_exact_generate_vertical_slice` test writes one
 deterministic fp32 init-latent archive, then invokes real `run_generate` at the

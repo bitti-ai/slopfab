@@ -11059,6 +11059,7 @@ VIDFAB_TEST(cuda_vulkan_keyframe_encoder_real_graph) {
       max_hash ^= max_bytes[i];
       max_hash *= 1099511628211ull;
     }
+    CHECK(max_hash == 0x0afec53595c5874dull);
     std::printf(
         "  keyframe public 2048x2048 CUDA/Vulkan %.3f/%.3fs fnv=%016llx activation/used/reserved %.1f/%.1f/%.1fMiB\n",
         max_cuda_seconds, max_vk_seconds,
