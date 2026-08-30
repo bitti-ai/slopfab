@@ -2461,6 +2461,8 @@ VIDFAB_TEST(attention_sol_zero_error_weight_ignores_infinite_residual) {
 
 VIDFAB_TEST(attention_sage2_architecture_dispatch) {
   using Variant = vidfab::cuda::Sage2KernelVariant;
+  CHECK(vidfab::cuda::sage2_ampere_dynamic_smem_bytes(64) == 20 * 1024);
+  CHECK(vidfab::cuda::sage2_ampere_dynamic_smem_bytes(128) == 40 * 1024);
   CHECK(vidfab::cuda::sage2_variant_for_compute_capability(79) == Variant::kUnsupported);
   CHECK(vidfab::cuda::sage2_variant_for_compute_capability(80) == Variant::kUnsupported);
   CHECK(vidfab::cuda::sage2_variant_for_compute_capability(85) == Variant::kUnsupported);

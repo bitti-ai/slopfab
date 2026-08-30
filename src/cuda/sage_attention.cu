@@ -232,8 +232,12 @@ void launch_ampere(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* out
       CTA_Q, CTA_K, WARP_Q, WARP_K, D, DataType::kInt8,
       QuantGranularity::kPerWarp, QuantGranularity::kPerWarp, float, false,
       KernelOut, ComputeUnit::kTensorCore, MaskMode::kNone, false, false>;
-  const size_t smem = std::max<size_t>((CTA_Q + CTA_K) * D,
-                                      CTA_K * D * sizeof(__half));
+  // Upstream lays out Q, K and V consecutively in the same live arena:
+  //   Q int8 [CTA_Q,D] + K int8 [CTA_K,D] + V fp16 [CTA_K,D].
+  // Only the final fp16 output tile aliases that storage. Taking the maximum
+  // of the individual segments underallocates the arena (24 KiB instead of
+  // 40 KiB at D=128) and lets V's cp.async writes escape shared memory.
+  constexpr size_t smem = sage2_ampere_dynamic_smem_bytes(D);
   VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                          static_cast<int>(smem)));
   dim3 grid(ceil_div(c.seq_len, CTA_Q), c.num_heads, 1);
