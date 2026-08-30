@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "vidfab/cuda_launcher.h"
+
 namespace {
 
 bool file_exists(const std::wstring& path) {
@@ -103,25 +105,6 @@ std::wstring find_toolkit_bin(int major) {
   return {};
 }
 
-std::wstring quote(std::wstring value) {
-  if (value.find_first_of(L" \t\"") == std::wstring::npos) return value;
-  std::wstring result = L"\"";
-  size_t slashes = 0;
-  for (wchar_t ch : value) {
-    if (ch == L'\\') {
-      ++slashes;
-    } else {
-      if (ch == L'\"') result.append(slashes * 2 + 1, L'\\');
-      else result.append(slashes, L'\\');
-      slashes = 0;
-      result += ch;
-    }
-  }
-  result.append(slashes * 2, L'\\');
-  result += L'\"';
-  return result;
-}
-
 int fail(const std::wstring& message) {
   std::wcerr << L"vidfab: " << message << L'\n';
   return 1;
@@ -144,49 +127,44 @@ int wmain(int argc, wchar_t** argv) {
       forwarded.push_back(argument);
     }
   }
-  if (requested.empty()) requested = environment(L"VIDFAB_CUDA_VERSION");
-  if (requested.empty()) requested = L"auto";
+  requested = vidfab::cuda_version_request(
+      requested, environment(L"VIDFAB_CUDA_VERSION"));
   if (requested != L"auto" && requested != L"13" && requested != L"12")
     return fail(L"--cuda-version requires auto, 13, or 12");
 
   const std::wstring directory = executable_directory();
   if (directory.empty()) return fail(L"cannot determine launcher directory");
   const int order[] = {13, 12};
-  int selected = 0;
-  std::wstring backend;
-  std::wstring toolkit_bin;
+  std::vector<vidfab::CudaLaunchCandidate> candidates;
   for (int major : order) {
-    if (requested != L"auto" && requested != std::to_wstring(major)) continue;
     const std::wstring candidate = directory + L"\\vidfab-cuda" +
                                    std::to_wstring(major) + L".exe";
-    if (!file_exists(candidate)) continue;
-    std::wstring bin = find_toolkit_bin(major);
-    if (bin.empty()) continue;
-    selected = major;
-    backend = candidate;
-    toolkit_bin = std::move(bin);
-    break;
+    candidates.push_back({major, file_exists(candidate) ? candidate : L"",
+                          find_toolkit_bin(major)});
   }
-  if (selected == 0) {
+  const vidfab::CudaLaunchCandidate* selected =
+      vidfab::select_cuda_launch(requested, candidates);
+  if (selected == nullptr) {
     return fail(L"no matching CUDA backend/toolkit found (looked for CUDA 13, then CUDA 12; "
                 L"install the toolkit with cuBLAS or select --cuda-version=12|13)");
   }
 
   const std::wstring old_path = environment(L"PATH");
-  const std::wstring child_path = toolkit_bin + (old_path.empty() ? L"" : L";" + old_path);
+  const std::wstring child_path = selected->toolkit_bin +
+      (old_path.empty() ? L"" : L";" + old_path);
   if (!SetEnvironmentVariableW(L"PATH", child_path.c_str()))
     return fail(L"cannot prepare CUDA toolkit PATH");
 
-  std::wstring command = quote(backend);
-  for (const std::wstring& argument : forwarded) command += L" " + quote(argument);
+  std::wstring command = vidfab::cuda_launch_command(selected->backend, forwarded);
   std::vector<wchar_t> mutable_command(command.begin(), command.end());
   mutable_command.push_back(L'\0');
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION process{};
-  if (!CreateProcessW(backend.c_str(), mutable_command.data(), nullptr, nullptr, TRUE, 0,
+  if (!CreateProcessW(selected->backend.c_str(), mutable_command.data(), nullptr, nullptr,
+                      FALSE, 0,
                       nullptr, nullptr, &startup, &process)) {
-    return fail(L"cannot start CUDA " + std::to_wstring(selected) +
+    return fail(L"cannot start CUDA " + std::to_wstring(selected->major) +
                 L" backend (Windows error " + std::to_wstring(GetLastError()) + L")");
   }
   CloseHandle(process.hThread);
