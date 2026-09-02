@@ -89,10 +89,17 @@ __global__ void quantize_activation_kernel(
     if (tid < stride) temporary[tid] = fmaxf(temporary[tid], temporary[tid + stride]);
     __syncthreads();
   }
-  const float scale = fmaxf(temporary[0] * (1.0f / 127.0f), 1.0e-30f);
+  const float scale =
+      fmaxf(fminf(temporary[0], 65504.0f) * (1.0f / 127.0f), 1.0e-30f);
   if (tid == 0) row_scale[source_row] = scale;
+  // Comfy's FP16 path rounds the rotated value, scale, and quotient through
+  // the activation dtype before the final nearest-even INT8 conversion.
+  const float rounded_scale = __half2float(__float2half_rn(scale));
   for (int col = tid; col < in_features; col += blockDim.x) {
-    const int q = max(-128, min(127, __float2int_rn(row[col] / scale)));
+    const float rounded_value = __half2float(__float2half_rn(row[col]));
+    const float divided = __half2float(
+        __float2half_rn(rounded_value / rounded_scale));
+    const int q = max(-128, min(127, __float2int_rn(divided)));
     output[offset + col] = static_cast<int8_t>(q);
   }
 }
