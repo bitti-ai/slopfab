@@ -2,9 +2,7 @@
 
 #include <cuda_fp8.h>
 
-#include <algorithm>
 #include <stdexcept>
-#include <string>
 
 #include "vidfab/cuda/device.h"
 
@@ -146,12 +144,6 @@ void launch_quantize_w4a8_activation(const __half* input, int8_t* output,
     throw std::invalid_argument("W4A8 activation requires K divisible by 256");
   const size_t shared =
       (static_cast<size_t>(in_features) + kConvRotGroup) * sizeof(float);
-  cudaError_t status = cudaFuncSetAttribute(
-      quantize_activation_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
-      static_cast<int>(shared));
-  if (status != cudaSuccess)
-    throw std::runtime_error(std::string("W4A8 activation shared memory: ") +
-                             cudaGetErrorString(status));
   quantize_activation_kernel<<<static_cast<unsigned>(rows), kThreads, shared,
                                stream>>>(input, output, row_scale, in_features);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
