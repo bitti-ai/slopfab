@@ -175,10 +175,10 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_proj;     // [S, dim] or [S, patch_dim]
   DeviceBuffer<float> d_ffn;      // [S, 2*ffn_inner]
   DeviceBuffer<__half> d_gemm_in; // narrowed input for tensor-core linears
-  DeviceBuffer<__half> d_weight;  // active NF4 matrix expansion
+  DeviceBuffer<uint8_t> d_weight;  // active NF4/W4A8 matrix expansion
   DeviceBuffer<int8_t> d_w4a8_activation;
   DeviceBuffer<float> d_w4a8_activation_scale;
-  size_t cap_weight = 0;
+  size_t cap_weight_bytes = 0;
   DeviceBuffer<float> d_cos, d_sin;  // [S, rope_dim]
   DeviceBuffer<float> d_latent;     // [in_channels, T*H*W]
   DeviceBuffer<float> d_patch;      // [N, in_channels] packed tokens
@@ -281,7 +281,8 @@ struct ViTDecoder::Impl {
       if (cfg.transformer_mode == ViTTransformerMode::kExact)
         throw std::runtime_error("W4A8 video VAE does not support exact attention mode");
       const int8_t* B = weight.materialize_w4a8(
-          reinterpret_cast<int8_t*>(d_weight.get()), cap_weight, stream.get());
+          reinterpret_cast<int8_t*>(d_weight.get()), cap_weight_bytes,
+          stream.get());
       cuda::launch_quantize_w4a8_activation(
           A, d_w4a8_activation.get(), d_w4a8_activation_scale.get(), M, K,
           stream.get());
@@ -296,7 +297,9 @@ struct ViTDecoder::Impl {
           weight.w4a8_channel_scale(), M, N, stream.get());
       return;
     }
-    const __half* B = weight.materialize(d_weight.get(), cap_weight, stream.get());
+    const __half* B = weight.materialize(
+        reinterpret_cast<__half*>(d_weight.get()), cap_weight_bytes / 2,
+        stream.get());
     if (cfg.transformer_mode == ViTTransformerMode::kExact) {
       cuda::launch_deterministic_scalar_gemm_nt(
           A, B, nullptr, C, static_cast<uint32_t>(M),
@@ -587,8 +590,14 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
     }
   }
 
-  size_t max_weight = std::max({d.x_embed_w.elements(), d.proj_out_w.elements(),
-                                d.post_quant_w.elements()});
+  auto workspace_bytes = [](const cuda::F16Weight& weight) {
+    if (weight.packed_w4a8()) return weight.elements();
+    if (weight.packed_nf4()) return weight.elements() * sizeof(__half);
+    return size_t{0};
+  };
+  size_t max_weight_bytes = std::max(
+      {workspace_bytes(d.x_embed_w), workspace_bytes(d.proj_out_w),
+       workspace_bytes(d.post_quant_w)});
   size_t total = d.x_embed_w.stored_bytes() + d.x_embed_b.nbytes() + d.register_tokens.nbytes() +
                  d.norm_out_w.nbytes() + d.norm_out_b.nbytes() + d.proj_out_w.stored_bytes() +
                  d.proj_out_b.nbytes() + d.post_quant_w.stored_bytes() + d.post_quant_b.nbytes();
@@ -596,12 +605,14 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
     total += b.norm1.nbytes() + b.norm2.nbytes() + b.scale1.nbytes() + b.scale2.nbytes() +
              b.qkv_w.stored_bytes() + b.qkv_b.nbytes() + b.out_w.stored_bytes() + b.out_b.nbytes() +
              b.w1.stored_bytes() + b.w1_b.nbytes() + b.w2.stored_bytes() + b.w2_b.nbytes();
-    max_weight = std::max({max_weight, b.qkv_w.elements(), b.out_w.elements(), b.w1.elements(),
-                           b.w2.elements()});
+    max_weight_bytes = std::max(
+        {max_weight_bytes, workspace_bytes(b.qkv_w),
+         workspace_bytes(b.out_w), workspace_bytes(b.w1),
+         workspace_bytes(b.w2)});
   }
   if (d.exact_blocks) total += d.exact_blocks->persistent_bytes();
-  d.cap_weight = max_weight;
-  d.d_weight.allocate(max_weight);
+  d.cap_weight_bytes = max_weight_bytes;
+  d.d_weight.allocate(max_weight_bytes);
   d.weight_bytes = total;
   d.stream.synchronize();
   d.loaded = true;
