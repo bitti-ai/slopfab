@@ -666,25 +666,38 @@ void test_narrow_f16() {
 
 void test_bf16_to_f16() {
   TEST("bf16_to_f16");
-  std::vector<uint16_t> input;
+  std::vector<uint16_t> packed_input;
   for (uint32_t bits = 0; bits <= 0xFFFFu; ++bits) {
     if ((bits & 0x7F80u) == 0x7F80u) continue;  // exclude inf/nan payload details
-    input.push_back(static_cast<uint16_t>(bits));
+    packed_input.push_back(static_cast<uint16_t>(bits));
   }
-  // Exercise the scalar tail as well as the aligned uint4 path.
-  input.push_back(vidfab::f32_to_bf16(1.25f));
-  std::vector<uint16_t> want(input.size());
-  for (size_t i = 0; i < input.size(); ++i)
-    want[i] = vidfab::f32_to_f16(vidfab::bf16_to_f32(input[i]));
+  CHECK(packed_input.size() % 8 == 0);
 
-  DeviceBuffer<uint16_t> src(input.size()), dst(input.size());
-  src.copy_from_host(input.data(), input.size());
-  vidfab::cuda::launch_bf16_to_f16(
-      reinterpret_cast<const __nv_bfloat16*>(src.get()), dst.get(), input.size(), nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  std::vector<uint16_t> got(input.size());
-  dst.copy_to_host(got.data(), got.size());
-  CHECK(want == got);
+  auto check_conversion = [](const std::vector<uint16_t>& input) {
+    std::vector<uint16_t> want(input.size());
+    for (size_t i = 0; i < input.size(); ++i)
+      want[i] = vidfab::f32_to_f16(vidfab::bf16_to_f32(input[i]));
+    DeviceBuffer<uint16_t> src(input.size()), dst(input.size());
+    src.copy_from_host(input.data(), input.size());
+    vidfab::cuda::launch_bf16_to_f16(
+        reinterpret_cast<const __nv_bfloat16*>(src.get()), dst.get(), input.size(), nullptr);
+    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    std::vector<uint16_t> got(input.size());
+    dst.copy_to_host(got.data(), got.size());
+    return want == got;
+  };
+
+  // cudaMalloc supplies the required alignment and this count is divisible by
+  // eight, so exhaustive finite BF16 coverage goes through the uint4 kernel.
+  CHECK(check_conversion(packed_input));
+
+  // A non-multiple count selects the scalar fallback, independently covering
+  // values from both signs and throughout the BF16 exponent range.
+  const std::vector<uint16_t> scalar_input{
+      0x0000, 0x8000, 0x0001, 0x807F, 0x0080, 0x8080, 0x3F80, 0xBF80, 0x3FA0,
+      0xC020, 0x3800, 0xB800, 0x477F, 0xC77F, 0x7F7F, 0xFF7F, 0x4049};
+  CHECK(scalar_input.size() % 8 != 0);
+  CHECK(check_conversion(scalar_input));
 }
 
 void test_heads_to_tokens_bf16() {
