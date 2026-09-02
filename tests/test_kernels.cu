@@ -647,6 +647,29 @@ void test_narrow_f16() {
             mismatches, want.size());
 }
 
+void test_bf16_to_f16() {
+  TEST("bf16_to_f16");
+  std::vector<uint16_t> input;
+  for (uint32_t bits = 0; bits <= 0xFFFFu; ++bits) {
+    if ((bits & 0x7F80u) == 0x7F80u) continue;  // exclude inf/nan payload details
+    input.push_back(static_cast<uint16_t>(bits));
+  }
+  // Exercise the scalar tail as well as the aligned uint4 path.
+  input.push_back(vidfab::f32_to_bf16(1.25f));
+  std::vector<uint16_t> want(input.size());
+  for (size_t i = 0; i < input.size(); ++i)
+    want[i] = vidfab::f32_to_f16(vidfab::bf16_to_f32(input[i]));
+
+  DeviceBuffer<uint16_t> src(input.size()), dst(input.size());
+  src.copy_from_host(input.data(), input.size());
+  vidfab::cuda::launch_bf16_to_f16(
+      reinterpret_cast<const __nv_bfloat16*>(src.get()), dst.get(), input.size(), nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> got(input.size());
+  dst.copy_to_host(got.data(), got.size());
+  CHECK(want == got);
+}
+
 void test_heads_to_tokens_bf16() {
   TEST("heads_to_tokens_bf16");
   const int seq = 11, heads = 3, dim = 64;
@@ -838,6 +861,7 @@ const bool registered = ::vidfab::test::register_test("registered_mapping_contai
                         ::vidfab::test::register_test("gemm_nn_batched_ld", &test_gemm_scatter) &&
                         ::vidfab::test::register_test("widen_f16", &test_widen_f16) &&
                         ::vidfab::test::register_test("narrow_f16", &test_narrow_f16) &&
+                        ::vidfab::test::register_test("bf16_to_f16", &test_bf16_to_f16) &&
                         ::vidfab::test::register_test("heads_to_tokens_bf16",
                                                      &test_heads_to_tokens_bf16) &&
                         ::vidfab::test::register_test("transpose_cn_to_nc", &test_transpose) &&

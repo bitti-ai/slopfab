@@ -429,6 +429,26 @@ __global__ void latent_denorm_kernel(const float* __restrict__ z_norm,
       canonicalize_pointwise_float(mean[c])));
 }
 
+__global__ void bf16_to_f16_packed_kernel(const __nv_bfloat16* __restrict__ src,
+                                          __half* __restrict__ dst, size_t packs) {
+  const size_t pack = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (pack >= packs) return;
+  const size_t base = pack * 8;
+  const uint4 raw = *reinterpret_cast<const uint4*>(src + base);
+  const __nv_bfloat162* in = reinterpret_cast<const __nv_bfloat162*>(&raw);
+  uint4 converted;
+  __half2* out = reinterpret_cast<__half2*>(&converted);
+#pragma unroll
+  for (int i = 0; i < 4; ++i) out[i] = __float22half2_rn(__bfloat1622float2(in[i]));
+  *reinterpret_cast<uint4*>(dst + base) = converted;
+}
+
+__global__ void bf16_to_f16_scalar_kernel(const __nv_bfloat16* __restrict__ src,
+                                          __half* __restrict__ dst, size_t count) {
+  const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (idx < count) dst[idx] = __float2half_rn(__bfloat162float(src[idx]));
+}
+
 // Shipped-path variant of split_qkv_norm_rope_kernel. Arithmetic deliberately
 // stays verbatim fp32; only the final store folds in the old layout conversion
 // and __float2bfloat16_rn rounding pass.
@@ -619,6 +639,24 @@ void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t s
   const size_t blocks = (count + threads - 1) / threads;
   narrow_f16_kernel<<<static_cast<int>(blocks), threads, 0, stream>>>(
       src, static_cast<__half*>(dst), count);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_bf16_to_f16(const __nv_bfloat16* src, void* dst, size_t count,
+                        cudaStream_t stream) {
+  if (count == 0) return;
+  __half* half_dst = static_cast<__half*>(dst);
+  const bool packed = count % 8 == 0 && reinterpret_cast<uintptr_t>(src) % 16 == 0 &&
+                      reinterpret_cast<uintptr_t>(half_dst) % 16 == 0;
+  const int threads = 256;
+  if (packed) {
+    const size_t packs = count / 8;
+    bf16_to_f16_packed_kernel<<<static_cast<int>((packs + threads - 1) / threads), threads, 0,
+                                stream>>>(src, half_dst, packs);
+  } else {
+    bf16_to_f16_scalar_kernel<<<static_cast<int>((count + threads - 1) / threads), threads, 0,
+                                stream>>>(src, half_dst, count);
+  }
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

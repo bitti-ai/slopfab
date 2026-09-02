@@ -69,6 +69,11 @@ void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t st
 // accumulation remain fp32; only the operands use checkpoint-native fp16.
 void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t stream);
 
+// Converts BF16 attention output directly to the following fp16 GEMM operand.
+// This is exactly the old lossless BF16->fp32 widen followed by fp32->fp16 RN.
+void launch_bf16_to_f16(const __nv_bfloat16* src, void* dst, size_t count,
+                        cudaStream_t stream);
+
 // Converts head-major [heads, seq, dim] fp32 into the token-major BF16 layout
 // consumed by the shared fused-attention kernel.
 void launch_heads_to_tokens_bf16(const float* src, __nv_bfloat16* dst, int seq, int heads,

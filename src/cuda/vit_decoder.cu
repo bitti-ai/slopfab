@@ -169,7 +169,6 @@ struct ViTDecoder::Impl {
   DeviceBuffer<__nv_bfloat16> d_q_bf16, d_k_bf16, d_v_bf16;  // [S, H, D]
   DeviceBuffer<__nv_bfloat16> d_attn_bf16;                     // [S, H, D]
   cuda::Workspace attention_ws;
-  DeviceBuffer<float> d_merged;   // [S, dim]
   DeviceBuffer<float> d_proj;     // [S, dim] or [S, patch_dim]
   DeviceBuffer<float> d_ffn;      // [S, 2*ffn_inner]
   DeviceBuffer<__half> d_gemm_in; // narrowed input for tensor-core linears
@@ -341,7 +340,6 @@ struct ViTDecoder::Impl {
     d_k_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
     d_v_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
     d_attn_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
-    d_merged.allocate(s * dim);
     d_proj.allocate(s * static_cast<size_t>(cfg.patch_dim()));
     d_ffn.allocate(s * 2 * cfg.ffn_inner);
     d_gemm_in.allocate(s * static_cast<size_t>(std::max(cfg.ffn_inner, cfg.dim)));
@@ -405,11 +403,11 @@ struct ViTDecoder::Impl {
       attention_ws.clear();
       cuda::attention_forward(blas, s, d_q_bf16.get(), d_k_bf16.get(), d_v_bf16.get(),
                               d_attn_bf16.get(), attn_cfg, attn_backend, attention_ws);
-      cuda::launch_widen_bf16(d_attn_bf16.get(), d_merged.get() + row0 * dim,
-                              static_cast<size_t>(seq) * dim, s);
+      cuda::launch_bf16_to_f16(d_attn_bf16.get(), d_gemm_in.get() + row0 * dim,
+                               static_cast<size_t>(seq) * dim, s);
     }
 
-    gemm_nt(d_merged.get(), b.out_w, d_normed.get(), rows, dim, dim);
+    gemm_nt_prepared(d_gemm_in.get(), b.out_w, d_normed.get(), rows, dim, dim);
     cuda::launch_layerscale_residual(d_tokens.get(), d_normed.get(), b.out_b.get(), b.scale1.get(),
                                      rows, dim, s);
 
