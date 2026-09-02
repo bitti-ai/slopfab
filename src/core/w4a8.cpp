@@ -8,6 +8,14 @@ namespace vidfab {
 namespace {
 
 std::string state_name(const std::string& weight_name) {
+  constexpr const char* suffix = ".weight";
+  constexpr size_t suffix_size = 7;
+  if (weight_name.size() >= suffix_size &&
+      weight_name.compare(weight_name.size() - suffix_size, suffix_size,
+                          suffix) == 0) {
+    return weight_name.substr(0, weight_name.size() - suffix_size) +
+           ".comfy_quant";
+  }
   return weight_name + ".comfy_quant";
 }
 

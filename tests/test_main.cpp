@@ -247,7 +247,7 @@ void test_w4a8_state() {
       R"({"format":"asym_w4a8_int8","group_size":16,"convrot_groupsize":256})";
   const std::string header =
       std::string(R"({"layer.weight":{"dtype":"I8","shape":[2,128],"data_offsets":[0,256]},)" ) +
-      R"("layer.weight.comfy_quant":{"dtype":"U8","shape":[)" +
+      R"("layer.comfy_quant":{"dtype":"U8","shape":[)" +
       std::to_string(payload.size()) + R"(],"data_offsets":[256,)" +
       std::to_string(256 + payload.size()) + "]}}";
   std::vector<uint8_t> data(256 + payload.size());
