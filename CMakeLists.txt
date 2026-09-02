@@ -40,6 +40,7 @@ option(VIDFAB_WITH_FFMPEG "Compile MP4 muxing and FFmpeg-based image decoding" O
 add_library(vidfab_core STATIC
   src/core/json.cpp
   src/core/nf4.cpp
+  src/core/w4a8.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
   src/core/device_tensor.cpp

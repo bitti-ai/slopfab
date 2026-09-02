@@ -16,6 +16,7 @@
 #include "vidfab/safetensors.h"
 #include "vidfab/sampler/scheduler.h"
 #include "vidfab/tensor_convert.h"
+#include "vidfab/w4a8.h"
 
 namespace {
 
@@ -238,6 +239,33 @@ void test_safetensors() {
   CHECK(missing_rejected);
 }
 
+void test_w4a8_state() {
+  TEST("w4a8_state");
+  using namespace vidfab;
+
+  const std::string payload =
+      R"({"format":"asym_w4a8_int8","group_size":16,"convrot_groupsize":256})";
+  const std::string header =
+      std::string(R"({"layer.weight":{"dtype":"I8","shape":[2,128],"data_offsets":[0,256]},)" ) +
+      R"("layer.weight.comfy_quant":{"dtype":"U8","shape":[)" +
+      std::to_string(payload.size()) + R"(],"data_offsets":[256,)" +
+      std::to_string(256 + payload.size()) + "]}}";
+  std::vector<uint8_t> data(256 + payload.size());
+  std::memcpy(data.data() + 256, payload.data(), payload.size());
+  const std::string path =
+      write_temp_safetensors(header, data, "vidfab_w4a8_state.safetensors");
+  SafeTensors st;
+  st.open(path);
+  CHECK(is_w4a8_weight(st, "layer.weight"));
+  const W4A8State state = read_w4a8_state(st, "layer.weight", "test");
+  CHECK(state.group_size == 16);
+  CHECK(state.convrot_group_size == 256);
+  CHECK(!is_w4a8_weight(st, "absent.weight"));
+  st.close();
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+}
+
 // --- compare ----------------------------------------------------------------
 
 void test_compare() {
@@ -411,6 +439,7 @@ void test_scheduler() {
 const bool registered = ::vidfab::test::register_test("json", &test_json) &&
                         ::vidfab::test::register_test("dtype", &test_dtype) &&
                         ::vidfab::test::register_test("safetensors", &test_safetensors) &&
+                        ::vidfab::test::register_test("w4a8_state", &test_w4a8_state) &&
                         ::vidfab::test::register_test("compare", &test_compare) &&
                         ::vidfab::test::register_test("scheduler", &test_scheduler);
 
