@@ -293,10 +293,17 @@ loaded dynamically and an explicit request fails clearly when no compatible
 device or loader is available; it never silently falls back.
 
 Both VAE arguments also accept the compact checkpoints in `weights/vae`:
-`video_vae_nf4.safetensors` and `audio_vae_nf4.safetensors`. The video VAE keeps
-bitsandbytes NF4 matrices packed on device and expands only the matrix currently
-being used into reusable FP16 workspace. The audio file's decode graph is BF16
-weight-normalized; its NF4 pre-block is not part of synthesis.
+`video_vae_nf4.safetensors` and `audio_vae_nf4.safetensors`. CUDA video decode
+also accepts `minimax_h3_video_vae_w4a8_from_fp16.safetensors`. Its asymmetric
+W4A8 linears remain packed on device; VidFab applies ConvRot-256, dynamically
+quantizes each activation row to INT8, accumulates the GEMM in INT32, and applies
+the FP8 group/codebook and FP32 channel scales without TensorRT. W4A8 currently
+requires the CUDA inference backend and shipped attention mode.
+
+The NF4 video VAE likewise keeps bitsandbytes matrices packed on device and
+expands only the matrix currently being used into reusable FP16 workspace. The
+audio file's decode graph is BF16 weight-normalized; its NF4 pre-block is not
+part of synthesis.
 
 `decode --dump <f>` writes raw fp32 pixels as safetensors, so two runs can be
 compared at float precision instead of after 8-bit quantisation.

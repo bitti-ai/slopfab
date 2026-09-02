@@ -10,6 +10,7 @@
 
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/vit_block.h"
+#include "vidfab/w4a8.h"
 #include "vidfab/vulkan/gemm.h"
 #include "vidfab/vulkan/tensor.h"
 #include "vidfab/vulkan/vae_vit_block.h"
@@ -309,6 +310,12 @@ void VideoVaeDecoder::load(const SafeTensors& checkpoint) {
   if (!impl_) throw std::logic_error("Vulkan video VAE: empty decoder");
   if (!checkpoint.is_open())
     throw std::invalid_argument("Vulkan video VAE: checkpoint is not open");
+  if (is_w4a8_weight(
+          checkpoint,
+          "decoder.transformer_blocks.0.attn.to_qkv.weight")) {
+    throw std::runtime_error(
+        "Vulkan video VAE: W4A8 checkpoints currently require the CUDA inference backend");
+  }
   Impl& d = *impl_;
   d.loaded = false;
   const uint64_t c = static_cast<uint64_t>(d.config.in_channels);
