@@ -696,16 +696,18 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
         cuda::launch_layernorm(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
                                d.norm_out_b.get(), d.d_normed.get(), num_patches, dim, cfg.eps, s);
         d.gemm_nt(d.d_normed.get(), d.proj_out_w, d.d_proj.get(), num_patches, patch_dim, dim);
+        cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
+        cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W,
+                                    cfg.out_channels, cfg.patch_t, cfg.patch, s);
       } else {
         cuda::launch_layernorm_f16(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
                                    d.norm_out_b.get(), d.d_gemm_in.get(), num_patches, dim,
                                    cfg.eps, s);
         d.gemm_nt_prepared(d.d_gemm_in.get(), d.proj_out_w, d.d_proj.get(), num_patches,
                            patch_dim, dim);
+        cuda::launch_depth_to_space_bias(d.d_proj.get(), d.proj_out_b.get(), d.d_pixels.get(),
+                                         T, H, W, cfg.out_channels, cfg.patch_t, cfg.patch, s);
       }
-      cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
-      cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
-                                  cfg.patch_t, cfg.patch, s);
       d.d_pixels.copy_to_host(host_dst, pixels, s);
     }
     cuda::PhaseSpan s_sync("forward: sync wait");

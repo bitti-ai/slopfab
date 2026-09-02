@@ -87,6 +87,12 @@ void launch_transpose_cn_to_nc(const float* src, float* dst, int channels, int v
 void launch_depth_to_space(const float* tokens, float* out, int T, int H, int W, int channels,
                            int patch_t, int patch, cudaStream_t stream);
 
+// Adds the projection bias in fp32 at the old rounding point while scattering
+// tokens to pixels, eliminating the standalone full projection pass.
+void launch_depth_to_space_bias(const float* tokens, const float* bias, float* out,
+                                int T, int H, int W, int channels, int patch_t, int patch,
+                                cudaStream_t stream);
+
 // out = z_norm * std + mean, per channel over [channels, voxels].
 void launch_latent_denorm(const float* z_norm, const float* mean, const float* std_dev, float* out,
                           int channels, int voxels, cudaStream_t stream);

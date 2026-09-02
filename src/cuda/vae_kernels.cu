@@ -384,8 +384,10 @@ __global__ void transpose_cn_to_nc_kernel(const float* __restrict__ src, float* 
 // with c outermost. This is NOT nn.PixelShuffle ordering and not the common
 // (pt, ph, pw, c) ordering; getting it wrong yields a scrambled image that
 // still looks structured.
-__global__ void depth_to_space_kernel(const float* __restrict__ tokens, float* __restrict__ out,
-                                      int T, int H, int W, int channels, int patch_t, int patch) {
+__global__ void depth_to_space_kernel(const float* __restrict__ tokens,
+                                      const float* __restrict__ bias,
+                                      float* __restrict__ out, int T, int H, int W,
+                                      int channels, int patch_t, int patch) {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const int out_T = T * patch_t;
   const int out_H = H * patch;
@@ -411,7 +413,8 @@ __global__ void depth_to_space_kernel(const float* __restrict__ tokens, float* _
   const int patch_dim = channels * patch_t * patch * patch;
   const size_t token = (static_cast<size_t>(t) * H + h) * W + w;
   const int offset = ((c * patch_t + pt) * patch + ph) * patch + pw;
-  out[idx] = tokens[token * patch_dim + offset];
+  const float value = tokens[token * patch_dim + offset];
+  out[idx] = bias != nullptr ? __fadd_rn(value, bias[offset]) : value;
 }
 
 // z = z_norm * std + mean, per latent channel.
@@ -682,8 +685,19 @@ void launch_depth_to_space(const float* tokens, float* out, int T, int H, int W,
   const size_t total = static_cast<size_t>(channels) * (T * patch_t) * (H * patch) * (W * patch);
   const int threads = 256;
   const int blocks = static_cast<int>((total + threads - 1) / threads);
-  depth_to_space_kernel<<<blocks, threads, 0, stream>>>(tokens, out, T, H, W, channels, patch_t,
-                                                        patch);
+  depth_to_space_kernel<<<blocks, threads, 0, stream>>>(tokens, nullptr, out, T, H, W, channels,
+                                                        patch_t, patch);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_depth_to_space_bias(const float* tokens, const float* bias, float* out,
+                                int T, int H, int W, int channels, int patch_t, int patch,
+                                cudaStream_t stream) {
+  const size_t total = static_cast<size_t>(channels) * (T * patch_t) * (H * patch) * (W * patch);
+  const int threads = 256;
+  const int blocks = static_cast<int>((total + threads - 1) / threads);
+  depth_to_space_kernel<<<blocks, threads, 0, stream>>>(tokens, bias, out, T, H, W, channels,
+                                                        patch_t, patch);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

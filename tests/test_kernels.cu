@@ -358,6 +358,23 @@ void test_depth_to_space() {
                                       nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want, to_host(dout), 0.0, "depth_to_space");
+
+  const std::vector<float> bias = make_data(patch_dim, 556u, 0.25f);
+  DeviceBuffer<float> dbias = to_device(bias);
+  DeviceBuffer<float> dlegacy_tokens(in.size());
+  DeviceBuffer<float> dlegacy_out(want.size());
+  DeviceBuffer<float> dfused_out(want.size());
+  VIDFAB_CUDA_CHECK(cudaMemcpy(dlegacy_tokens.get(), din.get(), in.size() * sizeof(float),
+                               cudaMemcpyDeviceToDevice));
+  vidfab::cuda::launch_add_bias(dlegacy_tokens.get(), dbias.get(), tokens, patch_dim, nullptr);
+  vidfab::cuda::launch_depth_to_space(dlegacy_tokens.get(), dlegacy_out.get(), T, H, W,
+                                      channels, patch_t, patch, nullptr);
+  vidfab::cuda::launch_depth_to_space_bias(din.get(), dbias.get(), dfused_out.get(), T, H, W,
+                                           channels, patch_t, patch, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  const std::vector<float> legacy = to_host(dlegacy_out);
+  const std::vector<float> fused = to_host(dfused_out);
+  CHECK(std::memcmp(legacy.data(), fused.data(), legacy.size() * sizeof(float)) == 0);
 }
 
 // The other silent-failure candidate: QKV is interleaved per head as
