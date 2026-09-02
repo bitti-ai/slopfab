@@ -18,9 +18,11 @@
 #include "vidfab/cuda/profile.h"
 #include "vidfab/cuda/vae_kernels.cuh"
 #include "vidfab/cuda/vae_vit_block.h"
+#include "vidfab/cuda/w4a8.cuh"
 #include "vidfab/nf4.h"
 #include "vidfab/tensor_convert.h"
 #include "vidfab/vae/vit_decoder.h"
+#include "vidfab/w4a8.h"
 
 namespace vidfab::vae {
 namespace {
@@ -139,6 +141,7 @@ struct ViTDecoder::Impl {
   cublasHandle_t blas = nullptr;
   cuda::Stream stream;
   size_t weight_bytes = 0;
+  bool has_w4a8 = false;
 
   std::vector<BlockWeights> blocks;
   std::unique_ptr<cuda::ExactViTBlockGraph> exact_blocks;
@@ -173,6 +176,8 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_ffn;      // [S, 2*ffn_inner]
   DeviceBuffer<__half> d_gemm_in; // narrowed input for tensor-core linears
   DeviceBuffer<__half> d_weight;  // active NF4 matrix expansion
+  DeviceBuffer<int8_t> d_w4a8_activation;
+  DeviceBuffer<float> d_w4a8_activation_scale;
   size_t cap_weight = 0;
   DeviceBuffer<float> d_cos, d_sin;  // [S, rope_dim]
   DeviceBuffer<float> d_latent;     // [in_channels, T*H*W]
@@ -272,6 +277,25 @@ struct ViTDecoder::Impl {
   // operand the old launch_narrow_f16 pass produced.
   void gemm_nt_prepared(const __half* A, const cuda::F16Weight& weight, float* C,
                         int M, int N, int K) {
+    if (weight.packed_w4a8()) {
+      if (cfg.transformer_mode == ViTTransformerMode::kExact)
+        throw std::runtime_error("W4A8 video VAE does not support exact attention mode");
+      const int8_t* B = weight.materialize_w4a8(
+          reinterpret_cast<int8_t*>(d_weight.get()), cap_weight, stream.get());
+      cuda::launch_quantize_w4a8_activation(
+          A, d_w4a8_activation.get(), d_w4a8_activation_scale.get(), M, K,
+          stream.get());
+      const int32_t alpha = 1;
+      const int32_t beta = 0;
+      CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(
+          blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_8I,
+          K, d_w4a8_activation.get(), CUDA_R_8I, K, &beta, C, CUDA_R_32I,
+          N, CUBLAS_COMPUTE_32I, CUBLAS_GEMM_DEFAULT));
+      cuda::launch_dequant_w4a8_output(
+          reinterpret_cast<int32_t*>(C), d_w4a8_activation_scale.get(),
+          weight.w4a8_channel_scale(), M, N, stream.get());
+      return;
+    }
     const __half* B = weight.materialize(d_weight.get(), cap_weight, stream.get());
     if (cfg.transformer_mode == ViTTransformerMode::kExact) {
       cuda::launch_deterministic_scalar_gemm_nt(
@@ -343,6 +367,11 @@ struct ViTDecoder::Impl {
     d_proj.allocate(s * static_cast<size_t>(cfg.patch_dim()));
     d_ffn.allocate(s * 2 * cfg.ffn_inner);
     d_gemm_in.allocate(s * static_cast<size_t>(std::max(cfg.ffn_inner, cfg.dim)));
+    if (has_w4a8) {
+      d_w4a8_activation.allocate(
+          s * static_cast<size_t>(std::max(cfg.ffn_inner, cfg.dim)));
+      d_w4a8_activation_scale.allocate(s);
+    }
     d_cos.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
     d_sin.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
 
@@ -451,6 +480,7 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   const int inner = config.ffn_inner;
   const int ch = config.in_channels;
   d.loaded = false;
+  d.has_w4a8 = false;
   d.blocks.clear();
   d.exact_blocks.reset();
 
@@ -466,6 +496,15 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   if (config.heads * config.head_dim != dim) {
     throw std::runtime_error("vae: heads * head_dim must equal dim");
   }
+
+  const bool checkpoint_w4a8 = is_w4a8_weight(
+      ckpt, "decoder.transformer_blocks.0.attn.to_qkv.weight");
+  if (checkpoint_w4a8 &&
+      config.transformer_mode == ViTTransformerMode::kExact) {
+    throw std::runtime_error(
+        "video vae: W4A8 checkpoints require the shipped CUDA attention mode");
+  }
+  d.has_w4a8 = checkpoint_w4a8;
 
   // Page-locks the checkpoint mapping for the whole of the load below, and is
   // declared here rather than inside the uploader because the uploader is not
