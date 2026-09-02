@@ -36,6 +36,7 @@
 #include "vidfab/cuda/nvfp4_gemm.cuh"
 #include "vidfab/cuda/sage_attention.cuh"
 #include "vidfab/cuda/workspace.cuh"
+#include "vidfab/cuda/w4a8.cuh"
 #include "vidfab/dit/packing.h"
 #include "vidfab/dtype.h"
 #include "vidfab/text/qwen_vision.h"
@@ -989,6 +990,104 @@ VIDFAB_TEST(nn_dequant_i8_per_channel) {
     }
   }
   CHECK_CLOSE(want, ddst.host(), 0.0, "dequant_i8 per output channel");
+}
+
+VIDFAB_TEST(nn_w4a8_weight_and_activation_decode) {
+  const int rows = 2;
+  const int out_features = 3;
+  const int in_features = 256;
+  const int group_size = 16;
+
+  std::vector<int8_t> packed(size_t(out_features) * in_features / 2);
+  std::vector<int8_t> expected_weight(size_t(out_features) * in_features);
+  for (int o = 0; o < out_features; ++o) {
+    for (int i = 0; i < in_features; i += 2) {
+      const int lo = (o * 5 + i) & 15;
+      const int hi = (o * 7 + i + 1) & 15;
+      packed[size_t(o) * (in_features / 2) + i / 2] =
+          static_cast<int8_t>(lo | (hi << 4));
+      expected_weight[size_t(o) * in_features + i] = static_cast<int8_t>(lo - 8);
+      expected_weight[size_t(o) * in_features + i + 1] = static_cast<int8_t>(hi - 8);
+    }
+  }
+  const std::vector<uint8_t> group_scale(
+      size_t(out_features) * in_features / group_size, 0x38);  // E4M3 1.0
+  std::vector<float> codebook(16);
+  for (int i = 0; i < 16; ++i) codebook[i] = static_cast<float>(i - 8);
+
+  DeviceBuffer<int8_t> dpacked(packed.size()), dweight(expected_weight.size());
+  DeviceBuffer<uint8_t> dgroup(group_scale.size());
+  dpacked.copy_from_host(packed.data(), packed.size());
+  dgroup.copy_from_host(group_scale.data(), group_scale.size());
+  DeviceBuffer<float> dcodebook = to_device(codebook);
+  vidfab::cuda::launch_dequant_w4a8_weight(
+      dpacked.get(), dgroup.get(), dcodebook.get(), dweight.get(), out_features,
+      in_features, group_size, nullptr);
+  std::vector<int8_t> got_weight(expected_weight.size());
+  dweight.copy_to_host(got_weight.data(), got_weight.size());
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  CHECK(got_weight == expected_weight);
+
+  // Two exactly representable rows make the independently constructed
+  // Hadamard reference unambiguous after dynamic INT8 quantization.
+  std::vector<float> x(size_t(rows) * in_features, 0.0f);
+  x[0] = 1.0f;
+  std::fill(x.begin() + in_features, x.end(), 1.0f);
+  std::vector<uint16_t> xbits(x.size());
+  for (size_t i = 0; i < x.size(); ++i) xbits[i] = vidfab::f32_to_f16(x[i]);
+  DeviceBuffer<uint16_t> dx(xbits.size());
+  DeviceBuffer<int8_t> dq(x.size());
+  DeviceBuffer<float> dscale(rows);
+  dx.copy_from_host(xbits.data(), xbits.size());
+  vidfab::cuda::launch_quantize_w4a8_activation(
+      reinterpret_cast<const __half*>(dx.get()), dq.get(), dscale.get(), rows,
+      in_features, nullptr);
+  std::vector<int8_t> q(x.size());
+  std::vector<float> scale(rows);
+  dq.copy_to_host(q.data(), q.size());
+  dscale.copy_to_host(scale.data(), scale.size());
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+
+  std::vector<float> H = kron_power(&kH4[0][0], 4, 4);
+  for (float& value : H) value /= 16.0f;
+  for (int r = 0; r < rows; ++r) {
+    float amax = 0.0f;
+    std::vector<float> rotated(in_features);
+    for (int i = 0; i < in_features; ++i) {
+      float sum = 0.0f;
+      for (int j = 0; j < in_features; ++j)
+        sum += H[size_t(i) * in_features + j] * x[size_t(r) * in_features + j];
+      rotated[i] = sum;
+      amax = std::max(amax, std::fabs(sum));
+    }
+    const float want_scale = std::max(amax / 127.0f, 1.0e-30f);
+    CHECK_NEAR(scale[r], want_scale, 1e-8);
+    for (int i = 0; i < in_features; ++i) {
+      const int want = std::max(-128, std::min(127,
+          static_cast<int>(std::nearbyint(rotated[i] / want_scale))));
+      CHECK(q[size_t(r) * in_features + i] == want);
+    }
+  }
+
+  std::vector<int32_t> accum = {100, -200, 300, -400, 500, -600};
+  const std::vector<float> activation_scale = {0.25f, 0.5f};
+  const std::vector<float> weight_scale = {0.1f, 0.2f, 0.3f};
+  DeviceBuffer<int32_t> daccum = to_device_i32(accum);
+  DeviceBuffer<float> dax = to_device(activation_scale);
+  DeviceBuffer<float> dwx = to_device(weight_scale);
+  vidfab::cuda::launch_dequant_w4a8_output(
+      daccum.get(), dax.get(), dwx.get(), rows, out_features, nullptr);
+  std::vector<float> result(accum.size());
+  VIDFAB_CUDA_CHECK(cudaMemcpy(result.data(), daccum.get(),
+                               result.size() * sizeof(float),
+                               cudaMemcpyDeviceToHost));
+  for (int r = 0; r < rows; ++r) {
+    for (int o = 0; o < out_features; ++o) {
+      const size_t i = size_t(r) * out_features + o;
+      CHECK_NEAR(result[i], static_cast<float>(accum[i]) *
+                                activation_scale[r] * weight_scale[o], 1e-6);
+    }
+  }
 }
 
 // The ConvRot rotation, against an explicitly constructed 256x256 matrix. This

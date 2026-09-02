@@ -216,6 +216,7 @@ if(VIDFAB_ENABLE_CUDA)
       src/cuda/deterministic_gemm.cu
       src/cuda/deterministic_attention.cu
       src/cuda/nf4_weight.cu
+      src/cuda/w4a8.cu
       src/cuda/nvfp4_gemm.cu
       src/cuda/attention.cu
       src/cuda/sage_attention.cu
