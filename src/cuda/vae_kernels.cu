@@ -429,6 +429,79 @@ __global__ void latent_denorm_kernel(const float* __restrict__ z_norm,
       canonicalize_pointwise_float(mean[c])));
 }
 
+// Shipped-path variant of split_qkv_norm_rope_kernel. Arithmetic deliberately
+// stays verbatim fp32; only the final store folds in the old layout conversion
+// and __float2bfloat16_rn rounding pass.
+__global__ void split_qkv_norm_rope_bf16_kernel(
+    const float* __restrict__ qkv, const float* __restrict__ bias,
+    const float* __restrict__ cos_tab, const float* __restrict__ sin_tab,
+    __nv_bfloat16* __restrict__ q_out, __nv_bfloat16* __restrict__ k_out,
+    __nv_bfloat16* __restrict__ v_out, int seq, int heads, int head_dim,
+    int rope_dim, int num_patches, float eps) {
+  const int warp_in_block = threadIdx.x / kWarp;
+  const int lane = threadIdx.x % kWarp;
+  const int pair = blockIdx.x * (blockDim.x / kWarp) + warp_in_block;
+  const int total_pairs = seq * heads;
+  if (pair >= total_pairs) return;
+
+  const int head = pair % heads;
+  const int token = pair / heads;
+  const int triple = 3 * head_dim;
+  const float* row = qkv + static_cast<size_t>(token) * heads * triple + head * triple;
+  const float* bias_row = (bias != nullptr) ? (bias + head * triple) : nullptr;
+  const size_t out_base = (static_cast<size_t>(token) * heads + head) * head_dim;
+
+  v_out[out_base + lane] = __float2bfloat16_rn(
+      row[2 * head_dim + lane] +
+      (bias != nullptr ? bias_row[2 * head_dim + lane] : 0.0f));
+  v_out[out_base + lane + kWarp] = __float2bfloat16_rn(
+      row[2 * head_dim + lane + kWarp] +
+      (bias != nullptr ? bias_row[2 * head_dim + lane + kWarp] : 0.0f));
+
+  const bool rotate = token < num_patches;
+  const int half = rope_dim / 2;
+  for (int which = 0; which < 2; ++which) {
+    const float* src = row + which * head_dim;
+    __nv_bfloat16* dst = (which == 0 ? q_out : k_out) + out_base;
+    const float v0 = src[lane] +
+                     (bias != nullptr ? bias_row[which * head_dim + lane] : 0.0f);
+    const float v1 = src[lane + kWarp] +
+                     (bias != nullptr ? bias_row[which * head_dim + lane + kWarp] : 0.0f);
+
+    float s0 = v0 * v0;
+    float s1 = v1 * v1;
+    for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
+      s0 += __shfl_xor_sync(0xFFFFFFFFu, s0, offset);
+      s1 += __shfl_xor_sync(0xFFFFFFFFu, s1, offset);
+    }
+    const float sum_sq = s0 + s1;
+    float inv = lane == 0
+                    ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(head_dim), eps)
+                    : 0.0f;
+    inv = __shfl_sync(0xFFFFFFFFu, inv, 0);
+    const float n0 = v0 * inv;
+    const float n1 = v1 * inv;
+
+    auto rotated = [&](int d, float normalised) -> float {
+      const bool active = rotate && d < rope_dim;
+      const int partner_index = (d < half) ? (d + half) : (d - half);
+      const int src_lane = partner_index & (kWarp - 1);
+      const int src_reg = partner_index >> 5;
+      const float p0 = __shfl_sync(0xFFFFFFFFu, n0, src_lane);
+      const float p1 = __shfl_sync(0xFFFFFFFFu, n1, src_lane);
+      if (!active) return normalised;
+      const float sign = (d < half) ? -1.0f : 1.0f;
+      const float partner = sign * ((src_reg == 0) ? p0 : p1);
+      const float c = cos_tab[static_cast<size_t>(token) * rope_dim + d];
+      const float s = sin_tab[static_cast<size_t>(token) * rope_dim + d];
+      return normalised * c + partner * s;
+    };
+
+    dst[lane] = __float2bfloat16_rn(rotated(lane, n0));
+    dst[lane + kWarp] = __float2bfloat16_rn(rotated(lane + kWarp, n1));
+  }
+}
+
 }  // namespace
 
 void launch_rmsnorm(const float* x, const float* weight, float* out, int rows, int dim, float eps,
@@ -506,6 +579,22 @@ void launch_swiglu(const float* in, const float* bias, float* out, int rows, int
   const int threads = 256;
   const dim3 grid((inner + threads - 1) / threads, rows);
   swiglu_kernel<<<grid, threads, 0, stream>>>(in, bias, out, inner);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias,
+                                     const float* cos_tab, const float* sin_tab,
+                                     __nv_bfloat16* q, __nv_bfloat16* k,
+                                     __nv_bfloat16* v, int seq, int heads, int head_dim,
+                                     int rope_dim, int num_patches, float eps,
+                                     cudaStream_t stream) {
+  const int threads = 256;
+  const int warps_per_block = threads / kWarp;
+  const int pairs = seq * heads;
+  const int blocks = (pairs + warps_per_block - 1) / warps_per_block;
+  split_qkv_norm_rope_bf16_kernel<<<blocks, threads, 0, stream>>>(
+      qkv, bias, cos_tab, sin_tab, q, k, v, seq, heads, head_dim, rope_dim,
+      num_patches, eps);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

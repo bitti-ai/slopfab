@@ -459,6 +459,38 @@ void test_qkv_rope() {
   CHECK_CLOSE(to_host(dq_ref), to_host(dq_fused), 1e-6, "fused qkv bias q");
   CHECK_CLOSE(to_host(dk_ref), to_host(dk_fused), 1e-6, "fused qkv bias k");
   CHECK_CLOSE(to_host(dv_ref), to_host(dv_fused), 0.0, "fused qkv bias v");
+
+  // The shipped decoder writes token-major BF16 directly. It must retain the
+  // exact old rounding point: fp32 split/norm/RoPE, then layout+narrow.
+  DeviceBuffer<uint16_t> dq_legacy(per), dk_legacy(per), dv_legacy(per);
+  DeviceBuffer<uint16_t> dq_direct(per), dk_direct(per), dv_direct(per);
+  vidfab::cuda::launch_heads_to_tokens_bf16(
+      dq_fused.get(), reinterpret_cast<__nv_bfloat16*>(dq_legacy.get()), seq, heads,
+      head_dim, nullptr);
+  vidfab::cuda::launch_heads_to_tokens_bf16(
+      dk_fused.get(), reinterpret_cast<__nv_bfloat16*>(dk_legacy.get()), seq, heads,
+      head_dim, nullptr);
+  vidfab::cuda::launch_heads_to_tokens_bf16(
+      dv_fused.get(), reinterpret_cast<__nv_bfloat16*>(dv_legacy.get()), seq, heads,
+      head_dim, nullptr);
+  vidfab::cuda::launch_split_qkv_norm_rope_bf16(
+      dqkv.get(), dbias.get(), dcos.get(), dsin.get(),
+      reinterpret_cast<__nv_bfloat16*>(dq_direct.get()),
+      reinterpret_cast<__nv_bfloat16*>(dk_direct.get()),
+      reinterpret_cast<__nv_bfloat16*>(dv_direct.get()), seq, heads, head_dim,
+      rope_dim, num_patches, eps, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> q_legacy(per), k_legacy(per), v_legacy(per);
+  std::vector<uint16_t> q_direct(per), k_direct(per), v_direct(per);
+  dq_legacy.copy_to_host(q_legacy.data(), per);
+  dk_legacy.copy_to_host(k_legacy.data(), per);
+  dv_legacy.copy_to_host(v_legacy.data(), per);
+  dq_direct.copy_to_host(q_direct.data(), per);
+  dk_direct.copy_to_host(k_direct.data(), per);
+  dv_direct.copy_to_host(v_direct.data(), per);
+  CHECK(q_legacy == q_direct);
+  CHECK(k_legacy == k_direct);
+  CHECK(v_legacy == v_direct);
 }
 
 // The AV GEMM writes token-major directly by using ldc = heads*head_dim and a

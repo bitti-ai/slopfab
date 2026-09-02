@@ -166,7 +166,6 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_tokens;   // [S, dim]
   DeviceBuffer<float> d_normed;   // [S, dim]
   DeviceBuffer<float> d_qkv;      // [S, 3*dim]
-  DeviceBuffer<float> d_q, d_k, d_v;  // [H, S, D]
   DeviceBuffer<__nv_bfloat16> d_q_bf16, d_k_bf16, d_v_bf16;  // [S, H, D]
   DeviceBuffer<__nv_bfloat16> d_attn_bf16;                     // [S, H, D]
   cuda::Workspace attention_ws;
@@ -338,9 +337,6 @@ struct ViTDecoder::Impl {
     // Attention is deliberately serialized by document. Replicating the
     // quadratic score buffer for every spatial tile would erase batching's
     // memory advantage; token-wise activations above remain batched.
-    d_q.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
-    d_k.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
-    d_v.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
     d_q_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
     d_k_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
     d_v_bf16.allocate(static_cast<size_t>(seq) * cfg.heads * hd);
@@ -402,12 +398,10 @@ struct ViTDecoder::Impl {
     attention_ws.reserve(cuda::attention_workspace_bytes(attn_cfg, attn_backend));
     for (int doc = 0; doc < batch; ++doc) {
       const size_t row0 = static_cast<size_t>(doc) * seq;
-      cuda::launch_split_qkv_norm_rope(d_qkv.get() + row0 * 3 * dim, b.qkv_b.get(), d_cos.get(),
-                                       d_sin.get(), d_q.get(), d_k.get(), d_v.get(), seq, heads,
-                                       hd, cfg.rope_dim, num_patches, cfg.eps, s);
-      cuda::launch_heads_to_tokens_bf16(d_q.get(), d_q_bf16.get(), seq, heads, hd, s);
-      cuda::launch_heads_to_tokens_bf16(d_k.get(), d_k_bf16.get(), seq, heads, hd, s);
-      cuda::launch_heads_to_tokens_bf16(d_v.get(), d_v_bf16.get(), seq, heads, hd, s);
+      cuda::launch_split_qkv_norm_rope_bf16(
+          d_qkv.get() + row0 * 3 * dim, b.qkv_b.get(), d_cos.get(), d_sin.get(),
+          d_q_bf16.get(), d_k_bf16.get(), d_v_bf16.get(), seq, heads, hd,
+          cfg.rope_dim, num_patches, cfg.eps, s);
       attention_ws.clear();
       cuda::attention_forward(blas, s, d_q_bf16.get(), d_k_bf16.get(), d_v_bf16.get(),
                               d_attn_bf16.get(), attn_cfg, attn_backend, attention_ws);

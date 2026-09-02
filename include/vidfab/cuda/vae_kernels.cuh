@@ -36,6 +36,16 @@ void launch_split_qkv_norm_rope(const float* qkv, const float* bias, const float
                                 int heads, int head_dim, int rope_dim, int num_patches, float eps,
                                 cudaStream_t stream);
 
+// Same fp32 computation and BF16 rounding as launch_split_qkv_norm_rope
+// followed by three launch_heads_to_tokens_bf16 calls, but writes the
+// attention kernel's token-major BF16 inputs directly.
+void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias,
+                                     const float* cos_tab, const float* sin_tab,
+                                     __nv_bfloat16* q, __nv_bfloat16* k,
+                                     __nv_bfloat16* v, int seq, int heads, int head_dim,
+                                     int rope_dim, int num_patches, float eps,
+                                     cudaStream_t stream);
+
 void launch_softmax_rows(float* scores, int rows, int cols, float scale, cudaStream_t stream);
 
 // x += (y + bias) * scale, bias and scale broadcast over columns (LayerScale).
