@@ -85,12 +85,18 @@ __device__ inline float block_reduce_max(float value, float* shared) {
 
 // y = x / sqrt(mean(x^2) + eps) * weight
 // PyTorch RMSNorm: no mean subtraction, eps added to the mean square.
+__device__ inline void store_activation(float* dst, float value) { *dst = value; }
+__device__ inline void store_activation(__half* dst, float value) {
+  *dst = __float2half_rn(value);
+}
+
+template <typename Output>
 __global__ void rmsnorm_kernel(const float* __restrict__ x, const float* __restrict__ weight,
-                               float* __restrict__ out, int dim, float eps) {
+                               Output* __restrict__ out, int dim, float eps) {
   extern __shared__ float shared[];
   const int row = blockIdx.x;
   const float* xr = x + static_cast<size_t>(row) * dim;
-  float* outr = out + static_cast<size_t>(row) * dim;
+  Output* outr = out + static_cast<size_t>(row) * dim;
 
   float sum_sq = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
@@ -101,18 +107,19 @@ __global__ void rmsnorm_kernel(const float* __restrict__ x, const float* __restr
   const float inv = block_norm_inverse(total, static_cast<uint32_t>(dim), eps, shared);
 
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
-    outr[i] = xr[i] * inv * weight[i];
+    store_activation(outr + i, xr[i] * inv * weight[i]);
   }
 }
 
 // y = (x - mean) / sqrt(var + eps) * weight + bias, biased variance.
+template <typename Output>
 __global__ void layernorm_kernel(const float* __restrict__ x, const float* __restrict__ weight,
-                                 const float* __restrict__ bias, float* __restrict__ out,
+                                 const float* __restrict__ bias, Output* __restrict__ out,
                                  int dim, float eps) {
   extern __shared__ float shared[];
   const int row = blockIdx.x;
   const float* xr = x + static_cast<size_t>(row) * dim;
-  float* outr = out + static_cast<size_t>(row) * dim;
+  Output* outr = out + static_cast<size_t>(row) * dim;
 
   float sum = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += xr[i];
@@ -129,7 +136,7 @@ __global__ void layernorm_kernel(const float* __restrict__ x, const float* __res
                                        static_cast<uint32_t>(dim), eps, shared);
 
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
-    outr[i] = (xr[i] - mean) * inv * weight[i] + bias[i];
+    store_activation(outr + i, (xr[i] - mean) * inv * weight[i] + bias[i]);
   }
 }
 
@@ -310,8 +317,9 @@ __global__ void layerscale_residual_kernel(float* __restrict__ x, const float* _
 //
 // The w1 bias is folded in for the same reason as above: this kernel already
 // streams the whole 2*inner-wide row.
+template <typename Output>
 __global__ void swiglu_kernel(const float* __restrict__ in, const float* __restrict__ bias,
-                              float* __restrict__ out, int inner) {
+                              Output* __restrict__ out, int inner) {
   const int c = blockIdx.x * blockDim.x + threadIdx.x;
   if (c >= inner) return;
   const size_t row = blockIdx.y;
@@ -326,8 +334,8 @@ __global__ void swiglu_kernel(const float* __restrict__ in, const float* __restr
       ? canonicalize_pointwise_float(__fadd_rn(
             value_input, canonicalize_pointwise_float(bias[inner + c])))
       : value_input;
-  out[row * inner + c] = canonicalize_pointwise_float(
-      __fmul_rn(deterministic_pointwise_silu(gate), value));
+  store_activation(out + row * inner + c, canonicalize_pointwise_float(
+      __fmul_rn(deterministic_pointwise_silu(gate), value)));
 }
 
 // Widens fp16 checkpoint bytes to fp32 on the device, so the host never has to
@@ -431,11 +439,29 @@ void launch_rmsnorm(const float* x, const float* weight, float* out, int rows, i
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
+void launch_rmsnorm_f16(const float* x, const float* weight, void* out, int rows, int dim,
+                        float eps, cudaStream_t stream) {
+  const int threads = 256;
+  const size_t shared = (threads / kWarp) * sizeof(float);
+  rmsnorm_kernel<<<rows, threads, shared, stream>>>(
+      x, weight, static_cast<__half*>(out), dim, eps);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
 void launch_layernorm(const float* x, const float* weight, const float* bias, float* out, int rows,
                       int dim, float eps, cudaStream_t stream) {
   const int threads = 256;
   const size_t shared = (threads / kWarp) * sizeof(float);
   layernorm_kernel<<<rows, threads, shared, stream>>>(x, weight, bias, out, dim, eps);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_layernorm_f16(const float* x, const float* weight, const float* bias, void* out,
+                          int rows, int dim, float eps, cudaStream_t stream) {
+  const int threads = 256;
+  const size_t shared = (threads / kWarp) * sizeof(float);
+  layernorm_kernel<<<rows, threads, shared, stream>>>(
+      x, weight, bias, static_cast<__half*>(out), dim, eps);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -480,6 +506,14 @@ void launch_swiglu(const float* in, const float* bias, float* out, int rows, int
   const int threads = 256;
   const dim3 grid((inner + threads - 1) / threads, rows);
   swiglu_kernel<<<grid, threads, 0, stream>>>(in, bias, out, inner);
+  VIDFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_swiglu_f16(const float* in, const float* bias, void* out, int rows, int inner,
+                       cudaStream_t stream) {
+  const int threads = 256;
+  const dim3 grid((inner + threads - 1) / threads, rows);
+  swiglu_kernel<<<grid, threads, 0, stream>>>(in, bias, static_cast<__half*>(out), inner);
   VIDFAB_CUDA_CHECK(cudaGetLastError());
 }
 

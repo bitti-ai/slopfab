@@ -173,7 +173,6 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_merged;   // [S, dim]
   DeviceBuffer<float> d_proj;     // [S, dim] or [S, patch_dim]
   DeviceBuffer<float> d_ffn;      // [S, 2*ffn_inner]
-  DeviceBuffer<float> d_act;      // [S, ffn_inner]
   DeviceBuffer<__half> d_gemm_in; // narrowed input for tensor-core linears
   DeviceBuffer<__half> d_weight;  // active NF4 matrix expansion
   size_t cap_weight = 0;
@@ -267,11 +266,18 @@ struct ViTDecoder::Impl {
   }
 
   void gemm_nt(const float* A, const cuda::F16Weight& weight, float* C, int M, int N, int K) {
-    const __half* B = weight.materialize(d_weight.get(), cap_weight, stream.get());
     cuda::launch_narrow_f16(A, d_gemm_in.get(), static_cast<size_t>(M) * K, stream.get());
+    gemm_nt_prepared(d_gemm_in.get(), weight, C, M, N, K);
+  }
+
+  // The producer has already rounded the fp32 activation to the exact fp16
+  // operand the old launch_narrow_f16 pass produced.
+  void gemm_nt_prepared(const __half* A, const cuda::F16Weight& weight, float* C,
+                        int M, int N, int K) {
+    const __half* B = weight.materialize(d_weight.get(), cap_weight, stream.get());
     if (cfg.transformer_mode == ViTTransformerMode::kExact) {
       cuda::launch_deterministic_scalar_gemm_nt(
-          d_gemm_in.get(), B, nullptr, C, static_cast<uint32_t>(M),
+          A, B, nullptr, C, static_cast<uint32_t>(M),
           static_cast<uint32_t>(N), static_cast<uint32_t>(K),
           DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone, 0, 0,
           stream.get());
@@ -279,7 +285,7 @@ struct ViTDecoder::Impl {
     }
     const float alpha = 1.0f, beta = 0.0f;
     CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F,
-                              K, d_gemm_in.get(), CUDA_R_16F, K, &beta, C, CUDA_R_32F, N,
+                              K, A, CUDA_R_16F, K, &beta, C, CUDA_R_32F, N,
                               CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
   }
 
@@ -342,7 +348,6 @@ struct ViTDecoder::Impl {
     d_merged.allocate(s * dim);
     d_proj.allocate(s * static_cast<size_t>(cfg.patch_dim()));
     d_ffn.allocate(s * 2 * cfg.ffn_inner);
-    d_act.allocate(s * cfg.ffn_inner);
     d_gemm_in.allocate(s * static_cast<size_t>(std::max(cfg.ffn_inner, cfg.dim)));
     d_cos.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
     d_sin.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
@@ -383,8 +388,9 @@ struct ViTDecoder::Impl {
 
     // --- attention ---
     const int rows = seq * batch;
-    cuda::launch_rmsnorm(d_tokens.get(), b.norm1.get(), d_normed.get(), rows, dim, cfg.eps, s);
-    gemm_nt(d_normed.get(), b.qkv_w, d_qkv.get(), rows, 3 * dim, dim);
+    cuda::launch_rmsnorm_f16(d_tokens.get(), b.norm1.get(), d_gemm_in.get(), rows, dim,
+                             cfg.eps, s);
+    gemm_nt_prepared(d_gemm_in.get(), b.qkv_w, d_qkv.get(), rows, 3 * dim, dim);
 
     // The qkv bias is applied inside the split kernel, which already reads
     // every element of d_qkv once.
@@ -414,10 +420,12 @@ struct ViTDecoder::Impl {
                                      rows, dim, s);
 
     // --- feed forward ---
-    cuda::launch_rmsnorm(d_tokens.get(), b.norm2.get(), d_normed.get(), rows, dim, cfg.eps, s);
-    gemm_nt(d_normed.get(), b.w1, d_ffn.get(), rows, 2 * cfg.ffn_inner, dim);
-    cuda::launch_swiglu(d_ffn.get(), b.w1_b.get(), d_act.get(), rows, cfg.ffn_inner, s);
-    gemm_nt(d_act.get(), b.w2, d_normed.get(), rows, dim, cfg.ffn_inner);
+    cuda::launch_rmsnorm_f16(d_tokens.get(), b.norm2.get(), d_gemm_in.get(), rows, dim,
+                             cfg.eps, s);
+    gemm_nt_prepared(d_gemm_in.get(), b.w1, d_ffn.get(), rows, 2 * cfg.ffn_inner, dim);
+    cuda::launch_swiglu_f16(d_ffn.get(), b.w1_b.get(), d_gemm_in.get(), rows,
+                            cfg.ffn_inner, s);
+    gemm_nt_prepared(d_gemm_in.get(), b.w2, d_normed.get(), rows, dim, cfg.ffn_inner);
     cuda::launch_layerscale_residual(d_tokens.get(), d_normed.get(), b.w2_b.get(), b.scale2.get(),
                                      rows, dim, s);
   }
@@ -692,9 +700,17 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     {
       cuda::PhaseSpan s_proj("forward: issue project");
       cuda::PhaseGpuSpan g_proj("forward: project + D2H", s);
-      cuda::launch_layernorm(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
-                             d.norm_out_b.get(), d.d_normed.get(), num_patches, dim, cfg.eps, s);
-      d.gemm_nt(d.d_normed.get(), d.proj_out_w, d.d_proj.get(), num_patches, patch_dim, dim);
+      if (cfg.transformer_mode == ViTTransformerMode::kExact) {
+        cuda::launch_layernorm(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
+                               d.norm_out_b.get(), d.d_normed.get(), num_patches, dim, cfg.eps, s);
+        d.gemm_nt(d.d_normed.get(), d.proj_out_w, d.d_proj.get(), num_patches, patch_dim, dim);
+      } else {
+        cuda::launch_layernorm_f16(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
+                                   d.norm_out_b.get(), d.d_gemm_in.get(), num_patches, dim,
+                                   cfg.eps, s);
+        d.gemm_nt_prepared(d.d_gemm_in.get(), d.proj_out_w, d.d_proj.get(), num_patches,
+                           patch_dim, dim);
+      }
       cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
       cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
                                   cfg.patch_t, cfg.patch, s);

@@ -143,15 +143,32 @@ void test_norms() {
   DeviceBuffer<float> dw = to_device(w);
   DeviceBuffer<float> db = to_device(b);
   DeviceBuffer<float> dout(x.size());
+  DeviceBuffer<uint16_t> dlegacy_f16(x.size());
+  DeviceBuffer<uint16_t> dfused_f16(x.size());
 
   vidfab::cuda::launch_rmsnorm(dx.get(), dw.get(), dout.get(), rows, dim, eps, nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(cpu_rmsnorm(x, w, rows, dim, eps), to_host(dout), 1e-4, "rmsnorm");
+  vidfab::cuda::launch_narrow_f16(dout.get(), dlegacy_f16.get(), x.size(), nullptr);
+  vidfab::cuda::launch_rmsnorm_f16(dx.get(), dw.get(), dfused_f16.get(), rows, dim, eps,
+                                   nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> legacy_f16(x.size()), fused_f16(x.size());
+  dlegacy_f16.copy_to_host(legacy_f16.data(), legacy_f16.size());
+  dfused_f16.copy_to_host(fused_f16.data(), fused_f16.size());
+  CHECK(legacy_f16 == fused_f16);
 
   vidfab::cuda::launch_layernorm(dx.get(), dw.get(), db.get(), dout.get(), rows, dim, eps,
                                  nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(cpu_layernorm(x, w, b, rows, dim, eps), to_host(dout), 1e-4, "layernorm");
+  vidfab::cuda::launch_narrow_f16(dout.get(), dlegacy_f16.get(), x.size(), nullptr);
+  vidfab::cuda::launch_layernorm_f16(dx.get(), dw.get(), db.get(), dfused_f16.get(), rows, dim,
+                                     eps, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  dlegacy_f16.copy_to_host(legacy_f16.data(), legacy_f16.size());
+  dfused_f16.copy_to_host(fused_f16.data(), fused_f16.size());
+  CHECK(legacy_f16 == fused_f16);
 }
 
 void test_gemm() {
@@ -233,6 +250,8 @@ void test_swiglu() {
 
   DeviceBuffer<float> din = to_device(in);
   DeviceBuffer<float> dout(want.size());
+  DeviceBuffer<uint16_t> dlegacy_f16(want.size());
+  DeviceBuffer<uint16_t> dfused_f16(want.size());
   vidfab::cuda::launch_swiglu(din.get(), nullptr, dout.get(), rows, inner, nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want, to_host(dout), 1e-5, "swiglu");
@@ -252,6 +271,13 @@ void test_swiglu() {
   vidfab::cuda::launch_swiglu(din.get(), dbias.get(), dout.get(), rows, inner, nullptr);
   VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_biased, to_host(dout), 1e-5, "swiglu with fused bias");
+  vidfab::cuda::launch_narrow_f16(dout.get(), dlegacy_f16.get(), want.size(), nullptr);
+  vidfab::cuda::launch_swiglu_f16(din.get(), dbias.get(), dfused_f16.get(), rows, inner, nullptr);
+  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  std::vector<uint16_t> legacy_f16(want.size()), fused_f16(want.size());
+  dlegacy_f16.copy_to_host(legacy_f16.data(), legacy_f16.size());
+  dfused_f16.copy_to_host(fused_f16.data(), fused_f16.size());
+  CHECK(legacy_f16 == fused_f16);
 }
 
 void test_softmax() {

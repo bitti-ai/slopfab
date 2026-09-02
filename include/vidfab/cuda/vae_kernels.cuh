@@ -12,9 +12,18 @@ namespace vidfab::cuda {
 void launch_rmsnorm(const float* x, const float* weight, float* out, int rows, int dim, float eps,
                     cudaStream_t stream);
 
+// Same fp32 reduction and pointwise arithmetic as launch_rmsnorm, but writes
+// the already-required fp16 operand for the following VAE GEMM directly.
+void launch_rmsnorm_f16(const float* x, const float* weight, void* out, int rows, int dim,
+                        float eps, cudaStream_t stream);
+
 // y = (x - mean)/sqrt(var + eps) * weight + bias, biased variance.
 void launch_layernorm(const float* x, const float* weight, const float* bias, float* out, int rows,
                       int dim, float eps, cudaStream_t stream);
+
+// Same fp32 arithmetic as launch_layernorm followed by launch_narrow_f16.
+void launch_layernorm_f16(const float* x, const float* weight, const float* bias, void* out,
+                          int rows, int dim, float eps, cudaStream_t stream);
 
 void launch_add_bias(float* y, const float* bias, int rows, int cols, cudaStream_t stream);
 
@@ -38,6 +47,10 @@ void launch_layerscale_residual(float* x, const float* y, const float* bias, con
 // `bias` may be null.
 void launch_swiglu(const float* in, const float* bias, float* out, int rows, int inner,
                    cudaStream_t stream);
+
+// Computes SwiGLU in fp32 and writes the following w2 GEMM's fp16 operand.
+void launch_swiglu_f16(const float* in, const float* bias, void* out, int rows, int inner,
+                       cudaStream_t stream);
 
 // Widens `count` fp16 values to fp32 on the device.
 void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t stream);
