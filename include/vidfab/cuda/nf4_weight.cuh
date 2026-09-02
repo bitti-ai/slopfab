@@ -24,9 +24,14 @@ class F16Weight {
             bool canonicalize_f16_subnormals = false);
   const __half* materialize(__half* workspace, size_t workspace_elements,
                             cudaStream_t stream) const;
+  const int8_t* materialize_w4a8(int8_t* workspace,
+                                 size_t workspace_elements,
+                                 cudaStream_t stream) const;
   size_t elements() const { return elements_; }
   size_t stored_bytes() const;
   bool packed_nf4() const { return codes_.size() != 0; }
+  bool packed_w4a8() const { return w4_codes_.size() != 0; }
+  const float* w4a8_channel_scale() const { return w4_channel_scale_.get(); }
 
  private:
   size_t elements_ = 0;
@@ -36,6 +41,12 @@ class F16Weight {
   DeviceBuffer<__half> dense_;
   DeviceBuffer<uint8_t> codes_, absmax_;
   DeviceBuffer<float> quant_map_, nested_quant_map_, nested_absmax_;
+  int w4_out_features_ = 0;
+  int w4_in_features_ = 0;
+  int w4_group_size_ = 0;
+  DeviceBuffer<int8_t> w4_codes_;
+  DeviceBuffer<uint8_t> w4_group_scale_;
+  DeviceBuffer<float> w4_channel_scale_, w4_codebook_;
 };
 
 }  // namespace vidfab::cuda
