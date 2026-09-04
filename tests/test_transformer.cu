@@ -1478,6 +1478,36 @@ VIDFAB_TEST(denoise_zero_velocity_is_a_fixed_point) {
   CHECK_CLOSE(first_audio, out.audio_rows, 1e-6, "audio latents under zero velocity");
 }
 
+VIDFAB_TEST(denoise_accepts_video_only_still_layout) {
+  SequenceLayout layout = tiny_layout();
+  layout.num_audio_latents = 0;
+  layout.num_audio_rows = 0;
+  layout.num_latent_frames = 1;
+  layout.num_video_rows = layout.rows_per_frame();
+  const PackedIndices idx = vidfab::dit::build_indices(layout);
+
+  vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+  video.set_timesteps(4);
+  audio.set_timesteps(4);
+
+  Transformer model;
+  vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+  int calls = 0;
+  in.velocity = [&](int, const RowTimesteps& rt, const float*, const float* audio_rows,
+                    float* vv, float* audio_velocity) {
+    ++calls;
+    CHECK(audio_rows != nullptr);
+    CHECK(audio_velocity != nullptr);
+    CHECK(rt.indices.size() == idx.text.size() + idx.video.size());
+    std::fill(vv, vv + layout.num_video_rows * 96, 0.0f);
+  };
+
+  const vidfab::dit::DenoiseOutputs out = vidfab::dit::denoise(model, in);
+  CHECK(calls == static_cast<int>(video.timesteps().size()));
+  CHECK(out.video_rows.size() == static_cast<size_t>(layout.num_video_rows) * 96);
+  CHECK(out.audio_rows.empty());
+}
+
 VIDFAB_TEST(denoise_constant_velocity_matches_cpu_euler) {
   const SequenceLayout layout = tiny_layout();
   const PackedIndices idx = vidfab::dit::build_indices(layout);

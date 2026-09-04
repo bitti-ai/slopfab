@@ -59,11 +59,16 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   if (cv) require(inputs.condition_video_rows->size() == cv, "condition video shape disagrees with layout");
   if (ca) require(inputs.condition_audio_rows->size() == ca, "condition audio shape disagrees with layout");
   std::vector<float> all_video(video_rows * patch, 0.0f);
-  std::vector<float> all_audio(audio_rows * audio_dim, 0.0f);
+  const size_t audio_values = audio_rows * static_cast<size_t>(audio_dim);
+  // Keep a valid address even for the video-only still path. The transformer
+  // and optional capture hooks receive the pointer alongside a logical row
+  // count of zero; a one-float sentinel avoids null-pointer arithmetic in
+  // instrumentation without introducing an audio token or output sample.
+  std::vector<float> all_audio(std::max<size_t>(audio_values, 1), 0.0f);
   if (cv) std::copy(inputs.condition_video_rows->begin(), inputs.condition_video_rows->end(), all_video.begin());
   if (ca) std::copy(inputs.condition_audio_rows->begin(), inputs.condition_audio_rows->end(), all_audio.begin());
   out.video_rows.assign(all_video.size() - cv, 0.0f);
-  out.audio_rows.assign(all_audio.size() - ca, 0.0f);
+  out.audio_rows.assign(audio_values - ca, 0.0f);
 
   // Draw order matters for reproducibility even though our generator is not
   // torch's: video first, in `(24, F, Hl, Wl)` layout and then patchified, then
@@ -86,7 +91,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     require(inputs.init_audio_rows->size() == out.audio_rows.size(),
             "the supplied initial audio latents disagree with the layout");
     out.audio_rows = *inputs.init_audio_rows;
-  } else {
+  } else if (!out.audio_rows.empty()) {
     const std::vector<float> noise =
         sampler::audio_noise(inputs.seed, layout.num_audio_latents, audio_dim);
     require(noise.size() == out.audio_rows.size(), "audio noise shape disagrees with the layout");
@@ -100,7 +105,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   // consume the velocities still sitting here. 14.3 MB at the default geometry,
   // already allocated, so the feature costs no memory at all.
   std::vector<float> video_velocity(all_video.size(), 0.0f);
-  std::vector<float> audio_velocity(all_audio.size(), 0.0f);
+  std::vector<float> audio_velocity(std::max<size_t>(audio_values, 1), 0.0f);
 
   const int steps = static_cast<int>(video_t.size());
   StepCache cache(inputs.cache, steps);

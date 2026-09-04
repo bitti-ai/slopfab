@@ -984,7 +984,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // overlapping the two would only make them queue behind each other on the
       // same drive. From this line to the end of the loop the pipeline touches
       // no disk at all, which is the window this is trying to fill.
-      vae_prefetch.start({request.video_vae_path, request.audio_vae_path}, options.verbose);
+      vae_prefetch.start(request.still_image
+                             ? std::vector<std::string>{request.video_vae_path}
+                             : std::vector<std::string>{request.video_vae_path,
+                                                        request.audio_vae_path},
+                         options.verbose);
 
       const Clock::time_point loop_start = Clock::now();
       // `denoise` breaks out of the loop when the callback returns false and
@@ -1118,8 +1122,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
             live.latent_width);
         initial_video.resize(static_cast<size_t>(live.num_video_rows) * 96);
         dit::patchify_video(noise.data(), live, initial_video.data());
-        initial_audio = sampler::audio_noise(
-            request.seed, live.num_audio_latents);
+        if (live.num_audio_latents > 0) {
+          initial_audio = sampler::audio_noise(
+              request.seed, live.num_audio_latents);
+        }
       }
       if (conditioned) {
         if (condition_video_rows.size() !=
@@ -1152,7 +1158,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       video_sched.set_timesteps(plan.num_inference_steps);
       audio_sched.set_timesteps(plan.num_inference_steps);
       const int total_steps = plan.num_model_evaluations();
-      vae_prefetch.start({request.video_vae_path, request.audio_vae_path},
+      vae_prefetch.start(request.still_image
+                             ? std::vector<std::string>{request.video_vae_path}
+                             : std::vector<std::string>{request.video_vae_path,
+                                                        request.audio_vae_path},
                          options.verbose);
       const Clock::time_point loop_start = Clock::now();
       bool cancel_requested = false;
@@ -1208,7 +1217,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                              layout.latent_width);
     video_rows.resize(static_cast<size_t>(layout.num_video_rows) * 96);
     dit::patchify_video(video_latents.data(), layout, video_rows.data());
-    audio_rows = sampler::audio_noise(request.seed, layout.num_audio_latents);
+    if (layout.num_audio_latents > 0) {
+      audio_rows = sampler::audio_noise(request.seed, layout.num_audio_latents);
+    }
     result.seconds_denoise = seconds_since(t0);
   }
 
@@ -1267,9 +1278,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     static_cast<double>(decoder.weight_bytes()) /
                         (1024.0 * 1024.0 * 1024.0));
       }
-      video = decoder.decode(latents.data(), layout.num_latent_frames,
-                             layout.latent_height, layout.latent_width, mean,
-                             std_dev);
+      video = request.still_image
+                  ? vae::decode_still_image(decoder, latents.data(),
+                                            layout.latent_height, layout.latent_width,
+                                            mean, std_dev)
+                  : decoder.decode(latents.data(), layout.num_latent_frames,
+                                   layout.latent_height, layout.latent_width, mean,
+                                   std_dev);
     } else {
 #if VIDFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device();
@@ -1284,9 +1299,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     static_cast<double>(decoder.persistent_bytes()) /
                         (1024.0 * 1024.0 * 1024.0));
       }
-      video = decoder.decode(latents.data(), layout.num_latent_frames,
-                             layout.latent_height, layout.latent_width, mean,
-                             std_dev);
+      video = request.still_image
+                  ? vae::decode_still_image(decoder, latents.data(),
+                                            layout.latent_height, layout.latent_width,
+                                            mean, std_dev)
+                  : decoder.decode(latents.data(), layout.num_latent_frames,
+                                   layout.latent_height, layout.latent_width, mean,
+                                   std_dev);
 #else
       throw std::logic_error("Vulkan inference compiled out after validation");
 #endif
@@ -1305,7 +1324,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   // --- audio ----------------------------------------------------------------
 
   vae::DecodedAudio audio;
-  if (!request.audio_vae_path.empty()) {
+  if (!request.still_image && !request.audio_vae_path.empty()) {
     if (!notify(RunStage::kAudioDecode, -1, 0)) return stop("audio decode");
     const Clock::time_point t0 = Clock::now();
 
@@ -1351,7 +1370,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                   result.seconds_audio_decode);
     }
   } else if (options.verbose) {
-    std::printf("audio       skipped (no --audio-vae)\n");
+    std::printf("audio       skipped (%s)\n",
+                request.still_image ? "still-image mode" : "no --audio-vae");
   }
 
   // --- output ---------------------------------------------------------------

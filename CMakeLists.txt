@@ -1245,6 +1245,7 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_audio_primitives.cpp
     tests/test_chunking.cpp
     tests/test_compare_metrics.cpp
+    tests/test_decode_pipeline.cpp
     tests/test_image.cpp
     tests/test_noise.cpp
     tests/test_packing.cpp
