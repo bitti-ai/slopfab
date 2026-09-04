@@ -76,6 +76,7 @@ VIDFAB_TEST(capi_rejects_null_handles) {
   CHECK(vidfab_request_set_prompt(nullptr, "x") == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_seed(nullptr, 1) == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_frames(nullptr, 5) == VIDFAB_ERR_INVALID_ARGUMENT);
+  CHECK(vidfab_request_set_still_image(nullptr, 1) == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_reuse_models(nullptr, 1) == VIDFAB_ERR_INVALID_ARGUMENT);
   CHECK(vidfab_request_set_model_path(nullptr, VIDFAB_MODEL_TRANSFORMER, "x") ==
         VIDFAB_ERR_INVALID_ARGUMENT);
@@ -164,6 +165,26 @@ VIDFAB_TEST(capi_request_geometry) {
   CHECK(vidfab_request_set_steps(request.handle, 8) == VIDFAB_OK);
   CHECK(vidfab_resolve_plan(request.handle, &plan) == VIDFAB_OK);
   CHECK(plan.num_model_evaluations == 7);
+}
+
+VIDFAB_TEST(capi_still_image_plan) {
+  Request request;
+  CHECK(vidfab_request_set_prompt(request.handle, "a still life") == VIDFAB_OK);
+  CHECK(vidfab_request_set_aspect(request.handle, 1, 1) == VIDFAB_OK);
+  CHECK(vidfab_request_set_frames(request.handle, 1) == VIDFAB_OK);
+  CHECK(vidfab_request_set_still_image(request.handle, 1) == VIDFAB_OK);
+
+  vidfab_plan plan{};
+  CHECK(vidfab_resolve_plan(request.handle, &plan) == VIDFAB_OK);
+  CHECK(plan.aligned_frames == 1);
+  CHECK(plan.latent_frames == 1);
+  CHECK(plan.num_video_rows == 576);
+  CHECK(plan.num_audio_latents == 0);
+  CHECK(plan.num_audio_rows == 0);
+  CHECK(plan.sequence_rows_without_text == 576);
+
+  CHECK(vidfab_request_set_still_image(request.handle, 0) == VIDFAB_OK);
+  CHECK(vidfab_resolve_plan(request.handle, &plan) == VIDFAB_ERR_INVALID_REQUEST);
 }
 
 // A canvas off the 32-pixel grid is well-formed as arguments and impossible as

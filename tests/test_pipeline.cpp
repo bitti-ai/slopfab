@@ -188,6 +188,35 @@ VIDFAB_TEST(pipeline_plan_aspect_and_frames) {
   CHECK(sq.layout.rows_per_frame() == 24 * 24);
 }
 
+VIDFAB_TEST(pipeline_plan_still_image) {
+  vidfab::GenerateRequest r = base_request();
+  r.aspect_w = 1;
+  r.aspect_h = 1;
+  r.num_frames = 1;  // Invalid for video, deliberately irrelevant for a still.
+  r.still_image = true;
+  const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
+
+  CHECK(p.aligned_frames == 1);
+  CHECK_NEAR(p.duration_seconds, 1.0 / 24.0, 1e-12);
+  CHECK(p.layout.num_latent_frames == 1);
+  CHECK(p.layout.latent_height == 48);
+  CHECK(p.layout.latent_width == 48);
+  CHECK(p.layout.rows_per_frame() == 576);
+  CHECK(p.layout.num_video_rows == 576);
+  CHECK(p.layout.num_audio_latents == 0);
+  CHECK(p.layout.num_audio_rows == 0);
+  CHECK(p.sequence_length_without_text() == 576);
+
+  const std::string description = vidfab::describe_plan(r, p);
+  CHECK(description.find("still image") != std::string::npos);
+  CHECK(description.find("1 output") != std::string::npos);
+
+  // Turning the mode off restores ordinary validation; the request field was
+  // not silently rewritten by resolving the still plan.
+  r.still_image = false;
+  CHECK(rejects_frame_count(r.num_frames));
+}
+
 VIDFAB_TEST(pipeline_plan_explicit_resolution) {
   // The property the whole flag rests on: naming the canvas the default
   // already produces must reproduce the default plan exactly. If this drifts,

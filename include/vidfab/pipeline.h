@@ -64,6 +64,13 @@ struct GenerateRequest {
   // Snapped up to the next 17*k + 5 the video VAE can encode.
   int num_frames = 124;
 
+  // Generate one still image instead of a temporal video. This is deliberately
+  // opt-in: it denoises one video latent frame, omits target audio rows, and
+  // decodes temporal phase 3 directly instead of running the VAE's seven-token
+  // video schedule. It is therefore a different sampling mode, not a faster
+  // way to reproduce frame zero of a normal video request.
+  bool still_image = false;
+
   // Sigma grid points *including* the terminal zero, so the model runs
   // `num_inference_steps - 1` times.
   int num_inference_steps = 50;

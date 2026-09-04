@@ -90,7 +90,7 @@ extern "C" {
  * A binding should compare `vidfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define VIDFAB_CAPI_VERSION_MAJOR 1
-#define VIDFAB_CAPI_VERSION_MINOR 4
+#define VIDFAB_CAPI_VERSION_MINOR 5
 #define VIDFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -219,7 +219,7 @@ typedef struct vidfab_plan {
   int32_t canvas_width;
   int32_t canvas_height;
   /* The frame count snapped up to the next 17*k + 5 the video VAE can encode,
-   * which is what will actually be produced. */
+   * which is what will actually be produced; exactly 1 in still-image mode. */
   int32_t aligned_frames;
   double duration_seconds;
   /* Forward passes the loop will run: one fewer than the grid points, because
@@ -334,6 +334,15 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_resolution(vidfab_request* reque
 /* Snapped up to the next 17*k + 5 the video VAE can encode; `vidfab_plan`
  * reports what it became. */
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_frames(vidfab_request* request, int32_t frames);
+
+/* Selects the dedicated still-image path. When enabled, `frames` is ignored:
+ * the plan contains one video latent frame, no target audio rows, and one
+ * decoded output frame. The VAE decodes temporal phase 3 directly, matching
+ * the first retained phase of the normal temporal schedule. This is a distinct
+ * sampling mode and is not bit-equivalent to frame zero of a video request.
+ * Disabling it restores the request's previous frame count. */
+VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_still_image(vidfab_request* request,
+                                                            int32_t enable);
 
 /* Sigma grid points *including* the terminal zero, so the model runs
  * `steps - 1` times. At least 2. */

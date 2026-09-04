@@ -44,28 +44,35 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
                              &plan.canvas_width);
   }
 
-  plan.aligned_frames = dit::align_num_frames(request.num_frames);
-  plan.duration_seconds = static_cast<double>(plan.aligned_frames) / kFps;
+  if (request.still_image) {
+    plan.aligned_frames = 1;
+    plan.duration_seconds = 1.0 / kFps;
+  } else {
+    plan.aligned_frames = dit::align_num_frames(request.num_frames);
+    plan.duration_seconds = static_cast<double>(plan.aligned_frames) / kFps;
 
-  // Checked here rather than in the decoder so the run fails in milliseconds
-  // instead of after uploading 9 GB of VAE weights. The decoder does keep its
-  // own guard — this one is about where the user finds out.
-  if (dit::video_latent_num_frames(plan.aligned_frames) < kMinLatentFrames) {
-    throw std::runtime_error(
-        "num_frames = " + std::to_string(request.num_frames) + " aligns to " +
-        std::to_string(plan.aligned_frames) + " frames, which is " +
-        std::to_string(dit::video_latent_num_frames(plan.aligned_frames)) +
-        " latent frames; the video decoder needs at least " +
-        std::to_string(kMinLatentFrames) + ". Ask for at least 6 frames, which aligns up to " +
-        std::to_string(kMinFrames) + ".");
+    // Checked here rather than in the decoder so the run fails in milliseconds
+    // instead of after uploading 9 GB of VAE weights. The decoder does keep its
+    // own guard — this one is about where the user finds out.
+    if (dit::video_latent_num_frames(plan.aligned_frames) < kMinLatentFrames) {
+      throw std::runtime_error(
+          "num_frames = " + std::to_string(request.num_frames) + " aligns to " +
+          std::to_string(plan.aligned_frames) + " frames, which is " +
+          std::to_string(dit::video_latent_num_frames(plan.aligned_frames)) +
+          " latent frames; the video decoder needs at least " +
+          std::to_string(kMinLatentFrames) + ". Ask for at least 6 frames, which aligns up to " +
+          std::to_string(kMinFrames) + ".");
+    }
   }
 
   plan.layout.num_text = 0;  // filled in after tokenisation
   plan.layout.num_condition_video = 0;  // t2va has no conditioning rows
-  plan.layout.num_latent_frames = dit::video_latent_num_frames(plan.aligned_frames);
+  plan.layout.num_latent_frames =
+      request.still_image ? 1 : dit::video_latent_num_frames(plan.aligned_frames);
   plan.layout.latent_height = plan.canvas_height / kSpatialCompression;
   plan.layout.latent_width = plan.canvas_width / kSpatialCompression;
-  plan.layout.num_audio_latents = dit::audio_latents_for_frames(plan.aligned_frames);
+  plan.layout.num_audio_latents =
+      request.still_image ? 0 : dit::audio_latents_for_frames(plan.aligned_frames);
   plan.layout.num_audio_rows = 2 * plan.layout.num_audio_latents;
   plan.layout.num_video_rows = plan.layout.num_latent_frames * plan.layout.rows_per_frame();
 
@@ -270,7 +277,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       "  prompt              %zu characters\n"
       "  reference images    %zu%s\n"
       "  canvas              %d x %d  (%s)\n"
-      "  frames              %d requested -> %d aligned (%.2f s at %d fps)\n"
+      "  mode                %s\n"
+      "  frames              %d requested -> %d %s (%.2f s at %d fps)\n"
       "  latent grid         %d frames of %d x %d  -> %d rows per frame\n"
       "  audio latents       %d per channel -> %d rows\n"
       "  packed sequence     %d rows + prompt length\n"
@@ -280,9 +288,13 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       "  seed                %llu\n"
       "  output              %s\n",
       request.prompt.size(), request.reference_image_paths.size(),
-      request.reference_image_paths.empty() ? " (text-to-video)" : " (Ref2VA, ordered)",
+      request.reference_image_paths.empty()
+          ? (request.still_image ? " (text-to-image)" : " (text-to-video)")
+          : " (Ref2VA, ordered)",
       plan.canvas_height, plan.canvas_width, provenance,
-      request.num_frames, plan.aligned_frames, plan.duration_seconds, kFps,
+      request.still_image ? "still image (one video latent, no target audio)" : "video",
+      request.num_frames, plan.aligned_frames, request.still_image ? "output" : "aligned",
+      plan.duration_seconds, kFps,
       l.num_latent_frames, l.latent_height, l.latent_width, l.rows_per_frame(),
       l.num_audio_latents, l.num_audio_rows, l.total_rows(), plan.num_inference_steps,
       plan.num_model_evaluations(), static_cast<double>(plan.video_sigmas.front()),

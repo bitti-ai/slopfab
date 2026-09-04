@@ -479,6 +479,16 @@ VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_frames(vidfab_request* request, 
   return VIDFAB_OK;
 }
 
+VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_still_image(vidfab_request* request,
+                                                            int32_t enable) {
+  if (request == nullptr) {
+    return fail(VIDFAB_ERR_INVALID_ARGUMENT,
+                "vidfab_request_set_still_image: null request");
+  }
+  request->request.still_image = enable != 0;
+  return VIDFAB_OK;
+}
+
 VIDFAB_C_API int VIDFAB_CALL vidfab_request_set_steps(vidfab_request* request, int32_t steps) {
   if (request == nullptr || steps < 2) {
     return fail(VIDFAB_ERR_INVALID_ARGUMENT,
