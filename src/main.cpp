@@ -576,7 +576,7 @@ const CommandHelp kCommands[] = {
      "checkpoints (omitted weights are found under weights/ or downloaded there):\n"
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --text-encoder <f>           Qwen3-VL conditioner, int8 ConvRot or nvfp4 AWQ\n"
-     "  --transformer <f>            H3 omni transformer, fp8, nvfp4 or NF4\n"
+     "  --transformer <f>            H3 omni transformer, fp8, int8 ConvRot, nvfp4 or NF4\n"
      "  --vae <f>                    video VAE decoder\n"
      "  --audio-vae <f>              audio VAE decoder\n"
      "\n"

@@ -891,8 +891,8 @@ builds dequantise to bf16 and run the same cuBLAS GEMM; nvfp4's resident load is
 *slower* (9.30 s against 4.95 s) despite reading a smaller file, which is the
 50 x 7 extra `weight_scale_2` reads and the larger tensor count, not bandwidth.
 
-Streaming is the default because the transformer needs 19.6 GiB (fp8) or
-12.5 GB (nvfp4) later in the same process. Its encode used to be 2.9 s, of which **96% was a single-threaded
+Streaming is the default because the transformer needs 19.6 GiB (fp8 or int8
+ConvRot) or 12.5 GB (nvfp4) later in the same process. Its encode used to be 2.9 s, of which **96% was a single-threaded
 host `memcpy`** staging weights into pinned memory — and most of *that* was soft
 page faults on the 27 GB mapping, not memcpy bandwidth. The mapping is now
 page-locked once with `cudaHostRegister` and each weight DMAs straight out of
@@ -1268,6 +1268,7 @@ The card is a 32 GB RTX 5090. Resident weights, measured from the checkpoints:
 | Qwen3-VL conditioner, int8 + ConvRot | 22.7 GB (23.1 GB peak; +1.6 GB embedding, kept on the host) |
 | Qwen3-VL conditioner, nvfp4 + AWQ | 12.8 GB (13.1 GB peak; +0.78 GB embedding, kept on the host) |
 | H3 transformer, fp8 | 19.3 GB |
+| H3 transformer, int8 + ConvRot | 19.5 GB |
 | H3 transformer, nvfp4 | 12.5 GB |
 | Video VAE decoder | 9.0 GB (fp16 on disk, widened to fp32) |
 | Audio VAE | 0.6 GB |
