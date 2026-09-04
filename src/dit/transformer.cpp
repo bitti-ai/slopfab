@@ -211,6 +211,8 @@ bool is_nvfp4(const SafeTensors& st, const std::string& name, int in_features) {
 struct QuantTag {
   std::string format;             // empty when the tensor carries no blob
   bool full_precision = false;
+  bool convrot = false;
+  int convrot_group = 256;
 };
 
 // The blob is the checkpoint's own statement of what its bytes mean, so it is
@@ -242,10 +244,23 @@ QuantTag read_comfy_quant(const SafeTensors& st, const std::string& name) {
   if (const json::Value* p = root.find("full_precision_matrix_mult"); p != nullptr) {
     tag.full_precision = p->as_bool();
   }
+  if (const json::Value* c = root.find("convrot"); c != nullptr) {
+    tag.convrot = c->as_bool();
+  }
+  if (const json::Value* g = root.find("convrot_groupsize"); g != nullptr) {
+    const int64_t value = g->as_int();
+    if (value <= 0 || value > 256) {
+      throw std::runtime_error("transformer: '" + name +
+                               ".comfy_quant' has invalid convrot_groupsize " +
+                               std::to_string(value));
+    }
+    tag.convrot_group = static_cast<int>(value);
+  }
 
   // Anything else is a layout this port has not been shown, and guessing at one
   // yields finite plausible output rather than a failure.
-  if (tag.format != "nvfp4" && tag.format != "float8_e4m3fn") {
+  if (tag.format != "nvfp4" && tag.format != "float8_e4m3fn" &&
+      tag.format != "int8_tensorwise") {
     throw std::runtime_error("transformer: '" + name + "' declares quant format '" + tag.format +
                              "', which this port does not implement");
   }
@@ -478,6 +493,17 @@ struct Carve {
   size_t total = 0;     // bytes
 };
 
+bool stack_uses_convrot(const std::vector<BlockWeights>& blocks) {
+  for (const BlockWeights& block : blocks) {
+    if (block.wq.convrot || block.wk.convrot || block.wv.convrot ||
+        block.out_proj.convrot || block.fc1.convrot || block.fc2.convrot ||
+        block.full_adaln.convrot) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // `chunk_override` exists for the token refiner, which runs the whole text
 // stream in one pass: its attention is over all L rows anyway, so chunking the
 // row-wise stages around it would buy nothing and complicate the carve.
@@ -497,7 +523,8 @@ size_t attention_scratch_for_mode(const TransformerConfig& cfg, int sequence,
 
 Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
                  int chunk_override = 0,
-                 AttentionMode attention_mode = AttentionMode::kFlash2) {
+                 AttentionMode attention_mode = AttentionMode::kFlash2,
+                 bool reserve_convrot = false) {
   const int seq = layout.total_rows();
   const int hidden = cfg.hidden_size;
   const int inner = cfg.inner_dim();
@@ -530,6 +557,12 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
   {
     QuantWeight probe;
     probe.format = QuantFormat::kF8E4M3;
+    // The dense dequantisation footprint is format-independent for every
+    // non-BF16 block weight, but ConvRot also needs one [rows, in] activation
+    // buffer. Use group 1 in this sizing-only probe so mixed/custom shapes are
+    // conservatively covered whenever any block in the stack rotates.
+    probe.convrot = reserve_convrot;
+    probe.convrot_group = 1;
     const auto dense = [&](int out, int in) {
       probe.out_features = out;
       probe.in_features = in;
@@ -1285,23 +1318,45 @@ struct Transformer::Impl {
         linear.forward_prepared(weight, dense, input, count, output, ws);
         return;
       }
-      const bool transformed = weight.pre_quant_scale != nullptr ||
-          (weight.convrot && weight.convrot_group > 0 &&
-           weight.in_features % weight.convrot_group == 0);
-      if (weight.bias != nullptr || transformed)
+      if (weight.bias != nullptr)
         throw std::runtime_error(
-            "transformer: exact H3 projection requires bias-free untransformed weights");
+            "transformer: exact H3 projection requires bias-free weights");
+      // The deterministic GEMM consumes the same logical activation as the
+      // regular LinearRunner. ConvRot INT8 checkpoints therefore still need
+      // their online activation rotation; exactness changes the GEMM, not the
+      // checkpoint's coordinate system. Rewind the temporary buffers after
+      // each projection just as LinearRunner::forward_prepared does. Stream
+      // order keeps the preceding GEMM ahead of the next projection's reuse.
+      Workspace::Scope projection_scope(ws);
+      const __nv_bfloat16* projected_input = input;
+      if (weight.pre_quant_scale != nullptr) {
+        __nv_bfloat16* scaled = ws.alloc_n<__nv_bfloat16>(
+            static_cast<size_t>(count) * weight.in_features);
+        cuda::launch_pre_quant_scale(projected_input, weight.pre_quant_scale,
+                                     scaled, count, weight.in_features,
+                                     stream.get());
+        projected_input = scaled;
+      }
+      if (weight.convrot && weight.convrot_group > 0 &&
+          weight.in_features % weight.convrot_group == 0) {
+        __nv_bfloat16* rotated = ws.alloc_n<__nv_bfloat16>(
+            static_cast<size_t>(count) * weight.in_features);
+        cuda::launch_convrot(projected_input, rotated, count,
+                             weight.in_features, weight.convrot_group,
+                             stream.get());
+        projected_input = rotated;
+      }
       const uint32_t tiled = static_cast<uint32_t>(count) / 64 * 64;
       if (tiled != 0) {
         cuda::launch_deterministic_bf16_gemm_nt(
-            input, dense, nullptr, output, tiled,
+            projected_input, dense, nullptr, output, tiled,
             static_cast<uint32_t>(weight.out_features),
             static_cast<uint32_t>(weight.in_features), DenseGemmBias::kNone,
             0, 0, stream.get());
       }
       if (tiled != static_cast<uint32_t>(count)) {
         cuda::launch_deterministic_scalar_gemm_nt(
-            input, dense, nullptr, output,
+            projected_input, dense, nullptr, output,
             static_cast<uint32_t>(count) - tiled,
             static_cast<uint32_t>(weight.out_features),
             static_cast<uint32_t>(weight.in_features),
@@ -1703,6 +1758,12 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
                    {out_features, in_features / static_cast<int>(cuda::kNVFP4BlockSize)},
                    Store::kVerbatim);
       plan.optional_scalar(name + ".weight_scale_2");
+    } else if (const TensorView* weight = checkpoint.find(name + ".weight");
+               weight != nullptr && weight->dtype == DType::kI8) {
+      plan.require(name + ".weight", {out_features, in_features}, Store::kVerbatim);
+      // ComfyUI calls this tensorwise INT8, but the checkpoint stores one F32
+      // dequantisation scale per output row as [out, 1].
+      plan.require(name + ".weight_scale", {out_features, 1}, Store::kAsF32);
     } else {
       plan.require(name + ".weight", {out_features, in_features}, Store::kVerbatim);
       plan.optional_scalar(name + ".weight_scale");
@@ -1930,13 +1991,32 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
         throw std::runtime_error("transformer: '" + name +
                                  ".weight' is fp8 but ships no weight_scale");
       }
+      if (w.format == QuantFormat::kI8 && w.weight_scale == nullptr) {
+        throw std::runtime_error("transformer: '" + name +
+                                 ".weight' is int8 but ships no per-channel weight_scale");
+      }
+      w.per_channel_scale = w.format == QuantFormat::kI8;
     }
 
     w.input_scale = host_scalar(name + ".input_scale");
     // The file decides, not a heuristic on which scales are present. No layer
     // of the nvfp4 transformer sets it and 50 of the fp8 transformer's do —
     // exactly `mlp.fc2`, which also ships no input_scale (spec 8.2).
-    w.full_precision = read_comfy_quant(checkpoint, name).full_precision;
+    const QuantTag tag = read_comfy_quant(checkpoint, name);
+    w.full_precision = tag.full_precision;
+    if (tag.convrot) {
+      int power = 1;
+      while (power < tag.convrot_group) power *= 4;
+      if (tag.format != "int8_tensorwise" || w.format != QuantFormat::kI8 ||
+          power != tag.convrot_group) {
+        throw std::runtime_error("transformer: '" + name +
+                                 "' has incompatible ConvRot metadata");
+      }
+      // The quantiser deliberately leaves a non-aligned contraction axis
+      // unrotated, so apply the same per-tensor rule at inference time.
+      w.convrot = in_features % tag.convrot_group == 0;
+      w.convrot_group = tag.convrot_group;
+    }
     return w;
   };
 
@@ -1997,6 +2077,10 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
       const size_t third = static_cast<size_t>(inner) * hidden * format_bytes(fused.format);
       b.wk.data = static_cast<const uint8_t*>(fused.data) + third;
       b.wv.data = static_cast<const uint8_t*>(fused.data) + 2 * third;
+      if (fused.per_channel_scale) {
+        b.wk.weight_scale = fused.weight_scale + inner;
+        b.wv.weight_scale = fused.weight_scale + 2 * inner;
+      }
     }
 
     b.out_proj = quant(prefix + "attn.out_proj", hidden, inner);
@@ -2068,7 +2152,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
 size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   const TransformerConfig& cfg = impl_->cfg;
-  const Carve c = plan_carve(cfg, layout, 0, impl_->attention_mode);
+  const Carve c = plan_carve(cfg, layout, 0, impl_->attention_mode,
+                             stack_uses_convrot(impl_->blocks));
   const int seq = layout.total_rows();
 
   size_t total = c.total;
@@ -2194,7 +2279,8 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   SequenceLayout text_only;
   text_only.num_text = num_tokens;
   const Carve text_carve = plan_carve(s.cfg, text_only, /*chunk_override=*/num_tokens,
-                                      s.attention_mode);
+                                      s.attention_mode,
+                                      stack_uses_convrot(s.refiner));
 
   Workspace& ws = s.ws;
   // The refiner needs one extra bf16 [L, text_dim] buffer that the main path
@@ -2294,7 +2380,8 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
 
   s.layout = layout;
   s.indices = indices;
-  s.carve = plan_carve(s.cfg, layout, 0, s.attention_mode);
+  s.carve = plan_carve(s.cfg, layout, 0, s.attention_mode,
+                       stack_uses_convrot(s.blocks));
   if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN) {
     const size_t old_scratch = s.carve.scratch;
     s.carve.scratch = std::max(s.carve.scratch, cuda::linear_workspace_bytes(
