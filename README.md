@@ -150,6 +150,18 @@ if (vidfab_generation_start(req, on_progress, NULL, &gen) == VIDFAB_OK) {
 vidfab_request_destroy(req);
 ```
 
+For the low-latency still-image path, opt in before resolving the plan:
+
+```c
+vidfab_request_set_still_image(req, 1);
+```
+
+This is a distinct sampling mode, not a one-frame truncation of a video run.
+It denoises one video latent with no audio tokens, decodes only the temporal
+phase corresponding to the first retained video frame, and returns exactly one
+frame in `vidfab_output`. Both CUDA and exact Vulkan denoising are supported;
+the regular frame-count setting is ignored while still mode is on.
+
 From Rust the same flow is a `bindgen` run over `capi.h` and a `Drop` impl per
 handle; the destructors all accept null, so the `Drop` needs no guard. Three
 rules carry across every binding:
