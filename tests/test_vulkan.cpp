@@ -3953,6 +3953,89 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   denoiser.unload();
   CHECK(denoise_context.pooled_used_bytes() == denoise_staging_used);
 
+  // Dedicated still trajectory: one video latent frame and no audio modality.
+  // Empty audio host spans stay empty all the way through the transformer,
+  // scheduler and result; no one-row device placeholder is introduced.
+  ExactH3DenoiseConfig still_config = denoise_config;
+  still_config.layout.num_audio_rows = 0;
+  still_config.layout.num_audio_latents = 0;
+  still_config.layout.num_latent_frames = 1;
+  still_config.layout.num_video_rows = still_config.layout.rows_per_frame();
+  still_config.indices = dit::build_indices(still_config.layout);
+  still_config.position_ids = dit::build_position_ids(still_config.layout);
+  still_config.attention_band = 0;
+  still_config.transformer.video_rows =
+      static_cast<uint32_t>(still_config.layout.num_video_rows);
+  still_config.transformer.audio_rows = 0;
+  still_config.transformer.main.block.sequence =
+      static_cast<uint32_t>(still_config.layout.total_rows());
+  ExactH3Denoiser still_denoiser = ExactH3Denoiser::create(
+      denoise_context, still_config);
+  still_denoiser.load(transformer_checkpoint);
+  CHECK_MSG(still_denoiser.required_step_operators() == 30u,
+            "video-only Vulkan denoiser recorded %u operators, expected 30",
+            still_denoiser.required_step_operators());
+  const std::vector<float> still_video(
+      video_values.begin(),
+      video_values.begin() +
+          static_cast<ptrdiff_t>(still_config.layout.num_video_rows * 4));
+  still_denoiser.prepare(prompt_values.data(), prompt_values.size(),
+                         still_video.data(), still_video.size(), nullptr, 0);
+  const ExactH3DenoiseResult still_output = still_denoiser.run(
+      denoise_video, denoise_audio);
+  CHECK(!still_output.cancelled && still_output.steps_completed == 3u);
+  CHECK(still_output.video_rows.size() == still_video.size());
+  CHECK(still_output.audio_rows.empty());
+  still_denoiser.prepare(prompt_values.data(), prompt_values.size(),
+                         still_video.data(), still_video.size(), nullptr, 0);
+  const ExactH3DenoiseResult still_repeat = still_denoiser.run(
+      denoise_video, denoise_audio);
+  CHECK(still_repeat.video_rows == still_output.video_rows);
+  CHECK(still_repeat.audio_rows.empty());
+  still_denoiser.unload();
+  CHECK(denoise_context.pooled_used_bytes() == denoise_staging_used);
+
+  // The same zero-audio contract must survive Ref2VA's indexed packing, where
+  // fixed image rows precede the generated still rows in the video modality.
+  const dit::Ref2VAPackedSequence still_ref_packed =
+      dit::build_ref2va_packed_sequence(
+          ref_text_tags,
+          {{dit::ReferenceKind::kImage, 1, 4, 4, 0}},
+          1, 4, 4, 0);
+  ExactH3DenoiseConfig still_ref_config = still_config;
+  still_ref_config.layout = still_ref_packed.layout;
+  still_ref_config.indices = still_ref_packed.indices;
+  still_ref_config.position_ids = still_ref_packed.position_ids;
+  still_ref_config.transformer.video_rows =
+      static_cast<uint32_t>(still_ref_config.indices.video.size());
+  still_ref_config.transformer.video_output_rows =
+      static_cast<uint32_t>(still_ref_config.layout.num_video_rows);
+  still_ref_config.transformer.video_output_start =
+      static_cast<uint32_t>(still_ref_config.layout.video_start());
+  still_ref_config.transformer.audio_output_rows = 0;
+  still_ref_config.transformer.audio_output_start =
+      static_cast<uint32_t>(still_ref_config.layout.audio_start());
+  still_ref_config.transformer.main.block.sequence =
+      static_cast<uint32_t>(still_ref_config.layout.total_rows());
+  still_ref_config.transformer.main.block.timesteps = 4;
+  ExactH3Denoiser still_ref_denoiser = ExactH3Denoiser::create(
+      denoise_context, still_ref_config);
+  still_ref_denoiser.load(transformer_checkpoint);
+  const std::vector<float> still_ref_video(
+      video_values.begin(),
+      video_values.begin() + static_cast<ptrdiff_t>(
+          still_ref_config.transformer.video_rows * 4));
+  still_ref_denoiser.prepare(
+      prompt_values.data(), prompt_values.size(), still_ref_video.data(),
+      still_ref_video.size(), nullptr, 0);
+  const ExactH3DenoiseResult still_ref_output = still_ref_denoiser.run(
+      denoise_video, denoise_audio);
+  CHECK(still_ref_output.video_rows.size() ==
+        static_cast<size_t>(still_ref_config.layout.num_video_rows) * 4);
+  CHECK(still_ref_output.audio_rows.empty());
+  still_ref_denoiser.unload();
+  CHECK(denoise_context.pooled_used_bytes() == denoise_staging_used);
+
   CHECK(first.persistent_bytes() == 0u && second.persistent_bytes() == 0u);
   CHECK(context.pooled_used_bytes() + 2 * persistent <= stable_used);
   first.load(valid, 0);

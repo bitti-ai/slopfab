@@ -24,6 +24,7 @@ uint64_t tensor_bytes(const DeviceTensor& tensor) {
   return tensor ? tensor.layout().bytes(tensor.type()) : 0;
 }
 bool finite_span(const float* values, uint64_t count) {
+  if (count == 0) return true;
   if (!values) return false;
   for (uint64_t i = 0; i < count; ++i)
     if (!std::isfinite(values[i])) return false;
@@ -59,7 +60,7 @@ void validate_config(const ExactH3DenoiseConfig& c) {
       total_audio_wide > std::numeric_limits<uint32_t>::max() ||
       sequence_wide > static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ||
       (conditioned && !l.condition_audio_is_explicit) || l.num_text <= 0 ||
-      l.num_video_rows <= 0 || l.num_audio_rows <= 0 ||
+      l.num_video_rows <= 0 || l.num_audio_rows < 0 ||
       sequence_wide != sequence ||
       c.transformer.text_rows != static_cast<uint32_t>(l.num_text) ||
       c.transformer.video_rows != total_video ||
@@ -193,23 +194,30 @@ void ExactH3Denoiser::load(const SafeTensors& checkpoint) {
     TensorContext& context = *impl_->context;
     next->video = context.allocate(
         matrix(c.transformer.video_rows, c.transformer.video_dim));
-    next->audio = context.allocate(
-        matrix(c.transformer.audio_rows, c.transformer.audio_dim));
+    const bool has_audio = c.transformer.audio_rows != 0;
+    if (has_audio) {
+      next->audio = context.allocate(
+          matrix(c.transformer.audio_rows, c.transformer.audio_dim));
+    }
     const uint32_t video_output = c.transformer.video_output_rows
         ? c.transformer.video_output_rows : c.transformer.video_rows;
     const uint32_t audio_output = c.transformer.audio_output_rows
         ? c.transformer.audio_output_rows : c.transformer.audio_rows;
     next->video_velocity = context.allocate(
         matrix(video_output, c.transformer.video_dim));
-    next->audio_velocity = context.allocate(
-        matrix(audio_output, c.transformer.audio_dim));
+    if (has_audio) {
+      next->audio_velocity = context.allocate(
+          matrix(audio_output, c.transformer.audio_dim));
+    }
     const bool conditioned = c.layout.num_condition_video != 0 ||
                              c.layout.num_condition_audio != 0;
     if (conditioned) {
       next->video_result = context.allocate(
           matrix(video_output, c.transformer.video_dim));
-      next->audio_result = context.allocate(
-          matrix(audio_output, c.transformer.audio_dim));
+      if (has_audio) {
+        next->audio_result = context.allocate(
+            matrix(audio_output, c.transformer.audio_dim));
+      }
     }
     next->selectors = context.allocate(
         vector(c.transformer.main.block.sequence), ScalarType::kInt32);
@@ -225,17 +233,23 @@ void ExactH3Denoiser::load(const SafeTensors& checkpoint) {
     next->sine = context.allocate(matrix(rope.rows, 96));
     next->video_timestep_indices = context.allocate(
         vector(video_output), ScalarType::kInt32);
-    next->audio_timestep_indices = context.allocate(
-        vector(audio_output), ScalarType::kInt32);
+    if (has_audio) {
+      next->audio_timestep_indices = context.allocate(
+          vector(audio_output), ScalarType::kInt32);
+    }
     if (conditioned) {
       next->video_row_indices = context.allocate(
           vector(c.transformer.video_rows), ScalarType::kInt32);
-      next->audio_row_indices = context.allocate(
-          vector(c.transformer.audio_rows), ScalarType::kInt32);
+      if (has_audio) {
+        next->audio_row_indices = context.allocate(
+            vector(c.transformer.audio_rows), ScalarType::kInt32);
+      }
       context.upload_transient_bytes(next->video_row_indices,
           c.indices.video.data(), c.indices.video.size() * sizeof(int32_t));
-      context.upload_transient_bytes(next->audio_row_indices,
-          c.indices.audio.data(), c.indices.audio.size() * sizeof(int32_t));
+      if (has_audio) {
+        context.upload_transient_bytes(next->audio_row_indices,
+            c.indices.audio.data(), c.indices.audio.size() * sizeof(int32_t));
+      }
     }
     context.upload_transient(next->cosine, rope.cosine.data(), rope.cosine.size());
     context.upload_transient(next->sine, rope.sine.data(), rope.sine.size());
@@ -301,20 +315,28 @@ void ExactH3Denoiser::prepare(
       ? c.audio_output_rows : c.audio_rows;
   DeviceTensor prompt_tensor = impl_->context->allocate(
       matrix(c.text_rows, c.text_dim));
-  const TensorUpload base_uploads[] = {
+  std::vector<TensorUpload> base_uploads{
       {&prompt_tensor, prompt, prompt_elements * sizeof(float)},
-      {&s.video, video_rows, video_elements * sizeof(float)},
-      {&s.audio, audio_rows, audio_elements * sizeof(float)}};
-  impl_->context->upload_batch(base_uploads, 3);
+      {&s.video, video_rows, video_elements * sizeof(float)}};
+  if (expected_audio != 0) {
+    base_uploads.push_back(
+        {&s.audio, audio_rows, audio_elements * sizeof(float)});
+  }
+  impl_->context->upload_batch(base_uploads.data(),
+                               static_cast<uint32_t>(base_uploads.size()));
   if (condition_video != 0 || condition_audio != 0) {
-    const TensorUpload result_uploads[] = {
+    std::vector<TensorUpload> result_uploads{
         {&s.video_result,
          video_rows + uint64_t(condition_video) * c.video_dim,
-         uint64_t(video_output) * c.video_dim * sizeof(float)},
-        {&s.audio_result,
-         audio_rows + uint64_t(condition_audio) * c.audio_dim,
-         uint64_t(audio_output) * c.audio_dim * sizeof(float)}};
-    impl_->context->upload_batch(result_uploads, 2);
+         uint64_t(video_output) * c.video_dim * sizeof(float)}};
+    if (expected_audio != 0) {
+      result_uploads.push_back(
+          {&s.audio_result,
+           audio_rows + uint64_t(condition_audio) * c.audio_dim,
+           uint64_t(audio_output) * c.audio_dim * sizeof(float)});
+    }
+    impl_->context->upload_batch(
+        result_uploads.data(), static_cast<uint32_t>(result_uploads.size()));
   }
   s.transformer.prepare_text(prompt_tensor, taps);
   impl_->ready = true;
@@ -350,6 +372,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
       ? c.transformer.video_output_rows : c.transformer.video_rows;
   const uint32_t audio_output = c.transformer.audio_output_rows
       ? c.transformer.audio_output_rows : c.transformer.audio_rows;
+  const bool has_audio = c.transformer.audio_rows != 0;
   std::vector<float> code(uint64_t(code_rows) * dit::AdaLNTable::kRank);
   std::vector<int32_t> video_indices(video_output);
   std::vector<int32_t> audio_indices(audio_output);
@@ -378,14 +401,18 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
     for (uint32_t i = 0; i < audio_output; ++i)
       audio_indices[i] = row.indices[static_cast<size_t>(
           c.indices.audio[condition_audio + i])];
-    const TensorUpload controls[] = {
+    std::vector<TensorUpload> controls{
         {&s.selectors, row.adaln.data(), row.adaln.size() * sizeof(int32_t)},
         {&s.code, code.data(), code.size() * sizeof(float)},
         {&s.video_timestep_indices, video_indices.data(),
-         video_indices.size() * sizeof(int32_t)},
-        {&s.audio_timestep_indices, audio_indices.data(),
-         audio_indices.size() * sizeof(int32_t)}};
-    impl_->context->upload_batch(controls, 4);
+         video_indices.size() * sizeof(int32_t)}};
+    if (has_audio) {
+      controls.push_back(
+          {&s.audio_timestep_indices, audio_indices.data(),
+           audio_indices.size() * sizeof(int32_t)});
+    }
+    impl_->context->upload_batch(controls.data(),
+                                 static_cast<uint32_t>(controls.size()));
 
     const float video_sigma = 1.0f - video_t;
     const float audio_sigma = 1.0f - audio_t;
@@ -395,7 +422,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
     batch.require_operator_capacity(required_step_operators(taps));
     if (conditioned) {
       batch.copy_rows(s.video_result, s.video, 0, condition_video, video_output);
-      batch.copy_rows(s.audio_result, s.audio, 0, condition_audio, audio_output);
+      if (has_audio) {
+        batch.copy_rows(s.audio_result, s.audio, 0, condition_audio, audio_output);
+      }
     }
     s.transformer.record_forward(
         batch, s.video, s.audio, s.selectors, s.code, s.cosine, s.sine,
@@ -403,13 +432,15 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
         s.video_velocity, s.audio_velocity,
         s.ranges ? &s.ranges : nullptr, taps,
         conditioned ? &s.video_row_indices : nullptr,
-        conditioned ? &s.audio_row_indices : nullptr);
+        conditioned && has_audio ? &s.audio_row_indices : nullptr);
     DeviceTensor& video_state = conditioned ? s.video_result : s.video;
-    DeviceTensor& audio_state = conditioned ? s.audio_result : s.audio;
     batch.dit_euler_step_f32(video_state, s.video_velocity,
                              video_sigma, video_ratio);
-    batch.dit_euler_step_f32(audio_state, s.audio_velocity,
-                             audio_sigma, audio_ratio);
+    if (has_audio) {
+      DeviceTensor& audio_state = conditioned ? s.audio_result : s.audio;
+      batch.dit_euler_step_f32(audio_state, s.audio_velocity,
+                               audio_sigma, audio_ratio);
+    }
     batch.submit().wait();
     result.steps_completed = step + 1;
     if (boundary) {
@@ -419,8 +450,11 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
                                c.transformer.audio_dim);
       impl_->context->download(video_state, result.video_rows.data(),
                                result.video_rows.size());
-      impl_->context->download(audio_state, result.audio_rows.data(),
-                               result.audio_rows.size());
+      if (has_audio) {
+        DeviceTensor& audio_state = conditioned ? s.audio_result : s.audio;
+        impl_->context->download(audio_state, result.audio_rows.data(),
+                                 result.audio_rows.size());
+      }
       boundary(step, result.video_rows, result.audio_rows);
     }
     if (progress && !progress(step, steps)) {
@@ -433,11 +467,13 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
   result.audio_rows.resize(uint64_t(audio_output) *
                            c.transformer.audio_dim);
   DeviceTensor& final_video = conditioned ? s.video_result : s.video;
-  DeviceTensor& final_audio = conditioned ? s.audio_result : s.audio;
   impl_->context->download(final_video, result.video_rows.data(),
                            result.video_rows.size());
-  impl_->context->download(final_audio, result.audio_rows.data(),
-                           result.audio_rows.size());
+  if (has_audio) {
+    DeviceTensor& final_audio = conditioned ? s.audio_result : s.audio;
+    impl_->context->download(final_audio, result.audio_rows.data(),
+                             result.audio_rows.size());
+  }
   return result;
 }
 
@@ -479,7 +515,8 @@ uint32_t ExactH3Denoiser::required_step_operators(
       impl_->state->transformer.required_forward_operators(taps);
   const bool conditioned = impl_->config.layout.num_condition_video != 0 ||
                            impl_->config.layout.num_condition_audio != 0;
-  const uint32_t tail = conditioned ? 4u : 2u;
+  const bool has_audio = impl_->config.transformer.audio_rows != 0;
+  const uint32_t tail = (conditioned ? 2u : 1u) * (has_audio ? 2u : 1u);
   if (forward > UINT32_MAX - tail)
     throw std::overflow_error("Vulkan H3 denoise: step operator overflow");
   return forward + tail;

@@ -66,7 +66,9 @@ class ExactH3Transformer {
   uint32_t required_prepare_text_operators(
       const H3TransformerTextReplayTaps* taps = nullptr) const;
 
-  // Inputs/outputs are contiguous fp32 modality rows. The backend-neutral H3
+  // Inputs/outputs are contiguous fp32 modality rows. Audio tensors may be
+  // empty when `audio_rows == 0`; that modality's projection and head are not
+  // recorded. The backend-neutral H3
   // packing invariant is [text|audio|video]; exact row-range transfers build
   // and gather that packed stream without a shader or host boundary.
   // main_selectors are [S] AdaLN table rows, code is [T,rank], and final

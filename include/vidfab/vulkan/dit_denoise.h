@@ -11,11 +11,11 @@
 
 namespace vidfab::vulkan {
 
-// Exact pruned-table T2VA denoise orchestration. The transformer, latent rows,
+// Exact pruned-table H3 denoise orchestration. The transformer, latent rows,
 // velocity rows, RoPE and attention ranges remain on one Vulkan context for
 // the complete trajectory. Only small per-step control tensors are uploaded;
 // fp32 modality rows cross the host boundary once at prepare and once at the
-// final result.
+// final result. A video-only still sequence may contain zero audio rows.
 struct ExactH3DenoiseConfig {
   ExactH3TransformerConfig transformer;
   dit::SequenceLayout layout;
