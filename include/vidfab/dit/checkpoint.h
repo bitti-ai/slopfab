@@ -23,6 +23,7 @@ constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture
 enum class TransformerQuantization {
   kUnknown,
   kFloat8,
+  kInt8ConvRot,
   kNativeNVFP4,
   kBitsAndBytesNF4,
 };

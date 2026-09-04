@@ -5,7 +5,9 @@
 #include "vidfab/safetensors_write.h"
 #include "vidfab/vae/keyframe_encoder.h"
 
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 
 using namespace vidfab::dit;
 
@@ -15,6 +17,27 @@ std::string checkpoint_fixture(
   const auto path = std::filesystem::temp_directory_path() /
                     (std::string("vidfab_") + stem + ".safetensors");
   vidfab::write_safetensors(path.string(), tensors);
+  return path.string();
+}
+
+std::string int8_transformer_fixture() {
+  const auto path = std::filesystem::temp_directory_path() /
+                    "vidfab_int8_transformer_kind.safetensors";
+  std::string header =
+      "{\"blocks.0.attn.qkv_proj.weight\":{\"dtype\":\"I8\","
+      "\"shape\":[3,2],\"data_offsets\":[0,6]},"
+      "\"blocks.0.attn.qkv_proj.weight_scale\":{\"dtype\":\"F32\","
+      "\"shape\":[3,1],\"data_offsets\":[6,18]}}";
+  while ((8 + header.size()) % 8 != 0) header += ' ';
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  const uint64_t header_bytes = header.size();
+  const int8_t weights[6] = {-3, -2, -1, 1, 2, 3};
+  const float scales[3] = {0.25f, 0.5f, 1.0f};
+  out.write(reinterpret_cast<const char*>(&header_bytes), sizeof(header_bytes));
+  out.write(header.data(), static_cast<std::streamsize>(header.size()));
+  out.write(reinterpret_cast<const char*>(weights), sizeof(weights));
+  out.write(reinterpret_cast<const char*>(scales), sizeof(scales));
+  if (!out) throw std::runtime_error("failed writing INT8 transformer fixture");
   return path.string();
 }
 }  // namespace
@@ -66,6 +89,13 @@ VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
   ref.open(ref_path);
   CHECK(detect_transformer_architecture(ref) == TransformerArchitecture::kRef2VAFullAdaLN);
   CHECK(detect_transformer_quantization(ref) == TransformerQuantization::kBitsAndBytesNF4);
+  CHECK(std::string(transformer_quantization_name(
+            TransformerQuantization::kInt8ConvRot)) == "int8 ConvRot");
+
+  vidfab::SafeTensors int8;
+  int8.open(int8_transformer_fixture());
+  CHECK(detect_transformer_quantization(int8) ==
+        TransformerQuantization::kInt8ConvRot);
   require_ref2va_transformer(ref, 1);
 
   const auto unknown_path = checkpoint_fixture("unknown_kind", {{"x", {1}, {0.0f}}});

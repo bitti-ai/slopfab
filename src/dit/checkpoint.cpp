@@ -52,6 +52,11 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
   }
   if (weight->dtype == DType::kF8E4M3) return TransformerQuantization::kFloat8;
   const TensorView* scale = checkpoint.find("blocks.0.attn.qkv_proj.weight_scale");
+  if (weight->dtype == DType::kI8 && weight->shape.size() == 2 && scale != nullptr &&
+      scale->dtype == DType::kF32 && scale->shape.size() == 2 &&
+      scale->shape[0] == weight->shape[0] && scale->shape[1] == 1) {
+    return TransformerQuantization::kInt8ConvRot;
+  }
   if (weight->dtype == DType::kU8 && scale != nullptr && scale->dtype == DType::kF8E4M3) {
     return TransformerQuantization::kNativeNVFP4;
   }
@@ -75,6 +80,7 @@ const char* transformer_architecture_name(TransformerArchitecture architecture) 
 const char* transformer_quantization_name(TransformerQuantization quantization) {
   switch (quantization) {
     case TransformerQuantization::kFloat8: return "float8";
+    case TransformerQuantization::kInt8ConvRot: return "int8 ConvRot";
     case TransformerQuantization::kNativeNVFP4: return "native NVFP4";
     case TransformerQuantization::kBitsAndBytesNF4: return "bitsandbytes NF4";
     case TransformerQuantization::kUnknown: return "unknown";
