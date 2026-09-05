@@ -38,7 +38,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace vidfab::video::ff {
+namespace slopfab::video::ff {
 
 // --- opaque handles ---------------------------------------------------------
 //
@@ -340,4 +340,4 @@ struct Api {
   SwsFreeContextFn sws_freeContext;
 };
 
-}  // namespace vidfab::video::ff
+}  // namespace slopfab::video::ff

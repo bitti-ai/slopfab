@@ -4,12 +4,12 @@
 // attention, and answers it *without a kernel*: one request is split into
 // several overlapping shorter requests, each is run through the ordinary
 // pipeline as its own packed sequence, and the resulting latents are
-// cross-faded back together. See `include/vidfab/dit/chunking.h` for why that
+// cross-faded back together. See `include/slopfab/dit/chunking.h` for why that
 // is strictly more damaging than a frame band, which is the point.
 //
-// **This binary links `vidfab_core` only.** It never initialises CUDA, never
+// **This binary links `slopfab_core` only.** It never initialises CUDA, never
 // opens a checkpoint's weights, and can be run while the card is busy with
-// something else — the same deliberate choice `vidfab_loadprobe` makes, and for
+// something else — the same deliberate choice `slopfab_loadprobe` makes, and for
 // the same reason. Everything here is host arithmetic over fp32 safetensors.
 //
 // Four subcommands:
@@ -30,12 +30,12 @@
 #include <string_view>
 #include <vector>
 
-#include "vidfab/dit/chunking.h"
-#include "vidfab/pipeline.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/sampler/noise.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/tensor_convert.h"
+#include "slopfab/dit/chunking.h"
+#include "slopfab/pipeline.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/sampler/noise.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/tensor_convert.h"
 
 namespace {
 
@@ -48,8 +48,8 @@ struct Geometry {
   uint64_t seed = 11;
 };
 
-vidfab::GenerateRequest request_for(const Geometry& g, int frames) {
-  vidfab::GenerateRequest r;
+slopfab::GenerateRequest request_for(const Geometry& g, int frames) {
+  slopfab::GenerateRequest r;
   r.prompt = "chunkprobe";  // only the length-independent geometry is used
   r.aspect_w = g.aspect_w;
   r.aspect_h = g.aspect_h;
@@ -59,16 +59,16 @@ vidfab::GenerateRequest request_for(const Geometry& g, int frames) {
 }
 
 struct Resolved {
-  vidfab::GeneratePlan full;
-  vidfab::GeneratePlan chunk;
-  vidfab::dit::ChunkPlan plan;
+  slopfab::GeneratePlan full;
+  slopfab::GeneratePlan chunk;
+  slopfab::dit::ChunkPlan plan;
 };
 
 Resolved resolve(const Geometry& g) {
   Resolved out;
-  out.full = vidfab::resolve_plan(request_for(g, g.full_frames));
-  out.chunk = vidfab::resolve_plan(request_for(g, g.chunk_frames));
-  out.plan = vidfab::dit::resolve_chunk_plan(out.full.layout, out.chunk.layout, g.num_chunks);
+  out.full = slopfab::resolve_plan(request_for(g, g.full_frames));
+  out.chunk = slopfab::resolve_plan(request_for(g, g.chunk_frames));
+  out.plan = slopfab::dit::resolve_chunk_plan(out.full.layout, out.chunk.layout, g.num_chunks);
   return out;
 }
 
@@ -113,8 +113,8 @@ void parse_geometry(int argc, char** argv, Geometry* g, std::vector<std::string>
 }
 
 void print_plan(const Geometry& g, const Resolved& r) {
-  const vidfab::dit::SequenceLayout& fl = r.full.layout;
-  const vidfab::dit::SequenceLayout& cl = r.chunk.layout;
+  const slopfab::dit::SequenceLayout& fl = r.full.layout;
+  const slopfab::dit::SequenceLayout& cl = r.chunk.layout;
   std::printf("full      --frames %d -> %d aligned, %dx%d px, %d latent frames of %d rows\n",
               g.full_frames, r.full.aligned_frames, r.full.canvas_width, r.full.canvas_height,
               fl.num_latent_frames, fl.rows_per_frame());
@@ -165,21 +165,21 @@ Moments moments(const float* v, size_t n, size_t stride = 1) {
   return m;
 }
 
-// rel_L2 and correlation now come from `vidfab::compare` rather than from a
+// rel_L2 and correlation now come from `slopfab::compare` rather than from a
 // copy here. This tool grew its own pair, as did the AB2 sampler sweep and the
 // banding work, which is what put them in the shared header — see
-// `include/vidfab/tensor_convert.h` for the exact formulas and the reasons for
+// `include/slopfab/tensor_convert.h` for the exact formulas and the reasons for
 // those choices rather than the neighbouring plausible ones.
 double relative_l2(const std::vector<float>& a, const std::vector<float>& b) {
-  return vidfab::compare(a, b).rel_l2;
+  return slopfab::compare(a, b).rel_l2;
 }
 
-std::vector<float> read_rows(const vidfab::SafeTensors& st, const char* name, int64_t width) {
-  const vidfab::TensorView& v = st.at(name);
+std::vector<float> read_rows(const slopfab::SafeTensors& st, const char* name, int64_t width) {
+  const slopfab::TensorView& v = st.at(name);
   if (v.shape.size() != 2 || v.shape[1] != width) {
     throw std::runtime_error(std::string(name) + " must be [rows, " + std::to_string(width) + "]");
   }
-  return vidfab::to_f32(v);
+  return slopfab::to_f32(v);
 }
 
 void report_pair(const char* label, const std::vector<float>& ref, const std::vector<float>& act) {
@@ -192,7 +192,7 @@ void report_pair(const char* label, const std::vector<float>& ref, const std::ve
   // and max|diff|. The last is reported because rel_L2 cannot distinguish
   // "identical" from "identical to four decimals", and one of the runs this
   // tool drives is a byte-for-byte control.
-  const vidfab::CompareStats s = vidfab::compare(ref, act);
+  const slopfab::CompareStats s = slopfab::compare(ref, act);
   double dot = 0.0, ref_sq = 0.0, act_sq = 0.0;
   for (size_t i = 0; i < ref.size(); ++i) {
     if (!std::isfinite(ref[i]) || !std::isfinite(act[i])) continue;
@@ -255,9 +255,9 @@ int cmd_slice(int argc, char** argv) {
   const Resolved r = resolve(g);
   std::vector<float> video;
   std::vector<float> audio;
-  vidfab::dit::slice_chunk_noise(g.seed, r.full.layout, r.chunk.layout, r.plan, index, &video,
+  slopfab::dit::slice_chunk_noise(g.seed, r.full.layout, r.chunk.layout, r.plan, index, &video,
                                  &audio);
-  vidfab::write_safetensors(
+  slopfab::write_safetensors(
       out_path, {{"video_rows", {r.chunk.layout.num_video_rows, 96}, video},
                  {"audio_rows", {r.chunk.layout.num_audio_rows, 32}, audio}});
   std::printf("chunk %d  latent frames [%d, %d)  audio latents [%d, %d)  -> %s\n", index,
@@ -282,15 +282,15 @@ int cmd_noise(int argc, char** argv) {
   if (out_path.empty()) throw std::runtime_error("noise needs --out <file.safetensors>");
 
   const Resolved r = resolve(g);
-  const vidfab::dit::SequenceLayout& fl = r.full.layout;
+  const slopfab::dit::SequenceLayout& fl = r.full.layout;
   const std::vector<float> field =
-      vidfab::sampler::video_noise(g.seed, fl.num_latent_frames, fl.latent_height, fl.latent_width,
+      slopfab::sampler::video_noise(g.seed, fl.num_latent_frames, fl.latent_height, fl.latent_width,
                                    24);
   std::vector<float> video(static_cast<size_t>(fl.num_video_rows) * 96);
-  vidfab::dit::patchify_video(field.data(), fl, video.data());
-  const std::vector<float> audio = vidfab::sampler::audio_noise(g.seed, fl.num_audio_latents, 32);
+  slopfab::dit::patchify_video(field.data(), fl, video.data());
+  const std::vector<float> audio = slopfab::sampler::audio_noise(g.seed, fl.num_audio_latents, 32);
 
-  vidfab::write_safetensors(out_path, {{"video_rows", {fl.num_video_rows, 96}, video},
+  slopfab::write_safetensors(out_path, {{"video_rows", {fl.num_video_rows, 96}, video},
                                        {"audio_rows", {fl.num_audio_rows, 32}, audio}});
   std::printf("noise     seed %llu at the full geometry -> %s\n",
               static_cast<unsigned long long>(g.seed), out_path.c_str());
@@ -313,7 +313,7 @@ int cmd_blend(int argc, char** argv) {
   std::vector<std::vector<float>> video;
   std::vector<std::vector<float>> audio;
   for (const std::string& path : inputs) {
-    vidfab::SafeTensors st;
+    slopfab::SafeTensors st;
     st.open(path);
     video.push_back(read_rows(st, "video_rows", 96));
     audio.push_back(read_rows(st, "audio_rows", 32));
@@ -321,9 +321,9 @@ int cmd_blend(int argc, char** argv) {
 
   std::vector<float> video_out;
   std::vector<float> audio_out;
-  vidfab::dit::blend_chunks(r.full.layout, r.chunk.layout, r.plan, video, audio, &video_out,
+  slopfab::dit::blend_chunks(r.full.layout, r.chunk.layout, r.plan, video, audio, &video_out,
                             &audio_out);
-  vidfab::write_safetensors(
+  slopfab::write_safetensors(
       out_path, {{"video_rows", {r.full.layout.num_video_rows, 96}, video_out},
                  {"audio_rows", {r.full.layout.num_audio_rows, 32}, audio_out}});
   const Moments mv = moments(video_out.data(), video_out.size());
@@ -342,10 +342,10 @@ int cmd_stats(int argc, char** argv) {
   if (inputs.size() != 2) throw std::runtime_error("stats needs a reference and an actual dump");
 
   const Resolved r = resolve(g);
-  const vidfab::dit::SequenceLayout& fl = r.full.layout;
+  const slopfab::dit::SequenceLayout& fl = r.full.layout;
 
-  vidfab::SafeTensors ref_file;
-  vidfab::SafeTensors act_file;
+  slopfab::SafeTensors ref_file;
+  slopfab::SafeTensors act_file;
   ref_file.open(inputs[0]);
   act_file.open(inputs[1]);
   const std::vector<float> ref_v = read_rows(ref_file, "video_rows", 96);
@@ -408,9 +408,9 @@ int cmd_stats(int argc, char** argv) {
 
 void print_usage() {
   std::printf(
-      "vidfab_chunkprobe - frame-banding quality probe (host only, no CUDA)\n"
+      "slopfab_chunkprobe - frame-banding quality probe (host only, no CUDA)\n"
       "\n"
-      "usage: vidfab_chunkprobe <plan|noise|slice|blend|stats> [options]\n"
+      "usage: slopfab_chunkprobe <plan|noise|slice|blend|stats> [options]\n"
       "\n"
       "  plan                            print both geometries and the chunk placement\n"
       "  noise  --out <f>                the full request's own seeded draw, so that\n"
@@ -428,7 +428,7 @@ void print_usage() {
       "  --aspect <W:H>      display aspect                    (default 1:1)\n"
       "  --seed <n>          noise seed                        (default 11)\n"
       "\n"
-      "This binary links vidfab_core only: it initialises no CUDA context and reads\n"
+      "This binary links slopfab_core only: it initialises no CUDA context and reads\n"
       "no checkpoint, so it is safe to run while the card is busy.\n");
 }
 
@@ -450,11 +450,11 @@ int main(int argc, char** argv) {
     if (command == "slice") return cmd_slice(argc - 2, argv + 2);
     if (command == "blend") return cmd_blend(argc - 2, argv + 2);
     if (command == "stats") return cmd_stats(argc - 2, argv + 2);
-    std::fprintf(stderr, "vidfab_chunkprobe: unknown command '%s'\n\n", argv[1]);
+    std::fprintf(stderr, "slopfab_chunkprobe: unknown command '%s'\n\n", argv[1]);
     print_usage();
     return 2;
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "vidfab_chunkprobe: %s\n", e.what());
+    std::fprintf(stderr, "slopfab_chunkprobe: %s\n", e.what());
     return 1;
   }
 }

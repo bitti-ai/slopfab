@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/vae_decoder.h"
+#include "slopfab/vulkan/vae_decoder.h"
 
 #include <algorithm>
 #include <cmath>
@@ -8,14 +8,14 @@
 #include <string>
 #include <utility>
 
-#include "vidfab/tensor_convert.h"
-#include "vidfab/vae/vit_block.h"
-#include "vidfab/w4a8.h"
-#include "vidfab/vulkan/gemm.h"
-#include "vidfab/vulkan/tensor.h"
-#include "vidfab/vulkan/vae_vit_block.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/vae/vit_block.h"
+#include "slopfab/w4a8.h"
+#include "slopfab/vulkan/gemm.h"
+#include "slopfab/vulkan/tensor.h"
+#include "slopfab/vulkan/vae_vit_block.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 TensorLayout matrix(uint64_t rows, uint64_t columns) {
@@ -491,4 +491,4 @@ vae::DecodedVideo VideoVaeDecoder::decode(
                            std_dev, schedule);
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

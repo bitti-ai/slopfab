@@ -4,22 +4,22 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/safetensors.h"
-#include "vidfab/vae/keyframe_encoder.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/vae/keyframe_encoder.h"
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::fprintf(stderr, "usage: vidfab_vaecudaprobe <checkpoint> [--smoke]\n");
+    std::fprintf(stderr, "usage: slopfab_vaecudaprobe <checkpoint> [--smoke]\n");
     return 2;
   }
   try {
-    vidfab::SafeTensors checkpoint;
+    slopfab::SafeTensors checkpoint;
     checkpoint.open(argv[1]);
-    vidfab::vae::KeyframeEncoder encoder(checkpoint);
+    slopfab::vae::KeyframeEncoder encoder(checkpoint);
     std::puts("H3 image encoder weights uploaded to CUDA");
     if (argc == 3) {
       if (std::string(argv[2]) != "--smoke") return 2;
-      vidfab::RGBImage image;
+      slopfab::RGBImage image;
       image.width = image.height = 32;
       image.pixels.assign(32 * 32 * 3, 127);
       std::vector<float> mean(24, 0.0f), stddev(24, 1.0f);

@@ -1,13 +1,13 @@
-#include "vidfab/dit/chunking.h"
+#include "slopfab/dit/chunking.h"
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/sampler/noise.h"
+#include "slopfab/sampler/noise.h"
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 namespace {
 
 // The rotary temporal grid repeats every 5 latent frames (spec 2.3), so an
@@ -233,4 +233,4 @@ void blend_chunks(const SequenceLayout& full, const SequenceLayout& chunk, const
   normalise(*audio_rows_out, audio_weight, kAudioDim);
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

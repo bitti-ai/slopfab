@@ -30,67 +30,67 @@
 #include <bcrypt.h>
 #endif
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/attention.cuh"
-#include "vidfab/cuda/deterministic_math.cuh"
-#include "vidfab/cuda/deterministic_gemm.cuh"
-#include "vidfab/cuda/deterministic_attention.cuh"
-#include "vidfab/cuda/gemm.cuh"
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/keyframe_encoder.cuh"
-#include "vidfab/cuda/nn_kernels.cuh"
-#include "vidfab/cuda/qwen_vision.cuh"
-#include "vidfab/cuda/vae_kernels.cuh"
-#include "vidfab/cuda/vae_vit_block.h"
-#include "vidfab/attention.h"
-#include "vidfab/dit/rope.h"
-#include "vidfab/dit/denoise.h"
-#include "vidfab/dit/transformer.h"
-#include "vidfab/dit/block_capture.h"
-#include "vidfab/dit/graph_capture.h"
-#include "vidfab/dit/packing.h"
-#include "vidfab/dit/ref2va.h"
-#include "vidfab/dtype.h"
-#include "vidfab/generate.h"
-#include "vidfab/nf4.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/sha256.h"
-#include "vidfab/sol_capture.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/text/encoder.h"
-#include "vidfab/text/layer_capture.h"
-#include "vidfab/vulkan/linear.h"
-#include "vidfab/vulkan/keyframe_encoder.h"
-#include "vidfab/vulkan/dit_block.h"
-#include "vidfab/vulkan/dit_graph.h"
-#include "vidfab/vulkan/dit_transformer.h"
-#include "vidfab/vulkan/dit_denoise.h"
-#include "vidfab/vulkan/gemm.h"
-#include "vidfab/vulkan/tensor.h"
-#include "vidfab/vulkan/text_layer.h"
-#include "vidfab/vulkan/text_encoder.h"
-#include "vidfab/vulkan/vision_stage.h"
-#include "vidfab/vulkan/vae_vit_block.h"
-#include "vidfab/vulkan/vae_decoder.h"
-#include "vidfab/vulkan/yuv_converter.h"
-#include "vidfab/vae/vit_decoder.h"
-#include "vidfab/vae/keyframe_encoder.h"
-#include "vidfab/video/y4m.h"
-#include "vidfab/video/y4m_compare.h"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/attention.cuh"
+#include "slopfab/cuda/deterministic_math.cuh"
+#include "slopfab/cuda/deterministic_gemm.cuh"
+#include "slopfab/cuda/deterministic_attention.cuh"
+#include "slopfab/cuda/gemm.cuh"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/keyframe_encoder.cuh"
+#include "slopfab/cuda/nn_kernels.cuh"
+#include "slopfab/cuda/qwen_vision.cuh"
+#include "slopfab/cuda/vae_kernels.cuh"
+#include "slopfab/cuda/vae_vit_block.h"
+#include "slopfab/attention.h"
+#include "slopfab/dit/rope.h"
+#include "slopfab/dit/denoise.h"
+#include "slopfab/dit/transformer.h"
+#include "slopfab/dit/block_capture.h"
+#include "slopfab/dit/graph_capture.h"
+#include "slopfab/dit/packing.h"
+#include "slopfab/dit/ref2va.h"
+#include "slopfab/dtype.h"
+#include "slopfab/generate.h"
+#include "slopfab/nf4.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/sha256.h"
+#include "slopfab/sol_capture.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/text/encoder.h"
+#include "slopfab/text/layer_capture.h"
+#include "slopfab/vulkan/linear.h"
+#include "slopfab/vulkan/keyframe_encoder.h"
+#include "slopfab/vulkan/dit_block.h"
+#include "slopfab/vulkan/dit_graph.h"
+#include "slopfab/vulkan/dit_transformer.h"
+#include "slopfab/vulkan/dit_denoise.h"
+#include "slopfab/vulkan/gemm.h"
+#include "slopfab/vulkan/tensor.h"
+#include "slopfab/vulkan/text_layer.h"
+#include "slopfab/vulkan/text_encoder.h"
+#include "slopfab/vulkan/vision_stage.h"
+#include "slopfab/vulkan/vae_vit_block.h"
+#include "slopfab/vulkan/vae_decoder.h"
+#include "slopfab/vulkan/yuv_converter.h"
+#include "slopfab/vae/vit_decoder.h"
+#include "slopfab/vae/keyframe_encoder.h"
+#include "slopfab/video/y4m.h"
+#include "slopfab/video/y4m_compare.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 void launch_adaln_expand(const float*, const float*, const float*, float*,
                          int, int, int, int, int, cudaStream_t);
 }
 
-VIDFAB_TEST(reference_conditioning_aggregate_fails_before_model_load) {
-  using namespace vidfab;
+SLOPFAB_TEST(reference_conditioning_aggregate_fails_before_model_load) {
+  using namespace slopfab;
   const std::string unique = std::to_string(
       std::chrono::high_resolution_clock::now().time_since_epoch().count());
   const std::filesystem::path image_path =
       std::filesystem::temp_directory_path() /
-      ("vidfab-reference-preflight-" + unique + ".ppm");
+      ("slopfab-reference-preflight-" + unique + ".ppm");
   {
     std::ofstream ppm(image_path, std::ios::binary);
     const std::array<uint8_t, 3> pixel{0x17, 0x83, 0xd1};
@@ -107,7 +107,7 @@ VIDFAB_TEST(reference_conditioning_aggregate_fails_before_model_load) {
   request.num_inference_steps = 4;
   request.reference_image_paths = {image_path.string(), image_path.string()};
   request.tokenizer_path =
-      (std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+      (std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
        "ref/text_encoder/tokenizer.json").string();
   request.text_encoder_path = "missing-text-encoder.safetensors";
   request.transformer_path = "missing-transformer.safetensors";
@@ -161,12 +161,12 @@ std::array<uint8_t, 32> sha256_mapping(const void* data, size_t bytes) {
 }
 
 std::filesystem::path make_sparse_qwen_metadata_corruption(
-    const vidfab::SafeTensors& source, vidfab::text::WeightFormat format,
+    const slopfab::SafeTensors& source, slopfab::text::WeightFormat format,
     const std::string& corrupt_name, bool rank_one = false,
     bool zero_scalar = false, bool visual_shape = false) {
   static std::atomic<uint32_t> serial{0};
   const std::filesystem::path path = std::filesystem::temp_directory_path() /
-      ("vidfab_qwen_corrupt_" + std::to_string(GetCurrentProcessId()) + "_" +
+      ("slopfab_qwen_corrupt_" + std::to_string(GetCurrentProcessId()) + "_" +
        std::to_string(serial.fetch_add(1)) + ".safetensors");
   HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -234,11 +234,11 @@ std::filesystem::path make_sparse_qwen_metadata_corruption(
   for (const auto& entry : source.tensors()) {
     const std::string& name = entry.first;
     const bool copy = ends_with(name, ".comfy_quant") ||
-        (format == vidfab::text::WeightFormat::kNVFP4Awq &&
+        (format == slopfab::text::WeightFormat::kNVFP4Awq &&
          (ends_with(name, ".weight_scale_2") ||
           name == "model.embed_tokens.weight_scale"));
     if (!copy) continue;
-    const vidfab::TensorView& view = entry.second;
+    const slopfab::TensorView& view = entry.second;
     const uint64_t offset = static_cast<const uint8_t*>(view.data) - base;
     if (name == corrupt_name && zero_scalar) {
       const float zero = 0.0f;
@@ -266,7 +266,7 @@ __global__ void deterministic_rsqrt_probe(const float* input, float* stable,
                                            float* native, int count) {
   int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   if (index < count) {
-    stable[index] = vidfab::cuda::deterministic_rsqrt(input[index]);
+    stable[index] = slopfab::cuda::deterministic_rsqrt(input[index]);
     native[index] = rsqrtf(input[index]);
   }
 }
@@ -281,11 +281,11 @@ __global__ void deterministic_divide_add_probe(const uint32_t* input_bits,
   if (index >= count) return;
   const uint32_t magnitude = input_bits[index] & 0x7fffffffu;
   positive_divided[index] =
-      vidfab::cuda::positive_float_div_uint(magnitude, divisors[index]);
+      slopfab::cuda::positive_float_div_uint(magnitude, divisors[index]);
   const float signed_value = __uint_as_float(input_bits[index]);
   signed_divided[index] = __float_as_uint(
-      vidfab::cuda::deterministic_divide(signed_value, divisors[index]));
-  added[index] = vidfab::cuda::positive_float_add(positive_divided[index],
+      slopfab::cuda::deterministic_divide(signed_value, divisors[index]));
+  added[index] = slopfab::cuda::positive_float_add(positive_divided[index],
                                                    epsilon_bits[index]);
 }
 
@@ -293,13 +293,13 @@ __global__ void deterministic_silu_probe(const float* input, float* output,
                                          float* pointwise_output, int count) {
   const int index = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   if (index < count) {
-    output[index] = vidfab::cuda::deterministic_silu(input[index]);
-    pointwise_output[index] = vidfab::cuda::deterministic_pointwise_silu(input[index]);
+    output[index] = slopfab::cuda::deterministic_silu(input[index]);
+    pointwise_output[index] = slopfab::cuda::deterministic_pointwise_silu(input[index]);
   }
 }
 
-VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
-  using namespace vidfab;
+SLOPFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
+  using namespace slopfab;
   int devices = 0;
   if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return;
   std::vector<uint32_t> bits = {
@@ -323,7 +323,7 @@ VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
   d_input.copy_from_host(input.data(), input.size());
   deterministic_rsqrt_probe<<<static_cast<unsigned>((input.size() + 255) / 256), 256>>>(
       d_input.get(), d_stable.get(), d_native.get(), static_cast<int>(input.size()));
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   d_stable.copy_to_host(stable.data(), stable.size());
   d_native.copy_to_host(native.data(), native.size());
   const struct { size_t index; uint32_t expected; } exceptional[] = {
@@ -405,7 +405,7 @@ VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
   deterministic_divide_add_probe<<<static_cast<unsigned>((arithmetic_count + 255) / 256), 256>>>(
       d_divide_inputs.get(), d_divisors.get(), d_epsilons.get(), d_positive.get(),
       d_signed.get(), d_added.get(), static_cast<int>(arithmetic_count));
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint32_t> positive(arithmetic_count), signed_result(arithmetic_count),
       add_result(arithmetic_count);
   d_positive.copy_to_host(positive.data(), arithmetic_count);
@@ -440,8 +440,8 @@ VIDFAB_TEST(cuda_deterministic_rsqrt_dense_reference) {
 
 }
 
-VIDFAB_TEST(cuda_deterministic_silu_dense_reference) {
-  using namespace vidfab;
+SLOPFAB_TEST(cuda_deterministic_silu_dense_reference) {
+  using namespace slopfab;
   int devices = 0;
   if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return;
   std::vector<float> input;
@@ -479,7 +479,7 @@ VIDFAB_TEST(cuda_deterministic_silu_dense_reference) {
   deterministic_silu_probe<<<static_cast<unsigned>((input.size() + 255) / 256), 256>>>(
       d_input.get(), d_output.get(), d_pointwise_output.get(),
       static_cast<int>(input.size()));
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<float> output(input.size()), pointwise_output(input.size());
   d_output.copy_to_host(output.data(), output.size());
   d_pointwise_output.copy_to_host(pointwise_output.data(), pointwise_output.size());
@@ -575,9 +575,9 @@ VIDFAB_TEST(cuda_deterministic_silu_dense_reference) {
               pointwise_max_relative);
 }
 
-VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) {
@@ -628,10 +628,10 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   cuda::DeviceBuffer<float> cuda_a(count), cuda_b(count), cuda_copy(count), cuda_sum(count);
   cuda_a.copy_from_host(a.data(), count);
   cuda_b.copy_from_host(b.data(), count);
-  VIDFAB_CUDA_CHECK(cudaMemcpy(cuda_copy.get(), cuda_a.get(), count * sizeof(float),
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(cuda_copy.get(), cuda_a.get(), count * sizeof(float),
                                cudaMemcpyDeviceToDevice));
   cuda::launch_add(cuda_a.get(), cuda_b.get(), cuda_sum.get(), count, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<float> cuda_copy_host(count), cuda_sum_host(count);
   cuda_copy.copy_to_host(cuda_copy_host.data(), count);
   cuda_sum.copy_to_host(cuda_sum_host.data(), count);
@@ -671,9 +671,9 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_copy_and_add) {
   }
 }
 
-VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_exact_blocked_attention) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -743,7 +743,7 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
           reinterpret_cast<const __half*>(cv16.get()),
           reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim, scale);
     }
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> cuda_output(count);
     co.copy_to_host(cuda_output.data(), count);
     if (sequence == 129) {
@@ -753,7 +753,7 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
           reinterpret_cast<const __half*>(cv16.get()),
           reinterpret_cast<__nv_bfloat16*>(co_repeat.get()), sequence, heads,
           dim, scale);
-      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
       std::vector<uint16_t> cuda_repeat(count);
       co_repeat.copy_to_host(cuda_repeat.data(), count);
       CHECK(cuda_repeat == cuda_output);
@@ -843,7 +843,7 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
         reinterpret_cast<__half*>(prepared0.get()),
         reinterpret_cast<__half*>(prepared1.get()),
         reinterpret_cast<__half*>(prepared2.get()), patterns);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     prepared0.copy_to_host(got.data(), patterns);
     for (size_t i = 0; i < patterns; ++i) {
       const uint16_t expected = (bits[i] & 0x7fffu) > 0x7f80u
@@ -891,7 +891,7 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
   // A Qwen-vision-shaped D72 tail: preparation is once, then two query-row
   // consumers share it. Uploads/downloads are outside both timings.
   {
-    const bool real_shape = std::getenv("VIDFAB_ATTENTION_REAL_BENCH") != nullptr;
+    const bool real_shape = std::getenv("SLOPFAB_ATTENTION_REAL_BENCH") != nullptr;
     const uint32_t sequence = real_shape ? 16384u : 257u;
     constexpr uint32_t heads = 16, dim = 72;
     const uint32_t first_rows = (sequence + 1) / 2;
@@ -905,11 +905,11 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
     cq.copy_from_host(host.data(), count); ck.copy_from_host(host.data(), count);
     cv.copy_from_host(host.data(), count);
     cudaEvent_t begin{}, end{};
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&begin));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&end));
     float cuda_prepare_ms = 0.0f, cuda_attention_ms = 0.0f;
     for (int iteration = -warmups; iteration < samples; ++iteration) {
-      VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
       cuda::launch_prepare_deterministic_attention_inputs(
           nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
           reinterpret_cast<const __nv_bfloat16*>(ck.get()),
@@ -917,11 +917,11 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
           reinterpret_cast<__half*>(cq16.get()),
           reinterpret_cast<__half*>(ck16.get()),
           reinterpret_cast<__half*>(cv16.get()), count);
-      VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-      VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+      SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
       float prepare_ms = 0.0f;
-      VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&prepare_ms, begin, end));
-      VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+      SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&prepare_ms, begin, end));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
       cuda::launch_deterministic_blocked_attention_f16(
           nullptr, reinterpret_cast<const __half*>(cq16.get()),
           reinterpret_cast<const __half*>(ck16.get()),
@@ -934,17 +934,17 @@ VIDFAB_TEST(cuda_vulkan_exact_blocked_attention) {
           reinterpret_cast<const __half*>(cv16.get()),
           reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, heads, dim,
           exact_attention_scale(dim), first_rows, second_rows, first_rows);
-      VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-      VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+      SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
       float attention_ms = 0.0f;
-      VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&attention_ms, begin, end));
+      SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&attention_ms, begin, end));
       if (iteration >= 0) {
         cuda_prepare_ms += prepare_ms;
         cuda_attention_ms += attention_ms;
       }
     }
-    VIDFAB_CUDA_CHECK(cudaEventDestroy(begin));
-    VIDFAB_CUDA_CHECK(cudaEventDestroy(end));
+    SLOPFAB_CUDA_CHECK(cudaEventDestroy(begin));
+    SLOPFAB_CUDA_CHECK(cudaEventDestroy(end));
 
     const uint64_t shape[] = {sequence, heads, dim};
     const TensorLayout layout = TensorLayout::contiguous(shape, 3);
@@ -1000,17 +1000,17 @@ __global__ void legacy_vae_swiglu_probe(const float* input, const float* bias,
       (gate / (1.0f + __expf(-gate))) * value;
 }
 
-VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
-  if (vidfab::cuda::current_device_compute_capability() != 120) {
+SLOPFAB_TEST(cuda_vulkan_exact_h3_attention) {
+  if (slopfab::cuda::current_device_compute_capability() != 120) {
     SKIP_UNSUPPORTED_HARDWARE("exact H3 attention requires the shipped SM120 image");
     return;
   }
-  if (!vidfab::cuda::deterministic_h3_attention_available()) {
+  if (!slopfab::cuda::deterministic_h3_attention_available()) {
     SKIP_UNSUPPORTED_HARDWARE("exact H3 CUDA driver/runtime tuple is not qualified");
     return;
   }
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const unsigned char board_a[16] = {};
   const unsigned char board_b[16] = {1, 2, 3, 4};
   CHECK(cuda::deterministic_h3_cuda_tuple_fits(
@@ -1163,7 +1163,7 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
       reinterpret_cast<const __nv_bfloat16*>(cv.get()),
       reinterpret_cast<__nv_bfloat16*>(co_wide.get()), cwide.get(),
       sequence, heads, dim, scale);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> expected_full(count), expected_band(count), expected_wide(count);
   co_full.copy_to_host(expected_full.data(), count);
   co_band.copy_to_host(expected_band.data(), count);
@@ -1291,7 +1291,7 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
         reinterpret_cast<const __nv_bfloat16*>(dv.get()),
         reinterpret_cast<__nv_bfloat16*>(dout.get()), dr.get(), s, h, d,
         exact_attention_scale(d));
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> expected(n);
     dout.copy_to_host(expected.data(), n);
     const uint64_t sshape[] = {s, h, d};
@@ -1383,7 +1383,7 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
         reinterpret_cast<const __nv_bfloat16*>(dv.get()),
         reinterpret_cast<__nv_bfloat16*>(dout.get()), correction_device.get(),
         s, h, d, exact_attention_scale(d), 0, 1, 0);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     dout.copy_to_host(expected.data(), n);
     vk.upload_bytes(vq, qh.data(), n * 2);
     vk.upload_bytes(vkey, kh.data(), n * 2);
@@ -1433,7 +1433,7 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
           exact_attention_scale(adversarial_dim));
     };
     launch_adversarial(dao); launch_adversarial(dar);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> adversarial_expected(adversarial_count),
         adversarial_repeat(adversarial_count);
     dao.copy_to_host(adversarial_expected.data(), adversarial_count);
@@ -1584,10 +1584,10 @@ VIDFAB_TEST(cuda_vulkan_exact_h3_attention) {
   CHECK(vk.pooled_used_bytes() == used_before_drop);
 }
 
-VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
-  if (!std::getenv("VIDFAB_H3_ATTENTION_REAL_BENCH")) return;
+SLOPFAB_TEST(cuda_vulkan_h3_real_timing) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!std::getenv("SLOPFAB_H3_ATTENTION_REAL_BENCH")) return;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -1621,14 +1621,14 @@ VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
     ranges.copy_from_host(band.ranges.data(), band.ranges.size());
     auto timed = [&](auto&& launch) {
       cudaEvent_t begin{}, end{};
-      VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
-      VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
-      VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+      SLOPFAB_CUDA_CHECK(cudaEventCreate(&begin));
+      SLOPFAB_CUDA_CHECK(cudaEventCreate(&end));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
       launch();
-      VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-      VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+      SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
       float ms = 0.0f;
-      VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, begin, end));
+      SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, begin, end));
       cudaEventDestroy(begin); cudaEventDestroy(end);
       return ms;
     };
@@ -1651,7 +1651,7 @@ VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
     });
     out.copy_to_host(expected_band.data(), count);
     cublasHandle_t handle = nullptr;
-    VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&handle));
+    SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&handle));
     cuda::Workspace workspace;
     cuda::AttentionConfig config;
     config.seq_len = sequence;
@@ -1684,7 +1684,7 @@ VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
           reinterpret_cast<__nv_bfloat16*>(out.get()), config,
           cuda::AttentionBackend::kFused, workspace);
     });
-    vidfab::cuda::cublas_destroy(handle);
+    slopfab::cuda::cublas_destroy(handle);
   }
 
   Instance instance = Instance::create();
@@ -1743,10 +1743,10 @@ VIDFAB_TEST(cuda_vulkan_h3_real_timing) {
       band.ranges.size() * sizeof(int32_t));
 }
 
-VIDFAB_TEST(cuda_vulkan_h3_capture_replay) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
-  const char* path = std::getenv("VIDFAB_H3_ATTENTION_CAPTURE");
+SLOPFAB_TEST(cuda_vulkan_h3_capture_replay) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  const char* path = std::getenv("SLOPFAB_H3_ATTENTION_CAPTURE");
   if (!path || !*path) return;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
@@ -1792,14 +1792,14 @@ VIDFAB_TEST(cuda_vulkan_h3_capture_replay) {
   cv.copy_from_host(captured.data() + count * 2, count);
   auto cuda_time = [&](auto&& launch) {
     cudaEvent_t begin{}, end{};
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
-    VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&begin));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&end));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
     launch();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-    VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+    SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
     float milliseconds = 0;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&milliseconds, begin, end));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&milliseconds, begin, end));
     cudaEventDestroy(begin); cudaEventDestroy(end);
     return milliseconds;
   };
@@ -1813,7 +1813,7 @@ VIDFAB_TEST(cuda_vulkan_h3_capture_replay) {
         header.seq_len, header.num_heads, header.head_dim, scale);
   });
   cublasHandle_t blas{};
-  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&blas));
+  SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&blas));
   cuda::Workspace workspace;
   cuda::AttentionConfig config;
   config.seq_len = header.seq_len;
@@ -1828,7 +1828,7 @@ VIDFAB_TEST(cuda_vulkan_h3_capture_replay) {
         reinterpret_cast<__nv_bfloat16*>(shipped_output.get()), config,
         cuda::AttentionBackend::kFused, workspace);
   });
-  vidfab::cuda::cublas_destroy(blas);
+  slopfab::cuda::cublas_destroy(blas);
   std::vector<uint16_t> expected(count), shipped(count);
   exact_output.copy_to_host(expected.data(), count);
   shipped_output.copy_to_host(shipped.data(), count);
@@ -1895,9 +1895,9 @@ VIDFAB_TEST(cuda_vulkan_h3_capture_replay) {
       reference2 == 0 ? 0 : std::sqrt(error2 / reference2), max_abs);
 }
 
-VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -1941,7 +1941,7 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
       reinterpret_cast<const __nv_bfloat16*>(cv.get()),
       reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, query_heads,
       kv_heads, dim, exact_attention_scale(dim));
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> expected(q_count);
   co.copy_to_host(expected.data(), q_count);
   cuda::launch_deterministic_causal_gqa_attention(
@@ -1950,7 +1950,7 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
       reinterpret_cast<const __nv_bfloat16*>(cv.get()),
       reinterpret_cast<__nv_bfloat16*>(co_repeat.get()), sequence, query_heads,
       kv_heads, dim, exact_attention_scale(dim));
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> expected_repeat(q_count);
   co_repeat.copy_to_host(expected_repeat.data(), q_count);
   CHECK(expected_repeat == expected);
@@ -2036,7 +2036,7 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
         reinterpret_cast<const __nv_bfloat16*>(dcv.get()),
         reinterpret_cast<__nv_bfloat16*>(dco.get()), boundary_sequence,
         query_heads, kv_heads, dim, exact_attention_scale(dim));
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> boundary_expected(boundary_q_count);
     dco.copy_to_host(boundary_expected.data(), boundary_expected.size());
 
@@ -2171,10 +2171,10 @@ VIDFAB_TEST(cuda_vulkan_exact_causal_gqa_attention) {
   CHECK(got == expected);
 }
 
-VIDFAB_TEST(cuda_vulkan_causal_gqa_real_timing) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
-  if (!std::getenv("VIDFAB_CAUSAL_GQA_BENCH")) return;
+SLOPFAB_TEST(cuda_vulkan_causal_gqa_real_timing) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!std::getenv("SLOPFAB_CAUSAL_GQA_BENCH")) return;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -2229,19 +2229,19 @@ VIDFAB_TEST(cuda_vulkan_causal_gqa_real_timing) {
           kv_heads, dim, exact_attention_scale(dim));
     };
     launch_cuda();
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     submit_vulkan().wait();
     cudaEvent_t start = nullptr, stop = nullptr;
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&start));
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&stop));
-    VIDFAB_CUDA_CHECK(cudaEventRecord(start));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&start));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&stop));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(start));
     launch_cuda();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(stop));
-    VIDFAB_CUDA_CHECK(cudaEventSynchronize(stop));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(stop));
+    SLOPFAB_CUDA_CHECK(cudaEventSynchronize(stop));
     float cuda_ms = 0.0f;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_ms, start, stop));
-    VIDFAB_CUDA_CHECK(cudaEventDestroy(start));
-    VIDFAB_CUDA_CHECK(cudaEventDestroy(stop));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_ms, start, stop));
+    SLOPFAB_CUDA_CHECK(cudaEventDestroy(start));
+    SLOPFAB_CUDA_CHECK(cudaEventDestroy(stop));
     const auto begin = std::chrono::steady_clock::now();
     submit_vulkan().wait();
     const double vulkan_ms = std::chrono::duration<double, std::milli>(
@@ -2261,9 +2261,9 @@ VIDFAB_TEST(cuda_vulkan_causal_gqa_real_timing) {
   }
 }
 
-VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -2313,7 +2313,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   cuda::DeviceBuffer<float> c_transpose(count), c_biased(count);
   cuda::DeviceBuffer<float> c_bias(cols);
   c_bias.copy_from_host(bias.data(), bias.size());
-  VIDFAB_CUDA_CHECK(cudaMemcpy(c_biased.get(), c_input.get(), count * sizeof(float),
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(c_biased.get(), c_input.get(), count * sizeof(float),
                                cudaMemcpyDeviceToDevice));
   cuda::launch_transpose_cn_to_nc(c_input.get(), c_transpose.get(), rows, cols, nullptr);
   cuda::launch_add_bias(c_biased.get(), c_bias.get(), rows, cols, nullptr);
@@ -2375,7 +2375,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   c_raw_half.copy_from_host(raw_half_host.data(), raw_half_count);
   cuda::launch_widen_f16(c_raw_half.get(), c_raw_half_wide.get(), raw_half_count,
                          nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   const uint64_t shape_extents[] = {rows, cols};
   const uint64_t transpose_extents[] = {cols, rows};
@@ -2533,9 +2533,9 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_conversion_and_layout_ops) {
   }
 }
 
-VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -2868,9 +2868,9 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_pointwise) {
   CHECK(vk.pooled_used_bytes() == used_before_drop);
 }
 
-VIDFAB_TEST(cuda_vulkan_dit_exact_pointwise) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_dit_exact_pointwise) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -2954,7 +2954,7 @@ VIDFAB_TEST(cuda_vulkan_dit_exact_pointwise) {
   text::launch_swiglu_split_exact(reinterpret_cast<const __nv_bfloat16*>(ctext_gate.get()),
       reinterpret_cast<const __nv_bfloat16*>(ctext_up.get()),
       reinterpret_cast<__nv_bfloat16*>(ctext_out.get()),text_gate.size(),nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   auto mat=[&](uint64_t a,uint64_t b){const uint64_t s[]={a,b};return TensorLayout::contiguous(s,2);};
   auto vec=[&](uint64_t n){return TensorLayout::contiguous(&n,1);};
@@ -3065,9 +3065,9 @@ VIDFAB_TEST(cuda_vulkan_dit_exact_pointwise) {
   CHECK(stream_expected_bits==stream_actual_bits);
 }
 
-VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_gelu) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_qwen_vision_exact_gelu) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -3094,7 +3094,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_gelu) {
   cuda_bits.copy_from_host(input.data(), input.size());
   cuda::launch_gelu_tanh_exact(
       reinterpret_cast<__nv_bfloat16*>(cuda_bits.get()), input.size(), nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> expected(input.size());
   cuda_bits.copy_to_host(expected.data(), expected.size());
 
@@ -3123,7 +3123,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_gelu) {
   // Production S=16384, intermediate=4304 is opt-in because each authority
   // buffer is 134.5 MiB.  It is deliberately one packed dispatch, including
   // a non-multiple-of-64 pair count, rather than a synthetic extrapolation.
-  if (std::getenv("VIDFAB_RUN_QWEN_VISION_REAL")) {
+  if (std::getenv("SLOPFAB_RUN_QWEN_VISION_REAL")) {
     constexpr uint64_t rows = 16384, dim = 4304;
     const uint64_t count = rows * dim;
     std::vector<uint16_t> host(count);
@@ -3135,7 +3135,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_gelu) {
     const auto cuda_start = std::chrono::steady_clock::now();
     cuda::launch_gelu_tanh_exact(
         reinterpret_cast<__nv_bfloat16*>(cuda_production.get()), count, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const auto cuda_end = std::chrono::steady_clock::now();
     const uint64_t production_shape[] = {rows, dim};
     DeviceTensor vk_production = vk.allocate(
@@ -3157,9 +3157,9 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_gelu) {
   }
 }
 
-VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_layout) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_qwen_vision_exact_layout) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -3218,7 +3218,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_layout) {
   cuda::qwen_vision_scatter_add_exact(
       reinterpret_cast<const __nv_bfloat16*>(cm.get()), csi.get(),
       reinterpret_cast<__nv_bfloat16*>(cd.get()), groups, merged_dim, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   auto matrix = [](uint64_t a, uint64_t b) {
     const uint64_t shape[] = {a, b};
@@ -3298,11 +3298,11 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_exact_layout) {
   CHECK(short_batch.remaining_operator_capacity() == 2);
 }
 
-VIDFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const std::filesystem::path checkpoint_path =
-      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+      std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
   int cuda_devices = 0;
   if (!std::filesystem::exists(checkpoint_path) ||
@@ -3390,7 +3390,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
   cuda::qwen_vision_block_forward_exact(
       nullptr, cuda_weights, cc.get(), cs.get(),
       reinterpret_cast<__nv_bfloat16*>(cx.get()), rows, cuda_scratch);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const double cuda_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cuda_begin).count();
   std::vector<uint16_t> expected(input.size());
@@ -3509,7 +3509,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
       nullptr, patch_weight, reinterpret_cast<const __nv_bfloat16*>(cpixels.get()),
       reinterpret_cast<const __nv_bfloat16*>(cposition.get()),
       cposition_index.get(), reinterpret_cast<__nv_bfloat16*>(cpatch_out.get()), rows);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> expected_patch(size_t(rows) * hidden);
   cpatch_out.copy_to_host(expected_patch.data(), expected_patch.size());
 
@@ -3567,7 +3567,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
         reinterpret_cast<__nv_bfloat16*>(mm.get()),
         reinterpret_cast<__nv_bfloat16*>(mh.get()),
         reinterpret_cast<__nv_bfloat16*>(mo.get()), rows);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> result(size_t(rows / 4) * 5120);
     mo.copy_to_host(result.data(), result.size());
     return result;
@@ -3592,12 +3592,12 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_block0) {
               static_cast<unsigned long long>(scratch.reserved_bytes()));
 }
 
-VIDFAB_TEST(cuda_vulkan_qwen_vision_real_tower) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
-  if (!std::getenv("VIDFAB_QWEN_VISION_TOWER_REAL")) return;
+SLOPFAB_TEST(cuda_vulkan_qwen_vision_real_tower) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!std::getenv("SLOPFAB_QWEN_VISION_TOWER_REAL")) return;
   const std::filesystem::path checkpoint_path =
-      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+      std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
   int cuda_devices = 0;
   if (!std::filesystem::exists(checkpoint_path) ||
@@ -3733,14 +3733,14 @@ VIDFAB_TEST(cuda_vulkan_qwen_vision_real_tower) {
               stats.max_streamed_weight_bytes / 1048576.0);
 }
 
-VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const bool nv_requested =
-      std::getenv("VIDFAB_QWEN_MULTIMODAL_NV_REAL") != nullptr;
-  if (!nv_requested && !std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL")) return;
+      std::getenv("SLOPFAB_QWEN_MULTIMODAL_NV_REAL") != nullptr;
+  if (!nv_requested && !std::getenv("SLOPFAB_QWEN_MULTIMODAL_REAL")) return;
   const std::filesystem::path checkpoint_path =
-      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+      std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
       (nv_requested
           ? "weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
           : "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors");
@@ -3969,17 +3969,17 @@ VIDFAB_TEST(cuda_vulkan_qwen_multimodal_full50_real) {
   std::printf("\n");
 }
 
-VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_qwen_multimodal_max_real) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const bool nv_requested =
-      std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_NV_REAL") != nullptr;
+      std::getenv("SLOPFAB_QWEN_MULTIMODAL_MAX_NV_REAL") != nullptr;
   const bool cuda_authority =
-      std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_CUDA_REAL") != nullptr;
+      std::getenv("SLOPFAB_QWEN_MULTIMODAL_MAX_CUDA_REAL") != nullptr;
   if (!nv_requested && !cuda_authority &&
-      !std::getenv("VIDFAB_QWEN_MULTIMODAL_MAX_REAL")) return;
+      !std::getenv("SLOPFAB_QWEN_MULTIMODAL_MAX_REAL")) return;
   const std::filesystem::path checkpoint_path =
-      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+      std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
       (nv_requested
           ? "weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
           : "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors");
@@ -4031,7 +4031,7 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
         (nv_requested ? nv_sha : i8_sha));
   if (nv_requested) {
     SafeTensors i8_archive;
-    i8_archive.open((std::filesystem::path(VIDFAB_TEST_SOURCE_DIR) /
+    i8_archive.open((std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
         "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors").string());
     size_t visual_tensor_count = 0;
     for (const auto& entry : archive.tensors()) {
@@ -4071,7 +4071,7 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
     cuda_max_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - cuda_begin).count();
     cuda_encoder.unload();
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   }
 
   // Pin the four no-trace vision outputs at the same maximum grid. The visual
@@ -4173,9 +4173,9 @@ VIDFAB_TEST(vulkan_qwen_multimodal_max_real) {
                 cuda_max_seconds, first_seconds);
 }
 
-VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const std::filesystem::path checkpoint_path =
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
   if (!std::filesystem::exists(checkpoint_path) || !Instance::available()) return;
@@ -4336,7 +4336,7 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
   // weights, pool high-water and the executable output.
   const std::filesystem::path bad_path =
       std::filesystem::temp_directory_path() /
-      ("vidfab_qwen_layer_bad_reload_" + std::to_string(
+      ("slopfab_qwen_layer_bad_reload_" + std::to_string(
           std::chrono::high_resolution_clock::now().time_since_epoch().count()) +
        ".safetensors");
   write_safetensors(bad_path.string(),
@@ -4466,12 +4466,12 @@ VIDFAB_TEST(vulkan_qwen_real_layer0_synthetic_activation) {
       static_cast<unsigned long long>(stable_descriptors));
 }
 
-VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   constexpr uint32_t rows=132,hidden=5120,q_heads=64,kv_heads=8,
                      head_dim=128,ffn=25600;
-  const std::filesystem::path source(VIDFAB_TEST_SOURCE_DIR);
+  const std::filesystem::path source(SLOPFAB_TEST_SOURCE_DIR);
   const std::filesystem::path checkpoint_path=source/
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
   const std::filesystem::path tokenizer_path=source/
@@ -4544,7 +4544,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
       cuda_cosine.get(),cuda_sine.get(),
       reinterpret_cast<__nv_bfloat16*>(cuda_tokens.get()),cuda_workspace,
       &cuda_taps);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const double cuda_ms=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-cuda_begin).count();
 
@@ -4654,9 +4654,9 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
   generated.header.boundary_fnv64=hashes;generated.token_ids=token_ids;
   generated.input_bf16=input;generated.cosine=cosine;generated.sine=sine;
   const std::filesystem::path capture_path=
-      std::filesystem::path(VIDFAB_TEST_SOURCE_DIR)/
+      std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR)/
       "tests/data/qwen_layer0_l132.vfqw";
-  if(const char* write=std::getenv("VIDFAB_WRITE_QWEN_LAYER_CAPTURE");
+  if(const char* write=std::getenv("SLOPFAB_WRITE_QWEN_LAYER_CAPTURE");
      write&&std::strcmp(write,"1")==0){
     text::write_qwen_layer_capture(capture_path.string(),generated);
   }
@@ -4717,7 +4717,7 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
       cuda_cosine.get(),cuda_sine.get(),
       reinterpret_cast<__nv_bfloat16*>(cuda_tokens.get()),cuda_workspace,
       &cuda_taps);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const double nv_cuda_ms=std::chrono::duration<double,std::milli>(
       std::chrono::steady_clock::now()-nv_cuda_begin).count();
 
@@ -4768,10 +4768,10 @@ VIDFAB_TEST(cuda_vulkan_qwen_layer0_real_l132) {
   std::printf("\n");
 }
 
-VIDFAB_TEST(cuda_vulkan_qwen_full50_real_l132) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
-  const std::filesystem::path source(VIDFAB_TEST_SOURCE_DIR);
+SLOPFAB_TEST(cuda_vulkan_qwen_full50_real_l132) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  const std::filesystem::path source(SLOPFAB_TEST_SOURCE_DIR);
   const std::filesystem::path checkpoint_path = source /
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
   const std::filesystem::path capture_path = source /
@@ -5005,10 +5005,10 @@ VIDFAB_TEST(cuda_vulkan_qwen_full50_real_l132) {
   std::printf("\n");
 }
 
-VIDFAB_TEST(cuda_vulkan_qwen_full50_real_nvfp4_l132) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
-  const std::filesystem::path source(VIDFAB_TEST_SOURCE_DIR);
+SLOPFAB_TEST(cuda_vulkan_qwen_full50_real_nvfp4_l132) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  const std::filesystem::path source(SLOPFAB_TEST_SOURCE_DIR);
   const std::filesystem::path checkpoint_path = source /
       "weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors";
   const std::filesystem::path capture_path = source /
@@ -5238,9 +5238,9 @@ VIDFAB_TEST(cuda_vulkan_qwen_full50_real_nvfp4_l132) {
   std::printf("\n");
 }
 
-VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const std::filesystem::path path =
       "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
   if (!std::filesystem::exists(path) || !Instance::available()) return;
@@ -5265,10 +5265,10 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
       !vk.exact_fp32_vae_normalization()) return;
 
   uint32_t sequence = 65;
-  if (const char* requested = std::getenv("VIDFAB_DIT_BLOCK_SEQUENCE")) {
+  if (const char* requested = std::getenv("SLOPFAB_DIT_BLOCK_SEQUENCE")) {
     const unsigned long parsed = std::strtoul(requested, nullptr, 10);
     if (parsed == 0 || parsed > UINT32_MAX)
-      throw std::invalid_argument("VIDFAB_DIT_BLOCK_SEQUENCE is invalid");
+      throw std::invalid_argument("SLOPFAB_DIT_BLOCK_SEQUENCE is invalid");
     sequence = static_cast<uint32_t>(parsed);
   }
   H3BlockConfig config;
@@ -5501,7 +5501,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
       reinterpret_cast<const __nv_bfloat16*>(cuda_branch.get()),
       cuda_modulation.get() + 5 * table, cuda_selectors.get(), sequence,
       hidden, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const double cuda_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cuda_begin).count();
   std::vector<uint16_t> cuda_output(token_bits.size());
@@ -5551,7 +5551,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
       double(vk.reserved_bytes()) / 1048576.0,
       static_cast<unsigned long long>(vk.descriptor_set_allocations()));
 
-  if (const char* production = std::getenv("VIDFAB_DIT_GRAPH_PRODUCTION");
+  if (const char* production = std::getenv("SLOPFAB_DIT_GRAPH_PRODUCTION");
       production && production[0] == '1') {
     TensorContextOptions prod_context_options;
     prod_context_options.max_batch_operators = 2048;
@@ -5644,10 +5644,10 @@ VIDFAB_TEST(cuda_vulkan_dit_real_block0_replay) {
   }
 }
 
-VIDFAB_TEST(cuda_vulkan_dit_real_capture_replay) {
-  using namespace vidfab;
-  using namespace vidfab::dit;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_dit_real_capture_replay) {
+  using namespace slopfab;
+  using namespace slopfab::dit;
+  using namespace slopfab::vulkan;
   const std::filesystem::path checkpoint_path =
       "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
   const std::filesystem::path capture_path =
@@ -5851,10 +5851,10 @@ VIDFAB_TEST(cuda_vulkan_dit_real_capture_replay) {
   CHECK(overflow_threw);
 }
 
-VIDFAB_TEST(cuda_ref2va_text_l4100_authority) {
-  using namespace vidfab;
-  using namespace vidfab::dit;
-  const char* enabled = std::getenv("VIDFAB_REF2VA_TEXT_CUDA_REAL");
+SLOPFAB_TEST(cuda_ref2va_text_l4100_authority) {
+  using namespace slopfab;
+  using namespace slopfab::dit;
+  const char* enabled = std::getenv("SLOPFAB_REF2VA_TEXT_CUDA_REAL");
   if (!enabled || enabled[0] != '1') return;
   const std::filesystem::path checkpoint_path =
       "weights/transformer/minimax_h3_ref2va_pruned_nvfp4.safetensors";
@@ -5908,12 +5908,12 @@ VIDFAB_TEST(cuda_ref2va_text_l4100_authority) {
   transformer.unload();
 }
 
-VIDFAB_TEST(cuda_vulkan_dit_real_main50_capture_replay) {
-  using namespace vidfab;
-  using namespace vidfab::dit;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_dit_real_main50_capture_replay) {
+  using namespace slopfab;
+  using namespace slopfab::dit;
+  using namespace slopfab::vulkan;
   const char* replay_capture =
-      std::getenv("VIDFAB_REF2VA_GRAPH_REPLAY_CAPTURE");
+      std::getenv("SLOPFAB_REF2VA_GRAPH_REPLAY_CAPTURE");
   const bool dynamic_capture = replay_capture && replay_capture[0] != '\0';
   const std::filesystem::path checkpoint_path = dynamic_capture
       ? std::filesystem::path(
@@ -6149,10 +6149,10 @@ VIDFAB_TEST(cuda_vulkan_dit_real_main50_capture_replay) {
 
 }
 
-VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
-  using namespace vidfab;
-  using namespace vidfab::dit;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
+  using namespace slopfab;
+  using namespace slopfab::dit;
+  using namespace slopfab::vulkan;
   const std::filesystem::path checkpoint_path =
       "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
   const std::filesystem::path capture_path =
@@ -6435,7 +6435,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
                     actual_audio.size() * 4) == 0);
   transformer.unload();
 
-  if (const char* real_denoise = std::getenv("VIDFAB_DIT_DENOISE_REAL");
+  if (const char* real_denoise = std::getenv("SLOPFAB_DIT_DENOISE_REAL");
       real_denoise && real_denoise[0] == '1') {
     SequenceLayout denoise_layout;
     denoise_layout.num_text = static_cast<int>(header.text_rows);
@@ -6507,7 +6507,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
     CHECK(cuda_result.steps_computed == 3 &&
           cuda_result.steps_skipped == 0 && cuda_boundaries.size() == 3u);
     cuda_model.unload();
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
     ExactH3DenoiseConfig denoise_config;
     denoise_config.transformer = config;
@@ -6566,19 +6566,19 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         double(vk_denoiser.peak_device_bytes()) / 1048576.0);
     vk_denoiser.unload();
 
-    const char* ref2va_real = std::getenv("VIDFAB_REF2VA_DENOISE_REAL");
+    const char* ref2va_real = std::getenv("SLOPFAB_REF2VA_DENOISE_REAL");
     const char* ref2va_production =
-        std::getenv("VIDFAB_REF2VA_DENOISE_PRODUCTION_REAL");
+        std::getenv("SLOPFAB_REF2VA_DENOISE_PRODUCTION_REAL");
     if ((ref2va_real && ref2va_real[0] == '1') ||
         (ref2va_production && ref2va_production[0] == '1')) {
       const bool production_shape =
           ref2va_production && ref2va_production[0] == '1';
       const char* ref_graph_capture_env = production_shape
-          ? std::getenv("VIDFAB_REF2VA_GRAPH_CAPTURE") : nullptr;
+          ? std::getenv("SLOPFAB_REF2VA_GRAPH_CAPTURE") : nullptr;
       const std::string ref_graph_capture = ref_graph_capture_env
           ? ref_graph_capture_env : "";
       const char* ref_graph_reuse_env =
-          std::getenv("VIDFAB_REF2VA_GRAPH_CAPTURE_REUSE");
+          std::getenv("SLOPFAB_REF2VA_GRAPH_CAPTURE_REUSE");
       const bool reuse_ref_graph = !ref_graph_capture.empty() &&
           ref_graph_reuse_env && ref_graph_reuse_env[0] == '1';
       if (reuse_ref_graph)
@@ -6668,11 +6668,11 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       if (!reuse_ref_graph) {
       if (!ref_graph_capture.empty()) {
 #ifdef _WIN32
-        _putenv_s("VIDFAB_H3_GRAPH_CAPTURE", ref_graph_capture.c_str());
-        _putenv_s("VIDFAB_H3_GRAPH_CAPTURE_STEP", "0");
+        _putenv_s("SLOPFAB_H3_GRAPH_CAPTURE", ref_graph_capture.c_str());
+        _putenv_s("SLOPFAB_H3_GRAPH_CAPTURE_STEP", "0");
 #else
-        setenv("VIDFAB_H3_GRAPH_CAPTURE", ref_graph_capture.c_str(), 1);
-        setenv("VIDFAB_H3_GRAPH_CAPTURE_STEP", "0", 1);
+        setenv("SLOPFAB_H3_GRAPH_CAPTURE", ref_graph_capture.c_str(), 1);
+        setenv("SLOPFAB_H3_GRAPH_CAPTURE_STEP", "0", 1);
 #endif
       }
       dit::Transformer ref_cuda_model;
@@ -6680,11 +6680,11 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       ref_cuda_model.load(ref_checkpoint);
       if (!ref_graph_capture.empty()) {
 #ifdef _WIN32
-        _putenv_s("VIDFAB_H3_GRAPH_CAPTURE", "");
-        _putenv_s("VIDFAB_H3_GRAPH_CAPTURE_STEP", "");
+        _putenv_s("SLOPFAB_H3_GRAPH_CAPTURE", "");
+        _putenv_s("SLOPFAB_H3_GRAPH_CAPTURE_STEP", "");
 #else
-        unsetenv("VIDFAB_H3_GRAPH_CAPTURE");
-        unsetenv("VIDFAB_H3_GRAPH_CAPTURE_STEP");
+        unsetenv("SLOPFAB_H3_GRAPH_CAPTURE");
+        unsetenv("SLOPFAB_H3_GRAPH_CAPTURE_STEP");
 #endif
       }
       ref_cuda_model.set_attention_mode(AttentionMode::kExact);
@@ -6724,7 +6724,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
             ref_cuda_result.steps_skipped == 0 &&
             ref_cuda_boundaries.size() == ref_expected_steps);
       ref_cuda_model.unload();
-      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
       }
 
       ExactH3DenoiseConfig ref_vk_config;
@@ -7003,11 +7003,11 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
     }
   }
 
-  const char* captured_vertical = std::getenv("VIDFAB_DIT_VERTICAL_REAL");
-  const char* qwen_vertical = std::getenv("VIDFAB_QWEN_VERTICAL_REAL");
-  const char* ref2va_vertical = std::getenv("VIDFAB_REF2VA_VERTICAL_REAL");
+  const char* captured_vertical = std::getenv("SLOPFAB_DIT_VERTICAL_REAL");
+  const char* qwen_vertical = std::getenv("SLOPFAB_QWEN_VERTICAL_REAL");
+  const char* ref2va_vertical = std::getenv("SLOPFAB_REF2VA_VERTICAL_REAL");
   const char* ref2va_nonsquare_vertical =
-      std::getenv("VIDFAB_REF2VA_NONSQUARE_VERTICAL_REAL");
+      std::getenv("SLOPFAB_REF2VA_NONSQUARE_VERTICAL_REAL");
   if ((captured_vertical && captured_vertical[0] == '1') ||
       (qwen_vertical && qwen_vertical[0] == '1') ||
       (ref2va_vertical && ref2va_vertical[0] == '1') ||
@@ -7030,15 +7030,15 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
         std::chrono::high_resolution_clock::now().time_since_epoch().count());
     const std::filesystem::path temp = std::filesystem::temp_directory_path();
     const std::filesystem::path prompt_path =
-        temp / ("vidfab-g7d-prompt-" + unique + ".safetensors");
+        temp / ("slopfab-g7d-prompt-" + unique + ".safetensors");
     const std::filesystem::path init_path =
-        temp / ("vidfab-g7d-init-" + unique + ".safetensors");
+        temp / ("slopfab-g7d-init-" + unique + ".safetensors");
     const std::filesystem::path cuda_out =
-        temp / ("vidfab-g7d-cuda-" + unique + ".raw");
+        temp / ("slopfab-g7d-cuda-" + unique + ".raw");
     const std::filesystem::path vulkan_out =
-        temp / ("vidfab-g7d-vulkan-" + unique + ".raw");
+        temp / ("slopfab-g7d-vulkan-" + unique + ".raw");
     const std::filesystem::path reference_path =
-        temp / ("vidfab-g9-reference-" + unique + ".ppm");
+        temp / ("slopfab-g9-reference-" + unique + ".ppm");
     write_safetensors(prompt_path.string(),
                       {{"prompt_embedding",
                         {static_cast<int64_t>(header.text_rows),
@@ -7277,7 +7277,7 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
       std::filesystem::remove(path, ignored);
   }
 
-  if (const char* production = std::getenv("VIDFAB_DIT_TRANSFORMER_PRODUCTION");
+  if (const char* production = std::getenv("SLOPFAB_DIT_TRANSFORMER_PRODUCTION");
       production && production[0] == '1') {
     constexpr uint32_t prod_sequence = 9864;
     constexpr uint32_t prod_audio_rows = 74;
@@ -7377,10 +7377,10 @@ VIDFAB_TEST(cuda_vulkan_dit_real_transformer_capture_replay) {
   }
 }
 
-VIDFAB_TEST(cuda_vulkan_vae_pointwise_real_timing) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
-  if (!std::getenv("VIDFAB_VAE_POINTWISE_BENCH")) return;
+SLOPFAB_TEST(cuda_vulkan_vae_pointwise_real_timing) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!std::getenv("SLOPFAB_VAE_POINTWISE_BENCH")) return;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -7435,16 +7435,16 @@ VIDFAB_TEST(cuda_vulkan_vae_pointwise_real_timing) {
 
   auto time_cuda = [&](auto&& launch) {
     launch();
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     cudaEvent_t begin{}, end{};
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
-    VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&begin));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&end));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
     for (int repeat = 0; repeat < repeats; ++repeat) launch();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-    VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+    SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
     float milliseconds = 0.0f;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&milliseconds, begin, end));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&milliseconds, begin, end));
     cudaEventDestroy(begin);
     cudaEventDestroy(end);
     return milliseconds / repeats;
@@ -7453,7 +7453,7 @@ VIDFAB_TEST(cuda_vulkan_vae_pointwise_real_timing) {
   const float legacy_swiglu_ms = time_cuda([&] {
     legacy_vae_swiglu_probe<<<swiglu_grid, 256>>>(
         cinput.get(), csbias.get(), clegacy.get(), inner);
-    VIDFAB_CUDA_CHECK(cudaGetLastError());
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
   });
   const float exact_swiglu_ms = time_cuda([&] {
     cuda::launch_swiglu(cinput.get(), csbias.get(), cexact.get(), rows, inner,
@@ -7553,9 +7553,9 @@ VIDFAB_TEST(cuda_vulkan_vae_pointwise_real_timing) {
       direct_mib, double(vk.reserved_bytes()) / 1048576.0);
 }
 
-VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -7620,7 +7620,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
                          dim, epsilon, nullptr);
     cuda::launch_layernorm(c_input.get(), c_weight.get(), c_bias.get(),
                            c_layer_repeat.get(), rows, dim, epsilon, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<float> rms_once(count), rms_twice(count), layer_once(count),
         layer_twice(count);
     c_rms.copy_to_host(rms_once.data(), count);
@@ -7732,9 +7732,9 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_norms) {
   }
 }
 
-VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -7795,7 +7795,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
                          reinterpret_cast<const __nv_bfloat16*>(c_weight.get()),
                          reinterpret_cast<__nv_bfloat16*>(c_repeat.get()), rows,
                          dim, 1.0e-5f, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> expected(count), actual(count);
     c_output.copy_to_host(expected.data(), count);
     std::vector<uint16_t> repeated(count);
@@ -7852,7 +7852,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
         reinterpret_cast<const __nv_bfloat16*>(c_bias.get()),
         reinterpret_cast<__nv_bfloat16*>(c_repeat.get()), rows, dim, 1.0e-6f,
         nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> expected(count), actual(count);
     c_output.copy_to_host(expected.data(), count);
     std::vector<uint16_t> repeated(count);
@@ -7952,7 +7952,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
           reinterpret_cast<__nv_bfloat16*>(c_bf_repeat.get()), rows, dim,
           1.0e-5f, nullptr);
     }
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     if (!invalid_selectors) {
       if (fp32) {
         std::vector<float> once(count), twice(count);
@@ -8169,9 +8169,9 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_shared_norms) {
             static_cast<unsigned long long>(used_before_mixed));
 }
 
-VIDFAB_TEST(cuda_vulkan_tensor_exact_group_norm_silu) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_tensor_exact_group_norm_silu) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -8219,7 +8219,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_group_norm_silu) {
     cuda::launch_keyframe_groupnorm_silu(c_input.get(), c_weight.get(), c_bias.get(),
                                          c_output.get(), channels, height, width,
                                          groups, 1.0e-6f, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<float> expected(count), actual(count);
     c_output.copy_to_host(expected.data(), count);
 
@@ -8363,9 +8363,9 @@ __global__ void dense_weight_convert_probe(const void* input, uint16_t* output,
   }
 }
 
-VIDFAB_TEST(cuda_vulkan_tensor_exact_bf16_rope) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_tensor_exact_bf16_rope) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -8450,7 +8450,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_bf16_rope) {
     else
       cuda::launch_rope_neox(cuda_data.get(), cuda_cos.get(), cuda_sin.get(), rows,
                              heads, head_dim, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> expected(count), actual(count);
     cuda_data.copy_to_host(reinterpret_cast<__nv_bfloat16*>(expected.data()), count);
 
@@ -8561,9 +8561,9 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_bf16_rope) {
   CHECK(vk.pooled_used_bytes() == used_before_reuse);
 }
 
-VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_fused_rope) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_tensor_exact_vae_fused_rope) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -8610,7 +8610,7 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_fused_rope) {
       c_input.get(), c_bias.get(), c_cos.get(), c_sin.get(), c_q.get(),
       c_k.get(), c_v.get(), sequence, heads, head_dim, rope_dim, num_patches,
       epsilon, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::array<std::vector<float>, 3> expected{
       std::vector<float>(output_count), std::vector<float>(output_count),
       std::vector<float>(output_count)};
@@ -8794,9 +8794,9 @@ VIDFAB_TEST(cuda_vulkan_tensor_exact_vae_fused_rope) {
 
 }
 
-VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -8840,9 +8840,9 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
   cuda_f8_scale.copy_from_host(&f8_scale, 1);
   cuda::launch_dequant_f8e4m3(cuda_f8.get(), cuda_f8_scale.get(),
                               cuda_f8_output.get(), f8.size(), nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> f8_expected(f8.size());
-  VIDFAB_CUDA_CHECK(cudaMemcpy(f8_expected.data(), cuda_f8_output.get(),
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(f8_expected.data(), cuda_f8_output.get(),
                               f8_expected.size() * sizeof(uint16_t),
                               cudaMemcpyDeviceToHost));
   LinearWeightUpload f8_upload;
@@ -8878,9 +8878,9 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
   cuda::launch_dequant_i8_per_channel(cuda_i8.get(), cuda_i8_scale.get(),
                                       cuda_i8_output.get(), i8_rows, i8_columns,
                                       nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> i8_expected(i8.size());
-  VIDFAB_CUDA_CHECK(cudaMemcpy(i8_expected.data(), cuda_i8_output.get(),
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(i8_expected.data(), cuda_i8_output.get(),
                               i8_expected.size() * sizeof(uint16_t),
                               cudaMemcpyDeviceToHost));
   LinearWeightUpload i8_upload;
@@ -8934,7 +8934,7 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
     dense_weight_convert_probe<<<static_cast<unsigned>((count + 255) / 256), 256>>>(
         cuda_input.get(), cuda_output.get(), static_cast<int>(count), source_op,
         output_fp16);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> expected(count), actual(count);
     cuda_output.copy_to_host(expected.data(), count);
     LinearWeightUpload upload;
@@ -8978,9 +8978,9 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_f8_i8_exact) {
                    f32_bits.data(), f32_bits.size(), true);
 }
 
-VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -9030,9 +9030,9 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
   d_nv_scales.copy_from_host(nv_scales.data(), nv_scales.size());
   cuda::launch_dequant_nvfp4(d_nv.get(), d_nv_scales.get(), nv_global,
                              d_nv_output.get(), nv_out, nv_in, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> nv_expected(nv_count);
-  VIDFAB_CUDA_CHECK(cudaMemcpy(nv_expected.data(), d_nv_output.get(),
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(nv_expected.data(), d_nv_output.get(),
                               nv_count * sizeof(uint16_t), cudaMemcpyDeviceToHost));
   LinearWeightUpload nv_upload;
   nv_upload.format = LinearWeightFormat::kNVFloat4;
@@ -9088,7 +9088,7 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
   cuda::launch_dequant_nf4_f16(d_nf.get(), d_nf_absmax.get(), d_nf_map.get(),
       d_nf_nested_map.get(), d_nf_nested_absmax.get(), block, nested_block,
       nf_offset, reinterpret_cast<__half*>(d_nf_f16.get()), nf_count, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> nf_bf16_expected(nf_count), nf_f16_expected(nf_count);
   d_nf_bf16.copy_to_host(nf_bf16_expected.data(), nf_count);
   d_nf_f16.copy_to_host(nf_f16_expected.data(), nf_count);
@@ -9145,9 +9145,9 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_nvfp4_nf4_exact) {
                     nf_count * sizeof(uint16_t)) == 0);
 }
 
-VIDFAB_TEST(cuda_vulkan_linear_weight_activation_transforms_exact) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_linear_weight_activation_transforms_exact) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -9203,7 +9203,7 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_activation_transforms_exact) {
       nullptr);
   cuda::launch_convrot_f32(d_f32_input.get(), d_f32_rotated.get(), rows, dim,
                            dim, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> bf_scaled_expected(count), bf_rotated_expected(count);
   std::vector<float> f32_scaled_expected(count), f32_rotated_expected(count);
   d_bf_scaled.copy_to_host(bf_scaled_expected.data(), count);
@@ -9241,9 +9241,9 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_activation_transforms_exact) {
   CHECK(std::memcmp(f32_rotated_expected.data(), f32_rotated_actual.data(), count * 4) == 0);
 }
 
-VIDFAB_TEST(vulkan_linear_weight_bounded_reuse_and_lifetime) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_linear_weight_bounded_reuse_and_lifetime) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -9376,9 +9376,9 @@ VIDFAB_TEST(vulkan_linear_weight_bounded_reuse_and_lifetime) {
   CHECK(vk.pooled_used_bytes() == used_before_submit);
 }
 
-VIDFAB_TEST(cuda_vulkan_linear_weight_real_nvfp4_slab) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_linear_weight_real_nvfp4_slab) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const std::filesystem::path path =
       "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
   int cuda_devices = 0;
@@ -9436,7 +9436,7 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_real_nvfp4_slab) {
   cuda_scale.copy_from_host(static_cast<const uint8_t*>(scale.data), scale_bytes);
   cuda::launch_dequant_nvfp4(cuda_stored.get(), cuda_scale.get(), global,
       reinterpret_cast<__nv_bfloat16*>(cuda_dense.get()), slab_out, in, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   {
     TensorBatch batch = vk.begin_batch();
     weight.materialize_bf16(batch, dense);
@@ -9454,7 +9454,7 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_real_nvfp4_slab) {
     cuda::launch_dequant_nvfp4(cuda_stored.get(), cuda_scale.get(), global,
         reinterpret_cast<__nv_bfloat16*>(cuda_dense.get()), slab_out, in, nullptr);
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const double cuda_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cuda_begin).count() / iterations;
   auto vulkan_begin = std::chrono::steady_clock::now();
@@ -9472,9 +9472,9 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_real_nvfp4_slab) {
               static_cast<double>(elements * 2) / 1048576.0);
 }
 
-VIDFAB_TEST(cuda_vulkan_streamed_nvfp4_gemm_real_slab) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_streamed_nvfp4_gemm_real_slab) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const std::filesystem::path path =
       "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
   int cuda_devices = 0;
@@ -9529,7 +9529,7 @@ VIDFAB_TEST(cuda_vulkan_streamed_nvfp4_gemm_real_slab) {
         DenseGemmMode::kBFloat16, DenseGemmBias::kBFloat16, 64, 64);
   };
   cuda_run();
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> cuda_output(initial.size());
   co.copy_to_host(cuda_output.data(), cuda_output.size());
 
@@ -9586,14 +9586,14 @@ VIDFAB_TEST(cuda_vulkan_streamed_nvfp4_gemm_real_slab) {
 
   constexpr int iterations = 10;
   cudaEvent_t begin = nullptr, end = nullptr;
-  VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
-  VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
-  VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+  SLOPFAB_CUDA_CHECK(cudaEventCreate(&begin));
+  SLOPFAB_CUDA_CHECK(cudaEventCreate(&end));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
   for (int i = 0; i < iterations; ++i) cuda_run();
-  VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-  VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+  SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
   float cuda_elapsed = 0.0f;
-  VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_elapsed, begin, end));
+  SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_elapsed, begin, end));
   cudaEventDestroy(begin); cudaEventDestroy(end);
   const auto vk_begin = std::chrono::steady_clock::now();
   for (int i = 0; i < iterations; ++i) vulkan_run().wait();
@@ -9606,9 +9606,9 @@ VIDFAB_TEST(cuda_vulkan_streamed_nvfp4_gemm_real_slab) {
               double(cache.dense_bytes()) / 1048576.0);
 }
 
-VIDFAB_TEST(cuda_vulkan_linear_weight_real_nf4_conv) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_linear_weight_real_nf4_conv) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   const std::filesystem::path path = "weights/vae/video_vae_nf4.safetensors";
   int cuda_devices = 0;
   if (!std::filesystem::exists(path) ||
@@ -9699,7 +9699,7 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_real_nf4_conv) {
       d_nested_map.get(), d_nested_absmax.get(), state.block_size,
       state.nested_block_size, state.nested_offset,
       reinterpret_cast<__half*>(d_dense.get()), elements, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   {
     TensorBatch batch = vk.begin_batch();
     weight.materialize_f16(batch, dense);
@@ -9718,7 +9718,7 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_real_nf4_conv) {
         state.nested_block_size, state.nested_offset,
         reinterpret_cast<__half*>(d_dense.get()), elements, nullptr);
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const double cuda_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cuda_begin).count() / iterations;
   auto vulkan_begin = std::chrono::steady_clock::now();
@@ -9736,36 +9736,36 @@ VIDFAB_TEST(cuda_vulkan_linear_weight_real_nf4_conv) {
               static_cast<double>(elements * 2) / 1048576.0);
 }
 
-VIDFAB_TEST(cuda_bf16_gemm_5376_baseline) {
+SLOPFAB_TEST(cuda_bf16_gemm_5376_baseline) {
   constexpr int m = 64, n = 5376, k = 5376;
-  vidfab::cuda::DeviceBuffer<__nv_bfloat16> a(size_t(m) * k), w(size_t(n) * k), c(size_t(m) * n);
-  VIDFAB_CUDA_CHECK(cudaMemset(a.get(), 0, size_t(m) * k * sizeof(__nv_bfloat16)));
-  VIDFAB_CUDA_CHECK(cudaMemset(w.get(), 0, size_t(n) * k * sizeof(__nv_bfloat16)));
+  slopfab::cuda::DeviceBuffer<__nv_bfloat16> a(size_t(m) * k), w(size_t(n) * k), c(size_t(m) * n);
+  SLOPFAB_CUDA_CHECK(cudaMemset(a.get(), 0, size_t(m) * k * sizeof(__nv_bfloat16)));
+  SLOPFAB_CUDA_CHECK(cudaMemset(w.get(), 0, size_t(n) * k * sizeof(__nv_bfloat16)));
   cublasHandle_t handle = nullptr;
-  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&handle));
+  SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&handle));
   const float alpha = 1.0f, beta = 0.0f;
   auto launch = [&] {
-    VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
+    SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
                                      &alpha, w.get(), CUDA_R_16BF, k,
                                      a.get(), CUDA_R_16BF, k, &beta,
                                      c.get(), CUDA_R_16BF, n,
                                      CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
   };
   launch();
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   cudaEvent_t begin = nullptr, end = nullptr;
-  VIDFAB_CUDA_CHECK(cudaEventCreate(&begin)); VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
-  VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+  SLOPFAB_CUDA_CHECK(cudaEventCreate(&begin)); SLOPFAB_CUDA_CHECK(cudaEventCreate(&end));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
   for (int i = 0; i < 20; ++i) launch();
-  VIDFAB_CUDA_CHECK(cudaEventRecord(end)); VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
-  float elapsed = 0.0f; VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&elapsed, begin, end));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(end)); SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
+  float elapsed = 0.0f; SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&elapsed, begin, end));
   std::printf("  cuBLAS BF16 GEMM 64x5376x5376: %.3f ms\n", elapsed / 20.0f);
-  cudaEventDestroy(begin); cudaEventDestroy(end); vidfab::cuda::cublas_destroy(handle);
+  cudaEventDestroy(begin); cudaEventDestroy(end); slopfab::cuda::cublas_destroy(handle);
 }
 
-VIDFAB_TEST(cuda_vulkan_cooperative_bf16_gemm_exact) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_cooperative_bf16_gemm_exact) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   constexpr uint32_t m = 64, n = 16, k = 5376;
   constexpr uint32_t input_rows = 128, output_rows = 128;
   constexpr uint32_t input_offset = 64, output_offset = 17;
@@ -9839,9 +9839,9 @@ VIDFAB_TEST(cuda_vulkan_cooperative_bf16_gemm_exact) {
             differences, cuda_output.size());
 }
 
-VIDFAB_TEST(cuda_vulkan_cooperative_f16_gemm_exact) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_cooperative_f16_gemm_exact) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   constexpr uint32_t m = 64, n = 64, k = 64;
   constexpr uint32_t input_rows = 128, output_rows = 128;
   constexpr uint32_t input_offset = 64, output_offset = 17;
@@ -9912,9 +9912,9 @@ VIDFAB_TEST(cuda_vulkan_cooperative_f16_gemm_exact) {
             cuda_output.size());
 }
 
-VIDFAB_TEST(cuda_vulkan_scalar_gemm_modes_exact) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_scalar_gemm_modes_exact) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   constexpr uint32_t m = 3, n = 11, k = 19;
   constexpr uint32_t input_rows = 5, output_rows = 6;
   constexpr uint32_t input_offset = 1, output_offset = 2;
@@ -10057,9 +10057,9 @@ VIDFAB_TEST(cuda_vulkan_scalar_gemm_modes_exact) {
   run(DenseGemmMode::kFloat32, DenseGemmBias::kFloat32);
 }
 
-VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   CHECK(!physical.empty());
@@ -10072,10 +10072,10 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
   TensorContext context(device);
 
   cublasHandle_t handle = nullptr;
-  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&handle));
+  SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&handle));
   cudaEvent_t begin = nullptr, end = nullptr;
-  VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
-  VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
+  SLOPFAB_CUDA_CHECK(cudaEventCreate(&begin));
+  SLOPFAB_CUDA_CHECK(cudaEventCreate(&end));
   const float alpha = 1.0f, beta = 0.0f;
 
   {
@@ -10083,34 +10083,34 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
     cuda::DeviceBuffer<float> caf(size_t(m) * k);
     cuda::DeviceBuffer<__half> ca(size_t(m) * k), cw(size_t(n) * k);
     cuda::DeviceBuffer<float> co(size_t(m) * n);
-    VIDFAB_CUDA_CHECK(cudaMemset(caf.get(), 0, size_t(m) * k * 4));
-    VIDFAB_CUDA_CHECK(cudaMemset(ca.get(), 0, size_t(m) * k * 2));
-    VIDFAB_CUDA_CHECK(cudaMemset(cw.get(), 0, size_t(n) * k * 2));
+    SLOPFAB_CUDA_CHECK(cudaMemset(caf.get(), 0, size_t(m) * k * 4));
+    SLOPFAB_CUDA_CHECK(cudaMemset(ca.get(), 0, size_t(m) * k * 2));
+    SLOPFAB_CUDA_CHECK(cudaMemset(cw.get(), 0, size_t(n) * k * 2));
     auto cuda_launch = [&] {
-      VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(
+      SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(
           handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k, &alpha, cw.get(),
           CUDA_R_16F, k, ca.get(), CUDA_R_16F, k, &beta, co.get(),
           CUDA_R_32F, n, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
     };
     cuda_launch();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
     for (int i = 0; i < 20; ++i) cuda_launch();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-    VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+    SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
     float cuda_ms = 0;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_ms, begin, end));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_ms, begin, end));
     cuda_ms /= 20.0f;
     auto cuda_total_launch = [&] {
       cuda::launch_narrow_f16(caf.get(), ca.get(), size_t(m) * k, nullptr);
       cuda_launch();
     };
     cuda_total_launch();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
     for (int i = 0; i < 20; ++i) cuda_total_launch();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-    VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+    SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
     float cuda_total_ms = 0;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_total_ms, begin, end));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_total_ms, begin, end));
     cuda_total_ms /= 20.0f;
 
     const uint64_t as[] = {m, k}, ws[] = {n, k}, os[] = {m, n};
@@ -10168,20 +10168,20 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
     constexpr uint32_t m = 64, n = 2048, k = 2048;
     cuda::DeviceBuffer<float> ca(size_t(m) * k), cw(size_t(n) * k),
         co(size_t(m) * n);
-    VIDFAB_CUDA_CHECK(cudaMemset(ca.get(), 0, size_t(m) * k * 4));
-    VIDFAB_CUDA_CHECK(cudaMemset(cw.get(), 0, size_t(n) * k * 4));
+    SLOPFAB_CUDA_CHECK(cudaMemset(ca.get(), 0, size_t(m) * k * 4));
+    SLOPFAB_CUDA_CHECK(cudaMemset(cw.get(), 0, size_t(n) * k * 4));
     auto cuda_launch = [&] {
-      VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_sgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+      SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_sgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                                       n, m, k, &alpha, cw.get(), k,
                                       ca.get(), k, &beta, co.get(), n));
     };
     cuda_launch();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
     for (int i = 0; i < 20; ++i) cuda_launch();
-    VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-    VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+    SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
     float cuda_ms = 0;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_ms, begin, end));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&cuda_ms, begin, end));
     cuda_ms /= 20.0f;
 
     const uint64_t as[] = {m, k}, ws[] = {n, k}, os[] = {m, n};
@@ -10204,11 +10204,11 @@ VIDFAB_TEST(cuda_vulkan_dense_gemm_production_timing) {
   }
   cudaEventDestroy(begin);
   cudaEventDestroy(end);
-  vidfab::cuda::cublas_destroy(handle);
+  slopfab::cuda::cublas_destroy(handle);
 }
 
-VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
-  using namespace vidfab;
+SLOPFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
+  using namespace slopfab;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !vulkan::Instance::available()) return;
@@ -10475,20 +10475,20 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   cuda::DeviceBuffer<float> base_cosine = make_cuda_rope(69);
   cuda::DeviceBuffer<float> base_sine = make_cuda_rope(69);
   cuda::Stream queued_stream, switched_stream;
-  VIDFAB_CUDA_CHECK(cudaMemsetAsync(queued_tokens.get(), 0,
+  SLOPFAB_CUDA_CHECK(cudaMemsetAsync(queued_tokens.get(), 0,
       queued_tokens.nbytes(), queued_stream.get()));
-  VIDFAB_CUDA_CHECK(cudaMemsetAsync(queued_cosine.get(), 0,
+  SLOPFAB_CUDA_CHECK(cudaMemsetAsync(queued_cosine.get(), 0,
       queued_cosine.nbytes(), queued_stream.get()));
-  VIDFAB_CUDA_CHECK(cudaMemsetAsync(queued_sine.get(), 0,
+  SLOPFAB_CUDA_CHECK(cudaMemsetAsync(queued_sine.get(), 0,
       queued_sine.nbytes(), queued_stream.get()));
   shape_graph.forward_device(queued_tokens.get(), queued_cosine.get(),
                              queued_sine.get(), queued_stream.get());
   shape_graph.prepare_shape(69, 64);
-  VIDFAB_CUDA_CHECK(cudaMemsetAsync(base_tokens.get(), 0, base_tokens.nbytes(),
+  SLOPFAB_CUDA_CHECK(cudaMemsetAsync(base_tokens.get(), 0, base_tokens.nbytes(),
                                     switched_stream.get()));
-  VIDFAB_CUDA_CHECK(cudaMemsetAsync(base_cosine.get(), 0, base_cosine.nbytes(),
+  SLOPFAB_CUDA_CHECK(cudaMemsetAsync(base_cosine.get(), 0, base_cosine.nbytes(),
                                     switched_stream.get()));
-  VIDFAB_CUDA_CHECK(cudaMemsetAsync(base_sine.get(), 0, base_sine.nbytes(),
+  SLOPFAB_CUDA_CHECK(cudaMemsetAsync(base_sine.get(), 0, base_sine.nbytes(),
                                     switched_stream.get()));
   shape_graph.forward_device(base_tokens.get(), base_cosine.get(),
                              base_sine.get(), switched_stream.get());
@@ -10514,7 +10514,7 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
     CHECK(insufficient.remaining_operator_capacity() == insufficient_capacity);
   }
 
-  if (!std::getenv("VIDFAB_VAE_VIT_BLOCK_REAL")) return;
+  if (!std::getenv("SLOPFAB_VAE_VIT_BLOCK_REAL")) return;
   const std::filesystem::path checkpoint_path =
       "weights/vae/minimax_h3_video_vae_fp16.safetensors";
   if (!std::filesystem::exists(checkpoint_path)) return;
@@ -10644,7 +10644,7 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
              real_input.size() * sizeof(float) +
              2 * real_cosine.size() * sizeof(float)) / 1048576.0);
 
-  if (!std::getenv("VIDFAB_VAE_VIT_GRAPH_REAL")) return;
+  if (!std::getenv("SLOPFAB_VAE_VIT_GRAPH_REAL")) return;
   vulkan::TensorContextOptions graph_options;
   graph_options.max_batch_operators = 1024;
   vulkan::TensorContext graph_context(device, graph_options);
@@ -10849,9 +10849,9 @@ VIDFAB_TEST(cuda_vulkan_exact_vae_vit_block_stage) {
   std::printf("\n");
 }
 
-VIDFAB_TEST(cuda_vulkan_keyframe_conv3d_exact) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_keyframe_conv3d_exact) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -10898,7 +10898,7 @@ VIDFAB_TEST(cuda_vulkan_keyframe_conv3d_exact) {
         static_cast<int>(cin), static_cast<int>(cout), static_cast<int>(height),
         static_cast<int>(width), static_cast<int>(kernel), static_cast<int>(stride),
         reflect, asymmetric, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<float> expected(output_count), actual(output_count);
     c_output.copy_to_host(expected.data(), output_count);
 
@@ -10968,9 +10968,9 @@ VIDFAB_TEST(cuda_vulkan_keyframe_conv3d_exact) {
   batch.submit().wait();
 }
 
-VIDFAB_TEST(cuda_vulkan_keyframe_groupnorm_large_divisor) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(cuda_vulkan_keyframe_groupnorm_large_divisor) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) return;
@@ -11003,7 +11003,7 @@ VIDFAB_TEST(cuda_vulkan_keyframe_groupnorm_large_divisor) {
   cuda::launch_keyframe_groupnorm_silu(
       c_input.get(), c_weight.get(), c_bias.get(), c_output.get(), channels,
       height, width, groups, 1.0e-6f, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   c_output.copy_to_host(expected.data(), count);
 
   const uint64_t flat = count, feature = channels;
@@ -11032,9 +11032,9 @@ VIDFAB_TEST(cuda_vulkan_keyframe_groupnorm_large_divisor) {
             "large keyframe GroupNorm mismatch at %zu of %zu", mismatch, count);
 }
 
-VIDFAB_TEST(cuda_vulkan_keyframe_encoder_real_graph) {
-  using namespace vidfab;
-  if (!std::getenv("VIDFAB_KEYFRAME_ENCODER_REAL")) return;
+SLOPFAB_TEST(cuda_vulkan_keyframe_encoder_real_graph) {
+  using namespace slopfab;
+  if (!std::getenv("SLOPFAB_KEYFRAME_ENCODER_REAL")) return;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !vulkan::Instance::available()) return;
@@ -11123,7 +11123,7 @@ VIDFAB_TEST(cuda_vulkan_keyframe_encoder_real_graph) {
               stats.allocator_used_bytes / 1048576.0,
               stats.allocator_reserved_bytes / 1048576.0,
               static_cast<unsigned long long>(stats.descriptor_set_allocations));
-  if (const char* max_shape = std::getenv("VIDFAB_KEYFRAME_ENCODER_MAX");
+  if (const char* max_shape = std::getenv("SLOPFAB_KEYFRAME_ENCODER_MAX");
       max_shape && max_shape[0] == '1') {
     constexpr int max_height = 2048;
     constexpr int max_width = 2048;
@@ -11161,11 +11161,11 @@ VIDFAB_TEST(cuda_vulkan_keyframe_encoder_real_graph) {
   CHECK(!vk.loaded());
 }
 
-VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
-  using namespace vidfab;
+SLOPFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
+  using namespace slopfab;
   vae::ViTConfig default_config;
   CHECK(default_config.transformer_mode == vae::ViTTransformerMode::kShipped);
-  if (!std::getenv("VIDFAB_VAE_VIT_DECODER_REAL")) return;
+  if (!std::getenv("SLOPFAB_VAE_VIT_DECODER_REAL")) return;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0)
     return;
@@ -11357,9 +11357,9 @@ VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
       }
       CHECK(pixel_digest == 0xf455f77e718d9c21ull);
       const std::filesystem::path cuda_y4m =
-          std::filesystem::temp_directory_path() / "vidfab_exact_vae_cuda.y4m";
+          std::filesystem::temp_directory_path() / "slopfab_exact_vae_cuda.y4m";
       const std::filesystem::path vk_y4m =
-          std::filesystem::temp_directory_path() / "vidfab_exact_vae_vulkan.y4m";
+          std::filesystem::temp_directory_path() / "slopfab_exact_vae_vulkan.y4m";
       std::filesystem::remove(cuda_y4m);
       std::filesystem::remove(vk_y4m);
       video::write_y4m(cuda_y4m.string(), cuda_video.data, cuda_video.frames,
@@ -11395,4 +11395,4 @@ VIDFAB_TEST(cuda_exact_vae_vit_decoder_integration) {
       first.size(), ragged.size(), static_cast<unsigned long long>(digest));
 }
 
-int main() { return ::vidfab::test::run_all(); }
+int main() { return ::slopfab::test::run_all(); }

@@ -1,4 +1,4 @@
-// vidfab - MiniMax H3 video generation in C++/CUDA.
+// slopfab - MiniMax H3 video generation in C++/CUDA.
 
 #include <algorithm>
 #include <cctype>
@@ -20,27 +20,27 @@
 #include <string_view>
 #include <vector>
 
-// Included directly rather than picked up from vidfab/generate.h, which is
+// Included directly rather than picked up from slopfab/generate.h, which is
 // behind the CUDA guard below: the flag parsing that names an attention mode
-// is not, so a build with VIDFAB_ENABLE_CUDA=OFF could not see this type at
+// is not, so a build with SLOPFAB_ENABLE_CUDA=OFF could not see this type at
 // all. It is a core header and costs a CPU-only build nothing.
-#include "vidfab/attention_mode.h"
-#include "vidfab/dtype.h"
-#include "vidfab/json.h"
-#include "vidfab/dit/step_cache.h"
-#include "vidfab/pipeline.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/sampler/scheduler.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/text/tokenizer.h"
+#include "slopfab/attention_mode.h"
+#include "slopfab/dtype.h"
+#include "slopfab/json.h"
+#include "slopfab/dit/step_cache.h"
+#include "slopfab/pipeline.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/sampler/scheduler.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/text/tokenizer.h"
 
-#include "vidfab/video/y4m.h"
-#include "vidfab/video/y4m_compare.h"
+#include "slopfab/video/y4m.h"
+#include "slopfab/video/y4m_compare.h"
 
-#if VIDFAB_WITH_VULKAN
-#include "vidfab/vulkan/runtime.h"
-#include "vidfab/vulkan/yuv_converter.h"
+#if SLOPFAB_WITH_VULKAN
+#include "slopfab/vulkan/runtime.h"
+#include "slopfab/vulkan/yuv_converter.h"
 #endif
 
 #if defined(_WIN32)
@@ -49,16 +49,16 @@
 #include <winhttp.h>
 #endif
 
-#if VIDFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA
 #include <chrono>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/cublas_dispatch.h"
-#include "vidfab/cuda/deterministic_attention.cuh"
-#include "vidfab/cuda/profile.h"
-#include "vidfab/dit/transformer.h"
-#include "vidfab/generate.h"
-#include "vidfab/vae/vit_decoder.h"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/cublas_dispatch.h"
+#include "slopfab/cuda/deterministic_attention.cuh"
+#include "slopfab/cuda/profile.h"
+#include "slopfab/dit/transformer.h"
+#include "slopfab/generate.h"
+#include "slopfab/vae/vit_decoder.h"
 #endif
 
 namespace {
@@ -111,18 +111,18 @@ std::filesystem::path license_state_path() {
   if (base.empty()) base = environment_value("APPDATA");
   if (base.empty())
     throw std::runtime_error("license: LOCALAPPDATA is not available");
-  return std::filesystem::path(base) / "Vidfab" / "state.json";
+  return std::filesystem::path(base) / "Slopfab" / "state.json";
 #elif defined(__APPLE__)
   const std::string home = environment_value("HOME");
   if (home.empty()) throw std::runtime_error("license: HOME is not available");
-  return std::filesystem::path(home) / "Library" / "Application Support" / "Vidfab" /
+  return std::filesystem::path(home) / "Library" / "Application Support" / "Slopfab" /
          "state.json";
 #else
   const std::string state = environment_value("XDG_STATE_HOME");
-  if (!state.empty()) return std::filesystem::path(state) / "vidfab" / "state.json";
+  if (!state.empty()) return std::filesystem::path(state) / "slopfab" / "state.json";
   const std::string home = environment_value("HOME");
   if (home.empty()) throw std::runtime_error("license: HOME is not available");
-  return std::filesystem::path(home) / ".local" / "state" / "vidfab" / "state.json";
+  return std::filesystem::path(home) / ".local" / "state" / "slopfab" / "state.json";
 #endif
 }
 
@@ -132,9 +132,9 @@ bool license_is_accepted(const std::filesystem::path& path, const std::string& h
   std::ostringstream contents;
   contents << in.rdbuf();
   try {
-    const vidfab::json::Value state = vidfab::json::parse(contents.str());
-    const vidfab::json::Value* accepted = state.find("accepted");
-    const vidfab::json::Value* stored_hash = state.find("license_hash");
+    const slopfab::json::Value state = slopfab::json::parse(contents.str());
+    const slopfab::json::Value* accepted = state.find("accepted");
+    const slopfab::json::Value* stored_hash = state.find("license_hash");
     return accepted != nullptr && accepted->as_bool() && stored_hash != nullptr &&
            stored_hash->as_string() == hash;
   } catch (const std::exception&) {
@@ -193,7 +193,7 @@ bool ensure_license_acceptance() {
   if (regional) {
     std::printf("\nYou need to apply for a MiniMax H3 license at:\n%s\n\n", kRegionalLicenseUrl);
     if (!ask_yes_no("Have you applied for a license?")) {
-      std::printf("A license must be applied for before Vidfab can be used.\n");
+      std::printf("A license must be applied for before Slopfab can be used.\n");
       return false;
     }
     store_license_acceptance(state, hash, "regional-application");
@@ -202,7 +202,7 @@ bool ensure_license_acceptance() {
 
   std::printf("\n%s\n", std::string(license).c_str());
   if (!ask_yes_no("Do you accept the MiniMax H3 license?")) {
-    std::printf("The license was declined. Vidfab will now terminate.\n");
+    std::printf("The license was declined. Slopfab will now terminate.\n");
     return false;
   }
   store_license_acceptance(state, hash, "community-license");
@@ -256,7 +256,7 @@ void download_model(const ModelDownload& model, const std::filesystem::path& des
   std::wstring path(parts.lpszUrlPath, parts.dwUrlPathLength);
   path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
 
-  InternetHandle session{WinHttpOpen(L"vidfab/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+  InternetHandle session{WinHttpOpen(L"slopfab/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
   if (!session.value) throw std::runtime_error("download: cannot initialise WinHTTP");
   WinHttpSetTimeouts(session.value, 30000, 30000, 30000, 60000);
@@ -390,7 +390,7 @@ std::string find_checkpoint(const std::filesystem::path& directory,
   return matches.empty() ? std::string() : matches.front().string();
 }
 
-void discover_generate_checkpoints(vidfab::GenerateRequest& req, const char* executable) {
+void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* executable) {
   const std::filesystem::path weights = find_weights_directory(executable);
   if (weights.empty()) return;
   if (req.text_encoder_path.empty())
@@ -433,7 +433,7 @@ void ensure_model(std::string& path, const ModelDownload& model,
   path = destination.string();
 }
 
-void ensure_generate_models(vidfab::GenerateRequest& req, const char* executable) {
+void ensure_generate_models(slopfab::GenerateRequest& req, const char* executable) {
   const std::filesystem::path weights = default_weights_directory(executable);
   ensure_model(req.text_encoder_path, kTextEncoder, weights);
   ensure_model(req.transformer_path,
@@ -444,7 +444,7 @@ void ensure_generate_models(vidfab::GenerateRequest& req, const char* executable
 }
 
 // Per-command help. Keeping the detail beside the summary in one table is what
-// stops `vidfab <cmd> --help` from drifting out of step with the top-level
+// stops `slopfab <cmd> --help` from drifting out of step with the top-level
 // usage, which is the usual way CLI help rots.
 struct CommandHelp {
   const char* name;
@@ -454,13 +454,13 @@ struct CommandHelp {
 };
 
 const CommandHelp kCommands[] = {
-    {"generate", "vidfab generate --prompt <text> [options]", "text to video and audio",
+    {"generate", "slopfab generate --prompt <text> [options]", "text to video and audio",
      "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
      "  --prompt-file <file>         read that same prompt from a UTF-8 text file\n"
      "                               instead; a BOM and surrounding blank space are\n"
      "                               stripped. Cannot be combined with --prompt\n"
      "  --reference-image <file>     ordered Ref2VA image; repeat up to 9 times.\n"
-#if VIDFAB_WITH_FFMPEG
+#if SLOPFAB_WITH_FFMPEG
      "                               Any still or video FFmpeg can decode (a video\n"
      "                               contributes its first frame), plus binary PPM.\n"
 #else
@@ -597,12 +597,12 @@ const CommandHelp kCommands[] = {
      "the sequencing costs nothing measurable and is what makes every mixture of\n"
      "the four safe. Expect the first output well after the progress line starts\n"
      "moving.\n"},
-    {"inspect", "vidfab inspect <file.safetensors> [options]",
+    {"inspect", "slopfab inspect <file.safetensors> [options]",
      "summarise a checkpoint's tensors",
      "  --list                       print every tensor, not just a summary\n"
      "  --prefix <str>               only tensors whose name starts with <str>\n"
      "  --limit <n>                  cap listed tensors (default 40, 0 = all)\n"},
-    {"compare", "vidfab compare <reference> <actual> [options]",
+    {"compare", "slopfab compare <reference> <actual> [options]",
      "diff two checkpoints tensor by tensor",
      "  --abs-tol <x>                absolute tolerance (default 1e-3)\n"
      "  --rel-tol <x>                relative tolerance (default 1e-2)\n"
@@ -630,11 +630,11 @@ const CommandHelp kCommands[] = {
      "both sides are finite. Matching global statistics with falling\n"
      "correlation is this project's signature of a different sample rather\n"
      "than a degraded one -- see the README.\n"},
-    {"compare-y4m", "vidfab compare-y4m <expected.y4m> <actual.y4m>",
+    {"compare-y4m", "slopfab compare-y4m <expected.y4m> <actual.y4m>",
      "byte-compare deterministic raw video outputs",
      "Reports both headers, sizes, and the first differing byte. The command\n"
      "streams its inputs and returns non-zero for any difference.\n"},
-    {"decode", "vidfab decode --vae <f> [--latent <f>] [options]",
+    {"decode", "slopfab decode --vae <f> [--latent <f>] [options]",
      "run the video VAE decoder",
      "  --vae <f>                    video VAE checkpoint\n"
      "  --latent <f>                 latent safetensors; omit for a synthetic one\n"
@@ -642,12 +642,12 @@ const CommandHelp kCommands[] = {
      "  --out <f>                    .y4m output\n"
      "  --ppm <f>                    also write frame 0 as a PPM\n"
      "  --dump <f>                   raw fp32 pixels as safetensors\n"},
-    {"tokenize", "vidfab tokenize [--tokenizer <f>] <text>",
+    {"tokenize", "slopfab tokenize [--tokenizer <f>] <text>",
      "encode text and round-trip it",
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --pieces                     also print the pre-tokenizer split\n"},
-    {"devices", "vidfab devices", "list CUDA inference and Vulkan output devices", ""},
-    {"version", "vidfab version", "print the version and exit", ""},
+    {"devices", "slopfab devices", "list CUDA inference and Vulkan output devices", ""},
+    {"version", "slopfab version", "print the version and exit", ""},
 };
 
 const CommandHelp* find_command(std::string_view name) {
@@ -675,22 +675,22 @@ int print_command_help(const CommandHelp& c) {
 
 void print_usage() {
   std::printf(
-      "vidfab %s - MiniMax H3 video generation\n"
+      "slopfab %s - MiniMax H3 video generation\n"
       "\n"
-      "usage: vidfab [--cuda-version=auto|13|12] <command> [options]\n"
-      "       vidfab <command> --help\n"
+      "usage: slopfab [--cuda-version=auto|13|12] <command> [options]\n"
+      "       slopfab <command> --help\n"
       "\n"
       "commands:\n",
       kVersion);
   for (const CommandHelp& c : kCommands) {
     std::printf("  %-9s %s\n", c.name, c.summary);
   }
-  std::printf("\nRun `vidfab <command> --help` for that command's options.\n"
+  std::printf("\nRun `slopfab <command> --help` for that command's options.\n"
               "CUDA defaults to installed version 13, then 12; "
-              "VIDFAB_CUDA_VERSION provides the same override.\n");
+              "SLOPFAB_CUDA_VERSION provides the same override.\n");
 }
 
-#if VIDFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA
 void consume_cuda_version_option(int& argc, char** argv) {
   std::string requested;
   int write = 1;
@@ -709,7 +709,7 @@ void consume_cuda_version_option(int& argc, char** argv) {
   }
   argc = write;
   argv[argc] = nullptr;
-  if (!requested.empty()) vidfab::cuda::set_cublas_version_request(requested);
+  if (!requested.empty()) slopfab::cuda::set_cublas_version_request(requested);
 }
 #endif
 
@@ -758,22 +758,22 @@ int cmd_inspect(int argc, char** argv) {
     } else if (arg == "--limit" && i + 1 < argc) {
       limit = static_cast<size_t>(std::strtoull(argv[++i], nullptr, 10));
     } else if (!arg.empty() && arg.front() == '-') {
-      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      std::fprintf(stderr, "slopfab: unrecognised option '%s'\n", argv[i]);
       return 2;
     } else if (path.empty()) {
       path = argv[i];
     } else {
-      std::fprintf(stderr, "vidfab: unexpected argument '%s'\n", argv[i]);
+      std::fprintf(stderr, "slopfab: unexpected argument '%s'\n", argv[i]);
       return 2;
     }
   }
 
   if (path.empty()) {
-    std::fprintf(stderr, "vidfab: inspect needs a .safetensors path\n");
+    std::fprintf(stderr, "slopfab: inspect needs a .safetensors path\n");
     return 2;
   }
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
 
   std::printf("file       %s\n", st.path().c_str());
@@ -794,7 +794,7 @@ int cmd_inspect(int argc, char** argv) {
   std::map<std::string, std::pair<uint64_t, uint64_t>> by_dtype;  // count, bytes
   uint64_t total_bytes = 0;
   for (const auto& [name, view] : st.tensors()) {
-    auto& slot = by_dtype[vidfab::dtype_name(view.dtype)];
+    auto& slot = by_dtype[slopfab::dtype_name(view.dtype)];
     slot.first += 1;
     slot.second += view.nbytes;
     total_bytes += view.nbytes;
@@ -816,7 +816,7 @@ int cmd_inspect(int argc, char** argv) {
       if (!prefix.empty() && name.rfind(prefix, 0) != 0) continue;
       ++matched;
       if (limit != 0 && shown >= limit) continue;
-      std::printf("  %-58s %-8s %-20s %10s\n", name.c_str(), vidfab::dtype_name(view.dtype),
+      std::printf("  %-58s %-8s %-20s %10s\n", name.c_str(), slopfab::dtype_name(view.dtype),
                   format_shape(view.shape).c_str(), format_bytes(view.nbytes).c_str());
       ++shown;
     }
@@ -853,25 +853,25 @@ int cmd_compare(int argc, char** argv) {
     } else if (arg == "--verbose" || arg == "-v") {
       verbose = true;
     } else if (!arg.empty() && arg.front() == '-') {
-      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      std::fprintf(stderr, "slopfab: unrecognised option '%s'\n", argv[i]);
       return 2;
     } else if (ref_path.empty()) {
       ref_path = argv[i];
     } else if (act_path.empty()) {
       act_path = argv[i];
     } else {
-      std::fprintf(stderr, "vidfab: unexpected argument '%s'\n", argv[i]);
+      std::fprintf(stderr, "slopfab: unexpected argument '%s'\n", argv[i]);
       return 2;
     }
   }
 
   if (ref_path.empty() || act_path.empty()) {
-    std::fprintf(stderr, "vidfab: compare needs a reference and an actual .safetensors path\n");
+    std::fprintf(stderr, "slopfab: compare needs a reference and an actual .safetensors path\n");
     return 2;
   }
 
-  vidfab::SafeTensors ref;
-  vidfab::SafeTensors act;
+  slopfab::SafeTensors ref;
+  slopfab::SafeTensors act;
   ref.open(ref_path);
   act.open(act_path);
 
@@ -889,16 +889,16 @@ int cmd_compare(int argc, char** argv) {
   std::vector<float> act_values;
 
   for (const auto& [name, ref_view] : ref.tensors()) {
-    const vidfab::TensorView* act_view = act.find(name);
+    const slopfab::TensorView* act_view = act.find(name);
     if (act_view == nullptr) {
       ++missing;
       if (verbose) std::printf("  MISSING  %s\n", name.c_str());
       continue;
     }
 
-    vidfab::to_f32(ref_view, ref_values);
-    vidfab::to_f32(*act_view, act_values);
-    const vidfab::CompareStats stats = vidfab::compare(ref_values, act_values);
+    slopfab::to_f32(ref_view, ref_values);
+    slopfab::to_f32(*act_view, act_values);
+    const slopfab::CompareStats stats = slopfab::compare(ref_values, act_values);
     ++compared;
 
     if (stats.max_abs_err > worst_abs) {
@@ -946,11 +946,11 @@ int cmd_compare(int argc, char** argv) {
 int cmd_compare_y4m(int argc, char** argv) {
   if (wants_help(argc, argv)) return print_command_help(*find_command("compare-y4m"));
   if (argc != 2) {
-    std::fprintf(stderr, "vidfab: compare-y4m needs expected and actual paths\n");
+    std::fprintf(stderr, "slopfab: compare-y4m needs expected and actual paths\n");
     return 2;
   }
-  const vidfab::video::ExactY4mComparison result =
-      vidfab::video::compare_y4m_exact(argv[0], argv[1]);
+  const slopfab::video::ExactY4mComparison result =
+      slopfab::video::compare_y4m_exact(argv[0], argv[1]);
   std::printf("expected   %s (%llu bytes)\n", argv[0],
               static_cast<unsigned long long>(result.expected_size));
   std::printf("           %s\n", result.expected_header.c_str());
@@ -975,18 +975,18 @@ int cmd_compare_y4m(int argc, char** argv) {
   return 1;
 }
 
-#if VIDFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA
 // Reads latents_mean / latents_std from the checkpoint's __metadata__ JSON,
 // which carries full fp32 text. The F16 tensors of the same name lose
 // precision, and the FL2VA copy of config.json has corrupted digits.
-bool latent_stats_from_metadata(const vidfab::SafeTensors& ckpt, std::vector<float>& mean,
+bool latent_stats_from_metadata(const slopfab::SafeTensors& ckpt, std::vector<float>& mean,
                                 std::vector<float>& std_dev) {
   auto it = ckpt.metadata().find("minimax_h3_video_vae");
   if (it == ckpt.metadata().end()) return false;
   try {
-    const vidfab::json::Value meta = vidfab::json::parse(it->second);
-    const vidfab::json::Value* m = meta.find("latents_mean");
-    const vidfab::json::Value* s = meta.find("latents_std");
+    const slopfab::json::Value meta = slopfab::json::parse(it->second);
+    const slopfab::json::Value* m = meta.find("latents_mean");
+    const slopfab::json::Value* s = meta.find("latents_std");
     if (m == nullptr || s == nullptr) return false;
     mean.clear();
     std_dev.clear();
@@ -1059,39 +1059,39 @@ int cmd_decode(int argc, char** argv) {
     } else if (arg == "--bench-load") {
       bench_load = true;
     } else {
-      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      std::fprintf(stderr, "slopfab: unrecognised option '%s'\n", argv[i]);
       return 2;
     }
   }
 
   if (vae_path.empty()) {
-    std::fprintf(stderr, "vidfab: decode needs --vae <video_vae.safetensors>\n");
+    std::fprintf(stderr, "slopfab: decode needs --vae <video_vae.safetensors>\n");
     return 2;
   }
 
-  vidfab::SafeTensors ckpt;
+  slopfab::SafeTensors ckpt;
   ckpt.open(vae_path);
 
   std::vector<float> mean;
   std::vector<float> std_dev;
   if (!latent_stats_from_metadata(ckpt, mean, std_dev)) {
-    mean = vidfab::vae::default_video_latents_mean();
-    std_dev = vidfab::vae::default_video_latents_std();
+    mean = slopfab::vae::default_video_latents_mean();
+    std_dev = slopfab::vae::default_video_latents_std();
   }
 
   std::vector<float> z;
   if (!latent_path.empty()) {
-    vidfab::SafeTensors latent_file;
+    slopfab::SafeTensors latent_file;
     latent_file.open(latent_path);
-    const vidfab::TensorView& lv = latent_file.at("latent");
+    const slopfab::TensorView& lv = latent_file.at("latent");
     if (lv.shape.size() != 4 || lv.shape[0] != 24) {
-      std::fprintf(stderr, "vidfab: latent tensor must be [24, T, H, W]\n");
+      std::fprintf(stderr, "slopfab: latent tensor must be [24, T, H, W]\n");
       return 1;
     }
     T = static_cast<int>(lv.shape[1]);
     H = static_cast<int>(lv.shape[2]);
     W = static_cast<int>(lv.shape[3]);
-    z = vidfab::to_f32(lv);
+    z = slopfab::to_f32(lv);
   } else {
     std::printf("no --latent given; decoding a deterministic synthetic latent (seed %u)\n", seed);
     z = synthetic_latent(T, H, W, seed);
@@ -1106,7 +1106,7 @@ int cmd_decode(int argc, char** argv) {
   // worth building.
   if (bench_load) {
     auto time_load = [&](const char* label) {
-      vidfab::vae::ViTDecoder probe;
+      slopfab::vae::ViTDecoder probe;
       const auto s0 = std::chrono::steady_clock::now();
       probe.load(ckpt);
       const auto s1 = std::chrono::steady_clock::now();
@@ -1121,7 +1121,7 @@ int cmd_decode(int argc, char** argv) {
     return 0;
   }
 
-  vidfab::vae::ViTDecoder decoder;
+  slopfab::vae::ViTDecoder decoder;
   const auto load_start = std::chrono::steady_clock::now();
   decoder.load(ckpt);
   const auto load_end = std::chrono::steady_clock::now();
@@ -1129,7 +1129,7 @@ int cmd_decode(int argc, char** argv) {
               format_bytes(decoder.weight_bytes()).c_str(),
               std::chrono::duration<double>(load_end - load_start).count());
 
-  vidfab::vae::DecodeSchedule schedule;
+  slopfab::vae::DecodeSchedule schedule;
   schedule.tiling_enabled = !no_tiling;
 
   // The first decode pays one-time costs the steady state does not: scratch
@@ -1137,7 +1137,7 @@ int cmd_decode(int argc, char** argv) {
   // GEMM shape. Reporting it as the decode time overstates the cost by a
   // noticeable margin, so timings are reported per run and `--repeat` exists to
   // expose the warm number.
-  vidfab::vae::DecodedVideo video;
+  slopfab::vae::DecodedVideo video;
   for (int run = 0; run < repeat; ++run) {
     const auto t0 = std::chrono::steady_clock::now();
     video = decoder.decode(z.data(), T, H, W, mean, std_dev, schedule);
@@ -1149,9 +1149,9 @@ int cmd_decode(int argc, char** argv) {
                 seconds > 0 ? static_cast<double>(video.frames) / seconds : 0.0);
     // The phase spans inside `decode` tile exactly this interval, so it is
     // their denominator. With --repeat both sides accumulate together.
-    vidfab::cuda::PhaseProfiler::instance().add_total("video vae decode", seconds * 1000.0);
+    slopfab::cuda::PhaseProfiler::instance().add_total("video vae decode", seconds * 1000.0);
   }
-  vidfab::cuda::PhaseProfiler::instance().report(stdout);
+  slopfab::cuda::PhaseProfiler::instance().report(stdout);
 
   // Report basic statistics: a decode that silently produced NaN or a constant
   // image should be visible here without opening the file.
@@ -1171,31 +1171,31 @@ int cmd_decode(int argc, char** argv) {
   std::printf("pixels     min %.4f  max %.4f  mean %.4f  non-finite %zu\n", lo, hi,
               sum / static_cast<double>(video.data.size()), nonfinite);
   if (nonfinite != 0) {
-    std::fprintf(stderr, "vidfab: decode produced non-finite pixels\n");
+    std::fprintf(stderr, "slopfab: decode produced non-finite pixels\n");
     return 1;
   }
 
   if (!dump_path.empty()) {
-    // Raw fp32 pixels, so two runs can be diffed with `vidfab compare` at
+    // Raw fp32 pixels, so two runs can be diffed with `slopfab compare` at
     // float precision rather than after 8-bit quantisation. The copy into the
     // writer's own vector type is what this diagnostic path already did.
-    vidfab::write_safetensors(
+    slopfab::write_safetensors(
         dump_path, {{"pixels",
                      {3, video.frames, video.height, video.width},
                      std::vector<float>(video.data.begin(), video.data.end())}});
     std::printf("wrote      %s\n", dump_path.c_str());
   }
 
-  vidfab::video::write_y4m(out_path, video.data, video.frames, video.height, video.width,
+  slopfab::video::write_y4m(out_path, video.data, video.frames, video.height, video.width,
                            {fps, 1});
   std::printf("wrote      %s\n", out_path.c_str());
   if (!ppm_path.empty()) {
-    vidfab::video::write_ppm(ppm_path, video.data, video.frames, video.height, video.width, 0);
+    slopfab::video::write_ppm(ppm_path, video.data, video.frames, video.height, video.width, 0);
     std::printf("wrote      %s\n", ppm_path.c_str());
   }
   return 0;
 }
-#endif  // VIDFAB_WITH_CUDA
+#endif  // SLOPFAB_WITH_CUDA
 
 int cmd_tokenize(int argc, char** argv) {
   if (wants_help(argc, argv)) return print_command_help(*find_command("tokenize"));
@@ -1211,14 +1211,14 @@ int cmd_tokenize(int argc, char** argv) {
     } else if (arg == "--pieces") {
       show_pieces = true;
     } else if (!arg.empty() && arg.front() == '-') {
-      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      std::fprintf(stderr, "slopfab: unrecognised option '%s'\n", argv[i]);
       return 2;
     } else {
       if (!text.empty()) text += " ";
       text += argv[i];
     }
   }
-  vidfab::text::Tokenizer tok;
+  slopfab::text::Tokenizer tok;
   if (tok_path.empty()) tok.load_embedded();
   else tok.load(tok_path);
   std::printf("vocab      %zu tokens\n", tok.vocab_size());
@@ -1250,7 +1250,7 @@ int cmd_tokenize(int argc, char** argv) {
 int cmd_generate(int argc, char** argv, const char* executable) {
   if (wants_help(argc, argv)) return print_command_help(*find_command("generate"));
 
-  vidfab::GenerateRequest req;
+  slopfab::GenerateRequest req;
   req.canvas_width = 864;
   req.canvas_height = 480;
   req.num_frames = 124;
@@ -1258,13 +1258,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   req.seed = 0;
   bool dry_run = false;
   bool synthetic = false;
-  vidfab::sampler::SamplerKind sampler_kind = vidfab::sampler::SamplerKind::kEuler;
+  slopfab::sampler::SamplerKind sampler_kind = slopfab::sampler::SamplerKind::kEuler;
   std::string dump_latents;
   std::string prompt_file;
   bool saw_prompt = false;
   int attn_band = 0;
-  vidfab::AttentionMode attention_mode = vidfab::AttentionMode::kSage2;
-  vidfab::SolSchedule sol_schedule;
+  slopfab::AttentionMode attention_mode = slopfab::AttentionMode::kSage2;
+  slopfab::SolSchedule sol_schedule;
   std::string init_latents;
   std::string prompt_embedding;
   int bench_load = 0;
@@ -1315,18 +1315,18 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--sampler") {
       const std::string v = next("--sampler");
       if (v == "euler") {
-        sampler_kind = vidfab::sampler::SamplerKind::kEuler;
+        sampler_kind = slopfab::sampler::SamplerKind::kEuler;
       } else if (v == "ab2") {
-        sampler_kind = vidfab::sampler::SamplerKind::kAb2;
+        sampler_kind = slopfab::sampler::SamplerKind::kAb2;
       } else {
-        std::fprintf(stderr, "vidfab: --sampler wants euler or ab2, got '%s'\n", v.c_str());
+        std::fprintf(stderr, "slopfab: --sampler wants euler or ab2, got '%s'\n", v.c_str());
         return 2;
       }
     } else if (arg == "--aspect") {
       const std::string v = next("--aspect");
       const size_t colon = v.find(':');
       if (colon == std::string::npos) {
-        std::fprintf(stderr, "vidfab: --aspect wants W:H, e.g. 16:9\n");
+        std::fprintf(stderr, "slopfab: --aspect wants W:H, e.g. 16:9\n");
         return 2;
       }
       req.aspect_w = std::atoi(v.substr(0, colon).c_str());
@@ -1338,13 +1338,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       const std::string v = next("--resolution");
       const size_t x = v.find_first_of("xX");
       if (x == std::string::npos) {
-        std::fprintf(stderr, "vidfab: --resolution wants WxH, e.g. 1344x768\n");
+        std::fprintf(stderr, "slopfab: --resolution wants WxH, e.g. 1344x768\n");
         return 2;
       }
       req.canvas_width = std::atoi(v.substr(0, x).c_str());
       req.canvas_height = std::atoi(v.substr(x + 1).c_str());
       if (req.canvas_width <= 0 || req.canvas_height <= 0) {
-        std::fprintf(stderr, "vidfab: --resolution wants two positive numbers, got '%s'\n",
+        std::fprintf(stderr, "slopfab: --resolution wants two positive numbers, got '%s'\n",
                      v.c_str());
         return 2;
       }
@@ -1367,7 +1367,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       inference_backend = next("--inference-backend");
       if (inference_backend != "cuda" && inference_backend != "vulkan") {
         std::fprintf(stderr,
-                     "vidfab: --inference-backend wants cuda or vulkan, got '%s'\n",
+                     "slopfab: --inference-backend wants cuda or vulkan, got '%s'\n",
                      inference_backend.c_str());
         return 2;
       }
@@ -1375,7 +1375,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       output_accelerator = next("--output-accelerator");
       if (output_accelerator != "cpu" && output_accelerator != "vulkan") {
         std::fprintf(stderr,
-                     "vidfab: --output-accelerator wants cpu or vulkan, got '%s'\n",
+                     "slopfab: --output-accelerator wants cpu or vulkan, got '%s'\n",
                      output_accelerator.c_str());
         return 2;
       }
@@ -1403,9 +1403,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       attn_band = std::atoi(next("--attn-band"));
     } else if (arg == "--attention") {
       const std::string v = next("--attention");
-      if (!vidfab::parse_attention_mode(v, &attention_mode)) {
+      if (!slopfab::parse_attention_mode(v, &attention_mode)) {
         std::fprintf(stderr,
-                     "vidfab: --attention wants none, flash2, sage2, sol, "
+                     "slopfab: --attention wants none, flash2, sage2, sol, "
                      "sol-experimental, or exact, got '%s'\n", v.c_str());
         return 2;
       }
@@ -1434,17 +1434,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--bench-load") {
       bench_load = std::atoi(next("--bench-load"));
     } else {
-      std::fprintf(stderr, "vidfab: unrecognised option '%s'\n", argv[i]);
+      std::fprintf(stderr, "slopfab: unrecognised option '%s'\n", argv[i]);
       return 2;
     }
   }
 
   if (inference_backend == "vulkan") {
-    if (attention_mode != vidfab::AttentionMode::kExact) {
+    if (attention_mode != slopfab::AttentionMode::kExact) {
       std::fprintf(stderr,
-                   "vidfab: Vulkan VAE inference requires --attention exact; mode '%s' "
+                   "slopfab: Vulkan VAE inference requires --attention exact; mode '%s' "
                    "will not be remapped and no CUDA fallback was used\n",
-                   vidfab::attention_mode_name(attention_mode));
+                   slopfab::attention_mode_name(attention_mode));
       return 1;
     }
   }
@@ -1452,7 +1452,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // Both write the same field, so accepting both would mean silently honouring
   // one of them and dropping the other.
   if (saw_prompt && !prompt_file.empty()) {
-    std::fprintf(stderr, "vidfab: --prompt and --prompt-file cannot be combined\n");
+    std::fprintf(stderr, "slopfab: --prompt and --prompt-file cannot be combined\n");
     return 2;
   }
   if (!prompt_file.empty()) {
@@ -1463,7 +1463,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     // prompt wants in its token stream.
     std::ifstream in(prompt_file, std::ios::binary);
     if (!in) {
-      std::fprintf(stderr, "vidfab: cannot read --prompt-file '%s'\n", prompt_file.c_str());
+      std::fprintf(stderr, "slopfab: cannot read --prompt-file '%s'\n", prompt_file.c_str());
       return 2;
     }
     std::ostringstream contents;
@@ -1473,7 +1473,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
     const size_t first = text.find_first_not_of(" \t\n");
     if (first == std::string::npos) {
-      std::fprintf(stderr, "vidfab: --prompt-file '%s' has no prompt in it\n",
+      std::fprintf(stderr, "slopfab: --prompt-file '%s' has no prompt in it\n",
                    prompt_file.c_str());
       return 2;
     }
@@ -1484,7 +1484,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // `--synthetic-latents --init-latents <f>` is the decode-an-existing-latent
   // path and needs no prompt; the seeded-noise form still does not either.
   if (req.prompt.empty() && prompt_embedding.empty() && !dry_run && !synthetic) {
-    std::fprintf(stderr, "vidfab: generate needs --prompt \"...\" or --prompt-file <file>\n");
+    std::fprintf(stderr, "slopfab: generate needs --prompt \"...\" or --prompt-file <file>\n");
     return 2;
   }
   if (!std::isfinite(sol_schedule.beta)||!std::isfinite(sol_schedule.error_k)||
@@ -1493,25 +1493,25 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       sol_schedule.layer_every <= 0 || sol_schedule.step_begin < 0 ||
       sol_schedule.layer_begin < 0 || sol_schedule.step_end < sol_schedule.step_begin ||
       sol_schedule.layer_end < sol_schedule.layer_begin) {
-    std::fprintf(stderr,"vidfab: invalid Sol beta/range/cadence\n");
+    std::fprintf(stderr,"slopfab: invalid Sol beta/range/cadence\n");
     return 2;
   }
   if (synthetic && !req.reference_image_paths.empty()) {
     std::fprintf(stderr,
-                 "vidfab: --reference-image needs denoising and cannot be combined with "
+                 "slopfab: --reference-image needs denoising and cannot be combined with "
                  "--synthetic-latents\n");
     return 2;
   }
   if (req.cache_threshold < 0.0f) {
-    std::fprintf(stderr, "vidfab: --cache-threshold cannot be negative (0 disables it)\n");
+    std::fprintf(stderr, "slopfab: --cache-threshold cannot be negative (0 disables it)\n");
     return 2;
   }
   if (req.skip_every < 0) {
-    std::fprintf(stderr, "vidfab: --skip-every cannot be negative (0 disables it)\n");
+    std::fprintf(stderr, "slopfab: --skip-every cannot be negative (0 disables it)\n");
     return 2;
   }
   if (req.block_cache_span < 0) {
-    std::fprintf(stderr, "vidfab: --block-cache-span cannot be negative (0 disables it)\n");
+    std::fprintf(stderr, "slopfab: --block-cache-span cannot be negative (0 disables it)\n");
     return 2;
   }
   // Rejected rather than clamped up to 2. An interval of 1 evaluates the span
@@ -1520,7 +1520,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // something else.
   if (req.block_cache_span > 0 && req.block_cache_interval < 2) {
     std::fprintf(stderr,
-                 "vidfab: --block-cache-interval must be at least 2 (1 would evaluate every "
+                 "slopfab: --block-cache-interval must be at least 2 (1 would evaluate every "
                  "step and cache for nothing)\n");
     return 2;
   }
@@ -1544,14 +1544,14 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // counters stay defined — not to delete this check.
   if (req.block_cache_span > 0 && (req.cache_threshold > 0.0f || req.skip_every > 0)) {
     std::fprintf(stderr,
-                 "vidfab: --block-cache-span cannot be combined with --cache-threshold or "
+                 "slopfab: --block-cache-span cannot be combined with --cache-threshold or "
                  "--skip-every; a skipped step hides the block cache's schedule from it\n");
     return 2;
   }
-  if (attn_band > 0 && attention_mode != vidfab::AttentionMode::kFlash2 &&
-      attention_mode != vidfab::AttentionMode::kExact) {
+  if (attn_band > 0 && attention_mode != slopfab::AttentionMode::kFlash2 &&
+      attention_mode != slopfab::AttentionMode::kExact) {
     std::fprintf(stderr,
-                 "vidfab: --attn-band currently requires --attention flash2 or exact\n");
+                 "slopfab: --attn-band currently requires --attention flash2 or exact\n");
     return 2;
   }
   // Rejected rather than silently resolved. A fixed interval and an adaptive
@@ -1559,7 +1559,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // precisely so the adaptive one has something to be measured against.
   if (req.cache_threshold > 0.0f && req.skip_every > 0) {
     std::fprintf(stderr,
-                 "vidfab: --cache-threshold and --skip-every are alternatives; pass one\n");
+                 "slopfab: --cache-threshold and --skip-every are alternatives; pass one\n");
     return 2;
   }
   // Refused, not warned about. AB2 extrapolates from `v_{n-1}`, and with step
@@ -1576,13 +1576,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // definition. A duplicated predicate is how `--sampler ab2` alone — the floor
   // control, which must stay legal — would eventually start being refused by a
   // guard that had drifted from the library it is guarding.
-  vidfab::dit::StepCacheConfig cache_cfg;
+  slopfab::dit::StepCacheConfig cache_cfg;
   cache_cfg.threshold = req.cache_threshold;
   cache_cfg.warmup = req.cache_warmup;
   cache_cfg.skip_every = req.skip_every;
-  if (cache_cfg.enabled() && sampler_kind == vidfab::sampler::SamplerKind::kAb2) {
+  if (cache_cfg.enabled() && sampler_kind == slopfab::sampler::SamplerKind::kAb2) {
     std::fprintf(stderr,
-                 "vidfab: --sampler ab2 does not compose with step caching: ab2 extrapolates\n"
+                 "slopfab: --sampler ab2 does not compose with step caching: ab2 extrapolates\n"
                  "        from the previous velocity, which caching makes a reused one. Run\n"
                  "        them separately; their savings are not multiplicative.\n");
     return 2;
@@ -1594,28 +1594,28 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // mistake worth telling them about.
   if (saw_aspect && saw_resolution) {
     std::fprintf(stderr,
-                 "vidfab: --aspect and --resolution set the same thing; pass one or the other\n");
+                 "slopfab: --aspect and --resolution set the same thing; pass one or the other\n");
     return 2;
   }
   if (count <= 0) {
-    std::fprintf(stderr, "vidfab: --count must be a positive integer\n");
+    std::fprintf(stderr, "slopfab: --count must be a positive integer\n");
     return 2;
   }
   if (!saw_out) req.out_path = timestamped_output_path();
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;
-  const vidfab::GeneratePlan plan = vidfab::resolve_plan(req);
+  const slopfab::GeneratePlan plan = slopfab::resolve_plan(req);
 
   // After `resolve_plan`, so a canvas that is going to be rejected outright is
   // not first warned about — an invalid request should produce one message
   // about what is wrong with it, not a size advisory followed by a refusal.
-  if (saw_resolution && vidfab::dit::canvas_exceeds_trained_area(req.canvas_height,
+  if (saw_resolution && slopfab::dit::canvas_exceeds_trained_area(req.canvas_height,
                                                                 req.canvas_width)) {
     // A warning, not a refusal: the caller named this canvas. But packed rows
     // grow with area and attention with their square, so an innocent-looking
     // doubling is roughly four times the attention cost.
     std::fprintf(stderr,
-                 "vidfab: %dx%d is %.2fx the 1344x768 area the model was trained at; "
+                 "slopfab: %dx%d is %.2fx the 1344x768 area the model was trained at; "
                  "attention cost grows with the square of that, and quality outside the "
                  "trained range is uncharacterised\n",
                  req.canvas_width, req.canvas_height,
@@ -1626,47 +1626,47 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
       req.out_path = counted_output_path(base_out_path, generation, count);
       if (generation > 0) std::printf("\n");
-      std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
+      std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);
     }
     return 0;
   }
 
-#if VIDFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA
   // Dry-run above is deliberately device-free. Synthetic latents skip the
   // transformer, so only a real denoise run needs the pinned exact tuple.
   if (inference_backend == "cuda" && !synthetic &&
-      attention_mode == vidfab::AttentionMode::kExact &&
-      !vidfab::cuda::deterministic_h3_attention_available()) {
+      attention_mode == slopfab::AttentionMode::kExact &&
+      !slopfab::cuda::deterministic_h3_attention_available()) {
     std::fprintf(stderr,
-                 "vidfab: --attention exact is unavailable on this CUDA device/runtime tuple\n");
+                 "slopfab: --attention exact is unavailable on this CUDA device/runtime tuple\n");
     return 1;
   }
 #endif
 
-#if !VIDFAB_WITH_CUDA
+#if !SLOPFAB_WITH_CUDA
   (void)executable;
   std::fprintf(stderr,
-               "vidfab: built without CUDA support; model inference requires CUDA. "
+               "slopfab: built without CUDA support; model inference requires CUDA. "
                "Vulkan accelerates output conversion only\n");
   return 1;
 #else
 
-#if VIDFAB_WITH_VULKAN
-  std::unique_ptr<vidfab::vulkan::Yuv420Converter> output_converter;
+#if SLOPFAB_WITH_VULKAN
+  std::unique_ptr<slopfab::vulkan::Yuv420Converter> output_converter;
   if (output_accelerator == "vulkan") {
     try {
-      output_converter = std::make_unique<vidfab::vulkan::Yuv420Converter>();
+      output_converter = std::make_unique<slopfab::vulkan::Yuv420Converter>();
       std::printf("output      Vulkan RGB-to-YUV on %s (independent output backend)\n",
                   output_converter->device_name());
     } catch (const std::exception& error) {
-      std::fprintf(stderr, "vidfab: Vulkan output accelerator unavailable: %s\n", error.what());
+      std::fprintf(stderr, "slopfab: Vulkan output accelerator unavailable: %s\n", error.what());
       return 1;
     }
   }
 #else
   if (output_accelerator == "vulkan") {
     std::fprintf(stderr,
-                 "vidfab: Vulkan output accelerator requested, but this build disabled Vulkan\n");
+                 "slopfab: Vulkan output accelerator requested, but this build disabled Vulkan\n");
     return 1;
   }
 #endif
@@ -1676,7 +1676,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   discover_generate_checkpoints(req, executable);
   ensure_generate_models(req, executable);
 
-#if VIDFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA
   // Times the transformer load on its own, the same way `decode --bench-load`
   // times the VAE's and for the same reason: the first load in a process pays
   // for pulling the mapping in from storage and the later ones do not, and the
@@ -1688,15 +1688,15 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // if the caller made it one.
   if (bench_load > 0) {
     if (req.transformer_path.empty()) {
-      std::fprintf(stderr, "vidfab: --bench-load needs --transformer <f>\n");
+      std::fprintf(stderr, "slopfab: --bench-load needs --transformer <f>\n");
       return 2;
     }
-    vidfab::SafeTensors ckpt;
+    slopfab::SafeTensors ckpt;
     ckpt.open(req.transformer_path);
     std::printf("\n%s\n%.3f GB on disk, %zu tensors\n", req.transformer_path.c_str(),
                 ckpt.file_size() / 1e9, ckpt.tensor_count());
     for (int i = 0; i < bench_load; ++i) {
-      vidfab::dit::Transformer probe;
+      slopfab::dit::Transformer probe;
       const auto s0 = std::chrono::steady_clock::now();
       probe.load(ckpt);
       const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count();
@@ -1709,24 +1709,24 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 #else
   if (bench_load > 0) {
-    std::fprintf(stderr, "vidfab: --bench-load needs a GPU build\n");
+    std::fprintf(stderr, "slopfab: --bench-load needs a GPU build\n");
     return 1;
   }
 #endif
 
-#if !VIDFAB_WITH_CUDA
+#if !SLOPFAB_WITH_CUDA
   (void)sampler_kind;
   (void)dump_latents;
   (void)init_latents;
   (void)attn_band;
-  std::fprintf(stderr, "vidfab: built without CUDA support; generate needs a GPU\n");
+  std::fprintf(stderr, "slopfab: built without CUDA support; generate needs a GPU\n");
   return 1;
 #else
-  vidfab::RunOptions options;
+  slopfab::RunOptions options;
   options.source =
-      synthetic ? vidfab::LatentSource::kSyntheticNoise : vidfab::LatentSource::kDenoise;
+      synthetic ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
   options.inference_backend = inference_backend == "vulkan"
-      ? vidfab::DeviceBackend::kVulkan : vidfab::DeviceBackend::kCuda;
+      ? slopfab::DeviceBackend::kVulkan : slopfab::DeviceBackend::kCuda;
   options.sampler = sampler_kind;
   options.dump_latents_path = dump_latents;
   options.attention_band = attn_band;
@@ -1734,7 +1734,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.sol_schedule = sol_schedule;
   options.init_latents_path = init_latents;
   options.prompt_embedding_path = prompt_embedding;
-#if VIDFAB_WITH_VULKAN
+#if SLOPFAB_WITH_VULKAN
   options.output_frame_converter = output_converter.get();
 #endif
 
@@ -1744,11 +1744,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     options.reuse_models = count > 1;
     options.release_reused_models = generation + 1 == count;
     if (generation > 0) std::printf("\n");
-    std::fputs(vidfab::describe_plan(req, plan).c_str(), stdout);
+    std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);
     std::printf("\n");
-    const vidfab::RunResult run = vidfab::run_generate(req, plan, options);
+    const slopfab::RunResult run = slopfab::run_generate(req, plan, options);
     if (!run.ok) {
-      std::fprintf(stderr, "\nvidfab: generation %d of %d: %s\n", generation + 1, count,
+      std::fprintf(stderr, "\nslopfab: generation %d of %d: %s\n", generation + 1, count,
                    run.message.c_str());
       return 1;
     }
@@ -1757,19 +1757,19 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   return 0;
 #endif
-#endif  // VIDFAB_WITH_CUDA
+#endif  // SLOPFAB_WITH_CUDA
 }
 
 int cmd_devices() {
-#if !VIDFAB_WITH_CUDA
+#if !SLOPFAB_WITH_CUDA
   std::printf("CUDA inference       unavailable in this build\n");
 #else
-  const int count = vidfab::cuda::device_count();
+  const int count = slopfab::cuda::device_count();
   if (count == 0) {
     std::printf("CUDA inference       no visible device\n");
   }
   for (int i = 0; i < count; ++i) {
-    const vidfab::cuda::DeviceInfo d = vidfab::cuda::query_device(i);
+    const slopfab::cuda::DeviceInfo d = slopfab::cuda::query_device(i);
     std::printf("device %d  %s\n", d.index, d.name.c_str());
     std::printf("  compute capability  %d.%d\n", d.major, d.minor);
     std::printf("  memory              %s free of %s\n", format_bytes(d.free_memory).c_str(),
@@ -1780,13 +1780,13 @@ int cmd_devices() {
                 d.supports_fp8 ? "yes" : "no", d.supports_fp4 ? "yes" : "no");
   }
 #endif
-#if VIDFAB_WITH_VULKAN
+#if SLOPFAB_WITH_VULKAN
   std::string diagnostic;
-  if (!vidfab::vulkan::Instance::available(&diagnostic)) {
+  if (!slopfab::vulkan::Instance::available(&diagnostic)) {
     std::printf("Vulkan output        unavailable: %s\n", diagnostic.c_str());
   } else {
     try {
-      auto instance = vidfab::vulkan::Instance::create();
+      auto instance = slopfab::vulkan::Instance::create();
       const auto devices = instance.enumerate_devices();
       if (devices.empty()) std::printf("Vulkan output        no compute device\n");
       for (size_t i = 0; i < devices.size(); ++i) {
@@ -1812,12 +1812,12 @@ int main(int argc, char** argv) {
   SetConsoleCP(CP_UTF8);
 #endif
   try {
-#if VIDFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA
     consume_cuda_version_option(argc, argv);
 #endif
     if (!ensure_license_acceptance()) return 3;
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "vidfab: %s\n", e.what());
+    std::fprintf(stderr, "slopfab: %s\n", e.what());
     return 1;
   }
 
@@ -1842,29 +1842,29 @@ int main(int argc, char** argv) {
     if (command == "compare-y4m") return cmd_compare_y4m(argc - 2, argv + 2);
     if (command == "devices") return cmd_devices();
     if (command == "tokenize") return cmd_tokenize(argc - 2, argv + 2);
-#if VIDFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA
     if (command == "decode") return cmd_decode(argc - 2, argv + 2);
 #endif
     if (command == "version") {
-      std::printf("vidfab %s\n", kVersion);
+      std::printf("slopfab %s\n", kVersion);
       return 0;
     }
     if (command == "help" || command == "--help" || command == "-h") {
       if (argc > 2) {
         const CommandHelp* c = find_command(argv[2]);
         if (c != nullptr) return print_command_help(*c);
-        std::fprintf(stderr, "vidfab: unknown command '%s'\n\n", argv[2]);
+        std::fprintf(stderr, "slopfab: unknown command '%s'\n\n", argv[2]);
         print_usage();
         return 2;
       }
       print_usage();
       return 0;
     }
-    std::fprintf(stderr, "vidfab: unknown command '%s'\n\n", argv[1]);
+    std::fprintf(stderr, "slopfab: unknown command '%s'\n\n", argv[1]);
     print_usage();
     return 2;
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "vidfab: %s\n", e.what());
+    std::fprintf(stderr, "slopfab: %s\n", e.what());
     return 1;
   }
 }

@@ -7,15 +7,15 @@
 
 #include <cuda_runtime.h>
 
-#include "vidfab/dtype.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/text/qwen_vision.h"
+#include "slopfab/dtype.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/text/qwen_vision.h"
 
 namespace {
 double rms(const std::vector<uint16_t>& x) {
   long double sum = 0;
   for (uint16_t b : x) {
-    const float v = vidfab::bf16_to_f32(b);
+    const float v = slopfab::bf16_to_f32(b);
     if (!std::isfinite(v)) throw std::runtime_error("non-finite visual output");
     sum += static_cast<long double>(v) * v;
   }
@@ -25,7 +25,7 @@ double rms(const std::vector<uint16_t>& x) {
 
 int main(int argc, char** argv) {
   if (argc != 2) {
-    std::fprintf(stderr, "usage: vidfab_qwenvisionprobe <qwen.safetensors>\n");
+    std::fprintf(stderr, "usage: slopfab_qwenvisionprobe <qwen.safetensors>\n");
     return 2;
   }
   try {
@@ -36,9 +36,9 @@ int main(int argc, char** argv) {
       rgb[i + 1] = static_cast<uint8_t>((x * 5 + y * 11) & 255);
       rgb[i + 2] = static_cast<uint8_t>((x ^ y) & 255);
     }
-    const auto pixels = vidfab::text::qwen3vl_patchify_resized_rgb(rgb, 256, 256);
-    vidfab::SafeTensors checkpoint; checkpoint.open(argv[1]);
-    vidfab::text::QwenVisionEncoder encoder;
+    const auto pixels = slopfab::text::qwen3vl_patchify_resized_rgb(rgb, 256, 256);
+    slopfab::SafeTensors checkpoint; checkpoint.open(argv[1]);
+    slopfab::text::QwenVisionEncoder encoder;
     const auto t0 = std::chrono::steady_clock::now(); encoder.load(checkpoint);
     const auto t1 = std::chrono::steady_clock::now(); const auto out = encoder.encode({pixels});
     const auto t2 = std::chrono::steady_clock::now();

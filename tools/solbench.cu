@@ -13,11 +13,11 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/cuda/attention.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/gemm.cuh"
-#include "vidfab/cuda/workspace.cuh"
-#include "vidfab/sol_capture.h"
+#include "slopfab/cuda/attention.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/gemm.cuh"
+#include "slopfab/cuda/workspace.cuh"
+#include "slopfab/sol_capture.h"
 
 namespace {
 __global__ void fill(__nv_bfloat16* p, size_t n, unsigned seed, float amplitude) {
@@ -70,25 +70,25 @@ __global__ void compare_outputs(const __nv_bfloat16* sol,
 
 float time_backend(cublasHandle_t blas, const __nv_bfloat16* q, const __nv_bfloat16* k,
                    const __nv_bfloat16* v, __nv_bfloat16* out,
-                   const vidfab::cuda::AttentionConfig& cfg,
-                   vidfab::cuda::AttentionBackend backend, vidfab::cuda::Workspace& ws,
+                   const slopfab::cuda::AttentionConfig& cfg,
+                   slopfab::cuda::AttentionBackend backend, slopfab::cuda::Workspace& ws,
                    int warmup, int iterations) {
   for (int i = 0; i < warmup; ++i) {
     ws.clear();
-    vidfab::cuda::attention_forward(blas, nullptr, q, k, v, out, cfg, backend, ws);
+    slopfab::cuda::attention_forward(blas, nullptr, q, k, v, out, cfg, backend, ws);
   }
   cudaEvent_t begin{}, end{};
-  VIDFAB_CUDA_CHECK(cudaEventCreate(&begin));
-  VIDFAB_CUDA_CHECK(cudaEventCreate(&end));
-  VIDFAB_CUDA_CHECK(cudaEventRecord(begin));
+  SLOPFAB_CUDA_CHECK(cudaEventCreate(&begin));
+  SLOPFAB_CUDA_CHECK(cudaEventCreate(&end));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(begin));
   for (int i = 0; i < iterations; ++i) {
     ws.clear();
-    vidfab::cuda::attention_forward(blas, nullptr, q, k, v, out, cfg, backend, ws);
+    slopfab::cuda::attention_forward(blas, nullptr, q, k, v, out, cfg, backend, ws);
   }
-  VIDFAB_CUDA_CHECK(cudaEventRecord(end));
-  VIDFAB_CUDA_CHECK(cudaEventSynchronize(end));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(end));
+  SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
   float ms = 0;
-  VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, begin, end));
+  SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, begin, end));
   cudaEventDestroy(begin); cudaEventDestroy(end);
   return ms / iterations;
 }
@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
     else { std::fprintf(stderr, "unknown option: %s\n", argv[i]); return 2; }
   }
   std::vector<uint16_t> captured;
-  vidfab::SolCaptureHeader capture{};
+  slopfab::SolCaptureHeader capture{};
   if (!input.empty()) {
     std::ifstream in(input, std::ios::binary);
     if (!in.read(reinterpret_cast<char*>(&capture), sizeof(capture)) ||
@@ -157,28 +157,28 @@ int main(int argc, char** argv) {
   cudaDeviceGetAttribute(&regs_per_sm, cudaDevAttrMaxRegistersPerMultiprocessor, 0);
   prefix = std::min(prefix, seq);
   const size_t values = size_t(seq) * heads * 128;
-  vidfab::cuda::DeviceBuffer<__nv_bfloat16> q(values), k(values), v(values), out(values), dense_out(values);
+  slopfab::cuda::DeviceBuffer<__nv_bfloat16> q(values), k(values), v(values), out(values), dense_out(values);
   if (captured.empty()) {
     fill<<<std::min<size_t>(65535, (values + 255) / 256), 256>>>(q.get(), values, 1, 0.3f);
     fill<<<std::min<size_t>(65535, (values + 255) / 256), 256>>>(k.get(), values, 2, 0.3f);
     fill<<<std::min<size_t>(65535, (values + 255) / 256), 256>>>(v.get(), values, 3, 1.0f);
   } else {
-    VIDFAB_CUDA_CHECK(cudaMemcpy(q.get(), captured.data(), values * sizeof(uint16_t), cudaMemcpyHostToDevice));
-    VIDFAB_CUDA_CHECK(cudaMemcpy(k.get(), captured.data() + values, values * sizeof(uint16_t), cudaMemcpyHostToDevice));
-    VIDFAB_CUDA_CHECK(cudaMemcpy(v.get(), captured.data() + 2 * values, values * sizeof(uint16_t), cudaMemcpyHostToDevice));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(q.get(), captured.data(), values * sizeof(uint16_t), cudaMemcpyHostToDevice));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(k.get(), captured.data() + values, values * sizeof(uint16_t), cudaMemcpyHostToDevice));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(v.get(), captured.data() + 2 * values, values * sizeof(uint16_t), cudaMemcpyHostToDevice));
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
   if (!save_input.empty()) {
     if (!input.empty()) {
       std::fprintf(stderr, "--save-input cannot be combined with --input\n");
       return 2;
     }
     captured.resize(values * 3);
-    VIDFAB_CUDA_CHECK(cudaMemcpy(captured.data(), q.get(), values * sizeof(uint16_t), cudaMemcpyDeviceToHost));
-    VIDFAB_CUDA_CHECK(cudaMemcpy(captured.data() + values, k.get(), values * sizeof(uint16_t), cudaMemcpyDeviceToHost));
-    VIDFAB_CUDA_CHECK(cudaMemcpy(captured.data() + 2 * values, v.get(), values * sizeof(uint16_t), cudaMemcpyDeviceToHost));
-    vidfab::SolCaptureHeader h{{'V','F','S','O','L','Q','K','V'}, 1,
-        sizeof(vidfab::SolCaptureHeader), static_cast<uint32_t>(seq),
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(captured.data(), q.get(), values * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(captured.data() + values, k.get(), values * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(captured.data() + 2 * values, v.get(), values * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    slopfab::SolCaptureHeader h{{'V','F','S','O','L','Q','K','V'}, 1,
+        sizeof(slopfab::SolCaptureHeader), static_cast<uint32_t>(seq),
         static_cast<uint32_t>(heads), 128, static_cast<uint32_t>(prefix), -1, -1, values, {0, 0}};
     std::ofstream out_file(save_input, std::ios::binary | std::ios::trunc);
     out_file.write(reinterpret_cast<const char*>(&h), sizeof(h));
@@ -190,55 +190,55 @@ int main(int argc, char** argv) {
     }
     captured.clear();
   }
-  cublasHandle_t blas{}; vidfab::cuda::cublas_create(&blas);
-  vidfab::cuda::AttentionConfig cfg;
+  cublasHandle_t blas{}; slopfab::cuda::cublas_create(&blas);
+  slopfab::cuda::AttentionConfig cfg;
   cfg.seq_len = seq; cfg.num_heads = heads; cfg.head_dim = 128; cfg.exact_prefix = prefix;
   cfg.sol_beta = beta;
   cfg.sol_error_k=error_k;cfg.sol_error_v=error_v;
   cfg.sol_pipeline = pipeline;
-  vidfab::cuda::DeviceBuffer<unsigned long long> routes(2);
-  const size_t sol_bytes = vidfab::cuda::attention_workspace_bytes(
-      cfg, vidfab::cuda::AttentionBackend::kSol);
-  vidfab::cuda::Workspace ws; ws.reserve(sol_bytes);
+  slopfab::cuda::DeviceBuffer<unsigned long long> routes(2);
+  const size_t sol_bytes = slopfab::cuda::attention_workspace_bytes(
+      cfg, slopfab::cuda::AttentionBackend::kSol);
+  slopfab::cuda::Workspace ws; ws.reserve(sol_bytes);
   const float sol = time_backend(blas, q.get(), k.get(), v.get(), out.get(), cfg,
-                                 vidfab::cuda::AttentionBackend::kSol, ws, 2, iterations);
+                                 slopfab::cuda::AttentionBackend::kSol, ws, 2, iterations);
   // Diagnostics are deliberately outside the timed path.
-  VIDFAB_CUDA_CHECK(cudaMemset(routes.get(), 0, routes.nbytes()));
+  SLOPFAB_CUDA_CHECK(cudaMemset(routes.get(), 0, routes.nbytes()));
   cfg.sol_route_counts = routes.get();
   ws.clear();
-  vidfab::cuda::attention_forward(blas, nullptr, q.get(), k.get(), v.get(), out.get(), cfg,
-                                  vidfab::cuda::AttentionBackend::kSol, ws);
+  slopfab::cuda::attention_forward(blas, nullptr, q.get(), k.get(), v.get(), out.get(), cfg,
+                                  slopfab::cuda::AttentionBackend::kSol, ws);
   unsigned long long route_host[2]{};
-  VIDFAB_CUDA_CHECK(cudaMemcpy(route_host, routes.get(), sizeof(route_host), cudaMemcpyDeviceToHost));
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(route_host, routes.get(), sizeof(route_host), cudaMemcpyDeviceToHost));
   cfg.sol_route_counts = nullptr;
   float phases[4]{};
   cfg.sol_phase_ms = phases;
   ws.clear();
-  vidfab::cuda::attention_forward(blas, nullptr, q.get(), k.get(), v.get(), out.get(), cfg,
-                                  vidfab::cuda::AttentionBackend::kSol, ws);
+  slopfab::cuda::attention_forward(blas, nullptr, q.get(), k.get(), v.get(), out.get(), cfg,
+                                  slopfab::cuda::AttentionBackend::kSol, ws);
   cfg.sol_phase_ms = nullptr;
-  vidfab::cuda::DeviceBuffer<unsigned long long> finite_diag(3);
+  slopfab::cuda::DeviceBuffer<unsigned long long> finite_diag(3);
   const unsigned long long finite_init[3]={0,~0ull,0};
-  VIDFAB_CUDA_CHECK(cudaMemcpy(finite_diag.get(),finite_init,sizeof(finite_init),
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(finite_diag.get(),finite_init,sizeof(finite_init),
                                cudaMemcpyHostToDevice));
   scan_nonfinite<<<256,256>>>(out.get(),values,finite_diag.get());
   unsigned long long finite_host[3]{};
-  VIDFAB_CUDA_CHECK(cudaMemcpy(finite_host,finite_diag.get(),sizeof(finite_host),
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(finite_host,finite_diag.get(),sizeof(finite_host),
                                cudaMemcpyDeviceToHost));
   const float dense = time_backend(blas, q.get(), k.get(), v.get(), dense_out.get(), cfg,
-                                   vidfab::cuda::AttentionBackend::kFused, ws, 2, iterations);
-  vidfab::cuda::DeviceBuffer<double> compare_sums(4);
-  vidfab::cuda::DeviceBuffer<unsigned long long> compare_bad(2);
-  vidfab::cuda::DeviceBuffer<unsigned> compare_max(1);
-  VIDFAB_CUDA_CHECK(cudaMemset(compare_sums.get(),0,compare_sums.nbytes()));
-  VIDFAB_CUDA_CHECK(cudaMemset(compare_bad.get(),0,compare_bad.nbytes()));
-  VIDFAB_CUDA_CHECK(cudaMemset(compare_max.get(),0,compare_max.nbytes()));
+                                   slopfab::cuda::AttentionBackend::kFused, ws, 2, iterations);
+  slopfab::cuda::DeviceBuffer<double> compare_sums(4);
+  slopfab::cuda::DeviceBuffer<unsigned long long> compare_bad(2);
+  slopfab::cuda::DeviceBuffer<unsigned> compare_max(1);
+  SLOPFAB_CUDA_CHECK(cudaMemset(compare_sums.get(),0,compare_sums.nbytes()));
+  SLOPFAB_CUDA_CHECK(cudaMemset(compare_bad.get(),0,compare_bad.nbytes()));
+  SLOPFAB_CUDA_CHECK(cudaMemset(compare_max.get(),0,compare_max.nbytes()));
   compare_outputs<<<256,256>>>(out.get(),dense_out.get(),values,compare_sums.get(),
                                compare_bad.get(),compare_max.get());
   double cmp[4]{};unsigned long long cmp_bad[2]{};unsigned cmp_max_bits=0;
-  VIDFAB_CUDA_CHECK(cudaMemcpy(cmp,compare_sums.get(),sizeof(cmp),cudaMemcpyDeviceToHost));
-  VIDFAB_CUDA_CHECK(cudaMemcpy(cmp_bad,compare_bad.get(),sizeof(cmp_bad),cudaMemcpyDeviceToHost));
-  VIDFAB_CUDA_CHECK(cudaMemcpy(&cmp_max_bits,compare_max.get(),sizeof(cmp_max_bits),cudaMemcpyDeviceToHost));
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(cmp,compare_sums.get(),sizeof(cmp),cudaMemcpyDeviceToHost));
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(cmp_bad,compare_bad.get(),sizeof(cmp_bad),cudaMemcpyDeviceToHost));
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(&cmp_max_bits,compare_max.get(),sizeof(cmp_max_bits),cudaMemcpyDeviceToHost));
   float cmp_max=0;std::memcpy(&cmp_max,&cmp_max_bits,sizeof(cmp_max));
   std::printf("seq=%d heads=%d prefix=%d beta=%.3g pipeline=%d workspace=%.2f MiB\n", seq, heads, prefix, beta, int(pipeline),
               sol_bytes / 1048576.0);
@@ -264,6 +264,6 @@ int main(int argc, char** argv) {
     float max_abs=0; std::memcpy(&max_abs,&max_bits,sizeof(max_abs));
     std::printf("output finite max_abs=%.7g\n",max_abs);
   }
-  vidfab::cuda::cublas_destroy(blas);
+  slopfab::cuda::cublas_destroy(blas);
   return 0;
 }

@@ -1,10 +1,10 @@
-#include "vidfab/dit/step_cache.h"
+#include "slopfab/dit/step_cache.h"
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 
 float conditioning_distance(const float* a, const float* reference, int n) {
   if (a == nullptr || reference == nullptr || n <= 0) return 0.0f;
@@ -108,4 +108,4 @@ std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
   return plan_step_cache(config, codes);
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

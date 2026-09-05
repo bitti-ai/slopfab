@@ -7,7 +7,7 @@
 //
 // Use it as:
 //
-//   VIDFAB_TEST(my_thing) {
+//   SLOPFAB_TEST(my_thing) {
 //     CHECK(1 + 1 == 2);
 //     CHECK_NEAR(x, 3.0, 1e-6);
 //     CHECK_CLOSE(expected_vec, actual_vec, 1e-5, "my kernel");
@@ -26,7 +26,7 @@
 #include <string>
 #include <vector>
 
-namespace vidfab::test {
+namespace slopfab::test {
 
 using TestFn = void (*)();
 
@@ -96,19 +96,19 @@ enum class SkipReason {
 void skip(SkipReason reason, const char* file, int line, const char* fmt, ...);
 int skipped_count();
 
-}  // namespace vidfab::test
+}  // namespace slopfab::test
 
-#define CHECK(expr) ::vidfab::test::check((expr), #expr, __FILE__, __LINE__)
+#define CHECK(expr) ::slopfab::test::check((expr), #expr, __FILE__, __LINE__)
 #define CHECK_NEAR(a, b, tol) \
-  ::vidfab::test::check_near((a), (b), (tol), #a " ~= " #b, __FILE__, __LINE__)
+  ::slopfab::test::check_near((a), (b), (tol), #a " ~= " #b, __FILE__, __LINE__)
 #define CHECK_CLOSE(e, a, tol, what) \
-  ::vidfab::test::check_close((e), (a), (tol), (what), __FILE__, __LINE__)
+  ::slopfab::test::check_close((e), (a), (tol), (what), __FILE__, __LINE__)
 #define CHECK_CLOSE_REL(e, a, atol, rtol, what) \
-  ::vidfab::test::check_close_rel((e), (a), (atol), (rtol), (what), __FILE__, __LINE__)
-#define CHECK_MSG(ok, ...) ::vidfab::test::check_printf((ok), __FILE__, __LINE__, __VA_ARGS__)
+  ::slopfab::test::check_close_rel((e), (a), (atol), (rtol), (what), __FILE__, __LINE__)
+#define CHECK_MSG(ok, ...) ::slopfab::test::check_printf((ok), __FILE__, __LINE__, __VA_ARGS__)
 // Known-failing on purpose. Reports the number, never fails the run.
 #define CHECK_DEFERRED(ok, ...) \
-  ::vidfab::test::check_deferred((ok), __FILE__, __LINE__, __VA_ARGS__)
+  ::slopfab::test::check_deferred((ok), __FILE__, __LINE__, __VA_ARGS__)
 
 // Declines to run, and says so in the summary. Use these instead of a bare
 // printf-and-return: a case that prints "skipping" and returns contributes no
@@ -116,21 +116,21 @@ int skipped_count();
 // This suite carried two such cases for months -- the golden tokenizer tests
 // probed a path that did not exist and reported "0 checks, 0 failures".
 #define SKIP_MISSING_FIXTURE(...) \
-  ::vidfab::test::skip(::vidfab::test::SkipReason::kMissingFixture, __FILE__, __LINE__, __VA_ARGS__)
+  ::slopfab::test::skip(::slopfab::test::SkipReason::kMissingFixture, __FILE__, __LINE__, __VA_ARGS__)
 #define SKIP_INSUFFICIENT_VRAM(...)                                            \
-  ::vidfab::test::skip(::vidfab::test::SkipReason::kInsufficientVram, __FILE__, \
+  ::slopfab::test::skip(::slopfab::test::SkipReason::kInsufficientVram, __FILE__, \
                        __LINE__, __VA_ARGS__)
 #define SKIP_UNSUPPORTED_HARDWARE(...)                                      \
-  ::vidfab::test::skip(::vidfab::test::SkipReason::kUnsupportedHardware,     \
+  ::slopfab::test::skip(::slopfab::test::SkipReason::kUnsupportedHardware,     \
                        __FILE__, __LINE__, __VA_ARGS__)
 
 // Names the case currently running, for files that register their functions
-// separately rather than through VIDFAB_TEST.
-#define TEST(name) ::vidfab::test::set_current(name)
+// separately rather than through SLOPFAB_TEST.
+#define TEST(name) ::slopfab::test::set_current(name)
 
 // Defines and registers a test case in one go.
-#define VIDFAB_TEST(name)                                                              \
-  static void vidfab_test_##name();                                                    \
-  static const bool vidfab_test_##name##_registered =                                  \
-      ::vidfab::test::register_test(#name, &vidfab_test_##name);                       \
-  static void vidfab_test_##name()
+#define SLOPFAB_TEST(name)                                                              \
+  static void slopfab_test_##name();                                                    \
+  static const bool slopfab_test_##name##_registered =                                  \
+      ::slopfab::test::register_test(#name, &slopfab_test_##name);                       \
+  static void slopfab_test_##name()

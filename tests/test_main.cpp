@@ -1,4 +1,4 @@
-﻿// Unit tests. Hand-rolled rather than gtest to keep the dependency count at
+// Unit tests. Hand-rolled rather than gtest to keep the dependency count at
 // zero; the harness is a few dozen lines and reports the same information.
 
 #include <cmath>
@@ -11,22 +11,22 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/dtype.h"
-#include "vidfab/json.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/sampler/scheduler.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/w4a8.h"
+#include "slopfab/dtype.h"
+#include "slopfab/json.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/sampler/scheduler.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/w4a8.h"
 
 namespace {
 
-using ::vidfab::test::throws;
+using ::slopfab::test::throws;
 
 // --- json -------------------------------------------------------------------
 
 void test_json() {
   TEST("json");
-  using namespace vidfab;
+  using namespace slopfab;
 
   const json::Value v = json::parse(R"({
     "name": "hello",
@@ -75,7 +75,7 @@ void test_json() {
 
 void test_dtype() {
   TEST("dtype");
-  using namespace vidfab;
+  using namespace slopfab;
 
   CHECK(dtype_from_string("BF16") == DType::kBF16);
   CHECK(dtype_from_string("F8_E4M3") == DType::kF8E4M3);
@@ -147,7 +147,7 @@ std::string write_temp_safetensors(const std::string& header, const std::vector<
 
 void test_safetensors() {
   TEST("safetensors");
-  using namespace vidfab;
+  using namespace slopfab;
 
   // Two tensors: a 2x3 f32 and a scalar f32, plus a metadata block.
   std::vector<uint8_t> data(6 * 4 + 4);
@@ -161,7 +161,7 @@ void test_safetensors() {
       R"("w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},)"
       R"("s":{"dtype":"F32","shape":[],"data_offsets":[24,28]}})";
 
-  const std::string path = write_temp_safetensors(header, data, "vidfab_ok.safetensors");
+  const std::string path = write_temp_safetensors(header, data, "slopfab_ok.safetensors");
 
   SafeTensors st;
   st.open(path);
@@ -202,7 +202,7 @@ void test_safetensors() {
   const std::string bad_header =
       R"({"w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,16]}})";
   const std::string bad_path =
-      write_temp_safetensors(bad_header, std::vector<uint8_t>(16, 0), "vidfab_bad.safetensors");
+      write_temp_safetensors(bad_header, std::vector<uint8_t>(16, 0), "slopfab_bad.safetensors");
   bool rejected = false;
   try {
     SafeTensors bad;
@@ -217,7 +217,7 @@ void test_safetensors() {
   const std::string over_header =
       R"({"w":{"dtype":"F32","shape":[100],"data_offsets":[0,400]}})";
   const std::string over_path =
-      write_temp_safetensors(over_header, std::vector<uint8_t>(8, 0), "vidfab_over.safetensors");
+      write_temp_safetensors(over_header, std::vector<uint8_t>(8, 0), "slopfab_over.safetensors");
   bool over_rejected = false;
   try {
     SafeTensors over;
@@ -241,7 +241,7 @@ void test_safetensors() {
 
 void test_w4a8_state() {
   TEST("w4a8_state");
-  using namespace vidfab;
+  using namespace slopfab;
 
   const std::string payload =
       R"({"format":"asym_w4a8_int8","group_size":16,"convrot_groupsize":256})";
@@ -253,7 +253,7 @@ void test_w4a8_state() {
   std::vector<uint8_t> data(256 + payload.size());
   std::memcpy(data.data() + 256, payload.data(), payload.size());
   const std::string path =
-      write_temp_safetensors(header, data, "vidfab_w4a8_state.safetensors");
+      write_temp_safetensors(header, data, "slopfab_w4a8_state.safetensors");
   SafeTensors st;
   st.open(path);
   CHECK(is_w4a8_weight(st, "layer.weight"));
@@ -270,7 +270,7 @@ void test_w4a8_state() {
 
 void test_compare() {
   TEST("compare");
-  using namespace vidfab;
+  using namespace slopfab;
 
   // Identical inputs produce exactly zero error.
   const std::vector<float> a = {1.0f, 2.0f, -3.0f, 0.0f};
@@ -335,7 +335,7 @@ void test_compare() {
 
 void test_scheduler() {
   TEST("scheduler");
-  using vidfab::sampler::FlowScheduler;
+  using slopfab::sampler::FlowScheduler;
 
   FlowScheduler s(12.0f);
   s.set_timesteps(50);
@@ -436,14 +436,14 @@ void test_scheduler() {
   CHECK(throws([] { FlowScheduler bad(0.0f); }));
 }
 
-const bool registered = ::vidfab::test::register_test("json", &test_json) &&
-                        ::vidfab::test::register_test("dtype", &test_dtype) &&
-                        ::vidfab::test::register_test("safetensors", &test_safetensors) &&
-                        ::vidfab::test::register_test("w4a8_state", &test_w4a8_state) &&
-                        ::vidfab::test::register_test("compare", &test_compare) &&
-                        ::vidfab::test::register_test("scheduler", &test_scheduler);
+const bool registered = ::slopfab::test::register_test("json", &test_json) &&
+                        ::slopfab::test::register_test("dtype", &test_dtype) &&
+                        ::slopfab::test::register_test("safetensors", &test_safetensors) &&
+                        ::slopfab::test::register_test("w4a8_state", &test_w4a8_state) &&
+                        ::slopfab::test::register_test("compare", &test_compare) &&
+                        ::slopfab::test::register_test("scheduler", &test_scheduler);
 
 }  // namespace
 
-int main() { return ::vidfab::test::run_all(); }
+int main() { return ::slopfab::test::run_all(); }
 

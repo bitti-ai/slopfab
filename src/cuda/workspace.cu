@@ -4,12 +4,12 @@
 // the alignment cuBLAS wants for its operands and the width of a full memory
 // transaction; over-aligning costs at most a few kilobytes per call site.
 
-#include "vidfab/cuda/workspace.cuh"
+#include "slopfab/cuda/workspace.cuh"
 
 #include <stdexcept>
 #include <string>
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr size_t kAlign = 256;
@@ -39,4 +39,4 @@ void* Workspace::alloc(size_t bytes) {
   return buffer_.get() + offset;
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

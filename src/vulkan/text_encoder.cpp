@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/text_encoder.h"
+#include "slopfab/vulkan/text_encoder.h"
 
 #include <algorithm>
 #include <chrono>
@@ -6,10 +6,10 @@
 #include <stdexcept>
 #include <utility>
 
-#include "vidfab/vulkan/text_layer.h"
-#include "vidfab/vulkan/vision_stage.h"
+#include "slopfab/vulkan/text_layer.h"
+#include "slopfab/vulkan/vision_stage.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -515,4 +515,4 @@ const ExactQwenTextEncoderStats& ExactQwenTextEncoder::stats() const noexcept {
   return impl_ ? impl_->stats : empty;
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

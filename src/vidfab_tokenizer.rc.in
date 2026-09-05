@@ -1,7 +1,0 @@
-#include <windows.h>
-
-// Compiled into whichever module contains src/text/tokenizer.cpp, which looks
-// itself up by module handle rather than asking for the process module. That
-// is vidfab.exe for the CLI and vidfab.dll for the C API; it is
-// deliberately not both, because this is 7 MB.
-101 RCDATA "@VIDFAB_TOKENIZER_RESOURCE@"

@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/dit_denoise.h"
+#include "slopfab/vulkan/dit_denoise.h"
 
 #include <algorithm>
 #include <array>
@@ -7,10 +7,10 @@
 #include <stdexcept>
 #include <utility>
 
-#include "vidfab/dit/adaln.h"
-#include "vidfab/dit/rope.h"
+#include "slopfab/dit/adaln.h"
+#include "slopfab/dit/rope.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 TensorLayout matrix(uint64_t rows, uint64_t columns) {
@@ -522,4 +522,4 @@ uint32_t ExactH3Denoiser::required_step_operators(
   return forward + tail;
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

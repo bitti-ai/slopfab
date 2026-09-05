@@ -14,29 +14,29 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/vulkan/runtime.h"
-#include "vidfab/vulkan/compute.h"
-#include "vidfab/vulkan/gemm.h"
-#include "vidfab/vulkan/linear.h"
-#include "vidfab/vulkan/tensor.h"
-#include "vidfab/vulkan/audio_decoder.h"
-#include "vidfab/vulkan/dit_block.h"
-#include "vidfab/vulkan/dit_denoise.h"
-#include "vidfab/vulkan/dit_graph.h"
-#include "vidfab/vulkan/dit_transformer.h"
-#include "vidfab/vulkan/text_layer.h"
-#include "vidfab/vulkan/text_encoder.h"
-#include "vidfab/vulkan/vae_decoder.h"
-#include "vidfab/vulkan/yuv_converter.h"
-#include "vidfab/attention.h"
-#include "vidfab/dit/ref2va.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/sampler/scheduler.h"
-#include "vidfab/video/y4m.h"
-#include "vidfab/dtype.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/sha256.h"
-#include "vidfab/text/layer_capture.h"
+#include "slopfab/vulkan/runtime.h"
+#include "slopfab/vulkan/compute.h"
+#include "slopfab/vulkan/gemm.h"
+#include "slopfab/vulkan/linear.h"
+#include "slopfab/vulkan/tensor.h"
+#include "slopfab/vulkan/audio_decoder.h"
+#include "slopfab/vulkan/dit_block.h"
+#include "slopfab/vulkan/dit_denoise.h"
+#include "slopfab/vulkan/dit_graph.h"
+#include "slopfab/vulkan/dit_transformer.h"
+#include "slopfab/vulkan/text_layer.h"
+#include "slopfab/vulkan/text_encoder.h"
+#include "slopfab/vulkan/vae_decoder.h"
+#include "slopfab/vulkan/yuv_converter.h"
+#include "slopfab/attention.h"
+#include "slopfab/dit/ref2va.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/sampler/scheduler.h"
+#include "slopfab/video/y4m.h"
+#include "slopfab/dtype.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/sha256.h"
+#include "slopfab/text/layer_capture.h"
 #include "../src/vulkan/tensor_validation.h"
 
 namespace {
@@ -102,9 +102,9 @@ uint16_t reference_bf16(float value) {
   return static_cast<uint16_t>((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
 }
 
-VIDFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   constexpr std::array<uint64_t, 11> expected_hashes{
       0x6ca9b8c5e16917b5ull, 0xf9bf6e554a1e84e4ull,
       0x9c2c264a60b4b8b1ull, 0xec21312eea810e06ull,
@@ -122,7 +122,7 @@ VIDFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
       0x93,0x11,0x5a,0x9e,0xf2,0x87,0xe6,0x13,
       0x2f,0xdb,0xf3,0x02,0x70,0xda,0x62,0x18,
       0x19,0x4b,0xa7,0x42,0x26,0x11,0x73,0xc7};
-  const std::filesystem::path source(VIDFAB_TEST_SOURCE_DIR);
+  const std::filesystem::path source(SLOPFAB_TEST_SOURCE_DIR);
   const std::filesystem::path checkpoint_path = source /
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
   const std::filesystem::path capture_path = source /
@@ -133,7 +133,7 @@ VIDFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
       !std::filesystem::exists(capture_path) ||
       !std::filesystem::exists(tokenizer_path) || !Instance::available()) return;
 
-#if !defined(VIDFAB_WITH_CUDA) || !VIDFAB_WITH_CUDA
+#if !defined(SLOPFAB_WITH_CUDA) || !SLOPFAB_WITH_CUDA
   constexpr Sha256Digest capture_sha{
       0xec,0x13,0xad,0x62,0xa7,0xe2,0x53,0xd5,
       0x88,0xbf,0xac,0x51,0x85,0x0b,0x92,0x48,
@@ -280,11 +280,11 @@ VIDFAB_TEST(vulkan_qwen_layer0_real_l132_capture_replay) {
   CHECK(context.descriptor_set_allocations() == stable_descriptors);
 }
 
-#if !defined(VIDFAB_WITH_CUDA) || !VIDFAB_WITH_CUDA
-VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
-  const std::filesystem::path source(VIDFAB_TEST_SOURCE_DIR);
+#if !defined(SLOPFAB_WITH_CUDA) || !SLOPFAB_WITH_CUDA
+SLOPFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  const std::filesystem::path source(SLOPFAB_TEST_SOURCE_DIR);
   const std::filesystem::path checkpoint_path = source /
       "weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors";
   const std::filesystem::path capture_path = source /
@@ -307,7 +307,7 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
   Device device = physical.front().create_device(options);
   TensorContextOptions context_options;
   context_options.max_batch_operators =
-      std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL") ? 128 : 37;
+      std::getenv("SLOPFAB_QWEN_MULTIMODAL_REAL") ? 128 : 37;
   TensorContext context(device, context_options);
   const uint64_t cold_baseline = context.pooled_used_bytes();
 
@@ -368,7 +368,7 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
         stats.allocator_peak_nonstaging_bytes +
             2 * context.staging_capacity_bytes());
   CHECK(stats.descriptor_set_allocations == 36);
-  if (std::getenv("VIDFAB_QWEN_MULTIMODAL_REAL")) {
+  if (std::getenv("SLOPFAB_QWEN_MULTIMODAL_REAL")) {
     std::vector<uint8_t> rgb(size_t(256) * 256 * 3);
     for (size_t i = 0; i < rgb.size(); ++i)
       rgb[i] = static_cast<uint8_t>((i * 37 + i / 17 + 23) & 255u);
@@ -451,9 +451,9 @@ VIDFAB_TEST(vulkan_qwen_full50_real_l132_replay) {
 }
 #endif
 
-VIDFAB_TEST(vulkan_exact_dit_euler_matches_host_scheduler) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_exact_dit_euler_matches_host_scheduler) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -541,9 +541,9 @@ VIDFAB_TEST(vulkan_exact_dit_euler_matches_host_scheduler) {
     run_exceptional(65u, controls[0], controls[1]);
 }
 
-VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_exact_blocked_attention_single_key) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -747,9 +747,9 @@ VIDFAB_TEST(vulkan_exact_blocked_attention_single_key) {
   CHECK(context.pooled_used_bytes() == attention_live_baseline);
 }
 
-VIDFAB_TEST(vulkan_exact_h3_attention_single_key) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_exact_h3_attention_single_key) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -799,9 +799,9 @@ VIDFAB_TEST(vulkan_exact_h3_attention_single_key) {
   CHECK(actual == values);
 }
 
-VIDFAB_TEST(vulkan_attention_prepare_exhaustive_bf16) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_attention_prepare_exhaustive_bf16) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -815,7 +815,7 @@ VIDFAB_TEST(vulkan_attention_prepare_exhaustive_bf16) {
   pipeline_options.push_constant_bytes = sizeof(uint32_t);
   pipeline_options.local_size[0] = 64;
   ComputePipeline pipeline = ComputePipeline::create(
-      device, load_spirv(VIDFAB_TEST_ATTENTION_PREPARE_SPV_PATH),
+      device, load_spirv(SLOPFAB_TEST_ATTENTION_PREPARE_SPV_PATH),
       pipeline_options);
 
   constexpr uint32_t patterns = 1u << 16;
@@ -865,9 +865,9 @@ VIDFAB_TEST(vulkan_attention_prepare_exhaustive_bf16) {
   }
 }
 
-VIDFAB_TEST(vulkan_linear_weight_cpu_reference) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_linear_weight_cpu_reference) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -1023,9 +1023,9 @@ VIDFAB_TEST(vulkan_linear_weight_cpu_reference) {
   run("nf4", nf_upload, nf_expected);
 }
 
-VIDFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -1199,9 +1199,9 @@ VIDFAB_TEST(vulkan_streamed_nvfp4_gemm_cache) {
   CHECK(context.descriptor_set_allocations() == high_descriptors);
 }
 
-VIDFAB_TEST(vulkan_streamed_nvfp4_wrapper_drop) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_streamed_nvfp4_wrapper_drop) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -1261,9 +1261,9 @@ VIDFAB_TEST(vulkan_streamed_nvfp4_wrapper_drop) {
             static_cast<unsigned long long>(baseline));
 }
 
-VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_dense_gemm_tail_reference) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -1717,8 +1717,8 @@ VIDFAB_TEST(vulkan_dense_gemm_tail_reference) {
   }
 }
 
-VIDFAB_TEST(vulkan_runtime_and_pool) {
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_runtime_and_pool) {
+  using namespace slopfab::vulkan;
 
   std::string diagnostic;
   if (!Instance::available(&diagnostic)) {
@@ -1846,8 +1846,8 @@ VIDFAB_TEST(vulkan_runtime_and_pool) {
   queue.wait_idle();
 }
 
-VIDFAB_TEST(vulkan_compute_submission) {
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_compute_submission) {
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   std::vector<PhysicalDevice> physical = instance.enumerate_devices();
@@ -1862,7 +1862,7 @@ VIDFAB_TEST(vulkan_compute_submission) {
   ComputeContext context(device, context_options);
   ComputeContext other_context(device, context_options);
 
-  const std::vector<uint32_t> spirv = load_spirv(VIDFAB_TEST_AFFINE_SPV_PATH);
+  const std::vector<uint32_t> spirv = load_spirv(SLOPFAB_TEST_AFFINE_SPV_PATH);
   ComputePipelineOptions pipeline_options;
   pipeline_options.storage_binding_count = 2;
   pipeline_options.push_constant_bytes = 12;
@@ -2011,9 +2011,9 @@ VIDFAB_TEST(vulkan_compute_submission) {
   CHECK(pool.reserved_bytes() == 0);
 }
 
-VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_tensor_batch_and_workspace) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto devices = instance.enumerate_devices();
@@ -2311,9 +2311,9 @@ VIDFAB_TEST(vulkan_tensor_batch_and_workspace) {
   CHECK(moved_context_rejected);
 }
 
-VIDFAB_TEST(vulkan_tensor_layout_and_conversion_ops) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_tensor_layout_and_conversion_ops) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -2540,9 +2540,9 @@ VIDFAB_TEST(vulkan_tensor_layout_and_conversion_ops) {
   }
 }
 
-VIDFAB_TEST(vulkan_tensor_exact_vae_norms) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_tensor_exact_vae_norms) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -2660,9 +2660,9 @@ VIDFAB_TEST(vulkan_tensor_exact_vae_norms) {
   CHECK(subnormal_epsilon_rejected);
 }
 
-VIDFAB_TEST(vulkan_yuv420_output) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_yuv420_output) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance probe = Instance::create();
   const auto devices = probe.enumerate_devices();
@@ -2824,8 +2824,8 @@ VIDFAB_TEST(vulkan_yuv420_output) {
       clip[2 * plane + offset] = static_cast<float>((i * 37 + frame * 3) % 107) / 106.0f;
     }
   }
-  const auto cpu_path = std::filesystem::temp_directory_path() / "vidfab_vulkan_cpu.y4m";
-  const auto vk_path = std::filesystem::temp_directory_path() / "vidfab_vulkan_output.y4m";
+  const auto cpu_path = std::filesystem::temp_directory_path() / "slopfab_vulkan_cpu.y4m";
+  const auto vk_path = std::filesystem::temp_directory_path() / "slopfab_vulkan_output.y4m";
   std::filesystem::remove(cpu_path);
   std::filesystem::remove(vk_path);
   video::write_y4m(cpu_path.string(), clip, frames, y4m_height, y4m_width);
@@ -2839,9 +2839,9 @@ VIDFAB_TEST(vulkan_yuv420_output) {
 
 }  // namespace
 
-VIDFAB_TEST(vulkan_video_vae_decoder_contract) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_video_vae_decoder_contract) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -2904,9 +2904,9 @@ VIDFAB_TEST(vulkan_video_vae_decoder_contract) {
   CHECK(maximum.operators_per_document() == 4095);
 }
 
-VIDFAB_TEST(vulkan_audio_vae_decoder_cuda_off_contract) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_audio_vae_decoder_cuda_off_contract) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -2932,8 +2932,8 @@ VIDFAB_TEST(vulkan_audio_vae_decoder_cuda_off_contract) {
   decoder.unload();
   CHECK(decoder.weight_bytes() == 0u);
 
-  if (!std::getenv("VIDFAB_AUDIO_DECODER_REAL")) return;
-  const char* configured_path = std::getenv("VIDFAB_AUDIO_VAE_PATH");
+  if (!std::getenv("SLOPFAB_AUDIO_DECODER_REAL")) return;
+  const char* configured_path = std::getenv("SLOPFAB_AUDIO_VAE_PATH");
   const std::filesystem::path checkpoint_path = configured_path != nullptr
       ? configured_path
       : "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
@@ -2975,9 +2975,9 @@ VIDFAB_TEST(vulkan_audio_vae_decoder_cuda_off_contract) {
   CHECK(unloaded_decode_rejected);
 }
 
-VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
-  using namespace vidfab;
-  using namespace vidfab::vulkan;
+SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
   if (!Instance::available()) return;
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -3056,13 +3056,13 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     return tensors;
   };
   const auto base = std::filesystem::temp_directory_path() /
-      ("vidfab_h3_cuda_off_" + std::to_string(
+      ("slopfab_h3_cuda_off_" + std::to_string(
           std::chrono::steady_clock::now().time_since_epoch().count()));
   std::filesystem::create_directories(base);
-  const auto valid_path = base / "vidfab_h3_cuda_off_valid.safetensors";
-  const auto corrupt_path = base / "vidfab_h3_cuda_off_corrupt.safetensors";
+  const auto valid_path = base / "slopfab_h3_cuda_off_valid.safetensors";
+  const auto corrupt_path = base / "slopfab_h3_cuda_off_corrupt.safetensors";
   const auto corrupt_fc2_path =
-      base / "vidfab_h3_cuda_off_corrupt_fc2.safetensors";
+      base / "slopfab_h3_cuda_off_corrupt_fc2.safetensors";
   write_safetensors(valid_path.string(), fixture(0));
   write_safetensors(corrupt_path.string(), fixture(1));
   write_safetensors(corrupt_fc2_path.string(), fixture(2));
@@ -3083,9 +3083,9 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     }
     return all;
   };
-  const auto graph_path = base / "vidfab_h3_cuda_off_graph.safetensors";
+  const auto graph_path = base / "slopfab_h3_cuda_off_graph.safetensors";
   const auto corrupt_graph_path =
-      base / "vidfab_h3_cuda_off_corrupt_graph.safetensors";
+      base / "slopfab_h3_cuda_off_corrupt_graph.safetensors";
   write_safetensors(graph_path.string(), graph_fixture(false));
   write_safetensors(corrupt_graph_path.string(), graph_fixture(true));
   SafeTensors graph_checkpoint, corrupt_graph;
@@ -3151,16 +3151,16 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     return all;
   };
   const auto transformer_path =
-      base / "vidfab_h3_cuda_off_transformer.safetensors";
+      base / "slopfab_h3_cuda_off_transformer.safetensors";
   const auto corrupt_transformer_path =
-      base / "vidfab_h3_cuda_off_corrupt_transformer.safetensors";
+      base / "slopfab_h3_cuda_off_corrupt_transformer.safetensors";
   const auto corrupt_transformer_dtype_path =
-      base / "vidfab_h3_cuda_off_corrupt_transformer_dtype.safetensors";
+      base / "slopfab_h3_cuda_off_corrupt_transformer_dtype.safetensors";
   const std::array<std::filesystem::path, 4> corrupt_transformer_metadata_paths{
-      base / "vidfab_h3_cuda_off_corrupt_transformer_prequant.safetensors",
-      base / "vidfab_h3_cuda_off_corrupt_transformer_weightscale.safetensors",
-      base / "vidfab_h3_cuda_off_corrupt_transformer_inputscale.safetensors",
-      base / "vidfab_h3_cuda_off_corrupt_transformer_comfy.safetensors"};
+      base / "slopfab_h3_cuda_off_corrupt_transformer_prequant.safetensors",
+      base / "slopfab_h3_cuda_off_corrupt_transformer_weightscale.safetensors",
+      base / "slopfab_h3_cuda_off_corrupt_transformer_inputscale.safetensors",
+      base / "slopfab_h3_cuda_off_corrupt_transformer_comfy.safetensors"};
   write_safetensors(transformer_path.string(), transformer_fixture(0));
   write_safetensors(corrupt_transformer_path.string(),
                     transformer_fixture(1));
@@ -4054,7 +4054,7 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   // present, additionally load its real NVFP4 block 0 and pin the canonical
   // S65 result used by the CUDA-enabled replay suite.
   const std::filesystem::path real_path = std::filesystem::path(
-      VIDFAB_TEST_SOURCE_DIR) /
+      SLOPFAB_TEST_SOURCE_DIR) /
       "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
   if (std::filesystem::exists(real_path)) {
     H3BlockConfig real_config;
@@ -4283,9 +4283,9 @@ VIDFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   std::filesystem::remove(base, ignored);
 }
 
-VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {
-  using vidfab::vulkan::detail::GemmDispatchGeometry;
-  using vidfab::vulkan::detail::gemm_dispatch_geometry;
+SLOPFAB_TEST(vulkan_gemm_dispatch_geometry) {
+  using slopfab::vulkan::detail::GemmDispatchGeometry;
+  using slopfab::vulkan::detail::gemm_dispatch_geometry;
   GemmDispatchGeometry geometry{99, 99};
   CHECK(!gemm_dispatch_geometry(0, 1, 16, 16, 8, 8, &geometry));
   CHECK(!gemm_dispatch_geometry(1, 0, 16, 16, 8, 8, &geometry));
@@ -4307,4 +4307,4 @@ VIDFAB_TEST(vulkan_gemm_dispatch_geometry) {
   CHECK(!gemm_dispatch_geometry(1, 1, 16, 16, 8, 8, nullptr));
 }
 
-int main() { return ::vidfab::test::run_all(); }
+int main() { return ::slopfab::test::run_all(); }

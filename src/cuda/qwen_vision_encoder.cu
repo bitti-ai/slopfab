@@ -1,15 +1,15 @@
-#include "vidfab/text/qwen_vision.h"
+#include "slopfab/text/qwen_vision.h"
 
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <unordered_map>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/gemm.cuh"
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/qwen_vision.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/gemm.cuh"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/qwen_vision.cuh"
 
-namespace vidfab::text {
+namespace slopfab::text {
 using cuda::DeviceBuffer;
 namespace {
 // Activation widths. Tied to the public config rather than re-typed, because
@@ -102,10 +102,10 @@ struct QwenVisionEncoder::Impl {
   cuda::Workspace ws, acts;
 
   DeviceBuffer<uint16_t>& at(const std::string& suffix) { return tensors.at(prefix + suffix); }
-  void open() { if (handle) return; if (vidfab::cuda::cublas_create(&handle) != CUBLAS_STATUS_SUCCESS)
+  void open() { if (handle) return; if (slopfab::cuda::cublas_create(&handle) != CUBLAS_STATUS_SUCCESS)
       throw std::runtime_error("Qwen vision: cublasCreate failed");
-    VIDFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking)); linear.init(handle, stream); }
-  void close() { if (stream) cudaStreamDestroy(stream); if (handle) vidfab::cuda::cublas_destroy(handle);
+    SLOPFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking)); linear.init(handle, stream); }
+  void close() { if (stream) cudaStreamDestroy(stream); if (handle) slopfab::cuda::cublas_destroy(handle);
     stream = nullptr; handle = nullptr; }
   cuda::QwenVisionBlockWeights block(int i) {
     const std::string p = "blocks." + std::to_string(i) + ".";
@@ -152,7 +152,7 @@ void QwenVisionEncoder::load(const SafeTensors& st){ unload(); auto c=load_qwen3
     const TensorView& t=kv.second; DeviceBuffer<uint16_t> d(t.nbytes/2);
     d.copy_from_host(static_cast<const uint16_t*>(t.data),t.nbytes/2,s.stream);
     s.tensors.emplace(kv.first,std::move(d)); }
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream)); s.loaded=true; }
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream)); s.loaded=true; }
 
 QwenVisionEmbedding QwenVisionEncoder::Impl::run(
     const std::vector<QwenPixelValues>& images, bool exact,
@@ -192,10 +192,10 @@ QwenVisionEmbedding QwenVisionEncoder::Impl::run(
     Carver carver; carver.ws=&s.acts;
     const VisionScratch b=carve_vision(carver,rows,groups,positions.learned.size(),hc.size());
 
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.pixels,hp.data(),hp.size()*sizeof(uint16_t),cudaMemcpyHostToDevice,s.stream));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.pos_index,positions.learned.data(),positions.learned.size()*sizeof(int32_t),cudaMemcpyHostToDevice,s.stream));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.rope_cos,hc.data(),hc.size()*sizeof(float),cudaMemcpyHostToDevice,s.stream));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(b.rope_sin,hs.data(),hs.size()*sizeof(float),cudaMemcpyHostToDevice,s.stream));
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(b.pixels,hp.data(),hp.size()*sizeof(uint16_t),cudaMemcpyHostToDevice,s.stream));
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(b.pos_index,positions.learned.data(),positions.learned.size()*sizeof(int32_t),cudaMemcpyHostToDevice,s.stream));
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(b.rope_cos,hc.data(),hc.size()*sizeof(float),cudaMemcpyHostToDevice,s.stream));
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(b.rope_sin,hs.data(),hs.size()*sizeof(float),cudaMemcpyHostToDevice,s.stream));
     auto patch=dense(s.at("patch_embed.proj.weight"),kHidden,kPatchDim,&s.at("patch_embed.proj.bias"));
     if (exact) {
       cuda::qwen_vision_patch_embed_exact(
@@ -215,7 +215,7 @@ QwenVisionEmbedding QwenVisionEncoder::Impl::run(
         cuda::qwen_vision_block_forward_exact(
             s.stream, blocks[layer], b.rope_cos, b.rope_sin, b.x, rows, bs);
         if (trace) {
-          VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
+          SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(
               trace_device.get() + static_cast<size_t>(layer) * rows * kHidden,
               b.x, static_cast<size_t>(rows) * kHidden * sizeof(uint16_t),
               cudaMemcpyDeviceToDevice, s.stream));
@@ -235,20 +235,20 @@ QwenVisionEmbedding QwenVisionEncoder::Impl::run(
     }
     const size_t out_n=static_cast<size_t>(groups)*kOutDim;
     const size_t old=result.main.size(); result.main.resize(old+out_n);
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(result.main.data()+old,b.out,out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(result.main.data()+old,b.out,out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));
     for(int i=0;i<3;++i){size_t o=result.deepstack[i].size();result.deepstack[i].resize(o+out_n);
-      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(result.deepstack[i].data()+o,b.deep[i],out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));}
+      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(result.deepstack[i].data()+o,b.deep[i],out_n*sizeof(uint16_t),cudaMemcpyDeviceToHost,s.stream));}
     if (trace) {
       const size_t old_trace = trace->block_residuals.size();
       const size_t trace_count = static_cast<size_t>(27) * rows * kHidden;
       trace->block_residuals.resize(old_trace + trace_count);
-      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
+      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(
           trace->block_residuals.data() + old_trace, trace_device.get(),
           trace_count * sizeof(uint16_t), cudaMemcpyDeviceToHost, s.stream));
       trace->tokens += rows;
     }
     result.tokens+=groups;
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream));
   } return result;
 }
 
@@ -261,4 +261,4 @@ QwenVisionEmbedding QwenVisionEncoder::encode_exact(
     const std::vector<QwenPixelValues>& images, QwenVisionTrace* trace) {
   return impl_->run(images, true, trace);
 }
-} // namespace vidfab::text
+} // namespace slopfab::text

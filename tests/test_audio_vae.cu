@@ -26,16 +26,16 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/cuda/audio_vae_kernels.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/vae/audio_decoder.h"
+#include "slopfab/cuda/audio_vae_kernels.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/vae/audio_decoder.h"
 
 namespace {
 
-using vidfab::cuda::DeviceBuffer;
+using slopfab::cuda::DeviceBuffer;
 
-constexpr int kTaps = vidfab::cuda::kAudioAAKernel;  // 12
+constexpr int kTaps = slopfab::cuda::kAudioAAKernel;  // 12
 
 // Deterministic pseudo-random fill; avoids <random> so results are identical
 // across standard library versions. Same generator as tests/test_kernels.cu.
@@ -257,7 +257,7 @@ std::vector<float> kaiser_sinc12() {
 
 // --- tests ------------------------------------------------------------------
 
-VIDFAB_TEST(audio_snake_beta) {
+SLOPFAB_TEST(audio_snake_beta) {
   const int batch = 2;
   const int channels = 5;
   const int len = 37;  // not a multiple of the block width
@@ -275,8 +275,8 @@ VIDFAB_TEST(audio_snake_beta) {
   DeviceBuffer<float> dx = to_device(x);
   DeviceBuffer<float> da = to_device(log_alpha);
   DeviceBuffer<float> db = to_device(log_beta);
-  vidfab::cuda::launch_snake_beta(dx.get(), da.get(), db.get(), batch, channels, len, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  slopfab::cuda::launch_snake_beta(dx.get(), da.get(), db.get(), batch, channels, len, nullptr);
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want, to_host(dx), 2e-5, "snake_beta");
 
   // Hand-computed anchor. Channel 1 has log_alpha = ln 2, log_beta = 0.4, so
@@ -290,8 +290,8 @@ VIDFAB_TEST(audio_snake_beta) {
     DeviceBuffer<float> d1 = to_device(one);
     DeviceBuffer<float> da1 = to_device(a1);
     DeviceBuffer<float> db1 = to_device(b1);
-    vidfab::cuda::launch_snake_beta(d1.get(), da1.get(), db1.get(), 1, 1, 1, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    slopfab::cuda::launch_snake_beta(d1.get(), da1.get(), db1.get(), 1, 1, 1, nullptr);
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const double s = std::sin(2.0 * 0.75);
     const double expect = 0.75 + s * s / std::exp(0.4);
     CHECK_NEAR(to_host(d1)[0], expect, 1e-5);
@@ -303,7 +303,7 @@ VIDFAB_TEST(audio_snake_beta) {
   }
 }
 
-VIDFAB_TEST(audio_conv1d) {
+SLOPFAB_TEST(audio_conv1d) {
   // Asymmetric everywhere: 3 in / 5 out channels, a length that straddles the
   // 512-wide block tile, and random (hence non-palindromic) weights.
   struct Case {
@@ -332,9 +332,9 @@ VIDFAB_TEST(audio_conv1d) {
       DeviceBuffer<float> dw = to_device(w);
       DeviceBuffer<float> dbias = to_device(bias);
       DeviceBuffer<float> dy(want.size());
-      vidfab::cuda::launch_conv1d(dx.get(), dw.get(), dbias.get(), dy.get(), batch, in_ch, out_ch,
+      slopfab::cuda::launch_conv1d(dx.get(), dw.get(), dbias.get(), dy.get(), batch, in_ch, out_ch,
                                   len, len_out, c.kernel, pad, c.dilation, nullptr);
-      VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
       const std::string what = "conv1d k" + std::to_string(c.kernel) + " d" +
                                std::to_string(c.dilation) + " L" + std::to_string(len);
       CHECK_CLOSE(want, to_host(dy), 2e-5, what.c_str());
@@ -350,9 +350,9 @@ VIDFAB_TEST(audio_conv1d) {
     DeviceBuffer<float> dx2 = to_device(x);
     DeviceBuffer<float> dw = to_device(w);
     DeviceBuffer<float> dy(want.size());
-    vidfab::cuda::launch_conv1d(dx2.get(), dw.get(), nullptr, dy.get(), 1, in_ch, 1, len, len, 7, 3,
+    slopfab::cuda::launch_conv1d(dx2.get(), dw.get(), nullptr, dy.get(), 1, in_ch, 1, len, len, 7, 3,
                                 1, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_CLOSE(want, to_host(dy), 2e-5, "conv1d no bias");
   }
 
@@ -370,9 +370,9 @@ VIDFAB_TEST(audio_conv1d) {
     DeviceBuffer<float> dx3 = to_device(x);
     DeviceBuffer<float> dw = to_device(w);
     DeviceBuffer<float> dy(static_cast<size_t>(len));
-    vidfab::cuda::launch_conv1d(dx3.get(), dw.get(), nullptr, dy.get(), 1, 1, 1, len, len, kernel, 2,
+    slopfab::cuda::launch_conv1d(dx3.get(), dw.get(), nullptr, dy.get(), 1, 1, 1, len, len, kernel, 2,
                                 1, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> got = to_host(dy);
     // y[n] = sum_k x[n + k - 2] w[k]; x[7]=1 => y[9-k] = w[k].
     for (int k = 0; k < kernel; ++k) {
@@ -381,7 +381,7 @@ VIDFAB_TEST(audio_conv1d) {
   }
 }
 
-VIDFAB_TEST(audio_conv_transpose1d) {
+SLOPFAB_TEST(audio_conv_transpose1d) {
   // The two (kernel, stride) pairs the decoder actually uses, plus a case whose
   // kernel is not a whole number of strides so the phase logic is exercised.
   struct Case {
@@ -410,9 +410,9 @@ VIDFAB_TEST(audio_conv_transpose1d) {
     DeviceBuffer<float> dw = to_device(w);
     DeviceBuffer<float> dbias = to_device(bias);
     DeviceBuffer<float> dy(want.size());
-    vidfab::cuda::launch_conv_transpose1d(dx.get(), dw.get(), dbias.get(), dy.get(), batch, in_ch,
+    slopfab::cuda::launch_conv_transpose1d(dx.get(), dw.get(), dbias.get(), dy.get(), batch, in_ch,
                                           out_ch, len, len_out, c.kernel, c.stride, c.pad, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::string what =
         "conv_transpose1d k" + std::to_string(c.kernel) + " s" + std::to_string(c.stride);
     CHECK_CLOSE(want, to_host(dy), 2e-5, what.c_str());
@@ -439,7 +439,7 @@ VIDFAB_TEST(audio_conv_transpose1d) {
   }
 }
 
-VIDFAB_TEST(audio_aa_activation) {
+SLOPFAB_TEST(audio_aa_activation) {
   const std::vector<float> filter = kaiser_sinc12();
 
   // The recomputed filter must be normalised and symmetric; both properties are
@@ -474,15 +474,15 @@ VIDFAB_TEST(audio_aa_activation) {
     DeviceBuffer<float> dmid(mid.size());
     DeviceBuffer<float> dy(want.size());
 
-    vidfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(),
+    slopfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(),
                                            batch, channels, len, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::string up_what = "aa_upsample_snake L" + std::to_string(len);
     CHECK_CLOSE(mid, to_host(dmid), 2e-5, up_what.c_str());
 
-    vidfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), batch, channels, 2 * len,
+    slopfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), batch, channels, 2 * len,
                                        len, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::string what = "aa_activation L" + std::to_string(len);
     CHECK_CLOSE(want, to_host(dy), 2e-5, what.c_str());
   }
@@ -503,10 +503,10 @@ VIDFAB_TEST(audio_aa_activation) {
     DeviceBuffer<float> db = to_device(big_beta);
     DeviceBuffer<float> dmid(static_cast<size_t>(2 * len));
     DeviceBuffer<float> dy(static_cast<size_t>(len));
-    vidfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1, 1,
+    slopfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1, 1,
                                            len, nullptr);
-    vidfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    slopfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len, nullptr);
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> mid = to_host(dmid);
     const std::vector<float> got = to_host(dy);
     for (size_t i = 0; i < mid.size(); ++i) CHECK_NEAR(mid[i], 0.375, 1e-5);
@@ -534,10 +534,10 @@ VIDFAB_TEST(audio_aa_activation) {
     DeviceBuffer<float> db = to_device(log_beta);
     DeviceBuffer<float> dmid(static_cast<size_t>(2 * len));
     DeviceBuffer<float> dy(static_cast<size_t>(len));
-    vidfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1, 1,
+    slopfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1, 1,
                                            len, nullptr);
-    vidfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len, nullptr);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    slopfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len, nullptr);
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     bool finite = true;
     for (float v : to_host(dmid)) finite = finite && std::isfinite(v);
     for (float v : to_host(dy)) finite = finite && std::isfinite(v);
@@ -545,7 +545,7 @@ VIDFAB_TEST(audio_aa_activation) {
   }
 }
 
-VIDFAB_TEST(audio_elementwise) {
+SLOPFAB_TEST(audio_elementwise) {
   const size_t n = 5000;
   std::vector<float> a = make_data(n, 3u, 2.0f);
   const std::vector<float> b = make_data(n, 4u, 2.0f);
@@ -554,24 +554,24 @@ VIDFAB_TEST(audio_elementwise) {
   for (size_t i = 0; i < n; ++i) want_add[i] = a[i] + b[i];
   DeviceBuffer<float> da = to_device(a);
   DeviceBuffer<float> db = to_device(b);
-  vidfab::cuda::launch_add_inplace(da.get(), db.get(), n, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  slopfab::cuda::launch_add_inplace(da.get(), db.get(), n, nullptr);
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_add, to_host(da), 1e-6, "add_inplace");
 
   std::vector<float> want_scale(n);
   // Multiply by the reciprocal, exactly as the kernel does: `x / 3.0f` differs
   // in the last bit and the clamp check below runs at zero tolerance.
   for (size_t i = 0; i < n; ++i) want_scale[i] = want_add[i] * (1.0f / 3.0f);
-  vidfab::cuda::launch_scale_inplace(da.get(), 1.0f / 3.0f, n, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  slopfab::cuda::launch_scale_inplace(da.get(), 1.0f / 3.0f, n, nullptr);
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_scale, to_host(da), 1e-6, "scale_inplace");
 
   std::vector<float> want_clamp(n);
   for (size_t i = 0; i < n; ++i) {
     want_clamp[i] = want_scale[i] < -1.0f ? -1.0f : (want_scale[i] > 1.0f ? 1.0f : want_scale[i]);
   }
-  vidfab::cuda::launch_clamp_inplace(da.get(), -1.0f, 1.0f, n, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  slopfab::cuda::launch_clamp_inplace(da.get(), -1.0f, 1.0f, n, nullptr);
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_clamp, to_host(da), 0.0, "clamp_inplace");
 
   // [batch, 1, frames] planar -> interleaved. Left is batch item 0
@@ -584,8 +584,8 @@ VIDFAB_TEST(audio_elementwise) {
   }
   DeviceBuffer<float> dp = to_device(planar);
   DeviceBuffer<float> di(planar.size());
-  vidfab::cuda::launch_interleave(dp.get(), di.get(), 2, frames, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  slopfab::cuda::launch_interleave(dp.get(), di.get(), 2, frames, nullptr);
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = to_host(di);
   for (int t = 0; t < frames; ++t) {
     CHECK_NEAR(got[static_cast<size_t>(2 * t)], static_cast<double>(t), 0.0);
@@ -608,7 +608,7 @@ std::vector<float> reference_latents(int batch, int channels, int len, uint32_t 
 }
 
 std::string checkpoint_path() {
-  if (const char* env = std::getenv("VIDFAB_AUDIO_VAE")) return env;
+  if (const char* env = std::getenv("SLOPFAB_AUDIO_VAE")) return env;
   return "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
 }
 
@@ -626,7 +626,7 @@ const float kGolden[] = {
     -0.03484774f, +0.03697970f, +0.14894537f, +0.04332416f, +0.14315795f, -0.00255305f,
 };
 
-VIDFAB_TEST(audio_decoder_checkpoint) {
+SLOPFAB_TEST(audio_decoder_checkpoint) {
   const std::string path = checkpoint_path();
   if (!std::filesystem::exists(path)) {
     std::fprintf(stderr, "  (no %s; skipping the end-to-end audio decode)\n", path.c_str());
@@ -635,13 +635,13 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
 
   size_t free_at_rest = 0;
   size_t total_memory = 0;
-  VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_at_rest, &total_memory));
+  SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_at_rest, &total_memory));
 
-  vidfab::SafeTensors ckpt;
+  slopfab::SafeTensors ckpt;
   ckpt.open(path);
   CHECK(ckpt.tensor_count() == 917);
 
-  vidfab::vae::AudioDecoder decoder;
+  slopfab::vae::AudioDecoder decoder;
   decoder.load(ckpt);
   // 779 of the 917 tensors are on the decode path; the other 138 are the
   // encoder, its attention projection, and the two latent-statistics vectors.
@@ -653,7 +653,7 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
 
   const int latents = 3;
   const std::vector<float> z = reference_latents(2, 32, latents, 12345u);
-  const vidfab::vae::DecodedAudio audio = decoder.decode(z.data(), latents);
+  const slopfab::vae::DecodedAudio audio = decoder.decode(z.data(), latents);
 
   CHECK(audio.channels == 2);
   CHECK(audio.sample_rate == 32000);
@@ -736,7 +736,7 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
   // non-finite and nothing may run away.
   {
     const std::vector<float> flat(static_cast<size_t>(2) * 32 * 5, 0.25f);
-    const vidfab::vae::DecodedAudio quiet = decoder.decode(flat.data(), 5);
+    const slopfab::vae::DecodedAudio quiet = decoder.decode(flat.data(), 5);
     CHECK(quiet.num_frames() == 5 * 800);
     bool finite = true;
     double worst = 0.0;
@@ -753,7 +753,7 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
     const int ten_seconds = 405;
     const std::vector<float> big = reference_latents(2, 32, ten_seconds, 999u);
 
-    const vidfab::vae::DecodedAudio warm = decoder.decode(big.data(), ten_seconds);
+    const slopfab::vae::DecodedAudio warm = decoder.decode(big.data(), ten_seconds);
     CHECK(warm.num_frames() == ten_seconds * 800);
 
     // Measured against the free memory recorded before the checkpoint was
@@ -761,21 +761,21 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
     // grows to its final size on the first ten-second decode and is reused
     // afterwards, which is why the reading is taken after the warm-up run.
     size_t free_now = 0;
-    VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_now, &total_memory));
+    SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_now, &total_memory));
     const double peak_mib = static_cast<double>(free_at_rest - free_now) / 1048576.0;
 
     cudaEvent_t start;
     cudaEvent_t stop;
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&start));
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&stop));
-    VIDFAB_CUDA_CHECK(cudaEventRecord(start));
-    const vidfab::vae::DecodedAudio timed = decoder.decode(big.data(), ten_seconds);
-    VIDFAB_CUDA_CHECK(cudaEventRecord(stop));
-    VIDFAB_CUDA_CHECK(cudaEventSynchronize(stop));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&start));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&stop));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(start));
+    const slopfab::vae::DecodedAudio timed = decoder.decode(big.data(), ten_seconds);
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(stop));
+    SLOPFAB_CUDA_CHECK(cudaEventSynchronize(stop));
     float ms = 0.0f;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
-    VIDFAB_CUDA_CHECK(cudaEventDestroy(start));
-    VIDFAB_CUDA_CHECK(cudaEventDestroy(stop));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+    SLOPFAB_CUDA_CHECK(cudaEventDestroy(start));
+    SLOPFAB_CUDA_CHECK(cudaEventDestroy(stop));
 
     double peak10 = 0.0;
     bool finite = true;
@@ -792,30 +792,30 @@ VIDFAB_TEST(audio_decoder_checkpoint) {
   }
 }
 
-VIDFAB_TEST(audio_decoder_nf4_checkpoint) {
+SLOPFAB_TEST(audio_decoder_nf4_checkpoint) {
   const std::string path = "weights/vae/audio_vae_nf4.safetensors";
   if (!std::filesystem::exists(path)) {
     std::fprintf(stderr, "  (no %s; skipping NF4 audio VAE)\n", path.c_str());
     return;
   }
-  vidfab::SafeTensors ckpt;
+  slopfab::SafeTensors ckpt;
   ckpt.open(path);
   CHECK(ckpt.tensor_count() == 1117);
-  vidfab::vae::AudioDecoder decoder;
+  slopfab::vae::AudioDecoder decoder;
   decoder.load(ckpt);
   CHECK(decoder.weight_bytes() > 240u * 1024u * 1024u);
   CHECK(decoder.weight_bytes() < 270u * 1024u * 1024u);
   const std::vector<float> z = reference_latents(2, 32, 3, 12345u);
-  const vidfab::vae::DecodedAudio audio = decoder.decode(z.data(), 3);
+  const slopfab::vae::DecodedAudio audio = decoder.decode(z.data(), 3);
   CHECK(audio.channels == 2);
   CHECK(audio.sample_rate == 32000);
   CHECK(audio.num_frames() == 2400);
   bool finite = true;
   for (float sample : audio.samples) finite = finite && std::isfinite(sample);
   CHECK_MSG(finite, "NF4 audio VAE emitted non-finite sample");
-  vidfab::SafeTensors fp32_ckpt;
+  slopfab::SafeTensors fp32_ckpt;
   fp32_ckpt.open(checkpoint_path());
-  vidfab::vae::AudioDecoder fp32_decoder;
+  slopfab::vae::AudioDecoder fp32_decoder;
   fp32_decoder.load(fp32_ckpt);
   const auto reference = fp32_decoder.decode(z.data(), 3);
   double err2 = 0.0, ref2 = 0.0, dot = 0.0, got2 = 0.0, max_abs = 0.0;

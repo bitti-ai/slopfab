@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/vision_stage.h"
+#include "slopfab/vulkan/vision_stage.h"
 
 #include <algorithm>
 #include <chrono>
@@ -7,10 +7,10 @@
 #include <string>
 #include <utility>
 
-#include "vidfab/attention.h"
-#include "vidfab/tensor_convert.h"
+#include "slopfab/attention.h"
+#include "slopfab/tensor_convert.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 uint64_t nonstaging_used_bytes(const TensorContext& context) {
@@ -739,4 +739,4 @@ const ExactQwenVisionStats& ExactQwenVisionEncoder::stats() const noexcept {
   return impl_ ? impl_->stats : empty;
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

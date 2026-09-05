@@ -2,7 +2,7 @@
 //
 // Three things live here that could not be reused from elsewhere:
 //
-//   1. **Causal GQA attention.** `vidfab/cuda/attention.cuh` is unmasked by
+//   1. **Causal GQA attention.** `slopfab/cuda/attention.cuh` is unmasked by
 //      design — the H3 DiT has no mask anywhere (transformer spec 2.2) — but
 //      `Qwen3VLTextAttention` sets `is_causal = True` unconditionally and the
 //      model calls `create_causal_mask`. The `attention_mask=ones_like(input_ids)`
@@ -26,8 +26,8 @@
 //      src/text/encoder.cpp because that file is compiled by the host compiler
 //      and everything below needs nvcc.
 
-#include "vidfab/text/encoder.h"
-#include "vidfab/attention.h"
+#include "slopfab/text/encoder.h"
+#include "slopfab/attention.h"
 
 #include <algorithm>
 #include <chrono>
@@ -38,29 +38,29 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/deterministic_math.cuh"
-#include "vidfab/cuda/deterministic_gemm.cuh"
-#include "vidfab/cuda/deterministic_attention.cuh"
-#include "vidfab/cuda/gemm.cuh"
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/nn_kernels.cuh"
-#include "vidfab/cuda/workspace.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/deterministic_math.cuh"
+#include "slopfab/cuda/deterministic_gemm.cuh"
+#include "slopfab/cuda/deterministic_attention.cuh"
+#include "slopfab/cuda/gemm.cuh"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/nn_kernels.cuh"
+#include "slopfab/cuda/workspace.cuh"
 
-namespace vidfab::text {
+namespace slopfab::text {
 namespace {
 
-using vidfab::cuda::ComputeType;
-using vidfab::cuda::DeviceBuffer;
-using vidfab::cuda::PinnedBuffer;
-using vidfab::cuda::QuantFormat;
-using vidfab::cuda::QuantWeight;
-using vidfab::cuda::Workspace;
+using slopfab::cuda::ComputeType;
+using slopfab::cuda::DeviceBuffer;
+using slopfab::cuda::PinnedBuffer;
+using slopfab::cuda::QuantFormat;
+using slopfab::cuda::QuantWeight;
+using slopfab::cuda::Workspace;
 
 // src/text/encoder.cpp works out the on-disk shapes from its own copy of this,
 // because it is host-compiled and linear.cuh drags in cuBLAS. If the two ever
 // disagree the scale tensor's declared width is wrong and nothing else notices.
-static_assert(vidfab::cuda::kNVFP4BlockSize == 16,
+static_assert(slopfab::cuda::kNVFP4BlockSize == 16,
               "the encoder's nvfp4 shapes and scale swizzle assume 16 elements per block");
 
 constexpr int kWarp = 32;
@@ -129,15 +129,15 @@ __device__ inline __nv_bfloat16 exact_text_bf16_result(float value) {
 }
 
 __device__ inline float exact_text_silu(float value) {
-  value = vidfab::cuda::canonicalize_pointwise_float(value);
+  value = slopfab::cuda::canonicalize_pointwise_float(value);
   const uint32_t bits = __float_as_uint(value);
   const uint32_t magnitude = bits & 0x7fffffffu;
   if (magnitude > 0x7f800000u) return __uint_as_float(0x7fc00000u);
   if (magnitude == 0x7f800000u)
     return (bits & 0x80000000u) != 0u
         ? __uint_as_float(0x80000000u) : value;
-  return vidfab::cuda::deterministic_float_divide(
-      value, __fadd_rn(1.0f, vidfab::cuda::deterministic_exp(-value)));
+  return slopfab::cuda::deterministic_float_divide(
+      value, __fadd_rn(1.0f, slopfab::cuda::deterministic_exp(-value)));
 }
 
 __global__ void swiglu_split_exact_kernel(
@@ -387,7 +387,7 @@ size_t projection_workspace(WeightFormat format, int out_features, int in_featur
   w.per_channel_scale = true;
   w.convrot = true;
   w.convrot_group = kConvRotGroup;
-  return vidfab::cuda::linear_workspace_bytes(w, rows, ComputeType::kBF16);
+  return slopfab::cuda::linear_workspace_bytes(w, rows, ComputeType::kBF16);
 }
 
 }  // namespace
@@ -438,7 +438,7 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
   float* m_run = ws.alloc_n<float>(static_cast<size_t>(H) * bq_max);
   float* l_run = ws.alloc_n<float>(static_cast<size_t>(H) * bq_max);
 
-  VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_set_stream(handle, stream));
+  SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_set_stream(handle, stream));
   const float one = 1.0f;
   const float zero = 0.0f;
 
@@ -446,10 +446,10 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
     const int bq = std::min(bq_max, S - q0);
     const size_t stat_n = static_cast<size_t>(H) * bq;
 
-    VIDFAB_CUDA_CHECK(cudaMemsetAsync(acc, 0, stat_n * D * sizeof(float), stream));
-    VIDFAB_CUDA_CHECK(cudaMemsetAsync(l_run, 0, stat_n * sizeof(float), stream));
+    SLOPFAB_CUDA_CHECK(cudaMemsetAsync(acc, 0, stat_n * D * sizeof(float), stream));
+    SLOPFAB_CUDA_CHECK(cudaMemsetAsync(l_run, 0, stat_n * sizeof(float), stream));
     fill_kernel<<<grid_1d(stat_n, 256), 256, 0, stream>>>(m_run, kHostNegInf, stat_n);
-    VIDFAB_CUDA_CHECK(cudaGetLastError());
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
 
     // The whole point: the last query in this block is `q0 + bq - 1`, so no key
     // beyond it can ever be attended to and those tiles are never computed.
@@ -462,7 +462,7 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
       // S_tile[h] (row-major [bq, bk]) = Q[h] K[h]^T * scale.
       // Column-major: C[bk, bq] = op_T(K[D, bk]) * op_N(Q[D, bq]).
       if (G == 1) {
-        VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_strided_batched_ex(
+        SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_gemm_strided_batched_ex(
             handle, CUBLAS_OP_T, CUBLAS_OP_N, bk, bq, D, &scale,
             k + static_cast<size_t>(k0) * kvld, CUDA_R_16BF, kvld, D,
             q + static_cast<size_t>(q0) * qld, CUDA_R_16BF, qld, D, &zero, scores, CUDA_R_32F, bk,
@@ -472,7 +472,7 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
         // (spec section 4.2), which is exactly what makes each kv head one
         // batched call with a zero stride on K.
         for (int kv = 0; kv < cfg.num_kv_heads; ++kv) {
-          VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_strided_batched_ex(
+          SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_gemm_strided_batched_ex(
               handle, CUBLAS_OP_T, CUBLAS_OP_N, bk, bq, D, &scale,
               k + static_cast<size_t>(k0) * kvld + static_cast<size_t>(kv) * D, CUDA_R_16BF, kvld,
               0, q + static_cast<size_t>(q0) * qld + static_cast<size_t>(kv) * G * D, CUDA_R_16BF,
@@ -483,18 +483,18 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
 
       causal_softmax_kernel<<<static_cast<int>(stat_n), kSoftmaxThreads, 0, stream>>>(
           scores, probs, acc, m_run, l_run, bq, bk, D, q0, k0);
-      VIDFAB_CUDA_CHECK(cudaGetLastError());
+      SLOPFAB_CUDA_CHECK(cudaGetLastError());
 
       // acc[h] (row-major [bq, D]) += P[h] V[h], beta = 1.
       if (G == 1) {
-        VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_strided_batched_ex(
+        SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_gemm_strided_batched_ex(
             handle, CUBLAS_OP_N, CUBLAS_OP_N, D, bq, bk, &one,
             v + static_cast<size_t>(k0) * kvld, CUDA_R_16BF, kvld, D, probs, CUDA_R_16BF, bk,
             static_cast<long long>(bq) * bk, &one, acc, CUDA_R_32F, D,
             static_cast<long long>(bq) * D, H, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
       } else {
         for (int kv = 0; kv < cfg.num_kv_heads; ++kv) {
-          VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_gemm_strided_batched_ex(
+          SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_gemm_strided_batched_ex(
               handle, CUBLAS_OP_N, CUBLAS_OP_N, D, bq, bk, &one,
               v + static_cast<size_t>(k0) * kvld + static_cast<size_t>(kv) * D, CUDA_R_16BF, kvld,
               0, probs + static_cast<size_t>(kv) * G * bq * bk, CUDA_R_16BF, bk,
@@ -507,7 +507,7 @@ void causal_attention_forward(cublasHandle_t handle, cudaStream_t stream, const 
 
     const dim3 grid(static_cast<unsigned>(stat_n), static_cast<unsigned>((D + 127) / 128));
     finalise_kernel<<<grid, 128, 0, stream>>>(acc, l_run, out, bq, H, D, q0);
-    VIDFAB_CUDA_CHECK(cudaGetLastError());
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
   }
 }
 
@@ -517,14 +517,14 @@ void launch_swiglu_split(const __nv_bfloat16* gate, const __nv_bfloat16* up, __n
                          size_t n, cudaStream_t stream) {
   if (n == 0) return;
   swiglu_split_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(gate, up, out, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_residual_add(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
                          cudaStream_t stream) {
   if (n == 0) return;
   residual_add_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(x, branch, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_swiglu_split_exact(const __nv_bfloat16* gate,
@@ -534,7 +534,7 @@ void launch_swiglu_split_exact(const __nv_bfloat16* gate,
   if (n == 0) return;
   swiglu_split_exact_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(
       gate, up, out, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_residual_add_exact(__nv_bfloat16* x,
@@ -543,7 +543,7 @@ void launch_residual_add_exact(__nv_bfloat16* x,
   if (n == 0) return;
   residual_add_exact_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(
       x, branch, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 // --- decoder layer -----------------------------------------------------------
@@ -672,7 +672,7 @@ size_t resident_request_bytes(const EncoderConfig& cfg, size_t weight_bytes,
 }
 
 void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
-                           vidfab::cuda::LinearRunner& linear, const LayerWeights& w,
+                           slopfab::cuda::LinearRunner& linear, const LayerWeights& w,
                            const LayerDims& d, const float* cos, const float* sin,
                            __nv_bfloat16* x, Workspace& ws) {
   require(d.num_tokens > 0, "encoder_layer_forward: num_tokens must be positive");
@@ -693,7 +693,7 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
 
   // --- attention half. Pre-norm: the residual carries the *unnormalised*
   // stream and is never gated or scaled (spec section 4.4).
-  vidfab::cuda::launch_rmsnorm(x, w.input_layernorm, n, rows, d.hidden, d.rms_norm_eps, stream);
+  slopfab::cuda::launch_rmsnorm(x, w.input_layernorm, n, rows, d.hidden, d.rms_norm_eps, stream);
 
   // ConvRot rotates the contraction axis, so it belongs to the activation, not
   // to the GEMM: q/k/v share one rotation of `n`, and LinearRunner applies it
@@ -706,23 +706,23 @@ void encoder_layer_forward(cublasHandle_t handle, cudaStream_t stream,
   // QK-norm BEFORE RoPE. Reversing the two is a silent quality bug: RMSNorm
   // scales channel j by w[j], RoPE mixes j with j+64, and those two weights
   // differ by up to 440x on k_norm (spec section 4.2).
-  vidfab::cuda::launch_head_rmsnorm(q, w.q_norm, rows, d.num_heads, d.head_dim, d.rms_norm_eps,
+  slopfab::cuda::launch_head_rmsnorm(q, w.q_norm, rows, d.num_heads, d.head_dim, d.rms_norm_eps,
                                     stream);
-  vidfab::cuda::launch_head_rmsnorm(k, w.k_norm, rows, d.num_kv_heads, d.head_dim, d.rms_norm_eps,
+  slopfab::cuda::launch_head_rmsnorm(k, w.k_norm, rows, d.num_kv_heads, d.head_dim, d.rms_norm_eps,
                                     stream);
   // v is not normalised. Only q and k.
 
   // All 128 head dims rotate, pairing j with j + 64 — unlike the H3 DiT, which
   // rotates 96 of 128 and pairs j with j + 48 (spec section 2.4).
-  vidfab::cuda::launch_rope_neox(q, cos, sin, rows, d.num_heads, d.head_dim, stream);
-  vidfab::cuda::launch_rope_neox(k, cos, sin, rows, d.num_kv_heads, d.head_dim, stream);
+  slopfab::cuda::launch_rope_neox(q, cos, sin, rows, d.num_heads, d.head_dim, stream);
+  slopfab::cuda::launch_rope_neox(k, cos, sin, rows, d.num_kv_heads, d.head_dim, stream);
 
   causal_attention_forward(handle, stream, q, k, v, attn, attention_config(d), ws);
   linear.forward(w.o_proj, attn, rows, proj, ws);
   launch_residual_add(x, proj, L * d.hidden, stream);
 
   // --- MLP half.
-  vidfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n, rows, d.hidden, d.rms_norm_eps,
+  slopfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n, rows, d.hidden, d.rms_norm_eps,
                                stream);
   linear.forward(w.gate_proj, n, rows, gate, ws);
   linear.forward(w.up_proj, n, rows, up, ws);
@@ -748,7 +748,7 @@ size_t exact_layer_workspace_bytes(const LayerWeights& w,
     activations += align_up(elements * bf);
   }
   size_t transient = 0;
-  for (const vidfab::cuda::QuantWeight* weight : {
+  for (const slopfab::cuda::QuantWeight* weight : {
            &w.q_proj, &w.k_proj, &w.v_proj, &w.o_proj,
            &w.gate_proj, &w.up_proj, &w.down_proj}) {
     const size_t dense = align_up(static_cast<size_t>(weight->out_features) *
@@ -787,18 +787,18 @@ void encoder_layer_forward_exact(cudaStream_t stream, const LayerWeights& w,
   auto copy_tap = [&](const __nv_bfloat16* source, __nv_bfloat16* destination,
                       size_t count) {
     if (destination != nullptr) {
-      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(destination, source,
+      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(destination, source,
           count * sizeof(__nv_bfloat16), cudaMemcpyDeviceToDevice, stream));
     }
   };
-  auto projection = [&](const vidfab::cuda::QuantWeight& weight,
+  auto projection = [&](const slopfab::cuda::QuantWeight& weight,
                         const __nv_bfloat16* input, __nv_bfloat16* output) {
     Workspace::Scope projection_scope(ws);
     const __nv_bfloat16* source = input;
     if (weight.pre_quant_scale != nullptr) {
       __nv_bfloat16* transformed = ws.alloc_n<__nv_bfloat16>(
           L * weight.in_features);
-      vidfab::cuda::launch_pre_quant_scale(
+      slopfab::cuda::launch_pre_quant_scale(
           input, weight.pre_quant_scale, transformed, d.num_tokens,
           weight.in_features, stream);
       source = transformed;
@@ -806,21 +806,21 @@ void encoder_layer_forward_exact(cudaStream_t stream, const LayerWeights& w,
                weight.in_features % weight.convrot_group == 0) {
       __nv_bfloat16* transformed = ws.alloc_n<__nv_bfloat16>(
           L * weight.in_features);
-      vidfab::cuda::launch_convrot(input, transformed, d.num_tokens,
+      slopfab::cuda::launch_convrot(input, transformed, d.num_tokens,
                                    weight.in_features,
                                    weight.convrot_group, stream);
       source = transformed;
     }
     const __nv_bfloat16* dense =
-        vidfab::cuda::materialize_bf16_exact(weight, ws, stream);
+        slopfab::cuda::materialize_bf16_exact(weight, ws, stream);
     const uint32_t tiled = rows / 64u * 64u;
     if (tiled != 0) {
-      vidfab::cuda::launch_deterministic_bf16_gemm_nt(
+      slopfab::cuda::launch_deterministic_bf16_gemm_nt(
           source, dense, nullptr, output, tiled, weight.out_features,
           weight.in_features, DenseGemmBias::kNone, 0, 0, stream);
     }
     if (tiled != rows) {
-      vidfab::cuda::launch_deterministic_scalar_gemm_nt(
+      slopfab::cuda::launch_deterministic_scalar_gemm_nt(
           source, dense, nullptr, output, rows - tiled,
           weight.out_features, weight.in_features,
           DenseGemmMode::kBFloat16, DenseGemmBias::kNone,
@@ -828,34 +828,34 @@ void encoder_layer_forward_exact(cudaStream_t stream, const LayerWeights& w,
     }
   };
 
-  vidfab::cuda::launch_rmsnorm(x, w.input_layernorm, n, d.num_tokens,
+  slopfab::cuda::launch_rmsnorm(x, w.input_layernorm, n, d.num_tokens,
                                d.hidden, d.rms_norm_eps, stream);
   if (taps) copy_tap(n, taps->input_norm, L * d.hidden);
   projection(w.q_proj, n, q);
   projection(w.k_proj, n, k);
   projection(w.v_proj, n, v);
-  vidfab::cuda::launch_head_rmsnorm(q, w.q_norm, d.num_tokens, d.num_heads,
+  slopfab::cuda::launch_head_rmsnorm(q, w.q_norm, d.num_tokens, d.num_heads,
                                     d.head_dim, d.rms_norm_eps, stream);
-  vidfab::cuda::launch_head_rmsnorm(k, w.k_norm, d.num_tokens,
+  slopfab::cuda::launch_head_rmsnorm(k, w.k_norm, d.num_tokens,
                                     d.num_kv_heads, d.head_dim,
                                     d.rms_norm_eps, stream);
-  vidfab::cuda::launch_rope_neox(q, cos, sin, d.num_tokens, d.num_heads,
+  slopfab::cuda::launch_rope_neox(q, cos, sin, d.num_tokens, d.num_heads,
                                  d.head_dim, stream);
-  vidfab::cuda::launch_rope_neox(k, cos, sin, d.num_tokens,
+  slopfab::cuda::launch_rope_neox(k, cos, sin, d.num_tokens,
                                  d.num_kv_heads, d.head_dim, stream);
   if (taps) {
     copy_tap(q, taps->query, L * q_width);
     copy_tap(k, taps->key, L * kv_width);
     copy_tap(v, taps->value, L * kv_width);
   }
-  vidfab::cuda::launch_deterministic_causal_gqa_attention(
+  slopfab::cuda::launch_deterministic_causal_gqa_attention(
       stream, q, k, v, attention, rows, d.num_heads, d.num_kv_heads,
       d.head_dim, exact_attention_scale(d.head_dim));
   if (taps) copy_tap(attention, taps->attention, L * q_width);
   projection(w.o_proj, attention, branch);
   launch_residual_add_exact(x, branch, L * d.hidden, stream);
   if (taps) copy_tap(x, taps->attention_residual, L * d.hidden);
-  vidfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n,
+  slopfab::cuda::launch_rmsnorm(x, w.post_attention_layernorm, n,
                                d.num_tokens, d.hidden, d.rms_norm_eps, stream);
   if (taps) copy_tap(n, taps->post_attention_norm, L * d.hidden);
   projection(w.gate_proj, n, gate);
@@ -908,21 +908,21 @@ struct Encoder::Impl {
   cudaEvent_t compute_done[2] = {nullptr, nullptr};
 
   Workspace ws;
-  vidfab::cuda::LinearRunner linear;
+  slopfab::cuda::LinearRunner linear;
   QwenVisionEncoder vision;
   const std::vector<QwenPixelValues>* pending_images = nullptr;
 
   void open_device() {
     if (cublas != nullptr) return;
-    VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&cublas));
+    SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&cublas));
     // Non-blocking rather than the legacy default stream: the streaming path
     // needs the upload stream to run concurrently with compute, and the legacy
     // default stream serialises against every other blocking stream.
-    VIDFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&compute, cudaStreamNonBlocking));
-    VIDFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&transfer, cudaStreamNonBlocking));
+    SLOPFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&compute, cudaStreamNonBlocking));
+    SLOPFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&transfer, cudaStreamNonBlocking));
     for (int i = 0; i < 2; ++i) {
-      VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&upload_done[i], cudaEventDisableTiming));
-      VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&compute_done[i], cudaEventDisableTiming));
+      SLOPFAB_CUDA_CHECK(cudaEventCreateWithFlags(&upload_done[i], cudaEventDisableTiming));
+      SLOPFAB_CUDA_CHECK(cudaEventCreateWithFlags(&compute_done[i], cudaEventDisableTiming));
     }
     linear.init(cublas, compute);
   }
@@ -936,7 +936,7 @@ struct Encoder::Impl {
     }
     if (transfer != nullptr) cudaStreamDestroy(transfer);
     if (compute != nullptr) cudaStreamDestroy(compute);
-    if (cublas != nullptr) vidfab::cuda::cublas_destroy(cublas);
+    if (cublas != nullptr) slopfab::cuda::cublas_destroy(cublas);
     transfer = nullptr;
     compute = nullptr;
     cublas = nullptr;
@@ -998,19 +998,19 @@ struct Encoder::Impl {
       // pinned slot is unused and there is nothing to wait for beyond the
       // previous upload into this arena, which the caller's ping-pong event
       // already orders.
-      VIDFAB_CUDA_CHECK(cudaEventSynchronize(upload_done[slot]));
+      SLOPFAB_CUDA_CHECK(cudaEventSynchronize(upload_done[slot]));
       upload_layer_direct(*checkpoint, cfg, layer, layout, dst, transfer);
-      VIDFAB_CUDA_CHECK(cudaEventRecord(upload_done[slot], transfer));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(upload_done[slot], transfer));
       return;
     }
 
     // The previous upload out of this pinned buffer must have landed before it
     // is overwritten.
-    VIDFAB_CUDA_CHECK(cudaEventSynchronize(upload_done[slot]));
+    SLOPFAB_CUDA_CHECK(cudaEventSynchronize(upload_done[slot]));
     pack_layer(*checkpoint, cfg, layer, layout, staging[slot].get());
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(dst, staging[slot].get(), layout.total_bytes,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(dst, staging[slot].get(), layout.total_bytes,
                                       cudaMemcpyHostToDevice, transfer));
-    VIDFAB_CUDA_CHECK(cudaEventRecord(upload_done[slot], transfer));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(upload_done[slot], transfer));
   }
 
   void free_weights() {
@@ -1107,7 +1107,7 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
   if (mode == Residency::kAuto || mode == Residency::kResident) {
     size_t free_bytes = 0;
     size_t total_bytes = 0;
-    VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
+    SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
     const size_t required = resident_request_bytes(s.cfg, weight_bytes, total_bytes);
     if (free_bytes < required) {
       if (mode == Residency::kResident) {
@@ -1159,7 +1159,7 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
     for (int i = 0; i < config.num_layers; ++i) {
       s.stage_upload(i, i % 2, s.resident[static_cast<size_t>(i)].get());
     }
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.transfer));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.transfer));
     for (int i = 0; i < 2; ++i) s.staging[i].reset();
     s.stats.host_pinned_bytes = 0;
     s.stats.weight_bytes = weight_bytes;
@@ -1289,7 +1289,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
   const int N = s.cfg.num_layers;
   auto capture_layer = [&](int layer) {
     if (trace_device.get() == nullptr) return;
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(
         trace_device.get() + static_cast<size_t>(layer) * stream_elems, x.get(),
         stream_elems * sizeof(uint16_t), cudaMemcpyDeviceToDevice, s.compute));
   };
@@ -1306,20 +1306,20 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
     s.stage_upload(0, 0, s.ping[0].get());
     for (int i = 0; i < N; ++i) {
       const int slot = i % 2;
-      VIDFAB_CUDA_CHECK(cudaStreamWaitEvent(s.compute, s.upload_done[slot], 0));
+      SLOPFAB_CUDA_CHECK(cudaStreamWaitEvent(s.compute, s.upload_done[slot], 0));
       const LayerWeights w = layer_weights_from_blob(s.ping[slot].get(), s.layout, s.cfg,
                                                     s.globals[static_cast<size_t>(i)]);
       forward_layer(w);
       inject(i);
       capture_layer(i);
-      VIDFAB_CUDA_CHECK(cudaEventRecord(s.compute_done[slot], s.compute));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(s.compute_done[slot], s.compute));
 
       if (i + 1 < N) {
         const int next = (i + 1) % 2;
         // The buffer layer i+1 lands in is the one layer i-1 computed from, so
         // that compute must finish first. Without this the upload would race
         // ahead and rewrite weights mid-GEMM — silently, and only under load.
-        if (i >= 1) VIDFAB_CUDA_CHECK(cudaStreamWaitEvent(s.transfer, s.compute_done[next], 0));
+        if (i >= 1) SLOPFAB_CUDA_CHECK(cudaStreamWaitEvent(s.transfer, s.compute_done[next], 0));
         s.stage_upload(i + 1, next, s.ping[next].get());
       }
     }
@@ -1328,7 +1328,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
   // fp32 on the host. NO final norm and NO lm_head: the wanted tensor is the
   // raw output of the last layer present (spec section 1.4).
   DeviceBuffer<float> out(stream_elems);
-  vidfab::cuda::launch_widen_bf16(xp, out.get(), stream_elems, s.compute);
+  slopfab::cuda::launch_widen_bf16(xp, out.get(), stream_elems, s.compute);
 
   PromptEmbedding result;
   result.num_tokens = L;
@@ -1351,7 +1351,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
     trace_host.resize(static_cast<size_t>(N) * stream_elems);
     trace_device.copy_to_host(trace_host.data(), trace_host.size(), s.compute);
   }
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.compute));
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.compute));
   if (trace != nullptr) {
     trace->num_tokens = L;
     trace->hidden_size = hidden;
@@ -1392,4 +1392,4 @@ PromptEmbedding Encoder::encode(const Tokenizer& tokenizer, const std::string& p
   return encode(tokenizer.encode(prompt));
 }
 
-}  // namespace vidfab::text
+}  // namespace slopfab::text

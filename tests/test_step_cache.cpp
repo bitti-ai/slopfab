@@ -30,16 +30,16 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/dit/step_cache.h"
+#include "slopfab/dit/step_cache.h"
 
 namespace {
 
-using vidfab::dit::AdaLNTable;
-using vidfab::dit::conditioning_distance;
-using vidfab::dit::kMinWarmup;
-using vidfab::dit::plan_step_cache;
-using vidfab::dit::StepCache;
-using vidfab::dit::StepCacheConfig;
+using slopfab::dit::AdaLNTable;
+using slopfab::dit::conditioning_distance;
+using slopfab::dit::kMinWarmup;
+using slopfab::dit::plan_step_cache;
+using slopfab::dit::StepCache;
+using slopfab::dit::StepCacheConfig;
 
 constexpr int kSignature = 2 * AdaLNTable::kRank;  // c(t_v) then c(t_a)
 
@@ -123,7 +123,7 @@ std::vector<uint8_t> at(size_t n, const std::vector<int>& indices) {
 
 }  // namespace
 
-VIDFAB_TEST(step_cache_distance_is_relative) {
+SLOPFAB_TEST(step_cache_distance_is_relative) {
   const std::vector<float> a = flat(1.0);
   const std::vector<float> b = flat(1.1);
 
@@ -144,7 +144,7 @@ VIDFAB_TEST(step_cache_distance_is_relative) {
   CHECK_NEAR(conditioning_distance(nullptr, a.data(), kSignature), 0.0, 0.0);
 }
 
-VIDFAB_TEST(step_cache_off_computes_everything) {
+SLOPFAB_TEST(step_cache_off_computes_everything) {
   // Codes that move violently, so nothing but the disable can be keeping the
   // count at N.
   std::vector<std::vector<float>> codes;
@@ -167,7 +167,7 @@ VIDFAB_TEST(step_cache_off_computes_everything) {
   CHECK(cache.computed() == static_cast<int>(codes.size()));
 }
 
-VIDFAB_TEST(step_cache_warmup_and_last_are_unconditional) {
+SLOPFAB_TEST(step_cache_warmup_and_last_are_unconditional) {
   // A monotone schedule with a threshold so large it can never be reached:
   // what survives is exactly the two guarantees that are enforced in code.
   std::vector<std::vector<float>> codes;
@@ -190,7 +190,7 @@ VIDFAB_TEST(step_cache_warmup_and_last_are_unconditional) {
   CHECK(wrong_plan(cfg, codes, Wrong::kProtectLastTwo)[18] == 1);
 }
 
-VIDFAB_TEST(step_cache_warmup_has_a_floor) {
+SLOPFAB_TEST(step_cache_warmup_has_a_floor) {
   std::vector<std::vector<float>> codes;
   for (int i = 0; i < 12; ++i) codes.push_back(flat(1.0 + 0.001 * i));
 
@@ -206,7 +206,7 @@ VIDFAB_TEST(step_cache_warmup_has_a_floor) {
   CHECK(cache.warmup() == kMinWarmup);
 }
 
-VIDFAB_TEST(step_cache_accumulates_across_skipped_steps) {
+SLOPFAB_TEST(step_cache_accumulates_across_skipped_steps) {
   // Geometric codes, so every consecutive distance is exactly 0.1 and the
   // crossings can be written down: the accumulator reaches 0.4 on the fourth
   // skipped step in a row and no sooner.
@@ -241,7 +241,7 @@ VIDFAB_TEST(step_cache_accumulates_across_skipped_steps) {
   CHECK(cache.computed() + cache.skipped() == static_cast<int>(codes.size()));
 }
 
-VIDFAB_TEST(step_cache_measures_arc_not_chord) {
+SLOPFAB_TEST(step_cache_measures_arc_not_chord) {
   // Conditioning that moves out and back. The chord to the last computed step
   // is near zero every other step, so a chord-based rule never recomputes —
   // and the reused velocity is at its stalest exactly there.
@@ -260,7 +260,7 @@ VIDFAB_TEST(step_cache_measures_arc_not_chord) {
   CHECK(chord == at(codes.size(), {0, 1, 9}));
 }
 
-VIDFAB_TEST(step_cache_skip_every_is_warmup_plus_interval_plus_last) {
+SLOPFAB_TEST(step_cache_skip_every_is_warmup_plus_interval_plus_last) {
   std::vector<std::vector<float>> codes;
   for (int i = 0; i < 20; ++i) codes.push_back(flat(1.0 + 0.7 * i));
 
@@ -284,7 +284,7 @@ VIDFAB_TEST(step_cache_skip_every_is_warmup_plus_interval_plus_last) {
   CHECK(plan_step_cache(cfg, codes) == ones(codes.size()));
 }
 
-VIDFAB_TEST(step_cache_skip_every_wins_over_threshold) {
+SLOPFAB_TEST(step_cache_skip_every_wins_over_threshold) {
   // The CLI rejects the combination; the library resolves it, and which way it
   // resolves is worth pinning rather than discovering.
   std::vector<std::vector<float>> codes;
@@ -300,12 +300,12 @@ VIDFAB_TEST(step_cache_skip_every_wins_over_threshold) {
   CHECK(plan_step_cache(both, codes) == plan_step_cache(interval, codes));
 }
 
-VIDFAB_TEST(step_cache_uses_both_timesteps) {
+SLOPFAB_TEST(step_cache_uses_both_timesteps) {
   // t2va has two distinct timesteps per step on grids of different shift (spec
   // 7.5). A distance built over the video one alone cannot see the audio
   // branch's conditioning moving, so a schedule whose video timestep is frozen
   // would never recompute.
-  const vidfab::dit::CodeFn code = [](float t) {
+  const slopfab::dit::CodeFn code = [](float t) {
     std::array<float, AdaLNTable::kRank> c{};
     c[0] = t;
     return c;
@@ -330,7 +330,7 @@ VIDFAB_TEST(step_cache_uses_both_timesteps) {
   CHECK(count(plan) > count(plan_step_cache(cfg, frozen, code)));
 }
 
-VIDFAB_TEST(step_cache_enabled_is_the_one_definition) {
+SLOPFAB_TEST(step_cache_enabled_is_the_one_definition) {
   // `StepCacheConfig::enabled()` is what the CLI uses to decide whether
   // `--sampler ab2` is refused, so this is not an accessor test — it pins the
   // exact combination matrix that guard implements.
@@ -364,7 +364,7 @@ VIDFAB_TEST(step_cache_enabled_is_the_one_definition) {
   CHECK(interval.enabled());  // degenerate but opted in: it took the flag path
 }
 
-VIDFAB_TEST(step_cache_short_schedules) {
+SLOPFAB_TEST(step_cache_short_schedules) {
   StepCacheConfig cfg;
   cfg.threshold = 1e-9f;
   cfg.warmup = 8;  // longer than the schedule

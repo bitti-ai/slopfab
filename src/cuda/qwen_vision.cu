@@ -1,17 +1,17 @@
-#include "vidfab/cuda/qwen_vision.cuh"
+#include "slopfab/cuda/qwen_vision.cuh"
 
 #include <stdexcept>
 
-#include "vidfab/attention.h"
-#include "vidfab/cuda/attention.cuh"
-#include "vidfab/cuda/deterministic_math.cuh"
-#include "vidfab/cuda/deterministic_attention.cuh"
-#include "vidfab/cuda/deterministic_gemm.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/nn_kernels.cuh"
-#include "vidfab/text/encoder.h"
+#include "slopfab/attention.h"
+#include "slopfab/cuda/attention.cuh"
+#include "slopfab/cuda/deterministic_math.cuh"
+#include "slopfab/cuda/deterministic_attention.cuh"
+#include "slopfab/cuda/deterministic_gemm.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/nn_kernels.cuh"
+#include "slopfab/text/encoder.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 __global__ void split_qkv_kernel(const __nv_bfloat16* qkv, __nv_bfloat16* q,
                                  __nv_bfloat16* k, __nv_bfloat16* v, int hidden) {
@@ -90,7 +90,7 @@ void qwen_vision_add_positions_exact(__nv_bfloat16* x,
   const size_t count = static_cast<size_t>(rows) * hidden;
   add_positions_exact_kernel<<<static_cast<unsigned>((count + 255) / 256), 256,
                                0, stream>>>(x, table, index, rows, hidden);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void qwen_vision_split_qkv_exact(const __nv_bfloat16* fused,
@@ -101,7 +101,7 @@ void qwen_vision_split_qkv_exact(const __nv_bfloat16* fused,
     throw std::invalid_argument("qwen vision exact QKV: invalid input");
   split_qkv_kernel<<<dim3(rows, (hidden + 255) / 256), 256, 0, stream>>>(
       fused, query, key, value, hidden);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void qwen_vision_scatter_add_exact(const __nv_bfloat16* source,
@@ -114,7 +114,7 @@ void qwen_vision_scatter_add_exact(const __nv_bfloat16* source,
   scatter_add_exact_kernel<<<static_cast<unsigned>((count + 255) / 256), 256,
                              0, stream>>>(source, index, destination, rows,
                                          hidden);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void qwen_vision_attention(cublasHandle_t handle, cudaStream_t stream,
@@ -127,7 +127,7 @@ void qwen_vision_attention(cublasHandle_t handle, cudaStream_t stream,
     throw std::runtime_error("qwen vision attention: invalid dimensions");
   const int hidden = heads * head_dim;
   split_qkv_kernel<<<dim3(rows, (hidden + 255) / 256), 256, 0, stream>>>(qkv, q, k, v, hidden);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
   launch_rope_neox(q, cos, sin, rows, heads, head_dim, stream);
   launch_rope_neox(k, cos, sin, rows, heads, head_dim, stream);
   AttentionConfig cfg;
@@ -220,7 +220,7 @@ void qwen_vision_patch_embed(LinearRunner& linear, const QuantWeight& projection
   constexpr int hidden = 1152;
   linear.forward(projection, pixels, rows, x, ws);
   add_positions_kernel<<<dim3(rows, (hidden + 255) / 256), 256, 0, stream>>>(x, pos, index, hidden);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void qwen_vision_patch_embed_exact(
@@ -337,4 +337,4 @@ void qwen_vision_tower_forward(cublasHandle_t handle, cudaStream_t stream,
                              merger_hidden, output, rows, ws);
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

@@ -1,6 +1,6 @@
 #pragma once
 
-namespace vidfab::test {
+namespace slopfab::test {
 
 // Test-only thread-local guard. The executable's global allocation operators
 // throw while this object is alive, allowing a production record path to prove
@@ -13,4 +13,4 @@ class HostAllocationGuard {
   HostAllocationGuard& operator=(const HostAllocationGuard&) = delete;
 };
 
-}  // namespace vidfab::test
+}  // namespace slopfab::test

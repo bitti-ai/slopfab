@@ -1,16 +1,16 @@
-#include "vidfab/cuda/nf4_weight.cuh"
+#include "slopfab/cuda/nf4_weight.cuh"
 
 #include <cstring>
 #include <stdexcept>
 #include <vector>
 
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/w4a8.cuh"
-#include "vidfab/nf4.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/w4a8.h"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/w4a8.cuh"
+#include "slopfab/nf4.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/w4a8.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 
 void F16Weight::load(const SafeTensors& checkpoint, const std::string& name,
                      size_t expected_elements, cudaStream_t stream,
@@ -109,7 +109,7 @@ void F16Weight::load(const SafeTensors& checkpoint, const std::string& name,
         }
         dense_.copy_from_host(reinterpret_cast<const __half*>(canonical.data()),
                               expected_elements, stream);
-        VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream));
+        SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream));
       } else {
         dense_.copy_from_host(static_cast<const __half*>(view.data),
                               expected_elements, stream);
@@ -156,4 +156,4 @@ size_t F16Weight::stored_bytes() const {
          w4_channel_scale_.nbytes() + w4_codebook_.nbytes();
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

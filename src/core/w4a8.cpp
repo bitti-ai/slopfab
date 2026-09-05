@@ -1,10 +1,10 @@
-#include "vidfab/w4a8.h"
+#include "slopfab/w4a8.h"
 
 #include <stdexcept>
 
-#include "vidfab/json.h"
+#include "slopfab/json.h"
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 std::string state_name(const std::string& weight_name) {
@@ -86,4 +86,4 @@ W4A8State read_w4a8_state(const SafeTensors& checkpoint,
   return state;
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

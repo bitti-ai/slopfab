@@ -1,4 +1,4 @@
-#include "vidfab/sha256.h"
+#include "slopfab/sha256.h"
 
 #include <algorithm>
 #include <array>
@@ -15,7 +15,7 @@
 #include <bcrypt.h>
 #endif
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 constexpr std::array<uint32_t, 64> kRound{
@@ -183,4 +183,4 @@ Sha256Digest sha256_file(const std::string& path) {
 #endif
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

@@ -4,11 +4,11 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/text/qwen_vision.h"
+#include "slopfab/text/qwen_vision.h"
 
-using namespace vidfab::text;
+using namespace slopfab::text;
 
-VIDFAB_TEST(qwen_vision_deepstack_targets_first_text_layers) {
+SLOPFAB_TEST(qwen_vision_deepstack_targets_first_text_layers) {
   CHECK(qwen3vl_deepstack_slot(-1) == -1);
   CHECK(qwen3vl_deepstack_slot(0) == 0);
   CHECK(qwen3vl_deepstack_slot(1) == 1);
@@ -18,7 +18,7 @@ VIDFAB_TEST(qwen_vision_deepstack_targets_first_text_layers) {
   CHECK(qwen3vl_deepstack_slot(24) == -1);
 }
 
-VIDFAB_TEST(qwen_vision_smart_resize_and_merge) {
+SLOPFAB_TEST(qwen_vision_smart_resize_and_merge) {
   auto square = qwen3vl_image_grid(256, 256);
   CHECK(square.temporal == 1);
   CHECK(square.height == 16);
@@ -31,10 +31,10 @@ VIDFAB_TEST(qwen_vision_smart_resize_and_merge) {
   CHECK(small.height == 12);
   CHECK(small.width == 24);
   CHECK(small.merged_token_count() == 72);
-  CHECK(::vidfab::test::throws([] { (void)qwen3vl_image_grid(201, 1); }));
+  CHECK(::slopfab::test::throws([] { (void)qwen3vl_image_grid(201, 1); }));
 }
 
-VIDFAB_TEST(qwen_reference_conditioning_grid_is_bounded) {
+SLOPFAB_TEST(qwen_reference_conditioning_grid_is_bounded) {
   const auto square = qwen3vl_conditioning_grid(2048, 2048);
   CHECK(square.height == 128 && square.width == 128);
   CHECK(square.patch_count() == 16384);
@@ -53,23 +53,23 @@ VIDFAB_TEST(qwen_reference_conditioning_grid_is_bounded) {
   CHECK(wide.patch_count() == 16384 && tall.patch_count() == 16384);
 
   CHECK(qwen3vl_conditioning_token_count({wide}, 4094) == 8192);
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     const auto grid = qwen3vl_conditioning_grid(8192, 2048);
     (void)qwen3vl_conditioning_token_count({grid}, 4095);
   }));
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     const auto grid = qwen3vl_conditioning_grid(8192, 2048);
     (void)qwen3vl_conditioning_token_count({grid, grid}, 0);
   }));
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     (void)qwen3vl_conditioning_token_count({{1, 128, 130}}, 0);
   }));
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     (void)qwen3vl_conditioning_grid(0, 2048);
   }));
 }
 
-VIDFAB_TEST(qwen_vision_minimax_presentation) {
+SLOPFAB_TEST(qwen_vision_minimax_presentation) {
   const auto ids = qwen3vl_image_block({10, 11}, 3);
   CHECK(ids.size() == 7);
   CHECK(ids[0] == 10);
@@ -80,7 +80,7 @@ VIDFAB_TEST(qwen_vision_minimax_presentation) {
   CHECK(ids[6] == 151653);
 }
 
-VIDFAB_TEST(qwen_vision_pixel_patch_order) {
+SLOPFAB_TEST(qwen_vision_pixel_patch_order) {
   std::vector<uint8_t> rgb(32 * 32 * 3, 128);
   // Distinguish the first pixel/channel and the first pixel of the patch to
   // its right. Merge-group ordering must make those patches consecutive rows.
@@ -93,12 +93,12 @@ VIDFAB_TEST(qwen_vision_pixel_patch_order) {
   CHECK_NEAR(pixels.rows[1536], -1.0, 1e-6);
   // Temporal duplication is inside a row, after channel and before y/x.
   CHECK_NEAR(pixels.rows[256], 1.0, 1e-6);
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     (void)qwen3vl_patchify_resized_rgb(std::vector<uint8_t>(31 * 32 * 3), 31, 32);
   }));
 }
 
-VIDFAB_TEST(qwen_vision_position_order_and_interpolation) {
+SLOPFAB_TEST(qwen_vision_position_order_and_interpolation) {
   const auto p = qwen3vl_vision_positions({1, 2, 4});
   CHECK(p.learned.size() == 8);
   CHECK(p.learned[0] == 0);
@@ -111,7 +111,7 @@ VIDFAB_TEST(qwen_vision_position_order_and_interpolation) {
   CHECK(p.rotary_thw[3] == 0 && p.rotary_thw[4] == 0 && p.rotary_thw[5] == 1);
 }
 
-VIDFAB_TEST(qwen_vision_decoder_mrope_and_scatter_rows) {
+SLOPFAB_TEST(qwen_vision_decoder_mrope_and_scatter_rows) {
   const std::vector<int32_t> ids = {7, 151652, 151655, 151655, 151655, 151655, 151653, 8};
   const auto p = qwen3vl_multimodal_plan(ids, {{1, 4, 4}});
   CHECK(p.image_rows == std::vector<int32_t>({2, 3, 4, 5}));
@@ -121,13 +121,13 @@ VIDFAB_TEST(qwen_vision_decoder_mrope_and_scatter_rows) {
   CHECK(p.position_ids[3] == 2 && p.position_ids[L + 3] == 2 && p.position_ids[2 * L + 3] == 3);
   CHECK(p.position_ids[4] == 2 && p.position_ids[L + 4] == 3 && p.position_ids[2 * L + 4] == 2);
   CHECK(p.position_ids[6] == 4 && p.position_ids[7] == 5);
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     (void)qwen3vl_multimodal_plan(
         {7, 151652, 151655, 151655, 151655, 151655, 151653, 8}, {{1, 2, 2}});
   }));
 }
 
-VIDFAB_TEST(qwen_vision_two_axis_rope) {
+SLOPFAB_TEST(qwen_vision_two_axis_rope) {
   const auto p = qwen3vl_vision_positions({1, 2, 2});
   std::vector<float> c, s;
   qwen3vl_vision_rope_tables(p, c, s);
@@ -164,7 +164,7 @@ bool same_bits(float a, float b) {
 
 }  // namespace
 
-VIDFAB_TEST(qwen_vision_rope_hoisting_is_bit_identical) {
+SLOPFAB_TEST(qwen_vision_rope_hoisting_is_bit_identical) {
   // A grid big enough that the hoist actually matters: 32x32 patches is 1024
   // rows of 72 channels.
   const auto p = qwen3vl_vision_positions({1, 32, 32});
@@ -206,7 +206,7 @@ VIDFAB_TEST(qwen_vision_rope_hoisting_is_bit_identical) {
             static_cast<double>(cos_got[first]));
 }
 
-VIDFAB_TEST(qwen_decoder_mrope_hoisting_is_bit_identical) {
+SLOPFAB_TEST(qwen_decoder_mrope_hoisting_is_bit_identical) {
   // 512 text tokens with a 4x4 image in the middle, so all three axes carry
   // non-trivial positions rather than the identity a pure-text plan gives.
   std::vector<int32_t> ids;

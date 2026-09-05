@@ -1,12 +1,12 @@
-#include "vidfab/dit/adaln.h"
+#include "slopfab/dit/adaln.h"
 
 #include <cmath>
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/tensor_convert.h"
+#include "slopfab/tensor_convert.h"
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 namespace {
 
 constexpr int kIntervals = AdaLNTable::kRows - 1;  // 1024
@@ -203,4 +203,4 @@ std::array<float, AdaLNTable::kRank> AdaLNTable::lookup(float t, AdaLNLookup mod
   return out;
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

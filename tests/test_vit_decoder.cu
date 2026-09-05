@@ -23,17 +23,17 @@
 #include <cuda_runtime.h>
 
 #include "harness.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/vae/vit_decoder.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/vae/vit_decoder.h"
 
 namespace {
 
 // Small enough to build in a test, shaped like the real thing where the kernels
 // care: head_dim 64 and rope_dim 48 are the shipped values, because the
 // attention backend and the RoPE table layout are chosen from them.
-vidfab::vae::ViTConfig tiny_config() {
-  vidfab::vae::ViTConfig cfg;
+slopfab::vae::ViTConfig tiny_config() {
+  slopfab::vae::ViTConfig cfg;
   cfg.num_layers = 1;
   cfg.dim = 128;
   cfg.heads = 2;
@@ -49,22 +49,22 @@ vidfab::vae::ViTConfig tiny_config() {
   return cfg;
 }
 
-void add(std::vector<vidfab::TensorWrite>* out, const std::string& name,
+void add(std::vector<slopfab::TensorWrite>* out, const std::string& name,
          std::vector<int64_t> shape, uint32_t seed) {
   size_t n = 1;
   for (int64_t d : shape) n *= static_cast<size_t>(d);
   // Small weights: one transformer block at fp16 amplifies, and a decoder that
   // saturates to inf would compare equal to itself for the wrong reason.
-  out->push_back({name, std::move(shape), vidfab::test::make_data(n, seed, 0.05f)});
+  out->push_back({name, std::move(shape), slopfab::test::make_data(n, seed, 0.05f)});
 }
 
-std::string write_tiny_checkpoint(const vidfab::vae::ViTConfig& cfg) {
+std::string write_tiny_checkpoint(const slopfab::vae::ViTConfig& cfg) {
   const int dim = cfg.dim;
   const int ch = cfg.in_channels;
   const int inner = cfg.ffn_inner;
   const int pd = cfg.patch_dim();
 
-  std::vector<vidfab::TensorWrite> t;
+  std::vector<slopfab::TensorWrite> t;
   uint32_t seed = 17;
   add(&t, "decoder.x_embedder.weight", {dim, ch}, seed += 7);
   add(&t, "decoder.x_embedder.bias", {dim}, seed += 7);
@@ -92,14 +92,14 @@ std::string write_tiny_checkpoint(const vidfab::vae::ViTConfig& cfg) {
   }
 
   const std::filesystem::path dir =
-      std::filesystem::temp_directory_path() / "vidfab_vit_decoder_test";
+      std::filesystem::temp_directory_path() / "slopfab_vit_decoder_test";
   std::filesystem::create_directories(dir);
   const std::string path = (dir / "tiny_vae.safetensors").string();
-  vidfab::write_safetensors(path, t);
+  slopfab::write_safetensors(path, t);
   return path;
 }
 
-size_t window_pixels(const vidfab::vae::ViTConfig& cfg, int T, int H, int W) {
+size_t window_pixels(const slopfab::vae::ViTConfig& cfg, int T, int H, int W) {
   return static_cast<size_t>(cfg.out_channels) * (T * cfg.patch_t) * (H * cfg.patch) *
          (W * cfg.patch);
 }
@@ -115,7 +115,7 @@ bool all_finite_and_not_all_zero(const std::vector<float>& v) {
 
 }  // namespace
 
-VIDFAB_TEST(vit_decoder_window_lands_in_the_callers_buffer) {
+SLOPFAB_TEST(vit_decoder_window_lands_in_the_callers_buffer) {
   // Establish up front whether this machine can page-lock an ordinary heap
   // allocation right now. If it cannot, the decoder takes its staged fallback
   // and everything below still holds — but it is then testing the fallback, so
@@ -139,21 +139,21 @@ VIDFAB_TEST(vit_decoder_window_lands_in_the_callers_buffer) {
     cudaGetLastError();
   }
 
-  const vidfab::vae::ViTConfig cfg = tiny_config();
+  const slopfab::vae::ViTConfig cfg = tiny_config();
   const std::string path = write_tiny_checkpoint(cfg);
-  vidfab::SafeTensors ckpt;
+  slopfab::SafeTensors ckpt;
   ckpt.open(path);
 
-  vidfab::vae::ViTDecoder decoder;
+  slopfab::vae::ViTDecoder decoder;
   decoder.load(ckpt, cfg);
 
   const int batch = 2;
   const int T = 2, H = 2, W = 2;
   const size_t voxels = static_cast<size_t>(T) * H * W;
   const std::vector<float> z =
-      vidfab::test::make_data(static_cast<size_t>(batch) * cfg.in_channels * voxels, 991, 1.0f);
+      slopfab::test::make_data(static_cast<size_t>(batch) * cfg.in_channels * voxels, 991, 1.0f);
   const std::vector<float> z_small =
-      vidfab::test::make_data(static_cast<size_t>(batch) * cfg.in_channels * (voxels / 2), 991,
+      slopfab::test::make_data(static_cast<size_t>(batch) * cfg.in_channels * (voxels / 2), 991,
                               1.0f);
   const size_t slots[2] = {0, 1};
   const size_t pixels = window_pixels(cfg, T, H, W);
@@ -163,7 +163,7 @@ VIDFAB_TEST(vit_decoder_window_lands_in_the_callers_buffer) {
   // Declared after both buffers so it runs before they are destroyed: a lock
   // must never outlive the memory it covers, including on a throwing path.
   struct Guard {
-    vidfab::vae::ViTDecoder* decoder;
+    slopfab::vae::ViTDecoder* decoder;
     ~Guard() { decoder->release_host_registrations(); }
   } guard{&decoder};
 
@@ -208,21 +208,21 @@ VIDFAB_TEST(vit_decoder_window_lands_in_the_callers_buffer) {
   std::filesystem::remove(path, ec);
 }
 
-VIDFAB_TEST(vit_decoder_single_window_releases_its_lock) {
+SLOPFAB_TEST(vit_decoder_single_window_releases_its_lock) {
   // forward_window moves its buffer into a vector the decoder cannot see, so
   // it has to release the lock itself. If it did not, the lock would outlive
   // `out` here and the unregister at decoder teardown would hit freed memory.
-  const vidfab::vae::ViTConfig cfg = tiny_config();
+  const slopfab::vae::ViTConfig cfg = tiny_config();
   const std::string path = write_tiny_checkpoint(cfg);
-  vidfab::SafeTensors ckpt;
+  slopfab::SafeTensors ckpt;
   ckpt.open(path);
 
-  vidfab::vae::ViTDecoder decoder;
+  slopfab::vae::ViTDecoder decoder;
   decoder.load(ckpt, cfg);
 
   const int T = 2, H = 2, W = 2;
   const std::vector<float> z =
-      vidfab::test::make_data(static_cast<size_t>(cfg.in_channels) * T * H * W, 991, 1.0f);
+      slopfab::test::make_data(static_cast<size_t>(cfg.in_channels) * T * H * W, 991, 1.0f);
 
   std::vector<float> single;
   decoder.forward_window(z.data(), T, H, W, single);
@@ -247,7 +247,7 @@ VIDFAB_TEST(vit_decoder_single_window_releases_its_lock) {
   decoder.release_host_registrations();
 
   // The lock must also go when the scope unwinds rather than returns. Every
-  // VIDFAB_CUDA_CHECK inside forward_windows can throw after a slot has been
+  // SLOPFAB_CUDA_CHECK inside forward_windows can throw after a slot has been
   // registered — a device out-of-memory is the realistic one — and the buffer
   // would then be destroyed still page-locked. The throw is raised here rather
   // than injected into CUDA because what is under test is the guard, not the
@@ -255,7 +255,7 @@ VIDFAB_TEST(vit_decoder_single_window_releases_its_lock) {
   {
     std::vector<std::vector<float>> unwound(1);
     try {
-      vidfab::vae::ViTDecoder::HostRegistrationScope scope(decoder);
+      slopfab::vae::ViTDecoder::HostRegistrationScope scope(decoder);
       decoder.forward_windows(z.data(), 1, T, H, W, unwound, &slot);
       throw std::runtime_error("simulated failure after registration");
     } catch (const std::runtime_error&) {

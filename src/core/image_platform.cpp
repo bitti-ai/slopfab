@@ -13,7 +13,7 @@
 //
 // Elsewhere there is no equivalent single API, so this refuses rather than
 // pretending: a Linux build without FFmpeg reads PPM, and says so.
-#include "vidfab/image.h"
+#include "slopfab/image.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -33,7 +33,7 @@
 #include <objbase.h>
 #include <wincodec.h>
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 std::runtime_error wic_error(const std::string& path, const std::string& reason, HRESULT hr) {
@@ -176,19 +176,19 @@ RGBImage load_platform_image(const std::string& path) {
   return image;
 }
 
-}  // namespace vidfab
+}  // namespace slopfab
 
 #else  // !_WIN32
 
-namespace vidfab {
+namespace slopfab {
 
 RGBImage load_platform_image(const std::string& path) {
   throw std::runtime_error(
       "reference image '" + path +
       "': this build has no FFmpeg and this platform has no image decoder, so only binary PPM "
-      "(P6) can be read; convert the image or build with -DVIDFAB_WITH_FFMPEG=ON");
+      "(P6) can be read; convert the image or build with -DSLOPFAB_WITH_FFMPEG=ON");
 }
 
-}  // namespace vidfab
+}  // namespace slopfab
 
 #endif  // _WIN32

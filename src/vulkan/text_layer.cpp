@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/text_layer.h"
+#include "slopfab/vulkan/text_layer.h"
 
 #include <algorithm>
 #include <array>
@@ -9,11 +9,11 @@
 #include <string>
 #include <utility>
 
-#include "vidfab/attention.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/vulkan/linear.h"
+#include "slopfab/attention.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/vulkan/linear.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 TensorLayout matrix(uint64_t rows, uint64_t columns) {
@@ -777,4 +777,4 @@ uint64_t ExactQwenTextLayerStage::peak_device_bytes(
   return persistent_bytes() + scratch.reserved_bytes();
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

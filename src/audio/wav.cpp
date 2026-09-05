@@ -1,4 +1,4 @@
-#include "vidfab/audio/wav.h"
+#include "slopfab/audio/wav.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,7 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace vidfab::audio {
+namespace slopfab::audio {
 namespace {
 
 // RIFF is little-endian everywhere, including on big-endian hosts, so the
@@ -139,4 +139,4 @@ void write_wav(const std::string& path, const std::vector<float>& interleaved, i
   if (!out) throw std::runtime_error("wav: write failed for " + path);
 }
 
-}  // namespace vidfab::audio
+}  // namespace slopfab::audio

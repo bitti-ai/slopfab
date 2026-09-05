@@ -1,9 +1,9 @@
-#include "vidfab/sampler/noise.h"
+#include "slopfab/sampler/noise.h"
 
 #include <cmath>
 #include <stdexcept>
 
-namespace vidfab::sampler {
+namespace slopfab::sampler {
 namespace {
 
 // Golden-ratio odd constants, the usual choice for a Weyl/Threefry mix. They
@@ -102,4 +102,4 @@ std::vector<float> audio_noise(uint64_t seed, int num_audio_latents, int latent_
   return out;
 }
 
-}  // namespace vidfab::sampler
+}  // namespace slopfab::sampler

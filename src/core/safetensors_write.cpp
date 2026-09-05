@@ -1,6 +1,6 @@
 // Minimal safetensors writer.
 //
-// Exists so intermediate activations can be dumped and fed to `vidfab compare`
+// Exists so intermediate activations can be dumped and fed to `slopfab compare`
 // — both for regression-checking our own optimisations and, later, for diffing
 // against tensors dumped from the reference implementation.
 
@@ -11,9 +11,9 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/safetensors_write.h"
+#include "slopfab/safetensors_write.h"
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 std::string shape_to_json(const std::vector<int64_t>& shape) {
@@ -83,4 +83,4 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
   if (!out) throw std::runtime_error("safetensors write: failed writing " + path);
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

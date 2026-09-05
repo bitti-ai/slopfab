@@ -7,7 +7,7 @@
 // with the reference on a handful of tokens.
 //
 // So the real tokenizer.json is parsed here a second time, the old way, with
-// `vidfab::json`, and the two results are compared entry by entry over all
+// `slopfab::json`, and the two results are compared entry by entry over all
 // 151643 vocabulary entries. Merges are not reachable through the public API,
 // so they are compared through behaviour instead: the merge list read by the
 // tree parser is written back out as a second tokenizer.json, loaded by the
@@ -27,12 +27,12 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/json.h"
-#include "vidfab/text/tokenizer.h"
+#include "slopfab/json.h"
+#include "slopfab/text/tokenizer.h"
 
 namespace {
 
-using vidfab::text::Tokenizer;
+using slopfab::text::Tokenizer;
 
 // Both layouts `ref/` is unpacked in, same order as `test_tokenizer.cpp` and
 // `test_encoder.cu`. Probing only one of them is how the golden suite came to
@@ -65,7 +65,7 @@ std::string read_file(const std::string& path) {
 }
 
 // The state the old implementation built, rebuilt here through the same
-// `vidfab::json` tree it used. Deliberately a transcription of the code that
+// `slopfab::json` tree it used. Deliberately a transcription of the code that
 // was replaced, not a tidied version of it: its value is being the *previous*
 // answer.
 struct Reference {
@@ -77,9 +77,9 @@ struct Reference {
 
 Reference parse_the_old_way(const std::string& text) {
   Reference ref;
-  const vidfab::json::Value root = vidfab::json::parse(text);
-  const vidfab::json::Value* model = root.find("model");
-  const vidfab::json::Value* vocab = model->find("vocab");
+  const slopfab::json::Value root = slopfab::json::parse(text);
+  const slopfab::json::Value* model = root.find("model");
+  const slopfab::json::Value* vocab = model->find("vocab");
   int32_t max_id = -1;
   for (const auto& [token, id] : vocab->as_object()) {
     const auto value = static_cast<int32_t>(id.as_int());
@@ -87,11 +87,11 @@ Reference parse_the_old_way(const std::string& text) {
     max_id = std::max(max_id, value);
   }
 
-  const vidfab::json::Value* added = root.find("added_tokens");
+  const slopfab::json::Value* added = root.find("added_tokens");
   if (added != nullptr && added->is_array()) {
-    for (const vidfab::json::Value& entry : added->as_array()) {
-      const vidfab::json::Value* content = entry.find("content");
-      const vidfab::json::Value* id = entry.find("id");
+    for (const slopfab::json::Value& entry : added->as_array()) {
+      const slopfab::json::Value* content = entry.find("content");
+      const slopfab::json::Value* id = entry.find("id");
       if (content == nullptr || id == nullptr) continue;
       const auto value = static_cast<int32_t>(id->as_int());
       ref.vocab[content->as_string()] = value;
@@ -103,9 +103,9 @@ Reference parse_the_old_way(const std::string& text) {
   ref.id_to_token.assign(static_cast<size_t>(max_id) + 1, std::string());
   for (const auto& [token, id] : ref.vocab) ref.id_to_token[static_cast<size_t>(id)] = token;
 
-  const vidfab::json::Value* merges = model->find("merges");
+  const slopfab::json::Value* merges = model->find("merges");
   if (merges != nullptr && merges->is_array()) {
-    for (const vidfab::json::Value& m : merges->as_array()) {
+    for (const slopfab::json::Value& m : merges->as_array()) {
       if (m.is_string()) {
         const std::string& s = m.as_string();
         const size_t sp = s.find(' ');
@@ -159,7 +159,7 @@ std::vector<std::string> corpus(const Tokenizer& tok) {
   return out;
 }
 
-VIDFAB_TEST(tokenizer_scan_matches_json_tree_over_the_whole_vocabulary) {
+SLOPFAB_TEST(tokenizer_scan_matches_json_tree_over_the_whole_vocabulary) {
   const std::string path = find_tokenizer();
   if (path.empty()) {
     report_missing_tokenizer();
@@ -213,7 +213,7 @@ VIDFAB_TEST(tokenizer_scan_matches_json_tree_over_the_whole_vocabulary) {
   }
 }
 
-VIDFAB_TEST(tokenizer_scan_reads_the_same_merges_as_the_json_tree) {
+SLOPFAB_TEST(tokenizer_scan_reads_the_same_merges_as_the_json_tree) {
   const std::string path = find_tokenizer();
   if (path.empty()) {
     report_missing_tokenizer();
@@ -276,7 +276,7 @@ VIDFAB_TEST(tokenizer_scan_reads_the_same_merges_as_the_json_tree) {
   CHECK_MSG(lossy == 0, "%zu corpus strings failed to round trip", lossy);
 }
 
-VIDFAB_TEST(tokenizer_scan_handles_escapes_added_tokens_and_malformed_input) {
+SLOPFAB_TEST(tokenizer_scan_handles_escapes_added_tokens_and_malformed_input) {
   // Small enough to reason about exactly, and it holds every shape the scanner
   // has to get right: escaped and literal UTF-8, a surrogate pair, merges in
   // both the string and the pair-array form, and added tokens listed *before*

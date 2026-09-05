@@ -1,11 +1,11 @@
-#include "vidfab/sampler/scheduler.h"
+#include "slopfab/sampler/scheduler.h"
 
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 
-namespace vidfab::sampler {
+namespace slopfab::sampler {
 namespace {
 
 uint32_t float_bits(float value) noexcept {
@@ -244,4 +244,4 @@ void FlowScheduler::scale_noise(const float* x0, const float* noise, float t, si
   }
 }
 
-}  // namespace vidfab::sampler
+}  // namespace slopfab::sampler

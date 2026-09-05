@@ -1,11 +1,11 @@
-#include "vidfab/text/encoder.h"
+#include "slopfab/text/encoder.h"
 
 #include <cuda_runtime.h>
 
 #include <stdexcept>
 #include <string>
 
-namespace vidfab::text {
+namespace slopfab::text {
 
 void upload_layer_direct(const SafeTensors& checkpoint,
                          const EncoderConfig& config, int layer,
@@ -35,4 +35,4 @@ void upload_layer_direct(const SafeTensors& checkpoint,
   }
 }
 
-}  // namespace vidfab::text
+}  // namespace slopfab::text

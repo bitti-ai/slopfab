@@ -1,9 +1,9 @@
-#include "vidfab/device_tensor.h"
+#include "slopfab/device_tensor.h"
 
 #include <algorithm>
 #include <limits>
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 uint64_t scalar_bytes(ScalarType type) {
@@ -119,4 +119,4 @@ DeviceTensorView DeviceTensorView::slice(uint64_t offset,
   return result;
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

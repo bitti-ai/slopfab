@@ -8,7 +8,7 @@
 // asks `ffmpeg_available` before muxing and falls back to `.y4m` + `.wav` when
 // the answer is no — a path that exists for the machine that has no FFmpeg
 // installed, and works identically for the build that has none compiled in.
-// So a build with VIDFAB_WITH_FFMPEG off writes raw output through the same
+// So a build with SLOPFAB_WITH_FFMPEG off writes raw output through the same
 // branch, and the C API, which takes the pixels before either branch runs, is
 // unaffected either way.
 //
@@ -16,11 +16,11 @@
 // declared in media.h behind the same switch, and its one caller — the
 // reference-image loader — uses the platform decoder in this configuration.
 // A stub would turn a compile error into a runtime one for no benefit.
-#include "vidfab/video/mux.h"
+#include "slopfab/video/mux.h"
 
 #include <string>
 
-namespace vidfab::video {
+namespace slopfab::video {
 
 // Defined here as well as in mux.cpp because `run_generate` calls it on the
 // mux-failed branch. That branch is unreachable in this configuration —
@@ -33,7 +33,7 @@ const char* mux_status_message(MuxStatus s) {
     case MuxStatus::kLibraryNotFound:
       return "this build has no FFmpeg support compiled in";
     case MuxStatus::kSymbolMissing:
-      return "ffmpeg found but not a version vidfab knows how to drive";
+      return "ffmpeg found but not a version slopfab knows how to drive";
     case MuxStatus::kEncoderMissing:
       return "this ffmpeg build has no usable H.264 or AAC encoder";
     case MuxStatus::kWriteFailed:
@@ -44,7 +44,7 @@ const char* mux_status_message(MuxStatus s) {
 
 bool ffmpeg_available(std::string* detail) {
   if (detail != nullptr) {
-    *detail = "this build was compiled without FFmpeg support (VIDFAB_WITH_FFMPEG=OFF)";
+    *detail = "this build was compiled without FFmpeg support (SLOPFAB_WITH_FFMPEG=OFF)";
   }
   return false;
 }
@@ -60,4 +60,4 @@ MuxStatus write_mp4(const MuxRequest&) {
   return MuxStatus::kLibraryNotFound;
 }
 
-}  // namespace vidfab::video
+}  // namespace slopfab::video

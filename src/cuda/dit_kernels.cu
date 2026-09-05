@@ -16,9 +16,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/cuda/device.h"
+#include "slopfab/cuda/device.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr int kThreads = 256;
@@ -126,14 +126,14 @@ void launch_adaln_expand(const float* w, const float* bias, const float* code, f
   // A launch-configuration check, not an execution check: an asynchronous fault
   // from any earlier kernel on this stream also latches here and will be
   // reported with this file's line number.
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_add_rows_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
                           cudaStream_t stream) {
   if (n == 0) return;
   add_rows_bf16_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(x, branch, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

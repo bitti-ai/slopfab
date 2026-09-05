@@ -9,19 +9,19 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/image.h"
+#include "slopfab/image.h"
 
 namespace {
 
-VIDFAB_TEST(reference_image_loads_binary_ppm) {
-  const std::string path = "vidfab_test_reference.ppm";
+SLOPFAB_TEST(reference_image_loads_binary_ppm) {
+  const std::string path = "slopfab_test_reference.ppm";
   {
     std::ofstream out(path, std::ios::binary);
     out << "P6\n# comment\n2 1\n255\n";
     const char pixels[] = {char(1), char(2), char(3), char(250), char(251), char(252)};
     out.write(pixels, sizeof(pixels));
   }
-  const vidfab::RGBImage image = vidfab::load_reference_image(path);
+  const slopfab::RGBImage image = slopfab::load_reference_image(path);
   std::remove(path.c_str());
   CHECK(image.width == 2);
   CHECK(image.height == 1);
@@ -29,15 +29,15 @@ VIDFAB_TEST(reference_image_loads_binary_ppm) {
   CHECK(image.pixels[0] == 1 && image.pixels[5] == 252);
 }
 
-VIDFAB_TEST(reference_image_rejects_truncated_ppm) {
-  const std::string path = "vidfab_test_truncated_reference.ppm";
+SLOPFAB_TEST(reference_image_rejects_truncated_ppm) {
+  const std::string path = "slopfab_test_truncated_reference.ppm";
   {
     std::ofstream out(path, std::ios::binary);
     out << "P6\n2 2\n255\nshort";
   }
   bool rejected = false;
   try {
-    (void)vidfab::load_reference_image(path);
+    (void)slopfab::load_reference_image(path);
   } catch (const std::runtime_error&) {
     rejected = true;
   }
@@ -45,8 +45,8 @@ VIDFAB_TEST(reference_image_rejects_truncated_ppm) {
   CHECK(rejected);
 }
 
-VIDFAB_TEST(reference_media_decodes_common_formats_with_ffmpeg) {
-  const std::string source = "vidfab_test_media_source.ppm";
+SLOPFAB_TEST(reference_media_decodes_common_formats_with_ffmpeg) {
+  const std::string source = "slopfab_test_media_source.ppm";
   {
     std::ofstream out(source, std::ios::binary);
     out << "P6\n3 2\n255\n";
@@ -62,10 +62,10 @@ VIDFAB_TEST(reference_media_decodes_common_formats_with_ffmpeg) {
 #endif
   int exercised = 0;
   for (const char* extension : {"png", "jpg", "bmp"}) {
-    const std::string output = std::string("vidfab_test_media.") + extension;
+    const std::string output = std::string("slopfab_test_media.") + extension;
     const std::string command = "ffmpeg -y -loglevel error -i " + source + " " + output + quiet;
     if (std::system(command.c_str()) != 0) continue;
-    const vidfab::RGBImage image = vidfab::load_reference_image(output);
+    const slopfab::RGBImage image = slopfab::load_reference_image(output);
     CHECK(image.width == 3);
     CHECK(image.height == 2);
     CHECK(image.pixels.size() == 18);
@@ -77,23 +77,23 @@ VIDFAB_TEST(reference_media_decodes_common_formats_with_ffmpeg) {
   else CHECK(exercised == 3);
 }
 
-VIDFAB_TEST(reference_image_lanczos_golden) {
-  vidfab::RGBImage image;
+SLOPFAB_TEST(reference_image_lanczos_golden) {
+  slopfab::RGBImage image;
   image.width = 2;
   image.height = 1;
   image.pixels = {0, 10, 20, 255, 110, 20};
-  const auto identity = vidfab::resize_reference_lanczos(image, 2, 1);
+  const auto identity = slopfab::resize_reference_lanczos(image, 2, 1);
   CHECK(identity.pixels == image.pixels);
 
-  const auto wide = vidfab::resize_reference_lanczos(image, 4, 1);
+  const auto wide = slopfab::resize_reference_lanczos(image, 4, 1);
   CHECK(wide.width == 4 && wide.height == 1);
   // Scale-adaptive Lanczos-3, half-pixel centers, edge replication and
   // round-half-up byte conversion.
   const uint8_t golden[] = {0, 0, 20, 54, 31, 20, 201, 89, 20, 255, 120, 20};
   CHECK(wide.pixels == std::vector<uint8_t>(std::begin(golden), std::end(golden)));
 
-  vidfab::RGBImage constant{3, 2, std::vector<uint8_t>(18, 73)};
-  const auto scaled = vidfab::resize_reference_lanczos(constant, 7, 5);
+  slopfab::RGBImage constant{3, 2, std::vector<uint8_t>(18, 73)};
+  const auto scaled = slopfab::resize_reference_lanczos(constant, 7, 5);
   for (uint8_t value : scaled.pixels) CHECK(value == 73);
 }
 
@@ -107,7 +107,7 @@ VIDFAB_TEST(reference_image_lanczos_golden) {
 // moved thousands of output bytes by one in the survey that found it. Exact
 // equality is the only assertion that would catch it — a 1e-3 tolerance would
 // not.
-vidfab::RGBImage resize_reference_lanczos_unmemoised(const vidfab::RGBImage& image, int width,
+slopfab::RGBImage resize_reference_lanczos_unmemoised(const slopfab::RGBImage& image, int width,
                                                      int height) {
   auto kernel = [](double x) {
     x = std::abs(x);
@@ -134,7 +134,7 @@ vidfab::RGBImage resize_reference_lanczos_unmemoised(const vidfab::RGBImage& ima
     }
     for (int c = 0; c < 3; ++c) tmp[(static_cast<size_t>(y) * width + x) * 3 + c] = rgb[c] / sum;
   }
-  vidfab::RGBImage out{width, height, std::vector<uint8_t>(static_cast<size_t>(width) * height * 3)};
+  slopfab::RGBImage out{width, height, std::vector<uint8_t>(static_cast<size_t>(width) * height * 3)};
   for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
     const double center = (y + 0.5) * sy - 0.5;
     const int first = static_cast<int>(std::floor(center - 3.0 * fy + 1.0));
@@ -153,8 +153,8 @@ vidfab::RGBImage resize_reference_lanczos_unmemoised(const vidfab::RGBImage& ima
   return out;
 }
 
-vidfab::RGBImage noise_image(int w, int h, uint32_t seed) {
-  vidfab::RGBImage image{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 3)};
+slopfab::RGBImage noise_image(int w, int h, uint32_t seed) {
+  slopfab::RGBImage image{w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 3)};
   uint32_t state = seed;
   for (uint8_t& p : image.pixels) {
     state = state * 1664525u + 1013904223u;
@@ -163,7 +163,7 @@ vidfab::RGBImage noise_image(int w, int h, uint32_t seed) {
   return image;
 }
 
-VIDFAB_TEST(reference_image_lanczos_weight_tables_are_bit_identical) {
+SLOPFAB_TEST(reference_image_lanczos_weight_tables_are_bit_identical) {
   struct Case {
     const char* name;
     int in_w, in_h, out_w, out_h;
@@ -181,9 +181,9 @@ VIDFAB_TEST(reference_image_lanczos_weight_tables_are_bit_identical) {
       {"non-integer ratio", 101, 67, 45, 39},
   };
   for (const Case& c : cases) {
-    const vidfab::RGBImage src = noise_image(c.in_w, c.in_h, 0x9E3779B9u ^ static_cast<uint32_t>(c.out_w));
-    const vidfab::RGBImage expect = resize_reference_lanczos_unmemoised(src, c.out_w, c.out_h);
-    const vidfab::RGBImage actual = vidfab::resize_reference_lanczos(src, c.out_w, c.out_h);
+    const slopfab::RGBImage src = noise_image(c.in_w, c.in_h, 0x9E3779B9u ^ static_cast<uint32_t>(c.out_w));
+    const slopfab::RGBImage expect = resize_reference_lanczos_unmemoised(src, c.out_w, c.out_h);
+    const slopfab::RGBImage actual = slopfab::resize_reference_lanczos(src, c.out_w, c.out_h);
     CHECK(actual.width == expect.width && actual.height == expect.height);
     size_t differing = 0;
     for (size_t i = 0; i < expect.pixels.size() && i < actual.pixels.size(); ++i) {
@@ -196,13 +196,13 @@ VIDFAB_TEST(reference_image_lanczos_weight_tables_are_bit_identical) {
   // A second call at the same extents takes the cached tables. It must return
   // the same bytes — a cache that handed back a table built for other extents
   // would be caught here and nowhere else.
-  const vidfab::RGBImage src = noise_image(320, 180, 12345u);
-  const vidfab::RGBImage first = vidfab::resize_reference_lanczos(src, 213, 128);
-  const vidfab::RGBImage second = vidfab::resize_reference_lanczos(src, 213, 128);
+  const slopfab::RGBImage src = noise_image(320, 180, 12345u);
+  const slopfab::RGBImage first = slopfab::resize_reference_lanczos(src, 213, 128);
+  const slopfab::RGBImage second = slopfab::resize_reference_lanczos(src, 213, 128);
   CHECK(first.pixels == second.pixels);
   // Interleaving a different size between the two must not disturb it either.
-  (void)vidfab::resize_reference_lanczos(src, 64, 64);
-  const vidfab::RGBImage third = vidfab::resize_reference_lanczos(src, 213, 128);
+  (void)slopfab::resize_reference_lanczos(src, 64, 64);
+  const slopfab::RGBImage third = slopfab::resize_reference_lanczos(src, 213, 128);
   CHECK(first.pixels == third.pixels);
 }
 

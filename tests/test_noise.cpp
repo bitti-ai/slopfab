@@ -11,11 +11,11 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/sampler/noise.h"
+#include "slopfab/sampler/noise.h"
 
 namespace {
 
-using namespace vidfab::sampler;
+using namespace slopfab::sampler;
 
 struct Moments {
   double mean = 0.0;
@@ -52,7 +52,7 @@ Moments moments(const std::vector<float>& v) {
   return m;
 }
 
-VIDFAB_TEST(noise_moments) {
+SLOPFAB_TEST(noise_moments) {
   std::vector<float> v(1 << 20);
   fill_normal(1234, NoiseStream::kVideoLatents, v.data(), v.size());
   const Moments m = moments(v);
@@ -76,7 +76,7 @@ VIDFAB_TEST(noise_moments) {
   CHECK(finite);
 }
 
-VIDFAB_TEST(noise_is_position_independent) {
+SLOPFAB_TEST(noise_is_position_independent) {
   // Element i must depend only on (seed, stream, i). Filling a long buffer and
   // a short one must agree on the overlap — if it does not, the generator is
   // carrying state and the audio noise would shift whenever the video
@@ -97,7 +97,7 @@ VIDFAB_TEST(noise_is_position_independent) {
   CHECK(prefix);
 }
 
-VIDFAB_TEST(noise_streams_and_seeds_are_independent) {
+SLOPFAB_TEST(noise_streams_and_seeds_are_independent) {
   const size_t n = 1 << 16;
   std::vector<float> video(n);
   std::vector<float> audio(n);
@@ -127,7 +127,7 @@ VIDFAB_TEST(noise_streams_and_seeds_are_independent) {
             "seeds 0 and 1 correlate at %.5f", dot01 / static_cast<double>(n));
 }
 
-VIDFAB_TEST(noise_has_no_short_range_structure) {
+SLOPFAB_TEST(noise_has_no_short_range_structure) {
   // Autocorrelation at small lags catches a generator whose counter mixing is
   // too weak — the classic failure of a hand-rolled counter-based RNG, and one
   // that would print as visible structure in the first denoising step.
@@ -143,7 +143,7 @@ VIDFAB_TEST(noise_has_no_short_range_structure) {
   }
 }
 
-VIDFAB_TEST(noise_shapes) {
+SLOPFAB_TEST(noise_shapes) {
   // Video noise is channel-major (24, F, Hl, Wl), the layout patchify_video
   // reads.
   const std::vector<float> v = video_noise(11, 37, 48, 84);
@@ -166,8 +166,8 @@ VIDFAB_TEST(noise_shapes) {
   const std::vector<float> a2 = audio_noise(11, 207);
   CHECK(a == a2);
 
-  CHECK(::vidfab::test::throws([] { video_noise(1, 0, 48, 84); }));
-  CHECK(::vidfab::test::throws([] { audio_noise(1, -1); }));
+  CHECK(::slopfab::test::throws([] { video_noise(1, 0, 48, 84); }));
+  CHECK(::slopfab::test::throws([] { audio_noise(1, -1); }));
 }
 
 }  // namespace

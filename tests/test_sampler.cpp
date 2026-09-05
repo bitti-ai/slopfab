@@ -27,11 +27,11 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/generate.h"
-#include "vidfab/sampler/scheduler.h"
+#include "slopfab/generate.h"
+#include "slopfab/sampler/scheduler.h"
 
-using vidfab::sampler::FlowScheduler;
-using vidfab::sampler::SamplerKind;
+using slopfab::sampler::FlowScheduler;
+using slopfab::sampler::SamplerKind;
 
 namespace {
 
@@ -107,8 +107,8 @@ double linear_ode_wrong(float shift, int grid_points, float k, float c_now, floa
 
 }  // namespace
 
-VIDFAB_TEST(exact_euler_has_total_canonical_fp32_semantics) {
-  using vidfab::sampler::exact_euler_value;
+SLOPFAB_TEST(exact_euler_has_total_canonical_fp32_semantics) {
+  using slopfab::sampler::exact_euler_value;
   const float qnan_a = from_bits(0x7fc12345u);
   const float qnan_b = from_bits(0xffdabcdeu);
   const float pos_inf = from_bits(0x7f800000u);
@@ -150,7 +150,7 @@ VIDFAB_TEST(exact_euler_has_total_canonical_fp32_semantics) {
 // the difference of the two is the original value), so this is a bit equality
 // and not a tolerance. It catches a sign error on either term and any
 // coefficient pair that does not sum to one.
-VIDFAB_TEST(ab2_reproduces_euler_on_a_constant_velocity_field) {
+SLOPFAB_TEST(ab2_reproduces_euler_on_a_constant_velocity_field) {
   for (const float shift : {12.0f, 3.0f}) {
     for (const int grid : {6, 20, 50}) {
       FlowScheduler euler(shift), ab2(shift);
@@ -175,7 +175,7 @@ VIDFAB_TEST(ab2_reproduces_euler_on_a_constant_velocity_field) {
 // The first step of a trajectory has no history, so it must be plain Euler —
 // not AB2 with an invented v_{-1} of zero, which would scale the first step by
 // 1.5 and is the obvious way to get this wrong.
-VIDFAB_TEST(ab2_first_step_is_first_order) {
+SLOPFAB_TEST(ab2_first_step_is_first_order) {
   FlowScheduler euler(12.0f), ab2(12.0f);
   euler.set_timesteps(50);
   ab2.set_timesteps(50);
@@ -224,7 +224,7 @@ VIDFAB_TEST(ab2_first_step_is_first_order) {
 // the fixed 1.5/-0.5 coefficients are the constant-step formula on a variable
 // step. That costs accuracy but not the order: refining the grid shrinks
 // (h_n - h_{n-1}) as h^2, so the local error stays O(h^3).
-VIDFAB_TEST(ab2_is_second_order_on_a_linear_ode) {
+SLOPFAB_TEST(ab2_is_second_order_on_a_linear_ode) {
   const float k = 1.0f;
   const double exact = std::exp(-static_cast<double>(k));
 
@@ -292,7 +292,7 @@ VIDFAB_TEST(ab2_is_second_order_on_a_linear_ode) {
 // The house habit: compute the plausible wrong forms too and require that the
 // implementation does not match them. Every one of these produces a finite,
 // correctly shaped, roughly right trajectory.
-VIDFAB_TEST(ab2_rejects_plausible_wrong_extrapolations) {
+SLOPFAB_TEST(ab2_rejects_plausible_wrong_extrapolations) {
   const float k = 1.0f;
   const int grid = 25;
   const double exact = std::exp(-static_cast<double>(k));
@@ -324,14 +324,14 @@ VIDFAB_TEST(ab2_rejects_plausible_wrong_extrapolations) {
 // mode was added, the default was not perturbed. Full trajectories at both
 // live shifts, compared at zero tolerance against a transcription of the
 // pre-change update.
-VIDFAB_TEST(euler_mode_is_bit_identical_to_the_reference_update) {
+SLOPFAB_TEST(euler_mode_is_bit_identical_to_the_reference_update) {
   for (const float shift : {12.0f, 3.0f}) {
     for (const int grid : {6, 30, 50}) {
       FlowScheduler s(shift);
       s.set_timesteps(grid);
       CHECK(s.sampler() == SamplerKind::kEuler);
 
-      std::vector<float> x = ::vidfab::test::make_data(64, 0x51ED + static_cast<uint32_t>(grid));
+      std::vector<float> x = ::slopfab::test::make_data(64, 0x51ED + static_cast<uint32_t>(grid));
       std::vector<float> want = x;
       const int steps = static_cast<int>(s.num_steps());
       for (int i = 0; i < steps; ++i) {
@@ -350,7 +350,7 @@ VIDFAB_TEST(euler_mode_is_bit_identical_to_the_reference_update) {
 // The two schedulers a request runs — shift 12 for video, shift 3 for audio —
 // are stepped independently inside one loop iteration, at different buffer
 // lengths. Each must carry its own history.
-VIDFAB_TEST(ab2_histories_do_not_cross_between_schedulers) {
+SLOPFAB_TEST(ab2_histories_do_not_cross_between_schedulers) {
   FlowScheduler video(12.0f), audio(3.0f);
   video.set_timesteps(20);
   audio.set_timesteps(20);
@@ -358,8 +358,8 @@ VIDFAB_TEST(ab2_histories_do_not_cross_between_schedulers) {
   audio.set_sampler(SamplerKind::kAb2);
   CHECK(video.num_steps() == audio.num_steps());
 
-  std::vector<float> xv = ::vidfab::test::make_data(37, 0x1234);
-  std::vector<float> xa = ::vidfab::test::make_data(11, 0x5678);
+  std::vector<float> xv = ::slopfab::test::make_data(37, 0x1234);
+  std::vector<float> xa = ::slopfab::test::make_data(11, 0x5678);
   const std::vector<float> xv0 = xv, xa0 = xa;
 
   const int steps = static_cast<int>(video.num_steps());
@@ -408,15 +408,15 @@ VIDFAB_TEST(ab2_histories_do_not_cross_between_schedulers) {
 // CLI's own string parsing lives inside main.cpp and is not linkable, so it
 // was verified by execution instead: `--sampler ab2 --dry-run` resolves, and
 // `--sampler nonsense` exits 2 naming the valid values.
-VIDFAB_TEST(run_options_default_selects_the_euler_path) {
+SLOPFAB_TEST(run_options_default_selects_the_euler_path) {
   // The default a run gets when no --sampler flag is passed at all.
-  const vidfab::RunOptions defaults;
+  const slopfab::RunOptions defaults;
   CHECK(defaults.sampler == SamplerKind::kEuler);
 
   // And handing that default to a scheduler must be indistinguishable from
   // never touching the sampler — bitwise, over a whole trajectory. This is the
   // assertion that fails if the default ever moves.
-  const std::vector<float> x0 = ::vidfab::test::make_data(48, 0xE01E);
+  const std::vector<float> x0 = ::slopfab::test::make_data(48, 0xE01E);
   auto trajectory = [&](bool configure, SamplerKind kind) {
     FlowScheduler s(12.0f);
     s.set_timesteps(30);
@@ -453,9 +453,9 @@ VIDFAB_TEST(run_options_default_selects_the_euler_path) {
 
 // State makes ordering load-bearing, so the errors have to be exceptions and
 // not a silently wrong extrapolation from some other point of the trajectory.
-VIDFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
+SLOPFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
   // Skipping an index.
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     FlowScheduler s(12.0f);
     s.set_timesteps(10);
     s.set_sampler(SamplerKind::kAb2);
@@ -465,7 +465,7 @@ VIDFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
   }));
 
   // Repeating one.
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     FlowScheduler s(12.0f);
     s.set_timesteps(10);
     s.set_sampler(SamplerKind::kAb2);
@@ -476,7 +476,7 @@ VIDFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
   }));
 
   // Going backwards.
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     FlowScheduler s(12.0f);
     s.set_timesteps(10);
     s.set_sampler(SamplerKind::kAb2);
@@ -488,7 +488,7 @@ VIDFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
   }));
 
   // A restart at 0 does not license the next index being wrong either.
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     FlowScheduler s(12.0f);
     s.set_timesteps(10);
     s.set_sampler(SamplerKind::kAb2);
@@ -501,7 +501,7 @@ VIDFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
 
   // Changing the buffer length mid-trajectory. Legal between trajectories,
   // meaningless within one.
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     FlowScheduler s(12.0f);
     s.set_timesteps(10);
     s.set_sampler(SamplerKind::kAb2);
@@ -512,7 +512,7 @@ VIDFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
   }));
 
   // The range check that was already there still fires.
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     FlowScheduler s(12.0f);
     s.set_timesteps(10);
     std::vector<float> x = {1.0f}, v = {0.5f};

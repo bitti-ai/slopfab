@@ -4,12 +4,12 @@
 #include <filesystem>
 #include <vector>
 
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/vae/audio_primitives.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/vae/audio_primitives.h"
 
-VIDFAB_TEST(audio_primitive_descriptors) {
-  using namespace vidfab::vae;
+SLOPFAB_TEST(audio_primitive_descriptors) {
+  using namespace slopfab::vae;
   AudioConv1DDesc conv{2, 3, 5, 17, 17, 11, 25, 5};
   conv.validate();
   CHECK(conv.input_elements() == 102);
@@ -35,10 +35,10 @@ VIDFAB_TEST(audio_primitive_descriptors) {
   CHECK(bad_transpose_rejected);
 }
 
-VIDFAB_TEST(audio_typed_weight_loader) {
-  using namespace vidfab;
+SLOPFAB_TEST(audio_typed_weight_loader) {
+  using namespace slopfab;
   const auto path = std::filesystem::temp_directory_path() /
-      "vidfab_audio_primitive_weights.safetensors";
+      "slopfab_audio_primitive_weights.safetensors";
   std::filesystem::remove(path);
   write_safetensors(path.string(), {
       {"fold.weight_v", {2, 2, 2}, {1, 2, 3, 4, -1, 2, -3, 4}},

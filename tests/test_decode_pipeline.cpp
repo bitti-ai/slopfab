@@ -5,11 +5,11 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/vae/vit_decoder.h"
+#include "slopfab/vae/vit_decoder.h"
 
 namespace {
 
-class StillBackend final : public vidfab::vae::VideoVaeWindowBackend {
+class StillBackend final : public slopfab::vae::VideoVaeWindowBackend {
  public:
   StillBackend() {
     config_.in_channels = 1;
@@ -18,7 +18,7 @@ class StillBackend final : public vidfab::vae::VideoVaeWindowBackend {
     config_.patch_t = 4;
   }
 
-  const vidfab::vae::ViTConfig& config() const override { return config_; }
+  const slopfab::vae::ViTConfig& config() const override { return config_; }
 
   void forward_windows(const float* z, int batch, int T, int H, int W,
                        std::vector<std::vector<float>>& out,
@@ -57,7 +57,7 @@ class StillBackend final : public vidfab::vae::VideoVaeWindowBackend {
 
   void release_host_registrations() override { released = true; }
 
-  vidfab::vae::ViTConfig config_;
+  slopfab::vae::ViTConfig config_;
   int calls = 0;
   int seen_t = 0;
   float first_latent = 0.0f;
@@ -66,15 +66,15 @@ class StillBackend final : public vidfab::vae::VideoVaeWindowBackend {
 
 }  // namespace
 
-VIDFAB_TEST(still_decode_uses_one_token_and_first_retained_phase) {
+SLOPFAB_TEST(still_decode_uses_one_token_and_first_retained_phase) {
   StillBackend backend;
-  vidfab::vae::DecodeSchedule schedule;
+  slopfab::vae::DecodeSchedule schedule;
   schedule.tile_size = 4;
   schedule.tile_overlap_min = 2;
   const int h = 2, w = 3;
   std::vector<float> latent(static_cast<size_t>(h) * w, 0.25f);
 
-  const vidfab::vae::DecodedVideo image = vidfab::vae::decode_still_image(
+  const slopfab::vae::DecodedVideo image = slopfab::vae::decode_still_image(
       backend, latent.data(), h, w, {1.0f}, {2.0f}, schedule);
 
   CHECK(backend.calls == 1);
@@ -102,14 +102,14 @@ VIDFAB_TEST(still_decode_uses_one_token_and_first_retained_phase) {
   }
 }
 
-VIDFAB_TEST(still_decode_rejects_an_invalid_phase_contract) {
+SLOPFAB_TEST(still_decode_rejects_an_invalid_phase_contract) {
   StillBackend backend;
-  vidfab::vae::DecodeSchedule schedule;
+  slopfab::vae::DecodeSchedule schedule;
   schedule.frame_pre_padding = 4;
   const std::vector<float> latent(4, 0.0f);
   bool rejected = false;
   try {
-    (void)vidfab::vae::decode_still_image(backend, latent.data(), 2, 2,
+    (void)slopfab::vae::decode_still_image(backend, latent.data(), 2, 2,
                                           {0.0f}, {1.0f}, schedule);
   } catch (...) {
     rejected = true;

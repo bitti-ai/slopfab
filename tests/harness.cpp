@@ -5,7 +5,7 @@
 #include <exception>
 #include <vector>
 
-namespace vidfab::test {
+namespace slopfab::test {
 namespace {
 
 struct Case {
@@ -201,7 +201,7 @@ int failure_count() { return g_failures; }
 int deferred_count() { return g_deferred; }
 
 int run_all() {
-  const char* filter = std::getenv("VIDFAB_TEST_FILTER");
+  const char* filter = std::getenv("SLOPFAB_TEST_FILTER");
   for (const Case& c : cases()) {
     if (filter != nullptr && std::strstr(c.name, filter) == nullptr) continue;
     g_current = c.name;
@@ -232,4 +232,4 @@ int run_all() {
   return g_failures == 0 ? 0 : 1;
 }
 
-}  // namespace vidfab::test
+}  // namespace slopfab::test

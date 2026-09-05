@@ -1,9 +1,9 @@
-#include "vidfab/json.h"
+#include "slopfab/json.h"
 
 #include <cmath>
 #include <cstdlib>
 
-namespace vidfab::json {
+namespace slopfab::json {
 namespace {
 
 class Parser {
@@ -238,4 +238,4 @@ class Parser {
 
 Value parse(std::string_view text) { return Parser(text).parse_document(); }
 
-}  // namespace vidfab::json
+}  // namespace slopfab::json

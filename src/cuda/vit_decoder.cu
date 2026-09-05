@@ -9,22 +9,22 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/attention.cuh"
-#include "vidfab/cuda/deterministic_gemm.cuh"
-#include "vidfab/cuda/gemm.cuh"
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/nf4_weight.cuh"
-#include "vidfab/cuda/profile.h"
-#include "vidfab/cuda/vae_kernels.cuh"
-#include "vidfab/cuda/vae_vit_block.h"
-#include "vidfab/cuda/w4a8.cuh"
-#include "vidfab/nf4.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/vae/vit_decoder.h"
-#include "vidfab/w4a8.h"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/attention.cuh"
+#include "slopfab/cuda/deterministic_gemm.cuh"
+#include "slopfab/cuda/gemm.cuh"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/nf4_weight.cuh"
+#include "slopfab/cuda/profile.h"
+#include "slopfab/cuda/vae_kernels.cuh"
+#include "slopfab/cuda/vae_vit_block.h"
+#include "slopfab/cuda/w4a8.cuh"
+#include "slopfab/nf4.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/vae/vit_decoder.h"
+#include "slopfab/w4a8.h"
 
-namespace vidfab::vae {
+namespace slopfab::vae {
 namespace {
 
 void cublas_check(cublasStatus_t status, const char* expr, int line) {
@@ -83,7 +83,7 @@ class WeightUploader {
           // synchronise either. The only reused buffer left is `staging_`,
           // which lives on the device, so stream order already guarantees the
           // widen of one hop finishes before the next hop overwrites it.
-          VIDFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), src + done * sizeof(uint16_t),
+          SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), src + done * sizeof(uint16_t),
                                             n * sizeof(uint16_t), cudaMemcpyHostToDevice,
                                             stream_));
           cuda::launch_widen_f16(staging_.get(), out.get() + done, n, stream_);
@@ -93,12 +93,12 @@ class WeightUploader {
           // will not touch.
           if (raw_.get() == nullptr) raw_.allocate(kStagingElems * sizeof(uint16_t));
           std::memcpy(raw_.get(), src + done * sizeof(uint16_t), n * sizeof(uint16_t));
-          VIDFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), raw_.get(), n * sizeof(uint16_t),
+          SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), raw_.get(), n * sizeof(uint16_t),
                                             cudaMemcpyHostToDevice, stream_));
           cuda::launch_widen_f16(staging_.get(), out.get() + done, n, stream_);
           // The pinned buffer is reused next iteration, so the copy and widen
           // must complete before the next memcpy overwrites it.
-          VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
+          SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
         }
         done += n;
       }
@@ -106,7 +106,7 @@ class WeightUploader {
       // Rare in this checkpoint; fall back to host conversion.
       const std::vector<float> host = to_f32(view);
       out.copy_from_host(host.data(), host.size(), stream_);
-      VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
+      SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
     }
     return out;
   }
@@ -210,7 +210,7 @@ struct ViTDecoder::Impl {
 
   ~Impl() {
     release_host_regs();
-    if (blas != nullptr) vidfab::cuda::cublas_destroy(blas);
+    if (blas != nullptr) slopfab::cuda::cublas_destroy(blas);
   }
 
   void erase_registration(size_t index) {
@@ -258,7 +258,7 @@ struct ViTDecoder::Impl {
       if (!warned_no_page_lock) {
         warned_no_page_lock = true;
         std::fprintf(stderr,
-                     "vidfab: could not page-lock a video vae output tile (%s); decoded tiles "
+                     "slopfab: could not page-lock a video vae output tile (%s); decoded tiles "
                      "are being staged through pinned memory and copied, which is slower\n",
                      cudaGetErrorName(rc));
       }
@@ -288,7 +288,7 @@ struct ViTDecoder::Impl {
           stream.get());
       const int32_t alpha = 1;
       const int32_t beta = 0;
-      CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(
+      CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(
           blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_8I,
           K, d_w4a8_activation.get(), CUDA_R_8I, K, &beta, C, CUDA_R_32I,
           N, CUBLAS_COMPUTE_32I, CUBLAS_GEMM_DEFAULT));
@@ -309,7 +309,7 @@ struct ViTDecoder::Impl {
       return;
     }
     const float alpha = 1.0f, beta = 0.0f;
-    CUBLAS_CHECK(vidfab::cuda::cublas_gemm_ex(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F,
+    CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F,
                               K, A, CUDA_R_16F, K, &beta, C, CUDA_R_32F, N,
                               CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
   }
@@ -467,16 +467,16 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   // file, so it asks for it up front rather than one page fault at a time.
   ckpt.prefetch();
   d.cfg = config;
-  CUBLAS_CHECK(vidfab::cuda::cublas_create(&d.blas));
-  CUBLAS_CHECK(vidfab::cuda::cublas_set_stream(d.blas, d.stream.get()));
+  CUBLAS_CHECK(slopfab::cuda::cublas_create(&d.blas));
+  CUBLAS_CHECK(slopfab::cuda::cublas_set_stream(d.blas, d.stream.get()));
   // DEFAULT already refuses to drop mantissa bits for an fp32 compute type —
   // TF32 requires an explicitly TF32 math mode or compute type, neither of
   // which we ask for. PEDANTIC additionally forbids optimisations that do not
   // affect precision, and NVIDIA documents it as slower. Keep it available for
-  // the correctness harness via VIDFAB_CUBLAS_PEDANTIC=1.
-  const char* pedantic = std::getenv("VIDFAB_CUBLAS_PEDANTIC");
+  // the correctness harness via SLOPFAB_CUBLAS_PEDANTIC=1.
+  const char* pedantic = std::getenv("SLOPFAB_CUBLAS_PEDANTIC");
   const bool want_pedantic = pedantic != nullptr && pedantic[0] == '1';
-  CUBLAS_CHECK(vidfab::cuda::cublas_set_math_mode(d.blas,
+  CUBLAS_CHECK(slopfab::cuda::cublas_set_math_mode(d.blas,
                                  want_pedantic ? CUBLAS_PEDANTIC_MATH : CUBLAS_DEFAULT_MATH));
 
   const int dim = config.dim;
@@ -521,7 +521,7 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   const cuda::RegisteredMapping mapping(ckpt.mapping_base(), ckpt.file_size());
   if (!mapping.registered()) {
     std::fprintf(stderr,
-                 "vidfab: could not page-lock the video vae mapping; uploading via the staged "
+                 "slopfab: could not page-lock the video vae mapping; uploading via the staged "
                  "path, which is slower\n");
   }
   WeightUploader uploader(d.stream.get(), mapping);
@@ -621,7 +621,7 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
 void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector<float>& out) {
   std::vector<std::vector<float>> batch_out(1);
   // Declared after `batch_out` so it destructs first. forward_windows can throw
-  // after it has page-locked the slot — every VIDFAB_CUDA_CHECK in it can, and
+  // after it has page-locked the slot — every SLOPFAB_CUDA_CHECK in it can, and
   // a device out-of-memory really does — and without this `batch_out` would die
   // still locked, leaving an entry pointing at freed memory for ~Impl to
   // unregister later.
@@ -678,10 +678,10 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     d.gemm_nt(d.d_quantised.get() + patch0 * ch, d.x_embed_w,
               d.d_tokens.get() + token0 * dim, num_patches, dim, ch);
     cuda::launch_add_bias(d.d_tokens.get() + token0 * dim, d.x_embed_b.get(), num_patches, dim, s);
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(
         d.d_tokens.get() + (token0 + num_patches) * dim, d.register_tokens.get(),
         static_cast<size_t>(cfg.num_register) * dim * sizeof(float), cudaMemcpyDeviceToDevice, s));
-    VIDFAB_CUDA_CHECK(cudaMemsetAsync(
+    SLOPFAB_CUDA_CHECK(cudaMemsetAsync(
         d.d_tokens.get() + (token0 + num_patches + cfg.num_register) * dim, 0,
         static_cast<size_t>(dim) * sizeof(float), s));
   }
@@ -816,4 +816,4 @@ void ViTDecoder::denormalize_latents(
   }
 }
 
-}  // namespace vidfab::vae
+}  // namespace slopfab::vae

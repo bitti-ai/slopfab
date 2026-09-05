@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/tensor_convert.h"
+#include "slopfab/tensor_convert.h"
 
 namespace {
 
@@ -50,8 +50,8 @@ double cosine_similarity(const std::vector<float>& x, const std::vector<float>& 
 
 }  // namespace
 
-VIDFAB_TEST(compare_metrics_match_the_stated_formulas) {
-  const vidfab::CompareStats s = vidfab::compare(kRef, kAct);
+SLOPFAB_TEST(compare_metrics_match_the_stated_formulas) {
+  const slopfab::CompareStats s = slopfab::compare(kRef, kAct);
 
   CHECK(s.shape_match);
   CHECK(s.finite_count == 4);
@@ -64,18 +64,18 @@ VIDFAB_TEST(compare_metrics_match_the_stated_formulas) {
   CHECK_NEAR(s.rel_l2, s.rms_err * std::sqrt(4.0) / kNormRef, 1e-12);
 }
 
-VIDFAB_TEST(compare_metrics_known_anchor_values) {
+SLOPFAB_TEST(compare_metrics_known_anchor_values) {
   // The two cases that anchor the definitions against something outside this
   // implementation, and both must be *exact*, not near. `S / sqrt(S*S)` is
   // exactly 1 in IEEE754; `cov / (sd * sd)` is not reliably, which is why the
   // implementation uses the former.
-  const vidfab::CompareStats same = vidfab::compare(kRef, kRef);
+  const slopfab::CompareStats same = slopfab::compare(kRef, kRef);
   CHECK(same.rel_l2 == 0.0);
   CHECK(same.correlation == 1.0);
 
   std::vector<float> negated;
   for (float v : kRef) negated.push_back(-v);
-  const vidfab::CompareStats flipped = vidfab::compare(kRef, negated);
+  const slopfab::CompareStats flipped = slopfab::compare(kRef, negated);
   CHECK(flipped.correlation == -1.0);
   // A negation is a completely different tensor, and rel_L2 must say so: the
   // difference is 2r, so rel_L2 is exactly 2.
@@ -86,13 +86,13 @@ VIDFAB_TEST(compare_metrics_known_anchor_values) {
   // reporting the same thing twice.
   std::vector<float> scaled;
   for (float v : kRef) scaled.push_back(v * 3.0f);
-  const vidfab::CompareStats s = vidfab::compare(kRef, scaled);
+  const slopfab::CompareStats s = slopfab::compare(kRef, scaled);
   CHECK_NEAR(s.correlation, 1.0, 1e-12);
   CHECK_NEAR(s.rel_l2, 2.0, 1e-12);
 }
 
-VIDFAB_TEST(compare_correlation_rejects_the_uncentred_form) {
-  const vidfab::CompareStats s = vidfab::compare(kRef, kAct);
+SLOPFAB_TEST(compare_correlation_rejects_the_uncentred_form) {
+  const slopfab::CompareStats s = slopfab::compare(kRef, kAct);
 
   // Cosine similarity — Pearson without subtracting the means. On this data it
   // is 0.9940 against Pearson's 0.9827: the same shape, the same sign, close
@@ -113,7 +113,7 @@ VIDFAB_TEST(compare_correlation_rejects_the_uncentred_form) {
     ref_shifted.push_back(kRef[i] + 1000.0f);
     act_shifted.push_back(kAct[i] + 1000.0f);
   }
-  const vidfab::CompareStats shifted = vidfab::compare(ref_shifted, act_shifted);
+  const slopfab::CompareStats shifted = slopfab::compare(ref_shifted, act_shifted);
   CHECK_NEAR(shifted.correlation, kCorr, 1e-9);
 
   const double shifted_cosine = cosine_similarity(ref_shifted, act_shifted);
@@ -127,8 +127,8 @@ VIDFAB_TEST(compare_correlation_rejects_the_uncentred_form) {
             shifted.correlation, shifted_cosine);
 }
 
-VIDFAB_TEST(compare_rel_l2_rejects_the_other_normalisations) {
-  const vidfab::CompareStats s = vidfab::compare(kRef, kAct);
+SLOPFAB_TEST(compare_rel_l2_rejects_the_other_normalisations) {
+  const slopfab::CompareStats s = slopfab::compare(kRef, kAct);
 
   // Normalised by `actual` instead of `reference`. 0.1601 against 0.1826.
   const double by_actual = 1.0 / kNormAct;
@@ -145,7 +145,7 @@ VIDFAB_TEST(compare_rel_l2_rejects_the_other_normalisations) {
 
   // The asymmetry is the observable consequence of that choice, so assert it
   // directly: swapping the arguments must change the answer.
-  const vidfab::CompareStats swapped = vidfab::compare(kAct, kRef);
+  const slopfab::CompareStats swapped = slopfab::compare(kAct, kRef);
   CHECK_MSG(std::fabs(s.rel_l2 - swapped.rel_l2) > 1e-3,
             "rel_L2 is normalised by the reference and so must be asymmetric, but compare(a,b) "
             "gave %.6f and compare(b,a) gave %.6f",
@@ -155,13 +155,13 @@ VIDFAB_TEST(compare_rel_l2_rejects_the_other_normalisations) {
   CHECK_NEAR(swapped.correlation, s.correlation, 1e-12);
 }
 
-VIDFAB_TEST(compare_metrics_are_over_the_flattened_tensor) {
+SLOPFAB_TEST(compare_metrics_are_over_the_flattened_tensor) {
   // Two "rows" of two elements. Row 0 agrees, row 1 is reversed. Any
   // implementation that reduced per row and averaged would report 0 — the mean
   // of +1 and -1 — where the flattened population gives +0.5704.
   const std::vector<float> r = {1.0f, 2.0f, 10.0f, 20.0f};
   const std::vector<float> a = {1.0f, 2.0f, 20.0f, 10.0f};
-  const vidfab::CompareStats s = vidfab::compare(r, a);
+  const slopfab::CompareStats s = slopfab::compare(r, a);
 
   // mean 8.25 both sides; S_ra = 132.75, S_rr = S_aa = 232.75.
   CHECK_NEAR(s.correlation, 132.75 / 232.75, 1e-12);
@@ -174,26 +174,26 @@ VIDFAB_TEST(compare_metrics_are_over_the_flattened_tensor) {
   CHECK_NEAR(s.rel_l2, std::sqrt(200.0) / std::sqrt(505.0), 1e-12);
 }
 
-VIDFAB_TEST(compare_metrics_degenerate_cases) {
+SLOPFAB_TEST(compare_metrics_degenerate_cases) {
   // An all-zero reference has no norm to divide by. Zero difference is a
   // perfect match; anything else is reported as infinite rather than as 0,
   // because calling a wrong answer perfect is the one unacceptable outcome.
   const std::vector<float> zeros = {0.0f, 0.0f, 0.0f};
-  CHECK(vidfab::compare(zeros, zeros).rel_l2 == 0.0);
-  const vidfab::CompareStats from_zero =
-      vidfab::compare(zeros, std::vector<float>{0.0f, 1.0f, 0.0f});
+  CHECK(slopfab::compare(zeros, zeros).rel_l2 == 0.0);
+  const slopfab::CompareStats from_zero =
+      slopfab::compare(zeros, std::vector<float>{0.0f, 1.0f, 0.0f});
   CHECK(std::isinf(from_zero.rel_l2));
 
   // A constant tensor has zero variance, so correlation is undefined, not 1.
   // Reported as 0, and the header says so.
   const std::vector<float> flat = {2.0f, 2.0f, 2.0f};
-  CHECK(vidfab::compare(flat, flat).correlation == 0.0);
+  CHECK(slopfab::compare(flat, flat).correlation == 0.0);
   // ...but rel_L2 still works there, and must still be 0.
-  CHECK(vidfab::compare(flat, flat).rel_l2 == 0.0);
+  CHECK(slopfab::compare(flat, flat).rel_l2 == 0.0);
 
   // Empty and mismatched inputs must not produce a metric at all.
-  const vidfab::CompareStats mismatch =
-      vidfab::compare(kRef, std::vector<float>{1.0f});
+  const slopfab::CompareStats mismatch =
+      slopfab::compare(kRef, std::vector<float>{1.0f});
   CHECK(!mismatch.shape_match);
   CHECK(mismatch.rel_l2 == 0.0);
   CHECK(mismatch.correlation == 0.0);
@@ -219,12 +219,12 @@ double one_pass_correlation(const std::vector<float>& a, const std::vector<float
   return (va > 0 && vb > 0) ? cov / std::sqrt(va * vb) : 0.0;
 }
 
-VIDFAB_TEST(compare_correlation_agrees_with_the_kernel_tests_but_is_better_conditioned) {
+SLOPFAB_TEST(compare_correlation_agrees_with_the_kernel_tests_but_is_better_conditioned) {
   // On well-conditioned data the two forms are the same number, which is what
   // says the *definition* here matches the one behind the nvfp4 correlation
   // figures in the README. If this ever fails, the two are measuring different
   // things and every cross-track comparison is void.
-  CHECK_NEAR(vidfab::compare(kRef, kAct).correlation, one_pass_correlation(kRef, kAct), 1e-12);
+  CHECK_NEAR(slopfab::compare(kRef, kAct).correlation, one_pass_correlation(kRef, kAct), 1e-12);
 
   // The property this implementation promises is that correlation is invariant
   // to a common shift and to a positive scale, *exactly*, because the means are
@@ -236,7 +236,7 @@ VIDFAB_TEST(compare_correlation_agrees_with_the_kernel_tests_but_is_better_condi
     ref_hi.push_back(1.0e8f + (kRef[i] - 1.0f) * 8.0f);
     act_hi.push_back(1.0e8f + (kAct[i] - 1.0f) * 8.0f);
   }
-  const double ours = vidfab::compare(ref_hi, act_hi).correlation;
+  const double ours = slopfab::compare(ref_hi, act_hi).correlation;
   CHECK_NEAR(ours, kCorr, 1e-12);
 
   // And the two forms still agree there. That is worth asserting rather than
@@ -258,10 +258,10 @@ VIDFAB_TEST(compare_correlation_agrees_with_the_kernel_tests_but_is_better_condi
   // Positive scale on one side alone must not move it either.
   std::vector<float> act_scaled;
   for (float v : kAct) act_scaled.push_back(v * 1000.0f);
-  CHECK_NEAR(vidfab::compare(kRef, act_scaled).correlation, kCorr, 1e-12);
+  CHECK_NEAR(slopfab::compare(kRef, act_scaled).correlation, kCorr, 1e-12);
 }
 
-VIDFAB_TEST(compare_metrics_use_only_the_finite_population) {
+SLOPFAB_TEST(compare_metrics_use_only_the_finite_population) {
   const float nan_v = std::nanf("");
 
   // A matching NaN pair is agreement, and is excluded from both metrics rather
@@ -269,7 +269,7 @@ VIDFAB_TEST(compare_metrics_use_only_the_finite_population) {
   // correlate at exactly +1 and differ by nothing.
   const std::vector<float> r = {1.0f, 2.0f, nan_v};
   const std::vector<float> a = {1.0f, 2.0f, nan_v};
-  const vidfab::CompareStats s = vidfab::compare(r, a);
+  const slopfab::CompareStats s = slopfab::compare(r, a);
   CHECK(s.nan_mismatches == 0);
   CHECK(s.count == 3);
   CHECK(s.finite_count == 2);
@@ -279,7 +279,7 @@ VIDFAB_TEST(compare_metrics_use_only_the_finite_population) {
 
   // A NaN against a number is a mismatch, counted, and still must not make
   // either metric non-finite.
-  const vidfab::CompareStats bad = vidfab::compare({nan_v, 1.0f, 2.0f}, {0.0f, 1.0f, 2.0f});
+  const slopfab::CompareStats bad = slopfab::compare({nan_v, 1.0f, 2.0f}, {0.0f, 1.0f, 2.0f});
   CHECK(bad.nan_mismatches == 1);
   CHECK(bad.finite_count == 2);
   CHECK(std::isfinite(bad.rel_l2));

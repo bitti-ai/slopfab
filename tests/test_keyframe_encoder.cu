@@ -2,12 +2,12 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/keyframe_encoder.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/keyframe_encoder.cuh"
 
-using vidfab::cuda::DeviceBuffer;
+using slopfab::cuda::DeviceBuffer;
 
-VIDFAB_TEST(keyframe_conv3d_single_frame_causal_slice) {
+SLOPFAB_TEST(keyframe_conv3d_single_frame_causal_slice) {
   // Cin=1,Cout=1,K=3. Only the last temporal plane may contribute.
   std::vector<float> x = {1, 2, 3, 4, 5, 6};
   std::vector<__half> w(27, __float2half(100.0f));
@@ -18,7 +18,7 @@ VIDFAB_TEST(keyframe_conv3d_single_frame_causal_slice) {
   dx.copy_from_host(x.data(), x.size());
   dw.copy_from_host(w.data(), w.size());
   db.copy_from_host(bias.data(), 1);
-  vidfab::cuda::launch_keyframe_conv3d(dx.get(), dw.get(), db.get(), dy.get(), 1, 1, 2, 3,
+  slopfab::cuda::launch_keyframe_conv3d(dx.get(), dw.get(), db.get(), dy.get(), 1, 1, 2, 3,
                                        3, 1, true, false, nullptr);
   std::vector<float> y(6);
   dy.copy_to_host(y.data(), y.size());
@@ -27,7 +27,7 @@ VIDFAB_TEST(keyframe_conv3d_single_frame_causal_slice) {
   CHECK_NEAR(y[0], 33.5, 1e-5);
 }
 
-VIDFAB_TEST(keyframe_groupnorm_silu_matches_cpu) {
+SLOPFAB_TEST(keyframe_groupnorm_silu_matches_cpu) {
   std::vector<float> x = {1, 2, 3, 4, 10, 12, 14, 16};
   std::vector<__half> weight(2, __float2half(1.0f)), bias(2, __float2half(0.0f));
   DeviceBuffer<float> dx(8), dy(8);
@@ -35,7 +35,7 @@ VIDFAB_TEST(keyframe_groupnorm_silu_matches_cpu) {
   dx.copy_from_host(x.data(), 8);
   dw.copy_from_host(weight.data(), 2);
   db.copy_from_host(bias.data(), 2);
-  vidfab::cuda::launch_keyframe_groupnorm_silu(dx.get(), dw.get(), db.get(), dy.get(), 2, 2, 2,
+  slopfab::cuda::launch_keyframe_groupnorm_silu(dx.get(), dw.get(), db.get(), dy.get(), 2, 2, 2,
                                                1, 1e-6f, nullptr);
   std::vector<float> y(8);
   dy.copy_to_host(y.data(), 8);

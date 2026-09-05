@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/dit_transformer.h"
+#include "slopfab/vulkan/dit_transformer.h"
 
 #include <algorithm>
 #include <array>
@@ -9,11 +9,11 @@
 #include <utility>
 #include <vector>
 
-#include "vidfab/dtype.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/vulkan/gemm.h"
+#include "slopfab/dtype.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/vulkan/gemm.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 TensorLayout matrix(uint64_t rows, uint64_t columns) {
@@ -661,4 +661,4 @@ uint64_t ExactH3Transformer::peak_device_bytes() const noexcept {
   return add_saturating(persistent_bytes(), scratch_bytes());
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

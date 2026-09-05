@@ -1,4 +1,4 @@
-#include "vidfab/text/layer_capture.h"
+#include "slopfab/text/layer_capture.h"
 
 #include <algorithm>
 #include <cstring>
@@ -7,7 +7,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace vidfab::text {
+namespace slopfab::text {
 namespace {
 
 uint64_t checked_product(uint64_t left, uint64_t right) {
@@ -138,4 +138,4 @@ void write_qwen_layer_capture(const std::string& path,
   if (!output) throw std::runtime_error("Qwen capture: write failed");
 }
 
-}  // namespace vidfab::text
+}  // namespace slopfab::text

@@ -1,8 +1,8 @@
-#include "vidfab/dit/block_cache.h"
+#include "slopfab/dit/block_cache.h"
 
 #include <algorithm>
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 
 BlockSpan resolve_block_span(const BlockCacheConfig& config, int num_layers) {
   BlockSpan span;
@@ -77,4 +77,4 @@ std::vector<uint8_t> plan_block_cache(const BlockCacheConfig& config, int num_st
   return out;
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

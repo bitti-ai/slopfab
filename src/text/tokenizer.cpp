@@ -1,4 +1,4 @@
-#include "vidfab/text/tokenizer.h"
+#include "slopfab/text/tokenizer.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -13,7 +13,7 @@
 #include <windows.h>
 #endif
 
-namespace vidfab::text {
+namespace slopfab::text {
 namespace {
 
 struct Range {
@@ -943,11 +943,11 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
 namespace {
 
 // The module this translation unit was linked into, which is where the
-// tokenizer resource lives: either vidfab.exe or vidfab.dll.
+// tokenizer resource lives: either slopfab.exe or slopfab.dll.
 //
 // `FindResourceW(nullptr, ...)` asks for the *process* module instead, i.e.
 // always the executable. That is correct for the CLI but wrong when an
-// application loads vidfab.dll and carries no resource 101 at all — or, worse,
+// application loads slopfab.dll and carries no resource 101 at all — or, worse,
 // carries an unrelated RCDATA 101 of its own, which would be handed to
 // `load_json` as a
 // tokenizer. Anchoring on an address inside this module is correct for both
@@ -1066,4 +1066,4 @@ std::string Tokenizer::decode(const std::vector<int32_t>& ids) const {
   return out;
 }
 
-}  // namespace vidfab::text
+}  // namespace slopfab::text

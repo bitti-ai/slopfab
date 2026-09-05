@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/tensor.h"
+#include "slopfab/vulkan/tensor.h"
 
 #include <algorithm>
 #include <array>
@@ -13,13 +13,13 @@
 
 #include "embedded_tensor_spv.h"
 #include "tensor_validation.h"
-#include "vidfab/attention.h"
-#include "vidfab/vae/audio_primitives.h"
-#include "vidfab/vulkan/compute.h"
-#include "vidfab/vulkan/gemm.h"
-#include "vidfab/vulkan/linear.h"
+#include "slopfab/attention.h"
+#include "slopfab/vae/audio_primitives.h"
+#include "slopfab/vulkan/compute.h"
+#include "slopfab/vulkan/gemm.h"
+#include "slopfab/vulkan/linear.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 constexpr uint64_t kMaxExactNormDimension = 1ull << 24;
@@ -5317,4 +5317,4 @@ Submission TensorBatch::submit() {
   return result;
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

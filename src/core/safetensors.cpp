@@ -1,10 +1,10 @@
-#include "vidfab/safetensors.h"
+#include "slopfab/safetensors.h"
 
 #include <cstdlib>
 #include <stdexcept>
 #include <utility>
 
-#include "vidfab/json.h"
+#include "slopfab/json.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -21,7 +21,7 @@
 #include <unistd.h>
 #endif
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 // Header length prefix plus a sanity bound. Real headers run ~100 KB; anything
@@ -235,8 +235,8 @@ bool SafeTensors::prefetch_range(const void* begin, size_t bytes) const {
   // Exists so the same binary can be run both ways. Proving that a readahead
   // hint left the weight arena bit-identical needs an A/B, and an A/B across
   // two builds proves less than one across two runs of one build. Same shape
-  // as VIDFAB_NATIVE_NVFP4 in transformer.cpp.
-  if (env_flag("VIDFAB_NO_PREFETCH")) return false;
+  // as SLOPFAB_NATIVE_NVFP4 in transformer.cpp.
+  if (env_flag("SLOPFAB_NO_PREFETCH")) return false;
 #ifdef _WIN32
   // PrefetchVirtualMemory is Windows 8+. Resolved at run time rather than
   // link time so a build that runs on something older degrades to demand
@@ -377,4 +377,4 @@ const TensorView& SafeTensors::at(std::string_view name) const {
   return *v;
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

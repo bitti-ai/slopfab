@@ -23,31 +23,31 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/audio/wav.h"
-#include "vidfab/video/mux.h"
-#include "vidfab/video/y4m.h"
-#include "vidfab/video/y4m_compare.h"
+#include "slopfab/audio/wav.h"
+#include "slopfab/video/mux.h"
+#include "slopfab/video/y4m.h"
+#include "slopfab/video/y4m_compare.h"
 
 namespace {
 
-struct CountingConverter final : vidfab::video::FrameConverter {
+struct CountingConverter final : slopfab::video::FrameConverter {
   int calls = 0;
   bool saw_padded_stride = false;
   void convert(const float* r, const float* g, const float* b, int height, int width,
                uint8_t* y, int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
     ++calls;
     saw_padded_stride = saw_padded_stride || ys > width || us > width / 2 || vs > width / 2;
-    vidfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
+    slopfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
   }
 };
 
-struct ThrowingConverter final : vidfab::video::FrameConverter {
+struct ThrowingConverter final : slopfab::video::FrameConverter {
   int calls = 0;
   int throw_after = 1;
   void convert(const float* r, const float* g, const float* b, int height, int width,
                uint8_t* y, int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
     if (++calls > throw_after) throw std::runtime_error("converter sentinel failure");
-    vidfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
+    slopfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
   }
 };
 
@@ -113,9 +113,9 @@ const RiffChunk* find_chunk(const std::vector<RiffChunk>& chunks, const char* id
 // A moving diagonal gradient plus a colour ramp. Deterministic, has content in
 // all three channels, and moves between frames so a muxer that repeats or
 // drops a frame produces a visibly different file.
-vidfab::PixelBuffer make_clip(int frames, int height, int width) {
+slopfab::PixelBuffer make_clip(int frames, int height, int width) {
   const size_t n = static_cast<size_t>(frames) * height * width;
-  vidfab::PixelBuffer v(3 * n);
+  slopfab::PixelBuffer v(3 * n);
   for (int f = 0; f < frames; ++f) {
     for (int y = 0; y < height; ++y) {
       for (int x = 0; x < width; ++x) {
@@ -151,8 +151,8 @@ std::vector<float> make_tone(int channels, int sample_rate, float seconds, float
 
 // --- wav --------------------------------------------------------------------
 
-VIDFAB_TEST(wav_pcm16_header_and_samples) {
-  using namespace vidfab::audio;
+SLOPFAB_TEST(wav_pcm16_header_and_samples) {
+  using namespace slopfab::audio;
 
   const int channels = 2;
   const int rate = 32000;
@@ -163,7 +163,7 @@ VIDFAB_TEST(wav_pcm16_header_and_samples) {
     pcm[static_cast<size_t>(i) * 2 + 1] = -0.5f + static_cast<float>(i) / 1024.0f;
   }
 
-  const std::filesystem::path path = temp_path("vidfab_pcm16.wav");
+  const std::filesystem::path path = temp_path("slopfab_pcm16.wav");
   write_wav(path.string(), pcm, channels, rate, SampleFormat::kPcm16);
   const std::vector<uint8_t> b = read_file(path);
 
@@ -207,8 +207,8 @@ VIDFAB_TEST(wav_pcm16_header_and_samples) {
   std::filesystem::remove(path);
 }
 
-VIDFAB_TEST(wav_float32_header_and_samples) {
-  using namespace vidfab::audio;
+SLOPFAB_TEST(wav_float32_header_and_samples) {
+  using namespace slopfab::audio;
 
   const int channels = 1;
   const int rate = 48000;
@@ -217,7 +217,7 @@ VIDFAB_TEST(wav_float32_header_and_samples) {
     pcm[i] = static_cast<float>(i) / 128.0f - 0.5f;
   }
 
-  const std::filesystem::path path = temp_path("vidfab_f32.wav");
+  const std::filesystem::path path = temp_path("slopfab_f32.wav");
   write_wav(path.string(), pcm, channels, rate, SampleFormat::kFloat32);
   const std::vector<uint8_t> b = read_file(path);
 
@@ -269,12 +269,12 @@ VIDFAB_TEST(wav_float32_header_and_samples) {
   std::filesystem::remove(path);
 }
 
-VIDFAB_TEST(wav_clamps_pcm16_and_passes_float) {
-  using namespace vidfab::audio;
+SLOPFAB_TEST(wav_clamps_pcm16_and_passes_float) {
+  using namespace slopfab::audio;
 
   const std::vector<float> hot = {2.0f, -2.0f, 1.0f, -1.0f, 0.0f, 1e9f};
 
-  const std::filesystem::path p16 = temp_path("vidfab_clip16.wav");
+  const std::filesystem::path p16 = temp_path("slopfab_clip16.wav");
   write_wav(p16.string(), hot, 1, 8000, SampleFormat::kPcm16);
   const std::vector<uint8_t> b16 = read_file(p16);
   const RiffChunk* d16 = find_chunk(walk_riff(b16), "data");
@@ -290,7 +290,7 @@ VIDFAB_TEST(wav_clamps_pcm16_and_passes_float) {
   }
   std::filesystem::remove(p16);
 
-  const std::filesystem::path p32 = temp_path("vidfab_clip32.wav");
+  const std::filesystem::path p32 = temp_path("slopfab_clip32.wav");
   write_wav(p32.string(), hot, 1, 8000, SampleFormat::kFloat32);
   const std::vector<uint8_t> b32 = read_file(p32);
   const RiffChunk* d32 = find_chunk(walk_riff(b32), "data");
@@ -307,21 +307,21 @@ VIDFAB_TEST(wav_clamps_pcm16_and_passes_float) {
   std::filesystem::remove(p32);
 }
 
-VIDFAB_TEST(wav_rejects_malformed_requests) {
-  using namespace vidfab::audio;
-  const std::filesystem::path path = temp_path("vidfab_bad.wav");
+SLOPFAB_TEST(wav_rejects_malformed_requests) {
+  using namespace slopfab::audio;
+  const std::filesystem::path path = temp_path("slopfab_bad.wav");
 
-  CHECK(vidfab::test::throws([] {
-    write_wav((std::filesystem::temp_directory_path() / "vidfab_bad.wav").string(),
+  CHECK(slopfab::test::throws([] {
+    write_wav((std::filesystem::temp_directory_path() / "slopfab_bad.wav").string(),
               std::vector<float>(4), 0, 8000);
   }));
-  CHECK(vidfab::test::throws([] {
-    write_wav((std::filesystem::temp_directory_path() / "vidfab_bad.wav").string(),
+  CHECK(slopfab::test::throws([] {
+    write_wav((std::filesystem::temp_directory_path() / "slopfab_bad.wav").string(),
               std::vector<float>(4), 2, 0);
   }));
   // 5 samples cannot be an integral number of stereo frames.
-  CHECK(vidfab::test::throws([] {
-    write_wav((std::filesystem::temp_directory_path() / "vidfab_bad.wav").string(),
+  CHECK(slopfab::test::throws([] {
+    write_wav((std::filesystem::temp_directory_path() / "slopfab_bad.wav").string(),
               std::vector<float>(5), 2, 8000);
   }));
   std::filesystem::remove(path);
@@ -380,8 +380,8 @@ void rgb_frame_to_yuv420_serial(const float* r, const float* g, const float* b, 
   }
 }
 
-VIDFAB_TEST(rgb_to_yuv_threading_is_bit_identical) {
-  using namespace vidfab::video;
+SLOPFAB_TEST(rgb_to_yuv_threading_is_bit_identical) {
+  using namespace slopfab::video;
 
   // Above the parallel floor (256k pixels) so the threaded path really runs,
   // and below it so the serial path is exercised too. A row count that is not
@@ -401,7 +401,7 @@ VIDFAB_TEST(rgb_to_yuv_threading_is_bit_identical) {
   };
 
   for (const Case& c : cases) {
-    const vidfab::PixelBuffer clip = make_clip(1, c.height, c.width);
+    const slopfab::PixelBuffer clip = make_clip(1, c.height, c.width);
     const size_t plane = static_cast<size_t>(c.height) * c.width;
     // Over-wide strides again: the split must not confuse stride with extent.
     const int y_stride = c.width + 7;
@@ -427,8 +427,8 @@ VIDFAB_TEST(rgb_to_yuv_threading_is_bit_identical) {
   }
 }
 
-VIDFAB_TEST(y4m_frame_split_writes_frames_in_order) {
-  using namespace vidfab::video;
+SLOPFAB_TEST(y4m_frame_split_writes_frames_in_order) {
+  using namespace slopfab::video;
 
   // write_y4m converts frames in parallel batches and writes each batch in
   // order once it has joined. The risk that buys is a file whose frames are
@@ -441,9 +441,9 @@ VIDFAB_TEST(y4m_frame_split_writes_frames_in_order) {
   const int frames = 19;
   const int height = 512;
   const int width = 520;
-  const vidfab::PixelBuffer clip = make_clip(frames, height, width);
+  const slopfab::PixelBuffer clip = make_clip(frames, height, width);
 
-  const std::filesystem::path path = temp_path("vidfab_frame_split.y4m");
+  const std::filesystem::path path = temp_path("slopfab_frame_split.y4m");
   write_y4m(path.string(), clip, frames, height, width, FrameRate{24, 1});
   const std::vector<uint8_t> file = read_file(path);
   std::filesystem::remove(path);
@@ -483,15 +483,15 @@ VIDFAB_TEST(y4m_frame_split_writes_frames_in_order) {
   CHECK(off == file.size());
 }
 
-VIDFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
-  using namespace vidfab::video;
+SLOPFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
+  using namespace slopfab::video;
 
   const int frames = 3;
   const int height = 8;
   const int width = 16;
-  const vidfab::PixelBuffer clip = make_clip(frames, height, width);
+  const slopfab::PixelBuffer clip = make_clip(frames, height, width);
 
-  const std::filesystem::path path = temp_path("vidfab_convert.y4m");
+  const std::filesystem::path path = temp_path("slopfab_convert.y4m");
   write_y4m(path.string(), clip, frames, height, width, FrameRate{24, 1});
   const std::vector<uint8_t> file = read_file(path);
 
@@ -565,14 +565,14 @@ VIDFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
   std::filesystem::remove(path);
 }
 
-VIDFAB_TEST(y4m_uses_frame_converter_hook) {
-  using namespace vidfab::video;
+SLOPFAB_TEST(y4m_uses_frame_converter_hook) {
+  using namespace slopfab::video;
   const int frames = 3;
   const int width = 10;
   const int height = 6;
-  const vidfab::PixelBuffer clip = make_clip(frames, height, width);
-  const auto cpu_path = temp_path("vidfab_y4m_cpu.y4m");
-  const auto hook_path = temp_path("vidfab_y4m_hook.y4m");
+  const slopfab::PixelBuffer clip = make_clip(frames, height, width);
+  const auto cpu_path = temp_path("slopfab_y4m_cpu.y4m");
+  const auto hook_path = temp_path("slopfab_y4m_hook.y4m");
   write_y4m(cpu_path.string(), clip, frames, height, width);
   CountingConverter converter;
   write_y4m(hook_path.string(), clip, frames, height, width, {}, &converter);
@@ -582,11 +582,11 @@ VIDFAB_TEST(y4m_uses_frame_converter_hook) {
   std::filesystem::remove(hook_path);
 }
 
-VIDFAB_TEST(y4m_removes_partial_file_when_converter_throws) {
-  using namespace vidfab::video;
-  const auto path = temp_path("vidfab_y4m_converter_failure.y4m");
+SLOPFAB_TEST(y4m_removes_partial_file_when_converter_throws) {
+  using namespace slopfab::video;
+  const auto path = temp_path("slopfab_y4m_converter_failure.y4m");
   std::filesystem::remove(path);
-  const vidfab::PixelBuffer clip = make_clip(3, 6, 10);
+  const slopfab::PixelBuffer clip = make_clip(3, 6, 10);
   ThrowingConverter converter;
   bool preserved = false;
   try {
@@ -599,11 +599,11 @@ VIDFAB_TEST(y4m_removes_partial_file_when_converter_throws) {
   CHECK(!std::filesystem::exists(path));
 }
 
-VIDFAB_TEST(y4m_exact_comparison_reports_first_byte) {
-  using namespace vidfab::video;
-  const auto expected_path = temp_path("vidfab_compare_expected.y4m");
-  const auto actual_path = temp_path("vidfab_compare_actual.y4m");
-  const vidfab::PixelBuffer clip = make_clip(2, 6, 10);
+SLOPFAB_TEST(y4m_exact_comparison_reports_first_byte) {
+  using namespace slopfab::video;
+  const auto expected_path = temp_path("slopfab_compare_expected.y4m");
+  const auto actual_path = temp_path("slopfab_compare_actual.y4m");
+  const slopfab::PixelBuffer clip = make_clip(2, 6, 10);
   write_y4m(expected_path.string(), clip, 2, 6, 10);
   write_y4m(actual_path.string(), clip, 2, 6, 10);
   ExactY4mComparison comparison =
@@ -661,8 +661,8 @@ VIDFAB_TEST(y4m_exact_comparison_reports_first_byte) {
 
 // --- ffmpeg ----------------------------------------------------------------
 
-VIDFAB_TEST(ffmpeg_probe_is_coherent) {
-  using namespace vidfab::video;
+SLOPFAB_TEST(ffmpeg_probe_is_coherent) {
+  using namespace slopfab::video;
 
   std::string first;
   std::string second;
@@ -706,8 +706,8 @@ VIDFAB_TEST(ffmpeg_probe_is_coherent) {
   }
 }
 
-VIDFAB_TEST(mp4_video_and_audio_end_to_end) {
-  using namespace vidfab::video;
+SLOPFAB_TEST(mp4_video_and_audio_end_to_end) {
+  using namespace slopfab::video;
 
   std::string detail;
   if (!ffmpeg_available(&detail)) {
@@ -719,10 +719,10 @@ VIDFAB_TEST(mp4_video_and_audio_end_to_end) {
   const int width = 130;
   const int height = 128;
   const int rate = 32000;
-  const vidfab::PixelBuffer clip = make_clip(frames, height, width);
+  const slopfab::PixelBuffer clip = make_clip(frames, height, width);
   const std::vector<float> tone = make_tone(2, rate, 1.0f, 440.0f);
 
-  const std::filesystem::path path = temp_path("vidfab_muxed.mp4");
+  const std::filesystem::path path = temp_path("slopfab_muxed.mp4");
   std::filesystem::remove(path);
 
   MuxRequest req;
@@ -772,8 +772,8 @@ VIDFAB_TEST(mp4_video_and_audio_end_to_end) {
   std::filesystem::remove(path);
 }
 
-VIDFAB_TEST(mp4_video_only_and_bad_requests) {
-  using namespace vidfab::video;
+SLOPFAB_TEST(mp4_video_only_and_bad_requests) {
+  using namespace slopfab::video;
 
   if (!ffmpeg_available(nullptr)) {
     std::printf("  skipped: no usable ffmpeg\n");
@@ -782,9 +782,9 @@ VIDFAB_TEST(mp4_video_only_and_bad_requests) {
 
   const int frames = 8;
   const int size = 64;
-  const vidfab::PixelBuffer clip = make_clip(frames, size, size);
+  const slopfab::PixelBuffer clip = make_clip(frames, size, size);
 
-  const std::filesystem::path path = temp_path("vidfab_silent.mp4");
+  const std::filesystem::path path = temp_path("slopfab_silent.mp4");
   std::filesystem::remove(path);
 
   MuxRequest req;
@@ -825,7 +825,7 @@ VIDFAB_TEST(mp4_video_only_and_bad_requests) {
   bad_audio.audio_channels = 2;
   CHECK(write_mp4(bad_audio) == MuxStatus::kWriteFailed);
 
-  const std::filesystem::path failed_path = temp_path("vidfab_converter_failure.mp4");
+  const std::filesystem::path failed_path = temp_path("slopfab_converter_failure.mp4");
   std::filesystem::remove(failed_path);
   ThrowingConverter converter;
   converter.throw_after = 0;

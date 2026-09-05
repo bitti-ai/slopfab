@@ -1,4 +1,4 @@
-#include "vidfab/cuda/vae_vit_block.h"
+#include "slopfab/cuda/vae_vit_block.h"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -8,14 +8,14 @@
 #include <cstring>
 #include <stdexcept>
 
-#include "vidfab/cuda/deterministic_attention.cuh"
-#include "vidfab/cuda/deterministic_gemm.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/nn_kernels.cuh"
-#include "vidfab/cuda/vae_kernels.cuh"
+#include "slopfab/cuda/deterministic_attention.cuh"
+#include "slopfab/cuda/deterministic_gemm.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/nn_kernels.cuh"
+#include "slopfab/cuda/vae_kernels.cuh"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 using vae::ViTBlockConfig;
@@ -246,7 +246,7 @@ struct ExactViTBlockGraph::Impl {
     bool has_work = false;
 
     ScratchSlot() {
-      VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&completion,
+      SLOPFAB_CUDA_CHECK(cudaEventCreateWithFlags(&completion,
                                                   cudaEventDisableTiming));
     }
     ~ScratchSlot() {
@@ -260,10 +260,10 @@ struct ExactViTBlockGraph::Impl {
 
     void wait(cudaStream_t stream) const {
       if (has_work)
-        VIDFAB_CUDA_CHECK(cudaStreamWaitEvent(stream, completion, 0));
+        SLOPFAB_CUDA_CHECK(cudaStreamWaitEvent(stream, completion, 0));
     }
     void mark(cudaStream_t stream) {
-      VIDFAB_CUDA_CHECK(cudaEventRecord(completion, stream));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(completion, stream));
       has_work = true;
     }
   };
@@ -462,4 +462,4 @@ std::unique_ptr<vae::ExactViTBlockStage> create_exact_vae_vit_block_stage(
   return std::make_unique<CudaExactViTBlockStage>(config);
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

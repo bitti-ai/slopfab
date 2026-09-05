@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/dit_graph.h"
+#include "slopfab/vulkan/dit_graph.h"
 
 #include <array>
 #include <limits>
@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 void validate_graph_config(const H3MainGraphConfig& config) {
@@ -239,4 +239,4 @@ uint64_t ExactH3MainGraph::peak_device_bytes() const noexcept {
       ? std::numeric_limits<uint64_t>::max() : persistent + scratch;
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

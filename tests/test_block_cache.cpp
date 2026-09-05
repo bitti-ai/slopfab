@@ -16,16 +16,16 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/dit/block_cache.h"
+#include "slopfab/dit/block_cache.h"
 
 namespace {
 
-using vidfab::dit::BlockCache;
-using vidfab::dit::BlockCacheConfig;
-using vidfab::dit::BlockSpan;
-using vidfab::dit::kMinBlockWarmup;
-using vidfab::dit::plan_block_cache;
-using vidfab::dit::resolve_block_span;
+using slopfab::dit::BlockCache;
+using slopfab::dit::BlockCacheConfig;
+using slopfab::dit::BlockSpan;
+using slopfab::dit::kMinBlockWarmup;
+using slopfab::dit::plan_block_cache;
+using slopfab::dit::resolve_block_span;
 
 BlockCacheConfig cfg(int span, int interval, int warmup = 3, int start = -1) {
   BlockCacheConfig c;
@@ -83,7 +83,7 @@ bool terminal_is_off_interval(const BlockCacheConfig& c, int steps) {
 
 }  // namespace
 
-VIDFAB_TEST(block_span_centres_by_default) {
+SLOPFAB_TEST(block_span_centres_by_default) {
   // 50 blocks, span 10 -> [20, 30). The point of centring is that neither end
   // block is in the span; assert that directly rather than only the indices,
   // because that is the property the default exists to guarantee.
@@ -103,13 +103,13 @@ VIDFAB_TEST(block_span_centres_by_default) {
   CHECK(odd.end < 50);
 }
 
-VIDFAB_TEST(block_span_honours_explicit_start) {
+SLOPFAB_TEST(block_span_honours_explicit_start) {
   const BlockSpan s = resolve_block_span(cfg(4, 2, 3, /*start=*/7), 50);
   CHECK(s.begin == 7);
   CHECK(s.end == 11);
 }
 
-VIDFAB_TEST(block_span_clamps_rather_than_failing) {
+SLOPFAB_TEST(block_span_clamps_rather_than_failing) {
   // A span wider than the stack means "everything", not an error after a
   // 19.6 GiB load.
   const BlockSpan all = resolve_block_span(cfg(999, 2), 50);
@@ -128,13 +128,13 @@ VIDFAB_TEST(block_span_clamps_rather_than_failing) {
   CHECK(tail.end == 50);
 }
 
-VIDFAB_TEST(block_span_disabled_is_invalid) {
+SLOPFAB_TEST(block_span_disabled_is_invalid) {
   CHECK(!resolve_block_span(cfg(0, 2), 50).valid());   // span 0
   CHECK(!resolve_block_span(cfg(10, 1), 50).valid());  // interval 1
   CHECK(!resolve_block_span(cfg(10, 2), 0).valid());   // no blocks
 }
 
-VIDFAB_TEST(block_cache_plan_protects_warmup_and_terminal) {
+SLOPFAB_TEST(block_cache_plan_protects_warmup_and_terminal) {
   // 10 steps, warmup 3, interval 2. Steps 0,1,2 warm up; the interval is phased
   // from the end of the warmup so step 3 computes, 4 reuses, 5 computes, 6
   // reuses, 7 computes, 8 reuses; step 9 is terminal and forced.
@@ -163,7 +163,7 @@ VIDFAB_TEST(block_cache_plan_protects_warmup_and_terminal) {
   CHECK(asserted > 0);
 }
 
-VIDFAB_TEST(block_cache_interval_is_phased_from_the_warmup) {
+SLOPFAB_TEST(block_cache_interval_is_phased_from_the_warmup) {
   // Anchoring the interval at step 0 makes the first post-warmup step compute
   // or reuse depending on whether the warmup happens to divide the interval —
   // a silent coupling between two flags that look independent. With warmup 3
@@ -183,7 +183,7 @@ VIDFAB_TEST(block_cache_interval_is_phased_from_the_warmup) {
   }
 }
 
-VIDFAB_TEST(block_cache_never_reuses_an_absent_delta) {
+SLOPFAB_TEST(block_cache_never_reuses_an_absent_delta) {
   // The floor on the warmup. `--block-cache-warmup 0` must not become "reuse
   // from step 0", which would add uninitialised device memory to the residual
   // stream — the one way this feature reaches a NaN rather than a drift.
@@ -201,7 +201,7 @@ VIDFAB_TEST(block_cache_never_reuses_an_absent_delta) {
   CHECK(cache.computed() == 8);
 }
 
-VIDFAB_TEST(block_cache_disabled_computes_everything) {
+SLOPFAB_TEST(block_cache_disabled_computes_everything) {
   // The shipped default must leave every step computing, so that a build with
   // this feature present is identical to one without it until asked.
   const std::vector<uint8_t> off = plan_block_cache(cfg(0, 2), 20);
@@ -212,7 +212,7 @@ VIDFAB_TEST(block_cache_disabled_computes_everything) {
   CHECK(count(plan_block_cache(cfg(10, 1), 20)) == 20);
 }
 
-VIDFAB_TEST(block_cache_counts_add_up) {
+SLOPFAB_TEST(block_cache_counts_add_up) {
   const BlockCacheConfig c = cfg(10, 2, 3);
   BlockCache cache(c, 20);
   bool have = false;

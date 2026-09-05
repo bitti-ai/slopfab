@@ -7,7 +7,7 @@
 // and buys exact agreement with a reference that dequantises first (spec 8.2).
 // Native fp8/int8 GEMM will slot in behind `set_native` later.
 
-#include "vidfab/cuda/linear.cuh"
+#include "slopfab/cuda/linear.cuh"
 
 #include <cuda_runtime.h>
 
@@ -16,11 +16,11 @@
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/gemm.cuh"
-#include "vidfab/cuda/nvfp4_gemm.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/gemm.cuh"
+#include "slopfab/cuda/nvfp4_gemm.cuh"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr int kThreads = 256;
@@ -31,7 +31,7 @@ inline size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
 
 // --- float8 E4M3 ------------------------------------------------------------
 //
-// Transcribed from `vidfab::f8_e4m3_to_f32` in dtype.h, including the unsigned
+// Transcribed from `slopfab::f8_e4m3_to_f32` in dtype.h, including the unsigned
 // wraparound in the subnormal loop, because the two are compared on all 256
 // bit patterns in test_nn_kernels.cu. Do not "simplify" one without the other.
 __device__ inline float f8_e4m3_to_f32_dev(uint8_t v) {
@@ -513,7 +513,7 @@ void launch_pre_quant_scale_impl(const T* src, const __nv_bfloat16* scale, T* ds
   const dim3 grid(static_cast<unsigned>(rows),
                   static_cast<unsigned>(grid_1d(static_cast<size_t>(dim), kThreads)));
   pre_quant_scale_kernel<<<grid, kThreads, 0, stream>>>(src, scale, dst, dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -588,7 +588,7 @@ void add_bias(void* y, bool y_is_f32, const QuantWeight& w, int rows, cudaStream
         throw std::runtime_error("linear: unsupported bias format");
     }
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 // Returns a dense bf16 view of `w`, dequantising into `ws` when the stored
@@ -633,12 +633,12 @@ const __nv_bfloat16* materialise_bf16(const QuantWeight& w, Workspace& ws, cudaS
     case QuantFormat::kF16:
       f16_to_bf16_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(
           static_cast<const __half*>(w.data), dst, n);
-      VIDFAB_CUDA_CHECK(cudaGetLastError());
+      SLOPFAB_CUDA_CHECK(cudaGetLastError());
       break;
     case QuantFormat::kF32:
       f32_to_bf16_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(
           static_cast<const float*>(w.data), dst, n);
-      VIDFAB_CUDA_CHECK(cudaGetLastError());
+      SLOPFAB_CUDA_CHECK(cudaGetLastError());
       break;
     default:
       throw std::runtime_error("linear: unhandled weight format");
@@ -736,7 +736,7 @@ void LinearRunner::init(cublasHandle_t handle, cudaStream_t stream) {
   handle_ = handle;
   stream_ = stream;
   native_nvfp4_device_ = current_device_compute_capability() == 120;
-  VIDFAB_CUBLAS_CHECK(cublas_set_stream(handle_, stream_));
+  SLOPFAB_CUBLAS_CHECK(cublas_set_stream(handle_, stream_));
 }
 
 bool LinearRunner::takes_native_nvfp4(const QuantWeight& w) const {
@@ -828,7 +828,7 @@ void LinearRunner::forward_prepared(const QuantWeight& w, const __nv_bfloat16* w
   // [in,out] and x as [in,rows]; op_T on W then gives [out,in] * [in,rows].
   const float alpha = 1.0f;
   const float beta = 0.0f;
-  VIDFAB_CUBLAS_CHECK(cublas_gemm_ex(handle_, CUBLAS_OP_T, CUBLAS_OP_N, w.out_features, rows,
+  SLOPFAB_CUBLAS_CHECK(cublas_gemm_ex(handle_, CUBLAS_OP_T, CUBLAS_OP_N, w.out_features, rows,
                                    w.in_features, &alpha, weight, CUDA_R_16BF, w.in_features, xin,
                                    CUDA_R_16BF, w.in_features, &beta, y, CUDA_R_16BF,
                                    w.out_features, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
@@ -900,7 +900,7 @@ void launch_convrot_impl(const T* in, T* out, int rows, int dim, int group, cuda
   const int blocks = static_cast<int>((groups + groups_per_block - 1) / groups_per_block);
   convrot_kernel<<<blocks, threads, shared, stream>>>(in, out, group, stages, norm,
                                                       groups_per_block, groups);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 }  // namespace
@@ -926,7 +926,7 @@ void launch_dequant_f8e4m3(const uint8_t* src, const float* scale, __nv_bfloat16
   } else {
     dequant_f8_scalar_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(src, scale, dst, n);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_dequant_i8_per_channel(const int8_t* src, const float* scale, __nv_bfloat16* dst,
@@ -941,7 +941,7 @@ void launch_dequant_i8_per_channel(const int8_t* src, const float* scale, __nv_b
     dequant_i8_scalar_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(src, scale, dst,
                                                                            in_features, n);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float global_scale,
@@ -969,7 +969,7 @@ void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float 
                   static_cast<unsigned>(std::min(out_features, 65535)));
   dequant_nvfp4_kernel<<<grid, kThreads, 0, stream>>>(src, block_scale, global_scale, dst,
                                                       out_features, packs_per_row, blocks_per_row);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 namespace {
@@ -1024,7 +1024,7 @@ void launch_dequant_nf4(const uint8_t* src, const uint8_t* absmax, const float* 
         src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
         nested_offset, dst, n);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_dequant_nf4_f16(const uint8_t* src, const uint8_t* absmax, const float* quant_map,
@@ -1046,7 +1046,7 @@ void launch_dequant_nf4_f16(const uint8_t* src, const uint8_t* absmax, const flo
         src, absmax, quant_map, nested_quant_map, nested_absmax, block_size, nested_block_size,
         nested_offset, dst, n);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_pre_quant_scale(const __nv_bfloat16* src, const __nv_bfloat16* scale,
@@ -1065,19 +1065,19 @@ void launch_quantize_f8e4m3(const __nv_bfloat16* src, float input_scale, uint8_t
   }
   quantize_f8_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(src, 1.0f / input_scale, dst,
                                                                    n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_widen_bf16(const __nv_bfloat16* src, float* dst, size_t n, cudaStream_t stream) {
   if (n == 0) return;
   widen_bf16_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(src, dst, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_narrow_to_bf16(const float* src, __nv_bfloat16* dst, size_t n, cudaStream_t stream) {
   if (n == 0) return;
   narrow_bf16_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(src, dst, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 const __nv_bfloat16* materialize_bf16_exact(const QuantWeight& weight,
@@ -1086,4 +1086,4 @@ const __nv_bfloat16* materialize_bf16_exact(const QuantWeight& weight,
   return materialise_bf16(weight, workspace, stream);
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

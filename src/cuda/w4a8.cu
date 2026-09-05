@@ -1,12 +1,12 @@
-#include "vidfab/cuda/w4a8.cuh"
+#include "slopfab/cuda/w4a8.cuh"
 
 #include <cuda_fp8.h>
 
 #include <stdexcept>
 
-#include "vidfab/cuda/device.h"
+#include "slopfab/cuda/device.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr int kThreads = 256;
@@ -132,7 +132,7 @@ void launch_dequant_w4a8_weight(const int8_t* packed,
                           kThreads, 0, stream>>>(
       packed, group_scale, codebook, output, count, in_features / 2,
       in_features, in_features / group_size, group_size);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_quantize_w4a8_activation(const __half* input, int8_t* output,
@@ -146,7 +146,7 @@ void launch_quantize_w4a8_activation(const __half* input, int8_t* output,
       (static_cast<size_t>(in_features) + kConvRotGroup) * sizeof(float);
   quantize_activation_kernel<<<static_cast<unsigned>(rows), kThreads, shared,
                                stream>>>(input, output, row_scale, in_features);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_dequant_w4a8_output(int32_t* input_output,
@@ -161,7 +161,7 @@ void launch_dequant_w4a8_output(int32_t* input_output,
   dequant_output_kernel<<<static_cast<unsigned>((count + kThreads - 1) / kThreads),
                           kThreads, 0, stream>>>(
       input_output, activation_scale, weight_scale, count, cols);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

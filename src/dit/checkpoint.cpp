@@ -1,4 +1,4 @@
-#include "vidfab/dit/checkpoint.h"
+#include "slopfab/dit/checkpoint.h"
 
 #include <algorithm>
 #include <cctype>
@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 namespace {
 
 bool has(const SafeTensors& st, const char* name) { return st.find(name) != nullptr; }
@@ -98,4 +98,4 @@ void require_ref2va_transformer(const SafeTensors& checkpoint, size_t reference_
       checkpoint.path() + "' is a " + transformer_architecture_name(architecture));
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

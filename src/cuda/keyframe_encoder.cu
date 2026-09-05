@@ -1,12 +1,12 @@
-#include "vidfab/cuda/keyframe_encoder.cuh"
-#include "vidfab/cuda/deterministic_math.cuh"
+#include "slopfab/cuda/keyframe_encoder.cuh"
+#include "slopfab/cuda/deterministic_math.cuh"
 
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 __device__ int reflect_index(int i, int n) {
@@ -140,4 +140,4 @@ void launch_keyframe_add(const float* a, const float* b, float* y, size_t count,
   add_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(a, b, y, count);
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

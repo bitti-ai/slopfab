@@ -1,4 +1,4 @@
-#include "vidfab/vae/keyframe_encoder.h"
+#include "slopfab/vae/keyframe_encoder.h"
 
 #include <cuda_fp16.h>
 
@@ -10,14 +10,14 @@
 #include <utility>
 #include <vector>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/keyframe_encoder.cuh"
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/nf4_weight.cuh"
-#include "vidfab/nf4.h"
-#include "vidfab/tensor_convert.h"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/keyframe_encoder.cuh"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/nf4_weight.cuh"
+#include "slopfab/nf4.h"
+#include "slopfab/tensor_convert.h"
 
-namespace vidfab::vae {
+namespace slopfab::vae {
 namespace {
 
 using cuda::DeviceBuffer;
@@ -245,7 +245,7 @@ class Loader {
 
   void copy_in(__half* dst, const __half* src, size_t count) {
     if (count == 0) return;
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, count * sizeof(__half), cudaMemcpyHostToDevice,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, count * sizeof(__half), cudaMemcpyHostToDevice,
                                       stream_));
   }
 
@@ -291,7 +291,7 @@ struct KeyframeEncoder::Impl {
     const cuda::RegisteredMapping mapping(checkpoint.mapping_base(), checkpoint.file_size());
     if (!mapping.registered()) {
       std::fprintf(stderr,
-                   "vidfab: could not page-lock the video vae mapping for the keyframe encoder; "
+                   "slopfab: could not page-lock the video vae mapping for the keyframe encoder; "
                    "uploading via the staged path, which is slower\n");
     }
     const WeightPlan plan = plan_weights();
@@ -425,4 +425,4 @@ std::vector<float> KeyframeEncoder::encode_reference_image(
   return encode_condition_rows(image, normal.data(), latents_mean, latents_std);
 }
 
-}  // namespace vidfab::vae
+}  // namespace slopfab::vae

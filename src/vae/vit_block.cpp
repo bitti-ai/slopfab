@@ -1,13 +1,13 @@
-#include "vidfab/vae/vit_block.h"
+#include "slopfab/vae/vit_block.h"
 
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/tensor_convert.h"
+#include "slopfab/tensor_convert.h"
 
-namespace vidfab::vae {
+namespace slopfab::vae {
 namespace {
 
 void require_shape(const TensorView& tensor, int64_t rows, int64_t columns) {
@@ -141,4 +141,4 @@ ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint,
   return result;
 }
 
-}  // namespace vidfab::vae
+}  // namespace slopfab::vae

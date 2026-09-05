@@ -49,9 +49,9 @@
 // converted to fp16 first. k and v are converted once per call; q only a query
 // block at a time, which is the same arithmetic for 1/37th of the buffer.
 
-#include "vidfab/cuda/attention.cuh"
-#include "vidfab/cuda/sage_attention.cuh"
-#include "vidfab/cuda/sol_attention.cuh"
+#include "slopfab/cuda/attention.cuh"
+#include "slopfab/cuda/sage_attention.cuh"
+#include "slopfab/cuda/sol_attention.cuh"
 
 #include <cuda_fp16.h>
 
@@ -62,10 +62,10 @@
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/gemm.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/gemm.cuh"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr int kWarp = 32;
@@ -283,30 +283,30 @@ __global__ void online_softmax_kernel(__half* __restrict__ tile, float* __restri
 void launch_online_softmax(int chunks, int blocks, __half* tile, float* acc, float* m_run,
                            float* l_run, int key_block, int head_dim, cudaStream_t stream) {
   constexpr int shared = kSoftmaxThreads / kWarp * static_cast<int>(sizeof(float));
-#define VIDFAB_SOFTMAX_CASE(n)                                                                  \
+#define SLOPFAB_SOFTMAX_CASE(n)                                                                  \
   case n:                                                                                       \
     online_softmax_kernel<n><<<blocks, kSoftmaxThreads, shared, stream>>>(tile, acc, m_run,      \
                                                                          l_run, key_block,      \
                                                                          head_dim);             \
     break;
   switch (chunks) {
-    VIDFAB_SOFTMAX_CASE(1)
-    VIDFAB_SOFTMAX_CASE(2)
-    VIDFAB_SOFTMAX_CASE(4)
-    VIDFAB_SOFTMAX_CASE(8)
-    VIDFAB_SOFTMAX_CASE(12)
-    VIDFAB_SOFTMAX_CASE(16)
-    VIDFAB_SOFTMAX_CASE(20)
-    VIDFAB_SOFTMAX_CASE(24)
-    VIDFAB_SOFTMAX_CASE(28)
-    VIDFAB_SOFTMAX_CASE(32)
+    SLOPFAB_SOFTMAX_CASE(1)
+    SLOPFAB_SOFTMAX_CASE(2)
+    SLOPFAB_SOFTMAX_CASE(4)
+    SLOPFAB_SOFTMAX_CASE(8)
+    SLOPFAB_SOFTMAX_CASE(12)
+    SLOPFAB_SOFTMAX_CASE(16)
+    SLOPFAB_SOFTMAX_CASE(20)
+    SLOPFAB_SOFTMAX_CASE(24)
+    SLOPFAB_SOFTMAX_CASE(28)
+    SLOPFAB_SOFTMAX_CASE(32)
     default:
       online_softmax_kernel<0><<<blocks, kSoftmaxThreads, shared, stream>>>(
           tile, acc, m_run, l_run, key_block, head_dim);
       break;
   }
-#undef VIDFAB_SOFTMAX_CASE
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+#undef SLOPFAB_SOFTMAX_CASE
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 // --- bf16 -> fp16 -----------------------------------------------------------
@@ -350,7 +350,7 @@ void convert_bf16_to_f16(const __nv_bfloat16* src, __half* dst, size_t n, cudaSt
   } else {
     bf16_to_f16_scalar_kernel<<<static_cast<int>((n + 255) / 256), 256, 0, stream>>>(src, dst, n);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 // acc[head][row][d] / l[head][row] -> out[q0 + row][head*head_dim + d]
@@ -419,7 +419,7 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
   // one stream, which is the only configuration this project has; if attention
   // and a linear ever share a handle across two streams, this line silently
   // moves the linear's work as well. Give each stream its own handle then.
-  VIDFAB_CUBLAS_CHECK(cublas_set_stream(handle, stream));
+  SLOPFAB_CUBLAS_CHECK(cublas_set_stream(handle, stream));
 
   convert_bf16_to_f16(k, k16, static_cast<size_t>(S) * kvld, stream);
   convert_bf16_to_f16(v, v16, static_cast<size_t>(S) * kvld, stream);
@@ -436,10 +436,10 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
     // `acc` is deliberately *not* zeroed: the k0 == 0 PV GEMM runs with
     // beta = 0, which writes every element it would have read. That is 28 MB of
     // memset saved per query block.
-    VIDFAB_CUDA_CHECK(cudaMemsetAsync(l_run, 0, stat_n * sizeof(float), stream));
+    SLOPFAB_CUDA_CHECK(cudaMemsetAsync(l_run, 0, stat_n * sizeof(float), stream));
     fill_kernel<<<static_cast<int>((stat_n + 255) / 256), 256, 0, stream>>>(m_run, kHostNegInf,
                                                                            stat_n);
-    VIDFAB_CUDA_CHECK(cudaGetLastError());
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
 
     convert_bf16_to_f16(q + static_cast<size_t>(q0) * qld, q16, static_cast<size_t>(bq) * qld,
                         stream);
@@ -453,7 +453,7 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
       // S_tile[h] (row-major [bq, bk]) = Q[h] K[h]^T * scale.
       // Column-major: C[bk, bq] = op_T(K[D, bk]) * op_N(Q[D, bq]).
       if (G == 1) {
-        VIDFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
+        SLOPFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
             handle, CUBLAS_OP_T, CUBLAS_OP_N, bk, bq, D, &scale,
             k16 + static_cast<size_t>(k0) * kvld, CUDA_R_16F, kvld, D, q16, CUDA_R_16F, qld, D,
             &zero, tile_buf, CUDA_R_16F, bk, static_cast<long long>(bq) * bk, H,
@@ -462,7 +462,7 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
         // Grouped-query: the G query heads sharing a kv head are contiguous, so
         // each kv head is one batched call with a zero stride on K.
         for (int kv = 0; kv < num_kv_heads; ++kv) {
-          VIDFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
+          SLOPFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
               handle, CUBLAS_OP_T, CUBLAS_OP_N, bk, bq, D, &scale,
               k16 + static_cast<size_t>(k0) * kvld + static_cast<size_t>(kv) * D, CUDA_R_16F, kvld,
               0, q16 + static_cast<size_t>(kv) * G * D, CUDA_R_16F, qld, D, &zero,
@@ -477,14 +477,14 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
       // acc[h] (row-major [bq, D]) += P[h] V[h].
       // Column-major: C[D, bq] = op_N(V[D, bk]) * op_N(P[bk, bq]).
       if (G == 1) {
-        VIDFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
+        SLOPFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
             handle, CUBLAS_OP_N, CUBLAS_OP_N, D, bq, bk, &one,
             v16 + static_cast<size_t>(k0) * kvld, CUDA_R_16F, kvld, D, tile_buf, CUDA_R_16F, bk,
             static_cast<long long>(bq) * bk, pv_beta, acc, CUDA_R_32F, D,
             static_cast<long long>(bq) * D, H, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
       } else {
         for (int kv = 0; kv < num_kv_heads; ++kv) {
-          VIDFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
+          SLOPFAB_CUBLAS_CHECK(cublas_gemm_strided_batched_ex(
               handle, CUBLAS_OP_N, CUBLAS_OP_N, D, bq, bk, &one,
               v16 + static_cast<size_t>(k0) * kvld + static_cast<size_t>(kv) * D, CUDA_R_16F, kvld,
               0, tile_buf + static_cast<size_t>(kv) * G * bq * bk, CUDA_R_16F, bk,
@@ -497,7 +497,7 @@ void run_blocked(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16
 
     const dim3 grid(static_cast<unsigned>(stat_n), static_cast<unsigned>((D + 127) / 128));
     finalise_kernel<<<grid, 128, 0, stream>>>(acc, l_run, out, bq, H, D, q0);
-    VIDFAB_CUDA_CHECK(cudaGetLastError());
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
   }
 }
 
@@ -1112,10 +1112,10 @@ template <int D>
 void ensure_smem_optin() {
   static thread_local bool done = false;
   if (done) return;
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D, false>,
+  SLOPFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D, false>,
                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
                                          static_cast<int>(smem_bytes<D>())));
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D, true>,
+  SLOPFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D, true>,
                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
                                          static_cast<int>(smem_bytes<D>())));
   done = true;
@@ -1141,7 +1141,7 @@ void launch(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
     fused_kernel<D, false><<<grid, kThreads, smem_bytes<D>(), stream>>>(
         q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), nullptr);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 bool supported(const AttentionConfig& cfg) { return cfg.head_dim == 64 || cfg.head_dim == 128; }
@@ -1257,4 +1257,4 @@ void attention_forward_gqa(cublasHandle_t handle, cudaStream_t stream, const __n
   run_blocked(handle, stream, q, k, v, out, cfg, num_kv_heads, ws);
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

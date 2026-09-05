@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/audio_decoder.h"
+#include "slopfab/vulkan/audio_decoder.h"
 
 #include <algorithm>
 #include <array>
@@ -7,10 +7,10 @@
 #include <string>
 #include <utility>
 
-#include "vidfab/vae/audio_primitives.h"
-#include "vidfab/vulkan/tensor.h"
+#include "slopfab/vae/audio_primitives.h"
+#include "slopfab/vulkan/tensor.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 constexpr uint32_t kGraphOperators = 497;
@@ -554,4 +554,4 @@ uint32_t AudioDecoder::recorded_operators() const noexcept {
   return kGraphOperators;
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

@@ -6,17 +6,17 @@
 // `audio_timesteps[i]`. There is no guider and no second forward pass: the
 // released checkpoints are CFG-distilled.
 
-#include "vidfab/dit/denoise.h"
+#include "slopfab/dit/denoise.h"
 
 #include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/cuda/profile.h"
-#include "vidfab/sampler/noise.h"
+#include "slopfab/cuda/profile.h"
+#include "slopfab/sampler/noise.h"
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 namespace {
 
 void require(bool ok, const char* message) {
@@ -196,4 +196,4 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   return out;
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

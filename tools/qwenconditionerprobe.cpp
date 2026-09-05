@@ -5,18 +5,18 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/safetensors.h"
-#include "vidfab/text/encoder.h"
-#include "vidfab/text/qwen_vision.h"
-#include "vidfab/text/tokenizer.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/text/encoder.h"
+#include "slopfab/text/qwen_vision.h"
+#include "slopfab/text/tokenizer.h"
 
 int main(int argc, char** argv) {
   if (argc != 3) {
-    std::fprintf(stderr, "usage: vidfab_qwenconditionerprobe <qwen.safetensors> <tokenizer.json>\n");
+    std::fprintf(stderr, "usage: slopfab_qwenconditionerprobe <qwen.safetensors> <tokenizer.json>\n");
     return 2;
   }
   try {
-    vidfab::text::Tokenizer tokenizer; tokenizer.load(argv[2]);
+    slopfab::text::Tokenizer tokenizer; tokenizer.load(argv[2]);
     std::vector<uint8_t> rgb(256 * 256 * 3);
     for (int y=0;y<256;++y) for(int x=0;x<256;++x) {
       size_t i=(static_cast<size_t>(y)*256+x)*3;
@@ -24,15 +24,15 @@ int main(int argc, char** argv) {
       rgb[i+1]=static_cast<uint8_t>((5*x+11*y)&255);
       rgb[i+2]=static_cast<uint8_t>((x^y)&255);
     }
-    auto pixels=vidfab::text::qwen3vl_patchify_resized_rgb(rgb,256,256);
+    auto pixels=slopfab::text::qwen3vl_patchify_resized_rgb(rgb,256,256);
     auto label=tokenizer.encode("<Picture 1>: ");
-    auto ids=vidfab::text::qwen3vl_image_block(label,pixels.grid.merged_token_count());
+    auto ids=slopfab::text::qwen3vl_image_block(label,pixels.grid.merged_token_count());
     auto prompt=tokenizer.encode("A calm camera observes the reference image.");
     ids.insert(ids.end(),prompt.begin(),prompt.end());
 
-    vidfab::SafeTensors checkpoint; checkpoint.open(argv[1]);
-    vidfab::text::EncoderConfig cfg; cfg.residency=vidfab::text::Residency::kStreaming;
-    vidfab::text::Encoder encoder;
+    slopfab::SafeTensors checkpoint; checkpoint.open(argv[1]);
+    slopfab::text::EncoderConfig cfg; cfg.residency=slopfab::text::Residency::kStreaming;
+    slopfab::text::Encoder encoder;
     auto t0=std::chrono::steady_clock::now(); encoder.load(checkpoint,cfg);
     auto t1=std::chrono::steady_clock::now(); auto out=encoder.encode(ids,{pixels});
     auto t2=std::chrono::steady_clock::now();

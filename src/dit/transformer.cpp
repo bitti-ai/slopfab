@@ -19,10 +19,10 @@
 // The workspace is reserved once at the high-water mark in `prepare_sequence`
 // and never grows inside the loop.
 
-#include "vidfab/dit/transformer.h"
-#include "vidfab/dit/block_capture.h"
-#include "vidfab/dit/graph_capture.h"
-#include "vidfab/dit/rope.h"
+#include "slopfab/dit/transformer.h"
+#include "slopfab/dit/block_capture.h"
+#include "slopfab/dit/graph_capture.h"
+#include "slopfab/dit/rope.h"
 
 #include <functional>
 #include <fstream>
@@ -45,23 +45,23 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/cuda/attention.cuh"
-#include "vidfab/cuda/deterministic_attention.cuh"
-#include "vidfab/cuda/deterministic_gemm.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/diagnostics.cuh"
-#include "vidfab/cuda/gemm.cuh"
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/nn_kernels.cuh"
-#include "vidfab/cuda/profile.h"
-#include "vidfab/cuda/vae_kernels.cuh"
-#include "vidfab/cuda/workspace.cuh"
-#include "vidfab/dtype.h"
-#include "vidfab/json.h"
-#include "vidfab/sol_capture.h"
-#include "vidfab/tensor_convert.h"
+#include "slopfab/cuda/attention.cuh"
+#include "slopfab/cuda/deterministic_attention.cuh"
+#include "slopfab/cuda/deterministic_gemm.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/diagnostics.cuh"
+#include "slopfab/cuda/gemm.cuh"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/nn_kernels.cuh"
+#include "slopfab/cuda/profile.h"
+#include "slopfab/cuda/vae_kernels.cuh"
+#include "slopfab/cuda/workspace.cuh"
+#include "slopfab/dtype.h"
+#include "slopfab/json.h"
+#include "slopfab/sol_capture.h"
+#include "slopfab/tensor_convert.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 
 // Defined in src/cuda/dit_kernels.cu. Declared here rather than in a header
 // because they have exactly one caller each; a signature drift is a link
@@ -72,9 +72,9 @@ void launch_adaln_expand(const float* w, const float* bias, const float* code, f
 void launch_add_rows_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
                           cudaStream_t stream);
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 namespace {
 
 using cuda::AttentionBackend;
@@ -289,11 +289,11 @@ class Uploader {
       : stream_(stream), lock_(lock) {
     for (int i = 0; i < 2; ++i) {
       slot_[i].allocate(kStageBytes);
-      VIDFAB_CUDA_CHECK(cudaEventCreateWithFlags(&event_[i], cudaEventDisableTiming));
+      SLOPFAB_CUDA_CHECK(cudaEventCreateWithFlags(&event_[i], cudaEventDisableTiming));
       // Recorded once so the first wait on each slot is a no-op rather than a
       // wait on an event that was never recorded (which is legal but reads as
       // an accident).
-      VIDFAB_CUDA_CHECK(cudaEventRecord(event_[i], stream_));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(event_[i], stream_));
     }
   }
 
@@ -320,7 +320,7 @@ class Uploader {
     // wait for, and stream order keeps this correctly sequenced against the
     // staged copies around it.
     if (from_mapping && lock_ != nullptr && lock_->contains(src, bytes)) {
-      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream_));
+      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream_));
       return;
     }
 
@@ -328,11 +328,11 @@ class Uploader {
     uint8_t* d = static_cast<uint8_t*>(dst);
     while (bytes > 0) {
       const size_t n = std::min(bytes, kStageBytes);
-      VIDFAB_CUDA_CHECK(cudaEventSynchronize(event_[cur_]));
+      SLOPFAB_CUDA_CHECK(cudaEventSynchronize(event_[cur_]));
       std::memcpy(slot_[cur_].get(), s, n);
-      VIDFAB_CUDA_CHECK(
+      SLOPFAB_CUDA_CHECK(
           cudaMemcpyAsync(d, slot_[cur_].get(), n, cudaMemcpyHostToDevice, stream_));
-      VIDFAB_CUDA_CHECK(cudaEventRecord(event_[cur_], stream_));
+      SLOPFAB_CUDA_CHECK(cudaEventRecord(event_[cur_], stream_));
       cur_ ^= 1;
       s += n;
       d += n;
@@ -684,12 +684,12 @@ struct Transformer::Impl {
 
   void diagnose(const char* stage,const __nv_bfloat16* p,size_t n,int layer){
     if(!tensor_diag)return;
-    VIDFAB_CUDA_CHECK(cudaMemsetAsync(d_tensor_diag.get(),0,sizeof(cuda::TensorScan),stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaMemsetAsync(d_tensor_diag.get(),0,sizeof(cuda::TensorScan),stream.get()));
     cuda::launch_tensor_scan(p,n,d_tensor_diag.get(),stream.get());
     cuda::TensorScan h{};d_tensor_diag.copy_to_host(&h,1,stream.get());
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     float mx=0;std::memcpy(&mx,&h.max_bits,sizeof(mx));
-    std::fprintf(stderr,"vidfab tensor step=%d layer=%d stage=%s nonfinite=%llu max=%.7g\n",
+    std::fprintf(stderr,"slopfab tensor step=%d layer=%d stage=%s nonfinite=%llu max=%.7g\n",
                  denoise_step,layer,stage,h.nonfinite,mx);
     if(h.nonfinite)throw std::runtime_error("transformer: first non-finite tensor at "+std::string(stage));
   }
@@ -705,9 +705,9 @@ struct Transformer::Impl {
   uint64_t capture_hash(const __nv_bfloat16* data, size_t elements,
                         uint64_t seed = 1469598103934665603ull) {
     std::vector<uint16_t> host(elements);
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(host.data(), data, elements * 2,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(host.data(), data, elements * 2,
                                       cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     return fnv64_append(seed, host.data(), host.size() * 2);
   }
 
@@ -748,15 +748,15 @@ struct Transformer::Impl {
     next.cosine.resize(static_cast<size_t>(next.header.rope_elements));
     next.sine.resize(static_cast<size_t>(next.header.rope_elements));
     next.ranges = host_band;
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.input.data(), residual,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(next.input.data(), residual,
         next.input.size() * 2, cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.selectors.data(), selectors,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(next.selectors.data(), selectors,
         next.selectors.size() * sizeof(int32_t), cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.cosine.data(), cosine,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(next.cosine.data(), cosine,
         next.cosine.size() * sizeof(float), cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.sine.data(), sine,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(next.sine.data(), sine,
         next.sine.size() * sizeof(float), cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     next.header.input_fnv64 = fnv64_append(1469598103934665603ull,
         next.input.data(), next.input.size() * 2);
     next.active = true;
@@ -788,9 +788,9 @@ struct Transformer::Impl {
     if (!block_capture.active) return;
     std::vector<uint16_t> final(
         static_cast<size_t>(block_capture.header.residual_elements));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(final.data(), residual, final.size() * 2,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(final.data(), residual, final.size() * 2,
                                       cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     block_capture.header.final_fnv64 = fnv64_append(1469598103934665603ull,
         final.data(), final.size() * 2);
     std::ofstream output(block_capture_path, std::ios::binary | std::ios::trunc);
@@ -808,9 +808,9 @@ struct Transformer::Impl {
     if (!output) throw std::runtime_error(
         "transformer: failed writing H3 block capture: " + block_capture_path);
     block_capture.active = false; block_capture_done = true;
-    std::fprintf(stderr, "vidfab: captured exact H3 block step %d layer %d to %s\n",
+    std::fprintf(stderr, "slopfab: captured exact H3 block step %d layer %d to %s\n",
                  denoise_step, block_capture_layer, block_capture_path.c_str());
-    const char* stop = std::getenv("VIDFAB_H3_BLOCK_CAPTURE_EXIT");
+    const char* stop = std::getenv("SLOPFAB_H3_BLOCK_CAPTURE_EXIT");
     if (stop && stop[0] == '1')
       throw std::runtime_error("transformer: stopped after requested H3 block capture");
   }
@@ -851,18 +851,18 @@ struct Transformer::Impl {
     next.cosine.resize(static_cast<size_t>(next.header.rope_elements));
     next.sine.resize(static_cast<size_t>(next.header.rope_elements));
     next.ranges = host_band;
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.input.data(), residual,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(next.input.data(), residual,
         next.input.size() * 2, cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.selectors.data(), selectors,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(next.selectors.data(), selectors,
         next.selectors.size() * sizeof(int32_t), cudaMemcpyDeviceToHost,
         stream.get()));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.cosine.data(), cosine,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(next.cosine.data(), cosine,
         next.cosine.size() * sizeof(float), cudaMemcpyDeviceToHost,
         stream.get()));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(next.sine.data(), sine,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(next.sine.data(), sine,
         next.sine.size() * sizeof(float), cudaMemcpyDeviceToHost,
         stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     next.header.input_fnv64 = fnv64_append(1469598103934665603ull,
         next.input.data(), next.input.size() * 2);
     next.active = true;
@@ -878,9 +878,9 @@ struct Transformer::Impl {
     if (static_cast<uint32_t>(layer + 1) != graph_capture.header.layers) return;
     std::vector<uint16_t> final(
         static_cast<size_t>(graph_capture.header.residual_elements));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(final.data(), residual, final.size() * 2,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(final.data(), residual, final.size() * 2,
                                       cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     graph_capture.header.final_fnv64 = fnv64_append(1469598103934665603ull,
         final.data(), final.size() * 2);
     std::ofstream output(graph_capture_path, std::ios::binary | std::ios::trunc);
@@ -899,9 +899,9 @@ struct Transformer::Impl {
         "transformer: failed writing H3 graph capture: " + graph_capture_path);
     graph_capture.active = false;
     graph_capture_done = true;
-    std::fprintf(stderr, "vidfab: captured exact H3 50-layer graph step %d to %s\n",
+    std::fprintf(stderr, "slopfab: captured exact H3 50-layer graph step %d to %s\n",
                  denoise_step, graph_capture_path.c_str());
-    const char* stop = std::getenv("VIDFAB_H3_GRAPH_CAPTURE_EXIT");
+    const char* stop = std::getenv("SLOPFAB_H3_GRAPH_CAPTURE_EXIT");
     if (stop && stop[0] == '1')
       throw std::runtime_error(
           "transformer: stopped after requested H3 graph capture");
@@ -984,14 +984,14 @@ struct Transformer::Impl {
     cap.video_ts.assign(host_ts.begin(), host_ts.begin() + video_rows);
     cap.audio_ts.assign(host_ts.begin() + video_rows, host_ts.end());
     cap.selectors.resize(layout.total_rows());
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(cap.selectors.data(), d_adaln.get(),
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(cap.selectors.data(), d_adaln.get(),
         cap.selectors.size() * sizeof(int32_t), cudaMemcpyDeviceToHost,
         stream.get()));
     cap.text_cache.resize(static_cast<size_t>(cap.header.text_elements));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(cap.text_cache.data(), text_cache.get(),
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(cap.text_cache.data(), text_cache.get(),
         cap.text_cache.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost,
         stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     cap.forward_active = true;
   }
 
@@ -999,10 +999,10 @@ struct Transformer::Impl {
     auto& cap = transformer_capture;
     if (!cap.forward_active) return;
     cap.packed_input.resize(static_cast<size_t>(cap.header.packed_elements));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(cap.packed_input.data(), values,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(cap.packed_input.data(), values,
         cap.packed_input.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost,
         stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     cap.header.packed_input_fnv64 = fnv64_append(1469598103934665603ull,
         cap.packed_input.data(), cap.packed_input.size() * sizeof(uint16_t));
   }
@@ -1011,10 +1011,10 @@ struct Transformer::Impl {
     auto& cap = transformer_capture;
     if (!cap.forward_active) return;
     cap.main_final.resize(static_cast<size_t>(cap.header.packed_elements));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(cap.main_final.data(), values,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(cap.main_final.data(), values,
         cap.main_final.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost,
         stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     cap.header.main_final_fnv64 = fnv64_append(1469598103934665603ull,
         cap.main_final.data(), cap.main_final.size() * sizeof(uint16_t));
   }
@@ -1051,9 +1051,9 @@ struct Transformer::Impl {
         transformer_capture_path);
     cap.forward_active = false;
     transformer_capture_done = true;
-    std::fprintf(stderr, "vidfab: captured exact H3 transformer step %d to %s\n",
+    std::fprintf(stderr, "slopfab: captured exact H3 transformer step %d to %s\n",
                  denoise_step, transformer_capture_path.c_str());
-    const char* stop = std::getenv("VIDFAB_H3_TRANSFORMER_CAPTURE_EXIT");
+    const char* stop = std::getenv("SLOPFAB_H3_TRANSFORMER_CAPTURE_EXIT");
     if (stop && stop[0] == '1')
       throw std::runtime_error(
           "transformer: stopped after requested full H3 capture");
@@ -1067,13 +1067,13 @@ struct Transformer::Impl {
     const uint64_t n = static_cast<uint64_t>(rows) * cfg.num_attention_heads *
                        cfg.attention_head_dim;
     std::vector<uint16_t> host(static_cast<size_t>(n) * 3);
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(host.data(), q, n * sizeof(uint16_t),
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(host.data(), q, n * sizeof(uint16_t),
                                       cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(host.data() + n, k, n * sizeof(uint16_t),
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(host.data() + n, k, n * sizeof(uint16_t),
                                       cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(host.data() + 2 * n, v, n * sizeof(uint16_t),
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(host.data() + 2 * n, v, n * sizeof(uint16_t),
                                       cudaMemcpyDeviceToHost, stream.get()));
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     SolCaptureHeader header{{'V','F','S','O','L','Q','K','V'}, 1, sizeof(SolCaptureHeader),
                             static_cast<uint32_t>(rows),
                             static_cast<uint32_t>(cfg.num_attention_heads),
@@ -1087,9 +1087,9 @@ struct Transformer::Impl {
               static_cast<std::streamsize>(host.size() * sizeof(uint16_t)));
     if (!out) throw std::runtime_error("transformer: failed writing Sol capture: " + sol_capture_path);
     sol_capture_done = true;
-    std::fprintf(stderr, "vidfab: captured Sol Q/K/V step %d layer %d to %s\n",
+    std::fprintf(stderr, "slopfab: captured Sol Q/K/V step %d layer %d to %s\n",
                  denoise_step, layer, sol_capture_path.c_str());
-    const char* stop = std::getenv("VIDFAB_SOL_CAPTURE_EXIT");
+    const char* stop = std::getenv("SLOPFAB_SOL_CAPTURE_EXIT");
     if (stop != nullptr && stop[0] == '1')
       throw std::runtime_error("transformer: stopped after requested Sol capture");
   }
@@ -1141,7 +1141,7 @@ struct Transformer::Impl {
   std::vector<int32_t> host_ts;
 
   Impl() {
-    VIDFAB_CUBLAS_CHECK(cuda::cublas_create(&blas));
+    SLOPFAB_CUBLAS_CHECK(cuda::cublas_create(&blas));
     linear.init(blas, stream.get());
 
     // The native nvfp4 GEMM is 2.6-4.1x the dequantise-then-cuBLAS path and is
@@ -1150,41 +1150,41 @@ struct Transformer::Impl {
     // of the format, not a defect (see the README). Whether that survives 50
     // blocks and 29 steps is an end-to-end question, and this switch exists so
     // it can be answered by generating the same seed both ways rather than
-    // argued about. Same shape as VIDFAB_CUBLAS_PEDANTIC in vit_decoder.cu.
-    const char* native = std::getenv("VIDFAB_NATIVE_NVFP4");
+    // argued about. Same shape as SLOPFAB_CUBLAS_PEDANTIC in vit_decoder.cu.
+    const char* native = std::getenv("SLOPFAB_NATIVE_NVFP4");
     if (native != nullptr && native[0] == '1') linear.set_native(true);
-    const char* capture = std::getenv("VIDFAB_SOL_CAPTURE");
-    const char* block_capture_env = std::getenv("VIDFAB_H3_BLOCK_CAPTURE");
-    const char* graph_capture_env = std::getenv("VIDFAB_H3_GRAPH_CAPTURE");
+    const char* capture = std::getenv("SLOPFAB_SOL_CAPTURE");
+    const char* block_capture_env = std::getenv("SLOPFAB_H3_BLOCK_CAPTURE");
+    const char* graph_capture_env = std::getenv("SLOPFAB_H3_GRAPH_CAPTURE");
     const char* transformer_capture_env =
-        std::getenv("VIDFAB_H3_TRANSFORMER_CAPTURE");
-    const char* diag = std::getenv("VIDFAB_TENSOR_DIAG");
+        std::getenv("SLOPFAB_H3_TRANSFORMER_CAPTURE");
+    const char* diag = std::getenv("SLOPFAB_TENSOR_DIAG");
     tensor_diag=diag!=nullptr&&diag[0]=='1';
     if(tensor_diag)d_tensor_diag.allocate(1);
-    const char* sol_pipe=std::getenv("VIDFAB_SOL_PIPELINE");
+    const char* sol_pipe=std::getenv("SLOPFAB_SOL_PIPELINE");
     sol_pipeline_diag=sol_pipe!=nullptr&&sol_pipe[0]=='1';
     if (capture != nullptr && *capture != '\0') {
       sol_capture_path = capture;
-      const char* step = std::getenv("VIDFAB_SOL_CAPTURE_STEP");
-      const char* layer = std::getenv("VIDFAB_SOL_CAPTURE_LAYER");
+      const char* step = std::getenv("SLOPFAB_SOL_CAPTURE_STEP");
+      const char* layer = std::getenv("SLOPFAB_SOL_CAPTURE_LAYER");
       if (step != nullptr && *step != '\0') sol_capture_step = std::atoi(step);
       if (layer != nullptr && *layer != '\0') sol_capture_layer = std::atoi(layer);
     }
     if (block_capture_env && *block_capture_env) {
       block_capture_path = block_capture_env;
-      const char* step = std::getenv("VIDFAB_H3_BLOCK_CAPTURE_STEP");
-      const char* layer = std::getenv("VIDFAB_H3_BLOCK_CAPTURE_LAYER");
+      const char* step = std::getenv("SLOPFAB_H3_BLOCK_CAPTURE_STEP");
+      const char* layer = std::getenv("SLOPFAB_H3_BLOCK_CAPTURE_LAYER");
       if (step && *step) block_capture_step = std::atoi(step);
       if (layer && *layer) block_capture_layer = std::atoi(layer);
     }
     if (graph_capture_env && *graph_capture_env) {
       graph_capture_path = graph_capture_env;
-      const char* step = std::getenv("VIDFAB_H3_GRAPH_CAPTURE_STEP");
+      const char* step = std::getenv("SLOPFAB_H3_GRAPH_CAPTURE_STEP");
       if (step && *step) graph_capture_step = std::atoi(step);
     }
     if (transformer_capture_env && *transformer_capture_env) {
       transformer_capture_path = transformer_capture_env;
-      const char* step = std::getenv("VIDFAB_H3_TRANSFORMER_CAPTURE_STEP");
+      const char* step = std::getenv("SLOPFAB_H3_TRANSFORMER_CAPTURE_STEP");
       if (step && *step) transformer_capture_step = std::atoi(step);
     }
   }
@@ -1278,7 +1278,7 @@ struct Transformer::Impl {
     (void)label;
     capture_transformer_text_stage(x, rows, dim);
     if (!stage_hook) return;
-    VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream.get()));
     stage_hook(label, x, rows, dim);
   }
 
@@ -1818,7 +1818,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     // mysterious regression later.
     if (!lock.registered()) {
       std::fprintf(stderr,
-                   "vidfab: could not page-lock the transformer mapping; uploading via the "
+                   "slopfab: could not page-lock the transformer mapping; uploading via the "
                    "staged path, which is slower\n");
     }
     std::vector<float> wide;
@@ -1872,7 +1872,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
           //
           // Note what this does *not* do: the arena still stores these records
           // as fp32, so it saves no device memory. That is not an oversight,
-          // it is the thing that was verified — `VIDFAB_ARENA_HASH=1` over
+          // it is the thing that was verified — `SLOPFAB_ARENA_HASH=1` over
           // fl2va_pruned_fp8_scaled.safetensors gives 21045398272 bytes, 730
           // records, fnv1a 190cdce19da29c2d both before and after this change.
           // An arena that got smaller would be a different arena.
@@ -1903,7 +1903,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
       }
     }
   }
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
 
   // A hash of the finished weight arena, off unless asked for. This exists so
   // that a change to *how* the file is read can be shown to have left *what*
@@ -1911,7 +1911,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   // the same 12.5 GB byte for byte, and a single number either matches or it
   // does not. Reading it back costs one D2H of the arena — about half a second
   // — which is why it is behind an environment variable rather than always on.
-  if (const char* want = std::getenv("VIDFAB_ARENA_HASH"); want != nullptr && want[0] == '1') {
+  if (const char* want = std::getenv("SLOPFAB_ARENA_HASH"); want != nullptr && want[0] == '1') {
     constexpr size_t kChunk = 64u << 20;
     std::vector<uint64_t> host(kChunk / sizeof(uint64_t));
     uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
@@ -1919,7 +1919,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     const uint8_t* src = base;
     while (left > 0) {
       const size_t n = std::min(left, kChunk);
-      VIDFAB_CUDA_CHECK(cudaMemcpy(host.data(), src, n, cudaMemcpyDeviceToHost));
+      SLOPFAB_CUDA_CHECK(cudaMemcpy(host.data(), src, n, cudaMemcpyDeviceToHost));
       // Whole words only; the arena's records are 256-byte aligned, so the
       // trailing partial word can only be padding this loop never reaches.
       const size_t words = n / sizeof(uint64_t);
@@ -2209,10 +2209,10 @@ std::vector<float> Transformer::debug_modulation(int block_index,
   s.build_modulation(timesteps);
   const size_t per_block = s.block_mod_stride();
   std::vector<float> out(per_block);
-  VIDFAB_CUDA_CHECK(cudaMemcpyAsync(out.data(), s.mod.get() + block_index * per_block,
+  SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(out.data(), s.mod.get() + block_index * per_block,
                                     per_block * sizeof(float), cudaMemcpyDeviceToHost,
                                     s.stream.get()));
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   return out;
 }
 
@@ -2227,7 +2227,7 @@ std::vector<Transformer::DebugStage> Transformer::debug_text_stages(const float*
     stage.dim = dim;
     const size_t n = static_cast<size_t>(rows) * dim;
     std::vector<uint16_t> bits(n);
-    VIDFAB_CUDA_CHECK(
+    SLOPFAB_CUDA_CHECK(
         cudaMemcpy(bits.data(), x, n * sizeof(uint16_t), cudaMemcpyDeviceToHost));
     stage.data.resize(n);
     for (size_t i = 0; i < n; ++i) stage.data[i] = bf16_to_f32(bits[i]);
@@ -2247,7 +2247,7 @@ std::vector<float> Transformer::debug_text_cache() const {
   Impl& s = *impl_;
   if (s.num_text == 0 || s.text_cache.size() == 0) return {};
   std::vector<uint16_t> bits(s.text_cache.size());
-  VIDFAB_CUDA_CHECK(cudaMemcpy(bits.data(), s.text_cache.get(),
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(bits.data(), s.text_cache.get(),
                                bits.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
   std::vector<float> out(bits.size());
   for (size_t i = 0; i < bits.size(); ++i) out[i] = bf16_to_f32(bits[i]);
@@ -2349,9 +2349,9 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
 
   cuda::launch_rmsnorm(x, s.refiner_final_norm, normed, num_tokens, hidden, s.cfg.norm_eps,
                        s.stream.get());
-  VIDFAB_CUDA_CHECK(cudaMemcpyAsync(x, normed, rows * hidden * sizeof(__nv_bfloat16),
+  SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(x, normed, rows * hidden * sizeof(__nv_bfloat16),
                                     cudaMemcpyDeviceToDevice, s.stream.get()));
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   s.emit_stage("final_norm", x, num_tokens, hidden);
   s.transformer_capture.text_active = false;
   ws.clear();
@@ -2424,7 +2424,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   s.rope_sin.allocate(rope.sine.size());
   s.rope_cos.copy_from_host(rope.cosine.data(), rope.cosine.size(), s.stream.get());
   s.rope_sin.copy_from_host(rope.sine.data(), rope.sine.size(), s.stream.get());
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
 
   auto upload_idx = [&](const std::vector<int32_t>& src, DeviceBuffer<int32_t>& dst) {
     dst.allocate(std::max<size_t>(src.size(), 1));
@@ -2461,7 +2461,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
 
   s.ws.reserve(s.carve.total);
   s.has_sequence = true;
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   s.attention_configuration_locked = true;
 }
 
@@ -2542,7 +2542,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   // every row and the zero is dead stores. At the production geometry it is a
   // 844 MB memset per step.
   //
-  // Kept, behind VIDFAB_TENSOR_DIAG, as insurance against a layout that ever
+  // Kept, behind SLOPFAB_TENSOR_DIAG, as insurance against a layout that ever
   // stops being a permutation. Note what it does and does not buy: `hidden` is
   // allocated once in `prepare_sequence` and reused, so from the second step an
   // uncovered row would hold the previous step's residual — finite, plausible,
@@ -2623,7 +2623,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
         // The stream as it enters the span, parked in the delta buffer until
         // the subtract below turns it into the delta. `run_block` works in
         // place, so without this copy the delta would be `x - x`.
-        VIDFAB_CUDA_CHECK(cudaMemcpyAsync(s.bc_delta.get(), x,
+        SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(s.bc_delta.get(), x,
                                           stream_n * sizeof(__nv_bfloat16),
                                           cudaMemcpyDeviceToDevice, s.stream.get()));
         // Cleared for the duration: between here and the capture the buffer
@@ -2713,7 +2713,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   // the whole answer to "was the host ever the bottleneck": if the host had
   // been the slow side it would arrive late and wait for nothing.
   const std::chrono::steady_clock::time_point t_issued = std::chrono::steady_clock::now();
-  VIDFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   s.finish_transformer_capture(video_velocity, audio_velocity);
   const std::chrono::steady_clock::time_point t_exit = std::chrono::steady_clock::now();
   prof.end_step();
@@ -2723,4 +2723,4 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
                      std::chrono::duration<double, std::milli>(t_exit - t_issued).count());
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

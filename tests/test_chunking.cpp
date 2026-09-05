@@ -12,14 +12,14 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/dit/chunking.h"
-#include "vidfab/pipeline.h"
-#include "vidfab/sampler/noise.h"
+#include "slopfab/dit/chunking.h"
+#include "slopfab/pipeline.h"
+#include "slopfab/sampler/noise.h"
 
 namespace {
 
-vidfab::GenerateRequest square_request(int frames) {
-  vidfab::GenerateRequest r;
+slopfab::GenerateRequest square_request(int frames) {
+  slopfab::GenerateRequest r;
   r.prompt = "a test";
   r.aspect_w = 1;
   r.aspect_h = 1;
@@ -31,18 +31,18 @@ vidfab::GenerateRequest square_request(int frames) {
 // The probe's own geometry, resolved rather than asserted from memory:
 // `--frames 15` snaps up to 22 pixel frames and `--frames 45` to 56, and three
 // 22-frame chunks at a stride of 5 latent frames compose to exactly the 56.
-vidfab::dit::SequenceLayout full_layout() {
-  return vidfab::resolve_plan(square_request(45)).layout;
+slopfab::dit::SequenceLayout full_layout() {
+  return slopfab::resolve_plan(square_request(45)).layout;
 }
-vidfab::dit::SequenceLayout chunk_layout() {
-  return vidfab::resolve_plan(square_request(15)).layout;
+slopfab::dit::SequenceLayout chunk_layout() {
+  return slopfab::resolve_plan(square_request(15)).layout;
 }
 
 bool rejects_stride_not_multiple_of_five() {
   // 12 latent frames of chunk inside 22, two chunks: stride 10 is legal, so
   // build an illegal one instead — 7 inside 15 over 2 chunks is a stride of 8.
-  vidfab::dit::SequenceLayout full;
-  vidfab::dit::SequenceLayout chunk;
+  slopfab::dit::SequenceLayout full;
+  slopfab::dit::SequenceLayout chunk;
   full.latent_height = chunk.latent_height = 48;
   full.latent_width = chunk.latent_width = 48;
   full.num_latent_frames = 15;
@@ -50,7 +50,7 @@ bool rejects_stride_not_multiple_of_five() {
   full.num_audio_latents = 60;
   chunk.num_audio_latents = 30;
   try {
-    vidfab::dit::resolve_chunk_plan(full, chunk, 2);
+    slopfab::dit::resolve_chunk_plan(full, chunk, 2);
   } catch (const std::exception&) {
     return true;
   }
@@ -59,9 +59,9 @@ bool rejects_stride_not_multiple_of_five() {
 
 }  // namespace
 
-VIDFAB_TEST(chunking_probe_geometry_resolves) {
-  const vidfab::GeneratePlan full = vidfab::resolve_plan(square_request(45));
-  const vidfab::GeneratePlan chunk = vidfab::resolve_plan(square_request(15));
+SLOPFAB_TEST(chunking_probe_geometry_resolves) {
+  const slopfab::GeneratePlan full = slopfab::resolve_plan(square_request(45));
+  const slopfab::GeneratePlan chunk = slopfab::resolve_plan(square_request(15));
 
   // `align_num_frames` snaps up to the next 17k+5. The probe's two request
   // sizes were chosen because they land exactly on a tiling, and that is worth
@@ -79,9 +79,9 @@ VIDFAB_TEST(chunking_probe_geometry_resolves) {
   CHECK(chunk.layout.num_audio_latents == 37);
 }
 
-VIDFAB_TEST(chunking_plan_tiles_exactly) {
-  const vidfab::dit::ChunkPlan p =
-      vidfab::dit::resolve_chunk_plan(full_layout(), chunk_layout(), 3);
+SLOPFAB_TEST(chunking_plan_tiles_exactly) {
+  const slopfab::dit::ChunkPlan p =
+      slopfab::dit::resolve_chunk_plan(full_layout(), chunk_layout(), 3);
 
   CHECK(p.latent_stride == 5);
   CHECK(p.frame_overlap == 2);
@@ -103,27 +103,27 @@ VIDFAB_TEST(chunking_plan_tiles_exactly) {
   CHECK(rejects_stride_not_multiple_of_five());
 }
 
-VIDFAB_TEST(chunking_noise_slice_matches_the_full_draw) {
-  const vidfab::dit::SequenceLayout full = full_layout();
-  const vidfab::dit::SequenceLayout chunk = chunk_layout();
-  const vidfab::dit::ChunkPlan plan = vidfab::dit::resolve_chunk_plan(full, chunk, 3);
+SLOPFAB_TEST(chunking_noise_slice_matches_the_full_draw) {
+  const slopfab::dit::SequenceLayout full = full_layout();
+  const slopfab::dit::SequenceLayout chunk = chunk_layout();
+  const slopfab::dit::ChunkPlan plan = slopfab::dit::resolve_chunk_plan(full, chunk, 3);
   const uint64_t seed = 11;
 
   // The reference: the full field, patchified at full geometry.
   const std::vector<float> field =
-      vidfab::sampler::video_noise(seed, full.num_latent_frames, full.latent_height,
+      slopfab::sampler::video_noise(seed, full.num_latent_frames, full.latent_height,
                                    full.latent_width, 24);
   std::vector<float> full_rows(static_cast<size_t>(full.num_video_rows) * 96);
-  vidfab::dit::patchify_video(field.data(), full, full_rows.data());
+  slopfab::dit::patchify_video(field.data(), full, full_rows.data());
 
   const std::vector<float> audio_field =
-      vidfab::sampler::audio_noise(seed, full.num_audio_latents, 32);
+      slopfab::sampler::audio_noise(seed, full.num_audio_latents, 32);
 
   const int R = full.rows_per_frame();
   for (int k = 0; k < 3; ++k) {
     std::vector<float> v;
     std::vector<float> a;
-    vidfab::dit::slice_chunk_noise(seed, full, chunk, plan, k, &v, &a);
+    slopfab::dit::slice_chunk_noise(seed, full, chunk, plan, k, &v, &a);
     CHECK(v.size() == static_cast<size_t>(chunk.num_video_rows) * 96);
     CHECK(a.size() == static_cast<size_t>(chunk.num_audio_rows) * 32);
 
@@ -155,11 +155,11 @@ VIDFAB_TEST(chunking_noise_slice_matches_the_full_draw) {
   // measuring three independent samples without saying so.
   std::vector<float> v0;
   std::vector<float> a0;
-  vidfab::dit::slice_chunk_noise(seed, full, chunk, plan, 0, &v0, &a0);
-  const std::vector<float> own = vidfab::sampler::video_noise(
+  slopfab::dit::slice_chunk_noise(seed, full, chunk, plan, 0, &v0, &a0);
+  const std::vector<float> own = slopfab::sampler::video_noise(
       seed, chunk.num_latent_frames, chunk.latent_height, chunk.latent_width, 24);
   std::vector<float> own_rows(static_cast<size_t>(chunk.num_video_rows) * 96);
-  vidfab::dit::patchify_video(own.data(), chunk, own_rows.data());
+  slopfab::dit::patchify_video(own.data(), chunk, own_rows.data());
   size_t differing = 0;
   for (size_t i = 0; i < v0.size(); ++i) {
     if (v0[i] != own_rows[i]) ++differing;
@@ -170,10 +170,10 @@ VIDFAB_TEST(chunking_noise_slice_matches_the_full_draw) {
             differing, v0.size());
 }
 
-VIDFAB_TEST(chunking_blend_is_a_partition_of_unity) {
-  const vidfab::dit::SequenceLayout full = full_layout();
-  const vidfab::dit::SequenceLayout chunk = chunk_layout();
-  const vidfab::dit::ChunkPlan plan = vidfab::dit::resolve_chunk_plan(full, chunk, 3);
+SLOPFAB_TEST(chunking_blend_is_a_partition_of_unity) {
+  const slopfab::dit::SequenceLayout full = full_layout();
+  const slopfab::dit::SequenceLayout chunk = chunk_layout();
+  const slopfab::dit::ChunkPlan plan = slopfab::dit::resolve_chunk_plan(full, chunk, 3);
 
   // Every chunk holds the constant 1. A correct cross-fade must return 1
   // everywhere: any weight that does not sum to one shows up as a dark or
@@ -186,17 +186,17 @@ VIDFAB_TEST(chunking_blend_is_a_partition_of_unity) {
 
   std::vector<float> vout;
   std::vector<float> aout;
-  vidfab::dit::blend_chunks(full, chunk, plan, video, audio, &vout, &aout);
+  slopfab::dit::blend_chunks(full, chunk, plan, video, audio, &vout, &aout);
   CHECK(vout.size() == static_cast<size_t>(full.num_video_rows) * 96);
   CHECK(aout.size() == static_cast<size_t>(full.num_audio_rows) * 32);
   CHECK_CLOSE(std::vector<float>(vout.size(), 1.0f), vout, 1e-6f, "video partition of unity");
   CHECK_CLOSE(std::vector<float>(aout.size(), 1.0f), aout, 1e-6f, "audio partition of unity");
 }
 
-VIDFAB_TEST(chunking_slice_then_blend_is_the_identity) {
-  const vidfab::dit::SequenceLayout full = full_layout();
-  const vidfab::dit::SequenceLayout chunk = chunk_layout();
-  const vidfab::dit::ChunkPlan plan = vidfab::dit::resolve_chunk_plan(full, chunk, 3);
+SLOPFAB_TEST(chunking_slice_then_blend_is_the_identity) {
+  const slopfab::dit::SequenceLayout full = full_layout();
+  const slopfab::dit::SequenceLayout chunk = chunk_layout();
+  const slopfab::dit::ChunkPlan plan = slopfab::dit::resolve_chunk_plan(full, chunk, 3);
   const uint64_t seed = 11;
 
   // Slicing a field into chunks and cross-fading it straight back must return
@@ -214,22 +214,22 @@ VIDFAB_TEST(chunking_slice_then_blend_is_the_identity) {
   for (int k = 0; k < 3; ++k) {
     std::vector<float> v;
     std::vector<float> a;
-    vidfab::dit::slice_chunk_noise(seed, full, chunk, plan, k, &v, &a);
+    slopfab::dit::slice_chunk_noise(seed, full, chunk, plan, k, &v, &a);
     video.push_back(std::move(v));
     audio.push_back(std::move(a));
   }
 
   std::vector<float> vout;
   std::vector<float> aout;
-  vidfab::dit::blend_chunks(full, chunk, plan, video, audio, &vout, &aout);
+  slopfab::dit::blend_chunks(full, chunk, plan, video, audio, &vout, &aout);
 
   const std::vector<float> field =
-      vidfab::sampler::video_noise(seed, full.num_latent_frames, full.latent_height,
+      slopfab::sampler::video_noise(seed, full.num_latent_frames, full.latent_height,
                                    full.latent_width, 24);
   std::vector<float> expect_video(static_cast<size_t>(full.num_video_rows) * 96);
-  vidfab::dit::patchify_video(field.data(), full, expect_video.data());
+  slopfab::dit::patchify_video(field.data(), full, expect_video.data());
   const std::vector<float> expect_audio =
-      vidfab::sampler::audio_noise(seed, full.num_audio_latents, 32);
+      slopfab::sampler::audio_noise(seed, full.num_audio_latents, 32);
 
   // fp32 only: the blend multiplies by weights that sum to one, so the overlap
   // frames carry a rounding of order 1e-7 against a unit-variance field.
@@ -237,10 +237,10 @@ VIDFAB_TEST(chunking_slice_then_blend_is_the_identity) {
   CHECK_CLOSE(expect_audio, aout, 1e-6f, "slice -> blend round trip, audio");
 }
 
-VIDFAB_TEST(chunking_blend_places_each_chunk_where_the_plan_says) {
-  const vidfab::dit::SequenceLayout full = full_layout();
-  const vidfab::dit::SequenceLayout chunk = chunk_layout();
-  const vidfab::dit::ChunkPlan plan = vidfab::dit::resolve_chunk_plan(full, chunk, 3);
+SLOPFAB_TEST(chunking_blend_places_each_chunk_where_the_plan_says) {
+  const slopfab::dit::SequenceLayout full = full_layout();
+  const slopfab::dit::SequenceLayout chunk = chunk_layout();
+  const slopfab::dit::ChunkPlan plan = slopfab::dit::resolve_chunk_plan(full, chunk, 3);
   const int R = full.rows_per_frame();
 
   // Chunk k holds the constant (k + 1). The interior of each chunk must come
@@ -255,7 +255,7 @@ VIDFAB_TEST(chunking_blend_places_each_chunk_where_the_plan_says) {
 
   std::vector<float> vout;
   std::vector<float> aout;
-  vidfab::dit::blend_chunks(full, chunk, plan, video, audio, &vout, &aout);
+  slopfab::dit::blend_chunks(full, chunk, plan, video, audio, &vout, &aout);
 
   auto frame_value = [&](int f) { return vout[static_cast<size_t>(f) * R * 96]; };
   for (int f = 0; f <= 4; ++f) CHECK_NEAR(frame_value(f), 1.0, 1e-6);

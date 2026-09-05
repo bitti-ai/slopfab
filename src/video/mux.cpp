@@ -1,5 +1,5 @@
-#include "vidfab/video/mux.h"
-#include "vidfab/video/media.h"
+#include "slopfab/video/mux.h"
+#include "slopfab/video/media.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,7 +25,7 @@
 #include <dlfcn.h>
 #endif
 
-namespace vidfab::video {
+namespace slopfab::video {
 namespace {
 
 using namespace ff;
@@ -42,7 +42,7 @@ LibHandle lib_open(const std::string& path) {
   // *that* library's own dependencies against the process search path rather
   // than against the directory it came from — so avcodec-62.dll loads and then
   // fails to find the avutil-60.dll sitting next to it. Without this flag the
-  // VIDFAB_FFMPEG_DIR override only works when the directory is on PATH too,
+  // SLOPFAB_FFMPEG_DIR override only works when the directory is on PATH too,
   // which would make it pointless.
   if (path.find('\\') != std::string::npos || path.find('/') != std::string::npos) {
     return ::LoadLibraryExA(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
@@ -108,13 +108,13 @@ bool env_value(const char* name, std::string* out) {
 #endif
 }
 
-// Set VIDFAB_FFMPEG_DIR to point at a directory of ffmpeg shared libraries.
+// Set SLOPFAB_FFMPEG_DIR to point at a directory of ffmpeg shared libraries.
 // This exists for the LGPL substitution case: swapping in your own build must
-// not require rebuilding vidfab, and on Windows it must not require editing
+// not require rebuilding slopfab, and on Windows it must not require editing
 // PATH either.
 std::string ffmpeg_dir() {
   std::string s;
-  if (!env_value("VIDFAB_FFMPEG_DIR", &s)) return {};
+  if (!env_value("SLOPFAB_FFMPEG_DIR", &s)) return {};
   if (s.back() != '/' && s.back() != '\\') s.push_back(kPathSep);
   return s;
 }
@@ -133,7 +133,7 @@ struct OpenedLib {
 // 41 across the four of them. Trying the pinned major first costs one call and
 // changes nothing else: the sweep still finds a newer or older ffmpeg when the
 // pinned one is absent, which is what keeps the "found libavcodec 64, but
-// vidfab drives 62" diagnostic working instead of a bare "not installed".
+// slopfab drives 62" diagnostic working instead of a bare "not installed".
 //
 // It does reorder one case: a machine with both the pinned major and a newer
 // one now loads the pinned one and works, where before it found the newer one
@@ -404,7 +404,7 @@ Loaded probe() {
     if (swscale.handle == nullptr) s.detail += "libswscale ";
     s.detail += "(tried majors " + std::to_string(kProbeMajorLow) + "-" +
                 std::to_string(kProbeMajorHigh) + " on the library search path";
-    if (!dir.empty()) s.detail += " and in VIDFAB_FFMPEG_DIR=" + dir;
+    if (!dir.empty()) s.detail += " and in SLOPFAB_FFMPEG_DIR=" + dir;
     s.detail += ")";
     return s;
   }
@@ -433,7 +433,7 @@ Loaded probe() {
   if ((util_v >> 16) != kRequiredAvutilMajor || (codec_v >> 16) != kRequiredAvcodecMajor ||
       (format_v >> 16) != kRequiredAvformatMajor) {
     s.status = MuxStatus::kSymbolMissing;
-    s.detail = "found " + s.version + ", but vidfab drives libavcodec " +
+    s.detail = "found " + s.version + ", but slopfab drives libavcodec " +
                std::to_string(kRequiredAvcodecMajor) + " / libavformat " +
                std::to_string(kRequiredAvformatMajor) + " / libavutil " +
                std::to_string(kRequiredAvutilMajor) + " (ffmpeg 8.x)";
@@ -503,7 +503,7 @@ Loaded probe() {
   // ffmpeg logs to stderr at AV_LOG_INFO by default, which turns a successful
   // encode into a wall of text on a CLI that has its own progress output.
   std::string verbose;
-  api.av_log_set_level(env_value("VIDFAB_FFMPEG_VERBOSE", &verbose) ? kLogVerbose : kLogError);
+  api.av_log_set_level(env_value("SLOPFAB_FFMPEG_VERBOSE", &verbose) ? kLogVerbose : kLogError);
 
   s.layout = kLayoutFfmpeg8;
   std::string why;
@@ -690,7 +690,7 @@ const char* mux_status_message(MuxStatus s) {
     case MuxStatus::kLibraryNotFound:
       return "ffmpeg shared libraries not found";
     case MuxStatus::kSymbolMissing:
-      return "ffmpeg found but not a version vidfab knows how to drive";
+      return "ffmpeg found but not a version slopfab knows how to drive";
     case MuxStatus::kEncoderMissing:
       return "this ffmpeg build has no usable H.264 or AAC encoder";
     case MuxStatus::kWriteFailed:
@@ -1127,4 +1127,4 @@ DecodedVideoFrame decode_first_video_frame(const std::string& path) {
   return result;
 }
 
-}  // namespace vidfab::video
+}  // namespace slopfab::video

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace vidfab::vulkan::detail {
+namespace slopfab::vulkan::detail {
 
 constexpr bool norm_dispatch_fits(uint64_t rows, uint32_t max_workgroups_x) noexcept {
   return rows != 0 && rows <= max_workgroups_x;
@@ -52,4 +52,4 @@ constexpr bool known_exact_vae_pointwise_device(uint32_t vendor_id,
          driver_version == 0x98960000u;  // RTX 5090, NVIDIA 610.88
 }
 
-}  // namespace vidfab::vulkan::detail
+}  // namespace slopfab::vulkan::detail

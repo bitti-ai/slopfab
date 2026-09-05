@@ -1,12 +1,12 @@
-#include "vidfab/cuda/deterministic_gemm.cuh"
+#include "slopfab/cuda/deterministic_gemm.cuh"
 
 #include <mma.h>
 
 #include <stdexcept>
 
-#include "vidfab/cuda/device.h"
+#include "slopfab/cuda/device.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 using namespace nvcuda;
@@ -150,7 +150,7 @@ void launch_deterministic_bf16_gemm_nt(
           input, weight, bias, output, rows, out_features, in_features,
           static_cast<uint32_t>(bias_type), input_row_offset,
           output_row_offset);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_deterministic_f16_gemm_nt(
@@ -167,7 +167,7 @@ void launch_deterministic_f16_gemm_nt(
       dim3(out_features / 16, rows / 64), 128, 0, stream>>>(
           input, weight, output, out_features, in_features,
           output_row_offset);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_deterministic_scalar_gemm_nt(
@@ -195,7 +195,7 @@ void launch_deterministic_scalar_gemm_nt(
           input, weight, bias, output, rows, out_features, in_features,
           static_cast<uint32_t>(mode), static_cast<uint32_t>(bias_type),
           input_row_offset, output_row_offset);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

@@ -63,7 +63,7 @@ void operator delete[](void* pointer, std::size_t,
   ::operator delete(pointer, alignment);
 }
 
-namespace vidfab::test {
+namespace slopfab::test {
 HostAllocationGuard::HostAllocationGuard() noexcept { ++allocation_guard_depth; }
 HostAllocationGuard::~HostAllocationGuard() { --allocation_guard_depth; }
-}  // namespace vidfab::test
+}  // namespace slopfab::test

@@ -1,10 +1,10 @@
-#include "vidfab/tensor_convert.h"
+#include "slopfab/tensor_convert.h"
 
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 template <typename Stored, typename Fn>
@@ -186,4 +186,4 @@ CompareStats compare(const std::vector<float>& reference, const std::vector<floa
   return stats;
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

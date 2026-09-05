@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/vae_vit_block.h"
+#include "slopfab/vulkan/vae_vit_block.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,10 +6,10 @@
 #include <utility>
 #include <vector>
 
-#include "vidfab/gemm.h"
-#include "vidfab/vulkan/gemm.h"
+#include "slopfab/gemm.h"
+#include "slopfab/vulkan/gemm.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 using vae::ViTBlockConfig;
@@ -540,4 +540,4 @@ uint64_t ExactViTBlockGraph::peak_device_bytes() const noexcept {
   return total;
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

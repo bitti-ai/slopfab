@@ -22,13 +22,13 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/dit/packing.h"
-#include "vidfab/dit/rope.h"
-#include "vidfab/sampler/scheduler.h"
+#include "slopfab/dit/packing.h"
+#include "slopfab/dit/rope.h"
+#include "slopfab/sampler/scheduler.h"
 
 namespace {
 
-using namespace vidfab::dit;
+using namespace slopfab::dit;
 
 // The reference t2va request: 16:9, short edge 768, 10 s at 24 fps.
 SequenceLayout reference_layout(int num_text) {
@@ -45,7 +45,7 @@ SequenceLayout reference_layout(int num_text) {
   return l;
 }
 
-VIDFAB_TEST(packing_geometry) {
+SLOPFAB_TEST(packing_geometry) {
   // Canvas: 16:9 resolves to 768x1344, which is exactly the area cap.
   int h = 0;
   int w = 0;
@@ -74,7 +74,7 @@ VIDFAB_TEST(packing_geometry) {
   }
 
   // Outside 1:4 .. 4:1 is rejected rather than clamped.
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     int a = 0;
     int b = 0;
     resolve_canvas_size(5, 1, &a, &b);
@@ -94,17 +94,17 @@ VIDFAB_TEST(packing_geometry) {
   // last row or column silently.
   validate_canvas_size(768, 1344);
   validate_canvas_size(512, 512);
-  CHECK(::vidfab::test::throws([] { validate_canvas_size(768, 1360); }));  // 1360 = 16*85
-  CHECK(::vidfab::test::throws([] { validate_canvas_size(784, 1344); }));  // 784  = 16*49
-  CHECK(::vidfab::test::throws([] { validate_canvas_size(0, 1344); }));
-  CHECK(::vidfab::test::throws([] { validate_canvas_size(768, -32); }));
+  CHECK(::slopfab::test::throws([] { validate_canvas_size(768, 1360); }));  // 1360 = 16*85
+  CHECK(::slopfab::test::throws([] { validate_canvas_size(784, 1344); }));  // 784  = 16*49
+  CHECK(::slopfab::test::throws([] { validate_canvas_size(0, 1344); }));
+  CHECK(::slopfab::test::throws([] { validate_canvas_size(768, -32); }));
 
   // The same 1:4..4:1 range the aspect path enforces, applied to the canvas
   // the caller named rather than to a ratio they asked for.
   validate_canvas_size(768, 3072);                                          // exactly 4:1
   validate_canvas_size(3072, 768);                                          // exactly 1:4
-  CHECK(::vidfab::test::throws([] { validate_canvas_size(768, 3104); }));   // just over 4:1
-  CHECK(::vidfab::test::throws([] { validate_canvas_size(3104, 768); }));   // just over 1:4
+  CHECK(::slopfab::test::throws([] { validate_canvas_size(768, 3104); }));   // just over 4:1
+  CHECK(::slopfab::test::throws([] { validate_canvas_size(3104, 768); }));   // just over 1:4
 
   // The area cap is deliberately NOT enforced here — that is the difference
   // between the two entry points, and a test that accepted an over-budget
@@ -131,14 +131,14 @@ VIDFAB_TEST(packing_geometry) {
   CHECK(video_latent_num_frames(243) == 72);
   CHECK(video_latent_num_frames(124) == 37);
   CHECK(video_latent_num_frames(5) == 2);
-  CHECK(::vidfab::test::throws([] { video_latent_num_frames(100); }));
+  CHECK(::slopfab::test::throws([] { video_latent_num_frames(100); }));
 
   // 40 audio latents per second at 24 fps.
   CHECK(audio_latents_for_frames(243) == 405);
   CHECK(audio_latents_for_frames(124) == 207);
 }
 
-VIDFAB_TEST(packing_worked_example) {
+SLOPFAB_TEST(packing_worked_example) {
   // docs/transformer_spec.md section 1.1, the reproducible 768p request.
   const int L = 128;
   const SequenceLayout l = reference_layout(L);
@@ -170,7 +170,7 @@ VIDFAB_TEST(packing_worked_example) {
   CHECK(d.total_rows() == 37710 + L);
 }
 
-VIDFAB_TEST(packing_indices_are_a_permutation) {
+SLOPFAB_TEST(packing_indices_are_a_permutation) {
   const SequenceLayout l = reference_layout(37);
   const PackedIndices idx = build_indices(l);
   const int S = l.total_rows();
@@ -205,7 +205,7 @@ VIDFAB_TEST(packing_indices_are_a_permutation) {
 // in the spec, not against its own implementation. Values are made unique per
 // (c, f, y, x) so that any transposition shows up as a mismatch rather than as
 // a coincidence.
-VIDFAB_TEST(packing_patchify_index_arithmetic) {
+SLOPFAB_TEST(packing_patchify_index_arithmetic) {
   SequenceLayout l;
   l.num_text = 0;
   l.num_latent_frames = 3;
@@ -275,7 +275,7 @@ VIDFAB_TEST(packing_patchify_index_arithmetic) {
   CHECK(back == latents);
 }
 
-VIDFAB_TEST(packing_unpack_audio) {
+SLOPFAB_TEST(packing_unpack_audio) {
   const int A = 5;
   const int dim = 32;
   std::vector<float> rows(static_cast<size_t>(2 * A) * dim);
@@ -304,7 +304,7 @@ VIDFAB_TEST(packing_unpack_audio) {
   CHECK(ok);
 }
 
-VIDFAB_TEST(packing_rotary_coordinates) {
+SLOPFAB_TEST(packing_rotary_coordinates) {
   const int L = 11;
   const SequenceLayout l = reference_layout(L);
   const std::vector<double> pos = build_position_ids(l);
@@ -391,7 +391,7 @@ VIDFAB_TEST(packing_rotary_coordinates) {
   CHECK_NEAR(pos[static_cast<size_t>(as + A) * 3 + 2], (left_w + 41.0 * step_w) * 32.0, 1e-12);
 }
 
-VIDFAB_TEST(packing_row_timesteps) {
+SLOPFAB_TEST(packing_row_timesteps) {
   const int L = 4;
   const SequenceLayout l = reference_layout(L);
   const PackedIndices idx = build_indices(l);
@@ -523,7 +523,7 @@ SequenceLayout small_layout(int num_text, int num_audio_latents, int num_latent_
   return l;
 }
 
-VIDFAB_TEST(packing_row_timesteps_matches_sort) {
+SLOPFAB_TEST(packing_row_timesteps_matches_sort) {
   std::vector<SequenceLayout> layouts;
   std::vector<std::string> names;
 
@@ -600,13 +600,13 @@ VIDFAB_TEST(packing_row_timesteps_matches_sort) {
   CHECK(compared == static_cast<int>(layouts.size() * pairs.size()));
 }
 
-VIDFAB_TEST(packing_row_timesteps_over_the_real_schedule) {
+SLOPFAB_TEST(packing_row_timesteps_over_the_real_schedule) {
   // The two schedulers a real request runs: shift 12 for video, shift 3 for
   // audio, stepped together. This is where the identity of index 0 is actually
   // decided, so walk every step of a full 50-step schedule and require the
   // rewrite to agree with the sort at every one.
-  vidfab::sampler::FlowScheduler video(12.0f);
-  vidfab::sampler::FlowScheduler audio(3.0f);
+  slopfab::sampler::FlowScheduler video(12.0f);
+  slopfab::sampler::FlowScheduler audio(3.0f);
   video.set_timesteps(50);
   audio.set_timesteps(50);
   const std::vector<float>& vt = video.timesteps();
@@ -646,7 +646,7 @@ VIDFAB_TEST(packing_row_timesteps_over_the_real_schedule) {
             video_is_zero, audio_is_zero, vt.size());
 }
 
-VIDFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
+SLOPFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
   // Three rewrites of this function are plausible rather than merely broken,
   // and all three produce correctly shaped output. Compute each wrong form and
   // require the implementation not to match it.
@@ -730,7 +730,7 @@ VIDFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
 // Frame-banded attention is lossy, so what it drops has to be exactly what was
 // intended. Every failure below is silent: the model still runs, the output is
 // still finite and plausibly scaled, and only the samples change.
-VIDFAB_TEST(packing_banded_key_ranges) {
+SLOPFAB_TEST(packing_banded_key_ranges) {
   // The default request: 124 frames at 16:9 -> 37 latent frames of 48x84.
   SequenceLayout layout;
   layout.num_text = 17;
@@ -865,7 +865,7 @@ VIDFAB_TEST(packing_banded_key_ranges) {
   }
 }
 
-VIDFAB_TEST(h3_rope_tables_are_canonical_serialized_bytes) {
+SLOPFAB_TEST(h3_rope_tables_are_canonical_serialized_bytes) {
   const std::vector<double> positions = {
       0.0, 0.0, 0.0, 1.25, -2.5, 4096.125, 16777217.0, 3.5, -9.75};
   const H3RopeTables tables = build_h3_rope_tables(positions, 10000.0f, 16);

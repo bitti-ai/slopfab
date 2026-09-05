@@ -1,8 +1,8 @@
-#include "vidfab/dit/ref2va.h"
+#include "slopfab/dit/ref2va.h"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
-namespace vidfab::dit { namespace {
+namespace slopfab::dit { namespace {
 constexpr double kFrameScale=5.0/3.0; constexpr int kFrameSteps[5]={1,4,4,4,4};
 double round_even(double v){double f=std::floor(v),d=v-f; return d<.5?f:d>.5?f+1:(std::fmod(f,2.0)==0?f:f+1);}
 std::vector<double> axis(int dim,double area){int n=dim/2; double ratio=dim/area,left=(1-ratio)/2,delta=(left+ratio)-left; std::vector<double> o(n); for(int i=0;i<n;++i)o[i]=(i*(delta/n)+left)*32; return o;}
@@ -16,4 +16,4 @@ Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>&tt,
  if(F<=0||H<=0||W<=0||H%2||W%2||A<0)throw std::runtime_error("ref2va: invalid target geometry");Ref2VAPackedSequence o;auto&l=o.layout;l.condition_audio_is_explicit=true;l.num_text=int(tt.size());l.num_latent_frames=F;l.latent_height=H;l.latent_width=W;l.num_audio_latents=A;l.num_audio_rows=2*A;l.num_video_rows=F*(H/2)*(W/2);for(auto&r:rs){l.num_condition_video+=r.video_rows();l.num_condition_audio+=r.audio_rows();}int S=l.total_rows();o.position_ids.assign(size_t(S)*3,0);o.indices.tags.assign(S,kTagText);o.indices.text.resize(tt.size());for(int i=0;i<int(tt.size());++i){o.indices.text[i]=i;o.indices.tags[i]=tt[i];o.position_ids[size_t(i)*3]=i;}auto tw=axis(W,std::sqrt(double(H)*W));int cur=int(tt.size());double clock=cur;
  for(auto&r:rs){if(r.kind==ReferenceKind::kAudio){audio(o.position_ids,cur,r.num_audio_latents,clock,tw);for(int i=0;i<r.audio_rows();++i)o.indices.audio.push_back(cur+i);cur+=r.audio_rows();clock+=r.num_audio_latents;}else if(r.kind==ReferenceKind::kImage){video(o.position_ids,cur,r,clock);for(int i=0;i<r.video_rows();++i)o.indices.video.push_back(cur+i);cur+=r.video_rows();clock+=1;}else{auto rw=axis(r.latent_width,std::sqrt(double(r.latent_height)*r.latent_width));audio(o.position_ids,cur,r.num_audio_latents,clock,rw);for(int i=0;i<r.audio_rows();++i)o.indices.audio.push_back(cur+i);cur+=r.audio_rows();video(o.position_ids,cur,r,clock);for(int i=0;i<r.video_rows();++i)o.indices.video.push_back(cur+i);cur+=r.video_rows();clock+=std::max(double(r.num_audio_latents),span(r.num_latent_frames));}}
  audio(o.position_ids,cur,A,clock,tw);for(int i=0;i<2*A;++i)o.indices.audio.push_back(cur+i);cur+=2*A;ReferenceGeometry target{ReferenceKind::kVideo,F,H,W,0};video(o.position_ids,cur,target,clock);for(int i=0;i<target.video_rows();++i)o.indices.video.push_back(cur+i);for(int i:o.indices.audio)o.indices.tags[i]=kTagAudio;for(int i:o.indices.video)o.indices.tags[i]=kTagVideo;return o;}
-} // namespace vidfab::dit
+} // namespace slopfab::dit

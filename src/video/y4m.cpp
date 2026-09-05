@@ -1,4 +1,4 @@
-#include "vidfab/video/y4m.h"
+#include "slopfab/video/y4m.h"
 
 #include <algorithm>
 #include <cmath>
@@ -8,7 +8,7 @@
 #include <thread>
 #include <vector>
 
-namespace vidfab::video {
+namespace slopfab::video {
 namespace {
 
 inline uint8_t clamp_u8(float v) {
@@ -276,4 +276,4 @@ void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frame
   if (!out) throw std::runtime_error("ppm: write failed for " + path);
 }
 
-}  // namespace vidfab::video
+}  // namespace slopfab::video

@@ -1,4 +1,4 @@
-#include "vidfab/vae/keyframe_encoder.h"
+#include "slopfab/vae/keyframe_encoder.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,10 +6,10 @@
 #include <string>
 #include <array>
 
-#include "vidfab/dtype.h"
-#include "vidfab/nf4.h"
+#include "slopfab/dtype.h"
+#include "slopfab/nf4.h"
 
-namespace vidfab::vae {
+namespace slopfab::vae {
 namespace {
 
 class TorchMT19937 {
@@ -201,4 +201,4 @@ std::vector<float> torch_cpu_normal_seed42(size_t count) {
   return out;
 }
 
-}  // namespace vidfab::vae
+}  // namespace slopfab::vae

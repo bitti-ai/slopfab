@@ -1,8 +1,8 @@
 // Standalone SageAttention2.2 integration. The attention kernel and its CUDA
 // primitives are adapted from THU-ML/SageAttention (Apache-2.0); see
 // third_party/sageattention/LICENSE. The PyTorch wrapper is deliberately not
-// included: vidfab supplies raw NHD pointers and owns the transient arena.
-#include "vidfab/cuda/sage_attention.cuh"
+// included: slopfab supplies raw NHD pointers and owns the transient arena.
+#include "slopfab/cuda/sage_attention.cuh"
 
 #include <cuda_fp8.h>
 #include <cuda_fp16.h>
@@ -13,9 +13,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/cuda/attention.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/workspace.cuh"
+#include "slopfab/cuda/attention.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/workspace.cuh"
 #include "../../third_party/sageattention/qattn/qk_int_sv_f16_cuda_sm80.cuh"
 #undef PACK_SIZE_QK
 #undef PACK_SIZE_V
@@ -28,7 +28,7 @@
 #undef MMA_SV_K
 #include "../../third_party/sageattention/qattn/qk_int_sv_f8_cuda_sm89.cuh"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr int kQBlock = 128;
@@ -207,7 +207,7 @@ void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* o
       KernelOut, ComputeUnit::kCudaCore, MaskMode::kNone, false, true, false, true>;
   const size_t smem = std::max<size_t>(CTA_Q * D + CTA_K * D + CTA_K * D,
                                       CTA_Q * D * sizeof(__half));
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+  SLOPFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                          static_cast<int>(smem)));
   dim3 grid(ceil_div(c.seq_len, CTA_Q), c.num_heads, 1);
   dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
@@ -220,7 +220,7 @@ void launch_official(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* o
       padded * kvh * D, padded, padded * kvh,
       c.seq_len * c.num_heads * D, c.num_heads * D, D,
       c.effective_scale());
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 template <int D>
@@ -238,7 +238,7 @@ void launch_ampere(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* out
   // of the individual segments underallocates the arena (24 KiB instead of
   // 40 KiB at D=128) and lets V's cp.async writes escape shared memory.
   constexpr size_t smem = sage2_ampere_dynamic_smem_bytes(D);
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+  SLOPFAB_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                          static_cast<int>(smem)));
   dim3 grid(ceil_div(c.seq_len, CTA_Q), c.num_heads, 1);
   dim3 block(32, (CTA_Q / WARP_Q) * (CTA_K / WARP_K));
@@ -251,7 +251,7 @@ void launch_ampere(cudaStream_t stream, const SageBuffers& b, __nv_bfloat16* out
       c.seq_len * kvh * D, kvh * D, D,
       c.seq_len * c.num_heads * D, c.num_heads * D, D,
       c.effective_scale());
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 }  // namespace
@@ -290,7 +290,7 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
                              __nv_bfloat16* out, const AttentionConfig& cfg,
                              int num_kv_heads, Workspace& ws) {
   int device = 0;
-  VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
+  SLOPFAB_CUDA_CHECK(cudaGetDevice(&device));
   const char* reason = nullptr;
   if (!sage2_supported(cfg, device, &reason))
     throw std::runtime_error(std::string("attention: sage2 ") + reason);
@@ -322,7 +322,7 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
         v, static_cast<int8_t*>(b.v), b.vs, cfg.seq_len, padded, num_kv_heads,
         cfg.head_dim);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
   if (ampere) {
     if (cfg.head_dim == 64) launch_ampere<64>(stream, b, out, cfg, num_kv_heads);
     else launch_ampere<128>(stream, b, out, cfg, num_kv_heads);
@@ -332,4 +332,4 @@ void sage2_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   }
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/text/tokenizer.h"
+#include "slopfab/text/tokenizer.h"
 
 namespace {
 
@@ -63,14 +63,14 @@ struct GoldenCase {
   std::vector<int32_t> ids;
 };
 
-VIDFAB_TEST(tokenizer_golden_ids) {
+SLOPFAB_TEST(tokenizer_golden_ids) {
   const std::string path = find_tokenizer();
   if (path.empty()) {
     report_missing_tokenizer();
     return;
   }
 
-  vidfab::text::Tokenizer tok;
+  slopfab::text::Tokenizer tok;
   tok.load(path);
   CHECK(tok.loaded());
   CHECK(tok.vocab_size() > 151000);
@@ -119,14 +119,14 @@ VIDFAB_TEST(tokenizer_golden_ids) {
   CHECK(in_range);
 }
 
-VIDFAB_TEST(tokenizer_round_trip) {
+SLOPFAB_TEST(tokenizer_round_trip) {
   const std::string path = find_tokenizer();
   if (path.empty()) {
     report_missing_tokenizer();
     return;
   }
 
-  vidfab::text::Tokenizer tok;
+  slopfab::text::Tokenizer tok;
   tok.load(path);
 
   // Byte-level BPE is lossless, so decode(encode(s)) == s for any input,

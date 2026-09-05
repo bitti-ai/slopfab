@@ -2,16 +2,16 @@
 // the fallback. One thread owns one output column and keeps all 64 row outputs
 // in registers; the score arena and reusable K/V stage are the only large
 // shared allocations.
-#include "vidfab/cuda/sol_attention.cuh"
+#include "slopfab/cuda/sol_attention.cuh"
 
 #include <cuda.h>
 #include <cfloat>
 #include <cmath>
 #include <mma.h>
 
-#include "vidfab/cuda/device.h"
+#include "slopfab/cuda/device.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 constexpr int B = 64, D = 128, Threads = 128;
 constexpr int MaxBlocks = 1024;
@@ -150,16 +150,16 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     for(int kr=0;kr<B;kr+=16) {
       wmma::fragment<wmma::accumulator,16,16,16,float> c;
       wmma::fill_fragment(c,0.0f);
-#define VIDFAB_QK_STEP(QR, OFF) do {                                      \
+#define SLOPFAB_QK_STEP(QR, OFF) do {                                      \
         wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,             \
                        wmma::col_major> b;                                 \
         wmma::load_matrix_sync(b,kv+kr*D+(OFF),D);                         \
         wmma::mma_sync(c,(QR),b,c);                                        \
       } while (false)
-      VIDFAB_QK_STEP(qr0,  0); VIDFAB_QK_STEP(qr1, 16);
-      VIDFAB_QK_STEP(qr2, 32); VIDFAB_QK_STEP(qr3, 48);
-      VIDFAB_QK_STEP(qr4, 64); VIDFAB_QK_STEP(qr5, 80);
-      VIDFAB_QK_STEP(qr6, 96); VIDFAB_QK_STEP(qr7,112);
+      SLOPFAB_QK_STEP(qr0,  0); SLOPFAB_QK_STEP(qr1, 16);
+      SLOPFAB_QK_STEP(qr2, 32); SLOPFAB_QK_STEP(qr3, 48);
+      SLOPFAB_QK_STEP(qr4, 64); SLOPFAB_QK_STEP(qr5, 80);
+      SLOPFAB_QK_STEP(qr6, 96); SLOPFAB_QK_STEP(qr7,112);
       for(unsigned i=0;i<c.num_elements;++i)c.x[i]*=scale;
       wmma::store_matrix_sync(score+warp*16*B+kr,c,B,wmma::mem_row_major);
     }
@@ -226,7 +226,7 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
   // Begin the persistent output-fragment lifetime only after approximation.
   wmma::fragment<wmma::accumulator,16,16,16,float>
       o0,o1,o2,o3,o4,o5,o6,o7;
-#define VIDFAB_INIT_O(C, OFF) do {                                         \
+#define SLOPFAB_INIT_O(C, OFF) do {                                         \
     auto& frag=(C); const int d=(OFF),lane=t&31,qr0=warp*16;                \
     for(unsigned i=0;i<frag.num_elements;++i) {                             \
       const int row=qr0+lane/4+int((i/2)%2)*8;                              \
@@ -235,9 +235,9 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
           __bfloat162float(out[size_t(qlo+row)*heads*D+h*D+col])*denom[row]:0.0f; \
     }                                                                      \
   } while(false)
-  VIDFAB_INIT_O(o0,0); VIDFAB_INIT_O(o1,16); VIDFAB_INIT_O(o2,32); VIDFAB_INIT_O(o3,48);
-  VIDFAB_INIT_O(o4,64); VIDFAB_INIT_O(o5,80); VIDFAB_INIT_O(o6,96); VIDFAB_INIT_O(o7,112);
-#undef VIDFAB_INIT_O
+  SLOPFAB_INIT_O(o0,0); SLOPFAB_INIT_O(o1,16); SLOPFAB_INIT_O(o2,32); SLOPFAB_INIT_O(o3,48);
+  SLOPFAB_INIT_O(o4,64); SLOPFAB_INIT_O(o5,80); SLOPFAB_INIT_O(o6,96); SLOPFAB_INIT_O(o7,112);
+#undef SLOPFAB_INIT_O
 
   for (int ordinal = 0; ordinal < exact_count; ++ordinal) {
     const int kb=route_ids[ordinal], stage = 0;
@@ -250,10 +250,10 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
     for (int kr = 0; kr < B; kr += 16) {
       wmma::fragment<wmma::accumulator,16,16,16,float> c;
       wmma::fill_fragment(c, 0.0f);
-      VIDFAB_QK_STEP(qr0,  0); VIDFAB_QK_STEP(qr1, 16);
-      VIDFAB_QK_STEP(qr2, 32); VIDFAB_QK_STEP(qr3, 48);
-      VIDFAB_QK_STEP(qr4, 64); VIDFAB_QK_STEP(qr5, 80);
-      VIDFAB_QK_STEP(qr6, 96); VIDFAB_QK_STEP(qr7,112);
+      SLOPFAB_QK_STEP(qr0,  0); SLOPFAB_QK_STEP(qr1, 16);
+      SLOPFAB_QK_STEP(qr2, 32); SLOPFAB_QK_STEP(qr3, 48);
+      SLOPFAB_QK_STEP(qr4, 64); SLOPFAB_QK_STEP(qr5, 80);
+      SLOPFAB_QK_STEP(qr6, 96); SLOPFAB_QK_STEP(qr7,112);
       for (unsigned i=0;i<c.num_elements;++i) c.x[i] *= scale;
       wmma::store_matrix_sync(score + warp * 16 * B + kr, c, B, wmma::mem_row_major);
     }
@@ -274,16 +274,16 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       wait(&bars[stage], states[stage]);
     }
     __syncthreads();
-#define VIDFAB_SCALE_O(C) do {                                             \
+#define SLOPFAB_SCALE_O(C) do {                                             \
       const int qr0=warp*16; auto& c=(C);                                  \
       for(unsigned i=0;i<c.num_elements;++i) {                              \
         const int row=qr0+(t&31)/4+int((i/2)%2)*8;                          \
         if(row<qn) c.x[i] *= ratio[row];                                    \
       }                                                                    \
     } while(false)
-    VIDFAB_SCALE_O(o0); VIDFAB_SCALE_O(o1); VIDFAB_SCALE_O(o2); VIDFAB_SCALE_O(o3);
-    VIDFAB_SCALE_O(o4); VIDFAB_SCALE_O(o5); VIDFAB_SCALE_O(o6); VIDFAB_SCALE_O(o7);
-#undef VIDFAB_SCALE_O
+    SLOPFAB_SCALE_O(o0); SLOPFAB_SCALE_O(o1); SLOPFAB_SCALE_O(o2); SLOPFAB_SCALE_O(o3);
+    SLOPFAB_SCALE_O(o4); SLOPFAB_SCALE_O(o5); SLOPFAB_SCALE_O(o6); SLOPFAB_SCALE_O(o7);
+#undef SLOPFAB_SCALE_O
     for(int j=0;j<B;j+=16) {
       auto* ps=prob_scratch+warp*256;
       for(int p=(t&31);p<256;p+=32) {
@@ -294,24 +294,24 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
       __syncwarp();
       wmma::fragment<wmma::matrix_a,16,16,16,__nv_bfloat16,wmma::row_major> a;
       wmma::load_matrix_sync(a,ps,16);
-#define VIDFAB_PV_STEP(C, OFF) do {                                        \
+#define SLOPFAB_PV_STEP(C, OFF) do {                                        \
         const int d=(OFF);                                                  \
         wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,               \
                        wmma::row_major> b;                                   \
         wmma::load_matrix_sync(b,kv+stage*B*D+j*D+d,D);                     \
         wmma::mma_sync((C),a,b,(C));                                        \
       } while(false)
-      VIDFAB_PV_STEP(o0,  0); VIDFAB_PV_STEP(o1, 16);
-      VIDFAB_PV_STEP(o2, 32); VIDFAB_PV_STEP(o3, 48);
-      VIDFAB_PV_STEP(o4, 64); VIDFAB_PV_STEP(o5, 80);
-      VIDFAB_PV_STEP(o6, 96); VIDFAB_PV_STEP(o7,112);
-#undef VIDFAB_PV_STEP
+      SLOPFAB_PV_STEP(o0,  0); SLOPFAB_PV_STEP(o1, 16);
+      SLOPFAB_PV_STEP(o2, 32); SLOPFAB_PV_STEP(o3, 48);
+      SLOPFAB_PV_STEP(o4, 64); SLOPFAB_PV_STEP(o5, 80);
+      SLOPFAB_PV_STEP(o6, 96); SLOPFAB_PV_STEP(o7,112);
+#undef SLOPFAB_PV_STEP
       __syncwarp();
     }
     __syncthreads();
   }
   const int lane=t&31;
-#define VIDFAB_STORE_O(C, OFF) do {                                        \
+#define SLOPFAB_STORE_O(C, OFF) do {                                        \
     const int qr0=warp*16, d=(OFF); auto& frag=(C);                         \
     for(unsigned i=0;i<frag.num_elements;++i) {                             \
       const int row=qr0+lane/4+int((i/2)%2)*8;                              \
@@ -321,12 +321,12 @@ __global__ __launch_bounds__(Threads, 1) void exact_pipeline(
             __float2bfloat16_rn(frag.x[i]/denom[row]);                     \
     }                                                                      \
   } while(false)
-  VIDFAB_STORE_O(o0,  0); VIDFAB_STORE_O(o1, 16);
-  VIDFAB_STORE_O(o2, 32); VIDFAB_STORE_O(o3, 48);
-  VIDFAB_STORE_O(o4, 64); VIDFAB_STORE_O(o5, 80);
-  VIDFAB_STORE_O(o6, 96); VIDFAB_STORE_O(o7,112);
-#undef VIDFAB_STORE_O
-#undef VIDFAB_QK_STEP
+  SLOPFAB_STORE_O(o0,  0); SLOPFAB_STORE_O(o1, 16);
+  SLOPFAB_STORE_O(o2, 32); SLOPFAB_STORE_O(o3, 48);
+  SLOPFAB_STORE_O(o4, 64); SLOPFAB_STORE_O(o5, 80);
+  SLOPFAB_STORE_O(o6, 96); SLOPFAB_STORE_O(o7,112);
+#undef SLOPFAB_STORE_O
+#undef SLOPFAB_QK_STEP
 }
 
 bool map_for(const __nv_bfloat16* p, const AttentionConfig& c, CUtensorMap* m) {
@@ -357,12 +357,12 @@ bool sol_pipeline_forward(cudaStream_t stream, const __nv_bfloat16* q,
   // Misaligned or otherwise unsupported K/V layouts are valid inputs for the
   // scalar Sol kernel. Never launch TMA with a zero/invalid descriptor.
   if(!map_for(q,c,&q_map)||!map_for(k,c,&k_map)||!map_for(v,c,&v_map)) return false;
-  VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(exact_pipeline,
+  SLOPFAB_CUDA_CHECK(cudaFuncSetAttribute(exact_pipeline,
       cudaFuncAttributeMaxDynamicSharedMemorySize,int(SmemBytes)));
   exact_pipeline<<<dim3((c.seq_len+B-1)/B,c.num_heads),Threads,SmemBytes,stream>>>(
       q_map,k_map,v_map,out,km,vm,vs,k_residual,v_residual,tau,c.seq_len,c.num_heads,
       c.exact_prefix,c.effective_scale(),c.sol_error_k,c.sol_error_v,c.sol_route_counts);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
   return true;
 }
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

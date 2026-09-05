@@ -12,7 +12,7 @@
 //     14336 — is a multiple of 8; the scalar path exists for tests and for the
 //     odd width a future component might bring.
 
-#include "vidfab/cuda/nn_kernels.cuh"
+#include "slopfab/cuda/nn_kernels.cuh"
 
 #include <cmath>
 #include <cstdint>
@@ -20,10 +20,10 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/deterministic_math.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/deterministic_math.cuh"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr int kWarp = 32;
@@ -725,7 +725,7 @@ void launch_rmsnorm(const __nv_bfloat16* x, const __nv_bfloat16* w, __nv_bfloat1
   } else {
     rmsnorm_bf16_kernel<1><<<rows, kRowThreads, shared, stream>>>(x, w, out, dim, eps);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_rmsnorm_f32(const float* x, const float* w, float* out, int rows, int dim, float eps,
@@ -746,7 +746,7 @@ void launch_rmsnorm_f32(const float* x, const float* w, float* out, int rows, in
   } else {
     rmsnorm_f32_kernel<1><<<rows, kRowThreads, shared, stream>>>(x, w, out, dim, eps);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_layernorm_affine(const __nv_bfloat16* x, const __nv_bfloat16* w,
@@ -755,7 +755,7 @@ void launch_layernorm_affine(const __nv_bfloat16* x, const __nv_bfloat16* w,
   require_positive(rows, dim, "launch_layernorm_affine");
   layernorm_affine_kernel<<<rows, kRowThreads, reduce_shared_bytes(), stream>>>(x, w, bias, out,
                                                                                 dim, eps);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_rmsnorm_modulate(const __nv_bfloat16* x, const __nv_bfloat16* w, const float* scale,
@@ -770,7 +770,7 @@ void launch_rmsnorm_modulate(const __nv_bfloat16* x, const __nv_bfloat16* w, con
     rmsnorm_modulate_bf16_kernel<1>
         <<<rows, kRowThreads, shared, stream>>>(x, w, scale, shift, a, out, dim, eps);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_rmsnorm_modulate_f32(const float* x, const __nv_bfloat16* w, const float* scale,
@@ -785,7 +785,7 @@ void launch_rmsnorm_modulate_f32(const float* x, const __nv_bfloat16* w, const f
     rmsnorm_modulate_f32_kernel<1>
         <<<rows, kRowThreads, shared, stream>>>(x, w, scale, shift, a, out, dim, eps);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_add_gated(__nv_bfloat16* x, const __nv_bfloat16* branch, const float* gate,
@@ -798,7 +798,7 @@ void launch_add_gated(__nv_bfloat16* x, const __nv_bfloat16* branch, const float
   } else {
     add_gated_kernel<1><<<grid, kRowThreads, 0, stream>>>(x, branch, gate, a, dim);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_swiglu(const __nv_bfloat16* fused, __nv_bfloat16* out, int rows, int inner,
@@ -811,7 +811,7 @@ void launch_swiglu(const __nv_bfloat16* fused, __nv_bfloat16* out, int rows, int
   } else {
     swiglu_kernel<1><<<grid, kRowThreads, 0, stream>>>(fused, out, inner);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_swiglu_exact(const __nv_bfloat16* fused, __nv_bfloat16* out,
@@ -824,33 +824,33 @@ void launch_swiglu_exact(const __nv_bfloat16* fused, __nv_bfloat16* out,
   } else {
     swiglu_exact_kernel<1><<<grid, kRowThreads, 0, stream>>>(fused, out, inner);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream) {
   if (n == 0) return;
   silu_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, out, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_gelu_tanh(__nv_bfloat16* x, size_t n, cudaStream_t stream) {
   if (!n) return;
   gelu_tanh_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_gelu_tanh_exact(__nv_bfloat16* x, size_t n,
                             cudaStream_t stream) {
   if (!n) return;
   gelu_tanh_exact_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_add_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
                      cudaStream_t stream) {
   if (!n) return;
   add_bf16_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, branch, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_sub_bf16(const __nv_bfloat16* a, const __nv_bfloat16* b, __nv_bfloat16* out, size_t n,
@@ -883,13 +883,13 @@ void launch_sub_bf16(const __nv_bfloat16* a, const __nv_bfloat16* b, __nv_bfloat
   if (vec_n) {
     sub_bf16_kernel<8><<<grid_1d(vec_n / 8, kRowThreads), kRowThreads, 0, stream>>>(a, b, out,
                                                                                     vec_n);
-    VIDFAB_CUDA_CHECK(cudaGetLastError());
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
   }
   if (vec_n < n) {
     const size_t rest = n - vec_n;
     sub_bf16_kernel<1><<<grid_1d(rest, kRowThreads), kRowThreads, 0, stream>>>(a + vec_n, b + vec_n,
                                                                               out + vec_n, rest);
-    VIDFAB_CUDA_CHECK(cudaGetLastError());
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
   }
 }
 
@@ -904,7 +904,7 @@ void launch_rope_h3(__nv_bfloat16* x, const float* cos, const float* sin, int ro
   const dim3 block(kWarp, 4);
   const dim3 grid(rows, (heads + 3) / 4);
   rope_h3_kernel<<<grid, block, 0, stream>>>(x, cos, sin, rows, heads, head_dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_rope_neox(__nv_bfloat16* x, const float* cos, const float* sin, int rows, int heads,
@@ -916,7 +916,7 @@ void launch_rope_neox(__nv_bfloat16* x, const float* cos, const float* sin, int 
   const dim3 block(kWarp, 4);
   const dim3 grid(rows, (heads + 3) / 4);
   rope_neox_kernel<<<grid, block, 0, stream>>>(x, cos, sin, rows, heads, head_dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_head_rmsnorm(__nv_bfloat16* x, const __nv_bfloat16* w, int rows, int heads, int dim,
@@ -943,7 +943,7 @@ void launch_gather_impl(const T* src, const int32_t* index, T* dst, int n, int d
     const dim3 grid(n, grid_1d(static_cast<size_t>(dim), kRowThreads));
     gather_rows_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, dim);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 template <typename T>
@@ -957,7 +957,7 @@ void launch_scatter_impl(const T* src, const int32_t* index, T* dst, int n, int 
     const dim3 grid(n, grid_1d(static_cast<size_t>(dim), kRowThreads));
     scatter_rows_kernel<<<grid, kRowThreads, 0, stream>>>(src, index, dst, n, dim);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 }  // namespace
@@ -991,7 +991,7 @@ void launch_scatter_add_rows(const __nv_bfloat16* src, const int32_t* index,
   require_positive(n, dim, "launch_scatter_add_rows");
   scatter_add_rows_kernel<<<dim3(n, grid_1d(dim, kRowThreads)), kRowThreads, 0, stream>>>(
       src, index, dst, dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_merge_four_rows(const __nv_bfloat16* src, __nv_bfloat16* dst,
@@ -999,20 +999,20 @@ void launch_merge_four_rows(const __nv_bfloat16* src, __nv_bfloat16* dst,
   require_positive(groups, dim, "launch_merge_four_rows");
   merge_four_rows_kernel<<<dim3(groups, grid_1d(4 * dim, kRowThreads)), kRowThreads, 0, stream>>>(
       src, dst, dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_add(const float* a, const float* b, float* out, size_t n, cudaStream_t stream) {
   if (n == 0) return;
   add_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(a, b, out, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_axpby(const float* x, float a, const float* y, float b, float* out, size_t n,
                   cudaStream_t stream) {
   if (n == 0) return;
   axpby_kernel<<<grid_1d(n, kRowThreads), kRowThreads, 0, stream>>>(x, a, y, b, out, n);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

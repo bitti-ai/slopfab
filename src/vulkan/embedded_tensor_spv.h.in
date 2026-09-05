@@ -1,61 +1,61 @@
 #pragma once
 #include <cstdint>
-namespace vidfab::vulkan::detail {
-inline constexpr uint8_t kTensorOpsSpirv[] = {@VIDFAB_TENSOR_OPS_SPV_BYTES@};
+namespace slopfab::vulkan::detail {
+inline constexpr uint8_t kTensorOpsSpirv[] = {@SLOPFAB_TENSOR_OPS_SPV_BYTES@};
 inline constexpr uint8_t kTensorOpsDenormSpirv[] = {
-    @VIDFAB_TENSOR_OPS_DENORM_SPV_BYTES@};
-inline constexpr uint8_t kTensorRmsNormSpirv[] = {@VIDFAB_TENSOR_RMS_NORM_SPV_BYTES@};
-inline constexpr uint8_t kTensorLayerNormSpirv[] = {@VIDFAB_TENSOR_LAYER_NORM_SPV_BYTES@};
+    @SLOPFAB_TENSOR_OPS_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorRmsNormSpirv[] = {@SLOPFAB_TENSOR_RMS_NORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorLayerNormSpirv[] = {@SLOPFAB_TENSOR_LAYER_NORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorBf16RmsBlockSpirv[] = {
-    @VIDFAB_TENSOR_BF16_RMS_BLOCK_SPV_BYTES@};
+    @SLOPFAB_TENSOR_BF16_RMS_BLOCK_SPV_BYTES@};
 inline constexpr uint8_t kTensorBf16RmsNarrowSpirv[] = {
-    @VIDFAB_TENSOR_BF16_RMS_NARROW_SPV_BYTES@};
-inline constexpr uint8_t kTensorBf16LayerSpirv[] = {@VIDFAB_TENSOR_BF16_LAYER_SPV_BYTES@};
-inline constexpr uint8_t kTensorBf16ModSpirv[] = {@VIDFAB_TENSOR_BF16_MOD_SPV_BYTES@};
-inline constexpr uint8_t kTensorFp32ModSpirv[] = {@VIDFAB_TENSOR_FP32_MOD_SPV_BYTES@};
+    @SLOPFAB_TENSOR_BF16_RMS_NARROW_SPV_BYTES@};
+inline constexpr uint8_t kTensorBf16LayerSpirv[] = {@SLOPFAB_TENSOR_BF16_LAYER_SPV_BYTES@};
+inline constexpr uint8_t kTensorBf16ModSpirv[] = {@SLOPFAB_TENSOR_BF16_MOD_SPV_BYTES@};
+inline constexpr uint8_t kTensorFp32ModSpirv[] = {@SLOPFAB_TENSOR_FP32_MOD_SPV_BYTES@};
 inline constexpr uint8_t kTensorGroupNormSpirv[] = {
-    @VIDFAB_TENSOR_GROUP_NORM_SPV_BYTES@};
+    @SLOPFAB_TENSOR_GROUP_NORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorVaeResidualSpirv[] = {
-    @VIDFAB_TENSOR_VAE_RESIDUAL_SPV_BYTES@};
+    @SLOPFAB_TENSOR_VAE_RESIDUAL_SPV_BYTES@};
 inline constexpr uint8_t kTensorVaeSwigluSpirv[] = {
-    @VIDFAB_TENSOR_VAE_SWIGLU_SPV_BYTES@};
+    @SLOPFAB_TENSOR_VAE_SWIGLU_SPV_BYTES@};
 inline constexpr uint8_t kTensorVaeDenormSpirv[] = {
-    @VIDFAB_TENSOR_VAE_DENORM_SPV_BYTES@};
+    @SLOPFAB_TENSOR_VAE_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorAudioSpirv[] = {
-    @VIDFAB_TENSOR_AUDIO_SPV_BYTES@};
+    @SLOPFAB_TENSOR_AUDIO_SPV_BYTES@};
 inline constexpr uint8_t kTensorKeyframeSpirv[] = {
-    @VIDFAB_TENSOR_KEYFRAME_SPV_BYTES@};
+    @SLOPFAB_TENSOR_KEYFRAME_SPV_BYTES@};
 inline constexpr uint8_t kTensorDitSpirv[] = {
-    @VIDFAB_TENSOR_DIT_SPV_BYTES@};
-inline constexpr uint8_t kTensorRopeSpirv[] = {@VIDFAB_TENSOR_ROPE_SPV_BYTES@};
+    @SLOPFAB_TENSOR_DIT_SPV_BYTES@};
+inline constexpr uint8_t kTensorRopeSpirv[] = {@SLOPFAB_TENSOR_ROPE_SPV_BYTES@};
 inline constexpr uint8_t kTensorRopeDenormSpirv[] = {
-    @VIDFAB_TENSOR_ROPE_DENORM_SPV_BYTES@};
+    @SLOPFAB_TENSOR_ROPE_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorVaeRopeSpirv[] = {
-    @VIDFAB_TENSOR_VAE_ROPE_SPV_BYTES@};
-inline constexpr uint8_t kTensorWeightSpirv[] = {@VIDFAB_TENSOR_WEIGHT_SPV_BYTES@};
+    @SLOPFAB_TENSOR_VAE_ROPE_SPV_BYTES@};
+inline constexpr uint8_t kTensorWeightSpirv[] = {@SLOPFAB_TENSOR_WEIGHT_SPV_BYTES@};
 inline constexpr uint8_t kTensorWeightDenormSpirv[] = {
-    @VIDFAB_TENSOR_WEIGHT_DENORM_SPV_BYTES@};
-inline constexpr uint8_t kTensorGemmSpirv[] = {@VIDFAB_TENSOR_GEMM_SPV_BYTES@};
+    @SLOPFAB_TENSOR_WEIGHT_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorGemmSpirv[] = {@SLOPFAB_TENSOR_GEMM_SPV_BYTES@};
 inline constexpr uint8_t kTensorGemmDenormSpirv[] = {
-    @VIDFAB_TENSOR_GEMM_DENORM_SPV_BYTES@};
+    @SLOPFAB_TENSOR_GEMM_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorGemmCoopSpirv[] = {
-    @VIDFAB_TENSOR_GEMM_COOP_SPV_BYTES@};
+    @SLOPFAB_TENSOR_GEMM_COOP_SPV_BYTES@};
 inline constexpr uint8_t kTensorGemmCoopDenormSpirv[] = {
-    @VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV_BYTES@};
+    @SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorGemmPrepareSpirv[] = {
-    @VIDFAB_TENSOR_GEMM_PREPARE_SPV_BYTES@};
+    @SLOPFAB_TENSOR_GEMM_PREPARE_SPV_BYTES@};
 inline constexpr uint8_t kTensorGemmCoopF16Spirv[] = {
-    @VIDFAB_TENSOR_GEMM_COOP_F16_SPV_BYTES@};
+    @SLOPFAB_TENSOR_GEMM_COOP_F16_SPV_BYTES@};
 inline constexpr uint8_t kTensorGemmCoopF16DenormSpirv[] = {
-    @VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_BYTES@};
+    @SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorAttentionBlockedSpirv[] = {
-    @VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_BYTES@};
+    @SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV_BYTES@};
 inline constexpr uint8_t kTensorAttentionPrepareSpirv[] = {
-    @VIDFAB_TENSOR_ATTENTION_PREPARE_SPV_BYTES@};
+    @SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV_BYTES@};
 inline constexpr uint8_t kTensorAttentionCausalGqaSpirv[] = {
-    @VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_BYTES@};
+    @SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_BYTES@};
 inline constexpr uint8_t kTensorAttentionH3Spirv[] = {
-    @VIDFAB_TENSOR_ATTENTION_H3_SPV_BYTES@};
+    @SLOPFAB_TENSOR_ATTENTION_H3_SPV_BYTES@};
 inline constexpr uint8_t kTensorAttentionH3BandedSpirv[] = {
-    @VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV_BYTES@};
-}  // namespace vidfab::vulkan::detail
+    @SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_BYTES@};
+}  // namespace slopfab::vulkan::detail

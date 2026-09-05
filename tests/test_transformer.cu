@@ -16,7 +16,7 @@
 //      can.
 //
 // The heavy path (the real 124-frame geometry and a full 49-step loop) is gated
-// on VIDFAB_TRANSFORMER_FULL=1 so an ordinary test run stays minutes rather than
+// on SLOPFAB_TRANSFORMER_FULL=1 so an ordinary test run stays minutes rather than
 // an hour.
 
 #include <cuda_runtime.h>
@@ -34,28 +34,28 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/dit/adaln.h"
-#include "vidfab/dit/denoise.h"
-#include "vidfab/dit/packing.h"
-#include "vidfab/dit/transformer.h"
-#include "vidfab/cuda/deterministic_attention.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/dtype.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/sampler/scheduler.h"
+#include "slopfab/dit/adaln.h"
+#include "slopfab/dit/denoise.h"
+#include "slopfab/dit/packing.h"
+#include "slopfab/dit/transformer.h"
+#include "slopfab/cuda/deterministic_attention.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/dtype.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/sampler/scheduler.h"
 
 namespace {
 
-using vidfab::dit::AdaLNTable;
-using vidfab::dit::PackedIndices;
-using vidfab::dit::RowTimesteps;
-using vidfab::dit::SequenceLayout;
-using vidfab::dit::Transformer;
-using vidfab::dit::TransformerConfig;
-using vidfab::test::make_data;
+using slopfab::dit::AdaLNTable;
+using slopfab::dit::PackedIndices;
+using slopfab::dit::RowTimesteps;
+using slopfab::dit::SequenceLayout;
+using slopfab::dit::Transformer;
+using slopfab::dit::TransformerConfig;
+using slopfab::test::make_data;
 
-using Tensors = std::map<std::string, vidfab::TensorWrite>;
+using Tensors = std::map<std::string, slopfab::TensorWrite>;
 
 std::string find_weight_file(const std::string& relative) {
   for (const char* prefix : {"", "../", "../../", "../../../"}) {
@@ -78,7 +78,7 @@ std::string find_ref2va_nf4_checkpoint() {
 }
 
 bool full_run_requested() {
-  const char* v = std::getenv("VIDFAB_TRANSFORMER_FULL");
+  const char* v = std::getenv("SLOPFAB_TRANSFORMER_FULL");
   return v != nullptr && v[0] != '\0' && v[0] != '0';
 }
 
@@ -97,7 +97,7 @@ bool full_run_requested() {
 // well under a tenth of that, which is what gives 1e-3 / 1e-2 teeth.
 //
 // Every reduction still accumulates in double; that difference is ~1e-7.
-float as_bf16(float v) { return vidfab::bf16_to_f32(vidfab::f32_to_bf16(v)); }
+float as_bf16(float v) { return slopfab::bf16_to_f32(slopfab::f32_to_bf16(v)); }
 
 void round_bf16(std::vector<float>& v) {
   for (float& x : v) x = as_bf16(x);
@@ -591,7 +591,7 @@ RefOutputs reference_forward(const Tensors& t, const AdaLNTable& table,
 
 void put(Tensors& t, const std::string& name, std::vector<int64_t> shape,
          std::vector<float> data) {
-  t[name] = vidfab::TensorWrite{name, std::move(shape), std::move(data)};
+  t[name] = slopfab::TensorWrite{name, std::move(shape), std::move(data)};
 }
 
 // Weights scaled by 1/sqrt(fan_in) so activations neither vanish nor blow up
@@ -625,7 +625,7 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
       fan_in_weights(hidden, cfg.text_dim, seed++));
   // Exact mode's canonical endpoint is checkpoint-native BF16 with a runtime
   // fp32 bias. Keep the synthetic archive on that same typed contract.
-  t["condition_proj.weight"].dtype = vidfab::DType::kBF16;
+  t["condition_proj.weight"].dtype = slopfab::DType::kBF16;
   put(t, "condition_proj.bias", {hidden}, make_data(hidden, seed++, 0.05f));
 
   // A smooth table, as the real one is: linear interpolation only means
@@ -736,13 +736,13 @@ SequenceLayout tiny_layout() {
 
 std::string write_synthetic(const Tensors& t) {
   const std::filesystem::path dir =
-      std::filesystem::temp_directory_path() / "vidfab_transformer_test";
+      std::filesystem::temp_directory_path() / "slopfab_transformer_test";
   std::filesystem::create_directories(dir);
   const std::string path = (dir / "tiny.safetensors").string();
-  std::vector<vidfab::TensorWrite> list;
+  std::vector<slopfab::TensorWrite> list;
   list.reserve(t.size());
   for (const auto& kv : t) list.push_back(kv.second);
-  vidfab::write_safetensors(path, list);
+  slopfab::write_safetensors(path, list);
   return path;
 }
 
@@ -836,8 +836,8 @@ Case make_case(const TransformerConfig& cfg, int text_rows, float audio_t) {
   Case c;
   c.layout = tiny_layout();
   c.layout.num_text = text_rows;
-  c.idx = vidfab::dit::build_indices(c.layout);
-  c.pos = vidfab::dit::build_position_ids(c.layout);
+  c.idx = slopfab::dit::build_indices(c.layout);
+  c.pos = slopfab::dit::build_position_ids(c.layout);
   // `+ 1` keeps the buffer non-empty at L = 0; only L*text_dim is ever read.
   c.prompt = make_data(static_cast<size_t>(text_rows) * cfg.text_dim + 1, 9001, 1.0f);
   c.video_rows =
@@ -846,7 +846,7 @@ Case make_case(const TransformerConfig& cfg, int text_rows, float audio_t) {
       make_data(c.idx.audio.size() * static_cast<size_t>(cfg.audio_in_channels), 9003, 1.0f);
   // Text rows inherit the video timestep and are never overridden, so
   // `torch.unique` yields two entries unless the two schedules coincide.
-  c.rt = vidfab::dit::build_row_timesteps(c.layout, c.idx, 0.62f, audio_t);
+  c.rt = slopfab::dit::build_row_timesteps(c.layout, c.idx, 0.62f, audio_t);
   return c;
 }
 
@@ -857,11 +857,11 @@ Case make_case(const TransformerConfig& cfg, int text_rows, float audio_t) {
 // from "bf16 rounding accumulated across all of them", and those have very
 // different consequences. This walks the same boundaries on both sides and
 // prints where agreement is first lost, and by how much at each step.
-VIDFAB_TEST(transformer_refiner_bisect) {
+SLOPFAB_TEST(transformer_refiner_bisect) {
   const TransformerConfig cfg = tiny_config();
   const Tensors tensors = build_synthetic(cfg);
   const std::string path = write_synthetic(tensors);
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
 
   Transformer model;
@@ -918,12 +918,12 @@ VIDFAB_TEST(transformer_refiner_bisect) {
   }
 }
 
-VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
-  if (vidfab::cuda::current_device_compute_capability() != 120) {
+SLOPFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
+  if (slopfab::cuda::current_device_compute_capability() != 120) {
     SKIP_UNSUPPORTED_HARDWARE("exact H3 attention requires the shipped SM120 image");
     return;
   }
-  if (!vidfab::cuda::deterministic_h3_attention_available()) {
+  if (!slopfab::cuda::deterministic_h3_attention_available()) {
     SKIP_UNSUPPORTED_HARDWARE("exact H3 CUDA driver/runtime tuple is not qualified");
     return;
   }
@@ -931,20 +931,20 @@ VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
   const TransformerConfig cfg = tiny_config();
   const Tensors tensors = build_synthetic(cfg);
   const std::string path = write_synthetic(tensors);
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
   Case c = make_case(cfg, 5, 0.31f);
   // Four video frames make +/-1 a genuinely restricted range; the ordinary
   // two-frame tiny fixture would make that band indistinguishable from full.
   c.layout.num_latent_frames = 4;
   c.layout.num_video_rows = c.layout.num_latent_frames * c.layout.rows_per_frame();
-  c.idx = vidfab::dit::build_indices(c.layout);
-  c.pos = vidfab::dit::build_position_ids(c.layout);
+  c.idx = slopfab::dit::build_indices(c.layout);
+  c.pos = slopfab::dit::build_position_ids(c.layout);
   c.video_rows = make_data(
       c.idx.video.size() * static_cast<size_t>(cfg.video_patch_dim()), 9002, 1.0f);
   c.audio_rows = make_data(
       c.idx.audio.size() * static_cast<size_t>(cfg.audio_in_channels), 9003, 1.0f);
-  c.rt = vidfab::dit::build_row_timesteps(c.layout, c.idx, 0.62f, 0.31f);
+  c.rt = slopfab::dit::build_row_timesteps(c.layout, c.idx, 0.62f, 0.31f);
 
   // A failed preparation must not lock a half-recorded mode into the object.
   // Null host input is rejected by the CUDA copy before any attention work.
@@ -958,8 +958,8 @@ VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
       rejected = true;
     }
     CHECK(rejected);
-    failed.set_attention_mode(vidfab::AttentionMode::kExact);
-    CHECK(failed.attention_mode() == vidfab::AttentionMode::kExact);
+    failed.set_attention_mode(slopfab::AttentionMode::kExact);
+    CHECK(failed.attention_mode() == slopfab::AttentionMode::kExact);
   }
 
   struct Evidence {
@@ -968,7 +968,7 @@ VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
     std::vector<float> audio;
   };
 
-  auto run = [&](vidfab::AttentionMode mode, int band) {
+  auto run = [&](slopfab::AttentionMode mode, int band) {
     Transformer model;
     model.load(st, cfg);
     model.set_attention_mode(mode);
@@ -990,11 +990,11 @@ VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
     model.set_attention_band(band);
     bool mode_rejected = false;
     try {
-      model.set_attention_mode(vidfab::AttentionMode::kFlash2);
+      model.set_attention_mode(slopfab::AttentionMode::kFlash2);
     } catch (const std::exception&) {
       mode_rejected = true;
     }
-    CHECK(mode == vidfab::AttentionMode::kFlash2 || mode_rejected);
+    CHECK(mode == slopfab::AttentionMode::kFlash2 || mode_rejected);
     bool band_rejected = false;
     try {
       model.set_attention_band(band == 0 ? 1 : 0);
@@ -1017,9 +1017,9 @@ VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
     return out;
   };
 
-  const Evidence exact_full = run(vidfab::AttentionMode::kExact, 0);
-  const Evidence exact_banded = run(vidfab::AttentionMode::kExact, 1);
-  const Evidence flash_full = run(vidfab::AttentionMode::kFlash2, 0);
+  const Evidence exact_full = run(slopfab::AttentionMode::kExact, 0);
+  const Evidence exact_banded = run(slopfab::AttentionMode::kExact, 1);
+  const Evidence flash_full = run(slopfab::AttentionMode::kFlash2, 0);
   CHECK(exact_full.routes.exact_refiner_full == 2);
   CHECK(exact_full.routes.exact_main_full == 2);
   CHECK(exact_full.routes.exact_main_banded == 0);
@@ -1042,11 +1042,11 @@ VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
   // both retain the same Q/K/V/output tensors and linear high-water.
   Transformer exact_size;
   exact_size.load(st, cfg);
-  exact_size.set_attention_mode(vidfab::AttentionMode::kExact);
+  exact_size.set_attention_mode(slopfab::AttentionMode::kExact);
   CHECK(exact_size.debug_attention_scratch_bytes(c.layout) == 0);
   Transformer blocked_size;
   blocked_size.load(st, cfg);
-  blocked_size.set_attention_mode(vidfab::AttentionMode::kNone);
+  blocked_size.set_attention_mode(slopfab::AttentionMode::kNone);
   CHECK(blocked_size.debug_attention_scratch_bytes(c.layout) > 0);
 
   st.close();
@@ -1054,12 +1054,12 @@ VIDFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
   std::filesystem::remove(path, ec);
 }
 
-VIDFAB_TEST(transformer_forward_vs_cpu_reference) {
+SLOPFAB_TEST(transformer_forward_vs_cpu_reference) {
   const TransformerConfig cfg = tiny_config();
   const Tensors tensors = build_synthetic(cfg);
   const std::string path = write_synthetic(tensors);
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
 
   AdaLNTable table;
@@ -1252,7 +1252,7 @@ VIDFAB_TEST(transformer_forward_vs_cpu_reference) {
   std::filesystem::remove(path, ec);
 }
 
-VIDFAB_TEST(transformer_load_rejects_bad_shapes) {
+SLOPFAB_TEST(transformer_load_rejects_bad_shapes) {
   const TransformerConfig cfg = tiny_config();
   Tensors tensors = build_synthetic(cfg);
   // A qkv_proj that is 2*inner rows instead of 3*inner is exactly what a port
@@ -1262,7 +1262,7 @@ VIDFAB_TEST(transformer_load_rejects_bad_shapes) {
       static_cast<size_t>(2 * cfg.inner_dim()) * cfg.hidden_size);
   const std::string path = write_synthetic(tensors);
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
   Transformer model;
   bool threw = false;
@@ -1286,11 +1286,11 @@ VIDFAB_TEST(transformer_load_rejects_bad_shapes) {
 // Denoising loop. Exercised with a substituted velocity so the arithmetic can
 // be pinned without the checkpoint.
 
-vidfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
+slopfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
                                                const PackedIndices& idx,
-                                               vidfab::sampler::FlowScheduler& video,
-                                               vidfab::sampler::FlowScheduler& audio) {
-  vidfab::dit::DenoiseInputs in;
+                                               slopfab::sampler::FlowScheduler& video,
+                                               slopfab::sampler::FlowScheduler& audio) {
+  slopfab::dit::DenoiseInputs in;
   in.layout = &layout;
   in.indices = &idx;
   in.video_timesteps = &video.timesteps();
@@ -1320,16 +1320,16 @@ vidfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
 //   3. the steps on which the substituted velocity was actually invoked
 // (1) vs (2) is "the loop decided what the planner decided"; (2) vs (3) is "the
 // loop then did what it decided". Neither implies the other.
-VIDFAB_TEST(denoise_skips_exactly_the_planned_steps) {
+SLOPFAB_TEST(denoise_skips_exactly_the_planned_steps) {
   const SequenceLayout layout = tiny_layout();
-  const PackedIndices idx = vidfab::dit::build_indices(layout);
+  const PackedIndices idx = slopfab::dit::build_indices(layout);
 
   // A code function standing in for the AdaLN table: c(t) = (t, 0...). The
   // relative-L1 distance between consecutive signatures is then a known
   // function of the two schedules, and the planner and the loop must derive it
   // from the same timesteps.
-  const vidfab::dit::CodeFn code = [](float t) {
-    std::array<float, vidfab::dit::AdaLNTable::kRank> c{};
+  const slopfab::dit::CodeFn code = [](float t) {
+    std::array<float, slopfab::dit::AdaLNTable::kRank> c{};
     c[0] = t;
     c[1] = 0.5f * t;
     return c;
@@ -1351,12 +1351,12 @@ VIDFAB_TEST(denoise_skips_exactly_the_planned_steps) {
   };
 
   for (const Case& c : cases) {
-    vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+    slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
     video.set_timesteps(16);
     audio.set_timesteps(16);
 
     Transformer model;  // never used: `velocity` and `code` short-circuit it
-    vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+    slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
     in.code = code;
     in.cache.threshold = c.threshold;
     in.cache.warmup = c.warmup;
@@ -1375,9 +1375,9 @@ VIDFAB_TEST(denoise_skips_exactly_the_planned_steps) {
     for (size_t i = 0; i < video.timesteps().size(); ++i) {
       schedule.emplace_back(video.timesteps()[i], audio.timesteps()[i]);
     }
-    const std::vector<uint8_t> planned = vidfab::dit::plan_step_cache(in.cache, schedule, code);
+    const std::vector<uint8_t> planned = slopfab::dit::plan_step_cache(in.cache, schedule, code);
 
-    const vidfab::dit::DenoiseOutputs out = vidfab::dit::denoise(model, in);
+    const slopfab::dit::DenoiseOutputs out = slopfab::dit::denoise(model, in);
 
     CHECK_MSG(out.decisions == planned, "%s: loop decisions differ from plan_step_cache", c.name);
     CHECK_MSG(invoked == planned, "%s: forward ran on steps the plan did not choose", c.name);
@@ -1403,16 +1403,16 @@ VIDFAB_TEST(denoise_skips_exactly_the_planned_steps) {
 // the same loop built without a cache config at all. This is the unit-level
 // half of the bit-identity gate: it needs no checkpoint and no card time, so a
 // regression in the default path fails here long before a generation is run.
-VIDFAB_TEST(denoise_cache_disabled_changes_nothing) {
+SLOPFAB_TEST(denoise_cache_disabled_changes_nothing) {
   const SequenceLayout layout = tiny_layout();
-  const PackedIndices idx = vidfab::dit::build_indices(layout);
+  const PackedIndices idx = slopfab::dit::build_indices(layout);
 
   auto run = [&](bool set_inert_flags) {
-    vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+    slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
     video.set_timesteps(14);
     audio.set_timesteps(14);
     Transformer model;
-    vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+    slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
     if (set_inert_flags) {
       // Explicitly zero, plus a warmup that must not switch anything on by
       // itself. `--cache-warmup` alone is inert and this is where that is
@@ -1429,11 +1429,11 @@ VIDFAB_TEST(denoise_cache_disabled_changes_nothing) {
       for (int r = 0; r < layout.num_video_rows * 96; ++r) vv[r] = s * (v[r] + 0.3f);
       std::fill(av, av + layout.num_audio_rows * 32, s);
     };
-    return vidfab::dit::denoise(model, in);
+    return slopfab::dit::denoise(model, in);
   };
 
-  const vidfab::dit::DenoiseOutputs a = run(false);
-  const vidfab::dit::DenoiseOutputs b = run(true);
+  const slopfab::dit::DenoiseOutputs a = run(false);
+  const slopfab::dit::DenoiseOutputs b = run(true);
 
   CHECK(a.steps_skipped == 0);
   CHECK(b.steps_skipped == 0);
@@ -1445,15 +1445,15 @@ VIDFAB_TEST(denoise_cache_disabled_changes_nothing) {
   CHECK(a.audio_rows == b.audio_rows);
 }
 
-VIDFAB_TEST(denoise_zero_velocity_is_a_fixed_point) {
+SLOPFAB_TEST(denoise_zero_velocity_is_a_fixed_point) {
   const SequenceLayout layout = tiny_layout();
-  const PackedIndices idx = vidfab::dit::build_indices(layout);
-  vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+  const PackedIndices idx = slopfab::dit::build_indices(layout);
+  slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
   video.set_timesteps(8);
   audio.set_timesteps(8);
 
   Transformer model;  // never used: `velocity` short-circuits the forward pass
-  vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+  slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
 
   // Capture the starting latents by recording the first call's inputs.
   std::vector<float> first_video, first_audio;
@@ -1469,7 +1469,7 @@ VIDFAB_TEST(denoise_zero_velocity_is_a_fixed_point) {
     std::fill(av, av + layout.num_audio_rows * 32, 0.0f);
   };
 
-  const vidfab::dit::DenoiseOutputs out = vidfab::dit::denoise(model, in);
+  const slopfab::dit::DenoiseOutputs out = slopfab::dit::denoise(model, in);
   CHECK(calls == static_cast<int>(video.timesteps().size()));
 
   // v = 0 makes `denoised` equal x_t, so x_next = ratio*x + (1-ratio)*x = x for
@@ -1478,20 +1478,20 @@ VIDFAB_TEST(denoise_zero_velocity_is_a_fixed_point) {
   CHECK_CLOSE(first_audio, out.audio_rows, 1e-6, "audio latents under zero velocity");
 }
 
-VIDFAB_TEST(denoise_accepts_video_only_still_layout) {
+SLOPFAB_TEST(denoise_accepts_video_only_still_layout) {
   SequenceLayout layout = tiny_layout();
   layout.num_audio_latents = 0;
   layout.num_audio_rows = 0;
   layout.num_latent_frames = 1;
   layout.num_video_rows = layout.rows_per_frame();
-  const PackedIndices idx = vidfab::dit::build_indices(layout);
+  const PackedIndices idx = slopfab::dit::build_indices(layout);
 
-  vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+  slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
   video.set_timesteps(4);
   audio.set_timesteps(4);
 
   Transformer model;
-  vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+  slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
   int calls = 0;
   in.velocity = [&](int, const RowTimesteps& rt, const float*, const float* audio_rows,
                     float* vv, float* audio_velocity) {
@@ -1502,21 +1502,21 @@ VIDFAB_TEST(denoise_accepts_video_only_still_layout) {
     std::fill(vv, vv + layout.num_video_rows * 96, 0.0f);
   };
 
-  const vidfab::dit::DenoiseOutputs out = vidfab::dit::denoise(model, in);
+  const slopfab::dit::DenoiseOutputs out = slopfab::dit::denoise(model, in);
   CHECK(calls == static_cast<int>(video.timesteps().size()));
   CHECK(out.video_rows.size() == static_cast<size_t>(layout.num_video_rows) * 96);
   CHECK(out.audio_rows.empty());
 }
 
-VIDFAB_TEST(denoise_constant_velocity_matches_cpu_euler) {
+SLOPFAB_TEST(denoise_constant_velocity_matches_cpu_euler) {
   const SequenceLayout layout = tiny_layout();
-  const PackedIndices idx = vidfab::dit::build_indices(layout);
-  vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+  const PackedIndices idx = slopfab::dit::build_indices(layout);
+  slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
   video.set_timesteps(12);
   audio.set_timesteps(12);
 
   Transformer model;
-  vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+  slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
 
   const float kVideoV = 0.75f;
   const float kAudioV = -0.4f;
@@ -1537,10 +1537,10 @@ VIDFAB_TEST(denoise_constant_velocity_matches_cpu_euler) {
     std::fill(av, av + layout.num_audio_rows * 32, kAudioV);
   };
 
-  const vidfab::dit::DenoiseOutputs out = vidfab::dit::denoise(model, in);
+  const slopfab::dit::DenoiseOutputs out = slopfab::dit::denoise(model, in);
 
   // Independent host integration of the same schedule.
-  auto integrate = [](const vidfab::sampler::FlowScheduler& sched, std::vector<float> x, float v) {
+  auto integrate = [](const slopfab::sampler::FlowScheduler& sched, std::vector<float> x, float v) {
     for (size_t i = 0; i + 1 < sched.sigmas().size(); ++i) {
       const float sigma_from_t = 1.0f - sched.timesteps()[i];
       const float ratio = sched.sigmas()[i + 1] / sched.sigmas()[i];
@@ -1569,16 +1569,16 @@ VIDFAB_TEST(denoise_constant_velocity_matches_cpu_euler) {
             distinct, seen_video_t.size() - 1);
 }
 
-VIDFAB_TEST(denoise_is_deterministic) {
+SLOPFAB_TEST(denoise_is_deterministic) {
   const SequenceLayout layout = tiny_layout();
-  const PackedIndices idx = vidfab::dit::build_indices(layout);
-  vidfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
+  const PackedIndices idx = slopfab::dit::build_indices(layout);
+  slopfab::sampler::FlowScheduler video(12.0f), audio(3.0f);
   video.set_timesteps(6);
   audio.set_timesteps(6);
 
   Transformer model;
   auto run = [&](uint64_t seed) {
-    vidfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
+    slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
     in.seed = seed;
     in.velocity = [&](int, const RowTimesteps&, const float* v, const float* a, float* vv,
                       float* av) {
@@ -1587,12 +1587,12 @@ VIDFAB_TEST(denoise_is_deterministic) {
       for (int i = 0; i < layout.num_video_rows * 96; ++i) vv[i] = 0.1f * v[i];
       for (int i = 0; i < layout.num_audio_rows * 32; ++i) av[i] = -0.2f * a[i];
     };
-    return vidfab::dit::denoise(model, in);
+    return slopfab::dit::denoise(model, in);
   };
 
-  const vidfab::dit::DenoiseOutputs a = run(11);
-  const vidfab::dit::DenoiseOutputs b = run(11);
-  const vidfab::dit::DenoiseOutputs c = run(12);
+  const slopfab::dit::DenoiseOutputs a = run(11);
+  const slopfab::dit::DenoiseOutputs b = run(11);
+  const slopfab::dit::DenoiseOutputs c = run(12);
   CHECK_CLOSE(a.video_rows, b.video_rows, 0.0, "same seed, same video latents");
   CHECK_CLOSE(a.audio_rows, b.audio_rows, 0.0, "same seed, same audio latents");
   CHECK(a.video_rows != c.video_rows);
@@ -1604,13 +1604,13 @@ VIDFAB_TEST(denoise_is_deterministic) {
 // Spec 8.1: the mean |w| of the contiguous [q; k; v] partition separates while
 // the per-head interleaved partition is flat. This reads the file directly — no
 // GPU, no 19.5 GiB load — so it can run even when the rest is skipped.
-VIDFAB_TEST(transformer_real_qkv_is_contiguous) {
+SLOPFAB_TEST(transformer_real_qkv_is_contiguous) {
   const std::string path = find_checkpoint();
   if (path.empty()) {
     std::printf("  transformer checkpoint not present; skipping\n");
     return;
   }
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
 
   const int inner = 7168;
@@ -1620,8 +1620,8 @@ VIDFAB_TEST(transformer_real_qkv_is_contiguous) {
 
   for (int block : {0, 49}) {
     const std::string name = "blocks." + std::to_string(block) + ".attn.qkv_proj.weight";
-    const vidfab::TensorView& w = st.at(name);
-    CHECK(w.dtype == vidfab::DType::kF8E4M3);
+    const slopfab::TensorView& w = st.at(name);
+    CHECK(w.dtype == slopfab::DType::kF8E4M3);
     CHECK(w.shape == std::vector<int64_t>({3 * inner, hidden}));
     const uint8_t* raw = static_cast<const uint8_t*>(w.data);
 
@@ -1634,7 +1634,7 @@ VIDFAB_TEST(transformer_real_qkv_is_contiguous) {
         const int which = interleaved ? (r / head_dim) % 3 : r / inner;
         if (which != part) continue;
         const uint8_t* row = raw + static_cast<size_t>(r) * hidden;
-        for (int c = 0; c < hidden; ++c) acc += std::fabs(vidfab::f8_e4m3_to_f32(row[c]));
+        for (int c = 0; c < hidden; ++c) acc += std::fabs(slopfab::f8_e4m3_to_f32(row[c]));
         n += static_cast<size_t>(hidden);
       }
       return n == 0 ? 0.0 : acc / static_cast<double>(n);
@@ -1670,7 +1670,7 @@ VIDFAB_TEST(transformer_real_qkv_is_contiguous) {
   }
 }
 
-VIDFAB_TEST(transformer_real_checkpoint) {
+SLOPFAB_TEST(transformer_real_checkpoint) {
   const std::string path = find_checkpoint();
   if (path.empty()) {
     std::printf("  transformer checkpoint not present; skipping\n");
@@ -1680,7 +1680,7 @@ VIDFAB_TEST(transformer_real_checkpoint) {
   size_t free_before = 0, total_device = 0;
   cudaMemGetInfo(&free_before, &total_device);
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
   CHECK_MSG(st.tensor_count() == 1082, "checkpoint has %zu tensors, expected 1082",
             st.tensor_count());
@@ -1736,22 +1736,22 @@ VIDFAB_TEST(transformer_real_checkpoint) {
   // --- a real forward pass --------------------------------------------------
   const bool full = full_run_requested();
   int canvas_h = 0, canvas_w = 0;
-  vidfab::dit::resolve_canvas_size(16, 9, &canvas_h, &canvas_w);
-  const int aligned = vidfab::dit::align_num_frames(124);
+  slopfab::dit::resolve_canvas_size(16, 9, &canvas_h, &canvas_w);
+  const int aligned = slopfab::dit::align_num_frames(124);
 
   SequenceLayout layout;
   layout.num_text = 64;
   layout.latent_height = canvas_h / 16;
   layout.latent_width = canvas_w / 16;
-  layout.num_audio_latents = vidfab::dit::audio_latents_for_frames(aligned);
+  layout.num_audio_latents = slopfab::dit::audio_latents_for_frames(aligned);
   layout.num_audio_rows = 2 * layout.num_audio_latents;
   // The default run uses a shorter clip so an ordinary test pass stays in the
-  // minutes; VIDFAB_TRANSFORMER_FULL=1 runs the real 124-frame geometry.
-  layout.num_latent_frames = full ? vidfab::dit::video_latent_num_frames(aligned) : 4;
+  // minutes; SLOPFAB_TRANSFORMER_FULL=1 runs the real 124-frame geometry.
+  layout.num_latent_frames = full ? slopfab::dit::video_latent_num_frames(aligned) : 4;
   layout.num_video_rows = layout.num_latent_frames * layout.rows_per_frame();
 
-  const PackedIndices idx = vidfab::dit::build_indices(layout);
-  const std::vector<double> pos = vidfab::dit::build_position_ids(layout);
+  const PackedIndices idx = slopfab::dit::build_indices(layout);
+  const std::vector<double> pos = slopfab::dit::build_position_ids(layout);
   std::printf("  sequence %d rows (%d video, %d audio, %d text), activations %.3f GiB\n",
               layout.total_rows(), layout.num_video_rows, layout.num_audio_rows, layout.num_text,
               static_cast<double>(model.activation_bytes(layout)) / (1024.0 * 1024.0 * 1024.0));
@@ -1767,7 +1767,7 @@ VIDFAB_TEST(transformer_real_checkpoint) {
   std::vector<float> video_velocity(video_rows.size());
   std::vector<float> audio_velocity(audio_rows.size());
 
-  const RowTimesteps rt = vidfab::dit::build_row_timesteps(layout, idx, 0.5f, 0.35f);
+  const RowTimesteps rt = slopfab::dit::build_row_timesteps(layout, idx, 0.5f, 0.35f);
   const auto step_start = std::chrono::steady_clock::now();
   model.forward(video_rows.data(), audio_rows.data(), rt, video_velocity.data(),
                 audio_velocity.data());
@@ -1803,17 +1803,17 @@ VIDFAB_TEST(transformer_real_checkpoint) {
   }
 
   if (!full) {
-    std::printf("  set VIDFAB_TRANSFORMER_FULL=1 for the 124-frame geometry and a 49-step loop\n");
+    std::printf("  set SLOPFAB_TRANSFORMER_FULL=1 for the 124-frame geometry and a 49-step loop\n");
     return;
   }
 
   // --- the whole loop -------------------------------------------------------
-  vidfab::sampler::FlowScheduler video_sched(12.0f), audio_sched(3.0f);
+  slopfab::sampler::FlowScheduler video_sched(12.0f), audio_sched(3.0f);
   video_sched.set_timesteps(50);
   audio_sched.set_timesteps(50);
   CHECK(video_sched.timesteps().size() == 49);
 
-  vidfab::dit::DenoiseInputs in;
+  slopfab::dit::DenoiseInputs in;
   in.layout = &layout;
   in.indices = &idx;
   in.video_timesteps = &video_sched.timesteps();
@@ -1823,8 +1823,8 @@ VIDFAB_TEST(transformer_real_checkpoint) {
   in.seed = 20260804;
 
   const auto loop_start = std::chrono::steady_clock::now();
-  const vidfab::dit::DenoiseOutputs out =
-      vidfab::dit::denoise(model, in, [&](int step, int total) {
+  const slopfab::dit::DenoiseOutputs out =
+      slopfab::dit::denoise(model, in, [&](int step, int total) {
         const double elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
         std::printf("  step %2d/%d  %.1f s elapsed (%.1f s/step)\n", step + 1, total, elapsed,
@@ -1838,14 +1838,14 @@ VIDFAB_TEST(transformer_real_checkpoint) {
               rms(out.audio_rows));
 }
 
-VIDFAB_TEST(transformer_real_ref2va_nf4_checkpoint_load) {
+SLOPFAB_TEST(transformer_real_ref2va_nf4_checkpoint_load) {
   const std::string path = find_ref2va_nf4_checkpoint();
   if (path.empty()) {
     std::printf("  Ref2VA NF4 transformer checkpoint not present; skipping\n");
     return;
   }
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
   CHECK_MSG(st.tensor_count() == 1830, "NF4 checkpoint has %zu tensors, expected 1830",
             st.tensor_count());
@@ -1875,14 +1875,14 @@ VIDFAB_TEST(transformer_real_ref2va_nf4_checkpoint_load) {
 // row-major read of the block scales or a half-sliced qkv view all leave the
 // output finite and sanely scaled, so `all_finite` and an rms band cannot see
 // them; correlation against the fp8 run can.
-VIDFAB_TEST(transformer_real_nvfp4_checkpoint) {
+SLOPFAB_TEST(transformer_real_nvfp4_checkpoint) {
   const std::string path = find_nvfp4_checkpoint();
   if (path.empty()) {
     std::printf("  nvfp4 transformer checkpoint not present; skipping\n");
     return;
   }
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
   CHECK_MSG(st.tensor_count() == 1132, "nvfp4 checkpoint has %zu tensors, expected 1132",
             st.tensor_count());
@@ -1919,25 +1919,25 @@ VIDFAB_TEST(transformer_real_nvfp4_checkpoint) {
             "nvfp4 weights occupy %.3f GiB, expected about 12.5", resident_gib);
 
   int canvas_h = 0, canvas_w = 0;
-  vidfab::dit::resolve_canvas_size(16, 9, &canvas_h, &canvas_w);
-  const int aligned = vidfab::dit::align_num_frames(124);
+  slopfab::dit::resolve_canvas_size(16, 9, &canvas_h, &canvas_w);
+  const int aligned = slopfab::dit::align_num_frames(124);
 
   SequenceLayout layout;
   layout.num_text = 64;
   layout.latent_height = canvas_h / 16;
   layout.latent_width = canvas_w / 16;
-  layout.num_audio_latents = vidfab::dit::audio_latents_for_frames(aligned);
+  layout.num_audio_latents = slopfab::dit::audio_latents_for_frames(aligned);
   layout.num_audio_rows = 2 * layout.num_audio_latents;
   layout.num_latent_frames = 4;
   layout.num_video_rows = layout.num_latent_frames * layout.rows_per_frame();
 
-  const PackedIndices idx = vidfab::dit::build_indices(layout);
-  const std::vector<double> pos = vidfab::dit::build_position_ids(layout);
+  const PackedIndices idx = slopfab::dit::build_indices(layout);
+  const std::vector<double> pos = slopfab::dit::build_position_ids(layout);
   const std::vector<float> prompt =
       make_data(static_cast<size_t>(layout.num_text) * 5120, 7, 1.0f);
   const std::vector<float> video_rows = make_data(idx.video.size() * 96, 8, 1.0f);
   const std::vector<float> audio_rows = make_data(idx.audio.size() * 32, 9, 1.0f);
-  const RowTimesteps rt = vidfab::dit::build_row_timesteps(layout, idx, 0.5f, 0.35f);
+  const RowTimesteps rt = slopfab::dit::build_row_timesteps(layout, idx, 0.5f, 0.35f);
 
   std::vector<float> video_velocity(video_rows.size());
   std::vector<float> audio_velocity(audio_rows.size());
@@ -1977,7 +1977,7 @@ VIDFAB_TEST(transformer_real_nvfp4_checkpoint) {
   // is released before the fp8 one is loaded.
   model.unload();
 
-  vidfab::SafeTensors fp8;
+  slopfab::SafeTensors fp8;
   fp8.open(fp8_path);
   Transformer reference;
   reference.load(fp8, TransformerConfig{});

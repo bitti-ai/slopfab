@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/vae/tile_merge.h"
+#include "slopfab/vae/tile_merge.h"
 
 namespace {
 
@@ -95,7 +95,7 @@ std::vector<float> reference_stitch(const Geometry& g, const std::vector<float>&
 
 std::vector<float> merged_stitch(const Geometry& g, const std::vector<float>& raw,
                                  const std::vector<float>& above,
-                                 const std::vector<float>& left, vidfab::vae::TileMerge* merge) {
+                                 const std::vector<float>& left, slopfab::vae::TileMerge* merge) {
   merge->prepare(raw.data(), g.y_ov > 0 ? above.data() : nullptr,
                  g.x_ov > 0 ? left.data() : nullptr, g.planes, g.th, g.tw, g.y_ov, g.x_ov);
   std::vector<float> out(static_cast<size_t>(g.planes) * g.keep_h * g.keep_w);
@@ -110,7 +110,7 @@ std::vector<float> merged_stitch(const Geometry& g, const std::vector<float>& ra
 
 }  // namespace
 
-VIDFAB_TEST(tile_merge_matches_the_whole_tile_blend_exactly) {
+SLOPFAB_TEST(tile_merge_matches_the_whole_tile_blend_exactly) {
   // The shipped decode runs 3 * 28 planes over 256 x 256 tiles with y-overlaps
   // [96, 80, 80] and x-overlaps [96, 96, 80, 80, 80, 80]. The proportions are
   // reproduced at a size a unit test can afford, plus the degenerate corners.
@@ -127,12 +127,12 @@ VIDFAB_TEST(tile_merge_matches_the_whole_tile_blend_exactly) {
       {"keep narrower than the x overlap", 4, 16, 16, 6, 12, 10, 8},
   };
 
-  vidfab::vae::TileMerge merge;  // deliberately reused, as the pipeline reuses it
+  slopfab::vae::TileMerge merge;  // deliberately reused, as the pipeline reuses it
   for (const Geometry& g : cases) {
     const size_t tile = static_cast<size_t>(g.planes) * g.th * g.tw;
-    const std::vector<float> raw = vidfab::test::make_data(tile, 1301, 3.0f);
-    const std::vector<float> above = vidfab::test::make_data(tile, 7717, 3.0f);
-    const std::vector<float> left = vidfab::test::make_data(tile, 4409, 3.0f);
+    const std::vector<float> raw = slopfab::test::make_data(tile, 1301, 3.0f);
+    const std::vector<float> above = slopfab::test::make_data(tile, 7717, 3.0f);
+    const std::vector<float> left = slopfab::test::make_data(tile, 4409, 3.0f);
 
     const std::vector<float> expect = reference_stitch(g, raw, above, left);
     const std::vector<float> actual = merged_stitch(g, raw, above, left, &merge);
@@ -142,7 +142,7 @@ VIDFAB_TEST(tile_merge_matches_the_whole_tile_blend_exactly) {
   }
 }
 
-VIDFAB_TEST(tile_merge_corner_is_blended_twice) {
+SLOPFAB_TEST(tile_merge_corner_is_blended_twice) {
   // Constant tiles make the expected value arithmetic rather than a second
   // implementation. raw = 0, above = 4, left = 8, overlap 4 on both axes.
   //
@@ -156,7 +156,7 @@ VIDFAB_TEST(tile_merge_corner_is_blended_twice) {
   const std::vector<float> above(tile, 4.0f);
   const std::vector<float> left(tile, 8.0f);
 
-  vidfab::vae::TileMerge merge;
+  slopfab::vae::TileMerge merge;
   merge.prepare(raw.data(), above.data(), left.data(), planes, th, tw, ov, ov);
   std::vector<float> row(tw);
 
@@ -172,7 +172,7 @@ VIDFAB_TEST(tile_merge_corner_is_blended_twice) {
   CHECK_NEAR(row[ov], 0.0, 0.0);
 }
 
-VIDFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
+SLOPFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
   // The shipped schedule: 28 decoded frames per chunk, of which [3, 20) is the
   // primary block and [23, 28) is the carry. The old code stitched all 28 into
   // a staging buffer and then copied those two ranges out of it; writing
@@ -204,7 +204,7 @@ VIDFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
   std::vector<float> primary(expect_primary.size(), sentinel);
   std::vector<float> carry(expect_carry.size(), sentinel);
   std::vector<float*> dst;
-  vidfab::vae::chunk_frame_destinations(out_frames, pre, frames_per_chunk, chunk_dec, overlap,
+  slopfab::vae::chunk_frame_destinations(out_frames, pre, frames_per_chunk, chunk_dec, overlap,
                                         stride, primary.data(), carry.data(), &dst);
   CHECK(dst.size() == static_cast<size_t>(out_frames));
   int written = 0;
@@ -224,12 +224,12 @@ VIDFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
   for (int f : {3, 19, 23, 27}) CHECK(dst[static_cast<size_t>(f)] != nullptr);
 }
 
-VIDFAB_TEST(tile_layout_is_the_shipped_geometry) {
+SLOPFAB_TEST(tile_layout_is_the_shipped_geometry) {
   // The overlap widths are what every sizing argument about the blend rests on,
   // so they are pinned rather than recomputed: 1280 x 768 at tile 256, minimum
   // overlap 64, latent ratio 16.
-  const vidfab::vae::TileLayout y = vidfab::vae::split_tiles(768, 256, 64, 16);
-  const vidfab::vae::TileLayout x = vidfab::vae::split_tiles(1280, 256, 64, 16);
+  const slopfab::vae::TileLayout y = slopfab::vae::split_tiles(768, 256, 64, 16);
+  const slopfab::vae::TileLayout x = slopfab::vae::split_tiles(1280, 256, 64, 16);
 
   CHECK(y.starts.size() == 4);
   CHECK(x.starts.size() == 7);
@@ -241,7 +241,7 @@ VIDFAB_TEST(tile_layout_is_the_shipped_geometry) {
   // The kept extents must tile the axis exactly — the stitch writes
   // `keep` pixels per tile and relies on them summing to the full width, with
   // no gap left holding whatever the buffer had before.
-  auto kept_total = [](const vidfab::vae::TileLayout& l) {
+  auto kept_total = [](const slopfab::vae::TileLayout& l) {
     int total = 0;
     for (size_t i = 0; i < l.starts.size(); ++i) {
       total += l.extents[i] - (i + 1 < l.starts.size() ? l.overlaps[i] : 0);
@@ -257,32 +257,32 @@ VIDFAB_TEST(tile_layout_is_the_shipped_geometry) {
   for (int o : x.overlaps) CHECK(o % 16 == 0);
 
   // A single tile when the axis fits, and no overlaps to blend.
-  const vidfab::vae::TileLayout one = vidfab::vae::split_tiles(256, 256, 64, 16);
+  const slopfab::vae::TileLayout one = slopfab::vae::split_tiles(256, 256, 64, 16);
   CHECK(one.starts.size() == 1 && one.overlaps.empty() && one.extents[0] == 256);
 
   // Degenerate arguments spin forever rather than returning something wrong:
   // neither loop below the guard makes progress. A hang is the one failure a
   // caller cannot diagnose, so both are rejected. The single-tile early-out
   // above runs first, so these need an input longer than the tile.
-  CHECK(vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 256, 16); }));
-  CHECK(vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 300, 16); }));
-  CHECK(vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 64, 0); }));
-  CHECK(vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 64, -16); }));
+  CHECK(slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 256, 16); }));
+  CHECK(slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 300, 16); }));
+  CHECK(slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 64, 0); }));
+  CHECK(slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 64, -16); }));
   // And the shipped arguments are nowhere near the guard.
-  CHECK(!vidfab::test::throws([] { (void)vidfab::vae::split_tiles(1280, 256, 64, 16); }));
+  CHECK(!slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 64, 16); }));
 }
 
-VIDFAB_TEST(tile_shape_groups_are_chunk_invariant) {
+SLOPFAB_TEST(tile_shape_groups_are_chunk_invariant) {
   // The pipeline resolves this once for the whole decode instead of per chunk.
   // Nothing it reads depends on the chunk, so the only thing to establish is
   // that the map really does partition the tiles and that its iteration order —
   // which fixes the order batches reach the decoder — is deterministic.
-  const vidfab::vae::TileLayout y = vidfab::vae::split_tiles(768, 256, 64, 16);
-  const vidfab::vae::TileLayout x = vidfab::vae::split_tiles(1280, 256, 64, 16);
+  const slopfab::vae::TileLayout y = slopfab::vae::split_tiles(768, 256, 64, 16);
+  const slopfab::vae::TileLayout x = slopfab::vae::split_tiles(1280, 256, 64, 16);
 
   std::vector<int> tile_h, tile_w;
   std::map<std::pair<int, int>, std::vector<size_t>> groups;
-  vidfab::vae::tile_shape_groups(y, x, 768, 1280, 16, &tile_h, &tile_w, &groups);
+  slopfab::vae::tile_shape_groups(y, x, 768, 1280, 16, &tile_h, &tile_w, &groups);
 
   CHECK(tile_h.size() == 4 && tile_w.size() == 7);
   for (int h : tile_h) CHECK(h == 256);
@@ -306,22 +306,22 @@ VIDFAB_TEST(tile_shape_groups_are_chunk_invariant) {
   // makes hoisting it out of the chunk loop a no-op.
   std::vector<int> h2, w2;
   std::map<std::pair<int, int>, std::vector<size_t>> again;
-  vidfab::vae::tile_shape_groups(y, x, 768, 1280, 16, &h2, &w2, &again);
+  slopfab::vae::tile_shape_groups(y, x, 768, 1280, 16, &h2, &w2, &again);
   CHECK(h2 == tile_h && w2 == tile_w);
   CHECK(again == groups);
 
   // A geometry with a ragged edge, so the multi-group path is exercised too:
   // 300 pixels at tile 256 splits into two tiles whose second one is clipped.
-  const vidfab::vae::TileLayout ry = vidfab::vae::split_tiles(768, 256, 64, 16);
-  const vidfab::vae::TileLayout rx = vidfab::vae::split_tiles(1280, 512, 64, 16);
+  const slopfab::vae::TileLayout ry = slopfab::vae::split_tiles(768, 256, 64, 16);
+  const slopfab::vae::TileLayout rx = slopfab::vae::split_tiles(1280, 512, 64, 16);
   std::vector<int> rh, rw;
   std::map<std::pair<int, int>, std::vector<size_t>> rgroups;
-  vidfab::vae::tile_shape_groups(ry, rx, 768, 1280, 16, &rh, &rw, &rgroups);
+  slopfab::vae::tile_shape_groups(ry, rx, 768, 1280, 16, &rh, &rw, &rgroups);
   size_t total = 0;
   for (const auto& g : rgroups) total += g.second.size();
   CHECK(total == ry.starts.size() * rx.starts.size());
 }
-VIDFAB_TEST(tile_latent_gather_covers_its_whole_buffer) {
+SLOPFAB_TEST(tile_latent_gather_covers_its_whole_buffer) {
   // The gather's destination buffer is now reused and grown rather than
   // value-initialised each shape group, which is only safe because the gather
   // writes every element of it. The indexing below is the pipeline's, at

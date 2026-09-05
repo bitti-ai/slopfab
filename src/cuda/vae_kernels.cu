@@ -5,7 +5,7 @@
 // to match, not a conservative choice. Lower-precision paths come later and
 // will be measured against this one.
 
-#include "vidfab/cuda/vae_kernels.cuh"
+#include "slopfab/cuda/vae_kernels.cuh"
 
 #include <cuda_fp16.h>
 
@@ -13,9 +13,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/cuda/deterministic_math.cuh"
+#include "slopfab/cuda/deterministic_math.cuh"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr int kWarp = 32;
@@ -532,7 +532,7 @@ void launch_rmsnorm(const float* x, const float* weight, float* out, int rows, i
   const int threads = 256;
   const size_t shared = (threads / kWarp) * sizeof(float);
   rmsnorm_kernel<<<rows, threads, shared, stream>>>(x, weight, out, dim, eps);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_rmsnorm_f16(const float* x, const float* weight, void* out, int rows, int dim,
@@ -541,7 +541,7 @@ void launch_rmsnorm_f16(const float* x, const float* weight, void* out, int rows
   const size_t shared = (threads / kWarp) * sizeof(float);
   rmsnorm_kernel<<<rows, threads, shared, stream>>>(
       x, weight, static_cast<__half*>(out), dim, eps);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_layernorm(const float* x, const float* weight, const float* bias, float* out, int rows,
@@ -549,7 +549,7 @@ void launch_layernorm(const float* x, const float* weight, const float* bias, fl
   const int threads = 256;
   const size_t shared = (threads / kWarp) * sizeof(float);
   layernorm_kernel<<<rows, threads, shared, stream>>>(x, weight, bias, out, dim, eps);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_layernorm_f16(const float* x, const float* weight, const float* bias, void* out,
@@ -558,7 +558,7 @@ void launch_layernorm_f16(const float* x, const float* weight, const float* bias
   const size_t shared = (threads / kWarp) * sizeof(float);
   layernorm_kernel<<<rows, threads, shared, stream>>>(
       x, weight, bias, static_cast<__half*>(out), dim, eps);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_add_bias(float* y, const float* bias, int rows, int cols, cudaStream_t stream) {
@@ -566,7 +566,7 @@ void launch_add_bias(float* y, const float* bias, int rows, int cols, cudaStream
   const int threads = 256;
   const int blocks = static_cast<int>((total + threads - 1) / threads);
   add_bias_kernel<<<blocks, threads, 0, stream>>>(y, bias, rows, cols);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_split_qkv_norm_rope(const float* qkv, const float* bias, const float* cos_tab,
@@ -579,14 +579,14 @@ void launch_split_qkv_norm_rope(const float* qkv, const float* bias, const float
   const int blocks = (pairs + warps_per_block - 1) / warps_per_block;
   split_qkv_norm_rope_kernel<<<blocks, threads, 0, stream>>>(
       qkv, bias, cos_tab, sin_tab, q, k, v, seq, heads, head_dim, rope_dim, num_patches, eps);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_softmax_rows(float* scores, int rows, int cols, float scale, cudaStream_t stream) {
   const int threads = 256;
   const size_t shared = (threads / kWarp) * sizeof(float);
   softmax_rows_kernel<<<rows, threads, shared, stream>>>(scores, cols, scale);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_layerscale_residual(float* x, const float* y, const float* bias, const float* scale,
@@ -594,7 +594,7 @@ void launch_layerscale_residual(float* x, const float* y, const float* bias, con
   const int threads = 256;
   const dim3 grid((cols + threads - 1) / threads, rows);
   layerscale_residual_kernel<<<grid, threads, 0, stream>>>(x, y, bias, scale, cols);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_swiglu(const float* in, const float* bias, float* out, int rows, int inner,
@@ -602,7 +602,7 @@ void launch_swiglu(const float* in, const float* bias, float* out, int rows, int
   const int threads = 256;
   const dim3 grid((inner + threads - 1) / threads, rows);
   swiglu_kernel<<<grid, threads, 0, stream>>>(in, bias, out, inner);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias,
@@ -618,7 +618,7 @@ void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias,
   split_qkv_norm_rope_bf16_kernel<<<blocks, threads, 0, stream>>>(
       qkv, bias, cos_tab, sin_tab, q, k, v, seq, heads, head_dim, rope_dim,
       num_patches, eps);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_swiglu_f16(const float* in, const float* bias, void* out, int rows, int inner,
@@ -626,7 +626,7 @@ void launch_swiglu_f16(const float* in, const float* bias, void* out, int rows, 
   const int threads = 256;
   const dim3 grid((inner + threads - 1) / threads, rows);
   swiglu_kernel<<<grid, threads, 0, stream>>>(in, bias, static_cast<__half*>(out), inner);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t stream) {
@@ -634,7 +634,7 @@ void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t st
   const size_t blocks = (count + threads - 1) / threads;
   widen_f16_kernel<<<static_cast<int>(blocks), threads, 0, stream>>>(
       static_cast<const __half*>(src), dst, count);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t stream) {
@@ -642,7 +642,7 @@ void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t s
   const size_t blocks = (count + threads - 1) / threads;
   narrow_f16_kernel<<<static_cast<int>(blocks), threads, 0, stream>>>(
       src, static_cast<__half*>(dst), count);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_bf16_to_f16(const __nv_bfloat16* src, void* dst, size_t count,
@@ -660,7 +660,7 @@ void launch_bf16_to_f16(const __nv_bfloat16* src, void* dst, size_t count,
     bf16_to_f16_scalar_kernel<<<static_cast<int>((count + threads - 1) / threads), threads, 0,
                                 stream>>>(src, half_dst, count);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_heads_to_tokens_bf16(const float* src, __nv_bfloat16* dst, int seq, int heads,
@@ -669,7 +669,7 @@ void launch_heads_to_tokens_bf16(const float* src, __nv_bfloat16* dst, int seq, 
   const int threads = 256;
   heads_to_tokens_bf16_kernel<<<static_cast<int>((count + threads - 1) / threads), threads, 0,
                                  stream>>>(src, dst, seq, heads, head_dim);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_transpose_cn_to_nc(const float* src, float* dst, int channels, int voxels,
@@ -677,7 +677,7 @@ void launch_transpose_cn_to_nc(const float* src, float* dst, int channels, int v
   const int threads = 256;
   const dim3 grid((voxels + threads - 1) / threads, channels);
   transpose_cn_to_nc_kernel<<<grid, threads, 0, stream>>>(src, dst, channels, voxels);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_depth_to_space(const float* tokens, float* out, int T, int H, int W, int channels,
@@ -687,7 +687,7 @@ void launch_depth_to_space(const float* tokens, float* out, int T, int H, int W,
   const int blocks = static_cast<int>((total + threads - 1) / threads);
   depth_to_space_kernel<<<blocks, threads, 0, stream>>>(tokens, nullptr, out, T, H, W, channels,
                                                         patch_t, patch);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_depth_to_space_bias(const float* tokens, const float* bias, float* out,
@@ -698,7 +698,7 @@ void launch_depth_to_space_bias(const float* tokens, const float* bias, float* o
   const int blocks = static_cast<int>((total + threads - 1) / threads);
   depth_to_space_kernel<<<blocks, threads, 0, stream>>>(tokens, bias, out, T, H, W, channels,
                                                         patch_t, patch);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_latent_denorm(const float* z_norm, const float* mean, const float* std_dev, float* out,
@@ -708,7 +708,7 @@ void launch_latent_denorm(const float* z_norm, const float* mean, const float* s
   const int blocks = static_cast<int>((total + threads - 1) / threads);
   latent_denorm_kernel<<<blocks, threads, 0, stream>>>(z_norm, mean, std_dev, out, channels,
                                                        voxels);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

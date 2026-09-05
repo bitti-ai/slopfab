@@ -20,15 +20,15 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/sha256.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/text/layer_capture.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/sha256.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/text/layer_capture.h"
 
 namespace {
 
-using vidfab::SafeTensors;
-using vidfab::TensorView;
+using slopfab::SafeTensors;
+using slopfab::TensorView;
 
 struct Spec {
   std::string name;
@@ -74,8 +74,8 @@ std::string write_file(const std::vector<Spec>& specs, const std::string& stem) 
       if (width(specs[k]) == 4) {
         out.write(reinterpret_cast<const char*>(&v), 4);
       } else {
-        const uint16_t h = std::strcmp(specs[k].dtype, "BF16") == 0 ? vidfab::f32_to_bf16(v)
-                                                                    : vidfab::f32_to_f16(v);
+        const uint16_t h = std::strcmp(specs[k].dtype, "BF16") == 0 ? slopfab::f32_to_bf16(v)
+                                                                    : slopfab::f32_to_f16(v);
         out.write(reinterpret_cast<const char*>(&h), 2);
       }
     }
@@ -100,16 +100,16 @@ uint64_t fnv64(const void* data, size_t bytes,
   return hash;
 }
 
-VIDFAB_TEST(qwen_layer_capture_is_bounded_and_self_verifying) {
+SLOPFAB_TEST(qwen_layer_capture_is_bounded_and_self_verifying) {
   const char abc[] = "abc";
-  constexpr vidfab::Sha256Digest abc_sha{
+  constexpr slopfab::Sha256Digest abc_sha{
       0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,
       0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
       0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,
       0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};
-  CHECK(vidfab::sha256_bytes(abc, 3) == abc_sha);
+  CHECK(slopfab::sha256_bytes(abc, 3) == abc_sha);
 
-  vidfab::text::QwenLayerCapture capture;
+  slopfab::text::QwenLayerCapture capture;
   capture.header.sequence = 1;
   capture.header.hidden = 5120;
   capture.header.query_heads = 64;
@@ -133,29 +133,29 @@ VIDFAB_TEST(qwen_layer_capture_is_bounded_and_self_verifying) {
       capture.sine.data(), capture.sine.size() * sizeof(float),
       capture.header.rope_fnv64);
   const std::filesystem::path path = std::filesystem::temp_directory_path() /
-      ("vidfab_qwen_capture_validation_" + std::to_string(
+      ("slopfab_qwen_capture_validation_" + std::to_string(
           std::chrono::high_resolution_clock::now().time_since_epoch().count()) +
        ".vfqw");
   auto write_valid = [&] {
-    vidfab::text::write_qwen_layer_capture(path.string(), capture);
+    slopfab::text::write_qwen_layer_capture(path.string(), capture);
   };
   auto rejects = [&] {
-    try { (void)vidfab::text::read_qwen_layer_capture(path.string()); }
+    try { (void)slopfab::text::read_qwen_layer_capture(path.string()); }
     catch (const std::exception&) { return true; }
     return false;
   };
   write_valid();
-  CHECK(vidfab::text::read_qwen_layer_capture(path.string()).input_bf16 ==
+  CHECK(slopfab::text::read_qwen_layer_capture(path.string()).input_bf16 ==
         capture.input_bf16);
-  vidfab::Sha256Digest memory_digest{};
+  slopfab::Sha256Digest memory_digest{};
   {
     std::ifstream bytes_in(path, std::ios::binary);
     const std::vector<uint8_t> bytes{
         std::istreambuf_iterator<char>(bytes_in),
         std::istreambuf_iterator<char>()};
-    memory_digest = vidfab::sha256_bytes(bytes.data(), bytes.size());
+    memory_digest = slopfab::sha256_bytes(bytes.data(), bytes.size());
   }
-  CHECK(vidfab::sha256_file(path.string()) == memory_digest);
+  CHECK(slopfab::sha256_file(path.string()) == memory_digest);
 
   // Truncation and trailing bytes are rejected from exact file-size preflight.
   const uintmax_t valid_size = std::filesystem::file_size(path);
@@ -188,21 +188,21 @@ VIDFAB_TEST(qwen_layer_capture_is_bounded_and_self_verifying) {
   // but fail the payload digest/domain checks.
   write_valid();
   { std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
-    file.seekg(sizeof(vidfab::text::QwenLayerCaptureHeader) + sizeof(int32_t));
+    file.seekg(sizeof(slopfab::text::QwenLayerCaptureHeader) + sizeof(int32_t));
     char byte = 0; file.read(&byte, 1); byte ^= 1;
-    file.seekp(sizeof(vidfab::text::QwenLayerCaptureHeader) + sizeof(int32_t));
+    file.seekp(sizeof(slopfab::text::QwenLayerCaptureHeader) + sizeof(int32_t));
     file.write(&byte, 1); }
   CHECK(rejects());
   write_valid();
   { std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
     const int32_t invalid_token = 151936;
-    file.seekp(sizeof(vidfab::text::QwenLayerCaptureHeader));
+    file.seekp(sizeof(slopfab::text::QwenLayerCaptureHeader));
     file.write(reinterpret_cast<const char*>(&invalid_token), sizeof(invalid_token)); }
   CHECK(rejects());
   std::filesystem::remove(path);
 }
 
-VIDFAB_TEST(safetensors_prefix_extent_bounds_the_matching_tensors) {
+SLOPFAB_TEST(safetensors_prefix_extent_bounds_the_matching_tensors) {
   // Deliberately not in name order on disk, and with a decoy whose name shares
   // the prefix's leading characters but not the prefix itself. The extent must
   // come from the three `visual.` tensors and nothing else.
@@ -214,7 +214,7 @@ VIDFAB_TEST(safetensors_prefix_extent_bounds_the_matching_tensors) {
       {"visual.merger.weight", 2},
       {"zzz.tail", 64},
   };
-  const std::string path = write_file(specs, "vidfab_prefix_extent");
+  const std::string path = write_file(specs, "slopfab_prefix_extent");
 
   SafeTensors st;
   st.open(path);
@@ -258,9 +258,9 @@ VIDFAB_TEST(safetensors_prefix_extent_bounds_the_matching_tensors) {
   std::filesystem::remove(path);
 }
 
-VIDFAB_TEST(safetensors_prefetch_range_is_advisory_and_bounded) {
+SLOPFAB_TEST(safetensors_prefetch_range_is_advisory_and_bounded) {
   const std::vector<Spec> specs = {{"a.weight", 1024}, {"b.weight", 2048}, {"c.weight", 512}};
-  const std::string path = write_file(specs, "vidfab_prefetch_range");
+  const std::string path = write_file(specs, "slopfab_prefetch_range");
 
   SafeTensors st;
   st.open(path);
@@ -317,7 +317,7 @@ VIDFAB_TEST(safetensors_prefetch_range_is_advisory_and_bounded) {
 // which is exactly what a reused buffer makes easy to get wrong: a shorter
 // tensor followed by a longer one, or a longer one followed by a shorter one,
 // must not leave any element of the previous tensor visible.
-VIDFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
+SLOPFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
   const std::vector<Spec> specs = {
       {"long.f32", 4096, "F32"},
       {"short.f16", 7, "F16"},
@@ -325,7 +325,7 @@ VIDFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
       {"empty.f32", 0, "F32"},
       {"tail.f16", 5000, "F16"},
   };
-  const std::string path = write_file(specs, "vidfab_to_f32_reuse");
+  const std::string path = write_file(specs, "slopfab_to_f32_reuse");
 
   SafeTensors st;
   st.open(path);
@@ -333,7 +333,7 @@ VIDFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
   // The answer each tensor produces into a buffer that has never been used.
   std::vector<std::vector<float>> fresh(specs.size());
   for (size_t k = 0; k < specs.size(); ++k) {
-    fresh[k] = vidfab::to_f32(st.at(specs[k].name));
+    fresh[k] = slopfab::to_f32(st.at(specs[k].name));
     CHECK_MSG(fresh[k].size() == specs[k].elements, "%s widened to %zu elements, expected %zu",
               specs[k].name.c_str(), fresh[k].size(), specs[k].elements);
   }
@@ -346,7 +346,7 @@ VIDFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
   for (size_t start = 0; start < specs.size(); ++start) {
     for (size_t step = 0; step < specs.size(); ++step) {
       const size_t k = (start + step) % specs.size();
-      vidfab::to_f32(st.at(specs[k].name), reused);
+      slopfab::to_f32(st.at(specs[k].name), reused);
       if (reused != fresh[k]) {
         if (diffs == 0) first_bad = specs[k].name;
         ++diffs;

@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/dit_block.h"
+#include "slopfab/vulkan/dit_block.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,14 +9,14 @@
 #include <utility>
 #include <vector>
 
-#include "vidfab/attention.h"
-#include "vidfab/dtype.h"
-#include "vidfab/json.h"
-#include "vidfab/nf4.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/vulkan/linear.h"
+#include "slopfab/attention.h"
+#include "slopfab/dtype.h"
+#include "slopfab/json.h"
+#include "slopfab/nf4.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/vulkan/linear.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 TensorLayout matrix(uint64_t a, uint64_t b) {
@@ -400,9 +400,9 @@ struct ExactH3BlockStage::Impl {
     DeviceTensor norm1, norm2, q_norm, k_norm, adaln_w, adaln_b;
     Projection q, k, v, out, fc1, fc2;
     uint64_t bytes() const noexcept {
-      return ::vidfab::vulkan::bytes(norm1) + ::vidfab::vulkan::bytes(norm2) +
-          ::vidfab::vulkan::bytes(q_norm) + ::vidfab::vulkan::bytes(k_norm) +
-          ::vidfab::vulkan::bytes(adaln_w) + ::vidfab::vulkan::bytes(adaln_b) +
+      return ::slopfab::vulkan::bytes(norm1) + ::slopfab::vulkan::bytes(norm2) +
+          ::slopfab::vulkan::bytes(q_norm) + ::slopfab::vulkan::bytes(k_norm) +
+          ::slopfab::vulkan::bytes(adaln_w) + ::slopfab::vulkan::bytes(adaln_b) +
           q.persistent_bytes() + k.persistent_bytes() + v.persistent_bytes() +
           out.persistent_bytes() + fc1.persistent_bytes() + fc2.persistent_bytes();
     }
@@ -804,4 +804,4 @@ uint64_t ExactH3BlockStage::peak_device_bytes(
   return persistent_bytes() + scratch.reserved_bytes();
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

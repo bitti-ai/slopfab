@@ -46,7 +46,7 @@
 // `nvfp4_activation_cost` measures it on every run and
 // `nvfp4_gemm_exact_fp4_activations` is the control that separates the two.
 
-#include "vidfab/cuda/nvfp4_gemm.cuh"
+#include "slopfab/cuda/nvfp4_gemm.cuh"
 
 #include <cuda_fp4.h>
 #include <cuda_fp8.h>
@@ -56,9 +56,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "vidfab/cuda/device.h"
+#include "slopfab/cuda/device.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 constexpr int kWarp = 32;
@@ -487,7 +487,7 @@ void launch_nvfp4_gemm_q(const uint8_t* xq, const uint8_t* xs,
   nvfp4_gemm_kernel<<<grid, kThreads, 0, stream>>>(
       xq, xs, w_packed, w_scale, y, rows, out_features, in_features / 2,
       in_features / 16, (in_features + kBK - 1) / kBK, global_scale);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 }  // namespace
@@ -521,7 +521,7 @@ void launch_quantize_nvfp4_activations(const __nv_bfloat16* x, uint8_t* packed, 
   const int threads = 256;
   const int blocks = static_cast<int>((halves + threads - 1) / threads);
   quantize_act_kernel<<<blocks, threads, 0, stream>>>(x, packed, scales, halves);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w_packed,
@@ -594,4 +594,4 @@ void nvfp4_gemm_forward_prevalidated(
   }
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

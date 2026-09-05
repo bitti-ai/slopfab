@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/keyframe_encoder.h"
+#include "slopfab/vulkan/keyframe_encoder.h"
 
 #include <algorithm>
 #include <chrono>
@@ -9,10 +9,10 @@
 #include <string>
 #include <utility>
 
-#include "vidfab/vae/keyframe_encoder.h"
-#include "vidfab/vulkan/tensor.h"
+#include "slopfab/vae/keyframe_encoder.h"
+#include "slopfab/vulkan/tensor.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace {
 
 constexpr uint32_t kChannels[] = {128, 256, 256, 512, 512, 1024};
@@ -392,4 +392,4 @@ const KeyframeEncoderStats& KeyframeEncoder::stats() const noexcept {
   return impl_ ? impl_->statistics : empty;
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

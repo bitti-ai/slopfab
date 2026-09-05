@@ -1,4 +1,4 @@
-#include "vidfab/video/y4m_compare.h"
+#include "slopfab/video/y4m_compare.h"
 
 #include <algorithm>
 #include <array>
@@ -6,7 +6,7 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace vidfab::video {
+namespace slopfab::video {
 namespace {
 
 uint64_t stream_size(std::ifstream& stream, const std::string& path) {
@@ -92,4 +92,4 @@ ExactY4mComparison compare_y4m_exact(const std::string& expected_path,
   return result;
 }
 
-}  // namespace vidfab::video
+}  // namespace slopfab::video

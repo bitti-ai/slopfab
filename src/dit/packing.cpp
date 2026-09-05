@@ -1,11 +1,11 @@
-#include "vidfab/dit/packing.h"
+#include "slopfab/dit/packing.h"
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <string>
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 namespace {
 
 // packing.py:47-95. These are checkpoint contracts, not tunables.
@@ -500,4 +500,4 @@ BandedKeyRanges build_banded_key_ranges(const SequenceLayout& layout, int band_f
   return out;
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

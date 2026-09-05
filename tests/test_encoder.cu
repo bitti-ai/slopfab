@@ -27,25 +27,25 @@
 #include <vector>
 
 #include "harness.h"
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/gemm.cuh"
-#include "vidfab/cuda/linear.cuh"
-#include "vidfab/cuda/nn_kernels.cuh"
-#include "vidfab/cuda/workspace.cuh"
-#include "vidfab/dtype.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/text/encoder.h"
-#include "vidfab/text/tokenizer.h"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/gemm.cuh"
+#include "slopfab/cuda/linear.cuh"
+#include "slopfab/cuda/nn_kernels.cuh"
+#include "slopfab/cuda/workspace.cuh"
+#include "slopfab/dtype.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/text/encoder.h"
+#include "slopfab/text/tokenizer.h"
 
 namespace {
 
-using vidfab::cuda::DeviceBuffer;
-using vidfab::cuda::QuantFormat;
-using vidfab::cuda::QuantWeight;
-using vidfab::cuda::Workspace;
-using vidfab::test::make_data;
+using slopfab::cuda::DeviceBuffer;
+using slopfab::cuda::QuantFormat;
+using slopfab::cuda::QuantWeight;
+using slopfab::cuda::Workspace;
+using slopfab::test::make_data;
 
 // --- host/device plumbing ---------------------------------------------------
 
@@ -55,7 +55,7 @@ struct BfBuf {
   explicit BfBuf(size_t n) : raw(n) {}
   explicit BfBuf(const std::vector<float>& host) : raw(host.size()) {
     std::vector<uint16_t> bits(host.size());
-    for (size_t i = 0; i < host.size(); ++i) bits[i] = vidfab::f32_to_bf16(host[i]);
+    for (size_t i = 0; i < host.size(); ++i) bits[i] = slopfab::f32_to_bf16(host[i]);
     raw.copy_from_host(bits.data(), bits.size());
   }
 
@@ -65,20 +65,20 @@ struct BfBuf {
     std::vector<uint16_t> b(raw.size());
     raw.copy_to_host(b.data(), b.size());
     std::vector<float> out(b.size());
-    for (size_t i = 0; i < b.size(); ++i) out[i] = vidfab::bf16_to_f32(b[i]);
+    for (size_t i = 0; i < b.size(); ++i) out[i] = slopfab::bf16_to_f32(b[i]);
     return out;
   }
 };
 
 struct CublasScope {
   cublasHandle_t h = nullptr;
-  CublasScope() { VIDFAB_CUBLAS_CHECK(vidfab::cuda::cublas_create(&h)); }
-  ~CublasScope() { vidfab::cuda::cublas_destroy(h); }
+  CublasScope() { SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&h)); }
+  ~CublasScope() { slopfab::cuda::cublas_destroy(h); }
 };
 
 std::vector<float> bf16_round(const std::vector<float>& v) {
   std::vector<float> out(v.size());
-  for (size_t i = 0; i < v.size(); ++i) out[i] = vidfab::bf16_to_f32(vidfab::f32_to_bf16(v[i]));
+  for (size_t i = 0; i < v.size(); ++i) out[i] = slopfab::bf16_to_f32(slopfab::f32_to_bf16(v[i]));
   return out;
 }
 
@@ -172,7 +172,7 @@ std::vector<int32_t> prompt_ids() {
     for (int i = 0; i < 200; ++i) ids.push_back(1000 + i);
     return ids;
   }
-  vidfab::text::Tokenizer tokenizer;
+  slopfab::text::Tokenizer tokenizer;
   tokenizer.load(tok);
   std::vector<int32_t> ids = tokenizer.encode(kPrompt);
   std::printf("  tokenised the prompt to %zu tokens\n", ids.size());
@@ -180,7 +180,7 @@ std::vector<int32_t> prompt_ids() {
 }
 
 // Per-row RMS over the 5120 channels of an encoder output.
-std::vector<double> row_rms(const vidfab::text::PromptEmbedding& e) {
+std::vector<double> row_rms(const slopfab::text::PromptEmbedding& e) {
   std::vector<double> out(e.num_tokens, 0.0);
   for (int r = 0; r < e.num_tokens; ++r) {
     double acc = 0.0;
@@ -344,8 +344,8 @@ float silu(float z) { return z / (1.0f + std::exp(-z)); }
 
 // --- tests ------------------------------------------------------------------
 
-VIDFAB_TEST(encoder_rope_inv_freq_and_tables) {
-  const std::vector<float> inv = vidfab::text::rope_inv_freq(128, 5.0e6f);
+SLOPFAB_TEST(encoder_rope_inv_freq_and_tables) {
+  const std::vector<float> inv = slopfab::text::rope_inv_freq(128, 5.0e6f);
   CHECK(inv.size() == 64);
 
   // Values transcribed from spec section 2.5, which computed them from
@@ -364,13 +364,13 @@ VIDFAB_TEST(encoder_rope_inv_freq_and_tables) {
 
   // head_dim comes from the config (128), not from hidden/num_heads (which
   // would be 80). A port that used 80 would give a different inv_freq[1].
-  const std::vector<float> wrong = vidfab::text::rope_inv_freq(80, 5.0e6f);
+  const std::vector<float> wrong = slopfab::text::rope_inv_freq(80, 5.0e6f);
   CHECK(wrong.size() == 40);
   CHECK(std::fabs(wrong[1] - inv[1]) > 1e-3);
 
   std::vector<float> cos;
   std::vector<float> sin;
-  vidfab::text::build_rope_tables(6, inv, cos, sin);
+  slopfab::text::build_rope_tables(6, inv, cos, sin);
   CHECK(cos.size() == 6 * 128);
   CHECK(sin.size() == 6 * 128);
 
@@ -398,7 +398,7 @@ VIDFAB_TEST(encoder_rope_inv_freq_and_tables) {
   // sequence. If it is not, the exponent sign or the /64 is wrong.
   std::vector<float> cos_far;
   std::vector<float> sin_far;
-  vidfab::text::build_rope_tables(4096, inv, cos_far, sin_far);
+  slopfab::text::build_rope_tables(4096, inv, cos_far, sin_far);
   CHECK(cos_far[size_t(4095) * 128 + 63] > 0.9999f);
   CHECK(cos_far[size_t(4095) * 128 + 48] > 0.99f);
   // ...and the low channels must have turned many times.
@@ -406,15 +406,15 @@ VIDFAB_TEST(encoder_rope_inv_freq_and_tables) {
   CHECK(cos_far[size_t(4095) * 128 + 0] < 0.9999f);
 }
 
-VIDFAB_TEST(encoder_rope_neox_rotates_all_128_dims) {
+SLOPFAB_TEST(encoder_rope_neox_rotates_all_128_dims) {
   const int rows = 512;
   const int heads = 3;
   const int head_dim = 128;
 
-  const std::vector<float> inv = vidfab::text::rope_inv_freq(head_dim, 5.0e6f);
+  const std::vector<float> inv = slopfab::text::rope_inv_freq(head_dim, 5.0e6f);
   std::vector<float> cos;
   std::vector<float> sin;
-  vidfab::text::build_rope_tables(rows, inv, cos, sin);
+  slopfab::text::build_rope_tables(rows, inv, cos, sin);
 
   const std::vector<float> x =
       bf16_round(make_data(size_t(rows) * heads * head_dim, 4001u, 2.0f));
@@ -428,8 +428,8 @@ VIDFAB_TEST(encoder_rope_neox_rotates_all_128_dims) {
   BfBuf dx(x);
   DeviceBuffer<float> dcos = to_device(cos);
   DeviceBuffer<float> dsin = to_device(sin);
-  vidfab::cuda::launch_rope_neox(dx.p(), dcos.get(), dsin.get(), rows, heads, head_dim, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  slopfab::cuda::launch_rope_neox(dx.p(), dcos.get(), dsin.get(), rows, heads, head_dim, nullptr);
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = dx.host();
 
   CHECK_CLOSE_REL(want, got, 1e-3, 1e-2, "rope_neox over all 128 dims, pairing (j, j+64)");
@@ -451,7 +451,7 @@ VIDFAB_TEST(encoder_rope_neox_rotates_all_128_dims) {
             top_change);
 }
 
-VIDFAB_TEST(encoder_causal_attention) {
+SLOPFAB_TEST(encoder_causal_attention) {
   CublasScope cb;
   const int seq = 300;
   const int heads = 8;
@@ -466,14 +466,14 @@ VIDFAB_TEST(encoder_causal_attention) {
 
   BfBuf dq(q), dk(k), dv(v);
 
-  vidfab::text::CausalAttentionConfig cfg;
+  slopfab::text::CausalAttentionConfig cfg;
   cfg.seq_len = seq;
   cfg.num_heads = heads;
   cfg.num_kv_heads = kv_heads;
   cfg.head_dim = head_dim;
-  CHECK_NEAR(vidfab::text::causal_attention_scale(cfg), 1.0 / std::sqrt(64.0), 1e-7);
+  CHECK_NEAR(slopfab::text::causal_attention_scale(cfg), 1.0 / std::sqrt(64.0), 1e-7);
 
-  const float scale = vidfab::text::causal_attention_scale(cfg);
+  const float scale = slopfab::text::causal_attention_scale(cfg);
   const std::vector<float> want = cpu_attention(q, k, v, seq, heads, kv_heads, head_dim, scale, true);
   const std::vector<float> bidirectional =
       cpu_attention(q, k, v, seq, heads, kv_heads, head_dim, scale, false);
@@ -485,10 +485,10 @@ VIDFAB_TEST(encoder_causal_attention) {
     cfg.query_block = bq;
     BfBuf dout(size_t(seq) * qld);
     Workspace ws;
-    ws.reserve(vidfab::text::causal_attention_workspace_bytes(cfg));
-    vidfab::text::causal_attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+    ws.reserve(slopfab::text::causal_attention_workspace_bytes(cfg));
+    slopfab::text::causal_attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
                                            ws);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     results.push_back(dout.host());
     CHECK_CLOSE_REL(want, results.back(), 1e-3, 1e-2,
                     ("causal gqa attention, query_block " + std::to_string(bq)).c_str());
@@ -528,15 +528,15 @@ VIDFAB_TEST(encoder_causal_attention) {
   // must not change row `t`'s output — a token cannot see its successors.
   {
     const int t = 97;
-    vidfab::text::CausalAttentionConfig short_cfg = cfg;
+    slopfab::text::CausalAttentionConfig short_cfg = cfg;
     short_cfg.seq_len = t + 1;
     short_cfg.query_block = 128;
     BfBuf dshort(size_t(t + 1) * qld);
     Workspace ws;
-    ws.reserve(vidfab::text::causal_attention_workspace_bytes(short_cfg));
-    vidfab::text::causal_attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dshort.p(),
+    ws.reserve(slopfab::text::causal_attention_workspace_bytes(short_cfg));
+    slopfab::text::causal_attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dshort.p(),
                                            short_cfg, ws);
-    VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+    SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> truncated = dshort.host();
 
     double worst = 0.0;
@@ -561,7 +561,7 @@ VIDFAB_TEST(encoder_causal_attention) {
   CHECK_MSG(row0 < 1e-2, "row 0 must equal v[0] exactly; it differs by %.4g", row0);
 }
 
-VIDFAB_TEST(encoder_convrot_cross_check) {
+SLOPFAB_TEST(encoder_convrot_cross_check) {
   // Spec section 5.4. H is involutory, so de-rotating a weight and running it
   // against an *unrotated* activation must agree with the normal rotated path.
   // A wrong ConvRot is silent — it computes `x H W^T`, well-scaled noise — so
@@ -618,12 +618,12 @@ VIDFAB_TEST(encoder_convrot_cross_check) {
   qw.convrot = true;
   qw.convrot_group = group;
 
-  vidfab::cuda::LinearRunner runner;
+  slopfab::cuda::LinearRunner runner;
   runner.init(cb.h, nullptr);
   Workspace ws;
-  ws.reserve(vidfab::cuda::linear_workspace_bytes(qw, rows, vidfab::cuda::ComputeType::kBF16));
+  ws.reserve(slopfab::cuda::linear_workspace_bytes(qw, rows, slopfab::cuda::ComputeType::kBF16));
   runner.forward(qw, dx.p(), rows, dy.p(), ws);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = dy.host();
 
   const double err = rms_relative_error(want, got);
@@ -643,7 +643,7 @@ VIDFAB_TEST(encoder_convrot_cross_check) {
   CHECK_CLOSE(x, twice, 1e-4, "H is involutory: H(H(v)) == v");
 }
 
-VIDFAB_TEST(encoder_layer_vs_cpu_reference) {
+SLOPFAB_TEST(encoder_layer_vs_cpu_reference) {
   // One full decoder layer at small synthetic dimensions, written from spec
   // section 4 and checked against a CPU implementation of the same. Widths are
   // multiples of the 256-wide ConvRot group where they are contracted over.
@@ -721,10 +721,10 @@ VIDFAB_TEST(encoder_layer_vs_cpu_reference) {
   const std::vector<float> q_norm = bf16_round(make_data(head_dim, 4313u, 1.0f));
   const std::vector<float> k_norm = bf16_round(make_data(head_dim, 4314u, 1.0f));
 
-  const std::vector<float> inv = vidfab::text::rope_inv_freq(head_dim, 5.0e6f);
+  const std::vector<float> inv = slopfab::text::rope_inv_freq(head_dim, 5.0e6f);
   std::vector<float> cos;
   std::vector<float> sin;
-  vidfab::text::build_rope_tables(L, inv, cos, sin);
+  slopfab::text::build_rope_tables(L, inv, cos, sin);
 
   const float scale = 1.0f / std::sqrt(float(head_dim));
 
@@ -777,7 +777,7 @@ VIDFAB_TEST(encoder_layer_vs_cpu_reference) {
   DeviceBuffer<float> dcos = to_device(cos);
   DeviceBuffer<float> dsin = to_device(sin);
 
-  vidfab::text::LayerWeights w;
+  slopfab::text::LayerWeights w;
   w.q_proj = wq.qw;
   w.k_proj = wk.qw;
   w.v_proj = wv.qw;
@@ -790,7 +790,7 @@ VIDFAB_TEST(encoder_layer_vs_cpu_reference) {
   w.q_norm = d_qnorm.p();
   w.k_norm = d_knorm.p();
 
-  vidfab::text::LayerDims dims;
+  slopfab::text::LayerDims dims;
   dims.num_tokens = L;
   dims.hidden = hidden;
   dims.num_heads = heads;
@@ -799,13 +799,13 @@ VIDFAB_TEST(encoder_layer_vs_cpu_reference) {
   dims.intermediate = inner;
   dims.rms_norm_eps = eps;
 
-  vidfab::cuda::LinearRunner runner;
+  slopfab::cuda::LinearRunner runner;
   runner.init(cb.h, nullptr);
   Workspace ws;
-  ws.reserve(vidfab::text::layer_workspace_bytes(dims));
-  vidfab::text::encoder_layer_forward(cb.h, nullptr, runner, w, dims, dcos.get(), dsin.get(),
+  ws.reserve(slopfab::text::layer_workspace_bytes(dims));
+  slopfab::text::encoder_layer_forward(cb.h, nullptr, runner, w, dims, dcos.get(), dsin.get(),
                                       dx.p(), ws);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = dx.host();
 
   // bf16 activations at every stage and eleven GEMMs deep, so a percent or so
@@ -834,36 +834,36 @@ VIDFAB_TEST(encoder_layer_vs_cpu_reference) {
             "SiLU goes on gate_proj, not on up_proj (spec 4.3)");
 }
 
-VIDFAB_TEST(encoder_layer_layout) {
-  vidfab::text::EncoderConfig cfg;
+SLOPFAB_TEST(encoder_layer_layout) {
+  slopfab::text::EncoderConfig cfg;
   // The host helpers refuse kAuto: two incompatible layouts and no file in
   // front of them is exactly where silently picking one goes wrong.
-  cfg.format = vidfab::text::WeightFormat::kI8ConvRot;
-  const vidfab::text::LayerLayout layout = vidfab::text::make_layer_layout(cfg);
+  cfg.format = slopfab::text::WeightFormat::kI8ConvRot;
+  const slopfab::text::LayerLayout layout = slopfab::text::make_layer_layout(cfg);
 
   const size_t q = size_t(8192) * 5120;
   const size_t kv = size_t(1024) * 5120;
   const size_t o = size_t(5120) * 8192;
   const size_t mlp = size_t(25600) * 5120;
 
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kQWeight)] == q);
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kKWeight)] == kv);
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kOWeight)] == o);
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kDownWeight)] == mlp);
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kQScale)] == 8192 * sizeof(float));
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kQNorm)] == 128 * 2);
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kInputLayerNorm)] == 5120 * 2);
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kQWeight)] == q);
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kKWeight)] == kv);
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kOWeight)] == o);
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kDownWeight)] == mlp);
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kQScale)] == 8192 * sizeof(float));
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kQNorm)] == 128 * 2);
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kInputLayerNorm)] == 5120 * 2);
 
   // Spec section 7: 487 587 840 B of int8 weights, 286 720 B of scales and
   // 20 992 B of norms per layer. The blob rounds each up to 256 bytes.
   size_t weights = 0;
   size_t scales = 0;
   size_t norms = 0;
-  for (int i = 0; i < vidfab::text::kLayerTensorCount; ++i) {
-    const vidfab::text::TensorSpec spec =
-        vidfab::text::layer_tensor_spec(cfg, static_cast<vidfab::text::LayerTensor>(i));
-    if (spec.dtype == vidfab::DType::kI8) weights += layout.bytes[i];
-    else if (spec.dtype == vidfab::DType::kF32) scales += layout.bytes[i];
+  for (int i = 0; i < slopfab::text::kLayerTensorCount; ++i) {
+    const slopfab::text::TensorSpec spec =
+        slopfab::text::layer_tensor_spec(cfg, static_cast<slopfab::text::LayerTensor>(i));
+    if (spec.dtype == slopfab::DType::kI8) weights += layout.bytes[i];
+    else if (spec.dtype == slopfab::DType::kF32) scales += layout.bytes[i];
     else norms += layout.bytes[i];
   }
   CHECK(weights == 487587840);
@@ -873,7 +873,7 @@ VIDFAB_TEST(encoder_layer_layout) {
   CHECK(layout.total_bytes % 256 == 0);
 
   // Every offset is 256-byte aligned and no two tensors overlap.
-  for (int i = 0; i < vidfab::text::kLayerTensorCount; ++i) {
+  for (int i = 0; i < slopfab::text::kLayerTensorCount; ++i) {
     if (layout.bytes[i] == 0) continue;
     CHECK(layout.offset[i] % 256 == 0);
     if (i > 0) CHECK(layout.offset[i] >= layout.offset[i - 1] + layout.bytes[i - 1]);
@@ -881,38 +881,38 @@ VIDFAB_TEST(encoder_layer_layout) {
 
   // The int8 build has no AWQ activation scaling; those two slots are empty and
   // cost nothing in the blob.
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kOPreQuantScale)] == 0);
-  CHECK(layout.bytes[int(vidfab::text::LayerTensor::kDownPreQuantScale)] == 0);
-  CHECK(!vidfab::text::layer_tensor_spec(cfg, vidfab::text::LayerTensor::kOPreQuantScale).present());
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kOPreQuantScale)] == 0);
+  CHECK(layout.bytes[int(slopfab::text::LayerTensor::kDownPreQuantScale)] == 0);
+  CHECK(!slopfab::text::layer_tensor_spec(cfg, slopfab::text::LayerTensor::kOPreQuantScale).present());
 
   // Every contraction width is a multiple of the ConvRot group, so there is no
   // skip-when-not-divisible case in this checkpoint (spec section 5.2).
   for (int in_features : {5120, 8192, 25600}) CHECK(in_features % 256 == 0);
 }
 
-VIDFAB_TEST(encoder_validation_rejects_a_foreign_checkpoint) {
-  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "vidfab_encoder_test";
+SLOPFAB_TEST(encoder_validation_rejects_a_foreign_checkpoint) {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "slopfab_encoder_test";
   std::filesystem::create_directories(dir);
   const std::string path = (dir / "fake.safetensors").string();
 
-  std::vector<vidfab::TensorWrite> tensors;
+  std::vector<slopfab::TensorWrite> tensors;
   tensors.push_back(
       {"model.embed_tokens.weight", {4, 5120}, std::vector<float>(4 * 5120, 0.5f)});
-  vidfab::write_safetensors(path, tensors);
+  slopfab::write_safetensors(path, tensors);
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
 
   // Real widths, tiny vocabulary: the file is F32 where the checkpoint is
   // BF16, so validation must reject it on dtype and say which tensor.
-  vidfab::text::EncoderConfig cfg;
+  slopfab::text::EncoderConfig cfg;
   cfg.vocab_size = 4;
   cfg.num_layers = 1;
 
   bool threw = false;
   std::string message;
   try {
-    vidfab::text::validate_checkpoint(st, cfg);
+    slopfab::text::validate_checkpoint(st, cfg);
   } catch (const std::exception& e) {
     threw = true;
     message = e.what();
@@ -930,7 +930,7 @@ VIDFAB_TEST(encoder_validation_rejects_a_foreign_checkpoint) {
   std::vector<uint16_t> out;
   bool gather_threw = false;
   try {
-    vidfab::text::gather_embedding_rows(st.at("model.embed_tokens.weight"), nullptr, {0, 1}, out);
+    slopfab::text::gather_embedding_rows(st.at("model.embed_tokens.weight"), nullptr, {0, 1}, out);
   } catch (const std::exception&) {
     gather_threw = true;
   }
@@ -941,7 +941,7 @@ VIDFAB_TEST(encoder_validation_rejects_a_foreign_checkpoint) {
   std::filesystem::remove(path, ec);
 }
 
-VIDFAB_TEST(encoder_embedding_gather_int8) {
+SLOPFAB_TEST(encoder_embedding_gather_int8) {
   // The nvfp4 build stores the embedding table as I8 with a per-row F32 scale
   // while the int8+ConvRot build stores the same table as BF16 — the embedding
   // does not follow the linears. Both directions of the row scale are finite
@@ -956,23 +956,23 @@ VIDFAB_TEST(encoder_embedding_gather_int8) {
   std::vector<float> scale(static_cast<size_t>(vocab));
   for (int64_t r = 0; r < vocab; ++r) scale[size_t(r)] = 1e-3f * float(1 + r * 3);
 
-  vidfab::TensorView embed;
+  slopfab::TensorView embed;
   embed.name = "model.embed_tokens.weight";
-  embed.dtype = vidfab::DType::kI8;
+  embed.dtype = slopfab::DType::kI8;
   embed.shape = {vocab, hidden};
   embed.data = table.data();
   embed.nbytes = table.size();
 
-  vidfab::TensorView embed_scale;
+  slopfab::TensorView embed_scale;
   embed_scale.name = "model.embed_tokens.weight_scale";
-  embed_scale.dtype = vidfab::DType::kF32;
+  embed_scale.dtype = slopfab::DType::kF32;
   embed_scale.shape = {vocab, 1};
   embed_scale.data = scale.data();
   embed_scale.nbytes = scale.size() * sizeof(float);
 
   const std::vector<int32_t> ids = {4, 0, 4, 2};
   std::vector<uint16_t> out;
-  vidfab::text::gather_embedding_rows(embed, &embed_scale, ids, out);
+  slopfab::text::gather_embedding_rows(embed, &embed_scale, ids, out);
   CHECK(out.size() == ids.size() * size_t(hidden));
 
   double worst = 0.0;
@@ -980,7 +980,7 @@ VIDFAB_TEST(encoder_embedding_gather_int8) {
     const size_t row = size_t(ids[i]);
     for (int64_t j = 0; j < hidden; ++j) {
       const float want = float(table[row * hidden + j]) * scale[row];
-      const float got = vidfab::bf16_to_f32(out[i * size_t(hidden) + j]);
+      const float got = slopfab::bf16_to_f32(out[i * size_t(hidden) + j]);
       // The only loss is the single bf16 rounding of the product.
       worst = std::max(worst, std::fabs(double(got - want)) / std::max(1e-30f, std::fabs(want)));
     }
@@ -993,7 +993,7 @@ VIDFAB_TEST(encoder_embedding_gather_int8) {
   // Dividing by the scale instead of multiplying is the silent alternative. It
   // is off by six orders of magnitude here, and by seven on the real table.
   const float divided = float(table[size_t(ids[0]) * hidden]) / scale[size_t(ids[0])];
-  const float multiplied = vidfab::bf16_to_f32(out[0]);
+  const float multiplied = slopfab::bf16_to_f32(out[0]);
   CHECK_MSG(std::fabs(divided) > 100.0f * std::fabs(multiplied),
             "the per-row scale must multiply, not divide");
 
@@ -1002,29 +1002,29 @@ VIDFAB_TEST(encoder_embedding_gather_int8) {
   // memory.
   bool threw = false;
   try {
-    vidfab::text::gather_embedding_rows(embed, nullptr, ids, out);
+    slopfab::text::gather_embedding_rows(embed, nullptr, ids, out);
   } catch (const std::exception&) {
     threw = true;
   }
   CHECK(threw);
 
-  vidfab::TensorView short_scale = embed_scale;
+  slopfab::TensorView short_scale = embed_scale;
   short_scale.shape = {vocab - 1, 1};
   threw = false;
   try {
-    vidfab::text::gather_embedding_rows(embed, &short_scale, ids, out);
+    slopfab::text::gather_embedding_rows(embed, &short_scale, ids, out);
   } catch (const std::exception&) {
     threw = true;
   }
   CHECK(threw);
 }
 
-VIDFAB_TEST(encoder_nvfp4_layer_layout) {
-  vidfab::text::EncoderConfig cfg;
-  cfg.format = vidfab::text::WeightFormat::kNVFP4Awq;
-  const vidfab::text::LayerLayout layout = vidfab::text::make_layer_layout(cfg);
+SLOPFAB_TEST(encoder_nvfp4_layer_layout) {
+  slopfab::text::EncoderConfig cfg;
+  cfg.format = slopfab::text::WeightFormat::kNVFP4Awq;
+  const slopfab::text::LayerLayout layout = slopfab::text::make_layer_layout(cfg);
 
-  using LT = vidfab::text::LayerTensor;
+  using LT = slopfab::text::LayerTensor;
   // Two E2M1 per byte on the contraction axis, one e4m3 scale per 16.
   CHECK(layout.bytes[int(LT::kQWeight)] == size_t(8192) * 2560);
   CHECK(layout.bytes[int(LT::kQScale)] == size_t(8192) * 320);
@@ -1043,9 +1043,9 @@ VIDFAB_TEST(encoder_nvfp4_layer_layout) {
   for (int in_features : {5120, 8192, 25600}) CHECK((in_features / 16) % 4 == 0);
 
   // Half the int8 build's blob, which is the whole point of this format.
-  vidfab::text::EncoderConfig i8 = cfg;
-  i8.format = vidfab::text::WeightFormat::kI8ConvRot;
-  const size_t i8_bytes = vidfab::text::make_layer_layout(i8).total_bytes;
+  slopfab::text::EncoderConfig i8 = cfg;
+  i8.format = slopfab::text::WeightFormat::kI8ConvRot;
+  const size_t i8_bytes = slopfab::text::make_layer_layout(i8).total_bytes;
   std::printf("  layer blob: nvfp4 %.1f MB, int8 %.1f MB, ratio %.3f\n",
               double(layout.total_bytes) / (1 << 20), double(i8_bytes) / (1 << 20),
               double(layout.total_bytes) / double(i8_bytes));
@@ -1053,27 +1053,27 @@ VIDFAB_TEST(encoder_nvfp4_layer_layout) {
   CHECK(layout.total_bytes % 256 == 0);
 }
 
-VIDFAB_TEST(reference_vision_support_never_silently_ignores_pixels) {
-  const std::string no_vision_path = "vidfab_test_qwen_no_vision.safetensors";
-  vidfab::write_safetensors(no_vision_path, {{"model.embed_tokens.weight", {1}, {0.0f}}});
-  vidfab::SafeTensors no_vision;
+SLOPFAB_TEST(reference_vision_support_never_silently_ignores_pixels) {
+  const std::string no_vision_path = "slopfab_test_qwen_no_vision.safetensors";
+  slopfab::write_safetensors(no_vision_path, {{"model.embed_tokens.weight", {1}, {0.0f}}});
+  slopfab::SafeTensors no_vision;
   no_vision.open(no_vision_path);
-  vidfab::text::require_reference_vision_support(no_vision, 0);
+  slopfab::text::require_reference_vision_support(no_vision, 0);
   bool missing_failed = false;
   try {
-    vidfab::text::require_reference_vision_support(no_vision, 1);
+    slopfab::text::require_reference_vision_support(no_vision, 1);
   } catch (const std::runtime_error& e) {
     missing_failed = std::string(e.what()).find("contains no visual.*") != std::string::npos;
   }
   CHECK(missing_failed);
 
-  const std::string vision_path = "vidfab_test_qwen_with_vision.safetensors";
-  vidfab::write_safetensors(vision_path, {{"visual.patch_embed.weight", {1}, {1.0f}}});
-  vidfab::SafeTensors vision;
+  const std::string vision_path = "slopfab_test_qwen_with_vision.safetensors";
+  slopfab::write_safetensors(vision_path, {{"visual.patch_embed.weight", {1}, {1.0f}}});
+  slopfab::SafeTensors vision;
   vision.open(vision_path);
   bool malformed_failed = false;
   try {
-    vidfab::text::require_reference_vision_support(vision, 1);
+    slopfab::text::require_reference_vision_support(vision, 1);
   } catch (const std::runtime_error& e) {
     malformed_failed = std::string(e.what()).find("exactly 351 Qwen vision tensors") !=
                        std::string::npos;
@@ -1083,7 +1083,7 @@ VIDFAB_TEST(reference_vision_support_never_silently_ignores_pixels) {
 
 // --- checkpoint-dependent ----------------------------------------------------
 
-VIDFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {
+SLOPFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {
   const std::string path = find_checkpoint();
   if (path.empty()) {
     std::printf("  text encoder checkpoint not present; skipping\n");
@@ -1091,15 +1091,15 @@ VIDFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {
   }
   CublasScope cb;
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
-  vidfab::text::EncoderConfig cfg;
-  vidfab::text::validate_checkpoint(st, cfg);
+  slopfab::text::EncoderConfig cfg;
+  slopfab::text::validate_checkpoint(st, cfg);
   CHECK(st.tensor_count() == 1602);
 
   // Layer 0's k_proj: [1024, 5120] int8, small enough to run both ways.
-  const vidfab::TensorView& wv = st.at("model.layers.0.self_attn.k_proj.weight");
-  const vidfab::TensorView& sv = st.at("model.layers.0.self_attn.k_proj.weight_scale");
+  const slopfab::TensorView& wv = st.at("model.layers.0.self_attn.k_proj.weight");
+  const slopfab::TensorView& sv = st.at("model.layers.0.self_attn.k_proj.weight_scale");
   const int out_features = 1024;
   const int in_features = 5120;
   const int rows = 8;
@@ -1126,7 +1126,7 @@ VIDFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {
   const std::vector<float> x = bf16_round(make_data(size_t(rows) * in_features, 4401u, 0.05f));
   BfBuf dx(x);
 
-  vidfab::cuda::LinearRunner runner;
+  slopfab::cuda::LinearRunner runner;
   runner.init(cb.h, nullptr);
   Workspace ws;
 
@@ -1142,16 +1142,16 @@ VIDFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {
   qa.convrot_group = 256;
 
   BfBuf ya(size_t(rows) * out_features);
-  ws.reserve(vidfab::cuda::linear_workspace_bytes(qa, rows, vidfab::cuda::ComputeType::kBF16));
+  ws.reserve(slopfab::cuda::linear_workspace_bytes(qa, rows, slopfab::cuda::ComputeType::kBF16));
   runner.forward(qa, dx.p(), rows, ya.p(), ws);
 
   // (b) de-rotate the dequantised weight and use the unrotated activation.
   // H is involutory, so the same butterfly undoes it.
   BfBuf w_dequant(size_t(out_features) * in_features);
   BfBuf w_plain(size_t(out_features) * in_features);
-  vidfab::cuda::launch_dequant_i8_per_channel(dw.get(), dscale.get(), w_dequant.p(), out_features,
+  slopfab::cuda::launch_dequant_i8_per_channel(dw.get(), dscale.get(), w_dequant.p(), out_features,
                                               in_features, nullptr);
-  vidfab::cuda::launch_convrot(w_dequant.p(), w_plain.p(), out_features, in_features, 256, nullptr);
+  slopfab::cuda::launch_convrot(w_dequant.p(), w_plain.p(), out_features, in_features, 256, nullptr);
 
   QuantWeight qb;
   qb.format = QuantFormat::kBF16;
@@ -1162,7 +1162,7 @@ VIDFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {
 
   BfBuf yb(size_t(rows) * out_features);
   runner.forward(qb, dx.p(), rows, yb.p(), ws);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   const std::vector<float> a = ya.host();
   const std::vector<float> b = yb.host();
@@ -1179,20 +1179,20 @@ VIDFAB_TEST(encoder_real_checkpoint_convrot_cross_check) {
   // The measured k_norm extreme from spec section 4.1, which is why attention
   // scores need fp32 accumulation. Corruption would look the same.
   std::vector<float> knorm;
-  vidfab::to_f32(st.at("model.layers.0.self_attn.k_norm.weight"), knorm);
+  slopfab::to_f32(st.at("model.layers.0.self_attn.k_norm.weight"), knorm);
   CHECK(knorm.size() == 128);
   const float kmax = *std::max_element(knorm.begin(), knorm.end());
   CHECK_MSG(kmax > 20.0f && kmax < 21.0f, "layer 0 k_norm max is %.4f, expected ~20.75", kmax);
 }
 
-VIDFAB_TEST(encoder_real_encode) {
+SLOPFAB_TEST(encoder_real_encode) {
   const std::string path = find_checkpoint();
   if (path.empty()) {
     std::printf("  text encoder checkpoint not present; skipping\n");
     return;
   }
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
 
   // A real prompt when the tokenizer is available, a synthetic id run
@@ -1201,7 +1201,7 @@ VIDFAB_TEST(encoder_real_encode) {
   std::vector<int32_t> ids;
   const std::string tok_path = find_tokenizer();
   if (!tok_path.empty()) {
-    vidfab::text::Tokenizer tokenizer;
+    slopfab::text::Tokenizer tokenizer;
     tokenizer.load(tok_path);
     // No BOS, no EOS, no chat template: Tokenizer::encode adds nothing, and
     // adding one later would shift every RoPE position (spec section 1.2).
@@ -1229,7 +1229,7 @@ VIDFAB_TEST(encoder_real_encode) {
 
   size_t free_before = 0;
   size_t total = 0;
-  VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_before, &total));
+  SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_before, &total));
   std::printf("  device: %.2f GB free of %.2f GB\n", double(free_before) / (1 << 30),
               double(total) / (1 << 30));
 
@@ -1250,9 +1250,9 @@ VIDFAB_TEST(encoder_real_encode) {
 
   // --- residency mode 1: everything on the device.
   {
-    vidfab::text::Encoder encoder;
-    vidfab::text::EncoderConfig cfg;
-    cfg.residency = vidfab::text::Residency::kResident;
+    slopfab::text::Encoder encoder;
+    slopfab::text::EncoderConfig cfg;
+    cfg.residency = slopfab::text::Residency::kResident;
 
     bool loaded = true;
     try {
@@ -1277,10 +1277,10 @@ VIDFAB_TEST(encoder_real_encode) {
     }
 
     if (loaded) {
-      const vidfab::text::PromptEmbedding a = encoder.encode(ids);
+      const slopfab::text::PromptEmbedding a = encoder.encode(ids);
       size_t free_after = 0;
-      VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
-      const vidfab::text::EncoderStats& s = encoder.stats();
+      SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
+      const slopfab::text::EncoderStats& s = encoder.stats();
       std::printf(
           "  resident: load %.2f s, encode %.3f s for %d tokens, weights %.2f GB, "
           "workspace %.2f GB, accounted peak %.2f GB, measured %.2f GB\n",
@@ -1288,7 +1288,7 @@ VIDFAB_TEST(encoder_real_encode) {
           double(s.weight_bytes) / (1 << 30), double(s.workspace_bytes) / (1 << 30),
           double(s.peak_device_bytes) / (1 << 30), double(free_before - free_after) / (1 << 30));
 
-      CHECK(encoder.residency() == vidfab::text::Residency::kResident);
+      CHECK(encoder.residency() == slopfab::text::Residency::kResident);
       CHECK(a.num_tokens == int(ids.size()));
       CHECK(a.hidden_size == 5120);
       CHECK(a.data.size() == size_t(a.num_tokens) * 5120);
@@ -1336,7 +1336,7 @@ VIDFAB_TEST(encoder_real_encode) {
       // --- causality, the free test from spec section 3. Row 0 attends only
       // to itself, so appending tokens cannot change it. Bidirectional
       // attention is otherwise completely silent.
-      const vidfab::text::PromptEmbedding b = encoder.encode(longer);
+      const slopfab::text::PromptEmbedding b = encoder.encode(longer);
       std::printf("  resident: warm encode %.3f s for %d tokens\n", s.last_encode_seconds,
                   s.last_num_tokens);
       CHECK(b.num_tokens == int(longer.size()));
@@ -1384,16 +1384,16 @@ VIDFAB_TEST(encoder_real_encode) {
 
   // --- residency mode 2: stream each layer from the mapping just before use.
   {
-    vidfab::text::Encoder encoder;
-    vidfab::text::EncoderConfig cfg;
-    cfg.residency = vidfab::text::Residency::kStreaming;
+    slopfab::text::Encoder encoder;
+    slopfab::text::EncoderConfig cfg;
+    cfg.residency = slopfab::text::Residency::kStreaming;
     encoder.load(st, cfg);
-    CHECK(encoder.residency() == vidfab::text::Residency::kStreaming);
+    CHECK(encoder.residency() == slopfab::text::Residency::kStreaming);
 
-    const vidfab::text::PromptEmbedding c = encoder.encode(ids);
+    const slopfab::text::PromptEmbedding c = encoder.encode(ids);
     size_t free_after = 0;
-    VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
-    const vidfab::text::EncoderStats& s = encoder.stats();
+    SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
+    const slopfab::text::EncoderStats& s = encoder.stats();
     std::printf(
         "  streaming: load %.2f s, encode %.3f s for %d tokens, layer buffers %.2f GB, "
         "workspace %.2f GB, accounted peak %.2f GB, measured %.2f GB\n",
@@ -1420,7 +1420,7 @@ VIDFAB_TEST(encoder_real_encode) {
                 mismatches, c.data.size(), max_abs_diff(resident_out, c.data));
     }
 
-    const vidfab::text::PromptEmbedding d = encoder.encode(ids);
+    const slopfab::text::PromptEmbedding d = encoder.encode(ids);
     std::printf("  streaming: warm encode %.3f s for %d tokens (page cache warm)\n",
                 s.last_encode_seconds, s.last_num_tokens);
     CHECK(d.num_tokens == int(ids.size()));
@@ -1452,7 +1452,7 @@ VIDFAB_TEST(encoder_real_encode) {
 // are measured by identical code — the residency comparison is the point.
 struct EncodeRun {
   bool ok = false;
-  vidfab::text::PromptEmbedding out;
+  slopfab::text::PromptEmbedding out;
   double load_seconds = 0.0;
   double cold_encode = 0.0;
   double warm_encode = 0.0;
@@ -1461,15 +1461,15 @@ struct EncodeRun {
   size_t measured_bytes = 0;
 };
 
-EncodeRun run_encoder(const vidfab::SafeTensors& st, vidfab::text::Residency mode,
+EncodeRun run_encoder(const slopfab::SafeTensors& st, slopfab::text::Residency mode,
                       const std::vector<int32_t>& ids, const char* label) {
   EncodeRun r;
   size_t free_before = 0;
   size_t total = 0;
-  VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_before, &total));
+  SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_before, &total));
 
-  vidfab::text::Encoder encoder;
-  vidfab::text::EncoderConfig cfg;
+  slopfab::text::Encoder encoder;
+  slopfab::text::EncoderConfig cfg;
   cfg.residency = mode;
   try {
     encoder.load(st, cfg);
@@ -1485,7 +1485,7 @@ EncodeRun run_encoder(const vidfab::SafeTensors& st, vidfab::text::Residency mod
   r.out = encoder.encode(ids);
   r.cold_encode = encoder.stats().last_encode_seconds;
   size_t free_after = 0;
-  VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
+  SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
 
   encoder.encode(ids);
   r.warm_encode = encoder.stats().last_encode_seconds;
@@ -1509,7 +1509,7 @@ EncodeRun run_encoder(const vidfab::SafeTensors& st, vidfab::text::Residency mod
 // depend on which build produced the output, which is exactly why they are
 // worth applying to both: they say "this is an unnormalised residual stream",
 // and a final norm having crept in is the failure they exist to catch.
-void check_residual_stream_shape(const vidfab::text::PromptEmbedding& e, const char* label) {
+void check_residual_stream_shape(const slopfab::text::PromptEmbedding& e, const char* label) {
   size_t nonfinite = 0;
   for (float v : e.data) {
     if (!std::isfinite(v)) ++nonfinite;
@@ -1545,28 +1545,28 @@ void check_residual_stream_shape(const vidfab::text::PromptEmbedding& e, const c
             label, rms_rows.front(), others_max);
 }
 
-VIDFAB_TEST(encoder_nvfp4_real_encode) {
+SLOPFAB_TEST(encoder_nvfp4_real_encode) {
   const std::string path = find_nvfp4_checkpoint();
   if (path.empty()) {
     std::printf("  nvfp4 text encoder checkpoint not present; skipping\n");
     return;
   }
 
-  vidfab::SafeTensors st;
+  slopfab::SafeTensors st;
   st.open(path);
   // 1700 layer tensors at 34 per layer, 3 for the embedding, 351 visual.* that
   // are present and never loaded.
   CHECK(st.tensor_count() == 2054);
-  CHECK(vidfab::text::detect_weight_format(st) == vidfab::text::WeightFormat::kNVFP4Awq);
+  CHECK(slopfab::text::detect_weight_format(st) == slopfab::text::WeightFormat::kNVFP4Awq);
 
-  vidfab::text::EncoderConfig cfg;
-  vidfab::text::validate_checkpoint(st, cfg);
+  slopfab::text::EncoderConfig cfg;
+  slopfab::text::validate_checkpoint(st, cfg);
 
   // Asking for the other build must be refused rather than half-read.
-  cfg.format = vidfab::text::WeightFormat::kI8ConvRot;
+  cfg.format = slopfab::text::WeightFormat::kI8ConvRot;
   bool threw = false;
   try {
-    vidfab::text::validate_checkpoint(st, cfg);
+    slopfab::text::validate_checkpoint(st, cfg);
   } catch (const std::exception&) {
     threw = true;
   }
@@ -1577,7 +1577,7 @@ VIDFAB_TEST(encoder_nvfp4_real_encode) {
 
   size_t free_before = 0;
   size_t total = 0;
-  VIDFAB_CUDA_CHECK(cudaMemGetInfo(&free_before, &total));
+  SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_before, &total));
   std::printf("  device: %.2f GB free of %.2f GB\n", double(free_before) / (1 << 30),
               double(total) / (1 << 30));
   if (free_before < (size_t(2) << 30)) {
@@ -1587,9 +1587,9 @@ VIDFAB_TEST(encoder_nvfp4_real_encode) {
   }
 
   const EncodeRun resident =
-      run_encoder(st, vidfab::text::Residency::kResident, ids, "nvfp4 resident");
+      run_encoder(st, slopfab::text::Residency::kResident, ids, "nvfp4 resident");
   const EncodeRun streaming =
-      run_encoder(st, vidfab::text::Residency::kStreaming, ids, "nvfp4 streaming");
+      run_encoder(st, slopfab::text::Residency::kStreaming, ids, "nvfp4 streaming");
 
   if (resident.ok) check_residual_stream_shape(resident.out, "nvfp4 resident");
   if (streaming.ok) check_residual_stream_shape(streaming.out, "nvfp4 streaming");
@@ -1620,10 +1620,10 @@ VIDFAB_TEST(encoder_nvfp4_real_encode) {
     std::printf("  int8 checkpoint not present; skipping the cross-checkpoint comparison\n");
     return;
   }
-  vidfab::SafeTensors i8;
+  slopfab::SafeTensors i8;
   i8.open(int8_path);
   const EncodeRun other =
-      run_encoder(i8, vidfab::text::Residency::kStreaming, ids, "int8 streaming");
+      run_encoder(i8, slopfab::text::Residency::kStreaming, ids, "int8 streaming");
   if (!other.ok) return;
   check_residual_stream_shape(other.out, "int8 streaming");
 

@@ -1,5 +1,5 @@
 #pragma once
 
-namespace vidfab::vulkan::detail {
-alignas(4) inline constexpr unsigned char kRgbToYuvSpirv[] = {@VIDFAB_YUV_SPV_BYTES@};
-}  // namespace vidfab::vulkan::detail
+namespace slopfab::vulkan::detail {
+alignas(4) inline constexpr unsigned char kRgbToYuvSpirv[] = {@SLOPFAB_YUV_SPV_BYTES@};
+}  // namespace slopfab::vulkan::detail

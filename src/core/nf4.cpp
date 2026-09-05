@@ -1,11 +1,11 @@
-#include "vidfab/nf4.h"
+#include "slopfab/nf4.h"
 
 #include <cmath>
 #include <stdexcept>
 
-#include "vidfab/json.h"
+#include "slopfab/json.h"
 
-namespace vidfab {
+namespace slopfab {
 
 namespace {
 std::string state_name(const std::string& weight_name) {
@@ -47,4 +47,4 @@ NF4State read_nf4_state(const SafeTensors& checkpoint, const std::string& weight
   return state;
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

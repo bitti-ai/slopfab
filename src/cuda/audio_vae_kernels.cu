@@ -9,14 +9,14 @@
 // dimension would be 8) and rules in direct convolution with a shared-memory
 // tile over time. See docs/audio_vae_spec.md §13.
 
-#include "vidfab/cuda/audio_vae_kernels.cuh"
-#include "vidfab/cuda/deterministic_math.cuh"
+#include "slopfab/cuda/audio_vae_kernels.cuh"
+#include "slopfab/cuda/deterministic_math.cuh"
 
 #include <cmath>
 #include <stdexcept>
 #include <string>
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 // --- conv1d tiling ----------------------------------------------------------
@@ -385,7 +385,7 @@ void launch_conv1d(const float* x, const float* w, const float* bias, float* y, 
                                          static_cast<size_t>(kConvIn) * kConvOut * kernel);
   conv1d_kernel<<<grid, kConvThreads, shared, stream>>>(x, w, bias, y, in_channels, out_channels,
                                                         len_in, len_out, kernel, pad, dilation);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_conv_transpose1d(const float* x, const float* w, const float* bias, float* y, int batch,
@@ -407,7 +407,7 @@ void launch_conv_transpose1d(const float* x, const float* w, const float* bias, 
   const size_t shared = sizeof(float) * static_cast<size_t>(kUpIn) * kUpOut * kernel;
   conv_transpose1d_kernel<<<grid, kUpThreads, shared, stream>>>(
       x, w, bias, y, in_channels, out_channels, len_in, len_out, kernel, stride, pad);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_snake_beta(float* x, const float* log_alpha, const float* log_beta, int batch,
@@ -415,7 +415,7 @@ void launch_snake_beta(float* x, const float* log_alpha, const float* log_beta, 
   snake_beta_kernel<<<elementwise_grid(len, channels, batch), 256, 0, stream>>>(x, log_alpha,
                                                                                log_beta, channels,
                                                                                len);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_aa_upsample_snake(const float* x, const float* filter, const float* log_alpha,
@@ -424,7 +424,7 @@ void launch_aa_upsample_snake(const float* x, const float* filter, const float* 
   const dim3 grid = elementwise_grid(kAudioAARatio * len_in, channels, batch);
   aa_upsample_snake_kernel<<<grid, 256, 0, stream>>>(x, filter, log_alpha, log_beta, y, channels,
                                                      len_in);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_aa_downsample(const float* x, const float* filter, float* y, int batch, int channels,
@@ -437,22 +437,22 @@ void launch_aa_downsample(const float* x, const float* filter, float* y, int bat
   }
   aa_downsample_kernel<<<elementwise_grid(len_out, channels, batch), 256, 0, stream>>>(
       x, filter, y, channels, len_in, len_out);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_add_inplace(float* x, const float* y, size_t count, cudaStream_t stream) {
   add_inplace_kernel<<<elementwise_blocks(count), 256, 0, stream>>>(x, y, count);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_scale_inplace(float* x, float scale, size_t count, cudaStream_t stream) {
   scale_inplace_kernel<<<elementwise_blocks(count), 256, 0, stream>>>(x, scale, count);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_clamp_inplace(float* x, float lo, float hi, size_t count, cudaStream_t stream) {
   clamp_inplace_kernel<<<elementwise_blocks(count), 256, 0, stream>>>(x, lo, hi, count);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_interleave(const float* planar, float* interleaved, int batch, int frames,
@@ -460,7 +460,7 @@ void launch_interleave(const float* planar, float* interleaved, int batch, int f
   const size_t count = static_cast<size_t>(batch) * frames;
   interleave_kernel<<<elementwise_blocks(count), 256, 0, stream>>>(planar, interleaved, batch,
                                                                    frames);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

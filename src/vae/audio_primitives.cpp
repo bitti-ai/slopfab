@@ -1,13 +1,13 @@
-#include "vidfab/vae/audio_primitives.h"
+#include "slopfab/vae/audio_primitives.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 
-#include "vidfab/tensor_convert.h"
+#include "slopfab/tensor_convert.h"
 
-namespace vidfab::vae {
+namespace slopfab::vae {
 namespace {
 
 uint64_t checked_product(uint64_t a, uint64_t b, const char* what) {
@@ -130,4 +130,4 @@ AudioConvWeights load_audio_conv_weights(
   return result;
 }
 
-}  // namespace vidfab::vae
+}  // namespace slopfab::vae

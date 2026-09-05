@@ -20,7 +20,7 @@
 // name order and in file order, through the same code, on the same drive, in
 // the same session isolates access order from everything else.
 //
-// Host-only. Links vidfab_core and touches no CUDA, so it can run while the
+// Host-only. Links slopfab_core and touches no CUDA, so it can run while the
 // card is busy.
 #include <algorithm>
 #include <chrono>
@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 
-#include "vidfab/safetensors.h"
+#include "slopfab/safetensors.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -66,7 +66,7 @@ struct Extent {
 // The extents a checkpoint's tensors occupy, in *name* order — which is the
 // order `std::map<std::string, ...>` hands them to every loader in this
 // project, and therefore the order the bytes are actually demanded in.
-std::vector<Extent> extents_in_name_order(const vidfab::SafeTensors& st) {
+std::vector<Extent> extents_in_name_order(const slopfab::SafeTensors& st) {
   std::vector<Extent> out;
   out.reserve(st.tensor_count());
   const auto* base = static_cast<const uint8_t*>(st.mapping_base());
@@ -415,7 +415,7 @@ double probe_cached_gbs(const std::string& path, uint64_t file_size, uint64_t sl
 
 void usage() {
   std::printf(
-      "usage: vidfab_loadprobe <file.safetensors> [options]\n"
+      "usage: slopfab_loadprobe <file.safetensors> [options]\n"
       "\n"
       "  --order                report name-order vs file-order traversal and exit\n"
       "  --mode <m>             seq | replay | map | evict   (default: the first three)\n"
@@ -476,7 +476,7 @@ int main(int argc, char** argv) {
   std::vector<Extent> name_order;
   uint64_t file_size = 0;
   try {
-    vidfab::SafeTensors st;
+    slopfab::SafeTensors st;
     st.open(path);
     file_size = st.file_size();
     name_order = extents_in_name_order(st);
@@ -489,7 +489,7 @@ int main(int argc, char** argv) {
   std::printf("== %s ==\n", path.c_str());
 
   // Evict and exit. This is how a *different* process gets a cold cache to
-  // measure against — `vidfab generate --bench-load` cannot drop its own file
+  // measure against — `slopfab generate --bench-load` cannot drop its own file
   // and should not learn how. Reports the before and after rate so the run it
   // precedes can be called cold on evidence rather than on intent.
   if (mode == "evict") {

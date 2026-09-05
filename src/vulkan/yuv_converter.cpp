@@ -1,4 +1,4 @@
-#include "vidfab/vulkan/yuv_converter.h"
+#include "slopfab/vulkan/yuv_converter.h"
 
 #include <algorithm>
 #include <cstring>
@@ -8,10 +8,10 @@
 #include <vector>
 
 #include "embedded_yuv_spv.h"
-#include "vidfab/vulkan/compute.h"
-#include "vidfab/vulkan/runtime.h"
+#include "slopfab/vulkan/compute.h"
+#include "slopfab/vulkan/runtime.h"
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 
 struct Yuv420Converter::Impl {
   struct Geometry {
@@ -205,4 +205,4 @@ uint64_t Yuv420Converter::high_water_bytes() const { return impl_ ? impl_->high_
 uint64_t Yuv420Converter::capacity_pixels() const { return impl_ ? impl_->capacity : 0; }
 const char* Yuv420Converter::device_name() const { return impl_ ? impl_->name.c_str() : ""; }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

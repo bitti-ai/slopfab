@@ -24,17 +24,17 @@
 #include <utility>
 #include <vector>
 
-#include "vidfab/cuda/audio_vae_kernels.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/vae/audio_decoder.h"
-#include "vidfab/vae/audio_primitives.h"
+#include "slopfab/cuda/audio_vae_kernels.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/vae/audio_decoder.h"
+#include "slopfab/vae/audio_primitives.h"
 
-namespace vidfab::vae {
+namespace slopfab::vae {
 namespace {
 
-using ::vidfab::cuda::DeviceBuffer;
-using ::vidfab::cuda::Stream;
+using ::slopfab::cuda::DeviceBuffer;
+using ::slopfab::cuda::Stream;
 
 constexpr int kStereo = 2;
 constexpr int kResblockDilations[3] = {1, 3, 5};
@@ -430,7 +430,7 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
   auto capture = [&](const float* source, size_t count) {
     if (trace == nullptr) return;
     trace->boundaries.emplace_back(count);
-    VIDFAB_CUDA_CHECK(cudaMemcpyAsync(trace->boundaries.back().data(), source,
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(trace->boundaries.back().data(), source,
                                       count * sizeof(float),
                                       cudaMemcpyDeviceToHost, im.stream.get()));
   };
@@ -461,7 +461,7 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
     const size_t elems = static_cast<size_t>(batch) * stage.up.out_channels * len;
     for (int j = 0; j < 3; ++j) {
       float* dst = (j == 0) ? acc : work;
-      VIDFAB_CUDA_CHECK(cudaMemcpyAsync(dst, cur, elems * sizeof(float), cudaMemcpyDeviceToDevice,
+      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(dst, cur, elems * sizeof(float), cudaMemcpyDeviceToDevice,
                                         im.stream.get()));
       im.run_amp_block(stage.blocks[j], dst, batch, len, t1, t2, scratch);
       if (j != 0) cuda::launch_add_inplace(acc, work, elems, im.stream.get());
@@ -496,7 +496,7 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
   out.channels = batch;
   out.sample_rate = cfg.sample_rate;
   out.samples.resize(samples);
-  VIDFAB_CUDA_CHECK(cudaMemcpyAsync(out.samples.data(), spare, samples * sizeof(float),
+  SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(out.samples.data(), spare, samples * sizeof(float),
                                     cudaMemcpyDeviceToHost, im.stream.get()));
   im.stream.synchronize();
   if (trace != nullptr && trace->boundaries.size() != 13)
@@ -509,4 +509,4 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
   return out;
 }
 
-}  // namespace vidfab::vae
+}  // namespace slopfab::vae

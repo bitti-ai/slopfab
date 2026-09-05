@@ -1,4 +1,4 @@
-#include "vidfab/cuda/deterministic_attention.cuh"
+#include "slopfab/cuda/deterministic_attention.cuh"
 
 #include <cuda_fp16.h>
 #include <mma.h>
@@ -11,11 +11,11 @@
 #include <mutex>
 #include <stdexcept>
 
-#include "vidfab/cuda/device.h"
-#include "vidfab/cuda/deterministic_math.cuh"
-#include "vidfab/attention.h"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/deterministic_math.cuh"
+#include "slopfab/attention.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 using namespace nvcuda;
@@ -52,19 +52,19 @@ GridLimits cached_grid_limits() {
   static std::once_flag once[kCachedDevices];
   static GridLimits limits[kCachedDevices];
   int device = 0;
-  VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
+  SLOPFAB_CUDA_CHECK(cudaGetDevice(&device));
   if (device < 0 || device >= kCachedDevices) {
     throw std::out_of_range("deterministic attention: CUDA device index is out of cache range");
   }
   std::call_once(once[device], [device] {
     cudaDeviceProp properties{};
-    VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
+    SLOPFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
     int optin_shared = 0;
-    VIDFAB_CUDA_CHECK(cudaDeviceGetAttribute(
+    SLOPFAB_CUDA_CHECK(cudaDeviceGetAttribute(
         &optin_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, device));
     int driver_version = 0, runtime_version = 0;
-    VIDFAB_CUDA_CHECK(cudaDriverGetVersion(&driver_version));
-    VIDFAB_CUDA_CHECK(cudaRuntimeGetVersion(&runtime_version));
+    SLOPFAB_CUDA_CHECK(cudaDriverGetVersion(&driver_version));
+    SLOPFAB_CUDA_CHECK(cudaRuntimeGetVersion(&runtime_version));
     const bool exact_h3_tuple = deterministic_h3_cuda_tuple_fits(
         properties.major, properties.minor, properties.name, driver_version,
         runtime_version, static_cast<uint32_t>(properties.maxThreadsPerBlock),
@@ -447,11 +447,11 @@ void ensure_h3_shared_optin() {
   constexpr int kCachedDevices = 32;
   static std::once_flag once[kCachedDevices];
   int device = 0;
-  VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
+  SLOPFAB_CUDA_CHECK(cudaGetDevice(&device));
   if (device < 0 || device >= kCachedDevices)
     throw std::out_of_range("deterministic H3 attention: CUDA device index is out of cache range");
   std::call_once(once[device], [] {
-    VIDFAB_CUDA_CHECK(cudaFuncSetAttribute(
+    SLOPFAB_CUDA_CHECK(cudaFuncSetAttribute(
         h3_attention_coop64_kernel<Banded>,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         static_cast<int>(kH3AttentionSharedBytes)));
@@ -601,7 +601,7 @@ void launch_attention_impl(
   blocked_attention_kernel<<<dim3(selected_rows, heads), 128, 0, stream>>>(
       query, key, value, output, sequence, heads, head_dim, scale,
       query_row_offset, output_row_offset, selected_rows);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 }  // namespace
@@ -656,7 +656,7 @@ void launch_prepare_deterministic_attention_inputs(
   const uint32_t blocks = static_cast<uint32_t>((elements + 255) / 256);
   prepare_attention_inputs_kernel<<<blocks, 256, 0, stream>>>(
       query, key, value, prepared_query, prepared_key, prepared_value, elements);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_deterministic_blocked_attention_f16(
@@ -743,7 +743,7 @@ void launch_deterministic_h3_attention(
         query, key, value, output, nullptr, sequence, heads, head_dim, scale,
         query_row_offset, output_row_offset, selected_rows);
   }
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void launch_deterministic_causal_gqa_attention(
@@ -796,7 +796,7 @@ void launch_deterministic_causal_gqa_attention(
                                 stream>>>(
       query, key, value, output, sequence, query_heads, kv_heads, head_dim,
       scale, query_row_offset, output_row_offset, selected_rows);
-  VIDFAB_CUDA_CHECK(cudaGetLastError());
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

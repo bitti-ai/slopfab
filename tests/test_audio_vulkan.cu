@@ -20,24 +20,24 @@
 #include <bcrypt.h>
 #endif
 
-#include "vidfab/cuda/audio_vae_kernels.cuh"
-#include "vidfab/cuda/device.h"
-#include "vidfab/audio/wav.h"
-#include "vidfab/generate.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/vae/audio_decoder.h"
-#include "vidfab/vae/audio_primitives.h"
-#include "vidfab/video/y4m.h"
-#include "vidfab/vulkan/audio_decoder.h"
-#include "vidfab/vulkan/tensor.h"
+#include "slopfab/cuda/audio_vae_kernels.cuh"
+#include "slopfab/cuda/device.h"
+#include "slopfab/audio/wav.h"
+#include "slopfab/generate.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/vae/audio_decoder.h"
+#include "slopfab/vae/audio_primitives.h"
+#include "slopfab/video/y4m.h"
+#include "slopfab/vulkan/audio_decoder.h"
+#include "slopfab/vulkan/tensor.h"
 
 namespace {
 
-vidfab::TensorLayout layout(std::initializer_list<uint64_t> extents) {
+slopfab::TensorLayout layout(std::initializer_list<uint64_t> extents) {
   std::vector<uint64_t> shape(extents);
-  return vidfab::TensorLayout::contiguous(shape.data(),
+  return slopfab::TensorLayout::contiguous(shape.data(),
                                           static_cast<uint32_t>(shape.size()));
 }
 
@@ -115,11 +115,11 @@ struct CapturedGeneration {
   int width = 0;
   int audio_channels = 0;
   int audio_sample_rate = 0;
-  vidfab::PixelBuffer video;
+  slopfab::PixelBuffer video;
   std::vector<float> audio;
 };
 
-bool capture_generation(vidfab::RunSamples& samples, void* userdata) {
+bool capture_generation(slopfab::RunSamples& samples, void* userdata) {
   auto& captured = *static_cast<CapturedGeneration*>(userdata);
   captured.channels = samples.channels;
   captured.frames = samples.frames;
@@ -165,8 +165,8 @@ std::array<uint8_t, 32> mapping_sha256(const void* mapping, size_t bytes) {
 
 }  // namespace
 
-VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
-  using namespace vidfab;
+SLOPFAB_TEST(cuda_vulkan_exact_audio_primitives) {
+  using namespace slopfab;
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !vulkan::Instance::available()) return;
@@ -214,7 +214,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
     batch.audio_conv1d(v_conv_x, v_conv_w, &v_conv_b, v_conv_y, conv);
     batch.submit().wait();
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<float> cuda_conv(conv.output_elements()),
       vk_conv(conv.output_elements());
   c_conv_y.copy_to_host(cuda_conv.data(), cuda_conv.size());
@@ -249,7 +249,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
                                  v_trans_y, transpose);
     batch.submit().wait();
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<float> cuda_trans(transpose.output_elements()),
       vk_trans(transpose.output_elements());
   c_trans_y.copy_to_host(cuda_trans.data(), cuda_trans.size());
@@ -279,7 +279,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
                                    channels, length);
     batch.submit().wait();
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<float> cuda_snake(snake_count), vk_snake(snake_count);
   c_snake.copy_to_host(cuda_snake.data(), snake_count);
   vk.download(v_snake, vk_snake.data(), snake_count);
@@ -332,7 +332,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
         exceptional_channels, exceptional_length);
     batch.submit().wait();
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<float> cuda_exceptional(exceptional_x.size()),
       vk_exceptional(exceptional_x.size());
   c_exceptional.copy_to_host(cuda_exceptional.data(), cuda_exceptional.size());
@@ -379,7 +379,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
                               aa_channels, aa_length * 2, aa_length);
     batch.submit().wait();
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<float> cuda_up(aa_up_count), vk_up(aa_up_count),
       cuda_down(aa_input_count), vk_down(aa_input_count);
   c_aa_up.copy_to_host(cuda_up.data(), aa_up_count);
@@ -423,7 +423,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
     invalid.audio_interleave(v_element_x, v_interleaved, 2, frames);
     invalid.submit().wait();
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<float> cuda_element(element_x.size()), vk_element(element_x.size()),
       cuda_interleaved(element_x.size()), vk_interleaved(element_x.size());
   c_element_x.copy_to_host(cuda_element.data(), element_x.size());
@@ -451,9 +451,9 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_primitives) {
               static_cast<unsigned long long>(vk.descriptor_set_allocations()));
 }
 
-VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
-  using namespace vidfab;
-  if (!std::getenv("VIDFAB_AUDIO_VAE_REAL")) return;
+SLOPFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
+  using namespace slopfab;
+  if (!std::getenv("SLOPFAB_AUDIO_VAE_REAL")) return;
   const std::filesystem::path path =
       "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
   if (!std::filesystem::exists(path)) return;
@@ -656,7 +656,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
                               aa_channels, aa_length * 2, aa_length);
     batch.submit().wait();
   }
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   std::vector<float> cuda_conv(conv.output_elements()),
       vk_conv(conv.output_elements()),
@@ -734,7 +734,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
                                          production_conv_input.size());
   c_production_transpose_input.copy_from_host(
       production_transpose_input.data(), production_transpose_input.size());
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const auto cuda_conv_begin = std::chrono::steady_clock::now();
   cuda::launch_conv1d(
       c_production_conv_input.get(), c_conv_weight.get(), c_conv_bias.get(),
@@ -743,7 +743,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
       production_conv.length_in, production_conv.length_out,
       production_conv.kernel, production_conv.padding,
       production_conv.dilation, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const double cuda_conv_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cuda_conv_begin).count();
   const auto cuda_stage_begin = std::chrono::steady_clock::now();
@@ -761,7 +761,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
       production_residual.out_channels, production_residual.length_in,
       production_residual.length_out, production_residual.kernel,
       production_residual.padding, production_residual.dilation, nullptr);
-  VIDFAB_CUDA_CHECK(cudaDeviceSynchronize());
+  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const double cuda_stage_ms = std::chrono::duration<double, std::milli>(
       std::chrono::steady_clock::now() - cuda_stage_begin).count();
 
@@ -864,9 +864,9 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_real_checkpoint_primitives) {
       double(production_used_delta) / 1048576.0);
 }
 
-VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
-  using namespace vidfab;
-  if (!std::getenv("VIDFAB_AUDIO_DECODER_REAL")) return;
+SLOPFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
+  using namespace slopfab;
+  if (!std::getenv("SLOPFAB_AUDIO_DECODER_REAL")) return;
   const std::filesystem::path checkpoint_path =
       "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
   if (!std::filesystem::exists(checkpoint_path)) return;
@@ -924,9 +924,9 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
   check_exact(cuda_audio.samples, vk_audio.samples, "complete audio decoder");
 
   const auto cuda_wav = std::filesystem::temp_directory_path() /
-      "vidfab_cuda_audio_exact.wav";
+      "slopfab_cuda_audio_exact.wav";
   const auto vk_wav = std::filesystem::temp_directory_path() /
-      "vidfab_vulkan_audio_exact.wav";
+      "slopfab_vulkan_audio_exact.wav";
   audio::write_wav(cuda_wav.string(), cuda_audio.samples, cuda_audio.channels,
                    cuda_audio.sample_rate, audio::SampleFormat::kPcm16);
   audio::write_wav(vk_wav.string(), vk_audio.samples, vk_audio.channels,
@@ -943,7 +943,7 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
   // archive gets through both input convolutions and then fails at stage 0.
   const std::filesystem::path partial_path =
       std::filesystem::temp_directory_path() /
-      "vidfab_vulkan_audio_partial_reload.safetensors";
+      "slopfab_vulkan_audio_partial_reload.safetensors";
   write_safetensors(
       partial_path.string(),
       {{"dec_in_proj.weight", {2048, 32, 1},
@@ -1075,9 +1075,9 @@ VIDFAB_TEST(cuda_vulkan_exact_audio_decoder_graph) {
   vk_decoder.unload();
 }
 
-VIDFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {
-  using namespace vidfab;
-  if (!std::getenv("VIDFAB_GENERATE_VULKAN_REAL")) return;
+SLOPFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {
+  using namespace slopfab;
+  if (!std::getenv("SLOPFAB_GENERATE_VULKAN_REAL")) return;
   const std::filesystem::path video_checkpoint =
       "weights/vae/minimax_h3_video_vae_fp16.safetensors";
   const std::filesystem::path audio_checkpoint =
@@ -1128,7 +1128,7 @@ VIDFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {
       size_t(plan.layout.num_audio_rows) * 32, 89, 1013, 1.0f / 512.0f);
   const std::filesystem::path base = std::filesystem::temp_directory_path();
   const std::filesystem::path latent_path =
-      base / "vidfab_cuda_vulkan_exact_latents.safetensors";
+      base / "slopfab_cuda_vulkan_exact_latents.safetensors";
   write_safetensors(
       latent_path.string(),
       {{"video_rows", {plan.layout.num_video_rows, 96}, video_rows},
@@ -1164,10 +1164,10 @@ VIDFAB_TEST(cuda_vulkan_exact_generate_vertical_slice) {
   check_exact(cuda_capture.audio, vk_capture.audio,
               "run_generate interleaved PCM");
 
-  const std::filesystem::path cuda_y4m = base / "vidfab_generate_cuda_exact.y4m";
-  const std::filesystem::path vk_y4m = base / "vidfab_generate_vulkan_exact.y4m";
-  const std::filesystem::path cuda_wav = base / "vidfab_generate_cuda_exact.wav";
-  const std::filesystem::path vk_wav = base / "vidfab_generate_vulkan_exact.wav";
+  const std::filesystem::path cuda_y4m = base / "slopfab_generate_cuda_exact.y4m";
+  const std::filesystem::path vk_y4m = base / "slopfab_generate_vulkan_exact.y4m";
+  const std::filesystem::path cuda_wav = base / "slopfab_generate_cuda_exact.wav";
+  const std::filesystem::path vk_wav = base / "slopfab_generate_vulkan_exact.wav";
   video::write_y4m(cuda_y4m.string(), cuda_capture.video,
                    cuda_capture.frames, cuda_capture.height,
                    cuda_capture.width);

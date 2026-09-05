@@ -1,4 +1,4 @@
-#include "vidfab/pipeline.h"
+#include "slopfab/pipeline.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -6,9 +6,9 @@
 #include <stdexcept>
 #include <system_error>
 
-#include "vidfab/sampler/scheduler.h"
+#include "slopfab/sampler/scheduler.h"
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 constexpr int kSpatialCompression = 16;
@@ -306,4 +306,4 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   return buf;
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

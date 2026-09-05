@@ -13,11 +13,11 @@
 #include <string>
 
 #include "harness.h"
-#include "vidfab/pipeline.h"
-#include "vidfab/generate.h"
-#include "vidfab/attention_mode.h"
-#include "vidfab/cuda/cuda_toolkit.h"
-#include "vidfab/sampler/scheduler.h"
+#include "slopfab/pipeline.h"
+#include "slopfab/generate.h"
+#include "slopfab/attention_mode.h"
+#include "slopfab/cuda/cuda_toolkit.h"
+#include "slopfab/sampler/scheduler.h"
 
 namespace {
 
@@ -42,24 +42,24 @@ void write_file(const std::filesystem::path& path, const std::string& content,
 // `throws` takes a plain function pointer, so a capturing lambda will not do.
 bool rejects_frame_count(int frames) {
   try {
-    vidfab::GenerateRequest r;
+    slopfab::GenerateRequest r;
     r.num_frames = frames;
-    vidfab::resolve_plan(r);
+    slopfab::resolve_plan(r);
   } catch (const std::exception&) {
     return true;
   }
   return false;
 }
 
-vidfab::GenerateRequest base_request() {
-  vidfab::GenerateRequest r;
+slopfab::GenerateRequest base_request() {
+  slopfab::GenerateRequest r;
   r.prompt = "a test";
   return r;
 }
 
-VIDFAB_TEST(pipeline_plan_default) {
-  const vidfab::GenerateRequest r = base_request();
-  const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
+SLOPFAB_TEST(pipeline_plan_default) {
+  const slopfab::GenerateRequest r = base_request();
+  const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
 
   CHECK(p.canvas_height == 768);
   CHECK(p.canvas_width == 1344);
@@ -109,63 +109,63 @@ VIDFAB_TEST(pipeline_plan_default) {
   CHECK(last_video > last_audio);
 }
 
-VIDFAB_TEST(attention_mode_parse_name_and_backend_contract) {
-  using vidfab::AttentionMode;
-  using vidfab::DeviceBackend;
+SLOPFAB_TEST(attention_mode_parse_name_and_backend_contract) {
+  using slopfab::AttentionMode;
+  using slopfab::DeviceBackend;
   const AttentionMode modes[] = {
       AttentionMode::kNone, AttentionMode::kFlash2, AttentionMode::kSage2,
       AttentionMode::kSol, AttentionMode::kSolExperimental, AttentionMode::kExact};
   for (AttentionMode mode : modes) {
     AttentionMode parsed = AttentionMode::kNone;
-    CHECK(vidfab::parse_attention_mode(vidfab::attention_mode_name(mode), &parsed));
+    CHECK(slopfab::parse_attention_mode(slopfab::attention_mode_name(mode), &parsed));
     CHECK(parsed == mode);
-    CHECK(vidfab::attention_mode_supported(DeviceBackend::kCuda, mode));
-    CHECK(vidfab::attention_mode_supported(DeviceBackend::kVulkan, mode) ==
+    CHECK(slopfab::attention_mode_supported(DeviceBackend::kCuda, mode));
+    CHECK(slopfab::attention_mode_supported(DeviceBackend::kVulkan, mode) ==
           (mode == AttentionMode::kExact));
   }
 
   AttentionMode unchanged = AttentionMode::kSol;
-  CHECK(!vidfab::parse_attention_mode("flash3", &unchanged));
+  CHECK(!slopfab::parse_attention_mode("flash3", &unchanged));
   CHECK(unchanged == AttentionMode::kSol);
-  CHECK(!vidfab::parse_attention_mode("exact ", &unchanged));
-  CHECK(!vidfab::parse_attention_mode("exact", nullptr));
-  CHECK(std::string(vidfab::attention_mode_name(static_cast<AttentionMode>(999))) == "unknown");
-  CHECK(!vidfab::attention_mode_supported(DeviceBackend::kVulkan,
+  CHECK(!slopfab::parse_attention_mode("exact ", &unchanged));
+  CHECK(!slopfab::parse_attention_mode("exact", nullptr));
+  CHECK(std::string(slopfab::attention_mode_name(static_cast<AttentionMode>(999))) == "unknown");
+  CHECK(!slopfab::attention_mode_supported(DeviceBackend::kVulkan,
                                            static_cast<AttentionMode>(999)));
 }
 
-VIDFAB_TEST(generation_backend_contract) {
-  using vidfab::DeviceBackend;
-  using vidfab::LatentSource;
-  using vidfab::AttentionMode;
-  CHECK(vidfab::generation_backend_supported(DeviceBackend::kCuda,
+SLOPFAB_TEST(generation_backend_contract) {
+  using slopfab::DeviceBackend;
+  using slopfab::LatentSource;
+  using slopfab::AttentionMode;
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kCuda,
                                               LatentSource::kDenoise,
                                               AttentionMode::kFlash2));
-  CHECK(vidfab::generation_backend_supported(DeviceBackend::kCuda,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kCuda,
                                               LatentSource::kSyntheticNoise,
                                               AttentionMode::kSage2));
-  CHECK(vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
                                               LatentSource::kDenoise,
                                               AttentionMode::kExact));
-  CHECK(vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
                                               LatentSource::kSyntheticNoise,
                                               AttentionMode::kExact));
-  CHECK(!vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+  CHECK(!slopfab::generation_backend_supported(DeviceBackend::kVulkan,
                                                LatentSource::kSyntheticNoise,
                                                AttentionMode::kFlash2));
-  CHECK(!vidfab::generation_backend_supported(DeviceBackend::kVulkan,
+  CHECK(!slopfab::generation_backend_supported(DeviceBackend::kVulkan,
                                                LatentSource::kSyntheticNoise,
                                                AttentionMode::kSage2));
-  vidfab::RunOptions defaults;
+  slopfab::RunOptions defaults;
   CHECK(defaults.inference_backend == DeviceBackend::kCuda);
 }
 
-VIDFAB_TEST(pipeline_plan_aspect_and_frames) {
-  vidfab::GenerateRequest r = base_request();
+SLOPFAB_TEST(pipeline_plan_aspect_and_frames) {
+  slopfab::GenerateRequest r = base_request();
   r.aspect_w = 9;
   r.aspect_h = 16;
   r.num_frames = 240;
-  const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
+  const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
 
   // The portrait canvas is the landscape one transposed, and the 10-second
   // request is the worked example in the spec.
@@ -182,19 +182,19 @@ VIDFAB_TEST(pipeline_plan_aspect_and_frames) {
   // A square request stays square and keeps the same row count per frame.
   r.aspect_w = 1;
   r.aspect_h = 1;
-  const vidfab::GeneratePlan sq = vidfab::resolve_plan(r);
+  const slopfab::GeneratePlan sq = slopfab::resolve_plan(r);
   CHECK(sq.canvas_height == 768 && sq.canvas_width == 768);
   CHECK(sq.layout.latent_height == 48 && sq.layout.latent_width == 48);
   CHECK(sq.layout.rows_per_frame() == 24 * 24);
 }
 
-VIDFAB_TEST(pipeline_plan_still_image) {
-  vidfab::GenerateRequest r = base_request();
+SLOPFAB_TEST(pipeline_plan_still_image) {
+  slopfab::GenerateRequest r = base_request();
   r.aspect_w = 1;
   r.aspect_h = 1;
   r.num_frames = 1;  // Invalid for video, deliberately irrelevant for a still.
   r.still_image = true;
-  const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
+  const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
 
   CHECK(p.aligned_frames == 1);
   CHECK_NEAR(p.duration_seconds, 1.0 / 24.0, 1e-12);
@@ -207,7 +207,7 @@ VIDFAB_TEST(pipeline_plan_still_image) {
   CHECK(p.layout.num_audio_rows == 0);
   CHECK(p.sequence_length_without_text() == 576);
 
-  const std::string description = vidfab::describe_plan(r, p);
+  const std::string description = slopfab::describe_plan(r, p);
   CHECK(description.find("still image") != std::string::npos);
   CHECK(description.find("1 output") != std::string::npos);
 
@@ -217,16 +217,16 @@ VIDFAB_TEST(pipeline_plan_still_image) {
   CHECK(rejects_frame_count(r.num_frames));
 }
 
-VIDFAB_TEST(pipeline_plan_explicit_resolution) {
+SLOPFAB_TEST(pipeline_plan_explicit_resolution) {
   // The property the whole flag rests on: naming the canvas the default
   // already produces must reproduce the default plan exactly. If this drifts,
   // adding the option moved the default for everyone who never passed it.
-  const vidfab::GeneratePlan derived = vidfab::resolve_plan(base_request());
+  const slopfab::GeneratePlan derived = slopfab::resolve_plan(base_request());
 
-  vidfab::GenerateRequest named = base_request();
+  slopfab::GenerateRequest named = base_request();
   named.canvas_width = 1344;
   named.canvas_height = 768;
-  const vidfab::GeneratePlan explicit_plan = vidfab::resolve_plan(named);
+  const slopfab::GeneratePlan explicit_plan = slopfab::resolve_plan(named);
 
   CHECK(explicit_plan.canvas_width == derived.canvas_width);
   CHECK(explicit_plan.canvas_height == derived.canvas_height);
@@ -236,59 +236,59 @@ VIDFAB_TEST(pipeline_plan_explicit_resolution) {
 
   // An explicit canvas wins over the aspect rather than being reconciled with
   // it — the two disagree here on purpose, and the canvas is what survives.
-  vidfab::GenerateRequest both = base_request();
+  slopfab::GenerateRequest both = base_request();
   both.aspect_w = 1;
   both.aspect_h = 1;
   both.canvas_width = 1024;
   both.canvas_height = 512;
-  const vidfab::GeneratePlan p = vidfab::resolve_plan(both);
+  const slopfab::GeneratePlan p = slopfab::resolve_plan(both);
   CHECK(p.canvas_width == 1024 && p.canvas_height == 512);
   CHECK(p.layout.latent_width == 64 && p.layout.latent_height == 32);
 
   // One axis alone is not an explicit canvas, so it falls back to the aspect
   // rather than silently generating a 1344x0 plan.
-  vidfab::GenerateRequest half = base_request();
+  slopfab::GenerateRequest half = base_request();
   half.canvas_width = 1024;
-  const vidfab::GeneratePlan fell_back = vidfab::resolve_plan(half);
+  const slopfab::GeneratePlan fell_back = slopfab::resolve_plan(half);
   CHECK(fell_back.canvas_width == 1344 && fell_back.canvas_height == 768);
 
   // Over the trained area is allowed here and refused nowhere — the warning
   // lives in the CLI, and the plan resolves so a caller can see the cost.
-  vidfab::GenerateRequest big = base_request();
+  slopfab::GenerateRequest big = base_request();
   big.canvas_width = 1920;
   big.canvas_height = 1088;
-  const vidfab::GeneratePlan large = vidfab::resolve_plan(big);
+  const slopfab::GeneratePlan large = slopfab::resolve_plan(big);
   CHECK(large.layout.total_rows() > derived.layout.total_rows());
 
   // A canvas off the 32-grid is rejected, not rounded.
-  CHECK(::vidfab::test::throws([] {
-    vidfab::GenerateRequest r;
+  CHECK(::slopfab::test::throws([] {
+    slopfab::GenerateRequest r;
     r.canvas_width = 1350;
     r.canvas_height = 768;
-    vidfab::resolve_plan(r);
+    slopfab::resolve_plan(r);
   }));
 }
 
-VIDFAB_TEST(pipeline_plan_rejects_bad_requests) {
+SLOPFAB_TEST(pipeline_plan_rejects_bad_requests) {
   // A one-point grid has no model evaluation at all.
-  CHECK(::vidfab::test::throws([] {
-    vidfab::GenerateRequest r;
+  CHECK(::slopfab::test::throws([] {
+    slopfab::GenerateRequest r;
     r.num_inference_steps = 1;
-    vidfab::resolve_plan(r);
+    slopfab::resolve_plan(r);
   }));
 
   // Outside 1:4 .. 4:1.
-  CHECK(::vidfab::test::throws([] {
-    vidfab::GenerateRequest r;
+  CHECK(::slopfab::test::throws([] {
+    slopfab::GenerateRequest r;
     r.aspect_w = 5;
     r.aspect_h = 1;
-    vidfab::resolve_plan(r);
+    slopfab::resolve_plan(r);
   }));
 
-  CHECK(::vidfab::test::throws([] {
-    vidfab::GenerateRequest r;
+  CHECK(::slopfab::test::throws([] {
+    slopfab::GenerateRequest r;
     r.num_frames = 0;
-    vidfab::resolve_plan(r);
+    slopfab::resolve_plan(r);
   }));
 
   // Too few frames to decode. `F = 5k + 2` and the video decoder needs 7-token
@@ -306,23 +306,23 @@ VIDFAB_TEST(pipeline_plan_rejects_bad_requests) {
   CHECK(!rejects_frame_count(6));
   CHECK(!rejects_frame_count(21));
   CHECK(!rejects_frame_count(22));
-  vidfab::GenerateRequest ok;
+  slopfab::GenerateRequest ok;
   ok.num_frames = 6;
-  const vidfab::GeneratePlan p = vidfab::resolve_plan(ok);
+  const slopfab::GeneratePlan p = slopfab::resolve_plan(ok);
   CHECK(p.aligned_frames == 22);
   CHECK(p.layout.num_latent_frames == 7);
 }
 
-VIDFAB_TEST(pipeline_schedules_stay_paired) {
+SLOPFAB_TEST(pipeline_schedules_stay_paired) {
   // The denoise loop zips the video and audio timestep lists while iterating
   // the video one, so a length divergence caused by unique_consecutive
   // collapsing the two shifted grids differently would silently truncate the
   // run. resolve_plan asserts they match; check it holds across the practical
   // range rather than only at the default.
   for (int steps = 2; steps <= 120; ++steps) {
-    vidfab::GenerateRequest r = base_request();
+    slopfab::GenerateRequest r = base_request();
     r.num_inference_steps = steps;
-    const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
+    const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
     CHECK_MSG(p.video_timesteps.size() == p.audio_timesteps.size(),
               "steps=%d: video %zu vs audio %zu timesteps", steps, p.video_timesteps.size(),
               p.audio_timesteps.size());
@@ -335,18 +335,18 @@ VIDFAB_TEST(pipeline_schedules_stay_paired) {
 // everything that reconstruction needs and that doing so reproduces the plan's
 // own grids exactly — not nearly, exactly, because the sample is bit-identical
 // only if the loop steps the identical sigmas.
-VIDFAB_TEST(pipeline_plan_carries_its_schedule_inputs) {
+SLOPFAB_TEST(pipeline_plan_carries_its_schedule_inputs) {
   for (int steps : {2, 7, 29, 50, 120}) {
-    vidfab::GenerateRequest r = base_request();
+    slopfab::GenerateRequest r = base_request();
     r.num_inference_steps = steps;
-    const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
+    const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
 
     CHECK(p.num_inference_steps == steps);
     CHECK_NEAR(p.video_sigma_shift, 12.0, 0.0);
     CHECK_NEAR(p.audio_sigma_shift, 3.0, 0.0);
 
-    vidfab::sampler::FlowScheduler video(p.video_sigma_shift);
-    vidfab::sampler::FlowScheduler audio(p.audio_sigma_shift);
+    slopfab::sampler::FlowScheduler video(p.video_sigma_shift);
+    slopfab::sampler::FlowScheduler audio(p.audio_sigma_shift);
     video.set_timesteps(p.num_inference_steps);
     audio.set_timesteps(p.num_inference_steps);
 
@@ -358,15 +358,15 @@ VIDFAB_TEST(pipeline_plan_carries_its_schedule_inputs) {
 
   // A plan that never went through resolve_plan still names the shipped shifts
   // rather than zero, so the defaults cannot quietly become shift-free.
-  const vidfab::GeneratePlan fresh;
-  CHECK_NEAR(fresh.video_sigma_shift, vidfab::kVideoSigmaShift, 0.0);
-  CHECK_NEAR(fresh.audio_sigma_shift, vidfab::kAudioSigmaShift, 0.0);
+  const slopfab::GeneratePlan fresh;
+  CHECK_NEAR(fresh.video_sigma_shift, slopfab::kVideoSigmaShift, 0.0);
+  CHECK_NEAR(fresh.audio_sigma_shift, slopfab::kAudioSigmaShift, 0.0);
 }
 
-VIDFAB_TEST(pipeline_describe_plan) {
-  const vidfab::GenerateRequest r = base_request();
-  const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
-  const std::string text = vidfab::describe_plan(r, p);
+SLOPFAB_TEST(pipeline_describe_plan) {
+  const slopfab::GenerateRequest r = base_request();
+  const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
+  const std::string text = slopfab::describe_plan(r, p);
   CHECK(text.find("768 x 1344") != std::string::npos);
   CHECK(text.find("37710") != std::string::npos);
   CHECK(text.find("49 model evaluations") != std::string::npos);
@@ -375,30 +375,30 @@ VIDFAB_TEST(pipeline_describe_plan) {
   // produced it. The grid the header prints and the grid the loop integrates
   // have to be the same object, and a request field read here is the one way
   // back to two of them.
-  vidfab::GeneratePlan renumbered = p;
+  slopfab::GeneratePlan renumbered = p;
   renumbered.num_inference_steps = 7;
-  const std::string retold = vidfab::describe_plan(r, renumbered);
+  const std::string retold = slopfab::describe_plan(r, renumbered);
   CHECK(retold.find("7 grid points") != std::string::npos);
   CHECK(retold.find("50 grid points") == std::string::npos);
 }
 
-VIDFAB_TEST(pipeline_reference_image_limit) {
-  vidfab::GenerateRequest r = base_request();
+SLOPFAB_TEST(pipeline_reference_image_limit) {
+  slopfab::GenerateRequest r = base_request();
   r.reference_image_paths = {"subject.png", "style.png", "scene.png"};
-  const vidfab::GeneratePlan p = vidfab::resolve_plan(r);
-  CHECK(vidfab::describe_plan(r, p).find("3 (Ref2VA, ordered)") != std::string::npos);
+  const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
+  CHECK(slopfab::describe_plan(r, p).find("3 (Ref2VA, ordered)") != std::string::npos);
   CHECK(r.reference_image_paths[0] == "subject.png");
   CHECK(r.reference_image_paths[1] == "style.png");
   CHECK(r.reference_image_paths[2] == "scene.png");
 
   // Nine is accepted; the tenth is rejected before any image I/O or GPU work.
   r.reference_image_paths.assign(9, "image.png");
-  CHECK(vidfab::describe_plan(r, vidfab::resolve_plan(r)).find("9 (Ref2VA, ordered)") !=
+  CHECK(slopfab::describe_plan(r, slopfab::resolve_plan(r)).find("9 (Ref2VA, ordered)") !=
         std::string::npos);
   r.reference_image_paths.push_back("too-many.png");
   bool rejected = false;
   try {
-    vidfab::resolve_plan(r);
+    slopfab::resolve_plan(r);
   } catch (const std::exception&) {
     rejected = true;
   }
@@ -409,55 +409,55 @@ VIDFAB_TEST(pipeline_reference_image_limit) {
 // overwritten in place between two `--reuse-models` generations must not be
 // served from the first image's cache entry. Before this, both runs produced
 // the same key and the second silently rendered the first image's conditioning.
-VIDFAB_TEST(conditioning_cache_key_detects_overwritten_reference_image) {
-  const std::filesystem::path ref = scratch_path("vidfab_cachekey_ref.ppm");
+SLOPFAB_TEST(conditioning_cache_key_detects_overwritten_reference_image) {
+  const std::filesystem::path ref = scratch_path("slopfab_cachekey_ref.ppm");
 
-  vidfab::GenerateRequest r = base_request();
+  slopfab::GenerateRequest r = base_request();
   r.text_encoder_path = "encoder.safetensors";
   r.tokenizer_path = "tokenizer.json";
   r.reference_image_paths = {ref.string()};
 
   write_file(ref, "first image bytes", 120);
-  const std::string before = vidfab::conditioning_cache_key(r);
+  const std::string before = slopfab::conditioning_cache_key(r);
 
   // Same path, same request, different content. Different size *and* a
   // different mtime, which is what any real overwrite produces.
   write_file(ref, "second image bytes, a different length entirely", 0);
-  const std::string after = vidfab::conditioning_cache_key(r);
+  const std::string after = slopfab::conditioning_cache_key(r);
   CHECK(before != after);
 
   // Rewriting the identical bytes at a later mtime is the *same* image, and a
   // content-keyed entry says so rather than throwing away a valid encode. This
   // is the direction stat keying gets wrong in the harmless way.
   write_file(ref, "second image bytes, a different length entirely", 60);
-  const std::string rewritten = vidfab::conditioning_cache_key(r);
+  const std::string rewritten = slopfab::conditioning_cache_key(r);
   CHECK(rewritten == after);
 
   // And nothing else moved: asking twice with the file untouched is a hit.
-  CHECK(vidfab::conditioning_cache_key(r) == rewritten);
+  CHECK(slopfab::conditioning_cache_key(r) == rewritten);
 
   // The reference key sees the same overwrite, because the VAE keyframe encode
   // is cached against it.
   r.video_vae_path = "video_vae.safetensors";
-  const std::string ref_key = vidfab::reference_cache_key(r);
+  const std::string ref_key = slopfab::reference_cache_key(r);
   write_file(ref, "third", 0);
-  CHECK(vidfab::reference_cache_key(r) != ref_key);
+  CHECK(slopfab::reference_cache_key(r) != ref_key);
 
   // Deleting the file is a change too, rather than "unchanged since last time".
-  const std::string present = vidfab::conditioning_cache_key(r);
+  const std::string present = slopfab::conditioning_cache_key(r);
   std::filesystem::remove(ref);
-  CHECK(vidfab::conditioning_cache_key(r) != present);
+  CHECK(slopfab::conditioning_cache_key(r) != present);
 
   // Checkpoints keep the cheaper stat identity, and it is live: a rebuilt
   // encoder at the same path invalidates on mtime alone. Hashing 27 GB here
   // would cost more than everything the key protects.
-  const std::filesystem::path ckpt = scratch_path("vidfab_cachekey_ckpt.bin");
+  const std::filesystem::path ckpt = scratch_path("slopfab_cachekey_ckpt.bin");
   r.reference_image_paths.clear();
   r.text_encoder_path = ckpt.string();
   write_file(ckpt, "weights", 300);
-  const std::string old_ckpt = vidfab::conditioning_cache_key(r);
+  const std::string old_ckpt = slopfab::conditioning_cache_key(r);
   write_file(ckpt, "weights", 0);
-  CHECK(vidfab::conditioning_cache_key(r) != old_ckpt);
+  CHECK(slopfab::conditioning_cache_key(r) != old_ckpt);
   std::filesystem::remove(ckpt);
 }
 
@@ -467,18 +467,18 @@ VIDFAB_TEST(conditioning_cache_key_detects_overwritten_reference_image) {
 // put back exactly, which is what `copy`, `robocopy /COPY:T`, `xcopy /K`,
 // rsync --times and a good deal of image tooling actually do. Only hashing the
 // contents distinguishes these two files.
-VIDFAB_TEST(reference_key_detects_overwrite_that_preserves_size_and_mtime) {
-  const std::filesystem::path ref = scratch_path("vidfab_cachekey_samestamp.ppm");
+SLOPFAB_TEST(reference_key_detects_overwrite_that_preserves_size_and_mtime) {
+  const std::filesystem::path ref = scratch_path("slopfab_cachekey_samestamp.ppm");
 
-  vidfab::GenerateRequest r = base_request();
+  slopfab::GenerateRequest r = base_request();
   r.video_vae_path = "video_vae.safetensors";
   r.text_encoder_path = "encoder.safetensors";
   r.reference_image_paths = {ref.string()};
 
   write_file(ref, "PPM-payload-version-one", 90);
   const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(ref);
-  const std::string before = vidfab::conditioning_cache_key(r);
-  const std::string before_ref = vidfab::reference_cache_key(r);
+  const std::string before = slopfab::conditioning_cache_key(r);
+  const std::string before_ref = slopfab::reference_cache_key(r);
 
   // Same byte count, different bytes, and the timestamp restored to the exact
   // value it had — so (size, mtime) is identical across the overwrite.
@@ -494,19 +494,19 @@ VIDFAB_TEST(reference_key_detects_overwrite_that_preserves_size_and_mtime) {
   CHECK(std::filesystem::last_write_time(ref) == stamp);
   CHECK(std::filesystem::file_size(ref) == std::string("PPM-payload-version-one").size());
 
-  CHECK(vidfab::conditioning_cache_key(r) != before);
-  CHECK(vidfab::reference_cache_key(r) != before_ref);
+  CHECK(slopfab::conditioning_cache_key(r) != before);
+  CHECK(slopfab::reference_cache_key(r) != before_ref);
 
   // And it is still stable when nothing moves at all, so the hash has not just
   // made every lookup a miss.
-  const std::string settled = vidfab::conditioning_cache_key(r);
-  CHECK(vidfab::conditioning_cache_key(r) == settled);
-  CHECK(vidfab::reference_cache_key(r) == vidfab::reference_cache_key(r));
+  const std::string settled = slopfab::conditioning_cache_key(r);
+  CHECK(slopfab::conditioning_cache_key(r) == settled);
+  CHECK(slopfab::reference_cache_key(r) == slopfab::reference_cache_key(r));
 
   // A byte-for-byte identical rewrite at a different mtime is the same image,
   // and content keying says so — which stat keying could not.
   write_file(ref, "PPM-payload-version-two", 5);
-  CHECK(vidfab::conditioning_cache_key(r) == settled);
+  CHECK(slopfab::conditioning_cache_key(r) == settled);
 
   std::filesystem::remove(ref);
 }
@@ -514,57 +514,57 @@ VIDFAB_TEST(reference_key_detects_overwrite_that_preserves_size_and_mtime) {
 // Sharing one hash between the two keys has to be a pure saving: the keys it
 // produces must be the ones the self-hashing form produces, or a run that took
 // the fast path would miss a cache the slow path would have hit.
-VIDFAB_TEST(shared_reference_identities_agree_with_hashing_twice) {
-  const std::filesystem::path one = scratch_path("vidfab_cachekey_share1.ppm");
-  const std::filesystem::path two = scratch_path("vidfab_cachekey_share2.ppm");
+SLOPFAB_TEST(shared_reference_identities_agree_with_hashing_twice) {
+  const std::filesystem::path one = scratch_path("slopfab_cachekey_share1.ppm");
+  const std::filesystem::path two = scratch_path("slopfab_cachekey_share2.ppm");
   write_file(one, "first reference payload", 40);
   write_file(two, "second reference payload, longer", 40);
 
-  vidfab::GenerateRequest r = base_request();
+  slopfab::GenerateRequest r = base_request();
   r.text_encoder_path = "encoder.safetensors";
   r.video_vae_path = "video_vae.safetensors";
   r.reference_image_paths = {one.string(), two.string()};
 
-  const std::vector<std::string> identities = vidfab::reference_image_identities(r);
+  const std::vector<std::string> identities = slopfab::reference_image_identities(r);
   CHECK(identities.size() == 2);
   CHECK(identities[0] != identities[1]);
 
-  CHECK(vidfab::conditioning_cache_key(r, identities) == vidfab::conditioning_cache_key(r));
-  CHECK(vidfab::reference_cache_key(r, identities) == vidfab::reference_cache_key(r));
+  CHECK(slopfab::conditioning_cache_key(r, identities) == slopfab::conditioning_cache_key(r));
+  CHECK(slopfab::reference_cache_key(r, identities) == slopfab::reference_cache_key(r));
 
   // A list that does not match the request falls back to hashing rather than
   // keying off a stale snapshot — the failure mode that would otherwise reuse
   // the wrong image silently, which is the whole bug class this file guards.
   const std::vector<std::string> truncated{identities[0]};
-  CHECK(vidfab::conditioning_cache_key(r, truncated) == vidfab::conditioning_cache_key(r));
-  CHECK(vidfab::reference_cache_key(r, truncated) == vidfab::reference_cache_key(r));
-  CHECK(vidfab::conditioning_cache_key(r, {}) == vidfab::conditioning_cache_key(r));
+  CHECK(slopfab::conditioning_cache_key(r, truncated) == slopfab::conditioning_cache_key(r));
+  CHECK(slopfab::reference_cache_key(r, truncated) == slopfab::reference_cache_key(r));
+  CHECK(slopfab::conditioning_cache_key(r, {}) == slopfab::conditioning_cache_key(r));
 
   // The empty case is not a special case: no references, and both forms agree.
-  vidfab::GenerateRequest text_only = base_request();
+  slopfab::GenerateRequest text_only = base_request();
   text_only.text_encoder_path = "encoder.safetensors";
-  CHECK(vidfab::reference_image_identities(text_only).empty());
-  CHECK(vidfab::conditioning_cache_key(text_only, {}) ==
-        vidfab::conditioning_cache_key(text_only));
+  CHECK(slopfab::reference_image_identities(text_only).empty());
+  CHECK(slopfab::conditioning_cache_key(text_only, {}) ==
+        slopfab::conditioning_cache_key(text_only));
 
   // And the shared snapshot still tracks content: rehashing after an overwrite
   // gives different identities and therefore different keys.
-  const std::string before = vidfab::conditioning_cache_key(r, identities);
+  const std::string before = slopfab::conditioning_cache_key(r, identities);
   write_file(one, "first reference payload, edited", 40);
-  const std::vector<std::string> rehashed = vidfab::reference_image_identities(r);
-  CHECK(vidfab::conditioning_cache_key(r, rehashed) != before);
+  const std::vector<std::string> rehashed = slopfab::reference_image_identities(r);
+  CHECK(slopfab::conditioning_cache_key(r, rehashed) != before);
 
   std::filesystem::remove(one);
   std::filesystem::remove(two);
 }
 
-VIDFAB_TEST(cache_keys_separate_their_inputs) {
-  const std::filesystem::path a = scratch_path("vidfab_cachekey_a.bin");
-  const std::filesystem::path b = scratch_path("vidfab_cachekey_b.bin");
+SLOPFAB_TEST(cache_keys_separate_their_inputs) {
+  const std::filesystem::path a = scratch_path("slopfab_cachekey_a.bin");
+  const std::filesystem::path b = scratch_path("slopfab_cachekey_b.bin");
   write_file(a, "aaaa", 60);
   write_file(b, "aaaa", 60);
 
-  vidfab::GenerateRequest r = base_request();
+  slopfab::GenerateRequest r = base_request();
   r.text_encoder_path = a.string();
   r.tokenizer_path = a.string();
   r.video_vae_path = a.string();
@@ -572,58 +572,58 @@ VIDFAB_TEST(cache_keys_separate_their_inputs) {
 
   // Two files with identical size and mtime still differ, because the path is
   // part of the identity.
-  vidfab::GenerateRequest other = r;
+  slopfab::GenerateRequest other = r;
   other.reference_image_paths = {b.string()};
-  CHECK(vidfab::conditioning_cache_key(r) != vidfab::conditioning_cache_key(other));
+  CHECK(slopfab::conditioning_cache_key(r) != slopfab::conditioning_cache_key(other));
 
   // The prompt drives conditioning and nothing else. A prompt sweep must not
   // invalidate the reference encode or the tokenizer.
-  vidfab::GenerateRequest reworded = r;
+  slopfab::GenerateRequest reworded = r;
   reworded.prompt = r.prompt + " at night";
-  CHECK(vidfab::conditioning_cache_key(reworded) != vidfab::conditioning_cache_key(r));
-  CHECK(vidfab::reference_cache_key(reworded) == vidfab::reference_cache_key(r));
-  CHECK(vidfab::tokenizer_cache_key(reworded) == vidfab::tokenizer_cache_key(r));
+  CHECK(slopfab::conditioning_cache_key(reworded) != slopfab::conditioning_cache_key(r));
+  CHECK(slopfab::reference_cache_key(reworded) == slopfab::reference_cache_key(r));
+  CHECK(slopfab::tokenizer_cache_key(reworded) == slopfab::tokenizer_cache_key(r));
 
   // The video VAE is an input to the reference encode but not to conditioning.
-  vidfab::GenerateRequest other_vae = r;
+  slopfab::GenerateRequest other_vae = r;
   other_vae.video_vae_path = b.string();
-  CHECK(vidfab::reference_cache_key(other_vae) != vidfab::reference_cache_key(r));
-  CHECK(vidfab::conditioning_cache_key(other_vae) == vidfab::conditioning_cache_key(r));
+  CHECK(slopfab::reference_cache_key(other_vae) != slopfab::reference_cache_key(r));
+  CHECK(slopfab::conditioning_cache_key(other_vae) == slopfab::conditioning_cache_key(r));
 
   // A cached embedding never crosses conditioner implementation or arithmetic
   // authority, even when the exact implementations currently agree bytewise.
-  const auto cuda_shipped = vidfab::ConditionerAuthority::kCudaShipped;
-  const auto cuda_exact = vidfab::ConditionerAuthority::kCudaExact;
-  const auto vulkan_exact = vidfab::ConditionerAuthority::kVulkanExact;
-  CHECK(vidfab::conditioning_cache_key_for_authority(r, cuda_shipped) ==
-        vidfab::conditioning_cache_key_for_authority(r, cuda_shipped));
-  CHECK(vidfab::conditioning_cache_key_for_authority(r, cuda_shipped) !=
-        vidfab::conditioning_cache_key_for_authority(r, cuda_exact));
-  CHECK(vidfab::conditioning_cache_key_for_authority(r, cuda_exact) !=
-        vidfab::conditioning_cache_key_for_authority(r, vulkan_exact));
-  CHECK(vidfab::conditioning_cache_key_for_authority(r, cuda_shipped) !=
-        vidfab::conditioning_cache_key_for_authority(r, vulkan_exact));
+  const auto cuda_shipped = slopfab::ConditionerAuthority::kCudaShipped;
+  const auto cuda_exact = slopfab::ConditionerAuthority::kCudaExact;
+  const auto vulkan_exact = slopfab::ConditionerAuthority::kVulkanExact;
+  CHECK(slopfab::conditioning_cache_key_for_authority(r, cuda_shipped) ==
+        slopfab::conditioning_cache_key_for_authority(r, cuda_shipped));
+  CHECK(slopfab::conditioning_cache_key_for_authority(r, cuda_shipped) !=
+        slopfab::conditioning_cache_key_for_authority(r, cuda_exact));
+  CHECK(slopfab::conditioning_cache_key_for_authority(r, cuda_exact) !=
+        slopfab::conditioning_cache_key_for_authority(r, vulkan_exact));
+  CHECK(slopfab::conditioning_cache_key_for_authority(r, cuda_shipped) !=
+        slopfab::conditioning_cache_key_for_authority(r, vulkan_exact));
 
   // Reference count is part of both: dropping one must not leave a prefix that
   // compares equal to the longer list.
-  vidfab::GenerateRequest two = r;
+  slopfab::GenerateRequest two = r;
   two.reference_image_paths = {a.string(), b.string()};
-  CHECK(vidfab::reference_cache_key(two) != vidfab::reference_cache_key(r));
-  CHECK(vidfab::conditioning_cache_key(two) != vidfab::conditioning_cache_key(r));
+  CHECK(slopfab::reference_cache_key(two) != slopfab::reference_cache_key(r));
+  CHECK(slopfab::conditioning_cache_key(two) != slopfab::conditioning_cache_key(r));
 
   // An empty tokenizer path is the embedded tokenizer, which cannot go stale
   // and must key stably rather than looking like a missing file each time.
-  vidfab::GenerateRequest embedded = r;
+  slopfab::GenerateRequest embedded = r;
   embedded.tokenizer_path.clear();
-  CHECK(vidfab::tokenizer_cache_key(embedded) == vidfab::tokenizer_cache_key(embedded));
-  CHECK(vidfab::tokenizer_cache_key(embedded) != vidfab::tokenizer_cache_key(r));
+  CHECK(slopfab::tokenizer_cache_key(embedded) == slopfab::tokenizer_cache_key(embedded));
+  CHECK(slopfab::tokenizer_cache_key(embedded) != slopfab::tokenizer_cache_key(r));
 
   std::filesystem::remove(a);
   std::filesystem::remove(b);
 }
 
-VIDFAB_TEST(sol_schedule_ranges_and_cadence) {
-  vidfab::SolSchedule s;
+SLOPFAB_TEST(sol_schedule_ranges_and_cadence) {
+  slopfab::SolSchedule s;
   CHECK(!s.active(9,2));
   CHECK(!s.active(10,1));
   CHECK(s.active(10,2));
@@ -638,36 +638,36 @@ VIDFAB_TEST(sol_schedule_ranges_and_cadence) {
   CHECK(!s.active(12,11));
 }
 
-VIDFAB_TEST(cuda_toolkit_selection) {
-  const std::vector<vidfab::cuda::CudaToolkitCandidate> both = {
+SLOPFAB_TEST(cuda_toolkit_selection) {
+  const std::vector<slopfab::cuda::CudaToolkitCandidate> both = {
       {13, L"C:\\CUDA\\v13\\bin\\x64"},
       {12, L"C:\\CUDA\\v12\\bin"},
   };
-  const auto* preferred = vidfab::cuda::select_cuda_toolkit(L"auto", both);
+  const auto* preferred = slopfab::cuda::select_cuda_toolkit(L"auto", both);
   CHECK(preferred != nullptr && preferred->major == 13);
 
-  std::vector<vidfab::cuda::CudaToolkitCandidate> fallback = both;
+  std::vector<slopfab::cuda::CudaToolkitCandidate> fallback = both;
   fallback[0].bin.clear();
-  const auto* selected_fallback = vidfab::cuda::select_cuda_toolkit(L"auto", fallback);
+  const auto* selected_fallback = slopfab::cuda::select_cuda_toolkit(L"auto", fallback);
   CHECK(selected_fallback != nullptr && selected_fallback->major == 12);
 
-  CHECK(vidfab::cuda::cuda_version_request(L"", L"12") == L"12");
-  CHECK(vidfab::cuda::cuda_version_request(L"13", L"12") == L"13");
-  const auto* environment_override = vidfab::cuda::select_cuda_toolkit(
-      vidfab::cuda::cuda_version_request(L"", L"12"), both);
+  CHECK(slopfab::cuda::cuda_version_request(L"", L"12") == L"12");
+  CHECK(slopfab::cuda::cuda_version_request(L"13", L"12") == L"13");
+  const auto* environment_override = slopfab::cuda::select_cuda_toolkit(
+      slopfab::cuda::cuda_version_request(L"", L"12"), both);
   CHECK(environment_override != nullptr && environment_override->major == 12);
 
-  CHECK(vidfab::cuda::cuda_version_matches_linked_toolkit(L"auto", 12));
-  CHECK(vidfab::cuda::cuda_version_matches_linked_toolkit(L"12", 12));
-  CHECK(!vidfab::cuda::cuda_version_matches_linked_toolkit(L"13", 12));
+  CHECK(slopfab::cuda::cuda_version_matches_linked_toolkit(L"auto", 12));
+  CHECK(slopfab::cuda::cuda_version_matches_linked_toolkit(L"12", 12));
+  CHECK(!slopfab::cuda::cuda_version_matches_linked_toolkit(L"13", 12));
 
-  CHECK(!vidfab::cuda::cuda_driver_supports_toolkit(12999, 13));
-  CHECK(vidfab::cuda::cuda_driver_supports_toolkit(12999, 12));
-  CHECK(vidfab::cuda::cuda_driver_supports_toolkit(13000, 13));
-  const auto* driver_fallback = vidfab::cuda::select_cuda_toolkit_for_driver(
+  CHECK(!slopfab::cuda::cuda_driver_supports_toolkit(12999, 13));
+  CHECK(slopfab::cuda::cuda_driver_supports_toolkit(12999, 12));
+  CHECK(slopfab::cuda::cuda_driver_supports_toolkit(13000, 13));
+  const auto* driver_fallback = slopfab::cuda::select_cuda_toolkit_for_driver(
       L"auto", both, 12999);
   CHECK(driver_fallback != nullptr && driver_fallback->major == 12);
-  CHECK(vidfab::cuda::select_cuda_toolkit_for_driver(L"13", both, 12999) ==
+  CHECK(slopfab::cuda::select_cuda_toolkit_for_driver(L"13", both, 12999) ==
         nullptr);
 }
 

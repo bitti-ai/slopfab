@@ -10,10 +10,10 @@
 #include <thread>
 #include <vector>
 
-#include "vidfab/vae/tile_merge.h"
-#include "vidfab/vae/vit_decoder.h"
+#include "slopfab/vae/tile_merge.h"
+#include "slopfab/vae/vit_decoder.h"
 
-namespace vidfab::vae {
+namespace slopfab::vae {
 
 const std::vector<float>& default_video_latents_mean() {
   static const std::vector<float> values = {
@@ -36,7 +36,7 @@ const std::vector<float>& default_video_latents_std() {
 }
 namespace {
 
-// Scheduling is backend-neutral and lives in vidfab_core. Keep the phase
+// Scheduling is backend-neutral and lives in slopfab_core. Keep the phase
 // boundaries explicit without importing a CUDA profiler into the common
 // library; a future generic observer can replace this no-op without changing
 // the decode arithmetic or backend interface.
@@ -577,4 +577,4 @@ DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat,
                       latents_std, schedule);
 }
 
-}  // namespace vidfab::vae
+}  // namespace slopfab::vae

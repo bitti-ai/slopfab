@@ -8,8 +8,8 @@
 #include <fstream>
 #include <string>
 
-#include "vidfab/cuda/cublas_dispatch.h"
-#include "vidfab/cuda/device.h"
+#include "slopfab/cuda/cublas_dispatch.h"
+#include "slopfab/cuda/device.h"
 
 int main(int argc, char** argv) {
   if (argc != 2) return 2;
@@ -22,8 +22,8 @@ int main(int argc, char** argv) {
 #if defined(_WIN32)
   if (fallback || broken_explicit) {
     fake_root = std::filesystem::temp_directory_path() /
-                (fallback ? "vidfab-broken-cuda13-auto"
-                          : "vidfab-broken-cuda13-explicit");
+                (fallback ? "slopfab-broken-cuda13-auto"
+                          : "slopfab-broken-cuda13-explicit");
     const std::filesystem::path bin = fake_root / "bin" / "x64";
     std::filesystem::create_directories(bin);
     if (fallback) {
@@ -44,21 +44,21 @@ int main(int argc, char** argv) {
                                  std::filesystem::copy_options::overwrite_existing);
     }
     _wputenv_s(L"CUDA_PATH_V13_9", fake_root.c_str());
-    _putenv_s("VIDFAB_CUDA_VERSION", fallback ? "auto" : "13");
+    _putenv_s("SLOPFAB_CUDA_VERSION", fallback ? "auto" : "13");
   }
 #endif
   try {
     cublasHandle_t handle = nullptr;
-    const cublasStatus_t created = vidfab::cuda::cublas_create(&handle);
+    const cublasStatus_t created = slopfab::cuda::cublas_create(&handle);
     if (broken_explicit) {
       if (created == CUBLAS_STATUS_SUCCESS && handle != nullptr)
-        vidfab::cuda::cublas_destroy(handle);
+        slopfab::cuda::cublas_destroy(handle);
       if (!fake_root.empty()) std::filesystem::remove_all(fake_root);
       return 7;
     }
     if (created != CUBLAS_STATUS_SUCCESS) return 3;
-    if (vidfab::cuda::cublas_loaded_major() != expected) return 4;
-    const std::wstring path = vidfab::cuda::cublas_loaded_path();
+    if (slopfab::cuda::cublas_loaded_major() != expected) return 4;
+    const std::wstring path = slopfab::cuda::cublas_loaded_path();
     if (path.find(L"cublas64_" + std::to_wstring(expected) + L".dll") ==
         std::wstring::npos)
       return 5;
@@ -66,22 +66,22 @@ int main(int argc, char** argv) {
     float* a = nullptr;
     float* b = nullptr;
     float* c = nullptr;
-    VIDFAB_CUDA_CHECK(cudaMalloc(&a, sizeof(float)));
-    VIDFAB_CUDA_CHECK(cudaMalloc(&b, sizeof(float)));
-    VIDFAB_CUDA_CHECK(cudaMalloc(&c, sizeof(float)));
+    SLOPFAB_CUDA_CHECK(cudaMalloc(&a, sizeof(float)));
+    SLOPFAB_CUDA_CHECK(cudaMalloc(&b, sizeof(float)));
+    SLOPFAB_CUDA_CHECK(cudaMalloc(&c, sizeof(float)));
     const float ha = 2.0f, hb = 3.0f;
-    VIDFAB_CUDA_CHECK(cudaMemcpy(a, &ha, sizeof(float), cudaMemcpyHostToDevice));
-    VIDFAB_CUDA_CHECK(cudaMemcpy(b, &hb, sizeof(float), cudaMemcpyHostToDevice));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(a, &ha, sizeof(float), cudaMemcpyHostToDevice));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(b, &hb, sizeof(float), cudaMemcpyHostToDevice));
     const float alpha = 1.0f, beta = 0.0f;
-    const cublasStatus_t gemm = vidfab::cuda::cublas_sgemm(
+    const cublasStatus_t gemm = slopfab::cuda::cublas_sgemm(
         handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, 1, 1, &alpha, a, 1, b, 1,
         &beta, c, 1);
     float hc = 0.0f;
-    VIDFAB_CUDA_CHECK(cudaMemcpy(&hc, c, sizeof(float), cudaMemcpyDeviceToHost));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(&hc, c, sizeof(float), cudaMemcpyDeviceToHost));
     cudaFree(c);
     cudaFree(b);
     cudaFree(a);
-    vidfab::cuda::cublas_destroy(handle);
+    slopfab::cuda::cublas_destroy(handle);
     if (gemm != CUBLAS_STATUS_SUCCESS || std::fabs(hc - 6.0f) > 1.0e-6f) return 6;
     std::printf("CUDA %d cuBLAS loaded from %ls\n", expected, path.c_str());
     if (!fake_root.empty()) std::filesystem::remove_all(fake_root);
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
   } catch (const std::exception& error) {
     if (!fake_root.empty()) std::filesystem::remove_all(fake_root);
     if (broken_explicit &&
-        std::string(error.what()).find("vidfab-broken-cuda13-explicit") !=
+        std::string(error.what()).find("slopfab-broken-cuda13-explicit") !=
             std::string::npos)
       return 0;
     std::fprintf(stderr, "%s\n", error.what());

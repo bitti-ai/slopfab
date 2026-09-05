@@ -1,7 +1,7 @@
 // Host-side half of the Qwen3-VL conditioner: checkpoint validation, the layer
 // blob layout, the RoPE tables and the embedding gather. Nothing here touches
 // CUDA, which is what lets it be read and tested without a device — and what
-// lets `include/vidfab/text/encoder.h` stay free of CUDA types for host
+// lets `include/slopfab/text/encoder.h` stay free of CUDA types for host
 // translation units. The forward pass lives in src/cuda/encoder_kernels.cu.
 //
 // The validation is deliberately unforgiving. Every silent failure in
@@ -9,13 +9,13 @@
 // so shapes are the only thing a loader can check — and a checkpoint that
 // differs in any of them is not the one the spec describes.
 
-#include "vidfab/text/encoder.h"
+#include "slopfab/text/encoder.h"
 
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
 
-namespace vidfab::text {
+namespace slopfab::text {
 
 void require_reference_vision_support(const SafeTensors& checkpoint, size_t reference_count) {
   if (reference_count == 0) return;
@@ -41,7 +41,7 @@ namespace {
 
 constexpr int kConvRotGroup = 256;
 
-// Mirrors vidfab::cuda::kNVFP4BlockSize. Duplicated rather than included
+// Mirrors slopfab::cuda::kNVFP4BlockSize. Duplicated rather than included
 // because this file is compiled by the host compiler and linear.cuh drags in
 // cuBLAS; `encoder_kernels.cu` static_asserts the two agree.
 constexpr int64_t kNVFP4Block = 16;
@@ -568,4 +568,4 @@ void gather_embedding_rows(const TensorView& embed, const TensorView* weight_sca
   }
 }
 
-}  // namespace vidfab::text
+}  // namespace slopfab::text

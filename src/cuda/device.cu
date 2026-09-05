@@ -1,10 +1,10 @@
-#include "vidfab/cuda/device.h"
+#include "slopfab/cuda/device.h"
 
 #include <stdexcept>
 #include <string>
 #include <mutex>
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 
 void check(cudaError_t status, const char* expr, const char* file, int line) {
   if (status == cudaSuccess) return;
@@ -24,13 +24,13 @@ int device_count() {
   // No driver or no device is a legitimate state to report, not an error to
   // throw from: the CLI needs to print a helpful message instead.
   if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver) return 0;
-  VIDFAB_CUDA_CHECK(status);
+  SLOPFAB_CUDA_CHECK(status);
   return count;
 }
 
 DeviceInfo query_device(int index) {
   cudaDeviceProp props{};
-  VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&props, index));
+  SLOPFAB_CUDA_CHECK(cudaGetDeviceProperties(&props, index));
 
   DeviceInfo info;
   info.index = index;
@@ -50,19 +50,19 @@ DeviceInfo query_device(int index) {
   // Free memory is only meaningful for the current device, so query it after
   // switching; restore the previous device to avoid surprising the caller.
   int previous = 0;
-  VIDFAB_CUDA_CHECK(cudaGetDevice(&previous));
+  SLOPFAB_CUDA_CHECK(cudaGetDevice(&previous));
   if (cudaSetDevice(index) == cudaSuccess) {
     size_t free_bytes = 0;
     size_t total_bytes = 0;
     if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
       info.free_memory = free_bytes;
     }
-    VIDFAB_CUDA_CHECK(cudaSetDevice(previous));
+    SLOPFAB_CUDA_CHECK(cudaSetDevice(previous));
   }
   return info;
 }
 
-void set_device(int index) { VIDFAB_CUDA_CHECK(cudaSetDevice(index)); }
+void set_device(int index) { SLOPFAB_CUDA_CHECK(cudaSetDevice(index)); }
 
 int device_compute_capability(int index) {
   constexpr int kCachedDevices = 64;
@@ -71,12 +71,12 @@ int device_compute_capability(int index) {
   if (index < 0) throw std::out_of_range("CUDA device index must be non-negative");
   if (index >= kCachedDevices) {
     cudaDeviceProp properties{};
-    VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, index));
+    SLOPFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, index));
     return properties.major * 10 + properties.minor;
   }
   std::call_once(once[index], [index] {
     cudaDeviceProp properties{};
-    VIDFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, index));
+    SLOPFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, index));
     capabilities[index] = properties.major * 10 + properties.minor;
   });
   return capabilities[index];
@@ -84,14 +84,14 @@ int device_compute_capability(int index) {
 
 int current_device_compute_capability() {
   int device = 0;
-  VIDFAB_CUDA_CHECK(cudaGetDevice(&device));
+  SLOPFAB_CUDA_CHECK(cudaGetDevice(&device));
   return device_compute_capability(device);
 }
 
 Stream::Stream() {
   // Non-blocking: a default stream would implicitly synchronise against the
   // legacy NULL stream, silently serialising any future concurrent work.
-  VIDFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+  SLOPFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
 }
 
 Stream::~Stream() { destroy(); }
@@ -104,7 +104,7 @@ void Stream::destroy() {
 }
 
 void Stream::synchronize() const {
-  if (stream_ != nullptr) VIDFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
+  if (stream_ != nullptr) SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda

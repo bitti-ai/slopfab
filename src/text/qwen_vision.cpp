@@ -1,4 +1,4 @@
-#include "vidfab/text/qwen_vision.h"
+#include "slopfab/text/qwen_vision.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace vidfab::text {
+namespace slopfab::text {
 
 int qwen3vl_deepstack_slot(int text_decoder_layer) {
   return text_decoder_layer >= 0 && text_decoder_layer < 3 ? text_decoder_layer : -1;
@@ -332,4 +332,4 @@ std::vector<int32_t> qwen3vl_image_block(const std::vector<int32_t>& label_ids,
   return ids;
 }
 
-}  // namespace vidfab::text
+}  // namespace slopfab::text

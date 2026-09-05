@@ -1,4 +1,4 @@
-#include "vidfab/generate.h"
+#include "slopfab/generate.h"
 
 #include <algorithm>
 #include <chrono>
@@ -13,36 +13,36 @@
 #include <thread>
 #include <vector>
 
-#include "vidfab/audio/wav.h"
-#include "vidfab/image.h"
-#include "vidfab/cuda/profile.h"
-#include "vidfab/cuda/deterministic_attention.cuh"
-#include "vidfab/dit/denoise.h"
-#include "vidfab/dit/checkpoint.h"
-#include "vidfab/dit/packing.h"
-#include "vidfab/dit/ref2va.h"
-#include "vidfab/dit/transformer.h"
-#include "vidfab/text/encoder.h"
-#include "vidfab/text/tokenizer.h"
-#include "vidfab/sampler/scheduler.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/sampler/noise.h"
-#include "vidfab/tensor_convert.h"
-#include "vidfab/vae/audio_decoder.h"
-#include "vidfab/vae/vit_decoder.h"
-#include "vidfab/vae/keyframe_encoder.h"
-#include "vidfab/video/mux.h"
-#include "vidfab/video/y4m.h"
-#if VIDFAB_WITH_VULKAN
-#include "vidfab/vulkan/audio_decoder.h"
-#include "vidfab/vulkan/dit_denoise.h"
-#include "vidfab/vulkan/keyframe_encoder.h"
-#include "vidfab/vulkan/text_encoder.h"
-#include "vidfab/vulkan/vae_decoder.h"
+#include "slopfab/audio/wav.h"
+#include "slopfab/image.h"
+#include "slopfab/cuda/profile.h"
+#include "slopfab/cuda/deterministic_attention.cuh"
+#include "slopfab/dit/denoise.h"
+#include "slopfab/dit/checkpoint.h"
+#include "slopfab/dit/packing.h"
+#include "slopfab/dit/ref2va.h"
+#include "slopfab/dit/transformer.h"
+#include "slopfab/text/encoder.h"
+#include "slopfab/text/tokenizer.h"
+#include "slopfab/sampler/scheduler.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/sampler/noise.h"
+#include "slopfab/tensor_convert.h"
+#include "slopfab/vae/audio_decoder.h"
+#include "slopfab/vae/vit_decoder.h"
+#include "slopfab/vae/keyframe_encoder.h"
+#include "slopfab/video/mux.h"
+#include "slopfab/video/y4m.h"
+#if SLOPFAB_WITH_VULKAN
+#include "slopfab/vulkan/audio_decoder.h"
+#include "slopfab/vulkan/dit_denoise.h"
+#include "slopfab/vulkan/keyframe_encoder.h"
+#include "slopfab/vulkan/text_encoder.h"
+#include "slopfab/vulkan/vae_decoder.h"
 #endif
 
-namespace vidfab {
+namespace slopfab {
 namespace {
 
 std::vector<uint8_t> resize_rgb_bilinear(const RGBImage& in, int width, int height) {
@@ -155,7 +155,7 @@ class CheckpointPrefetch {
     opened_ = 0;
     accepted_ = 0;
     bytes_ = 0;
-    if (env_flag("VIDFAB_NO_PREFETCH")) {
+    if (env_flag("SLOPFAB_NO_PREFETCH")) {
       skipped_ = true;
       return;
     }
@@ -204,7 +204,7 @@ class CheckpointPrefetch {
   }
 
   // Reports as well as joins, because the whole value of this class has to be
-  // established by an A/B against `VIDFAB_NO_PREFETCH=1` — and without a line
+  // established by an A/B against `SLOPFAB_NO_PREFETCH=1` — and without a line
   // in the log, "the hint was refused", "the file would not open", "the thread
   // would not start", "the flag was set" and "it all worked" are five different
   // runs that look identical.
@@ -213,7 +213,7 @@ class CheckpointPrefetch {
     if (verbose_ && !reported_) {
       reported_ = true;
       if (skipped_) {
-        std::printf("prefetch    off (VIDFAB_NO_PREFETCH=1); the vae load demand faults\n");
+        std::printf("prefetch    off (SLOPFAB_NO_PREFETCH=1); the vae load demand faults\n");
       } else if (spawn_failed_) {
         std::printf("prefetch    no worker thread available; the vae load demand faults\n");
       } else if (requested_ != 0) {
@@ -309,7 +309,7 @@ text::PromptEmbedding read_prompt_embedding(const std::string& path) {
   return result;
 }
 
-#if VIDFAB_WITH_VULKAN
+#if SLOPFAB_WITH_VULKAN
 vulkan::Device create_vulkan_inference_device(bool exact_h3 = false) {
   if (!vulkan::Instance::available())
     throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
@@ -354,7 +354,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         "Vulkan neural inference requires exact arithmetic; select attention mode exact";
     return result;
   }
-#if !VIDFAB_WITH_VULKAN
+#if !SLOPFAB_WITH_VULKAN
   if (options.inference_backend == DeviceBackend::kVulkan) {
     result.message = "Vulkan inference requested, but this build disabled Vulkan";
     return result;
@@ -646,7 +646,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                                 image.height / 16, image.width / 16, 0});
           }
         } else {
-#if VIDFAB_WITH_VULKAN
+#if SLOPFAB_WITH_VULKAN
           vulkan::Device keyframe_device = create_vulkan_inference_device();
           vulkan::KeyframeEncoder image_encoder =
               vulkan::KeyframeEncoder::create(keyframe_device);
@@ -817,7 +817,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
             ? "CUDA streaming exact" : "CUDA streaming shipped";
         encoder.unload();
       } else {
-#if VIDFAB_WITH_VULKAN
+#if SLOPFAB_WITH_VULKAN
         vulkan::Device device = create_vulkan_inference_device(true);
         vulkan::TensorContextOptions tensor_options;
         tensor_options.max_batch_operators = 64;
@@ -1069,7 +1069,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     result.seconds_transformer_load, result.seconds_prepare);
       }
     } else {
-#if VIDFAB_WITH_VULKAN
+#if SLOPFAB_WITH_VULKAN
       const Clock::time_point t0 = Clock::now();
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
@@ -1286,7 +1286,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                                    layout.latent_height, layout.latent_width, mean,
                                    std_dev);
     } else {
-#if VIDFAB_WITH_VULKAN
+#if SLOPFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device();
       vae::ViTConfig config;
       config.transformer_mode = vae::ViTTransformerMode::kExact;
@@ -1353,7 +1353,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       denormalize(decoder.latents_mean(), decoder.latents_std());
       audio = decoder.decode(audio_latents.data(), A);
     } else {
-#if VIDFAB_WITH_VULKAN
+#if SLOPFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device();
       vulkan::AudioDecoder decoder = vulkan::AudioDecoder::create(device);
       decoder.load(audio_file);
@@ -1474,4 +1474,4 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   return result;
 }
 
-}  // namespace vidfab
+}  // namespace slopfab

@@ -1,10 +1,10 @@
-#include "vidfab/dit/rope.h"
+#include "slopfab/dit/rope.h"
 
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 
-namespace vidfab::dit {
+namespace slopfab::dit {
 
 H3RopeTables build_h3_rope_tables(const std::vector<double>& positions,
                                   float theta, uint32_t frequency_dim) {
@@ -53,4 +53,4 @@ H3RopeTables build_h3_rope_tables(const std::vector<double>& positions,
   return result;
 }
 
-}  // namespace vidfab::dit
+}  // namespace slopfab::dit

@@ -1,5 +1,5 @@
-#include "vidfab/vulkan/runtime.h"
-#include "vidfab/vulkan/compute.h"
+#include "slopfab/vulkan/runtime.h"
+#include "slopfab/vulkan/compute.h"
 
 #include <vulkan/vulkan_core.h>
 
@@ -20,7 +20,7 @@
 #include <dlfcn.h>
 #endif
 
-namespace vidfab::vulkan {
+namespace slopfab::vulkan {
 namespace detail {
 
 [[noreturn]] void fail(const char* operation, VkResult result) {
@@ -456,7 +456,7 @@ Instance Instance::create(const InstanceOptions& options) {
                                  ? std::min(loader_version, VK_API_VERSION_1_3)
                                  : options.api_version;
   if (requested < VK_API_VERSION_1_2) {
-    throw std::runtime_error("vulkan: vidfab requires Vulkan instance API 1.2 or newer");
+    throw std::runtime_error("vulkan: slopfab requires Vulkan instance API 1.2 or newer");
   }
   if (requested > loader_version) {
     throw std::runtime_error("vulkan: requested instance API exceeds loader API");
@@ -466,7 +466,7 @@ Instance Instance::create(const InstanceOptions& options) {
   app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
   app.pApplicationName = options.application_name.c_str();
   app.applicationVersion = VK_MAKE_API_VERSION(0, 0, 1, 0);
-  app.pEngineName = "vidfab";
+  app.pEngineName = "slopfab";
   app.engineVersion = VK_MAKE_API_VERSION(0, 0, 1, 0);
   app.apiVersion = requested;
   VkInstanceCreateInfo create{};
@@ -1222,40 +1222,40 @@ struct ComputeFns {
 
 ComputeFns load_compute_fns(const std::shared_ptr<DeviceState>& device) {
   ComputeFns f;
-#define VIDFAB_LOAD_DEVICE(member, type, name) \
+#define SLOPFAB_LOAD_DEVICE(member, type, name) \
   f.member = load_device<type>(*device->instance, device->device, name)
-  VIDFAB_LOAD_DEVICE(create_command_pool, PFN_vkCreateCommandPool, "vkCreateCommandPool");
-  VIDFAB_LOAD_DEVICE(destroy_command_pool, PFN_vkDestroyCommandPool, "vkDestroyCommandPool");
-  VIDFAB_LOAD_DEVICE(allocate_command_buffers, PFN_vkAllocateCommandBuffers,
+  SLOPFAB_LOAD_DEVICE(create_command_pool, PFN_vkCreateCommandPool, "vkCreateCommandPool");
+  SLOPFAB_LOAD_DEVICE(destroy_command_pool, PFN_vkDestroyCommandPool, "vkDestroyCommandPool");
+  SLOPFAB_LOAD_DEVICE(allocate_command_buffers, PFN_vkAllocateCommandBuffers,
                      "vkAllocateCommandBuffers");
-  VIDFAB_LOAD_DEVICE(reset_command_buffer, PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
-  VIDFAB_LOAD_DEVICE(begin_command_buffer, PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
-  VIDFAB_LOAD_DEVICE(end_command_buffer, PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
-  VIDFAB_LOAD_DEVICE(create_descriptor_pool, PFN_vkCreateDescriptorPool,
+  SLOPFAB_LOAD_DEVICE(reset_command_buffer, PFN_vkResetCommandBuffer, "vkResetCommandBuffer");
+  SLOPFAB_LOAD_DEVICE(begin_command_buffer, PFN_vkBeginCommandBuffer, "vkBeginCommandBuffer");
+  SLOPFAB_LOAD_DEVICE(end_command_buffer, PFN_vkEndCommandBuffer, "vkEndCommandBuffer");
+  SLOPFAB_LOAD_DEVICE(create_descriptor_pool, PFN_vkCreateDescriptorPool,
                      "vkCreateDescriptorPool");
-  VIDFAB_LOAD_DEVICE(destroy_descriptor_pool, PFN_vkDestroyDescriptorPool,
+  SLOPFAB_LOAD_DEVICE(destroy_descriptor_pool, PFN_vkDestroyDescriptorPool,
                      "vkDestroyDescriptorPool");
-  VIDFAB_LOAD_DEVICE(reset_descriptor_pool, PFN_vkResetDescriptorPool,
+  SLOPFAB_LOAD_DEVICE(reset_descriptor_pool, PFN_vkResetDescriptorPool,
                      "vkResetDescriptorPool");
-  VIDFAB_LOAD_DEVICE(allocate_descriptor_sets, PFN_vkAllocateDescriptorSets,
+  SLOPFAB_LOAD_DEVICE(allocate_descriptor_sets, PFN_vkAllocateDescriptorSets,
                      "vkAllocateDescriptorSets");
-  VIDFAB_LOAD_DEVICE(update_descriptor_sets, PFN_vkUpdateDescriptorSets,
+  SLOPFAB_LOAD_DEVICE(update_descriptor_sets, PFN_vkUpdateDescriptorSets,
                      "vkUpdateDescriptorSets");
-  VIDFAB_LOAD_DEVICE(cmd_copy_buffer, PFN_vkCmdCopyBuffer, "vkCmdCopyBuffer");
-  VIDFAB_LOAD_DEVICE(cmd_pipeline_barrier, PFN_vkCmdPipelineBarrier,
+  SLOPFAB_LOAD_DEVICE(cmd_copy_buffer, PFN_vkCmdCopyBuffer, "vkCmdCopyBuffer");
+  SLOPFAB_LOAD_DEVICE(cmd_pipeline_barrier, PFN_vkCmdPipelineBarrier,
                      "vkCmdPipelineBarrier");
-  VIDFAB_LOAD_DEVICE(cmd_bind_pipeline, PFN_vkCmdBindPipeline, "vkCmdBindPipeline");
-  VIDFAB_LOAD_DEVICE(cmd_bind_descriptor_sets, PFN_vkCmdBindDescriptorSets,
+  SLOPFAB_LOAD_DEVICE(cmd_bind_pipeline, PFN_vkCmdBindPipeline, "vkCmdBindPipeline");
+  SLOPFAB_LOAD_DEVICE(cmd_bind_descriptor_sets, PFN_vkCmdBindDescriptorSets,
                      "vkCmdBindDescriptorSets");
-  VIDFAB_LOAD_DEVICE(cmd_push_constants, PFN_vkCmdPushConstants, "vkCmdPushConstants");
-  VIDFAB_LOAD_DEVICE(cmd_dispatch, PFN_vkCmdDispatch, "vkCmdDispatch");
-  VIDFAB_LOAD_DEVICE(create_semaphore, PFN_vkCreateSemaphore, "vkCreateSemaphore");
-  VIDFAB_LOAD_DEVICE(destroy_semaphore, PFN_vkDestroySemaphore, "vkDestroySemaphore");
-  VIDFAB_LOAD_DEVICE(get_semaphore_counter, PFN_vkGetSemaphoreCounterValue,
+  SLOPFAB_LOAD_DEVICE(cmd_push_constants, PFN_vkCmdPushConstants, "vkCmdPushConstants");
+  SLOPFAB_LOAD_DEVICE(cmd_dispatch, PFN_vkCmdDispatch, "vkCmdDispatch");
+  SLOPFAB_LOAD_DEVICE(create_semaphore, PFN_vkCreateSemaphore, "vkCreateSemaphore");
+  SLOPFAB_LOAD_DEVICE(destroy_semaphore, PFN_vkDestroySemaphore, "vkDestroySemaphore");
+  SLOPFAB_LOAD_DEVICE(get_semaphore_counter, PFN_vkGetSemaphoreCounterValue,
                      "vkGetSemaphoreCounterValue");
-  VIDFAB_LOAD_DEVICE(wait_semaphores, PFN_vkWaitSemaphores, "vkWaitSemaphores");
-  VIDFAB_LOAD_DEVICE(queue_submit, PFN_vkQueueSubmit, "vkQueueSubmit");
-#undef VIDFAB_LOAD_DEVICE
+  SLOPFAB_LOAD_DEVICE(wait_semaphores, PFN_vkWaitSemaphores, "vkWaitSemaphores");
+  SLOPFAB_LOAD_DEVICE(queue_submit, PFN_vkQueueSubmit, "vkQueueSubmit");
+#undef SLOPFAB_LOAD_DEVICE
   return f;
 }
 
@@ -1967,4 +1967,4 @@ void CommandList::dispatch(uint32_t groups_x, uint32_t groups_y, uint32_t groups
                                groups_x, groups_y, groups_z);
 }
 
-}  // namespace vidfab::vulkan
+}  // namespace slopfab::vulkan

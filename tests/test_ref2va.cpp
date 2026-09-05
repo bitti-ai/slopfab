@@ -1,28 +1,28 @@
 #include "harness.h"
-#include "vidfab/dit/checkpoint.h"
-#include "vidfab/dit/ref2va.h"
-#include "vidfab/safetensors.h"
-#include "vidfab/safetensors_write.h"
-#include "vidfab/vae/keyframe_encoder.h"
+#include "slopfab/dit/checkpoint.h"
+#include "slopfab/dit/ref2va.h"
+#include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
+#include "slopfab/vae/keyframe_encoder.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 
-using namespace vidfab::dit;
+using namespace slopfab::dit;
 
 namespace {
 std::string checkpoint_fixture(
-    const char* stem, std::vector<vidfab::TensorWrite> tensors) {
+    const char* stem, std::vector<slopfab::TensorWrite> tensors) {
   const auto path = std::filesystem::temp_directory_path() /
-                    (std::string("vidfab_") + stem + ".safetensors");
-  vidfab::write_safetensors(path.string(), tensors);
+                    (std::string("slopfab_") + stem + ".safetensors");
+  slopfab::write_safetensors(path.string(), tensors);
   return path.string();
 }
 
 std::string int8_transformer_fixture() {
   const auto path = std::filesystem::temp_directory_path() /
-                    "vidfab_int8_transformer_kind.safetensors";
+                    "slopfab_int8_transformer_kind.safetensors";
   std::string header =
       "{\"blocks.0.attn.qkv_proj.weight\":{\"dtype\":\"I8\","
       "\"shape\":[3,2],\"data_offsets\":[0,6]},"
@@ -42,7 +42,7 @@ std::string int8_transformer_fixture() {
 }
 }  // namespace
 
-VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
+SLOPFAB_TEST(ref2va_transformer_checkpoint_detection) {
   CHECK(is_pruned_table_architecture(TransformerArchitecture::kPrunedTable));
   CHECK(is_pruned_table_architecture(TransformerArchitecture::kRef2VAPrunedTable));
   CHECK(!is_pruned_table_architecture(TransformerArchitecture::kRef2VAFullAdaLN));
@@ -50,7 +50,7 @@ VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
   const auto pruned_path = checkpoint_fixture(
       "pruned_kind", {{"adaln_t_table", {1}, {0.0f}},
                        {"blocks.0.adaln_proj.linear.weight", {1}, {0.0f}}});
-  vidfab::SafeTensors pruned;
+  slopfab::SafeTensors pruned;
   pruned.open(pruned_path);
   CHECK(detect_transformer_architecture(pruned) == TransformerArchitecture::kPrunedTable);
   bool rejected = false;
@@ -66,7 +66,7 @@ VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
       "ref2va_pruned_fp8", {{"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
                              {"blocks.0.adaln_proj.linear.weight", {6, 8},
                               std::vector<float>(6 * 8)}});
-  vidfab::SafeTensors pruned_ref;
+  slopfab::SafeTensors pruned_ref;
   pruned_ref.open(pruned_ref_path);
   CHECK(detect_transformer_architecture(pruned_ref) ==
         TransformerArchitecture::kRef2VAPrunedTable);
@@ -85,27 +85,27 @@ VIDFAB_TEST(ref2va_transformer_checkpoint_detection) {
                        {"blocks.0.attn.qkv_proj.weight.quant_state.bitsandbytes__nf4",
                         {1}, {0.0f}},
                        {"blocks.0.adaln_proj.linear.weight.absmax", {1}, {0.0f}}});
-  vidfab::SafeTensors ref;
+  slopfab::SafeTensors ref;
   ref.open(ref_path);
   CHECK(detect_transformer_architecture(ref) == TransformerArchitecture::kRef2VAFullAdaLN);
   CHECK(detect_transformer_quantization(ref) == TransformerQuantization::kBitsAndBytesNF4);
   CHECK(std::string(transformer_quantization_name(
             TransformerQuantization::kInt8ConvRot)) == "int8 ConvRot");
 
-  vidfab::SafeTensors int8;
+  slopfab::SafeTensors int8;
   int8.open(int8_transformer_fixture());
   CHECK(detect_transformer_quantization(int8) ==
         TransformerQuantization::kInt8ConvRot);
   require_ref2va_transformer(ref, 1);
 
   const auto unknown_path = checkpoint_fixture("unknown_kind", {{"x", {1}, {0.0f}}});
-  vidfab::SafeTensors unknown;
+  slopfab::SafeTensors unknown;
   unknown.open(unknown_path);
   CHECK(detect_transformer_architecture(unknown) == TransformerArchitecture::kUnknown);
 
 }
 
-VIDFAB_TEST(ref2va_image_size) {
+SLOPFAB_TEST(ref2va_image_size) {
   int h = 0, w = 0;
 
   // Ref2VA preserves the source aspect ratio around a 2048-pixel short edge.
@@ -134,36 +134,36 @@ VIDFAB_TEST(ref2va_image_size) {
   CHECK(h == 2048 && w == 8192);
   resolve_reference_image_size(1, 4, &h, &w);
   CHECK(h == 8192 && w == 2048);
-  CHECK(::vidfab::test::throws([] { int a, b; resolve_reference_image_size(401, 100, &a, &b); }));
-  CHECK(::vidfab::test::throws([] { int a, b; resolve_reference_image_size(100, 401, &a, &b); }));
-  CHECK(::vidfab::test::throws([] { int a, b; resolve_reference_image_size(0, 1, &a, &b); }));
-  CHECK(::vidfab::test::throws([] { int a, b; resolve_reference_image_size(1, -1, &a, &b); }));
-  CHECK(::vidfab::test::throws([] { int b; resolve_reference_image_size(1, 1, nullptr, &b); }));
+  CHECK(::slopfab::test::throws([] { int a, b; resolve_reference_image_size(401, 100, &a, &b); }));
+  CHECK(::slopfab::test::throws([] { int a, b; resolve_reference_image_size(100, 401, &a, &b); }));
+  CHECK(::slopfab::test::throws([] { int a, b; resolve_reference_image_size(0, 1, &a, &b); }));
+  CHECK(::slopfab::test::throws([] { int a, b; resolve_reference_image_size(1, -1, &a, &b); }));
+  CHECK(::slopfab::test::throws([] { int b; resolve_reference_image_size(1, 1, nullptr, &b); }));
 }
 
-VIDFAB_TEST(ref2va_keyframe_vae_contract) {
-  vidfab::RGBImage image;
+SLOPFAB_TEST(ref2va_keyframe_vae_contract) {
+  slopfab::RGBImage image;
   image.width = 1;
   image.height = 1;
   image.pixels = {255, 0, 128};
-  const auto pixels = vidfab::vae::prepare_keyframe_pixels(image);
+  const auto pixels = slopfab::vae::prepare_keyframe_pixels(image);
   CHECK(pixels.size() == 3);
   CHECK(std::abs(pixels[0] - (1.0f - 0.485f) / 0.229f) < 1e-6f);
   CHECK(std::abs(pixels[1] - (0.0f - 0.456f) / 0.224f) < 1e-6f);
 
   std::vector<float> moments(48, 0.0f), normal(24, 0.0f), mean(24, 1.0f), sd(24, 2.0f);
   moments[0] = 3.0f;
-  const auto latent = vidfab::vae::sample_keyframe_latents(
+  const auto latent = slopfab::vae::sample_keyframe_latents(
       moments.data(), normal.data(), 1, 1, mean, sd);
   CHECK(latent.size() == 24);
   CHECK(std::abs(latent[0] - 1.0f) < 1e-6f);
   CHECK(std::abs(latent[1] + 0.5f) < 1e-6f);
 }
 
-VIDFAB_TEST(ref2va_keyframe_patchify) {
+SLOPFAB_TEST(ref2va_keyframe_patchify) {
   std::vector<float> latent(24 * 2 * 4);
   for (size_t i = 0; i < latent.size(); ++i) latent[i] = static_cast<float>(i);
-  const auto rows = vidfab::vae::patchify_keyframe_latents(latent.data(), 2, 4);
+  const auto rows = slopfab::vae::patchify_keyframe_latents(latent.data(), 2, 4);
   CHECK(rows.size() == 2 * 96);
   CHECK(rows[0] == 0.0f);
   CHECK(rows[1] == 1.0f);
@@ -172,14 +172,14 @@ VIDFAB_TEST(ref2va_keyframe_patchify) {
   CHECK(rows[4] == 8.0f);
   CHECK(rows[96] == 2.0f);
   CHECK(rows[99] == 7.0f);
-  CHECK(::vidfab::test::throws([] {
+  CHECK(::slopfab::test::throws([] {
     float latent[24 * 4] = {};
-    vidfab::vae::patchify_keyframe_latents(latent, 1, 4);
+    slopfab::vae::patchify_keyframe_latents(latent, 1, 4);
   }));
 }
 
-VIDFAB_TEST(ref2va_torch_cpu_seed42_normal) {
-  const auto n = vidfab::vae::torch_cpu_normal_seed42(16);
+SLOPFAB_TEST(ref2va_torch_cpu_seed42_normal) {
+  const auto n = slopfab::vae::torch_cpu_normal_seed42(16);
   // torch.manual_seed(42); torch.randn(16), contiguous CPU float kernel.
   const float golden[] = {1.92691541f, 1.48728406f, 0.90071720f, -2.10552096f,
                           0.67841846f, -1.23454487f, -0.04306748f, -1.60466695f,
@@ -187,7 +187,7 @@ VIDFAB_TEST(ref2va_torch_cpu_seed42_normal) {
                           -0.72788125f, -0.55943018f, -0.76883894f, 0.76244539f};
   for (int i = 0; i < 16; ++i) CHECK_NEAR(n[i], golden[i], 3e-6);
 }
-VIDFAB_TEST(ref2va_order_positions_and_timesteps) {
+SLOPFAB_TEST(ref2va_order_positions_and_timesteps) {
   const ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 6, 0};  // 6 video rows
   const ReferenceGeometry audio{ReferenceKind::kAudio, 1, 0, 0, 2};  // 4 audio rows
   const ReferenceGeometry clip{ReferenceKind::kVideo, 2, 4, 4, 3};   // 6 audio, 8 video
@@ -247,7 +247,7 @@ VIDFAB_TEST(ref2va_order_positions_and_timesteps) {
   for (int row = 31; row < 39; ++row) CHECK(rt.indices[static_cast<size_t>(row)] == 1);
 }
 
-VIDFAB_TEST(ref2va_interleaved_reference_timesteps) {
+SLOPFAB_TEST(ref2va_interleaved_reference_timesteps) {
   ReferenceGeometry image{ReferenceKind::kImage,1,4,4,0};
   ReferenceGeometry sound{ReferenceKind::kAudio,1,0,0,2};
   ReferenceGeometry clip{ReferenceKind::kVideo,1,4,4,1};
@@ -266,7 +266,7 @@ VIDFAB_TEST(ref2va_interleaved_reference_timesteps) {
   for(int i:image_only.indices.audio) CHECK(image_rt.indices[static_cast<size_t>(i)]==0);
 }
 
-VIDFAB_TEST(ref2va_fixed_condition_noise_levels) {
+SLOPFAB_TEST(ref2va_fixed_condition_noise_levels) {
   const ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 4, 0};
   const auto p = build_ref2va_packed_sequence({kTagText}, {image}, 1, 4, 4, 2);
   const auto rt = build_row_timesteps(p.layout, p.indices, 0.7f, 0.3f, 0.999f, 1.0f);

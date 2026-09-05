@@ -1,12 +1,12 @@
-#include "vidfab/cuda/profile.h"
+#include "slopfab/cuda/profile.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
 
-#include "vidfab/cuda/device.h"
+#include "slopfab/cuda/device.h"
 
-namespace vidfab::cuda {
+namespace slopfab::cuda {
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -21,7 +21,7 @@ double to_gib(size_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024
 }  // namespace
 
 StepProfiler::StepProfiler() {
-  const char* v = std::getenv("VIDFAB_PROFILE");
+  const char* v = std::getenv("SLOPFAB_PROFILE");
   enabled_ = v != nullptr && v[0] == '1';
 }
 
@@ -53,11 +53,11 @@ void StepProfiler::tick(const char* label, cudaStream_t stream) {
   if (!enabled_ || !active_) return;
   if (pool_used_ == pool_.size()) {
     cudaEvent_t e = nullptr;
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&e));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&e));
     pool_.push_back(e);
   }
   cudaEvent_t e = pool_[pool_used_++];
-  VIDFAB_CUDA_CHECK(cudaEventRecord(e, stream));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(e, stream));
   marks_.push_back(Mark{label, e, now_ns()});
 }
 
@@ -72,7 +72,7 @@ void StepProfiler::end_step() {
   double min_lead = 1.0e30;
   for (size_t i = 1; i < marks_.size(); ++i) {
     float ms = 0.0f;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, marks_[i - 1].event, marks_[i].event));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, marks_[i - 1].event, marks_[i].event));
     const double host_ms =
         static_cast<double>(marks_[i].host_ns - marks_[i - 1].host_ns) / 1.0e6;
     Total& t = slot(marks_[i].label, /*host=*/false);
@@ -90,7 +90,7 @@ void StepProfiler::end_step() {
     min_lead = std::min(min_lead, gpu_at - host_at);
   }
   float span = 0.0f;
-  VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&span, marks_.front().event, marks_.back().event));
+  SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&span, marks_.front().event, marks_.back().event));
   span_ms_ += span;
   min_lead_ms_ += min_lead;
   steps_ += 1;
@@ -129,7 +129,7 @@ void StepProfiler::report(std::FILE* out) const {
   const double n = static_cast<double>(steps_);
   const double step_ms = wall_ms_ / n;
 
-  std::fprintf(out, "\n--- VIDFAB_PROFILE: %d step%s ---\n", steps_, steps_ == 1 ? "" : "s");
+  std::fprintf(out, "\n--- SLOPFAB_PROFILE: %d step%s ---\n", steps_, steps_ == 1 ? "" : "s");
   std::fprintf(out, "%-24s %12s %12s %8s %12s %10s\n", "phase", "ms/step", "total ms", "%step",
                "host ms/step", "calls/step");
 
@@ -182,12 +182,12 @@ void StepProfiler::report(std::FILE* out) const {
                  to_gib(peak_used_), to_gib(total_bytes_));
     std::fprintf(out, "%-24s %.3f GiB\n", "min free VRAM", to_gib(min_free_));
   }
-  std::fprintf(out, "--- end VIDFAB_PROFILE ---\n");
+  std::fprintf(out, "--- end SLOPFAB_PROFILE ---\n");
   std::fflush(out);
 }
 
 PhaseProfiler::PhaseProfiler() {
-  const char* v = std::getenv("VIDFAB_PROFILE");
+  const char* v = std::getenv("SLOPFAB_PROFILE");
   enabled_ = v != nullptr && v[0] == '1';
 }
 
@@ -230,7 +230,7 @@ void PhaseProfiler::add_total(const char* stage, double ms) {
 cudaEvent_t PhaseProfiler::lease_event() {
   if (pool_used_ == pool_.size()) {
     cudaEvent_t e = nullptr;
-    VIDFAB_CUDA_CHECK(cudaEventCreate(&e));
+    SLOPFAB_CUDA_CHECK(cudaEventCreate(&e));
     pool_.push_back(e);
   }
   return pool_[pool_used_++];
@@ -244,7 +244,7 @@ void PhaseProfiler::flush_gpu() {
   if (!enabled_ || pending_.empty()) return;
   for (const Pair& p : pending_) {
     float ms = 0.0f;
-    VIDFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, p.begin, p.end));
+    SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, p.begin, p.end));
     add_gpu(p.label, ms);
   }
   pending_.clear();
@@ -265,7 +265,7 @@ void PhaseProfiler::sample_memory() {
 void PhaseProfiler::report(std::FILE* out) const {
   if (!enabled_ || total_ms_ == 0.0) return;
 
-  std::fprintf(out, "\n--- VIDFAB_PROFILE: %s ---\n", stage_.c_str());
+  std::fprintf(out, "\n--- SLOPFAB_PROFILE: %s ---\n", stage_.c_str());
   std::fprintf(out, "%-24s %12s %8s %10s\n", "phase", "ms", "%stage", "calls");
 
   double host_sum = 0.0;
@@ -312,7 +312,7 @@ void PhaseProfiler::report(std::FILE* out) const {
                  to_gib(peak_used_), to_gib(total_bytes_));
     std::fprintf(out, "%-24s %.3f GiB\n", "min free VRAM", to_gib(min_free_));
   }
-  std::fprintf(out, "--- end VIDFAB_PROFILE ---\n");
+  std::fprintf(out, "--- end SLOPFAB_PROFILE ---\n");
   std::fflush(out);
 }
 
@@ -335,14 +335,14 @@ PhaseGpuSpan::PhaseGpuSpan(const char* label, cudaStream_t stream)
   PhaseProfiler& p = PhaseProfiler::instance();
   if (!p.enabled()) return;
   begin_ = p.lease_event();
-  VIDFAB_CUDA_CHECK(cudaEventRecord(begin_, stream_));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(begin_, stream_));
 }
 
 PhaseGpuSpan::~PhaseGpuSpan() {
   PhaseProfiler& p = PhaseProfiler::instance();
   if (!p.enabled() || begin_ == nullptr) return;
   end_ = p.lease_event();
-  VIDFAB_CUDA_CHECK(cudaEventRecord(end_, stream_));
+  SLOPFAB_CUDA_CHECK(cudaEventRecord(end_, stream_));
   p.bank_pair(label_, begin_, end_);
 }
 
@@ -357,4 +357,4 @@ HostSpan::~HostSpan() {
   p.add_host(label_, static_cast<double>(now_ns() - t0_) / 1.0e6);
 }
 
-}  // namespace vidfab::cuda
+}  // namespace slopfab::cuda
