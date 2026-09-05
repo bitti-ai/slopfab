@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 # CUDA is enabled lazily: the core loader and CLI build without it so the
 # project stays useful on machines without a toolkit, and so early phases can
 # be developed and tested before any kernels exist.
-project(vidfab LANGUAGES CXX VERSION 0.1.0)
+project(slopfab LANGUAGES CXX VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,31 +13,31 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-option(VIDFAB_ENABLE_CUDA "Build CUDA kernels" ON)
-option(VIDFAB_ENABLE_VULKAN "Build the standalone Vulkan runtime foundation" ON)
-option(VIDFAB_BUILD_TESTS "Build unit tests" ON)
-option(VIDFAB_BUILD_DEV_TOOLS "Build developer profiling/probe executables" OFF)
+option(SLOPFAB_ENABLE_CUDA "Build CUDA kernels" ON)
+option(SLOPFAB_ENABLE_VULKAN "Build the standalone Vulkan runtime foundation" ON)
+option(SLOPFAB_BUILD_TESTS "Build unit tests" ON)
+option(SLOPFAB_BUILD_DEV_TOOLS "Build developer profiling/probe executables" OFF)
 
 # FFmpeg is loaded at runtime and never linked, so this option does not change
 # what the binary depends on to *start* — it changes what is compiled in at
 # all. Off, the muxer is replaced by a stub, MP4 output is gone, and reference
 # images are decoded by the platform (WIC on Windows) instead of by libavcodec.
-# `vidfab` then writes .y4m + .wav, which is the same fallback it already takes
+# `slopfab` then writes .y4m + .wav, which is the same fallback it already takes
 # on a machine where FFmpeg is not installed.
 #
 # It is one switch for the whole build tree rather than per target, and that is
-# a real limitation worth stating: vidfab_cuda links vidfab_core, so an
+# a real limitation worth stating: slopfab_cuda links slopfab_core, so an
 # FFmpeg-free DLL beside an MP4-capable exe would need a second copy of both
-# libraries, and vidfab_cuda costs minutes to compile. The C API does not need
+# libraries, and slopfab_cuda costs minutes to compile. The C API does not need
 # the distinction anyway — it hands the caller pixels and never reaches the
-# muxer in either configuration — so the choice only decides what `vidfab.exe`
-# can write. Configure with -DVIDFAB_WITH_FFMPEG=OFF to build the DLL with no
+# muxer in either configuration — so the choice only decides what `slopfab.exe`
+# can write. Configure with -DSLOPFAB_WITH_FFMPEG=OFF to build the DLL with no
 # FFmpeg code in the process at all.
-option(VIDFAB_WITH_FFMPEG "Compile MP4 muxing and FFmpeg-based image decoding" ON)
+option(SLOPFAB_WITH_FFMPEG "Compile MP4 muxing and FFmpeg-based image decoding" ON)
 
 # --- core -------------------------------------------------------------------
 
-add_library(vidfab_core STATIC
+add_library(slopfab_core STATIC
   src/core/json.cpp
   src/core/nf4.cpp
   src/core/w4a8.cpp
@@ -75,46 +75,46 @@ add_library(vidfab_core STATIC
 # The muxer, or the stub that stands in for it. Exactly one of the two is
 # compiled: they define the same four functions, so every call site links
 # against whichever this build has and none of them needs an #if.
-if(VIDFAB_WITH_FFMPEG)
-  target_sources(vidfab_core PRIVATE src/video/mux.cpp)
+if(SLOPFAB_WITH_FFMPEG)
+  target_sources(slopfab_core PRIVATE src/video/mux.cpp)
 else()
-  target_sources(vidfab_core PRIVATE src/video/mux_disabled.cpp)
+  target_sources(slopfab_core PRIVATE src/video/mux_disabled.cpp)
 endif()
 
 # PUBLIC because headers branch on it: media.h only declares the demuxer where
 # it exists, and image.cpp picks its decoder with it. A consumer that saw a
 # different value than this library was built with would disagree about which
 # functions exist.
-target_compile_definitions(vidfab_core PUBLIC
-  VIDFAB_WITH_FFMPEG=$<IF:$<BOOL:${VIDFAB_WITH_FFMPEG}>,1,0>)
+target_compile_definitions(slopfab_core PUBLIC
+  SLOPFAB_WITH_FFMPEG=$<IF:$<BOOL:${SLOPFAB_WITH_FFMPEG}>,1,0>)
 
-target_include_directories(vidfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(slopfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # The platform image decoder. Compiled in every configuration — so the two
 # decoders can be compared and the code cannot rot unbuilt — which is why
 # these are linked whether or not FFmpeg is on. Both ship with Windows.
 if(WIN32)
-  target_link_libraries(vidfab_core PRIVATE windowscodecs ole32 bcrypt)
+  target_link_libraries(slopfab_core PRIVATE windowscodecs ole32 bcrypt)
 endif()
 
 # The RGB -> YUV 4:2:0 conversion in src/video/y4m.cpp is threaded. MSVC needs
 # nothing for std::thread, but every other toolchain wants -pthread both to
 # compile and to link, and without this the non-MSVC build breaks. Requested
-# here as well as in the CUDA block below because vidfab_core must build on its
+# here as well as in the CUDA block below because slopfab_core must build on its
 # own, on a machine with no CUDA toolkit at all.
 find_package(Threads REQUIRED)
-target_link_libraries(vidfab_core PUBLIC Threads::Threads)
+target_link_libraries(slopfab_core PUBLIC Threads::Threads)
 
 if(MSVC)
   # /utf-8 keeps string literals well-defined regardless of the system codepage.
-  target_compile_options(vidfab_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  target_compile_options(slopfab_core PRIVATE /W4 /permissive- /utf-8 /EHsc)
 else()
-  target_compile_options(vidfab_core PRIVATE -Wall -Wextra)
+  target_compile_options(slopfab_core PRIVATE -Wall -Wextra)
 endif()
 
 # --- cuda -------------------------------------------------------------------
 
-if(VIDFAB_ENABLE_CUDA)
+if(SLOPFAB_ENABLE_CUDA)
   include(CheckLanguage)
   check_language(CUDA)
   if(CMAKE_CUDA_COMPILER)
@@ -155,57 +155,57 @@ if(VIDFAB_ENABLE_CUDA)
       # driver, while cuBLAS itself is selected independently at runtime.
       if(NOT CUDAToolkit_VERSION MATCHES "^12\\.8(\\.|$)")
         message(FATAL_ERROR
-          "vidfab: Windows release/core builds require CUDA 12.8; got ${CUDAToolkit_VERSION}")
+          "slopfab: Windows release/core builds require CUDA 12.8; got ${CUDAToolkit_VERSION}")
       endif()
 
-      try_compile(VIDFAB_CUBLAS12_ABI_OK
+      try_compile(SLOPFAB_CUBLAS12_ABI_OK
         "${CMAKE_CURRENT_BINARY_DIR}/cublas12-abi-probe"
         SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cublas_abi_probe.cpp"
         CMAKE_FLAGS
           "-DINCLUDE_DIRECTORIES=${CUDAToolkit_INCLUDE_DIRS}"
           "-DCMAKE_CXX_STANDARD=17"
           "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
-        OUTPUT_VARIABLE VIDFAB_CUBLAS12_ABI_OUTPUT)
-      if(NOT VIDFAB_CUBLAS12_ABI_OK)
+        OUTPUT_VARIABLE SLOPFAB_CUBLAS12_ABI_OUTPUT)
+      if(NOT SLOPFAB_CUBLAS12_ABI_OK)
         message(FATAL_ERROR
-          "vidfab: CUDA 12.8 cuBLAS ABI does not match the late-bound adapter:\n${VIDFAB_CUBLAS12_ABI_OUTPUT}")
+          "slopfab: CUDA 12.8 cuBLAS ABI does not match the late-bound adapter:\n${SLOPFAB_CUBLAS12_ABI_OUTPUT}")
       endif()
 
       # NVIDIA guarantees ABI compatibility within a major, not across one.
       # Our eight-call adapter supports the exact locally validated CUDA 13.0
       # ABI, so compile its neutral signature/enum contract against 13.0's own
       # headers instead of blindly casting CUDA 12 declarations.
-      set(VIDFAB_CUDA13_ROOT "$ENV{CUDA_PATH_V13_0}" CACHE PATH
+      set(SLOPFAB_CUDA13_ROOT "$ENV{CUDA_PATH_V13_0}" CACHE PATH
         "CUDA 13.0 toolkit used to validate the late-bound cuBLAS ABI")
-      if(NOT VIDFAB_CUDA13_ROOT)
-        set(VIDFAB_CUDA13_ROOT
+      if(NOT SLOPFAB_CUDA13_ROOT)
+        set(SLOPFAB_CUDA13_ROOT
           "$ENV{ProgramFiles}/NVIDIA GPU Computing Toolkit/CUDA/v13.0")
       endif()
-      if(NOT EXISTS "${VIDFAB_CUDA13_ROOT}/include/cublas_v2.h")
+      if(NOT EXISTS "${SLOPFAB_CUDA13_ROOT}/include/cublas_v2.h")
         message(FATAL_ERROR
-          "vidfab: CUDA 13.0 headers are required to validate dual-major cuBLAS dispatch; set VIDFAB_CUDA13_ROOT")
+          "slopfab: CUDA 13.0 headers are required to validate dual-major cuBLAS dispatch; set SLOPFAB_CUDA13_ROOT")
       endif()
-      try_compile(VIDFAB_CUBLAS13_ABI_OK
+      try_compile(SLOPFAB_CUBLAS13_ABI_OK
         "${CMAKE_CURRENT_BINARY_DIR}/cublas13-abi-probe"
         SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cublas_abi_probe.cpp"
         CMAKE_FLAGS
-          "-DINCLUDE_DIRECTORIES=${VIDFAB_CUDA13_ROOT}/include"
+          "-DINCLUDE_DIRECTORIES=${SLOPFAB_CUDA13_ROOT}/include"
           "-DCMAKE_CXX_STANDARD=17"
           "-DCMAKE_CXX_STANDARD_REQUIRED=ON"
-        OUTPUT_VARIABLE VIDFAB_CUBLAS13_ABI_OUTPUT)
-      if(NOT VIDFAB_CUBLAS13_ABI_OK)
+        OUTPUT_VARIABLE SLOPFAB_CUBLAS13_ABI_OUTPUT)
+      if(NOT SLOPFAB_CUBLAS13_ABI_OK)
         message(FATAL_ERROR
-          "vidfab: CUDA 13.0 cuBLAS ABI does not match the late-bound adapter:\n${VIDFAB_CUBLAS13_ABI_OUTPUT}")
+          "slopfab: CUDA 13.0 cuBLAS ABI does not match the late-bound adapter:\n${SLOPFAB_CUBLAS13_ABI_OUTPUT}")
       endif()
-      message(STATUS "vidfab: validated late-bound cuBLAS ABI against CUDA 12.8 and 13.0 headers")
+      message(STATUS "slopfab: validated late-bound cuBLAS ABI against CUDA 12.8 and 13.0 headers")
     endif()
     # The VAE decode's final de-normalise is the project's first std::thread
     # use. MSVC needs nothing for it, but every other toolchain wants -pthread
     # both to compile and to link, and without this the non-MSVC build breaks.
     find_package(Threads REQUIRED)
-    message(STATUS "vidfab: CUDA ${CMAKE_CUDA_COMPILER_VERSION}, arch ${CMAKE_CUDA_ARCHITECTURES}")
+    message(STATUS "slopfab: CUDA ${CMAKE_CUDA_COMPILER_VERSION}, arch ${CMAKE_CUDA_ARCHITECTURES}")
 
-    add_library(vidfab_cuda STATIC
+    add_library(slopfab_cuda STATIC
       src/cuda/device.cu
       src/cuda/cublas_dispatch.cpp
       src/cuda/diagnostics.cu
@@ -235,27 +235,27 @@ if(VIDFAB_ENABLE_CUDA)
       src/generate.cpp
       # src/capi/capi.cpp is deliberately NOT here. It calls run_generate, so
       # it depends on this target — but compiling it *into* this target as well
-      # as into vidfab_c builds every C entry point twice: once with capi.h
+      # as into slopfab_c builds every C entry point twice: once with capi.h
       # seen as dllimport (here, MSVC C4273 "inconsistent dll linkage") and
       # once as dllexport (there). The link happens to pick the right copy, so
       # the failure is silent, and it would leave the C ABI exported from a
-      # library that is otherwise pure C++. It belongs to vidfab_c alone; see
+      # library that is otherwise pure C++. It belongs to slopfab_c alone; see
       # the c api section below.
       src/vae/audio_decoder.cpp
       src/dit/transformer.cpp
       src/dit/denoise.cpp
       src/cuda/encoder_checkpoint_upload.cpp
     )
-    target_include_directories(vidfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-    target_link_libraries(vidfab_cuda PUBLIC CUDA::cuda_driver Threads::Threads)
+    target_include_directories(slopfab_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(slopfab_cuda PUBLIC CUDA::cuda_driver Threads::Threads)
     if(NOT WIN32)
       # Windows resolves CUDA 12/13 cuBLAS in-process. Other platforms retain
       # the toolkit selected at link time until an equivalent loader exists.
-      target_link_libraries(vidfab_cuda PUBLIC CUDA::cublas)
+      target_link_libraries(slopfab_cuda PUBLIC CUDA::cublas)
     endif()
     # Whole-program compilation: no device code crosses translation units, and
     # -rdc=true would otherwise require an explicit device-link step.
-    set_target_properties(vidfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
+    set_target_properties(slopfab_cuda PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
 
     # The CUDA runtime is linked statically, which is deliberate: it avoids an
     # additional cudart DLL dependency. cuBLAS remains a dynamic dependency
@@ -271,27 +271,27 @@ if(VIDFAB_ENABLE_CUDA)
     # CUDA::cudart_static is public because plain-C++ consumers such as
     # qwenvisionprobe call the runtime API without compiling a CUDA source of
     # their own and therefore do not get its link dependency automatically.
-    target_link_libraries(vidfab_cuda PUBLIC vidfab_core CUDA::cudart_static)
-    if(VIDFAB_ENABLE_VULKAN)
-      target_link_libraries(vidfab_cuda PUBLIC vidfab_vulkan)
-      target_compile_definitions(vidfab_cuda PRIVATE VIDFAB_WITH_VULKAN=1)
+    target_link_libraries(slopfab_cuda PUBLIC slopfab_core CUDA::cudart_static)
+    if(SLOPFAB_ENABLE_VULKAN)
+      target_link_libraries(slopfab_cuda PUBLIC slopfab_vulkan)
+      target_compile_definitions(slopfab_cuda PRIVATE SLOPFAB_WITH_VULKAN=1)
     else()
-      target_compile_definitions(vidfab_cuda PRIVATE VIDFAB_WITH_VULKAN=0)
+      target_compile_definitions(slopfab_cuda PRIVATE SLOPFAB_WITH_VULKAN=0)
     endif()
 
-    add_executable(vidfab_qwenvisionprobe tools/qwenvisionprobe.cpp)
-    target_link_libraries(vidfab_qwenvisionprobe PRIVATE vidfab_cuda)
-    add_executable(vidfab_qwenconditionerprobe tools/qwenconditionerprobe.cpp)
-    target_link_libraries(vidfab_qwenconditionerprobe PRIVATE vidfab_cuda)
-    if(VIDFAB_BUILD_DEV_TOOLS)
-      add_executable(vidfab_solbench tools/solbench.cu)
-      target_link_libraries(vidfab_solbench PRIVATE vidfab_cuda)
+    add_executable(slopfab_qwenvisionprobe tools/qwenvisionprobe.cpp)
+    target_link_libraries(slopfab_qwenvisionprobe PRIVATE slopfab_cuda)
+    add_executable(slopfab_qwenconditionerprobe tools/qwenconditionerprobe.cpp)
+    target_link_libraries(slopfab_qwenconditionerprobe PRIVATE slopfab_cuda)
+    if(SLOPFAB_BUILD_DEV_TOOLS)
+      add_executable(slopfab_solbench tools/solbench.cu)
+      target_link_libraries(slopfab_solbench PRIVATE slopfab_cuda)
     endif()
 
-    target_compile_definitions(vidfab_core PUBLIC VIDFAB_WITH_CUDA=1)
+    target_compile_definitions(slopfab_core PUBLIC SLOPFAB_WITH_CUDA=1)
   else()
-    message(WARNING "vidfab: no CUDA compiler found; building CPU-only")
-    set(VIDFAB_ENABLE_CUDA OFF)
+    message(WARNING "slopfab: no CUDA compiler found; building CPU-only")
+    set(SLOPFAB_ENABLE_CUDA OFF)
   endif()
 endif()
 
@@ -302,573 +302,573 @@ endif()
 # platform loader is opened dynamically by runtime.cpp. Consequently enabling
 # this target needs no Vulkan SDK at build time or Vulkan loader at process
 # startup.
-if(VIDFAB_ENABLE_VULKAN)
-  set(VIDFAB_YUV_SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp")
-  set(VIDFAB_YUV_SHADER_SPV "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp.spv")
-  set(VIDFAB_TENSOR_OPS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_ops.comp")
-  set(VIDFAB_TENSOR_OPS_SPV "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_ops.comp.spv")
-  set(VIDFAB_TENSOR_OPS_DENORM_SPV
+if(SLOPFAB_ENABLE_VULKAN)
+  set(SLOPFAB_YUV_SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp")
+  set(SLOPFAB_YUV_SHADER_SPV "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/rgb_to_yuv.comp.spv")
+  set(SLOPFAB_TENSOR_OPS_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_ops.comp")
+  set(SLOPFAB_TENSOR_OPS_SPV "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_ops.comp.spv")
+  set(SLOPFAB_TENSOR_OPS_DENORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_ops_denorm.comp.spv")
-  set(VIDFAB_TENSOR_NORM_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_norm.comp")
-  set(VIDFAB_TENSOR_RMS_NORM_SPV
+  set(SLOPFAB_TENSOR_NORM_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_norm.comp")
+  set(SLOPFAB_TENSOR_RMS_NORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_rms_norm.comp.spv")
-  set(VIDFAB_TENSOR_LAYER_NORM_SPV
+  set(SLOPFAB_TENSOR_LAYER_NORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_layer_norm.comp.spv")
-  set(VIDFAB_TENSOR_SHARED_NORM_SOURCE
+  set(SLOPFAB_TENSOR_SHARED_NORM_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_shared_norm.comp")
-  set(VIDFAB_TENSOR_BF16_RMS_BLOCK_SPV
+  set(SLOPFAB_TENSOR_BF16_RMS_BLOCK_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_bf16_rms_block.comp.spv")
-  set(VIDFAB_TENSOR_BF16_RMS_NARROW_SPV
+  set(SLOPFAB_TENSOR_BF16_RMS_NARROW_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_bf16_rms_narrow.comp.spv")
-  set(VIDFAB_TENSOR_BF16_LAYER_SPV
+  set(SLOPFAB_TENSOR_BF16_LAYER_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_bf16_layer.comp.spv")
-  set(VIDFAB_TENSOR_BF16_MOD_SPV
+  set(SLOPFAB_TENSOR_BF16_MOD_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_bf16_mod.comp.spv")
-  set(VIDFAB_TENSOR_FP32_MOD_SPV
+  set(SLOPFAB_TENSOR_FP32_MOD_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_fp32_mod.comp.spv")
-  set(VIDFAB_TENSOR_GROUP_NORM_SOURCE
+  set(SLOPFAB_TENSOR_GROUP_NORM_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_group_norm.comp")
-  set(VIDFAB_TENSOR_GROUP_NORM_SPV
+  set(SLOPFAB_TENSOR_GROUP_NORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_group_norm.comp.spv")
-  set(VIDFAB_TENSOR_VAE_POINTWISE_SOURCE
+  set(SLOPFAB_TENSOR_VAE_POINTWISE_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_vae_pointwise.comp")
-  set(VIDFAB_TENSOR_VAE_RESIDUAL_SPV
+  set(SLOPFAB_TENSOR_VAE_RESIDUAL_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_vae_residual.comp.spv")
-  set(VIDFAB_TENSOR_VAE_SWIGLU_SPV
+  set(SLOPFAB_TENSOR_VAE_SWIGLU_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_vae_swiglu.comp.spv")
-  set(VIDFAB_TENSOR_VAE_DENORM_SPV
+  set(SLOPFAB_TENSOR_VAE_DENORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_vae_denorm.comp.spv")
-  set(VIDFAB_TENSOR_AUDIO_SOURCE
+  set(SLOPFAB_TENSOR_AUDIO_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_audio.hlsl")
-  set(VIDFAB_TENSOR_AUDIO_SPV
+  set(SLOPFAB_TENSOR_AUDIO_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_audio.comp.spv")
-  set(VIDFAB_TENSOR_KEYFRAME_SOURCE
+  set(SLOPFAB_TENSOR_KEYFRAME_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_keyframe.hlsl")
-  set(VIDFAB_TENSOR_KEYFRAME_SPV
+  set(SLOPFAB_TENSOR_KEYFRAME_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_keyframe.comp.spv")
-  set(VIDFAB_TENSOR_DIT_SOURCE
+  set(SLOPFAB_TENSOR_DIT_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_dit.hlsl")
-  set(VIDFAB_TENSOR_DIT_SPV
+  set(SLOPFAB_TENSOR_DIT_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_dit.comp.spv")
-  set(VIDFAB_TENSOR_ROPE_SOURCE
+  set(SLOPFAB_TENSOR_ROPE_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_rope.comp")
-  set(VIDFAB_TENSOR_ROPE_SPV
+  set(SLOPFAB_TENSOR_ROPE_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_rope.comp.spv")
-  set(VIDFAB_TENSOR_ROPE_DENORM_SPV
+  set(SLOPFAB_TENSOR_ROPE_DENORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_rope_denorm.comp.spv")
-  set(VIDFAB_TENSOR_VAE_ROPE_SOURCE
+  set(SLOPFAB_TENSOR_VAE_ROPE_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_vae_rope.comp")
-  set(VIDFAB_TENSOR_VAE_ROPE_SPV
+  set(SLOPFAB_TENSOR_VAE_ROPE_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_vae_rope.comp.spv")
-  set(VIDFAB_TENSOR_WEIGHT_SOURCE
+  set(SLOPFAB_TENSOR_WEIGHT_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_weight.comp")
-  set(VIDFAB_TENSOR_WEIGHT_SPV
+  set(SLOPFAB_TENSOR_WEIGHT_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_weight.comp.spv")
-  set(VIDFAB_TENSOR_WEIGHT_DENORM_SPV
+  set(SLOPFAB_TENSOR_WEIGHT_DENORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_weight_denorm.comp.spv")
-  set(VIDFAB_TENSOR_GEMM_SOURCE
+  set(SLOPFAB_TENSOR_GEMM_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm.hlsl")
-  set(VIDFAB_TENSOR_GEMM_SPV
+  set(SLOPFAB_TENSOR_GEMM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm.comp.spv")
-  set(VIDFAB_TENSOR_GEMM_DENORM_SPV
+  set(SLOPFAB_TENSOR_GEMM_DENORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_denorm.comp.spv")
-  set(VIDFAB_TENSOR_GEMM_COOP_SOURCE
+  set(SLOPFAB_TENSOR_GEMM_COOP_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_coop.comp")
-  set(VIDFAB_TENSOR_GEMM_COOP_SPV
+  set(SLOPFAB_TENSOR_GEMM_COOP_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_coop.comp.spv")
-  set(VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV
+  set(SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_coop_denorm.comp.spv")
-  set(VIDFAB_TENSOR_GEMM_PREPARE_SOURCE
+  set(SLOPFAB_TENSOR_GEMM_PREPARE_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_prepare.hlsl")
-  set(VIDFAB_TENSOR_GEMM_PREPARE_SPV
+  set(SLOPFAB_TENSOR_GEMM_PREPARE_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_prepare.comp.spv")
-  set(VIDFAB_TENSOR_GEMM_COOP_F16_SOURCE
+  set(SLOPFAB_TENSOR_GEMM_COOP_F16_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_coop_f16.comp")
-  set(VIDFAB_TENSOR_GEMM_COOP_F16_SPV
+  set(SLOPFAB_TENSOR_GEMM_COOP_F16_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_coop_f16.comp.spv")
-  set(VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV
+  set(SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_gemm_coop_f16_denorm.comp.spv")
-  set(VIDFAB_TENSOR_ATTENTION_BLOCKED_SOURCE
+  set(SLOPFAB_TENSOR_ATTENTION_BLOCKED_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_blocked.comp")
-  set(VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV
+  set(SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_blocked.comp.spv")
-  set(VIDFAB_TENSOR_ATTENTION_PREPARE_SOURCE
+  set(SLOPFAB_TENSOR_ATTENTION_PREPARE_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_prepare.comp")
-  set(VIDFAB_TENSOR_ATTENTION_PREPARE_SPV
+  set(SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_prepare.comp.spv")
-  set(VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE
+  set(SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_causal_gqa.comp")
-  set(VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV
+  set(SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_causal_gqa.comp.spv")
-  set(VIDFAB_TENSOR_ATTENTION_H3_SOURCE
+  set(SLOPFAB_TENSOR_ATTENTION_H3_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_h3.comp")
-  set(VIDFAB_TENSOR_ATTENTION_H3_SPV
+  set(SLOPFAB_TENSOR_ATTENTION_H3_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_h3.comp.spv")
-  set(VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV
+  set(SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV
     "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_h3_banded.comp.spv")
-  file(READ "${VIDFAB_YUV_SHADER_SOURCE}" VIDFAB_YUV_SHADER_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_YUV_SHADER_TEXT "${VIDFAB_YUV_SHADER_TEXT}")
-  string(SHA256 VIDFAB_YUV_SHADER_SOURCE_HASH "${VIDFAB_YUV_SHADER_TEXT}")
-  file(SHA256 "${VIDFAB_YUV_SHADER_SPV}" VIDFAB_YUV_SHADER_SPV_HASH)
-  if(NOT VIDFAB_YUV_SHADER_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_YUV_SHADER_SOURCE}" SLOPFAB_YUV_SHADER_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_YUV_SHADER_TEXT "${SLOPFAB_YUV_SHADER_TEXT}")
+  string(SHA256 SLOPFAB_YUV_SHADER_SOURCE_HASH "${SLOPFAB_YUV_SHADER_TEXT}")
+  file(SHA256 "${SLOPFAB_YUV_SHADER_SPV}" SLOPFAB_YUV_SHADER_SPV_HASH)
+  if(NOT SLOPFAB_YUV_SHADER_SOURCE_HASH STREQUAL
       "77fa686e8c2ccca0b62551211defb4d47dd941dd617627efce56df35637d2c37" OR
-     NOT VIDFAB_YUV_SHADER_SPV_HASH STREQUAL
+     NOT SLOPFAB_YUV_SHADER_SPV_HASH STREQUAL
       "c4cee251c15f54371387d2dbacb4637c76c0dbc5dc6c0663c1e1269c703e71e6")
     message(FATAL_ERROR
-      "vidfab: RGB-to-YUV shader/source hash mismatch; regenerate with glslang 16.5.0 "
+      "slopfab: RGB-to-YUV shader/source hash mismatch; regenerate with glslang 16.5.0 "
       "and update both pinned hashes")
   endif()
-  file(READ "${VIDFAB_YUV_SHADER_SPV}" VIDFAB_YUV_SPV_HEX HEX)
-  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," VIDFAB_YUV_SPV_BYTES
-    "${VIDFAB_YUV_SPV_HEX}")
+  file(READ "${SLOPFAB_YUV_SHADER_SPV}" SLOPFAB_YUV_SPV_HEX HEX)
+  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SLOPFAB_YUV_SPV_BYTES
+    "${SLOPFAB_YUV_SPV_HEX}")
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan")
   configure_file(src/vulkan/embedded_yuv_spv.h.in
     generated/vulkan/embedded_yuv_spv.h @ONLY)
-  file(READ "${VIDFAB_TENSOR_OPS_SOURCE}" VIDFAB_TENSOR_OPS_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_OPS_TEXT "${VIDFAB_TENSOR_OPS_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_OPS_SOURCE_HASH "${VIDFAB_TENSOR_OPS_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_OPS_SPV}" VIDFAB_TENSOR_OPS_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_OPS_DENORM_SPV}" VIDFAB_TENSOR_OPS_DENORM_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_OPS_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_OPS_SOURCE}" SLOPFAB_TENSOR_OPS_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_OPS_TEXT "${SLOPFAB_TENSOR_OPS_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_OPS_SOURCE_HASH "${SLOPFAB_TENSOR_OPS_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_OPS_SPV}" SLOPFAB_TENSOR_OPS_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_OPS_DENORM_SPV}" SLOPFAB_TENSOR_OPS_DENORM_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_OPS_SOURCE_HASH STREQUAL
       "a5e10d2ff909dc131e0e38e4bf5927df1bc3a9fbb02f283bf5118942dfcaa806" OR
-     NOT VIDFAB_TENSOR_OPS_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_OPS_SPV_HASH STREQUAL
       "a11b87b00658e97b8a3b53a24618045eadbbfa929a44ad9bc08997f958fa2106" OR
-     NOT VIDFAB_TENSOR_OPS_DENORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_OPS_DENORM_SPV_HASH STREQUAL
       "e35519ece4af1021bf5056b100fae32d8c3a8757fc0d439c9eaeda9613f92aa7")
-    message(FATAL_ERROR "vidfab: tensor-ops shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: tensor-ops shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_NORM_SOURCE}" VIDFAB_TENSOR_NORM_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_NORM_TEXT "${VIDFAB_TENSOR_NORM_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_NORM_SOURCE_HASH "${VIDFAB_TENSOR_NORM_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_RMS_NORM_SPV}" VIDFAB_TENSOR_RMS_NORM_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_LAYER_NORM_SPV}" VIDFAB_TENSOR_LAYER_NORM_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_NORM_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_NORM_SOURCE}" SLOPFAB_TENSOR_NORM_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_NORM_TEXT "${SLOPFAB_TENSOR_NORM_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_NORM_SOURCE_HASH "${SLOPFAB_TENSOR_NORM_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_RMS_NORM_SPV}" SLOPFAB_TENSOR_RMS_NORM_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_LAYER_NORM_SPV}" SLOPFAB_TENSOR_LAYER_NORM_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_NORM_SOURCE_HASH STREQUAL
       "f82042e4d335da14e442abd2dde6df877b832bccc8c14033d2aa22f7ed03c325" OR
-     NOT VIDFAB_TENSOR_RMS_NORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_RMS_NORM_SPV_HASH STREQUAL
       "160b9d0f6260bc912379c26171dd8d0c60ad6e4d9b81da57a413b831e513229c" OR
-     NOT VIDFAB_TENSOR_LAYER_NORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_LAYER_NORM_SPV_HASH STREQUAL
       "516ecc94d93cd829f6f6b208acfb3ff647861daae9db3017b31729528d8724e5")
-    message(FATAL_ERROR "vidfab: tensor-norm shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: tensor-norm shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_SHARED_NORM_SOURCE}" VIDFAB_TENSOR_SHARED_NORM_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_SHARED_NORM_TEXT
-    "${VIDFAB_TENSOR_SHARED_NORM_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_SHARED_NORM_SOURCE_HASH
-    "${VIDFAB_TENSOR_SHARED_NORM_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_BF16_RMS_BLOCK_SPV}"
-    VIDFAB_TENSOR_BF16_RMS_BLOCK_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_BF16_RMS_NARROW_SPV}"
-    VIDFAB_TENSOR_BF16_RMS_NARROW_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_BF16_LAYER_SPV}" VIDFAB_TENSOR_BF16_LAYER_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_BF16_MOD_SPV}" VIDFAB_TENSOR_BF16_MOD_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_FP32_MOD_SPV}" VIDFAB_TENSOR_FP32_MOD_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_SHARED_NORM_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_SHARED_NORM_SOURCE}" SLOPFAB_TENSOR_SHARED_NORM_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_SHARED_NORM_TEXT
+    "${SLOPFAB_TENSOR_SHARED_NORM_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_SHARED_NORM_SOURCE_HASH
+    "${SLOPFAB_TENSOR_SHARED_NORM_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_BF16_RMS_BLOCK_SPV}"
+    SLOPFAB_TENSOR_BF16_RMS_BLOCK_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_BF16_RMS_NARROW_SPV}"
+    SLOPFAB_TENSOR_BF16_RMS_NARROW_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_BF16_LAYER_SPV}" SLOPFAB_TENSOR_BF16_LAYER_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_BF16_MOD_SPV}" SLOPFAB_TENSOR_BF16_MOD_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_FP32_MOD_SPV}" SLOPFAB_TENSOR_FP32_MOD_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_SHARED_NORM_SOURCE_HASH STREQUAL
       "6435b32e3c0272ea0f20695ca38e993e01bbe8b16688258c2c79bc5845cfa972" OR
-     NOT VIDFAB_TENSOR_BF16_RMS_BLOCK_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_BF16_RMS_BLOCK_SPV_HASH STREQUAL
       "5784286fc645492fe7f9b68e292f47e1d8b6efd5ff3bd213bef003559f5eb49f" OR
-     NOT VIDFAB_TENSOR_BF16_RMS_NARROW_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_BF16_RMS_NARROW_SPV_HASH STREQUAL
       "5473b833ff74234c38817535f57b33de46534aa678e5dcfe0f562a0b4f1779a2" OR
-     NOT VIDFAB_TENSOR_BF16_LAYER_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_BF16_LAYER_SPV_HASH STREQUAL
       "5f33ab2d86663d2611d64cde7a62f27b13471256c808d067b80cf2baeac5c96a" OR
-     NOT VIDFAB_TENSOR_BF16_MOD_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_BF16_MOD_SPV_HASH STREQUAL
       "7c6634df12153142fc0c17d9a7ec89275e9bfde45ec7c0249e8353b7685f16ae" OR
-     NOT VIDFAB_TENSOR_FP32_MOD_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_FP32_MOD_SPV_HASH STREQUAL
       "c744ee45acf2e34c017a1d1ec83be5bc83042ba29aac95c70ae864d55198f5ec")
-    message(FATAL_ERROR "vidfab: shared-norm shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: shared-norm shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_GROUP_NORM_SOURCE}" VIDFAB_TENSOR_GROUP_NORM_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_GROUP_NORM_TEXT
-    "${VIDFAB_TENSOR_GROUP_NORM_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_GROUP_NORM_SOURCE_HASH
-    "${VIDFAB_TENSOR_GROUP_NORM_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_GROUP_NORM_SPV}"
-    VIDFAB_TENSOR_GROUP_NORM_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_GROUP_NORM_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_GROUP_NORM_SOURCE}" SLOPFAB_TENSOR_GROUP_NORM_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_GROUP_NORM_TEXT
+    "${SLOPFAB_TENSOR_GROUP_NORM_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_GROUP_NORM_SOURCE_HASH
+    "${SLOPFAB_TENSOR_GROUP_NORM_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_GROUP_NORM_SPV}"
+    SLOPFAB_TENSOR_GROUP_NORM_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_GROUP_NORM_SOURCE_HASH STREQUAL
       "988faec12f82a744a49cbb5e46aae35b5563f408a7809e72652e4b67ed1457ca" OR
-     NOT VIDFAB_TENSOR_GROUP_NORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_GROUP_NORM_SPV_HASH STREQUAL
       "57aed42788d1d8ca9a3f6ede8d6130b2c32fda2d62c2261fe00f1d3ff2e98d33")
-    message(FATAL_ERROR "vidfab: group-norm shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: group-norm shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_VAE_POINTWISE_SOURCE}"
-    VIDFAB_TENSOR_VAE_POINTWISE_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_VAE_POINTWISE_TEXT
-    "${VIDFAB_TENSOR_VAE_POINTWISE_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_VAE_POINTWISE_SOURCE_HASH
-    "${VIDFAB_TENSOR_VAE_POINTWISE_TEXT}")
+  file(READ "${SLOPFAB_TENSOR_VAE_POINTWISE_SOURCE}"
+    SLOPFAB_TENSOR_VAE_POINTWISE_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_VAE_POINTWISE_TEXT
+    "${SLOPFAB_TENSOR_VAE_POINTWISE_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_VAE_POINTWISE_SOURCE_HASH
+    "${SLOPFAB_TENSOR_VAE_POINTWISE_TEXT}")
   foreach(VARIANT RESIDUAL SWIGLU DENORM)
-    file(SHA256 "${VIDFAB_TENSOR_VAE_${VARIANT}_SPV}"
-      VIDFAB_TENSOR_VAE_${VARIANT}_SPV_HASH)
+    file(SHA256 "${SLOPFAB_TENSOR_VAE_${VARIANT}_SPV}"
+      SLOPFAB_TENSOR_VAE_${VARIANT}_SPV_HASH)
   endforeach()
-  if(NOT VIDFAB_TENSOR_VAE_POINTWISE_SOURCE_HASH STREQUAL
+  if(NOT SLOPFAB_TENSOR_VAE_POINTWISE_SOURCE_HASH STREQUAL
       "c0d3ca5a113ab83c08a12d2f06a63d127d2858fe72d96df8e58f4f6af559b83d" OR
-     NOT VIDFAB_TENSOR_VAE_RESIDUAL_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_VAE_RESIDUAL_SPV_HASH STREQUAL
       "8b64d04cb5b579f787148fb546d77afb1ed6b1a1782bde8d6573b28ea9408c92" OR
-     NOT VIDFAB_TENSOR_VAE_SWIGLU_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_VAE_SWIGLU_SPV_HASH STREQUAL
       "e4f51a55b55d7888fc264c1fa2f547bbc8930d9d7db5f627d0356220b92cb453" OR
-     NOT VIDFAB_TENSOR_VAE_DENORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_VAE_DENORM_SPV_HASH STREQUAL
       "e295edcad9058d8581007b4776f0bc7db95a10c99aa9df4fb149947aae9519f2")
-    message(FATAL_ERROR "vidfab: VAE pointwise shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: VAE pointwise shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_AUDIO_SOURCE}" VIDFAB_TENSOR_AUDIO_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_AUDIO_TEXT
-    "${VIDFAB_TENSOR_AUDIO_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_AUDIO_SOURCE_HASH "${VIDFAB_TENSOR_AUDIO_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_AUDIO_SPV}" VIDFAB_TENSOR_AUDIO_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_AUDIO_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_AUDIO_SOURCE}" SLOPFAB_TENSOR_AUDIO_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_AUDIO_TEXT
+    "${SLOPFAB_TENSOR_AUDIO_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_AUDIO_SOURCE_HASH "${SLOPFAB_TENSOR_AUDIO_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_AUDIO_SPV}" SLOPFAB_TENSOR_AUDIO_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_AUDIO_SOURCE_HASH STREQUAL
       "c5d8f8d334d64ae5cad62e8f725bad1bb818d25718ce3d1b4d723004f738dbec" OR
-     NOT VIDFAB_TENSOR_AUDIO_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_AUDIO_SPV_HASH STREQUAL
       "51c0834880118790b70eccbd5fef7267c8dfd8bb98256ee2f67d3250a1e90ab5")
     message(FATAL_ERROR
-      "vidfab: audio shader/source hash mismatch; regenerate with Microsoft DXC "
+      "slopfab: audio shader/source hash mismatch; regenerate with Microsoft DXC "
       "1.9.2607 using -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 -E main "
       "-O3 -Gis and update both pinned hashes")
   endif()
-  file(READ "${VIDFAB_TENSOR_KEYFRAME_SOURCE}" VIDFAB_TENSOR_KEYFRAME_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_KEYFRAME_TEXT
-    "${VIDFAB_TENSOR_KEYFRAME_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_KEYFRAME_SOURCE_HASH
-    "${VIDFAB_TENSOR_KEYFRAME_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_KEYFRAME_SPV}"
-    VIDFAB_TENSOR_KEYFRAME_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_KEYFRAME_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_KEYFRAME_SOURCE}" SLOPFAB_TENSOR_KEYFRAME_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_KEYFRAME_TEXT
+    "${SLOPFAB_TENSOR_KEYFRAME_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_KEYFRAME_SOURCE_HASH
+    "${SLOPFAB_TENSOR_KEYFRAME_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_KEYFRAME_SPV}"
+    SLOPFAB_TENSOR_KEYFRAME_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_KEYFRAME_SOURCE_HASH STREQUAL
       "2f9e12838e3f8ac93110cadce002466c4e66ef7c54f4a4082822bd9056066775" OR
-     NOT VIDFAB_TENSOR_KEYFRAME_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_KEYFRAME_SPV_HASH STREQUAL
       "acbab36d4016a4ff4c8ba90992e8c38622de86e44f19a28ebb2df4ffc8e1974a")
     message(FATAL_ERROR
-      "vidfab: keyframe shader/source hash mismatch; regenerate with Microsoft "
+      "slopfab: keyframe shader/source hash mismatch; regenerate with Microsoft "
       "DXC 1.9.2607 using -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 "
       "-E main -O3 -Gis and update both pinned hashes")
   endif()
-  file(READ "${VIDFAB_TENSOR_DIT_SOURCE}" VIDFAB_TENSOR_DIT_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_DIT_TEXT
-    "${VIDFAB_TENSOR_DIT_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_DIT_SOURCE_HASH "${VIDFAB_TENSOR_DIT_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_DIT_SPV}" VIDFAB_TENSOR_DIT_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_DIT_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_DIT_SOURCE}" SLOPFAB_TENSOR_DIT_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_DIT_TEXT
+    "${SLOPFAB_TENSOR_DIT_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_DIT_SOURCE_HASH "${SLOPFAB_TENSOR_DIT_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_DIT_SPV}" SLOPFAB_TENSOR_DIT_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_DIT_SOURCE_HASH STREQUAL
       "67d485f5818226dae9d95fcb7b9dd0d208f767df60b014981aecedb2ffc1ec7e" OR
-     NOT VIDFAB_TENSOR_DIT_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_DIT_SPV_HASH STREQUAL
       "08ab6bba63c121eaae8348cb62328f9c7337d21e9e6de5c62292da8be47f1e9b")
     message(FATAL_ERROR
-      "vidfab: DiT shader/source hash mismatch; regenerate with Microsoft DXC "
+      "slopfab: DiT shader/source hash mismatch; regenerate with Microsoft DXC "
       "1.9.2607 using -spirv -fspv-target-env=vulkan1.2 -T cs_6_6 -E main "
       "-O3 -Gis and update both pinned hashes")
   endif()
-  file(READ "${VIDFAB_TENSOR_ROPE_SOURCE}" VIDFAB_TENSOR_ROPE_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_ROPE_TEXT "${VIDFAB_TENSOR_ROPE_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_ROPE_SOURCE_HASH "${VIDFAB_TENSOR_ROPE_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_ROPE_SPV}" VIDFAB_TENSOR_ROPE_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_ROPE_DENORM_SPV}"
-    VIDFAB_TENSOR_ROPE_DENORM_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_ROPE_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_ROPE_SOURCE}" SLOPFAB_TENSOR_ROPE_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_ROPE_TEXT "${SLOPFAB_TENSOR_ROPE_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_ROPE_SOURCE_HASH "${SLOPFAB_TENSOR_ROPE_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_ROPE_SPV}" SLOPFAB_TENSOR_ROPE_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_ROPE_DENORM_SPV}"
+    SLOPFAB_TENSOR_ROPE_DENORM_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_ROPE_SOURCE_HASH STREQUAL
       "b98e96debc46548ac25065f4ba75037ebda95b92f43303edc625e50e4fdc6347" OR
-     NOT VIDFAB_TENSOR_ROPE_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_ROPE_SPV_HASH STREQUAL
       "fb36a5238c64dffd756d65471e0bb492b4fe59910bb676f1d8a4109715391a90" OR
-     NOT VIDFAB_TENSOR_ROPE_DENORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_ROPE_DENORM_SPV_HASH STREQUAL
       "e15674264a7cf898c286cc4e9110f8d7a5918732682120010ee02272d73e1734")
-    message(FATAL_ERROR "vidfab: RoPE shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: RoPE shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_VAE_ROPE_SOURCE}" VIDFAB_TENSOR_VAE_ROPE_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_VAE_ROPE_TEXT
-    "${VIDFAB_TENSOR_VAE_ROPE_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_VAE_ROPE_SOURCE_HASH
-    "${VIDFAB_TENSOR_VAE_ROPE_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_VAE_ROPE_SPV}" VIDFAB_TENSOR_VAE_ROPE_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_VAE_ROPE_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_VAE_ROPE_SOURCE}" SLOPFAB_TENSOR_VAE_ROPE_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_VAE_ROPE_TEXT
+    "${SLOPFAB_TENSOR_VAE_ROPE_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_VAE_ROPE_SOURCE_HASH
+    "${SLOPFAB_TENSOR_VAE_ROPE_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_VAE_ROPE_SPV}" SLOPFAB_TENSOR_VAE_ROPE_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_VAE_ROPE_SOURCE_HASH STREQUAL
       "57f4761647d8f8f1775cd8edce0156ff5a89b6e19adf99b51330d78056b9c8fd" OR
-     NOT VIDFAB_TENSOR_VAE_ROPE_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_VAE_ROPE_SPV_HASH STREQUAL
       "e51ae5f500a65b87b5fd1af440e0b60db375a75dc7021620fae40379812a8196")
-    message(FATAL_ERROR "vidfab: VAE RoPE shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: VAE RoPE shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_WEIGHT_SOURCE}" VIDFAB_TENSOR_WEIGHT_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_WEIGHT_TEXT
-    "${VIDFAB_TENSOR_WEIGHT_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_WEIGHT_SOURCE_HASH "${VIDFAB_TENSOR_WEIGHT_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_WEIGHT_SPV}" VIDFAB_TENSOR_WEIGHT_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_WEIGHT_DENORM_SPV}"
-    VIDFAB_TENSOR_WEIGHT_DENORM_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_WEIGHT_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_WEIGHT_SOURCE}" SLOPFAB_TENSOR_WEIGHT_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_WEIGHT_TEXT
+    "${SLOPFAB_TENSOR_WEIGHT_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_WEIGHT_SOURCE_HASH "${SLOPFAB_TENSOR_WEIGHT_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_WEIGHT_SPV}" SLOPFAB_TENSOR_WEIGHT_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_WEIGHT_DENORM_SPV}"
+    SLOPFAB_TENSOR_WEIGHT_DENORM_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_WEIGHT_SOURCE_HASH STREQUAL
       "55fadb68982abcdb0079c8d9b0a84e77f64d268e63e7227f2a2bc770ed60307f" OR
-     NOT VIDFAB_TENSOR_WEIGHT_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_WEIGHT_SPV_HASH STREQUAL
       "da6454d969f13f02f6571eaa5850e7cd757e9ab0df68e005557b277c4d73f30e" OR
-     NOT VIDFAB_TENSOR_WEIGHT_DENORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_WEIGHT_DENORM_SPV_HASH STREQUAL
       "d67d8f272b694181a350760c29c4adaccaff692b043e6fa8a619d0a8cb807dae")
-    message(FATAL_ERROR "vidfab: tensor-weight shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: tensor-weight shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_GEMM_SOURCE}" VIDFAB_TENSOR_GEMM_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_GEMM_TEXT
-    "${VIDFAB_TENSOR_GEMM_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_GEMM_SOURCE_HASH "${VIDFAB_TENSOR_GEMM_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_GEMM_SPV}" VIDFAB_TENSOR_GEMM_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_GEMM_DENORM_SPV}"
-    VIDFAB_TENSOR_GEMM_DENORM_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_GEMM_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_GEMM_SOURCE}" SLOPFAB_TENSOR_GEMM_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_GEMM_TEXT
+    "${SLOPFAB_TENSOR_GEMM_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_GEMM_SOURCE_HASH "${SLOPFAB_TENSOR_GEMM_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_GEMM_SPV}" SLOPFAB_TENSOR_GEMM_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_GEMM_DENORM_SPV}"
+    SLOPFAB_TENSOR_GEMM_DENORM_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_GEMM_SOURCE_HASH STREQUAL
       "86e608b81ba51dd0f827aa53a07d91cc8b2c0542c764dec3d16c937afcdb2f31" OR
-     NOT VIDFAB_TENSOR_GEMM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_GEMM_SPV_HASH STREQUAL
       "f91563d2de7553c84059a416812e2a4241c3f500206d57fa1655af0e3d3061b1" OR
-     NOT VIDFAB_TENSOR_GEMM_DENORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_GEMM_DENORM_SPV_HASH STREQUAL
       "d606a8e6ee510b8d32de4341af977d478121e0101cb8274c23640feabe1c83f9")
-    message(FATAL_ERROR "vidfab: tensor-gemm shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: tensor-gemm shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_GEMM_COOP_SOURCE}" VIDFAB_TENSOR_GEMM_COOP_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_GEMM_COOP_TEXT
-    "${VIDFAB_TENSOR_GEMM_COOP_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_GEMM_COOP_SOURCE_HASH
-    "${VIDFAB_TENSOR_GEMM_COOP_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_GEMM_COOP_SPV}"
-    VIDFAB_TENSOR_GEMM_COOP_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV}"
-    VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_GEMM_COOP_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_GEMM_COOP_SOURCE}" SLOPFAB_TENSOR_GEMM_COOP_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_GEMM_COOP_TEXT
+    "${SLOPFAB_TENSOR_GEMM_COOP_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_GEMM_COOP_SOURCE_HASH
+    "${SLOPFAB_TENSOR_GEMM_COOP_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_GEMM_COOP_SPV}"
+    SLOPFAB_TENSOR_GEMM_COOP_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV}"
+    SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_GEMM_COOP_SOURCE_HASH STREQUAL
       "76589b0446b567f2fdad655cc337ee96cdc2e22f909994815891f84a3e4c5691" OR
-     NOT VIDFAB_TENSOR_GEMM_COOP_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_GEMM_COOP_SPV_HASH STREQUAL
       "b9719969312c4962006cd0877dbdadb2aab8e4c8232be84d593f4267f7597cf9" OR
-     NOT VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV_HASH STREQUAL
       "b5b80ac23262aab3285aac2f763910d56d6aaed256da920274fd6d7778ac4ea9")
-    message(FATAL_ERROR "vidfab: cooperative GEMM shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: cooperative GEMM shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_GEMM_PREPARE_SOURCE}"
-    VIDFAB_TENSOR_GEMM_PREPARE_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_GEMM_PREPARE_TEXT
-    "${VIDFAB_TENSOR_GEMM_PREPARE_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_GEMM_PREPARE_SOURCE_HASH
-    "${VIDFAB_TENSOR_GEMM_PREPARE_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_GEMM_PREPARE_SPV}"
-    VIDFAB_TENSOR_GEMM_PREPARE_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_GEMM_PREPARE_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_GEMM_PREPARE_SOURCE}"
+    SLOPFAB_TENSOR_GEMM_PREPARE_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_GEMM_PREPARE_TEXT
+    "${SLOPFAB_TENSOR_GEMM_PREPARE_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_GEMM_PREPARE_SOURCE_HASH
+    "${SLOPFAB_TENSOR_GEMM_PREPARE_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_GEMM_PREPARE_SPV}"
+    SLOPFAB_TENSOR_GEMM_PREPARE_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_GEMM_PREPARE_SOURCE_HASH STREQUAL
       "c8914cf9427fd5a904b7c503de1f5f1b63e2bb9ec37dca46aa6823b96acc8063" OR
-     NOT VIDFAB_TENSOR_GEMM_PREPARE_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_GEMM_PREPARE_SPV_HASH STREQUAL
       "d716981e9734554c9e18e9587959fa70770e768df94f1aa88478192b4727aa59")
-    message(FATAL_ERROR "vidfab: GEMM prepare shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: GEMM prepare shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_GEMM_COOP_F16_SOURCE}"
-    VIDFAB_TENSOR_GEMM_COOP_F16_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_GEMM_COOP_F16_TEXT
-    "${VIDFAB_TENSOR_GEMM_COOP_F16_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_GEMM_COOP_F16_SOURCE_HASH
-    "${VIDFAB_TENSOR_GEMM_COOP_F16_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_GEMM_COOP_F16_SPV}"
-    VIDFAB_TENSOR_GEMM_COOP_F16_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV}"
-    VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_GEMM_COOP_F16_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_GEMM_COOP_F16_SOURCE}"
+    SLOPFAB_TENSOR_GEMM_COOP_F16_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_GEMM_COOP_F16_TEXT
+    "${SLOPFAB_TENSOR_GEMM_COOP_F16_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_GEMM_COOP_F16_SOURCE_HASH
+    "${SLOPFAB_TENSOR_GEMM_COOP_F16_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_GEMM_COOP_F16_SPV}"
+    SLOPFAB_TENSOR_GEMM_COOP_F16_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV}"
+    SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_GEMM_COOP_F16_SOURCE_HASH STREQUAL
       "11b75eefefaef0eff8266bae7d5e4ce0d1b6ebaa43c29f2d0cb9da5b12e6203f" OR
-     NOT VIDFAB_TENSOR_GEMM_COOP_F16_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_GEMM_COOP_F16_SPV_HASH STREQUAL
       "e76c1a114f177a4eaa48d69a1df7c102c06e1109ea4512c04b4335e99fea537d" OR
-     NOT VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_HASH STREQUAL
       "9b51be611b7f6477f6f5d4c82daba6e1f900f29a06c9811f987126bda9d23c9a")
-    message(FATAL_ERROR "vidfab: cooperative F16 GEMM shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: cooperative F16 GEMM shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_ATTENTION_BLOCKED_SOURCE}"
-    VIDFAB_TENSOR_ATTENTION_BLOCKED_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_ATTENTION_BLOCKED_TEXT
-    "${VIDFAB_TENSOR_ATTENTION_BLOCKED_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_ATTENTION_BLOCKED_SOURCE_HASH
-    "${VIDFAB_TENSOR_ATTENTION_BLOCKED_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV}"
-    VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_ATTENTION_BLOCKED_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_BLOCKED_SOURCE}"
+    SLOPFAB_TENSOR_ATTENTION_BLOCKED_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_ATTENTION_BLOCKED_TEXT
+    "${SLOPFAB_TENSOR_ATTENTION_BLOCKED_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_ATTENTION_BLOCKED_SOURCE_HASH
+    "${SLOPFAB_TENSOR_ATTENTION_BLOCKED_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_ATTENTION_BLOCKED_SOURCE_HASH STREQUAL
       "c27a8133ad290d086e1aa0c03418dd87b5f3eda924e69f0959ac3d9562f840b7" OR
-     NOT VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV_HASH STREQUAL
       "9c1339b2fd44b9f453bd3974f720e635682130ce9f808411823c3657a97098f2")
-    message(FATAL_ERROR "vidfab: blocked-attention shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: blocked-attention shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_ATTENTION_PREPARE_SOURCE}"
-    VIDFAB_TENSOR_ATTENTION_PREPARE_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_ATTENTION_PREPARE_TEXT
-    "${VIDFAB_TENSOR_ATTENTION_PREPARE_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_ATTENTION_PREPARE_SOURCE_HASH
-    "${VIDFAB_TENSOR_ATTENTION_PREPARE_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_ATTENTION_PREPARE_SPV}"
-    VIDFAB_TENSOR_ATTENTION_PREPARE_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_ATTENTION_PREPARE_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_PREPARE_SOURCE}"
+    SLOPFAB_TENSOR_ATTENTION_PREPARE_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_ATTENTION_PREPARE_TEXT
+    "${SLOPFAB_TENSOR_ATTENTION_PREPARE_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_ATTENTION_PREPARE_SOURCE_HASH
+    "${SLOPFAB_TENSOR_ATTENTION_PREPARE_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_ATTENTION_PREPARE_SOURCE_HASH STREQUAL
       "786295c4e33eedc7f67317b9ecf6b1bdea0108b319ae5b5e8d57b6b3cea4677d" OR
-     NOT VIDFAB_TENSOR_ATTENTION_PREPARE_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV_HASH STREQUAL
       "56dc48503f296776cd1c105d0dc44d34e5f8768b35a8fee6ec73efaa9d3ff8f4")
-    message(FATAL_ERROR "vidfab: attention-prepare shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: attention-prepare shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE}"
-    VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_TEXT
-    "${VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE_HASH
-    "${VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV}"
-    VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE}"
+    SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_TEXT
+    "${SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE_HASH
+    "${SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE_HASH STREQUAL
       "dd700e2fdc18ed483973b2e161aea3f1f43e8f2db18fc8796f800be766a79930" OR
-     NOT VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_HASH STREQUAL
       "9f8b4480179c01cc26a3e467d1f0915d606594388dab8b5c0856770b2e7e3778")
-    message(FATAL_ERROR "vidfab: causal-GQA attention shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: causal-GQA attention shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_ATTENTION_H3_SOURCE}"
-    VIDFAB_TENSOR_ATTENTION_H3_TEXT)
-  string(REPLACE "\r\n" "\n" VIDFAB_TENSOR_ATTENTION_H3_TEXT
-    "${VIDFAB_TENSOR_ATTENTION_H3_TEXT}")
-  string(SHA256 VIDFAB_TENSOR_ATTENTION_H3_SOURCE_HASH
-    "${VIDFAB_TENSOR_ATTENTION_H3_TEXT}")
-  file(SHA256 "${VIDFAB_TENSOR_ATTENTION_H3_SPV}"
-    VIDFAB_TENSOR_ATTENTION_H3_SPV_HASH)
-  file(SHA256 "${VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV}"
-    VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HASH)
-  if(NOT VIDFAB_TENSOR_ATTENTION_H3_SOURCE_HASH STREQUAL
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_H3_SOURCE}"
+    SLOPFAB_TENSOR_ATTENTION_H3_TEXT)
+  string(REPLACE "\r\n" "\n" SLOPFAB_TENSOR_ATTENTION_H3_TEXT
+    "${SLOPFAB_TENSOR_ATTENTION_H3_TEXT}")
+  string(SHA256 SLOPFAB_TENSOR_ATTENTION_H3_SOURCE_HASH
+    "${SLOPFAB_TENSOR_ATTENTION_H3_TEXT}")
+  file(SHA256 "${SLOPFAB_TENSOR_ATTENTION_H3_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_H3_SPV_HASH)
+  file(SHA256 "${SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HASH)
+  if(NOT SLOPFAB_TENSOR_ATTENTION_H3_SOURCE_HASH STREQUAL
       "b9e51135b436dff97ce6463f4731965e7466530dc1b1e69d3fd7444b3cb6ba2b" OR
-     NOT VIDFAB_TENSOR_ATTENTION_H3_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_ATTENTION_H3_SPV_HASH STREQUAL
       "4fd87fbdbe7ae6ec6c40c67aad6fd39a0b9ef05f6e3cc1a5ed688a5b17fbb37f" OR
-     NOT VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HASH STREQUAL
+     NOT SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HASH STREQUAL
       "9564933f40b33b8c6077cb073f6e0cb78ad40627cd0c973ff16897cab1764efb")
-    message(FATAL_ERROR "vidfab: H3 attention shader/source hash mismatch")
+    message(FATAL_ERROR "slopfab: H3 attention shader/source hash mismatch")
   endif()
-  file(READ "${VIDFAB_TENSOR_OPS_SPV}" VIDFAB_TENSOR_OPS_SPV_HEX HEX)
-  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," VIDFAB_TENSOR_OPS_SPV_BYTES
-    "${VIDFAB_TENSOR_OPS_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_OPS_DENORM_SPV}" VIDFAB_TENSOR_OPS_DENORM_SPV_HEX HEX)
+  file(READ "${SLOPFAB_TENSOR_OPS_SPV}" SLOPFAB_TENSOR_OPS_SPV_HEX HEX)
+  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SLOPFAB_TENSOR_OPS_SPV_BYTES
+    "${SLOPFAB_TENSOR_OPS_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_OPS_DENORM_SPV}" SLOPFAB_TENSOR_OPS_DENORM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_OPS_DENORM_SPV_BYTES "${VIDFAB_TENSOR_OPS_DENORM_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_RMS_NORM_SPV}" VIDFAB_TENSOR_RMS_NORM_SPV_HEX HEX)
-  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," VIDFAB_TENSOR_RMS_NORM_SPV_BYTES
-    "${VIDFAB_TENSOR_RMS_NORM_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_LAYER_NORM_SPV}" VIDFAB_TENSOR_LAYER_NORM_SPV_HEX HEX)
+    SLOPFAB_TENSOR_OPS_DENORM_SPV_BYTES "${SLOPFAB_TENSOR_OPS_DENORM_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_RMS_NORM_SPV}" SLOPFAB_TENSOR_RMS_NORM_SPV_HEX HEX)
+  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SLOPFAB_TENSOR_RMS_NORM_SPV_BYTES
+    "${SLOPFAB_TENSOR_RMS_NORM_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_LAYER_NORM_SPV}" SLOPFAB_TENSOR_LAYER_NORM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_LAYER_NORM_SPV_BYTES "${VIDFAB_TENSOR_LAYER_NORM_SPV_HEX}")
+    SLOPFAB_TENSOR_LAYER_NORM_SPV_BYTES "${SLOPFAB_TENSOR_LAYER_NORM_SPV_HEX}")
   foreach(VARIANT BF16_RMS_BLOCK BF16_RMS_NARROW BF16_LAYER BF16_MOD FP32_MOD)
-    file(READ "${VIDFAB_TENSOR_${VARIANT}_SPV}"
-      VIDFAB_TENSOR_${VARIANT}_SPV_HEX HEX)
+    file(READ "${SLOPFAB_TENSOR_${VARIANT}_SPV}"
+      SLOPFAB_TENSOR_${VARIANT}_SPV_HEX HEX)
     string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-      VIDFAB_TENSOR_${VARIANT}_SPV_BYTES "${VIDFAB_TENSOR_${VARIANT}_SPV_HEX}")
+      SLOPFAB_TENSOR_${VARIANT}_SPV_BYTES "${SLOPFAB_TENSOR_${VARIANT}_SPV_HEX}")
   endforeach()
-  file(READ "${VIDFAB_TENSOR_GROUP_NORM_SPV}"
-    VIDFAB_TENSOR_GROUP_NORM_SPV_HEX HEX)
+  file(READ "${SLOPFAB_TENSOR_GROUP_NORM_SPV}"
+    SLOPFAB_TENSOR_GROUP_NORM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_GROUP_NORM_SPV_BYTES "${VIDFAB_TENSOR_GROUP_NORM_SPV_HEX}")
+    SLOPFAB_TENSOR_GROUP_NORM_SPV_BYTES "${SLOPFAB_TENSOR_GROUP_NORM_SPV_HEX}")
   foreach(VARIANT RESIDUAL SWIGLU DENORM)
-    file(READ "${VIDFAB_TENSOR_VAE_${VARIANT}_SPV}"
-      VIDFAB_TENSOR_VAE_${VARIANT}_SPV_HEX HEX)
+    file(READ "${SLOPFAB_TENSOR_VAE_${VARIANT}_SPV}"
+      SLOPFAB_TENSOR_VAE_${VARIANT}_SPV_HEX HEX)
     string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-      VIDFAB_TENSOR_VAE_${VARIANT}_SPV_BYTES
-      "${VIDFAB_TENSOR_VAE_${VARIANT}_SPV_HEX}")
+      SLOPFAB_TENSOR_VAE_${VARIANT}_SPV_BYTES
+      "${SLOPFAB_TENSOR_VAE_${VARIANT}_SPV_HEX}")
   endforeach()
-  file(READ "${VIDFAB_TENSOR_AUDIO_SPV}" VIDFAB_TENSOR_AUDIO_SPV_HEX HEX)
+  file(READ "${SLOPFAB_TENSOR_AUDIO_SPV}" SLOPFAB_TENSOR_AUDIO_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_AUDIO_SPV_BYTES "${VIDFAB_TENSOR_AUDIO_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_KEYFRAME_SPV}"
-    VIDFAB_TENSOR_KEYFRAME_SPV_HEX HEX)
+    SLOPFAB_TENSOR_AUDIO_SPV_BYTES "${SLOPFAB_TENSOR_AUDIO_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_KEYFRAME_SPV}"
+    SLOPFAB_TENSOR_KEYFRAME_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_KEYFRAME_SPV_BYTES "${VIDFAB_TENSOR_KEYFRAME_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_DIT_SPV}" VIDFAB_TENSOR_DIT_SPV_HEX HEX)
+    SLOPFAB_TENSOR_KEYFRAME_SPV_BYTES "${SLOPFAB_TENSOR_KEYFRAME_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_DIT_SPV}" SLOPFAB_TENSOR_DIT_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_DIT_SPV_BYTES "${VIDFAB_TENSOR_DIT_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_ROPE_SPV}" VIDFAB_TENSOR_ROPE_SPV_HEX HEX)
+    SLOPFAB_TENSOR_DIT_SPV_BYTES "${SLOPFAB_TENSOR_DIT_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_ROPE_SPV}" SLOPFAB_TENSOR_ROPE_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_ROPE_SPV_BYTES "${VIDFAB_TENSOR_ROPE_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_ROPE_DENORM_SPV}"
-    VIDFAB_TENSOR_ROPE_DENORM_SPV_HEX HEX)
+    SLOPFAB_TENSOR_ROPE_SPV_BYTES "${SLOPFAB_TENSOR_ROPE_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_ROPE_DENORM_SPV}"
+    SLOPFAB_TENSOR_ROPE_DENORM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_ROPE_DENORM_SPV_BYTES "${VIDFAB_TENSOR_ROPE_DENORM_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_VAE_ROPE_SPV}" VIDFAB_TENSOR_VAE_ROPE_SPV_HEX HEX)
+    SLOPFAB_TENSOR_ROPE_DENORM_SPV_BYTES "${SLOPFAB_TENSOR_ROPE_DENORM_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_VAE_ROPE_SPV}" SLOPFAB_TENSOR_VAE_ROPE_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_VAE_ROPE_SPV_BYTES "${VIDFAB_TENSOR_VAE_ROPE_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_WEIGHT_SPV}" VIDFAB_TENSOR_WEIGHT_SPV_HEX HEX)
+    SLOPFAB_TENSOR_VAE_ROPE_SPV_BYTES "${SLOPFAB_TENSOR_VAE_ROPE_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_WEIGHT_SPV}" SLOPFAB_TENSOR_WEIGHT_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_WEIGHT_SPV_BYTES "${VIDFAB_TENSOR_WEIGHT_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_WEIGHT_DENORM_SPV}"
-    VIDFAB_TENSOR_WEIGHT_DENORM_SPV_HEX HEX)
+    SLOPFAB_TENSOR_WEIGHT_SPV_BYTES "${SLOPFAB_TENSOR_WEIGHT_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_WEIGHT_DENORM_SPV}"
+    SLOPFAB_TENSOR_WEIGHT_DENORM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_WEIGHT_DENORM_SPV_BYTES "${VIDFAB_TENSOR_WEIGHT_DENORM_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_GEMM_SPV}" VIDFAB_TENSOR_GEMM_SPV_HEX HEX)
+    SLOPFAB_TENSOR_WEIGHT_DENORM_SPV_BYTES "${SLOPFAB_TENSOR_WEIGHT_DENORM_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_GEMM_SPV}" SLOPFAB_TENSOR_GEMM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_GEMM_SPV_BYTES "${VIDFAB_TENSOR_GEMM_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_GEMM_DENORM_SPV}"
-    VIDFAB_TENSOR_GEMM_DENORM_SPV_HEX HEX)
+    SLOPFAB_TENSOR_GEMM_SPV_BYTES "${SLOPFAB_TENSOR_GEMM_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_GEMM_DENORM_SPV}"
+    SLOPFAB_TENSOR_GEMM_DENORM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_GEMM_DENORM_SPV_BYTES "${VIDFAB_TENSOR_GEMM_DENORM_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_GEMM_COOP_SPV}"
-    VIDFAB_TENSOR_GEMM_COOP_SPV_HEX HEX)
+    SLOPFAB_TENSOR_GEMM_DENORM_SPV_BYTES "${SLOPFAB_TENSOR_GEMM_DENORM_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_GEMM_COOP_SPV}"
+    SLOPFAB_TENSOR_GEMM_COOP_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_GEMM_COOP_SPV_BYTES "${VIDFAB_TENSOR_GEMM_COOP_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV}"
-    VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV_HEX HEX)
+    SLOPFAB_TENSOR_GEMM_COOP_SPV_BYTES "${SLOPFAB_TENSOR_GEMM_COOP_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV}"
+    SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV_BYTES
-    "${VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_GEMM_PREPARE_SPV}"
-    VIDFAB_TENSOR_GEMM_PREPARE_SPV_HEX HEX)
+    SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV_BYTES
+    "${SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_GEMM_PREPARE_SPV}"
+    SLOPFAB_TENSOR_GEMM_PREPARE_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_GEMM_PREPARE_SPV_BYTES
-    "${VIDFAB_TENSOR_GEMM_PREPARE_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_GEMM_COOP_F16_SPV}"
-    VIDFAB_TENSOR_GEMM_COOP_F16_SPV_HEX HEX)
+    SLOPFAB_TENSOR_GEMM_PREPARE_SPV_BYTES
+    "${SLOPFAB_TENSOR_GEMM_PREPARE_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_GEMM_COOP_F16_SPV}"
+    SLOPFAB_TENSOR_GEMM_COOP_F16_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_GEMM_COOP_F16_SPV_BYTES
-    "${VIDFAB_TENSOR_GEMM_COOP_F16_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV}"
-    VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_HEX HEX)
+    SLOPFAB_TENSOR_GEMM_COOP_F16_SPV_BYTES
+    "${SLOPFAB_TENSOR_GEMM_COOP_F16_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV}"
+    SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_BYTES
-    "${VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV}"
-    VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_HEX HEX)
+    SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_BYTES
+    "${SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_BYTES
-    "${VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_ATTENTION_PREPARE_SPV}"
-    VIDFAB_TENSOR_ATTENTION_PREPARE_SPV_HEX HEX)
+    SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV_BYTES
+    "${SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_ATTENTION_PREPARE_SPV_BYTES
-    "${VIDFAB_TENSOR_ATTENTION_PREPARE_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV}"
-    VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_HEX HEX)
+    SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV_BYTES
+    "${SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_BYTES
-    "${VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_ATTENTION_H3_SPV}"
-    VIDFAB_TENSOR_ATTENTION_H3_SPV_HEX HEX)
+    SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_BYTES
+    "${SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_H3_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_H3_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_ATTENTION_H3_SPV_BYTES
-    "${VIDFAB_TENSOR_ATTENTION_H3_SPV_HEX}")
-  file(READ "${VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV}"
-    VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HEX HEX)
+    SLOPFAB_TENSOR_ATTENTION_H3_SPV_BYTES
+    "${SLOPFAB_TENSOR_ATTENTION_H3_SPV_HEX}")
+  file(READ "${SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV}"
+    SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
-    VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV_BYTES
-    "${VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HEX}")
+    SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_BYTES
+    "${SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HEX}")
   configure_file(src/vulkan/embedded_tensor_spv.h.in
     generated/vulkan/embedded_tensor_spv.h @ONLY)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${VIDFAB_YUV_SHADER_SOURCE}" "${VIDFAB_YUV_SHADER_SPV}"
-    "${VIDFAB_TENSOR_OPS_SOURCE}"
-    "${VIDFAB_TENSOR_OPS_SPV}" "${VIDFAB_TENSOR_OPS_DENORM_SPV}"
-    "${VIDFAB_TENSOR_NORM_SOURCE}" "${VIDFAB_TENSOR_RMS_NORM_SPV}"
-    "${VIDFAB_TENSOR_LAYER_NORM_SPV}" "${VIDFAB_TENSOR_SHARED_NORM_SOURCE}"
-    "${VIDFAB_TENSOR_BF16_RMS_BLOCK_SPV}" "${VIDFAB_TENSOR_BF16_RMS_NARROW_SPV}"
-    "${VIDFAB_TENSOR_BF16_LAYER_SPV}" "${VIDFAB_TENSOR_BF16_MOD_SPV}"
-    "${VIDFAB_TENSOR_FP32_MOD_SPV}" "${VIDFAB_TENSOR_GROUP_NORM_SOURCE}"
-    "${VIDFAB_TENSOR_GROUP_NORM_SPV}" "${VIDFAB_TENSOR_VAE_POINTWISE_SOURCE}"
-    "${VIDFAB_TENSOR_VAE_RESIDUAL_SPV}" "${VIDFAB_TENSOR_VAE_SWIGLU_SPV}"
-    "${VIDFAB_TENSOR_VAE_DENORM_SPV}" "${VIDFAB_TENSOR_AUDIO_SOURCE}"
-    "${VIDFAB_TENSOR_AUDIO_SPV}" "${VIDFAB_TENSOR_KEYFRAME_SOURCE}"
-    "${VIDFAB_TENSOR_KEYFRAME_SPV}" "${VIDFAB_TENSOR_DIT_SOURCE}"
-    "${VIDFAB_TENSOR_DIT_SPV}" "${VIDFAB_TENSOR_ROPE_SOURCE}"
-    "${VIDFAB_TENSOR_ROPE_SPV}" "${VIDFAB_TENSOR_ROPE_DENORM_SPV}"
-    "${VIDFAB_TENSOR_VAE_ROPE_SOURCE}" "${VIDFAB_TENSOR_VAE_ROPE_SPV}")
+    "${SLOPFAB_YUV_SHADER_SOURCE}" "${SLOPFAB_YUV_SHADER_SPV}"
+    "${SLOPFAB_TENSOR_OPS_SOURCE}"
+    "${SLOPFAB_TENSOR_OPS_SPV}" "${SLOPFAB_TENSOR_OPS_DENORM_SPV}"
+    "${SLOPFAB_TENSOR_NORM_SOURCE}" "${SLOPFAB_TENSOR_RMS_NORM_SPV}"
+    "${SLOPFAB_TENSOR_LAYER_NORM_SPV}" "${SLOPFAB_TENSOR_SHARED_NORM_SOURCE}"
+    "${SLOPFAB_TENSOR_BF16_RMS_BLOCK_SPV}" "${SLOPFAB_TENSOR_BF16_RMS_NARROW_SPV}"
+    "${SLOPFAB_TENSOR_BF16_LAYER_SPV}" "${SLOPFAB_TENSOR_BF16_MOD_SPV}"
+    "${SLOPFAB_TENSOR_FP32_MOD_SPV}" "${SLOPFAB_TENSOR_GROUP_NORM_SOURCE}"
+    "${SLOPFAB_TENSOR_GROUP_NORM_SPV}" "${SLOPFAB_TENSOR_VAE_POINTWISE_SOURCE}"
+    "${SLOPFAB_TENSOR_VAE_RESIDUAL_SPV}" "${SLOPFAB_TENSOR_VAE_SWIGLU_SPV}"
+    "${SLOPFAB_TENSOR_VAE_DENORM_SPV}" "${SLOPFAB_TENSOR_AUDIO_SOURCE}"
+    "${SLOPFAB_TENSOR_AUDIO_SPV}" "${SLOPFAB_TENSOR_KEYFRAME_SOURCE}"
+    "${SLOPFAB_TENSOR_KEYFRAME_SPV}" "${SLOPFAB_TENSOR_DIT_SOURCE}"
+    "${SLOPFAB_TENSOR_DIT_SPV}" "${SLOPFAB_TENSOR_ROPE_SOURCE}"
+    "${SLOPFAB_TENSOR_ROPE_SPV}" "${SLOPFAB_TENSOR_ROPE_DENORM_SPV}"
+    "${SLOPFAB_TENSOR_VAE_ROPE_SOURCE}" "${SLOPFAB_TENSOR_VAE_ROPE_SPV}")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${VIDFAB_TENSOR_WEIGHT_SOURCE}" "${VIDFAB_TENSOR_WEIGHT_SPV}"
-    "${VIDFAB_TENSOR_WEIGHT_DENORM_SPV}" "${VIDFAB_TENSOR_GEMM_SOURCE}"
-    "${VIDFAB_TENSOR_GEMM_SPV}" "${VIDFAB_TENSOR_GEMM_DENORM_SPV}"
-    "${VIDFAB_TENSOR_GEMM_COOP_SOURCE}" "${VIDFAB_TENSOR_GEMM_COOP_SPV}"
-    "${VIDFAB_TENSOR_GEMM_COOP_DENORM_SPV}"
-    "${VIDFAB_TENSOR_GEMM_PREPARE_SOURCE}" "${VIDFAB_TENSOR_GEMM_PREPARE_SPV}"
-    "${VIDFAB_TENSOR_GEMM_COOP_F16_SOURCE}" "${VIDFAB_TENSOR_GEMM_COOP_F16_SPV}"
-    "${VIDFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV}"
-    "${VIDFAB_TENSOR_ATTENTION_BLOCKED_SOURCE}"
-    "${VIDFAB_TENSOR_ATTENTION_BLOCKED_SPV}"
-    "${VIDFAB_TENSOR_ATTENTION_PREPARE_SOURCE}"
-    "${VIDFAB_TENSOR_ATTENTION_PREPARE_SPV}"
-    "${VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE}"
-    "${VIDFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV}"
-    "${VIDFAB_TENSOR_ATTENTION_H3_SOURCE}"
-    "${VIDFAB_TENSOR_ATTENTION_H3_SPV}"
-    "${VIDFAB_TENSOR_ATTENTION_H3_BANDED_SPV}")
+    "${SLOPFAB_TENSOR_WEIGHT_SOURCE}" "${SLOPFAB_TENSOR_WEIGHT_SPV}"
+    "${SLOPFAB_TENSOR_WEIGHT_DENORM_SPV}" "${SLOPFAB_TENSOR_GEMM_SOURCE}"
+    "${SLOPFAB_TENSOR_GEMM_SPV}" "${SLOPFAB_TENSOR_GEMM_DENORM_SPV}"
+    "${SLOPFAB_TENSOR_GEMM_COOP_SOURCE}" "${SLOPFAB_TENSOR_GEMM_COOP_SPV}"
+    "${SLOPFAB_TENSOR_GEMM_COOP_DENORM_SPV}"
+    "${SLOPFAB_TENSOR_GEMM_PREPARE_SOURCE}" "${SLOPFAB_TENSOR_GEMM_PREPARE_SPV}"
+    "${SLOPFAB_TENSOR_GEMM_COOP_F16_SOURCE}" "${SLOPFAB_TENSOR_GEMM_COOP_F16_SPV}"
+    "${SLOPFAB_TENSOR_GEMM_COOP_F16_DENORM_SPV}"
+    "${SLOPFAB_TENSOR_ATTENTION_BLOCKED_SOURCE}"
+    "${SLOPFAB_TENSOR_ATTENTION_BLOCKED_SPV}"
+    "${SLOPFAB_TENSOR_ATTENTION_PREPARE_SOURCE}"
+    "${SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV}"
+    "${SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SOURCE}"
+    "${SLOPFAB_TENSOR_ATTENTION_CAUSAL_GQA_SPV}"
+    "${SLOPFAB_TENSOR_ATTENTION_H3_SOURCE}"
+    "${SLOPFAB_TENSOR_ATTENTION_H3_SPV}"
+    "${SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV}")
 
-  add_library(vidfab_vulkan STATIC
+  add_library(slopfab_vulkan STATIC
     src/vulkan/runtime.cpp
     src/vulkan/tensor.cpp
     src/vulkan/text_layer.cpp
@@ -883,19 +883,19 @@ if(VIDFAB_ENABLE_VULKAN)
     src/vulkan/vae_decoder.cpp
     src/vulkan/vae_vit_block.cpp
     src/vulkan/yuv_converter.cpp)
-  target_include_directories(vidfab_vulkan
+  target_include_directories(slopfab_vulkan
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan/include
             ${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan)
-  target_link_libraries(vidfab_vulkan PUBLIC vidfab_core)
-  target_compile_definitions(vidfab_vulkan PRIVATE VK_NO_PROTOTYPES)
+  target_link_libraries(slopfab_vulkan PUBLIC slopfab_core)
+  target_compile_definitions(slopfab_vulkan PRIVATE VK_NO_PROTOTYPES)
   if(CMAKE_DL_LIBS)
-    target_link_libraries(vidfab_vulkan PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(slopfab_vulkan PRIVATE ${CMAKE_DL_LIBS})
   endif()
   if(MSVC)
-    target_compile_options(vidfab_vulkan PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    target_compile_options(slopfab_vulkan PRIVATE /W4 /permissive- /utf-8 /EHsc)
   else()
-    target_compile_options(vidfab_vulkan PRIVATE -Wall -Wextra)
+    target_compile_options(slopfab_vulkan PRIVATE -Wall -Wextra)
   endif()
 endif()
 
@@ -903,9 +903,9 @@ endif()
 
 if(WIN32)
   if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json")
-    message(FATAL_ERROR "vidfab: ref/text_encoder/tokenizer.json is required to embed the tokenizer")
+    message(FATAL_ERROR "slopfab: ref/text_encoder/tokenizer.json is required to embed the tokenizer")
   endif()
-  set(VIDFAB_LICENSE_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/minimax_h3_LICENSE")
+  set(SLOPFAB_LICENSE_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/minimax_h3_LICENSE")
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
   # Fetched once per build tree and then kept. Embedding the licence is a
   # compliance mechanism and stays; re-downloading it on every configure only
@@ -926,9 +926,9 @@ if(WIN32)
   # line and upstream may legitimately revise the text; pinning it would turn a
   # lawful upstream edit into a build break that only a source change can clear.
   # The marker catches the actual failure mode without that.
-  set(VIDFAB_LICENSE_MARKER "MiniMax H3 COMMUNITY LICENSE AGREEMENT")
+  set(SLOPFAB_LICENSE_MARKER "MiniMax H3 COMMUNITY LICENSE AGREEMENT")
 
-  function(vidfab_check_license path out_var)
+  function(slopfab_check_license path out_var)
     set(${out_var} FALSE PARENT_SCOPE)
     if(NOT EXISTS "${path}")
       return()
@@ -938,118 +938,118 @@ if(WIN32)
       return()
     endif()
     file(READ "${path}" license_head LIMIT 4096)
-    string(FIND "${license_head}" "${VIDFAB_LICENSE_MARKER}" license_marker_at)
+    string(FIND "${license_head}" "${SLOPFAB_LICENSE_MARKER}" license_marker_at)
     if(license_marker_at EQUAL -1)
       return()
     endif()
     set(${out_var} TRUE PARENT_SCOPE)
   endfunction()
 
-  vidfab_check_license("${VIDFAB_LICENSE_RESOURCE}" VIDFAB_LICENSE_PRESENT)
-  if(NOT VIDFAB_LICENSE_PRESENT)
+  slopfab_check_license("${SLOPFAB_LICENSE_RESOURCE}" SLOPFAB_LICENSE_PRESENT)
+  if(NOT SLOPFAB_LICENSE_PRESENT)
     file(DOWNLOAD
       "https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/LICENSE"
-      "${VIDFAB_LICENSE_RESOURCE}"
-      STATUS VIDFAB_LICENSE_DOWNLOAD_STATUS
+      "${SLOPFAB_LICENSE_RESOURCE}"
+      STATUS SLOPFAB_LICENSE_DOWNLOAD_STATUS
       TLS_VERIFY ON)
-    list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 0 VIDFAB_LICENSE_DOWNLOAD_CODE)
+    list(GET SLOPFAB_LICENSE_DOWNLOAD_STATUS 0 SLOPFAB_LICENSE_DOWNLOAD_CODE)
     # Applied to what actually arrived, not just to the transport result, so an
     # error page is rejected on the way in as well as out of the cache.
-    vidfab_check_license("${VIDFAB_LICENSE_RESOURCE}" VIDFAB_LICENSE_PRESENT)
-    if(NOT VIDFAB_LICENSE_DOWNLOAD_CODE EQUAL 0 OR NOT VIDFAB_LICENSE_PRESENT)
-      if(VIDFAB_LICENSE_DOWNLOAD_CODE EQUAL 0)
+    slopfab_check_license("${SLOPFAB_LICENSE_RESOURCE}" SLOPFAB_LICENSE_PRESENT)
+    if(NOT SLOPFAB_LICENSE_DOWNLOAD_CODE EQUAL 0 OR NOT SLOPFAB_LICENSE_PRESENT)
+      if(SLOPFAB_LICENSE_DOWNLOAD_CODE EQUAL 0)
         # The transfer succeeded and the body is not the licence. Usually that
         # means an error page, but it is also what a lawful upstream retitle
         # looks like from here, and the reader has no way to tell which without
         # being told where the expectation lives.
-        string(CONCAT VIDFAB_LICENSE_DOWNLOAD_MESSAGE
+        string(CONCAT SLOPFAB_LICENSE_DOWNLOAD_MESSAGE
           "the server returned something that is not the MiniMax H3 license. "
           "The transfer itself succeeded, so this is either an error page or a "
-          "document whose text no longer contains VIDFAB_LICENSE_MARKER "
-          "(\"${VIDFAB_LICENSE_MARKER}\"). Fetch the URL by hand to tell which; "
+          "document whose text no longer contains SLOPFAB_LICENSE_MARKER "
+          "(\"${SLOPFAB_LICENSE_MARKER}\"). Fetch the URL by hand to tell which; "
           "if upstream legitimately retitled the document, update that marker "
           "in CMakeLists.txt to match")
       else()
-        list(GET VIDFAB_LICENSE_DOWNLOAD_STATUS 1 VIDFAB_LICENSE_DOWNLOAD_MESSAGE)
+        list(GET SLOPFAB_LICENSE_DOWNLOAD_STATUS 1 SLOPFAB_LICENSE_DOWNLOAD_MESSAGE)
       endif()
-      file(REMOVE "${VIDFAB_LICENSE_RESOURCE}")
-      message(FATAL_ERROR "vidfab: could not download MiniMax H3 license: ${VIDFAB_LICENSE_DOWNLOAD_MESSAGE}")
+      file(REMOVE "${SLOPFAB_LICENSE_RESOURCE}")
+      message(FATAL_ERROR "slopfab: could not download MiniMax H3 license: ${SLOPFAB_LICENSE_DOWNLOAD_MESSAGE}")
     endif()
   endif()
   file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json"
-       VIDFAB_TOKENIZER_RESOURCE)
-  file(TO_CMAKE_PATH "${VIDFAB_LICENSE_RESOURCE}" VIDFAB_LICENSE_RESOURCE)
-  configure_file(src/vidfab_tokenizer.rc.in generated/vidfab_tokenizer.rc @ONLY)
-  configure_file(src/vidfab_license.rc.in generated/vidfab_license.rc @ONLY)
+       SLOPFAB_TOKENIZER_RESOURCE)
+  file(TO_CMAKE_PATH "${SLOPFAB_LICENSE_RESOURCE}" SLOPFAB_LICENSE_RESOURCE)
+  configure_file(src/slopfab_tokenizer.rc.in generated/slopfab_tokenizer.rc @ONLY)
+  configure_file(src/slopfab_license.rc.in generated/slopfab_license.rc @ONLY)
 
   # A static library cannot usefully carry a .res — the linker has no reference
   # to pull it in with — so the executable embeds both resources itself.
-  set(VIDFAB_EXE_RESOURCES
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_tokenizer.rc"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_license.rc")
-  set(VIDFAB_CLI_SOURCES src/main.cpp ${VIDFAB_EXE_RESOURCES})
+  set(SLOPFAB_EXE_RESOURCES
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/slopfab_tokenizer.rc"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/slopfab_license.rc")
+  set(SLOPFAB_CLI_SOURCES src/main.cpp ${SLOPFAB_EXE_RESOURCES})
 else()
-  set(VIDFAB_CLI_SOURCES src/main.cpp)
+  set(SLOPFAB_CLI_SOURCES src/main.cpp)
 endif()
 
 # The CLI and C API use the same in-process CUDA core. On Windows cuBLAS is
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
 # or toolkit-specific backend executable is needed.
-add_executable(vidfab ${VIDFAB_CLI_SOURCES})
-set(VIDFAB_CLI_TARGET vidfab)
+add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
+set(SLOPFAB_CLI_TARGET slopfab)
 
-target_link_libraries(${VIDFAB_CLI_TARGET} PRIVATE vidfab_core)
-target_compile_definitions(${VIDFAB_CLI_TARGET} PRIVATE
-  VIDFAB_WITH_VULKAN=$<IF:$<BOOL:${VIDFAB_ENABLE_VULKAN}>,1,0>)
-if(VIDFAB_ENABLE_VULKAN)
-  target_link_libraries(${VIDFAB_CLI_TARGET} PRIVATE vidfab_vulkan)
+target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_core)
+target_compile_definitions(${SLOPFAB_CLI_TARGET} PRIVATE
+  SLOPFAB_WITH_VULKAN=$<IF:$<BOOL:${SLOPFAB_ENABLE_VULKAN}>,1,0>)
+if(SLOPFAB_ENABLE_VULKAN)
+  target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_vulkan)
 endif()
-if(VIDFAB_ENABLE_CUDA)
-  target_link_libraries(${VIDFAB_CLI_TARGET} PRIVATE vidfab_cuda)
+if(SLOPFAB_ENABLE_CUDA)
+  target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_cuda)
 endif()
 
 if(MSVC)
-  target_compile_options(${VIDFAB_CLI_TARGET} PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  target_compile_options(${SLOPFAB_CLI_TARGET} PRIVATE /W4 /permissive- /utf-8 /EHsc)
 else()
-  target_compile_options(${VIDFAB_CLI_TARGET} PRIVATE -Wall -Wextra)
+  target_compile_options(${SLOPFAB_CLI_TARGET} PRIVATE -Wall -Wextra)
 endif()
 if(WIN32)
-  target_link_libraries(${VIDFAB_CLI_TARGET} PRIVATE winhttp)
+  target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE winhttp)
 endif()
 
 # Staging the FFmpeg runtime beside the executable, which only a build that
 # compiled the muxer has any use for. Guarded rather than left unconditional
 # because the check below is a FATAL_ERROR: without this, configuring with
-# -DVIDFAB_WITH_FFMPEG=OFF would still refuse to proceed without the very
+# -DSLOPFAB_WITH_FFMPEG=OFF would still refuse to proceed without the very
 # distribution the option exists to do without.
-if(WIN32 AND VIDFAB_WITH_FFMPEG)
+if(WIN32 AND SLOPFAB_WITH_FFMPEG)
   # FFmpeg remains runtime-loaded (and therefore replaceable), but the checked-in
   # distribution is the default used by local builds. Keep only the libraries
   # mux.cpp loads, plus swresample which avcodec depends on in this FFmpeg build.
-  set(VIDFAB_FFMPEG_BIN "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
-  set(VIDFAB_FFMPEG_RUNTIME_DLLS
+  set(SLOPFAB_FFMPEG_BIN "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
+  set(SLOPFAB_FFMPEG_RUNTIME_DLLS
     avcodec-62.dll
     avformat-62.dll
     avutil-60.dll
     swresample-6.dll
     swscale-9.dll)
-  foreach(VIDFAB_FFMPEG_DLL IN LISTS VIDFAB_FFMPEG_RUNTIME_DLLS)
-    if(NOT EXISTS "${VIDFAB_FFMPEG_BIN}/${VIDFAB_FFMPEG_DLL}")
+  foreach(SLOPFAB_FFMPEG_DLL IN LISTS SLOPFAB_FFMPEG_RUNTIME_DLLS)
+    if(NOT EXISTS "${SLOPFAB_FFMPEG_BIN}/${SLOPFAB_FFMPEG_DLL}")
       message(FATAL_ERROR
-        "vidfab: required FFmpeg runtime is missing: ${VIDFAB_FFMPEG_BIN}/${VIDFAB_FFMPEG_DLL}")
+        "slopfab: required FFmpeg runtime is missing: ${SLOPFAB_FFMPEG_BIN}/${SLOPFAB_FFMPEG_DLL}")
     endif()
-    add_custom_command(TARGET ${VIDFAB_CLI_TARGET} POST_BUILD
+    add_custom_command(TARGET ${SLOPFAB_CLI_TARGET} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${VIDFAB_FFMPEG_BIN}/${VIDFAB_FFMPEG_DLL}"
-        "$<TARGET_FILE_DIR:vidfab>/${VIDFAB_FFMPEG_DLL}"
+        "${SLOPFAB_FFMPEG_BIN}/${SLOPFAB_FFMPEG_DLL}"
+        "$<TARGET_FILE_DIR:slopfab>/${SLOPFAB_FFMPEG_DLL}"
       VERBATIM)
   endforeach()
 endif()
 
 # --- c api ------------------------------------------------------------------
 
-# vidfab_c builds vidfab.dll, the stable C ABI with a hand-written export set, for
-# Rust, C#, Python and anything else with an FFI. See include/vidfab/capi.h.
+# slopfab_c builds slopfab.dll, the stable C ABI with a hand-written export set, for
+# Rust, C#, Python and anything else with an FFI. See include/slopfab/capi.h.
 #
 # Dependent on CUDA rather than merely checked against it, because the C API
 # exists to run generations and `run_generate` is on the CUDA side. Making it a
@@ -1057,44 +1057,44 @@ endif()
 # the lazy-CUDA design at the top of this file exists to support — stopped
 # configuring at all, since the default would then contradict a hard error two
 # hundred lines earlier. This forces it off in that situation instead, and says
-# so, and an explicit -DVIDFAB_BUILD_C_API=ON cannot resurrect it.
+# so, and an explicit -DSLOPFAB_BUILD_C_API=ON cannot resurrect it.
 include(CMakeDependentOption)
-cmake_dependent_option(VIDFAB_BUILD_C_API
-  "Build vidfab_c, the stable C ABI shared library" ON
-  "VIDFAB_ENABLE_CUDA" OFF)
+cmake_dependent_option(SLOPFAB_BUILD_C_API
+  "Build slopfab_c, the stable C ABI shared library" ON
+  "SLOPFAB_ENABLE_CUDA" OFF)
 
-if(NOT VIDFAB_BUILD_C_API AND NOT VIDFAB_ENABLE_CUDA)
-  message(STATUS "vidfab: no CUDA, so vidfab_c (the C ABI DLL) is not built")
+if(NOT SLOPFAB_BUILD_C_API AND NOT SLOPFAB_ENABLE_CUDA)
+  message(STATUS "slopfab: no CUDA, so slopfab_c (the C ABI DLL) is not built")
 endif()
 
-if(VIDFAB_BUILD_C_API)
+if(SLOPFAB_BUILD_C_API)
   # The internal core and CUDA libraries are static and link into this target.
-  # Consequently vidfab.dll is the only project DLL, and its exports are exactly
-  # the C entry points — no unstable C++ ABI and no companion vidfab DLLs.
+  # Consequently slopfab.dll is the only project DLL, and its exports are exactly
+  # the C entry points — no unstable C++ ABI and no companion slopfab DLLs.
   #
   # Static cudart is embedded (see above), while the shared in-process loader
   # resolves CUDA 13/12 cuBLAS by absolute toolkit path on first use. Thus the
   # DLL and CLI have identical selection/error behavior and neither has a
   # fixed cublas64_<major>.dll import.
-  add_library(vidfab_c SHARED src/capi/capi.cpp)
-  # vidfab_cuda carries vidfab_core with it as a PUBLIC dependency, so naming
+  add_library(slopfab_c SHARED src/capi/capi.cpp)
+  # slopfab_cuda carries slopfab_core with it as a PUBLIC dependency, so naming
   # the one target is naming both.
-  target_link_libraries(vidfab_c PRIVATE vidfab_cuda)
+  target_link_libraries(slopfab_c PRIVATE slopfab_cuda)
 
   # PRIVATE: consumers of the DLL include capi.h and nothing else, and the
   # install rule below places it for them. Anything in this build tree that
   # needs the header asks for the include directory itself.
-  target_include_directories(vidfab_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_include_directories(slopfab_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # Switches capi.h from dllimport to dllexport. It is the only definition the
   # C API needs: the version it reports is stated in the header next to the
   # constants a consumer compiles against, so the two cannot drift.
-  target_compile_definitions(vidfab_c PRIVATE VIDFAB_C_BUILD=1)
+  target_compile_definitions(slopfab_c PRIVATE SLOPFAB_C_BUILD=1)
 
   # The static libraries end up inside a shared object here, which on ELF
   # targets requires every object in them to be position independent. Harmless
   # and ignored on Windows.
-  set_property(TARGET vidfab_core PROPERTY POSITION_INDEPENDENT_CODE ON)
-  set_property(TARGET vidfab_cuda PROPERTY POSITION_INDEPENDENT_CODE ON)
+  set_property(TARGET slopfab_core PROPERTY POSITION_INDEPENDENT_CODE ON)
+  set_property(TARGET slopfab_cuda PROPERTY POSITION_INDEPENDENT_CODE ON)
 
   # The export set is the point of this target, so it is stated rather than
   # inherited. WINDOWS_EXPORT_ALL_SYMBOLS is off explicitly because a build
@@ -1107,37 +1107,37 @@ if(VIDFAB_BUILD_C_API)
   # answering different questions — capi.h declares its own version and tells
   # a binding to refuse a different major, while PROJECT_VERSION is 0.1.0 and
   # moves whenever anything in the project does. Using the latter here would
-  # produce a libvidfab.so.0 whose soname says 0 for an ABI that says 1, and
+  # produce a libslopfab.so.0 whose soname says 0 for an ABI that says 1, and
   # would bump it for releases that did not touch the C interface at all.
-  set(VIDFAB_CAPI_VERSION_MAJOR 1)
-  set(VIDFAB_CAPI_VERSION_MINOR 5)
-  set(VIDFAB_CAPI_VERSION_PATCH 0)
-  set(VIDFAB_CAPI_VERSION
-    "${VIDFAB_CAPI_VERSION_MAJOR}.${VIDFAB_CAPI_VERSION_MINOR}.${VIDFAB_CAPI_VERSION_PATCH}")
+  set(SLOPFAB_CAPI_VERSION_MAJOR 1)
+  set(SLOPFAB_CAPI_VERSION_MINOR 5)
+  set(SLOPFAB_CAPI_VERSION_PATCH 0)
+  set(SLOPFAB_CAPI_VERSION
+    "${SLOPFAB_CAPI_VERSION_MAJOR}.${SLOPFAB_CAPI_VERSION_MINOR}.${SLOPFAB_CAPI_VERSION_PATCH}")
 
-  set_target_properties(vidfab_c PROPERTIES
-    OUTPUT_NAME vidfab
+  set_target_properties(slopfab_c PROPERTIES
+    OUTPUT_NAME slopfab
     WINDOWS_EXPORT_ALL_SYMBOLS OFF
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
-    VERSION ${VIDFAB_CAPI_VERSION}
-    SOVERSION ${VIDFAB_CAPI_VERSION_MAJOR})
+    VERSION ${SLOPFAB_CAPI_VERSION}
+    SOVERSION ${SLOPFAB_CAPI_VERSION_MAJOR})
   if(WIN32)
     # The DLL and CLI intentionally share the runtime basename, but an MSVC
-    # executable with exported symbols can also emit vidfab.lib. Give the DLL
+    # executable with exported symbols can also emit slopfab.lib. Give the DLL
     # import archive its own name so parallel aggregate builds cannot overwrite
     # the library C-API tests are about to link.
-    set_target_properties(vidfab_c PROPERTIES ARCHIVE_OUTPUT_NAME vidfab_c)
+    set_target_properties(slopfab_c PROPERTIES ARCHIVE_OUTPUT_NAME slopfab_c)
   endif()
 
   # The visibility presets above are *compile* properties, so they only cover
-  # capi.cpp. vidfab_core and vidfab_cuda are compiled with default visibility,
+  # capi.cpp. slopfab_core and slopfab_cuda are compiled with default visibility,
   # and on ELF their entire C++ symbol table would otherwise be re-exported
-  # from libvidfab.so — precisely what WINDOWS_EXPORT_ALL_SYMBOLS OFF
+  # from libslopfab.so — precisely what WINDOWS_EXPORT_ALL_SYMBOLS OFF
   # prevents on the other platform. --exclude-libs makes the two agree.
   if(NOT WIN32 AND NOT APPLE)
-    target_link_options(vidfab_c PRIVATE "LINKER:--exclude-libs,ALL")
+    target_link_options(slopfab_c PRIVATE "LINKER:--exclude-libs,ALL")
   endif()
 
   # capi.h states the same three numbers for the compiler; if they ever
@@ -1148,97 +1148,97 @@ if(VIDFAB_BUILD_C_API)
   # order and joining them would compare 0.1.0 against 1.0.0 — and abort with a
   # message blaming the version rather than the reordering — if someone ever
   # rearranged three `#define`s that C is perfectly happy to see in any order.
-  foreach(VIDFAB_CAPI_PART MAJOR MINOR PATCH)
-    unset(VIDFAB_CAPI_HEADER_${VIDFAB_CAPI_PART})
-    file(STRINGS include/vidfab/capi.h VIDFAB_CAPI_HEADER_LINE
-      REGEX "^#define[ \t]+VIDFAB_CAPI_VERSION_${VIDFAB_CAPI_PART}[ \t]+[0-9]+")
-    if(NOT VIDFAB_CAPI_HEADER_LINE)
+  foreach(SLOPFAB_CAPI_PART MAJOR MINOR PATCH)
+    unset(SLOPFAB_CAPI_HEADER_${SLOPFAB_CAPI_PART})
+    file(STRINGS include/slopfab/capi.h SLOPFAB_CAPI_HEADER_LINE
+      REGEX "^#define[ \t]+SLOPFAB_CAPI_VERSION_${SLOPFAB_CAPI_PART}[ \t]+[0-9]+")
+    if(NOT SLOPFAB_CAPI_HEADER_LINE)
       message(FATAL_ERROR
-        "vidfab: capi.h has no VIDFAB_CAPI_VERSION_${VIDFAB_CAPI_PART} to check against")
+        "slopfab: capi.h has no SLOPFAB_CAPI_VERSION_${SLOPFAB_CAPI_PART} to check against")
     endif()
-    string(REGEX MATCH "[0-9]+$" VIDFAB_CAPI_HEADER_${VIDFAB_CAPI_PART}
-      "${VIDFAB_CAPI_HEADER_LINE}")
+    string(REGEX MATCH "[0-9]+$" SLOPFAB_CAPI_HEADER_${SLOPFAB_CAPI_PART}
+      "${SLOPFAB_CAPI_HEADER_LINE}")
   endforeach()
-  set(VIDFAB_CAPI_HEADER_VERSION
-    "${VIDFAB_CAPI_HEADER_MAJOR}.${VIDFAB_CAPI_HEADER_MINOR}.${VIDFAB_CAPI_HEADER_PATCH}")
-  if(NOT VIDFAB_CAPI_HEADER_VERSION STREQUAL VIDFAB_CAPI_VERSION)
+  set(SLOPFAB_CAPI_HEADER_VERSION
+    "${SLOPFAB_CAPI_HEADER_MAJOR}.${SLOPFAB_CAPI_HEADER_MINOR}.${SLOPFAB_CAPI_HEADER_PATCH}")
+  if(NOT SLOPFAB_CAPI_HEADER_VERSION STREQUAL SLOPFAB_CAPI_VERSION)
     message(FATAL_ERROR
-      "vidfab: capi.h declares ABI ${VIDFAB_CAPI_HEADER_VERSION} but CMakeLists says "
-      "${VIDFAB_CAPI_VERSION}; update both.")
+      "slopfab: capi.h declares ABI ${SLOPFAB_CAPI_HEADER_VERSION} but CMakeLists says "
+      "${SLOPFAB_CAPI_VERSION}; update both.")
   endif()
   # `file(STRINGS)` creates no dependency of its own, so without this the check
   # would go stale at exactly the moment it exists for: editing the header's
   # version macros would not re-run CMake, and the soname would keep describing
   # the previous ABI.
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/vidfab/capi.h")
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/slopfab/capi.h")
 
   # `Tokenizer::load_embedded` looks the resource up in the module holding its
-  # own code. That code is linked into vidfab.dll, so the 7 MB tokenizer has to
+  # own code. That code is linked into slopfab.dll, so the 7 MB tokenizer has to
   # be here too or a C caller that leaves the tokenizer path empty gets
   # "embedded resource is missing".
   if(WIN32)
-    target_sources(vidfab_c PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/vidfab_tokenizer.rc")
+    target_sources(slopfab_c PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/slopfab_tokenizer.rc")
   endif()
 
   if(MSVC)
-    target_compile_options(vidfab_c PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(slopfab_c PRIVATE /W4 /permissive- /utf-8)
   else()
-    target_compile_options(vidfab_c PRIVATE -Wall -Wextra)
+    target_compile_options(slopfab_c PRIVATE -Wall -Wextra)
   endif()
 endif()
 
 # --- tools ------------------------------------------------------------------
 
-# Disk-side load probe. Deliberately a separate binary rather than a `vidfab`
-# subcommand: it links vidfab_core only, so it never initialises CUDA and can
+# Disk-side load probe. Deliberately a separate binary rather than a `slopfab`
+# subcommand: it links slopfab_core only, so it never initialises CUDA and can
 # be run while the card is busy with something else.
-add_executable(vidfab_loadprobe tools/loadprobe.cpp)
-target_link_libraries(vidfab_loadprobe PRIVATE vidfab_core)
+add_executable(slopfab_loadprobe tools/loadprobe.cpp)
+target_link_libraries(slopfab_loadprobe PRIVATE slopfab_core)
 if(MSVC)
-  target_compile_options(vidfab_loadprobe PRIVATE /W4 /permissive- /utf-8)
+  target_compile_options(slopfab_loadprobe PRIVATE /W4 /permissive- /utf-8)
 else()
-  target_compile_options(vidfab_loadprobe PRIVATE -Wall -Wextra)
+  target_compile_options(slopfab_loadprobe PRIVATE -Wall -Wextra)
 endif()
 
 # Temporal-chunking driver for the frame-banding quality probe. Separate binary
-# for the same reason as the load probe: it links vidfab_core only, so it
+# for the same reason as the load probe: it links slopfab_core only, so it
 # initialises no CUDA context and reads no checkpoint, and it can be run while
 # the card is busy with the generations it is preparing or analysing.
-add_executable(vidfab_chunkprobe tools/chunkprobe.cpp)
-target_link_libraries(vidfab_chunkprobe PRIVATE vidfab_core)
+add_executable(slopfab_chunkprobe tools/chunkprobe.cpp)
+target_link_libraries(slopfab_chunkprobe PRIVATE slopfab_core)
 if(MSVC)
-  target_compile_options(vidfab_chunkprobe PRIVATE /W4 /permissive- /utf-8)
+  target_compile_options(slopfab_chunkprobe PRIVATE /W4 /permissive- /utf-8)
 else()
-  target_compile_options(vidfab_chunkprobe PRIVATE -Wall -Wextra)
+  target_compile_options(slopfab_chunkprobe PRIVATE -Wall -Wextra)
 endif()
 
-add_executable(vidfab_vaeprobe tools/vaeprobe.cpp)
-target_link_libraries(vidfab_vaeprobe PRIVATE vidfab_core)
+add_executable(slopfab_vaeprobe tools/vaeprobe.cpp)
+target_link_libraries(slopfab_vaeprobe PRIVATE slopfab_core)
 if(MSVC)
-  target_compile_options(vidfab_vaeprobe PRIVATE /W4 /permissive- /utf-8)
+  target_compile_options(slopfab_vaeprobe PRIVATE /W4 /permissive- /utf-8)
 else()
-  target_compile_options(vidfab_vaeprobe PRIVATE -Wall -Wextra)
+  target_compile_options(slopfab_vaeprobe PRIVATE -Wall -Wextra)
 endif()
 
-if(VIDFAB_ENABLE_CUDA)
-  add_executable(vidfab_vaecudaprobe tools/vaecudaprobe.cpp)
-  target_link_libraries(vidfab_vaecudaprobe PRIVATE vidfab_cuda)
+if(SLOPFAB_ENABLE_CUDA)
+  add_executable(slopfab_vaecudaprobe tools/vaecudaprobe.cpp)
+  target_link_libraries(slopfab_vaecudaprobe PRIVATE slopfab_cuda)
   if(MSVC)
-    target_compile_options(vidfab_vaecudaprobe PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(slopfab_vaecudaprobe PRIVATE /W4 /permissive- /utf-8)
   else()
-    target_compile_options(vidfab_vaecudaprobe PRIVATE -Wall -Wextra)
+    target_compile_options(slopfab_vaecudaprobe PRIVATE -Wall -Wextra)
   endif()
 endif()
 
 # --- tests ------------------------------------------------------------------
 
-if(VIDFAB_BUILD_TESTS)
+if(SLOPFAB_BUILD_TESTS)
   enable_testing()
   # Host tests. Each area contributes its own translation unit and registers
   # its cases with the shared harness, so adding tests never touches a file
   # someone else is editing.
-  add_executable(vidfab_tests
+  add_executable(slopfab_tests
     tests/harness.cpp
     tests/test_main.cpp
     tests/test_adaln.cpp
@@ -1262,115 +1262,115 @@ if(VIDFAB_BUILD_TESTS)
     tests/test_output.cpp
     tests/test_device_tensor.cpp
   )
-  target_link_libraries(vidfab_tests PRIVATE vidfab_core)
+  target_link_libraries(slopfab_tests PRIVATE slopfab_core)
   if(MSVC)
-    target_compile_options(vidfab_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    target_compile_options(slopfab_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   else()
-    target_compile_options(vidfab_tests PRIVATE -Wall -Wextra)
+    target_compile_options(slopfab_tests PRIVATE -Wall -Wextra)
   endif()
-  add_test(NAME unit COMMAND vidfab_tests)
+  add_test(NAME unit COMMAND slopfab_tests)
 
-  if(VIDFAB_ENABLE_VULKAN)
-    add_executable(vidfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp)
-    target_link_libraries(vidfab_vulkan_tests PRIVATE vidfab_vulkan)
-    set(VIDFAB_AFFINE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp")
-    set(VIDFAB_AFFINE_SPV "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp.spv")
-    file(READ "${VIDFAB_AFFINE_SOURCE}" VIDFAB_AFFINE_SOURCE_TEXT)
-    string(REPLACE "\r\n" "\n" VIDFAB_AFFINE_SOURCE_TEXT "${VIDFAB_AFFINE_SOURCE_TEXT}")
-    string(SHA256 VIDFAB_AFFINE_SOURCE_HASH "${VIDFAB_AFFINE_SOURCE_TEXT}")
-    file(SHA256 "${VIDFAB_AFFINE_SPV}" VIDFAB_AFFINE_SPV_HASH)
-    if(NOT VIDFAB_AFFINE_SOURCE_HASH STREQUAL
+  if(SLOPFAB_ENABLE_VULKAN)
+    add_executable(slopfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp)
+    target_link_libraries(slopfab_vulkan_tests PRIVATE slopfab_vulkan)
+    set(SLOPFAB_AFFINE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp")
+    set(SLOPFAB_AFFINE_SPV "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp.spv")
+    file(READ "${SLOPFAB_AFFINE_SOURCE}" SLOPFAB_AFFINE_SOURCE_TEXT)
+    string(REPLACE "\r\n" "\n" SLOPFAB_AFFINE_SOURCE_TEXT "${SLOPFAB_AFFINE_SOURCE_TEXT}")
+    string(SHA256 SLOPFAB_AFFINE_SOURCE_HASH "${SLOPFAB_AFFINE_SOURCE_TEXT}")
+    file(SHA256 "${SLOPFAB_AFFINE_SPV}" SLOPFAB_AFFINE_SPV_HASH)
+    if(NOT SLOPFAB_AFFINE_SOURCE_HASH STREQUAL
         "5ff2705b9c300adbdb476d393226f0dda0a3e23dd7b1eda9ac8095a9165345cd" OR
-       NOT VIDFAB_AFFINE_SPV_HASH STREQUAL
+       NOT SLOPFAB_AFFINE_SPV_HASH STREQUAL
         "75c8343ac68d52af2c5908db040af9768f6abbce9df0a82268d131afbfc2ede5")
       message(FATAL_ERROR
-        "vidfab: affine.comp or its checked-in SPIR-V changed. Regenerate with the "
+        "slopfab: affine.comp or its checked-in SPIR-V changed. Regenerate with the "
         "documented glslang command, verify the shader test, and update both hashes")
     endif()
-    target_compile_definitions(vidfab_vulkan_tests PRIVATE
-      VIDFAB_TEST_AFFINE_SPV_PATH="affine.comp.spv"
-      VIDFAB_TEST_ATTENTION_PREPARE_SPV_PATH="tensor_attention_prepare.comp.spv"
-      VIDFAB_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-    add_custom_command(TARGET vidfab_vulkan_tests POST_BUILD
+    target_compile_definitions(slopfab_vulkan_tests PRIVATE
+      SLOPFAB_TEST_AFFINE_SPV_PATH="affine.comp.spv"
+      SLOPFAB_TEST_ATTENTION_PREPARE_SPV_PATH="tensor_attention_prepare.comp.spv"
+      SLOPFAB_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_custom_command(TARGET slopfab_vulkan_tests POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${VIDFAB_AFFINE_SPV}" "$<TARGET_FILE_DIR:vidfab_vulkan_tests>/affine.comp.spv"
+        "${SLOPFAB_AFFINE_SPV}" "$<TARGET_FILE_DIR:slopfab_vulkan_tests>/affine.comp.spv"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${VIDFAB_TENSOR_ATTENTION_PREPARE_SPV}"
-        "$<TARGET_FILE_DIR:vidfab_vulkan_tests>/tensor_attention_prepare.comp.spv"
+        "${SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV}"
+        "$<TARGET_FILE_DIR:slopfab_vulkan_tests>/tensor_attention_prepare.comp.spv"
       VERBATIM)
     if(MSVC)
-      target_compile_options(vidfab_vulkan_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+      target_compile_options(slopfab_vulkan_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
     else()
-      target_compile_options(vidfab_vulkan_tests PRIVATE -Wall -Wextra)
+      target_compile_options(slopfab_vulkan_tests PRIVATE -Wall -Wextra)
     endif()
-    add_test(NAME vulkan COMMAND vidfab_vulkan_tests)
+    add_test(NAME vulkan COMMAND slopfab_vulkan_tests)
     set_tests_properties(vulkan PROPERTIES
-      WORKING_DIRECTORY "$<TARGET_FILE_DIR:vidfab_vulkan_tests>")
+      WORKING_DIRECTORY "$<TARGET_FILE_DIR:slopfab_vulkan_tests>")
   endif()
 
-  if(VIDFAB_ENABLE_CUDA AND VIDFAB_ENABLE_VULKAN)
-    add_executable(vidfab_tensor_backend_tests
+  if(SLOPFAB_ENABLE_CUDA AND SLOPFAB_ENABLE_VULKAN)
+    add_executable(slopfab_tensor_backend_tests
       tests/harness.cpp tests/allocation_guard.cpp
       tests/test_tensor_backends.cu tests/test_audio_vulkan.cu)
-    target_link_libraries(vidfab_tensor_backend_tests PRIVATE
-      vidfab_cuda vidfab_vulkan)
-    target_compile_definitions(vidfab_tensor_backend_tests PRIVATE
-      VIDFAB_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(slopfab_tensor_backend_tests PRIVATE
+      slopfab_cuda slopfab_vulkan)
+    target_compile_definitions(slopfab_tensor_backend_tests PRIVATE
+      SLOPFAB_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(WIN32)
-      target_link_libraries(vidfab_tensor_backend_tests PRIVATE bcrypt)
+      target_link_libraries(slopfab_tensor_backend_tests PRIVATE bcrypt)
     endif()
     if(MSVC)
-      target_compile_options(vidfab_tensor_backend_tests PRIVATE
+      target_compile_options(slopfab_tensor_backend_tests PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive-;/utf-8;/EHsc>)
     endif()
-    add_test(NAME tensor_backends COMMAND vidfab_tensor_backend_tests)
+    add_test(NAME tensor_backends COMMAND slopfab_tensor_backend_tests)
   endif()
 
-  if(VIDFAB_ENABLE_CUDA)
-    add_executable(vidfab_cublas_dispatch_tests tests/test_cublas_dispatch.cpp)
-    target_link_libraries(vidfab_cublas_dispatch_tests PRIVATE vidfab_cuda)
+  if(SLOPFAB_ENABLE_CUDA)
+    add_executable(slopfab_cublas_dispatch_tests tests/test_cublas_dispatch.cpp)
+    target_link_libraries(slopfab_cublas_dispatch_tests PRIVATE slopfab_cuda)
     if(WIN32)
-      add_test(NAME cublas_cuda12 COMMAND vidfab_cublas_dispatch_tests 12)
+      add_test(NAME cublas_cuda12 COMMAND slopfab_cublas_dispatch_tests 12)
       set_tests_properties(cublas_cuda12 PROPERTIES
-        ENVIRONMENT "VIDFAB_CUDA_VERSION=12")
-      add_test(NAME cublas_cuda13 COMMAND vidfab_cublas_dispatch_tests 13)
+        ENVIRONMENT "SLOPFAB_CUDA_VERSION=12")
+      add_test(NAME cublas_cuda13 COMMAND slopfab_cublas_dispatch_tests 13)
       set_tests_properties(cublas_cuda13 PROPERTIES
-        ENVIRONMENT "VIDFAB_CUDA_VERSION=13")
-      add_test(NAME cublas_auto_prefer13 COMMAND vidfab_cublas_dispatch_tests auto)
+        ENVIRONMENT "SLOPFAB_CUDA_VERSION=13")
+      add_test(NAME cublas_auto_prefer13 COMMAND slopfab_cublas_dispatch_tests auto)
       set_tests_properties(cublas_auto_prefer13 PROPERTIES
-        ENVIRONMENT "VIDFAB_CUDA_VERSION=auto")
+        ENVIRONMENT "SLOPFAB_CUDA_VERSION=auto")
       add_test(NAME cublas_auto_load_fallback
-        COMMAND vidfab_cublas_dispatch_tests auto-fallback)
+        COMMAND slopfab_cublas_dispatch_tests auto-fallback)
       add_test(NAME cublas_explicit_load_failure
-        COMMAND vidfab_cublas_dispatch_tests broken-13)
+        COMMAND slopfab_cublas_dispatch_tests broken-13)
     else()
-      add_executable(vidfab_cublas_linked_dispatch_tests
+      add_executable(slopfab_cublas_linked_dispatch_tests
         tests/test_cublas_linked_dispatch.cpp)
-      target_link_libraries(vidfab_cublas_linked_dispatch_tests PRIVATE vidfab_cuda)
+      target_link_libraries(slopfab_cublas_linked_dispatch_tests PRIVATE slopfab_cuda)
       add_test(NAME cublas_linked_auto
-        COMMAND vidfab_cublas_linked_dispatch_tests auto success)
+        COMMAND slopfab_cublas_linked_dispatch_tests auto success)
       add_test(NAME cublas_linked_matching
-        COMMAND vidfab_cublas_linked_dispatch_tests
+        COMMAND slopfab_cublas_linked_dispatch_tests
           ${CUDAToolkit_VERSION_MAJOR} success)
       if(CUDAToolkit_VERSION_MAJOR EQUAL 12)
-        set(VIDFAB_CUBLAS_MISMATCH_MAJOR 13)
+        set(SLOPFAB_CUBLAS_MISMATCH_MAJOR 13)
       else()
-        set(VIDFAB_CUBLAS_MISMATCH_MAJOR 12)
+        set(SLOPFAB_CUBLAS_MISMATCH_MAJOR 12)
       endif()
       add_test(NAME cublas_linked_mismatch
-        COMMAND vidfab_cublas_linked_dispatch_tests
-          ${VIDFAB_CUBLAS_MISMATCH_MAJOR} failure)
+        COMMAND slopfab_cublas_linked_dispatch_tests
+          ${SLOPFAB_CUBLAS_MISMATCH_MAJOR} failure)
       add_test(NAME cublas_linked_environment_matching
-        COMMAND vidfab_cublas_linked_dispatch_tests environment success)
+        COMMAND slopfab_cublas_linked_dispatch_tests environment success)
       set_tests_properties(cublas_linked_environment_matching PROPERTIES
-        ENVIRONMENT "VIDFAB_CUDA_VERSION=${CUDAToolkit_VERSION_MAJOR}")
+        ENVIRONMENT "SLOPFAB_CUDA_VERSION=${CUDAToolkit_VERSION_MAJOR}")
       add_test(NAME cublas_linked_environment_mismatch
-        COMMAND vidfab_cublas_linked_dispatch_tests environment failure)
+        COMMAND slopfab_cublas_linked_dispatch_tests environment failure)
       set_tests_properties(cublas_linked_environment_mismatch PROPERTIES
-        ENVIRONMENT "VIDFAB_CUDA_VERSION=${VIDFAB_CUBLAS_MISMATCH_MAJOR}")
+        ENVIRONMENT "SLOPFAB_CUDA_VERSION=${SLOPFAB_CUBLAS_MISMATCH_MAJOR}")
     endif()
 
-    add_executable(vidfab_kernel_tests
+    add_executable(slopfab_kernel_tests
       tests/harness.cpp
       tests/test_kernels.cu
       tests/test_nn_kernels.cu
@@ -1380,14 +1380,14 @@ if(VIDFAB_BUILD_TESTS)
       tests/test_keyframe_encoder.cu
       tests/test_vit_decoder.cu
     )
-    target_link_libraries(vidfab_kernel_tests PRIVATE vidfab_cuda)
-    add_test(NAME kernels COMMAND vidfab_kernel_tests)
+    target_link_libraries(slopfab_kernel_tests PRIVATE slopfab_cuda)
+    add_test(NAME kernels COMMAND slopfab_kernel_tests)
 
     if(WIN32)
       add_test(NAME cuda_version_option
-        COMMAND vidfab --cuda-version=12 --help)
+        COMMAND slopfab --cuda-version=12 --help)
       add_test(NAME cuda_version_invalid
-        COMMAND vidfab --cuda-version=invalid --help)
+        COMMAND slopfab --cuda-version=invalid --help)
       set_tests_properties(cuda_version_invalid PROPERTIES WILL_FAIL TRUE)
     endif()
   endif()
@@ -1397,33 +1397,33 @@ if(VIDFAB_BUILD_TESTS)
   # a missing export, a mangled name, a calling-convention mismatch and a
   # struct the two sides lay out differently are all link- or run-time
   # properties of the module, invisible to a test that includes the source.
-  if(VIDFAB_BUILD_C_API)
+  if(SLOPFAB_BUILD_C_API)
     # Its own main, not tests/test_main.cpp: that file carries C++ test cases
-    # of its own and would drag vidfab_core into a binary whose entire point is
+    # of its own and would drag slopfab_core into a binary whose entire point is
     # linking nothing but the DLL.
-    add_executable(vidfab_capi_tests tests/harness.cpp tests/test_capi.cpp)
-    target_link_libraries(vidfab_capi_tests PRIVATE vidfab_c)
-    target_include_directories(vidfab_capi_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_executable(slopfab_capi_tests tests/harness.cpp tests/test_capi.cpp)
+    target_link_libraries(slopfab_capi_tests PRIVATE slopfab_c)
+    target_include_directories(slopfab_capi_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     if(MSVC)
-      target_compile_options(vidfab_capi_tests PRIVATE /W4 /permissive- /utf-8)
+      target_compile_options(slopfab_capi_tests PRIVATE /W4 /permissive- /utf-8)
     else()
-      target_compile_options(vidfab_capi_tests PRIVATE -Wall -Wextra)
+      target_compile_options(slopfab_capi_tests PRIVATE -Wall -Wextra)
     endif()
-    add_test(NAME capi COMMAND vidfab_capi_tests)
+    add_test(NAME capi COMMAND slopfab_capi_tests)
 
-    add_executable(vidfab_capi_cuda_dispatch_tests tests/test_capi_cuda_dispatch.cpp)
-    target_link_libraries(vidfab_capi_cuda_dispatch_tests PRIVATE vidfab_c)
-    target_include_directories(vidfab_capi_cuda_dispatch_tests PRIVATE
+    add_executable(slopfab_capi_cuda_dispatch_tests tests/test_capi_cuda_dispatch.cpp)
+    target_link_libraries(slopfab_capi_cuda_dispatch_tests PRIVATE slopfab_c)
+    target_include_directories(slopfab_capi_cuda_dispatch_tests PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include)
     if(MSVC)
-      target_compile_options(vidfab_capi_cuda_dispatch_tests PRIVATE
+      target_compile_options(slopfab_capi_cuda_dispatch_tests PRIVATE
         /W4 /permissive- /utf-8)
     else()
-      target_compile_options(vidfab_capi_cuda_dispatch_tests PRIVATE -Wall -Wextra)
+      target_compile_options(slopfab_capi_cuda_dispatch_tests PRIVATE -Wall -Wextra)
     endif()
     if(WIN32)
-      add_test(NAME capi_cublas_cuda12 COMMAND vidfab_capi_cuda_dispatch_tests 12)
-      add_test(NAME capi_cublas_cuda13 COMMAND vidfab_capi_cuda_dispatch_tests 13)
+      add_test(NAME capi_cublas_cuda12 COMMAND slopfab_capi_cuda_dispatch_tests 12)
+      add_test(NAME capi_cublas_cuda13 COMMAND slopfab_capi_cuda_dispatch_tests 13)
     endif()
   endif()
 endif()
@@ -1432,14 +1432,14 @@ endif()
 
 # The DLL installs one header rather than the whole include tree: capi.h is the
 # supported surface and the C++ headers beside it are internal implementation.
-if(VIDFAB_BUILD_C_API)
+if(SLOPFAB_BUILD_C_API)
   include(GNUInstallDirs)
-  install(TARGETS vidfab_c
+  install(TARGETS slopfab_c
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(FILES include/vidfab/capi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vidfab)
+  install(FILES include/slopfab/capi.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/slopfab)
 
-  # CUDA and cuBLAS DLLs are intentionally not installed. vidfab.dll discovers
+  # CUDA and cuBLAS DLLs are intentionally not installed. slopfab.dll discovers
   # the selected installed toolkit itself; consumers do not modify PATH.
 endif()

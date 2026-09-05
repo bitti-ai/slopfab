@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-rem Build one CUDA 12.8 static-runtime core shared by vidfab.exe and vidfab.dll.
+rem Build one CUDA 12.8 static-runtime core shared by slopfab.exe and slopfab.dll.
 rem cuBLAS is resolved in-process from an installed CUDA 13 or CUDA 12 toolkit;
 rem no CUDA DLL is copied into the archive.
 for %%I in ("%~dp0.") do set "ROOT=%%~fI"
@@ -25,19 +25,19 @@ echo package: configuring CUDA 12.8 core...
 cmake -S "%ROOT%" -B "%BUILD%" -G "Visual Studio 17 2022" -A x64 ^
   -T "cuda=%CUDA12%" ^
   "-DCMAKE_CUDA_ARCHITECTURES=86;120a" ^
-  -DVIDFAB_BUILD_C_API=ON
+  -DSLOPFAB_BUILD_C_API=ON
 if errorlevel 1 exit /b 1
-cmake --build "%BUILD%" --config Release --target vidfab vidfab_c
+cmake --build "%BUILD%" --config Release --target slopfab slopfab_c
 if errorlevel 1 exit /b 1
 
 set "VERSION="
-for /f "tokens=5" %%V in ('findstr /b /c:"project(vidfab " "%ROOT%\CMakeLists.txt"') do for /f "delims=)" %%W in ("%%V") do set "VERSION=%%W"
+for /f "tokens=5" %%V in ('findstr /b /c:"project(slopfab " "%ROOT%\CMakeLists.txt"') do for /f "delims=)" %%W in ("%%V") do set "VERSION=%%W"
 if not defined VERSION (
   echo package: could not read the project version
   exit /b 1
 )
 
-set "NAME=vidfab-%VERSION%-windows-x64"
+set "NAME=slopfab-%VERSION%-windows-x64"
 set "STAGE=%DIST%\%NAME%"
 set "ZIP=%DIST%\%NAME%.zip"
 if not exist "%DIST%" mkdir "%DIST%"
@@ -47,17 +47,17 @@ if exist "%ZIP%" del /q "%ZIP%"
 mkdir "%STAGE%"
 if errorlevel 1 exit /b 1
 
-copy /y "%BUILD%\Release\vidfab.exe" "%STAGE%\vidfab.exe" >nul
+copy /y "%BUILD%\Release\slopfab.exe" "%STAGE%\slopfab.exe" >nul
 if errorlevel 1 exit /b 1
-copy /y "%BUILD%\Release\vidfab.dll" "%STAGE%\vidfab.dll" >nul
+copy /y "%BUILD%\Release\slopfab.dll" "%STAGE%\slopfab.dll" >nul
 if errorlevel 1 exit /b 1
-mkdir "%STAGE%\include\vidfab"
+mkdir "%STAGE%\include\slopfab"
 if errorlevel 1 exit /b 1
-copy /y "%ROOT%\include\vidfab\capi.h" "%STAGE%\include\vidfab\capi.h" >nul
+copy /y "%ROOT%\include\slopfab\capi.h" "%STAGE%\include\slopfab\capi.h" >nul
 if errorlevel 1 exit /b 1
 mkdir "%STAGE%\lib"
 if errorlevel 1 exit /b 1
-copy /y "%BUILD%\Release\vidfab_c.lib" "%STAGE%\lib\vidfab_c.lib" >nul
+copy /y "%BUILD%\Release\slopfab_c.lib" "%STAGE%\lib\slopfab_c.lib" >nul
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\README.md" "%STAGE%\README.md" >nul
 if errorlevel 1 exit /b 1
