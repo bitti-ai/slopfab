@@ -6,11 +6,11 @@ Target: a C++/CUDA port of the **decoder** half of `AutoencoderKLLegacy`
 
 Everything here is grounded in:
 
-- `D:\Projects\vidfab\ref\FL2VA\video_vae\*.py` (the inference-only reference bundle)
-- `D:\Projects\vidfab\ref\FL2VA\video_vae\source\config.json` — **the constructor config that actually built the checkpoint**
-- `D:\Projects\vidfab\ref\FL2VA\video_vae\config.json` — the wrapper/runtime config
-- `D:\Projects\vidfab\ref\vae\config.json` — a *re-expressed* config for the diffusers-native `AutoencoderKLMiniMaxH3` port (different module names, same model)
-- the checkpoint itself, enumerated with `vidfab.exe inspect`
+- `D:\Projects\slopfab\ref\FL2VA\video_vae\*.py` (the inference-only reference bundle)
+- `D:\Projects\slopfab\ref\FL2VA\video_vae\source\config.json` — **the constructor config that actually built the checkpoint**
+- `D:\Projects\slopfab\ref\FL2VA\video_vae\config.json` — the wrapper/runtime config
+- `D:\Projects\slopfab\ref\vae\config.json` — a *re-expressed* config for the diffusers-native `AutoencoderKLMiniMaxH3` port (different module names, same model)
+- the checkpoint itself, enumerated with `slopfab.exe inspect`
 
 > **Read this first.** The `ref/vae/config.json` names quoted in the task brief
 > (`block_out_channels`, `spatial_downsample_factors`, `layers_per_block`,
@@ -184,7 +184,7 @@ Grounding and caveat:
   under the key `minimax_h3_video_vae`.
 - They appear in `ref/vae/config.json` and `ref/FL2VA/video_vae/config.json`
   but **nowhere in any `.py` file in `ref/`** (verified by grep over all of
-  `D:\Projects\vidfab\ref`: the only hits are the four `config.json` files).
+  `D:\Projects\slopfab\ref`: the only hits are the four `config.json` files).
   The application site is in the *pipeline*
   (`MiniMaxH3ModularPipeline` / `AutoencoderKLMiniMaxH3` in diffusers
   0.36.0.dev0), which is **not part of the provided inputs**.
@@ -991,7 +991,7 @@ The ramp is asymmetric (weight_b tops out at `(n-1)/n`, never 1.0) — see
 
 1. **UNRESOLVED — the exact pipeline call site and formula for
    `latents_mean`/`latents_std`.** Checked: every `.py` under
-   `D:\Projects\vidfab\ref` (grep for `latents_mean|latents_std` returns hits
+   `D:\Projects\slopfab\ref` (grep for `latents_mean|latents_std` returns hits
    only in the four `config.json` files); the safetensors `__metadata__`;
    `model_index.json`; `README.md`; `docs/`. The consumer is
    `AutoencoderKLMiniMaxH3` / `MiniMaxH3ModularPipeline` in

@@ -178,7 +178,7 @@ tensor_vae_residual.comp.spv              8B64D04CB5B579F787148FB546D77AFB1ED6B1
 tensor_vae_swiglu.comp.spv                E4F51A55B55D7888FC264C1FA2F547BBC8930D9D7DB5F627D0356220B92CB453
 tensor_vae_denorm.comp.spv                E295EDCAD9058D8581007B4776F0BC7DB95A10C99AA9DF4FB149947AAE9519F2
 src/cuda/vae_kernels.cu                   48D1B0281E6D4A1B5AF915BA394E964701FE6C0CBBFFC03B09F4BF00AD40FE8C
-include/vidfab/cuda/deterministic_math.cuh F84F74E46D0EA32E5F2A2B6FF5E87F16C71A86B97D1379C96768C022D84F1913
+include/slopfab/cuda/deterministic_math.cuh F84F74E46D0EA32E5F2A2B6FF5E87F16C71A86B97D1379C96768C022D84F1913
 vae_kernels.fatbin                        17AA0AD0176D273716E2403E3F8B6599BD1D8BD9C62FEC55A06108BE8F5A3F02
 ```
 
@@ -474,7 +474,7 @@ evaluations. These are operator measurements, not an unwired-backend claim.
 
 ## Persistent linear-weight preparation
 
-`vidfab::vulkan::LinearWeight` retains immutable checkpoint metadata and only
+`slopfab::vulkan::LinearWeight` retains immutable checkpoint metadata and only
 the compressed/native bytes and auxiliaries on device. It supports F32, F16,
 BF16, E4M3 FP8, per-output I8, NVFP4 and bitsandbytes NF4. Dense BF16/FP16 is a
 caller-owned prepared tensor, so an orchestrator can reuse one bounded buffer
@@ -599,7 +599,7 @@ tensor_gemm_coop_f16.comp                11B75EEFEFAEF0EFF8266BAE7D5E4CE0D1B6EBA
 tensor_gemm_coop_f16.comp.spv            E76C1A114F177A4EAA48D69A1DF7C102C06E1109EA4512C04B4335E99FEA537D
 tensor_gemm_coop_f16_denorm.comp.spv     9B51BE611B7F6477F6F5D4C82DABA6E1F900F29A06C9811F987126BDA9D23C9A
 src/cuda/deterministic_gemm.cu           8504C1A85F511A49B16753BA476500F2A986CC564A036D10F7E0693A532AF7E4
-include/vidfab/cuda/deterministic_gemm.cuh 3C422641C753992CFCC136BFB64327DD85841BC6B7047D1F2091E88686AB6670
+include/slopfab/cuda/deterministic_gemm.cuh 3C422641C753992CFCC136BFB64327DD85841BC6B7047D1F2091E88686AB6670
 deterministic_gemm.fatbin                E417A406011985FF0D8F518DE0532D7367FA148C2113A1435E6B1ED795DA4A2C
 ```
 
@@ -633,7 +633,7 @@ including their immutable `full_precision_matrix_mult` value. It rejects AWQ
 pre-scale or ConvRot weights before recording; those require a future typed
 prepared-activation view bound to the weight identity, rather than an unsafe
 caller boolean. CUDA likewise keeps its native transformer path opt-in behind
-`VIDFAB_NATIVE_NVFP4=1`; default generation does not require native FP4 MMA.
+`SLOPFAB_NATIVE_NVFP4=1`; default generation does not require native FP4 MMA.
 
 The real `blocks.0.attn.qkv_proj` 384x5376 slab, including high-even nibbles,
 128x4 scale swizzle, global-scale multiply order, BF16 boundary, BF16 bias,
@@ -748,7 +748,7 @@ tensor_attention_blocked.comp.spv         9C1339B2FD44B9F453BD3974F720E635682130
 tensor_attention_prepare.comp             786295C4E33EEDC7F67317B9ECF6B1BDEA0108B319AE5B5E8D57B6B3CEA4677D
 tensor_attention_prepare.comp.spv         56DC48503F296776CD1C105D0DC44D34E5F8768B35A8FEE6EC73EFAA9D3FF8F4
 src/cuda/deterministic_attention.cu       143547BB7C6A421C59BDD95B695EE662C6D1B0CE58B63A16E9164226A2C6E82E
-include/vidfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
+include/slopfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
 deterministic_attention.fatbin            D8C01855993DA931125F2BA06D7683C79C04F0DAC23ECCBA985E5E72A01EC194
 ```
 
@@ -844,7 +844,7 @@ tensor_attention_h3.comp                  B9E51135B436DFF97CE6463F4731965E746653
 tensor_attention_h3.comp.spv              4FD87FBDBE7AE6EC6C40C67AAD6FD39A0B9EF05F6E3CC1A5ED688A5B17FBB37F
 tensor_attention_h3_banded.comp.spv       9564933F40B33B8C6077CB073F6E0CB78AD40627CD0C973FF16897CAB1764EFB
 src/cuda/deterministic_attention.cu       143547BB7C6A421C59BDD95B695EE662C6D1B0CE58B63A16E9164226A2C6E82E
-include/vidfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
+include/slopfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
 deterministic_attention.fatbin            D8C01855993DA931125F2BA06D7683C79C04F0DAC23ECCBA985E5E72A01EC194
 ```
 
@@ -876,7 +876,7 @@ The real block-0 audit used
 At S65, deterministic finite BF16 residuals, selectors, rank-8 code, and
 identity RoPE tables exercise both the cooperative path and a one-row tail.
 Output FNV64 is `191929c14480e873`; the same real checkpoint load/forward pin
-runs in `vidfab_vulkan_tests`, whose executable is built and linked with CUDA
+runs in `slopfab_vulkan_tests`, whose executable is built and linked with CUDA
 disabled.
 
 The authoritative full-block replay is captured by the production CUDA exact
@@ -1334,6 +1334,6 @@ nvcc --fatbin -std=c++17 -ccbin <MSVC-14.44> --generate-code=arch=compute_120a,c
 tensor_attention_causal_gqa.comp          DD700E2FDC18ED483973B2E161AEA3F1F43E8F2DB18FC8796F800BE766A79930
 tensor_attention_causal_gqa.comp.spv      9F8B4480179C01CC26A3E467D1F0915D606594388DAB8B5C0856770B2E7E3778
 src/cuda/deterministic_attention.cu       143547BB7C6A421C59BDD95B695EE662C6D1B0CE58B63A16E9164226A2C6E82E
-include/vidfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
+include/slopfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993EB9CD3716DE090D6D44D6559B28BFC6BFF
 deterministic_attention.fatbin            D8C01855993DA931125F2BA06D7683C79C04F0DAC23ECCBA985E5E72A01EC194
 ```

@@ -30,7 +30,7 @@ The current CUDA neural implementation comprises:
 | Area | Files | Lines |
 |---|---:|---:|
 | CUDA `.cu` runtime and kernels (`src/cuda`) | 19 | 8,393 |
-| CUDA-facing headers (`include/vidfab/cuda`) | 16 | 1,794 |
+| CUDA-facing headers (`include/slopfab/cuda`) | 16 | 1,794 |
 | Host neural orchestration | 6 | 4,166 |
 | Public neural-stage APIs | 5 | 978 |
 
@@ -215,7 +215,7 @@ canonical RoPE, final affine norm/projection, and depth-to-space. CUDA and
 Vulkan implement the same `VideoVaeWindowBackend` interface and consume one
 shared host temporal-chunk/spatial-tile/stitch/cross-fade/pixel-de-normalize
 schedule, which is the backend-selection seam intended for `RunOptions`.
-That schedule is compiled into `vidfab_core` and has no CUDA profiler or link
+That schedule is compiled into `slopfab_core` and has no CUDA profiler or link
 dependency; a CUDA-disabled Vulkan build links and runs the decoder contract
 test. There are no CUDA calls or resources in the Vulkan decoder. Construction
 requires an explicit `ViTTransformerMode::kExact` configuration; `kShipped` is
@@ -362,5 +362,5 @@ FNV64 `0B9084D3F1C6355A`.
 The CUDA-off build proves decoder-library purity only. It executes the real
 Vulkan audio decoder without a CUDA target, pins `A=3` at FNV64
 `528F17A83D5EF7EE`, repeats without pool/descriptor growth, and unloads. The
-top-level `run_generate` still lives in `vidfab_cuda`, so a CUDA-disabled CLI
+top-level `run_generate` still lives in `slopfab_cuda`, so a CUDA-disabled CLI
 does not yet expose this slice; this is not a decoder fallback.

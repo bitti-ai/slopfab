@@ -13,7 +13,7 @@ the result is rounded through FP16, and each of the 24 channels is normalized
 with the constants in the bundled VAE `config.json`. The one-frame latent is
 then patchified in channel-major `1x2x2` order to 96-wide Ref2VA rows.
 
-`vidfab_vaeprobe <checkpoint>` validates every encoder and `quant_conv`
+`slopfab_vaeprobe <checkpoint>` validates every encoder and `quant_conv`
 tensor without paging the 5.2 GB archive into RAM.
 
 ## Remaining forward implementation

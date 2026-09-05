@@ -1,10 +1,10 @@
-# vidfab
+# slopfab
 
 A from-scratch C++/CUDA implementation of [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3),
 targeting Ampere RTX 30-series and Blackwell RTX 50-series GPUs with no Python
 at runtime.
 
-**Status: `vidfab generate` works end to end.** A text prompt goes in and a
+**Status: `slopfab generate` works end to end.** A text prompt goes in and a
 real MP4 comes out — Qwen3-VL conditioner, 50-block transformer, flow-matching
 denoise loop, both VAEs, H.264/AAC muxing, no Python anywhere. Output is
 coherent, prompt-faithful video. See [Roadmap](#roadmap) and
@@ -35,7 +35,7 @@ ffmpeg is loaded with `LoadLibrary`/`dlopen` at first use and is never linked
 at build time; the build system does not reference an ffmpeg header or library
 at all, and the handful of ABI declarations needed to drive it live in
 `src/video/ffmpeg_abi.h`. That is a licensing requirement — LGPL compliance
-depends on being able to substitute your own build, which `VIDFAB_FFMPEG_DIR`
+depends on being able to substitute your own build, which `SLOPFAB_FFMPEG_DIR`
 exists for — and it means a missing or unusable ffmpeg degrades to the `.y4m` +
 `.wav` writers rather than failing the run. Every struct offset the muxer
 relies on is validated at load time by driving ffmpeg's own allocators and
@@ -46,7 +46,7 @@ of corrupting memory.
 
 Requires CMake 3.24+, a C++17 compiler, CUDA toolkit 12.8 for the Windows
 build, and CUDA 13.0 headers for the build-time cross-major cuBLAS ABI check.
-CUDA and cuBLAS DLLs are not shipped with vidfab.
+CUDA and cuBLAS DLLs are not shipped with slopfab.
 
 ```sh
 cmake -S . -B build
@@ -63,13 +63,13 @@ planned but not part of this build yet.
 On Windows, one CUDA 12.8-built fat binary serves both toolkit installations.
 Static cudart and the SM86/SM120a SASS talk to NVIDIA's backward-compatible
 driver ABI; cuBLAS is intentionally separate and is resolved in-process from
-an installed toolkit. Both `vidfab.exe` and `vidfab.dll` prefer CUDA 13 and
+an installed toolkit. Both `slopfab.exe` and `slopfab.dll` prefer CUDA 13 and
 fall back to CUDA 12, loading `cublas64_<major>.dll` and
 `cublasLt64_<major>.dll` by absolute toolkit path. They do not depend on the
 host's `PATH` ordering and carry no fixed cuBLAS import. Override the CLI with
-`--cuda-version=auto|13|12`; `VIDFAB_CUDA_VERSION` provides the same process
+`--cuda-version=auto|13|12`; `SLOPFAB_CUDA_VERSION` provides the same process
 setting. C API hosts may use either the environment or
-`vidfab_cuda_set_version` before first use. Automatic mode falls back to CUDA
+`slopfab_cuda_set_version` before first use. Automatic mode falls back to CUDA
 12 even when a discovered CUDA 13 installation is incomplete.
 
 NVIDIA promises cuBLAS ABI compatibility within a major, not across majors.
@@ -81,27 +81,27 @@ major is accepted, while an explicit different major fails with a clear error.
 
 ### The C API
 
-`vidfab.dll` exports the flat C ABI in `include/vidfab/capi.h`, so Rust, C#,
+`slopfab.dll` exports the flat C ABI in `include/slopfab/capi.h`, so Rust, C#,
 Python, Go and plain C can drive the pipeline without depending on a C++ ABI.
-It is built by default; `-DVIDFAB_BUILD_C_API=OFF` turns it off.
+It is built by default; `-DSLOPFAB_BUILD_C_API=OFF` turns it off.
 
 ```sh
-cmake -S . -B build-dll -DVIDFAB_WITH_FFMPEG=OFF
-cmake --build build-dll --config Release --target vidfab_c
+cmake -S . -B build-dll -DSLOPFAB_WITH_FFMPEG=OFF
+cmake --build build-dll --config Release --target slopfab_c
 ```
 
-`vidfab_core` and `vidfab_cuda` are internal static libraries that link into
-`vidfab.dll`. It is therefore the only vidfab DLL, and its export table contains
+`slopfab_core` and `slopfab_cuda` are internal static libraries that link into
+`slopfab.dll`. It is therefore the only slopfab DLL, and its export table contains
 exactly the stable C entry points rather than the internal C++ symbols.
-The Windows archive includes `include/vidfab/capi.h` and the MSVC import
-library `lib/vidfab_c.lib` alongside the DLL.
+The Windows archive includes `include/slopfab/capi.h` and the MSVC import
+library `lib/slopfab_c.lib` alongside the DLL.
 
 The CUDA runtime is embedded, while cuBLAS is not installed or packaged by
-vidfab. Loading `vidfab.dll` itself needs no cuBLAS DLL: the first operation
+slopfab. Loading `slopfab.dll` itself needs no cuBLAS DLL: the first operation
 that creates a cuBLAS handle discovers CUDA 13 then 12 and reports the exact
 absolute DLL path or a clear discovery/load error. A C API host can call
-`vidfab_cuda_set_version("12")` or `("13")`, or set `VIDFAB_CUDA_VERSION`,
-before its first generation to force a major. `vidfab_cuda_loaded_major`
+`slopfab_cuda_set_version("12")` or `("13")`, or set `SLOPFAB_CUDA_VERSION`,
+before its first generation to force a major. `slopfab_cuda_loaded_major`
 initializes the loader and lets the host validate its installation early.
 Selection is process-wide and immutable after initialization.
 
@@ -111,55 +111,55 @@ disk. Encoding, muxing and playback belong to the host. That is why the DLL
 needs no FFmpeg at all: the muxer is the only thing in this project that loads
 it, and the C API never reaches the muxer.
 
-Generation is asynchronous — `vidfab_generation_start` returns as soon as the
+Generation is asynchronous — `slopfab_generation_start` returns as soon as the
 request is known to be satisfiable, and the work proceeds on a worker thread,
 so a UI stays responsive across a run that takes minutes. Progress callbacks
 arrive on that worker thread, not the caller's.
 
 ```c
-#include <vidfab/capi.h>
+#include <slopfab/capi.h>
 
-vidfab_request* req = vidfab_request_create();
-vidfab_request_set_prompt(req, "a cat playing a piano, warm lamplight");
-vidfab_request_set_model_path(req, VIDFAB_MODEL_TRANSFORMER, "transformer.safetensors");
-vidfab_request_set_model_path(req, VIDFAB_MODEL_TEXT_ENCODER, "text_encoder.safetensors");
-vidfab_request_set_model_path(req, VIDFAB_MODEL_VIDEO_VAE, "video_vae.safetensors");
-vidfab_request_set_frames(req, 124);
+slopfab_request* req = slopfab_request_create();
+slopfab_request_set_prompt(req, "a cat playing a piano, warm lamplight");
+slopfab_request_set_model_path(req, SLOPFAB_MODEL_TRANSFORMER, "transformer.safetensors");
+slopfab_request_set_model_path(req, SLOPFAB_MODEL_TEXT_ENCODER, "text_encoder.safetensors");
+slopfab_request_set_model_path(req, SLOPFAB_MODEL_VIDEO_VAE, "video_vae.safetensors");
+slopfab_request_set_frames(req, 124);
 
 /* Reads no weights, so it is instant: validate and cost the request first. */
-vidfab_plan plan;
-if (vidfab_resolve_plan(req, &plan) != VIDFAB_OK) {
-  fprintf(stderr, "%s\n", vidfab_last_error());
+slopfab_plan plan;
+if (slopfab_resolve_plan(req, &plan) != SLOPFAB_OK) {
+  fprintf(stderr, "%s\n", slopfab_last_error());
   return 1;
 }
 
-vidfab_generation* gen = NULL;
-if (vidfab_generation_start(req, on_progress, NULL, &gen) == VIDFAB_OK) {
-  if (vidfab_generation_wait(gen, -1) == VIDFAB_OK) {
-    vidfab_output out;
-    vidfab_generation_output(gen, &out);
+slopfab_generation* gen = NULL;
+if (slopfab_generation_start(req, on_progress, NULL, &gen) == SLOPFAB_OK) {
+  if (slopfab_generation_wait(gen, -1) == SLOPFAB_OK) {
+    slopfab_output out;
+    slopfab_generation_output(gen, &out);
     /* out.video is [channels][frames][height][width], fp32 in [0,1], owned by
        `gen`. One frame as packed RGBA8, for a texture upload: */
     uint8_t* rgba = malloc((size_t)out.width * out.height * 4);
-    vidfab_generation_frame_rgba8(gen, 0, rgba, (size_t)out.width * out.height * 4);
+    slopfab_generation_frame_rgba8(gen, 0, rgba, (size_t)out.width * out.height * 4);
   } else {
-    fprintf(stderr, "%s\n", vidfab_generation_error(gen));
+    fprintf(stderr, "%s\n", slopfab_generation_error(gen));
   }
-  vidfab_generation_destroy(gen);  /* the pixels die with the handle */
+  slopfab_generation_destroy(gen);  /* the pixels die with the handle */
 }
-vidfab_request_destroy(req);
+slopfab_request_destroy(req);
 ```
 
 For the low-latency still-image path, opt in before resolving the plan:
 
 ```c
-vidfab_request_set_still_image(req, 1);
+slopfab_request_set_still_image(req, 1);
 ```
 
 This is a distinct sampling mode, not a one-frame truncation of a video run.
 It denoises one video latent with no audio tokens, decodes only the temporal
 phase corresponding to the first retained video frame, and returns exactly one
-frame in `vidfab_output`. Both CUDA and exact Vulkan denoising are supported;
+frame in `slopfab_output`. Both CUDA and exact Vulkan denoising are supported;
 the regular frame-count setting is ignored while still mode is on.
 
 From Rust the same flow is a `bindgen` run over `capi.h` and a `Drop` impl per
@@ -169,28 +169,28 @@ rules carry across every binding:
 - **Status codes are plain `int`, not an enum**, so a caller linked against an
   older header can hold a code this header does not name. Mapping them into a
   Rust enum needs a catch-all arm.
-- **Every pointer in `vidfab_output` is owned by the generation** and dangles
-  after `vidfab_generation_destroy`. At the default geometry the video plane
+- **Every pointer in `slopfab_output` is owned by the generation** and dangles
+  after `slopfab_generation_destroy`. At the default geometry the video plane
   alone is over 2 GB, so it is handed over by pointer rather than copied — copy
   it out if it must outlive the handle.
-- **The only pointer you free is the `char*` from `vidfab_describe_plan`**, and
-  it is freed by `vidfab_free_string`. Calling the host's own `free` on it
+- **The only pointer you free is the `char*` from `slopfab_describe_plan`**, and
+  it is freed by `slopfab_free_string`. Calling the host's own `free` on it
   crosses CRTs, which on Windows is a crash often enough to matter.
 
-`vidfab_last_error()` is thread-local and holds the reason the *calling* thread
+`slopfab_last_error()` is thread-local and holds the reason the *calling* thread
 last failed. A run's failure message is not there — the run fails on a worker
-thread the caller never enters — so use `vidfab_generation_error()` for that.
+thread the caller never enters — so use `slopfab_generation_error()` for that.
 
 ### Building without FFmpeg
 
-FFmpeg is loaded at runtime and never linked, so `-DVIDFAB_WITH_FFMPEG=OFF`
+FFmpeg is loaded at runtime and never linked, so `-DSLOPFAB_WITH_FFMPEG=OFF`
 does not change what the binary needs in order to *start*. It changes what is
 compiled in at all: the muxer is replaced by a stub, and reference images are
 decoded by the platform instead of by libavcodec.
 
 |                      | `ON` (default)                     | `OFF`                                  |
 | -------------------- | ---------------------------------- | -------------------------------------- |
-| `vidfab` output      | MP4, falling back to `.y4m`+`.wav` | `.y4m` + `.wav` only                   |
+| `slopfab` output      | MP4, falling back to `.y4m`+`.wav` | `.y4m` + `.wav` only                   |
 | Reference images     | anything FFmpeg demuxes, incl. video | PPM, plus WIC formats on Windows     |
 | Shipped beside `.exe`| five FFmpeg DLLs                   | nothing                                |
 
@@ -200,11 +200,11 @@ JPEG, BMP, GIF and TIFF with nothing shipped or linked beyond
 without FFmpeg reads binary PPM and says so — which is a 15-byte header and the
 bytes, if a host needs to hand over pixels it already holds.
 
-It is one switch for the whole build tree rather than per target. `vidfab_cuda`
-links `vidfab_core`, so an FFmpeg-free DLL beside an MP4-capable exe would need
-a second copy of both libraries, and `vidfab_cuda` costs minutes to compile.
+It is one switch for the whole build tree rather than per target. `slopfab_cuda`
+links `slopfab_core`, so an FFmpeg-free DLL beside an MP4-capable exe would need
+a second copy of both libraries, and `slopfab_cuda` costs minutes to compile.
 The C API does not need the distinction anyway — it never reaches the muxer in
-either configuration — so the switch really only decides what `vidfab.exe` can
+either configuration — so the switch really only decides what `slopfab.exe` can
 write.
 
 ## Usage
@@ -212,10 +212,10 @@ write.
 ```sh
 # Resolve a request: canvas, frame alignment, packed sequence length, both
 # sigma schedules. Reads no weights, so it is instant.
-vidfab generate --prompt "..." --aspect 16:9 --frames 124 --steps 50 --dry-run
+slopfab generate --prompt "..." --aspect 16:9 --frames 124 --steps 50 --dry-run
 
 # The real thing: prompt -> conditioner -> transformer -> denoise -> VAEs -> MP4.
-vidfab generate --prompt "integrated_multimodal_description: ..." \
+slopfab generate --prompt "integrated_multimodal_description: ..." \
                 --frames 22 --aspect 1:1 --steps 30 --seed 11 \
                 --tokenizer      <tokenizer.json> \
                 --text-encoder   weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors \
@@ -229,13 +229,13 @@ vidfab generate --prompt "integrated_multimodal_description: ..." \
 # for each video (11, 12, 13 here); without --seed, or with a negative one,
 # every video gets a fresh random seed. Multi-video filenames also receive
 # -001, -002, ... suffixes.
-vidfab generate --prompt "three variations of a moonlit forest" \
+slopfab generate --prompt "three variations of a moonlit forest" \
                 --count 3 --seed 11
 
 # Long Context-IR prompts do not belong on a command line. --prompt-file reads
 # one out of a UTF-8 text file instead; a BOM, CRLF endings and blank space
 # around the text are stripped. It replaces --prompt and cannot join it.
-vidfab generate --prompt-file prompts/moonlit-forest.txt --steps 30
+slopfab generate --prompt-file prompts/moonlit-forest.txt --steps 30
 
 # The quantisation of each checkpoint is read out of the file, so there is no
 # flag for it and the pair need not match. `generate.cmd` wraps all of this.
@@ -245,13 +245,13 @@ vidfab generate --prompt-file prompts/moonlit-forest.txt --steps 30
 # takes what you give it. Both axes must be a multiple of 32 and the ratio must
 # stay inside 1:4 .. 4:1, but the area is *not* capped -- a larger canvas is
 # allowed, warned about, and costs attention time with the square of its area.
-vidfab generate --prompt "..." --resolution 1024x512 --dry-run
+slopfab generate --prompt "..." --resolution 1024x512 --dry-run
 
 # Condition a run with MiniMax H3 Ref2VA images. Repeat --reference-image in
 # subject/style/scene order; that order is preserved in the multimodal prompt
 # and packed sequence. At most nine images are accepted. This mode requires a
 # Ref2VA transformer checkpoint (FL2VA/text-to-video weights are not compatible).
-vidfab generate --prompt "integrated_multimodal_description: ..." \
+slopfab generate --prompt "integrated_multimodal_description: ..." \
                 --reference-image subject.png \
                 --reference-image style.jpg \
                 --transformer weights/transformer/minimax_h3_ref2va_pruned_fp8_scaled.safetensors \
@@ -264,34 +264,34 @@ vidfab generate --prompt "integrated_multimodal_description: ..." \
 # pruned FP8 Ref2VA checkpoint above.
 
 # The pruned FP8 Ref2VA and FL2VA archives have the same tensor schema and no
-# identifying metadata. Keep `ref2va` in the Ref2VA filename: vidfab uses that
+# identifying metadata. Keep `ref2va` in the Ref2VA filename: slopfab uses that
 # distribution name to reject accidental image conditioning with FL2VA weights.
 
 # Every command documents itself.
-vidfab generate --help
+slopfab generate --help
 
 # Everything downstream of the denoiser only, against the real checkpoints:
 # seeded noise -> unpatchify -> video VAE -> audio VAE -> H.264/AAC in an MP4.
-vidfab generate --synthetic-latents --frames 22 --aspect 1:1 \
+slopfab generate --synthetic-latents --frames 22 --aspect 1:1 \
                 --vae weights/vae/minimax_h3_video_vae_fp16.safetensors \
                 --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors \
                 --out out.mp4
 
 # Inspect a checkpoint: tensor names, shapes, dtype breakdown, metadata
-vidfab inspect weights/vae/minimax_h3_video_vae_fp16.safetensors --list --prefix decoder
+slopfab inspect weights/vae/minimax_h3_video_vae_fp16.safetensors --list --prefix decoder
 
 # Decode a latent to video
-vidfab decode --vae weights/vae/minimax_h3_video_vae_fp16.safetensors \
+slopfab decode --vae weights/vae/minimax_h3_video_vae_fp16.safetensors \
               --latent latent.safetensors --out out.y4m
 
 # Without --latent, decodes a deterministic synthetic latent (smoke test)
-vidfab decode --vae <vae.safetensors> --shape 7 48 48 --out out.y4m --ppm frame0.ppm
+slopfab decode --vae <vae.safetensors> --shape 7 48 48 --out out.y4m --ppm frame0.ppm
 
 # Diff two checkpoints or two activation dumps, tensor by tensor
-vidfab compare reference.safetensors actual.safetensors --abs-tol 1e-3
+slopfab compare reference.safetensors actual.safetensors --abs-tol 1e-3
 
 # Report CUDA devices and supported numeric formats
-vidfab devices
+slopfab devices
 ```
 
 `generate --output-accelerator vulkan` moves the final planar RGB to BT.709
@@ -307,7 +307,7 @@ device or loader is available; it never silently falls back.
 Both VAE arguments also accept the compact checkpoints in `weights/vae`:
 `video_vae_nf4.safetensors` and `audio_vae_nf4.safetensors`. CUDA video decode
 also accepts `minimax_h3_video_vae_w4a8_from_fp16.safetensors`. Its asymmetric
-W4A8 linears remain packed on device; VidFab applies ConvRot-256, dynamically
+W4A8 linears remain packed on device; SlopFab applies ConvRot-256, dynamically
 quantizes each activation row to INT8, accumulates the GEMM in INT32, and applies
 the FP8 group/codebook and FP32 channel scales without TensorRT. W4A8 currently
 requires the CUDA inference backend and shipped attention mode.
@@ -324,7 +324,7 @@ video and audio rows — before either VAE sees it. That is the diff point for a
 change to the transformer: 7.5 MB a side at the default geometry rather than
 400 MB, and no 9 GB decoder between the change and the comparison. Two runs of
 the same seed and geometry must agree exactly, so
-`vidfab compare a b --abs-tol 0` is the whole test.
+`slopfab compare a b --abs-tol 0` is the whole test.
 
 `--sampler euler|ab2` selects the integrator; `euler` is the default and is the
 reference's own update, unchanged. `ab2` is Adams-Bashforth 2, second order at
@@ -403,14 +403,14 @@ against golden values taken from numpy **with zero tolerance**, because numpy's
 width grid one ulp off, which a loose tolerance would happily accept.
 
 ```sh
-build/Release/vidfab_tests.exe
-build/Release/vidfab_kernel_tests.exe
+build/Release/slopfab_tests.exe
+build/Release/slopfab_kernel_tests.exe
 ```
 
 **What is not yet verified:** agreement with the reference implementation
 itself. Everything above checks internal consistency against
 `docs/vae_decoder_spec.md`. Closing that gap requires activation tensors dumped
-from the reference PyTorch pipeline; `vidfab compare` is built to consume them.
+from the reference PyTorch pipeline; `slopfab compare` is built to consume them.
 
 ## Architecture notes
 
@@ -529,7 +529,7 @@ bf16 gap as a measurement beside it. **The tolerance was not loosened.**
 
 ### What ~9% per layer does over a whole generation
 
-Measured, rather than argued about. `VIDFAB_NATIVE_NVFP4=1` exists so the same
+Measured, rather than argued about. `SLOPFAB_NATIVE_NVFP4=1` exists so the same
 seed can be run both ways; 22 frames at 1:1, 30 steps, seed 11, everything else
 identical:
 
@@ -705,7 +705,7 @@ temporal attention at all?"* was asked with a deliberately cruder experiment
 that needs no kernel: **run one request as three overlapping shorter ones and
 cross-fade the latents.**
 
-`vidfab_chunkprobe` drives it and links `vidfab_core` only, so it starts no
+`slopfab_chunkprobe` drives it and links `slopfab_core` only, so it starts no
 CUDA context and can run while the card is busy. `--frames 15` snaps to 22
 pixel frames (7 latent), `--frames 45` to 56 (17 latent), and three chunks at a
 stride of 5 latent frames tile 17 exactly with a 2-frame overlap. The stride
@@ -783,7 +783,7 @@ not.
 
 So: **build the kernel**, and when measuring it, re-measure the floor at the
 target geometry, report correlation beside rel_L2, and look at whether the
-subject is still the same object at the end of the clip. `vidfab_chunkprobe
+subject is still the same object at the end of the clip. `slopfab_chunkprobe
 stats` prints exactly that set.
 
 ## Performance
@@ -838,7 +838,7 @@ default:
 | 22 frames, 1:1, 30 steps | 4 167 | 1.07 s | **~50 s** |
 | **124 frames, 16:9, 50 steps (the default)** | 37 710 | **19.1 s** | **~16 min** |
 
-Both rows are the nvfp4 pair, measured with `VIDFAB_PROFILE=1` on an idle card,
+Both rows are the nvfp4 pair, measured with `SLOPFAB_PROFILE=1` on an idle card,
 whose device timeline accounts for 100.00% of a step at 0.24% overhead. **An
 earlier revision of this table said 38.8 s and ~33 min**; that was an fp8
 carry-over never re-measured against the nvfp4 pair, and it was 36% too high.
@@ -958,8 +958,8 @@ are consumed, so the flood evicted itself and left the target fully cached.
 That same probe later caught two contaminated samples in flight.
 
 Weights are bit-identical, which is the point of a readahead change and is
-checked rather than argued: `VIDFAB_ARENA_HASH=1` hashes the finished arena,
-and ten loads of each checkpoint across both settings of `VIDFAB_NO_PREFETCH`
+checked rather than argued: `SLOPFAB_ARENA_HASH=1` hashes the finished arena,
+and ten loads of each checkpoint across both settings of `SLOPFAB_NO_PREFETCH`
 agree exactly — nvfp4 `7da30a6df7e45676` over 12,615,830,272 bytes and 930
 records, fp8 `190cdce19da29c2d` over 21,045,398,272 bytes and 730 records.
 
@@ -1162,7 +1162,7 @@ rel_L2 answers "did the clip become a different clip". It is one person and one
 pair of clips, so it does not settle the trade; it is recorded because it is
 the only observation here of the kind the decision actually turns on.
 
-All fifteen latent dumps behind this table were compared with `vidfab compare`,
+All fifteen latent dumps behind this table were compared with `slopfab compare`,
 whose `rel_L2` and correlation were cross-checked against an independently
 written tool: the two agree to every digit quoted.
 

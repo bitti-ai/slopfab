@@ -342,7 +342,7 @@ pointers, fixed shapes, and the only host branches are diagnostics that are off
 by default. But the prize is bounded by `GPU idle in step`, measured at
 **0.42%** of a step (1.51% as a 3-step upper bound), falling further at the
 default geometry. Capture would freeze arena pointers into the exec graph and
-silently break `VIDFAB_TENSOR_DIAG` and `VIDFAB_SOL_CAPTURE`. Not worth it.
+silently break `SLOPFAB_TENSOR_DIAG` and `SLOPFAB_SOL_CAPTURE`. Not worth it.
 
 **Caching dequantised weights across steps.** The largest genuinely
 step-invariant GPU work in the loop, and it does not fit: 19.27 G parameters at
@@ -397,7 +397,7 @@ by caching more.
 `tests/test_tokenizer.cpp:31` hard-codes `ref/FL2VA/text_encoder/tokenizer.json`.
 That path does not exist — the tokenizer ships at `ref/text_encoder/tokenizer.json`
 — so both `tokenizer_golden_ids` and `tokenizer_round_trip` take the
-"not present; skipping" branch. On master, `VIDFAB_TEST_FILTER=tokenizer`
+"not present; skipping" branch. On master, `SLOPFAB_TEST_FILTER=tokenizer`
 reports **`0 checks, 0 failures`**. With the file placed at the expected path it
 reports **28 checks, 0 failures**, so the tests themselves are fine and have
 simply never been exercised.

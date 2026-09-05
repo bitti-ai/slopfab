@@ -7,17 +7,17 @@ Target: a C++/CUDA port of the **decode half** of `DacAudioVAE`
 
 Everything here is grounded in:
 
-- `D:\Projects\vidfab\ref\FL2VA\audio_vae\*.py` — the inference-only reference
+- `D:\Projects\slopfab\ref\FL2VA\audio_vae\*.py` — the inference-only reference
   bundle, and **the authority** for every formula below
-- `D:\Projects\vidfab\ref\FL2VA\audio_vae\config.yaml` and `metadata.json` —
+- `D:\Projects\slopfab\ref\FL2VA\audio_vae\config.yaml` and `metadata.json` —
   the constructor kwargs the checkpoint was built with
-- `D:\Projects\vidfab\ref\FL2VA\audio_vae\config.json` — the wrapper config
+- `D:\Projects\slopfab\ref\FL2VA\audio_vae\config.json` — the wrapper config
   (`latents_mean` / `latents_std`)
-- `D:\Projects\vidfab\ref\audio_vae\config.json` — a *re-expressed* config for
+- `D:\Projects\slopfab\ref\audio_vae\config.json` — a *re-expressed* config for
   the diffusers-native `AutoencoderKLMiniMaxH3Audio` port (same model)
-- `D:\Projects\vidfab\ref\diffusers\modular\decoders.py:123-198` and
+- `D:\Projects\slopfab\ref\diffusers\modular\decoders.py:123-198` and
   `packing.py:315-328` — how `decode` is called from the pipeline
-- the checkpoint itself, enumerated with `vidfab.exe inspect --list`
+- the checkpoint itself, enumerated with `slopfab.exe inspect --list`
 
 > **Read §2 and §6 first.** Two things in this model produce output that is
 > bounded, audible and completely wrong if taken the obvious way: the Snake
@@ -633,7 +633,7 @@ the decoder, so a magnitude bug does not get rescaled away — it compounds.
 | | **encoder path (rows 11-16)** | **136** | **281.13 MiB** | **not loaded** |
 | | **total** | **917** | **577.12 MiB** | |
 
-`2 + 779 + 136 = 917`. Verified against `vidfab.exe inspect --list --limit 1000`
+`2 + 779 + 136 = 917`. Verified against `slopfab.exe inspect --list --limit 1000`
 by classifying every name; the classifier has no "other" bucket.
 
 Row-5 arithmetic: 21 blocks x 2 conv lists x 3 dilations x {weight,bias} = 252.
@@ -668,7 +668,7 @@ weights, none of it executed.
 
 ## 13. Implementation notes for this port
 
-### 13.1 Kernels (`include/vidfab/cuda/audio_vae_kernels.cuh`)
+### 13.1 Kernels (`include/slopfab/cuda/audio_vae_kernels.cuh`)
 
 Channel counts run 2048 down to 1 while lengths run to 324,000, so nothing here
 is GEMM-shaped; all five kernels are direct.
@@ -759,7 +759,7 @@ Pinned source/SPIR-V SHA-256 values are
 `C5D8F8D334D64AE5CAD62E8F725BAD1BB818D25718CE3D1B4D723004F738DBEC`
 and `51C0834880118790B70ECCBD5FEF7267C8DFD8BB98256EE2F67D3250A1E90AB5`.
 
-The opt-in real test (`VIDFAB_AUDIO_VAE_REAL=1`) binds replay to
+The opt-in real test (`SLOPFAB_AUDIO_VAE_REAL=1`) binds replay to
 `minimax_h3_audio_vae_fp32.safetensors`, 605,254,808 bytes, SHA-256
 `8E505D95DD1561D47ABD43D4238FD40D9BB1AE9E147ED0A4CBA778D76AE4DB48`.
 It exercises the production `[2048,32,1]` input projection, the
@@ -835,7 +835,7 @@ The Vulkan library and decoder contract test also build and run with CUDA
 disabled. It loads the real checkpoint, verifies the 497-operator contract,
 pins A3 FNV64 `528F17A83D5EF7EE`, repeats without pool/descriptor growth and
 unloads, while linking no CUDA target. This guards decoder-library purity. The
-top-level runner still belongs to `vidfab_cuda`, so the CUDA-off CLI does not
+top-level runner still belongs to `slopfab_cuda`, so the CUDA-off CLI does not
 yet expose synthetic Vulkan generation.
 
 ---

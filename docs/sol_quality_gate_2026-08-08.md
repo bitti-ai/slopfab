@@ -10,17 +10,17 @@ Common arguments:
 generate
 --prompt "integrated_multimodal_description: a red ceramic teapot on a wooden table, warm studio light"
 --frames 22 --aspect 1:1 --steps 20 --seed 11
---tokenizer D:\Projects\vidfab\ref\text_encoder\tokenizer.json
---text-encoder D:\Projects\vidfab\weights\text_encoder\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
---transformer D:\Projects\vidfab\weights\transformer\MiniMax_H3_FL2VA_pruned_nvfp4.safetensors
---vae D:\Projects\vidfab\weights\vae\minimax_h3_video_vae_fp16.safetensors
---audio-vae D:\Projects\vidfab\weights\vae\minimax_h3_audio_vae_fp32.safetensors
+--tokenizer D:\Projects\slopfab\ref\text_encoder\tokenizer.json
+--text-encoder D:\Projects\slopfab\weights\text_encoder\qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors
+--transformer D:\Projects\slopfab\weights\transformer\MiniMax_H3_FL2VA_pruned_nvfp4.safetensors
+--vae D:\Projects\slopfab\weights\vae\minimax_h3_video_vae_fp16.safetensors
+--audio-vae D:\Projects\slopfab\weights\vae\minimax_h3_audio_vae_fp32.safetensors
 ```
 
 Dense appended `--attention flash2 --dump-latents build-sol\dense-final-latents.safetensors
---out build-sol\dense-final.mp4`. Pipeline set `VIDFAB_SOL_PIPELINE=1` and appended
+--out build-sol\dense-final.mp4`. Pipeline set `SLOPFAB_SOL_PIPELINE=1` and appended
 `--attention sol --dump-latents build-sol\pipeline-final-latents.safetensors
---out build-sol\pipeline-final.mp4`. Both set `VIDFAB_TENSOR_DIAG=1`; every scanned
+--out build-sol\pipeline-final.mp4`. Both set `SLOPFAB_TENSOR_DIAG=1`; every scanned
 attention, projection, residual, AdaLN and MLP tensor was finite.
 
 | Artifact | SHA-256 |

@@ -134,12 +134,12 @@ the port should assume a hard cap, but sizing buffers for `L ≤ 8192` is ample.
 
 ### 1.2 Tokenisation — the interface
 
-**Solved elsewhere.** `include/vidfab/text/tokenizer.h` implements the Qwen2
+**Solved elsewhere.** `include/slopfab/text/tokenizer.h` implements the Qwen2
 byte-level BPE and has been verified against the HuggingFace reference over 98
 cases including fuzz. This spec fixes only how it is *called*.
 
 ```
-token_ids = Tokenizer::encode(prompt)          // vidfab/text/tokenizer.h:35
+token_ids = Tokenizer::encode(prompt)          // slopfab/text/tokenizer.h:35
 ```
 
 with the following, all load-bearing:
@@ -331,7 +331,7 @@ is the discriminating test, and it is what `tests/test_encoder.cu` asserts.
 PromptEmbedding { num_tokens = L, hidden_size = 5120, data = [L * 5120] fp32 }
 ```
 
-matching `include/vidfab/text/encoder.h`. fp32 on the **host**: `L` is at most a
+matching `include/slopfab/text/encoder.h`. fp32 on the **host**: `L` is at most a
 few thousand, so at `L = 4096` this is 84 MB — trivially copied, and it lets the
 encoder `unload()` all 24.4 GB before the transformer loads (§7).
 
@@ -1243,7 +1243,7 @@ Notes:
 
 - **Keep `model.embed_tokens.weight` on the host.** Only `L` of its 151 936 rows
   are ever read. Gather them host-side into an `[L, 5120]` buffer and upload
-  that: 40 MB instead of 1.56 GB. `include/vidfab/text/encoder.h` already
+  that: 40 MB instead of 1.56 GB. `include/slopfab/text/encoder.h` already
   specifies this.
 - **Fuse dequantisation with the rotation of the activation, not with the
   weight.** The activation rotation is `L × in`; the weight dequant is
@@ -1254,7 +1254,7 @@ Notes:
   pure bandwidth; the arithmetic is ~48.8 GFLOP/token × `L`, so at `L = 1024`
   about 50 TFLOP plus ~1.7 TFLOP of attention. Sub-second either way.
 - **`unload()` before the transformer loads.** 24.39 GB here plus 19.3 GB there
-  does not fit; `include/vidfab/text/encoder.h` already documents that the
+  does not fit; `include/slopfab/text/encoder.h` already documents that the
   pipeline enforces the ordering, and §1.5's host-side fp32 output is what makes
   it possible.
 

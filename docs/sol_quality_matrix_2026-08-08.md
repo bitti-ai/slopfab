@@ -1,7 +1,7 @@
 # Sol pipeline final quality matrix — 2026-08-08
 
 This matrix and its acceptance criteria were committed before its generation
-runs. Every row compares `--attention sol` with `VIDFAB_SOL_PIPELINE=1` against
+runs. Every row compares `--attention sol` with `SLOPFAB_SOL_PIPELINE=1` against
 `--attention flash2`, using the same executable, prompt, seed, step schedule,
 22-frame 1:1 geometry, tokenizer, and weights. Pipeline remains opt-in.
 
@@ -45,7 +45,7 @@ metrics, and verdicts are appended after execution. Common model paths are the
 absolute paths recorded in `sol_quality_gate_2026-08-08.md`. Runs use
 `--frames 22 --aspect 1:1 --steps 20`; no cache, banding, or unrelated lossy
 option is enabled. One representative pair additionally uses
-`VIDFAB_TENSOR_DIAG=1` to establish finiteness; timing runs keep diagnostics off.
+`SLOPFAB_TENSOR_DIAG=1` to establish finiteness; timing runs keep diagnostics off.
 
 ## Results
 
@@ -69,7 +69,7 @@ For each scenario and seed, the exact dense suffix was:
 ```
 
 The pipeline command changed only the artifact suffix to `pipeline`, set
-`VIDFAB_SOL_PIPELINE=1`, and used `--attention sol`. `COMMON_MODELS` expands to
+`SLOPFAB_SOL_PIPELINE=1`, and used `--attention sol`. `COMMON_MODELS` expands to
 the five absolute tokenizer/model paths in `sol_quality_gate_2026-08-08.md`.
 The prompts are exactly the strings in the fixed matrix above. Logs record the
 expanded seed, geometry, steps, output, token count, backend, and schedule.
@@ -96,7 +96,7 @@ the subjective gate moot rather than silently passing it.
 | music | 29 | .9650/.9648 | .9761/.9761 | .86189 | .97209 | 25.14 | .93592 | FAIL |
 
 The representative `detail`, seed 11 pipeline run was repeated with
-`VIDFAB_TENSOR_DIAG=1`. Its 5,766-line
+`SLOPFAB_TENSOR_DIAG=1`. Its 5,766-line
 `detail-s11-pipeline-diag.log` contains zero lines with a nonzero `nonfinite`
 count. The repeat exited successfully.
 
@@ -107,7 +107,7 @@ standard deviation 0.184 s, range 18.6--19.3 s). The median ratio is 1.003x,
 within run-to-run dispersion; this short 4.1K-row matrix establishes no
 end-to-end speedup.
 
-`vidfab_chunkprobe stats` computes final-latent metrics directly from the FP32
+`slopfab_chunkprobe stats` computes final-latent metrics directly from the FP32
 safetensors. `tools/media_compare.py` streams FFmpeg-decoded `rgb24` video and
 `f32le` audio and accumulates dot products, centered covariance, absolute and
 squared error in double precision. FFmpeg's `ssim` filter supplies SSIM.
