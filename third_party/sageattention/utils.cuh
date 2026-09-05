@@ -15,7 +15,7 @@
  */
 
 #pragma once
-// The standalone vidfab port does not use the PyTorch validation macros below.
+// The standalone slopfab port does not use the PyTorch validation macros below.
 
 #define CHECK_CUDA(x) \
   TORCH_CHECK(x.is_cuda(), "Tensor " #x " must be on CUDA")

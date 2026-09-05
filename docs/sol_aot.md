@@ -17,7 +17,7 @@ release does not provide a cubin, a C ABI, or an offline export script.
 
 ## Windows CUDA 13 result
 
-Vidfab's supported build host is Windows with CUDA 13.0. Both matching package
+Slopfab's supported build host is Windows with CUDA 13.0. Both matching package
 lines were tested in a clean Python 3.10 virtual environment:
 
 ```text

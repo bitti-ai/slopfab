@@ -280,7 +280,7 @@ checksummed on-disk format plus `cache build`/`cache inspect` tooling, so it
 is not being built. If one is ever wanted, the design work is done and is
 recorded in the campaign notes: magic + format version + per-source key of
 (size, mtime, header length, FNV-1a of the header bytes) + independently
-checksummed sections, in `%LOCALAPPDATA%\Vidfab\cache\`, temp-file-plus-atomic-
+checksummed sections, in `%LOCALAPPDATA%\Slopfab\cache\`, temp-file-plus-atomic-
 rename, and silent fallback on any mismatch.
 
 **Restructuring the nvfp4 dequant grid to stop wasting scale sectors. Measured

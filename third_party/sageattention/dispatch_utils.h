@@ -15,7 +15,7 @@
  */
 
 #pragma once
-// The standalone vidfab port instantiates kernels directly and does not use
+// The standalone slopfab port instantiates kernels directly and does not use
 // the PyTorch dispatch macros below.
 #include <cstdint>
 #include <sstream>
