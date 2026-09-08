@@ -66,8 +66,8 @@ struct GenerateRequest {
 
   // Generate one still image instead of a temporal video. This is deliberately
   // opt-in: it denoises one video latent frame, omits target audio rows, and
-  // decodes temporal phase 3 directly instead of running the VAE's seven-token
-  // video schedule. It is therefore a different sampling mode, not a faster
+  // repeats that latent across seven VAE temporal positions and retains phase
+  // 3 of the first position. It is a different sampling mode, not a faster
   // way to reproduce frame zero of a normal video request.
   bool still_image = false;
 

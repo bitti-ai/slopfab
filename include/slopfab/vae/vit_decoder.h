@@ -97,10 +97,10 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
                           const DecodeSchedule& schedule = {});
 
 // Dedicated still-image decode. The input contains exactly one temporal latent
-// frame. Spatial tiling and blending are identical to video decode, but the
-// seven-token temporal schedule is bypassed and only temporal phase
-// `frame_pre_padding` (3 for the shipped model) is retained. That is the first
-// phase a normal video decode keeps after dropping its temporal pre-padding.
+// frame, repeated across seven temporal positions for each spatial tile. Only
+// temporal phase `frame_pre_padding` (3 for the shipped model) from the first
+// latent position is stitched into the output. This matches the first retained
+// frame of video decode on the repeated latent, without assembling other frames.
 DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
                                 const float* z_norm, int H_lat, int W_lat,
                                 const std::vector<float>& latents_mean,

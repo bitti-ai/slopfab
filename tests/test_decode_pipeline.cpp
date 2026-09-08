@@ -26,6 +26,7 @@ class StillBackend final : public slopfab::vae::VideoVaeWindowBackend {
     ++calls;
     seen_t = T;
     first_latent = z[0];
+    seen_latents.assign(z, z + static_cast<size_t>(batch) * config_.in_channels * T * H * W);
     const int out_h = H * config_.patch;
     const int out_w = W * config_.patch;
     const size_t plane_pixels = static_cast<size_t>(out_h) * out_w;
@@ -61,12 +62,13 @@ class StillBackend final : public slopfab::vae::VideoVaeWindowBackend {
   int calls = 0;
   int seen_t = 0;
   float first_latent = 0.0f;
+  std::vector<float> seen_latents;
   bool released = false;
 };
 
 }  // namespace
 
-SLOPFAB_TEST(still_decode_uses_one_token_and_first_retained_phase) {
+SLOPFAB_TEST(still_decode_uses_seven_tokens_and_first_retained_phase) {
   StillBackend backend;
   slopfab::vae::DecodeSchedule schedule;
   schedule.tile_size = 4;
@@ -78,7 +80,7 @@ SLOPFAB_TEST(still_decode_uses_one_token_and_first_retained_phase) {
       backend, latent.data(), h, w, {1.0f}, {2.0f}, schedule);
 
   CHECK(backend.calls == 1);
-  CHECK(backend.seen_t == 1);
+  CHECK(backend.seen_t == 7);
   CHECK_NEAR(backend.first_latent, 1.5, 0.0);
   CHECK(backend.released);
   CHECK(image.channels == 3);
@@ -87,17 +89,44 @@ SLOPFAB_TEST(still_decode_uses_one_token_and_first_retained_phase) {
   CHECK(image.width == 6);
   CHECK(image.data.size() == static_cast<size_t>(3 * 4 * 6));
 
-  // Phase 3 is selected from [channel][four temporal phases]. The fake emits
-  // -0.03, +0.01 and +0.05 for that phase in channels R, G and B.
   const float expected[3] = {
       -0.03f * 0.229f + 0.485f,
-       0.01f * 0.224f + 0.456f,
-       0.05f * 0.225f + 0.406f,
+       0.25f * 0.224f + 0.456f,
+       0.53f * 0.225f + 0.406f,
   };
   const size_t plane = static_cast<size_t>(image.height) * image.width;
   for (int c = 0; c < 3; ++c) {
     for (size_t i = 0; i < plane; ++i) {
       CHECK_NEAR(image.data[static_cast<size_t>(c) * plane + i], expected[c], 1e-7);
+    }
+  }
+}
+
+SLOPFAB_TEST(still_decode_repeats_spatial_tiles_in_channel_time_order) {
+  StillBackend backend;
+  backend.config_.in_channels = 2;
+  slopfab::vae::DecodeSchedule schedule;
+  schedule.tile_size = 4;
+  schedule.tile_overlap_min = 2;
+  const std::vector<float> latent = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+  const std::vector<float> mean = {1, -2};
+  const std::vector<float> stddev = {2, 3};
+  const auto image = slopfab::vae::decode_still_image(
+      backend, latent.data(), 2, 3, mean, stddev, schedule);
+  CHECK(image.frames == 1);
+  CHECK(backend.seen_t == 7);
+  CHECK(backend.seen_latents.size() == 2 * 2 * 7 * 2 * 2);
+  for (int tile = 0; tile < 2; ++tile) {
+    for (int channel = 0; channel < 2; ++channel) {
+      for (int frame = 0; frame < 7; ++frame) {
+        for (int row = 0; row < 2; ++row) {
+          for (int column = 0; column < 2; ++column) {
+            const size_t source = (channel * 2 + row) * 3 + tile + column;
+            const size_t target = (((tile * 2 + channel) * 7 + frame) * 2 + row) * 2 + column;
+            CHECK(backend.seen_latents[target] == latent[source] * stddev[channel] + mean[channel]);
+          }
+        }
+      }
     }
   }
 }

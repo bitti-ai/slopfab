@@ -87,6 +87,7 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
   }
 
   const size_t latent_pixels = static_cast<size_t>(H_lat) * W_lat;
+  constexpr int window = 7;
   std::vector<float> z;
   backend.denormalize_latents(z_norm, ch, latent_pixels, latents_mean,
                               latents_std, z);
@@ -116,13 +117,11 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
   } registration_scope{&backend};
   std::vector<float> z_batch;
 
-  // Gather equal-shape spatial tiles into the same batched format used by the
-  // normal decoder, with a temporal extent of one.
   for (const auto& [shape, ids] : shape_groups) {
     const int th = shape.first;
     const int tw = shape.second;
     const size_t tile_pixels = static_cast<size_t>(th) * tw;
-    const size_t needed = static_cast<size_t>(ids.size()) * ch * tile_pixels;
+    const size_t needed = static_cast<size_t>(ids.size()) * ch * window * tile_pixels;
     if (z_batch.size() < needed) z_batch.resize(needed);
     for (size_t bi = 0; bi < ids.size(); ++bi) {
       const size_t id = ids[bi];
@@ -131,16 +130,19 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
       const int y0 = ytiles.starts[ti] / cfg.patch;
       const int x0 = xtiles.starts[tj] / cfg.patch;
       for (int ci = 0; ci < ch; ++ci) {
-        for (int y = 0; y < th; ++y) {
-          const size_t src = (static_cast<size_t>(ci) * H_lat + (y0 + y)) * W_lat + x0;
-          const size_t dst = (bi * ch + ci) * tile_pixels + static_cast<size_t>(y) * tw;
-          std::copy_n(z.begin() + static_cast<ptrdiff_t>(src), tw,
-                      z_batch.begin() + static_cast<ptrdiff_t>(dst));
+        for (int frame = 0; frame < window; ++frame) {
+          for (int y = 0; y < th; ++y) {
+            const size_t src = (static_cast<size_t>(ci) * H_lat + (y0 + y)) * W_lat + x0;
+            const size_t dst = ((bi * ch + ci) * window + frame) * tile_pixels +
+                               static_cast<size_t>(y) * tw;
+            std::copy_n(z.begin() + static_cast<ptrdiff_t>(src), tw,
+                        z_batch.begin() + static_cast<ptrdiff_t>(dst));
+          }
         }
       }
     }
     backend.forward_windows(z_batch.data(), static_cast<int>(ids.size()),
-                            1, th, tw, tiles, ids.data());
+                            window, th, tw, tiles, ids.data());
   }
 
   DecodedVideo image;
@@ -149,9 +151,6 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
   image.frames = 1;
   image.data.resize(static_cast<size_t>(cfg.out_channels) * frame_pixels);
 
-  // Blend only the three RGB planes that survive. Passing one plane at a time
-  // preserves the normal decoder's vertical-then-horizontal tile arithmetic,
-  // while avoiding overlap work for the other nine temporal/channel planes.
   TileMerge merge;
   int y_cursor = 0;
   for (size_t ti = 0; ti < ytiles.starts.size(); ++ti) {
@@ -170,7 +169,7 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
       const float* left = tj > 0 ? tiles[id - 1].data() : nullptr;
       const size_t tile_pixels = static_cast<size_t>(th) * tw;
       for (int c = 0; c < cfg.out_channels; ++c) {
-        const int p = c * cfg.patch_t + phase;
+        const int p = c * window * cfg.patch_t + phase;
         const size_t plane_offset = static_cast<size_t>(p) * tile_pixels;
         merge.prepare(raw.data() + plane_offset,
                       above != nullptr ? above + plane_offset : nullptr,

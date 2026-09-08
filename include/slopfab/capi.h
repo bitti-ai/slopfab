@@ -337,8 +337,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_frames(slopfab_request* reque
 
 /* Selects the dedicated still-image path. When enabled, `frames` is ignored:
  * the plan contains one video latent frame, no target audio rows, and one
- * decoded output frame. The VAE decodes temporal phase 3 directly, matching
- * the first retained phase of the normal temporal schedule. This is a distinct
+ * decoded output frame. The VAE repeats that latent across seven temporal
+ * positions and retains phase 3 of the first position. This is a distinct
  * sampling mode and is not bit-equivalent to frame zero of a video request.
  * Disabling it restores the request's previous frame count. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_still_image(slopfab_request* request,
