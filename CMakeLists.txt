@@ -1233,6 +1233,16 @@ endif()
 
 # --- tests ------------------------------------------------------------------
 
+if(SLOPFAB_ENABLE_CUDA AND SLOPFAB_BUILD_DEV_TOOLS)
+  add_executable(slopfab_stillprobe tools/stillprobe.cpp)
+  target_link_libraries(slopfab_stillprobe PRIVATE slopfab_cuda)
+  if(MSVC)
+    target_compile_options(slopfab_stillprobe PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  else()
+    target_compile_options(slopfab_stillprobe PRIVATE -Wall -Wextra)
+  endif()
+endif()
+
 if(SLOPFAB_BUILD_TESTS)
   enable_testing()
   # Host tests. Each area contributes its own translation unit and registers
@@ -1246,6 +1256,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_chunking.cpp
     tests/test_compare_metrics.cpp
     tests/test_decode_pipeline.cpp
+    tests/test_stillprobe.cpp
     tests/test_image.cpp
     tests/test_noise.cpp
     tests/test_packing.cpp
