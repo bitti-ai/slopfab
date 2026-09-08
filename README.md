@@ -150,17 +150,22 @@ if (slopfab_generation_start(req, on_progress, NULL, &gen) == SLOPFAB_OK) {
 slopfab_request_destroy(req);
 ```
 
-For the low-latency still-image path, opt in before resolving the plan:
+For still-image generation, opt in before resolving the plan:
 
 ```c
 slopfab_request_set_still_image(req, 1);
 ```
 
 This is a distinct sampling mode, not a one-frame truncation of a video run.
-It denoises one video latent with no audio tokens, decodes only the temporal
-phase corresponding to the first retained video frame, and returns exactly one
-frame in `slopfab_output`. Both CUDA and exact Vulkan denoising are supported;
+It denoises one video latent with no audio tokens, repeats that latent across
+seven VAE temporal positions, and returns exactly one frame in `slopfab_output`.
+Only the first retained video phase is stitched into the output. The previous
+one-token VAE shortcut is removed; no application API changes are needed.
+Both CUDA and exact Vulkan denoising are supported;
 the regular frame-count setting is ignored while still mode is on.
+
+For the quality investigation and a same-latent video-reference check, see
+[Still decoder diagnostic](docs/still_decode_diagnostic.md).
 
 From Rust the same flow is a `bindgen` run over `capi.h` and a `Drop` impl per
 handle; the destructors all accept null, so the `Drop` needs no guard. Three
