@@ -353,6 +353,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
   LoraAdapters loras;
+  validate_refmods(request.refmods);
+  if (request.has_refmods() && options.source != LatentSource::kDenoise) {
+    result.message = "refmods require denoising";
+    return result;
+  }
   if (request.schedule == sampler::ScheduleKind::kTaoMate3Step &&
       (options.sampler != sampler::SamplerKind::kEuler || request.cache_threshold > 0 ||
        request.skip_every > 0 || request.block_cache_span > 0)) {
@@ -849,6 +854,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         }
       }
       for (const auto& media : prepared_media) reference_geometry.push_back(media.plan.geometry);
+    }
+
+    if (request.has_refmods()) {
+      if (!notify(RunStage::kReferences, -1, 0)) return stop("refmod conditioning");
+      append_refmod_conditions(request.refmods, request.seed, reference_geometry,
+                               condition_video_rows, condition_audio_rows);
     }
 
     // --- conditioning -------------------------------------------------------

@@ -39,10 +39,13 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 }  // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  validate_refmods(request.refmods);
   validate_reference_media(request.reference_image_paths.size(), request.reference_media);
   if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
     bool has_video = false;
     for (const auto& media : request.reference_media) has_video |= media->is_video();
+    for (const auto& ref : request.refmods)
+      has_video |= ref.enabled() && ref.mod->geometry().kind != dit::ReferenceKind::kAudio;
     if (!has_video) throw std::invalid_argument("reference audio requires an image or video reference");
   }
   if (request.reference_image_paths.size() > 9) {
@@ -103,6 +106,13 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
       plan.layout.num_condition_video += geometry.video_rows();
       plan.layout.num_condition_audio += geometry.audio_rows();
     }
+  }
+
+  for (const auto& ref : request.refmods) {
+    if (!ref.enabled()) continue;
+    plan.layout.condition_audio_is_explicit = true;
+    plan.layout.num_condition_video += ref.mod->geometry().video_rows() * ref.copies;
+    plan.layout.num_condition_audio += ref.mod->geometry().audio_rows() * ref.copies;
   }
 
   for (const auto& lora : request.loras) {
@@ -349,6 +359,11 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigma_shift),
       static_cast<unsigned long long>(request.seed), request.out_path.c_str());
   std::string description = buf;
+  for (const auto& ref : request.refmods) {
+    description += "  refmod              " + ref.mod->path() + " (strength " +
+        std::to_string(ref.strength) + ", copies " + std::to_string(ref.copies) +
+        ", tokens " + std::to_string(ref.enabled() ? ref.mod->token_count() * ref.copies : 0) + ")\n";
+  }
   if (request.schedule == sampler::ScheduleKind::kTaoMate3Step)
     description += "  schedule            taomate-3step (teacher states 0,16,33,49)\n";
   for (const auto& lora : request.loras) {

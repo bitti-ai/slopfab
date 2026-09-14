@@ -24,6 +24,7 @@
 
 #include "slopfab/dit/packing.h"
 #include "slopfab/reference_media.h"
+#include "slopfab/refmod.h"
 #include "slopfab/lora.h"
 #include "slopfab/sampler/scheduler.h"
 
@@ -97,10 +98,17 @@ struct GenerateRequest {
   // CUDA and Vulkan support video/audio conditioning.
   std::vector<std::shared_ptr<const ReferenceMedia>> reference_media;
 
+  // Pre-encoded references follow native media; they do not add Qwen tokens.
+  std::vector<RefModReference> refmods;
+
   bool has_native_references() const {
     return !reference_image_paths.empty() || !reference_media.empty();
   }
-  bool has_references() const { return has_native_references(); }
+  bool has_refmods() const {
+    for (const auto& ref : refmods) if (ref.enabled()) return true;
+    return false;
+  }
+  bool has_references() const { return has_native_references() || has_refmods(); }
 
   // Write .y4m + .wav instead of muxing an MP4. Also the automatic fallback
   // when ffmpeg cannot be loaded.

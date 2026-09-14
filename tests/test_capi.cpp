@@ -22,6 +22,38 @@
 
 #include "harness.h"
 #include "slopfab/capi.h"
+#include "refmod_fixture.h"
+SLOPFAB_TEST(capi_refmod_loading_ownership_and_validation) {
+  RefModFixture fixture; fixture.write();
+  slopfab_request* request = slopfab_request_create();
+  CHECK(request != nullptr);
+  if (!request) return;
+  struct Guard { slopfab_request* p; ~Guard() { slopfab_request_destroy(p); } } guard{request};
+  slopfab_plan base{}, loaded{}, cleared{};
+  CHECK(slopfab_resolve_plan(request, &base) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_refmod(nullptr, "x", 1, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_refmod(request, nullptr, 1, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_refmod(request, "", 1, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_refmod(request, "x", NAN, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_refmod(request, "x", 1.1f, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_refmod(request, "x", 1, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_refmod(request, "x", 1, 11) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_refmod(request, fixture.path.string().c_str(), 1, 2) == SLOPFAB_OK);
+  std::filesystem::remove(fixture.path);  // Neither a retained mapping nor deferred I/O.
+  CHECK(slopfab_resolve_plan(request, &loaded) == SLOPFAB_OK);
+  CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text + 8);
+  CHECK(slopfab_request_add_refmod(request, fixture.path.string().c_str(), 1, 1) != SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &loaded) == SLOPFAB_OK);
+  CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text + 8);
+  CHECK(slopfab_request_clear_refmods(request) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &cleared) == SLOPFAB_OK);
+  CHECK(cleared.sequence_rows_without_text == base.sequence_rows_without_text);
+  fixture.write();
+  CHECK(slopfab_request_add_refmod(request, fixture.path.string().c_str(), 0, 2) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &loaded) == SLOPFAB_OK);
+  CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text);
+  CHECK(slopfab_request_clear_refmods(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+}
 
 namespace {
 

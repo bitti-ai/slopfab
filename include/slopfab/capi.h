@@ -90,7 +90,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 7
+#define SLOPFAB_CAPI_VERSION_MINOR 8
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -416,6 +416,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(
     slopfab_request* request, const char* path, float strength);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_loras(slopfab_request* request);
 
+/* Standalone ComfyUI H3 refmod safetensors (image/video/audio). Loads and owns
+ * the latents immediately; later file changes do not affect queued requests.
+ * strength: 0..1 (0 disables), copies: 1..10. Requires a Ref2VA transformer.
+ * Refmods follow native references and do not alter the text prompt. Since 1.8. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(
+    slopfab_request* request, const char* path, float strength, int32_t copies);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* request);
 #define SLOPFAB_SCHEDULE_DEFAULT 0
 #define SLOPFAB_SCHEDULE_TAOMATE_3STEP 1
 /* TaoMate uses three evaluations and overrides the ordinary step count.

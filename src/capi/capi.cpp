@@ -663,6 +663,27 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(
+    slopfab_request* request, const char* path, float strength, int32_t copies) {
+  if (!request || !path || !*path || !std::isfinite(strength) || strength < 0 || strength > 1 || copies < 1 || copies > 10)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "refmod needs a request, path, strength 0..1 and copies 1..10");
+  return guarded([&] {
+    auto refs = request->request.refmods;
+    refs.push_back({slopfab::RefMod::load(path), strength, copies});
+    slopfab::validate_refmods(refs);
+    request->request.refmods.swap(refs);
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* request) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear_refmods: null request");
+  return guarded([&] {
+    request->request.refmods.clear();
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_request* request, const char* path) {
   if (request == nullptr || path == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_add_reference_image: null argument");

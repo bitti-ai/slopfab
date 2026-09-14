@@ -461,6 +461,9 @@ const CommandHelp kCommands[] = {
      "                               instead; a BOM and surrounding blank space are\n"
      "                               stripped. Cannot be combined with --prompt\n"
      "  --reference-image <file>     ordered Ref2VA image; repeat up to 9 times.\n"
+     "  --refmod <file>              pre-encoded H3 reference safetensors; repeatable.\n"
+     "  --refmod-strength <0..1>     strength of preceding refmod (default 1).\n"
+     "  --refmod-copies <1..10>      copies of preceding refmod (default 1).\n"
      "  --reference-video <file>     ingest clip and soundtrack (up to 3).\n"
      "  --reference-audio <file>     ingest standalone audio (up to 3).\n"
      "                               Video/audio generation supports CUDA/Vulkan; file\n"
@@ -1374,6 +1377,16 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.video_vae_path = next("--vae");
     } else if (arg == "--audio-vae") {
       req.audio_vae_path = next("--audio-vae");
+    } else if (arg == "--refmod") {
+      req.refmods.push_back({slopfab::RefMod::load(next("--refmod")), 1.0f, 1});
+    } else if (arg == "--refmod-strength" || arg == "--refmod-copies") {
+      if (req.refmods.empty()) throw std::runtime_error(std::string(arg) + " must follow --refmod");
+      const std::string value = next(arg == "--refmod-strength" ? "--refmod-strength" : "--refmod-copies");
+      size_t consumed = 0;
+      if (arg == "--refmod-strength") req.refmods.back().strength = std::stof(value, &consumed);
+      else req.refmods.back().copies = std::stoi(value, &consumed);
+      if (consumed != value.size()) throw std::runtime_error("invalid refmod numeric value: " + value);
+      slopfab::validate_refmods(req.refmods);
     } else if (arg == "--reference-image") {
       req.reference_image_paths.emplace_back(next("--reference-image"));
     } else if (arg == "--reference-video" || arg == "--reference-audio") {

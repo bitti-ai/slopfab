@@ -1369,6 +1369,13 @@ weights; audio references require floating-point audio encoder weights, and
 Vulkan video references require FP16/BF16 video encoder weights.
 See [the API, generation path and verification](docs/reference_media.md).
 
+## Refmod references
+
+CUDA and Vulkan support standalone H3 image, video, and audio refmods with
+Ref2VA weights. Use `--refmod person.safetensors --refmod-strength 1 --refmod-copies 2`;
+repeat `--refmod` to combine references. The DLL exposes `slopfab_request_add_refmod`
+and `slopfab_request_clear_refmods`. See [usage and file compatibility](docs/refmods.md).
+
 ## Licence
 
 The code in this repository is the author's. Model weights, configuration files
