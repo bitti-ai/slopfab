@@ -45,6 +45,8 @@ add_library(slopfab_core STATIC
   src/core/tensor_convert.cpp
   src/core/device_tensor.cpp
   src/core/image.cpp
+  src/core/reference_media.cpp
+  src/core/reference_conditioning.cpp
   src/core/image_platform.cpp
   src/core/safetensors_write.cpp
   src/core/sha256.cpp
@@ -229,9 +231,11 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/dit_kernels.cu
       src/cuda/encoder_kernels.cu
       src/cuda/keyframe_encoder.cu
+      src/cuda/reference_encoder.cu
       src/cuda/qwen_vision.cu
       src/cuda/qwen_vision_encoder.cu
       src/vae/keyframe_cuda.cpp
+      src/vae/audio_encoder.cpp
       src/generate.cpp
       # src/capi/capi.cpp is deliberately NOT here. It calls run_generate, so
       # it depends on this target — but compiling it *into* this target as well
@@ -718,6 +722,22 @@ if(SLOPFAB_ENABLE_VULKAN)
       "9564933f40b33b8c6077cb073f6e0cb78ad40627cd0c973ff16897cab1764efb")
     message(FATAL_ERROR "slopfab: H3 attention shader/source hash mismatch")
   endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    src/vulkan/tensor_reference.comp src/vulkan/tensor_reference.comp.spv
+    src/vulkan/reference.sha256)
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_reference.comp" REFERENCE_SOURCE)
+  string(REPLACE "\r\n" "\n" REFERENCE_SOURCE "${REFERENCE_SOURCE}")
+  string(SHA256 REFERENCE_SOURCE_HASH "${REFERENCE_SOURCE}")
+  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_reference.comp.spv" REFERENCE_SPV_HASH)
+  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/reference.sha256" REFERENCE_HASHES)
+  list(GET REFERENCE_HASHES 0 EXPECTED_REFERENCE_SOURCE)
+  list(GET REFERENCE_HASHES 1 EXPECTED_REFERENCE_SPV)
+  if(NOT REFERENCE_SOURCE_HASH STREQUAL EXPECTED_REFERENCE_SOURCE OR
+     NOT REFERENCE_SPV_HASH STREQUAL EXPECTED_REFERENCE_SPV)
+    message(FATAL_ERROR "slopfab: reference shader/source hash mismatch")
+  endif()
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_reference.comp.spv" REFERENCE_HEX HEX)
+  string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SLOPFAB_TENSOR_REFERENCE_SPV_BYTES "${REFERENCE_HEX}")
   file(READ "${SLOPFAB_TENSOR_OPS_SPV}" SLOPFAB_TENSOR_OPS_SPV_HEX HEX)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SLOPFAB_TENSOR_OPS_SPV_BYTES
     "${SLOPFAB_TENSOR_OPS_SPV_HEX}")
@@ -917,6 +937,7 @@ if(SLOPFAB_ENABLE_VULKAN)
     src/vulkan/dit_transformer.cpp
     src/vulkan/audio_decoder.cpp
     src/vulkan/keyframe_encoder.cpp
+    src/vulkan/reference_encoder.cpp
     src/vulkan/vae_decoder.cpp
     src/vulkan/vae_vit_block.cpp
     src/vulkan/yuv_converter.cpp)
@@ -1040,6 +1061,7 @@ endif()
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
 # or toolkit-specific backend executable is needed.
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
+target_sources(slopfab PRIVATE src/cli/reference_decode.cpp)
 set(SLOPFAB_CLI_TARGET slopfab)
 
 target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_core)
@@ -1154,7 +1176,7 @@ if(SLOPFAB_BUILD_C_API)
   # produce a libslopfab.so.0 whose soname says 0 for an ABI that says 1, and
   # would bump it for releases that did not touch the C interface at all.
   set(SLOPFAB_CAPI_VERSION_MAJOR 1)
-  set(SLOPFAB_CAPI_VERSION_MINOR 5)
+  set(SLOPFAB_CAPI_VERSION_MINOR 6)
   set(SLOPFAB_CAPI_VERSION_PATCH 0)
   set(SLOPFAB_CAPI_VERSION
     "${SLOPFAB_CAPI_VERSION_MAJOR}.${SLOPFAB_CAPI_VERSION_MINOR}.${SLOPFAB_CAPI_VERSION_PATCH}")
@@ -1276,9 +1298,16 @@ if(SLOPFAB_ENABLE_CUDA)
 endif()
 
 # --- tests ------------------------------------------------------------------
+if(SLOPFAB_ENABLE_VULKAN AND SLOPFAB_BUILD_DEV_TOOLS)
+  add_executable(slopfab_referenceprobe_vulkan tools/referenceprobe.cpp)
+  target_compile_definitions(slopfab_referenceprobe_vulkan PRIVATE SLOPFAB_REFERENCEPROBE_VULKAN=1)
+  target_link_libraries(slopfab_referenceprobe_vulkan PRIVATE slopfab_vulkan)
+endif()
 
 if(SLOPFAB_ENABLE_CUDA AND SLOPFAB_BUILD_DEV_TOOLS)
   add_executable(slopfab_stillprobe tools/stillprobe.cpp)
+  add_executable(slopfab_referenceprobe tools/referenceprobe.cpp)
+  target_link_libraries(slopfab_referenceprobe PRIVATE slopfab_cuda)
   target_link_libraries(slopfab_stillprobe PRIVATE slopfab_cuda)
   if(MSVC)
     target_compile_options(slopfab_stillprobe PRIVATE /W4 /permissive- /utf-8 /EHsc)
@@ -1302,6 +1331,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_decode_pipeline.cpp
     tests/test_stillprobe.cpp
     tests/test_image.cpp
+    tests/test_reference_media.cpp
     tests/test_noise.cpp
     tests/test_packing.cpp
     tests/test_ref2va.cpp
@@ -1324,6 +1354,20 @@ if(SLOPFAB_BUILD_TESTS)
     target_compile_options(slopfab_tests PRIVATE -Wall -Wextra)
   endif()
   add_test(NAME unit COMMAND slopfab_tests)
+  if(SLOPFAB_WITH_FFMPEG)
+    find_program(SLOPFAB_TEST_FFMPEG ffmpeg HINTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
+    find_program(SLOPFAB_TEST_FFPROBE ffprobe HINTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
+    if(SLOPFAB_TEST_FFMPEG AND SLOPFAB_TEST_FFPROBE)
+      add_executable(slopfab_reference_decode_tests tests/test_reference_decode.cpp src/cli/reference_decode.cpp)
+      target_link_libraries(slopfab_reference_decode_tests PRIVATE slopfab_core)
+      add_test(NAME reference_media_decode COMMAND ${CMAKE_COMMAND}
+        "-DPROBE=$<TARGET_FILE:slopfab_reference_decode_tests>" "-DFFMPEG=${SLOPFAB_TEST_FFMPEG}"
+        "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/reference_media_fixture"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_reference_decode.cmake")
+      set_tests_properties(reference_media_decode PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
+    endif()
+  endif()
 
   if(SLOPFAB_ENABLE_VULKAN)
     add_executable(slopfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp)

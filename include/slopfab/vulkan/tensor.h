@@ -42,6 +42,8 @@ struct TensorContextOptions {
   // Required INT8 Q/K and means/scales are reported separately by the plan.
   // Zero preserves the compact allocation footprint. No free-VRAM guessing.
   uint64_t sage_extra_workspace_bytes = 64ull << 20;
+  // Compile reference-only shaders only for media encoder contexts.
+  bool enable_reference_encoder = false;
 };
 
 class DeviceTensor {
@@ -121,6 +123,12 @@ class TensorBatch {
   TensorBatch& operator=(const TensorBatch&) = delete;
 
   void copy(DeviceTensor& source, DeviceTensor& destination);
+  // Internal reference-encoder primitive. Parameters describe a validated
+  // graph operation; callers own shape validation and must not alias output.
+  void reference_operation(DeviceTensor& input, DeviceTensor& weight,
+      DeviceTensor& bias, DeviceTensor& output, const uint32_t* parameters,
+      uint32_t groups, uint32_t batches = 1,
+      DeviceTensor* previous = nullptr, DeviceTensor* earliest = nullptr);
   // Contiguous 2-D row-range transfer. Source/destination must have the same
   // scalar type and column count; ranges are in rows and must not overlap.
   void copy_rows(DeviceTensor& source, DeviceTensor& destination,

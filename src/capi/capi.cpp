@@ -177,6 +177,89 @@ struct slopfab_request {
   RunOptions options;
 };
 
+struct slopfab_reference_video {
+  slopfab::ReferenceMedia media;
+};
+
+namespace {
+
+template <typename Fn>
+int reference_input_guarded(Fn&& body) {
+  return guarded([&] {
+    try { body(); }
+    catch (const std::invalid_argument& e) {
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
+    }
+    return SLOPFAB_OK;
+  });
+}
+
+void attach_reference(slopfab_request* request, const slopfab::ReferenceMedia& media) {
+  auto references = request->request.reference_media;
+  references.push_back(std::make_shared<const slopfab::ReferenceMedia>(media));
+  slopfab::validate_reference_media(request->request.reference_image_paths.size(), references);
+  request->request.reference_media.swap(references);
+}
+
+}  // namespace
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_create(
+    double duration_seconds, slopfab_reference_video** out_video) {
+  if (!out_video) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "reference video: null output pointer");
+  *out_video = nullptr;
+  return reference_input_guarded([&] {
+    auto video = std::make_unique<slopfab_reference_video>();
+    video->media = slopfab::ReferenceMedia::video(duration_seconds);
+    *out_video = video.release();
+  });
+}
+
+SLOPFAB_C_API void SLOPFAB_CALL slopfab_reference_video_destroy(slopfab_reference_video* video) {
+  delete video;
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_append_rgb24(
+    slopfab_reference_video* video, const uint8_t* pixels, size_t buffer_bytes,
+    int32_t width, int32_t height, size_t row_stride_bytes, double timestamp_seconds) {
+  if (!video) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "reference video: null handle");
+  return reference_input_guarded([&] {
+    video->media.append_frame(pixels, buffer_bytes, width, height, row_stride_bytes, 3, timestamp_seconds);
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_append_rgba8(
+    slopfab_reference_video* video, const uint8_t* pixels, size_t buffer_bytes,
+    int32_t width, int32_t height, size_t row_stride_bytes, double timestamp_seconds) {
+  if (!video) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "reference video: null handle");
+  return reference_input_guarded([&] {
+    video->media.append_frame(pixels, buffer_bytes, width, height, row_stride_bytes, 4, timestamp_seconds);
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_set_audio_f32(
+    slopfab_reference_video* video, const float* samples, size_t float_count,
+    int32_t channels, int32_t sample_rate, double start_seconds) {
+  if (!video) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "reference video: null handle");
+  return reference_input_guarded([&] {
+    video->media.set_audio(samples, float_count, channels, sample_rate, start_seconds);
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_video(
+    slopfab_request* request, const slopfab_reference_video* video) {
+  if (!request || !video) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "reference video: null handle");
+  return reference_input_guarded([&] { attach_reference(request, video->media); });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_audio_f32(
+    slopfab_request* request, const float* samples, size_t float_count,
+    int32_t channels, int32_t sample_rate) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "reference audio: null request");
+  return reference_input_guarded([&] {
+    attach_reference(request, slopfab::ReferenceMedia::audio(samples, float_count, channels, sample_rate));
+  });
+}
+
 struct slopfab_generation {
   GenerateRequest request;
   RunOptions options;
@@ -192,6 +275,8 @@ struct slopfab_generation {
   bool done = false;
 
   std::string error;
+  // Written and read only by the worker, including when no callback is set.
+  const char* stage_name = "starting";
   std::chrono::steady_clock::time_point started;
 
   // Moved out of the decoder's own buffers by `on_samples`, so the pixels are
@@ -270,6 +355,17 @@ int report_terminal_status(const slopfab_generation* generation) noexcept {
 // unwind through `run_generate` and out of the worker thread.
 bool progress_hook(RunStage stage, int step, int steps, void* userdata) {
   auto* gen = static_cast<slopfab_generation*>(userdata);
+  switch (stage) {
+    case RunStage::kStarting: gen->stage_name = "starting"; break;
+    case RunStage::kReferences: gen->stage_name = "reference encoding"; break;
+    case RunStage::kConditioning: gen->stage_name = "prompt conditioning"; break;
+    case RunStage::kTransformerLoad: gen->stage_name = "transformer loading"; break;
+    case RunStage::kDenoising: gen->stage_name = "denoising"; break;
+    case RunStage::kVideoDecode: gen->stage_name = "video VAE decoding"; break;
+    case RunStage::kAudioDecode: gen->stage_name = "audio VAE decoding"; break;
+    case RunStage::kDelivering: gen->stage_name = "output delivery"; break;
+    case RunStage::kFinished: gen->stage_name = "finishing"; break;
+  }
   if (gen->callback != nullptr) {
     slopfab_progress progress;
     progress.stage = static_cast<int32_t>(stage);
@@ -322,7 +418,7 @@ void run_worker(slopfab_generation* gen) {
       message = result.message;
     } else if (!result.ok) {
       code = classify(result.message);
-      message = result.message;
+      message = std::string(gen->stage_name) + ": " + result.message;
     } else {
       code = SLOPFAB_OK;
     }
@@ -330,7 +426,7 @@ void run_worker(slopfab_generation* gen) {
     code = SLOPFAB_ERR_OUT_OF_MEMORY;
     message = "out of memory";
   } catch (const std::exception& e) {
-    message = e.what();
+    message = std::string(gen->stage_name) + ": " + e.what();
     code = classify(message);
   } catch (...) {
     code = SLOPFAB_ERR_UNKNOWN;
@@ -546,6 +642,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_reque
     if (request->request.reference_image_paths.size() >= 9) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST,
                   "MiniMax-H3 Ref2VA accepts at most 9 reference images");
+    }
+    if (request->request.reference_image_paths.size() + request->request.reference_media.size() >= 12) {
+      return fail(SLOPFAB_ERR_INVALID_REQUEST, "MiniMax-H3 Ref2VA accepts at most 12 references in total");
     }
     request->request.reference_image_paths.emplace_back(path);
     return SLOPFAB_OK;

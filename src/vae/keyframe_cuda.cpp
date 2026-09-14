@@ -1,4 +1,6 @@
 #include "slopfab/vae/keyframe_encoder.h"
+#include "slopfab/cuda/reference_encoder.cuh"
+#include "slopfab/reference_conditioning.h"
 
 #include <cuda_fp16.h>
 
@@ -423,6 +425,83 @@ std::vector<float> KeyframeEncoder::encode_reference_image(
   const size_t count = static_cast<size_t>(24) * (image.height / 16) * (image.width / 16);
   const std::vector<float> normal = torch_cpu_normal_seed42(count);
   return encode_condition_rows(image, normal.data(), latents_mean, latents_std);
+}
+
+std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels, int frames, int height, int width) {
+  if (!pixels || frames <= 0 || frames > 17 || height <= 0 || width <= 0 || height % 16 || width % 16)
+    throw std::invalid_argument("video encoder: expected 1..17 frames and dimensions divisible by 16");
+  cuda::ReferenceEncoderOps ops(impl_->stream.get());
+  int t = frames, h = height, w = width;
+  auto conv = [&](const DeviceBuffer<float>& x, const std::string& name, int ci, int co,
+                  int k, int ss = 1, int ts = 1, bool down = false) {
+    const auto& weight = impl_->convs.at(name);
+    return ops.conv3d(x.get(), weight.weight.materialize(impl_->weight_workspace.get(),
+        impl_->weight_workspace_elements, impl_->stream.get()), weight.bias, ci, co, t, h, w, k, ss, ts, down);
+  };
+  auto norm = [&](const float* x, float* y, const std::string& name, int c) {
+    const auto& n = impl_->norms.at(name);
+    cuda::reference_groupnorm(x, n.weight, n.bias, y, c, t, h, w, impl_->stream.get());
+  };
+  DeviceBuffer<float> x(size_t(3) * t * h * w);
+  x.copy_from_host(pixels, x.size(), impl_->stream.get());
+  x = conv(x, "encoder.conv_in", 3, 128, 3);
+  const int channels[] = {128,256,256,512,512,1024};
+  const int spatial[] = {2,2,2,2,1,1}, temporal[] = {1,2,2,1,1,1};
+  int current = 128;
+  for (int level = 0; level < 6; ++level) {
+    for (int block = 0; block < 2; ++block) {
+      std::string prefix = "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
+      DeviceBuffer<float> branch(x.size());
+      norm(x.get(), branch.get(), prefix + ".norm1", current);
+      branch = conv(branch, prefix + ".conv1", current, channels[level], 3);
+      norm(branch.get(), branch.get(), prefix + ".norm2", channels[level]);
+      branch = conv(branch, prefix + ".conv2", channels[level], channels[level], 3);
+      if (current != channels[level]) x = conv(x, prefix + ".nin_shortcut", current, channels[level], 1);
+      ops.add(x.get(), branch.get(), x.size());
+      current = channels[level];
+    }
+    if (spatial[level] > 1 || temporal[level] > 1) {
+      x = conv(x, "encoder.down." + std::to_string(level) + ".downsample.conv", current, current, 3,
+               spatial[level], temporal[level], true);
+      t = (t - 1) / temporal[level] + 1; h /= spatial[level]; w /= spatial[level];
+    }
+  }
+  norm(x.get(), x.get(), "encoder.norm_out", 1024);
+  x = conv(x, "encoder.conv_out", 1024, 48, 3);
+  x = conv(x, "quant_conv", 48, 48, 1);
+  std::vector<float> moments(x.size());
+  x.copy_to_host(moments.data(), moments.size(), impl_->stream.get());
+  impl_->stream.synchronize();
+  return moments;
+}
+
+std::vector<float> KeyframeEncoder::encode_reference_video(const std::vector<RGBImage>& frames,
+    int count, const std::vector<float>& mean, const std::vector<float>& stddev) {
+  if (count < 22 || (count - 5) % 17 || size_t(count) > frames.size())
+    throw std::invalid_argument("reference video: input must be 17*n+5 frames");
+  const int h = frames.front().height, w = frames.front().width;
+  const int latent_frames = (count - 5) / 17 * 5 + 2;
+  const size_t plane = size_t(h) * w, latent_plane = size_t(h / 16) * (w / 16);
+  std::vector<float> moments(size_t(48) * latent_frames * latent_plane);
+  std::vector<float> pixels(size_t(3) * 17 * plane);
+  for (int start = 0; start < count; start += 17) {
+    for (int t = 0; t < 17; ++t) {
+      const auto& image = frames[std::min(start + t, count - 1)];
+      if (image.height != h || image.width != w) throw std::invalid_argument("reference video: changing dimensions");
+      const auto prepared = prepare_keyframe_pixels(image);
+      for (int c = 0; c < 3; ++c)
+        std::copy_n(prepared.data() + size_t(c) * plane, plane, pixels.data() + (size_t(c) * 17 + t) * plane);
+    }
+    const auto chunk = encode_temporal_moments(pixels.data(), 17, h, w);
+    const int latent_start = start / 17 * 5;
+    const int keep = std::min(5, latent_frames - latent_start);
+    for (int c = 0; c < 48; ++c)
+      std::copy_n(chunk.data() + size_t(c) * 5 * latent_plane, size_t(keep) * latent_plane,
+                  moments.data() + (size_t(c) * latent_frames + latent_start) * latent_plane);
+  }
+  auto normal = torch_cpu_normal_seed42(size_t(24) * latent_frames * latent_plane);
+  auto latent = sample_keyframe_latents(moments.data(), normal.data(), latent_frames * (h / 16), w / 16, mean, stddev);
+  return patchify_reference_video(latent.data(), latent_frames, h / 16, w / 16);
 }
 
 }  // namespace slopfab::vae

@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "slopfab/dtype.h"
+#include "slopfab/text/limits.h"
 #include "slopfab/safetensors.h"
 #include "slopfab/text/tokenizer.h"
 #include "slopfab/text/qwen_vision.h"
@@ -124,7 +125,7 @@ struct EncoderConfig {
   // The reference truncates nothing (spec section 10.6), so neither do we: a
   // silently shortened prompt is worse than a hard error. Buffers are sized for
   // this bound; raising it is safe but costs O(L^2) attention.
-  int max_prompt_tokens = 8192;
+  int max_prompt_tokens = kMaxPromptTokens;
 };
 
 // `[num_tokens, hidden_size]` fp32, host side. A few thousand rows at most, so

@@ -157,9 +157,12 @@ QwenMultimodalPlan qwen3vl_multimodal_plan(const std::vector<int32_t>& ids,
     const size_t merged = g.merged_token_count();
     if (start + 1 + merged >= L) throw std::runtime_error("Qwen vision: truncated image-pad run");
     const int mh = g.height / 2, mw = g.width / 2;
+    const int32_t block_pad = ids[start + 1];
+    if (block_pad != pad && block_pad != 151656)
+      throw std::runtime_error("Qwen vision: expected image or video pad");
     for (size_t j = 0; j < merged; ++j) {
       const size_t row = start + 1 + j;
-      if (ids[row] != pad) throw std::runtime_error("Qwen vision: image-pad count disagrees with grid");
+      if (ids[row] != block_pad) throw std::runtime_error("Qwen vision: pad count disagrees with grid");
       const int t = static_cast<int>(j / static_cast<size_t>(mh * mw));
       const int rem = static_cast<int>(j % static_cast<size_t>(mh * mw));
       out.position_ids[row] = next + t;
@@ -287,9 +290,14 @@ size_t qwen3vl_conditioning_token_count(
 
 QwenPixelValues qwen3vl_patchify_resized_rgb(const std::vector<uint8_t>& rgb,
                                              int width, int height) {
+  return qwen3vl_patchify_resized_rgb_pair(rgb, rgb, width, height);
+}
+
+QwenPixelValues qwen3vl_patchify_resized_rgb_pair(const std::vector<uint8_t>& rgb,
+    const std::vector<uint8_t>& second, int width, int height) {
   if (width <= 0 || height <= 0 || width % kFactor || height % kFactor)
     throw std::runtime_error("Qwen image: resized dimensions must be positive multiples of 32");
-  if (rgb.size() != static_cast<size_t>(width) * height * 3)
+  if (rgb.size() != static_cast<size_t>(width) * height * 3 || second.size() != rgb.size())
     throw std::runtime_error("Qwen image: RGB byte count does not match dimensions");
 
   QwenPixelValues out;
@@ -309,10 +317,10 @@ QwenPixelValues qwen3vl_patchify_resized_rgb(const std::vector<uint8_t>& rgb,
             for (int time = 0; time < temporal; ++time)
               for (int py = 0; py < patch; ++py)
                 for (int px = 0; px < patch; ++px) {
-                  (void)time;  // a still image is duplicated over the temporal patch
+                  const auto& pixels = time == 0 ? rgb : second;
                   const int y = (tile_y * merge + merge_y) * patch + py;
                   const int x = (tile_x * merge + merge_x) * patch + px;
-                  out.rows[dst++] = rgb[(static_cast<size_t>(y) * width + x) * 3 + channel] /
+                  out.rows[dst++] = pixels[(static_cast<size_t>(y) * width + x) * 3 + channel] /
                                            127.5f -
                                        1.0f;
                 }

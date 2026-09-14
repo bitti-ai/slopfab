@@ -11,8 +11,8 @@
 //      would produce a plausible, entirely wrong conditioning
 //      (docs/text_encoder_spec.md section 3).
 //
-//      The problem is much smaller than the DiT's: L is a prompt length, a few
-//      hundred to a few thousand and capped at 8192, not 37710. So this is the
+//      L includes text and visual conditioning, with a shared default budget
+//      of kMaxPromptTokens. This uses the
 //      same blocked online-softmax algorithm as attention.cu with two additions
 //      — key blocks entirely past the diagonal are skipped, and the diagonal
 //      block is masked per row — rather than a fused flash kernel.

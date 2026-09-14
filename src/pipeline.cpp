@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include "slopfab/sampler/scheduler.h"
+#include "slopfab/reference_conditioning.h"
 
 namespace slopfab {
 namespace {
@@ -21,9 +22,27 @@ constexpr int kFps = 24;
 constexpr int kMinLatentFrames = 7;
 constexpr int kMinFrames = 22;
 
+void append_media_identity(std::string& key, const GenerateRequest& request) {
+  if (request.reference_media.empty()) return;
+  key.push_back('\0');
+  const int frames = request.still_image ? 1 : dit::align_num_frames(request.num_frames);
+  key += "decoded-media-preprocessing-v2:" + std::to_string(frames);
+  key.push_back('\0');
+  for (const auto& reference : request.reference_media) {
+    if (!reference) throw std::invalid_argument("reference media: null reference");
+    key += reference_media_identity(*reference);
+  }
+}
+
 }  // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  validate_reference_media(request.reference_image_paths.size(), request.reference_media);
+  if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
+    bool has_video = false;
+    for (const auto& media : request.reference_media) has_video |= media->is_video();
+    if (!has_video) throw std::invalid_argument("reference audio requires an image or video reference");
+  }
   if (request.reference_image_paths.size() > 9) {
     throw std::runtime_error("MiniMax-H3 Ref2VA accepts at most 9 reference images, got " +
                              std::to_string(request.reference_image_paths.size()));
@@ -75,6 +94,15 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
       request.still_image ? 0 : dit::audio_latents_for_frames(plan.aligned_frames);
   plan.layout.num_audio_rows = 2 * plan.layout.num_audio_latents;
   plan.layout.num_video_rows = plan.layout.num_latent_frames * plan.layout.rows_per_frame();
+  if (!request.reference_media.empty()) {
+    plan.layout.condition_audio_is_explicit = true;
+    for (const auto& media : request.reference_media) {
+      const auto geometry = reference_condition_plan(*media, plan.duration_seconds).geometry;
+      plan.layout.num_condition_video += geometry.video_rows();
+      plan.layout.num_condition_audio += geometry.audio_rows();
+    }
+  }
+
 
   plan.video_sigma_shift = kVideoSigmaShift;
   plan.audio_sigma_shift = kAudioSigmaShift;
@@ -187,6 +215,7 @@ std::string conditioning_cache_key(const GenerateRequest& request,
   key.push_back('\0');
   key += request.prompt;
   for (const std::string& identity : reference_identities) key += identity;
+  append_media_identity(key, request);
   return key;
 }
 
@@ -218,6 +247,7 @@ std::string conditioning_cache_key(const GenerateRequest& request) {
   for (const std::string& path : request.reference_image_paths) {
     append_file_content_identity(key, path);
   }
+  append_media_identity(key, request);
   return key;
 }
 
@@ -236,6 +266,8 @@ std::string reference_cache_key(const GenerateRequest& request,
   std::string key = "reference";
   append_file_identity(key, request.video_vae_path);
   for (const std::string& identity : reference_identities) key += identity;
+  if (!request.reference_media.empty()) append_file_identity(key, request.audio_vae_path);
+  append_media_identity(key, request);
   return key;
 }
 
@@ -245,6 +277,8 @@ std::string reference_cache_key(const GenerateRequest& request) {
   for (const std::string& path : request.reference_image_paths) {
     append_file_content_identity(key, path);
   }
+  if (!request.reference_media.empty()) append_file_identity(key, request.audio_vae_path);
+  append_media_identity(key, request);
   return key;
 }
 
@@ -288,7 +322,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       "  seed                %llu\n"
       "  output              %s\n",
       request.prompt.size(), request.reference_image_paths.size(),
-      request.reference_image_paths.empty()
+      !request.has_references()
           ? (request.still_image ? " (text-to-image)" : " (text-to-video)")
           : " (Ref2VA, ordered)",
       plan.canvas_height, plan.canvas_width, provenance,
@@ -303,7 +337,18 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigmas[plan.audio_sigmas.size() - 2]),
       static_cast<double>(plan.audio_sigma_shift),
       static_cast<unsigned long long>(request.seed), request.out_path.c_str());
-  return buf;
+  std::string description = buf;
+  if (!request.reference_media.empty()) {
+    size_t videos = 0, audios = 0, soundtracks = 0;
+    for (const auto& media : request.reference_media) {
+      if (media->is_video()) { ++videos; soundtracks += bool(media->soundtrack()); }
+      else ++audios;
+    }
+    description += "  reference videos    " + std::to_string(videos) + " (" +
+        std::to_string(soundtracks) + " with audio)\n  reference audios    " + std::to_string(audios) +
+        "\n  media conditioning  CUDA/Vulkan (packed row count includes video/audio references)\n";
+  }
+  return description;
 }
 
 }  // namespace slopfab

@@ -32,12 +32,15 @@
 #include "slopfab/vae/audio_decoder.h"
 #include "slopfab/vae/vit_decoder.h"
 #include "slopfab/vae/keyframe_encoder.h"
+#include "slopfab/vae/audio_encoder.h"
+#include "slopfab/reference_conditioning.h"
 #include "slopfab/video/mux.h"
 #include "slopfab/video/y4m.h"
 #if SLOPFAB_WITH_VULKAN
 #include "slopfab/vulkan/audio_decoder.h"
 #include "slopfab/vulkan/dit_denoise.h"
 #include "slopfab/vulkan/keyframe_encoder.h"
+#include "slopfab/vulkan/reference_encoder.h"
 #include "slopfab/vulkan/text_encoder.h"
 #include "slopfab/vulkan/vae_decoder.h"
 #endif
@@ -349,6 +352,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   } release_guard{options.release_reused_models};
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
+  if (!request.reference_media.empty() &&
+      (options.source != LatentSource::kDenoise || !options.prompt_embedding_path.empty())) {
+    result.message = "reference video/audio requires denoising with native prompt conditioning";
+    return result;
+  }
 
   if (!generation_backend_supported(options.inference_backend, options.source,
                                     options.attention_mode)) {
@@ -508,6 +516,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   // impossible multi-reference/prompt aggregate a cheap transactional error.
   std::vector<text::QwenImageGrid> reference_conditioning_grids;
   std::vector<int32_t> reference_conditioning_ids;
+  std::vector<PreparedReference> prepared_media;
+  for (const auto& media : request.reference_media) {
+    if (!notify(RunStage::kReferences, -1, 0)) return stop("reference preprocessing");
+    prepared_media.push_back(prepare_reference_condition(*media, plan.duration_seconds));
+  }
+  std::vector<text::QwenPixelValues> media_qwen_pairs;
   if (options.source == LatentSource::kDenoise && !reference_images.empty()) {
     if (!options.prompt_embedding_path.empty()) {
       result.message =
@@ -556,6 +570,46 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
   }
 
+  if (!prepared_media.empty()) {
+    auto& tokenizer = conditioning_tokenizer();
+    const auto prompt_ids = tokenizer.encode(request.prompt);
+    if (!reference_images.empty()) reference_conditioning_ids.resize(reference_conditioning_ids.size() - prompt_ids.size());
+    auto emit_text = [&](const std::string& value) {
+      auto ids = tokenizer.encode(value);
+      reference_conditioning_ids.insert(reference_conditioning_ids.end(), ids.begin(), ids.end());
+    };
+    int audio_number = 0, video_number = 0;
+    for (const auto& media : prepared_media) {
+      if (!media.audio.empty()) emit_text("<Audio " + std::to_string(++audio_number) + ">: ");
+      if (media.frames.empty()) continue;
+      emit_text("<Video " + std::to_string(++video_number) + ">: ");
+      const auto grid = text::qwen3vl_conditioning_grid(media.plan.width, media.plan.height);
+      const int rw = grid.width * 16, rh = grid.height * 16;
+      // 2 fps presentation, paired into Qwen's temporal patch size of two.
+      // Pair labels use decimal round-half-to-even, independently of locale.
+      const int sampled = (media.plan.frames + 11) / 12;
+      for (int pair = 0; pair < sampled; pair += 2) {
+        const int second = std::min(pair + 1, sampled - 1);
+        const int quarters = pair + second; // timestamp = quarters / 4
+        const int scaled = quarters * 5; // tenths = scaled / 2
+        const int tenths = scaled / 2 + ((scaled % 2) && ((scaled / 2) % 2));
+        emit_text("<" + std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " seconds>");
+        auto ids = text::qwen3vl_image_block({}, grid.merged_token_count(), 151652, 151656, 151653);
+        reference_conditioning_ids.insert(reference_conditioning_ids.end(), ids.begin(), ids.end());
+        if (reference_conditioning_ids.size() + prompt_ids.size() > text::kMaxPromptTokens)
+          throw std::runtime_error("reference video conditioning exceeds " +
+                                   std::to_string(text::kMaxPromptTokens) + " prompt tokens");
+        auto first_rgb = resize_rgb_bilinear(media.frames[pair * 12], rw, rh);
+        auto second_rgb = resize_rgb_bilinear(media.frames[second * 12], rw, rh);
+        media_qwen_pairs.push_back(text::qwen3vl_patchify_resized_rgb_pair(first_rgb, second_rgb, rw, rh));
+      }
+    }
+    reference_conditioning_ids.insert(reference_conditioning_ids.end(), prompt_ids.begin(), prompt_ids.end());
+    if (reference_conditioning_ids.size() > text::kMaxPromptTokens)
+      throw std::runtime_error("reference conditioning exceeds " +
+                               std::to_string(text::kMaxPromptTokens) + " prompt tokens");
+  }
+
   // --- latents ---------------------------------------------------------------
 
   std::vector<float> video_rows;  // [V, 96]
@@ -599,11 +653,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     // have incompatible timestep/AdaLN graphs. Check the cheap header contract
     // before loading the 15+ GiB conditioner so a wrong --transformer fails in
     // milliseconds rather than after an otherwise successful text encode.
-    if (!reference_images.empty()) {
+    if (request.has_references()) {
       try {
         SafeTensors transformer_header;
         transformer_header.open(request.transformer_path);
-        dit::require_ref2va_transformer(transformer_header, reference_images.size());
+        dit::require_ref2va_transformer(transformer_header, 1);
       } catch (const std::exception& e) {
         result.message = e.what();
         return result;
@@ -612,6 +666,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
     // --- fixed image anchors ------------------------------------------------
     std::vector<float> condition_video_rows;
+    std::vector<float> condition_audio_rows;
     std::vector<dit::ReferenceGeometry> reference_geometry;
     if (!reference_images.empty()) {
       if (request.video_vae_path.empty()) {
@@ -710,6 +765,69 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     seconds_since(t0), encode_cache_hit ? " (cached encode)" : "");
     }
 
+    if (!prepared_media.empty()) {
+      bool has_video = false, has_audio = false;
+      for (const auto& media : prepared_media) { has_video |= !media.frames.empty(); has_audio |= !media.audio.empty(); }
+      if (has_video && request.video_vae_path.empty()) throw std::runtime_error("reference video requires --video-vae");
+      if (has_audio && request.audio_vae_path.empty()) throw std::runtime_error("reference audio requires --audio-vae");
+      if (has_video) {
+        SafeTensors checkpoint; checkpoint.open(request.video_vae_path);
+        std::unique_ptr<vae::KeyframeEncoder> cuda_encoder;
+#if SLOPFAB_WITH_VULKAN
+        vulkan::Device device;
+        std::unique_ptr<vulkan::ReferenceEncoder> vk_encoder;
+        if (options.inference_backend == DeviceBackend::kVulkan) {
+          device = create_vulkan_inference_device();
+          vk_encoder = std::make_unique<vulkan::ReferenceEncoder>(device, checkpoint, false);
+        } else
+#endif
+          cuda_encoder = std::make_unique<vae::KeyframeEncoder>(checkpoint);
+        auto mean = read_stat(checkpoint, "latents_mean", 24), stddev = read_stat(checkpoint, "latents_std", 24);
+        for (size_t i = 0; i < prepared_media.size(); ++i) {
+          const auto& media = prepared_media[i];
+          if (media.frames.empty()) continue;
+          if (!notify(RunStage::kReferences, -1, 0)) return stop("reference video encode");
+          const auto& g = media.plan.geometry;
+          std::vector<float> rows;
+#if SLOPFAB_WITH_VULKAN
+          if (vk_encoder) rows = vk_encoder->encode_reference_video(media.frames, media.plan.encoding_frames, mean, stddev);
+          else
+#endif
+            rows = cuda_encoder->encode_reference_video(media.frames, media.plan.encoding_frames, mean, stddev);
+          auto noise = sampler::video_noise(request.seed ^ (0x9e3779b97f4a7c15ULL * (reference_images.size() + i + 1)),
+              g.num_latent_frames, g.latent_height, g.latent_width);
+          auto noise_rows = patchify_reference_video(noise.data(), g.num_latent_frames, g.latent_height, g.latent_width);
+          sampler::FlowScheduler::scale_noise(rows.data(), noise_rows.data(), .999f, rows.size(), rows.data());
+          condition_video_rows.insert(condition_video_rows.end(), rows.begin(), rows.end());
+        }
+      }
+      if (has_audio) {
+        SafeTensors checkpoint; checkpoint.open(request.audio_vae_path);
+        std::unique_ptr<vae::AudioEncoder> cuda_encoder;
+#if SLOPFAB_WITH_VULKAN
+        vulkan::Device device;
+        std::unique_ptr<vulkan::ReferenceEncoder> vk_encoder;
+        if (options.inference_backend == DeviceBackend::kVulkan) {
+          device = create_vulkan_inference_device();
+          vk_encoder = std::make_unique<vulkan::ReferenceEncoder>(device, checkpoint, true);
+        } else
+#endif
+          cuda_encoder = std::make_unique<vae::AudioEncoder>(checkpoint);
+        for (const auto& media : prepared_media) {
+          if (media.audio.empty()) continue;
+          if (!notify(RunStage::kReferences, -1, 0)) return stop("reference audio encode");
+          std::vector<float> rows;
+#if SLOPFAB_WITH_VULKAN
+          if (vk_encoder) rows = vk_encoder->encode_reference(media.audio.data(), media.plan.audio_samples);
+          else
+#endif
+            rows = cuda_encoder->encode_reference(media.audio.data(), media.plan.audio_samples);
+          condition_audio_rows.insert(condition_audio_rows.end(), rows.begin(), rows.end());
+        }
+      }
+      for (const auto& media : prepared_media) reference_geometry.push_back(media.plan.geometry);
+    }
+
     // --- conditioning -------------------------------------------------------
     //
     // The encoder is loaded, used and freed before the transformer is touched.
@@ -776,7 +894,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // every rotary position downstream (spec 1.2).
       std::vector<int32_t> ids;
       std::vector<text::QwenPixelValues> qwen_images;
-      if (!reference_images.empty()) {
+      if (request.has_native_references()) {
         if (reference_conditioning_grids.size() != reference_images.size() ||
             reference_conditioning_ids.empty())
           throw std::logic_error("reference conditioning preflight is absent");
@@ -788,7 +906,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         auto rgb = resize_rgb_bilinear(reference_images[i], rw, rh);
         qwen_images.push_back(text::qwen3vl_patchify_resized_rgb(rgb, rw, rh));
       }
-      if (reference_images.empty()) {
+      for (auto& pair : media_qwen_pairs) qwen_images.push_back(std::move(pair));
+      if (!request.has_native_references()) {
         const auto prompt_ids = tokenizer.encode(request.prompt);
         ids.insert(ids.end(), prompt_ids.begin(), prompt_ids.end());
       }
@@ -800,7 +919,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       SafeTensors encoder_file;
       encoder_file.open(request.text_encoder_path);
       try {
-        text::require_reference_vision_support(encoder_file, reference_images.size());
+        text::require_reference_vision_support(encoder_file, qwen_images.size());
       } catch (const std::exception& e) {
         result.message = e.what();
         return result;
@@ -947,6 +1066,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       in.audio_scheduler = &audio_sched;
       in.seed = request.seed;
       if (!condition_video_rows.empty()) in.condition_video_rows = &condition_video_rows;
+      if (!condition_audio_rows.empty()) in.condition_audio_rows = &condition_audio_rows;
       if (!options.init_latents_path.empty()) {
         in.init_video_rows = &init_video;
         in.init_audio_rows = &init_audio;
@@ -1133,13 +1253,14 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (conditioned) {
         if (condition_video_rows.size() !=
             static_cast<size_t>(live.num_condition_video) * 96u ||
-            live.num_condition_audio != 0) {
+            condition_audio_rows.size() != static_cast<size_t>(live.num_condition_audio) * 32u) {
           throw std::runtime_error(
               "Vulkan Ref2VA: condition row payload does not match packed layout");
         }
         initial_video.insert(initial_video.begin(),
                              condition_video_rows.begin(),
                              condition_video_rows.end());
+        initial_audio.insert(initial_audio.begin(), condition_audio_rows.begin(), condition_audio_rows.end());
       }
       const Clock::time_point t_prep = Clock::now();
       model.prepare(prompt.data.data(), prompt.data.size(),

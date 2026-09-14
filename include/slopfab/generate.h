@@ -73,9 +73,8 @@ enum class LatentSource {
 
 struct RunOptions {
   LatentSource source = LatentSource::kDenoise;
-  // Neural backend. CUDA remains the default. Vulkan supports the native exact
-  // text-only conditioner or an explicitly supplied captured fp32 embedding;
-  // reference vision is rejected rather than routed through CUDA.
+  // Neural backend. CUDA remains the default. Both CUDA and Vulkan support
+  // reference video/audio encoding; backends never fall back silently.
   DeviceBackend inference_backend = DeviceBackend::kCuda;
   bool verbose = true;
 

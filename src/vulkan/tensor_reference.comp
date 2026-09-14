@@ -1,0 +1,126 @@
+#version 450
+// Bounded implicit-im2col FP32 GEMM and reference-only pointwise/reduction ops.
+// No cooperative matrix or CUDA dependency. Each convolution workgroup owns
+// a 16x16 output tile and shares its input/weight reduction tiles.
+layout(local_size_x=16, local_size_y=16) in;
+layout(binding=0) readonly buffer X { float x[]; };
+layout(binding=1) readonly buffer W { float w[]; };
+layout(binding=2) readonly buffer B { float b[]; };
+layout(binding=3) writeonly buffer Y { float y[]; };
+layout(binding=4) readonly buffer Previous { float previous[]; };
+layout(binding=5) readonly buffer Earliest { float earliest[]; };
+layout(push_constant) uniform Parameters {
+  uint op, ci, co, t, h, width, k, stride, ts, pad, dil, n, count, gx, extra, unused;
+} p;
+shared float a[256], z[256], reduction[256], scores[608];
+int reflect_at(int i, int n) {
+  if (n <= 1) return 0;
+  while (i < 0 || i >= n) i = i < 0 ? -i : 2*n-2-i;
+  return i;
+}
+float input_at(uint batch, uint reduction_at, uint column) {
+  if (column >= p.n) return 0;
+  if (p.op == 2) return x[column*p.ci+reduction_at]; // linear
+  if (p.op == 1) {
+    uint channel = reduction_at / p.k;
+    int position = int(column*p.stride + (reduction_at%p.k)*p.dil)-int(p.pad);
+    return position < 0 || position >= int(p.t) ? 0 : x[(batch*p.ci+channel)*p.t+uint(position)];
+  }
+  uint spatial = p.k*p.k, channel = reduction_at/(spatial*p.k);
+  uint tap = reduction_at%(spatial*p.k);
+  uint oh=p.h/p.stride, ow=p.width/p.stride;
+  if(p.dil!=0) {
+    uint time=tap/spatial;
+    if(time+p.t<p.k) return 0;
+    int row=reflect_at(int((column/ow)%oh*p.stride+(tap/p.k)%p.k)-int(p.pad),int(p.h));
+    int col=reflect_at(int(column%ow*p.stride+tap%p.k)-int(p.pad),int(p.width));
+    uint index=(channel*p.h+uint(row))*p.width+uint(col);
+    return time==p.k-1 ? x[index] : time==p.k-2 ? previous[index] : earliest[index];
+  }
+  int time=int(column/(oh*ow)*p.ts+tap/spatial)-int(p.k-1);
+  if(time<0 || time>=int(p.t)) return 0;
+  int row=reflect_at(int((column/ow)%oh*p.stride+(tap/p.k)%p.k)-int(p.pad),int(p.h));
+  int col=reflect_at(int(column%ow*p.stride+tap%p.k)-int(p.pad),int(p.width));
+  return x[((channel*p.t+uint(time))*p.h+uint(row))*p.width+uint(col)];
+}
+void main() {
+  uint lx=gl_LocalInvocationID.x, ly=gl_LocalInvocationID.y, lane=ly*16+lx;
+  uint group=gl_WorkGroupID.y*p.gx+gl_WorkGroupID.x;
+  if(group>=p.unused) return;
+  if(p.op<=2) {
+    uint tiles=(p.n+15)/16, col=(group%tiles)*16+lx, row=(group/tiles)*16+ly;
+    uint K=p.ci*(p.op==0 ? p.k*p.k*p.k : p.op==1 ? p.k : 1);
+    float sum=0;
+    for(uint start=0;start<K;start+=16) {
+      uint ka=start+lx, kb=start+ly;
+      a[lane]=row<p.co && ka<K ? w[row*K+ka] : 0;
+      z[lane]=kb<K ? input_at(gl_WorkGroupID.z,kb,col) : 0;
+      barrier();
+      for(uint j=0;j<16;++j) sum=fma(a[ly*16+j],z[j*16+lx],sum);
+      barrier();
+    }
+    if(row<p.co && col<p.n) {
+      uint index=p.op==2 ? col*p.co+row : (gl_WorkGroupID.z*p.co+row)*p.n+col;
+      y[index]=sum+(p.extra!=0 ? b[row] : 0);
+    }
+    return;
+  }
+  if(p.op==3 || p.op==4) { // time-isolated GN+SiLU or row LayerNorm
+    uint size=p.op==3 ? p.ci/32*p.h*p.width : p.ci;
+    uint frame=group%p.t, channel_group=group/p.t;
+    float sum=0;
+    for(uint i=lane;i<size;i+=256) {
+      uint index=p.op==4 ? group*size+i : ((channel_group*(p.ci/32)+i/(p.h*p.width))*p.t+frame)*p.h*p.width+i%(p.h*p.width);
+      sum+=x[index];
+    }
+    reduction[lane]=sum; barrier();
+    for(uint s=128;s>0;s/=2) { if(lane<s) reduction[lane]+=reduction[lane+s]; barrier(); }
+    float mean=reduction[0]/float(size); sum=0;
+    for(uint i=lane;i<size;i+=256) {
+      uint index=p.op==4 ? group*size+i : ((channel_group*(p.ci/32)+i/(p.h*p.width))*p.t+frame)*p.h*p.width+i%(p.h*p.width);
+      float d=x[index]-mean; sum+=d*d;
+    }
+    reduction[lane]=sum; barrier();
+    for(uint s=128;s>0;s/=2) { if(lane<s) reduction[lane]+=reduction[lane+s]; barrier(); }
+    float inverse=inversesqrt(reduction[0]/float(size)+(p.op==3 ? 1e-6 : 1e-5));
+    for(uint i=lane;i<size;i+=256) {
+      uint c=p.op==4 ? i : channel_group*(p.ci/32)+i/(p.h*p.width);
+      uint index=p.op==4 ? group*size+i : (c*p.t+frame)*p.h*p.width+i%(p.h*p.width);
+      float value=(x[index]-mean)*inverse*w[c]+b[c];
+      y[index]=p.op==3 ? value/(1+exp(-value)) : value;
+    }
+    return;
+  }
+  if(p.op==9) { // QKV [2,T,6144], attention output [2,T,2048]
+    uint query=group%p.t, head=(group/p.t)%8, batch=group/(p.t*8), c=head*256+lane;
+    float q=x[(batch*p.t+query)*6144+c];
+    for(uint key=0;key<=query;++key) {
+      reduction[lane]=q*x[(batch*p.t+key)*6144+2048+c]; barrier();
+      for(uint s=128;s>0;s/=2) { if(lane<s) reduction[lane]+=reduction[lane+s]; barrier(); }
+      if(lane==0) scores[key]=reduction[0]/16;
+      barrier();
+    }
+    if(lane==0) {
+      float maximum=scores[0], sum=0;
+      for(uint key=1;key<=query;++key) maximum=max(maximum,scores[key]);
+      for(uint key=0;key<=query;++key) { scores[key]=exp(scores[key]-maximum); sum+=scores[key]; }
+      for(uint key=0;key<=query;++key) scores[key]/=sum;
+    }
+    barrier();
+    float sum=0;
+    for(uint key=0;key<=query;++key) sum+=scores[key]*x[(batch*p.t+key)*6144+4096+c];
+    y[(batch*p.t+query)*2048+c]=sum;
+    return;
+  }
+  uint i=group*256+lane;
+  if(i>=p.count) return;
+  if(p.op==5) { float alpha=w[(i/p.t)%p.ci], s=sin(alpha*x[i]); y[i]=x[i]+s*s/(alpha+1e-9); }
+  if(p.op==6) { uint col=i%p.t,row=(i/p.t)%p.ci,batch=i/(p.ci*p.t); y[(batch*p.t+col)*p.ci+row]=x[i]; }
+  if(p.op==7) y[i]=x[i]+w[i];
+  if(p.op==8) { float v=x[i]; y[i]=.5*v*(1+tanh(.7978845608028654*(v+.044715*v*v*v)))*w[i]; }
+  if(p.op==10) {
+    uint row=i/32,c=i%32; float sum=0;
+    for(uint d=0;d<8;++d) { float heads=0; for(uint h=0;h<8;++h) heads+=x[row*2048+h*256+c*8+d]; sum+=heads/8; }
+    y[i]=sum/8;
+  }
+}

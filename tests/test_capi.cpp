@@ -17,6 +17,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
+#include <limits>
 
 #include "harness.h"
 #include "slopfab/capi.h"
@@ -322,4 +324,44 @@ SLOPFAB_TEST(capi_generation_start_validates_first) {
 // Its own, rather than tests/test_main.cpp: that file registers C++ cases that
 // would pull slopfab_core into a binary whose whole point is linking nothing
 // but the DLL.
+SLOPFAB_TEST(capi_reference_video_audio_ingestion) {
+  Request request;
+  slopfab_reference_video* video = reinterpret_cast<slopfab_reference_video*>(1);
+  CHECK(slopfab_reference_video_create(1, &video) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(video == nullptr);
+  CHECK(slopfab_reference_video_create(2, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_reference_video_create(2, &video) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_reference_video(request.handle, video) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  uint8_t rgba[] = {10, 20, 30, 255};
+  CHECK(slopfab_reference_video_append_rgba8(video, rgba, sizeof(rgba), 1, 1, 4, 0) == SLOPFAB_OK);
+  CHECK(slopfab_reference_video_append_rgb24(video, rgba, 2, 1, 1, 3, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_reference_video_append_rgb24(video, rgba, 3, 1, 1, 3, 1) == SLOPFAB_OK);
+  CHECK(slopfab_reference_video_append_rgb24(video, rgba, 3, 1, 1, 3, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_reference_video_append_rgb24(nullptr, rgba, 3, 1, 1, 3, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  std::vector<float> pcm(64000 * 2, .25f);
+  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 2, 32000, 0) == SLOPFAB_OK);
+  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 2, 32000, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_reference_video(request.handle, video) == SLOPFAB_OK);
+  slopfab_reference_video_destroy(video);
+  slopfab_reference_video_destroy(nullptr);
+  rgba[0] = 99;
+  CHECK(slopfab_request_add_reference_audio_f32(request.handle, pcm.data(), pcm.size(), 2, 32000) == SLOPFAB_OK);
+  pcm.assign(pcm.size(), std::numeric_limits<float>::quiet_NaN());
+  CHECK(slopfab_request_add_reference_audio_f32(request.handle, pcm.data(), pcm.size(), 2, 32000) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  OwnedString description;
+  CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
+  CHECK(std::strstr(description.text, "reference videos    1 (1 with audio)") != nullptr);
+  CHECK(std::strstr(description.text, "reference audios    1") != nullptr);
+  slopfab_generation* generation = reinterpret_cast<slopfab_generation*>(1);
+  CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_VULKAN) == SLOPFAB_OK);
+  CHECK(slopfab_generation_start(request.handle, nullptr, nullptr, &generation) == SLOPFAB_OK);
+  CHECK(generation != nullptr);
+  // The request is accepted without loading models synchronously. This fixture
+  // intentionally has no checkpoints; the worker reports that failure.
+  CHECK(slopfab_generation_wait(generation, -1) != SLOPFAB_OK);
+  slopfab_generation_destroy(generation);
+}
+
 int main() { return slopfab::test::run_all(); }

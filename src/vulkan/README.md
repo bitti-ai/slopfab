@@ -1212,7 +1212,7 @@ Reference geometry has two intentional contracts. The keyframe VAE keeps the
 public 2048-pixel short edge, up to 8192x2048. Qwen independently applies the
 same factor-32/aspect-preserving resize with a 4,194,304-pixel ceiling, so one
 image never exceeds its exact 16,384-patch capacity. The complete image-pad
-and prompt token stream is built and checked against L8192 before either neural
+and prompt token stream is built and checked against L32768 before either neural
 checkpoint opens or a keyframe arena is allocated. Impossible multi-image
 aggregates therefore fail transactionally, and CUDA/Vulkan consume the same
 prevalidated token IDs and bounded RGB presentation.
@@ -1333,7 +1333,7 @@ authority uses the portable SHA API to verify the actual 27.1 GB checkpoint,
 113.3 s and is deliberately not repeated in the CUDA-enabled test.
 
 The durable capture reader accepts only exact production dimensions and
-`1 <= L <= 8192`, validates token range plus input/RoPE digests, and checks the
+`1 <= L <= 32768`, validates token range plus input/RoPE digests, and checks the
 exact payload byte size before allocation. Tests cover corrupt header/payload,
 token, truncation, trailing bytes, an oversized sparse L8193 declaration and
 max-`uint32_t` overflow input.

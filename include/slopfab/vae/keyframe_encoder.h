@@ -51,6 +51,14 @@ class KeyframeEncoder {
   // ImageNet-normalized planar [3,H,W], output [48,H/16,W/16].
   std::vector<float> encode_moments(const float* pixels, int height, int width);
 
+  // One causal temporal clip, [3,T,H,W] -> [48,ceil(T/4),H/16,W/16].
+  // Used by the 17-frame chunked reference video path and parity probes.
+  std::vector<float> encode_temporal_moments(const float* pixels, int frames, int height, int width);
+  // Normalized reference frames at 24 fps, already snapped to 17*n+5.
+  std::vector<float> encode_reference_video(const std::vector<RGBImage>& frames,
+      int encoding_frames, const std::vector<float>& latents_mean,
+      const std::vector<float>& latents_std);
+
   // Complete Ref2VA conditioning path. `normal` contains 24*(H/16)*(W/16)
   // standard-normal values in channel-major order.
   std::vector<float> encode_condition_rows(const RGBImage& image, const float* normal,

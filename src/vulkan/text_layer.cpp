@@ -51,7 +51,7 @@ bool same_model_shape(const QwenTextLayerConfig& left,
 }
 void validate_config(const QwenTextLayerConfig& config) {
   const text::EncoderConfig& c = config.encoder;
-  if (config.sequence == 0 || config.sequence > 8192 ||
+  if (config.sequence == 0 || config.sequence > text::kMaxPromptTokens ||
       c.hidden_size != 5120 || c.num_attention_heads != 64 ||
       c.num_key_value_heads != 8 || c.head_dim != 128 ||
       c.intermediate_size <= 0 || c.num_layers <= 0 ||

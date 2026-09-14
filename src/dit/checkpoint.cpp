@@ -94,7 +94,7 @@ void require_ref2va_transformer(const SafeTensors& checkpoint, size_t reference_
   if (architecture == TransformerArchitecture::kRef2VAPrunedTable ||
       architecture == TransformerArchitecture::kRef2VAFullAdaLN) return;
   throw std::runtime_error(
-      "reference-image conditioning requires a Ref2VA transformer, but '" +
+      "reference conditioning requires a Ref2VA transformer, but '" +
       checkpoint.path() + "' is a " + transformer_architecture_name(architecture));
 }
 

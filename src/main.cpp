@@ -34,6 +34,7 @@
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/text/tokenizer.h"
+#include "cli/reference_decode.h"
 
 #include "slopfab/video/y4m.h"
 #include "slopfab/video/y4m_compare.h"
@@ -397,7 +398,7 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
     req.text_encoder_path = find_checkpoint(weights / "text_encoder", "");
   if (req.transformer_path.empty()) {
     const std::string_view architecture =
-        req.reference_image_paths.empty() ? "fl2va" : "ref2va";
+        req.has_references() ? "ref2va" : "fl2va";
     req.transformer_path = find_checkpoint(weights / "transformer", architecture);
   }
   if (req.video_vae_path.empty())
@@ -437,7 +438,7 @@ void ensure_generate_models(slopfab::GenerateRequest& req, const char* executabl
   const std::filesystem::path weights = default_weights_directory(executable);
   ensure_model(req.text_encoder_path, kTextEncoder, weights);
   ensure_model(req.transformer_path,
-               req.reference_image_paths.empty() ? kFL2VATransformer : kRef2VATransformer,
+               req.has_references() ? kRef2VATransformer : kFL2VATransformer,
                weights);
   ensure_model(req.video_vae_path, kVideoVAE, weights);
   ensure_model(req.audio_vae_path, kAudioVAE, weights);
@@ -460,6 +461,10 @@ const CommandHelp kCommands[] = {
      "                               instead; a BOM and surrounding blank space are\n"
      "                               stripped. Cannot be combined with --prompt\n"
      "  --reference-image <file>     ordered Ref2VA image; repeat up to 9 times.\n"
+     "  --reference-video <file>     ingest clip and soundtrack (up to 3).\n"
+     "  --reference-audio <file>     ingest standalone audio (up to 3).\n"
+     "                               Video/audio generation supports CUDA/Vulkan; file\n"
+     "                               ingestion requires ffmpeg and ffprobe.\n"
 #if SLOPFAB_WITH_FFMPEG
      "                               Any still or video FFmpeg can decode (a video\n"
      "                               contributes its first frame), plus binary PPM.\n"
@@ -581,7 +586,7 @@ const CommandHelp kCommands[] = {
      "  --text-encoder <f>           Qwen3-VL conditioner, int8 ConvRot or nvfp4 AWQ\n"
      "  --transformer <f>            H3 omni transformer, fp8, int8 ConvRot, nvfp4 or NF4\n"
      "  --vae <f>                    video VAE decoder\n"
-     "  --audio-vae <f>              audio VAE decoder\n"
+     "  --audio-vae <f>              audio VAE decoder and reference encoder\n"
      "\n"
      "  --bench-load <n>             load --transformer n times and exit, timing each.\n"
      "                               The first pays for reading the file, the rest do\n"
@@ -1254,6 +1259,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (wants_help(argc, argv)) return print_command_help(*find_command("generate"));
 
   slopfab::GenerateRequest req;
+  std::vector<std::pair<std::string, bool>> reference_files;
   req.canvas_width = 864;
   req.canvas_height = 480;
   req.num_frames = 124;
@@ -1365,6 +1371,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.audio_vae_path = next("--audio-vae");
     } else if (arg == "--reference-image") {
       req.reference_image_paths.emplace_back(next("--reference-image"));
+    } else if (arg == "--reference-video" || arg == "--reference-audio") {
+      const bool is_video = arg == "--reference-video";
+      reference_files.emplace_back(next(is_video ? "--reference-video" : "--reference-audio"), is_video);
     } else if (arg == "--raw") {
       req.raw_output = true;
     } else if (arg == "--inference-backend") {
@@ -1507,9 +1516,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     std::fprintf(stderr,"slopfab: invalid Sol beta/range/cadence\n");
     return 2;
   }
-  if (synthetic && !req.reference_image_paths.empty()) {
+  if (synthetic && (!req.reference_image_paths.empty() || !reference_files.empty())) {
     std::fprintf(stderr,
-                 "slopfab: --reference-image needs denoising and cannot be combined with "
+                 "slopfab: references need denoising and cannot be combined with "
                  "--synthetic-latents\n");
     return 2;
   }
@@ -1614,6 +1623,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     return 2;
   }
   if (!saw_out) req.out_path = timestamped_output_path();
+  for (const auto& entry : reference_files) {
+    req.reference_media.push_back(std::make_shared<const slopfab::ReferenceMedia>(
+        slopfab::cli::decode_reference_file(entry.first, entry.second, executable)));
+    slopfab::validate_reference_media(req.reference_image_paths.size(), req.reference_media);
+  }
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;
   const slopfab::GeneratePlan plan = slopfab::resolve_plan(req);

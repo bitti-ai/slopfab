@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "slopfab/safetensors.h"
+#include "slopfab/text/limits.h"
 
 namespace slopfab::text {
 
@@ -140,13 +141,15 @@ QwenImageGrid qwen3vl_conditioning_grid(int width, int height);
 // aggregate are validated with checked arithmetic before model allocation.
 size_t qwen3vl_conditioning_token_count(
     const std::vector<QwenImageGrid>& grids, size_t nonvision_tokens,
-    size_t max_prompt_tokens = 8192);
+    size_t max_prompt_tokens = kMaxPromptTokens);
 
 // Patchifies an image already resized to the grid selected above. Keeping
 // interpolation outside this primitive makes its byte-to-row mapping exact
 // and independently testable. A still is repeated for the temporal size 2.
 QwenPixelValues qwen3vl_patchify_resized_rgb(const std::vector<uint8_t>& rgb,
                                              int width, int height);
+QwenPixelValues qwen3vl_patchify_resized_rgb_pair(const std::vector<uint8_t>& first,
+    const std::vector<uint8_t>& second, int width, int height);
 
 // MiniMax's image presentation, before the verbatim prompt. No chat template,
 // BOS, EOS, im_start, or im_end tokens are added.

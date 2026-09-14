@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "slopfab/dit/packing.h"
+#include "slopfab/reference_media.h"
 
 namespace slopfab {
 
@@ -86,6 +87,16 @@ struct GenerateRequest {
   // Ordered subject/style/scene references. Presence selects the Ref2VA task;
   // the same order labels images in the multimodal prompt and packed sequence.
   std::vector<std::string> reference_image_paths;
+
+  // Decoded video/audio references, in insertion order, following the legacy
+  // image list. Attached payloads are immutable and shared by request copies.
+  // CUDA and Vulkan support video/audio conditioning.
+  std::vector<std::shared_ptr<const ReferenceMedia>> reference_media;
+
+  bool has_native_references() const {
+    return !reference_image_paths.empty() || !reference_media.empty();
+  }
+  bool has_references() const { return has_native_references(); }
 
   // Write .y4m + .wav instead of muxing an MP4. Also the automatic fallback
   // when ffmpeg cannot be loaded.
@@ -203,6 +214,7 @@ enum class ConditionerAuthority : uint8_t {
 
 // Key for a request's prompt conditioning: the encoder and tokenizer files by
 // stat identity, the prompt text, and every reference image by content.
+// Decoded media contributes content digests, dimensions, timing and PCM format.
 //
 // The single-argument form hashes the references itself. Prefer the other one
 // wherever both keys are needed; passing a list that does not match
@@ -222,6 +234,7 @@ std::string conditioning_cache_key_for_authority(
 // the VAE keyframe encode. Deliberately narrower than the conditioning key,
 // because none of that work reads the prompt or the text encoder — but wider in
 // one place, because all of it reads the video VAE.
+// With decoded media, the audio VAE identity also participates.
 std::string reference_cache_key(const GenerateRequest& request);
 std::string reference_cache_key(const GenerateRequest& request,
                                 const std::vector<std::string>& reference_identities);

@@ -1,4 +1,5 @@
 #include "slopfab/text/layer_capture.h"
+#include "slopfab/text/limits.h"
 
 #include <algorithm>
 #include <cstring>
@@ -25,7 +26,7 @@ uint64_t checked_sum(uint64_t left, uint64_t right) {
 void validate_header(const QwenLayerCaptureHeader& h) {
   const char expected[8] = {'V','F','Q','W','E','N','L','1'};
   if (std::memcmp(h.magic, expected, sizeof(expected)) != 0 ||
-      h.version != 1 || h.sequence == 0 || h.sequence > 8192 ||
+      h.version != 1 || h.sequence == 0 || h.sequence > kMaxPromptTokens ||
       h.hidden != 5120 || h.query_heads != 64 || h.kv_heads != 8 ||
       h.head_dim != 128 || h.intermediate != 25600 ||
       h.input_fnv64 == 0 || h.rope_fnv64 == 0 ||

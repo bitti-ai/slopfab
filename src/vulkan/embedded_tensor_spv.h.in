@@ -30,6 +30,7 @@ inline constexpr uint8_t kTensorDitSpirv[] = {
 inline constexpr uint8_t kTensorRopeSpirv[] = {@SLOPFAB_TENSOR_ROPE_SPV_BYTES@};
 inline constexpr uint8_t kTensorRopeDenormSpirv[] = {
     @SLOPFAB_TENSOR_ROPE_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorReferenceSpirv[] = {@SLOPFAB_TENSOR_REFERENCE_SPV_BYTES@};
 inline constexpr uint8_t kTensorVaeRopeSpirv[] = {
     @SLOPFAB_TENSOR_VAE_ROPE_SPV_BYTES@};
 inline constexpr uint8_t kTensorWeightSpirv[] = {@SLOPFAB_TENSOR_WEIGHT_SPV_BYTES@};

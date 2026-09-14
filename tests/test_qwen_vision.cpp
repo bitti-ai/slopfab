@@ -53,13 +53,17 @@ SLOPFAB_TEST(qwen_reference_conditioning_grid_is_bounded) {
   CHECK(wide.patch_count() == 16384 && tall.patch_count() == 16384);
 
   CHECK(qwen3vl_conditioning_token_count({wide}, 4094) == 8192);
+  CHECK(qwen3vl_conditioning_token_count({wide}, 4095) == 8193);
+  CHECK(qwen3vl_conditioning_token_count({wide, wide}, 0) == 8196);
+  CHECK(qwen3vl_conditioning_token_count({wide}, kMaxPromptTokens - 4098) ==
+        kMaxPromptTokens);
   CHECK(::slopfab::test::throws([] {
     const auto grid = qwen3vl_conditioning_grid(8192, 2048);
-    (void)qwen3vl_conditioning_token_count({grid}, 4095);
+    (void)qwen3vl_conditioning_token_count({grid}, kMaxPromptTokens - 4097);
   }));
   CHECK(::slopfab::test::throws([] {
     const auto grid = qwen3vl_conditioning_grid(8192, 2048);
-    (void)qwen3vl_conditioning_token_count({grid, grid}, 0);
+    (void)qwen3vl_conditioning_token_count({grid, grid}, 0, 8192);
   }));
   CHECK(::slopfab::test::throws([] {
     (void)qwen3vl_conditioning_token_count({{1, 128, 130}}, 0);

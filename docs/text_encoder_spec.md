@@ -128,9 +128,9 @@ Explicitly **excluded**:
 | `I` | 25600, MLP intermediate |
 | `N` | 50, decoder layers present in the checkpoint |
 
-`L` is bounded in practice by MiniMax's Context-IR prompt convention (a few
-hundred to a few thousand tokens; `docs/transformer_spec.md` §1.2). Nothing in
-the port should assume a hard cap, but sizing buffers for `L ≤ 8192` is ample.
+`L` includes the Context-IR prompt and visual conditioning tokens. The port's
+default resource bound is `L ≤ 32768` (`text::kMaxPromptTokens`); this is an
+implementation budget rather than the model's architectural context limit.
 
 ### 1.2 Tokenisation — the interface
 
@@ -1645,7 +1645,9 @@ adds it to the packed sequence length `S`.
 (`S = L + Sa + V`) and the encoder's own `O(L²)` attention. A 100 k-token prompt
 would be a memory problem in the *transformer*, not here.
 
-**Recommended default:** do not truncate. Reject or warn above, say, 8192
-tokens at the API boundary, and size the encoder's buffers for that. Note that
+**Current default:** do not truncate. Reject above 32,768 combined text and
+visual tokens, using `text::kMaxPromptTokens` as the shared resource bound.
+The original 8192-token recommendation was raised to accommodate reference
+videos. Size the encoder's buffers for the configured bound. Note that
 truncation would be *observable* to the user as a silently shortened prompt, so
 a hard error is better than a silent cut.

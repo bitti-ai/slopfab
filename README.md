@@ -1343,8 +1343,18 @@ The checked-in exact tensor shader provenance is source SHA-256
 and SPIR-V SHA-256
 `08AB6BBA63C121EAAE8348CB62328F9C7337D21E9E6DE5C62292DA8BE47F1E9B`,
 matching the mandatory configure-time checks in `CMakeLists.txt`.
-Top-level reference generation still fails closed until the separate keyframe
-video-VAE encoder is ported; no reference request crosses into CUDA silently.
+Reference generation uses native Vulkan VAE encoders; no reference request
+crosses into CUDA silently.
+
+## Reference video and audio inputs
+
+CUDA and Vulkan generation accept reference videos, their soundtracks, and standalone
+audio alongside visual references. C ABI 1.6 takes RGB24/RGBA8 frames and float
+PCM without FFmpeg; the CLI accepts `--reference-video` and `--reference-audio`
+files through FFmpeg. Use a Ref2VA transformer and the appropriate VAE encoder
+weights; audio references require floating-point audio encoder weights, and
+Vulkan video references require FP16/BF16 video encoder weights.
+See [the API, generation path and verification](docs/reference_media.md).
 
 ## Licence
 

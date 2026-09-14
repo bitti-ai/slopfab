@@ -90,7 +90,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 5
+#define SLOPFAB_CAPI_VERSION_MINOR 6
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -139,6 +139,8 @@ SLOPFAB_C_API const char* SLOPFAB_CALL slopfab_capi_version_string(void);
 /* A generation is already running in this process. See
  * `slopfab_generation_start`. */
 #define SLOPFAB_ERR_BUSY (-9)
+/* The requested feature has an input contract but no execution backend yet. */
+#define SLOPFAB_ERR_UNSUPPORTED (-10)
 
 /* The message belonging to the most recent failure **on the calling thread**,
  * or "" when the last call on this thread succeeded. Never null.
@@ -208,6 +210,53 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_loaded_major(int32_t* out_major);
 
 typedef struct slopfab_request slopfab_request;
 typedef struct slopfab_generation slopfab_generation;
+typedef struct slopfab_reference_video slopfab_reference_video;
+
+/* Decoded video/audio reference ingestion (no FFmpeg).
+ *
+ * Generation supports CUDA and Vulkan with a Ref2VA transformer. Video uses
+ * the video VAE encoder; attached/standalone audio also needs an audio VAE
+ * with floating-point encoder weights. Vulkan video references also require
+ * floating-point encoder weights. Host frames and PCM never require FFmpeg.
+ *
+ * Video duration is 2..15 seconds. Frame times are relative to the clip start:
+ * first time zero, subsequent times strictly increasing and below duration.
+ * Dimensions stay constant. Row stride is positive, in bytes; only visible
+ * pixels are read and RGBA alpha is ignored. Every append copies its input.
+ *
+ * Soundtracks are interleaved float PCM in [-1,1], mono or stereo, at a positive
+ * native sample rate. float_count counts floats, not sample frames or bytes.
+ * set_audio replaces the soundtrack and copies before returning. The start
+ * offset is clip-relative; the soundtrack must end within the video duration.
+ *
+ * Attaching retains an immutable snapshot: the video handle may then be edited
+ * or destroyed and input buffers reused. A failed setter leaves the handle
+ * unchanged. Serialize access to each mutable video or request handle.
+ *
+ * Images precede video/audio inputs; video/audio inputs retain insertion order.
+ * At most 9 images, 3 videos, 3 standalone audios, and 12 total references.
+ * Videos and standalone audios each have a 15 second aggregate duration limit.
+ * A video's soundtrack does not consume a standalone audio-reference slot.
+ * Standalone audio references require at least one image or video in the
+ * completed request; this is checked by slopfab_resolve_plan.
+ */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_create(
+    double duration_seconds, slopfab_reference_video** out_video);
+SLOPFAB_C_API void SLOPFAB_CALL slopfab_reference_video_destroy(slopfab_reference_video* video);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_append_rgb24(
+    slopfab_reference_video* video, const uint8_t* pixels, size_t buffer_bytes,
+    int32_t width, int32_t height, size_t row_stride_bytes, double timestamp_seconds);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_append_rgba8(
+    slopfab_reference_video* video, const uint8_t* pixels, size_t buffer_bytes,
+    int32_t width, int32_t height, size_t row_stride_bytes, double timestamp_seconds);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_set_audio_f32(
+    slopfab_reference_video* video, const float* samples, size_t float_count,
+    int32_t channels, int32_t sample_rate, double start_seconds);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_video(
+    slopfab_request* request, const slopfab_reference_video* video);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_audio_f32(
+    slopfab_request* request, const float* samples, size_t float_count,
+    int32_t channels, int32_t sample_rate);
 
 /* --- plan ------------------------------------------------------------------
  *

@@ -15,6 +15,7 @@
 #include "tensor_validation.h"
 #include "sage_selection.h"
 #include "slopfab/attention.h"
+#include "slopfab/text/limits.h"
 #include "slopfab/vae/audio_primitives.h"
 #include "slopfab/vulkan/compute.h"
 #include "slopfab/vulkan/gemm.h"
@@ -375,6 +376,7 @@ struct TensorContext::Impl {
   ComputePipeline vae_denorm_pipeline;
   ComputePipeline audio_pipeline;
   ComputePipeline keyframe_pipeline;
+  ComputePipeline reference_pipeline;
   ComputePipeline dit_pipeline;
   Buffer upload_buffer;
   Buffer readback_buffer;
@@ -522,6 +524,19 @@ struct TensorContext::Impl {
       vae_denorm_pipeline = make_pointwise(
           detail::kTensorVaeDenormSpirv,
           sizeof(detail::kTensorVaeDenormSpirv));
+    }
+    if (tensor_options.enable_reference_encoder) {
+      if (input.info().max_compute_workgroup_invocations < 256 ||
+          input.info().max_compute_workgroup_size[0] < 16 ||
+          input.info().max_compute_workgroup_size[1] < 16)
+        throw std::runtime_error("Vulkan reference: device requires 16x16 compute workgroups");
+      std::vector<uint32_t> module(sizeof(detail::kTensorReferenceSpirv) / 4);
+      std::memcpy(module.data(), detail::kTensorReferenceSpirv, sizeof(detail::kTensorReferenceSpirv));
+      ComputePipelineOptions reference_options;
+      reference_options.storage_binding_count = 6;
+      reference_options.push_constant_bytes = 64;
+      reference_options.local_size[0] = reference_options.local_size[1] = 16;
+      reference_pipeline = ComputePipeline::create(input, module, reference_options);
     }
     if (exact_audio) {
       std::vector<uint32_t> audio_spirv(
@@ -3549,6 +3564,42 @@ void TensorBatch::group_norm_silu_f16_affine(DeviceTensor& input,
   }
 }
 
+void TensorBatch::reference_operation(DeviceTensor& input, DeviceTensor& weight,
+    DeviceTensor& bias, DeviceTensor& output, const uint32_t* parameters,
+    uint32_t groups, uint32_t batches, DeviceTensor* previous, DeviceTensor* earliest) {
+  if (!impl_ || impl_->poisoned || !parameters || !groups || !batches)
+    throw std::invalid_argument("Vulkan reference: invalid dispatch");
+  if (!impl_->owner->reference_pipeline)
+    throw std::logic_error("Vulkan reference: encoder shaders are not enabled in this context");
+  std::array<std::shared_ptr<DeviceTensor::Impl>, 6> tensors = {
+    impl_->owner->require(input), impl_->owner->require(weight),
+    impl_->owner->require(bias), impl_->owner->require(output),
+    impl_->owner->require(previous ? *previous : input),
+    impl_->owner->require(earliest ? *earliest : input)};
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    if (tensors[i]->type != ScalarType::kFloat32 || !tensors[i]->layout.is_contiguous() ||
+        (i != 3 && tensors[i] == tensors[3]))
+      throw std::invalid_argument("Vulkan reference: invalid tensor or output alias");
+  }
+  uint32_t p[16]; std::copy_n(parameters, 16, p);
+  p[15] = groups;
+  p[13] = std::min(groups, impl_->owner->max_dispatch_x);
+  const uint32_t gy = (groups + p[13] - 1) / p[13];
+  if (gy > impl_->owner->max_dispatch_y || batches > 2)
+    throw std::out_of_range("Vulkan reference: dispatch capacity exceeded");
+  try {
+    impl_->count_operator();
+    std::vector<StorageBinding> bindings;
+    for (uint32_t i = 0; i < tensors.size(); ++i) {
+      impl_->transition(tensors[i], i == 3 ? BufferAccess::kComputeWrite : BufferAccess::kComputeRead);
+      bindings.push_back({i, &tensors[i]->buffer, 0, tensors[i]->buffer.size()});
+    }
+    impl_->commands.bind_compute(impl_->owner->reference_pipeline, bindings);
+    impl_->commands.push_constants(p, sizeof(p));
+    impl_->commands.dispatch(p[13], gy, batches);
+  } catch (...) { impl_->poisoned = true; throw; }
+}
+
 void TensorBatch::keyframe_conv3d_f16(
     DeviceTensor& input, DeviceTensor& weight, DeviceTensor& bias,
     DeviceTensor& output, uint32_t in_channels, uint32_t out_channels,
@@ -5383,7 +5434,7 @@ CausalGQAAttentionPlan CausalGQAAttentionPlan::create(
   }
   // This plan names the shipped Qwen3-VL text contract rather than advertising
   // an unverified generic GQA family.
-  if (desc.sequence == 0 || desc.sequence > 8192 ||
+  if (desc.sequence == 0 || desc.sequence > text::kMaxPromptTokens ||
       desc.query_heads != 64 || desc.kv_heads != 8 || desc.head_dim != 128 ||
       !is_exact_attention_scale(desc.head_dim, desc.scale)) {
     throw std::invalid_argument(
