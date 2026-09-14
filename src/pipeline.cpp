@@ -1,5 +1,7 @@
 #include "slopfab/pipeline.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -103,15 +105,24 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     }
   }
 
+  for (const auto& lora : request.loras) {
+    if (lora.path.empty() || !std::isfinite(lora.strength))
+      throw std::runtime_error("LoRA path must be nonempty and strength finite");
+  }
+  if (request.schedule == sampler::ScheduleKind::kTaoMate3Step &&
+      std::none_of(request.loras.begin(), request.loras.end(),
+                   [](const LoraSpec& lora) { return lora.strength != 0.0f; }))
+    throw std::runtime_error("taomate-3step requires an enabled TaoMate LoRA");
 
   plan.video_sigma_shift = kVideoSigmaShift;
   plan.audio_sigma_shift = kAudioSigmaShift;
-  plan.num_inference_steps = request.num_inference_steps;
+  plan.num_inference_steps = request.schedule == sampler::ScheduleKind::kTaoMate3Step
+      ? 4 : request.num_inference_steps;
 
   sampler::FlowScheduler video(plan.video_sigma_shift);
   sampler::FlowScheduler audio(plan.audio_sigma_shift);
-  video.set_timesteps(plan.num_inference_steps);
-  audio.set_timesteps(plan.num_inference_steps);
+  video.set_timesteps(plan.num_inference_steps, request.schedule);
+  audio.set_timesteps(plan.num_inference_steps, request.schedule);
 
   plan.video_sigmas = video.sigmas();
   plan.audio_sigmas = audio.sigmas();
@@ -338,6 +349,13 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigma_shift),
       static_cast<unsigned long long>(request.seed), request.out_path.c_str());
   std::string description = buf;
+  if (request.schedule == sampler::ScheduleKind::kTaoMate3Step)
+    description += "  schedule            taomate-3step (teacher states 0,16,33,49)\n";
+  for (const auto& lora : request.loras) {
+    char strength[64];
+    std::snprintf(strength, sizeof(strength), "%.6g", static_cast<double>(lora.strength));
+    description += "  LoRA                " + lora.path + " (strength " + strength + ")\n";
+  }
   if (!request.reference_media.empty()) {
     size_t videos = 0, audios = 0, soundtracks = 0;
     for (const auto& media : request.reference_media) {

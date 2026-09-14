@@ -483,6 +483,9 @@ const CommandHelp kCommands[] = {
      "                               about, and costs attention time quadratically\n"
      "  --frames <n>                 snapped up to 17k+5 (default 124, minimum 6)\n"
      "  --steps <n>                  sigma grid points, n-1 evaluations (default 15)\n"
+     "  --lora <file>               H3 safetensors adapter (repeatable)\n"
+     "  --lora-strength <n>         strength for preceding --lora (default 1)\n"
+     "  --schedule <name>           default or taomate-3step\n"
      "  --sampler euler|ab2          integrator (default euler)\n"
      "  --seed <n>                   noise seed; negative or absent draws a random one\n"
      "  --count <n>                  generate n videos; explicit seeds increment by one,\n"
@@ -1282,6 +1285,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_resolution = false;
   bool saw_out = false;
   bool saw_seed = false;
+  bool saw_steps = false;
   int count = 1;
   std::string inference_backend = "cuda";
   std::string output_accelerator = "cpu";
@@ -1306,6 +1310,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.num_frames = std::atoi(next("--frames"));
     } else if (arg == "--steps") {
       req.num_inference_steps = std::atoi(next("--steps"));
+      saw_steps = true;
     } else if (arg == "--seed") {
       // A negative seed asks for a random one, the same as passing no --seed at
       // all. Checked on the text rather than on the parsed value because
@@ -1449,6 +1454,21 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       sol_schedule.layer_every = std::atoi(next("--sol-layer-every"));
     } else if (arg == "--init-latents") {
       init_latents = next("--init-latents");
+    } else if (arg == "--lora") {
+      req.loras.push_back({next("--lora"), 1.0f});
+    } else if (arg == "--lora-strength") {
+      if (req.loras.empty()) throw std::runtime_error("--lora-strength must follow --lora");
+      const std::string value = next("--lora-strength");
+      size_t used = 0;
+      const float strength = std::stof(value, &used);
+      if (used != value.size() || !std::isfinite(strength))
+        throw std::runtime_error("--lora-strength requires a finite number");
+      req.loras.back().strength = strength;
+    } else if (arg == "--schedule") {
+      const std::string value = next("--schedule");
+      if (value == "default") req.schedule = slopfab::sampler::ScheduleKind::kDefault;
+      else if (value == "taomate-3step") req.schedule = slopfab::sampler::ScheduleKind::kTaoMate3Step;
+      else throw std::runtime_error("--schedule wants default or taomate-3step");
     } else if (arg == "--prompt-embedding") {
       prompt_embedding = next("--prompt-embedding");
     } else if (arg == "--bench-load") {
@@ -1544,6 +1564,15 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                  "step and cache for nothing)\n");
     return 2;
   }
+  if (req.schedule == slopfab::sampler::ScheduleKind::kTaoMate3Step) {
+    if (saw_steps && req.num_inference_steps != 4)
+      throw std::runtime_error("taomate-3step uses 4 sigma points (3 evaluations); omit --steps");
+    if (sampler_kind != slopfab::sampler::SamplerKind::kEuler ||
+        req.cache_threshold > 0 || req.skip_every > 0 || req.block_cache_span > 0)
+      throw std::runtime_error("taomate-3step requires Euler without step or block caching");
+    req.num_inference_steps = 4;
+  }
+
   // Refused, like `--sampler ab2` with step caching above, and for a related
   // reason: the two caches do not compose the way their flags suggest.
   //
@@ -1719,12 +1748,14 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     }
     slopfab::SafeTensors ckpt;
     ckpt.open(req.transformer_path);
+    slopfab::LoraAdapters loras;
+    loras.load(req.loras, ckpt);
     std::printf("\n%s\n%.3f GB on disk, %zu tensors\n", req.transformer_path.c_str(),
                 ckpt.file_size() / 1e9, ckpt.tensor_count());
     for (int i = 0; i < bench_load; ++i) {
       slopfab::dit::Transformer probe;
       const auto s0 = std::chrono::steady_clock::now();
-      probe.load(ckpt);
+      probe.load(ckpt, {}, &loras);
       const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count();
       std::printf("load %d: %s on device in %6.3f s  (%.2f GB/s off disk)\n", i + 1,
                   format_bytes(probe.weight_bytes()).c_str(), sec,

@@ -352,6 +352,14 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   } release_guard{options.release_reused_models};
   RunResult result;
   const dit::SequenceLayout& layout = plan.layout;
+  LoraAdapters loras;
+  if (request.schedule == sampler::ScheduleKind::kTaoMate3Step &&
+      (options.sampler != sampler::SamplerKind::kEuler || request.cache_threshold > 0 ||
+       request.skip_every > 0 || request.block_cache_span > 0)) {
+    result.message = "taomate-3step requires Euler without step or block caching";
+    return result;
+  }
+
   if (!request.reference_media.empty() &&
       (options.source != LatentSource::kDenoise || !options.prompt_embedding_path.empty())) {
     result.message = "reference video/audio requires denoising with native prompt conditioning";
@@ -409,6 +417,21 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     return result;
   };
   if (!notify(RunStage::kStarting, -1, 0)) return stop("startup");
+
+  if (!request.loras.empty()) {
+    if (options.source != LatentSource::kDenoise) {
+      result.message = "LoRAs require denoising";
+      return result;
+    }
+    try {
+      SafeTensors base;
+      base.open(request.transformer_path);
+      loras.load(request.loras, base);
+    } catch (const std::exception& e) {
+      result.message = e.what();
+      return result;
+    }
+  }
 
   // Declared out here, not inside the denoise block, because it is started
   // under the loop and joined at the VAE load that follows the block. Its
@@ -1003,7 +1026,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
       dit::Transformer model;
-      model.load(dit_file);
+      model.load(dit_file, {}, &loras);
+      loras = LoraAdapters();
       result.seconds_transformer_load = seconds_since(t0);
       if (options.verbose) {
         std::printf("transformer %.2f GiB on device, %d packed rows, loaded in %.2f s\n",
@@ -1052,8 +1076,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // only one place they can be changed.
       sampler::FlowScheduler video_sched(plan.video_sigma_shift);
       sampler::FlowScheduler audio_sched(plan.audio_sigma_shift);
-      video_sched.set_timesteps(plan.num_inference_steps);
-      audio_sched.set_timesteps(plan.num_inference_steps);
+      video_sched.set_sigmas(plan.video_sigmas);
+      audio_sched.set_sigmas(plan.audio_sigmas);
       video_sched.set_sampler(options.sampler);
       audio_sched.set_sampler(options.sampler);
 
@@ -1198,7 +1222,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       vulkan::Device device = create_vulkan_inference_device(
           true, options.attention_mode == AttentionMode::kSage2);
       vulkan::TensorContextOptions context_options;
-      context_options.max_batch_operators = 2048;
+      context_options.max_batch_operators = request.loras.empty() ? 2048 : 4096;
       context_options.sage_extra_workspace_bytes = options.vulkan_sage_extra_workspace_bytes;
       vulkan::TensorContext context(device, context_options);
       context.require_h3_attention(options.attention_mode);
@@ -1210,6 +1234,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       const bool conditioned = live.num_condition_video != 0 ||
                                live.num_condition_audio != 0;
       config.transformer.main.block.timesteps = conditioned ? 4u : 2u;
+      config.transformer.main.block.loras = &loras;
       config.transformer.text_rows = static_cast<uint32_t>(live.num_text);
       config.transformer.video_rows = static_cast<uint32_t>(
           live.num_condition_video + live.num_video_rows);
@@ -1232,6 +1257,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       vulkan::ExactH3Denoiser model =
           vulkan::ExactH3Denoiser::create(context, config);
       model.load(dit_file);
+      loras = LoraAdapters();
       result.seconds_transformer_load = seconds_since(t0);
 
       std::vector<float> initial_video;
@@ -1279,8 +1305,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 
       sampler::FlowScheduler video_sched(plan.video_sigma_shift);
       sampler::FlowScheduler audio_sched(plan.audio_sigma_shift);
-      video_sched.set_timesteps(plan.num_inference_steps);
-      audio_sched.set_timesteps(plan.num_inference_steps);
+      video_sched.set_sigmas(plan.video_sigmas);
+      audio_sched.set_sigmas(plan.audio_sigmas);
       const int total_steps = plan.num_model_evaluations();
       vae_prefetch.start(request.still_image
                              ? std::vector<std::string>{request.video_vae_path}

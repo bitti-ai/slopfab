@@ -365,3 +365,23 @@ SLOPFAB_TEST(capi_reference_video_audio_ingestion) {
 }
 
 int main() { return slopfab::test::run_all(); }
+
+SLOPFAB_TEST(capi_lora_and_taomate_schedule) {
+  Request request;
+  CHECK(slopfab_request_add_lora(nullptr, "lora", 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_lora(request.handle, "", 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_lora(request.handle, "lora", std::numeric_limits<float>::infinity()) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_schedule(request.handle, 99) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_prompt(request.handle, "a video") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_TAOMATE_3STEP) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_add_lora(request.handle, "TaoMate.safetensors", 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 3);
+  CHECK(slopfab_request_clear_loras(request.handle) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_DEFAULT) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 49);
+}

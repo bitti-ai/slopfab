@@ -3117,12 +3117,14 @@ void TensorBatch::text_add_residual_bf16(DeviceTensor& residual,
   }
   auto x = impl_->owner->require(residual);
   auto b = impl_->owner->require(branch);
-  const uint64_t rows = x->layout.rank == 2 ? x->layout.extent[0] : 0;
-  const uint64_t dim = x->layout.rank == 2 ? x->layout.extent[1] : 0;
+  const uint64_t rows = x->layout.rank == 2 || x->layout.rank == 3 ? x->layout.extent[0] : 0;
+  const uint64_t dim = x->layout.rank == 2 ? x->layout.extent[1]
+      : x->layout.rank == 3 ? checked_multiply(x->layout.extent[1], x->layout.extent[2], "residual heads") : 0;
   const uint64_t count = checked_multiply(rows, dim, "text residual");
   const uint64_t packed = count == 0 ? 0 : 1 + (count - 1) / 2;
-  if (x.get() == b.get() || x->layout.rank != 2 || rows == 0 || dim == 0 ||
-      b->layout.rank != 2 || b->layout.extent != x->layout.extent ||
+  if (x.get() == b.get() || rows == 0 || dim == 0 ||
+      (b->layout.rank != 2 && b->layout.rank != 3) ||
+      b->layout.extent[0] != rows || b->layout.elements() != count ||
       x->type != ScalarType::kBFloat16 || b->type != ScalarType::kBFloat16 ||
       !x->layout.is_contiguous() || !b->layout.is_contiguous() ||
       rows > std::numeric_limits<uint32_t>::max() ||

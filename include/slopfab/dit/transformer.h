@@ -28,6 +28,7 @@
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/packing.h"
 #include "slopfab/safetensors.h"
+#include "slopfab/lora.h"
 
 namespace slopfab::dit {
 
@@ -61,7 +62,8 @@ class Transformer {
   Transformer(const Transformer&) = delete;
   Transformer& operator=(const Transformer&) = delete;
 
-  void load(const SafeTensors& checkpoint, const TransformerConfig& config = {});
+  void load(const SafeTensors& checkpoint, const TransformerConfig& config = {},
+            const LoraAdapters* loras = nullptr);
   const TransformerConfig& config() const;
   size_t weight_bytes() const;
   void unload();

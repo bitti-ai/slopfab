@@ -1,4 +1,5 @@
 #include "slopfab/vulkan/dit_block.h"
+#include "slopfab/vulkan/lora.h"
 
 #include <algorithm>
 #include <cmath>
@@ -200,6 +201,7 @@ void validate_projection_archive(const SafeTensors& st,
 }
 
 struct Projection {
+  LoraProjection lora;
   LinearWeight weight;
   DeviceTensor dense;
   uint32_t out = 0, in = 0;
@@ -215,7 +217,7 @@ struct Projection {
     }
   }
   uint64_t persistent_bytes() const noexcept {
-    return weight.resident_bytes() + bytes(dense);
+    return weight.resident_bytes() + bytes(dense) + lora.resident_bytes();
   }
 };
 
@@ -245,6 +247,7 @@ void validate_block_archive(const SafeTensors& st, const std::string& p,
 }
 
 Projection load_projection(TensorContext& context, const SafeTensors& st,
+                           const LoraAdapters* loras, uint32_t rows,
                            const std::string& name, uint32_t out, uint32_t in,
                            uint32_t source_out = 0, uint32_t row_offset = 0) {
   if (source_out == 0) source_out = out;
@@ -348,6 +351,8 @@ Projection load_projection(TensorContext& context, const SafeTensors& st,
   u.convrot_group = tag.convrot_group;
   Projection result; result.out = out; result.in = in;
   result.weight = LinearWeight::upload(context, u);
+  if (loras) if (const auto* f = loras->find(name))
+    result.lora.load(context, *f, row_offset, out, rows);
   // Quantized projections stay packed. Retaining a BF16 copy of every INT8
   // or FP8 matrix adds ~36 GiB across the main stack alone. Their exact
   // materialization uses the same shared slot already used for NVFP4.
@@ -367,6 +372,7 @@ struct ExactH3BlockScratch::Impl {
   DeviceTensor modulation, normed, q, k, v, attention, branch, fused, activation;
   DeviceTensor hidden_a, hidden_b, inner_a, inner_b, ffn_a, ffn_b;
   StreamedNVFP4WeightCache cache;
+  LoraScratch lora;
   DenseGemmPlan q_plan, k_plan, v_plan, out_plan, fc1_plan, fc2_plan;
   H3AttentionPlan attention_plan;
   explicit Impl(TensorContext& owner, const H3BlockConfig& c)
@@ -405,7 +411,7 @@ struct ExactH3BlockScratch::Impl {
     return bytes(modulation) + bytes(normed) + bytes(q) + bytes(k) + bytes(v) +
         bytes(attention) + bytes(branch) + bytes(fused) + bytes(activation) +
         bytes(hidden_a) + bytes(hidden_b) + bytes(inner_a) + bytes(inner_b) +
-        bytes(ffn_a) + bytes(ffn_b) + cache.dense_bytes() + attention_plan.workspace_bytes();
+        bytes(ffn_a) + bytes(ffn_b) + lora.reserved_bytes() + cache.dense_bytes() + attention_plan.workspace_bytes();
   }
 };
 
@@ -511,12 +517,12 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   next->norm2 = upload_bf(host_norm2);
   next->q_norm = upload_bf(host_q_norm);
   next->k_norm = upload_bf(host_k_norm);
-  next->q = load_projection(*s.context, st, qkv, inner, c.hidden, 3 * inner, 0);
-  next->k = load_projection(*s.context, st, qkv, inner, c.hidden, 3 * inner, inner);
-  next->v = load_projection(*s.context, st, qkv, inner, c.hidden, 3 * inner, 2 * inner);
-  next->out = load_projection(*s.context, st, p + "attn.out_proj", c.hidden, inner);
-  next->fc1 = load_projection(*s.context, st, p + "mlp.fc1", 2 * c.ffn, c.hidden);
-  next->fc2 = load_projection(*s.context, st, p + "mlp.fc2", c.hidden, c.ffn);
+  next->q = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, 0);
+  next->k = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, inner);
+  next->v = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, 2 * inner);
+  next->out = load_projection(*s.context, st, c.loras, c.sequence, p + "attn.out_proj", c.hidden, inner);
+  next->fc1 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc1", 2 * c.ffn, c.hidden);
+  next->fc2 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc2", c.hidden, c.ffn);
   next->adaln_w = s.context->allocate(matrix(adaln_out, c.adaln_rank));
   next->adaln_b = s.context->allocate(vector(adaln_out));
   s.context->upload_transient(next->adaln_w, wide_w.data(), wide_w.size());
@@ -552,17 +558,17 @@ void ExactH3BlockStage::load_refiner(const SafeTensors& st, uint32_t layer) {
   next->norm2 = upload_bf(host_norm2);
   next->q_norm = upload_bf(host_q_norm);
   next->k_norm = upload_bf(host_k_norm);
-  next->q = load_projection(*s.context, st, qkv, inner, c.hidden,
+  next->q = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden,
                             3 * inner, 0);
-  next->k = load_projection(*s.context, st, qkv, inner, c.hidden,
+  next->k = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden,
                             3 * inner, inner);
-  next->v = load_projection(*s.context, st, qkv, inner, c.hidden,
+  next->v = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden,
                             3 * inner, 2 * inner);
-  next->out = load_projection(*s.context, st, p + "attn.out_proj",
+  next->out = load_projection(*s.context, st, c.loras, c.sequence, p + "attn.out_proj",
                               c.hidden, inner);
-  next->fc1 = load_projection(*s.context, st, p + "mlp.fc1",
+  next->fc1 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc1",
                               2 * c.ffn, c.hidden);
-  next->fc2 = load_projection(*s.context, st, p + "mlp.fc2",
+  next->fc2 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc2",
                               c.hidden, c.ffn);
 
   // Reuse the accepted modulated block implementation without maintaining a
@@ -625,7 +631,7 @@ void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
                 StreamedNVFP4WeightCache& cache, DeviceTensor& input,
                 DeviceTensor& output, DeviceTensor& transform_a,
                 DeviceTensor& transform_b, uint32_t rows,
-                TensorContext& context) {
+                TensorContext& context, LoraScratch& lora) {
   ensure_transforms(context, p, rows, transform_a, transform_b);
   DeviceTensor& source = transformed_input(batch, p, input, transform_a, transform_b);
   const uint32_t tiled_rows = rows / 64 * 64;
@@ -642,13 +648,14 @@ void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
   } else {
     record(p.dense);
   }
+  p.lora.record(batch, input, output, rows, lora);
 }
 
 uint32_t projection_operators(const Projection& projection, uint32_t rows) {
   return (projection.weight.has_pre_quant_scale() ? 1u : 0u) +
       (projection.weight.applies_convrot() ? 1u : 0u) +
       (projection.streamed() ? 1u : 0u) +
-      (rows >= 64 ? 1u : 0u) + (rows % 64 ? 1u : 0u);
+      (rows >= 64 ? 1u : 0u) + (rows % 64 ? 1u : 0u) + projection.lora.operators(rows);
 }
 
 void validate_tap(DeviceTensor* tensor, ScalarType type,
@@ -681,6 +688,8 @@ void ExactH3BlockStage::prepare(ExactH3BlockScratch& scratch) const {
       a.adaln_rank != b.adaln_rank || a.attention_mode != b.attention_mode)
     throw std::invalid_argument("Vulkan H3 block: scratch configuration mismatch");
   const auto& w = *impl_->weights;
+  for (const Projection* p : {&w.q, &w.k, &w.v, &w.out, &w.fc1, &w.fc2})
+    p->lora.prepare(*s.context, s.lora);
   ensure_transforms(*s.context, w.q, impl_->config.sequence, s.hidden_a, s.hidden_b);
   ensure_transforms(*s.context, w.k, impl_->config.sequence, s.hidden_a, s.hidden_b);
   ensure_transforms(*s.context, w.v, impl_->config.sequence, s.hidden_a, s.hidden_b);
@@ -754,11 +763,11 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   batch.rms_norm_modulate_bf16_table(tokens, w.norm1, s.modulation,
                                      s.modulation_rows, 1, 0, selectors, s.normed, c.epsilon);
   projection(batch, w.q, s.q_plan, s.cache, s.normed, s.q,
-             s.hidden_a, s.hidden_b, c.sequence, *s.context);
+             s.hidden_a, s.hidden_b, c.sequence, *s.context, s.lora);
   projection(batch, w.k, s.k_plan, s.cache, s.normed, s.k,
-             s.hidden_a, s.hidden_b, c.sequence, *s.context);
+             s.hidden_a, s.hidden_b, c.sequence, *s.context, s.lora);
   projection(batch, w.v, s.v_plan, s.cache, s.normed, s.v,
-             s.hidden_a, s.hidden_b, c.sequence, *s.context);
+             s.hidden_a, s.hidden_b, c.sequence, *s.context, s.lora);
   batch.rms_norm_heads_bf16(s.q, w.q_norm, s.q, c.heads, c.head_dim, c.epsilon);
   batch.rms_norm_heads_bf16(s.k, w.k_norm, s.k, c.heads, c.head_dim, c.epsilon);
   batch.rope_h3_bf16(s.q, cosine, sine);
@@ -771,7 +780,7 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   s.attention_plan.record(batch, s.q, s.k, s.v, s.attention, ranges);
   if (taps && taps->attention) batch.copy(s.attention, *taps->attention);
   projection(batch, w.out, s.out_plan, s.cache, s.attention, s.branch,
-             s.inner_a, s.inner_b, c.sequence, *s.context);
+             s.inner_a, s.inner_b, c.sequence, *s.context, s.lora);
   batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation,
                                  s.modulation_rows, 2, selectors);
   if (taps && taps->attention_residual)
@@ -779,10 +788,10 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   batch.rms_norm_modulate_bf16_table(tokens, w.norm2, s.modulation,
                                      s.modulation_rows, 4, 3, selectors, s.normed, c.epsilon);
   projection(batch, w.fc1, s.fc1_plan, s.cache, s.normed, s.fused,
-             s.hidden_a, s.hidden_b, c.sequence, *s.context);
+             s.hidden_a, s.hidden_b, c.sequence, *s.context, s.lora);
   batch.dit_swiglu_bf16(s.fused, s.activation);
   projection(batch, w.fc2, s.fc2_plan, s.cache, s.activation, s.branch,
-             s.ffn_a, s.ffn_b, c.sequence, *s.context);
+             s.ffn_a, s.ffn_b, c.sequence, *s.context, s.lora);
   batch.dit_add_gated_bf16_table(tokens, s.branch, s.modulation,
                                  s.modulation_rows, 5, selectors);
   if (taps && taps->final_residual) batch.copy(tokens, *taps->final_residual);

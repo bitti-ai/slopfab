@@ -1346,6 +1346,19 @@ matching the mandatory configure-time checks in `CMakeLists.txt`.
 Reference generation uses native Vulkan VAE encoders; no reference request
 crosses into CUDA silently.
 
+## LoRA adapters and TaoMate
+
+CUDA and Vulkan generation support H3 attention/MLP LoRA adapters, including
+TaoMate's text-refiner adapters. Add `--lora <file>` and optionally
+`--lora-strength 0.7`; repeat these options to combine adapters.
+
+For the [TaoMate 3-step adapter](https://huggingface.co/CZMartin22/TaoMate-H3-3step-ComfyUI),
+use FL2VA weights and `--schedule taomate-3step`. This performs three Euler
+evaluations using the published retained teacher states. It supports the
+adapter within slopfab's existing pipeline; upstream TaoMate streaming and
+audio-guidance preparation are separate features.
+See [download instructions, examples, API and limits](docs/loras.md).
+
 ## Reference video and audio inputs
 
 CUDA and Vulkan generation accept reference videos, their soundtracks, and standalone

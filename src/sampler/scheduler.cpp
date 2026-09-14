@@ -1,6 +1,7 @@
 #include "slopfab/sampler/scheduler.h"
 
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -85,7 +86,20 @@ void FlowScheduler::set_sampler(SamplerKind kind) {
   clear_history();
 }
 
-void FlowScheduler::set_timesteps(int num_inference_steps) {
+void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule) {
+  if (schedule == ScheduleKind::kTaoMate3Step) {
+    // TaoMate's distilled states are retained from the teacher's 50-point
+    // shifted grid, not a newly generated four-point linspace.
+    std::vector<float> grid;
+    for (int i : {0, 16, 33, 49}) {
+      const float base = static_cast<float>(49 - i) / 49.0f;
+      grid.push_back(shift_ * base / (1.0f + (shift_ - 1.0f) * base));
+    }
+    set_sigmas(grid);
+    return;
+  }
+  if (schedule != ScheduleKind::kDefault)
+    throw std::runtime_error("scheduler: unknown schedule");
   // A new schedule invalidates any velocity carried over from the old one.
   clear_history();
 
@@ -117,6 +131,20 @@ void FlowScheduler::set_timesteps(int num_inference_steps) {
   for (size_t i = 0; i + 1 < sigmas_.size(); ++i) {
     timesteps_.push_back(1.0f - sigmas_[i]);
   }
+}
+
+void FlowScheduler::set_sigmas(const std::vector<float>& sigmas) {
+  if (sigmas.size() < 2 || sigmas.front() != 1.0f || sigmas.back() != 0.0f)
+    throw std::runtime_error("scheduler: sigma grid must span 1 to 0");
+  for (size_t i = 0; i < sigmas.size(); ++i) {
+    if (!std::isfinite(sigmas[i]) || sigmas[i] < 0.0f || sigmas[i] > 1.0f ||
+        (i > 0 && sigmas[i] >= sigmas[i-1]))
+      throw std::runtime_error("scheduler: sigma grid must be finite and strictly decreasing");
+  }
+  sigmas_ = sigmas;
+  timesteps_.clear();
+  for (size_t i = 0; i + 1 < sigmas_.size(); ++i) timesteps_.push_back(1.0f - sigmas_[i]);
+  clear_history();
 }
 
 void FlowScheduler::step(int step_index, const float* sample, const float* velocity, size_t count,

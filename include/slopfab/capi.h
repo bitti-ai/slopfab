@@ -90,7 +90,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 6
+#define SLOPFAB_CAPI_VERSION_MINOR 7
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -409,6 +409,19 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
  * either backend to compare captured conditioning without recomputation. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
     slopfab_request* request, const char* path);
+
+/* H3 attention/MLP LoRA adapters, combined by summing their updates. Paths are copied.
+ * A finite strength may be zero (disabled) or negative. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(
+    slopfab_request* request, const char* path, float strength);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_loras(slopfab_request* request);
+
+#define SLOPFAB_SCHEDULE_DEFAULT 0
+#define SLOPFAB_SCHEDULE_TAOMATE_3STEP 1
+/* TaoMate uses three evaluations and overrides the ordinary step count.
+ * Requires an enabled TaoMate adapter, Euler and no step/block caches. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
+    slopfab_request* request, int32_t schedule);
 
 /* Ordered subject/style/scene references; presence selects the Ref2VA task and
  * this order labels the images in the packed sequence. At most nine, and the

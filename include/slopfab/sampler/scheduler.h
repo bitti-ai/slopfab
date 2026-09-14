@@ -19,6 +19,8 @@
 
 namespace slopfab::sampler {
 
+enum class ScheduleKind { kDefault, kTaoMate3Step };
+
 // Which integrator advances the trajectory. Both cost exactly one model
 // evaluation per step; the difference is what they do with the velocity they
 // were given.
@@ -49,8 +51,12 @@ class FlowScheduler {
 
   // Builds the schedule. `num_inference_steps` counts sigma grid points
   // *including* the terminal zero, so the model is evaluated
-  // `timesteps().size()` times, which is one fewer.
-  void set_timesteps(int num_inference_steps);
+  // `timesteps().size()` times, which is one fewer. TaoMate3Step overrides
+  // the count with four retained teacher states (three evaluations).
+  void set_timesteps(int num_inference_steps, ScheduleKind schedule = ScheduleKind::kDefault);
+
+  // Explicit decreasing sigma grid including both endpoints; resets history.
+  void set_sigmas(const std::vector<float>& sigmas);
 
   // Sigma grid, strictly decreasing, ending at exactly 0.
   const std::vector<float>& sigmas() const { return sigmas_; }

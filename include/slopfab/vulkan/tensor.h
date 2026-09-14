@@ -239,7 +239,7 @@ class TensorBatch {
                                 DeviceTensor& selectors);
   void dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output);
   // Qwen text-layer exact pointwise seams. Residual add operates in place on
-  // contiguous BF16 [rows,dim]. Split SwiGLU consumes two distinct BF16
+  // contiguous BF16 [rows,dim] or [rows,heads,dim]. Split SwiGLU consumes two distinct BF16
   // [rows,inner] tensors and writes a third. BF16 subnormals are flushed to
   // signed zero and NaNs are canonicalized before the final RNE conversion.
   void text_add_residual_bf16(DeviceTensor& residual, DeviceTensor& branch);

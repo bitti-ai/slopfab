@@ -41,6 +41,7 @@ add_library(slopfab_core STATIC
   src/core/json.cpp
   src/core/nf4.cpp
   src/core/w4a8.cpp
+  src/core/lora.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
   src/core/device_tensor.cpp
@@ -214,6 +215,7 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/profile.cpp
       src/cuda/workspace.cu
       src/cuda/nn_kernels.cu
+      src/cuda/lora.cu
       src/cuda/linear.cu
       src/cuda/deterministic_gemm.cu
       src/cuda/deterministic_attention.cu
@@ -931,6 +933,7 @@ if(SLOPFAB_ENABLE_VULKAN)
     src/vulkan/text_layer.cpp
     src/vulkan/text_encoder.cpp
     src/vulkan/vision_stage.cpp
+    src/vulkan/lora.cpp
     src/vulkan/dit_block.cpp
     src/vulkan/dit_denoise.cpp
     src/vulkan/dit_graph.cpp
@@ -1176,7 +1179,7 @@ if(SLOPFAB_BUILD_C_API)
   # produce a libslopfab.so.0 whose soname says 0 for an ABI that says 1, and
   # would bump it for releases that did not touch the C interface at all.
   set(SLOPFAB_CAPI_VERSION_MAJOR 1)
-  set(SLOPFAB_CAPI_VERSION_MINOR 6)
+  set(SLOPFAB_CAPI_VERSION_MINOR 7)
   set(SLOPFAB_CAPI_VERSION_PATCH 0)
   set(SLOPFAB_CAPI_VERSION
     "${SLOPFAB_CAPI_VERSION_MAJOR}.${SLOPFAB_CAPI_VERSION_MINOR}.${SLOPFAB_CAPI_VERSION_PATCH}")
@@ -1337,6 +1340,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_ref2va.cpp
     tests/test_safetensors.cpp
     tests/test_pipeline.cpp
+    tests/test_lora.cpp
     tests/test_sampler.cpp
     tests/test_step_cache.cpp
     tests/test_block_cache.cpp
@@ -1410,7 +1414,7 @@ if(SLOPFAB_BUILD_TESTS)
   if(SLOPFAB_ENABLE_CUDA AND SLOPFAB_ENABLE_VULKAN)
     add_executable(slopfab_tensor_backend_tests
       tests/harness.cpp tests/allocation_guard.cpp
-      tests/test_tensor_backends.cu tests/test_audio_vulkan.cu)
+      tests/test_tensor_backends.cu tests/test_audio_vulkan.cu tests/test_lora_backends.cu)
     target_link_libraries(slopfab_tensor_backend_tests PRIVATE
       slopfab_cuda slopfab_vulkan)
     target_compile_definitions(slopfab_tensor_backend_tests PRIVATE

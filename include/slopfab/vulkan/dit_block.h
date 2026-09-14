@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "slopfab/safetensors.h"
+#include "slopfab/lora.h"
 #include "slopfab/vulkan/gemm.h"
 #include "slopfab/vulkan/tensor.h"
 
@@ -20,6 +21,8 @@ struct H3BlockConfig {
   uint32_t adaln_rank = 8;
   float epsilon = 1.0e-5f;
   AttentionMode attention_mode = AttentionMode::kExact;
+  // Borrowed only during checkpoint loading.
+  const LoraAdapters* loras = nullptr;
 };
 
 // Optional device-only diagnostic taps. Each non-null destination must match

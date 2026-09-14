@@ -24,6 +24,8 @@
 
 #include "slopfab/dit/packing.h"
 #include "slopfab/reference_media.h"
+#include "slopfab/lora.h"
+#include "slopfab/sampler/scheduler.h"
 
 namespace slopfab {
 
@@ -75,6 +77,8 @@ struct GenerateRequest {
   // Sigma grid points *including* the terminal zero, so the model runs
   // `num_inference_steps - 1` times.
   int num_inference_steps = 50;
+  sampler::ScheduleKind schedule = sampler::ScheduleKind::kDefault;
+  std::vector<LoraSpec> loras;
 
   uint64_t seed = 0;
 

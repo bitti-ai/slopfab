@@ -20,6 +20,7 @@
 // and never grows inside the loop.
 
 #include "slopfab/dit/transformer.h"
+#include "slopfab/cuda/lora.cuh"
 #include "slopfab/dit/block_capture.h"
 #include "slopfab/dit/graph_capture.h"
 #include "slopfab/dit/rope.h"
@@ -609,6 +610,7 @@ struct Transformer::Impl {
   cuda::Stream stream;
   cublasHandle_t blas = nullptr;
   cuda::LinearRunner linear;
+  cuda::LoraRunner lora;
   Workspace ws;
 
   DeviceBuffer<uint8_t> arena;
@@ -1316,6 +1318,7 @@ struct Transformer::Impl {
                        __nv_bfloat16* output) {
       if (block_attention_mode != AttentionMode::kExact) {
         linear.forward_prepared(weight, dense, input, count, output, ws);
+        lora.apply(weight.data, input, count, output, blas, stream.get(), false);
         return;
       }
       if (weight.bias != nullptr)
@@ -1363,6 +1366,7 @@ struct Transformer::Impl {
             DenseGemmMode::kBFloat16, DenseGemmBias::kNone,
             tiled, tiled, stream.get());
       }
+      lora.apply(weight.data, input, count, output, blas, stream.get(), true);
     };
 
     // Dequantised once per block, not once per row-chunk. The dense copy of a
@@ -1552,7 +1556,7 @@ Transformer::Transformer() : impl_(new Impl()) {}
 Transformer::~Transformer() = default;
 
 const TransformerConfig& Transformer::config() const { return impl_->cfg; }
-size_t Transformer::weight_bytes() const { return impl_->arena_bytes; }
+size_t Transformer::weight_bytes() const { return impl_->arena_bytes + impl_->lora.weight_bytes(); }
 void Transformer::set_adaln_lookup(AdaLNLookup mode) { impl_->lookup = mode; }
 AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
 
@@ -1629,6 +1633,7 @@ std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
 }
 
 void Transformer::unload() {
+  impl_->lora = cuda::LoraRunner();
   impl_->blocks.clear();
   impl_->refiner.clear();
   impl_->arena.reset();
@@ -1638,7 +1643,8 @@ void Transformer::unload() {
   impl_->attention_routes = {};
 }
 
-void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config) {
+void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config,
+                       const LoraAdapters* loras) {
   Impl& s = *impl_;
   // Issued first, before anything else in this function, because it is
   // asynchronous: the plan walk and the arena allocation below run while the
@@ -2086,6 +2092,19 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     b.out_proj = quant(prefix + "attn.out_proj", hidden, inner);
     b.fc1 = quant(prefix + "mlp.fc1", 2 * ffn, hidden);
     b.fc2 = quant(prefix + "mlp.fc2", hidden, ffn);
+    if (loras) {
+      auto attach = [&](const QuantWeight& w, const char* suffix, int offset = 0) {
+        if (const auto* factors = loras->find(prefix + suffix))
+          s.lora.attach(w.data, *factors, offset, w.out_features);
+      };
+      attach(b.wq, "attn.qkv_proj");
+      attach(b.wk, "attn.qkv_proj", inner);
+      attach(b.wv, "attn.qkv_proj", 2 * inner);
+      attach(b.out_proj, "attn.out_proj");
+      attach(b.fc1, "mlp.fc1");
+      attach(b.fc2, "mlp.fc2");
+    }
+
     if (with_adaln) {
       if (full_adaln) {
         b.full_adaln = quant(prefix + "adaln_proj.linear", adaln_out,
@@ -2156,7 +2175,7 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
                              stack_uses_convrot(impl_->blocks));
   const int seq = layout.total_rows();
 
-  size_t total = c.total;
+  size_t total = c.total + impl_->lora.scratch_bytes();
   if (impl_->architecture == TransformerArchitecture::kRef2VAFullAdaLN &&
       !impl_->blocks.empty()) {
     size_t full_scratch = cuda::linear_workspace_bytes(

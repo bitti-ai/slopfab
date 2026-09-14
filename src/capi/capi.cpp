@@ -634,6 +634,35 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(
+    slopfab_request* request, const char* path, float strength) {
+  if (!request || !path || !*path || !std::isfinite(strength))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "LoRA needs a request, nonempty path and finite strength");
+  return guarded([&] {
+    request->request.loras.push_back({path, strength});
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_loras(slopfab_request* request) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear_loras: null request");
+  return guarded([&] {
+    request->request.loras.clear();
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
+    slopfab_request* request, int32_t schedule) {
+  if (!request || (schedule != SLOPFAB_SCHEDULE_DEFAULT && schedule != SLOPFAB_SCHEDULE_TAOMATE_3STEP))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "unknown denoising schedule or null request");
+  return guarded([&] {
+    request->request.schedule = schedule == SLOPFAB_SCHEDULE_DEFAULT
+        ? slopfab::sampler::ScheduleKind::kDefault : slopfab::sampler::ScheduleKind::kTaoMate3Step;
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_request* request, const char* path) {
   if (request == nullptr || path == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_add_reference_image: null argument");
