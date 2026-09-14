@@ -25,6 +25,7 @@
 #include "slopfab/dit/packing.h"
 #include "slopfab/reference_media.h"
 #include "slopfab/refmod.h"
+#include "slopfab/continuation.h"
 #include "slopfab/lora.h"
 #include "slopfab/sampler/scheduler.h"
 
@@ -101,6 +102,11 @@ struct GenerateRequest {
   // Pre-encoded references follow native media; they do not add Qwen tokens.
   std::vector<RefModReference> refmods;
 
+  // Owning immutable snapshot. With continuation, num_frames means NEW frames
+  // (rounded up to a multiple of 17); the output includes the source clip.
+  std::shared_ptr<const LatentClip> continuation;
+  int continuation_overlap_frames = 22;
+
   bool has_native_references() const {
     return !reference_image_paths.empty() || !reference_media.empty();
   }
@@ -138,6 +144,11 @@ struct GeneratePlan {
   int canvas_width = 0;
   int aligned_frames = 0;
   double duration_seconds = 0.0;
+
+  // aligned_frames/duration describe delivered output; layout describes only
+  // the bounded sampling window. Equal for ordinary generations.
+  int sampling_frames = 0;
+  ContinuationPlan continuation;
 
   dit::SequenceLayout layout;  // layout.num_text is 0 until the prompt is tokenised
 

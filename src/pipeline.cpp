@@ -27,7 +27,9 @@ constexpr int kMinFrames = 22;
 void append_media_identity(std::string& key, const GenerateRequest& request) {
   if (request.reference_media.empty()) return;
   key.push_back('\0');
-  const int frames = request.still_image ? 1 : dit::align_num_frames(request.num_frames);
+  const int frames = request.continuation
+      ? plan_continuation(*request.continuation, request.continuation_overlap_frames, request.num_frames).window_frames
+      : (request.still_image ? 1 : dit::align_num_frames(request.num_frames));
   key += "decoded-media-preprocessing-v2:" + std::to_string(frames);
   key.push_back('\0');
   for (const auto& reference : request.reference_media) {
@@ -39,10 +41,12 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 }  // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  if (request.continuation && request.still_image)
+    throw std::invalid_argument("continuation is unavailable in still-image mode");
   validate_refmods(request.refmods);
   validate_reference_media(request.reference_image_paths.size(), request.reference_media);
   if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
-    bool has_video = false;
+    bool has_video = bool(request.continuation);
     for (const auto& media : request.reference_media) has_video |= media->is_video();
     for (const auto& ref : request.refmods)
       has_video |= ref.enabled() && ref.mod->geometry().kind != dit::ReferenceKind::kAudio;
@@ -62,13 +66,25 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     dit::validate_canvas_size(request.canvas_height, request.canvas_width);
     plan.canvas_height = request.canvas_height;
     plan.canvas_width = request.canvas_width;
+  } else if (request.continuation) {
+    plan.canvas_height = request.continuation->height;
+    plan.canvas_width = request.continuation->width;
   } else {
     dit::resolve_canvas_size(static_cast<double>(request.aspect_w),
                              static_cast<double>(request.aspect_h), &plan.canvas_height,
                              &plan.canvas_width);
   }
 
-  if (request.still_image) {
+  if (request.continuation) {
+    if (plan.canvas_width != request.continuation->width ||
+        plan.canvas_height != request.continuation->height)
+      throw std::invalid_argument("continuation canvas must match the saved latents");
+    plan.continuation = plan_continuation(*request.continuation,
+        request.continuation_overlap_frames, request.num_frames);
+    plan.aligned_frames = plan.continuation.output_frames;
+    plan.sampling_frames = plan.continuation.window_frames;
+    plan.duration_seconds = double(plan.aligned_frames) / kFps;
+  } else if (request.still_image) {
     plan.aligned_frames = 1;
     plan.duration_seconds = 1.0 / kFps;
   } else {
@@ -89,20 +105,22 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     }
   }
 
+  if (!request.continuation) plan.sampling_frames = plan.aligned_frames;
   plan.layout.num_text = 0;  // filled in after tokenisation
   plan.layout.num_condition_video = 0;  // t2va has no conditioning rows
   plan.layout.num_latent_frames =
-      request.still_image ? 1 : dit::video_latent_num_frames(plan.aligned_frames);
+      request.still_image ? 1 : dit::video_latent_num_frames(plan.sampling_frames);
   plan.layout.latent_height = plan.canvas_height / kSpatialCompression;
   plan.layout.latent_width = plan.canvas_width / kSpatialCompression;
   plan.layout.num_audio_latents =
-      request.still_image ? 0 : dit::audio_latents_for_frames(plan.aligned_frames);
+      request.continuation ? plan.continuation.window_audio_latents :
+      (request.still_image ? 0 : dit::audio_latents_for_frames(plan.sampling_frames));
   plan.layout.num_audio_rows = 2 * plan.layout.num_audio_latents;
   plan.layout.num_video_rows = plan.layout.num_latent_frames * plan.layout.rows_per_frame();
   if (!request.reference_media.empty()) {
     plan.layout.condition_audio_is_explicit = true;
     for (const auto& media : request.reference_media) {
-      const auto geometry = reference_condition_plan(*media, plan.duration_seconds).geometry;
+      const auto geometry = reference_condition_plan(*media, double(plan.sampling_frames) / kFps).geometry;
       plan.layout.num_condition_video += geometry.video_rows();
       plan.layout.num_condition_audio += geometry.audio_rows();
     }
@@ -113,6 +131,12 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     plan.layout.condition_audio_is_explicit = true;
     plan.layout.num_condition_video += ref.mod->geometry().video_rows() * ref.copies;
     plan.layout.num_condition_audio += ref.mod->geometry().audio_rows() * ref.copies;
+  }
+
+  if (request.continuation) {
+    plan.layout.condition_audio_is_explicit = true;
+    plan.layout.num_condition_video += plan.continuation.overlap_video_latents * plan.layout.rows_per_frame();
+    plan.layout.num_condition_audio += 2 * plan.continuation.overlap_audio_latents;
   }
 
   for (const auto& lora : request.loras) {
@@ -359,6 +383,12 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigma_shift),
       static_cast<unsigned long long>(request.seed), request.out_path.c_str());
   std::string description = buf;
+  if (request.continuation) {
+    description += "  continuation        " + std::to_string(request.continuation->frames) +
+        " source + " + std::to_string(plan.continuation.extension_frames) + " new frames\n" +
+        "  sampling window     " + std::to_string(plan.sampling_frames) + " frames (" +
+        std::to_string(plan.continuation.overlap_frames) + " hidden overlap); output is full joined clip\n";
+  }
   for (const auto& ref : request.refmods) {
     description += "  refmod              " + ref.mod->path() + " (strength " +
         std::to_string(ref.strength) + ", copies " + std::to_string(ref.copies) +

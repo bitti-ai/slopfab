@@ -9,7 +9,8 @@
  *
  * **This API produces pixels, not files.** A generation hands back the decoded
  * frames as planar float RGB and the audio as interleaved float PCM, and
- * writes nothing to disk. Encoding, muxing and playback belong to the host,
+ * writes no media files. Optional latent archives can be saved for continuation.
+ * Encoding, muxing and playback belong to the host,
  * which is why the DLL needs no FFmpeg: the one part of this project that
  * loads it is the muxer, and nothing here calls it. A host that wants an MP4
  * feeds these buffers to its own encoder; `slopfab.exe` is the reference
@@ -90,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 8
+#define SLOPFAB_CAPI_VERSION_MINOR 9
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -472,9 +473,48 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_verbose(slopfab_request* requ
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_reuse_models(slopfab_request* request,
                                                              int32_t enable);
 
+/* --- saved latents and continuation ----------------------------------------
+ * All functions are optional. Existing generations keep their old memory and
+ * file behavior unless saving or retention is requested. Archives contain
+ * normalized FP32 video AND audio, geometry, and the cumulative timeline.
+ */
+
+/* Save the completed (joined, when continuing) latents before VAE decode.
+ * Null or empty path disables saving. A later decode failure does not remove
+ * the saved archive. Does not require retention. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_save_latents(
+    slopfab_request* request, const char* path);
+
+/* Keep a shared immutable latent snapshot on the generation handle. Default
+ * off. Required for generation_save_latents and set_continuation_generation. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_retain_latents(
+    slopfab_request* request, int32_t enable);
+
+/* Load an owning snapshot now, so deleting/replacing the file later is safe.
+ * overlap_frames must be 17*k+5, at least 5, and fit in the source. With
+ * continuation set, request frames means NEW frames (rounded up to a multiple
+ * of 17). The source canvas is inherited unless an explicit matching canvas
+ * is set. Output pixels and saved latents contain the full extended clip.
+ * Synthetic and still-image generation cannot continue. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(
+    slopfab_request* request, const char* path, int32_t overlap_frames);
+
+/* Share retained latents from a successful generation; source may be destroyed
+ * after this returns. No disk I/O and no latent buffer copy. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_generation(
+    slopfab_request* request, const slopfab_generation* source, int32_t overlap_frames);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_request* request);
+
+/* Save retained latents after a successful generation. NOT_READY while
+ * running; INVALID_REQUEST when retention was not enabled. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_save_latents(
+    const slopfab_generation* generation, const char* path);
+
 /* --- plan ------------------------------------------------------------------ */
 
-/* Resolves `request` into `out_plan`. Reads no weights.
+/* Resolves `request` into `out_plan`. Reads no weights. With continuation,
+ * aligned_frames/duration describe the full output; latent sizes and row
+ * counts describe the bounded sampling window, including hidden overlap.
  * SLOPFAB_ERR_INVALID_REQUEST, with the reason on `slopfab_last_error()`, if the
  * request cannot be satisfied. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_resolve_plan(const slopfab_request* request,

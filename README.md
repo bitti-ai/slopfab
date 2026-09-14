@@ -105,9 +105,9 @@ before its first generation to force a major. `slopfab_cuda_loaded_major`
 initializes the loader and lets the host validate its installation early.
 Selection is process-wide and immutable after initialization.
 
-**It produces pixels, not files.** A generation hands back decoded frames as
-planar float RGB and audio as interleaved float PCM, and writes nothing to
-disk. Encoding, muxing and playback belong to the host. That is why the DLL
+**It returns decoded pixels and audio.** A generation hands back frames as
+planar float RGB and audio as interleaved float PCM. Optional latent archives
+can be saved for continuation; encoding, muxing and playback belong to the host. That is why the DLL
 needs no FFmpeg at all: the muxer is the only thing in this project that loads
 it, and the C API never reaches the muxer.
 
@@ -185,6 +185,19 @@ rules carry across every binding:
 `slopfab_last_error()` is thread-local and holds the reason the *calling* thread
 last failed. A run's failure message is not there — the run fails on a worker
 thread the caller never enters — so use `slopfab_generation_error()` for that.
+
+### Saving latents and continuing a video
+
+```sh
+slopfab generate --prompt "A cyclist rides along a forest road" --frames 124 --out first.mp4 --save-latents first.safetensors
+slopfab generate --continue-from first.safetensors --overlap-frames 22 --frames 119 --prompt "The cyclist keeps riding around the bend" --out extended.mp4 --save-latents extended.safetensors
+```
+
+Continuation samples a fresh window guided by the saved video/audio tail,
+discards its hidden overlap, and appends only the new latents. `--frames` means
+new frames when continuing; output and saved latents contain the full joined
+clip. The DLL supports file saving/loading and shared in-memory handoffs in
+C API 1.9. See [continuation API, format, and examples](docs/continuation.md).
 
 ### Building without FFmpeg
 

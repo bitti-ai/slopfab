@@ -282,6 +282,7 @@ struct slopfab_generation {
   // Moved out of the decoder's own buffers by `on_samples`, so the pixels are
   // never copied: they are decoded once and handed to the caller by pointer.
   PixelBuffer video;
+  std::shared_ptr<const slopfab::LatentClip> latents;
   std::vector<float> audio;
   int channels = 0;
   int frames = 0;
@@ -391,6 +392,10 @@ bool samples_hook(RunSamples& samples, void* userdata) {
   gen->audio_channels = samples.audio_channels;
   gen->audio_sample_rate = samples.audio_sample_rate;
   return true;
+}
+
+void latents_hook(const std::shared_ptr<const slopfab::LatentClip>& latents, void* userdata) {
+  static_cast<slopfab_generation*>(userdata)->latents = latents;
 }
 
 void run_worker(slopfab_generation* gen) {
@@ -676,6 +681,77 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_save_latents(
+    slopfab_request* request, const char* path) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "save latents: null request");
+  return guarded([&] {
+    request->options.save_latents_path = path ? path : "";
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_retain_latents(
+    slopfab_request* request, int32_t enable) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "retain latents: null request");
+  return guarded([&] {
+    request->options.on_latents = enable ? &latents_hook : nullptr;
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(
+    slopfab_request* request, const char* path, int32_t overlap_frames) {
+  if (!request || !path || !*path || overlap_frames < 5 || overlap_frames % 17 != 5)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "continuation needs a request, archive path and 17*k+5 overlap >=5");
+  return guarded([&] {
+    auto clip = slopfab::LatentClip::load(path);
+    try { (void)slopfab::plan_continuation(*clip, overlap_frames, 17); }
+    catch (const std::exception& e) { return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what()); }
+    request->request.continuation = std::move(clip);
+    request->request.continuation_overlap_frames = overlap_frames;
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_generation(
+    slopfab_request* request, const slopfab_generation* source, int32_t overlap_frames) {
+  if (!request || !source || overlap_frames < 5 || overlap_frames % 17 != 5)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "continuation needs a request, source generation and 17*k+5 overlap >=5");
+  const int terminal = report_terminal_status(source);
+  if (terminal != SLOPFAB_OK) return terminal;
+  return guarded([&] {
+    if (!source->latents)
+      return fail(SLOPFAB_ERR_INVALID_REQUEST, "enable latent retention before starting the source generation");
+    try { (void)slopfab::plan_continuation(*source->latents, overlap_frames, 17); }
+    catch (const std::exception& e) { return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what()); }
+    request->request.continuation = source->latents;
+    request->request.continuation_overlap_frames = overlap_frames;
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_request* request) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear continuation: null request");
+  return guarded([&] {
+    request->request.continuation.reset();
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_save_latents(
+    const slopfab_generation* generation, const char* path) {
+  if (!generation || !path || !*path)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "save latents needs a generation and path");
+  const int terminal = report_terminal_status(generation);
+  if (terminal != SLOPFAB_OK) return terminal;
+  return guarded([&] {
+    if (!generation->latents)
+      return fail(SLOPFAB_ERR_INVALID_REQUEST, "enable latent retention before starting the generation");
+    generation->latents->save(path);
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* request) {
   if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear_refmods: null request");
   return guarded([&] {
@@ -772,6 +848,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_resolve_plan(const slopfab_request* reque
   return guarded([&] {
     GeneratePlan plan;
     try {
+      if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
+        throw std::invalid_argument("continuation requires denoising");
       plan = slopfab::resolve_plan(request->request);
     } catch (const std::exception& e) {
       // Every throw out of resolve_plan is the request being unsatisfiable —
@@ -805,6 +883,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* requ
   return guarded([&] {
     GeneratePlan plan;
     try {
+      if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
+        throw std::invalid_argument("continuation requires denoising");
       plan = slopfab::resolve_plan(request->request);
     } catch (const std::exception& e) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
@@ -842,6 +922,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
     // reported synchronously, as a return code, rather than as a handle that
     // fails a millisecond later.
     try {
+      if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
+        throw std::invalid_argument("continuation requires denoising");
       (void)slopfab::resolve_plan(request->request);
     } catch (const std::exception& e) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());

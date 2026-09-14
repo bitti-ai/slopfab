@@ -23,6 +23,50 @@
 #include "harness.h"
 #include "slopfab/capi.h"
 #include "refmod_fixture.h"
+#include "latent_fixture.h"
+
+SLOPFAB_TEST(capi_continuation_snapshot_and_plan) {
+  LatentFixture fixture;
+  fixture.write();
+  auto* request = slopfab_request_create();
+  CHECK(request != nullptr);
+  CHECK(slopfab_request_set_save_latents(request, "next.safetensors") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_save_latents(request, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_retain_latents(request, 1) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_continuation_file(request, fixture.path.string().c_str(), 22) == SLOPFAB_OK);
+  // The attached snapshot survives replacement by invalid bytes.
+  fixture.write(39, true, "unsupported");
+  CHECK(slopfab_request_set_continuation_file(request, fixture.path.string().c_str(), 22) != SLOPFAB_OK);
+  std::filesystem::remove(fixture.path);
+  CHECK(slopfab_request_set_frames(request, 18) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 73 && plan.canvas_width == 64 && plan.canvas_height == 32);
+  CHECK(plan.latent_frames == 17);
+  CHECK(plan.num_audio_latents == 94);  // round(73*5/3) - round(17*5/3)
+  CHECK(plan.sequence_rows_without_text == 34 + 188 + 14 + 74);
+  CHECK(slopfab_request_set_still_image(request, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_still_image(request, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_synthetic_latents(request, 1) == SLOPFAB_OK);
+  slopfab_generation* generation = nullptr;
+  CHECK(slopfab_generation_start(request, nullptr, nullptr, &generation) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(generation == nullptr);
+  CHECK(slopfab_request_clear_continuation(request) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 22);
+  slopfab_request_destroy(request);
+}
+
+SLOPFAB_TEST(capi_continuation_null_arguments) {
+  CHECK(slopfab_request_set_save_latents(nullptr, "x") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_retain_latents(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_clear_continuation(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_file(nullptr, "x", 22) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_generation(nullptr, nullptr, 22) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_generation_save_latents(nullptr, "x") == SLOPFAB_ERR_INVALID_ARGUMENT);
+}
+
 SLOPFAB_TEST(capi_refmod_loading_ownership_and_validation) {
   RefModFixture fixture; fixture.write();
   slopfab_request* request = slopfab_request_create();

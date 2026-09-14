@@ -101,6 +101,13 @@ struct RunOptions {
   // `slopfab compare a b --abs-tol 0` is the whole test.
   std::string dump_latents_path;
 
+  // Versioned, self-describing archive suitable for continuation. Includes the
+  // cumulative clip after an extension. Written before VAE decode.
+  std::string save_latents_path;
+  // Optional in-memory handoff before decoding. A host can retain the shared
+  // immutable snapshot without copying buffers. Completion still uses RunResult.
+  void (*on_latents)(const std::shared_ptr<const LatentClip>&, void*) = nullptr;
+
   // Frame-banded attention: a video row attends to +/- this many latent frames
   // rather than the whole packed sequence. 0 is off and is the default.
   //

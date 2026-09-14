@@ -351,7 +351,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
   } release_guard{options.release_reused_models};
   RunResult result;
-  const dit::SequenceLayout& layout = plan.layout;
+  dit::SequenceLayout layout = plan.layout;
+  if (request.continuation && (options.source != LatentSource::kDenoise ||
+                               !options.init_latents_path.empty())) {
+    result.message = "continuation requires denoising from fresh noise; --init-latents is incompatible";
+    return result;
+  }
   LoraAdapters loras;
   validate_refmods(request.refmods);
   if (request.has_refmods() && options.source != LatentSource::kDenoise) {
@@ -547,7 +552,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   std::vector<PreparedReference> prepared_media;
   for (const auto& media : request.reference_media) {
     if (!notify(RunStage::kReferences, -1, 0)) return stop("reference preprocessing");
-    prepared_media.push_back(prepare_reference_condition(*media, plan.duration_seconds));
+    prepared_media.push_back(prepare_reference_condition(*media, double(plan.sampling_frames) / 24));
   }
   std::vector<text::QwenPixelValues> media_qwen_pairs;
   if (options.source == LatentSource::kDenoise && !reference_images.empty()) {
@@ -860,6 +865,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (!notify(RunStage::kReferences, -1, 0)) return stop("refmod conditioning");
       append_refmod_conditions(request.refmods, request.seed, reference_geometry,
                                condition_video_rows, condition_audio_rows);
+    }
+
+    if (request.continuation) {
+      append_continuation_guide(*request.continuation, plan.continuation, request.seed,
+                                reference_geometry, condition_video_rows, condition_audio_rows);
     }
 
     // --- conditioning -------------------------------------------------------
@@ -1396,6 +1406,33 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
   }
 
+  // Preserve normalized sampler output, join in latent space, then decode the
+  // cumulative stream so the VAE sees context on both sides of the join.
+  auto completed = std::make_shared<LatentClip>();
+  if (request.continuation) {
+    *completed = join_continuation(*request.continuation, plan.continuation, video_rows, audio_rows);
+    video_rows.clear(); audio_rows.clear();
+  } else {
+    completed->width = plan.canvas_width;
+    completed->height = plan.canvas_height;
+    completed->frames = plan.aligned_frames;
+    completed->video_rows = std::move(video_rows);
+    completed->audio_rows = std::move(audio_rows);
+  }
+  completed->sampled = options.source == LatentSource::kDenoise;
+  completed->transformer = request.transformer_path;
+  completed->video_vae = request.video_vae_path;
+  completed->audio_vae = request.audio_vae_path;
+  completed->validate();
+  layout = completed->layout();
+  if (!options.save_latents_path.empty()) {
+    completed->save(options.save_latents_path);
+    result.outputs.push_back(options.save_latents_path);
+    if (options.verbose) std::printf("saved       %s (%d frames, normalized fp32 AV latents)\n",
+        options.save_latents_path.c_str(), completed->frames);
+  }
+  if (options.on_latents) options.on_latents(completed, options.hook_userdata);
+
   // --- video ----------------------------------------------------------------
 
   if (!notify(RunStage::kVideoDecode, -1, 0)) return stop("video decode");
@@ -1412,7 +1449,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     cuda::PhaseSpan s_unpatch("unpatchify latents");
     std::vector<float> latents(static_cast<size_t>(24) * layout.num_latent_frames *
                                layout.latent_height * layout.latent_width);
-    dit::unpatchify_video(video_rows.data(), layout, latents.data());
+    dit::unpatchify_video(completed->video_rows.data(), layout, latents.data());
     s_unpatch.stop();
 
     // Before the span, so the readahead started under the loop is accounted to
@@ -1490,8 +1527,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     const Clock::time_point t0 = Clock::now();
 
     // (Sa, 32) rows -> (2, 32, A), then de-normalise per channel.
-    std::vector<float> audio_latents(audio_rows.size());
-    dit::unpack_audio(audio_rows.data(), layout.num_audio_latents, audio_latents.data());
+    std::vector<float> audio_latents(completed->audio_rows.size());
+    dit::unpack_audio(completed->audio_rows.data(), layout.num_audio_latents, audio_latents.data());
 
     SafeTensors audio_file;
     audio_file.open(request.audio_vae_path);

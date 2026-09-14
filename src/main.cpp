@@ -539,6 +539,10 @@ const CommandHelp kCommands[] = {
      "                               seeded draw; with --synthetic-latents, decode\n"
      "                               them straight to video and audio. Same shape as\n"
      "                               --dump-latents writes. Off by default.\n"
+     "  --save-latents <f>           save a versioned AV latent archive for continuation.\n"
+     "  --continue-from <f>          extend a saved archive; --frames is NEW frames,\n"
+     "                               rounded up to a multiple of 17. Output is joined.\n"
+     "  --overlap-frames <n>         hidden context, 17*k+5 frames (default 22).\n"
      "  --prompt-embedding <f>       F32 prompt_embedding [L,5120] safetensors;\n"
      "                               optional exact conditioner replay for either backend\n"
      "\n"
@@ -1275,6 +1279,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool synthetic = false;
   slopfab::sampler::SamplerKind sampler_kind = slopfab::sampler::SamplerKind::kEuler;
   std::string dump_latents;
+  std::string save_latents;
+  std::string continue_from;
+  bool saw_overlap = false;
   std::string prompt_file;
   bool saw_prompt = false;
   int attn_band = 0;
@@ -1430,6 +1437,18 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       synthetic = true;
     } else if (arg == "--dump-latents") {
       dump_latents = next("--dump-latents");
+    } else if (arg == "--save-latents") {
+      save_latents = next("--save-latents");
+      if (save_latents.empty()) throw std::runtime_error("--save-latents needs a nonempty path");
+    } else if (arg == "--continue-from") {
+      continue_from = next("--continue-from");
+      if (continue_from.empty()) throw std::runtime_error("--continue-from needs a nonempty path");
+    } else if (arg == "--overlap-frames") {
+      const std::string value = next("--overlap-frames");
+      size_t consumed = 0;
+      req.continuation_overlap_frames = std::stoi(value, &consumed);
+      if (consumed != value.size()) throw std::runtime_error("invalid --overlap-frames value");
+      saw_overlap = true;
     } else if (arg == "--attn-band") {
       attn_band = std::atoi(next("--attn-band"));
     } else if (arg == "--attention") {
@@ -1665,6 +1684,15 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     return 2;
   }
   if (!saw_out) req.out_path = timestamped_output_path();
+  if (saw_overlap && continue_from.empty())
+    throw std::runtime_error("--overlap-frames requires --continue-from");
+  if (!continue_from.empty()) {
+    if (synthetic || !init_latents.empty())
+      throw std::runtime_error("continuation requires denoising from fresh noise");
+    if (saw_aspect && !saw_resolution)
+      throw std::runtime_error("continuation inherits its canvas; omit --aspect");
+    req.continuation = slopfab::LatentClip::load(continue_from);
+  }
   for (const auto& entry : reference_files) {
     req.reference_media.push_back(std::make_shared<const slopfab::ReferenceMedia>(
         slopfab::cli::decode_reference_file(entry.first, entry.second, executable)));
@@ -1799,6 +1827,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       ? slopfab::DeviceBackend::kVulkan : slopfab::DeviceBackend::kCuda;
   options.sampler = sampler_kind;
   options.dump_latents_path = dump_latents;
+  options.save_latents_path = save_latents;
   options.attention_band = attn_band;
   options.attention_mode = attention_mode;
   options.vulkan_sage_extra_workspace_bytes = vulkan_sage_workspace_mib << 20;
@@ -1813,6 +1842,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
     req.out_path = counted_output_path(base_out_path, generation, count);
     options.reuse_models = count > 1;
+    options.save_latents_path = save_latents.empty() ? std::string() : counted_output_path(save_latents, generation, count);
     options.release_reused_models = generation + 1 == count;
     if (generation > 0) std::printf("\n");
     std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);

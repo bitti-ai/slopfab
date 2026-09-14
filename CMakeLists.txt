@@ -48,6 +48,7 @@ add_library(slopfab_core STATIC
   src/core/image.cpp
   src/core/reference_media.cpp
   src/core/refmod.cpp
+  src/core/continuation.cpp
   src/core/reference_conditioning.cpp
   src/core/image_platform.cpp
   src/core/safetensors_write.cpp
@@ -1180,7 +1181,7 @@ if(SLOPFAB_BUILD_C_API)
   # produce a libslopfab.so.0 whose soname says 0 for an ABI that says 1, and
   # would bump it for releases that did not touch the C interface at all.
   set(SLOPFAB_CAPI_VERSION_MAJOR 1)
-  set(SLOPFAB_CAPI_VERSION_MINOR 8)
+  set(SLOPFAB_CAPI_VERSION_MINOR 9)
   set(SLOPFAB_CAPI_VERSION_PATCH 0)
   set(SLOPFAB_CAPI_VERSION
     "${SLOPFAB_CAPI_VERSION_MAJOR}.${SLOPFAB_CAPI_VERSION_MINOR}.${SLOPFAB_CAPI_VERSION_PATCH}")
@@ -1331,6 +1332,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_adaln.cpp
     tests/test_audio_primitives.cpp
     tests/test_chunking.cpp
+    tests/test_continuation.cpp
     tests/test_compare_metrics.cpp
     tests/test_decode_pipeline.cpp
     tests/test_stillprobe.cpp

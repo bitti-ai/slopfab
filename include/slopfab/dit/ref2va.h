@@ -10,6 +10,8 @@ struct ReferenceGeometry {
   int latent_height = 0;
   int latent_width = 0;
   int num_audio_latents = 0;
+  // A final temporal guide shares the target origin instead of advancing it.
+  bool target_aligned = false;
   int video_rows() const;
   int audio_rows() const;
 };

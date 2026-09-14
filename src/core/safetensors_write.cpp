@@ -16,6 +16,17 @@
 namespace slopfab {
 namespace {
 
+std::string quote_json(const std::string& value) {
+  const char* hex = "0123456789abcdef";
+  std::string result = "\"";
+  for (unsigned char c : value) {
+    if (c == '"' || c == '\\') { result += '\\'; result += static_cast<char>(c); }
+    else if (c < 32) { result += "\\u00"; result += hex[c >> 4]; result += hex[c & 15]; }
+    else result += static_cast<char>(c);
+  }
+  return result + '"';
+}
+
 std::string shape_to_json(const std::vector<int64_t>& shape) {
   std::string out = "[";
   for (size_t i = 0; i < shape.size(); ++i) {
@@ -28,12 +39,22 @@ std::string shape_to_json(const std::vector<int64_t>& shape) {
 
 }  // namespace
 
-void write_safetensors(const std::string& path, const std::vector<TensorWrite>& tensors) {
+void write_safetensors(const std::string& path, const std::vector<TensorWrite>& tensors,
+                      const std::map<std::string, std::string>& metadata) {
   // Header first: offsets are relative to the start of the data block, so the
   // whole layout is known before anything is written.
   std::string header = "{";
   size_t offset = 0;
   bool first = true;
+  if (!metadata.empty()) {
+    header += "\"__metadata__\":{";
+    for (const auto& entry : metadata) {
+      if (!first) header += ',';
+      first = false;
+      header += quote_json(entry.first) + ':' + quote_json(entry.second);
+    }
+    header += '}';
+  }
   for (const TensorWrite& t : tensors) {
     int64_t elems = 1;
     for (int64_t d : t.shape) elems *= d;
@@ -80,6 +101,7 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
                 static_cast<std::streamsize>(bits.size() * sizeof(uint16_t)));
     }
   }
+  out.flush();
   if (!out) throw std::runtime_error("safetensors write: failed writing " + path);
 }
 
