@@ -203,6 +203,17 @@ struct Projection {
   LinearWeight weight;
   DeviceTensor dense;
   uint32_t out = 0, in = 0;
+  bool streamed() const {
+    switch (weight.format()) {
+      case LinearWeightFormat::kFloat8E4M3:
+      case LinearWeightFormat::kInt8:
+      case LinearWeightFormat::kNVFloat4:
+      case LinearWeightFormat::kNF4:
+        return true;
+      default:
+        return false;
+    }
+  }
   uint64_t persistent_bytes() const noexcept {
     return weight.resident_bytes() + bytes(dense);
   }
@@ -337,7 +348,10 @@ Projection load_projection(TensorContext& context, const SafeTensors& st,
   u.convrot_group = tag.convrot_group;
   Projection result; result.out = out; result.in = in;
   result.weight = LinearWeight::upload(context, u);
-  if (result.weight.format() != LinearWeightFormat::kNVFloat4) {
+  // Quantized projections stay packed. Retaining a BF16 copy of every INT8
+  // or FP8 matrix adds ~36 GiB across the main stack alone. Their exact
+  // materialization uses the same shared slot already used for NVFP4.
+  if (!result.streamed()) {
     result.dense = context.allocate(matrix(out, in), ScalarType::kBFloat16);
     TensorBatch batch = context.begin_batch();
     result.weight.materialize_bf16(batch, result.dense); batch.submit().wait();
@@ -622,7 +636,7 @@ void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
       plan.record(batch, source, weight, output, rows - tiled_rows,
                   tiled_rows, tiled_rows);
   };
-  if (p.weight.format() == LinearWeightFormat::kNVFloat4) {
+  if (p.streamed()) {
     PreparedNVFP4WeightView prepared = cache.prepare(batch, p.weight, plan);
     record(prepared);
   } else {
@@ -633,7 +647,7 @@ void projection(TensorBatch& batch, Projection& p, const DenseGemmPlan& plan,
 uint32_t projection_operators(const Projection& projection, uint32_t rows) {
   return (projection.weight.has_pre_quant_scale() ? 1u : 0u) +
       (projection.weight.applies_convrot() ? 1u : 0u) +
-      (projection.weight.format() == LinearWeightFormat::kNVFloat4 ? 1u : 0u) +
+      (projection.streamed() ? 1u : 0u) +
       (rows >= 64 ? 1u : 0u) + (rows % 64 ? 1u : 0u);
 }
 

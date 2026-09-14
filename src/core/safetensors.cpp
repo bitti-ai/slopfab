@@ -114,6 +114,7 @@ SafeTensors& SafeTensors::operator=(SafeTensors&& other) noexcept {
   size_ = other.size_;
   tensors_ = std::move(other.tensors_);
   metadata_ = std::move(other.metadata_);
+  lookup_prefix_ = std::move(other.lookup_prefix_);
   other.base_ = nullptr;
   other.size_ = 0;
 #ifdef _WIN32
@@ -201,6 +202,7 @@ void SafeTensors::open(const std::string& path) {
 void SafeTensors::close() {
   tensors_.clear();
   metadata_.clear();
+  lookup_prefix_.clear();
 #ifdef _WIN32
   if (base_ != nullptr) UnmapViewOfFile(base_);
   if (mapping_handle_ != nullptr) CloseHandle(static_cast<HANDLE>(mapping_handle_));
@@ -361,10 +363,28 @@ void SafeTensors::parse_header() {
     view.nbytes = span;
     tensors_.emplace(name, std::move(view));
   }
+
+  // Some ComfyUI releases (including H3 Singularity) wrap the entire state
+  // dict. Only alias a uniform namespace: mixed archives must not silently
+  // combine tensors from different models. This never copies weight data.
+  const std::string prefix = "model.diffusion_model.";
+  if (!tensors_.empty()) {
+    bool uniform = true;
+    for (const auto& item : tensors_) {
+      if (item.first.compare(0, prefix.size(), prefix) != 0) {
+        uniform = false;
+        break;
+      }
+    }
+    if (uniform) lookup_prefix_ = prefix;
+  }
 }
 
 const TensorView* SafeTensors::find(std::string_view name) const {
   auto it = tensors_.find(std::string(name));
+  if (it == tensors_.end() && !lookup_prefix_.empty()) {
+    it = tensors_.find(lookup_prefix_ + std::string(name));
+  }
   return it == tensors_.end() ? nullptr : &it->second;
 }
 

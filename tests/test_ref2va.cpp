@@ -105,6 +105,21 @@ SLOPFAB_TEST(ref2va_transformer_checkpoint_detection) {
 
 }
 
+SLOPFAB_TEST(ref2va_singularity_wrapped_checkpoint_detection) {
+  const auto path = checkpoint_fixture("Singularity_ref2va_Pruned", {
+      {"model.diffusion_model.adaln_t_table", {1025, 8},
+       std::vector<float>(1025 * 8)},
+      {"model.diffusion_model.blocks.0.adaln_proj.linear.weight", {6, 8},
+       std::vector<float>(6 * 8)}});
+  slopfab::SafeTensors st;
+  st.open(path);
+  CHECK(detect_transformer_architecture(st) ==
+        TransformerArchitecture::kRef2VAPrunedTable);
+  require_ref2va_transformer(st, 1);
+  st.close();
+  std::filesystem::remove(path);
+}
+
 SLOPFAB_TEST(ref2va_image_size) {
   int h = 0, w = 0;
 

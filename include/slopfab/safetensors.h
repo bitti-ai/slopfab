@@ -106,7 +106,9 @@ class SafeTensors {
   const std::map<std::string, TensorView>& tensors() const { return tensors_; }
   size_t tensor_count() const { return tensors_.size(); }
 
-  // Returns nullptr when absent.
+  // Returns nullptr when absent. Archives uniformly wrapped in ComfyUI's
+  // `model.diffusion_model.` namespace also accept unprefixed lookup names.
+  // TensorView::name and tensors() retain the original names from disk.
   const TensorView* find(std::string_view name) const;
 
   // Throws when absent, naming the tensor. Use where a missing weight is a
@@ -119,6 +121,7 @@ class SafeTensors {
   size_t size_ = 0;
   std::map<std::string, TensorView> tensors_;
   std::map<std::string, std::string> metadata_;
+  std::string lookup_prefix_;
 
 #ifdef _WIN32
   void* file_handle_ = nullptr;

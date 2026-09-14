@@ -87,19 +87,30 @@ void validate_endpoint_archive(const SafeTensors& st,
     require_shape(view, shape, name);
     require_dtype(view, dtype, name);
   };
+  auto require_float_weight = [&](const char* name,
+                                  std::initializer_list<int64_t> shape) {
+    const TensorView& view = st.at(name);
+    require_shape(view, shape, name);
+    // Endpoint uploads widen to F32. Singularity stores these weights as
+    // BF16, while the original pruned releases use F32/F16.
+    if (view.dtype != DType::kF32 && view.dtype != DType::kF16 &&
+        view.dtype != DType::kBF16)
+      throw std::runtime_error("Vulkan H3 transformer: '" + std::string(name) +
+                               "' must be an F32/F16/BF16 weight");
+  };
   require("condition_proj.weight", {h, c.text_dim}, DType::kBF16);
   require("condition_proj.bias", {h}, DType::kBF16);
-  require("video_patch_proj.weight", {h, c.video_dim}, DType::kF32);
+  require_float_weight("video_patch_proj.weight", {h, c.video_dim});
   require("video_patch_proj.bias", {h}, DType::kF32);
-  require("audio_patch_proj.weight", {h, c.audio_dim}, DType::kF32);
+  require_float_weight("audio_patch_proj.weight", {h, c.audio_dim});
   require("audio_patch_proj.bias", {h}, DType::kF32);
   require("token_refiner.final_norm.weight", {h}, DType::kBF16);
   require("final_layer.norm.weight", {h}, DType::kBF16);
-  require("final_layer.adaln_proj.linear.weight", {2 * h, r}, DType::kF16);
+  require_float_weight("final_layer.adaln_proj.linear.weight", {2 * h, r});
   require("final_layer.adaln_proj.linear.bias", {2 * h}, DType::kF16);
-  require("final_layer.video_out.weight", {c.video_dim, h}, DType::kF32);
+  require_float_weight("final_layer.video_out.weight", {c.video_dim, h});
   require("final_layer.video_out.bias", {c.video_dim}, DType::kF32);
-  require("final_layer.audio_out.weight", {c.audio_dim, h}, DType::kF32);
+  require_float_weight("final_layer.audio_out.weight", {c.audio_dim, h});
   require("final_layer.audio_out.bias", {c.audio_dim}, DType::kF32);
   for (const char* name : {"condition_proj", "video_patch_proj",
                           "audio_patch_proj", "final_layer.video_out",

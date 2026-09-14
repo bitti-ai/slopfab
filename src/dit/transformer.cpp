@@ -395,7 +395,7 @@ class Plan {
   const TensorView* optional(const std::string& name) {
     const TensorView* v = st_.find(name);
     if (v == nullptr) return nullptr;
-    consumed_.insert(name);
+    consumed_.insert(v->name);
     return v;
   }
 
@@ -456,7 +456,7 @@ class Plan {
     r.offset = total_;
     total_ += align_up(r.bytes);
     records_[name] = r;
-    consumed_.insert(name);
+    consumed_.insert(v.name);
   }
 
   const SafeTensors& st_;

@@ -3735,6 +3735,29 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   CHECK(run_transformer() == transformer_output);
   transformer.unload();
 
+  // Singularity wraps every key and stores these endpoints as BF16. The
+  // fixture values are exactly representable, so storage must not affect output.
+  auto singularity_tensors = transformer_fixture(0);
+  for (auto& tensor : singularity_tensors) {
+    if (tensor.name == "video_patch_proj.weight" ||
+        tensor.name == "audio_patch_proj.weight" ||
+        tensor.name == "final_layer.adaln_proj.linear.weight" ||
+        tensor.name == "final_layer.video_out.weight" ||
+        tensor.name == "final_layer.audio_out.weight")
+      tensor.dtype = DType::kBF16;
+    tensor.name = "model.diffusion_model." + tensor.name;
+  }
+  const auto singularity_path = base / "Singularity_ref2va_Pruned.safetensors";
+  write_safetensors(singularity_path.string(), singularity_tensors);
+  SafeTensors singularity;
+  singularity.open(singularity_path.string());
+  transformer.load(singularity);
+  transformer.prepare_text(prompt);
+  CHECK(run_transformer() == transformer_output);
+  transformer.unload();
+  singularity.close();
+  std::filesystem::remove(singularity_path);
+
   // Complete CUDA-off T2VA denoise trajectory. Modality rows remain on the
   // device across every transformer evaluation and Euler update; only final
   // rows cross back to the host.
@@ -4305,6 +4328,169 @@ SLOPFAB_TEST(vulkan_gemm_dispatch_geometry) {
                                 UINT32_MAX, UINT32_MAX, &geometry));
   CHECK(!gemm_dispatch_geometry(1, 1, 0, 16, 8, 8, &geometry));
   CHECK(!gemm_dispatch_geometry(1, 1, 16, 16, 8, 8, nullptr));
+}
+
+SLOPFAB_TEST(vulkan_h3_quantized_weight_residency) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(options);
+  for (const char* filename : {"fl2va_pruned_fp8_scaled.safetensors",
+       "minimax_h3_fl2va_fasth3_dense_pruned_int8_convrot.safetensors"}) {
+    const auto path = std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
+        "weights/transformer" / filename;
+    if (!std::filesystem::exists(path)) {
+      SKIP_MISSING_FIXTURE("missing %s", filename);
+      continue;
+    }
+    TensorContextOptions context_options;
+    context_options.max_batch_operators = 2048;
+    TensorContext context(device, context_options);
+    if (!context.exact_h3_attention()) {
+      SKIP_UNSUPPORTED_HARDWARE("exact H3 attention unavailable");
+      return;
+    }
+    SafeTensors checkpoint;
+    checkpoint.open(path.string());
+    H3BlockConfig config;
+    config.sequence = 65;  // Both the 64-row GEMM and its remainder use one expansion.
+    auto stage = ExactH3BlockStage::create(context, config);
+    stage.load(checkpoint, 0);
+    auto scratch = ExactH3BlockScratch::create(context, config);
+    stage.prepare(scratch);
+    auto tensor = [&](std::initializer_list<uint64_t> shape,
+                      ScalarType type = ScalarType::kFloat32) {
+      return context.allocate(TensorLayout::contiguous(shape.begin(),
+          static_cast<uint32_t>(shape.size())), type);
+    };
+    auto tokens = tensor({config.sequence, config.hidden}, ScalarType::kBFloat16);
+    auto selectors = tensor({config.sequence}, ScalarType::kInt32);
+    auto code = tensor({config.timesteps, config.adaln_rank});
+    auto cosine = tensor({config.sequence, 96});
+    auto sine = tensor({config.sequence, 96});
+    std::vector<uint16_t> input(size_t(config.sequence) * config.hidden);
+    for (size_t i = 0; i < input.size(); ++i)
+      input[i] = f32_to_bf16(float(int(i % 61) - 30) / 64.0f);
+    std::vector<int32_t> ids(config.sequence);
+    for (size_t i = 0; i < ids.size(); ++i) ids[i] = int32_t(i % config.modalities);
+    std::vector<float> codes(size_t(config.timesteps) * config.adaln_rank);
+    for (size_t i = 0; i < codes.size(); ++i)
+      codes[i] = float(int(i % 7) - 3) / 16.0f;
+    std::vector<float> ones(size_t(config.sequence) * 96, 1.0f), zeros(ones.size());
+    context.upload_bytes(selectors, ids.data(), ids.size() * 4);
+    context.upload(code, codes.data(), codes.size());
+    context.upload(cosine, ones.data(), ones.size());
+    context.upload(sine, zeros.data(), zeros.size());
+    auto replay = [&] {
+      context.upload_bytes(tokens, input.data(), input.size() * 2);
+      auto batch = context.begin_batch();
+      stage.record(batch, tokens, selectors, code, cosine, sine, scratch);
+      stage.record(batch, tokens, selectors, code, cosine, sine, scratch);
+      batch.submit().wait();
+      std::vector<uint16_t> result(input.size());
+      context.download_bytes(tokens, result.data(), result.size() * 2);
+      return result;
+    };
+    const auto output = replay();
+    const uint64_t used = context.pooled_used_bytes();
+    CHECK(output == replay());
+    CHECK(context.pooled_used_bytes() == used);
+    // Pinned on the former permanent-BF16 path. Covers six different shared
+    // expansions, both GEMM row ranges, repeated blocks, and INT8 ConvRot.
+    const uint64_t expected = std::strstr(filename, "int8")
+        ? 0x730a94ce15dc8847ull : 0x3657399741e2efc5ull;
+    CHECK(fnv64_bytes(output.data(), output.size() * 2) == expected);
+    // One packed real block is below 400 MiB. A retained BF16 copy makes it
+    // exceed 1 GiB and reproduces the 32-GB-card load failure at stack scale.
+    CHECK(stage.persistent_bytes() < (400ull << 20));
+    std::printf("  %s: block persistent %llu, scratch %llu, output %016llx\n",
+        filename, static_cast<unsigned long long>(stage.persistent_bytes()),
+        static_cast<unsigned long long>(scratch.reserved_bytes()),
+        static_cast<unsigned long long>(fnv64_bytes(output.data(), output.size() * 2)));
+  }
+}
+
+SLOPFAB_TEST(vulkan_h3_int8_still_full_stack_memory) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  const auto path = std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
+      "weights/transformer/minimax_h3_fl2va_fasth3_dense_pruned_int8_convrot.safetensors";
+  if (!std::filesystem::exists(path)) {
+    SKIP_MISSING_FIXTURE("INT8 H3 checkpoint unavailable");
+    return;
+  }
+  if (!Instance::available()) return;
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) return;
+  uint64_t device_heap = 0;
+  for (const auto& heap : physical.front().info().memory_heaps)
+    if (heap.device_local) device_heap = std::max(device_heap, heap.bytes);
+  if (device_heap < (28ull << 30)) {
+    SKIP_INSUFFICIENT_VRAM("full INT8 still regression needs a 28-GiB device heap");
+    return;
+  }
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = physical.front().info().shader_int64;
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
+  Device device = physical.front().create_device(options);
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 2048;
+  TensorContext context(device, context_options);
+  if (!context.exact_h3_attention()) {
+    SKIP_UNSUPPORTED_HARDWARE("exact H3 attention unavailable");
+    return;
+  }
+  ExactH3DenoiseConfig config;
+  config.layout.num_text = 65;
+  config.layout.num_latent_frames = 1;
+  config.layout.latent_height = config.layout.latent_width = 48; // 768x768 still.
+  config.layout.num_video_rows = config.layout.rows_per_frame();
+  config.indices = dit::build_indices(config.layout);
+  config.position_ids = dit::build_position_ids(config.layout);
+  config.transformer.text_rows = config.layout.num_text;
+  config.transformer.video_rows = config.layout.num_video_rows;
+  config.transformer.main.layers = 50;
+  config.transformer.main.block.sequence = config.layout.total_rows();
+  config.transformer.main.block.timesteps = 2;
+  SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  auto model = ExactH3Denoiser::create(context, config);
+  model.load(checkpoint);
+  CHECK(model.loaded());
+  CHECK(context.reserved_bytes() < (24ull << 30));
+  std::vector<float> prompt(size_t(config.layout.num_text) * 5120);
+  std::vector<float> video(size_t(config.layout.num_video_rows) * 96);
+  for (size_t i = 0; i < prompt.size(); ++i) prompt[i] = float(int(i % 127) - 63) / 64;
+  for (size_t i = 0; i < video.size(); ++i) video[i] = float(int(i % 61) - 30) / 32;
+  model.prepare(prompt.data(), prompt.size(), video.data(), video.size(), nullptr, 0);
+  sampler::FlowScheduler video_schedule(12.0f), audio_schedule(3.0f);
+  video_schedule.set_timesteps(2);
+  audio_schedule.set_timesteps(2);
+  const auto output = model.run(video_schedule, audio_schedule);
+  CHECK(output.steps_completed == 1 && !output.cancelled);
+  CHECK(output.video_rows.size() == video.size() && output.audio_rows.empty());
+  CHECK(std::all_of(output.video_rows.begin(), output.video_rows.end(),
+                    [](float value) { return std::isfinite(value); }));
+  CHECK(context.reserved_bytes() < (24ull << 30));
+  std::printf("  INT8 50-block 768x768 still: persistent %.3f GiB, peak %.3f GiB, pool %.3f GiB\n",
+      double(model.persistent_bytes()) / (1ull << 30),
+      double(model.peak_device_bytes()) / (1ull << 30),
+      double(context.reserved_bytes()) / (1ull << 30));
+  model.unload();
+  CHECK(!model.loaded() && model.persistent_bytes() == 0);
 }
 
 int main() { return ::slopfab::test::run_all(); }

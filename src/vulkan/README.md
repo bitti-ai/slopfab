@@ -858,8 +858,12 @@ F16, F32, E4M3, per-row I8, NVFP4 and NF4 contracts, including AWQ pre-scale
 and ConvRot transforms. Loading is transactional. A production record call has
 no host boundary, submission, CUDA dependency, or fallback.
 
-NVFP4 execution keeps the six compressed projections persistent and reuses one
-bounded dense BF16 cache. A non-multiple-of-64 sequence records cooperative
+NVFP4, FP8, INT8 and NF4 execution keep the six compressed projections persistent
+and reuse one bounded dense BF16 cache. Previously FP8/INT8 retained a BF16 copy
+of every projection in addition to the packed weights, adding about 36 GiB across
+the 50 main blocks and exhausting a 32-GB card during transformer loading.
+Materialization now occurs immediately before each projection and preserves the
+same BF16 rounding. A non-multiple-of-64 sequence records cooperative
 64-row GEMMs plus one scalar tail against the same prepared view. AWQ/ConvRot
 activation slots are allocated only by the explicit pre-batch `prepare` seam
 when a loaded projection needs them; recording never allocates. The shipped
@@ -869,6 +873,16 @@ across submissions. A two-stage/one-batch S65 test uses one shared scratch,
 exactly one AWQ pre-scale and one ConvRot transform, and records the exact
 50-operator bound. Repeat, late-corrupt transactional reload, unload/reload,
 allocator and descriptor high-water are checked.
+
+The quantized-residency regression pins the former permanent-BF16 two-pass S65
+block outputs for the real FP8 and INT8 ConvRot checkpoints. Both remain bit-exact;
+the INT8 block's persistent weights drop from 1,159,804,416 to 389,101,056 bytes.
+On RTX 5090, the full INT8 transformer (50 main blocks plus both refiners) loads
+and completes one exact denoising evaluation for a 768x768 still with 65 supplied
+prompt rows: 21.046 GiB persistent, 21.816 GiB logical peak, and 21.847 GiB pool
+reservation. This measures the transformer stage, excluding the conditioner and
+VAE. Tests: `vulkan_h3_quantized_weight_residency` and
+`vulkan_h3_int8_still_full_stack_memory` in `slopfab_vulkan_tests`.
 
 The real block-0 audit used
 `MiniMax_H3_FL2VA_pruned_nvfp4.safetensors` (SHA-256

@@ -350,6 +350,12 @@ The repository is public and ungated. Full-precision transformer and text
 encoder come from `MiniMaxAI/MiniMax-H3`; quantised variants (fp8, int8, nvfp4,
 int4) from `Comfy-Org/MiniMax-H3` and `Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot`.
 
+[Minimax-h3_Singularity](https://huggingface.co/WarmBloodAban/Minimax-h3_Singularity)
+`ref2va_Pruned_v1.3_int8` is supported on CUDA and Vulkan. Its ComfyUI
+`model.diffusion_model.` tensor prefix and BF16 endpoint weights are handled
+directly; no checkpoint conversion is needed. Keep `ref2va` in the filename
+so reference conditioning can identify the pruned Ref2VA variant.
+
 Weights are **not** redistributed here. They are covered by the MiniMax H3
 Community License.
 

@@ -1054,6 +1054,34 @@ SLOPFAB_TEST(transformer_exact_attention_routes_refiner_and_main_blocks) {
   std::filesystem::remove(path, ec);
 }
 
+SLOPFAB_TEST(transformer_wrapped_checkpoint_matches_unwrapped) {
+  const TransformerConfig cfg = tiny_config();
+  const Tensors tensors = build_synthetic(cfg);
+  const Case c = make_case(cfg, 5, 0.31f);
+  auto evaluate = [&](const Tensors& weights) {
+    const std::string path = write_synthetic(weights);
+    slopfab::SafeTensors st;
+    st.open(path);
+    Transformer model;
+    model.load(st, cfg);
+    model.prepare_text(c.prompt.data(), c.layout.num_text);
+    model.prepare_sequence(c.layout, c.idx, c.pos);
+    std::vector<float> result(c.video_rows.size() + c.audio_rows.size());
+    model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt,
+                  result.data(), result.data() + c.video_rows.size());
+    CHECK(all_finite(result));
+    return result;
+  };
+  const auto expected = evaluate(tensors);
+  Tensors wrapped;
+  for (const auto& kv : tensors) {
+    auto tensor = kv.second;
+    tensor.name = "model.diffusion_model." + tensor.name;
+    wrapped.emplace(tensor.name, std::move(tensor));
+  }
+  CHECK(expected == evaluate(wrapped));
+}
+
 SLOPFAB_TEST(transformer_forward_vs_cpu_reference) {
   const TransformerConfig cfg = tiny_config();
   const Tensors tensors = build_synthetic(cfg);

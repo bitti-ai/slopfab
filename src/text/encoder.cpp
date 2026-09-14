@@ -115,6 +115,24 @@ WeightFormat detect_weight_format(const SafeTensors& checkpoint) {
   // is rejected rather than half-read off this one sample.
   const std::string name = "model.layers.0.self_attn.q_proj.comfy_quant";
   const TensorView* view = checkpoint.find(name);
+  if (!view) {
+    // Unrepacked Qwen exports use model.language_model.*. Inspect the actual
+    // embedding width before reporting a missing quantization descriptor: a
+    // smaller Qwen model cannot supply H3's trained conditioning features,
+    // regardless of how its weights are named or quantized.
+    const TensorView* embedding = checkpoint.find("model.language_model.embed_tokens.weight");
+    if (!embedding) embedding = checkpoint.find("model.embed_tokens.weight");
+    if (embedding && embedding->shape.size() == 2 && embedding->shape[1] != 5120) {
+      throw std::runtime_error(
+          "text encoder: " + embedding->name + " has hidden size " +
+          std::to_string(embedding->shape[1]) +
+          "; MiniMax H3 requires the Qwen3-VL-32B conditioner truncated to 50 layers "
+          "with hidden size 5120. A different Qwen model is not a compatible replacement; "
+          "renaming tensors or changing quantization cannot fix the conditioning mismatch. "
+          "Use qwen3vl_32b_int8_convrot.safetensors or "
+          "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors");
+    }
+  }
   require(view != nullptr,
           name + " is missing; this file does not look like either shipped Qwen3-VL build");
   const std::string payload = squeeze(view->data, view->nbytes);

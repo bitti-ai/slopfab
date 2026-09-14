@@ -202,6 +202,38 @@ SLOPFAB_TEST(qwen_layer_capture_is_bounded_and_self_verifying) {
   std::filesystem::remove(path);
 }
 
+SLOPFAB_TEST(safetensors_comfy_diffusion_namespace) {
+  const std::string prefix = "model.diffusion_model.";
+  const auto path = write_file({{prefix + "adaln_t_table", 8},
+                                {prefix + "blocks.0.weight", 4}},
+                               "slopfab_comfy_namespace");
+  SafeTensors st;
+  st.open(path);
+  CHECK(st.tensor_count() == 2);
+  CHECK(st.find("blocks.0.weight") == st.find(prefix + "blocks.0.weight"));
+  CHECK(st.at("blocks.0.weight").name == prefix + "blocks.0.weight");
+  CHECK(st.tensors().count(prefix + "blocks.0.weight") == 1);
+  CHECK(st.find("absent") == nullptr);
+  CHECK(static_cast<const float*>(st.at("blocks.0.weight").data)[0] == element(1, 0));
+  SafeTensors moved(std::move(st));
+  CHECK(moved.find("adaln_t_table") != nullptr);
+  st = std::move(moved);
+  CHECK(st.find("adaln_t_table") != nullptr);
+  st.close();
+  CHECK(st.find("adaln_t_table") == nullptr);
+  std::filesystem::remove(path);
+
+  // A mixed namespace is not an aliasable model. Exact names still work.
+  const auto mixed = write_file({{prefix + "a", 1}, {"a", 1},
+                                 {prefix + "b", 1}}, "slopfab_comfy_mixed");
+  st.open(mixed);
+  CHECK(st.at("a").name == "a");
+  CHECK(st.find("b") == nullptr);
+  CHECK(st.find(prefix + "b") != nullptr);
+  st.close();
+  std::filesystem::remove(mixed);
+}
+
 SLOPFAB_TEST(safetensors_prefix_extent_bounds_the_matching_tensors) {
   // Deliberately not in name order on disk, and with a decoy whose name shares
   // the prefix's leading characters but not the prefix itself. The extent must
