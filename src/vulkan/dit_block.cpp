@@ -399,13 +399,13 @@ struct ExactH3BlockScratch::Impl {
     v_plan = plan(inner, c.hidden); out_plan = plan(c.hidden, inner);
     fc1_plan = plan(2 * c.ffn, c.hidden); fc2_plan = plan(c.hidden, c.ffn);
     attention_plan = H3AttentionPlan::create(owner, {c.sequence, c.heads,
-        c.head_dim, exact_attention_scale(c.head_dim)});
+        c.head_dim, exact_attention_scale(c.head_dim), c.attention_mode});
   }
   uint64_t reserved() const noexcept {
     return bytes(modulation) + bytes(normed) + bytes(q) + bytes(k) + bytes(v) +
         bytes(attention) + bytes(branch) + bytes(fused) + bytes(activation) +
         bytes(hidden_a) + bytes(hidden_b) + bytes(inner_a) + bytes(inner_b) +
-        bytes(ffn_a) + bytes(ffn_b) + cache.dense_bytes();
+        bytes(ffn_a) + bytes(ffn_b) + cache.dense_bytes() + attention_plan.workspace_bytes();
   }
 };
 
@@ -434,7 +434,7 @@ ExactH3BlockScratch& ExactH3BlockScratch::operator=(ExactH3BlockScratch&&) noexc
 ExactH3BlockScratch ExactH3BlockScratch::create(TensorContext& context,
                                                 const H3BlockConfig& config) {
   validate_config(config); context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise(); context.require_exact_h3_attention();
+  context.require_exact_vae_pointwise(); context.require_h3_attention(config.attention_mode);
   return ExactH3BlockScratch(std::make_shared<Impl>(context, config));
 }
 uint64_t ExactH3BlockScratch::reserved_bytes() const noexcept {
@@ -449,7 +449,7 @@ ExactH3BlockStage& ExactH3BlockStage::operator=(ExactH3BlockStage&&) noexcept = 
 ExactH3BlockStage ExactH3BlockStage::create(TensorContext& context,
                                             const H3BlockConfig& config) {
   validate_config(config); context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise(); context.require_exact_h3_attention();
+  context.require_exact_vae_pointwise(); context.require_h3_attention(config.attention_mode);
   return ExactH3BlockStage(std::make_shared<Impl>(context, config));
 }
 
@@ -678,7 +678,7 @@ void ExactH3BlockStage::prepare(ExactH3BlockScratch& scratch) const {
   if (a.sequence != b.sequence || a.hidden != b.hidden || a.heads != b.heads ||
       a.head_dim != b.head_dim || a.ffn != b.ffn ||
       a.timesteps != b.timesteps || a.modalities != b.modalities ||
-      a.adaln_rank != b.adaln_rank)
+      a.adaln_rank != b.adaln_rank || a.attention_mode != b.attention_mode)
     throw std::invalid_argument("Vulkan H3 block: scratch configuration mismatch");
   const auto& w = *impl_->weights;
   ensure_transforms(*s.context, w.q, impl_->config.sequence, s.hidden_a, s.hidden_b);
@@ -700,7 +700,8 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   if (s.config.sequence != c.sequence || s.config.hidden != c.hidden ||
       s.config.heads != c.heads || s.config.head_dim != c.head_dim ||
       s.config.ffn != c.ffn || s.config.timesteps != c.timesteps ||
-      s.config.modalities != c.modalities || s.config.adaln_rank != c.adaln_rank)
+      s.config.modalities != c.modalities || s.config.adaln_rank != c.adaln_rank ||
+      s.config.attention_mode != c.attention_mode)
     throw std::invalid_argument("Vulkan H3 block: scratch configuration mismatch");
   const auto tv = tokens.view(), av = selectors.view(), cv = code.view();
   const auto cosv = cosine.view(), sinv = sine.view();

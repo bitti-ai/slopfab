@@ -34,6 +34,8 @@ struct DeviceInfo {
   bool discrete = false;
   uint32_t compute_queue_family = 0;
   uint32_t compute_queue_count = 0;
+  uint32_t timestamp_valid_bits = 0;
+  float timestamp_period_ns = 0.0f;
   uint32_t max_compute_workgroup_invocations = 0;
   uint32_t max_compute_workgroup_count[3] = {};
   uint32_t max_compute_workgroup_size[3] = {};
@@ -47,6 +49,7 @@ struct DeviceInfo {
   bool shader_float16 = false;
   bool shader_float16_enabled = false;
   bool shader_int8 = false;
+  bool shader_int8_enabled = false;
   bool shader_int64 = false;
   bool shader_int64_enabled = false;
   bool storage_buffer_16bit = false;
@@ -63,11 +66,14 @@ struct DeviceInfo {
   bool fp32_signed_zero_inf_nan_preserve = false;
   bool fp32_rounding_rte = false;
   uint32_t subgroup_size = 0;
+  bool compute_subgroup_shuffle = false;
+  bool compute_subgroup_arithmetic = false;
   uint8_t driver_uuid[16] = {};
   bool cooperative_matrix = false;
   bool cooperative_matrix_enabled = false;
   bool cooperative_matrix_bf16_f32_16x16x16 = false;
   bool cooperative_matrix_f16_f32_16x16x16 = false;
+  bool cooperative_matrix_i8_i32_16x16x32 = false;
   bool shader_bfloat16_type = false;
   bool shader_bfloat16_cooperative_matrix = false;
   std::vector<MemoryHeapInfo> memory_heaps;
@@ -180,6 +186,7 @@ class Device {
   friend class BufferPool;
   friend class ComputePipeline;
   friend class ComputeContext;
+  friend class TimestampQuery;
 };
 
 enum class BufferUsage : uint32_t {

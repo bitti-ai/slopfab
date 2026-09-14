@@ -25,7 +25,7 @@ tolerance rather than approximately.
 | CUDA 12 or 13 toolkit | kernels, GEMM | runtime embedded; installed cuBLAS dynamic |
 | C++17 standard library | — | — |
 | ffmpeg | MP4/AAC muxing only | **dynamic, resolved at runtime** |
-| Vulkan 1.2 loader | optional exact neural inference and RGB-to-YUV conversion | dynamic, SDK-free |
+| Vulkan 1.2 loader | optional neural inference (exact, flash2, sage2) and RGB-to-YUV conversion | dynamic, SDK-free |
 
 There is deliberately no JSON library and no test framework — both are
 hand-written and small. Nothing in the decode path allocates through a
@@ -1068,7 +1068,7 @@ not promise byte identity with the shipped fused implementation. On the
 qualified RTX 5090 tuple its accepted current cost at S37727/H56/D128 is
 2.525 s full or 1.261 s at the default +/-9 band on Vulkan, and 1.667/0.783 s
 on CUDA; this is the fastest native exact implementation, not the default.
-`sage2` is an explicitly lossy SageAttention2.2 path: smooth-K and per-warp
+On CUDA, `sage2` is an explicitly lossy SageAttention2.2 path: smooth-K and per-warp
 INT8 Q/K on every supported GPU. SM86 uses the upstream INT8-QK/FP16-PV kernel
 with FP32 accumulation because Ampere has no FP8 tensor cores. Blackwell
 retains the existing per-channel FP8 E4M3 V kernel. Workspace sizing follows
@@ -1076,10 +1076,21 @@ the selected device, so Blackwell's allocation and launch path are unchanged;
 Ampere uses twice the packed-V storage and no V-scale preparation. Head
 dimensions 64 and 128 are supported by the shipped SM86-SM88 and SM120 images;
 SM89 remains an explicit future dispatch case. Frame banding is accepted by `flash2` and
-`exact`; Sage2 is rejected rather than silently falling back.
+`exact` on CUDA; CUDA Sage2 rejects banding rather than silently falling back.
 The vendored primitives retain Apache-2.0 notices under
 `third_party/sageattention`; Windows packages include the same license as
 `SAGEATTENTION-LICENSE.txt`.
+
+Vulkan accepts `exact`, `flash2`, and `sage2`, including frame bands. Vulkan
+Sage uses INT8 Q/K and FP16 P/V, selects a tile that fits device limits, and
+supports 32- or 64-lane subgroups with the required cooperative-matrix tuples.
+`--vulkan-sage-workspace-mib <n>` limits optional scratch per shared plan
+(default 64 MiB). Set it to 0 for serial smoothing and conversion of V inside
+attention; mandatory INT8 Q/K and scale buffers remain. Larger budgets allow
+parallel smoothing and preparation of FP16 V once per call. This is a scratch
+budget, not a total VRAM limit. Other Vulkan neural operators retain their
+existing device restrictions. See [Vulkan attention details](src/vulkan/README.md#fast-h3-flashattention-and-sageattention)
+for capabilities, measurements, and benchmark controls.
 
 `sol` is the scalar training-free block-routing reference. `sol-experimental`
 selects the separate SM120 TMA/WMMA pipeline evaluated in

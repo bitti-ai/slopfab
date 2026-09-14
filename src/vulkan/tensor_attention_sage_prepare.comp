@@ -1,0 +1,96 @@
+#version 460
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+layout(local_size_x = 128) in;
+layout(binding = 0, std430) readonly buffer Q { uint data[]; } q;
+layout(binding = 1, std430) readonly buffer K { uint data[]; } k;
+layout(binding = 2, std430) writeonly buffer Q8 { uint data[]; } q8;
+layout(binding = 3, std430) writeonly buffer K8 { uint data[]; } k8;
+layout(binding = 4, std430) buffer Aux { float data[]; } aux;
+layout(binding = 5, std430) readonly buffer V { uint data[]; } v;
+layout(binding = 6, std430) writeonly buffer V16 { uint data[]; } v16;
+layout(push_constant) uniform Parameters {
+  uint sequence, heads, head_dim, scale_bits;
+  uint query_row_offset, output_row_offset, rows, phase;
+} p;
+shared float partial_q[4], partial_k[4], scale_q, scale_k;
+float load_bf16(bool query, uint index) {
+  uint word = query ? q.data[index / 2u] : k.data[index / 2u];
+  return uintBitsToFloat(((word >> (16u * (index & 1u))) & 65535u) << 16u);
+}
+uint quantize(float x, float scale) {
+  return uint(int(clamp(roundEven(x / scale), -127.0, 127.0))) & 255u;
+}
+void main() {
+  uint tid = gl_LocalInvocationID.x, head = gl_WorkGroupID.y;
+  uint phase = p.phase & 7u;
+  uint partial_base = p.heads * (p.head_dim + 2u * ((p.sequence + 15u) / 16u));
+  uint chunks = (p.sequence + 255u) / 256u;
+  if (phase == 3u) {
+    if (tid < p.head_dim) {
+      float mean = 0.0;
+      for (uint i = 0u; i < chunks; ++i)
+        mean += aux.data[partial_base + (head * chunks + i) * p.head_dim + tid];
+      aux.data[head * p.head_dim + tid] = mean;
+    }
+    return;
+  }
+  if (phase == 0u || phase == 2u) {
+    if (tid < p.head_dim) {
+      float mean = 0.0;
+      // The same channel mean is subtracted from every key. Its Q dot
+      // product is a row-constant softmax shift, including banded attention.
+      uint first = phase == 2u ? gl_WorkGroupID.x * 256u : 0u;
+      uint stop = phase == 2u ? min(first + 256u, p.sequence) : p.sequence;
+      for (uint row = first; row < stop; ++row)
+        mean += load_bf16(false, (row * p.heads + head) * p.head_dim + tid) / float(p.sequence);
+      uint output_index = phase == 2u
+          ? partial_base + (head * chunks + gl_WorkGroupID.x) * p.head_dim + tid
+          : head * p.head_dim + tid;
+      aux.data[output_index] = mean;
+    }
+    return;
+  }
+  uint base_row = gl_WorkGroupID.x * 16u;
+  float mq = 0.0, mk = 0.0;
+  for (uint i = tid; i < 16u * p.head_dim; i += 128u) {
+    uint row = base_row + i / p.head_dim, d = i % p.head_dim;
+    if (row < p.sequence) {
+      uint index = (row * p.heads + head) * p.head_dim + d;
+      mq = max(mq, abs(load_bf16(true, index)));
+      mk = max(mk, abs(load_bf16(false, index) - aux.data[head * p.head_dim + d]));
+    }
+  }
+  mq = subgroupMax(mq); mk = subgroupMax(mk);
+  if (gl_SubgroupInvocationID == 0u) { partial_q[gl_SubgroupID] = mq; partial_k[gl_SubgroupID] = mk; }
+  barrier();
+  if (tid == 0u) {
+    for (uint i = 0u; i < gl_NumSubgroups; ++i) { mq = max(mq, partial_q[i]); mk = max(mk, partial_k[i]); }
+    scale_q = mq > 0.0 ? max(mq / 127.0, 1.17549435e-38) : 1.0;
+    scale_k = mk > 0.0 ? max(mk / 127.0, 1.17549435e-38) : 1.0;
+    uint blocks = (p.sequence + 15u) / 16u;
+    uint base = p.heads * p.head_dim + head * blocks * 2u + gl_WorkGroupID.x;
+    aux.data[base] = scale_q; aux.data[base + blocks] = scale_k;
+  }
+  barrier();
+  // One invocation owns all four bytes of each output word.
+  for (uint i = tid * 4u; i < 16u * p.head_dim; i += 512u) {
+    uint row = base_row + i / p.head_dim, d = i % p.head_dim;
+    if (row < p.sequence) {
+      uint index = (row * p.heads + head) * p.head_dim + d;
+      uint pq = 0u, pk = 0u;
+      for (uint j = 0u; j < 4u; ++j) {
+        pq |= quantize(load_bf16(true, index+j), scale_q) << (8u*j);
+        pk |= quantize(load_bf16(false, index+j) - aux.data[head*p.head_dim+d+j], scale_k) << (8u*j);
+      }
+      q8.data[index/4u] = pq; k8.data[index/4u] = pk;
+      if ((p.phase & 8u) != 0u) {
+        for (uint j = 0u; j < 4u; j += 2u) {
+          uint word = v.data[(index+j)/2u];
+          v16.data[(index+j)/2u] = packHalf2x16(vec2(
+              uintBitsToFloat(word << 16u), uintBitsToFloat(word & 0xffff0000u)));
+        }
+      }
+    }
+  }
+}

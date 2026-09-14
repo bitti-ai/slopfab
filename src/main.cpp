@@ -484,7 +484,7 @@ const CommandHelp kCommands[] = {
      "                               random ones are drawn afresh for each\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
      "  --inference-backend cuda|vulkan\n"
-     "                               neural model backend (default cuda); Vulkan exact\n"
+     "                               neural model backend (default cuda); Vulkan\n"
      "                               supports native text and reference conditioning\n"
      "  --output-accelerator cpu|vulkan\n"
      "                               RGB-to-YUV output conversion only (default cpu);\n"
@@ -505,9 +505,12 @@ const CommandHelp kCommands[] = {
      "                               as the effect. Judge output before relying on it\n"
      "  --attention <backend>        none, flash2, sage2 (default), sol,\n"
      "                               sol-experimental, or exact. Vulkan neural\n"
-     "                               inference accepts only exact attention.\n"
+     "                               inference accepts exact, flash2 and sage2.\n"
      "                               The experimental SM120-only\n"
      "                               path is lossy and fails rather than falling back.\n"
+     "  --vulkan-sage-workspace-mib <n>\n"
+     "                               extra Sage scratch budget (default 64 MiB);\n"
+     "                               0 uses compact preparation; Q/K scratch is extra\n"
      "  --sol-beta <f>               routing threshold multiplier (default 1)\n"
      "  --sol-error-k/v <f>           experimental K-residual/V-dispersion weights\n"
      "  --sol-step-start <n>         first active denoise step (default 10)\n"
@@ -1264,6 +1267,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_prompt = false;
   int attn_band = 0;
   slopfab::AttentionMode attention_mode = slopfab::AttentionMode::kSage2;
+  uint64_t vulkan_sage_workspace_mib = 64;
   slopfab::SolSchedule sol_schedule;
   std::string init_latents;
   std::string prompt_embedding;
@@ -1409,6 +1413,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                      "sol-experimental, or exact, got '%s'\n", v.c_str());
         return 2;
       }
+    } else if (arg == "--vulkan-sage-workspace-mib") {
+      const std::string value = next("--vulkan-sage-workspace-mib");
+      if (value.empty() || value.size() > 5 || value.find_first_not_of("0123456789") != std::string::npos ||
+          (vulkan_sage_workspace_mib = std::strtoull(value.c_str(), nullptr, 10)) > 65536) {
+        std::fprintf(stderr, "slopfab: --vulkan-sage-workspace-mib wants an integer from 0 to 65536\n");
+        return 2;
+      }
     } else if (arg == "--sol-beta") {
       sol_schedule.beta = std::strtof(next("--sol-beta"), nullptr);
     } else if (arg == "--sol-error-k") {
@@ -1440,9 +1451,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 
   if (inference_backend == "vulkan") {
-    if (attention_mode != slopfab::AttentionMode::kExact) {
+    if (!slopfab::attention_mode_supported(slopfab::DeviceBackend::kVulkan, attention_mode)) {
       std::fprintf(stderr,
-                   "slopfab: Vulkan VAE inference requires --attention exact; mode '%s' "
+                   "slopfab: Vulkan inference requires --attention exact, flash2 or sage2; mode '%s' "
                    "will not be remapped and no CUDA fallback was used\n",
                    slopfab::attention_mode_name(attention_mode));
       return 1;
@@ -1549,7 +1560,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     return 2;
   }
   if (attn_band > 0 && attention_mode != slopfab::AttentionMode::kFlash2 &&
-      attention_mode != slopfab::AttentionMode::kExact) {
+      attention_mode != slopfab::AttentionMode::kExact &&
+      !(inference_backend == "vulkan" && attention_mode == slopfab::AttentionMode::kSage2)) {
     std::fprintf(stderr,
                  "slopfab: --attn-band currently requires --attention flash2 or exact\n");
     return 2;
@@ -1731,6 +1743,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.dump_latents_path = dump_latents;
   options.attention_band = attn_band;
   options.attention_mode = attention_mode;
+  options.vulkan_sage_extra_workspace_bytes = vulkan_sage_workspace_mib << 20;
   options.sol_schedule = sol_schedule;
   options.init_latents_path = init_latents;
   options.prompt_embedding_path = prompt_embedding;

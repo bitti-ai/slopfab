@@ -113,6 +113,9 @@ struct RunOptions {
   int attention_band = 0;
   // Attention implementation. Flash2 preserves the former default.
   AttentionMode attention_mode = AttentionMode::kFlash2;
+  // Optional Vulkan Sage scratch per shared attention plan. Zero disables
+  // parallel smoothing and prepared FP16 V; mandatory Q/K scratch is separate.
+  uint64_t vulkan_sage_extra_workspace_bytes = 64ull << 20;
   SolSchedule sol_schedule;
   // If set, the fp32 latent rows in this file replace the seeded noise draw.
   // Off by default; nothing about a normal run reads it.
@@ -172,7 +175,7 @@ inline bool generation_backend_supported(DeviceBackend backend,
     case DeviceBackend::kVulkan:
       return (source == LatentSource::kSyntheticNoise ||
               source == LatentSource::kDenoise) &&
-             attention == AttentionMode::kExact;
+             attention_mode_supported(backend, attention);
   }
   return false;
 }

@@ -310,7 +310,8 @@ text::PromptEmbedding read_prompt_embedding(const std::string& path) {
 }
 
 #if SLOPFAB_WITH_VULKAN
-vulkan::Device create_vulkan_inference_device(bool exact_h3 = false) {
+vulkan::Device create_vulkan_inference_device(bool exact_h3 = false,
+                                             bool sage_attention = false) {
   if (!vulkan::Instance::available())
     throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
   vulkan::Instance instance = vulkan::Instance::create();
@@ -329,6 +330,7 @@ vulkan::Device create_vulkan_inference_device(bool exact_h3 = false) {
   options.enable_shader_float16 = exact_h3;
   options.enable_storage_buffer_16bit = exact_h3;
   options.enable_cooperative_matrix = exact_h3;
+  options.enable_shader_int8 = sage_attention && info.shader_int8;
   return physical.front().create_device(options);
 }
 #endif
@@ -351,7 +353,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   if (!generation_backend_supported(options.inference_backend, options.source,
                                     options.attention_mode)) {
     result.message =
-        "Vulkan neural inference requires exact arithmetic; select attention mode exact";
+        "Vulkan neural inference requires attention mode exact, flash2 or sage2";
     return result;
   }
 #if !SLOPFAB_WITH_VULKAN
@@ -366,7 +368,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         request.cache_threshold > 0.0f || request.skip_every > 0 ||
         request.block_cache_span > 0) {
       result.message =
-          "Vulkan exact generation supports Euler without step or block "
+          "Vulkan generation supports Euler without step or block "
           "caches; no CUDA fallback was used";
       return result;
     }
@@ -1073,15 +1075,16 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       const Clock::time_point t0 = Clock::now();
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
-      vulkan::Device device = create_vulkan_inference_device(true);
+      vulkan::Device device = create_vulkan_inference_device(
+          true, options.attention_mode == AttentionMode::kSage2);
       vulkan::TensorContextOptions context_options;
       context_options.max_batch_operators = 2048;
+      context_options.sage_extra_workspace_bytes = options.vulkan_sage_extra_workspace_bytes;
       vulkan::TensorContext context(device, context_options);
-      if (!context.exact_h3_attention())
-        throw std::runtime_error(
-            "Vulkan inference: exact H3 attention artifact is unavailable");
+      context.require_h3_attention(options.attention_mode);
       vulkan::ExactH3DenoiseConfig config;
       config.transformer.main.layers = 50;
+      config.transformer.main.block.attention_mode = options.attention_mode;
       config.transformer.main.block.sequence =
           static_cast<uint32_t>(live.total_rows());
       const bool conditioned = live.num_condition_video != 0 ||
@@ -1192,8 +1195,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       result.seconds_denoise = seconds_since(t0);
       if (options.verbose) {
         std::printf(
-            "denoised    %d Vulkan exact steps in %.1f s (%.2f s/step); +%.1f s load, +%.1f s prepare\n",
-            total_steps, result.seconds_denoise_loop,
+            "denoised    %d Vulkan %s steps in %.1f s (%.2f s/step); +%.1f s load, +%.1f s prepare\n",
+            total_steps, attention_mode_name(options.attention_mode), result.seconds_denoise_loop,
             result.seconds_denoise_loop / std::max(1, total_steps),
             result.seconds_transformer_load, result.seconds_prepare);
       }

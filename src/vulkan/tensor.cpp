@@ -13,6 +13,7 @@
 
 #include "embedded_tensor_spv.h"
 #include "tensor_validation.h"
+#include "sage_selection.h"
 #include "slopfab/attention.h"
 #include "slopfab/vae/audio_primitives.h"
 #include "slopfab/vulkan/compute.h"
@@ -25,6 +26,8 @@ namespace {
 constexpr uint64_t kMaxExactNormDimension = 1ull << 24;
 enum class VaePointwiseOperation : uint32_t { kResidual, kSwiglu, kDenorm };
 constexpr uint32_t kH3AttentionLocalSize = 1024;
+constexpr uint32_t kFastH3AttentionLocalSize = 256;
+constexpr uint32_t kFastH3AttentionQueryTile = 32;
 // The pinned module declares 99,328 bytes across phase-aliased workgroup
 // arrays. NVIDIA 610.88 lowers those nonoverlapping phases under its reported
 // 48 KiB core limit; pipeline creation remains the final module-resource gate.
@@ -107,6 +110,15 @@ bool known_exact_h3_attention_device(const DeviceInfo& info) {
       info.max_compute_shared_memory_bytes >= kH3AttentionMinReportedSharedBytes;
 }
 
+bool fast_h3_attention_device(const DeviceInfo& info) {
+  return info.cooperative_matrix_enabled && info.shader_float16_enabled &&
+      info.storage_buffer_16bit_enabled && info.subgroup_size == 32 &&
+      info.compute_subgroup_shuffle &&
+      info.cooperative_matrix_f16_f32_16x16x16 &&
+      info.max_compute_workgroup_invocations >= kFastH3AttentionLocalSize &&
+      info.max_compute_workgroup_size[0] >= kFastH3AttentionLocalSize;
+}
+
 }  // namespace
 
 struct DeviceTensor::Impl {
@@ -167,6 +179,8 @@ struct H3AttentionRanges::Impl {
 struct H3AttentionPlan::Impl {
   std::shared_ptr<TensorContext::Impl> owner;
   H3AttentionPlanDesc desc;
+  DeviceTensor quantized_query, quantized_key, sage_aux, prepared_value;
+  SageAttentionConfiguration sage;
 };
 
 struct CausalGQAAttentionPlan::Impl {
@@ -341,6 +355,11 @@ struct TensorContext::Impl {
   ComputePipeline attention_blocked_pipeline;
   ComputePipeline attention_h3_pipeline;
   ComputePipeline attention_h3_banded_pipeline;
+  ComputePipeline attention_flash_pipeline, attention_flash_banded_pipeline;
+  std::array<std::array<ComputePipeline, 4>, 4> attention_sage_pipelines, attention_sage_banded_pipelines;
+  ComputePipeline attention_sage_prepare_pipeline;
+  DeviceInfo sage_device_info;
+  uint64_t sage_extra_workspace_bytes = 0;
   ComputePipeline attention_prepare_pipeline;
   ComputePipeline attention_causal_gqa_pipeline;
   ComputePipeline rms_norm_pipeline;
@@ -374,6 +393,8 @@ struct TensorContext::Impl {
   std::vector<StorageBinding> attention_bindings;
   std::vector<StorageBinding> attention_h3_bindings;
   std::vector<StorageBinding> attention_h3_banded_bindings;
+  std::vector<StorageBinding> attention_sage_bindings;
+  std::vector<StorageBinding> attention_sage_prepare_bindings;
   std::vector<StorageBinding> attention_prepare_bindings;
   std::vector<StorageBinding> attention_causal_gqa_bindings;
   bool full_arithmetic_exact = false;
@@ -383,6 +404,8 @@ struct TensorContext::Impl {
   bool exact_dit_pointwise = false;
   bool exact_attention = false;
   bool exact_h3_attention = false;
+  bool flash_attention = false;
+  bool sage_attention = false;
   bool exact_causal_gqa_attention = false;
   bool cooperative_gemm = false;
   bool cooperative_f16_gemm = false;
@@ -422,6 +445,8 @@ struct TensorContext::Impl {
         attention_bindings(4),
         attention_h3_bindings(4),
         attention_h3_banded_bindings(5),
+        attention_sage_bindings(6),
+        attention_sage_prepare_bindings(7),
         attention_prepare_bindings(6),
         attention_causal_gqa_bindings(4) {
     // Device is move-only; the opaque handle is sufficient for identity and
@@ -449,6 +474,20 @@ struct TensorContext::Impl {
     exact_dit_pointwise = exact_vae_pointwise;
     exact_attention = known_exact_blocked_attention_device(input.info());
     exact_h3_attention = known_exact_h3_attention_device(input.info());
+    flash_attention = fast_h3_attention_device(input.info()) &&
+        input.info().max_compute_shared_memory_bytes >= 41344 &&
+        input.info().shader_bfloat16_type &&
+        input.info().shader_bfloat16_cooperative_matrix &&
+        input.info().cooperative_matrix_bf16_f32_16x16x16;
+    sage_device_info = input.info();
+    sage_extra_workspace_bytes = tensor_options.sage_extra_workspace_bytes;
+    sage_attention = input.info().cooperative_matrix_enabled &&
+        input.info().shader_float16_enabled && input.info().storage_buffer_16bit_enabled &&
+        input.info().compute_subgroup_shuffle &&
+        input.info().cooperative_matrix_f16_f32_16x16x16 &&
+        detail::sage_kernel_fits(input.info(), 1) &&
+        input.info().compute_subgroup_arithmetic && input.info().shader_int8_enabled &&
+        input.info().cooperative_matrix_i8_i32_16x16x32;
     exact_causal_gqa_attention =
         known_exact_causal_gqa_attention_device(input.info());
     max_dispatch_x = input.info().max_compute_workgroup_count[0];
@@ -601,7 +640,8 @@ struct TensorContext::Impl {
     auto make_norm_pipeline = [&](const uint8_t* shader, size_t shader_bytes,
                                   uint32_t bindings = 4, uint32_t local_x = 256,
                                   uint32_t local_y = 1,
-                                  uint32_t push_bytes = sizeof(NormParameters)) {
+                                  uint32_t push_bytes = sizeof(NormParameters),
+                                  std::vector<SpecializationConstant> constants = {}) {
       std::vector<uint32_t> module(shader_bytes / sizeof(uint32_t));
       std::memcpy(module.data(), shader, shader_bytes);
       ComputePipelineOptions selected = norm_options;
@@ -609,6 +649,7 @@ struct TensorContext::Impl {
       selected.local_size[0] = local_x;
       selected.local_size[1] = local_y;
       selected.push_constant_bytes = push_bytes;
+      selected.specialization_constants = std::move(constants);
       return ComputePipeline::create(input, module, selected);
     };
     if (exact_vae_norm) {
@@ -656,6 +697,39 @@ struct TensorContext::Impl {
           kH3AttentionLocalSize, 1,
           sizeof(AttentionParameters));
     }
+    if (flash_attention) {
+      attention_flash_pipeline = make_norm_pipeline(detail::kTensorAttentionFlashSpirv,
+          sizeof(detail::kTensorAttentionFlashSpirv), 4, kFastH3AttentionLocalSize, 1, sizeof(AttentionParameters));
+      attention_flash_banded_pipeline = make_norm_pipeline(detail::kTensorAttentionFlashBandedSpirv,
+          sizeof(detail::kTensorAttentionFlashBandedSpirv), 5, kFastH3AttentionLocalSize, 1, sizeof(AttentionParameters));
+    }
+    if (sage_attention) {
+      auto make_sage = [&](uint32_t kernel, const uint8_t* full, size_t full_bytes,
+                           const uint8_t* banded, size_t banded_bytes) {
+        if (!detail::sage_kernel_fits(input.info(), kernel)) return;
+        const auto c = detail::sage_kernel_configuration(kernel, input.info().subgroup_size);
+        for (uint32_t variant = 0; variant < 4; ++variant) {
+          const std::vector<SpecializationConstant> constants = {{0, variant & 1u}, {1, variant < 2 ? 64u : 128u}};
+          attention_sage_pipelines[kernel-1][variant] = make_norm_pipeline(full, full_bytes, 6, c.local_size, 1, sizeof(AttentionParameters), constants);
+          attention_sage_banded_pipelines[kernel-1][variant] = make_norm_pipeline(banded, banded_bytes, 6, c.local_size, 1, sizeof(AttentionParameters), constants);
+        }
+      };
+#define SAGE_PIPELINE(K, F, B) make_sage(K, detail::F, sizeof(detail::F), detail::B, sizeof(detail::B))
+      if (input.info().subgroup_size == 32) {
+        SAGE_PIPELINE(1, kTensorAttentionSageSpirv, kTensorAttentionSageBandedSpirv);
+        SAGE_PIPELINE(2, kTensorAttention_SAGE_FULL, kTensorAttention_SAGE_FULL_BANDED);
+        SAGE_PIPELINE(3, kTensorAttention_SAGE_WIDE, kTensorAttention_SAGE_WIDE_BANDED);
+        SAGE_PIPELINE(4, kTensorAttention_SAGE_WIDE_FULL, kTensorAttention_SAGE_WIDE_FULL_BANDED);
+      } else {
+        SAGE_PIPELINE(1, kTensorAttention_SAGE_SG64, kTensorAttention_SAGE_SG64_BANDED);
+        SAGE_PIPELINE(2, kTensorAttention_SAGE_FULL_SG64, kTensorAttention_SAGE_FULL_SG64_BANDED);
+        SAGE_PIPELINE(3, kTensorAttention_SAGE_WIDE_SG64, kTensorAttention_SAGE_WIDE_SG64_BANDED);
+        SAGE_PIPELINE(4, kTensorAttention_SAGE_WIDE_FULL_SG64, kTensorAttention_SAGE_WIDE_FULL_SG64_BANDED);
+      }
+#undef SAGE_PIPELINE
+      attention_sage_prepare_pipeline = make_norm_pipeline(detail::kTensorAttentionSagePrepareSpirv,
+          sizeof(detail::kTensorAttentionSagePrepareSpirv), 7, 128, 1, sizeof(AttentionParameters));
+    }
     if (exact_causal_gqa_attention) {
       attention_causal_gqa_pipeline = make_norm_pipeline(
           detail::kTensorAttentionCausalGqaSpirv,
@@ -687,6 +761,10 @@ struct TensorContext::Impl {
       attention_h3_bindings[i].binding = i;
     for (uint32_t i = 0; i < attention_h3_banded_bindings.size(); ++i)
       attention_h3_banded_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_sage_bindings.size(); ++i)
+      attention_sage_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_sage_prepare_bindings.size(); ++i)
+      attention_sage_prepare_bindings[i].binding = i;
     for (uint32_t i = 0; i < attention_prepare_bindings.size(); ++i)
       attention_prepare_bindings[i].binding = i;
     for (uint32_t i = 0; i < attention_causal_gqa_bindings.size(); ++i)
@@ -1084,33 +1162,39 @@ struct TensorBatch::Impl {
 
   void dispatch_h3_attention(
       const TensorContext::Impl::AttentionParameters& parameters,
-      const std::array<std::shared_ptr<DeviceTensor::Impl>, 4>& resources) {
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 4>& resources,
+      AttentionMode mode) {
     for (size_t i = 0; i < resources.size(); ++i) {
       owner->attention_h3_bindings[i].buffer = &resources[i]->buffer;
       owner->attention_h3_bindings[i].bytes = resources[i]->buffer.size();
     }
-    commands.bind_compute(owner->attention_h3_pipeline,
+    commands.bind_compute(mode == AttentionMode::kExact ? owner->attention_h3_pipeline
+                                                       : owner->attention_flash_pipeline,
                           owner->attention_h3_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
-    const uint32_t aligned_first = parameters.query_row_offset & ~63u;
+    const uint32_t tile = mode == AttentionMode::kExact ? 64u : kFastH3AttentionQueryTile;
+    const uint32_t aligned_first = parameters.query_row_offset & ~(tile - 1u);
     const uint32_t groups =
-        (parameters.query_row_offset + parameters.rows - aligned_first + 63u) / 64u;
+        (parameters.query_row_offset + parameters.rows - aligned_first + tile - 1u) / tile;
     commands.dispatch(groups, parameters.heads);
   }
 
   void dispatch_h3_banded_attention(
       const TensorContext::Impl::AttentionParameters& parameters,
-      const std::array<std::shared_ptr<DeviceTensor::Impl>, 5>& resources) {
+      const std::array<std::shared_ptr<DeviceTensor::Impl>, 5>& resources,
+      AttentionMode mode) {
     for (size_t i = 0; i < resources.size(); ++i) {
       owner->attention_h3_banded_bindings[i].buffer = &resources[i]->buffer;
       owner->attention_h3_banded_bindings[i].bytes = resources[i]->buffer.size();
     }
-    commands.bind_compute(owner->attention_h3_banded_pipeline,
+    commands.bind_compute(mode == AttentionMode::kExact ? owner->attention_h3_banded_pipeline
+                                                       : owner->attention_flash_banded_pipeline,
                           owner->attention_h3_banded_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
-    const uint32_t aligned_first = parameters.query_row_offset & ~63u;
+    const uint32_t tile = mode == AttentionMode::kExact ? 64u : kFastH3AttentionQueryTile;
+    const uint32_t aligned_first = parameters.query_row_offset & ~(tile - 1u);
     const uint32_t groups =
-        (parameters.query_row_offset + parameters.rows - aligned_first + 63u) / 64u;
+        (parameters.query_row_offset + parameters.rows - aligned_first + tile - 1u) / tile;
     commands.dispatch(groups, parameters.heads);
   }
 
@@ -1671,7 +1755,7 @@ TensorBatch TensorContext::begin_batch() {
   auto recording_lease = impl_->acquire_recorder();
   auto batch = std::make_unique<TensorBatch::Impl>();
   batch->owner = impl_;
-  batch->snapshots.resize(static_cast<size_t>(impl_->max_batch_operators) * 7u);
+  batch->snapshots.resize(static_cast<size_t>(impl_->max_batch_operators) * 9u);
   batch->batch_id = next_context_identity();
   batch->recording_lease = std::move(recording_lease);
   batch->commands = impl_->commands.begin();
@@ -1946,6 +2030,21 @@ void TensorContext::require_exact_blocked_attention() const {
 }
 bool TensorContext::exact_h3_attention() const noexcept {
   return impl_ && impl_->exact_h3_attention;
+}
+bool TensorContext::h3_attention_supported(AttentionMode mode) const noexcept {
+  if (!impl_) return false;
+  switch (mode) {
+    case AttentionMode::kExact: return impl_->exact_h3_attention;
+    case AttentionMode::kFlash2: return impl_->flash_attention;
+    case AttentionMode::kSage2: return impl_->sage_attention;
+    default: return false;
+  }
+}
+void TensorContext::require_h3_attention(AttentionMode mode) const {
+  if (!h3_attention_supported(mode))
+    throw std::runtime_error(std::string("vulkan H3 attention: mode '") +
+        attention_mode_name(mode) + "' is unavailable; check enabled cooperative matrix, "
+        "subgroup and arithmetic features");
 }
 void TensorContext::require_exact_h3_attention() const {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");
@@ -4972,9 +5071,10 @@ H3AttentionRanges H3AttentionRanges::create(
     TensorContext& context, uint32_t sequence, const int32_t* values,
     uint32_t value_count) {
   if (!context.impl_) throw std::invalid_argument("vulkan H3 attention: empty context");
-  if (!context.impl_->exact_h3_attention) {
+  if (!context.impl_->exact_h3_attention && !context.impl_->flash_attention &&
+      !context.impl_->sage_attention) {
     throw std::runtime_error(
-        "vulkan H3 attention: exact mode is unavailable on this device/driver");
+        "vulkan H3 attention: no supported attention mode on this device/driver");
   }
   if (sequence == 0 || !values) {
     throw std::invalid_argument("vulkan H3 attention: invalid range table");
@@ -5071,14 +5171,13 @@ H3AttentionPlan::operator bool() const noexcept { return impl_ != nullptr; }
 H3AttentionPlan H3AttentionPlan::create(
     TensorContext& context, const H3AttentionPlanDesc& desc) {
   if (!context.impl_) throw std::invalid_argument("vulkan H3 attention: empty context");
-  if (!context.impl_->exact_h3_attention) {
-    throw std::runtime_error(
-        "vulkan H3 attention: exact mode is unavailable on this device/driver");
-  }
+  context.require_h3_attention(desc.mode);
   if (desc.sequence == 0 || desc.heads == 0 ||
       (desc.head_dim != 64 && desc.head_dim != 128) ||
-      !is_exact_attention_scale(desc.head_dim, desc.scale)) {
-    throw std::invalid_argument("vulkan H3 attention: invalid exact plan");
+      !std::isfinite(desc.scale) || desc.scale <= 0.0f ||
+      (desc.mode == AttentionMode::kExact &&
+       !is_exact_attention_scale(desc.head_dim, desc.scale))) {
+    throw std::invalid_argument("vulkan H3 attention: invalid plan");
   }
   uint64_t elements = checked_multiply(desc.sequence, desc.heads, "H3 attention");
   elements = checked_multiply(elements, desc.head_dim, "H3 attention");
@@ -5091,7 +5190,32 @@ H3AttentionPlan H3AttentionPlan::create(
   auto result = std::make_shared<Impl>();
   result->owner = context.impl_;
   result->desc = desc;
+  if (desc.mode == AttentionMode::kSage2) {
+    result->sage = detail::select_sage_configuration(context.impl_->sage_device_info,
+        desc, context.impl_->sage_extra_workspace_bytes);
+    uint64_t aux_elements = uint64_t(desc.heads) *
+        (desc.head_dim + 2ull * ((uint64_t(desc.sequence) + 15) / 16));
+    if (result->sage.parallel_mean)
+      aux_elements += uint64_t(desc.heads) * desc.head_dim * ((uint64_t(desc.sequence)+255)/256);
+    const uint64_t shape[] = {elements};
+    const uint64_t aux_shape[] = {aux_elements};
+    result->quantized_query = context.allocate(TensorLayout::contiguous(shape, 1), ScalarType::kInt8);
+    result->quantized_key = context.allocate(TensorLayout::contiguous(shape, 1), ScalarType::kInt8);
+    result->sage_aux = context.allocate(TensorLayout::contiguous(aux_shape, 1), ScalarType::kFloat32);
+    if (result->sage.prepared_value)
+      result->prepared_value = context.allocate(TensorLayout::contiguous(shape, 1), ScalarType::kFloat16);
+  }
   return H3AttentionPlan(std::move(result));
+}
+
+uint64_t H3AttentionPlan::workspace_bytes() const noexcept {
+  return impl_ && impl_->desc.mode == AttentionMode::kSage2
+      ? impl_->sage.required_workspace_bytes + impl_->sage.extra_workspace_bytes : 0;
+}
+SageAttentionConfiguration H3AttentionPlan::sage_configuration() const {
+  if (!impl_ || impl_->desc.mode != AttentionMode::kSage2)
+    throw std::logic_error("vulkan Sage: configuration requires a Sage plan");
+  return impl_->sage;
 }
 
 const H3AttentionPlanDesc& H3AttentionPlan::description() const {
@@ -5103,7 +5227,7 @@ void H3AttentionPlan::record(
     TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
     DeviceTensor& value, DeviceTensor& output, const H3AttentionRanges* ranges,
     uint32_t query_row_offset, uint32_t rows,
-    uint32_t output_row_offset) const {
+    uint32_t output_row_offset, TimestampQuery* sage_timestamps) const {
   if (!impl_ || !batch.impl_ || batch.impl_->poisoned) {
     throw std::logic_error("vulkan H3 attention: empty plan or batch");
   }
@@ -5125,6 +5249,8 @@ void H3AttentionPlan::record(
     range_tensor = impl_->owner->require(ranges->impl_->tensor);
   }
   const auto& desc = impl_->desc;
+  if (sage_timestamps && (desc.mode != AttentionMode::kSage2 || sage_timestamps->count() < 4))
+    throw std::invalid_argument("vulkan Sage: timing requires four timestamp queries");
   const uint32_t selected_rows = rows == 0 && query_row_offset <= desc.sequence
       ? desc.sequence - query_row_offset : rows;
   auto valid_layout = [&](const std::shared_ptr<DeviceTensor::Impl>& tensor) {
@@ -5161,14 +5287,72 @@ void H3AttentionPlan::record(
     batch.impl_->transition(k, BufferAccess::kComputeRead);
     batch.impl_->transition(v, BufferAccess::kComputeRead);
     batch.impl_->transition(out, BufferAccess::kComputeWrite);
-    if (range_tensor) {
+    if (desc.mode == AttentionMode::kSage2) {
+      auto q8 = impl_->owner->require(impl_->quantized_query);
+      auto k8 = impl_->owner->require(impl_->quantized_key);
+      auto aux = impl_->owner->require(impl_->sage_aux);
+      auto pv = impl_->sage.prepared_value ? impl_->owner->require(impl_->prepared_value) : v;
+      auto& commands = batch.impl_->commands;
+      if (sage_timestamps) {
+        commands.reset_timestamps(*sage_timestamps);
+        commands.write_timestamp(*sage_timestamps, 0);
+      }
+      auto& bindings = impl_->owner->attention_sage_prepare_bindings;
+      std::array<std::shared_ptr<DeviceTensor::Impl>, 7> prep{q, k, q8, k8, aux, v,
+          impl_->sage.prepared_value ? pv : q8};
+      for (size_t i = 0; i < prep.size(); ++i) {
+        bindings[i].buffer = &prep[i]->buffer;
+        bindings[i].bytes = prep[i]->buffer.size();
+      }
+      batch.impl_->transition(q8, BufferAccess::kComputeWrite);
+      batch.impl_->transition(k8, BufferAccess::kComputeWrite);
+      batch.impl_->transition(aux, BufferAccess::kComputeWrite);
+      if (impl_->sage.prepared_value) batch.impl_->transition(pv, BufferAccess::kComputeWrite);
+      commands.bind_compute(impl_->owner->attention_sage_prepare_pipeline, bindings);
+      parameters.reserved = impl_->sage.parallel_mean ? 2 : 0;
+      commands.push_constants(&parameters, sizeof(parameters));
+      commands.dispatch(impl_->sage.parallel_mean ? (desc.sequence+255u)/256u : 1u, desc.heads);
+      if (impl_->sage.parallel_mean) {
+        batch.impl_->transition(aux, BufferAccess::kComputeReadWrite);
+        parameters.reserved = 3;
+        commands.push_constants(&parameters, sizeof(parameters));
+        commands.dispatch(1, desc.heads);
+      }
+      batch.impl_->transition(aux, BufferAccess::kComputeReadWrite);
+      if (sage_timestamps) commands.write_timestamp(*sage_timestamps, 1);
+      parameters.reserved = 1 | (impl_->sage.prepared_value ? 8u : 0u);
+      commands.push_constants(&parameters, sizeof(parameters));
+      commands.dispatch((desc.sequence + 15u) / 16u, desc.heads);
+      if (sage_timestamps) commands.write_timestamp(*sage_timestamps, 2);
+      batch.impl_->transition(q8, BufferAccess::kComputeRead);
+      batch.impl_->transition(k8, BufferAccess::kComputeRead);
+      batch.impl_->transition(aux, BufferAccess::kComputeRead);
+      if (impl_->sage.prepared_value) batch.impl_->transition(pv, BufferAccess::kComputeRead);
+      if (range_tensor) batch.impl_->transition(range_tensor, BufferAccess::kComputeRead);
+      std::array<std::shared_ptr<DeviceTensor::Impl>, 6> resources{
+          q8, k8, pv, out, range_tensor ? range_tensor : aux, aux};
+      auto& sage_bindings = impl_->owner->attention_sage_bindings;
+      for (size_t i = 0; i < resources.size(); ++i) {
+        sage_bindings[i].buffer = &resources[i]->buffer;
+        sage_bindings[i].bytes = resources[i]->buffer.size();
+      }
+      const uint32_t kernel = impl_->sage.kernel - 1;
+      const uint32_t variant = (desc.head_dim == 128 ? 2u : 0u) + (impl_->sage.prepared_value ? 1u : 0u);
+      commands.bind_compute(range_tensor ? impl_->owner->attention_sage_banded_pipelines[kernel][variant]
+                                        : impl_->owner->attention_sage_pipelines[kernel][variant], sage_bindings);
+      parameters.reserved = impl_->sage.prepared_value ? 1 : 0;
+      commands.push_constants(&parameters, sizeof(parameters));
+      const uint32_t tile = impl_->sage.query_rows;
+      commands.dispatch((query_row_offset % tile + selected_rows + tile - 1u) / tile, desc.heads);
+      if (sage_timestamps) commands.write_timestamp(*sage_timestamps, 3);
+    } else if (range_tensor) {
       batch.impl_->transition(range_tensor, BufferAccess::kComputeRead);
       std::array<std::shared_ptr<DeviceTensor::Impl>, 5> resources{
           q, k, v, out, range_tensor};
-      batch.impl_->dispatch_h3_banded_attention(parameters, resources);
+      batch.impl_->dispatch_h3_banded_attention(parameters, resources, desc.mode);
     } else {
       std::array<std::shared_ptr<DeviceTensor::Impl>, 4> resources{q, k, v, out};
-      batch.impl_->dispatch_h3_attention(parameters, resources);
+      batch.impl_->dispatch_h3_attention(parameters, resources, desc.mode);
     }
   } catch (...) {
     batch.impl_->poisoned = true;

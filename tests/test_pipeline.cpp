@@ -121,7 +121,11 @@ SLOPFAB_TEST(attention_mode_parse_name_and_backend_contract) {
     CHECK(parsed == mode);
     CHECK(slopfab::attention_mode_supported(DeviceBackend::kCuda, mode));
     CHECK(slopfab::attention_mode_supported(DeviceBackend::kVulkan, mode) ==
-          (mode == AttentionMode::kExact));
+          (mode == AttentionMode::kExact || mode == AttentionMode::kFlash2 ||
+           mode == AttentionMode::kSage2));
+    CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
+          slopfab::LatentSource::kDenoise, mode) ==
+          slopfab::attention_mode_supported(DeviceBackend::kVulkan, mode));
   }
 
   AttentionMode unchanged = AttentionMode::kSol;
@@ -150,10 +154,10 @@ SLOPFAB_TEST(generation_backend_contract) {
   CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
                                               LatentSource::kSyntheticNoise,
                                               AttentionMode::kExact));
-  CHECK(!slopfab::generation_backend_supported(DeviceBackend::kVulkan,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
                                                LatentSource::kSyntheticNoise,
                                                AttentionMode::kFlash2));
-  CHECK(!slopfab::generation_backend_supported(DeviceBackend::kVulkan,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
                                                LatentSource::kSyntheticNoise,
                                                AttentionMode::kSage2));
   slopfab::RunOptions defaults;

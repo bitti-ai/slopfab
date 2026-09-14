@@ -830,6 +830,43 @@ if(SLOPFAB_ENABLE_VULKAN)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1,"
     SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_BYTES
     "${SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_HEX}")
+  # Fast attention is checked in like the exact modules. Verify normalized
+  # sources and binaries together; rebuild with tools/build_vulkan_attention.py.
+  set(SLOPFAB_FAST_ATTENTION_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/attention_fast.sha256")
+  file(STRINGS "${SLOPFAB_FAST_ATTENTION_MANIFEST}" SLOPFAB_FAST_ATTENTION_HASHES)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SLOPFAB_FAST_ATTENTION_MANIFEST}")
+  foreach(ENTRY IN LISTS SLOPFAB_FAST_ATTENTION_HASHES)
+    string(REGEX MATCH "^([0-9a-f]+)  (.+)$" MATCHED "${ENTRY}")
+    if(NOT MATCHED)
+      message(FATAL_ERROR "slopfab: malformed fast attention shader manifest")
+    endif()
+    set(EXPECTED_HASH "${CMAKE_MATCH_1}")
+    set(SHADER_FILE "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/${CMAKE_MATCH_2}")
+    if(SHADER_FILE MATCHES "\\.comp$")
+      file(READ "${SHADER_FILE}" SOURCE_TEXT)
+      string(REPLACE "\r\n" "\n" SOURCE_TEXT "${SOURCE_TEXT}")
+      string(SHA256 ACTUAL_HASH "${SOURCE_TEXT}")
+    else()
+      file(SHA256 "${SHADER_FILE}" ACTUAL_HASH)
+    endif()
+    if(NOT ACTUAL_HASH STREQUAL EXPECTED_HASH)
+      message(FATAL_ERROR "slopfab: fast attention shader/source hash mismatch: ${SHADER_FILE}")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SHADER_FILE}")
+  endforeach()
+  set(SLOPFAB_SAGE_VARIANT_DECLARATIONS "")
+  foreach(VARIANT FLASH FLASH_BANDED SAGE SAGE_BANDED SAGE_PREPARE
+      SAGE_FULL SAGE_FULL_BANDED SAGE_WIDE SAGE_WIDE_BANDED SAGE_WIDE_FULL SAGE_WIDE_FULL_BANDED
+      SAGE_SG64 SAGE_SG64_BANDED SAGE_FULL_SG64 SAGE_FULL_SG64_BANDED
+      SAGE_WIDE_SG64 SAGE_WIDE_SG64_BANDED SAGE_WIDE_FULL_SG64 SAGE_WIDE_FULL_SG64_BANDED)
+    string(TOLOWER "${VARIANT}" LOWER_VARIANT)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/tensor_attention_${LOWER_VARIANT}.comp.spv" SHADER_HEX HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SLOPFAB_TENSOR_ATTENTION_${VARIANT}_SPV_BYTES "${SHADER_HEX}")
+    if(NOT VARIANT MATCHES "^(FLASH|FLASH_BANDED|SAGE|SAGE_BANDED|SAGE_PREPARE)$")
+      string(APPEND SLOPFAB_SAGE_VARIANT_DECLARATIONS
+        "inline constexpr uint8_t kTensorAttention_${VARIANT}[] = {${SLOPFAB_TENSOR_ATTENTION_${VARIANT}_SPV_BYTES}};\n")
+    endif()
+  endforeach()
   configure_file(src/vulkan/embedded_tensor_spv.h.in
     generated/vulkan/embedded_tensor_spv.h @ONLY)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
@@ -888,6 +925,13 @@ if(SLOPFAB_ENABLE_VULKAN)
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan/include
             ${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan)
   target_link_libraries(slopfab_vulkan PUBLIC slopfab_core)
+  if(SLOPFAB_BUILD_DEV_TOOLS)
+    add_executable(slopfab_attentionbench tools/attentionbench.cpp)
+    target_link_libraries(slopfab_attentionbench PRIVATE slopfab_vulkan)
+    if(TARGET slopfab_cuda)
+      target_link_libraries(slopfab_attentionbench PRIVATE slopfab_cuda)
+    endif()
+  endif()
   target_compile_definitions(slopfab_vulkan PRIVATE VK_NO_PROTOTYPES)
   if(CMAKE_DL_LIBS)
     target_link_libraries(slopfab_vulkan PRIVATE ${CMAKE_DL_LIBS})

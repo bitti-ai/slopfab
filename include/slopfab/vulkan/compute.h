@@ -11,11 +11,18 @@
 
 namespace slopfab::vulkan {
 
+struct SpecializationConstant {
+  uint32_t id = 0;
+  uint32_t value = 0;
+};
+
 struct ComputePipelineOptions {
   uint32_t storage_binding_count = 0;
   uint32_t push_constant_bytes = 0;
   uint32_t local_size[3] = {1, 1, 1};
   std::string entry_point = "main";
+  // 32-bit scalar shader constants, including VkBool32 values.
+  std::vector<SpecializationConstant> specialization_constants;
 };
 
 class ComputePipeline {
@@ -79,6 +86,20 @@ class Submission {
   friend class ComputeContext;
 };
 
+// Optional diagnostics. A pool must not be reused until its submission has
+// completed. Read after waiting; unavailable results throw instead of blocking.
+class TimestampQuery {
+ public:
+  TimestampQuery() = default;
+  static TimestampQuery create(const Device& device, uint32_t count);
+  uint32_t count() const noexcept;
+  double elapsed_milliseconds(uint32_t first, uint32_t last) const;
+ private:
+  struct Impl;
+  std::shared_ptr<Impl> impl_;
+  friend class CommandList;
+};
+
 class CommandList {
  public:
   CommandList();
@@ -96,6 +117,8 @@ class CommandList {
                     const std::vector<StorageBinding>& bindings);
   void push_constants(const void* data, uint32_t bytes);
   void dispatch(uint32_t groups_x, uint32_t groups_y = 1, uint32_t groups_z = 1);
+  void reset_timestamps(TimestampQuery& queries);
+  void write_timestamp(TimestampQuery& queries, uint32_t index);
   explicit operator bool() const noexcept;
 
  private:

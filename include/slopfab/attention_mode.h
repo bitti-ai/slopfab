@@ -10,7 +10,7 @@ namespace slopfab {
 // User-selected implementation for MiniMax H3 self-attention.
 enum class AttentionMode {
   kNone,    // Unfused, memory-bounded reference path.
-  kFlash2,  // Exact BF16 FlashAttention-2-style fused kernel.
+  kFlash2,  // BF16 FlashAttention-2-style fused kernel (not deterministic exact).
   kSage2,   // Quantized SageAttention2 kernel.
   kSol,     // Training-free block routing with zeroth-order correction.
   kSolExperimental,  // Experimental SM120 TMA/WMMA pipeline; explicitly opt-in.
@@ -46,8 +46,7 @@ inline bool parse_attention_mode(std::string_view name,
 }
 
 // Backend capability contract, intentionally separate from orchestration.
-// Vulkan's complete exact denoiser accepts kExact; prompt conditioning remains
-// an explicit captured-embedding boundary until its native graph lands.
+// Device-specific enabled-feature checks are performed by each backend.
 inline bool attention_mode_supported(DeviceBackend backend,
                                      AttentionMode mode) noexcept {
   switch (backend) {
@@ -56,7 +55,8 @@ inline bool attention_mode_supported(DeviceBackend backend,
              mode == AttentionMode::kSage2 || mode == AttentionMode::kSol ||
              mode == AttentionMode::kSolExperimental || mode == AttentionMode::kExact;
     case DeviceBackend::kVulkan:
-      return mode == AttentionMode::kExact;
+      return mode == AttentionMode::kExact || mode == AttentionMode::kFlash2 ||
+             mode == AttentionMode::kSage2;
   }
   return false;
 }

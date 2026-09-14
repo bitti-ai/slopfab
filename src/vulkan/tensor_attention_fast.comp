@@ -1,0 +1,216 @@
+#version 460
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#ifdef SAGE
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#define QK_TYPE int8_t
+#define ACC_TYPE int
+#define QK_K 32
+#else
+#extension GL_EXT_bfloat16 : require
+#define QK_TYPE bfloat16_t
+#define ACC_TYPE float
+#define QK_K 16
+#endif
+
+#ifndef QUERY_ROWS
+#define QUERY_ROWS 32
+#endif
+#ifndef VALUE_ROWS
+#define VALUE_ROWS 16
+#endif
+#ifndef SUBGROUP_SIZE
+#define SUBGROUP_SIZE 32
+#endif
+#define THREADS (QUERY_ROWS / 16 * 4 * SUBGROUP_SIZE)
+// Each subgroup owns one
+// QK tile and one or two output tiles, retained in registers across keys.
+layout(local_size_x = THREADS) in;
+layout(binding = 0, std430) readonly buffer Q { uint data[]; } q;
+layout(binding = 1, std430) readonly buffer K { uint data[]; } k;
+layout(binding = 2, std430) readonly buffer V { uint data[]; } v;
+layout(binding = 3, std430) writeonly buffer O { uint data[]; } o;
+#if defined(BANDED) || defined(SAGE)
+layout(binding = 4, std430) readonly buffer Ranges { int data[]; } ranges;
+#endif
+#ifdef SAGE
+layout(binding = 5, std430) readonly buffer Scales { float data[]; } scales;
+#endif
+layout(push_constant) uniform Parameters {
+  uint sequence, heads, head_dim, scale_bits;
+  uint query_row_offset, output_row_offset, rows, reserved;
+} p;
+
+#ifdef SAGE
+layout(constant_id = 0) const bool PREPARED_VALUE = false;
+layout(constant_id = 1) const uint HEAD_DIM = 128;
+#define HD HEAD_DIM
+#else
+#define HD p.head_dim
+#endif
+
+shared QK_TYPE qs[QUERY_ROWS * 128];
+shared QK_TYPE ks[8192];
+shared float16_t vs[VALUE_ROWS * 128];
+shared float scores[QUERY_ROWS * 64];
+shared float16_t probs[QUERY_ROWS * 64];
+shared float maxima[QUERY_ROWS], sums[QUERY_ROWS], correction[QUERY_ROWS];
+
+float bf16(uint word, uint index) {
+  return uintBitsToFloat(((word >> (16u * (index & 1u))) & 65535u) << 16u);
+}
+QK_TYPE load_qk(bool query, uint index) {
+#ifdef SAGE
+  uint word = query ? q.data[index / 4u] : k.data[index / 4u];
+  return int8_t(int(word << (24u - 8u * (index & 3u))) >> 24);
+#else
+  uint word = query ? q.data[index / 2u] : k.data[index / 2u];
+  return bfloat16_t(bf16(word, index));
+#endif
+}
+uint pack_bf16(float x) {
+  uint bits = floatBitsToUint(x);
+  return (bits + 32767u + ((bits >> 16u) & 1u)) >> 16u;
+}
+float16_t load_value(uint row, uint head, uint d, uint stop) {
+  if (row >= stop) return float16_t(0.0);
+  uint index = (row * p.heads + head) * HD + d;
+#ifdef SAGE
+  if (PREPARED_VALUE)
+    return float16_t(unpackHalf2x16(v.data[index / 2u])[index & 1u]);
+#endif
+  return float16_t(bf16(v.data[index / 2u], index));
+}
+void main() {
+  uint tid = gl_LocalInvocationID.x, sg = gl_SubgroupID;
+  uint qb = (p.query_row_offset & ~(QUERY_ROWS - 1u)) + gl_WorkGroupID.x * QUERY_ROWS;
+  uint head = gl_WorkGroupID.y;
+  uint query_tile = sg / 4u, key_tile = sg % 4u;
+  for (uint i = tid; i < QUERY_ROWS * HD; i += THREADS) {
+    uint row = qb + i / HD;
+    qs[i] = row < p.sequence
+        ? load_qk(true, (row * p.heads + head) * HD + i % HD)
+        : QK_TYPE(0);
+  }
+  if (tid < QUERY_ROWS) { maxima[tid] = -1.0 / 0.0; sums[tid] = 0.0; }
+  coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc[2];
+  for (uint t = 0u; t < HD / 64u; ++t)
+    acc[t] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+  barrier();
+#ifdef BANDED
+  uint rb = (qb / 128u) * 4u;
+  int bounds[4] = int[4](ranges.data[rb], ranges.data[rb+1], ranges.data[rb+2], ranges.data[rb+3]);
+#else
+  int bounds[4] = int[4](0, int(p.sequence), 0, 0);
+#endif
+  for (uint range = 0u; range < 2u; ++range) {
+    uint stop = min(uint(bounds[range*2u+1u]), p.sequence);
+    for (uint kb = uint(bounds[range*2u]); kb < stop; kb += 64u) {
+      for (uint i = tid; i < 64u * HD; i += THREADS) {
+        uint row = kb + i / HD;
+        ks[i] = row < stop
+            ? load_qk(false, (row * p.heads + head) * HD + i % HD)
+            : QK_TYPE(0);
+      }
+      barrier();
+      coopmat<ACC_TYPE, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> score =
+          coopmat<ACC_TYPE, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0);
+      for (uint d = 0u; d < HD; d += QK_K) {
+        coopmat<QK_TYPE, gl_ScopeSubgroup, 16, QK_K, gl_MatrixUseA> a;
+        coopmat<QK_TYPE, gl_ScopeSubgroup, QK_K, 16, gl_MatrixUseB> b;
+        coopMatLoad(a, qs, query_tile * 16u * HD + d, HD, gl_CooperativeMatrixLayoutRowMajor);
+        coopMatLoad(b, ks, key_tile * 16u * HD + d, HD, gl_CooperativeMatrixLayoutColumnMajor);
+        score = coopMatMulAdd(a, b, score);
+      }
+      coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> fs =
+          coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(score);
+      float scale = uintBitsToFloat(p.scale_bits);
+#ifdef SAGE
+      uint blocks = (p.sequence + 15u) / 16u;
+      uint base = p.heads * HD + head * blocks * 2u;
+      // Padded key subtiles must not fetch beyond the last scale block.
+      scale *= scales.data[base + min(qb / 16u + query_tile, blocks - 1u)] *
+          scales.data[base + blocks + min(kb / 16u + key_tile, blocks - 1u)];
+#endif
+      fs *= scale;
+      coopMatStore(fs, scores, query_tile * 1024u + key_tile * 16u, 64u, gl_CooperativeMatrixLayoutRowMajor);
+      barrier();
+      uint row = tid / 8u, lane = tid & 7u;
+      // Wave64 uses twice as many invocations for the same cooperative tiles.
+      // This branch is subgroup-uniform; only softmax row owners participate.
+      if (tid < QUERY_ROWS * 8u) {
+      float x[8], m = -1.0 / 0.0;
+      for (uint j = 0u; j < 8u; ++j) {
+        uint col = lane + j * 8u;
+        x[j] = kb + col < stop ? scores[row * 64u + col] : -1.0 / 0.0;
+        m = max(m, x[j]);
+      }
+      for (uint mask = 4u; mask > 0u; mask >>= 1u) m = max(m, subgroupShuffleXor(m, mask));
+      m = max(m, maxima[row]);
+      float corr = exp(maxima[row] - m), sum = 0.0;
+      for (uint j = 0u; j < 8u; ++j) {
+        float e = exp(x[j] - m);
+        probs[row * 64u + lane + j * 8u] = float16_t(e);
+        sum += e;
+      }
+      for (uint mask = 4u; mask > 0u; mask >>= 1u) sum += subgroupShuffleXor(sum, mask);
+      if (lane == 0u) {
+        sums[row] = sums[row] * corr + sum;
+        maxima[row] = m; correction[row] = corr;
+      }
+      }
+      barrier();
+      // Replicate per-row correction into a fragment without assuming the
+      // implementation-defined mapping between matrix elements and lanes.
+      for (uint i = tid; i < QUERY_ROWS * 16u; i += THREADS) scores[i] = correction[i / 16u];
+      barrier();
+      coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> cf;
+      coopMatLoad(cf, scores, query_tile * 256u, 16u, gl_CooperativeMatrixLayoutRowMajor);
+      for (uint t = 0u; t < HD / 64u; ++t) acc[t] *= cf;
+#if VALUE_ROWS == 64
+      for (uint i = tid; i < 64u * HD; i += THREADS)
+        vs[i] = load_value(kb + i / HD, head, i % HD, stop);
+      barrier();
+#endif
+      for (uint kp = 0u; kp < 64u; kp += 16u) {
+#if VALUE_ROWS == 16
+        for (uint i = tid; i < 16u * HD; i += THREADS)
+          vs[i] = load_value(kb + kp + i / HD, head, i % HD, stop);
+        barrier();
+#endif
+        coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA> a;
+        coopMatLoad(a, probs, query_tile * 1024u + kp, 64u, gl_CooperativeMatrixLayoutRowMajor);
+        for (uint t = 0u; t < HD / 64u; ++t) {
+          coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> b;
+          coopMatLoad(b, vs, (VALUE_ROWS == 64 ? kp * HD : 0u) +
+              (key_tile + t * 4u) * 16u, HD, gl_CooperativeMatrixLayoutRowMajor);
+          acc[t] = coopMatMulAdd(a, b, acc[t]);
+        }
+#if VALUE_ROWS == 16
+        barrier();
+#endif
+      }
+#if VALUE_ROWS == 64
+      barrier();
+#endif
+    }
+  }
+  // Reuse score storage for one 64-channel output slice at a time.
+  for (uint t = 0u; t < HD / 64u; ++t) {
+    coopMatStore(acc[t], scores, query_tile * 1024u + key_tile * 16u, 64u, gl_CooperativeMatrixLayoutRowMajor);
+    barrier();
+    for (uint i = tid * 2u; i < QUERY_ROWS * 64u; i += THREADS * 2u) {
+      uint row = qb + i / 64u;
+      if (row >= p.query_row_offset && row < p.query_row_offset + p.rows) {
+        uint out_row = p.output_row_offset + row - p.query_row_offset;
+        uint index = (out_row * p.heads + head) * HD + i % 64u + t * 64u;
+        float denom = sums[i / 64u];
+        o.data[index / 2u] = pack_bf16(scores[i] / denom) | (pack_bf16(scores[i+1u] / denom) << 16u);
+      }
+    }
+    barrier();
+  }
+}

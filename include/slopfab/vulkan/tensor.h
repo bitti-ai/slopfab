@@ -1,5 +1,7 @@
 #pragma once
 
+#include "slopfab/attention_mode.h"
+
 #include <cstdint>
 #include <memory>
 
@@ -36,6 +38,10 @@ struct TensorContextOptions {
   // The default preserves the small primitive-test footprint; the 36-block
   // video-VAE graph requests 1024 so it can record without per-block submits.
   uint32_t max_batch_operators = 32;
+  // Per-plan optional Sage scratch (parallel mean partials and FP16 V).
+  // Required INT8 Q/K and means/scales are reported separately by the plan.
+  // Zero preserves the compact allocation footprint. No free-VRAM guessing.
+  uint64_t sage_extra_workspace_bytes = 64ull << 20;
 };
 
 class DeviceTensor {
@@ -428,6 +434,8 @@ class TensorContext {
   void require_exact_blocked_attention() const;
   bool exact_h3_attention() const noexcept;
   void require_exact_h3_attention() const;
+  bool h3_attention_supported(AttentionMode mode) const noexcept;
+  void require_h3_attention(AttentionMode mode) const;
   bool exact_causal_gqa_attention() const noexcept;
   void require_exact_causal_gqa_attention() const;
   // Native block-scaled E2M1 cooperative MMA is deliberately separate from
@@ -549,17 +557,36 @@ class BlockedAttentionPlan {
   std::shared_ptr<Impl> impl_;
 };
 
-// Exact H3 full/frame-banded attention is deliberately separate from the
+// H3 full/frame-banded attention is deliberately separate from the
 // blocked FP16 plan. Q/K/V remain direct BF16 tensors; QK follows ascending
 // 16-channel cooperative tiles with empirically pinned CUDA-WMMA/Vulkan-KHR
 // internal semantics, probabilities and V operands are rounded to FP16, and
 // selected keys are visited in 64-row blocks. This is the shared CUDA/Vulkan
 // exact-mode rebaseline, not byte identity with the shipped fused-MMA kernel.
+// kFlash2 selects native softmax/subgroup reductions with register output
+// fragments. kSage2 adds global key-mean smoothing and blockwise INT8 Q/K;
+// both fast modes use FP16 P/V and FP32 accumulation without exact guarantees.
 struct H3AttentionPlanDesc {
   uint32_t sequence = 0;
   uint32_t heads = 0;
   uint32_t head_dim = 0;
   float scale = 0.0f;
+  AttentionMode mode = AttentionMode::kExact;
+  // Diagnostic override: 0 auto, 1 compact, 2 whole V tile, 3 64 queries,
+  // 4 64 queries + whole V tile. Unsupported overrides are rejected.
+  uint32_t sage_kernel = 0;
+};
+
+struct SageAttentionConfiguration {
+  uint32_t kernel = 0;
+  uint32_t query_rows = 32;
+  uint32_t value_rows = 16;
+  uint32_t local_size = 256;
+  uint32_t shared_bytes = 29056;
+  bool parallel_mean = false;
+  bool prepared_value = false;
+  uint64_t required_workspace_bytes = 0;
+  uint64_t extra_workspace_bytes = 0;
 };
 
 // Immutable device-resident ranges for one packed H3 sequence. There are four
@@ -602,6 +629,11 @@ class H3AttentionPlan {
   static H3AttentionPlan create(TensorContext& context,
                                 const H3AttentionPlanDesc& desc);
   const H3AttentionPlanDesc& description() const;
+  // Sage's mandatory and optional scratch, excluding pool allocation padding;
+  // zero for flash2/exact. sage_configuration() reports the selected paths.
+  // Record regenerates preparation on the same queue and retains all buffers.
+  uint64_t workspace_bytes() const noexcept;
+  SageAttentionConfiguration sage_configuration() const;
   // Tensors are distinct, nonoverlapping contiguous token-major BF16
   // [sequence,heads,head_dim] or its projection-native [sequence,heads*head_dim]
   // flattening. Null ranges select full attention; otherwise the range table
@@ -613,11 +645,15 @@ class H3AttentionPlan {
   // products, cooperative PV tile outputs, corrected accumulator sums, and
   // BF16-subnormal outputs to signed zero. Internal cooperative products obey
   // the pinned hardware tuple rather than a portable scalar ordering.
+  // Optional Sage timing resets/writes queries 0..3 at start, after smoothing,
+  // after quantization/V preparation, and after attention. Wait for completion
+  // before reading or reusing the query pool; requires a Sage plan and 4 queries.
   void record(TensorBatch& batch, DeviceTensor& query, DeviceTensor& key,
               DeviceTensor& value, DeviceTensor& output,
               const H3AttentionRanges* ranges = nullptr,
               uint32_t query_row_offset = 0, uint32_t rows = 0,
-              uint32_t output_row_offset = 0) const;
+              uint32_t output_row_offset = 0,
+              TimestampQuery* sage_timestamps = nullptr) const;
   explicit operator bool() const noexcept;
 
  private:

@@ -58,4 +58,10 @@ inline constexpr uint8_t kTensorAttentionH3Spirv[] = {
     @SLOPFAB_TENSOR_ATTENTION_H3_SPV_BYTES@};
 inline constexpr uint8_t kTensorAttentionH3BandedSpirv[] = {
     @SLOPFAB_TENSOR_ATTENTION_H3_BANDED_SPV_BYTES@};
+inline constexpr uint8_t kTensorAttentionFlashSpirv[] = {@SLOPFAB_TENSOR_ATTENTION_FLASH_SPV_BYTES@};
+inline constexpr uint8_t kTensorAttentionFlashBandedSpirv[] = {@SLOPFAB_TENSOR_ATTENTION_FLASH_BANDED_SPV_BYTES@};
+inline constexpr uint8_t kTensorAttentionSageSpirv[] = {@SLOPFAB_TENSOR_ATTENTION_SAGE_SPV_BYTES@};
+inline constexpr uint8_t kTensorAttentionSageBandedSpirv[] = {@SLOPFAB_TENSOR_ATTENTION_SAGE_BANDED_SPV_BYTES@};
+inline constexpr uint8_t kTensorAttentionSagePrepareSpirv[] = {@SLOPFAB_TENSOR_ATTENTION_SAGE_PREPARE_SPV_BYTES@};
+@SLOPFAB_SAGE_VARIANT_DECLARATIONS@
 }  // namespace slopfab::vulkan::detail

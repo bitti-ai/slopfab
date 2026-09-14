@@ -38,6 +38,7 @@
 #include "slopfab/sha256.h"
 #include "slopfab/text/layer_capture.h"
 #include "../src/vulkan/tensor_validation.h"
+#include "../src/vulkan/sage_selection.h"
 
 namespace {
 
@@ -797,6 +798,316 @@ SLOPFAB_TEST(vulkan_exact_h3_attention_single_key) {
   std::vector<uint16_t> actual(dim);
   context.download_bytes(out, actual.data(), actual.size() * 2);
   CHECK(actual == values);
+}
+
+SLOPFAB_TEST(vulkan_sage_device_and_memory_selection) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  DeviceInfo info;
+  info.subgroup_size = 32;
+  info.max_compute_workgroup_size[0] = info.max_compute_workgroup_invocations = 1024;
+  info.max_compute_shared_memory_bytes = 32768;
+  info.max_storage_buffer_bytes = info.max_allocation_bytes = 1ull << 30;
+  H3AttentionPlanDesc d{4096, 8, 128, exact_attention_scale(128), AttentionMode::kSage2};
+  auto select = [&](uint64_t budget) { return detail::select_sage_configuration(info, d, budget); };
+  auto c = select(0);
+  CHECK(c.kernel == 1 && c.shared_bytes == 29056 && c.local_size == 256);
+  CHECK(!c.parallel_mean && !c.prepared_value && c.extra_workspace_bytes == 0);
+  const uint64_t partials = 8ull * 128 * 16 * 4;
+  CHECK(select(partials-1).extra_workspace_bytes == 0);
+  c = select(partials);
+  CHECK(c.parallel_mean && !c.prepared_value && c.extra_workspace_bytes == partials);
+  const uint64_t prepared = 4096ull * 8 * 128 * 2;
+  CHECK(!select(partials+prepared-1).prepared_value);
+  c = select(partials+prepared);
+  CHECK(c.prepared_value && c.extra_workspace_bytes == partials+prepared);
+  CHECK(c.required_workspace_bytes == prepared + 8ull * (128 + 2 * 256) * 4);
+  info.max_compute_shared_memory_bytes = 41344;
+  CHECK(select(0).kernel == 1 && detail::sage_kernel_fits(info, 2));
+  info.max_compute_shared_memory_bytes = 45824;
+  CHECK(select(0).query_rows == 64);
+  info.max_compute_workgroup_invocations = 256;
+  CHECK(select(0).kernel == 1);
+  info.subgroup_size = 64;
+  CHECK(!detail::sage_kernel_fits(info, 1));
+  info.max_compute_workgroup_invocations = 512;
+  CHECK(select(0).local_size == 512 && select(0).kernel == 1);
+  info.max_compute_workgroup_invocations = 1024;
+  CHECK(select(0).query_rows == 32 && detail::sage_kernel_fits(info, 3));
+  info.max_compute_shared_memory_bytes = 65536;
+  d.sage_kernel = 4;
+  CHECK(select(0).shared_bytes == 58112);
+  info.max_compute_shared_memory_bytes = 58111;
+  bool rejected = false;
+  try { (void)select(0); } catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+  d.sage_kernel = 1;
+  info.max_storage_buffer_bytes = c.required_workspace_bytes - prepared;
+  CHECK(!select(UINT64_MAX).parallel_mean && !select(UINT64_MAX).prepared_value);
+  info.subgroup_size = 16;
+  CHECK(!detail::sage_kernel_fits(info, 1));
+}
+
+SLOPFAB_TEST(vulkan_sage_variants_and_bounded_preparation) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!Instance::available()) { SKIP_UNSUPPORTED_HARDWARE("No Vulkan loader"); return; }
+  auto instance = Instance::create(); auto physical = instance.enumerate_devices();
+  if (physical.empty()) { SKIP_UNSUPPORTED_HARDWARE("No Vulkan device"); return; }
+  const auto& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int8 || !info.shader_float16 ||
+      !info.storage_buffer_16bit || !info.cooperative_matrix_i8_i32_16x16x32 ||
+      !info.cooperative_matrix_f16_f32_16x16x16 || !detail::sage_kernel_fits(info, 1)) {
+    SKIP_UNSUPPORTED_HARDWARE("Sage cooperative tuples unavailable"); return;
+  }
+  DeviceOptions opts;
+  opts.enable_timeline_semaphore = opts.enable_shader_int8 = true;
+  opts.enable_shader_float16 = opts.enable_storage_buffer_16bit = opts.enable_cooperative_matrix = true;
+  auto device = physical.front().create_device(opts);
+  for (uint32_t dim : {64u, 128u}) {
+    constexpr uint32_t sequence = 513, heads = 2;
+    const size_t n = size_t(sequence)*heads*dim;
+    auto data = test::make_data(n*3, 931, 0.8f);
+    for (size_t i = 0; i < n; ++i) data[n+i] += i % dim < dim/2 ? 12.0f : -8.0f;
+    std::vector<uint16_t> host(n*3), baseline;
+    for (size_t i = 0; i < host.size(); ++i) host[i] = reference_bf16(data[i]);
+    for (uint64_t budget : {0ull, 4096ull, 64ull<<20}) {
+      TensorContextOptions tc; tc.max_batch_operators = 1; tc.sage_extra_workspace_bytes = budget;
+      TensorContext context(device, tc);
+      const uint64_t shape[] = {sequence, heads, dim};
+      const auto layout = TensorLayout::contiguous(shape, 3);
+      auto q = context.allocate(layout, ScalarType::kBFloat16);
+      auto k = context.allocate(layout, ScalarType::kBFloat16);
+      auto v = context.allocate(layout, ScalarType::kBFloat16);
+      auto out = context.allocate(layout, ScalarType::kBFloat16);
+      context.upload_bytes(q, host.data(), n*2); context.upload_bytes(k, host.data()+n, n*2);
+      context.upload_bytes(v, host.data()+n*2, n*2);
+      std::vector<int32_t> bounds(5*4);
+      for (int i = 0; i < 5; ++i) { bounds[i*4] = 0; bounds[i*4+1] = 64; bounds[i*4+2] = 384; bounds[i*4+3] = 576; }
+      auto ranges = H3AttentionRanges::create(context, sequence, bounds.data(), uint32_t(bounds.size()));
+      for (uint32_t kernel = 1; kernel <= 4; ++kernel) {
+        if (!detail::sage_kernel_fits(info, kernel)) continue;
+        auto plan = H3AttentionPlan::create(context, {sequence, heads, dim, exact_attention_scale(dim), AttentionMode::kSage2, kernel});
+        const auto c = plan.sage_configuration();
+        CHECK(c.extra_workspace_bytes <= budget);
+        CHECK(plan.workspace_bytes() == c.required_workspace_bytes + c.extra_workspace_bytes);
+        CHECK(c.parallel_mean == (budget >= uint64_t(heads)*dim*3*4));
+        CHECK(c.prepared_value == (budget >= uint64_t(heads)*dim*3*4 + n*2));
+        TimestampQuery timing;
+        if (info.timestamp_valid_bits) timing = TimestampQuery::create(device, 4);
+        auto batch = context.begin_batch();
+        plan.record(batch, q, k, v, out, &ranges, 0, 0, 0, timing.count() ? &timing : nullptr);
+        CHECK(batch.remaining_operator_capacity() == 0);
+        batch.submit().wait();
+        if (timing.count()) {
+          for (uint32_t i = 0; i < 3; ++i) CHECK(timing.elapsed_milliseconds(i, i+1) >= 0);
+          bool rejected = false;
+          try { (void)timing.elapsed_milliseconds(0, 4); } catch (const std::invalid_argument&) { rejected = true; }
+          CHECK(rejected);
+        }
+        std::vector<uint16_t> actual(n);
+        context.download_bytes(out, actual.data(), n*2);
+        if (baseline.empty()) baseline = actual;
+        for (size_t i = 0; i < n; ++i) CHECK_NEAR(bf16_to_f32(actual[i]), bf16_to_f32(baseline[i]), 0.002);
+        // Repeat after changing V, covering preparation freshness and pooled
+        // allocation stability. All rows agree independently of Q/K quants.
+        std::vector<uint16_t> constant(n, reference_bf16(0.5f));
+        context.upload_bytes(v, constant.data(), n*2);
+        const uint64_t used = context.pooled_used_bytes(), reserved = context.reserved_bytes();
+        auto repeat = context.begin_batch(); plan.record(repeat, q, k, v, out, &ranges);
+        auto token = repeat.submit(); plan = H3AttentionPlan(); token.wait();
+        context.download_bytes(out, actual.data(), n*2);
+        CHECK(actual == constant);
+        CHECK(context.pooled_used_bytes() <= used && context.reserved_bytes() == reserved);
+        context.upload_bytes(v, host.data()+n*2, n*2);
+      }
+    }
+  }
+}
+
+SLOPFAB_TEST(vulkan_fast_attention_accuracy_and_lifetime) {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!Instance::available()) { SKIP_UNSUPPORTED_HARDWARE("Vulkan loader unavailable"); return; }
+  Instance instance = Instance::create();
+  auto physical = instance.enumerate_devices();
+  if (physical.empty()) { SKIP_UNSUPPORTED_HARDWARE("No Vulkan device"); return; }
+  const auto& info = physical.front().info();
+  DeviceOptions options;
+  options.enable_timeline_semaphore = info.timeline_semaphore;
+  Device disabled_device = physical.front().create_device(options);
+  TensorContext disabled(disabled_device);
+  for (auto mode : {AttentionMode::kFlash2, AttentionMode::kSage2, AttentionMode::kSol}) {
+    CHECK(!disabled.h3_attention_supported(mode));
+    bool rejected = false;
+    try { (void)H3AttentionPlan::create(disabled, {1, 1, 64, 0.125f, mode}); }
+    catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected);
+  }
+  if (!info.cooperative_matrix_bf16_f32_16x16x16 || !info.shader_float16 ||
+      !info.storage_buffer_16bit || !info.timeline_semaphore) {
+    SKIP_UNSUPPORTED_HARDWARE("Fast attention cooperative matrices unavailable"); return;
+  }
+  options.enable_shader_float16 = true;
+  options.enable_storage_buffer_16bit = true;
+  options.enable_cooperative_matrix = true;
+  {
+    Device no_int8_device = physical.front().create_device(options);
+    TensorContext no_int8(no_int8_device);
+    CHECK(!no_int8.h3_attention_supported(AttentionMode::kSage2));
+  }
+  options.enable_shader_int8 = info.shader_int8;
+  // Fast attention does not require shaderInt64 or the exact driver allow-list.
+  Device device = physical.front().create_device(options);
+  TensorContext context(device, {2, 1});
+  CHECK(!context.exact_h3_attention());
+  for (auto mode : {AttentionMode::kFlash2, AttentionMode::kSage2}) {
+    if (!context.h3_attention_supported(mode)) {
+      SKIP_UNSUPPORTED_HARDWARE("%s unavailable on %s (INT8 tuple %d)",
+          attention_mode_name(mode), info.name.c_str(), int(info.cooperative_matrix_i8_i32_16x16x32));
+      continue;
+    }
+    double worst_l2 = 0.0, worst_abs = 0.0;
+    for (float invalid_scale : {0.0f, -1.0f, std::numeric_limits<float>::infinity(),
+                               std::numeric_limits<float>::quiet_NaN()}) {
+      bool rejected = false;
+      try { (void)H3AttentionPlan::create(context, {1, 1, 64, invalid_scale, mode}); }
+      catch (const std::invalid_argument&) { rejected = true; }
+      CHECK(rejected);
+    }
+    for (uint32_t dim : {64u, 128u}) for (uint32_t sequence : {1u, 15u, 16u, 17u, 31u, 32u, 33u, 63u, 64u, 65u, 129u, 257u, 513u}) {
+      constexpr uint32_t heads = 2;
+      const uint64_t shape[] = {sequence, heads, dim};
+      auto layout = TensorLayout::contiguous(shape, 3);
+      size_t n = size_t(sequence) * heads * dim;
+      auto qf = test::make_data(n, 73, 0.8f), kf = test::make_data(n, 321, 0.8f);
+      auto vf = test::make_data(n, 999, 0.8f);
+      std::vector<uint16_t> qh(n), kh(n), vh(n), actual(n), chunk(n);
+      for (size_t i = 0; i < n; ++i) {
+        // Large channel bias exercises K smoothing. A zero Q fixture also
+        // tests all-zero quantization scales and uniform softmax.
+        qh[i] = reference_bf16(sequence == 17 ? 0.0f : qf[i]);
+        kh[i] = reference_bf16(kf[i] + (i % dim < dim/2 ? 12.0f : -8.0f));
+        vh[i] = reference_bf16(vf[i]);
+        qf[i] = bf16_to_f32(qh[i]); kf[i] = bf16_to_f32(kh[i]); vf[i] = bf16_to_f32(vh[i]);
+      }
+      auto q = context.allocate(layout, ScalarType::kBFloat16);
+      auto k = context.allocate(layout, ScalarType::kBFloat16);
+      auto v = context.allocate(layout, ScalarType::kBFloat16);
+      auto out = context.allocate(layout, ScalarType::kBFloat16);
+      auto chunks = context.allocate(layout, ScalarType::kBFloat16);
+      context.upload_bytes(q, qh.data(), n*2); context.upload_bytes(k, kh.data(), n*2);
+      context.upload_bytes(v, vh.data(), n*2);
+      const float scale = exact_attention_scale(dim);
+      auto plan = H3AttentionPlan::create(context, {sequence, heads, dim, scale, mode});
+      CHECK((plan.workspace_bytes() != 0) == (mode == AttentionMode::kSage2));
+      // Distinct ranges per global 128-row query tile; disjoint intervals
+      // and padded last keys exercise both range traversal and masking.
+      std::vector<int32_t> bounds;
+      for (uint32_t tile = 0; tile < (sequence+127)/128; ++tile) {
+        if (sequence >= 257 && tile % 2 == 0)
+          bounds.insert(bounds.end(), {0, 64, 192, 320});
+        else bounds.insert(bounds.end(), {0, int32_t((sequence+63)/64*64), 0, 0});
+      }
+      auto ranges = H3AttentionRanges::create(context, sequence, bounds.data(), uint32_t(bounds.size()));
+      for (bool banded : {false, true}) {
+        auto range_ptr = banded ? &ranges : nullptr;
+        auto batch = context.begin_batch();
+        bool rejected = false;
+        try { plan.record(batch, q, k, v, q); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        CHECK(rejected);
+        plan.record(batch, q, k, v, out, range_ptr);
+        batch.submit().wait();
+        context.download_bytes(out, actual.data(), n*2);
+        std::vector<double> expected(n), scores(sequence);
+        for (uint32_t row = 0; row < sequence; ++row) for (uint32_t head = 0; head < heads; ++head) {
+          double maximum = -std::numeric_limits<double>::infinity();
+          for (uint32_t key = 0; key < sequence; ++key) {
+            auto b = bounds.data() + (row/128)*4;
+            bool selected = !banded || (key >= uint32_t(b[0]) && key < uint32_t(b[1])) ||
+                (key >= uint32_t(b[2]) && key < uint32_t(b[3]));
+            double score = 0;
+            for (uint32_t d = 0; d < dim; ++d)
+              score += double(qf[(row*heads+head)*dim+d]) * kf[(key*heads+head)*dim+d];
+            scores[key] = selected ? score*scale : -std::numeric_limits<double>::infinity();
+            maximum = std::max(maximum, scores[key]);
+          }
+          double sum = 0;
+          for (auto& s : scores) { s = std::exp(s-maximum); sum += s; }
+          for (uint32_t key = 0; key < sequence; ++key) for (uint32_t d = 0; d < dim; ++d)
+            expected[(row*heads+head)*dim+d] += scores[key]/sum * vf[(key*heads+head)*dim+d];
+        }
+        double err2 = 0, ref2 = 0, max_abs = 0;
+        for (size_t i = 0; i < n; ++i) {
+          double delta = bf16_to_f32(actual[i]) - expected[i];
+          CHECK(std::isfinite(delta));
+          err2 += delta*delta; ref2 += expected[i]*expected[i];
+          max_abs = std::max(max_abs, std::abs(delta));
+        }
+        double rel = std::sqrt(err2 / std::max(ref2, 1e-30));
+        worst_l2 = std::max(worst_l2, rel); worst_abs = std::max(worst_abs, max_abs);
+        CHECK_MSG(rel < (mode == AttentionMode::kSage2 ? 0.025 : 0.005),
+            "%s S%u D%u band%d relative L2 %.8f", attention_mode_name(mode), sequence, dim, int(banded), rel);
+        CHECK_MSG(max_abs < (mode == AttentionMode::kSage2 ? 0.025 : 0.005),
+            "%s S%u D%u max abs %.8f", attention_mode_name(mode), sequence, dim, max_abs);
+        // Split through a query tile, writing to the same global row offsets.
+        const uint32_t cut = std::min(7u, sequence);
+        auto first = context.begin_batch();
+        plan.record(first, q, k, v, chunks, range_ptr, 0, cut, 0);
+        auto token1 = first.submit();
+        if (sequence > cut) {
+          auto second = context.begin_batch();
+          plan.record(second, q, k, v, chunks, range_ptr, cut, sequence-cut, cut);
+          second.submit().wait();
+        }
+        token1.wait();
+        context.download_bytes(chunks, chunk.data(), n*2);
+        CHECK(chunk == actual);
+        if (sequence == 65 || sequence == 129) {
+          std::fill(chunk.begin(), chunk.end(), uint16_t(0x4210));
+          context.upload_bytes(chunks, chunk.data(), n*2);
+          const auto used = context.pooled_used_bytes();
+          const auto reserved = context.reserved_bytes();
+          auto remap = context.begin_batch();
+          plan.record(remap, q, k, v, chunks, range_ptr, 7, sequence-14, 3);
+          CHECK(remap.remaining_operator_capacity() == 0);
+          remap.submit().wait();
+          CHECK(context.pooled_used_bytes() == used);
+          CHECK(context.reserved_bytes() == reserved);
+          context.download_bytes(chunks, chunk.data(), n*2);
+          for (uint32_t row = 0; row < sequence; ++row) for (uint32_t d = 0; d < heads*dim; ++d) {
+            const uint16_t expected_word = row >= 3 && row < sequence-11
+                ? actual[size_t(row+4)*heads*dim+d] : uint16_t(0x4210);
+            CHECK(chunk[size_t(row)*heads*dim+d] == expected_word);
+          }
+          // Exceeding the one-operator limit poisons this batch, then the
+          // next batch recovers all input/workspace access state.
+          auto over_capacity = context.begin_batch();
+          plan.record(over_capacity, q, k, v, out, range_ptr);
+          bool rejected = false;
+          try { plan.record(over_capacity, q, k, v, out, range_ptr); }
+          catch (const std::logic_error&) { rejected = true; }
+          CHECK(rejected);
+        }
+      }
+      // Re-recorded preparation must observe changed inputs, and submitted
+      // work owns the plan's buffers even if its public wrapper is destroyed.
+      std::fill(vh.begin(), vh.end(), reference_bf16(0.25f));
+      std::fill(qh.begin(), qh.end(), uint16_t(0)); std::fill(kh.begin(), kh.end(), uint16_t(0));
+      context.upload_bytes(q, qh.data(), n*2); context.upload_bytes(k, kh.data(), n*2);
+      context.upload_bytes(v, vh.data(), n*2);
+      auto final_batch = context.begin_batch();
+      plan.record(final_batch, q, k, v, out);
+      auto final_token = final_batch.submit();
+      plan = H3AttentionPlan();
+      final_token.wait();
+      context.download_bytes(out, actual.data(), n*2);
+      CHECK(actual == vh);
+    }
+    std::printf("  %s FP64 reference worst relative L2 %.8f max abs %.8f\n",
+        attention_mode_name(mode), worst_l2, worst_abs);
+  }
 }
 
 SLOPFAB_TEST(vulkan_attention_prepare_exhaustive_bf16) {
@@ -2992,6 +3303,7 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   device_options.enable_shader_float16 = true;
   device_options.enable_storage_buffer_16bit = true;
   device_options.enable_cooperative_matrix = true;
+  device_options.enable_shader_int8 = info.shader_int8;
   Device device = physical.front().create_device(device_options);
   TensorContextOptions context_options;
   context_options.max_batch_operators = 64;
@@ -3305,6 +3617,34 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     digest ^= bits >> 8; digest *= 1099511628211ull;
   }
   CHECK(digest == 0x70e1eaf01723020bull);
+  for (auto mode : {AttentionMode::kFlash2, AttentionMode::kSage2}) {
+    if (!context.h3_attention_supported(mode)) continue;
+    H3BlockConfig fast_config = config; fast_config.attention_mode = mode;
+    auto fast_stage = ExactH3BlockStage::create(context, fast_config);
+    fast_stage.load(valid, 0);
+    auto fast_scratch = ExactH3BlockScratch::create(context, fast_config);
+    fast_stage.prepare(fast_scratch);
+    context.upload_bytes(tokens, input.data(), input.size()*2);
+    auto batch = context.begin_batch();
+    bool mismatch_rejected = false;
+    try { fast_stage.record(batch, tokens, selectors, code, cosine, sine, scratch); }
+    catch (const std::invalid_argument&) { mismatch_rejected = true; }
+    CHECK(mismatch_rejected && batch.remaining_operator_capacity() == 64);
+    fast_stage.record(batch, tokens, selectors, code, cosine, sine, fast_scratch);
+    fast_stage.record(batch, tokens, selectors, code, cosine, sine, fast_scratch);
+    CHECK(batch.remaining_operator_capacity() == 14);
+    batch.submit().wait();
+    std::vector<uint16_t> fast_output(input.size());
+    context.download_bytes(tokens, fast_output.data(), fast_output.size()*2);
+    double e2 = 0, r2 = 0;
+    for (size_t i = 0; i < output.size(); ++i) {
+      double r = bf16_to_f32(output[i]), e = bf16_to_f32(fast_output[i])-r;
+      CHECK(std::isfinite(e)); e2 += e*e; r2 += r*r;
+    }
+    CHECK_MSG(std::sqrt(e2/std::max(r2, 1e-30)) < 0.01,
+        "%s two-block residual differs from exact", attention_mode_name(mode));
+  }
+  CHECK(run_chain() == output);
   const uint64_t stable_used = context.pooled_used_bytes();
   const uint64_t stable_reserved = context.reserved_bytes();
   const uint64_t stable_descriptors = context.descriptor_set_allocations();

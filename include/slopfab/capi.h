@@ -186,7 +186,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_loaded_major(int32_t* out_major);
 #define SLOPFAB_MODEL_VIDEO_VAE 3
 #define SLOPFAB_MODEL_AUDIO_VAE 4
 
-/* Neural backend. Vulkan denoising requires exact attention, supports native
+/* Neural backend. Vulkan denoising accepts exact, flash2 and sage2, supports native
  * text-only conditioning, and never calls the CUDA conditioner. */
 #define SLOPFAB_INFERENCE_CUDA 0
 #define SLOPFAB_INFERENCE_VULKAN 1

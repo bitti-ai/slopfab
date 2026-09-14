@@ -47,7 +47,7 @@ Implementation status by pipeline stage:
 | Shared tensor/weights | `linear.cu` (1,080), `nf4_weight.cu` (73), `nvfp4_gemm.cu` (556), `nn_kernels.cu` (952), workspace/device code | native quantized GEMM, NN/batched attention GEMM, remaining activations, and residual/broadcast operations; tensor lifetime, conversion/layout, add/bias, normalization, GroupNorm+SiLU, used RoPE variants, dense NT GEMM, persistent seven-format weight preparation, AWQ pre-scale and ConvRot now have Vulkan primitives |
 | Video VAE decode | Implemented by `vulkan::VideoVaeDecoder` | Exact 36-block graph and shared backend-neutral tile/stitch schedule are complete; shipped tensor-core mode remains CUDA-only |
 | Audio VAE decode | Implemented by `vulkan::AudioDecoder` | All 779 tensors and 497 production operators are device-resident and exact; diagnostics add 13 in-batch boundary copies |
-| Transformer and denoise | Exact full transformer/refiner/endpoints and Euler denoiser implemented in Vulkan; CUDA retains non-exact attention families | non-exact Flash/Sage/SOL attention, AB2, and step/block caches remain CUDA-only and Vulkan rejects them |
+| Transformer and denoise | Full transformer/refiner/endpoints and Euler denoiser implemented in Vulkan, with exact, FlashAttention and INT8-Q/K + FP16-P/V SageAttention | SOL attention, AB2, and step/block caches remain CUDA-only; fast attention performance/accuracy measurements are in `src/vulkan/README.md` |
 | Qwen text/vision conditioner and keyframe encode | Implemented by `vulkan::ExactQwenVisionEncoder`, `vulkan::ExactQwenTextEncoder`, and `vulkan::KeyframeEncoder` | non-exact conditioner arithmetic remains CUDA-only and is rejected by the Vulkan route |
 
 The implemented Vulkan graphs preserve the shipped safetensors names and typed
@@ -150,8 +150,9 @@ supports multiple query-row consumers in one batch, and mirrors a pinned CUDA
 reference byte-for-byte. A real Qwen vision S16384/H16/D72 activation audit
 proved finite prepared values and scaled scores; its slot is 108 MiB. The
 complete Qwen vision graph now consumes this primitive; causal GQA and H3
-attention are separate exact, wired implementations. Sage2/SOL remain
-unsupported and may not silently route to the unmasked primitive. The exact
+attention are separate exact, wired implementations. H3 also has fast Flash
+and Sage plans; SOL remains unsupported and may not silently route to the
+unmasked primitive. The exact
 Vulkan kernel is also an accepted performance exception:
 1.174 s/call and about 31.7 s for 27 Qwen vision blocks at S16384, versus
 145.276 ms/call and 3.922 s/27 for the shipped CUDA cuBLAS blocked path.

@@ -752,6 +752,168 @@ include/slopfab/cuda/deterministic_attention.cuh 61F8CFA242C7A581B2DC7FD1405993E
 deterministic_attention.fatbin            D8C01855993DA931125F2BA06D7683C79C04F0DAC23ECCBA985E5E72A01EC194
 ```
 
+## Fast H3 FlashAttention and SageAttention
+
+Vulkan generation accepts `--attention flash2`, `sage2`, and `exact`.
+`H3BlockConfig::attention_mode` carries the selection to `H3AttentionPlanDesc::mode`;
+both default to `exact` for existing direct API callers. The other neural
+operators (including the conditioner and VAEs) retain their existing exact
+contracts and device gates. SOL, AB2 and cache modes remain unsupported.
+
+`tensor_attention_fast.comp` implements online softmax over 32 or 64 query rows
+and 64 keys using cooperative matrices, native exponentials, eight-lane row
+reductions, and FP32 output fragments retained across key tiles.
+Flash uses BF16 Q/K and FP16 P/V. Sage uses signed INT8 Q/K with INT32 QK
+accumulation and FP16 P/V with FP32 accumulation. This Vulkan Sage path follows
+the key-smoothing/block-quantization algorithm with 16-row quantization blocks;
+it is not a byte-identical port of the CUDA vendor kernel or its FP8 P/V path.
+
+Sage first computes each head's global per-channel key mean on the GPU, then
+subtracts it while quantizing Q/K using symmetric max-absolute scales, RNE,
+and saturation to [-127,127]. Zero blocks use a unit scale. The removed key
+mean contributes a row-constant score shift and therefore needs no softmax
+correction, including with band masks. Preparation is regenerated on every
+record, so input changes cannot reuse stale quants. A plan owns reusable INT8
+Q/K buffers, FP32 means/scales, and optional preparation scratch;
+`workspace_bytes()` reports their logical size, excluding allocator padding.
+DiT shares one plan through its existing block scratch. All three or four Sage
+dispatches count as one logical operator; recording allocates and submits
+nothing, and normal tensor barriers and submission retention protect scratch.
+Sage-mode token refiners use FlashAttention, as on CUDA.
+
+Both fast variants accept BF16 token-major D64/D128 tensors, arbitrary positive
+finite scales, ragged sequence ends, output row offsets and the existing full
+or two-range band masks. Inputs, scaled scores and FP32 accumulators must be
+finite, and V must fit FP16. Fast modes provide numerical approximation, not
+cross-backend bit reproducibility. Exact shader sources and artifacts are
+unchanged.
+
+`TensorContext::h3_attention_supported(mode)` checks enabled features rather
+than the exact-mode GPU/driver allow-list. Both modes require compute subgroup
+shuffle, cooperative matrices, FP16 arithmetic/storage, and the FP16/FP32
+16x16x16 tuple. Flash requires 32-lane subgroups, 256-thread workgroups,
+BF16/FP32 16x16x16 and 41,344 shared bytes. Sage accepts 32- or 64-lane
+subgroups and requires enabled `shaderInt8`, subgroup arithmetic, and signed
+INT8/INT32 16x16x32. Packed INT8 storage uses uint words, so 8-bit storage-buffer
+access is unnecessary. Sage does not require the BF16 shader extension;
+cooperative-matrix device creation enables it only when available. Full
+neural generation retains the stricter gates of its other operators.
+`require_h3_attention(mode)` rejects unsupported modes before plan allocation.
+
+Sage provides four tiles, each with full/banded and subgroup32/subgroup64
+modules. Shared-memory checks conservatively count all declared D128 arrays,
+including for D64, without assuming the driver aliases their lifetimes:
+
+| Kernel override | Query / staged V rows | Shared bytes | Threads, subgroup32 / subgroup64 |
+|---|---|---:|---:|
+| 1 | 32 / 16 | 29,056 | 256 / 512 |
+| 2 | 32 / 64 | 41,344 | 256 / 512 |
+| 3 | 64 / 16 | 45,824 | 512 / 1,024 |
+| 4 | 64 / 64 | 58,112 | 512 / 1,024 |
+
+`H3AttentionPlanDesc::sage_kernel = 0` selects 64 queries for subgroup32 at
+S256 or larger if workgroup and shared-memory limits permit, otherwise 32
+queries. Both use compact V staging. Wave64 defaults conservatively to 32
+queries. Whole-V variants reduce the four PV staging barrier pairs to one,
+but lost performance on the measured device, so they remain explicit
+benchmark overrides. Unsupported overrides fail before allocating scratch.
+The selector is a capability/shape policy, not a runtime autotuner or a promise
+of optimal scheduling on every vendor. `sage_configuration()` exposes the
+selected tile, preparation paths and required/extra logical workspace.
+Pipelines specialize D64/D128 and the prepared-value flag so loop bounds and
+value conversion are resolved by the compiler.
+
+`TensorContextOptions::sage_extra_workspace_bytes` defaults to 64 MiB per plan;
+generation exposes it as `--vulkan-sage-workspace-mib` (0..65536). Let
+`E = sequence * heads * head_dim`. Mandatory scratch is `2*E` bytes for INT8
+Q/K plus `4*heads*(head_dim + 2*ceil(sequence/16))` bytes for means/scales.
+The extra budget is spent in this order, checking storage/allocation limits:
+
+1. At S512 or larger, parallel mean reduction uses 256-row chunks followed by
+   a reduction of their partial means. Scratch is
+   `4*heads*head_dim*ceil(sequence/256)` bytes.
+2. If another `2*E` bytes fit, convert V from BF16 to FP16 while packing Q/K,
+   then reuse it across query tiles. A specialization constant removes the
+   value-format branch from the attention loop.
+
+Zero extra budget retains serial means and converts V inside attention.
+Insufficient extra budget disables an optional path; no quadratic score buffer
+is allocated. The budget does not cap model memory, mandatory attention
+scratch, allocator padding, or other live plans, and is not a measurement of
+free VRAM. Allocation failures still report an error. Setting a smaller budget
+is useful when the model already consumes most of a device's memory.
+
+Rebuild all 19 checked-in SPIR-V variants and their normalized source/binary
+hash manifest with Khronos glslang 16.5.0:
+
+```text
+python tools/build_vulkan_attention.py --glslang /path/to/glslang
+```
+
+CMake verifies `attention_fast.sha256` and embeds the binaries, so a consumer
+build needs no shader compiler. The fast modules do not receive the exact
+float-control transform. The implementation uses the standard
+[KHR cooperative matrix interface](https://github.com/KhronosGroup/GLSL/blob/main/extensions/khr/GLSL_KHR_cooperative_matrix.txt)
+without assuming a vendor-specific fragment-to-lane layout.
+
+`vulkan_fast_attention_accuracy_and_lifetime` compares to an independent FP64
+softmax reference at S1/15/16/17/31/32/33/63/64/65/129/257/513, D64/D128 and two heads, with
+large key-channel offsets, zero Q, full/disjoint bands, ragged keys, unaligned
+query chunks, consecutive in-flight submissions, changed inputs and destroyed
+plan wrappers. On RTX 5090, worst relative L2 / maximum absolute error was
+0.001857 / 0.001004 for Flash and 0.002165 / 0.001250 for Sage in these fixtures.
+These are primitive-level bounds, not end-to-end generation quality metrics.
+
+`vulkan_sage_variants_and_bounded_preparation` compares supported tile and
+preparation combinations at S513/D64/D128 with disjoint bands, key bias,
+changed V, bounded workspace, timestamps, and destroyed plan wrappers.
+`vulkan_sage_device_and_memory_selection` checks synthetic subgroup sizes,
+32/41/45/58/64 KiB limits, thread limits and budget boundaries. The 64-lane
+modules and kernel 4 are compiled, but have not been executed on this GPU.
+
+Enable `SLOPFAB_BUILD_DEV_TOOLS` to build the benchmark:
+
+```text
+slopfab_attentionbench [sequence] [heads] [extra_MiB=64] [sage_kernel=0] [Vulkan_device_index=0] [head_dim=128]
+```
+
+It reports median warmed host-observed latency (including recording,
+submission and completion; excluding allocation/transfers) for the available
+Vulkan modes and, in CUDA builds, the shipped CUDA Flash/Sage modes. CUDA Sage
+uses its architecture-selected P/V precision; on Blackwell this is FP8.
+Optional GPU timestamps separately measure smoothing, quantization/V, and
+attention when the compute queue supports them. These diagnostics use a
+separate set of runs from the host medians. Queue timestamp width and period
+are respected. Results are read only after submission completion, and a query
+pool must not be reused while its earlier submission is in flight.
+
+Before the Sage optimization, RTX 5090, Windows Release, CUDA 12.8.93
+(milliseconds, median of seven warm
+host-observed runs; one warmup, sequential backend measurements):
+
+| Shape | Vulkan exact | Vulkan Flash | Vulkan Sage FP16 | CUDA Flash | CUDA Sage FP8 |
+|---|---:|---:|---:|---:|---:|
+| S1024, H4, D128 | 0.407 | 0.237 | 0.262 | 0.089 | 0.079 |
+| S4096, H8, D128 | 5.756 | 3.839 | 3.999 | 0.622 | 0.333 |
+
+After specialization, wider query tiles and parallel preparation, S4096/H8/D128
+Sage measured about 2.6-2.9 ms with the default budget, versus 3.999 ms above.
+GPU phases measured approximately 0.011 ms smoothing, 0.016-0.018 ms
+quantization/V, and 2.51 ms attention. Zero-extra preparation measured 2.69 ms
+host latency, with 0.106 ms smoothing. Workspace is 16.082 MiB with preparation
+or 8.020 MiB without; the selected wide tile consumes 45,824 shared bytes.
+Prepared V did not materially change attention time on this device. Benefits
+vary by shape and host scheduling; the timestamp phases isolate GPU work.
+The smaller S1024/H4/D128 shape measured about 0.30 ms with these changes,
+versus the earlier 0.262 ms; this optimization does not improve every shape.
+CUDA performance parity is not achieved. Original Vulkan Sage workspace was
+1.004/8.020 MiB in the two baseline shapes respectively.
+CUDA Flash output differed from Vulkan Flash by relative L2 0.000002/0.000012;
+the shipped CUDA Sage FP8 path differed by 0.036654/0.037799. Those comparisons
+use the same deterministic BF16 inputs but different P/V precision for Sage.
+Full-resolution generation quality, long-sequence performance and other
+vendors/drivers remain unmeasured.
+
 ## Exact H3 full and frame-band attention
 
 `H3AttentionPlan` consumes direct token-major BF16 Q/K/V and produces BF16 for
@@ -765,7 +927,7 @@ requested row chunk, so record splitting and output offsets do not change bits.
 The backend-neutral control spelling is `AttentionMode::kExact` / `--attention
 exact`. CUDA transformer main blocks and the token refiner dispatch this
 primitive directly; `kNone` remains the separate blocked reference and no
-other mode is remapped. Vulkan accepts only exact and the complete denoiser
+other mode is remapped. In exact mode, the complete Vulkan denoiser
 keeps packed video/audio rows resident across evaluations. Text-only CLI runs
 use the native exact Vulkan conditioner; captured prompt embeddings remain an
 optional replay seam. Reference vision and keyframe encoding are native Vulkan
@@ -1063,7 +1225,7 @@ peak/reserved was 11.12/11.13 GiB with 71 descriptors, conditioner
 peak/reserved was 2.56/2.21 GiB with 56 descriptors, and the transformer
 reported 13.19 GiB persistent / 16.67 GiB peak. Final exact FNV64 pins are
 fp32 PixelBuffer `b47a2b3e91e9c744`, fp32 PCM `334e7829e92a479f`, Y4M
-`dc958cbd7468dd84`, and WAV `ec54a7c6ac251e5f`. Vulkan rejects non-exact
+`dc958cbd7468dd84`, and WAV `ec54a7c6ac251e5f`. Vulkan rejects SOL
 attention, AB2 and cache modes; no
 accepted or rejected reference request falls back to CUDA.
 

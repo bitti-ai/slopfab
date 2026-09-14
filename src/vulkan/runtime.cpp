@@ -25,7 +25,11 @@ namespace detail {
 
 [[noreturn]] void fail(const char* operation, VkResult result) {
   throw std::runtime_error(std::string("vulkan: ") + operation + " failed (VkResult " +
-                           std::to_string(static_cast<int>(result)) + ")");
+                           std::to_string(static_cast<int>(result)) + ")" +
+                           (result == VK_ERROR_OUT_OF_DEVICE_MEMORY
+                                ? ": out of memory (device)"
+                                : result == VK_ERROR_OUT_OF_HOST_MEMORY
+                                      ? ": out of memory (host)" : ""));
 }
 
 void check(VkResult result, const char* operation) {
@@ -218,7 +222,7 @@ std::vector<std::string> enumerate_extensions(const InstanceState& state,
 }
 
 uint32_t choose_compute_queue(const InstanceState& state, VkPhysicalDevice physical,
-                              uint32_t* queue_count) {
+                              uint32_t* queue_count, uint32_t* timestamp_bits) {
   uint32_t count = 0;
   state.get_queue_family_properties(physical, &count, nullptr);
   std::vector<VkQueueFamilyProperties> families(count);
@@ -231,6 +235,7 @@ uint32_t choose_compute_queue(const InstanceState& state, VkPhysicalDevice physi
     if (fallback == std::numeric_limits<uint32_t>::max()) fallback = i;
     if (!(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
       *queue_count = families[i].queueCount;
+      *timestamp_bits = families[i].timestampValidBits;
       return i;
     }
   }
@@ -238,6 +243,7 @@ uint32_t choose_compute_queue(const InstanceState& state, VkPhysicalDevice physi
     throw std::runtime_error("vulkan: physical device has no compute queue");
   }
   *queue_count = families[fallback].queueCount;
+  *timestamp_bits = families[fallback].timestampValidBits;
   return fallback;
 }
 
@@ -259,7 +265,9 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
   info.driver_version = properties.driverVersion;
   info.api_version = unpack_version(properties.apiVersion);
   info.discrete = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
-  info.compute_queue_family = choose_compute_queue(*state, physical, &info.compute_queue_count);
+  info.compute_queue_family = choose_compute_queue(*state, physical, &info.compute_queue_count,
+                                                   &info.timestamp_valid_bits);
+  info.timestamp_period_ns = properties.limits.timestampPeriod;
   info.max_compute_workgroup_invocations = properties.limits.maxComputeWorkGroupInvocations;
   for (int i = 0; i < 3; ++i) {
     info.max_compute_workgroup_count[i] = properties.limits.maxComputeWorkGroupCount[i];
@@ -337,6 +345,12 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
     state->get_physical_device_properties2(physical, &properties2);
     info.max_allocation_bytes = properties11.maxMemoryAllocationSize;
     info.subgroup_size = properties11.subgroupSize;
+    info.compute_subgroup_shuffle =
+        (properties11.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+        (properties11.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT);
+    info.compute_subgroup_arithmetic =
+        (properties11.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+        (properties11.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT);
     std::memcpy(info.driver_uuid, properties11.driverUUID, VK_UUID_SIZE);
     info.fp32_denorm_preserve = properties12.shaderDenormPreserveFloat32 == VK_TRUE;
     info.fp32_signed_zero_inf_nan_preserve =
@@ -352,6 +366,14 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
       }
       if (state->get_cooperative_matrix_properties(physical, &count, tuples.data()) == VK_SUCCESS) {
         for (const auto& tuple : tuples) {
+          info.cooperative_matrix_i8_i32_16x16x32 |=
+              tuple.MSize == 16 && tuple.NSize == 16 && tuple.KSize == 32 &&
+              tuple.scope == VK_SCOPE_SUBGROUP_KHR &&
+              tuple.AType == VK_COMPONENT_TYPE_SINT8_KHR &&
+              tuple.BType == VK_COMPONENT_TYPE_SINT8_KHR &&
+              tuple.CType == VK_COMPONENT_TYPE_SINT32_KHR &&
+              tuple.ResultType == VK_COMPONENT_TYPE_SINT32_KHR &&
+              tuple.saturatingAccumulation == VK_FALSE;
           const bool common = tuple.MSize == 16 && tuple.NSize == 16 &&
               tuple.KSize == 16 && tuple.scope == VK_SCOPE_SUBGROUP_KHR &&
               tuple.CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
@@ -578,14 +600,13 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   require(options.enable_descriptor_indexing, impl_->info.descriptor_indexing, "descriptorIndexing");
   require(options.enable_cooperative_matrix, impl_->info.cooperative_matrix,
           "cooperativeMatrix");
-  require(options.enable_cooperative_matrix, impl_->info.shader_bfloat16_type &&
-              impl_->info.shader_bfloat16_cooperative_matrix,
-          "shaderBFloat16CooperativeMatrix");
+  const bool enable_bfloat16 = options.enable_cooperative_matrix &&
+      impl_->info.shader_bfloat16_type && impl_->info.shader_bfloat16_cooperative_matrix;
 
   std::vector<std::string> names = options.extensions;
   if (options.enable_cooperative_matrix) {
     names.emplace_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
-    names.emplace_back(VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME);
+    if (enable_bfloat16) names.emplace_back(VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME);
   }
   std::sort(names.begin(), names.end());
   names.erase(std::unique(names.begin(), names.end()), names.end());
@@ -626,10 +647,10 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
   cooperative.cooperativeMatrix = options.enable_cooperative_matrix;
   VkPhysicalDeviceShaderBfloat16FeaturesKHR bfloat16{};
   bfloat16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR;
-  bfloat16.shaderBFloat16Type = options.enable_cooperative_matrix;
-  bfloat16.shaderBFloat16CooperativeMatrix = options.enable_cooperative_matrix;
+  bfloat16.shaderBFloat16Type = enable_bfloat16;
+  bfloat16.shaderBFloat16CooperativeMatrix = enable_bfloat16;
   bfloat16.pNext = &features11;
-  cooperative.pNext = &bfloat16;
+  cooperative.pNext = enable_bfloat16 ? static_cast<void*>(&bfloat16) : static_cast<void*>(&features11);
   VkPhysicalDeviceFeatures core_features{};
   core_features.shaderInt64 = options.enable_shader_int64;
   const bool any_features = options.enable_shader_float16 || options.enable_shader_int8 ||
@@ -691,6 +712,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
     result->state = std::move(state);
     result->info = impl_->info;
     result->info.shader_float16_enabled = options.enable_shader_float16;
+    result->info.shader_int8_enabled = options.enable_shader_int8;
     result->info.shader_int64_enabled = options.enable_shader_int64;
     result->info.storage_buffer_16bit_enabled = options.enable_storage_buffer_16bit;
     result->info.cooperative_matrix_enabled = options.enable_cooperative_matrix;
@@ -842,8 +864,25 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
                                               : nullptr);
     allocate.allocationSize = bytes;
     allocate.memoryTypeIndex = memory_type;
-    detail::check(device->allocate_memory(device->device, &allocate, nullptr, &block->memory),
-                  "vkAllocateMemory");
+    const VkResult allocation_result =
+        device->allocate_memory(device->device, &allocate, nullptr, &block->memory);
+    if (allocation_result != VK_SUCCESS) {
+      // Keep the failed request and this pool's residency in the exception:
+      // the caller may only retain the final generation error, not stdout.
+      uint64_t reserved = 0, used = 0;
+      for (const auto& existing : blocks) {
+        reserved += existing->bytes;
+        used += existing->used;
+      }
+      const uint32_t heap = device->memory.memoryTypes[memory_type].heapIndex;
+      const std::string operation = "vkAllocateMemory [requested=" +
+          std::to_string(bytes) + " bytes, memory_type=" + std::to_string(memory_type) +
+          ", heap=" + std::to_string(heap) + ", heap_size=" +
+          std::to_string(device->memory.memoryHeaps[heap].size) +
+          " bytes, pool_reserved=" + std::to_string(reserved) +
+          " bytes, pool_used=" + std::to_string(used) + " bytes]";
+      detail::fail(operation.c_str(), allocation_result);
+    }
     if (block->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
       try {
         detail::check(device->map_memory(device->device, block->memory, 0, bytes, 0,
@@ -1171,6 +1210,55 @@ Buffer::operator bool() const noexcept { return impl_ != nullptr; }
 
 // --- reusable compute submission ------------------------------------------
 
+struct TimestampQuery::Impl {
+  std::shared_ptr<detail::DeviceState> device;
+  VkQueryPool pool = VK_NULL_HANDLE;
+  uint32_t count = 0;
+  uint32_t valid_bits = 0;
+  float period = 0;
+  PFN_vkDestroyQueryPool destroy = nullptr;
+  PFN_vkGetQueryPoolResults results = nullptr;
+  PFN_vkCmdResetQueryPool reset = nullptr;
+  PFN_vkCmdWriteTimestamp write = nullptr;
+  ~Impl() { if (pool) destroy(device->device, pool, nullptr); }
+};
+TimestampQuery TimestampQuery::create(const Device& device, uint32_t count) {
+  if (!device.impl_ || count == 0 || count > 256)
+    throw std::invalid_argument("vulkan timestamps: count must be in [1,256]");
+  if (!device.info().timestamp_valid_bits || device.info().timestamp_period_ns <= 0)
+    throw std::runtime_error("vulkan timestamps: compute queue does not support timestamps");
+  TimestampQuery query;
+  query.impl_ = std::make_shared<Impl>();
+  auto& s = *query.impl_;
+  s.device = device.impl_->state; s.count = count;
+  s.valid_bits = device.info().timestamp_valid_bits;
+  s.period = device.info().timestamp_period_ns;
+#define QUERY_FN(TYPE, NAME) detail::load_device<TYPE>(*s.device->instance, s.device->device, NAME)
+  s.destroy = QUERY_FN(PFN_vkDestroyQueryPool, "vkDestroyQueryPool");
+  s.results = QUERY_FN(PFN_vkGetQueryPoolResults, "vkGetQueryPoolResults");
+  s.reset = QUERY_FN(PFN_vkCmdResetQueryPool, "vkCmdResetQueryPool");
+  s.write = QUERY_FN(PFN_vkCmdWriteTimestamp, "vkCmdWriteTimestamp");
+  const auto create = QUERY_FN(PFN_vkCreateQueryPool, "vkCreateQueryPool");
+#undef QUERY_FN
+  VkQueryPoolCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+  info.queryType = VK_QUERY_TYPE_TIMESTAMP; info.queryCount = count;
+  detail::check(create(s.device->device, &info, nullptr, &s.pool), "vkCreateQueryPool");
+  return query;
+}
+uint32_t TimestampQuery::count() const noexcept { return impl_ ? impl_->count : 0; }
+double TimestampQuery::elapsed_milliseconds(uint32_t first, uint32_t last) const {
+  if (!impl_ || first >= last || last >= impl_->count)
+    throw std::invalid_argument("vulkan timestamps: invalid interval");
+  uint64_t begin = 0, end = 0;
+  detail::check(impl_->results(impl_->device->device, impl_->pool, first, 1,
+      sizeof(begin), &begin, sizeof(begin), VK_QUERY_RESULT_64_BIT), "vkGetQueryPoolResults(begin)");
+  detail::check(impl_->results(impl_->device->device, impl_->pool, last, 1,
+      sizeof(end), &end, sizeof(end), VK_QUERY_RESULT_64_BIT), "vkGetQueryPoolResults(end)");
+  const uint64_t mask = impl_->valid_bits == 64 ? ~uint64_t(0) : (uint64_t(1) << impl_->valid_bits)-1;
+  return double((end-begin) & mask) * impl_->period / 1.0e6;
+}
+
 struct ComputePipeline::Impl {
   std::shared_ptr<detail::DeviceState> device;
   VkDescriptorSetLayout descriptor_layout = VK_NULL_HANDLE;
@@ -1491,6 +1579,22 @@ ComputePipeline ComputePipeline::create(const Device& device,
   if (invocations > device.info().max_compute_workgroup_invocations) {
     throw std::invalid_argument("vulkan: compute local invocation count exceeds device limit");
   }
+  std::vector<VkSpecializationMapEntry> specialization_entries;
+  std::vector<uint32_t> specialization_values;
+  for (const auto& constant : options.specialization_constants) {
+    for (const auto& entry : specialization_entries) {
+      if (entry.constantID == constant.id)
+        throw std::invalid_argument("vulkan: duplicate specialization constant ID");
+    }
+    specialization_entries.push_back({constant.id,
+        static_cast<uint32_t>(specialization_values.size() * sizeof(uint32_t)), sizeof(uint32_t)});
+    specialization_values.push_back(constant.value);
+  }
+  VkSpecializationInfo specialization{};
+  specialization.mapEntryCount = static_cast<uint32_t>(specialization_entries.size());
+  specialization.pMapEntries = specialization_entries.data();
+  specialization.dataSize = specialization_values.size() * sizeof(uint32_t);
+  specialization.pData = specialization_values.data();
 
   auto result = std::make_shared<Impl>();
   result->device = device.impl_->state;
@@ -1555,6 +1659,7 @@ ComputePipeline ComputePipeline::create(const Device& device,
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = shader;
     stage.pName = options.entry_point.c_str();
+    stage.pSpecializationInfo = specialization_entries.empty() ? nullptr : &specialization;
     VkComputePipelineCreateInfo pipeline_create{};
     pipeline_create.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipeline_create.stage = stage;
@@ -1785,6 +1890,20 @@ CommandList::CommandList(CommandList&&) noexcept = default;
 CommandList& CommandList::operator=(CommandList&&) noexcept = default;
 CommandList::CommandList(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 CommandList::operator bool() const noexcept { return impl_ != nullptr; }
+
+void CommandList::reset_timestamps(TimestampQuery& queries) {
+  if (!impl_ || !queries.impl_ || queries.impl_->device != impl_->state->device)
+    throw std::invalid_argument("vulkan timestamps: incompatible query pool");
+  impl_->retain(queries.impl_);
+  queries.impl_->reset(impl_->state->slots[impl_->slot].commands, queries.impl_->pool, 0, queries.impl_->count);
+}
+void CommandList::write_timestamp(TimestampQuery& queries, uint32_t index) {
+  if (!impl_ || !queries.impl_ || queries.impl_->device != impl_->state->device || index >= queries.impl_->count)
+    throw std::invalid_argument("vulkan timestamps: incompatible query or index");
+  impl_->retain(queries.impl_);
+  queries.impl_->write(impl_->state->slots[impl_->slot].commands,
+      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries.impl_->pool, index);
+}
 
 void CommandList::copy_buffer(Buffer& source, Buffer& destination, uint64_t bytes,
                               uint64_t source_offset, uint64_t destination_offset) {
