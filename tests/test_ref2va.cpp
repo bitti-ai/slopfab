@@ -117,6 +117,39 @@ SLOPFAB_TEST(viggle_interleaved_qkv_weights_and_scales) {
   }
 }
 
+SLOPFAB_TEST(viggle_real_checkpoint_header) {
+  std::filesystem::path path;
+  for (const char* prefix : {"", "../", "../../", "../../../"}) {
+    auto candidate = std::filesystem::path(prefix) / "weights/transformer" /
+        "Viggle-Animate-pruned_rank8_int8_convrot.safetensors";
+    if (std::filesystem::exists(candidate)) { path = candidate; break; }
+  }
+  if (path.empty()) {
+    SKIP_MISSING_FIXTURE("Viggle-Animate checkpoint absent");
+    return;
+  }
+  slopfab::SafeTensors st;
+  st.open(path.string());
+  CHECK(detect_transformer_architecture(st) == TransformerArchitecture::kViggleAnimatePrunedTable);
+  CHECK(detect_transformer_quantization(st) == TransformerQuantization::kInt8ConvRot);
+  CHECK(transformer_qkv_is_interleaved(st));
+  require_ref2va_transformer(st, 2);
+  CHECK(st.at("adaln_t_table").shape == std::vector<int64_t>({1025, 8}));
+  CHECK(st.at("final_layer.adaln_proj.linear.bias").dtype == slopfab::DType::kF32);
+  for (int layer = 0; layer < 52; ++layer) {
+    const std::string prefix = layer < 50 ? "blocks." + std::to_string(layer) :
+        "token_refiner.blocks." + std::to_string(layer - 50);
+    const auto& w = st.at(prefix + ".attn.qkv_proj.weight");
+    validate_interleaved_qkv(w, 128);
+    CHECK(w.shape == std::vector<int64_t>({21504, 5376}));
+    if (layer < 50) {
+      const auto& scale = st.at(prefix + ".attn.qkv_proj.weight_scale");
+      validate_interleaved_qkv(scale, 128);
+      CHECK(scale.shape == std::vector<int64_t>({21504, 1}));
+    }
+  }
+}
+
 SLOPFAB_TEST(ref2va_transformer_checkpoint_detection) {
   CHECK(is_pruned_table_architecture(TransformerArchitecture::kPrunedTable));
   CHECK(is_pruned_table_architecture(TransformerArchitecture::kRef2VAPrunedTable));

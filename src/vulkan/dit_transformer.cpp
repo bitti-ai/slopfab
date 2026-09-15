@@ -107,7 +107,7 @@ void validate_endpoint_archive(const SafeTensors& st,
   require("token_refiner.final_norm.weight", {h}, DType::kBF16);
   require("final_layer.norm.weight", {h}, DType::kBF16);
   require_float_weight("final_layer.adaln_proj.linear.weight", {2 * h, r});
-  require("final_layer.adaln_proj.linear.bias", {2 * h}, DType::kF16);
+  require_float_weight("final_layer.adaln_proj.linear.bias", {2 * h});
   require_float_weight("final_layer.video_out.weight", {c.video_dim, h});
   require("final_layer.video_out.bias", {c.video_dim}, DType::kF32);
   require_float_weight("final_layer.audio_out.weight", {c.audio_dim, h});

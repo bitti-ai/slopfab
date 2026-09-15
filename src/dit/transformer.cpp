@@ -1674,6 +1674,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
         "checkpoint");
   }
   const bool full_adaln = s.architecture == TransformerArchitecture::kRef2VAFullAdaLN;
+  const bool interleaved_qkv = transformer_qkv_is_interleaved(checkpoint);
 
   const int hidden = config.hidden_size;
   const int inner = config.inner_dim();
@@ -1782,6 +1783,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     plan.require(prefix + "norm1.weight", {hidden}, Store::kAsBF16);
     plan.require(prefix + "norm2.weight", {hidden}, Store::kAsBF16);
     plan_linear(prefix + "attn.qkv_proj", 3 * inner, hidden);
+    if (interleaved_qkv)
+      validate_interleaved_qkv(checkpoint.at(prefix + "attn.qkv_proj.weight"), head_dim);
     plan.require(prefix + "attn.q_norm.weight", {head_dim}, Store::kAsBF16);
     plan.require(prefix + "attn.k_norm.weight", {head_dim}, Store::kAsBF16);
     plan_linear(prefix + "attn.out_proj", hidden, inner);
@@ -1829,6 +1832,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     }
     std::vector<float> wide;
     std::vector<uint16_t> narrow;
+    std::vector<uint8_t> reordered;
     // Landing pad for the fp16 records that are widened on the device rather
     // than on the host. On the real checkpoint the largest is
     // `blocks.N.adaln_proj.linear.weight`, 774144 fp16 values, so 1.5 MB of
@@ -1856,6 +1860,16 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     for (const auto& kv : plan.records()) {
       const Record& r = kv.second;
       uint8_t* dst = base + r.offset;
+      if (interleaved_qkv &&
+          (kv.first.find(".attn.qkv_proj.weight") != std::string::npos) &&
+          r.view->shape.size() == 2) {
+        reordered = deinterleave_qkv_rows(*r.view, head_dim);
+        // These records retain their disk dtype (INT8 weights / F32 scales).
+        if (reordered.size() != r.bytes)
+          throw std::runtime_error("transformer: interleaved QKV upload dtype mismatch");
+        up.copy(dst, reordered.data(), reordered.size(), /*from_mapping=*/false);
+        continue;
+      }
       switch (r.store) {
         case Store::kVerbatim:
           up.copy(dst, r.view->data, r.bytes, /*from_mapping=*/true);
@@ -2033,8 +2047,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     b.q_norm = bf(prefix + "attn.q_norm.weight");
     b.k_norm = bf(prefix + "attn.k_norm.weight");
 
-    // Spec 8.1: `qkv_proj.weight` is contiguous [Wq; Wk; Wv], already
-    // de-interleaved. Three views over one allocation, sharing both scales.
+    // The upload canonicalizes QKV to contiguous [Wq; Wk; Wv].
+    // Three views over one allocation, sharing both scales.
     //
     // For nvfp4 **both** arrays have to be sliced. Advancing `data` and leaving
     // `block_scale` at the base gives k and v the wrong scales entirely, which

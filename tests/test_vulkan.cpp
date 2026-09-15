@@ -3673,6 +3673,44 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     return output;
   };
   const std::vector<uint16_t> output = run_chain();
+  {
+    // Two heads are essential: a one-head QKV permutation is the identity.
+    config.heads = 2;
+    auto contiguous = fixture(0);
+    auto interleaved = contiguous;
+    for (auto& tensor : interleaved) {
+      if (tensor.name != "blocks.0.attn.qkv_proj.weight") continue;
+      const auto original = tensor.data;
+      size_t dst = 0;
+      for (uint32_t head = 0; head < config.heads; ++head)
+        for (uint32_t part = 0; part < 3; ++part)
+          for (uint32_t channel = 0; channel < config.head_dim; ++channel)
+            for (uint32_t col = 0; col < config.hidden; ++col)
+              tensor.data[dst++] = original[size_t((part * config.heads + head) *
+                  config.head_dim + channel) * config.hidden + col];
+    }
+    const auto pair_path = base / "slopfab_viggle_two_heads.safetensors";
+    auto evaluate = [&](const std::vector<TensorWrite>& weights, const char* layout) {
+      write_safetensors(pair_path.string(), weights, {{"qkv_layout", layout}});
+      SafeTensors checkpoint;
+      checkpoint.open(pair_path.string());
+      auto stage = ExactH3BlockStage::create(context, config);
+      stage.load(checkpoint, 0);
+      auto pair_scratch = ExactH3BlockScratch::create(context, config);
+      stage.prepare(pair_scratch);
+      context.upload_bytes(tokens, input.data(), input.size() * 2);
+      auto batch = context.begin_batch();
+      stage.record(batch, tokens, selectors, code, cosine, sine, pair_scratch);
+      batch.submit().wait();
+      std::vector<uint16_t> result(input.size());
+      context.download_bytes(tokens, result.data(), result.size() * 2);
+      return result;
+    };
+    const auto expected = evaluate(contiguous, "contiguous");
+    CHECK(expected == evaluate(interleaved, "interleaved"));
+    std::filesystem::remove(pair_path);
+    config.heads = 1;
+  }
   uint64_t digest = 1469598103934665603ull;
   for (uint16_t bits : output) {
     digest ^= bits & 0xffu; digest *= 1099511628211ull;
@@ -4159,6 +4197,24 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   transformer.unload();
   singularity.close();
   std::filesystem::remove(singularity_path);
+
+  // Viggle keeps the AdaLN curve/projections in F32 and declares upstream
+  // per-head QKV storage. The endpoint dtype must not change the result.
+  auto viggle_tensors = transformer_fixture(0);
+  for (auto& tensor : viggle_tensors)
+    if (tensor.name.find("adaln_proj.linear") != std::string::npos)
+      tensor.dtype = DType::kF32;
+  const auto viggle_path = base / "Viggle-Animate-pruned_rank8_int8_convrot.safetensors";
+  write_safetensors(viggle_path.string(), viggle_tensors,
+      {{"source", "Viggle/Viggle-Animate"}, {"qkv_layout", "interleaved"}});
+  SafeTensors viggle;
+  viggle.open(viggle_path.string());
+  transformer.load(viggle);
+  transformer.prepare_text(prompt);
+  CHECK(run_transformer() == transformer_output);
+  transformer.unload();
+  viggle.close();
+  std::filesystem::remove(viggle_path);
 
   // Complete CUDA-off T2VA denoise trajectory. Modality rows remain on the
   // device across every transformer evaluation and Euler update; only final
@@ -4730,6 +4786,28 @@ SLOPFAB_TEST(vulkan_gemm_dispatch_geometry) {
                                 UINT32_MAX, UINT32_MAX, &geometry));
   CHECK(!gemm_dispatch_geometry(1, 1, 0, 16, 8, 8, &geometry));
   CHECK(!gemm_dispatch_geometry(1, 1, 16, 16, 8, 8, nullptr));
+}
+
+SLOPFAB_TEST(viggle_vulkan_real_block_archive) {
+  const auto path = std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
+      "weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot.safetensors";
+  if (!std::filesystem::exists(path)) {
+    SKIP_MISSING_FIXTURE("Viggle-Animate checkpoint absent");
+    return;
+  }
+  slopfab::SafeTensors checkpoint;
+  checkpoint.open(path.string());
+  // Host-only archive validation runs even on machines with no Vulkan GPU.
+  slopfab::vulkan::H3BlockConfig config;
+  config.sequence = 1;
+  for (uint32_t layer = 0; layer < 50; ++layer) {
+    slopfab::vulkan::ExactH3BlockStage::validate_checkpoint(checkpoint, layer, config);
+    CHECK(true);
+  }
+  for (uint32_t layer = 0; layer < 2; ++layer) {
+    slopfab::vulkan::ExactH3BlockStage::validate_refiner_checkpoint(checkpoint, layer, config);
+    CHECK(true);
+  }
 }
 
 SLOPFAB_TEST(vulkan_h3_quantized_weight_residency) {

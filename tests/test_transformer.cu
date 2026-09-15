@@ -734,7 +734,8 @@ SequenceLayout tiny_layout() {
   return l;
 }
 
-std::string write_synthetic(const Tensors& t) {
+std::string write_synthetic(const Tensors& t,
+    const std::map<std::string, std::string>& metadata = {}) {
   const std::filesystem::path dir =
       std::filesystem::temp_directory_path() / "slopfab_transformer_test";
   std::filesystem::create_directories(dir);
@@ -742,7 +743,7 @@ std::string write_synthetic(const Tensors& t) {
   std::vector<slopfab::TensorWrite> list;
   list.reserve(t.size());
   for (const auto& kv : t) list.push_back(kv.second);
-  slopfab::write_safetensors(path, list);
+  slopfab::write_safetensors(path, list, metadata);
   return path;
 }
 
@@ -1058,8 +1059,11 @@ SLOPFAB_TEST(transformer_wrapped_checkpoint_matches_unwrapped) {
   const TransformerConfig cfg = tiny_config();
   const Tensors tensors = build_synthetic(cfg);
   const Case c = make_case(cfg, 5, 0.31f);
-  auto evaluate = [&](const Tensors& weights) {
-    const std::string path = write_synthetic(weights);
+  auto evaluate = [&](const Tensors& weights, bool interleaved = false) {
+    const std::string path = write_synthetic(weights, interleaved
+        ? std::map<std::string, std::string>{{"source", "Viggle/Viggle-Animate"},
+                                           {"qkv_layout", "interleaved"}}
+        : std::map<std::string, std::string>{});
     slopfab::SafeTensors st;
     st.open(path);
     Transformer model;
@@ -1080,6 +1084,22 @@ SLOPFAB_TEST(transformer_wrapped_checkpoint_matches_unwrapped) {
     wrapped.emplace(tensor.name, std::move(tensor));
   }
   CHECK(expected == evaluate(wrapped));
+  Tensors viggle = tensors;
+  for (auto& kv : viggle) {
+    auto& tensor = kv.second;
+    if (tensor.name.find(".attn.qkv_proj.weight") == std::string::npos ||
+        tensor.shape.size() != 2) continue;
+    const auto original = tensor.data;
+    const int cols = int(tensor.shape[1]);
+    size_t dst = 0;
+    for (int head = 0; head < cfg.num_attention_heads; ++head)
+      for (int part = 0; part < 3; ++part)
+        for (int channel = 0; channel < cfg.attention_head_dim; ++channel)
+          for (int col = 0; col < cols; ++col)
+            tensor.data[dst++] = original[size_t(part * cfg.inner_dim() +
+                head * cfg.attention_head_dim + channel) * cols + col];
+  }
+  CHECK(expected == evaluate(viggle, true));
 }
 
 SLOPFAB_TEST(transformer_forward_vs_cpu_reference) {

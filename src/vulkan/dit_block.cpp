@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "slopfab/attention.h"
+#include "slopfab/dit/checkpoint.h"
 #include "slopfab/dtype.h"
 #include "slopfab/json.h"
 #include "slopfab/nf4.h"
@@ -238,6 +239,11 @@ void validate_block_archive(const SafeTensors& st, const std::string& p,
     (void)to_f32(aw); (void)to_f32(ab);
   }
   const std::string qkv = p + "attn.qkv_proj";
+  if (dit::transformer_qkv_is_interleaved(st)) {
+    dit::validate_interleaved_qkv(st.at(qkv + ".weight"), c.head_dim);
+    if (st.at(qkv + ".weight").dtype == DType::kI8)
+      dit::validate_interleaved_qkv(st.at(qkv + ".weight_scale"), c.head_dim);
+  }
   validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 0);
   validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, inner);
   validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 2 * inner);
@@ -249,7 +255,8 @@ void validate_block_archive(const SafeTensors& st, const std::string& p,
 Projection load_projection(TensorContext& context, const SafeTensors& st,
                            const LoraAdapters* loras, uint32_t rows,
                            const std::string& name, uint32_t out, uint32_t in,
-                           uint32_t source_out = 0, uint32_t row_offset = 0) {
+                           uint32_t source_out = 0, uint32_t row_offset = 0,
+                           uint32_t head_dim = 128) {
   if (source_out == 0) source_out = out;
   if (row_offset > source_out || out > source_out - row_offset)
     throw std::invalid_argument("Vulkan H3 block: invalid projection slice");
@@ -258,6 +265,7 @@ Projection load_projection(TensorContext& context, const SafeTensors& st,
   std::vector<float> scale_storage, map_storage, nested_map_storage,
       nested_absmax_storage;
   std::vector<uint16_t> pre_scale_storage;
+  std::vector<uint8_t> reordered;
   const uint64_t elements = checked_product(out, in, "projection elements");
   const uint64_t source_elements = checked_product(source_out, in, "projection source");
   const uint64_t element_offset = checked_product(row_offset, in, "projection offset");
@@ -337,6 +345,20 @@ Projection load_projection(TensorContext& context, const SafeTensors& st,
         throw std::runtime_error("Vulkan H3 block: INT8 scale shape mismatch");
       scale_storage.assign(all.begin() + row_offset, all.begin() + row_offset + out);
       u.weight_scale = scale_storage.data(); u.weight_scale_count = out;
+    }
+  }
+  if (name.size() >= 14 && name.compare(name.size() - 14, 14, ".attn.qkv_proj") == 0 &&
+      dit::transformer_qkv_is_interleaved(st)) {
+    reordered = dit::deinterleave_qkv_rows(w, head_dim, row_offset, out);
+    u.data = reordered.data();
+    u.data_bytes = reordered.size();
+    if (u.format == LinearWeightFormat::kInt8) {
+      const auto scales = dit::deinterleave_qkv_rows(
+          st.at(name + ".weight_scale"), head_dim, row_offset, out);
+      TensorView view = st.at(name + ".weight_scale");
+      view.shape = {out, 1}; view.data = scales.data(); view.nbytes = scales.size();
+      scale_storage = to_f32(view);
+      u.weight_scale = scale_storage.data();
     }
   }
   if (const TensorView* pre = st.find(name + ".pre_quant_scale")) {
@@ -517,9 +539,9 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   next->norm2 = upload_bf(host_norm2);
   next->q_norm = upload_bf(host_q_norm);
   next->k_norm = upload_bf(host_k_norm);
-  next->q = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, 0);
-  next->k = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, inner);
-  next->v = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, 2 * inner);
+  next->q = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, 0, c.head_dim);
+  next->k = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, inner, c.head_dim);
+  next->v = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden, 3 * inner, 2 * inner, c.head_dim);
   next->out = load_projection(*s.context, st, c.loras, c.sequence, p + "attn.out_proj", c.hidden, inner);
   next->fc1 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc1", 2 * c.ffn, c.hidden);
   next->fc2 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc2", c.hidden, c.ffn);
@@ -559,11 +581,11 @@ void ExactH3BlockStage::load_refiner(const SafeTensors& st, uint32_t layer) {
   next->q_norm = upload_bf(host_q_norm);
   next->k_norm = upload_bf(host_k_norm);
   next->q = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden,
-                            3 * inner, 0);
+                            3 * inner, 0, c.head_dim);
   next->k = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden,
-                            3 * inner, inner);
+                            3 * inner, inner, c.head_dim);
   next->v = load_projection(*s.context, st, c.loras, c.sequence, qkv, inner, c.hidden,
-                            3 * inner, 2 * inner);
+                            3 * inner, 2 * inner, c.head_dim);
   next->out = load_projection(*s.context, st, c.loras, c.sequence, p + "attn.out_proj",
                               c.hidden, inner);
   next->fc1 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc1",
