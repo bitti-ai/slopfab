@@ -259,8 +259,16 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
       checkpoint.at("condition_proj.weight"), matrix(h, c.text_dim));
   next->condition_bias = upload_f32(context,
       checkpoint.at("condition_proj.bias"), vector(h));
-  next->video_in_weight = upload_f32(context,
-      checkpoint.at("video_patch_proj.weight"), matrix(h, c.video_dim));
+  auto upload_video_endpoint = [&](const char* name, const TensorLayout& layout) {
+    if (c.main.block.loras && c.main.block.loras->find(name)) {
+      const auto values = c.main.block.loras->merged_endpoint_weight(checkpoint, name);
+      auto result = context.allocate(layout);
+      context.upload_transient(result, values.data(), values.size());
+      return result;
+    }
+    return upload_f32(context, checkpoint.at(std::string(name) + ".weight"), layout);
+  };
+  next->video_in_weight = upload_video_endpoint("video_patch_proj", matrix(h, c.video_dim));
   next->video_in_bias = upload_f32(context,
       checkpoint.at("video_patch_proj.bias"), vector(h));
   if (has_audio) {
@@ -289,8 +297,7 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
                                           matrix(h, rank));
   next->final_shift_bias = upload_slice(adaln_b.data(), vector(h));
   next->final_scale_bias = upload_slice(adaln_b.data() + h, vector(h));
-  next->video_out_weight = upload_f32(context,
-      checkpoint.at("final_layer.video_out.weight"), matrix(c.video_dim, h));
+  next->video_out_weight = upload_video_endpoint("final_layer.video_out", matrix(c.video_dim, h));
   next->video_out_bias = upload_f32(context,
       checkpoint.at("final_layer.video_out.bias"), vector(c.video_dim));
   if (has_audio) {

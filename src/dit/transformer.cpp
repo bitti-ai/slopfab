@@ -1860,6 +1860,15 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     for (const auto& kv : plan.records()) {
       const Record& r = kv.second;
       uint8_t* dst = base + r.offset;
+      if (loras && (kv.first == "video_patch_proj.weight" ||
+                    kv.first == "final_layer.video_out.weight")) {
+        const std::string name = kv.first.substr(0, kv.first.size() - 7);
+        if (loras->find(name)) {
+          wide = loras->merged_endpoint_weight(checkpoint, name);
+          up.copy(dst, wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
+          continue;
+        }
+      }
       if (interleaved_qkv &&
           (kv.first.find(".attn.qkv_proj.weight") != std::string::npos) &&
           r.view->shape.size() == 2) {
@@ -2114,6 +2123,11 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
       attach(b.wq, "attn.qkv_proj");
       attach(b.wk, "attn.qkv_proj", inner);
       attach(b.wv, "attn.qkv_proj", 2 * inner);
+      // Diffusers factors are already in per-projection head order, even
+      // when the base archive stores interleaved QKV rows.
+      attach(b.wq, "attn.to_q");
+      attach(b.wk, "attn.to_k");
+      attach(b.wv, "attn.to_v");
       attach(b.out_proj, "attn.out_proj");
       attach(b.fc1, "mlp.fc1");
       attach(b.fc2, "mlp.fc2");

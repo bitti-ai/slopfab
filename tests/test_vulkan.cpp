@@ -4216,6 +4216,36 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   viggle.close();
   std::filesystem::remove(viggle_path);
 
+  // Every Viggle target must affect the forward pass. In particular, accepting
+  // proj_in/proj_out or split Q/K/V in the host loader must not drop the update.
+  const auto viggle_adapter_path = base / "slopfab_viggle_vulkan_lora.safetensors";
+  for (const auto& target : std::vector<std::pair<std::string, std::string>>{
+      {"proj_in", "video_patch_proj"}, {"proj_out", "final_layer.video_out"},
+      {"transformer_blocks.0.attn.to_q", "blocks.0.attn.qkv_proj"},
+      {"transformer_blocks.0.attn.to_k", "blocks.0.attn.qkv_proj"},
+      {"transformer_blocks.0.attn.to_v", "blocks.0.attn.qkv_proj"},
+      {"transformer_blocks.0.attn.to_out.0", "blocks.0.attn.out_proj"},
+      {"transformer_blocks.0.ff.net.0.proj", "blocks.0.mlp.fc1"},
+      {"transformer_blocks.0.ff.net.2", "blocks.0.mlp.fc2"}}) {
+    const auto& weight = transformer_checkpoint.at(target.second + ".weight");
+    const int64_t in = weight.shape[1];
+    const int64_t out = weight.shape[0] / (target.second == "blocks.0.attn.qkv_proj" ? 3 : 1);
+    write_safetensors(viggle_adapter_path.string(), {
+        {target.first + ".lora_A.weight", {16, in}, test::make_data(size_t(16 * in), 893, .25f)},
+        {target.first + ".lora_B.weight", {out, 16}, test::make_data(size_t(out * 16), 981, .25f)}});
+    LoraAdapters adapter;
+    adapter.load({{viggle_adapter_path.string(), 1}}, transformer_checkpoint);
+    auto adapter_config = transformer_config;
+    adapter_config.main.block.loras = &adapter;
+    transformer = ExactH3Transformer::create(graph_context, adapter_config);
+    transformer.load(transformer_checkpoint);
+    transformer.prepare_text(prompt);
+    CHECK_MSG(run_transformer() != transformer_output, "%s update did not reach Vulkan forward", target.first.c_str());
+    transformer.unload();
+  }
+  transformer = ExactH3Transformer::create(graph_context, transformer_config);
+  std::filesystem::remove(viggle_adapter_path);
+
   // Complete CUDA-off T2VA denoise trajectory. Modality rows remain on the
   // device across every transformer evaluation and Euler update; only final
   // rows cross back to the host.

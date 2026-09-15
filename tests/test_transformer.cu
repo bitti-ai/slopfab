@@ -1102,6 +1102,73 @@ SLOPFAB_TEST(transformer_wrapped_checkpoint_matches_unwrapped) {
   CHECK(expected == evaluate(viggle, true));
 }
 
+SLOPFAB_TEST(transformer_viggle_lora_targets_reach_forward) {
+  const auto cfg = tiny_config();
+  const auto tensors = build_synthetic(cfg);
+  const auto c = make_case(cfg, 5, .31f);
+  const auto adapter_path = std::filesystem::temp_directory_path() / "slopfab_viggle_cuda_lora.safetensors";
+  auto evaluate = [&](const Tensors& weights, const std::vector<slopfab::TensorWrite>& adapter) {
+    slopfab::SafeTensors base;
+    base.open(write_synthetic(weights));
+    slopfab::LoraAdapters loras;
+    if (!adapter.empty()) {
+      slopfab::write_safetensors(adapter_path.string(), adapter);
+      loras.load({{adapter_path.string(), 1}}, base);
+    }
+    Transformer model;
+    model.load(base, cfg, &loras);
+    model.prepare_text(c.prompt.data(), c.layout.num_text);
+    model.prepare_sequence(c.layout, c.idx, c.pos);
+    std::vector<float> result(c.video_rows.size() + c.audio_rows.size());
+    model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt,
+                  result.data(), result.data() + c.video_rows.size());
+    CHECK(all_finite(result));
+    return result;
+  };
+  const auto baseline = evaluate(tensors, {});
+  struct Target { const char* source; const char* native; int part; };
+  for (const Target& target : std::vector<Target>{
+      {"proj_in", "video_patch_proj", -1}, {"proj_out", "final_layer.video_out", -1},
+      {"transformer_blocks.0.attn.to_q", "blocks.0.attn.qkv_proj", 0},
+      {"transformer_blocks.0.attn.to_k", "blocks.0.attn.qkv_proj", 1},
+      {"transformer_blocks.0.attn.to_v", "blocks.0.attn.qkv_proj", 2},
+      {"transformer_blocks.0.attn.to_out.0", "blocks.0.attn.out_proj", -1},
+      {"transformer_blocks.0.ff.net.0.proj", "blocks.0.mlp.fc1", -1},
+      {"transformer_blocks.0.ff.net.2", "blocks.0.mlp.fc2", -1}}) {
+    const auto& weight = tensors.at(std::string(target.native) + ".weight");
+    const int in = int(weight.shape[1]), out = int(weight.shape[0]) / (target.part < 0 ? 1 : 3);
+    constexpr int rank = 16;
+    const auto a = make_data(size_t(rank) * in, 893, .25f);
+    const auto b = make_data(size_t(out) * rank, 981, .25f);
+    const auto actual = evaluate(tensors, {
+        {std::string(target.source) + ".lora_A.weight", {rank, in}, a},
+        {std::string(target.source) + ".lora_B.weight", {out, rank}, b}});
+    CHECK_MSG(actual != baseline, "%s update did not reach forward", target.source);
+    if (std::string(target.source).compare(0, 5, "proj_") == 0) {
+      auto merged = tensors;
+      auto& w = merged.at(std::string(target.native) + ".weight").data;
+      for (int row = 0; row < out; ++row) for (int col = 0; col < in; ++col) {
+        double delta = 0;
+        for (int r = 0; r < rank; ++r) delta += double(b[row * rank + r]) * a[r * in + col];
+        w[row * in + col] = float(double(w[row * in + col]) + delta);
+      }
+      CHECK(actual == evaluate(merged, {}));
+    } else {
+      auto native_b = b;
+      if (target.part >= 0) {
+        native_b.assign(size_t(out) * 3 * rank, 0);
+        std::copy(b.begin(), b.end(), native_b.begin() + size_t(target.part) * out * rank);
+      } else if (std::string(target.native) == "blocks.0.mlp.fc1") {
+        std::rotate(native_b.begin(), native_b.begin() + native_b.size() / 2, native_b.end());
+      }
+      CHECK(actual == evaluate(tensors, {
+          {std::string(target.native) + ".lora_A.weight", {rank, in}, a},
+          {std::string(target.native) + ".lora_B.weight", {weight.shape[0], rank}, native_b}}));
+    }
+  }
+  std::filesystem::remove(adapter_path);
+}
+
 SLOPFAB_TEST(transformer_forward_vs_cpu_reference) {
   const TransformerConfig cfg = tiny_config();
   const Tensors tensors = build_synthetic(cfg);

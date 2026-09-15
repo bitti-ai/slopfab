@@ -14,7 +14,7 @@ struct LoraSpec {
 };
 
 // Host factors in original (unrotated, unscaled) model coordinates. Each
-// update is strength * alpha/rank * B @ A. Scale is folded into B at upload.
+// update is strength * alpha/rank * B @ A. Scale is folded into B at load.
 struct LoraFactors {
   int rank = 0, in = 0, out = 0;
   std::vector<float> a, b;

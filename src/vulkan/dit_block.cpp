@@ -375,6 +375,12 @@ Projection load_projection(TensorContext& context, const SafeTensors& st,
   result.weight = LinearWeight::upload(context, u);
   if (loras) if (const auto* f = loras->find(name))
     result.lora.load(context, *f, row_offset, out, rows);
+  if (loras && name.size() >= 14 &&
+      name.compare(name.size() - 14, 14, ".attn.qkv_proj") == 0) {
+    const char* suffix = row_offset == 0 ? "to_q" : row_offset == out ? "to_k" : "to_v";
+    if (const auto* f = loras->find(name.substr(0, name.size() - 8) + suffix))
+      result.lora.load(context, *f, 0, out, rows);
+  }
   // Quantized projections stay packed. Retaining a BF16 copy of every INT8
   // or FP8 matrix adds ~36 GiB across the main stack alone. Their exact
   // materialization uses the same shared slot already used for NVFP4.
