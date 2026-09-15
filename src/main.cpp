@@ -27,6 +27,7 @@
 #include "slopfab/attention_mode.h"
 #include "slopfab/dtype.h"
 #include "slopfab/json.h"
+#include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/step_cache.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/safetensors.h"
@@ -797,6 +798,14 @@ int cmd_inspect(int argc, char** argv) {
   std::printf("file       %s\n", st.path().c_str());
   std::printf("size       %s\n", format_bytes(st.file_size()).c_str());
   std::printf("tensors    %zu\n", st.tensor_count());
+  const auto architecture = slopfab::dit::detect_transformer_architecture(st);
+  if (architecture != slopfab::dit::TransformerArchitecture::kUnknown) {
+    std::printf("model      %s\n", slopfab::dit::transformer_architecture_name(architecture));
+    std::printf("quant      %s\n", slopfab::dit::transformer_quantization_name(
+        slopfab::dit::detect_transformer_quantization(st)));
+    std::printf("qkv        %s\n", slopfab::dit::transformer_qkv_is_interleaved(st)
+        ? "interleaved (reordered on load)" : "contiguous");
+  }
 
   if (!st.metadata().empty()) {
     std::printf("metadata\n");

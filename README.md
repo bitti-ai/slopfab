@@ -369,6 +369,10 @@ int4) from `Comfy-Org/MiniMax-H3` and `Abiray/Minimax-H3-nvfp4-INT4-INT8-Convrot
 directly; no checkpoint conversion is needed. Keep `ref2va` in the filename
 so reference conditioning can identify the pruned Ref2VA variant.
 
+The Viggle-Animate rank-eight INT8 ConvRot transformer checkpoint is supported
+by both loaders, including its interleaved attention weights and F32 AdaLN
+projections. See [checkpoint selection, workflow requirements and validation](docs/viggle_animate.md).
+
 Weights are **not** redistributed here. They are covered by the MiniMax H3
 Community License.
 
