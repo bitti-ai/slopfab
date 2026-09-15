@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include "slopfab/dit/ref2va.h"
 #include "slopfab/reference_media.h"
 

@@ -553,8 +553,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   std::vector<text::QwenImageGrid> reference_conditioning_grids;
   std::vector<int32_t> reference_conditioning_ids;
   std::vector<PreparedReference> prepared_media;
+  const bool mixed_reference_video = options.inference_backend == DeviceBackend::kCuda &&
+                                     !env_flag("SLOPFAB_REFERENCE_FP32");
   const auto media_authority = options.inference_backend == DeviceBackend::kCuda
-      ? ReferenceEncoderAuthority::kCudaFp32 : ReferenceEncoderAuthority::kVulkanFp32;
+      ? (mixed_reference_video ? ReferenceEncoderAuthority::kCudaFp16 : ReferenceEncoderAuthority::kCudaFp32)
+      : ReferenceEncoderAuthority::kVulkanFp32;
   const std::string media_key = cache_references && !request.reference_media.empty()
       ? media_encoding_cache_key(request, media_authority) : std::string();
   const auto* cached_media = cache_references ? reuse.media_cache.find(media_key) : nullptr;
@@ -835,7 +838,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 #endif
           cuda_encoder = std::make_unique<vae::KeyframeEncoder>(checkpoint);
         auto mean = read_stat(checkpoint, "latents_mean", 24), stddev = read_stat(checkpoint, "latents_std", 24);
-        if (options.verbose) std::printf("references  video VAE load in %.3f s\n", seconds_since(load_start));
+        if (options.verbose) std::printf("references  video VAE load in %.3f s (%s activations)\n",
+            seconds_since(load_start), mixed_reference_video ? "fp16" : "fp32");
         for (size_t i = 0; i < prepared_media.size(); ++i) {
           const auto& media = prepared_media[i];
           if (media.frames.empty()) continue;
@@ -846,7 +850,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
           if (vk_encoder) rows = vk_encoder->encode_reference_video(media.frames, media.plan.encoding_frames, mean, stddev);
           else
 #endif
-            rows = cuda_encoder->encode_reference_video(media.frames, media.plan.encoding_frames, mean, stddev);
+            rows = cuda_encoder->encode_reference_video(media.frames, media.plan.encoding_frames, mean, stddev, mixed_reference_video);
           if (options.verbose) std::printf("references  video %zu: %dx%d, %d frames -> %zu rows in %.3f s\n",
               i + 1, media.plan.width, media.plan.height, media.plan.encoding_frames,
               rows.size() / 96, seconds_since(encode_start));

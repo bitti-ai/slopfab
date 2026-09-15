@@ -7,8 +7,8 @@
 #include "slopfab/cuda/profile.h"
 
 namespace slopfab::cuda {
-// FP32 contractions with bounded im2col scratch. Used only by reference
-// encoders; existing single-image and audio decoder arithmetic is unchanged.
+// Bounded im2col contractions. Video supports FP16 storage/FP32 accumulation;
+// audio and the reference FP32 authority retain their original arithmetic.
 class ReferenceEncoderOps {
  public:
   explicit ReferenceEncoderOps(cudaStream_t stream);
@@ -20,6 +20,9 @@ class ReferenceEncoderOps {
                              int height, int width, int kernel,
                              int spatial_stride, int temporal_stride,
                              bool downsample);
+  ReferenceBuffer<__half> conv3d(const __half* x, const __half* weight,
+      const __half* bias, int cin, int cout, int frames, int height, int width,
+      int kernel, int spatial_stride, int temporal_stride, bool downsample);
   ReferenceBuffer<float> conv1d(const float* x, const float* weight,
                              const float* bias, int batch, int cin, int cout,
                              int length, int kernel, int stride, int padding,
@@ -35,6 +38,7 @@ class ReferenceEncoderOps {
                                 int length);
   void snake(float* x, const float* alpha, int batch, int channels, int length);
   void add(float* x, const float* branch, size_t count);
+  void add(__half* x, const __half* branch, size_t count);
   void geglu(float* x, const float* gate, size_t count);
   template <typename T> ReferenceBuffer<T> allocate(size_t count) {
     return ReferenceBuffer<T>(count, activations_);
@@ -49,5 +53,8 @@ class ReferenceEncoderOps {
 };
 void reference_groupnorm(const float* x, const __half* weight,
                          const __half* bias, float* y, int channels, int frames,
+                         int height, int width, cudaStream_t stream);
+void reference_groupnorm(const __half* x, const __half* weight,
+                         const __half* bias, __half* y, int channels, int frames,
                          int height, int width, cudaStream_t stream);
 }  // namespace slopfab::cuda

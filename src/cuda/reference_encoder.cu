@@ -22,7 +22,8 @@ __global__ void convert(const __half* x, float* y, size_t n) {
   size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) y[i] = __half2float(x[i]);
 }
-__global__ void col3(const float* x, float* col, int cin, int t, int h, int w,
+template <typename T>
+__global__ void col3(const T* x, T* col, int cin, int t, int h, int w,
                      int k, int ss, int ts, bool down, int oh, int ow,
                      int start, int columns) {
   size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -41,7 +42,7 @@ __global__ void col3(const float* x, float* col, int cin, int t, int h, int w,
   // reflect. Temporal padding is causal zero, never replication.
   sx = reflected(sx, w);
   sy = reflected(sy, h);
-  col[i] = st < 0 || st >= t ? 0 : x[((size_t(c) * t + st) * h + sy) * w + sx];
+  col[i] = st < 0 || st >= t ? T(0.0f) : x[((size_t(c) * t + st) * h + sy) * w + sx];
 }
 __global__ void col1(const float* x, float* col, int cin, int length, int k,
                      int stride, int pad, int dil, int start, int columns) {
@@ -54,6 +55,14 @@ __global__ void col1(const float* x, float* col, int cin, int length, int k,
 __global__ void bias_channels(float* x, const float* b, int n, int c) {
   size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < size_t(n) * c) x[i] += b[i / n];
+}
+__global__ void half_bias(__half* x, const __half* b, int n, size_t count) {
+  size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < count) x[i] = __float2half_rn(__half2float(x[i]) + __half2float(b[i / n]));
+}
+__global__ void half_add(__half* x, const __half* branch, size_t count) {
+  size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < count) x[i] = __float2half_rn(__half2float(x[i]) + __half2float(branch[i]));
 }
 __global__ void bias_rows(float* x, const float* b, int n, int c) {
   size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -113,7 +122,8 @@ __global__ void norm_kernel(const float* x, const float* w, const float* b,
     y[size_t(row) * width + c] =
         (x[size_t(row) * width + c] - mean) * inv * w[c] + b[c];
 }
-__global__ void gn(const float* x, const __half* w, const __half* b, float* y,
+template <typename T>
+__global__ void gn(const T* x, const __half* w, const __half* b, T* y,
                    int channels, int frames, int spatial) {
   int frame = blockIdx.x / 32, group = blockIdx.x % 32, cpg = channels / 32,
       count = cpg * spatial;
@@ -121,7 +131,7 @@ __global__ void gn(const float* x, const __half* w, const __half* b, float* y,
   float sum = 0;
   for (int j = threadIdx.x; j < count; j += 256) {
     int c = group * cpg + j / spatial;
-    sum += x[(size_t(c) * frames + frame) * spatial + j % spatial];
+    sum += static_cast<float>(x[(size_t(c) * frames + frame) * spatial + j % spatial]);
   }
   a[threadIdx.x] = sum;
   __syncthreads();
@@ -133,7 +143,7 @@ __global__ void gn(const float* x, const __half* w, const __half* b, float* y,
   sum = 0;
   for (int j = threadIdx.x; j < count; j += 256) {
     int c = group * cpg + j / spatial;
-    float v = x[(size_t(c) * frames + frame) * spatial + j % spatial] - mean;
+    float v = static_cast<float>(x[(size_t(c) * frames + frame) * spatial + j % spatial]) - mean;
     sum += v * v;
   }
   __syncthreads();
@@ -147,7 +157,7 @@ __global__ void gn(const float* x, const __half* w, const __half* b, float* y,
   for (int j = threadIdx.x; j < count; j += 256) {
     int c = group * cpg + j / spatial;
     size_t at = (size_t(c) * frames + frame) * spatial + j % spatial;
-    float v = (x[at] - mean) * inv * __half2float(w[c]) + __half2float(b[c]);
+    float v = (static_cast<float>(x[at]) - mean) * inv * __half2float(w[c]) + __half2float(b[c]);
     y[at] = v / (1 + expf(-v));
   }
 }
@@ -224,7 +234,7 @@ ReferenceEncoderOps::ReferenceEncoderOps(cudaStream_t s) : stream_(s) {
   blas_check(cublas_create(&blas_));
   try {
     blas_check(cublas_set_stream(blas_, s));
-    blas_check(cublas_set_math_mode(blas_, CUBLAS_DEFAULT_MATH));
+    blas_check(cublas_set_math_mode(blas_, CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION));
   } catch (...) {
     cublas_destroy(blas_);
     throw;
@@ -271,6 +281,32 @@ ReferenceBuffer<float> ReferenceEncoderOps::conv3d(const float* x, const __half*
   if (b)
     bias_channels<<<blocks(out.size()), 256, 0, stream_>>>(out.get(),
                                                            bias.get(), N, co);
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
+  return out;
+}
+ReferenceBuffer<__half> ReferenceEncoderOps::conv3d(const __half* x, const __half* w,
+    const __half* b, int ci, int co, int t, int h, int width, int k,
+    int ss, int ts, bool down) {
+  if (!x || !w || ci <= 0 || co <= 0 || t <= 0 || h <= 0 || width <= 0 ||
+      (k != 1 && k != 3) || (ss != 1 && ss != 2) || (ts != 1 && ts != 2))
+    throw std::invalid_argument("reference conv3d: invalid shape");
+  const int oh = h / ss, ow = width / ss, ot = (t - 1) / ts + 1,
+            K = ci * k * k * k, N = ot * oh * ow;
+  const int tile = std::min(N, 2048);
+  ReferenceBuffer<__half> col(size_t(K) * tile, scratch_);
+  auto out = allocate<__half>(size_t(co) * N);
+  memory_.sample();
+  float one = 1, zero = 0;
+  for (int start = 0; start < N; start += tile) {
+    const int n = std::min(tile, N - start);
+    col3<<<blocks(size_t(K) * n), 256, 0, stream_>>>(
+        x, col.get(), ci, t, h, width, k, ss, ts, down, oh, ow, start, n);
+    blas_check(cublas_gemm_ex(blas_, CUBLAS_OP_N, CUBLAS_OP_N, n, co, K,
+        &one, col.get(), CUDA_R_16F, n, w, CUDA_R_16F, K, &zero,
+        out.get() + start, CUDA_R_16F, N, CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+  }
+  if (b) half_bias<<<blocks(out.size()), 256, 0, stream_>>>(out.get(), b, N, out.size());
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
   return out;
 }
@@ -354,12 +390,19 @@ void ReferenceEncoderOps::snake(float* x, const float* a, int b, int c,
 void ReferenceEncoderOps::add(float* x, const float* p, size_t n) {
   element<<<blocks(n), 256, 0, stream_>>>(x, p, n, 0, 0, 0);
 }
+void ReferenceEncoderOps::add(__half* x, const __half* p, size_t n) {
+  half_add<<<blocks(n), 256, 0, stream_>>>(x, p, n);
+}
 void ReferenceEncoderOps::geglu(float* x, const float* p, size_t n) {
   element<<<blocks(n), 256, 0, stream_>>>(x, p, n, 0, 0, 2);
 }
 void reference_groupnorm(const float* x, const __half* w, const __half* b,
                          float* y, int c, int t, int h, int width,
                          cudaStream_t stream) {
+  gn<<<32 * t, 256, 0, stream>>>(x, w, b, y, c, t, h * width);
+}
+void reference_groupnorm(const __half* x, const __half* w, const __half* b,
+                         __half* y, int c, int t, int h, int width, cudaStream_t stream) {
   gn<<<32 * t, 256, 0, stream>>>(x, w, b, y, c, t, h * width);
 }
 }  // namespace slopfab::cuda

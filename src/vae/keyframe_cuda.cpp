@@ -5,6 +5,9 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <type_traits>
 #include <cstdio>
 #include <map>
 #include <stdexcept>
@@ -273,6 +276,8 @@ struct KeyframeEncoder::Impl {
   DeviceBuffer<__half> weight_workspace;
   size_t weight_workspace_elements = 0;
   std::unique_ptr<cuda::ReferenceEncoderOps> reference_ops;
+  template <typename T> std::vector<float> temporal_moments(const float* pixels,
+      int frames, int height, int width);
 
   explicit Impl(const SafeTensors& checkpoint) {
     // See the note on `SafeTensors::prefetch`: issued first because it is
@@ -428,25 +433,33 @@ std::vector<float> KeyframeEncoder::encode_reference_image(
   return encode_condition_rows(image, normal.data(), latents_mean, latents_std);
 }
 
-std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels, int frames, int height, int width) {
+template <typename T>
+std::vector<float> KeyframeEncoder::Impl::temporal_moments(const float* pixels, int frames, int height, int width) {
   if (!pixels || frames <= 0 || frames > 17 || height <= 0 || width <= 0 || height % 16 || width % 16)
     throw std::invalid_argument("video encoder: expected 1..17 frames and dimensions divisible by 16");
-  if (!impl_->reference_ops)
-    impl_->reference_ops = std::make_unique<cuda::ReferenceEncoderOps>(impl_->stream.get());
-  auto& ops = *impl_->reference_ops;
+  if (!reference_ops)
+    reference_ops = std::make_unique<cuda::ReferenceEncoderOps>(stream.get());
+  auto& ops = *reference_ops;
   int t = frames, h = height, w = width;
-  auto conv = [&](const cuda::ReferenceBuffer<float>& x, const std::string& name, int ci, int co,
+  auto conv = [&](const cuda::ReferenceBuffer<T>& x, const std::string& name, int ci, int co,
                   int k, int ss = 1, int ts = 1, bool down = false) {
-    const auto& weight = impl_->convs.at(name);
-    return ops.conv3d(x.get(), weight.weight.materialize(impl_->weight_workspace.get(),
-        impl_->weight_workspace_elements, impl_->stream.get()), weight.bias, ci, co, t, h, w, k, ss, ts, down);
+    const auto& weight = convs.at(name);
+    return ops.conv3d(x.get(), weight.weight.materialize(weight_workspace.get(),
+        weight_workspace_elements, stream.get()), weight.bias, ci, co, t, h, w, k, ss, ts, down);
   };
-  auto norm = [&](const float* x, float* y, const std::string& name, int c) {
-    const auto& n = impl_->norms.at(name);
-    cuda::reference_groupnorm(x, n.weight, n.bias, y, c, t, h, w, impl_->stream.get());
+  auto norm = [&](const T* x, T* y, const std::string& name, int c) {
+    const auto& n = norms.at(name);
+    cuda::reference_groupnorm(x, n.weight, n.bias, y, c, t, h, w, stream.get());
   };
-  auto x = ops.allocate<float>(size_t(3) * t * h * w);
-  x.copy_from_host(pixels, x.size(), impl_->stream.get());
+  auto x = ops.allocate<T>(size_t(3) * t * h * w);
+  std::vector<T> upload;
+  if constexpr (std::is_same_v<T, float>) {
+    x.copy_from_host(pixels, x.size(), stream.get());
+  } else {
+    upload.resize(x.size());
+    for (size_t i = 0; i < x.size(); ++i) upload[i] = __float2half_rn(pixels[i]);
+    x.copy_from_host(upload.data(), upload.size(), stream.get());
+  }
   x = conv(x, "encoder.conv_in", 3, 128, 3);
   const int channels[] = {128,256,256,512,512,1024};
   const int spatial[] = {2,2,2,2,1,1}, temporal[] = {1,2,2,1,1,1};
@@ -454,7 +467,7 @@ std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels,
   for (int level = 0; level < 6; ++level) {
     for (int block = 0; block < 2; ++block) {
       std::string prefix = "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
-      auto branch = ops.allocate<float>(x.size());
+      auto branch = ops.allocate<T>(x.size());
       norm(x.get(), branch.get(), prefix + ".norm1", current);
       branch = conv(branch, prefix + ".conv1", current, channels[level], 3);
       norm(branch.get(), branch.get(), prefix + ".norm2", channels[level]);
@@ -472,15 +485,29 @@ std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels,
   norm(x.get(), x.get(), "encoder.norm_out", 1024);
   x = conv(x, "encoder.conv_out", 1024, 48, 3);
   x = conv(x, "quant_conv", 48, 48, 1);
-  std::vector<float> moments(x.size());
-  x.copy_to_host(moments.data(), moments.size(), impl_->stream.get());
-  impl_->stream.synchronize();
+  std::vector<T> host(x.size());
+  x.copy_to_host(host.data(), host.size(), stream.get());
+  stream.synchronize();
+  std::vector<float> moments(host.size());
+  for (size_t i = 0; i < host.size(); ++i) {
+    moments[i] = static_cast<float>(host[i]);
+    if constexpr (std::is_same_v<T, __half>) {
+      if (!std::isfinite(moments[i]))
+        throw std::runtime_error("reference video: nonfinite FP16 moments; retry with SLOPFAB_REFERENCE_FP32=1");
+    }
+  }
   ops.report_memory("video chunk");
   return moments;
 }
 
+std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels,
+    int frames, int height, int width, bool mixed_precision) {
+  return mixed_precision ? impl_->temporal_moments<__half>(pixels, frames, height, width)
+                         : impl_->temporal_moments<float>(pixels, frames, height, width);
+}
+
 std::vector<float> KeyframeEncoder::encode_reference_video(const std::vector<RGBImage>& frames,
-    int count, const std::vector<float>& mean, const std::vector<float>& stddev) {
+    int count, const std::vector<float>& mean, const std::vector<float>& stddev, bool mixed_precision) {
   if (count < 22 || (count - 5) % 17 || size_t(count) > frames.size())
     throw std::invalid_argument("reference video: input must be 17*n+5 frames");
   const int h = frames.front().height, w = frames.front().width;
@@ -496,7 +523,13 @@ std::vector<float> KeyframeEncoder::encode_reference_video(const std::vector<RGB
       for (int c = 0; c < 3; ++c)
         std::copy_n(prepared.data() + size_t(c) * plane, plane, pixels.data() + (size_t(c) * 17 + t) * plane);
     }
-    const auto chunk = encode_temporal_moments(pixels.data(), 17, h, w);
+    const auto begin = std::chrono::steady_clock::now();
+    const auto chunk = encode_temporal_moments(pixels.data(), 17, h, w, mixed_precision);
+    if (cuda::StepProfiler::instance().enabled()) {
+      const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+      std::printf("references  CUDA %s chunk %d/%d: 17 frames at %dx%d in %.3f s\n",
+          mixed_precision ? "fp16" : "fp32", start / 17 + 1, (count + 16) / 17, w, h, seconds);
+    }
     const int latent_start = start / 17 * 5;
     const int keep = std::min(5, latent_frames - latent_start);
     for (int c = 0; c < 48; ++c)

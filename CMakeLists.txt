@@ -1481,6 +1481,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/harness.cpp
       tests/test_kernels.cu
       tests/test_nn_kernels.cu
+      tests/test_reference_encoder.cu
       tests/test_audio_vae.cu
       tests/test_transformer.cu
       tests/test_encoder.cu

@@ -1,6 +1,7 @@
 """Real-checkpoint FFmpeg-free DLL smoke run with video and PCM references.
 
-Usage: python reference_generation_smoke.py slopfab.dll repository-root [vulkan]
+Usage: python reference_generation_smoke.py slopfab.dll repository-root [vulkan] [--reuse]
+--reuse checks identical repeated output, a new seed, and skipped VAE encodes.
 No output files are written; asserts decoded frame/audio geometry and finiteness.
 """
 import ctypes as C
@@ -11,6 +12,8 @@ import sys
 root = pathlib.Path(sys.argv[2]).resolve()
 dll = C.CDLL(str(pathlib.Path(sys.argv[1]).resolve()))
 handle = C.c_void_p
+reuse = "--reuse" in sys.argv[3:]
+reference_events = []
 
 
 def bind(name, arguments, result=C.c_int):
@@ -62,6 +65,7 @@ Callback = C.CFUNCTYPE(None, C.POINTER(Progress), handle)
 @Callback
 def progress(value, _):
     p = value.contents
+    if p.stage == 1: reference_events.append(p.elapsed_seconds)
     print(f"stage={p.stage} step={p.step} elapsed={p.elapsed_seconds:.1f}s", flush=True)
 
 
@@ -89,29 +93,57 @@ try:
     check(set_resolution(request, 32, 32))
     check(set_frames(request, 22))
     check(set_steps(request, 2))
-    if len(sys.argv) > 3 and sys.argv[3] == "vulkan":
+    if "vulkan" in sys.argv[3:]:
         set_backend = bind("slopfab_request_set_inference_backend", [handle, C.c_int])
         check(set_backend(request, 1))
-    check(start(request, progress, None, C.byref(generation)))
-    # Inputs are released while the worker is active, exercising ownership.
-    destroy(request)
-    request = None
-    video_destroy(video)
-    video = handle()
-    while True:
-        status = wait(generation, 1000)
-        if status == -7:
-            continue
-        if status:
-            raise RuntimeError(generation_error(generation).decode())
-        break
-    result = Output()
-    check(output(generation, C.byref(result)))
-    assert (result.frames, result.width, result.height) == (22, 32, 32)
-    assert result.audio_frames > 0 and result.audio_channels == 2
-    assert all(math.isfinite(result.video[i]) for i in range(result.video_float_count))
-    assert all(math.isfinite(result.audio[i]) for i in range(result.audio_float_count))
-    print(f"PASS: {result.frames} frames, {result.audio_frames} stereo audio samples, {result.steps_computed} denoiser evaluation(s).")
+    set_seed = bind("slopfab_request_set_seed", [handle, C.c_uint64])
+    if reuse:
+        check(bind("slopfab_request_set_reuse_models", [handle, C.c_int])(request, 1))
+    first_output = None
+    first_reference_count = None
+    runs = 3 if reuse else 1
+    for run in range(runs):
+        check(set_seed(request, 11 if run < 2 else 12))
+        reference_events.clear()
+        check(start(request, progress, None, C.byref(generation)))
+        # On the last run all input handles are released while work is active.
+        if run == runs - 1:
+            destroy(request)
+            request = None
+        if video:
+            video_destroy(video)
+            video = handle()
+        while True:
+            status = wait(generation, 1000)
+            if status == -7:
+                continue
+            if status:
+                raise RuntimeError(generation_error(generation).decode())
+            break
+        result = Output()
+        check(output(generation, C.byref(result)))
+        assert (result.frames, result.width, result.height) == (22, 32, 32)
+        assert result.audio_frames > 0 and result.audio_channels == 2
+        assert all(math.isfinite(result.video[i]) for i in range(result.video_float_count))
+        assert all(math.isfinite(result.audio[i]) for i in range(result.audio_float_count))
+        video_bytes = C.string_at(result.video, result.video_float_count * C.sizeof(C.c_float))
+        audio_bytes = C.string_at(result.audio, result.audio_float_count * C.sizeof(C.c_float))
+        if run == 0:
+            first_output = (video_bytes, audio_bytes)
+            first_reference_count = len(reference_events)
+        elif run == 1:
+            assert first_output == (video_bytes, audio_bytes), "cache changed same-seed output"
+        else:
+            assert first_output[0] != video_bytes, "new seed did not change video"
+        if run:
+            assert len(reference_events) < first_reference_count, "cache did not skip VAE encoding"
+        print(f"PASS run {run + 1}: {result.frames} frames, {result.audio_frames} stereo audio samples, "
+              f"{result.steps_computed} denoiser evaluation(s), {len(reference_events)} reference events.", flush=True)
+        generation_destroy(generation)
+        generation = handle()
+    if reuse:
+        check(bind("slopfab_reused_models_clear", [])())
+
 finally:
     if generation:
         generation_destroy(generation)

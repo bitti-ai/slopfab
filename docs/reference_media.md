@@ -138,6 +138,41 @@ numerically checked against CPU PyTorch; bitwise equality to CUDA is not promise
 Remaining work includes NF4 reference encoder support,
 longer-run perceptual quality comparisons.
 
+### CUDA reference performance
+
+Generation uses FP16 video encoder activations and im2col scratch, with cuBLAS
+FP32 accumulation and FP32 normalization statistics. FP16 checkpoint weights
+feed GEMM directly, avoiding the former per-convolution FP32 conversion.
+Audio encoding remains FP32. Set `SLOPFAB_REFERENCE_FP32=1` before launching the
+CLI or DLL host to use the original video arithmetic. Precision is part of the
+media cache key. The low-level encoder/probe defaults to FP32 for authority
+comparisons; its explicit mixed-precision switch does not affect images.
+
+Measured on an idle RTX 5090, 768x768 reference, 22 frames (two 17-frame chunks),
+FP16 video checkpoint, warm encoder, second of two identical runs. Both modes
+use the new pools and `SLOPFAB_PROFILE=1`; encoding includes pixel preparation
+and latent packing but excludes model loading:
+
+| Measurement | FP32 | FP16 |
+|---|---:|---:|
+| Reference video encode | 12.677 s | 4.840 s |
+| Peak live activation storage | 14.344 GiB | 7.172 GiB |
+| Reserved activation + scratch pools | 14.555 GiB | 7.277 GiB |
+| Sampled total device memory peak | 16.54 GiB | 9.26 GiB |
+
+The resulting 387,072 condition values differ by 0.000585 relative RMS and
+0.04735 maximum absolute error. The original 32x32 CPU golden gives FP16 errors
+of 0.000420 relative RMS for moments and 0.000544 for condition rows. The FP32
+golden tolerances remain unchanged; the separate FP16 gate is 0.005 relative
+RMS and 0.1 maximum absolute error. These numerical checks do not establish
+perceptual equivalence for every reference/checkpoint.
+
+The CUDA DLL smoke test with video, soundtrack and standalone audio reached
+conditioning at 6.8 s on the first generation and about 0.1 s on cache hits.
+Repeated same-seed decoded video and audio were byte-identical; changing the
+seed changed the video. These are reference-stage savings, not a claim about
+total generation time.
+
 Sources: [reference normalization](https://github.com/huggingface/diffusers/blob/c419dac0152186060246c93a095bc1bfaea342b3/src/diffusers/modular_pipelines/minimax_h3/before_encoder.py),
 [conditioning](https://github.com/huggingface/diffusers/blob/c419dac0152186060246c93a095bc1bfaea342b3/src/diffusers/modular_pipelines/minimax_h3/encoders.py),
 [audio encoder](https://github.com/huggingface/diffusers/blob/c419dac0152186060246c93a095bc1bfaea342b3/src/diffusers/models/autoencoders/autoencoder_kl_minimax_h3_audio.py).
@@ -185,6 +220,23 @@ means. Generate and check a fixture with:
 python tools/reference_encoder_goldens.py VIDEO_VAE AUDIO_VAE golden.safetensors
 slopfab_referenceprobe VIDEO_VAE AUDIO_VAE golden.safetensors
 ```
+
+Add `--fp16` to validate CUDA mixed precision. To reproduce the performance
+comparison, run the following from a scratch directory (each writes its
+condition rows to `reference-bench-fp32.bin` or `reference-bench-fp16.bin`):
+
+```text
+slopfab_referenceprobe VIDEO_VAE AUDIO_VAE golden.safetensors --bench 768 768 22
+slopfab_referenceprobe VIDEO_VAE AUDIO_VAE golden.safetensors --bench 768 768 22 --fp16
+```
+
+`--bench` checks finiteness and exact repeatability over two encodes. Enable
+`SLOPFAB_PROFILE=1` for per-chunk timings and memory/pool counters. The focused
+`reference_` CUDA kernel tests independently check causal/reflected convolution
+boundaries, both strides, FP16/FP32 arithmetic, normalization and residual adds.
+Add `--reuse` to `tools/reference_generation_smoke.py DLL REPOSITORY_ROOT` to
+check three serial generations, cache hits, same-seed equality, changed-seed
+output and release of input handles while the final worker is active.
 
 The FP16 video/FP32 audio checkpoint run measured relative RMS errors of
 `2.01e-6` for video moments, `8.33e-7` for audio means, and `5.58e-8` for

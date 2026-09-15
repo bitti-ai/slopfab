@@ -13,6 +13,11 @@ namespace slopfab::cuda {
 // request pinning a multi-GiB activation block.
 class ReferenceBufferPool {
  public:
+  ReferenceBufferPool() = default;
+  ReferenceBufferPool(const ReferenceBufferPool&) = delete;
+  ReferenceBufferPool& operator=(const ReferenceBufferPool&) = delete;
+  ReferenceBufferPool(ReferenceBufferPool&&) = delete;
+  ReferenceBufferPool& operator=(ReferenceBufferPool&&) = delete;
   struct Lease { void* pointer; size_t slot; };
   Lease acquire(size_t bytes) {
     size_t best = blocks_.size();
