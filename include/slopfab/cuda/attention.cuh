@@ -137,6 +137,14 @@ void attention_forward(cublasHandle_t handle, cudaStream_t stream, const __nv_bf
                        const __nv_bfloat16* k, const __nv_bfloat16* v, __nv_bfloat16* out,
                        const AttentionConfig& cfg, AttentionBackend backend, Workspace& ws);
 
+// Flash2 with compact Q/output [query_rows, heads*head_dim] and full K/V.
+// query_offset locates these queries in cfg.seq_len for frame-band lookup.
+// Banded chunks must start on a fused query-tile boundary. No scratch needed.
+void attention_forward_query_chunk(cudaStream_t stream, const __nv_bfloat16* q,
+                                   const __nv_bfloat16* k, const __nv_bfloat16* v,
+                                   __nv_bfloat16* out, const AttentionConfig& cfg,
+                                   int query_offset, int query_rows);
+
 // Grouped-query variant for the Qwen3-VL encoder: 64 query heads share 8
 // key/value heads, so `k` and `v` are `[seq, num_kv_heads * head_dim]` and
 // query head `h` reads kv head `h / (num_heads / num_kv_heads)`.

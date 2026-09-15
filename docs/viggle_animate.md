@@ -1,5 +1,9 @@
 # Viggle-Animate transformer checkpoints
 
+For CUDA denoising VRAM reductions and stage profiling, see
+[Denoising memory](denoising_memory.md). Flash2 uses compact Q/output buffers
+by default; projection/FFN scratch is bounded to 2,048 rows.
+
 The CUDA and Vulkan transformer loaders accept
 `Viggle-Animate-pruned_rank8_int8_convrot.safetensors` directly. Select it
 explicitly with `--transformer` or `SLOPFAB_MODEL_TRANSFORMER` in the C API.

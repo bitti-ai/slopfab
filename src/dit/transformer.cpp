@@ -13,8 +13,8 @@
 // output heads is strictly row-wise, so they are processed `kRowChunk` rows at
 // a time — exactly equivalent, and it cuts the transient buffers by four to
 // five times. Attention is the exception: it needs the whole sequence on the
-// key axis, so `q`, `k` and `v` are materialised in full and only the query
-// axis is blocked, which `attention_forward` already does internally.
+// key axis. Flash2 keeps K/V in full, then projects Q, evaluates attention and
+// consumes its output one row chunk at a time. Other backends keep full Q/O.
 //
 // The workspace is reserved once at the high-water mark in `prepare_sequence`
 // and never grows inside the loop.
@@ -482,6 +482,8 @@ struct BlockWeights {
 // `activation_bytes` and the carve cannot drift apart.
 struct Carve {
   int chunk = 0;
+  bool chunked_attention = false;
+  size_t query = 0;     // Q and attention output; compact on Flash2
   size_t qkv = 0;       // one of q/k/v, elements
   size_t normed = 0;
   size_t fused = 0;
@@ -520,7 +522,7 @@ size_t attention_scratch_for_mode(const TransformerConfig& cfg, int sequence,
 Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
                  int row_chunk = kRowChunk,
                  AttentionMode attention_mode = AttentionMode::kFlash2,
-                 bool reserve_convrot = false) {
+                 bool reserve_convrot = false, bool query_chunking = false) {
   const int seq = layout.total_rows();
   const int hidden = cfg.hidden_size;
   const int inner = cfg.inner_dim();
@@ -528,13 +530,16 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
   Carve c;
   c.chunk = std::min(row_chunk, std::max(seq, 1));
   c.qkv = static_cast<size_t>(seq) * inner;
+  c.chunked_attention = query_chunking && seq > c.chunk;
+  c.query = static_cast<size_t>(c.chunked_attention ? c.chunk : seq) * inner;
   c.normed = static_cast<size_t>(c.chunk) * hidden;
   c.fused = static_cast<size_t>(c.chunk) * 2 * cfg.ffn_dim;
   c.act = static_cast<size_t>(c.chunk) * cfg.ffn_dim;
   c.fbuf = static_cast<size_t>(c.chunk) * hidden;
 
   size_t bytes = 0;
-  bytes += 4 * align_up(c.qkv * sizeof(__nv_bfloat16));  // q, k, v, attn_out
+  bytes += 2 * align_up(c.qkv * sizeof(__nv_bfloat16));  // k, v
+  bytes += 2 * align_up(c.query * sizeof(__nv_bfloat16));  // q, attn_out
   bytes += align_up(c.normed * sizeof(__nv_bfloat16));
   bytes += align_up(c.fused * sizeof(__nv_bfloat16));
   bytes += align_up(c.act * sizeof(__nv_bfloat16));
@@ -573,6 +578,9 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     scratch = std::max(scratch, 3 * dense(inner, hidden) + act_ws(inner, hidden));
     // out_proj on its own.
     scratch = std::max(scratch, dense(hidden, inner) + act_ws(hidden, inner));
+    // Chunked attention keeps Q and output projection weights together.
+    scratch = std::max(scratch, dense(inner, hidden) + dense(hidden, inner) +
+                      std::max(act_ws(inner, hidden), act_ws(hidden, inner)));
     // fc1 and fc2 live at once.
     scratch = std::max(scratch, dense(2 * cfg.ffn_dim, hidden) + dense(hidden, cfg.ffn_dim) +
                                     std::max(act_ws(2 * cfg.ffn_dim, hidden),
@@ -634,6 +642,14 @@ struct Transformer::Impl {
   int attn_band = 0;
   AttentionMode attention_mode = AttentionMode::kFlash2;
   int row_chunk = kRowChunk;
+  bool query_chunking = true;
+  bool compact_queries(AttentionMode mode) const {
+    return query_chunking && mode == AttentionMode::kFlash2 &&
+           (cfg.attention_head_dim == 64 || cfg.attention_head_dim == 128) &&
+           row_chunk % cuda::attention_fused_query_tile() == 0 &&
+           block_capture_path.empty() && graph_capture_path.empty() &&
+           transformer_capture_path.empty() && sol_capture_path.empty();
+  }
   int denoise_step = -1;
   SolSchedule sol_schedule;
   std::string sol_capture_path;
@@ -1139,6 +1155,8 @@ struct Transformer::Impl {
   std::vector<int32_t> host_ts;
 
   Impl() {
+    const char* full_queries = std::getenv("SLOPFAB_DIT_FULL_QUERIES");
+    query_chunking = !(full_queries != nullptr && full_queries[0] == '1');
     SLOPFAB_CUBLAS_CHECK(cuda::cublas_create(&blas));
     linear.init(blas, stream.get());
 
@@ -1365,132 +1383,212 @@ struct Transformer::Impl {
       lora.apply(weight.data, input, count, output, blas, stream.get(), true);
     };
 
-    // Dequantised once per block, not once per row-chunk. The dense copy of a
-    // weight does not depend on which rows are being projected, so re-deriving
-    // it inside the loop was the largest single piece of redundant memory
-    // traffic in a step: 771 MB per block per chunk, at ten chunks and fifty
-    // blocks. The scope holds them until the loop ends; `compute_carve` sizes
-    // the arena for the three thirds at once, which is exactly the fused
-    // qkv_proj it already reserved for.
-    {
-      Workspace::Scope qkv_scope(ws);
-      const __nv_bfloat16* dq = linear.prepare(b.wq, ws);
-      const __nv_bfloat16* dk = linear.prepare(b.wk, ws);
-      const __nv_bfloat16* dv = linear.prepare(b.wv, ws);
-      // Its own phase. Billed to `attn.norm1` it would look like a norm that
-      // got slower when the dequantisation moved out of the loop, which is the
-      // opposite of what happened.
-      prof.tick("attn.dequant", stream.get());
-      for (int start = 0; start < rows; start += chunk) {
-        const int n = std::min(chunk, rows - start);
+    if (carve.chunked_attention) {
+      // All keys/values must be formed from the original residual stream.
+      // Once they are ready each query chunk can update only its own rows of
+      // x: later queries read disjoint rows, so no full Q or output is needed.
+      auto normalize = [&](int start, int n) {
         const size_t off = static_cast<size_t>(start) * hidden;
-        if (mod_base != nullptr) {
-          cuda::launch_rmsnorm_modulate(x + off, b.norm1, scale_msa, shift_msa, adaln_idx + start,
-                                        normed, n, hidden, eps, stream.get());
-        } else {
+        if (mod_base != nullptr)
+          cuda::launch_rmsnorm_modulate(x + off, b.norm1, scale_msa, shift_msa,
+              adaln_idx + start, normed, n, hidden, eps, stream.get());
+        else
           cuda::launch_rmsnorm(x + off, b.norm1, normed, n, hidden, eps, stream.get());
-        }
         prof.tick("attn.norm1", stream.get());
-        // Three GEMMs against contiguous thirds of `qkv_proj` rather than one
-        // fused GEMM plus a split: identical arithmetic, and it writes straight
-        // into the full-sequence q/k/v without a [chunk, 21504] staging buffer.
-        const size_t qoff = static_cast<size_t>(start) * inner;
-        project(b.wq, dq, normed, n, q + qoff);
-        project(b.wk, dk, normed, n, k + qoff);
-        project(b.wv, dv, normed, n, v + qoff);
-        prof.tick("attn.qkv_proj", stream.get());
+      };
+      {
+        Workspace::Scope kv_scope(ws);
+        const __nv_bfloat16* dk = linear.prepare(b.wk, ws);
+        const __nv_bfloat16* dv = linear.prepare(b.wv, ws);
+        prof.tick("attn.dequant", stream.get());
+        for (int start = 0; start < rows; start += chunk) {
+          const int n = std::min(chunk, rows - start);
+          normalize(start, n);
+          const size_t off = static_cast<size_t>(start) * inner;
+          project(b.wk, dk, normed, n, k + off);
+          project(b.wv, dv, normed, n, v + off);
+          prof.tick("attn.qkv_proj", stream.get());
+        }
       }
-    }
+      cuda::launch_head_rmsnorm(k, b.k_norm, rows, cfg.num_attention_heads,
+                                cfg.attention_head_dim, eps, stream.get());
+      if (cos != nullptr)
+        cuda::launch_rope_h3(k, cos, sin, rows, cfg.num_attention_heads,
+                             cfg.attention_head_dim, stream.get());
+      prof.tick("attn.qknorm_rope", stream.get());
 
-    // QK-norm over the 128-wide head dimension, then RoPE — in that order
-    // (spec 4.3). `v` is not normalised and never rotated.
-    cuda::launch_head_rmsnorm(q, b.q_norm, rows, cfg.num_attention_heads, cfg.attention_head_dim,
-                              eps, stream.get());
-    cuda::launch_head_rmsnorm(k, b.k_norm, rows, cfg.num_attention_heads, cfg.attention_head_dim,
-                              eps, stream.get());
-    if (cos != nullptr) {
-      cuda::launch_rope_h3(q, cos, sin, rows, cfg.num_attention_heads, cfg.attention_head_dim,
-                           stream.get());
-      cuda::launch_rope_h3(k, cos, sin, rows, cfg.num_attention_heads, cfg.attention_head_dim,
-                           stream.get());
-    }
-    if (layer >= 0) capture_block_qkv(q, k, v);
-    prof.tick("attn.qknorm_rope", stream.get());
-
-    AttentionConfig acfg;
-    acfg.seq_len = rows;
-    acfg.num_heads = cfg.num_attention_heads;
-    acfg.head_dim = cfg.attention_head_dim;
-    // The label follows the backend that actually ran. It used to say
-    // "attn.fused" unconditionally, so the profile could not distinguish the
-    // fused path from a fallback to the blocked one — only the magnitudes
-    // could, which is not a check, it is a reader noticing.
-    AttentionBackend backend = AttentionBackend::kFused;
-    if (block_attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
-    if (block_attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
-    // Released H3 policy: dense for the first ten denoiser evaluations and
-    // for blocks 0 and 1 on every later evaluation. Refiner layer=-1 is dense.
-    if (is_sol_attention(block_attention_mode))
-      backend = AttentionBackend::kSol;
-    // Empty unless this request asked for a band, so the default path hands the
-    // kernel a null pointer and gets the unbanded instantiation.
-    // The text refiner is always full attention. On a reused model `d_band`
-    // may still hold the preceding main sequence's table, so key this on the
-    // block kind as well as buffer presence rather than relying on first-run
-    // allocation order.
-    acfg.band_ranges = layer >= 0 && d_band.size() > 0 ? d_band.get() : nullptr;
-    if (backend == AttentionBackend::kSol && rows == layout.total_rows()) {
-      acfg.exact_prefix = layout.video_start();
-      acfg.sol_beta = sol_schedule.beta;
-      acfg.sol_error_k=sol_schedule.error_k;
-      acfg.sol_error_v=sol_schedule.error_v;
-      acfg.sol_pipeline = block_attention_mode == AttentionMode::kSolExperimental ||
-                          sol_pipeline_diag;
-    }
-    if (layer >= 0 && !sol_capture_path.empty()) capture_sol_inputs(q, k, v, rows, layer);
-    if (block_attention_mode == AttentionMode::kExact) {
-      cuda::launch_deterministic_h3_attention(
-          stream.get(), q, k, v, attn_out, acfg.band_ranges,
-          static_cast<uint32_t>(rows), static_cast<uint32_t>(cfg.num_attention_heads),
-          static_cast<uint32_t>(cfg.attention_head_dim), acfg.effective_scale());
-      if (layer < 0) ++attention_routes.exact_refiner_full;
-      else if (acfg.band_ranges == nullptr) ++attention_routes.exact_main_full;
-      else ++attention_routes.exact_main_banded;
-    } else {
-      cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
+      AttentionConfig acfg;
+      acfg.seq_len = rows;
+      acfg.num_heads = cfg.num_attention_heads;
+      acfg.head_dim = cfg.attention_head_dim;
+      acfg.band_ranges = layer >= 0 && d_band.size() > 0 ? d_band.get() : nullptr;
+      {
+        Workspace::Scope query_scope(ws);
+        const __nv_bfloat16* dq = linear.prepare(b.wq, ws);
+        const __nv_bfloat16* dout = linear.prepare(b.out_proj, ws);
+        prof.tick("attn.dequant", stream.get());
+        for (int start = 0; start < rows; start += chunk) {
+          const int n = std::min(chunk, rows - start);
+          const size_t off = static_cast<size_t>(start) * hidden;
+          normalize(start, n);
+          project(b.wq, dq, normed, n, q);
+          prof.tick("attn.qkv_proj", stream.get());
+          cuda::launch_head_rmsnorm(q, b.q_norm, n, cfg.num_attention_heads,
+                                    cfg.attention_head_dim, eps, stream.get());
+          if (cos != nullptr) {
+            // H3 rotary tables store the 96 rotated channels per row.
+            const size_t rope_off = static_cast<size_t>(start) * 96;
+            cuda::launch_rope_h3(q, cos + rope_off, sin + rope_off, n,
+                                 cfg.num_attention_heads, cfg.attention_head_dim, stream.get());
+          }
+          prof.tick("attn.qknorm_rope", stream.get());
+          cuda::attention_forward_query_chunk(stream.get(), q, k, v, attn_out,
+                                               acfg, start, n);
+          diagnose("attention", attn_out, static_cast<size_t>(n) * inner, layer);
+          prof.tick("attn.flash2", stream.get());
+          project(b.out_proj, dout, attn_out, n, branch);
+          diagnose("out_proj", branch, static_cast<size_t>(n) * hidden, layer);
+          prof.tick("attn.out_proj", stream.get());
+          if (mod_base != nullptr)
+            cuda::launch_add_gated(x + off, branch, gate_msa, adaln_idx + start,
+                                   n, hidden, stream.get());
+          else
+            cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden,
+                                       stream.get());
+          prof.tick("attn.residual", stream.get());
+          diagnose("attention_residual", x + off, static_cast<size_t>(n) * hidden, layer);
+        }
+      }
       if (layer < 0) ++attention_routes.generic_refiner;
       else ++attention_routes.generic_main;
-    }
-    if (layer >= 0) capture_block_attention(attn_out);
-    diagnose("attention",attn_out,size_t(rows)*inner,layer);
-    const char* label = block_attention_mode == AttentionMode::kExact ? "attn.exact" :
-                        backend == AttentionBackend::kFused ? "attn.flash2" :
-                        backend == AttentionBackend::kSage2 ? "attn.sage2" :
-                        backend == AttentionBackend::kSol ?
-                          (block_attention_mode==AttentionMode::kSolExperimental?
-                            "attn.sol.experimental":"attn.sol") : "attn.none";
-    prof.tick(label, stream.get());
-
-    {
-      Workspace::Scope out_scope(ws);
-      const __nv_bfloat16* dout = linear.prepare(b.out_proj, ws);
-      prof.tick("attn.dequant", stream.get());
-      for (int start = 0; start < rows; start += chunk) {
-        const int n = std::min(chunk, rows - start);
-        const size_t off = static_cast<size_t>(start) * hidden;
-        project(b.out_proj, dout,
-                attn_out + static_cast<size_t>(start) * inner, n, branch);
-        diagnose("out_proj",branch,size_t(n)*hidden,layer);
-        prof.tick("attn.out_proj", stream.get());
-        if (mod_base != nullptr) {
-          cuda::launch_add_gated(x + off, branch, gate_msa, adaln_idx + start, n, hidden,
-                                 stream.get());
-        } else {
-          cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden,
-                                     stream.get());
+    } else {
+      // Dequantised once per block, not once per row-chunk. The dense copy of a
+      // weight does not depend on which rows are being projected, so re-deriving
+      // it inside the loop was the largest single piece of redundant memory
+      // traffic in a step: 771 MB per block per chunk, at ten chunks and fifty
+      // blocks. The scope holds them until the loop ends; `compute_carve` sizes
+      // the arena for the three thirds at once, which is exactly the fused
+      // qkv_proj it already reserved for.
+      {
+        Workspace::Scope qkv_scope(ws);
+        const __nv_bfloat16* dq = linear.prepare(b.wq, ws);
+        const __nv_bfloat16* dk = linear.prepare(b.wk, ws);
+        const __nv_bfloat16* dv = linear.prepare(b.wv, ws);
+        // Its own phase. Billed to `attn.norm1` it would look like a norm that
+        // got slower when the dequantisation moved out of the loop, which is the
+        // opposite of what happened.
+        prof.tick("attn.dequant", stream.get());
+        for (int start = 0; start < rows; start += chunk) {
+          const int n = std::min(chunk, rows - start);
+          const size_t off = static_cast<size_t>(start) * hidden;
+          if (mod_base != nullptr) {
+            cuda::launch_rmsnorm_modulate(x + off, b.norm1, scale_msa, shift_msa, adaln_idx + start,
+                                          normed, n, hidden, eps, stream.get());
+          } else {
+            cuda::launch_rmsnorm(x + off, b.norm1, normed, n, hidden, eps, stream.get());
+          }
+          prof.tick("attn.norm1", stream.get());
+          // Three GEMMs against contiguous thirds of `qkv_proj` rather than one
+          // fused GEMM plus a split: identical arithmetic, and it writes straight
+          // into the full-sequence q/k/v without a [chunk, 21504] staging buffer.
+          const size_t qoff = static_cast<size_t>(start) * inner;
+          project(b.wq, dq, normed, n, q + qoff);
+          project(b.wk, dk, normed, n, k + qoff);
+          project(b.wv, dv, normed, n, v + qoff);
+          prof.tick("attn.qkv_proj", stream.get());
         }
-        prof.tick("attn.residual", stream.get());
-        diagnose("attention_residual",x+off,size_t(n)*hidden,layer);
+      }
+
+      // QK-norm over the 128-wide head dimension, then RoPE — in that order
+      // (spec 4.3). `v` is not normalised and never rotated.
+      cuda::launch_head_rmsnorm(q, b.q_norm, rows, cfg.num_attention_heads, cfg.attention_head_dim,
+                                eps, stream.get());
+      cuda::launch_head_rmsnorm(k, b.k_norm, rows, cfg.num_attention_heads, cfg.attention_head_dim,
+                                eps, stream.get());
+      if (cos != nullptr) {
+        cuda::launch_rope_h3(q, cos, sin, rows, cfg.num_attention_heads, cfg.attention_head_dim,
+                             stream.get());
+        cuda::launch_rope_h3(k, cos, sin, rows, cfg.num_attention_heads, cfg.attention_head_dim,
+                             stream.get());
+      }
+      if (layer >= 0) capture_block_qkv(q, k, v);
+      prof.tick("attn.qknorm_rope", stream.get());
+
+      AttentionConfig acfg;
+      acfg.seq_len = rows;
+      acfg.num_heads = cfg.num_attention_heads;
+      acfg.head_dim = cfg.attention_head_dim;
+      // The label follows the backend that actually ran. It used to say
+      // "attn.fused" unconditionally, so the profile could not distinguish the
+      // fused path from a fallback to the blocked one — only the magnitudes
+      // could, which is not a check, it is a reader noticing.
+      AttentionBackend backend = AttentionBackend::kFused;
+      if (block_attention_mode == AttentionMode::kNone) backend = AttentionBackend::kBlocked;
+      if (block_attention_mode == AttentionMode::kSage2) backend = AttentionBackend::kSage2;
+      // Released H3 policy: dense for the first ten denoiser evaluations and
+      // for blocks 0 and 1 on every later evaluation. Refiner layer=-1 is dense.
+      if (is_sol_attention(block_attention_mode))
+        backend = AttentionBackend::kSol;
+      // Empty unless this request asked for a band, so the default path hands the
+      // kernel a null pointer and gets the unbanded instantiation.
+      // The text refiner is always full attention. On a reused model `d_band`
+      // may still hold the preceding main sequence's table, so key this on the
+      // block kind as well as buffer presence rather than relying on first-run
+      // allocation order.
+      acfg.band_ranges = layer >= 0 && d_band.size() > 0 ? d_band.get() : nullptr;
+      if (backend == AttentionBackend::kSol && rows == layout.total_rows()) {
+        acfg.exact_prefix = layout.video_start();
+        acfg.sol_beta = sol_schedule.beta;
+        acfg.sol_error_k=sol_schedule.error_k;
+        acfg.sol_error_v=sol_schedule.error_v;
+        acfg.sol_pipeline = block_attention_mode == AttentionMode::kSolExperimental ||
+                            sol_pipeline_diag;
+      }
+      if (layer >= 0 && !sol_capture_path.empty()) capture_sol_inputs(q, k, v, rows, layer);
+      if (block_attention_mode == AttentionMode::kExact) {
+        cuda::launch_deterministic_h3_attention(
+            stream.get(), q, k, v, attn_out, acfg.band_ranges,
+            static_cast<uint32_t>(rows), static_cast<uint32_t>(cfg.num_attention_heads),
+            static_cast<uint32_t>(cfg.attention_head_dim), acfg.effective_scale());
+        if (layer < 0) ++attention_routes.exact_refiner_full;
+        else if (acfg.band_ranges == nullptr) ++attention_routes.exact_main_full;
+        else ++attention_routes.exact_main_banded;
+      } else {
+        cuda::attention_forward(blas, stream.get(), q, k, v, attn_out, acfg, backend, ws);
+        if (layer < 0) ++attention_routes.generic_refiner;
+        else ++attention_routes.generic_main;
+      }
+      if (layer >= 0) capture_block_attention(attn_out);
+      diagnose("attention",attn_out,size_t(rows)*inner,layer);
+      const char* label = block_attention_mode == AttentionMode::kExact ? "attn.exact" :
+                          backend == AttentionBackend::kFused ? "attn.flash2" :
+                          backend == AttentionBackend::kSage2 ? "attn.sage2" :
+                          backend == AttentionBackend::kSol ?
+                            (block_attention_mode==AttentionMode::kSolExperimental?
+                              "attn.sol.experimental":"attn.sol") : "attn.none";
+      prof.tick(label, stream.get());
+
+      {
+        Workspace::Scope out_scope(ws);
+        const __nv_bfloat16* dout = linear.prepare(b.out_proj, ws);
+        prof.tick("attn.dequant", stream.get());
+        for (int start = 0; start < rows; start += chunk) {
+          const int n = std::min(chunk, rows - start);
+          const size_t off = static_cast<size_t>(start) * hidden;
+          project(b.out_proj, dout,
+                  attn_out + static_cast<size_t>(start) * inner, n, branch);
+          diagnose("out_proj",branch,size_t(n)*hidden,layer);
+          prof.tick("attn.out_proj", stream.get());
+          if (mod_base != nullptr) {
+            cuda::launch_add_gated(x + off, branch, gate_msa, adaln_idx + start, n, hidden,
+                                   stream.get());
+          } else {
+            cuda::launch_add_rows_bf16(x + off, branch, static_cast<size_t>(n) * hidden,
+                                       stream.get());
+          }
+          prof.tick("attn.residual", stream.get());
+          diagnose("attention_residual",x+off,size_t(n)*hidden,layer);
+        }
       }
     }
     if (layer >= 0) capture_block_attention_residual(x);
@@ -1587,6 +1685,14 @@ void Transformer::set_row_chunk(int rows) {
     throw std::runtime_error("transformer: set row chunk before preparation");
   impl_->row_chunk = rows;
 }
+
+void Transformer::set_query_chunking(bool enabled) {
+  if (impl_->attention_configuration_locked && enabled != impl_->query_chunking)
+    throw std::runtime_error("transformer: set query chunking before preparation");
+  impl_->query_chunking = enabled;
+}
+
+size_t Transformer::workspace_bytes() const { return impl_->ws.capacity(); }
 void Transformer::set_sol_schedule(const SolSchedule& schedule) { impl_->sol_schedule=schedule; }
 void Transformer::set_denoise_step(int step) { impl_->denoise_step = step; }
 
@@ -2204,7 +2310,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   const TransformerConfig& cfg = impl_->cfg;
   const Carve c = plan_carve(cfg, layout, impl_->row_chunk, impl_->attention_mode,
-                             stack_uses_convrot(impl_->blocks));
+                             stack_uses_convrot(impl_->blocks),
+                             impl_->compact_queries(impl_->attention_mode));
   const int seq = layout.total_rows();
 
   size_t total = c.total + impl_->lora.scratch_bytes();
@@ -2332,7 +2439,9 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   text_only.num_text = num_tokens;
   const Carve text_carve = plan_carve(s.cfg, text_only, s.row_chunk,
                                       s.attention_mode,
-                                      stack_uses_convrot(s.refiner));
+                                      stack_uses_convrot(s.refiner),
+                                      s.compact_queries(s.attention_mode == AttentionMode::kExact
+                                          ? AttentionMode::kExact : AttentionMode::kFlash2));
 
   Workspace& ws = s.ws;
   // The refiner needs one extra bf16 [L, text_dim] buffer that the main path
@@ -2377,10 +2486,10 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   }
   s.emit_stage("condition_proj", x, num_tokens, hidden);
 
-  __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(rows * inner);
+  __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(text_carve.query);
   __nv_bfloat16* k = ws.alloc_n<__nv_bfloat16>(rows * inner);
   __nv_bfloat16* v = ws.alloc_n<__nv_bfloat16>(rows * inner);
-  __nv_bfloat16* attn_out = ws.alloc_n<__nv_bfloat16>(rows * inner);
+  __nv_bfloat16* attn_out = ws.alloc_n<__nv_bfloat16>(text_carve.query);
   __nv_bfloat16* normed = ws.alloc_n<__nv_bfloat16>(text_carve.normed);
   __nv_bfloat16* fused = ws.alloc_n<__nv_bfloat16>(text_carve.fused);
   __nv_bfloat16* act = ws.alloc_n<__nv_bfloat16>(text_carve.act);
@@ -2434,10 +2543,11 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
     throw std::runtime_error("transformer: token tags do not cover the sequence");
   }
 
+  s.has_sequence = false;
   s.layout = layout;
   s.indices = indices;
   s.carve = plan_carve(s.cfg, layout, s.row_chunk, s.attention_mode,
-                       stack_uses_convrot(s.blocks));
+                       stack_uses_convrot(s.blocks), s.compact_queries(s.attention_mode));
   if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN) {
     const size_t old_scratch = s.carve.scratch;
     s.carve.scratch = std::max(s.carve.scratch, cuda::linear_workspace_bytes(
@@ -2450,6 +2560,17 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   // Drop a larger text/refiner reservation before allocating sequence buffers.
   // Previous preparation/forward has completed before this stage is entered.
   SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  if (cuda::StepProfiler::instance().enabled()) {
+    constexpr double gib = 1024.0 * 1024 * 1024;
+    std::printf("memory      sequence %d rows (text %d, condition video %d, condition audio %d, video %d, audio %d); "
+                "row chunk %d, compact queries %s; workspace %.3f -> %.3f GiB, "
+                "K/V %.3f GiB, Q/output %.3f GiB\n",
+                layout.total_rows(), layout.num_text, layout.num_condition_video,
+                layout.num_condition_audio, layout.num_video_rows, layout.num_audio_rows, s.carve.chunk,
+                s.carve.chunked_attention ? "yes" : "no", s.ws.capacity() / gib,
+                s.carve.total / gib, 4.0 * s.carve.qkv / gib, 4.0 * s.carve.query / gib);
+    std::fflush(stdout);
+  }
   s.ws.resize(s.carve.total);
 
   // Frame-banded attention: one small table for the whole request, ~300 entries
@@ -2586,10 +2707,10 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   s.ws.clear();
   Workspace& ws = s.ws;
   const size_t qkv_n = s.carve.qkv;
-  __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(qkv_n);
+  __nv_bfloat16* q = ws.alloc_n<__nv_bfloat16>(s.carve.query);
   __nv_bfloat16* k = ws.alloc_n<__nv_bfloat16>(qkv_n);
   __nv_bfloat16* v = ws.alloc_n<__nv_bfloat16>(qkv_n);
-  __nv_bfloat16* attn_out = ws.alloc_n<__nv_bfloat16>(qkv_n);
+  __nv_bfloat16* attn_out = ws.alloc_n<__nv_bfloat16>(s.carve.query);
   __nv_bfloat16* normed = ws.alloc_n<__nv_bfloat16>(s.carve.normed);
   __nv_bfloat16* fused = ws.alloc_n<__nv_bfloat16>(s.carve.fused);
   __nv_bfloat16* act = ws.alloc_n<__nv_bfloat16>(s.carve.act);

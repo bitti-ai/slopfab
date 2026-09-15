@@ -89,6 +89,10 @@ class Transformer {
   // Row-wise projections and FFNs default to 2048 rows of scratch. Set before
   // preparation; smaller chunks trade GEMM throughput for temporary memory.
   void set_row_chunk(int rows);
+  // Compact Flash2 Q/output buffers, enabled by default. Other backends and
+  // full-tensor capture retain their existing path. Set before preparation.
+  void set_query_chunking(bool enabled);
+  size_t workspace_bytes() const;
   void set_sol_schedule(const SolSchedule& schedule);
   void set_denoise_step(int step);
 

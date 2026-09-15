@@ -882,6 +882,55 @@ SLOPFAB_TEST(transformer_row_chunks_match_full_rows) {
   std::filesystem::remove(path);
 }
 
+SLOPFAB_TEST(transformer_query_chunks_match_full_attention) {
+  const auto cfg = tiny_config();
+  const std::string path = write_synthetic(build_synthetic(cfg));
+  slopfab::SafeTensors st; st.open(path);
+  const Case c = make_case(cfg, 259, 0.31f);
+  for (int band : {0, 1}) {
+    auto run = [&](bool compact) {
+      Transformer model; model.load(st, cfg);
+      model.set_row_chunk(128);
+      model.set_query_chunking(compact);
+      model.set_attention_band(band);
+      model.prepare_text(c.prompt.data(), c.layout.num_text);
+      model.prepare_sequence(c.layout, c.idx, c.pos);
+      std::vector<float> video(c.video_rows.size()), audio(c.audio_rows.size());
+      model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt, video.data(), audio.data());
+      const auto first = video;
+      model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt, video.data(), audio.data());
+      CHECK_CLOSE(first, video, 0.0, "query scratch reusable across steps");
+      video.insert(video.end(), audio.begin(), audio.end());
+      return video;
+    };
+    CHECK_CLOSE(run(false), run(true), 0.0, "compact transformer including refiner/RoPE/AdaLN");
+  }
+  // A long conditioning stream must not retain its workspace into a smaller
+  // following sequence. Both preparatory stages have completed here.
+  Transformer reuse; reuse.load(st, cfg);
+  reuse.set_row_chunk(128);
+  reuse.prepare_text(c.prompt.data(), c.layout.num_text);
+  const size_t text_bytes = reuse.workspace_bytes();
+  const Case small = make_case(cfg, 1, 0.31f);
+  reuse.prepare_text(small.prompt.data(), small.layout.num_text);
+  reuse.prepare_sequence(small.layout, small.idx, small.pos);
+  CHECK(reuse.workspace_bytes() < text_bytes);
+  st.close(); std::filesystem::remove(path);
+}
+
+SLOPFAB_TEST(transformer_query_chunk_memory_plan) {
+  Transformer model;
+  SequenceLayout layout;
+  layout.num_video_rows = 150000;
+  model.set_query_chunking(false);
+  const size_t full = model.activation_bytes(layout);
+  model.set_query_chunking(true);
+  const size_t compact = model.activation_bytes(layout);
+  CHECK(full - compact == size_t(150000 - 2048) * 7168 * 4);
+  std::printf("  compact queries save %.3f GiB at 150000 rows\n",
+              (full - compact) / (1024.0 * 1024 * 1024));
+}
+
 SLOPFAB_TEST(transformer_refiner_bisect) {
   const TransformerConfig cfg = tiny_config();
   const Tensors tensors = build_synthetic(cfg);
@@ -1129,9 +1178,10 @@ SLOPFAB_TEST(transformer_wrapped_checkpoint_matches_unwrapped) {
 SLOPFAB_TEST(transformer_viggle_lora_targets_reach_forward) {
   const auto cfg = tiny_config();
   const auto tensors = build_synthetic(cfg);
-  const auto c = make_case(cfg, 5, .31f);
+  const auto c = make_case(cfg, 259, .31f);
   const auto adapter_path = std::filesystem::temp_directory_path() / "slopfab_viggle_cuda_lora.safetensors";
-  auto evaluate = [&](const Tensors& weights, const std::vector<slopfab::TensorWrite>& adapter) {
+  auto evaluate = [&](const Tensors& weights, const std::vector<slopfab::TensorWrite>& adapter,
+                      bool compact = true) {
     slopfab::SafeTensors base;
     base.open(write_synthetic(weights));
     slopfab::LoraAdapters loras;
@@ -1141,6 +1191,8 @@ SLOPFAB_TEST(transformer_viggle_lora_targets_reach_forward) {
     }
     Transformer model;
     model.load(base, cfg, &loras);
+    model.set_row_chunk(128);
+    model.set_query_chunking(compact);
     model.prepare_text(c.prompt.data(), c.layout.num_text);
     model.prepare_sequence(c.layout, c.idx, c.pos);
     std::vector<float> result(c.video_rows.size() + c.audio_rows.size());
@@ -1167,6 +1219,10 @@ SLOPFAB_TEST(transformer_viggle_lora_targets_reach_forward) {
     const auto actual = evaluate(tensors, {
         {std::string(target.source) + ".lora_A.weight", {rank, in}, a},
         {std::string(target.source) + ".lora_B.weight", {out, rank}, b}});
+    CHECK_CLOSE(actual, evaluate(tensors, {
+        {std::string(target.source) + ".lora_A.weight", {rank, in}, a},
+        {std::string(target.source) + ".lora_B.weight", {out, rank}, b}}, false),
+        0.0, "compact attention preserves LoRA contributions");
     CHECK_MSG(actual != baseline, "%s update did not reach forward", target.source);
     if (std::string(target.source).compare(0, 5, "proj_") == 0) {
       auto merged = tensors;

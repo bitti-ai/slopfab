@@ -2326,6 +2326,50 @@ SLOPFAB_TEST(attention_fused_ragged_tail) {
   }
 }
 
+SLOPFAB_TEST(attention_compact_queries_match_full_buffers) {
+  CublasScope cb;
+  for (int dim : {64, 128}) for (int seq : {1, 127, 128, 259, 2051}) {
+    const int width = 2 * dim;
+    const auto q = bf16_round(make_data(size_t(seq) * width, 9701, 0.3f));
+    const auto k = bf16_round(make_data(size_t(seq) * width, 9702, 0.3f));
+    const auto v = bf16_round(make_data(size_t(seq) * width, 9703, 1.0f));
+    BfBuf dq(q), dk(k), dv(v), full(size_t(seq) * width);
+    slopfab::cuda::AttentionConfig cfg;
+    cfg.seq_len = seq; cfg.num_heads = 2; cfg.head_dim = dim;
+    for (bool banded : {false, true}) {
+      if (banded && seq < 259) continue;
+      slopfab::cuda::DeviceBuffer<int32_t> bands;
+      if (banded) {
+        std::vector<int32_t> ranges;
+        for (int tile = 0; tile < (seq + 127) / 128; ++tile)
+          ranges.insert(ranges.end(), {0, 64, 128 + (tile % 2) * 64, (seq + 63) / 64 * 64});
+        bands.allocate(ranges.size()); bands.copy_from_host(ranges.data(), ranges.size());
+      }
+      cfg.band_ranges = bands.get();
+      Workspace ws;
+      slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), full.p(),
+                                       cfg, slopfab::cuda::AttentionBackend::kFused, ws);
+      const auto expected = full.host();
+      for (int chunk : {128, 256}) {
+        std::vector<float> actual;
+        for (int start = 0; start < seq; start += chunk) {
+          const int rows = std::min(chunk, seq - start);
+          const size_t count = static_cast<size_t>(rows) * width;
+          BfBuf compact_q(std::vector<float>(q.begin() + static_cast<size_t>(start) * width,
+                                            q.begin() + static_cast<size_t>(start + rows) * width));
+          BfBuf compact_out(std::vector<float>(count + 16, 42.0f));
+          slopfab::cuda::attention_forward_query_chunk(nullptr, compact_q.p(), dk.p(), dv.p(),
+                                                       compact_out.p(), cfg, start, rows);
+          const auto got = compact_out.host();
+          CHECK(std::all_of(got.begin() + count, got.end(), [](float x) { return x == 42.0f; }));
+          actual.insert(actual.end(), got.begin(), got.begin() + count);
+        }
+        CHECK_CLOSE(expected, actual, 0.0, "compact Q/output preserves Flash2 bits and band offsets");
+      }
+    }
+  }
+}
+
 SLOPFAB_TEST(attention_sol) {
   REQUIRE_SM120_TEST("Sol attention");
   CublasScope cb;

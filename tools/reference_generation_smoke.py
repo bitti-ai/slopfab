@@ -14,6 +14,7 @@ dll = C.CDLL(str(pathlib.Path(sys.argv[1]).resolve()))
 handle = C.c_void_p
 reuse = "--reuse" in sys.argv[3:]
 reference_events = []
+denoise_events = []
 
 
 def bind(name, arguments, result=C.c_int):
@@ -66,6 +67,7 @@ Callback = C.CFUNCTYPE(None, C.POINTER(Progress), handle)
 def progress(value, _):
     p = value.contents
     if p.stage == 1: reference_events.append(p.elapsed_seconds)
+    if p.stage == 4: denoise_events.append((p.step, p.total_steps))
     print(f"stage={p.stage} step={p.step} elapsed={p.elapsed_seconds:.1f}s", flush=True)
 
 
@@ -105,6 +107,7 @@ try:
     for run in range(runs):
         check(set_seed(request, 11 if run < 2 else 12))
         reference_events.clear()
+        denoise_events.clear()
         check(start(request, progress, None, C.byref(generation)))
         # On the last run all input handles are released while work is active.
         if run == runs - 1:
@@ -122,6 +125,9 @@ try:
             break
         result = Output()
         check(output(generation, C.byref(result)))
+        assert denoise_events and denoise_events[0][0] == -1, "missing denoising entry notification"
+        assert denoise_events[0][1] > 0, "denoising entry must report its step count"
+        assert [step for step, _ in denoise_events[1:]] == list(range(denoise_events[0][1]))
         assert (result.frames, result.width, result.height) == (22, 32, 32)
         assert result.audio_frames > 0 and result.audio_channels == 2
         assert all(math.isfinite(result.video[i]) for i in range(result.video_float_count))

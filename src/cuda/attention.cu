@@ -859,7 +859,7 @@ template <int D, bool kBanded>
 __global__ __launch_bounds__(kThreads) void fused_kernel(
     const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ k,
     const __nv_bfloat16* __restrict__ v, __nv_bfloat16* __restrict__ out, int seq, int heads,
-    int num_kv_heads, float scale, const int4* __restrict__ band) {
+    int num_kv_heads, float scale, const int4* __restrict__ band, int query_rows) {
   constexpr int kKStride = D + kPadH;
   constexpr int kVStride = kBc + kPadV;
   constexpr int kDSteps = D / 16;      // k-steps of the QK product
@@ -910,8 +910,8 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // Rows past the end of the sequence read zero, exactly as the zero-filled
   // shared tile gave them. They are discarded by the guard in the epilogue,
   // never by the arithmetic.
-  const bool q_live_a = q0 + row_a < seq;
-  const bool q_live_b = q0 + row_b < seq;
+  const bool q_live_a = q0 + row_a < query_rows;
+  const bool q_live_b = q0 + row_b < query_rows;
   const __nv_bfloat16* qsrc_a =
       q + static_cast<size_t>(q0 + row_a) * qld + head * D + tig * 2;
   const __nv_bfloat16* qsrc_b =
@@ -1094,11 +1094,11 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
 #pragma unroll
   for (int j = 0; j < kOTiles; ++j) {
     const int c = j * kMmaN + tig * 2;
-    if (out_a < seq) {
+    if (out_a < query_rows) {
       base[static_cast<size_t>(out_a) * qld + c] = __float2bfloat16(o[j][0] * inv_a);
       base[static_cast<size_t>(out_a) * qld + c + 1] = __float2bfloat16(o[j][1] * inv_a);
     }
-    if (out_b < seq) {
+    if (out_b < query_rows) {
       base[static_cast<size_t>(out_b) * qld + c] = __float2bfloat16(o[j][2] * inv_b);
       base[static_cast<size_t>(out_b) * qld + c + 1] = __float2bfloat16(o[j][3] * inv_b);
     }
@@ -1124,9 +1124,9 @@ void ensure_smem_optin() {
 template <int D>
 void launch(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
             const __nv_bfloat16* v, __nv_bfloat16* out, const AttentionConfig& cfg,
-            int num_kv_heads) {
+            int num_kv_heads, int query_rows) {
   ensure_smem_optin<D>();
-  const dim3 grid(static_cast<unsigned>((cfg.seq_len + kBr - 1) / kBr),
+  const dim3 grid(static_cast<unsigned>((query_rows + kBr - 1) / kBr),
                   static_cast<unsigned>(cfg.num_heads));
   // Grid order matters and is load-bearing: x is the query tile and y is the
   // head, and CUDA dispatches x fastest, so the resident blocks share a head
@@ -1136,10 +1136,10 @@ void launch(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
   const int4* band = reinterpret_cast<const int4*>(cfg.band_ranges);
   if (band != nullptr) {
     fused_kernel<D, true><<<grid, kThreads, smem_bytes<D>(), stream>>>(
-        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), band);
+        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), band, query_rows);
   } else {
     fused_kernel<D, false><<<grid, kThreads, smem_bytes<D>(), stream>>>(
-        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), nullptr);
+        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), nullptr, query_rows);
   }
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
@@ -1150,7 +1150,7 @@ bool supported(const AttentionConfig& cfg) { return cfg.head_dim == 64 || cfg.he
 
 void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
                const __nv_bfloat16* v, __nv_bfloat16* out, const AttentionConfig& cfg,
-               int num_kv_heads) {
+               int num_kv_heads, int query_rows = 0) {
   check_config(cfg, num_kv_heads);
   if (!fused::supported(cfg)) {
     throw std::runtime_error("attention: kFused supports head_dim 64 or 128, got " +
@@ -1169,9 +1169,11 @@ void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16*
     throw std::runtime_error("attention: kFused needs 16-byte aligned q, k and v");
   }
   if (cfg.head_dim == 64) {
-    fused::launch<64>(stream, q, k, v, out, cfg, num_kv_heads);
+    fused::launch<64>(stream, q, k, v, out, cfg, num_kv_heads,
+                      query_rows > 0 ? query_rows : cfg.seq_len);
   } else {
-    fused::launch<128>(stream, q, k, v, out, cfg, num_kv_heads);
+    fused::launch<128>(stream, q, k, v, out, cfg, num_kv_heads,
+                       query_rows > 0 ? query_rows : cfg.seq_len);
   }
 }
 
@@ -1234,6 +1236,22 @@ void attention_forward(cublasHandle_t handle, cudaStream_t stream, const __nv_bf
     return;
   }
   run_blocked(handle, stream, q, k, v, out, cfg, cfg.num_heads, ws);
+}
+
+void attention_forward_query_chunk(cudaStream_t stream, const __nv_bfloat16* q,
+                                   const __nv_bfloat16* k, const __nv_bfloat16* v,
+                                   __nv_bfloat16* out, const AttentionConfig& cfg,
+                                   int query_offset, int query_rows) {
+  if (!q || !k || !v || !out || query_offset < 0 || query_rows <= 0 ||
+      query_offset > cfg.seq_len || query_rows > cfg.seq_len - query_offset)
+    throw std::invalid_argument("attention: invalid compact query range");
+  AttentionConfig part = cfg;
+  if (cfg.band_ranges != nullptr) {
+    if (query_offset % fused::kBr != 0)
+      throw std::invalid_argument("attention: compact banded query offset must align to query tile");
+    part.band_ranges += static_cast<size_t>(query_offset / fused::kBr) * 4;
+  }
+  run_fused(stream, q, k, v, out, part, cfg.num_heads, query_rows);
 }
 
 void attention_forward_gqa(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16* q,
