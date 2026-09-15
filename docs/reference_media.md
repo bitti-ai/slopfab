@@ -155,6 +155,15 @@ unsampled peaks. Vulkan verbose logs report encoder tensor peak and reserved
 pool bytes. Neither figure should be compared to an idle-card baseline without
 checking for other GPU workloads.
 
+CUDA reference encoders retain separate activation and scratch buffer pools,
+and one cuBLAS handle, across chunks/references within the stage. Pool logs
+report logical activation/scratch peaks, current reserved bytes and allocation
+counts. Reuse removes repeated allocation stalls; reserved memory can remain
+above the live tensor size until the encoder is destroyed before conditioning.
+The 32x32 golden video probe reaches 20 pool allocations in its first chunk
+and performs no additional allocations in its next two chunks, with unchanged
+FP32 golden errors.
+
 `test_reference_media.cpp` covers pixel strides, transactional failures, overflow,
 timing, snapshot ownership, PCM validation, reference limits, target-dependent
 geometry/cache identities, temporal patchification and paired Qwen pixels.

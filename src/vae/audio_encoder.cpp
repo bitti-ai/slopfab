@@ -97,11 +97,11 @@ std::vector<float> AudioEncoder::encode_mean(const float* stereo, int samples) {
   for (int b = 0; b < 2; ++b)
     std::copy_n(stereo + size_t(b) * samples, samples,
                 host.data() + size_t(b) * padded);
-  DeviceBuffer<float> x(host.size());
-  x.copy_from_host(host.data(), host.size(), impl_->stream.get());
   auto& ops = impl_->ops;
+  auto x = ops.allocate<float>(host.size());
+  x.copy_from_host(host.data(), host.size(), impl_->stream.get());
   auto w = [&](const std::string& n) { return impl_->at(n); };
-  auto conv = [&](const DeviceBuffer<float>& input, const std::string& n,
+  auto conv = [&](const cuda::ReferenceBuffer<float>& input, const std::string& n,
                   int ci, int co, int len, int k, int stride = 1, int pad = 0,
                   int dil = 1) {
     return ops.conv1d(input.get(), w(n + ".weight"), w(n + ".bias"), 2, ci, co,
@@ -115,7 +115,7 @@ std::vector<float> AudioEncoder::encode_mean(const float* stereo, int samples) {
         "encoder.block." + std::to_string(stage + 1) + ".block.";
     for (int block = 0; block < 3; ++block) {
       const std::string p = prefix + std::to_string(block) + ".block.";
-      DeviceBuffer<float> branch(x.size());
+      auto branch = ops.allocate<float>(x.size());
       SLOPFAB_CUDA_CHECK(
           cudaMemcpyAsync(branch.get(), x.get(), x.size() * sizeof(float),
                           cudaMemcpyDeviceToDevice, impl_->stream.get()));

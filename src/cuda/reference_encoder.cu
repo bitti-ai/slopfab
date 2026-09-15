@@ -231,9 +231,19 @@ ReferenceEncoderOps::ReferenceEncoderOps(cudaStream_t s) : stream_(s) {
   }
 }
 ReferenceEncoderOps::~ReferenceEncoderOps() {
+  cudaStreamSynchronize(stream_);  // Includes exception paths before pool teardown.
   if (blas_) cublas_destroy(blas_);
 }
-DeviceBuffer<float> ReferenceEncoderOps::conv3d(const float* x, const __half* w,
+void ReferenceEncoderOps::report_memory(const char* label) const {
+  memory_.report(label);
+  if (!StepProfiler::instance().enabled()) return;
+  constexpr double gib = 1024.0 * 1024 * 1024;
+  std::printf("references  %s CUDA pools: activation peak %.3f GiB, scratch peak %.3f GiB, reserved %.3f GiB, %zu allocations\n",
+      label, activations_.peak_bytes() / gib, scratch_.peak_bytes() / gib,
+      (activations_.reserved_bytes() + scratch_.reserved_bytes()) / gib,
+      activations_.allocations() + scratch_.allocations());
+}
+ReferenceBuffer<float> ReferenceEncoderOps::conv3d(const float* x, const __half* w,
                                                 const __half* b, int ci, int co,
                                                 int t, int h, int width, int k,
                                                 int ss, int ts, bool down) {
@@ -243,8 +253,8 @@ DeviceBuffer<float> ReferenceEncoderOps::conv3d(const float* x, const __half* w,
   int oh = h / ss, ow = width / ss, ot = (t - 1) / ts + 1, K = ci * k * k * k,
       N = ot * oh * ow;
   const int tile = std::min(N, 1024);
-  DeviceBuffer<float> col(size_t(K) * tile), weight(size_t(co) * K),
-      bias(b ? co : 0), out(size_t(co) * N);
+  ReferenceBuffer<float> col(size_t(K) * tile, scratch_), weight(size_t(co) * K, scratch_),
+      bias(b ? co : 0, scratch_), out(size_t(co) * N, activations_);
   memory_.sample();
   convert<<<blocks(weight.size()), 256, 0, stream_>>>(w, weight.get(),
                                                       weight.size());
@@ -264,16 +274,16 @@ DeviceBuffer<float> ReferenceEncoderOps::conv3d(const float* x, const __half* w,
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
   return out;
 }
-DeviceBuffer<float> ReferenceEncoderOps::conv1d(const float* x, const float* w,
+ReferenceBuffer<float> ReferenceEncoderOps::conv1d(const float* x, const float* w,
                                                 const float* b, int batch,
                                                 int ci, int co, int len, int k,
                                                 int stride, int pad, int dil) {
   int n = (len + 2 * pad - dil * (k - 1) - 1) / stride + 1;
   if (n <= 0 || batch <= 0 || ci <= 0 || co <= 0)
     throw std::invalid_argument("reference conv1d: invalid shape");
-  DeviceBuffer<float> out(size_t(batch) * co * n);
+  auto out = allocate<float>(size_t(batch) * co * n);
   int K = ci * k, tile = std::min(n, 4096);
-  DeviceBuffer<float> col(size_t(K) * tile);
+  ReferenceBuffer<float> col(size_t(K) * tile, scratch_);
   memory_.sample();
   float one = 1, zero = 0;
   for (int bch = 0; bch < batch; ++bch) {
@@ -293,10 +303,10 @@ DeviceBuffer<float> ReferenceEncoderOps::conv1d(const float* x, const float* w,
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
   return out;
 }
-DeviceBuffer<float> ReferenceEncoderOps::linear(const float* x, const float* w,
+ReferenceBuffer<float> ReferenceEncoderOps::linear(const float* x, const float* w,
                                                 const float* b, int rows,
                                                 int in, int out) {
-  DeviceBuffer<float> y(size_t(rows) * out);
+  auto y = allocate<float>(size_t(rows) * out);
   memory_.sample();
   float one = 1, zero = 0;
   blas_check(cublas_sgemm(blas_, CUBLAS_OP_T, CUBLAS_OP_N, out, rows, in, &one,
@@ -305,21 +315,21 @@ DeviceBuffer<float> ReferenceEncoderOps::linear(const float* x, const float* w,
     bias_rows<<<blocks(y.size()), 256, 0, stream_>>>(y.get(), b, rows, out);
   return y;
 }
-DeviceBuffer<float> ReferenceEncoderOps::norm(const float* x, const float* w,
+ReferenceBuffer<float> ReferenceEncoderOps::norm(const float* x, const float* w,
                                               const float* b, int rows,
                                               int width) {
-  DeviceBuffer<float> y(size_t(rows) * width);
+  auto y = allocate<float>(size_t(rows) * width);
   norm_kernel<<<rows, 256, 0, stream_>>>(x, w, b, y.get(), width);
   return y;
 }
-DeviceBuffer<float> ReferenceEncoderOps::transpose(const float* x, int batch,
+ReferenceBuffer<float> ReferenceEncoderOps::transpose(const float* x, int batch,
                                                    int rows, int cols) {
-  DeviceBuffer<float> y(size_t(batch) * rows * cols);
+  auto y = allocate<float>(size_t(batch) * rows * cols);
   transpose_kernel<<<blocks(y.size()), 256, 0, stream_>>>(x, y.get(), batch,
                                                           rows, cols);
   return y;
 }
-DeviceBuffer<float> ReferenceEncoderOps::attention(const float* x,
+ReferenceBuffer<float> ReferenceEncoderOps::attention(const float* x,
                                                    const float* qb,
                                                    const float* kb,
                                                    const float* vb, int batch,
@@ -327,8 +337,8 @@ DeviceBuffer<float> ReferenceEncoderOps::attention(const float* x,
   if (len > 600 || len <= 0)
     throw std::invalid_argument(
         "reference audio: attention length must be 1..600");
-  DeviceBuffer<float> heads(size_t(batch) * len * 2048),
-      out(size_t(batch) * len * 32);
+  auto heads = allocate<float>(size_t(batch) * len * 2048);
+  auto out = allocate<float>(size_t(batch) * len * 32);
   memory_.sample();
   causal_attention<<<batch * len * 8, 256, 0, stream_>>>(x, qb, kb, vb,
                                                          heads.get(), len);

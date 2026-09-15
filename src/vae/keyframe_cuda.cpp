@@ -272,6 +272,7 @@ struct KeyframeEncoder::Impl {
   DeviceBuffer<__half> affines;
   DeviceBuffer<__half> weight_workspace;
   size_t weight_workspace_elements = 0;
+  std::unique_ptr<cuda::ReferenceEncoderOps> reference_ops;
 
   explicit Impl(const SafeTensors& checkpoint) {
     // See the note on `SafeTensors::prefetch`: issued first because it is
@@ -430,9 +431,11 @@ std::vector<float> KeyframeEncoder::encode_reference_image(
 std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels, int frames, int height, int width) {
   if (!pixels || frames <= 0 || frames > 17 || height <= 0 || width <= 0 || height % 16 || width % 16)
     throw std::invalid_argument("video encoder: expected 1..17 frames and dimensions divisible by 16");
-  cuda::ReferenceEncoderOps ops(impl_->stream.get());
+  if (!impl_->reference_ops)
+    impl_->reference_ops = std::make_unique<cuda::ReferenceEncoderOps>(impl_->stream.get());
+  auto& ops = *impl_->reference_ops;
   int t = frames, h = height, w = width;
-  auto conv = [&](const DeviceBuffer<float>& x, const std::string& name, int ci, int co,
+  auto conv = [&](const cuda::ReferenceBuffer<float>& x, const std::string& name, int ci, int co,
                   int k, int ss = 1, int ts = 1, bool down = false) {
     const auto& weight = impl_->convs.at(name);
     return ops.conv3d(x.get(), weight.weight.materialize(impl_->weight_workspace.get(),
@@ -442,7 +445,7 @@ std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels,
     const auto& n = impl_->norms.at(name);
     cuda::reference_groupnorm(x, n.weight, n.bias, y, c, t, h, w, impl_->stream.get());
   };
-  DeviceBuffer<float> x(size_t(3) * t * h * w);
+  auto x = ops.allocate<float>(size_t(3) * t * h * w);
   x.copy_from_host(pixels, x.size(), impl_->stream.get());
   x = conv(x, "encoder.conv_in", 3, 128, 3);
   const int channels[] = {128,256,256,512,512,1024};
@@ -451,7 +454,7 @@ std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels,
   for (int level = 0; level < 6; ++level) {
     for (int block = 0; block < 2; ++block) {
       std::string prefix = "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
-      DeviceBuffer<float> branch(x.size());
+      auto branch = ops.allocate<float>(x.size());
       norm(x.get(), branch.get(), prefix + ".norm1", current);
       branch = conv(branch, prefix + ".conv1", current, channels[level], 3);
       norm(branch.get(), branch.get(), prefix + ".norm2", channels[level]);
