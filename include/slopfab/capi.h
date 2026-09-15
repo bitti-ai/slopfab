@@ -290,7 +290,8 @@ typedef struct slopfab_plan {
  *
  * Delivered on the worker thread, not the caller's: a callback that touches
  * host UI state must marshal to its own thread. `step` is -1 outside the
- * denoising loop, and `total_steps` is 0 where it means nothing. */
+ * denoising loop and on entry before its first step completes; `total_steps`
+ * is already set on denoising entry and is 0 where it means nothing. */
 typedef struct slopfab_progress {
   int32_t stage; /* one of SLOPFAB_STAGE_* */
   int32_t step;

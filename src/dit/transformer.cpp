@@ -1645,6 +1645,7 @@ void Transformer::unload() {
 
 void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config,
                        const LoraAdapters* loras) {
+  cuda::StageMemorySpan memory("transformer.weights");
   Impl& s = *impl_;
   // Issued first, before anything else in this function, because it is
   // asynchronous: the plan walk and the arena allocation below run while the
@@ -2304,6 +2305,7 @@ std::vector<float> Transformer::debug_text_cache() const {
 // ---------------------------------------------------------------------------
 
 void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
+  cuda::StageMemorySpan memory("transformer.text");
   Impl& s = *impl_;
   s.require_loaded("prepare_text");
   if (num_tokens < 0) throw std::runtime_error("transformer: negative token count");
@@ -2517,6 +2519,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
 void Transformer::forward(const float* video_latents, const float* audio_latents,
                           const RowTimesteps& row_timesteps, float* video_velocity,
                           float* audio_velocity) {
+  cuda::StageMemorySpan memory("denoising.forward");
   Impl& s = *impl_;
   s.require_loaded("forward");
   if (!s.has_sequence) throw std::runtime_error("transformer: forward before prepare_sequence");

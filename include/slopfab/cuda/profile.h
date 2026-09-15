@@ -32,6 +32,21 @@
 
 namespace slopfab::cuda {
 
+// Immediate stage boundaries survive an OOM before the final profile report.
+// Samples device-wide usage, not an allocator-exact peak; never synchronizes.
+class StageMemorySpan {
+ public:
+  explicit StageMemorySpan(const char* label);
+  ~StageMemorySpan();
+  StageMemorySpan(const StageMemorySpan&) = delete;
+  StageMemorySpan& operator=(const StageMemorySpan&) = delete;
+ private:
+  void report(const char* boundary) const;
+  const char* label_;
+  long long start_ = 0;
+  int exceptions_ = 0;
+};
+
 // Reference encoders sample while convolution inputs, outputs and scratch are
 // simultaneously live. Enabled by SLOPFAB_PROFILE=1; these are sampled,
 // device-wide figures (including other processes), not allocator-exact peaks.

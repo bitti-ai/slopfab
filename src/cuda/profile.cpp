@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <exception>
 
 #include "slopfab/cuda/device.h"
 
@@ -39,6 +40,31 @@ long long now_ns() {
 double to_gib(size_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0); }
 
 }  // namespace
+
+StageMemorySpan::StageMemorySpan(const char* label) : label_(label) {
+  if (!StepProfiler::instance().enabled()) return;
+  start_ = now_ns();
+  exceptions_ = std::uncaught_exceptions();
+  report("begin");
+}
+
+StageMemorySpan::~StageMemorySpan() {
+  if (start_ == 0) return;
+  report(std::uncaught_exceptions() > exceptions_ ? "failed" : "end");
+}
+
+void StageMemorySpan::report(const char* boundary) const {
+  size_t free = 0, total = 0;
+  const cudaError_t status = cudaMemGetInfo(&free, &total);
+  std::printf("memory      %s %s %.3f s", label_, boundary,
+              (now_ns() - start_) / 1.0e9);
+  if (status == cudaSuccess)
+    std::printf("; device used %.3f GiB, free %.3f GiB", to_gib(total - free), to_gib(free));
+  else
+    std::printf("; memory sample unavailable: %s", cudaGetErrorString(status));
+  std::printf("\n");
+  std::fflush(stdout);
+}
 
 StepProfiler::StepProfiler() {
   const char* v = std::getenv("SLOPFAB_PROFILE");

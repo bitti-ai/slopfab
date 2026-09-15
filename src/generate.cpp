@@ -1132,7 +1132,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         }
       }
       model.prepare_text(prompt.data.data(), prompt.num_tokens);
-      model.prepare_sequence(live, idx, pos);
+      {
+        cuda::StageMemorySpan memory("transformer.sequence");
+        model.prepare_sequence(live, idx, pos);
+      }
       result.seconds_prepare = seconds_since(t_prep);
 
       // Rebuilt from the plan rather than from literals, so the loop integrates
@@ -1207,6 +1210,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       // so the decision has to be remembered here rather than inferred from
       // the output, and the run stopped before either VAE sees it.
       bool cancel_requested = false;
+      if (!notify(RunStage::kDenoising, -1, plan.num_model_evaluations()))
+        return stop("denoising");
       const dit::DenoiseOutputs out = dit::denoise(model, in, [&](int step, int steps) {
         if (options.verbose) {
           const double elapsed = seconds_since(loop_start);
@@ -1380,6 +1385,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                          options.verbose);
       const Clock::time_point loop_start = Clock::now();
       bool cancel_requested = false;
+      if (!notify(RunStage::kDenoising, -1, total_steps)) return stop("denoising");
       const vulkan::ExactH3DenoiseResult out = model.run(
           video_sched, audio_sched,
           [&](uint32_t step, uint32_t steps) {
