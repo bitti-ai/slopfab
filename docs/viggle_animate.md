@@ -47,10 +47,23 @@ sampling, and video flow shift 3.
 The local checkpoint explicitly declares `distillation_lora_merged=false`.
 Its rank-eight AdaLN compression is separate from the distillation adapter.
 The [upstream model card](https://huggingface.co/Viggle/Viggle-Animate) requires
-that adapter on the Viggle finetune for the three-pass recipe. The upstream
-Diffusers adapter also needs conversion to slopfab's supported projection
-names/layout before use; passing `--steps 4` alone does not produce the
-distilled model. The upstream frozen `.pt` embedding, reference ordering and
+that adapter on the Viggle finetune for the three-pass recipe. Slopfab now loads
+`viggle_animate_distillation_bf16.safetensors` directly on CUDA and Vulkan.
+Add these options to your generation command:
+
+```sh
+--transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --lora-strength 1
+```
+
+All 604 tensors are used across 302 projections. Diffusers' separate Q/K/V
+adapters retain their per-projection head order, and the first feed-forward
+projection's B rows are reordered from `[value; gate]` to H3's `[gate; value]`.
+The `proj_in` and `proj_out` updates are merged once into the F32 video
+endpoint weights at load time, without rewriting the checkpoint. The adapter's
+embedded PEFT metadata supplies alpha 128 for its rank-128 factors.
+
+Loading the adapter does not select a different schedule; passing `--steps 4`
+alone does not reproduce the full recipe. The upstream frozen `.pt` embedding, reference ordering and
 geometry, and optional pinned target audio require separate pipeline work.
 
 ## Verification
@@ -61,6 +74,12 @@ downloaded checkpoint is checked across all 52 blocks, including Vulkan's
 host-side archive validation. CUDA and Vulkan regression fixtures compare
 forward results from equivalent contiguous and interleaved checkpoints;
 the Vulkan fixture also checks F32 AdaLN storage.
+
+The LoRA host suite loads the actual 604-tensor adapter against the downloaded
+checkpoint, validates all 302 targets, and merges both video endpoints.
+Synthetic tests cover alpha/strength scaling, Q/K/V dimensions, SwiGLU order,
+stacking, and malformed inputs. GPU regression cases check that each of the
+eight projection types affects the forward pass on both backends.
 
 The Release CLI, DLL, CUDA tests and Vulkan tests compile. In the implementation
 environment, CUDA reports no visible device and Vulkan instance creation

@@ -15,17 +15,25 @@ in main transformer blocks and text-refiner blocks. Supported key suffixes are
 `lora_B.default.weight`, and `lora_down.weight` / `lora_up.weight`. Names can
 start with `diffusion_model.`, `model.diffusion_model.`, `base_model.model.`,
 or the projection name directly. Each projection may provide an `alpha`
-scalar; absent alpha defaults to the rank. External PEFT configuration files
+scalar; absent alpha uses embedded `lora_adapter_metadata.lora_alpha`, or the
+rank when metadata is absent. External PEFT configuration files
 are not read, so adapters relying on an external non-default alpha must first
 embed those scalars in their safetensors file.
 
-The update is `strength * alpha / rank * B @ A`. The implementation folds
+Viggle's Diffusers-format adapter is also supported directly: `proj_in`,
+`proj_out`, and the six attention/MLP projections under `transformer_blocks.N`.
+Separate Q/K/V factors are applied to their respective base projection slices.
+Diffusers SwiGLU B rows are reordered from `[value; gate]` to `[gate; value]`.
+The video input/output updates are merged into the floating-point weights at
+load time on both backends. See [Viggle usage and workflow limits](viggle_animate.md).
+
+The update is `strength * alpha / rank * B @ A`. For block projections, the implementation folds
 scaling into B and uploads both factors as BF16; intermediate projections and
 the residual sum round to BF16. Multiple adapters are combined by concatenating
 their low-rank factors. FP8, INT8+ConvRot, native NVFP4 and the loader's supported
 NF4 base weights retain their original storage. LoRA activations use the
 original input before the base weight's ConvRot transform. AWQ activation
-scales, other target modules, DoRA, LyCORIS, convolutional adapters, malformed
+scales, other target modules, DoRA, RSLoRA, per-target alpha patterns, LyCORIS, convolutional adapters, malformed
 pairs and incompatible dimensions are rejected explicitly.
 
 The base checkpoint is never rewritten. LoRAs are uploaded once per model
