@@ -22,12 +22,16 @@ struct LoraFactors {
 
 class LoraAdapters {
  public:
-  // Accepts H3 block/refiner attention and MLP adapters. Unknown keys, missing
+  // Accepts H3 block/refiner attention and MLP adapters, including Diffusers
+  // separate Q/K/V and video input/output projections. Unknown keys, missing
   // partners, non-finite values and incompatible base shapes are errors.
   void load(const std::vector<LoraSpec>& specs, const SafeTensors& base);
   // Multiple adapters for one target are concatenated into one factor pair.
   const std::vector<LoraFactors>* find(const std::string& projection) const;
   size_t projection_count() const { return factors_.size(); }
+  // F32 video endpoints are merged at load time; biases remain unchanged.
+  std::vector<float> merged_endpoint_weight(const SafeTensors& base,
+                                            const std::string& projection) const;
  private:
   std::map<std::string, std::vector<LoraFactors>> factors_;
 };
