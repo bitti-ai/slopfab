@@ -55,6 +55,18 @@ struct TransformerConfig {
   int video_patch_dim() const { return in_channels * 4; }  // patch (1,2,2)
 };
 
+struct TransformerLoadOptions {
+  // Enables automatic residency planning for this sequence. Null preserves
+  // the low-level resident default unless offload_blocks is explicitly set.
+  const SequenceLayout* layout = nullptr;
+  bool block_cache = false;
+  size_t headroom_bytes = size_t(1) << 30;
+  // Optional cap on total device-wide usage, including other processes.
+  size_t device_budget_bytes = 0;
+  // -1 selects the shortest suffix that fits; 0 disables streaming.
+  int offload_blocks = -1;
+};
+
 class Transformer {
  public:
   Transformer();
@@ -63,7 +75,9 @@ class Transformer {
   Transformer& operator=(const Transformer&) = delete;
 
   void load(const SafeTensors& checkpoint, const TransformerConfig& config = {},
-            const LoraAdapters* loras = nullptr);
+            const LoraAdapters* loras = nullptr, const TransformerLoadOptions& options = {});
+  size_t offloaded_blocks() const;
+  size_t offloaded_host_bytes() const;
   const TransformerConfig& config() const;
   size_t weight_bytes() const;
   void unload();

@@ -1,5 +1,6 @@
 #include "slopfab/cuda/lora.cuh"
 #include <algorithm>
+#include <cstring>
 #include "slopfab/cuda/cublas_dispatch.h"
 #include "slopfab/cuda/deterministic_gemm.cuh"
 #include "slopfab/cuda/gemm.cuh"
@@ -10,20 +11,32 @@ namespace slopfab::cuda {
 namespace { constexpr int kRows = 256; }
 
 void LoraRunner::attach(const void* key, const std::vector<LoraFactors>& host,
-                         int offset, int out) {
-  auto upload = [](DeviceBuffer<__nv_bfloat16>& device, const float* p, size_t n) {
+                         int offset, int out, uint8_t* staged_host,
+                         uint8_t* staged_device, size_t* staged_offset) {
+  if ((staged_host != nullptr || staged_device != nullptr || staged_offset != nullptr) &&
+      !(staged_host && staged_device && staged_offset))
+    throw std::invalid_argument("LoRA: incomplete weight staging buffers");
+  auto upload = [&](DeviceBuffer<__nv_bfloat16>& device, const float* p, size_t n)
+      -> const __nv_bfloat16* {
     std::vector<uint16_t> bf(n);
     for (size_t i = 0; i < n; ++i) bf[i] = f32_to_bf16(p[i]);
+    if (staged_host) {
+      std::memcpy(staged_host + *staged_offset, bf.data(), n * 2);
+      const auto* result = reinterpret_cast<const __nv_bfloat16*>(staged_device + *staged_offset);
+      *staged_offset += (n * 2 + 255) / 256 * 256;
+      return result;
+    }
     device.allocate(n);
     SLOPFAB_CUDA_CHECK(cudaMemcpy(device.get(), bf.data(), n * 2, cudaMemcpyHostToDevice));
+    return device.get();
   };
   for (const auto& h : host) {
     if (offset < 0 || out <= 0 || offset > h.out || out > h.out - offset)
       throw std::runtime_error("LoRA: invalid CUDA output slice");
     Factors f;
     f.rank = h.rank; f.in = h.in; f.out = out;
-    upload(f.a, h.a.data(), h.a.size());
-    upload(f.b, h.b.data() + static_cast<size_t>(offset) * h.rank,
+    f.a_ptr = upload(f.a, h.a.data(), h.a.size());
+    f.b_ptr = upload(f.b, h.b.data() + static_cast<size_t>(offset) * h.rank,
            static_cast<size_t>(out) * h.rank);
     if (hidden_.size() < static_cast<size_t>(kRows) * h.rank)
       hidden_.allocate(static_cast<size_t>(kRows) * h.rank);
@@ -64,9 +77,9 @@ void LoraRunner::apply(const void* key, const __nv_bfloat16* input, int rows,
   for (const auto& f : found->second) {
     for (int row = 0; row < rows; row += kRows) {
       const int count = std::min(kRows, rows - row);
-      gemm(input + static_cast<size_t>(row) * f.in, f.a.get(), hidden_.get(),
+      gemm(input + static_cast<size_t>(row) * f.in, f.a_ptr, hidden_.get(),
            count, f.rank, f.in);
-      gemm(hidden_.get(), f.b.get(), delta_.get(), count, f.out, f.rank);
+      gemm(hidden_.get(), f.b_ptr, delta_.get(), count, f.out, f.rank);
       launch_add_bf16(output + static_cast<size_t>(row) * f.out, delta_.get(),
                        static_cast<size_t>(count) * f.out, stream);
     }

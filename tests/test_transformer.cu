@@ -918,6 +918,72 @@ SLOPFAB_TEST(transformer_query_chunks_match_full_attention) {
   st.close(); std::filesystem::remove(path);
 }
 
+SLOPFAB_TEST(transformer_offloaded_blocks_match_resident) {
+  auto cfg = tiny_config(); cfg.num_layers = 6;
+  const auto weights = build_synthetic(cfg);
+  const std::string path = write_synthetic(weights);
+  const auto adapter_path = std::filesystem::temp_directory_path() / "slopfab_streamed_lora.safetensors";
+  std::vector<slopfab::TensorWrite> adapters;
+  for (int block = 0; block < cfg.num_layers; ++block) {
+    for (const char* suffix : {"attn.qkv_proj", "attn.out_proj", "mlp.fc1", "mlp.fc2"}) {
+      const std::string name = "blocks." + std::to_string(block) + "." + suffix;
+      const auto& shape = weights.at(name + ".weight").shape;
+      adapters.push_back({name + ".lora_A.weight", {4, shape[1]},
+          make_data(size_t(4 * shape[1]), 7300 + block, .05f)});
+      adapters.push_back({name + ".lora_B.weight", {shape[0], 4},
+          make_data(size_t(4 * shape[0]), 7400 + block, .05f)});
+    }
+  }
+  slopfab::write_safetensors(adapter_path.string(), adapters);
+  auto run = [&](int offload, bool cache) {
+    slopfab::SafeTensors st; st.open(path);
+    slopfab::LoraAdapters loras; loras.load({{adapter_path.string(), 1}}, st);
+    Transformer model;
+    slopfab::dit::TransformerLoadOptions load;
+    load.offload_blocks = offload; load.headroom_bytes = 0;
+    model.load(st, cfg, &loras, load);
+    CHECK(model.offloaded_blocks() == size_t(offload));
+    CHECK((model.offloaded_host_bytes() > 0) == (offload > 0));
+    // The streamer owns its bytes after both source objects are released.
+    st.close(); loras = slopfab::LoraAdapters();
+    model.set_row_chunk(128);
+    if (cache) {
+      slopfab::dit::BlockCacheConfig bc; bc.span = 3; bc.interval = 2; bc.warmup = 2;
+      model.set_block_cache(bc, 6);
+    }
+    std::vector<float> result;
+    for (int text : {259, 131}) {
+      const auto c = make_case(cfg, text, .31f);
+      model.prepare_text(c.prompt.data(), c.layout.num_text);
+      model.prepare_sequence(c.layout, c.idx, c.pos);
+      for (int step = 0; step < 6; ++step) {
+        model.set_denoise_step(step);
+        std::vector<float> video(c.video_rows.size()), audio(c.audio_rows.size());
+        model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt, video.data(), audio.data());
+        result.insert(result.end(), video.begin(), video.end());
+        result.insert(result.end(), audio.begin(), audio.end());
+      }
+    }
+    CHECK(all_finite(result));
+    if (cache) CHECK(model.block_cache_reused() > 0);
+    const size_t bytes = model.weight_bytes();
+    model.unload();
+    CHECK(model.weight_bytes() == 0);
+    CHECK(model.offloaded_blocks() == 0);
+    CHECK(model.offloaded_host_bytes() == 0);
+    return std::make_pair(result, bytes);
+  };
+  for (bool cache : {false, true}) {
+    const auto resident = run(0, cache);
+    for (int offload : {1, 5, 6}) {
+      const auto streamed = run(offload, cache);
+      CHECK_CLOSE(resident.first, streamed.first, 0.0, "streamed blocks/LoRA preserve repeated and cached forwards");
+      if (offload > 2) CHECK(streamed.second < resident.second);
+    }
+  }
+  std::filesystem::remove(path); std::filesystem::remove(adapter_path);
+}
+
 SLOPFAB_TEST(transformer_query_chunk_memory_plan) {
   Transformer model;
   SequenceLayout layout;

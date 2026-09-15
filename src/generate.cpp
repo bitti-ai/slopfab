@@ -1091,7 +1091,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
       dit::Transformer model;
-      model.load(dit_file, {}, &loras);
+      model.set_attention_mode(options.attention_mode);
+      dit::TransformerLoadOptions load_options;
+      load_options.layout = &live;
+      load_options.block_cache = request.block_cache_span > 0;
+      model.load(dit_file, {}, &loras, load_options);
       loras = LoraAdapters();
       result.seconds_transformer_load = seconds_since(t0);
       if (options.verbose) {

@@ -7,12 +7,15 @@
 #include "slopfab/lora.h"
 
 namespace slopfab::cuda {
-// Factors persist; activation scratch is bounded to 256 rows and shared by
-// every projection. The caller supplies the original, pre-ConvRot activation.
+// Resident factors are owned here. Optional staged factors live in the
+// caller's block transfer buffers; keys retain logical projection identity.
+// Activation scratch is bounded to 256 rows and shared by every projection.
+// The caller supplies the original, pre-ConvRot activation.
 class LoraRunner {
  public:
   void attach(const void* key, const std::vector<LoraFactors>& factors,
-              int row_offset, int out);
+              int row_offset, int out, uint8_t* staged_host = nullptr,
+              uint8_t* staged_device = nullptr, size_t* staged_offset = nullptr);
   void apply(const void* key, const __nv_bfloat16* input, int rows,
              __nv_bfloat16* output, cublasHandle_t blas,
              cudaStream_t stream, bool exact);
@@ -22,6 +25,8 @@ class LoraRunner {
   struct Factors {
     int rank = 0, in = 0, out = 0;
     DeviceBuffer<__nv_bfloat16> a, b;
+    const __nv_bfloat16* a_ptr = nullptr;
+    const __nv_bfloat16* b_ptr = nullptr;
   };
   std::map<const void*, std::vector<Factors>> factors_;
   DeviceBuffer<__nv_bfloat16> hidden_, delta_;

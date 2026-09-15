@@ -24,6 +24,7 @@
 #include "slopfab/dit/block_capture.h"
 #include "slopfab/dit/graph_capture.h"
 #include "slopfab/dit/rope.h"
+#include "slopfab/dit/offload.h"
 
 #include <functional>
 #include <fstream>
@@ -41,9 +42,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "slopfab/cuda/attention.cuh"
@@ -478,6 +481,100 @@ struct BlockWeights {
   QuantWeight full_adaln;
 };
 
+// Owns CPU copies independently of the checkpoint mapping. Two device slots
+// alternate; transfer waits for prior compute before overwriting a slot.
+class BlockStreamer {
+ public:
+  struct Block { cuda::PinnedBuffer<uint8_t> host; size_t cursor = 0; };
+  explicit BlockStreamer(cudaStream_t compute) : compute_(compute) {}
+  ~BlockStreamer() {
+    cudaStreamSynchronize(compute_);
+    if (copy_) cudaStreamSynchronize(copy_->get());
+    for (int i = 0; i < 2; ++i) {
+      if (ready_[i]) cudaEventDestroy(ready_[i]);
+      if (consumed_[i]) cudaEventDestroy(consumed_[i]);
+    }
+  }
+  void initialize(const BlockOffloadPlan& plan, const std::vector<size_t>& sizes) {
+    first = plan.first; count = plan.count; host_bytes = plan.host_bytes;
+    copy_ = std::make_unique<cuda::Stream>();
+    blocks.resize(sizes.size());
+    for (size_t i = first; i < sizes.size(); ++i) blocks[i].host.allocate(sizes[i]);
+    for (size_t i = 0; i < plan.slots(); ++i) {
+      slots_[i].allocate(plan.slot_bytes);
+      SLOPFAB_CUDA_CHECK(cudaEventCreateWithFlags(&ready_[i], cudaEventDisableTiming));
+      SLOPFAB_CUDA_CHECK(cudaEventCreateWithFlags(&consumed_[i], cudaEventDisableTiming));
+    }
+  }
+  bool contains(size_t block) const { return block >= first && block < first + count; }
+  uint8_t* device(size_t block) { return slots_[(block - first) % 2].get(); }
+  size_t device_bytes() const { return slots_[0].nbytes() + slots_[1].nbytes(); }
+  void prefetch(size_t block) {
+    if (!contains(block)) return;
+    const size_t slot = (block - first) % 2;
+    if (queued_[slot] == block) return;
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(consumed_[slot], compute_));
+    SLOPFAB_CUDA_CHECK(cudaStreamWaitEvent(copy_->get(), consumed_[slot], 0));
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(device(block), blocks[block].host.get(),
+        blocks[block].host.size(), cudaMemcpyHostToDevice, copy_->get()));
+    SLOPFAB_CUDA_CHECK(cudaEventRecord(ready_[slot], copy_->get()));
+    queued_[slot] = block;
+  }
+  void acquire(size_t block) {
+    prefetch(block);
+    SLOPFAB_CUDA_CHECK(cudaStreamWaitEvent(compute_, ready_[(block - first) % 2], 0));
+    prefetch(block + 1);
+  }
+  size_t first = 0, count = 0, host_bytes = 0;
+  std::vector<Block> blocks;
+ private:
+  cudaStream_t compute_;
+  std::unique_ptr<cuda::Stream> copy_;
+  DeviceBuffer<uint8_t> slots_[2];
+  cudaEvent_t ready_[2]{}, consumed_[2]{};
+  size_t queued_[2] = {size_t(-1), size_t(-1)};
+};
+
+// AdaLN is consumed for every block before the block loop. Keep it resident.
+int streamable_block(const std::string& name) {
+  if (name.compare(0, 7, "blocks.") != 0) return -1;
+  const size_t end = name.find('.', 7);
+  if (end == std::string::npos || name.compare(end + 1, 6, "adaln_") == 0) return -1;
+  return std::stoi(name.substr(7, end - 7));
+}
+
+template <typename Fn>
+void visit_block_loras(const LoraAdapters* loras, const std::string& prefix,
+                       const TransformerConfig& cfg, Fn&& fn) {
+  if (!loras) return;
+  struct Target { const char* name; int projection, offset, out; };
+  const int inner = cfg.inner_dim();
+  const Target targets[] = {
+      {"attn.qkv_proj", 0, 0, inner}, {"attn.qkv_proj", 1, inner, inner},
+      {"attn.qkv_proj", 2, 2 * inner, inner},
+      {"attn.to_q", 0, 0, inner}, {"attn.to_k", 1, 0, inner}, {"attn.to_v", 2, 0, inner},
+      {"attn.out_proj", 3, 0, cfg.hidden_size}, {"mlp.fc1", 4, 0, 2 * cfg.ffn_dim},
+      {"mlp.fc2", 5, 0, cfg.hidden_size}};
+  for (const auto& t : targets)
+    if (const auto* factors = loras->find(prefix + t.name)) fn(t.projection, *factors, t.offset, t.out);
+}
+
+BlockWeights relocate_block(BlockWeights b, const uint8_t* host, size_t bytes, uint8_t* device) {
+  auto relocate = [&](auto& ptr) {
+    const auto address = reinterpret_cast<uintptr_t>(ptr);
+    const auto base = reinterpret_cast<uintptr_t>(host);
+    if (ptr && address >= base && address - base < bytes)
+      ptr = reinterpret_cast<std::remove_reference_t<decltype(ptr)>>(device + address - base);
+  };
+  relocate(b.norm1); relocate(b.norm2); relocate(b.q_norm); relocate(b.k_norm);
+  for (QuantWeight* w : {&b.wq, &b.wk, &b.wv, &b.out_proj, &b.fc1, &b.fc2}) {
+    relocate(w->data); relocate(w->weight_scale); relocate(w->block_scale);
+    relocate(w->pre_quant_scale); relocate(w->nf4_absmax); relocate(w->nf4_quant_map);
+    relocate(w->nf4_nested_quant_map); relocate(w->nf4_nested_absmax); relocate(w->bias);
+  }
+  return b;
+}
+
 // Sizes of the transient buffers `forward` carves, all in one place so that
 // `activation_bytes` and the carve cannot drift apart.
 struct Carve {
@@ -617,6 +714,7 @@ struct Transformer::Impl {
   Workspace ws;
 
   DeviceBuffer<uint8_t> arena;
+  std::unique_ptr<BlockStreamer> streamer;
   size_t arena_bytes = 0;
 
   std::vector<BlockWeights> blocks;
@@ -1326,13 +1424,24 @@ struct Transformer::Impl {
     if (layer >= 0)
       begin_graph_capture(x, adaln_idx, cos, sin, rows, layer,
                           block_attention_mode);
+    // Adapter keys identify logical projections even when two blocks reuse
+    // the same device address. Their staged factors share the block's slot.
+    auto adapter_key = [&](const QuantWeight& weight) -> const void* {
+      if (layer < 0 || !streamer || !streamer->contains(layer)) return weight.data;
+      const BlockWeights& original = blocks[layer];
+      const QuantWeight* current[] = {&b.wq, &b.wk, &b.wv, &b.out_proj, &b.fc1, &b.fc2};
+      const QuantWeight* logical[] = {&original.wq, &original.wk, &original.wv,
+                                      &original.out_proj, &original.fc1, &original.fc2};
+      for (int i = 0; i < 6; ++i) if (&weight == current[i]) return logical[i]->data;
+      return weight.data;
+    };
     auto project = [&](const QuantWeight& weight,
                        const __nv_bfloat16* dense,
                        const __nv_bfloat16* input, int count,
                        __nv_bfloat16* output) {
       if (block_attention_mode != AttentionMode::kExact) {
         linear.forward_prepared(weight, dense, input, count, output, ws);
-        lora.apply(weight.data, input, count, output, blas, stream.get(), false);
+        lora.apply(adapter_key(weight), input, count, output, blas, stream.get(), false);
         return;
       }
       if (weight.bias != nullptr)
@@ -1380,7 +1489,7 @@ struct Transformer::Impl {
             DenseGemmMode::kBFloat16, DenseGemmBias::kNone,
             tiled, tiled, stream.get());
       }
-      lora.apply(weight.data, input, count, output, blas, stream.get(), true);
+      lora.apply(adapter_key(weight), input, count, output, blas, stream.get(), true);
     };
 
     if (carve.chunked_attention) {
@@ -1650,7 +1759,12 @@ Transformer::Transformer() : impl_(new Impl()) {}
 Transformer::~Transformer() = default;
 
 const TransformerConfig& Transformer::config() const { return impl_->cfg; }
-size_t Transformer::weight_bytes() const { return impl_->arena_bytes + impl_->lora.weight_bytes(); }
+size_t Transformer::weight_bytes() const {
+  return impl_->arena_bytes + impl_->lora.weight_bytes() +
+         (impl_->streamer ? impl_->streamer->device_bytes() : 0);
+}
+size_t Transformer::offloaded_blocks() const { return impl_->streamer ? impl_->streamer->count : 0; }
+size_t Transformer::offloaded_host_bytes() const { return impl_->streamer ? impl_->streamer->host_bytes : 0; }
 void Transformer::set_adaln_lookup(AdaLNLookup mode) { impl_->lookup = mode; }
 AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
 
@@ -1742,6 +1856,7 @@ std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
 }
 
 void Transformer::unload() {
+  impl_->streamer.reset();
   impl_->lora = cuda::LoraRunner();
   impl_->blocks.clear();
   impl_->refiner.clear();
@@ -1753,7 +1868,7 @@ void Transformer::unload() {
 }
 
 void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config,
-                       const LoraAdapters* loras) {
+                       const LoraAdapters* loras, const TransformerLoadOptions& options) {
   cuda::StageMemorySpan memory("transformer.weights");
   Impl& s = *impl_;
   // Issued first, before anything else in this function, because it is
@@ -1922,9 +2037,118 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
   // --- upload ---------------------------------------------------------------
 
-  s.arena.allocate(plan.arena_bytes());
-  s.arena_bytes = plan.arena_bytes();
+  std::vector<size_t> block_bytes(config.num_layers, 0);
+  size_t fixed_bytes = 0, adapter_rank = 0, adapter_out = 0;
+  for (const auto& item : plan.records()) {
+    const int block = streamable_block(item.first);
+    if (block >= 0) block_bytes.at(block) += align_up(item.second.bytes);
+    else fixed_bytes += align_up(item.second.bytes);
+  }
+  auto count_adapters = [&](const std::string& prefix, size_t& bytes) {
+    visit_block_loras(loras, prefix, config,
+        [&](int, const std::vector<LoraFactors>& factors, int, int out) {
+          for (const auto& f : factors) {
+            const size_t n = align_up(f.a.size() * 2) + align_up(size_t(out) * f.rank * 2);
+            bytes += n;
+            adapter_rank = std::max(adapter_rank, size_t(f.rank));
+            adapter_out = std::max(adapter_out, size_t(out));
+          }
+        });
+  };
+  for (int i = 0; i < config.num_layers; ++i)
+    count_adapters("blocks." + std::to_string(i) + ".", block_bytes[i]);
+  for (int i = 0; i < config.num_refiner_layers; ++i)
+    count_adapters("token_refiner.blocks." + std::to_string(i) + ".", fixed_bytes);
+
+  int forced = options.offload_blocks;
+  if (const char* value = std::getenv("SLOPFAB_DIT_OFFLOAD_BLOCKS")) {
+    size_t end = 0; forced = std::stoi(value, &end);
+    if (value[end] != '\0') throw std::invalid_argument("invalid SLOPFAB_DIT_OFFLOAD_BLOCKS");
+  }
+  size_t cap = options.device_budget_bytes;
+  if (const char* value = std::getenv("SLOPFAB_DIT_VRAM_GIB")) {
+    size_t end = 0; const double gib = std::stod(value, &end);
+    if (value[end] != '\0' || !std::isfinite(gib) || gib <= 0 || gib > 1048576)
+      throw std::invalid_argument("invalid SLOPFAB_DIT_VRAM_GIB");
+    cap = static_cast<size_t>(gib * 1024 * 1024 * 1024);
+  }
+  size_t reserve = options.headroom_bytes + size_t(256) * (adapter_rank + adapter_out) * 2;
+  if (options.layout) {
+    const auto& layout = *options.layout;
+    // Conservative ConvRot scratch even for archives that do not use it.
+    const Carve main = plan_carve(config, layout, s.row_chunk, s.attention_mode,
+                                  true, s.compact_queries(s.attention_mode));
+    const Carve plain = plan_carve(config, layout, s.row_chunk, s.attention_mode,
+                                   false, s.compact_queries(s.attention_mode));
+    size_t main_bytes = activation_bytes(layout) + main.total - plain.total;
+    // Account for cached text and up to four distinct row timesteps, rather
+    // than the two used by the original text-to-video estimator.
+    main_bytes += size_t(layout.num_text) * config.hidden_size * 2;
+    main_bytes += size_t(config.num_layers) * 6 * 2 * 3 * config.hidden_size * 4;
+    if (options.block_cache) main_bytes += size_t(layout.total_rows()) * config.hidden_size * 2;
+    if (full_adaln) {
+      QuantWeight probe; probe.format = QuantFormat::kF8E4M3;
+      probe.in_features = config.timestep_embed_dim; probe.out_features = adaln_out;
+      const size_t scratch = cuda::linear_workspace_bytes(probe, 4, ComputeType::kF32);
+      if (scratch > main.scratch) main_bytes += scratch - main.scratch;
+    }
+    SequenceLayout text_layout; text_layout.num_text = layout.num_text;
+    const Carve text = plan_carve(config, text_layout, s.row_chunk,
+        s.attention_mode == AttentionMode::kExact ? AttentionMode::kExact : AttentionMode::kFlash2,
+        true, s.compact_queries(s.attention_mode == AttentionMode::kExact
+            ? AttentionMode::kExact : AttentionMode::kFlash2));
+    const size_t text_bytes = text.total + size_t(layout.num_text) *
+        (config.text_dim * 6 + config.hidden_size * 2);
+    reserve += std::max(main_bytes, text_bytes);
+  }
+  size_t budget = std::numeric_limits<size_t>::max();
+  if (options.layout || cap || forced >= 0) {
+    size_t free = 0, total = 0;
+    SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
+    if (cap) free = std::min(free, cap > total - free ? cap - (total - free) : 0);
+    if (free <= reserve)
+      throw std::runtime_error("transformer offload: activations and safety headroom exhaust the VRAM budget");
+    budget = free - reserve;
+  }
+  const BlockOffloadPlan residency = plan_block_offload(block_bytes, fixed_bytes, budget, forced);
+  if (residency.count) {
+    if (!s.block_capture_path.empty() || !s.graph_capture_path.empty() ||
+        !s.transformer_capture_path.empty() || !s.sol_capture_path.empty())
+      throw std::runtime_error("transformer offload: full-tensor capture requires resident weights");
+    s.streamer = std::make_unique<BlockStreamer>(s.stream.get());
+    s.streamer->initialize(residency, block_bytes);
+  }
+  size_t resident_records = 0;
+  for (const auto& item : plan.records()) {
+    const int block = streamable_block(item.first);
+    if (!s.streamer || block < 0 || !s.streamer->contains(block))
+      resident_records += align_up(item.second.bytes);
+  }
+  s.arena.allocate(resident_records);
+  s.arena_bytes = resident_records;
   uint8_t* base = s.arena.get();
+  std::map<std::string, uint8_t*> destinations;
+  size_t resident_cursor = 0;
+  for (const auto& item : plan.records()) {
+    const int block = streamable_block(item.first);
+    if (s.streamer && block >= 0 && s.streamer->contains(block)) {
+      auto& staged = s.streamer->blocks[block];
+      destinations[item.first] = staged.host.get() + staged.cursor;
+      staged.cursor += align_up(item.second.bytes);
+    } else {
+      destinations[item.first] = base + (s.streamer ? resident_cursor : item.second.offset);
+      resident_cursor += align_up(item.second.bytes);
+    }
+  }
+  if (residency.count || cuda::StepProfiler::instance().enabled()) {
+    constexpr double gib = 1024.0 * 1024 * 1024;
+    std::printf("offload     blocks [%zu,%zu) of %d; weights+adapters %.3f GiB GPU, "
+                "%.3f GiB pinned CPU, %zu transfer slots (%.3f GiB); activation/headroom reserve %.3f GiB\n",
+                residency.first, residency.first + residency.count, config.num_layers,
+                residency.device_bytes / gib, residency.host_bytes / gib, residency.slots(),
+                residency.slots() * residency.slot_bytes / gib, reserve / gib);
+    std::fflush(stdout);
+  }
 
   {
     // Both declared before the uploader so that they outlive it. ~Uploader
@@ -1969,13 +2193,19 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     Uploader up(s.stream.get(), &lock);
     for (const auto& kv : plan.records()) {
       const Record& r = kv.second;
-      uint8_t* dst = base + r.offset;
+      uint8_t* dst = destinations.at(kv.first);
+      const int block = streamable_block(kv.first);
+      const bool staged = s.streamer && block >= 0 && s.streamer->contains(block);
+      auto copy = [&](const void* source, size_t bytes, bool mapping) {
+        if (staged) std::memcpy(dst, source, bytes);
+        else up.copy(dst, source, bytes, mapping);
+      };
       if (loras && (kv.first == "video_patch_proj.weight" ||
                     kv.first == "final_layer.video_out.weight")) {
         const std::string name = kv.first.substr(0, kv.first.size() - 7);
         if (loras->find(name)) {
           wide = loras->merged_endpoint_weight(checkpoint, name);
-          up.copy(dst, wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
+          copy(wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
           continue;
         }
       }
@@ -1986,12 +2216,12 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
         // These records retain their disk dtype (INT8 weights / F32 scales).
         if (reordered.size() != r.bytes)
           throw std::runtime_error("transformer: interleaved QKV upload dtype mismatch");
-        up.copy(dst, reordered.data(), reordered.size(), /*from_mapping=*/false);
+        copy(reordered.data(), reordered.size(), /*from_mapping=*/false);
         continue;
       }
       switch (r.store) {
         case Store::kVerbatim:
-          up.copy(dst, r.view->data, r.bytes, /*from_mapping=*/true);
+          copy(r.view->data, r.bytes, /*from_mapping=*/true);
           break;
         case Store::kAsF32:
           // The arena wants fp32 here, and the two dtypes that actually occur
@@ -2016,8 +2246,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
           // records, fnv1a 190cdce19da29c2d both before and after this change.
           // An arena that got smaller would be a different arena.
           if (r.view->dtype == DType::kF32) {
-            up.copy(dst, r.view->data, r.bytes, /*from_mapping=*/true);
-          } else if (r.view->dtype == DType::kF16) {
+            copy(r.view->data, r.bytes, /*from_mapping=*/true);
+          } else if (r.view->dtype == DType::kF16 && !staged) {
             const auto count = static_cast<size_t>(r.view->numel());
             // Reuse across records needs no synchronise: both halves are on
             // `s.stream`, so the next record's copy into `widen_src` is
@@ -2030,14 +2260,14 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
                                    s.stream.get());
           } else {
             to_f32(*r.view, wide);
-            up.copy(dst, wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
+            copy(wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
           }
           break;
         case Store::kAsBF16:
           to_f32(*r.view, wide);
           narrow.resize(wide.size());
           for (size_t i = 0; i < wide.size(); ++i) narrow[i] = f32_to_bf16(wide[i]);
-          up.copy(dst, narrow.data(), narrow.size() * sizeof(uint16_t), /*from_mapping=*/false);
+          copy(narrow.data(), narrow.size() * sizeof(uint16_t), /*from_mapping=*/false);
           break;
       }
     }
@@ -2076,7 +2306,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   auto ptr = [&](const std::string& name) -> const void* {
     const auto it = plan.records().find(name);
     if (it == plan.records().end()) return nullptr;
-    return base + it->second.offset;
+    return destinations.at(name);
   };
   auto bf = [&](const std::string& name) {
     return static_cast<const __nv_bfloat16*>(ptr(name));
@@ -2225,23 +2455,25 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     b.out_proj = quant(prefix + "attn.out_proj", hidden, inner);
     b.fc1 = quant(prefix + "mlp.fc1", 2 * ffn, hidden);
     b.fc2 = quant(prefix + "mlp.fc2", hidden, ffn);
-    if (loras) {
-      auto attach = [&](const QuantWeight& w, const char* suffix, int offset = 0) {
-        if (const auto* factors = loras->find(prefix + suffix))
-          s.lora.attach(w.data, *factors, offset, w.out_features);
-      };
-      attach(b.wq, "attn.qkv_proj");
-      attach(b.wk, "attn.qkv_proj", inner);
-      attach(b.wv, "attn.qkv_proj", 2 * inner);
-      // Diffusers factors are already in per-projection head order, even
-      // when the base archive stores interleaved QKV rows.
-      attach(b.wq, "attn.to_q");
-      attach(b.wk, "attn.to_k");
-      attach(b.wv, "attn.to_v");
-      attach(b.out_proj, "attn.out_proj");
-      attach(b.fc1, "mlp.fc1");
-      attach(b.fc2, "mlp.fc2");
-    }
+    const int staged_block = streamable_block(prefix);
+    const bool staged = s.streamer && staged_block >= 0 && s.streamer->contains(staged_block);
+    const QuantWeight* projections[] = {&b.wq, &b.wk, &b.wv, &b.out_proj, &b.fc1, &b.fc2};
+    visit_block_loras(loras, prefix, config,
+        [&](int projection, const std::vector<LoraFactors>& factors, int offset, int out) {
+          const void* key = projections[projection]->data;
+          if (staged) {
+            auto& storage = s.streamer->blocks[staged_block];
+            size_t need = 0;
+            for (const auto& f : factors)
+              need += align_up(f.a.size() * 2) + align_up(size_t(out) * f.rank * 2);
+            if (need > storage.host.size() - storage.cursor)
+              throw std::runtime_error("transformer offload: adapter staging exceeds its plan");
+            s.lora.attach(key, factors, offset, out, storage.host.get(),
+                          s.streamer->device(staged_block), &storage.cursor);
+          } else {
+            s.lora.attach(key, factors, offset, out);
+          }
+        });
 
     if (with_adaln) {
       if (full_adaln) {
@@ -2265,6 +2497,9 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   for (int i = 0; i < config.num_layers; ++i) {
     s.blocks.push_back(build_block("blocks." + std::to_string(i) + ".", true));
   }
+  if (s.streamer) for (size_t i = s.streamer->first; i < s.blocks.size(); ++i)
+    if (s.streamer->blocks[i].cursor != s.streamer->blocks[i].host.size())
+      throw std::runtime_error("transformer offload: staged block size does not match its plan");
 
   s.refiner_final_norm = bf("token_refiner.final_norm.weight");
   s.final_norm = bf("final_layer.norm.weight");
@@ -2327,12 +2562,8 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   // The block cache's delta, same shape as `hidden`: 844 MB at the production
   // geometry.
   //
-  // **This number is reported, not enforced.** Nothing in the generate path
-  // calls this — the only caller in the tree is tests/test_transformer.cu — so
-  // enabling the block cache on a marginal-fit configuration still fails as a
-  // `cudaMalloc` in `prepare_sequence` after the 19.6 GiB load, and the error
-  // does not mention the block cache. Counted here anyway so the accounting is
-  // right if a preflight check is ever added.
+  // Load-time residency planning adds this separately when the requested
+  // cache has not yet been configured on the loaded model.
   if (impl_->block_cache.enabled() && impl_->bc_span.valid()) {
     total += align_up(static_cast<size_t>(seq) * cfg.hidden_size * sizeof(__nv_bfloat16));
   }
@@ -2673,6 +2904,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   cuda::StepProfiler& prof = cuda::StepProfiler::instance();
   const std::chrono::steady_clock::time_point t_enter = std::chrono::steady_clock::now();
   prof.begin_step(s.stream.get());
+  if (s.streamer) s.streamer->prefetch(s.streamer->first);
 
   // Modulation for this step's distinct timesteps, and the per-row indices
   // into it. `torch.unique(sorted=True)` sorts ascending, so which of the video
@@ -2830,7 +3062,14 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
                 !s.sol_schedule.active(s.denoise_step,static_cast<int>(b))
             ? AttentionMode::kFlash2
             : s.attention_mode;
-    s.run_block(s.blocks[b], s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),
+    BlockWeights active = s.blocks[b];
+    if (s.streamer && s.streamer->contains(b)) {
+      s.streamer->acquire(b);
+      prof.tick("offload.wait", s.stream.get());
+      const auto& host = s.streamer->blocks[b].host;
+      active = relocate_block(active, host.get(), host.size(), s.streamer->device(b));
+    }
+    s.run_block(active, s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),
                 s.rope_cos.get(), s.rope_sin.get(), q, k, v, attn_out, normed, fused, act, branch,
                 block_mode, static_cast<int>(b));
 
