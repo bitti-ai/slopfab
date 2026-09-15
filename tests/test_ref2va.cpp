@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <cstring>
 
 using namespace slopfab::dit;
 
@@ -41,6 +42,80 @@ std::string int8_transformer_fixture() {
   return path.string();
 }
 }  // namespace
+
+SLOPFAB_TEST(viggle_checkpoint_detection) {
+  const auto path = std::filesystem::temp_directory_path() / "slopfab_renamed_viggle.safetensors";
+  const std::vector<slopfab::TensorWrite> tensors = {
+      {"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+      {"blocks.0.adaln_proj.linear.weight", {6, 8}, std::vector<float>(48)}};
+  slopfab::write_safetensors(path.string(), tensors,
+      {{"source", "Viggle/Viggle-Animate"}, {"qkv_layout", "interleaved"},
+       {"distillation_lora_merged", "false"}});
+  slopfab::SafeTensors st;
+  st.open(path.string());
+  CHECK(detect_transformer_architecture(st) == TransformerArchitecture::kViggleAnimatePrunedTable);
+  CHECK(is_pruned_table_architecture(detect_transformer_architecture(st)));
+  CHECK(transformer_qkv_is_interleaved(st));
+  require_ref2va_transformer(st, 2);
+  st.close();
+  std::filesystem::remove(path);
+  const auto named = checkpoint_fixture("Viggle-Animate-pruned_rank8_int8_convrot", tensors);
+  st.open(named);
+  CHECK(detect_transformer_architecture(st) == TransformerArchitecture::kViggleAnimatePrunedTable);
+  CHECK(!transformer_qkv_is_interleaved(st)); // Layout is explicit, never guessed from the name.
+  st.close();
+  std::filesystem::remove(named);
+  slopfab::write_safetensors(path.string(), tensors, {{"qkv_layout", "typo"}});
+  st.open(path.string());
+  bool rejected = false;
+  try { (void)transformer_qkv_is_interleaved(st); }
+  catch (const std::runtime_error&) { rejected = true; }
+  CHECK(rejected);
+  st.close();
+  std::filesystem::remove(path);
+}
+
+SLOPFAB_TEST(viggle_interleaved_qkv_weights_and_scales) {
+  // Two heads of width two. Each head contains Q0,Q1,K0,K1,V0,V1.
+  const int source_rows[] = {0, 1, 6, 7, 2, 3, 8, 9, 4, 5, 10, 11};
+  std::vector<int8_t> weights(12 * 3);
+  std::vector<float> scales(12);
+  for (int row = 0; row < 12; ++row) {
+    scales[row] = float(row + 1) / 16;
+    for (int col = 0; col < 3; ++col) weights[row * 3 + col] = int8_t(row * 3 + col - 18);
+  }
+  slopfab::TensorView w{"qkv.weight", slopfab::DType::kI8, {12, 3}, weights.data(), weights.size()};
+  slopfab::TensorView s{"qkv.weight_scale", slopfab::DType::kF32, {12, 1}, scales.data(), scales.size() * 4};
+  const auto all = deinterleave_qkv_rows(w, 2);
+  const float input[] = {1, -2, 3};
+  for (int part = 0; part < 3; ++part) {
+    const auto qw = deinterleave_qkv_rows(w, 2, part * 4, 4);
+    const auto qs = deinterleave_qkv_rows(s, 2, part * 4, 4);
+    for (int row = 0; row < 4; ++row) {
+      float scale;
+      std::memcpy(&scale, qs.data() + row * 4, 4);
+      float got = 0, expected = 0;
+      const int source = source_rows[part * 4 + row];
+      for (int col = 0; col < 3; ++col) {
+        int8_t value;
+        std::memcpy(&value, qw.data() + row * 3 + col, 1);
+        got += value * scale * input[col];
+        expected += weights[source * 3 + col] * scales[source] * input[col];
+        CHECK(qw[row * 3 + col] == all[(part * 4 + row) * 3 + col]);
+      }
+      CHECK_NEAR(got, expected, 0);
+    }
+  }
+  for (int invalid = 0; invalid < 3; ++invalid) {
+    auto bad = w;
+    if (invalid == 0) bad.dtype = slopfab::DType::kU8;
+    if (invalid == 1) bad.shape = {11, 3};
+    bool rejected = false;
+    try { (void)deinterleave_qkv_rows(bad, 2, invalid == 2 ? 12 : 0, 1); }
+    catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected);
+  }
+}
 
 SLOPFAB_TEST(ref2va_transformer_checkpoint_detection) {
   CHECK(is_pruned_table_architecture(TransformerArchitecture::kPrunedTable));
