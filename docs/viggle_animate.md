@@ -3,6 +3,9 @@
 For CUDA denoising VRAM reductions and stage profiling, see
 [Denoising memory](denoising_memory.md). Flash2 uses compact Q/output buffers
 by default; projection/FFN scratch is bounded to 2,048 rows.
+CUDA generation also automatically streams selected transformer blocks and
+their adapters from CPU RAM when the estimated VRAM requirement exceeds the
+available budget. See the linked document for budget controls and measurements.
 
 The CUDA and Vulkan transformer loaders accept
 `Viggle-Animate-pruned_rank8_int8_convrot.safetensors` directly. Select it

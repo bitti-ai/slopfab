@@ -60,6 +60,59 @@ block-cache buffers still occupy VRAM.
   row chunk divisible by Flash2's query-tile size (currently 128); other sizes
   retain full Q/output. `workspace_bytes()` reports the actual reservation.
 
+## Automatic block offloading
+
+CUDA generation plans weight residency before uploading the transformer. If
+the weights and estimated working memory fit, all blocks stay resident.
+Otherwise it selects the shortest suffix of main transformer blocks that fits
+the budget, accounting for **both** alternating GPU transfer slots. Streaming
+one or two similarly sized blocks usually provides no net saving because the
+slots occupy that space too.
+
+The estimate reserves the larger of text preparation and denoising memory,
+including the requested block cache, LoRA scratch, conservative ConvRot scratch,
+and **1 GiB of safety headroom**. Available space comes from current device-wide
+free memory. This is a load-time estimate, not a hard allocator limit; another
+process allocating VRAM afterward can still cause an OOM.
+
+Selected attention/FFN weights, norms, quantization metadata and LoRA factors
+are converted once into owned, pinned CPU storage. They are never first loaded
+as a complete GPU model. Input/output projections, the token refiner, and AdaLN
+timestep-conditioning weights remain resident; AdaLN is evaluated across all
+blocks before the block loop. No checkpoint is rewritten or requantized.
+
+A separate CUDA stream prefetches the next selected block while the current
+block computes. Events prevent transfer slots from being overwritten before
+their previous users finish. Logical adapter keys remain distinct even when
+blocks share a GPU address. Streaming also works across repeated evaluations
+and block-cache skips; CPU staging outlives the original checkpoint mapping.
+
+### Budget controls
+
+Automatic selection is enabled for the normal CUDA generator. Optional process
+environment variables must be set before launching the application:
+
+| Variable | Behavior |
+| --- | --- |
+| `SLOPFAB_DIT_VRAM_GIB=22` | Plan for at most 22 GiB total device usage, including existing allocations. |
+| `SLOPFAB_DIT_OFFLOAD_BLOCKS=12` | Stream the last 12 blocks, still checking the memory budget. |
+| `SLOPFAB_DIT_OFFLOAD_BLOCKS=0` | Require fully resident weights; fail early if they exceed the budget. |
+
+An `offload` log line reports the selected half-open block range, GPU weight
+and adapter bytes (including transfer slots), pinned CPU bytes and working-memory
+reserve. `SLOPFAB_PROFILE=1` also reports `offload.wait` in the step timeline.
+If even the fully streamed plan cannot fit, reduce the sequence geometry or
+raise the configured budget; streaming cannot remove activation memory.
+
+Low-level C++ callers pass `TransformerLoadOptions` to `Transformer::load`,
+including the intended `layout` and whether block caching will be enabled.
+Set attention mode and chunk options before loading so the estimate matches
+execution. Reload to replan residency for a different geometry. The low-level
+default without a layout preserves resident loading. `offloaded_blocks()` and
+`offloaded_host_bytes()` expose the selected residency. Full-tensor diagnostic
+capture requires resident weights and rejects a streamed plan explicitly.
+This feature currently applies to CUDA; Vulkan residency is unchanged.
+
 ## Validation
 
 Focused CUDA tests compare compact and full-buffer attention bit for bit,
@@ -81,6 +134,22 @@ distillation adapter produced **identical decoded video/audio bytes** with
 
 Timings are single-run observations. This small run exercises the integration;
 it does not establish memory requirements or throughput for a user's full clip.
-The focused checks passed, alongside 21,276 CPU and 209 C API checks. The
-existing CPU-reference comparison retains 11 documented deferred checks; the
+The existing CPU-reference comparison retains 11 documented deferred checks; the
 exact-attention integration test skipped on the installed driver/runtime tuple.
+
+### Offloading validation
+
+Planner tests include transfer-buffer costs, uneven block sizes and budgets
+that cannot fit. CUDA comparisons use six blocks with adapters on every
+attention/FFN projection, stream one/five/all blocks, repeat evaluations and
+sequence preparation, exercise block-cache skips, release source checkpoints
+before execution and verify cleanup. Outputs match resident execution bit for bit.
+
+With `SLOPFAB_DIT_VRAM_GIB=22`, the same real Animate/LoRA smoke case above
+selected blocks **[41,50)**: 3.455 GiB of pinned CPU storage and two GPU slots
+totaling 0.768 GiB. Sampled denoising usage dropped from **23.854 to 21.110 GiB**.
+Decoded video and audio bytes were identical. One forward took 1.664 seconds
+versus the earlier resident observation of 1.569 seconds; these single-run
+measurements do not predict full-clip throughput. Regression checks passed:
+21,289 CPU, 209 C API and the selected CUDA suites, with the same existing
+deferred checks and exact-mode skip described above.
