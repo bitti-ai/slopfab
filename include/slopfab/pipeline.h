@@ -259,6 +259,9 @@ std::string conditioning_cache_key_for_authority(
 // one place, because all of it reads the video VAE.
 // With decoded media, the audio VAE identity also participates.
 std::string reference_cache_key(const GenerateRequest& request);
+enum class ReferenceEncoderAuthority : uint8_t { kCudaFp32, kCudaFp16, kVulkanFp32 };
+std::string media_encoding_cache_key(const GenerateRequest& request,
+                                     ReferenceEncoderAuthority authority);
 std::string reference_cache_key(const GenerateRequest& request,
                                 const std::vector<std::string>& reference_identities);
 

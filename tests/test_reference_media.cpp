@@ -138,6 +138,72 @@ SLOPFAB_TEST(reference_media_request_limits_and_cache) {
   CHECK(throws([&] { slopfab::resolve_plan(request); }));
 }
 
+SLOPFAB_TEST(encoded_media_cache_identity_and_seed) {
+  using Authority = slopfab::ReferenceEncoderAuthority;
+  slopfab::GenerateRequest request;
+  request.reference_media.push_back(std::make_shared<const ReferenceMedia>(clip()));
+  const auto key = slopfab::media_encoding_cache_key(request, Authority::kCudaFp32);
+  request.seed += 1;
+  request.prompt = "a different prompt";
+  request.reference_image_paths.push_back("irrelevant-image.ppm");
+  CHECK(slopfab::media_encoding_cache_key(request, Authority::kCudaFp32) == key);
+  CHECK(slopfab::media_encoding_cache_key(request, Authority::kCudaFp16) != key);
+  CHECK(slopfab::media_encoding_cache_key(request, Authority::kVulkanFp32) != key);
+  auto changed = request;
+  changed.num_frames += 17;
+  CHECK(slopfab::media_encoding_cache_key(changed, Authority::kCudaFp32) != key);
+  changed = request;
+  changed.video_vae_path = "other-video";
+  CHECK(slopfab::media_encoding_cache_key(changed, Authority::kCudaFp32) != key);
+  changed = request;
+  changed.audio_vae_path = "other-audio";
+  CHECK(slopfab::media_encoding_cache_key(changed, Authority::kCudaFp32) != key);
+  changed = request;
+  changed.reference_media.push_back(std::make_shared<const ReferenceMedia>(clip(3)));
+  CHECK(slopfab::media_encoding_cache_key(changed, Authority::kCudaFp32) != key);
+
+  slopfab::EncodedReferenceCondition encoded;
+  encoded.geometry = {slopfab::dit::ReferenceKind::kVideo, 7, 2, 2, 1};
+  encoded.video_rows.assign(7 * 96, .25f);
+  encoded.audio_rows.assign(2 * 32, .5f);
+  slopfab::EncodedMediaCache cache;
+  CHECK(cache.find(key) == nullptr);
+  cache.store(key, {encoded});
+  CHECK(cache.find("miss") == nullptr);
+  CHECK(cache.find(key) != nullptr);
+  std::vector<float> v1, v2, v3, a1, a2, a3;
+  const auto& hit = cache.find(key)->front();
+  slopfab::append_encoded_reference_condition(hit, 42, 0, v1, a1);
+  slopfab::append_encoded_reference_condition(hit, 43, 0, v2, a2);
+  slopfab::append_encoded_reference_condition(hit, 42, 0, v3, a3);
+  CHECK(v1 != v2);
+  CHECK(v1 == v3);
+  CHECK(a1 == encoded.audio_rows && a2 == a1 && a3 == a1);
+  CHECK(hit.video_rows == encoded.video_rows);
+  cache.store("replacement", {encoded});
+  CHECK(cache.find(key) == nullptr);
+  cache.clear();
+  CHECK(cache.find("replacement") == nullptr);
+}
+
+SLOPFAB_TEST(encoded_media_cache_prepares_identical_qwen_frames) {
+  auto video = clip();
+  std::vector<float> pcm(64000, .25f);
+  video.set_audio(pcm.data(), pcm.size(), 1, 32000);
+  const auto full = slopfab::prepare_reference_condition(video, 22.0 / 24);
+  const auto hit = slopfab::prepare_reference_condition(video, 22.0 / 24, false);
+  CHECK(hit.plan.audio_samples == full.plan.audio_samples);
+  CHECK(hit.audio.empty() && !full.audio.empty());
+  CHECK(hit.frames.size() == full.frames.size());
+  for (size_t i = 0; i < full.frames.size(); ++i) {
+    if (i % 12 == 0) {
+      CHECK(hit.frames[i].pixels == full.frames[i].pixels);
+      CHECK(hit.frames[i].width == full.frames[i].width);
+      CHECK(hit.frames[i].height == full.frames[i].height);
+    } else CHECK(hit.frames[i].pixels.empty());
+  }
+}
+
 SLOPFAB_TEST(reference_conditioning_temporal_geometry_and_audio) {
   const auto video = clip(2);
   auto plan = slopfab::reference_condition_plan(video, 5);

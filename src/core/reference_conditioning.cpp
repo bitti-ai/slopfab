@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include "slopfab/sampler/noise.h"
+#include "slopfab/sampler/scheduler.h"
 
 namespace slopfab {
 ReferenceConditionPlan reference_condition_plan(const ReferenceMedia& reference,
@@ -42,13 +44,20 @@ ReferenceConditionPlan reference_condition_plan(const ReferenceMedia& reference,
 }
 
 PreparedReference prepare_reference_condition(const ReferenceMedia& reference,
-                                              double target_seconds) {
+                                              double target_seconds,
+                                              bool prepare_vae) {
   PreparedReference out;
   out.plan = reference_condition_plan(reference, target_seconds);
   if (reference.is_video()) {
     size_t source = 0;
     out.frames.reserve(out.plan.frames);
     for (int i = 0; i < out.plan.frames; ++i) {
+      // On an encoded-media hit only Qwen's 2 fps presentation is needed.
+      // Preserve indexing so its paired-frame construction stays identical.
+      if (!prepare_vae && i % 12 != 0) {
+        out.frames.emplace_back();
+        continue;
+      }
       // FFmpeg fps uses rounded PTS boundaries: hold each source frame until
       // the next one's destination slot, and the last until clip end.
       while (source + 1 < reference.frames().size() &&
@@ -63,7 +72,7 @@ PreparedReference prepare_reference_condition(const ReferenceMedia& reference,
                                                           out.plan.height));
     }
   }
-  if (const auto& audio = reference.soundtrack()) {
+  if (const auto& audio = reference.soundtrack(); audio && prepare_vae) {
     const int n = out.plan.audio_samples;
     out.audio.assign(size_t(2) * n, 0);
     const int offset =
@@ -108,6 +117,25 @@ PreparedReference prepare_reference_condition(const ReferenceMedia& reference,
     }
   }
   return out;
+}
+
+void append_encoded_reference_condition(const EncodedReferenceCondition& encoded,
+    uint64_t seed, size_t reference_index, std::vector<float>& video_rows,
+    std::vector<float>& audio_rows) {
+  if (!encoded.video_rows.empty()) {
+    const auto& g = encoded.geometry;
+    auto noise = sampler::video_noise(seed ^ (0x9e3779b97f4a7c15ULL * (reference_index + 1)),
+        g.num_latent_frames, g.latent_height, g.latent_width);
+    auto noise_rows = patchify_reference_video(noise.data(), g.num_latent_frames,
+                                               g.latent_height, g.latent_width);
+    if (noise_rows.size() != encoded.video_rows.size())
+      throw std::invalid_argument("reference cache: video row geometry mismatch");
+    auto rows = encoded.video_rows;
+    sampler::FlowScheduler::scale_noise(rows.data(), noise_rows.data(), .999f,
+                                        rows.size(), rows.data());
+    video_rows.insert(video_rows.end(), rows.begin(), rows.end());
+  }
+  audio_rows.insert(audio_rows.end(), encoded.audio_rows.begin(), encoded.audio_rows.end());
 }
 
 std::vector<float> patchify_reference_video(const float* latents, int frames,

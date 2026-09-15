@@ -120,8 +120,14 @@ at revision `c419dac0152186060246c93a095bc1bfaea342b3`:
 4. CUDA or Vulkan Ref2VA receives both condition-row arrays and their temporal geometry.
    Audio conditions stay clean at timestep 1.0; visual conditions use the
    existing 0.999 noise rule. Prompt cache identity includes the decoded media
-   and target duration. Video/audio VAE encoding currently runs again per
-   generation, while existing image preparation caching remains available.
+   and target duration. With model reuse enabled, video/audio VAE outputs are
+   cached in host RAM before seed-dependent noise is applied. A hit skips VAE
+   loading/encoding, waveform resampling and all but Qwen's 2 fps frame resize.
+   The single retained media entry includes both VAE file identities, decoded
+   media content/timing, target duration, backend and video precision. It is
+   published only after every reference encode succeeds. CLI counted runs and
+   DLL `slopfab_request_set_reuse_models` enable reuse; clearing reused models
+   also releases this cache.
 
 Vulkan video activations use separate frame buffers, so causal convolutions
 read their two preceding frames without exceeding the device's per-buffer size
@@ -130,7 +136,7 @@ audio attention and projections also execute on Vulkan. These encoders are
 numerically checked against CPU PyTorch; bitwise equality to CUDA is not promised.
 
 Remaining work includes NF4 reference encoder support,
-reusable encoded-media caching, and longer-run perceptual quality comparisons.
+longer-run perceptual quality comparisons.
 
 Sources: [reference normalization](https://github.com/huggingface/diffusers/blob/c419dac0152186060246c93a095bc1bfaea342b3/src/diffusers/modular_pipelines/minimax_h3/before_encoder.py),
 [conditioning](https://github.com/huggingface/diffusers/blob/c419dac0152186060246c93a095bc1bfaea342b3/src/diffusers/modular_pipelines/minimax_h3/encoders.py),

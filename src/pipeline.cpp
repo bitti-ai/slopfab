@@ -333,6 +333,16 @@ std::string tokenizer_cache_key(const GenerateRequest& request) {
   return key;
 }
 
+std::string media_encoding_cache_key(const GenerateRequest& request,
+                                     ReferenceEncoderAuthority authority) {
+  std::string key = "encoded-media-v1";
+  key.push_back(static_cast<char>(authority));
+  append_file_identity(key, request.video_vae_path);
+  append_file_identity(key, request.audio_vae_path);
+  append_media_identity(key, request);
+  return key;
+}
+
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan) {
   const dit::SequenceLayout& l = plan.layout;
   // The canvas line says where the number came from, because "1344 x 768" from
