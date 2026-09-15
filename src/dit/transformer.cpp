@@ -86,10 +86,8 @@ using cuda::QuantFormat;
 using cuda::QuantWeight;
 using cuda::Workspace;
 
-// Rows per pass through the row-wise stages. 8192 keeps the fused FFN
-// projection at 470 MB instead of 2.16 GB while still handing cuBLAS a GEMM
-// large enough to reach peak.
-constexpr int kRowChunk = 8192;
+// Bound row-wise scratch independently of the video and conditioning length.
+constexpr int kRowChunk = 2048;
 
 // Spec 3.2: six modulation parameters, three modalities.
 constexpr int kNumParams = 6;
@@ -505,9 +503,6 @@ bool stack_uses_convrot(const std::vector<BlockWeights>& blocks) {
   return false;
 }
 
-// `chunk_override` exists for the token refiner, which runs the whole text
-// stream in one pass: its attention is over all L rows anyway, so chunking the
-// row-wise stages around it would buy nothing and complicate the carve.
 size_t attention_scratch_for_mode(const TransformerConfig& cfg, int sequence,
                                   AttentionMode mode) {
   if (mode == AttentionMode::kExact) return 0;
@@ -523,7 +518,7 @@ size_t attention_scratch_for_mode(const TransformerConfig& cfg, int sequence,
 }
 
 Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
-                 int chunk_override = 0,
+                 int row_chunk = kRowChunk,
                  AttentionMode attention_mode = AttentionMode::kFlash2,
                  bool reserve_convrot = false) {
   const int seq = layout.total_rows();
@@ -531,7 +526,7 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
   const int inner = cfg.inner_dim();
 
   Carve c;
-  c.chunk = chunk_override > 0 ? chunk_override : std::min(kRowChunk, std::max(seq, 1));
+  c.chunk = std::min(row_chunk, std::max(seq, 1));
   c.qkv = static_cast<size_t>(seq) * inner;
   c.normed = static_cast<size_t>(c.chunk) * hidden;
   c.fused = static_cast<size_t>(c.chunk) * 2 * cfg.ffn_dim;
@@ -638,6 +633,7 @@ struct Transformer::Impl {
   // `prepare_sequence` and empty when banding is off.
   int attn_band = 0;
   AttentionMode attention_mode = AttentionMode::kFlash2;
+  int row_chunk = kRowChunk;
   int denoise_step = -1;
   SolSchedule sol_schedule;
   std::string sol_capture_path;
@@ -1584,6 +1580,13 @@ void Transformer::set_attention_mode(AttentionMode mode) {
   impl_->attention_mode = mode;
 }
 AttentionMode Transformer::attention_mode() const { return impl_->attention_mode; }
+
+void Transformer::set_row_chunk(int rows) {
+  if (rows <= 0) throw std::invalid_argument("transformer: row chunk must be positive");
+  if (impl_->attention_configuration_locked && rows != impl_->row_chunk)
+    throw std::runtime_error("transformer: set row chunk before preparation");
+  impl_->row_chunk = rows;
+}
 void Transformer::set_sol_schedule(const SolSchedule& schedule) { impl_->sol_schedule=schedule; }
 void Transformer::set_denoise_step(int step) { impl_->denoise_step = step; }
 
@@ -2200,7 +2203,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
 size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   const TransformerConfig& cfg = impl_->cfg;
-  const Carve c = plan_carve(cfg, layout, 0, impl_->attention_mode,
+  const Carve c = plan_carve(cfg, layout, impl_->row_chunk, impl_->attention_mode,
                              stack_uses_convrot(impl_->blocks));
   const int seq = layout.total_rows();
 
@@ -2239,7 +2242,7 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
 }
 
 size_t Transformer::debug_attention_scratch_bytes(const SequenceLayout& layout) const {
-  return plan_carve(impl_->cfg, layout, 0, impl_->attention_mode).attention_scratch;
+  return plan_carve(impl_->cfg, layout, impl_->row_chunk, impl_->attention_mode).attention_scratch;
 }
 
 Transformer::DebugAttentionRoutes Transformer::debug_attention_routes() const {
@@ -2327,7 +2330,7 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   // forward is stateless (spec 6).
   SequenceLayout text_only;
   text_only.num_text = num_tokens;
-  const Carve text_carve = plan_carve(s.cfg, text_only, /*chunk_override=*/num_tokens,
+  const Carve text_carve = plan_carve(s.cfg, text_only, s.row_chunk,
                                       s.attention_mode,
                                       stack_uses_convrot(s.refiner));
 
@@ -2378,13 +2381,13 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   __nv_bfloat16* k = ws.alloc_n<__nv_bfloat16>(rows * inner);
   __nv_bfloat16* v = ws.alloc_n<__nv_bfloat16>(rows * inner);
   __nv_bfloat16* attn_out = ws.alloc_n<__nv_bfloat16>(rows * inner);
-  __nv_bfloat16* normed = ws.alloc_n<__nv_bfloat16>(rows * hidden);
-  __nv_bfloat16* fused = ws.alloc_n<__nv_bfloat16>(rows * 2 * s.cfg.ffn_dim);
-  __nv_bfloat16* act = ws.alloc_n<__nv_bfloat16>(rows * s.cfg.ffn_dim);
-  __nv_bfloat16* branch = ws.alloc_n<__nv_bfloat16>(rows * hidden);
+  __nv_bfloat16* normed = ws.alloc_n<__nv_bfloat16>(text_carve.normed);
+  __nv_bfloat16* fused = ws.alloc_n<__nv_bfloat16>(text_carve.fused);
+  __nv_bfloat16* act = ws.alloc_n<__nv_bfloat16>(text_carve.act);
+  __nv_bfloat16* branch = ws.alloc_n<__nv_bfloat16>(text_carve.normed);
 
   const Carve saved = s.carve;
-  s.carve.chunk = num_tokens;
+  s.carve = text_carve;
   for (const BlockWeights& b : s.refiner) {
     // No AdaLN, no RoPE, no mask: `mod_base` and `cos` are null.
     // Preserve every legacy mode's historical Flash2 refiner. Exact is the
@@ -2396,10 +2399,14 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   }
   s.carve = saved;
 
-  cuda::launch_rmsnorm(x, s.refiner_final_norm, normed, num_tokens, hidden, s.cfg.norm_eps,
-                       s.stream.get());
-  SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(x, normed, rows * hidden * sizeof(__nv_bfloat16),
-                                    cudaMemcpyDeviceToDevice, s.stream.get()));
+  for (int start = 0; start < num_tokens; start += text_carve.chunk) {
+    const int n = std::min(text_carve.chunk, num_tokens - start);
+    __nv_bfloat16* part = x + static_cast<size_t>(start) * hidden;
+    cuda::launch_rmsnorm(part, s.refiner_final_norm, normed, n, hidden, s.cfg.norm_eps,
+                         s.stream.get());
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(part, normed, static_cast<size_t>(n) * hidden * sizeof(__nv_bfloat16),
+                                      cudaMemcpyDeviceToDevice, s.stream.get()));
+  }
   SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   s.emit_stage("final_norm", x, num_tokens, hidden);
   s.transformer_capture.text_active = false;
@@ -2429,7 +2436,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
 
   s.layout = layout;
   s.indices = indices;
-  s.carve = plan_carve(s.cfg, layout, 0, s.attention_mode,
+  s.carve = plan_carve(s.cfg, layout, s.row_chunk, s.attention_mode,
                        stack_uses_convrot(s.blocks));
   if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN) {
     const size_t old_scratch = s.carve.scratch;
@@ -2439,6 +2446,11 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
         s.final_full_adaln, 2, ComputeType::kF32));
     s.carve.total += align_up(s.carve.scratch) - align_up(old_scratch);
   }
+
+  // Drop a larger text/refiner reservation before allocating sequence buffers.
+  // Previous preparation/forward has completed before this stage is entered.
+  SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  s.ws.resize(s.carve.total);
 
   // Frame-banded attention: one small table for the whole request, ~300 entries
   // at the default geometry, rebuilt here because it depends on the layout and

@@ -27,6 +27,11 @@ void Workspace::reserve(size_t bytes) {
   cursor_ = 0;
 }
 
+void Workspace::resize(size_t bytes) {
+  cursor_ = 0;
+  if (align_up(bytes) != buffer_.nbytes()) buffer_.allocate(align_up(bytes));
+}
+
 void* Workspace::alloc(size_t bytes) {
   const size_t offset = align_up(cursor_);
   const size_t end = offset + bytes;

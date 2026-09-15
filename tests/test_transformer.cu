@@ -858,6 +858,30 @@ Case make_case(const TransformerConfig& cfg, int text_rows, float audio_t) {
 // from "bf16 rounding accumulated across all of them", and those have very
 // different consequences. This walks the same boundaries on both sides and
 // prints where agreement is first lost, and by how much at each step.
+SLOPFAB_TEST(transformer_row_chunks_match_full_rows) {
+  const TransformerConfig cfg = tiny_config();
+  const std::string path = write_synthetic(build_synthetic(cfg));
+  slopfab::SafeTensors st; st.open(path);
+  const Case c = make_case(cfg, 259, 0.31f);
+  auto run = [&](int chunk) {
+    Transformer model;
+    model.load(st, cfg);
+    model.set_row_chunk(chunk);
+    model.prepare_text(c.prompt.data(), c.layout.num_text);
+    model.prepare_sequence(c.layout, c.idx, c.pos);
+    std::vector<float> video(c.video_rows.size()), audio(c.audio_rows.size());
+    model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt, video.data(), audio.data());
+    CHECK(all_finite(video)); CHECK(all_finite(audio));
+    video.insert(video.end(), audio.begin(), audio.end());
+    return video;
+  };
+  const auto full = run(8192);
+  const auto chunked = run(128);
+  CHECK_CLOSE_REL(full, chunked, 0.003, 0.02, "row chunks including refiner tail");
+  st.close();
+  std::filesystem::remove(path);
+}
+
 SLOPFAB_TEST(transformer_refiner_bisect) {
   const TransformerConfig cfg = tiny_config();
   const Tensors tensors = build_synthetic(cfg);

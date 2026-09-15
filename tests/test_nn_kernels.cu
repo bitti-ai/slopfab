@@ -4496,6 +4496,23 @@ SLOPFAB_TEST(qwen_vision_layernorm_and_gelu) {
 //
 // The over-carve check is the other half: an arena that is simply too small
 // throws rather than overruns.
+SLOPFAB_TEST(workspace_resize_releases_stage_reservation) {
+  Workspace ws;
+  ws.reserve(1 << 20);
+  ws.alloc(8192);
+  ws.resize(513);
+  CHECK(ws.capacity() == 768);
+  CHECK(ws.used() == 0);
+  auto* data = ws.alloc_n<float>(128);
+  SLOPFAB_CUDA_CHECK(cudaMemset(data, 0, 128 * sizeof(float)));
+  std::vector<float> host(128, 1.0f);
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(host.data(), data, 128 * sizeof(float), cudaMemcpyDeviceToHost));
+  CHECK(host == std::vector<float>(128, 0.0f));
+  ws.resize(0);
+  CHECK(ws.capacity() == 0);
+  CHECK(ws.used() == 0);
+}
+
 SLOPFAB_TEST(workspace_reserve_below_capacity_preserves_carved_pointers) {
   Workspace ws;
   ws.reserve(1 << 20);

@@ -26,6 +26,10 @@ class Workspace {
   // handed out earlier is invalidated by a grow, so reserve before carving.
   void reserve(size_t bytes);
 
+  // Set capacity to the aligned size, including shrinking. Invalidates every
+  // carved pointer. Only use between stages after their stream has completed.
+  void resize(size_t bytes);
+
   // Bumps the cursor and returns a 256-byte-aligned pointer. Throws if the
   // arena is exhausted — that is a sizing bug, not a runtime condition.
   void* alloc(size_t bytes);
