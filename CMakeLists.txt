@@ -1330,6 +1330,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/harness.cpp
     tests/test_main.cpp
     tests/test_adaln.cpp
+    tests/test_offload.cpp
     tests/test_audio_primitives.cpp
     tests/test_chunking.cpp
     tests/test_continuation.cpp
