@@ -32,6 +32,20 @@
 
 namespace slopfab::cuda {
 
+// Reference encoders sample while convolution inputs, outputs and scratch are
+// simultaneously live. Enabled by SLOPFAB_PROFILE=1; these are sampled,
+// device-wide figures (including other processes), not allocator-exact peaks.
+class ReferenceMemoryProfiler {
+ public:
+  ReferenceMemoryProfiler();
+  void sample();
+  void report(const char* label) const;
+ private:
+  bool enabled_ = false;
+  size_t baseline_ = 0, peak_ = 0, minimum_free_ = 0;
+  size_t samples_ = 0;
+};
+
 class StepProfiler {
  public:
   // Reads SLOPFAB_PROFILE once. There is one profiler per process because there

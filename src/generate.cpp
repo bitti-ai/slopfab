@@ -552,7 +552,14 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   std::vector<PreparedReference> prepared_media;
   for (const auto& media : request.reference_media) {
     if (!notify(RunStage::kReferences, -1, 0)) return stop("reference preprocessing");
+    const auto t0 = Clock::now();
     prepared_media.push_back(prepare_reference_condition(*media, double(plan.sampling_frames) / 24));
+    if (options.verbose) {
+      const auto& p = prepared_media.back().plan;
+      std::printf("references  preprocess %zu: %dx%d, %d VAE frames, %d audio samples in %.3f s\n",
+                  prepared_media.size(), p.width, p.height, p.encoding_frames,
+                  p.audio_samples, seconds_since(t0));
+    }
   }
   std::vector<text::QwenPixelValues> media_qwen_pairs;
   if (options.source == LatentSource::kDenoise && !reference_images.empty()) {
@@ -804,6 +811,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (has_video && request.video_vae_path.empty()) throw std::runtime_error("reference video requires --video-vae");
       if (has_audio && request.audio_vae_path.empty()) throw std::runtime_error("reference audio requires --audio-vae");
       if (has_video) {
+        const auto load_start = Clock::now();
         SafeTensors checkpoint; checkpoint.open(request.video_vae_path);
         std::unique_ptr<vae::KeyframeEncoder> cuda_encoder;
 #if SLOPFAB_WITH_VULKAN
@@ -816,10 +824,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 #endif
           cuda_encoder = std::make_unique<vae::KeyframeEncoder>(checkpoint);
         auto mean = read_stat(checkpoint, "latents_mean", 24), stddev = read_stat(checkpoint, "latents_std", 24);
+        if (options.verbose) std::printf("references  video VAE load in %.3f s\n", seconds_since(load_start));
         for (size_t i = 0; i < prepared_media.size(); ++i) {
           const auto& media = prepared_media[i];
           if (media.frames.empty()) continue;
           if (!notify(RunStage::kReferences, -1, 0)) return stop("reference video encode");
+          const auto encode_start = Clock::now();
           const auto& g = media.plan.geometry;
           std::vector<float> rows;
 #if SLOPFAB_WITH_VULKAN
@@ -827,14 +837,21 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
           else
 #endif
             rows = cuda_encoder->encode_reference_video(media.frames, media.plan.encoding_frames, mean, stddev);
+          if (options.verbose) std::printf("references  video %zu: %dx%d, %d frames -> %zu rows in %.3f s\n",
+              i + 1, media.plan.width, media.plan.height, media.plan.encoding_frames,
+              rows.size() / 96, seconds_since(encode_start));
           auto noise = sampler::video_noise(request.seed ^ (0x9e3779b97f4a7c15ULL * (reference_images.size() + i + 1)),
               g.num_latent_frames, g.latent_height, g.latent_width);
           auto noise_rows = patchify_reference_video(noise.data(), g.num_latent_frames, g.latent_height, g.latent_width);
           sampler::FlowScheduler::scale_noise(rows.data(), noise_rows.data(), .999f, rows.size(), rows.data());
           condition_video_rows.insert(condition_video_rows.end(), rows.begin(), rows.end());
         }
+#if SLOPFAB_WITH_VULKAN
+        if (vk_encoder && options.verbose) vk_encoder->report_memory();
+#endif
       }
       if (has_audio) {
+        const auto load_start = Clock::now();
         SafeTensors checkpoint; checkpoint.open(request.audio_vae_path);
         std::unique_ptr<vae::AudioEncoder> cuda_encoder;
 #if SLOPFAB_WITH_VULKAN
@@ -846,17 +863,24 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         } else
 #endif
           cuda_encoder = std::make_unique<vae::AudioEncoder>(checkpoint);
+        if (options.verbose) std::printf("references  audio VAE load in %.3f s\n", seconds_since(load_start));
         for (const auto& media : prepared_media) {
           if (media.audio.empty()) continue;
           if (!notify(RunStage::kReferences, -1, 0)) return stop("reference audio encode");
+          const auto encode_start = Clock::now();
           std::vector<float> rows;
 #if SLOPFAB_WITH_VULKAN
           if (vk_encoder) rows = vk_encoder->encode_reference(media.audio.data(), media.plan.audio_samples);
           else
 #endif
             rows = cuda_encoder->encode_reference(media.audio.data(), media.plan.audio_samples);
+          if (options.verbose) std::printf("references  audio: %d samples -> %zu rows in %.3f s\n",
+              media.plan.audio_samples, rows.size() / 32, seconds_since(encode_start));
           condition_audio_rows.insert(condition_audio_rows.end(), rows.begin(), rows.end());
         }
+#if SLOPFAB_WITH_VULKAN
+        if (vk_encoder && options.verbose) vk_encoder->report_memory();
+#endif
       }
       for (const auto& media : prepared_media) reference_geometry.push_back(media.plan.geometry);
     }

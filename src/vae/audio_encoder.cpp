@@ -167,6 +167,7 @@ std::vector<float> AudioEncoder::encode_mean(const float* stereo, int samples) {
   std::vector<float> result(x.size());
   x.copy_to_host(result.data(), result.size(), impl_->stream.get());
   impl_->stream.synchronize();
+  ops.report_memory("audio encoder");
   return result;
 }
 std::vector<float> AudioEncoder::encode_reference(const float* stereo,

@@ -140,6 +140,15 @@ provide the modality count and duration limits.
 
 ## Verification
 
+Verbose generation logs separate media preprocessing, video/audio VAE loading,
+and each reference encode, including input geometry and output row counts.
+`SLOPFAB_PROFILE=1` additionally samples CUDA device memory while convolution
+inputs, outputs and scratch coexist. These logs include baseline/peak device
+usage and minimum free memory; they include other processes and may miss
+unsampled peaks. Vulkan verbose logs report encoder tensor peak and reserved
+pool bytes. Neither figure should be compared to an idle-card baseline without
+checking for other GPU workloads.
+
 `test_reference_media.cpp` covers pixel strides, transactional failures, overflow,
 timing, snapshot ownership, PCM validation, reference limits, target-dependent
 geometry/cache identities, temporal patchification and paired Qwen pixels.

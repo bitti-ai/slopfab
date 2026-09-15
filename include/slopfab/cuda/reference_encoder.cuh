@@ -3,6 +3,7 @@
 
 #include "slopfab/cuda/cublas_dispatch.h"
 #include "slopfab/cuda/device.h"
+#include "slopfab/cuda/profile.h"
 
 namespace slopfab::cuda {
 // FP32 contractions with bounded im2col scratch. Used only by reference
@@ -34,10 +35,12 @@ class ReferenceEncoderOps {
   void snake(float* x, const float* alpha, int batch, int channels, int length);
   void add(float* x, const float* branch, size_t count);
   void geglu(float* x, const float* gate, size_t count);
+  void report_memory(const char* label) const { memory_.report(label); }
 
  private:
   cudaStream_t stream_;
   cublasHandle_t blas_ = nullptr;
+  ReferenceMemoryProfiler memory_;
 };
 void reference_groupnorm(const float* x, const __half* weight,
                          const __half* bias, float* y, int channels, int frames,

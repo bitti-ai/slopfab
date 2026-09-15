@@ -245,6 +245,7 @@ DeviceBuffer<float> ReferenceEncoderOps::conv3d(const float* x, const __half* w,
   const int tile = std::min(N, 1024);
   DeviceBuffer<float> col(size_t(K) * tile), weight(size_t(co) * K),
       bias(b ? co : 0), out(size_t(co) * N);
+  memory_.sample();
   convert<<<blocks(weight.size()), 256, 0, stream_>>>(w, weight.get(),
                                                       weight.size());
   if (b) convert<<<blocks(co), 256, 0, stream_>>>(b, bias.get(), co);
@@ -273,6 +274,7 @@ DeviceBuffer<float> ReferenceEncoderOps::conv1d(const float* x, const float* w,
   DeviceBuffer<float> out(size_t(batch) * co * n);
   int K = ci * k, tile = std::min(n, 4096);
   DeviceBuffer<float> col(size_t(K) * tile);
+  memory_.sample();
   float one = 1, zero = 0;
   for (int bch = 0; bch < batch; ++bch) {
     float* y = out.get() + size_t(bch) * co * n;
@@ -295,6 +297,7 @@ DeviceBuffer<float> ReferenceEncoderOps::linear(const float* x, const float* w,
                                                 const float* b, int rows,
                                                 int in, int out) {
   DeviceBuffer<float> y(size_t(rows) * out);
+  memory_.sample();
   float one = 1, zero = 0;
   blas_check(cublas_sgemm(blas_, CUBLAS_OP_T, CUBLAS_OP_N, out, rows, in, &one,
                           w, in, x, in, &zero, y.get(), out));
@@ -326,6 +329,7 @@ DeviceBuffer<float> ReferenceEncoderOps::attention(const float* x,
         "reference audio: attention length must be 1..600");
   DeviceBuffer<float> heads(size_t(batch) * len * 2048),
       out(size_t(batch) * len * 32);
+  memory_.sample();
   causal_attention<<<batch * len * 8, 256, 0, stream_>>>(x, qb, kb, vb,
                                                          heads.get(), len);
   pool_heads<<<blocks(out.size()), 256, 0, stream_>>>(heads.get(), out.get(),

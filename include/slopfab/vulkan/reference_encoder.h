@@ -24,6 +24,7 @@ class ReferenceEncoder {
                                             const std::vector<float>& stddev);
   std::vector<float> encode_mean(const float* stereo, int samples);
   std::vector<float> encode_reference(const float* stereo, int samples);
+  void report_memory() const;
 
  private:
   struct Impl;

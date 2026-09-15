@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -22,6 +23,7 @@ struct ReferenceEncoder::Impl {
   std::map<std::string, DeviceTensor> weights;
   std::vector<float> mean, stddev;
   bool audio;
+  uint64_t peak_used = 0;
   DeviceTensor allocate(uint64_t n) {
     if (!n || n > UINT32_MAX)
       throw std::invalid_argument(
@@ -48,6 +50,7 @@ struct ReferenceEncoder::Impl {
                    DeviceTensor* previous = nullptr,
                    DeviceTensor* earliest = nullptr) {
     auto out = allocate(n);
+    peak_used = std::max(peak_used, context.pooled_used_bytes());
     p[12] = uint32_t(n);
     auto batch = context.begin_batch();
     batch.reference_operation(const_cast<DeviceTensor&>(x),
@@ -134,6 +137,12 @@ ReferenceEncoder::ReferenceEncoder(const Device& device,
                                    const SafeTensors& checkpoint, bool audio)
     : impl_(std::make_unique<Impl>(device, checkpoint, audio)) {}
 ReferenceEncoder::~ReferenceEncoder() = default;
+
+void ReferenceEncoder::report_memory() const {
+  constexpr double gib = 1024.0 * 1024 * 1024;
+  std::printf("references  Vulkan encoder tensors: peak %.2f GiB, reserved %.2f GiB\n",
+              impl_->peak_used / gib, impl_->context.reserved_bytes() / gib);
+}
 
 ReferenceEncoder::Impl::Impl(const Device& device,
                              const SafeTensors& checkpoint, bool is_audio)

@@ -472,6 +472,7 @@ std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels,
   std::vector<float> moments(x.size());
   x.copy_to_host(moments.data(), moments.size(), impl_->stream.get());
   impl_->stream.synchronize();
+  ops.report_memory("video chunk");
   return moments;
 }
 

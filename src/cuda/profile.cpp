@@ -7,6 +7,26 @@
 #include "slopfab/cuda/device.h"
 
 namespace slopfab::cuda {
+
+ReferenceMemoryProfiler::ReferenceMemoryProfiler()
+    : enabled_(StepProfiler::instance().enabled()) { sample(); }
+
+void ReferenceMemoryProfiler::sample() {
+  if (!enabled_) return;
+  size_t free = 0, total = 0;
+  if (cudaMemGetInfo(&free, &total) != cudaSuccess) return;
+  if (!samples_) { baseline_ = total - free; minimum_free_ = free; }
+  peak_ = std::max(peak_, total - free);
+  minimum_free_ = std::min(minimum_free_, free);
+  ++samples_;
+}
+
+void ReferenceMemoryProfiler::report(const char* label) const {
+  if (!samples_) return;
+  constexpr double gib = 1024.0 * 1024 * 1024;
+  std::printf("references  %s CUDA sampled device memory: baseline %.2f GiB, peak %.2f GiB, minimum free %.2f GiB (%zu samples)\n",
+              label, baseline_ / gib, peak_ / gib, minimum_free_ / gib, samples_);
+}
 namespace {
 
 using Clock = std::chrono::steady_clock;
