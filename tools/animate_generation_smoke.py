@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--frames", type=int, default=124)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--backend", choices=("cuda", "vulkan"), default="cuda")
+    parser.add_argument("--transformer", type=Path, help="Override the transformer for controlled comparisons")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     ffmpeg = str(root / "external/ffmpeg/bin/ffmpeg.exe")
@@ -87,6 +88,8 @@ def main():
                                (3, "vae/minimax_h3_video_vae_fp16.safetensors"),
                                (4, "vae/minimax_h3_audio_vae_fp32.safetensors")]:
             check(set_model(request, kind, str(root / "weights" / relative).encode()))
+        if args.transformer:
+            check(set_model(request, 0, str(args.transformer.resolve()).encode()))
         check(bind("slopfab_request_set_prompt_embedding_path", [handle, C.c_char_p])(
             request, str(root / "weights/conditioning/viggle_animate.safetensors").encode()))
         check(bind("slopfab_request_add_lora", [handle, C.c_char_p, C.c_float])(
