@@ -1,3 +1,4 @@
+#include "slopfab/text/prompt_embedding.h"
 #include "slopfab/generate.h"
 
 #include <algorithm>
@@ -295,26 +296,6 @@ ReusedGenerationModels& reused_models() {
   return models;
 }
 
-text::PromptEmbedding read_prompt_embedding(const std::string& path) {
-  SafeTensors file;
-  file.open(path);
-  const TensorView& view = file.at("prompt_embedding");
-  if (view.dtype != DType::kF32 || view.shape.size() != 2 ||
-      view.shape[0] <= 0 || view.shape[1] != 5120)
-    throw std::runtime_error(
-        "captured prompt: prompt_embedding must be F32 [L,5120]");
-  text::PromptEmbedding result;
-  result.num_tokens = static_cast<int>(view.shape[0]);
-  result.hidden_size = static_cast<int>(view.shape[1]);
-  result.data = to_f32(view);
-  result.modality_tags.assign(static_cast<size_t>(result.num_tokens),
-                              dit::kTagText);
-  for (float value : result.data)
-    if (!std::isfinite(value))
-      throw std::runtime_error("captured prompt: non-finite embedding value");
-  return result;
-}
-
 #if SLOPFAB_WITH_VULKAN
 vulkan::Device create_vulkan_inference_device(bool exact_h3 = false,
                                              bool sage_attention = false) {
@@ -374,8 +355,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   }
 
   if (!request.reference_media.empty() &&
-      (options.source != LatentSource::kDenoise || !options.prompt_embedding_path.empty())) {
-    result.message = "reference video/audio requires denoising with native prompt conditioning";
+      options.source != LatentSource::kDenoise) {
+    result.message = "reference video/audio requires denoising";
     return result;
   }
 
@@ -483,6 +464,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     return *conditioning_tokenizer_instance;
   };
 
+  text::PromptEmbedding fixed_prompt;
+  if (!options.prompt_embedding_path.empty())
+    fixed_prompt = text::read_prompt_embedding(options.prompt_embedding_path,
+                                                request.has_native_references());
+
   // Decode all references before opening a multi-gigabyte checkpoint. Besides
   // giving file errors promptly, this validates the Ref2VA aspect contract at
   // the dimensions actually presented by the decoder.
@@ -573,13 +559,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
   }
   std::vector<text::QwenPixelValues> media_qwen_pairs;
-  if (options.source == LatentSource::kDenoise && !reference_images.empty()) {
-    if (!options.prompt_embedding_path.empty()) {
-      result.message =
-          "captured prompt embeddings currently support T2VA only; reference "
-          "modality tags must not be guessed";
-      return result;
-    }
+  if (options.source == LatentSource::kDenoise && !reference_images.empty() &&
+      options.prompt_embedding_path.empty()) {
     try {
       text::Tokenizer& tokenizer = conditioning_tokenizer();
       reference_conditioning_grids.reserve(reference_images.size());
@@ -621,7 +602,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
   }
 
-  if (!prepared_media.empty()) {
+  if (!prepared_media.empty() && options.prompt_embedding_path.empty()) {
     auto& tokenizer = conditioning_tokenizer();
     const auto prompt_ids = tokenizer.encode(request.prompt);
     if (!reference_images.empty()) reference_conditioning_ids.resize(reference_conditioning_ids.size() - prompt_ids.size());
@@ -947,7 +928,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     if (!options.prompt_embedding_path.empty()) {
       const Clock::time_point t0 = Clock::now();
       try {
-        prompt = read_prompt_embedding(options.prompt_embedding_path);
+        prompt = std::move(fixed_prompt);
       } catch (const std::exception& e) {
         result.message = e.what();
         return result;

@@ -70,6 +70,7 @@ add_library(slopfab_core STATIC
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
   src/text/encoder.cpp
+  src/text/prompt_embedding.cpp
   src/text/layer_capture.cpp
   src/text/qwen_vision.cpp
   src/video/y4m.cpp
@@ -1345,6 +1346,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_ref2va.cpp
     tests/test_safetensors.cpp
     tests/test_pipeline.cpp
+    tests/test_prompt_embedding.cpp
     tests/test_lora.cpp
     tests/test_sampler.cpp
     tests/test_step_cache.cpp

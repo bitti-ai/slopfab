@@ -407,8 +407,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seed(slopfab_request* request
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* request, int32_t which,
                                                            const char* path);
 
-/* Optional safetensors containing F32 `prompt_embedding` [L,5120]. Accepted by
- * either backend to compare captured conditioning without recomputation. */
+/* Optional safetensors containing F32 `prompt_embedding` [L,5120]. Reference
+ * runs also require I32/I64 `text_token_tags` [L]. Both backends bypass Qwen
+ * and tokenization entirely when this is supplied, including video references. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
     slopfab_request* request, const char* path);
 

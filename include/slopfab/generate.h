@@ -141,9 +141,8 @@ struct RunOptions {
   // and `audio_rows` [Sa, 32], both fp32, both checked against the layout.
   std::string init_latents_path;
 
-  // Optional safetensors containing `prompt_embedding` [L,5120] F32. Both
-  // backends accept it for exact captured-conditioning comparisons without
-  // running their conditioner.
+  // Optional F32 `prompt_embedding` [L,5120]; reference runs also require
+  // I32/I64 `text_token_tags` [L]. Both backends bypass tokenizer and Qwen.
   std::string prompt_embedding_path;
 
   // --- host hooks -----------------------------------------------------------
