@@ -29,13 +29,21 @@ blocks, with the usual H3 dimensions (5376 hidden channels, 56 heads of
 128 channels, 5120 text features). Its AdaLN curve is F32 `[1025,8]`, and
 the rank-eight AdaLN projections and biases remain F32.
 
-`qkv_layout=interleaved` stores attention rows as
-`[head, Q/K/V, channel]`. Both backends reorder these into `[Q; K; V]` when
+For a correctly labelled checkpoint, `qkv_layout=interleaved` means attention
+rows are `[head, Q/K/V, channel]`. Both backends reorder these into `[Q; K; V]` when
 loading, including the per-row F32 INT8 scales. The BF16 token-refiner
 weights receive the same permutation. This preserves the quantized values
 and ConvRot input transformation; it does not requantize the model.
 Checkpoints without layout metadata retain the existing contiguous layout.
 Unsupported layout names and interleaved packed NF4/NVFP4 weights are rejected.
+
+**The local file named `Viggle-Animate-pruned_rank8_int8_convrot.safetensors`
+has incorrect layout metadata.** Its header declares `interleaved`, but sampled
+weights match the original Viggle model in contiguous order. Loading it as
+declared scrambles both main-block and text-refiner attention. A separate local
+copy, `Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors`, corrects
+only that metadata. See [the weight audit and controlled comparison](animate_failure_diagnosis.md).
+Do not assume other downloads with the same filename share this defect.
 
 ## Animation workflow requirements
 
@@ -58,7 +66,7 @@ that adapter on the Viggle finetune for the three-pass recipe. Slopfab now loads
 Add these options to your generation command:
 
 ```sh
---transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --lora-strength 1
+--transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --lora-strength 1
 ```
 
 All 604 tensors are used across 302 projections. Diffusers' separate Q/K/V
@@ -120,7 +128,7 @@ it does not promise sample-identical PCM or establish the cause of earlier
 corrupted audio.
 
 ```sh
-slopfab generate --animate --prompt-embedding weights/conditioning/viggle_animate.safetensors --reference-video driving.mp4 --reference-image repainted.png --resolution 704x1248 --frames 124 --preserve-driving-audio --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out animated.mp4
+slopfab generate --animate --prompt-embedding weights/conditioning/viggle_animate.safetensors --reference-video driving.mp4 --reference-image repainted.png --resolution 704x1248 --frames 124 --preserve-driving-audio --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out animated.mp4
 ```
 
 Reference clips must be 2-15 seconds; trim longer sources first. The C API takes
@@ -134,7 +142,7 @@ this new setter to opt in; attaching PCM alone retains generic reference behavio
 
 Host tests cover metadata/filename detection, Ref2VA acceptance, invalid
 layouts, and an INT8 projection with distinct per-row scales. The actual
-downloaded checkpoint is checked across all 52 blocks, including Vulkan's
+downloaded checkpoint's structural contract is checked across all 52 blocks, including Vulkan's
 host-side archive validation. CUDA and Vulkan regression fixtures compare
 forward results from equivalent contiguous and interleaved checkpoints;
 the Vulkan fixture also checks F32 AdaLN storage.
@@ -162,13 +170,21 @@ and the runtime check confirmed bitwise-unchanged target audio latents.
 Decoded audio correlated with the source resampled to 32 kHz at 0.975/0.977
 for the left/right channels over the first 5.167 seconds.
 
-**Visual validation failed:** the output is a nearly uniform brown texture,
+**Initial visual validation failed:** the output was a nearly uniform brown texture,
 not an animated performer. A separate encode/decode of the repainted frame
 with the same video VAE reconstructs the person and scene correctly; its still
 and repeated-latent video decode paths agree exactly. This narrows investigation
 to the conditioning/transformer path, but does not establish the cause or rule
 out every temporal decoding issue. The recipe changes are not evidence of
 successful end-to-end Animate quality.
+
+Follow-up identified false `qkv_layout=interleaved` metadata in the local
+checkpoint. Repeating the same render with only that field corrected to
+`contiguous` produces the character and scene in the inspected beginning,
+middle and final frames; video latent standard deviation increases from 0.2372
+to 1.0089. Audio latents and decoded WAV files are identical between runs.
+See [the diagnosis](animate_failure_diagnosis.md) for original-weight comparisons,
+the corrected local checkpoint path, reproduction commands and limitations.
 
 `tools/animate_generation_smoke.py` reproduces the DLL comparison without Qwen
 and saves video, decoded audio and normalized latents. Its runtime checks do
