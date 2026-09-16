@@ -259,3 +259,83 @@ SLOPFAB_TEST(reference_video_qwen_pair_uses_both_frames) {
   auto rows = slopfab::patchify_reference_video(latents.data(), 2, 2, 2);
   CHECK(rows[0] == 0 && rows[4] == 8 && rows[96] == 4 && rows[100] == 12);
 }
+
+SLOPFAB_TEST(animate_geometry_order_and_audio_contract) {
+  auto video = ReferenceMedia::video(2);
+  const std::vector<uint8_t> pixels(64 * 96 * 3, 80);
+  video.append_frame(pixels.data(), pixels.size(), 64, 96, 64 * 3, 3, 0);
+  std::vector<float> pcm(32000, .25f);
+  video.set_audio(pcm.data(), pcm.size(), 1, 32000);
+  slopfab::GenerateRequest r;
+  r.animate = true;
+  r.num_inference_steps = 4;
+  r.num_frames = 39;
+  r.reference_image_paths = {"repainted.png"};
+  r.reference_media = {std::make_shared<const ReferenceMedia>(video)};
+  const auto p = slopfab::resolve_plan(r);
+  CHECK(p.canvas_width == 64 && p.canvas_height == 96);
+  CHECK(p.video_sigma_shift == 3);
+  CHECK(p.layout.num_condition_audio == 0);
+  CHECK(p.layout.num_audio_rows == 130);
+  const auto options = slopfab::animate_reference_options(p.canvas_width, p.canvas_height);
+  const auto prepared = slopfab::prepare_reference_condition(video, p.duration_seconds, true, options);
+  CHECK(prepared.plan.width == 64 && prepared.plan.height == 96);
+  CHECK(prepared.plan.encoding_frames == 39);
+  CHECK(prepared.audio.empty());
+  CHECK(prepared.plan.geometry.num_audio_latents == 0);
+  int h, w;
+  slopfab::dit::resolve_reference_image_size(300, 450, &h, &w, options.short_edge);
+  CHECK(w == 64 && h == 96);
+
+  std::vector<slopfab::dit::ReferenceGeometry> geometry = {
+      {slopfab::dit::ReferenceKind::kImage, 1, 6, 4, 0}, prepared.plan.geometry};
+  const size_t image_values = size_t(geometry.front().video_rows()) * 96;
+  const size_t video_values = size_t(geometry.back().video_rows()) * 96;
+  std::vector<float> rows(image_values, 1);
+  rows.insert(rows.end(), video_values, 2);
+  slopfab::order_animate_references(geometry, rows);
+  CHECK(geometry.front().kind == slopfab::dit::ReferenceKind::kVideo);
+  CHECK(std::vector<float>(rows.begin(), rows.begin() + video_values) == std::vector<float>(video_values, 2));
+  CHECK(std::vector<float>(rows.begin() + video_values, rows.end()) == std::vector<float>(image_values, 1));
+  const auto packed = slopfab::dit::build_ref2va_packed_sequence(std::vector<int32_t>(362, 1),
+      geometry, p.layout.num_latent_frames, 6, 4, p.layout.num_audio_latents);
+  CHECK(packed.position_ids[size_t(packed.indices.video.front()) * 3] == 362);
+  CHECK(packed.position_ids[size_t(packed.indices.video[geometry.front().video_rows()]) * 3] > 362);
+  CHECK(packed.layout.num_condition_audio == 0);
+  CHECK(packed.layout.num_audio_rows == p.layout.num_audio_rows);
+
+  const auto key = slopfab::media_encoding_cache_key(r, slopfab::ReferenceEncoderAuthority::kCudaFp32);
+  r.preserve_driving_audio = true;
+  CHECK(key != slopfab::media_encoding_cache_key(r, slopfab::ReferenceEncoderAuthority::kCudaFp32));
+  CHECK(slopfab::resolve_plan(r).layout.num_condition_audio == 0);
+  const auto image_key = slopfab::reference_cache_key(r);
+  r.canvas_width = 128; r.canvas_height = 192;
+  CHECK(image_key != slopfab::reference_cache_key(r));
+  r.reference_image_paths.clear();
+  CHECK(throws([&] { slopfab::resolve_plan(r); }));
+  r.reference_image_paths = {"repainted.png"};
+  r.reference_media = {std::make_shared<const ReferenceMedia>(clip())};
+  CHECK(throws([&] { slopfab::resolve_plan(r); }));
+}
+
+SLOPFAB_TEST(animate_target_audio_padding_and_channel_crop) {
+  auto video = clip();
+  const std::vector<float> pcm(32000, .25f);
+  video.set_audio(pcm.data(), pcm.size(), 1, 32000);
+  const auto wav = slopfab::prepare_target_audio(*video.soundtrack(), 39);
+  CHECK(wav.size() == 2 * 53333);
+  for (int channel = 0; channel < 2; ++channel) {
+    CHECK(wav[channel * 53333] == .25f);
+    CHECK(wav[channel * 53333 + 31999] == .25f);
+    CHECK(wav[channel * 53333 + 32000] == 0);
+    CHECK(wav[channel * 53333 + 53332] == 0);
+  }
+  std::vector<float> encoded(2 * 4 * 32);
+  for (size_t i = 0; i < encoded.size(); ++i) encoded[i] = float(i);
+  const auto rows = slopfab::target_audio_rows(encoded, 3);
+  CHECK(rows.size() == 2 * 3 * 32);
+  CHECK(rows[95] == 95);
+  CHECK(rows[96] == 128);  // Right channel starts after all four left latents.
+  CHECK(rows.back() == 223);
+  CHECK(throws([&] { slopfab::target_audio_rows(encoded, 5); }));
+}

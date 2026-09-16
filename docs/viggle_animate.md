@@ -39,10 +39,9 @@ Unsupported layout names and interleaved packed NF4/NVFP4 weights are rejected.
 
 ## Animation workflow requirements
 
-This change supports the transformer checkpoint. It does not add a dedicated
-Viggle animation command or reproduce the upstream character-replacement
-pipeline automatically. The generic H3 reference-generation defaults differ
-from Viggle's evaluated recipe.
+Use `--animate` (C API 1.10: `slopfab_request_set_animate`) to select the
+fixed-conditioning recipe. It requires exactly one driving video and one
+repainted scene frame. Generic H3 reference generation retains its own defaults.
 
 The [upstream inference script](https://huggingface.co/Viggle/Viggle-Animate/blob/main/inference/sample.py)
 uses a frozen embedding with modality tags, a driving video followed by one
@@ -76,9 +75,60 @@ the loaders. With `--steps 4 --sampler euler`, its sigma boundaries are
 general-purpose H3 video models retain shift 12. Planning inspects only the
 checkpoint header; without a local checkpoint, it uses the H3 defaults.
 
-Loading the adapter alone does not select the shift or step count. The
-upstream frozen `.pt` embedding, reference ordering and
-geometry, and optional pinned target audio require separate pipeline work.
+Loading the adapter alone does not select the step count. Animate mode defaults
+to four boundaries and requires Euler without step/block caching, continuation,
+refmods, or supplied initial latents.
+
+## Frozen conditioning and references
+
+Download `assets/fixed_embed_fwd_anyframe.pt` from the upstream repository, then
+convert it once (requires PyTorch and NumPy):
+
+```sh
+python tools/convert_viggle_embedding.py fixed_embed_fwd_anyframe.pt weights/conditioning/viggle_animate.safetensors
+```
+
+The converter preserves the 362 x 5120 BF16 values exactly in F32 and copies the
+modality tags. SlopFab reads `prompt_embedding` and `text_token_tags` directly;
+it never tokenizes the prompt or references, and never loads Qwen in this mode.
+The generic embedding API also accepts video/image references when explicit
+I32/I64 `text_token_tags [L]` are included.
+
+Animate packs the driving video first, then the repainted image, including their
+latent payloads, modality indices, noise streams, and shared rotary clock. Both
+references use the target's short edge; video resizing also uses the target's
+pixel budget. With no explicit canvas, the driving video's aspect determines
+the canvas, with its short edge rounded down to a multiple of 32. Use
+`--resolution WxH` to choose the same canvas as an upstream comparison.
+
+The reference image should be a frame of the driving scene with the performer
+repainted as the desired character. Preserve pose, framing, background, and
+lighting. A standalone portrait on white is not an equivalent input.
+
+## Soundtrack preservation
+
+`--preserve-driving-audio` encodes the driving soundtrack once, pads/truncates
+it to the aligned output duration plus one video frame, and takes the required
+normalized posterior-mean latents for each stereo channel. The target audio
+rows remain clean (`t=1`) on every forward pass and are never scheduler-updated,
+on CUDA and Vulkan. They remain target rows and are decoded normally. A runtime
+check verifies they are bitwise unchanged after denoising.
+
+The driving soundtrack is never a reference in Animate mode. Without this flag,
+output audio is generated. Preservation follows upstream's audio-VAE round trip;
+it does not promise sample-identical PCM or establish the cause of earlier
+corrupted audio.
+
+```sh
+slopfab generate --animate --prompt-embedding weights/conditioning/viggle_animate.safetensors --reference-video driving.mp4 --reference-image repainted.png --resolution 704x1248 --frames 124 --preserve-driving-audio --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out animated.mp4
+```
+
+Reference clips must be 2?15 seconds; trim longer sources first. The C API takes
+decoded frames and PCM as before. Call `slopfab_request_set_animate(req, 1, 1)`
+to select four boundaries, Euler, and preserved driving audio, then set the
+embedding path, transformer, LoRA, references, and any canvas/frame overrides.
+Pass zero as the third argument for generated audio. Existing hosts must call
+this new setter to opt in; attaching PCM alone retains generic reference behavior.
 
 ## Verification
 
@@ -95,7 +145,9 @@ Synthetic tests cover alpha/strength scaling, Q/K/V dimensions, SwiGLU order,
 stacking, and malformed inputs. GPU regression cases check that each of the
 eight projection types affects the forward pass on both backends.
 
-The Release CLI, DLL, CUDA tests and Vulkan tests compile. In the implementation
-environment, CUDA reports no visible device and Vulkan instance creation
-fails with `VK_ERROR_INCOMPATIBLE_DRIVER`, so GPU execution and end-to-end
-animation quality have not been verified.
+The Release CLI and DLL build. Host and C API tests cover fixed embedding tags,
+Animate geometry, ordering, cache separation, soundtrack padding, and stereo
+latent cropping. CUDA loop tests verify clean audio timesteps and unchanged
+samples at every boundary; an independent Vulkan fixture verifies three pinned
+audio boundaries while video advances. Broader Vulkan stage tests currently
+fail on operator-count and AWQ/LoRA checks unrelated to this recipe.

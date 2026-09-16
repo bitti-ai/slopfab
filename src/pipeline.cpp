@@ -26,6 +26,11 @@ constexpr int kMinLatentFrames = 7;
 constexpr int kMinFrames = 22;
 
 void append_media_identity(std::string& key, const GenerateRequest& request) {
+  key += request.animate ? "animate-v1" : "general";
+  if (request.animate) {
+    key += ":" + std::to_string(request.canvas_width) + "x" + std::to_string(request.canvas_height);
+    key += request.preserve_driving_audio ? ":pinned-audio" : ":generated-audio";
+  }
   if (request.reference_media.empty()) return;
   key.push_back('\0');
   const int frames = request.continuation
@@ -46,6 +51,18 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::invalid_argument("continuation is unavailable in still-image mode");
   validate_refmods(request.refmods);
   validate_reference_media(request.reference_image_paths.size(), request.reference_media);
+  if (request.preserve_driving_audio && !request.animate)
+    throw std::invalid_argument("preserve_driving_audio requires Animate mode");
+  if (request.animate) {
+    if (request.still_image || request.continuation || request.has_refmods() ||
+        request.reference_image_paths.size() != 1 || request.reference_media.size() != 1 ||
+        !request.reference_media.front()->is_video())
+      throw std::invalid_argument("Animate requires one driving video and one repainted image, without continuation or refmods");
+    if (request.schedule != sampler::ScheduleKind::kDefault)
+      throw std::invalid_argument("Animate requires the default shifted schedule");
+    if (request.preserve_driving_audio && !request.reference_media.front()->soundtrack())
+      throw std::invalid_argument("Animate audio preservation requires a driving soundtrack");
+  }
   if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
     bool has_video = bool(request.continuation);
     for (const auto& media : request.reference_media) has_video |= media->is_video();
@@ -70,6 +87,11 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   } else if (request.continuation) {
     plan.canvas_height = request.continuation->height;
     plan.canvas_width = request.continuation->width;
+  } else if (request.animate) {
+    const auto& frame = request.reference_media.front()->frames().front()->image;
+    const int short_edge = std::max(32, std::min(frame.width, frame.height) / 32 * 32);
+    dit::resolve_canvas_size(frame.width, frame.height, &plan.canvas_height, &plan.canvas_width,
+                             short_edge, INT32_MAX);
   } else {
     dit::resolve_canvas_size(static_cast<double>(request.aspect_w),
                              static_cast<double>(request.aspect_h), &plan.canvas_height,
@@ -107,6 +129,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   }
 
   if (!request.continuation) plan.sampling_frames = plan.aligned_frames;
+  if (request.animate && plan.aligned_frames > 360)
+    throw std::invalid_argument("Animate supports at most 15 seconds after frame alignment");
   plan.layout.num_text = 0;  // filled in after tokenisation
   plan.layout.num_condition_video = 0;  // t2va has no conditioning rows
   plan.layout.num_latent_frames =
@@ -121,7 +145,9 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   if (!request.reference_media.empty()) {
     plan.layout.condition_audio_is_explicit = true;
     for (const auto& media : request.reference_media) {
-      const auto geometry = reference_condition_plan(*media, double(plan.sampling_frames) / kFps).geometry;
+      const auto options = request.animate
+          ? animate_reference_options(plan.canvas_width, plan.canvas_height) : ReferenceConditionOptions{};
+      const auto geometry = reference_condition_plan(*media, double(plan.sampling_frames) / kFps, options).geometry;
       plan.layout.num_condition_video += geometry.video_rows();
       plan.layout.num_condition_audio += geometry.audio_rows();
     }
@@ -161,6 +187,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
         dit::TransformerArchitecture::kViggleAnimatePrunedTable)
       plan.video_sigma_shift = kViggleVideoSigmaShift;
   }
+  if (request.animate) plan.video_sigma_shift = kViggleVideoSigmaShift;
   plan.audio_sigma_shift = kAudioSigmaShift;
   plan.num_inference_steps = request.schedule == sampler::ScheduleKind::kTaoMate3Step
       ? 4 : request.num_inference_steps;
@@ -367,6 +394,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
                   dit::canvas_exceeds_trained_area(plan.canvas_height, plan.canvas_width)
                       ? ", above the trained area"
                       : "");
+  } else if (request.animate) {
+    std::snprintf(provenance, sizeof(provenance), "from driving video, aligned to 32");
   } else {
     std::snprintf(provenance, sizeof(provenance), "from %d:%d", request.aspect_w,
                   request.aspect_h);
@@ -405,6 +434,13 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigma_shift),
       static_cast<unsigned long long>(request.seed), request.out_path.c_str());
   std::string description = buf;
+  if (request.animate) {
+    description += "  Animate             fixed 362-token embedding; video then repainted image\n";
+    description += "  reference short edge " + std::to_string(std::min(plan.canvas_width, plan.canvas_height)) + "\n";
+    description += request.preserve_driving_audio
+        ? "  target audio        pinned driving soundtrack (clean t=1)\n"
+        : "  target audio        generated; driving reference soundtrack omitted\n";
+  }
   if (request.continuation) {
     description += "  continuation        " + std::to_string(request.continuation->frames) +
         " source + " + std::to_string(plan.continuation.extension_frames) + " new frames\n" +

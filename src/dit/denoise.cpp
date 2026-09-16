@@ -69,6 +69,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   if (ca) std::copy(inputs.condition_audio_rows->begin(), inputs.condition_audio_rows->end(), all_audio.begin());
   out.video_rows.assign(all_video.size() - cv, 0.0f);
   out.audio_rows.assign(audio_values - ca, 0.0f);
+  require(!inputs.pin_target_audio || (inputs.init_audio_rows && !out.audio_rows.empty()),
+          "pinned target audio requires nonempty initial audio rows");
 
   // Draw order matters for reproducibility even though our generator is not
   // torch's: video first, in `(24, F, Hl, Wl)` layout and then patchified, then
@@ -130,7 +132,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       // Shared with `plan_step_cache`, so the loop and the planner cannot
       // disagree about what this step's signature is — only about what to do
       // with it, which is the thing under test.
-      build_signature(code, video_t[static_cast<size_t>(i)], audio_t[static_cast<size_t>(i)],
+      build_signature(code, video_t[static_cast<size_t>(i)],
+                      inputs.pin_target_audio ? 1.0f : audio_t[static_cast<size_t>(i)],
                       signature);
       compute = cache.should_compute(i, signature.data(), static_cast<int>(signature.size()));
     } else {
@@ -159,7 +162,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         // why it sits inside this branch rather than above it.
         cuda::HostSpan span("build_row_timesteps");
         const float vt = video_t[static_cast<size_t>(i)];
-        const float at = audio_t[static_cast<size_t>(i)];
+        const float at = inputs.pin_target_audio ? 1.0f : audio_t[static_cast<size_t>(i)];
         row_timesteps = layout.condition_audio_is_explicit
                             ? build_row_timesteps(layout, indices, vt, at,
                                                   std::max(vt, 0.999f), 1.0f)
@@ -180,8 +183,9 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       cuda::HostSpan span("scheduler_step");
       inputs.video_scheduler->step(i, all_video.data() + cv, video_velocity.data() + cv,
                                    out.video_rows.size(), out.video_rows.data());
-      inputs.audio_scheduler->step(i, all_audio.data() + ca, audio_velocity.data() + ca,
-                                   out.audio_rows.size(), out.audio_rows.data());
+      if (!inputs.pin_target_audio)
+        inputs.audio_scheduler->step(i, all_audio.data() + ca, audio_velocity.data() + ca,
+                                     out.audio_rows.size(), out.audio_rows.data());
       std::copy(out.video_rows.begin(), out.video_rows.end(), all_video.begin() + cv);
       std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);
     }

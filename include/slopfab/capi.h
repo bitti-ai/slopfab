@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 9
+#define SLOPFAB_CAPI_VERSION_MINOR 10
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -235,6 +235,7 @@ typedef struct slopfab_reference_video slopfab_reference_video;
  * unchanged. Serialize access to each mutable video or request handle.
  *
  * Images precede video/audio inputs; video/audio inputs retain insertion order.
+ * Animate mode instead packs its single driving video before its repainted image.
  * At most 9 images, 3 videos, 3 standalone audios, and 12 total references.
  * Videos and standalone audios each have a 15 second aggregate duration limit.
  * A video's soundtrack does not consume a standalone audio-reference slot.
@@ -412,6 +413,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
  * and tokenization entirely when this is supplied, including video references. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
     slopfab_request* request, const char* path);
+
+/* Since 1.10. Enable the Viggle-Animate recipe: four sigma boundaries, Euler,
+ * fixed conditioning, driving video before one repainted image, and references
+ * resized to the target short edge. Without an explicit canvas, derive it
+ * from the driving video on a 32-pixel grid. Supply the converted shipped
+ * embedding with set_prompt_embedding_path, the Viggle transformer and its
+ * distillation LoRA separately. Step count can be changed after this call.
+ * preserve_driving_audio pins the attached soundtrack in clean target rows;
+ * otherwise the soundtrack is omitted from references and audio is generated.
+ * Disabling clears these two mode flags but retains other request settings. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(
+    slopfab_request* request, int32_t enable, int32_t preserve_driving_audio);
 
 /* H3 attention/MLP LoRA adapters, combined by summing their updates. Paths are copied.
  * A finite strength may be zero (disabled) or negative. */

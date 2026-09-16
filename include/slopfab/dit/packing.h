@@ -53,7 +53,8 @@ struct SequenceLayout {
 // 768*1344, and both axes are then rounded to the nearest multiple of 32 — so
 // the final area can land slightly *above* the pre-rounding budget. Throws for
 // ratios outside 1:4 .. 4:1.
-void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w);
+void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w,
+                         int short_edge = 768, int max_pixels = 768 * 1344);
 
 // Checks a canvas the caller chose outright, rather than deriving one from a
 // ratio. Enforces what the pipeline cannot work without — positive axes, both a

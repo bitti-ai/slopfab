@@ -435,9 +435,9 @@ void ensure_model(std::string& path, const ModelDownload& model,
   path = destination.string();
 }
 
-void ensure_generate_models(slopfab::GenerateRequest& req, const char* executable) {
+void ensure_generate_models(slopfab::GenerateRequest& req, const char* executable, bool need_text_encoder) {
   const std::filesystem::path weights = default_weights_directory(executable);
-  ensure_model(req.text_encoder_path, kTextEncoder, weights);
+  if (need_text_encoder) ensure_model(req.text_encoder_path, kTextEncoder, weights);
   ensure_model(req.transformer_path,
                req.has_references() ? kRef2VATransformer : kFL2VATransformer,
                weights);
@@ -544,6 +544,8 @@ const CommandHelp kCommands[] = {
      "  --continue-from <f>          extend a saved archive; --frames is NEW frames,\n"
      "                               rounded up to a multiple of 17. Output is joined.\n"
      "  --overlap-frames <n>         hidden context, 17*k+5 frames (default 22).\n"
+     "  --animate                   Viggle fixed-conditioning recipe (default 4 steps)\n"
+     "  --preserve-driving-audio    pin driving soundtrack as clean target audio\n"
      "  --prompt-embedding <f>       F32 prompt_embedding [L,5120] safetensors;\n"
      "                               optional exact conditioner replay for either backend\n"
      "\n"
@@ -1510,6 +1512,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       if (value == "default") req.schedule = slopfab::sampler::ScheduleKind::kDefault;
       else if (value == "taomate-3step") req.schedule = slopfab::sampler::ScheduleKind::kTaoMate3Step;
       else throw std::runtime_error("--schedule wants default or taomate-3step");
+    } else if (arg == "--animate") {
+      req.animate = true;
+    } else if (arg == "--preserve-driving-audio") {
+      req.preserve_driving_audio = true;
     } else if (arg == "--prompt-embedding") {
       prompt_embedding = next("--prompt-embedding");
     } else if (arg == "--bench-load") {
@@ -1560,6 +1566,14 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     }
     const size_t last = text.find_last_not_of(" \t\n");
     req.prompt = text.substr(first, last - first + 1);
+  }
+
+  if (req.animate) {
+    if (!saw_steps) req.num_inference_steps = 4;
+    if (prompt_embedding.empty())
+      throw std::runtime_error("--animate requires --prompt-embedding with the converted Viggle embedding");
+    if (req.transformer_path.empty())
+      throw std::runtime_error("--animate requires an explicit Viggle --transformer");
   }
 
   // `--synthetic-latents --init-latents <f>` is the decode-an-existing-latent
@@ -1779,7 +1793,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (!saw_out) std::filesystem::create_directories(std::filesystem::path(req.out_path).parent_path());
 
   discover_generate_checkpoints(req, executable);
-  ensure_generate_models(req, executable);
+  ensure_generate_models(req, executable, prompt_embedding.empty());
 
 #if SLOPFAB_WITH_CUDA
   // Times the transformer load on its own, the same way `decode --bench-load`

@@ -341,6 +341,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     result.message = "continuation requires denoising from fresh noise; --init-latents is incompatible";
     return result;
   }
+  if (request.animate && (options.prompt_embedding_path.empty() ||
+      options.source != LatentSource::kDenoise || !options.init_latents_path.empty() ||
+      options.sampler != sampler::SamplerKind::kEuler || request.cache_threshold > 0 ||
+      request.skip_every > 0 || request.block_cache_span > 0)) {
+    result.message = "Animate requires fixed conditioning and Euler denoising without initial latents or caches";
+    return result;
+  }
   LoraAdapters loras;
   validate_refmods(request.refmods);
   if (request.has_refmods() && options.source != LatentSource::kDenoise) {
@@ -469,6 +476,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     fixed_prompt = text::read_prompt_embedding(options.prompt_embedding_path,
                                                 request.has_native_references());
 
+  if (request.animate && fixed_prompt.num_tokens != 362)
+    throw std::runtime_error("Animate requires the shipped 362-token embedding");
+
   // Decode all references before opening a multi-gigabyte checkpoint. Besides
   // giving file errors promptly, this validates the Ref2VA aspect contract at
   // the dimensions actually presented by the decoder.
@@ -519,7 +529,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
           std::printf("reference   %s (%dx%d)\n", path.c_str(), image.width, image.height);
         }
         int resized_h = 0, resized_w = 0;
-        dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w);
+        dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w,
+            request.animate ? std::min(plan.canvas_width, plan.canvas_height) : 2048);
         image = resize_reference_lanczos(image, resized_w, resized_h);
         reference_images.push_back(std::move(image));
       }
@@ -550,7 +561,15 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   for (const auto& media : request.reference_media) {
     if (!notify(RunStage::kReferences, -1, 0)) return stop("reference preprocessing");
     const auto t0 = Clock::now();
-    prepared_media.push_back(prepare_reference_condition(*media, double(plan.sampling_frames) / 24, !cached_media));
+    const auto reference_options = request.animate
+        ? animate_reference_options(plan.canvas_width, plan.canvas_height) : ReferenceConditionOptions{};
+    prepared_media.push_back(prepare_reference_condition(*media, double(plan.sampling_frames) / 24,
+                                                         !cached_media, reference_options));
+    if (request.preserve_driving_audio) {
+      auto& prepared = prepared_media.back();
+      prepared.plan.audio_samples = static_cast<int>(std::floor(double(plan.sampling_frames + 1) / 24 * 32000 + .5));
+      if (!cached_media) prepared.audio = prepare_target_audio(*media->soundtrack(), plan.sampling_frames);
+    }
     if (options.verbose) {
       const auto& p = prepared_media.back().plan;
       std::printf("references  preprocess %zu: %dx%d, %d VAE frames, %d audio samples in %.3f s\n",
@@ -690,6 +709,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         SafeTensors transformer_header;
         transformer_header.open(request.transformer_path);
         dit::require_ref2va_transformer(transformer_header, 1);
+        if (request.animate && dit::detect_transformer_architecture(transformer_header) !=
+            dit::TransformerArchitecture::kViggleAnimatePrunedTable)
+          throw std::runtime_error("Animate requires a Viggle-Animate transformer");
       } catch (const std::exception& e) {
         result.message = e.what();
         return result;
@@ -782,7 +804,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         const int latent_h = image.height / 16;
         const int latent_w = image.width / 16;
         const uint64_t reference_seed =
-            request.seed ^ (0x9e3779b97f4a7c15ULL * (reference_index + 1));
+            request.seed ^ (0x9e3779b97f4a7c15ULL * (reference_index + 1 + (request.animate ? 1 : 0)));
         const std::vector<float> noise_latents =
             sampler::video_noise(reference_seed, 1, latent_h, latent_w);
         const std::vector<float> noise_rows =
@@ -877,14 +899,19 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       const auto& clean_media = cached_media ? *cached_media : encoded_media;
       for (size_t i = 0; i < clean_media.size(); ++i) {
         append_encoded_reference_condition(clean_media[i], request.seed,
-            reference_images.size() + i, condition_video_rows, condition_audio_rows);
+            (request.animate ? 0 : reference_images.size()) + i, condition_video_rows, condition_audio_rows,
+            !request.animate);
         reference_geometry.push_back(clean_media[i].geometry);
       }
+      if (request.preserve_driving_audio)
+        init_audio = target_audio_rows(clean_media.front().audio_rows, layout.num_audio_latents);
       if (cached_media && options.verbose)
         std::printf("references  reusing %zu encoded media references (host cache)\n", clean_media.size());
       if (!cached_media && cache_references)
         reuse.media_cache.store(media_key, std::move(encoded_media));
     }
+
+    if (request.animate) order_animate_references(reference_geometry, condition_video_rows);
 
     if (request.has_refmods()) {
       if (!notify(RunStage::kReferences, -1, 0)) return stop("refmod conditioning");
@@ -1148,6 +1175,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         in.init_video_rows = &init_video;
         in.init_audio_rows = &init_audio;
       }
+      if (request.preserve_driving_audio) {
+        in.init_audio_rows = &init_audio;
+        in.pin_target_audio = true;
+      }
       in.cache.threshold = request.cache_threshold;
       in.cache.warmup = request.cache_warmup;
       in.cache.skip_every = request.skip_every;
@@ -1305,6 +1336,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         config.transformer.audio_output_start =
             static_cast<uint32_t>(live.audio_start());
       }
+      config.pin_target_audio = request.preserve_driving_audio;
       config.layout = live;
       config.indices = idx;
       config.position_ids = pos;
@@ -1331,6 +1363,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
               request.seed, live.num_audio_latents);
         }
       }
+      if (request.preserve_driving_audio) initial_audio = init_audio;
       if (conditioned) {
         if (condition_video_rows.size() !=
             static_cast<size_t>(live.num_condition_video) * 96u ||
@@ -1427,6 +1460,13 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       audio_rows = sampler::audio_noise(request.seed, layout.num_audio_latents);
     }
     result.seconds_denoise = seconds_since(t0);
+  }
+
+  if (request.preserve_driving_audio) {
+    if (audio_rows.size() != init_audio.size() ||
+        std::memcmp(audio_rows.data(), init_audio.data(), audio_rows.size() * sizeof(float)) != 0)
+      throw std::logic_error("pinned target audio changed during denoising");
+    if (options.verbose) std::printf("audio       pinned target rows unchanged through denoising\n");
   }
 
   // The denoiser's output, before either VAE. Written from both branches on

@@ -461,3 +461,34 @@ SLOPFAB_TEST(capi_lora_and_taomate_schedule) {
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.num_model_evaluations == 49);
 }
+
+SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
+  Request request;
+  CHECK(slopfab_request_set_animate(nullptr, 1, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_animate(request.handle, 1, 1) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_frames(request.handle, 39) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_prompt_embedding_path(request.handle, "fixed.safetensors") == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  slopfab_reference_video* video = nullptr;
+  CHECK(slopfab_reference_video_create(2, &video) == SLOPFAB_OK);
+  std::vector<uint8_t> rgb(64 * 96 * 3, 127);
+  CHECK(slopfab_reference_video_append_rgb24(video, rgb.data(), rgb.size(), 64, 96, 64 * 3, 0) == SLOPFAB_OK);
+  std::vector<float> pcm(64000, .25f);
+  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 1, 32000, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_reference_video(request.handle, video) == SLOPFAB_OK);
+  slopfab_reference_video_destroy(video);
+  CHECK(slopfab_request_add_reference_image(request.handle, "repainted.png") == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 64 && plan.canvas_height == 96);
+  CHECK(plan.num_model_evaluations == 3);
+  CHECK(plan.num_audio_rows == 130);
+  OwnedString description;
+  CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
+  CHECK(std::strstr(description.text, "fixed 362-token embedding") != nullptr);
+  CHECK(std::strstr(description.text, "pinned driving soundtrack") != nullptr);
+  CHECK(std::strstr(description.text, "shift 3.0") != nullptr);
+  CHECK(slopfab_request_set_animate(request.handle, 0, 0) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 1344 && plan.canvas_height == 768);
+}

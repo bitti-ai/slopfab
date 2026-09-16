@@ -373,6 +373,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
   const uint32_t audio_output = c.transformer.audio_output_rows
       ? c.transformer.audio_output_rows : c.transformer.audio_rows;
   const bool has_audio = c.transformer.audio_rows != 0;
+  if (c.pin_target_audio && c.layout.num_audio_rows == 0)
+    throw std::invalid_argument("Vulkan H3 denoise: pinned target audio needs target rows");
   std::vector<float> code(uint64_t(code_rows) * dit::AdaLNTable::kRank);
   std::vector<int32_t> video_indices(video_output);
   std::vector<int32_t> audio_indices(audio_output);
@@ -381,7 +383,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
   const bool conditioned = condition_video != 0 || condition_audio != 0;
   for (uint32_t step = 0; step < steps; ++step) {
     const float video_t = video.timesteps()[step];
-    const float audio_t = audio.timesteps()[step];
+    const float audio_t = c.pin_target_audio ? 1.0f : audio.timesteps()[step];
     const dit::RowTimesteps row = conditioned
         ? dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t,
                                    std::max(video_t, 0.999f), 1.0f)
@@ -436,7 +438,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
     DeviceTensor& video_state = conditioned ? s.video_result : s.video;
     batch.dit_euler_step_f32(video_state, s.video_velocity,
                              video_sigma, video_ratio);
-    if (has_audio) {
+    if (has_audio && !c.pin_target_audio) {
       DeviceTensor& audio_state = conditioned ? s.audio_result : s.audio;
       batch.dit_euler_step_f32(audio_state, s.audio_velocity,
                                audio_sigma, audio_ratio);
@@ -516,7 +518,8 @@ uint32_t ExactH3Denoiser::required_step_operators(
   const bool conditioned = impl_->config.layout.num_condition_video != 0 ||
                            impl_->config.layout.num_condition_audio != 0;
   const bool has_audio = impl_->config.transformer.audio_rows != 0;
-  const uint32_t tail = (conditioned ? 2u : 1u) * (has_audio ? 2u : 1u);
+  const uint32_t tail = (conditioned ? 2u : 1u) * (has_audio ? 2u : 1u) -
+      (has_audio && impl_->config.pin_target_audio ? 1u : 0u);
   if (forward > UINT32_MAX - tail)
     throw std::overflow_error("Vulkan H3 denoise: step operator overflow");
   return forward + tail;

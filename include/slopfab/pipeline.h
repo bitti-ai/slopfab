@@ -85,6 +85,12 @@ struct GenerateRequest {
   sampler::ScheduleKind schedule = sampler::ScheduleKind::kDefault;
   std::vector<LoraSpec> loras;
 
+  // Viggle's frozen-conditioning recipe: driving video then repainted frame,
+  // target-sized references, and no reference soundtrack. The fixed embedding
+  // is supplied through RunOptions::prompt_embedding_path.
+  bool animate = false;
+  bool preserve_driving_audio = false;
+
   uint64_t seed = 0;
 
   std::string transformer_path;

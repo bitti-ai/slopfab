@@ -10,7 +10,6 @@ namespace {
 
 // packing.py:47-95. These are checkpoint contracts, not tunables.
 constexpr int kFps = 24;
-constexpr int kShortEdge = 768;
 constexpr int kMaxPixels = 768 * 1344;
 constexpr int kCanvasMultiple = 32;
 constexpr double kMinAspect = 1.0 / 4.0;
@@ -77,8 +76,9 @@ std::vector<double> temporal_position_grid(int num_latent_frames, double origin)
 
 }  // namespace
 
-void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w) {
-  if (aspect_w <= 0.0 || aspect_h <= 0.0) {
+void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w,
+                         int short_edge, int max_pixels) {
+  if (aspect_w <= 0.0 || aspect_h <= 0.0 || short_edge <= 0 || max_pixels <= 0 || !out_h || !out_w) {
     throw std::runtime_error("resolve_canvas_size: aspect ratio must be positive");
   }
   const double ratio = aspect_w / aspect_h;
@@ -90,16 +90,16 @@ void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_
   double width;
   double height;
   if (ratio >= 1.0) {
-    width = kShortEdge * ratio;
-    height = static_cast<double>(kShortEdge);
+    width = short_edge * ratio;
+    height = static_cast<double>(short_edge);
   } else {
-    width = static_cast<double>(kShortEdge);
-    height = kShortEdge / ratio;
+    width = static_cast<double>(short_edge);
+    height = short_edge / ratio;
   }
 
   const double area = width * height;
-  if (area > kMaxPixels) {
-    const double scale = std::sqrt(kMaxPixels / area);
+  if (area > max_pixels) {
+    const double scale = std::sqrt(max_pixels / area);
     width *= scale;
     height *= scale;
   }

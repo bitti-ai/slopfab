@@ -639,6 +639,19 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(
+    slopfab_request* request, int32_t enable, int32_t preserve_driving_audio) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_animate: null request");
+  request->request.animate = enable != 0;
+  request->request.preserve_driving_audio = enable != 0 && preserve_driving_audio != 0;
+  if (enable) {
+    request->request.num_inference_steps = 4;
+    request->request.schedule = slopfab::sampler::ScheduleKind::kDefault;
+    request->options.sampler = slopfab::sampler::SamplerKind::kEuler;
+  }
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(
     slopfab_request* request, const char* path, float strength) {
   if (!request || !path || !*path || !std::isfinite(strength))

@@ -1739,6 +1739,38 @@ SLOPFAB_TEST(denoise_zero_velocity_is_a_fixed_point) {
   CHECK_CLOSE(first_audio, out.audio_rows, 1e-6, "audio latents under zero velocity");
 }
 
+SLOPFAB_TEST(denoise_pinned_target_audio_is_clean_and_never_stepped) {
+  SequenceLayout layout = tiny_layout();
+  layout.condition_audio_is_explicit = true;
+  const auto idx = slopfab::dit::build_indices(layout);
+  slopfab::sampler::FlowScheduler video(3), audio(3);
+  video.set_timesteps(4); audio.set_timesteps(4);
+  Transformer model;
+  auto in = make_denoise_inputs(layout, idx, video, audio);
+  const std::vector<float> initial_audio = slopfab::test::make_data(size_t(layout.num_audio_rows) * 32, 78);
+  const std::vector<float> initial_video(size_t(layout.num_video_rows) * 96, .5f);
+  in.init_audio_rows = &initial_audio;
+  in.init_video_rows = &initial_video;
+  in.pin_target_audio = true;
+  int calls = 0;
+  in.velocity = [&](int, const RowTimesteps& rt, const float*, const float* a, float* vv, float* av) {
+    ++calls;
+    CHECK(std::vector<float>(a, a + initial_audio.size()) == initial_audio);
+    for (int row : idx.audio) CHECK(rt.unique[rt.indices[row]] == 1.0f);
+    std::fill(vv, vv + initial_video.size(), .25f);
+    std::fill(av, av + initial_audio.size(), 1000.0f);
+  };
+  in.boundary = [&](int, const std::vector<float>&, const std::vector<float>& a) { CHECK(a == initial_audio); };
+  const auto result = slopfab::dit::denoise(model, in);
+  CHECK(calls == 3);
+  CHECK(result.audio_rows == initial_audio);
+  CHECK(result.video_rows != initial_video);
+  in.init_audio_rows = nullptr;
+  bool rejected = false;
+  try { slopfab::dit::denoise(model, in); } catch (const std::exception&) { rejected = true; }
+  CHECK(rejected);
+}
+
 SLOPFAB_TEST(denoise_accepts_video_only_still_layout) {
   SequenceLayout layout = tiny_layout();
   layout.num_audio_latents = 0;

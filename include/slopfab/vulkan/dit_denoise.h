@@ -22,6 +22,8 @@ struct ExactH3DenoiseConfig {
   dit::PackedIndices indices;
   std::vector<double> position_ids;
   int attention_band = 0;
+  // Keep the prepared target audio rows fixed and condition them at t=1.
+  bool pin_target_audio = false;
   // Optional canonical four-int range record per global 128-query tile.
   // Captured replay can supply the CUDA table verbatim; production normally
   // derives it from attention_band. The two forms are exclusive.
