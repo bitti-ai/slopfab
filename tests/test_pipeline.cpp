@@ -18,6 +18,7 @@
 #include "slopfab/attention_mode.h"
 #include "slopfab/cuda/cuda_toolkit.h"
 #include "slopfab/sampler/scheduler.h"
+#include "slopfab/safetensors_write.h"
 
 namespace {
 
@@ -365,6 +366,60 @@ SLOPFAB_TEST(pipeline_plan_carries_its_schedule_inputs) {
   const slopfab::GeneratePlan fresh;
   CHECK_NEAR(fresh.video_sigma_shift, slopfab::kVideoSigmaShift, 0.0);
   CHECK_NEAR(fresh.audio_sigma_shift, slopfab::kAudioSigmaShift, 0.0);
+}
+
+SLOPFAB_TEST(pipeline_viggle_schedule_uses_model_identity) {
+  const std::vector<slopfab::TensorWrite> tensors = {
+      {"adaln_t_table", {1, 8}, std::vector<float>(8)},
+      {"blocks.0.adaln_proj.linear.weight", {1, 8}, std::vector<float>(8)}};
+  const std::vector<float> expected = {1.0f, 6.0f / 7.0f, 0.6f, 0.0f};
+  for (const char* filename : {"slopfab_plan_renamed.safetensors",
+                               "slopfab_plan_Viggle-Animate.safetensors"}) {
+    const auto path = scratch_path(filename);
+    struct Cleanup {
+      std::filesystem::path path;
+      ~Cleanup() { std::error_code ec; std::filesystem::remove(path, ec); }
+    } cleanup{path};
+    slopfab::GenerateRequest r = base_request();
+    r.transformer_path = path.string();
+    r.num_inference_steps = 4;
+    const bool renamed = std::string(filename).find("renamed") != std::string::npos;
+    slopfab::write_safetensors(r.transformer_path, tensors,
+        renamed ? std::map<std::string, std::string>{{"source", "Viggle/Viggle-Animate"}}
+                : std::map<std::string, std::string>{});
+
+    const auto p = slopfab::resolve_plan(r);
+    CHECK_NEAR(p.video_sigma_shift, 3.0, 0.0);
+    CHECK_NEAR(p.audio_sigma_shift, 3.0, 0.0);
+    CHECK(p.num_inference_steps == 4);
+    CHECK(p.num_model_evaluations() == 3);
+    CHECK_CLOSE(expected, p.video_sigmas, 1e-6, "Viggle three-pass sigma grid");
+    CHECK(p.video_sigmas == p.audio_sigmas);
+    for (size_t i = 0; i < p.video_timesteps.size(); ++i)
+      CHECK_NEAR(p.video_timesteps[i], 1.0f - expected[i], 1e-6);
+
+    // Both GPU runners reconstruct from these fields, so they must step the
+    // exact grid the planner reports, also with other user-selected counts.
+    for (int steps : {4, 10}) {
+      r.num_inference_steps = steps;
+      const auto plan = slopfab::resolve_plan(r);
+      slopfab::sampler::FlowScheduler video(plan.video_sigma_shift);
+      video.set_timesteps(plan.num_inference_steps, r.schedule);
+      CHECK(video.sigmas() == plan.video_sigmas);
+      CHECK(video.timesteps() == plan.video_timesteps);
+      CHECK_NEAR(plan.video_sigma_shift, 3.0, 0.0);
+      CHECK(plan.num_model_evaluations() == steps - 1);
+    }
+
+    // Explicit non-Viggle provenance takes priority over a suggestive name.
+    // Replacing a file at the same path must not leave a cached Viggle shift.
+    slopfab::write_safetensors(r.transformer_path, tensors, {{"source", "MiniMax/H3"}});
+    r.num_inference_steps = 4;
+    const auto h3 = slopfab::resolve_plan(r);
+    CHECK_NEAR(h3.video_sigma_shift, 12.0, 0.0);
+    CHECK_CLOSE((std::vector<float>{1.0f, 0.96f, 6.0f / 7.0f, 0.0f}),
+                h3.video_sigmas, 1e-6, "H3 four-boundary grid is unchanged");
+  }
 }
 
 SLOPFAB_TEST(pipeline_describe_plan) {

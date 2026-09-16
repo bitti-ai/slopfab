@@ -14,8 +14,9 @@
 // below inspects them to decide it.
 //
 // `resolve_plan` does every piece of geometry and schedule arithmetic up front
-// and without touching a weight file, so a request can be validated — and its
-// memory footprint reported — before 20 GB of I/O happens.
+// without loading weights, so a request can be validated — and its
+// memory footprint reported — before 20 GB of I/O happens. An available
+// transformer header is inspected to select the model's sigma shift.
 #pragma once
 
 #include <cstdint>
@@ -42,6 +43,8 @@ namespace slopfab {
 // nothing would have said so.
 constexpr float kVideoSigmaShift = 12.0f;
 constexpr float kAudioSigmaShift = 3.0f;
+// Viggle-Animate's distilled Euler recipe uses the lower video flow shift.
+constexpr float kViggleVideoSigmaShift = 3.0f;
 
 struct GenerateRequest {
   std::string prompt;
@@ -136,7 +139,7 @@ struct GenerateRequest {
   int block_cache_warmup = 3;
 };
 
-// Everything derivable from a request without reading a checkpoint. `num_text`
+// Everything derivable from a request and an available checkpoint header. `num_text`
 // in the layout is filled in only after tokenisation, so it is zero here and
 // `sequence_length_without_text` is what can be known in advance.
 struct GeneratePlan {
@@ -152,8 +155,8 @@ struct GeneratePlan {
 
   dit::SequenceLayout layout;  // layout.num_text is 0 until the prompt is tokenised
 
-  // Two independent schedules stepped inside one loop: shift 12.0 for video,
-  // 3.0 for audio. Both are asserted to be the same length — the reference
+  // Two independent schedules stepped inside one loop: video shift 12.0 for
+  // H3 or 3.0 for Viggle-Animate, audio shift 3.0. Both have the same length — the reference
   // zips them, and a length mismatch after `unique_consecutive` would silently
   // truncate the run (spec section 9.5).
   std::vector<float> video_sigmas;

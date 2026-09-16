@@ -10,6 +10,7 @@
 
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/reference_conditioning.h"
+#include "slopfab/dit/checkpoint.h"
 
 namespace slopfab {
 namespace {
@@ -149,6 +150,17 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::runtime_error("taomate-3step requires an enabled TaoMate LoRA");
 
   plan.video_sigma_shift = kVideoSigmaShift;
+  // Reuse the loader's metadata/filename identity rules, including renamed
+  // Viggle files. SafeTensors only maps the file and parses its header here;
+  // no tensor payload is read. Plans without a local checkpoint retain H3's
+  // defaults so geometry-only dry runs remain available.
+  if (!request.transformer_path.empty() && std::filesystem::exists(request.transformer_path)) {
+    SafeTensors checkpoint;
+    checkpoint.open(request.transformer_path);
+    if (dit::detect_transformer_architecture(checkpoint) ==
+        dit::TransformerArchitecture::kViggleAnimatePrunedTable)
+      plan.video_sigma_shift = kViggleVideoSigmaShift;
+  }
   plan.audio_sigma_shift = kAudioSigmaShift;
   plan.num_inference_steps = request.schedule == sampler::ScheduleKind::kTaoMate3Step
       ? 4 : request.num_inference_steps;

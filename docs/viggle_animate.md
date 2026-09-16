@@ -69,8 +69,15 @@ The `proj_in` and `proj_out` updates are merged once into the F32 video
 endpoint weights at load time, without rewriting the checkpoint. The adapter's
 embedded PEFT metadata supplies alpha 128 for its rank-128 factors.
 
-Loading the adapter does not select a different schedule; passing `--steps 4`
-alone does not reproduce the full recipe. The upstream frozen `.pt` embedding, reference ordering and
+Selecting a local Viggle-Animate transformer automatically sets video flow
+shift 3 in the CLI and C API, using the same metadata/filename detection as
+the loaders. With `--steps 4 --sampler euler`, its sigma boundaries are
+`1 -> 0.857143 -> 0.600000 -> 0` (three forward passes). Audio shift remains 3;
+general-purpose H3 video models retain shift 12. Planning inspects only the
+checkpoint header; without a local checkpoint, it uses the H3 defaults.
+
+Loading the adapter alone does not select the shift or step count. The
+upstream frozen `.pt` embedding, reference ordering and
 geometry, and optional pinned target audio require separate pipeline work.
 
 ## Verification
