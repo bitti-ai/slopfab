@@ -371,7 +371,11 @@ so reference conditioning can identify the pruned Ref2VA variant.
 
 The Viggle-Animate rank-eight INT8 ConvRot transformer checkpoint is supported
 by both loaders, including its interleaved attention weights and F32 AdaLN
-projections. See [checkpoint selection, workflow requirements and validation](docs/viggle_animate.md).
+projections. `--animate` adds the frozen 362-token conditioning recipe, video-first
+reference packing, target-sized reference geometry, and optional
+`--preserve-driving-audio` with clean target audio held fixed during denoising.
+C API 1.10 exposes this through `slopfab_request_set_animate`. See
+[checkpoint selection, conversion, and workflow examples](docs/viggle_animate.md).
 
 Weights are **not** redistributed here. They are covered by the MiniMax H3
 Community License.

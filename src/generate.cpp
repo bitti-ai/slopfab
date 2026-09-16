@@ -472,7 +472,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   };
 
   text::PromptEmbedding fixed_prompt;
-  if (!options.prompt_embedding_path.empty())
+  if (options.source == LatentSource::kDenoise && !options.prompt_embedding_path.empty())
     fixed_prompt = text::read_prompt_embedding(options.prompt_embedding_path,
                                                 request.has_native_references());
 

@@ -547,7 +547,7 @@ const CommandHelp kCommands[] = {
      "  --animate                   Viggle fixed-conditioning recipe (default 4 steps)\n"
      "  --preserve-driving-audio    pin driving soundtrack as clean target audio\n"
      "  --prompt-embedding <f>       F32 prompt_embedding [L,5120] safetensors;\n"
-     "                               optional exact conditioner replay for either backend\n"
+     "                               reference runs also need text_token_tags [L]\n"
      "\n"
      "step caching (all off by default; each one trades quality for time):\n"
      "  --cache-threshold <x>        reuse the previous step's velocity until the\n"

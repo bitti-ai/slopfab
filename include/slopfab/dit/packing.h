@@ -48,11 +48,10 @@ struct SequenceLayout {
   int total_rows() const { return video_start() + num_video_rows; }  // S
 };
 
-// Canvas resolution from a display aspect ratio. Only the ratio of the two
-// arguments matters: the short edge is fixed at 768, the area is capped at
-// 768*1344, and both axes are then rounded to the nearest multiple of 32 — so
-// the final area can land slightly *above* the pre-rounding budget. Throws for
-// ratios outside 1:4 .. 4:1.
+// Canvas resolution from a display aspect ratio. Only the ratio matters.
+// Defaults: short edge 768, pixel budget 768*1344; Animate uses its target's
+// geometry. Both axes round to the nearest multiple of 32, so the final area
+// can land slightly above the budget. Throws for ratios outside 1:4..4:1.
 void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w,
                          int short_edge = 768, int max_pixels = 768 * 1344);
 

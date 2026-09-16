@@ -123,7 +123,7 @@ corrupted audio.
 slopfab generate --animate --prompt-embedding weights/conditioning/viggle_animate.safetensors --reference-video driving.mp4 --reference-image repainted.png --resolution 704x1248 --frames 124 --preserve-driving-audio --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot.safetensors --lora weights/loras/viggle_animate_distillation_bf16.safetensors --video-vae weights/vae/minimax_h3_video_vae_fp16.safetensors --audio-vae weights/vae/minimax_h3_audio_vae_fp32.safetensors --out animated.mp4
 ```
 
-Reference clips must be 2?15 seconds; trim longer sources first. The C API takes
+Reference clips must be 2-15 seconds; trim longer sources first. The C API takes
 decoded frames and PCM as before. Call `slopfab_request_set_animate(req, 1, 1)`
 to select four boundaries, Euler, and preserved driving audio, then set the
 embedding path, transformer, LoRA, references, and any canvas/frame overrides.
@@ -151,3 +151,27 @@ latent cropping. CUDA loop tests verify clean audio timesteps and unchanged
 samples at every boundary; an independent Vulkan fixture verifies three pinned
 audio boundaries while video advances. Broader Vulkan stage tests currently
 fail on operator-count and AWQ/LoRA checks unrelated to this recipe.
+
+### Local comparison, 2026-09-16
+
+The CUDA DLL rendered 124 frames at 704x1248 using the supplied shuffle video,
+a repainted first frame, the shipped 362-token embedding, the INT8 ConvRot
+transformer and distillation adapter. Intentionally nonexistent Qwen/tokenizer
+paths confirmed that neither was loaded. The three forward passes completed,
+and the runtime check confirmed bitwise-unchanged target audio latents.
+Decoded audio correlated with the source resampled to 32 kHz at 0.975/0.977
+for the left/right channels over the first 5.167 seconds.
+
+**Visual validation failed:** the output is a nearly uniform brown texture,
+not an animated performer. A separate encode/decode of the repainted frame
+with the same video VAE reconstructs the person and scene correctly; its still
+and repeated-latent video decode paths agree exactly. This narrows investigation
+to the conditioning/transformer path, but does not establish the cause or rule
+out every temporal decoding issue. The recipe changes are not evidence of
+successful end-to-end Animate quality.
+
+`tools/animate_generation_smoke.py` reproduces the DLL comparison without Qwen
+and saves video, decoded audio and normalized latents. Its runtime checks do
+not assess visual quality. `slopfab_stillprobe --reference-image FILE` bypasses
+denoising for the VAE round-trip diagnostic. Local comparison artifacts and
+logs are under `output/animate-comparison/`; they are not committed.

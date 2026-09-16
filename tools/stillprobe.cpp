@@ -14,6 +14,7 @@
 #include "slopfab/safetensors.h"
 #include "slopfab/safetensors_write.h"
 #include "slopfab/tensor_convert.h"
+#include "slopfab/vae/keyframe_encoder.h"
 #include "stillprobe_helpers.h"
 
 namespace {
@@ -108,12 +109,13 @@ int main(int argc, char** argv) {
     request.canvas_height = 768;
     request.seed = 1234;
     std::string latent_path;
+    std::string reference_path;
     std::filesystem::path directory;
     for (int index = 1; index < argc; ++index) {
       const std::string argument = argv[index];
       if (argument == "--help") {
         std::puts("usage: slopfab_stillprobe --vae FILE --out NEW_DIRECTORY\n"
-                  "  (--latents FILE | --prompt TEXT --transformer FILE --text-encoder FILE --tokenizer FILE)\n"
+                  "  (--reference-image FILE | --latents FILE | --prompt TEXT --transformer FILE --text-encoder FILE --tokenizer FILE)\n"
                   "  [--width 768 --height 768 --steps 50 --seed 1234]\n"
                   "Saved latents must be F32 video_rows [height/32 * width/32, 96].\n"
                   "Checks default still decoding against seven-token video decoding.\n"
@@ -125,6 +127,7 @@ int main(int argc, char** argv) {
       if (argument == "--vae") request.video_vae_path = value;
       else if (argument == "--out") directory = value;
       else if (argument == "--latents") latent_path = value;
+      else if (argument == "--reference-image") reference_path = value;
       else if (argument == "--prompt") request.prompt = value;
       else if (argument == "--transformer") request.transformer_path = value;
       else if (argument == "--text-encoder") request.text_encoder_path = value;
@@ -136,9 +139,11 @@ int main(int argc, char** argv) {
       else throw std::invalid_argument("unknown argument " + argument);
     }
     if (directory.empty() || request.video_vae_path.empty() ||
-        (latent_path.empty() && (request.prompt.empty() || request.transformer_path.empty() ||
+        (latent_path.empty() && reference_path.empty() && (request.prompt.empty() || request.transformer_path.empty() ||
                                 request.text_encoder_path.empty() || request.tokenizer_path.empty())))
       throw std::invalid_argument("missing required options; use --help");
+    if (!reference_path.empty() && !latent_path.empty())
+      throw std::invalid_argument("choose reference-image or latents, not both");
     const auto plan = slopfab::resolve_plan(request);
     if (std::filesystem::exists(directory))
       throw std::invalid_argument("output directory already exists; choose a new directory");
@@ -147,7 +152,7 @@ int main(int argc, char** argv) {
     report << std::setprecision(10)
            << "canvas=" << plan.canvas_width << 'x' << plan.canvas_height << '\n'
            << "vae=" << request.video_vae_path << '\n';
-    if (latent_path.empty()) {
+    if (latent_path.empty() && reference_path.empty()) {
       report << "prompt=" << request.prompt << '\n'
              << "seed=" << request.seed << " steps=" << request.num_inference_steps << '\n'
              << "transformer=" << request.transformer_path << '\n'
@@ -160,6 +165,25 @@ int main(int argc, char** argv) {
     report << "Patch amplitude: 16px row-luma fundamental, second-difference detrended,\n"
            << "in 0..255 luma units; scene content can contribute. Not an aesthetic score.\n"
            << "edges: outer 5% of columns on each side, not guaranteed background.\n";
+    if (!reference_path.empty()) {
+      std::puts("Encoding reference image; bypassing denoising...");
+      slopfab::SafeTensors checkpoint;
+      checkpoint.open(request.video_vae_path);
+      const auto* mean_tensor = checkpoint.find("latents_mean");
+      const auto* std_tensor = checkpoint.find("latents_std");
+      const auto mean = mean_tensor ? slopfab::to_f32(*mean_tensor)
+                                   : slopfab::vae::default_video_latents_mean();
+      const auto stddev = std_tensor ? slopfab::to_f32(*std_tensor)
+                                    : slopfab::vae::default_video_latents_std();
+      const auto image = slopfab::resize_reference_lanczos(
+          slopfab::load_reference_image(reference_path), plan.canvas_width, plan.canvas_height);
+      slopfab::vae::KeyframeEncoder encoder(checkpoint);
+      const auto encoded = encoder.encode_reference_image(image, mean, stddev);
+      latent_path = (directory / "input.safetensors").string();
+      slopfab::write_safetensors(latent_path,
+          {{"video_rows", {plan.layout.num_video_rows, 96}, encoded}});
+      report << "reference_image=" << reference_path << " (denoising bypassed)\n";
+    }
     if (latent_path.empty()) {
       slopfab::RunOptions options;
       options.dump_latents_path = (directory / "input.safetensors").string();
