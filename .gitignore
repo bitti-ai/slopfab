@@ -10,3 +10,4 @@ ref/
 *.mp4
 *.safetensors
 __pycache__/
+/generate.cmd
