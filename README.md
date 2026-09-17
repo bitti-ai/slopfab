@@ -58,7 +58,7 @@ Reconfigure that directory when changing build options. On Windows with multiple
 CUDA toolkits installed, select CUDA 12.8 explicitly during the first configure:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "cuda=$env:CUDA_PATH_V12_8"
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "cuda=$($env:CUDA_PATH_V12_8.Replace('\', '/'))"
 ```
 
 The default is a `86;120a` fat binary. SM86 serves Ampere / RTX 30-series GPUs;

@@ -21,6 +21,9 @@ if not exist "%CUDA13%\include\cublas_v2.h" (
   exit /b 1
 )
 
+rem CMake compares toolset strings literally when reusing an existing build tree.
+set "CUDA12=%CUDA12:\=/%"
+
 echo package: configuring CUDA 12.8 core...
 cmake -S "%ROOT%" -B "%BUILD%" -G "Visual Studio 17 2022" -A x64 ^
   -T "cuda=%CUDA12%" ^
