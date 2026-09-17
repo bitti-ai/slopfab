@@ -118,8 +118,8 @@ DLL smoke test covers automatic and explicit saving, an in-memory handoff, a
 file handoff after deleting the source file, and finite joined video/audio:
 
 ```sh
-python tools/continuation_smoke.py build-vulkan-fast-cuda128/Release/slopfab.dll . cuda
-python tools/continuation_smoke.py build-vulkan-fast-cuda128/Release/slopfab.dll . vulkan
+python tools/continuation_smoke.py build/Release/slopfab.dll . cuda
+python tools/continuation_smoke.py build/Release/slopfab.dll . vulkan
 ```
 
 The CUDA and Vulkan smoke runs both passed with 22, 39, and 56 joined frames.

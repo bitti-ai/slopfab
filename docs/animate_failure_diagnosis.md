@@ -70,7 +70,7 @@ seed 42, four sigma boundaries, LoRA strength 1, frozen prompt, repainted frame,
 driving video and pinned target audio.
 
 ```powershell
-python tools/animate_generation_smoke.py build-release-cuda128-vs/Release/slopfab.dll 'C:\Users\NN\Downloads\Work_it._Shuffle_cuttingshapes_720p60.mp4' output/animate-comparison/repainted-reference.png output/animate-comparison/animate-contiguous.mp4 --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors
+python tools/animate_generation_smoke.py build/Release/slopfab.dll 'C:\Users\NN\Downloads\Work_it._Shuffle_cuttingshapes_720p60.mp4' output/animate-comparison/repainted-reference.png output/animate-comparison/animate-contiguous.mp4 --transformer weights/transformer/Viggle-Animate-pruned_rank8_int8_convrot-contiguous.safetensors
 ```
 
 Choose a new output stem to repeat the render. Artifacts and logs are local and

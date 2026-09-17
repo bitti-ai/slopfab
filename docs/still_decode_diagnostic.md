@@ -13,14 +13,14 @@ one-token/seven-token investigation is preserved under Local results below.
 Build:
 
 ```powershell
-cmake -S . -B build-release-cuda128-vs -DSLOPFAB_BUILD_DEV_TOOLS=ON
-cmake --build build-release-cuda128-vs --config Release --target slopfab_stillprobe slopfab_tests
+cmake -S . -B build -DSLOPFAB_BUILD_DEV_TOOLS=ON
+cmake --build build --config Release --target slopfab_stillprobe slopfab_tests
 ```
 
 Generate one still latent and run the comparison:
 
 ```powershell
-./build-release-cuda128-vs/Release/slopfab_stillprobe.exe `
+./build/Release/slopfab_stillprobe.exe `
   --vae weights/vae/minimax_h3_video_vae_fp16.safetensors `
   --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors `
   --text-encoder weights/text_encoder/qwen3vl_32b_int8_convrot.safetensors `
@@ -49,7 +49,7 @@ discarded full frames. It does not rerun denoising or generate target audio.
 Repeat the decode experiment without any more denoising:
 
 ```powershell
-./build-release-cuda128-vs/Release/slopfab_stillprobe.exe `
+./build/Release/slopfab_stillprobe.exe `
   --vae weights/vae/minimax_h3_video_vae_fp16.safetensors `
   --latents output/still-probe/input.safetensors `
   --width 768 --height 768 --out output/still-probe-redecode
@@ -151,6 +151,6 @@ After this change, 13,203 host checks and 122 C API checks passed. Tests cover
 seven-position repetition with nonuniform spatial values and distinct channel
 statistics, output phase/channel indexing, and exact tiled reference agreement.
 The Release DLL was rebuilt at
-`build-release-cuda128-vs/Release/slopfab.dll`. No opt-out for one-token decoding
+`build/Release/slopfab.dll`. No opt-out for one-token decoding
 was introduced. The scheduling change is shared by CUDA and Vulkan; real-weight
 image comparisons here were run on CUDA.

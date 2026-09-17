@@ -9,7 +9,7 @@ $env:SLOPFAB_SOL_CAPTURE = 'h3-step0-layer2.solqkv'
 $env:SLOPFAB_SOL_CAPTURE_STEP = '0'
 $env:SLOPFAB_SOL_CAPTURE_LAYER = '2'
 # Run slopfab normally.
-build-sol/Release/slopfab_solbench.exe --input h3-step0-layer2.solqkv --iters 10
+build/Release/slopfab_solbench.exe --input h3-step0-layer2.solqkv --iters 10
 ```
 
 Step and layer default to zero. Only the first matching call is written. Q and

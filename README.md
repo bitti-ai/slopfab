@@ -53,6 +53,14 @@ cmake -S . -B build
 cmake --build build --config Release
 ```
 
+Use `build/` for local builds, tests, developer tools and `package.cmd`.
+Reconfigure that directory when changing build options. On Windows with multiple
+CUDA toolkits installed, select CUDA 12.8 explicitly during the first configure:
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "cuda=$env:CUDA_PATH_V12_8"
+```
+
 The default is a `86;120a` fat binary. SM86 serves Ampere / RTX 30-series GPUs;
 SM120a serves Blackwell / RTX 50-series GPUs. The `a` is load-bearing rather
 than decorative: `ptxas` rejects the `.block_scale` operand plain `sm_120`
@@ -86,9 +94,12 @@ Python, Go and plain C can drive the pipeline without depending on a C++ ABI.
 It is built by default; `-DSLOPFAB_BUILD_C_API=OFF` turns it off.
 
 ```sh
-cmake -S . -B build-dll -DSLOPFAB_WITH_FFMPEG=OFF
-cmake --build build-dll --config Release --target slopfab_c
+cmake --build build --config Release --target slopfab_c
 ```
+
+For a DLL without FFmpeg support, reconfigure `build/` with
+`-DSLOPFAB_WITH_FFMPEG=OFF`. Restore it with `-DSLOPFAB_WITH_FFMPEG=ON` for
+MP4 output; `package.cmd` sets this automatically.
 
 `slopfab_core` and `slopfab_cuda` are internal static libraries that link into
 `slopfab.dll`. It is therefore the only slopfab DLL, and its export table contains

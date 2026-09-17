@@ -6,7 +6,7 @@ rem cuBLAS is resolved in-process from an installed CUDA 13 or CUDA 12 toolkit;
 rem no CUDA DLL is copied into the archive.
 for %%I in ("%~dp0.") do set "ROOT=%%~fI"
 set "DIST=%ROOT%\dist"
-set "BUILD=%ROOT%\build-package-cuda12"
+set "BUILD=%ROOT%\build"
 
 set "CUDA12=%CUDA_PATH_V12_8%"
 if not defined CUDA12 set "CUDA12=%ProgramFiles%\NVIDIA GPU Computing Toolkit\CUDA\v12.8"
@@ -25,6 +25,10 @@ echo package: configuring CUDA 12.8 core...
 cmake -S "%ROOT%" -B "%BUILD%" -G "Visual Studio 17 2022" -A x64 ^
   -T "cuda=%CUDA12%" ^
   "-DCMAKE_CUDA_ARCHITECTURES=86;120a" ^
+  "-DSLOPFAB_CUDA13_ROOT=%CUDA13%" ^
+  -DSLOPFAB_ENABLE_CUDA=ON ^
+  -DSLOPFAB_ENABLE_VULKAN=ON ^
+  -DSLOPFAB_WITH_FFMPEG=ON ^
   -DSLOPFAB_BUILD_C_API=ON
 if errorlevel 1 exit /b 1
 cmake --build "%BUILD%" --config Release --target slopfab slopfab_c

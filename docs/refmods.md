@@ -88,8 +88,8 @@ and file-independent ownership. The full generation smoke tool uses small
 synthetic refmod tensors with real model weights:
 
 ```powershell
-python tools/refmod_generation_smoke.py build-vulkan-fast-cuda128/Release/slopfab.dll . cuda
-python tools/refmod_generation_smoke.py build-vulkan-fast-cuda128/Release/slopfab.dll . vulkan embedding
+python tools/refmod_generation_smoke.py build/Release/slopfab.dll . cuda
+python tools/refmod_generation_smoke.py build/Release/slopfab.dll . vulkan embedding
 ```
 
 The second invocation also exercises captured prompt conditioning. These tests
