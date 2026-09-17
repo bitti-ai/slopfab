@@ -976,88 +976,15 @@ if(WIN32)
   if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json")
     message(FATAL_ERROR "slopfab: ref/text_encoder/tokenizer.json is required to embed the tokenizer")
   endif()
-  set(SLOPFAB_LICENSE_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/minimax_h3_LICENSE")
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
-  # Fetched once per build tree and then kept. Embedding the licence is a
-  # compliance mechanism and stays; re-downloading it on every configure only
-  # made `cmake -S . -B build` require the network and block on a third-party
-  # host, every time, forever.
-  #
-  # Caching it, though, has to come with a content check, because `file(DOWNLOAD)`
-  # does not set CURLOPT_FAILONERROR: an HTTP 404, 403 or 502 from the host is a
-  # *successful transfer of the error body*. STATUS comes back 0 and a perfectly
-  # non-empty page of HTML lands at the destination. Re-downloading every time
-  # used to paper over that — the next configure fetched the real document — so
-  # a size-only guard would have pinned HuggingFace's error page in place as the
-  # MiniMax H3 licence for the life of the build tree, silently. Of all the ways
-  # this can fail, that is the one it must not.
-  #
-  # The check is the document's first line rather than an EXPECTED_HASH. A hash
-  # would be stricter, but the file carries its own "release date/License date"
-  # line and upstream may legitimately revise the text; pinning it would turn a
-  # lawful upstream edit into a build break that only a source change can clear.
-  # The marker catches the actual failure mode without that.
-  set(SLOPFAB_LICENSE_MARKER "MiniMax H3 COMMUNITY LICENSE AGREEMENT")
-
-  function(slopfab_check_license path out_var)
-    set(${out_var} FALSE PARENT_SCOPE)
-    if(NOT EXISTS "${path}")
-      return()
-    endif()
-    file(SIZE "${path}" license_bytes)
-    if(license_bytes EQUAL 0)
-      return()
-    endif()
-    file(READ "${path}" license_head LIMIT 4096)
-    string(FIND "${license_head}" "${SLOPFAB_LICENSE_MARKER}" license_marker_at)
-    if(license_marker_at EQUAL -1)
-      return()
-    endif()
-    set(${out_var} TRUE PARENT_SCOPE)
-  endfunction()
-
-  slopfab_check_license("${SLOPFAB_LICENSE_RESOURCE}" SLOPFAB_LICENSE_PRESENT)
-  if(NOT SLOPFAB_LICENSE_PRESENT)
-    file(DOWNLOAD
-      "https://huggingface.co/MiniMaxAI/MiniMax-H3/raw/main/LICENSE"
-      "${SLOPFAB_LICENSE_RESOURCE}"
-      STATUS SLOPFAB_LICENSE_DOWNLOAD_STATUS
-      TLS_VERIFY ON)
-    list(GET SLOPFAB_LICENSE_DOWNLOAD_STATUS 0 SLOPFAB_LICENSE_DOWNLOAD_CODE)
-    # Applied to what actually arrived, not just to the transport result, so an
-    # error page is rejected on the way in as well as out of the cache.
-    slopfab_check_license("${SLOPFAB_LICENSE_RESOURCE}" SLOPFAB_LICENSE_PRESENT)
-    if(NOT SLOPFAB_LICENSE_DOWNLOAD_CODE EQUAL 0 OR NOT SLOPFAB_LICENSE_PRESENT)
-      if(SLOPFAB_LICENSE_DOWNLOAD_CODE EQUAL 0)
-        # The transfer succeeded and the body is not the licence. Usually that
-        # means an error page, but it is also what a lawful upstream retitle
-        # looks like from here, and the reader has no way to tell which without
-        # being told where the expectation lives.
-        string(CONCAT SLOPFAB_LICENSE_DOWNLOAD_MESSAGE
-          "the server returned something that is not the MiniMax H3 license. "
-          "The transfer itself succeeded, so this is either an error page or a "
-          "document whose text no longer contains SLOPFAB_LICENSE_MARKER "
-          "(\"${SLOPFAB_LICENSE_MARKER}\"). Fetch the URL by hand to tell which; "
-          "if upstream legitimately retitled the document, update that marker "
-          "in CMakeLists.txt to match")
-      else()
-        list(GET SLOPFAB_LICENSE_DOWNLOAD_STATUS 1 SLOPFAB_LICENSE_DOWNLOAD_MESSAGE)
-      endif()
-      file(REMOVE "${SLOPFAB_LICENSE_RESOURCE}")
-      message(FATAL_ERROR "slopfab: could not download MiniMax H3 license: ${SLOPFAB_LICENSE_DOWNLOAD_MESSAGE}")
-    endif()
-  endif()
   file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json"
        SLOPFAB_TOKENIZER_RESOURCE)
-  file(TO_CMAKE_PATH "${SLOPFAB_LICENSE_RESOURCE}" SLOPFAB_LICENSE_RESOURCE)
   configure_file(src/slopfab_tokenizer.rc.in generated/slopfab_tokenizer.rc @ONLY)
-  configure_file(src/slopfab_license.rc.in generated/slopfab_license.rc @ONLY)
 
   # A static library cannot usefully carry a .res — the linker has no reference
-  # to pull it in with — so the executable embeds both resources itself.
+  # to pull it in with — so the executable embeds the tokenizer itself.
   set(SLOPFAB_EXE_RESOURCES
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/slopfab_tokenizer.rc"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/slopfab_license.rc")
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/slopfab_tokenizer.rc")
   set(SLOPFAB_CLI_SOURCES src/main.cpp ${SLOPFAB_EXE_RESOURCES})
 else()
   set(SLOPFAB_CLI_SOURCES src/main.cpp)

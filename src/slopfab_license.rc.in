@@ -1,5 +1,0 @@
-#include <windows.h>
-
-// Read by src/main.cpp, which is only ever in the executable, so this resource
-// stays in the executable in every configuration.
-102 RCDATA "@SLOPFAB_LICENSE_RESOURCE@"

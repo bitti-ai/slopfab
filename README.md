@@ -64,8 +64,6 @@ The CLI discovers checkpoints in these folders. On Windows, it can download miss
 
 Text-to-video uses FL2VA weights. Reference conditioning requires compatible Ref2VA weights; video and audio references also require VAE encoder weights. See [reference media support](docs/reference_media.md) for formats and requirements.
 
-The Windows CLI prompts for model-license acceptance on first use.
-
 ## Usage
 
 The Windows executable is `build/Release/slopfab.exe`. The examples below assume `slopfab` is on your `PATH`.

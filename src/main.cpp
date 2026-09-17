@@ -66,150 +66,6 @@
 namespace {
 
 constexpr const char* kVersion = "0.1.0";
-constexpr const char* kRegionalLicenseUrl = "https://platform.minimax.io/h3-license";
-
-std::string_view embedded_license() {
-#if defined(_WIN32)
-  HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(102), MAKEINTRESOURCEW(10));
-  if (resource == nullptr) throw std::runtime_error("license: embedded resource is missing");
-  HGLOBAL loaded = LoadResource(nullptr, resource);
-  const DWORD size = SizeofResource(nullptr, resource);
-  const void* bytes = loaded == nullptr ? nullptr : LockResource(loaded);
-  if (bytes == nullptr || size == 0) throw std::runtime_error("license: embedded text is empty");
-  return {static_cast<const char*>(bytes), size};
-#else
-  throw std::runtime_error("license: this build has no embedded MiniMax H3 license");
-#endif
-}
-
-std::string license_hash(std::string_view text) {
-  uint64_t hash = 14695981039346656037ull;
-  for (unsigned char byte : text) {
-    hash ^= byte;
-    hash *= 1099511628211ull;
-  }
-  char out[17]{};
-  std::snprintf(out, sizeof(out), "%016llx", static_cast<unsigned long long>(hash));
-  return out;
-}
-
-std::string environment_value(const char* name) {
-#if defined(_WIN32)
-  char* value = nullptr;
-  size_t size = 0;
-  if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) return {};
-  std::string result(value);
-  std::free(value);
-  return result;
-#else
-  const char* value = std::getenv(name);
-  return value == nullptr ? std::string() : std::string(value);
-#endif
-}
-
-std::filesystem::path license_state_path() {
-#if defined(_WIN32)
-  std::string base = environment_value("LOCALAPPDATA");
-  if (base.empty()) base = environment_value("APPDATA");
-  if (base.empty())
-    throw std::runtime_error("license: LOCALAPPDATA is not available");
-  return std::filesystem::path(base) / "Slopfab" / "state.json";
-#elif defined(__APPLE__)
-  const std::string home = environment_value("HOME");
-  if (home.empty()) throw std::runtime_error("license: HOME is not available");
-  return std::filesystem::path(home) / "Library" / "Application Support" / "Slopfab" /
-         "state.json";
-#else
-  const std::string state = environment_value("XDG_STATE_HOME");
-  if (!state.empty()) return std::filesystem::path(state) / "slopfab" / "state.json";
-  const std::string home = environment_value("HOME");
-  if (home.empty()) throw std::runtime_error("license: HOME is not available");
-  return std::filesystem::path(home) / ".local" / "state" / "slopfab" / "state.json";
-#endif
-}
-
-bool license_is_accepted(const std::filesystem::path& path, const std::string& hash) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) return false;
-  std::ostringstream contents;
-  contents << in.rdbuf();
-  try {
-    const slopfab::json::Value state = slopfab::json::parse(contents.str());
-    const slopfab::json::Value* accepted = state.find("accepted");
-    const slopfab::json::Value* stored_hash = state.find("license_hash");
-    return accepted != nullptr && accepted->as_bool() && stored_hash != nullptr &&
-           stored_hash->as_string() == hash;
-  } catch (const std::exception&) {
-    return false;
-  }
-}
-
-bool ask_yes_no(const char* question) {
-  for (;;) {
-    std::printf("%s [yes/no]: ", question);
-    std::fflush(stdout);
-    char answer[64]{};
-    if (std::fgets(answer, sizeof(answer), stdin) == nullptr) return false;
-    std::string value(answer);
-    value.erase(std::remove_if(value.begin(), value.end(),
-                               [](unsigned char c) { return std::isspace(c) != 0; }), value.end());
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (value == "yes" || value == "y") return true;
-    if (value == "no" || value == "n") return false;
-    std::printf("Please answer yes or no.\n");
-  }
-}
-
-void store_license_acceptance(const std::filesystem::path& path, const std::string& hash,
-                              const char* route) {
-  std::filesystem::create_directories(path.parent_path());
-  const std::filesystem::path temporary = path.string() + ".tmp";
-  {
-    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-    if (!out) throw std::runtime_error("license: cannot write " + temporary.string());
-    out << "{\n  \"accepted\": true,\n  \"license_hash\": \"" << hash
-        << "\",\n  \"route\": \"" << route << "\"\n}\n";
-    if (!out) throw std::runtime_error("license: cannot finish writing state");
-  }
-#if defined(_WIN32)
-  if (!MoveFileExW(temporary.c_str(), path.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    std::filesystem::remove(temporary);
-    throw std::runtime_error("license: cannot install state file " + path.string());
-  }
-#else
-  std::filesystem::rename(temporary, path);
-#endif
-}
-
-bool ensure_license_acceptance() {
-  const std::string_view license = embedded_license();
-  const std::string hash = license_hash(license);
-  const std::filesystem::path state = license_state_path();
-  if (license_is_accepted(state, hash)) return true;
-
-  std::printf("MiniMax H3 license check\n\n");
-  const bool regional = ask_yes_no(
-      "Are you from the European Union, South Korea, United Kingdom, or United States?");
-  if (regional) {
-    std::printf("\nYou need to apply for a MiniMax H3 license at:\n%s\n\n", kRegionalLicenseUrl);
-    if (!ask_yes_no("Have you applied for a license?")) {
-      std::printf("A license must be applied for before Slopfab can be used.\n");
-      return false;
-    }
-    store_license_acceptance(state, hash, "regional-application");
-    return true;
-  }
-
-  std::printf("\n%s\n", std::string(license).c_str());
-  if (!ask_yes_no("Do you accept the MiniMax H3 license?")) {
-    std::printf("The license was declined. Slopfab will now terminate.\n");
-    return false;
-  }
-  store_license_acceptance(state, hash, "community-license");
-  return true;
-}
 
 struct ModelDownload {
   const char* subdirectory;
@@ -1935,15 +1791,14 @@ int main(int argc, char** argv) {
   SetConsoleOutputCP(CP_UTF8);
   SetConsoleCP(CP_UTF8);
 #endif
-  try {
 #if SLOPFAB_WITH_CUDA
+  try {
     consume_cuda_version_option(argc, argv);
-#endif
-    if (!ensure_license_acceptance()) return 3;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "slopfab: %s\n", e.what());
     return 1;
   }
+#endif
 
   if (argc < 2) {
     print_usage();
@@ -1992,5 +1847,4 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
-
 
