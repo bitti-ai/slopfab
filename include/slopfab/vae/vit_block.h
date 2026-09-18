@@ -32,8 +32,8 @@ ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height,
                                     uint32_t width, uint32_t suffix,
                                     uint32_t rope_dim, float theta);
 
-// Non-owning host views. Linear matrices are checkpoint-native row-major
-// fp16 [out_features,in_features]; all other arrays are fp32.
+// Non-owning host views. Linear matrices are row-major fp16 in unrotated
+// coordinates [out_features,in_features]; all other arrays are fp32.
 struct ViTBlockWeightsView {
   const float* norm1 = nullptr;
   const float* norm2 = nullptr;
@@ -68,8 +68,9 @@ struct ViTBlockWeights {
 };
 
 // Loads one real decoder block using the shipped checkpoint naming/layout
-// contract. Matrices must be rank-2 fp16 in [out,in] order; their subnormals
-// are canonicalized to signed zero. Affine tensors may
+// contract. Matrices must be rank-2 fp16 or Comfy INT8 in [out,in] order.
+// INT8 scales and ConvRot are undone before narrowing to fp16; all fp16
+// subnormals are canonicalized to signed zero. Affine tensors may
 // be fp16/fp32 and are converted to the exact fp32 stage boundary.
 ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint,
                                        uint32_t layer,

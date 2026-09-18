@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "slopfab/int8_weight.h"
 #include "slopfab/tensor_convert.h"
 
 namespace slopfab::vae {
@@ -23,10 +24,12 @@ std::vector<uint16_t> load_f16_matrix(const SafeTensors& checkpoint,
                                       int64_t columns) {
   const TensorView& tensor = checkpoint.at(name);
   require_shape(tensor, rows, columns);
+  if (tensor.dtype == DType::kI8)
+    return unpack_int8_weight(read_int8_weight(checkpoint, name, "video VAE block"), true);
   if (tensor.dtype != DType::kF16 ||
       tensor.nbytes != static_cast<size_t>(rows * columns) * sizeof(uint16_t)) {
     throw std::runtime_error("video VAE block: tensor '" + name +
-                             "' must be checkpoint-native fp16");
+                             "' must be fp16 or Comfy INT8");
   }
   std::vector<uint16_t> result(static_cast<size_t>(rows * columns));
   std::memcpy(result.data(), tensor.data, tensor.nbytes);

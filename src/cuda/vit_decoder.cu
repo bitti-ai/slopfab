@@ -175,7 +175,7 @@ struct ViTDecoder::Impl {
   DeviceBuffer<float> d_proj;     // [S, dim] or [S, patch_dim]
   DeviceBuffer<float> d_ffn;      // [S, 2*ffn_inner]
   DeviceBuffer<__half> d_gemm_in; // narrowed input for tensor-core linears
-  DeviceBuffer<uint8_t> d_weight;  // active NF4/W4A8 matrix expansion
+  DeviceBuffer<uint8_t> d_weight;  // active NF4/W4A8/INT8 matrix expansion
   DeviceBuffer<int8_t> d_w4a8_activation;
   DeviceBuffer<float> d_w4a8_activation_scale;
   size_t cap_weight_bytes = 0;
@@ -592,7 +592,8 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
 
   auto workspace_bytes = [](const cuda::F16Weight& weight) {
     if (weight.packed_w4a8()) return weight.elements();
-    if (weight.packed_nf4()) return weight.elements() * sizeof(__half);
+    if (weight.packed_nf4() || weight.packed_int8())
+      return weight.elements() * sizeof(__half);
     return size_t{0};
   };
   size_t max_weight_bytes = std::max(

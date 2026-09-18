@@ -41,6 +41,7 @@ add_library(slopfab_core STATIC
   src/core/json.cpp
   src/core/nf4.cpp
   src/core/w4a8.cpp
+  src/core/int8_weight.cpp
   src/core/lora.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
@@ -1421,6 +1422,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_encoder.cu
       tests/test_keyframe_encoder.cu
       tests/test_vit_decoder.cu
+      tests/test_int8_weight.cu
     )
     target_link_libraries(slopfab_kernel_tests PRIVATE slopfab_cuda)
     add_test(NAME kernels COMMAND slopfab_kernel_tests)

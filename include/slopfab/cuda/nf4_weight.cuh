@@ -9,8 +9,8 @@
 
 namespace slopfab::cuda {
 
-// Keeps bitsandbytes NF4 packed on device and expands only when a consumer is
-// about to use the matrix. Ordinary F16/BF16 matrices use `dense_` directly.
+// Keeps NF4, W4A8 and Comfy INT8 packed on device and expands only when a
+// consumer is about to use the matrix. Ordinary floats use `dense_` directly.
 class F16Weight {
  public:
   F16Weight() = default;
@@ -30,6 +30,7 @@ class F16Weight {
   size_t elements() const { return elements_; }
   size_t stored_bytes() const;
   bool packed_nf4() const { return codes_.size() != 0; }
+  bool packed_int8() const { return int8_codes_.size() != 0; }
   bool packed_w4a8() const { return w4_codes_.size() != 0; }
   const float* w4a8_channel_scale() const { return w4_channel_scale_.get(); }
 
@@ -39,6 +40,11 @@ class F16Weight {
   int nested_block_size_ = 0;
   float nested_offset_ = 0.0f;
   DeviceBuffer<__half> dense_;
+  DeviceBuffer<int8_t> int8_codes_;
+  DeviceBuffer<float> int8_scales_;
+  int int8_columns_ = 0;
+  int int8_rotation_group_ = 1;
+  bool int8_canonicalize_ = false;
   DeviceBuffer<uint8_t> codes_, absmax_;
   DeviceBuffer<float> quant_map_, nested_quant_map_, nested_absmax_;
   int w4_out_features_ = 0;

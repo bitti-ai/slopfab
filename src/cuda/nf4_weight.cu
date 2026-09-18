@@ -7,14 +7,55 @@
 #include "slopfab/cuda/linear.cuh"
 #include "slopfab/cuda/w4a8.cuh"
 #include "slopfab/nf4.h"
+#include "slopfab/int8_weight.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/w4a8.h"
 
 namespace slopfab::cuda {
+namespace {
+
+// Undo W_rot = W H using H = kron(H4, ..., H4) / sqrt(group).
+// H4 is the regular symmetric Hadamard, with its negative anti-diagonal.
+// The integer butterflies are exact; apply the row scale only once at the end.
+__global__ void unpack_int8_kernel(const int8_t* codes, const float* scales,
+                                    __half* output, size_t count, int columns,
+                                    int group, bool canonicalize) {
+  __shared__ float values[256];
+  const int lane = threadIdx.x;
+  const size_t index = static_cast<size_t>(blockIdx.x) * 256 + lane;
+  values[lane] = index < count ? static_cast<float>(codes[index]) : 0.0f;
+  __syncthreads();
+  for (int stride = 1; stride < group; stride *= 4) {
+    const int base = lane / (4 * stride) * (4 * stride) + lane % stride;
+    const int digit = lane / stride % 4;
+    const float a = values[base], b = values[base + stride];
+    const float c = values[base + 2 * stride], d = values[base + 3 * stride];
+    const float value = digit == 0 ? a + b + c - d :
+                        digit == 1 ? a + b - c + d :
+                        digit == 2 ? a - b + c + d : -a + b + c + d;
+    __syncthreads();
+    values[lane] = value;
+    __syncthreads();
+  }
+  if (index < count) {
+    const float factor = scales[index / columns] * rsqrtf(static_cast<float>(group));
+    __half value = __float2half_rn(values[lane] * factor);
+    if (canonicalize) {
+      unsigned short bits = __half_as_ushort(value);
+      if ((bits & 0x7c00u) == 0) bits &= 0x8000u;
+      value = __ushort_as_half(bits);
+    }
+    output[index] = value;
+  }
+}
+
+}  // namespace
 
 void F16Weight::load(const SafeTensors& checkpoint, const std::string& name,
                      size_t expected_elements, cudaStream_t stream,
                      const char* consumer, bool canonicalize_f16_subnormals) {
+  // Reloading a weight must not leave a previous packed representation active.
+  *this = F16Weight{};
   const TensorView& view = checkpoint.at(name);
   elements_ = expected_elements;
   if (is_w4a8_weight(checkpoint, name)) {
@@ -95,6 +136,17 @@ void F16Weight::load(const SafeTensors& checkpoint, const std::string& name,
     quant_map_.copy_from_host(static_cast<const float*>(q.data), quant_map_.size(), stream);
     nested_quant_map_.copy_from_host(static_cast<const float*>(nq.data), nested_quant_map_.size(), stream);
     nested_absmax_.copy_from_host(static_cast<const float*>(na.data), nested_absmax_.size(), stream);
+  } else if (view.dtype == DType::kI8) {
+    const Int8WeightState state = read_int8_weight(checkpoint, name, consumer);
+    if (static_cast<size_t>(view.numel()) != expected_elements)
+      throw std::runtime_error(std::string(consumer) + ": INT8 shape mismatch for '" + name + "'");
+    int8_columns_ = state.columns;
+    int8_rotation_group_ = state.rotation_group;
+    int8_canonicalize_ = canonicalize_f16_subnormals;
+    int8_codes_.allocate(expected_elements);
+    int8_scales_.allocate(state.rows);
+    int8_codes_.copy_from_host(state.codes, expected_elements, stream);
+    int8_scales_.copy_from_host(state.scales, state.rows, stream);
   } else {
     if (static_cast<size_t>(view.numel()) != expected_elements)
       throw std::runtime_error(std::string(consumer) + ": shape mismatch for '" + name + "'");
@@ -127,9 +179,16 @@ const __half* F16Weight::materialize(__half* workspace, size_t workspace_element
                                      cudaStream_t stream) const {
   if (packed_w4a8())
     throw std::runtime_error("W4A8 weight requires the INT8 materialization path");
-  if (!packed_nf4()) return dense_.get();
+  if (!packed_nf4() && !packed_int8()) return dense_.get();
   if (!workspace || workspace_elements < elements_)
-    throw std::runtime_error("NF4 weight workspace is too small");
+    throw std::runtime_error("Packed weight workspace is too small");
+  if (packed_int8()) {
+    unpack_int8_kernel<<<static_cast<unsigned>((elements_ + 255) / 256), 256, 0, stream>>>(
+        int8_codes_.get(), int8_scales_.get(), workspace, elements_,
+        int8_columns_, int8_rotation_group_, int8_canonicalize_);
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
+    return workspace;
+  }
   launch_dequant_nf4_f16(codes_.get(), absmax_.get(), quant_map_.get(), nested_quant_map_.get(),
                           nested_absmax_.get(), block_size_, nested_block_size_, nested_offset_,
                           workspace, elements_, stream);
@@ -150,7 +209,8 @@ const int8_t* F16Weight::materialize_w4a8(int8_t* workspace,
 }
 
 size_t F16Weight::stored_bytes() const {
-  return dense_.nbytes() + codes_.nbytes() + absmax_.nbytes() + quant_map_.nbytes() +
+  return dense_.nbytes() + int8_codes_.nbytes() + int8_scales_.nbytes() +
+         codes_.nbytes() + absmax_.nbytes() + quant_map_.nbytes() +
          nested_quant_map_.nbytes() + nested_absmax_.nbytes() +
          w4_codes_.nbytes() + w4_group_scale_.nbytes() +
          w4_channel_scale_.nbytes() + w4_codebook_.nbytes();
