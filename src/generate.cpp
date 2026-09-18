@@ -336,6 +336,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   } release_guard{options.release_reused_models};
   RunResult result;
   dit::SequenceLayout layout = plan.layout;
+  if (plan.fasth3_v2 && (options.inference_backend != DeviceBackend::kCuda ||
+      options.sampler != sampler::SamplerKind::kEuler || options.attention_band > 0 || request.cache_threshold > 0 ||
+      request.skip_every > 0 || request.block_cache_span > 0)) {
+    result.message = "FastH3 V2 requires CUDA and Euler without frame banding, step or block caching";
+    return result;
+  }
   if (request.continuation && (options.source != LatentSource::kDenoise ||
                                !options.init_latents_path.empty())) {
     result.message = "continuation requires denoising from fresh noise; --init-latents is incompatible";

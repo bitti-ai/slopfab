@@ -25,6 +25,8 @@
 #include "slopfab/dit/graph_capture.h"
 #include "slopfab/dit/rope.h"
 #include "slopfab/dit/offload.h"
+#include "slopfab/dit/vsa.h"
+#include "slopfab/cuda/vsa_attention.cuh"
 
 #include <functional>
 #include <fstream>
@@ -475,7 +477,7 @@ struct BlockWeights {
   const __nv_bfloat16* norm2 = nullptr;
   const __nv_bfloat16* q_norm = nullptr;
   const __nv_bfloat16* k_norm = nullptr;
-  QuantWeight wq, wk, wv, out_proj, fc1, fc2;
+  QuantWeight wq, wk, wv, out_proj, fc1, fc2, compress_gate;
   const float* adaln_w = nullptr;
   const float* adaln_b = nullptr;
   QuantWeight full_adaln;
@@ -567,7 +569,7 @@ BlockWeights relocate_block(BlockWeights b, const uint8_t* host, size_t bytes, u
       ptr = reinterpret_cast<std::remove_reference_t<decltype(ptr)>>(device + address - base);
   };
   relocate(b.norm1); relocate(b.norm2); relocate(b.q_norm); relocate(b.k_norm);
-  for (QuantWeight* w : {&b.wq, &b.wk, &b.wv, &b.out_proj, &b.fc1, &b.fc2}) {
+  for (QuantWeight* w : {&b.wq, &b.wk, &b.wv, &b.out_proj, &b.fc1, &b.fc2, &b.compress_gate}) {
     relocate(w->data); relocate(w->weight_scale); relocate(w->block_scale);
     relocate(w->pre_quant_scale); relocate(w->nf4_absmax); relocate(w->nf4_quant_map);
     relocate(w->nf4_nested_quant_map); relocate(w->nf4_nested_absmax); relocate(w->bias);
@@ -595,7 +597,7 @@ bool stack_uses_convrot(const std::vector<BlockWeights>& blocks) {
   for (const BlockWeights& block : blocks) {
     if (block.wq.convrot || block.wk.convrot || block.wv.convrot ||
         block.out_proj.convrot || block.fc1.convrot || block.fc2.convrot ||
-        block.full_adaln.convrot) {
+        block.full_adaln.convrot || block.compress_gate.convrot) {
       return true;
     }
   }
@@ -619,7 +621,7 @@ size_t attention_scratch_for_mode(const TransformerConfig& cfg, int sequence,
 Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
                  int row_chunk = kRowChunk,
                  AttentionMode attention_mode = AttentionMode::kFlash2,
-                 bool reserve_convrot = false, bool query_chunking = false) {
+                 bool reserve_convrot = false, bool query_chunking = false, bool vsa = false) {
   const int seq = layout.total_rows();
   const int hidden = cfg.hidden_size;
   const int inner = cfg.inner_dim();
@@ -630,7 +632,7 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
   c.chunked_attention = query_chunking && seq > c.chunk;
   c.query = static_cast<size_t>(c.chunked_attention ? c.chunk : seq) * inner;
   c.normed = static_cast<size_t>(c.chunk) * hidden;
-  c.fused = static_cast<size_t>(c.chunk) * 2 * cfg.ffn_dim;
+  c.fused = static_cast<size_t>(c.chunk) * std::max(2 * cfg.ffn_dim, vsa ? inner : 0);
   c.act = static_cast<size_t>(c.chunk) * cfg.ffn_dim;
   c.fbuf = static_cast<size_t>(c.chunk) * hidden;
 
@@ -689,7 +691,10 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
     probe.in_features = cfg.text_dim;
     scratch = std::max(scratch, cuda::linear_workspace_bytes(probe, c.chunk, ComputeType::kF32));
   }
-  c.attention_scratch = attention_scratch_for_mode(cfg, seq, attention_mode);
+  c.attention_scratch = vsa
+      ? cuda::vsa_attention_workspace_bytes(static_cast<int>(build_vsa_tiles(layout).sizes.size()),
+                                            cfg.num_attention_heads, cfg.attention_head_dim)
+      : attention_scratch_for_mode(cfg, seq, attention_mode);
   scratch = std::max(scratch, c.attention_scratch);
   c.scratch = scratch;
   c.total = bytes + align_up(scratch);
@@ -741,8 +746,9 @@ struct Transformer::Impl {
   AttentionMode attention_mode = AttentionMode::kFlash2;
   int row_chunk = kRowChunk;
   bool query_chunking = true;
+  bool is_vsa() const { return architecture == TransformerArchitecture::kFastH3V2PrunedTable; }
   bool compact_queries(AttentionMode mode) const {
-    return query_chunking && mode == AttentionMode::kFlash2 &&
+    return !is_vsa() && query_chunking && mode == AttentionMode::kFlash2 &&
            (cfg.attention_head_dim == 64 || cfg.attention_head_dim == 128) &&
            row_chunk % cuda::attention_fused_query_tile() == 0 &&
            block_capture_path.empty() && graph_capture_path.empty() &&
@@ -1206,6 +1212,9 @@ struct Transformer::Impl {
       throw std::runtime_error("transformer: stopped after requested Sol capture");
   }
   DeviceBuffer<int32_t> d_band;
+  DeviceBuffer<int32_t> vsa_rows, vsa_sizes, vsa_row_tiles;
+  DeviceBuffer<__nv_bfloat16> vsa_compressed;
+  cuda::VsaConfig vsa_config;
   std::vector<int32_t> host_band;
   DeviceBuffer<float> rope_cos, rope_sin;
   std::vector<float> host_rope_cos, host_rope_sin;
@@ -1654,7 +1663,11 @@ struct Transformer::Impl {
                             sol_pipeline_diag;
       }
       if (layer >= 0 && !sol_capture_path.empty()) capture_sol_inputs(q, k, v, rows, layer);
-      if (block_attention_mode == AttentionMode::kExact) {
+      if (layer >= 0 && is_vsa()) {
+        cuda::vsa_attention_forward(stream.get(), q, k, v, attn_out,
+                                    vsa_compressed.get(), vsa_config, ws);
+        ++attention_routes.generic_main;
+      } else if (block_attention_mode == AttentionMode::kExact) {
         cuda::launch_deterministic_h3_attention(
             stream.get(), q, k, v, attn_out, acfg.band_ranges,
             static_cast<uint32_t>(rows), static_cast<uint32_t>(cfg.num_attention_heads),
@@ -1669,13 +1682,28 @@ struct Transformer::Impl {
       }
       if (layer >= 0) capture_block_attention(attn_out);
       diagnose("attention",attn_out,size_t(rows)*inner,layer);
-      const char* label = block_attention_mode == AttentionMode::kExact ? "attn.exact" :
+      const char* label = layer >= 0 && is_vsa() ? "attn.vsa-h3" : block_attention_mode == AttentionMode::kExact ? "attn.exact" :
                           backend == AttentionBackend::kFused ? "attn.flash2" :
                           backend == AttentionBackend::kSage2 ? "attn.sage2" :
                           backend == AttentionBackend::kSol ?
                             (block_attention_mode==AttentionMode::kSolExperimental?
                               "attn.sol.experimental":"attn.sol") : "attn.none";
       prof.tick(label, stream.get());
+
+      if (layer >= 0 && is_vsa()) {
+        Workspace::Scope gate_scope(ws);
+        const __nv_bfloat16* dense_gate = linear.prepare(b.compress_gate, ws);
+        for (int start = 0; start < rows; start += chunk) {
+          const int n = std::min(chunk, rows - start);
+          cuda::launch_rmsnorm_modulate(x + size_t(start) * hidden, b.norm1,
+              scale_msa, shift_msa, adaln_idx + start, normed, n, hidden, eps, stream.get());
+          // The fused FFN buffer is idle here and large enough for the gate.
+          project(b.compress_gate, dense_gate, normed, n, fused);
+          cuda::vsa_add_compression(stream.get(), attn_out + size_t(start) * inner,
+              fused, vsa_compressed.get(), start, n, vsa_config);
+        }
+        prof.tick("attn.vsa_gate", stream.get());
+      }
 
       {
         Workspace::Scope out_scope(ws);
@@ -1865,6 +1893,8 @@ void Transformer::unload() {
   impl_->has_sequence = false;
   impl_->attention_configuration_locked = false;
   impl_->attention_routes = {};
+  impl_->vsa_rows.reset(); impl_->vsa_sizes.reset(); impl_->vsa_row_tiles.reset();
+  impl_->vsa_compressed.reset(); impl_->vsa_config = {};
 }
 
 void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config,
@@ -2013,6 +2043,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     plan.require(prefix + "attn.q_norm.weight", {head_dim}, Store::kAsBF16);
     plan.require(prefix + "attn.k_norm.weight", {head_dim}, Store::kAsBF16);
     plan_linear(prefix + "attn.out_proj", hidden, inner);
+    if (with_adaln && s.is_vsa()) plan_linear(prefix + "attn.to_gate_compress", inner, hidden);
     plan_linear(prefix + "mlp.fc1", 2 * ffn, hidden);
     plan_linear(prefix + "mlp.fc2", hidden, ffn);
     if (with_adaln) {
@@ -2077,9 +2108,9 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     const auto& layout = *options.layout;
     // Conservative ConvRot scratch even for archives that do not use it.
     const Carve main = plan_carve(config, layout, s.row_chunk, s.attention_mode,
-                                  true, s.compact_queries(s.attention_mode));
+                                  true, s.compact_queries(s.attention_mode), s.is_vsa());
     const Carve plain = plan_carve(config, layout, s.row_chunk, s.attention_mode,
-                                   false, s.compact_queries(s.attention_mode));
+                                   false, s.compact_queries(s.attention_mode), s.is_vsa());
     size_t main_bytes = activation_bytes(layout) + main.total - plain.total;
     // Account for cached text and up to four distinct row timesteps, rather
     // than the two used by the original text-to-video estimator.
@@ -2453,6 +2484,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     }
 
     b.out_proj = quant(prefix + "attn.out_proj", hidden, inner);
+    if (with_adaln && s.is_vsa()) b.compress_gate = quant(prefix + "attn.to_gate_compress", inner, hidden);
     b.fc1 = quant(prefix + "mlp.fc1", 2 * ffn, hidden);
     b.fc2 = quant(prefix + "mlp.fc2", hidden, ffn);
     const int staged_block = streamable_block(prefix);
@@ -2546,10 +2578,17 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   const TransformerConfig& cfg = impl_->cfg;
   const Carve c = plan_carve(cfg, layout, impl_->row_chunk, impl_->attention_mode,
                              stack_uses_convrot(impl_->blocks),
-                             impl_->compact_queries(impl_->attention_mode));
+                             impl_->compact_queries(impl_->attention_mode), impl_->is_vsa());
   const int seq = layout.total_rows();
 
   size_t total = c.total + impl_->lora.scratch_bytes();
+  if (impl_->is_vsa()) {
+    const auto tiles = build_vsa_tiles(layout);
+    total += align_up(tiles.sizes.size() * cfg.inner_dim() * sizeof(__nv_bfloat16));
+    total += align_up(tiles.rows.size() * sizeof(int32_t)) +
+             align_up(tiles.sizes.size() * sizeof(int32_t)) +
+             align_up(tiles.row_tiles.size() * sizeof(int32_t));
+  }
   if (impl_->architecture == TransformerArchitecture::kRef2VAFullAdaLN &&
       !impl_->blocks.empty()) {
     size_t full_scratch = cuda::linear_workspace_bytes(
@@ -2778,7 +2817,7 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   s.layout = layout;
   s.indices = indices;
   s.carve = plan_carve(s.cfg, layout, s.row_chunk, s.attention_mode,
-                       stack_uses_convrot(s.blocks), s.compact_queries(s.attention_mode));
+                       stack_uses_convrot(s.blocks), s.compact_queries(s.attention_mode), s.is_vsa());
   if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN) {
     const size_t old_scratch = s.carve.scratch;
     s.carve.scratch = std::max(s.carve.scratch, cuda::linear_workspace_bytes(
@@ -2803,6 +2842,22 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
     std::fflush(stdout);
   }
   s.ws.resize(s.carve.total);
+  if (s.is_vsa()) {
+    if (s.attn_band > 0) throw std::runtime_error("VSA-H3 cannot use frame-banded attention");
+    const auto tiles = build_vsa_tiles(layout);
+    s.vsa_rows.allocate(tiles.rows.size());
+    s.vsa_sizes.allocate(tiles.sizes.size());
+    s.vsa_row_tiles.allocate(tiles.row_tiles.size());
+    s.vsa_rows.copy_from_host(tiles.rows.data(), tiles.rows.size(), s.stream.get());
+    s.vsa_sizes.copy_from_host(tiles.sizes.data(), tiles.sizes.size(), s.stream.get());
+    s.vsa_row_tiles.copy_from_host(tiles.row_tiles.data(), tiles.row_tiles.size(), s.stream.get());
+    s.vsa_compressed.allocate(tiles.sizes.size() * s.cfg.inner_dim());
+    s.vsa_config = {static_cast<int>(tiles.sizes.size()), tiles.prefix_tiles,
+                    s.cfg.num_attention_heads, s.cfg.attention_head_dim,
+                    s.vsa_rows.get(), s.vsa_sizes.get(), s.vsa_row_tiles.get()};
+    // The map vectors are local pageable storage; finish their transfers.
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
+  }
 
   // Frame-banded attention: one small table for the whole request, ~300 entries
   // at the default geometry, rebuilt here because it depends on the layout and

@@ -492,6 +492,8 @@ void ExactH3BlockStage::validate_checkpoint(const SafeTensors& st,
                                             const H3BlockConfig& c) {
   validate_config(c);
   const std::string p = "blocks." + std::to_string(layer) + ".";
+  if (st.find(p + "attn.to_gate_compress.weight"))
+    throw std::runtime_error("VSA-H3 checkpoints require the CUDA transformer backend");
   validate_block_archive(st, p, c, true);
 }
 

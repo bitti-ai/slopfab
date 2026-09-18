@@ -19,7 +19,7 @@
 
 namespace slopfab::sampler {
 
-enum class ScheduleKind { kDefault, kTaoMate3Step };
+enum class ScheduleKind { kDefault, kTaoMate3Step, kFastH3V2 };
 
 // Which integrator advances the trajectory. Both cost exactly one model
 // evaluation per step; the difference is what they do with the velocity they
@@ -55,7 +55,8 @@ class FlowScheduler {
   // the count with four retained teacher states (three evaluations).
   void set_timesteps(int num_inference_steps, ScheduleKind schedule = ScheduleKind::kDefault);
 
-  // Explicit decreasing sigma grid including both endpoints; resets history.
+  // Explicit decreasing sigma grid starting in (0,1] and ending at 0;
+  // resets history. Distilled FastH3 starts just below sigma 1.
   void set_sigmas(const std::vector<float>& sigmas);
 
   // Sigma grid, strictly decreasing, ending at exactly 0.

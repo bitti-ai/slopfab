@@ -186,16 +186,28 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     if (dit::detect_transformer_architecture(checkpoint) ==
         dit::TransformerArchitecture::kViggleAnimatePrunedTable)
       plan.video_sigma_shift = kViggleVideoSigmaShift;
+    plan.fasth3_v2 = dit::detect_transformer_architecture(checkpoint) ==
+        dit::TransformerArchitecture::kFastH3V2PrunedTable;
   }
   if (request.animate) plan.video_sigma_shift = kViggleVideoSigmaShift;
   plan.audio_sigma_shift = kAudioSigmaShift;
   plan.num_inference_steps = request.schedule == sampler::ScheduleKind::kTaoMate3Step
       ? 4 : request.num_inference_steps;
 
+  auto schedule = request.schedule;
+  if (plan.fasth3_v2) {
+    if (request.has_references() || request.continuation || request.animate ||
+        schedule != sampler::ScheduleKind::kDefault)
+      throw std::runtime_error("FastH3 V2 supports text-to-video with its trained eight-step schedule; references, continuation and other schedules are incompatible");
+    plan.video_sigma_shift = 10.0f;
+    plan.num_inference_steps = 9;
+    schedule = sampler::ScheduleKind::kFastH3V2;
+  }
+
   sampler::FlowScheduler video(plan.video_sigma_shift);
   sampler::FlowScheduler audio(plan.audio_sigma_shift);
-  video.set_timesteps(plan.num_inference_steps, request.schedule);
-  audio.set_timesteps(plan.num_inference_steps, request.schedule);
+  video.set_timesteps(plan.num_inference_steps, schedule);
+  audio.set_timesteps(plan.num_inference_steps, schedule);
 
   plan.video_sigmas = video.sigmas();
   plan.audio_sigmas = audio.sigmas();
@@ -454,6 +466,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   }
   if (request.schedule == sampler::ScheduleKind::kTaoMate3Step)
     description += "  schedule            taomate-3step (teacher states 0,16,33,49)\n";
+  if (plan.fasth3_v2)
+    description += "  schedule            FastH3 V2 (8 evaluations, video/audio shifts 10/3)\n"
+                   "  attention           VSA-H3 (64-token tiles, 80% sparsity, learned gates)\n";
   for (const auto& lora : request.loras) {
     char strength[64];
     std::snprintf(strength, sizeof(strength), "%.6g", static_cast<double>(lora.strength));

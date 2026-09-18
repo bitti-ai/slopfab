@@ -149,6 +149,7 @@ struct GenerateRequest {
 // in the layout is filled in only after tokenisation, so it is zero here and
 // `sequence_length_without_text` is what can be known in advance.
 struct GeneratePlan {
+  bool fasth3_v2 = false;
   int canvas_height = 0;
   int canvas_width = 0;
   int aligned_frames = 0;

@@ -28,6 +28,22 @@ bool marks_viggle(const SafeTensors& st) {
   return name.find("viggle-animate") != std::string::npos;
 }
 
+bool marks_fasth3_v2(const SafeTensors& st) {
+  // V1 and V2 share tensor layouts but have different trained schedules.
+  // Converted files often retain only {format: pt}, so recognize the release
+  // filename as well as an explicit source/model_id in renamed archives.
+  std::string identity = std::filesystem::path(st.path()).filename().string();
+  for (const char* key : {"source", "model_id"}) {
+    const auto it = st.metadata().find(key);
+    if (it != st.metadata().end()) identity += " " + it->second;
+  }
+  std::transform(identity.begin(), identity.end(), identity.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  identity.erase(std::remove_if(identity.begin(), identity.end(),
+      [](char c) { return c == '_' || c == '-'; }), identity.end());
+  return identity.find("fasth38stepv2") != std::string::npos;
+}
+
 }  // namespace
 
 TransformerArchitecture detect_transformer_architecture(const SafeTensors& checkpoint) {
@@ -35,6 +51,9 @@ TransformerArchitecture detect_transformer_architecture(const SafeTensors& check
   // table and contract every AdaLN projection to rank eight.
   if (has(checkpoint, "adaln_t_table") &&
       has(checkpoint, "blocks.0.adaln_proj.linear.weight")) {
+    if (has(checkpoint, "blocks.0.attn.to_gate_compress.weight"))
+      return marks_fasth3_v2(checkpoint) ? TransformerArchitecture::kFastH3V2PrunedTable
+                                       : TransformerArchitecture::kUnknown;
     if (marks_viggle(checkpoint)) return TransformerArchitecture::kViggleAnimatePrunedTable;
     // The released pruned Ref2VA FP8 file has the exact same tensor names,
     // shapes, dtypes and empty metadata as the FL2VA file. The distribution
@@ -78,6 +97,8 @@ const char* transformer_architecture_name(TransformerArchitecture architecture) 
   switch (architecture) {
     case TransformerArchitecture::kPrunedTable:
       return "pruned AdaLN-table transformer";
+    case TransformerArchitecture::kFastH3V2PrunedTable:
+      return "FastH3 V2 (VSA-H3, 8-step) transformer";
     case TransformerArchitecture::kRef2VAPrunedTable:
       return "pruned AdaLN-table Ref2VA transformer";
     case TransformerArchitecture::kRef2VAFullAdaLN:

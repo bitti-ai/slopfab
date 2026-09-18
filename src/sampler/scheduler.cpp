@@ -87,6 +87,15 @@ void FlowScheduler::set_sampler(SamplerKind kind) {
 }
 
 void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule) {
+  if (schedule == ScheduleKind::kFastH3V2) {
+    std::vector<float> grid;
+    for (int rung : {999, 874, 749, 624, 500, 375, 250, 125, 0}) {
+      const float base = static_cast<float>(rung) / 1000.0f;
+      grid.push_back(shift_ * base / (1.0f + (shift_ - 1.0f) * base));
+    }
+    set_sigmas(grid);
+    return;
+  }
   if (schedule == ScheduleKind::kTaoMate3Step) {
     // TaoMate's distilled states are retained from the teacher's 50-point
     // shifted grid, not a newly generated four-point linspace.
@@ -134,8 +143,9 @@ void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule
 }
 
 void FlowScheduler::set_sigmas(const std::vector<float>& sigmas) {
-  if (sigmas.size() < 2 || sigmas.front() != 1.0f || sigmas.back() != 0.0f)
-    throw std::runtime_error("scheduler: sigma grid must span 1 to 0");
+  if (sigmas.size() < 2 || !(sigmas.front() > 0.0f && sigmas.front() <= 1.0f) ||
+      sigmas.back() != 0.0f)
+    throw std::runtime_error("scheduler: sigma grid must start in (0,1] and end at 0");
   for (size_t i = 0; i < sigmas.size(); ++i) {
     if (!std::isfinite(sigmas[i]) || sigmas[i] < 0.0f || sigmas[i] > 1.0f ||
         (i > 0 && sigmas[i] >= sigmas[i-1]))

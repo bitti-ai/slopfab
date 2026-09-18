@@ -14,12 +14,14 @@ enum class TransformerArchitecture {
   kRef2VAPrunedTable,
   kRef2VAFullAdaLN,
   kViggleAnimatePrunedTable,
+  kFastH3V2PrunedTable,
 };
 
 constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture) {
   return architecture == TransformerArchitecture::kPrunedTable ||
          architecture == TransformerArchitecture::kRef2VAPrunedTable ||
-         architecture == TransformerArchitecture::kViggleAnimatePrunedTable;
+         architecture == TransformerArchitecture::kViggleAnimatePrunedTable ||
+         architecture == TransformerArchitecture::kFastH3V2PrunedTable;
 }
 
 enum class TransformerQuantization {

@@ -57,6 +57,7 @@ add_library(slopfab_core STATIC
   src/dit/block_cache.cpp
   src/dit/chunking.cpp
   src/dit/checkpoint.cpp
+  src/dit/vsa.cpp
   src/dit/packing.cpp
   src/dit/ref2va.cpp
   src/dit/rope.cpp
@@ -226,6 +227,7 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/w4a8.cu
       src/cuda/nvfp4_gemm.cu
       src/cuda/attention.cu
+      src/cuda/vsa_attention.cu
       src/cuda/sage_attention.cu
       src/cuda/sol_attention.cu
       src/cuda/sol_attention_pipeline.cu
@@ -1271,6 +1273,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_noise.cpp
     tests/test_packing.cpp
     tests/test_ref2va.cpp
+    tests/test_vsa.cpp
     tests/test_safetensors.cpp
     tests/test_pipeline.cpp
     tests/test_prompt_embedding.cpp
@@ -1413,7 +1416,8 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_nn_kernels.cu
       tests/test_reference_encoder.cu
       tests/test_audio_vae.cu
-      tests/test_transformer.cu
+        tests/test_transformer.cu
+        tests/test_vsa.cu
       tests/test_encoder.cu
       tests/test_keyframe_encoder.cu
       tests/test_vit_decoder.cu

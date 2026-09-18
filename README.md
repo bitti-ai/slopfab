@@ -5,6 +5,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 ## Features
 
 - **Text-to-video with audio**, configurable resolution, frame count, sampling steps, seeds and batch generation.
+- **FastH3 V2 on CUDA**, with learned VSA-H3 sparse attention and automatic eight-step scheduling. See [FastH3 V2](docs/fasth3_v2.md).
 - **Image, video and audio references** with compatible Ref2VA models, including reusable [refmods](docs/refmods.md).
 - **CUDA and Vulkan inference** with native text and reference conditioning, plus selectable attention backends.
 - **LoRA adapters**, adapter stacking and the [TaoMate three-step schedule](docs/loras.md).
