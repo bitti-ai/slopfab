@@ -510,6 +510,8 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   Impl& s = *impl_; const H3BlockConfig& c = s.config;
   const uint32_t inner = c.heads * c.head_dim;
   const std::string p = "blocks." + std::to_string(layer) + ".";
+  if (st.find(p + "attn.to_gate_compress.weight"))
+    throw std::runtime_error("VSA-H3 checkpoints require the CUDA transformer backend");
   // Decode every small tensor, including the archive-tail AdaLN tensors,
   // before reserving device memory.  Apart from producing clearer errors,
   // this keeps a late corrupt reload from raising the allocator high-water

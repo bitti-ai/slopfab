@@ -71,12 +71,28 @@ SLOPFAB_TEST(vsa_checkpoint_and_schedule) {
   sampler::FlowScheduler replay(10);
   replay.set_sigmas(plan.video_sigmas);
   CHECK(replay.timesteps() == plan.video_timesteps);
+  request.reference_image_paths.push_back("reference.png");
+  bool rejected = false;
+  try { (void)resolve_plan(request); } catch (...) { rejected = true; }
+  CHECK(rejected);
+  request.reference_image_paths.clear();
+  request.schedule = sampler::ScheduleKind::kTaoMate3Step;
+  request.loras.push_back({"taomate.safetensors", 1.0f});
+  rejected = false;
+  try { (void)resolve_plan(request); } catch (...) { rejected = true; }
+  CHECK(rejected);
   std::filesystem::remove(path);
   const auto renamed = std::filesystem::temp_directory_path() / "slopfab_vsa_renamed.safetensors";
   write_safetensors(renamed.string(), tensors, {{"model_id", "FastVideo/FastVideo-FastH3-8-Step-V2"}});
   {
     SafeTensors st; st.open(renamed.string());
     CHECK(dit::detect_transformer_architecture(st) == dit::TransformerArchitecture::kFastH3V2PrunedTable);
+  }
+  std::filesystem::remove(renamed);
+  write_safetensors(renamed.string(), tensors, {{"model_id", "FastVideo/FastH3-V1"}});
+  {
+    SafeTensors st; st.open(renamed.string());
+    CHECK(dit::detect_transformer_architecture(st) == dit::TransformerArchitecture::kUnknown);
   }
   std::filesystem::remove(renamed);
 }

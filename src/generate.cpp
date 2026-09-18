@@ -1128,7 +1128,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     options.attention_band);
       }
       if (options.verbose) {
-        std::printf("attention  backend %s\n", attention_mode_name(options.attention_mode));
+        std::printf("attention  backend %s\n", plan.fasth3_v2 ? "vsa-h3 (dense text refiner)"
+                                                               : attention_mode_name(options.attention_mode));
       }
       // Also before prepare_sequence, and for the same kind of reason: that is
       // where the two residual-stream-sized buffers are allocated, so a cache

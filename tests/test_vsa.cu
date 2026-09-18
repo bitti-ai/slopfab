@@ -131,19 +131,26 @@ SLOPFAB_TEST(vsa_real_checkpoint_forward) {
   layout.num_latent_frames = 5; layout.latent_height = 10; layout.latent_width = 14;
   layout.num_video_rows = 175;
   SafeTensors checkpoint; checkpoint.open(path);
-  dit::Transformer model;
-  dit::TransformerLoadOptions options; options.layout = &layout;
-  model.load(checkpoint, {}, nullptr, options);
-  CHECK(model.num_blocks() == 50);
   auto prompt = test::make_data(8 * 5120, 31, 0.1f);
   auto video = test::make_data(175 * 96, 41, 0.5f);
   auto audio = test::make_data(14 * 32, 51, 0.5f);
-  model.prepare_text(prompt.data(), 8);
-  model.prepare_sequence(layout, dit::build_indices(layout), dit::build_position_ids(layout));
-  std::vector<float> ov(video.size()), oa(audio.size());
+  std::vector<float> resident_video, resident_audio;
   const auto timesteps = dit::build_row_timesteps(layout, dit::build_indices(layout), 0.2f, 0.3f);
-  model.forward(video.data(), audio.data(), timesteps, ov.data(), oa.data());
-  CHECK(std::all_of(ov.begin(), ov.end(), [](float x) { return std::isfinite(x); }));
-  CHECK(std::all_of(oa.begin(), oa.end(), [](float x) { return std::isfinite(x); }));
-  CHECK(std::any_of(ov.begin(), ov.end(), [](float x) { return x != 0; }));
+  // Three blocks exercise reuse of the streamer's two transfer slots.
+  for (int offload : {0, 3}) {
+    dit::Transformer model;
+    dit::TransformerLoadOptions options; options.layout = &layout; options.offload_blocks = offload;
+    model.load(checkpoint, {}, nullptr, options);
+    CHECK(model.num_blocks() == 50);
+    CHECK(model.offloaded_blocks() == offload);
+    model.prepare_text(prompt.data(), 8);
+    model.prepare_sequence(layout, dit::build_indices(layout), dit::build_position_ids(layout));
+    std::vector<float> ov(video.size()), oa(audio.size());
+    model.forward(video.data(), audio.data(), timesteps, ov.data(), oa.data());
+    CHECK(std::all_of(ov.begin(), ov.end(), [](float x) { return std::isfinite(x); }));
+    CHECK(std::all_of(oa.begin(), oa.end(), [](float x) { return std::isfinite(x); }));
+    CHECK(std::any_of(ov.begin(), ov.end(), [](float x) { return x != 0; }));
+    if (offload == 0) { resident_video = ov; resident_audio = oa; }
+    else { CHECK(ov == resident_video); CHECK(oa == resident_audio); }
+  }
 }
