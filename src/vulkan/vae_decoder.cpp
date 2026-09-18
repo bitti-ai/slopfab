@@ -71,11 +71,18 @@ std::vector<uint16_t> load_matrix(const SafeTensors& checkpoint,
       tensor.shape[1] == static_cast<int64_t>(columns);
   if ((!matrix_shape && (!flattened ||
                          tensor.numel() != static_cast<int64_t>(rows * columns))) ||
-      tensor.dtype != DType::kF16 || tensor.nbytes != rows * columns * 2) {
-    throw std::runtime_error("Vulkan video VAE: invalid fp16 matrix '" + name + "'");
+      (tensor.dtype != DType::kF16 && tensor.dtype != DType::kF32)) {
+    throw std::runtime_error("Vulkan video VAE: invalid fp16/fp32 matrix '" + name + "'");
   }
   std::vector<uint16_t> result(static_cast<size_t>(rows * columns));
-  std::memcpy(result.data(), tensor.data, tensor.nbytes);
+  if (tensor.dtype == DType::kF16) {
+    std::memcpy(result.data(), tensor.data, tensor.nbytes);
+  } else {
+    // Comfy INT8 VAEs retain their unquantized endpoint matrices as FP32.
+    // Narrow once to the same canonical FP16 contract as native FP16 files.
+    const auto values = to_f32(tensor);
+    for (size_t i = 0; i < values.size(); ++i) result[i] = f32_to_f16(values[i]);
+  }
   for (uint16_t& word : result) {
     if ((word & 0x7c00u) == 0 && (word & 0x03ffu) != 0)
       word &= 0x8000u;
