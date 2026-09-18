@@ -7,6 +7,7 @@
 #include "slopfab/lora.h"
 #include "slopfab/vulkan/gemm.h"
 #include "slopfab/vulkan/tensor.h"
+#include "slopfab/dit/vsa.h"
 
 namespace slopfab::vulkan {
 
@@ -23,6 +24,8 @@ struct H3BlockConfig {
   AttentionMode attention_mode = AttentionMode::kExact;
   // Borrowed only during checkpoint loading.
   const LoraAdapters* loras = nullptr;
+  // Main FastH3 V2 blocks only. Refiners keep dense attention.
+  std::shared_ptr<const dit::VsaTiles> vsa_tiles;
 };
 
 // Optional device-only diagnostic taps. Each non-null destination must match

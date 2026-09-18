@@ -55,6 +55,9 @@ void validate_config(const ExactH3DenoiseConfig& c) {
       total_audio_wide > std::numeric_limits<uint32_t>::max()
       ? 0u : static_cast<uint32_t>(total_audio_wide);
   const bool conditioned = condition_video != 0 || condition_audio != 0;
+  if (c.transformer.main.block.vsa_tiles &&
+      (conditioned || c.attention_band != 0 || !c.attention_ranges.empty()))
+    throw std::invalid_argument("Vulkan VSA requires unconditioned, unbanded text-to-video/audio");
   if (l.num_condition_video < 0 || l.num_condition_audio < 0 ||
       total_video_wide > std::numeric_limits<uint32_t>::max() ||
       total_audio_wide > std::numeric_limits<uint32_t>::max() ||

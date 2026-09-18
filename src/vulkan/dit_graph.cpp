@@ -147,6 +147,8 @@ uint32_t ExactH3MainGraph::preflight_layers(
       layer_count > impl_->config.layers - first_layer)
     throw std::invalid_argument("Vulkan H3 graph: invalid layer span");
   const H3BlockConfig& c = impl_->config.block;
+  if (c.vsa_tiles && ranges)
+    throw std::invalid_argument("Vulkan VSA: frame-banded attention is incompatible");
   const auto tv = tokens.view(), sv = selectors.view(), cv = code.view();
   const auto cosv = cosine.view(), sinv = sine.view();
   if (!impl_->context->owns(tokens) || !impl_->context->owns(selectors) ||

@@ -336,10 +336,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   } release_guard{options.release_reused_models};
   RunResult result;
   dit::SequenceLayout layout = plan.layout;
-  if (plan.fasth3_v2 && (options.inference_backend != DeviceBackend::kCuda ||
-      options.sampler != sampler::SamplerKind::kEuler || options.attention_band > 0 || request.cache_threshold > 0 ||
+  if (plan.fasth3_v2 && (options.sampler != sampler::SamplerKind::kEuler ||
+      options.attention_band > 0 || request.cache_threshold > 0 ||
       request.skip_every > 0 || request.block_cache_span > 0)) {
-    result.message = "FastH3 V2 requires CUDA and Euler without frame banding, step or block caching";
+    result.message = "FastH3 V2 requires Euler without frame banding, step or block caching";
     return result;
   }
   if (request.continuation && (options.source != LatentSource::kDenoise ||
@@ -1315,7 +1315,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       vulkan::Device device = create_vulkan_inference_device(
           true, options.attention_mode == AttentionMode::kSage2);
       vulkan::TensorContextOptions context_options;
-      context_options.max_batch_operators = request.loras.empty() ? 2048 : 4096;
+      context_options.max_batch_operators = request.loras.empty() && !plan.fasth3_v2 ? 2048 : 4096;
       context_options.sage_extra_workspace_bytes = options.vulkan_sage_extra_workspace_bytes;
       vulkan::TensorContext context(device, context_options);
       context.require_h3_attention(options.attention_mode);
@@ -1328,6 +1328,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                                live.num_condition_audio != 0;
       config.transformer.main.block.timesteps = conditioned ? 4u : 2u;
       config.transformer.main.block.loras = &loras;
+      if (plan.fasth3_v2)
+        config.transformer.main.block.vsa_tiles =
+            std::make_shared<dit::VsaTiles>(dit::build_vsa_tiles(live));
       config.transformer.text_rows = static_cast<uint32_t>(live.num_text);
       config.transformer.video_rows = static_cast<uint32_t>(
           live.num_condition_video + live.num_video_rows);
@@ -1439,7 +1442,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (options.verbose) {
         std::printf(
             "denoised    %d Vulkan %s steps in %.1f s (%.2f s/step); +%.1f s load, +%.1f s prepare\n",
-            total_steps, attention_mode_name(options.attention_mode), result.seconds_denoise_loop,
+            total_steps, plan.fasth3_v2 ? "vsa-h3" : attention_mode_name(options.attention_mode), result.seconds_denoise_loop,
             result.seconds_denoise_loop / std::max(1, total_steps),
             result.seconds_transformer_load, result.seconds_prepare);
       }

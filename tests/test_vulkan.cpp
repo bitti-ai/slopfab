@@ -3717,6 +3717,57 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
     digest ^= bits >> 8; digest *= 1099511628211ull;
   }
   CHECK(digest == 0x70e1eaf01723020bull);
+  if (context.h3_attention_supported(AttentionMode::kFlash2)) {
+    // One video tile makes sparse attention dense. A zero compression gate
+    // must then reproduce Flash attention; a learned gate must affect it.
+    auto vsa_config = config;
+    vsa_config.attention_mode = AttentionMode::kFlash2;
+    dit::SequenceLayout geometry;
+    geometry.num_text = 1;
+    geometry.num_latent_frames = 4;
+    geometry.latent_height = geometry.latent_width = 8;
+    geometry.num_video_rows = 64;
+    auto tile_map = std::make_shared<dit::VsaTiles>(dit::build_vsa_tiles(geometry));
+    const auto vsa_path = base / "vsa.safetensors";
+    auto evaluate = [&](bool sparse, float gate_scale) {
+      auto tensors = fixture(0);
+      if (sparse) {
+        std::vector<float> gate(config.hidden * config.hidden, 0.0f);
+        for (uint32_t i = 0; i < config.hidden; ++i) gate[i * config.hidden + i] = gate_scale;
+        tensors.push_back({"blocks.0.attn.to_gate_compress.weight",
+                           {config.hidden, config.hidden}, std::move(gate)});
+      }
+      write_safetensors(vsa_path.string(), tensors);
+      SafeTensors checkpoint;
+      checkpoint.open(vsa_path.string());
+      vsa_config.vsa_tiles = sparse ? tile_map : nullptr;
+      auto stage = ExactH3BlockStage::create(context, vsa_config);
+      stage.load(checkpoint, 0);
+      auto vsa_scratch = ExactH3BlockScratch::create(context, vsa_config);
+      stage.prepare(vsa_scratch);
+      context.upload_bytes(tokens, input.data(), input.size() * 2);
+      auto batch = context.begin_batch();
+      while (batch.remaining_operator_capacity() > stage.required_operators()) batch.copy(tokens, dummy);
+      stage.record(batch, tokens, selectors, code, cosine, sine, vsa_scratch);
+      CHECK(batch.remaining_operator_capacity() == 0);
+      batch.submit().wait();
+      std::vector<uint16_t> result(input.size());
+      context.download_bytes(tokens, result.data(), result.size() * 2);
+      return result;
+    };
+    const auto dense = evaluate(false, 0.0f);
+    const auto zero_gate = evaluate(true, 0.0f);
+    float error = 0;
+    for (size_t i = 0; i < dense.size(); ++i)
+      error = std::max(error, std::abs(bf16_to_f32(dense[i]) - bf16_to_f32(zero_gate[i])));
+    CHECK_MSG(error < 0.016f, "VSA zero gate versus dense Flash error %g", error);
+    CHECK(evaluate(true, 1.0f) != zero_gate);
+    bool rejected = false;
+    try { ExactH3BlockStage::validate_checkpoint(valid, 0, vsa_config); }
+    catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected);
+    std::filesystem::remove(vsa_path);
+  }
   for (auto mode : {AttentionMode::kFlash2, AttentionMode::kSage2}) {
     if (!context.h3_attention_supported(mode)) continue;
     H3BlockConfig fast_config = config; fast_config.attention_mode = mode;
@@ -4130,7 +4181,8 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
         transformer_code, transformer_cosine, transformer_sine,
         transformer_video_ts, transformer_audio_ts, transformer_video_out,
         transformer_audio_out);
-    CHECK(batch.remaining_operator_capacity() == 86u);
+    CHECK(batch.remaining_operator_capacity() ==
+          graph_options.max_batch_operators - transformer.required_forward_operators());
     batch.submit().wait();
     std::vector<float> video_result(60 * 4), audio_result(2 * 2);
     graph_context.download(transformer_video_out, video_result.data(),
@@ -4234,6 +4286,15 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
         {target.first + ".lora_A.weight", {16, in}, test::make_data(size_t(16 * in), 893, .25f)},
         {target.first + ".lora_B.weight", {out, 16}, test::make_data(size_t(out * 16), 981, .25f)}});
     LoraAdapters adapter;
+    if (transformer_checkpoint.find(target.second + ".pre_quant_scale")) {
+      bool rejected = false;
+      try { adapter.load({{viggle_adapter_path.string(), 1}}, transformer_checkpoint); }
+      catch (const std::runtime_error& error) {
+        rejected = std::string(error.what()).find("AWQ activation scaling") != std::string::npos;
+      }
+      CHECK(rejected);
+      continue;
+    }
     adapter.load({{viggle_adapter_path.string(), 1}}, transformer_checkpoint);
     auto adapter_config = transformer_config;
     adapter_config.main.block.loras = &adapter;

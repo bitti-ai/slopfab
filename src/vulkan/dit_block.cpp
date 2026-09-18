@@ -17,6 +17,7 @@
 #include "slopfab/nf4.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/vulkan/linear.h"
+#include "slopfab/vulkan/vsa_attention.h"
 
 namespace slopfab::vulkan {
 namespace {
@@ -403,6 +404,8 @@ struct ExactH3BlockScratch::Impl {
   LoraScratch lora;
   DenseGemmPlan q_plan, k_plan, v_plan, out_plan, fc1_plan, fc2_plan;
   H3AttentionPlan attention_plan;
+  VsaAttentionPlan vsa_plan;
+  DeviceTensor compress_gate;
   explicit Impl(TensorContext& owner, const H3BlockConfig& c)
       : context(&owner), config(c) {
     const uint32_t inner = c.heads * c.head_dim;
@@ -432,27 +435,36 @@ struct ExactH3BlockScratch::Impl {
     q_plan = plan(inner, c.hidden); k_plan = plan(inner, c.hidden);
     v_plan = plan(inner, c.hidden); out_plan = plan(c.hidden, inner);
     fc1_plan = plan(2 * c.ffn, c.hidden); fc2_plan = plan(c.hidden, c.ffn);
-    attention_plan = H3AttentionPlan::create(owner, {c.sequence, c.heads,
-        c.head_dim, exact_attention_scale(c.head_dim), c.attention_mode});
+    if (c.vsa_tiles) {
+      if (c.vsa_tiles->row_tiles.size() != c.sequence)
+        throw std::invalid_argument("Vulkan H3 block: VSA sequence mismatch");
+      vsa_plan = VsaAttentionPlan::create(owner, *c.vsa_tiles, c.heads, c.head_dim);
+      compress_gate = owner.allocate(matrix(c.sequence, inner), ScalarType::kBFloat16);
+    } else {
+      attention_plan = H3AttentionPlan::create(owner, {c.sequence, c.heads,
+          c.head_dim, exact_attention_scale(c.head_dim), c.attention_mode});
+    }
   }
   uint64_t reserved() const noexcept {
     return bytes(modulation) + bytes(normed) + bytes(q) + bytes(k) + bytes(v) +
         bytes(attention) + bytes(branch) + bytes(fused) + bytes(activation) +
         bytes(hidden_a) + bytes(hidden_b) + bytes(inner_a) + bytes(inner_b) +
-        bytes(ffn_a) + bytes(ffn_b) + lora.reserved_bytes() + cache.dense_bytes() + attention_plan.workspace_bytes();
+        bytes(ffn_a) + bytes(ffn_b) + bytes(compress_gate) + vsa_plan.workspace_bytes() +
+        lora.reserved_bytes() + cache.dense_bytes() + attention_plan.workspace_bytes();
   }
 };
 
 struct ExactH3BlockStage::Impl {
   struct Weights {
     DeviceTensor norm1, norm2, q_norm, k_norm, adaln_w, adaln_b;
-    Projection q, k, v, out, fc1, fc2;
+    Projection q, k, v, out, fc1, fc2, compress_gate;
     uint64_t bytes() const noexcept {
       return ::slopfab::vulkan::bytes(norm1) + ::slopfab::vulkan::bytes(norm2) +
           ::slopfab::vulkan::bytes(q_norm) + ::slopfab::vulkan::bytes(k_norm) +
           ::slopfab::vulkan::bytes(adaln_w) + ::slopfab::vulkan::bytes(adaln_b) +
           q.persistent_bytes() + k.persistent_bytes() + v.persistent_bytes() +
-          out.persistent_bytes() + fc1.persistent_bytes() + fc2.persistent_bytes();
+          out.persistent_bytes() + fc1.persistent_bytes() + fc2.persistent_bytes() +
+          compress_gate.persistent_bytes();
     }
   };
   TensorContext* context = nullptr; H3BlockConfig config;
@@ -468,7 +480,8 @@ ExactH3BlockScratch& ExactH3BlockScratch::operator=(ExactH3BlockScratch&&) noexc
 ExactH3BlockScratch ExactH3BlockScratch::create(TensorContext& context,
                                                 const H3BlockConfig& config) {
   validate_config(config); context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise(); context.require_h3_attention(config.attention_mode);
+  context.require_exact_vae_pointwise();
+  context.require_h3_attention(config.vsa_tiles ? AttentionMode::kFlash2 : config.attention_mode);
   return ExactH3BlockScratch(std::make_shared<Impl>(context, config));
 }
 uint64_t ExactH3BlockScratch::reserved_bytes() const noexcept {
@@ -483,7 +496,8 @@ ExactH3BlockStage& ExactH3BlockStage::operator=(ExactH3BlockStage&&) noexcept = 
 ExactH3BlockStage ExactH3BlockStage::create(TensorContext& context,
                                             const H3BlockConfig& config) {
   validate_config(config); context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise(); context.require_h3_attention(config.attention_mode);
+  context.require_exact_vae_pointwise();
+  context.require_h3_attention(config.vsa_tiles ? AttentionMode::kFlash2 : config.attention_mode);
   return ExactH3BlockStage(std::make_shared<Impl>(context, config));
 }
 
@@ -492,14 +506,18 @@ void ExactH3BlockStage::validate_checkpoint(const SafeTensors& st,
                                             const H3BlockConfig& c) {
   validate_config(c);
   const std::string p = "blocks." + std::to_string(layer) + ".";
-  if (st.find(p + "attn.to_gate_compress.weight"))
-    throw std::runtime_error("VSA-H3 checkpoints require the CUDA transformer backend");
+  if (bool(st.find(p + "attn.to_gate_compress.weight")) != bool(c.vsa_tiles))
+    throw std::runtime_error("Vulkan H3 block: VSA gate weights and tile geometry must be supplied together");
+  if (c.vsa_tiles)
+    validate_projection_archive(st, p + "attn.to_gate_compress", c.heads * c.head_dim, c.hidden);
   validate_block_archive(st, p, c, true);
 }
 
 void ExactH3BlockStage::validate_refiner_checkpoint(
     const SafeTensors& st, uint32_t layer, const H3BlockConfig& c) {
   validate_config(c);
+  if (c.vsa_tiles)
+    throw std::invalid_argument("Vulkan H3 refiner requires dense attention");
   const std::string p =
       "token_refiner.blocks." + std::to_string(layer) + ".";
   validate_block_archive(st, p, c, false);
@@ -510,8 +528,10 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   Impl& s = *impl_; const H3BlockConfig& c = s.config;
   const uint32_t inner = c.heads * c.head_dim;
   const std::string p = "blocks." + std::to_string(layer) + ".";
-  if (st.find(p + "attn.to_gate_compress.weight"))
-    throw std::runtime_error("VSA-H3 checkpoints require the CUDA transformer backend");
+  if (bool(st.find(p + "attn.to_gate_compress.weight")) != bool(c.vsa_tiles))
+    throw std::runtime_error("Vulkan H3 block: VSA gate weights and tile geometry must be supplied together");
+  if (c.vsa_tiles)
+    validate_projection_archive(st, p + "attn.to_gate_compress", inner, c.hidden);
   // Decode every small tensor, including the archive-tail AdaLN tensors,
   // before reserving device memory.  Apart from producing clearer errors,
   // this keeps a late corrupt reload from raising the allocator high-water
@@ -555,6 +575,9 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   next->out = load_projection(*s.context, st, c.loras, c.sequence, p + "attn.out_proj", c.hidden, inner);
   next->fc1 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc1", 2 * c.ffn, c.hidden);
   next->fc2 = load_projection(*s.context, st, c.loras, c.sequence, p + "mlp.fc2", c.hidden, c.ffn);
+  if (c.vsa_tiles)
+    next->compress_gate = load_projection(*s.context, st, c.loras, c.sequence,
+        p + "attn.to_gate_compress", inner, c.hidden);
   next->adaln_w = s.context->allocate(matrix(adaln_out, c.adaln_rank));
   next->adaln_b = s.context->allocate(vector(adaln_out));
   s.context->upload_transient(next->adaln_w, wide_w.data(), wide_w.size());
@@ -717,7 +740,7 @@ void ExactH3BlockStage::prepare(ExactH3BlockScratch& scratch) const {
   if (a.sequence != b.sequence || a.hidden != b.hidden || a.heads != b.heads ||
       a.head_dim != b.head_dim || a.ffn != b.ffn ||
       a.timesteps != b.timesteps || a.modalities != b.modalities ||
-      a.adaln_rank != b.adaln_rank || a.attention_mode != b.attention_mode)
+      a.adaln_rank != b.adaln_rank || a.attention_mode != b.attention_mode || a.vsa_tiles != b.vsa_tiles)
     throw std::invalid_argument("Vulkan H3 block: scratch configuration mismatch");
   const auto& w = *impl_->weights;
   for (const Projection* p : {&w.q, &w.k, &w.v, &w.out, &w.fc1, &w.fc2})
@@ -728,6 +751,10 @@ void ExactH3BlockStage::prepare(ExactH3BlockScratch& scratch) const {
   ensure_transforms(*s.context, w.out, impl_->config.sequence, s.inner_a, s.inner_b);
   ensure_transforms(*s.context, w.fc1, impl_->config.sequence, s.hidden_a, s.hidden_b);
   ensure_transforms(*s.context, w.fc2, impl_->config.sequence, s.ffn_a, s.ffn_b);
+  if (a.vsa_tiles) {
+    w.compress_gate.lora.prepare(*s.context, s.lora);
+    ensure_transforms(*s.context, w.compress_gate, a.sequence, s.hidden_a, s.hidden_b);
+  }
 }
 
 void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
@@ -742,8 +769,10 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
       s.config.heads != c.heads || s.config.head_dim != c.head_dim ||
       s.config.ffn != c.ffn || s.config.timesteps != c.timesteps ||
       s.config.modalities != c.modalities || s.config.adaln_rank != c.adaln_rank ||
-      s.config.attention_mode != c.attention_mode)
+      s.config.attention_mode != c.attention_mode || s.config.vsa_tiles != c.vsa_tiles)
     throw std::invalid_argument("Vulkan H3 block: scratch configuration mismatch");
+  if (c.vsa_tiles && ranges)
+    throw std::invalid_argument("Vulkan VSA: frame-banded attention is incompatible");
   const auto tv = tokens.view(), av = selectors.view(), cv = code.view();
   const auto cosv = cosine.view(), sinv = sine.view();
   if (tv.type != ScalarType::kBFloat16 || tv.layout.rank != 2 ||
@@ -788,7 +817,8 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
       !transforms_ready(w.v, s.hidden_a, s.hidden_b) ||
       !transforms_ready(w.out, s.inner_a, s.inner_b) ||
       !transforms_ready(w.fc1, s.hidden_a, s.hidden_b) ||
-      !transforms_ready(w.fc2, s.ffn_a, s.ffn_b))
+      !transforms_ready(w.fc2, s.ffn_a, s.ffn_b) ||
+      (c.vsa_tiles && !transforms_ready(w.compress_gate, s.hidden_a, s.hidden_b)))
     throw std::logic_error("Vulkan H3 block: transformed-weight scratch is not prepared");
   batch.dit_expand_adaln(w.adaln_w, w.adaln_b, code, s.modulation,
                          c.modalities, 6, c.hidden);
@@ -809,7 +839,14 @@ void ExactH3BlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
     if (taps->k) batch.copy(s.k, *taps->k);
     if (taps->v) batch.copy(s.v, *taps->v);
   }
-  s.attention_plan.record(batch, s.q, s.k, s.v, s.attention, ranges);
+  if (c.vsa_tiles) {
+    s.vsa_plan.record(batch, s.q, s.k, s.v, s.attention);
+    projection(batch, w.compress_gate, s.q_plan, s.cache, s.normed, s.compress_gate,
+               s.hidden_a, s.hidden_b, c.sequence, *s.context, s.lora);
+    s.vsa_plan.add_compression(batch, s.compress_gate, s.attention);
+  } else {
+    s.attention_plan.record(batch, s.q, s.k, s.v, s.attention, ranges);
+  }
   if (taps && taps->attention) batch.copy(s.attention, *taps->attention);
   projection(batch, w.out, s.out_plan, s.cache, s.attention, s.branch,
              s.inner_a, s.inner_b, c.sequence, *s.context, s.lora);
@@ -840,6 +877,8 @@ uint32_t ExactH3BlockStage::required_operators(
       projection_operators(w.out, impl_->config.sequence) +
       projection_operators(w.fc1, impl_->config.sequence) +
       projection_operators(w.fc2, impl_->config.sequence);
+  if (impl_->config.vsa_tiles)
+    count += 3 + projection_operators(w.compress_gate, impl_->config.sequence);
   if (taps) {
     count += taps->q != nullptr; count += taps->k != nullptr;
     count += taps->v != nullptr; count += taps->attention != nullptr;
