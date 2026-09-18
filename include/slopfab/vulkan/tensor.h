@@ -22,6 +22,7 @@ class LinearWeight;
 class DenseGemmPlan;
 class BlockedAttentionPlan;
 class H3AttentionPlan;
+class VsaAttentionPlan;
 class H3AttentionRanges;
 class CausalGQAAttentionPlan;
 class PreparedAttentionInputs;
@@ -70,6 +71,7 @@ class DeviceTensor {
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
   friend class H3AttentionPlan;
+  friend class VsaAttentionPlan;
   friend class H3AttentionRanges;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
@@ -356,6 +358,7 @@ class TensorBatch {
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
   friend class H3AttentionPlan;
+  friend class VsaAttentionPlan;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
@@ -472,6 +475,7 @@ class TensorContext {
   friend class DenseGemmPlan;
   friend class BlockedAttentionPlan;
   friend class H3AttentionPlan;
+  friend class VsaAttentionPlan;
   friend class H3AttentionRanges;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;

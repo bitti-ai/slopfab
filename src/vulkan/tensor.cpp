@@ -20,6 +20,7 @@
 #include "slopfab/vulkan/compute.h"
 #include "slopfab/vulkan/gemm.h"
 #include "slopfab/vulkan/linear.h"
+#include "slopfab/vulkan/vsa_attention.h"
 
 namespace slopfab::vulkan {
 namespace {
@@ -182,6 +183,13 @@ struct H3AttentionPlan::Impl {
   H3AttentionPlanDesc desc;
   DeviceTensor quantized_query, quantized_key, sage_aux, prepared_value;
   SageAttentionConfiguration sage;
+};
+
+struct VsaAttentionPlan::Impl {
+  std::shared_ptr<TensorContext::Impl> owner;
+  uint32_t sequence = 0, heads = 0, dim = 0, tiles = 0, prefix = 0, padded = 0;
+  DeviceTensor geometry, pooled, mask, compressed;
+  uintptr_t batch_id = 0, output_id = 0;
 };
 
 struct CausalGQAAttentionPlan::Impl {
@@ -357,6 +365,7 @@ struct TensorContext::Impl {
   ComputePipeline attention_h3_pipeline;
   ComputePipeline attention_h3_banded_pipeline;
   ComputePipeline attention_flash_pipeline, attention_flash_banded_pipeline;
+  ComputePipeline attention_vsa_pipeline, attention_vsa_prepare_pipeline;
   std::array<std::array<ComputePipeline, 4>, 4> attention_sage_pipelines, attention_sage_banded_pipelines;
   ComputePipeline attention_sage_prepare_pipeline;
   DeviceInfo sage_device_info;
@@ -427,7 +436,7 @@ struct TensorContext::Impl {
           }
           ComputeContextOptions options;
           options.max_in_flight = tensor_options.max_in_flight;
-          options.max_storage_bindings = 7;
+          options.max_storage_bindings = 8;
           options.max_compute_binds_per_job = tensor_options.max_batch_operators * 2;
           return options;
         }()),
@@ -713,6 +722,10 @@ struct TensorContext::Impl {
           sizeof(AttentionParameters));
     }
     if (flash_attention) {
+      attention_vsa_pipeline = make_norm_pipeline(detail::kTensorAttention_VSA,
+          sizeof(detail::kTensorAttention_VSA), 6, 256, 1, 32);
+      attention_vsa_prepare_pipeline = make_norm_pipeline(detail::kTensorAttention_VSA_PREPARE,
+          sizeof(detail::kTensorAttention_VSA_PREPARE), 8, 256, 1, 32);
       attention_flash_pipeline = make_norm_pipeline(detail::kTensorAttentionFlashSpirv,
           sizeof(detail::kTensorAttentionFlashSpirv), 4, kFastH3AttentionLocalSize, 1, sizeof(AttentionParameters));
       attention_flash_banded_pipeline = make_norm_pipeline(detail::kTensorAttentionFlashBandedSpirv,
@@ -5411,6 +5424,172 @@ void H3AttentionPlan::record(
     batch.impl_->poisoned = true;
     throw;
   }
+}
+
+VsaAttentionPlan::VsaAttentionPlan() = default;
+VsaAttentionPlan::~VsaAttentionPlan() = default;
+VsaAttentionPlan::VsaAttentionPlan(VsaAttentionPlan&&) noexcept = default;
+VsaAttentionPlan& VsaAttentionPlan::operator=(VsaAttentionPlan&&) noexcept = default;
+VsaAttentionPlan::VsaAttentionPlan(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
+VsaAttentionPlan VsaAttentionPlan::create(TensorContext& context,
+    const dit::VsaTiles& tiles, uint32_t heads, uint32_t head_dim) {
+  context.require_h3_attention(AttentionMode::kFlash2);
+  const size_t n = tiles.sizes.size(), sequence = tiles.row_tiles.size();
+  if (n == 0 || n > 4096 || sequence == 0 || sequence > UINT32_MAX ||
+      tiles.rows.size() != n * 64 || tiles.prefix_tiles < 0 ||
+      static_cast<size_t>(tiles.prefix_tiles) >= n || heads == 0 ||
+      (head_dim != 64 && head_dim != 128))
+    throw std::invalid_argument("Vulkan VSA: invalid tile geometry or head shape");
+  const uint64_t elements = uint64_t(sequence) * heads * head_dim;
+  if (elements > UINT32_MAX || elements * 2 > context.impl_->max_storage_bytes ||
+      n * 2 > context.impl_->max_dispatch_x || heads > context.impl_->max_dispatch_y ||
+      (elements + 511) / 512 > uint64_t(context.impl_->max_dispatch_x) * context.impl_->max_dispatch_y)
+    throw std::out_of_range("Vulkan VSA: shape exceeds device/index limits");
+  std::vector<bool> seen(sequence, false);
+  for (size_t tile = 0; tile < n; ++tile) {
+    if (tiles.sizes[tile] < 1 || tiles.sizes[tile] > 64)
+      throw std::invalid_argument("Vulkan VSA: tile size must be in [1,64]");
+    for (int i = 0; i < 64; ++i) {
+      const int row = tiles.rows[tile * 64 + i];
+      if (i >= tiles.sizes[tile]) {
+        if (row != -1) throw std::invalid_argument("Vulkan VSA: invalid padding");
+      } else {
+        if (row < 0 || static_cast<size_t>(row) >= sequence || seen[row] ||
+            tiles.row_tiles[row] != static_cast<int>(tile))
+          throw std::invalid_argument("Vulkan VSA: invalid row mapping");
+        seen[row] = true;
+      }
+    }
+  }
+  if (std::find(seen.begin(), seen.end(), false) != seen.end())
+    throw std::invalid_argument("Vulkan VSA: incomplete row mapping");
+  auto result = std::make_shared<Impl>();
+  result->owner = context.impl_; result->sequence = static_cast<uint32_t>(sequence);
+  result->heads = heads; result->dim = head_dim; result->tiles = static_cast<uint32_t>(n);
+  result->prefix = tiles.prefix_tiles; result->padded = 1;
+  while (result->padded < n - tiles.prefix_tiles) result->padded *= 2;
+  auto allocate = [&](uint64_t count, ScalarType type) {
+    return context.allocate(TensorLayout::contiguous(&count, 1), type);
+  };
+  std::vector<int32_t> geometry = tiles.rows;
+  geometry.insert(geometry.end(), tiles.sizes.begin(), tiles.sizes.end());
+  geometry.insert(geometry.end(), tiles.row_tiles.begin(), tiles.row_tiles.end());
+  result->geometry = allocate(geometry.size(), ScalarType::kInt32);
+  result->pooled = allocate(3ull * n * heads * head_dim, ScalarType::kFloat32);
+  result->mask = allocate(uint64_t(heads) * n * ((n + 31) / 32), ScalarType::kInt32);
+  result->compressed = allocate(n * heads * head_dim, ScalarType::kBFloat16);
+  context.upload_transient_bytes(result->geometry, geometry.data(), geometry.size() * 4);
+  return VsaAttentionPlan(std::move(result));
+}
+
+uint64_t VsaAttentionPlan::workspace_bytes() const noexcept {
+  if (!impl_) return 0;
+  uint64_t count = 0;
+  for (const DeviceTensor* tensor : {&impl_->geometry, &impl_->pooled, &impl_->mask, &impl_->compressed})
+    count += tensor->layout().bytes(tensor->type());
+  return count;
+}
+
+void VsaAttentionPlan::record(TensorBatch& batch, DeviceTensor& query,
+    DeviceTensor& key, DeviceTensor& value, DeviceTensor& output) const {
+  if (!impl_ || !batch.impl_ || batch.impl_->poisoned)
+    throw std::logic_error("Vulkan VSA: empty plan or batch");
+  auto& s = *impl_;
+  if (batch.impl_->owner != s.owner)
+    throw std::invalid_argument("Vulkan VSA: incompatible context");
+  auto q = s.owner->require(query), k = s.owner->require(key);
+  auto v = s.owner->require(value), out = s.owner->require(output);
+  auto valid = [&](const auto& tensor) {
+    const auto& l = tensor->layout;
+    return tensor->type == ScalarType::kBFloat16 && l.is_contiguous() &&
+        l.extent[0] == s.sequence &&
+        ((l.rank == 3 && l.extent[1] == s.heads && l.extent[2] == s.dim) ||
+         (l.rank == 2 && l.extent[1] == uint64_t(s.heads) * s.dim));
+  };
+  if (!valid(q) || !valid(k) || !valid(v) || !valid(out) ||
+      q == k || q == v || k == v || out == q || out == k || out == v)
+    throw std::invalid_argument("Vulkan VSA: invalid tensor shape or alias");
+  if (batch.remaining_operator_capacity() < 3)
+    throw std::logic_error("Vulkan VSA: insufficient batch capacity");
+  auto geometry = s.owner->require(s.geometry), pooled = s.owner->require(s.pooled);
+  auto mask = s.owner->require(s.mask), compressed = s.owner->require(s.compressed);
+  uint32_t parameters[] = {s.sequence, s.heads, s.dim, s.tiles, s.prefix,
+      s.padded, (s.tiles - s.prefix + 4) / 5, 0};
+  try {
+    for (auto& tensor : {q, k, v, geometry}) batch.impl_->transition(tensor, BufferAccess::kComputeRead);
+    batch.impl_->transition(pooled, BufferAccess::kComputeWrite);
+    batch.impl_->transition(mask, BufferAccess::kComputeWrite);
+    batch.impl_->transition(compressed, BufferAccess::kComputeWrite);
+    batch.impl_->transition(out, BufferAccess::kComputeWrite);
+    const std::array<std::shared_ptr<DeviceTensor::Impl>, 8> resources{q,k,v,geometry,pooled,mask,compressed,out};
+    std::vector<StorageBinding> bindings(8);
+    for (uint32_t i = 0; i < 8; ++i) {
+      bindings[i].binding = i; bindings[i].buffer = &resources[i]->buffer;
+      bindings[i].bytes = resources[i]->buffer.size();
+    }
+    auto& commands = batch.impl_->commands;
+    batch.impl_->count_operator();
+    commands.bind_compute(s.owner->attention_vsa_prepare_pipeline, bindings);
+    commands.push_constants(parameters, sizeof(parameters));
+    commands.dispatch(s.tiles, s.heads);
+    batch.impl_->transition(pooled, BufferAccess::kComputeRead);
+    parameters[7] = 1;
+    batch.impl_->count_operator();
+    commands.push_constants(parameters, sizeof(parameters));
+    commands.dispatch(s.tiles, s.heads);
+    batch.impl_->transition(mask, BufferAccess::kComputeRead);
+    std::vector<StorageBinding> sparse(bindings.begin(), bindings.begin() + 4);
+    sparse[3] = bindings[7]; sparse[3].binding = 3;
+    sparse.push_back(bindings[3]); sparse[4].binding = 4;
+    sparse.push_back(bindings[5]); sparse[5].binding = 5;
+    TensorContext::Impl::AttentionParameters attention;
+    attention.sequence = s.sequence; attention.heads = s.heads; attention.head_dim = s.dim;
+    const float scale = 1.0f / std::sqrt(float(s.dim));
+    std::memcpy(&attention.scale_bits, &scale, sizeof(scale));
+    attention.rows = s.sequence; attention.reserved = s.tiles;
+    batch.impl_->count_operator();
+    commands.bind_compute(s.owner->attention_vsa_pipeline, sparse);
+    commands.push_constants(&attention, sizeof(attention));
+    commands.dispatch(s.tiles * 2, s.heads);
+    s.batch_id = batch.impl_->batch_id; s.output_id = out->identity;
+  } catch (...) { batch.impl_->poisoned = true; throw; }
+}
+
+void VsaAttentionPlan::add_compression(TensorBatch& batch, DeviceTensor& gate,
+                                       DeviceTensor& output) const {
+  if (!impl_ || !batch.impl_ || batch.impl_->poisoned)
+    throw std::logic_error("Vulkan VSA: empty plan or batch");
+  auto& s = *impl_;
+  if (batch.impl_->owner != s.owner || s.batch_id != batch.impl_->batch_id)
+    throw std::invalid_argument("Vulkan VSA: compression must follow attention in the same batch");
+  auto g = s.owner->require(gate), out = s.owner->require(output);
+  if (g->type != ScalarType::kBFloat16 || g->layout.rank != 2 ||
+      g->layout.extent[0] != s.sequence || g->layout.extent[1] != uint64_t(s.heads) * s.dim ||
+      !g->layout.is_contiguous() || g == out || out->identity != s.output_id)
+    throw std::invalid_argument("Vulkan VSA: invalid gate or output");
+  if (batch.remaining_operator_capacity() < 1)
+    throw std::logic_error("Vulkan VSA: insufficient batch capacity");
+  auto geometry = s.owner->require(s.geometry), compressed = s.owner->require(s.compressed);
+  const uint64_t groups = (uint64_t(s.sequence) * s.heads * s.dim + 511) / 512;
+  const uint32_t groups_x = static_cast<uint32_t>(std::min<uint64_t>(groups, s.owner->max_dispatch_x));
+  uint32_t parameters[] = {s.sequence, s.heads, s.dim, s.tiles, s.prefix, s.padded, groups_x, 2};
+  try {
+    batch.impl_->count_operator();
+    batch.impl_->transition(g, BufferAccess::kComputeRead);
+    batch.impl_->transition(geometry, BufferAccess::kComputeRead);
+    batch.impl_->transition(compressed, BufferAccess::kComputeRead);
+    batch.impl_->transition(out, BufferAccess::kComputeReadWrite);
+    const std::array<std::shared_ptr<DeviceTensor::Impl>, 8> resources{g,g,g,geometry,g,g,compressed,out};
+    std::vector<StorageBinding> bindings(8);
+    for (uint32_t i = 0; i < 8; ++i) {
+      bindings[i].binding = i; bindings[i].buffer = &resources[i]->buffer;
+      bindings[i].bytes = resources[i]->buffer.size();
+    }
+    batch.impl_->commands.bind_compute(s.owner->attention_vsa_prepare_pipeline, bindings);
+    batch.impl_->commands.push_constants(parameters, sizeof(parameters));
+    batch.impl_->commands.dispatch(groups_x, static_cast<uint32_t>((groups + groups_x - 1) / groups_x));
+  } catch (...) { batch.impl_->poisoned = true; throw; }
 }
 
 CausalGQAAttentionPlan::CausalGQAAttentionPlan() = default;

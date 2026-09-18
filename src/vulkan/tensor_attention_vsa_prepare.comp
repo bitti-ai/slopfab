@@ -1,0 +1,141 @@
+#version 460
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle_relative : require
+// FastH3 V2: pool ragged tiles, route the top 20% of video keys, and form
+// the dense pooled branch. Scores stay in shared memory, not an H*T*T arena.
+layout(local_size_x = 256) in;
+layout(binding=0, std430) readonly buffer Q { uint data[]; } q;
+layout(binding=1, std430) readonly buffer K { uint data[]; } k;
+layout(binding=2, std430) readonly buffer V { uint data[]; } v;
+layout(binding=3, std430) readonly buffer Geometry { int data[]; } geometry;
+layout(binding=4, std430) buffer Pooled { float data[]; } pooled;
+layout(binding=5, std430) buffer Mask { uint data[]; } mask;
+layout(binding=6, std430) buffer Compressed { uint data[]; } compressed;
+layout(binding=7, std430) buffer Output { uint data[]; } output_data;
+layout(push_constant) uniform Parameters {
+  uint sequence, heads, dim, tiles;
+  uint prefix, padded, keep, operation;
+} p;
+shared float scores[4096];
+shared uint ids[4096];
+float bf16(uint word, uint index) {
+  return uintBitsToFloat(((word >> (16u * (index & 1u))) & 65535u) << 16u);
+}
+uint pack_bf16(float x) {
+  uint bits = floatBitsToUint(x);
+  return (bits + 32767u + ((bits >> 16u) & 1u)) >> 16u;
+}
+float round_bf16(float x) { return uintBitsToFloat(pack_bf16(x) << 16u); }
+void main() {
+  uint tid = gl_LocalInvocationID.x, tile = gl_WorkGroupID.x, head = gl_WorkGroupID.y;
+  uint inner = p.heads * p.dim, stride = p.heads * p.tiles * p.dim;
+  if (p.operation == 2u) {
+    // q holds the learned gate, output_data holds sparse attention. Each
+    // invocation owns a full BF16 pair, so writes never race across channels.
+    uint pair = (tile + head * p.keep) * 256u + tid;
+    uint index = pair * 2u;
+    if (index >= p.sequence * inner) return;
+    uint row_tile = uint(geometry.data[p.tiles * 65u + index / inner]);
+    uint coarse = row_tile * inner + index % inner;
+    uint gate = q.data[pair], branch = compressed.data[coarse / 2u];
+    uint original = output_data.data[pair];
+    float a = bf16(original, 0u) + round_bf16(bf16(gate, 0u) * bf16(branch, 0u));
+    float b = bf16(original, 1u) + round_bf16(bf16(gate, 1u) * bf16(branch, 1u));
+    output_data.data[pair] = pack_bf16(a) | (pack_bf16(b) << 16u);
+    return;
+  }
+  if (p.operation == 0u) {
+    if (tid >= p.dim) return;
+    uint count = uint(geometry.data[p.tiles * 64u + tile]);
+    float sq = 0.0, sk = 0.0, sv = 0.0;
+    for (uint r = 0u; r < count; ++r) {
+      uint index = uint(geometry.data[tile * 64u + r]) * inner + head * p.dim + tid;
+      sq += bf16(q.data[index/2u], index);
+      sk += bf16(k.data[index/2u], index);
+      sv += bf16(v.data[index/2u], index);
+    }
+    uint dest = (head * p.tiles + tile) * p.dim + tid;
+    float inverse = 1.0 / float(count);
+    pooled.data[dest] = sq * inverse;
+    pooled.data[stride + dest] = sk * inverse;
+    pooled.data[2u * stride + dest] = sv * inverse;
+    return;
+  }
+  // Match CUDA's 32-lane dot-product reduction for stable routing near ties.
+  uint lane = tid % 32u, warp = tid / 32u;
+  for (uint key = warp; key < p.tiles; key += 8u) {
+    float dot = 0.0;
+    for (uint d = lane; d < p.dim; d += 32u)
+      dot += pooled.data[(head * p.tiles + tile) * p.dim + d] *
+             pooled.data[stride + (head * p.tiles + key) * p.dim + d];
+    // Shared storage cannot serve as both the reduction and score table;
+    // subgroup shuffle keeps all partial sums in registers.
+    for (uint delta = 16u; delta > 0u; delta /= 2u)
+      dot += subgroupShuffleDown(dot, delta);
+    if (lane == 0u) scores[key] = dot / sqrt(float(p.dim));
+  }
+  barrier();
+  if (tid == 0u) {
+    float maximum = -1.0 / 0.0, total = 0.0;
+    for (uint key = 0u; key < p.tiles; ++key) maximum = max(maximum, scores[key]);
+    for (uint key = 0u; key < p.tiles; ++key) {
+      scores[key] = exp(scores[key] - maximum); total += scores[key];
+    }
+    for (uint key = 0u; key < p.tiles; ++key) scores[key] /= total;
+  }
+  barrier();
+  if (tid < p.dim / 2u) {
+    float a = 0.0, b = 0.0;
+    for (uint key = 0u; key < p.tiles; ++key) {
+      uint offset = 2u * stride + (head * p.tiles + key) * p.dim + tid * 2u;
+      a += scores[key] * pooled.data[offset];
+      b += scores[key] * pooled.data[offset + 1u];
+    }
+    uint dest = ((tile * p.heads + head) * p.dim) / 2u + tid;
+    compressed.data[dest] = pack_bf16(a) | (pack_bf16(b) << 16u);
+  }
+  barrier();
+  // Sort original scores, rather than probabilities which can underflow or
+  // round to equal values. Prefix queries retain all tiles without sorting.
+  if (tile >= p.prefix) {
+    for (uint key = warp; key < p.padded; key += 8u) {
+      float dot = -1.0 / 0.0;
+      if (key + p.prefix < p.tiles) {
+        dot = 0.0;
+        for (uint d = lane; d < p.dim; d += 32u)
+          dot += pooled.data[(head * p.tiles + tile) * p.dim + d] *
+                 pooled.data[stride + (head * p.tiles + key + p.prefix) * p.dim + d];
+        for (uint delta = 16u; delta > 0u; delta /= 2u)
+          dot += subgroupShuffleDown(dot, delta);
+      }
+      if (lane == 0u) { scores[key] = dot / sqrt(float(p.dim)); ids[key] = key + p.prefix; }
+    }
+    barrier();
+    for (uint width = 2u; width <= p.padded; width *= 2u)
+      for (uint step = width / 2u; step > 0u; step /= 2u) {
+        for (uint i = tid; i < p.padded; i += 256u) {
+          uint j = i ^ step;
+          if (j <= i) continue;
+          bool before = scores[i] > scores[j] || (scores[i] == scores[j] && ids[i] < ids[j]);
+          if (before != ((i & width) == 0u)) {
+            float s = scores[i]; scores[i] = scores[j]; scores[j] = s;
+            uint id = ids[i]; ids[i] = ids[j]; ids[j] = id;
+          }
+        }
+        barrier();
+      }
+  }
+  for (uint i = tid; i < p.tiles; i += 256u)
+    scores[i] = (tile < p.prefix || i < p.prefix) ? 1.0 : 0.0;
+  barrier();
+  if (tile >= p.prefix)
+    for (uint i = tid; i < p.keep; i += 256u) scores[ids[i]] = 1.0;
+  barrier();
+  uint words = (p.tiles + 31u) / 32u;
+  if (tid < words) {
+    uint bits = 0u;
+    for (uint bit = 0u; bit < 32u; ++bit)
+      if (tid * 32u + bit < p.tiles && scores[tid * 32u + bit] != 0.0) bits |= 1u << bit;
+    mask.data[(head * p.tiles + tile) * words + tid] = bits;
+  }
+}

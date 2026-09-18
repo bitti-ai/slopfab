@@ -883,7 +883,7 @@ if(SLOPFAB_ENABLE_VULKAN)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SHADER_FILE}")
   endforeach()
   set(SLOPFAB_SAGE_VARIANT_DECLARATIONS "")
-  foreach(VARIANT FLASH FLASH_BANDED SAGE SAGE_BANDED SAGE_PREPARE
+  foreach(VARIANT FLASH FLASH_BANDED SAGE SAGE_BANDED SAGE_PREPARE VSA VSA_PREPARE
       SAGE_FULL SAGE_FULL_BANDED SAGE_WIDE SAGE_WIDE_BANDED SAGE_WIDE_FULL SAGE_WIDE_FULL_BANDED
       SAGE_SG64 SAGE_SG64_BANDED SAGE_FULL_SG64 SAGE_FULL_SG64_BANDED
       SAGE_WIDE_SG64 SAGE_WIDE_SG64_BANDED SAGE_WIDE_FULL_SG64 SAGE_WIDE_FULL_SG64_BANDED)
@@ -1352,7 +1352,8 @@ if(SLOPFAB_BUILD_TESTS)
   if(SLOPFAB_ENABLE_CUDA AND SLOPFAB_ENABLE_VULKAN)
     add_executable(slopfab_tensor_backend_tests
       tests/harness.cpp tests/allocation_guard.cpp
-      tests/test_tensor_backends.cu tests/test_audio_vulkan.cu tests/test_lora_backends.cu)
+      tests/test_tensor_backends.cu tests/test_audio_vulkan.cu tests/test_lora_backends.cu
+      tests/test_vsa_vulkan.cu)
     target_link_libraries(slopfab_tensor_backend_tests PRIVATE
       slopfab_cuda slopfab_vulkan)
     target_compile_definitions(slopfab_tensor_backend_tests PRIVATE

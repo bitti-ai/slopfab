@@ -33,6 +33,10 @@ layout(binding = 0, std430) readonly buffer Q { uint data[]; } q;
 layout(binding = 1, std430) readonly buffer K { uint data[]; } k;
 layout(binding = 2, std430) readonly buffer V { uint data[]; } v;
 layout(binding = 3, std430) writeonly buffer O { uint data[]; } o;
+#ifdef VSA
+layout(binding = 4, std430) readonly buffer Geometry { int data[]; } geometry;
+layout(binding = 5, std430) readonly buffer TileMask { uint data[]; } tile_mask;
+#endif
 #if defined(BANDED) || defined(SAGE)
 layout(binding = 4, std430) readonly buffer Ranges { int data[]; } ranges;
 #endif
@@ -77,6 +81,10 @@ uint pack_bf16(float x) {
 }
 float16_t load_value(uint row, uint head, uint d, uint stop) {
   if (row >= stop) return float16_t(0.0);
+#ifdef VSA
+  if (geometry.data[row] < 0) return float16_t(0.0);
+  row = uint(geometry.data[row]);
+#endif
   uint index = (row * p.heads + head) * HD + d;
 #ifdef SAGE
   if (PREPARED_VALUE)
@@ -91,6 +99,9 @@ void main() {
   uint query_tile = sg / 4u, key_tile = sg % 4u;
   for (uint i = tid; i < QUERY_ROWS * HD; i += THREADS) {
     uint row = qb + i / HD;
+#ifdef VSA
+    row = uint(geometry.data[row]);
+#endif
     qs[i] = row < p.sequence
         ? load_qk(true, (row * p.heads + head) * HD + i % HD)
         : QK_TYPE(0);
@@ -100,18 +111,35 @@ void main() {
   for (uint t = 0u; t < HD / 64u; ++t)
     acc[t] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
   barrier();
-#ifdef BANDED
+#ifdef VSA
+  int bounds[4] = int[4](0, int(p.reserved * 64u), 0, 0);
+#elif defined(BANDED)
   uint rb = (qb / 128u) * 4u;
   int bounds[4] = int[4](ranges.data[rb], ranges.data[rb+1], ranges.data[rb+2], ranges.data[rb+3]);
 #else
   int bounds[4] = int[4](0, int(p.sequence), 0, 0);
 #endif
   for (uint range = 0u; range < 2u; ++range) {
-    uint stop = min(uint(bounds[range*2u+1u]), p.sequence);
+    uint stop = min(uint(bounds[range*2u+1u]),
+#ifdef VSA
+        p.reserved * 64u);
+#else
+        p.sequence);
+#endif
     for (uint kb = uint(bounds[range*2u]); kb < stop; kb += 64u) {
+#ifdef VSA
+      uint words = (p.reserved + 31u) / 32u, key_tile_index = kb / 64u;
+      uint mask_offset = (head * p.reserved + qb / 64u) * words + key_tile_index / 32u;
+      if ((tile_mask.data[mask_offset] & (1u << (key_tile_index % 32u))) == 0u) continue;
+#endif
       for (uint i = tid; i < 64u * HD; i += THREADS) {
         uint row = kb + i / HD;
+#ifdef VSA
+        row = uint(geometry.data[row]);
+        ks[i] = row < p.sequence
+#else
         ks[i] = row < stop
+#endif
             ? load_qk(false, (row * p.heads + head) * HD + i % HD)
             : QK_TYPE(0);
       }
@@ -145,7 +173,11 @@ void main() {
       float x[8], m = -1.0 / 0.0;
       for (uint j = 0u; j < 8u; ++j) {
         uint col = lane + j * 8u;
-        x[j] = kb + col < stop ? scores[row * 64u + col] : -1.0 / 0.0;
+        bool live = kb + col < stop;
+#ifdef VSA
+        live = live && geometry.data[kb + col] >= 0;
+#endif
+        x[j] = live ? scores[row * 64u + col] : -1.0 / 0.0;
         m = max(m, x[j]);
       }
       for (uint mask = 4u; mask > 0u; mask >>= 1u) m = max(m, subgroupShuffleXor(m, mask));
@@ -204,6 +236,9 @@ void main() {
     barrier();
     for (uint i = tid * 2u; i < QUERY_ROWS * 64u; i += THREADS * 2u) {
       uint row = qb + i / 64u;
+#ifdef VSA
+      row = uint(geometry.data[row]);
+#endif
       if (row >= p.query_row_offset && row < p.query_row_offset + p.rows) {
         uint out_row = p.output_row_offset + row - p.query_row_offset;
         uint index = (out_row * p.heads + head) * HD + i % 64u + t * 64u;
