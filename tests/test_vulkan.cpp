@@ -4278,7 +4278,9 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
       {"transformer_blocks.0.attn.to_v", "blocks.0.attn.qkv_proj"},
       {"transformer_blocks.0.attn.to_out.0", "blocks.0.attn.out_proj"},
       {"transformer_blocks.0.ff.net.0.proj", "blocks.0.mlp.fc1"},
-      {"transformer_blocks.0.ff.net.2", "blocks.0.mlp.fc2"}}) {
+      {"transformer_blocks.0.ff.net.2", "blocks.0.mlp.fc2"},
+      {"blocks.0.adaln_proj.linear", "blocks.0.adaln_proj.linear"},
+      {"final_layer.adaln_proj.linear", "final_layer.adaln_proj.linear"}}) {
     const auto& weight = transformer_checkpoint.at(target.second + ".weight");
     const int64_t in = weight.shape[1];
     const int64_t out = weight.shape[0] / (target.second == "blocks.0.attn.qkv_proj" ? 3 : 1);

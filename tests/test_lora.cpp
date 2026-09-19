@@ -5,6 +5,8 @@
 #include "slopfab/lora.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/safetensors_write.h"
+#include "slopfab/sha256.h"
+#include "../src/core/lora_grid.h"
 
 namespace {
 using namespace slopfab;
@@ -51,8 +53,11 @@ SLOPFAB_TEST(lora_adaln_rebase_preserves_weight_bias_and_stacking) {
   std::vector<float> a(20), b(12);
   for (size_t i = 0; i < a.size(); ++i) a[i] = float(int(i % 7) - 3) / 8;
   for (size_t i = 0; i < b.size(); ++i) b[i] = float(i + 1) / 8;
-  write_safetensors(f.path, {{target + ".lora_A.weight", {2, 10}, a},
-      {target + ".lora_B.weight", {6, 2}, b}});
+  const std::vector<TensorWrite> adapter_tensors = {{target + ".lora_A.weight", {2, 10}, a},
+      {target + ".lora_B.weight", {6, 2}, b}};
+  const std::map<std::string, std::string> metadata{{"provenance", "keep quotes \" and newlines\nunchanged"}};
+  write_safetensors(f.path, adapter_tensors, metadata);
+  const auto original_digest = sha256_file(f.path);
   LoraAdapters loras;
   bool missing = false;
   try { loras.load({{f.path, .5f}}, f.base); }
@@ -60,6 +65,7 @@ SLOPFAB_TEST(lora_adaln_rebase_preserves_weight_bias_and_stacking) {
   CHECK(missing);
   loras.load({{f.path, 0}}, f.base); // Disabled adapters do not require a grid.
   CHECK(loras.projection_count() == 0);
+  CHECK(sha256_file(f.path) == original_digest);
   const auto grid_path = (f.dir / "h3_silu_temb_grid.safetensors").string();
   write_safetensors(grid_path, {{"silu_t_emb_grid", {1025, 10}, grid}});
   loras.load({{f.path, .5f}}, f.base);
@@ -67,6 +73,25 @@ SLOPFAB_TEST(lora_adaln_rebase_preserves_weight_bias_and_stacking) {
   CHECK(loras.find(target)->front().in == 8);
   const auto w = loras.merged_adaln_weight(f.base, target);
   const auto bias = loras.merged_adaln_bias(f.base, target);
+  {
+    SafeTensors embedded; embedded.open(f.path);
+    CHECK(embedded.tensor_count() == 3);
+    CHECK(embedded.metadata() == metadata);
+    CHECK(embedded.at(detail::kLoraGridTensor).shape == std::vector<int64_t>({1025, 10}));
+    for (const auto& t : adapter_tensors) {
+      const auto& original = embedded.at(t.name);
+      CHECK(original.dtype == t.dtype && original.shape == t.shape);
+      CHECK(sha256_bytes(original.data, original.nbytes) == sha256_bytes(t.data.data(), t.data.size() * sizeof(float)));
+    }
+  }
+  std::filesystem::remove(grid_path);
+  const auto embedded_digest = sha256_file(f.path);
+  const auto embedded_time = std::filesystem::last_write_time(f.path);
+  loras.load({{f.path, .5f}}, f.base);
+  CHECK(loras.merged_adaln_weight(f.base, target) == w);
+  CHECK(loras.merged_adaln_bias(f.base, target) == bias);
+  CHECK(sha256_file(f.path) == embedded_digest);
+  CHECK(std::filesystem::last_write_time(f.path) == embedded_time);
   CHECK(bias != std::vector<float>(6, .5f)); // Dropping the affine correction is wrong.
   for (int t : {0, 1, 129, 512, 899, 1024}) for (int row = 0; row < 6; ++row) {
     double expected = .5, actual = bias[row];
@@ -84,11 +109,71 @@ SLOPFAB_TEST(lora_adaln_rebase_preserves_weight_bias_and_stacking) {
   // A curve outside the base table's span must fail, preserving loaded adapters.
   for (int row = 0; row < 1025; ++row) grid[row * 10] += row % 2 ? 10 : -10;
   write_safetensors(grid_path, {{"silu_t_emb_grid", {1025, 10}, grid}});
+  // An existing embedded grid takes precedence over a broken companion.
+  loras.load({{f.path, .5f}, {f.path, -.5f}}, f.base);
+  // Restore the original archive to exercise a failed first use.
+  write_safetensors(f.path, adapter_tensors, metadata);
   bool rejected = false;
   try { loras.load({{f.path, 1}}, f.base); }
   catch (const std::runtime_error& e) { rejected = std::string(e.what()).find("fit error") != std::string::npos; }
   CHECK(rejected && loras.projection_count() == 1);
+  CHECK(sha256_file(f.path) == original_digest);
   CHECK_CLOSE(std::vector<float>(6, .5f), loras.merged_adaln_bias(f.base, target), 1e-6, "Failed AdaLN load is atomic");
+}
+
+SLOPFAB_TEST(lora_grid_embedding_preserves_raw_storage_and_rejects_changed_files) {
+  Fixture f;
+  const std::vector<TensorWrite> tensors = {
+      {"diffusion_model.blocks.0.attn.qkv_proj.lora_A.weight", {2, 3}, {1,2,3,4,5,6}, DType::kBF16},
+      {"diffusion_model.blocks.0.attn.qkv_proj.lora_B.weight", {6, 2}, std::vector<float>(12, .75f), DType::kF16}};
+  write_safetensors(f.path, tensors, {{"source", "preserve original metadata"}});
+  const auto grid_path = (f.dir / "h3_silu_temb_grid.safetensors").string();
+  write_safetensors(grid_path, {{"silu_t_emb_grid", {1025, 10}, std::vector<float>(10250, .5f), DType::kBF16}});
+  detail::LoraGrid grid;
+  std::map<std::string, Sha256Digest> hashes;
+  {
+    SafeTensors original; original.open(f.path);
+    for (const auto& t : original.tensors()) hashes[t.first] = sha256_bytes(t.second.data, t.second.nbytes);
+    grid.load(original, 10, false);
+  }
+  grid.embed();
+  const auto digest = sha256_file(f.path);
+  grid.embed(); // A repeated adapter in a stack must not duplicate the grid.
+  CHECK(sha256_file(f.path) == digest);
+  {
+    SafeTensors embedded; embedded.open(f.path);
+    CHECK(embedded.tensor_count() == 3);
+    CHECK(embedded.metadata().at("source") == "preserve original metadata");
+    for (const auto& t : tensors) {
+      const auto& actual = embedded.at(t.name);
+      CHECK(actual.dtype == t.dtype && actual.shape == t.shape);
+      CHECK(sha256_bytes(actual.data, actual.nbytes) == hashes.at(t.name));
+    }
+    const auto& actual = embedded.at(detail::kLoraGridTensor);
+    CHECK(actual.dtype == DType::kBF16);
+    CHECK(sha256_bytes(actual.data, actual.nbytes) == sha256_bytes(grid.bytes.data(), grid.bytes.size()));
+  }
+  write_safetensors(f.path, tensors, {{"source", "externally changed"}});
+  const auto changed = sha256_file(f.path);
+  bool rejected = false;
+  try { grid.embed(); } catch (const std::runtime_error&) { rejected = true; }
+  CHECK(rejected && sha256_file(f.path) == changed);
+  for (const auto& entry : std::filesystem::directory_iterator(f.dir))
+    CHECK(entry.path().filename().string().find(".slopfab-lora-") != 0);
+#ifdef _WIN32
+  // Another open reader prevents replacement on Windows. Preserve the source
+  // and clean up the staged copy, then succeed once that reader closes.
+  {
+    SafeTensors reader; reader.open(f.path);
+    grid.load(reader, 10, false);
+    rejected = false;
+    try { grid.embed(); } catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected && sha256_file(f.path) == changed);
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(f.dir))
+    CHECK(entry.path().filename().string().find(".slopfab-lora-") != 0);
+  grid.embed();
+#endif
 }
 
 SLOPFAB_TEST(lora_adaln_rank8_and_final_projection) {
@@ -114,6 +199,14 @@ SLOPFAB_TEST(lora_adaln_local_adapter_load) {
     return;
   }
   SafeTensors base; base.open(checkpoint);
+  std::map<std::string, Sha256Digest> hashes;
+  std::map<std::string, std::string> metadata;
+  {
+    SafeTensors original; original.open(adapter);
+    metadata = original.metadata();
+    for (const auto& t : original.tensors())
+      hashes[t.first] = sha256_bytes(t.second.data, t.second.nbytes);
+  }
   LoraAdapters loras; loras.load({{adapter, 1}}, base);
   CHECK(loras.has_adaln("blocks.0.adaln_proj.linear"));
   CHECK(loras.has_adaln("final_layer.adaln_proj.linear"));
@@ -125,6 +218,20 @@ SLOPFAB_TEST(lora_adaln_local_adapter_load) {
     for (float v : weights) CHECK(std::isfinite(v));
     for (float v : bias) CHECK(std::isfinite(v));
   }
+  {
+    SafeTensors embedded; embedded.open(adapter);
+    CHECK(embedded.metadata() == metadata);
+    CHECK(embedded.at(detail::kLoraGridTensor).shape == std::vector<int64_t>({1025, 2688}));
+    for (const auto& entry : hashes) {
+      const auto& tensor = embedded.at(entry.first);
+      CHECK(sha256_bytes(tensor.data, tensor.nbytes) == entry.second);
+    }
+  }
+  const auto digest = sha256_file(adapter);
+  const auto timestamp = std::filesystem::last_write_time(adapter);
+  loras.load({{adapter, 1}}, base);
+  CHECK(sha256_file(adapter) == digest);
+  CHECK(std::filesystem::last_write_time(adapter) == timestamp);
   std::printf("  local LoRA: %zu projections loaded\n", loras.projection_count());
 }
 

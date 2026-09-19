@@ -1276,7 +1276,9 @@ SLOPFAB_TEST(transformer_viggle_lora_targets_reach_forward) {
       {"transformer_blocks.0.attn.to_v", "blocks.0.attn.qkv_proj", 2},
       {"transformer_blocks.0.attn.to_out.0", "blocks.0.attn.out_proj", -1},
       {"transformer_blocks.0.ff.net.0.proj", "blocks.0.mlp.fc1", -1},
-      {"transformer_blocks.0.ff.net.2", "blocks.0.mlp.fc2", -1}}) {
+      {"transformer_blocks.0.ff.net.2", "blocks.0.mlp.fc2", -1},
+      {"blocks.0.adaln_proj.linear", "blocks.0.adaln_proj.linear", -1},
+      {"final_layer.adaln_proj.linear", "final_layer.adaln_proj.linear", -1}}) {
     const auto& weight = tensors.at(std::string(target.native) + ".weight");
     const int in = int(weight.shape[1]), out = int(weight.shape[0]) / (target.part < 0 ? 1 : 3);
     constexpr int rank = 16;
@@ -1290,7 +1292,8 @@ SLOPFAB_TEST(transformer_viggle_lora_targets_reach_forward) {
         {std::string(target.source) + ".lora_B.weight", {out, rank}, b}}, false),
         0.0, "compact attention preserves LoRA contributions");
     CHECK_MSG(actual != baseline, "%s update did not reach forward", target.source);
-    if (std::string(target.source).compare(0, 5, "proj_") == 0) {
+    if (std::string(target.source).compare(0, 5, "proj_") == 0 ||
+        std::string(target.source).find("adaln_proj") != std::string::npos) {
       auto merged = tensors;
       auto& w = merged.at(std::string(target.native) + ".weight").data;
       for (int row = 0; row < out; ++row) for (int col = 0; col < in; ++col) {
