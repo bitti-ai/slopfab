@@ -4525,6 +4525,51 @@ SLOPFAB_TEST(vulkan_h3_loaded_stage_cuda_off_contract) {
   denoiser.unload();
   CHECK(denoise_context.pooled_used_bytes() == denoise_staging_used);
 
+  // MotionCache leaves the disabled trajectory bit-identical, and its split
+  // forward/update submissions must also agree when warmup prevents reuse.
+  {
+    auto mc_config = denoise_config;
+    sampler::FlowScheduler mv(12), ma(3);
+    mv.set_timesteps(12); ma.set_timesteps(12);
+    auto run_motion = [&](const ExactH3DenoiseConfig& config, bool cancel) {
+      auto model = ExactH3Denoiser::create(denoise_context, config);
+      model.load(transformer_checkpoint);
+      model.prepare(prompt_values.data(), prompt_values.size(),
+                    video_values.data(), video_values.size(),
+                    audio_values.data(), audio_values.size());
+      const auto output = model.run(mv, ma, [&](uint32_t step, uint32_t) {
+        return !cancel || step < 3;
+      });
+      CHECK(output.steps_completed == output.steps_computed + output.steps_skipped);
+      if (!cancel) {
+        model.prepare(prompt_values.data(), prompt_values.size(),
+                      video_values.data(), video_values.size(),
+                      audio_values.data(), audio_values.size());
+        const auto repeat = model.run(mv, ma);
+        CHECK(output.video_rows == repeat.video_rows);
+        CHECK(output.audio_rows == repeat.audio_rows);
+        CHECK(output.steps_skipped == repeat.steps_skipped);
+      }
+      return output;
+    };
+    const auto baseline = run_motion(mc_config, false);
+    CHECK(baseline.steps_skipped == 0);
+    mc_config.motion_cache.enabled = true;
+    mc_config.motion_cache.warmup_steps = 20;
+    const auto warmup = run_motion(mc_config, false);
+    CHECK(warmup.steps_skipped == 0);
+    CHECK(warmup.video_rows == baseline.video_rows);
+    CHECK(warmup.audio_rows == baseline.audio_rows);
+    mc_config.motion_cache.warmup_steps = 2;
+    mc_config.motion_cache.reuse_threshold = 1;
+    mc_config.motion_cache.start_percent = 0;
+    mc_config.motion_cache.end_percent = 1;
+    const auto reused = run_motion(mc_config, false);
+    CHECK(reused.steps_skipped > 0 && reused.steps_computed >= 3);
+    const auto motion_cancelled = run_motion(mc_config, true);
+    CHECK(motion_cancelled.cancelled && motion_cancelled.steps_completed == 4);
+  }
+
   // Dedicated still trajectory: one video latent frame and no audio modality.
   // Empty audio host spans stay empty all the way through the transformer,
   // scheduler and result; no one-row device placeholder is introduced.

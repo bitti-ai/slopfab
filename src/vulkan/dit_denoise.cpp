@@ -33,6 +33,8 @@ bool finite_span(const float* values, uint64_t count) {
 
 void validate_config(const ExactH3DenoiseConfig& c) {
   c.motion_cache.validate();
+  if (c.motion_cache.active() && c.transformer.main.block.vsa_tiles)
+    throw std::invalid_argument("Vulkan VSA does not support MotionCache");
   const dit::SequenceLayout& l = c.layout;
   const uint32_t sequence = c.transformer.main.block.sequence;
   const uint32_t condition_video = l.num_condition_video < 0 ? 0u :

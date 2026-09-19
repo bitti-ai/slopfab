@@ -104,7 +104,7 @@ struct DenoiseOutputs {
   int steps_skipped = 0;
 
   // The compute/skip decision the loop actually took at each step: 1 = the
-  // transformer ran, 0 = the previous velocity was reused. Length is the number
+  // transformer ran, 0 = a cached prediction was reused. Length is the number
   // of model evaluations in the schedule.
   //
   // This exists because the counts above are a *weak* check. They catch

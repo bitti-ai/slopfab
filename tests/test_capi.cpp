@@ -25,6 +25,28 @@
 #include "refmod_fixture.h"
 #include "latent_fixture.h"
 
+SLOPFAB_TEST(capi_motion_cache_validation_and_atomic_setter) {
+  auto* request = slopfab_request_create();
+  CHECK(request != nullptr);
+  CHECK(slopfab_request_set_motion_cache(nullptr, 1, .15f, 1, 4, 2, .15f, .95f, 8, 0) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_motion_cache(request, 1, .15f, 1, 4, 2, .15f, .95f, 8, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_motion_cache(request, 1,
+        std::numeric_limits<float>::quiet_NaN(), 1, 4, 2, .15f, .95f, 8, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_motion_cache(request, 1, .15f, 1, 4, 2, .95f, .15f, 8, 0) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  char* description = nullptr;
+  CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
+  CHECK(description && std::strstr(description, "MotionCache") && std::strstr(description, "threshold 0.150"));
+  slopfab_free_string(description);
+  CHECK(slopfab_request_set_motion_cache(request, 0, .15f, 1, 4, 2, .15f, .95f, 8, 0) == SLOPFAB_OK);
+  description = nullptr;
+  CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
+  CHECK(description && !std::strstr(description, "MotionCache"));
+  slopfab_free_string(description);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_continuation_snapshot_and_plan) {
   LatentFixture fixture;
   fixture.write();

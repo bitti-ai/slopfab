@@ -109,6 +109,22 @@ SLOPFAB_TEST(motion_cache_subsamples_latent_coordinates_not_packed_features) {
   CHECK(cache.should_compute(3, .6f, v.data(), a.data()));
 }
 
+SLOPFAB_TEST(motion_cache_clean_prediction_uses_native_velocity_sign) {
+  auto l = layout(3); l.num_audio_rows = l.num_audio_latents = 0;
+  MotionCache cache(enabled(), l, 4, 1, 10, 12);
+  std::vector<float> v{-1,-1,-1,-1, 0,0,0,0, 4,4,4,4};
+  std::vector<float> vv{-1,-1,-1,-1, 1,1,1,1, -1,-1,-1,-1};
+  cache.update(.6f, v.data(), nullptr, vv.data(), nullptr);
+  for (float& x : v) ++x;
+  for (float& x : vv) ++x;
+  cache.update(.5f, v.data(), nullptr, vv.data(), nullptr);
+  // Clean prediction [0,2,5], weights [13/14,13/14,8/7], rate 1,
+  // weighted velocity norm 13/21. A .1 change in frame 2 scores .8/13.
+  v[8] += .1f;
+  CHECK(!cache.should_compute(2, .4f, v.data(), nullptr));
+  CHECK_NEAR(cache.score(), .8 / 13, 1e-6);
+}
+
 SLOPFAB_TEST(motion_cache_warmup_sigma_range_terminal_and_reset) {
   auto c = enabled(); c.start_percent = .15f; c.end_percent = .95f;
   MotionCache cache(c, layout(), 4, 1, 10, 12);
@@ -151,4 +167,18 @@ SLOPFAB_TEST(motion_cache_validation_and_plan) {
   bool rejected = false;
   try { slopfab::resolve_plan(request); } catch (const std::invalid_argument&) { rejected = true; }
   CHECK(rejected);
+}
+
+SLOPFAB_TEST(motion_cache_still_and_pinned_audio_ignore_audio_scores) {
+  for (bool pinned : {false, true}) {
+    auto l = layout(1);
+    if (!pinned) l.num_audio_latents = l.num_audio_rows = 0;
+    MotionCache cache(enabled(), l, 4, 1, 10, 12, pinned);
+    prime(cache);
+    std::vector<float> video(4, 2.1f), audio(4, 1000), vv(4), av(4, 42);
+    CHECK(!cache.should_compute(2, .7f, video.data(), pinned ? audio.data() : nullptr));
+    cache.reuse(video.data(), pinned ? audio.data() : nullptr, vv.data(), av.data());
+    for (float value : vv) CHECK_NEAR(value, 3.9, 1e-6);
+    for (float value : av) CHECK(value == 42);
+  }
 }

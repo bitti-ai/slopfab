@@ -1581,6 +1581,62 @@ slopfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
 //   3. the steps on which the substituted velocity was actually invoked
 // (1) vs (2) is "the loop decided what the planner decided"; (2) vs (3) is "the
 // loop then did what it decided". Neither implies the other.
+SLOPFAB_TEST(denoise_motion_cache_residual_trajectory_and_reset) {
+  // v = constant - x has a constant residual. Reusing that residual must
+  // exactly reproduce fresh evaluations, including different modality grids.
+  auto layout = tiny_layout();
+  layout.num_condition_video = 1;
+  layout.num_condition_audio = 1;
+  layout.condition_audio_is_explicit = true;
+  auto indices = slopfab::dit::build_indices(layout);
+  // build_indices is the FL2VA packer; place the Ref2VA audio anchor in
+  // its modality list, preserving the condition-first ordering.
+  indices.video.erase(indices.video.begin() + 1);
+  indices.audio.insert(indices.audio.begin(), layout.num_text + 1);
+  indices.tags[layout.num_text + 1] = slopfab::dit::kTagAudio;
+  std::vector<float> anchor_v(96, 7), anchor_a(32, 9);
+  auto run = [&](bool enabled, bool cancel) {
+    slopfab::sampler::FlowScheduler video(12), audio(3);
+    video.set_timesteps(14); audio.set_timesteps(14);
+    Transformer model;
+    auto in = make_denoise_inputs(layout, indices, video, audio);
+    in.condition_video_rows = &anchor_v;
+    in.condition_audio_rows = &anchor_a;
+    in.motion_cache.enabled = enabled;
+    in.motion_cache.reuse_threshold = 1;
+    in.motion_cache.start_percent = 0;
+    in.motion_cache.end_percent = 1;
+    in.motion_cache.warmup_steps = 2;
+    std::vector<uint8_t> invoked(video.num_steps(), 0);
+    in.velocity = [&](int step, const RowTimesteps&, const float* v, const float* a,
+                      float* vv, float* av) {
+      invoked[step] = 1;
+      for (size_t i = 0; i < anchor_v.size(); ++i) CHECK(v[i] == 7);
+      for (size_t i = 0; i < anchor_a.size(); ++i) CHECK(a[i] == 9);
+      for (size_t i = 0; i < indices.video.size() * 96; ++i) vv[i] = 4 - v[i];
+      for (size_t i = 0; i < indices.audio.size() * 32; ++i) av[i] = 8 - a[i];
+    };
+    const auto out = slopfab::dit::denoise(model, in,
+        [&](int step, int) { return !cancel || step < 3; });
+    invoked.resize(out.decisions.size());
+    CHECK(out.decisions == invoked);
+    CHECK(out.steps_computed + out.steps_skipped == static_cast<int>(out.decisions.size()));
+    if (enabled) CHECK(out.steps_skipped > 0);
+    return out;
+  };
+  const auto fresh = run(false, false);
+  const auto cached = run(true, false);
+  CHECK_CLOSE(fresh.video_rows, cached.video_rows, 1e-6, "MotionCache video residual sign");
+  CHECK_CLOSE(fresh.audio_rows, cached.audio_rows, 1e-6, "MotionCache audio residual sign");
+  const auto cancelled = run(true, true);
+  CHECK(cancelled.decisions.size() == 4);
+  const auto repeated = run(true, false);
+  CHECK(cached.decisions == repeated.decisions);
+  CHECK(cached.video_rows == repeated.video_rows);
+  CHECK(cached.audio_rows == repeated.audio_rows);
+  CHECK(cached.decisions.front() == 1 && cached.decisions.back() == 1);
+}
+
 SLOPFAB_TEST(denoise_skips_exactly_the_planned_steps) {
   const SequenceLayout layout = tiny_layout();
   const PackedIndices idx = slopfab::dit::build_indices(layout);

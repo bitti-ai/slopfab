@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 10
+#define SLOPFAB_CAPI_VERSION_MINOR 11
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -447,7 +447,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
     slopfab_request* request, int32_t schedule);
 
 /* Optional MotionCache on CUDA/Vulkan. Disabled on new requests. Defaults:
- * threshold .15, strength 1, warmup 4, max skips 2, range .15..95, subsample 8.
+ * threshold .15, strength 1, warmup 4, max skips 2, range 0.15..0.95, subsample 8.
  * threshold 0 disables reuse. Requires ordinary Euler denoising; incompatible
  * with FastH3 V2, TaoMate and Animate. Failed setters leave the request intact.
  * Ranges: threshold 0..1, strength 0..4, warmup 2..20, skips 1..10,

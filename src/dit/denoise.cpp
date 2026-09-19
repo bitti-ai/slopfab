@@ -114,9 +114,10 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   MotionCache motion(inputs.motion_cache, layout, patch, audio_dim, steps,
                      inputs.video_scheduler->shift(), inputs.pin_target_audio);
   require(!motion.enabled() || (!cache.enabled() &&
+          !transformer.block_cache_config().enabled() &&
           inputs.video_scheduler->sampler() == sampler::SamplerKind::kEuler &&
           inputs.audio_scheduler->sampler() == sampler::SamplerKind::kEuler),
-          "MotionCache requires Euler without step caching");
+          "MotionCache requires Euler without step or block caching");
 
   // The signature of a step, `c(t_v)` then `c(t_a)`. Built only when the cache
   // is on, so a default run never touches the AdaLN table here.

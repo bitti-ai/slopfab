@@ -1265,8 +1265,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       cuda::StepProfiler::instance().report(stdout);
       // Always printed when anything was reused, verbose or not: a run whose
       // skip count is invisible cannot be compared against another one.
-      if (out.steps_skipped != 0) {
-        std::printf("step cache  %d of %d evaluations skipped (%d computed), %.1f%%\n",
+      if (out.steps_skipped != 0 || (request.motion_cache.active() && options.verbose)) {
+        std::printf("%s  %d of %d evaluations skipped (%d computed), %.1f%%\n",
+                    request.motion_cache.active() ? "MotionCache" : "step cache",
                     out.steps_skipped, out.steps_computed + out.steps_skipped, out.steps_computed,
                     100.0 * out.steps_skipped /
                         static_cast<double>(std::max(1, out.steps_computed + out.steps_skipped)));

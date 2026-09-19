@@ -208,8 +208,8 @@ struct RunResult {
   double seconds_prepare = 0.0;
   // The denoising loop alone: no load, no prepare.
   double seconds_denoise_loop = 0.0;
-  // Evaluations actually run, and evaluations served from the previous
-  // velocity. `steps_skipped` is zero unless step caching was turned on.
+  // Evaluations actually run, and evaluations served from a cached prediction.
+  // `steps_skipped` is zero unless step caching or MotionCache was enabled.
   int steps_computed = 0;
   int steps_skipped = 0;
   double seconds_denoise = 0.0;
