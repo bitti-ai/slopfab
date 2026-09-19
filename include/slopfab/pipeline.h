@@ -19,6 +19,8 @@
 // transformer header is inspected to select the model's sigma shift.
 #pragma once
 
+#include "slopfab/dit/motion_cache.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -133,6 +135,7 @@ struct GenerateRequest {
   // `skip_every == 0` mean every step is evaluated, which is the shipped
   // behaviour and must stay bit-identical to a build without any of this.
   float cache_threshold = 0.0f;
+  dit::MotionCacheConfig motion_cache;
   int cache_warmup = 3;
   int skip_every = 0;
 

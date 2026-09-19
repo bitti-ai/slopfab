@@ -13,6 +13,7 @@
 
 #include "slopfab/dit/packing.h"
 #include "slopfab/dit/step_cache.h"
+#include "slopfab/dit/motion_cache.h"
 #include "slopfab/dit/transformer.h"
 #include "slopfab/sampler/scheduler.h"
 
@@ -46,6 +47,7 @@ struct DenoiseInputs {
   // in which case the loop below is the loop it was, plus one host branch per
   // step that is always taken.
   StepCacheConfig cache;
+  MotionCacheConfig motion_cache;
 
   // Substitutes the transformer's AdaLN lookup when building a step's
   // conditioning signature, for the same reason `velocity` substitutes the

@@ -111,6 +111,12 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
 
   const int steps = static_cast<int>(video_t.size());
   StepCache cache(inputs.cache, steps);
+  MotionCache motion(inputs.motion_cache, layout, patch, audio_dim, steps,
+                     inputs.video_scheduler->shift(), inputs.pin_target_audio);
+  require(!motion.enabled() || (!cache.enabled() &&
+          inputs.video_scheduler->sampler() == sampler::SamplerKind::kEuler &&
+          inputs.audio_scheduler->sampler() == sampler::SamplerKind::kEuler),
+          "MotionCache requires Euler without step caching");
 
   // The signature of a step, `c(t_v)` then `c(t_a)`. Built only when the cache
   // is on, so a default run never touches the AdaLN table here.
@@ -127,7 +133,10 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   out.decisions.reserve(static_cast<size_t>(std::max(0, steps)));
   for (int i = 0; i < steps; ++i) {
     bool compute = true;
-    if (cache.enabled()) {
+    if (motion.enabled()) {
+      compute = motion.should_compute(i, 1.0f - video_t[static_cast<size_t>(i)],
+                                      all_video.data() + cv, all_audio.data() + ca);
+    } else if (cache.enabled()) {
       cuda::HostSpan span("step_cache");
       // Shared with `plan_step_cache`, so the loop and the planner cannot
       // disagree about what this step's signature is — only about what to do
@@ -176,6 +185,12 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         transformer.forward(all_video.data(), all_audio.data(), row_timesteps,
                             video_velocity.data(), audio_velocity.data());
       }
+      motion.update(1.0f - video_t[static_cast<size_t>(i)],
+                    all_video.data() + cv, all_audio.data() + ca,
+                    video_velocity.data() + cv, audio_velocity.data() + ca);
+    } else if (motion.enabled()) {
+      motion.reuse(all_video.data() + cv, all_audio.data() + ca,
+                   video_velocity.data() + cv, audio_velocity.data() + ca);
     }
 
     {
@@ -195,8 +210,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     if (progress && !progress(i, steps)) break;
   }
 
-  out.steps_computed = cache.computed();
-  out.steps_skipped = cache.skipped();
+  out.steps_computed = motion.enabled() ? motion.computed() : cache.computed();
+  out.steps_skipped = motion.enabled() ? motion.skipped() : cache.skipped();
   return out;
 }
 

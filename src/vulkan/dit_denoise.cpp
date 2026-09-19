@@ -32,6 +32,7 @@ bool finite_span(const float* values, uint64_t count) {
 }
 
 void validate_config(const ExactH3DenoiseConfig& c) {
+  c.motion_cache.validate();
   const dit::SequenceLayout& l = c.layout;
   const uint32_t sequence = c.transformer.main.block.sequence;
   const uint32_t condition_video = l.num_condition_video < 0 ? 0u :
@@ -384,6 +385,15 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
   ExactH3DenoiseResult result;
   const uint32_t steps = static_cast<uint32_t>(video.num_steps());
   const bool conditioned = condition_video != 0 || condition_audio != 0;
+  dit::MotionCache motion(c.motion_cache, c.layout, c.transformer.video_dim,
+                          c.transformer.audio_dim, steps, video.shift(), c.pin_target_audio);
+  std::vector<float> motion_video, motion_audio, motion_vv, motion_av;
+  if (motion.enabled()) {
+    motion_video.resize(uint64_t(video_output) * c.transformer.video_dim);
+    motion_audio.resize(uint64_t(audio_output) * c.transformer.audio_dim);
+    motion_vv.resize(motion_video.size());
+    motion_av.resize(motion_audio.size());
+  }
   for (uint32_t step = 0; step < steps; ++step) {
     const float video_t = video.timesteps()[step];
     const float audio_t = c.pin_target_audio ? 1.0f : audio.timesteps()[step];
@@ -423,6 +433,21 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
     const float audio_sigma = 1.0f - audio_t;
     const float video_ratio = video.sigmas()[step + 1] / video.sigmas()[step];
     const float audio_ratio = audio.sigmas()[step + 1] / audio.sigmas()[step];
+    bool compute = true;
+    if (motion.enabled()) {
+      impl_->context->download(conditioned ? s.video_result : s.video,
+                               motion_video.data(), motion_video.size());
+      if (has_audio)
+        impl_->context->download(conditioned ? s.audio_result : s.audio,
+                                 motion_audio.data(), motion_audio.size());
+      compute = motion.should_compute(step, video_sigma, motion_video.data(), motion_audio.data());
+      if (!compute) {
+        motion.reuse(motion_video.data(), motion_audio.data(), motion_vv.data(), motion_av.data());
+        impl_->context->upload(s.video_velocity, motion_vv.data(), motion_vv.size());
+        if (has_audio)
+          impl_->context->upload(s.audio_velocity, motion_av.data(), motion_av.size());
+      }
+    }
     TensorBatch batch = impl_->context->begin_batch();
     batch.require_operator_capacity(required_step_operators(taps));
     if (conditioned) {
@@ -431,13 +456,23 @@ ExactH3DenoiseResult ExactH3Denoiser::run(
         batch.copy_rows(s.audio_result, s.audio, 0, condition_audio, audio_output);
       }
     }
-    s.transformer.record_forward(
+    if (compute) s.transformer.record_forward(
         batch, s.video, s.audio, s.selectors, s.code, s.cosine, s.sine,
         s.video_timestep_indices, s.audio_timestep_indices,
         s.video_velocity, s.audio_velocity,
         s.ranges ? &s.ranges : nullptr, taps,
         conditioned ? &s.video_row_indices : nullptr,
         conditioned && has_audio ? &s.audio_row_indices : nullptr);
+    if (motion.enabled() && compute) {
+      batch.submit().wait();
+      impl_->context->download(s.video_velocity, motion_vv.data(), motion_vv.size());
+      if (has_audio)
+        impl_->context->download(s.audio_velocity, motion_av.data(), motion_av.size());
+      motion.update(video_sigma, motion_video.data(), motion_audio.data(), motion_vv.data(), motion_av.data());
+      batch = impl_->context->begin_batch();
+    }
+    if (compute) ++result.steps_computed;
+    else ++result.steps_skipped;
     DeviceTensor& video_state = conditioned ? s.video_result : s.video;
     batch.dit_euler_step_f32(video_state, s.video_velocity,
                              video_sigma, video_ratio);

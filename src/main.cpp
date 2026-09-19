@@ -406,6 +406,17 @@ const CommandHelp kCommands[] = {
      "                               reference runs also need text_token_tags [L]\n"
      "\n"
      "step caching (all off by default; each one trades quality for time):\n"
+     "  --motion-cache               enable motion-aware video/audio residual reuse\n"
+     "  --motion-cache-threshold <x> reuse threshold, 0 disables (default 0.15, 0..1)\n"
+     "  --motion-cache-strength <x>  motion weighting (default 1, 0..4)\n"
+     "  --motion-cache-warmup <n>    initial computed calls (default 4, 2..20)\n"
+     "  --motion-cache-max-skips <n> consecutive reuse limit (default 2, 1..10)\n"
+     "  --motion-cache-start <x>     active range start (default 0.15, 0..1)\n"
+     "  --motion-cache-end <x>       active range end (default 0.95, 0..1)\n"
+     "  --motion-cache-subsample <n> estimator stride (default 8, 1..32)\n"
+     "  --motion-cache-verbose       log each compute/reuse decision\n"
+     "                               Requires Euler; excludes other caches,\n"
+     "                               FastH3 V2, TaoMate and Animate.\n"
      "  --cache-threshold <x>        reuse the previous step's velocity until the\n"
      "                               conditioning has moved by <x>. 0 = off (default).\n"
      "                               Units: accumulated relative L1 of the rank-8 AdaLN\n"
@@ -1284,6 +1295,30 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                      output_accelerator.c_str());
         return 2;
       }
+    } else if (arg == "--motion-cache") {
+      req.motion_cache.enabled = true;
+    } else if (arg == "--motion-cache-verbose") {
+      req.motion_cache.verbose = true;
+    } else if (arg == "--motion-cache-threshold" || arg == "--motion-cache-strength" ||
+               arg == "--motion-cache-start" || arg == "--motion-cache-end") {
+      const char* value = next(arg.data());
+      char* end = nullptr;
+      const float parsed = std::strtof(value, &end);
+      if (end == value || *end != '\0') throw std::runtime_error(std::string(arg) + " requires a number");
+      if (arg == "--motion-cache-threshold") req.motion_cache.reuse_threshold = parsed;
+      else if (arg == "--motion-cache-strength") req.motion_cache.motion_strength = parsed;
+      else if (arg == "--motion-cache-start") req.motion_cache.start_percent = parsed;
+      else req.motion_cache.end_percent = parsed;
+    } else if (arg == "--motion-cache-warmup" || arg == "--motion-cache-max-skips" ||
+               arg == "--motion-cache-subsample") {
+      const char* value = next(arg.data());
+      char* end = nullptr;
+      const long parsed = std::strtol(value, &end, 10);
+      if (end == value || *end != '\0' || parsed < 0 || parsed > 32)
+        throw std::runtime_error(std::string(arg) + " requires a small positive integer");
+      if (arg == "--motion-cache-warmup") req.motion_cache.warmup_steps = static_cast<int>(parsed);
+      else if (arg == "--motion-cache-max-skips") req.motion_cache.max_consecutive_skips = static_cast<int>(parsed);
+      else req.motion_cache.subsample_factor = static_cast<int>(parsed);
     } else if (arg == "--cache-threshold") {
       req.cache_threshold = static_cast<float>(std::strtod(next("--cache-threshold"), nullptr));
     } else if (arg == "--cache-warmup") {
@@ -1457,6 +1492,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     std::fprintf(stderr, "slopfab: --cache-threshold cannot be negative (0 disables it)\n");
     return 2;
   }
+  req.motion_cache.validate();
+  if (req.motion_cache.active() && (sampler_kind != slopfab::sampler::SamplerKind::kEuler ||
+                                   synthetic))
+    throw std::runtime_error("MotionCache requires Euler denoising");
   if (req.skip_every < 0) {
     std::fprintf(stderr, "slopfab: --skip-every cannot be negative (0 disables it)\n");
     return 2;

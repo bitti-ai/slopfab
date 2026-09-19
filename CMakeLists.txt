@@ -63,6 +63,7 @@ add_library(slopfab_core STATIC
   src/dit/ref2va.cpp
   src/dit/rope.cpp
   src/dit/step_cache.cpp
+  src/dit/motion_cache.cpp
   src/vae/keyframe_encoder.cpp
   src/vae/audio_primitives.cpp
   src/vae/vit_block.cpp
@@ -1281,6 +1282,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_lora.cpp
     tests/test_sampler.cpp
     tests/test_step_cache.cpp
+    tests/test_motion_cache.cpp
     tests/test_block_cache.cpp
     tests/test_tile_merge.cpp
     tests/test_tokenizer.cpp

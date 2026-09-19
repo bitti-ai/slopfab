@@ -47,6 +47,11 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 }  // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  request.motion_cache.validate();
+  if (request.motion_cache.active() &&
+      (request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
+       request.animate || request.schedule != sampler::ScheduleKind::kDefault))
+    throw std::invalid_argument("MotionCache requires the default schedule without other caches or Animate");
   if (request.continuation && request.still_image)
     throw std::invalid_argument("continuation is unavailable in still-image mode");
   validate_refmods(request.refmods);
@@ -196,6 +201,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
 
   auto schedule = request.schedule;
   if (plan.fasth3_v2) {
+    if (request.motion_cache.active())
+      throw std::invalid_argument("FastH3 V2 does not support MotionCache");
     if (request.has_references() || request.continuation || request.animate ||
         schedule != sampler::ScheduleKind::kDefault)
       throw std::runtime_error("FastH3 V2 supports text-to-video with its trained eight-step schedule; references, continuation and other schedules are incompatible");
@@ -483,6 +490,15 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
     description += "  reference videos    " + std::to_string(videos) + " (" +
         std::to_string(soundtracks) + " with audio)\n  reference audios    " + std::to_string(audios) +
         "\n  media conditioning  CUDA/Vulkan (packed row count includes video/audio references)\n";
+  }
+  if (request.motion_cache.active()) {
+    const auto& m = request.motion_cache;
+    char detail[256];
+    std::snprintf(detail, sizeof(detail),
+        "  MotionCache         threshold %.3f, strength %.2f, warmup %d, max skips %d, range %.2f..%.2f, subsample %d\n",
+        m.reuse_threshold, m.motion_strength, m.warmup_steps, m.max_consecutive_skips,
+        m.start_percent, m.end_percent, m.subsample_factor);
+    description += detail;
   }
   return description;
 }

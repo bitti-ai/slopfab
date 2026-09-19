@@ -335,6 +335,15 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
   } release_guard{options.release_reused_models};
   RunResult result;
+  request.motion_cache.validate();
+  if (request.motion_cache.active() &&
+      (options.sampler != sampler::SamplerKind::kEuler || request.cache_threshold > 0 ||
+       request.skip_every > 0 || request.block_cache_span > 0 || plan.fasth3_v2 ||
+       request.animate || request.schedule != sampler::ScheduleKind::kDefault ||
+       options.source != LatentSource::kDenoise)) {
+    result.message = "MotionCache requires default-schedule Euler denoising without other caches, FastH3 V2 or Animate";
+    return result;
+  }
   dit::SequenceLayout layout = plan.layout;
   if (plan.fasth3_v2 && (options.sampler != sampler::SamplerKind::kEuler ||
       options.attention_band > 0 || request.cache_threshold > 0 ||
@@ -1187,6 +1196,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         in.pin_target_audio = true;
       }
       in.cache.threshold = request.cache_threshold;
+      in.motion_cache = request.motion_cache;
       in.cache.warmup = request.cache_warmup;
       in.cache.skip_every = request.skip_every;
 
@@ -1320,6 +1330,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       vulkan::TensorContext context(device, context_options);
       context.require_h3_attention(options.attention_mode);
       vulkan::ExactH3DenoiseConfig config;
+      config.motion_cache = request.motion_cache;
       config.transformer.main.layers = 50;
       config.transformer.main.block.attention_mode = options.attention_mode;
       config.transformer.main.block.sequence =
@@ -1433,8 +1444,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (options.verbose) std::printf("\n");
       if (cancel_requested || out.cancelled) return stop("denoising");
       result.seconds_denoise_loop = seconds_since(loop_start);
-      result.steps_computed = static_cast<int>(out.steps_completed);
-      result.steps_skipped = 0;
+      result.steps_computed = static_cast<int>(out.steps_computed);
+      result.steps_skipped = static_cast<int>(out.steps_skipped);
       video_rows = out.video_rows;
       audio_rows = out.audio_rows;
       model.unload();
@@ -1445,6 +1456,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
             total_steps, plan.fasth3_v2 ? "vsa-h3" : attention_mode_name(options.attention_mode), result.seconds_denoise_loop,
             result.seconds_denoise_loop / std::max(1, total_steps),
             result.seconds_transformer_load, result.seconds_prepare);
+        if (request.motion_cache.active())
+          std::printf("MotionCache: reused %d/%d model calls (%d computed)\n",
+                      result.steps_skipped, result.steps_skipped + result.steps_computed,
+                      result.steps_computed);
       }
 #else
       throw std::logic_error("Vulkan inference compiled out after validation");

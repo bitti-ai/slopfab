@@ -681,6 +681,30 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_motion_cache(
+    slopfab_request* request, int32_t enabled, float reuse_threshold,
+    float motion_strength, int32_t warmup_steps, int32_t max_consecutive_skips,
+    float start_percent, float end_percent, int32_t subsample_factor, int32_t verbose) {
+  if (!request || (enabled != 0 && enabled != 1) || (verbose != 0 && verbose != 1))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "MotionCache: null request or invalid boolean");
+  return guarded([&] {
+    slopfab::dit::MotionCacheConfig config;
+    config.enabled = enabled != 0;
+    config.reuse_threshold = reuse_threshold;
+    config.motion_strength = motion_strength;
+    config.warmup_steps = warmup_steps;
+    config.max_consecutive_skips = max_consecutive_skips;
+    config.start_percent = start_percent;
+    config.end_percent = end_percent;
+    config.subsample_factor = subsample_factor;
+    config.verbose = verbose != 0;
+    try { config.validate(); }
+    catch (const std::invalid_argument& e) { return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what()); }
+    request->request.motion_cache = config;
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(
     slopfab_request* request, const char* path, float strength, int32_t copies) {
   if (!request || !path || !*path || !std::isfinite(strength) || strength < 0 || strength > 1 || copies < 1 || copies > 10)

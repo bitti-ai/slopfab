@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "slopfab/dit/packing.h"
+#include "slopfab/dit/motion_cache.h"
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/vulkan/dit_transformer.h"
 
@@ -24,6 +25,8 @@ struct ExactH3DenoiseConfig {
   int attention_band = 0;
   // Keep the prepared target audio rows fixed and condition them at t=1.
   bool pin_target_audio = false;
+  // Opt-in host estimator. Downloads target latents/velocities while active.
+  dit::MotionCacheConfig motion_cache;
   // Optional canonical four-int range record per global 128-query tile.
   // Captured replay can supply the CUDA table verbatim; production normally
   // derives it from attention_band. The two forms are exclusive.
@@ -34,6 +37,8 @@ struct ExactH3DenoiseResult {
   std::vector<float> video_rows;
   std::vector<float> audio_rows;
   uint32_t steps_completed = 0;
+  uint32_t steps_computed = 0;
+  uint32_t steps_skipped = 0;
   bool cancelled = false;
 };
 

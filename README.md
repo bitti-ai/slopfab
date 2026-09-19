@@ -6,6 +6,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 
 - **Text-to-video with audio**, configurable resolution, frame count, sampling steps, seeds and batch generation.
 - **FastH3 V2 on CUDA and Vulkan**, with learned VSA-H3 sparse attention and automatic eight-step scheduling. See [FastH3 V2](docs/fasth3_v2.md).
+- **Optional MotionCache on CUDA and Vulkan**, reusing motion-aware video/audio residuals to reduce transformer calls. See [MotionCache](docs/motioncache.md).
 - **Image, video and audio references** with compatible Ref2VA models, including reusable [refmods](docs/refmods.md).
 - **CUDA and Vulkan inference** with native text and reference conditioning, plus selectable attention backends.
 - **LoRA adapters**, adapter stacking and the [TaoMate three-step schedule](docs/loras.md).
@@ -91,6 +92,7 @@ Common generation options:
 | `--inference-backend cuda\|vulkan` | Select the inference backend |
 | `--steps N` | Set the sigma schedule length; performs `N - 1` evaluations |
 | `--count N` | Generate multiple variations |
+| `--motion-cache` | Enable approximate motion-aware denoising reuse |
 | `--reference-image FILE` | Add an image reference; repeat for multiple images |
 | `--reference-video FILE` / `--reference-audio FILE` | Add video or audio references |
 | `--lora FILE --lora-strength VALUE` | Apply a LoRA adapter |

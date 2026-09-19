@@ -446,6 +446,17 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* re
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
     slopfab_request* request, int32_t schedule);
 
+/* Optional MotionCache on CUDA/Vulkan. Disabled on new requests. Defaults:
+ * threshold .15, strength 1, warmup 4, max skips 2, range .15..95, subsample 8.
+ * threshold 0 disables reuse. Requires ordinary Euler denoising; incompatible
+ * with FastH3 V2, TaoMate and Animate. Failed setters leave the request intact.
+ * Ranges: threshold 0..1, strength 0..4, warmup 2..20, skips 1..10,
+ * 0 <= start < end <= 1, subsample 1..32. Boolean arguments accept 0 or 1. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_motion_cache(
+    slopfab_request* request, int32_t enabled, float reuse_threshold,
+    float motion_strength, int32_t warmup_steps, int32_t max_consecutive_skips,
+    float start_percent, float end_percent, int32_t subsample_factor, int32_t verbose);
+
 /* Ordered subject/style/scene references; presence selects the Ref2VA task and
  * this order labels the images in the packed sequence. At most nine, and the
  * tenth is refused here rather than at run time. Requires a Ref2VA transformer
