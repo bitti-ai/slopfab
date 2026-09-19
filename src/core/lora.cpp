@@ -2,13 +2,19 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <filesystem>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 
 #include "slopfab/nf4.h"
 #include "slopfab/json.h"
 #include "slopfab/tensor_convert.h"
+#include "slopfab/dit/checkpoint.h"
+#include "lora_grid.h"
 
 namespace slopfab {
 namespace {
@@ -41,7 +47,16 @@ std::string projection_name(std::string name) {
 bool split_qkv(const std::string& name) {
   return ends(name, ".attn.to_q") || ends(name, ".attn.to_k") || ends(name, ".attn.to_v");
 }
+bool adaln_target(const std::string& name) {
+  if (name == "final_layer.adaln_proj.linear") return true;
+  if (name.compare(0, 7, "blocks.") != 0) return false;
+  const size_t dot = name.find('.', 7);
+  if (dot == std::string::npos || dot == 7) return false;
+  for (size_t i = 7; i < dot; ++i) if (name[i] < '0' || name[i] > '9') return false;
+  return name.substr(dot + 1) == "adaln_proj.linear";
+}
 bool supported(const std::string& name) {
+  if (adaln_target(name)) return true;
   if (name == "video_patch_proj" || name == "final_layer.video_out") return true;
   size_t start = 0;
   if (name.compare(0, 7, "blocks.") == 0) start = 7;
@@ -62,6 +77,94 @@ std::vector<float> values(const TensorView& tensor) {
     throw std::runtime_error("LoRA: non-finite value in " + tensor.name);
   return result;
 }
+
+// Fit [table, 1] * map = silu(time_embedder(t)). The affine column matters:
+// pruning moved the curve's mean into each projection's bias. Use reorthogonalized
+// QR in double instead of normal equations; table columns have very different scales.
+struct AdaLNBasis {
+  int rows = 0, columns = 0, full = 0;
+  std::vector<float> grid, table;
+  std::vector<double> map;
+  std::unique_ptr<detail::LoraGrid> source;
+  void load(const SafeTensors& base, const SafeTensors& adapter, int width) {
+    source = std::make_unique<detail::LoraGrid>();
+    source->load(adapter, width, dit::detect_transformer_architecture(base) ==
+        dit::TransformerArchitecture::kPrunedTable);
+    const auto& e = source->tensor;
+    const auto& t = base.at("adaln_t_table");
+    if (t.shape != std::vector<int64_t>{1025, 8} || e.shape != std::vector<int64_t>{1025, width})
+      throw std::runtime_error("LoRA: AdaLN timestep grid must match the base's 1025 rows and adapter width");
+    rows = 1025; columns = 9; full = width;
+    grid = values(e); table = values(t);
+    std::vector<double> q(size_t(rows) * columns), r(size_t(columns) * columns);
+    for (int col = 0; col < columns; ++col) {
+      for (int row = 0; row < rows; ++row)
+        q[size_t(col) * rows + row] = col == columns - 1 ? 1 : table[size_t(row) * (columns - 1) + col];
+      for (int pass = 0; pass < 2; ++pass) for (int j = 0; j < col; ++j) {
+        double dot = 0;
+        for (int row = 0; row < rows; ++row) dot += q[size_t(j) * rows + row] * q[size_t(col) * rows + row];
+        r[size_t(j) * columns + col] += dot;
+        for (int row = 0; row < rows; ++row) q[size_t(col) * rows + row] -= dot * q[size_t(j) * rows + row];
+      }
+      double norm = 0;
+      for (int row = 0; row < rows; ++row) norm += std::pow(q[size_t(col) * rows + row], 2);
+      norm = std::sqrt(norm);
+      if (!(norm > 1e-12) || !std::isfinite(norm))
+        throw std::runtime_error("LoRA: singular AdaLN timestep table");
+      r[size_t(col) * columns + col] = norm;
+      for (int row = 0; row < rows; ++row) q[size_t(col) * rows + row] /= norm;
+    }
+    map.assign(size_t(full) * columns, 0);
+    for (int feature = 0; feature < full; ++feature) {
+      for (int col = 0; col < columns; ++col)
+        for (int row = 0; row < rows; ++row)
+          map[size_t(feature) * columns + col] += q[size_t(col) * rows + row] * grid[size_t(row) * full + feature];
+      for (int col = columns - 1; col >= 0; --col) {
+        auto& v = map[size_t(feature) * columns + col];
+        for (int j = col + 1; j < columns; ++j) v -= r[size_t(col) * columns + j] * map[size_t(feature) * columns + j];
+        v /= r[size_t(col) * columns + col];
+      }
+    }
+  }
+  double project(LoraFactors& f, std::vector<float>& bias) const {
+    if (f.in != full) throw std::runtime_error("LoRA: inconsistent full AdaLN input widths");
+    std::vector<float> a(size_t(f.rank) * (columns - 1));
+    std::vector<double> constant(f.rank);
+    double error = 0, energy = 0;
+    for (int rank = 0; rank < f.rank; ++rank) {
+      std::vector<double> fit(columns);
+      for (int k = 0; k < full; ++k)
+        for (int col = 0; col < columns; ++col)
+          fit[col] += f.a[size_t(rank) * full + k] * map[size_t(k) * columns + col];
+      for (int col = 0; col < columns - 1; ++col)
+        a[size_t(rank) * (columns - 1) + col] = static_cast<float>(fit[col]);
+      constant[rank] = fit.back();
+      // Check the actual low-rank activation curve, after narrowing the fitted
+      // weight to F32. A small whole-grid error need not imply a good A projection.
+      for (int row = 0; row < rows; ++row) {
+        double actual = 0, predicted = constant[rank];
+        for (int k = 0; k < full; ++k) actual += double(f.a[size_t(rank) * full + k]) * grid[size_t(row) * full + k];
+        for (int col = 0; col < columns - 1; ++col)
+          predicted += a[size_t(rank) * (columns - 1) + col] * double(table[size_t(row) * (columns - 1) + col]);
+        error += (actual - predicted) * (actual - predicted);
+        energy += actual * actual;
+      }
+    }
+    const double relative = std::sqrt(error / std::max(energy, 1e-30));
+    if (!std::isfinite(relative) || relative > 0.01)
+      throw std::runtime_error("LoRA: AdaLN conversion exceeds 1% relative fit error; use a matching timestep grid or a pruned adapter");
+    bias.resize(f.out);
+    for (int row = 0; row < f.out; ++row) {
+      double sum = 0;
+      for (int rank = 0; rank < f.rank; ++rank) sum += f.b[size_t(row) * f.rank + rank] * constant[rank];
+      bias[row] = static_cast<float>(sum);
+      if (!std::isfinite(bias[row])) throw std::runtime_error("LoRA: AdaLN bias conversion overflow");
+    }
+    f.in = columns - 1; f.a = std::move(a);
+    for (float v : f.a) if (!std::isfinite(v)) throw std::runtime_error("LoRA: AdaLN conversion overflow");
+    return relative;
+  }
+};
 }  // namespace
 
 const std::vector<LoraFactors>* LoraAdapters::find(const std::string& name) const {
@@ -70,12 +173,21 @@ const std::vector<LoraFactors>* LoraAdapters::find(const std::string& name) cons
 }
 
 void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& base) {
+  // First-use embedding replaces adapter files after all mappings are closed.
+  // Serialize library loaders so another local reader cannot race that write.
+  static std::mutex loading;
+  const std::lock_guard<std::mutex> lock(loading);
   decltype(factors_) next;
+  decltype(adaln_bias_) next_bias;
+  std::vector<std::unique_ptr<detail::LoraGrid>> embeddings;
   for (const LoraSpec& spec : specs) {
     if (spec.path.empty() || !std::isfinite(spec.strength))
       throw std::runtime_error("LoRA: path must be nonempty and strength finite");
     SafeTensors adapter;
     adapter.open(spec.path);
+    AdaLNBasis adaln_basis;
+    double worst_adaln_error = 0;
+    int rebased = 0;
     float metadata_alpha = 0;
     bool has_metadata_alpha = false;
     if (const auto it = adapter.metadata().find("lora_adapter_metadata");
@@ -100,6 +212,7 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
     };
     std::map<std::string, Pair> pairs;
     for (const auto& item : adapter.tensors()) {
+      if (item.first == detail::kLoraGridTensor) continue;
       const std::string key = normalize(item.first);
       bool matched = false;
       for (const auto& suffix : std::vector<std::pair<std::string, int>>{
@@ -136,13 +249,19 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
       f.in = static_cast<int>(p.a->shape[1]);
       f.out = static_cast<int>(p.b->shape[0]);
       const bool split = split_qkv(name);
+      const bool adaln = adaln_target(name);
       const std::string base_name = split ? name.substr(0, name.size() - 4) + "qkv_proj" : name;
       const TensorView& w = base.at(base_name + ".weight");
       const bool packed = w.dtype == DType::kU8 && base.find(base_name + ".weight_scale");
       const bool nf4 = is_nf4_weight(base, base_name + ".weight");
       const auto shape = nf4 ? read_nf4_state(base, base_name + ".weight", "LoRA").shape : w.shape;
-      if (shape != std::vector<int64_t>{int64_t(f.out) * (split ? 3 : 1), packed ? f.in / 2 : f.in} || (packed && f.in % 2))
+      const bool rebase = adaln && base.find("adaln_t_table") &&
+          shape == std::vector<int64_t>{f.out, 8} && f.in != 8;
+      if (!rebase && (shape != std::vector<int64_t>{int64_t(f.out) * (split ? 3 : 1), packed ? f.in / 2 : f.in} || (packed && f.in % 2)))
         throw std::runtime_error("LoRA: base model dimensions do not match " + name);
+      if (adaln && (!base.find("adaln_t_table") || shape != std::vector<int64_t>{f.out, 8} ||
+          (w.dtype != DType::kF32 && w.dtype != DType::kF16 && w.dtype != DType::kBF16)))
+        throw std::runtime_error("LoRA: AdaLN updates require floating-point pruned rank-8 base projections: " + name);
       if ((name == "video_patch_proj" || name == "final_layer.video_out") &&
           (w.dtype != DType::kF32 && w.dtype != DType::kF16 && w.dtype != DType::kBF16))
         throw std::runtime_error("LoRA: video endpoint must have floating-point weights: " + name);
@@ -171,8 +290,27 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
       }
       for (float v : f.a) if (!std::isfinite(bf16_to_f32(f32_to_bf16(v))))
         throw std::runtime_error("LoRA: A overflows BF16 for " + name);
-      if (scale != 0.0f) next[name].push_back(std::move(f));
+      if (scale != 0.0f) {
+        if (rebase) {
+          if (adaln_basis.map.empty()) adaln_basis.load(base, adapter, f.in);
+          std::vector<float> bias;
+          worst_adaln_error = std::max(worst_adaln_error, adaln_basis.project(f, bias));
+          auto& combined = next_bias[name];
+          if (combined.empty()) combined.resize(bias.size());
+          for (size_t i = 0; i < bias.size(); ++i) {
+            combined[i] += bias[i];
+            if (!std::isfinite(combined[i])) throw std::runtime_error("LoRA: combined AdaLN bias overflow");
+          }
+          ++rebased;
+        }
+        next[name].push_back(std::move(f));
+      }
     }
+    if (rebased)
+      std::fprintf(stderr, "LoRA: converted %d AdaLN targets to pruned coordinates; worst activation fit error %.4f%% (%s)\n",
+                   rebased, worst_adaln_error * 100, spec.path.c_str());
+    if (adaln_basis.source && adaln_basis.source->needs_embedding)
+      embeddings.push_back(std::move(adaln_basis.source));
   }
   // Concatenation represents sum_i B_i A_i as one low-rank product. This
   // keeps dispatch count constant even with several adapters on Vulkan.
@@ -195,7 +333,45 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
     list.clear();
     list.push_back(std::move(combined));
   }
+  // Validation and composition succeeded. Never rewrite a malformed adapter.
+  for (const auto& grid : embeddings) grid->embed();
   factors_ = std::move(next);
+  adaln_bias_ = std::move(next_bias);
+}
+
+bool LoraAdapters::has_adaln(const std::string& name) const {
+  return adaln_target(name) && find(name);
+}
+
+std::vector<float> LoraAdapters::merged_adaln_weight(const SafeTensors& base, const std::string& name) const {
+  if (!adaln_target(name)) throw std::runtime_error("LoRA: unsupported AdaLN merge " + name);
+  const auto& weight = base.at(name + ".weight");
+  auto result = values(weight);
+  if (const auto* updates = find(name)) for (const auto& f : *updates) {
+    if (weight.shape != std::vector<int64_t>{f.out, f.in})
+      throw std::runtime_error("LoRA: AdaLN merge dimensions do not match " + name);
+    for (int row = 0; row < f.out; ++row) for (int col = 0; col < f.in; ++col) {
+      double delta = 0;
+      for (int r = 0; r < f.rank; ++r) delta += double(f.b[size_t(row) * f.rank + r]) * f.a[size_t(r) * f.in + col];
+      float& value = result[size_t(row) * f.in + col];
+      value = static_cast<float>(double(value) + delta);
+      if (!std::isfinite(value)) throw std::runtime_error("LoRA: merged AdaLN weight overflows " + name);
+    }
+  }
+  return result;
+}
+
+std::vector<float> LoraAdapters::merged_adaln_bias(const SafeTensors& base, const std::string& name) const {
+  if (!adaln_target(name)) throw std::runtime_error("LoRA: unsupported AdaLN bias merge " + name);
+  auto result = values(base.at(name + ".bias"));
+  if (auto it = adaln_bias_.find(name); it != adaln_bias_.end()) {
+    if (result.size() != it->second.size()) throw std::runtime_error("LoRA: AdaLN bias shape mismatch " + name);
+    for (size_t i = 0; i < result.size(); ++i) {
+      result[i] += it->second[i];
+      if (!std::isfinite(result[i])) throw std::runtime_error("LoRA: merged AdaLN bias overflows " + name);
+    }
+  }
+  return result;
 }
 
 std::vector<float> LoraAdapters::merged_endpoint_weight(

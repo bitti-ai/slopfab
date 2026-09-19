@@ -44,6 +44,54 @@ projection but currently upload separate copies of A). Vulkan adds roughly
 2.95 GiB of LoRA activation scratch at the default 37,727-row geometry; smaller
 canvases use proportionally less. Zero-strength adapters allocate no GPU data.
 
+## Turbo adapters with AdaLN updates
+
+Adapters may also update `blocks.N.adaln_proj.linear` and
+`final_layer.adaln_proj.linear`. Rank-8 AdaLN factors are merged into the
+floating-point pruned weights at model load on CUDA and Vulkan.
+
+Some Turbo adapters, including the LightX2V v4 step-600 DARE-TIES file, retain
+the original 2,688-dimensional AdaLN input. Pruned checkpoints have only eight
+input coordinates and omit the original timestep embedder. On the first
+successful load, slopfab embeds the matching timestep grid into the LoRA as
+`slopfab.silu_t_emb_grid`. Later loads use that embedded tensor, with no
+companion file or network access required.
+
+For standard FL2VA checkpoints on Windows, a missing grid is downloaded from
+[deAPI-ai's H3 distribution](https://huggingface.co/deAPI-ai/minimax-h3-33b-int8/blob/ee696877efb4553214cb8d920d5617fd3309b910/loras/h3_silu_temb_grid.safetensors)
+into temporary storage. The revision, size and SHA-256 are pinned and verified;
+the temporary download is removed automatically. For offline first use, other
+platforms, or other model variants, place a matching
+`h3_silu_temb_grid.safetensors` beside the LoRA. An existing embedded grid takes
+precedence over this companion. A user-supplied companion is left in place and
+can be removed once every adapter that needs it has embedded its copy.
+
+First use requires write access to the LoRA and enough space beside it for a
+temporary full copy. After all adapters validate, slopfab atomically replaces
+the LoRA, preserving its existing tensor bytes and metadata and adding about
+5.26 MiB for the standard grid. Later loads work with a read-only adapter and
+do not rewrite it. The base checkpoint is never changed.
+
+The runtime fits the adapter's timestep input to the loaded base's
+`adaln_t_table`, preserving the
+constant offset as an AdaLN bias update. Both weight and bias updates respect
+adapter strengths and stacking. Nothing is silently dropped. The fit uses F64
+QR and checks the low-rank activation curve at all 1,025 grid positions; errors
+above 1% are rejected. Invalid adapters are not rewritten. Disabled adapters
+do not require or embed a grid.
+
+This is an approximate conversion. The LightX2V v4 step-600 DARE-TIES adapter
+loaded all 259 projections against `minimax_h3_fl2va_pruned_int8_convrot`, with
+a worst relative activation fit error of 0.1629% across its 51 AdaLN targets.
+That measures the fitted adapter activation, not final video quality or the
+error of the full model. The loader prints this measurement. Use a grid derived
+from the adapter's original timestep embedder; matching tensor dimensions alone
+cannot prove it came from the correct model.
+
+This support does not select a new sampling schedule or enable full, unpruned
+AdaLN execution. To request eight evaluations on the ordinary schedule, use
+`--steps 9`.
+
 ## TaoMate H3, three evaluations
 
 Download the [ComfyUI-format adapter](https://huggingface.co/CZMartin22/TaoMate-H3-3step-ComfyUI)
@@ -98,7 +146,12 @@ but does not load or validate adapter tensor contents.
 
 The `lora` test filter covers adapter naming, alpha/rank scaling, negative and
 zero strengths, composition, malformed archives, the released adapter's 208
-projection shapes, custom-grid validation, and the three-step plan. GPU tests
+projection shapes, custom-grid validation, and the three-step plan. Embedding
+tests check preservation of tensor bytes and metadata, repeat loads without a
+companion, unchanged files after invalid fits, and cleanup after replacement
+fails. Set `SLOPFAB_TEST_LORA_PATH` and `SLOPFAB_TEST_LORA_BASE` to also check a
+local Turbo adapter's complete tensor hashes and reload behavior; this test
+embeds the grid on first use, just like the runtime. GPU tests
 compare split Q/K/V updates with an independent CPU contraction, including a
 real TaoMate projection, partial tiles and non-tensor-core ranks. A reduced
 real-checkpoint test runs both text refiners and one main block through all

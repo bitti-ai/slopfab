@@ -1,5 +1,6 @@
 #include "harness.h"
 #include <filesystem>
+#include <cstdlib>
 #include <limits>
 #include "slopfab/lora.h"
 #include "slopfab/pipeline.h"
@@ -27,6 +28,104 @@ struct Fixture {
             {prefix + ".alpha", {}, {4}}};
   }
 };
+}
+
+SLOPFAB_TEST(lora_adaln_rebase_preserves_weight_bias_and_stacking) {
+  Fixture f;
+  f.base.close();
+  const auto base_path = (f.dir / "base.safetensors").string();
+  std::vector<float> table(1025 * 8), grid(1025 * 10);
+  for (int row = 0; row < 1025; ++row) {
+    for (int col = 0; col < 8; ++col)
+      table[row * 8 + col] = float(std::cos((col + 1) * row * 3.141592653589793 / 1024)) / float(1 << col);
+    for (int col = 0; col < 10; ++col) {
+      grid[row * 10 + col] = float(col + 1) / 8;
+      for (int k = 0; k < 8; ++k) grid[row * 10 + col] += table[row * 8 + k] * float(col - k) / 16;
+    }
+  }
+  const std::string target = "blocks.0.adaln_proj.linear";
+  write_safetensors(base_path, {{"adaln_t_table", {1025, 8}, table},
+      {target + ".weight", {6, 8}, std::vector<float>(48, .25f)},
+      {target + ".bias", {6}, std::vector<float>(6, .5f)}});
+  f.base.open(base_path);
+  std::vector<float> a(20), b(12);
+  for (size_t i = 0; i < a.size(); ++i) a[i] = float(int(i % 7) - 3) / 8;
+  for (size_t i = 0; i < b.size(); ++i) b[i] = float(i + 1) / 8;
+  write_safetensors(f.path, {{target + ".lora_A.weight", {2, 10}, a},
+      {target + ".lora_B.weight", {6, 2}, b}});
+  LoraAdapters loras;
+  bool missing = false;
+  try { loras.load({{f.path, .5f}}, f.base); }
+  catch (const std::runtime_error& e) { missing = std::string(e.what()).find("h3_silu_temb_grid") != std::string::npos; }
+  CHECK(missing);
+  loras.load({{f.path, 0}}, f.base); // Disabled adapters do not require a grid.
+  CHECK(loras.projection_count() == 0);
+  const auto grid_path = (f.dir / "h3_silu_temb_grid.safetensors").string();
+  write_safetensors(grid_path, {{"silu_t_emb_grid", {1025, 10}, grid}});
+  loras.load({{f.path, .5f}}, f.base);
+  CHECK(loras.has_adaln(target));
+  CHECK(loras.find(target)->front().in == 8);
+  const auto w = loras.merged_adaln_weight(f.base, target);
+  const auto bias = loras.merged_adaln_bias(f.base, target);
+  CHECK(bias != std::vector<float>(6, .5f)); // Dropping the affine correction is wrong.
+  for (int t : {0, 1, 129, 512, 899, 1024}) for (int row = 0; row < 6; ++row) {
+    double expected = .5, actual = bias[row];
+    for (int col = 0; col < 8; ++col) {
+      expected += .25 * table[t * 8 + col];
+      actual += w[row * 8 + col] * table[t * 8 + col];
+    }
+    for (int rank = 0; rank < 2; ++rank) for (int col = 0; col < 10; ++col)
+      expected += .5 * b[row * 2 + rank] * a[rank * 10 + col] * grid[t * 10 + col];
+    CHECK_NEAR(actual, expected, 1e-5);
+  }
+  loras.load({{f.path, .5f}, {f.path, -.5f}}, f.base);
+  CHECK_CLOSE(std::vector<float>(48, .25f), loras.merged_adaln_weight(f.base, target), 1e-6, "AdaLN weight cancellation");
+  CHECK_CLOSE(std::vector<float>(6, .5f), loras.merged_adaln_bias(f.base, target), 1e-6, "AdaLN bias cancellation");
+  // A curve outside the base table's span must fail, preserving loaded adapters.
+  for (int row = 0; row < 1025; ++row) grid[row * 10] += row % 2 ? 10 : -10;
+  write_safetensors(grid_path, {{"silu_t_emb_grid", {1025, 10}, grid}});
+  bool rejected = false;
+  try { loras.load({{f.path, 1}}, f.base); }
+  catch (const std::runtime_error& e) { rejected = std::string(e.what()).find("fit error") != std::string::npos; }
+  CHECK(rejected && loras.projection_count() == 1);
+  CHECK_CLOSE(std::vector<float>(6, .5f), loras.merged_adaln_bias(f.base, target), 1e-6, "Failed AdaLN load is atomic");
+}
+
+SLOPFAB_TEST(lora_adaln_rank8_and_final_projection) {
+  Fixture f; f.base.close();
+  const std::string target = "final_layer.adaln_proj.linear";
+  const auto base_path = (f.dir / "base.safetensors").string();
+  write_safetensors(base_path, {{"adaln_t_table", {1025, 8}, std::vector<float>(8200)},
+      {target + ".weight", {4, 8}, std::vector<float>(32, 1), DType::kF16},
+      {target + ".bias", {4}, std::vector<float>(4, .5f)}});
+  f.base.open(base_path);
+  write_safetensors(f.path, {{target + ".lora_A.weight", {1, 8}, std::vector<float>(8, 2)},
+      {target + ".lora_B.weight", {4, 1}, std::vector<float>(4, 3)}});
+  LoraAdapters loras; loras.load({{f.path, -.5f}}, f.base);
+  CHECK(loras.merged_adaln_weight(f.base, target) == std::vector<float>(32, -2));
+  CHECK(loras.merged_adaln_bias(f.base, target) == std::vector<float>(4, .5f));
+}
+
+SLOPFAB_TEST(lora_adaln_local_adapter_load) {
+  const char* adapter = std::getenv("SLOPFAB_TEST_LORA_PATH");
+  const char* checkpoint = std::getenv("SLOPFAB_TEST_LORA_BASE");
+  if (!adapter || !checkpoint) {
+    SKIP_MISSING_FIXTURE("Set SLOPFAB_TEST_LORA_PATH and SLOPFAB_TEST_LORA_BASE to validate a full local adapter");
+    return;
+  }
+  SafeTensors base; base.open(checkpoint);
+  LoraAdapters loras; loras.load({{adapter, 1}}, base);
+  CHECK(loras.has_adaln("blocks.0.adaln_proj.linear"));
+  CHECK(loras.has_adaln("final_layer.adaln_proj.linear"));
+  for (const char* name : {"blocks.0.adaln_proj.linear", "final_layer.adaln_proj.linear"}) {
+    CHECK(loras.find(name)->front().in == 8);
+    const auto weights = loras.merged_adaln_weight(base, name);
+    const auto bias = loras.merged_adaln_bias(base, name);
+    CHECK(!weights.empty() && !bias.empty());
+    for (float v : weights) CHECK(std::isfinite(v));
+    for (float v : bias) CHECK(std::isfinite(v));
+  }
+  std::printf("  local LoRA: %zu projections loaded\n", loras.projection_count());
 }
 
 SLOPFAB_TEST(lora_formats_strength_stacking_and_disable) {

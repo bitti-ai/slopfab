@@ -23,7 +23,13 @@ struct LoraFactors {
 class LoraAdapters {
  public:
   // Accepts H3 block/refiner attention and MLP adapters, including Diffusers
-  // separate Q/K/V and video input/output projections. Unknown keys, missing
+  // separate Q/K/V, video input/output and pruned AdaLN projections. Full-width
+  // AdaLN factors use an embedded timestep grid and are fitted to the base
+  // checkpoint's table with a checked residual. On first successful load the
+  // grid is atomically embedded in the adapter, using a local companion or a
+  // verified Windows download for standard FL2VA. First use requires a writable
+  // adapter and temporary space for a complete copy; later loads are read-only.
+  // Unknown keys, missing
   // partners, non-finite values and incompatible base shapes are errors.
   void load(const std::vector<LoraSpec>& specs, const SafeTensors& base);
   // Multiple adapters for one target are concatenated into one factor pair.
@@ -32,8 +38,15 @@ class LoraAdapters {
   // F32 video endpoints are merged at load time; biases remain unchanged.
   std::vector<float> merged_endpoint_weight(const SafeTensors& base,
                                             const std::string& projection) const;
+  // Pruned AdaLN weights and biases are merged in F32 on both backends.
+  bool has_adaln(const std::string& projection) const;
+  std::vector<float> merged_adaln_weight(const SafeTensors& base,
+                                         const std::string& projection) const;
+  std::vector<float> merged_adaln_bias(const SafeTensors& base,
+                                       const std::string& projection) const;
  private:
   std::map<std::string, std::vector<LoraFactors>> factors_;
+  std::map<std::string, std::vector<float>> adaln_bias_;
 };
 
 }  // namespace slopfab

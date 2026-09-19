@@ -550,7 +550,10 @@ void ExactH3BlockStage::load(const SafeTensors& st, uint32_t layer) {
   const TensorView& ab = st.at(p + "adaln_proj.linear.bias");
   require_shape(aw, {static_cast<int64_t>(adaln_out), c.adaln_rank}, aw.name);
   require_shape(ab, {static_cast<int64_t>(adaln_out)}, ab.name);
-  const std::vector<float> wide_w = to_f32(aw), wide_b = to_f32(ab);
+  const std::string adaln = p + "adaln_proj.linear";
+  const bool adapted_adaln = c.loras && c.loras->has_adaln(adaln);
+  const std::vector<float> wide_w = adapted_adaln ? c.loras->merged_adaln_weight(st, adaln) : to_f32(aw);
+  const std::vector<float> wide_b = adapted_adaln ? c.loras->merged_adaln_bias(st, adaln) : to_f32(ab);
   const std::string qkv = p + "attn.qkv_proj";
   validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, 0);
   validate_projection_archive(st, qkv, inner, c.hidden, 3 * inner, inner);

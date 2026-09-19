@@ -2231,6 +2231,17 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
         if (staged) std::memcpy(dst, source, bytes);
         else up.copy(dst, source, bytes, mapping);
       };
+      if (loras && !full_adaln) {
+        const bool weight = kv.first.size() > 7 && kv.first.compare(kv.first.size() - 7, 7, ".weight") == 0;
+        const bool bias = kv.first.size() > 5 && kv.first.compare(kv.first.size() - 5, 5, ".bias") == 0;
+        const std::string name = kv.first.substr(0, kv.first.size() - (weight ? 7 : bias ? 5 : 0));
+        if ((weight || bias) && loras->has_adaln(name)) {
+          wide = weight ? loras->merged_adaln_weight(checkpoint, name)
+                        : loras->merged_adaln_bias(checkpoint, name);
+          copy(wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
+          continue;
+        }
+      }
       if (loras && (kv.first == "video_patch_proj.weight" ||
                     kv.first == "final_layer.video_out.weight")) {
         const std::string name = kv.first.substr(0, kv.first.size() - 7);

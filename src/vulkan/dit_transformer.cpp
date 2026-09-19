@@ -283,10 +283,14 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
   next->final_norm = upload_bf16(context,
       checkpoint.at("final_layer.norm.weight"), vector(h));
 
-  const std::vector<float> adaln_w = to_f32(
-      checkpoint.at("final_layer.adaln_proj.linear.weight"));
-  const std::vector<float> adaln_b = to_f32(
-      checkpoint.at("final_layer.adaln_proj.linear.bias"));
+  const std::string adaln = "final_layer.adaln_proj.linear";
+  const bool adapted_adaln = c.main.block.loras && c.main.block.loras->has_adaln(adaln);
+  const std::vector<float> adaln_w = adapted_adaln
+      ? c.main.block.loras->merged_adaln_weight(checkpoint, adaln)
+      : to_f32(checkpoint.at(adaln + ".weight"));
+  const std::vector<float> adaln_b = adapted_adaln
+      ? c.main.block.loras->merged_adaln_bias(checkpoint, adaln)
+      : to_f32(checkpoint.at(adaln + ".bias"));
   auto upload_slice = [&](const float* values, const TensorLayout& layout) {
     DeviceTensor result = context.allocate(layout);
     context.upload_transient(result, values, layout.elements());
