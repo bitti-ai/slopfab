@@ -35,6 +35,8 @@ Sizes must be positive; token and frame limits must be nonnegative. Settings sel
 
 `--animate` remains a compatibility preset resolved into these same fields. Metadata and explicit overrides can change its defaults while structural restrictions remain enforced. Preprocessing settings contribute to cache identity; sampling-only changes do not invalidate prompt or reference caches.
 
+The CLI now leaves an unspecified canvas to the shared planner, so model geometry and `canvas_from_reference_video` take effect. Its former forced 864x480 canvas is available with `--resolution 864x480`; ordinary H3 planning uses a 768 short edge capped to the trained area. See the sampling guide for the accompanying unified step default.
+
 In C++, set `GenerateRequest::conditioning` or call `parse_conditioning_settings()`. Use `resolve_plan()` and `validate_generation_options()` for device-free validation. CLI, C API and execution share that validation. The C API accepts the same JSON:
 
 ```c

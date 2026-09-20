@@ -96,7 +96,7 @@ const CommandHelp kCommands[] = {
      "                               Requires Ref2VA transformer weights. Files are\n"
      "                               read only when the run starts\n"
      "  --out <file>                 output path (default output/video-<timestamp>.mp4)\n"
-     "  --aspect <W:H>               display aspect, 1:4 to 4:1 (overrides 864x480)\n"
+     "  --aspect <W:H>               display aspect (default 16:9; model canvas limits)\n"
      "  --resolution <WxH>           exact canvas instead of an aspect; both axes a\n"
      "                               multiple of 32, ratio 1:4 to 4:1. Not capped to the\n"
      "                               trained 1344x768 area — larger is allowed, warned\n"

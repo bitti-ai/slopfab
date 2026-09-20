@@ -71,8 +71,6 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 
   slopfab::GenerateRequest req;
   std::vector<std::pair<std::string, bool>> reference_files;
-  req.canvas_width = 864;
-  req.canvas_height = 480;
   req.num_frames = 124;
   // Step defaults are resolved from the model/task recipe.
   req.seed = 0;
@@ -452,16 +450,16 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // not first warned about — an invalid request should produce one message
   // about what is wrong with it, not a size advisory followed by a refusal.
   if (saw_resolution && slopfab::dit::canvas_exceeds_trained_area(req.canvas_height,
-                                                                req.canvas_width)) {
+                                                                req.canvas_width, plan.geometry)) {
     // A warning, not a refusal: the caller named this canvas. But packed rows
     // grow with area and attention with their square, so an innocent-looking
     // doubling is roughly four times the attention cost.
     std::fprintf(stderr,
-                 "slopfab: %dx%d is %.2fx the 1344x768 area the model was trained at; "
+                 "slopfab: %dx%d is %.2fx the model profile's trained pixel budget; "
                  "attention cost grows with the square of that, and quality outside the "
                  "trained range is uncharacterised\n",
                  req.canvas_width, req.canvas_height,
-                 static_cast<double>(req.canvas_width) * req.canvas_height / (1344.0 * 768.0));
+                 static_cast<double>(req.canvas_width) * req.canvas_height / plan.geometry.trained_max_pixels);
   }
   if (dry_run) {
     for (int generation = 0; generation < count; ++generation) {

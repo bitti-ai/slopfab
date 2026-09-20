@@ -16,12 +16,14 @@ SLOPFAB_TEST_CATEGORY(reference_conditioning_aggregate_fails_before_model_load, 
   }
 
   GenerateRequest request;
-  request.prompt = "two references must fail before any model opens";
+  request.prompt = "over-budget references must fail before any model opens";
   request.canvas_width = 256;
   request.canvas_height = 256;
   request.num_frames = 22;
   request.num_inference_steps = 4;
-  request.reference_image_paths = {image_path.string(), image_path.string()};
+  // Each 2048-square image contributes 4096 vision tokens plus markers.
+  // The shared budget is now 32768, so two images no longer overflow it.
+  request.reference_image_paths.assign(8, image_path.string());
   request.tokenizer_path =
       (std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
        "ref/text_encoder/tokenizer.json").string();
@@ -35,6 +37,8 @@ SLOPFAB_TEST_CATEGORY(reference_conditioning_aggregate_fails_before_model_load, 
   options.attention_mode = AttentionMode::kExact;
   options.verbose = false;
   const RunResult result = run_generate(request, plan, options);
+  if (result.message.find("conditioning exceeds max prompt tokens") == std::string::npos)
+    std::fprintf(stderr, "reference preflight returned: %s\n", result.message.c_str());
   CHECK(!result.ok && !result.cancelled);
   CHECK(result.message.find("conditioning exceeds max prompt tokens") !=
         std::string::npos);
