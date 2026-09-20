@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include "embedded_tensor_spv.h"
 #include "tensor_validation.h"
 #include "sage_selection.h"
 #include "slopfab/attention.h"

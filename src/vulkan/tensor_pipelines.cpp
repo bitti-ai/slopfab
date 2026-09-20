@@ -1,4 +1,5 @@
 #include "tensor_context.h"
+#include "embedded_tensor_spv.h"
 
 namespace slopfab::vulkan {
 TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tensor_options)
