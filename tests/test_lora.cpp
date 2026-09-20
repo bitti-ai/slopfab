@@ -73,6 +73,8 @@ SLOPFAB_TEST(lora_adaln_rebase_preserves_weight_bias_and_stacking) {
   CHECK(loras.find(target)->front().in == 8);
   const auto w = loras.merged_adaln_weight(f.base, target);
   const auto bias = loras.merged_adaln_bias(f.base, target);
+  CHECK(sha256_file(f.path) == original_digest); // Inference is read-only.
+  prepare_lora_grid(f.path, 10);
   {
     SafeTensors embedded; embedded.open(f.path);
     CHECK(embedded.tensor_count() == 3);

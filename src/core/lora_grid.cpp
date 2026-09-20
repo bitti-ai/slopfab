@@ -1,4 +1,8 @@
 #include "lora_grid.h"
+#include "slopfab/lora.h"
+#include "slopfab/json.h"
+#include <set>
+#include <mutex>
 
 #include <algorithm>
 #include <atomic>
@@ -104,6 +108,31 @@ void download_grid(const fs::path& destination) {
 }  // namespace
 
 void LoraGrid::load(const SafeTensors& adapter, int width, bool allow_download) {
+  std::string filename = "h3_silu_temb_grid.safetensors";
+  std::string tensor_name = "silu_t_emb_grid";
+  bool custom_asset = false;
+  if (const auto it = adapter.metadata().find("slopfab.lora_grid"); it != adapter.metadata().end()) {
+    custom_asset = true;
+    const auto root = json::parse(it->second);
+    if (!root.is_object()) throw std::runtime_error("LoRA: slopfab.lora_grid must be an object");
+    const std::set<std::string> keys = {"version", "identity", "file", "tensor", "rows", "width"};
+    for (const auto& item : root.as_object())
+      if (!keys.count(item.first)) throw std::runtime_error("LoRA: unknown grid setting " + item.first);
+    const auto* version = root.find("version");
+    if (!version || version->as_number() != 1) throw std::runtime_error("LoRA: unsupported grid schema version");
+    if (const auto* v = root.find("identity")) identity = v->as_string();
+    if (const auto* v = root.find("file")) filename = v->as_string();
+    if (const auto* v = root.find("tensor")) tensor_name = v->as_string();
+    if (const auto* v = root.find("rows"); v && v->as_number() != 1025)
+      throw std::runtime_error("LoRA: unsupported AdaLN grid row count");
+    if (const auto* v = root.find("width"); v && v->as_number() != width)
+      throw std::runtime_error("LoRA: AdaLN grid width does not match adapter");
+    const fs::path relative = fs::u8path(filename);
+    if (filename.empty() || tensor_name.empty() || relative.is_absolute() || relative.has_root_name())
+      throw std::runtime_error("LoRA: grid asset must name a relative companion file and nonempty tensor");
+    for (const auto& part : relative)
+      if (part == "..") throw std::runtime_error("LoRA: grid asset cannot escape adapter directory");
+  }
   auto copy = [&](const TensorView& source) {
     if (source.shape != std::vector<int64_t>{1025, width} ||
         (source.dtype != DType::kF32 && source.dtype != DType::kBF16 && source.dtype != DType::kF16))
@@ -122,18 +151,18 @@ void LoraGrid::load(const SafeTensors& adapter, int width, bool allow_download) 
   original_size = adapter.file_size();
   original_time = fs::last_write_time(path);
   original_header = header_digest(adapter);
-  const auto companion = path.parent_path() / "h3_silu_temb_grid.safetensors";
+  const auto companion = path.parent_path() / fs::u8path(filename);
   if (fs::is_regular_file(companion)) {
     SafeTensors archive; archive.open(companion.u8string());
-    copy(archive.at("silu_t_emb_grid"));
+    copy(archive.at(tensor_name));
   } else {
-    if (!allow_download || width != 2688)
+    if (!allow_download || custom_asset || width != 2688)
       throw std::runtime_error("LoRA: no matching embedded AdaLN grid; place h3_silu_temb_grid.safetensors beside the LoRA for first use: " + companion.u8string());
     TemporaryDirectory temporary(fs::temp_directory_path());
     const auto downloaded = temporary.path / "grid.safetensors";
     download_grid(downloaded);
     SafeTensors archive; archive.open(downloaded.u8string());
-    copy(archive.at("silu_t_emb_grid"));
+    copy(archive.at(tensor_name));
   }
   needs_embedding = true;
 }
@@ -197,3 +226,17 @@ void LoraGrid::embed() const {
   std::fprintf(stderr, "LoRA: embedded timestep grid in %s; future loads need no companion file\n", adapter_path.c_str());
 }
 }  // namespace slopfab::detail
+
+namespace slopfab {
+void prepare_lora_grid(const std::string& adapter_path, int width, bool allow_download) {
+  static std::mutex preparation;
+  const std::lock_guard<std::mutex> lock(preparation);
+  detail::LoraGrid grid;
+  {
+    SafeTensors adapter;
+    adapter.open(adapter_path);
+    grid.load(adapter, width, allow_download);
+  }
+  grid.embed();
+}
+}

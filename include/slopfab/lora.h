@@ -20,15 +20,17 @@ struct LoraFactors {
   std::vector<float> a, b;
 };
 
+// Explicit asset preparation, outside inference. Embeds a validated local grid;
+// allow_download opts into the pinned legacy FL2VA asset acquisition.
+void prepare_lora_grid(const std::string& adapter_path, int width, bool allow_download = false);
+
 class LoraAdapters {
  public:
   // Accepts H3 block/refiner attention and MLP adapters, including Diffusers
   // separate Q/K/V, video input/output and pruned AdaLN projections. Full-width
   // AdaLN factors use an embedded timestep grid and are fitted to the base
-  // checkpoint's table with a checked residual. On first successful load the
-  // grid is atomically embedded in the adapter, using a local companion or a
-  // verified Windows download for standard FL2VA. First use requires a writable
-  // adapter and temporary space for a complete copy; later loads are read-only.
+  // checkpoint's table with a checked residual. Inference reads an embedded or
+  // local companion grid and never downloads assets or rewrites adapters.
   // Unknown keys, missing
   // partners, non-finite values and incompatible base shapes are errors.
   void load(const std::vector<LoraSpec>& specs, const SafeTensors& base);

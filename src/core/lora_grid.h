@@ -17,6 +17,7 @@ struct LoraGrid {
   TensorView tensor;
   std::vector<uint8_t> bytes;
   std::string adapter_path;
+  std::string identity;
   uintmax_t original_size = 0;
   std::filesystem::file_time_type original_time;
   Sha256Digest original_header{};

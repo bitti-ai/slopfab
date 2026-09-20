@@ -103,7 +103,7 @@ ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
   const auto root = json::parse(metadata->second);
   if (!root.is_object()) throw std::runtime_error("slopfab.model: expected an object");
   const std::set<std::string> keys = {"version", "family", "modulation", "supports_references",
-      "compressed_attention", "qkv_layout", "legacy_profile"};
+      "compressed_attention", "qkv_layout", "legacy_profile", "adaln_grid_id"};
   for (const auto& item : root.as_object())
     if (!keys.count(item.first)) throw std::runtime_error("slopfab.model: unknown field '" + item.first + "'");
   auto required = [&](const char* key) -> const json::Value& {
@@ -147,6 +147,11 @@ ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
     else if (name == "fast_h3_v2" && table && !model.supports_references && model.compressed_attention)
       model.compatibility_architecture = TransformerArchitecture::kFastH3V2PrunedTable;
     else if (name != "none") throw std::runtime_error("slopfab.model: incompatible legacy_profile");
+  }
+  if (const auto* grid = root.find("adaln_grid_id")) {
+    model.adaln_grid_id = grid->as_string();
+    if (model.adaln_grid_id.empty() || !table)
+      throw std::runtime_error("slopfab.model: adaln_grid_id requires a nonempty table identity");
   }
   model.explicit_metadata = true;
   model.origin = "slopfab.model v1 metadata";

@@ -39,6 +39,7 @@ enum class ModulationImplementation { kTable, kTimestepMlp };
 struct ModelDescriptor {
   int version = 1;
   std::string family = "h3";
+  std::string adaln_grid_id;
   ModulationImplementation modulation = ModulationImplementation::kTable;
   bool supports_references = false;
   bool compressed_attention = false;
