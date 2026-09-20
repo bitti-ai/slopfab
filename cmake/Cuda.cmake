@@ -130,6 +130,7 @@ if(SLOPFAB_ENABLE_CUDA)
       src/generation/helpers.cpp
       src/generation/decode.cpp
       src/generation/session.cpp
+      src/generation/prompt.cpp
       # src/capi/capi.cpp is deliberately NOT here. It calls run_generate, so
       # it depends on this target — but compiling it *into* this target as well
       # as into slopfab_c builds every C entry point twice: once with capi.h

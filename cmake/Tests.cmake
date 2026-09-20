@@ -26,6 +26,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_safetensors.cpp
     tests/test_pipeline.cpp
     tests/test_model_descriptor.cpp
+    tests/test_model_geometry.cpp
     tests/test_attention_descriptor.cpp
     tests/test_prompt_embedding.cpp
     tests/test_lora.cpp
