@@ -2,6 +2,9 @@
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/safetensors_write.h"
 #include "slopfab/text/tokenizer.h"
+#include "slopfab/text/encoder.h"
+#include "slopfab/nf4.h"
+#include <fstream>
 #include <filesystem>
 #include <stdexcept>
 
@@ -69,4 +72,51 @@ SLOPFAB_TEST(tokenizer_rejects_incompatible_algorithms) {
     CHECK(fails([&] { tokenizer.load_json(document); }));
   tokenizer.load_json(R"({"model":{"type":"BPE","dropout":null,"vocab":{"a":0},"merges":[]}})");
   CHECK(tokenizer.loaded());
+}
+
+SLOPFAB_TEST(conditioner_descriptor_checks_semantics_and_fingerprint) {
+  ModelFixture fixture;
+  const std::string contract = R"({"version":1,"family":"qwen3_vl","tokenizer":"qwen_byte_bpe","output_width":5120,"output_layer":49,"final_normalization":false,"vision":false})";
+  write_safetensors(fixture.path.string(), {{"stub", {1}, {0}}}, {{"slopfab.conditioner", contract}});
+  fixture.file.open(fixture.path.string());
+  const auto descriptor = text::resolve_conditioner_descriptor(fixture.file);
+  CHECK(descriptor.explicit_metadata && !descriptor.vision);
+  CHECK(descriptor.output_width == 5120 && descriptor.output_layer == 49);
+  text::EncoderConfig smaller;
+  smaller.hidden_size = 4096;
+  CHECK(fails([&] { text::resolve_conditioner_descriptor(fixture.file, smaller); }));
+  auto changed = descriptor;
+  changed.output_layer = 47;
+  CHECK(descriptor.fingerprint() != changed.fingerprint());
+  fixture.file.close();
+  auto normalized = contract;
+  normalized.replace(normalized.find("false"), 5, "true");
+  write_safetensors(fixture.path.string(), {{"stub", {1}, {0}}}, {{"slopfab.conditioner", normalized}});
+  fixture.file.open(fixture.path.string());
+  CHECK(fails([&] { text::resolve_conditioner_descriptor(fixture.file); }));
+}
+SLOPFAB_TEST(nf4_shared_parser_preserves_transformer_source_contract) {
+  ModelFixture fixture;
+  auto write = [&](const std::string& dtype, const std::string& blocksize) {
+    fixture.file.close();
+    const std::string payload = "{\"quant_type\":\"nf4\",\"dtype\":\"" + dtype +
+        "\",\"nested_dtype\":\"float32\",\"blocksize\":" + blocksize +
+        ",\"nested_blocksize\":256,\"nested_offset\":0,\"shape\":[8,8]}";
+    std::string header = "{\"linear.weight.quant_state.bitsandbytes__nf4\":{\"dtype\":\"U8\",\"shape\":[" +
+        std::to_string(payload.size()) + "],\"data_offsets\":[0," + std::to_string(payload.size()) + "]}}";
+    while (header.size() % 8) header += ' ';
+    std::ofstream out(fixture.path, std::ios::binary);
+    const uint64_t bytes = header.size();
+    out.write(reinterpret_cast<const char*>(&bytes), sizeof(bytes));
+    out << header << payload;
+    out.close();
+    fixture.file.open(fixture.path.string());
+  };
+  write("bfloat16", "64");
+  CHECK(read_nf4_state(fixture.file, "linear.weight", "test", true).block_size == 64);
+  write("float16", "64");
+  CHECK(read_nf4_state(fixture.file, "linear.weight", "test").source_dtype == "float16");
+  CHECK(fails([&] { read_nf4_state(fixture.file, "linear.weight", "test", true); }));
+  write("bfloat16", "64.5");
+  CHECK(fails([&] { read_nf4_state(fixture.file, "linear.weight", "test"); }));
 }

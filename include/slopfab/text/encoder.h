@@ -128,6 +128,22 @@ struct EncoderConfig {
   int max_prompt_tokens = kMaxPromptTokens;
 };
 
+// The semantic output contract is independent of weight quantization and backend
+// kernel support. Metadata selects only implemented conditioner families.
+struct ConditionerDescriptor {
+  int version = 1;
+  std::string family = "qwen3_vl";
+  std::string tokenizer = "qwen_byte_bpe";
+  int output_width = 5120;
+  int output_layer = 49;
+  bool final_normalization = false;
+  bool vision = false;
+  bool explicit_metadata = false;
+  std::string fingerprint() const;
+};
+ConditionerDescriptor resolve_conditioner_descriptor(const SafeTensors& checkpoint,
+                                                     const EncoderConfig& config = {});
+
 // `[num_tokens, hidden_size]` fp32, host side. A few thousand rows at most, so
 // there is no reason to keep it on the device between stages.
 struct PromptEmbedding {

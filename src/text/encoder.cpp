@@ -14,28 +14,70 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <set>
+#include "slopfab/json.h"
 
 namespace slopfab::text {
 
+std::string ConditionerDescriptor::fingerprint() const {
+  return family + ":" + tokenizer + ":" + std::to_string(version) + ":" +
+      std::to_string(output_width) + ":" + std::to_string(output_layer) + ":" +
+      (final_normalization ? "normalized:" : "residual:") + (vision ? "vision" : "text");
+}
+
+ConditionerDescriptor resolve_conditioner_descriptor(const SafeTensors& checkpoint,
+                                                     const EncoderConfig& config) {
+  if (config.hidden_size <= 0 || config.num_layers <= 0)
+    throw std::runtime_error("text encoder: conditioner width and layer count must be positive");
+  ConditionerDescriptor descriptor;
+  descriptor.output_width = config.hidden_size;
+  descriptor.output_layer = config.num_layers - 1;
+  size_t visual_tensors = 0;
+  for (const auto& entry : checkpoint.tensors())
+    if (entry.first.rfind("visual.", 0) == 0 || entry.first.rfind("model.visual.", 0) == 0)
+      ++visual_tensors;
+  descriptor.vision = visual_tensors == 351;
+  const auto it = checkpoint.metadata().find("slopfab.conditioner");
+  if (it == checkpoint.metadata().end()) return descriptor;
+  const auto root = json::parse(it->second);
+  if (!root.is_object()) throw std::runtime_error("slopfab.conditioner: expected an object");
+  const std::set<std::string> fields = {"version", "family", "tokenizer", "output_width",
+      "output_layer", "final_normalization", "vision"};
+  for (const auto& field : root.as_object())
+    if (!fields.count(field.first)) throw std::runtime_error("slopfab.conditioner: unknown field " + field.first);
+  auto required = [&](const char* key) -> const json::Value& {
+    const auto* value = root.find(key);
+    if (!value) throw std::runtime_error(std::string("slopfab.conditioner: missing '") + key + "'");
+    return *value;
+  };
+  if (required("version").as_number() != 1 || required("family").as_string() != descriptor.family ||
+      required("tokenizer").as_string() != descriptor.tokenizer)
+    throw std::runtime_error("slopfab.conditioner: unsupported conditioner/tokenizer implementation");
+  if (required("output_width").as_number() != descriptor.output_width ||
+      required("output_layer").as_number() != descriptor.output_layer ||
+      required("final_normalization").as_bool())
+    throw std::runtime_error("slopfab.conditioner: output contract does not match the configured residual stream");
+  descriptor.vision = required("vision").as_bool();
+  if (descriptor.vision && visual_tensors != 351)
+    throw std::runtime_error("slopfab.conditioner: vision requires exactly 351 Qwen vision tensors");
+  descriptor.explicit_metadata = true;
+  return descriptor;
+}
+
 void require_reference_vision_support(const SafeTensors& checkpoint, size_t reference_count) {
   if (reference_count == 0) return;
-
+  const auto descriptor = resolve_conditioner_descriptor(checkpoint);
+  if (descriptor.vision) return;
   size_t visual_tensors = 0;
-  for (const auto& entry : checkpoint.tensors()) {
-    if (entry.first.rfind("visual.", 0) == 0 ||
-        entry.first.rfind("model.visual.", 0) == 0) {
+  for (const auto& entry : checkpoint.tensors())
+    if (entry.first.rfind("visual.", 0) == 0 || entry.first.rfind("model.visual.", 0) == 0)
       ++visual_tensors;
-    }
-  }
-  if (visual_tensors == 0) {
-    throw std::runtime_error(
-        "reference-image conditioning requires the Qwen3-VL visual tower, but text encoder '" +
-        checkpoint.path() +
-        "' contains no visual.* or model.visual.* tensors; refusing to ignore the image pixels "
-        "and run text-to-video");
-  }
+  if (visual_tensors == 0)
+    throw std::runtime_error("reference-image conditioning requires the Qwen3-VL visual tower, but text encoder '" +
+        checkpoint.path() + "' contains no visual.* or model.visual.* tensors");
   if (visual_tensors != 351)
     throw std::runtime_error("reference-image conditioning requires exactly 351 Qwen vision tensors");
+  throw std::runtime_error("reference-image conditioning is disabled by the conditioner descriptor");
 }
 namespace {
 
@@ -323,6 +365,15 @@ LayerGlobalScales read_global_scales(const SafeTensors& checkpoint, const Encode
 }
 
 void validate_checkpoint(const SafeTensors& checkpoint, const EncoderConfig& base_config) {
+  if (base_config.hidden_size <= 0 || base_config.num_layers <= 0 ||
+      base_config.num_attention_heads <= 0 || base_config.num_key_value_heads <= 0 ||
+      base_config.head_dim <= 0 || base_config.intermediate_size <= 0 ||
+      base_config.vocab_size <= 0 || base_config.max_prompt_tokens <= 0 ||
+      !std::isfinite(base_config.rms_norm_eps) || base_config.rms_norm_eps <= 0 ||
+      !std::isfinite(base_config.rope_theta) || base_config.rope_theta <= 0)
+    throw std::runtime_error("text encoder: dimensions and numerical constants must be positive and finite");
+  (void)resolve_conditioner_descriptor(checkpoint, base_config);
+
   EncoderConfig config = base_config;
   const WeightFormat detected = detect_weight_format(checkpoint);
   if (config.format == WeightFormat::kAuto) {
