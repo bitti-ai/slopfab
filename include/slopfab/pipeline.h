@@ -31,6 +31,7 @@
 #include "slopfab/continuation.h"
 #include "slopfab/lora.h"
 #include "slopfab/sampler/scheduler.h"
+#include "slopfab/sampling_settings.h"
 
 namespace slopfab {
 
@@ -85,6 +86,8 @@ struct GenerateRequest {
   // `num_inference_steps - 1` times.
   int num_inference_steps = 50;
   sampler::ScheduleKind schedule = sampler::ScheduleKind::kDefault;
+  // Explicit overrides of checkpoint and enabled-adapter sampling defaults.
+  SamplingSettings sampling;
   std::vector<LoraSpec> loras;
 
   // Viggle's frozen-conditioning recipe: driving video then repainted frame,
@@ -153,6 +156,9 @@ struct GenerateRequest {
 // `sequence_length_without_text` is what can be known in advance.
 struct GeneratePlan {
   bool fasth3_v2 = false;
+  // Fixed grids use Euler without approximate step/block/MotionCache reuse.
+  bool fixed_sampling_grid = false;
+  std::vector<std::string> sampling_sources;
   int canvas_height = 0;
   int canvas_width = 0;
   int aligned_frames = 0;
@@ -189,6 +195,8 @@ struct GeneratePlan {
 // Throws std::runtime_error with a specific message for an unsupported aspect
 // ratio, a non-positive frame count, or a schedule shorter than one step.
 GeneratePlan resolve_plan(const GenerateRequest& request);
+// Shared by frontend validation and execution before model weights are loaded.
+void validate_sampling_sampler(const GeneratePlan& plan, sampler::SamplerKind sampler);
 
 // --- reuse keys -------------------------------------------------------------
 //

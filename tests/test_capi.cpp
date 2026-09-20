@@ -232,6 +232,23 @@ SLOPFAB_TEST(capi_default_request_matches_cpp_defaults) {
   CHECK(plan.num_audio_rows == 414);
 }
 
+SLOPFAB_TEST(capi_sampling_settings) {
+  Request request;
+  CHECK(slopfab_request_set_sampling_settings(nullptr, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_sampling_settings(request.handle,
+      R"({"version":1,"video_sigma_shift":6,"base_sigmas":[1,0.5,0]})") == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 2);
+  CHECK(slopfab_request_set_sampling_settings(request.handle,
+      R"({"version":1,"video_sigma_shift":0})") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 2);
+  CHECK(slopfab_request_set_sampling_settings(request.handle, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 49);
+}
+
 SLOPFAB_TEST(capi_request_geometry) {
   Request request;
 
@@ -509,7 +526,7 @@ SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
   CHECK(slopfab_describe_plan(request.handle, &description.text) == SLOPFAB_OK);
   CHECK(std::strstr(description.text, "fixed 362-token embedding") != nullptr);
   CHECK(std::strstr(description.text, "pinned driving soundtrack") != nullptr);
-  CHECK(std::strstr(description.text, "shift 3.0") != nullptr);
+  CHECK(std::strstr(description.text, "shift 3)") != nullptr);
   CHECK(slopfab_request_set_animate(request.handle, 0, 0) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.canvas_width == 1344 && plan.canvas_height == 768);

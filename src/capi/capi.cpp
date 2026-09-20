@@ -681,6 +681,20 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_settings(
+    slopfab_request* request, const char* json) {
+  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "sampling settings: null request");
+  return guarded([&] {
+    try {
+      auto settings = json ? slopfab::parse_sampling_settings(json) : slopfab::SamplingSettings{};
+      request->request.sampling = std::move(settings);
+    } catch (const std::exception& e) {
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
+    }
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_motion_cache(
     slopfab_request* request, int32_t enabled, float reuse_threshold,
     float motion_strength, int32_t warmup_steps, int32_t max_consecutive_skips,
@@ -888,6 +902,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_resolve_plan(const slopfab_request* reque
       if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       plan = slopfab::resolve_plan(request->request);
+      slopfab::validate_sampling_sampler(plan, request->options.sampler);
     } catch (const std::exception& e) {
       // Every throw out of resolve_plan is the request being unsatisfiable —
       // an aspect outside 1:4..4:1, too few frames, a schedule shorter than
@@ -923,6 +938,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* requ
       if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       plan = slopfab::resolve_plan(request->request);
+      slopfab::validate_sampling_sampler(plan, request->options.sampler);
     } catch (const std::exception& e) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
     }
@@ -961,7 +977,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
     try {
       if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
-      (void)slopfab::resolve_plan(request->request);
+      const auto plan = slopfab::resolve_plan(request->request);
+      slopfab::validate_sampling_sampler(plan, request->options.sampler);
     } catch (const std::exception& e) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
     }

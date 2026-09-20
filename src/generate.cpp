@@ -335,6 +335,12 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
   } release_guard{options.release_reused_models};
   RunResult result;
+  try {
+    validate_sampling_sampler(plan, options.sampler);
+  } catch (const std::exception& e) {
+    result.message = e.what();
+    return result;
+  }
   request.motion_cache.validate();
   if (request.motion_cache.active() &&
       (options.sampler != sampler::SamplerKind::kEuler || request.cache_threshold > 0 ||

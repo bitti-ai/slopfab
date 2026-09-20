@@ -10,7 +10,7 @@
 
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/reference_conditioning.h"
-#include "slopfab/dit/checkpoint.h"
+#include "sampling_plan.h"
 
 namespace slopfab {
 namespace {
@@ -79,11 +79,6 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::runtime_error("MiniMax-H3 Ref2VA accepts at most 9 reference images, got " +
                              std::to_string(request.reference_image_paths.size()));
   }
-  if (request.num_inference_steps < 2) {
-    throw std::runtime_error("num_inference_steps must be at least 2: the grid includes a "
-                             "terminal sigma of zero that gets no model evaluation");
-  }
-
   GeneratePlan plan;
   if (request.has_explicit_canvas()) {
     dit::validate_canvas_size(request.canvas_height, request.canvas_width);
@@ -171,55 +166,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     plan.layout.num_condition_audio += 2 * plan.continuation.overlap_audio_latents;
   }
 
-  for (const auto& lora : request.loras) {
-    if (lora.path.empty() || !std::isfinite(lora.strength))
-      throw std::runtime_error("LoRA path must be nonempty and strength finite");
-  }
-  if (request.schedule == sampler::ScheduleKind::kTaoMate3Step &&
-      std::none_of(request.loras.begin(), request.loras.end(),
-                   [](const LoraSpec& lora) { return lora.strength != 0.0f; }))
-    throw std::runtime_error("taomate-3step requires an enabled TaoMate LoRA");
-
-  plan.video_sigma_shift = kVideoSigmaShift;
-  // Reuse the loader's metadata/filename identity rules, including renamed
-  // Viggle files. SafeTensors only maps the file and parses its header here;
-  // no tensor payload is read. Plans without a local checkpoint retain H3's
-  // defaults so geometry-only dry runs remain available.
-  if (!request.transformer_path.empty() && std::filesystem::exists(request.transformer_path)) {
-    SafeTensors checkpoint;
-    checkpoint.open(request.transformer_path);
-    if (dit::detect_transformer_architecture(checkpoint) ==
-        dit::TransformerArchitecture::kViggleAnimatePrunedTable)
-      plan.video_sigma_shift = kViggleVideoSigmaShift;
-    plan.fasth3_v2 = dit::detect_transformer_architecture(checkpoint) ==
-        dit::TransformerArchitecture::kFastH3V2PrunedTable;
-  }
-  if (request.animate) plan.video_sigma_shift = kViggleVideoSigmaShift;
-  plan.audio_sigma_shift = kAudioSigmaShift;
-  plan.num_inference_steps = request.schedule == sampler::ScheduleKind::kTaoMate3Step
-      ? 4 : request.num_inference_steps;
-
-  auto schedule = request.schedule;
-  if (plan.fasth3_v2) {
-    if (request.motion_cache.active())
-      throw std::invalid_argument("FastH3 V2 does not support MotionCache");
-    if (request.has_references() || request.continuation || request.animate ||
-        schedule != sampler::ScheduleKind::kDefault)
-      throw std::runtime_error("FastH3 V2 supports text-to-video with its trained eight-step schedule; references, continuation and other schedules are incompatible");
-    plan.video_sigma_shift = 10.0f;
-    plan.num_inference_steps = 9;
-    schedule = sampler::ScheduleKind::kFastH3V2;
-  }
-
-  sampler::FlowScheduler video(plan.video_sigma_shift);
-  sampler::FlowScheduler audio(plan.audio_sigma_shift);
-  video.set_timesteps(plan.num_inference_steps, schedule);
-  audio.set_timesteps(plan.num_inference_steps, schedule);
-
-  plan.video_sigmas = video.sigmas();
-  plan.audio_sigmas = audio.sigmas();
-  plan.video_timesteps = video.timesteps();
-  plan.audio_timesteps = audio.timesteps();
+  resolve_sampling_plan(request, plan);
 
   // The reference zips the two timestep lists to build its row-timestep plan
   // while iterating the video one. If `unique_consecutive` collapsed the two
@@ -432,8 +379,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       "  audio latents       %d per channel -> %d rows\n"
       "  packed sequence     %d rows + prompt length\n"
       "  steps               %d grid points -> %d model evaluations\n"
-      "  sigma range         video %.6f .. %.6f (shift %.1f)\n"
-      "                      audio %.6f .. %.6f (shift %.1f)\n"
+      "  sigma range         video %.6f .. %.6f (shift %.6g)\n"
+      "                      audio %.6f .. %.6f (shift %.6g)\n"
       "  seed                %llu\n"
       "  output              %s\n",
       request.prompt.size(), request.reference_image_paths.size(),
@@ -471,11 +418,12 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
         std::to_string(ref.strength) + ", copies " + std::to_string(ref.copies) +
         ", tokens " + std::to_string(ref.enabled() ? ref.mod->token_count() * ref.copies : 0) + ")\n";
   }
-  if (request.schedule == sampler::ScheduleKind::kTaoMate3Step)
-    description += "  schedule            taomate-3step (teacher states 0,16,33,49)\n";
+  if (plan.fixed_sampling_grid)
+    description += "  schedule            fixed base grid (Euler, no approximate caches)\n";
+  for (const auto& source : plan.sampling_sources)
+    description += "  sampling source     " + source + "\n";
   if (plan.fasth3_v2)
-    description += "  schedule            FastH3 V2 (8 evaluations, video/audio shifts 10/3)\n"
-                   "  attention           VSA-H3 (64-token tiles, 80% sparsity, learned gates)\n";
+    description += "  attention           VSA-H3 (64-token tiles, 80% sparsity, learned gates)\n";
   for (const auto& lora : request.loras) {
     char strength[64];
     std::snprintf(strength, sizeof(strength), "%.6g", static_cast<double>(lora.strength));

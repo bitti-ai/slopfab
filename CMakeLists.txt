@@ -43,6 +43,7 @@ add_library(slopfab_core STATIC
   src/core/w4a8.cpp
   src/core/int8_weight.cpp
   src/core/lora.cpp
+  src/core/sampling_settings.cpp
   src/core/lora_grid.cpp
   src/core/safetensors.cpp
   src/core/tensor_convert.cpp
@@ -70,6 +71,7 @@ add_library(slopfab_core STATIC
   src/vae/vit_block.cpp
   src/vae/decode_pipeline.cpp
   src/pipeline.cpp
+  src/sampling_plan.cpp
   src/sampler/noise.cpp
   src/sampler/scheduler.cpp
   src/text/tokenizer.cpp
@@ -1282,6 +1284,8 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_prompt_embedding.cpp
     tests/test_lora.cpp
     tests/test_sampler.cpp
+    tests/test_sampling_settings.cpp
+    tests/test_sampling_plan.cpp
     tests/test_step_cache.cpp
     tests/test_motion_cache.cpp
     tests/test_block_cache.cpp

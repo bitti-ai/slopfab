@@ -346,6 +346,7 @@ const CommandHelp kCommands[] = {
      "  --lora <file>               H3 safetensors adapter (repeatable)\n"
      "  --lora-strength <n>         strength for preceding --lora (default 1)\n"
      "  --schedule <name>           default or taomate-3step\n"
+     "  --sampling-settings FILE    JSON sigma shifts and optional fixed base grid\n"
      "  --sampler euler|ab2          integrator (default euler)\n"
      "  --seed <n>                   noise seed; negative or absent draws a random one\n"
      "  --count <n>                  generate n videos; explicit seeds increment by one,\n"
@@ -1398,6 +1399,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       if (used != value.size() || !std::isfinite(strength))
         throw std::runtime_error("--lora-strength requires a finite number");
       req.loras.back().strength = strength;
+    } else if (arg == "--sampling-settings") {
+      const std::string path = next("--sampling-settings");
+      std::ifstream in(path, std::ios::binary);
+      if (!in) throw std::runtime_error("cannot read sampling settings: " + path);
+      std::ostringstream contents;
+      contents << in.rdbuf();
+      req.sampling = slopfab::parse_sampling_settings(contents.str());
     } else if (arg == "--schedule") {
       const std::string value = next("--schedule");
       if (value == "default") req.schedule = slopfab::sampler::ScheduleKind::kDefault;
@@ -1514,15 +1522,6 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                  "step and cache for nothing)\n");
     return 2;
   }
-  if (req.schedule == slopfab::sampler::ScheduleKind::kTaoMate3Step) {
-    if (saw_steps && req.num_inference_steps != 4)
-      throw std::runtime_error("taomate-3step uses 4 sigma points (3 evaluations); omit --steps");
-    if (sampler_kind != slopfab::sampler::SamplerKind::kEuler ||
-        req.cache_threshold > 0 || req.skip_every > 0 || req.block_cache_span > 0)
-      throw std::runtime_error("taomate-3step requires Euler without step or block caching");
-    req.num_inference_steps = 4;
-  }
-
   // Refused, like `--sampler ab2` with step caching above, and for a related
   // reason: the two caches do not compose the way their flags suggest.
   //
@@ -1619,6 +1618,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;
   const slopfab::GeneratePlan plan = slopfab::resolve_plan(req);
+  slopfab::validate_sampling_sampler(plan, sampler_kind);
 
   // After `resolve_plan`, so a canvas that is going to be rejected outright is
   // not first warned about — an invalid request should produce one message

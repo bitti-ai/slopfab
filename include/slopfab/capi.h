@@ -446,6 +446,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* re
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
     slopfab_request* request, int32_t schedule);
 
+// Replace explicit sampling overrides with a version-1 JSON object (see
+// docs/sampling_settings.md). Null JSON clears overrides. Model and enabled
+// LoRA metadata defaults are resolved during validation; existing ABI structs
+// and schedule enum values are unchanged.
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_settings(
+    slopfab_request* request, const char* json);
+
 /* Optional MotionCache on CUDA/Vulkan. Disabled on new requests. Defaults:
  * threshold .15, strength 1, warmup 4, max skips 2, range 0.15..0.95, subsample 8.
  * threshold 0 disables reuse. Requires ordinary Euler denoising; incompatible
