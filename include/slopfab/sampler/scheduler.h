@@ -59,6 +59,10 @@ class FlowScheduler {
   // resets history. Distilled FastH3 starts just below sigma 1.
   void set_sigmas(const std::vector<float>& sigmas);
 
+  // Validate and shift an explicit unshifted grid. Rejects float32 collisions
+  // rather than silently dropping trained evaluation points.
+  void set_base_sigmas(const std::vector<float>& base_sigmas);
+
   // Sigma grid, strictly decreasing, ending at exactly 0.
   const std::vector<float>& sigmas() const { return sigmas_; }
 

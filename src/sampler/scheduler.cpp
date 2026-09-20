@@ -1,4 +1,5 @@
 #include "slopfab/sampler/scheduler.h"
+#include "slopfab/sampling_settings.h"
 
 #include <cstdint>
 #include <cmath>
@@ -68,7 +69,7 @@ float exact_euler_value(float sample, float velocity,
 }
 
 FlowScheduler::FlowScheduler(float shift) : shift_(shift) {
-  if (shift <= 0.0f) {
+  if (!std::isfinite(shift) || shift <= 0.0f) {
     throw std::runtime_error("scheduler: shift must be positive, got " + std::to_string(shift));
   }
 }
@@ -87,28 +88,10 @@ void FlowScheduler::set_sampler(SamplerKind kind) {
 }
 
 void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule) {
-  if (schedule == ScheduleKind::kFastH3V2) {
-    std::vector<float> grid;
-    for (int rung : {999, 874, 749, 624, 500, 375, 250, 125, 0}) {
-      const float base = static_cast<float>(rung) / 1000.0f;
-      grid.push_back(shift_ * base / (1.0f + (shift_ - 1.0f) * base));
-    }
-    set_sigmas(grid);
+  if (schedule != ScheduleKind::kDefault) {
+    set_base_sigmas(*sampling_schedule_defaults(schedule).base_sigmas);
     return;
   }
-  if (schedule == ScheduleKind::kTaoMate3Step) {
-    // TaoMate's distilled states are retained from the teacher's 50-point
-    // shifted grid, not a newly generated four-point linspace.
-    std::vector<float> grid;
-    for (int i : {0, 16, 33, 49}) {
-      const float base = static_cast<float>(49 - i) / 49.0f;
-      grid.push_back(shift_ * base / (1.0f + (shift_ - 1.0f) * base));
-    }
-    set_sigmas(grid);
-    return;
-  }
-  if (schedule != ScheduleKind::kDefault)
-    throw std::runtime_error("scheduler: unknown schedule");
   // A new schedule invalidates any velocity carried over from the old one.
   clear_history();
 
@@ -140,6 +123,16 @@ void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule
   for (size_t i = 0; i + 1 < sigmas_.size(); ++i) {
     timesteps_.push_back(1.0f - sigmas_[i]);
   }
+}
+
+void FlowScheduler::set_base_sigmas(const std::vector<float>& base_sigmas) {
+  FlowScheduler validator(1.0f);
+  validator.set_sigmas(base_sigmas);
+  std::vector<float> shifted;
+  shifted.reserve(base_sigmas.size());
+  for (float base : base_sigmas)
+    shifted.push_back(shift_ * base / (1.0f + (shift_ - 1.0f) * base));
+  set_sigmas(shifted);
 }
 
 void FlowScheduler::set_sigmas(const std::vector<float>& sigmas) {
