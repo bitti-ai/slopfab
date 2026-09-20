@@ -26,6 +26,7 @@
 #include <cstddef>
 
 #include "slopfab/cuda/workspace.cuh"
+#include "slopfab/attention_descriptor.h"
 
 namespace slopfab::cuda {
 
@@ -109,6 +110,45 @@ enum class AttentionBackend {
   kSol,
 };
 
+struct AttentionExecutionPolicy {
+  AttentionBackend backend = AttentionBackend::kFused;
+  int query_block = 1024;
+  int key_block = 0;
+  const int32_t* band_ranges = nullptr;
+  int exact_prefix = 0;
+  float sol_beta = 1.0f;
+  float sol_error_k = 0.0f;
+  float sol_error_v = 0.0f;
+  unsigned long long* sol_route_counts = nullptr;
+  float* sol_phase_ms = nullptr;
+  bool sol_pipeline = false;
+};
+
+// A value plan freezes kernel selection and workspace requirements together.
+// Referenced band ranges/diagnostic buffers retain caller-owned lifetimes.
+class AttentionPlan {
+ public:
+  static AttentionPlan compile(const AttentionDescriptor& descriptor,
+                               const AttentionExecutionPolicy& policy);
+  static AttentionPlan compile(const AttentionConfig& config, int kv_heads,
+                               AttentionBackend backend);
+  const AttentionDescriptor& description() const noexcept { return descriptor_; }
+  AttentionBackend backend() const noexcept { return backend_; }
+  size_t workspace_bytes() const noexcept { return workspace_bytes_; }
+  void forward(cublasHandle_t handle, cudaStream_t stream,
+               const __nv_bfloat16* query, const __nv_bfloat16* key,
+               const __nv_bfloat16* value, __nv_bfloat16* output,
+               Workspace& workspace) const;
+
+ private:
+  AttentionPlan() = default;
+  AttentionDescriptor descriptor_;
+  AttentionConfig config_;
+  AttentionBackend backend_ = AttentionBackend::kBlocked;
+  size_t workspace_bytes_ = 0;
+  int device_ = -1;  // Sage workspace/variant is specific to the compiling device.
+};
+
 // The fastest backend that can run this configuration. kFused is instantiated
 // for head_dim 64 and 128 and falls back to kBlocked for anything else.
 //
@@ -121,6 +161,8 @@ AttentionBackend attention_preferred_backend(const AttentionConfig& cfg);
 
 // Workspace required for a given configuration and backend.
 size_t attention_workspace_bytes(const AttentionConfig& cfg, AttentionBackend backend);
+size_t attention_workspace_bytes(const AttentionConfig& cfg, int num_kv_heads,
+                                 AttentionBackend backend);
 
 // out[seq, heads*head_dim] = softmax(q k^T * scale) v, per head.
 //

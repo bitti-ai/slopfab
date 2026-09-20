@@ -8,6 +8,7 @@
 
 #include "slopfab/vulkan/text_layer.h"
 #include "slopfab/vulkan/vision_stage.h"
+#include "slopfab/text/backend_capabilities.h"
 
 namespace slopfab::vulkan {
 namespace {
@@ -40,10 +41,11 @@ text::EncoderConfig resolved_config(const SafeTensors& checkpoint,
   result.format = detected;
   result.residency = text::Residency::kStreaming;
   result.arithmetic = text::EncoderArithmetic::kExact;
-  if (result.num_layers != 50 || result.hidden_size != 5120 ||
-      result.num_attention_heads != 64 || result.num_key_value_heads != 8 ||
-      result.head_dim != 128 || result.intermediate_size != 25600 ||
-      result.rms_norm_eps != 1.0e-6f || result.rope_theta != 5.0e6f ||
+  if (!text::supports_exact_text_layer({result.max_prompt_tokens, result.hidden_size,
+          result.num_attention_heads, result.num_key_value_heads, result.head_dim,
+          result.intermediate_size, result.rms_norm_eps}) ||
+      result.num_layers != 50 || result.intermediate_size != 25600 ||
+      result.rope_theta != 5.0e6f ||
       result.max_prompt_tokens <= 0 || result.max_prompt_tokens > text::kMaxPromptTokens) {
     throw std::invalid_argument(
         "Vulkan Qwen encoder: invalid production configuration");

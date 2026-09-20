@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "slopfab/attention.h"
+#include "slopfab/text/backend_capabilities.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/vulkan/linear.h"
 
@@ -52,10 +53,9 @@ bool same_model_shape(const QwenTextLayerConfig& left,
 void validate_config(const QwenTextLayerConfig& config) {
   const text::EncoderConfig& c = config.encoder;
   if (config.sequence == 0 || config.sequence > text::kMaxPromptTokens ||
-      c.hidden_size != 5120 || c.num_attention_heads != 64 ||
-      c.num_key_value_heads != 8 || c.head_dim != 128 ||
-      c.intermediate_size <= 0 || c.num_layers <= 0 ||
-      c.rms_norm_eps != 1.0e-6f ||
+      !text::supports_exact_text_layer({static_cast<int>(config.sequence), c.hidden_size,
+          c.num_attention_heads, c.num_key_value_heads, c.head_dim,
+          c.intermediate_size, c.rms_norm_eps}) || c.num_layers <= 0 ||
       c.intermediate_size % 256 != 0) {
     throw std::invalid_argument("Vulkan Qwen layer: invalid production configuration");
   }

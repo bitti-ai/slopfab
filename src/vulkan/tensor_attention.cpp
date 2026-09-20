@@ -1,4 +1,5 @@
 #include "tensor_recording.h"
+#include "slopfab/attention_descriptor.h"
 
 namespace slopfab::vulkan {
 
@@ -715,9 +716,10 @@ CausalGQAAttentionPlan CausalGQAAttentionPlan::create(
   }
   // This plan names the shipped Qwen3-VL text contract rather than advertising
   // an unverified generic GQA family.
-  if (desc.sequence == 0 || desc.sequence > text::kMaxPromptTokens ||
-      desc.query_heads != 64 || desc.kv_heads != 8 || desc.head_dim != 128 ||
-      !is_exact_attention_scale(desc.head_dim, desc.scale)) {
+  const AttentionDescriptor descriptor{desc.sequence, desc.sequence, desc.query_heads,
+      desc.kv_heads, desc.head_dim, AttentionLayout::kTokensHeadsChannels,
+      AttentionMask::kCausal, AttentionArithmetic::kExact, desc.scale};
+  if (!supports_exact_text_attention(descriptor, text::kMaxPromptTokens)) {
     throw std::invalid_argument(
         "vulkan causal GQA attention: invalid Qwen text plan");
   }
