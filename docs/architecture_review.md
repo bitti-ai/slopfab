@@ -51,7 +51,7 @@ The version-1 `slopfab.sampling` SafeTensors metadata entry is a JSON string wit
 
 Resolution proceeds from H3/legacy compatibility defaults to model metadata, enabled LoRA metadata, then explicit request settings. An explicitly selected named schedule is a request-level recipe; individual request fields override that recipe. Conflicting LoRA defaults require an explicit override of the conflicting field instead of depending on adapter order. Zero-strength adapters contribute no sampling defaults. The resolved plan owns the actual grids consumed by execution.
 
-This moves sampling recipes into data without advertising a new transformer family. FastH3's trained-grid requirements and fixed-grid incompatibilities remain checked. The schema intentionally does not accept arbitrary architecture, attention, or cache fields. Guidance, geometry, conditioner behavior, and general family manifests below are follow-up proposals, not fields supported by this first schema. See the accompanying change's tests and user documentation for its final public entry points.
+This moves sampling recipes into data without advertising a new transformer family. FastH3's trained-grid requirements and fixed-grid incompatibilities remain checked. The schema intentionally does not accept arbitrary architecture, attention, or cache fields. Guidance, geometry, conditioner behavior, and general family manifests below are follow-up proposals, not fields supported by this first schema. See [sampling settings](sampling_settings.md) for metadata, CLI, C++ and C API usage.
 
 ## Recommended boundaries
 
