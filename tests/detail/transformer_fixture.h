@@ -50,7 +50,6 @@
 
 
 namespace {
-namespace {
 
 using slopfab::dit::AdaLNTable;
 using slopfab::dit::PackedIndices;
@@ -925,7 +924,5 @@ slopfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
 // output finite and sanely scaled, so `all_finite` and an rms band cannot see
 // them; correlation against the fp8 run can.
 
-
-}  // namespace
 
 }  // namespace

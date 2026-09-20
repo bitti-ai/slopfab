@@ -89,7 +89,6 @@ void launch_adaln_expand(const float*, const float*, const float*, float*,
 
 namespace {
 #ifdef _WIN32
-namespace {
 
 std::array<uint8_t, 32> sha256_mapping(const void* data, size_t bytes) {
   BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -219,7 +218,6 @@ std::filesystem::path make_sparse_qwen_metadata_corruption(
   return path;
 }
 
-}  // namespace
 #endif
 
 __global__ void deterministic_rsqrt_probe(const float* input, float* stable,

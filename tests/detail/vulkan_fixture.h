@@ -45,7 +45,6 @@
 
 
 namespace {
-namespace {
 
 std::vector<uint32_t> load_spirv(const char* path) {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -111,7 +110,5 @@ uint16_t reference_bf16(float value) {
 #if !defined(SLOPFAB_WITH_CUDA) || !SLOPFAB_WITH_CUDA
 
 #endif
-
-}  // namespace
 
 }  // namespace

@@ -38,7 +38,6 @@
 
 
 namespace {
-namespace {
 
 slopfab::TensorLayout layout(std::initializer_list<uint64_t> extents) {
   std::vector<uint64_t> shape(extents);
@@ -167,7 +166,5 @@ std::array<uint8_t, 32> mapping_sha256(const void* mapping, size_t bytes) {
   return digest;
 }
 #endif
-
-}  // namespace
 
 }  // namespace

@@ -44,7 +44,6 @@
 
 
 namespace {
-namespace {
 
 using slopfab::cuda::DeviceBuffer;
 using slopfab::cuda::QuantFormat;
@@ -448,7 +447,5 @@ void check_residual_stream_shape(const slopfab::text::PromptEmbedding& e, const 
             "%.2f)",
             label, rms_rows.front(), others_max);
 }
-
-}  // namespace
 
 }  // namespace
