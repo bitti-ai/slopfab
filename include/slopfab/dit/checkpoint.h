@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 
 #include "slopfab/safetensors.h"
 
@@ -31,6 +32,25 @@ enum class TransformerQuantization {
   kNativeNVFP4,
   kBitsAndBytesNF4,
 };
+
+// Validated graph facts, independent of distribution filenames. Explicit metadata
+// uses the versioned slopfab.model JSON object; unsupported implementations fail.
+enum class ModulationImplementation { kTable, kTimestepMlp };
+struct ModelDescriptor {
+  int version = 1;
+  std::string family = "h3";
+  ModulationImplementation modulation = ModulationImplementation::kTable;
+  bool supports_references = false;
+  bool compressed_attention = false;
+  bool qkv_interleaved = false;
+  bool explicit_metadata = false;
+  std::string origin = "legacy checkpoint inference";
+  TransformerArchitecture compatibility_architecture = TransformerArchitecture::kUnknown;
+  TransformerQuantization quantization = TransformerQuantization::kUnknown;
+};
+ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint);
+// The supported table implementation has fixed lookup/capture/adapter contracts.
+void validate_adaln_table_config(int rank, int rows);
 
 TransformerArchitecture detect_transformer_architecture(const SafeTensors& checkpoint);
 TransformerQuantization detect_transformer_quantization(const SafeTensors& checkpoint);

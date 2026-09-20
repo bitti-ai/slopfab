@@ -18,7 +18,7 @@ bool is_nf4_weight(const SafeTensors& checkpoint, const std::string& weight_name
 }
 
 NF4State read_nf4_state(const SafeTensors& checkpoint, const std::string& weight_name,
-                        const char* consumer) {
+                        const char* consumer, bool require_bfloat16) {
   const std::string name = state_name(weight_name);
   const TensorView* view = checkpoint.find(name);
   if (view == nullptr || view->dtype != DType::kU8 || view->shape.size() != 1)
@@ -38,6 +38,9 @@ NF4State read_nf4_state(const SafeTensors& checkpoint, const std::string& weight
   if (get("quant_type").as_string() != "nf4" || get("nested_dtype").as_string() != "float32")
     throw std::runtime_error(std::string(consumer) + ": unsupported NF4 contract for '" + weight_name + "'");
   NF4State state;
+  if (const auto* dtype = root.find("dtype")) state.source_dtype = dtype->as_string();
+  if (require_bfloat16 && state.source_dtype != "bfloat16")
+    throw std::runtime_error(std::string(consumer) + ": NF4 source dtype must be bfloat16 for '" + weight_name + "'");
   state.block_size = static_cast<int>(get("blocksize").as_int());
   state.nested_block_size = static_cast<int>(get("nested_blocksize").as_int());
   state.nested_offset = static_cast<float>(get("nested_offset").as_number());

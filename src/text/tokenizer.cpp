@@ -1,4 +1,5 @@
 #include "slopfab/text/tokenizer.h"
+#include "tokenizer_contract.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -473,6 +474,13 @@ class TokenizerScanner {
     }
   }
 
+  std::string_view value_text() {
+    ws();
+    const size_t start = pos_;
+    skip_value();
+    return s_.substr(start, pos_ - start);
+  }
+
   // Same trailing-content check the tree parser performs, so a truncated or
   // concatenated file fails loudly here too rather than yielding a half-built
   // vocabulary.
@@ -812,6 +820,11 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
       });
       return;
     }
+    if (key == "pre_tokenizer" || key == "normalizer" || key == "decoder" ||
+        key == "post_processor") {
+      detail::validate_tokenizer_component(key, scan.value_text());
+      return;
+    }
     if (key != "model") {
       scan.skip_value();
       return;
@@ -835,7 +848,7 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
         return;
       }
       if (model_key != "merges") {
-        scan.skip_value();
+        detail::validate_tokenizer_model_field(model_key, scan.value_text());
         return;
       }
       if (!scan.at_array()) {

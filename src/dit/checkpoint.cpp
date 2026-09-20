@@ -6,6 +6,9 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <set>
+#include "slopfab/json.h"
+#include "slopfab/dit/adaln.h"
 
 namespace slopfab::dit {
 namespace {
@@ -46,7 +49,7 @@ bool marks_fasth3_v2(const SafeTensors& st) {
 
 }  // namespace
 
-TransformerArchitecture detect_transformer_architecture(const SafeTensors& checkpoint) {
+static TransformerArchitecture infer_legacy_architecture(const SafeTensors& checkpoint) {
   // The released pruned checkpoints replace the timestep MLP with a lookup
   // table and contract every AdaLN projection to rank eight.
   if (has(checkpoint, "adaln_t_table") &&
@@ -71,6 +74,87 @@ TransformerArchitecture detect_transformer_architecture(const SafeTensors& check
     return TransformerArchitecture::kRef2VAFullAdaLN;
   }
   return TransformerArchitecture::kUnknown;
+}
+
+void validate_adaln_table_config(int rank, int rows) {
+  if (rank != AdaLNTable::kRank || rows != AdaLNTable::kRows)
+    throw std::runtime_error("transformer: table modulation requires AdaLN rank 8 and 1025 rows");
+}
+
+ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
+  ModelDescriptor model;
+  model.compatibility_architecture = infer_legacy_architecture(checkpoint);
+  model.quantization = detect_transformer_quantization(checkpoint);
+  const auto legacy = model.compatibility_architecture;
+  model.modulation = legacy == TransformerArchitecture::kRef2VAFullAdaLN
+      ? ModulationImplementation::kTimestepMlp : ModulationImplementation::kTable;
+  model.supports_references = legacy == TransformerArchitecture::kRef2VAFullAdaLN ||
+      legacy == TransformerArchitecture::kRef2VAPrunedTable ||
+      legacy == TransformerArchitecture::kViggleAnimatePrunedTable;
+  model.compressed_attention = has(checkpoint, "blocks.0.attn.to_gate_compress.weight");
+  const auto layout = checkpoint.metadata().find("qkv_layout");
+  if (layout != checkpoint.metadata().end()) {
+    if (layout->second != "contiguous" && layout->second != "interleaved")
+      throw std::runtime_error("transformer: unsupported qkv_layout '" + layout->second + "'");
+    model.qkv_interleaved = layout->second == "interleaved";
+  }
+  const auto metadata = checkpoint.metadata().find("slopfab.model");
+  if (metadata == checkpoint.metadata().end()) return model;
+  const auto root = json::parse(metadata->second);
+  if (!root.is_object()) throw std::runtime_error("slopfab.model: expected an object");
+  const std::set<std::string> keys = {"version", "family", "modulation", "supports_references",
+      "compressed_attention", "qkv_layout", "legacy_profile"};
+  for (const auto& item : root.as_object())
+    if (!keys.count(item.first)) throw std::runtime_error("slopfab.model: unknown field '" + item.first + "'");
+  auto required = [&](const char* key) -> const json::Value& {
+    const auto* value = root.find(key);
+    if (!value) throw std::runtime_error(std::string("slopfab.model: missing '") + key + "'");
+    return *value;
+  };
+  if (required("version").as_number() != 1)
+    throw std::runtime_error("slopfab.model: unsupported version");
+  if (required("family").as_string() != "h3")
+    throw std::runtime_error("slopfab.model: unsupported transformer family");
+  const std::string modulation = required("modulation").as_string();
+  if (modulation != "table" && modulation != "timestep_mlp")
+    throw std::runtime_error("slopfab.model: unsupported modulation implementation");
+  model.modulation = modulation == "table" ? ModulationImplementation::kTable : ModulationImplementation::kTimestepMlp;
+  model.supports_references = required("supports_references").as_bool();
+  model.compressed_attention = required("compressed_attention").as_bool();
+  const std::string qkv = required("qkv_layout").as_string();
+  if (qkv != "contiguous" && qkv != "interleaved")
+    throw std::runtime_error("slopfab.model: unsupported qkv_layout");
+  model.qkv_interleaved = qkv == "interleaved";
+  if (layout != checkpoint.metadata().end() && layout->second != qkv)
+    throw std::runtime_error("slopfab.model: qkv_layout conflicts with legacy metadata");
+  const bool table = model.modulation == ModulationImplementation::kTable;
+  if (!has(checkpoint, "blocks.0.adaln_proj.linear.weight") ||
+      (table && (!has(checkpoint, "adaln_t_table") ||
+        checkpoint.at("adaln_t_table").shape != std::vector<int64_t>{AdaLNTable::kRows, AdaLNTable::kRank})) ||
+      (!table && (!has(checkpoint, "time_embedder.proj_in.weight") ||
+                  !has(checkpoint, "time_embedder.proj_out.weight"))))
+    throw std::runtime_error("slopfab.model: modulation tensor contract does not match metadata");
+  if (model.compressed_attention != has(checkpoint, "blocks.0.attn.to_gate_compress.weight"))
+    throw std::runtime_error("slopfab.model: compressed attention requires matching gate tensors");
+  if (!table && (!model.supports_references || model.compressed_attention))
+    throw std::runtime_error("slopfab.model: unsupported timestep MLP capability combination");
+  model.compatibility_architecture = !table ? TransformerArchitecture::kRef2VAFullAdaLN :
+      model.supports_references ? TransformerArchitecture::kRef2VAPrunedTable : TransformerArchitecture::kPrunedTable;
+  if (const auto* profile = root.find("legacy_profile")) {
+    const auto& name = profile->as_string();
+    if (name == "animate" && table && model.supports_references && !model.compressed_attention)
+      model.compatibility_architecture = TransformerArchitecture::kViggleAnimatePrunedTable;
+    else if (name == "fast_h3_v2" && table && !model.supports_references && model.compressed_attention)
+      model.compatibility_architecture = TransformerArchitecture::kFastH3V2PrunedTable;
+    else if (name != "none") throw std::runtime_error("slopfab.model: incompatible legacy_profile");
+  }
+  model.explicit_metadata = true;
+  model.origin = "slopfab.model v1 metadata";
+  return model;
+}
+
+TransformerArchitecture detect_transformer_architecture(const SafeTensors& checkpoint) {
+  return resolve_model_descriptor(checkpoint).compatibility_architecture;
 }
 
 TransformerQuantization detect_transformer_quantization(const SafeTensors& checkpoint) {
@@ -123,10 +207,7 @@ const char* transformer_quantization_name(TransformerQuantization quantization) 
 }
 
 bool transformer_qkv_is_interleaved(const SafeTensors& checkpoint) {
-  const auto it = checkpoint.metadata().find("qkv_layout");
-  if (it == checkpoint.metadata().end() || it->second == "contiguous") return false;
-  if (it->second == "interleaved") return true;
-  throw std::runtime_error("transformer: unsupported qkv_layout '" + it->second + "'");
+  return resolve_model_descriptor(checkpoint).qkv_interleaved;
 }
 
 void validate_interleaved_qkv(const TensorView& tensor, int head_dim) {
@@ -161,10 +242,9 @@ std::vector<uint8_t> deinterleave_qkv_rows(const TensorView& tensor, int head_di
 
 void require_ref2va_transformer(const SafeTensors& checkpoint, size_t reference_count) {
   if (reference_count == 0) return;
-  const TransformerArchitecture architecture = detect_transformer_architecture(checkpoint);
-  if (architecture == TransformerArchitecture::kRef2VAPrunedTable ||
-      architecture == TransformerArchitecture::kViggleAnimatePrunedTable ||
-      architecture == TransformerArchitecture::kRef2VAFullAdaLN) return;
+  const auto model = resolve_model_descriptor(checkpoint);
+  if (model.supports_references) return;
+  const auto architecture = model.compatibility_architecture;
   throw std::runtime_error(
       "reference conditioning requires a Ref2VA transformer, but '" +
       checkpoint.path() + "' is a " + transformer_architecture_name(architecture));

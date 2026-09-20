@@ -64,6 +64,8 @@
 #include "slopfab/cuda/workspace.cuh"
 #include "slopfab/dtype.h"
 #include "slopfab/json.h"
+#include "slopfab/nf4.h"
+#include "weight_metadata.h"
 #include "slopfab/sol_capture.h"
 #include "slopfab/tensor_convert.h"
 
@@ -140,60 +142,14 @@ size_t format_bytes(QuantFormat f) {
   return 0;
 }
 
-struct NF4State {
-  int block_size = 0;
-  int nested_block_size = 0;
-  float nested_offset = 0.0f;
-  std::vector<int64_t> shape;
-};
-
 std::string nf4_state_name(const std::string& name) {
   return name + ".weight.quant_state.bitsandbytes__nf4";
 }
-
 bool is_nf4(const SafeTensors& st, const std::string& name) {
-  return st.find(nf4_state_name(name)) != nullptr;
+  return slopfab::is_nf4_weight(st, name + ".weight");
 }
-
 NF4State read_nf4_state(const SafeTensors& st, const std::string& name) {
-  const std::string state_name = nf4_state_name(name);
-  const TensorView* v = st.find(state_name);
-  if (v == nullptr || v->dtype != DType::kU8 || v->shape.size() != 1) {
-    throw std::runtime_error("transformer: '" + state_name +
-                             "' must be a rank-1 U8 JSON tensor");
-  }
-  std::string text(static_cast<const char*>(v->data), v->nbytes);
-  json::Value root;
-  try {
-    root = json::parse(text);
-  } catch (const std::exception& e) {
-    throw std::runtime_error("transformer: '" + state_name + "' is not valid JSON (" +
-                             e.what() + ")");
-  }
-  auto require = [&](const char* key) -> const json::Value& {
-    const json::Value* value = root.find(key);
-    if (value == nullptr) {
-      throw std::runtime_error("transformer: '" + state_name + "' is missing '" + key + "'");
-    }
-    return *value;
-  };
-  if (require("quant_type").as_string() != "nf4" ||
-      require("dtype").as_string() != "bfloat16" ||
-      require("nested_dtype").as_string() != "float32") {
-    throw std::runtime_error("transformer: '" + state_name +
-                             "' has an unsupported bitsandbytes NF4 contract");
-  }
-  NF4State state;
-  state.block_size = static_cast<int>(require("blocksize").as_int());
-  state.nested_block_size = static_cast<int>(require("nested_blocksize").as_int());
-  state.nested_offset = static_cast<float>(require("nested_offset").as_number());
-  for (const json::Value& dim : require("shape").as_array()) state.shape.push_back(dim.as_int());
-  if (state.block_size != 64 || state.nested_block_size != 256 ||
-      !std::isfinite(state.nested_offset)) {
-    throw std::runtime_error("transformer: '" + state_name +
-                             "' requires unsupported NF4 block sizes or offset");
-  }
-  return state;
+  return slopfab::read_nf4_state(st, name + ".weight", "transformer", true);
 }
 
 // True when `name` is stored as nvfp4. Structural, from the file itself, rather
@@ -211,65 +167,8 @@ bool is_nvfp4(const SafeTensors& st, const std::string& name, int in_features) {
          s->shape[1] == in_features / static_cast<int>(cuda::kNVFP4BlockSize);
 }
 
-// What a `comfy_quant` blob says about its tensor.
-struct QuantTag {
-  std::string format;             // empty when the tensor carries no blob
-  bool full_precision = false;
-  bool convrot = false;
-  int convrot_group = 256;
-};
-
-// The blob is the checkpoint's own statement of what its bytes mean, so it is
-// parsed rather than pattern-matched. A substring search cannot tell a format
-// it does not implement from one it does — it just fails to find its needle and
-// carries on — and this is the file's only description of layouts that are
-// otherwise indistinguishable by inspection.
-QuantTag read_comfy_quant(const SafeTensors& st, const std::string& name) {
-  QuantTag tag;
-  const TensorView* v = st.find(name + ".comfy_quant");
-  if (v == nullptr) return tag;
-
-  std::string text(static_cast<const char*>(v->data), v->nbytes);
-  // ComfyUI writes the blob as a byte tensor, which may be NUL-padded to a
-  // whole number of elements.
-  while (!text.empty() && (text.back() == '\0' || text.back() == ' ' || text.back() == '\n')) {
-    text.pop_back();
-  }
-  if (text.empty()) return tag;
-
-  json::Value root;
-  try {
-    root = json::parse(text);
-  } catch (const std::exception& e) {
-    throw std::runtime_error("transformer: '" + name + ".comfy_quant' is not valid JSON (" +
-                             e.what() + "): " + text);
-  }
-  if (const json::Value* f = root.find("format"); f != nullptr) tag.format = f->as_string();
-  if (const json::Value* p = root.find("full_precision_matrix_mult"); p != nullptr) {
-    tag.full_precision = p->as_bool();
-  }
-  if (const json::Value* c = root.find("convrot"); c != nullptr) {
-    tag.convrot = c->as_bool();
-  }
-  if (const json::Value* g = root.find("convrot_groupsize"); g != nullptr) {
-    const int64_t value = g->as_int();
-    if (value <= 0 || value > 256) {
-      throw std::runtime_error("transformer: '" + name +
-                               ".comfy_quant' has invalid convrot_groupsize " +
-                               std::to_string(value));
-    }
-    tag.convrot_group = static_cast<int>(value);
-  }
-
-  // Anything else is a layout this port has not been shown, and guessing at one
-  // yields finite plausible output rather than a failure.
-  if (tag.format != "nvfp4" && tag.format != "float8_e4m3fn" &&
-      tag.format != "int8_tensorwise") {
-    throw std::runtime_error("transformer: '" + name + "' declares quant format '" + tag.format +
-                             "', which this port does not implement");
-  }
-  return tag;
-}
+using detail::read_comfy_quant;
+using detail::QuantTag;
 
 std::string shape_string(const std::vector<int64_t>& s) {
   std::string out = "[";
@@ -707,6 +606,7 @@ Carve plan_carve(const TransformerConfig& cfg, const SequenceLayout& layout,
 
 struct Transformer::Impl {
   TransformerConfig cfg;
+  ModelDescriptor model;
   TransformerArchitecture architecture = TransformerArchitecture::kUnknown;
   AdaLNLookup lookup = AdaLNLookup::kLinear;
   AdaLNTable table;
@@ -746,7 +646,7 @@ struct Transformer::Impl {
   AttentionMode attention_mode = AttentionMode::kFlash2;
   int row_chunk = kRowChunk;
   bool query_chunking = true;
-  bool is_vsa() const { return architecture == TransformerArchitecture::kFastH3V2PrunedTable; }
+  bool is_vsa() const { return model.compressed_attention; }
   bool compact_queries(AttentionMode mode) const {
     return !is_vsa() && query_chunking && mode == AttentionMode::kFlash2 &&
            (cfg.attention_head_dim == 64 || cfg.attention_head_dim == 128) &&
@@ -1910,7 +1810,10 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   checkpoint.prefetch();
   unload();
   s.cfg = config;
-  s.architecture = detect_transformer_architecture(checkpoint);
+  s.model = resolve_model_descriptor(checkpoint);
+  s.architecture = s.model.compatibility_architecture;
+  if (s.model.modulation == ModulationImplementation::kTable)
+    validate_adaln_table_config(config.adaln_rank, config.adaln_table_rows);
   if (s.architecture == TransformerArchitecture::kUnknown) {
     throw std::runtime_error("transformer: checkpoint architecture is unknown");
   }
