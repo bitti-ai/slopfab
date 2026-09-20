@@ -98,8 +98,12 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/profile.cpp
       src/cuda/workspace.cu
       src/cuda/nn_kernels.cu
+      src/cuda/nn_pointwise.cu
+      src/cuda/nn_position.cu
+      src/cuda/nn_rows.cu
       src/cuda/lora.cu
       src/cuda/linear.cu
+      src/cuda/linear_weights.cu
       src/cuda/deterministic_gemm.cu
       src/cuda/deterministic_attention.cu
       src/cuda/nf4_weight.cu

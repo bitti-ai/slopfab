@@ -57,7 +57,12 @@ add_library(slopfab_core STATIC
 # compiled: they define the same four functions, so every call site links
 # against whichever this build has and none of them needs an #if.
 if(SLOPFAB_WITH_FFMPEG)
-  target_sources(slopfab_core PRIVATE src/video/mux.cpp)
+  target_sources(slopfab_core PRIVATE
+    src/video/mux.cpp
+    src/video/ffmpeg_runtime.cpp
+    src/video/mux_codecs.cpp
+    src/video/mux_audio.cpp
+    src/video/media_decode.cpp)
 else()
   target_sources(slopfab_core PRIVATE src/video/mux_disabled.cpp)
 endif()
