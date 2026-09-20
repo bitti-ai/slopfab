@@ -213,6 +213,7 @@ using namespace slopfab::capi;
 struct slopfab_generation {
   std::shared_ptr<slopfab::GenerationSession> session;
   GenerateRequest request;
+  GeneratePlan plan;
   RunOptions options;
 
   slopfab_progress_fn callback = nullptr;
@@ -353,7 +354,7 @@ inline void run_worker(slopfab_generation* gen) {
   int code = SLOPFAB_ERR_UNKNOWN;
   std::string message;
   try {
-    const GeneratePlan plan = slopfab::resolve_plan(gen->request);
+    const GeneratePlan& plan = gen->plan;
     if (plan.duration_seconds > 0.0) {
       gen->fps = static_cast<double>(plan.aligned_frames) / plan.duration_seconds;
     }

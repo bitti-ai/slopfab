@@ -10,11 +10,12 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
     // Resolved before the thread exists so an unsatisfiable request is
     // reported synchronously, as a return code, rather than as a handle that
     // fails a millisecond later.
+    GeneratePlan resolved_plan;
     try {
       if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
-      const auto plan = slopfab::resolve_plan(request->request);
-      slopfab::validate_generation_options(request->request, plan, request->options);
+      resolved_plan = slopfab::resolve_plan(request->request);
+      slopfab::validate_generation_options(request->request, resolved_plan, request->options);
     } catch (const std::exception& e) {
       return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
     }
@@ -49,6 +50,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
     // moment this returns. It is the only sane contract across an ABI: the
     // run outlives the call by minutes.
     gen->request = request->request;
+    gen->plan = std::move(resolved_plan);
     gen->session = request->session;
     gen->options = request->options;
     gen->callback = callback;
