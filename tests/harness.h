@@ -33,7 +33,7 @@ using TestFn = void (*)();
 // Registers a case. Returns true so it can be used in a namespace-scope
 // initialiser. Registration order across translation units is unspecified;
 // tests must not depend on each other.
-bool register_test(const char* name, TestFn fn);
+bool register_test(const char* name, TestFn fn, const char* category = "synthetic");
 
 void set_current(const char* name);
 
@@ -91,6 +91,7 @@ enum class SkipReason {
   kMissingFixture,  // a checkpoint, tokenizer or tool the case needs is absent
   kInsufficientVram,  // the card has less free memory than the case requires
   kUnsupportedHardware,  // the case targets an instruction/image this GPU lacks
+  kOptInDisabled,  // explicitly selected expensive coverage was not enabled
 };
 
 void skip(SkipReason reason, const char* file, int line, const char* fmt, ...);
@@ -123,14 +124,18 @@ int skipped_count();
 #define SKIP_UNSUPPORTED_HARDWARE(...)                                      \
   ::slopfab::test::skip(::slopfab::test::SkipReason::kUnsupportedHardware,     \
                        __FILE__, __LINE__, __VA_ARGS__)
+#define SKIP_OPT_IN(...) \
+  ::slopfab::test::skip(::slopfab::test::SkipReason::kOptInDisabled, __FILE__, __LINE__, __VA_ARGS__)
 
 // Names the case currently running, for files that register their functions
 // separately rather than through SLOPFAB_TEST.
 #define TEST(name) ::slopfab::test::set_current(name)
 
 // Defines and registers a test case in one go.
-#define SLOPFAB_TEST(name)                                                              \
+#define SLOPFAB_TEST_CATEGORY(name, category)                                           \
   static void slopfab_test_##name();                                                    \
   static const bool slopfab_test_##name##_registered =                                  \
-      ::slopfab::test::register_test(#name, &slopfab_test_##name);                       \
+      ::slopfab::test::register_test(#name, &slopfab_test_##name, category);              \
   static void slopfab_test_##name()
+
+#define SLOPFAB_TEST(name) SLOPFAB_TEST_CATEGORY(name, "synthetic")

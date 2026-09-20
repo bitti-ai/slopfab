@@ -2,6 +2,8 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <vector>
 
@@ -11,6 +13,7 @@ namespace {
 struct Case {
   const char* name;
   TestFn fn;
+  const char* category;
 };
 
 // Function-local static: registration happens during dynamic initialisation of
@@ -28,6 +31,7 @@ int g_skipped = 0;
 int g_skipped_fixture = 0;
 int g_skipped_vram = 0;
 int g_skipped_hardware = 0;
+int g_skipped_opt_in = 0;
 const char* g_current = "";
 
 // Strips the directory so failures read `test_kernels.cu:412` rather than an
@@ -42,8 +46,8 @@ const char* basename(const char* path) {
 
 }  // namespace
 
-bool register_test(const char* name, TestFn fn) {
-  cases().push_back({name, fn});
+bool register_test(const char* name, TestFn fn, const char* category) {
+  cases().push_back({name, fn, category});
   return true;
 }
 
@@ -145,13 +149,16 @@ void skip(SkipReason reason, const char* file, int line, const char* fmt, ...) {
     ++g_skipped_fixture;
   } else if (reason == SkipReason::kInsufficientVram) {
     ++g_skipped_vram;
-  } else {
+  } else if (reason == SkipReason::kUnsupportedHardware) {
     ++g_skipped_hardware;
+  } else {
+    ++g_skipped_opt_in;
   }
   const char* label = reason == SkipReason::kMissingFixture
       ? "fixture absent"
       : reason == SkipReason::kInsufficientVram ? "insufficient vram"
-                                                 : "unsupported hardware";
+      : reason == SkipReason::kUnsupportedHardware ? "unsupported hardware"
+                                                   : "opt-in disabled";
   std::fprintf(stderr, "  SKIP [%s] %s:%d  (%s) ", g_current, basename(file), line,
                label);
   va_list args;
@@ -202,10 +209,20 @@ int deferred_count() { return g_deferred; }
 
 int run_all() {
   const char* filter = std::getenv("SLOPFAB_TEST_FILTER");
+  const char* category = std::getenv("SLOPFAB_TEST_CATEGORY");
+  const char* benchmarks = std::getenv("SLOPFAB_RUN_BENCHMARKS");
+  int selected = 0;
   for (const Case& c : cases()) {
     if (filter != nullptr && std::strstr(c.name, filter) == nullptr) continue;
+    if (category != nullptr && std::strcmp(category, c.category) != 0) continue;
+    ++selected;
     g_current = c.name;
-    std::printf("test %s\n", c.name);
+    std::printf("test %s [%s]\n", c.name, c.category);
+    if (std::strcmp(c.category, "benchmark") == 0 &&
+        (benchmarks == nullptr || std::strcmp(benchmarks, "1") != 0)) {
+      SKIP_OPT_IN("set SLOPFAB_RUN_BENCHMARKS=1 to run benchmarks");
+      continue;
+    }
     try {
       c.fn();
     } catch (const std::exception& e) {
@@ -225,11 +242,18 @@ int run_all() {
   // fixture skip is fixed by fetching a file, a vram skip by freeing the card,
   // and a hardware skip by running the matching compiled image on its GPU.
   if (g_skipped != 0) {
-    std::printf(", %d skipped (%d fixture, %d vram, %d hardware; see SKIP lines above)",
-                g_skipped, g_skipped_fixture, g_skipped_vram, g_skipped_hardware);
+    std::printf(", %d skipped (%d fixture, %d vram, %d hardware, %d opt-in; see SKIP lines above)",
+                g_skipped, g_skipped_fixture, g_skipped_vram, g_skipped_hardware,
+                g_skipped_opt_in);
   }
   std::fputc(0x0A, stdout);
-  return g_failures == 0 ? 0 : 1;
+  if (selected == 0) {
+    std::fprintf(stderr, "no test cases matched the requested filters\n");
+    return 1;
+  }
+  if (g_failures != 0) return 1;
+  // CTest can distinguish an unavailable suite from a successful one.
+  return g_checks == 0 && g_skipped != 0 ? 77 : 0;
 }
 
 }  // namespace slopfab::test

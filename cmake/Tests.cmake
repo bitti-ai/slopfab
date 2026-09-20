@@ -31,6 +31,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_lora.cpp
     tests/test_sampler.cpp
     tests/test_sampling_settings.cpp
+    tests/test_conditioning_settings.cpp
     tests/test_sampling_plan.cpp
     tests/test_step_cache.cpp
     tests/test_motion_cache.cpp
@@ -67,6 +68,7 @@ if(SLOPFAB_BUILD_TESTS)
 
   if(SLOPFAB_ENABLE_VULKAN)
     add_executable(slopfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp
+      tests/test_vulkan_pipeline_sets.cpp
       tests/test_vulkan_conditioner_synthetic.cpp
       tests/test_vulkan_conditioner_checkpoint.cpp
       tests/test_vulkan_conditioner_integration.cpp
@@ -211,7 +213,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_nn_kernels_linear_synthetic.cu
       tests/test_nn_kernels_nvfp4_synthetic.cu
       tests/test_nn_kernels_attention_synthetic.cu
-      tests/test_nn_kernels_attention_checkpoint.cu
+      tests/test_nn_kernels_attention_ranges_synthetic.cu
       tests/test_nn_kernels_workspace_synthetic.cu
       tests/test_nn_kernels_nvfp4_benchmark.cu
       tests/test_nn_kernels_operators_benchmark.cu
