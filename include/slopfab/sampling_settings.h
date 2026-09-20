@@ -13,6 +13,7 @@ namespace slopfab {
 // Unset fields inherit defaults. An explicit grid contains unshifted sigma
 // points including terminal zero; its length determines the evaluation count.
 struct SamplingSettings {
+  std::optional<int> default_steps;
   std::optional<float> video_sigma_shift;
   std::optional<float> audio_sigma_shift;
   std::optional<std::vector<float>> base_sigmas;

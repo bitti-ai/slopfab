@@ -23,6 +23,13 @@ SamplingSettings parse_sampling_settings(std::string_view text) {
   };
   for (const auto& [key, value] : root.as_object()) {
     if (key == "version") continue;
+    if (key == "default_steps") {
+      const double n = value.as_number();
+      if (!std::isfinite(n) || n < 2 || n > 1000000 || std::floor(n) != n)
+        throw std::invalid_argument("sampling settings: default_steps must be an integer in [2,1000000]");
+      settings.default_steps = static_cast<int>(n);
+      continue;
+    }
     if (key == "video_sigma_shift") settings.video_sigma_shift = scalar(value);
     else if (key == "audio_sigma_shift") settings.audio_sigma_shift = scalar(value);
     else if (key == "base_sigmas") {
@@ -37,6 +44,8 @@ SamplingSettings parse_sampling_settings(std::string_view text) {
 }
 
 void validate_sampling_settings(const SamplingSettings& settings) {
+  if (settings.default_steps && (*settings.default_steps < 2 || *settings.default_steps > 1000000))
+    throw std::invalid_argument("sampling settings: default_steps must be in [2,1000000]");
   for (const auto& shift : {settings.video_sigma_shift, settings.audio_sigma_shift}) {
     if (shift && (!std::isfinite(*shift) || *shift <= 0.0f))
       throw std::runtime_error("sampling settings: sigma shifts must be finite and positive");
@@ -50,6 +59,7 @@ void validate_sampling_settings(const SamplingSettings& settings) {
 void overlay_sampling_settings(SamplingSettings& destination,
                                const SamplingSettings& overrides) {
   validate_sampling_settings(overrides);
+  if (overrides.default_steps) destination.default_steps = overrides.default_steps;
   if (overrides.video_sigma_shift) destination.video_sigma_shift = overrides.video_sigma_shift;
   if (overrides.audio_sigma_shift) destination.audio_sigma_shift = overrides.audio_sigma_shift;
   if (overrides.base_sigmas) destination.base_sigmas = overrides.base_sigmas;

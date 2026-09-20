@@ -1,6 +1,6 @@
 // Running a resolved request.
 //
-// `pipeline.h` turns a request into a plan without touching a weight file;
+// `pipeline.h` turns a request into a plan by reading available checkpoint headers;
 // this runs the plan. It lives apart from `pipeline.h` because it needs the
 // decoders, and the dependency in this project runs one way — cuda depends on
 // core, never back — so the orchestration that touches both belongs on the
@@ -218,8 +218,33 @@ struct RunResult {
   double seconds_output = 0.0;
 };
 
+// Device-free validation shared by CLI, C API and runner. Plans can still be
+// inspected before checkpoint paths exist; execution validates file contents.
+void validate_generation_options(const GenerateRequest& request, const GeneratePlan& plan,
+                                 const RunOptions& options);
+
 RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                        const RunOptions& options = {});
+
+// Owns reusable host conditioning/reference state. Device stages still release
+// their weights between phases. Execution remains serialized while device
+// dispatch and profiling retain process-wide state; separate sessions isolate
+// caches, not concurrent GPU execution.
+class GenerationSession {
+ public:
+  GenerationSession();
+  ~GenerationSession();
+  GenerationSession(const GenerationSession&) = delete;
+  GenerationSession& operator=(const GenerationSession&) = delete;
+  void clear();
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+  friend RunResult run_generate(GenerationSession&, const GenerateRequest&,
+                                const GeneratePlan&, const RunOptions&);
+};
+RunResult run_generate(GenerationSession& session, const GenerateRequest& request,
+                       const GeneratePlan& plan, const RunOptions& options = {});
 
 // Releases tokenizer, conditioning and prepared-reference state retained by
 // `RunOptions::reuse_models`. The host must serialize this with run_generate.

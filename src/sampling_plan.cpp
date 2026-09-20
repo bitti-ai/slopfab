@@ -23,7 +23,7 @@ SamplingSettings file_settings(const std::string& path) {
 }
 
 bool has_settings(const SamplingSettings& settings) {
-  return settings.video_sigma_shift || settings.audio_sigma_shift || settings.base_sigmas;
+  return settings.default_steps || settings.video_sigma_shift || settings.audio_sigma_shift || settings.base_sigmas;
 }
 
 template <typename T>
@@ -40,6 +40,7 @@ void merge_adapter_field(std::optional<T>& target, const std::optional<T>& incom
 
 void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   SamplingSettings effective;
+  effective.default_steps = request.animate ? 4 : 50;
   effective.video_sigma_shift = kVideoSigmaShift;
   effective.audio_sigma_shift = kAudioSigmaShift;
   plan.sampling_sources = {"H3 defaults"};
@@ -47,7 +48,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   if (!request.transformer_path.empty() && std::filesystem::exists(request.transformer_path)) {
     SafeTensors checkpoint;
     checkpoint.open(request.transformer_path);
-    const auto architecture = dit::detect_transformer_architecture(checkpoint);
+    const auto architecture = plan.model.compatibility_architecture;
     plan.fasth3_v2 = architecture == dit::TransformerArchitecture::kFastH3V2PrunedTable;
     if (architecture == dit::TransformerArchitecture::kViggleAnimatePrunedTable)
       effective.video_sigma_shift = kViggleVideoSigmaShift;
@@ -81,6 +82,9 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
       throw std::invalid_argument("LoRA path must be nonempty and strength finite");
     if (lora.strength == 0.0f) continue;
     const auto settings = file_settings(lora.path);
+    merge_adapter_field(adapters.default_steps, settings.default_steps,
+                        request.num_inference_steps != 0 ? std::optional<int>{request.num_inference_steps}
+                                                         : overrides.default_steps, "default_steps");
     merge_adapter_field(adapters.video_sigma_shift, settings.video_sigma_shift,
                         overrides.video_sigma_shift, "video_sigma_shift");
     merge_adapter_field(adapters.audio_sigma_shift, settings.audio_sigma_shift,
@@ -112,7 +116,8 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   plan.video_sigma_shift = *effective.video_sigma_shift;
   plan.audio_sigma_shift = *effective.audio_sigma_shift;
   plan.num_inference_steps = effective.base_sigmas
-      ? static_cast<int>(effective.base_sigmas->size()) : request.num_inference_steps;
+      ? static_cast<int>(effective.base_sigmas->size())
+      : (request.num_inference_steps == 0 ? *effective.default_steps : request.num_inference_steps);
   sampler::FlowScheduler video(plan.video_sigma_shift), audio(plan.audio_sigma_shift);
   if (effective.base_sigmas) {
     video.set_base_sigmas(*effective.base_sigmas);

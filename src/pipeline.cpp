@@ -15,8 +15,6 @@
 namespace slopfab {
 namespace {
 
-constexpr int kSpatialCompression = 16;
-constexpr int kFps = 24;
 
 // The video decoder consumes 7-token temporal windows (`tokens_chunk_size` 5 +
 // `token_overlap` 2), so a latent shorter than that cannot be decoded at all.
@@ -26,10 +24,18 @@ constexpr int kMinLatentFrames = 7;
 constexpr int kMinFrames = 22;
 
 void append_media_identity(std::string& key, const GenerateRequest& request) {
-  key += request.animate ? "animate-v1" : "general";
-  if (request.animate) {
+  const auto settings = resolve_conditioning_settings(request);
+  key += settings.cache_identity();
+  if (settings.references_at_target_canvas) {
+    LatentGeometry geometry;
+    if (!request.transformer_path.empty() && std::filesystem::exists(request.transformer_path)) {
+      SafeTensors checkpoint;
+      checkpoint.open(request.transformer_path);
+      geometry = read_model_geometry(checkpoint);
+    }
+    key += ":geometry:" + geometry.fingerprint();
     key += ":" + std::to_string(request.canvas_width) + "x" + std::to_string(request.canvas_height);
-    key += request.preserve_driving_audio ? ":pinned-audio" : ":generated-audio";
+    key += ":aspect:" + std::to_string(request.aspect_w) + ":" + std::to_string(request.aspect_h);
   }
   if (request.reference_media.empty()) return;
   key.push_back('\0');
@@ -56,18 +62,21 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::invalid_argument("continuation is unavailable in still-image mode");
   validate_refmods(request.refmods);
   validate_reference_media(request.reference_image_paths.size(), request.reference_media);
-  if (request.preserve_driving_audio && !request.animate)
-    throw std::invalid_argument("preserve_driving_audio requires Animate mode");
-  if (request.animate) {
-    if (request.still_image || request.continuation || request.has_refmods() ||
-        request.reference_image_paths.size() != 1 || request.reference_media.size() != 1 ||
-        !request.reference_media.front()->is_video())
-      throw std::invalid_argument("Animate requires one driving video and one repainted image, without continuation or refmods");
-    if (request.schedule != sampler::ScheduleKind::kDefault)
-      throw std::invalid_argument("Animate requires the default shifted schedule");
-    if (request.preserve_driving_audio && !request.reference_media.front()->soundtrack())
-      throw std::invalid_argument("Animate audio preservation requires a driving soundtrack");
+  GeneratePlan plan;
+  if (!request.transformer_path.empty() && std::filesystem::exists(request.transformer_path)) {
+    SafeTensors checkpoint;
+    checkpoint.open(request.transformer_path);
+    plan.checkpoint_available = true;
+    plan.model = dit::resolve_model_descriptor(checkpoint);
+    plan.geometry = read_model_geometry(checkpoint);
+    require_h3_latent_geometry(plan.geometry);
+    if ((request.has_references() || request.continuation) && !plan.model.supports_references)
+      throw std::invalid_argument("selected model does not support reference conditioning");
+    if (plan.model.compressed_attention && (request.has_references() || request.continuation))
+      throw std::invalid_argument("compressed attention currently supports unconditioned media layouts only");
   }
+  plan.conditioning = resolve_conditioning_settings(request);
+  validate_conditioning_request(request, plan.conditioning);
   if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
     bool has_video = bool(request.continuation);
     for (const auto& media : request.reference_media) has_video |= media->is_video();
@@ -79,24 +88,26 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::runtime_error("MiniMax-H3 Ref2VA accepts at most 9 reference images, got " +
                              std::to_string(request.reference_image_paths.size()));
   }
-  GeneratePlan plan;
   if (request.has_explicit_canvas()) {
-    dit::validate_canvas_size(request.canvas_height, request.canvas_width);
+    dit::validate_canvas_size(request.canvas_height, request.canvas_width, plan.geometry);
     plan.canvas_height = request.canvas_height;
     plan.canvas_width = request.canvas_width;
   } else if (request.continuation) {
     plan.canvas_height = request.continuation->height;
     plan.canvas_width = request.continuation->width;
-  } else if (request.animate) {
+  } else if (plan.conditioning.canvas_from_reference_video) {
     const auto& frame = request.reference_media.front()->frames().front()->image;
-    const int short_edge = std::max(32, std::min(frame.width, frame.height) / 32 * 32);
+    const int multiple = plan.geometry.canvas_multiple;
+    const int short_edge = std::max(multiple, std::min(frame.width, frame.height) / multiple * multiple);
     dit::resolve_canvas_size(frame.width, frame.height, &plan.canvas_height, &plan.canvas_width,
-                             short_edge, INT32_MAX);
+                             short_edge, INT32_MAX, plan.geometry);
   } else {
     dit::resolve_canvas_size(static_cast<double>(request.aspect_w),
                              static_cast<double>(request.aspect_h), &plan.canvas_height,
-                             &plan.canvas_width);
+                             &plan.canvas_width, 768, plan.geometry.trained_max_pixels, plan.geometry);
   }
+
+  dit::validate_canvas_size(plan.canvas_height, plan.canvas_width, plan.geometry);
 
   if (request.continuation) {
     if (plan.canvas_width != request.continuation->width ||
@@ -106,22 +117,22 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
         request.continuation_overlap_frames, request.num_frames);
     plan.aligned_frames = plan.continuation.output_frames;
     plan.sampling_frames = plan.continuation.window_frames;
-    plan.duration_seconds = double(plan.aligned_frames) / kFps;
+    plan.duration_seconds = double(plan.aligned_frames) / plan.geometry.fps;
   } else if (request.still_image) {
     plan.aligned_frames = 1;
-    plan.duration_seconds = 1.0 / kFps;
+    plan.duration_seconds = 1.0 / plan.geometry.fps;
   } else {
-    plan.aligned_frames = dit::align_num_frames(request.num_frames);
-    plan.duration_seconds = static_cast<double>(plan.aligned_frames) / kFps;
+    plan.aligned_frames = dit::align_num_frames(request.num_frames, plan.geometry);
+    plan.duration_seconds = static_cast<double>(plan.aligned_frames) / plan.geometry.fps;
 
     // Checked here rather than in the decoder so the run fails in milliseconds
     // instead of after uploading 9 GB of VAE weights. The decoder does keep its
     // own guard — this one is about where the user finds out.
-    if (dit::video_latent_num_frames(plan.aligned_frames) < kMinLatentFrames) {
+    if (dit::video_latent_num_frames(plan.aligned_frames, plan.geometry) < kMinLatentFrames) {
       throw std::runtime_error(
           "num_frames = " + std::to_string(request.num_frames) + " aligns to " +
           std::to_string(plan.aligned_frames) + " frames, which is " +
-          std::to_string(dit::video_latent_num_frames(plan.aligned_frames)) +
+          std::to_string(dit::video_latent_num_frames(plan.aligned_frames, plan.geometry)) +
           " latent frames; the video decoder needs at least " +
           std::to_string(kMinLatentFrames) + ". Ask for at least 6 frames, which aligns up to " +
           std::to_string(kMinFrames) + ".");
@@ -129,25 +140,24 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   }
 
   if (!request.continuation) plan.sampling_frames = plan.aligned_frames;
-  if (request.animate && plan.aligned_frames > 360)
-    throw std::invalid_argument("Animate supports at most 15 seconds after frame alignment");
+  if (plan.conditioning.max_frames > 0 && plan.aligned_frames > plan.conditioning.max_frames)
+    throw std::invalid_argument("aligned frame count exceeds conditioning max_frames");
   plan.layout.num_text = 0;  // filled in after tokenisation
   plan.layout.num_condition_video = 0;  // t2va has no conditioning rows
   plan.layout.num_latent_frames =
-      request.still_image ? 1 : dit::video_latent_num_frames(plan.sampling_frames);
-  plan.layout.latent_height = plan.canvas_height / kSpatialCompression;
-  plan.layout.latent_width = plan.canvas_width / kSpatialCompression;
+      request.still_image ? 1 : dit::video_latent_num_frames(plan.sampling_frames, plan.geometry);
+  plan.layout.latent_height = plan.canvas_height / plan.geometry.spatial_compression;
+  plan.layout.latent_width = plan.canvas_width / plan.geometry.spatial_compression;
   plan.layout.num_audio_latents =
       request.continuation ? plan.continuation.window_audio_latents :
-      (request.still_image ? 0 : dit::audio_latents_for_frames(plan.sampling_frames));
-  plan.layout.num_audio_rows = 2 * plan.layout.num_audio_latents;
-  plan.layout.num_video_rows = plan.layout.num_latent_frames * plan.layout.rows_per_frame();
+      (request.still_image ? 0 : dit::audio_latents_for_frames(plan.sampling_frames, plan.geometry));
+  plan.layout.num_audio_rows = plan.geometry.audio_channels * plan.layout.num_audio_latents;
+  plan.layout.num_video_rows = plan.layout.num_latent_frames * plan.layout.rows_per_frame(plan.geometry);
   if (!request.reference_media.empty()) {
     plan.layout.condition_audio_is_explicit = true;
     for (const auto& media : request.reference_media) {
-      const auto options = request.animate
-          ? animate_reference_options(plan.canvas_width, plan.canvas_height) : ReferenceConditionOptions{};
-      const auto geometry = reference_condition_plan(*media, double(plan.sampling_frames) / kFps, options).geometry;
+      const auto options = plan.conditioning.reference_options(plan.canvas_width, plan.canvas_height);
+      const auto geometry = reference_condition_plan(*media, double(plan.sampling_frames) / plan.geometry.fps, options).geometry;
       plan.layout.num_condition_video += geometry.video_rows();
       plan.layout.num_condition_audio += geometry.audio_rows();
     }
@@ -162,8 +172,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
 
   if (request.continuation) {
     plan.layout.condition_audio_is_explicit = true;
-    plan.layout.num_condition_video += plan.continuation.overlap_video_latents * plan.layout.rows_per_frame();
-    plan.layout.num_condition_audio += 2 * plan.continuation.overlap_audio_latents;
+    plan.layout.num_condition_video += plan.continuation.overlap_video_latents * plan.layout.rows_per_frame(plan.geometry);
+    plan.layout.num_condition_audio += plan.geometry.audio_channels * plan.continuation.overlap_audio_latents;
   }
 
   resolve_sampling_plan(request, plan);
@@ -357,10 +367,10 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   char provenance[64];
   if (request.has_explicit_canvas()) {
     std::snprintf(provenance, sizeof(provenance), "as given%s",
-                  dit::canvas_exceeds_trained_area(plan.canvas_height, plan.canvas_width)
+                  dit::canvas_exceeds_trained_area(plan.canvas_height, plan.canvas_width, plan.geometry)
                       ? ", above the trained area"
                       : "");
-  } else if (request.animate) {
+  } else if (plan.conditioning.canvas_from_reference_video) {
     std::snprintf(provenance, sizeof(provenance), "from driving video, aligned to 32");
   } else {
     std::snprintf(provenance, sizeof(provenance), "from %d:%d", request.aspect_w,
@@ -390,7 +400,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       plan.canvas_height, plan.canvas_width, provenance,
       request.still_image ? "still image (one video latent, no target audio)" : "video",
       request.num_frames, plan.aligned_frames, request.still_image ? "output" : "aligned",
-      plan.duration_seconds, kFps,
+      plan.duration_seconds, plan.geometry.fps,
       l.num_latent_frames, l.latent_height, l.latent_width, l.rows_per_frame(),
       l.num_audio_latents, l.num_audio_rows, l.total_rows(), plan.num_inference_steps,
       plan.num_model_evaluations(), static_cast<double>(plan.video_sigmas.front()),
@@ -400,13 +410,12 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigma_shift),
       static_cast<unsigned long long>(request.seed), request.out_path.c_str());
   std::string description = buf;
-  if (request.animate) {
-    description += "  Animate             fixed 362-token embedding; video then repainted image\n";
-    description += "  reference short edge " + std::to_string(std::min(plan.canvas_width, plan.canvas_height)) + "\n";
-    description += request.preserve_driving_audio
-        ? "  target audio        pinned driving soundtrack (clean t=1)\n"
-        : "  target audio        generated; driving reference soundtrack omitted\n";
-  }
+  description += "  conditioning        " + plan.conditioning.cache_identity() + "\n";
+  description += "  model contract      " + plan.model.family + " (" + plan.model.origin + ")\n";
+  if (plan.conditioning.fixed_prompt_tokens > 0)
+    description += "  prompt              fixed " + std::to_string(plan.conditioning.fixed_prompt_tokens) + "-token embedding\n";
+  if (plan.conditioning.pin_target_audio)
+    description += "  target audio        pinned driving soundtrack (clean t=1)\n";
   if (request.continuation) {
     description += "  continuation        " + std::to_string(request.continuation->frames) +
         " source + " + std::to_string(plan.continuation.extension_frames) + " new frames\n" +

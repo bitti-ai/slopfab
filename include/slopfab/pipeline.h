@@ -32,6 +32,9 @@
 #include "slopfab/lora.h"
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/sampling_settings.h"
+#include "slopfab/conditioning_settings.h"
+#include "slopfab/dit/checkpoint.h"
+#include "slopfab/model_geometry.h"
 
 namespace slopfab {
 
@@ -84,10 +87,11 @@ struct GenerateRequest {
 
   // Sigma grid points *including* the terminal zero, so the model runs
   // `num_inference_steps - 1` times.
-  int num_inference_steps = 50;
+  int num_inference_steps = 0;  // zero inherits the model/task recipe
   sampler::ScheduleKind schedule = sampler::ScheduleKind::kDefault;
   // Explicit overrides of checkpoint and enabled-adapter sampling defaults.
   SamplingSettings sampling;
+  ConditioningSettings conditioning;
   std::vector<LoraSpec> loras;
 
   // Viggle's frozen-conditioning recipe: driving video then repainted frame,
@@ -155,6 +159,10 @@ struct GenerateRequest {
 // in the layout is filled in only after tokenisation, so it is zero here and
 // `sequence_length_without_text` is what can be known in advance.
 struct GeneratePlan {
+  dit::ModelDescriptor model;
+  LatentGeometry geometry;
+  bool checkpoint_available = false;
+  ResolvedConditioning conditioning;
   bool fasth3_v2 = false;
   // Fixed grids use Euler without approximate step/block/MotionCache reuse.
   bool fixed_sampling_grid = false;

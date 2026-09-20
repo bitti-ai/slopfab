@@ -1,6 +1,6 @@
 # Sampling settings
 
-Models and LoRAs can supply video/audio sigma shifts and fixed sampling grids as data. These settings work with the existing H3 flow scheduler on CUDA and Vulkan; a different transformer graph or velocity convention still needs a model-family implementation.
+Models and LoRAs can supply default step counts, video/audio sigma shifts and fixed sampling grids as data. These settings work with the existing H3 flow scheduler on CUDA and Vulkan; a different transformer graph or velocity convention still needs a model-family implementation.
 
 For example, save this as `sampling.json`:
 
@@ -21,7 +21,9 @@ The example specifies four evaluations. It illustrates the format; choose values
 
 Only `version` is required. Omitting a field inherits it. Shifts must be finite and positive. A grid must have at least two finite points, start in `(0,1]`, decrease strictly, and end at zero. Shifted grids must also remain valid in float32. Unsupported versions, unknown fields, incorrect types and invalid grids are errors. JSON syntax uses the repository's existing parser.
 
-Omit `base_sigmas` to inherit the selected grid, or use the ordinary `--steps` linspace if no lower layer supplies a grid. A fixed grid determines its own length and takes precedence over `--steps`. Fixed grids currently require Euler and disable approximate step, block and MotionCache reuse. This restriction also applies when the grid comes from metadata.
+Omit `base_sigmas` to inherit the selected grid, or use the ordinary linspace if no lower layer supplies a grid. `default_steps` is an integer from 2 to 1,000,000 specifying grid points. Explicit `--steps` takes precedence over this default and resolves conflicting adapter step defaults. A fixed grid determines its own length and takes precedence over `--steps`. Fixed grids currently require Euler and disable approximate step, block and MotionCache reuse. This restriction also applies when the grid comes from metadata.
+
+CLI, C++ and C API now inherit the same recipe defaults: ordinarily 50 grid points, or 4 for Animate. The CLI previously forced 15. `GenerateRequest::num_inference_steps = 0` means inherit; positive explicit counts are retained when toggling Animate. Set an explicit count to preserve an old CLI invocation's evaluation count.
 
 ## Model and adapter metadata
 
@@ -66,4 +68,4 @@ The setter replaces the request's explicit overrides. Invalid input leaves exist
 
 ## Further architecture work
 
-This change makes sampling recipes extensible without a new model-named scheduler branch. Conditioning policy, geometry, checkpoint schemas, backend capabilities, session ownership, and the large source files remain separate follow-up work described in the [architecture review](architecture_review.md).
+See [conditioning settings and sessions](conditioning_settings.md), [model contracts](model_contracts.md), [backend contracts](backend_contracts.md) and the updated [architecture review](architecture_review.md) for the accompanying implementation and remaining family-specific constraints.
