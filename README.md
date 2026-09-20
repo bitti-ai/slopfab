@@ -5,18 +5,21 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 ## Features
 
 - **Text-to-video with audio**, configurable resolution, frame count, sampling steps, seeds and batch generation.
-- **FastH3 V2 on CUDA and Vulkan**, with learned VSA-H3 sparse attention and automatic eight-step scheduling. See [FastH3 V2](docs/fasth3_v2.md).
-- **Optional MotionCache on CUDA and Vulkan**, reusing motion-aware video/audio residuals to reduce transformer calls. See [MotionCache](docs/motioncache.md).
 - **Image, video and audio references** with compatible Ref2VA models, including reusable [refmods](docs/refmods.md).
 - **CUDA and Vulkan inference** with native text and reference conditioning, plus selectable attention backends.
 - **LoRA adapters**, adapter stacking and the [TaoMate three-step schedule](docs/loras.md).
 - **Model and LoRA sampling settings**, with [metadata defaults and JSON overrides](docs/sampling_settings.md).
 - **Configurable conditioning and isolated session caches**, with [model/LoRA recipes and library APIs](docs/conditioning_settings.md).
-- **Viggle-Animate checkpoint and adapter loading**, with [fixed-conditioning and driving-audio options](docs/viggle_animate.md).
 - **Video continuation** through [saved video and audio latents](docs/continuation.md).
 - **Quantized checkpoints** and [automatic CUDA transformer offloading](docs/denoising_memory.md) to manage GPU memory.
 - **A C API** for asynchronous video and still-image generation, progress callbacks, cancellation and model reuse.
 - **MP4 output through FFmpeg**, raw Y4M/WAV output, checkpoint inspection and tensor comparison tools.
+
+## Misc
+
+- **FastH3 V2 on CUDA and Vulkan**, with learned VSA-H3 sparse attention and automatic eight-step scheduling. See [FastH3 V2](docs/fasth3_v2.md).
+- **Optional MotionCache on CUDA and Vulkan**, reusing motion-aware video/audio residuals to reduce transformer calls. See [MotionCache](docs/motioncache.md).
+- **Viggle-Animate checkpoint and adapter loading**, with [fixed-conditioning and driving-audio options](docs/viggle_animate.md).
 
 ## Build
 
