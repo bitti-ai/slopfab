@@ -2,6 +2,7 @@
 #include "slopfab/dit/adaln.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/tensor_convert.h"
+#include "slopfab/nf4.h"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -61,6 +62,42 @@ bool supported(const std::string& name) {
   return tail == "attn.qkv_proj" || tail == "attn.out_proj" || tail == "mlp.fc1" ||
          tail == "mlp.fc2" || split_qkv(name);
 }
+bool needs_output_basis_conversion(const std::string& key) {
+  return key.compare(0, 19, "transformer_blocks.") == 0 &&
+      key.find(".ff.net.0.proj.") != std::string::npos;
+}
+bool validate_target(const SafeTensors& base, const std::string& name, const LoraFactors& f) {
+  const bool split = split_qkv(name);
+  const bool adaln = adaln_target(name);
+  const std::string base_name = split ? name.substr(0, name.size() - 4) + "qkv_proj" : name;
+  const TensorView& w = base.at(base_name + ".weight");
+  const bool packed = w.dtype == DType::kU8 && base.find(base_name + ".weight_scale");
+  const bool nf4 = is_nf4_weight(base, base_name + ".weight");
+  const auto shape = nf4 ? read_nf4_state(base, base_name + ".weight", "LoRA").shape : w.shape;
+  const bool rebase = adaln && base.find("adaln_t_table") &&
+      shape == std::vector<int64_t>{f.out, dit::AdaLNTable::kRank} && f.in != dit::AdaLNTable::kRank;
+  if (!rebase && (shape != std::vector<int64_t>{int64_t(f.out) * (split ? 3 : 1), packed ? f.in / 2 : f.in} || (packed && f.in % 2)))
+    throw std::runtime_error("LoRA: base model dimensions do not match " + name);
+  if (adaln && (!base.find("adaln_t_table") || shape != std::vector<int64_t>{f.out, dit::AdaLNTable::kRank} ||
+      (w.dtype != DType::kF32 && w.dtype != DType::kF16 && w.dtype != DType::kBF16)))
+    throw std::runtime_error("LoRA: AdaLN updates require floating-point pruned rank-8 base projections: " + name);
+  if ((name == "video_patch_proj" || name == "final_layer.video_out") &&
+      (w.dtype != DType::kF32 && w.dtype != DType::kF16 && w.dtype != DType::kBF16))
+    throw std::runtime_error("LoRA: video endpoint must have floating-point weights: " + name);
+  // H3 AWQ can fold scales into preceding norms. There is no reliable
+  // inverse coordinate transform for an arbitrary adapter in that case.
+  if (base.find(base_name + ".pre_quant_scale"))
+    throw std::runtime_error("LoRA: AWQ activation scaling is unsupported for " + name);
+  return rebase;
+}
+void convert_output_basis(LoraFactors& f, bool needed) {
+  if (needed) {
+    if (f.out % 2) throw std::runtime_error("LoRA: SwiGLU output must have two equal halves");
+    // Diffusers SwiGLU stores [value; gate]; native H3 stores [gate; value].
+    std::rotate(f.b.begin(), f.b.begin() + f.b.size() / 2, f.b.end());
+  }
+}
+
 void AdaLNBasis::load(const SafeTensors& base, const SafeTensors& adapter, int width) {
     source = std::make_unique<detail::LoraGrid>();
     source->load(adapter, width, false);

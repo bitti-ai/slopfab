@@ -59,7 +59,7 @@ void validate_plan(const LatentClip& source, const ContinuationPlan& p) {
 
 dit::SequenceLayout LatentClip::layout() const {
   require_h3_latent_geometry(geometry);
-  dit::validate_canvas_size(height, width);
+  dit::validate_canvas_size(height, width, geometry);
   require(frames == 1 || (frames >= 22 && frames % 17 == 5), "invalid frame count");
   // Packed row indices and downstream tensor counts use signed 32-bit integers.
   const int64_t f = frames == 1 ? 1 : dit::video_latent_num_frames(frames);

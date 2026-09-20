@@ -6,11 +6,9 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <utility>
 
-#include "slopfab/nf4.h"
 #include "slopfab/json.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/dit/checkpoint.h"
@@ -30,7 +28,6 @@ std::string normalize(std::string name) {
   return name;
 }
 using detail::h3::projection_name;
-using detail::h3::split_qkv;
 using detail::h3::adaln_target;
 using detail::h3::supported;
 using detail::h3::AdaLNBasis;
@@ -96,9 +93,7 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
         const std::string name = projection_name(key.substr(0, key.size() - suffix.first.size()));
         if (!supported(name)) throw std::runtime_error("LoRA: unsupported target " + name);
         Pair& pair = pairs[name];
-        if (key.compare(0, 19, "transformer_blocks.") == 0 &&
-            key.find(".ff.net.0.proj.") != std::string::npos)
-          pair.swap_ffn = true;
+        if (detail::h3::needs_output_basis_conversion(key)) pair.swap_ffn = true;
         const TensorView*& slot = suffix.second == 0 ? pair.a : suffix.second == 1 ? pair.b : pair.alpha;
         if (slot) throw std::runtime_error("LoRA: duplicate tensor for " + name);
         slot = &item.second;
@@ -121,27 +116,7 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
       f.rank = static_cast<int>(p.a->shape[0]);
       f.in = static_cast<int>(p.a->shape[1]);
       f.out = static_cast<int>(p.b->shape[0]);
-      const bool split = split_qkv(name);
-      const bool adaln = adaln_target(name);
-      const std::string base_name = split ? name.substr(0, name.size() - 4) + "qkv_proj" : name;
-      const TensorView& w = base.at(base_name + ".weight");
-      const bool packed = w.dtype == DType::kU8 && base.find(base_name + ".weight_scale");
-      const bool nf4 = is_nf4_weight(base, base_name + ".weight");
-      const auto shape = nf4 ? read_nf4_state(base, base_name + ".weight", "LoRA").shape : w.shape;
-      const bool rebase = adaln && base.find("adaln_t_table") &&
-          shape == std::vector<int64_t>{f.out, 8} && f.in != 8;
-      if (!rebase && (shape != std::vector<int64_t>{int64_t(f.out) * (split ? 3 : 1), packed ? f.in / 2 : f.in} || (packed && f.in % 2)))
-        throw std::runtime_error("LoRA: base model dimensions do not match " + name);
-      if (adaln && (!base.find("adaln_t_table") || shape != std::vector<int64_t>{f.out, 8} ||
-          (w.dtype != DType::kF32 && w.dtype != DType::kF16 && w.dtype != DType::kBF16)))
-        throw std::runtime_error("LoRA: AdaLN updates require floating-point pruned rank-8 base projections: " + name);
-      if ((name == "video_patch_proj" || name == "final_layer.video_out") &&
-          (w.dtype != DType::kF32 && w.dtype != DType::kF16 && w.dtype != DType::kBF16))
-        throw std::runtime_error("LoRA: video endpoint must have floating-point weights: " + name);
-      // H3 AWQ can fold scales into preceding norms. There is no reliable
-      // inverse coordinate transform for an arbitrary adapter in that case.
-      if (base.find(base_name + ".pre_quant_scale"))
-        throw std::runtime_error("LoRA: AWQ activation scaling is unsupported for " + name);
+      const bool rebase = detail::h3::validate_target(base, name, f);
       float alpha = has_metadata_alpha ? metadata_alpha : static_cast<float>(f.rank);
       if (p.alpha) {
         if (p.alpha->numel() != 1) throw std::runtime_error("LoRA: alpha must be scalar for " + name);
@@ -149,11 +124,7 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
       }
       f.a = values(*p.a);
       f.b = values(*p.b);
-      if (p.swap_ffn) {
-        if (f.out % 2) throw std::runtime_error("LoRA: SwiGLU output must have two equal halves");
-        // Diffusers SwiGLU stores [value; gate]; native H3 stores [gate; value].
-        std::rotate(f.b.begin(), f.b.begin() + f.b.size() / 2, f.b.end());
-      }
+      detail::h3::convert_output_basis(f, p.swap_ffn);
       const float scale = spec.strength * (alpha / static_cast<float>(f.rank));
       if (!std::isfinite(scale)) throw std::runtime_error("LoRA: non-finite scale for " + name);
       for (float& v : f.b) {

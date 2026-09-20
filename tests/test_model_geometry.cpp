@@ -2,6 +2,8 @@
 #include "slopfab/model_geometry.h"
 #include "slopfab/dit/packing.h"
 #include "slopfab/continuation.h"
+#include "slopfab/pipeline.h"
+#include "slopfab/safetensors_write.h"
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
@@ -79,4 +81,35 @@ SLOPFAB_TEST(model_geometry_archive_preserves_contract) {
   std::filesystem::remove(path);
   clip.geometry.fps=30;
   CHECK(rejects([&] { clip.validate(); }));
+}
+
+SLOPFAB_TEST(model_geometry_canvas_policy_reaches_plan_and_reference_cache) {
+  using namespace slopfab;
+  const auto path = std::filesystem::temp_directory_path()/"slopfab_geometry_policy.safetensors";
+  auto write = [&](int pixels) {
+    write_safetensors(path.string(), {
+        {"adaln_t_table", {1025,8}, std::vector<float>(1025*8)},
+        {"blocks.0.adaln_proj.linear.weight", {18,8}, std::vector<float>(18*8)}},
+        {{"slopfab.geometry", "{\"version\":1,\"trained_max_pixels\":" + std::to_string(pixels) + "}"}});
+  };
+  GenerateRequest request;
+  request.transformer_path = path.string();
+  request.still_image = true;
+  request.aspect_w = request.aspect_h = 1;
+  request.conditioning.references_at_target_canvas = true;
+  write(256*256);
+  auto plan = resolve_plan(request);
+  CHECK(plan.canvas_width == 256 && plan.canvas_height == 256);
+  CHECK(plan.layout.latent_width == 16 && plan.layout.latent_height == 16);
+  const auto cache = reference_cache_key(request);
+  write(512*512);
+  plan = resolve_plan(request);
+  CHECK(plan.canvas_width == 512 && plan.canvas_height == 512);
+  CHECK(cache != reference_cache_key(request));
+  LatentGeometry policy;
+  policy.min_aspect = 0.125;
+  policy.max_aspect = 8;
+  require_h3_latent_geometry(policy);
+  dit::validate_canvas_size(32,256,policy);
+  std::filesystem::remove(path);
 }

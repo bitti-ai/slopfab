@@ -68,7 +68,15 @@ std::string geometry_json(const LatentGeometry& g) {
 }
 std::string LatentGeometry::fingerprint() const { return geometry_json(*this); }
 void require_h3_latent_geometry(const LatentGeometry& g) {
-  require(g.fingerprint() == h3_latent_geometry().fingerprint(),
+  validate_latent_geometry(g);
+  // Canvas policy does not change tensor layout, codec arithmetic or positions.
+  // The planner consumes these profile defaults before allocating model state.
+  auto structural = g;
+  const auto& h3 = h3_latent_geometry();
+  structural.trained_max_pixels = h3.trained_max_pixels;
+  structural.min_aspect = h3.min_aspect;
+  structural.max_aspect = h3.max_aspect;
+  require(structural.fingerprint() == h3.fingerprint(),
           "checkpoint geometry is not supported by the H3 transformer and codecs");
 }
 LatentGeometry parse_model_geometry(std::string_view text) {
