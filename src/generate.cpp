@@ -46,372 +46,38 @@
 #include "slopfab/vulkan/vae_decoder.h"
 #endif
 
+#include "generation/session_state.h"
+#include "generation/helpers.h"
+#include "generation/prefetch.h"
+#include "generation/decode.h"
+#include "generation/prompt.h"
 namespace slopfab {
-namespace {
-
-std::vector<uint8_t> resize_rgb_bilinear(const RGBImage& in, int width, int height) {
-  std::vector<uint8_t> out(static_cast<size_t>(width) * height * 3);
-  for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
-    const float sy = (y + .5f) * in.height / height - .5f;
-    const float sx = (x + .5f) * in.width / width - .5f;
-    const int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, in.height - 1);
-    const int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, in.width - 1);
-    const int y1 = std::min(y0 + 1, in.height - 1), x1 = std::min(x0 + 1, in.width - 1);
-    const float fy = std::clamp(sy - std::floor(sy), 0.0f, 1.0f);
-    const float fx = std::clamp(sx - std::floor(sx), 0.0f, 1.0f);
-    for (int c = 0; c < 3; ++c) {
-      auto at=[&](int yy,int xx){return in.pixels[(static_cast<size_t>(yy)*in.width+xx)*3+c];};
-      const float v=(1-fy)*((1-fx)*at(y0,x0)+fx*at(y0,x1))+fy*((1-fx)*at(y1,x0)+fx*at(y1,x1));
-      out[(static_cast<size_t>(y)*width+x)*3+c]=static_cast<uint8_t>(std::clamp(std::lround(v),0l,255l));
-    }
-  } return out;
-}
-
-using Clock = std::chrono::steady_clock;
-
-double seconds_since(Clock::time_point start) {
-  return std::chrono::duration<double>(Clock::now() - start).count();
-}
-
-std::string strip_extension(const std::string& path) {
-  const size_t slash = path.find_last_of("/\\");
-  const size_t dot = path.find_last_of('.');
-  if (dot == std::string::npos) return path;
-  if (slash != std::string::npos && dot < slash) return path;
-  return path.substr(0, dot);
-}
-
-// The two VAEs both ship per-channel latent statistics as tensors. Prefer them
-// over the copies in the config JSON: the tensors are what the checkpoint
-// actually carries, and a config file can drift from the weights beside it.
-std::vector<float> read_stat(const SafeTensors& st, const char* name, int expect) {
-  const TensorView* found = st.find(name);
-  if (found == nullptr && expect == 24) {
-    if (std::strcmp(name, "latents_mean") == 0) return vae::default_video_latents_mean();
-    if (std::strcmp(name, "latents_std") == 0) return vae::default_video_latents_std();
-  }
-  const TensorView& view = found ? *found : st.at(name);
-  std::vector<float> out = to_f32(view);
-  if (static_cast<int>(out.size()) != expect) {
-    throw std::runtime_error(std::string("vae: ") + name + " has " + std::to_string(out.size()) +
-                             " entries, expected " + std::to_string(expect));
-  }
-  return out;
-}
-
-// Same spelling as safetensors.cpp's, and file-local for the same reason:
-// `std::getenv` is C4996 under /W4 on MSVC.
-bool env_flag(const char* name) {
-#ifdef _MSC_VER
-  size_t len = 0;
-  char buf[8] = {};
-  if (getenv_s(&len, buf, sizeof(buf), name) != 0) return false;
-  return len != 0 && buf[0] == '1';
-#else
-  const char* v = std::getenv(name);
-  return v != nullptr && v[0] == '1';
-#endif
-}
-
-// Reads the VAE checkpoints into the page cache while the denoise loop runs.
-//
-// The loop is minutes long and touches no disk at all; the video VAE's read
-// then starts stone cold the moment it ends, and on a clean profile that read
-// alone is 42.83% of the whole video VAE stage. Demand-faulting a mapping is a
-// synchronous one-request-at-a-time walk, which is why the hint is worth
-// roughly 3x on a cold file (safetensors.h) and why it wants to be issued from
-// somewhere the latency does not show.
-//
-// It is advisory and correctness-neutral. The worker opens its own mapping,
-// hints it, and never hands anything to the main path, which opens the file
-// itself as before; `prefetch()` can fail or be ignored and every caller is
-// still correct, just slower. On an already-resident mapping the hint costs a
-// documented 0.4-0.8 s, and here that is paid off the critical path.
-//
-// It is not, however, free of externally visible effects, and one is worth
-// naming. `SafeTensors::open` uses `FILE_SHARE_READ` alone
-// (core/safetensors.cpp:142-143), so holding the mapping across the loop locks
-// both VAE checkpoints against writing and deletion for the whole denoise
-// rather than for the ~1.2 s of the load. Replacing a VAE mid-run was never
-// sensible and the lock arguably protects against it, but the window grew from
-// seconds to minutes and that is a behaviour change, not a no-op.
-//
-// The joiner is RAII rather than a bare `std::thread` because the denoise block
-// can leave by return *or* by exception, and a live thread holding a mapping
-// while the main path unwinds is a crash, not a slow run.
-class CheckpointPrefetch {
- public:
-  CheckpointPrefetch() = default;
-  CheckpointPrefetch(const CheckpointPrefetch&) = delete;
-  CheckpointPrefetch& operator=(const CheckpointPrefetch&) = delete;
-  ~CheckpointPrefetch() { join(); }
-
-  // Off under the same idiom `prefetch()` itself honours, so the same binary
-  // can be run both ways. Checked here as well so the flag also skips the
-  // thread and the header reads, not just the hint.
-  void start(std::vector<std::string> paths, bool verbose) {
-    join();
-    verbose_ = verbose;
-    reported_ = false;
-    skipped_ = false;
-    spawn_failed_ = false;
-    requested_ = 0;
-    opened_ = 0;
-    accepted_ = 0;
-    bytes_ = 0;
-    if (env_flag("SLOPFAB_NO_PREFETCH")) {
-      skipped_ = true;
-      return;
-    }
-    paths.erase(std::remove_if(paths.begin(), paths.end(),
-                               [](const std::string& p) { return p.empty(); }),
-                paths.end());
-    if (paths.empty()) return;
-    requested_ = paths.size();
-    // `std::thread`'s constructor throws `std::system_error` when the process
-    // cannot spawn one. Letting that escape would kill a generation that was
-    // about to denoise perfectly well, for the sake of an optimisation whose
-    // whole contract is that losing it costs only time. Degrade to demand
-    // faulting instead — which is exactly what the run did before this class
-    // existed.
-    try {
-      worker_ = std::thread([this, paths = std::move(paths)] {
-        for (const std::string& path : paths) {
-          try {
-            // Held open rather than closed here: PrefetchVirtualMemory returns
-            // as soon as the read is *initiated*, so unmapping immediately after
-            // it would race the readahead it just asked for. The mappings are
-            // dropped in `join()`, by which point the loop has had minutes.
-            SafeTensors file;
-            file.open(path);
-            ++opened_;
-            if (file.prefetch()) {
-              ++accepted_;
-              bytes_ += file.file_size();
-            }
-            files_.push_back(std::move(file));
-          } catch (...) {
-            // A missing or malformed checkpoint fails on the main path in a
-            // moment, with the message and the exit code the user needs. There
-            // is nothing this thread can usefully add, and throwing out of it
-            // would call std::terminate. The counters above are what makes the
-            // swallow visible rather than silent.
-          }
-        }
-      });
-    } catch (const std::system_error&) {
-      // Reported on its own line rather than folded into "nothing to do":
-      // a machine that cannot spawn a thread is a real condition worth seeing,
-      // and it must not look like a run that was given no VAE paths.
-      spawn_failed_ = true;
-    }
-  }
-
-  // Reports as well as joins, because the whole value of this class has to be
-  // established by an A/B against `SLOPFAB_NO_PREFETCH=1` — and without a line
-  // in the log, "the hint was refused", "the file would not open", "the thread
-  // would not start", "the flag was set" and "it all worked" are five different
-  // runs that look identical.
-  void join() {
-    if (worker_.joinable()) worker_.join();
-    if (verbose_ && !reported_) {
-      reported_ = true;
-      if (skipped_) {
-        std::printf("prefetch    off (SLOPFAB_NO_PREFETCH=1); the vae load demand faults\n");
-      } else if (spawn_failed_) {
-        std::printf("prefetch    no worker thread available; the vae load demand faults\n");
-      } else if (requested_ != 0) {
-        std::printf("prefetch    %zu of %zu vae checkpoints hinted, %.2f GiB, %zu accepted\n",
-                    opened_, requested_,
-                    static_cast<double>(bytes_) / (1024.0 * 1024.0 * 1024.0), accepted_);
-      }
-    }
-    files_.clear();
-  }
-
- private:
-  std::thread worker_;
-  // Written by the worker, read by the main thread only after `join()`, which
-  // is the happens-before edge that makes them safe without atomics.
-  std::vector<SafeTensors> files_;
-  size_t requested_ = 0;
-  size_t opened_ = 0;
-  size_t accepted_ = 0;
-  uint64_t bytes_ = 0;
-  bool verbose_ = false;
-  bool skipped_ = false;
-  bool spawn_failed_ = false;
-  bool reported_ = false;
-};
-
-// Per-process reuse across the generations of one counted run. Everything here
-// is keyed on the identity of the files it was derived from (pipeline.h), and
-// every entry carries its own key: a prompt sweep changes the conditioning and
-// nothing else, and must not throw away a tokenizer or a reference encode that
-// did not depend on the prompt.
-//
-// Each cache has a `_valid` flag that is cleared *before* it is refilled, so a
-// throw part-way through leaves an entry that is stale-and-unusable rather than
-// stale-and-matching.
-struct ReusedGenerationModels {
-  std::string conditioning_key;
-  text::PromptEmbedding prompt;
-
-  // The tokenizer is 147-166 ms to load and depends only on its own file, so it
-  // survives the conditioning misses a prompt sweep is made of.
-  std::string tokenizer_key;
-  bool tokenizer_valid = false;
-  text::Tokenizer tokenizer;
-
-  // The seed-independent half of the reference-image path: decode, Lanczos
-  // resize to the ~2048-pixel short edge, and the six-level Conv3D keyframe
-  // encode at that resolution. The seed-dependent half — one noise draw and one
-  // `scale_noise` at t = 0.999 — stays per generation, so two generations of a
-  // counted run differ exactly where they are supposed to.
-  std::string reference_key;
-  bool reference_valid = false;
-  std::vector<RGBImage> reference_images;
-  std::vector<std::vector<float>> clean_reference_rows;
-  std::vector<dit::ReferenceGeometry> reference_geometry;
-
-  EncodedMediaCache media_cache;
-
-  void clear() {
-    conditioning_key.clear();
-    prompt = {};
-    tokenizer_key.clear();
-    tokenizer_valid = false;
-    tokenizer = text::Tokenizer();
-    reference_key.clear();
-    reference_valid = false;
-    reference_images.clear();
-    clean_reference_rows.clear();
-    reference_geometry.clear();
-    media_cache.clear();
-  }
-};
-
-ReusedGenerationModels& reused_models() {
-  static ReusedGenerationModels models;
-  return models;
-}
-
-#if SLOPFAB_WITH_VULKAN
-vulkan::Device create_vulkan_inference_device(bool exact_h3 = false,
-                                             bool sage_attention = false) {
-  if (!vulkan::Instance::available())
-    throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
-  vulkan::Instance instance = vulkan::Instance::create();
-  const std::vector<vulkan::PhysicalDevice> physical = instance.enumerate_devices();
-  if (physical.empty())
-    throw std::runtime_error("Vulkan inference: no compute device is available");
-  const vulkan::DeviceInfo& info = physical.front().info();
-  if (!info.timeline_semaphore || !info.shader_int64 ||
-      (exact_h3 && (!info.shader_float16 || !info.storage_buffer_16bit ||
-                    !info.cooperative_matrix_bf16_f32_16x16x16)))
-    throw std::runtime_error(
-        "Vulkan inference: device lacks required exact neural features");
-  vulkan::DeviceOptions options;
-  options.enable_timeline_semaphore = true;
-  options.enable_shader_int64 = true;
-  options.enable_shader_float16 = exact_h3;
-  options.enable_storage_buffer_16bit = exact_h3;
-  options.enable_cooperative_matrix = exact_h3;
-  options.enable_shader_int8 = sage_attention && info.shader_int8;
-  return physical.front().create_device(options);
-}
-#endif
-
-}  // namespace
-
-void clear_reused_generation_models() { reused_models().clear(); }
-
-RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
-                       const RunOptions& options) {
+using namespace generation;
+RunResult generation::run_generate_impl(const GenerateRequest& request, const GeneratePlan& plan,
+                       const RunOptions& options, ReusedGenerationModels& reuse) {
   struct ReuseReleaseGuard {
+    ReusedGenerationModels& reuse;
     bool release = false;
     ~ReuseReleaseGuard() {
-      if (release) reused_models().clear();
+      if (release) reuse.clear();
     }
-  } release_guard{options.release_reused_models};
+  } release_guard{reuse, options.release_reused_models};
   RunResult result;
   try {
-    validate_sampling_sampler(plan, options.sampler);
+    validate_generation_options(request, plan, options);
   } catch (const std::exception& e) {
     result.message = e.what();
     return result;
   }
-  request.motion_cache.validate();
-  if (request.motion_cache.active() &&
-      (options.sampler != sampler::SamplerKind::kEuler || request.cache_threshold > 0 ||
-       request.skip_every > 0 || request.block_cache_span > 0 || plan.fasth3_v2 ||
-       request.animate || request.schedule != sampler::ScheduleKind::kDefault ||
-       options.source != LatentSource::kDenoise)) {
-    result.message = "MotionCache requires default-schedule Euler denoising without other caches, FastH3 V2 or Animate";
-    return result;
-  }
   dit::SequenceLayout layout = plan.layout;
-  if (plan.fasth3_v2 && (options.sampler != sampler::SamplerKind::kEuler ||
-      options.attention_band > 0 || request.cache_threshold > 0 ||
-      request.skip_every > 0 || request.block_cache_span > 0)) {
-    result.message = "FastH3 V2 requires Euler without frame banding, step or block caching";
-    return result;
-  }
-  if (request.continuation && (options.source != LatentSource::kDenoise ||
-                               !options.init_latents_path.empty())) {
-    result.message = "continuation requires denoising from fresh noise; --init-latents is incompatible";
-    return result;
-  }
-  if (request.animate && (options.prompt_embedding_path.empty() ||
-      options.source != LatentSource::kDenoise || !options.init_latents_path.empty() ||
-      options.sampler != sampler::SamplerKind::kEuler || request.cache_threshold > 0 ||
-      request.skip_every > 0 || request.block_cache_span > 0)) {
-    result.message = "Animate requires fixed conditioning and Euler denoising without initial latents or caches";
-    return result;
-  }
   LoraAdapters loras;
   validate_refmods(request.refmods);
-  if (request.has_refmods() && options.source != LatentSource::kDenoise) {
-    result.message = "refmods require denoising";
-    return result;
-  }
-  if (request.schedule == sampler::ScheduleKind::kTaoMate3Step &&
-      (options.sampler != sampler::SamplerKind::kEuler || request.cache_threshold > 0 ||
-       request.skip_every > 0 || request.block_cache_span > 0)) {
-    result.message = "taomate-3step requires Euler without step or block caching";
-    return result;
-  }
-
-  if (!request.reference_media.empty() &&
-      options.source != LatentSource::kDenoise) {
-    result.message = "reference video/audio requires denoising";
-    return result;
-  }
-
-  if (!generation_backend_supported(options.inference_backend, options.source,
-                                    options.attention_mode)) {
-    result.message =
-        "Vulkan neural inference requires attention mode exact, flash2 or sage2";
-    return result;
-  }
 #if !SLOPFAB_WITH_VULKAN
   if (options.inference_backend == DeviceBackend::kVulkan) {
     result.message = "Vulkan inference requested, but this build disabled Vulkan";
     return result;
   }
 #endif
-  if (options.inference_backend == DeviceBackend::kVulkan &&
-      options.source == LatentSource::kDenoise) {
-    if (options.sampler != sampler::SamplerKind::kEuler ||
-        request.cache_threshold > 0.0f || request.skip_every > 0 ||
-        request.block_cache_span > 0) {
-      result.message =
-          "Vulkan generation supports Euler without step or block "
-          "caches; no CUDA fallback was used";
-      return result;
-    }
-  }
-
   // Validate the explicitly selected exact CUDA artifact before touching any
   // prompt/checkpoint. Synthetic-latent runs never execute a transformer and
   // therefore do not require this tuple.
@@ -462,7 +128,6 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   // running thread behind.
   CheckpointPrefetch vae_prefetch;
 
-  ReusedGenerationModels& reuse = reused_models();
   text::Tokenizer owned_conditioning_tokenizer;
   text::Tokenizer* conditioning_tokenizer_instance = nullptr;
   auto conditioning_tokenizer = [&]() -> text::Tokenizer& {
@@ -497,8 +162,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     fixed_prompt = text::read_prompt_embedding(options.prompt_embedding_path,
                                                 request.has_native_references());
 
-  if (request.animate && fixed_prompt.num_tokens != 362)
-    throw std::runtime_error("Animate requires the shipped 362-token embedding");
+  if (plan.conditioning.fixed_prompt_tokens > 0 &&
+      fixed_prompt.num_tokens != plan.conditioning.fixed_prompt_tokens)
+    throw std::runtime_error("fixed prompt embedding token count does not match conditioning settings");
 
   // Decode all references before opening a multi-gigabyte checkpoint. Besides
   // giving file errors promptly, this validates the Ref2VA aspect contract at
@@ -551,7 +217,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         }
         int resized_h = 0, resized_w = 0;
         dit::resolve_reference_image_size(image.width, image.height, &resized_h, &resized_w,
-            request.animate ? std::min(plan.canvas_width, plan.canvas_height) : 2048);
+            plan.conditioning.references_at_target_canvas ? std::min(plan.canvas_width, plan.canvas_height) : plan.conditioning.image_short_edge);
         image = resize_reference_lanczos(image, resized_w, resized_h);
         reference_images.push_back(std::move(image));
       }
@@ -582,11 +248,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   for (const auto& media : request.reference_media) {
     if (!notify(RunStage::kReferences, -1, 0)) return stop("reference preprocessing");
     const auto t0 = Clock::now();
-    const auto reference_options = request.animate
-        ? animate_reference_options(plan.canvas_width, plan.canvas_height) : ReferenceConditionOptions{};
+    const auto reference_options = plan.conditioning.reference_options(plan.canvas_width, plan.canvas_height);
     prepared_media.push_back(prepare_reference_condition(*media, double(plan.sampling_frames) / 24,
                                                          !cached_media, reference_options));
-    if (request.preserve_driving_audio) {
+    if (plan.conditioning.pin_target_audio) {
       auto& prepared = prepared_media.back();
       prepared.plan.audio_samples = static_cast<int>(std::floor(double(plan.sampling_frames + 1) / 24 * 32000 + .5));
       if (!cached_media) prepared.audio = prepare_target_audio(*media->soundtrack(), plan.sampling_frames);
@@ -599,88 +264,10 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     }
   }
   std::vector<text::QwenPixelValues> media_qwen_pairs;
-  if (options.source == LatentSource::kDenoise && !reference_images.empty() &&
-      options.prompt_embedding_path.empty()) {
-    try {
-      text::Tokenizer& tokenizer = conditioning_tokenizer();
-      reference_conditioning_grids.reserve(reference_images.size());
-      std::vector<std::vector<int32_t>> labels;
-      labels.reserve(reference_images.size());
-      size_t nonvision_tokens = 0;
-      for (size_t i = 0; i < reference_images.size(); ++i) {
-        reference_conditioning_grids.push_back(
-            text::qwen3vl_conditioning_grid(reference_images[i].width,
-                                            reference_images[i].height));
-        labels.push_back(tokenizer.encode(
-            "<Picture " + std::to_string(i + 1) + ">: "));
-        if (labels.back().size() > std::numeric_limits<size_t>::max() -
-                                     nonvision_tokens)
-          throw std::overflow_error("reference conditioning token overflow");
-        nonvision_tokens += labels.back().size();
-      }
-      const std::vector<int32_t> prompt_ids = tokenizer.encode(request.prompt);
-      if (prompt_ids.size() > std::numeric_limits<size_t>::max() -
-                                  nonvision_tokens)
-        throw std::overflow_error("reference conditioning token overflow");
-      nonvision_tokens += prompt_ids.size();
-      const size_t total = text::qwen3vl_conditioning_token_count(
-          reference_conditioning_grids, nonvision_tokens);
-      reference_conditioning_ids.reserve(total);
-      for (size_t i = 0; i < labels.size(); ++i) {
-        const std::vector<int32_t> block = text::qwen3vl_image_block(
-            labels[i], reference_conditioning_grids[i].merged_token_count());
-        reference_conditioning_ids.insert(reference_conditioning_ids.end(),
-                                          block.begin(), block.end());
-      }
-      reference_conditioning_ids.insert(reference_conditioning_ids.end(),
-                                        prompt_ids.begin(), prompt_ids.end());
-      if (reference_conditioning_ids.size() != total)
-        throw std::logic_error("reference conditioning token count drift");
-    } catch (const std::exception& e) {
-      result.message = e.what();
-      return result;
-    }
-  }
-
-  if (!prepared_media.empty() && options.prompt_embedding_path.empty()) {
-    auto& tokenizer = conditioning_tokenizer();
-    const auto prompt_ids = tokenizer.encode(request.prompt);
-    if (!reference_images.empty()) reference_conditioning_ids.resize(reference_conditioning_ids.size() - prompt_ids.size());
-    auto emit_text = [&](const std::string& value) {
-      auto ids = tokenizer.encode(value);
-      reference_conditioning_ids.insert(reference_conditioning_ids.end(), ids.begin(), ids.end());
-    };
-    int audio_number = 0, video_number = 0;
-    for (const auto& media : prepared_media) {
-      if (media.plan.audio_samples) emit_text("<Audio " + std::to_string(++audio_number) + ">: ");
-      if (media.frames.empty()) continue;
-      emit_text("<Video " + std::to_string(++video_number) + ">: ");
-      const auto grid = text::qwen3vl_conditioning_grid(media.plan.width, media.plan.height);
-      const int rw = grid.width * 16, rh = grid.height * 16;
-      // 2 fps presentation, paired into Qwen's temporal patch size of two.
-      // Pair labels use decimal round-half-to-even, independently of locale.
-      const int sampled = (media.plan.frames + 11) / 12;
-      for (int pair = 0; pair < sampled; pair += 2) {
-        const int second = std::min(pair + 1, sampled - 1);
-        const int quarters = pair + second; // timestamp = quarters / 4
-        const int scaled = quarters * 5; // tenths = scaled / 2
-        const int tenths = scaled / 2 + ((scaled % 2) && ((scaled / 2) % 2));
-        emit_text("<" + std::to_string(tenths / 10) + "." + std::to_string(tenths % 10) + " seconds>");
-        auto ids = text::qwen3vl_image_block({}, grid.merged_token_count(), 151652, 151656, 151653);
-        reference_conditioning_ids.insert(reference_conditioning_ids.end(), ids.begin(), ids.end());
-        if (reference_conditioning_ids.size() + prompt_ids.size() > text::kMaxPromptTokens)
-          throw std::runtime_error("reference video conditioning exceeds " +
-                                   std::to_string(text::kMaxPromptTokens) + " prompt tokens");
-        auto first_rgb = resize_rgb_bilinear(media.frames[pair * 12], rw, rh);
-        auto second_rgb = resize_rgb_bilinear(media.frames[second * 12], rw, rh);
-        media_qwen_pairs.push_back(text::qwen3vl_patchify_resized_rgb_pair(first_rgb, second_rgb, rw, rh));
-      }
-    }
-    reference_conditioning_ids.insert(reference_conditioning_ids.end(), prompt_ids.begin(), prompt_ids.end());
-    if (reference_conditioning_ids.size() > text::kMaxPromptTokens)
-      throw std::runtime_error("reference conditioning exceeds " +
-                               std::to_string(text::kMaxPromptTokens) + " prompt tokens");
-  }
+  PromptInputs prompt_inputs{fixed_prompt, reference_identities, reference_images,
+      reference_conditioning_grids, reference_conditioning_ids, media_qwen_pairs,
+      conditioning_tokenizer};
+  if (!prepare_multimodal_prompt(request, options, prepared_media, prompt_inputs, result)) return result;
 
   // --- latents ---------------------------------------------------------------
 
@@ -730,9 +317,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         SafeTensors transformer_header;
         transformer_header.open(request.transformer_path);
         dit::require_ref2va_transformer(transformer_header, 1);
-        if (request.animate && dit::detect_transformer_architecture(transformer_header) !=
-            dit::TransformerArchitecture::kViggleAnimatePrunedTable)
-          throw std::runtime_error("Animate requires a Viggle-Animate transformer");
+
       } catch (const std::exception& e) {
         result.message = e.what();
         return result;
@@ -825,7 +410,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         const int latent_h = image.height / 16;
         const int latent_w = image.width / 16;
         const uint64_t reference_seed =
-            request.seed ^ (0x9e3779b97f4a7c15ULL * (reference_index + 1 + (request.animate ? 1 : 0)));
+            request.seed ^ (0x9e3779b97f4a7c15ULL * (reference_index + 1 + (plan.conditioning.video_first ? request.reference_media.size() : 0)));
         const std::vector<float> noise_latents =
             sampler::video_noise(reference_seed, 1, latent_h, latent_w);
         const std::vector<float> noise_rows =
@@ -920,11 +505,11 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       const auto& clean_media = cached_media ? *cached_media : encoded_media;
       for (size_t i = 0; i < clean_media.size(); ++i) {
         append_encoded_reference_condition(clean_media[i], request.seed,
-            (request.animate ? 0 : reference_images.size()) + i, condition_video_rows, condition_audio_rows,
-            !request.animate);
+            (plan.conditioning.video_first ? 0 : reference_images.size()) + i, condition_video_rows, condition_audio_rows,
+            plan.conditioning.include_reference_audio);
         reference_geometry.push_back(clean_media[i].geometry);
       }
-      if (request.preserve_driving_audio)
+      if (plan.conditioning.pin_target_audio)
         init_audio = target_audio_rows(clean_media.front().audio_rows, layout.num_audio_latents);
       if (cached_media && options.verbose)
         std::printf("references  reusing %zu encoded media references (host cache)\n", clean_media.size());
@@ -932,7 +517,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         reuse.media_cache.store(media_key, std::move(encoded_media));
     }
 
-    if (request.animate) order_animate_references(reference_geometry, condition_video_rows);
+    if (plan.conditioning.video_first) order_animate_references(reference_geometry, condition_video_rows);
 
     if (request.has_refmods()) {
       if (!notify(RunStage::kReferences, -1, 0)) return stop("refmod conditioning");
@@ -945,154 +530,9 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                                 reference_geometry, condition_video_rows, condition_audio_rows);
     }
 
-    // --- conditioning -------------------------------------------------------
-    //
-    // The encoder is loaded, used and freed before the transformer is touched.
-    // The scoping below is the enforcement: `encoder` and its checkpoint
-    // mapping both die at the closing brace, and the transformer is not
-    // constructed until after it.
-    //
-    // The int8 conditioner and the fp8 transformer cannot co-exist on a 32 GB
-    // card — measured, 23.1 GB peak and 19.3 GB. The nvfp4 pair can (13.1 and
-    // 12.5), so the sequencing is no longer forced for that combination, but it
-    // stays: a resident encode is 0.12 s against a whole denoising run, the
-    // saving would be nothing, and dropping it would make three of the four
-    // checkpoint combinations fail at the worst possible moment.
     if (!notify(RunStage::kConditioning, -1, 0)) return stop("conditioning");
     text::PromptEmbedding prompt;
-    // Same snapshot of the references as the reference key above, and likewise
-    // skipped outright when nothing will consult it.
-    const ConditionerAuthority conditioner_authority =
-        options.inference_backend == DeviceBackend::kVulkan
-            ? ConditionerAuthority::kVulkanExact
-            : (options.attention_mode == AttentionMode::kExact
-                   ? ConditionerAuthority::kCudaExact
-                   : ConditionerAuthority::kCudaShipped);
-    const std::string prompt_key =
-        options.reuse_models
-            ? conditioning_cache_key_for_authority(
-                  request, reference_identities, conditioner_authority)
-            : std::string();
-    if (!options.prompt_embedding_path.empty()) {
-      const Clock::time_point t0 = Clock::now();
-      try {
-        prompt = std::move(fixed_prompt);
-      } catch (const std::exception& e) {
-        result.message = e.what();
-        return result;
-      }
-      result.seconds_conditioning = seconds_since(t0);
-      if (options.verbose)
-        std::printf("prompt      captured [%d, %d] from %s (no conditioner)\n",
-                    prompt.num_tokens, prompt.hidden_size,
-                    options.prompt_embedding_path.c_str());
-    } else if (options.reuse_models && reuse.conditioning_key == prompt_key &&
-        !reuse.prompt.data.empty()) {
-      prompt = reuse.prompt;
-      if (options.verbose) {
-        std::printf("prompt      reused cached [%d, %d] conditioning\n", prompt.num_tokens,
-                    prompt.hidden_size);
-      }
-    } else {
-      const Clock::time_point t0 = Clock::now();
-
-      // Reaching here means the conditioning cache missed. The tokenizer does
-      // not depend on the prompt, so it is kept across those misses and
-      // reloaded only when its own file changes; `encode()` is const and
-      // stateless, so one instance serves every caller.
-      // The early reference preflight and the actual conditioner deliberately
-      // share this instance. Besides avoiding a second tokenizer load, that
-      // guarantees the IDs validated before the keyframe checkpoint opens are
-      // exactly the IDs consumed here.
-      text::Tokenizer& tokenizer = conditioning_tokenizer();
-
-      // No chat template, no BOS, no EOS: `hidden_states[50]` of a raw prompt
-      // is the conditioning H3 expects, and a special token here would shift
-      // every rotary position downstream (spec 1.2).
-      std::vector<int32_t> ids;
-      std::vector<text::QwenPixelValues> qwen_images;
-      if (request.has_native_references()) {
-        if (reference_conditioning_grids.size() != reference_images.size() ||
-            reference_conditioning_ids.empty())
-          throw std::logic_error("reference conditioning preflight is absent");
-        ids = reference_conditioning_ids;
-      }
-      for (size_t i = 0; i < reference_images.size(); ++i) {
-        const auto& grid = reference_conditioning_grids[i];
-        const int rw = grid.width * 16, rh = grid.height * 16;
-        auto rgb = resize_rgb_bilinear(reference_images[i], rw, rh);
-        qwen_images.push_back(text::qwen3vl_patchify_resized_rgb(rgb, rw, rh));
-      }
-      for (auto& pair : media_qwen_pairs) qwen_images.push_back(std::move(pair));
-      if (!request.has_native_references()) {
-        const auto prompt_ids = tokenizer.encode(request.prompt);
-        ids.insert(ids.end(), prompt_ids.begin(), prompt_ids.end());
-      }
-      if (ids.empty()) {
-        result.message = "the prompt tokenised to zero tokens";
-        return result;
-      }
-
-      SafeTensors encoder_file;
-      encoder_file.open(request.text_encoder_path);
-      try {
-        text::require_reference_vision_support(encoder_file, qwen_images.size());
-      } catch (const std::exception& e) {
-        result.message = e.what();
-        return result;
-      }
-      const char* conditioner_mode = nullptr;
-      if (options.inference_backend == DeviceBackend::kCuda) {
-        text::Encoder encoder;
-        text::EncoderConfig ecfg;
-        ecfg.residency = text::Residency::kStreaming;
-        if (options.attention_mode == AttentionMode::kExact)
-          ecfg.arithmetic = text::EncoderArithmetic::kExact;
-        encoder.load(encoder_file, ecfg);
-        prompt = qwen_images.empty() ? encoder.encode(ids)
-                                     : encoder.encode(ids, qwen_images);
-        conditioner_mode = ecfg.arithmetic == text::EncoderArithmetic::kExact
-            ? "CUDA streaming exact" : "CUDA streaming shipped";
-        encoder.unload();
-      } else {
-#if SLOPFAB_WITH_VULKAN
-        vulkan::Device device = create_vulkan_inference_device(true);
-        vulkan::TensorContextOptions tensor_options;
-        tensor_options.max_batch_operators = 64;
-        vulkan::TensorContext context(device, tensor_options);
-        vulkan::ExactQwenTextEncoder encoder =
-            vulkan::ExactQwenTextEncoder::create(context);
-        encoder.load(encoder_file);
-        prompt = qwen_images.empty() ? encoder.encode(ids)
-                                     : encoder.encode(ids, qwen_images);
-        if (options.verbose) {
-          const auto& stats = encoder.stats();
-          std::printf(
-              "conditioner Vulkan exact peak/reserved %.2f/%.2f GiB, %llu descriptors\n",
-              static_cast<double>(stats.peak_device_bytes) /
-                  (1024.0 * 1024.0 * 1024.0),
-              static_cast<double>(stats.allocator_reserved_bytes) /
-                  (1024.0 * 1024.0 * 1024.0),
-              static_cast<unsigned long long>(stats.descriptor_set_allocations));
-        }
-        encoder.unload();
-        conditioner_mode = "Vulkan streaming exact";
-#else
-        throw std::logic_error("Vulkan conditioner compiled out after validation");
-#endif
-      }
-      result.conditioner_executed = true;
-      if (options.reuse_models) {
-        reuse.conditioning_key = prompt_key;
-        reuse.prompt = prompt;
-      }
-      result.seconds_conditioning = seconds_since(t0);
-      if (options.verbose) {
-        std::printf("prompt      %d tokens -> [%d, %d] in %.2f s (%s)\n",
-                    static_cast<int>(ids.size()), prompt.num_tokens, prompt.hidden_size,
-                    result.seconds_conditioning, conditioner_mode);
-      }
-    }
+    if (!encode_h3_prompt(request, options, reuse, prompt_inputs, prompt, result)) return result;
 
     // --- denoise ------------------------------------------------------------
     //
@@ -1104,7 +544,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     if (reference_geometry.empty()) {
       live.num_text = prompt.num_tokens;
       idx = dit::build_indices(live);
-      pos = dit::build_position_ids(live);
+      pos = dit::build_position_ids(live, plan.geometry);
     } else {
       dit::Ref2VAPackedSequence packed = dit::build_ref2va_packed_sequence(
           prompt.modality_tags, reference_geometry, live.num_latent_frames, live.latent_height,
@@ -1143,7 +583,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                     options.attention_band);
       }
       if (options.verbose) {
-        std::printf("attention  backend %s\n", plan.fasth3_v2 ? "vsa-h3 (dense text refiner)"
+        std::printf("attention  backend %s\n", plan.model.compressed_attention ? "vsa-h3 (dense text refiner)"
                                                                : attention_mode_name(options.attention_mode));
       }
       // Also before prepare_sequence, and for the same kind of reason: that is
@@ -1197,7 +637,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         in.init_video_rows = &init_video;
         in.init_audio_rows = &init_audio;
       }
-      if (request.preserve_driving_audio) {
+      if (plan.conditioning.pin_target_audio) {
         in.init_audio_rows = &init_audio;
         in.pin_target_audio = true;
       }
@@ -1332,7 +772,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       vulkan::Device device = create_vulkan_inference_device(
           true, options.attention_mode == AttentionMode::kSage2);
       vulkan::TensorContextOptions context_options;
-      context_options.max_batch_operators = request.loras.empty() && !plan.fasth3_v2 ? 2048 : 4096;
+      context_options.max_batch_operators = request.loras.empty() && !plan.model.compressed_attention ? 2048 : 4096;
       context_options.sage_extra_workspace_bytes = options.vulkan_sage_extra_workspace_bytes;
       vulkan::TensorContext context(device, context_options);
       context.require_h3_attention(options.attention_mode);
@@ -1346,7 +786,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
                                live.num_condition_audio != 0;
       config.transformer.main.block.timesteps = conditioned ? 4u : 2u;
       config.transformer.main.block.loras = &loras;
-      if (plan.fasth3_v2)
+      if (plan.model.compressed_attention)
         config.transformer.main.block.vsa_tiles =
             std::make_shared<dit::VsaTiles>(dit::build_vsa_tiles(live));
       config.transformer.text_rows = static_cast<uint32_t>(live.num_text);
@@ -1364,7 +804,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
         config.transformer.audio_output_start =
             static_cast<uint32_t>(live.audio_start());
       }
-      config.pin_target_audio = request.preserve_driving_audio;
+      config.pin_target_audio = plan.conditioning.pin_target_audio;
       config.layout = live;
       config.indices = idx;
       config.position_ids = pos;
@@ -1391,7 +831,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
               request.seed, live.num_audio_latents);
         }
       }
-      if (request.preserve_driving_audio) initial_audio = init_audio;
+      if (plan.conditioning.pin_target_audio) initial_audio = init_audio;
       if (conditioned) {
         if (condition_video_rows.size() !=
             static_cast<size_t>(live.num_condition_video) * 96u ||
@@ -1460,7 +900,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
       if (options.verbose) {
         std::printf(
             "denoised    %d Vulkan %s steps in %.1f s (%.2f s/step); +%.1f s load, +%.1f s prepare\n",
-            total_steps, plan.fasth3_v2 ? "vsa-h3" : attention_mode_name(options.attention_mode), result.seconds_denoise_loop,
+            total_steps, plan.model.compressed_attention ? "vsa-h3" : attention_mode_name(options.attention_mode), result.seconds_denoise_loop,
             result.seconds_denoise_loop / std::max(1, total_steps),
             result.seconds_transformer_load, result.seconds_prepare);
         if (request.motion_cache.active())
@@ -1494,7 +934,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     result.seconds_denoise = seconds_since(t0);
   }
 
-  if (request.preserve_driving_audio) {
+  if (plan.conditioning.pin_target_audio) {
     if (audio_rows.size() != init_audio.size() ||
         std::memcmp(audio_rows.data(), init_audio.data(), audio_rows.size() * sizeof(float)) != 0)
       throw std::logic_error("pinned target audio changed during denoising");
@@ -1526,6 +966,7 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
     completed->video_rows = std::move(video_rows);
     completed->audio_rows = std::move(audio_rows);
   }
+  completed->geometry = plan.geometry;
   completed->sampled = options.source == LatentSource::kDenoise;
   completed->transformer = request.transformer_path;
   completed->video_vae = request.video_vae_path;
@@ -1540,243 +981,8 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
   }
   if (options.on_latents) options.on_latents(completed, options.hook_userdata);
 
-  // --- video ----------------------------------------------------------------
-
-  if (!notify(RunStage::kVideoDecode, -1, 0)) return stop("video decode");
-  vae::DecodedVideo video;
-  {
-    const Clock::time_point t0 = Clock::now();
-    if (request.video_vae_path.empty()) {
-      result.message = "generate needs --vae <video_vae.safetensors>";
-      return result;
-    }
-
-    // Rows back to a latent volume, then de-normalise per channel. The
-    // multiply-then-add order is the reference's (decoders.py:107).
-    cuda::PhaseSpan s_unpatch("unpatchify latents");
-    std::vector<float> latents(static_cast<size_t>(24) * layout.num_latent_frames *
-                               layout.latent_height * layout.latent_width);
-    dit::unpatchify_video(completed->video_rows.data(), layout, latents.data());
-    s_unpatch.stop();
-
-    // Before the span, so the readahead started under the loop is accounted to
-    // the loop and this span keeps measuring the load it names. Joining is
-    // required, not tidy: the mapping the worker holds is dropped here, and
-    // nothing may outlive this function still holding one.
-    vae_prefetch.join();
-
-    cuda::PhaseSpan s_load("vae weight load");
-    SafeTensors vae_file;
-    vae_file.open(request.video_vae_path);
-    const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
-    const std::vector<float> std_dev = read_stat(vae_file, "latents_std", 24);
-
-    if (options.inference_backend == DeviceBackend::kCuda) {
-      vae::ViTDecoder decoder;
-      vae::ViTConfig config;
-      if (options.attention_mode == AttentionMode::kExact)
-        config.transformer_mode = vae::ViTTransformerMode::kExact;
-      decoder.load(vae_file, config);
-      s_load.stop();
-      if (options.verbose) {
-        std::printf("video vae   CUDA %.2f GiB on device\n",
-                    static_cast<double>(decoder.weight_bytes()) /
-                        (1024.0 * 1024.0 * 1024.0));
-      }
-      video = request.still_image
-                  ? vae::decode_still_image(decoder, latents.data(),
-                                            layout.latent_height, layout.latent_width,
-                                            mean, std_dev)
-                  : decoder.decode(latents.data(), layout.num_latent_frames,
-                                   layout.latent_height, layout.latent_width, mean,
-                                   std_dev);
-    } else {
-#if SLOPFAB_WITH_VULKAN
-      vulkan::Device device = create_vulkan_inference_device();
-      vae::ViTConfig config;
-      config.transformer_mode = vae::ViTTransformerMode::kExact;
-      vulkan::VideoVaeDecoder decoder =
-          vulkan::VideoVaeDecoder::create(device, config);
-      decoder.load(vae_file);
-      s_load.stop();
-      if (options.verbose) {
-        std::printf("video vae   Vulkan %.2f GiB on device\n",
-                    static_cast<double>(decoder.persistent_bytes()) /
-                        (1024.0 * 1024.0 * 1024.0));
-      }
-      video = request.still_image
-                  ? vae::decode_still_image(decoder, latents.data(),
-                                            layout.latent_height, layout.latent_width,
-                                            mean, std_dev)
-                  : decoder.decode(latents.data(), layout.num_latent_frames,
-                                   layout.latent_height, layout.latent_width, mean,
-                                   std_dev);
-#else
-      throw std::logic_error("Vulkan inference compiled out after validation");
-#endif
-    }
-    result.seconds_video_decode = seconds_since(t0);
-    if (options.verbose) {
-      std::printf("video       %d frames of %dx%d in %.2f s\n", video.frames, video.width,
-                  video.height, result.seconds_video_decode);
-    }
-    // The spans above tile this block, so the elapsed time is their denominator.
-    cuda::PhaseProfiler::instance().add_total("video vae stage",
-                                              result.seconds_video_decode * 1000.0);
-    cuda::PhaseProfiler::instance().report(stdout);
-  }
-
-  // --- audio ----------------------------------------------------------------
-
-  vae::DecodedAudio audio;
-  if (!request.still_image && !request.audio_vae_path.empty()) {
-    if (!notify(RunStage::kAudioDecode, -1, 0)) return stop("audio decode");
-    const Clock::time_point t0 = Clock::now();
-
-    // (Sa, 32) rows -> (2, 32, A), then de-normalise per channel.
-    std::vector<float> audio_latents(completed->audio_rows.size());
-    dit::unpack_audio(completed->audio_rows.data(), layout.num_audio_latents, audio_latents.data());
-
-    SafeTensors audio_file;
-    audio_file.open(request.audio_vae_path);
-    const int A = layout.num_audio_latents;
-    auto denormalize = [&](const std::vector<float>& mean,
-                           const std::vector<float>& std_dev) {
-      for (int c = 0; c < 2; ++c) {
-        for (int ch = 0; ch < 32; ++ch) {
-          const float m = mean[static_cast<size_t>(ch)];
-          const float s = std_dev[static_cast<size_t>(ch)];
-          float* row = audio_latents.data() +
-              (static_cast<size_t>(c) * 32 + ch) * A;
-          for (int a = 0; a < A; ++a) row[a] = row[a] * s + m;
-        }
-      }
-    };
-    if (options.inference_backend == DeviceBackend::kCuda) {
-      vae::AudioDecoder decoder;
-      decoder.load(audio_file);
-      denormalize(decoder.latents_mean(), decoder.latents_std());
-      audio = decoder.decode(audio_latents.data(), A);
-    } else {
-#if SLOPFAB_WITH_VULKAN
-      vulkan::Device device = create_vulkan_inference_device();
-      vulkan::AudioDecoder decoder = vulkan::AudioDecoder::create(device);
-      decoder.load(audio_file);
-      denormalize(decoder.latents_mean(), decoder.latents_std());
-      audio = decoder.decode(audio_latents.data(), A);
-#else
-      throw std::logic_error("Vulkan inference compiled out after validation");
-#endif
-    }
-    result.seconds_audio_decode = seconds_since(t0);
-    if (options.verbose) {
-      std::printf("audio       %lld frames at %d Hz in %.2f s\n",
-                  static_cast<long long>(audio.num_frames()), audio.sample_rate,
-                  result.seconds_audio_decode);
-    }
-  } else if (options.verbose) {
-    std::printf("audio       skipped (%s)\n",
-                request.still_image ? "still-image mode" : "no --audio-vae");
-  }
-
-  // --- output ---------------------------------------------------------------
-
-  {
-    const Clock::time_point t0 = Clock::now();
-    const bool have_audio = !audio.samples.empty();
-
-    // An in-process host takes the samples here and there is nothing left to
-    // write — no MP4, no .y4m, and in particular no call into the muxer,
-    // which is the only thing in this project that loads FFmpeg. That is the
-    // whole reason this hook is before the branch below rather than after it.
-    if (options.on_samples != nullptr) {
-      if (!notify(RunStage::kDelivering, -1, 0)) return stop("delivery");
-      RunSamples samples;
-      samples.channels = video.channels;
-      samples.frames = video.frames;
-      samples.height = video.height;
-      samples.width = video.width;
-      samples.video = &video.data;
-      samples.audio_channels = audio.channels;
-      samples.audio_sample_rate = audio.sample_rate;
-      samples.audio = have_audio ? &audio.samples : nullptr;
-      // Read before the hook, which is entitled to move both buffers out — and
-      // is expected to, since the video plane alone is gigabytes. Afterwards
-      // `audio.num_frames()` is derived from a vector the caller now owns, so
-      // reporting it here would print 0 for every run that delivered audio
-      // perfectly well. The video counts survive only because they are
-      // scalars, which is what made this look right.
-      const long long delivered_audio_frames = static_cast<long long>(audio.num_frames());
-      if (options.on_samples(samples, options.hook_userdata)) {
-        result.seconds_output = seconds_since(t0);
-        if (options.verbose) {
-          std::printf("delivered   %d frames of %dx%d and %lld audio frames in-process\n",
-                      video.frames, video.width, video.height, delivered_audio_frames);
-        }
-        result.ok = true;
-        notify(RunStage::kFinished, -1, 0);
-        return result;
-      }
-    }
-
-    bool muxed = false;
-    if (!request.raw_output) {
-      std::string detail;
-      if (video::ffmpeg_available(&detail)) {
-        video::MuxRequest mux;
-        mux.path = request.out_path;
-        mux.video = &video.data;
-        mux.frames = video.frames;
-        mux.height = video.height;
-        mux.width = video.width;
-        mux.audio = have_audio ? &audio.samples : nullptr;
-        mux.audio_channels = audio.channels;
-        mux.audio_sample_rate = audio.sample_rate;
-        mux.frame_converter = options.output_frame_converter;
-
-        const video::MuxStatus status = video::write_mp4(mux);
-        if (status == video::MuxStatus::kOk) {
-          muxed = true;
-          result.outputs.push_back(request.out_path);
-          if (options.verbose) {
-            std::printf("muxed       %s (ffmpeg %s)\n", request.out_path.c_str(),
-                        video::ffmpeg_version().c_str());
-          }
-        } else if (options.verbose) {
-          std::printf("mux failed  %s; falling back to raw output\n",
-                      video::mux_status_message(status));
-        }
-      } else if (options.verbose) {
-        std::printf("no ffmpeg   %s; writing raw output\n", detail.c_str());
-      }
-    }
-
-    // The fallback is not a degraded mode so much as the honest one: .y4m and
-    // .wav put the samples on disk with nothing between them and the eye or
-    // ear, so a wrong decode looks and sounds wrong instead of being masked by
-    // a codec. mpv, VLC and ffmpeg all read both directly.
-    if (!muxed) {
-      const std::string base = strip_extension(request.out_path);
-      const std::string y4m = base + ".y4m";
-      video::write_y4m(y4m, video.data, video.frames, video.height, video.width, {},
-                       options.output_frame_converter);
-      result.outputs.push_back(y4m);
-      if (have_audio) {
-        const std::string wav = base + ".wav";
-        audio::write_wav(wav, audio.samples, audio.channels, audio.sample_rate);
-        result.outputs.push_back(wav);
-      }
-      if (options.verbose) {
-        for (const std::string& p : result.outputs) std::printf("wrote       %s\n", p.c_str());
-      }
-    }
-    result.seconds_output = seconds_since(t0);
-    if (options.verbose) std::printf("output      %.2f s\n", result.seconds_output);
-  }
-
-  result.ok = true;
-  notify(RunStage::kFinished, -1, 0);
-  return result;
+  vae_prefetch.join();
+  return decode_and_deliver(request, options, completed, std::move(result));
 }
 
 }  // namespace slopfab

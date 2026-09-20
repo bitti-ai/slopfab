@@ -249,6 +249,25 @@ SLOPFAB_TEST(capi_sampling_settings) {
   CHECK(plan.num_model_evaluations == 49);
 }
 
+SLOPFAB_TEST(capi_session_ownership_and_conditioning_setter) {
+  Request request;
+  slopfab_session* session = nullptr;
+  CHECK(slopfab_session_create(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_session_create(&session) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_session(request.handle, session) == SLOPFAB_OK);
+  CHECK(slopfab_session_clear(session) == SLOPFAB_OK);
+  slopfab_session_destroy(session);
+  CHECK(slopfab_request_set_conditioning_settings(request.handle,
+      R"({"version":1,"max_frames":22})") == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_conditioning_settings(request.handle, "{}") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_conditioning_settings(request.handle, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_session(request.handle, nullptr) == SLOPFAB_OK);
+}
+
 SLOPFAB_TEST(capi_request_geometry) {
   Request request;
 
@@ -527,6 +546,10 @@ SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
   CHECK(std::strstr(description.text, "fixed 362-token embedding") != nullptr);
   CHECK(std::strstr(description.text, "pinned driving soundtrack") != nullptr);
   CHECK(std::strstr(description.text, "shift 3)") != nullptr);
+  CHECK(slopfab_request_set_steps(request.handle, 8) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_animate(request.handle, 1, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 7);
   CHECK(slopfab_request_set_animate(request.handle, 0, 0) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.canvas_width == 1344 && plan.canvas_height == 768);

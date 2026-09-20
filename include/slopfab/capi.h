@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 11
+#define SLOPFAB_CAPI_VERSION_MINOR 12
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -210,8 +210,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_loaded_major(int32_t* out_major);
 /* --- handles --------------------------------------------------------------- */
 
 typedef struct slopfab_request slopfab_request;
+typedef struct slopfab_session slopfab_session;
 typedef struct slopfab_generation slopfab_generation;
 typedef struct slopfab_reference_video slopfab_reference_video;
+
+/* Sessions isolate reusable conditioning/reference caches. GPU execution is
+ * still serialized. Requests and running generations retain shared ownership,
+ * so destroying the session handle does not invalidate an attached request. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_session_create(slopfab_session** out_session);
+SLOPFAB_C_API void SLOPFAB_CALL slopfab_session_destroy(slopfab_session* session);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_session_clear(slopfab_session* session);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_session(
+    slopfab_request* request, const slopfab_session* session);
 
 /* Decoded video/audio reference ingestion (no FFmpeg).
  *
@@ -451,6 +461,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
 // LoRA metadata defaults are resolved during validation; existing ABI structs
 // and schedule enum values are unchanged.
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_settings(
+    slopfab_request* request, const char* json);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_conditioning_settings(
     slopfab_request* request, const char* json);
 
 /* Optional MotionCache on CUDA/Vulkan. Disabled on new requests. Defaults:
