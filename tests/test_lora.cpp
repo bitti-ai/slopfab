@@ -447,3 +447,35 @@ SLOPFAB_TEST(lora_taomate_released_adapter_compatibility) {
   CHECK(loras.find("token_refiner.blocks.1.mlp.fc2")->front().rank == 128);
   CHECK(loras.find("blocks.49.attn.qkv_proj")->front().out == 21504);
 }
+
+SLOPFAB_TEST(lora_grid_metadata_selects_local_asset_without_mutating_adapter) {
+  Fixture fixture;
+  const std::string metadata = R"({"version":1,"identity":"custom-grid-v1","file":"custom-grid.safetensors","tensor":"activation_curve","rows":1025,"width":3})";
+  write_safetensors(fixture.path, fixture.tensors(), {{"slopfab.lora_grid", metadata}});
+  const auto original = sha256_file(fixture.path);
+  write_safetensors((fixture.dir / "custom-grid.safetensors").string(),
+      {{"activation_curve", {1025,3}, std::vector<float>(1025*3, .5f)}});
+  SafeTensors adapter;
+  adapter.open(fixture.path);
+  detail::LoraGrid grid;
+  grid.load(adapter, 3, false);
+  CHECK(grid.identity == "custom-grid-v1");
+  CHECK(grid.tensor.shape == std::vector<int64_t>({1025,3}));
+  CHECK(sha256_file(fixture.path) == original);
+  adapter.close();
+  prepare_lora_grid(fixture.path, 3);
+  std::filesystem::remove(fixture.dir / "custom-grid.safetensors");
+  adapter.open(fixture.path);
+  detail::LoraGrid embedded;
+  embedded.load(adapter, 3, false);
+  CHECK(embedded.identity == grid.identity);
+  CHECK(embedded.bytes == grid.bytes);
+  adapter.close();
+  write_safetensors(fixture.path, fixture.tensors(), {{"slopfab.lora_grid",
+      R"({"version":1,"file":"../outside.safetensors"})"}});
+  adapter.open(fixture.path);
+  bool rejected = false;
+  try { detail::LoraGrid bad; bad.load(adapter, 3, false); }
+  catch (const std::runtime_error&) { rejected = true; }
+  CHECK(rejected);
+}
