@@ -290,7 +290,7 @@ SLOPFAB_TEST(tokenizer_scan_handles_escapes_added_tokens_and_malformed_input) {
       "    {\"id\": 7, \"content\": \"a\"}\n"
       "  ],\n"
       "  \"normalizer\": null,\n"
-      "  \"pre_tokenizer\": {\"type\": \"ByteLevel\", \"nested\": [1, [2, {\"x\": \"}\"}]]},\n"
+      "  \"ignored_extension\": {\"type\": \"ByteLevel\", \"nested\": [1, [2, {\"x\": \"}\"}]]},\n"
       "  \"model\": {\n"
       "    \"type\": \"BPE\",\n"
       "    \"dropout\": null,\n"

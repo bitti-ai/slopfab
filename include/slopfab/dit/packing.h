@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <vector>
+#include "slopfab/model_geometry.h"
 
 namespace slopfab::dit {
 
@@ -41,7 +42,10 @@ struct SequenceLayout {
   int latent_height = 0;        // Hl
   int latent_width = 0;         // Wl
 
-  int rows_per_frame() const { return (latent_height / 2) * (latent_width / 2); }  // R
+  int rows_per_frame() const { return rows_per_frame(h3_latent_geometry()); }
+  int rows_per_frame(const LatentGeometry& g) const {
+    return (latent_height / g.patch_height) * (latent_width / g.patch_width);
+  }
   int condition_start() const { return num_text; }
   int audio_start() const { return num_text + num_condition_video + num_condition_audio; }
   int video_start() const { return audio_start() + num_audio_rows; }
@@ -131,6 +135,22 @@ RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndic
 RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndices& idx,
                                  float video_t, float audio_t, float condition_video_t,
                                  float condition_audio_t);
+
+// Geometry-aware host operations. Existing overloads retain exact H3 defaults.
+void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w,
+                         int short_edge, int max_pixels, const LatentGeometry& geometry);
+void validate_canvas_size(int height, int width, const LatentGeometry& geometry);
+bool canvas_exceeds_trained_area(int height, int width, const LatentGeometry& geometry);
+int align_num_frames(int num_frames, const LatentGeometry& geometry);
+int video_latent_num_frames(int aligned_frames, const LatentGeometry& geometry);
+int audio_latents_for_frames(int aligned_frames, const LatentGeometry& geometry);
+std::vector<double> build_position_ids(const SequenceLayout& layout, const LatentGeometry& geometry);
+void patchify_video(const float* latents, const SequenceLayout& layout, float* rows_out,
+                    const LatentGeometry& geometry);
+void unpatchify_video(const float* rows, const SequenceLayout& layout, float* latents_out,
+                      const LatentGeometry& geometry);
+void unpack_audio(const float* rows, int num_audio_latents, float* out,
+                  const LatentGeometry& geometry);
 
 // --- frame-banded attention -------------------------------------------------
 //

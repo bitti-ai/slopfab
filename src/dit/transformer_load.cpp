@@ -5,6 +5,7 @@ namespace slopfab::dit {
 void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config,
                        const LoraAdapters* loras, const TransformerLoadOptions& options) {
   cuda::StageMemorySpan memory("transformer.weights");
+  require_h3_latent_geometry(read_model_geometry(checkpoint));
   Impl& s = *impl_;
   // Issued first, before anything else in this function, because it is
   // asynchronous: the plan walk and the arena allocation below run while the

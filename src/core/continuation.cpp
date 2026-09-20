@@ -58,6 +58,7 @@ void validate_plan(const LatentClip& source, const ContinuationPlan& p) {
 }  // namespace
 
 dit::SequenceLayout LatentClip::layout() const {
+  require_h3_latent_geometry(geometry);
   dit::validate_canvas_size(height, width);
   require(frames == 1 || (frames >= 22 && frames % 17 == 5), "invalid frame count");
   // Packed row indices and downstream tensor counts use signed 32-bit integers.
@@ -106,7 +107,8 @@ void LatentClip::save(const std::string& path) const {
        {"audio_rows", {l.num_audio_rows, 32}, audio_rows}},
       {{"slopfab_latents", "h3-av-v1"}, {"width", std::to_string(width)},
        {"height", std::to_string(height)}, {"frames", std::to_string(frames)},
-       {"fps", "24"}, {"sampled", sampled ? "1" : "0"},
+       {"fps", std::to_string(geometry.fps)}, {"sampled", sampled ? "1" : "0"},
+       {"slopfab.geometry", geometry_json(geometry)},
        {"transformer", transformer}, {"video_vae", video_vae}, {"audio_vae", audio_vae}});
 #ifdef _WIN32
   if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
@@ -123,6 +125,7 @@ std::shared_ptr<const LatentClip> LatentClip::load(const std::string& path) {
           "unsupported archive; continuation requires a file written by --save-latents");
   require(meta(file, "fps") == "24", "only 24 fps H3 latents are supported");
   auto clip = std::make_shared<LatentClip>();
+  clip->geometry = read_model_geometry(file);
   clip->width = integer(file, "width");
   clip->height = integer(file, "height");
   clip->frames = integer(file, "frames");
@@ -158,6 +161,7 @@ ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int ex
   p.overlap_audio_latents = source.layout().num_audio_latents - static_cast<int>(boundary);
   p.window_audio_latents = static_cast<int>(output_audio - boundary);
   LatentClip output_geometry;
+  output_geometry.geometry = source.geometry;
   output_geometry.width = source.width;
   output_geometry.height = source.height;
   output_geometry.frames = p.output_frames;
@@ -200,6 +204,7 @@ LatentClip join_continuation(const LatentClip& source, const ContinuationPlan& p
               audio.size() == size_t(p.window_audio_latents) * 64,
           "sampled continuation window has the wrong shape");
   LatentClip out;
+  out.geometry = source.geometry;
   out.width = source.width; out.height = source.height; out.frames = p.output_frames;
   out.transformer = source.transformer; out.video_vae = source.video_vae; out.audio_vae = source.audio_vae;
   out.video_rows = source.video_rows;

@@ -4,24 +4,10 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <limits>
 
 namespace slopfab::dit {
 namespace {
-
-// packing.py:47-95. These are checkpoint contracts, not tunables.
-constexpr int kFps = 24;
-constexpr int kMaxPixels = 768 * 1344;
-constexpr int kCanvasMultiple = 32;
-constexpr double kMinAspect = 1.0 / 4.0;
-constexpr double kMaxAspect = 4.0;
-constexpr int kFramesPerChunk = 17;
-constexpr int kLatentsPerChunk = 5;
-constexpr int kAudioLatentsPerSecond = 40;
-constexpr int kAudioChannels = 2;
-
-constexpr double kRopeFrameRescale = 5.0 / 3.0;
-constexpr int kRopeFramesPerLatent[5] = {1, 4, 4, 4, 4};
-constexpr double kRopeSpatialScale = 32.0;
 
 // Python's round() is round-half-to-**even**, and the canvas arithmetic can
 // land exactly on a half (a 2:1 ratio puts the long edge at 1536, but an
@@ -48,7 +34,7 @@ double round_half_even(double v) {
 // identity. Using `ratio` directly leaves the width grid one ulp off for a
 // 48x84 latent canvas. Verified bitwise against numpy for every even
 // height/width in [16, 200).
-std::vector<double> spatial_position_grid(int dim, int patch, double sqrt_area) {
+std::vector<double> spatial_position_grid(int dim, int patch, double sqrt_area, double scale) {
   const int n = dim / patch;
   const double ratio = static_cast<double>(dim) / sqrt_area;
   const double left = (1.0 - ratio) / 2.0;
@@ -57,19 +43,19 @@ std::vector<double> spatial_position_grid(int dim, int patch, double sqrt_area) 
 
   std::vector<double> grid(static_cast<size_t>(n));
   for (int k = 0; k < n; ++k) {
-    grid[static_cast<size_t>(k)] = (static_cast<double>(k) * step + left) * kRopeSpatialScale;
+    grid[static_cast<size_t>(k)] = (static_cast<double>(k) * step + left) * scale;
   }
   return grid;
 }
 
 // packing.py:344-353. Non-uniform spacing: 5/3 * (1, 4, 4, 4, 4) repeating,
 // mirroring the VAE's 17-pixel-frames-to-5-latent-frames grouping. T(0) = 0.
-std::vector<double> temporal_position_grid(int num_latent_frames, double origin) {
+std::vector<double> temporal_position_grid(int num_latent_frames, double origin, const LatentGeometry& g) {
   std::vector<double> t(static_cast<size_t>(num_latent_frames));
   double acc = 0.0;
   for (int f = 0; f < num_latent_frames; ++f) {
     t[static_cast<size_t>(f)] = origin + acc;
-    acc += kRopeFrameRescale * kRopeFramesPerLatent[f % 5];
+    acc += g.rope_frame_rescale * g.rope_frames_per_latent[f % g.rope_frames_per_latent.size()];
   }
   return t;
 }
@@ -77,12 +63,13 @@ std::vector<double> temporal_position_grid(int num_latent_frames, double origin)
 }  // namespace
 
 void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w,
-                         int short_edge, int max_pixels) {
+                         int short_edge, int max_pixels, const LatentGeometry& g) {
+  validate_latent_geometry(g);
   if (aspect_w <= 0.0 || aspect_h <= 0.0 || short_edge <= 0 || max_pixels <= 0 || !out_h || !out_w) {
     throw std::runtime_error("resolve_canvas_size: aspect ratio must be positive");
   }
   const double ratio = aspect_w / aspect_h;
-  if (!(ratio >= kMinAspect && ratio <= kMaxAspect)) {
+  if (!(ratio >= g.min_aspect && ratio <= g.max_aspect)) {
     throw std::runtime_error("resolve_canvas_size: MiniMax-H3 supports 1:4 to 4:1, got ratio " +
                              std::to_string(ratio));
   }
@@ -104,13 +91,14 @@ void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_
     height *= scale;
   }
 
-  *out_h = std::max(kCanvasMultiple,
-                    static_cast<int>(round_half_even(height / kCanvasMultiple)) * kCanvasMultiple);
-  *out_w = std::max(kCanvasMultiple,
-                    static_cast<int>(round_half_even(width / kCanvasMultiple)) * kCanvasMultiple);
+  *out_h = std::max(g.canvas_multiple,
+                    static_cast<int>(round_half_even(height / g.canvas_multiple)) * g.canvas_multiple);
+  *out_w = std::max(g.canvas_multiple,
+                    static_cast<int>(round_half_even(width / g.canvas_multiple)) * g.canvas_multiple);
 }
 
-void validate_canvas_size(int height, int width) {
+void validate_canvas_size(int height, int width, const LatentGeometry& g) {
+  validate_latent_geometry(g);
   if (height <= 0 || width <= 0) {
     throw std::runtime_error("resolution: both axes must be positive, got " +
                              std::to_string(width) + "x" + std::to_string(height));
@@ -119,45 +107,64 @@ void validate_canvas_size(int height, int width) {
   // 2x2 patches, so an axis that is a multiple of 16 but not 32 produces a
   // latent with an odd extent and a patch grid that silently drops its last
   // row or column.
-  if (height % kCanvasMultiple != 0 || width % kCanvasMultiple != 0) {
+  if (height % g.canvas_multiple != 0 || width % g.canvas_multiple != 0) {
     throw std::runtime_error("resolution: both axes must be a multiple of " +
-                             std::to_string(kCanvasMultiple) + ", got " + std::to_string(width) +
+                             std::to_string(g.canvas_multiple) + ", got " + std::to_string(width) +
                              "x" + std::to_string(height));
   }
   const double ratio = static_cast<double>(width) / static_cast<double>(height);
-  if (!(ratio >= kMinAspect && ratio <= kMaxAspect)) {
+  if (!(ratio >= g.min_aspect && ratio <= g.max_aspect)) {
     throw std::runtime_error("resolution: MiniMax-H3 supports 1:4 to 4:1, and " +
                              std::to_string(width) + "x" + std::to_string(height) + " is " +
                              std::to_string(ratio));
   }
 }
 
-bool canvas_exceeds_trained_area(int height, int width) {
-  return static_cast<long long>(height) * width > static_cast<long long>(kMaxPixels);
+bool canvas_exceeds_trained_area(int height, int width, const LatentGeometry& g) {
+  validate_latent_geometry(g);
+  return static_cast<long long>(height) * width > static_cast<long long>(g.trained_max_pixels);
 }
 
-int align_num_frames(int num_frames) {
-  if (num_frames < 1) {
-    throw std::runtime_error("align_num_frames: num_frames must be positive");
-  }
-  while (num_frames % kFramesPerChunk != kLatentsPerChunk) ++num_frames;
-  return num_frames;
+int align_num_frames(int num_frames, const LatentGeometry& g) {
+  validate_latent_geometry(g);
+  if (num_frames < 1) throw std::runtime_error("align_num_frames: num_frames must be positive");
+  const int64_t chunks = num_frames <= g.frame_offset ? 0 :
+      (int64_t(num_frames) - g.frame_offset + g.frames_per_chunk - 1) / g.frames_per_chunk;
+  const int64_t result = chunks * g.frames_per_chunk + g.frame_offset;
+  if (result > std::numeric_limits<int>::max()) throw std::runtime_error("align_num_frames: frame count overflows");
+  return static_cast<int>(result);
+}
+int video_latent_num_frames(int aligned_frames, const LatentGeometry& g) {
+  validate_latent_geometry(g);
+  if (aligned_frames < g.frame_offset || aligned_frames % g.frames_per_chunk != g.frame_offset)
+    throw std::runtime_error("video_latent_num_frames: frame count does not match codec temporal mapping");
+  const int64_t result = int64_t((aligned_frames - g.frame_offset) / g.frames_per_chunk) *
+      g.latents_per_chunk + g.latent_frame_offset;
+  if (result > std::numeric_limits<int>::max()) throw std::runtime_error("video_latent_num_frames: latent count overflows");
+  return static_cast<int>(result);
+}
+int audio_latents_for_frames(int aligned_frames, const LatentGeometry& g) {
+  validate_latent_geometry(g);
+  if (aligned_frames < 0) throw std::runtime_error("audio_latents_for_frames: frame count must be nonnegative");
+  // Preserve Python round and H3 operation order exactly.
+  const double result = round_half_even(static_cast<double>(aligned_frames) / g.fps *
+                                        static_cast<double>(g.audio_latents_per_second));
+  if (result > std::numeric_limits<int>::max()) throw std::runtime_error("audio_latents_for_frames: latent count overflows");
+  return static_cast<int>(result);
 }
 
-int video_latent_num_frames(int aligned_frames) {
-  if (aligned_frames % kFramesPerChunk != kLatentsPerChunk) {
-    throw std::runtime_error("video_latent_num_frames: expected 17*k + 5, got " +
-                             std::to_string(aligned_frames));
-  }
-  return (aligned_frames - kLatentsPerChunk) / kFramesPerChunk * kLatentsPerChunk + 2;
+void resolve_canvas_size(double aw, double ah, int* h, int* w, int edge, int pixels) {
+  resolve_canvas_size(aw, ah, h, w, edge, pixels, h3_latent_geometry());
 }
-
-int audio_latents_for_frames(int aligned_frames) {
-  // round(frames / fps * 40), matching before_denoise.py's Python round.
-  const double latents =
-      static_cast<double>(aligned_frames) / kFps * static_cast<double>(kAudioLatentsPerSecond);
-  return static_cast<int>(round_half_even(latents));
-}
+void validate_canvas_size(int h, int w) { validate_canvas_size(h,w,h3_latent_geometry()); }
+bool canvas_exceeds_trained_area(int h, int w) { return canvas_exceeds_trained_area(h,w,h3_latent_geometry()); }
+int align_num_frames(int frames) { return align_num_frames(frames,h3_latent_geometry()); }
+int video_latent_num_frames(int frames) { return video_latent_num_frames(frames,h3_latent_geometry()); }
+int audio_latents_for_frames(int frames) { return audio_latents_for_frames(frames,h3_latent_geometry()); }
+std::vector<double> build_position_ids(const SequenceLayout& l) { return build_position_ids(l,h3_latent_geometry()); }
+void patchify_video(const float* in, const SequenceLayout& l, float* out) { patchify_video(in,l,out,h3_latent_geometry()); }
+void unpatchify_video(const float* in, const SequenceLayout& l, float* out) { unpatchify_video(in,l,out,h3_latent_geometry()); }
+void unpack_audio(const float* in, int n, float* out) { unpack_audio(in,n,out,h3_latent_geometry()); }
 
 PackedIndices build_indices(const SequenceLayout& layout) {
   const int condition_start = layout.condition_start();
@@ -190,14 +197,18 @@ PackedIndices build_indices(const SequenceLayout& layout) {
   return out;
 }
 
-std::vector<double> build_position_ids(const SequenceLayout& layout) {
+std::vector<double> build_position_ids(const SequenceLayout& layout, const LatentGeometry& g) {
+  validate_latent_geometry(g);
   const int total = layout.total_rows();
   const int L = layout.num_text;
   const int audio_start = layout.audio_start();
   const int video_start = layout.video_start();
   const int Hl = layout.latent_height;
   const int Wl = layout.latent_width;
-  const int rows_per_frame = layout.rows_per_frame();
+  if (Hl <= 0 || Wl <= 0 || layout.num_latent_frames < 0 ||
+      Hl % g.patch_height || Wl % g.patch_width)
+    throw std::runtime_error("packing: latent dimensions must contain complete patches");
+  const int rows_per_frame = layout.rows_per_frame(g);
 
   std::vector<double> pos(static_cast<size_t>(total) * 3, 0.0);
 
@@ -206,8 +217,8 @@ std::vector<double> build_position_ids(const SequenceLayout& layout) {
   for (int i = 0; i < L; ++i) pos[static_cast<size_t>(i) * 3 + 0] = static_cast<double>(i);
 
   const double sqrt_area = std::sqrt(static_cast<double>(Hl) * static_cast<double>(Wl));
-  const std::vector<double> h_grid = spatial_position_grid(Hl, 2, sqrt_area);
-  const std::vector<double> w_grid = spatial_position_grid(Wl, 2, sqrt_area);
+  const std::vector<double> h_grid = spatial_position_grid(Hl, g.patch_height, sqrt_area, g.rope_spatial_scale);
+  const std::vector<double> w_grid = spatial_position_grid(Wl, g.patch_width, sqrt_area, g.rope_spatial_scale);
 
   // Audio: channel-major, sharing the video's 40-units-per-second clock. No
   // height coordinate; the two stereo channels are distinguished only by being
@@ -216,7 +227,7 @@ std::vector<double> build_position_ids(const SequenceLayout& layout) {
   // Note the origin is `L`, not `audio_start`: keyframe condition rows do not
   // advance the audio clock (packing.py:433).
   const int A = layout.num_audio_latents;
-  for (int c = 0; c < kAudioChannels; ++c) {
+  for (int c = 0; c < g.audio_channels; ++c) {
     const double w = (c == 0) ? w_grid.front() : w_grid.back();
     for (int a = 0; a < A; ++a) {
       const size_t row = static_cast<size_t>(audio_start + c * A + a);
@@ -229,8 +240,8 @@ std::vector<double> build_position_ids(const SequenceLayout& layout) {
   // Video: frame-major, then the same hh*(Wl/2)+ww ordering the patchifier
   // uses. A mismatch between the two scrambles the spatial rotary without
   // changing any shape.
-  const std::vector<double> t_grid = temporal_position_grid(layout.num_latent_frames, static_cast<double>(L));
-  const int half_w = Wl / 2;
+  const std::vector<double> t_grid = temporal_position_grid(layout.num_latent_frames, static_cast<double>(L), g);
+  const int half_w = Wl / g.patch_width;
   for (int f = 0; f < layout.num_latent_frames; ++f) {
     for (int r = 0; r < rows_per_frame; ++r) {
       const int hh = r / half_w;
@@ -245,14 +256,18 @@ std::vector<double> build_position_ids(const SequenceLayout& layout) {
   return pos;
 }
 
-void patchify_video(const float* latents, const SequenceLayout& layout, float* rows_out) {
-  const int C = 24;
+void patchify_video(const float* latents, const SequenceLayout& layout, float* rows_out, const LatentGeometry& g) {
+  validate_latent_geometry(g);
+  const int C = g.video_channels;
   const int F = layout.num_latent_frames;
   const int Hl = layout.latent_height;
   const int Wl = layout.latent_width;
-  const int half_h = Hl / 2;
-  const int half_w = Wl / 2;
-  const int feature_dim = C * 4;
+  if (Hl <= 0 || Wl <= 0 || layout.num_latent_frames < 0 ||
+      Hl % g.patch_height || Wl % g.patch_width)
+    throw std::runtime_error("packing: latent dimensions must contain complete patches");
+  const int half_h = Hl / g.patch_height;
+  const int half_w = Wl / g.patch_width;
+  const int feature_dim = g.video_patch_dim();
 
   const size_t frame_stride = static_cast<size_t>(Hl) * Wl;
   const size_t channel_stride = frame_stride * F;
@@ -263,12 +278,12 @@ void patchify_video(const float* latents, const SequenceLayout& layout, float* r
         const size_t row = (static_cast<size_t>(f) * half_h + hh) * half_w + ww;
         float* dst = rows_out + row * feature_dim;
         for (int c = 0; c < C; ++c) {
-          for (int dh = 0; dh < 2; ++dh) {
-            for (int dw = 0; dw < 2; ++dw) {
+          for (int dh = 0; dh < g.patch_height; ++dh) {
+            for (int dw = 0; dw < g.patch_width; ++dw) {
               const size_t src = static_cast<size_t>(c) * channel_stride +
                                  static_cast<size_t>(f) * frame_stride +
-                                 static_cast<size_t>(2 * hh + dh) * Wl + (2 * ww + dw);
-              dst[c * 4 + dh * 2 + dw] = latents[src];
+                                 static_cast<size_t>(g.patch_height * hh + dh) * Wl + (g.patch_width * ww + dw);
+              dst[c * g.patch_height * g.patch_width + dh * g.patch_width + dw] = latents[src];
             }
           }
         }
@@ -277,14 +292,18 @@ void patchify_video(const float* latents, const SequenceLayout& layout, float* r
   }
 }
 
-void unpatchify_video(const float* rows, const SequenceLayout& layout, float* latents_out) {
-  const int C = 24;
+void unpatchify_video(const float* rows, const SequenceLayout& layout, float* latents_out, const LatentGeometry& g) {
+  validate_latent_geometry(g);
+  const int C = g.video_channels;
   const int F = layout.num_latent_frames;
   const int Hl = layout.latent_height;
   const int Wl = layout.latent_width;
-  const int half_h = Hl / 2;
-  const int half_w = Wl / 2;
-  const int feature_dim = C * 4;
+  if (Hl <= 0 || Wl <= 0 || layout.num_latent_frames < 0 ||
+      Hl % g.patch_height || Wl % g.patch_width)
+    throw std::runtime_error("packing: latent dimensions must contain complete patches");
+  const int half_h = Hl / g.patch_height;
+  const int half_w = Wl / g.patch_width;
+  const int feature_dim = g.video_patch_dim();
 
   const size_t frame_stride = static_cast<size_t>(Hl) * Wl;
   const size_t channel_stride = frame_stride * F;
@@ -295,12 +314,12 @@ void unpatchify_video(const float* rows, const SequenceLayout& layout, float* la
         const size_t row = (static_cast<size_t>(f) * half_h + hh) * half_w + ww;
         const float* src = rows + row * feature_dim;
         for (int c = 0; c < C; ++c) {
-          for (int dh = 0; dh < 2; ++dh) {
-            for (int dw = 0; dw < 2; ++dw) {
+          for (int dh = 0; dh < g.patch_height; ++dh) {
+            for (int dw = 0; dw < g.patch_width; ++dw) {
               const size_t dst = static_cast<size_t>(c) * channel_stride +
                                  static_cast<size_t>(f) * frame_stride +
-                                 static_cast<size_t>(2 * hh + dh) * Wl + (2 * ww + dw);
-              latents_out[dst] = src[c * 4 + dh * 2 + dw];
+                                 static_cast<size_t>(g.patch_height * hh + dh) * Wl + (g.patch_width * ww + dw);
+              latents_out[dst] = src[c * g.patch_height * g.patch_width + dh * g.patch_width + dw];
             }
           }
         }
@@ -309,10 +328,12 @@ void unpatchify_video(const float* rows, const SequenceLayout& layout, float* la
   }
 }
 
-void unpack_audio(const float* rows, int num_audio_latents, float* out) {
+void unpack_audio(const float* rows, int num_audio_latents, float* out, const LatentGeometry& g) {
+  validate_latent_geometry(g);
+  if (num_audio_latents < 0) throw std::runtime_error("unpack_audio: negative latent count");
   // (2A, 32) -> (2, A, 32) -> permute(0, 2, 1) -> (2, 32, A)
-  const int channels = kAudioChannels;
-  const int dim = 32;
+  const int channels = g.audio_channels;
+  const int dim = g.audio_features;
   for (int c = 0; c < channels; ++c) {
     for (int a = 0; a < num_audio_latents; ++a) {
       for (int d = 0; d < dim; ++d) {

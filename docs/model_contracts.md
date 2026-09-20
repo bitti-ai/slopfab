@@ -75,3 +75,11 @@ Preparation embeds the validated grid using atomic replacement and checks the ad
 ## Transformer modules
 
 The former 3200-line transformer is divided into lifecycle/forward orchestration (`transformer.cpp`), checkpoint planning/loading (`transformer_load.cpp`), sequence/text preparation (`transformer_prepare.cpp`), block arithmetic (`transformer_execution.cpp`), and captures/diagnostics (`transformer_capture.cpp`). Shared state and resource helpers are private headers. Public ABI is unchanged. General CUDA attention uses compiled attention plans for dispatch and scratch sizing; exact, VSA and compact query execution retain their dedicated numerical paths.
+
+## Geometry and archive identity
+
+`LatentGeometry` centralizes the H3 frame rate, spatial compression, patch and channel dimensions, audio rates, temporal codec mapping, canvas bounds and position-grid parameters. `slopfab.geometry` is version-1 JSON; supplied fields override canonical H3 defaults. Unknown fields, fractional dimensions, impossible patch/canvas alignment and invalid position patterns are rejected. `geometry_json`/`fingerprint` provide a canonical complete representation independent of metadata ordering.
+
+Geometry-aware host packing overloads accept a descriptor, including non-default patch sizes, latent channel counts and audio dimensions. For example, a synthetic contract can use three video channels and 1-by-2 patches without another packing implementation. Temporal mapping remains the declared chunk-plus-offset algorithm; a genuinely different algorithm requires another family implementation. H3 floating-point position and rounding operation order is preserved.
+
+The current H3 execution and continuation paths call `require_h3_latent_geometry` and reject incompatible descriptors before upload. Host generality does not imply support in unchanged GPU kernels or codecs. New latent archives write their canonical geometry under `slopfab.geometry`, while archives without that entry retain the original H3 geometry. Loading/continuation validates the identity and cannot silently combine different latent contracts.

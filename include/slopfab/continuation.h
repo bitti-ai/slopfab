@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "slopfab/dit/ref2va.h"
+#include "slopfab/model_geometry.h"
 
 namespace slopfab {
 
@@ -14,6 +15,7 @@ struct LatentClip {
   int width = 0, height = 0, frames = 0;
   bool sampled = true;
   std::string transformer, video_vae, audio_vae;
+  LatentGeometry geometry;
   std::vector<float> video_rows, audio_rows;
 
   dit::SequenceLayout layout() const;
