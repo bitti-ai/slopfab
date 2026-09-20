@@ -174,6 +174,8 @@ class Device {
 
   const DeviceInfo& info() const;
   Queue compute_queue() const;
+  // Reuses of an existing pipeline with identical SPIR-V and compile options.
+  uint64_t pipeline_cache_hits() const noexcept;
   void wait_idle() const;
   void* native_handle() const noexcept;
   explicit operator bool() const noexcept;

@@ -113,6 +113,39 @@ ComputePipeline ComputePipeline::create(const Device& device,
   specialization.dataSize = specialization_values.size() * sizeof(uint32_t);
   specialization.pData = specialization_values.data();
 
+  // The cache key contains the complete module and every semantic option.
+  // Arithmetic variants live in different modules; no driver/name heuristic
+  // can accidentally reuse a pipeline compiled for another contract.
+  std::string cache_key;
+  auto append = [&](const void* data, size_t bytes) {
+    cache_key.append(static_cast<const char*>(data), bytes);
+  };
+  auto append_size = [&](size_t size) { append(&size, sizeof(size)); };
+  append_size(spirv.size());
+  append(spirv.data(), spirv.size() * sizeof(uint32_t));
+  append(&options.storage_binding_count, sizeof(options.storage_binding_count));
+  append(&options.push_constant_bytes, sizeof(options.push_constant_bytes));
+  append(options.local_size, sizeof(options.local_size));
+  append_size(options.entry_point.size());
+  append(options.entry_point.data(), options.entry_point.size());
+  append_size(options.specialization_constants.size());
+  for (const auto& constant : options.specialization_constants) {
+    append(&constant.id, sizeof(constant.id));
+    append(&constant.value, sizeof(constant.value));
+  }
+  auto& device_state = *device.impl_->state;
+  std::lock_guard<std::mutex> cache_lock(device_state.pipeline_mutex);
+  if (auto found = device_state.pipeline_cache.find(cache_key);
+      found != device_state.pipeline_cache.end()) {
+    if (auto cached = found->second.lock()) {
+      device_state.pipeline_cache_hits.fetch_add(1, std::memory_order_relaxed);
+      return ComputePipeline(std::static_pointer_cast<Impl>(cached));
+    }
+  }
+  for (auto it = device_state.pipeline_cache.begin(); it != device_state.pipeline_cache.end();) {
+    if (it->second.expired()) it = device_state.pipeline_cache.erase(it);
+    else ++it;
+  }
   auto result = std::make_shared<Impl>();
   result->device = device.impl_->state;
   result->options = options;
@@ -189,6 +222,7 @@ ComputePipeline ComputePipeline::create(const Device& device,
     throw;
   }
   destroy_shader(state.device, shader, nullptr);
+  device_state.pipeline_cache[std::move(cache_key)] = result;
   return ComputePipeline(std::move(result));
 }
 

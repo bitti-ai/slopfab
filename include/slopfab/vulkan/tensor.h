@@ -31,6 +31,24 @@ class PreparedF16Activation;
 class PreparedNVFP4WeightView;
 class StreamedNVFP4WeightCache;
 
+enum class TensorPipelineSet : uint32_t {
+  kCore = 1u << 0,       // storage, conversion, GEMM, normalization and positions
+  kVideo = 1u << 1,
+  kAudio = 1u << 2,
+  kDit = 1u << 3,
+  kReference = 1u << 4,
+  kBlockedAttention = 1u << 5,
+  kExactH3Attention = 1u << 6,
+  kFlashAttention = 1u << 7,
+  kSageAttention = 1u << 8,
+  kTextAttention = 1u << 9,
+  kLegacy = 0x3efu,     // all historical defaults, excluding reference encoding
+  kAll = 0x3ffu,
+};
+constexpr TensorPipelineSet operator|(TensorPipelineSet a, TensorPipelineSet b) {
+  return static_cast<TensorPipelineSet>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+}
+
 struct TensorContextOptions {
   // Two slots let a producer record the next bounded graph chunk while the
   // previous timeline submission is still executing.
@@ -43,8 +61,11 @@ struct TensorContextOptions {
   // Required INT8 Q/K and means/scales are reported separately by the plan.
   // Zero preserves the compact allocation footprint. No free-VRAM guessing.
   uint64_t sage_extra_workspace_bytes = 64ull << 20;
-  // Compile reference-only shaders only for media encoder contexts.
+  // Compatibility alias for adding kReference to pipeline_sets.
   bool enable_reference_encoder = false;
+  // Prepare only selected operator families. Core operators are always added.
+  // Preparation occurs before recording, never inside an operator's dispatch.
+  TensorPipelineSet pipeline_sets = TensorPipelineSet::kLegacy;
 };
 
 class DeviceTensor {
@@ -383,6 +404,11 @@ class TensorContext {
   TensorContext(TensorContext&&) noexcept;
   TensorContext& operator=(TensorContext&&) noexcept;
   TensorContext(const TensorContext&) = delete;
+  // Add and cache operator families between batches. The supplied device must
+  // be the same device used to construct the context. Unsupported arithmetic
+  // remains unavailable even when its family is requested.
+  void prepare_pipeline_sets(const Device& device, TensorPipelineSet sets);
+  TensorPipelineSet prepared_pipeline_sets() const noexcept;
   TensorContext& operator=(const TensorContext&) = delete;
 
   DeviceTensor allocate(const TensorLayout& layout,

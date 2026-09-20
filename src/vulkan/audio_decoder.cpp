@@ -121,6 +121,7 @@ struct AudioDecoder::Impl {
   explicit Impl(const Device& device)
       : context(device, [] {
           TensorContextOptions options;
+          options.pipeline_sets = TensorPipelineSet::kCore | TensorPipelineSet::kAudio;
           options.max_batch_operators = kGraphCapacity;
           return options;
         }()) {

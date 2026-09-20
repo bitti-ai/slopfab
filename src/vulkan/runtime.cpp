@@ -494,6 +494,9 @@ Device::Device(Device&&) noexcept = default;
 Device& Device::operator=(Device&&) noexcept = default;
 Device::Device(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Device::operator bool() const noexcept { return impl_ != nullptr; }
+uint64_t Device::pipeline_cache_hits() const noexcept {
+  return impl_ ? impl_->state->pipeline_cache_hits.load(std::memory_order_relaxed) : 0;
+}
 const DeviceInfo& Device::info() const {
   if (!impl_) throw std::logic_error("vulkan: empty Device");
   return impl_->info;

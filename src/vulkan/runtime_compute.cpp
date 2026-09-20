@@ -292,7 +292,8 @@ void CommandList::barrier(Buffer& buffer, BufferAccess before, BufferAccess afte
 
 void CommandList::bind_compute(ComputePipeline& pipeline,
                                const std::vector<StorageBinding>& bindings) {
-  if (!impl_ || !pipeline.impl_) throw std::invalid_argument("vulkan: bind requires pipeline");
+  if (!impl_ || !pipeline.impl_)
+    throw std::invalid_argument("vulkan: bind requires a supported, prepared pipeline set");
   if (pipeline.impl_->device != impl_->state->device) {
     throw std::invalid_argument("vulkan: pipeline belongs to another device");
   }

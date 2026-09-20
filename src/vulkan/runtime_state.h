@@ -11,6 +11,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <unordered_set>
+#include <unordered_map>
 #include <utility>
 
 #ifdef _WIN32
@@ -188,6 +189,10 @@ struct DeviceState {
   PFN_vkFlushMappedMemoryRanges flush_mapped_ranges = nullptr;
   PFN_vkInvalidateMappedMemoryRanges invalidate_mapped_ranges = nullptr;
   std::mutex queue_mutex;
+  // Weak entries avoid a device -> pipeline -> device ownership cycle.
+  std::mutex pipeline_mutex;
+  std::unordered_map<std::string, std::weak_ptr<void>> pipeline_cache;
+  std::atomic<uint64_t> pipeline_cache_hits{0};
 
   ~DeviceState() {
     if (device != VK_NULL_HANDLE && destroy_device != nullptr) {

@@ -148,7 +148,7 @@ ReferenceEncoder::Impl::Impl(const Device& device,
                              const SafeTensors& checkpoint, bool is_audio)
     : context(device, [] {
         TensorContextOptions options;
-        options.enable_reference_encoder = true;
+        options.pipeline_sets = TensorPipelineSet::kCore | TensorPipelineSet::kReference;
         return options;
       }()), audio(is_audio) {
   if (!audio) {

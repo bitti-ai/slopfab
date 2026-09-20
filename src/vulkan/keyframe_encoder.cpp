@@ -137,6 +137,8 @@ struct KeyframeEncoder::Impl {
 
   explicit Impl(const Device& device) : context(device, [] {
     TensorContextOptions options;
+    options.pipeline_sets = TensorPipelineSet::kCore | TensorPipelineSet::kVideo |
+        TensorPipelineSet::kAudio;
     options.max_batch_operators = 128;
     return options;
   }()) {

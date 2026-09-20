@@ -410,6 +410,9 @@ void TensorContext::require_h3_attention(AttentionMode mode) const {
     throw std::runtime_error(std::string("vulkan H3 attention: mode '") +
         attention_mode_name(mode) + "' is unavailable; check enabled cooperative matrix, "
         "subgroup and arithmetic features");
+  impl_->require_pipeline_set(mode == AttentionMode::kExact
+      ? TensorPipelineSet::kExactH3Attention : mode == AttentionMode::kFlash2
+      ? TensorPipelineSet::kFlashAttention : TensorPipelineSet::kSageAttention);
 }
 void TensorContext::require_exact_h3_attention() const {
   if (!impl_) throw std::logic_error("vulkan tensor: moved-from context");

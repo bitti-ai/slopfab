@@ -138,6 +138,8 @@ struct VideoVaeDecoder::Impl {
       : config(cfg), operators_per_document(decoder_operator_count(cfg)),
         context(device, [] {
           TensorContextOptions options;
+          options.pipeline_sets = TensorPipelineSet::kCore | TensorPipelineSet::kVideo |
+              TensorPipelineSet::kBlockedAttention;
           options.max_batch_operators = kMaxBatchOperators;
           return options;
         }()), graph(ExactViTBlockGraph::create(context, [&] {

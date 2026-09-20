@@ -190,6 +190,13 @@ struct TensorContext::Impl {
   std::atomic<bool> recorder_active{false};
 
   explicit Impl(const Device& input, const TensorContextOptions& tensor_options);
+  void prepare_pipelines(const Device& input, TensorPipelineSet sets);
+  uint32_t prepared_sets = 0;
+  void* device_identity = nullptr;
+  void require_pipeline_set(TensorPipelineSet set) const {
+    if ((prepared_sets & static_cast<uint32_t>(set)) == 0)
+      throw std::logic_error("vulkan tensor: prepare the required pipeline set before creating a plan");
+  }
 
   uintptr_t context_id = next_context_identity();
 

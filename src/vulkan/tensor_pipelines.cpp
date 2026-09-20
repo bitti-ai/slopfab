@@ -80,18 +80,69 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
     max_dispatch_y = input.info().max_compute_workgroup_count[1];
     max_storage_bytes = input.info().max_storage_buffer_bytes;
     storage_binding_alignment = input.info().min_storage_buffer_offset_alignment;
+    device_identity = input.native_handle();
+    prepare_pipelines(input, tensor_options.pipeline_sets |
+        (tensor_options.enable_reference_encoder ? TensorPipelineSet::kReference
+                                                : TensorPipelineSet::kCore));
+    for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
+    for (uint32_t i = 0; i < vae_pointwise_bindings.size(); ++i)
+      vae_pointwise_bindings[i].binding = i;
+    for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
+    for (uint32_t i = 0; i < mod_bindings.size(); ++i) mod_bindings[i].binding = i;
+    for (uint32_t i = 0; i < vae_rope_bindings.size(); ++i)
+      vae_rope_bindings[i].binding = i;
+    for (uint32_t i = 0; i < audio_bindings.size(); ++i)
+      audio_bindings[i].binding = i;
+    for (uint32_t i = 0; i < keyframe_bindings.size(); ++i)
+      keyframe_bindings[i].binding = i;
+    for (uint32_t i = 0; i < dit_bindings.size(); ++i)
+      dit_bindings[i].binding = i;
+    for (uint32_t i = 0; i < weight_bindings.size(); ++i)
+      weight_bindings[i].binding = i;
+    for (uint32_t i = 0; i < gemm_bindings.size(); ++i)
+      gemm_bindings[i].binding = i;
+    for (uint32_t i = 0; i < gemm_prepare_bindings.size(); ++i)
+      gemm_prepare_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_bindings.size(); ++i)
+      attention_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_h3_bindings.size(); ++i)
+      attention_h3_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_h3_banded_bindings.size(); ++i)
+      attention_h3_banded_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_sage_bindings.size(); ++i)
+      attention_sage_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_sage_prepare_bindings.size(); ++i)
+      attention_sage_prepare_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_prepare_bindings.size(); ++i)
+      attention_prepare_bindings[i].binding = i;
+    for (uint32_t i = 0; i < attention_causal_gqa_bindings.size(); ++i)
+      attention_causal_gqa_bindings[i].binding = i;
+  }
+
+void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineSet sets) {
+  const uint32_t requested = static_cast<uint32_t>(sets) |
+      static_cast<uint32_t>(TensorPipelineSet::kCore);
+  if (requested & ~static_cast<uint32_t>(TensorPipelineSet::kAll))
+    throw std::invalid_argument("vulkan tensor: unknown pipeline set");
+  const uint32_t missing = requested & ~prepared_sets;
+  if (!missing) return;
+  auto has = [&](TensorPipelineSet set) {
+    return (missing & static_cast<uint32_t>(set)) != 0;
+  };
+    ComputePipelineOptions options;
+    options.storage_binding_count = 3;
+    options.push_constant_bytes = sizeof(Parameters);
+    options.local_size[0] = 64;
+    if (has(TensorPipelineSet::kCore)) {
     const uint8_t* shader = full_arithmetic_exact ? detail::kTensorOpsDenormSpirv
                                            : detail::kTensorOpsSpirv;
     const size_t shader_bytes = full_arithmetic_exact ? sizeof(detail::kTensorOpsDenormSpirv)
                                                : sizeof(detail::kTensorOpsSpirv);
     std::vector<uint32_t> spirv(shader_bytes / sizeof(uint32_t));
     std::memcpy(spirv.data(), shader, shader_bytes);
-    ComputePipelineOptions options;
-    options.storage_binding_count = 3;
-    options.push_constant_bytes = sizeof(Parameters);
-    options.local_size[0] = 64;
     ops_pipeline = ComputePipeline::create(input, spirv, options);
-    if (exact_vae_pointwise) {
+    }
+    if (has(TensorPipelineSet::kVideo) && exact_vae_pointwise) {
       ComputePipelineOptions pointwise_options = options;
       pointwise_options.storage_binding_count = 4;
       auto make_pointwise = [&](const uint8_t* bytes, size_t byte_count) {
@@ -109,7 +160,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
           detail::kTensorVaeDenormSpirv,
           sizeof(detail::kTensorVaeDenormSpirv));
     }
-    if (tensor_options.enable_reference_encoder) {
+    if (has(TensorPipelineSet::kReference)) {
       if (input.info().max_compute_workgroup_invocations < 256 ||
           input.info().max_compute_workgroup_size[0] < 16 ||
           input.info().max_compute_workgroup_size[1] < 16)
@@ -122,7 +173,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       reference_options.local_size[0] = reference_options.local_size[1] = 16;
       reference_pipeline = ComputePipeline::create(input, module, reference_options);
     }
-    if (exact_audio) {
+    if (has(TensorPipelineSet::kAudio) && exact_audio) {
       std::vector<uint32_t> audio_spirv(
           sizeof(detail::kTensorAudioSpirv) / sizeof(uint32_t));
       std::memcpy(audio_spirv.data(), detail::kTensorAudioSpirv,
@@ -133,7 +184,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       audio_options.local_size[0] = 64;
       audio_pipeline = ComputePipeline::create(input, audio_spirv, audio_options);
     }
-    if (exact_vae_pointwise) {
+    if (has(TensorPipelineSet::kVideo) && exact_vae_pointwise) {
       std::vector<uint32_t> keyframe_spirv(
           sizeof(detail::kTensorKeyframeSpirv) / sizeof(uint32_t));
       std::memcpy(keyframe_spirv.data(), detail::kTensorKeyframeSpirv,
@@ -145,7 +196,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       keyframe_pipeline =
           ComputePipeline::create(input, keyframe_spirv, keyframe_options);
     }
-    if (exact_dit_pointwise) {
+    if (has(TensorPipelineSet::kDit) && exact_dit_pointwise) {
       std::vector<uint32_t> dit_spirv(
           sizeof(detail::kTensorDitSpirv) / sizeof(uint32_t));
       std::memcpy(dit_spirv.data(), detail::kTensorDitSpirv,
@@ -156,6 +207,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       dit_options.local_size[0] = 64;
       dit_pipeline = ComputePipeline::create(input, dit_spirv, dit_options);
     }
+    if (has(TensorPipelineSet::kCore)) {
     const uint8_t* rope_shader = full_arithmetic_exact
         ? detail::kTensorRopeDenormSpirv : detail::kTensorRopeSpirv;
     const size_t rope_shader_bytes = full_arithmetic_exact
@@ -232,6 +284,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       gemm_coop_f16_pipeline = ComputePipeline::create(
           input, cooperative_spirv, cooperative_options);
     }
+    }
     ComputePipelineOptions norm_options;
     norm_options.storage_binding_count = 4;
     norm_options.push_constant_bytes = sizeof(NormParameters);
@@ -251,7 +304,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       selected.specialization_constants = std::move(constants);
       return ComputePipeline::create(input, module, selected);
     };
-    if (exact_vae_norm) {
+    if (has(TensorPipelineSet::kCore) && exact_vae_norm) {
       rms_norm_pipeline = make_norm_pipeline(detail::kTensorRmsNormSpirv,
                                              sizeof(detail::kTensorRmsNormSpirv));
       layer_norm_pipeline = make_norm_pipeline(detail::kTensorLayerNormSpirv,
@@ -274,7 +327,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
           detail::kTensorVaeRopeSpirv, sizeof(detail::kTensorVaeRopeSpirv), 7,
           32, 1, sizeof(VaeRopeParameters));
     }
-    if (exact_attention) {
+    if (has(TensorPipelineSet::kBlockedAttention) && exact_attention) {
       attention_blocked_pipeline = make_norm_pipeline(
           detail::kTensorAttentionBlockedSpirv,
           sizeof(detail::kTensorAttentionBlockedSpirv), 4, 128, 1,
@@ -284,7 +337,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
           sizeof(detail::kTensorAttentionPrepareSpirv), 6, 64, 1,
           sizeof(uint32_t));
     }
-    if (exact_h3_attention) {
+    if (has(TensorPipelineSet::kExactH3Attention) && exact_h3_attention) {
       attention_h3_pipeline = make_norm_pipeline(
           detail::kTensorAttentionH3Spirv,
           sizeof(detail::kTensorAttentionH3Spirv), 4,
@@ -296,7 +349,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
           kH3AttentionLocalSize, 1,
           sizeof(AttentionParameters));
     }
-    if (flash_attention) {
+    if (has(TensorPipelineSet::kFlashAttention) && flash_attention) {
       attention_vsa_pipeline = make_norm_pipeline(detail::kTensorAttention_VSA,
           sizeof(detail::kTensorAttention_VSA), 6, 256, 1, 32);
       attention_vsa_prepare_pipeline = make_norm_pipeline(detail::kTensorAttention_VSA_PREPARE,
@@ -306,7 +359,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       attention_flash_banded_pipeline = make_norm_pipeline(detail::kTensorAttentionFlashBandedSpirv,
           sizeof(detail::kTensorAttentionFlashBandedSpirv), 5, kFastH3AttentionLocalSize, 1, sizeof(AttentionParameters));
     }
-    if (sage_attention) {
+    if (has(TensorPipelineSet::kSageAttention) && sage_attention) {
       auto make_sage = [&](uint32_t kernel, const uint8_t* full, size_t full_bytes,
                            const uint8_t* banded, size_t banded_bytes) {
         if (!detail::sage_kernel_fits(input.info(), kernel)) return;
@@ -333,44 +386,23 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       attention_sage_prepare_pipeline = make_norm_pipeline(detail::kTensorAttentionSagePrepareSpirv,
           sizeof(detail::kTensorAttentionSagePrepareSpirv), 7, 128, 1, sizeof(AttentionParameters));
     }
-    if (exact_causal_gqa_attention) {
+    if (has(TensorPipelineSet::kTextAttention) && exact_causal_gqa_attention) {
       attention_causal_gqa_pipeline = make_norm_pipeline(
           detail::kTensorAttentionCausalGqaSpirv,
           sizeof(detail::kTensorAttentionCausalGqaSpirv), 4, 128, 1,
           sizeof(CausalGQAAttentionParameters));
     }
-    for (uint32_t i = 0; i < ops_bindings.size(); ++i) ops_bindings[i].binding = i;
-    for (uint32_t i = 0; i < vae_pointwise_bindings.size(); ++i)
-      vae_pointwise_bindings[i].binding = i;
-    for (uint32_t i = 0; i < norm_bindings.size(); ++i) norm_bindings[i].binding = i;
-    for (uint32_t i = 0; i < mod_bindings.size(); ++i) mod_bindings[i].binding = i;
-    for (uint32_t i = 0; i < vae_rope_bindings.size(); ++i)
-      vae_rope_bindings[i].binding = i;
-    for (uint32_t i = 0; i < audio_bindings.size(); ++i)
-      audio_bindings[i].binding = i;
-    for (uint32_t i = 0; i < keyframe_bindings.size(); ++i)
-      keyframe_bindings[i].binding = i;
-    for (uint32_t i = 0; i < dit_bindings.size(); ++i)
-      dit_bindings[i].binding = i;
-    for (uint32_t i = 0; i < weight_bindings.size(); ++i)
-      weight_bindings[i].binding = i;
-    for (uint32_t i = 0; i < gemm_bindings.size(); ++i)
-      gemm_bindings[i].binding = i;
-    for (uint32_t i = 0; i < gemm_prepare_bindings.size(); ++i)
-      gemm_prepare_bindings[i].binding = i;
-    for (uint32_t i = 0; i < attention_bindings.size(); ++i)
-      attention_bindings[i].binding = i;
-    for (uint32_t i = 0; i < attention_h3_bindings.size(); ++i)
-      attention_h3_bindings[i].binding = i;
-    for (uint32_t i = 0; i < attention_h3_banded_bindings.size(); ++i)
-      attention_h3_banded_bindings[i].binding = i;
-    for (uint32_t i = 0; i < attention_sage_bindings.size(); ++i)
-      attention_sage_bindings[i].binding = i;
-    for (uint32_t i = 0; i < attention_sage_prepare_bindings.size(); ++i)
-      attention_sage_prepare_bindings[i].binding = i;
-    for (uint32_t i = 0; i < attention_prepare_bindings.size(); ++i)
-      attention_prepare_bindings[i].binding = i;
-    for (uint32_t i = 0; i < attention_causal_gqa_bindings.size(); ++i)
-      attention_causal_gqa_bindings[i].binding = i;
-  }
+  prepared_sets |= requested;
+}
+
+void TensorContext::prepare_pipeline_sets(const Device& device, TensorPipelineSet sets) {
+  if (!impl_ || !device || impl_->device_identity != device.native_handle())
+    throw std::invalid_argument("vulkan tensor: pipeline preparation requires the context device");
+  [[maybe_unused]] auto recording_lock = impl_->acquire_recorder();
+  impl_->prepare_pipelines(device, sets);
+}
+
+TensorPipelineSet TensorContext::prepared_pipeline_sets() const noexcept {
+  return static_cast<TensorPipelineSet>(impl_ ? impl_->prepared_sets : 0);
+}
 }  // namespace slopfab::vulkan

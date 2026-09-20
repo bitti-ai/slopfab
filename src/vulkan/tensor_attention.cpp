@@ -14,6 +14,7 @@ BlockedAttentionPlan::operator bool() const noexcept { return impl_ != nullptr; 
 BlockedAttentionPlan BlockedAttentionPlan::create(
     TensorContext& context, const BlockedAttentionPlanDesc& desc) {
   if (!context.impl_) throw std::invalid_argument("vulkan attention: empty context");
+  context.impl_->require_pipeline_set(TensorPipelineSet::kBlockedAttention);
   if (!context.impl_->exact_attention) {
     throw std::runtime_error(
         "vulkan attention: exact blocked attention is unavailable on this device/driver");
@@ -710,6 +711,7 @@ CausalGQAAttentionPlan CausalGQAAttentionPlan::create(
   if (!context.impl_) {
     throw std::invalid_argument("vulkan causal GQA attention: empty context");
   }
+  context.impl_->require_pipeline_set(TensorPipelineSet::kTextAttention);
   if (!context.impl_->exact_causal_gqa_attention) {
     throw std::runtime_error(
         "vulkan causal GQA attention: exact mode is unavailable on this device/driver");
