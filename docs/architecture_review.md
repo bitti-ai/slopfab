@@ -1,10 +1,28 @@
 # Architecture review and model extensibility
 
-Reviewed on 2026-09-20 with separate model, pipeline, and backend reviews. The source inventory and original line references below use commit `ed34677`; accompanying sampling-settings changes are described separately. Counts are physical lines, including comments and blank lines. This is an implementation roadmap, not a claim that arbitrary model families already run.
+Reviewed on 2026-09-20 with separate model, pipeline, and backend reviews, followed by a coordinated implementation. The baseline inventory and historical line references below use commit `ed34677`; the implementation status immediately below describes the resulting code. Historical links name the original responsibilities, and their old line numbers should be read against that baseline commit. Counts are physical lines, including comments and blank lines. New model families still require implementations and numerical validation.
 
 The central recommendation is to separate **model contracts**, **generation defaults**, and **backend capabilities**. Existing H3 variants often need different data, not different orchestration. A genuinely different transformer, conditioner, or VAE still needs an implementation of its graph. Settings should select and configure supported implementations rather than imply that any combination of dimensions and flags will work.
 
-## Current architecture
+## Implemented changes and remaining limits
+
+| Area | Implemented | Remaining boundary |
+|---|---|---|
+| Shared settings | [Sampling settings](../src/sampling_plan.cpp) and [conditioning settings](../src/conditioning_plan.cpp) resolve compatibility defaults, model metadata, enabled LoRA metadata and explicit request overrides. Conflicting adapters require an override. CLI, C++ and C ABI use the shared resolution. | Guidance and all execution policies are not a universal profile schema. Preserve explicit supported fields rather than accepting arbitrary graph changes. |
+| Model facts | [ModelDescriptor](../include/slopfab/dit/checkpoint.h) separates family, modulation, reference support, compressed attention, QKV layout and quantization. Versioned explicit metadata supplements legacy inference; fixed AdaLN configuration is validated. | H3 remains the implemented transformer family. Legacy release recognition still supports existing files; it has not become a general component registry. |
+| Geometry | [LatentGeometry](../include/slopfab/model_geometry.h) provides validated geometry, fingerprints and geometry-aware packing entry points. | Current production kernels explicitly require the supported H3 geometry. A new codec or temporal mapping requires implementation work as well as metadata. |
+| Adapters and tokenizers | [H3 LoRA conversion](../src/dit/h3_lora.cpp) is separate from generic factor handling. [Tokenizer contract validation](../src/text/tokenizer_contract.cpp) rejects unsupported declared algorithms and preprocessing. | Additional adapter target schemas and tokenizer algorithms need family implementations. Legacy grid acquisition remains a compatibility responsibility. |
+| Generation ownership | [GenerationSession](../src/generation/session.cpp) owns reusable tokenizer/conditioning/reference state; an additive C ABI session handle retains ownership across asynchronous runs. [Prompt](../src/generation/prompt.cpp), [decode](../src/generation/decode.cpp), helpers and validation are separate modules. | Sessions still share a global execution guard because backend context and profiling state are not fully session-owned. Independent sessions do not imply concurrent GPU execution. |
+| Backends | CUDA attention planning and capability matching include KV heads; operator kernels, encoder stages, transformer loading/execution/captures, Vulkan recording domains, and FFmpeg stages have separate modules. [Vulkan pipeline sets](../include/slopfab/vulkan/tensor.h) select domains before execution and reuse compatible device pipelines. | Exact arithmetic, production shape restrictions and hardware gates remain intentional. More accepted settings do not make unsupported kernels available. |
+| Build and coverage | [CMake modules](../CMakeLists.txt), a [shader manifest](../cmake/ShaderManifest.cmake) and [shared validation helper](../cmake/Shaders.cmake) preserve pinned shader hashes. Six large test suites are split by domain and coverage category with private fixture headers. [Coverage labels](../tests/README.md) distinguish synthetic, checkpoint, integration and benchmark runs; unavailable cases report explicit skips. | Two individual graph/replay test bodies remain above 1,000 lines. GPU compilation and numerical replay evidence must be assessed separately from host-only success. |
+
+The original 19 large-file candidates are all split. No production source/header or build module currently exceeds 1,000 physical lines. The two remaining large test files are [test_tensor_backends_dit_integration_2.cu](../tests/test_tensor_backends_dit_integration_2.cu) (1,241 lines) and [test_vulkan_dit_synthetic_2.cpp](../tests/test_vulkan_dit_synthetic_2.cpp) (1,567 lines); each contains one substantial graph or replay case. Their next useful extraction is scenario setup and reusable assertions, rather than dividing a single execution across independent tests. All 182 original registrations from the six split suites remain present exactly once.
+
+CPU-only validation used a fresh Visual Studio 2022 x64 Release tree with CUDA, Vulkan, developer tools and C ABI disabled. The complete build, CLI `--help`, `unit` and `reference_media_decode` passed (2/2 CTest suites). Shader-manifest validation preserved all 54 original pinned source/binary hashes and supplied all 41 embedding-template variables. These checks do not establish device execution or full checkpoint parity; record GPU results with their fixture and skip summaries when running the coordinated GPU build.
+
+The most useful next steps are to resolve and retain one immutable model/conditioning/execution plan through preflight and execution, complete backend-context/profiler ownership before permitting session concurrency, and introduce a second family through explicit conditioner/transformer/codec implementations. Cache identity construction still has places that re-resolve metadata rather than consuming that same plan snapshot. Capability and effective-plan queries should grow with those contracts while preserving the public C ABI's existing layouts.
+
+## Reviewed architecture flow
 
 ```mermaid
 flowchart TD
@@ -34,11 +52,11 @@ Useful foundations already exist:
 - [Checkpoint detection](../src/dit/checkpoint.cpp#L49), quantization helpers, explicit sequence layouts, and the host-side planning phase provide places to resolve and validate contracts before expensive uploads.
 - Exact CUDA/Vulkan captures and replay tests preserve numerical behavior across refactors. Strict shape and layout checks are valuable safeguards, not obstacles to remove indiscriminately.
 
-## First implementation slice: sampling defaults as data
+## Sampling defaults as data
 
-The accompanying change introduces [SamplingSettings](../include/slopfab/sampling_settings.h), its [strict parser and compatibility recipes](../src/core/sampling_settings.cpp), and a [sampling plan resolver](../src/sampling_plan.cpp). This is a deliberately narrow first slice of the design below.
+The change introduces [SamplingSettings](../include/slopfab/sampling_settings.h), its [schema validation and compatibility recipes](../src/core/sampling_settings.cpp), and a [sampling plan resolver](../src/sampling_plan.cpp). Settings use the repository's shared JSON parser and validate supported keys and values.
 
-The version-1 `slopfab.sampling` SafeTensors metadata entry is a JSON string with optional `video_sigma_shift`, `audio_sigma_shift`, and `base_sigmas`. The same settings object can supply explicit request overrides. A grid contains unshifted sigma points, including terminal zero; the scheduler applies the resolved modality-specific shifts. Named schedules remain compatibility recipes.
+The version-1 `slopfab.sampling` SafeTensors metadata entry is a JSON string with optional `default_steps`, `video_sigma_shift`, `audio_sigma_shift`, and `base_sigmas`. The same settings object can supply explicit request overrides. A grid contains unshifted sigma points, including terminal zero; the scheduler applies the resolved modality-specific shifts. Named schedules remain compatibility recipes.
 
 ```json
 {
@@ -51,9 +69,11 @@ The version-1 `slopfab.sampling` SafeTensors metadata entry is a JSON string wit
 
 Resolution proceeds from H3/legacy compatibility defaults to model metadata, enabled LoRA metadata, then explicit request settings. An explicitly selected named schedule is a request-level recipe; individual request fields override that recipe. Conflicting LoRA defaults require an explicit override of the conflicting field instead of depending on adapter order. Zero-strength adapters contribute no sampling defaults. The resolved plan owns the actual grids consumed by execution.
 
-This moves sampling recipes into data without advertising a new transformer family. FastH3's trained-grid requirements and fixed-grid incompatibilities remain checked. The schema intentionally does not accept arbitrary architecture, attention, or cache fields. Guidance, geometry, conditioner behavior, and general family manifests below are follow-up proposals, not fields supported by this first schema. See [sampling settings](sampling_settings.md) for metadata, CLI, C++ and C API usage.
+This moves sampling recipes into data without advertising a new transformer family. FastH3's trained-grid requirements and fixed-grid incompatibilities remain checked. The sampling schema intentionally does not accept arbitrary architecture, attention, or cache fields. Conditioning and geometry have separate validated contracts; guidance and general family implementation registration remain follow-up work. See [sampling settings](sampling_settings.md) for metadata, CLI, C++ and C API usage.
 
-## Recommended boundaries
+## Recommended boundaries and baseline findings
+
+The following findings retain the review's original problem statements and source references. Several recommendations are now implemented as described above; remaining work should build on those modules rather than repeat their extraction.
 
 | Layer | Owns | Examples | Must not do |
 |---|---|---|---|
@@ -150,7 +170,7 @@ Preserve [opaque requests/generations](../include/slopfab/capi.h#L212), exceptio
 
 Do not append fields to existing caller-allocated public structs and assume a minor-version bump alone makes old binaries safe. Prefer new versioned query functions or new structs with `struct_size`/version negotiation; keep existing entry points writing their original layout. Capability and effective-plan queries should let hosts discover supported combinations without replicating internal model logic.
 
-## Complete large-file inventory
+## Historical large-file inventory
 
 All 19 first-party source/test/build files above 1,000 physical lines at `ed34677` are listed below. The inventory excludes `third_party`, `external`, generated files, reference code, build outputs and binary assets. No first-party header or shader crossed the threshold. Line count identifies review candidates; coupling and change frequency determine priority.
 
