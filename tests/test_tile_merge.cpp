@@ -1,22 +1,6 @@
-// The VAE decoder's spatial tile cross-fade.
-//
-// TileMerge computes only the two overlap slabs, where the whole-tile blend it
-// replaces wrote every element of a 22 MiB scratch buffer twice — and for most
-// of those elements the body of the loop was literally `out[i] = b[i]`. The
-// saving is only worth having if the result is bit-for-bit unchanged, so these
-// tests keep a verbatim copy of the old whole-tile blend and require exact
-// equality against it, not a tolerance.
-//
-// The case that would break first is the corner where both axes overlap. The
-// vertical blend runs first and the horizontal blend consumes its output, so
-// the corner must carry a doubly-blended value; a slab implementation that
-// materialised the vertical result only over the columns it "needed" would
-// feed the horizontal pass raw values there and produce a seam visible only at
-// tile crossings. Every geometry below with both overlaps non-zero tests that,
-// and `tile_merge_corner_is_blended_twice` checks it on numbers chosen so the
-// singly-blended answer is a different number.
-
+// Spatial composition regressions for composited-neighbour blending.
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <map>
 #include <string>
@@ -27,149 +11,218 @@
 #include "slopfab/vae/tile_merge.h"
 
 namespace {
+using slopfab::vae::TileLayout;
+using slopfab::vae::TileMerge;
+using slopfab::vae::split_tiles;
 
-// The whole-tile blend this replaces, copied unchanged from the version of
-// src/vae/decode_pipeline.cpp that shipped it. blend(a, b, overlap) from
-// klvae.py:220-250: the result has b's shape, its first `overlap` slices
-// cross-fade from a to b, the rest is b verbatim.
-void blend_axis(const float* a, const float* b, float* out, int lead, int overlap, int blend_len,
-                int trail) {
-  for (int l = 0; l < lead; ++l) {
-    for (int i = 0; i < blend_len; ++i) {
-      const float wb = (i < overlap) ? static_cast<float>(i) / static_cast<float>(overlap) : 1.0f;
-      const float wa = 1.0f - wb;
-      for (int t = 0; t < trail; ++t) {
-        const size_t bi = (static_cast<size_t>(l) * blend_len + i) * trail + t;
-        if (i < overlap) {
-          const int a_index = blend_len - overlap + i;
-          const size_t ai = (static_cast<size_t>(l) * blend_len + a_index) * trail + t;
-          out[bi] = a[ai] * wa + b[bi] * wb;
-        } else {
-          out[bi] = b[bi];
+// Float64 reference using complete composited rows and complete left tiles.
+// This deliberately retains whole neighbours instead of the production tails.
+std::vector<float> oracle(const TileLayout& yl, const TileLayout& xl, int h, int w,
+                          int planes, const std::vector<std::vector<float>>& tiles) {
+  std::vector<float> result(static_cast<size_t>(planes) * h * w);
+  for (int p = 0; p < planes; ++p) {
+    std::vector<double> previous;
+    for (size_t i = 0; i < yl.starts.size(); ++i) {
+      const int th = yl.extents[i];
+      std::vector<double> current(static_cast<size_t>(th) * w);
+      std::vector<double> left;
+      for (size_t j = 0; j < xl.starts.size(); ++j) {
+        const int tw = xl.extents[j];
+        const auto& raw = tiles[i * xl.starts.size() + j];
+        std::vector<double> tile(raw.begin() + static_cast<ptrdiff_t>(p * th * tw),
+                                 raw.begin() + static_cast<ptrdiff_t>((p + 1) * th * tw));
+        if (i > 0) {
+          const int overlap = yl.overlaps[i - 1];
+          for (int y = 0; y < overlap; ++y) {
+            const double wb = static_cast<double>(y) / overlap;
+            for (int x = 0; x < tw; ++x) {
+              const size_t above = static_cast<size_t>(yl.extents[i - 1] - overlap + y) * w +
+                                       xl.starts[j] + x;
+              tile[y * tw + x] = previous[above] * (1.0 - wb) + tile[y * tw + x] * wb;
+            }
+          }
         }
+        if (j > 0) {
+          const int overlap = xl.overlaps[j - 1];
+          for (int y = 0; y < th; ++y) {
+            for (int x = 0; x < overlap; ++x) {
+              const double wb = static_cast<double>(x) / overlap;
+              const size_t before = static_cast<size_t>(y) * xl.extents[j - 1] +
+                                        xl.extents[j - 1] - overlap + x;
+              tile[y * tw + x] = left[before] * (1.0 - wb) + tile[y * tw + x] * wb;
+            }
+          }
+        }
+        const int keep = tw - (j + 1 < xl.starts.size() ? xl.overlaps[j] : 0);
+        for (int y = 0; y < th; ++y)
+          std::copy_n(tile.data() + y * tw, keep, current.data() + y * w + xl.starts[j]);
+        left = std::move(tile);
       }
+      const int keep = th - (i + 1 < yl.starts.size() ? yl.overlaps[i] : 0);
+      for (size_t k = 0; k < static_cast<size_t>(keep) * w; ++k)
+        result[(static_cast<size_t>(p) * h + yl.starts[i]) * w + k] =
+            static_cast<float>(current[k]);
+      previous = std::move(current);
     }
   }
+  return result;
 }
 
-struct Geometry {
-  const char* name;
-  int planes;
-  int th;
-  int tw;
-  int y_ov;  // 0 means no tile above
-  int x_ov;  // 0 means no tile to the left
-  int keep_h;
-  int keep_w;
-};
-
-// What the old code produced for the kept part of one tile: blend vertically
-// into a full-tile scratch, blend that horizontally into another full-tile
-// scratch, then copy the top-left keep_h x keep_w corner of every plane out.
-std::vector<float> reference_stitch(const Geometry& g, const std::vector<float>& raw,
-                                    const std::vector<float>& above,
-                                    const std::vector<float>& left) {
-  const size_t tile = static_cast<size_t>(g.planes) * g.th * g.tw;
-  std::vector<float> lhs(tile);
-  std::vector<float> rhs(tile);
-  const float* src = raw.data();
-  if (g.y_ov > 0) {
-    blend_axis(above.data(), src, lhs.data(), g.planes, g.y_ov, g.th, g.tw);
-    src = lhs.data();
-  }
-  if (g.x_ov > 0) {
-    blend_axis(left.data(), src, rhs.data(), g.planes * g.th, g.x_ov, g.tw, 1);
-    src = rhs.data();
-  }
-  std::vector<float> out(static_cast<size_t>(g.planes) * g.keep_h * g.keep_w);
-  for (int p = 0; p < g.planes; ++p) {
-    for (int y = 0; y < g.keep_h; ++y) {
-      for (int x = 0; x < g.keep_w; ++x) {
-        out[(static_cast<size_t>(p) * g.keep_h + y) * g.keep_w + x] =
-            src[(static_cast<size_t>(p) * g.th + y) * g.tw + x];
-      }
-    }
-  }
-  return out;
+std::vector<std::vector<float>> random_tiles(const TileLayout& yl, const TileLayout& xl,
+                                             int planes) {
+  std::vector<std::vector<float>> tiles;
+  for (int h : yl.extents)
+    for (int w : xl.extents)
+      tiles.push_back(slopfab::test::make_data(static_cast<size_t>(planes) * h * w,
+                                              123 + static_cast<uint32_t>(tiles.size()), 3.0f));
+  return tiles;
 }
 
-std::vector<float> merged_stitch(const Geometry& g, const std::vector<float>& raw,
-                                 const std::vector<float>& above,
-                                 const std::vector<float>& left, slopfab::vae::TileMerge* merge) {
-  merge->prepare(raw.data(), g.y_ov > 0 ? above.data() : nullptr,
-                 g.x_ov > 0 ? left.data() : nullptr, g.planes, g.th, g.tw, g.y_ov, g.x_ov);
-  std::vector<float> out(static_cast<size_t>(g.planes) * g.keep_h * g.keep_w);
-  for (int p = 0; p < g.planes; ++p) {
-    for (int y = 0; y < g.keep_h; ++y) {
-      merge->copy_row(p, y, g.keep_w,
-                      out.data() + (static_cast<size_t>(p) * g.keep_h + y) * g.keep_w);
-    }
-  }
-  return out;
+std::vector<float*> destinations(std::vector<float>& output, int planes, int h, int w) {
+  std::vector<float*> dst;
+  for (int p = 0; p < planes; ++p)
+    dst.push_back(output.data() + static_cast<size_t>(p) * h * w);
+  return dst;
 }
-
 }  // namespace
 
-SLOPFAB_TEST(tile_merge_matches_the_whole_tile_blend_exactly) {
-  // The shipped decode runs 3 * 28 planes over 256 x 256 tiles with y-overlaps
-  // [96, 80, 80] and x-overlaps [96, 96, 80, 80, 80, 80]. The proportions are
-  // reproduced at a size a unit test can afford, plus the degenerate corners.
-  const Geometry cases[] = {
-      {"interior tile, both overlaps", 5, 32, 32, 12, 12, 20, 20},
-      {"first row, left overlap only", 5, 32, 32, 0, 12, 32, 20},
-      {"first column, top overlap only", 5, 32, 32, 12, 0, 20, 32},
-      {"first tile, no overlap at all", 5, 32, 32, 0, 0, 20, 20},
-      {"last tile keeps its full extent", 5, 32, 32, 10, 10, 32, 32},
-      {"overlap of one", 3, 8, 8, 1, 1, 7, 7},
-      {"overlap fills the whole tile", 3, 8, 8, 8, 8, 8, 8},
-      {"shipped ratios, 96 of 256 scaled", 7, 64, 64, 24, 24, 40, 40},
-      {"asymmetric extents", 4, 24, 40, 9, 15, 15, 25},
-      {"keep narrower than the x overlap", 4, 16, 16, 6, 12, 10, 8},
-  };
+SLOPFAB_TEST(tile_merge_includes_diagonal_at_intersection) {
+  const auto layout = split_tiles(12, 8, 4, 1);
+  std::vector<std::vector<float>> tiles;
+  for (float value : {0.0f, 10.0f, 20.0f, 30.0f}) tiles.emplace_back(64, value);
+  TileMerge merge(layout, layout, 12, 12);
+  std::vector<float> out(144, -999.0f);
+  merge.compose(tiles, destinations(out, 1, 12, 12));
+  CHECK_NEAR(out[6 * 12 + 6], 15.0, 0.0);
+  // If only the diagonal is nonzero, it still contributes one quarter.
+  for (size_t i = 0; i < tiles.size(); ++i)
+    std::fill(tiles[i].begin(), tiles[i].end(), i == 0 ? 4.0f : 0.0f);
+  merge.compose(tiles, destinations(out, 1, 12, 12));
+  CHECK_NEAR(out[6 * 12 + 6], 1.0, 0.0);
+}
 
-  slopfab::vae::TileMerge merge;  // deliberately reused, as the pipeline reuses it
-  for (const Geometry& g : cases) {
-    const size_t tile = static_cast<size_t>(g.planes) * g.th * g.tw;
-    const std::vector<float> raw = slopfab::test::make_data(tile, 1301, 3.0f);
-    const std::vector<float> above = slopfab::test::make_data(tile, 7717, 3.0f);
-    const std::vector<float> left = slopfab::test::make_data(tile, 4409, 3.0f);
-
-    const std::vector<float> expect = reference_stitch(g, raw, above, left);
-    const std::vector<float> actual = merged_stitch(g, raw, above, left, &merge);
-    CHECK(expect.size() == actual.size());
-    // Tolerance zero: this is a data-movement change, not an arithmetic one.
-    CHECK_CLOSE(expect, actual, 0.0, (std::string("tile merge: ") + g.name).c_str());
+SLOPFAB_TEST(tile_merge_matches_float64_composited_neighbour_oracle) {
+  struct Case { int h, w, tile, overlap; };
+  for (const auto g : {Case{12, 12, 8, 4}, Case{29, 29, 16, 4},
+                       Case{32, 32, 16, 15}, Case{57, 76, 16, 4},
+                       Case{7, 32, 16, 0}, Case{32, 7, 16, 0}, Case{7, 37, 16, 0}, Case{37, 7, 16, 4}, Case{7, 9, 16, 4}}) {
+    const auto yl = split_tiles(g.h, g.tile, g.overlap, 1);
+    const auto xl = split_tiles(g.w, g.tile, g.overlap, 1);
+    auto tiles = random_tiles(yl, xl, 3);
+    const auto original = tiles;
+    const auto expected = oracle(yl, xl, g.h, g.w, 3, tiles);
+    std::vector<float> out(expected.size(), -999.0f);
+    TileMerge merge(yl, xl, g.h, g.w);
+    const auto dst = destinations(out, 3, g.h, g.w);
+    merge.compose(tiles, dst);
+    CHECK_CLOSE(expected, out, 2e-6, "composited neighbours, float64 oracle");
+    CHECK(tiles == original);
+    std::fill(out.begin(), out.end(), 777.0f);
+    merge.compose(tiles, dst);
+    CHECK_CLOSE(expected, out, 2e-6, "reused tails overwrite output");
+    // A skipped plane must not be read or written, and other planes retain
+    // their original decoder strides rather than being packed together.
+    auto sparse = dst;
+    sparse[1] = nullptr;
+    std::fill(out.begin() + g.h * g.w, out.begin() + 2 * g.h * g.w, 777.0f);
+    merge.compose(tiles, sparse);
+    for (int k = 0; k < g.h * g.w; ++k) {
+      CHECK_NEAR(out[g.h * g.w + k], 777.0, 0.0);
+      CHECK_NEAR(out[2 * g.h * g.w + k], expected[2 * g.h * g.w + k], 2e-6);
+    }
   }
 }
 
-SLOPFAB_TEST(tile_merge_corner_is_blended_twice) {
-  // Constant tiles make the expected value arithmetic rather than a second
-  // implementation. raw = 0, above = 4, left = 8, overlap 4 on both axes.
-  //
-  // At (y, x) = (1, 1): the vertical pass gives b1 = 4 * (1 - 1/4) = 3, then
-  // the horizontal pass gives 8 * (1 - 1/4) + 3 * (1/4) = 6.75. Had the corner
-  // been blended horizontally against the *raw* 0 it would be 6.0, so the two
-  // orders are distinguishable, which is the whole point of the check.
-  const int planes = 2, th = 8, tw = 8, ov = 4;
-  const size_t tile = static_cast<size_t>(planes) * th * tw;
-  const std::vector<float> raw(tile, 0.0f);
-  const std::vector<float> above(tile, 4.0f);
-  const std::vector<float> left(tile, 8.0f);
+SLOPFAB_TEST(tile_merge_preserves_constants_and_global_coordinates) {
+  const int h = 29, w = 47, planes = 2;
+  const auto yl = split_tiles(h, 16, 4, 1);
+  const auto xl = split_tiles(w, 16, 4, 1);
+  auto tiles = random_tiles(yl, xl, planes);
+  for (size_t i = 0; i < yl.starts.size(); ++i)
+    for (size_t j = 0; j < xl.starts.size(); ++j)
+      for (int y = 0; y < yl.extents[i]; ++y)
+        for (int x = 0; x < xl.extents[j]; ++x) {
+          auto& tile = tiles[i * xl.starts.size() + j];
+          tile[y * xl.extents[j] + x] = 0.375f;
+          tile[(yl.extents[i] + y) * xl.extents[j] + x] =
+              static_cast<float>((yl.starts[i] + y) * w + xl.starts[j] + x);
+        }
+  TileMerge merge(yl, xl, h, w);
+  std::vector<float> out(planes * h * w, -999.0f);
+  merge.compose(tiles, destinations(out, planes, h, w));
+  for (int k = 0; k < h * w; ++k) {
+    CHECK_NEAR(out[k], 0.375, 2e-7);
+    CHECK_NEAR(out[h * w + k], k, 3e-4);
+  }
+}
 
-  slopfab::vae::TileMerge merge;
-  merge.prepare(raw.data(), above.data(), left.data(), planes, th, tw, ov, ov);
-  std::vector<float> row(tw);
+SLOPFAB_TEST(tile_merge_triple_overlap_uses_sequential_weights) {
+  // Three length-8 tiles at starts 0, 3, 6. At coordinate 7 the first
+  // contributor survives two fades: (1 - 4/5) * (1 - 1/5) = 0.16.
+  // Normalized overlap-add instead gives 1/6, so this pins the sequential rule.
+  const TileLayout triple{{0, 3, 6}, {8, 8, 8}, {5, 5}};
+  const TileLayout one{{0}, {1}, {}};
+  for (bool vertical : {false, true}) {
+    TileMerge merge(vertical ? triple : one, vertical ? one : triple,
+                     vertical ? 14 : 1, vertical ? 1 : 14);
+    std::vector<std::vector<float>> tiles(3, std::vector<float>(8, 0.0f));
+    const float expected[] = {0.16f, 0.64f, 0.2f};
+    std::vector<float> out(14);
+    for (size_t contributor = 0; contributor < tiles.size(); ++contributor) {
+      for (size_t k = 0; k < tiles.size(); ++k)
+        std::fill(tiles[k].begin(), tiles[k].end(), k == contributor ? 1.0f : 0.0f);
+      merge.compose(tiles, {out.data()});
+      CHECK_NEAR(out[7], expected[contributor], 1e-7);
+    }
+  }
+  // Both axes overlap three ways; the diagonal survives through both tails.
+  TileMerge merge(triple, triple, 14, 14);
+  std::vector<std::vector<float>> tiles(9, std::vector<float>(64, 0.0f));
+  std::fill(tiles[0].begin(), tiles[0].end(), 1.0f);
+  std::vector<float> out(196);
+  merge.compose(tiles, {out.data()});
+  CHECK_NEAR(out[7 * 14 + 7], 0.16 * 0.16, 1e-7);
+}
 
-  merge.copy_row(1, 1, tw, row.data());
-  CHECK_NEAR(row[1], 6.75, 0.0);
-  // Same row, outside the horizontal slab: vertical blend only.
-  CHECK_NEAR(row[ov], 3.0, 0.0);
-  // Below the vertical slab, inside the horizontal one: horizontal blend of
-  // raw against left, 8 * (1 - 1/4) + 0 * (1/4).
-  merge.copy_row(1, ov, tw, row.data());
-  CHECK_NEAR(row[1], 6.0, 0.0);
-  // Interior: the raw tile, untouched.
-  CHECK_NEAR(row[ov], 0.0, 0.0);
+SLOPFAB_TEST(tile_merge_preserves_native_plan) {
+  const auto x = split_tiles(1216, 256, 64, 16);
+  const auto y = split_tiles(896, 256, 64, 16);
+  CHECK(x.starts == std::vector<int>({0, 192, 384, 576, 768, 960}));
+  CHECK(y.starts == std::vector<int>({0, 160, 320, 480, 640}));
+  CHECK(x.starts.size() * y.starts.size() == 30);
+}
+
+SLOPFAB_TEST(tile_merge_single_tile_is_exact_and_bad_shapes_can_be_retried) {
+  const auto y = split_tiles(7, 16, 4, 1);
+  const auto x = split_tiles(9, 16, 4, 1);
+  TileMerge merge(y, x, 7, 9);
+  auto tiles = random_tiles(y, x, 2);
+  std::vector<float> out(126, -999.0f);
+  const auto dst = destinations(out, 2, 7, 9);
+  merge.compose(tiles, dst);
+  CHECK_CLOSE(tiles[0], out, 0.0, "single tile identity");
+  const auto original = tiles;
+  tiles[0].pop_back();
+  bool threw = false;
+  try { merge.compose(tiles, dst); } catch (const std::runtime_error&) { threw = true; }
+  CHECK(threw);
+  tiles = original;
+  merge.compose(tiles, dst);
+  CHECK_CLOSE(tiles[0], out, 0.0, "retry after invalid tile");
+}
+
+SLOPFAB_TEST(tile_merge_rejects_invalid_plans) {
+  const std::vector<TileLayout> invalid = {
+      {{}, {}, {}}, {{0}, {}, {}}, {{1}, {7}, {}}, {{0}, {7}, {}},
+      {{0, 5}, {4, 3}, {-1}}, {{0, 5}, {4, 3}, {0}},
+      {{0, 4}, {6, 4}, {1}}, {{0, 4}, {8, 4}, {5}},
+      {{0, 0}, {8, 8}, {8}}, {{0, 4}, {4, 0}, {0}}};
+  for (const auto& layout : invalid) {
+    bool threw = false;
+    try { (void)slopfab::vae::validate_tile_axis(layout, 8); }
+    catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+  }
 }
 
 SLOPFAB_TEST(chunk_destinations_reproduce_the_staged_split) {

@@ -50,12 +50,6 @@ class ScheduleSpan {
 constexpr float kImagenetMean[3] = {0.485f, 0.456f, 0.406f};
 constexpr float kImagenetStd[3] = {0.229f, 0.224f, 0.225f};
 
-// blend(a, b, overlap) (klvae.py:220-250) cross-fades the first `overlap`
-// slices from a to b and leaves the rest of b alone. The ramp is asymmetric —
-// weight_b runs 0, 1/n, ... (n-1)/n and never reaches 1 — so the last blended
-// slice retains a 1/n contribution from `a`. TileMerge in vae/tile_merge.h
-// applies it to a decoded tile without materialising the untouched interior.
-
 }  // namespace
 
 DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
@@ -151,42 +145,13 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
   image.frames = 1;
   image.data.resize(static_cast<size_t>(cfg.out_channels) * frame_pixels);
 
-  TileMerge merge;
-  int y_cursor = 0;
-  for (size_t ti = 0; ti < ytiles.starts.size(); ++ti) {
-    const int th = tile_h[ti];
-    const int keep_h =
-        (ti + 1 < ytiles.starts.size()) ? th - ytiles.overlaps[ti] : th;
-    int x_cursor = 0;
-    for (size_t tj = 0; tj < xtiles.starts.size(); ++tj) {
-      const int tw = tile_w[tj];
-      const int keep_w =
-          (tj + 1 < xtiles.starts.size()) ? tw - xtiles.overlaps[tj] : tw;
-      const size_t id = ti * xtiles.starts.size() + tj;
-      const std::vector<float>& raw = tiles[id];
-      const float* above = ti > 0 ? tiles[(ti - 1) * xtiles.starts.size() + tj].data()
-                                  : nullptr;
-      const float* left = tj > 0 ? tiles[id - 1].data() : nullptr;
-      const size_t tile_pixels = static_cast<size_t>(th) * tw;
-      for (int c = 0; c < cfg.out_channels; ++c) {
-        const int p = c * window * cfg.patch_t + phase;
-        const size_t plane_offset = static_cast<size_t>(p) * tile_pixels;
-        merge.prepare(raw.data() + plane_offset,
-                      above != nullptr ? above + plane_offset : nullptr,
-                      left != nullptr ? left + plane_offset : nullptr,
-                      1, th, tw,
-                      ti > 0 ? ytiles.overlaps[ti - 1] : 0,
-                      tj > 0 ? xtiles.overlaps[tj - 1] : 0);
-        float* dst = image.data.data() + static_cast<size_t>(c) * frame_pixels +
-                     static_cast<size_t>(y_cursor) * W_px + x_cursor;
-        for (int y = 0; y < keep_h; ++y) {
-          merge.copy_row(0, y, keep_w, dst + static_cast<size_t>(y) * W_px);
-        }
-      }
-      x_cursor += keep_w;
-    }
-    y_cursor += keep_h;
-  }
+  TileMerge merge(ytiles, xtiles, H_px, W_px);
+  std::vector<float*> plane_dst(static_cast<size_t>(cfg.out_channels) * window * cfg.patch_t,
+                                 nullptr);
+  for (int c = 0; c < cfg.out_channels; ++c)
+    plane_dst[static_cast<size_t>(c) * window * cfg.patch_t + phase] =
+        image.data.data() + static_cast<size_t>(c) * frame_pixels;
+  merge.compose(tiles, plane_dst);
 
   // The window backend returns ImageNet-normalised RGB, as it does for video.
   // With one frame the output is already planar [3][H][W].
@@ -318,14 +283,10 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
     ~RegistrationScope() { backend->release_host_registrations(); }
   } registration_scope{&backend};
 
-  // Every per-chunk working buffer is hoisted for the same reason as `tiles`:
-  // each is written in full before it is read, so a fresh allocation per chunk
-  // would only buy a zero-fill of a few hundred megabytes that the next line
-  // overwrites. `merge` holds the two overlap slabs, which is all the
-  // cross-fade ever changes; the raw neighbour tiles are read straight out of
-  // `tiles`.
+  // Composition reuses composited overlap tails across planes and chunks.
   const int out_frames = window * cfg.patch_t;  // 28
-  TileMerge merge;
+  TileMerge merge(ytiles, xtiles, H_px, W_px);
+  std::vector<float*> plane_dst(static_cast<size_t>(3 * out_frames), nullptr);
   std::vector<float> z_batch;
   std::vector<float> next_carry(static_cast<size_t>(schedule.frame_overlap) * 3 * frame_pixels);
   // Where each of the chunk's 28 decoded frames belongs, rebuilt per chunk
@@ -333,11 +294,8 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
   // belong nowhere and are marked null; see the comment where it is filled.
   std::vector<float*> frame_dst(static_cast<size_t>(out_frames), nullptr);
 
-  // Spatial tiling. Tiles are decoded independently, then blended against
-  // their raw (unblended) neighbours and trimmed. Every input here — the two
-  // tile layouts, the pixel extents and the patch size — is fixed for the whole
-  // decode, so the geometry and the batching are resolved once rather than
-  // rebuilt, std::map and all, on each of the chunks.
+  // Keep the decoder windows and shape batching fixed across chunks. Each
+  // tile blends against its already-composited neighbours.
   std::vector<int> tile_h;
   std::vector<int> tile_w;
   std::map<std::pair<int, int>, std::vector<size_t>> shape_groups;
@@ -411,48 +369,15 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
     chunk_frame_destinations(out_frames, pre, frames_per_chunk, schedule.chunk_dec, overlap,
                              3 * frame_pixels, primary, next_carry.data(), &frame_dst);
 
-    // Merge tiles into their destination frames.
-    int y_cursor = 0;
-    for (size_t ti = 0; ti < ytiles.starts.size(); ++ti) {
-      const int th = tile_h[ti];
-      const int keep_h =
-          (ti + 1 < ytiles.starts.size()) ? th - ytiles.overlaps[ti] : th;
-      int x_cursor = 0;
-      for (size_t tj = 0; tj < xtiles.starts.size(); ++tj) {
-        const int tw = tile_w[tj];
-        const int keep_w =
-            (tj + 1 < xtiles.starts.size()) ? tw - xtiles.overlaps[tj] : tw;
-
-        const std::vector<float>& raw = tiles[ti * xtiles.starts.size() + tj];
-
-        // Only the overlap slabs are computed; with no neighbour on either axis
-        // nothing is computed at all and the stitch reads the raw tile.
-        ScheduleSpan s_blend("tile blend");
-        const float* above =
-            (ti > 0) ? tiles[(ti - 1) * xtiles.starts.size() + tj].data() : nullptr;
-        const float* left =
-            (tj > 0) ? tiles[ti * xtiles.starts.size() + (tj - 1)].data() : nullptr;
-        merge.prepare(raw.data(), above, left, 3 * out_frames, th, tw,
-                      (ti > 0) ? ytiles.overlaps[ti - 1] : 0,
-                      (tj > 0) ? xtiles.overlaps[tj - 1] : 0);
-        s_blend.stop();
-
-        ScheduleSpan s_stitch("tile stitch");
-        for (int p = 0; p < 3 * out_frames; ++p) {
-          float* base = frame_dst[static_cast<size_t>(p % out_frames)];
-          if (base == nullptr) continue;  // a frame nothing downstream reads
-          const int channel = p / out_frames;
-          float* row0 = base + static_cast<size_t>(channel) * frame_pixels +
-                        static_cast<size_t>(y_cursor) * W_px + x_cursor;
-          for (int y = 0; y < keep_h; ++y) {
-            merge.copy_row(p, y, keep_w, row0 + static_cast<size_t>(y) * W_px);
-          }
-        }
-        s_stitch.stop();
-        x_cursor += keep_w;
-      }
-      y_cursor += keep_h;
+    // Route planar decoder output into the retained frame/channel planes.
+    for (int p = 0; p < 3 * out_frames; ++p) {
+      float* base = frame_dst[static_cast<size_t>(p % out_frames)];
+      plane_dst[static_cast<size_t>(p)] =
+          base == nullptr ? nullptr : base + static_cast<size_t>(p / out_frames) * frame_pixels;
     }
+    ScheduleSpan s_compose("tile composition");
+    merge.compose(tiles, plane_dst);
+    s_compose.stop();
 
     // Cross-fade the leading frames against the previous chunk's carry. The
     // stitch has already put them in `assembled`, so this mutates the final

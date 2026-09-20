@@ -1,24 +1,4 @@
-// Cross-fade of one spatial tile against its already-decoded neighbours.
-//
-// The reference blends whole tiles (klvae.py:220-250): blend(a, b, overlap)
-// returns a buffer of b's shape whose first `overlap` slices cross-fade from a
-// to b and whose remaining slices are b verbatim. Done literally that is two
-// full-tile passes per tile — 22 MiB read and written each — for a result that
-// differs from the raw tile only inside the overlap slabs, which at the shipped
-// geometry are 96 of 256 rows and 96 of 256 columns. The horizontal pass in
-// particular copied 100% of the tile to change 96 columns of it.
-//
-// So only the two slabs are materialised, and the stitch reads the untouched
-// interior straight out of the raw tile.
-//
-// THE ORDERING THAT MATTERS: the vertical blend runs first and the horizontal
-// blend consumes its output (spec section 1.5), so in the corner where both
-// apply the horizontal pass must read the *vertically blended* value, not the
-// raw one. That is why the vertical slab is materialised across the full tile
-// width rather than only the columns the horizontal slab covers: those extra
-// columns are exactly the ones the horizontal pass reads. Every blended element
-// keeps the identical `a * wa + b * wb` expression with the identical weights,
-// so the result is bit-for-bit what the two full-tile passes produced.
+// Spatial cross-fades against already-composited VAE neighbours.
 #pragma once
 
 #include <algorithm>
@@ -109,90 +89,125 @@ inline void tile_shape_groups(const TileLayout& ytiles, const TileLayout& xtiles
   }
 }
 
-// Scratch for one tile's overlap slabs. Reused across tiles and chunks: the
-// buffers only ever grow, so after the first tile every prepare() is
-// allocation-free.
-class TileMerge {
- public:
-  // `raw` is the freshly decoded tile, [planes][th][tw]. `above` and `left`
-  // are the raw neighbouring tiles, or null when this tile has no neighbour on
-  // that axis; `y_ov` / `x_ov` are then ignored.
-  //
-  // Both neighbours are indexed with *this* tile's th/tw strides, exactly as
-  // the whole-tile blend did. split_tiles gives every tile the same extents, so
-  // the two agree; keeping the arithmetic identical keeps the results identical.
-  void prepare(const float* raw, const float* above, const float* left, int planes, int th, int tw,
-               int y_ov, int x_ov) {
-    raw_ = raw;
-    th_ = th;
-    tw_ = tw;
-    y_ov_ = (above != nullptr) ? y_ov : 0;
-    x_ov_ = (left != nullptr) ? x_ov : 0;
-
-    if (y_ov_ > 0) {
-      const size_t need = static_cast<size_t>(planes) * y_ov_ * tw;
-      if (top_.size() < need) top_.resize(need);
-      for (int p = 0; p < planes; ++p) {
-        for (int i = 0; i < y_ov_; ++i) {
-          const float wb = static_cast<float>(i) / static_cast<float>(y_ov_);
-          const float wa = 1.0f - wb;
-          const size_t b_row = (static_cast<size_t>(p) * th + i) * tw;
-          const size_t a_row = (static_cast<size_t>(p) * th + (th - y_ov_ + i)) * tw;
-          const size_t o_row = (static_cast<size_t>(p) * y_ov_ + i) * tw;
-          for (int t = 0; t < tw; ++t) {
-            top_[o_row + t] = above[a_row + t] * wa + raw[b_row + t] * wb;
-          }
-        }
-      }
+inline void validate_tile_axis(const TileLayout& layout, int length) {
+  const size_t n = layout.starts.size();
+  if (n == 0 || layout.extents.size() != n || layout.overlaps.size() != n - 1 ||
+      length <= 0 || layout.starts.front() != 0) {
+    throw std::runtime_error("vae: invalid tile axis plan");
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const int start = layout.starts[i], extent = layout.extents[i];
+    if (start < 0 || start >= length || extent <= 0 || extent > length - start) {
+      throw std::runtime_error("vae: invalid tile extent");
     }
-
-    if (x_ov_ > 0) {
-      const size_t need = static_cast<size_t>(planes) * th * x_ov_;
-      if (cols_.size() < need) cols_.resize(need);
-      for (int p = 0; p < planes; ++p) {
-        for (int y = 0; y < th; ++y) {
-          // Rows inside the vertical slab take their `b` from the vertically
-          // blended value; the rest are still raw.
-          const float* brow = (y < y_ov_)
-                                  ? top_.data() + (static_cast<size_t>(p) * y_ov_ + y) * tw
-                                  : raw + (static_cast<size_t>(p) * th + y) * tw;
-          const float* arow = left + (static_cast<size_t>(p) * th + y) * tw;
-          float* orow = cols_.data() + (static_cast<size_t>(p) * th + y) * x_ov_;
-          for (int j = 0; j < x_ov_; ++j) {
-            const float wb = static_cast<float>(j) / static_cast<float>(x_ov_);
-            const float wa = 1.0f - wb;
-            orow[j] = arow[tw - x_ov_ + j] * wa + brow[j] * wb;
-          }
-        }
+    if (i > 0) {
+      const int overlap = layout.overlaps[i - 1];
+      if (start <= layout.starts[i - 1] || overlap < 0 ||
+          overlap > std::min(layout.extents[i - 1], extent) ||
+          layout.starts[i - 1] + layout.extents[i - 1] - start != overlap) {
+        throw std::runtime_error("vae: inconsistent tile overlap geometry");
       }
     }
   }
+  if (layout.starts.back() + layout.extents.back() != length) {
+    throw std::runtime_error("vae: tile plan does not cover the axis");
+  }
+}
 
-  // Writes the first `count` columns of merged row (p, y) to `dst`. The row is
-  // assembled from up to two pieces: the horizontal slab, then whichever of the
-  // vertical slab or the raw tile owns the interior.
-  void copy_row(int p, int y, int count, float* dst) const {
-    const int from_cols = std::min(count, x_ov_);
-    if (from_cols > 0) {
-      const float* src = cols_.data() + (static_cast<size_t>(p) * th_ + y) * x_ov_;
-      std::copy_n(src, from_cols, dst);
+class TileMerge {
+ public:
+  TileMerge(const TileLayout& ytiles, const TileLayout& xtiles, int height, int width)
+      : ytiles_(ytiles), xtiles_(xtiles), height_(height), width_(width) {
+    validate_tile_axis(ytiles, height);
+    validate_tile_axis(xtiles, width);
+    if (ytiles.starts.size() == 1 && xtiles.starts.size() == 1) return;
+    const int th = *std::max_element(ytiles.extents.begin(), ytiles.extents.end());
+    const int tw = *std::max_element(xtiles.extents.begin(), xtiles.extents.end());
+    const int y_overlap = ytiles.overlaps.empty() ? 0 :
+        *std::max_element(ytiles.overlaps.begin(), ytiles.overlaps.end());
+    const int x_overlap = xtiles.overlaps.empty() ? 0 :
+        *std::max_element(xtiles.overlaps.begin(), xtiles.overlaps.end());
+    // Process one retained plane at a time in the backend's host float format.
+    // Only composited overlap tails survive a tile; no accumulation band or
+    // normalization weights are needed. All scratch is reused across chunks.
+    tile_.resize(static_cast<size_t>(th) * tw);
+    left_.resize(static_cast<size_t>(th) * x_overlap);
+    strip_.resize(static_cast<size_t>(y_overlap) * width);
+    next_strip_.resize(strip_.size());
+  }
+
+  // Tiles are row-major [plane][tile height][tile width]. Each destination is
+  // one full output plane, or null for a discarded temporal frame. No input is
+  // modified; destinations are overwritten, including when this object is reused.
+  void compose(const std::vector<std::vector<float>>& tiles,
+               const std::vector<float*>& destinations) {
+    const size_t nx = xtiles_.starts.size();
+    if (tiles.size() != ytiles_.starts.size() * nx)
+      throw std::runtime_error("vae: decoded tile count does not match the plan");
+    for (size_t i = 0; i < tiles.size(); ++i) {
+      if (tiles[i].size() != destinations.size() * ytiles_.extents[i / nx] *
+                                xtiles_.extents[i % nx])
+        throw std::runtime_error("vae: decoded tile shape does not match the plan");
     }
-    if (from_cols < count) {
-      const float* src = (y < y_ov_)
-                             ? top_.data() + (static_cast<size_t>(p) * y_ov_ + y) * tw_
-                             : raw_ + (static_cast<size_t>(p) * th_ + y) * tw_;
-      std::copy_n(src + from_cols, count - from_cols, dst + from_cols);
+    const size_t pixels = static_cast<size_t>(height_) * width_;
+    for (size_t p = 0; p < destinations.size(); ++p) {
+      float* dst = destinations[p];
+      if (dst == nullptr) continue;
+      if (tiles.size() == 1) {
+        std::copy_n(tiles[0].data() + p * pixels, pixels, dst);
+        continue;
+      }
+      for (size_t i = 0; i < ytiles_.starts.size(); ++i) {
+        const int th = ytiles_.extents[i];
+        const int top = i > 0 ? ytiles_.overlaps[i - 1] : 0;
+        const int bottom = i + 1 < ytiles_.starts.size() ? ytiles_.overlaps[i] : 0;
+        for (size_t j = 0; j < nx; ++j) {
+          const int tw = xtiles_.extents[j];
+          const int left = j > 0 ? xtiles_.overlaps[j - 1] : 0;
+          const int right = j + 1 < nx ? xtiles_.overlaps[j] : 0;
+          const int keep_w = tw - right;
+          const float* raw = tiles[i * nx + j].data() + p * th * tw;
+          std::copy_n(raw, static_cast<size_t>(th) * tw, tile_.data());
+          // The previous row's strip contains horizontally composited pixels
+          // across the full canvas width, including diagonal contributors.
+          for (int y = 0; y < top; ++y) {
+            const float wb = static_cast<float>(y) / top;
+            for (int x = 0; x < tw; ++x) {
+              float& value = tile_[static_cast<size_t>(y) * tw + x];
+              value = strip_[static_cast<size_t>(y) * width_ + xtiles_.starts[j] + x] *
+                          (1.0f - wb) + value * wb;
+            }
+          }
+          for (int y = 0; y < th; ++y) {
+            float* row = tile_.data() + static_cast<size_t>(y) * tw;
+            for (int x = 0; x < left; ++x) {
+              const float wb = static_cast<float>(x) / left;
+              row[x] = left_[static_cast<size_t>(y) * left + x] * (1.0f - wb) + row[x] * wb;
+            }
+          }
+          // Save the right tail AFTER both blends and BEFORE cropping columns.
+          // Save bottom rows with those columns cropped to build one full strip.
+          for (int y = 0; y < th; ++y) {
+            const float* row = tile_.data() + static_cast<size_t>(y) * tw;
+            if (right > 0)
+              std::copy_n(row + keep_w, right, left_.data() + static_cast<size_t>(y) * right);
+            if (y >= th - bottom)
+              std::copy_n(row, keep_w, next_strip_.data() +
+                  static_cast<size_t>(y - (th - bottom)) * width_ + xtiles_.starts[j]);
+            else
+              std::copy_n(row, keep_w, dst +
+                  static_cast<size_t>(ytiles_.starts[i] + y) * width_ + xtiles_.starts[j]);
+          }
+        }
+        strip_.swap(next_strip_);
+      }
     }
   }
 
  private:
-  std::vector<float> top_;   // [planes][y_ov][tw], the vertical slab
-  std::vector<float> cols_;  // [planes][th][x_ov], the horizontal slab
-  const float* raw_ = nullptr;
-  int th_ = 0;
-  int tw_ = 0;
-  int y_ov_ = 0;
-  int x_ov_ = 0;
+  TileLayout ytiles_, xtiles_;
+  int height_, width_;
+  std::vector<float> tile_, left_, strip_, next_strip_;
 };
 
 // Where each of a chunk's `out_frames` decoded frames belongs.
