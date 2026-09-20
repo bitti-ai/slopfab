@@ -75,6 +75,22 @@ SLOPFAB_TEST(sampling_plan_adapter_conflicts_need_explicit_override) {
   CHECK(plan.video_sigma_shift == 3);
 }
 
+SLOPFAB_TEST(sampling_plan_explicit_steps_resolve_adapter_defaults) {
+  using namespace slopfab;
+  SamplingFixture first("slopfab_steps_first.safetensors",
+      R"({"version":1,"default_steps":4})");
+  SamplingFixture second("slopfab_steps_second.safetensors",
+      R"({"version":1,"default_steps":8})");
+  GenerateRequest request;
+  request.loras = {{first.path.string(), 1}, {second.path.string(), 1}};
+  CHECK(rejects([&] { resolve_plan(request); }));
+  request.num_inference_steps = 6;
+  CHECK(resolve_plan(request).num_inference_steps == 6);
+  request.num_inference_steps = 0;
+  request.sampling.default_steps = 10;
+  CHECK(resolve_plan(request).num_inference_steps == 10);
+}
+
 SLOPFAB_TEST(sampling_plan_rejects_invalid_metadata_and_unsafe_execution) {
   using namespace slopfab;
   SamplingFixture bad("slopfab_sampling_bad.safetensors", R"({"version":1,"typo":2})");

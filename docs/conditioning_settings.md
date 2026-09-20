@@ -66,7 +66,7 @@ C API 1.12 adds `slopfab_session_create`, `slopfab_session_destroy`, `slopfab_se
 Inference reads adapter assets without downloading or rewriting the adapter. Prepare a missing H3 AdaLN grid explicitly:
 
 ```sh
-slopfab prepare-lora --adapter adapter.safetensors --width 3072 --download
+slopfab prepare-lora --adapter adapter.safetensors --width 2688 --download
 ```
 
 Omit `--download` to permit local assets only. See [model contracts](model_contracts.md) for asset metadata/API, [sampling settings](sampling_settings.md) for step/grid defaults, and [backend contracts](backend_contracts.md) for supported execution contracts.

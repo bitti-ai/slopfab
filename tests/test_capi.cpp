@@ -490,8 +490,14 @@ SLOPFAB_TEST(capi_reference_video_audio_ingestion) {
   CHECK(std::strstr(description.text, "reference audios    1") != nullptr);
   slopfab_generation* generation = reinterpret_cast<slopfab_generation*>(1);
   CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_VULKAN) == SLOPFAB_OK);
+  slopfab_session* session = nullptr;
+  CHECK(slopfab_session_create(&session) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_session(request.handle, session) == SLOPFAB_OK);
+  slopfab_session_destroy(session);
   CHECK(slopfab_generation_start(request.handle, nullptr, nullptr, &generation) == SLOPFAB_OK);
   CHECK(generation != nullptr);
+  slopfab_request_destroy(request.handle);
+  request.handle = nullptr;
   // The request is accepted without loading models synchronously. This fixture
   // intentionally has no checkpoints; the worker reports that failure.
   CHECK(slopfab_generation_wait(generation, -1) != SLOPFAB_OK);

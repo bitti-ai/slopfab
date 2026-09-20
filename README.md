@@ -11,6 +11,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 - **CUDA and Vulkan inference** with native text and reference conditioning, plus selectable attention backends.
 - **LoRA adapters**, adapter stacking and the [TaoMate three-step schedule](docs/loras.md).
 - **Model and LoRA sampling settings**, with [metadata defaults and JSON overrides](docs/sampling_settings.md).
+- **Configurable conditioning and isolated session caches**, with [model/LoRA recipes and library APIs](docs/conditioning_settings.md).
 - **Viggle-Animate checkpoint and adapter loading**, with [fixed-conditioning and driving-audio options](docs/viggle_animate.md).
 - **Video continuation** through [saved video and audio latents](docs/continuation.md).
 - **Quantized checkpoints** and [automatic CUDA transformer offloading](docs/denoising_memory.md) to manage GPU memory.

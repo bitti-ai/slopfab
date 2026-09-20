@@ -81,3 +81,40 @@ SLOPFAB_TEST(conditioning_settings_metadata_conflicts_and_disabled_adapters) {
   r.conditioning.image_short_edge = 1024;
   CHECK(resolve_conditioning_settings(r).image_short_edge == 1024);
 }
+
+SLOPFAB_TEST(generation_options_shared_validation) {
+  using namespace slopfab;
+  GenerateRequest request;
+  auto plan = resolve_plan(request);
+  RunOptions options;
+  validate_generation_options(request, plan, options);
+  request.cache_threshold = 0.1f;
+  request.skip_every = 2;
+  CHECK(rejected([&] { validate_generation_options(request, plan, options); }));
+  request.cache_threshold = 0;
+  request.skip_every = 0;
+  options.attention_band = -1;
+  CHECK(rejected([&] { validate_generation_options(request, plan, options); }));
+  options.attention_band = 0;
+  options.sol_schedule.step_every = 0;
+  CHECK(rejected([&] { validate_generation_options(request, plan, options); }));
+}
+
+SLOPFAB_TEST(conditioning_cache_tracks_continuation_canvas) {
+  using namespace slopfab;
+  GenerateRequest request;
+  request.conditioning.references_at_target_canvas = true;
+  request.reference_image_paths = {"unavailable.png"};
+  auto clip = std::make_shared<LatentClip>();
+  clip->width = 256;
+  clip->height = 256;
+  request.continuation = clip;
+  const auto reference = reference_cache_key(request);
+  const auto prompt = conditioning_cache_key(request);
+  auto larger = std::make_shared<LatentClip>(*clip);
+  larger->width = 512;
+  larger->height = 512;
+  request.continuation = larger;
+  CHECK(reference_cache_key(request) != reference);
+  CHECK(conditioning_cache_key(request) != prompt);
+}

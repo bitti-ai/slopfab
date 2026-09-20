@@ -36,6 +36,9 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
     key += ":geometry:" + geometry.fingerprint();
     key += ":" + std::to_string(request.canvas_width) + "x" + std::to_string(request.canvas_height);
     key += ":aspect:" + std::to_string(request.aspect_w) + ":" + std::to_string(request.aspect_h);
+    if (request.continuation && !request.has_explicit_canvas())
+      key += ":continuation-canvas:" + std::to_string(request.continuation->width) + "x" +
+             std::to_string(request.continuation->height);
   }
   if (request.reference_media.empty()) return;
   key.push_back('\0');
@@ -56,8 +59,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   request.motion_cache.validate();
   if (request.motion_cache.active() &&
       (request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
-       request.animate || request.schedule != sampler::ScheduleKind::kDefault))
-    throw std::invalid_argument("MotionCache requires the default schedule without other caches or Animate");
+       request.schedule != sampler::ScheduleKind::kDefault))
+    throw std::invalid_argument("MotionCache requires the default schedule without other caches");
   if (request.continuation && request.still_image)
     throw std::invalid_argument("continuation is unavailable in still-image mode");
   validate_refmods(request.refmods);
@@ -77,6 +80,9 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   }
   plan.conditioning = resolve_conditioning_settings(request);
   validate_conditioning_request(request, plan.conditioning);
+  if (request.motion_cache.active() && (!plan.conditioning.allow_caches ||
+      plan.conditioning.video_first || plan.conditioning.pin_target_audio || plan.model.compressed_attention))
+    throw std::invalid_argument("MotionCache is incompatible with the resolved conditioning or attention contract");
   if (!request.reference_media.empty() && request.reference_image_paths.empty()) {
     bool has_video = bool(request.continuation);
     for (const auto& media : request.reference_media) has_video |= media->is_video();
