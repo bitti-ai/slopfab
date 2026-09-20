@@ -341,17 +341,32 @@ divided by `vae_ratio=16` to slice the latent.
   16, tiles cover the input exactly.
 
 Per tile: `z_tile = z[..., i_pos//16 : (i_pos+256)//16, j_pos//16 :
-(j_pos+256)//16]` (`klvae.py:384-392`), decoded independently, then merged
-(`klvae.py:414-428`) in this exact order for tile `(i,j)`:
+(j_pos+256)//16]` (`klvae.py:384-392`), decoded independently with local
+positions. Decoder windows and batching are unchanged.
 
-1. if `i > 0`: `blend(rows[i-1][j], tile, y_overlap[i-1], dim=-2)` — vertical
-2. if `j > 0`: `blend(row[j-1],   tile, x_overlap[j-1], dim=-1)` — horizontal
-3. if not last row: drop the last `y_overlap[i]` rows
-4. if not last col: drop the last `x_overlap[j]` cols
+Spatial composition retains the vertical-then-horizontal cross-fades, but reads already-composited
+neighbours instead of raw decoder output:
 
-`rows[i-1][j]` and `row[j-1]` are the **unmodified** decoded tiles (the loop
-never writes back into `rows`), so blending always reads raw neighbours.
-Rows are concatenated along `-1` then along `-2`.
+1. Blend the top overlap against the previous row's full-width bottom strip,
+   sliced at the current tile's X position.
+2. Blend the left overlap against the previous tile's composited right tail.
+3. Save the right tail after both blends, before cropping the right overlap.
+4. Crop the right overlap, then copy the bottom overlap into the next row's
+   full-width strip. Write the remaining rows directly to the output.
+
+Each cross-fade uses the native asymmetric ramp `k / overlap`. Composited tails
+carry diagonal and older contributors through intersections and triple overlaps.
+For ordinary two-way overlaps this agrees mathematically with normalized
+separable blending; triple and higher overlaps use sequential, order-dependent
+weights instead.
+
+The shared host compositor applies this to video and still images in the
+backend's host float format, one retained frame/channel plane at a time.
+Scratch consists of one working tile, one right tail, and two alternating
+full-width bottom strips, reused across planes and chunks. There are no
+normalization weights or float32 accumulation band. A single spatial tile is
+copied directly. Temporal frame selection, cross-fades, decoder windows, and
+final pixel de-normalisation are unchanged.
 
 **Nesting order: temporal chunking is the OUTER loop, spatial tiling the
 INNER loop** — `decode_temporal` → `_adaptive_decode` → `tiled_decode` →
@@ -972,10 +987,13 @@ The ramp is asymmetric (weight_b tops out at `(n-1)/n`, never 1.0) — see
 - **Suffix position ids are zeros**, giving `cos=1, sin=0`. If you skip RoPE
   for the suffix tokens entirely, that is equivalent — but only because
   `rotate_half(x)*0 == 0`; verify your kernel doesn't produce NaNs there.
-- **Tiling/chunking nesting order** and the vertical-then-horizontal blend
-  order (§1.5) affect the result in overlap corners.
+- **Tiling/chunking nesting order** is preserved; spatial composition uses
+  cross-fades against composited neighbours (section 1.5).
 
 ### 5.7 Things that are *not* fp32 in the reference
+
+These describe the released reference; the host spatial composition in
+section 1.5 uses the backend's host float format.
 
 - The residual stream, all GEMMs, RoPE application, LayerScale, the blends and
   `norm_out` all run in the model dtype.
