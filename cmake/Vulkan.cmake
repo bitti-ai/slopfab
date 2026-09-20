@@ -16,7 +16,20 @@ if(SLOPFAB_ENABLE_VULKAN)
 
   add_library(slopfab_vulkan STATIC
     src/vulkan/runtime.cpp
+    src/vulkan/runtime_buffer.cpp
+    src/vulkan/runtime_pipeline.cpp
+    src/vulkan/runtime_compute.cpp
     src/vulkan/tensor.cpp
+    src/vulkan/tensor_pipelines.cpp
+    src/vulkan/tensor_weights.cpp
+    src/vulkan/tensor_pointwise.cpp
+    src/vulkan/tensor_norm.cpp
+    src/vulkan/tensor_dit.cpp
+    src/vulkan/tensor_conditioning.cpp
+    src/vulkan/tensor_reference.cpp
+    src/vulkan/tensor_audio.cpp
+    src/vulkan/tensor_gemm.cpp
+    src/vulkan/tensor_attention.cpp
     src/vulkan/text_layer.cpp
     src/vulkan/text_encoder.cpp
     src/vulkan/vision_stage.cpp

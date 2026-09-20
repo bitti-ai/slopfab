@@ -29,6 +29,8 @@ if(SLOPFAB_BUILD_C_API)
   # DLL and CLI have identical selection/error behavior and neither has a
   # fixed cublas64_<major>.dll import.
   add_library(slopfab_c SHARED src/capi/capi.cpp)
+  target_sources(slopfab_c PRIVATE src/capi/requests.cpp src/capi/plans.cpp
+    src/capi/generation.cpp src/capi/references.cpp)
   # slopfab_cuda carries slopfab_core with it as a PUBLIC dependency, so naming
   # the one target is naming both.
   target_link_libraries(slopfab_c PRIVATE slopfab_cuda)

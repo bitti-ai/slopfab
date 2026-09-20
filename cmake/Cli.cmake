@@ -23,6 +23,9 @@ endif()
 # or toolkit-specific backend executable is needed.
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
 target_sources(slopfab PRIVATE src/cli/reference_decode.cpp)
+target_sources(slopfab PRIVATE
+  src/cli/model_assets.cpp src/cli/help.cpp src/cli/inspect.cpp
+  src/cli/decode.cpp src/cli/tokenize.cpp src/cli/generate.cpp src/cli/devices.cpp)
 set(SLOPFAB_CLI_TARGET slopfab)
 
 target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_core)

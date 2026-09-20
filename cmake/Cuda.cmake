@@ -105,7 +105,9 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/nf4_weight.cu
       src/cuda/w4a8.cu
       src/cuda/nvfp4_gemm.cu
-      src/cuda/attention.cu
+    src/cuda/attention.cu
+    src/cuda/attention_blocked.cu
+    src/cuda/attention_fused.cu
       src/cuda/vsa_attention.cu
       src/cuda/sage_attention.cu
       src/cuda/sol_attention.cu
@@ -115,7 +117,9 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/vit_decoder.cu
       src/cuda/audio_vae_kernels.cu
       src/cuda/dit_kernels.cu
-      src/cuda/encoder_kernels.cu
+    src/cuda/encoder_kernels.cu
+    src/cuda/encoder_layer.cu
+    src/cuda/encoder_runtime.cu
       src/cuda/keyframe_encoder.cu
       src/cuda/reference_encoder.cu
       src/cuda/qwen_vision.cu
@@ -123,6 +127,9 @@ if(SLOPFAB_ENABLE_CUDA)
       src/vae/keyframe_cuda.cpp
       src/vae/audio_encoder.cpp
       src/generate.cpp
+      src/generation/helpers.cpp
+      src/generation/decode.cpp
+      src/generation/session.cpp
       # src/capi/capi.cpp is deliberately NOT here. It calls run_generate, so
       # it depends on this target — but compiling it *into* this target as well
       # as into slopfab_c builds every C entry point twice: once with capi.h
@@ -133,6 +140,10 @@ if(SLOPFAB_ENABLE_CUDA)
       # the c api section below.
       src/vae/audio_decoder.cpp
     src/dit/transformer.cpp
+    src/dit/transformer_capture.cpp
+    src/dit/transformer_execution.cpp
+    src/dit/transformer_load.cpp
+    src/dit/transformer_prepare.cpp
     src/dit/weight_metadata.cpp
       src/dit/denoise.cpp
       src/cuda/encoder_checkpoint_upload.cpp

@@ -17,6 +17,7 @@ option(SLOPFAB_ENABLE_CUDA "Build CUDA kernels" ON)
 option(SLOPFAB_ENABLE_VULKAN "Build the standalone Vulkan runtime foundation" ON)
 option(SLOPFAB_BUILD_TESTS "Build unit tests" ON)
 option(SLOPFAB_BUILD_DEV_TOOLS "Build developer profiling/probe executables" OFF)
+option(SLOPFAB_TEST_BENCHMARKS "Register opt-in performance measurements with CTest" OFF)
 
 # FFmpeg is loaded at runtime and never linked, so this option does not change
 # what the binary depends on to *start* — it changes what is compiled in at

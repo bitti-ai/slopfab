@@ -20,6 +20,10 @@ add_library(slopfab_core STATIC
   src/core/safetensors_write.cpp
   src/core/sha256.cpp
   src/dit/adaln.cpp
+  src/dit/h3_lora.cpp
+  src/core/conditioning_settings.cpp
+  src/conditioning_plan.cpp
+  src/generation_validation.cpp
   src/dit/block_cache.cpp
   src/dit/chunking.cpp
   src/dit/checkpoint.cpp

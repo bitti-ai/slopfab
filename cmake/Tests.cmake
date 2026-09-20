@@ -1,6 +1,7 @@
 # --- tests ------------------------------------------------------------------
 if(SLOPFAB_BUILD_TESTS)
   enable_testing()
+  include(cmake/TestCoverage.cmake)
   # Host tests. Each area contributes its own translation unit and registers
   # its cases with the shared harness, so adding tests never touches a file
   # someone else is editing.
@@ -25,6 +26,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_safetensors.cpp
     tests/test_pipeline.cpp
     tests/test_model_descriptor.cpp
+    tests/test_attention_descriptor.cpp
     tests/test_prompt_embedding.cpp
     tests/test_lora.cpp
     tests/test_sampler.cpp
@@ -47,6 +49,7 @@ if(SLOPFAB_BUILD_TESTS)
     target_compile_options(slopfab_tests PRIVATE -Wall -Wextra)
   endif()
   add_test(NAME unit COMMAND slopfab_tests)
+  set_tests_properties(unit PROPERTIES LABELS synthetic SKIP_RETURN_CODE 77)
   if(SLOPFAB_WITH_FFMPEG)
     find_program(SLOPFAB_TEST_FFMPEG ffmpeg HINTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
     find_program(SLOPFAB_TEST_FFPROBE ffprobe HINTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
@@ -63,7 +66,19 @@ if(SLOPFAB_BUILD_TESTS)
   endif()
 
   if(SLOPFAB_ENABLE_VULKAN)
-    add_executable(slopfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp)
+    add_executable(slopfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp
+      tests/test_vulkan_conditioner_synthetic.cpp
+      tests/test_vulkan_conditioner_checkpoint.cpp
+      tests/test_vulkan_conditioner_integration.cpp
+      tests/test_vulkan_dit_synthetic_1.cpp
+      tests/test_vulkan_dit_synthetic_2.cpp
+      tests/test_vulkan_dit_synthetic_3.cpp
+      tests/test_vulkan_dit_integration.cpp
+      tests/test_vulkan_attention_synthetic.cpp
+      tests/test_vulkan_linear_synthetic.cpp
+      tests/test_vulkan_runtime_synthetic.cpp
+      tests/test_vulkan_codec_synthetic.cpp
+      tests/test_vulkan_dit_checkpoint.cpp)
     target_link_libraries(slopfab_vulkan_tests PRIVATE slopfab_vulkan)
     set(SLOPFAB_AFFINE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp")
     set(SLOPFAB_AFFINE_SPV "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/affine.comp.spv")
@@ -95,15 +110,40 @@ if(SLOPFAB_BUILD_TESTS)
     else()
       target_compile_options(slopfab_vulkan_tests PRIVATE -Wall -Wextra)
     endif()
-    add_test(NAME vulkan COMMAND slopfab_vulkan_tests)
-    set_tests_properties(vulkan PROPERTIES
-      WORKING_DIRECTORY "$<TARGET_FILE_DIR:slopfab_vulkan_tests>")
+    slopfab_test_suite(vulkan slopfab_vulkan_tests checkpoint integration)
   endif()
 
   if(SLOPFAB_ENABLE_CUDA AND SLOPFAB_ENABLE_VULKAN)
     add_executable(slopfab_tensor_backend_tests
       tests/harness.cpp tests/allocation_guard.cpp
-      tests/test_tensor_backends.cu tests/test_audio_vulkan.cu tests/test_lora_backends.cu
+      tests/test_tensor_backends.cu
+      tests/test_tensor_backends_reference_synthetic.cu
+      tests/test_tensor_backends_arithmetic_synthetic.cu
+      tests/test_tensor_backends_pointwise_synthetic_1.cu
+      tests/test_tensor_backends_pointwise_synthetic_2.cu
+      tests/test_tensor_backends_attention_synthetic_1.cu
+      tests/test_tensor_backends_attention_synthetic_2.cu
+      tests/test_tensor_backends_attention_benchmark.cu
+      tests/test_tensor_backends_attention_checkpoint.cu
+      tests/test_tensor_backends_dit_synthetic.cu
+      tests/test_tensor_backends_conditioner_synthetic.cu
+      tests/test_tensor_backends_conditioner_checkpoint.cu
+      tests/test_tensor_backends_conditioner_integration_1.cu
+      tests/test_tensor_backends_conditioner_integration_2.cu
+      tests/test_tensor_backends_dit_checkpoint.cu
+      tests/test_tensor_backends_dit_integration_1.cu
+      tests/test_tensor_backends_dit_integration_2.cu
+      tests/test_tensor_backends_pointwise_benchmark.cu
+      tests/test_tensor_backends_normalization_synthetic.cu
+      tests/test_tensor_backends_linear_synthetic.cu
+      tests/test_tensor_backends_linear_checkpoint.cu
+      tests/test_tensor_backends_linear_benchmark.cu
+      tests/test_tensor_backends_vae_synthetic.cu
+      tests/test_tensor_backends_reference_integration.cu
+      tests/test_tensor_backends_vae_integration.cu tests/test_audio_vulkan.cu
+      tests/test_audio_vulkan_checkpoint.cu
+      tests/test_audio_vulkan_decoder_integration.cu
+      tests/test_audio_vulkan_integration.cu tests/test_lora_backends.cu
       tests/test_vsa_vulkan.cu)
     target_link_libraries(slopfab_tensor_backend_tests PRIVATE
       slopfab_cuda slopfab_vulkan)
@@ -116,7 +156,7 @@ if(SLOPFAB_BUILD_TESTS)
       target_compile_options(slopfab_tensor_backend_tests PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive-;/utf-8;/EHsc>)
     endif()
-    add_test(NAME tensor_backends COMMAND slopfab_tensor_backend_tests)
+    slopfab_test_suite(tensor_backends slopfab_tensor_backend_tests checkpoint integration benchmark)
   endif()
 
   if(SLOPFAB_ENABLE_CUDA)
@@ -166,18 +206,34 @@ if(SLOPFAB_BUILD_TESTS)
     add_executable(slopfab_kernel_tests
       tests/harness.cpp
       tests/test_kernels.cu
+      tests/test_attention_plan.cu
       tests/test_nn_kernels.cu
+      tests/test_nn_kernels_linear_synthetic.cu
+      tests/test_nn_kernels_nvfp4_synthetic.cu
+      tests/test_nn_kernels_attention_synthetic.cu
+      tests/test_nn_kernels_attention_checkpoint.cu
+      tests/test_nn_kernels_workspace_synthetic.cu
+      tests/test_nn_kernels_nvfp4_benchmark.cu
+      tests/test_nn_kernels_operators_benchmark.cu
+      tests/test_nn_kernels_vision_synthetic.cu
+      tests/test_nn_kernels_vision_integration.cu
       tests/test_reference_encoder.cu
       tests/test_audio_vae.cu
         tests/test_transformer.cu
+      tests/test_transformer_loading_synthetic.cu
+      tests/test_transformer_denoise_synthetic.cu
+      tests/test_transformer_checkpoint.cu
         tests/test_vsa.cu
       tests/test_encoder.cu
+      tests/test_encoder_loading_synthetic.cu
+      tests/test_encoder_checkpoint.cu
+      tests/test_encoder_checkpoint_integration.cu
       tests/test_keyframe_encoder.cu
       tests/test_vit_decoder.cu
       tests/test_int8_weight.cu
     )
     target_link_libraries(slopfab_kernel_tests PRIVATE slopfab_cuda)
-    add_test(NAME kernels COMMAND slopfab_kernel_tests)
+    slopfab_test_suite(kernels slopfab_kernel_tests checkpoint integration benchmark)
 
     if(WIN32)
       add_test(NAME cuda_version_option
@@ -206,6 +262,7 @@ if(SLOPFAB_BUILD_TESTS)
       target_compile_options(slopfab_capi_tests PRIVATE -Wall -Wextra)
     endif()
     add_test(NAME capi COMMAND slopfab_capi_tests)
+    set_tests_properties(capi PROPERTIES LABELS integration SKIP_RETURN_CODE 77)
 
     add_executable(slopfab_capi_cuda_dispatch_tests tests/test_capi_cuda_dispatch.cpp)
     target_link_libraries(slopfab_capi_cuda_dispatch_tests PRIVATE slopfab_c)
