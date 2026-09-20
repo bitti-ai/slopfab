@@ -1,6 +1,17 @@
 #include "internal.h"
+#include "slopfab/lora.h"
 extern "C" {
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_prepare_lora_grid(
+    const char* adapter_path, int32_t width, int32_t allow_download) {
+  if (!adapter_path || !*adapter_path || width <= 0)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "prepare_lora_grid: nonempty adapter path and positive width required");
+  return guarded([&] {
+    slopfab::prepare_lora_grid(adapter_path, width, allow_download != 0);
+    return SLOPFAB_OK;
+  });
+}
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_session_create(slopfab_session** out_session) {
   if (!out_session) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "session_create: null output");

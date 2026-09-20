@@ -7,7 +7,7 @@
 // compiled capi.cpp into itself, and fail here — which is where a Rust or C#
 // consumer would meet them.
 //
-// Nothing here reads a checkpoint or touches the GPU. Everything up to the
+// Only small synthetic file fixtures are read; nothing touches the GPU. Everything up to the
 // plan is arithmetic, and the generation entry points are called only on the
 // paths that reject their arguments before any work starts: a test that
 // actually generated would need 34 GB of weights and several minutes.
@@ -16,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 #include <limits>
@@ -24,6 +25,75 @@
 #include "slopfab/capi.h"
 #include "refmod_fixture.h"
 #include "latent_fixture.h"
+
+SLOPFAB_TEST(capi_prepare_lora_grid) {
+  CHECK(slopfab_prepare_lora_grid(nullptr, 2, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_prepare_lora_grid("", 2, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_prepare_lora_grid("unused", 0, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_prepare_lora_grid("unused", -1, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+
+  struct Fixture {
+    std::filesystem::path dir = std::filesystem::temp_directory_path() /
+        ("slopfab-capi-grid-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::path adapter = dir / "adapter.safetensors";
+    std::filesystem::path companion = dir / "h3_silu_temb_grid.safetensors";
+    Fixture() { std::filesystem::create_directory(dir); }
+    ~Fixture() {
+      std::error_code ec;
+      std::filesystem::remove(adapter, ec);
+      std::filesystem::remove(companion, ec);
+      std::filesystem::remove(dir, ec);
+    }
+    void write(const std::filesystem::path& path, std::string header,
+               const std::vector<float>& values) {
+      while (header.size() % 8) header += ' ';
+      const uint64_t length = header.size();
+      std::ofstream out(path, std::ios::binary);
+      out.write(reinterpret_cast<const char*>(&length), 8);
+      out.write(header.data(), static_cast<std::streamsize>(header.size()));
+      out.write(reinterpret_cast<const char*>(values.data()),
+                static_cast<std::streamsize>(values.size() * sizeof(float)));
+      if (!out) throw std::runtime_error("cannot write DLL grid fixture");
+    }
+    std::string bytes() const {
+      std::ifstream in(adapter, std::ios::binary);
+      return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+  } fixture;
+  const auto path = fixture.adapter.u8string();
+  CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_ERR_RUNTIME);
+  CHECK(std::strlen(slopfab_last_error()) > 0);
+  fixture.write(fixture.adapter,
+      R"({"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}})", {42.0f});
+  const auto original = fixture.bytes();
+  CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_ERR_RUNTIME);
+  CHECK(fixture.bytes() == original); // Missing local grid never rewrites the adapter.
+  fixture.write(fixture.companion,
+      R"({"silu_t_emb_grid":{"dtype":"F32","shape":[1025,2],"data_offsets":[0,8200]}})",
+      std::vector<float>(2050, .5f));
+  CHECK(slopfab_prepare_lora_grid(path.c_str(), 3, 0) == SLOPFAB_ERR_RUNTIME);
+  CHECK(fixture.bytes() == original); // Shape failure is transactional too.
+  CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_OK);
+  CHECK(std::strlen(slopfab_last_error()) == 0);
+  const auto embedded = fixture.bytes();
+  CHECK(embedded.size() >= original.size() + 8200);
+  uint64_t header_bytes = 0;
+  std::memcpy(&header_bytes, embedded.data(), sizeof(header_bytes));
+  const bool valid_payload = header_bytes <= embedded.size() - 8 &&
+      embedded.size() - 8 - header_bytes == 8204;
+  CHECK(valid_payload);
+  if (valid_payload) {
+    const auto* payload = embedded.data() + 8 + header_bytes;
+    CHECK(std::memcmp(payload, original.data() + original.size() - 4, 4) == 0);
+    const std::vector<float> grid(2050, .5f);
+    CHECK(std::memcmp(payload + 4, grid.data(), 8200) == 0);
+  }
+  std::filesystem::remove(fixture.companion);
+  CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_OK);
+  CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 1) == SLOPFAB_OK);
+  CHECK(fixture.bytes() == embedded); // Embedded input is idempotent, even with download allowed.
+}
 
 SLOPFAB_TEST(capi_motion_cache_validation_and_atomic_setter) {
   auto* request = slopfab_request_create();

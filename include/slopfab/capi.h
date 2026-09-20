@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 12
+#define SLOPFAB_CAPI_VERSION_MINOR 13
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -435,6 +435,20 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
  * Disabling clears these two mode flags but retains other request settings. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(
     slopfab_request* request, int32_t enable, int32_t preserve_driving_audio);
+
+/* Since 1.13. Synchronously prepare an adapter's AdaLN grid outside inference.
+ * adapter_path is a nonempty UTF-8 path; width is the positive base transformer
+ * hidden width. Validates an embedded grid or atomically replaces the adapter
+ * with a copy containing its local companion grid. Requires write access and
+ * temporary space for a full adapter copy when embedding. Close other readers
+ * of that adapter before calling; do not prepare it during generation.
+ * allow_download == 0 permits local assets only; nonzero opts into the pinned,
+ * verified legacy grid download (currently Windows-only). No GPU work occurs.
+ * Returns INVALID_ARGUMENT for null/empty paths or nonpositive widths; file,
+ * grid and preparation errors use the usual runtime status/last_error contract.
+ * Repeating the call on a valid embedded grid succeeds without rewriting it. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_prepare_lora_grid(
+    const char* adapter_path, int32_t width, int32_t allow_download);
 
 /* H3 attention/MLP LoRA adapters, combined by summing their updates. Paths are copied.
  * A finite strength may be zero (disabled) or negative. */

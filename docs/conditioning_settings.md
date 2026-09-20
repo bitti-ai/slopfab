@@ -72,3 +72,21 @@ slopfab prepare-lora --adapter adapter.safetensors --width 2688 --download
 ```
 
 Omit `--download` to permit local assets only. See [model contracts](model_contracts.md) for asset metadata/API, [sampling settings](sampling_settings.md) for step/grid defaults, and [backend contracts](backend_contracts.md) for supported execution contracts.
+
+C API 1.13 exposes the same operation from the DLL:
+
+```c
+int status = slopfab_prepare_lora_grid("adapter.safetensors", 2688, 0);
+if (status != SLOPFAB_OK) {
+    fprintf(stderr, "%s\n", slopfab_last_error());
+}
+```
+
+The final argument is `allow_download`: zero uses local assets only; nonzero
+allows the verified legacy download. This call is synchronous and performs no
+GPU work. It validates an already embedded grid or embeds a companion using
+atomic replacement, requiring write access and space for an adapter copy.
+Close readers of that adapter before preparation and prepare it before starting
+generation. Calling it again after successful preparation does not rewrite the
+adapter. Invalid path/width arguments return `SLOPFAB_ERR_INVALID_ARGUMENT`;
+file and grid errors are reported through the usual status and `slopfab_last_error()`.
