@@ -16,7 +16,8 @@ SLOPFAB_TEST_CATEGORY(denoise_motion_cache_residual_trajectory_and_reset, "synth
   std::vector<float> anchor_v(96, 7), anchor_a(32, 9);
   auto run = [&](bool enabled, bool cancel) {
     slopfab::sampler::FlowScheduler video(12), audio(3);
-    video.set_timesteps(14); audio.set_timesteps(14);
+    video.set_timesteps(14);
+    audio.set_timesteps(14);
     Transformer model;
     auto in = make_denoise_inputs(layout, indices, video, audio);
     in.condition_video_rows = &anchor_v;
@@ -27,20 +28,26 @@ SLOPFAB_TEST_CATEGORY(denoise_motion_cache_residual_trajectory_and_reset, "synth
     in.motion_cache.end_percent = 1;
     in.motion_cache.warmup_steps = 2;
     std::vector<uint8_t> invoked(video.num_steps(), 0);
-    in.velocity = [&](int step, const RowTimesteps&, const float* v, const float* a,
-                      float* vv, float* av) {
+    in.velocity = [&](int step, const RowTimesteps&, const float* v, const float* a, float* vv,
+                      float* av) {
       invoked[step] = 1;
-      for (size_t i = 0; i < anchor_v.size(); ++i) CHECK(v[i] == 7);
-      for (size_t i = 0; i < anchor_a.size(); ++i) CHECK(a[i] == 9);
-      for (size_t i = 0; i < indices.video.size() * 96; ++i) vv[i] = 4 - v[i];
-      for (size_t i = 0; i < indices.audio.size() * 32; ++i) av[i] = 8 - a[i];
+      for (size_t i = 0; i < anchor_v.size(); ++i)
+        CHECK(v[i] == 7);
+      for (size_t i = 0; i < anchor_a.size(); ++i)
+        CHECK(a[i] == 9);
+      for (size_t i = 0; i < indices.video.size() * 96; ++i)
+        vv[i] = 4 - v[i];
+      for (size_t i = 0; i < indices.audio.size() * 32; ++i)
+        av[i] = 8 - a[i];
     };
-    const auto out = slopfab::dit::denoise(model, in,
-        [&](int step, int) { return !cancel || step < 3; });
+    const auto out = slopfab::dit::denoise(model, in, [&](int step, int) {
+      return !cancel || step < 3;
+    });
     invoked.resize(out.decisions.size());
     CHECK(out.decisions == invoked);
     CHECK(out.steps_computed + out.steps_skipped == static_cast<int>(out.decisions.size()));
-    if (enabled) CHECK(out.steps_skipped > 0);
+    if (enabled)
+      CHECK(out.steps_skipped > 0);
     return out;
   };
   const auto fresh = run(false, false);
@@ -77,6 +84,7 @@ SLOPFAB_TEST_CATEGORY(denoise_skips_exactly_the_planned_steps, "synthetic") {
     int warmup;
     int skip_every;
   };
+
   const Case cases[] = {
       {"off", 0.0f, 3, 0},
       {"threshold", 0.30f, 3, 0},
@@ -91,7 +99,7 @@ SLOPFAB_TEST_CATEGORY(denoise_skips_exactly_the_planned_steps, "synthetic") {
     video.set_timesteps(16);
     audio.set_timesteps(16);
 
-    Transformer model;  // never used: `velocity` and `code` short-circuit it
+    Transformer model; // never used: `velocity` and `code` short-circuit it
     slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
     in.code = code;
     in.cache.threshold = c.threshold;
@@ -122,7 +130,8 @@ SLOPFAB_TEST_CATEGORY(denoise_skips_exactly_the_planned_steps, "synthetic") {
               video.timesteps().size());
 
     int computed = 0;
-    for (uint8_t v : planned) computed += v;
+    for (uint8_t v : planned)
+      computed += v;
     CHECK_MSG(out.steps_computed == computed, "%s: steps_computed %d, plan says %d", c.name,
               out.steps_computed, computed);
     CHECK_MSG(out.steps_skipped == static_cast<int>(planned.size()) - computed,
@@ -158,7 +167,8 @@ SLOPFAB_TEST_CATEGORY(denoise_cache_disabled_changes_nothing, "synthetic") {
       // Velocity that depends on the step and on the current latents, so a
       // reused one would diverge immediately rather than coincidentally match.
       const float s = 0.1f * static_cast<float>(step + 1);
-      for (int r = 0; r < layout.num_video_rows * 96; ++r) vv[r] = s * (v[r] + 0.3f);
+      for (int r = 0; r < layout.num_video_rows * 96; ++r)
+        vv[r] = s * (v[r] + 0.3f);
       std::fill(av, av + layout.num_audio_rows * 32, s);
     };
     return slopfab::dit::denoise(model, in);
@@ -170,7 +180,8 @@ SLOPFAB_TEST_CATEGORY(denoise_cache_disabled_changes_nothing, "synthetic") {
   CHECK(a.steps_skipped == 0);
   CHECK(b.steps_skipped == 0);
   CHECK(a.decisions == b.decisions);
-  for (uint8_t d : a.decisions) CHECK(d == 1);
+  for (uint8_t d : a.decisions)
+    CHECK(d == 1);
   // Exact equality, not a tolerance: the default path must be the same
   // arithmetic in the same order, not merely close to it.
   CHECK(a.video_rows == b.video_rows);
@@ -184,7 +195,7 @@ SLOPFAB_TEST_CATEGORY(denoise_zero_velocity_is_a_fixed_point, "synthetic") {
   video.set_timesteps(8);
   audio.set_timesteps(8);
 
-  Transformer model;  // never used: `velocity` short-circuits the forward pass
+  Transformer model; // never used: `velocity` short-circuits the forward pass
   slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
 
   // Capture the starting latents by recording the first call's inputs.
@@ -215,30 +226,40 @@ SLOPFAB_TEST_CATEGORY(denoise_pinned_target_audio_is_clean_and_never_stepped, "s
   layout.condition_audio_is_explicit = true;
   const auto idx = slopfab::dit::build_indices(layout);
   slopfab::sampler::FlowScheduler video(3), audio(3);
-  video.set_timesteps(4); audio.set_timesteps(4);
+  video.set_timesteps(4);
+  audio.set_timesteps(4);
   Transformer model;
   auto in = make_denoise_inputs(layout, idx, video, audio);
-  const std::vector<float> initial_audio = slopfab::test::make_data(size_t(layout.num_audio_rows) * 32, 78);
+  const std::vector<float> initial_audio =
+      slopfab::test::make_data(size_t(layout.num_audio_rows) * 32, 78);
   const std::vector<float> initial_video(size_t(layout.num_video_rows) * 96, .5f);
   in.init_audio_rows = &initial_audio;
   in.init_video_rows = &initial_video;
   in.pin_target_audio = true;
   int calls = 0;
-  in.velocity = [&](int, const RowTimesteps& rt, const float*, const float* a, float* vv, float* av) {
+  in.velocity = [&](int, const RowTimesteps& rt, const float*, const float* a, float* vv,
+                    float* av) {
     ++calls;
     CHECK(std::vector<float>(a, a + initial_audio.size()) == initial_audio);
-    for (int row : idx.audio) CHECK(rt.unique[rt.indices[row]] == 1.0f);
+    for (int row : idx.audio)
+      CHECK(rt.unique[rt.indices[row]] == 1.0f);
     std::fill(vv, vv + initial_video.size(), .25f);
     std::fill(av, av + initial_audio.size(), 1000.0f);
   };
-  in.boundary = [&](int, const std::vector<float>&, const std::vector<float>& a) { CHECK(a == initial_audio); };
+  in.boundary = [&](int, const std::vector<float>&, const std::vector<float>& a) {
+    CHECK(a == initial_audio);
+  };
   const auto result = slopfab::dit::denoise(model, in);
   CHECK(calls == 3);
   CHECK(result.audio_rows == initial_audio);
   CHECK(result.video_rows != initial_video);
   in.init_audio_rows = nullptr;
   bool rejected = false;
-  try { slopfab::dit::denoise(model, in); } catch (const std::exception&) { rejected = true; }
+  try {
+    slopfab::dit::denoise(model, in);
+  } catch (const std::exception&) {
+    rejected = true;
+  }
   CHECK(rejected);
 }
 
@@ -257,8 +278,8 @@ SLOPFAB_TEST_CATEGORY(denoise_accepts_video_only_still_layout, "synthetic") {
   Transformer model;
   slopfab::dit::DenoiseInputs in = make_denoise_inputs(layout, idx, video, audio);
   int calls = 0;
-  in.velocity = [&](int, const RowTimesteps& rt, const float*, const float* audio_rows,
-                    float* vv, float* audio_velocity) {
+  in.velocity = [&](int, const RowTimesteps& rt, const float*, const float* audio_rows, float* vv,
+                    float* audio_velocity) {
     ++calls;
     CHECK(audio_rows != nullptr);
     CHECK(audio_velocity != nullptr);
@@ -309,14 +330,16 @@ SLOPFAB_TEST_CATEGORY(denoise_constant_velocity_matches_cpu_euler, "synthetic") 
       const float sigma_from_t = 1.0f - sched.timesteps()[i];
       const float ratio = sched.sigmas()[i + 1] / sched.sigmas()[i];
       for (float& e : x) {
-        const float denoised = e + sigma_from_t * v;  // a PLUS (spec 7.3)
+        const float denoised = e + sigma_from_t * v; // a PLUS (spec 7.3)
         e = ratio * e + (1.0f - ratio) * denoised;
       }
     }
     return x;
   };
-  CHECK_CLOSE(integrate(video, start_video, kVideoV), out.video_rows, 1e-5, "video Euler trajectory");
-  CHECK_CLOSE(integrate(audio, start_audio, kAudioV), out.audio_rows, 1e-5, "audio Euler trajectory");
+  CHECK_CLOSE(integrate(video, start_video, kVideoV), out.video_rows, 1e-5,
+              "video Euler trajectory");
+  CHECK_CLOSE(integrate(audio, start_audio, kAudioV), out.audio_rows, 1e-5,
+              "audio Euler trajectory");
 
   // Both shifts map sigma = 1 to itself, so step 0 conditions every row on
   // t = 0 and the unique set collapses to one entry — the one step where t2va
@@ -325,7 +348,8 @@ SLOPFAB_TEST_CATEGORY(denoise_constant_velocity_matches_cpu_euler, "synthetic") 
   CHECK(seen_video_t.front() == seen_audio_t.front());
   int distinct = 0;
   for (size_t i = 1; i < seen_video_t.size(); ++i) {
-    if (seen_video_t[i] != seen_audio_t[i]) ++distinct;
+    if (seen_video_t[i] != seen_audio_t[i])
+      ++distinct;
   }
   CHECK_MSG(distinct == static_cast<int>(seen_video_t.size()) - 1,
             "only %d of %zu steps after the first had two distinct timesteps; the video and "
@@ -348,8 +372,10 @@ SLOPFAB_TEST_CATEGORY(denoise_is_deterministic, "synthetic") {
                       float* av) {
       // A velocity that depends on the state, so a divergence anywhere in the
       // trajectory propagates rather than cancelling.
-      for (int i = 0; i < layout.num_video_rows * 96; ++i) vv[i] = 0.1f * v[i];
-      for (int i = 0; i < layout.num_audio_rows * 32; ++i) av[i] = -0.2f * a[i];
+      for (int i = 0; i < layout.num_video_rows * 96; ++i)
+        vv[i] = 0.1f * v[i];
+      for (int i = 0; i < layout.num_audio_rows * 32; ++i)
+        av[i] = -0.2f * a[i];
     };
     return slopfab::dit::denoise(model, in);
   };

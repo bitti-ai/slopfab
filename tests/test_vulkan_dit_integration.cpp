@@ -3,7 +3,8 @@
 SLOPFAB_TEST_CATEGORY(vulkan_h3_int8_still_full_stack_memory, "integration") {
   using namespace slopfab;
   using namespace slopfab::vulkan;
-  const auto path = std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
+  const auto path =
+      std::filesystem::path(SLOPFAB_TEST_SOURCE_DIR) /
       "weights/transformer/minimax_h3_fl2va_fasth3_dense_pruned_int8_convrot.safetensors";
   if (!std::filesystem::exists(path)) {
     SKIP_MISSING_FIXTURE("INT8 H3 checkpoint unavailable");
@@ -21,7 +22,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_int8_still_full_stack_memory, "integration") {
   }
   uint64_t device_heap = 0;
   for (const auto& heap : physical.front().info().memory_heaps)
-    if (heap.device_local) device_heap = std::max(device_heap, heap.bytes);
+    if (heap.device_local)
+      device_heap = std::max(device_heap, heap.bytes);
   if (device_heap < (28ull << 30)) {
     SKIP_INSUFFICIENT_VRAM("full INT8 still regression needs a 28-GiB device heap");
     return;
@@ -60,8 +62,10 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_int8_still_full_stack_memory, "integration") {
   CHECK(context.reserved_bytes() < (24ull << 30));
   std::vector<float> prompt(size_t(config.layout.num_text) * 5120);
   std::vector<float> video(size_t(config.layout.num_video_rows) * 96);
-  for (size_t i = 0; i < prompt.size(); ++i) prompt[i] = float(int(i % 127) - 63) / 64;
-  for (size_t i = 0; i < video.size(); ++i) video[i] = float(int(i % 61) - 30) / 32;
+  for (size_t i = 0; i < prompt.size(); ++i)
+    prompt[i] = float(int(i % 127) - 63) / 64;
+  for (size_t i = 0; i < video.size(); ++i)
+    video[i] = float(int(i % 61) - 30) / 32;
   model.prepare(prompt.data(), prompt.size(), video.data(), video.size(), nullptr, 0);
   sampler::FlowScheduler video_schedule(12.0f), audio_schedule(3.0f);
   video_schedule.set_timesteps(2);
@@ -69,13 +73,14 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_int8_still_full_stack_memory, "integration") {
   const auto output = model.run(video_schedule, audio_schedule);
   CHECK(output.steps_completed == 1 && !output.cancelled);
   CHECK(output.video_rows.size() == video.size() && output.audio_rows.empty());
-  CHECK(std::all_of(output.video_rows.begin(), output.video_rows.end(),
-                    [](float value) { return std::isfinite(value); }));
+  CHECK(std::all_of(output.video_rows.begin(), output.video_rows.end(), [](float value) {
+    return std::isfinite(value);
+  }));
   CHECK(context.reserved_bytes() < (24ull << 30));
   std::printf("  INT8 50-block 768x768 still: persistent %.3f GiB, peak %.3f GiB, pool %.3f GiB\n",
-      double(model.persistent_bytes()) / (1ull << 30),
-      double(model.peak_device_bytes()) / (1ull << 30),
-      double(context.reserved_bytes()) / (1ull << 30));
+              double(model.persistent_bytes()) / (1ull << 30),
+              double(model.peak_device_bytes()) / (1ull << 30),
+              double(context.reserved_bytes()) / (1ull << 30));
   model.unload();
   CHECK(!model.loaded() && model.persistent_bytes() == 0);
 }

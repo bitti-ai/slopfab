@@ -7,14 +7,16 @@ SLOPFAB_TEST_CATEGORY(nn_dequant_nvfp4, "synthetic") {
   // layout that ignored the tiling entirely.
   const int out_features = 256;
   const int in_features = 128;
-  const float global = 1.3580322e-3f;  // the qkv_proj block 0 value, not a power of two
+  const float global = 1.3580322e-3f; // the qkv_proj block 0 value, not a power of two
   const Nvfp4Weight w = make_nvfp4(out_features, in_features, global, 20260804u);
 
   // All sixteen E2M1 codes have to appear or the pattern coverage claim below
   // is empty.
   bool seen[16] = {false};
-  for (uint8_t c : w.codes) seen[c] = true;
-  for (int c = 0; c < 16; ++c) CHECK(seen[c]);
+  for (uint8_t c : w.codes)
+    seen[c] = true;
+  for (int c = 0; c < 16; ++c)
+    CHECK(seen[c]);
 
   DeviceBuffer<uint8_t> dw(w.packed.size());
   dw.copy_from_host(w.packed.data(), w.packed.size());
@@ -23,7 +25,7 @@ SLOPFAB_TEST_CATEGORY(nn_dequant_nvfp4, "synthetic") {
   BfBuf ddst(w.codes.size());
 
   slopfab::cuda::launch_dequant_nvfp4(dw.get(), dsc.get(), global, ddst.p(), out_features,
-                                     in_features, nullptr);
+                                      in_features, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = ddst.host();
 
@@ -47,12 +49,12 @@ SLOPFAB_TEST_CATEGORY(nn_dequant_nvfp4, "synthetic") {
   // Block scales read row-major instead of through the tile map.
   {
     Nvfp4Weight flat = w;
-    flat.stored = w.scales;  // as if the file were plain [out, in/16]
+    flat.stored = w.scales; // as if the file were plain [out, in/16]
     DeviceBuffer<uint8_t> dflat(flat.stored.size());
     dflat.copy_from_host(flat.stored.data(), flat.stored.size());
     BfBuf dout(w.codes.size());
     slopfab::cuda::launch_dequant_nvfp4(dw.get(), dflat.get(), global, dout.p(), out_features,
-                                       in_features, nullptr);
+                                        in_features, nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_MSG(max_abs_diff(dout.host(), got) > 1e-4,
               "dequant nvfp4 must unswizzle the 128x4 block-scale tiling (max diff %.4g)",
@@ -65,7 +67,7 @@ SLOPFAB_TEST_CATEGORY(nn_dequant_nvfp4, "synthetic") {
     bool threw = false;
     try {
       slopfab::cuda::launch_dequant_nvfp4(dw.get(), dsc.get(), global, ddst.p(), bad.first,
-                                         bad.second, nullptr);
+                                          bad.second, nullptr);
     } catch (const std::exception&) {
       threw = true;
     }
@@ -75,13 +77,18 @@ SLOPFAB_TEST_CATEGORY(nn_dequant_nvfp4, "synthetic") {
 
 SLOPFAB_TEST_CATEGORY(nn_dequant_nvfp4_tile_shapes, "synthetic") {
   const float global = 1.3580322e-3f;
-  struct Shape { int out; int in; };
+
+  struct Shape {
+    int out;
+    int in;
+  };
+
   const Shape shapes[] = {
-      {128, 64},    // exactly one tile, the degenerate case
-      {128, 512},   // one row-tile, eight k-tiles
-      {384, 128},   // three row-tiles: not a power of two
-      {256, 320},   // five k-tiles, likewise
-      {512, 64},    // one k-tile, four row-tiles
+      {128, 64},  // exactly one tile, the degenerate case
+      {128, 512}, // one row-tile, eight k-tiles
+      {384, 128}, // three row-tiles: not a power of two
+      {256, 320}, // five k-tiles, likewise
+      {512, 64},  // one k-tile, four row-tiles
   };
   for (int i = 0; i < 5; ++i) {
     const int out_features = shapes[i].out, in_features = shapes[i].in;
@@ -92,7 +99,7 @@ SLOPFAB_TEST_CATEGORY(nn_dequant_nvfp4_tile_shapes, "synthetic") {
     dsc.copy_from_host(w.stored.data(), w.stored.size());
     BfBuf ddst(w.codes.size());
     slopfab::cuda::launch_dequant_nvfp4(dw.get(), dsc.get(), global, ddst.p(), out_features,
-                                       in_features, nullptr);
+                                        in_features, nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> got = ddst.host();
     const std::vector<float> want = nvfp4_reference(w);
@@ -106,12 +113,12 @@ SLOPFAB_TEST_CATEGORY(nn_dequant_nvfp4_tile_shapes, "synthetic") {
     if (w.stored.size() > 1) {
       std::vector<uint8_t> poked = w.stored;
       const size_t at = poked.size() / 3;
-      poked[at] = uint8_t(poked[at] ^ 0x08u);  // one exponent step
+      poked[at] = uint8_t(poked[at] ^ 0x08u); // one exponent step
       DeviceBuffer<uint8_t> dpoke(poked.size());
       dpoke.copy_from_host(poked.data(), poked.size());
       BfBuf dalt(w.codes.size());
       slopfab::cuda::launch_dequant_nvfp4(dw.get(), dpoke.get(), global, dalt.p(), out_features,
-                                         in_features, nullptr);
+                                          in_features, nullptr);
       SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
       CHECK_MSG(max_abs_diff(dalt.host(), got) > 0.0,
                 "dequant nvfp4 %dx%d ignored a perturbed block scale at byte %zu", out_features,
@@ -159,8 +166,8 @@ SLOPFAB_TEST_CATEGORY(linear_nvfp4, "synthetic") {
 
   // A GEMM against the nibble-swapped weight is well scaled and completely
   // wrong, which is the shape of the failure this format invites.
-  const std::vector<float> wrong = cpu_matmul_nt(
-      x, nvfp4_reference(w, 16, /*swap_nibbles=*/true), rows, out_features, in_features);
+  const std::vector<float> wrong = cpu_matmul_nt(x, nvfp4_reference(w, 16, /*swap_nibbles=*/true),
+                                                 rows, out_features, in_features);
   CHECK_MSG(max_abs_diff(wrong, dy.host()) > 1e-3,
             "linear nvfp4 must not match the nibble-swapped weight (max diff %.4g)",
             max_abs_diff(wrong, dy.host()));
@@ -189,18 +196,16 @@ SLOPFAB_TEST_CATEGORY(linear_nvfp4, "synthetic") {
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> native = dy.host();
     runner.set_native(false);
-    CHECK_CLOSE_REL(cpu_matmul_nt(host_quantise_act(x, rows, in_features), wdq, rows,
-                                  out_features, in_features),
-                    native, 1e-3, 1e-2,
-                    "linear nvfp4 native vs an fp4-activation reference");
+    CHECK_CLOSE_REL(cpu_matmul_nt(host_quantise_act(x, rows, in_features), wdq, rows, out_features,
+                                  in_features),
+                    native, 1e-3, 1e-2, "linear nvfp4 native vs an fp4-activation reference");
     std::printf("  linear nvfp4 native vs dequantised: rms_rel %.4f (4-bit activations)\n",
                 rms_rel(got, native));
     // Still the same matrix, and still the same one the dequantised path
     // computes: a layout error would take the correlation to ~0, not to 0.99.
     CHECK(correlation(got, native) > 0.99);
   } else {
-    SKIP_UNSUPPORTED_HARDWARE(
-        "native half of linear_nvfp4 requires the shipped SM120 image");
+    SKIP_UNSUPPORTED_HARDWARE("native half of linear_nvfp4 requires the shipped SM120 image");
   }
 
   // With an AWQ activation scale the runner must scale the activation, not the
@@ -214,8 +219,8 @@ SLOPFAB_TEST_CATEGORY(linear_nvfp4, "synthetic") {
     std::vector<float> xs(x.size());
     for (int r = 0; r < rows; ++r) {
       for (int i = 0; i < in_features; ++i) {
-        xs[size_t(r) * in_features + i] = slopfab::bf16_to_f32(
-            slopfab::f32_to_bf16(x[size_t(r) * in_features + i] * pqs[i]));
+        xs[size_t(r) * in_features + i] =
+            slopfab::bf16_to_f32(slopfab::f32_to_bf16(x[size_t(r) * in_features + i] * pqs[i]));
       }
     }
     Workspace ws2;
@@ -223,8 +228,8 @@ SLOPFAB_TEST_CATEGORY(linear_nvfp4, "synthetic") {
                 256);
     runner.forward(aw, dx.p(), rows, dy.p(), ws2);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-    CHECK_CLOSE_REL(cpu_matmul_nt(xs, wdq, rows, out_features, in_features), dy.host(), 1e-3,
-                    1e-2, "linear nvfp4 with pre_quant_scale");
+    CHECK_CLOSE_REL(cpu_matmul_nt(xs, wdq, rows, out_features, in_features), dy.host(), 1e-3, 1e-2,
+                    "linear nvfp4 with pre_quant_scale");
     CHECK_MSG(max_abs_diff(got, dy.host()) > 1e-3,
               "pre_quant_scale must actually reach the activation (max diff %.4g)",
               max_abs_diff(got, dy.host()));
@@ -235,9 +240,11 @@ SLOPFAB_TEST_CATEGORY(nvfp4_mma_operand_layout, "synthetic") {
   REQUIRE_SM120_TEST("NVFP4 MMA operand-layout test");
   uint8_t A[16][64], B[64][8];
   for (int r = 0; r < 16; ++r)
-    for (int k = 0; k < 64; ++k) A[r][k] = static_cast<uint8_t>((r * 7 + k * 3) % 15);
+    for (int k = 0; k < 64; ++k)
+      A[r][k] = static_cast<uint8_t>((r * 7 + k * 3) % 15);
   for (int k = 0; k < 64; ++k)
-    for (int c = 0; c < 8; ++c) B[k][c] = static_cast<uint8_t>((k * 5 + c * 11) % 15);
+    for (int c = 0; c < 8; ++c)
+      B[k][c] = static_cast<uint8_t>((k * 5 + c * 11) % 15);
 
   // Each register packs eight consecutive-k nibbles; the register pair splits
   // rows at 8 and the pair-of-pairs splits k at 32.
@@ -266,7 +273,8 @@ SLOPFAB_TEST_CATEGORY(nvfp4_mma_operand_layout, "synthetic") {
   std::vector<float> want(128, 0.0f);
   for (int r = 0; r < 16; ++r)
     for (int c = 0; c < 8; ++c)
-      for (int k = 0; k < 64; ++k) want[r * 8 + c] += e2m1_ref(A[r][k]) * e2m1_ref(B[k][c]);
+      for (int k = 0; k < 64; ++k)
+        want[r * 8 + c] += e2m1_ref(A[r][k]) * e2m1_ref(B[k][c]);
   // fp4 products of these magnitudes accumulate exactly in fp32, so this is an
   // equality, not a tolerance.
   CHECK_CLOSE_REL(want, got, 0.0, 0.0, "nvfp4 m16n8k64 A/B/accumulator layout");
@@ -281,13 +289,13 @@ SLOPFAB_TEST_CATEGORY(nvfp4_mma_operand_layout, "synthetic") {
     for (int blk : {0, 3}) {
       std::vector<uint32_t> s(32, 0x38383838u);
       const int lane = scale_lane_for_row(r);
-      s[lane] = (s[lane] & ~(0xFFu << (8 * blk))) | (uint32_t(0x40) << (8 * blk));  // e4m3 2.0
+      s[lane] = (s[lane] & ~(0xFFu << (8 * blk))) | (uint32_t(0x40) << (8 * blk)); // e4m3 2.0
       dsx.copy_from_host(s.data(), s.size());
       nvfp4_mma_kernel<<<1, 32>>>(ua.get(), ub.get(), dsx.get(), dout.get());
       SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
       const std::vector<float> g = to_host(dout);
       for (int rr = 0; rr < 16; ++rr) {
-        const float expect = rr == r ? 80.0f : 64.0f;  // 64 + 16 on the scaled row
+        const float expect = rr == r ? 80.0f : 64.0f; // 64 + 16 on the scaled row
         CHECK_NEAR(g[rr * 8], expect, 1e-3);
       }
     }
@@ -300,7 +308,7 @@ SLOPFAB_TEST_CATEGORY(nvfp4_mma_b_scale_operand_layout, "synthetic") {
   DeviceBuffer<uint32_t> da(ones.size()), db(onesb.size()), dsa(32), dsb(32);
   da.copy_from_host(ones.data(), ones.size());
   db.copy_from_host(onesb.data(), onesb.size());
-  const std::vector<uint32_t> unit(32, 0x38383838u);  // four e4m3 1.0 scales
+  const std::vector<uint32_t> unit(32, 0x38383838u); // four e4m3 1.0 scales
   dsa.copy_from_host(unit.data(), unit.size());
   DeviceBuffer<float> dout(128);
 
@@ -314,7 +322,7 @@ SLOPFAB_TEST_CATEGORY(nvfp4_mma_b_scale_operand_layout, "synthetic") {
   for (int lane = 0; lane < 32; ++lane) {
     for (int blk : {0, 2, 3}) {
       std::vector<uint32_t> s(32, 0x38383838u);
-      s[lane] = (s[lane] & ~(0xFFu << (8 * blk))) | (uint32_t(0x40) << (8 * blk));  // e4m3 2.0
+      s[lane] = (s[lane] & ~(0xFFu << (8 * blk))) | (uint32_t(0x40) << (8 * blk)); // e4m3 2.0
       dsb.copy_from_host(s.data(), s.size());
       nvfp4_mma_bscale_kernel<<<1, 32>>>(da.get(), db.get(), dsa.get(), dsb.get(), dout.get());
       SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
@@ -326,7 +334,8 @@ SLOPFAB_TEST_CATEGORY(nvfp4_mma_b_scale_operand_layout, "synthetic") {
           ok = ok && std::fabs(g[r * 8 + c] - (c == live_col ? 80.0f : 64.0f)) < 1e-3;
         }
       }
-      if (live_col >= 0 && blk == 0) ++live_lanes;
+      if (live_col >= 0 && blk == 0)
+        ++live_lanes;
       CHECK_MSG(ok, "B scale lane %d byte %d: expected %s", lane, blk,
                 live_col >= 0 ? "its own column lifted by one block" : "no effect at all");
     }
@@ -355,9 +364,12 @@ SLOPFAB_TEST_CATEGORY(nvfp4_rounding_reference, "synthetic") {
     // The instruction packs the even index in the LOW nibble. That the
     // checkpoint does the opposite is a separate statement about a separate
     // layer, and conflating the two is exactly the trap this file exists for.
-    if ((h4[i] & 0x0F) != host_e2m1(vals[i * 2])) ++bad4;
-    if ((h4[i] >> 4) != host_e2m1(vals[i * 2 + 1])) ++bad4;
-    if (vals[i * 2] >= 0.0f && h8[i] != host_e4m3(vals[i * 2])) ++bad8;
+    if ((h4[i] & 0x0F) != host_e2m1(vals[i * 2]))
+      ++bad4;
+    if ((h4[i] >> 4) != host_e2m1(vals[i * 2 + 1]))
+      ++bad4;
+    if (vals[i * 2] >= 0.0f && h8[i] != host_e4m3(vals[i * 2]))
+      ++bad8;
   }
   CHECK_MSG(bad4 == 0, "host e2m1 encoder disagrees with cvt.rn.satfinite on %d of %d", bad4,
             pairs * 2);
@@ -371,9 +383,12 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_quantisation, "synthetic") {
   std::vector<float> x = make_gaussian(size_t(rows) * dim, 4242u, 0.7f);
   // Three blocks with a story: all zeros, far under e4m3's smallest scale, and
   // far over its largest. None may produce a NaN and none may wrap.
-  for (int i = 0; i < 16; ++i) x[0 * dim + i] = 0.0f;
-  for (int i = 0; i < 16; ++i) x[1 * dim + 16 + i] = 1e-6f * float(i + 1);
-  for (int i = 0; i < 16; ++i) x[2 * dim + 32 + i] = 5000.0f;
+  for (int i = 0; i < 16; ++i)
+    x[0 * dim + i] = 0.0f;
+  for (int i = 0; i < 16; ++i)
+    x[1 * dim + 16 + i] = 1e-6f * float(i + 1);
+  for (int i = 0; i < 16; ++i)
+    x[2 * dim + 32 + i] = 5000.0f;
   const std::vector<float> xr = bf16_round(x);
 
   BfBuf dx(x);
@@ -395,13 +410,15 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_quantisation, "synthetic") {
         amax = std::max(amax, std::fabs(xr[size_t(r) * dim + b * 16 + i]));
       }
       const uint8_t s8 = host_e4m3(amax * (1.0f / 6.0f));
-      if (hs[size_t(r) * (dim / 16) + b] != s8) ++bad_scale;
+      if (hs[size_t(r) * (dim / 16) + b] != s8)
+        ++bad_scale;
       const float sd = slopfab::f8_e4m3_to_f32(s8);
       const float inv = sd > 0.0f ? 1.0f / sd : 0.0f;
       for (int i = 0; i < 16; ++i) {
         const size_t flat = size_t(r) * dim + b * 16 + i;
         const uint8_t got = (i % 2 == 0) ? (hq[flat / 2] & 0x0F) : (hq[flat / 2] >> 4);
-        if (host_e2m1(xr[flat] * inv) != got) ++bad_nibble;
+        if (host_e2m1(xr[flat] * inv) != got)
+          ++bad_nibble;
       }
     }
   }
@@ -413,7 +430,8 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_quantisation, "synthetic") {
   // Zero block: scale zero, nibbles zero, and no NaN out of the reciprocal.
   CHECK(hs[0] == 0);
   bool zeros = true;
-  for (int i = 0; i < 8; ++i) zeros = zeros && hq[i] == 0;
+  for (int i = 0; i < 8; ++i)
+    zeros = zeros && hq[i] == 0;
   CHECK(zeros);
 
   // Underflow flushes the whole block rather than clipping it onto the grid.
@@ -429,22 +447,24 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_quantisation, "synthetic") {
   bool clipped = true;
   for (int i = 0; i < 8; ++i) {
     const uint8_t byte = hq[(size_t(2) * dim + 32) / 2 + i];
-    clipped = clipped && (byte & 0x0F) == 7 && (byte >> 4) == 7;  // +6 both halves
+    clipped = clipped && (byte & 0x0F) == 7 && (byte >> 4) == 7; // +6 both halves
   }
   CHECK(clipped);
 }
 
 SLOPFAB_TEST_CATEGORY(nvfp4_gemm_matches_cpu_reference, "synthetic") {
   REQUIRE_SM120_TEST("native NVFP4 GEMM");
+
   struct Shape {
     int rows, out, in;
   };
+
   // Ragged row counts on purpose: 1 leaves 127 rows of a tile as padding, 200
   // leaves a 72-row tail, 129 leaves a one-row second tile. The contraction
   // covers half a staging tile (64), one (128), one and a half (192) and two
   // and a half (320).
-  const Shape shapes[] = {{1, 128, 64},    {17, 128, 128}, {128, 256, 192},
-                          {200, 128, 320}, {129, 256, 64}};
+  const Shape shapes[] = {
+      {1, 128, 64}, {17, 128, 128}, {128, 256, 192}, {200, 128, 320}, {129, 256, 64}};
 
   for (const Shape& s : shapes) {
     const std::vector<float> x = bf16_round(make_gaussian(size_t(s.rows) * s.in, 71u + s.in, 0.8f));
@@ -479,6 +499,7 @@ SLOPFAB_TEST_CATEGORY(nvfp4_gemm_disk_layout, "synthetic") {
       {true, false, "block scales row-major rather than 128x4 tiled"},
       {false, false, "both conventions inverted"},
   };
+
   for (const auto& c : wrong) {
     const NvfpPacked bad = pack_nvfp4(wd, out, in, 1.0f, c.high_even, c.swizzled);
     const double rel = rms_rel(want, run_native_nvfp4(x, bad, rows, out, in, 1.0f));
@@ -500,8 +521,8 @@ SLOPFAB_TEST_CATEGORY(nvfp4_gemm_disk_layout, "synthetic") {
 
   // The shapes the 128x4 tiling cannot address are refused, not guessed at.
   CHECK(slopfab::cuda::nvfp4_gemm_supported(out, in));
-  CHECK(!slopfab::cuda::nvfp4_gemm_supported(out, in + 16));   // in % 64 != 0
-  CHECK(!slopfab::cuda::nvfp4_gemm_supported(out + 64, in));   // out % 128 != 0
+  CHECK(!slopfab::cuda::nvfp4_gemm_supported(out, in + 16)); // in % 64 != 0
+  CHECK(!slopfab::cuda::nvfp4_gemm_supported(out + 64, in)); // out % 128 != 0
 }
 
 SLOPFAB_TEST_CATEGORY(nvfp4_gemm_global_scale, "synthetic") {
@@ -529,8 +550,8 @@ SLOPFAB_TEST_CATEGORY(nvfp4_gemm_global_scale, "synthetic") {
   // The bar still has all the power it needs: getting the count wrong moves
   // the answer by a factor of 3.25.
   CHECK_CLOSE_REL(lifted, at_g, 1e-3, 1e-2, "global scale applied exactly once");
-  CHECK(rms_rel(at_one, at_g) > 0.5);  // not zero times
-  CHECK(rms_rel(twice, at_g) > 0.5);   // not twice
+  CHECK(rms_rel(at_one, at_g) > 0.5); // not zero times
+  CHECK(rms_rel(twice, at_g) > 0.5);  // not twice
 
   // And the scalar the checkpoint actually carries reaches the same answer
   // whether it is folded into the stored scales or passed alongside them.
@@ -557,7 +578,7 @@ SLOPFAB_TEST_CATEGORY(nvfp4_gemm_exact_fp4_activations, "synthetic") {
         const float sign = (int((u[flat] + 0.5f) * 64.0f) & 1) ? -1.0f : 1.0f;
         x[flat] = sign * grid[code] * s;
       }
-      x[size_t(r) * in + b * 16] = 6.0f * s;  // pin amax so the scale round-trips
+      x[size_t(r) * in + b * 16] = 6.0f * s; // pin amax so the scale round-trips
     }
   }
   // Every value is a small multiple of a power of two, so bf16 holds it exactly

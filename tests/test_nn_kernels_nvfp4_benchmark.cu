@@ -4,6 +4,7 @@
 
 SLOPFAB_TEST_CATEGORY(nvfp4_dequant_timings, "benchmark") {
   Timer timer;
+
   const struct {
     const char* name;
     int out_features;
@@ -29,14 +30,14 @@ SLOPFAB_TEST_CATEGORY(nvfp4_dequant_timings, "benchmark") {
       ms = std::min(ms, timer.measure(
                             [&] {
                               slopfab::cuda::launch_dequant_nvfp4(dw.get(), dsc.get(), 1.0f,
-                                                                 ddst.p(), s.out_features,
-                                                                 s.in_features, nullptr);
+                                                                  ddst.p(), s.out_features,
+                                                                  s.in_features, nullptr);
                             },
                             3, 20));
     }
     const double bytes = double(n) * 2.0 + double(n) / 2.0 + double(n) / 16.0;
-    std::printf("  %-24s %6d x %5d  %7.3f ms  %7.1f GB/s\n", s.name, s.out_features,
-                s.in_features, ms, bytes / (double(ms) * 1e-3) / 1e9);
+    std::printf("  %-24s %6d x %5d  %7.3f ms  %7.1f GB/s\n", s.name, s.out_features, s.in_features,
+                ms, bytes / (double(ms) * 1e-3) / 1e9);
     CHECK(ms > 0.0f);
   }
 }
@@ -47,15 +48,16 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_cost, "benchmark") {
   const std::vector<float> wd_full = make_gaussian(size_t(out) * 5376, 2468u, 0.05f);
 
   std::printf("  nvfp4 activation cost vs a bf16-activation reference:\n");
-  std::printf("      %-26s %6s %8s %8s %8s %9s\n", "distribution", "K", "rms_rel", "median",
-              "p99", "corr");
+  std::printf("      %-26s %6s %8s %8s %8s %9s\n", "distribution", "K", "rms_rel", "median", "p99",
+              "corr");
 
   struct Case {
     const char* name;
     int seed;
-    int hot_stride;  // 0 = none
+    int hot_stride; // 0 = none
     bool uniform;
   };
+
   const Case cases[] = {{"gaussian", 1234, 0, false},
                         {"gaussian + hot channels", 5678, 61, false},
                         {"uniform", 4321, 0, true}};
@@ -69,7 +71,8 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_cost, "benchmark") {
       // the case block scaling exists for, and no uniform generator produces it.
       if (c.hot_stride) {
         for (int ch = 0; ch < in; ch += c.hot_stride) {
-          for (int r = 0; r < rows; ++r) x[size_t(r) * in + ch] *= 20.0f;
+          for (int r = 0; r < rows; ++r)
+            x[size_t(r) * in + ch] *= 20.0f;
         }
       }
       x = bf16_round(x);
@@ -86,13 +89,15 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_cost, "benchmark") {
       double num = 0.0, den = 0.0, hi_err = 0.0, lo_err = 0.0;
       int hi_n = 0, lo_n = 0;
       double amax = 0.0;
-      for (float v : ref) amax = std::max(amax, std::fabs(double(v)));
+      for (float v : ref)
+        amax = std::max(amax, std::fabs(double(v)));
       for (size_t i = 0; i < got.size(); ++i) {
         const double a = std::fabs(double(ref[i]));
         const double d = std::fabs(double(got[i]) - ref[i]);
         num += d * d;
         den += double(ref[i]) * ref[i];
-        if (a > 1e-6) rel.push_back(d / a);
+        if (a > 1e-6)
+          rel.push_back(d / a);
         // Error against output magnitude: quantisation noise is roughly flat in
         // absolute terms, so it shows up as a huge *relative* error wherever
         // the output cancelled towards zero and a small one where it did not.
@@ -114,7 +119,7 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_cost, "benchmark") {
                     "on the smallest twentieth %.3e\n",
                     hi_n ? hi_err / hi_n : 0.0, lo_n ? lo_err / lo_n : 0.0);
       }
-      CHECK(std::sqrt(num / std::max(den, 1e-30)) < 1.0);  // still the same matrix
+      CHECK(std::sqrt(num / std::max(den, 1e-30)) < 1.0); // still the same matrix
     }
   }
 }
@@ -172,7 +177,8 @@ SLOPFAB_TEST_CATEGORY(nvfp4_activation_cost_real_weights, "benchmark") {
     // the hot channels are what makes the case hard.
     std::vector<float> x = make_gaussian(size_t(rows) * in, 777u, 1.0f);
     for (int ch = 0; ch < in; ch += 61) {
-      for (int r = 0; r < rows; ++r) x[size_t(r) * in + ch] *= 20.0f;
+      for (int r = 0; r < rows; ++r)
+        x[size_t(r) * in + ch] *= 20.0f;
     }
     x = bf16_round(x);
 
@@ -206,6 +212,7 @@ SLOPFAB_TEST_CATEGORY(nvfp4_gemm_production_timings, "benchmark") {
     const char* name;
     int out, in;
   };
+
   const Shape shapes[] = {{"qkv_proj", 21504, 5376},
                           {"attn.out_proj", 5376, 7168},
                           {"mlp.fc1", 28672, 5376},
@@ -239,8 +246,8 @@ SLOPFAB_TEST_CATEGORY(nvfp4_gemm_production_timings, "benchmark") {
         ms = std::min(ms, timer.measure(
                               [&] {
                                 slopfab::cuda::nvfp4_gemm_forward(dx.p(), dw.get(), dws.get(), 1.0f,
-                                                                 dy.p(), rows, s.out, s.in, ws,
-                                                                 nullptr);
+                                                                  dy.p(), rows, s.out, s.in, ws,
+                                                                  nullptr);
                               },
                               2, 5));
       }
@@ -249,21 +256,21 @@ SLOPFAB_TEST_CATEGORY(nvfp4_gemm_production_timings, "benchmark") {
       // dequantiser followed by a cuBLAS bf16 GEMM.
       float dq_ms = 1e30f;
       for (int pass = 0; pass < 3; ++pass) {
-        dq_ms = std::min(dq_ms, timer.measure(
-                                    [&] {
-                                      Workspace::Scope scope(dqws);
-                                      __nv_bfloat16* wb =
-                                          dqws.alloc_n<__nv_bfloat16>(size_t(s.out) * s.in);
-                                      slopfab::cuda::launch_dequant_nvfp4(dw.get(), dws.get(), 1.0f,
-                                                                         wb, s.out, s.in, nullptr);
-                                      const float alpha = 1.0f, beta = 0.0f;
-                                      SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(
-                                          cb.h, CUBLAS_OP_T, CUBLAS_OP_N, s.out, rows, s.in,
-                                          &alpha, wb, CUDA_R_16BF, s.in, dx.p(), CUDA_R_16BF, s.in,
-                                          &beta, dy.p(), CUDA_R_16BF, s.out, CUBLAS_COMPUTE_32F,
-                                          CUBLAS_GEMM_DEFAULT));
-                                    },
-                                    2, 5));
+        dq_ms =
+            std::min(dq_ms, timer.measure(
+                                [&] {
+                                  Workspace::Scope scope(dqws);
+                                  __nv_bfloat16* wb =
+                                      dqws.alloc_n<__nv_bfloat16>(size_t(s.out) * s.in);
+                                  slopfab::cuda::launch_dequant_nvfp4(dw.get(), dws.get(), 1.0f, wb,
+                                                                      s.out, s.in, nullptr);
+                                  const float alpha = 1.0f, beta = 0.0f;
+                                  SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(
+                                      cb.h, CUBLAS_OP_T, CUBLAS_OP_N, s.out, rows, s.in, &alpha, wb,
+                                      CUDA_R_16BF, s.in, dx.p(), CUDA_R_16BF, s.in, &beta, dy.p(),
+                                      CUDA_R_16BF, s.out, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+                                },
+                                2, 5));
       }
 
       std::printf("  %-14s out=%-6d in=%-6d rows=%-5d  native %8.3f ms %6.1f TFLOP/s %6.0f GB/s"

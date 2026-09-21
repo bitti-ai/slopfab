@@ -50,12 +50,10 @@ uint32_t to_bits(float value) {
 // The update as it stood before the sampler existed, transcribed from
 // scheduler.cpp at 2480c82 rather than refactored out of it — a copy is the
 // point, since a shared helper would move with the code it is meant to pin.
-std::vector<float> reference_euler_step(const FlowScheduler& s, int i,
-                                        const std::vector<float>& x,
+std::vector<float> reference_euler_step(const FlowScheduler& s, int i, const std::vector<float>& x,
                                         const std::vector<float>& v) {
   const float sigma_from_timestep = 1.0f - s.timesteps()[static_cast<size_t>(i)];
-  const float ratio =
-      s.sigmas()[static_cast<size_t>(i) + 1] / s.sigmas()[static_cast<size_t>(i)];
+  const float ratio = s.sigmas()[static_cast<size_t>(i) + 1] / s.sigmas()[static_cast<size_t>(i)];
   std::vector<float> out(x.size());
   for (size_t j = 0; j < x.size(); ++j) {
     const float denoised = x[j] + sigma_from_timestep * v[j];
@@ -81,7 +79,7 @@ double linear_ode(float shift, int grid_points, SamplerKind kind, float k) {
   const int steps = static_cast<int>(s.num_steps());
   for (int i = 0; i < steps; ++i) {
     const float v = -k * x;
-    s.step(i, &x, &v, 1, &x);  // out aliases sample, which step permits
+    s.step(i, &x, &v, 1, &x); // out aliases sample, which step permits
   }
   return static_cast<double>(x);
 }
@@ -100,12 +98,12 @@ double linear_ode_wrong(float shift, int grid_points, float k, float c_now, floa
     const float v_hat = have_prev ? c_now * v + c_prev * prev_v : v;
     prev_v = v;
     have_prev = true;
-    s.step(i, &x, &v_hat, 1, &x);  // euler mode: whatever velocity it is handed
+    s.step(i, &x, &v_hat, 1, &x); // euler mode: whatever velocity it is handed
   }
   return static_cast<double>(x);
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(exact_euler_has_total_canonical_fp32_semantics) {
   using slopfab::sampler::exact_euler_value;
@@ -117,30 +115,20 @@ SLOPFAB_TEST(exact_euler_has_total_canonical_fp32_semantics) {
   const float neg_sub = from_bits(0x80000001u);
   const float max_finite = std::numeric_limits<float>::max();
 
-  CHECK(to_bits(exact_euler_value(-0.0f, -0.0f, 1.0f, 1.0f)) ==
-        0x80000000u);
+  CHECK(to_bits(exact_euler_value(-0.0f, -0.0f, 1.0f, 1.0f)) == 0x80000000u);
   CHECK(to_bits(exact_euler_value(pos_sub, neg_sub, 0.0f, 0.0f)) == 0u);
-  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, pos_sub, 0.0f)) ==
-        to_bits(1.0f));
-  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, neg_sub, 1.0f)) ==
-        to_bits(1.0f));
-  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 1.0f, 0.0f)) ==
-        to_bits(2.0f));
-  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 1.0f, 1.0f)) ==
-        to_bits(1.0f));
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, pos_sub, 0.0f)) == to_bits(1.0f));
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, neg_sub, 1.0f)) == to_bits(1.0f));
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 1.0f, 0.0f)) == to_bits(2.0f));
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 1.0f, 1.0f)) == to_bits(1.0f));
   for (float exceptional : {qnan_a, qnan_b, pos_inf, neg_inf}) {
-    CHECK(to_bits(exact_euler_value(exceptional, 1.0f, 0.5f, 0.5f)) ==
-          0x7fc00000u);
-    CHECK(to_bits(exact_euler_value(1.0f, exceptional, 0.5f, 0.5f)) ==
-          0x7fc00000u);
+    CHECK(to_bits(exact_euler_value(exceptional, 1.0f, 0.5f, 0.5f)) == 0x7fc00000u);
+    CHECK(to_bits(exact_euler_value(1.0f, exceptional, 0.5f, 0.5f)) == 0x7fc00000u);
   }
-  CHECK(to_bits(exact_euler_value(max_finite, max_finite, 1.0f, 0.5f)) ==
-        0x7fc00000u);
+  CHECK(to_bits(exact_euler_value(max_finite, max_finite, 1.0f, 0.5f)) == 0x7fc00000u);
   CHECK(to_bits(exact_euler_value(max_finite, -max_finite, 1.0f, 0.0f)) == 0u);
-  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, qnan_a, 0.5f)) ==
-        0x7fc00000u);
-  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 0.5f, pos_inf)) ==
-        0x7fc00000u);
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, qnan_a, 0.5f)) == 0x7fc00000u);
+  CHECK(to_bits(exact_euler_value(1.0f, 1.0f, 0.5f, pos_inf)) == 0x7fc00000u);
 }
 
 // The campaign lead's required test, in its exact form: AB2 with a first-order
@@ -194,7 +182,8 @@ SLOPFAB_TEST(ab2_first_step_is_first_order) {
   ab2.step(1, oa.data(), v1.data(), 3, oa.data());
   bool differs = false;
   for (int j = 0; j < 3; ++j) {
-    if (oe[static_cast<size_t>(j)] != oa[static_cast<size_t>(j)]) differs = true;
+    if (oe[static_cast<size_t>(j)] != oa[static_cast<size_t>(j)])
+      differs = true;
   }
   CHECK_MSG(differs, "ab2 step 1 matched Euler on a changing velocity; it is not extrapolating");
 
@@ -236,12 +225,12 @@ SLOPFAB_TEST(ab2_is_second_order_on_a_linear_ode) {
       e_err[g] = std::abs(linear_ode(shift, kGrids[g], SamplerKind::kEuler, k) - exact);
       a_err[g] = std::abs(linear_ode(shift, kGrids[g], SamplerKind::kAb2, k) - exact);
       std::printf("  shift %4.0f  %3d points  euler %.4e  ab2 %.4e  ratio %5.2f\n",
-                  static_cast<double>(shift), kGrids[g], e_err[g], a_err[g],
-                  e_err[g] / a_err[g]);
+                  static_cast<double>(shift), kGrids[g], e_err[g], a_err[g], e_err[g] / a_err[g]);
     }
 
     for (int g = 0; g < 4; ++g) {
-      CHECK_MSG(a_err[g] < e_err[g], "shift %.0f, %d points: ab2 error %.3e is not below euler's %.3e",
+      CHECK_MSG(a_err[g] < e_err[g],
+                "shift %.0f, %d points: ab2 error %.3e is not below euler's %.3e",
                 static_cast<double>(shift), kGrids[g], a_err[g], e_err[g]);
       // Past the coarsest grid the margin is a factor, not a nudge. The
       // coarsest is left out on purpose: at 12 steps the shift-12 grid's step
@@ -304,6 +293,7 @@ SLOPFAB_TEST(ab2_rejects_plausible_wrong_extrapolations) {
     float c_now;
     float c_prev;
   };
+
   const Wrong wrong[] = {
       {"coefficients swapped (-0.5*v_n + 1.5*v_prev)", -0.5f, 1.5f},
       {"history term added rather than subtracted", 1.5f, 0.5f},
@@ -312,8 +302,8 @@ SLOPFAB_TEST(ab2_rejects_plausible_wrong_extrapolations) {
   };
   for (const Wrong& w : wrong) {
     const double bad = linear_ode_wrong(12.0f, grid, k, w.c_now, w.c_prev);
-    CHECK_MSG(std::abs(bad - ours) > 1e-6,
-              "ab2 matched the wrong form '%s' (%.9f vs %.9f)", w.name, bad, ours);
+    CHECK_MSG(std::abs(bad - ours) > 1e-6, "ab2 matched the wrong form '%s' (%.9f vs %.9f)", w.name,
+              bad, ours);
     CHECK_MSG(std::abs(bad - exact) > ours_err,
               "the wrong form '%s' integrated the ODE better than ab2 did (%.3e vs %.3e)", w.name,
               std::abs(bad - exact), ours_err);
@@ -338,7 +328,8 @@ SLOPFAB_TEST(euler_mode_is_bit_identical_to_the_reference_update) {
         // A state-dependent velocity, so any divergence compounds instead of
         // cancelling.
         std::vector<float> v(want.size());
-        for (size_t j = 0; j < v.size(); ++j) v[j] = 0.3f * want[j] - 0.05f;
+        for (size_t j = 0; j < v.size(); ++j)
+          v[j] = 0.3f * want[j] - 0.05f;
         want = reference_euler_step(s, i, want, v);
         s.step(i, x.data(), v.data(), x.size(), x.data());
       }
@@ -365,7 +356,8 @@ SLOPFAB_TEST(ab2_histories_do_not_cross_between_schedulers) {
   const int steps = static_cast<int>(video.num_steps());
   auto vel = [](const std::vector<float>& x, int i, float g) {
     std::vector<float> v(x.size());
-    for (size_t j = 0; j < v.size(); ++j) v[j] = g * x[j] + 0.01f * static_cast<float>(i);
+    for (size_t j = 0; j < v.size(); ++j)
+      v[j] = g * x[j] + 0.01f * static_cast<float>(i);
     return v;
   };
   for (int i = 0; i < steps; ++i) {
@@ -420,12 +412,14 @@ SLOPFAB_TEST(run_options_default_selects_the_euler_path) {
   auto trajectory = [&](bool configure, SamplerKind kind) {
     FlowScheduler s(12.0f);
     s.set_timesteps(30);
-    if (configure) s.set_sampler(kind);
+    if (configure)
+      s.set_sampler(kind);
     std::vector<float> x = x0;
     const int steps = static_cast<int>(s.num_steps());
     for (int i = 0; i < steps; ++i) {
       std::vector<float> v(x.size());
-      for (size_t j = 0; j < v.size(); ++j) v[j] = 0.3f * x[j] - 0.05f;
+      for (size_t j = 0; j < v.size(); ++j)
+        v[j] = 0.3f * x[j] - 0.05f;
       s.step(i, x.data(), v.data(), x.size(), x.data());
     }
     return x;
@@ -446,7 +440,8 @@ SLOPFAB_TEST(run_options_default_selects_the_euler_path) {
   const std::vector<float> as_ab2 = trajectory(true, SamplerKind::kAb2);
   bool differs = false;
   for (size_t j = 0; j < as_ab2.size(); ++j) {
-    if (as_ab2[j] != untouched[j]) differs = true;
+    if (as_ab2[j] != untouched[j])
+      differs = true;
   }
   CHECK_MSG(differs, "set_sampler(kAb2) left the trajectory unchanged; the plumbing is dead");
 }
@@ -495,8 +490,8 @@ SLOPFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
     std::vector<float> x = {1.0f}, v = {0.5f};
     s.step(0, x.data(), v.data(), 1, x.data());
     s.step(1, x.data(), v.data(), 1, x.data());
-    s.step(0, x.data(), v.data(), 1, x.data());  // legal: index 0 restarts
-    s.step(2, x.data(), v.data(), 1, x.data());  // not legal: 1 was expected
+    s.step(0, x.data(), v.data(), 1, x.data()); // legal: index 0 restarts
+    s.step(2, x.data(), v.data(), 1, x.data()); // not legal: 1 was expected
   }));
 
   // Changing the buffer length mid-trajectory. Legal between trajectories,
@@ -558,15 +553,26 @@ SLOPFAB_TEST(ab2_step_rejects_disordered_and_mismatched_calls) {
       s.set_sampler(SamplerKind::kAb2);
       std::vector<float> x = {1.0f};
       s.step(0, x.data(), v0.data(), 1, x.data());
-      s.step(1, x.data(), v1.data(), 1, x.data());  // history now holds v1
+      s.step(1, x.data(), v1.data(), 1, x.data()); // history now holds v1
       clear(s);
       x[0] = 1.0f;
       s.step(1, x.data(), v2.data(), 1, x.data());
       CHECK_CLOSE(want, x, 0.0, what);
     };
-    probe([](FlowScheduler& s) { s.set_timesteps(10); }, "set_timesteps clears the history");
-    probe([](FlowScheduler& s) { s.set_sampler(SamplerKind::kAb2); },
-          "set_sampler clears the history");
-    probe([](FlowScheduler& s) { s.reset(); }, "reset clears the history");
+    probe(
+        [](FlowScheduler& s) {
+          s.set_timesteps(10);
+        },
+        "set_timesteps clears the history");
+    probe(
+        [](FlowScheduler& s) {
+          s.set_sampler(SamplerKind::kAb2);
+        },
+        "set_sampler clears the history");
+    probe(
+        [](FlowScheduler& s) {
+          s.reset();
+        },
+        "reset clears the history");
   }
 }

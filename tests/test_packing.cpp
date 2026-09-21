@@ -94,24 +94,36 @@ SLOPFAB_TEST(packing_geometry) {
   // last row or column silently.
   validate_canvas_size(768, 1344);
   validate_canvas_size(512, 512);
-  CHECK(::slopfab::test::throws([] { validate_canvas_size(768, 1360); }));  // 1360 = 16*85
-  CHECK(::slopfab::test::throws([] { validate_canvas_size(784, 1344); }));  // 784  = 16*49
-  CHECK(::slopfab::test::throws([] { validate_canvas_size(0, 1344); }));
-  CHECK(::slopfab::test::throws([] { validate_canvas_size(768, -32); }));
+  CHECK(::slopfab::test::throws([] {
+    validate_canvas_size(768, 1360);
+  })); // 1360 = 16*85
+  CHECK(::slopfab::test::throws([] {
+    validate_canvas_size(784, 1344);
+  })); // 784  = 16*49
+  CHECK(::slopfab::test::throws([] {
+    validate_canvas_size(0, 1344);
+  }));
+  CHECK(::slopfab::test::throws([] {
+    validate_canvas_size(768, -32);
+  }));
 
   // The same 1:4..4:1 range the aspect path enforces, applied to the canvas
   // the caller named rather than to a ratio they asked for.
-  validate_canvas_size(768, 3072);                                          // exactly 4:1
-  validate_canvas_size(3072, 768);                                          // exactly 1:4
-  CHECK(::slopfab::test::throws([] { validate_canvas_size(768, 3104); }));   // just over 4:1
-  CHECK(::slopfab::test::throws([] { validate_canvas_size(3104, 768); }));   // just over 1:4
+  validate_canvas_size(768, 3072); // exactly 4:1
+  validate_canvas_size(3072, 768); // exactly 1:4
+  CHECK(::slopfab::test::throws([] {
+    validate_canvas_size(768, 3104);
+  })); // just over 4:1
+  CHECK(::slopfab::test::throws([] {
+    validate_canvas_size(3104, 768);
+  })); // just over 1:4
 
   // The area cap is deliberately NOT enforced here — that is the difference
   // between the two entry points, and a test that accepted an over-budget
   // canvas by accident would look identical to one that meant to.
   validate_canvas_size(1088, 1920);
   CHECK(canvas_exceeds_trained_area(1088, 1920));
-  CHECK(!canvas_exceeds_trained_area(768, 1344));   // exactly the budget is not over it
+  CHECK(!canvas_exceeds_trained_area(768, 1344)); // exactly the budget is not over it
   CHECK(!canvas_exceeds_trained_area(768, 768));
 
   // Frame alignment snaps UP to 17k + 5, and an already-aligned count is a
@@ -131,7 +143,9 @@ SLOPFAB_TEST(packing_geometry) {
   CHECK(video_latent_num_frames(243) == 72);
   CHECK(video_latent_num_frames(124) == 37);
   CHECK(video_latent_num_frames(5) == 2);
-  CHECK(::slopfab::test::throws([] { video_latent_num_frames(100); }));
+  CHECK(::slopfab::test::throws([] {
+    video_latent_num_frames(100);
+  }));
 
   // 40 audio latents per second at 24 fps.
   CHECK(audio_latents_for_frames(243) == 405);
@@ -183,21 +197,28 @@ SLOPFAB_TEST(packing_indices_are_a_permutation) {
   // relies on the scatter being a permutation, and a port that gets an offset
   // wrong silently drops or doubles rows.
   std::vector<int> seen(static_cast<size_t>(S), 0);
-  for (int i : idx.text) ++seen[static_cast<size_t>(i)];
-  for (int i : idx.audio) ++seen[static_cast<size_t>(i)];
-  for (int i : idx.video) ++seen[static_cast<size_t>(i)];
+  for (int i : idx.text)
+    ++seen[static_cast<size_t>(i)];
+  for (int i : idx.audio)
+    ++seen[static_cast<size_t>(i)];
+  for (int i : idx.video)
+    ++seen[static_cast<size_t>(i)];
   const int total_seen = std::accumulate(seen.begin(), seen.end(), 0);
   CHECK(total_seen == S);
   bool exactly_once = true;
-  for (int c : seen) exactly_once = exactly_once && (c == 1);
+  for (int c : seen)
+    exactly_once = exactly_once && (c == 1);
   CHECK(exactly_once);
 
   // Tags: text rows 1, audio rows 2, video rows 0.
   CHECK(static_cast<int>(idx.tags.size()) == S);
   bool tags_ok = true;
-  for (int i = 0; i < l.num_text; ++i) tags_ok = tags_ok && idx.tags[static_cast<size_t>(i)] == kTagText;
-  for (int i : idx.audio) tags_ok = tags_ok && idx.tags[static_cast<size_t>(i)] == kTagAudio;
-  for (int i : idx.video) tags_ok = tags_ok && idx.tags[static_cast<size_t>(i)] == kTagVideo;
+  for (int i = 0; i < l.num_text; ++i)
+    tags_ok = tags_ok && idx.tags[static_cast<size_t>(i)] == kTagText;
+  for (int i : idx.audio)
+    tags_ok = tags_ok && idx.tags[static_cast<size_t>(i)] == kTagAudio;
+  for (int i : idx.video)
+    tags_ok = tags_ok && idx.tags[static_cast<size_t>(i)] == kTagVideo;
   CHECK(tags_ok);
 }
 
@@ -216,10 +237,12 @@ SLOPFAB_TEST(packing_patchify_index_arithmetic) {
   l.num_video_rows = l.num_latent_frames * l.rows_per_frame();
 
   const int C = 24;
-  const int F = l.num_latent_frames;
+  const int F
+  = l.num_latent_frames;
   const int Hl = l.latent_height;
   const int Wl = l.latent_width;
-  const size_t n = static_cast<size_t>(C) * F * Hl * Wl;
+  const size_t n = static_cast<size_t>(C) * F
+  *Hl* Wl;
 
   std::vector<float> latents(n);
   for (int c = 0; c < C; ++c) {
@@ -263,11 +286,10 @@ SLOPFAB_TEST(packing_patchify_index_arithmetic) {
   // Within one row the layout is channel-major over the 2x2 patch, so the four
   // entries of channel 0 are contiguous and channel 1 starts at offset 4. A
   // patch-major layout would interleave them; assert the difference directly.
-  CHECK(rows[0 * 96 + 0] == latents[0]);                                 // c=0, dh=0, dw=0
-  CHECK(rows[0 * 96 + 1] == latents[1]);                                 // c=0, dh=0, dw=1
-  CHECK(rows[0 * 96 + 2] == latents[static_cast<size_t>(Wl)]);           // c=0, dh=1, dw=0
-  CHECK(rows[0 * 96 + 4] ==
-        latents[static_cast<size_t>(F) * Hl * Wl]);                      // c=1, dh=0, dw=0
+  CHECK(rows[0 * 96 + 0] == latents[0]);                                // c=0, dh=0, dw=0
+  CHECK(rows[0 * 96 + 1] == latents[1]);                                // c=0, dh=0, dw=1
+  CHECK(rows[0 * 96 + 2] == latents[static_cast<size_t>(Wl)]);          // c=0, dh=1, dw=0
+  CHECK(rows[0 * 96 + 4] == latents[static_cast<size_t>(F) * Hl * Wl]); // c=1, dh=0, dw=0
 
   // Round trip.
   std::vector<float> back(n, -1.0f);
@@ -402,9 +424,9 @@ SLOPFAB_TEST(packing_row_timesteps) {
     CHECK(rt.unique.size() == 2);
     CHECK_NEAR(rt.unique[0], 0.25, 0.0);
     CHECK_NEAR(rt.unique[1], 0.75, 0.0);
-    CHECK(rt.indices[0] == 0);                                           // text -> video t
-    CHECK(rt.indices[static_cast<size_t>(l.audio_start())] == 1);        // audio
-    CHECK(rt.indices[static_cast<size_t>(l.video_start())] == 0);        // video
+    CHECK(rt.indices[0] == 0);                                    // text -> video t
+    CHECK(rt.indices[static_cast<size_t>(l.audio_start())] == 1); // audio
+    CHECK(rt.indices[static_cast<size_t>(l.video_start())] == 0); // video
 
     // adaln = timestep_index * 3 + tag.
     CHECK(rt.adaln[0] == 0 * 3 + kTagText);
@@ -419,7 +441,7 @@ SLOPFAB_TEST(packing_row_timesteps) {
     const RowTimesteps rt = build_row_timesteps(l, idx, 0.75f, 0.25f);
     CHECK(rt.unique.size() == 2);
     CHECK_NEAR(rt.unique[0], 0.25, 0.0);
-    CHECK(rt.indices[0] == 1);                                           // text -> video t, now index 1
+    CHECK(rt.indices[0] == 1); // text -> video t, now index 1
     CHECK(rt.indices[static_cast<size_t>(l.audio_start())] == 0);
     CHECK(rt.adaln[0] == 1 * 3 + kTagText);
     CHECK(rt.adaln[static_cast<size_t>(l.audio_start())] == 0 * 3 + kTagAudio);
@@ -438,7 +460,8 @@ SLOPFAB_TEST(packing_row_timesteps) {
   // Every adaln index is in range for an 18-vector table of 3 modalities.
   const RowTimesteps rt = build_row_timesteps(l, idx, 0.9f, 0.1f);
   bool in_range = true;
-  for (int32_t a : rt.adaln) in_range = in_range && a >= 0 && a < 2 * 3;
+  for (int32_t a : rt.adaln)
+    in_range = in_range && a >= 0 && a < 2 * 3;
   CHECK(in_range);
 }
 
@@ -492,17 +515,23 @@ bool same_bits(float a, float b) {
 }
 
 bool identical(const RowTimesteps& a, const RowTimesteps& b) {
-  if (a.unique.size() != b.unique.size()) return false;
-  if (a.indices.size() != b.indices.size()) return false;
-  if (a.adaln.size() != b.adaln.size()) return false;
+  if (a.unique.size() != b.unique.size())
+    return false;
+  if (a.indices.size() != b.indices.size())
+    return false;
+  if (a.adaln.size() != b.adaln.size())
+    return false;
   for (size_t i = 0; i < a.unique.size(); ++i) {
-    if (!same_bits(a.unique[i], b.unique[i])) return false;
+    if (!same_bits(a.unique[i], b.unique[i]))
+      return false;
   }
   for (size_t i = 0; i < a.indices.size(); ++i) {
-    if (a.indices[i] != b.indices[i]) return false;
+    if (a.indices[i] != b.indices[i])
+      return false;
   }
   for (size_t i = 0; i < a.adaln.size(); ++i) {
-    if (a.adaln[i] != b.adaln[i]) return false;
+    if (a.adaln[i] != b.adaln[i])
+      return false;
   }
   return true;
 }
@@ -572,11 +601,10 @@ SLOPFAB_TEST(packing_row_timesteps_matches_sort) {
   names.push_back("empty");
 
   std::vector<std::pair<float, float>> pairs = {
-      {0.25f, 0.75f},  // video first
-      {0.75f, 0.25f},  // audio first — the flip
-      {0.5f, 0.5f},    // exactly equal, collapses to one entry
-      {0.0f, 0.0f},   {1.0f, 1.0f},  {0.0f, 1.0f},
-      {1.0f, 0.0f},   {1.0f, 0.999f}, {0.999f, 1.0f},
+      {0.25f, 0.75f}, // video first
+      {0.75f, 0.25f}, // audio first — the flip
+      {0.5f, 0.5f},   // exactly equal, collapses to one entry
+      {0.0f, 0.0f},   {1.0f, 1.0f}, {0.0f, 1.0f}, {1.0f, 0.0f}, {1.0f, 0.999f}, {0.999f, 1.0f},
   };
   // One ulp apart in both directions: the closest two distinct floats the
   // schedule could ever hand over, where a `fabs(a - b) < eps` style compare
@@ -592,7 +620,8 @@ SLOPFAB_TEST(packing_row_timesteps_matches_sort) {
     for (const auto& p : pairs) {
       const RowTimesteps want = row_timesteps_by_sort(layouts[li], idx, p.first, p.second);
       const RowTimesteps got = build_row_timesteps(layouts[li], idx, p.first, p.second);
-      CHECK_MSG(identical(want, got), "row timesteps differ from the sort reference: %s, v=%.9g a=%.9g",
+      CHECK_MSG(identical(want, got),
+                "row timesteps differ from the sort reference: %s, v=%.9g a=%.9g",
                 names[li].c_str(), static_cast<double>(p.first), static_cast<double>(p.second));
       ++compared;
     }
@@ -676,7 +705,8 @@ SLOPFAB_TEST(packing_row_timesteps_not_the_plausible_wrong_forms) {
     CHECK(rt.unique.size() == 1);
     CHECK(rt.unique.size() != 2);
     bool all_zero = true;
-    for (int32_t v : rt.indices) all_zero = all_zero && v == 0;
+    for (int32_t v : rt.indices)
+      all_zero = all_zero && v == 0;
     CHECK(all_zero);
     // ...and the adaln index then depends on the tag alone, which is what a
     // stale `ti = 1` for the audio rows would break.
@@ -755,9 +785,12 @@ SLOPFAB_TEST(packing_banded_key_ranges) {
     const BandedKeyRanges off = build_banded_key_ranges(layout, 0, kQueryTile, kKeyAlign);
     bool all_global = true;
     for (int t = 0; t < off.num_query_tiles; ++t) {
-      if (off.ranges[size_t(t) * 4 + 0] != 0) all_global = false;
-      if (off.ranges[size_t(t) * 4 + 1] < S) all_global = false;
-      if (off.ranges[size_t(t) * 4 + 3] != 0) all_global = false;
+      if (off.ranges[size_t(t) * 4 + 0] != 0)
+        all_global = false;
+      if (off.ranges[size_t(t) * 4 + 1] < S)
+        all_global = false;
+      if (off.ranges[size_t(t) * 4 + 3] != 0)
+        all_global = false;
     }
     CHECK(all_global);
   }
@@ -765,8 +798,8 @@ SLOPFAB_TEST(packing_banded_key_ranges) {
   const BandedKeyRanges b = build_banded_key_ranges(layout, 9, kQueryTile, kKeyAlign);
   CHECK(b.num_query_tiles == (S + kQueryTile - 1) / kQueryTile);
 
-  bool covers_own_rows = true;   // a query must always see its own frame
-  bool keeps_conditioning = true;  // ...and the text/audio prefix
+  bool covers_own_rows = true;    // a query must always see its own frame
+  bool keeps_conditioning = true; // ...and the text/audio prefix
   bool ordered_disjoint = true;
   bool aligned = true;
   bool in_bounds = true;
@@ -779,27 +812,35 @@ SLOPFAB_TEST(packing_banded_key_ranges) {
     const int q0 = t * kQueryTile;
     const int q_last = std::min(q0 + kQueryTile, S) - 1;
 
-    if (lo0 % kKeyAlign || hi0 % kKeyAlign || lo1 % kKeyAlign || hi1 % kKeyAlign) aligned = false;
-    if (lo0 > hi0 || lo1 > hi1) ordered_disjoint = false;
-    if (hi1 > 0 && lo1 <= hi0) ordered_disjoint = false;  // merged, or double-counted
-    if (hi0 > ((S + kKeyAlign - 1) / kKeyAlign) * kKeyAlign) in_bounds = false;
-    if (hi1 > ((S + kKeyAlign - 1) / kKeyAlign) * kKeyAlign) in_bounds = false;
+    if (lo0 % kKeyAlign || hi0 % kKeyAlign || lo1 % kKeyAlign || hi1 % kKeyAlign)
+      aligned = false;
+    if (lo0 > hi0 || lo1 > hi1)
+      ordered_disjoint = false;
+    if (hi1 > 0 && lo1 <= hi0)
+      ordered_disjoint = false; // merged, or double-counted
+    if (hi0 > ((S + kKeyAlign - 1) / kKeyAlign) * kKeyAlign)
+      in_bounds = false;
+    if (hi1 > ((S + kKeyAlign - 1) / kKeyAlign) * kKeyAlign)
+      in_bounds = false;
 
     const auto covered = [&](int row) {
       return (row >= lo0 && row < hi0) || (hi1 > lo1 && row >= lo1 && row < hi1);
     };
     // Self-attention: every row of this tile must be able to see itself.
     for (int r = q0; r <= q_last; ++r) {
-      if (!covered(r)) covers_own_rows = false;
+      if (!covered(r))
+        covers_own_rows = false;
     }
     // The prompt. Losing this is the failure that would look like the model
     // ignoring its conditioning while every shape and norm stayed plausible.
     for (int r = 0; r < vstart; ++r) {
-      if (!covered(r)) keeps_conditioning = false;
+      if (!covered(r))
+        keeps_conditioning = false;
     }
     const int keys = b.keys_for_tile(t);
     max_keys = std::max(max_keys, keys);
-    if (keys < S) ++banded_tiles;
+    if (keys < S)
+      ++banded_tiles;
   }
 
   CHECK(aligned);
@@ -827,15 +868,18 @@ SLOPFAB_TEST(packing_banded_key_ranges) {
     for (int t = 0; t < b.num_query_tiles; ++t) {
       const int q0 = t * kQueryTile;
       const int q_last = std::min(q0 + kQueryTile, S) - 1;
-      if (q0 < vstart) continue;
+      if (q0 < vstart)
+        continue;
       const int f_first = (q0 - vstart) / R;
       const int f_last = (q_last - vstart) / R;
-      if (f_first - band < 0 || f_last + band + 1 > layout.num_latent_frames) continue;
+      if (f_first - band < 0 || f_last + band + 1 > layout.num_latent_frames)
+        continue;
       const int frames = (f_last + band + 1) - (f_first - band);
       const int lo_bound = vstart + frames * R;
       const int hi_bound = lo_bound + 4 * kKeyAlign;
       const int keys = b.keys_for_tile(t);
-      if (keys < lo_bound || keys > hi_bound) within_model = false;
+      if (keys < lo_bound || keys > hi_bound)
+        within_model = false;
       ++checked;
     }
     CHECK(checked > 0);
@@ -848,8 +892,10 @@ SLOPFAB_TEST(packing_banded_key_ranges) {
     const BandedKeyRanges wide = build_banded_key_ranges(layout, 64, kQueryTile, kKeyAlign);
     bool all_full = true;
     for (int t = 0; t < wide.num_query_tiles; ++t) {
-      if (wide.keys_for_tile(t) < S) all_full = false;
-      if (wide.ranges[size_t(t) * 4 + 3] != 0) all_full = false;
+      if (wide.keys_for_tile(t) < S)
+        all_full = false;
+      if (wide.ranges[size_t(t) * 4 + 3] != 0)
+        all_full = false;
     }
     CHECK(all_full);
   }
@@ -866,8 +912,8 @@ SLOPFAB_TEST(packing_banded_key_ranges) {
 }
 
 SLOPFAB_TEST(h3_rope_tables_are_canonical_serialized_bytes) {
-  const std::vector<double> positions = {
-      0.0, 0.0, 0.0, 1.25, -2.5, 4096.125, 16777217.0, 3.5, -9.75};
+  const std::vector<double> positions = {0.0,      0.0,        0.0, 1.25, -2.5,
+                                         4096.125, 16777217.0, 3.5, -9.75};
   const H3RopeTables tables = build_h3_rope_tables(positions, 10000.0f, 16);
   CHECK(tables.rows == 3);
   CHECK(tables.frequency_dim == 16);
@@ -892,20 +938,31 @@ SLOPFAB_TEST(h3_rope_tables_are_canonical_serialized_bytes) {
   };
   hash_bytes(tables.cosine);
   hash_bytes(tables.sine);
-  CHECK_MSG(hash == 0xdfd06ee912173e0full,
-            "H3 RoPE canonical table hash is %016llx",
+  CHECK_MSG(hash == 0xdfd06ee912173e0full, "H3 RoPE canonical table hash is %016llx",
             static_cast<unsigned long long>(hash));
   auto rejects = [](auto&& call) {
-    try { call(); } catch (const std::exception&) { return true; }
+    try {
+      call();
+    } catch (const std::exception&) {
+      return true;
+    }
     return false;
   };
-  CHECK(rejects([&] { build_h3_rope_tables({}, 10000.0f, 16); }));
-  CHECK(rejects([&] { build_h3_rope_tables({0.0, 0.0, 0.0}, 0.0f, 16); }));
-  CHECK(rejects([&] { build_h3_rope_tables({0.0, 0.0, 0.0}, 0.5f, 16); }));
-  CHECK(rejects([&] { build_h3_rope_tables(
-      {0.0, std::numeric_limits<double>::infinity(), 0.0}, 10000.0f, 16); }));
-  CHECK(rejects([&] { build_h3_rope_tables(
-      {0.0, std::numeric_limits<double>::max(), 0.0}, 10000.0f, 16); }));
+  CHECK(rejects([&] {
+    build_h3_rope_tables({}, 10000.0f, 16);
+  }));
+  CHECK(rejects([&] {
+    build_h3_rope_tables({0.0, 0.0, 0.0}, 0.0f, 16);
+  }));
+  CHECK(rejects([&] {
+    build_h3_rope_tables({0.0, 0.0, 0.0}, 0.5f, 16);
+  }));
+  CHECK(rejects([&] {
+    build_h3_rope_tables({0.0, std::numeric_limits<double>::infinity(), 0.0}, 10000.0f, 16);
+  }));
+  CHECK(rejects([&] {
+    build_h3_rope_tables({0.0, std::numeric_limits<double>::max(), 0.0}, 10000.0f, 16);
+  }));
 }
 
-}  // namespace
+} // namespace

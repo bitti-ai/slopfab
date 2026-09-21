@@ -10,7 +10,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_exact_dit_euler_matches_host_scheduler, "synthetic"
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions device_options;
@@ -40,8 +41,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_exact_dit_euler_matches_host_scheduler, "synthetic"
   sampler::FlowScheduler schedule(12.0f);
   schedule.set_timesteps(6);
   for (size_t step = 0; step < schedule.num_steps(); ++step) {
-    schedule.step(static_cast<int>(step), host_sample.data(),
-                  host_velocity.data(), count, host_sample.data());
+    schedule.step(static_cast<int>(step), host_sample.data(), host_velocity.data(), count,
+                  host_sample.data());
     const float sigma_from_timestep = 1.0f - schedule.timesteps()[step];
     const float ratio = schedule.sigmas()[step + 1] / schedule.sigmas()[step];
     TensorBatch batch = context.begin_batch();
@@ -55,8 +56,11 @@ SLOPFAB_TEST_CATEGORY(vulkan_exact_dit_euler_matches_host_scheduler, "synthetic"
   // Validation is transactional and the same batch remains usable.
   TensorBatch transactional = context.begin_batch();
   bool alias_rejected = false;
-  try { transactional.dit_euler_step_f32(sample, sample, 0.5f, 0.5f); }
-  catch (const std::invalid_argument&) { alias_rejected = true; }
+  try {
+    transactional.dit_euler_step_f32(sample, sample, 0.5f, 0.5f);
+  } catch (const std::invalid_argument&) {
+    alias_rejected = true;
+  }
   CHECK(alias_rejected && transactional.remaining_operator_capacity() == 4u);
   transactional.dit_euler_step_f32(sample, velocity, 0.5f, 0.0f);
   transactional.submit().wait();
@@ -64,12 +68,18 @@ SLOPFAB_TEST_CATEGORY(vulkan_exact_dit_euler_matches_host_scheduler, "synthetic"
   // Total-domain parity, including a one-element dispatch and a 64-thread
   // tail. Exceptional source values are canonicalized on device, never read
   // back for graph-owned validation.
-  const std::vector<float> exceptional_samples{
-      0.0f, -0.0f, float_from_bits(0x00000001u),
-      float_from_bits(0x80000001u), float_from_bits(0x7fc12345u),
-      float_from_bits(0xffdabcdeu), float_from_bits(0x7f800000u),
-      float_from_bits(0xff800000u), std::numeric_limits<float>::max(),
-      -std::numeric_limits<float>::max(), 1.0f, -1.0f};
+  const std::vector<float> exceptional_samples{0.0f,
+                                               -0.0f,
+                                               float_from_bits(0x00000001u),
+                                               float_from_bits(0x80000001u),
+                                               float_from_bits(0x7fc12345u),
+                                               float_from_bits(0xffdabcdeu),
+                                               float_from_bits(0x7f800000u),
+                                               float_from_bits(0xff800000u),
+                                               std::numeric_limits<float>::max(),
+                                               -std::numeric_limits<float>::max(),
+                                               1.0f,
+                                               -1.0f};
   auto run_exceptional = [&](uint64_t elements, float sigma, float ratio) {
     const TensorLayout test_layout = TensorLayout::contiguous(&elements, 1);
     DeviceTensor test_sample = context.allocate(test_layout);
@@ -89,12 +99,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_exact_dit_euler_matches_host_scheduler, "synthetic"
     CHECK(std::memcmp(expected.data(), actual.data(), elements * sizeof(float)) == 0);
   };
   run_exceptional(1u, 1.0f, 1.0f);
-  for (const auto controls : {std::array<float, 2>{0.0f, 0.0f},
-                              std::array<float, 2>{1.0f, 0.0f},
-                              std::array<float, 2>{0.0f, 1.0f},
-                              std::array<float, 2>{1.0f, 1.0f},
-                              std::array<float, 2>{float_from_bits(1u),
-                                                   float_from_bits(1u)},
+  for (const auto controls : {std::array<float, 2>{0.0f, 0.0f}, std::array<float, 2>{1.0f, 0.0f},
+                              std::array<float, 2>{0.0f, 1.0f}, std::array<float, 2>{1.0f, 1.0f},
+                              std::array<float, 2>{float_from_bits(1u), float_from_bits(1u)},
                               std::array<float, 2>{0.5f, 0.5f}})
     run_exceptional(65u, controls[0], controls[1]);
 }
@@ -123,13 +130,15 @@ SLOPFAB_TEST_CATEGORY(vulkan_exact_h3_attention_single_key, "synthetic") {
   CHECK(!disabled.exact_h3_attention());
   bool unavailable_rejected = false;
   try {
-    (void)H3AttentionPlan::create(
-        disabled, {1, 1, 64, exact_attention_scale(64)});
-  } catch (const std::runtime_error&) { unavailable_rejected = true; }
+    (void)H3AttentionPlan::create(disabled, {1, 1, 64, exact_attention_scale(64)});
+  } catch (const std::runtime_error&) {
+    unavailable_rejected = true;
+  }
   CHECK(unavailable_rejected);
   if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
       !info.storage_buffer_16bit || !info.cooperative_matrix) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: !info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 || !info.storage_buffer_16bit || !info.cooperative_matrix");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: !info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 || !info.storage_buffer_16bit || !info.cooperative_matrix");
     return;
   }
   DeviceOptions options = disabled_options;
@@ -153,8 +162,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_exact_h3_attention_single_key, "synthetic") {
   context.upload_bytes(q, zeros.data(), zeros.size() * 2);
   context.upload_bytes(k, zeros.data(), zeros.size() * 2);
   context.upload_bytes(v, values.data(), values.size() * 2);
-  H3AttentionPlan plan = H3AttentionPlan::create(
-      context, {1, 1, dim, exact_attention_scale(dim)});
+  H3AttentionPlan plan = H3AttentionPlan::create(context, {1, 1, dim, exact_attention_scale(dim)});
   TensorBatch batch = context.begin_batch();
   plan.record(batch, q, k, v, out);
   batch.submit().wait();

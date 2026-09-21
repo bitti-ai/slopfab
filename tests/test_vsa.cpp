@@ -29,30 +29,41 @@ SLOPFAB_TEST(vsa_tile_geometry) {
   for (size_t t = 0; t < tiles.sizes.size(); ++t) {
     for (int i = 0; i < 64; ++i) {
       const int row = tiles.rows[t * 64 + i];
-      if (i >= tiles.sizes[t]) { CHECK(row == -1); continue; }
+      if (i >= tiles.sizes[t]) {
+        CHECK(row == -1);
+        continue;
+      }
       CHECK(row >= 0 && row < layout.total_rows());
       ++seen.at(row);
       CHECK(tiles.row_tiles.at(row) == t);
     }
   }
-  CHECK(std::all_of(seen.begin(), seen.end(), [](int n) { return n == 1; }));
+  CHECK(std::all_of(seen.begin(), seen.end(), [](int n) {
+    return n == 1;
+  }));
   layout.num_condition_audio = 1;
   bool rejected = false;
-  try { (void)slopfab::dit::build_vsa_tiles(layout); } catch (...) { rejected = true; }
+  try {
+    (void)slopfab::dit::build_vsa_tiles(layout);
+  } catch (...) {
+    rejected = true;
+  }
   CHECK(rejected);
 }
 
 SLOPFAB_TEST(vsa_checkpoint_and_schedule) {
   using namespace slopfab;
-  const auto path = std::filesystem::temp_directory_path() / "slopfab_fasth3_8step_v2_test.safetensors";
-  const std::vector<TensorWrite> tensors = {
-      {"adaln_t_table", {1}, {0}},
-      {"blocks.0.adaln_proj.linear.weight", {1}, {0}},
-      {"blocks.0.attn.to_gate_compress.weight", {1}, {0}}};
+  const auto path =
+      std::filesystem::temp_directory_path() / "slopfab_fasth3_8step_v2_test.safetensors";
+  const std::vector<TensorWrite> tensors = {{"adaln_t_table", {1}, {0}},
+                                            {"blocks.0.adaln_proj.linear.weight", {1}, {0}},
+                                            {"blocks.0.attn.to_gate_compress.weight", {1}, {0}}};
   write_safetensors(path.string(), tensors);
   {
-    SafeTensors st; st.open(path.string());
-    CHECK(dit::detect_transformer_architecture(st) == dit::TransformerArchitecture::kFastH3V2PrunedTable);
+    SafeTensors st;
+    st.open(path.string());
+    CHECK(dit::detect_transformer_architecture(st) ==
+          dit::TransformerArchitecture::kFastH3V2PrunedTable);
   }
   GenerateRequest request;
   request.prompt = "A forest";
@@ -73,25 +84,37 @@ SLOPFAB_TEST(vsa_checkpoint_and_schedule) {
   CHECK(replay.timesteps() == plan.video_timesteps);
   request.reference_image_paths.push_back("reference.png");
   bool rejected = false;
-  try { (void)resolve_plan(request); } catch (...) { rejected = true; }
+  try {
+    (void)resolve_plan(request);
+  } catch (...) {
+    rejected = true;
+  }
   CHECK(rejected);
   request.reference_image_paths.clear();
   request.schedule = sampler::ScheduleKind::kTaoMate3Step;
   request.loras.push_back({"taomate.safetensors", 1.0f});
   rejected = false;
-  try { (void)resolve_plan(request); } catch (...) { rejected = true; }
+  try {
+    (void)resolve_plan(request);
+  } catch (...) {
+    rejected = true;
+  }
   CHECK(rejected);
   std::filesystem::remove(path);
   const auto renamed = std::filesystem::temp_directory_path() / "slopfab_vsa_renamed.safetensors";
-  write_safetensors(renamed.string(), tensors, {{"model_id", "FastVideo/FastVideo-FastH3-8-Step-V2"}});
+  write_safetensors(renamed.string(), tensors,
+                    {{"model_id", "FastVideo/FastVideo-FastH3-8-Step-V2"}});
   {
-    SafeTensors st; st.open(renamed.string());
-    CHECK(dit::detect_transformer_architecture(st) == dit::TransformerArchitecture::kFastH3V2PrunedTable);
+    SafeTensors st;
+    st.open(renamed.string());
+    CHECK(dit::detect_transformer_architecture(st) ==
+          dit::TransformerArchitecture::kFastH3V2PrunedTable);
   }
   std::filesystem::remove(renamed);
   write_safetensors(renamed.string(), tensors, {{"model_id", "FastVideo/FastH3-V1"}});
   {
-    SafeTensors st; st.open(renamed.string());
+    SafeTensors st;
+    st.open(renamed.string());
     CHECK(dit::detect_transformer_architecture(st) == dit::TransformerArchitecture::kUnknown);
   }
   std::filesystem::remove(renamed);

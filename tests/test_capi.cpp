@@ -58,45 +58,55 @@ SLOPFAB_TEST(capi_prepare_lora_grid) {
   CHECK(slopfab_prepare_lora_grid("unused", -1, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
 
   struct Fixture {
-    std::filesystem::path dir = std::filesystem::temp_directory_path() /
-        ("slopfab-capi-grid-" + std::to_string(
-            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::path dir =
+        std::filesystem::temp_directory_path() /
+        ("slopfab-capi-grid-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::path adapter = dir / "adapter.safetensors";
     std::filesystem::path companion = dir / "h3_silu_temb_grid.safetensors";
-    Fixture() { std::filesystem::create_directory(dir); }
+
+    Fixture() {
+      std::filesystem::create_directory(dir);
+    }
+
     ~Fixture() {
       std::error_code ec;
       std::filesystem::remove(adapter, ec);
       std::filesystem::remove(companion, ec);
       std::filesystem::remove(dir, ec);
     }
+
     void write(const std::filesystem::path& path, std::string header,
                const std::vector<float>& values) {
-      while (header.size() % 8) header += ' ';
+      while (header.size() % 8)
+        header += ' ';
       const uint64_t length = header.size();
       std::ofstream out(path, std::ios::binary);
       out.write(reinterpret_cast<const char*>(&length), 8);
       out.write(header.data(), static_cast<std::streamsize>(header.size()));
       out.write(reinterpret_cast<const char*>(values.data()),
                 static_cast<std::streamsize>(values.size() * sizeof(float)));
-      if (!out) throw std::runtime_error("cannot write DLL grid fixture");
+      if (!out)
+        throw std::runtime_error("cannot write DLL grid fixture");
     }
+
     std::string bytes() const {
       std::ifstream in(adapter, std::ios::binary);
       return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     }
   } fixture;
+
   const auto path = fixture.adapter.u8string();
   CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_ERR_RUNTIME);
   CHECK(std::strlen(slopfab_last_error()) > 0);
-  fixture.write(fixture.adapter,
-      R"({"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}})", {42.0f});
+  fixture.write(fixture.adapter, R"({"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}})",
+                {42.0f});
   const auto original = fixture.bytes();
   CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_ERR_RUNTIME);
   CHECK(fixture.bytes() == original); // Missing local grid never rewrites the adapter.
   fixture.write(fixture.companion,
-      R"({"silu_t_emb_grid":{"dtype":"F32","shape":[1025,2],"data_offsets":[0,8200]}})",
-      std::vector<float>(2050, .5f));
+                R"({"silu_t_emb_grid":{"dtype":"F32","shape":[1025,2],"data_offsets":[0,8200]}})",
+                std::vector<float>(2050, .5f));
   CHECK(slopfab_prepare_lora_grid(path.c_str(), 3, 0) == SLOPFAB_ERR_RUNTIME);
   CHECK(fixture.bytes() == original); // Shape failure is transactional too.
   CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_OK);
@@ -105,8 +115,8 @@ SLOPFAB_TEST(capi_prepare_lora_grid) {
   CHECK(embedded.size() >= original.size() + 8200);
   uint64_t header_bytes = 0;
   std::memcpy(&header_bytes, embedded.data(), sizeof(header_bytes));
-  const bool valid_payload = header_bytes <= embedded.size() - 8 &&
-      embedded.size() - 8 - header_bytes == 8204;
+  const bool valid_payload =
+      header_bytes <= embedded.size() - 8 && embedded.size() - 8 - header_bytes == 8204;
   CHECK(valid_payload);
   if (valid_payload) {
     const auto* payload = embedded.data() + 8 + header_bytes;
@@ -125,16 +135,19 @@ SLOPFAB_TEST(capi_motion_cache_validation_and_atomic_setter) {
   CHECK(request != nullptr);
   CHECK(slopfab_request_set_motion_cache(nullptr, 1, .15f, 1, 4, 2, .15f, .95f, 8, 0) ==
         SLOPFAB_ERR_INVALID_ARGUMENT);
-  CHECK(slopfab_request_set_motion_cache(request, 1, .15f, 1, 4, 2, .15f, .95f, 8, 0) == SLOPFAB_OK);
-  CHECK(slopfab_request_set_motion_cache(request, 1,
-        std::numeric_limits<float>::quiet_NaN(), 1, 4, 2, .15f, .95f, 8, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_motion_cache(request, 1, .15f, 1, 4, 2, .15f, .95f, 8, 0) ==
+        SLOPFAB_OK);
+  CHECK(slopfab_request_set_motion_cache(request, 1, std::numeric_limits<float>::quiet_NaN(), 1, 4,
+                                         2, .15f, .95f, 8, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_motion_cache(request, 1, .15f, 1, 4, 2, .95f, .15f, 8, 0) ==
         SLOPFAB_ERR_INVALID_ARGUMENT);
   char* description = nullptr;
   CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
-  CHECK(description && std::strstr(description, "MotionCache") && std::strstr(description, "threshold 0.150"));
+  CHECK(description && std::strstr(description, "MotionCache") &&
+        std::strstr(description, "threshold 0.150"));
   slopfab_free_string(description);
-  CHECK(slopfab_request_set_motion_cache(request, 0, .15f, 1, 4, 2, .15f, .95f, 8, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_motion_cache(request, 0, .15f, 1, 4, 2, .15f, .95f, 8, 0) ==
+        SLOPFAB_OK);
   description = nullptr;
   CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
   CHECK(description && !std::strstr(description, "MotionCache"));
@@ -150,24 +163,27 @@ SLOPFAB_TEST(capi_continuation_snapshot_and_plan) {
   CHECK(slopfab_request_set_save_latents(request, "next.safetensors") == SLOPFAB_OK);
   CHECK(slopfab_request_set_save_latents(request, nullptr) == SLOPFAB_OK);
   CHECK(slopfab_request_set_retain_latents(request, 1) == SLOPFAB_OK);
-  CHECK(slopfab_request_set_continuation_file(request, fixture.path.string().c_str(), 22) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_continuation_file(request, fixture.path.string().c_str(), 22) ==
+        SLOPFAB_OK);
   // The attached snapshot survives replacement by invalid bytes.
   fixture.write(39, true, "unsupported");
-  CHECK(slopfab_request_set_continuation_file(request, fixture.path.string().c_str(), 22) != SLOPFAB_OK);
+  CHECK(slopfab_request_set_continuation_file(request, fixture.path.string().c_str(), 22) !=
+        SLOPFAB_OK);
   std::filesystem::remove(fixture.path);
   CHECK(slopfab_request_set_frames(request, 18) == SLOPFAB_OK);
   slopfab_plan plan{};
   CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
   CHECK(plan.aligned_frames == 73 && plan.canvas_width == 64 && plan.canvas_height == 32);
   CHECK(plan.latent_frames == 17);
-  CHECK(plan.num_audio_latents == 94);  // round(73*5/3) - round(17*5/3)
+  CHECK(plan.num_audio_latents == 94); // round(73*5/3) - round(17*5/3)
   CHECK(plan.sequence_rows_without_text == 34 + 188 + 14 + 74);
   CHECK(slopfab_request_set_still_image(request, 1) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
   CHECK(slopfab_request_set_still_image(request, 0) == SLOPFAB_OK);
   CHECK(slopfab_request_set_synthetic_latents(request, 1) == SLOPFAB_OK);
   slopfab_generation* generation = nullptr;
-  CHECK(slopfab_generation_start(request, nullptr, nullptr, &generation) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_generation_start(request, nullptr, nullptr, &generation) ==
+        SLOPFAB_ERR_INVALID_REQUEST);
   CHECK(generation == nullptr);
   CHECK(slopfab_request_clear_continuation(request) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
@@ -180,16 +196,27 @@ SLOPFAB_TEST(capi_continuation_null_arguments) {
   CHECK(slopfab_request_set_retain_latents(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_clear_continuation(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_continuation_file(nullptr, "x", 22) == SLOPFAB_ERR_INVALID_ARGUMENT);
-  CHECK(slopfab_request_set_continuation_generation(nullptr, nullptr, 22) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_generation(nullptr, nullptr, 22) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_generation_save_latents(nullptr, "x") == SLOPFAB_ERR_INVALID_ARGUMENT);
 }
 
 SLOPFAB_TEST(capi_refmod_loading_ownership_and_validation) {
-  RefModFixture fixture; fixture.write();
+  RefModFixture fixture;
+  fixture.write();
   slopfab_request* request = slopfab_request_create();
   CHECK(request != nullptr);
-  if (!request) return;
-  struct Guard { slopfab_request* p; ~Guard() { slopfab_request_destroy(p); } } guard{request};
+  if (!request)
+    return;
+
+  struct Guard {
+    slopfab_request* p;
+
+    ~Guard() {
+      slopfab_request_destroy(p);
+    }
+  } guard{request};
+
   slopfab_plan base{}, loaded{}, cleared{};
   CHECK(slopfab_resolve_plan(request, &base) == SLOPFAB_OK);
   CHECK(slopfab_request_add_refmod(nullptr, "x", 1, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
@@ -200,7 +227,7 @@ SLOPFAB_TEST(capi_refmod_loading_ownership_and_validation) {
   CHECK(slopfab_request_add_refmod(request, "x", 1, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_add_refmod(request, "x", 1, 11) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_add_refmod(request, fixture.path.string().c_str(), 1, 2) == SLOPFAB_OK);
-  std::filesystem::remove(fixture.path);  // Neither a retained mapping nor deferred I/O.
+  std::filesystem::remove(fixture.path); // Neither a retained mapping nor deferred I/O.
   CHECK(slopfab_resolve_plan(request, &loaded) == SLOPFAB_OK);
   CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text + 8);
   CHECK(slopfab_request_add_refmod(request, fixture.path.string().c_str(), 1, 1) != SLOPFAB_OK);
@@ -223,12 +250,18 @@ namespace {
 // handle into the next case.
 struct Request {
   slopfab_request* handle = slopfab_request_create();
-  ~Request() { slopfab_request_destroy(handle); }
+
+  ~Request() {
+    slopfab_request_destroy(handle);
+  }
 };
 
 struct OwnedString {
   char* text = nullptr;
-  ~OwnedString() { slopfab_free_string(text); }
+
+  ~OwnedString() {
+    slopfab_free_string(text);
+  }
 };
 
 std::filesystem::path scratch_file(const char* name, const std::string& contents) {
@@ -238,7 +271,7 @@ std::filesystem::path scratch_file(const char* name, const std::string& contents
   return path;
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(capi_version) {
   const uint32_t packed = slopfab_capi_version();
@@ -275,8 +308,7 @@ SLOPFAB_TEST(capi_rejects_null_handles) {
   CHECK(slopfab_request_set_reuse_models(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_model_path(nullptr, SLOPFAB_MODEL_TRANSFORMER, "x") ==
         SLOPFAB_ERR_INVALID_ARGUMENT);
-  CHECK(slopfab_request_set_prompt_embedding_path(nullptr, "x") ==
-        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_prompt_embedding_path(nullptr, "x") == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_resolve_plan(nullptr, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_describe_plan(nullptr, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_generation_start(nullptr, nullptr, nullptr, nullptr) ==
@@ -330,13 +362,15 @@ SLOPFAB_TEST(capi_default_request_matches_cpp_defaults) {
 SLOPFAB_TEST(capi_sampling_settings) {
   Request request;
   CHECK(slopfab_request_set_sampling_settings(nullptr, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
-  CHECK(slopfab_request_set_sampling_settings(request.handle,
-      R"({"version":1,"video_sigma_shift":6,"base_sigmas":[1,0.5,0]})") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_sampling_settings(
+            request.handle, R"({"version":1,"video_sigma_shift":6,"base_sigmas":[1,0.5,0]})") ==
+        SLOPFAB_OK);
   slopfab_plan plan{};
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.num_model_evaluations == 2);
   CHECK(slopfab_request_set_sampling_settings(request.handle,
-      R"({"version":1,"video_sigma_shift":0})") == SLOPFAB_ERR_INVALID_ARGUMENT);
+                                              R"({"version":1,"video_sigma_shift":0})") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.num_model_evaluations == 2);
   CHECK(slopfab_request_set_sampling_settings(request.handle, nullptr) == SLOPFAB_OK);
@@ -352,11 +386,12 @@ SLOPFAB_TEST(capi_session_ownership_and_conditioning_setter) {
   CHECK(slopfab_request_set_session(request.handle, session) == SLOPFAB_OK);
   CHECK(slopfab_session_clear(session) == SLOPFAB_OK);
   slopfab_session_destroy(session);
-  CHECK(slopfab_request_set_conditioning_settings(request.handle,
-      R"({"version":1,"max_frames":22})") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_conditioning_settings(
+            request.handle, R"({"version":1,"max_frames":22})") == SLOPFAB_OK);
   slopfab_plan plan{};
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
-  CHECK(slopfab_request_set_conditioning_settings(request.handle, "{}") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_conditioning_settings(request.handle, "{}") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
   CHECK(slopfab_request_set_conditioning_settings(request.handle, nullptr) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
@@ -438,14 +473,14 @@ SLOPFAB_TEST(capi_model_paths_and_attention) {
 
   CHECK(slopfab_request_set_model_path(request.handle, SLOPFAB_MODEL_TRANSFORMER, "t.st") ==
         SLOPFAB_OK);
-  CHECK(slopfab_request_set_model_path(request.handle, SLOPFAB_MODEL_AUDIO_VAE, "a.st") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_model_path(request.handle, SLOPFAB_MODEL_AUDIO_VAE, "a.st") ==
+        SLOPFAB_OK);
   // An unknown id is rejected rather than landing on whichever member happens
   // to be next in the struct.
   CHECK(slopfab_request_set_model_path(request.handle, 42, "x") == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_model_path(request.handle, SLOPFAB_MODEL_TOKENIZER, nullptr) ==
         SLOPFAB_ERR_INVALID_ARGUMENT);
-  CHECK(slopfab_request_set_prompt_embedding_path(request.handle, "prompt.st") ==
-        SLOPFAB_OK);
+  CHECK(slopfab_request_set_prompt_embedding_path(request.handle, "prompt.st") == SLOPFAB_OK);
   CHECK(slopfab_request_set_prompt_embedding_path(request.handle, nullptr) ==
         SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_reuse_models(request.handle, 1) == SLOPFAB_OK);
@@ -458,13 +493,12 @@ SLOPFAB_TEST(capi_model_paths_and_attention) {
   // The message has to name what was wrong, since there is no enum to consult.
   CHECK(std::string(slopfab_last_error()).find("flash3") != std::string::npos);
 
-  CHECK(slopfab_request_set_inference_backend(
-            request.handle, SLOPFAB_INFERENCE_CUDA) == SLOPFAB_OK);
-  CHECK(slopfab_request_set_inference_backend(
-            request.handle, SLOPFAB_INFERENCE_VULKAN) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_CUDA) ==
+        SLOPFAB_OK);
+  CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_VULKAN) ==
+        SLOPFAB_OK);
   CHECK(slopfab_request_set_attention(request.handle, "exact") == SLOPFAB_OK);
-  CHECK(slopfab_request_set_inference_backend(request.handle, 42) ==
-        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_inference_backend(request.handle, 42) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(std::string(slopfab_last_error()).find("42") != std::string::npos);
 
   CHECK(slopfab_request_set_synthetic_latents(request.handle, 1) == SLOPFAB_OK);
@@ -563,20 +597,27 @@ SLOPFAB_TEST(capi_reference_video_audio_ingestion) {
   CHECK(slopfab_request_add_reference_video(request.handle, video) == SLOPFAB_ERR_INVALID_ARGUMENT);
   uint8_t rgba[] = {10, 20, 30, 255};
   CHECK(slopfab_reference_video_append_rgba8(video, rgba, sizeof(rgba), 1, 1, 4, 0) == SLOPFAB_OK);
-  CHECK(slopfab_reference_video_append_rgb24(video, rgba, 2, 1, 1, 3, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_reference_video_append_rgb24(video, rgba, 2, 1, 1, 3, 1) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_reference_video_append_rgb24(video, rgba, 3, 1, 1, 3, 1) == SLOPFAB_OK);
-  CHECK(slopfab_reference_video_append_rgb24(video, rgba, 3, 1, 1, 3, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
-  CHECK(slopfab_reference_video_append_rgb24(nullptr, rgba, 3, 1, 1, 3, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_reference_video_append_rgb24(video, rgba, 3, 1, 1, 3, 1) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_reference_video_append_rgb24(nullptr, rgba, 3, 1, 1, 3, 0) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   std::vector<float> pcm(64000 * 2, .25f);
-  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 2, 32000, 0) == SLOPFAB_OK);
-  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 2, 32000, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 2, 32000, 0) ==
+        SLOPFAB_OK);
+  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 2, 32000, 1) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_add_reference_video(request.handle, video) == SLOPFAB_OK);
   slopfab_reference_video_destroy(video);
   slopfab_reference_video_destroy(nullptr);
   rgba[0] = 99;
-  CHECK(slopfab_request_add_reference_audio_f32(request.handle, pcm.data(), pcm.size(), 2, 32000) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_reference_audio_f32(request.handle, pcm.data(), pcm.size(), 2, 32000) ==
+        SLOPFAB_OK);
   pcm.assign(pcm.size(), std::numeric_limits<float>::quiet_NaN());
-  CHECK(slopfab_request_add_reference_audio_f32(request.handle, pcm.data(), pcm.size(), 2, 32000) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_reference_audio_f32(request.handle, pcm.data(), pcm.size(), 2, 32000) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   slopfab_plan plan{};
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   OwnedString description;
@@ -584,7 +625,8 @@ SLOPFAB_TEST(capi_reference_video_audio_ingestion) {
   CHECK(std::strstr(description.text, "reference videos    1 (1 with audio)") != nullptr);
   CHECK(std::strstr(description.text, "reference audios    1") != nullptr);
   slopfab_generation* generation = reinterpret_cast<slopfab_generation*>(1);
-  CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_VULKAN) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_VULKAN) ==
+        SLOPFAB_OK);
   slopfab_session* session = nullptr;
   CHECK(slopfab_session_create(&session) == SLOPFAB_OK);
   CHECK(slopfab_request_set_session(request.handle, session) == SLOPFAB_OK);
@@ -599,13 +641,16 @@ SLOPFAB_TEST(capi_reference_video_audio_ingestion) {
   slopfab_generation_destroy(generation);
 }
 
-int main() { return slopfab::test::run_all(); }
+int main() {
+  return slopfab::test::run_all();
+}
 
 SLOPFAB_TEST(capi_lora_and_taomate_schedule) {
   Request request;
   CHECK(slopfab_request_add_lora(nullptr, "lora", 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_add_lora(request.handle, "", 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
-  CHECK(slopfab_request_add_lora(request.handle, "lora", std::numeric_limits<float>::infinity()) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_add_lora(request.handle, "lora", std::numeric_limits<float>::infinity()) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_schedule(request.handle, 99) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_prompt(request.handle, "a video") == SLOPFAB_OK);
   CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_TAOMATE_3STEP) == SLOPFAB_OK);
@@ -626,15 +671,18 @@ SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
   CHECK(slopfab_request_set_animate(nullptr, 1, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_animate(request.handle, 1, 1) == SLOPFAB_OK);
   CHECK(slopfab_request_set_frames(request.handle, 39) == SLOPFAB_OK);
-  CHECK(slopfab_request_set_prompt_embedding_path(request.handle, "fixed.safetensors") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_prompt_embedding_path(request.handle, "fixed.safetensors") ==
+        SLOPFAB_OK);
   slopfab_plan plan{};
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
   slopfab_reference_video* video = nullptr;
   CHECK(slopfab_reference_video_create(2, &video) == SLOPFAB_OK);
   std::vector<uint8_t> rgb(64 * 96 * 3, 127);
-  CHECK(slopfab_reference_video_append_rgb24(video, rgb.data(), rgb.size(), 64, 96, 64 * 3, 0) == SLOPFAB_OK);
+  CHECK(slopfab_reference_video_append_rgb24(video, rgb.data(), rgb.size(), 64, 96, 64 * 3, 0) ==
+        SLOPFAB_OK);
   std::vector<float> pcm(64000, .25f);
-  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 1, 32000, 0) == SLOPFAB_OK);
+  CHECK(slopfab_reference_video_set_audio_f32(video, pcm.data(), pcm.size(), 1, 32000, 0) ==
+        SLOPFAB_OK);
   CHECK(slopfab_request_add_reference_video(request.handle, video) == SLOPFAB_OK);
   slopfab_reference_video_destroy(video);
   CHECK(slopfab_request_add_reference_image(request.handle, "repainted.png") == SLOPFAB_OK);

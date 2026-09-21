@@ -78,7 +78,8 @@ std::vector<float> cpu_layernorm(const std::vector<float>& x, const std::vector<
   std::vector<float> out(x.size());
   for (int r = 0; r < rows; ++r) {
     double mean = 0.0;
-    for (int i = 0; i < dim; ++i) mean += x[static_cast<size_t>(r) * dim + i];
+    for (int i = 0; i < dim; ++i)
+      mean += x[static_cast<size_t>(r) * dim + i];
     mean /= dim;
     double var = 0.0;
     for (int i = 0; i < dim; ++i) {
@@ -150,8 +151,7 @@ void test_norms() {
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(cpu_rmsnorm(x, w, rows, dim, eps), to_host(dout), 1e-4, "rmsnorm");
   slopfab::cuda::launch_narrow_f16(dout.get(), dlegacy_f16.get(), x.size(), nullptr);
-  slopfab::cuda::launch_rmsnorm_f16(dx.get(), dw.get(), dfused_f16.get(), rows, dim, eps,
-                                   nullptr);
+  slopfab::cuda::launch_rmsnorm_f16(dx.get(), dw.get(), dfused_f16.get(), rows, dim, eps, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> legacy_f16(x.size()), fused_f16(x.size());
   dlegacy_f16.copy_to_host(legacy_f16.data(), legacy_f16.size());
@@ -159,12 +159,12 @@ void test_norms() {
   CHECK(legacy_f16 == fused_f16);
 
   slopfab::cuda::launch_layernorm(dx.get(), dw.get(), db.get(), dout.get(), rows, dim, eps,
-                                 nullptr);
+                                  nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(cpu_layernorm(x, w, b, rows, dim, eps), to_host(dout), 1e-4, "layernorm");
   slopfab::cuda::launch_narrow_f16(dout.get(), dlegacy_f16.get(), x.size(), nullptr);
   slopfab::cuda::launch_layernorm_f16(dx.get(), dw.get(), db.get(), dfused_f16.get(), rows, dim,
-                                     eps, nullptr);
+                                      eps, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   dlegacy_f16.copy_to_host(legacy_f16.data(), legacy_f16.size());
   dfused_f16.copy_to_host(fused_f16.data(), fused_f16.size());
@@ -215,8 +215,8 @@ void test_gemm() {
   DeviceBuffer<float> dCb(static_cast<size_t>(batch) * M * N);
 
   slopfab::cuda::gemm_nt_batched(h, dAb.get(), dBb.get(), dCb.get(), M, N, K, batch,
-                                static_cast<long long>(M) * K, static_cast<long long>(N) * K,
-                                static_cast<long long>(M) * N);
+                                 static_cast<long long>(M) * K, static_cast<long long>(N) * K,
+                                 static_cast<long long>(M) * N);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = to_host(dCb);
   for (int b = 0; b < batch; ++b) {
@@ -263,8 +263,7 @@ void test_swiglu() {
     for (int c = 0; c < inner; ++c) {
       const float gate = in[static_cast<size_t>(r) * 2 * inner + c] + bias[c];
       const float value = in[static_cast<size_t>(r) * 2 * inner + inner + c] + bias[inner + c];
-      want_biased[static_cast<size_t>(r) * inner + c] =
-          (gate / (1.0f + std::exp(-gate))) * value;
+      want_biased[static_cast<size_t>(r) * inner + c] = (gate / (1.0f + std::exp(-gate))) * value;
     }
   }
   DeviceBuffer<float> dbias = to_device(bias);
@@ -290,9 +289,11 @@ void test_softmax() {
   std::vector<float> want(x.size());
   for (int r = 0; r < rows; ++r) {
     double m = -1e30;
-    for (int c = 0; c < cols; ++c) m = std::max(m, static_cast<double>(x[r * cols + c]) * scale);
+    for (int c = 0; c < cols; ++c)
+      m = std::max(m, static_cast<double>(x[r * cols + c]) * scale);
     double sum = 0.0;
-    for (int c = 0; c < cols; ++c) sum += std::exp(x[r * cols + c] * scale - m);
+    for (int c = 0; c < cols; ++c)
+      sum += std::exp(x[r * cols + c] * scale - m);
     for (int c = 0; c < cols; ++c) {
       want[r * cols + c] = static_cast<float>(std::exp(x[r * cols + c] * scale - m) / sum);
     }
@@ -307,7 +308,8 @@ void test_softmax() {
   // Every row must sum to one.
   for (int r = 0; r < rows; ++r) {
     double sum = 0.0;
-    for (int c = 0; c < cols; ++c) sum += got[r * cols + c];
+    for (int c = 0; c < cols; ++c)
+      sum += got[r * cols + c];
     CHECK_MSG(std::fabs(sum - 1.0) <= 1e-5, "softmax row %d sums to %.9f", r, sum);
   }
 }
@@ -344,8 +346,7 @@ void test_depth_to_space() {
           const int pw = ow % patch;
           const size_t token = (static_cast<size_t>(t) * H + hh) * W + ww;
           const int offset = ((c * patch_t + pt) * patch + ph) * patch + pw;
-          const size_t dst =
-              ((static_cast<size_t>(c) * out_T + ot) * out_H + oh) * out_W + ow;
+          const size_t dst = ((static_cast<size_t>(c) * out_T + ot) * out_H + oh) * out_W + ow;
           want[dst] = in[token * patch_dim + offset];
         }
       }
@@ -355,7 +356,7 @@ void test_depth_to_space() {
   DeviceBuffer<float> din = to_device(in);
   DeviceBuffer<float> dout(want.size());
   slopfab::cuda::launch_depth_to_space(din.get(), dout.get(), T, H, W, channels, patch_t, patch,
-                                      nullptr);
+                                       nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want, to_host(dout), 0.0, "depth_to_space");
 
@@ -365,12 +366,12 @@ void test_depth_to_space() {
   DeviceBuffer<float> dlegacy_out(want.size());
   DeviceBuffer<float> dfused_out(want.size());
   SLOPFAB_CUDA_CHECK(cudaMemcpy(dlegacy_tokens.get(), din.get(), in.size() * sizeof(float),
-                               cudaMemcpyDeviceToDevice));
+                                cudaMemcpyDeviceToDevice));
   slopfab::cuda::launch_add_bias(dlegacy_tokens.get(), dbias.get(), tokens, patch_dim, nullptr);
-  slopfab::cuda::launch_depth_to_space(dlegacy_tokens.get(), dlegacy_out.get(), T, H, W,
-                                      channels, patch_t, patch, nullptr);
+  slopfab::cuda::launch_depth_to_space(dlegacy_tokens.get(), dlegacy_out.get(), T, H, W, channels,
+                                       patch_t, patch, nullptr);
   slopfab::cuda::launch_depth_to_space_bias(din.get(), dbias.get(), dfused_out.get(), T, H, W,
-                                           channels, patch_t, patch, nullptr);
+                                            channels, patch_t, patch, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> legacy = to_host(dlegacy_out);
   const std::vector<float> fused = to_host(dfused_out);
@@ -406,7 +407,8 @@ void test_qkv_rope() {
       const size_t row = static_cast<size_t>(t) * heads * triple + static_cast<size_t>(h) * triple;
       const size_t out = (static_cast<size_t>(h) * seq + t) * head_dim;
 
-      for (int d = 0; d < head_dim; ++d) want_v[out + d] = qkv[row + 2 * head_dim + d];
+      for (int d = 0; d < head_dim; ++d)
+        want_v[out + d] = qkv[row + 2 * head_dim + d];
 
       for (int which = 0; which < 2; ++which) {
         const size_t src = row + static_cast<size_t>(which) * head_dim;
@@ -445,8 +447,8 @@ void test_qkv_rope() {
   DeviceBuffer<float> dv(per);
 
   slopfab::cuda::launch_split_qkv_norm_rope(dqkv.get(), nullptr, dcos.get(), dsin.get(), dq.get(),
-                                           dk.get(), dv.get(), seq, heads, head_dim, rope_dim,
-                                           num_patches, eps, nullptr);
+                                            dk.get(), dv.get(), seq, heads, head_dim, rope_dim,
+                                            num_patches, eps, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_q, to_host(dq), 1e-5, "rope q");
   CHECK_CLOSE(want_k, to_host(dk), 1e-5, "rope k");
@@ -467,11 +469,11 @@ void test_qkv_rope() {
   DeviceBuffer<float> dq_fused(per), dk_fused(per), dv_fused(per);
 
   slopfab::cuda::launch_split_qkv_norm_rope(dqkvb.get(), nullptr, dcos.get(), dsin.get(),
-                                           dq_ref.get(), dk_ref.get(), dv_ref.get(), seq, heads,
-                                           head_dim, rope_dim, num_patches, eps, nullptr);
+                                            dq_ref.get(), dk_ref.get(), dv_ref.get(), seq, heads,
+                                            head_dim, rope_dim, num_patches, eps, nullptr);
   slopfab::cuda::launch_split_qkv_norm_rope(dqkv.get(), dbias.get(), dcos.get(), dsin.get(),
-                                           dq_fused.get(), dk_fused.get(), dv_fused.get(), seq,
-                                           heads, head_dim, rope_dim, num_patches, eps, nullptr);
+                                            dq_fused.get(), dk_fused.get(), dv_fused.get(), seq,
+                                            heads, head_dim, rope_dim, num_patches, eps, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(to_host(dq_ref), to_host(dq_fused), 1e-6, "fused qkv bias q");
   CHECK_CLOSE(to_host(dk_ref), to_host(dk_fused), 1e-6, "fused qkv bias k");
@@ -481,21 +483,21 @@ void test_qkv_rope() {
   // exact old rounding point: fp32 split/norm/RoPE, then layout+narrow.
   DeviceBuffer<uint16_t> dq_legacy(per), dk_legacy(per), dv_legacy(per);
   DeviceBuffer<uint16_t> dq_direct(per), dk_direct(per), dv_direct(per);
-  slopfab::cuda::launch_heads_to_tokens_bf16(
-      dq_fused.get(), reinterpret_cast<__nv_bfloat16*>(dq_legacy.get()), seq, heads,
-      head_dim, nullptr);
-  slopfab::cuda::launch_heads_to_tokens_bf16(
-      dk_fused.get(), reinterpret_cast<__nv_bfloat16*>(dk_legacy.get()), seq, heads,
-      head_dim, nullptr);
-  slopfab::cuda::launch_heads_to_tokens_bf16(
-      dv_fused.get(), reinterpret_cast<__nv_bfloat16*>(dv_legacy.get()), seq, heads,
-      head_dim, nullptr);
-  slopfab::cuda::launch_split_qkv_norm_rope_bf16(
-      dqkv.get(), dbias.get(), dcos.get(), dsin.get(),
-      reinterpret_cast<__nv_bfloat16*>(dq_direct.get()),
-      reinterpret_cast<__nv_bfloat16*>(dk_direct.get()),
-      reinterpret_cast<__nv_bfloat16*>(dv_direct.get()), seq, heads, head_dim,
-      rope_dim, num_patches, eps, nullptr);
+  slopfab::cuda::launch_heads_to_tokens_bf16(dq_fused.get(),
+                                             reinterpret_cast<__nv_bfloat16*>(dq_legacy.get()), seq,
+                                             heads, head_dim, nullptr);
+  slopfab::cuda::launch_heads_to_tokens_bf16(dk_fused.get(),
+                                             reinterpret_cast<__nv_bfloat16*>(dk_legacy.get()), seq,
+                                             heads, head_dim, nullptr);
+  slopfab::cuda::launch_heads_to_tokens_bf16(dv_fused.get(),
+                                             reinterpret_cast<__nv_bfloat16*>(dv_legacy.get()), seq,
+                                             heads, head_dim, nullptr);
+  slopfab::cuda::launch_split_qkv_norm_rope_bf16(dqkv.get(), dbias.get(), dcos.get(), dsin.get(),
+                                                 reinterpret_cast<__nv_bfloat16*>(dq_direct.get()),
+                                                 reinterpret_cast<__nv_bfloat16*>(dk_direct.get()),
+                                                 reinterpret_cast<__nv_bfloat16*>(dv_direct.get()),
+                                                 seq, heads, head_dim, rope_dim, num_patches, eps,
+                                                 nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> q_legacy(per), k_legacy(per), v_legacy(per);
   std::vector<uint16_t> q_direct(per), k_direct(per), v_direct(per);
@@ -519,16 +521,14 @@ void test_gemm_scatter() {
   cublasHandle_t h = nullptr;
   SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&h));
 
-  const int seq = 1797;  // production: 7*16*16 patches + 5 suffix tokens
+  const int seq = 1797; // production: 7*16*16 patches + 5 suffix tokens
   const int heads = 32;
   const int head_dim = 64;
 
   // P[head][seq][seq] @ V[head][seq][head_dim] -> out[seq][heads*head_dim]
   // Small values keep the 1797-term dot products well conditioned.
-  const std::vector<float> P =
-      make_data(static_cast<size_t>(heads) * seq * seq, 61u, 0.05f);
-  const std::vector<float> V =
-      make_data(static_cast<size_t>(heads) * seq * head_dim, 62u, 1.0f);
+  const std::vector<float> P = make_data(static_cast<size_t>(heads) * seq * seq, 61u, 0.05f);
+  const std::vector<float> V = make_data(static_cast<size_t>(heads) * seq * head_dim, 62u, 1.0f);
 
   DeviceBuffer<float> dP = to_device(P);
   DeviceBuffer<float> dV = to_device(V);
@@ -536,9 +536,9 @@ void test_gemm_scatter() {
   dout.zero();
 
   slopfab::cuda::gemm_nn_batched_ld(h, dP.get(), dV.get(), dout.get(), seq, head_dim, seq, heads,
-                                   static_cast<long long>(seq) * seq,
-                                   static_cast<long long>(seq) * head_dim,
-                                   /*strideC=*/head_dim, /*ldc=*/heads * head_dim);
+                                    static_cast<long long>(seq) * seq,
+                                    static_cast<long long>(seq) * head_dim,
+                                    /*strideC=*/head_dim, /*ldc=*/heads * head_dim);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = to_host(dout);
 
@@ -565,8 +565,7 @@ void test_gemm_scatter() {
     }
   }
   // 1797-term fp32 dot products; 2e-3 is comfortably inside accumulation noise.
-  CHECK_MSG(worst <= 2e-3, "gemm_nn_batched_ld: worst abs err %.3e over %d probes", worst,
-            checked);
+  CHECK_MSG(worst <= 2e-3, "gemm_nn_batched_ld: worst abs err %.3e over %d probes", worst, checked);
 
   // Full coverage without an O(seq) CPU reference: run the same multiply
   // through the plain batched wrapper into a contiguous [H][S][D] buffer,
@@ -575,9 +574,9 @@ void test_gemm_scatter() {
   // O(result magnitude), not O(1e-4).
   DeviceBuffer<float> dplain(static_cast<size_t>(heads) * seq * head_dim);
   slopfab::cuda::gemm_nn_batched(h, dP.get(), dV.get(), dplain.get(), seq, head_dim, seq, heads,
-                                static_cast<long long>(seq) * seq,
-                                static_cast<long long>(seq) * head_dim,
-                                static_cast<long long>(seq) * head_dim);
+                                 static_cast<long long>(seq) * seq,
+                                 static_cast<long long>(seq) * head_dim,
+                                 static_cast<long long>(seq) * head_dim);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> plain = to_host(dplain);
 
@@ -607,7 +606,8 @@ void test_widen_f16() {
   std::vector<uint16_t> patterns;
   for (uint32_t bits = 0; bits <= 0xFFFFu; ++bits) {
     const uint16_t exp = static_cast<uint16_t>((bits >> 10) & 0x1Fu);
-    if (exp == 0x1F) continue;  // inf / nan
+    if (exp == 0x1F)
+      continue; // inf / nan
     patterns.push_back(static_cast<uint16_t>(bits));
   }
 
@@ -629,12 +629,14 @@ void test_widen_f16() {
   size_t first = 0;
   for (size_t i = 0; i < want.size(); ++i) {
     if (std::memcmp(&want[i], &got[i], sizeof(float)) != 0) {
-      if (mismatches == 0) first = i;
+      if (mismatches == 0)
+        first = i;
       ++mismatches;
     }
   }
-  CHECK_MSG(mismatches == 0, "widen_f16: %zu of %zu patterns differ; first at 0x%04X (%.9g vs %.9g)",
-            mismatches, want.size(), patterns[first], want[first], got[first]);
+  CHECK_MSG(mismatches == 0,
+            "widen_f16: %zu of %zu patterns differ; first at 0x%04X (%.9g vs %.9g)", mismatches,
+            want.size(), patterns[first], want[first], got[first]);
   if (mismatches == 0) {
     std::printf("  all %zu finite fp16 bit patterns widen identically\n", patterns.size());
   }
@@ -659,7 +661,8 @@ void test_narrow_f16() {
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   size_t mismatches = 0;
-  for (size_t i = 0; i < want.size(); ++i) mismatches += want[i] != got[i];
+  for (size_t i = 0; i < want.size(); ++i)
+    mismatches += want[i] != got[i];
   CHECK_MSG(mismatches == 0, "narrow_f16: %zu of %zu round-to-nearest-even results differ",
             mismatches, want.size());
 }
@@ -668,7 +671,8 @@ void test_bf16_to_f16() {
   TEST("bf16_to_f16");
   std::vector<uint16_t> packed_input;
   for (uint32_t bits = 0; bits <= 0xFFFFu; ++bits) {
-    if ((bits & 0x7F80u) == 0x7F80u) continue;  // exclude inf/nan payload details
+    if ((bits & 0x7F80u) == 0x7F80u)
+      continue; // exclude inf/nan payload details
     packed_input.push_back(static_cast<uint16_t>(bits));
   }
   CHECK(packed_input.size() % 8 == 0);
@@ -679,8 +683,8 @@ void test_bf16_to_f16() {
       want[i] = slopfab::f32_to_f16(slopfab::bf16_to_f32(input[i]));
     DeviceBuffer<uint16_t> src(input.size()), dst(input.size());
     src.copy_from_host(input.data(), input.size());
-    slopfab::cuda::launch_bf16_to_f16(
-        reinterpret_cast<const __nv_bfloat16*>(src.get()), dst.get(), input.size(), nullptr);
+    slopfab::cuda::launch_bf16_to_f16(reinterpret_cast<const __nv_bfloat16*>(src.get()), dst.get(),
+                                      input.size(), nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     std::vector<uint16_t> got(input.size());
     dst.copy_to_host(got.data(), got.size());
@@ -693,9 +697,9 @@ void test_bf16_to_f16() {
 
   // A non-multiple count selects the scalar fallback, independently covering
   // values from both signs and throughout the BF16 exponent range.
-  const std::vector<uint16_t> scalar_input{
-      0x0000, 0x8000, 0x0001, 0x807F, 0x0080, 0x8080, 0x3F80, 0xBF80, 0x3FA0,
-      0xC020, 0x3800, 0xB800, 0x477F, 0xC77F, 0x7F7F, 0xFF7F, 0x4049};
+  const std::vector<uint16_t> scalar_input{0x0000, 0x8000, 0x0001, 0x807F, 0x0080, 0x8080,
+                                           0x3F80, 0xBF80, 0x3FA0, 0xC020, 0x3800, 0xB800,
+                                           0x477F, 0xC77F, 0x7F7F, 0xFF7F, 0x4049};
   CHECK(scalar_input.size() % 8 != 0);
   CHECK(check_conversion(scalar_input));
 }
@@ -769,7 +773,7 @@ void test_misc() {
   DeviceBuffer<float> dy = to_device(y);
   DeviceBuffer<float> ds = to_device(scale);
   slopfab::cuda::launch_layerscale_residual(dx.get(), dy.get(), nullptr, ds.get(), rows, cols,
-                                           nullptr);
+                                            nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_res, to_host(dx), 1e-6, "layerscale_residual");
 
@@ -785,7 +789,7 @@ void test_misc() {
   DeviceBuffer<float> dx2 = to_device(x);
   DeviceBuffer<float> dlb = to_device(lsbias);
   slopfab::cuda::launch_layerscale_residual(dx2.get(), dy.get(), dlb.get(), ds.get(), rows, cols,
-                                           nullptr);
+                                            nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_fused, to_host(dx2), 1e-6, "layerscale_residual with fused bias");
 
@@ -795,8 +799,8 @@ void test_misc() {
   std::vector<float> want_bias(base.size());
   for (int r = 0; r < rows; ++r) {
     for (int c = 0; c < cols; ++c) {
-      want_bias[static_cast<size_t>(r) * cols + c] = base[static_cast<size_t>(r) * cols + c] +
-                                                     bias[c];
+      want_bias[static_cast<size_t>(r) * cols + c] =
+          base[static_cast<size_t>(r) * cols + c] + bias[c];
     }
   }
   DeviceBuffer<float> dbase = to_device(base);
@@ -823,7 +827,7 @@ void test_misc() {
   DeviceBuffer<float> dsd = to_device(sd);
   DeviceBuffer<float> ddn(z.size());
   slopfab::cuda::launch_latent_denorm(dz.get(), dm.get(), dsd.get(), ddn.get(), channels, voxels,
-                                     nullptr);
+                                      nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_dn, to_host(ddn), 1e-6, "latent_denorm");
 }
@@ -880,24 +884,24 @@ void test_registered_mapping_contains() {
   CHECK(!mapping.contains(backing.data() + backing.size() - 1, 1));
 }
 
-const bool registered = ::slopfab::test::register_test("registered_mapping_contains",
-                                                      &test_registered_mapping_contains) &&
-                        ::slopfab::test::register_test("norms", &test_norms) &&
-                        ::slopfab::test::register_test("gemm", &test_gemm) &&
-                        ::slopfab::test::register_test("swiglu", &test_swiglu) &&
-                        ::slopfab::test::register_test("softmax", &test_softmax) &&
-                        ::slopfab::test::register_test("depth_to_space", &test_depth_to_space) &&
-                        ::slopfab::test::register_test("qkv_norm_rope", &test_qkv_rope) &&
-                        ::slopfab::test::register_test("gemm_nn_batched_ld", &test_gemm_scatter) &&
-                        ::slopfab::test::register_test("widen_f16", &test_widen_f16) &&
-                        ::slopfab::test::register_test("narrow_f16", &test_narrow_f16) &&
-                        ::slopfab::test::register_test("bf16_to_f16", &test_bf16_to_f16) &&
-                        ::slopfab::test::register_test("heads_to_tokens_bf16",
-                                                     &test_heads_to_tokens_bf16) &&
-                        ::slopfab::test::register_test("transpose_cn_to_nc", &test_transpose) &&
-                        ::slopfab::test::register_test("misc", &test_misc);
+const bool registered =
+    ::slopfab::test::register_test("registered_mapping_contains",
+                                   &test_registered_mapping_contains) &&
+    ::slopfab::test::register_test("norms", &test_norms) &&
+    ::slopfab::test::register_test("gemm", &test_gemm) &&
+    ::slopfab::test::register_test("swiglu", &test_swiglu) &&
+    ::slopfab::test::register_test("softmax", &test_softmax) &&
+    ::slopfab::test::register_test("depth_to_space", &test_depth_to_space) &&
+    ::slopfab::test::register_test("qkv_norm_rope", &test_qkv_rope) &&
+    ::slopfab::test::register_test("gemm_nn_batched_ld", &test_gemm_scatter) &&
+    ::slopfab::test::register_test("widen_f16", &test_widen_f16) &&
+    ::slopfab::test::register_test("narrow_f16", &test_narrow_f16) &&
+    ::slopfab::test::register_test("bf16_to_f16", &test_bf16_to_f16) &&
+    ::slopfab::test::register_test("heads_to_tokens_bf16", &test_heads_to_tokens_bf16) &&
+    ::slopfab::test::register_test("transpose_cn_to_nc", &test_transpose) &&
+    ::slopfab::test::register_test("misc", &test_misc);
 
-}  // namespace
+} // namespace
 
 int main() {
   if (slopfab::cuda::device_count() == 0) {

@@ -40,8 +40,10 @@ SLOPFAB_TEST_CATEGORY(encoder_rope_inv_freq_and_tables, "synthetic") {
       // The half period is duplicated, not interleaved: cos[j] == cos[j+64]
       // exactly. That duplication is what makes the (j, j+64) pairing correct,
       // and it is the reference's own `cat((freqs, freqs), -1)`.
-      if (cos[size_t(s) * 128 + j + 64] != cos[size_t(s) * 128 + j]) ++duplication_breaks;
-      if (sin[size_t(s) * 128 + j + 64] != sin[size_t(s) * 128 + j]) ++duplication_breaks;
+      if (cos[size_t(s) * 128 + j + 64] != cos[size_t(s) * 128 + j])
+        ++duplication_breaks;
+      if (sin[size_t(s) * 128 + j + 64] != sin[size_t(s) * 128 + j])
+        ++duplication_breaks;
     }
   }
   CHECK_MSG(worst_angle < 1e-5, "rope table worst deviation from cos/sin(s * inv_freq) is %.3e",
@@ -72,8 +74,7 @@ SLOPFAB_TEST_CATEGORY(encoder_rope_neox_rotates_all_128_dims, "synthetic") {
   std::vector<float> sin;
   slopfab::text::build_rope_tables(rows, inv, cos, sin);
 
-  const std::vector<float> x =
-      bf16_round(make_data(size_t(rows) * heads * head_dim, 4001u, 2.0f));
+  const std::vector<float> x = bf16_round(make_data(size_t(rows) * heads * head_dim, 4001u, 2.0f));
 
   // All 128 dims rotate and j pairs with j+64.
   const std::vector<float> want = cpu_rope(x, cos, sin, rows, heads, head_dim, 128);
@@ -130,7 +131,8 @@ SLOPFAB_TEST_CATEGORY(encoder_causal_attention, "synthetic") {
   CHECK_NEAR(slopfab::text::causal_attention_scale(cfg), 1.0 / std::sqrt(64.0), 1e-7);
 
   const float scale = slopfab::text::causal_attention_scale(cfg);
-  const std::vector<float> want = cpu_attention(q, k, v, seq, heads, kv_heads, head_dim, scale, true);
+  const std::vector<float> want =
+      cpu_attention(q, k, v, seq, heads, kv_heads, head_dim, scale, true);
   const std::vector<float> bidirectional =
       cpu_attention(q, k, v, seq, heads, kv_heads, head_dim, scale, false);
 
@@ -143,7 +145,7 @@ SLOPFAB_TEST_CATEGORY(encoder_causal_attention, "synthetic") {
     Workspace ws;
     ws.reserve(slopfab::text::causal_attention_workspace_bytes(cfg));
     slopfab::text::causal_attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                           ws);
+                                            ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     results.push_back(dout.host());
     CHECK_CLOSE_REL(want, results.back(), 1e-3, 1e-2,
@@ -176,8 +178,7 @@ SLOPFAB_TEST_CATEGORY(encoder_causal_attention, "synthetic") {
     const std::vector<float> wrong =
         cpu_attention(q, k_perm, v_perm, seq, heads, kv_heads, head_dim, scale, true);
     CHECK_MSG(max_abs_diff(wrong, got) > 0.01,
-              "query head h must read kv head h/(H/Hkv) (max diff %.4g)",
-              max_abs_diff(wrong, got));
+              "query head h must read kv head h/(H/Hkv) (max diff %.4g)", max_abs_diff(wrong, got));
   }
 
   // Hazard 3: the cutoff itself. Truncating k and v to the first `t+1` rows
@@ -191,17 +192,18 @@ SLOPFAB_TEST_CATEGORY(encoder_causal_attention, "synthetic") {
     Workspace ws;
     ws.reserve(slopfab::text::causal_attention_workspace_bytes(short_cfg));
     slopfab::text::causal_attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dshort.p(),
-                                           short_cfg, ws);
+                                            short_cfg, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> truncated = dshort.host();
 
     double worst = 0.0;
     for (int i = 0; i < qld; ++i) {
-      worst = std::max(worst, std::fabs(double(truncated[size_t(t) * qld + i]) -
-                                        got[size_t(t) * qld + i]));
+      worst = std::max(
+          worst, std::fabs(double(truncated[size_t(t) * qld + i]) - got[size_t(t) * qld + i]));
     }
-    CHECK_MSG(worst < 1e-2, "row %d changed by %.4g when the keys after it were removed; the "
-                            "causal cutoff is not being applied",
+    CHECK_MSG(worst < 1e-2,
+              "row %d changed by %.4g when the keys after it were removed; the "
+              "causal cutoff is not being applied",
               t, worst);
   }
 
@@ -210,8 +212,8 @@ SLOPFAB_TEST_CATEGORY(encoder_causal_attention, "synthetic") {
   for (int h = 0; h < heads; ++h) {
     const int kv = h / (heads / kv_heads);
     for (int d = 0; d < head_dim; ++d) {
-      row0 = std::max(row0, std::fabs(double(got[size_t(h) * head_dim + d]) -
-                                      v[size_t(kv) * head_dim + d]));
+      row0 = std::max(
+          row0, std::fabs(double(got[size_t(h) * head_dim + d]) - v[size_t(kv) * head_dim + d]));
     }
   }
   CHECK_MSG(row0 < 1e-2, "row 0 must equal v[0] exactly; it differs by %.4g", row0);
@@ -224,7 +226,7 @@ SLOPFAB_TEST_CATEGORY(encoder_convrot_cross_check, "synthetic") {
   // this is the highest-value bring-up check in the module.
   CublasScope cb;
   const int rows = 19;
-  const int in_features = 512;  // two 256-wide groups
+  const int in_features = 512; // two 256-wide groups
   const int out_features = 96;
   const int group = 256;
 
@@ -238,7 +240,8 @@ SLOPFAB_TEST_CATEGORY(encoder_convrot_cross_check, "synthetic") {
     w_int8[i] = int8_t(int(seed >> 24) - 128);
   }
   std::vector<float> scales(out_features);
-  for (int o = 0; o < out_features; ++o) scales[o] = 1e-3f * float(1 + o % 7);
+  for (int o = 0; o < out_features; ++o)
+    scales[o] = 1e-3f * float(1 + o % 7);
 
   std::vector<float> w_rot(w_int8.size());
   for (int o = 0; o < out_features; ++o) {
@@ -294,8 +297,8 @@ SLOPFAB_TEST_CATEGORY(encoder_convrot_cross_check, "synthetic") {
 
   // And the butterfly is its own inverse, which catches a stride or sign error
   // in the transform independently of any weight.
-  const std::vector<float> twice = rotate_rows(rotate_rows(x, rows, in_features, group, H), rows,
-                                               in_features, group, H);
+  const std::vector<float> twice =
+      rotate_rows(rotate_rows(x, rows, in_features, group, H), rows, in_features, group, H);
   CHECK_CLOSE(x, twice, 1e-4, "H is involutory: H(H(v)) == v");
 }
 
@@ -310,8 +313,8 @@ SLOPFAB_TEST_CATEGORY(encoder_layer_vs_cpu_reference, "synthetic") {
   const int kv_heads = 2;
   const int head_dim = 64;
   const int inner = 512;
-  const int q_width = heads * head_dim;    // 256
-  const int kv_width = kv_heads * head_dim;  // 128
+  const int q_width = heads * head_dim;     // 256
+  const int kv_width = kv_heads * head_dim; // 128
   const float eps = 1e-6f;
   const int group = 256;
   const std::vector<float> H = hadamard(group);
@@ -322,7 +325,7 @@ SLOPFAB_TEST_CATEGORY(encoder_layer_vs_cpu_reference, "synthetic") {
   struct Proj {
     std::vector<int8_t> i8;
     std::vector<float> scale;
-    std::vector<float> plain;  // de-rotated, for the CPU reference
+    std::vector<float> plain; // de-rotated, for the CPU reference
     DeviceBuffer<int8_t> d_w;
     DeviceBuffer<float> d_s;
     QuantWeight qw;
@@ -337,7 +340,8 @@ SLOPFAB_TEST_CATEGORY(encoder_layer_vs_cpu_reference, "synthetic") {
       p.i8[i] = int8_t(int(s >> 24) - 128);
     }
     p.scale.resize(out_features);
-    for (int o = 0; o < out_features; ++o) p.scale[o] = 2e-3f * float(1 + (o * 13) % 5);
+    for (int o = 0; o < out_features; ++o)
+      p.scale[o] = 2e-3f * float(1 + (o * 13) % 5);
 
     std::vector<float> rot(p.i8.size());
     for (int o = 0; o < out_features; ++o) {
@@ -408,7 +412,8 @@ SLOPFAB_TEST_CATEGORY(encoder_layer_vs_cpu_reference, "synthetic") {
     const std::vector<float> a =
         cpu_attention(q, k, v, L, heads, kv_heads, head_dim, scale, causal);
     const std::vector<float> o = cpu_matmul_nt(a, wo.plain, L, hidden, q_width);
-    for (size_t i = 0; i < x.size(); ++i) x[i] += o[i];
+    for (size_t i = 0; i < x.size(); ++i)
+      x[i] += o[i];
 
     const std::vector<float> n2 = cpu_rmsnorm(x, ln_post, L, hidden, eps);
     const std::vector<float> g = cpu_matmul_nt(n2, wg.plain, L, inner, hidden);
@@ -418,7 +423,8 @@ SLOPFAB_TEST_CATEGORY(encoder_layer_vs_cpu_reference, "synthetic") {
       h[i] = silu_on_gate ? silu(g[i]) * u[i] : g[i] * silu(u[i]);
     }
     const std::vector<float> d = cpu_matmul_nt(h, wd.plain, L, hidden, inner);
-    for (size_t i = 0; i < x.size(); ++i) x[i] += d[i];
+    for (size_t i = 0; i < x.size(); ++i)
+      x[i] += d[i];
     return x;
   };
 
@@ -460,7 +466,7 @@ SLOPFAB_TEST_CATEGORY(encoder_layer_vs_cpu_reference, "synthetic") {
   Workspace ws;
   ws.reserve(slopfab::text::layer_workspace_bytes(dims));
   slopfab::text::encoder_layer_forward(cb.h, nullptr, runner, w, dims, dcos.get(), dsin.get(),
-                                      dx.p(), ws);
+                                       dx.p(), ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = dx.host();
 

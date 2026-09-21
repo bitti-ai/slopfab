@@ -36,22 +36,29 @@ SLOPFAB_TEST(vulkan_pipeline_sets_cache_and_recording_boundary) {
   {
     auto batch = first.begin_batch();
     bool rejected = false;
-    try { first.prepare_pipeline_sets(device, TensorPipelineSet::kAudio); }
-    catch (const std::logic_error&) { rejected = true; }
+    try {
+      first.prepare_pipeline_sets(device, TensorPipelineSet::kAudio);
+    } catch (const std::logic_error&) {
+      rejected = true;
+    }
     CHECK(rejected);
     batch.add(a, b, output);
     batch.submit().wait();
   }
   float actual[4] = {};
   first.download(output, actual, 4);
-  for (int i = 0; i < 4; ++i) CHECK(actual[i] == 2 * inputs[i]);
+  for (int i = 0; i < 4; ++i)
+    CHECK(actual[i] == 2 * inputs[i]);
   first.prepare_pipeline_sets(device, TensorPipelineSet::kAudio);
   CHECK(first.prepared_pipeline_sets() == (TensorPipelineSet::kCore | TensorPipelineSet::kAudio));
   const auto hits = device.pipeline_cache_hits();
   first.prepare_pipeline_sets(device, TensorPipelineSet::kAudio);
-  CHECK(device.pipeline_cache_hits() == hits);  // no recompilation/relookup
+  CHECK(device.pipeline_cache_hits() == hits); // no recompilation/relookup
   bool rejected = false;
-  try { first.prepare_pipeline_sets(device, static_cast<TensorPipelineSet>(1u << 31)); }
-  catch (const std::invalid_argument&) { rejected = true; }
+  try {
+    first.prepare_pipeline_sets(device, static_cast<TensorPipelineSet>(1u << 31));
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
   CHECK(rejected);
 }

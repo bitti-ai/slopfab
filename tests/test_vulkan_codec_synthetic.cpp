@@ -10,54 +10,54 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_exact_vae_norms, "synthetic") {
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   const DeviceInfo& info = physical.front().info();
   CHECK(!detail::norm_dispatch_fits(0, info.max_compute_workgroup_count[0]));
   CHECK(detail::norm_dispatch_fits(info.max_compute_workgroup_count[0],
                                    info.max_compute_workgroup_count[0]));
-  CHECK(!detail::norm_dispatch_fits(
-      static_cast<uint64_t>(info.max_compute_workgroup_count[0]) + 1,
-      info.max_compute_workgroup_count[0]));
+  CHECK(!detail::norm_dispatch_fits(static_cast<uint64_t>(info.max_compute_workgroup_count[0]) + 1,
+                                    info.max_compute_workgroup_count[0]));
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
   Device disabled_device = physical.front().create_device(options);
   TensorContext disabled_tensors(disabled_device);
   CHECK(!disabled_tensors.exact_normalization());
   CHECK(!disabled_tensors.exact_vae_pointwise());
-  CHECK(disabled_tensors.exact_fp32_vae_normalization() ==
-        disabled_tensors.exact_normalization());
+  CHECK(disabled_tensors.exact_fp32_vae_normalization() == disabled_tensors.exact_normalization());
   bool disabled_rejected = false;
-  try { disabled_tensors.require_exact_normalization(); }
-  catch (const std::runtime_error&) { disabled_rejected = true; }
+  try {
+    disabled_tensors.require_exact_normalization();
+  } catch (const std::runtime_error&) {
+    disabled_rejected = true;
+  }
   CHECK(disabled_rejected);
   options.enable_shader_int64 = info.shader_int64;
   Device device = physical.front().create_device(options);
   TensorContext tensors(device);
-  const bool expected_capability = detail::known_exact_vae_norm_device(
-                                       info.vendor_id, info.device_id,
-                                       info.driver_version) &&
-                                   info.fp32_signed_zero_inf_nan_preserve &&
-                                   info.shader_int64;
+  const bool expected_capability =
+      detail::known_exact_vae_norm_device(info.vendor_id, info.device_id, info.driver_version) &&
+      info.fp32_signed_zero_inf_nan_preserve && info.shader_int64;
   CHECK(!detail::known_exact_vae_norm_device(0x10deu, 0x2b85u, 0x98960001u));
   CHECK(!detail::known_exact_vae_norm_device(0x10deu, 0x2b86u, 0x98960000u));
-  const bool expected_pointwise = detail::known_exact_vae_pointwise_device(
-                                      info.vendor_id, info.device_id,
-                                      info.driver_version) &&
-                                  info.fp32_signed_zero_inf_nan_preserve &&
-                                  info.fp32_rounding_rte && info.shader_int64;
-  CHECK(!detail::known_exact_vae_pointwise_device(
-      0x10deu, 0x2b85u, 0x98960001u));
-  CHECK(!detail::known_exact_vae_pointwise_device(
-      0x10deu, 0x2b86u, 0x98960000u));
+  const bool expected_pointwise =
+      detail::known_exact_vae_pointwise_device(info.vendor_id, info.device_id,
+                                               info.driver_version) &&
+      info.fp32_signed_zero_inf_nan_preserve && info.fp32_rounding_rte && info.shader_int64;
+  CHECK(!detail::known_exact_vae_pointwise_device(0x10deu, 0x2b85u, 0x98960001u));
+  CHECK(!detail::known_exact_vae_pointwise_device(0x10deu, 0x2b86u, 0x98960000u));
   CHECK(tensors.exact_vae_pointwise() == expected_pointwise);
   CHECK(tensors.exact_normalization() == expected_capability);
   CHECK(tensors.exact_fp32_vae_normalization() == tensors.exact_normalization());
   if (!expected_capability) {
     bool rejected = false;
-    try { tensors.require_exact_normalization(); }
-    catch (const std::runtime_error&) { rejected = true; }
+    try {
+      tensors.require_exact_normalization();
+    } catch (const std::runtime_error&) {
+      rejected = true;
+    }
     CHECK(rejected);
     return;
   }
@@ -112,8 +112,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_exact_vae_norms, "synthetic") {
   constant.submit().wait();
   tensors.download(layer, layer_host.data(), layer_host.size());
   for (size_t row = 0; row < 2; ++row) {
-    CHECK(std::memcmp(layer_host.data() + row * 8, biases.data(),
-                      biases.size() * sizeof(float)) == 0);
+    CHECK(std::memcmp(layer_host.data() + row * 8, biases.data(), biases.size() * sizeof(float)) ==
+          0);
   }
 
   bool subnormal_epsilon_rejected = false;
@@ -136,7 +136,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_yuv420_output, "synthetic") {
   Instance probe = Instance::create();
   const auto devices = probe.enumerate_devices();
   if (devices.empty() || !devices.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: devices.empty() || !devices.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: devices.empty() || !devices.front().info().timeline_semaphore");
     return;
   }
 
@@ -145,10 +146,16 @@ SLOPFAB_TEST_CATEGORY(vulkan_yuv420_output, "synthetic") {
   try {
     Yuv420Converter unavailable(std::numeric_limits<uint32_t>::max());
   } catch (const std::runtime_error& error) {
-    unavailable_device_rejected = std::string(error.what()).find("unavailable") != std::string::npos;
+    unavailable_device_rejected =
+        std::string(error.what()).find("unavailable") != std::string::npos;
   }
   CHECK(unavailable_device_rejected);
-  struct Extent { int width; int height; };
+
+  struct Extent {
+    int width;
+    int height;
+  };
+
   const Extent extents[] = {{2, 2}, {10, 6}, {128, 66}, {1280, 768}};
   uint64_t previous_high_water = 0;
   for (const Extent extent : extents) {
@@ -165,7 +172,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_yuv420_output, "synthetic") {
         const float boundary =
             (static_cast<float>(96 + (boundary_block % 64)) + 0.5f - 128.0f) / 112.0f;
         const int direction = static_cast<int>(boundary_block % 3) - 1;
-        const float value = direction < 0 ? std::nextafter(boundary, -INFINITY)
+        const float value = direction < 0   ? std::nextafter(boundary, -INFINITY)
                             : direction > 0 ? std::nextafter(boundary, INFINITY)
                                             : boundary;
         for (int dy = 0; dy < 2; ++dy) {
@@ -183,10 +190,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_yuv420_output, "synthetic") {
     if (pixels >= 512) {
       for (size_t fixture = 0; fixture < 192; ++fixture) {
         const size_t i = pixels - 192 + fixture;
-        const float boundary =
-            (static_cast<float>(16 + (fixture % 220)) + 0.5f - 16.0f) / 219.0f;
+        const float boundary = (static_cast<float>(16 + (fixture % 220)) + 0.5f - 16.0f) / 219.0f;
         const int direction = static_cast<int>(fixture % 3) - 1;
-        const float value = direction < 0 ? std::nextafter(boundary, -INFINITY)
+        const float value = direction < 0   ? std::nextafter(boundary, -INFINITY)
                             : direction > 0 ? std::nextafter(boundary, INFINITY)
                                             : boundary;
         r[i] = value;
@@ -199,11 +205,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_yuv420_output, "synthetic") {
     std::vector<uint8_t> cpu_y(static_cast<size_t>(ys) * extent.height, 0xa5);
     std::vector<uint8_t> cpu_u(static_cast<size_t>(cs) * (extent.height / 2), 0xa5);
     std::vector<uint8_t> cpu_v(cpu_u.size(), 0xa5);
-    std::vector<uint8_t> vk_y(cpu_y.size(), 0xa5), vk_u(cpu_u.size(), 0xa5), vk_v(cpu_v.size(), 0xa5);
+    std::vector<uint8_t> vk_y(cpu_y.size(), 0xa5), vk_u(cpu_u.size(), 0xa5),
+        vk_v(cpu_v.size(), 0xa5);
     video::rgb_frame_to_yuv420(r.data(), g.data(), b.data(), extent.height, extent.width,
                                cpu_y.data(), ys, cpu_u.data(), cs, cpu_v.data(), cs);
-    converter.convert(r.data(), g.data(), b.data(), extent.height, extent.width,
-                      vk_y.data(), ys, vk_u.data(), cs, vk_v.data(), cs);
+    converter.convert(r.data(), g.data(), b.data(), extent.height, extent.width, vk_y.data(), ys,
+                      vk_u.data(), cs, vk_v.data(), cs);
 
     int differences = 0;
     int max_difference = 0;
@@ -212,9 +219,11 @@ SLOPFAB_TEST_CATEGORY(vulkan_yuv420_output, "synthetic") {
                              int stride) {
       for (int y = 0; y < rows; ++y) {
         for (int x = 0; x < columns; ++x) {
-          const int delta = std::abs(static_cast<int>(expected[static_cast<size_t>(y) * stride + x]) -
-                                     static_cast<int>(actual[static_cast<size_t>(y) * stride + x]));
-          if (delta != 0) ++differences;
+          const int delta =
+              std::abs(static_cast<int>(expected[static_cast<size_t>(y) * stride + x]) -
+                       static_cast<int>(actual[static_cast<size_t>(y) * stride + x]));
+          if (delta != 0)
+            ++differences;
           max_difference = std::max(max_difference, delta);
         }
         for (int x = columns; x < stride; ++x) {
@@ -225,16 +234,15 @@ SLOPFAB_TEST_CATEGORY(vulkan_yuv420_output, "synthetic") {
     compare_plane(cpu_y, vk_y, extent.height, extent.width, ys);
     compare_plane(cpu_u, vk_u, extent.height / 2, extent.width / 2, cs);
     compare_plane(cpu_v, vk_v, extent.height / 2, extent.width / 2, cs);
-    CHECK_MSG(differences == 0,
-              "Vulkan YUV differs by %d (changed samples %d) at %dx%d",
+    CHECK_MSG(differences == 0, "Vulkan YUV differs by %d (changed samples %d) at %dx%d",
               max_difference, differences, extent.width, extent.height);
     CHECK(converter.capacity_pixels() >= pixels);
     CHECK(converter.high_water_bytes() >= previous_high_water);
     previous_high_water = converter.high_water_bytes();
 
     const uint64_t reserved = converter.reserved_bytes();
-    converter.convert(r.data(), g.data(), b.data(), extent.height, extent.width,
-                      vk_y.data(), ys, vk_u.data(), cs, vk_v.data(), cs);
+    converter.convert(r.data(), g.data(), b.data(), extent.height, extent.width, vk_y.data(), ys,
+                      vk_u.data(), cs, vk_v.data(), cs);
     CHECK(converter.reserved_bytes() == reserved);
   }
   CHECK_MSG(converter.high_water_bytes() <= (48ull << 20),
@@ -247,8 +255,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_yuv420_output, "synthetic") {
   uint8_t reject_byte = 0;
   float reject_sample = 0.0f;
   try {
-    converter.convert(&reject_sample, &reject_sample, &reject_sample, 32768, 65536,
-                      &reject_byte, 65536, &reject_byte, 32768, &reject_byte, 32768);
+    converter.convert(&reject_sample, &reject_sample, &reject_sample, 32768, 65536, &reject_byte,
+                      65536, &reject_byte, 32768, &reject_byte, 32768);
   } catch (const std::overflow_error&) {
     index_overflow_rejected = true;
   }
@@ -319,7 +327,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_video_vae_decoder_contract, "synthetic") {
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions options;
@@ -338,7 +347,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_video_vae_decoder_contract, "synthetic") {
 
   vae::ViTConfig too_many;
   too_many.transformer_mode = vae::ViTTransformerMode::kExact;
-  too_many.num_layers = 205;  // 15 + 20*205 > the 4096-op transaction.
+  too_many.num_layers = 205; // 15 + 20*205 > the 4096-op transaction.
   bool capacity_rejected = false;
   try {
     (void)VideoVaeDecoder::create(device, too_many);
@@ -363,8 +372,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_video_vae_decoder_contract, "synthetic") {
   std::vector<float> normalized(size_t(exact.in_channels) * 7, 0.0f);
   bool unloaded_decode_rejected = false;
   try {
-    (void)decoder.decode(normalized.data(), 7, 1, 1,
-                         vae::default_video_latents_mean(),
+    (void)decoder.decode(normalized.data(), 7, 1, 1, vae::default_video_latents_mean(),
                          vae::default_video_latents_std());
   } catch (const std::logic_error&) {
     unloaded_decode_rejected = true;
@@ -392,7 +400,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_audio_vae_decoder_cuda_off_contract, "synthetic") {
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore ||
       !physical.front().info().shader_int64) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore || !physical.front().info().shader_int64");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore || !physical.front().info().shader_int64");
     return;
   }
   DeviceOptions options;
@@ -420,9 +429,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_audio_vae_decoder_cuda_off_contract, "synthetic") {
     return;
   }
   const char* configured_path = std::getenv("SLOPFAB_AUDIO_VAE_PATH");
-  const std::filesystem::path checkpoint_path = configured_path != nullptr
-      ? configured_path
-      : "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
+  const std::filesystem::path checkpoint_path =
+      configured_path != nullptr ? configured_path
+                                 : "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
   if (!std::filesystem::exists(checkpoint_path)) {
     SKIP_MISSING_FIXTURE("unavailable prerequisite: !std::filesystem::exists(checkpoint_path)");
     return;
@@ -438,14 +447,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_audio_vae_decoder_cuda_off_contract, "synthetic") {
   std::vector<float> real_latent(size_t(2) * 32 * latent_length);
   for (size_t i = 0; i < real_latent.size(); ++i)
     real_latent[i] = float(int((i * 67) % 607) - 303) / 128.0f;
-  const vae::DecodedAudio first = decoder.decode(real_latent.data(),
-                                                  latent_length);
+  const vae::DecodedAudio first = decoder.decode(real_latent.data(), latent_length);
   const uint64_t first_digest = fnv64_floats(first.samples);
   CHECK(first_digest == 0x528f17a83d5ef7eeull);
   const uint64_t stable_reserved = decoder.allocator_reserved_bytes();
   const uint64_t stable_descriptors = decoder.descriptor_set_allocations();
-  const vae::DecodedAudio repeat = decoder.decode(real_latent.data(),
-                                                   latent_length);
+  const vae::DecodedAudio repeat = decoder.decode(real_latent.data(), latent_length);
   CHECK(first.samples == repeat.samples);
   CHECK(fnv64_floats(repeat.samples) == first_digest);
   CHECK(decoder.allocator_reserved_bytes() == stable_reserved);

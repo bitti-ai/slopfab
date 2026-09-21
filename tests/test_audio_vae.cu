@@ -35,7 +35,7 @@ namespace {
 
 using slopfab::cuda::DeviceBuffer;
 
-constexpr int kTaps = slopfab::cuda::kAudioAAKernel;  // 12
+constexpr int kTaps = slopfab::cuda::kAudioAAKernel; // 12
 
 // Deterministic pseudo-random fill; avoids <random> so results are identical
 // across standard library versions. Same generator as tests/test_kernels.cu.
@@ -79,7 +79,8 @@ std::vector<float> cpu_conv1d(const std::vector<float>& x, const std::vector<flo
         for (int ci = 0; ci < in_ch; ++ci) {
           for (int k = 0; k < kernel; ++k) {
             const int t = n + k * dilation - pad;
-            if (t < 0 || t >= len_in) continue;
+            if (t < 0 || t >= len_in)
+              continue;
             sum += static_cast<double>(x[(static_cast<size_t>(b) * in_ch + ci) * len_in + t]) *
                    w[(static_cast<size_t>(co) * in_ch + ci) * kernel + k];
           }
@@ -227,7 +228,7 @@ std::vector<float> kaiser_sinc12() {
   const double half_width = 0.3;
   const int half = kTaps / 2;
   const double a = 2.285 * (half - 1) * 3.14159265358979323846 * (4.0 * half_width) + 7.95;
-  const double beta = 0.1102 * (a - 8.7);  // a = 51.02 > 50
+  const double beta = 0.1102 * (a - 8.7); // a = 51.02 > 50
   // Zeroth-order modified Bessel of the first kind, series form.
   auto bessel_i0 = [](double v) {
     double sum = 1.0;
@@ -242,16 +243,17 @@ std::vector<float> kaiser_sinc12() {
   double total = 0.0;
   std::vector<double> raw(kTaps);
   for (int i = 0; i < kTaps; ++i) {
-    const double r = 2.0 * i / (kTaps - 1) - 1.0;  // symmetric window, periodic=False
+    const double r = 2.0 * i / (kTaps - 1) - 1.0; // symmetric window, periodic=False
     const double win = bessel_i0(beta * std::sqrt(1.0 - r * r)) / bessel_i0(beta);
     const double t = (i - half) + 0.5;
     const double arg = 2.0 * cutoff * t;
-    const double sinc = arg == 0.0 ? 1.0 : std::sin(3.14159265358979323846 * arg) /
-                                               (3.14159265358979323846 * arg);
+    const double sinc =
+        arg == 0.0 ? 1.0 : std::sin(3.14159265358979323846 * arg) / (3.14159265358979323846 * arg);
     raw[i] = 2.0 * cutoff * win * sinc;
     total += raw[i];
   }
-  for (int i = 0; i < kTaps; ++i) f[static_cast<size_t>(i)] = static_cast<float>(raw[i] / total);
+  for (int i = 0; i < kTaps; ++i)
+    f[static_cast<size_t>(i)] = static_cast<float>(raw[i] / total);
   return f;
 }
 
@@ -260,7 +262,7 @@ std::vector<float> kaiser_sinc12() {
 SLOPFAB_TEST(audio_snake_beta) {
   const int batch = 2;
   const int channels = 5;
-  const int len = 37;  // not a multiple of the block width
+  const int len = 37; // not a multiple of the block width
 
   // Values chosen so the wrong formulas are visibly different rather than
   // marginally so: alpha and beta both positive and negative in log space,
@@ -310,6 +312,7 @@ SLOPFAB_TEST(audio_conv1d) {
     int kernel;
     int dilation;
   };
+
   const Case cases[] = {{1, 1}, {3, 1}, {7, 1}, {3, 3}, {7, 3}, {11, 5}, {3, 5}};
 
   const int batch = 2;
@@ -319,7 +322,7 @@ SLOPFAB_TEST(audio_conv1d) {
     const std::vector<float> x = make_data(static_cast<size_t>(batch) * in_ch * len, 11u, 1.5f);
     DeviceBuffer<float> dx = to_device(x);
     for (const Case& c : cases) {
-      const int pad = (c.kernel * c.dilation - c.dilation) / 2;  // dac_utils.py:11-12
+      const int pad = (c.kernel * c.dilation - c.dilation) / 2; // dac_utils.py:11-12
       const int len_out = len + 2 * pad - c.dilation * (c.kernel - 1);
       const std::vector<float> w =
           make_data(static_cast<size_t>(out_ch) * in_ch * c.kernel, 23u + c.kernel, 0.9f);
@@ -333,7 +336,7 @@ SLOPFAB_TEST(audio_conv1d) {
       DeviceBuffer<float> dbias = to_device(bias);
       DeviceBuffer<float> dy(want.size());
       slopfab::cuda::launch_conv1d(dx.get(), dw.get(), dbias.get(), dy.get(), batch, in_ch, out_ch,
-                                  len, len_out, c.kernel, pad, c.dilation, nullptr);
+                                   len, len_out, c.kernel, pad, c.dilation, nullptr);
       SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
       const std::string what = "conv1d k" + std::to_string(c.kernel) + " d" +
                                std::to_string(c.dilation) + " L" + std::to_string(len);
@@ -350,8 +353,8 @@ SLOPFAB_TEST(audio_conv1d) {
     DeviceBuffer<float> dx2 = to_device(x);
     DeviceBuffer<float> dw = to_device(w);
     DeviceBuffer<float> dy(want.size());
-    slopfab::cuda::launch_conv1d(dx2.get(), dw.get(), nullptr, dy.get(), 1, in_ch, 1, len, len, 7, 3,
-                                1, nullptr);
+    slopfab::cuda::launch_conv1d(dx2.get(), dw.get(), nullptr, dy.get(), 1, in_ch, 1, len, len, 7,
+                                 3, 1, nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_CLOSE(want, to_host(dy), 2e-5, "conv1d no bias");
   }
@@ -366,12 +369,13 @@ SLOPFAB_TEST(audio_conv1d) {
     std::vector<float> x(static_cast<size_t>(len), 0.0f);
     x[7] = 1.0f;
     std::vector<float> w(static_cast<size_t>(kernel));
-    for (int k = 0; k < kernel; ++k) w[static_cast<size_t>(k)] = static_cast<float>(k + 1);
+    for (int k = 0; k < kernel; ++k)
+      w[static_cast<size_t>(k)] = static_cast<float>(k + 1);
     DeviceBuffer<float> dx3 = to_device(x);
     DeviceBuffer<float> dw = to_device(w);
     DeviceBuffer<float> dy(static_cast<size_t>(len));
-    slopfab::cuda::launch_conv1d(dx3.get(), dw.get(), nullptr, dy.get(), 1, 1, 1, len, len, kernel, 2,
-                                1, nullptr);
+    slopfab::cuda::launch_conv1d(dx3.get(), dw.get(), nullptr, dy.get(), 1, 1, 1, len, len, kernel,
+                                 2, 1, nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> got = to_host(dy);
     // y[n] = sum_k x[n + k - 2] w[k]; x[7]=1 => y[9-k] = w[k].
@@ -389,11 +393,12 @@ SLOPFAB_TEST(audio_conv_transpose1d) {
     int stride;
     int pad;
   };
+
   const Case cases[] = {{9, 5, 2}, {4, 2, 1}, {6, 3, 1}, {5, 2, 1}};
 
   const int batch = 2;
   const int in_ch = 4;
-  const int out_ch = 3;  // deliberately different from in_ch and not a multiple of 8
+  const int out_ch = 3; // deliberately different from in_ch and not a multiple of 8
   const int len = 37;
   const std::vector<float> x = make_data(static_cast<size_t>(batch) * in_ch * len, 41u, 1.2f);
   DeviceBuffer<float> dx = to_device(x);
@@ -411,7 +416,8 @@ SLOPFAB_TEST(audio_conv_transpose1d) {
     DeviceBuffer<float> dbias = to_device(bias);
     DeviceBuffer<float> dy(want.size());
     slopfab::cuda::launch_conv_transpose1d(dx.get(), dw.get(), dbias.get(), dy.get(), batch, in_ch,
-                                          out_ch, len, len_out, c.kernel, c.stride, c.pad, nullptr);
+                                           out_ch, len, len_out, c.kernel, c.stride, c.pad,
+                                           nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::string what =
         "conv_transpose1d k" + std::to_string(c.kernel) + " s" + std::to_string(c.stride);
@@ -445,7 +451,8 @@ SLOPFAB_TEST(audio_aa_activation) {
   // The recomputed filter must be normalised and symmetric; both properties are
   // load-bearing (see below) and both are cheap to assert.
   double total = 0.0;
-  for (int k = 0; k < kTaps; ++k) total += filter[static_cast<size_t>(k)];
+  for (int k = 0; k < kTaps; ++k)
+    total += filter[static_cast<size_t>(k)];
   CHECK_NEAR(total, 1.0, 1e-6);
   for (int k = 0; k < kTaps / 2; ++k) {
     CHECK_NEAR(filter[static_cast<size_t>(k)], filter[static_cast<size_t>(kTaps - 1 - k)], 1e-6);
@@ -475,13 +482,13 @@ SLOPFAB_TEST(audio_aa_activation) {
     DeviceBuffer<float> dy(want.size());
 
     slopfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(),
-                                           batch, channels, len, nullptr);
+                                            batch, channels, len, nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::string up_what = "aa_upsample_snake L" + std::to_string(len);
     CHECK_CLOSE(mid, to_host(dmid), 2e-5, up_what.c_str());
 
     slopfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), batch, channels, 2 * len,
-                                       len, nullptr);
+                                        len, nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::string what = "aa_activation L" + std::to_string(len);
     CHECK_CLOSE(want, to_host(dy), 2e-5, what.c_str());
@@ -495,7 +502,7 @@ SLOPFAB_TEST(audio_aa_activation) {
   {
     const int len = 24;
     const std::vector<float> ones(static_cast<size_t>(len), 0.375f);
-    const std::vector<float> zero_alpha(1, -20.0f);  // exp(-20) ~ 0: sin term vanishes
+    const std::vector<float> zero_alpha(1, -20.0f); // exp(-20) ~ 0: sin term vanishes
     const std::vector<float> big_beta(1, 20.0f);
     DeviceBuffer<float> dx = to_device(ones);
     DeviceBuffer<float> df = to_device(filter);
@@ -503,14 +510,17 @@ SLOPFAB_TEST(audio_aa_activation) {
     DeviceBuffer<float> db = to_device(big_beta);
     DeviceBuffer<float> dmid(static_cast<size_t>(2 * len));
     DeviceBuffer<float> dy(static_cast<size_t>(len));
-    slopfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1, 1,
-                                           len, nullptr);
-    slopfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len, nullptr);
+    slopfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1,
+                                            1, len, nullptr);
+    slopfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len,
+                                        nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> mid = to_host(dmid);
     const std::vector<float> got = to_host(dy);
-    for (size_t i = 0; i < mid.size(); ++i) CHECK_NEAR(mid[i], 0.375, 1e-5);
-    for (size_t i = 0; i < got.size(); ++i) CHECK_NEAR(got[i], 0.375, 1e-5);
+    for (size_t i = 0; i < mid.size(); ++i)
+      CHECK_NEAR(mid[i], 0.375, 1e-5);
+    for (size_t i = 0; i < got.size(); ++i)
+      CHECK_NEAR(got[i], 0.375, 1e-5);
   }
 
   // Length arithmetic for an odd input: the decimation keeps ceil(L/2).
@@ -534,13 +544,16 @@ SLOPFAB_TEST(audio_aa_activation) {
     DeviceBuffer<float> db = to_device(log_beta);
     DeviceBuffer<float> dmid(static_cast<size_t>(2 * len));
     DeviceBuffer<float> dy(static_cast<size_t>(len));
-    slopfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1, 1,
-                                           len, nullptr);
-    slopfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len, nullptr);
+    slopfab::cuda::launch_aa_upsample_snake(dx.get(), df.get(), da.get(), db.get(), dmid.get(), 1,
+                                            1, len, nullptr);
+    slopfab::cuda::launch_aa_downsample(dmid.get(), df.get(), dy.get(), 1, 1, 2 * len, len,
+                                        nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     bool finite = true;
-    for (float v : to_host(dmid)) finite = finite && std::isfinite(v);
-    for (float v : to_host(dy)) finite = finite && std::isfinite(v);
+    for (float v : to_host(dmid))
+      finite = finite && std::isfinite(v);
+    for (float v : to_host(dy))
+      finite = finite && std::isfinite(v);
     CHECK_MSG(finite, "anti-alias wrapper produced a non-finite sample on a +/-1e6 input");
   }
 }
@@ -551,7 +564,8 @@ SLOPFAB_TEST(audio_elementwise) {
   const std::vector<float> b = make_data(n, 4u, 2.0f);
 
   std::vector<float> want_add(n);
-  for (size_t i = 0; i < n; ++i) want_add[i] = a[i] + b[i];
+  for (size_t i = 0; i < n; ++i)
+    want_add[i] = a[i] + b[i];
   DeviceBuffer<float> da = to_device(a);
   DeviceBuffer<float> db = to_device(b);
   slopfab::cuda::launch_add_inplace(da.get(), db.get(), n, nullptr);
@@ -561,7 +575,8 @@ SLOPFAB_TEST(audio_elementwise) {
   std::vector<float> want_scale(n);
   // Multiply by the reciprocal, exactly as the kernel does: `x / 3.0f` differs
   // in the last bit and the clamp check below runs at zero tolerance.
-  for (size_t i = 0; i < n; ++i) want_scale[i] = want_add[i] * (1.0f / 3.0f);
+  for (size_t i = 0; i < n; ++i)
+    want_scale[i] = want_add[i] * (1.0f / 3.0f);
   slopfab::cuda::launch_scale_inplace(da.get(), 1.0f / 3.0f, n, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(want_scale, to_host(da), 1e-6, "scale_inplace");
@@ -608,7 +623,8 @@ std::vector<float> reference_latents(int batch, int channels, int len, uint32_t 
 }
 
 std::string checkpoint_path() {
-  if (const char* env = std::getenv("SLOPFAB_AUDIO_VAE")) return env;
+  if (const char* env = std::getenv("SLOPFAB_AUDIO_VAE"))
+    return env;
   return "weights/vae/minimax_h3_audio_vae_fp32.safetensors";
 }
 
@@ -616,9 +632,8 @@ std::string checkpoint_path() {
 // float64 transcription of the reference decode path — written from
 // ref/FL2VA/audio_vae/*.py, not from this port. Sample index is into the
 // interleaved stream, so even indices are batch item 0.
-const int kGoldenIndex[] = {0,    1,    2,    3,    4,    5,    6,    7,
-                            400,  401,  800,  801,  1200, 1201, 2000, 2001,
-                            3000, 3001, 4000, 4001, 4796, 4797, 4798, 4799};
+const int kGoldenIndex[] = {0,    1,    2,    3,    4,    5,    6,    7,    400,  401,  800,  801,
+                            1200, 1201, 2000, 2001, 3000, 3001, 4000, 4001, 4796, 4797, 4798, 4799};
 const float kGolden[] = {
     +0.06559666f, +0.00993082f, -0.06596538f, -0.01808799f, -0.09343581f, -0.04275811f,
     -0.06899163f, -0.07203731f, -0.09627534f, +0.10140902f, -0.08329765f, -0.00430612f,
@@ -687,7 +702,8 @@ SLOPFAB_TEST(audio_decoder_checkpoint) {
   double peak = 0.0;
   bool all_finite = true;
   for (float v : audio.samples) {
-    if (!std::isfinite(v)) all_finite = false;
+    if (!std::isfinite(v))
+      all_finite = false;
     sum_sq += static_cast<double>(v) * v;
     peak = std::max(peak, std::abs(static_cast<double>(v)));
   }
@@ -712,7 +728,8 @@ SLOPFAB_TEST(audio_decoder_checkpoint) {
     auto within_tolerance = [](const std::vector<float>& want_v, const std::vector<float>& got_v) {
       for (size_t i = 0; i < want_v.size(); ++i) {
         const double d = std::abs(static_cast<double>(want_v[i]) - got_v[i]);
-        if (d > 1e-5 + 1e-4 * std::abs(static_cast<double>(want_v[i]))) return false;
+        if (d > 1e-5 + 1e-4 * std::abs(static_cast<double>(want_v[i])))
+          return false;
       }
       return true;
     };
@@ -741,7 +758,8 @@ SLOPFAB_TEST(audio_decoder_checkpoint) {
     bool finite = true;
     double worst = 0.0;
     for (float v : quiet.samples) {
-      if (!std::isfinite(v)) finite = false;
+      if (!std::isfinite(v))
+        finite = false;
       worst = std::max(worst, std::abs(static_cast<double>(v)));
     }
     CHECK_MSG(finite, "constant latent decoded to a non-finite sample");
@@ -780,7 +798,8 @@ SLOPFAB_TEST(audio_decoder_checkpoint) {
     double peak10 = 0.0;
     bool finite = true;
     for (float v : timed.samples) {
-      if (!std::isfinite(v)) finite = false;
+      if (!std::isfinite(v))
+        finite = false;
       peak10 = std::max(peak10, std::abs(static_cast<double>(v)));
     }
     CHECK_MSG(finite, "10 s decode produced a non-finite sample");
@@ -811,7 +830,8 @@ SLOPFAB_TEST(audio_decoder_nf4_checkpoint) {
   CHECK(audio.sample_rate == 32000);
   CHECK(audio.num_frames() == 2400);
   bool finite = true;
-  for (float sample : audio.samples) finite = finite && std::isfinite(sample);
+  for (float sample : audio.samples)
+    finite = finite && std::isfinite(sample);
   CHECK_MSG(finite, "NF4 audio VAE emitted non-finite sample");
   slopfab::SafeTensors fp32_ckpt;
   fp32_ckpt.open(checkpoint_path());
@@ -821,16 +841,20 @@ SLOPFAB_TEST(audio_decoder_nf4_checkpoint) {
   double err2 = 0.0, ref2 = 0.0, dot = 0.0, got2 = 0.0, max_abs = 0.0;
   for (size_t i = 0; i < audio.samples.size(); ++i) {
     const double a = reference.samples[i], b = audio.samples[i], e = b - a;
-    err2 += e * e; ref2 += a * a; dot += a * b; got2 += b * b;
+    err2 += e * e;
+    ref2 += a * a;
+    dot += a * b;
+    got2 += b * b;
     max_abs = std::max(max_abs, std::abs(e));
   }
   const double rel_l2 = std::sqrt(err2 / ref2);
   const double corr = dot / std::sqrt(ref2 * got2);
-  std::fprintf(stderr, "  BF16 audio VAE vs FP32: rel_L2 %.6f corr %.6f max %.6f\n",
-               rel_l2, corr, max_abs);
+  std::fprintf(stderr, "  BF16 audio VAE vs FP32: rel_L2 %.6f corr %.6f max %.6f\n", rel_l2, corr,
+               max_abs);
   CHECK_MSG(rel_l2 < 0.05, "BF16 audio VAE rel_L2 %.6f exceeds 0.05", rel_l2);
   CHECK_MSG(corr > 0.999, "BF16 audio VAE correlation %.6f is below 0.999", corr);
 }
 
-}  // namespace
+} // namespace
+
 // `main` lives in tests/test_kernels.cu; this translation unit only registers.

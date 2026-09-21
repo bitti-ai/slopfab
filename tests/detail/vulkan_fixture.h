@@ -43,18 +43,20 @@
 #include "../../src/vulkan/tensor_validation.h"
 #include "../../src/vulkan/sage_selection.h"
 
-
 namespace {
 
 std::vector<uint32_t> load_spirv(const char* path) {
   std::ifstream file(path, std::ios::binary | std::ios::ate);
-  if (!file) throw std::runtime_error(std::string("cannot open SPIR-V: ") + path);
+  if (!file)
+    throw std::runtime_error(std::string("cannot open SPIR-V: ") + path);
   const std::streamoff length = file.tellg();
-  if (length <= 0 || (length % 4) != 0) throw std::runtime_error("invalid SPIR-V byte size");
+  if (length <= 0 || (length % 4) != 0)
+    throw std::runtime_error("invalid SPIR-V byte size");
   file.seekg(0);
   std::vector<uint32_t> words(static_cast<size_t>(length) / 4);
   file.read(reinterpret_cast<char*>(words.data()), length);
-  if (!file) throw std::runtime_error("cannot read SPIR-V");
+  if (!file)
+    throw std::runtime_error("cannot read SPIR-V");
   return words;
 }
 
@@ -111,4 +113,4 @@ uint16_t reference_bf16(float value) {
 
 #endif
 
-}  // namespace
+} // namespace

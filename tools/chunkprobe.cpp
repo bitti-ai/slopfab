@@ -50,7 +50,7 @@ struct Geometry {
 
 slopfab::GenerateRequest request_for(const Geometry& g, int frames) {
   slopfab::GenerateRequest r;
-  r.prompt = "chunkprobe";  // only the length-independent geometry is used
+  r.prompt = "chunkprobe"; // only the length-independent geometry is used
   r.aspect_w = g.aspect_w;
   r.aspect_h = g.aspect_h;
   r.num_frames = frames;
@@ -79,7 +79,8 @@ void parse_geometry(int argc, char** argv, Geometry* g, std::vector<std::string>
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
     auto next = [&](const char* what) -> const char* {
-      if (i + 1 >= argc) throw std::runtime_error(std::string(what) + " needs a value");
+      if (i + 1 >= argc)
+        throw std::runtime_error(std::string(what) + " needs a value");
       return argv[++i];
     };
     if (arg == "--frames") {
@@ -91,15 +92,18 @@ void parse_geometry(int argc, char** argv, Geometry* g, std::vector<std::string>
     } else if (arg == "--seed") {
       g->seed = std::strtoull(next("--seed"), nullptr, 10);
     } else if (arg == "--index") {
-      if (index == nullptr) throw std::runtime_error("--index is not valid here");
+      if (index == nullptr)
+        throw std::runtime_error("--index is not valid here");
       *index = std::atoi(next("--index"));
     } else if (arg == "--out") {
-      if (out_path == nullptr) throw std::runtime_error("--out is not valid here");
+      if (out_path == nullptr)
+        throw std::runtime_error("--out is not valid here");
       *out_path = next("--out");
     } else if (arg == "--aspect") {
       const std::string v = next("--aspect");
       const size_t colon = v.find(':');
-      if (colon == std::string::npos) throw std::runtime_error("--aspect wants W:H, e.g. 1:1");
+      if (colon == std::string::npos)
+        throw std::runtime_error("--aspect wants W:H, e.g. 1:1");
       g->aspect_w = std::atoi(v.substr(0, colon).c_str());
       g->aspect_h = std::atoi(v.substr(colon + 1).c_str());
     } else if (!arg.empty() && arg.front() == '-') {
@@ -195,18 +199,18 @@ void report_pair(const char* label, const std::vector<float>& ref, const std::ve
   const slopfab::CompareStats s = slopfab::compare(ref, act);
   double dot = 0.0, ref_sq = 0.0, act_sq = 0.0;
   for (size_t i = 0; i < ref.size(); ++i) {
-    if (!std::isfinite(ref[i]) || !std::isfinite(act[i])) continue;
+    if (!std::isfinite(ref[i]) || !std::isfinite(act[i]))
+      continue;
     dot += static_cast<double>(ref[i]) * act[i];
     ref_sq += static_cast<double>(ref[i]) * ref[i];
     act_sq += static_cast<double>(act[i]) * act[i];
   }
-  const double cosine = ref_sq > 0.0 && act_sq > 0.0
-                            ? dot / std::sqrt(ref_sq * act_sq)
-                            : 0.0;
-  std::printf("%-6s rel_L2 %.4f   cosine %.4f   correlation %.4f   mean %+.4f vs %+.4f   std %.4f vs %.4f   "
-              "max|diff| %.3e\n",
-              label, s.rel_l2, cosine, s.correlation, mr.mean, ma.mean, mr.std_dev, ma.std_dev,
-              s.max_abs_err);
+  const double cosine = ref_sq > 0.0 && act_sq > 0.0 ? dot / std::sqrt(ref_sq * act_sq) : 0.0;
+  std::printf(
+      "%-6s rel_L2 %.4f   cosine %.4f   correlation %.4f   mean %+.4f vs %+.4f   std %.4f vs %.4f   "
+      "max|diff| %.3e\n",
+      label, s.rel_l2, cosine, s.correlation, mr.mean, ma.mean, mr.std_dev, ma.std_dev,
+      s.max_abs_err);
 }
 
 // Norm of the difference between consecutive latent frames, normalised by the
@@ -227,10 +231,13 @@ std::vector<double> temporal_step_profile(const std::vector<float>& rows, int fr
     out.push_back(std::sqrt(acc / slice_width));
   }
   double mean = 0.0;
-  for (double v : out) mean += v;
-  if (!out.empty()) mean /= static_cast<double>(out.size());
+  for (double v : out)
+    mean += v;
+  if (!out.empty())
+    mean /= static_cast<double>(out.size());
   if (mean > 0.0) {
-    for (double& v : out) v /= mean;
+    for (double& v : out)
+      v /= mean;
   }
   return out;
 }
@@ -249,17 +256,19 @@ int cmd_slice(int argc, char** argv) {
   std::string out_path;
   int index = -1;
   parse_geometry(argc, argv, &g, nullptr, &out_path, &index);
-  if (out_path.empty()) throw std::runtime_error("slice needs --out <file.safetensors>");
-  if (index < 0) throw std::runtime_error("slice needs --index <k>");
+  if (out_path.empty())
+    throw std::runtime_error("slice needs --out <file.safetensors>");
+  if (index < 0)
+    throw std::runtime_error("slice needs --index <k>");
 
   const Resolved r = resolve(g);
   std::vector<float> video;
   std::vector<float> audio;
   slopfab::dit::slice_chunk_noise(g.seed, r.full.layout, r.chunk.layout, r.plan, index, &video,
-                                 &audio);
-  slopfab::write_safetensors(
-      out_path, {{"video_rows", {r.chunk.layout.num_video_rows, 96}, video},
-                 {"audio_rows", {r.chunk.layout.num_audio_rows, 32}, audio}});
+                                  &audio);
+  slopfab::write_safetensors(out_path,
+                             {{"video_rows", {r.chunk.layout.num_video_rows, 96}, video},
+                              {"audio_rows", {r.chunk.layout.num_audio_rows, 32}, audio}});
   std::printf("chunk %d  latent frames [%d, %d)  audio latents [%d, %d)  -> %s\n", index,
               r.plan.frame_offset[static_cast<size_t>(index)],
               r.plan.frame_offset[static_cast<size_t>(index)] + r.chunk.layout.num_latent_frames,
@@ -279,19 +288,19 @@ int cmd_noise(int argc, char** argv) {
   Geometry g;
   std::string out_path;
   parse_geometry(argc, argv, &g, nullptr, &out_path, nullptr);
-  if (out_path.empty()) throw std::runtime_error("noise needs --out <file.safetensors>");
+  if (out_path.empty())
+    throw std::runtime_error("noise needs --out <file.safetensors>");
 
   const Resolved r = resolve(g);
   const slopfab::dit::SequenceLayout& fl = r.full.layout;
-  const std::vector<float> field =
-      slopfab::sampler::video_noise(g.seed, fl.num_latent_frames, fl.latent_height, fl.latent_width,
-                                   24);
+  const std::vector<float> field = slopfab::sampler::video_noise(
+      g.seed, fl.num_latent_frames, fl.latent_height, fl.latent_width, 24);
   std::vector<float> video(static_cast<size_t>(fl.num_video_rows) * 96);
   slopfab::dit::patchify_video(field.data(), fl, video.data());
   const std::vector<float> audio = slopfab::sampler::audio_noise(g.seed, fl.num_audio_latents, 32);
 
   slopfab::write_safetensors(out_path, {{"video_rows", {fl.num_video_rows, 96}, video},
-                                       {"audio_rows", {fl.num_audio_rows, 32}, audio}});
+                                        {"audio_rows", {fl.num_audio_rows, 32}, audio}});
   std::printf("noise     seed %llu at the full geometry -> %s\n",
               static_cast<unsigned long long>(g.seed), out_path.c_str());
   return 0;
@@ -302,7 +311,8 @@ int cmd_blend(int argc, char** argv) {
   std::string out_path;
   std::vector<std::string> inputs;
   parse_geometry(argc, argv, &g, &inputs, &out_path, nullptr);
-  if (out_path.empty()) throw std::runtime_error("blend needs --out <file.safetensors>");
+  if (out_path.empty())
+    throw std::runtime_error("blend needs --out <file.safetensors>");
 
   const Resolved r = resolve(g);
   if (static_cast<int>(inputs.size()) != r.plan.num_chunks) {
@@ -322,10 +332,10 @@ int cmd_blend(int argc, char** argv) {
   std::vector<float> video_out;
   std::vector<float> audio_out;
   slopfab::dit::blend_chunks(r.full.layout, r.chunk.layout, r.plan, video, audio, &video_out,
-                            &audio_out);
-  slopfab::write_safetensors(
-      out_path, {{"video_rows", {r.full.layout.num_video_rows, 96}, video_out},
-                 {"audio_rows", {r.full.layout.num_audio_rows, 32}, audio_out}});
+                             &audio_out);
+  slopfab::write_safetensors(out_path,
+                             {{"video_rows", {r.full.layout.num_video_rows, 96}, video_out},
+                              {"audio_rows", {r.full.layout.num_audio_rows, 32}, audio_out}});
   const Moments mv = moments(video_out.data(), video_out.size());
   const Moments ma = moments(audio_out.data(), audio_out.size());
   std::printf("blended   %d chunks -> %d video rows, %d audio rows -> %s\n", r.plan.num_chunks,
@@ -339,7 +349,8 @@ int cmd_stats(int argc, char** argv) {
   Geometry g;
   std::vector<std::string> inputs;
   parse_geometry(argc, argv, &g, &inputs, nullptr, nullptr);
-  if (inputs.size() != 2) throw std::runtime_error("stats needs a reference and an actual dump");
+  if (inputs.size() != 2)
+    throw std::runtime_error("stats needs a reference and an actual dump");
 
   const Resolved r = resolve(g);
   const slopfab::dit::SequenceLayout& fl = r.full.layout;
@@ -395,7 +406,8 @@ int cmd_stats(int argc, char** argv) {
         // The overlap the k-th chunk shares with its predecessor spans latent
         // frames [start, start + overlap); the steps that cross it are the
         // ones a hard cut would show up in.
-        if (static_cast<int>(i) >= start - 1 && static_cast<int>(i) < start + r.plan.frame_overlap) {
+        if (static_cast<int>(i) >= start - 1 &&
+            static_cast<int>(i) < start + r.plan.frame_overlap) {
           seam = true;
         }
       }
@@ -407,32 +419,31 @@ int cmd_stats(int argc, char** argv) {
 }
 
 void print_usage() {
-  std::printf(
-      "slopfab_chunkprobe - frame-banding quality probe (host only, no CUDA)\n"
-      "\n"
-      "usage: slopfab_chunkprobe <plan|noise|slice|blend|stats> [options]\n"
-      "\n"
-      "  plan                            print both geometries and the chunk placement\n"
-      "  noise  --out <f>                the full request's own seeded draw, so that\n"
-      "                                  blending the slices back can be checked\n"
-      "  slice  --index <k> --out <f>    chunk k's initial latents, sliced from the\n"
-      "                                  full request's own noise draw\n"
-      "  blend  --out <f> <a> <b> <c>    cross-fade the chunks' denoised latents\n"
-      "  stats  <reference> <actual>     relative L2, correlation, per-channel\n"
-      "                                  statistics and the per-frame seam profile\n"
-      "\n"
-      "geometry (shared by every subcommand; the defaults are the probe's own):\n"
-      "  --frames <n>        the full request, snapped up to 17k+5 (default 45 -> 56)\n"
-      "  --chunk-frames <n>  one chunk, snapped the same way   (default 15 -> 22)\n"
-      "  --chunks <n>        how many chunks                   (default 3)\n"
-      "  --aspect <W:H>      display aspect                    (default 1:1)\n"
-      "  --seed <n>          noise seed                        (default 11)\n"
-      "\n"
-      "This binary links slopfab_core only: it initialises no CUDA context and reads\n"
-      "no checkpoint, so it is safe to run while the card is busy.\n");
+  std::printf("slopfab_chunkprobe - frame-banding quality probe (host only, no CUDA)\n"
+              "\n"
+              "usage: slopfab_chunkprobe <plan|noise|slice|blend|stats> [options]\n"
+              "\n"
+              "  plan                            print both geometries and the chunk placement\n"
+              "  noise  --out <f>                the full request's own seeded draw, so that\n"
+              "                                  blending the slices back can be checked\n"
+              "  slice  --index <k> --out <f>    chunk k's initial latents, sliced from the\n"
+              "                                  full request's own noise draw\n"
+              "  blend  --out <f> <a> <b> <c>    cross-fade the chunks' denoised latents\n"
+              "  stats  <reference> <actual>     relative L2, correlation, per-channel\n"
+              "                                  statistics and the per-frame seam profile\n"
+              "\n"
+              "geometry (shared by every subcommand; the defaults are the probe's own):\n"
+              "  --frames <n>        the full request, snapped up to 17k+5 (default 45 -> 56)\n"
+              "  --chunk-frames <n>  one chunk, snapped the same way   (default 15 -> 22)\n"
+              "  --chunks <n>        how many chunks                   (default 3)\n"
+              "  --aspect <W:H>      display aspect                    (default 1:1)\n"
+              "  --seed <n>          noise seed                        (default 11)\n"
+              "\n"
+              "This binary links slopfab_core only: it initialises no CUDA context and reads\n"
+              "no checkpoint, so it is safe to run while the card is busy.\n");
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
   if (argc < 2) {
@@ -445,11 +456,16 @@ int main(int argc, char** argv) {
     return 0;
   }
   try {
-    if (command == "plan") return cmd_plan(argc - 2, argv + 2);
-    if (command == "noise") return cmd_noise(argc - 2, argv + 2);
-    if (command == "slice") return cmd_slice(argc - 2, argv + 2);
-    if (command == "blend") return cmd_blend(argc - 2, argv + 2);
-    if (command == "stats") return cmd_stats(argc - 2, argv + 2);
+    if (command == "plan")
+      return cmd_plan(argc - 2, argv + 2);
+    if (command == "noise")
+      return cmd_noise(argc - 2, argv + 2);
+    if (command == "slice")
+      return cmd_slice(argc - 2, argv + 2);
+    if (command == "blend")
+      return cmd_blend(argc - 2, argv + 2);
+    if (command == "stats")
+      return cmd_stats(argc - 2, argv + 2);
     std::fprintf(stderr, "slopfab_chunkprobe: unknown command '%s'\n\n", argv[1]);
     print_usage();
     return 2;

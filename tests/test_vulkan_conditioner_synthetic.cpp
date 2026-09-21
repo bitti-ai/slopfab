@@ -56,8 +56,11 @@ SLOPFAB_TEST_CATEGORY(vulkan_qwen_extended_prompt_attention, "synthetic") {
   batch.submit().wait();
   std::vector<uint16_t> result = std::move(zeros);
   context.download_bytes(out, result.data(), result.size() * sizeof(uint16_t));
-  CHECK(std::all_of(result.begin(), result.begin() + query_heads * dim,
-                    [](uint16_t x) { return x == reference_bf16(1.0f); }));
+  CHECK(std::all_of(result.begin(), result.begin() + query_heads * dim, [](uint16_t x) {
+    return x == reference_bf16(1.0f);
+  }));
   CHECK(std::all_of(result.begin() + query_heads * dim, result.begin() + 2 * query_heads * dim,
-                    [](uint16_t x) { return x == reference_bf16(2.0f); }));
+                    [](uint16_t x) {
+                      return x == reference_bf16(2.0f);
+                    }));
 }

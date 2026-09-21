@@ -45,7 +45,6 @@
 #include "slopfab/text/qwen_vision.h"
 #include "slopfab/safetensors.h"
 
-
 namespace {
 
 using slopfab::cuda::DeviceBuffer;
@@ -54,20 +53,26 @@ using slopfab::test::make_data;
 
 struct CublasScope {
   cublasHandle_t h = nullptr;
-  CublasScope() { SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&h)); }
-  ~CublasScope() { slopfab::cuda::cublas_destroy(h); }
+
+  CublasScope() {
+    SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&h));
+  }
+
+  ~CublasScope() {
+    slopfab::cuda::cublas_destroy(h);
+  }
 };
 
 bool test_is_sm120() {
   return slopfab::cuda::current_device_compute_capability() == 120;
 }
 
-#define REQUIRE_SM120_TEST(feature)                                      \
-  do {                                                                    \
-    if (!test_is_sm120()) {                                               \
-      SKIP_UNSUPPORTED_HARDWARE("%s requires the shipped SM120 image", feature); \
-      return;                                                             \
-    }                                                                     \
+#define REQUIRE_SM120_TEST(feature)                                                                \
+  do {                                                                                             \
+    if (!test_is_sm120()) {                                                                        \
+      SKIP_UNSUPPORTED_HARDWARE("%s requires the shipped SM120 image", feature);                   \
+      return;                                                                                      \
+    }                                                                                              \
   } while (false)
 
 // --- host/device plumbing ---------------------------------------------------
@@ -78,14 +83,19 @@ bool test_is_sm120() {
 struct BfBuf {
   DeviceBuffer<uint16_t> raw;
 
-  explicit BfBuf(size_t n) : raw(n) {}
+  explicit BfBuf(size_t n) : raw(n) {
+  }
+
   explicit BfBuf(const std::vector<float>& host) : raw(host.size()) {
     std::vector<uint16_t> bits(host.size());
-    for (size_t i = 0; i < host.size(); ++i) bits[i] = slopfab::f32_to_bf16(host[i]);
+    for (size_t i = 0; i < host.size(); ++i)
+      bits[i] = slopfab::f32_to_bf16(host[i]);
     raw.copy_from_host(bits.data(), bits.size());
   }
 
-  __nv_bfloat16* p() { return reinterpret_cast<__nv_bfloat16*>(raw.get()); }
+  __nv_bfloat16* p() {
+    return reinterpret_cast<__nv_bfloat16*>(raw.get());
+  }
 
   std::vector<uint16_t> bits() const {
     std::vector<uint16_t> h(raw.size());
@@ -96,7 +106,8 @@ struct BfBuf {
   std::vector<float> host() const {
     const std::vector<uint16_t> b = bits();
     std::vector<float> out(b.size());
-    for (size_t i = 0; i < b.size(); ++i) out[i] = slopfab::bf16_to_f32(b[i]);
+    for (size_t i = 0; i < b.size(); ++i)
+      out[i] = slopfab::bf16_to_f32(b[i]);
     return out;
   }
 };
@@ -105,7 +116,8 @@ struct BfBuf {
 // for a bf16 buffer is rounded on the host first.
 std::vector<float> bf16_round(const std::vector<float>& v) {
   std::vector<float> out(v.size());
-  for (size_t i = 0; i < v.size(); ++i) out[i] = slopfab::bf16_to_f32(slopfab::f32_to_bf16(v[i]));
+  for (size_t i = 0; i < v.size(); ++i)
+    out[i] = slopfab::bf16_to_f32(slopfab::f32_to_bf16(v[i]));
   return out;
 }
 
@@ -131,7 +143,8 @@ DeviceBuffer<int32_t> to_device_i32(const std::vector<int32_t>& host) {
 // that two candidate references are far apart.
 double max_abs_diff(const std::vector<float>& a, const std::vector<float>& b) {
   double worst = 0.0;
-  for (size_t i = 0; i < a.size(); ++i) worst = std::max(worst, std::fabs(double(a[i]) - b[i]));
+  for (size_t i = 0; i < a.size(); ++i)
+    worst = std::max(worst, std::fabs(double(a[i]) - b[i]));
   return worst;
 }
 
@@ -218,8 +231,8 @@ std::vector<float> cpu_attention(const std::vector<float>& q, const std::vector<
 
 // Independent one-head Sol-Attn oracle for routing/correction tests.
 std::vector<float> cpu_sol_attention(const std::vector<float>& q, const std::vector<float>& k,
-                                     const std::vector<float>& v, int seq, int prefix,
-                                     float scale, float beta, int* selected, int* rejected) {
+                                     const std::vector<float>& v, int seq, int prefix, float scale,
+                                     float beta, int* selected, int* rejected) {
   constexpr int block = 64, dim = 128;
   const int nb = (seq + block - 1) / block;
   std::vector<float> km(size_t(nb) * dim), vs(size_t(nb) * dim), mean(dim), var(dim);
@@ -230,12 +243,13 @@ std::vector<float> cpu_sol_attention(const std::vector<float>& q, const std::vec
         km[size_t(kb) * dim + d] += k[size_t(r) * dim + d];
         vs[size_t(kb) * dim + d] += v[size_t(r) * dim + d];
       }
-      km[size_t(kb) * dim + d] = slopfab::bf16_to_f32(slopfab::f32_to_bf16(
-          km[size_t(kb) * dim + d] / float(hi - lo)));
+      km[size_t(kb) * dim + d] =
+          slopfab::bf16_to_f32(slopfab::f32_to_bf16(km[size_t(kb) * dim + d] / float(hi - lo)));
     }
   }
   for (int d = 0; d < dim; ++d) {
-    for (int kb = 0; kb < nb; ++kb) mean[d] += km[size_t(kb) * dim + d] / float(nb);
+    for (int kb = 0; kb < nb; ++kb)
+      mean[d] += km[size_t(kb) * dim + d] / float(nb);
     for (int kb = 0; kb < nb; ++kb) {
       const float x = km[size_t(kb) * dim + d] - mean[d];
       var[d] += x * x / float(nb);
@@ -247,7 +261,8 @@ std::vector<float> cpu_sol_attention(const std::vector<float>& q, const std::vec
     std::fill(qm.begin(), qm.end(), 0.0f);
     double mu = 0, vv = 0;
     for (int d = 0; d < dim; ++d) {
-      for (int r = qlo; r < qhi; ++r) qm[d] += q[size_t(r) * dim + d];
+      for (int r = qlo; r < qhi; ++r)
+        qm[d] += q[size_t(r) * dim + d];
       qm[d] /= float(qhi - qlo);
       mu += double(qm[d]) * mean[d];
       vv += double(qm[d]) * qm[d] * var[d];
@@ -257,21 +272,25 @@ std::vector<float> cpu_sol_attention(const std::vector<float>& q, const std::vec
     std::vector<uint8_t> take(nb);
     for (int kb = 0; kb < nb; ++kb) {
       double proxy = 0;
-      for (int d = 0; d < dim; ++d) proxy += double(qm[d]) * km[size_t(kb) * dim + d];
-      take[kb] = qlo < prefix || kb * block < prefix || std::abs(qb - kb) <= 1 ||
-                 proxy * scale > tau;
-      if (row == qlo) take[kb] ? ++*selected : ++*rejected;
+      for (int d = 0; d < dim; ++d)
+        proxy += double(qm[d]) * km[size_t(kb) * dim + d];
+      take[kb] =
+          qlo < prefix || kb * block < prefix || std::abs(qb - kb) <= 1 || proxy * scale > tau;
+      if (row == qlo)
+        take[kb] ? ++*selected : ++*rejected;
       const int lo = kb * block, hi = std::min(lo + block, seq);
       if (take[kb]) {
         for (int kr = lo; kr < hi; ++kr) {
           double dot = 0;
-          for (int d = 0; d < dim; ++d) dot += double(q[size_t(row) * dim + d]) * k[size_t(kr) * dim + d];
+          for (int d = 0; d < dim; ++d)
+            dot += double(q[size_t(row) * dim + d]) * k[size_t(kr) * dim + d];
           logits[kr] = float(dot * scale);
           max_logit = std::max(max_logit, double(logits[kr]));
         }
       } else {
         double dot = 0;
-        for (int d = 0; d < dim; ++d) dot += double(q[size_t(row) * dim + d]) * km[size_t(kb) * dim + d];
+        for (int d = 0; d < dim; ++d)
+          dot += double(q[size_t(row) * dim + d]) * km[size_t(kb) * dim + d];
         logits[lo] = float(dot * scale);
         max_logit = std::max(max_logit, double(logits[lo]));
       }
@@ -279,15 +298,21 @@ std::vector<float> cpu_sol_attention(const std::vector<float>& q, const std::vec
     double denom = 0;
     for (int kb = 0; kb < nb; ++kb) {
       const int lo = kb * block, hi = std::min(lo + block, seq);
-      if (take[kb]) for (int kr = lo; kr < hi; ++kr) denom += std::exp(logits[kr] - max_logit);
-      else denom += (hi - lo) * std::exp(logits[lo] - max_logit);
+      if (take[kb])
+        for (int kr = lo; kr < hi; ++kr)
+          denom += std::exp(logits[kr] - max_logit);
+      else
+        denom += (hi - lo) * std::exp(logits[lo] - max_logit);
     }
     for (int d = 0; d < dim; ++d) {
       double num = 0;
       for (int kb = 0; kb < nb; ++kb) {
         const int lo = kb * block, hi = std::min(lo + block, seq);
-        if (take[kb]) for (int kr = lo; kr < hi; ++kr) num += std::exp(logits[kr] - max_logit) * v[size_t(kr) * dim + d];
-        else num += std::exp(logits[lo] - max_logit) * vs[size_t(kb) * dim + d];
+        if (take[kb])
+          for (int kr = lo; kr < hi; ++kr)
+            num += std::exp(logits[kr] - max_logit) * v[size_t(kr) * dim + d];
+        else
+          num += std::exp(logits[lo] - max_logit) * vs[size_t(kb) * dim + d];
       }
       out[size_t(row) * dim + d] = float(num / denom);
     }
@@ -301,7 +326,8 @@ std::vector<float> cpu_matmul_nt(const std::vector<float>& A, const std::vector<
   for (int m = 0; m < M; ++m) {
     for (int n = 0; n < N; ++n) {
       double acc = 0.0;
-      for (int k = 0; k < K; ++k) acc += double(A[size_t(m) * K + k]) * B[size_t(n) * K + k];
+      for (int k = 0; k < K; ++k)
+        acc += double(A[size_t(m) * K + k]) * B[size_t(n) * K + k];
       C[size_t(m) * N + n] = float(acc);
     }
   }
@@ -319,7 +345,8 @@ const int kSylvester2[2][2] = {{1, 1}, {1, -1}};
 // code at all with the butterfly it checks.
 std::vector<float> kron_power(const int* base, int base_n, int times) {
   std::vector<float> m(size_t(base_n) * base_n);
-  for (int i = 0; i < base_n * base_n; ++i) m[i] = float(base[i]);
+  for (int i = 0; i < base_n * base_n; ++i)
+    m[i] = float(base[i]);
   int n = base_n;
   for (int t = 1; t < times; ++t) {
     const int next = n * base_n;
@@ -328,8 +355,8 @@ std::vector<float> kron_power(const int* base, int base_n, int times) {
       for (int j = 0; j < base_n; ++j) {
         for (int r = 0; r < n; ++r) {
           for (int c = 0; c < n; ++c) {
-            out[size_t(i * n + r) * next + (j * n + c)] = float(base[i * base_n + j]) *
-                                                          m[size_t(r) * n + c];
+            out[size_t(i * n + r) * next + (j * n + c)] =
+                float(base[i * base_n + j]) * m[size_t(r) * n + c];
           }
         }
       }
@@ -342,8 +369,7 @@ std::vector<float> kron_power(const int* base, int base_n, int times) {
 
 // --- tests ------------------------------------------------------------------
 
-#if 0  // Removed: canonical H3 tables are host-built and tested in test_packing.cpp.
-
+#if 0 // Removed: canonical H3 tables are host-built and tested in test_packing.cpp.
 
 #endif
 
@@ -360,11 +386,9 @@ std::vector<float> kron_power(const int* base, int base_n, int times) {
 // a grid-stride or shared-memory-staged form, both of which break `out == b`
 // silently and produce plausible, finite, wrong deltas.
 
-
 // Every e4m3 bit pattern must dequantise to exactly what dtype.h's host
 // reference produces. The two implementations are written out separately, so
 // this is the check that keeps them in step.
-
 
 // The e4m3 encoder is only used by the (deferred) native fp8 path, but it has
 // to be right before that path can be trusted. Every finite pattern must
@@ -374,6 +398,4 @@ std::vector<float> kron_power(const int* base, int base_n, int times) {
 // is the test that separates the regular Hadamard from the Sylvester one — the
 // wrong choice gives relative error 1.4, not a crash.
 
-
-
-}  // namespace
+} // namespace

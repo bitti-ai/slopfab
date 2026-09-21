@@ -41,7 +41,7 @@ using slopfab::dit::plan_step_cache;
 using slopfab::dit::StepCache;
 using slopfab::dit::StepCacheConfig;
 
-constexpr int kSignature = 2 * AdaLNTable::kRank;  // c(t_v) then c(t_a)
+constexpr int kSignature = 2 * AdaLNTable::kRank; // c(t_v) then c(t_a)
 
 // A signature whose components are all `v`. The relative-L1 distance between
 // two such is then |v - w| / |w| exactly, independent of the width, which is
@@ -50,14 +50,16 @@ std::vector<float> flat(double v) {
   return std::vector<float>(static_cast<size_t>(kSignature), static_cast<float>(v));
 }
 
-std::vector<uint8_t> ones(size_t n) { return std::vector<uint8_t>(n, 1); }
+std::vector<uint8_t> ones(size_t n) {
+  return std::vector<uint8_t>(n, 1);
+}
 
 // Wrong forms, each differing from `StepCache` in exactly one decision.
 enum class Wrong {
-  kNoTerminal,      // last step not protected
-  kProtectLastTwo,  // one step too many protected
-  kResetOnSkip,     // accumulator cleared whether or not the step was computed
-  kChord,           // distance to the last computed step, not accumulated
+  kNoTerminal,     // last step not protected
+  kProtectLastTwo, // one step too many protected
+  kResetOnSkip,    // accumulator cleared whether or not the step was computed
+  kChord,          // distance to the last computed step, not accumulated
 };
 
 std::vector<uint8_t> wrong_plan(const StepCacheConfig& cfg,
@@ -84,10 +86,10 @@ std::vector<uint8_t> wrong_plan(const StepCacheConfig& cfg,
       if (cfg.skip_every > 0) {
         compute = (i % cfg.skip_every) == 0;
       } else if (which == Wrong::kChord) {
-        const float d = last_computed.empty()
-                            ? 0.0f
-                            : conditioning_distance(c.data(), last_computed.data(),
-                                                    static_cast<int>(c.size()));
+        const float d =
+            last_computed.empty()
+                ? 0.0f
+                : conditioning_distance(c.data(), last_computed.data(), static_cast<int>(c.size()));
         compute = d >= cfg.threshold;
       } else {
         if (!previous.empty()) {
@@ -97,12 +99,13 @@ std::vector<uint8_t> wrong_plan(const StepCacheConfig& cfg,
       }
     }
     if (which == Wrong::kResetOnSkip) {
-      acc = 0.0f;  // unconditionally, which is the bug
+      acc = 0.0f; // unconditionally, which is the bug
     } else if (compute) {
       acc = 0.0f;
     }
     previous = c;
-    if (compute) last_computed = c;
+    if (compute)
+      last_computed = c;
     out[static_cast<size_t>(i)] = compute ? 1 : 0;
   }
   return out;
@@ -110,18 +113,20 @@ std::vector<uint8_t> wrong_plan(const StepCacheConfig& cfg,
 
 int count(const std::vector<uint8_t>& plan) {
   int n = 0;
-  for (uint8_t v : plan) n += v;
+  for (uint8_t v : plan)
+    n += v;
   return n;
 }
 
 // 1 at each listed index, 0 elsewhere.
 std::vector<uint8_t> at(size_t n, const std::vector<int>& indices) {
   std::vector<uint8_t> out(n, 0);
-  for (int i : indices) out[static_cast<size_t>(i)] = 1;
+  for (int i : indices)
+    out[static_cast<size_t>(i)] = 1;
   return out;
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(step_cache_distance_is_relative) {
   const std::vector<float> a = flat(1.0);
@@ -148,9 +153,10 @@ SLOPFAB_TEST(step_cache_off_computes_everything) {
   // Codes that move violently, so nothing but the disable can be keeping the
   // count at N.
   std::vector<std::vector<float>> codes;
-  for (int i = 0; i < 30; ++i) codes.push_back(flat(1.0 + 5.0 * i));
+  for (int i = 0; i < 30; ++i)
+    codes.push_back(flat(1.0 + 5.0 * i));
 
-  StepCacheConfig cfg;  // defaults: threshold 0, skip_every 0
+  StepCacheConfig cfg; // defaults: threshold 0, skip_every 0
   CHECK(!cfg.enabled());
   CHECK(plan_step_cache(cfg, codes) == ones(codes.size()));
 
@@ -171,7 +177,8 @@ SLOPFAB_TEST(step_cache_warmup_and_last_are_unconditional) {
   // A monotone schedule with a threshold so large it can never be reached:
   // what survives is exactly the two guarantees that are enforced in code.
   std::vector<std::vector<float>> codes;
-  for (int i = 0; i < 20; ++i) codes.push_back(flat(1.0 + 0.001 * i));
+  for (int i = 0; i < 20; ++i)
+    codes.push_back(flat(1.0 + 0.001 * i));
 
   StepCacheConfig cfg;
   cfg.threshold = 1e6f;
@@ -192,7 +199,8 @@ SLOPFAB_TEST(step_cache_warmup_and_last_are_unconditional) {
 
 SLOPFAB_TEST(step_cache_warmup_has_a_floor) {
   std::vector<std::vector<float>> codes;
-  for (int i = 0; i < 12; ++i) codes.push_back(flat(1.0 + 0.001 * i));
+  for (int i = 0; i < 12; ++i)
+    codes.push_back(flat(1.0 + 0.001 * i));
 
   // Step 0 has no velocity to reuse — the buffers are zeros — and step 1 would
   // reuse one predicted from pure noise. A caller asking for warmup 0 gets 2.
@@ -219,7 +227,7 @@ SLOPFAB_TEST(step_cache_accumulates_across_skipped_steps) {
 
   StepCacheConfig cfg;
   cfg.threshold = 0.35f;
-  cfg.warmup = 1;  // raised to 2 by the floor
+  cfg.warmup = 1; // raised to 2 by the floor
 
   const std::vector<uint8_t> plan = plan_step_cache(cfg, codes);
   CHECK(plan == at(codes.size(), {0, 1, 5, 9, 11}));
@@ -246,7 +254,8 @@ SLOPFAB_TEST(step_cache_measures_arc_not_chord) {
   // is near zero every other step, so a chord-based rule never recomputes —
   // and the reused velocity is at its stalest exactly there.
   std::vector<std::vector<float>> codes;
-  for (int i = 0; i < 10; ++i) codes.push_back(flat((i % 2 == 0) ? 1.0 : 1.15));
+  for (int i = 0; i < 10; ++i)
+    codes.push_back(flat((i % 2 == 0) ? 1.0 : 1.15));
 
   StepCacheConfig cfg;
   cfg.threshold = 0.5f;
@@ -262,7 +271,8 @@ SLOPFAB_TEST(step_cache_measures_arc_not_chord) {
 
 SLOPFAB_TEST(step_cache_skip_every_is_warmup_plus_interval_plus_last) {
   std::vector<std::vector<float>> codes;
-  for (int i = 0; i < 20; ++i) codes.push_back(flat(1.0 + 0.7 * i));
+  for (int i = 0; i < 20; ++i)
+    codes.push_back(flat(1.0 + 0.7 * i));
 
   StepCacheConfig cfg;
   cfg.skip_every = 4;
@@ -288,12 +298,13 @@ SLOPFAB_TEST(step_cache_skip_every_wins_over_threshold) {
   // The CLI rejects the combination; the library resolves it, and which way it
   // resolves is worth pinning rather than discovering.
   std::vector<std::vector<float>> codes;
-  for (int i = 0; i < 20; ++i) codes.push_back(flat(1.0 + 0.7 * i));
+  for (int i = 0; i < 20; ++i)
+    codes.push_back(flat(1.0 + 0.7 * i));
 
   StepCacheConfig both;
   both.skip_every = 4;
   both.warmup = 3;
-  both.threshold = 1e-9f;  // would compute every step if it were consulted
+  both.threshold = 1e-9f; // would compute every step if it were consulted
 
   StepCacheConfig interval = both;
   interval.threshold = 0.0f;
@@ -348,7 +359,7 @@ SLOPFAB_TEST(step_cache_enabled_is_the_one_definition) {
 
   StepCacheConfig warmup_only;
   warmup_only.warmup = 12;
-  CHECK(!warmup_only.enabled());  // warmup alone is inert, not an opt-in
+  CHECK(!warmup_only.enabled()); // warmup alone is inert, not an opt-in
 
   StepCacheConfig explicit_zero;
   explicit_zero.threshold = 0.0f;
@@ -361,17 +372,18 @@ SLOPFAB_TEST(step_cache_enabled_is_the_one_definition) {
 
   StepCacheConfig interval;
   interval.skip_every = 1;
-  CHECK(interval.enabled());  // degenerate but opted in: it took the flag path
+  CHECK(interval.enabled()); // degenerate but opted in: it took the flag path
 }
 
 SLOPFAB_TEST(step_cache_short_schedules) {
   StepCacheConfig cfg;
   cfg.threshold = 1e-9f;
-  cfg.warmup = 8;  // longer than the schedule
+  cfg.warmup = 8; // longer than the schedule
 
   for (int n = 1; n <= 4; ++n) {
     std::vector<std::vector<float>> codes;
-    for (int i = 0; i < n; ++i) codes.push_back(flat(1.0 + i));
+    for (int i = 0; i < n; ++i)
+      codes.push_back(flat(1.0 + i));
     const std::vector<uint8_t> plan = plan_step_cache(cfg, codes);
     CHECK_MSG(plan == ones(codes.size()), "a %d-step schedule must evaluate every step", n);
   }

@@ -18,8 +18,9 @@ SLOPFAB_TEST_CATEGORY(qwen_vision_encode_reuses_arena_across_images, "integratio
     }
   }
   if (path.empty()) {
-    SKIP_MISSING_FIXTURE("qwen vision: no text encoder checkpoint under any of ./ .. ../.. ../../.. "
-                   "../../../.. -- the whole-tower carve is NOT being exercised");
+    SKIP_MISSING_FIXTURE(
+        "qwen vision: no text encoder checkpoint under any of ./ .. ../.. ../../.. "
+        "../../../.. -- the whole-tower carve is NOT being exercised");
     return;
   }
   std::printf("  qwen vision: using %s\n", path.c_str());
@@ -46,12 +47,14 @@ SLOPFAB_TEST_CATEGORY(qwen_vision_encode_reuses_arena_across_images, "integratio
   CHECK(out.main.size() == 128ull * 5120);
   const size_t half = out.main.size() / 2;
   size_t bad = 0;
-  for (size_t i = 0; i < half; ++i) bad += out.main[i] != out.main[half + i];
+  for (size_t i = 0; i < half; ++i)
+    bad += out.main[i] != out.main[half + i];
   CHECK_MSG(bad == 0, "second image's main embedding differs in %zu of %zu bf16", bad, half);
   for (int d = 0; d < 3; ++d) {
     CHECK(out.deepstack[d].size() == out.main.size());
     size_t dbad = 0;
-    for (size_t i = 0; i < half; ++i) dbad += out.deepstack[d][i] != out.deepstack[d][half + i];
+    for (size_t i = 0; i < half; ++i)
+      dbad += out.deepstack[d][i] != out.deepstack[d][half + i];
     CHECK_MSG(dbad == 0, "deepstack %d differs between identical images in %zu of %zu bf16", d,
               dbad, half);
   }

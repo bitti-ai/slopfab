@@ -48,7 +48,8 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
     // only when a benchmark names it. A silent fall back to the blocked path
     // would still produce correct output and a believable number -- it is only
     // visible if something asserts which backend the pipeline would pick.
-    CHECK(slopfab::cuda::attention_preferred_backend(cfg) == slopfab::cuda::AttentionBackend::kFused);
+    CHECK(slopfab::cuda::attention_preferred_backend(cfg) ==
+          slopfab::cuda::AttentionBackend::kFused);
 
     const size_t ws_bytes =
         slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kBlocked);
@@ -63,16 +64,15 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
     for (int pass = 0; pass < 3; ++pass) {
       ms = std::min(ms, timer.measure(
                             [&] {
-                              slopfab::cuda::attention_forward(cb.h, nullptr, q.p(), k.p(), v.p(),
-                                                              out.p(), cfg,
-                                                              slopfab::cuda::AttentionBackend::kBlocked,
-                                                              ws);
+                              slopfab::cuda::attention_forward(
+                                  cb.h, nullptr, q.p(), k.p(), v.p(), out.p(), cfg,
+                                  slopfab::cuda::AttentionBackend::kBlocked, ws);
                             },
                             1, 3));
     }
     const double flops = 4.0 * double(seq) * seq * head_dim * heads;
-    std::printf("  attention   seq=%-6d heads=56 head_dim=128  %8.2f ms  (%.1f TFLOP/s)\n", seq,
-                ms, flops / (ms * 1e-3) / 1e12);
+    std::printf("  attention   seq=%-6d heads=56 head_dim=128  %8.2f ms  (%.1f TFLOP/s)\n", seq, ms,
+                flops / (ms * 1e-3) / 1e12);
     CHECK(ms > 0.0f);
 
     // Same buffers, same timer, same best-of-three: the only honest way to
@@ -97,20 +97,23 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
     // Independent acceptance measurement: conversion/smoothing and the
     // quantized attention kernel are one timed operation.
     const std::vector<uint16_t> flash_bits = out.bits();
-    const size_t sage_ws_bytes = slopfab::cuda::attention_workspace_bytes(
-        cfg, slopfab::cuda::AttentionBackend::kSage2);
+    const size_t sage_ws_bytes =
+        slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kSage2);
     Workspace sage_ws;
     sage_ws.reserve(sage_ws_bytes);
     float sms = 1e30f;
     for (int pass = 0; pass < 3; ++pass) {
       sms = std::min(sms, timer.measure(
-          [&] { slopfab::cuda::attention_forward(cb.h, nullptr, q.p(), k.p(), v.p(), out.p(), cfg,
-                                                slopfab::cuda::AttentionBackend::kSage2, sage_ws); },
-          1, 3));
+                              [&] {
+                                slopfab::cuda::attention_forward(
+                                    cb.h, nullptr, q.p(), k.p(), v.p(), out.p(), cfg,
+                                    slopfab::cuda::AttentionBackend::kSage2, sage_ws);
+                              },
+                              1, 3));
     }
     const std::vector<uint16_t> sage_bits = out.bits();
     slopfab::cuda::attention_forward(cb.h, nullptr, q.p(), k.p(), v.p(), out.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kSage2, sage_ws);
+                                     slopfab::cuda::AttentionBackend::kSage2, sage_ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<uint16_t> sage_repeat = out.bits();
     double err2 = 0.0, ref2 = 0.0, dot = 0.0, got2 = 0.0, max_abs = 0.0;
@@ -119,15 +122,19 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
       const double a = slopfab::bf16_to_f32(flash_bits[i]);
       const double b = slopfab::bf16_to_f32(sage_bits[i]);
       const double e = b - a;
-      err2 += e * e; ref2 += a * a; dot += a * b; got2 += b * b;
+      err2 += e * e;
+      ref2 += a * a;
+      dot += a * b;
+      got2 += b * b;
       max_abs = std::max(max_abs, std::abs(e));
       mismatches += sage_bits[i] != sage_repeat[i];
     }
-    std::printf("  attention   sage2 (all conversions)             %8.2f ms  (%.2fx flash2)\n",
-                sms, fms / sms);
-    std::printf("  sage2 workspace %.3f GiB, rel_L2 %.6f corr %.6f max_abs %.6g repeat_mismatch %zu\n",
-                double(sage_ws_bytes) / (1 << 30), std::sqrt(err2 / ref2),
-                dot / std::sqrt(ref2 * got2), max_abs, mismatches);
+    std::printf("  attention   sage2 (all conversions)             %8.2f ms  (%.2fx flash2)\n", sms,
+                fms / sms);
+    std::printf(
+        "  sage2 workspace %.3f GiB, rel_L2 %.6f corr %.6f max_abs %.6g repeat_mismatch %zu\n",
+        double(sage_ws_bytes) / (1 << 30), std::sqrt(err2 / ref2), dot / std::sqrt(ref2 * got2),
+        max_abs, mismatches);
     CHECK(sms > 0.0f);
   }
 
@@ -145,8 +152,8 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
     for (int pass = 0; pass < 3; ++pass) {
       ms = std::min(ms, timer.measure(
                             [&] {
-                              slopfab::cuda::launch_head_rmsnorm(x.p(), w.p(), seq, qk_heads, qk_dim,
-                                                                1e-5f, nullptr);
+                              slopfab::cuda::launch_head_rmsnorm(x.p(), w.p(), seq, qk_heads,
+                                                                 qk_dim, 1e-5f, nullptr);
                             },
                             3, 20));
     }
@@ -162,6 +169,7 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
     int out_features;
     int in_features;
   };
+
   const Shape shapes[] = {
       {"qkv_proj", 21504, 5376},
       {"out_proj", 5376, 7168},
@@ -199,7 +207,11 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
                256);
     float ms = 1e30f;
     for (int pass = 0; pass < 2; ++pass) {
-      ms = std::min(ms, timer.measure([&] { runner.forward(qw, dx.p(), seq, dy.p(), ws); }, 2, 10));
+      ms = std::min(ms, timer.measure(
+                            [&] {
+                              runner.forward(qw, dx.p(), seq, dy.p(), ws);
+                            },
+                            2, 10));
     }
     const double flops = 2.0 * double(seq) * sh.out_features * sh.in_features;
     std::printf("  linear %-9s [%5d,%5d] rows=%-6d  %8.3f ms  (%.1f TFLOP/s)\n", sh.name,
@@ -218,7 +230,7 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
       ms_norm = std::min(ms_norm, timer.measure(
                                       [&] {
                                         slopfab::cuda::launch_rmsnorm(x.p(), w.p(), out.p(), seq,
-                                                                     model_dim, 1e-5f, nullptr);
+                                                                      model_dim, 1e-5f, nullptr);
                                       },
                                       3, 20));
     }
@@ -232,18 +244,18 @@ SLOPFAB_TEST_CATEGORY(production_shape_timings, "benchmark") {
     scale.zero();
     shift.zero();
     std::vector<int32_t> a(seq);
-    for (int r = 0; r < seq; ++r) a[r] = r % mod_rows;
+    for (int r = 0; r < seq; ++r)
+      a[r] = r % mod_rows;
     DeviceBuffer<int32_t> da = to_device_i32(a);
     float ms_mod = 1e30f;
     for (int pass = 0; pass < 3; ++pass) {
-      ms_mod = std::min(ms_mod,
-                        timer.measure(
-                            [&] {
-                              slopfab::cuda::launch_rmsnorm_modulate(x.p(), w.p(), scale.get(),
-                                                                    shift.get(), da.get(), out.p(),
-                                                                    seq, model_dim, 1e-5f, nullptr);
-                            },
-                            3, 20));
+      ms_mod = std::min(ms_mod, timer.measure(
+                                    [&] {
+                                      slopfab::cuda::launch_rmsnorm_modulate(
+                                          x.p(), w.p(), scale.get(), shift.get(), da.get(), out.p(),
+                                          seq, model_dim, 1e-5f, nullptr);
+                                    },
+                                    3, 20));
     }
     std::printf("  rmsnorm_mod rows=%-6d dim=5376              %8.3f ms\n", seq, ms_mod);
     CHECK(ms_norm > 0.0f && ms_mod > 0.0f);

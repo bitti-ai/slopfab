@@ -29,8 +29,7 @@ std::filesystem::path scratch_path(const char* name) {
 // Writes `content` and stamps the file with a last-write time `age_seconds`
 // before now, so a rewrite is distinguishable from its predecessor even on a
 // filesystem whose timestamp granularity is coarser than the test.
-void write_file(const std::filesystem::path& path, const std::string& content,
-                int age_seconds) {
+void write_file(const std::filesystem::path& path, const std::string& content, int age_seconds) {
   {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out.write(content.data(), static_cast<std::streamsize>(content.size()));
@@ -114,8 +113,8 @@ SLOPFAB_TEST(attention_mode_parse_name_and_backend_contract) {
   using slopfab::AttentionMode;
   using slopfab::DeviceBackend;
   const AttentionMode modes[] = {
-      AttentionMode::kNone, AttentionMode::kFlash2, AttentionMode::kSage2,
-      AttentionMode::kSol, AttentionMode::kSolExperimental, AttentionMode::kExact};
+      AttentionMode::kNone, AttentionMode::kFlash2,          AttentionMode::kSage2,
+      AttentionMode::kSol,  AttentionMode::kSolExperimental, AttentionMode::kExact};
   for (AttentionMode mode : modes) {
     AttentionMode parsed = AttentionMode::kNone;
     CHECK(slopfab::parse_attention_mode(slopfab::attention_mode_name(mode), &parsed));
@@ -125,7 +124,7 @@ SLOPFAB_TEST(attention_mode_parse_name_and_backend_contract) {
           (mode == AttentionMode::kExact || mode == AttentionMode::kFlash2 ||
            mode == AttentionMode::kSage2));
     CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
-          slopfab::LatentSource::kDenoise, mode) ==
+                                                slopfab::LatentSource::kDenoise, mode) ==
           slopfab::attention_mode_supported(DeviceBackend::kVulkan, mode));
   }
 
@@ -135,32 +134,26 @@ SLOPFAB_TEST(attention_mode_parse_name_and_backend_contract) {
   CHECK(!slopfab::parse_attention_mode("exact ", &unchanged));
   CHECK(!slopfab::parse_attention_mode("exact", nullptr));
   CHECK(std::string(slopfab::attention_mode_name(static_cast<AttentionMode>(999))) == "unknown");
-  CHECK(!slopfab::attention_mode_supported(DeviceBackend::kVulkan,
-                                           static_cast<AttentionMode>(999)));
+  CHECK(
+      !slopfab::attention_mode_supported(DeviceBackend::kVulkan, static_cast<AttentionMode>(999)));
 }
 
 SLOPFAB_TEST(generation_backend_contract) {
   using slopfab::DeviceBackend;
   using slopfab::LatentSource;
   using slopfab::AttentionMode;
-  CHECK(slopfab::generation_backend_supported(DeviceBackend::kCuda,
-                                              LatentSource::kDenoise,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kCuda, LatentSource::kDenoise,
                                               AttentionMode::kFlash2));
-  CHECK(slopfab::generation_backend_supported(DeviceBackend::kCuda,
-                                              LatentSource::kSyntheticNoise,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kCuda, LatentSource::kSyntheticNoise,
                                               AttentionMode::kSage2));
-  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
-                                              LatentSource::kDenoise,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan, LatentSource::kDenoise,
                                               AttentionMode::kExact));
-  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
-                                              LatentSource::kSyntheticNoise,
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan, LatentSource::kSyntheticNoise,
                                               AttentionMode::kExact));
-  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
-                                               LatentSource::kSyntheticNoise,
-                                               AttentionMode::kFlash2));
-  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
-                                               LatentSource::kSyntheticNoise,
-                                               AttentionMode::kSage2));
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan, LatentSource::kSyntheticNoise,
+                                              AttentionMode::kFlash2));
+  CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan, LatentSource::kSyntheticNoise,
+                                              AttentionMode::kSage2));
   slopfab::RunOptions defaults;
   CHECK(defaults.inference_backend == DeviceBackend::kCuda);
 }
@@ -197,7 +190,7 @@ SLOPFAB_TEST(pipeline_plan_still_image) {
   slopfab::GenerateRequest r = base_request();
   r.aspect_w = 1;
   r.aspect_h = 1;
-  r.num_frames = 1;  // Invalid for video, deliberately irrelevant for a still.
+  r.num_frames = 1; // Invalid for video, deliberately irrelevant for a still.
   r.still_image = true;
   const slopfab::GeneratePlan p = slopfab::resolve_plan(r);
 
@@ -373,18 +366,25 @@ SLOPFAB_TEST(pipeline_viggle_schedule_uses_model_identity) {
       {"adaln_t_table", {1, 8}, std::vector<float>(8)},
       {"blocks.0.adaln_proj.linear.weight", {1, 8}, std::vector<float>(8)}};
   const std::vector<float> expected = {1.0f, 6.0f / 7.0f, 0.6f, 0.0f};
-  for (const char* filename : {"slopfab_plan_renamed.safetensors",
-                               "slopfab_plan_Viggle-Animate.safetensors"}) {
+  for (const char* filename :
+       {"slopfab_plan_renamed.safetensors", "slopfab_plan_Viggle-Animate.safetensors"}) {
     const auto path = scratch_path(filename);
+
     struct Cleanup {
       std::filesystem::path path;
-      ~Cleanup() { std::error_code ec; std::filesystem::remove(path, ec); }
+
+      ~Cleanup() {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+      }
     } cleanup{path};
+
     slopfab::GenerateRequest r = base_request();
     r.transformer_path = path.string();
     r.num_inference_steps = 4;
     const bool renamed = std::string(filename).find("renamed") != std::string::npos;
-    slopfab::write_safetensors(r.transformer_path, tensors,
+    slopfab::write_safetensors(
+        r.transformer_path, tensors,
         renamed ? std::map<std::string, std::string>{{"source", "Viggle/Viggle-Animate"}}
                 : std::map<std::string, std::string>{});
 
@@ -417,8 +417,8 @@ SLOPFAB_TEST(pipeline_viggle_schedule_uses_model_identity) {
     r.num_inference_steps = 4;
     const auto h3 = slopfab::resolve_plan(r);
     CHECK_NEAR(h3.video_sigma_shift, 12.0, 0.0);
-    CHECK_CLOSE((std::vector<float>{1.0f, 0.96f, 6.0f / 7.0f, 0.0f}),
-                h3.video_sigmas, 1e-6, "H3 four-boundary grid is unchanged");
+    CHECK_CLOSE((std::vector<float>{1.0f, 0.96f, 6.0f / 7.0f, 0.0f}), h3.video_sigmas, 1e-6,
+                "H3 four-boundary grid is unchanged");
   }
 }
 
@@ -683,18 +683,21 @@ SLOPFAB_TEST(cache_keys_separate_their_inputs) {
 
 SLOPFAB_TEST(sol_schedule_ranges_and_cadence) {
   slopfab::SolSchedule s;
-  CHECK(!s.active(9,2));
-  CHECK(!s.active(10,1));
-  CHECK(s.active(10,2));
-  CHECK(s.active(11,49));
-  s.step_end=16;s.step_every=2;s.layer_end=10;s.layer_every=3;
-  CHECK(s.active(10,2));
-  CHECK(s.active(12,5));
-  CHECK(s.active(16,8));
-  CHECK(!s.active(11,2));
-  CHECK(!s.active(12,3));
-  CHECK(!s.active(18,8));
-  CHECK(!s.active(12,11));
+  CHECK(!s.active(9, 2));
+  CHECK(!s.active(10, 1));
+  CHECK(s.active(10, 2));
+  CHECK(s.active(11, 49));
+  s.step_end = 16;
+  s.step_every = 2;
+  s.layer_end = 10;
+  s.layer_every = 3;
+  CHECK(s.active(10, 2));
+  CHECK(s.active(12, 5));
+  CHECK(s.active(16, 8));
+  CHECK(!s.active(11, 2));
+  CHECK(!s.active(12, 3));
+  CHECK(!s.active(18, 8));
+  CHECK(!s.active(12, 11));
 }
 
 SLOPFAB_TEST(cuda_toolkit_selection) {
@@ -712,8 +715,8 @@ SLOPFAB_TEST(cuda_toolkit_selection) {
 
   CHECK(slopfab::cuda::cuda_version_request(L"", L"12") == L"12");
   CHECK(slopfab::cuda::cuda_version_request(L"13", L"12") == L"13");
-  const auto* environment_override = slopfab::cuda::select_cuda_toolkit(
-      slopfab::cuda::cuda_version_request(L"", L"12"), both);
+  const auto* environment_override =
+      slopfab::cuda::select_cuda_toolkit(slopfab::cuda::cuda_version_request(L"", L"12"), both);
   CHECK(environment_override != nullptr && environment_override->major == 12);
 
   CHECK(slopfab::cuda::cuda_version_matches_linked_toolkit(L"auto", 12));
@@ -723,11 +726,9 @@ SLOPFAB_TEST(cuda_toolkit_selection) {
   CHECK(!slopfab::cuda::cuda_driver_supports_toolkit(12999, 13));
   CHECK(slopfab::cuda::cuda_driver_supports_toolkit(12999, 12));
   CHECK(slopfab::cuda::cuda_driver_supports_toolkit(13000, 13));
-  const auto* driver_fallback = slopfab::cuda::select_cuda_toolkit_for_driver(
-      L"auto", both, 12999);
+  const auto* driver_fallback = slopfab::cuda::select_cuda_toolkit_for_driver(L"auto", both, 12999);
   CHECK(driver_fallback != nullptr && driver_fallback->major == 12);
-  CHECK(slopfab::cuda::select_cuda_toolkit_for_driver(L"13", both, 12999) ==
-        nullptr);
+  CHECK(slopfab::cuda::select_cuda_toolkit_for_driver(L"13", both, 12999) == nullptr);
 }
 
-}  // namespace
+} // namespace

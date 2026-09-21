@@ -5,14 +5,16 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !vulkan::Instance::available()) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !vulkan::Instance::available()");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !vulkan::Instance::available()");
     return;
   }
   vulkan::Instance instance = vulkan::Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore ||
       !physical.front().info().shader_int64) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore || !physical.front().info().shader_int64");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore || !physical.front().info().shader_int64");
     return;
   }
   vulkan::DeviceOptions device_options;
@@ -41,9 +43,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   c_conv_x.copy_from_host(conv_x.data(), conv_x.size());
   c_conv_w.copy_from_host(conv_w.data(), conv_w.size());
   c_conv_b.copy_from_host(conv_b.data(), conv_b.size());
-  cuda::launch_conv1d(c_conv_x.get(), c_conv_w.get(), c_conv_b.get(),
-                      c_conv_y.get(), conv.batch, conv.in_channels,
-                      conv.out_channels, conv.length_in, conv.length_out,
+  cuda::launch_conv1d(c_conv_x.get(), c_conv_w.get(), c_conv_b.get(), c_conv_y.get(), conv.batch,
+                      conv.in_channels, conv.out_channels, conv.length_in, conv.length_out,
                       conv.kernel, conv.padding, conv.dilation, nullptr);
 
   vulkan::DeviceTensor v_conv_x = vk.allocate(layout({2, 3, 19}));
@@ -59,8 +60,7 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
     batch.submit().wait();
   }
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  std::vector<float> cuda_conv(conv.output_elements()),
-      vk_conv(conv.output_elements());
+  std::vector<float> cuda_conv(conv.output_elements()), vk_conv(conv.output_elements());
   c_conv_y.copy_to_host(cuda_conv.data(), cuda_conv.size());
   vk.download(v_conv_y, vk_conv.data(), vk_conv.size());
   check_exact(cuda_conv, vk_conv, "Conv1D");
@@ -75,11 +75,10 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   c_trans_x.copy_from_host(trans_x.data(), trans_x.size());
   c_trans_w.copy_from_host(trans_w.data(), trans_w.size());
   c_trans_b.copy_from_host(trans_b.data(), trans_b.size());
-  cuda::launch_conv_transpose1d(
-      c_trans_x.get(), c_trans_w.get(), c_trans_b.get(), c_trans_y.get(),
-      transpose.batch, transpose.in_channels, transpose.out_channels,
-      transpose.length_in, transpose.length_out, transpose.kernel,
-      transpose.stride, transpose.padding, nullptr);
+  cuda::launch_conv_transpose1d(c_trans_x.get(), c_trans_w.get(), c_trans_b.get(), c_trans_y.get(),
+                                transpose.batch, transpose.in_channels, transpose.out_channels,
+                                transpose.length_in, transpose.length_out, transpose.kernel,
+                                transpose.stride, transpose.padding, nullptr);
   vulkan::DeviceTensor v_trans_x = vk.allocate(layout({1, 4, 11}));
   vulkan::DeviceTensor v_trans_w = vk.allocate(layout({4, 3, 9}));
   vulkan::DeviceTensor v_trans_b = vk.allocate(layout({3}));
@@ -89,13 +88,11 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   vk.upload(v_trans_b, trans_b.data(), trans_b.size());
   {
     vulkan::TensorBatch batch = vk.begin_batch();
-    batch.audio_conv_transpose1d(v_trans_x, v_trans_w, &v_trans_b,
-                                 v_trans_y, transpose);
+    batch.audio_conv_transpose1d(v_trans_x, v_trans_w, &v_trans_b, v_trans_y, transpose);
     batch.submit().wait();
   }
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  std::vector<float> cuda_trans(transpose.output_elements()),
-      vk_trans(transpose.output_elements());
+  std::vector<float> cuda_trans(transpose.output_elements()), vk_trans(transpose.output_elements());
   c_trans_y.copy_to_host(cuda_trans.data(), cuda_trans.size());
   vk.download(v_trans_y, vk_trans.data(), vk_trans.size());
   check_exact(cuda_trans, vk_trans, "ConvTranspose1D");
@@ -109,8 +106,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   c_snake.copy_from_host(snake_x.data(), snake_count);
   c_alpha.copy_from_host(log_alpha.data(), channels);
   c_beta.copy_from_host(log_beta.data(), channels);
-  cuda::launch_snake_beta(c_snake.get(), c_alpha.get(), c_beta.get(),
-                          batch_count, channels, length, nullptr);
+  cuda::launch_snake_beta(c_snake.get(), c_alpha.get(), c_beta.get(), batch_count, channels, length,
+                          nullptr);
   vulkan::DeviceTensor v_snake = vk.allocate(layout({batch_count, channels, length}));
   vulkan::DeviceTensor v_alpha = vk.allocate(layout({channels}));
   vulkan::DeviceTensor v_beta = vk.allocate(layout({channels}));
@@ -119,8 +116,7 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   vk.upload(v_beta, log_beta.data(), channels);
   {
     vulkan::TensorBatch batch = vk.begin_batch();
-    batch.audio_snake_beta_inplace(v_snake, v_alpha, v_beta, batch_count,
-                                   channels, length);
+    batch.audio_snake_beta_inplace(v_snake, v_alpha, v_beta, batch_count, channels, length);
     batch.submit().wait();
   }
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
@@ -135,56 +131,47 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   std::vector<float> exceptional_x(exceptional_channels * exceptional_length);
   for (size_t i = 0; i < exceptional_x.size(); ++i)
     exceptional_x[i] = float(int(i % 13) - 6) / 8.0f;
-  const uint32_t x_bits[] = {
-      0x00000001u, 0x807fffffu, 0x7fc12345u,
-      0x7f800000u, 0xff800000u, 0x60ad78ecu};
+  const uint32_t x_bits[] = {0x00000001u, 0x807fffffu, 0x7fc12345u,
+                             0x7f800000u, 0xff800000u, 0x60ad78ecu};
   std::memcpy(exceptional_x.data(), x_bits, sizeof(x_bits));
-  const uint32_t alpha_bits[] = {
-      0x00000001u, 0x7fa54321u, 0x00000000u, 0x7f800000u,
-      0xff800000u, 0x60ad78ecu, 0xe0ad78ecu, 0x3e800000u,
-      0x3e800000u, 0x3e800000u};
-  const uint32_t beta_bits[] = {
-      0x80000001u, 0x3e800000u, 0x7fcabcdeu, 0x3e800000u,
-      0x3e800000u, 0x3e800000u, 0x3e800000u, 0x7f800000u,
-      0xff800000u, 0x60ad78ecu};
+  const uint32_t alpha_bits[] = {0x00000001u, 0x7fa54321u, 0x00000000u, 0x7f800000u, 0xff800000u,
+                                 0x60ad78ecu, 0xe0ad78ecu, 0x3e800000u, 0x3e800000u, 0x3e800000u};
+  const uint32_t beta_bits[] = {0x80000001u, 0x3e800000u, 0x7fcabcdeu, 0x3e800000u, 0x3e800000u,
+                                0x3e800000u, 0x3e800000u, 0x7f800000u, 0xff800000u, 0x60ad78ecu};
   std::vector<float> exceptional_alpha(exceptional_channels),
       exceptional_beta(exceptional_channels);
   std::memcpy(exceptional_alpha.data(), alpha_bits, sizeof(alpha_bits));
   std::memcpy(exceptional_beta.data(), beta_bits, sizeof(beta_bits));
   cuda::DeviceBuffer<float> c_exceptional(exceptional_x.size()),
-      c_exceptional_alpha(exceptional_channels),
-      c_exceptional_beta(exceptional_channels);
+      c_exceptional_alpha(exceptional_channels), c_exceptional_beta(exceptional_channels);
   c_exceptional.copy_from_host(exceptional_x.data(), exceptional_x.size());
   c_exceptional_alpha.copy_from_host(exceptional_alpha.data(), exceptional_channels);
   c_exceptional_beta.copy_from_host(exceptional_beta.data(), exceptional_channels);
-  cuda::launch_snake_beta(
-      c_exceptional.get(), c_exceptional_alpha.get(), c_exceptional_beta.get(),
-      1, exceptional_channels, exceptional_length, nullptr);
+  cuda::launch_snake_beta(c_exceptional.get(), c_exceptional_alpha.get(), c_exceptional_beta.get(),
+                          1, exceptional_channels, exceptional_length, nullptr);
   vulkan::DeviceTensor v_exceptional =
       vk.allocate(layout({1, exceptional_channels, exceptional_length}));
-  vulkan::DeviceTensor v_exceptional_alpha =
-      vk.allocate(layout({exceptional_channels}));
-  vulkan::DeviceTensor v_exceptional_beta =
-      vk.allocate(layout({exceptional_channels}));
+  vulkan::DeviceTensor v_exceptional_alpha = vk.allocate(layout({exceptional_channels}));
+  vulkan::DeviceTensor v_exceptional_beta = vk.allocate(layout({exceptional_channels}));
   vk.upload(v_exceptional, exceptional_x.data(), exceptional_x.size());
   vk.upload(v_exceptional_alpha, exceptional_alpha.data(), exceptional_channels);
   vk.upload(v_exceptional_beta, exceptional_beta.data(), exceptional_channels);
   {
     vulkan::TensorBatch batch = vk.begin_batch();
-    batch.audio_snake_beta_inplace(
-        v_exceptional, v_exceptional_alpha, v_exceptional_beta, 1,
-        exceptional_channels, exceptional_length);
+    batch.audio_snake_beta_inplace(v_exceptional, v_exceptional_alpha, v_exceptional_beta, 1,
+                                   exceptional_channels, exceptional_length);
     batch.submit().wait();
   }
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  std::vector<float> cuda_exceptional(exceptional_x.size()),
-      vk_exceptional(exceptional_x.size());
+  std::vector<float> cuda_exceptional(exceptional_x.size()), vk_exceptional(exceptional_x.size());
   c_exceptional.copy_to_host(cuda_exceptional.data(), cuda_exceptional.size());
   vk.download(v_exceptional, vk_exceptional.data(), vk_exceptional.size());
   check_exact(cuda_exceptional, vk_exceptional, "exceptional SnakeBeta");
   for (float output : vk_exceptional) {
-    uint32_t bits = 0; std::memcpy(&bits, &output, sizeof(bits));
-    if ((bits & 0x7fffffffu) > 0x7f800000u) CHECK(bits == 0x7fc00000u);
+    uint32_t bits = 0;
+    std::memcpy(&bits, &output, sizeof(bits));
+    if ((bits & 0x7fffffffu) > 0x7f800000u)
+      CHECK(bits == 0x7fc00000u);
   }
   for (uint32_t index : {2u, 3u, 4u, 5u}) {
     uint32_t bits = 0;
@@ -196,19 +183,16 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   const size_t aa_input_count = size_t(aa_batch) * aa_channels * aa_length;
   const size_t aa_up_count = aa_input_count * 2;
   std::vector<float> aa_x = values(aa_input_count, 11, 97, 1.0f / 64.0f);
-  std::vector<float> filter{
-      -0.0012f, -0.0045f, 0.0123f, 0.0521f, 0.1432f, 0.2981f,
-       0.2981f,  0.1432f, 0.0521f, 0.0123f, -0.0045f, -0.0012f};
-  cuda::DeviceBuffer<float> c_aa_x(aa_input_count), c_filter(12),
-      c_aa_up(aa_up_count), c_aa_down(aa_input_count);
+  std::vector<float> filter{-0.0012f, -0.0045f, 0.0123f, 0.0521f, 0.1432f,  0.2981f,
+                            0.2981f,  0.1432f,  0.0521f, 0.0123f, -0.0045f, -0.0012f};
+  cuda::DeviceBuffer<float> c_aa_x(aa_input_count), c_filter(12), c_aa_up(aa_up_count),
+      c_aa_down(aa_input_count);
   c_aa_x.copy_from_host(aa_x.data(), aa_input_count);
   c_filter.copy_from_host(filter.data(), filter.size());
-  cuda::launch_aa_upsample_snake(
-      c_aa_x.get(), c_filter.get(), c_alpha.get(), c_beta.get(), c_aa_up.get(),
-      aa_batch, aa_channels, aa_length, nullptr);
-  cuda::launch_aa_downsample(c_aa_up.get(), c_filter.get(), c_aa_down.get(),
-                             aa_batch, aa_channels, aa_length * 2, aa_length,
-                             nullptr);
+  cuda::launch_aa_upsample_snake(c_aa_x.get(), c_filter.get(), c_alpha.get(), c_beta.get(),
+                                 c_aa_up.get(), aa_batch, aa_channels, aa_length, nullptr);
+  cuda::launch_aa_downsample(c_aa_up.get(), c_filter.get(), c_aa_down.get(), aa_batch, aa_channels,
+                             aa_length * 2, aa_length, nullptr);
   vulkan::DeviceTensor v_aa_x = vk.allocate(layout({aa_batch, aa_channels, aa_length}));
   vulkan::DeviceTensor v_filter = vk.allocate(layout({12}));
   vulkan::DeviceTensor v_aa_up = vk.allocate(layout({aa_batch, aa_channels, aa_length * 2}));
@@ -217,15 +201,15 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   vk.upload(v_filter, filter.data(), filter.size());
   {
     vulkan::TensorBatch batch = vk.begin_batch();
-    batch.audio_aa_upsample_snake(v_aa_x, v_filter, v_alpha, v_beta,
-                                  v_aa_up, aa_batch, aa_channels, aa_length);
-    batch.audio_aa_downsample(v_aa_up, v_filter, v_aa_down, aa_batch,
-                              aa_channels, aa_length * 2, aa_length);
+    batch.audio_aa_upsample_snake(v_aa_x, v_filter, v_alpha, v_beta, v_aa_up, aa_batch, aa_channels,
+                                  aa_length);
+    batch.audio_aa_downsample(v_aa_up, v_filter, v_aa_down, aa_batch, aa_channels, aa_length * 2,
+                              aa_length);
     batch.submit().wait();
   }
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  std::vector<float> cuda_up(aa_up_count), vk_up(aa_up_count),
-      cuda_down(aa_input_count), vk_down(aa_input_count);
+  std::vector<float> cuda_up(aa_up_count), vk_up(aa_up_count), cuda_down(aa_input_count),
+      vk_down(aa_input_count);
   c_aa_up.copy_to_host(cuda_up.data(), aa_up_count);
   c_aa_down.copy_to_host(cuda_down.data(), aa_input_count);
   vk.download(v_aa_up, vk_up.data(), aa_up_count);
@@ -236,10 +220,9 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
   constexpr uint32_t frames = 259;
   std::vector<float> element_x = values(size_t(2) * frames, 19, 113, 1.0f / 32.0f);
   std::vector<float> element_y = values(size_t(2) * frames, 37, 109, 1.0f / 64.0f);
-  const uint32_t element_exceptions[] = {
-      0x00000001u, 0x807fffffu, 0x7fc12345u, 0x7f800000u, 0xff800000u};
-  std::memcpy(element_x.data(), element_exceptions,
-              sizeof(element_exceptions));
+  const uint32_t element_exceptions[] = {0x00000001u, 0x807fffffu, 0x7fc12345u, 0x7f800000u,
+                                         0xff800000u};
+  std::memcpy(element_x.data(), element_exceptions, sizeof(element_exceptions));
   cuda::DeviceBuffer<float> c_element_x(element_x.size()), c_element_y(element_y.size()),
       c_interleaved(element_x.size());
   c_element_x.copy_from_host(element_x.data(), element_x.size());
@@ -257,8 +240,11 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_primitives, "synthetic") {
     vulkan::TensorBatch invalid = vk.begin_batch();
     const uint32_t remaining = invalid.remaining_operator_capacity();
     bool alias_rejected = false;
-    try { invalid.audio_add_inplace(v_element_x, v_element_x); }
-    catch (const std::invalid_argument&) { alias_rejected = true; }
+    try {
+      invalid.audio_add_inplace(v_element_x, v_element_x);
+    } catch (const std::invalid_argument&) {
+      alias_rejected = true;
+    }
     CHECK(alias_rejected);
     CHECK(invalid.remaining_operator_capacity() == remaining);
     invalid.audio_add_inplace(v_element_x, v_element_y);

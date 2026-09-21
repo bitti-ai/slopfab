@@ -4,8 +4,14 @@
 #include <filesystem>
 
 namespace {
-template <typename F> bool rejected(F f) {
-  try { f(); } catch (const std::exception&) { return true; }
+template <typename F
+
+> bool rejected(F f) {
+  try {
+    f();
+  } catch (const std::exception&) {
+    return true;
+  }
   return false;
 }
 }
@@ -13,9 +19,11 @@ template <typename F> bool rejected(F f) {
 SLOPFAB_TEST(conditioning_settings_schema_and_cache_dependencies) {
   using namespace slopfab;
   for (const char* text : {"{}", R"({"version":2})", R"({"version":1,"unknown":0})",
-      R"({"version":1,"image_short_edge":0})", R"({"version":1,"video_first":1})",
-      R"({"version":1,"max_frames":1.5})"})
-    CHECK(rejected([&] { parse_conditioning_settings(text); }));
+                           R"({"version":1,"image_short_edge":0})",
+                           R"({"version":1,"video_first":1})", R"({"version":1,"max_frames":1.5})"})
+    CHECK(rejected([&] {
+      parse_conditioning_settings(text);
+    }));
   GenerateRequest r;
   r.reference_image_paths = {"unavailable.png"};
   const auto original = reference_cache_key(r);
@@ -29,7 +37,9 @@ SLOPFAB_TEST(conditioning_settings_schema_and_cache_dependencies) {
   const auto plan = resolve_plan(r);
   CHECK(plan.conditioning.fixed_prompt_tokens == 17);
   RunOptions options;
-  CHECK(rejected([&] { validate_generation_options(r, plan, options); }));
+  CHECK(rejected([&] {
+    validate_generation_options(r, plan, options);
+  }));
   options.prompt_embedding_path = "embedding.safetensors";
   validate_generation_options(r, plan, options);
 }
@@ -51,33 +61,49 @@ SLOPFAB_TEST(conditioning_settings_presets_and_explicit_steps) {
   const auto override = resolve_conditioning_settings(r);
   CHECK(override.max_frames == 720 && override.image_short_edge == 512);
   r.animate = false;
-  r.conditioning = parse_conditioning_settings(R"({"version":1,"require_euler":true,"allow_caches":false})");
+  r.conditioning =
+      parse_conditioning_settings(R"({"version":1,"require_euler":true,"allow_caches":false})");
   auto plan = resolve_plan(r);
   RunOptions options;
   options.sampler = sampler::SamplerKind::kAb2;
-  CHECK(rejected([&] { validate_generation_options(r, plan, options); }));
+  CHECK(rejected([&] {
+    validate_generation_options(r, plan, options);
+  }));
   options.sampler = sampler::SamplerKind::kEuler;
   r.skip_every = 2;
-  CHECK(rejected([&] { validate_generation_options(r, plan, options); }));
+  CHECK(rejected([&] {
+    validate_generation_options(r, plan, options);
+  }));
 }
 
 SLOPFAB_TEST(conditioning_settings_metadata_conflicts_and_disabled_adapters) {
   using namespace slopfab;
-  const auto first = std::filesystem::temp_directory_path() / "slopfab_conditioning_first.safetensors";
-  const auto second = std::filesystem::temp_directory_path() / "slopfab_conditioning_second.safetensors";
+  const auto first =
+      std::filesystem::temp_directory_path() / "slopfab_conditioning_first.safetensors";
+  const auto second =
+      std::filesystem::temp_directory_path() / "slopfab_conditioning_second.safetensors";
+
   struct Cleanup {
-    std::filesystem::path a,b;
-    ~Cleanup() { std::error_code ec; std::filesystem::remove(a,ec); std::filesystem::remove(b,ec); }
-  } cleanup{first,second};
-  write_safetensors(first.string(), {{"x",{1},{0}}},
-      {{"slopfab.conditioning", R"({"version":1,"image_short_edge":512})"}});
-  write_safetensors(second.string(), {{"x",{1},{0}}},
-      {{"slopfab.conditioning", R"({"version":1,"image_short_edge":768})"}});
+    std::filesystem::path a, b;
+
+    ~Cleanup() {
+      std::error_code ec;
+      std::filesystem::remove(a, ec);
+      std::filesystem::remove(b, ec);
+    }
+  } cleanup{first, second};
+
+  write_safetensors(first.string(), {{"x", {1}, {0}}},
+                    {{"slopfab.conditioning", R"({"version":1,"image_short_edge":512})"}});
+  write_safetensors(second.string(), {{"x", {1}, {0}}},
+                    {{"slopfab.conditioning", R"({"version":1,"image_short_edge":768})"}});
   GenerateRequest r;
-  r.loras = {{first.string(),1}, {second.string(),0}};
+  r.loras = {{first.string(), 1}, {second.string(), 0}};
   CHECK(resolve_conditioning_settings(r).image_short_edge == 512);
   r.loras.back().strength = 1;
-  CHECK(rejected([&] { resolve_conditioning_settings(r); }));
+  CHECK(rejected([&] {
+    resolve_conditioning_settings(r);
+  }));
   r.conditioning.image_short_edge = 1024;
   CHECK(resolve_conditioning_settings(r).image_short_edge == 1024);
 }
@@ -90,14 +116,20 @@ SLOPFAB_TEST(generation_options_shared_validation) {
   validate_generation_options(request, plan, options);
   request.cache_threshold = 0.1f;
   request.skip_every = 2;
-  CHECK(rejected([&] { validate_generation_options(request, plan, options); }));
+  CHECK(rejected([&] {
+    validate_generation_options(request, plan, options);
+  }));
   request.cache_threshold = 0;
   request.skip_every = 0;
   options.attention_band = -1;
-  CHECK(rejected([&] { validate_generation_options(request, plan, options); }));
+  CHECK(rejected([&] {
+    validate_generation_options(request, plan, options);
+  }));
   options.attention_band = 0;
   options.sol_schedule.step_every = 0;
-  CHECK(rejected([&] { validate_generation_options(request, plan, options); }));
+  CHECK(rejected([&] {
+    validate_generation_options(request, plan, options);
+  }));
 }
 
 SLOPFAB_TEST(conditioning_cache_tracks_continuation_canvas) {

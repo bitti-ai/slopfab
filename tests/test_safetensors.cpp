@@ -55,15 +55,17 @@ std::string write_file(const std::vector<Spec>& specs, const std::string& stem) 
   size_t offset = 0;
   for (size_t k = 0; k < specs.size(); ++k) {
     const size_t bytes = specs[k].elements * width(specs[k]);
-    if (k != 0) header += ",";
+    if (k != 0)
+      header += ",";
     header += "\"" + specs[k].name + "\":{\"dtype\":\"" + specs[k].dtype + "\",\"shape\":[" +
-              std::to_string(specs[k].elements) + "],\"data_offsets\":[" +
-              std::to_string(offset) + "," + std::to_string(offset + bytes) + "]}";
+              std::to_string(specs[k].elements) + "],\"data_offsets\":[" + std::to_string(offset) +
+              "," + std::to_string(offset + bytes) + "]}";
     offset += bytes;
   }
   header += "}";
 
-  const std::filesystem::path path = std::filesystem::temp_directory_path() / (stem + ".safetensors");
+  const std::filesystem::path path =
+      std::filesystem::temp_directory_path() / (stem + ".safetensors");
   std::ofstream out(path, std::ios::binary);
   uint64_t header_len = header.size();
   out.write(reinterpret_cast<const char*>(&header_len), 8);
@@ -90,8 +92,7 @@ size_t offset_of(const SafeTensors& st, const char* name) {
   return static_cast<size_t>(static_cast<const uint8_t*>(st.at(name).data) - base);
 }
 
-uint64_t fnv64(const void* data, size_t bytes,
-               uint64_t hash = 1469598103934665603ull) {
+uint64_t fnv64(const void* data, size_t bytes, uint64_t hash = 1469598103934665603ull) {
   const auto* cursor = static_cast<const uint8_t*>(data);
   for (size_t i = 0; i < bytes; ++i) {
     hash ^= cursor[i];
@@ -102,11 +103,10 @@ uint64_t fnv64(const void* data, size_t bytes,
 
 SLOPFAB_TEST(qwen_layer_capture_is_bounded_and_self_verifying) {
   const char abc[] = "abc";
-  constexpr slopfab::Sha256Digest abc_sha{
-      0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,
-      0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
-      0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,
-      0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};
+  constexpr slopfab::Sha256Digest abc_sha{0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+                                          0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+                                          0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+                                          0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
   CHECK(slopfab::sha256_bytes(abc, 3) == abc_sha);
 
   slopfab::text::QwenLayerCapture capture;
@@ -125,34 +125,33 @@ SLOPFAB_TEST(qwen_layer_capture_is_bounded_and_self_verifying) {
     capture.input_bf16[i] = static_cast<uint16_t>(i * 37u);
   capture.cosine.resize(128, 1.0f);
   capture.sine.resize(128, 0.0f);
-  capture.header.input_fnv64 = fnv64(
-      capture.input_bf16.data(), capture.input_bf16.size() * 2);
-  capture.header.rope_fnv64 = fnv64(
-      capture.cosine.data(), capture.cosine.size() * sizeof(float));
-  capture.header.rope_fnv64 = fnv64(
-      capture.sine.data(), capture.sine.size() * sizeof(float),
-      capture.header.rope_fnv64);
-  const std::filesystem::path path = std::filesystem::temp_directory_path() /
-      ("slopfab_qwen_capture_validation_" + std::to_string(
-          std::chrono::high_resolution_clock::now().time_since_epoch().count()) +
+  capture.header.input_fnv64 = fnv64(capture.input_bf16.data(), capture.input_bf16.size() * 2);
+  capture.header.rope_fnv64 = fnv64(capture.cosine.data(), capture.cosine.size() * sizeof(float));
+  capture.header.rope_fnv64 =
+      fnv64(capture.sine.data(), capture.sine.size() * sizeof(float), capture.header.rope_fnv64);
+  const std::filesystem::path path =
+      std::filesystem::temp_directory_path() /
+      ("slopfab_qwen_capture_validation_" +
+       std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()) +
        ".vfqw");
   auto write_valid = [&] {
     slopfab::text::write_qwen_layer_capture(path.string(), capture);
   };
   auto rejects = [&] {
-    try { (void)slopfab::text::read_qwen_layer_capture(path.string()); }
-    catch (const std::exception&) { return true; }
+    try {
+      (void)slopfab::text::read_qwen_layer_capture(path.string());
+    } catch (const std::exception&) {
+      return true;
+    }
     return false;
   };
   write_valid();
-  CHECK(slopfab::text::read_qwen_layer_capture(path.string()).input_bf16 ==
-        capture.input_bf16);
+  CHECK(slopfab::text::read_qwen_layer_capture(path.string()).input_bf16 == capture.input_bf16);
   slopfab::Sha256Digest memory_digest{};
   {
     std::ifstream bytes_in(path, std::ios::binary);
-    const std::vector<uint8_t> bytes{
-        std::istreambuf_iterator<char>(bytes_in),
-        std::istreambuf_iterator<char>()};
+    const std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(bytes_in),
+                                     std::istreambuf_iterator<char>()};
     memory_digest = slopfab::sha256_bytes(bytes.data(), bytes.size());
   }
   CHECK(slopfab::sha256_file(path.string()) == memory_digest);
@@ -162,50 +161,64 @@ SLOPFAB_TEST(qwen_layer_capture_is_bounded_and_self_verifying) {
   std::filesystem::resize_file(path, valid_size - 1);
   CHECK(rejects());
   write_valid();
-  { std::ofstream out(path, std::ios::binary | std::ios::app); out.put('\0'); }
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::app);
+    out.put('\0');
+  }
   CHECK(rejects());
 
   // Header corruption and a production-cap overflow fail before allocation.
   write_valid();
-  { std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
-    file.put('X'); }
+  {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+    file.put('X');
+  }
   CHECK(rejects());
   write_valid();
-  { std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+  {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
     const uint32_t oversized = 8193;
-    file.seekp(12);  // magic[8], version[4]
-    file.write(reinterpret_cast<const char*>(&oversized), sizeof(oversized)); }
-  std::filesystem::resize_file(path, 90ull << 20);  // sparse on supported filesystems
+    file.seekp(12); // magic[8], version[4]
+    file.write(reinterpret_cast<const char*>(&oversized), sizeof(oversized));
+  }
+  std::filesystem::resize_file(path, 90ull << 20); // sparse on supported filesystems
   CHECK(rejects());
   write_valid();
-  { std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+  {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
     const uint32_t overflowing = std::numeric_limits<uint32_t>::max();
     file.seekp(12);
-    file.write(reinterpret_cast<const char*>(&overflowing), sizeof(overflowing)); }
+    file.write(reinterpret_cast<const char*>(&overflowing), sizeof(overflowing));
+  }
   CHECK(rejects());
 
   // A changed input word and an out-of-range token both survive shape parsing
   // but fail the payload digest/domain checks.
   write_valid();
-  { std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+  {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
     file.seekg(sizeof(slopfab::text::QwenLayerCaptureHeader) + sizeof(int32_t));
-    char byte = 0; file.read(&byte, 1); byte ^= 1;
+    char byte = 0;
+    file.read(&byte, 1);
+    byte ^= 1;
     file.seekp(sizeof(slopfab::text::QwenLayerCaptureHeader) + sizeof(int32_t));
-    file.write(&byte, 1); }
+    file.write(&byte, 1);
+  }
   CHECK(rejects());
   write_valid();
-  { std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+  {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
     const int32_t invalid_token = 151936;
     file.seekp(sizeof(slopfab::text::QwenLayerCaptureHeader));
-    file.write(reinterpret_cast<const char*>(&invalid_token), sizeof(invalid_token)); }
+    file.write(reinterpret_cast<const char*>(&invalid_token), sizeof(invalid_token));
+  }
   CHECK(rejects());
   std::filesystem::remove(path);
 }
 
 SLOPFAB_TEST(safetensors_comfy_diffusion_namespace) {
   const std::string prefix = "model.diffusion_model.";
-  const auto path = write_file({{prefix + "adaln_t_table", 8},
-                                {prefix + "blocks.0.weight", 4}},
+  const auto path = write_file({{prefix + "adaln_t_table", 8}, {prefix + "blocks.0.weight", 4}},
                                "slopfab_comfy_namespace");
   SafeTensors st;
   st.open(path);
@@ -224,8 +237,8 @@ SLOPFAB_TEST(safetensors_comfy_diffusion_namespace) {
   std::filesystem::remove(path);
 
   // A mixed namespace is not an aliasable model. Exact names still work.
-  const auto mixed = write_file({{prefix + "a", 1}, {"a", 1},
-                                 {prefix + "b", 1}}, "slopfab_comfy_mixed");
+  const auto mixed =
+      write_file({{prefix + "a", 1}, {"a", 1}, {prefix + "b", 1}}, "slopfab_comfy_mixed");
   st.open(mixed);
   CHECK(st.at("a").name == "a");
   CHECK(st.find("b") == nullptr);
@@ -239,12 +252,9 @@ SLOPFAB_TEST(safetensors_prefix_extent_bounds_the_matching_tensors) {
   // the prefix's leading characters but not the prefix itself. The extent must
   // come from the three `visual.` tensors and nothing else.
   const std::vector<Spec> specs = {
-      {"visual.blocks.1.weight", 8},
-      {"other.weight", 16},
-      {"visual.blocks.0.weight", 4},
-      {"visualise.weight", 32},  // decoy: "visual" is a prefix, "visual." is not
-      {"visual.merger.weight", 2},
-      {"zzz.tail", 64},
+      {"visual.blocks.1.weight", 8}, {"other.weight", 16}, {"visual.blocks.0.weight", 4},
+      {"visualise.weight", 32}, // decoy: "visual" is a prefix, "visual." is not
+      {"visual.merger.weight", 2},   {"zzz.tail", 64},
   };
   const std::string path = write_file(specs, "slopfab_prefix_extent");
 
@@ -262,8 +272,7 @@ SLOPFAB_TEST(safetensors_prefix_extent_bounds_the_matching_tensors) {
   const size_t lo = offset_of(st, "visual.blocks.1.weight");
   const size_t hi = offset_of(st, "visual.merger.weight") + st.at("visual.merger.weight").nbytes;
   const auto* base = static_cast<const uint8_t*>(st.mapping_base());
-  CHECK_MSG(static_cast<const uint8_t*>(begin) == base + lo,
-            "extent starts at %zu, expected %zu",
+  CHECK_MSG(static_cast<const uint8_t*>(begin) == base + lo, "extent starts at %zu, expected %zu",
             static_cast<size_t>(static_cast<const uint8_t*>(begin) - base), lo);
   CHECK_MSG(bytes == hi - lo, "extent spans %zu bytes, expected %zu", bytes, hi - lo);
 
@@ -351,11 +360,8 @@ SLOPFAB_TEST(safetensors_prefetch_range_is_advisory_and_bounded) {
 // must not leave any element of the previous tensor visible.
 SLOPFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
   const std::vector<Spec> specs = {
-      {"long.f32", 4096, "F32"},
-      {"short.f16", 7, "F16"},
-      {"mid.bf16", 300, "BF16"},
-      {"empty.f32", 0, "F32"},
-      {"tail.f16", 5000, "F16"},
+      {"long.f32", 4096, "F32"}, {"short.f16", 7, "F16"},   {"mid.bf16", 300, "BF16"},
+      {"empty.f32", 0, "F32"},   {"tail.f16", 5000, "F16"},
   };
   const std::string path = write_file(specs, "slopfab_to_f32_reuse");
 
@@ -380,7 +386,8 @@ SLOPFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
       const size_t k = (start + step) % specs.size();
       slopfab::to_f32(st.at(specs[k].name), reused);
       if (reused != fresh[k]) {
-        if (diffs == 0) first_bad = specs[k].name;
+        if (diffs == 0)
+          first_bad = specs[k].name;
         ++diffs;
       }
     }
@@ -395,7 +402,8 @@ SLOPFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
     size_t bad = 0;
     for (size_t i = 0; ok && i < specs[k].elements; ++i) {
       ok = fresh[k][i] == element(k, i);
-      if (!ok) bad = i;
+      if (!ok)
+        bad = i;
     }
     CHECK_MSG(ok, "%s widened to the wrong values: [%zu] is %.9g, expected %.9g",
               specs[k].name.c_str(), bad, ok ? 0.0 : static_cast<double>(fresh[k][bad]),
@@ -406,4 +414,4 @@ SLOPFAB_TEST(to_f32_result_does_not_depend_on_the_reused_buffer) {
   std::filesystem::remove(path);
 }
 
-}  // namespace
+} // namespace

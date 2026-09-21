@@ -10,7 +10,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_real_timing, "benchmark") {
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
     return;
   }
   constexpr uint32_t sequence = 37727, heads = 56, dim = 128;
@@ -22,10 +23,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_real_timing, "benchmark") {
   layout.latent_height = 48;
   layout.latent_width = 84;
   layout.num_video_rows = layout.num_latent_frames * layout.rows_per_frame();
-  const dit::BandedKeyRanges band =
-      dit::build_banded_key_ranges(layout, 9, 128, 64);
-  const dit::BandedKeyRanges wide =
-      dit::build_banded_key_ranges(layout, 64, 128, 64);
+  const dit::BandedKeyRanges band = dit::build_banded_key_ranges(layout, 9, 128, 64);
+  const dit::BandedKeyRanges wide = dit::build_banded_key_ranges(layout, 64, 128, 64);
   std::vector<uint16_t> host(count);
   for (size_t i = 0; i < count; ++i)
     host[i] = f32_to_bf16(float(int(i % 31) - 15) / 64.0f);
@@ -51,16 +50,17 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_real_timing, "benchmark") {
       SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
       float ms = 0.0f;
       SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, begin, end));
-      cudaEventDestroy(begin); cudaEventDestroy(end);
+      cudaEventDestroy(begin);
+      cudaEventDestroy(end);
       return ms;
     };
     cuda_full_ms = timed([&] {
-      cuda::launch_deterministic_h3_attention(
-          nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
-          reinterpret_cast<const __nv_bfloat16*>(k.get()),
-          reinterpret_cast<const __nv_bfloat16*>(v.get()),
-          reinterpret_cast<__nv_bfloat16*>(out.get()), nullptr,
-          sequence, heads, dim, exact_attention_scale(dim));
+      cuda::launch_deterministic_h3_attention(nullptr,
+                                              reinterpret_cast<const __nv_bfloat16*>(q.get()),
+                                              reinterpret_cast<const __nv_bfloat16*>(k.get()),
+                                              reinterpret_cast<const __nv_bfloat16*>(v.get()),
+                                              reinterpret_cast<__nv_bfloat16*>(out.get()), nullptr,
+                                              sequence, heads, dim, exact_attention_scale(dim));
     });
     out.copy_to_host(expected_full.data(), count);
     cuda_band_ms = timed([&] {
@@ -68,8 +68,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_real_timing, "benchmark") {
           nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
           reinterpret_cast<const __nv_bfloat16*>(k.get()),
           reinterpret_cast<const __nv_bfloat16*>(v.get()),
-          reinterpret_cast<__nv_bfloat16*>(out.get()), ranges.get(),
-          sequence, heads, dim, exact_attention_scale(dim));
+          reinterpret_cast<__nv_bfloat16*>(out.get()), ranges.get(), sequence, heads, dim,
+          exact_attention_scale(dim));
     });
     out.copy_to_host(expected_band.data(), count);
     cublasHandle_t handle = nullptr;
@@ -82,29 +82,27 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_real_timing, "benchmark") {
     config.scale = exact_attention_scale(dim);
     config.band_ranges = nullptr;
     shipped_full_ms = timed([&] {
-      cuda::attention_forward(
-          handle, nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
-          reinterpret_cast<const __nv_bfloat16*>(k.get()),
-          reinterpret_cast<const __nv_bfloat16*>(v.get()),
-          reinterpret_cast<__nv_bfloat16*>(out.get()), config,
-          cuda::AttentionBackend::kFused, workspace);
+      cuda::attention_forward(handle, nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
+                              reinterpret_cast<const __nv_bfloat16*>(k.get()),
+                              reinterpret_cast<const __nv_bfloat16*>(v.get()),
+                              reinterpret_cast<__nv_bfloat16*>(out.get()), config,
+                              cuda::AttentionBackend::kFused, workspace);
     });
     std::vector<uint16_t> shipped(count);
     out.copy_to_host(shipped.data(), count);
     for (size_t i = 0; i < count; ++i) {
-      if (shipped[i] != expected_full[i]) ++shipped_differences;
-      shipped_max_abs = std::max(
-          shipped_max_abs,
-          std::abs(bf16_to_f32(shipped[i]) - bf16_to_f32(expected_full[i])));
+      if (shipped[i] != expected_full[i])
+        ++shipped_differences;
+      shipped_max_abs = std::max(shipped_max_abs,
+                                 std::abs(bf16_to_f32(shipped[i]) - bf16_to_f32(expected_full[i])));
     }
     config.band_ranges = ranges.get();
     shipped_band_ms = timed([&] {
-      cuda::attention_forward(
-          handle, nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
-          reinterpret_cast<const __nv_bfloat16*>(k.get()),
-          reinterpret_cast<const __nv_bfloat16*>(v.get()),
-          reinterpret_cast<__nv_bfloat16*>(out.get()), config,
-          cuda::AttentionBackend::kFused, workspace);
+      cuda::attention_forward(handle, nullptr, reinterpret_cast<const __nv_bfloat16*>(q.get()),
+                              reinterpret_cast<const __nv_bfloat16*>(k.get()),
+                              reinterpret_cast<const __nv_bfloat16*>(v.get()),
+                              reinterpret_cast<__nv_bfloat16*>(out.get()), config,
+                              cuda::AttentionBackend::kFused, workspace);
     });
     slopfab::cuda::cublas_destroy(handle);
   }
@@ -130,21 +128,19 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_real_timing, "benchmark") {
   vk.upload_bytes(q, host.data(), count * sizeof(uint16_t));
   vk.upload_bytes(k, host.data(), count * sizeof(uint16_t));
   vk.upload_bytes(v, host.data(), count * sizeof(uint16_t));
-  H3AttentionPlan plan = H3AttentionPlan::create(
-      vk, {sequence, heads, dim, exact_attention_scale(dim)});
+  H3AttentionPlan plan =
+      H3AttentionPlan::create(vk, {sequence, heads, dim, exact_attention_scale(dim)});
   H3AttentionRanges band_table = H3AttentionRanges::create(
-      vk, sequence, band.ranges.data(),
-      static_cast<uint32_t>(band.ranges.size()));
+      vk, sequence, band.ranges.data(), static_cast<uint32_t>(band.ranges.size()));
   H3AttentionRanges wide_table = H3AttentionRanges::create(
-      vk, sequence, wide.ranges.data(),
-      static_cast<uint32_t>(wide.ranges.size()));
+      vk, sequence, wide.ranges.data(), static_cast<uint32_t>(wide.ranges.size()));
   auto timed_vk = [&](const H3AttentionRanges* selected) {
     const auto begin = std::chrono::steady_clock::now();
     TensorBatch batch = vk.begin_batch();
     plan.record(batch, q, k, v, out, selected);
     batch.submit().wait();
-    return std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - begin).count();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin)
+        .count();
   };
   const double vulkan_full_ms = timed_vk(nullptr);
   std::vector<uint16_t> got(count);
@@ -159,9 +155,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_real_timing, "benchmark") {
   const double direct_mib = double(count * sizeof(uint16_t) * 4) / 1048576.0;
   std::printf(
       "  H3 real S37727 H56 D128: exact CUDA full %.3f ms/band %.3f ms; Vulkan full %.3f ms/band %.3f ms/wide %.3f ms; shipped fused full %.3f ms/band %.3f ms; shipped drift %zu/%zu maxabs %.7g; direct QKV/out %.2f MiB, range %zu bytes, scratch 0\n",
-      cuda_full_ms, cuda_band_ms, vulkan_full_ms, vulkan_band_ms,
-      vulkan_wide_ms, shipped_full_ms, shipped_band_ms,
-      shipped_differences, count, shipped_max_abs, direct_mib,
+      cuda_full_ms, cuda_band_ms, vulkan_full_ms, vulkan_band_ms, vulkan_wide_ms, shipped_full_ms,
+      shipped_band_ms, shipped_differences, count, shipped_max_abs, direct_mib,
       band.ranges.size() * sizeof(int32_t));
 }
 
@@ -175,7 +170,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_causal_gqa_real_timing, "benchmark") {
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
     return;
   }
   Instance instance = Instance::create();
@@ -201,21 +197,16 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_causal_gqa_real_timing, "benchmark") {
     std::vector<uint16_t> hq(q_count, f32_to_bf16(0.03125f));
     std::vector<uint16_t> hk(kv_count, f32_to_bf16(-0.015625f));
     std::vector<uint16_t> hv(kv_count, f32_to_bf16(0.0625f));
-    cuda::DeviceBuffer<uint16_t> cq(q_count), ck(kv_count), cv(kv_count),
-        co(q_count);
+    cuda::DeviceBuffer<uint16_t> cq(q_count), ck(kv_count), cv(kv_count), co(q_count);
     cq.copy_from_host(hq.data(), hq.size());
     ck.copy_from_host(hk.data(), hk.size());
     cv.copy_from_host(hv.data(), hv.size());
     const uint64_t q_shape[] = {sequence, query_heads, dim};
     const uint64_t kv_shape[] = {sequence, kv_heads, dim};
-    DeviceTensor q = vk.allocate(TensorLayout::contiguous(q_shape, 3),
-                                 ScalarType::kBFloat16);
-    DeviceTensor k = vk.allocate(TensorLayout::contiguous(kv_shape, 3),
-                                 ScalarType::kBFloat16);
-    DeviceTensor v = vk.allocate(TensorLayout::contiguous(kv_shape, 3),
-                                 ScalarType::kBFloat16);
-    DeviceTensor out = vk.allocate(TensorLayout::contiguous(q_shape, 3),
-                                   ScalarType::kBFloat16);
+    DeviceTensor q = vk.allocate(TensorLayout::contiguous(q_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor k = vk.allocate(TensorLayout::contiguous(kv_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor v = vk.allocate(TensorLayout::contiguous(kv_shape, 3), ScalarType::kBFloat16);
+    DeviceTensor out = vk.allocate(TensorLayout::contiguous(q_shape, 3), ScalarType::kBFloat16);
     vk.upload_bytes(q, hq.data(), hq.size() * 2);
     vk.upload_bytes(k, hk.data(), hk.size() * 2);
     vk.upload_bytes(v, hv.data(), hv.size() * 2);
@@ -231,8 +222,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_causal_gqa_real_timing, "benchmark") {
           nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
           reinterpret_cast<const __nv_bfloat16*>(ck.get()),
           reinterpret_cast<const __nv_bfloat16*>(cv.get()),
-          reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, query_heads,
-          kv_heads, dim, exact_attention_scale(dim));
+          reinterpret_cast<__nv_bfloat16*>(co.get()), sequence, query_heads, kv_heads, dim,
+          exact_attention_scale(dim));
     };
     launch_cuda();
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
@@ -250,19 +241,19 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_causal_gqa_real_timing, "benchmark") {
     SLOPFAB_CUDA_CHECK(cudaEventDestroy(stop));
     const auto begin = std::chrono::steady_clock::now();
     submit_vulkan().wait();
-    const double vulkan_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - begin).count();
+    const double vulkan_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
     std::vector<uint16_t> cuda_out(q_count), vulkan_out(q_count);
     co.copy_to_host(cuda_out.data(), cuda_out.size());
     vk.download_bytes(out, vulkan_out.data(), vulkan_out.size() * 2);
     CHECK(cuda_out == vulkan_out);
     const uint64_t direct_bytes =
         (uint64_t(q_count) * 2 + uint64_t(kv_count) * 2) * sizeof(uint16_t);
-    std::printf("  causal GQA L%u H64/KV8/D128: CUDA %.3f ms, Vulkan %.3f ms, "
-                "direct Q/K/V/out %.2f MiB, pool used %.2f MiB, context reserved %.2f MiB, descriptors %llu\n",
-                sequence, cuda_ms, vulkan_ms, direct_bytes / (1024.0 * 1024.0),
-                vk.pooled_used_bytes() / (1024.0 * 1024.0),
-                vk.reserved_bytes() / (1024.0 * 1024.0),
-                static_cast<unsigned long long>(vk.descriptor_set_allocations()));
+    std::printf(
+        "  causal GQA L%u H64/KV8/D128: CUDA %.3f ms, Vulkan %.3f ms, "
+        "direct Q/K/V/out %.2f MiB, pool used %.2f MiB, context reserved %.2f MiB, descriptors %llu\n",
+        sequence, cuda_ms, vulkan_ms, direct_bytes / (1024.0 * 1024.0),
+        vk.pooled_used_bytes() / (1024.0 * 1024.0), vk.reserved_bytes() / (1024.0 * 1024.0),
+        static_cast<unsigned long long>(vk.descriptor_set_allocations()));
   }
 }

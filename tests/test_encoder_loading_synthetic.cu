@@ -28,9 +28,12 @@ SLOPFAB_TEST_CATEGORY(encoder_layer_layout, "synthetic") {
   for (int i = 0; i < slopfab::text::kLayerTensorCount; ++i) {
     const slopfab::text::TensorSpec spec =
         slopfab::text::layer_tensor_spec(cfg, static_cast<slopfab::text::LayerTensor>(i));
-    if (spec.dtype == slopfab::DType::kI8) weights += layout.bytes[i];
-    else if (spec.dtype == slopfab::DType::kF32) scales += layout.bytes[i];
-    else norms += layout.bytes[i];
+    if (spec.dtype == slopfab::DType::kI8)
+      weights += layout.bytes[i];
+    else if (spec.dtype == slopfab::DType::kF32)
+      scales += layout.bytes[i];
+    else
+      norms += layout.bytes[i];
   }
   CHECK(weights == 487587840);
   CHECK(scales == 286720);
@@ -40,20 +43,24 @@ SLOPFAB_TEST_CATEGORY(encoder_layer_layout, "synthetic") {
 
   // Every offset is 256-byte aligned and no two tensors overlap.
   for (int i = 0; i < slopfab::text::kLayerTensorCount; ++i) {
-    if (layout.bytes[i] == 0) continue;
+    if (layout.bytes[i] == 0)
+      continue;
     CHECK(layout.offset[i] % 256 == 0);
-    if (i > 0) CHECK(layout.offset[i] >= layout.offset[i - 1] + layout.bytes[i - 1]);
+    if (i > 0)
+      CHECK(layout.offset[i] >= layout.offset[i - 1] + layout.bytes[i - 1]);
   }
 
   // The int8 build has no AWQ activation scaling; those two slots are empty and
   // cost nothing in the blob.
   CHECK(layout.bytes[int(slopfab::text::LayerTensor::kOPreQuantScale)] == 0);
   CHECK(layout.bytes[int(slopfab::text::LayerTensor::kDownPreQuantScale)] == 0);
-  CHECK(!slopfab::text::layer_tensor_spec(cfg, slopfab::text::LayerTensor::kOPreQuantScale).present());
+  CHECK(!slopfab::text::layer_tensor_spec(cfg, slopfab::text::LayerTensor::kOPreQuantScale)
+             .present());
 
   // Every contraction width is a multiple of the ConvRot group, so there is no
   // skip-when-not-divisible case in this checkpoint (spec section 5.2).
-  for (int in_features : {5120, 8192, 25600}) CHECK(in_features % 256 == 0);
+  for (int in_features : {5120, 8192, 25600})
+    CHECK(in_features % 256 == 0);
 }
 
 SLOPFAB_TEST_CATEGORY(encoder_validation_rejects_a_foreign_checkpoint, "synthetic") {
@@ -62,8 +69,7 @@ SLOPFAB_TEST_CATEGORY(encoder_validation_rejects_a_foreign_checkpoint, "syntheti
   const std::string path = (dir / "fake.safetensors").string();
 
   std::vector<slopfab::TensorWrite> tensors;
-  tensors.push_back(
-      {"model.embed_tokens.weight", {4, 5120}, std::vector<float>(4 * 5120, 0.5f)});
+  tensors.push_back({"model.embed_tokens.weight", {4, 5120}, std::vector<float>(4 * 5120, 0.5f)});
   slopfab::write_safetensors(path, tensors);
 
   slopfab::SafeTensors st;
@@ -118,9 +124,11 @@ SLOPFAB_TEST_CATEGORY(encoder_embedding_gather_int8, "synthetic") {
   const int64_t hidden = 8;
 
   std::vector<int8_t> table(size_t(vocab) * hidden);
-  for (size_t i = 0; i < table.size(); ++i) table[i] = int8_t(int(i * 37 % 255) - 127);
+  for (size_t i = 0; i < table.size(); ++i)
+    table[i] = int8_t(int(i * 37 % 255) - 127);
   std::vector<float> scale(static_cast<size_t>(vocab));
-  for (int64_t r = 0; r < vocab; ++r) scale[size_t(r)] = 1e-3f * float(1 + r * 3);
+  for (int64_t r = 0; r < vocab; ++r)
+    scale[size_t(r)] = 1e-3f * float(1 + r * 3);
 
   slopfab::TensorView embed;
   embed.name = "model.embed_tokens.weight";
@@ -154,7 +162,8 @@ SLOPFAB_TEST_CATEGORY(encoder_embedding_gather_int8, "synthetic") {
   CHECK_MSG(worst < 4e-3, "int8 embedding gather: worst relative error %.3e", worst);
 
   // The same id must gather the same row every time it appears.
-  for (int64_t j = 0; j < hidden; ++j) CHECK(out[j] == out[2 * size_t(hidden) + j]);
+  for (int64_t j = 0; j < hidden; ++j)
+    CHECK(out[j] == out[2 * size_t(hidden) + j]);
 
   // Dividing by the scale instead of multiplying is the silent alternative. It
   // is off by six orders of magnitude here, and by seven on the real table.
@@ -205,8 +214,10 @@ SLOPFAB_TEST_CATEGORY(encoder_nvfp4_layer_layout, "synthetic") {
   // Every scale tensor must be whole 128x4 tiles, which is what lets the
   // swizzle be computed rather than stored. Checked here because a checkpoint
   // that broke it would need a padding convention this port has never seen.
-  for (int out_features : {8192, 1024, 5120, 25600}) CHECK(out_features % 128 == 0);
-  for (int in_features : {5120, 8192, 25600}) CHECK((in_features / 16) % 4 == 0);
+  for (int out_features : {8192, 1024, 5120, 25600})
+    CHECK(out_features % 128 == 0);
+  for (int in_features : {5120, 8192, 25600})
+    CHECK((in_features / 16) % 4 == 0);
 
   // Half the int8 build's blob, which is the whole point of this format.
   slopfab::text::EncoderConfig i8 = cfg;
@@ -241,8 +252,8 @@ SLOPFAB_TEST_CATEGORY(reference_vision_support_never_silently_ignores_pixels, "s
   try {
     slopfab::text::require_reference_vision_support(vision, 1);
   } catch (const std::runtime_error& e) {
-    malformed_failed = std::string(e.what()).find("exactly 351 Qwen vision tensors") !=
-                       std::string::npos;
+    malformed_failed =
+        std::string(e.what()).find("exactly 351 Qwen vision tensors") != std::string::npos;
   }
   CHECK(malformed_failed);
 }

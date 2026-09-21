@@ -7,7 +7,8 @@
 
 namespace {
 void check(bool condition, const char* message) {
-  if (!condition) throw std::runtime_error(message);
+  if (!condition)
+    throw std::runtime_error(message);
 }
 }
 
@@ -31,7 +32,8 @@ int main(int argc, char** argv) {
     check(video.soundtrack()->interleaved == audio.soundtrack()->interleaved,
           "standalone and embedded PCM disagree");
     double energy = 0;
-    for (float sample : audio.soundtrack()->interleaved) energy += double(sample) * sample;
+    for (float sample : audio.soundtrack()->interleaved)
+      energy += double(sample) * sample;
     check(energy / 88200 > .007 && energy / 88200 < .0085, "decoded audio has incorrect gain");
     auto delayed = slopfab::cli::decode_reference_file(argv[3], true, argv[0]);
     check(delayed.frames().size() == 72, "incorrect delayed clip length");

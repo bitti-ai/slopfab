@@ -18,7 +18,7 @@ SLOPFAB_TEST_CATEGORY(attention_blocked, "synthetic") {
   cfg.seq_len = seq;
   cfg.num_heads = heads;
   cfg.head_dim = head_dim;
-  CHECK_NEAR(cfg.effective_scale(), 1.0 / std::sqrt(128.0), 1e-7);  // computed in fp32
+  CHECK_NEAR(cfg.effective_scale(), 1.0 / std::sqrt(128.0), 1e-7); // computed in fp32
 
   const std::vector<float> want =
       cpu_attention(q, k, v, seq, heads, heads, head_dim, cfg.effective_scale());
@@ -31,9 +31,10 @@ SLOPFAB_TEST_CATEGORY(attention_blocked, "synthetic") {
     cfg.query_block = bq;
     BfBuf dout(size_t(seq) * width);
     Workspace ws;
-    ws.reserve(slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kBlocked));
+    ws.reserve(
+        slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kBlocked));
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kBlocked, ws);
+                                     slopfab::cuda::AttentionBackend::kBlocked, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     results.push_back(dout.host());
     CHECK_CLOSE_REL(want, results.back(), 1e-3, 1e-2,
@@ -50,9 +51,10 @@ SLOPFAB_TEST_CATEGORY(attention_blocked, "synthetic") {
     cfg.query_block = 1024;
     BfBuf dfused(size_t(seq) * width);
     Workspace ws;
-    CHECK(slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kFused) == 0);
+    CHECK(slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kFused) ==
+          0);
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dfused.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kFused, ws);
+                                     slopfab::cuda::AttentionBackend::kFused, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const std::vector<float> got = dfused.host();
     CHECK_CLOSE_REL(want, got, 1e-3, 1e-2, "fused attention vs dense CPU");
@@ -68,7 +70,7 @@ SLOPFAB_TEST_CATEGORY(attention_blocked, "synthetic") {
       Workspace ws;
       BfBuf dodd(size_t(seq) * heads * 96);
       slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dodd.p(), odd,
-                                      slopfab::cuda::AttentionBackend::kFused, ws);
+                                       slopfab::cuda::AttentionBackend::kFused, ws);
     } catch (const std::exception&) {
       threw = true;
     }
@@ -98,7 +100,7 @@ SLOPFAB_TEST_CATEGORY(attention_fused_ragged_tail, "synthetic") {
 
     Workspace ws;
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kFused, ws);
+                                     slopfab::cuda::AttentionBackend::kFused, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2,
                     ("fused attention, ragged seq " + std::to_string(seq)).c_str());
@@ -107,52 +109,61 @@ SLOPFAB_TEST_CATEGORY(attention_fused_ragged_tail, "synthetic") {
 
 SLOPFAB_TEST_CATEGORY(attention_compact_queries_match_full_buffers, "synthetic") {
   CublasScope cb;
-  for (int dim : {64, 128}) for (int seq : {1, 127, 128, 259, 2051}) {
-    const int width = 2 * dim;
-    const auto q = bf16_round(make_data(size_t(seq) * width, 9701, 0.3f));
-    const auto k = bf16_round(make_data(size_t(seq) * width, 9702, 0.3f));
-    const auto v = bf16_round(make_data(size_t(seq) * width, 9703, 1.0f));
-    BfBuf dq(q), dk(k), dv(v), full(size_t(seq) * width);
-    slopfab::cuda::AttentionConfig cfg;
-    cfg.seq_len = seq; cfg.num_heads = 2; cfg.head_dim = dim;
-    for (bool banded : {false, true}) {
-      if (banded && seq < 259) continue;
-      slopfab::cuda::DeviceBuffer<int32_t> bands;
-      if (banded) {
-        std::vector<int32_t> ranges;
-        for (int tile = 0; tile < (seq + 127) / 128; ++tile)
-          ranges.insert(ranges.end(), {0, 64, 128 + (tile % 2) * 64, (seq + 63) / 64 * 64});
-        bands.allocate(ranges.size()); bands.copy_from_host(ranges.data(), ranges.size());
-      }
-      cfg.band_ranges = bands.get();
-      Workspace ws;
-      slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), full.p(),
-                                       cfg, slopfab::cuda::AttentionBackend::kFused, ws);
-      const auto expected = full.host();
-      for (int chunk : {128, 256}) {
-        std::vector<float> actual;
-        for (int start = 0; start < seq; start += chunk) {
-          const int rows = std::min(chunk, seq - start);
-          const size_t count = static_cast<size_t>(rows) * width;
-          BfBuf compact_q(std::vector<float>(q.begin() + static_cast<size_t>(start) * width,
-                                            q.begin() + static_cast<size_t>(start + rows) * width));
-          BfBuf compact_out(std::vector<float>(count + 16, 42.0f));
-          slopfab::cuda::attention_forward_query_chunk(nullptr, compact_q.p(), dk.p(), dv.p(),
-                                                       compact_out.p(), cfg, start, rows);
-          const auto got = compact_out.host();
-          CHECK(std::all_of(got.begin() + count, got.end(), [](float x) { return x == 42.0f; }));
-          actual.insert(actual.end(), got.begin(), got.begin() + count);
+  for (int dim : {64, 128})
+    for (int seq : {1, 127, 128, 259, 2051}) {
+      const int width = 2 * dim;
+      const auto q = bf16_round(make_data(size_t(seq) * width, 9701, 0.3f));
+      const auto k = bf16_round(make_data(size_t(seq) * width, 9702, 0.3f));
+      const auto v = bf16_round(make_data(size_t(seq) * width, 9703, 1.0f));
+      BfBuf dq(q), dk(k), dv(v), full(size_t(seq) * width);
+      slopfab::cuda::AttentionConfig cfg;
+      cfg.seq_len = seq;
+      cfg.num_heads = 2;
+      cfg.head_dim = dim;
+      for (bool banded : {false, true}) {
+        if (banded && seq < 259)
+          continue;
+        slopfab::cuda::DeviceBuffer<int32_t> bands;
+        if (banded) {
+          std::vector<int32_t> ranges;
+          for (int tile = 0; tile < (seq + 127) / 128; ++tile)
+            ranges.insert(ranges.end(), {0, 64, 128 + (tile % 2) * 64, (seq + 63) / 64 * 64});
+          bands.allocate(ranges.size());
+          bands.copy_from_host(ranges.data(), ranges.size());
         }
-        CHECK_CLOSE(expected, actual, 0.0, "compact Q/output preserves Flash2 bits and band offsets");
+        cfg.band_ranges = bands.get();
+        Workspace ws;
+        slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), full.p(), cfg,
+                                         slopfab::cuda::AttentionBackend::kFused, ws);
+        const auto expected = full.host();
+        for (int chunk : {128, 256}) {
+          std::vector<float> actual;
+          for (int start = 0; start < seq; start += chunk) {
+            const int rows = std::min(chunk, seq - start);
+            const size_t count = static_cast<size_t>(rows) * width;
+            BfBuf compact_q(
+                std::vector<float>(q.begin() + static_cast<size_t>(start) * width,
+                                   q.begin() + static_cast<size_t>(start + rows) * width));
+            BfBuf compact_out(std::vector<float>(count + 16, 42.0f));
+            slopfab::cuda::attention_forward_query_chunk(nullptr, compact_q.p(), dk.p(), dv.p(),
+                                                         compact_out.p(), cfg, start, rows);
+            const auto got = compact_out.host();
+            CHECK(std::all_of(got.begin() + count, got.end(), [](float x) {
+              return x == 42.0f;
+            }));
+            actual.insert(actual.end(), got.begin(), got.begin() + count);
+          }
+          CHECK_CLOSE(expected, actual, 0.0,
+                      "compact Q/output preserves Flash2 bits and band offsets");
+        }
       }
     }
-  }
 }
 
 SLOPFAB_TEST_CATEGORY(attention_sol, "synthetic") {
   REQUIRE_SM120_TEST("Sol attention");
   CublasScope cb;
-  const int seq = 263;  // four full blocks, local routes, and a ragged tail
+  const int seq = 263; // four full blocks, local routes, and a ragged tail
   const int heads = 2;
   const int dim = 128;
   const int width = heads * dim;
@@ -177,7 +188,7 @@ SLOPFAB_TEST_CATEGORY(attention_sol, "synthetic") {
     Workspace ws;
     ws.reserve(bytes);
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kSol, ws);
+                                     slopfab::cuda::AttentionBackend::kSol, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     return dout.host();
   };
@@ -194,7 +205,8 @@ SLOPFAB_TEST_CATEGORY(attention_sol, "synthetic") {
   // independently catches mean-vs-sum and ragged-tail multiplicity mistakes.
   for (int row = 0; row < seq; ++row) {
     const int source = (row / 64) * 64;
-    for (int x = 0; x < width; ++x) k[size_t(row) * width + x] = k[size_t(source) * width + x];
+    for (int x = 0; x < width; ++x)
+      k[size_t(row) * width + x] = k[size_t(source) * width + x];
   }
   const std::vector<float> constant_want =
       cpu_attention(q, k, v, seq, heads, heads, dim, cfg.effective_scale());
@@ -204,8 +216,7 @@ SLOPFAB_TEST_CATEGORY(attention_sol, "synthetic") {
   // Forced-exact prefix includes the crossing physical block, so selecting an
   // arbitrary multimodal boundary cannot approximate any prefix key.
   cfg.exact_prefix = 70;
-  CHECK_CLOSE_REL(constant_want, run(k, 1.0e6f), 1e-3, 1e-2,
-                  "Sol-Attn forced-exact prefix");
+  CHECK_CLOSE_REL(constant_want, run(k, 1.0e6f), 1e-3, 1e-2, "Sol-Attn forced-exact prefix");
 
   // Nonconstant mixed-route oracle: six blocks ensure prefix, local and
   // threshold-selected routes coexist with corrected rejected routes.
@@ -226,10 +237,10 @@ SLOPFAB_TEST_CATEGORY(attention_sol, "synthetic") {
     mixed.exact_prefix = 70;
     mixed.sol_pipeline = true;
     Workspace mixed_ws;
-    mixed_ws.reserve(slopfab::cuda::attention_workspace_bytes(
-        mixed, slopfab::cuda::AttentionBackend::kSol));
+    mixed_ws.reserve(
+        slopfab::cuda::attention_workspace_bytes(mixed, slopfab::cuda::AttentionBackend::kSol));
     slopfab::cuda::attention_forward(cb.h, nullptr, dqm.p(), dkm.p(), dvm.p(), dom.p(), mixed,
-                                    slopfab::cuda::AttentionBackend::kSol, mixed_ws);
+                                     slopfab::cuda::AttentionBackend::kSol, mixed_ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_CLOSE_REL(oracle, dom.host(), 2e-3, 2e-2, "Sol-Attn mixed-route CPU oracle");
   }
@@ -242,43 +253,46 @@ SLOPFAB_TEST_CATEGORY(attention_sol_pipeline_exact, "synthetic") {
   const auto q = bf16_round(make_data(size_t(seq) * dim, 921u, 0.3f));
   const auto k = bf16_round(make_data(size_t(seq) * dim, 922u, 0.3f));
   const auto v = bf16_round(make_data(size_t(seq) * dim, 923u, 1.0f));
-  const auto want = cpu_attention(q, k, v, seq, heads, heads, dim,
-                                  1.0f / std::sqrt(float(dim)));
+  const auto want = cpu_attention(q, k, v, seq, heads, heads, dim, 1.0f / std::sqrt(float(dim)));
   BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * dim);
   slopfab::cuda::AttentionConfig cfg;
-  cfg.seq_len = seq; cfg.num_heads = heads; cfg.head_dim = dim;
-  cfg.exact_prefix = seq; cfg.sol_pipeline = true;
+  cfg.seq_len = seq;
+  cfg.num_heads = heads;
+  cfg.head_dim = dim;
+  cfg.exact_prefix = seq;
+  cfg.sol_pipeline = true;
   Workspace ws;
-  ws.reserve(slopfab::cuda::attention_workspace_bytes(
-      cfg, slopfab::cuda::AttentionBackend::kSol));
+  ws.reserve(slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kSol));
   slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                  slopfab::cuda::AttentionBackend::kSol, ws);
+                                   slopfab::cuda::AttentionBackend::kSol, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  CHECK_CLOSE_REL(want, dout.host(), 2e-3, 2e-2,
-                  "Sol SM120 pipeline exact oracle");
+  CHECK_CLOSE_REL(want, dout.host(), 2e-3, 2e-2, "Sol SM120 pipeline exact oracle");
 }
 
 SLOPFAB_TEST_CATEGORY(attention_sol_pipeline_mixed, "synthetic") {
   REQUIRE_SM120_TEST("Sol TMA pipeline");
   CublasScope cb;
-  const int seq=384, dim=128;
-  const auto q=bf16_round(make_data(size_t(seq)*dim,931u,0.8f));
-  const auto k=bf16_round(make_data(size_t(seq)*dim,932u,0.8f));
-  const auto v=bf16_round(make_data(size_t(seq)*dim,933u,1.0f));
-  int selected=0,rejected=0;
-  const auto want=cpu_sol_attention(q,k,v,seq,70,1.0f/std::sqrt(float(dim)),
-                                    1.0f,&selected,&rejected);
-  CHECK(selected>0 && rejected>0);
-  BfBuf dq(q),dk(k),dv(v),dout(size_t(seq)*dim);
+  const int seq = 384, dim = 128;
+  const auto q = bf16_round(make_data(size_t(seq) * dim, 931u, 0.8f));
+  const auto k = bf16_round(make_data(size_t(seq) * dim, 932u, 0.8f));
+  const auto v = bf16_round(make_data(size_t(seq) * dim, 933u, 1.0f));
+  int selected = 0, rejected = 0;
+  const auto want =
+      cpu_sol_attention(q, k, v, seq, 70, 1.0f / std::sqrt(float(dim)), 1.0f, &selected, &rejected);
+  CHECK(selected > 0 && rejected > 0);
+  BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * dim);
   slopfab::cuda::AttentionConfig cfg;
-  cfg.seq_len=seq; cfg.num_heads=1; cfg.head_dim=dim;
-  cfg.exact_prefix=70; cfg.sol_pipeline=true;
-  Workspace ws; ws.reserve(slopfab::cuda::attention_workspace_bytes(
-      cfg,slopfab::cuda::AttentionBackend::kSol));
-  slopfab::cuda::attention_forward(cb.h,nullptr,dq.p(),dk.p(),dv.p(),dout.p(),cfg,
-                                  slopfab::cuda::AttentionBackend::kSol,ws);
+  cfg.seq_len = seq;
+  cfg.num_heads = 1;
+  cfg.head_dim = dim;
+  cfg.exact_prefix = 70;
+  cfg.sol_pipeline = true;
+  Workspace ws;
+  ws.reserve(slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kSol));
+  slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                   slopfab::cuda::AttentionBackend::kSol, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  CHECK_CLOSE_REL(want,dout.host(),2e-3,2e-2,"Sol pipeline mixed-route CPU oracle");
+  CHECK_CLOSE_REL(want, dout.host(), 2e-3, 2e-2, "Sol pipeline mixed-route CPU oracle");
 }
 
 SLOPFAB_TEST_CATEGORY(attention_sol_pipeline_large_pooled_v, "synthetic") {
@@ -288,73 +302,95 @@ SLOPFAB_TEST_CATEGORY(attention_sol_pipeline_large_pooled_v, "synthetic") {
   // while the corrected attention result remains a perfectly finite ~2k.
   // This reproduces the end-to-end failure that motivated keeping the
   // approximate V contraction in FP32.
-  const int seq=321,dim=128;
-  const auto q=bf16_round(make_data(size_t(seq)*dim,951u,0.4f));
-  auto k=bf16_round(make_data(size_t(seq)*dim,952u,0.4f));
-  std::vector<float> v(size_t(seq)*dim);
-  for(int row=0;row<seq;++row) {
-    const int source=(row/64)*64;
-    for(int x=0;x<dim;++x) {
-      k[size_t(row)*dim+x]=k[size_t(source)*dim+x];
-      v[size_t(row)*dim+x]=2048.0f+float((x%7)-3)*8.0f;
+  const int seq = 321, dim = 128;
+  const auto q = bf16_round(make_data(size_t(seq) * dim, 951u, 0.4f));
+  auto k = bf16_round(make_data(size_t(seq) * dim, 952u, 0.4f));
+  std::vector<float> v(size_t(seq) * dim);
+  for (int row = 0; row < seq; ++row) {
+    const int source = (row / 64) * 64;
+    for (int x = 0; x < dim; ++x) {
+      k[size_t(row) * dim + x] = k[size_t(source) * dim + x];
+      v[size_t(row) * dim + x] = 2048.0f + float((x % 7) - 3) * 8.0f;
     }
   }
-  const auto want=cpu_attention(q,k,v,seq,1,1,dim,1.0f/std::sqrt(float(dim)));
-  BfBuf dq(q),dk(k),dv(v),dout(size_t(seq)*dim);
+  const auto want = cpu_attention(q, k, v, seq, 1, 1, dim, 1.0f / std::sqrt(float(dim)));
+  BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * dim);
   slopfab::cuda::AttentionConfig cfg;
-  cfg.seq_len=seq;cfg.num_heads=1;cfg.head_dim=dim;
-  cfg.exact_prefix=0;cfg.sol_pipeline=true;cfg.sol_beta=1.0e6f;
-  Workspace ws;ws.reserve(slopfab::cuda::attention_workspace_bytes(
-      cfg,slopfab::cuda::AttentionBackend::kSol));
-  slopfab::cuda::attention_forward(cb.h,nullptr,dq.p(),dk.p(),dv.p(),dout.p(),cfg,
-                                  slopfab::cuda::AttentionBackend::kSol,ws);
+  cfg.seq_len = seq;
+  cfg.num_heads = 1;
+  cfg.head_dim = dim;
+  cfg.exact_prefix = 0;
+  cfg.sol_pipeline = true;
+  cfg.sol_beta = 1.0e6f;
+  Workspace ws;
+  ws.reserve(slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kSol));
+  slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                   slopfab::cuda::AttentionBackend::kSol, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  const auto got=dout.host();
-  size_t bad=0;
-  for(float x:got) bad+=!std::isfinite(x);
-  CHECK_MSG(bad==0,"Sol large pooled-V pipeline produced %zu non-finite values",bad);
-  CHECK_CLOSE_REL(want,got,2e-3,2e-2,"Sol pipeline large pooled-V FP32 correction");
+  const auto got = dout.host();
+  size_t bad = 0;
+  for (float x : got)
+    bad += !std::isfinite(x);
+  CHECK_MSG(bad == 0, "Sol large pooled-V pipeline produced %zu non-finite values", bad);
+  CHECK_CLOSE_REL(want, got, 2e-3, 2e-2, "Sol pipeline large pooled-V FP32 correction");
 }
 
 SLOPFAB_TEST_CATEGORY(attention_sol_rejects_invalid_error_weights, "synthetic") {
   REQUIRE_SM120_TEST("Sol attention");
   slopfab::cuda::AttentionConfig cfg;
-  cfg.seq_len=64;cfg.num_heads=1;cfg.head_dim=128;
+  cfg.seq_len = 64;
+  cfg.num_heads = 1;
+  cfg.head_dim = 128;
   slopfab::cuda::Workspace ws;
-  auto rejected=[&]() {
+  auto rejected = [&]() {
     try {
-      slopfab::cuda::sol_attention_forward(nullptr,nullptr,nullptr,nullptr,nullptr,cfg,ws);
+      slopfab::cuda::sol_attention_forward(nullptr, nullptr, nullptr, nullptr, nullptr, cfg, ws);
       return false;
-    } catch(const std::runtime_error&) { return true; }
+    } catch (const std::runtime_error&) {
+      return true;
+    }
   };
-  cfg.sol_error_k=-1.0f;CHECK(rejected());
-  cfg.sol_error_k=std::numeric_limits<float>::infinity();CHECK(rejected());
-  cfg.sol_error_k=0.0f;cfg.sol_error_v=-1.0f;CHECK(rejected());
-  cfg.sol_error_v=std::numeric_limits<float>::quiet_NaN();CHECK(rejected());
+  cfg.sol_error_k = -1.0f;
+  CHECK(rejected());
+  cfg.sol_error_k = std::numeric_limits<float>::infinity();
+  CHECK(rejected());
+  cfg.sol_error_k = 0.0f;
+  cfg.sol_error_v = -1.0f;
+  CHECK(rejected());
+  cfg.sol_error_v = std::numeric_limits<float>::quiet_NaN();
+  CHECK(rejected());
 }
 
 SLOPFAB_TEST_CATEGORY(attention_sol_zero_error_weight_ignores_infinite_residual, "synthetic") {
   REQUIRE_SM120_TEST("Sol attention");
   CublasScope cb;
-  const int seq=321,dim=128;
-  std::vector<float> q(size_t(seq)*dim,0.0f),k(size_t(seq)*dim),v;
-  v=bf16_round(make_data(size_t(seq)*dim,961u,1.0f));
+  const int seq = 321, dim = 128;
+  std::vector<float> q(size_t(seq) * dim, 0.0f), k(size_t(seq) * dim), v;
+  v = bf16_round(make_data(size_t(seq) * dim, 961u, 1.0f));
   // Squaring this finite BF16 value overflows FP32 residual preprocessing,
   // while alternating signs keep the centroid and zero-Q proxy finite.
-  for(int row=0;row<seq;++row)for(int d=0;d<dim;++d)
-    k[size_t(row)*dim+d]=((row+d)&1)?-3.0e38f:3.0e38f;
-  k=bf16_round(k);
-  BfBuf dq(q),dk(k),dv(v),dout(size_t(seq)*dim);
+  for (int row = 0; row < seq; ++row)
+    for (int d = 0; d < dim; ++d)
+      k[size_t(row) * dim + d] = ((row + d) & 1) ? -3.0e38f : 3.0e38f;
+  k = bf16_round(k);
+  BfBuf dq(q), dk(k), dv(v), dout(size_t(seq) * dim);
   slopfab::cuda::AttentionConfig cfg;
-  cfg.seq_len=seq;cfg.num_heads=1;cfg.head_dim=dim;cfg.sol_pipeline=true;
-  cfg.sol_beta=1.0e6f;cfg.sol_error_k=0.0f;cfg.sol_error_v=0.0f;
-  Workspace ws;ws.reserve(slopfab::cuda::attention_workspace_bytes(
-      cfg,slopfab::cuda::AttentionBackend::kSol));
-  slopfab::cuda::attention_forward(cb.h,nullptr,dq.p(),dk.p(),dv.p(),dout.p(),cfg,
-                                  slopfab::cuda::AttentionBackend::kSol,ws);
+  cfg.seq_len = seq;
+  cfg.num_heads = 1;
+  cfg.head_dim = dim;
+  cfg.sol_pipeline = true;
+  cfg.sol_beta = 1.0e6f;
+  cfg.sol_error_k = 0.0f;
+  cfg.sol_error_v = 0.0f;
+  Workspace ws;
+  ws.reserve(slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kSol));
+  slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
+                                   slopfab::cuda::AttentionBackend::kSol, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
-  size_t bad=0;for(float x:dout.host())bad+=!std::isfinite(x);
-  CHECK_MSG(bad==0,"zero Sol error weights consumed infinite residual: %zu nonfinite",bad);
+  size_t bad = 0;
+  for (float x : dout.host())
+    bad += !std::isfinite(x);
+  CHECK_MSG(bad == 0, "zero Sol error weights consumed infinite residual: %zu nonfinite", bad);
 }
 
 SLOPFAB_TEST_CATEGORY(attention_sage2_architecture_dispatch, "synthetic") {
@@ -394,7 +430,7 @@ SLOPFAB_TEST_CATEGORY(attention_sage2, "synthetic") {
   CHECK(bytes > 0);
   ws.reserve(bytes);
   slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                  slopfab::cuda::AttentionBackend::kSage2, ws);
+                                   slopfab::cuda::AttentionBackend::kSage2, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = dout.host();
   CHECK_CLOSE_REL(want, got, 2.5e-2, 1e-1, "sage2 attention vs dense CPU");
@@ -403,7 +439,7 @@ SLOPFAB_TEST_CATEGORY(attention_sage2, "synthetic") {
   BfBuf again(size_t(seq) * width);
   ws.clear();
   slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), again.p(), cfg,
-                                  slopfab::cuda::AttentionBackend::kSage2, ws);
+                                   slopfab::cuda::AttentionBackend::kSage2, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK(dout.bits() == again.bits());
 
@@ -412,7 +448,7 @@ SLOPFAB_TEST_CATEGORY(attention_sage2, "synthetic") {
   try {
     ws.clear();
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), again.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kSage2, ws);
+                                     slopfab::cuda::AttentionBackend::kSage2, ws);
   } catch (const std::exception&) {
     threw = true;
   }
@@ -426,7 +462,13 @@ SLOPFAB_TEST_CATEGORY(attention_sage2_head_dims_bit_stable, "synthetic") {
     SKIP_UNSUPPORTED_HARDWARE(
         "Blackwell Sage hashes are SM120-specific; dense-reference and determinism still run");
   }
-  struct Shape { int seq; int head_dim; uint64_t digest; };
+
+  struct Shape {
+    int seq;
+    int head_dim;
+    uint64_t digest;
+  };
+
   const Shape shapes[] = {
       {64, 64, 0x3dece381009ce78cull},  {199, 128, 0xc755489173f5999cull},
       {130, 64, 0x51488ef18c4440adull}, {256, 128, 0xd01e0a63a85a68a9ull},
@@ -450,14 +492,13 @@ SLOPFAB_TEST_CATEGORY(attention_sage2_head_dims_bit_stable, "synthetic") {
       Workspace ws;
       ws.reserve(slopfab::cuda::sage2_workspace_bytes(cfg, kv_heads));
       slopfab::cuda::sage2_attention_forward(nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                            kv_heads, ws);
+                                             kv_heads, ws);
       SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
       const std::vector<uint16_t> bits = dout.bits();
 
       if (round == 0) {
-        const std::vector<float> want =
-            cpu_attention(q, k, v, seq, heads, kv_heads, head_dim,
-                          1.0f / std::sqrt(float(head_dim)));
+        const std::vector<float> want = cpu_attention(q, k, v, seq, heads, kv_heads, head_dim,
+                                                      1.0f / std::sqrt(float(head_dim)));
         CHECK_CLOSE_REL(want, dout.host(), 3.0e-2, 1.2e-1, "sage2 GQA vs dense CPU");
         first[si] = bits;
         // FNV-1a over the raw bf16 payload, against the frozen table above.
@@ -474,7 +515,8 @@ SLOPFAB_TEST_CATEGORY(attention_sage2_head_dims_bit_stable, "synthetic") {
         }
       } else {
         size_t bad = 0;
-        for (size_t i = 0; i < bits.size(); ++i) bad += bits[i] != first[si][i];
+        for (size_t i = 0; i < bits.size(); ++i)
+          bad += bits[i] != first[si][i];
         CHECK_MSG(bad == 0,
                   "sage2 seq=%d D=%d drifted across interleaved head dims: %zu of %zu bf16 differ",
                   seq, head_dim, bad, bits.size());
@@ -499,14 +541,15 @@ SLOPFAB_TEST_CATEGORY(attention_fused_head_dim_64, "synthetic") {
     cfg.seq_len = seq;
     cfg.num_heads = heads;
     cfg.head_dim = head_dim;
-    CHECK(slopfab::cuda::attention_preferred_backend(cfg) == slopfab::cuda::AttentionBackend::kFused);
+    CHECK(slopfab::cuda::attention_preferred_backend(cfg) ==
+          slopfab::cuda::AttentionBackend::kFused);
 
     const std::vector<float> want =
         cpu_attention(q, k, v, seq, heads, heads, head_dim, cfg.effective_scale());
 
     Workspace ws;
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kFused, ws);
+                                     slopfab::cuda::AttentionBackend::kFused, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2,
                     ("fused attention, head_dim 64, seq " + std::to_string(seq)).c_str());
@@ -534,7 +577,7 @@ SLOPFAB_TEST_CATEGORY(attention_fused_head_dim_64, "synthetic") {
         cpu_attention(q, k, v, seq, heads, kv_heads, head_dim, cfg.effective_scale());
     Workspace ws;
     slopfab::cuda::attention_forward_gqa(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                        kv_heads, slopfab::cuda::AttentionBackend::kFused, ws);
+                                         kv_heads, slopfab::cuda::AttentionBackend::kFused, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2, "fused gqa attention, head_dim 64");
   }
@@ -549,7 +592,7 @@ SLOPFAB_TEST_CATEGORY(attention_fused_banded, "synthetic") {
   layout.num_audio_rows = 8;
   layout.num_latent_frames = 12;
   layout.latent_height = 12;
-  layout.latent_width = 14;  // R = 6*7 = 42, coprime-ish with the 64-row block
+  layout.latent_width = 14; // R = 6*7 = 42, coprime-ish with the 64-row block
   layout.num_video_rows = layout.num_latent_frames * layout.rows_per_frame();
 
   const int seq = layout.total_rows();
@@ -559,7 +602,7 @@ SLOPFAB_TEST_CATEGORY(attention_fused_banded, "synthetic") {
   const int tile = slopfab::cuda::attention_fused_query_tile();
   const int align = slopfab::cuda::attention_fused_key_align();
   CHECK(layout.rows_per_frame() == 42);
-  CHECK(layout.rows_per_frame() % align != 0);  // the rounding must be exercised
+  CHECK(layout.rows_per_frame() % align != 0); // the rounding must be exercised
 
   const std::vector<float> q = bf16_round(make_data(size_t(seq) * width, 701u, 0.3f));
   const std::vector<float> k = bf16_round(make_data(size_t(seq) * width, 702u, 0.3f));
@@ -582,11 +625,11 @@ SLOPFAB_TEST_CATEGORY(attention_fused_banded, "synthetic") {
     banded.band_ranges = dranges.get();
     Workspace ws;
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), banded,
-                                    slopfab::cuda::AttentionBackend::kFused, ws);
+                                     slopfab::cuda::AttentionBackend::kFused, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
-    const std::vector<float> want = cpu_attention_banded(
-        q, k, v, seq, heads, heads, head_dim, cfg.effective_scale(), r.ranges, tile);
+    const std::vector<float> want = cpu_attention_banded(q, k, v, seq, heads, heads, head_dim,
+                                                         cfg.effective_scale(), r.ranges, tile);
     CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2,
                     ("banded fused attention, band +/-" + std::to_string(band)).c_str());
   }
@@ -604,11 +647,11 @@ SLOPFAB_TEST_CATEGORY(attention_fused_banded, "synthetic") {
     BfBuf dfull(size_t(seq) * width), dwide(size_t(seq) * width);
     Workspace ws;
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dfull.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kFused, ws);
+                                     slopfab::cuda::AttentionBackend::kFused, ws);
     slopfab::cuda::AttentionConfig banded = cfg;
     banded.band_ranges = dranges.get();
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dwide.p(), banded,
-                                    slopfab::cuda::AttentionBackend::kFused, ws);
+                                     slopfab::cuda::AttentionBackend::kFused, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_MSG(dfull.bits() == dwide.bits(),
               "a band covering the sequence is not bit-identical to full attention");
@@ -625,11 +668,11 @@ SLOPFAB_TEST_CATEGORY(attention_fused_banded, "synthetic") {
     BfBuf dfull(size_t(seq) * width), dnarrow(size_t(seq) * width);
     Workspace ws;
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dfull.p(), cfg,
-                                    slopfab::cuda::AttentionBackend::kFused, ws);
+                                     slopfab::cuda::AttentionBackend::kFused, ws);
     slopfab::cuda::AttentionConfig banded = cfg;
     banded.band_ranges = dranges.get();
     slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dnarrow.p(), banded,
-                                    slopfab::cuda::AttentionBackend::kFused, ws);
+                                     slopfab::cuda::AttentionBackend::kFused, ws);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     CHECK_MSG(dfull.bits() != dnarrow.bits(), "a +/-1 frame band did not change the output");
   }
@@ -645,11 +688,11 @@ SLOPFAB_TEST_CATEGORY(attention_fused_banded, "synthetic") {
     BfBuf dout(size_t(seq) * width);
     Workspace ws;
     ws.reserve(slopfab::cuda::attention_workspace_bytes(banded,
-                                                       slopfab::cuda::AttentionBackend::kBlocked));
+                                                        slopfab::cuda::AttentionBackend::kBlocked));
     bool threw = false;
     try {
       slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), banded,
-                                      slopfab::cuda::AttentionBackend::kBlocked, ws);
+                                       slopfab::cuda::AttentionBackend::kBlocked, ws);
     } catch (const std::exception&) {
       threw = true;
     }
@@ -681,7 +724,8 @@ SLOPFAB_TEST_CATEGORY(attention_fused_probability_precision, "synthetic") {
       cpu_attention(q, k, v, seq, heads, heads, head_dim, cfg.effective_scale());
 
   double norm_sq = 0.0;
-  for (double x : want) norm_sq += x * x;
+  for (double x : want)
+    norm_sq += x * x;
   const double want_rms = std::sqrt(norm_sq / double(want.size()));
 
   // The floor: what rounding the exact answer to the output's own format costs.
@@ -696,7 +740,7 @@ SLOPFAB_TEST_CATEGORY(attention_fused_probability_precision, "synthetic") {
 
   Workspace ws;
   slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                  slopfab::cuda::AttentionBackend::kFused, ws);
+                                   slopfab::cuda::AttentionBackend::kFused, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   const std::vector<float> got = dout.host();
 
@@ -740,7 +784,7 @@ SLOPFAB_TEST_CATEGORY(attention_fused_gqa, "synthetic") {
 
   Workspace ws;
   slopfab::cuda::attention_forward_gqa(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                      kv_heads, slopfab::cuda::AttentionBackend::kFused, ws);
+                                       kv_heads, slopfab::cuda::AttentionBackend::kFused, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE_REL(want, dout.host(), 1e-3, 1e-2, "fused gqa attention vs dense CPU");
 }
@@ -768,7 +812,8 @@ SLOPFAB_TEST_CATEGORY(attention_fp16_score_tile, "synthetic") {
       cpu_attention(q, k, v, seq, heads, heads, head_dim, cfg.effective_scale());
 
   double norm_sq = 0.0;
-  for (float f : want) norm_sq += double(f) * f;
+  for (float f : want)
+    norm_sq += double(f) * f;
   const double want_rms = std::sqrt(norm_sq / double(want.size()));
 
   // `out` is bf16, so *any* correct implementation is at least this far from the
@@ -800,7 +845,7 @@ SLOPFAB_TEST_CATEGORY(attention_fp16_score_tile, "synthetic") {
       ws.reserve(
           slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kBlocked));
       slopfab::cuda::attention_forward(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                      slopfab::cuda::AttentionBackend::kBlocked, ws);
+                                       slopfab::cuda::AttentionBackend::kBlocked, ws);
       SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
       const std::vector<float> got = dout.host();
 
@@ -812,10 +857,10 @@ SLOPFAB_TEST_CATEGORY(attention_fp16_score_tile, "synthetic") {
       }
       worst_rms_rel = std::max(worst_rms_rel, std::sqrt(err_sq / double(got.size())) / want_rms);
 
-      CHECK_CLOSE_REL(want, got, 1e-3, 1e-2,
-                      ("attention key_block " + std::to_string(kb) + " query_block " +
-                       std::to_string(qb))
-                          .c_str());
+      CHECK_CLOSE_REL(
+          want, got, 1e-3, 1e-2,
+          ("attention key_block " + std::to_string(kb) + " query_block " + std::to_string(qb))
+              .c_str());
       results.push_back(got);
     }
   }
@@ -869,9 +914,10 @@ SLOPFAB_TEST_CATEGORY(attention_gqa, "synthetic") {
   cfg.query_block = 64;
 
   Workspace ws;
-  ws.reserve(slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kBlocked));
+  ws.reserve(
+      slopfab::cuda::attention_workspace_bytes(cfg, slopfab::cuda::AttentionBackend::kBlocked));
   slopfab::cuda::attention_forward_gqa(cb.h, nullptr, dq.p(), dk.p(), dv.p(), dout.p(), cfg,
-                                      kv_heads, slopfab::cuda::AttentionBackend::kBlocked, ws);
+                                       kv_heads, slopfab::cuda::AttentionBackend::kBlocked, ws);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   const std::vector<float> want =

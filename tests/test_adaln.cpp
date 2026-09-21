@@ -35,7 +35,8 @@ std::string find_checkpoint() {
   for (const char* prefix : {"", "../", "../../"}) {
     const std::string p =
         std::string(prefix) + "weights/transformer/fl2va_pruned_fp8_scaled.safetensors";
-    if (std::filesystem::exists(p)) return p;
+    if (std::filesystem::exists(p))
+      return p;
   }
   return {};
 }
@@ -43,8 +44,7 @@ std::string find_checkpoint() {
 // A synthetic table whose rows are an exactly-known linear ramp, so that
 // interpolation error is attributable to the lookup and nothing else.
 std::string write_synthetic_table() {
-  const std::filesystem::path dir =
-      std::filesystem::temp_directory_path() / "slopfab_adaln_test";
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "slopfab_adaln_test";
   std::filesystem::create_directories(dir);
   const std::string path = (dir / "table.safetensors").string();
 
@@ -87,7 +87,7 @@ SLOPFAB_TEST(adaln_interpolation_arithmetic) {
       }
     }
   }
-  CHECK(true);  // the sweep above ran clean
+  CHECK(true); // the sweep above ran clean
 
   // Endpoints land exactly on rows 0 and 1024.
   const std::array<float, 8> at0 = table.lookup(0.0f);
@@ -102,7 +102,8 @@ SLOPFAB_TEST(adaln_interpolation_arithmetic) {
     const float t = static_cast<float>(j) / 1024.0f;
     const std::array<float, 8> lin = table.lookup(t, AdaLNLookup::kLinear);
     const std::array<float, 8> nea = table.lookup(t, AdaLNLookup::kNearest);
-    for (int col = 0; col < 8; ++col) CHECK_NEAR(lin[col], nea[col], 1e-3);
+    for (int col = 0; col < 8; ++col)
+      CHECK_NEAR(lin[col], nea[col], 1e-3);
   }
 
   // Mid-interval is where the two schemes must diverge, and by half a step.
@@ -166,8 +167,8 @@ SLOPFAB_TEST(adaln_real_table) {
 
     double worst_second_diff = 0.0;
     for (int j = 1; j < 1024; ++j) {
-      const double d2 = static_cast<double>(table.row(j - 1)[col]) -
-                        2.0 * table.row(j)[col] + table.row(j + 1)[col];
+      const double d2 = static_cast<double>(table.row(j - 1)[col]) - 2.0 * table.row(j)[col] +
+                        table.row(j + 1)[col];
       worst_second_diff = std::max(worst_second_diff, std::fabs(d2));
     }
     // Measured worst case across all eight columns is 4.1e-3 of range.
@@ -202,13 +203,13 @@ SLOPFAB_TEST(adaln_real_table) {
       hi = std::max(hi, table.row(j)[col]);
     }
     const double range = static_cast<double>(hi) - lo;
-    CHECK_MSG(range < prev_range, "column %d range %.6f is not below column %d's %.6f", col,
-              range, col - 1, prev_range);
+    CHECK_MSG(range < prev_range, "column %d range %.6f is not below column %d's %.6f", col, range,
+              col - 1, prev_range);
     prev_range = range;
   }
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(full_adaln_timestep_sinusoid_layout) {
   const std::vector<float> at_zero = slopfab::dit::minimax_h3_timestep_sinusoid(0.0f, 4);
@@ -223,17 +224,18 @@ SLOPFAB_TEST(full_adaln_timestep_sinusoid_layout) {
   CHECK_NEAR(at_one[1], std::cos(0.01), 1e-7);
   CHECK_NEAR(at_one[2], std::sin(1.0), 1e-7);
   CHECK_NEAR(at_one[3], std::sin(0.01), 1e-7);
-  CHECK(::slopfab::test::throws([] { slopfab::dit::minimax_h3_timestep_sinusoid(0.5f, 3); }));
+  CHECK(::slopfab::test::throws([] {
+    slopfab::dit::minimax_h3_timestep_sinusoid(0.5f, 3);
+  }));
 }
 
 SLOPFAB_TEST(full_adaln_timestep_mlp_contract_and_math) {
   const auto path = std::filesystem::temp_directory_path() / "slopfab_full_adaln_time.safetensors";
-  slopfab::write_safetensors(
-      path.string(),
-      {{"time_embedder.proj_in.weight", {2, 4}, {1, 0, 0, 0, 0, 1, 0, 0}},
-       {"time_embedder.proj_in.bias", {2}, {0.25f, -0.5f}},
-       {"time_embedder.proj_out.weight", {3, 2}, {1, 0, 0, 1, 2, -1}},
-       {"time_embedder.proj_out.bias", {3}, {0.1f, 0.2f, 0.3f}}});
+  slopfab::write_safetensors(path.string(),
+                             {{"time_embedder.proj_in.weight", {2, 4}, {1, 0, 0, 0, 0, 1, 0, 0}},
+                              {"time_embedder.proj_in.bias", {2}, {0.25f, -0.5f}},
+                              {"time_embedder.proj_out.weight", {3, 2}, {1, 0, 0, 1, 2, -1}},
+                              {"time_embedder.proj_out.bias", {3}, {0.1f, 0.2f, 0.3f}}});
   slopfab::SafeTensors checkpoint;
   checkpoint.open(path.string());
   FullAdaLNTimestepEmbedding embedding;

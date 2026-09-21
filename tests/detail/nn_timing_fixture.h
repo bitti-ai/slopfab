@@ -11,20 +11,24 @@ namespace {
 struct Timer {
   cudaEvent_t start = nullptr;
   cudaEvent_t stop = nullptr;
+
   Timer() {
     SLOPFAB_CUDA_CHECK(cudaEventCreate(&start));
     SLOPFAB_CUDA_CHECK(cudaEventCreate(&stop));
   }
+
   ~Timer() {
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
   }
-  template <class F>
-  float measure(F&& f, int warmup, int iters) {
-    for (int i = 0; i < warmup; ++i) f();
+
+  template <class F> float measure(F&& f, int warmup, int iters) {
+    for (int i = 0; i < warmup; ++i)
+      f();
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     SLOPFAB_CUDA_CHECK(cudaEventRecord(start));
-    for (int i = 0; i < iters; ++i) f();
+    for (int i = 0; i < iters; ++i)
+      f();
     SLOPFAB_CUDA_CHECK(cudaEventRecord(stop));
     SLOPFAB_CUDA_CHECK(cudaEventSynchronize(stop));
     float ms = 0.0f;
@@ -53,7 +57,8 @@ struct Timer {
 // through the host would cost more than the measurement.
 __global__ void fill_bf16_kernel(uint16_t* __restrict__ dst, size_t n, uint32_t seed) {
   const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= n) return;
+  if (i >= n)
+    return;
   uint32_t s = static_cast<uint32_t>(i) * 2654435761u + seed;
   s ^= s << 13;
   s ^= s >> 17;
@@ -70,12 +75,13 @@ __global__ void fill_bf16_kernel(uint16_t* __restrict__ dst, size_t n, uint32_t 
 // out afterwards, so no fill can turn a timing run into a NaN propagation study.
 __global__ void fill_f8_kernel(uint8_t* __restrict__ dst, size_t n, uint32_t seed) {
   const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= n) return;
+  if (i >= n)
+    return;
   uint32_t s = static_cast<uint32_t>(i) * 2246822519u + seed;
   s ^= s << 13;
   s ^= s >> 17;
   s ^= s << 5;
-  const uint32_t e = 5u + (s >> 27) % 5u;  // 2^-2 .. 2^2 before the tensor scale
+  const uint32_t e = 5u + (s >> 27) % 5u; // 2^-2 .. 2^2 before the tensor scale
   dst[i] = static_cast<uint8_t>((s & 0x80u) | (e << 3) | ((s >> 4) & 0x07u));
 }
 
@@ -100,5 +106,4 @@ void fill_random_f8(DeviceBuffer<uint8_t>& b, uint32_t seed) {
 // bytes cross the memory system, not by multiplier switching, and it is the
 // control that says so.
 
-
-}  // namespace
+} // namespace

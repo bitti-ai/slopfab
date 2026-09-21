@@ -28,9 +28,11 @@ SLOPFAB_TEST_CATEGORY(transformer_real_qkv_is_contiguous, "checkpoint") {
       size_t n = 0;
       for (int r = 0; r < 3 * inner; r += 8) {
         const int which = interleaved ? (r / head_dim) % 3 : r / inner;
-        if (which != part) continue;
+        if (which != part)
+          continue;
         const uint8_t* row = raw + static_cast<size_t>(r) * hidden;
-        for (int c = 0; c < hidden; ++c) acc += std::fabs(slopfab::f8_e4m3_to_f32(row[c]));
+        for (int c = 0; c < hidden; ++c)
+          acc += std::fabs(slopfab::f8_e4m3_to_f32(row[c]));
         n += static_cast<size_t>(hidden);
       }
       return n == 0 ? 0.0 : acc / static_cast<double>(n);
@@ -42,18 +44,16 @@ SLOPFAB_TEST_CATEGORY(transformer_real_qkv_is_contiguous, "checkpoint") {
       contiguous[p] = mean_abs(p, false);
       interleaved[p] = mean_abs(p, true);
     }
-    const double c_spread =
-        (*std::max_element(contiguous, contiguous + 3) -
-         *std::min_element(contiguous, contiguous + 3)) /
-        *std::max_element(contiguous, contiguous + 3);
-    const double i_spread =
-        (*std::max_element(interleaved, interleaved + 3) -
-         *std::min_element(interleaved, interleaved + 3)) /
-        *std::max_element(interleaved, interleaved + 3);
+    const double c_spread = (*std::max_element(contiguous, contiguous + 3) -
+                             *std::min_element(contiguous, contiguous + 3)) /
+                            *std::max_element(contiguous, contiguous + 3);
+    const double i_spread = (*std::max_element(interleaved, interleaved + 3) -
+                             *std::min_element(interleaved, interleaved + 3)) /
+                            *std::max_element(interleaved, interleaved + 3);
     std::printf("  block %2d contiguous [q,k,v] = %.3f, %.3f, %.3f (spread %.3f)\n", block,
                 contiguous[0], contiguous[1], contiguous[2], c_spread);
-    std::printf("           interleaved        = %.3f, %.3f, %.3f (spread %.3f)\n",
-                interleaved[0], interleaved[1], interleaved[2], i_spread);
+    std::printf("           interleaved        = %.3f, %.3f, %.3f (spread %.3f)\n", interleaved[0],
+                interleaved[1], interleaved[2], i_spread);
     CHECK_MSG(c_spread > 5.0 * i_spread,
               "block %d: the contiguous partition (spread %.4f) does not separate more than the "
               "interleaved one (%.4f) — reverify spec 8.1 before trusting the qkv split",
@@ -111,7 +111,8 @@ SLOPFAB_TEST_CATEGORY(transformer_real_checkpoint, "checkpoint") {
         // Parameter-outer, then the T*3 modulation rows; T is 1 here.
         const size_t base = (static_cast<size_t>(p) * 3 + m) * hidden;
         double sum = 0.0;
-        for (int i = 0; i < hidden; ++i) sum += mod[base + i];
+        for (int i = 0; i < hidden; ++i)
+          sum += mod[base + i];
         const double mean = sum / hidden;
         std::printf("  %-5s %-9s mean %+.4f\n", modality[m], names[p], mean);
         if (p == 1 || p == 4) {
@@ -152,13 +153,11 @@ SLOPFAB_TEST_CATEGORY(transformer_real_checkpoint, "checkpoint") {
               layout.total_rows(), layout.num_video_rows, layout.num_audio_rows, layout.num_text,
               static_cast<double>(model.activation_bytes(layout)) / (1024.0 * 1024.0 * 1024.0));
 
-  const std::vector<float> prompt =
-      make_data(static_cast<size_t>(layout.num_text) * 5120, 7, 1.0f);
+  const std::vector<float> prompt = make_data(static_cast<size_t>(layout.num_text) * 5120, 7, 1.0f);
   model.prepare_text(prompt.data(), layout.num_text);
   model.prepare_sequence(layout, idx, pos);
 
-  const std::vector<float> video_rows =
-      make_data(idx.video.size() * 96, 8, 1.0f);
+  const std::vector<float> video_rows = make_data(idx.video.size() * 96, 8, 1.0f);
   const std::vector<float> audio_rows = make_data(idx.audio.size() * 32, 9, 1.0f);
   std::vector<float> video_velocity(video_rows.size());
   std::vector<float> audio_velocity(audio_rows.size());
@@ -248,7 +247,8 @@ SLOPFAB_TEST_CATEGORY(transformer_real_ref2va_nf4_checkpoint_load, "checkpoint")
 
   size_t states = 0;
   for (const auto& kv : st.tensors()) {
-    if (kv.first.find(".weight.quant_state.bitsandbytes__nf4") != std::string::npos) ++states;
+    if (kv.first.find(".weight.quant_state.bitsandbytes__nf4") != std::string::npos)
+      ++states;
   }
   CHECK_MSG(states == 259, "expected 259 NF4 matrices, found %zu", states);
 
@@ -278,14 +278,15 @@ SLOPFAB_TEST_CATEGORY(transformer_real_nvfp4_checkpoint, "checkpoint") {
   // fp8 file's 1082 differ by exactly +200 weight_scale_2 and -150 input_scale.
   size_t scale2 = 0, input_scale = 0;
   for (const auto& kv : st.tensors()) {
-    if (kv.first.size() > 15 && kv.first.rfind(".weight_scale_2") == kv.first.size() - 15) ++scale2;
+    if (kv.first.size() > 15 && kv.first.rfind(".weight_scale_2") == kv.first.size() - 15)
+      ++scale2;
     if (kv.first.size() > 12 && kv.first.rfind(".input_scale") == kv.first.size() - 12) {
       ++input_scale;
     }
   }
   CHECK_MSG(scale2 == 200, "expected 200 weight_scale_2 tensors, found %zu", scale2);
-  CHECK_MSG(input_scale == 0,
-            "the nvfp4 transformer must carry no input_scale at all, found %zu", input_scale);
+  CHECK_MSG(input_scale == 0, "the nvfp4 transformer must carry no input_scale at all, found %zu",
+            input_scale);
 
   size_t free_before = 0, total_device = 0;
   cudaMemGetInfo(&free_before, &total_device);
@@ -320,8 +321,7 @@ SLOPFAB_TEST_CATEGORY(transformer_real_nvfp4_checkpoint, "checkpoint") {
 
   const PackedIndices idx = slopfab::dit::build_indices(layout);
   const std::vector<double> pos = slopfab::dit::build_position_ids(layout);
-  const std::vector<float> prompt =
-      make_data(static_cast<size_t>(layout.num_text) * 5120, 7, 1.0f);
+  const std::vector<float> prompt = make_data(static_cast<size_t>(layout.num_text) * 5120, 7, 1.0f);
   const std::vector<float> video_rows = make_data(idx.video.size() * 96, 8, 1.0f);
   const std::vector<float> audio_rows = make_data(idx.audio.size() * 32, 9, 1.0f);
   const RowTimesteps rt = slopfab::dit::build_row_timesteps(layout, idx, 0.5f, 0.35f);
@@ -400,8 +400,12 @@ SLOPFAB_TEST_CATEGORY(transformer_real_nvfp4_checkpoint, "checkpoint") {
   // tolerance check. What it separates is a correct dequantisation from a
   // plausible wrong one: every layout error measured on the raw weights sits at
   // a correlation of 0.00003, and this runs fifty layers on top of that.
-  CHECK_MSG(video_corr > 0.9, "nvfp4 video velocity correlates %.5f with the fp8 build of the "
-                              "same weights; a layout error would sit near zero", video_corr);
-  CHECK_MSG(audio_corr > 0.9, "nvfp4 audio velocity correlates %.5f with the fp8 build of the "
-                              "same weights; a layout error would sit near zero", audio_corr);
+  CHECK_MSG(video_corr > 0.9,
+            "nvfp4 video velocity correlates %.5f with the fp8 build of the "
+            "same weights; a layout error would sit near zero",
+            video_corr);
+  CHECK_MSG(audio_corr > 0.9,
+            "nvfp4 audio velocity correlates %.5f with the fp8 build of the "
+            "same weights; a layout error would sit near zero",
+            audio_corr);
 }

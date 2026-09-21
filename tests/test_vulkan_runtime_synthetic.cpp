@@ -14,7 +14,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_runtime_and_pool, "synthetic") {
   bool old_api_rejected = false;
   try {
     InstanceOptions old_api;
-    old_api.api_version = (1u << 22) | (1u << 12);  // Vulkan 1.1.0
+    old_api.api_version = (1u << 22) | (1u << 12); // Vulkan 1.1.0
     (void)Instance::create(old_api);
   } catch (const std::runtime_error&) {
     old_api_rejected = true;
@@ -53,8 +53,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_runtime_and_pool, "synthetic") {
     BufferPool address_pool(feature_device, 64 * 1024);
     {
       Buffer addressable = address_pool.allocate(
-          257, BufferUsage::kStorage | BufferUsage::kDeviceAddress,
-          MemoryUsage::kDevice);
+          257, BufferUsage::kStorage | BufferUsage::kDeviceAddress, MemoryUsage::kDevice);
       CHECK(static_cast<bool>(addressable));
       CHECK(address_pool.used_bytes() >= addressable.size());
     }
@@ -84,8 +83,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_runtime_and_pool, "synthetic") {
     disabled_address_rejected = true;
   }
   CHECK(disabled_address_rejected);
-  const BufferUsage transfer = BufferUsage::kTransferSource |
-                               BufferUsage::kTransferDestination;
+  const BufferUsage transfer = BufferUsage::kTransferSource | BufferUsage::kTransferDestination;
   uintptr_t tiny_native = 0;
   uint64_t tiny_offset = 0;
   {
@@ -93,8 +91,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_runtime_and_pool, "synthetic") {
     Buffer unaligned = pool.allocate(3, transfer, MemoryUsage::kUpload);
     tiny_native = tiny.native_handle();
     tiny_offset = tiny.memory_offset();
-    CHECK(unaligned.memory_offset() >= tiny.memory_offset() +
-          info.non_coherent_atom_bytes);
+    CHECK(unaligned.memory_offset() >= tiny.memory_offset() + info.non_coherent_atom_bytes);
     CHECK(pool.used_bytes() >= 4);
   }
   CHECK(pool.used_bytes() == 0);
@@ -115,7 +112,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_runtime_and_pool, "synthetic") {
   CHECK(pool.reserved_bytes() >= pool.used_bytes());
 
   std::vector<uint32_t> source(1024);
-  for (uint32_t i = 0; i < source.size(); ++i) source[i] = i * 2654435761u;
+  for (uint32_t i = 0; i < source.size(); ++i)
+    source[i] = i * 2654435761u;
   first.write(0, source.data(), source.size() * sizeof(uint32_t));
   std::vector<uint32_t> copy(source.size());
   first.read(0, copy.data(), copy.size() * sizeof(uint32_t));
@@ -138,7 +136,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_compute_submission, "synthetic") {
   Instance instance = Instance::create();
   std::vector<PhysicalDevice> physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
 
@@ -182,7 +181,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_compute_submission, "synthetic") {
   CHECK(foreign_rejected);
   CHECK(other_context.in_flight() == 0);
 
-  constexpr uint32_t count = 1003;  // deliberately not a multiple of local_size_x
+  constexpr uint32_t count = 1003; // deliberately not a multiple of local_size_x
   constexpr uint64_t bytes = static_cast<uint64_t>(count) * sizeof(float);
   BufferPool pool(device, 64 * 1024);
   const BufferUsage upload_usage = BufferUsage::kTransferSource;
@@ -206,8 +205,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_compute_submission, "synthetic") {
     CHECK(range_rejected);
     bool descriptor_range_rejected = false;
     try {
-      invalid.bind_compute(pipeline, {{0, &tiny_dst, 0, 17},
-                                      {1, &tiny_out, 0, 16}});
+      invalid.bind_compute(pipeline, {{0, &tiny_dst, 0, 17}, {1, &tiny_out, 0, 16}});
     } catch (const std::out_of_range&) {
       descriptor_range_rejected = true;
     }
@@ -215,16 +213,14 @@ SLOPFAB_TEST_CATEGORY(vulkan_compute_submission, "synthetic") {
     if (physical.front().info().min_storage_buffer_offset_alignment > 1) {
       bool descriptor_alignment_rejected = false;
       try {
-        invalid.bind_compute(pipeline, {{0, &tiny_dst, 1, 4},
-                                        {1, &tiny_out, 0, 16}});
+        invalid.bind_compute(pipeline, {{0, &tiny_dst, 1, 4}, {1, &tiny_out, 0, 16}});
       } catch (const std::invalid_argument&) {
         descriptor_alignment_rejected = true;
       }
       CHECK(descriptor_alignment_rejected);
     }
     Buffer self_copy = pool.allocate(
-        32, BufferUsage::kTransferSource | BufferUsage::kTransferDestination,
-        MemoryUsage::kUpload);
+        32, BufferUsage::kTransferSource | BufferUsage::kTransferDestination, MemoryUsage::kUpload);
     bool overlap_rejected = false;
     try {
       invalid.copy_buffer(self_copy, self_copy, 16, 0, 8);
@@ -238,15 +234,22 @@ SLOPFAB_TEST_CATEGORY(vulkan_compute_submission, "synthetic") {
   CHECK(context.in_flight() == 0);
   CHECK(pool.used_bytes() == 0);
 
-  struct Parameters { float scale; float bias; uint32_t count; };
+  struct Parameters {
+    float scale;
+    float bias;
+    uint32_t count;
+  };
+
   struct Job {
     Submission completion;
     Buffer readback;
     float scale = 0;
     float bias = 0;
   };
+
   std::vector<float> input(count);
-  for (uint32_t i = 0; i < count; ++i) input[i] = static_cast<float>(i) * 0.125f - 7.0f;
+  for (uint32_t i = 0; i < count; ++i)
+    input[i] = static_cast<float>(i) * 0.125f - 7.0f;
   std::vector<Job> jobs;
 
   for (uint32_t iteration = 0; iteration < 5; ++iteration) {
@@ -256,29 +259,26 @@ SLOPFAB_TEST_CATEGORY(vulkan_compute_submission, "synthetic") {
     Buffer readback = pool.allocate(bytes, readback_usage, MemoryUsage::kReadback);
     upload.write(0, input.data(), bytes);
 
-    const Parameters parameters{1.25f + iteration * 0.5f,
-                                -3.0f + static_cast<float>(iteration), count};
+    const Parameters parameters{1.25f + iteration * 0.5f, -3.0f + static_cast<float>(iteration),
+                                count};
     CommandList commands = context.begin();
     commands.barrier(upload, BufferAccess::kHostWrite, BufferAccess::kTransferRead);
     commands.copy_buffer(upload, device_input, bytes);
     commands.barrier(device_input, BufferAccess::kTransferWrite, BufferAccess::kComputeRead);
-    commands.bind_compute(pipeline, {{0, &device_input, 0, bytes},
-                                     {1, &device_output, 0, bytes}});
+    commands.bind_compute(pipeline, {{0, &device_input, 0, bytes}, {1, &device_output, 0, bytes}});
     commands.push_constants(&parameters, sizeof(parameters));
     commands.dispatch((count + 63) / 64);
-    commands.barrier(device_output, BufferAccess::kComputeWrite,
-                     BufferAccess::kTransferRead);
+    commands.barrier(device_output, BufferAccess::kComputeWrite, BufferAccess::kTransferRead);
     commands.copy_buffer(device_output, readback, bytes);
     commands.barrier(readback, BufferAccess::kTransferWrite, BufferAccess::kHostRead);
     Submission completion = context.submit(std::move(commands));
     CHECK(completion.value() != 0);
     CHECK(context.in_flight() <= 2);
-    jobs.push_back({std::move(completion), std::move(readback),
-                    parameters.scale, parameters.bias});
+    jobs.push_back({std::move(completion), std::move(readback), parameters.scale, parameters.bias});
     // upload/device_input/device_output wrappers die here. The submitted slot
     // retains their allocations until its exact timeline value completes.
   }
-  pipeline = ComputePipeline();  // in-flight jobs retain the pipeline too
+  pipeline = ComputePipeline(); // in-flight jobs retain the pipeline too
 
   uint64_t previous_value = 0;
   for (Job& job : jobs) {
@@ -310,7 +310,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_batch_and_workspace, "synthetic") {
   Instance instance = Instance::create();
   const auto devices = instance.enumerate_devices();
   if (devices.empty() || !devices.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: devices.empty() || !devices.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: devices.empty() || !devices.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions options;
@@ -318,8 +319,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_batch_and_workspace, "synthetic") {
   Device device = devices.front().create_device(options);
   TensorContext tensors(device);
   TensorContext other(device);
-  CHECK(tensors.full_fp32_arithmetic_exactness() ==
-        devices.front().info().fp32_denorm_preserve);
+  CHECK(tensors.full_fp32_arithmetic_exactness() == devices.front().info().fp32_denorm_preserve);
   bool exact_gate_rejected = false;
   try {
     tensors.require_full_fp32_arithmetic_exactness();
@@ -340,14 +340,10 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_batch_and_workspace, "synthetic") {
     host_a[i] = static_cast<float>(static_cast<int>(i % 31) - 15) / 16.0f;
     host_b[i] = static_cast<float>(static_cast<int>(i % 17) - 8) / 32.0f;
   }
-  const uint32_t special_a[] = {
-      0x00000000u, 0x80000000u, 0x00000001u, 0x00800000u,
-      0x3f800000u, 0x3f800000u, 0x7f800000u, 0xff800000u,
-      0x7fc12345u, 0x7fa54321u};
-  const uint32_t special_b[] = {
-      0x80000000u, 0x80000000u, 0x00000001u, 0x807fffffu,
-      0x33800000u, 0x33800001u, 0x3f800000u, 0xbf800000u,
-      0x00000000u, 0x00000000u};
+  const uint32_t special_a[] = {0x00000000u, 0x80000000u, 0x00000001u, 0x00800000u, 0x3f800000u,
+                                0x3f800000u, 0x7f800000u, 0xff800000u, 0x7fc12345u, 0x7fa54321u};
+  const uint32_t special_b[] = {0x80000000u, 0x80000000u, 0x00000001u, 0x807fffffu, 0x33800000u,
+                                0x33800001u, 0x3f800000u, 0xbf800000u, 0x00000000u, 0x00000000u};
   static_assert(sizeof(float) == sizeof(uint32_t));
   std::memcpy(host_a.data(), special_a, sizeof(special_a));
   std::memcpy(host_b.data(), special_b, sizeof(special_b));
@@ -415,15 +411,15 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_batch_and_workspace, "synthetic") {
       std::memcpy(&bits, &host_a[i], sizeof(bits));
       return bits;
     }();
-    if ((input_bits & 0x7f800000u) == 0x7f800000u &&
-        (input_bits & 0x007fffffu) != 0) continue;
-    if (!tensors.full_fp32_arithmetic_exactness() && (i == 2 || i == 3)) continue;
+    if ((input_bits & 0x7f800000u) == 0x7f800000u && (input_bits & 0x007fffffu) != 0)
+      continue;
+    if (!tensors.full_fp32_arithmetic_exactness() && (i == 2 || i == 3))
+      continue;
     const float expected = host_a[i] + host_b[i];
     uint32_t expected_bits = 0, actual_bits = 0;
     std::memcpy(&expected_bits, &expected, sizeof(expected_bits));
     std::memcpy(&actual_bits, &got_sum[i], sizeof(actual_bits));
-    CHECK_MSG(expected_bits == actual_bits,
-              "fp32 add bit mismatch at %zu: %08x != %08x", i,
+    CHECK_MSG(expected_bits == actual_bits, "fp32 add bit mismatch at %zu: %08x != %08x", i,
               expected_bits, actual_bits);
   }
 
@@ -492,7 +488,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_batch_and_workspace, "synthetic") {
   bool thirty_third_rejected = false;
   {
     TensorBatch bounded = tensors.begin_batch();
-    for (int i = 0; i < 32; ++i) bounded.add(a, b, sum);
+    for (int i = 0; i < 32; ++i)
+      bounded.add(a, b, sum);
     try {
       bounded.add(a, b, sum);
     } catch (const std::logic_error&) {
@@ -513,10 +510,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_batch_and_workspace, "synthetic") {
   // slots. The second begin neither waits for nor resets the first slot.
   const uint64_t before_chunks = tensors.reserved_bytes();
   TensorBatch first_chunk = tensors.begin_batch();
-  for (int i = 0; i < 32; ++i) first_chunk.add(a, b, sum);
+  for (int i = 0; i < 32; ++i)
+    first_chunk.add(a, b, sum);
   Submission first_token = first_chunk.submit();
   TensorBatch second_chunk = tensors.begin_batch();
-  for (int i = 0; i < 32; ++i) second_chunk.add(a, b, copied);
+  for (int i = 0; i < 32; ++i)
+    second_chunk.add(a, b, copied);
   Submission second_token = second_chunk.submit();
   CHECK(second_token.value() > first_token.value());
   // A third begin applies oldest-slot timeline backpressure, then reuses that
@@ -531,10 +530,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_batch_and_workspace, "synthetic") {
   CHECK(tensors.reserved_bytes() == before_chunks);
   const uint64_t descriptor_high_water = tensors.descriptor_set_allocations();
   TensorBatch reuse_first = tensors.begin_batch();
-  for (int i = 0; i < 32; ++i) reuse_first.add(a, b, sum);
+  for (int i = 0; i < 32; ++i)
+    reuse_first.add(a, b, sum);
   Submission reuse_first_token = reuse_first.submit();
   TensorBatch reuse_second = tensors.begin_batch();
-  for (int i = 0; i < 32; ++i) reuse_second.add(a, b, copied);
+  for (int i = 0; i < 32; ++i)
+    reuse_second.add(a, b, copied);
   Submission reuse_second_token = reuse_second.submit();
   reuse_first_token.wait();
   reuse_second_token.wait();
@@ -618,10 +619,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_layout_and_conversion_ops, "synthetic") {
   if (physical.empty() || !physical.front().info().timeline_semaphore ||
       !physical.front().info().fp32_signed_zero_inf_nan_preserve ||
       !physical.front().info().fp32_rounding_rte) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore || !physical.front().info().fp32_signed_zero_inf_nan_preserve || !physical.front().info().fp32_rounding_rte");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore || !physical.front().info().fp32_signed_zero_inf_nan_preserve || !physical.front().info().fp32_rounding_rte");
     return;
   }
-  DeviceOptions options; options.enable_timeline_semaphore = true;
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
   Device device = physical.front().create_device(options);
   TensorContext tensors(device);
 
@@ -648,10 +651,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_layout_and_conversion_ops, "synthetic") {
   const uint64_t bias_extent = 5;
   DeviceTensor bias = tensors.allocate(TensorLayout::contiguous(&bias_extent, 1));
 
-  const uint32_t patterns[] = {
-      0x00000000u, 0x80000000u, 0x3f800000u, 0xc0000000u, 0x477fe000u,
-      0x7f800000u, 0xff800000u, 0x33800000u, 0x33800001u, 0x00000001u,
-      0x7fc12345u, 0x7fa54321u, 0x38800000u, 0x3f000000u, 0xbf000000u};
+  const uint32_t patterns[] = {0x00000000u, 0x80000000u, 0x3f800000u, 0xc0000000u, 0x477fe000u,
+                               0x7f800000u, 0xff800000u, 0x33800000u, 0x33800001u, 0x00000001u,
+                               0x7fc12345u, 0x7fa54321u, 0x38800000u, 0x3f000000u, 0xbf000000u};
   std::vector<float> host(std::size(patterns));
   std::memcpy(host.data(), patterns, sizeof(patterns));
   const float host_bias[] = {1.0f, -1.0f, 0.25f, -0.25f, 2.0f};
@@ -681,12 +683,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_layout_and_conversion_ops, "synthetic") {
     CHECK(got_bf16[i] == reference_bf16(host[i]));
     CHECK(float_bits(got_bf16_back[i]) == (static_cast<uint32_t>(got_bf16[i]) << 16));
   }
-  const uint16_t expected_half[] = {
-      0x0000u, 0x8000u, 0x3c00u, 0xc000u, 0x7bffu, 0x7c00u, 0xfc00u,
-      0x0001u, 0x0001u, 0x0000u, 0x7fffu, 0x7fffu, 0x0400u, 0x3800u, 0xb800u};
+  const uint16_t expected_half[] = {0x0000u, 0x8000u, 0x3c00u, 0xc000u, 0x7bffu,
+                                    0x7c00u, 0xfc00u, 0x0001u, 0x0001u, 0x0000u,
+                                    0x7fffu, 0x7fffu, 0x0400u, 0x3800u, 0xb800u};
   for (size_t i = 0; i < host.size(); ++i) {
-    CHECK_MSG(got_fp16[i] == expected_half[i], "fp16 mismatch %zu: %04x != %04x",
-              i, got_fp16[i], expected_half[i]);
+    CHECK_MSG(got_fp16[i] == expected_half[i], "fp16 mismatch %zu: %04x != %04x", i, got_fp16[i],
+              expected_half[i]);
   }
   for (size_t row = 0; row < 3; ++row) {
     for (size_t col = 0; col < 5; ++col) {
@@ -704,12 +706,13 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_layout_and_conversion_ops, "synthetic") {
   const TensorLayout selected_shape = TensorLayout::contiguous(selected_shape_data, 2);
   const uint64_t index_count = 2;
   DeviceTensor matrix = tensors.allocate(matrix_shape);
-  DeviceTensor indices = tensors.allocate(TensorLayout::contiguous(&index_count, 1),
-                                          ScalarType::kInt32);
+  DeviceTensor indices =
+      tensors.allocate(TensorLayout::contiguous(&index_count, 1), ScalarType::kInt32);
   DeviceTensor gathered = tensors.allocate(selected_shape);
   DeviceTensor scattered = tensors.allocate(matrix_shape);
   std::vector<float> matrix_host(12), scatter_initial(12, -99.0f);
-  for (size_t i = 0; i < matrix_host.size(); ++i) matrix_host[i] = static_cast<float>(i + 1);
+  for (size_t i = 0; i < matrix_host.size(); ++i)
+    matrix_host[i] = static_cast<float>(i + 1);
   const int32_t host_indices[] = {2, 0};
   tensors.upload(matrix, matrix_host.data(), matrix_host.size());
   tensors.upload_bytes(indices, host_indices, sizeof(host_indices));
@@ -731,22 +734,24 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_layout_and_conversion_ops, "synthetic") {
 
   const uint64_t heads_elements = 24;
   DeviceTensor heads_input = tensors.allocate(TensorLayout::contiguous(&heads_elements, 1));
-  DeviceTensor token_bf16 = tensors.allocate(TensorLayout::contiguous(&heads_elements, 1),
-                                             ScalarType::kBFloat16);
+  DeviceTensor token_bf16 =
+      tensors.allocate(TensorLayout::contiguous(&heads_elements, 1), ScalarType::kBFloat16);
   std::vector<float> heads_host(heads_elements);
-  for (size_t i = 0; i < heads_host.size(); ++i) heads_host[i] = static_cast<float>(i) / 8.0f;
+  for (size_t i = 0; i < heads_host.size(); ++i)
+    heads_host[i] = static_cast<float>(i) / 8.0f;
   tensors.upload(heads_input, heads_host.data(), heads_host.size());
   TensorBatch layout_batch = tensors.begin_batch();
   layout_batch.heads_to_tokens_bf16(heads_input, token_bf16, 2, 3, 4);
   layout_batch.submit().wait();
   std::vector<uint16_t> token_host(heads_elements);
   tensors.download_bytes(token_bf16, token_host.data(), token_host.size() * 2);
-  for (uint32_t s = 0; s < 3; ++s) for (uint32_t h = 0; h < 2; ++h)
-    for (uint32_t d = 0; d < 4; ++d) {
-      const size_t out = (s * 2 + h) * 4 + d;
-      const size_t in = (h * 3 + s) * 4 + d;
-      CHECK(token_host[out] == reference_bf16(heads_host[in]));
-    }
+  for (uint32_t s = 0; s < 3; ++s)
+    for (uint32_t h = 0; h < 2; ++h)
+      for (uint32_t d = 0; d < 4; ++d) {
+        const size_t out = (s * 2 + h) * 4 + d;
+        const size_t in = (h * 3 + s) * 4 + d;
+        CHECK(token_host[out] == reference_bf16(heads_host[in]));
+      }
 
   const uint64_t depth_elements = 8;
   DeviceTensor depth_in = tensors.allocate(TensorLayout::contiguous(&depth_elements, 1));
@@ -788,8 +793,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_tensor_layout_and_conversion_ops, "synthetic") {
   bool overflow_rejected = false;
   try {
     TensorBatch invalid = tensors.begin_batch();
-    invalid.heads_to_tokens_bf16(input, bf16,
-                                 std::numeric_limits<uint32_t>::max(),
+    invalid.heads_to_tokens_bf16(input, bf16, std::numeric_limits<uint32_t>::max(),
                                  std::numeric_limits<uint32_t>::max(),
                                  std::numeric_limits<uint32_t>::max());
   } catch (const std::overflow_error&) {

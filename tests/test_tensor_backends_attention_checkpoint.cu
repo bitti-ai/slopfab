@@ -11,7 +11,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
     return;
   }
 
@@ -22,8 +23,7 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
       header.header_bytes != sizeof(header) || header.head_dim != 128) {
     throw std::runtime_error("invalid H3 capture replay header");
   }
-  const uint64_t elements64 = uint64_t(header.seq_len) * header.num_heads *
-                              header.head_dim;
+  const uint64_t elements64 = uint64_t(header.seq_len) * header.num_heads * header.head_dim;
   if (header.tensor_elements != elements64 || elements64 > SIZE_MAX / 6)
     throw std::runtime_error("invalid H3 capture replay shape");
   const size_t count = static_cast<size_t>(elements64);
@@ -38,8 +38,10 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
   float maximum[3]{};
   for (size_t i = 0; i < captured.size(); ++i) {
     const uint16_t bits = captured[i];
-    input_hash ^= bits & 0xffu; input_hash *= 1099511628211ull;
-    input_hash ^= bits >> 8; input_hash *= 1099511628211ull;
+    input_hash ^= bits & 0xffu;
+    input_hash *= 1099511628211ull;
+    input_hash ^= bits >> 8;
+    input_hash *= 1099511628211ull;
     const size_t tensor = i / count;
     const uint16_t exponent = bits & 0x7f80u;
     subnormal[tensor] += exponent == 0 && (bits & 0x007fu) != 0;
@@ -48,8 +50,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
       maximum[tensor] = std::max(maximum[tensor], std::abs(bf16_to_f32(bits)));
   }
 
-  cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count),
-      exact_output(count), shipped_output(count);
+  cuda::DeviceBuffer<uint16_t> cq(count), ck(count), cv(count), exact_output(count),
+      shipped_output(count);
   cq.copy_from_host(captured.data(), count);
   ck.copy_from_host(captured.data() + count, count);
   cv.copy_from_host(captured.data() + count * 2, count);
@@ -63,7 +65,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
     SLOPFAB_CUDA_CHECK(cudaEventSynchronize(end));
     float milliseconds = 0;
     SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&milliseconds, begin, end));
-    cudaEventDestroy(begin); cudaEventDestroy(end);
+    cudaEventDestroy(begin);
+    cudaEventDestroy(end);
     return milliseconds;
   };
   const float scale = exact_attention_scale(header.head_dim);
@@ -72,8 +75,8 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
         nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
         reinterpret_cast<const __nv_bfloat16*>(ck.get()),
         reinterpret_cast<const __nv_bfloat16*>(cv.get()),
-        reinterpret_cast<__nv_bfloat16*>(exact_output.get()), nullptr,
-        header.seq_len, header.num_heads, header.head_dim, scale);
+        reinterpret_cast<__nv_bfloat16*>(exact_output.get()), nullptr, header.seq_len,
+        header.num_heads, header.head_dim, scale);
   });
   cublasHandle_t blas{};
   SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&blas));
@@ -84,12 +87,11 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
   config.head_dim = header.head_dim;
   config.scale = scale;
   const float shipped_ms = cuda_time([&] {
-    cuda::attention_forward(
-        blas, nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
-        reinterpret_cast<const __nv_bfloat16*>(ck.get()),
-        reinterpret_cast<const __nv_bfloat16*>(cv.get()),
-        reinterpret_cast<__nv_bfloat16*>(shipped_output.get()), config,
-        cuda::AttentionBackend::kFused, workspace);
+    cuda::attention_forward(blas, nullptr, reinterpret_cast<const __nv_bfloat16*>(cq.get()),
+                            reinterpret_cast<const __nv_bfloat16*>(ck.get()),
+                            reinterpret_cast<const __nv_bfloat16*>(cv.get()),
+                            reinterpret_cast<__nv_bfloat16*>(shipped_output.get()), config,
+                            cuda::AttentionBackend::kFused, workspace);
   });
   slopfab::cuda::cublas_destroy(blas);
   std::vector<uint16_t> expected(count), shipped(count);
@@ -100,8 +102,10 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
   float max_abs = 0;
   uint64_t output_hash = 1469598103934665603ull;
   for (size_t i = 0; i < count; ++i) {
-    output_hash ^= expected[i] & 0xffu; output_hash *= 1099511628211ull;
-    output_hash ^= expected[i] >> 8; output_hash *= 1099511628211ull;
+    output_hash ^= expected[i] & 0xffu;
+    output_hash *= 1099511628211ull;
+    output_hash ^= expected[i] >> 8;
+    output_hash *= 1099511628211ull;
     differences += expected[i] != shipped[i];
     const double exact = bf16_to_f32(expected[i]);
     const double approximate = bf16_to_f32(shipped[i]);
@@ -135,28 +139,24 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_h3_capture_replay, "checkpoint") {
   vk.upload_bytes(q, captured.data(), count * 2);
   vk.upload_bytes(k, captured.data() + count, count * 2);
   vk.upload_bytes(v, captured.data() + count * 2, count * 2);
-  H3AttentionPlan plan = H3AttentionPlan::create(
-      vk, {header.seq_len, header.num_heads, header.head_dim, scale});
+  H3AttentionPlan plan =
+      H3AttentionPlan::create(vk, {header.seq_len, header.num_heads, header.head_dim, scale});
   const auto begin = std::chrono::steady_clock::now();
   TensorBatch batch = vk.begin_batch();
   plan.record(batch, q, k, v, output);
   batch.submit().wait();
-  const double vulkan_ms = std::chrono::duration<double, std::milli>(
-      std::chrono::steady_clock::now() - begin).count();
+  const double vulkan_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
   std::vector<uint16_t> got(count);
   vk.download_bytes(output, got.data(), count * 2);
   CHECK(got == expected);
   std::printf(
       "  H3 capture S%u H%u D%u step%d layer%d: input FNV64 %016llx, exact output %016llx; max Q/K/V %.7g/%.7g/%.7g, subnormal %llu/%llu/%llu, nonfinite %llu/%llu/%llu; exact CUDA %.3f ms Vulkan %.3f ms shipped %.3f ms, shipped drift %zu/%zu relL2 %.7g maxabs %.7g\n",
-      header.seq_len, header.num_heads, header.head_dim, header.denoise_step,
-      header.layer, static_cast<unsigned long long>(input_hash),
-      static_cast<unsigned long long>(output_hash), maximum[0], maximum[1],
-      maximum[2], static_cast<unsigned long long>(subnormal[0]),
-      static_cast<unsigned long long>(subnormal[1]),
-      static_cast<unsigned long long>(subnormal[2]),
-      static_cast<unsigned long long>(nonfinite[0]),
-      static_cast<unsigned long long>(nonfinite[1]),
-      static_cast<unsigned long long>(nonfinite[2]), exact_cuda_ms, vulkan_ms,
-      shipped_ms, differences, count,
-      reference2 == 0 ? 0 : std::sqrt(error2 / reference2), max_abs);
+      header.seq_len, header.num_heads, header.head_dim, header.denoise_step, header.layer,
+      static_cast<unsigned long long>(input_hash), static_cast<unsigned long long>(output_hash),
+      maximum[0], maximum[1], maximum[2], static_cast<unsigned long long>(subnormal[0]),
+      static_cast<unsigned long long>(subnormal[1]), static_cast<unsigned long long>(subnormal[2]),
+      static_cast<unsigned long long>(nonfinite[0]), static_cast<unsigned long long>(nonfinite[1]),
+      static_cast<unsigned long long>(nonfinite[2]), exact_cuda_ms, vulkan_ms, shipped_ms,
+      differences, count, reference2 == 0 ? 0 : std::sqrt(error2 / reference2), max_abs);
 }

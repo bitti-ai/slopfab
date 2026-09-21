@@ -34,6 +34,7 @@ slopfab::GenerateRequest square_request(int frames) {
 slopfab::dit::SequenceLayout full_layout() {
   return slopfab::resolve_plan(square_request(45)).layout;
 }
+
 slopfab::dit::SequenceLayout chunk_layout() {
   return slopfab::resolve_plan(square_request(15)).layout;
 }
@@ -57,7 +58,7 @@ bool rejects_stride_not_multiple_of_five() {
   return false;
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(chunking_probe_geometry_resolves) {
   const slopfab::GeneratePlan full = slopfab::resolve_plan(square_request(45));
@@ -110,9 +111,8 @@ SLOPFAB_TEST(chunking_noise_slice_matches_the_full_draw) {
   const uint64_t seed = 11;
 
   // The reference: the full field, patchified at full geometry.
-  const std::vector<float> field =
-      slopfab::sampler::video_noise(seed, full.num_latent_frames, full.latent_height,
-                                   full.latent_width, 24);
+  const std::vector<float> field = slopfab::sampler::video_noise(
+      seed, full.num_latent_frames, full.latent_height, full.latent_width, 24);
   std::vector<float> full_rows(static_cast<size_t>(full.num_video_rows) * 96);
   slopfab::dit::patchify_video(field.data(), full, full_rows.data());
 
@@ -143,8 +143,7 @@ SLOPFAB_TEST(chunking_noise_slice_matches_the_full_draw) {
     std::vector<float> audio_expect;
     for (int c = 0; c < 2; ++c) {
       const size_t off = (static_cast<size_t>(c) * A + a0) * 32;
-      audio_expect.insert(audio_expect.end(),
-                          audio_field.begin() + static_cast<ptrdiff_t>(off),
+      audio_expect.insert(audio_expect.end(), audio_field.begin() + static_cast<ptrdiff_t>(off),
                           audio_field.begin() + static_cast<ptrdiff_t>(off + Ac * 32));
     }
     CHECK_CLOSE(audio_expect, a, 0.0, ("audio noise slice, chunk " + std::to_string(k)).c_str());
@@ -162,7 +161,8 @@ SLOPFAB_TEST(chunking_noise_slice_matches_the_full_draw) {
   slopfab::dit::patchify_video(own.data(), chunk, own_rows.data());
   size_t differing = 0;
   for (size_t i = 0; i < v0.size(); ++i) {
-    if (v0[i] != own_rows[i]) ++differing;
+    if (v0[i] != own_rows[i])
+      ++differing;
   }
   CHECK_MSG(differing > v0.size() / 2,
             "a sliced chunk should differ from an independent chunk-sized draw almost everywhere, "
@@ -223,9 +223,8 @@ SLOPFAB_TEST(chunking_slice_then_blend_is_the_identity) {
   std::vector<float> aout;
   slopfab::dit::blend_chunks(full, chunk, plan, video, audio, &vout, &aout);
 
-  const std::vector<float> field =
-      slopfab::sampler::video_noise(seed, full.num_latent_frames, full.latent_height,
-                                   full.latent_width, 24);
+  const std::vector<float> field = slopfab::sampler::video_noise(
+      seed, full.num_latent_frames, full.latent_height, full.latent_width, 24);
   std::vector<float> expect_video(static_cast<size_t>(full.num_video_rows) * 96);
   slopfab::dit::patchify_video(field.data(), full, expect_video.data());
   const std::vector<float> expect_audio =
@@ -257,21 +256,28 @@ SLOPFAB_TEST(chunking_blend_places_each_chunk_where_the_plan_says) {
   std::vector<float> aout;
   slopfab::dit::blend_chunks(full, chunk, plan, video, audio, &vout, &aout);
 
-  auto frame_value = [&](int f) { return vout[static_cast<size_t>(f) * R * 96]; };
-  for (int f = 0; f <= 4; ++f) CHECK_NEAR(frame_value(f), 1.0, 1e-6);
+  auto frame_value = [&](int f) {
+    return vout[static_cast<size_t>(f) * R * 96];
+  };
+  for (int f = 0; f <= 4; ++f)
+    CHECK_NEAR(frame_value(f), 1.0, 1e-6);
   CHECK_NEAR(frame_value(5), 0.75 * 1.0 + 0.25 * 2.0, 1e-6);
   CHECK_NEAR(frame_value(6), 0.25 * 1.0 + 0.75 * 2.0, 1e-6);
-  for (int f = 7; f <= 9; ++f) CHECK_NEAR(frame_value(f), 2.0, 1e-6);
+  for (int f = 7; f <= 9; ++f)
+    CHECK_NEAR(frame_value(f), 2.0, 1e-6);
   CHECK_NEAR(frame_value(10), 0.75 * 2.0 + 0.25 * 3.0, 1e-6);
   CHECK_NEAR(frame_value(11), 0.25 * 2.0 + 0.75 * 3.0, 1e-6);
-  for (int f = 12; f <= 16; ++f) CHECK_NEAR(frame_value(f), 3.0, 1e-6);
+  for (int f = 12; f <= 16; ++f)
+    CHECK_NEAR(frame_value(f), 3.0, 1e-6);
 
   // Audio: 9 latents of overlap, so the ramp is 0.5/9 .. 8.5/9, and both
   // stereo channels must be blended — the second channel starts at A*32 into
   // the row buffer and a blend that forgot it would leave it as chunk 0's.
   const int A = full.num_audio_latents;
   for (int c = 0; c < 2; ++c) {
-    auto latent_value = [&](int a) { return aout[(static_cast<size_t>(c) * A + a) * 32]; };
+    auto latent_value = [&](int a) {
+      return aout[(static_cast<size_t>(c) * A + a) * 32];
+    };
     CHECK_NEAR(latent_value(0), 1.0, 1e-6);
     CHECK_NEAR(latent_value(27), 1.0, 1e-6);
     CHECK_NEAR(latent_value(28), (8.5 / 9.0) * 1.0 + (0.5 / 9.0) * 2.0, 1e-6);

@@ -48,7 +48,7 @@ double cosine_similarity(const std::vector<float>& x, const std::vector<float>& 
   return dot / std::sqrt(nx * ny);
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(compare_metrics_match_the_stated_formulas) {
   const slopfab::CompareStats s = slopfab::compare(kRef, kAct);
@@ -74,7 +74,8 @@ SLOPFAB_TEST(compare_metrics_known_anchor_values) {
   CHECK(same.correlation == 1.0);
 
   std::vector<float> negated;
-  for (float v : kRef) negated.push_back(-v);
+  for (float v : kRef)
+    negated.push_back(-v);
   const slopfab::CompareStats flipped = slopfab::compare(kRef, negated);
   CHECK(flipped.correlation == -1.0);
   // A negation is a completely different tensor, and rel_L2 must say so: the
@@ -85,7 +86,8 @@ SLOPFAB_TEST(compare_metrics_known_anchor_values) {
   // rel_L2 emphatically does not. A metric where both moved together would be
   // reporting the same thing twice.
   std::vector<float> scaled;
-  for (float v : kRef) scaled.push_back(v * 3.0f);
+  for (float v : kRef)
+    scaled.push_back(v * 3.0f);
   const slopfab::CompareStats s = slopfab::compare(kRef, scaled);
   CHECK_NEAR(s.correlation, 1.0, 1e-12);
   CHECK_NEAR(s.rel_l2, 2.0, 1e-12);
@@ -192,8 +194,7 @@ SLOPFAB_TEST(compare_metrics_degenerate_cases) {
   CHECK(slopfab::compare(flat, flat).rel_l2 == 0.0);
 
   // Empty and mismatched inputs must not produce a metric at all.
-  const slopfab::CompareStats mismatch =
-      slopfab::compare(kRef, std::vector<float>{1.0f});
+  const slopfab::CompareStats mismatch = slopfab::compare(kRef, std::vector<float>{1.0f});
   CHECK(!mismatch.shape_match);
   CHECK(mismatch.rel_l2 == 0.0);
   CHECK(mismatch.correlation == 0.0);
@@ -257,7 +258,8 @@ SLOPFAB_TEST(compare_correlation_agrees_with_the_kernel_tests_but_is_better_cond
 
   // Positive scale on one side alone must not move it either.
   std::vector<float> act_scaled;
-  for (float v : kAct) act_scaled.push_back(v * 1000.0f);
+  for (float v : kAct)
+    act_scaled.push_back(v * 1000.0f);
   CHECK_NEAR(slopfab::compare(kRef, act_scaled).correlation, kCorr, 1e-12);
 }
 

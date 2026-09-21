@@ -45,7 +45,8 @@ std::string find_tokenizer() {
   for (const char* path : kTokenizerPaths) {
     for (const char* prefix : {"", "../", "../../"}) {
       const std::string candidate = std::string(prefix) + path;
-      if (std::filesystem::exists(candidate)) return candidate;
+      if (std::filesystem::exists(candidate))
+        return candidate;
     }
   }
   return {};
@@ -55,7 +56,8 @@ std::string find_tokenizer() {
 // than an invisible one.
 void report_missing_tokenizer() {
   std::printf("  tokenizer.json not found; skipping. Tried, under \"\", \"../\" and \"../../\":\n");
-  for (const char* path : kTokenizerPaths) std::printf("    %s\n", path);
+  for (const char* path : kTokenizerPaths)
+    std::printf("    %s\n", path);
 }
 
 struct GoldenCase {
@@ -77,8 +79,8 @@ SLOPFAB_TEST(tokenizer_golden_ids) {
 
   const std::vector<GoldenCase> cases = {
       {"integrated_multimodal_description: A cat walks across a sunlit kitchen floor, tail high.",
-       {396, 47172, 26290, 318, 57597, 11448, 25, 362, 8251, 22479, 3941, 264, 7015, 31635, 9780,
-        6422, 11, 9787, 1550, 13}},
+       {396,  47172, 26290, 318,   57597, 11448, 25, 362,  8251, 22479,
+        3941, 264,   7015,  31635, 9780,  6422,  11, 9787, 1550, 13}},
       {"don't can't I'll we've", {15007, 944, 646, 944, 358, 3278, 582, 3003}},
       {"  leading and   multiple spaces ", {220, 6388, 323, 256, 5248, 12621, 220}},
       {"123 4567 0.5e-3 -42",
@@ -96,7 +98,8 @@ SLOPFAB_TEST(tokenizer_golden_ids) {
     const std::vector<int32_t> got = tok.encode(c.text);
     CHECK_MSG(got.size() == c.ids.size(), "%s: %zu ids, expected %zu", c.text, got.size(),
               c.ids.size());
-    if (got.size() != c.ids.size()) continue;
+    if (got.size() != c.ids.size())
+      continue;
     bool same = true;
     size_t first_bad = 0;
     for (size_t i = 0; i < got.size(); ++i) {
@@ -114,7 +117,8 @@ SLOPFAB_TEST(tokenizer_golden_ids) {
   // text config rather than from the tokenizer's own vocabulary size.
   bool in_range = true;
   for (const GoldenCase& c : cases) {
-    for (int32_t id : tok.encode(c.text)) in_range = in_range && id >= 0 && id < 151936;
+    for (int32_t id : tok.encode(c.text))
+      in_range = in_range && id >= 0 && id < 151936;
   }
   CHECK(in_range);
 }
@@ -136,8 +140,8 @@ SLOPFAB_TEST(tokenizer_round_trip) {
       "  leading and   multiple spaces ",
       "line1\nline2\ttabbed",
       "naive cafe -- em-dash, punctuation!?",
-      "\xe4\xb8\xad\xe6\x96\x87\xe5\xad\x97\xe7\xac\xa6",  // CJK
-      "\xf0\x9f\x8e\xac\xf0\x9f\x8e\xa5",                  // emoji
+      "\xe4\xb8\xad\xe6\x96\x87\xe5\xad\x97\xe7\xac\xa6", // CJK
+      "\xf0\x9f\x8e\xac\xf0\x9f\x8e\xa5",                 // emoji
       "a",
       " ",
   };
@@ -151,4 +155,4 @@ SLOPFAB_TEST(tokenizer_round_trip) {
   CHECK(tok.encode("").empty());
 }
 
-}  // namespace
+} // namespace

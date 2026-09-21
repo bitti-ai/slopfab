@@ -59,7 +59,7 @@ double seconds_since(Clock::time_point t0) {
 
 struct Extent {
   std::string name;
-  uint64_t begin = 0;  // absolute file offset
+  uint64_t begin = 0; // absolute file offset
   uint64_t bytes = 0;
 };
 
@@ -77,12 +77,13 @@ std::vector<Extent> extents_in_name_order(const slopfab::SafeTensors& st) {
     e.bytes = kv.second.nbytes;
     out.push_back(std::move(e));
   }
-  return out;  // std::map already iterates in name order
+  return out; // std::map already iterates in name order
 }
 
 std::vector<Extent> sorted_by_offset(std::vector<Extent> v) {
-  std::sort(v.begin(), v.end(),
-            [](const Extent& a, const Extent& b) { return a.begin < b.begin; });
+  std::sort(v.begin(), v.end(), [](const Extent& a, const Extent& b) {
+    return a.begin < b.begin;
+  });
   return v;
 }
 
@@ -90,7 +91,8 @@ std::vector<Extent> sorted_by_offset(std::vector<Extent> v) {
 
 void report_order(const std::vector<Extent>& name_order, uint64_t file_size) {
   uint64_t total = 0;
-  for (const Extent& e : name_order) total += e.bytes;
+  for (const Extent& e : name_order)
+    total += e.bytes;
 
   const std::vector<Extent> file_order = sorted_by_offset(name_order);
 
@@ -100,7 +102,8 @@ void report_order(const std::vector<Extent>& name_order, uint64_t file_size) {
   size_t holes = 0;
   uint64_t prev_end = file_order.empty() ? 0 : file_order.front().begin;
   for (const Extent& e : file_order) {
-    if (e.begin != prev_end) ++holes;
+    if (e.begin != prev_end)
+      ++holes;
     prev_end = e.begin + e.bytes;
   }
 
@@ -151,30 +154,43 @@ std::wstring widen(const std::string& s) {
 uint32_t sector_size_for(const std::string& path) {
   // "D:\Projects\..." -> "D:\". A UNC or relative path falls back to 4096,
   // which is a safe over-alignment on every drive this runs on.
-  if (path.size() < 3 || path[1] != ':') return 4096;
+  if (path.size() < 3 || path[1] != ':')
+    return 4096;
   const std::wstring root = widen(path.substr(0, 3));
   DWORD spc = 0, bps = 0, freec = 0, totalc = 0;
-  if (!GetDiskFreeSpaceW(root.c_str(), &spc, &bps, &freec, &totalc)) return 4096;
+  if (!GetDiskFreeSpaceW(root.c_str(), &spc, &bps, &freec, &totalc))
+    return 4096;
   return bps == 0 ? 4096u : bps;
 }
 
 class AlignedBuffer {
- public:
+public:
   void allocate(size_t bytes) {
     free();
     p_ = VirtualAlloc(nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     size_ = p_ ? bytes : 0;
   }
-  ~AlignedBuffer() { free(); }
+
+  ~AlignedBuffer() {
+    free();
+  }
+
   void free() {
-    if (p_) VirtualFree(p_, 0, MEM_RELEASE);
+    if (p_)
+      VirtualFree(p_, 0, MEM_RELEASE);
     p_ = nullptr;
     size_ = 0;
   }
-  uint8_t* get() const { return static_cast<uint8_t*>(p_); }
-  size_t size() const { return size_; }
 
- private:
+  uint8_t* get() const {
+    return static_cast<uint8_t*>(p_);
+  }
+
+  size_t size() const {
+    return size_;
+  }
+
+private:
   void* p_ = nullptr;
   size_t size_ = 0;
 };
@@ -193,8 +209,10 @@ bool read_at(HANDLE h, uint64_t offset, uint8_t* dst, uint64_t bytes) {
     ov.Offset = static_cast<DWORD>(offset & 0xFFFFFFFFull);
     ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
     DWORD got = 0;
-    if (!ReadFile(h, dst, chunk, &got, &ov)) return false;
-    if (got == 0) return false;  // past EOF
+    if (!ReadFile(h, dst, chunk, &got, &ov))
+      return false;
+    if (got == 0)
+      return false; // past EOF
     offset += got;
     dst += got;
     bytes -= got;
@@ -216,8 +234,10 @@ ReplayResult replay(const std::string& path, const std::vector<Extent>& order, b
                     bool sequential_hint, bool checksum) {
   const uint32_t sector = unbuffered ? sector_size_for(path) : 1;
   DWORD flags = FILE_ATTRIBUTE_NORMAL;
-  if (unbuffered) flags |= FILE_FLAG_NO_BUFFERING;
-  if (sequential_hint) flags |= FILE_FLAG_SEQUENTIAL_SCAN;
+  if (unbuffered)
+    flags |= FILE_FLAG_NO_BUFFERING;
+  if (sequential_hint)
+    flags |= FILE_FLAG_SEQUENTIAL_SCAN;
 
   HANDLE h = open_read(path, flags);
   if (h == INVALID_HANDLE_VALUE) {
@@ -240,8 +260,10 @@ ReplayResult replay(const std::string& path, const std::vector<Extent>& order, b
     uint64_t at = begin;
     while (left > 0) {
       uint64_t n = std::min<uint64_t>(left, buf.size());
-      if (unbuffered) n -= n % sector;
-      if (n == 0) break;
+      if (unbuffered)
+        n -= n % sector;
+      if (n == 0)
+        break;
       if (!read_at(h, at, buf.get(), n)) {
         // A sector-rounded tail can run past EOF; that is not an error.
         break;
@@ -249,7 +271,8 @@ ReplayResult replay(const std::string& path, const std::vector<Extent>& order, b
       if (checksum) {
         uint64_t hsh = r.checksum;
         const uint64_t* w = reinterpret_cast<const uint64_t*>(buf.get());
-        for (uint64_t i = 0; i < n / 8; ++i) hsh = (hsh ^ w[i]) * 1099511628211ull;
+        for (uint64_t i = 0; i < n / 8; ++i)
+          hsh = (hsh ^ w[i]) * 1099511628211ull;
         r.checksum = hsh;
       }
       r.bytes_read += n;
@@ -281,7 +304,8 @@ ReplayResult sequential(const std::string& path, uint64_t file_size, size_t chun
 // fault on the way is charged to the load. Buffered by construction.
 ReplayResult map_touch(const std::string& path, const std::vector<Extent>& order, bool prefetch) {
   HANDLE h = open_read(path, FILE_ATTRIBUTE_NORMAL);
-  if (h == INVALID_HANDLE_VALUE) return {};
+  if (h == INVALID_HANDLE_VALUE)
+    return {};
   LARGE_INTEGER fs{};
   GetFileSizeEx(h, &fs);
   HANDLE m = CreateFileMappingW(h, nullptr, PAGE_READONLY, 0, 0, nullptr);
@@ -313,7 +337,7 @@ ReplayResult map_touch(const std::string& path, const std::vector<Extent>& order
     while (left > 0) {
       const size_t n = static_cast<size_t>(std::min<uint64_t>(left, stage.size()));
       std::memcpy(stage.data(), src, n);
-      r.checksum += stage[0] + stage[n - 1];  // keep the memcpy alive
+      r.checksum += stage[0] + stage[n - 1]; // keep the memcpy alive
       r.bytes_read += n;
       src += n;
       left -= n;
@@ -337,7 +361,8 @@ ReplayResult map_touch(const std::string& path, const std::vector<Extent>& order
 // between five cold samples and one.
 bool evict_self(const std::string& path) {
   HANDLE h = open_read(path, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING);
-  if (h == INVALID_HANDLE_VALUE) return false;
+  if (h == INVALID_HANDLE_VALUE)
+    return false;
   AlignedBuffer buf;
   buf.allocate(64 << 10);
   const bool ok = read_at(h, 0, buf.get(), 64 << 10);
@@ -355,7 +380,8 @@ bool evict_self(const std::string& path) {
 // The first version of this had the flag and reported a fully cached file
 // after reading 62 GB past it.
 void flood(const std::vector<std::string>& paths, double gb_target) {
-  if (paths.empty()) return;
+  if (paths.empty())
+    return;
   std::vector<uint8_t> buf(8u << 20);
   uint64_t done = 0;
   const uint64_t target = static_cast<uint64_t>(gb_target * 1e9);
@@ -364,17 +390,21 @@ void flood(const std::vector<std::string>& paths, double gb_target) {
     bool any = false;
     for (const std::string& p : paths) {
       HANDLE h = open_read(p, FILE_ATTRIBUTE_NORMAL);
-      if (h == INVALID_HANDLE_VALUE) continue;
+      if (h == INVALID_HANDLE_VALUE)
+        continue;
       any = true;
       DWORD got = 0;
       while (ReadFile(h, buf.data(), static_cast<DWORD>(buf.size()), &got, nullptr) && got > 0) {
         done += got;
-        if (done >= target) break;
+        if (done >= target)
+          break;
       }
       CloseHandle(h);
-      if (done >= target) break;
+      if (done >= target)
+        break;
     }
-    if (!any) break;
+    if (!any)
+      break;
   }
   std::printf("  flood: read %.1f GB in %.1f s\n", done / 1e9, seconds_since(t0));
 }
@@ -391,17 +421,20 @@ void flood(const std::vector<std::string>& paths, double gb_target) {
 // and cannot be gamed by traversal order.
 double probe_cached_gbs(const std::string& path, uint64_t file_size, uint64_t slice_bytes) {
   HANDLE h = open_read(path, FILE_ATTRIBUTE_NORMAL);
-  if (h == INVALID_HANDLE_VALUE) return 0.0;
+  if (h == INVALID_HANDLE_VALUE)
+    return 0.0;
   std::vector<uint8_t> buf(4u << 20);
   const uint64_t each = slice_bytes / 4;
   const auto t0 = Clock::now();
   uint64_t got_total = 0;
   for (int s = 0; s < 4; ++s) {
     uint64_t begin = file_size / 8 + (file_size / 4) * static_cast<uint64_t>(s);
-    if (begin + each > file_size) begin = file_size - each;
+    if (begin + each > file_size)
+      begin = file_size - each;
     for (uint64_t at = begin; at < begin + each;) {
       const uint64_t n = std::min<uint64_t>(buf.size(), begin + each - at);
-      if (!read_at(h, at, buf.data(), n)) break;
+      if (!read_at(h, at, buf.data(), n))
+        break;
       at += n;
       got_total += n;
     }
@@ -411,7 +444,7 @@ double probe_cached_gbs(const std::string& path, uint64_t file_size, uint64_t sl
   return secs > 0 ? got_total / 1e9 / secs : 0.0;
 }
 
-#endif  // _WIN32
+#endif // _WIN32
 
 void usage() {
   std::printf(
@@ -433,7 +466,7 @@ void usage() {
       "  --checksum             hash the bytes read, to prove two orders read the same\n");
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
 #ifndef _WIN32
@@ -455,19 +488,33 @@ int main(int argc, char** argv) {
   std::vector<std::string> flood_paths;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
-    auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : std::string(); };
-    if (a == "--order") order_only = true;
-    else if (a == "--buffered") buffered = true;
-    else if (a == "--cold") cold = true;
-    else if (a == "--probe") probe = true;
-    else if (a == "--checksum") checksum = true;
-    else if (a == "--mode") mode = next();
-    else if (a == "--repeat") repeat = std::atoi(next().c_str());
-    else if (a == "--chunk") chunk_mb = static_cast<size_t>(std::atoi(next().c_str()));
-    else if (a == "--flood") flood_paths.push_back(next());
-    else if (a == "--flood-gb") flood_gb = std::atof(next().c_str());
-    else if (a == "--help" || a == "-h") { usage(); return 0; }
-    else {
+    auto next = [&]() -> std::string {
+      return i + 1 < argc ? argv[++i] : std::string();
+    };
+    if (a == "--order")
+      order_only = true;
+    else if (a == "--buffered")
+      buffered = true;
+    else if (a == "--cold")
+      cold = true;
+    else if (a == "--probe")
+      probe = true;
+    else if (a == "--checksum")
+      checksum = true;
+    else if (a == "--mode")
+      mode = next();
+    else if (a == "--repeat")
+      repeat = std::atoi(next().c_str());
+    else if (a == "--chunk")
+      chunk_mb = static_cast<size_t>(std::atoi(next().c_str()));
+    else if (a == "--flood")
+      flood_paths.push_back(next());
+    else if (a == "--flood-gb")
+      flood_gb = std::atof(next().c_str());
+    else if (a == "--help" || a == "-h") {
+      usage();
+      return 0;
+    } else {
       std::fprintf(stderr, "loadprobe: unknown option %s\n", a.c_str());
       return 2;
     }
@@ -499,14 +546,15 @@ int main(int argc, char** argv) {
       return 1;
     }
     const double after = probe_cached_gbs(path, file_size, 512ull << 20);
-    evict_self(path);  // the probe warmed 512 MB of it; take that back too
+    evict_self(path); // the probe warmed 512 MB of it; take that back too
     std::printf("after:  %.2f GB/s%s\n", after,
                 after < 3.0 ? "   (cold)" : "   (STILL CACHED - do not call the next run cold)");
     return after < 3.0 ? 0 : 1;
   }
 
   report_order(name_order, file_size);
-  if (order_only) return 0;
+  if (order_only)
+    return 0;
 
   // Opening the file above faulted the header in; nothing else. Every sample
   // below reports its own number so the spread is visible rather than averaged
@@ -515,52 +563,65 @@ int main(int argc, char** argv) {
     std::vector<double> gbs;
     std::printf("\n%s\n", label);
     for (int s = 0; s < repeat; ++s) {
-      if (!flood_paths.empty()) flood(flood_paths, flood_gb);
-      if (cold && !evict_self(path)) std::printf("  (eviction open failed)\n");
+      if (!flood_paths.empty())
+        flood(flood_paths, flood_gb);
+      if (cold && !evict_self(path))
+        std::printf("  (eviction open failed)\n");
       if (probe) {
         std::printf("  cache probe (4 x 128 MB): %.2f GB/s\n",
                     probe_cached_gbs(path, file_size, 512ull << 20));
-        if (cold) evict_self(path);  // the probe warmed 512 MB; take it back
+        if (cold)
+          evict_self(path); // the probe warmed 512 MB; take it back
       }
       const ReplayResult r = fn();
       const double rate = r.bytes_read / 1e9 / r.seconds;
       gbs.push_back(rate);
       std::printf("  sample %d: %7.2f s   %6.3f GB read   %5.2f GB/s", s + 1, r.seconds,
                   r.bytes_read / 1e9, rate);
-      if (checksum) std::printf("   fnv=%016llx", static_cast<unsigned long long>(r.checksum));
+      if (checksum)
+        std::printf("   fnv=%016llx", static_cast<unsigned long long>(r.checksum));
       std::printf("\n");
     }
     const double lo = *std::min_element(gbs.begin(), gbs.end());
     const double hi = *std::max_element(gbs.begin(), gbs.end());
     double sum = 0;
-    for (double g : gbs) sum += g;
-    std::printf("  n=%d  min %.2f  max %.2f  mean %.2f GB/s  spread %.2fx\n",
-                repeat, lo, hi, sum / gbs.size(), lo > 0 ? hi / lo : 0.0);
+    for (double g : gbs)
+      sum += g;
+    std::printf("  n=%d  min %.2f  max %.2f  mean %.2f GB/s  spread %.2fx\n", repeat, lo, hi,
+                sum / gbs.size(), lo > 0 ? hi / lo : 0.0);
   };
 
   const bool unbuf = !buffered;
   if (mode == "all" || mode == "seq") {
-    run("sequential control (whole file, fixed chunks)",
-        [&] { return sequential(path, file_size, chunk_mb << 20, unbuf); });
+    run("sequential control (whole file, fixed chunks)", [&] {
+      return sequential(path, file_size, chunk_mb << 20, unbuf);
+    });
   }
   if (mode == "all" || mode == "replay") {
-    run("replay, NAME order (what the loaders do today)",
-        [&] { return replay(path, name_order, unbuf, false, checksum); });
-    run("replay, FILE order (the same bytes, sorted by offset)",
-        [&] { return replay(path, file_order, unbuf, false, checksum); });
+    run("replay, NAME order (what the loaders do today)", [&] {
+      return replay(path, name_order, unbuf, false, checksum);
+    });
+    run("replay, FILE order (the same bytes, sorted by offset)", [&] {
+      return replay(path, file_order, unbuf, false, checksum);
+    });
   }
   // All four combinations of {name, file} order x {demand fault, prefetch}. The
   // two variables are separable only if measured separately: prefetch is
   // asynchronous, so a traversal that runs ahead of it in a different order can
   // still fault on every tensor and get none of its benefit.
   if (mode == "all" || mode == "map") {
-    run("mapped touch, NAME order (what the loaders do today)",
-        [&] { return map_touch(path, name_order, false); });
-    run("mapped touch, FILE order", [&] { return map_touch(path, file_order, false); });
-    run("mapped touch, NAME order + PrefetchVirtualMemory",
-        [&] { return map_touch(path, name_order, true); });
-    run("mapped touch, FILE order + PrefetchVirtualMemory",
-        [&] { return map_touch(path, file_order, true); });
+    run("mapped touch, NAME order (what the loaders do today)", [&] {
+      return map_touch(path, name_order, false);
+    });
+    run("mapped touch, FILE order", [&] {
+      return map_touch(path, file_order, false);
+    });
+    run("mapped touch, NAME order + PrefetchVirtualMemory", [&] {
+      return map_touch(path, name_order, true);
+    });
+    run("mapped touch, FILE order + PrefetchVirtualMemory", [&] {
+      return map_touch(path, file_order, true);
+    });
   }
   return 0;
 #endif

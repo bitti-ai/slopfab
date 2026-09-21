@@ -48,7 +48,6 @@
 #include "slopfab/safetensors_write.h"
 #include "slopfab/sampler/scheduler.h"
 
-
 namespace {
 
 using slopfab::dit::AdaLNTable;
@@ -64,7 +63,8 @@ using Tensors = std::map<std::string, slopfab::TensorWrite>;
 std::string find_weight_file(const std::string& relative) {
   for (const char* prefix : {"", "../", "../../", "../../../"}) {
     const std::string p = std::string(prefix) + relative;
-    if (std::filesystem::exists(p)) return p;
+    if (std::filesystem::exists(p))
+      return p;
   }
   return {};
 }
@@ -101,10 +101,13 @@ bool full_run_requested() {
 // well under a tenth of that, which is what gives 1e-3 / 1e-2 teeth.
 //
 // Every reduction still accumulates in double; that difference is ~1e-7.
-float as_bf16(float v) { return slopfab::bf16_to_f32(slopfab::f32_to_bf16(v)); }
+float as_bf16(float v) {
+  return slopfab::bf16_to_f32(slopfab::f32_to_bf16(v));
+}
 
 void round_bf16(std::vector<float>& v) {
-  for (float& x : v) x = as_bf16(x);
+  for (float& x : v)
+    x = as_bf16(x);
 }
 
 std::vector<float> rounded(const std::vector<float>& v) {
@@ -115,7 +118,8 @@ std::vector<float> rounded(const std::vector<float>& v) {
 
 const std::vector<float>& at(const Tensors& t, const std::string& name) {
   const auto it = t.find(name);
-  if (it == t.end()) throw std::runtime_error("reference: missing tensor " + name);
+  if (it == t.end())
+    throw std::runtime_error("reference: missing tensor " + name);
   return it->second.data;
 }
 
@@ -128,7 +132,8 @@ std::vector<float> matmul_nt(const std::vector<float>& x, const std::vector<floa
     for (int j = 0; j < n; ++j) {
       const float* wr = w.data() + static_cast<size_t>(j) * k;
       double acc = bias != nullptr ? (*bias)[static_cast<size_t>(j)] : 0.0;
-      for (int c = 0; c < k; ++c) acc += static_cast<double>(xr[c]) * wr[c];
+      for (int c = 0; c < k; ++c)
+        acc += static_cast<double>(xr[c]) * wr[c];
       y[static_cast<size_t>(i) * n + j] = static_cast<float>(acc);
     }
   }
@@ -296,18 +301,19 @@ void run_block(const Tensors& t, const TransformerConfig& cfg, const RefBlock& b
   const std::string& p = blk.prefix;
 
   auto modulate = [&](std::vector<float>& n, int scale_param, int shift_param) {
-    if (mod == nullptr) return;
+    if (mod == nullptr)
+      return;
     for (int r = 0; r < rows; ++r) {
       const int a = (*adaln_idx)[static_cast<size_t>(r)];
       const int ti = a / 3;
       const int modality = a % 3;
-      const size_t base = static_cast<size_t>(ti) * 18 * hidden +
-                          static_cast<size_t>(modality) * 6 * hidden;
+      const size_t base =
+          static_cast<size_t>(ti) * 18 * hidden + static_cast<size_t>(modality) * 6 * hidden;
       for (int i = 0; i < hidden; ++i) {
         const float scale = (*mod)[base + static_cast<size_t>(scale_param) * hidden + i];
         const float shift = (*mod)[base + static_cast<size_t>(shift_param) * hidden + i];
         float& value = n[static_cast<size_t>(r) * hidden + i];
-        value = value * (1.0f + scale) + shift;  // `1 + scale` then `+ shift` (spec 9.4.1)
+        value = value * (1.0f + scale) + shift; // `1 + scale` then `+ shift` (spec 9.4.1)
       }
     }
   };
@@ -317,15 +323,15 @@ void run_block(const Tensors& t, const TransformerConfig& cfg, const RefBlock& b
         float g = 1.0f;
         if (mod != nullptr) {
           const int a = (*adaln_idx)[static_cast<size_t>(r)];
-          const size_t base = static_cast<size_t>(a / 3) * 18 * hidden +
-                              static_cast<size_t>(a % 3) * 6 * hidden;
+          const size_t base =
+              static_cast<size_t>(a / 3) * 18 * hidden + static_cast<size_t>(a % 3) * 6 * hidden;
           g = (*mod)[base + static_cast<size_t>(gate_param) * hidden + i];
         }
         // The gate multiplies the branch only; the residual is ungated.
         x[static_cast<size_t>(r) * hidden + i] += g * branch[static_cast<size_t>(r) * hidden + i];
       }
     }
-    round_bf16(x);  // the residual stream is bf16
+    round_bf16(x); // the residual stream is bf16
   };
 
   std::vector<float> n = rmsnorm(x, at(t, p + "norm1.weight"), rows, hidden, cfg.norm_eps);
@@ -360,8 +366,7 @@ void run_block(const Tensors& t, const TransformerConfig& cfg, const RefBlock& b
     round_bf16(k);
   }
 
-  std::vector<float> a =
-      attention(q, k, v, rows, cfg.num_attention_heads, cfg.attention_head_dim);
+  std::vector<float> a = attention(q, k, v, rows, cfg.num_attention_heads, cfg.attention_head_dim);
   std::vector<float> branch =
       matmul_nt(a, rounded(at(t, p + "attn.out_proj.weight")), nullptr, rows, hidden, inner);
   round_bf16(branch);
@@ -422,8 +427,7 @@ void run_block_halves(const Tensors& t, const TransformerConfig& cfg, const RefB
                cfg.attention_head_dim, cfg.norm_eps);
   round_bf16(q);
   round_bf16(k);
-  std::vector<float> a =
-      attention(q, k, v, rows, cfg.num_attention_heads, cfg.attention_head_dim);
+  std::vector<float> a = attention(q, k, v, rows, cfg.num_attention_heads, cfg.attention_head_dim);
   std::vector<float> branch =
       matmul_nt(a, rounded(at(t, p + "attn.out_proj.weight")), nullptr, rows, hidden, inner);
   round_bf16(branch);
@@ -446,9 +450,8 @@ void run_block_halves(const Tensors& t, const TransformerConfig& cfg, const RefB
 
 // m(t) = W_8 @ c(t) + b, in the checkpoint's flat layout, for every distinct
 // timestep. fp32 throughout (spec 9.1).
-std::vector<float> expand_adaln(const Tensors& t, const AdaLNTable& table,
-                                const std::string& name, int out_features,
-                                const std::vector<float>& timesteps) {
+std::vector<float> expand_adaln(const Tensors& t, const AdaLNTable& table, const std::string& name,
+                                int out_features, const std::vector<float>& timesteps) {
   const std::vector<float>& w = at(t, name + ".weight");
   const std::vector<float>& b = at(t, name + ".bias");
   std::vector<float> out(timesteps.size() * out_features);
@@ -475,7 +478,8 @@ struct RefOutputs {
 // conditioning embedding is narrowed first.
 std::vector<float> reference_text(const Tensors& t, const TransformerConfig& cfg,
                                   const std::vector<float>& prompt, int L) {
-  if (L == 0) return {};
+  if (L == 0)
+    return {};
   // `condition_proj` is the only biased layer on the bf16 path, and the bias is
   // a separate kernel after the GEMM — so the product is rounded to bf16 first
   // and the sum is rounded again. Fusing the bias into the accumulator instead
@@ -505,8 +509,7 @@ std::vector<float> reference_text(const Tensors& t, const TransformerConfig& cfg
 RefOutputs reference_forward(const Tensors& t, const AdaLNTable& table,
                              const TransformerConfig& cfg, const SequenceLayout& layout,
                              const PackedIndices& idx, const std::vector<double>& pos,
-                             const std::vector<float>& prompt,
-                             const std::vector<float>& video_rows,
+                             const std::vector<float>& prompt, const std::vector<float>& video_rows,
                              const std::vector<float>& audio_rows, const RowTimesteps& rt) {
   const int hidden = cfg.hidden_size;
   const int seq = layout.total_rows();
@@ -593,8 +596,7 @@ RefOutputs reference_forward(const Tensors& t, const AdaLNTable& table,
 
 // --- synthetic checkpoint ---------------------------------------------------
 
-void put(Tensors& t, const std::string& name, std::vector<int64_t> shape,
-         std::vector<float> data) {
+void put(Tensors& t, const std::string& name, std::vector<int64_t> shape, std::vector<float> data) {
   t[name] = slopfab::TensorWrite{name, std::move(shape), std::move(data)};
 }
 
@@ -616,7 +618,8 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
 
   auto norm_weight = [&](const std::string& name, int dim) {
     std::vector<float> w = make_data(static_cast<size_t>(dim), seed++, 0.2f);
-    for (float& v : w) v += 1.0f;
+    for (float& v : w)
+      v += 1.0f;
     put(t, name, {dim}, std::move(w));
   };
 
@@ -652,11 +655,13 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
   // The final layer's [shift; scale] split, biased so the two halves are
   // distinguishable: a reversed split would change the answer.
   {
-    std::vector<float> w = make_data(static_cast<size_t>(2 * hidden) * AdaLNTable::kRank, seed++,
-                                     0.08f);
+    std::vector<float> w =
+        make_data(static_cast<size_t>(2 * hidden) * AdaLNTable::kRank, seed++, 0.08f);
     std::vector<float> b = make_data(static_cast<size_t>(2 * hidden), seed++, 0.02f);
-    for (int i = 0; i < hidden; ++i) b[static_cast<size_t>(i)] += 0.10f;           // shift
-    for (int i = 0; i < hidden; ++i) b[static_cast<size_t>(hidden + i)] += 0.30f;  // scale
+    for (int i = 0; i < hidden; ++i)
+      b[static_cast<size_t>(i)] += 0.10f; // shift
+    for (int i = 0; i < hidden; ++i)
+      b[static_cast<size_t>(hidden + i)] += 0.30f; // scale
     put(t, "final_layer.adaln_proj.linear.weight", {2 * hidden, AdaLNTable::kRank}, std::move(w));
     put(t, "final_layer.adaln_proj.linear.bias", {2 * hidden}, std::move(b));
   }
@@ -677,7 +682,8 @@ Tensors build_synthetic(const TransformerConfig& cfg) {
     put(t, prefix + "attn.out_proj.weight", {hidden, inner}, fan_in_weights(hidden, inner, seed++));
     put(t, prefix + "mlp.fc1.weight", {2 * ffn, hidden}, fan_in_weights(2 * ffn, hidden, seed++));
     put(t, prefix + "mlp.fc2.weight", {hidden, ffn}, fan_in_weights(hidden, ffn, seed++));
-    if (!with_adaln) return;
+    if (!with_adaln)
+      return;
 
     // Each of the six parameters gets a distinct bias, scaled by modality, so
     // that any permutation of spec 3.2's layout changes the output. A synthetic
@@ -739,28 +745,31 @@ SequenceLayout tiny_layout() {
 }
 
 std::string write_synthetic(const Tensors& t,
-    const std::map<std::string, std::string>& metadata = {}) {
+                            const std::map<std::string, std::string>& metadata = {}) {
   const std::filesystem::path dir =
       std::filesystem::temp_directory_path() / "slopfab_transformer_test";
   std::filesystem::create_directories(dir);
   const std::string path = (dir / "tiny.safetensors").string();
   std::vector<slopfab::TensorWrite> list;
   list.reserve(t.size());
-  for (const auto& kv : t) list.push_back(kv.second);
+  for (const auto& kv : t)
+    list.push_back(kv.second);
   slopfab::write_safetensors(path, list, metadata);
   return path;
 }
 
 bool all_finite(const std::vector<float>& v) {
   for (float x : v) {
-    if (!std::isfinite(x)) return false;
+    if (!std::isfinite(x))
+      return false;
   }
   return true;
 }
 
 double rms(const std::vector<float>& v) {
   double acc = 0.0;
-  for (float x : v) acc += static_cast<double>(x) * x;
+  for (float x : v)
+    acc += static_cast<double>(x) * x;
   return v.empty() ? 0.0 : std::sqrt(acc / static_cast<double>(v.size()));
 }
 
@@ -768,9 +777,10 @@ double rms(const std::vector<float>& v) {
 // mantissa bits, so the gap above a value in [2^e, 2^(e+1)) is 2^(e-7).
 double bf16_ulp(double v) {
   const double a = std::fabs(v);
-  if (a == 0.0) return std::ldexp(1.0, -133);  // smallest subnormal gap
+  if (a == 0.0)
+    return std::ldexp(1.0, -133); // smallest subnormal gap
   int exponent = 0;
-  std::frexp(a, &exponent);  // a in [0.5, 1) * 2^exponent, so 2^(exponent-1) <= a
+  std::frexp(a, &exponent); // a in [0.5, 1) * 2^exponent, so 2^(exponent-1) <= a
   return std::ldexp(1.0, exponent - 1 - 7);
 }
 
@@ -790,8 +800,14 @@ struct ErrorStats {
   size_t beyond_one_ulp = 0; // more than one bf16 ULP at that element's scale
   double signed_mean = 0.0;  // signed, so a one-sided bias shows up
 
-  double max_rel() const { return reference_rms > 0.0 ? max_abs / reference_rms : 0.0; }
-  double mean_rel() const { return reference_rms > 0.0 ? mean_abs / reference_rms : 0.0; }
+  double max_rel() const {
+    return reference_rms > 0.0 ? max_abs / reference_rms : 0.0;
+  }
+
+  double mean_rel() const {
+    return reference_rms > 0.0 ? mean_abs / reference_rms : 0.0;
+  }
+
   double differing_fraction() const {
     return count > 0 ? static_cast<double>(differing) / static_cast<double>(count) : 0.0;
   }
@@ -808,11 +824,13 @@ ErrorStats compare(const std::vector<float>& want, const std::vector<float>& got
     sum += e;
     signed_sum += d;
     ++s.count;
-    if (d != 0.0) ++s.differing;
+    if (d != 0.0)
+      ++s.differing;
     // A tolerance of 1.5 ULP rather than 1.0: two values either side of a
     // rounding boundary are one ULP apart, and floating-point comparison of
     // the gap itself should not be knife-edge.
-    if (e > 1.5 * bf16_ulp(want[i])) ++s.beyond_one_ulp;
+    if (e > 1.5 * bf16_ulp(want[i]))
+      ++s.beyond_one_ulp;
     if (e > s.max_abs) {
       s.max_abs = e;
       s.worst = i;
@@ -855,7 +873,6 @@ Case make_case(const TransformerConfig& cfg, int text_rows, float audio_t) {
   return c;
 }
 
-
 // Bisect the refiner stage by stage.
 //
 // Comparing only the end of the refiner cannot tell "one operation is wrong"
@@ -868,9 +885,9 @@ Case make_case(const TransformerConfig& cfg, int text_rows, float audio_t) {
 // be pinned without the checkpoint.
 
 slopfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
-                                               const PackedIndices& idx,
-                                               slopfab::sampler::FlowScheduler& video,
-                                               slopfab::sampler::FlowScheduler& audio) {
+                                                const PackedIndices& idx,
+                                                slopfab::sampler::FlowScheduler& video,
+                                                slopfab::sampler::FlowScheduler& audio) {
   slopfab::dit::DenoiseInputs in;
   in.layout = &layout;
   in.indices = &idx;
@@ -924,5 +941,4 @@ slopfab::dit::DenoiseInputs make_denoise_inputs(const SequenceLayout& layout,
 // output finite and sanely scaled, so `all_finite` and an rms band cannot see
 // them; correlation against the fp8 run can.
 
-
-}  // namespace
+} // namespace

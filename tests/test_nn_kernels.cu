@@ -2,7 +2,7 @@
 
 SLOPFAB_TEST_CATEGORY(nn_rmsnorm, "synthetic") {
   const int rows = 19;
-  const int dim = 5376;  // the real residual width, and a multiple of 8
+  const int dim = 5376; // the real residual width, and a multiple of 8
   const float eps = 1e-5f;
 
   const std::vector<float> x = bf16_round(make_data(size_t(rows) * dim, 11u, 3.0f));
@@ -45,14 +45,14 @@ SLOPFAB_TEST_CATEGORY(nn_rmsnorm, "synthetic") {
   // The two placements differ by a factor of 29, so a loose bound still
   // separates them; the bound has to clear one bf16 ulp of the output (0.4 %).
   CHECK_MSG(std::fabs(got[0] - inside) < 2e-2 * std::fabs(inside),
-            "rmsnorm eps inside sqrt: got %.6g, inside %.6g, outside would be %.6g", got[0],
-            inside, outside);
+            "rmsnorm eps inside sqrt: got %.6g, inside %.6g, outside would be %.6g", got[0], inside,
+            outside);
 }
 
 SLOPFAB_TEST_CATEGORY(nn_rmsnorm_modulate, "synthetic") {
   const int rows = 23;
   const int dim = 512;
-  const int mod_rows = 3;  // video / text / audio
+  const int mod_rows = 3; // video / text / audio
   const float eps = 1e-5f;
 
   const std::vector<float> x = bf16_round(make_data(size_t(rows) * dim, 51u, 2.0f));
@@ -60,7 +60,8 @@ SLOPFAB_TEST_CATEGORY(nn_rmsnorm_modulate, "synthetic") {
   const std::vector<float> scale = make_data(size_t(mod_rows) * dim, 53u, 0.8f);
   const std::vector<float> shift = make_data(size_t(mod_rows) * dim, 54u, 0.5f);
   std::vector<int32_t> a(rows);
-  for (int r = 0; r < rows; ++r) a[r] = r % mod_rows;
+  for (int r = 0; r < rows; ++r)
+    a[r] = r % mod_rows;
 
   BfBuf dx(x), dw(w), dout(x.size());
   DeviceBuffer<float> dscale = to_device(scale);
@@ -68,7 +69,7 @@ SLOPFAB_TEST_CATEGORY(nn_rmsnorm_modulate, "synthetic") {
   DeviceBuffer<int32_t> da = to_device_i32(a);
 
   slopfab::cuda::launch_rmsnorm_modulate(dx.p(), dw.p(), dscale.get(), dshift.get(), da.get(),
-                                        dout.p(), rows, dim, eps, nullptr);
+                                         dout.p(), rows, dim, eps, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   const std::vector<float> want = cpu_modulate(x, w, scale, shift, a, rows, dim, eps, true);
@@ -93,7 +94,7 @@ SLOPFAB_TEST_CATEGORY(nn_rmsnorm_modulate, "synthetic") {
   DeviceBuffer<float> fx = to_device(x);
   DeviceBuffer<float> fout(x.size());
   slopfab::cuda::launch_rmsnorm_modulate_f32(fx.get(), dw.p(), dscale.get(), dshift.get(),
-                                            dsingle.get(), fout.get(), rows, dim, eps, nullptr);
+                                             dsingle.get(), fout.get(), rows, dim, eps, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   CHECK_CLOSE(cpu_modulate(x, w, scale, shift, single, rows, dim, eps, true), to_host(fout), 1e-4,
               "rmsnorm_modulate_f32");
@@ -112,10 +113,12 @@ SLOPFAB_TEST_CATEGORY(nn_add_gated, "synthetic") {
   // than as noise.
   std::vector<float> gate(size_t(mod_rows) * dim);
   for (int m = 0; m < mod_rows; ++m) {
-    for (int i = 0; i < dim; ++i) gate[size_t(m) * dim + i] = float(m + 1) * (m == 1 ? -1.0f : 1.0f);
+    for (int i = 0; i < dim; ++i)
+      gate[size_t(m) * dim + i] = float(m + 1) * (m == 1 ? -1.0f : 1.0f);
   }
   std::vector<int32_t> a(rows);
-  for (int r = 0; r < rows; ++r) a[r] = (r * 2 + 1) % mod_rows;
+  for (int r = 0; r < rows; ++r)
+    a[r] = (r * 2 + 1) % mod_rows;
 
   std::vector<float> want(x.size());
   for (int r = 0; r < rows; ++r) {
@@ -194,8 +197,7 @@ SLOPFAB_TEST_CATEGORY(nn_rope_h3, "synthetic") {
   const int half = 48;
   const int rot = 96;
 
-  const std::vector<float> x =
-      bf16_round(make_data(size_t(rows) * heads * head_dim, 81u, 2.0f));
+  const std::vector<float> x = bf16_round(make_data(size_t(rows) * heads * head_dim, 81u, 2.0f));
   const std::vector<float> cos_t = make_data(size_t(rows) * rot, 82u, 1.0f);
   const std::vector<float> sin_t = make_data(size_t(rows) * rot, 83u, 1.0f);
 
@@ -251,7 +253,8 @@ SLOPFAB_TEST_CATEGORY(nn_rope_h3, "synthetic") {
     for (int h = 0; h < heads; ++h) {
       const size_t base = (size_t(r) * heads + h) * head_dim;
       for (int d = rot; d < head_dim; ++d) {
-        if (before[base + d] != after[base + d]) ++tail_diffs;
+        if (before[base + d] != after[base + d])
+          ++tail_diffs;
       }
     }
   }
@@ -259,7 +262,7 @@ SLOPFAB_TEST_CATEGORY(nn_rope_h3, "synthetic") {
             tail_diffs);
 }
 
-#if 0  // Removed: canonical H3 tables are host-built and tested in test_packing.cpp.
+#if 0 // Removed: canonical H3 tables are host-built and tested in test_packing.cpp.
 SLOPFAB_TEST_CATEGORY(nn_rope_tables_h3, "synthetic") {
   const int rows = 9;
   const int freq_dim = 16;
@@ -324,7 +327,6 @@ SLOPFAB_TEST_CATEGORY(nn_rope_tables_h3, "synthetic") {
 }
 #endif
 
-
 SLOPFAB_TEST_CATEGORY(nn_rope_neox, "synthetic") {
   const int rows = 7;
   const int heads = 2;
@@ -342,7 +344,8 @@ SLOPFAB_TEST_CATEGORY(nn_rope_neox, "synthetic") {
       for (int j = 0; j < half; ++j) {
         const float lo = x[base + j];
         const float hi = x[base + j + half];
-        want[base + j] = lo * cos_t[size_t(r) * head_dim + j] - hi * sin_t[size_t(r) * head_dim + j];
+        want[base + j] =
+            lo * cos_t[size_t(r) * head_dim + j] - hi * sin_t[size_t(r) * head_dim + j];
         want[base + j + half] = hi * cos_t[size_t(r) * head_dim + j + half] +
                                 lo * sin_t[size_t(r) * head_dim + j + half];
       }
@@ -369,8 +372,8 @@ SLOPFAB_TEST_CATEGORY(nn_head_rmsnorm, "synthetic") {
   // Normalises over the 128-wide head dim, not over heads*dim (spec 9.3).
   const std::vector<float> want = cpu_rmsnorm(x, w, rows * heads, dim, eps);
   // The hazard: normalising over the whole 640-wide concatenation.
-  const std::vector<float> hazard = cpu_rmsnorm(x, std::vector<float>(size_t(heads) * dim, 1.0f),
-                                                rows, heads * dim, eps);
+  const std::vector<float> hazard =
+      cpu_rmsnorm(x, std::vector<float>(size_t(heads) * dim, 1.0f), rows, heads * dim, eps);
 
   BfBuf dx(x), dw(w);
   slopfab::cuda::launch_head_rmsnorm(dx.p(), dw.p(), rows, heads, dim, eps, nullptr);
@@ -387,11 +390,13 @@ SLOPFAB_TEST_CATEGORY(nn_gather_scatter, "synthetic") {
   const int dim = 96;
   const std::vector<float> src = bf16_round(make_data(size_t(n) * dim, 111u, 1.0f));
   std::vector<int32_t> index(n);
-  for (int i = 0; i < n; ++i) index[i] = (n - 1) - i;  // reversal, so identity cannot pass
+  for (int i = 0; i < n; ++i)
+    index[i] = (n - 1) - i; // reversal, so identity cannot pass
 
   std::vector<float> want(src.size());
   for (int i = 0; i < n; ++i) {
-    for (int d = 0; d < dim; ++d) want[size_t(i) * dim + d] = src[size_t(index[i]) * dim + d];
+    for (int d = 0; d < dim; ++d)
+      want[size_t(i) * dim + d] = src[size_t(index[i]) * dim + d];
   }
 
   BfBuf dsrc(src), ddst(src.size());
@@ -458,7 +463,8 @@ SLOPFAB_TEST_CATEGORY(nn_sub_bf16_aliasing_and_tails, "synthetic") {
   // plain fp32 difference here would be off by up to one bf16 ulp (7.8e-3 at
   // magnitude 2.5) and would need a tolerance loose enough to hide real bugs.
   std::vector<float> want(n);
-  for (size_t i = 0; i < n; ++i) want[i] = a[i] - b[i];
+  for (size_t i = 0; i < n; ++i)
+    want[i] = a[i] - b[i];
   want = bf16_round(want);
 
   // Out of place first, to establish what the answer is.
@@ -485,7 +491,8 @@ SLOPFAB_TEST_CATEGORY(nn_sub_bf16_aliasing_and_tails, "synthetic") {
   // path; the launcher must notice and take the scalar kernel instead.
   const size_t m = n - 1;
   std::vector<float> want_off(m);
-  for (size_t i = 0; i < m; ++i) want_off[i] = a[i + 1] - b[i + 1];
+  for (size_t i = 0; i < m; ++i)
+    want_off[i] = a[i + 1] - b[i + 1];
   want_off = bf16_round(want_off);
   BfBuf da3(a), db3(b), dout3(n);
   slopfab::cuda::launch_sub_bf16(da3.p() + 1, db3.p() + 1, dout3.p() + 1, m, nullptr);

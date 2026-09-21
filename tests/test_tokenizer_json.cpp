@@ -46,7 +46,8 @@ std::string find_tokenizer() {
   for (const char* path : kTokenizerPaths) {
     for (const char* prefix : {"", "../", "../../"}) {
       const std::string candidate = std::string(prefix) + path;
-      if (std::filesystem::exists(candidate)) return candidate;
+      if (std::filesystem::exists(candidate))
+        return candidate;
     }
   }
   return {};
@@ -54,7 +55,8 @@ std::string find_tokenizer() {
 
 void report_missing_tokenizer() {
   std::printf("  tokenizer.json not found; skipping. Tried, under \"\", \"../\" and \"../../\":\n");
-  for (const char* path : kTokenizerPaths) std::printf("    %s\n", path);
+  for (const char* path : kTokenizerPaths)
+    std::printf("    %s\n", path);
 }
 
 std::string read_file(const std::string& path) {
@@ -69,10 +71,10 @@ std::string read_file(const std::string& path) {
 // was replaced, not a tidied version of it: its value is being the *previous*
 // answer.
 struct Reference {
-  std::map<std::string, int32_t> vocab;                     // after added-token overwrite
-  std::vector<std::pair<std::string, int32_t>> added;        // file order
+  std::map<std::string, int32_t> vocab;               // after added-token overwrite
+  std::vector<std::pair<std::string, int32_t>> added; // file order
   std::vector<std::string> id_to_token;
-  std::vector<std::pair<std::string, std::string>> merges;   // rank order
+  std::vector<std::pair<std::string, std::string>> merges; // rank order
 };
 
 Reference parse_the_old_way(const std::string& text) {
@@ -92,7 +94,8 @@ Reference parse_the_old_way(const std::string& text) {
     for (const slopfab::json::Value& entry : added->as_array()) {
       const slopfab::json::Value* content = entry.find("content");
       const slopfab::json::Value* id = entry.find("id");
-      if (content == nullptr || id == nullptr) continue;
+      if (content == nullptr || id == nullptr)
+        continue;
       const auto value = static_cast<int32_t>(id->as_int());
       ref.vocab[content->as_string()] = value;
       ref.added.emplace_back(content->as_string(), value);
@@ -101,7 +104,8 @@ Reference parse_the_old_way(const std::string& text) {
   }
 
   ref.id_to_token.assign(static_cast<size_t>(max_id) + 1, std::string());
-  for (const auto& [token, id] : ref.vocab) ref.id_to_token[static_cast<size_t>(id)] = token;
+  for (const auto& [token, id] : ref.vocab)
+    ref.id_to_token[static_cast<size_t>(id)] = token;
 
   const slopfab::json::Value* merges = model->find("merges");
   if (merges != nullptr && merges->is_array()) {
@@ -109,7 +113,8 @@ Reference parse_the_old_way(const std::string& text) {
       if (m.is_string()) {
         const std::string& s = m.as_string();
         const size_t sp = s.find(' ');
-        if (sp == std::string::npos) continue;
+        if (sp == std::string::npos)
+          continue;
         ref.merges.emplace_back(s.substr(0, sp), s.substr(sp + 1));
       } else if (m.is_array() && m.as_array().size() == 2) {
         ref.merges.emplace_back(m.as_array()[0].as_string(), m.as_array()[1].as_string());
@@ -127,7 +132,8 @@ std::vector<std::string> corpus(const Tokenizer& tok) {
   const auto vocab_end = static_cast<int32_t>(151000);
   for (int32_t base = 0; base + 8 < vocab_end; base += 331) {
     std::vector<int32_t> ids;
-    for (int32_t k = 0; k < 8; ++k) ids.push_back(base + k);
+    for (int32_t k = 0; k < 8; ++k)
+      ids.push_back(base + k);
     out.push_back(tok.decode(ids));
   }
   const char* fixed[] = {
@@ -142,7 +148,8 @@ std::vector<std::string> corpus(const Tokenizer& tok) {
       "\xe4\xb8\xad\xe6\x96\x87\xe5\xad\x97\xe7\xac\xa6",
       "\xf0\x9f\x8e\xac\xf0\x9f\x8e\xa5",
   };
-  for (const char* s : fixed) out.emplace_back(s);
+  for (const char* s : fixed)
+    out.emplace_back(s);
   // Deterministic pseudo-random ASCII, including the byte values the
   // byte-level fallback exists for.
   uint32_t state = 0x12345678u;
@@ -153,7 +160,8 @@ std::vector<std::string> corpus(const Tokenizer& tok) {
   for (int i = 0; i < 200; ++i) {
     std::string s;
     const int n = static_cast<int>(next() % 40) + 1;
-    for (int k = 0; k < n; ++k) s.push_back(static_cast<char>(0x20 + next() % 0x5F));
+    for (int k = 0; k < n; ++k)
+      s.push_back(static_cast<char>(0x20 + next() % 0x5F));
     out.push_back(std::move(s));
   }
   return out;
@@ -181,7 +189,8 @@ SLOPFAB_TEST(tokenizer_scan_matches_json_tree_over_the_whole_vocabulary) {
   const size_t n = std::min(tok.vocab_size(), ref.id_to_token.size());
   for (size_t i = 0; i < n; ++i) {
     if (tok.id_to_token(static_cast<int32_t>(i)) != ref.id_to_token[i]) {
-      if (id_diffs == 0) first_id_diff = i;
+      if (id_diffs == 0)
+        first_id_diff = i;
       ++id_diffs;
     }
   }
@@ -194,7 +203,8 @@ SLOPFAB_TEST(tokenizer_scan_matches_json_tree_over_the_whole_vocabulary) {
   std::string first_token_diff;
   for (const auto& [token, id] : ref.vocab) {
     if (tok.token_to_id(token) != id) {
-      if (token_diffs == 0) first_token_diff = token;
+      if (token_diffs == 0)
+        first_token_diff = token;
       ++token_diffs;
     }
   }
@@ -238,7 +248,8 @@ SLOPFAB_TEST(tokenizer_scan_reads_the_same_merges_as_the_json_tree) {
     std::string key = left;
     key.push_back('\x1F');
     key += right;
-    if (expected.emplace(std::move(key), rank).second) ++rank;
+    if (expected.emplace(std::move(key), rank).second)
+      ++rank;
   }
 
   const auto& actual = scanned.merge_ranks_for_testing();
@@ -251,17 +262,20 @@ SLOPFAB_TEST(tokenizer_scan_reads_the_same_merges_as_the_json_tree) {
   for (const auto& [key, want] : expected) {
     const auto it = actual.find(key);
     if (it == actual.end()) {
-      if (missing + misranked == 0) first_bad = key;
+      if (missing + misranked == 0)
+        first_bad = key;
       ++missing;
     } else if (it->second != want) {
-      if (missing + misranked == 0) first_bad = key;
+      if (missing + misranked == 0)
+        first_bad = key;
       ++misranked;
     }
   }
   // `\x1F` is not printable; report the key with it spelled out.
   std::string shown = first_bad;
   for (char& c : shown) {
-    if (c == '\x1F') c = '|';
+    if (c == '\x1F')
+      c = '|';
   }
   CHECK_MSG(missing == 0 && misranked == 0,
             "%zu merges missing and %zu misranked of %zu, first '%s'", missing, misranked,
@@ -271,7 +285,8 @@ SLOPFAB_TEST(tokenizer_scan_reads_the_same_merges_as_the_json_tree) {
   // corrupted merge *key* breaks first even when the rank survives.
   size_t lossy = 0;
   for (const std::string& s : corpus(scanned)) {
-    if (scanned.decode(scanned.encode(s)) != s) ++lossy;
+    if (scanned.decode(scanned.encode(s)) != s)
+      ++lossy;
   }
   CHECK_MSG(lossy == 0, "%zu corpus strings failed to round trip", lossy);
 }
@@ -304,15 +319,15 @@ SLOPFAB_TEST(tokenizer_scan_handles_escapes_added_tokens_and_malformed_input) {
   tok.load_json(doc);
 
   // Escapes decode to the same bytes the tree parser produced.
-  CHECK(tok.token_to_id("\xc3\xa9") == 2);            // \u00e9
-  CHECK(tok.token_to_id("\xf0\x9f\x98\x80") == 3);    // \ud83d\ude00 surrogate pair
-  CHECK(tok.token_to_id("q\"r") == 4);                // escaped quote inside a key
+  CHECK(tok.token_to_id("\xc3\xa9") == 2);         // \u00e9
+  CHECK(tok.token_to_id("\xf0\x9f\x98\x80") == 3); // \ud83d\ude00 surrogate pair
+  CHECK(tok.token_to_id("q\"r") == 4);             // escaped quote inside a key
 
   // An added token overwrites the vocabulary entry of the same content: "a"
   // was 0 in the vocab and is 7 in added_tokens.
   CHECK(tok.token_to_id("a") == 7);
   CHECK(tok.id_to_token(7) == "a");
-  CHECK(tok.vocab_size() == 9);  // max id 8 ("tail") + 1
+  CHECK(tok.vocab_size() == 9); // max id 8 ("tail") + 1
 
   // THE TRAP. The added tokens are listed shortest-first in the file and must
   // be matched longest-first, or "abc" is consumed as "ab" plus a stray "c".
@@ -333,11 +348,11 @@ SLOPFAB_TEST(tokenizer_scan_handles_escapes_added_tokens_and_malformed_input) {
   // one. The bound above it is a separate check: an id of 2e9 is in range for
   // the cast and asks for a 64 GB vector.
   const char* out_of_range[] = {
-      "{\"model\": {\"vocab\": {\"a\": 0, \"b\": -85018}}}",       // negative in the vocab
-      "{\"model\": {\"vocab\": {\"a\": -1}}}",                     // negative, only entry
+      "{\"model\": {\"vocab\": {\"a\": 0, \"b\": -85018}}}", // negative in the vocab
+      "{\"model\": {\"vocab\": {\"a\": -1}}}",               // negative, only entry
       "{\"added_tokens\": [{\"id\": -7, \"content\": \"x\"}],"
-      " \"model\": {\"vocab\": {\"a\": 0}}}",                      // negative via added_tokens
-      "{\"model\": {\"vocab\": {\"a\": 0, \"b\": 2000000000}}}",   // plausible but absurd
+      " \"model\": {\"vocab\": {\"a\": 0}}}",                    // negative via added_tokens
+      "{\"model\": {\"vocab\": {\"a\": 0, \"b\": 2000000000}}}", // plausible but absurd
       // An id that an added token overwrites still sized the vector, so it is
       // bounded even though it does not survive into `vocab_`.
       "{\"added_tokens\": [{\"id\": 1, \"content\": \"a\"}],"
@@ -372,8 +387,8 @@ SLOPFAB_TEST(tokenizer_scan_handles_escapes_added_tokens_and_malformed_input) {
       "{\"model\": {\"vocab\": {\"a\": }}}",
       "{\"model\": {\"vocab\": {\"a\": 0}, \"merges\": [\"a b\"}}",
       "[]",
-      "{\"model\": {\"merges\": []}}",  // no vocab
-      "{\"version\": \"1.0\"}",         // no model
+      "{\"model\": {\"merges\": []}}", // no vocab
+      "{\"version\": \"1.0\"}",        // no model
   };
   for (const char* doc_text : bad) {
     Tokenizer t;
@@ -387,4 +402,4 @@ SLOPFAB_TEST(tokenizer_scan_handles_escapes_added_tokens_and_malformed_input) {
   }
 }
 
-}  // namespace
+} // namespace

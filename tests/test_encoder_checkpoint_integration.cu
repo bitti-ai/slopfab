@@ -35,12 +35,14 @@ SLOPFAB_TEST_CATEGORY(encoder_real_encode, "integration") {
     std::printf("  tokenised the prompt to %zu tokens\n", ids.size());
   } else {
     SKIP_MISSING_FIXTURE("  ref/ tokenizer.json not present; using synthetic token ids\n");
-    for (int i = 0; i < 200; ++i) ids.push_back(1000 + i);
+    for (int i = 0; i < 200; ++i)
+      ids.push_back(1000 + i);
   }
   CHECK(!ids.empty());
 
   std::vector<int32_t> longer = ids;
-  for (int i = 0; i < 37; ++i) longer.push_back(5000 + i * 7);
+  for (int i = 0; i < 37; ++i)
+    longer.push_back(5000 + i * 7);
 
   size_t free_before = 0;
   size_t total = 0;
@@ -57,7 +59,7 @@ SLOPFAB_TEST_CATEGORY(encoder_real_encode, "integration") {
   constexpr size_t kStreamingHeadroom = size_t(2) << 30;
   if (free_before < kStreamingHeadroom) {
     SKIP_INSUFFICIENT_VRAM("only %.2f GB free; need ~2 GB even to stream",
-                double(free_before) / (1 << 30));
+                           double(free_before) / (1 << 30));
     return;
   }
 
@@ -84,8 +86,8 @@ SLOPFAB_TEST_CATEGORY(encoder_real_encode, "integration") {
       size_t ignored_total = 0;
       CHECK(cudaMemGetInfo(&free_after_failed_load, &ignored_total) == cudaSuccess);
       constexpr size_t kRollbackTolerance = size_t(512) << 20;
-      const size_t retained = free_before > free_after_failed_load
-          ? free_before - free_after_failed_load : 0;
+      const size_t retained =
+          free_before > free_after_failed_load ? free_before - free_after_failed_load : 0;
       CHECK_MSG(free_after_failed_load + kRollbackTolerance >= free_before,
                 "failed resident load retained %.2f GB of device memory",
                 double(retained) / (1 << 30));
@@ -96,12 +98,12 @@ SLOPFAB_TEST_CATEGORY(encoder_real_encode, "integration") {
       size_t free_after = 0;
       SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
       const slopfab::text::EncoderStats& s = encoder.stats();
-      std::printf(
-          "  resident: load %.2f s, encode %.3f s for %d tokens, weights %.2f GB, "
-          "workspace %.2f GB, accounted peak %.2f GB, measured %.2f GB\n",
-          s.load_seconds, s.last_encode_seconds, s.last_num_tokens,
-          double(s.weight_bytes) / (1 << 30), double(s.workspace_bytes) / (1 << 30),
-          double(s.peak_device_bytes) / (1 << 30), double(free_before - free_after) / (1 << 30));
+      std::printf("  resident: load %.2f s, encode %.3f s for %d tokens, weights %.2f GB, "
+                  "workspace %.2f GB, accounted peak %.2f GB, measured %.2f GB\n",
+                  s.load_seconds, s.last_encode_seconds, s.last_num_tokens,
+                  double(s.weight_bytes) / (1 << 30), double(s.workspace_bytes) / (1 << 30),
+                  double(s.peak_device_bytes) / (1 << 30),
+                  double(free_before - free_after) / (1 << 30));
 
       CHECK(encoder.residency() == slopfab::text::Residency::kResident);
       CHECK(a.num_tokens == int(ids.size()));
@@ -110,7 +112,8 @@ SLOPFAB_TEST_CATEGORY(encoder_real_encode, "integration") {
 
       size_t nonfinite = 0;
       for (float value : a.data) {
-        if (!std::isfinite(value)) ++nonfinite;
+        if (!std::isfinite(value))
+          ++nonfinite;
       }
       CHECK_MSG(nonfinite == 0, "%zu of %zu output values are not finite", nonfinite,
                 a.data.size());
@@ -174,7 +177,8 @@ SLOPFAB_TEST_CATEGORY(encoder_real_encode, "integration") {
           den += double(a.data[idx]) * a.data[idx];
         }
         const double relative = std::sqrt(num / std::max(1e-30, den));
-        if (r == 0) row0_relative = relative;
+        if (r == 0)
+          row0_relative = relative;
         if (relative > worst_relative) {
           worst_relative = relative;
           worst_row = r;
@@ -209,17 +213,18 @@ SLOPFAB_TEST_CATEGORY(encoder_real_encode, "integration") {
     size_t free_after = 0;
     SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_after, &total));
     const slopfab::text::EncoderStats& s = encoder.stats();
-    std::printf(
-        "  streaming: load %.2f s, encode %.3f s for %d tokens, layer buffers %.2f GB, "
-        "workspace %.2f GB, accounted peak %.2f GB, measured %.2f GB\n",
-        s.load_seconds, s.last_encode_seconds, s.last_num_tokens,
-        double(s.weight_bytes) / (1 << 30), double(s.workspace_bytes) / (1 << 30),
-        double(s.peak_device_bytes) / (1 << 30), double(free_before - free_after) / (1 << 30));
+    std::printf("  streaming: load %.2f s, encode %.3f s for %d tokens, layer buffers %.2f GB, "
+                "workspace %.2f GB, accounted peak %.2f GB, measured %.2f GB\n",
+                s.load_seconds, s.last_encode_seconds, s.last_num_tokens,
+                double(s.weight_bytes) / (1 << 30), double(s.workspace_bytes) / (1 << 30),
+                double(s.peak_device_bytes) / (1 << 30),
+                double(free_before - free_after) / (1 << 30));
 
     CHECK(c.num_tokens == int(ids.size()));
     size_t nonfinite = 0;
     for (float value : c.data) {
-      if (!std::isfinite(value)) ++nonfinite;
+      if (!std::isfinite(value))
+        ++nonfinite;
     }
     CHECK(nonfinite == 0);
 
@@ -228,7 +233,8 @@ SLOPFAB_TEST_CATEGORY(encoder_real_encode, "integration") {
     if (!resident_out.empty()) {
       size_t mismatches = 0;
       for (size_t i = 0; i < c.data.size(); ++i) {
-        if (c.data[i] != resident_out[i]) ++mismatches;
+        if (c.data[i] != resident_out[i])
+          ++mismatches;
       }
       CHECK_MSG(mismatches == 0,
                 "%zu of %zu values differ between the resident and streaming paths (max abs %.4g)",
@@ -298,7 +304,7 @@ SLOPFAB_TEST_CATEGORY(encoder_nvfp4_real_encode, "integration") {
               double(total) / (1 << 30));
   if (free_before < (size_t(2) << 30)) {
     SKIP_INSUFFICIENT_VRAM("only %.2f GB free; need ~2 GB even to stream",
-                double(free_before) / (1 << 30));
+                           double(free_before) / (1 << 30));
     return;
   }
 
@@ -307,15 +313,18 @@ SLOPFAB_TEST_CATEGORY(encoder_nvfp4_real_encode, "integration") {
   const EncodeRun streaming =
       run_encoder(st, slopfab::text::Residency::kStreaming, ids, "nvfp4 streaming");
 
-  if (resident.ok) check_residual_stream_shape(resident.out, "nvfp4 resident");
-  if (streaming.ok) check_residual_stream_shape(streaming.out, "nvfp4 streaming");
+  if (resident.ok)
+    check_residual_stream_shape(resident.out, "nvfp4 resident");
+  if (streaming.ok)
+    check_residual_stream_shape(streaming.out, "nvfp4 streaming");
 
   // The two modes differ only in when the weights arrive, so they must agree
   // bit for bit. A double-buffering race would show up here and nowhere else.
   if (resident.ok && streaming.ok) {
     size_t mismatches = 0;
     for (size_t i = 0; i < resident.out.data.size(); ++i) {
-      if (resident.out.data[i] != streaming.out.data[i]) ++mismatches;
+      if (resident.out.data[i] != streaming.out.data[i])
+        ++mismatches;
     }
     CHECK_MSG(mismatches == 0,
               "%zu of %zu values differ between the residency modes (max abs %.4g)", mismatches,
@@ -333,14 +342,16 @@ SLOPFAB_TEST_CATEGORY(encoder_nvfp4_real_encode, "integration") {
   // confused with it. A wrong fold direction misses by order one.
   const std::string int8_path = find_checkpoint();
   if (int8_path.empty() || !resident.ok) {
-    SKIP_MISSING_FIXTURE("  int8 checkpoint not present; skipping the cross-checkpoint comparison\n");
+    SKIP_MISSING_FIXTURE(
+        "  int8 checkpoint not present; skipping the cross-checkpoint comparison\n");
     return;
   }
   slopfab::SafeTensors i8;
   i8.open(int8_path);
   const EncodeRun other =
       run_encoder(i8, slopfab::text::Residency::kStreaming, ids, "int8 streaming");
-  if (!other.ok) return;
+  if (!other.ok)
+    return;
   check_residual_stream_shape(other.out, "int8 streaming");
 
   double worst_row = 0.0;

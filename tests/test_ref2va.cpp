@@ -13,23 +13,22 @@
 using namespace slopfab::dit;
 
 namespace {
-std::string checkpoint_fixture(
-    const char* stem, std::vector<slopfab::TensorWrite> tensors) {
-  const auto path = std::filesystem::temp_directory_path() /
-                    (std::string("slopfab_") + stem + ".safetensors");
+std::string checkpoint_fixture(const char* stem, std::vector<slopfab::TensorWrite> tensors) {
+  const auto path =
+      std::filesystem::temp_directory_path() / (std::string("slopfab_") + stem + ".safetensors");
   slopfab::write_safetensors(path.string(), tensors);
   return path.string();
 }
 
 std::string int8_transformer_fixture() {
-  const auto path = std::filesystem::temp_directory_path() /
-                    "slopfab_int8_transformer_kind.safetensors";
-  std::string header =
-      "{\"blocks.0.attn.qkv_proj.weight\":{\"dtype\":\"I8\","
-      "\"shape\":[3,2],\"data_offsets\":[0,6]},"
-      "\"blocks.0.attn.qkv_proj.weight_scale\":{\"dtype\":\"F32\","
-      "\"shape\":[3,1],\"data_offsets\":[6,18]}}";
-  while ((8 + header.size()) % 8 != 0) header += ' ';
+  const auto path =
+      std::filesystem::temp_directory_path() / "slopfab_int8_transformer_kind.safetensors";
+  std::string header = "{\"blocks.0.attn.qkv_proj.weight\":{\"dtype\":\"I8\","
+                       "\"shape\":[3,2],\"data_offsets\":[0,6]},"
+                       "\"blocks.0.attn.qkv_proj.weight_scale\":{\"dtype\":\"F32\","
+                       "\"shape\":[3,1],\"data_offsets\":[6,18]}}";
+  while ((8 + header.size()) % 8 != 0)
+    header += ' ';
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   const uint64_t header_bytes = header.size();
   const int8_t weights[6] = {-3, -2, -1, 1, 2, 3};
@@ -38,10 +37,11 @@ std::string int8_transformer_fixture() {
   out.write(header.data(), static_cast<std::streamsize>(header.size()));
   out.write(reinterpret_cast<const char*>(weights), sizeof(weights));
   out.write(reinterpret_cast<const char*>(scales), sizeof(scales));
-  if (!out) throw std::runtime_error("failed writing INT8 transformer fixture");
+  if (!out)
+    throw std::runtime_error("failed writing INT8 transformer fixture");
   return path.string();
 }
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(viggle_checkpoint_detection) {
   const auto path = std::filesystem::temp_directory_path() / "slopfab_renamed_viggle.safetensors";
@@ -49,8 +49,9 @@ SLOPFAB_TEST(viggle_checkpoint_detection) {
       {"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
       {"blocks.0.adaln_proj.linear.weight", {6, 8}, std::vector<float>(48)}};
   slopfab::write_safetensors(path.string(), tensors,
-      {{"source", "Viggle/Viggle-Animate"}, {"qkv_layout", "interleaved"},
-       {"distillation_lora_merged", "false"}});
+                             {{"source", "Viggle/Viggle-Animate"},
+                              {"qkv_layout", "interleaved"},
+                              {"distillation_lora_merged", "false"}});
   slopfab::SafeTensors st;
   st.open(path.string());
   CHECK(detect_transformer_architecture(st) == TransformerArchitecture::kViggleAnimatePrunedTable);
@@ -68,8 +69,11 @@ SLOPFAB_TEST(viggle_checkpoint_detection) {
   slopfab::write_safetensors(path.string(), tensors, {{"qkv_layout", "typo"}});
   st.open(path.string());
   bool rejected = false;
-  try { (void)transformer_qkv_is_interleaved(st); }
-  catch (const std::runtime_error&) { rejected = true; }
+  try {
+    (void)transformer_qkv_is_interleaved(st);
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
   CHECK(rejected);
   st.close();
   std::filesystem::remove(path);
@@ -82,10 +86,12 @@ SLOPFAB_TEST(viggle_interleaved_qkv_weights_and_scales) {
   std::vector<float> scales(12);
   for (int row = 0; row < 12; ++row) {
     scales[row] = float(row + 1) / 16;
-    for (int col = 0; col < 3; ++col) weights[row * 3 + col] = int8_t(row * 3 + col - 18);
+    for (int col = 0; col < 3; ++col)
+      weights[row * 3 + col] = int8_t(row * 3 + col - 18);
   }
   slopfab::TensorView w{"qkv.weight", slopfab::DType::kI8, {12, 3}, weights.data(), weights.size()};
-  slopfab::TensorView s{"qkv.weight_scale", slopfab::DType::kF32, {12, 1}, scales.data(), scales.size() * 4};
+  slopfab::TensorView s{
+      "qkv.weight_scale", slopfab::DType::kF32, {12, 1}, scales.data(), scales.size() * 4};
   const auto all = deinterleave_qkv_rows(w, 2);
   const float input[] = {1, -2, 3};
   for (int part = 0; part < 3; ++part) {
@@ -108,11 +114,16 @@ SLOPFAB_TEST(viggle_interleaved_qkv_weights_and_scales) {
   }
   for (int invalid = 0; invalid < 3; ++invalid) {
     auto bad = w;
-    if (invalid == 0) bad.dtype = slopfab::DType::kU8;
-    if (invalid == 1) bad.shape = {11, 3};
+    if (invalid == 0)
+      bad.dtype = slopfab::DType::kU8;
+    if (invalid == 1)
+      bad.shape = {11, 3};
     bool rejected = false;
-    try { (void)deinterleave_qkv_rows(bad, 2, invalid == 2 ? 12 : 0, 1); }
-    catch (const std::runtime_error&) { rejected = true; }
+    try {
+      (void)deinterleave_qkv_rows(bad, 2, invalid == 2 ? 12 : 0, 1);
+    } catch (const std::runtime_error&) {
+      rejected = true;
+    }
     CHECK(rejected);
   }
 }
@@ -121,8 +132,11 @@ SLOPFAB_TEST(viggle_real_checkpoint_header) {
   std::filesystem::path path;
   for (const char* prefix : {"", "../", "../../", "../../../"}) {
     auto candidate = std::filesystem::path(prefix) / "weights/transformer" /
-        "Viggle-Animate-pruned_rank8_int8_convrot.safetensors";
-    if (std::filesystem::exists(candidate)) { path = candidate; break; }
+                     "Viggle-Animate-pruned_rank8_int8_convrot.safetensors";
+    if (std::filesystem::exists(candidate)) {
+      path = candidate;
+      break;
+    }
   }
   if (path.empty()) {
     SKIP_MISSING_FIXTURE("Viggle-Animate checkpoint absent");
@@ -137,8 +151,8 @@ SLOPFAB_TEST(viggle_real_checkpoint_header) {
   CHECK(st.at("adaln_t_table").shape == std::vector<int64_t>({1025, 8}));
   CHECK(st.at("final_layer.adaln_proj.linear.bias").dtype == slopfab::DType::kF32);
   for (int layer = 0; layer < 52; ++layer) {
-    const std::string prefix = layer < 50 ? "blocks." + std::to_string(layer) :
-        "token_refiner.blocks." + std::to_string(layer - 50);
+    const std::string prefix = layer < 50 ? "blocks." + std::to_string(layer)
+                                          : "token_refiner.blocks." + std::to_string(layer - 50);
     const auto& w = st.at(prefix + ".attn.qkv_proj.weight");
     validate_interleaved_qkv(w, 128);
     CHECK(w.shape == std::vector<int64_t>({21504, 5376}));
@@ -155,9 +169,9 @@ SLOPFAB_TEST(ref2va_transformer_checkpoint_detection) {
   CHECK(is_pruned_table_architecture(TransformerArchitecture::kRef2VAPrunedTable));
   CHECK(!is_pruned_table_architecture(TransformerArchitecture::kRef2VAFullAdaLN));
   CHECK(!is_pruned_table_architecture(TransformerArchitecture::kUnknown));
-  const auto pruned_path = checkpoint_fixture(
-      "pruned_kind", {{"adaln_t_table", {1}, {0.0f}},
-                       {"blocks.0.adaln_proj.linear.weight", {1}, {0.0f}}});
+  const auto pruned_path =
+      checkpoint_fixture("pruned_kind", {{"adaln_t_table", {1}, {0.0f}},
+                                         {"blocks.0.adaln_proj.linear.weight", {1}, {0.0f}}});
   slopfab::SafeTensors pruned;
   pruned.open(pruned_path);
   CHECK(detect_transformer_architecture(pruned) == TransformerArchitecture::kPrunedTable);
@@ -171,58 +185,53 @@ SLOPFAB_TEST(ref2va_transformer_checkpoint_detection) {
   require_ref2va_transformer(pruned, 0);
 
   const auto pruned_ref_path = checkpoint_fixture(
-      "ref2va_pruned_fp8", {{"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
-                             {"blocks.0.adaln_proj.linear.weight", {6, 8},
-                              std::vector<float>(6 * 8)}});
+      "ref2va_pruned_fp8",
+      {{"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+       {"blocks.0.adaln_proj.linear.weight", {6, 8}, std::vector<float>(6 * 8)}});
   slopfab::SafeTensors pruned_ref;
   pruned_ref.open(pruned_ref_path);
-  CHECK(detect_transformer_architecture(pruned_ref) ==
-        TransformerArchitecture::kRef2VAPrunedTable);
-  CHECK(std::string(transformer_architecture_name(
-            TransformerArchitecture::kRef2VAPrunedTable)) ==
+  CHECK(detect_transformer_architecture(pruned_ref) == TransformerArchitecture::kRef2VAPrunedTable);
+  CHECK(std::string(transformer_architecture_name(TransformerArchitecture::kRef2VAPrunedTable)) ==
         "pruned AdaLN-table Ref2VA transformer");
   require_ref2va_transformer(pruned_ref, 1);
 
   const auto ref_path = checkpoint_fixture(
-      "ref2va_kind", {{"time_embedder.proj_in.weight", {1}, {0.0f}},
-                       {"time_embedder.proj_out.weight", {1}, {0.0f}},
-                       {"blocks.0.adaln_proj.linear.weight", {1}, {0.0f}},
-                       {"blocks.0.attn.qkv_proj.weight", {1}, {0.0f}},
-                       {"blocks.0.adaln_proj.linear.weight.quant_state.bitsandbytes__nf4",
-                        {1}, {0.0f}},
-                       {"blocks.0.attn.qkv_proj.weight.quant_state.bitsandbytes__nf4",
-                        {1}, {0.0f}},
-                       {"blocks.0.adaln_proj.linear.weight.absmax", {1}, {0.0f}}});
+      "ref2va_kind",
+      {{"time_embedder.proj_in.weight", {1}, {0.0f}},
+       {"time_embedder.proj_out.weight", {1}, {0.0f}},
+       {"blocks.0.adaln_proj.linear.weight", {1}, {0.0f}},
+       {"blocks.0.attn.qkv_proj.weight", {1}, {0.0f}},
+       {"blocks.0.adaln_proj.linear.weight.quant_state.bitsandbytes__nf4", {1}, {0.0f}},
+       {"blocks.0.attn.qkv_proj.weight.quant_state.bitsandbytes__nf4", {1}, {0.0f}},
+       {"blocks.0.adaln_proj.linear.weight.absmax", {1}, {0.0f}}});
   slopfab::SafeTensors ref;
   ref.open(ref_path);
   CHECK(detect_transformer_architecture(ref) == TransformerArchitecture::kRef2VAFullAdaLN);
   CHECK(detect_transformer_quantization(ref) == TransformerQuantization::kBitsAndBytesNF4);
-  CHECK(std::string(transformer_quantization_name(
-            TransformerQuantization::kInt8ConvRot)) == "int8 ConvRot");
+  CHECK(std::string(transformer_quantization_name(TransformerQuantization::kInt8ConvRot)) ==
+        "int8 ConvRot");
 
   slopfab::SafeTensors int8;
   int8.open(int8_transformer_fixture());
-  CHECK(detect_transformer_quantization(int8) ==
-        TransformerQuantization::kInt8ConvRot);
+  CHECK(detect_transformer_quantization(int8) == TransformerQuantization::kInt8ConvRot);
   require_ref2va_transformer(ref, 1);
 
   const auto unknown_path = checkpoint_fixture("unknown_kind", {{"x", {1}, {0.0f}}});
   slopfab::SafeTensors unknown;
   unknown.open(unknown_path);
   CHECK(detect_transformer_architecture(unknown) == TransformerArchitecture::kUnknown);
-
 }
 
 SLOPFAB_TEST(ref2va_singularity_wrapped_checkpoint_detection) {
-  const auto path = checkpoint_fixture("Singularity_ref2va_Pruned", {
-      {"model.diffusion_model.adaln_t_table", {1025, 8},
-       std::vector<float>(1025 * 8)},
-      {"model.diffusion_model.blocks.0.adaln_proj.linear.weight", {6, 8},
-       std::vector<float>(6 * 8)}});
+  const auto path = checkpoint_fixture(
+      "Singularity_ref2va_Pruned",
+      {{"model.diffusion_model.adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+       {"model.diffusion_model.blocks.0.adaln_proj.linear.weight",
+        {6, 8},
+        std::vector<float>(6 * 8)}});
   slopfab::SafeTensors st;
   st.open(path);
-  CHECK(detect_transformer_architecture(st) ==
-        TransformerArchitecture::kRef2VAPrunedTable);
+  CHECK(detect_transformer_architecture(st) == TransformerArchitecture::kRef2VAPrunedTable);
   require_ref2va_transformer(st, 1);
   st.close();
   std::filesystem::remove(path);
@@ -257,11 +266,26 @@ SLOPFAB_TEST(ref2va_image_size) {
   CHECK(h == 2048 && w == 8192);
   resolve_reference_image_size(1, 4, &h, &w);
   CHECK(h == 8192 && w == 2048);
-  CHECK(::slopfab::test::throws([] { int a, b; resolve_reference_image_size(401, 100, &a, &b); }));
-  CHECK(::slopfab::test::throws([] { int a, b; resolve_reference_image_size(100, 401, &a, &b); }));
-  CHECK(::slopfab::test::throws([] { int a, b; resolve_reference_image_size(0, 1, &a, &b); }));
-  CHECK(::slopfab::test::throws([] { int a, b; resolve_reference_image_size(1, -1, &a, &b); }));
-  CHECK(::slopfab::test::throws([] { int b; resolve_reference_image_size(1, 1, nullptr, &b); }));
+  CHECK(::slopfab::test::throws([] {
+    int a, b;
+    resolve_reference_image_size(401, 100, &a, &b);
+  }));
+  CHECK(::slopfab::test::throws([] {
+    int a, b;
+    resolve_reference_image_size(100, 401, &a, &b);
+  }));
+  CHECK(::slopfab::test::throws([] {
+    int a, b;
+    resolve_reference_image_size(0, 1, &a, &b);
+  }));
+  CHECK(::slopfab::test::throws([] {
+    int a, b;
+    resolve_reference_image_size(1, -1, &a, &b);
+  }));
+  CHECK(::slopfab::test::throws([] {
+    int b;
+    resolve_reference_image_size(1, 1, nullptr, &b);
+  }));
 }
 
 SLOPFAB_TEST(ref2va_keyframe_vae_contract) {
@@ -276,8 +300,8 @@ SLOPFAB_TEST(ref2va_keyframe_vae_contract) {
 
   std::vector<float> moments(48, 0.0f), normal(24, 0.0f), mean(24, 1.0f), sd(24, 2.0f);
   moments[0] = 3.0f;
-  const auto latent = slopfab::vae::sample_keyframe_latents(
-      moments.data(), normal.data(), 1, 1, mean, sd);
+  const auto latent =
+      slopfab::vae::sample_keyframe_latents(moments.data(), normal.data(), 1, 1, mean, sd);
   CHECK(latent.size() == 24);
   CHECK(std::abs(latent[0] - 1.0f) < 1e-6f);
   CHECK(std::abs(latent[1] + 0.5f) < 1e-6f);
@@ -285,7 +309,8 @@ SLOPFAB_TEST(ref2va_keyframe_vae_contract) {
 
 SLOPFAB_TEST(ref2va_keyframe_patchify) {
   std::vector<float> latent(24 * 2 * 4);
-  for (size_t i = 0; i < latent.size(); ++i) latent[i] = static_cast<float>(i);
+  for (size_t i = 0; i < latent.size(); ++i)
+    latent[i] = static_cast<float>(i);
   const auto rows = slopfab::vae::patchify_keyframe_latents(latent.data(), 2, 4);
   CHECK(rows.size() == 2 * 96);
   CHECK(rows[0] == 0.0f);
@@ -304,18 +329,20 @@ SLOPFAB_TEST(ref2va_keyframe_patchify) {
 SLOPFAB_TEST(ref2va_torch_cpu_seed42_normal) {
   const auto n = slopfab::vae::torch_cpu_normal_seed42(16);
   // torch.manual_seed(42); torch.randn(16), contiguous CPU float kernel.
-  const float golden[] = {1.92691541f, 1.48728406f, 0.90071720f, -2.10552096f,
-                          0.67841846f, -1.23454487f, -0.04306748f, -1.60466695f,
-                          -0.75213528f, 1.64872301f, -0.39247864f, -1.40360725f,
+  const float golden[] = {1.92691541f,  1.48728406f,  0.90071720f,  -2.10552096f,
+                          0.67841846f,  -1.23454487f, -0.04306748f, -1.60466695f,
+                          -0.75213528f, 1.64872301f,  -0.39247864f, -1.40360725f,
                           -0.72788125f, -0.55943018f, -0.76883894f, 0.76244539f};
-  for (int i = 0; i < 16; ++i) CHECK_NEAR(n[i], golden[i], 3e-6);
+  for (int i = 0; i < 16; ++i)
+    CHECK_NEAR(n[i], golden[i], 3e-6);
 }
+
 SLOPFAB_TEST(ref2va_order_positions_and_timesteps) {
-  const ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 6, 0};  // 6 video rows
-  const ReferenceGeometry audio{ReferenceKind::kAudio, 1, 0, 0, 2};  // 4 audio rows
-  const ReferenceGeometry clip{ReferenceKind::kVideo, 2, 4, 4, 3};   // 6 audio, 8 video
-  const auto p = build_ref2va_packed_sequence(
-      {kTagText, kTagVideo, kTagText}, {image, audio, clip}, 2, 4, 4, 2);
+  const ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 6, 0}; // 6 video rows
+  const ReferenceGeometry audio{ReferenceKind::kAudio, 1, 0, 0, 2}; // 4 audio rows
+  const ReferenceGeometry clip{ReferenceKind::kVideo, 2, 4, 4, 3};  // 6 audio, 8 video
+  const auto p = build_ref2va_packed_sequence({kTagText, kTagVideo, kTagText}, {image, audio, clip},
+                                              2, 4, 4, 2);
 
   CHECK(p.layout.num_text == 3);
   CHECK(p.layout.num_condition_video == 14);
@@ -341,7 +368,7 @@ SLOPFAB_TEST(ref2va_order_positions_and_timesteps) {
   CHECK(p.indices.audio[10] == 27);
   CHECK(p.indices.video[14] == 31);
 
-  CHECK(p.indices.tags[1] == kTagVideo);  // text-region vision token is preserved
+  CHECK(p.indices.tags[1] == kTagVideo); // text-region vision token is preserved
   CHECK(p.indices.tags[3] == kTagVideo);
   CHECK(p.indices.tags[9] == kTagAudio);
   CHECK(p.indices.tags[19] == kTagVideo);
@@ -349,10 +376,10 @@ SLOPFAB_TEST(ref2va_order_positions_and_timesteps) {
 
   // Each reference advances one shared media clock. An image advances by one;
   // audio by A; a video by max(A, its non-uniform video span).
-  CHECK_NEAR(p.position_ids[3 * 3], 3.0, 0.0);    // image origin
-  CHECK_NEAR(p.position_ids[9 * 3], 4.0, 0.0);    // audio reference origin
-  CHECK_NEAR(p.position_ids[13 * 3], 6.0, 0.0);   // clip audio origin
-  CHECK_NEAR(p.position_ids[19 * 3], 6.0, 0.0);   // clip video shares it
+  CHECK_NEAR(p.position_ids[3 * 3], 3.0, 0.0);                   // image origin
+  CHECK_NEAR(p.position_ids[9 * 3], 4.0, 0.0);                   // audio reference origin
+  CHECK_NEAR(p.position_ids[13 * 3], 6.0, 0.0);                  // clip audio origin
+  CHECK_NEAR(p.position_ids[19 * 3], 6.0, 0.0);                  // clip video shares it
   CHECK_NEAR(p.position_ids[23 * 3], 7.666666666666667, 1e-12);  // clip frame 1
   CHECK_NEAR(p.position_ids[27 * 3], 14.333333333333334, 1e-12); // target audio
   CHECK_NEAR(p.position_ids[31 * 3], 14.333333333333334, 1e-12); // target video
@@ -365,28 +392,34 @@ SLOPFAB_TEST(ref2va_order_positions_and_timesteps) {
     CHECK_NEAR(rt.unique[0], 0.2, 1e-7);
     CHECK_NEAR(rt.unique[1], 0.8, 1e-7);
   }
-  for (int row = 0; row < 27; ++row) CHECK(rt.indices[static_cast<size_t>(row)] == 1);
-  for (int row = 27; row < 31; ++row) CHECK(rt.indices[static_cast<size_t>(row)] == 0);
-  for (int row = 31; row < 39; ++row) CHECK(rt.indices[static_cast<size_t>(row)] == 1);
+  for (int row = 0; row < 27; ++row)
+    CHECK(rt.indices[static_cast<size_t>(row)] == 1);
+  for (int row = 27; row < 31; ++row)
+    CHECK(rt.indices[static_cast<size_t>(row)] == 0);
+  for (int row = 31; row < 39; ++row)
+    CHECK(rt.indices[static_cast<size_t>(row)] == 1);
 }
 
 SLOPFAB_TEST(ref2va_interleaved_reference_timesteps) {
-  ReferenceGeometry image{ReferenceKind::kImage,1,4,4,0};
-  ReferenceGeometry sound{ReferenceKind::kAudio,1,0,0,2};
-  ReferenceGeometry clip{ReferenceKind::kVideo,1,4,4,1};
-  auto p=build_ref2va_packed_sequence({kTagText},{image,sound,clip},1,4,4,2);
-  auto rt=build_row_timesteps(p.layout,p.indices,0.75f,0.25f);
+  ReferenceGeometry image{ReferenceKind::kImage, 1, 4, 4, 0};
+  ReferenceGeometry sound{ReferenceKind::kAudio, 1, 0, 0, 2};
+  ReferenceGeometry clip{ReferenceKind::kVideo, 1, 4, 4, 1};
+  auto p = build_ref2va_packed_sequence({kTagText}, {image, sound, clip}, 1, 4, 4, 2);
+  auto rt = build_row_timesteps(p.layout, p.indices, 0.75f, 0.25f);
   // Indices are condition-first within each modality despite packed interleaving.
-  for(int i=0;i<p.layout.num_condition_audio;++i)
-    CHECK(rt.indices[static_cast<size_t>(p.indices.audio[i])]==1);
-  for(size_t i=static_cast<size_t>(p.layout.num_condition_audio);i<p.indices.audio.size();++i)
-    CHECK(rt.indices[static_cast<size_t>(p.indices.audio[i])]==0);
-  for(int i:p.indices.video) CHECK(rt.indices[static_cast<size_t>(i)]==1);
+  for (int i = 0; i < p.layout.num_condition_audio; ++i)
+    CHECK(rt.indices[static_cast<size_t>(p.indices.audio[i])] == 1);
+  for (size_t i = static_cast<size_t>(p.layout.num_condition_audio); i < p.indices.audio.size();
+       ++i)
+    CHECK(rt.indices[static_cast<size_t>(p.indices.audio[i])] == 0);
+  for (int i : p.indices.video)
+    CHECK(rt.indices[static_cast<size_t>(i)] == 1);
 
   // Image-only references have no audio anchors: every audio row is generated.
-  auto image_only=build_ref2va_packed_sequence({kTagText},{image},1,4,4,2);
-  auto image_rt=build_row_timesteps(image_only.layout,image_only.indices,0.75f,0.25f);
-  for(int i:image_only.indices.audio) CHECK(image_rt.indices[static_cast<size_t>(i)]==0);
+  auto image_only = build_ref2va_packed_sequence({kTagText}, {image}, 1, 4, 4, 2);
+  auto image_rt = build_row_timesteps(image_only.layout, image_only.indices, 0.75f, 0.25f);
+  for (int i : image_only.indices.audio)
+    CHECK(image_rt.indices[static_cast<size_t>(i)] == 0);
 }
 
 SLOPFAB_TEST(ref2va_fixed_condition_noise_levels) {

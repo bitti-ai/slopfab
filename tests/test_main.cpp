@@ -64,11 +64,21 @@ void test_json() {
   CHECK(json::parse("{}").as_object().empty());
   CHECK(json::parse("[]").as_array().empty());
 
-  CHECK(throws([] { json::parse("{"); }));
-  CHECK(throws([] { json::parse("{\"a\": }"); }));
-  CHECK(throws([] { json::parse("{\"a\": 1} trailing"); }));
-  CHECK(throws([] { json::parse("\"unterminated"); }));
-  CHECK(throws([] { json::parse("{\"a\": tru}"); }));
+  CHECK(throws([] {
+    json::parse("{");
+  }));
+  CHECK(throws([] {
+    json::parse("{\"a\": }");
+  }));
+  CHECK(throws([] {
+    json::parse("{\"a\": 1} trailing");
+  }));
+  CHECK(throws([] {
+    json::parse("\"unterminated");
+  }));
+  CHECK(throws([] {
+    json::parse("{\"a\": tru}");
+  }));
 }
 
 // --- dtype ------------------------------------------------------------------
@@ -122,8 +132,8 @@ void test_dtype() {
   // (0.5) in the low half and nibble 2 (1.0) in the high half.
   CHECK_NEAR(f4_lo(0x21), 0.5f, 0.0);
   CHECK_NEAR(f4_hi(0x21), 1.0f, 0.0);
-  CHECK_NEAR(f4_lo(0xF7), 6.0f, 0.0);   // nibble 7
-  CHECK_NEAR(f4_hi(0xF7), -6.0f, 0.0);  // nibble 15 = sign | 7
+  CHECK_NEAR(f4_lo(0xF7), 6.0f, 0.0);  // nibble 7
+  CHECK_NEAR(f4_hi(0xF7), -6.0f, 0.0); // nibble 15 = sign | 7
 }
 
 // --- safetensors ------------------------------------------------------------
@@ -156,10 +166,9 @@ void test_safetensors() {
   const float scalar = 0.25f;
   std::memcpy(data.data() + 24, &scalar, sizeof(scalar));
 
-  const std::string header =
-      R"({"__metadata__":{"format":"pt","note":"unit test"},)"
-      R"("w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},)"
-      R"("s":{"dtype":"F32","shape":[],"data_offsets":[24,28]}})";
+  const std::string header = R"({"__metadata__":{"format":"pt","note":"unit test"},)"
+                             R"("w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},)"
+                             R"("s":{"dtype":"F32","shape":[],"data_offsets":[24,28]}})";
 
   const std::string path = write_temp_safetensors(header, data, "slopfab_ok.safetensors");
 
@@ -199,8 +208,7 @@ void test_safetensors() {
 
   // A shape that disagrees with the declared byte range must be rejected: it
   // would otherwise cause a silent misread of every following tensor.
-  const std::string bad_header =
-      R"({"w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,16]}})";
+  const std::string bad_header = R"({"w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,16]}})";
   const std::string bad_path =
       write_temp_safetensors(bad_header, std::vector<uint8_t>(16, 0), "slopfab_bad.safetensors");
   bool rejected = false;
@@ -214,8 +222,7 @@ void test_safetensors() {
   std::filesystem::remove(bad_path);
 
   // A range extending past EOF must be rejected too.
-  const std::string over_header =
-      R"({"w":{"dtype":"F32","shape":[100],"data_offsets":[0,400]}})";
+  const std::string over_header = R"({"w":{"dtype":"F32","shape":[100],"data_offsets":[0,400]}})";
   const std::string over_path =
       write_temp_safetensors(over_header, std::vector<uint8_t>(8, 0), "slopfab_over.safetensors");
   bool over_rejected = false;
@@ -246,14 +253,12 @@ void test_w4a8_state() {
   const std::string payload =
       R"({"format":"asym_w4a8_int8","group_size":16,"convrot_groupsize":256})";
   const std::string header =
-      std::string(R"({"layer.weight":{"dtype":"I8","shape":[2,128],"data_offsets":[0,256]},)" ) +
-      R"("layer.comfy_quant":{"dtype":"U8","shape":[)" +
-      std::to_string(payload.size()) + R"(],"data_offsets":[256,)" +
-      std::to_string(256 + payload.size()) + "]}}";
+      std::string(R"({"layer.weight":{"dtype":"I8","shape":[2,128],"data_offsets":[0,256]},)") +
+      R"("layer.comfy_quant":{"dtype":"U8","shape":[)" + std::to_string(payload.size()) +
+      R"(],"data_offsets":[256,)" + std::to_string(256 + payload.size()) + "]}}";
   std::vector<uint8_t> data(256 + payload.size());
   std::memcpy(data.data() + 256, payload.data(), payload.size());
-  const std::string path =
-      write_temp_safetensors(header, data, "slopfab_w4a8_state.safetensors");
+  const std::string path = write_temp_safetensors(header, data, "slopfab_w4a8_state.safetensors");
   SafeTensors st;
   st.open(path);
   CHECK(is_w4a8_weight(st, "layer.weight"));
@@ -292,8 +297,8 @@ void test_compare() {
   // Relative error is 0.5/3.
   CHECK_NEAR(diff.max_rel_err, 0.5 / 3.0, 1e-9);
   CHECK(!diff.passes(1e-3, 1e-3));
-  CHECK(diff.passes(1.0, 1e-3));   // passes on absolute
-  CHECK(diff.passes(1e-9, 0.2));   // passes on relative
+  CHECK(diff.passes(1.0, 1e-3)); // passes on absolute
+  CHECK(diff.passes(1e-9, 0.2)); // passes on relative
 
   // Size mismatch never passes.
   CompareStats mismatch = compare(a, std::vector<float>{1.0f});
@@ -349,7 +354,8 @@ void test_scheduler() {
   // Strictly decreasing after duplicate collapsing.
   bool decreasing = true;
   for (size_t i = 0; i + 1 < sig.size(); ++i) {
-    if (!(sig[i + 1] < sig[i])) decreasing = false;
+    if (!(sig[i + 1] < sig[i]))
+      decreasing = false;
   }
   CHECK(decreasing);
   // One model evaluation per sigma except the terminal zero.
@@ -365,7 +371,8 @@ void test_scheduler() {
   CHECK(unshifted.sigmas().size() == 50);
   bool shift_raises = true;
   for (size_t i = 1; i + 1 < unshifted.sigmas().size() && i + 1 < sig.size(); ++i) {
-    if (!(sig[i] > unshifted.sigmas()[i])) shift_raises = false;
+    if (!(sig[i] > unshifted.sigmas()[i]))
+      shift_raises = false;
   }
   CHECK(shift_raises);
   // shift = 1 is the identity map.
@@ -433,7 +440,9 @@ void test_scheduler() {
     FlowScheduler bad(12.0f);
     bad.set_timesteps(1);
   }));
-  CHECK(throws([] { FlowScheduler bad(0.0f); }));
+  CHECK(throws([] {
+    FlowScheduler bad(0.0f);
+  }));
 }
 
 const bool registered = ::slopfab::test::register_test("json", &test_json) &&
@@ -443,7 +452,8 @@ const bool registered = ::slopfab::test::register_test("json", &test_json) &&
                         ::slopfab::test::register_test("compare", &test_compare) &&
                         ::slopfab::test::register_test("scheduler", &test_scheduler);
 
-}  // namespace
+} // namespace
 
-int main() { return ::slopfab::test::run_all(); }
-
+int main() {
+  return ::slopfab::test::run_all();
+}

@@ -88,27 +88,27 @@ int deferred_count();
 // file, freeing the card, or using a supported GPU -- so the summary keeps
 // them apart rather than reporting a single opaque total.
 enum class SkipReason {
-  kMissingFixture,  // a checkpoint, tokenizer or tool the case needs is absent
-  kInsufficientVram,  // the card has less free memory than the case requires
-  kUnsupportedHardware,  // the case targets an instruction/image this GPU lacks
-  kOptInDisabled,  // explicitly selected expensive coverage was not enabled
+  kMissingFixture,      // a checkpoint, tokenizer or tool the case needs is absent
+  kInsufficientVram,    // the card has less free memory than the case requires
+  kUnsupportedHardware, // the case targets an instruction/image this GPU lacks
+  kOptInDisabled,       // explicitly selected expensive coverage was not enabled
 };
 
 void skip(SkipReason reason, const char* file, int line, const char* fmt, ...);
 int skipped_count();
 
-}  // namespace slopfab::test
+} // namespace slopfab::test
 
 #define CHECK(expr) ::slopfab::test::check((expr), #expr, __FILE__, __LINE__)
-#define CHECK_NEAR(a, b, tol) \
+#define CHECK_NEAR(a, b, tol)                                                                      \
   ::slopfab::test::check_near((a), (b), (tol), #a " ~= " #b, __FILE__, __LINE__)
-#define CHECK_CLOSE(e, a, tol, what) \
+#define CHECK_CLOSE(e, a, tol, what)                                                               \
   ::slopfab::test::check_close((e), (a), (tol), (what), __FILE__, __LINE__)
-#define CHECK_CLOSE_REL(e, a, atol, rtol, what) \
+#define CHECK_CLOSE_REL(e, a, atol, rtol, what)                                                    \
   ::slopfab::test::check_close_rel((e), (a), (atol), (rtol), (what), __FILE__, __LINE__)
 #define CHECK_MSG(ok, ...) ::slopfab::test::check_printf((ok), __FILE__, __LINE__, __VA_ARGS__)
 // Known-failing on purpose. Reports the number, never fails the run.
-#define CHECK_DEFERRED(ok, ...) \
+#define CHECK_DEFERRED(ok, ...)                                                                    \
   ::slopfab::test::check_deferred((ok), __FILE__, __LINE__, __VA_ARGS__)
 
 // Declines to run, and says so in the summary. Use these instead of a bare
@@ -116,26 +116,28 @@ int skipped_count();
 // checks, so the run reports success and the absent coverage is invisible.
 // This suite carried two such cases for months -- the golden tokenizer tests
 // probed a path that did not exist and reported "0 checks, 0 failures".
-#define SKIP_MISSING_FIXTURE(...) \
-  ::slopfab::test::skip(::slopfab::test::SkipReason::kMissingFixture, __FILE__, __LINE__, __VA_ARGS__)
-#define SKIP_INSUFFICIENT_VRAM(...)                                            \
-  ::slopfab::test::skip(::slopfab::test::SkipReason::kInsufficientVram, __FILE__, \
-                       __LINE__, __VA_ARGS__)
-#define SKIP_UNSUPPORTED_HARDWARE(...)                                      \
-  ::slopfab::test::skip(::slopfab::test::SkipReason::kUnsupportedHardware,     \
-                       __FILE__, __LINE__, __VA_ARGS__)
-#define SKIP_OPT_IN(...) \
-  ::slopfab::test::skip(::slopfab::test::SkipReason::kOptInDisabled, __FILE__, __LINE__, __VA_ARGS__)
+#define SKIP_MISSING_FIXTURE(...)                                                                  \
+  ::slopfab::test::skip(::slopfab::test::SkipReason::kMissingFixture, __FILE__, __LINE__,          \
+                        __VA_ARGS__)
+#define SKIP_INSUFFICIENT_VRAM(...)                                                                \
+  ::slopfab::test::skip(::slopfab::test::SkipReason::kInsufficientVram, __FILE__, __LINE__,        \
+                        __VA_ARGS__)
+#define SKIP_UNSUPPORTED_HARDWARE(...)                                                             \
+  ::slopfab::test::skip(::slopfab::test::SkipReason::kUnsupportedHardware, __FILE__, __LINE__,     \
+                        __VA_ARGS__)
+#define SKIP_OPT_IN(...)                                                                           \
+  ::slopfab::test::skip(::slopfab::test::SkipReason::kOptInDisabled, __FILE__, __LINE__,           \
+                        __VA_ARGS__)
 
 // Names the case currently running, for files that register their functions
 // separately rather than through SLOPFAB_TEST.
 #define TEST(name) ::slopfab::test::set_current(name)
 
 // Defines and registers a test case in one go.
-#define SLOPFAB_TEST_CATEGORY(name, category)                                           \
-  static void slopfab_test_##name();                                                    \
-  static const bool slopfab_test_##name##_registered =                                  \
-      ::slopfab::test::register_test(#name, &slopfab_test_##name, category);              \
+#define SLOPFAB_TEST_CATEGORY(name, category)                                                      \
+  static void slopfab_test_##name();                                                               \
+  static const bool slopfab_test_##name##_registered =                                             \
+      ::slopfab::test::register_test(#name, &slopfab_test_##name, category);                       \
   static void slopfab_test_##name()
 
 #define SLOPFAB_TEST(name) SLOPFAB_TEST_CATEGORY(name, "synthetic")

@@ -52,7 +52,8 @@ slopfab::vae::ViTConfig tiny_config() {
 void add(std::vector<slopfab::TensorWrite>* out, const std::string& name,
          std::vector<int64_t> shape, uint32_t seed) {
   size_t n = 1;
-  for (int64_t d : shape) n *= static_cast<size_t>(d);
+  for (int64_t d : shape)
+    n *= static_cast<size_t>(d);
   // Small weights: one transformer block at fp16 amplifies, and a decoder that
   // saturates to inf would compare equal to itself for the wrong reason.
   out->push_back({name, std::move(shape), slopfab::test::make_data(n, seed, 0.05f)});
@@ -107,13 +108,15 @@ size_t window_pixels(const slopfab::vae::ViTConfig& cfg, int T, int H, int W) {
 bool all_finite_and_not_all_zero(const std::vector<float>& v) {
   bool nonzero = false;
   for (float x : v) {
-    if (!(x == x) || x > 1e30f || x < -1e30f) return false;
-    if (x != 0.0f) nonzero = true;
+    if (!(x == x) || x > 1e30f || x < -1e30f)
+      return false;
+    if (x != 0.0f)
+      nonzero = true;
   }
   return nonzero;
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(vit_decoder_window_lands_in_the_callers_buffer) {
   // Establish up front whether this machine can page-lock an ordinary heap
@@ -152,19 +155,22 @@ SLOPFAB_TEST(vit_decoder_window_lands_in_the_callers_buffer) {
   const size_t voxels = static_cast<size_t>(T) * H * W;
   const std::vector<float> z =
       slopfab::test::make_data(static_cast<size_t>(batch) * cfg.in_channels * voxels, 991, 1.0f);
-  const std::vector<float> z_small =
-      slopfab::test::make_data(static_cast<size_t>(batch) * cfg.in_channels * (voxels / 2), 991,
-                              1.0f);
+  const std::vector<float> z_small = slopfab::test::make_data(
+      static_cast<size_t>(batch) * cfg.in_channels * (voxels / 2), 991, 1.0f);
   const size_t slots[2] = {0, 1};
   const size_t pixels = window_pixels(cfg, T, H, W);
 
   std::vector<std::vector<float>> out(batch);
   std::vector<std::vector<float>> grown(batch);
+
   // Declared after both buffers so it runs before they are destroyed: a lock
   // must never outlive the memory it covers, including on a throwing path.
   struct Guard {
     slopfab::vae::ViTDecoder* decoder;
-    ~Guard() { decoder->release_host_registrations(); }
+
+    ~Guard() {
+      decoder->release_host_registrations();
+    }
   } guard{&decoder};
 
   // (a) fresh, empty slots: the resize allocates and the registration is new.
@@ -172,7 +178,7 @@ SLOPFAB_TEST(vit_decoder_window_lands_in_the_callers_buffer) {
   CHECK(out[0].size() == pixels && out[1].size() == pixels);
   CHECK(all_finite_and_not_all_zero(out[0]));
   CHECK(all_finite_and_not_all_zero(out[1]));
-  CHECK(out[0] != out[1]);  // two documents, two different latents
+  CHECK(out[0] != out[1]); // two documents, two different latents
   const std::vector<float> ref0 = out[0];
   const std::vector<float> ref1 = out[1];
 
@@ -235,7 +241,8 @@ SLOPFAB_TEST(vit_decoder_single_window_releases_its_lock) {
       cudaHostRegister(single.data(), single.size() * sizeof(float), cudaHostRegisterDefault);
   CHECK_MSG(rc != cudaErrorHostMemoryAlreadyRegistered,
             "forward_window left its output buffer page-locked");
-  if (rc == cudaSuccess) cudaHostUnregister(single.data());
+  if (rc == cudaSuccess)
+    cudaHostUnregister(single.data());
   cudaGetLastError();
 
   // A batched call against the same latent must agree with the single-window
@@ -261,12 +268,12 @@ SLOPFAB_TEST(vit_decoder_single_window_releases_its_lock) {
     } catch (const std::runtime_error&) {
       // The guard has run; `unwound` is still alive and must be unlocked.
     }
-    const cudaError_t rc2 = cudaHostRegister(unwound[0].data(),
-                                             unwound[0].size() * sizeof(float),
+    const cudaError_t rc2 = cudaHostRegister(unwound[0].data(), unwound[0].size() * sizeof(float),
                                              cudaHostRegisterDefault);
     CHECK_MSG(rc2 != cudaErrorHostMemoryAlreadyRegistered,
               "an unwind left the output buffer page-locked");
-    if (rc2 == cudaSuccess) cudaHostUnregister(unwound[0].data());
+    if (rc2 == cudaSuccess)
+      cudaHostUnregister(unwound[0].data());
     cudaGetLastError();
   }
 

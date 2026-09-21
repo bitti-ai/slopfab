@@ -3,7 +3,8 @@
 SLOPFAB_TEST_CATEGORY(transformer_row_chunks_match_full_rows, "synthetic") {
   const TransformerConfig cfg = tiny_config();
   const std::string path = write_synthetic(build_synthetic(cfg));
-  slopfab::SafeTensors st; st.open(path);
+  slopfab::SafeTensors st;
+  st.open(path);
   const Case c = make_case(cfg, 259, 0.31f);
   auto run = [&](int chunk) {
     Transformer model;
@@ -13,7 +14,8 @@ SLOPFAB_TEST_CATEGORY(transformer_row_chunks_match_full_rows, "synthetic") {
     model.prepare_sequence(c.layout, c.idx, c.pos);
     std::vector<float> video(c.video_rows.size()), audio(c.audio_rows.size());
     model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt, video.data(), audio.data());
-    CHECK(all_finite(video)); CHECK(all_finite(audio));
+    CHECK(all_finite(video));
+    CHECK(all_finite(audio));
     video.insert(video.end(), audio.begin(), audio.end());
     return video;
   };
@@ -27,11 +29,13 @@ SLOPFAB_TEST_CATEGORY(transformer_row_chunks_match_full_rows, "synthetic") {
 SLOPFAB_TEST_CATEGORY(transformer_query_chunks_match_full_attention, "synthetic") {
   const auto cfg = tiny_config();
   const std::string path = write_synthetic(build_synthetic(cfg));
-  slopfab::SafeTensors st; st.open(path);
+  slopfab::SafeTensors st;
+  st.open(path);
   const Case c = make_case(cfg, 259, 0.31f);
   for (int band : {0, 1}) {
     auto run = [&](bool compact) {
-      Transformer model; model.load(st, cfg);
+      Transformer model;
+      model.load(st, cfg);
       model.set_row_chunk(128);
       model.set_query_chunking(compact);
       model.set_attention_band(band);
@@ -49,7 +53,8 @@ SLOPFAB_TEST_CATEGORY(transformer_query_chunks_match_full_attention, "synthetic"
   }
   // A long conditioning stream must not retain its workspace into a smaller
   // following sequence. Both preparatory stages have completed here.
-  Transformer reuse; reuse.load(st, cfg);
+  Transformer reuse;
+  reuse.load(st, cfg);
   reuse.set_row_chunk(128);
   reuse.prepare_text(c.prompt.data(), c.layout.num_text);
   const size_t text_bytes = reuse.workspace_bytes();
@@ -57,7 +62,8 @@ SLOPFAB_TEST_CATEGORY(transformer_query_chunks_match_full_attention, "synthetic"
   reuse.prepare_text(small.prompt.data(), small.layout.num_text);
   reuse.prepare_sequence(small.layout, small.idx, small.pos);
   CHECK(reuse.workspace_bytes() < text_bytes);
-  st.close(); std::filesystem::remove(path);
+  st.close();
+  std::filesystem::remove(path);
 }
 
 SLOPFAB_TEST_CATEGORY(transformer_query_chunk_memory_plan, "synthetic") {
@@ -112,16 +118,16 @@ SLOPFAB_TEST_CATEGORY(transformer_refiner_bisect, "synthetic") {
         RefBlock blk{"token_refiner.blocks." + std::to_string(i) + ".", false};
         run_block_halves(tensors, cfg, blk, text, L, want);
       }
-      std::vector<float> normed =
-          rmsnorm(text, at(tensors, "token_refiner.final_norm.weight"), L, cfg.hidden_size,
-                  cfg.norm_eps);
+      std::vector<float> normed = rmsnorm(text, at(tensors, "token_refiner.final_norm.weight"), L,
+                                          cfg.hidden_size, cfg.norm_eps);
       round_bf16(normed);
       want.emplace_back("final_norm", normed);
     }
 
     CHECK_MSG(got.size() == want.size(), "L=%d: %zu GPU stages vs %zu reference stages", L,
               got.size(), want.size());
-    if (got.size() != want.size()) continue;
+    if (got.size() != want.size())
+      continue;
 
     std::printf("  L=%d stage bisect:\n", L);
     for (size_t i = 0; i < got.size(); ++i) {
@@ -156,10 +162,10 @@ SLOPFAB_TEST_CATEGORY(transformer_exact_attention_routes_refiner_and_main_blocks
   c.layout.num_video_rows = c.layout.num_latent_frames * c.layout.rows_per_frame();
   c.idx = slopfab::dit::build_indices(c.layout);
   c.pos = slopfab::dit::build_position_ids(c.layout);
-  c.video_rows = make_data(
-      c.idx.video.size() * static_cast<size_t>(cfg.video_patch_dim()), 9002, 1.0f);
-  c.audio_rows = make_data(
-      c.idx.audio.size() * static_cast<size_t>(cfg.audio_in_channels), 9003, 1.0f);
+  c.video_rows =
+      make_data(c.idx.video.size() * static_cast<size_t>(cfg.video_patch_dim()), 9002, 1.0f);
+  c.audio_rows =
+      make_data(c.idx.audio.size() * static_cast<size_t>(cfg.audio_in_channels), 9003, 1.0f);
   c.rt = slopfab::dit::build_row_timesteps(c.layout, c.idx, 0.62f, 0.31f);
 
   // A failed preparation must not lock a half-recorded mode into the object.
@@ -197,7 +203,8 @@ SLOPFAB_TEST_CATEGORY(transformer_exact_attention_routes_refiner_and_main_blocks
     const std::vector<Transformer::DebugStage> refiner =
         model.debug_text_stages(c.prompt.data(), c.layout.num_text);
     CHECK(refiner.size() == static_cast<size_t>(2 * cfg.num_refiner_layers + 2));
-    for (const Transformer::DebugStage& stage : refiner) CHECK(all_finite(stage.data));
+    for (const Transformer::DebugStage& stage : refiner)
+      CHECK(all_finite(stage.data));
 
     // Preparation locks the arithmetic and range-table contract. Repeating
     // the selected values is harmless; changing either is rejected rather
@@ -222,8 +229,7 @@ SLOPFAB_TEST_CATEGORY(transformer_exact_attention_routes_refiner_and_main_blocks
     model.prepare_sequence(c.layout, c.idx, c.pos);
     std::vector<float> video(c.video_rows.size());
     std::vector<float> audio(c.audio_rows.size());
-    model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt,
-                  video.data(), audio.data());
+    model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt, video.data(), audio.data());
     CHECK(all_finite(video));
     CHECK(all_finite(audio));
     Evidence out;
@@ -317,8 +323,8 @@ SLOPFAB_TEST_CATEGORY(transformer_forward_vs_cpu_reference, "synthetic") {
     model.forward(c.video_rows.data(), c.audio_rows.data(), c.rt, video_velocity.data(),
                   audio_velocity.data());
 
-    const RefOutputs want = reference_forward(tensors, table, cfg, c.layout, c.idx, c.pos,
-                                              c.prompt, c.video_rows, c.audio_rows, c.rt);
+    const RefOutputs want = reference_forward(tensors, table, cfg, c.layout, c.idx, c.pos, c.prompt,
+                                              c.video_rows, c.audio_rows, c.rt);
     CHECK(want.video.size() == video_velocity.size());
     CHECK(want.audio.size() == audio_velocity.size());
     CHECK(all_finite(video_velocity));
@@ -328,13 +334,13 @@ SLOPFAB_TEST_CATEGORY(transformer_forward_vs_cpu_reference, "synthetic") {
     // `prepare_text` smears a couple of percent over every video row and
     // localises nowhere. Check the cache directly, where it is exact.
     if (c.layout.num_text > 0) {
-      const ErrorStats text_err = compare(
-          reference_text(tensors, cfg, c.prompt, c.layout.num_text), model.debug_text_cache());
+      const ErrorStats text_err = compare(reference_text(tensors, cfg, c.prompt, c.layout.num_text),
+                                          model.debug_text_cache());
       std::printf("  L=%d refiner: %zu/%zu elements differ (%.4f%%), %zu beyond one bf16 ULP, "
                   "max %.3e, signed mean %+.3e\n",
                   c.layout.num_text, text_err.differing, text_err.count,
-                  100.0 * text_err.differing_fraction(), text_err.beyond_one_ulp,
-                  text_err.max_abs, text_err.signed_mean);
+                  100.0 * text_err.differing_fraction(), text_err.beyond_one_ulp, text_err.max_abs,
+                  text_err.signed_mean);
       // Bit-exactness is not available here and demanding it would be a bug in
       // the test, not in the model: the CPU reference accumulates its 5120-term
       // dot products in double while cuBLAS accumulates in fp32, so a result
@@ -440,8 +446,8 @@ SLOPFAB_TEST_CATEGORY(transformer_forward_vs_cpu_reference, "synthetic") {
   // tolerance above, not marginally past it.
   {
     const Case c = make_case(cfg, 5, 0.31f);
-    const RefOutputs want = reference_forward(tensors, table, cfg, c.layout, c.idx, c.pos,
-                                              c.prompt, c.video_rows, c.audio_rows, c.rt);
+    const RefOutputs want = reference_forward(tensors, table, cfg, c.layout, c.idx, c.pos, c.prompt,
+                                              c.video_rows, c.audio_rows, c.rt);
     Tensors mutated = tensors;
     const int hidden = cfg.hidden_size;
     for (int b = 0; b < cfg.num_layers; ++b) {

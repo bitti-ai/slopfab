@@ -10,7 +10,7 @@
 namespace {
 
 class StillBackend final : public slopfab::vae::VideoVaeWindowBackend {
- public:
+public:
   StillBackend() {
     config_.in_channels = 1;
     config_.out_channels = 3;
@@ -18,11 +18,12 @@ class StillBackend final : public slopfab::vae::VideoVaeWindowBackend {
     config_.patch_t = 4;
   }
 
-  const slopfab::vae::ViTConfig& config() const override { return config_; }
+  const slopfab::vae::ViTConfig& config() const override {
+    return config_;
+  }
 
   void forward_windows(const float* z, int batch, int T, int H, int W,
-                       std::vector<std::vector<float>>& out,
-                       const size_t* slots) override {
+                       std::vector<std::vector<float>>& out, const size_t* slots) override {
     ++calls;
     seen_t = T;
     first_latent = z[0];
@@ -35,29 +36,30 @@ class StillBackend final : public slopfab::vae::VideoVaeWindowBackend {
       std::vector<float>& dst = out[slots[static_cast<size_t>(b)]];
       dst.resize(static_cast<size_t>(planes) * plane_pixels);
       for (int p = 0; p < planes; ++p) {
-        const float value = static_cast<float>(p - 6) * 0.01f +
+        const float value =
+            static_cast<float>(p - 6) * 0.01f +
             (spatial_values ? static_cast<float>(slots[b]) * 0.1f + calls * 0.02f : 0.0f);
-        std::fill_n(dst.data() + static_cast<size_t>(p) * plane_pixels,
-                    plane_pixels, value);
+        std::fill_n(dst.data() + static_cast<size_t>(p) * plane_pixels, plane_pixels, value);
       }
     }
   }
 
-  void denormalize_latents(const float* normalized, int channels,
-                           uint64_t voxels, const std::vector<float>& mean,
-                           const std::vector<float>& std_dev,
+  void denormalize_latents(const float* normalized, int channels, uint64_t voxels,
+                           const std::vector<float>& mean, const std::vector<float>& std_dev,
                            std::vector<float>& output) override {
     output.resize(static_cast<size_t>(channels) * voxels);
     for (int c = 0; c < channels; ++c) {
       for (uint64_t i = 0; i < voxels; ++i) {
         const size_t at = static_cast<size_t>(c) * voxels + static_cast<size_t>(i);
-        output[at] = normalized[at] * std_dev[static_cast<size_t>(c)] +
-                     mean[static_cast<size_t>(c)];
+        output[at] =
+            normalized[at] * std_dev[static_cast<size_t>(c)] + mean[static_cast<size_t>(c)];
       }
     }
   }
 
-  void release_host_registrations() override { released = true; }
+  void release_host_registrations() override {
+    released = true;
+  }
 
   slopfab::vae::ViTConfig config_;
   int calls = 0;
@@ -68,7 +70,7 @@ class StillBackend final : public slopfab::vae::VideoVaeWindowBackend {
   bool spatial_values = false;
 };
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(still_decode_uses_seven_tokens_and_first_retained_phase) {
   StillBackend backend;
@@ -78,8 +80,8 @@ SLOPFAB_TEST(still_decode_uses_seven_tokens_and_first_retained_phase) {
   const int h = 2, w = 3;
   std::vector<float> latent(static_cast<size_t>(h) * w, 0.25f);
 
-  const slopfab::vae::DecodedVideo image = slopfab::vae::decode_still_image(
-      backend, latent.data(), h, w, {1.0f}, {2.0f}, schedule);
+  const slopfab::vae::DecodedVideo image =
+      slopfab::vae::decode_still_image(backend, latent.data(), h, w, {1.0f}, {2.0f}, schedule);
 
   CHECK(backend.calls == 1);
   CHECK(backend.seen_t == 7);
@@ -93,8 +95,8 @@ SLOPFAB_TEST(still_decode_uses_seven_tokens_and_first_retained_phase) {
 
   const float expected[3] = {
       -0.03f * 0.229f + 0.485f,
-       0.25f * 0.224f + 0.456f,
-       0.53f * 0.225f + 0.406f,
+      0.25f * 0.224f + 0.456f,
+      0.53f * 0.225f + 0.406f,
   };
   const size_t plane = static_cast<size_t>(image.height) * image.width;
   for (int c = 0; c < 3; ++c) {
@@ -113,8 +115,8 @@ SLOPFAB_TEST(still_decode_repeats_spatial_tiles_in_channel_time_order) {
   const std::vector<float> latent = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
   const std::vector<float> mean = {1, -2};
   const std::vector<float> stddev = {2, 3};
-  const auto image = slopfab::vae::decode_still_image(
-      backend, latent.data(), 2, 3, mean, stddev, schedule);
+  const auto image =
+      slopfab::vae::decode_still_image(backend, latent.data(), 2, 3, mean, stddev, schedule);
   CHECK(image.frames == 1);
   CHECK(backend.seen_t == 7);
   CHECK(backend.seen_latents.size() == 2 * 2 * 7 * 2 * 2);
@@ -140,8 +142,7 @@ SLOPFAB_TEST(still_decode_rejects_an_invalid_phase_contract) {
   const std::vector<float> latent(4, 0.0f);
   bool rejected = false;
   try {
-    (void)slopfab::vae::decode_still_image(backend, latent.data(), 2, 2,
-                                          {0.0f}, {1.0f}, schedule);
+    (void)slopfab::vae::decode_still_image(backend, latent.data(), 2, 2, {0.0f}, {1.0f}, schedule);
   } catch (...) {
     rejected = true;
   }
@@ -157,8 +158,8 @@ SLOPFAB_TEST(decode_composes_diagonals_before_temporal_crossfade) {
   const std::vector<float> latent(12 * 6 * 6, 0.0f);
   StillBackend backend;
   backend.spatial_values = true;
-  const auto image = slopfab::vae::decode_still_image(
-      backend, latent.data(), 6, 6, {0.0f}, {1.0f}, schedule);
+  const auto image =
+      slopfab::vae::decode_still_image(backend, latent.data(), 6, 6, {0.0f}, {1.0f}, schedule);
   CHECK(backend.calls == 1 && backend.seen_t == 7 && backend.released);
   // Four tile constants at the overlap midpoint have equal weight. The old
   // above/left merge yielded 0.2 here instead of the correct 0.15.
@@ -168,8 +169,8 @@ SLOPFAB_TEST(decode_composes_diagonals_before_temporal_crossfade) {
   }
   backend.calls = 0;
   backend.released = false;
-  const auto video = slopfab::vae::decode_video(
-      backend, latent.data(), 12, 6, 6, {0.0f}, {1.0f}, schedule);
+  const auto video =
+      slopfab::vae::decode_video(backend, latent.data(), 12, 6, 6, {0.0f}, {1.0f}, schedule);
   CHECK(video.frames == 39 && video.height == 12 && video.width == 12);
   CHECK(backend.calls == 2 && backend.seen_t == 7 && backend.released);
   for (int c = 0; c < 3; ++c) {
@@ -187,8 +188,7 @@ SLOPFAB_TEST(decode_composes_diagonals_before_temporal_crossfade) {
         temporal = (c * 28 + phase - 6) * 0.01f + 0.04f;
       }
       const size_t plane = (static_cast<size_t>(c) * video.frames + f) * 144;
-      CHECK_NEAR(video.data[plane + 6 * 12 + 6],
-                 (temporal + 0.15f) * stddev[c] + mean[c], 2e-7);
+      CHECK_NEAR(video.data[plane + 6 * 12 + 6], (temporal + 0.15f) * stddev[c] + mean[c], 2e-7);
       CHECK_NEAR(video.data[plane], temporal * stddev[c] + mean[c], 2e-7);
       CHECK_NEAR(video.data[plane + 143], (temporal + 0.3f) * stddev[c] + mean[c], 2e-7);
     }

@@ -36,7 +36,8 @@ SLOPFAB_TEST_CATEGORY(encoder_real_checkpoint_convrot_cross_check, "checkpoint")
     for (int i = 0; i < in_features; ++i) {
       amax = std::max(amax, std::abs(int(w_host[size_t(o) * in_features + i])));
     }
-    if (amax == 127) ++rows_at_127;
+    if (amax == 127)
+      ++rows_at_127;
   }
   CHECK_MSG(rows_at_127 == out_features, "%d of %d int8 rows reach 127", rows_at_127, out_features);
 
@@ -67,8 +68,9 @@ SLOPFAB_TEST_CATEGORY(encoder_real_checkpoint_convrot_cross_check, "checkpoint")
   BfBuf w_dequant(size_t(out_features) * in_features);
   BfBuf w_plain(size_t(out_features) * in_features);
   slopfab::cuda::launch_dequant_i8_per_channel(dw.get(), dscale.get(), w_dequant.p(), out_features,
-                                              in_features, nullptr);
-  slopfab::cuda::launch_convrot(w_dequant.p(), w_plain.p(), out_features, in_features, 256, nullptr);
+                                               in_features, nullptr);
+  slopfab::cuda::launch_convrot(w_dequant.p(), w_plain.p(), out_features, in_features, 256,
+                                nullptr);
 
   QuantWeight qb;
   qb.format = QuantFormat::kBF16;
@@ -90,8 +92,7 @@ SLOPFAB_TEST_CATEGORY(encoder_real_checkpoint_convrot_cross_check, "checkpoint")
   // Path (b) rounds the de-rotated weight to bf16, which redistributes the int8
   // quantisation noise; the two are not bitwise identical by construction
   // (spec section 5.4).
-  CHECK_MSG(err < 3e-2,
-            "ConvRot cross-check on real weights: worst error %.3e of output RMS", err);
+  CHECK_MSG(err < 3e-2, "ConvRot cross-check on real weights: worst error %.3e of output RMS", err);
 
   // The measured k_norm extreme from spec section 4.1, which is why attention
   // scores need fp32 accumulation. Corruption would look the same.

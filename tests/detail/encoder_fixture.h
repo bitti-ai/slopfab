@@ -42,7 +42,6 @@
 #include "slopfab/text/encoder.h"
 #include "slopfab/text/tokenizer.h"
 
-
 namespace {
 
 using slopfab::cuda::DeviceBuffer;
@@ -56,33 +55,46 @@ using slopfab::test::make_data;
 struct BfBuf {
   DeviceBuffer<uint16_t> raw;
 
-  explicit BfBuf(size_t n) : raw(n) {}
+  explicit BfBuf(size_t n) : raw(n) {
+  }
+
   explicit BfBuf(const std::vector<float>& host) : raw(host.size()) {
     std::vector<uint16_t> bits(host.size());
-    for (size_t i = 0; i < host.size(); ++i) bits[i] = slopfab::f32_to_bf16(host[i]);
+    for (size_t i = 0; i < host.size(); ++i)
+      bits[i] = slopfab::f32_to_bf16(host[i]);
     raw.copy_from_host(bits.data(), bits.size());
   }
 
-  __nv_bfloat16* p() { return reinterpret_cast<__nv_bfloat16*>(raw.get()); }
+  __nv_bfloat16* p() {
+    return reinterpret_cast<__nv_bfloat16*>(raw.get());
+  }
 
   std::vector<float> host() const {
     std::vector<uint16_t> b(raw.size());
     raw.copy_to_host(b.data(), b.size());
     std::vector<float> out(b.size());
-    for (size_t i = 0; i < b.size(); ++i) out[i] = slopfab::bf16_to_f32(b[i]);
+    for (size_t i = 0; i < b.size(); ++i)
+      out[i] = slopfab::bf16_to_f32(b[i]);
     return out;
   }
 };
 
 struct CublasScope {
   cublasHandle_t h = nullptr;
-  CublasScope() { SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&h)); }
-  ~CublasScope() { slopfab::cuda::cublas_destroy(h); }
+
+  CublasScope() {
+    SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&h));
+  }
+
+  ~CublasScope() {
+    slopfab::cuda::cublas_destroy(h);
+  }
 };
 
 std::vector<float> bf16_round(const std::vector<float>& v) {
   std::vector<float> out(v.size());
-  for (size_t i = 0; i < v.size(); ++i) out[i] = slopfab::bf16_to_f32(slopfab::f32_to_bf16(v[i]));
+  for (size_t i = 0; i < v.size(); ++i)
+    out[i] = slopfab::bf16_to_f32(slopfab::f32_to_bf16(v[i]));
   return out;
 }
 
@@ -94,13 +106,15 @@ DeviceBuffer<float> to_device(const std::vector<float>& host) {
 
 double max_abs_diff(const std::vector<float>& a, const std::vector<float>& b) {
   double worst = 0.0;
-  for (size_t i = 0; i < a.size(); ++i) worst = std::max(worst, std::fabs(double(a[i]) - b[i]));
+  for (size_t i = 0; i < a.size(); ++i)
+    worst = std::max(worst, std::fabs(double(a[i]) - b[i]));
   return worst;
 }
 
 double rms(const std::vector<float>& v) {
   double acc = 0.0;
-  for (float x : v) acc += double(x) * x;
+  for (float x : v)
+    acc += double(x) * x;
   return std::sqrt(acc / std::max<size_t>(1, v.size()));
 }
 
@@ -123,7 +137,8 @@ double rms_relative_error(const std::vector<float>& want, const std::vector<floa
 // from "the whole tensor is wrong".
 double rms_error_ratio(const std::vector<float>& want, const std::vector<float>& got) {
   std::vector<float> diff(want.size());
-  for (size_t i = 0; i < want.size(); ++i) diff[i] = want[i] - got[i];
+  for (size_t i = 0; i < want.size(); ++i)
+    diff[i] = want[i] - got[i];
   return rms(diff) / std::max(1e-30, rms(want));
 }
 
@@ -132,7 +147,8 @@ double rms_error_ratio(const std::vector<float>& want, const std::vector<float>&
 std::string find_relative(const std::string& suffix) {
   for (const char* prefix : {"", "../", "../../", "../../../", "../../../../"}) {
     const std::string p = std::string(prefix) + suffix;
-    if (std::filesystem::exists(p)) return p;
+    if (std::filesystem::exists(p))
+      return p;
   }
   return {};
 }
@@ -173,7 +189,8 @@ std::vector<int32_t> prompt_ids() {
   if (tok.empty()) {
     std::printf("  ref/ tokenizer.json not present; using synthetic token ids\n");
     std::vector<int32_t> ids;
-    for (int i = 0; i < 200; ++i) ids.push_back(1000 + i);
+    for (int i = 0; i < 200; ++i)
+      ids.push_back(1000 + i);
     return ids;
   }
   slopfab::text::Tokenizer tokenizer;
@@ -212,7 +229,8 @@ std::vector<float> cpu_rmsnorm(const std::vector<float>& x, const std::vector<fl
       sum_sq += v * v;
     }
     const double inv = 1.0 / std::sqrt(sum_sq / dim + eps);
-    for (int i = 0; i < dim; ++i) out[size_t(r) * dim + i] = float(x[size_t(r) * dim + i] * inv * w[i]);
+    for (int i = 0; i < dim; ++i)
+      out[size_t(r) * dim + i] = float(x[size_t(r) * dim + i] * inv * w[i]);
   }
   return out;
 }
@@ -223,7 +241,8 @@ std::vector<float> cpu_matmul_nt(const std::vector<float>& A, const std::vector<
   for (int m = 0; m < M; ++m) {
     for (int n = 0; n < N; ++n) {
       double acc = 0.0;
-      for (int k = 0; k < K; ++k) acc += double(A[size_t(m) * K + k]) * B[size_t(n) * K + k];
+      for (int k = 0; k < K; ++k)
+        acc += double(A[size_t(m) * K + k]) * B[size_t(n) * K + k];
       C[size_t(m) * N + n] = float(acc);
     }
   }
@@ -288,7 +307,8 @@ std::vector<float> cpu_attention(const std::vector<float>& q, const std::vector<
       }
       for (int d = 0; d < head_dim; ++d) {
         double acc = 0.0;
-        for (int j = 0; j <= last; ++j) acc += p[j] * v[size_t(j) * kvld + kv * head_dim + d];
+        for (int j = 0; j <= last; ++j)
+          acc += p[j] * v[size_t(j) * kvld + kv * head_dim + d];
         out[size_t(i) * qld + h * head_dim + d] = float(acc / sum);
       }
     }
@@ -312,7 +332,8 @@ std::vector<float> hadamard(int size) {
       for (int j = 0; j < 4; ++j) {
         for (int r = 0; r < n; ++r) {
           for (int c = 0; c < n; ++c) {
-            next[size_t(i * n + r) * (n * 4) + (j * n + c)] = float(h4[i][j]) * m[size_t(r) * n + c];
+            next[size_t(i * n + r) * (n * 4) + (j * n + c)] =
+                float(h4[i][j]) * m[size_t(r) * n + c];
           }
         }
       }
@@ -321,7 +342,8 @@ std::vector<float> hadamard(int size) {
     n *= 4;
   }
   const float norm = 1.0f / std::sqrt(float(size));
-  for (float& v : m) v *= norm;
+  for (float& v : m)
+    v *= norm;
   return m;
 }
 
@@ -336,7 +358,8 @@ std::vector<float> rotate_rows(const std::vector<float>& x, int rows, int dim, i
       const size_t base = size_t(r) * dim + size_t(b) * group;
       for (int c = 0; c < group; ++c) {
         double acc = 0.0;
-        for (int i = 0; i < group; ++i) acc += double(x[base + i]) * H[size_t(i) * group + c];
+        for (int i = 0; i < group; ++i)
+          acc += double(x[base + i]) * H[size_t(i) * group + c];
         out[base + c] = float(acc);
       }
     }
@@ -344,7 +367,9 @@ std::vector<float> rotate_rows(const std::vector<float>& x, int rows, int dim, i
   return out;
 }
 
-float silu(float z) { return z / (1.0f + std::exp(-z)); }
+float silu(float z) {
+  return z / (1.0f + std::exp(-z));
+}
 
 // --- tests ------------------------------------------------------------------
 
@@ -415,7 +440,8 @@ EncodeRun run_encoder(const slopfab::SafeTensors& st, slopfab::text::Residency m
 void check_residual_stream_shape(const slopfab::text::PromptEmbedding& e, const char* label) {
   size_t nonfinite = 0;
   for (float v : e.data) {
-    if (!std::isfinite(v)) ++nonfinite;
+    if (!std::isfinite(v))
+      ++nonfinite;
   }
   CHECK_MSG(nonfinite == 0, "%s: %zu of %zu output values are not finite", label, nonfinite,
             e.data.size());
@@ -425,8 +451,7 @@ void check_residual_stream_shape(const slopfab::text::PromptEmbedding& e, const 
   const double hi = *std::max_element(rms_rows.begin(), rms_rows.end());
   std::printf(
       "  %s: row RMS first %.1f, min %.2f, max %.2f, spread %.1fx (L2 of the last row %.1f)\n",
-      label, rms_rows.front(), lo, hi, hi / lo,
-      rms_rows.back() * std::sqrt(double(e.hidden_size)));
+      label, rms_rows.front(), lo, hi, hi / lo, rms_rows.back() * std::sqrt(double(e.hidden_size)));
 
   // An RMSNorm divides every row by its own scale, so a normalised stream has a
   // nearly constant row RMS. A raw residual does not, and the spread is the
@@ -448,4 +473,4 @@ void check_residual_stream_shape(const slopfab::text::PromptEmbedding& e, const 
             label, rms_rows.front(), others_max);
 }
 
-}  // namespace
+} // namespace

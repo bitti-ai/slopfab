@@ -26,7 +26,6 @@ namespace {
 // question is whether that was intended. If it was, re-derive the table the same
 // way rather than pasting whatever the new build prints.
 
-
 // head_dim 64 is the other instantiation `supported()` accepts, and until this
 // existed nothing exercised it -- every fused test above is 128-wide. The two
 // differ in more than a constant: the staging tiles the key block into 2 passes
@@ -34,7 +33,6 @@ namespace {
 // than of a 128-wide one, so a mapping that covers D=128 exactly can still
 // double-write or skip columns at D=64. A ragged sequence checks that against
 // the tail at the same time.
-
 
 // Dense attention restricted to an explicit key set, for frame banding.
 //
@@ -75,8 +73,10 @@ std::vector<float> cpu_attention_banded(const std::vector<float>& q, const std::
         m = std::max(m, s);
         p.emplace_back(j, s);
       };
-      for (int j = lo0; j < hi0; ++j) score(j);
-      for (int j = lo1; j < hi1; ++j) score(j);
+      for (int j = lo0; j < hi0; ++j)
+        score(j);
+      for (int j = lo1; j < hi1; ++j)
+        score(j);
 
       double sum = 0.0;
       for (auto& e : p) {
@@ -103,7 +103,6 @@ std::vector<float> cpu_attention_banded(const std::vector<float>& q, const std::
 // which is the last thing anyone questions. The band edges here are chosen so
 // the rounding is live: R = 42 rows per frame against a 64-row key block, so no
 // frame boundary lands on a block boundary and every range is rounded outwards.
-
 
 // The fused kernel's probability precision is pinned by nothing else in this
 // file, and that is a hole rather than an oversight of one change.
@@ -148,11 +147,9 @@ std::vector<float> cpu_attention_banded(const std::vector<float>& q, const std::
 // strong: the *measurement* separates them cleanly, 1.31x against 1.01x. Both
 // comments are left standing because they are about different things.
 
-
 // Grouped-query: 6 query heads share 2 kv heads. Getting the kv head index wrong
 // still produces finite, plausibly-scaled output, so it is pinned against the
 // CPU reference rather than against a shape check.
-
 
 // The score tile is fp16 and doubles as the probability buffer. Two things have
 // to hold and neither is visible from the shapes above, where the tile budget
@@ -166,5 +163,4 @@ std::vector<float> cpu_attention_banded(const std::vector<float>& q, const std::
 //     future format change has a number to beat rather than an assertion to
 //     satisfy.
 
-
-}  // namespace
+} // namespace

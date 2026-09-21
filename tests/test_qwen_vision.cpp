@@ -31,7 +31,9 @@ SLOPFAB_TEST(qwen_vision_smart_resize_and_merge) {
   CHECK(small.height == 12);
   CHECK(small.width == 24);
   CHECK(small.merged_token_count() == 72);
-  CHECK(::slopfab::test::throws([] { (void)qwen3vl_image_grid(201, 1); }));
+  CHECK(::slopfab::test::throws([] {
+    (void)qwen3vl_image_grid(201, 1);
+  }));
 }
 
 SLOPFAB_TEST(qwen_reference_conditioning_grid_is_bounded) {
@@ -55,8 +57,7 @@ SLOPFAB_TEST(qwen_reference_conditioning_grid_is_bounded) {
   CHECK(qwen3vl_conditioning_token_count({wide}, 4094) == 8192);
   CHECK(qwen3vl_conditioning_token_count({wide}, 4095) == 8193);
   CHECK(qwen3vl_conditioning_token_count({wide, wide}, 0) == 8196);
-  CHECK(qwen3vl_conditioning_token_count({wide}, kMaxPromptTokens - 4098) ==
-        kMaxPromptTokens);
+  CHECK(qwen3vl_conditioning_token_count({wide}, kMaxPromptTokens - 4098) == kMaxPromptTokens);
   CHECK(::slopfab::test::throws([] {
     const auto grid = qwen3vl_conditioning_grid(8192, 2048);
     (void)qwen3vl_conditioning_token_count({grid}, kMaxPromptTokens - 4097);
@@ -126,8 +127,8 @@ SLOPFAB_TEST(qwen_vision_decoder_mrope_and_scatter_rows) {
   CHECK(p.position_ids[4] == 2 && p.position_ids[L + 4] == 3 && p.position_ids[2 * L + 4] == 2);
   CHECK(p.position_ids[6] == 4 && p.position_ids[7] == 5);
   CHECK(::slopfab::test::throws([] {
-    (void)qwen3vl_multimodal_plan(
-        {7, 151652, 151655, 151655, 151655, 151655, 151653, 8}, {{1, 2, 2}});
+    (void)qwen3vl_multimodal_plan({7, 151652, 151655, 151655, 151655, 151655, 151653, 8},
+                                  {{1, 2, 2}});
   }));
 }
 
@@ -166,7 +167,7 @@ bool same_bits(float a, float b) {
   return x == y;
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(qwen_vision_rope_hoisting_is_bit_identical) {
   // A grid big enough that the hoist actually matters: 32x32 patches is 1024
@@ -201,7 +202,8 @@ SLOPFAB_TEST(qwen_vision_rope_hoisting_is_bit_identical) {
   size_t first = 0;
   for (size_t i = 0; i < cos_want.size(); ++i) {
     if (!same_bits(cos_want[i], cos_got[i]) || !same_bits(sin_want[i], sin_got[i])) {
-      if (diffs == 0) first = i;
+      if (diffs == 0)
+        first = i;
       ++diffs;
     }
   }
@@ -214,11 +216,14 @@ SLOPFAB_TEST(qwen_decoder_mrope_hoisting_is_bit_identical) {
   // 512 text tokens with a 4x4 image in the middle, so all three axes carry
   // non-trivial positions rather than the identity a pure-text plan gives.
   std::vector<int32_t> ids;
-  for (int i = 0; i < 200; ++i) ids.push_back(1000 + i);
+  for (int i = 0; i < 200; ++i)
+    ids.push_back(1000 + i);
   ids.push_back(151652);
-  for (int i = 0; i < 16; ++i) ids.push_back(151655);
+  for (int i = 0; i < 16; ++i)
+    ids.push_back(151655);
   ids.push_back(151653);
-  for (int i = 0; i < 200; ++i) ids.push_back(2000 + i);
+  for (int i = 0; i < 200; ++i)
+    ids.push_back(2000 + i);
   const auto plan = qwen3vl_multimodal_plan(ids, {{1, 8, 8}});
   const int tokens = static_cast<int>(ids.size());
 
@@ -246,7 +251,8 @@ SLOPFAB_TEST(qwen_decoder_mrope_hoisting_is_bit_identical) {
   size_t first = 0;
   for (size_t i = 0; i < cos_want.size(); ++i) {
     if (!same_bits(cos_want[i], cos_got[i]) || !same_bits(sin_want[i], sin_got[i])) {
-      if (diffs == 0) first = i;
+      if (diffs == 0)
+        first = i;
       ++diffs;
     }
   }

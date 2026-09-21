@@ -17,8 +17,8 @@ using slopfab::vae::split_tiles;
 
 // Float64 reference using complete composited rows and complete left tiles.
 // This deliberately retains whole neighbours instead of the production tails.
-std::vector<float> oracle(const TileLayout& yl, const TileLayout& xl, int h, int w,
-                          int planes, const std::vector<std::vector<float>>& tiles) {
+std::vector<float> oracle(const TileLayout& yl, const TileLayout& xl, int h, int w, int planes,
+                          const std::vector<std::vector<float>>& tiles) {
   std::vector<float> result(static_cast<size_t>(planes) * h * w);
   for (int p = 0; p < planes; ++p) {
     std::vector<double> previous;
@@ -36,8 +36,8 @@ std::vector<float> oracle(const TileLayout& yl, const TileLayout& xl, int h, int
           for (int y = 0; y < overlap; ++y) {
             const double wb = static_cast<double>(y) / overlap;
             for (int x = 0; x < tw; ++x) {
-              const size_t above = static_cast<size_t>(yl.extents[i - 1] - overlap + y) * w +
-                                       xl.starts[j] + x;
+              const size_t above =
+                  static_cast<size_t>(yl.extents[i - 1] - overlap + y) * w + xl.starts[j] + x;
               tile[y * tw + x] = previous[above] * (1.0 - wb) + tile[y * tw + x] * wb;
             }
           }
@@ -47,8 +47,8 @@ std::vector<float> oracle(const TileLayout& yl, const TileLayout& xl, int h, int
           for (int y = 0; y < th; ++y) {
             for (int x = 0; x < overlap; ++x) {
               const double wb = static_cast<double>(x) / overlap;
-              const size_t before = static_cast<size_t>(y) * xl.extents[j - 1] +
-                                        xl.extents[j - 1] - overlap + x;
+              const size_t before =
+                  static_cast<size_t>(y) * xl.extents[j - 1] + xl.extents[j - 1] - overlap + x;
               tile[y * tw + x] = left[before] * (1.0 - wb) + tile[y * tw + x] * wb;
             }
           }
@@ -74,7 +74,7 @@ std::vector<std::vector<float>> random_tiles(const TileLayout& yl, const TileLay
   for (int h : yl.extents)
     for (int w : xl.extents)
       tiles.push_back(slopfab::test::make_data(static_cast<size_t>(planes) * h * w,
-                                              123 + static_cast<uint32_t>(tiles.size()), 3.0f));
+                                               123 + static_cast<uint32_t>(tiles.size()), 3.0f));
   return tiles;
 }
 
@@ -84,12 +84,13 @@ std::vector<float*> destinations(std::vector<float>& output, int planes, int h, 
     dst.push_back(output.data() + static_cast<size_t>(p) * h * w);
   return dst;
 }
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(tile_merge_includes_diagonal_at_intersection) {
   const auto layout = split_tiles(12, 8, 4, 1);
   std::vector<std::vector<float>> tiles;
-  for (float value : {0.0f, 10.0f, 20.0f, 30.0f}) tiles.emplace_back(64, value);
+  for (float value : {0.0f, 10.0f, 20.0f, 30.0f})
+    tiles.emplace_back(64, value);
   TileMerge merge(layout, layout, 12, 12);
   std::vector<float> out(144, -999.0f);
   merge.compose(tiles, destinations(out, 1, 12, 12));
@@ -102,10 +103,13 @@ SLOPFAB_TEST(tile_merge_includes_diagonal_at_intersection) {
 }
 
 SLOPFAB_TEST(tile_merge_matches_float64_composited_neighbour_oracle) {
-  struct Case { int h, w, tile, overlap; };
-  for (const auto g : {Case{12, 12, 8, 4}, Case{29, 29, 16, 4},
-                       Case{32, 32, 16, 15}, Case{57, 76, 16, 4},
-                       Case{7, 32, 16, 0}, Case{32, 7, 16, 0}, Case{7, 37, 16, 0}, Case{37, 7, 16, 4}, Case{7, 9, 16, 4}}) {
+  struct Case {
+    int h, w, tile, overlap;
+  };
+
+  for (const auto g : {Case{12, 12, 8, 4}, Case{29, 29, 16, 4}, Case{32, 32, 16, 15},
+                       Case{57, 76, 16, 4}, Case{7, 32, 16, 0}, Case{32, 7, 16, 0},
+                       Case{7, 37, 16, 0}, Case{37, 7, 16, 4}, Case{7, 9, 16, 4}}) {
     const auto yl = split_tiles(g.h, g.tile, g.overlap, 1);
     const auto xl = split_tiles(g.w, g.tile, g.overlap, 1);
     auto tiles = random_tiles(yl, xl, 3);
@@ -163,8 +167,8 @@ SLOPFAB_TEST(tile_merge_triple_overlap_uses_sequential_weights) {
   const TileLayout triple{{0, 3, 6}, {8, 8, 8}, {5, 5}};
   const TileLayout one{{0}, {1}, {}};
   for (bool vertical : {false, true}) {
-    TileMerge merge(vertical ? triple : one, vertical ? one : triple,
-                     vertical ? 14 : 1, vertical ? 1 : 14);
+    TileMerge merge(vertical ? triple : one, vertical ? one : triple, vertical ? 14 : 1,
+                    vertical ? 1 : 14);
     std::vector<std::vector<float>> tiles(3, std::vector<float>(8, 0.0f));
     const float expected[] = {0.16f, 0.64f, 0.2f};
     std::vector<float> out(14);
@@ -204,7 +208,11 @@ SLOPFAB_TEST(tile_merge_single_tile_is_exact_and_bad_shapes_can_be_retried) {
   const auto original = tiles;
   tiles[0].pop_back();
   bool threw = false;
-  try { merge.compose(tiles, dst); } catch (const std::runtime_error&) { threw = true; }
+  try {
+    merge.compose(tiles, dst);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
   CHECK(threw);
   tiles = original;
   merge.compose(tiles, dst);
@@ -213,14 +221,16 @@ SLOPFAB_TEST(tile_merge_single_tile_is_exact_and_bad_shapes_can_be_retried) {
 
 SLOPFAB_TEST(tile_merge_rejects_invalid_plans) {
   const std::vector<TileLayout> invalid = {
-      {{}, {}, {}}, {{0}, {}, {}}, {{1}, {7}, {}}, {{0}, {7}, {}},
-      {{0, 5}, {4, 3}, {-1}}, {{0, 5}, {4, 3}, {0}},
-      {{0, 4}, {6, 4}, {1}}, {{0, 4}, {8, 4}, {5}},
-      {{0, 0}, {8, 8}, {8}}, {{0, 4}, {4, 0}, {0}}};
+      {{}, {}, {}},           {{0}, {}, {}},         {{1}, {7}, {}},        {{0}, {7}, {}},
+      {{0, 5}, {4, 3}, {-1}}, {{0, 5}, {4, 3}, {0}}, {{0, 4}, {6, 4}, {1}}, {{0, 4}, {8, 4}, {5}},
+      {{0, 0}, {8, 8}, {8}},  {{0, 4}, {4, 0}, {0}}};
   for (const auto& layout : invalid) {
     bool threw = false;
-    try { (void)slopfab::vae::validate_tile_axis(layout, 8); }
-    catch (const std::runtime_error&) { threw = true; }
+    try {
+      (void)slopfab::vae::validate_tile_axis(layout, 8);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
     CHECK(threw);
   }
 }
@@ -232,14 +242,14 @@ SLOPFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
   // through the destination table has to put exactly the same bytes in exactly
   // the same places, and leave the six dead frames unwritten.
   const int out_frames = 28, pre = 3, frames_per_chunk = 17, chunk_dec = 20, overlap = 5;
-  const size_t stride = 12;  // stand-in for 3 * height * width
+  const size_t stride = 12; // stand-in for 3 * height * width
 
   // Distinguishable content: frame f, element i holds f * 1000 + i.
   std::vector<float> staged(static_cast<size_t>(out_frames) * stride);
   for (int f = 0; f < out_frames; ++f) {
     for (size_t i = 0; i < stride; ++i) {
-      staged[static_cast<size_t>(f) * stride + i] = static_cast<float>(f) * 1000.0f +
-                                                    static_cast<float>(i);
+      staged[static_cast<size_t>(f) * stride + i] =
+          static_cast<float>(f) * 1000.0f + static_cast<float>(i);
     }
   }
 
@@ -258,11 +268,12 @@ SLOPFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
   std::vector<float> carry(expect_carry.size(), sentinel);
   std::vector<float*> dst;
   slopfab::vae::chunk_frame_destinations(out_frames, pre, frames_per_chunk, chunk_dec, overlap,
-                                        stride, primary.data(), carry.data(), &dst);
+                                         stride, primary.data(), carry.data(), &dst);
   CHECK(dst.size() == static_cast<size_t>(out_frames));
   int written = 0;
   for (int f = 0; f < out_frames; ++f) {
-    if (dst[static_cast<size_t>(f)] == nullptr) continue;
+    if (dst[static_cast<size_t>(f)] == nullptr)
+      continue;
     ++written;
     std::copy_n(staged.begin() + static_cast<ptrdiff_t>(static_cast<size_t>(f) * stride), stride,
                 dst[static_cast<size_t>(f)]);
@@ -273,8 +284,10 @@ SLOPFAB_TEST(chunk_destinations_reproduce_the_staged_split) {
 
   // Named explicitly rather than left implicit in the arithmetic: frames 0-2
   // are the pre-padding and 20-22 the gap before the carry.
-  for (int f : {0, 1, 2, 20, 21, 22}) CHECK(dst[static_cast<size_t>(f)] == nullptr);
-  for (int f : {3, 19, 23, 27}) CHECK(dst[static_cast<size_t>(f)] != nullptr);
+  for (int f : {0, 1, 2, 20, 21, 22})
+    CHECK(dst[static_cast<size_t>(f)] == nullptr);
+  for (int f : {3, 19, 23, 27})
+    CHECK(dst[static_cast<size_t>(f)] != nullptr);
 }
 
 SLOPFAB_TEST(tile_layout_is_the_shipped_geometry) {
@@ -306,8 +319,10 @@ SLOPFAB_TEST(tile_layout_is_the_shipped_geometry) {
 
   // Every boundary stays on the latent grid: an overlap that was not a whole
   // number of latent units would slice a latent in half.
-  for (int o : y.overlaps) CHECK(o % 16 == 0);
-  for (int o : x.overlaps) CHECK(o % 16 == 0);
+  for (int o : y.overlaps)
+    CHECK(o % 16 == 0);
+  for (int o : x.overlaps)
+    CHECK(o % 16 == 0);
 
   // A single tile when the axis fits, and no overlaps to blend.
   const slopfab::vae::TileLayout one = slopfab::vae::split_tiles(256, 256, 64, 16);
@@ -317,12 +332,22 @@ SLOPFAB_TEST(tile_layout_is_the_shipped_geometry) {
   // neither loop below the guard makes progress. A hang is the one failure a
   // caller cannot diagnose, so both are rejected. The single-tile early-out
   // above runs first, so these need an input longer than the tile.
-  CHECK(slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 256, 16); }));
-  CHECK(slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 300, 16); }));
-  CHECK(slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 64, 0); }));
-  CHECK(slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 64, -16); }));
+  CHECK(slopfab::test::throws([] {
+    (void)slopfab::vae::split_tiles(1280, 256, 256, 16);
+  }));
+  CHECK(slopfab::test::throws([] {
+    (void)slopfab::vae::split_tiles(1280, 256, 300, 16);
+  }));
+  CHECK(slopfab::test::throws([] {
+    (void)slopfab::vae::split_tiles(1280, 256, 64, 0);
+  }));
+  CHECK(slopfab::test::throws([] {
+    (void)slopfab::vae::split_tiles(1280, 256, 64, -16);
+  }));
   // And the shipped arguments are nowhere near the guard.
-  CHECK(!slopfab::test::throws([] { (void)slopfab::vae::split_tiles(1280, 256, 64, 16); }));
+  CHECK(!slopfab::test::throws([] {
+    (void)slopfab::vae::split_tiles(1280, 256, 64, 16);
+  }));
 }
 
 SLOPFAB_TEST(tile_shape_groups_are_chunk_invariant) {
@@ -338,8 +363,10 @@ SLOPFAB_TEST(tile_shape_groups_are_chunk_invariant) {
   slopfab::vae::tile_shape_groups(y, x, 768, 1280, 16, &tile_h, &tile_w, &groups);
 
   CHECK(tile_h.size() == 4 && tile_w.size() == 7);
-  for (int h : tile_h) CHECK(h == 256);
-  for (int w : tile_w) CHECK(w == 256);
+  for (int h : tile_h)
+    CHECK(h == 256);
+  for (int w : tile_w)
+    CHECK(w == 256);
   // Every tile is 256 x 256 in pixels, so 16 x 16 in latents: one batch of 28.
   CHECK(groups.size() == 1);
   CHECK(groups.begin()->first == std::make_pair(16, 16));
@@ -353,7 +380,8 @@ SLOPFAB_TEST(tile_shape_groups_are_chunk_invariant) {
       ++seen[id];
     }
   }
-  for (int n : seen) CHECK(n == 1);
+  for (int n : seen)
+    CHECK(n == 1);
 
   // Recomputing gives an identical map, key order included — which is what
   // makes hoisting it out of the chunk loop a no-op.
@@ -371,9 +399,11 @@ SLOPFAB_TEST(tile_shape_groups_are_chunk_invariant) {
   std::map<std::pair<int, int>, std::vector<size_t>> rgroups;
   slopfab::vae::tile_shape_groups(ry, rx, 768, 1280, 16, &rh, &rw, &rgroups);
   size_t total = 0;
-  for (const auto& g : rgroups) total += g.second.size();
+  for (const auto& g : rgroups)
+    total += g.second.size();
   CHECK(total == ry.starts.size() * rx.starts.size());
 }
+
 SLOPFAB_TEST(tile_latent_gather_covers_its_whole_buffer) {
   // The gather's destination buffer is now reused and grown rather than
   // value-initialised each shape group, which is only safe because the gather
@@ -381,7 +411,7 @@ SLOPFAB_TEST(tile_latent_gather_covers_its_whole_buffer) {
   // src/vae/decode_pipeline.cpp: batch item `bi`, channel `ci`, frame `t`, row
   // `y`, each copying a whole row of `tw`.
   const int ch = 24, window = 7, th = 16, tw = 16;
-  const size_t n = 3;  // batch items
+  const size_t n = 3; // batch items
   const size_t tile_voxels = static_cast<size_t>(window) * th * tw;
   const size_t needed = n * ch * tile_voxels;
 
@@ -390,18 +420,20 @@ SLOPFAB_TEST(tile_latent_gather_covers_its_whole_buffer) {
     for (int ci = 0; ci < ch; ++ci) {
       for (int t = 0; t < window; ++t) {
         for (int y = 0; y < th; ++y) {
-          const size_t dst =
-              (bi * ch + ci) * tile_voxels + (static_cast<size_t>(t) * th + y) * tw;
+          const size_t dst = (bi * ch + ci) * tile_voxels + (static_cast<size_t>(t) * th + y) * tw;
           CHECK(dst + tw <= needed);
-          for (int k = 0; k < tw; ++k) ++touched[dst + static_cast<size_t>(k)];
+          for (int k = 0; k < tw; ++k)
+            ++touched[dst + static_cast<size_t>(k)];
         }
       }
     }
   }
   size_t unwritten = 0, doubled = 0;
   for (int c : touched) {
-    if (c == 0) ++unwritten;
-    if (c > 1) ++doubled;
+    if (c == 0)
+      ++unwritten;
+    if (c > 1)
+      ++doubled;
   }
   CHECK_MSG(unwritten == 0, "%zu of %zu gather destinations are never written", unwritten, needed);
   CHECK_MSG(doubled == 0, "%zu gather destinations are written more than once", doubled);

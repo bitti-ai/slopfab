@@ -12,8 +12,13 @@
 
 namespace {
 using slopfab::ReferenceMedia;
+
 template <typename Fn> bool throws(Fn&& fn) {
-  try { fn(); } catch (const std::exception&) { return true; }
+  try {
+    fn();
+  } catch (const std::exception&) {
+    return true;
+  }
   return false;
 }
 
@@ -23,50 +28,60 @@ ReferenceMedia clip(double duration = 2) {
   result.append_frame(rgb, sizeof(rgb), 1, 1, 3, 3, 0);
   return result;
 }
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(video_transition_boundary_preprocessing_and_cache) {
   auto source = ReferenceMedia::video(3);
   const uint8_t opening[] = {200, 10, 10}, ending[] = {10, 200, 10};
   source.append_frame(opening, 3, 1, 1, 3, 3, 0);
   source.append_frame(ending, 3, 1, 1, 3, 3, 1);
-  auto head = slopfab::prepare_reference_condition(source, 6, true,
-      slopfab::transition_reference_options(64, 32, 1));
-  auto tail = slopfab::prepare_reference_condition(source, 6, true,
-      slopfab::transition_reference_options(64, 32, -1));
+  auto head = slopfab::prepare_reference_condition(
+      source, 6, true, slopfab::transition_reference_options(64, 32, 1));
+  auto tail = slopfab::prepare_reference_condition(
+      source, 6, true, slopfab::transition_reference_options(64, 32, -1));
   CHECK(head.frames.size() == 22 && tail.frames.size() == 22);
   CHECK(head.plan.geometry.num_latent_frames == 7);
   CHECK(head.plan.width == 64 && head.plan.height == 32);
   CHECK(head.frames.front().pixels[0] == 200);
   CHECK(tail.frames.front().pixels[1] == 200);
   CHECK(tail.frames.back().pixels[1] == 200);
-  CHECK(throws([&] { slopfab::prepare_reference_condition(clip(.5), 6, true,
-      slopfab::transition_reference_options(64, 32, -1)); }));
+  CHECK(throws([&] {
+    slopfab::prepare_reference_condition(clip(.5), 6, true,
+                                         slopfab::transition_reference_options(64, 32, -1));
+  }));
   slopfab::GenerateRequest request;
-  request.canvas_width = 64; request.canvas_height = 32; request.num_frames = 39;
+  request.canvas_width = 64;
+  request.canvas_height = 32;
+  request.num_frames = 39;
   request.video_transition = 1;
   request.reference_media.push_back(std::make_shared<const ReferenceMedia>(source));
   const auto plan = slopfab::resolve_plan(request);
   CHECK(plan.aligned_frames == 39); // source context never lengthens the output
   CHECK(plan.layout.num_condition_video == 14);
   CHECK(plan.layout.num_condition_audio == 0);
-  const auto key = slopfab::media_encoding_cache_key(request, slopfab::ReferenceEncoderAuthority::kCudaFp32);
+  const auto key =
+      slopfab::media_encoding_cache_key(request, slopfab::ReferenceEncoderAuthority::kCudaFp32);
   request.video_transition = 0;
-  CHECK(key != slopfab::media_encoding_cache_key(request, slopfab::ReferenceEncoderAuthority::kCudaFp32));
+  CHECK(key !=
+        slopfab::media_encoding_cache_key(request, slopfab::ReferenceEncoderAuthority::kCudaFp32));
   request.video_transition = 2;
-  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(request);
+  }));
   request.reference_media.push_back(std::make_shared<const ReferenceMedia>(source));
   const auto bridge = slopfab::resolve_plan(request);
   CHECK(bridge.layout.num_condition_video == 28);
   CHECK(bridge.aligned_frames == 39);
   request.still_image = true;
-  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(request);
+  }));
 }
 
 SLOPFAB_TEST(video_transition_guides_surround_target_without_advancing_its_clock) {
   using namespace slopfab::dit;
-  std::vector<ReferenceGeometry> guides = {
-      {ReferenceKind::kVideo, 7, 2, 4, 0}, {ReferenceKind::kVideo, 7, 2, 4, 0}};
+  std::vector<ReferenceGeometry> guides = {{ReferenceKind::kVideo, 7, 2, 4, 0},
+                                           {ReferenceKind::kVideo, 7, 2, 4, 0}};
   slopfab::align_transition_guides(guides, 12);
   CHECK(guides[0].target_time_offset < 0);
   CHECK(guides[1].target_time_offset > 0);
@@ -76,9 +91,12 @@ SLOPFAB_TEST(video_transition_guides_surround_target_without_advancing_its_clock
   for (size_t i = 0; i < target.position_ids.size(); ++i)
     CHECK(packed.position_ids[size_t(context_rows) * 3 + i] == target.position_ids[i]);
   CHECK(packed.position_ids[0] < 0);
-  CHECK(packed.position_ids[size_t(guides[0].video_rows()) * 3] > target.position_ids[target.position_ids.size() - 3]);
+  CHECK(packed.position_ids[size_t(guides[0].video_rows()) * 3] >
+        target.position_ids[target.position_ids.size() - 3]);
   guides.push_back({ReferenceKind::kImage, 1, 2, 4, 0});
-  CHECK(throws([&] { build_ref2va_packed_sequence({}, guides, 12, 2, 4, 65); }));
+  CHECK(throws([&] {
+    build_ref2va_packed_sequence({}, guides, 12, 2, 4, 65);
+  }));
 }
 
 SLOPFAB_TEST(reference_media_pixels_and_snapshot) {
@@ -107,22 +125,47 @@ SLOPFAB_TEST(reference_media_rejects_invalid_frames_transactionally) {
   auto video = clip();
   const auto before = slopfab::reference_media_identity(video);
   const uint8_t pixels[12] = {};
-  CHECK(throws([&] { video.append_frame(pixels, 3, 1, 1, 3, 3, 0); }));
-  CHECK(throws([&] { video.append_frame(pixels, 3, 1, 1, 3, 3, 2); }));
-  CHECK(throws([&] { video.append_frame(pixels, 3, 1, 1, 3, 3, NAN); }));
-  CHECK(throws([&] { video.append_frame(pixels, 2, 1, 1, 3, 3, 1); }));
-  CHECK(throws([&] { video.append_frame(pixels, 3, 1, 1, 2, 3, 1); }));
-  CHECK(throws([&] { video.append_frame(nullptr, 3, 1, 1, 3, 3, 1); }));
-  CHECK(throws([&] { video.append_frame(pixels, 12, 2, 2, 6, 3, 1); }));
+  CHECK(throws([&] {
+    video.append_frame(pixels, 3, 1, 1, 3, 3, 0);
+  }));
+  CHECK(throws([&] {
+    video.append_frame(pixels, 3, 1, 1, 3, 3, 2);
+  }));
+  CHECK(throws([&] {
+    video.append_frame(pixels, 3, 1, 1, 3, 3, NAN);
+  }));
+  CHECK(throws([&] {
+    video.append_frame(pixels, 2, 1, 1, 3, 3, 1);
+  }));
+  CHECK(throws([&] {
+    video.append_frame(pixels, 3, 1, 1, 2, 3, 1);
+  }));
+  CHECK(throws([&] {
+    video.append_frame(nullptr, 3, 1, 1, 3, 3, 1);
+  }));
+  CHECK(throws([&] {
+    video.append_frame(pixels, 12, 2, 2, 6, 3, 1);
+  }));
   CHECK(slopfab::reference_media_identity(video) == before);
   auto empty = ReferenceMedia::video(2);
-  CHECK(throws([&] { empty.append_frame(pixels, 3, 1, 1, 3, 3, .1); }));
-  CHECK(throws([&] { empty.append_frame(pixels, 12, 1, 3,
-      std::numeric_limits<size_t>::max(), 3, 0); }));
-  CHECK(throws([&] { empty.validate(); }));
-  CHECK(throws([] { ReferenceMedia::video(INFINITY); }));
-  CHECK(throws([] { ReferenceMedia::video(1.99); }));
-  CHECK(throws([] { ReferenceMedia::video(15.01); }));
+  CHECK(throws([&] {
+    empty.append_frame(pixels, 3, 1, 1, 3, 3, .1);
+  }));
+  CHECK(throws([&] {
+    empty.append_frame(pixels, 12, 1, 3, std::numeric_limits<size_t>::max(), 3, 0);
+  }));
+  CHECK(throws([&] {
+    empty.validate();
+  }));
+  CHECK(throws([] {
+    ReferenceMedia::video(INFINITY);
+  }));
+  CHECK(throws([] {
+    ReferenceMedia::video(1.99);
+  }));
+  CHECK(throws([] {
+    ReferenceMedia::video(15.01);
+  }));
 }
 
 SLOPFAB_TEST(reference_media_audio_ownership_and_validation) {
@@ -137,21 +180,37 @@ SLOPFAB_TEST(reference_media_audio_ownership_and_validation) {
   CHECK(snapshot.soundtrack()->start_seconds == .5);
   CHECK(slopfab::reference_media_identity(video) != before);
   const auto valid = slopfab::reference_media_identity(video);
-  CHECK(throws([&] { video.set_audio(pcm.data(), pcm.size(), 2, 32000, 2); }));
-  CHECK(throws([&] { video.set_audio(pcm.data(), pcm.size() - 1, 2, 32000); }));
-  CHECK(throws([&] { video.set_audio(pcm.data(), pcm.size(), 3, 32000); }));
-  CHECK(throws([&] { video.set_audio(pcm.data(), pcm.size(), 2, 0); }));
-  CHECK(throws([&] { video.set_audio(pcm.data(), pcm.size(), 2, 32000, NAN); }));
+  CHECK(throws([&] {
+    video.set_audio(pcm.data(), pcm.size(), 2, 32000, 2);
+  }));
+  CHECK(throws([&] {
+    video.set_audio(pcm.data(), pcm.size() - 1, 2, 32000);
+  }));
+  CHECK(throws([&] {
+    video.set_audio(pcm.data(), pcm.size(), 3, 32000);
+  }));
+  CHECK(throws([&] {
+    video.set_audio(pcm.data(), pcm.size(), 2, 0);
+  }));
+  CHECK(throws([&] {
+    video.set_audio(pcm.data(), pcm.size(), 2, 32000, NAN);
+  }));
   pcm[0] = NAN;
-  CHECK(throws([&] { video.set_audio(pcm.data(), pcm.size(), 2, 32000); }));
+  CHECK(throws([&] {
+    video.set_audio(pcm.data(), pcm.size(), 2, 32000);
+  }));
   pcm[0] = 1.01f;
-  CHECK(throws([&] { video.set_audio(pcm.data(), pcm.size(), 2, 32000); }));
+  CHECK(throws([&] {
+    video.set_audio(pcm.data(), pcm.size(), 2, 32000);
+  }));
   CHECK(slopfab::reference_media_identity(video) == valid);
   pcm[0] = 0;
   auto audio = ReferenceMedia::audio(pcm.data(), pcm.size(), 2, 32000);
   CHECK(!audio.is_video());
   CHECK(audio.duration_seconds() == 2);
-  CHECK(throws([&] { ReferenceMedia::audio(pcm.data(), 2, 2, 32000); }));
+  CHECK(throws([&] {
+    ReferenceMedia::audio(pcm.data(), 2, 2, 32000);
+  }));
 }
 
 SLOPFAB_TEST(reference_media_request_limits_and_cache) {
@@ -175,23 +234,34 @@ SLOPFAB_TEST(reference_media_request_limits_and_cache) {
   request.reference_media.assign(3, std::make_shared<const ReferenceMedia>(clip(5)));
   slopfab::resolve_plan(request);
   request.reference_media.push_back(std::make_shared<const ReferenceMedia>(clip()));
-  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(request);
+  }));
   request.reference_media.assign(2, std::make_shared<const ReferenceMedia>(clip(8)));
-  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(request);
+  }));
   request.reference_media.assign(3, std::make_shared<const ReferenceMedia>(clip()));
   request.reference_image_paths.assign(9, "image.ppm");
   slopfab::resolve_plan(request);
   const std::vector<float> pcm(64000, 0);
-  auto audio = std::make_shared<const ReferenceMedia>(ReferenceMedia::audio(pcm.data(), pcm.size(), 1, 32000));
+  auto audio = std::make_shared<const ReferenceMedia>(
+      ReferenceMedia::audio(pcm.data(), pcm.size(), 1, 32000));
   request.reference_media.push_back(audio);
-  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(request);
+  }));
   request.reference_image_paths.clear();
   request.reference_media.assign(1, audio);
-  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(request);
+  }));
   request.reference_image_paths.push_back("image.ppm");
   slopfab::resolve_plan(request);
   request.reference_media.push_back(nullptr);
-  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(request);
+  }));
 }
 
 SLOPFAB_TEST(encoded_media_cache_identity_and_seed) {
@@ -256,7 +326,8 @@ SLOPFAB_TEST(encoded_media_cache_prepares_identical_qwen_frames) {
       CHECK(hit.frames[i].pixels == full.frames[i].pixels);
       CHECK(hit.frames[i].width == full.frames[i].width);
       CHECK(hit.frames[i].height == full.frames[i].height);
-    } else CHECK(hit.frames[i].pixels.empty());
+    } else
+      CHECK(hit.frames[i].pixels.empty());
   }
 }
 
@@ -269,10 +340,13 @@ SLOPFAB_TEST(reference_conditioning_temporal_geometry_and_audio) {
   plan = slopfab::reference_condition_plan(video, 22.0 / 24);
   CHECK(plan.encoding_frames == 22 && plan.geometry.num_latent_frames == 7);
   CHECK(plan.width == 768 && plan.height == 768);
-  CHECK(throws([&] { slopfab::reference_condition_plan(video, 1.0 / 24); }));
+  CHECK(throws([&] {
+    slopfab::reference_condition_plan(video, 1.0 / 24);
+  }));
 
   std::vector<float> pcm(64000);
-  for (size_t i = 0; i < pcm.size(); ++i) pcm[i] = float(i % 100) / 100;
+  for (size_t i = 0; i < pcm.size(); ++i)
+    pcm[i] = float(i % 100) / 100;
   auto audio = ReferenceMedia::audio(pcm.data(), pcm.size(), 1, 32000);
   auto prepared = slopfab::prepare_reference_condition(audio, .02501);
   CHECK(prepared.plan.audio_samples == 801);
@@ -311,7 +385,8 @@ SLOPFAB_TEST(reference_video_qwen_pair_uses_both_frames) {
   auto multimodal = slopfab::text::qwen3vl_multimodal_plan(ids, {pair.grid});
   CHECK(multimodal.image_rows == std::vector<int32_t>({2}));
   std::vector<float> latents(24 * 2 * 2 * 2);
-  for (size_t i = 0; i < latents.size(); ++i) latents[i] = float(i);
+  for (size_t i = 0; i < latents.size(); ++i)
+    latents[i] = float(i);
   auto rows = slopfab::patchify_reference_video(latents.data(), 2, 2, 2);
   CHECK(rows[0] == 0 && rows[4] == 8 && rows[96] == 4 && rows[100] == 12);
 }
@@ -334,7 +409,8 @@ SLOPFAB_TEST(animate_geometry_order_and_audio_contract) {
   CHECK(p.layout.num_condition_audio == 0);
   CHECK(p.layout.num_audio_rows == 130);
   const auto options = slopfab::animate_reference_options(p.canvas_width, p.canvas_height);
-  const auto prepared = slopfab::prepare_reference_condition(video, p.duration_seconds, true, options);
+  const auto prepared =
+      slopfab::prepare_reference_condition(video, p.duration_seconds, true, options);
   CHECK(prepared.plan.width == 64 && prepared.plan.height == 96);
   CHECK(prepared.plan.encoding_frames == 39);
   CHECK(prepared.audio.empty());
@@ -351,27 +427,36 @@ SLOPFAB_TEST(animate_geometry_order_and_audio_contract) {
   rows.insert(rows.end(), video_values, 2);
   slopfab::order_animate_references(geometry, rows);
   CHECK(geometry.front().kind == slopfab::dit::ReferenceKind::kVideo);
-  CHECK(std::vector<float>(rows.begin(), rows.begin() + video_values) == std::vector<float>(video_values, 2));
-  CHECK(std::vector<float>(rows.begin() + video_values, rows.end()) == std::vector<float>(image_values, 1));
-  const auto packed = slopfab::dit::build_ref2va_packed_sequence(std::vector<int32_t>(362, 1),
-      geometry, p.layout.num_latent_frames, 6, 4, p.layout.num_audio_latents);
+  CHECK(std::vector<float>(rows.begin(), rows.begin() + video_values) ==
+        std::vector<float>(video_values, 2));
+  CHECK(std::vector<float>(rows.begin() + video_values, rows.end()) ==
+        std::vector<float>(image_values, 1));
+  const auto packed = slopfab::dit::build_ref2va_packed_sequence(
+      std::vector<int32_t>(362, 1), geometry, p.layout.num_latent_frames, 6, 4,
+      p.layout.num_audio_latents);
   CHECK(packed.position_ids[size_t(packed.indices.video.front()) * 3] == 362);
   CHECK(packed.position_ids[size_t(packed.indices.video[geometry.front().video_rows()]) * 3] > 362);
   CHECK(packed.layout.num_condition_audio == 0);
   CHECK(packed.layout.num_audio_rows == p.layout.num_audio_rows);
 
-  const auto key = slopfab::media_encoding_cache_key(r, slopfab::ReferenceEncoderAuthority::kCudaFp32);
+  const auto key =
+      slopfab::media_encoding_cache_key(r, slopfab::ReferenceEncoderAuthority::kCudaFp32);
   r.preserve_driving_audio = true;
   CHECK(key != slopfab::media_encoding_cache_key(r, slopfab::ReferenceEncoderAuthority::kCudaFp32));
   CHECK(slopfab::resolve_plan(r).layout.num_condition_audio == 0);
   const auto image_key = slopfab::reference_cache_key(r);
-  r.canvas_width = 128; r.canvas_height = 192;
+  r.canvas_width = 128;
+  r.canvas_height = 192;
   CHECK(image_key != slopfab::reference_cache_key(r));
   r.reference_image_paths.clear();
-  CHECK(throws([&] { slopfab::resolve_plan(r); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(r);
+  }));
   r.reference_image_paths = {"repainted.png"};
   r.reference_media = {std::make_shared<const ReferenceMedia>(clip())};
-  CHECK(throws([&] { slopfab::resolve_plan(r); }));
+  CHECK(throws([&] {
+    slopfab::resolve_plan(r);
+  }));
 }
 
 SLOPFAB_TEST(animate_target_audio_padding_and_channel_crop) {
@@ -387,11 +472,14 @@ SLOPFAB_TEST(animate_target_audio_padding_and_channel_crop) {
     CHECK(wav[channel * 53333 + 53332] == 0);
   }
   std::vector<float> encoded(2 * 4 * 32);
-  for (size_t i = 0; i < encoded.size(); ++i) encoded[i] = float(i);
+  for (size_t i = 0; i < encoded.size(); ++i)
+    encoded[i] = float(i);
   const auto rows = slopfab::target_audio_rows(encoded, 3);
   CHECK(rows.size() == 2 * 3 * 32);
   CHECK(rows[95] == 95);
-  CHECK(rows[96] == 128);  // Right channel starts after all four left latents.
+  CHECK(rows[96] == 128); // Right channel starts after all four left latents.
   CHECK(rows.back() == 223);
-  CHECK(throws([&] { slopfab::target_audio_rows(encoded, 5); }));
+  CHECK(throws([&] {
+    slopfab::target_audio_rows(encoded, 5);
+  }));
 }

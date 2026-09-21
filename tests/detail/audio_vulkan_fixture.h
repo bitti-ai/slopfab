@@ -36,31 +36,26 @@
 #include "slopfab/vulkan/audio_decoder.h"
 #include "slopfab/vulkan/tensor.h"
 
-
 namespace {
 
 slopfab::TensorLayout layout(std::initializer_list<uint64_t> extents) {
   std::vector<uint64_t> shape(extents);
-  return slopfab::TensorLayout::contiguous(shape.data(),
-                                          static_cast<uint32_t>(shape.size()));
+  return slopfab::TensorLayout::contiguous(shape.data(), static_cast<uint32_t>(shape.size()));
 }
 
-void check_exact(const std::vector<float>& cuda_values,
-                 const std::vector<float>& vulkan_values,
+void check_exact(const std::vector<float>& cuda_values, const std::vector<float>& vulkan_values,
                  const char* operation) {
   CHECK(cuda_values.size() == vulkan_values.size());
   for (size_t i = 0; i < cuda_values.size(); ++i) {
     uint32_t cuda_bits = 0, vulkan_bits = 0;
     std::memcpy(&cuda_bits, &cuda_values[i], sizeof(cuda_bits));
     std::memcpy(&vulkan_bits, &vulkan_values[i], sizeof(vulkan_bits));
-    CHECK_MSG(cuda_bits == vulkan_bits,
-              "%s CUDA/Vulkan mismatch at %zu: %08x != %08x", operation,
+    CHECK_MSG(cuda_bits == vulkan_bits, "%s CUDA/Vulkan mismatch at %zu: %08x != %08x", operation,
               i, cuda_bits, vulkan_bits);
   }
 }
 
-std::vector<float> values(size_t count, uint32_t multiplier, uint32_t modulus,
-                          float scale) {
+std::vector<float> values(size_t count, uint32_t multiplier, uint32_t modulus, float scale) {
   std::vector<float> result(count);
   for (size_t i = 0; i < count; ++i)
     result[i] = float(int((i * multiplier) % modulus) - int(modulus / 2)) * scale;
@@ -70,7 +65,8 @@ std::vector<float> values(size_t count, uint32_t multiplier, uint32_t modulus,
 size_t count_subnormals(const std::vector<float>& values) {
   size_t count = 0;
   for (float value : values) {
-    uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits));
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
     count += (bits & 0x7f800000u) == 0u && (bits & 0x007fffffu) != 0u;
   }
   return count;
@@ -80,7 +76,8 @@ uint64_t fnv64(const std::vector<std::vector<float>>& tensors) {
   uint64_t hash = 1469598103934665603ull;
   for (const auto& tensor : tensors) {
     for (float value : tensor) {
-      uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits));
+      uint32_t bits = 0;
+      std::memcpy(&bits, &value, sizeof(bits));
       for (unsigned byte = 0; byte < 4; ++byte) {
         hash ^= (bits >> (8u * byte)) & 0xffu;
         hash *= 1099511628211ull;
@@ -132,7 +129,8 @@ bool capture_generation(slopfab::RunSamples& samples, void* userdata) {
   captured.audio_channels = samples.audio_channels;
   captured.audio_sample_rate = samples.audio_sample_rate;
   captured.video = std::move(*samples.video);
-  if (samples.audio != nullptr) captured.audio = std::move(*samples.audio);
+  if (samples.audio != nullptr)
+    captured.audio = std::move(*samples.audio);
   return true;
 }
 
@@ -147,24 +145,29 @@ std::array<uint8_t, 32> mapping_sha256(const void* mapping, size_t bytes) {
   BCRYPT_HASH_HANDLE hash = nullptr;
   std::array<uint8_t, 32> digest{};
   auto fail = [&] {
-    if (hash) BCryptDestroyHash(hash);
-    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (hash)
+      BCryptDestroyHash(hash);
+    if (algorithm)
+      BCryptCloseAlgorithmProvider(algorithm, 0);
     throw std::runtime_error("audio primitive checkpoint SHA-256 failed");
   };
-  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM,
-                                  nullptr, 0) < 0 ||
-      BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0) fail();
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0 ||
+      BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0)
+    fail();
   const auto* cursor = static_cast<const uint8_t*>(mapping);
   while (bytes != 0) {
     const ULONG chunk = static_cast<ULONG>(std::min<size_t>(bytes, 64ull << 20));
-    if (BCryptHashData(hash, const_cast<PUCHAR>(cursor), chunk, 0) < 0) fail();
-    cursor += chunk; bytes -= chunk;
+    if (BCryptHashData(hash, const_cast<PUCHAR>(cursor), chunk, 0) < 0)
+      fail();
+    cursor += chunk;
+    bytes -= chunk;
   }
-  if (BCryptFinishHash(hash, digest.data(),
-                       static_cast<ULONG>(digest.size()), 0) < 0) fail();
-  BCryptDestroyHash(hash); BCryptCloseAlgorithmProvider(algorithm, 0);
+  if (BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) < 0)
+    fail();
+  BCryptDestroyHash(hash);
+  BCryptCloseAlgorithmProvider(algorithm, 0);
   return digest;
 }
 #endif
 
-}  // namespace
+} // namespace

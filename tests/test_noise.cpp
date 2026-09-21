@@ -21,7 +21,7 @@ struct Moments {
   double mean = 0.0;
   double variance = 0.0;
   double skew = 0.0;
-  double kurtosis = 0.0;  // excess
+  double kurtosis = 0.0; // excess
   double min = 0.0;
   double max = 0.0;
 };
@@ -30,7 +30,8 @@ Moments moments(const std::vector<float>& v) {
   Moments m;
   const double n = static_cast<double>(v.size());
   double s1 = 0.0;
-  for (float x : v) s1 += x;
+  for (float x : v)
+    s1 += x;
   m.mean = s1 / n;
   double s2 = 0.0;
   double s3 = 0.0;
@@ -42,8 +43,10 @@ Moments moments(const std::vector<float>& v) {
     s2 += d * d;
     s3 += d * d * d;
     s4 += d * d * d * d;
-    if (x < m.min) m.min = x;
-    if (x > m.max) m.max = x;
+    if (x < m.min)
+      m.min = x;
+    if (x > m.max)
+      m.max = x;
   }
   m.variance = s2 / n;
   const double sd = std::sqrt(m.variance);
@@ -72,7 +75,8 @@ SLOPFAB_TEST(noise_moments) {
   CHECK_MSG(m.min < -3.5 && m.min > -7.0, "min %.4f is implausible", m.min);
 
   bool finite = true;
-  for (float x : v) finite = finite && std::isfinite(x);
+  for (float x : v)
+    finite = finite && std::isfinite(x);
   CHECK(finite);
 }
 
@@ -86,14 +90,16 @@ SLOPFAB_TEST(noise_is_position_independent) {
   fill_normal(99, NoiseStream::kVideoLatents, a.data(), a.size());
   fill_normal(99, NoiseStream::kVideoLatents, b.data(), b.size());
   bool same = true;
-  for (size_t i = 0; i < b.size(); ++i) same = same && a[i] == b[i];
+  for (size_t i = 0; i < b.size(); ++i)
+    same = same && a[i] == b[i];
   CHECK(same);
 
   // An odd count must not disturb the values before it.
   std::vector<float> c(101);
   fill_normal(99, NoiseStream::kVideoLatents, c.data(), c.size());
   bool prefix = true;
-  for (size_t i = 0; i < c.size(); ++i) prefix = prefix && a[i] == c[i];
+  for (size_t i = 0; i < c.size(); ++i)
+    prefix = prefix && a[i] == c[i];
   CHECK(prefix);
 }
 
@@ -107,12 +113,14 @@ SLOPFAB_TEST(noise_streams_and_seeds_are_independent) {
   // The two streams off one seed must not be the same sequence, nor a shift of
   // it. Correlation is the direct test.
   double dot = 0.0;
-  for (size_t i = 0; i < n; ++i) dot += static_cast<double>(video[i]) * audio[i];
+  for (size_t i = 0; i < n; ++i)
+    dot += static_cast<double>(video[i]) * audio[i];
   const double corr = dot / static_cast<double>(n);
   CHECK_MSG(std::fabs(corr) < 0.02, "video and audio streams correlate at %.5f", corr);
 
   bool identical = true;
-  for (size_t i = 0; i < n; ++i) identical = identical && video[i] == audio[i];
+  for (size_t i = 0; i < n; ++i)
+    identical = identical && video[i] == audio[i];
   CHECK(!identical);
 
   // Adjacent seeds must decorrelate too — this is what splitmix on the seed is
@@ -122,9 +130,10 @@ SLOPFAB_TEST(noise_streams_and_seeds_are_independent) {
   fill_normal(0, NoiseStream::kVideoLatents, s0.data(), n);
   fill_normal(1, NoiseStream::kVideoLatents, s1.data(), n);
   double dot01 = 0.0;
-  for (size_t i = 0; i < n; ++i) dot01 += static_cast<double>(s0[i]) * s1[i];
-  CHECK_MSG(std::fabs(dot01 / static_cast<double>(n)) < 0.02,
-            "seeds 0 and 1 correlate at %.5f", dot01 / static_cast<double>(n));
+  for (size_t i = 0; i < n; ++i)
+    dot01 += static_cast<double>(s0[i]) * s1[i];
+  CHECK_MSG(std::fabs(dot01 / static_cast<double>(n)) < 0.02, "seeds 0 and 1 correlate at %.5f",
+            dot01 / static_cast<double>(n));
 }
 
 SLOPFAB_TEST(noise_has_no_short_range_structure) {
@@ -137,7 +146,8 @@ SLOPFAB_TEST(noise_has_no_short_range_structure) {
 
   for (int lag = 1; lag <= 16; ++lag) {
     double dot = 0.0;
-    for (size_t i = 0; i + lag < n; ++i) dot += static_cast<double>(v[i]) * v[i + lag];
+    for (size_t i = 0; i + lag < n; ++i)
+      dot += static_cast<double>(v[i]) * v[i + lag];
     const double corr = dot / static_cast<double>(n - lag);
     CHECK_MSG(std::fabs(corr) < 0.01, "autocorrelation at lag %d is %.5f", lag, corr);
   }
@@ -166,8 +176,12 @@ SLOPFAB_TEST(noise_shapes) {
   const std::vector<float> a2 = audio_noise(11, 207);
   CHECK(a == a2);
 
-  CHECK(::slopfab::test::throws([] { video_noise(1, 0, 48, 84); }));
-  CHECK(::slopfab::test::throws([] { audio_noise(1, -1); }));
+  CHECK(::slopfab::test::throws([] {
+    video_noise(1, 0, 48, 84);
+  }));
+  CHECK(::slopfab::test::throws([] {
+    audio_noise(1, -1);
+  }));
 }
 
-}  // namespace
+} // namespace

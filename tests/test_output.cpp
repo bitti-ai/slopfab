@@ -33,8 +33,9 @@ namespace {
 struct CountingConverter final : slopfab::video::FrameConverter {
   int calls = 0;
   bool saw_padded_stride = false;
-  void convert(const float* r, const float* g, const float* b, int height, int width,
-               uint8_t* y, int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
+
+  void convert(const float* r, const float* g, const float* b, int height, int width, uint8_t* y,
+               int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
     ++calls;
     saw_padded_stride = saw_padded_stride || ys > width || us > width / 2 || vs > width / 2;
     slopfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
@@ -44,9 +45,11 @@ struct CountingConverter final : slopfab::video::FrameConverter {
 struct ThrowingConverter final : slopfab::video::FrameConverter {
   int calls = 0;
   int throw_after = 1;
-  void convert(const float* r, const float* g, const float* b, int height, int width,
-               uint8_t* y, int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
-    if (++calls > throw_after) throw std::runtime_error("converter sentinel failure");
+
+  void convert(const float* r, const float* g, const float* b, int height, int width, uint8_t* y,
+               int ys, uint8_t* u, int us, uint8_t* v, int vs) override {
+    if (++calls > throw_after)
+      throw std::runtime_error("converter sentinel failure");
     slopfab::video::rgb_frame_to_yuv420(r, g, b, height, width, y, ys, u, us, v, vs);
   }
 };
@@ -57,7 +60,8 @@ std::filesystem::path temp_path(const char* name) {
 
 std::vector<uint8_t> read_file(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
-  if (!in) return {};
+  if (!in)
+    return {};
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
 }
@@ -87,14 +91,16 @@ struct RiffChunk {
 
 std::vector<RiffChunk> walk_riff(const std::vector<uint8_t>& b) {
   std::vector<RiffChunk> chunks;
-  if (b.size() < 12) return chunks;
-  size_t off = 12;  // past "RIFF" + size + "WAVE"
+  if (b.size() < 12)
+    return chunks;
+  size_t off = 12; // past "RIFF" + size + "WAVE"
   while (off + 8 <= b.size()) {
     RiffChunk c;
     c.id.assign(reinterpret_cast<const char*>(b.data() + off), 4);
     c.payload_size = rd_u32(b, off + 4);
     c.payload_off = off + 8;
-    if (c.payload_off + c.payload_size > b.size()) break;
+    if (c.payload_off + c.payload_size > b.size())
+      break;
     chunks.push_back(c);
     off = c.payload_off + c.payload_size + (c.payload_size % 2);
   }
@@ -103,7 +109,8 @@ std::vector<RiffChunk> walk_riff(const std::vector<uint8_t>& b) {
 
 const RiffChunk* find_chunk(const std::vector<RiffChunk>& chunks, const char* id) {
   for (const RiffChunk& c : chunks) {
-    if (c.id == id) return &c;
+    if (c.id == id)
+      return &c;
   }
   return nullptr;
 }
@@ -136,8 +143,8 @@ std::vector<float> make_tone(int channels, int sample_rate, float seconds, float
   const int frames = static_cast<int>(sample_rate * seconds);
   std::vector<float> v(static_cast<size_t>(frames) * channels);
   for (int i = 0; i < frames; ++i) {
-    const float s = 0.4f * std::sin(6.2831853f * hz * static_cast<float>(i) /
-                                    static_cast<float>(sample_rate));
+    const float s =
+        0.4f * std::sin(6.2831853f * hz * static_cast<float>(i) / static_cast<float>(sample_rate));
     for (int c = 0; c < channels; ++c) {
       // Second channel inverted so a swapped or duplicated channel is audible
       // and, more usefully, detectable.
@@ -147,7 +154,7 @@ std::vector<float> make_tone(int channels, int sample_rate, float seconds, float
   return v;
 }
 
-}  // namespace
+} // namespace
 
 // --- wav --------------------------------------------------------------------
 
@@ -156,7 +163,7 @@ SLOPFAB_TEST(wav_pcm16_header_and_samples) {
 
   const int channels = 2;
   const int rate = 32000;
-  const int frames = 257;  // odd, so a frames/2 bug in the header shows up
+  const int frames = 257; // odd, so a frames/2 bug in the header shows up
   std::vector<float> pcm(static_cast<size_t>(frames) * channels);
   for (int i = 0; i < frames; ++i) {
     pcm[static_cast<size_t>(i) * 2 + 0] = std::sin(0.01f * static_cast<float>(i));
@@ -183,12 +190,12 @@ SLOPFAB_TEST(wav_pcm16_header_and_samples) {
 
   if (fmt != nullptr) {
     const size_t o = fmt->payload_off;
-    CHECK(rd_u16(b, o + 0) == 1);                             // WAVE_FORMAT_PCM
-    CHECK(rd_u16(b, o + 2) == 2);                             // channels
-    CHECK(rd_u32(b, o + 4) == 32000u);                        // sample rate
-    CHECK(rd_u32(b, o + 8) == 32000u * 2u * 2u);              // byte rate
-    CHECK(rd_u16(b, o + 12) == 4);                            // block align
-    CHECK(rd_u16(b, o + 14) == 16);                           // bits per sample
+    CHECK(rd_u16(b, o + 0) == 1);                // WAVE_FORMAT_PCM
+    CHECK(rd_u16(b, o + 2) == 2);                // channels
+    CHECK(rd_u32(b, o + 4) == 32000u);           // sample rate
+    CHECK(rd_u32(b, o + 8) == 32000u * 2u * 2u); // byte rate
+    CHECK(rd_u16(b, o + 12) == 4);               // block align
+    CHECK(rd_u16(b, o + 14) == 16);              // bits per sample
   }
 
   if (data != nullptr) {
@@ -239,13 +246,13 @@ SLOPFAB_TEST(wav_float32_header_and_samples) {
 
   if (fmt != nullptr) {
     const size_t o = fmt->payload_off;
-    CHECK(rd_u16(b, o + 0) == 3);                 // WAVE_FORMAT_IEEE_FLOAT
-    CHECK(rd_u16(b, o + 2) == 1);                 // channels
-    CHECK(rd_u32(b, o + 4) == 48000u);            // sample rate
-    CHECK(rd_u32(b, o + 8) == 48000u * 4u);       // byte rate
-    CHECK(rd_u16(b, o + 12) == 4);                // block align
-    CHECK(rd_u16(b, o + 14) == 32);               // bits per sample
-    CHECK(rd_u16(b, o + 16) == 0);                // cbSize
+    CHECK(rd_u16(b, o + 0) == 3);           // WAVE_FORMAT_IEEE_FLOAT
+    CHECK(rd_u16(b, o + 2) == 1);           // channels
+    CHECK(rd_u32(b, o + 4) == 48000u);      // sample rate
+    CHECK(rd_u32(b, o + 8) == 48000u * 4u); // byte rate
+    CHECK(rd_u16(b, o + 12) == 4);          // block align
+    CHECK(rd_u16(b, o + 14) == 32);         // bits per sample
+    CHECK(rd_u16(b, o + 16) == 0);          // cbSize
   }
   if (fact != nullptr) {
     CHECK(fact->payload_size == 4);
@@ -260,10 +267,10 @@ SLOPFAB_TEST(wav_float32_header_and_samples) {
       const uint32_t bits = rd_u32(b, data->payload_off + i * 4);
       float back = 0.0f;
       std::memcpy(&back, &bits, sizeof(back));
-      if (std::memcmp(&back, &pcm[i], sizeof(back)) != 0) ++mismatches;
+      if (std::memcmp(&back, &pcm[i], sizeof(back)) != 0)
+        ++mismatches;
     }
-    CHECK_MSG(mismatches == 0, "float32 samples differ in %d of %zu slots", mismatches,
-              pcm.size());
+    CHECK_MSG(mismatches == 0, "float32 samples differ in %d of %zu slots", mismatches, pcm.size());
   }
 
   std::filesystem::remove(path);
@@ -281,10 +288,10 @@ SLOPFAB_TEST(wav_clamps_pcm16_and_passes_float) {
   CHECK(d16 != nullptr);
   if (d16 != nullptr) {
     const size_t o = d16->payload_off;
-    CHECK(static_cast<int16_t>(rd_u16(b16, o + 0)) == 32767);   // +2.0 clamps
-    CHECK(static_cast<int16_t>(rd_u16(b16, o + 2)) == -32767);  // -2.0 clamps
-    CHECK(static_cast<int16_t>(rd_u16(b16, o + 4)) == 32767);   // +1.0 is full scale
-    CHECK(static_cast<int16_t>(rd_u16(b16, o + 6)) == -32767);  // and symmetric
+    CHECK(static_cast<int16_t>(rd_u16(b16, o + 0)) == 32767);  // +2.0 clamps
+    CHECK(static_cast<int16_t>(rd_u16(b16, o + 2)) == -32767); // -2.0 clamps
+    CHECK(static_cast<int16_t>(rd_u16(b16, o + 4)) == 32767);  // +1.0 is full scale
+    CHECK(static_cast<int16_t>(rd_u16(b16, o + 6)) == -32767); // and symmetric
     CHECK(static_cast<int16_t>(rd_u16(b16, o + 8)) == 0);
     CHECK(static_cast<int16_t>(rd_u16(b16, o + 10)) == 32767);
   }
@@ -390,14 +397,23 @@ SLOPFAB_TEST(rgb_to_yuv_threading_is_bit_identical) {
   struct Case {
     int height, width;
   };
+
   const Case cases[] = {
-      {482, 640}, {8, 16}, {2, 2}, {768, 400},
+      {482, 640},
+      {8, 16},
+      {2, 2},
+      {768, 400},
       // Odd extents. 4:2:0 is not defined for them and both container writers
       // reject them, but this is a public function now and a chroma-row split
       // silently skips the final luma row at an odd height — which is a buffer
       // the caller sized and we left uninitialised. The frozen serial copy
       // wrote it, so these cases are what holds the split to that.
-      {9, 16}, {7, 16}, {1, 16}, {483, 640}, {8, 15}, {1, 1},
+      {9, 16},
+      {7, 16},
+      {1, 16},
+      {483, 640},
+      {8, 15},
+      {1, 1},
   };
 
   for (const Case& c : cases) {
@@ -449,7 +465,8 @@ SLOPFAB_TEST(y4m_frame_split_writes_frames_in_order) {
   std::filesystem::remove(path);
 
   size_t off = 0;
-  while (off < file.size() && file[off] != '\n') ++off;
+  while (off < file.size() && file[off] != '\n')
+    ++off;
   ++off;
 
   const size_t frame_pixels = static_cast<size_t>(height) * width;
@@ -460,7 +477,8 @@ SLOPFAB_TEST(y4m_frame_split_writes_frames_in_order) {
   size_t mismatched_frames = 0;
   for (int f = 0; f < frames; ++f) {
     CHECK(tag_at(file, off, "FRAM"));
-    while (off < file.size() && file[off] != '\n') ++off;
+    while (off < file.size() && file[off] != '\n')
+      ++off;
     ++off;
 
     // Frame f of the file must be frame f of the input, converted. A batching
@@ -475,7 +493,8 @@ SLOPFAB_TEST(y4m_frame_split_writes_frames_in_order) {
     const bool cb_ok = std::memcmp(&file[off + frame_pixels], u.data(), chroma_pixels) == 0;
     const bool cr_ok =
         std::memcmp(&file[off + frame_pixels + chroma_pixels], v.data(), chroma_pixels) == 0;
-    if (!luma_ok || !cb_ok || !cr_ok) ++mismatched_frames;
+    if (!luma_ok || !cb_ok || !cr_ok)
+      ++mismatched_frames;
     off += frame_pixels + 2 * chroma_pixels;
   }
   CHECK_MSG(mismatched_frames == 0, "%zu of %d frames in the .y4m are not their own conversion",
@@ -497,7 +516,8 @@ SLOPFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
 
   // Skip the header line, then walk FRAME markers.
   size_t off = 0;
-  while (off < file.size() && file[off] != '\n') ++off;
+  while (off < file.size() && file[off] != '\n')
+    ++off;
   ++off;
 
   const size_t frame_pixels = static_cast<size_t>(height) * width;
@@ -525,7 +545,8 @@ SLOPFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
   int pad_touched = 0;
   for (int f = 0; f < frames; ++f) {
     CHECK(tag_at(file, off, "FRAM"));
-    while (off < file.size() && file[off] != '\n') ++off;
+    while (off < file.size() && file[off] != '\n')
+      ++off;
     ++off;
 
     const size_t base = static_cast<size_t>(f) * frame_pixels;
@@ -541,7 +562,8 @@ SLOPFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
         }
       }
       for (int col = width; col < y_stride; ++col) {
-        if (y[static_cast<size_t>(row) * y_stride + col] != 0xAB) ++pad_touched;
+        if (y[static_cast<size_t>(row) * y_stride + col] != 0xAB)
+          ++pad_touched;
       }
     }
     const size_t u_off = off + frame_pixels;
@@ -549,8 +571,10 @@ SLOPFAB_TEST(rgb_to_yuv_matches_y4m_bytes) {
     for (int row = 0; row < height / 2; ++row) {
       for (int col = 0; col < width / 2; ++col) {
         const size_t src = static_cast<size_t>(row) * (width / 2) + col;
-        if (u[static_cast<size_t>(row) * c_stride + col] != file[u_off + src]) ++u_diff;
-        if (v[static_cast<size_t>(row) * c_stride + col] != file[v_off + src]) ++v_diff;
+        if (u[static_cast<size_t>(row) * c_stride + col] != file[u_off + src])
+          ++u_diff;
+        if (v[static_cast<size_t>(row) * c_stride + col] != file[v_off + src])
+          ++v_diff;
       }
     }
     off = v_off + chroma_pixels;
@@ -606,8 +630,7 @@ SLOPFAB_TEST(y4m_exact_comparison_reports_first_byte) {
   const slopfab::PixelBuffer clip = make_clip(2, 6, 10);
   write_y4m(expected_path.string(), clip, 2, 6, 10);
   write_y4m(actual_path.string(), clip, 2, 6, 10);
-  ExactY4mComparison comparison =
-      compare_y4m_exact(expected_path.string(), actual_path.string());
+  ExactY4mComparison comparison = compare_y4m_exact(expected_path.string(), actual_path.string());
   CHECK(comparison.equal());
   CHECK(comparison.expected_size == comparison.actual_size);
   CHECK(comparison.expected_header == comparison.actual_header);
@@ -742,7 +765,8 @@ SLOPFAB_TEST(mp4_video_and_audio_end_to_end) {
 
   const MuxStatus status = write_mp4(req);
   CHECK_MSG(status == MuxStatus::kOk, "write_mp4 returned %s", mux_status_message(status));
-  if (status != MuxStatus::kOk) return;
+  if (status != MuxStatus::kOk)
+    return;
   CHECK(converter.calls == frames);
   CHECK(converter.saw_padded_stride);
 

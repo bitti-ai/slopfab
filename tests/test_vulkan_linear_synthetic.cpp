@@ -10,7 +10,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_linear_weight_cpu_reference, "synthetic") {
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions options;
@@ -22,8 +23,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_linear_weight_cpu_reference, "synthetic") {
                  const std::vector<uint16_t>& expected) {
     LinearWeight weight = LinearWeight::upload(context, upload);
     const uint64_t shape[] = {upload.out_features, upload.in_features};
-    DeviceTensor output = context.allocate(TensorLayout::contiguous(shape, 2),
-                                           ScalarType::kBFloat16);
+    DeviceTensor output =
+        context.allocate(TensorLayout::contiguous(shape, 2), ScalarType::kBFloat16);
     TensorBatch batch = context.begin_batch();
     weight.materialize_bf16(batch, output);
     batch.submit().wait();
@@ -31,9 +32,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_linear_weight_cpu_reference, "synthetic") {
     context.download_bytes(output, actual.data(), actual.size() * 2);
     size_t mismatch = expected.size();
     for (size_t i = 0; i < expected.size(); ++i)
-      if (actual[i] != expected[i]) { mismatch = i; break; }
-    CHECK_MSG(mismatch == expected.size(), "%s mismatch at %zu: %04x != %04x",
-              label, mismatch, mismatch == expected.size() ? 0u : expected[mismatch],
+      if (actual[i] != expected[i]) {
+        mismatch = i;
+        break;
+      }
+    CHECK_MSG(mismatch == expected.size(), "%s mismatch at %zu: %04x != %04x", label, mismatch,
+              mismatch == expected.size() ? 0u : expected[mismatch],
               mismatch == expected.size() ? 0u : actual[mismatch]);
   };
 
@@ -77,8 +81,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_linear_weight_cpu_reference, "synthetic") {
   std::vector<uint16_t> i8_expected(i8.size());
   for (size_t i = 0; i < i8.size(); ++i) {
     i8[i] = static_cast<int8_t>(i * 71u);
-    i8_expected[i] = reference_bf16(static_cast<float>(i8[i]) *
-                                  i8_scales[i / i8_in]);
+    i8_expected[i] = reference_bf16(static_cast<float>(i8[i]) * i8_scales[i / i8_in]);
   }
   LinearWeightUpload i8_upload;
   i8_upload.format = LinearWeightFormat::kInt8;
@@ -95,21 +98,19 @@ SLOPFAB_TEST_CATEGORY(vulkan_linear_weight_cpu_reference, "synthetic") {
   std::vector<uint8_t> nv_codes(nv_count / 2), nv_scales(nv_count / 16, 0x38);
   std::vector<uint16_t> nv_expected(nv_count);
   for (size_t byte = 0; byte < nv_codes.size(); ++byte)
-    nv_codes[byte] = static_cast<uint8_t>(((2 * byte & 15) << 4) |
-                                          ((2 * byte + 1) & 15));
+    nv_codes[byte] = static_cast<uint8_t>(((2 * byte & 15) << 4) | ((2 * byte + 1) & 15));
   const float nv_global = 0.25f;
   auto scale_slot = [&](uint32_t row, uint32_t block) {
     const uint32_t blocks_per_row = nv_in / 16;
     const uint32_t tile = (row >> 7) * (blocks_per_row >> 2) + (block >> 2);
-    return static_cast<size_t>(tile) * 512 + (row & 31) * 16 +
-           ((row & 127) >> 5) * 4 + (block & 3);
+    return static_cast<size_t>(tile) * 512 + (row & 31) * 16 + ((row & 127) >> 5) * 4 + (block & 3);
   };
   for (size_t i = 0; i < nv_count; ++i) {
     const uint8_t packed = nv_codes[i / 2];
     const uint8_t code = (i & 1) == 0 ? packed >> 4 : packed & 15;
     const uint32_t row = static_cast<uint32_t>(i / nv_in);
-    const float scale_value = f8_e4m3_to_f32(
-        nv_scales[scale_slot(row, static_cast<uint32_t>((i % nv_in) / 16))]) *
+    const float scale_value =
+        f8_e4m3_to_f32(nv_scales[scale_slot(row, static_cast<uint32_t>((i % nv_in) / 16))]) *
         nv_global;
     nv_expected[i] = reference_bf16(f4_e2m1_to_f32(code) * scale_value);
   }
@@ -129,10 +130,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_linear_weight_cpu_reference, "synthetic") {
   std::vector<uint8_t> nf_codes((nf_count + 1) / 2), nf_absmax(3);
   for (size_t i = 0; i < nf_codes.size(); ++i)
     nf_codes[i] = static_cast<uint8_t>((((i + 3) & 15) << 4) | ((i + 9) & 15));
-  for (size_t i = 0; i < nf_absmax.size(); ++i) nf_absmax[i] = static_cast<uint8_t>(i * 97);
+  for (size_t i = 0; i < nf_absmax.size(); ++i)
+    nf_absmax[i] = static_cast<uint8_t>(i * 97);
   std::array<float, 16> nf_map{};
   std::array<float, 256> nested_map{};
-  for (size_t i = 0; i < nf_map.size(); ++i) nf_map[i] = (float(i) - 7.0f) / 8.0f;
+  for (size_t i = 0; i < nf_map.size(); ++i)
+    nf_map[i] = (float(i) - 7.0f) / 8.0f;
   for (size_t i = 0; i < nested_map.size(); ++i)
     nested_map[i] = (float(i) - 127.0f) / 128.0f;
   const float nested_absmax[] = {0.75f};
@@ -140,8 +143,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_linear_weight_cpu_reference, "synthetic") {
   std::vector<uint16_t> nf_expected(nf_count);
   for (size_t i = 0; i < nf_count; ++i) {
     const size_t scale_index = i / 64;
-    const float scale_value = nested_map[nf_absmax[scale_index]] *
-                                  nested_absmax[scale_index / 256] + offset;
+    const float scale_value =
+        nested_map[nf_absmax[scale_index]] * nested_absmax[scale_index / 256] + offset;
     const uint8_t packed = nf_codes[i / 2];
     const uint8_t code = (i & 1) == 0 ? packed >> 4 : packed & 15;
     nf_expected[i] = reference_bf16(nf_map[code] * scale_value);
@@ -174,7 +177,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_gemm_cache, "synthetic") {
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions options;
@@ -185,8 +189,11 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_gemm_cache, "synthetic") {
   TensorContext context(device);
   CHECK(!context.native_nvfp4_gemm_available());
   bool native_threw = false;
-  try { context.require_native_nvfp4_gemm(); }
-  catch (const std::runtime_error&) { native_threw = true; }
+  try {
+    context.require_native_nvfp4_gemm();
+  } catch (const std::runtime_error&) {
+    native_threw = true;
+  }
   CHECK(native_threw);
 
   constexpr uint32_t rows = 6, n = 128, k = 64;
@@ -215,20 +222,17 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_gemm_cache, "synthetic") {
 
   const uint64_t input_shape[] = {rows, k};
   const uint64_t output_shape[] = {rows, n};
-  DeviceTensor input = context.allocate(
-      TensorLayout::contiguous(input_shape, 2), ScalarType::kBFloat16);
-  DeviceTensor output = context.allocate(
-      TensorLayout::contiguous(output_shape, 2), ScalarType::kBFloat16);
-  std::vector<uint16_t> input_bits(static_cast<size_t>(rows) * k,
-                                   reference_bf16(1.0f));
+  DeviceTensor input =
+      context.allocate(TensorLayout::contiguous(input_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor output =
+      context.allocate(TensorLayout::contiguous(output_shape, 2), ScalarType::kBFloat16);
+  std::vector<uint16_t> input_bits(static_cast<size_t>(rows) * k, reference_bf16(1.0f));
   std::vector<uint16_t> sentinel(static_cast<size_t>(rows) * n, 0x7fc1);
   context.upload_bytes(input, input_bits.data(), input_bits.size() * 2);
   context.upload_bytes(output, sentinel.data(), sentinel.size() * 2);
-  DenseGemmPlan plan = DenseGemmPlan::create(
-      context, {rows, n, k, DenseGemmMode::kBFloat16,
-                DenseGemmBias::kNone});
-  StreamedNVFP4WeightCache cache =
-      StreamedNVFP4WeightCache::create(context, weight_elements * 2);
+  DenseGemmPlan plan =
+      DenseGemmPlan::create(context, {rows, n, k, DenseGemmMode::kBFloat16, DenseGemmBias::kNone});
+  StreamedNVFP4WeightCache cache = StreamedNVFP4WeightCache::create(context, weight_elements * 2);
   CHECK(cache.capacity_elements() == weight_elements * 2);
   CHECK(cache.dense_bytes() == weight_elements * 4);
 
@@ -247,20 +251,25 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_gemm_cache, "synthetic") {
   foreign_upload.block_scale_count = foreign_scales.size();
   LinearWeight foreign_weight = LinearWeight::upload(foreign_context, foreign_upload);
   DenseGemmPlan foreign_shape_plan = DenseGemmPlan::create(
-      context, {rows, n, 128, DenseGemmMode::kBFloat16,
-                DenseGemmBias::kNone});
+      context, {rows, n, 128, DenseGemmMode::kBFloat16, DenseGemmBias::kNone});
 
   TensorBatch first = context.begin_batch();
   PreparedNVFP4WeightView p = cache.prepare(first, w_positive, plan);
   const uint32_t capacity_after_prepare = first.remaining_operator_capacity();
   bool foreign_threw = false;
-  try { (void)cache.prepare(first, foreign_weight, foreign_shape_plan); }
-  catch (const std::invalid_argument&) { foreign_threw = true; }
+  try {
+    (void)cache.prepare(first, foreign_weight, foreign_shape_plan);
+  } catch (const std::invalid_argument&) {
+    foreign_threw = true;
+  }
   CHECK(foreign_threw);
   CHECK(first.remaining_operator_capacity() == capacity_after_prepare);
   bool shape_threw = false;
-  try { (void)cache.prepare(first, w_positive, foreign_shape_plan); }
-  catch (const std::invalid_argument&) { shape_threw = true; }
+  try {
+    (void)cache.prepare(first, w_positive, foreign_shape_plan);
+  } catch (const std::invalid_argument&) {
+    shape_threw = true;
+  }
   CHECK(shape_threw);
   CHECK(first.remaining_operator_capacity() == capacity_after_prepare);
   // Both failures leave the prior generation, dense layout and access state
@@ -271,24 +280,30 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_gemm_cache, "synthetic") {
   // every successful prepare, supersedes the preceding cache generation.
   (void)cache.prepare(first, awq_weight, plan);
   bool awq_superseded_p = false;
-  try { plan.record(first, input, p, output, 1, 0, 0); }
-  catch (const std::invalid_argument&) { awq_superseded_p = true; }
+  try {
+    plan.record(first, input, p, output, 1, 0, 0);
+  } catch (const std::invalid_argument&) {
+    awq_superseded_p = true;
+  }
   CHECK(awq_superseded_p);
   p = cache.prepare(first, w_positive, plan);
   plan.record(first, input, p, output, 2, 2, 2);
   PreparedNVFP4WeightView m = cache.prepare(first, w_negative, plan);
   CHECK(m.full_precision_matrix_mult());
   bool stale_threw = false;
-  try { plan.record(first, input, p, output, 1, 0, 0); }
-  catch (const std::invalid_argument&) { stale_threw = true; }
+  try {
+    plan.record(first, input, p, output, 1, 0, 0);
+  } catch (const std::invalid_argument&) {
+    stale_threw = true;
+  }
   CHECK(stale_threw);
   plan.record(first, input, m, output, 2, 4, 4);
   Submission first_token = first.submit();
 
   // Overwrite the same cache in a second queued submission. The queue-ordered
   // R->W barrier protects the first job without a CPU/device-wide wait.
-  DeviceTensor second_output = context.allocate(
-      TensorLayout::contiguous(output_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor second_output =
+      context.allocate(TensorLayout::contiguous(output_shape, 2), ScalarType::kBFloat16);
   context.upload_bytes(second_output, sentinel.data(), sentinel.size() * 2);
   TensorBatch second = context.begin_batch();
   PreparedNVFP4WeightView again = cache.prepare(second, w_positive, plan);
@@ -304,8 +319,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_gemm_cache, "synthetic") {
   const uint16_t minus = reference_bf16(-64.0f);
   for (uint32_t row = 0; row < rows; ++row) {
     for (uint32_t col = 0; col < n; ++col) {
-      CHECK(got[static_cast<size_t>(row) * n + col] ==
-            (row < 4 ? plus : minus));
+      CHECK(got[static_cast<size_t>(row) * n + col] == (row < 4 ? plus : minus));
       CHECK(got_second[static_cast<size_t>(row) * n + col] == plus);
     }
   }
@@ -321,7 +335,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_gemm_cache, "synthetic") {
       plan.record(full, input, prepared, output, rows);
     warm_flights[flight] = full.submit();
   }
-  warm_flights[0].wait(); warm_flights[1].wait();
+  warm_flights[0].wait();
+  warm_flights[1].wait();
   const uint64_t high_reserved = context.reserved_bytes();
   const uint64_t high_descriptors = context.descriptor_set_allocations();
   {
@@ -330,8 +345,11 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_gemm_cache, "synthetic") {
     for (int i = 0; i < 31; ++i)
       plan.record(overflow, input, prepared, output, rows);
     bool threw = false;
-    try { plan.record(overflow, input, prepared, output, rows); }
-    catch (const std::logic_error&) { threw = true; }
+    try {
+      plan.record(overflow, input, prepared, output, rows);
+    } catch (const std::logic_error&) {
+      threw = true;
+    }
     CHECK(threw);
   }
   Submission tail;
@@ -356,7 +374,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_wrapper_drop, "synthetic") {
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions options;
@@ -367,12 +386,14 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_wrapper_drop, "synthetic") {
   TensorContext context(device);
   {
     const uint64_t warm_shape[] = {2, 64};
-    DeviceTensor warm = context.allocate(
-        TensorLayout::contiguous(warm_shape, 2), ScalarType::kBFloat16);
+    DeviceTensor warm =
+        context.allocate(TensorLayout::contiguous(warm_shape, 2), ScalarType::kBFloat16);
     std::vector<uint16_t> zeros(128);
     context.upload_bytes(warm, zeros.data(), zeros.size() * 2);
   }
-  { TensorBatch collect = context.begin_batch(); }
+  {
+    TensorBatch collect = context.begin_batch();
+  }
   const uint64_t baseline = context.pooled_used_bytes();
   Submission token;
   {
@@ -382,23 +403,21 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_wrapper_drop, "synthetic") {
     std::vector<uint8_t> scales(elements / 16, 0x38);
     LinearWeightUpload upload;
     upload.format = LinearWeightFormat::kNVFloat4;
-    upload.out_features = n; upload.in_features = k;
-    upload.data = codes.data(); upload.data_bytes = codes.size();
+    upload.out_features = n;
+    upload.in_features = k;
+    upload.data = codes.data();
+    upload.data_bytes = codes.size();
     upload.block_scale = scales.data();
     upload.block_scale_count = scales.size();
     LinearWeight weight = LinearWeight::upload(context, upload);
     const uint64_t is[] = {rows, k}, os[] = {rows, n};
-    DeviceTensor input = context.allocate(TensorLayout::contiguous(is, 2),
-                                          ScalarType::kBFloat16);
-    DeviceTensor output = context.allocate(TensorLayout::contiguous(os, 2),
-                                           ScalarType::kBFloat16);
+    DeviceTensor input = context.allocate(TensorLayout::contiguous(is, 2), ScalarType::kBFloat16);
+    DeviceTensor output = context.allocate(TensorLayout::contiguous(os, 2), ScalarType::kBFloat16);
     std::vector<uint16_t> bits(size_t(rows) * k, reference_bf16(1.0f));
     context.upload_bytes(input, bits.data(), bits.size() * 2);
     DenseGemmPlan plan = DenseGemmPlan::create(
-        context, {rows, n, k, DenseGemmMode::kBFloat16,
-                  DenseGemmBias::kNone});
-    StreamedNVFP4WeightCache cache =
-        StreamedNVFP4WeightCache::create(context, elements);
+        context, {rows, n, k, DenseGemmMode::kBFloat16, DenseGemmBias::kNone});
+    StreamedNVFP4WeightCache cache = StreamedNVFP4WeightCache::create(context, elements);
     TensorBatch batch = context.begin_batch();
     PreparedNVFP4WeightView prepared = cache.prepare(batch, weight, plan);
     plan.record(batch, input, prepared, output, rows);
@@ -407,7 +426,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_streamed_nvfp4_wrapper_drop, "synthetic") {
   CHECK(context.pooled_used_bytes() > baseline);
   token.wait();
   token = Submission{};
-  { TensorBatch collect = context.begin_batch(); }
+  {
+    TensorBatch collect = context.begin_batch();
+  }
   CHECK_MSG(context.pooled_used_bytes() == baseline,
             "streamed wrapper drop retained %llu bytes (baseline %llu)",
             static_cast<unsigned long long>(context.pooled_used_bytes()),
@@ -424,15 +445,16 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
   options.enable_cooperative_matrix = physical.front().info().cooperative_matrix;
   options.enable_storage_buffer_16bit = options.enable_cooperative_matrix;
-  options.enable_shader_float16 = options.enable_cooperative_matrix &&
-      physical.front().info().shader_float16;
+  options.enable_shader_float16 =
+      options.enable_cooperative_matrix && physical.front().info().shader_float16;
   Device device = physical.front().create_device(options);
   TensorContext context(device);
   constexpr uint32_t rows = 3, total_input_rows = 5, total_output_rows = 6;
@@ -441,14 +463,14 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
   const uint64_t weight_shape[] = {n, k};
   const uint64_t output_shape[] = {total_output_rows, n};
   const uint64_t bias_shape[] = {n};
-  DeviceTensor input = context.allocate(TensorLayout::contiguous(input_shape, 2),
-                                        ScalarType::kBFloat16);
-  DeviceTensor weight = context.allocate(TensorLayout::contiguous(weight_shape, 2),
-                                         ScalarType::kBFloat16);
-  DeviceTensor output = context.allocate(TensorLayout::contiguous(output_shape, 2),
-                                         ScalarType::kBFloat16);
-  DeviceTensor bias = context.allocate(TensorLayout::contiguous(bias_shape, 1),
-                                       ScalarType::kFloat32);
+  DeviceTensor input =
+      context.allocate(TensorLayout::contiguous(input_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor weight =
+      context.allocate(TensorLayout::contiguous(weight_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor output =
+      context.allocate(TensorLayout::contiguous(output_shape, 2), ScalarType::kBFloat16);
+  DeviceTensor bias =
+      context.allocate(TensorLayout::contiguous(bias_shape, 1), ScalarType::kFloat32);
   std::vector<uint16_t> input_bits(total_input_rows * k);
   std::vector<uint16_t> weight_bits(n * k);
   std::vector<uint16_t> output_bits(total_output_rows * n, 0x3e80u);
@@ -483,7 +505,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
         float a = 0.0f, w = 0.0f;
         const uint32_t ab = uint32_t(input_bits[(row + 1) * k + inner]) << 16;
         const uint32_t wb = uint32_t(weight_bits[column * k + inner]) << 16;
-        std::memcpy(&a, &ab, 4); std::memcpy(&w, &wb, 4);
+        std::memcpy(&a, &ab, 4);
+        std::memcpy(&w, &wb, 4);
         sum = std::fma(a, w, sum);
       }
       const uint16_t rounded = reference_bf16(sum);
@@ -491,26 +514,23 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
       std::memcpy(&sum, &rounded_bits, 4);
       const uint16_t expected = reference_bf16(sum + bias_values[column]);
       const size_t index = size_t(row + 2) * n + column;
-      CHECK_MSG(actual[index] == expected,
-                "gemm tail [%u,%u]: %04x != %04x", row, column,
+      CHECK_MSG(actual[index] == expected, "gemm tail [%u,%u]: %04x != %04x", row, column,
                 actual[index], expected);
     }
   }
   for (size_t i = 0; i < actual.size(); ++i) {
     const size_t row = i / n;
-    if (row < 2 || row >= 5) CHECK(actual[i] == 0x3e80u);
+    if (row < 2 || row >= 5)
+      CHECK(actual[i] == 0x3e80u);
   }
 
   auto run_float_mode = [&](DenseGemmMode mode, DenseGemmBias bias_mode) {
     const uint64_t fs[] = {rows, k}, fws[] = {n, k}, fos[] = {rows, n};
-    DeviceTensor fi = context.allocate(TensorLayout::contiguous(fs, 2),
-                                       ScalarType::kFloat32);
-    DeviceTensor fw = context.allocate(
-        TensorLayout::contiguous(fws, 2),
-        mode == DenseGemmMode::kFloat16Vae ? ScalarType::kFloat16
-                                           : ScalarType::kFloat32);
-    DeviceTensor fo = context.allocate(TensorLayout::contiguous(fos, 2),
-                                       ScalarType::kFloat32);
+    DeviceTensor fi = context.allocate(TensorLayout::contiguous(fs, 2), ScalarType::kFloat32);
+    DeviceTensor fw = context.allocate(TensorLayout::contiguous(fws, 2),
+                                       mode == DenseGemmMode::kFloat16Vae ? ScalarType::kFloat16
+                                                                          : ScalarType::kFloat32);
+    DeviceTensor fo = context.allocate(TensorLayout::contiguous(fos, 2), ScalarType::kFloat32);
     std::vector<float> host_input(rows * k), host_output(rows * n);
     std::vector<float> host_weight_f32;
     std::vector<uint16_t> host_weight_f16;
@@ -520,14 +540,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     if (mode == DenseGemmMode::kFloat16Vae) {
       host_weight_f16.resize(n * k);
       for (size_t i = 0; i < host_weight_f16.size(); ++i)
-        host_weight_f16[i] = f32_to_f16(
-            static_cast<float>(static_cast<int>(i % 23) - 11) / 19.0f);
+        host_weight_f16[i] = f32_to_f16(static_cast<float>(static_cast<int>(i % 23) - 11) / 19.0f);
       context.upload_bytes(fw, host_weight_f16.data(), host_weight_f16.size() * 2);
     } else {
       host_weight_f32.resize(n * k);
       for (size_t i = 0; i < host_weight_f32.size(); ++i)
-        host_weight_f32[i] =
-            static_cast<float>(static_cast<int>(i % 23) - 11) / 19.0f;
+        host_weight_f32[i] = static_cast<float>(static_cast<int>(i % 23) - 11) / 19.0f;
       context.upload(fw, host_weight_f32.data(), host_weight_f32.size());
     }
     DenseGemmPlanDesc float_desc{rows, n, k, mode, bias_mode};
@@ -555,18 +573,17 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
         float expected = 0.0f;
         for (uint32_t inner = 0; inner < k; ++inner) {
           const float a = mode == DenseGemmMode::kFloat16Vae
-              ? f16_to_f32(f32_to_f16(host_input[row * k + inner]))
-              : host_input[row * k + inner];
+                              ? f16_to_f32(f32_to_f16(host_input[row * k + inner]))
+                              : host_input[row * k + inner];
           const float w = mode == DenseGemmMode::kFloat16Vae
-              ? f16_to_f32(host_weight_f16[column * k + inner])
-              : host_weight_f32[column * k + inner];
+                              ? f16_to_f32(host_weight_f16[column * k + inner])
+                              : host_weight_f32[column * k + inner];
           expected = std::fma(a, w, expected);
         }
         if (bias_mode == DenseGemmBias::kFloat32)
           expected += bias_values[column];
         CHECK_MSG(float_bits(host_output[row * n + column]) == float_bits(expected),
-                  "gemm float mode %u [%u,%u] differs", unsigned(mode), row,
-                  column);
+                  "gemm float mode %u [%u,%u] differs", unsigned(mode), row, column);
       }
     }
   };
@@ -576,26 +593,29 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
   // Explicit fp32->fp16 boundary values exercise ties, signed zero,
   // subnormal-half results, carry into infinity, and both signs.
   {
-    const std::vector<float> edge = {
-        0.0f, -0.0f, std::ldexp(1.0f, -24), std::ldexp(1.0f, -25),
-        std::nextafter(std::ldexp(1.0f, -25), 1.0f), 65504.0f,
-        65520.0f, -65520.0f};
+    const std::vector<float> edge = {0.0f,
+                                     -0.0f,
+                                     std::ldexp(1.0f, -24),
+                                     std::ldexp(1.0f, -25),
+                                     std::nextafter(std::ldexp(1.0f, -25), 1.0f),
+                                     65504.0f,
+                                     65520.0f,
+                                     -65520.0f};
     const uint64_t es[] = {edge.size(), 1}, ews[] = {1, 1};
     DeviceTensor ei = context.allocate(TensorLayout::contiguous(es, 2));
-    DeviceTensor ew = context.allocate(TensorLayout::contiguous(ews, 2),
-                                       ScalarType::kFloat16);
+    DeviceTensor ew = context.allocate(TensorLayout::contiguous(ews, 2), ScalarType::kFloat16);
     DeviceTensor eo = context.allocate(TensorLayout::contiguous(es, 2));
     const uint16_t one = f32_to_f16(1.0f);
     context.upload(ei, edge.data(), edge.size());
     context.upload_bytes(ew, &one, sizeof(one));
-    PreparedF16Activation slot = PreparedF16Activation::create(
-        context, static_cast<uint32_t>(edge.size()), 1);
-    DenseGemmPlan edge_plan = DenseGemmPlan::create(
-        context, {static_cast<uint32_t>(edge.size()), 1, 1,
-                  DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone});
+    PreparedF16Activation slot =
+        PreparedF16Activation::create(context, static_cast<uint32_t>(edge.size()), 1);
+    DenseGemmPlan edge_plan =
+        DenseGemmPlan::create(context, {static_cast<uint32_t>(edge.size()), 1, 1,
+                                        DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone});
     TensorBatch edge_batch = context.begin_batch();
-    PreparedF16ActivationView prepared = slot.prepare(
-        edge_batch, ei, static_cast<uint32_t>(edge.size()));
+    PreparedF16ActivationView prepared =
+        slot.prepare(edge_batch, ei, static_cast<uint32_t>(edge.size()));
     edge_plan.record(edge_batch, prepared, ew, eo);
     edge_batch.submit().wait();
     std::vector<float> got(edge.size());
@@ -609,8 +629,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
 
   bool invalid_mode_rejected = false;
   try {
-    DenseGemmPlanDesc invalid{rows, n, k,
-        static_cast<DenseGemmMode>(0xffffffffu), DenseGemmBias::kNone};
+    DenseGemmPlanDesc invalid{rows, n, k, static_cast<DenseGemmMode>(0xffffffffu),
+                              DenseGemmBias::kNone};
     (void)DenseGemmPlan::create(context, invalid);
   } catch (const std::invalid_argument&) {
     invalid_mode_rejected = true;
@@ -621,9 +641,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
   run_float_mode(DenseGemmMode::kFloat32, DenseGemmBias::kNone);
   bool invalid_bias_rejected = false;
   try {
-    (void)DenseGemmPlan::create(
-        context, {rows, n, k, DenseGemmMode::kFloat16Vae,
-                  DenseGemmBias::kFloat32});
+    (void)DenseGemmPlan::create(context,
+                                {rows, n, k, DenseGemmMode::kFloat16Vae, DenseGemmBias::kFloat32});
   } catch (const std::invalid_argument&) {
     invalid_bias_rejected = true;
   }
@@ -636,8 +655,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     alias_rejected = true;
   }
   try {
-    plan.record(validation_batch, input, weight, output, desc.max_rows + 1,
-                0, 0, &bias);
+    plan.record(validation_batch, input, weight, output, desc.max_rows + 1, 0, 0, &bias);
   } catch (const std::invalid_argument&) {
     range_rejected = true;
   }
@@ -646,7 +664,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
   } catch (const std::invalid_argument&) {
     missing_bias_rejected = true;
   }
-  CHECK(alias_rejected); CHECK(range_rejected); CHECK(missing_bias_rejected);
+  CHECK(alias_rejected);
+  CHECK(range_rejected);
+  CHECK(missing_bias_rejected);
   plan.record(validation_batch, input, weight, output, rows, 1, 0, &bias);
   validation_batch.submit().wait();
 
@@ -654,11 +674,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
   // projections, and retained exactly through their submission token.
   const uint64_t staging_warm_shape[] = {64, 32};
   {
-    DeviceTensor staging_warm = context.allocate(
-        TensorLayout::contiguous(staging_warm_shape, 2));
+    DeviceTensor staging_warm = context.allocate(TensorLayout::contiguous(staging_warm_shape, 2));
     std::vector<float> staging_warm_values(64 * 32, 0.0f);
-    context.upload(staging_warm, staging_warm_values.data(),
-                   staging_warm_values.size());
+    context.upload(staging_warm, staging_warm_values.data(), staging_warm_values.size());
   }
   context.upload_bytes(input, input_bits.data(), input_bits.size() * 2);
   const uint64_t gemm_lifetime_baseline = context.pooled_used_bytes();
@@ -667,10 +685,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     const uint64_t ais[] = {lm, lk}, w0s[] = {ln0, lk}, w1s[] = {ln1, lk};
     const uint64_t o0s[] = {lm, ln0}, o1s[] = {lm, ln1};
     DeviceTensor ai = context.allocate(TensorLayout::contiguous(ais, 2));
-    DeviceTensor w0 = context.allocate(TensorLayout::contiguous(w0s, 2),
-                                       ScalarType::kFloat16);
-    DeviceTensor w1 = context.allocate(TensorLayout::contiguous(w1s, 2),
-                                       ScalarType::kFloat16);
+    DeviceTensor w0 = context.allocate(TensorLayout::contiguous(w0s, 2), ScalarType::kFloat16);
+    DeviceTensor w1 = context.allocate(TensorLayout::contiguous(w1s, 2), ScalarType::kFloat16);
     DeviceTensor o0 = context.allocate(TensorLayout::contiguous(o0s, 2));
     DeviceTensor o1 = context.allocate(TensorLayout::contiguous(o1s, 2));
     std::vector<float> ah(size_t(lm) * lk, 0.25f);
@@ -682,11 +698,9 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     PreparedF16Activation slot0 = PreparedF16Activation::create(context, lm, lk);
     PreparedF16Activation slot1 = PreparedF16Activation::create(context, lm, lk);
     DenseGemmPlan p0 = DenseGemmPlan::create(
-        context, {lm, ln0, lk, DenseGemmMode::kFloat16Vae,
-                  DenseGemmBias::kNone});
+        context, {lm, ln0, lk, DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone});
     DenseGemmPlan p1 = DenseGemmPlan::create(
-        context, {lm, ln1, lk, DenseGemmMode::kFloat16Vae,
-                  DenseGemmBias::kNone});
+        context, {lm, ln1, lk, DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone});
 
     TensorBatch first = context.begin_batch();
     PreparedF16ActivationView first_view = slot0.prepare(first, ai, lm);
@@ -707,12 +721,16 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     p0.record(third, third_view, w0, o0);
     Submission third_token = third.submit();
     CHECK(third_token.value() > second_token.value());
-    first_token.wait(); second_token.wait(); third_token.wait();
+    first_token.wait();
+    second_token.wait();
+    third_token.wait();
     std::vector<float> got0(size_t(lm) * ln0), got1(size_t(lm) * ln1);
     context.download(o0, got0.data(), got0.size());
     context.download(o1, got1.data(), got1.size());
-    for (float value : got0) CHECK(value == 4.0f);
-    for (float value : got1) CHECK(value == -2.0f);
+    for (float value : got0)
+      CHECK(value == 4.0f);
+    for (float value : got1)
+      CHECK(value == -2.0f);
     const uint64_t warm_reserved = context.reserved_bytes();
     const uint64_t warm_descriptors = context.descriptor_set_allocations();
 
@@ -747,7 +765,8 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     {
       TensorBatch bounded = context.begin_batch();
       PreparedF16ActivationView bounded_view = slot0.prepare(bounded, ai, lm);
-      for (int i = 0; i < 31; ++i) p0.record(bounded, bounded_view, w0, o0);
+      for (int i = 0; i < 31; ++i)
+        p0.record(bounded, bounded_view, w0, o0);
       try {
         p0.record(bounded, bounded_view, w0, o0);
       } catch (const std::logic_error&) {
@@ -770,14 +789,11 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     constexpr uint32_t dm = 64, dn = 16, dk = 32;
     const uint64_t das[] = {dm, dk}, dws[] = {dn, dk}, dos[] = {dm, dn};
     DeviceTensor da = context.allocate(TensorLayout::contiguous(das, 2));
-    DeviceTensor dw = context.allocate(TensorLayout::contiguous(dws, 2),
-                                       ScalarType::kFloat16);
+    DeviceTensor dw = context.allocate(TensorLayout::contiguous(dws, 2), ScalarType::kFloat16);
     DeviceTensor dout = context.allocate(TensorLayout::contiguous(dos, 2));
-    PreparedF16Activation dslot =
-        PreparedF16Activation::create(context, dm, dk);
+    PreparedF16Activation dslot = PreparedF16Activation::create(context, dm, dk);
     DenseGemmPlan dplan = DenseGemmPlan::create(
-        context, {dm, dn, dk, DenseGemmMode::kFloat16Vae,
-                  DenseGemmBias::kNone});
+        context, {dm, dn, dk, DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone});
     TensorBatch drop_batch = context.begin_batch();
     PreparedF16ActivationView dview = dslot.prepare(drop_batch, da, dm);
     dplan.record(drop_batch, dview, dw, dout);
@@ -793,14 +809,11 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
     constexpr uint32_t im = 1, in = 1, ik = 1;
     const uint64_t is[] = {im, ik}, ws[] = {in, ik}, os[] = {im, in};
     DeviceTensor ii = isolated.allocate(TensorLayout::contiguous(is, 2));
-    DeviceTensor iw = isolated.allocate(TensorLayout::contiguous(ws, 2),
-                                        ScalarType::kFloat16);
+    DeviceTensor iw = isolated.allocate(TensorLayout::contiguous(ws, 2), ScalarType::kFloat16);
     DeviceTensor io = isolated.allocate(TensorLayout::contiguous(os, 2));
-    PreparedF16Activation slot =
-        PreparedF16Activation::create(isolated, im, ik);
+    PreparedF16Activation slot = PreparedF16Activation::create(isolated, im, ik);
     DenseGemmPlan plan = DenseGemmPlan::create(
-        isolated, {im, in, ik, DenseGemmMode::kFloat16Vae,
-                   DenseGemmBias::kNone});
+        isolated, {im, in, ik, DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone});
     if (supersession) {
       TensorBatch batch = isolated.begin_batch();
       PreparedF16ActivationView old = slot.prepare(batch, ii, im);
@@ -841,18 +854,14 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
   {
     constexpr uint32_t bm = 64, bn = 5376, bk = 5376;
     const uint64_t as[] = {bm, bk}, ws[] = {bn, bk}, os[] = {bm, bn};
-    DeviceTensor ai = context.allocate(TensorLayout::contiguous(as, 2),
-                                       ScalarType::kBFloat16);
-    DeviceTensor wi = context.allocate(TensorLayout::contiguous(ws, 2),
-                                       ScalarType::kBFloat16);
-    DeviceTensor oi = context.allocate(TensorLayout::contiguous(os, 2),
-                                       ScalarType::kBFloat16);
+    DeviceTensor ai = context.allocate(TensorLayout::contiguous(as, 2), ScalarType::kBFloat16);
+    DeviceTensor wi = context.allocate(TensorLayout::contiguous(ws, 2), ScalarType::kBFloat16);
+    DeviceTensor oi = context.allocate(TensorLayout::contiguous(os, 2), ScalarType::kBFloat16);
     std::vector<uint16_t> az(size_t(bm) * bk, reference_bf16(0.25f));
     std::vector<uint16_t> wz(size_t(bn) * bk, reference_bf16(0.001f));
     context.upload_bytes(ai, az.data(), az.size() * 2);
     context.upload_bytes(wi, wz.data(), wz.size() * 2);
-    DenseGemmPlanDesc bd{bm, bn, bk, DenseGemmMode::kBFloat16,
-                         DenseGemmBias::kNone};
+    DenseGemmPlanDesc bd{bm, bn, bk, DenseGemmMode::kBFloat16, DenseGemmBias::kNone};
     DenseGemmPlan bp = DenseGemmPlan::create(context, bd);
     for (int iteration = -1; iteration < 3; ++iteration) {
       const auto start = std::chrono::steady_clock::now();
@@ -860,17 +869,21 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
       bp.record(b, ai, wi, oi, bm);
       b.submit().wait();
       if (iteration >= 0) {
-        const double ms = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - start).count();
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+                .count();
         std::printf("  deterministic Vulkan BF16 GEMM 64x5376x5376: %.3f ms\n", ms);
       }
     }
     const auto batched_start = std::chrono::steady_clock::now();
     TensorBatch repeated = context.begin_batch();
-    for (int i = 0; i < 16; ++i) bp.record(repeated, ai, wi, oi, bm);
+    for (int i = 0; i < 16; ++i)
+      bp.record(repeated, ai, wi, oi, bm);
     repeated.submit().wait();
-    const double batched_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - batched_start).count() / 16.0;
+    const double batched_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - batched_start)
+            .count() /
+        16.0;
     std::printf("  deterministic Vulkan BF16 GEMM batched device time proxy: %.3f ms\n",
                 batched_ms);
   }
@@ -894,8 +907,7 @@ SLOPFAB_TEST_CATEGORY(vulkan_gemm_dispatch_geometry, "synthetic") {
   CHECK(geometry.x == 8 && geometry.y == 8);
   CHECK(!gemm_dispatch_geometry(129, 128, 16, 16, 8, 8, &geometry));
   CHECK(!gemm_dispatch_geometry(128, 129, 16, 16, 8, 8, &geometry));
-  CHECK(!gemm_dispatch_geometry(UINT64_MAX, UINT64_MAX, 16, 16,
-                                UINT32_MAX, UINT32_MAX, &geometry));
+  CHECK(!gemm_dispatch_geometry(UINT64_MAX, UINT64_MAX, 16, 16, UINT32_MAX, UINT32_MAX, &geometry));
   CHECK(!gemm_dispatch_geometry(1, 1, 0, 16, 8, 8, &geometry));
   CHECK(!gemm_dispatch_geometry(1, 1, 16, 16, 8, 8, nullptr));
 }

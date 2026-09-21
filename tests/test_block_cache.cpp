@@ -38,20 +38,22 @@ BlockCacheConfig cfg(int span, int interval, int warmup = 3, int start = -1) {
 
 int count(const std::vector<uint8_t>& plan) {
   int n = 0;
-  for (uint8_t v : plan) n += v;
+  for (uint8_t v : plan)
+    n += v;
   return n;
 }
 
 // 1 at each listed index, 0 elsewhere.
 std::vector<uint8_t> at(size_t n, const std::vector<int>& indices) {
   std::vector<uint8_t> out(n, 0);
-  for (int i : indices) out[static_cast<size_t>(i)] = 1;
+  for (int i : indices)
+    out[static_cast<size_t>(i)] = 1;
   return out;
 }
 
 enum class Wrong {
-  kNoTerminal,    // last step not protected
-  kAnchorAtZero,  // interval phased from step 0 instead of from the warmup
+  kNoTerminal,   // last step not protected
+  kAnchorAtZero, // interval phased from step 0 instead of from the warmup
 };
 
 std::vector<uint8_t> wrong_plan(const BlockCacheConfig& c, int steps, Wrong which) {
@@ -60,11 +62,13 @@ std::vector<uint8_t> wrong_plan(const BlockCacheConfig& c, int steps, Wrong whic
   bool have = false;
   for (int i = 0; i < steps; ++i) {
     bool forced = !c.enabled() || i < warmup || !have;
-    if (which != Wrong::kNoTerminal) forced = forced || i >= steps - 1;
+    if (which != Wrong::kNoTerminal)
+      forced = forced || i >= steps - 1;
 
     const int phase = which == Wrong::kAnchorAtZero ? i : i - warmup;
     const bool compute = forced || (phase % c.interval) == 0;
-    if (compute) have = true;
+    if (compute)
+      have = true;
     out[static_cast<size_t>(i)] = compute ? 1 : 0;
   }
   return out;
@@ -81,7 +85,7 @@ bool terminal_is_off_interval(const BlockCacheConfig& c, int steps) {
   return ((steps - 1 - warmup) % c.interval) != 0;
 }
 
-}  // namespace
+} // namespace
 
 SLOPFAB_TEST(block_span_centres_by_default) {
   // 50 blocks, span 10 -> [20, 30). The point of centring is that neither end
@@ -129,9 +133,9 @@ SLOPFAB_TEST(block_span_clamps_rather_than_failing) {
 }
 
 SLOPFAB_TEST(block_span_disabled_is_invalid) {
-  CHECK(!resolve_block_span(cfg(0, 2), 50).valid());   // span 0
-  CHECK(!resolve_block_span(cfg(10, 1), 50).valid());  // interval 1
-  CHECK(!resolve_block_span(cfg(10, 2), 0).valid());   // no blocks
+  CHECK(!resolve_block_span(cfg(0, 2), 50).valid());  // span 0
+  CHECK(!resolve_block_span(cfg(10, 1), 50).valid()); // interval 1
+  CHECK(!resolve_block_span(cfg(10, 2), 0).valid());  // no blocks
 }
 
 SLOPFAB_TEST(block_cache_plan_protects_warmup_and_terminal) {
@@ -179,7 +183,8 @@ SLOPFAB_TEST(block_cache_interval_is_phased_from_the_warmup) {
   for (int w = 1; w <= 6; ++w) {
     const std::vector<uint8_t> p = plan_block_cache(cfg(10, 3, w), 20);
     CHECK(p[static_cast<size_t>(w)] == 1);
-    for (int i = 0; i < w; ++i) CHECK(p[static_cast<size_t>(i)] == 1);
+    for (int i = 0; i < w; ++i)
+      CHECK(p[static_cast<size_t>(i)] == 1);
   }
 }
 
@@ -196,7 +201,8 @@ SLOPFAB_TEST(block_cache_never_reuses_an_absent_delta) {
   // buffers, so it is driven directly: one that never captures never gets a
   // reuse, however long the run.
   BlockCache cache(cfg(10, 2, 0), 8);
-  for (int i = 0; i < 8; ++i) CHECK(cache.should_compute(i, /*have_delta=*/false));
+  for (int i = 0; i < 8; ++i)
+    CHECK(cache.should_compute(i, /*have_delta=*/false));
   CHECK(cache.reused() == 0);
   CHECK(cache.computed() == 8);
 }
@@ -217,7 +223,8 @@ SLOPFAB_TEST(block_cache_counts_add_up) {
   BlockCache cache(c, 20);
   bool have = false;
   for (int i = 0; i < 20; ++i) {
-    if (cache.should_compute(i, have)) have = true;
+    if (cache.should_compute(i, have))
+      have = true;
   }
   CHECK(cache.computed() + cache.reused() == 20);
   // The planner and the stepped object are the same policy, so their tallies

@@ -48,7 +48,8 @@ std::vector<double> row_profile(const slopfab::vae::DecodedVideo& image, bool ed
   for (int row = 0; row < image.height; ++row) {
     int count = 0;
     for (int column = 0; column < image.width; ++column) {
-      if (edges && column >= margin && column < image.width - margin) continue;
+      if (edges && column >= margin && column < image.width - margin)
+        continue;
       profile[row] += luminance(image, row, column);
       ++count;
     }
@@ -68,18 +69,19 @@ double patch_amplitude(const std::vector<double>& profile) {
     cosine += residual * std::cos(phase);
     sine += residual * std::sin(phase);
   }
-  return 2.0 * std::hypot(cosine, sine) /
-         ((count - 2) * (1.0 - std::cos(2.0 * pi / 16.0)));
+  return 2.0 * std::hypot(cosine, sine) / ((count - 2) * (1.0 - std::cos(2.0 * pi / 16.0)));
 }
 
 void save_image(const std::filesystem::path& directory, const std::string& name,
-                 const slopfab::vae::DecodedVideo& image) {
+                const slopfab::vae::DecodedVideo& image) {
   for (float value : image.data) {
-    if (!std::isfinite(value)) throw std::runtime_error("non-finite decoded pixel");
+    if (!std::isfinite(value))
+      throw std::runtime_error("non-finite decoded pixel");
   }
   slopfab::write_safetensors((directory / (name + ".safetensors")).string(),
-      {{"rgb", {3, image.height, image.width},
-        std::vector<float>(image.data.begin(), image.data.end())}});
+                             {{"rgb",
+                               {3, image.height, image.width},
+                               std::vector<float>(image.data.begin(), image.data.end())}});
   slopfab::RGBImage rgb;
   rgb.width = image.width;
   rgb.height = image.height;
@@ -94,7 +96,7 @@ void save_image(const std::filesystem::path& directory, const std::string& name,
   write_ppm(directory / (name + ".ppm"), rgb);
   if (image.width % 3 == 0 && image.height % 3 == 0) {
     write_ppm(directory / (name + "-third.ppm"),
-               slopfab::resize_reference_lanczos(rgb, image.width / 3, image.height / 3));
+              slopfab::resize_reference_lanczos(rgb, image.width / 3, image.height / 3));
   }
 }
 
@@ -114,33 +116,49 @@ int main(int argc, char** argv) {
     for (int index = 1; index < argc; ++index) {
       const std::string argument = argv[index];
       if (argument == "--help") {
-        std::puts("usage: slopfab_stillprobe --vae FILE --out NEW_DIRECTORY\n"
-                  "  (--reference-image FILE | --latents FILE | --prompt TEXT --transformer FILE --text-encoder FILE --tokenizer FILE)\n"
-                  "  [--width 768 --height 768 --steps 50 --seed 1234]\n"
-                  "Saved latents must be F32 video_rows [height/32 * width/32, 96].\n"
-                  "Checks default still decoding against seven-token video decoding.\n"
-                  "Both decodes use identical latents, weights, spatial tiling and phase 3.");
+        std::puts(
+            "usage: slopfab_stillprobe --vae FILE --out NEW_DIRECTORY\n"
+            "  (--reference-image FILE | --latents FILE | --prompt TEXT --transformer FILE --text-encoder FILE --tokenizer FILE)\n"
+            "  [--width 768 --height 768 --steps 50 --seed 1234]\n"
+            "Saved latents must be F32 video_rows [height/32 * width/32, 96].\n"
+            "Checks default still decoding against seven-token video decoding.\n"
+            "Both decodes use identical latents, weights, spatial tiling and phase 3.");
         return 0;
       }
-      if (++index >= argc) throw std::invalid_argument("missing value for " + argument);
+      if (++index >= argc)
+        throw std::invalid_argument("missing value for " + argument);
       const std::string value = argv[index];
-      if (argument == "--vae") request.video_vae_path = value;
-      else if (argument == "--out") directory = value;
-      else if (argument == "--latents") latent_path = value;
-      else if (argument == "--reference-image") reference_path = value;
-      else if (argument == "--prompt") request.prompt = value;
-      else if (argument == "--transformer") request.transformer_path = value;
-      else if (argument == "--text-encoder") request.text_encoder_path = value;
-      else if (argument == "--tokenizer") request.tokenizer_path = value;
-      else if (argument == "--width") request.canvas_width = std::stoi(value);
-      else if (argument == "--height") request.canvas_height = std::stoi(value);
-      else if (argument == "--steps") request.num_inference_steps = std::stoi(value);
-      else if (argument == "--seed") request.seed = std::stoull(value);
-      else throw std::invalid_argument("unknown argument " + argument);
+      if (argument == "--vae")
+        request.video_vae_path = value;
+      else if (argument == "--out")
+        directory = value;
+      else if (argument == "--latents")
+        latent_path = value;
+      else if (argument == "--reference-image")
+        reference_path = value;
+      else if (argument == "--prompt")
+        request.prompt = value;
+      else if (argument == "--transformer")
+        request.transformer_path = value;
+      else if (argument == "--text-encoder")
+        request.text_encoder_path = value;
+      else if (argument == "--tokenizer")
+        request.tokenizer_path = value;
+      else if (argument == "--width")
+        request.canvas_width = std::stoi(value);
+      else if (argument == "--height")
+        request.canvas_height = std::stoi(value);
+      else if (argument == "--steps")
+        request.num_inference_steps = std::stoi(value);
+      else if (argument == "--seed")
+        request.seed = std::stoull(value);
+      else
+        throw std::invalid_argument("unknown argument " + argument);
     }
     if (directory.empty() || request.video_vae_path.empty() ||
-        (latent_path.empty() && reference_path.empty() && (request.prompt.empty() || request.transformer_path.empty() ||
-                                request.text_encoder_path.empty() || request.tokenizer_path.empty())))
+        (latent_path.empty() && reference_path.empty() &&
+         (request.prompt.empty() || request.transformer_path.empty() ||
+          request.text_encoder_path.empty() || request.tokenizer_path.empty())))
       throw std::invalid_argument("missing required options; use --help");
     if (!reference_path.empty() && !latent_path.empty())
       throw std::invalid_argument("choose reference-image or latents, not both");
@@ -149,8 +167,8 @@ int main(int argc, char** argv) {
       throw std::invalid_argument("output directory already exists; choose a new directory");
     std::filesystem::create_directories(directory);
     auto report = output_file(directory / "report.txt");
-    report << std::setprecision(10)
-           << "canvas=" << plan.canvas_width << 'x' << plan.canvas_height << '\n'
+    report << std::setprecision(10) << "canvas=" << plan.canvas_width << 'x' << plan.canvas_height
+           << '\n'
            << "vae=" << request.video_vae_path << '\n';
     if (latent_path.empty() && reference_path.empty()) {
       report << "prompt=" << request.prompt << '\n'
@@ -160,7 +178,8 @@ int main(int argc, char** argv) {
              << "tokenizer=" << request.tokenizer_path << '\n'
              << "Generation defaults: Euler, Flash2; no step/block cache.\n";
     } else {
-      report << "Generation skipped; original prompt/seed/settings are not inferred from latents.\n";
+      report
+          << "Generation skipped; original prompt/seed/settings are not inferred from latents.\n";
     }
     report << "Patch amplitude: 16px row-luma fundamental, second-difference detrended,\n"
            << "in 0..255 luma units; scene content can contribute. Not an aesthetic score.\n"
@@ -171,17 +190,17 @@ int main(int argc, char** argv) {
       checkpoint.open(request.video_vae_path);
       const auto* mean_tensor = checkpoint.find("latents_mean");
       const auto* std_tensor = checkpoint.find("latents_std");
-      const auto mean = mean_tensor ? slopfab::to_f32(*mean_tensor)
-                                   : slopfab::vae::default_video_latents_mean();
-      const auto stddev = std_tensor ? slopfab::to_f32(*std_tensor)
-                                    : slopfab::vae::default_video_latents_std();
+      const auto mean =
+          mean_tensor ? slopfab::to_f32(*mean_tensor) : slopfab::vae::default_video_latents_mean();
+      const auto stddev =
+          std_tensor ? slopfab::to_f32(*std_tensor) : slopfab::vae::default_video_latents_std();
       const auto image = slopfab::resize_reference_lanczos(
           slopfab::load_reference_image(reference_path), plan.canvas_width, plan.canvas_height);
       slopfab::vae::KeyframeEncoder encoder(checkpoint);
       const auto encoded = encoder.encode_reference_image(image, mean, stddev);
       latent_path = (directory / "input.safetensors").string();
       slopfab::write_safetensors(latent_path,
-          {{"video_rows", {plan.layout.num_video_rows, 96}, encoded}});
+                                 {{"video_rows", {plan.layout.num_video_rows, 96}, encoded}});
       report << "reference_image=" << reference_path << " (denoising bypassed)\n";
     }
     if (latent_path.empty()) {
@@ -204,12 +223,14 @@ int main(int argc, char** argv) {
       throw std::invalid_argument("latent video_rows must be F32 and match the still canvas");
     const auto packed = slopfab::to_f32(rows);
     for (float value : packed) {
-      if (!std::isfinite(value)) throw std::invalid_argument("non-finite latent");
+      if (!std::isfinite(value))
+        throw std::invalid_argument("non-finite latent");
     }
     std::vector<float> latent(static_cast<size_t>(24) * plan.layout.latent_height *
-                               plan.layout.latent_width);
+                              plan.layout.latent_width);
     slopfab::dit::unpatchify_video(packed.data(), plan.layout, latent.data());
-    slopfab::write_safetensors((directory / "normalized-latent.safetensors").string(),
+    slopfab::write_safetensors(
+        (directory / "normalized-latent.safetensors").string(),
         {{"latent", {24, 1, plan.layout.latent_height, plan.layout.latent_width}, latent}});
 
     std::puts("Loading VAE once for both decodes...");
@@ -217,10 +238,10 @@ int main(int argc, char** argv) {
     checkpoint.open(request.video_vae_path);
     const auto* mean_tensor = checkpoint.find("latents_mean");
     const auto* std_tensor = checkpoint.find("latents_std");
-    const auto mean = mean_tensor ? slopfab::to_f32(*mean_tensor)
-                                 : slopfab::vae::default_video_latents_mean();
-    const auto stddev = std_tensor ? slopfab::to_f32(*std_tensor)
-                                   : slopfab::vae::default_video_latents_std();
+    const auto mean =
+        mean_tensor ? slopfab::to_f32(*mean_tensor) : slopfab::vae::default_video_latents_mean();
+    const auto stddev =
+        std_tensor ? slopfab::to_f32(*std_tensor) : slopfab::vae::default_video_latents_std();
     slopfab::vae::ViTDecoder decoder;
     decoder.load(checkpoint);
     std::vector<std::vector<double>> profiles;
@@ -235,8 +256,8 @@ int main(int argc, char** argv) {
       report << name << " seconds=" << seconds << " patch_luma=" << whole
              << " edge_patch_luma=" << edges << '\n';
       report.flush();
-      std::printf("%s: %.3fs, patch luma %.5f, edge patch luma %.5f\n",
-                  name.c_str(), seconds, whole, edges);
+      std::printf("%s: %.3fs, patch luma %.5f, edge patch luma %.5f\n", name.c_str(), seconds,
+                  whole, edges);
     };
 
     std::puts("A: default seven-token still decoder");
@@ -266,7 +287,8 @@ int main(int argc, char** argv) {
     csv << '\n';
     for (int row = 0; row < plan.canvas_height; ++row) {
       csv << row;
-      for (const auto& profile : profiles) csv << ',' << profile[row];
+      for (const auto& profile : profiles)
+        csv << ',' << profile[row];
       csv << '\n';
     }
     std::printf("Diagnostic saved to %s\n", directory.string().c_str());

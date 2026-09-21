@@ -6,13 +6,15 @@
 namespace {
 
 class TemporalInvariantBackend final : public slopfab::vae::VideoVaeWindowBackend {
- public:
+public:
   TemporalInvariantBackend() {
     config_.in_channels = 3;
     config_.patch = 2;
   }
 
-  const slopfab::vae::ViTConfig& config() const override { return config_; }
+  const slopfab::vae::ViTConfig& config() const override {
+    return config_;
+  }
 
   void forward_windows(const float* latent, int batch, int frames, int height, int width,
                        std::vector<std::vector<float>>& output, const size_t* slots) override {
@@ -51,7 +53,8 @@ class TemporalInvariantBackend final : public slopfab::vae::VideoVaeWindowBacken
     }
   }
 
-  void release_host_registrations() override {}
+  void release_host_registrations() override {
+  }
 
   int seen_frames = 0;
   slopfab::vae::ViTConfig config_;
@@ -70,9 +73,15 @@ SLOPFAB_TEST(stillprobe_repeats_each_channel_without_interleaving) {
       }
     }
   }
-  CHECK(slopfab::test::throws([] { slopfab::probe::repeat_still_latent({1, 2}, 0, 7); }));
-  CHECK(slopfab::test::throws([] { slopfab::probe::repeat_still_latent({1, 2}, 3, 7); }));
-  CHECK(slopfab::test::throws([] { slopfab::probe::repeat_still_latent({1, 2}, 2, 0); }));
+  CHECK(slopfab::test::throws([] {
+    slopfab::probe::repeat_still_latent({1, 2}, 0, 7);
+  }));
+  CHECK(slopfab::test::throws([] {
+    slopfab::probe::repeat_still_latent({1, 2}, 3, 7);
+  }));
+  CHECK(slopfab::test::throws([] {
+    slopfab::probe::repeat_still_latent({1, 2}, 2, 0);
+  }));
 }
 
 SLOPFAB_TEST(stillprobe_extracts_planar_first_frame) {
@@ -112,12 +121,12 @@ SLOPFAB_TEST(stillprobe_matches_video_phase_channels_and_spatial_blending) {
   std::vector<float> latent(3 * 4 * 4);
   for (int channel = 0; channel < 3; ++channel)
     std::fill_n(latent.data() + channel * 16, 16, static_cast<float>(channel + 1));
-  const auto original = slopfab::vae::decode_still_image(
-      backend, latent.data(), 4, 4, mean, stddev, schedule);
+  const auto original =
+      slopfab::vae::decode_still_image(backend, latent.data(), 4, 4, mean, stddev, schedule);
   CHECK(backend.seen_frames == 7);
   const auto repeated = slopfab::probe::repeat_still_latent(latent, 3, 7);
-  const auto video = slopfab::vae::decode_video(
-      backend, repeated.data(), 7, 4, 4, mean, stddev, schedule);
+  const auto video =
+      slopfab::vae::decode_video(backend, repeated.data(), 7, 4, 4, mean, stddev, schedule);
   CHECK(backend.seen_frames == 7);
   CHECK(video.frames == 22);
   const auto extracted = slopfab::probe::first_frame(video);

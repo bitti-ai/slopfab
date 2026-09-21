@@ -6,13 +6,15 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_qwen_vision_exact_gelu, "synthetic") {
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
     return;
   }
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions options;
@@ -26,22 +28,33 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_qwen_vision_exact_gelu, "synthetic") {
   // Odd count pins the packed-pair tail.  Exceptional BF16 values define a
   // total contract: signed subnormals flush, NaNs canonicalize, -Inf maps to
   // -0, and +Inf remains +Inf.  Huge finite values also avoid native tanh.
-  std::vector<uint16_t> input = {
-      0x0000u, 0x8000u, 0x0001u, 0x8001u, 0x7f81u, 0x7fc1u,
-      0x7f80u, 0xff80u, 0x7f7fu, 0xff7fu, f32_to_bf16(-12.0f),
-      f32_to_bf16(-1.0f), f32_to_bf16(-0.125f), f32_to_bf16(0.125f),
-      f32_to_bf16(1.0f), f32_to_bf16(6.0f), f32_to_bf16(12.0f)};
+  std::vector<uint16_t> input = {0x0000u,
+                                 0x8000u,
+                                 0x0001u,
+                                 0x8001u,
+                                 0x7f81u,
+                                 0x7fc1u,
+                                 0x7f80u,
+                                 0xff80u,
+                                 0x7f7fu,
+                                 0xff7fu,
+                                 f32_to_bf16(-12.0f),
+                                 f32_to_bf16(-1.0f),
+                                 f32_to_bf16(-0.125f),
+                                 f32_to_bf16(0.125f),
+                                 f32_to_bf16(1.0f),
+                                 f32_to_bf16(6.0f),
+                                 f32_to_bf16(12.0f)};
   cuda::DeviceBuffer<uint16_t> cuda_bits(input.size());
   cuda_bits.copy_from_host(input.data(), input.size());
-  cuda::launch_gelu_tanh_exact(
-      reinterpret_cast<__nv_bfloat16*>(cuda_bits.get()), input.size(), nullptr);
+  cuda::launch_gelu_tanh_exact(reinterpret_cast<__nv_bfloat16*>(cuda_bits.get()), input.size(),
+                               nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   std::vector<uint16_t> expected(input.size());
   cuda_bits.copy_to_host(expected.data(), expected.size());
 
   const uint64_t shape[] = {1, input.size()};
-  DeviceTensor activation = vk.allocate(
-      TensorLayout::contiguous(shape, 2), ScalarType::kBFloat16);
+  DeviceTensor activation = vk.allocate(TensorLayout::contiguous(shape, 2), ScalarType::kBFloat16);
   vk.upload_bytes(activation, input.data(), input.size() * sizeof(uint16_t));
   TensorBatch batch = vk.begin_batch();
   CHECK(batch.remaining_operator_capacity() == 1);
@@ -69,18 +82,17 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_qwen_vision_exact_gelu, "synthetic") {
     const uint64_t count = rows * dim;
     std::vector<uint16_t> host(count);
     for (uint64_t i = 0; i < count; ++i)
-      host[i] = f32_to_bf16(static_cast<float>(static_cast<int>(i % 257) - 128) /
-                            32.0f);
+      host[i] = f32_to_bf16(static_cast<float>(static_cast<int>(i % 257) - 128) / 32.0f);
     cuda::DeviceBuffer<uint16_t> cuda_production(count);
     cuda_production.copy_from_host(host.data(), host.size());
     const auto cuda_start = std::chrono::steady_clock::now();
-    cuda::launch_gelu_tanh_exact(
-        reinterpret_cast<__nv_bfloat16*>(cuda_production.get()), count, nullptr);
+    cuda::launch_gelu_tanh_exact(reinterpret_cast<__nv_bfloat16*>(cuda_production.get()), count,
+                                 nullptr);
     SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
     const auto cuda_end = std::chrono::steady_clock::now();
     const uint64_t production_shape[] = {rows, dim};
-    DeviceTensor vk_production = vk.allocate(
-        TensorLayout::contiguous(production_shape, 2), ScalarType::kBFloat16);
+    DeviceTensor vk_production =
+        vk.allocate(TensorLayout::contiguous(production_shape, 2), ScalarType::kBFloat16);
     vk.upload_bytes(vk_production, host.data(), host.size() * 2);
     const auto vk_start = std::chrono::steady_clock::now();
     TensorBatch production_batch = vk.begin_batch();
@@ -104,13 +116,15 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_qwen_vision_exact_layout, "synthetic") {
   int cuda_devices = 0;
   if (cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 ||
       !Instance::available()) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !Instance::available()");
     return;
   }
   Instance instance = Instance::create();
   const auto physical = instance.enumerate_devices();
   if (physical.empty() || !physical.front().info().timeline_semaphore) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: physical.empty() || !physical.front().info().timeline_semaphore");
     return;
   }
   DeviceOptions options;
@@ -135,43 +149,45 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_qwen_vision_exact_layout, "synthetic") {
     fused[i] = static_cast<uint16_t>(0x3e00u + (i * 37u) % 0x0180u);
   // Raw split/merge must preserve exceptional payload bits rather than
   // accidentally canonicalizing them in a layout operation.
-  fused[0] = 0x7fc1u; fused[dim] = 0x8001u; fused[2 * dim] = 0xff80u;
-  for (uint32_t r = 0; r < rows; ++r) position_index[r] = int32_t(r % positions);
+  fused[0] = 0x7fc1u;
+  fused[dim] = 0x8001u;
+  fused[2 * dim] = 0xff80u;
+  for (uint32_t r = 0; r < rows; ++r)
+    position_index[r] = int32_t(r % positions);
   for (size_t i = 0; i < destination.size(); ++i)
     destination[i] = f32_to_bf16(float(int(i % 11) - 5) / 64.0f);
 
   cuda::DeviceBuffer<uint16_t> cx(x.size()), ct(table.size()), cf(fused.size());
   cuda::DeviceBuffer<int32_t> cpi(position_index.size()), csi(scatter_index.size());
   cuda::DeviceBuffer<uint16_t> cq(size_t(rows) * dim), ck(size_t(rows) * dim),
-      cv(size_t(rows) * dim), cm(size_t(groups) * merged_dim),
-      cd(destination.size());
-  cx.copy_from_host(x.data(), x.size()); ct.copy_from_host(table.data(), table.size());
+      cv(size_t(rows) * dim), cm(size_t(groups) * merged_dim), cd(destination.size());
+  cx.copy_from_host(x.data(), x.size());
+  ct.copy_from_host(table.data(), table.size());
   cf.copy_from_host(fused.data(), fused.size());
   cpi.copy_from_host(position_index.data(), position_index.size());
   csi.copy_from_host(scatter_index.data(), scatter_index.size());
   cd.copy_from_host(destination.data(), destination.size());
-  cuda::qwen_vision_add_positions_exact(
-      reinterpret_cast<__nv_bfloat16*>(cx.get()),
-      reinterpret_cast<const __nv_bfloat16*>(ct.get()), cpi.get(), rows, dim,
-      nullptr);
-  cuda::qwen_vision_split_qkv_exact(
-      reinterpret_cast<const __nv_bfloat16*>(cf.get()),
-      reinterpret_cast<__nv_bfloat16*>(cq.get()),
-      reinterpret_cast<__nv_bfloat16*>(ck.get()),
-      reinterpret_cast<__nv_bfloat16*>(cv.get()), rows, dim, nullptr);
+  cuda::qwen_vision_add_positions_exact(reinterpret_cast<__nv_bfloat16*>(cx.get()),
+                                        reinterpret_cast<const __nv_bfloat16*>(ct.get()), cpi.get(),
+                                        rows, dim, nullptr);
+  cuda::qwen_vision_split_qkv_exact(reinterpret_cast<const __nv_bfloat16*>(cf.get()),
+                                    reinterpret_cast<__nv_bfloat16*>(cq.get()),
+                                    reinterpret_cast<__nv_bfloat16*>(ck.get()),
+                                    reinterpret_cast<__nv_bfloat16*>(cv.get()), rows, dim, nullptr);
   cuda::launch_merge_four_rows(reinterpret_cast<const __nv_bfloat16*>(cq.get()),
-                               reinterpret_cast<__nv_bfloat16*>(cm.get()),
-                               groups, dim, nullptr);
-  cuda::qwen_vision_scatter_add_exact(
-      reinterpret_cast<const __nv_bfloat16*>(cm.get()), csi.get(),
-      reinterpret_cast<__nv_bfloat16*>(cd.get()), groups, merged_dim, nullptr);
+                               reinterpret_cast<__nv_bfloat16*>(cm.get()), groups, dim, nullptr);
+  cuda::qwen_vision_scatter_add_exact(reinterpret_cast<const __nv_bfloat16*>(cm.get()), csi.get(),
+                                      reinterpret_cast<__nv_bfloat16*>(cd.get()), groups,
+                                      merged_dim, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
 
   auto matrix = [](uint64_t a, uint64_t b) {
     const uint64_t shape[] = {a, b};
     return TensorLayout::contiguous(shape, 2);
   };
-  auto vector = [](uint64_t n) { return TensorLayout::contiguous(&n, 1); };
+  auto vector = [](uint64_t n) {
+    return TensorLayout::contiguous(&n, 1);
+  };
   DeviceTensor vx = vk.allocate(matrix(rows, dim), ScalarType::kBFloat16);
   DeviceTensor vt = vk.allocate(matrix(positions, dim), ScalarType::kBFloat16);
   DeviceTensor vpi = vk.allocate(vector(rows), ScalarType::kInt32);
@@ -182,9 +198,9 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_qwen_vision_exact_layout, "synthetic") {
   DeviceTensor vm = vk.allocate(matrix(groups, merged_dim), ScalarType::kBFloat16);
   DeviceTensor vsi = vk.allocate(vector(groups), ScalarType::kInt32);
   DeviceTensor vd = vk.allocate(matrix(5, merged_dim), ScalarType::kBFloat16);
-  DeviceTensor vd_replace =
-      vk.allocate(matrix(5, merged_dim), ScalarType::kBFloat16);
-  vk.upload_bytes(vx, x.data(), x.size() * 2); vk.upload_bytes(vt, table.data(), table.size() * 2);
+  DeviceTensor vd_replace = vk.allocate(matrix(5, merged_dim), ScalarType::kBFloat16);
+  vk.upload_bytes(vx, x.data(), x.size() * 2);
+  vk.upload_bytes(vt, table.data(), table.size() * 2);
   vk.upload_bytes(vpi, position_index.data(), position_index.size() * 4);
   vk.upload_bytes(vf, fused.data(), fused.size() * 2);
   vk.upload_bytes(vsi, scatter_index.data(), scatter_index.size() * 4);
@@ -201,16 +217,18 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_qwen_vision_exact_layout, "synthetic") {
   }
   CHECK(batch.remaining_operator_capacity() == 0);
   batch.submit().wait();
-  auto exact = [&](cuda::DeviceBuffer<uint16_t>& authority, DeviceTensor& actual,
-                   size_t count) {
+  auto exact = [&](cuda::DeviceBuffer<uint16_t>& authority, DeviceTensor& actual, size_t count) {
     std::vector<uint16_t> a(count), b(count);
     authority.copy_to_host(a.data(), a.size());
     vk.download_bytes(actual, b.data(), b.size() * 2);
     CHECK(std::memcmp(a.data(), b.data(), count * 2) == 0);
   };
-  exact(cx, vx, x.size()); exact(cq, vq, size_t(rows) * dim);
-  exact(ck, vk_key, size_t(rows) * dim); exact(cv, vv, size_t(rows) * dim);
-  exact(cm, vm, size_t(groups) * merged_dim); exact(cd, vd, destination.size());
+  exact(cx, vx, x.size());
+  exact(cq, vq, size_t(rows) * dim);
+  exact(ck, vk_key, size_t(rows) * dim);
+  exact(cv, vv, size_t(rows) * dim);
+  exact(cm, vm, size_t(groups) * merged_dim);
+  exact(cd, vd, destination.size());
   std::vector<uint16_t> merged_host(size_t(groups) * merged_dim);
   cm.copy_to_host(merged_host.data(), merged_host.size());
   std::vector<uint16_t> replaced_expected = destination;
@@ -239,8 +257,11 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_qwen_vision_exact_layout, "synthetic") {
   DeviceTensor sv = short_vk.allocate(matrix(rows, dim), ScalarType::kBFloat16);
   TensorBatch short_batch = short_vk.begin_batch();
   bool short_rejected = false;
-  try { short_batch.vision_split_qkv_bf16(sf, sq, sk, sv); }
-  catch (const std::invalid_argument&) { short_rejected = true; }
+  try {
+    short_batch.vision_split_qkv_bf16(sf, sq, sk, sv);
+  } catch (const std::invalid_argument&) {
+    short_rejected = true;
+  }
   CHECK(short_rejected);
   CHECK(short_batch.remaining_operator_capacity() == 2);
 }

@@ -39,19 +39,22 @@ const char* g_current = "";
 const char* basename(const char* path) {
   const char* out = path;
   for (const char* p = path; *p != '\0'; ++p) {
-    if (*p == '/' || *p == '\\') out = p + 1;
+    if (*p == '/' || *p == '\\')
+      out = p + 1;
   }
   return out;
 }
 
-}  // namespace
+} // namespace
 
 bool register_test(const char* name, TestFn fn, const char* category) {
   cases().push_back({name, fn, category});
   return true;
 }
 
-void set_current(const char* name) { g_current = name; }
+void set_current(const char* name) {
+  g_current = name;
+}
 
 void check(bool ok, const char* expr, const char* file, int line) {
   ++g_checks;
@@ -97,8 +100,7 @@ void check_close(const std::vector<float>& expected, const std::vector<float>& a
 }
 
 void check_close_rel(const std::vector<float>& expected, const std::vector<float>& actual,
-                     double abs_tol, double rel_tol, const char* what, const char* file,
-                     int line) {
+                     double abs_tol, double rel_tol, const char* what, const char* file, int line) {
   ++g_checks;
   if (expected.size() != actual.size()) {
     ++g_failures;
@@ -106,7 +108,7 @@ void check_close_rel(const std::vector<float>& expected, const std::vector<float
                  line, what, expected.size(), actual.size());
     return;
   }
-  double worst_score = 0.0;  // err / allowance; > 1 fails
+  double worst_score = 0.0; // err / allowance; > 1 fails
   size_t worst_i = 0;
   double worst_abs = 0.0;
   for (size_t i = 0; i < expected.size(); ++i) {
@@ -133,7 +135,8 @@ void check_close_rel(const std::vector<float>& expected, const std::vector<float
 
 void check_deferred(bool ok, const char* file, int line, const char* fmt, ...) {
   ++g_checks;
-  if (ok) return;
+  if (ok)
+    return;
   ++g_deferred;
   std::fprintf(stderr, "  DEFER [%s] %s:%d  ", g_current, basename(file), line);
   va_list args;
@@ -154,13 +157,11 @@ void skip(SkipReason reason, const char* file, int line, const char* fmt, ...) {
   } else {
     ++g_skipped_opt_in;
   }
-  const char* label = reason == SkipReason::kMissingFixture
-      ? "fixture absent"
-      : reason == SkipReason::kInsufficientVram ? "insufficient vram"
-      : reason == SkipReason::kUnsupportedHardware ? "unsupported hardware"
-                                                   : "opt-in disabled";
-  std::fprintf(stderr, "  SKIP [%s] %s:%d  (%s) ", g_current, basename(file), line,
-               label);
+  const char* label = reason == SkipReason::kMissingFixture        ? "fixture absent"
+                      : reason == SkipReason::kInsufficientVram    ? "insufficient vram"
+                      : reason == SkipReason::kUnsupportedHardware ? "unsupported hardware"
+                                                                   : "opt-in disabled";
+  std::fprintf(stderr, "  SKIP [%s] %s:%d  (%s) ", g_current, basename(file), line, label);
   va_list args;
   va_start(args, fmt);
   std::vfprintf(stderr, fmt, args);
@@ -168,11 +169,14 @@ void skip(SkipReason reason, const char* file, int line, const char* fmt, ...) {
   std::fputc(0x0A, stderr);
 }
 
-int skipped_count() { return g_skipped; }
+int skipped_count() {
+  return g_skipped;
+}
 
 void check_printf(bool ok, const char* file, int line, const char* fmt, ...) {
   ++g_checks;
-  if (ok) return;
+  if (ok)
+    return;
   ++g_failures;
   std::fprintf(stderr, "  FAIL [%s] %s:%d  ", g_current, basename(file), line);
   va_list args;
@@ -203,9 +207,17 @@ std::vector<float> make_data(size_t n, uint32_t seed, float scale) {
   return v;
 }
 
-int check_count() { return g_checks; }
-int failure_count() { return g_failures; }
-int deferred_count() { return g_deferred; }
+int check_count() {
+  return g_checks;
+}
+
+int failure_count() {
+  return g_failures;
+}
+
+int deferred_count() {
+  return g_deferred;
+}
 
 int run_all() {
   const char* filter = std::getenv("SLOPFAB_TEST_FILTER");
@@ -213,8 +225,10 @@ int run_all() {
   const char* benchmarks = std::getenv("SLOPFAB_RUN_BENCHMARKS");
   int selected = 0;
   for (const Case& c : cases()) {
-    if (filter != nullptr && std::strstr(c.name, filter) == nullptr) continue;
-    if (category != nullptr && std::strcmp(category, c.category) != 0) continue;
+    if (filter != nullptr && std::strstr(c.name, filter) == nullptr)
+      continue;
+    if (category != nullptr && std::strcmp(category, c.category) != 0)
+      continue;
     ++selected;
     g_current = c.name;
     std::printf("test %s [%s]\n", c.name, c.category);
@@ -243,17 +257,17 @@ int run_all() {
   // and a hardware skip by running the matching compiled image on its GPU.
   if (g_skipped != 0) {
     std::printf(", %d skipped (%d fixture, %d vram, %d hardware, %d opt-in; see SKIP lines above)",
-                g_skipped, g_skipped_fixture, g_skipped_vram, g_skipped_hardware,
-                g_skipped_opt_in);
+                g_skipped, g_skipped_fixture, g_skipped_vram, g_skipped_hardware, g_skipped_opt_in);
   }
   std::fputc(0x0A, stdout);
   if (selected == 0) {
     std::fprintf(stderr, "no test cases matched the requested filters\n");
     return 1;
   }
-  if (g_failures != 0) return 1;
+  if (g_failures != 0)
+    return 1;
   // CTest can distinguish an unavailable suite from a successful one.
   return g_checks == 0 && g_skipped != 0 ? 77 : 0;
 }
 
-}  // namespace slopfab::test
+} // namespace slopfab::test

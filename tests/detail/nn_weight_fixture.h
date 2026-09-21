@@ -9,11 +9,9 @@ namespace {
 // `prepare` + `forward_prepared`, and a tolerance-based check here would pass
 // on a version that dequantised a stale or mis-sliced weight.
 
-
 // The end-to-end ConvRot path: the stored weight is already rotated, so the
 // activation must be rotated online or the result is `x H W^T`, which is
 // well-scaled noise (docs/convrot_notes.md).
-
 
 // --- nvfp4 storage ----------------------------------------------------------
 //
@@ -40,7 +38,8 @@ size_t nvfp4_scale_slot(int o, int k, int blocks_per_row) {
   const int row_in_tile = o % 128;
   // The 128 rows of a tile are visited as four groups of 32, the group index
   // moving slower than the row inside it.
-  const size_t inside = size_t(row_in_tile % 32) * 16 + size_t(row_in_tile / 32) * 4 + size_t(k % 4);
+  const size_t inside =
+      size_t(row_in_tile % 32) * 16 + size_t(row_in_tile / 32) * 4 + size_t(k % 4);
   return tile * 128 * 4 + inside;
 }
 
@@ -50,10 +49,10 @@ struct Nvfp4Weight {
   int out_features = 0;
   int in_features = 0;
   float global = 0.0f;
-  std::vector<uint8_t> codes;    // one E2M1 code per element, [out, in]
-  std::vector<uint8_t> scales;   // one e4m3 byte per 16 elements, unswizzled [out, in/16]
-  std::vector<uint8_t> packed;   // [out, in/2], even element in the high nibble
-  std::vector<uint8_t> stored;   // `scales` written through the 128x4 tile map
+  std::vector<uint8_t> codes;  // one E2M1 code per element, [out, in]
+  std::vector<uint8_t> scales; // one e4m3 byte per 16 elements, unswizzled [out, in/16]
+  std::vector<uint8_t> packed; // [out, in/2], even element in the high nibble
+  std::vector<uint8_t> stored; // `scales` written through the 128x4 tile map
 };
 
 Nvfp4Weight make_nvfp4(int out_features, int in_features, float global, uint32_t seed) {
@@ -72,7 +71,8 @@ Nvfp4Weight make_nvfp4(int out_features, int in_features, float global, uint32_t
   };
 
   w.codes.resize(size_t(out_features) * in_features);
-  for (size_t i = 0; i < w.codes.size(); ++i) w.codes[i] = uint8_t(next() & 0x0Fu);
+  for (size_t i = 0; i < w.codes.size(); ++i)
+    w.codes[i] = uint8_t(next() & 0x0Fu);
 
   w.scales.resize(size_t(out_features) * blocks_per_row);
   for (size_t i = 0; i < w.scales.size(); ++i) {
@@ -87,8 +87,7 @@ Nvfp4Weight make_nvfp4(int out_features, int in_features, float global, uint32_t
   for (int o = 0; o < out_features; ++o) {
     for (int i = 0; i < in_features; i += 2) {
       const size_t e = size_t(o) * in_features + i;
-      w.packed[size_t(o) * (in_features / 2) + i / 2] =
-          uint8_t((w.codes[e] << 4) | w.codes[e + 1]);
+      w.packed[size_t(o) * (in_features / 2) + i / 2] = uint8_t((w.codes[e] << 4) | w.codes[e + 1]);
     }
   }
 
@@ -138,7 +137,6 @@ std::vector<float> nvfp4_reference(const Nvfp4Weight& w, int block = 16,
 // the independent tile walk in `nvfp4_scale_slot` and multiplies in the same
 // order the kernel does.
 
-
 struct Nf4Weight {
   int out = 0, in = 0;
   float offset = 0.0f;
@@ -148,18 +146,23 @@ struct Nf4Weight {
 
 Nf4Weight make_nf4(int out, int in) {
   Nf4Weight w;
-  w.out = out; w.in = in; w.offset = 0.21360844373703003f;
-  w.map = {-1.0f, -0.6961928f, -0.52507305f, -0.39491749f, -0.28444138f,
-           -0.18477343f, -0.09105004f, 0.0f, 0.07958030f, 0.16093020f,
-           0.24611230f, 0.33791524f, 0.44070983f, 0.56261700f, 0.72295684f, 1.0f};
+  w.out = out;
+  w.in = in;
+  w.offset = 0.21360844373703003f;
+  w.map = {-1.0f,        -0.6961928f, -0.52507305f, -0.39491749f, -0.28444138f, -0.18477343f,
+           -0.09105004f, 0.0f,        0.07958030f,  0.16093020f,  0.24611230f,  0.33791524f,
+           0.44070983f,  0.56261700f, 0.72295684f,  1.0f};
   w.nested_map.resize(256);
-  for (int i = 0; i < 256; ++i) w.nested_map[i] = (float(i) - 127.0f) / 128.0f;
+  for (int i = 0; i < 256; ++i)
+    w.nested_map[i] = (float(i) - 127.0f) / 128.0f;
   const size_t n = size_t(out) * in;
   const size_t blocks = (n + 63) / 64;
   w.nested_absmax.resize((blocks + 255) / 256);
-  for (size_t i = 0; i < w.nested_absmax.size(); ++i) w.nested_absmax[i] = 0.75f + float(i) * 1.25f;
+  for (size_t i = 0; i < w.nested_absmax.size(); ++i)
+    w.nested_absmax[i] = 0.75f + float(i) * 1.25f;
   w.absmax.resize(blocks);
-  for (size_t i = 0; i < blocks; ++i) w.absmax[i] = uint8_t((i * 73 + 19) & 255);
+  for (size_t i = 0; i < blocks; ++i)
+    w.absmax[i] = uint8_t((i * 73 + 19) & 255);
   w.packed.resize((n + 1) / 2);
   for (size_t i = 0; i < w.packed.size(); ++i) {
     // Deliberately different nibbles; a swapped implementation cannot pass.
@@ -198,7 +201,6 @@ std::vector<float> nf4_reference(const Nf4Weight& w, bool swap = false) {
 // carry one; the transformer's are all null, which is a positive statement that
 // the quantiser folded the scale into the preceding norm.
 
-
 // Defined with the native-GEMM tests at the end of this file, where the rule
 // they implement is written down. Declared here so `linear_nvfp4` can hold the
 // native path to an fp4-activation reference without moving the definitions out
@@ -209,7 +211,6 @@ double correlation(const std::vector<float>& a, const std::vector<float>& b);
 
 // The whole path: a stored nvfp4 weight through LinearRunner against a host
 // matmul of the dequantised reference.
-
 
 // --- nvfp4 tensor core ------------------------------------------------------
 //
@@ -236,16 +237,15 @@ __global__ void nvfp4_mma_kernel(const uint32_t* a, const uint32_t* b, const uin
   const uint32_t ra[4] = {a[lane * 4], a[lane * 4 + 1], a[lane * 4 + 2], a[lane * 4 + 3]};
   const uint32_t rb[2] = {b[lane * 2], b[lane * 2 + 1]};
   const uint32_t s_a = sa[lane];
-  const uint32_t s_b = 0x38383838u;  // four e4m3 1.0 scales
+  const uint32_t s_b = 0x38383838u; // four e4m3 1.0 scales
   float c[4] = {0, 0, 0, 0};
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
-  asm volatile(
-      "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
-      ".f32.e2m1.e2m1.f32.ue4m3 "
-      "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
-      : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
-      : "r"(ra[0]), "r"(ra[1]), "r"(ra[2]), "r"(ra[3]), "r"(rb[0]), "r"(rb[1]), "r"(s_a),
-        "r"(s_b));
+  asm volatile("mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
+               ".f32.e2m1.e2m1.f32.ue4m3 "
+               "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
+               : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+               : "r"(ra[0]), "r"(ra[1]), "r"(ra[2]), "r"(ra[3]), "r"(rb[0]), "r"(rb[1]), "r"(s_a),
+                 "r"(s_b));
 #endif
   const int gid = lane >> 2, tig = lane & 3;
   out[gid * 8 + tig * 2] = c[0];
@@ -257,7 +257,9 @@ __global__ void nvfp4_mma_kernel(const uint32_t* a, const uint32_t* b, const uin
 // The lane that carries row r's block scales. Rows 0-7 sit on lane 4r, rows
 // 8-15 on lane 4(r-8)+1; lanes 4g+2 and 4g+3 carry nothing, which is why only
 // 64 of the warp's 128 scale bytes are live.
-int scale_lane_for_row(int r) { return r < 8 ? 4 * r : 4 * (r - 8) + 1; }
+int scale_lane_for_row(int r) {
+  return r < 8 ? 4 * r : 4 * (r - 8) + 1;
+}
 
 // --- native nvfp4 GEMM ------------------------------------------------------
 //
@@ -284,7 +286,7 @@ int scale_lane_for_row(int r) { return r < 8 ? 4 * r : 4 * (r - 8) + 1; }
 uint8_t host_e4m3(float v) {
   uint8_t best = 0;
   double bd = 1e300;
-  for (int c = 0; c < 0x7F; ++c) {  // non-negative only; 0x7F is NaN
+  for (int c = 0; c < 0x7F; ++c) { // non-negative only; 0x7F is NaN
     const double d = std::fabs(double(slopfab::f8_e4m3_to_f32(uint8_t(c))) - double(v));
     if (d < bd || (d == bd && (c & 1) == 0)) {
       bd = d;
@@ -328,8 +330,8 @@ struct NvfpPacked {
 // `high_even` and `swizzled` select the on-disk convention. Both shipped
 // checkpoints are (true, true); the other three exist so a test can show the
 // kernel tells them apart rather than happening to agree on symmetric data.
-NvfpPacked pack_nvfp4(const std::vector<float>& w, int rows, int cols, float global,
-                      bool high_even, bool swizzled) {
+NvfpPacked pack_nvfp4(const std::vector<float>& w, int rows, int cols, float global, bool high_even,
+                      bool swizzled) {
   const int kb = cols / 16;
   NvfpPacked t;
   t.data.assign(size_t(rows) * cols / 2, 0);
@@ -391,7 +393,7 @@ std::vector<float> host_quantise_act(const std::vector<float>& x, int rows, int 
 // of 0.5 below 2 and of 2 above 4, so a distribution that puts most of its
 // mass well inside its own maximum is the one the format suits.
 std::vector<float> make_gaussian(size_t n, uint32_t seed, float sigma) {
-  const std::vector<float> u = make_data(2 * n, seed, 0.5f);  // (-0.5, 0.5)
+  const std::vector<float> u = make_data(2 * n, seed, 0.5f); // (-0.5, 0.5)
   std::vector<float> v(n);
   for (size_t i = 0; i < n; ++i) {
     const float a = std::max(1e-7f, u[2 * i] + 0.5f);
@@ -439,7 +441,7 @@ std::vector<float> run_native_nvfp4(const std::vector<float>& x, const NvfpPacke
   Workspace ws;
   ws.reserve(slopfab::cuda::nvfp4_gemm_workspace_bytes(rows, in_features) + 4096);
   slopfab::cuda::nvfp4_gemm_forward(dx.p(), dw.get(), dws.get(), global, dy.p(), rows, out_features,
-                                   in_features, ws, nullptr);
+                                    in_features, ws, nullptr);
   SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   return dy.host();
 }
@@ -455,13 +457,12 @@ __global__ void nvfp4_mma_bscale_kernel(const uint32_t* a, const uint32_t* b, co
   const uint32_t s_b = sb[lane];
   float c[4] = {0, 0, 0, 0};
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
-  asm volatile(
-      "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
-      ".f32.e2m1.e2m1.f32.ue4m3 "
-      "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
-      : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
-      : "r"(ra[0]), "r"(ra[1]), "r"(ra[2]), "r"(ra[3]), "r"(rb[0]), "r"(rb[1]), "r"(s_a),
-        "r"(s_b));
+  asm volatile("mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
+               ".f32.e2m1.e2m1.f32.ue4m3 "
+               "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
+               : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+               : "r"(ra[0]), "r"(ra[1]), "r"(ra[2]), "r"(ra[3]), "r"(rb[0]), "r"(rb[1]), "r"(s_a),
+                 "r"(s_b));
 #endif
   const int gid = lane >> 2, tig = lane & 3;
   out[gid * 8 + tig * 2] = c[0];
@@ -481,21 +482,20 @@ __global__ void nvfp4_mma_bscale_kernel(const uint32_t* a, const uint32_t* b, co
 // the instruction ignores. It does not crash and does not produce zeros. It
 // produces a well-formed matrix with four of its eight columns scaled wrong.
 
-
 // --- rounding ---------------------------------------------------------------
 
 __global__ void nvfp4_cvt_probe_kernel(const float* in, uint8_t* e2m1, uint8_t* e4m3, int pairs) {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= pairs) return;
-  e2m1[i] = static_cast<uint8_t>(__nv_cvt_float2_to_fp4x2(make_float2(in[i * 2], in[i * 2 + 1]),
-                                                          __NV_E2M1, cudaRoundNearest));
+  if (i >= pairs)
+    return;
+  e2m1[i] = static_cast<uint8_t>(
+      __nv_cvt_float2_to_fp4x2(make_float2(in[i * 2], in[i * 2 + 1]), __NV_E2M1, cudaRoundNearest));
   e4m3[i] = __nv_cvt_float_to_fp8(in[i * 2], __NV_SATFINITE, __NV_E4M3);
 }
 
 // The awkward inputs are the ties — 0.25, 0.75, 1.75, 3.5, 5.0 — where
 // round-to-nearest-even and round-half-away-from-zero disagree, and the
 // saturating end, where e2m1 must clamp to +-6 rather than wrap.
-
 
 // --- activation quantisation ------------------------------------------------
 
@@ -505,11 +505,9 @@ __global__ void nvfp4_cvt_probe_kernel(const float* in, uint8_t* e2m1, uint8_t* 
 // every way of getting it wrong is silent. Each wrong form is constructed here
 // and the kernel required not to match it.
 
-
 // The global scale multiplies the whole tensor and is folded into the epilogue,
 // so it has to appear exactly once. Twice, or not at all, still gives a
 // well-formed matrix.
-
 
 // --- what the operand path costs, separated from what the format costs -------
 
@@ -522,7 +520,6 @@ __global__ void nvfp4_cvt_probe_kernel(const float* in, uint8_t* e2m1, uint8_t* 
 // If this agrees and `nvfp4_activation_cost` does not, the activation
 // quantisation is the entire story and the load path is correct. That is the
 // one measurement that tells a numerical limit apart from a layout bug.
-
 
 // The measurement, not an assertion.
 //
@@ -538,12 +535,9 @@ __global__ void nvfp4_cvt_probe_kernel(const float* in, uint8_t* e2m1, uint8_t* 
 // the assertion that the operand path is right; this is the cost of the format
 // on top of it, and whether that cost is acceptable is a modelling decision.
 
-
 // The same measurement on a real tensor. Synthetic weights cannot say whether
 // the shipped block scales are benign; these are the bytes the model ships.
 
-
 // --- timings ----------------------------------------------------------------
 
-
-}  // namespace
+} // namespace
