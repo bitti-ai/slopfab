@@ -56,25 +56,25 @@
  * Define SLOPFAB_C_STATIC when linking these entry points into a binary rather
  * than importing them, and SLOPFAB_C_BUILD only when building the library. */
 #if defined(_WIN32)
-#  if defined(SLOPFAB_C_BUILD)
-#    define SLOPFAB_C_API __declspec(dllexport)
-#  elif defined(SLOPFAB_C_STATIC)
-#    define SLOPFAB_C_API
-#  else
-#    define SLOPFAB_C_API __declspec(dllimport)
-#  endif
+#if defined(SLOPFAB_C_BUILD)
+#define SLOPFAB_C_API __declspec(dllexport)
+#elif defined(SLOPFAB_C_STATIC)
+#define SLOPFAB_C_API
+#else
+#define SLOPFAB_C_API __declspec(dllimport)
+#endif
 /* Named rather than left to the compiler default, because a consumer built
  * with /Gz would otherwise disagree with this DLL about the calling convention
  * on 32-bit x86 and corrupt the stack. On x64 there is one convention and this
  * expands to nothing that matters. */
-#  define SLOPFAB_CALL __cdecl
+#define SLOPFAB_CALL __cdecl
 #else
-#  if defined(SLOPFAB_C_BUILD)
-#    define SLOPFAB_C_API __attribute__((visibility("default")))
-#  else
-#    define SLOPFAB_C_API
-#  endif
-#  define SLOPFAB_CALL
+#if defined(SLOPFAB_C_BUILD)
+#define SLOPFAB_C_API __attribute__((visibility("default")))
+#else
+#define SLOPFAB_C_API
+#endif
+#define SLOPFAB_CALL
 #endif
 
 #ifdef __cplusplus
@@ -220,8 +220,8 @@ typedef struct slopfab_reference_video slopfab_reference_video;
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_session_create(slopfab_session** out_session);
 SLOPFAB_C_API void SLOPFAB_CALL slopfab_session_destroy(slopfab_session* session);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_session_clear(slopfab_session* session);
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_session(
-    slopfab_request* request, const slopfab_session* session);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_session(slopfab_request* request,
+                                                           const slopfab_session* session);
 
 /* Decoded video/audio reference ingestion (no FFmpeg).
  *
@@ -252,23 +252,25 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_session(
  * Standalone audio references require at least one image or video in the
  * completed request; this is checked by slopfab_resolve_plan.
  */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_create(
-    double duration_seconds, slopfab_reference_video** out_video);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_create(double duration_seconds,
+                                                              slopfab_reference_video** out_video);
 SLOPFAB_C_API void SLOPFAB_CALL slopfab_reference_video_destroy(slopfab_reference_video* video);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_append_rgb24(
-    slopfab_reference_video* video, const uint8_t* pixels, size_t buffer_bytes,
-    int32_t width, int32_t height, size_t row_stride_bytes, double timestamp_seconds);
+    slopfab_reference_video* video, const uint8_t* pixels, size_t buffer_bytes, int32_t width,
+    int32_t height, size_t row_stride_bytes, double timestamp_seconds);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_append_rgba8(
-    slopfab_reference_video* video, const uint8_t* pixels, size_t buffer_bytes,
-    int32_t width, int32_t height, size_t row_stride_bytes, double timestamp_seconds);
+    slopfab_reference_video* video, const uint8_t* pixels, size_t buffer_bytes, int32_t width,
+    int32_t height, size_t row_stride_bytes, double timestamp_seconds);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_reference_video_set_audio_f32(
-    slopfab_reference_video* video, const float* samples, size_t float_count,
-    int32_t channels, int32_t sample_rate, double start_seconds);
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_video(
-    slopfab_request* request, const slopfab_reference_video* video);
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_audio_f32(
-    slopfab_request* request, const float* samples, size_t float_count,
-    int32_t channels, int32_t sample_rate);
+    slopfab_reference_video* video, const float* samples, size_t float_count, int32_t channels,
+    int32_t sample_rate, double start_seconds);
+SLOPFAB_C_API int SLOPFAB_CALL
+slopfab_request_add_reference_video(slopfab_request* request, const slopfab_reference_video* video);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_audio_f32(slopfab_request* request,
+                                                                       const float* samples,
+                                                                       size_t float_count,
+                                                                       int32_t channels,
+                                                                       int32_t sample_rate);
 
 /* --- plan ------------------------------------------------------------------
  *
@@ -371,27 +373,28 @@ SLOPFAB_C_API slopfab_request* SLOPFAB_CALL slopfab_request_create(void);
 SLOPFAB_C_API void SLOPFAB_CALL slopfab_request_destroy(slopfab_request* request);
 
 /* UTF-8, and on Windows genuinely UTF-8 rather than the active code page. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt(slopfab_request* request, const char* utf8);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt(slopfab_request* request,
+                                                          const char* utf8);
 
 /* Reads the prompt out of a UTF-8 file, applying the same normalisation
  * `slopfab generate --prompt-file` does: a BOM, CR characters and surrounding
  * blank space are stripped. Long Context-IR prompts do not belong in a string
  * literal. SLOPFAB_ERR_NOT_FOUND if the file cannot be read. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_file(slopfab_request* request,
-                                                            const char* path);
+                                                               const char* path);
 
 /* Only the ratio matters: the short edge is fixed at 768 and the area capped
  * at the trained 768*1344. Setting an aspect clears any explicit resolution. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_aspect(slopfab_request* request, int32_t width,
-                                                       int32_t height);
+                                                          int32_t height);
 
 /* A canvas named outright, which wins over the aspect. Both axes must be a
  * multiple of 32 and the ratio must stay inside 1:4..4:1, checked when the
  * plan is resolved. Unlike the aspect path the area is *not* capped: a caller
  * naming 1920x1088 gets it, and pays attention cost with the square of the
  * area. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_resolution(slopfab_request* request, int32_t width,
-                                                           int32_t height);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_resolution(slopfab_request* request,
+                                                              int32_t width, int32_t height);
 
 /* Snapped up to the next 17*k + 5 the video VAE can encode; `slopfab_plan`
  * reports what it became. */
@@ -404,7 +407,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_frames(slopfab_request* reque
  * sampling mode and is not bit-equivalent to frame zero of a video request.
  * Disabling it restores the request's previous frame count. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_still_image(slopfab_request* request,
-                                                            int32_t enable);
+                                                               int32_t enable);
 
 /* Sigma grid points *including* the terminal zero, so the model runs
  * `steps - 1` times. At least 2. */
@@ -415,14 +418,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seed(slopfab_request* request
 /* `which` is one of SLOPFAB_MODEL_*. There is no discovery here: unlike the
  * CLI, which looks beside its own executable, a host names every checkpoint it
  * wants used. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* request, int32_t which,
-                                                           const char* path);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* request,
+                                                              int32_t which, const char* path);
 
 /* Optional safetensors containing F32 `prompt_embedding` [L,5120]. Reference
  * runs also require I32/I64 `text_token_tags` [L]. Both backends bypass Qwen
  * and tokenization entirely when this is supplied, including video references. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
-    slopfab_request* request, const char* path);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(slopfab_request* request,
+                                                                         const char* path);
 
 /* Since 1.10. Enable the Viggle-Animate recipe: four sigma boundaries, Euler,
  * fixed conditioning, driving video before one repainted image, and references
@@ -433,8 +436,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
  * preserve_driving_audio pins the attached soundtrack in clean target rows;
  * otherwise the soundtrack is omitted from references and audio is generated.
  * Disabling clears these two mode flags but retains other request settings. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(
-    slopfab_request* request, int32_t enable, int32_t preserve_driving_audio);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* request, int32_t enable,
+                                                           int32_t preserve_driving_audio);
 
 /* Since 1.13. Synchronously prepare an adapter's AdaLN grid outside inference.
  * adapter_path is a nonempty UTF-8 path; width is the positive base transformer
@@ -447,37 +450,38 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(
  * Returns INVALID_ARGUMENT for null/empty paths or nonpositive widths; file,
  * grid and preparation errors use the usual runtime status/last_error contract.
  * Repeating the call on a valid embedded grid succeeds without rewriting it. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_prepare_lora_grid(
-    const char* adapter_path, int32_t width, int32_t allow_download);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_prepare_lora_grid(const char* adapter_path, int32_t width,
+                                                         int32_t allow_download);
 
 /* H3 attention/MLP LoRA adapters, combined by summing their updates. Paths are copied.
  * A finite strength may be zero (disabled) or negative. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(
-    slopfab_request* request, const char* path, float strength);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(slopfab_request* request, const char* path,
+                                                        float strength);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_loras(slopfab_request* request);
 
 /* Standalone ComfyUI H3 refmod safetensors (image/video/audio). Loads and owns
  * the latents immediately; later file changes do not affect queued requests.
  * strength: 0..1 (0 disables), copies: 1..10. Requires a Ref2VA transformer.
  * Refmods follow native references and do not alter the text prompt. Since 1.8. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(
-    slopfab_request* request, const char* path, float strength, int32_t copies);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(slopfab_request* request,
+                                                          const char* path, float strength,
+                                                          int32_t copies);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* request);
 #define SLOPFAB_SCHEDULE_DEFAULT 0
 #define SLOPFAB_SCHEDULE_TAOMATE_3STEP 1
 /* TaoMate uses three evaluations and overrides the ordinary step count.
  * Requires an enabled TaoMate adapter, Euler and no step/block caches. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
-    slopfab_request* request, int32_t schedule);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(slopfab_request* request,
+                                                            int32_t schedule);
 
 // Replace explicit sampling overrides with a version-1 JSON object (see
 // docs/sampling_settings.md). Null JSON clears overrides. Model and enabled
 // LoRA metadata defaults are resolved during validation; existing ABI structs
 // and schedule enum values are unchanged.
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_settings(
-    slopfab_request* request, const char* json);
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_conditioning_settings(
-    slopfab_request* request, const char* json);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_settings(slopfab_request* request,
+                                                                     const char* json);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_conditioning_settings(slopfab_request* request,
+                                                                         const char* json);
 
 /* Optional MotionCache on CUDA/Vulkan. Disabled on new requests. Defaults:
  * threshold .15, strength 1, warmup 4, max skips 2, range 0.15..0.95, subsample 8.
@@ -486,9 +490,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_conditioning_settings(
  * Ranges: threshold 0..1, strength 0..4, warmup 2..20, skips 1..10,
  * 0 <= start < end <= 1, subsample 1..32. Boolean arguments accept 0 or 1. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_motion_cache(
-    slopfab_request* request, int32_t enabled, float reuse_threshold,
-    float motion_strength, int32_t warmup_steps, int32_t max_consecutive_skips,
-    float start_percent, float end_percent, int32_t subsample_factor, int32_t verbose);
+    slopfab_request* request, int32_t enabled, float reuse_threshold, float motion_strength,
+    int32_t warmup_steps, int32_t max_consecutive_skips, float start_percent, float end_percent,
+    int32_t subsample_factor, int32_t verbose);
 
 /* Ordered subject/style/scene references; presence selects the Ref2VA task and
  * this order labels the images in the packed sequence. At most nine, and the
@@ -501,7 +505,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_motion_cache(
  * that already holds pixels should write a PPM, which is a 15-byte header and
  * the bytes. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_request* request,
-                                                                const char* path);
+                                                                   const char* path);
 
 /* "none", "flash2" (the default), "sage2", "sol", "sol-experimental" or
  * "exact". Exact selects the pinned deterministic cooperative H3 arithmetic;
@@ -509,28 +513,29 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_reque
  * so that an attention implementation can be added without a new constant in
  * this header. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_attention(slopfab_request* request,
-                                                           const char* mode);
+                                                             const char* mode);
 
 /* Selects the neural inference backend. Default is SLOPFAB_INFERENCE_CUDA. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(
-    slopfab_request* request, int32_t backend);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_request* request,
+                                                                     int32_t backend);
 
 /* Skip conditioning and denoising and feed the decoders seeded noise. Not a
  * useful video, but it exercises both VAEs and the colour transform against
  * real weights without loading 44 GB of conditioner and transformer — which
  * makes it the cheap way for a host to prove its own plumbing. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_synthetic_latents(slopfab_request* request,
-                                                                  int32_t enable);
+                                                                     int32_t enable);
 
 /* Progress prose on the process's stdout. On by default, because the library
  * default is on; a GUI host wants it off and the progress callback instead. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_verbose(slopfab_request* request, int32_t enable);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_verbose(slopfab_request* request,
+                                                           int32_t enable);
 
 /* Retains reusable tokenizer, conditioning and reference preparation between
  * serial generations. The host controls the lifetime with
  * `slopfab_reused_models_clear`; overlapping generations remain forbidden. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_reuse_models(slopfab_request* request,
-                                                             int32_t enable);
+                                                                int32_t enable);
 
 /* --- saved latents and continuation ----------------------------------------
  * All functions are optional. Existing generations keep their old memory and
@@ -541,13 +546,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_reuse_models(slopfab_request*
 /* Save the completed (joined, when continuing) latents before VAE decode.
  * Null or empty path disables saving. A later decode failure does not remove
  * the saved archive. Does not require retention. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_save_latents(
-    slopfab_request* request, const char* path);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_save_latents(slopfab_request* request,
+                                                                const char* path);
 
 /* Keep a shared immutable latent snapshot on the generation handle. Default
  * off. Required for generation_save_latents and set_continuation_generation. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_retain_latents(
-    slopfab_request* request, int32_t enable);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_retain_latents(slopfab_request* request,
+                                                                  int32_t enable);
 
 /* Load an owning snapshot now, so deleting/replacing the file later is safe.
  * overlap_frames must be 17*k+5, at least 5, and fit in the source. With
@@ -555,8 +560,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_retain_latents(
  * of 17). The source canvas is inherited unless an explicit matching canvas
  * is set. Output pixels and saved latents contain the full extended clip.
  * Synthetic and still-image generation cannot continue. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(
-    slopfab_request* request, const char* path, int32_t overlap_frames);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(slopfab_request* request,
+                                                                     const char* path,
+                                                                     int32_t overlap_frames);
 
 /* Share retained latents from a successful generation; source may be destroyed
  * after this returns. No disk I/O and no latent buffer copy. */
@@ -571,13 +577,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_reques
  * must contain at least 22 frames at 24 fps. Boundary clips are encoded at the
  * target canvas; audio is generated from the prompt, not copied. Frames and
  * output describe only the newly generated segment. Planning does no encoding. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_video_transition(
-    slopfab_request* request, int32_t mode);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_video_transition(slopfab_request* request,
+                                                                    int32_t mode);
 
 /* Save retained latents after a successful generation. NOT_READY while
  * running; INVALID_REQUEST when retention was not enabled. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_save_latents(
-    const slopfab_generation* generation, const char* path);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_save_latents(const slopfab_generation* generation,
+                                                               const char* path);
 
 /* --- plan ------------------------------------------------------------------ */
 
@@ -587,12 +593,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_save_latents(
  * SLOPFAB_ERR_INVALID_REQUEST, with the reason on `slopfab_last_error()`, if the
  * request cannot be satisfied. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_resolve_plan(const slopfab_request* request,
-                                                 slopfab_plan* out_plan);
+                                                    slopfab_plan* out_plan);
 
 /* The human-readable summary the CLI prints for `--dry-run`. On SLOPFAB_OK,
  * `*out_text` holds a NUL-terminated string the caller must release with
  * `slopfab_free_string`; on failure it is null. */
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* request, char** out_text);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* request,
+                                                     char** out_text);
 
 /* --- generation ------------------------------------------------------------
  *
@@ -618,8 +625,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* requ
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_reused_models_clear(void);
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* request,
-                                                     slopfab_progress_fn callback, void* userdata,
-                                                     slopfab_generation** out_generation);
+                                                        slopfab_progress_fn callback,
+                                                        void* userdata,
+                                                        slopfab_generation** out_generation);
 
 /* Asks the run to stop at its next checkpoint; returns without waiting. The
  * generation then finishes with SLOPFAB_ERR_CANCELLED. Cancellation is only as
@@ -635,7 +643,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_status(const slopfab_generatio
  * status either way — so a timeout is reported as SLOPFAB_ERR_NOT_READY rather
  * than as a distinct code. Negative waits forever. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_wait(slopfab_generation* generation,
-                                                    int32_t timeout_ms);
+                                                       int32_t timeout_ms);
 
 /* Why this generation failed, or "" if it has not — including while it is
  * still running, which is a defined answer rather than an accident: the string
@@ -644,13 +652,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_wait(slopfab_generation* gener
  *
  * This is where a run's message lives; `slopfab_last_error` cannot carry it,
  * because the run failed on a thread the caller never entered. */
-SLOPFAB_C_API const char* SLOPFAB_CALL slopfab_generation_error(const slopfab_generation* generation);
+SLOPFAB_C_API const char* SLOPFAB_CALL
+slopfab_generation_error(const slopfab_generation* generation);
 
 /* Fills `out_output` with pointers into the finished generation's buffers.
  * SLOPFAB_ERR_NOT_READY while it is still running, or the failure code if it
  * failed. The pointers are valid until `slopfab_generation_destroy`. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generation* generation,
-                                                      slopfab_output* out_output);
+                                                         slopfab_output* out_output);
 
 /* One frame converted to tightly packed 8-bit RGBA, alpha 255 — the layout a
  * texture upload or a screenshot wants, and the one conversion common enough
@@ -658,8 +667,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generatio
  * least `width * height * 4` bytes; `dst_bytes` is checked. Values are clamped
  * to [0,255] and rounded. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_generation* generation,
-                                                           int32_t frame_index, uint8_t* dst,
-                                                           size_t dst_bytes);
+                                                              int32_t frame_index, uint8_t* dst,
+                                                              size_t dst_bytes);
 
 /* Cancels if still running, waits for the worker to drain, and frees
  * everything including the pixel buffers. Every pointer from

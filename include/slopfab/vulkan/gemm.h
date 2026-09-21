@@ -16,7 +16,7 @@ class PreparedNVFP4WeightView;
 // once for a chunk and the returned batch-scoped view can feed any number of
 // compatible VAE GEMM plans without repeating fp32-to-fp16 conversion.
 class PreparedF16Activation {
- public:
+public:
   PreparedF16Activation();
   ~PreparedF16Activation();
   PreparedF16Activation(PreparedF16Activation&&) noexcept;
@@ -24,16 +24,14 @@ class PreparedF16Activation {
   PreparedF16Activation(const PreparedF16Activation&) = delete;
   PreparedF16Activation& operator=(const PreparedF16Activation&) = delete;
 
-  static PreparedF16Activation create(TensorContext& context,
-                                      uint32_t max_rows,
+  static PreparedF16Activation create(TensorContext& context, uint32_t max_rows,
                                       uint32_t in_features);
-  PreparedF16ActivationView prepare(TensorBatch& batch, DeviceTensor& input,
-                                    uint32_t rows,
+  PreparedF16ActivationView prepare(TensorBatch& batch, DeviceTensor& input, uint32_t rows,
                                     uint32_t input_row_offset = 0);
   uint64_t reserved_bytes() const noexcept;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit PreparedF16Activation(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -42,7 +40,7 @@ class PreparedF16Activation {
 };
 
 class PreparedF16ActivationView {
- public:
+public:
   PreparedF16ActivationView();
   ~PreparedF16ActivationView();
   PreparedF16ActivationView(PreparedF16ActivationView&&) noexcept;
@@ -52,9 +50,8 @@ class PreparedF16ActivationView {
   uint32_t rows() const noexcept;
   explicit operator bool() const noexcept;
 
- private:
-  explicit PreparedF16ActivationView(std::shared_ptr<void> slot,
-                                     uintptr_t batch_id, uint32_t rows,
+private:
+  explicit PreparedF16ActivationView(std::shared_ptr<void> slot, uintptr_t batch_id, uint32_t rows,
                                      uint64_t generation) noexcept;
   std::shared_ptr<void> slot_;
   uintptr_t batch_id_ = 0;
@@ -72,7 +69,7 @@ class PreparedF16ActivationView {
 // Activation transforms, when present, remain the caller's explicit operation
 // and do not alter the materialized matrix.
 class StreamedNVFP4WeightCache {
- public:
+public:
   StreamedNVFP4WeightCache();
   ~StreamedNVFP4WeightCache();
   StreamedNVFP4WeightCache(StreamedNVFP4WeightCache&&) noexcept;
@@ -80,16 +77,14 @@ class StreamedNVFP4WeightCache {
   StreamedNVFP4WeightCache(const StreamedNVFP4WeightCache&) = delete;
   StreamedNVFP4WeightCache& operator=(const StreamedNVFP4WeightCache&) = delete;
 
-  static StreamedNVFP4WeightCache create(TensorContext& context,
-                                         uint64_t max_weight_elements);
-  PreparedNVFP4WeightView prepare(TensorBatch& batch,
-                                  const LinearWeight& weight,
+  static StreamedNVFP4WeightCache create(TensorContext& context, uint64_t max_weight_elements);
+  PreparedNVFP4WeightView prepare(TensorBatch& batch, const LinearWeight& weight,
                                   const DenseGemmPlan& plan);
   uint64_t capacity_elements() const noexcept;
   uint64_t dense_bytes() const noexcept;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit StreamedNVFP4WeightCache(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -98,7 +93,7 @@ class StreamedNVFP4WeightCache {
 };
 
 class PreparedNVFP4WeightView {
- public:
+public:
   PreparedNVFP4WeightView();
   ~PreparedNVFP4WeightView();
   PreparedNVFP4WeightView(PreparedNVFP4WeightView&&) noexcept;
@@ -110,11 +105,9 @@ class PreparedNVFP4WeightView {
   bool full_precision_matrix_mult() const noexcept;
   explicit operator bool() const noexcept;
 
- private:
-  explicit PreparedNVFP4WeightView(std::shared_ptr<void> cache,
-                                   uintptr_t batch_id, uint64_t generation,
-                                   uint32_t out_features,
-                                   uint32_t in_features,
+private:
+  explicit PreparedNVFP4WeightView(std::shared_ptr<void> cache, uintptr_t batch_id,
+                                   uint64_t generation, uint32_t out_features, uint32_t in_features,
                                    bool full_precision) noexcept;
   std::shared_ptr<void> cache_;
   uintptr_t batch_id_ = 0;
@@ -131,7 +124,7 @@ class PreparedNVFP4WeightView {
 // retains that context identity. Rows and source/destination row offsets are
 // supplied at record time so one prepared g1 weight is reused across chunks.
 class DenseGemmPlan {
- public:
+public:
   DenseGemmPlan();
   ~DenseGemmPlan();
   DenseGemmPlan(DenseGemmPlan&&) noexcept;
@@ -139,37 +132,29 @@ class DenseGemmPlan {
   DenseGemmPlan(const DenseGemmPlan&) = delete;
   DenseGemmPlan& operator=(const DenseGemmPlan&) = delete;
 
-  static DenseGemmPlan create(TensorContext& context,
-                              const DenseGemmPlanDesc& desc);
+  static DenseGemmPlan create(TensorContext& context, const DenseGemmPlanDesc& desc);
 
   const DenseGemmPlanDesc& description() const;
-  void record(TensorBatch& batch, DeviceTensor& input,
-              DeviceTensor& prepared_weight, DeviceTensor& output,
-              uint32_t rows, uint32_t input_row_offset = 0,
-              uint32_t output_row_offset = 0,
+  void record(TensorBatch& batch, DeviceTensor& input, DeviceTensor& prepared_weight,
+              DeviceTensor& output, uint32_t rows, uint32_t input_row_offset = 0,
+              uint32_t output_row_offset = 0, DeviceTensor* bias = nullptr) const;
+  void record(TensorBatch& batch, PreparedF16ActivationView& input, DeviceTensor& prepared_weight,
+              DeviceTensor& output, uint32_t output_row_offset = 0,
               DeviceTensor* bias = nullptr) const;
-  void record(TensorBatch& batch, PreparedF16ActivationView& input,
-              DeviceTensor& prepared_weight, DeviceTensor& output,
-              uint32_t output_row_offset = 0,
-              DeviceTensor* bias = nullptr) const;
-  void record(TensorBatch& batch, DeviceTensor& input,
-              PreparedNVFP4WeightView& prepared_weight,
-              DeviceTensor& output, uint32_t rows,
-              uint32_t input_row_offset = 0,
-              uint32_t output_row_offset = 0,
-              DeviceTensor* bias = nullptr) const;
+  void record(TensorBatch& batch, DeviceTensor& input, PreparedNVFP4WeightView& prepared_weight,
+              DeviceTensor& output, uint32_t rows, uint32_t input_row_offset = 0,
+              uint32_t output_row_offset = 0, DeviceTensor* bias = nullptr) const;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit DenseGemmPlan(std::shared_ptr<Impl> impl);
-  void record_impl(TensorBatch& batch, DeviceTensor& input,
-                   DeviceTensor& prepared_weight, DeviceTensor& output,
-                   uint32_t rows, uint32_t input_row_offset,
+  void record_impl(TensorBatch& batch, DeviceTensor& input, DeviceTensor& prepared_weight,
+                   DeviceTensor& output, uint32_t rows, uint32_t input_row_offset,
                    uint32_t output_row_offset, DeviceTensor* bias,
                    bool input_is_prepared_f16) const;
   std::shared_ptr<Impl> impl_;
   friend class StreamedNVFP4WeightCache;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

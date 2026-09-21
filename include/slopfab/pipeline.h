@@ -73,7 +73,9 @@ struct GenerateRequest {
   int canvas_width = 0;
   int canvas_height = 0;
 
-  bool has_explicit_canvas() const { return canvas_width > 0 && canvas_height > 0; }
+  bool has_explicit_canvas() const {
+    return canvas_width > 0 && canvas_height > 0;
+  }
 
   // Snapped up to the next 17*k + 5 the video VAE can encode.
   int num_frames = 124;
@@ -87,7 +89,7 @@ struct GenerateRequest {
 
   // Sigma grid points *including* the terminal zero, so the model runs
   // `num_inference_steps - 1` times.
-  int num_inference_steps = 0;  // zero inherits the model/task recipe
+  int num_inference_steps = 0; // zero inherits the model/task recipe
   sampler::ScheduleKind schedule = sampler::ScheduleKind::kDefault;
   // Explicit overrides of checkpoint and enabled-adapter sampling defaults.
   SamplingSettings sampling;
@@ -131,11 +133,17 @@ struct GenerateRequest {
   bool has_native_references() const {
     return !reference_image_paths.empty() || !reference_media.empty();
   }
+
   bool has_refmods() const {
-    for (const auto& ref : refmods) if (ref.enabled()) return true;
+    for (const auto& ref : refmods)
+      if (ref.enabled())
+        return true;
     return false;
   }
-  bool has_references() const { return has_native_references() || has_refmods(); }
+
+  bool has_references() const {
+    return has_native_references() || has_refmods();
+  }
 
   // Write .y4m + .wav instead of muxing an MP4. Also the automatic fallback
   // when ffmpeg cannot be loaded.
@@ -153,7 +161,7 @@ struct GenerateRequest {
   // step cache above and off by default for the same reason: `span == 0` must
   // leave the forward pass bit-identical to a build without any of this.
   int block_cache_span = 0;
-  int block_cache_start = -1;  // negative centres the span in the stack
+  int block_cache_start = -1; // negative centres the span in the stack
   int block_cache_interval = 2;
   int block_cache_warmup = 3;
 };
@@ -180,7 +188,7 @@ struct GeneratePlan {
   int sampling_frames = 0;
   ContinuationPlan continuation;
 
-  dit::SequenceLayout layout;  // layout.num_text is 0 until the prompt is tokenised
+  dit::SequenceLayout layout; // layout.num_text is 0 until the prompt is tokenised
 
   // Two independent schedules stepped inside one loop: video shift 12.0 for
   // H3 or 3.0 for Viggle-Animate, audio shift 3.0. Both have the same length — the reference
@@ -199,8 +207,13 @@ struct GeneratePlan {
   // `set_timesteps` argument without consulting the request.
   int num_inference_steps = 0;
 
-  int num_model_evaluations() const { return static_cast<int>(video_timesteps.size()); }
-  int sequence_length_without_text() const { return layout.total_rows(); }
+  int num_model_evaluations() const {
+    return static_cast<int>(video_timesteps.size());
+  }
+
+  int sequence_length_without_text() const {
+    return layout.total_rows();
+  }
 };
 
 // Throws std::runtime_error with a specific message for an unsupported aspect
@@ -278,12 +291,12 @@ enum class ConditionerAuthority : uint8_t {
 std::string conditioning_cache_key(const GenerateRequest& request);
 std::string conditioning_cache_key(const GenerateRequest& request,
                                    const std::vector<std::string>& reference_identities);
-std::string conditioning_cache_key_for_authority(
-    const GenerateRequest& request, ConditionerAuthority authority);
-std::string conditioning_cache_key_for_authority(
-    const GenerateRequest& request,
-    const std::vector<std::string>& reference_identities,
-    ConditionerAuthority authority);
+std::string conditioning_cache_key_for_authority(const GenerateRequest& request,
+                                                 ConditionerAuthority authority);
+std::string
+conditioning_cache_key_for_authority(const GenerateRequest& request,
+                                     const std::vector<std::string>& reference_identities,
+                                     ConditionerAuthority authority);
 
 // Key for the seed-independent reference-image work: decode, Lanczos resize and
 // the VAE keyframe encode. Deliberately narrower than the conditioning key,
@@ -305,4 +318,4 @@ std::string tokenizer_cache_key(const GenerateRequest& request);
 // header a real run prints before it starts.
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan);
 
-}  // namespace slopfab
+} // namespace slopfab

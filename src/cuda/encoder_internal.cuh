@@ -20,7 +20,6 @@
 #include "slopfab/cuda/nn_kernels.cuh"
 #include "slopfab/cuda/workspace.cuh"
 
-
 namespace slopfab::text::encoder_detail {
 using slopfab::cuda::ComputeType;
 using slopfab::cuda::DeviceBuffer;
@@ -49,16 +48,24 @@ constexpr size_t kScoreTileBudget = 256ull << 20;
 
 // MSVC's INFINITY macro is a double expression, which nvcc warns about on every
 // use in float context. Build the bit pattern instead.
-__device__ inline float neg_inf() { return __int_as_float(0xFF800000); }
+__device__ inline float neg_inf() {
+  return __int_as_float(0xFF800000);
+}
+
 constexpr float kHostNegInf = -std::numeric_limits<float>::infinity();
 
-inline size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
+inline size_t align_up(size_t n) {
+  return (n + 255) / 256 * 256;
+}
 
-inline int grid_1d(size_t n, int block) { return static_cast<int>((n + block - 1) / block); }
+inline int grid_1d(size_t n, int block) {
+  return static_cast<int>((n + block - 1) / block);
+}
 
 inline void require(bool ok, const std::string& message) {
-  if (!ok) throw std::runtime_error("text encoder: " + message);
+  if (!ok)
+    throw std::runtime_error("text encoder: " + message);
 }
 
 size_t resident_request_bytes(const EncoderConfig&, size_t weight_bytes, size_t total_device_bytes);
-}  // namespace slopfab::text::encoder_detail
+} // namespace slopfab::text::encoder_detail

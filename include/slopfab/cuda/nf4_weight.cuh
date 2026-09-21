@@ -12,7 +12,7 @@ namespace slopfab::cuda {
 // Keeps NF4, W4A8 and Comfy INT8 packed on device and expands only when a
 // consumer is about to use the matrix. Ordinary floats use `dense_` directly.
 class F16Weight {
- public:
+public:
   F16Weight() = default;
   F16Weight(F16Weight&&) noexcept = default;
   F16Weight& operator=(F16Weight&&) noexcept = default;
@@ -20,21 +20,35 @@ class F16Weight {
   F16Weight& operator=(const F16Weight&) = delete;
 
   void load(const SafeTensors& checkpoint, const std::string& name, size_t expected_elements,
-            cudaStream_t stream, const char* consumer,
-            bool canonicalize_f16_subnormals = false);
+            cudaStream_t stream, const char* consumer, bool canonicalize_f16_subnormals = false);
   const __half* materialize(__half* workspace, size_t workspace_elements,
                             cudaStream_t stream) const;
-  const int8_t* materialize_w4a8(int8_t* workspace,
-                                 size_t workspace_elements,
+  const int8_t* materialize_w4a8(int8_t* workspace, size_t workspace_elements,
                                  cudaStream_t stream) const;
-  size_t elements() const { return elements_; }
-  size_t stored_bytes() const;
-  bool packed_nf4() const { return codes_.size() != 0; }
-  bool packed_int8() const { return int8_codes_.size() != 0; }
-  bool packed_w4a8() const { return w4_codes_.size() != 0; }
-  const float* w4a8_channel_scale() const { return w4_channel_scale_.get(); }
 
- private:
+  size_t elements() const {
+    return elements_;
+  }
+
+  size_t stored_bytes() const;
+
+  bool packed_nf4() const {
+    return codes_.size() != 0;
+  }
+
+  bool packed_int8() const {
+    return int8_codes_.size() != 0;
+  }
+
+  bool packed_w4a8() const {
+    return w4_codes_.size() != 0;
+  }
+
+  const float* w4a8_channel_scale() const {
+    return w4_channel_scale_.get();
+  }
+
+private:
   size_t elements_ = 0;
   int block_size_ = 0;
   int nested_block_size_ = 0;
@@ -55,4 +69,4 @@ class F16Weight {
   DeviceBuffer<float> w4_channel_scale_, w4_codebook_;
 };
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

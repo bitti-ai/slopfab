@@ -48,21 +48,24 @@
 
 #include "helpers.h"
 #include "decode.h"
+
 namespace slopfab::generation {
 RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& options,
-    const std::shared_ptr<const LatentClip>& completed, RunResult result) {
+                             const std::shared_ptr<const LatentClip>& completed, RunResult result) {
   const auto layout = completed->layout();
   auto notify = [&options](RunStage stage, int step, int steps) {
     return !options.on_progress || options.on_progress(stage, step, steps, options.hook_userdata);
   };
   auto stop = [&result](const char* where) {
-    result.ok = false; result.cancelled = true;
+    result.ok = false;
+    result.cancelled = true;
     result.message = std::string("cancelled during ") + where;
     return result;
   };
   // --- video ----------------------------------------------------------------
 
-  if (!notify(RunStage::kVideoDecode, -1, 0)) return stop("video decode");
+  if (!notify(RunStage::kVideoDecode, -1, 0))
+    return stop("video decode");
   vae::DecodedVideo video;
   {
     const Clock::time_point t0 = Clock::now();
@@ -99,37 +102,30 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
       s_load.stop();
       if (options.verbose) {
         std::printf("video vae   CUDA %.2f GiB on device\n",
-                    static_cast<double>(decoder.weight_bytes()) /
-                        (1024.0 * 1024.0 * 1024.0));
+                    static_cast<double>(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
       }
       video = request.still_image
-                  ? vae::decode_still_image(decoder, latents.data(),
-                                            layout.latent_height, layout.latent_width,
-                                            mean, std_dev)
-                  : decoder.decode(latents.data(), layout.num_latent_frames,
-                                   layout.latent_height, layout.latent_width, mean,
-                                   std_dev);
+                  ? vae::decode_still_image(decoder, latents.data(), layout.latent_height,
+                                            layout.latent_width, mean, std_dev)
+                  : decoder.decode(latents.data(), layout.num_latent_frames, layout.latent_height,
+                                   layout.latent_width, mean, std_dev);
     } else {
 #if SLOPFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device();
       vae::ViTConfig config;
       config.transformer_mode = vae::ViTTransformerMode::kExact;
-      vulkan::VideoVaeDecoder decoder =
-          vulkan::VideoVaeDecoder::create(device, config);
+      vulkan::VideoVaeDecoder decoder = vulkan::VideoVaeDecoder::create(device, config);
       decoder.load(vae_file);
       s_load.stop();
       if (options.verbose) {
         std::printf("video vae   Vulkan %.2f GiB on device\n",
-                    static_cast<double>(decoder.persistent_bytes()) /
-                        (1024.0 * 1024.0 * 1024.0));
+                    static_cast<double>(decoder.persistent_bytes()) / (1024.0 * 1024.0 * 1024.0));
       }
       video = request.still_image
-                  ? vae::decode_still_image(decoder, latents.data(),
-                                            layout.latent_height, layout.latent_width,
-                                            mean, std_dev)
-                  : decoder.decode(latents.data(), layout.num_latent_frames,
-                                   layout.latent_height, layout.latent_width, mean,
-                                   std_dev);
+                  ? vae::decode_still_image(decoder, latents.data(), layout.latent_height,
+                                            layout.latent_width, mean, std_dev)
+                  : decoder.decode(latents.data(), layout.num_latent_frames, layout.latent_height,
+                                   layout.latent_width, mean, std_dev);
 #else
       throw std::logic_error("Vulkan inference compiled out after validation");
 #endif
@@ -149,7 +145,8 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 
   vae::DecodedAudio audio;
   if (!request.still_image && !request.audio_vae_path.empty()) {
-    if (!notify(RunStage::kAudioDecode, -1, 0)) return stop("audio decode");
+    if (!notify(RunStage::kAudioDecode, -1, 0))
+      return stop("audio decode");
     const Clock::time_point t0 = Clock::now();
 
     // (Sa, 32) rows -> (2, 32, A), then de-normalise per channel.
@@ -159,15 +156,14 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     SafeTensors audio_file;
     audio_file.open(request.audio_vae_path);
     const int A = layout.num_audio_latents;
-    auto denormalize = [&](const std::vector<float>& mean,
-                           const std::vector<float>& std_dev) {
+    auto denormalize = [&](const std::vector<float>& mean, const std::vector<float>& std_dev) {
       for (int c = 0; c < 2; ++c) {
         for (int ch = 0; ch < 32; ++ch) {
           const float m = mean[static_cast<size_t>(ch)];
           const float s = std_dev[static_cast<size_t>(ch)];
-          float* row = audio_latents.data() +
-              (static_cast<size_t>(c) * 32 + ch) * A;
-          for (int a = 0; a < A; ++a) row[a] = row[a] * s + m;
+          float* row = audio_latents.data() + (static_cast<size_t>(c) * 32 + ch) * A;
+          for (int a = 0; a < A; ++a)
+            row[a] = row[a] * s + m;
         }
       }
     };
@@ -209,7 +205,8 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     // which is the only thing in this project that loads FFmpeg. That is the
     // whole reason this hook is before the branch below rather than after it.
     if (options.on_samples != nullptr) {
-      if (!notify(RunStage::kDelivering, -1, 0)) return stop("delivery");
+      if (!notify(RunStage::kDelivering, -1, 0))
+        return stop("delivery");
       RunSamples samples;
       samples.channels = video.channels;
       samples.frames = video.frames;
@@ -286,11 +283,13 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
         result.outputs.push_back(wav);
       }
       if (options.verbose) {
-        for (const std::string& p : result.outputs) std::printf("wrote       %s\n", p.c_str());
+        for (const std::string& p : result.outputs)
+          std::printf("wrote       %s\n", p.c_str());
       }
     }
     result.seconds_output = seconds_since(t0);
-    if (options.verbose) std::printf("output      %.2f s\n", result.seconds_output);
+    if (options.verbose)
+      std::printf("output      %.2f s\n", result.seconds_output);
   }
 
   result.ok = true;

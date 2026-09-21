@@ -63,7 +63,9 @@ struct StepCacheConfig {
   int skip_every = 0;
 
   // False when this is a plain run and nothing may be skipped.
-  bool enabled() const { return threshold > 0.0f || skip_every > 0; }
+  bool enabled() const {
+    return threshold > 0.0f || skip_every > 0;
+  }
 };
 
 // Two steps are always computed no matter what the flags say, and both are
@@ -107,10 +109,12 @@ float conditioning_distance(const float* a, const float* reference, int n);
 // against. The arc length is also an upper bound on the chord, so this errs
 // towards recomputing.
 class StepCache {
- public:
+public:
   StepCache(const StepCacheConfig& config, int num_steps);
 
-  bool enabled() const { return config_.enabled(); }
+  bool enabled() const {
+    return config_.enabled();
+  }
 
   // Call exactly once per step, in order. `code` is that step's conditioning
   // signature — for t2va, `c(t_v)` followed by `c(t_a)`, 16 floats. Pass
@@ -121,16 +125,25 @@ class StepCache {
   // the previous computed step is to be reused.
   bool should_compute(int step, const float* code, int len);
 
-  int computed() const { return computed_; }
-  int skipped() const { return skipped_; }
+  int computed() const {
+    return computed_;
+  }
+
+  int skipped() const {
+    return skipped_;
+  }
 
   // Accumulated movement since the last computed step, for reporting.
-  float accumulator() const { return accumulator_; }
+  float accumulator() const {
+    return accumulator_;
+  }
 
   // The warmup actually in force, after the `kMinWarmup` floor.
-  int warmup() const { return warmup_; }
+  int warmup() const {
+    return warmup_;
+  }
 
- private:
+private:
   StepCacheConfig config_;
   int num_steps_ = 0;
   int warmup_ = kMinWarmup;
@@ -170,4 +183,4 @@ std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
                                      const std::vector<std::pair<float, float>>& schedule,
                                      const CodeFn& code);
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

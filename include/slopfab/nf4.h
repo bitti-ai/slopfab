@@ -19,4 +19,4 @@ bool is_nf4_weight(const SafeTensors& checkpoint, const std::string& weight_name
 NF4State read_nf4_state(const SafeTensors& checkpoint, const std::string& weight_name,
                         const char* consumer, bool require_bfloat16 = false);
 
-}  // namespace slopfab
+} // namespace slopfab

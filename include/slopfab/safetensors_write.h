@@ -20,6 +20,6 @@ struct TensorWrite {
 // Writes `tensors` as an fp32 safetensors archive. Throws if any tensor's
 // data length disagrees with its declared shape.
 void write_safetensors(const std::string& path, const std::vector<TensorWrite>& tensors,
-                      const std::map<std::string, std::string>& metadata = {});
+                       const std::map<std::string, std::string>& metadata = {});
 
-}  // namespace slopfab
+} // namespace slopfab

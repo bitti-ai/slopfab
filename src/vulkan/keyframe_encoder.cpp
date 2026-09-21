@@ -28,13 +28,13 @@ struct WeightSpec {
   std::vector<uint64_t> shape;
 };
 
-void append_conv(std::vector<WeightSpec>& out, const std::string& name,
-                 uint32_t output, uint32_t input, uint32_t kernel) {
+void append_conv(std::vector<WeightSpec>& out, const std::string& name, uint32_t output,
+                 uint32_t input, uint32_t kernel) {
   out.push_back({name + ".weight", {output, input, kernel, kernel, kernel}});
   out.push_back({name + ".bias", {output}});
 }
-void append_norm(std::vector<WeightSpec>& out, const std::string& name,
-                 uint32_t channels) {
+
+void append_norm(std::vector<WeightSpec>& out, const std::string& name, uint32_t channels) {
   out.push_back({name + ".weight", {channels}});
   out.push_back({name + ".bias", {channels}});
 }
@@ -48,8 +48,8 @@ std::vector<WeightSpec> weight_specs() {
     const uint32_t output = kChannels[level];
     for (uint32_t block = 0; block < 2; ++block) {
       const uint32_t input = block == 0 ? previous : output;
-      const std::string p = "encoder.down." + std::to_string(level) +
-          ".block." + std::to_string(block);
+      const std::string p =
+          "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
       append_norm(out, p + ".norm1", input);
       append_conv(out, p + ".conv1", output, input, 3);
       append_norm(out, p + ".norm2", output);
@@ -58,8 +58,8 @@ std::vector<WeightSpec> weight_specs() {
         append_conv(out, p + ".nin_shortcut", output, input, 1);
     }
     if (kDownsample[level] == 2) {
-      append_conv(out, "encoder.down." + std::to_string(level) +
-                          ".downsample.conv", output, output, 3);
+      append_conv(out, "encoder.down." + std::to_string(level) + ".downsample.conv", output, output,
+                  3);
     }
     previous = output;
   }
@@ -73,12 +73,10 @@ std::vector<WeightSpec> weight_specs() {
 }
 
 bool encoder_tensor_name(const std::string& name) {
-  return name.rfind("encoder.", 0) == 0 || name == "quant_conv.weight" ||
-      name == "quant_conv.bias";
+  return name.rfind("encoder.", 0) == 0 || name == "quant_conv.weight" || name == "quant_conv.bias";
 }
 
-void validate_archive(const SafeTensors& checkpoint,
-                      const std::vector<WeightSpec>& specs) {
+void validate_archive(const SafeTensors& checkpoint, const std::vector<WeightSpec>& specs) {
   vae::validate_keyframe_encoder_weights(checkpoint);
   std::set<std::string> expected;
   for (const WeightSpec& spec : specs) {
@@ -100,17 +98,16 @@ void validate_archive(const SafeTensors& checkpoint,
     if (view.dtype != DType::kF16 || view.shape != shape ||
         elements > std::numeric_limits<size_t>::max() / 2 ||
         view.nbytes != static_cast<size_t>(elements * 2)) {
-      throw std::runtime_error(
-          "Vulkan keyframe: invalid exact fp16 tensor '" + spec.name + "'");
+      throw std::runtime_error("Vulkan keyframe: invalid exact fp16 tensor '" + spec.name + "'");
     }
   }
   size_t observed = 0;
   for (const auto& entry : checkpoint.tensors()) {
-    if (!encoder_tensor_name(entry.first)) continue;
+    if (!encoder_tensor_name(entry.first))
+      continue;
     ++observed;
     if (expected.count(entry.first) == 0) {
-      throw std::runtime_error(
-          "Vulkan keyframe: unexpected encoder tensor '" + entry.first + "'");
+      throw std::runtime_error("Vulkan keyframe: unexpected encoder tensor '" + entry.first + "'");
     }
   }
   if (observed != specs.size()) {
@@ -118,10 +115,13 @@ void validate_archive(const SafeTensors& checkpoint,
   }
 }
 
-}  // namespace
+} // namespace
 
 struct KeyframeEncoder::Impl {
-  struct Pair { DeviceTensor weight, bias; };
+  struct Pair {
+    DeviceTensor weight, bias;
+  };
+
   struct Shape {
     uint32_t height = 0, width = 0;
     uint64_t capacity = 0;
@@ -135,27 +135,30 @@ struct KeyframeEncoder::Impl {
   bool is_loaded = false;
   KeyframeEncoderStats statistics;
 
-  explicit Impl(const Device& device) : context(device, [] {
-    TensorContextOptions options;
-    options.pipeline_sets = TensorPipelineSet::kCore | TensorPipelineSet::kVideo |
-        TensorPipelineSet::kAudio;
-    options.max_batch_operators = 128;
-    return options;
-  }()) {
+  explicit Impl(const Device& device)
+      : context(device, [] {
+          TensorContextOptions options;
+          options.pipeline_sets =
+              TensorPipelineSet::kCore | TensorPipelineSet::kVideo | TensorPipelineSet::kAudio;
+          options.max_batch_operators = 128;
+          return options;
+        }()) {
     context.require_exact_fp32_vae_normalization();
     context.require_exact_vae_pointwise();
   }
 
-  Pair& pair(const std::string& name) { return weights.at(name); }
+  Pair& pair(const std::string& name) {
+    return weights.at(name);
+  }
 
   Shape& prepare_shape(uint32_t height, uint32_t width) {
-    if (shape && shape->height == height && shape->width == width) return *shape;
+    if (shape && shape->height == height && shape->width == width)
+      return *shape;
     const uint64_t plane = static_cast<uint64_t>(height) * width;
     if (height == 0 || width == 0 || height % 16 || width % 16 ||
         plane > std::numeric_limits<uint64_t>::max() / 128 ||
         128 * plane > std::numeric_limits<uint32_t>::max()) {
-      throw std::invalid_argument(
-          "Vulkan keyframe: dimensions exceed exact flat-arena contract");
+      throw std::invalid_argument("Vulkan keyframe: dimensions exceed exact flat-arena contract");
     }
     // Never overlap two three-arena shapes. This is deliberately a bounded
     // one-shape cache: reference encode completes synchronously, so no command
@@ -175,29 +178,28 @@ struct KeyframeEncoder::Impl {
     return *shape;
   }
 
-  void conv(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output,
-            const std::string& name, uint32_t cin, uint32_t cout,
-            uint32_t height, uint32_t width, uint32_t kernel,
+  void conv(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output, const std::string& name,
+            uint32_t cin, uint32_t cout, uint32_t height, uint32_t width, uint32_t kernel,
             uint32_t stride = 1, bool asymmetric = false) {
     Pair& value = pair(name);
-    batch.keyframe_conv3d_f16(input, value.weight, value.bias, output,
-                              cin, cout, height, width, kernel, stride,
-                              !asymmetric, asymmetric);
+    batch.keyframe_conv3d_f16(input, value.weight, value.bias, output, cin, cout, height, width,
+                              kernel, stride, !asymmetric, asymmetric);
   }
-  void norm(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output,
-            const std::string& name, uint32_t channels, uint32_t height,
-            uint32_t width) {
+
+  void norm(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output, const std::string& name,
+            uint32_t channels, uint32_t height, uint32_t width) {
     Pair& value = pair(name);
-    batch.keyframe_group_norm_silu_f16_affine(
-        input, value.weight, value.bias, output, channels, height, width,
-        32, 1.0e-6f);
+    batch.keyframe_group_norm_silu_f16_affine(input, value.weight, value.bias, output, channels,
+                                              height, width, 32, 1.0e-6f);
   }
 };
 
 KeyframeEncoder::KeyframeEncoder() = default;
 KeyframeEncoder::~KeyframeEncoder() = default;
-KeyframeEncoder::KeyframeEncoder(std::unique_ptr<Impl> impl)
-    : impl_(std::move(impl)) {}
+
+KeyframeEncoder::KeyframeEncoder(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+
 KeyframeEncoder::KeyframeEncoder(KeyframeEncoder&&) noexcept = default;
 KeyframeEncoder& KeyframeEncoder::operator=(KeyframeEncoder&&) noexcept = default;
 
@@ -206,10 +208,10 @@ KeyframeEncoder KeyframeEncoder::create(const Device& device) {
 }
 
 void KeyframeEncoder::load(const SafeTensors& checkpoint) {
-  if (!impl_) throw std::logic_error("Vulkan keyframe: empty encoder");
+  if (!impl_)
+    throw std::logic_error("Vulkan keyframe: empty encoder");
   if (impl_->is_loaded) {
-    throw std::logic_error(
-        "Vulkan keyframe: unload before replacing active checkpoint weights");
+    throw std::logic_error("Vulkan keyframe: unload before replacing active checkpoint weights");
   }
   const std::vector<WeightSpec> specs = weight_specs();
   validate_archive(checkpoint, specs);
@@ -232,8 +234,7 @@ void KeyframeEncoder::load(const SafeTensors& checkpoint) {
     pair.bias = impl_->context.allocate(bias_layout, ScalarType::kFloat16);
     const TensorView& matrix_view = checkpoint.at(matrix_spec.name);
     const TensorView& bias_view = checkpoint.at(bias_spec.name);
-    impl_->context.upload_transient_bytes(
-        pair.weight, matrix_view.data, matrix_view.nbytes);
+    impl_->context.upload_transient_bytes(pair.weight, matrix_view.data, matrix_view.nbytes);
     impl_->context.upload_transient_bytes(pair.bias, bias_view.data, bias_view.nbytes);
     persistent += matrix_view.nbytes + bias_view.nbytes;
     next.emplace(matrix_spec.name.substr(0, suffix), std::move(pair));
@@ -246,26 +247,28 @@ void KeyframeEncoder::load(const SafeTensors& checkpoint) {
 }
 
 void KeyframeEncoder::unload() noexcept {
-  if (!impl_) return;
+  if (!impl_)
+    return;
   impl_->shape.reset();
   impl_->weights.clear();
   impl_->is_loaded = false;
   impl_->statistics = {};
-  try { impl_->context.collect(); } catch (...) {}
+  try {
+    impl_->context.collect();
+  } catch (...) {
+  }
 }
 
 bool KeyframeEncoder::loaded() const noexcept {
   return impl_ && impl_->is_loaded;
 }
 
-std::vector<float> KeyframeEncoder::encode_moments(
-    const float* pixels, int height, int width) {
-  if (!impl_ || !impl_->is_loaded || pixels == nullptr || height <= 0 ||
-      width <= 0) {
+std::vector<float> KeyframeEncoder::encode_moments(const float* pixels, int height, int width) {
+  if (!impl_ || !impl_->is_loaded || pixels == nullptr || height <= 0 || width <= 0) {
     throw std::invalid_argument("Vulkan keyframe: invalid encode request");
   }
-  Impl::Shape& shape = impl_->prepare_shape(
-      static_cast<uint32_t>(height), static_cast<uint32_t>(width));
+  Impl::Shape& shape =
+      impl_->prepare_shape(static_cast<uint32_t>(height), static_cast<uint32_t>(width));
   const uint64_t plane = static_cast<uint64_t>(height) * width;
   impl_->context.upload_transient(shape.input, pixels, 3 * plane);
   const auto start = std::chrono::steady_clock::now();
@@ -275,42 +278,37 @@ std::vector<float> KeyframeEncoder::encode_moments(
   uint32_t w = static_cast<uint32_t>(width);
   uint32_t current = 128;
   uint32_t state = 0;
-  impl_->conv(batch, shape.input, shape.arena[state], "encoder.conv_in",
-              3, 128, h, w, 3);
+  impl_->conv(batch, shape.input, shape.arena[state], "encoder.conv_in", 3, 128, h, w, 3);
   for (uint32_t level = 0; level < 6; ++level) {
     const uint32_t output = kChannels[level];
     for (uint32_t block = 0; block < 2; ++block) {
       const uint32_t input_channels = current;
-      const std::string p = "encoder.down." + std::to_string(level) +
-          ".block." + std::to_string(block);
+      const std::string p =
+          "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
       const uint32_t first = (state + 1) % 3;
       const uint32_t second = (state + 2) % 3;
       if (input_channels != output) {
-        impl_->conv(batch, shape.arena[state], shape.arena[first],
-                    p + ".nin_shortcut", input_channels, output, h, w, 1);
-        impl_->norm(batch, shape.arena[state], shape.arena[second],
-                    p + ".norm1", input_channels, h, w);
-        impl_->conv(batch, shape.arena[second], shape.arena[state],
-                    p + ".conv1", input_channels, output, h, w, 3);
-        impl_->norm(batch, shape.arena[state], shape.arena[second],
-                    p + ".norm2", output, h, w);
-        impl_->conv(batch, shape.arena[second], shape.arena[state],
-                    p + ".conv2", output, output, h, w, 3);
-        batch.keyframe_add_f32(shape.arena[first], shape.arena[state],
-                               shape.arena[second],
+        impl_->conv(batch, shape.arena[state], shape.arena[first], p + ".nin_shortcut",
+                    input_channels, output, h, w, 1);
+        impl_->norm(batch, shape.arena[state], shape.arena[second], p + ".norm1", input_channels, h,
+                    w);
+        impl_->conv(batch, shape.arena[second], shape.arena[state], p + ".conv1", input_channels,
+                    output, h, w, 3);
+        impl_->norm(batch, shape.arena[state], shape.arena[second], p + ".norm2", output, h, w);
+        impl_->conv(batch, shape.arena[second], shape.arena[state], p + ".conv2", output, output, h,
+                    w, 3);
+        batch.keyframe_add_f32(shape.arena[first], shape.arena[state], shape.arena[second],
                                static_cast<uint64_t>(output) * h * w);
         state = second;
       } else {
-        impl_->norm(batch, shape.arena[state], shape.arena[first],
-                    p + ".norm1", input_channels, h, w);
-        impl_->conv(batch, shape.arena[first], shape.arena[second],
-                    p + ".conv1", input_channels, output, h, w, 3);
-        impl_->norm(batch, shape.arena[second], shape.arena[first],
-                    p + ".norm2", output, h, w);
-        impl_->conv(batch, shape.arena[first], shape.arena[second],
-                    p + ".conv2", output, output, h, w, 3);
-        batch.keyframe_add_f32(shape.arena[state], shape.arena[second],
-                               shape.arena[first],
+        impl_->norm(batch, shape.arena[state], shape.arena[first], p + ".norm1", input_channels, h,
+                    w);
+        impl_->conv(batch, shape.arena[first], shape.arena[second], p + ".conv1", input_channels,
+                    output, h, w, 3);
+        impl_->norm(batch, shape.arena[second], shape.arena[first], p + ".norm2", output, h, w);
+        impl_->conv(batch, shape.arena[first], shape.arena[second], p + ".conv2", output, output, h,
+                    w, 3);
+        batch.keyframe_add_f32(shape.arena[state], shape.arena[second], shape.arena[first],
                                static_cast<uint64_t>(output) * h * w);
         state = first;
       }
@@ -319,55 +317,49 @@ std::vector<float> KeyframeEncoder::encode_moments(
     if (kDownsample[level] == 2) {
       const uint32_t destination = (state + 1) % 3;
       impl_->conv(batch, shape.arena[state], shape.arena[destination],
-                  "encoder.down." + std::to_string(level) + ".downsample.conv",
-                  current, current, h, w, 3, 2, true);
+                  "encoder.down." + std::to_string(level) + ".downsample.conv", current, current, h,
+                  w, 3, 2, true);
       state = destination;
       h /= 2;
       w /= 2;
     }
   }
   uint32_t destination = (state + 1) % 3;
-  impl_->norm(batch, shape.arena[state], shape.arena[destination],
-              "encoder.norm_out", 1024, h, w);
+  impl_->norm(batch, shape.arena[state], shape.arena[destination], "encoder.norm_out", 1024, h, w);
   state = destination;
   destination = (state + 1) % 3;
-  impl_->conv(batch, shape.arena[state], shape.arena[destination],
-              "encoder.conv_out", 1024, 48, h, w, 3);
+  impl_->conv(batch, shape.arena[state], shape.arena[destination], "encoder.conv_out", 1024, 48, h,
+              w, 3);
   state = destination;
   destination = (state + 1) % 3;
-  impl_->conv(batch, shape.arena[state], shape.arena[destination],
-              "quant_conv", 48, 48, h, w, 1);
+  impl_->conv(batch, shape.arena[state], shape.arena[destination], "quant_conv", 48, 48, h, w, 1);
   state = destination;
-  batch.audio_copy_prefix(shape.arena[state], shape.moments,
-                          static_cast<uint64_t>(48) * h * w);
+  batch.audio_copy_prefix(shape.arena[state], shape.moments, static_cast<uint64_t>(48) * h * w);
   batch.submit().wait();
   std::vector<float> result(static_cast<size_t>(48) * h * w);
   impl_->context.download(shape.moments, result.data(), result.size());
   impl_->context.collect();
   const auto stop = std::chrono::steady_clock::now();
-  impl_->statistics.last_encode_seconds =
-      std::chrono::duration<double>(stop - start).count();
+  impl_->statistics.last_encode_seconds = std::chrono::duration<double>(stop - start).count();
   impl_->statistics.activation_bytes =
       (3 * shape.capacity + 3 * plane + result.size()) * sizeof(float);
   impl_->statistics.allocator_peak_used_bytes =
-      std::max(impl_->statistics.allocator_peak_used_bytes,
-               impl_->context.pooled_used_bytes());
+      std::max(impl_->statistics.allocator_peak_used_bytes, impl_->context.pooled_used_bytes());
   impl_->statistics.allocator_used_bytes = impl_->context.pooled_used_bytes();
   impl_->statistics.allocator_reserved_bytes = impl_->context.reserved_bytes();
-  impl_->statistics.descriptor_set_allocations =
-      impl_->context.descriptor_set_allocations();
+  impl_->statistics.descriptor_set_allocations = impl_->context.descriptor_set_allocations();
   impl_->statistics.operators = kOperators;
   return result;
 }
 
-std::vector<float> KeyframeEncoder::encode_condition_rows(
-    const RGBImage& image, const float* normal,
-    const std::vector<float>& latents_mean,
-    const std::vector<float>& latents_std) {
-  if (!normal) throw std::invalid_argument("Vulkan keyframe: missing posterior normal");
+std::vector<float> KeyframeEncoder::encode_condition_rows(const RGBImage& image,
+                                                          const float* normal,
+                                                          const std::vector<float>& latents_mean,
+                                                          const std::vector<float>& latents_std) {
+  if (!normal)
+    throw std::invalid_argument("Vulkan keyframe: missing posterior normal");
   const std::vector<float> pixels = vae::prepare_keyframe_pixels(image);
-  const std::vector<float> moments =
-      encode_moments(pixels.data(), image.height, image.width);
+  const std::vector<float> moments = encode_moments(pixels.data(), image.height, image.width);
   const int latent_h = image.height / 16;
   const int latent_w = image.width / 16;
   const std::vector<float> latents = vae::sample_keyframe_latents(
@@ -375,16 +367,14 @@ std::vector<float> KeyframeEncoder::encode_condition_rows(
   return vae::patchify_keyframe_latents(latents.data(), latent_h, latent_w);
 }
 
-std::vector<float> KeyframeEncoder::encode_reference_image(
-    const RGBImage& image, const std::vector<float>& latents_mean,
-    const std::vector<float>& latents_std) {
-  if (image.height <= 0 || image.width <= 0 || image.height % 16 ||
-      image.width % 16) {
+std::vector<float> KeyframeEncoder::encode_reference_image(const RGBImage& image,
+                                                           const std::vector<float>& latents_mean,
+                                                           const std::vector<float>& latents_std) {
+  if (image.height <= 0 || image.width <= 0 || image.height % 16 || image.width % 16) {
     throw std::invalid_argument(
         "Vulkan keyframe: reference dimensions must be positive multiples of 16");
   }
-  const size_t count = static_cast<size_t>(24) * (image.height / 16) *
-      (image.width / 16);
+  const size_t count = static_cast<size_t>(24) * (image.height / 16) * (image.width / 16);
   const std::vector<float> normal = vae::torch_cpu_normal_seed42(count);
   return encode_condition_rows(image, normal.data(), latents_mean, latents_std);
 }
@@ -394,4 +384,4 @@ const KeyframeEncoderStats& KeyframeEncoder::stats() const noexcept {
   return impl_ ? impl_->statistics : empty;
 }
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

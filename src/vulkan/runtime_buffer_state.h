@@ -3,7 +3,11 @@
 
 namespace slopfab::vulkan {
 struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
-  struct Range { uint64_t offset; uint64_t bytes; };
+  struct Range {
+    uint64_t offset;
+    uint64_t bytes;
+  };
+
   struct Block {
     std::shared_ptr<detail::DeviceState> device;
     VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -19,8 +23,10 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
     mutable std::mutex mapped_mutex;
 
     ~Block() {
-      if (memory == VK_NULL_HANDLE) return;
-      if (mapped != nullptr) device->unmap_memory(device->device, memory);
+      if (memory == VK_NULL_HANDLE)
+        return;
+      if (mapped != nullptr)
+        device->unmap_memory(device->device, memory);
       device->free_memory(device->device, memory, nullptr);
     }
   };
@@ -38,21 +44,29 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
     } else {
       required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
       preferred = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-      if (usage == MemoryUsage::kReadback) preferred |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+      if (usage == MemoryUsage::kReadback)
+        preferred |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
     }
     int best = -1;
     int best_score = -1;
     for (uint32_t i = 0; i < device->memory.memoryTypeCount; ++i) {
-      if (!(bits & (1u << i))) continue;
+      if (!(bits & (1u << i)))
+        continue;
       const auto flags = device->memory.memoryTypes[i].propertyFlags;
-      if ((flags & required) != required) continue;
+      if ((flags & required) != required)
+        continue;
       int score = 0;
       for (uint32_t bit = 1; bit != 0; bit <<= 1) {
-        if ((preferred & bit) && (flags & bit)) ++score;
+        if ((preferred & bit) && (flags & bit))
+          ++score;
       }
-      if (score > best_score) { best = static_cast<int>(i); best_score = score; }
+      if (score > best_score) {
+        best = static_cast<int>(i);
+        best_score = score;
+      }
     }
-    if (best < 0) throw std::runtime_error("vulkan: no compatible memory type for buffer");
+    if (best < 0)
+      throw std::runtime_error("vulkan: no compatible memory type for buffer");
     return static_cast<uint32_t>(best);
   }
 
@@ -61,17 +75,21 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
       const Range range = block.free[i];
       const uint64_t aligned = detail::align_up(range.offset, alignment);
       if (aligned < range.offset || aligned - range.offset > range.bytes ||
-          bytes > range.bytes - (aligned - range.offset)) continue;
+          bytes > range.bytes - (aligned - range.offset))
+        continue;
       const uint64_t prefix = aligned - range.offset;
       const uint64_t suffix = range.bytes - prefix - bytes;
       // A split grows the vector by one. Reserve before changing the free list
       // so allocation failure leaves the original span intact.
-      if (prefix != 0 && suffix != 0) block.free.reserve(block.free.size() + 1);
+      if (prefix != 0 && suffix != 0)
+        block.free.reserve(block.free.size() + 1);
       block.free.erase(block.free.begin() + static_cast<std::ptrdiff_t>(i));
-      if (suffix != 0) block.free.insert(block.free.begin() + static_cast<std::ptrdiff_t>(i),
-                                        {aligned + bytes, suffix});
-      if (prefix != 0) block.free.insert(block.free.begin() + static_cast<std::ptrdiff_t>(i),
-                                        {range.offset, prefix});
+      if (suffix != 0)
+        block.free.insert(block.free.begin() + static_cast<std::ptrdiff_t>(i),
+                          {aligned + bytes, suffix});
+      if (prefix != 0)
+        block.free.insert(block.free.begin() + static_cast<std::ptrdiff_t>(i),
+                          {range.offset, prefix});
       block.used += bytes;
       *offset = aligned;
       return true;
@@ -97,9 +115,9 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
     flags_info.flags = addressable ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0;
     VkMemoryAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocate.pNext = addressable ? static_cast<const void*>(&flags_info)
-                                 : (dedicated ? static_cast<const void*>(&dedicated_info)
-                                              : nullptr);
+    allocate.pNext = addressable
+                         ? static_cast<const void*>(&flags_info)
+                         : (dedicated ? static_cast<const void*>(&dedicated_info) : nullptr);
     allocate.allocationSize = bytes;
     allocate.memoryTypeIndex = memory_type;
     const VkResult allocation_result =
@@ -113,18 +131,19 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
         used += existing->used;
       }
       const uint32_t heap = device->memory.memoryTypes[memory_type].heapIndex;
-      const std::string operation = "vkAllocateMemory [requested=" +
-          std::to_string(bytes) + " bytes, memory_type=" + std::to_string(memory_type) +
-          ", heap=" + std::to_string(heap) + ", heap_size=" +
-          std::to_string(device->memory.memoryHeaps[heap].size) +
+      const std::string operation =
+          "vkAllocateMemory [requested=" + std::to_string(bytes) +
+          " bytes, memory_type=" + std::to_string(memory_type) + ", heap=" + std::to_string(heap) +
+          ", heap_size=" + std::to_string(device->memory.memoryHeaps[heap].size) +
           " bytes, pool_reserved=" + std::to_string(reserved) +
           " bytes, pool_used=" + std::to_string(used) + " bytes]";
       detail::fail(operation.c_str(), allocation_result);
     }
     if (block->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
       try {
-        detail::check(device->map_memory(device->device, block->memory, 0, bytes, 0,
-                                         &block->mapped), "vkMapMemory");
+        detail::check(
+            device->map_memory(device->device, block->memory, 0, bytes, 0, &block->mapped),
+            "vkMapMemory");
       } catch (...) {
         device->free_memory(device->device, block->memory, nullptr);
         block->memory = VK_NULL_HANDLE;
@@ -157,8 +176,7 @@ struct BufferPool::Impl : std::enable_shared_from_this<BufferPool::Impl> {
             pos = block->free.erase(pos) - 1;
           }
         }
-        if (pos + 1 != block->free.end() &&
-            pos->offset + pos->bytes == (pos + 1)->offset) {
+        if (pos + 1 != block->free.end() && pos->offset + pos->bytes == (pos + 1)->offset) {
           pos->bytes += (pos + 1)->bytes;
           block->free.erase(pos + 1);
         }
@@ -184,8 +202,10 @@ struct Buffer::Impl {
   BufferUsage buffer_usage = static_cast<BufferUsage>(0);
 
   ~Impl() {
-    if (buffer != VK_NULL_HANDLE) pool->device->destroy_buffer(pool->device->device, buffer, nullptr);
-    if (block) pool->release(block, offset, allocation_bytes);
+    if (buffer != VK_NULL_HANDLE)
+      pool->device->destroy_buffer(pool->device->device, buffer, nullptr);
+    if (block)
+      pool->release(block, offset, allocation_bytes);
   }
 
   void check_range(uint64_t range_offset, uint64_t range_bytes) const {
@@ -200,8 +220,8 @@ struct Buffer::Impl {
     const uint64_t absolute = offset + range_offset;
     const uint64_t begin = absolute - absolute % atom;
     const uint64_t end_unaligned = absolute + range_bytes;
-    const uint64_t end = std::min<uint64_t>(offset + allocation_bytes,
-                                            detail::align_up(end_unaligned, atom));
+    const uint64_t end =
+        std::min<uint64_t>(offset + allocation_bytes, detail::align_up(end_unaligned, atom));
     VkMappedMemoryRange range{};
     range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
     range.memory = block->memory;
@@ -211,19 +231,20 @@ struct Buffer::Impl {
   }
 
   void flush_range(uint64_t range_offset, uint64_t range_bytes) const {
-    if (block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) return;
+    if (block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+      return;
     const auto range = mapped_range(range_offset, range_bytes);
     detail::check(pool->device->flush_mapped_ranges(pool->device->device, 1, &range),
                   "vkFlushMappedMemoryRanges");
   }
 
   void invalidate_range(uint64_t range_offset, uint64_t range_bytes) const {
-    if (block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) return;
+    if (block->properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+      return;
     const auto range = mapped_range(range_offset, range_bytes);
     detail::check(pool->device->invalidate_mapped_ranges(pool->device->device, 1, &range),
                   "vkInvalidateMappedMemoryRanges");
   }
 };
 
-
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

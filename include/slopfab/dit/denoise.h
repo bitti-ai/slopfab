@@ -21,12 +21,11 @@ namespace slopfab::dit {
 
 // Produces the two velocity predictions for one step, in place of the
 // transformer. See `DenoiseInputs::velocity`.
-using VelocityFn = std::function<void(int step, const RowTimesteps& row_timesteps,
-                                      const float* video_rows, const float* audio_rows,
-                                      float* video_velocity, float* audio_velocity)>;
-using DenoiseBoundaryFn = std::function<void(
-    int step, const std::vector<float>& video_rows,
-    const std::vector<float>& audio_rows)>;
+using VelocityFn =
+    std::function<void(int step, const RowTimesteps& row_timesteps, const float* video_rows,
+                       const float* audio_rows, float* video_velocity, float* audio_velocity)>;
+using DenoiseBoundaryFn = std::function<void(int step, const std::vector<float>& video_rows,
+                                             const std::vector<float>& audio_rows)>;
 
 struct DenoiseInputs {
   const SequenceLayout* layout = nullptr;
@@ -93,8 +92,8 @@ struct DenoiseInputs {
 };
 
 struct DenoiseOutputs {
-  std::vector<float> video_rows;  // [V, 96] fp32
-  std::vector<float> audio_rows;  // [Sa, 32] fp32
+  std::vector<float> video_rows; // [V, 96] fp32
+  std::vector<float> audio_rows; // [Sa, 32] fp32
 
   // How the loop actually spent its evaluations. Reported rather than inferred:
   // a cache threshold whose skip count is not printed cannot be reasoned about
@@ -135,4 +134,4 @@ using ProgressFn = std::function<bool(int, int)>;
 DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                        const ProgressFn& progress = {});
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

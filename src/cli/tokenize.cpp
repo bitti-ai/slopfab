@@ -65,9 +65,11 @@
 #endif
 
 #include "commands.h"
+
 namespace slopfab::cli {
 int cmd_tokenize(int argc, char** argv) {
-  if (wants_help(argc, argv)) return print_command_help(*find_command("tokenize"));
+  if (wants_help(argc, argv))
+    return print_command_help(*find_command("tokenize"));
 
   std::string tok_path;
   std::string text;
@@ -83,27 +85,33 @@ int cmd_tokenize(int argc, char** argv) {
       std::fprintf(stderr, "slopfab: unrecognised option '%s'\n", argv[i]);
       return 2;
     } else {
-      if (!text.empty()) text += " ";
+      if (!text.empty())
+        text += " ";
       text += argv[i];
     }
   }
   slopfab::text::Tokenizer tok;
-  if (tok_path.empty()) tok.load_embedded();
-  else tok.load(tok_path);
+  if (tok_path.empty())
+    tok.load_embedded();
+  else
+    tok.load(tok_path);
   std::printf("vocab      %zu tokens\n", tok.vocab_size());
 
   if (show_pieces) {
     std::printf("pieces     ");
-    for (const std::string& p : tok.pre_tokenize(text)) std::printf("[%s]", p.c_str());
+    for (const std::string& p : tok.pre_tokenize(text))
+      std::printf("[%s]", p.c_str());
     std::printf("\n");
   }
 
   const std::vector<int32_t> ids = tok.encode(text);
   std::printf("ids (%zu)   ", ids.size());
-  for (int32_t id : ids) std::printf("%d ", id);
+  for (int32_t id : ids)
+    std::printf("%d ", id);
   std::printf("\n");
   std::printf("tokens     ");
-  for (int32_t id : ids) std::printf("[%s]", tok.id_to_token(id).c_str());
+  for (int32_t id : ids)
+    std::printf("[%s]", tok.id_to_token(id).c_str());
   std::printf("\n");
 
   const std::string round = tok.decode(ids);

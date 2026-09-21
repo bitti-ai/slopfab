@@ -106,13 +106,13 @@ struct DeviceOptions {
 class Device;
 
 class PhysicalDevice {
- public:
+public:
   PhysicalDevice();
   const DeviceInfo& info() const;
   Device create_device(const DeviceOptions& options = {}) const;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit PhysicalDevice(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -120,7 +120,7 @@ class PhysicalDevice {
 };
 
 class Instance {
- public:
+public:
   Instance();
   ~Instance();
   Instance(Instance&&) noexcept;
@@ -138,14 +138,14 @@ class Instance {
   std::vector<PhysicalDevice> enumerate_devices() const;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit Instance(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
 
 class Queue {
- public:
+public:
   Queue();
   uint32_t family_index() const;
   void wait_idle() const;
@@ -155,7 +155,7 @@ class Queue {
   void* native_handle() const noexcept;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit Queue(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -164,7 +164,7 @@ class Queue {
 };
 
 class Device {
- public:
+public:
   Device();
   ~Device();
   Device(Device&&) noexcept;
@@ -180,7 +180,7 @@ class Device {
   void* native_handle() const noexcept;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit Device(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -200,18 +200,17 @@ enum class BufferUsage : uint32_t {
 };
 
 constexpr BufferUsage operator|(BufferUsage lhs, BufferUsage rhs) {
-  return static_cast<BufferUsage>(static_cast<uint32_t>(lhs) |
-                                  static_cast<uint32_t>(rhs));
+  return static_cast<BufferUsage>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
 }
 
 enum class MemoryUsage {
-  kDevice,    // device-local; normally not host-visible
-  kUpload,    // persistently mapped, coherent preferred
-  kReadback,  // persistently mapped, cached and coherent preferred
+  kDevice,   // device-local; normally not host-visible
+  kUpload,   // persistently mapped, coherent preferred
+  kReadback, // persistently mapped, cached and coherent preferred
 };
 
 class Buffer {
- public:
+public:
   Buffer();
   ~Buffer();
   Buffer(Buffer&&) noexcept;
@@ -239,7 +238,7 @@ class Buffer {
   uint64_t memory_offset() const noexcept;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit Buffer(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -249,7 +248,7 @@ class Buffer {
 };
 
 class BufferPool {
- public:
+public:
   // 256 MiB amortises vkAllocateMemory overhead for model tensors without
   // committing a block until the first allocation. Small heaps are clamped.
   explicit BufferPool(const Device& device, uint64_t block_bytes = 256ull << 20);
@@ -265,10 +264,10 @@ class BufferPool {
   uint64_t reserved_bytes() const;
   uint64_t used_bytes() const;
 
- private:
+private:
   struct Impl;
   std::shared_ptr<Impl> impl_;
   friend class Buffer;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

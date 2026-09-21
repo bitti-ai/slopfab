@@ -1,7 +1,9 @@
 #include "internal.h"
 extern "C" {
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* request, slopfab_progress_fn callback,
-                            void* userdata, slopfab_generation** out_generation) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* request,
+                                                        slopfab_progress_fn callback,
+                                                        void* userdata,
+                                                        slopfab_generation** out_generation) {
   if (request == nullptr || out_generation == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_generation_start: null argument");
   }
@@ -12,7 +14,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
     // fails a millisecond later.
     GeneratePlan resolved_plan;
     try {
-      if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
+      if (request->request.continuation &&
+          request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       resolved_plan = slopfab::resolve_plan(request->request);
       slopfab::validate_generation_options(request->request, resolved_plan, request->options);
@@ -36,9 +39,12 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
     struct ActiveClaim {
       bool held = true;
       ~ActiveClaim() {
-        if (held) g_generation_active.store(false);
+        if (held)
+          g_generation_active.store(false);
       }
-      void release() { held = false; }
+      void release() {
+        held = false;
+      }
     } claim;
 
     // Owning, so that a throw anywhere below frees it. The string copies on
@@ -72,7 +78,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_start(const slopfab_request* r
 }
 
 SLOPFAB_C_API void SLOPFAB_CALL slopfab_generation_cancel(slopfab_generation* generation) {
-  if (generation == nullptr) return;
+  if (generation == nullptr)
+    return;
   generation->cancel.store(true);
 }
 
@@ -83,22 +90,28 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_status(const slopfab_generatio
   return generation->status.load();
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_wait(slopfab_generation* generation, int32_t timeout_ms) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_wait(slopfab_generation* generation,
+                                                       int32_t timeout_ms) {
   if (generation == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_generation_wait: null generation");
   }
   std::unique_lock<std::mutex> lock(generation->mutex);
   if (timeout_ms < 0) {
-    generation->done_cv.wait(lock, [generation] { return generation->done; });
+    generation->done_cv.wait(lock, [generation] {
+      return generation->done;
+    });
   } else {
-    generation->done_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                                 [generation] { return generation->done; });
+    generation->done_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [generation] {
+      return generation->done;
+    });
   }
   return generation->status.load();
 }
 
-SLOPFAB_C_API const char* SLOPFAB_CALL slopfab_generation_error(const slopfab_generation* generation) {
-  if (generation == nullptr) return "";
+SLOPFAB_C_API const char* SLOPFAB_CALL
+slopfab_generation_error(const slopfab_generation* generation) {
+  if (generation == nullptr)
+    return "";
   // The status load is what makes the read below safe, so it is a guard and
   // not an optimisation. `finish` assigns `error` and *then* stores a terminal
   // status; observing that status here synchronises with the assignment, and
@@ -109,16 +122,19 @@ SLOPFAB_C_API const char* SLOPFAB_CALL slopfab_generation_error(const slopfab_ge
   // `slopfab_generation_status` in a UI loop would be calling `c_str()` while
   // the worker move-assigns the string underneath it, and the SSO-to-heap
   // transition hands back a pointer into a buffer being freed.
-  if (generation->status.load() == SLOPFAB_ERR_NOT_READY) return "";
+  if (generation->status.load() == SLOPFAB_ERR_NOT_READY)
+    return "";
   return generation->error.c_str();
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generation* generation, slopfab_output* out_output) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generation* generation,
+                                                         slopfab_output* out_output) {
   if (generation == nullptr || out_output == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_generation_output: null argument");
   }
   const int status = report_terminal_status(generation);
-  if (status != SLOPFAB_OK) return status;
+  if (status != SLOPFAB_OK)
+    return status;
   out_output->video = generation->video.empty() ? nullptr : generation->video.data();
   out_output->video_float_count = generation->video.size();
   out_output->channels = generation->channels;
@@ -144,8 +160,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generatio
   return SLOPFAB_OK;
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_generation* generation, int32_t frame_index,
-                                  uint8_t* dst, size_t dst_bytes) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_generation* generation,
+                                                              int32_t frame_index, uint8_t* dst,
+                                                              size_t dst_bytes) {
   if (generation == nullptr || dst == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_generation_frame_rgba8: null argument");
   }
@@ -153,22 +170,22 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_gene
   // this and `slopfab_generation_output` cannot tell a caller two different
   // stories about the same handle.
   const int status = report_terminal_status(generation);
-  if (status != SLOPFAB_OK) return status;
+  if (status != SLOPFAB_OK)
+    return status;
 
   // Guarded from here on: every check below names the offending number in its
   // message, so the reporting path allocates.
   return guarded([&] {
     if (frame_index < 0 || frame_index >= generation->frames) {
-      return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
-                  "frame " + std::to_string(frame_index) + " is outside 0.." +
-                      std::to_string(generation->frames - 1));
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "frame " + std::to_string(frame_index) +
+                                                    " is outside 0.." +
+                                                    std::to_string(generation->frames - 1));
     }
     const size_t pixels = static_cast<size_t>(generation->width) * generation->height;
     if (dst_bytes < pixels * 4) {
-      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "the destination holds " +
-                                                   std::to_string(dst_bytes) +
-                                                   " bytes; this frame needs " +
-                                                   std::to_string(pixels * 4));
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                  "the destination holds " + std::to_string(dst_bytes) +
+                      " bytes; this frame needs " + std::to_string(pixels * 4));
     }
     // Every other argument is validated; these are the invariants that govern
     // the actual memory access, and the loop below hardcodes three planes. The
@@ -198,14 +215,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_gene
 }
 
 SLOPFAB_C_API void SLOPFAB_CALL slopfab_generation_destroy(slopfab_generation* generation) {
-  if (generation == nullptr) return;
+  if (generation == nullptr)
+    return;
   generation->cancel.store(true);
   // Joined rather than detached. A detached worker would outlive the pixels
   // it is about to write into, and the caller has no way to know when the
   // last CUDA call has drained.
-  if (generation->worker.joinable()) generation->worker.join();
+  if (generation->worker.joinable())
+    generation->worker.join();
   delete generation;
 }
-
-
 }

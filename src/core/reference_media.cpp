@@ -11,7 +11,8 @@ namespace slopfab {
 namespace {
 
 void require(bool condition, const char* message) {
-  if (!condition) throw std::invalid_argument(message);
+  if (!condition)
+    throw std::invalid_argument(message);
 }
 
 size_t multiply(size_t a, size_t b) {
@@ -20,11 +21,12 @@ size_t multiply(size_t a, size_t b) {
   return a * b;
 }
 
-}  // namespace
+} // namespace
 
 double ReferenceAudio::duration_seconds() const {
   return channels > 0 && sample_rate > 0
-      ? static_cast<double>(interleaved.size() / channels) / sample_rate : 0;
+             ? static_cast<double>(interleaved.size() / channels) / sample_rate
+             : 0;
 }
 
 ReferenceMedia ReferenceMedia::video(double duration_seconds) {
@@ -36,23 +38,24 @@ ReferenceMedia ReferenceMedia::video(double duration_seconds) {
   return result;
 }
 
-ReferenceMedia ReferenceMedia::audio(const float* samples, size_t float_count,
-                                      int channels, int sample_rate) {
+ReferenceMedia ReferenceMedia::audio(const float* samples, size_t float_count, int channels,
+                                     int sample_rate) {
   ReferenceMedia result;
   result.set_audio(samples, float_count, channels, sample_rate);
   result.validate();
   return result;
 }
 
-void ReferenceMedia::append_frame(const uint8_t* pixels, size_t buffer_bytes,
-    int width, int height, size_t row_stride_bytes, int pixel_channels,
-    double timestamp_seconds) {
+void ReferenceMedia::append_frame(const uint8_t* pixels, size_t buffer_bytes, int width, int height,
+                                  size_t row_stride_bytes, int pixel_channels,
+                                  double timestamp_seconds) {
   require(video_, "reference media: frames require a video reference");
   require(pixels && width > 0 && height > 0, "reference video: invalid pixel buffer or dimensions");
   require(pixel_channels == 3 || pixel_channels == 4, "reference video: expected RGB24 or RGBA8");
-  require(static_cast<double>(width) / height >= .25 &&
-          static_cast<double>(width) / height <= 4, "reference video: aspect must be within 1:4 and 4:1");
-  require(std::isfinite(timestamp_seconds) && timestamp_seconds >= 0 && timestamp_seconds < duration_,
+  require(static_cast<double>(width) / height >= .25 && static_cast<double>(width) / height <= 4,
+          "reference video: aspect must be within 1:4 and 4:1");
+  require(std::isfinite(timestamp_seconds) && timestamp_seconds >= 0 &&
+              timestamp_seconds < duration_,
           "reference video: timestamp must be finite and within the clip");
   if (frames_.empty()) {
     require(timestamp_seconds == 0, "reference video: first frame timestamp must be zero");
@@ -75,15 +78,18 @@ void ReferenceMedia::append_frame(const uint8_t* pixels, size_t buffer_bytes,
   for (int y = 0; y < height; ++y) {
     const uint8_t* src = pixels + static_cast<size_t>(y) * row_stride_bytes;
     uint8_t* dst = frame->image.pixels.data() + static_cast<size_t>(y) * width * 3;
-    if (pixel_channels == 3) std::memcpy(dst, src, row_bytes);
-    else for (int x = 0; x < width; ++x) std::memcpy(dst + size_t(x) * 3, src + size_t(x) * 4, 3);
+    if (pixel_channels == 3)
+      std::memcpy(dst, src, row_bytes);
+    else
+      for (int x = 0; x < width; ++x)
+        std::memcpy(dst + size_t(x) * 3, src + size_t(x) * 4, 3);
   }
   frame->pixel_digest = sha256_bytes(frame->image.pixels.data(), frame->image.pixels.size());
   frames_.push_back(std::move(frame));
 }
 
-void ReferenceMedia::set_audio(const float* samples, size_t float_count,
-    int channels, int sample_rate, double start_seconds) {
+void ReferenceMedia::set_audio(const float* samples, size_t float_count, int channels,
+                               int sample_rate, double start_seconds) {
   require(samples && float_count > 0, "reference audio: empty sample buffer");
   require(channels == 1 || channels == 2, "reference audio: expected mono or stereo PCM");
   require(sample_rate > 0, "reference audio: sample rate must be positive");
@@ -93,10 +99,12 @@ void ReferenceMedia::set_audio(const float* samples, size_t float_count,
           "reference audio: start time must be finite and nonnegative");
   const double duration = static_cast<double>(float_count / channels) / sample_rate;
   require(duration <= 15, "reference audio: duration exceeds 15 seconds");
-  if (video_) require(start_seconds + duration <= duration_ + 1e-9,
-                      "reference audio: soundtrack extends beyond the video");
-  else require(start_seconds == 0 && duration >= 2,
-               "reference audio: standalone clip must start at zero and last 2 to 15 seconds");
+  if (video_)
+    require(start_seconds + duration <= duration_ + 1e-9,
+            "reference audio: soundtrack extends beyond the video");
+  else
+    require(start_seconds == 0 && duration >= 2,
+            "reference audio: standalone clip must start at zero and last 2 to 15 seconds");
   for (size_t i = 0; i < float_count; ++i) {
     require(std::isfinite(samples[i]) && samples[i] >= -1 && samples[i] <= 1,
             "reference audio: samples must be finite and within [-1,1]");
@@ -108,29 +116,39 @@ void ReferenceMedia::set_audio(const float* samples, size_t float_count,
   audio->interleaved.assign(samples, samples + float_count);
   audio->sample_digest = sha256_bytes(samples, float_count * sizeof(float));
   audio_ = std::move(audio);
-  if (!video_) duration_ = duration;
+  if (!video_)
+    duration_ = duration;
 }
 
 void ReferenceMedia::validate() const {
   require(duration_ >= 2 && duration_ <= 15, "reference media: duration must be 2 to 15 seconds");
-  require(video_ ? !frames_.empty() : bool(audio_), "reference media: reference has no frames or audio");
+  require(video_ ? !frames_.empty() : bool(audio_),
+          "reference media: reference has no frames or audio");
 }
 
-void validate_reference_media(size_t image_count,
-    const std::vector<std::shared_ptr<const ReferenceMedia>>& references) {
+void validate_reference_media(
+    size_t image_count, const std::vector<std::shared_ptr<const ReferenceMedia>>& references) {
   require(image_count <= 9, "MiniMax-H3 Ref2VA accepts at most 9 reference images");
-  require(references.size() <= 12 - image_count, "MiniMax-H3 Ref2VA accepts at most 12 references in total");
+  require(references.size() <= 12 - image_count,
+          "MiniMax-H3 Ref2VA accepts at most 12 references in total");
   size_t videos = 0, audios = 0;
   double video_seconds = 0, audio_seconds = 0;
   for (const auto& reference : references) {
     require(bool(reference), "reference media: null reference");
     reference->validate();
-    if (reference->is_video()) { ++videos; video_seconds += reference->duration_seconds(); }
-    else { ++audios; audio_seconds += reference->duration_seconds(); }
+    if (reference->is_video()) {
+      ++videos;
+      video_seconds += reference->duration_seconds();
+    } else {
+      ++audios;
+      audio_seconds += reference->duration_seconds();
+    }
   }
-  require(videos <= 3 && audios <= 3, "MiniMax-H3 Ref2VA accepts at most 3 videos and 3 standalone audio references");
-  require(video_seconds <= 15 + 1e-9 && audio_seconds <= 15 + 1e-9,
-          "MiniMax-H3 Ref2VA reference videos and standalone audio each have a 15 second total limit");
+  require(videos <= 3 && audios <= 3,
+          "MiniMax-H3 Ref2VA accepts at most 3 videos and 3 standalone audio references");
+  require(
+      video_seconds <= 15 + 1e-9 && audio_seconds <= 15 + 1e-9,
+      "MiniMax-H3 Ref2VA reference videos and standalone audio each have a 15 second total limit");
 }
 
 std::string reference_media_identity(const ReferenceMedia& reference) {
@@ -160,4 +178,4 @@ std::string reference_media_identity(const ReferenceMedia& reference) {
   return std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
 }
 
-}  // namespace slopfab
+} // namespace slopfab

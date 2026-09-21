@@ -21,7 +21,7 @@
 namespace slopfab::text {
 
 class Tokenizer {
- public:
+public:
   // Loads vocab and merges from a HuggingFace tokenizer.json. Added/special
   // tokens are read from the same file so that <|im_start|> and friends
   // resolve to their reserved ids.
@@ -37,8 +37,13 @@ class Tokenizer {
   // Windows only; elsewhere it throws and the caller must pass a file.
   void load_embedded();
 
-  bool loaded() const { return !vocab_.empty(); }
-  size_t vocab_size() const { return id_to_token_.size(); }
+  bool loaded() const {
+    return !vocab_.empty();
+  }
+
+  size_t vocab_size() const {
+    return id_to_token_.size();
+  }
 
   // Encodes text. Special-token strings present in the added-tokens table are
   // matched before the byte-level split, so a chat template's control tokens
@@ -64,7 +69,7 @@ class Tokenizer {
     return merge_ranks_;
   }
 
- private:
+private:
   std::unordered_map<std::string, int32_t> vocab_;
   std::vector<std::string> id_to_token_;
   // Merge rank keyed by "left\x1Fright"; lower rank merges first.
@@ -85,13 +90,13 @@ uint32_t utf8_next(const std::string& s, size_t& pos);
 void utf8_append(std::string& out, uint32_t cp);
 
 // Unicode general-category tests used by the pre-tokenizer pattern.
-bool is_letter(uint32_t cp);  // \p{L}
-bool is_number(uint32_t cp);  // \p{N}
-bool is_space(uint32_t cp);   // \s
+bool is_letter(uint32_t cp); // \p{L}
+bool is_number(uint32_t cp); // \p{N}
+bool is_space(uint32_t cp);  // \s
 
 // The reversible byte <-> code point map GPT-2 style tokenizers use so that
 // every byte is printable and no byte maps to a whitespace the splitter would
 // then re-split.
 const std::vector<uint32_t>& byte_to_unicode();
 
-}  // namespace slopfab::text
+} // namespace slopfab::text

@@ -65,12 +65,15 @@
 #endif
 
 #include "commands.h"
+
 namespace slopfab::cli {
 std::string format_shape(const std::vector<int64_t>& shape) {
-  if (shape.empty()) return "scalar";
+  if (shape.empty())
+    return "scalar";
   std::string out;
   for (size_t i = 0; i < shape.size(); ++i) {
-    if (i != 0) out += "x";
+    if (i != 0)
+      out += "x";
     out += std::to_string(shape[i]);
   }
   return out;
@@ -94,7 +97,8 @@ std::string format_bytes(uint64_t n) {
 }
 
 int cmd_inspect(int argc, char** argv) {
-  if (wants_help(argc, argv)) return print_command_help(*find_command("inspect"));
+  if (wants_help(argc, argv))
+    return print_command_help(*find_command("inspect"));
 
   std::string path;
   std::string prefix;
@@ -136,9 +140,10 @@ int cmd_inspect(int argc, char** argv) {
   if (architecture != slopfab::dit::TransformerArchitecture::kUnknown) {
     std::printf("model      %s\n", slopfab::dit::transformer_architecture_name(architecture));
     std::printf("quant      %s\n", slopfab::dit::transformer_quantization_name(
-        slopfab::dit::detect_transformer_quantization(st)));
+                                       slopfab::dit::detect_transformer_quantization(st)));
     std::printf("qkv        %s\n", slopfab::dit::transformer_qkv_is_interleaved(st)
-        ? "interleaved (reordered on load)" : "contiguous");
+                                       ? "interleaved (reordered on load)"
+                                       : "contiguous");
   }
 
   if (!st.metadata().empty()) {
@@ -152,7 +157,7 @@ int cmd_inspect(int argc, char** argv) {
 
   // Breakdown by dtype tells us at a glance which quantisation scheme a file
   // uses, which is the first thing we need when wiring up a new checkpoint.
-  std::map<std::string, std::pair<uint64_t, uint64_t>> by_dtype;  // count, bytes
+  std::map<std::string, std::pair<uint64_t, uint64_t>> by_dtype; // count, bytes
   uint64_t total_bytes = 0;
   for (const auto& [name, view] : st.tensors()) {
     auto& slot = by_dtype[slopfab::dtype_name(view.dtype)];
@@ -174,9 +179,11 @@ int cmd_inspect(int argc, char** argv) {
     size_t shown = 0;
     size_t matched = 0;
     for (const auto& [name, view] : st.tensors()) {
-      if (!prefix.empty() && name.rfind(prefix, 0) != 0) continue;
+      if (!prefix.empty() && name.rfind(prefix, 0) != 0)
+        continue;
       ++matched;
-      if (limit != 0 && shown >= limit) continue;
+      if (limit != 0 && shown >= limit)
+        continue;
       std::printf("  %-58s %-8s %-20s %10s\n", name.c_str(), slopfab::dtype_name(view.dtype),
                   format_shape(view.shape).c_str(), format_bytes(view.nbytes).c_str());
       ++shown;
@@ -197,7 +204,8 @@ int cmd_inspect(int argc, char** argv) {
 // ours, and diff. Exit code is non-zero when any tensor exceeds tolerance, so
 // it can be used directly as a test.
 int cmd_compare(int argc, char** argv) {
-  if (wants_help(argc, argv)) return print_command_help(*find_command("compare"));
+  if (wants_help(argc, argv))
+    return print_command_help(*find_command("compare"));
 
   std::string ref_path;
   std::string act_path;
@@ -253,7 +261,8 @@ int cmd_compare(int argc, char** argv) {
     const slopfab::TensorView* act_view = act.find(name);
     if (act_view == nullptr) {
       ++missing;
-      if (verbose) std::printf("  MISSING  %s\n", name.c_str());
+      if (verbose)
+        std::printf("  MISSING  %s\n", name.c_str());
       continue;
     }
 
@@ -268,7 +277,8 @@ int cmd_compare(int argc, char** argv) {
     }
 
     const bool ok = stats.passes(abs_tol, rel_tol);
-    if (!ok) ++failed;
+    if (!ok)
+      ++failed;
 
     if (!ok || verbose) {
       std::printf("  %-7s %-52s max_abs %.3e  max_rel %.3e  rms %.3e\n", ok ? "ok" : "FAIL",
@@ -278,8 +288,7 @@ int cmd_compare(int argc, char** argv) {
       // Suppressed for a shape mismatch, where neither metric was computed and
       // printing 0.000e+00 / +0.0000 would read as agreement.
       if (stats.shape_match) {
-        std::printf("          rel_L2 %.4e  correlation %+.4f\n", stats.rel_l2,
-                    stats.correlation);
+        std::printf("          rel_L2 %.4e  correlation %+.4f\n", stats.rel_l2, stats.correlation);
       }
       if (!stats.shape_match) {
         std::printf("           shape/element-count mismatch: %lld vs %lld\n",
@@ -305,7 +314,8 @@ int cmd_compare(int argc, char** argv) {
 }
 
 int cmd_compare_y4m(int argc, char** argv) {
-  if (wants_help(argc, argv)) return print_command_help(*find_command("compare-y4m"));
+  if (wants_help(argc, argv))
+    return print_command_help(*find_command("compare-y4m"));
   if (argc != 2) {
     std::fprintf(stderr, "slopfab: compare-y4m needs expected and actual paths\n");
     return 2;

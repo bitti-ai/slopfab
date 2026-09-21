@@ -9,17 +9,17 @@
 namespace slopfab::vulkan {
 
 class ExactViTBlockScratch {
- public:
+public:
   ExactViTBlockScratch();
   ~ExactViTBlockScratch();
   ExactViTBlockScratch(ExactViTBlockScratch&&) noexcept;
   ExactViTBlockScratch& operator=(ExactViTBlockScratch&&) noexcept;
   ExactViTBlockScratch(const ExactViTBlockScratch&) = delete;
   ExactViTBlockScratch& operator=(const ExactViTBlockScratch&) = delete;
-  static ExactViTBlockScratch create(TensorContext& context,
-                                     const vae::ViTBlockConfig& config);
+  static ExactViTBlockScratch create(TensorContext& context, const vae::ViTBlockConfig& config);
   uint64_t reserved_bytes() const noexcept;
- private:
+
+private:
   struct Impl;
   explicit ExactViTBlockScratch(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -27,20 +27,18 @@ class ExactViTBlockScratch {
 };
 
 class ExactViTBlockStage final : public vae::ExactViTBlockStage {
- public:
+public:
   ExactViTBlockStage();
   ~ExactViTBlockStage() override;
   ExactViTBlockStage(ExactViTBlockStage&&) noexcept;
   ExactViTBlockStage& operator=(ExactViTBlockStage&&) noexcept;
   ExactViTBlockStage(const ExactViTBlockStage&) = delete;
   ExactViTBlockStage& operator=(const ExactViTBlockStage&) = delete;
-  static ExactViTBlockStage create(TensorContext& context,
-                                   const vae::ViTBlockConfig& config);
+  static ExactViTBlockStage create(TensorContext& context, const vae::ViTBlockConfig& config);
   DeviceBackend backend() const noexcept override;
   const vae::ViTBlockConfig& config() const noexcept override;
   void load(const vae::ViTBlockWeightsView& weights) override;
-  void forward(const float* tokens, const float* cosine, const float* sine,
-               float* output) override;
+  void forward(const float* tokens, const float* cosine, const float* sine, float* output) override;
   uint64_t persistent_bytes() const noexcept override;
   uint64_t peak_device_bytes() const noexcept override;
 
@@ -48,9 +46,10 @@ class ExactViTBlockStage final : public vae::ExactViTBlockStage {
   // next block in the same batch. Scratch is externally owned so all 36 blocks
   // can share one bounded activation arena; no submission or host boundary is
   // introduced here.
-  void record(TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& cosine,
-              DeviceTensor& sine, ExactViTBlockScratch& scratch) const;
- private:
+  void record(TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& cosine, DeviceTensor& sine,
+              ExactViTBlockScratch& scratch) const;
+
+private:
   struct Impl;
   explicit ExactViTBlockStage(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -58,35 +57,33 @@ class ExactViTBlockStage final : public vae::ExactViTBlockStage {
 };
 
 class ExactViTBlockGraph {
- public:
+public:
   ExactViTBlockGraph();
   ~ExactViTBlockGraph();
   ExactViTBlockGraph(ExactViTBlockGraph&&) noexcept;
   ExactViTBlockGraph& operator=(ExactViTBlockGraph&&) noexcept;
   ExactViTBlockGraph(const ExactViTBlockGraph&) = delete;
   ExactViTBlockGraph& operator=(const ExactViTBlockGraph&) = delete;
-  static ExactViTBlockGraph create(TensorContext& context,
-                                   const vae::ViTBlockConfig& config,
+  static ExactViTBlockGraph create(TensorContext& context, const vae::ViTBlockConfig& config,
                                    uint32_t layers);
   void load(const SafeTensors& checkpoint);
-  void load_layer(uint32_t layer,
-                  const vae::ViTBlockWeightsView& weights);
+  void load_layer(uint32_t layer, const vae::ViTBlockWeightsView& weights);
   void prepare_shape(uint32_t sequence, uint32_t num_patches);
   void record(TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& cosine,
               DeviceTensor& sine) const;
   // Verification seam; production uses record() once for the complete stack.
-  void record_layer(uint32_t layer, TensorBatch& batch, DeviceTensor& tokens,
-                    DeviceTensor& cosine, DeviceTensor& sine) const;
-  void forward(const float* tokens, const float* cosine, const float* sine,
-               float* output);
+  void record_layer(uint32_t layer, TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& cosine,
+                    DeviceTensor& sine) const;
+  void forward(const float* tokens, const float* cosine, const float* sine, float* output);
   uint32_t layers() const noexcept;
   uint32_t cached_scratch_shapes() const noexcept;
   uint64_t persistent_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;
- private:
+
+private:
   struct Impl;
   explicit ExactViTBlockGraph(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

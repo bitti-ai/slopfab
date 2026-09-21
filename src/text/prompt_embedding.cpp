@@ -11,15 +11,17 @@ PromptEmbedding read_prompt_embedding(const std::string& path, bool require_tags
   SafeTensors file;
   file.open(path);
   const TensorView& view = file.at("prompt_embedding");
-  if (view.dtype != DType::kF32 || view.shape.size() != 2 ||
-      view.shape[0] <= 0 || view.shape[0] > kMaxPromptTokens || view.shape[1] != 5120)
-    throw std::runtime_error("fixed prompt: prompt_embedding must be F32 [L,5120] within token capacity");
+  if (view.dtype != DType::kF32 || view.shape.size() != 2 || view.shape[0] <= 0 ||
+      view.shape[0] > kMaxPromptTokens || view.shape[1] != 5120)
+    throw std::runtime_error(
+        "fixed prompt: prompt_embedding must be F32 [L,5120] within token capacity");
   PromptEmbedding result;
   result.num_tokens = static_cast<int>(view.shape[0]);
   result.hidden_size = 5120;
   result.data = to_f32(view);
   for (float value : result.data)
-    if (!std::isfinite(value)) throw std::runtime_error("fixed prompt: non-finite embedding value");
+    if (!std::isfinite(value))
+      throw std::runtime_error("fixed prompt: non-finite embedding value");
   result.modality_tags.assign(result.num_tokens, dit::kTagText);
   const auto* tags = file.find("text_token_tags");
   if (!tags && require_tags)
@@ -31,7 +33,8 @@ PromptEmbedding read_prompt_embedding(const std::string& path, bool require_tags
     for (int i = 0; i < result.num_tokens; ++i) {
       int64_t tag = 0;
       const auto* data = static_cast<const unsigned char*>(tags->data);
-      if (tags->dtype == DType::kI64) std::memcpy(&tag, data + size_t(i) * 8, 8);
+      if (tags->dtype == DType::kI64)
+        std::memcpy(&tag, data + size_t(i) * 8, 8);
       else {
         int32_t value;
         std::memcpy(&value, data + size_t(i) * 4, 4);
@@ -44,4 +47,4 @@ PromptEmbedding read_prompt_embedding(const std::string& path, bool require_tags
   }
   return result;
 }
-}  // namespace slopfab::text
+} // namespace slopfab::text

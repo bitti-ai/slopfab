@@ -50,11 +50,11 @@ struct RunSamples {
   int frames = 0;
   int height = 0;
   int width = 0;
-  PixelBuffer* video = nullptr;  // [channels][frames][height][width], fp32 in [0,1]
+  PixelBuffer* video = nullptr; // [channels][frames][height][width], fp32 in [0,1]
 
   int audio_channels = 0;
   int audio_sample_rate = 0;
-  std::vector<float>* audio = nullptr;  // interleaved, may be null or empty
+  std::vector<float>* audio = nullptr; // interleaved, may be null or empty
 };
 
 // Where the latents come from. The stages land one at a time, so the runner
@@ -171,16 +171,14 @@ struct RunOptions {
   video::FrameConverter* output_frame_converter = nullptr;
 };
 
-inline bool generation_backend_supported(DeviceBackend backend,
-                                         LatentSource source,
+inline bool generation_backend_supported(DeviceBackend backend, LatentSource source,
                                          AttentionMode attention) noexcept {
   switch (backend) {
-    case DeviceBackend::kCuda:
-      return true;
-    case DeviceBackend::kVulkan:
-      return (source == LatentSource::kSyntheticNoise ||
-              source == LatentSource::kDenoise) &&
-             attention_mode_supported(backend, attention);
+  case DeviceBackend::kCuda:
+    return true;
+  case DeviceBackend::kVulkan:
+    return (source == LatentSource::kSyntheticNoise || source == LatentSource::kDenoise) &&
+           attention_mode_supported(backend, attention);
   }
   return false;
 }
@@ -231,18 +229,20 @@ RunResult run_generate(const GenerateRequest& request, const GeneratePlan& plan,
 // dispatch and profiling retain process-wide state; separate sessions isolate
 // caches, not concurrent GPU execution.
 class GenerationSession {
- public:
+public:
   GenerationSession();
   ~GenerationSession();
   GenerationSession(const GenerationSession&) = delete;
   GenerationSession& operator=(const GenerationSession&) = delete;
   void clear();
- private:
+
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
-  friend RunResult run_generate(GenerationSession&, const GenerateRequest&,
-                                const GeneratePlan&, const RunOptions&);
+  friend RunResult run_generate(GenerationSession&, const GenerateRequest&, const GeneratePlan&,
+                                const RunOptions&);
 };
+
 RunResult run_generate(GenerationSession& session, const GenerateRequest& request,
                        const GeneratePlan& plan, const RunOptions& options = {});
 
@@ -250,4 +250,4 @@ RunResult run_generate(GenerationSession& session, const GenerateRequest& reques
 // `RunOptions::reuse_models`. The host must serialize this with run_generate.
 void clear_reused_generation_models();
 
-}  // namespace slopfab
+} // namespace slopfab

@@ -28,7 +28,7 @@ struct CompareStats {
 
   double max_abs_err = 0.0;
   double mean_abs_err = 0.0;
-  double max_rel_err = 0.0;   // relative to |reference|, guarded near zero
+  double max_rel_err = 0.0; // relative to |reference|, guarded near zero
   double rms_err = 0.0;
 
   // Where the worst absolute error landed, for pointing at a specific element.
@@ -36,7 +36,7 @@ struct CompareStats {
   double lhs_at_argmax = 0.0;
   double rhs_at_argmax = 0.0;
 
-  int64_t nan_mismatches = 0;  // NaN/Inf present in one side but not the other
+  int64_t nan_mismatches = 0; // NaN/Inf present in one side but not the other
 
   // --- whole-tensor quality metrics ----------------------------------------
   //
@@ -82,8 +82,10 @@ struct CompareStats {
   int64_t finite_count = 0;
 
   bool passes(double abs_tol, double rel_tol) const {
-    if (!shape_match) return false;
-    if (nan_mismatches != 0) return false;
+    if (!shape_match)
+      return false;
+    if (nan_mismatches != 0)
+      return false;
     return max_abs_err <= abs_tol || max_rel_err <= rel_tol;
   }
 };
@@ -92,4 +94,4 @@ struct CompareStats {
 // relative error and for `rel_l2`.
 CompareStats compare(const std::vector<float>& reference, const std::vector<float>& actual);
 
-}  // namespace slopfab
+} // namespace slopfab

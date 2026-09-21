@@ -76,9 +76,9 @@ struct AttentionConfig {
   // sol_beta is the standardized proxy-score cutoff (1.28155 ~= 90% routed
   // away for a normal distribution).
   int exact_prefix = 0;
-  float sol_beta = 1.0f;  // Official H3 diagonal-estimator cutoff.
-  float sol_error_k = 0.0f;  // Experimental q-norm * within-block K residual bound.
-  float sol_error_v = 0.0f;  // Optional within-block V-dispersion multiplier.
+  float sol_beta = 1.0f;    // Official H3 diagonal-estimator cutoff.
+  float sol_error_k = 0.0f; // Experimental q-norm * within-block K residual bound.
+  float sol_error_v = 0.0f; // Optional within-block V-dispersion multiplier.
   // Optional device counters [exact routes, approximate routes]. Null keeps
   // production routing free of diagnostic atomics.
   unsigned long long* sol_route_counts = nullptr;
@@ -127,26 +127,35 @@ struct AttentionExecutionPolicy {
 // A value plan freezes kernel selection and workspace requirements together.
 // Referenced band ranges/diagnostic buffers retain caller-owned lifetimes.
 class AttentionPlan {
- public:
+public:
   static AttentionPlan compile(const AttentionDescriptor& descriptor,
                                const AttentionExecutionPolicy& policy);
   static AttentionPlan compile(const AttentionConfig& config, int kv_heads,
                                AttentionBackend backend);
-  const AttentionDescriptor& description() const noexcept { return descriptor_; }
-  AttentionBackend backend() const noexcept { return backend_; }
-  size_t workspace_bytes() const noexcept { return workspace_bytes_; }
-  void forward(cublasHandle_t handle, cudaStream_t stream,
-               const __nv_bfloat16* query, const __nv_bfloat16* key,
-               const __nv_bfloat16* value, __nv_bfloat16* output,
+
+  const AttentionDescriptor& description() const noexcept {
+    return descriptor_;
+  }
+
+  AttentionBackend backend() const noexcept {
+    return backend_;
+  }
+
+  size_t workspace_bytes() const noexcept {
+    return workspace_bytes_;
+  }
+
+  void forward(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16* query,
+               const __nv_bfloat16* key, const __nv_bfloat16* value, __nv_bfloat16* output,
                Workspace& workspace) const;
 
- private:
+private:
   AttentionPlan() = default;
   AttentionDescriptor descriptor_;
   AttentionConfig config_;
   AttentionBackend backend_ = AttentionBackend::kBlocked;
   size_t workspace_bytes_ = 0;
-  int device_ = -1;  // Sage workspace/variant is specific to the compiling device.
+  int device_ = -1; // Sage workspace/variant is specific to the compiling device.
 };
 
 // The fastest backend that can run this configuration. kFused is instantiated
@@ -184,15 +193,15 @@ void attention_forward(cublasHandle_t handle, cudaStream_t stream, const __nv_bf
 // Banded chunks must start on a fused query-tile boundary. No scratch needed.
 void attention_forward_query_chunk(cudaStream_t stream, const __nv_bfloat16* q,
                                    const __nv_bfloat16* k, const __nv_bfloat16* v,
-                                   __nv_bfloat16* out, const AttentionConfig& cfg,
-                                   int query_offset, int query_rows);
+                                   __nv_bfloat16* out, const AttentionConfig& cfg, int query_offset,
+                                   int query_rows);
 
 // Grouped-query variant for the Qwen3-VL encoder: 64 query heads share 8
 // key/value heads, so `k` and `v` are `[seq, num_kv_heads * head_dim]` and
 // query head `h` reads kv head `h / (num_heads / num_kv_heads)`.
 void attention_forward_gqa(cublasHandle_t handle, cudaStream_t stream, const __nv_bfloat16* q,
                            const __nv_bfloat16* k, const __nv_bfloat16* v, __nv_bfloat16* out,
-                           const AttentionConfig& cfg, int num_kv_heads,
-                           AttentionBackend backend, Workspace& ws);
+                           const AttentionConfig& cfg, int num_kv_heads, AttentionBackend backend,
+                           Workspace& ws);
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

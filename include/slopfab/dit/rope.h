@@ -16,7 +16,7 @@ struct H3RopeTables {
   std::vector<float> sine;
 };
 
-H3RopeTables build_h3_rope_tables(const std::vector<double>& positions,
-                                  float theta, uint32_t frequency_dim);
+H3RopeTables build_h3_rope_tables(const std::vector<double>& positions, float theta,
+                                  uint32_t frequency_dim);
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

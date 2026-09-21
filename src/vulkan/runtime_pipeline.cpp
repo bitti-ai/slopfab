@@ -9,7 +9,8 @@ TimestampQuery TimestampQuery::create(const Device& device, uint32_t count) {
   TimestampQuery query;
   query.impl_ = std::make_shared<Impl>();
   auto& s = *query.impl_;
-  s.device = device.impl_->state; s.count = count;
+  s.device = device.impl_->state;
+  s.count = count;
   s.valid_bits = device.info().timestamp_valid_bits;
   s.period = device.info().timestamp_period_ns;
 #define QUERY_FN(TYPE, NAME) detail::load_device<TYPE>(*s.device->instance, s.device->device, NAME)
@@ -21,40 +22,55 @@ TimestampQuery TimestampQuery::create(const Device& device, uint32_t count) {
 #undef QUERY_FN
   VkQueryPoolCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-  info.queryType = VK_QUERY_TYPE_TIMESTAMP; info.queryCount = count;
+  info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  info.queryCount = count;
   detail::check(create(s.device->device, &info, nullptr, &s.pool), "vkCreateQueryPool");
   return query;
 }
-uint32_t TimestampQuery::count() const noexcept { return impl_ ? impl_->count : 0; }
+
+uint32_t TimestampQuery::count() const noexcept {
+  return impl_ ? impl_->count : 0;
+}
+
 double TimestampQuery::elapsed_milliseconds(uint32_t first, uint32_t last) const {
   if (!impl_ || first >= last || last >= impl_->count)
     throw std::invalid_argument("vulkan timestamps: invalid interval");
   uint64_t begin = 0, end = 0;
-  detail::check(impl_->results(impl_->device->device, impl_->pool, first, 1,
-      sizeof(begin), &begin, sizeof(begin), VK_QUERY_RESULT_64_BIT), "vkGetQueryPoolResults(begin)");
-  detail::check(impl_->results(impl_->device->device, impl_->pool, last, 1,
-      sizeof(end), &end, sizeof(end), VK_QUERY_RESULT_64_BIT), "vkGetQueryPoolResults(end)");
-  const uint64_t mask = impl_->valid_bits == 64 ? ~uint64_t(0) : (uint64_t(1) << impl_->valid_bits)-1;
-  return double((end-begin) & mask) * impl_->period / 1.0e6;
+  detail::check(impl_->results(impl_->device->device, impl_->pool, first, 1, sizeof(begin), &begin,
+                               sizeof(begin), VK_QUERY_RESULT_64_BIT),
+                "vkGetQueryPoolResults(begin)");
+  detail::check(impl_->results(impl_->device->device, impl_->pool, last, 1, sizeof(end), &end,
+                               sizeof(end), VK_QUERY_RESULT_64_BIT),
+                "vkGetQueryPoolResults(end)");
+  const uint64_t mask =
+      impl_->valid_bits == 64 ? ~uint64_t(0) : (uint64_t(1) << impl_->valid_bits) - 1;
+  return double((end - begin) & mask) * impl_->period / 1.0e6;
 }
 
 ComputePipeline::ComputePipeline() = default;
 ComputePipeline::~ComputePipeline() = default;
 ComputePipeline::ComputePipeline(ComputePipeline&&) noexcept = default;
 ComputePipeline& ComputePipeline::operator=(ComputePipeline&&) noexcept = default;
-ComputePipeline::ComputePipeline(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
-ComputePipeline::operator bool() const noexcept { return impl_ != nullptr; }
+
+ComputePipeline::ComputePipeline(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+
+ComputePipeline::operator bool() const noexcept {
+  return impl_ != nullptr;
+}
+
 uint32_t ComputePipeline::storage_binding_count() const noexcept {
   return impl_ ? impl_->options.storage_binding_count : 0;
 }
+
 uint32_t ComputePipeline::push_constant_bytes() const noexcept {
   return impl_ ? impl_->options.push_constant_bytes : 0;
 }
 
-ComputePipeline ComputePipeline::create(const Device& device,
-                                        const std::vector<uint32_t>& spirv,
+ComputePipeline ComputePipeline::create(const Device& device, const std::vector<uint32_t>& spirv,
                                         const ComputePipelineOptions& options) {
-  if (!device.impl_) throw std::invalid_argument("vulkan: ComputePipeline requires a device");
+  if (!device.impl_)
+    throw std::invalid_argument("vulkan: ComputePipeline requires a device");
   if (spirv.size() < 5 || spirv[0] != 0x07230203u) {
     throw std::invalid_argument("vulkan: invalid SPIR-V module");
   }
@@ -103,8 +119,9 @@ ComputePipeline ComputePipeline::create(const Device& device,
       if (entry.constantID == constant.id)
         throw std::invalid_argument("vulkan: duplicate specialization constant ID");
     }
-    specialization_entries.push_back({constant.id,
-        static_cast<uint32_t>(specialization_values.size() * sizeof(uint32_t)), sizeof(uint32_t)});
+    specialization_entries.push_back(
+        {constant.id, static_cast<uint32_t>(specialization_values.size() * sizeof(uint32_t)),
+         sizeof(uint32_t)});
     specialization_values.push_back(constant.value);
   }
   VkSpecializationInfo specialization{};
@@ -120,7 +137,9 @@ ComputePipeline ComputePipeline::create(const Device& device,
   auto append = [&](const void* data, size_t bytes) {
     cache_key.append(static_cast<const char*>(data), bytes);
   };
-  auto append_size = [&](size_t size) { append(&size, sizeof(size)); };
+  auto append_size = [&](size_t size) {
+    append(&size, sizeof(size));
+  };
   append_size(spirv.size());
   append(spirv.data(), spirv.size() * sizeof(uint32_t));
   append(&options.storage_binding_count, sizeof(options.storage_binding_count));
@@ -143,8 +162,10 @@ ComputePipeline ComputePipeline::create(const Device& device,
     }
   }
   for (auto it = device_state.pipeline_cache.begin(); it != device_state.pipeline_cache.end();) {
-    if (it->second.expired()) it = device_state.pipeline_cache.erase(it);
-    else ++it;
+    if (it->second.expired())
+      it = device_state.pipeline_cache.erase(it);
+    else
+      ++it;
   }
   auto result = std::make_shared<Impl>();
   result->device = device.impl_->state;
@@ -200,9 +221,9 @@ ComputePipeline ComputePipeline::create(const Device& device,
     layout_create.pSetLayouts = &result->descriptor_layout;
     layout_create.pushConstantRangeCount = options.push_constant_bytes == 0 ? 0 : 1;
     layout_create.pPushConstantRanges = options.push_constant_bytes == 0 ? nullptr : &push;
-    detail::check(create_pipeline_layout(state.device, &layout_create, nullptr,
-                                         &result->pipeline_layout),
-                  "vkCreatePipelineLayout");
+    detail::check(
+        create_pipeline_layout(state.device, &layout_create, nullptr, &result->pipeline_layout),
+        "vkCreatePipelineLayout");
 
     VkPipelineShaderStageCreateInfo stage{};
     stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -214,8 +235,8 @@ ComputePipeline ComputePipeline::create(const Device& device,
     pipeline_create.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pipeline_create.stage = stage;
     pipeline_create.layout = result->pipeline_layout;
-    detail::check(create_pipelines(state.device, VK_NULL_HANDLE, 1, &pipeline_create,
-                                   nullptr, &result->pipeline),
+    detail::check(create_pipelines(state.device, VK_NULL_HANDLE, 1, &pipeline_create, nullptr,
+                                   &result->pipeline),
                   "vkCreateComputePipelines");
   } catch (...) {
     destroy_shader(state.device, shader, nullptr);
@@ -226,5 +247,4 @@ ComputePipeline ComputePipeline::create(const Device& device,
   return ComputePipeline(std::move(result));
 }
 
-
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

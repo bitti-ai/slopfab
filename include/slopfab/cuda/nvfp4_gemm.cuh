@@ -93,10 +93,10 @@ void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const u
 // Same operation after a long-lived caller has already established that its
 // current device is SM120 and the shape satisfies `nvfp4_gemm_shape_supported`.
 // This keeps device queries out of every transformer linear invocation.
-void nvfp4_gemm_forward_prevalidated(
-    const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
-    float global_scale, __nv_bfloat16* y, int rows, int out_features,
-    int in_features, Workspace& ws, cudaStream_t stream);
+void nvfp4_gemm_forward_prevalidated(const __nv_bfloat16* x, const uint8_t* w_packed,
+                                     const uint8_t* w_scale, float global_scale, __nv_bfloat16* y,
+                                     int rows, int out_features, int in_features, Workspace& ws,
+                                     cudaStream_t stream);
 
 // As above, but against an activation the caller has already quantised with
 // `launch_quantize_nvfp4_activations`.
@@ -112,4 +112,4 @@ void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w
                           const uint8_t* w_scale, float global_scale, __nv_bfloat16* y, int rows,
                           int out_features, int in_features, cudaStream_t stream);
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

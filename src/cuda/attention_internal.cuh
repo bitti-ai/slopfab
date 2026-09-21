@@ -15,13 +15,15 @@
 #include "slopfab/cuda/device.h"
 #include "slopfab/cuda/gemm.cuh"
 
-
 namespace slopfab::cuda::attention_detail {
 constexpr int kWarp = 32;
 
 // MSVC's INFINITY macro is a double expression, which nvcc warns about on every
 // use in float context. Build the bit pattern instead.
-__device__ inline float neg_inf() { return __int_as_float(0xFF800000); }
+__device__ inline float neg_inf() {
+  return __int_as_float(0xFF800000);
+}
+
 constexpr float kHostNegInf = -std::numeric_limits<float>::infinity();
 
 // Score tiles dominate the footprint: `heads * query_block * key_block`
@@ -37,7 +39,9 @@ constexpr float kHostNegInf = -std::numeric_limits<float>::infinity();
 constexpr size_t kScoreTileBudget = 640ull << 20;
 constexpr size_t kScoreTileBytesPerKey = 2;
 
-inline size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
+inline size_t align_up(size_t n) {
+  return (n + 255) / 256 * 256;
+}
 
 inline int effective_query_block(const AttentionConfig& cfg) {
   int bq = cfg.query_block > 0 ? cfg.query_block : 1024;
@@ -54,13 +58,16 @@ inline int effective_query_block(const AttentionConfig& cfg) {
 // multiple of 64 but not of 256. 64 elements is 128 bytes of fp16, which keeps
 // the tile's leading dimension comfortably aligned for cuBLAS.
 inline int choose_key_block(const AttentionConfig& cfg) {
-  if (cfg.key_block > 0) return std::min(cfg.key_block, cfg.seq_len);
+  if (cfg.key_block > 0)
+    return std::min(cfg.key_block, cfg.seq_len);
   const int bq = effective_query_block(cfg);
   const size_t per_key = static_cast<size_t>(cfg.num_heads) * bq * kScoreTileBytesPerKey;
   size_t bk_max = per_key > 0 ? kScoreTileBudget / per_key : static_cast<size_t>(cfg.seq_len);
   bk_max = bk_max / 256 * 256;
-  if (bk_max < 256) bk_max = 256;
-  if (bk_max > static_cast<size_t>(cfg.seq_len)) bk_max = static_cast<size_t>(cfg.seq_len);
+  if (bk_max < 256)
+    bk_max = 256;
+  if (bk_max > static_cast<size_t>(cfg.seq_len))
+    bk_max = static_cast<size_t>(cfg.seq_len);
 
   const size_t S = static_cast<size_t>(cfg.seq_len);
   const size_t nblocks = (S + bk_max - 1) / bk_max;
@@ -68,8 +75,10 @@ inline int choose_key_block(const AttentionConfig& cfg) {
   bk = (bk + 63) / 64 * 64;
   // bk_max is a multiple of 64, so rounding a value already <= bk_max up to the
   // next multiple of 64 cannot overshoot it.
-  if (bk > bk_max) bk = bk_max;
-  if (bk < 1) bk = 1;
+  if (bk > bk_max)
+    bk = bk_max;
+  if (bk < 1)
+    bk = 1;
   return static_cast<int>(bk);
 }
 
@@ -82,13 +91,12 @@ inline void check_config(const AttentionConfig& cfg, int num_kv_heads) {
   }
 }
 
-void run_blocked(cublasHandle_t, cudaStream_t, const __nv_bfloat16*,
-                 const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*,
-                 const AttentionConfig&, int, Workspace&);
-void run_fused(cudaStream_t, const __nv_bfloat16*, const __nv_bfloat16*,
-               const __nv_bfloat16*, __nv_bfloat16*, const AttentionConfig&,
-               int, int query_rows = 0);
+void run_blocked(cublasHandle_t, cudaStream_t, const __nv_bfloat16*, const __nv_bfloat16*,
+                 const __nv_bfloat16*, __nv_bfloat16*, const AttentionConfig&, int, Workspace&);
+void run_fused(cudaStream_t, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*,
+               __nv_bfloat16*, const AttentionConfig&, int, int query_rows = 0);
+
 inline bool fused_supported(const AttentionConfig& config) {
   return config.head_dim == 64 || config.head_dim == 128;
 }
-}  // namespace slopfab::cuda::attention_detail
+} // namespace slopfab::cuda::attention_detail

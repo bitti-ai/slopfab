@@ -14,7 +14,9 @@ struct ExactY4mComparison {
   std::string expected_header;
   std::string actual_header;
 
-  bool equal() const noexcept { return first_difference == UINT64_MAX; }
+  bool equal() const noexcept {
+    return first_difference == UINT64_MAX;
+  }
 };
 
 // Byte-exact, streaming comparison for deterministic raw-video runs. Throws
@@ -22,4 +24,4 @@ struct ExactY4mComparison {
 ExactY4mComparison compare_y4m_exact(const std::string& expected_path,
                                      const std::string& actual_path);
 
-}  // namespace slopfab::video
+} // namespace slopfab::video

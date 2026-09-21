@@ -12,9 +12,9 @@
 namespace slopfab::vae {
 
 struct TileLayout {
-  std::vector<int> starts;    // tile start position in pixels
-  std::vector<int> extents;   // tile length in pixels
-  std::vector<int> overlaps;  // overlap between tile i and i+1, size = N-1
+  std::vector<int> starts;   // tile start position in pixels
+  std::vector<int> extents;  // tile length in pixels
+  std::vector<int> overlaps; // overlap between tile i and i+1, size = N-1
 };
 
 // Mirrors split_tiles(..., is_decoder=True) (klvae.py:192-218). Positions are
@@ -41,7 +41,8 @@ inline TileLayout split_tiles(int input_len, int tile_size, int overlap_min, int
   }
 
   int n = (input_len + tile_size - 1) / tile_size;
-  while (tile_size * n - overlap_min * (n - 1) - input_len < 0) ++n;
+  while (tile_size * n - overlap_min * (n - 1) - input_len < 0)
+    ++n;
 
   std::vector<int> overlaps(static_cast<size_t>(n - 1), overlap_min);
   int surplus = tile_size * n - overlap_min * (n - 1) - input_len;
@@ -57,7 +58,8 @@ inline TileLayout split_tiles(int input_len, int tile_size, int overlap_min, int
   for (int i = 0; i < n; ++i) {
     layout.starts.push_back(pos);
     layout.extents.push_back(tile_size);
-    if (i < n - 1) pos += tile_size - overlaps[static_cast<size_t>(i)];
+    if (i < n - 1)
+      pos += tile_size - overlaps[static_cast<size_t>(i)];
   }
   layout.overlaps = std::move(overlaps);
   return layout;
@@ -91,8 +93,8 @@ inline void tile_shape_groups(const TileLayout& ytiles, const TileLayout& xtiles
 
 inline void validate_tile_axis(const TileLayout& layout, int length) {
   const size_t n = layout.starts.size();
-  if (n == 0 || layout.extents.size() != n || layout.overlaps.size() != n - 1 ||
-      length <= 0 || layout.starts.front() != 0) {
+  if (n == 0 || layout.extents.size() != n || layout.overlaps.size() != n - 1 || length <= 0 ||
+      layout.starts.front() != 0) {
     throw std::runtime_error("vae: invalid tile axis plan");
   }
   for (size_t i = 0; i < n; ++i) {
@@ -115,18 +117,21 @@ inline void validate_tile_axis(const TileLayout& layout, int length) {
 }
 
 class TileMerge {
- public:
+public:
   TileMerge(const TileLayout& ytiles, const TileLayout& xtiles, int height, int width)
       : ytiles_(ytiles), xtiles_(xtiles), height_(height), width_(width) {
     validate_tile_axis(ytiles, height);
     validate_tile_axis(xtiles, width);
-    if (ytiles.starts.size() == 1 && xtiles.starts.size() == 1) return;
+    if (ytiles.starts.size() == 1 && xtiles.starts.size() == 1)
+      return;
     const int th = *std::max_element(ytiles.extents.begin(), ytiles.extents.end());
     const int tw = *std::max_element(xtiles.extents.begin(), xtiles.extents.end());
-    const int y_overlap = ytiles.overlaps.empty() ? 0 :
-        *std::max_element(ytiles.overlaps.begin(), ytiles.overlaps.end());
-    const int x_overlap = xtiles.overlaps.empty() ? 0 :
-        *std::max_element(xtiles.overlaps.begin(), xtiles.overlaps.end());
+    const int y_overlap = ytiles.overlaps.empty()
+                              ? 0
+                              : *std::max_element(ytiles.overlaps.begin(), ytiles.overlaps.end());
+    const int x_overlap = xtiles.overlaps.empty()
+                              ? 0
+                              : *std::max_element(xtiles.overlaps.begin(), xtiles.overlaps.end());
     // Process one retained plane at a time in the backend's host float format.
     // Only composited overlap tails survive a tile; no accumulation band or
     // normalization weights are needed. All scratch is reused across chunks.
@@ -145,14 +150,15 @@ class TileMerge {
     if (tiles.size() != ytiles_.starts.size() * nx)
       throw std::runtime_error("vae: decoded tile count does not match the plan");
     for (size_t i = 0; i < tiles.size(); ++i) {
-      if (tiles[i].size() != destinations.size() * ytiles_.extents[i / nx] *
-                                xtiles_.extents[i % nx])
+      if (tiles[i].size() !=
+          destinations.size() * ytiles_.extents[i / nx] * xtiles_.extents[i % nx])
         throw std::runtime_error("vae: decoded tile shape does not match the plan");
     }
     const size_t pixels = static_cast<size_t>(height_) * width_;
     for (size_t p = 0; p < destinations.size(); ++p) {
       float* dst = destinations[p];
-      if (dst == nullptr) continue;
+      if (dst == nullptr)
+        continue;
       if (tiles.size() == 1) {
         std::copy_n(tiles[0].data() + p * pixels, pixels, dst);
         continue;
@@ -174,8 +180,9 @@ class TileMerge {
             const float wb = static_cast<float>(y) / top;
             for (int x = 0; x < tw; ++x) {
               float& value = tile_[static_cast<size_t>(y) * tw + x];
-              value = strip_[static_cast<size_t>(y) * width_ + xtiles_.starts[j] + x] *
-                          (1.0f - wb) + value * wb;
+              value =
+                  strip_[static_cast<size_t>(y) * width_ + xtiles_.starts[j] + x] * (1.0f - wb) +
+                  value * wb;
             }
           }
           for (int y = 0; y < th; ++y) {
@@ -192,11 +199,13 @@ class TileMerge {
             if (right > 0)
               std::copy_n(row + keep_w, right, left_.data() + static_cast<size_t>(y) * right);
             if (y >= th - bottom)
-              std::copy_n(row, keep_w, next_strip_.data() +
-                  static_cast<size_t>(y - (th - bottom)) * width_ + xtiles_.starts[j]);
+              std::copy_n(row, keep_w,
+                          next_strip_.data() + static_cast<size_t>(y - (th - bottom)) * width_ +
+                              xtiles_.starts[j]);
             else
-              std::copy_n(row, keep_w, dst +
-                  static_cast<size_t>(ytiles_.starts[i] + y) * width_ + xtiles_.starts[j]);
+              std::copy_n(row, keep_w,
+                          dst + static_cast<size_t>(ytiles_.starts[i] + y) * width_ +
+                              xtiles_.starts[j]);
           }
         }
         strip_.swap(next_strip_);
@@ -204,7 +213,7 @@ class TileMerge {
     }
   }
 
- private:
+private:
   TileLayout ytiles_, xtiles_;
   int height_, width_;
   std::vector<float> tile_, left_, strip_, next_strip_;
@@ -236,4 +245,4 @@ inline void chunk_frame_destinations(int out_frames, int pre, int frames_per_chu
   }
 }
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

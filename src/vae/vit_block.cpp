@@ -12,24 +12,21 @@ namespace slopfab::vae {
 namespace {
 
 void require_shape(const TensorView& tensor, int64_t rows, int64_t columns) {
-  if (tensor.shape.size() != 2 || tensor.shape[0] != rows ||
-      tensor.shape[1] != columns) {
+  if (tensor.shape.size() != 2 || tensor.shape[0] != rows || tensor.shape[1] != columns) {
     throw std::runtime_error("video VAE block: tensor '" + tensor.name +
                              "' has an unexpected matrix shape");
   }
 }
 
-std::vector<uint16_t> load_f16_matrix(const SafeTensors& checkpoint,
-                                      const std::string& name, int64_t rows,
-                                      int64_t columns) {
+std::vector<uint16_t> load_f16_matrix(const SafeTensors& checkpoint, const std::string& name,
+                                      int64_t rows, int64_t columns) {
   const TensorView& tensor = checkpoint.at(name);
   require_shape(tensor, rows, columns);
   if (tensor.dtype == DType::kI8)
     return unpack_int8_weight(read_int8_weight(checkpoint, name, "video VAE block"), true);
   if (tensor.dtype != DType::kF16 ||
       tensor.nbytes != static_cast<size_t>(rows * columns) * sizeof(uint16_t)) {
-    throw std::runtime_error("video VAE block: tensor '" + name +
-                             "' must be fp16 or Comfy INT8");
+    throw std::runtime_error("video VAE block: tensor '" + name + "' must be fp16 or Comfy INT8");
   }
   std::vector<uint16_t> result(static_cast<size_t>(rows * columns));
   std::memcpy(result.data(), tensor.data, tensor.nbytes);
@@ -40,27 +37,25 @@ std::vector<uint16_t> load_f16_matrix(const SafeTensors& checkpoint,
   return result;
 }
 
-std::vector<float> load_vector(const SafeTensors& checkpoint,
-                               const std::string& name, int64_t count) {
+std::vector<float> load_vector(const SafeTensors& checkpoint, const std::string& name,
+                               int64_t count) {
   const TensorView& tensor = checkpoint.at(name);
   if (tensor.shape.size() != 1 || tensor.shape[0] != count) {
     throw std::runtime_error("video VAE block: tensor '" + name +
                              "' has an unexpected vector shape");
   }
   if (tensor.dtype != DType::kF16 && tensor.dtype != DType::kF32) {
-    throw std::runtime_error("video VAE block: tensor '" + name +
-                             "' must be fp16 or fp32");
+    throw std::runtime_error("video VAE block: tensor '" + name + "' must be fp16 or fp32");
   }
   return to_f32(tensor);
 }
 
-}  // namespace
+} // namespace
 
-ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height,
-                                    uint32_t width, uint32_t suffix,
+ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t width, uint32_t suffix,
                                     uint32_t rope_dim, float theta) {
-  if (time == 0 || height == 0 || width == 0 || rope_dim == 0 ||
-      rope_dim % 6 != 0 || !std::isfinite(theta) || theta <= 0.0f) {
+  if (time == 0 || height == 0 || width == 0 || rope_dim == 0 || rope_dim % 6 != 0 ||
+      !std::isfinite(theta) || theta <= 0.0f) {
     throw std::invalid_argument("video VAE RoPE: invalid configuration");
   }
   const uint64_t patches64 = static_cast<uint64_t>(time) * height * width;
@@ -84,8 +79,7 @@ ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height,
     for (uint32_t h = 0; h < height; ++h) {
       for (uint32_t w = 0; w < width; ++w) {
         const size_t token = (static_cast<size_t>(t) * height + h) * width + w;
-        const float coords[3] = {coordinate(t, time), coordinate(h, height),
-                                 coordinate(w, width)};
+        const float coords[3] = {coordinate(t, time), coordinate(h, height), coordinate(w, width)};
         for (uint32_t axis = 0; axis < 3; ++axis) {
           for (uint32_t f = 0; f < per_axis; ++f) {
             const uint32_t j = axis * per_axis + f;
@@ -105,21 +99,22 @@ ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height,
 }
 
 ViTBlockWeightsView ViTBlockWeights::view() const noexcept {
-  return {norm1.data(), norm2.data(), scale1.data(), scale2.data(),
+  return {norm1.data(),      norm2.data(),    scale1.data(),     scale2.data(),
           qkv_weight.data(), qkv_bias.data(), out_weight.data(), out_bias.data(),
-          w1_weight.data(), w1_bias.data(), w2_weight.data(), w2_bias.data()};
+          w1_weight.data(),  w1_bias.data(),  w2_weight.data(),  w2_bias.data()};
 }
 
 uint64_t ViTBlockWeights::bytes() const noexcept {
-  return static_cast<uint64_t>(norm1.size() + norm2.size() + scale1.size() +
-      scale2.size() + qkv_bias.size() + out_bias.size() + w1_bias.size() +
-      w2_bias.size()) * sizeof(float) +
-      static_cast<uint64_t>(qkv_weight.size() + out_weight.size() +
-      w1_weight.size() + w2_weight.size()) * sizeof(uint16_t);
+  return static_cast<uint64_t>(norm1.size() + norm2.size() + scale1.size() + scale2.size() +
+                               qkv_bias.size() + out_bias.size() + w1_bias.size() +
+                               w2_bias.size()) *
+             sizeof(float) +
+         static_cast<uint64_t>(qkv_weight.size() + out_weight.size() + w1_weight.size() +
+                               w2_weight.size()) *
+             sizeof(uint16_t);
 }
 
-ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint,
-                                       uint32_t layer,
+ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint, uint32_t layer,
                                        const ViTBlockConfig& config) {
   if (!checkpoint.is_open())
     throw std::invalid_argument("video VAE block: checkpoint is not open");
@@ -144,4 +139,4 @@ ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint,
   return result;
 }
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

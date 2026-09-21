@@ -9,11 +9,11 @@ namespace slopfab {
 
 // User-selected implementation for MiniMax H3 self-attention.
 enum class AttentionMode {
-  kNone,    // Unfused, memory-bounded reference path.
-  kFlash2,  // BF16 FlashAttention-2-style fused kernel (not deterministic exact).
-  kSage2,   // Quantized SageAttention2 kernel.
-  kSol,     // Training-free block routing with zeroth-order correction.
-  kSolExperimental,  // Experimental SM120 TMA/WMMA pipeline; explicitly opt-in.
+  kNone,            // Unfused, memory-bounded reference path.
+  kFlash2,          // BF16 FlashAttention-2-style fused kernel (not deterministic exact).
+  kSage2,           // Quantized SageAttention2 kernel.
+  kSol,             // Training-free block routing with zeroth-order correction.
+  kSolExperimental, // Experimental SM120 TMA/WMMA pipeline; explicitly opt-in.
   // Pinned deterministic cooperative attention shared by CUDA and Vulkan.
   // This is distinct from kNone: it has no materialized score tensor and does
   // not silently fall back to the legacy blocked reference.
@@ -22,41 +22,53 @@ enum class AttentionMode {
 
 inline const char* attention_mode_name(AttentionMode mode) {
   switch (mode) {
-    case AttentionMode::kNone: return "none";
-    case AttentionMode::kFlash2: return "flash2";
-    case AttentionMode::kSage2: return "sage2";
-    case AttentionMode::kSol: return "sol";
-    case AttentionMode::kSolExperimental: return "sol-experimental";
-    case AttentionMode::kExact: return "exact";
+  case AttentionMode::kNone:
+    return "none";
+  case AttentionMode::kFlash2:
+    return "flash2";
+  case AttentionMode::kSage2:
+    return "sage2";
+  case AttentionMode::kSol:
+    return "sol";
+  case AttentionMode::kSolExperimental:
+    return "sol-experimental";
+  case AttentionMode::kExact:
+    return "exact";
   }
   return "unknown";
 }
 
-inline bool parse_attention_mode(std::string_view name,
-                                 AttentionMode* mode) noexcept {
-  if (mode == nullptr) return false;
-  if (name == "none") *mode = AttentionMode::kNone;
-  else if (name == "flash2") *mode = AttentionMode::kFlash2;
-  else if (name == "sage2") *mode = AttentionMode::kSage2;
-  else if (name == "sol") *mode = AttentionMode::kSol;
-  else if (name == "sol-experimental") *mode = AttentionMode::kSolExperimental;
-  else if (name == "exact") *mode = AttentionMode::kExact;
-  else return false;
+inline bool parse_attention_mode(std::string_view name, AttentionMode* mode) noexcept {
+  if (mode == nullptr)
+    return false;
+  if (name == "none")
+    *mode = AttentionMode::kNone;
+  else if (name == "flash2")
+    *mode = AttentionMode::kFlash2;
+  else if (name == "sage2")
+    *mode = AttentionMode::kSage2;
+  else if (name == "sol")
+    *mode = AttentionMode::kSol;
+  else if (name == "sol-experimental")
+    *mode = AttentionMode::kSolExperimental;
+  else if (name == "exact")
+    *mode = AttentionMode::kExact;
+  else
+    return false;
   return true;
 }
 
 // Backend capability contract, intentionally separate from orchestration.
 // Device-specific enabled-feature checks are performed by each backend.
-inline bool attention_mode_supported(DeviceBackend backend,
-                                     AttentionMode mode) noexcept {
+inline bool attention_mode_supported(DeviceBackend backend, AttentionMode mode) noexcept {
   switch (backend) {
-    case DeviceBackend::kCuda:
-      return mode == AttentionMode::kNone || mode == AttentionMode::kFlash2 ||
-             mode == AttentionMode::kSage2 || mode == AttentionMode::kSol ||
-             mode == AttentionMode::kSolExperimental || mode == AttentionMode::kExact;
-    case DeviceBackend::kVulkan:
-      return mode == AttentionMode::kExact || mode == AttentionMode::kFlash2 ||
-             mode == AttentionMode::kSage2;
+  case DeviceBackend::kCuda:
+    return mode == AttentionMode::kNone || mode == AttentionMode::kFlash2 ||
+           mode == AttentionMode::kSage2 || mode == AttentionMode::kSol ||
+           mode == AttentionMode::kSolExperimental || mode == AttentionMode::kExact;
+  case DeviceBackend::kVulkan:
+    return mode == AttentionMode::kExact || mode == AttentionMode::kFlash2 ||
+           mode == AttentionMode::kSage2;
   }
   return false;
 }
@@ -78,10 +90,9 @@ struct SolSchedule {
 
   bool active(int step, int layer) const {
     return step >= step_begin && step <= step_end && step_every > 0 &&
-           (step - step_begin) % step_every == 0 && layer >= layer_begin &&
-           layer <= layer_end && layer_every > 0 &&
-           (layer - layer_begin) % layer_every == 0;
+           (step - step_begin) % step_every == 0 && layer >= layer_begin && layer <= layer_end &&
+           layer_every > 0 && (layer - layer_begin) % layer_every == 0;
   }
 };
 
-}  // namespace slopfab
+} // namespace slopfab

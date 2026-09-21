@@ -27,4 +27,4 @@ struct LoraGrid {
   void embed() const;
 };
 
-}  // namespace slopfab::detail
+} // namespace slopfab::detail

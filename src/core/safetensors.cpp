@@ -38,7 +38,8 @@ bool env_flag(const char* name) {
 #ifdef _MSC_VER
   size_t len = 0;
   char buf[8] = {};
-  if (getenv_s(&len, buf, sizeof(buf), name) != 0) return false;
+  if (getenv_s(&len, buf, sizeof(buf), name) != 0)
+    return false;
   return len != 0 && buf[0] == '1';
 #else
   const char* v = std::getenv(name);
@@ -46,68 +47,103 @@ bool env_flag(const char* name) {
 #endif
 }
 
-}  // namespace
+} // namespace
 
 DType dtype_from_string(std::string_view name) {
-  if (name == "BOOL") return DType::kBool;
-  if (name == "U8") return DType::kU8;
-  if (name == "I8") return DType::kI8;
-  if (name == "I16") return DType::kI16;
-  if (name == "I32") return DType::kI32;
-  if (name == "I64") return DType::kI64;
-  if (name == "F8_E4M3") return DType::kF8E4M3;
-  if (name == "F8_E5M2") return DType::kF8E5M2;
-  if (name == "F16") return DType::kF16;
-  if (name == "BF16") return DType::kBF16;
-  if (name == "F32") return DType::kF32;
-  if (name == "F64") return DType::kF64;
+  if (name == "BOOL")
+    return DType::kBool;
+  if (name == "U8")
+    return DType::kU8;
+  if (name == "I8")
+    return DType::kI8;
+  if (name == "I16")
+    return DType::kI16;
+  if (name == "I32")
+    return DType::kI32;
+  if (name == "I64")
+    return DType::kI64;
+  if (name == "F8_E4M3")
+    return DType::kF8E4M3;
+  if (name == "F8_E5M2")
+    return DType::kF8E5M2;
+  if (name == "F16")
+    return DType::kF16;
+  if (name == "BF16")
+    return DType::kBF16;
+  if (name == "F32")
+    return DType::kF32;
+  if (name == "F64")
+    return DType::kF64;
   return DType::kUnknown;
 }
 
 const char* dtype_name(DType dt) {
   switch (dt) {
-    case DType::kBool: return "BOOL";
-    case DType::kU8: return "U8";
-    case DType::kI8: return "I8";
-    case DType::kI16: return "I16";
-    case DType::kI32: return "I32";
-    case DType::kI64: return "I64";
-    case DType::kF8E4M3: return "F8_E4M3";
-    case DType::kF8E5M2: return "F8_E5M2";
-    case DType::kF16: return "F16";
-    case DType::kBF16: return "BF16";
-    case DType::kF32: return "F32";
-    case DType::kF64: return "F64";
-    case DType::kUnknown: break;
+  case DType::kBool:
+    return "BOOL";
+  case DType::kU8:
+    return "U8";
+  case DType::kI8:
+    return "I8";
+  case DType::kI16:
+    return "I16";
+  case DType::kI32:
+    return "I32";
+  case DType::kI64:
+    return "I64";
+  case DType::kF8E4M3:
+    return "F8_E4M3";
+  case DType::kF8E5M2:
+    return "F8_E5M2";
+  case DType::kF16:
+    return "F16";
+  case DType::kBF16:
+    return "BF16";
+  case DType::kF32:
+    return "F32";
+  case DType::kF64:
+    return "F64";
+  case DType::kUnknown:
+    break;
   }
   return "UNKNOWN";
 }
 
 size_t dtype_size(DType dt) {
   switch (dt) {
-    case DType::kBool:
-    case DType::kU8:
-    case DType::kI8:
-    case DType::kF8E4M3:
-    case DType::kF8E5M2: return 1;
-    case DType::kI16:
-    case DType::kF16:
-    case DType::kBF16: return 2;
-    case DType::kI32:
-    case DType::kF32: return 4;
-    case DType::kI64:
-    case DType::kF64: return 8;
-    case DType::kUnknown: break;
+  case DType::kBool:
+  case DType::kU8:
+  case DType::kI8:
+  case DType::kF8E4M3:
+  case DType::kF8E5M2:
+    return 1;
+  case DType::kI16:
+  case DType::kF16:
+  case DType::kBF16:
+    return 2;
+  case DType::kI32:
+  case DType::kF32:
+    return 4;
+  case DType::kI64:
+  case DType::kF64:
+    return 8;
+  case DType::kUnknown:
+    break;
   }
   return 0;
 }
 
-SafeTensors::~SafeTensors() { close(); }
+SafeTensors::~SafeTensors() {
+  close();
+}
 
-SafeTensors::SafeTensors(SafeTensors&& other) noexcept { *this = std::move(other); }
+SafeTensors::SafeTensors(SafeTensors&& other) noexcept {
+  *this = std::move(other);
+}
 
 SafeTensors& SafeTensors::operator=(SafeTensors&& other) noexcept {
-  if (this == &other) return *this;
+  if (this == &other)
+    return *this;
   close();
   path_ = std::move(other.path_);
   base_ = other.base_;
@@ -136,13 +172,15 @@ void SafeTensors::open(const std::string& path) {
 #ifdef _WIN32
   // Widen via the ANSI->UTF16 path so non-ASCII paths work.
   const int wide_len = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-  if (wide_len <= 0) fail(path, "path is not valid UTF-8");
+  if (wide_len <= 0)
+    fail(path, "path is not valid UTF-8");
   std::wstring wide(static_cast<size_t>(wide_len), L'\0');
   MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(), wide_len);
 
-  HANDLE file = CreateFileW(wide.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) fail(path, "cannot open file");
+  HANDLE file = CreateFileW(wide.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE)
+    fail(path, "cannot open file");
   file_handle_ = file;
 
   LARGE_INTEGER file_size{};
@@ -170,9 +208,10 @@ void SafeTensors::open(const std::string& path) {
   }
 #else
   fd_ = ::open(path.c_str(), O_RDONLY);
-  if (fd_ < 0) fail(path, "cannot open file");
+  if (fd_ < 0)
+    fail(path, "cannot open file");
 
-  struct stat st {};
+  struct stat st{};
   if (fstat(fd_, &st) != 0) {
     close();
     fail(path, "cannot stat file");
@@ -204,41 +243,52 @@ void SafeTensors::close() {
   metadata_.clear();
   lookup_prefix_.clear();
 #ifdef _WIN32
-  if (base_ != nullptr) UnmapViewOfFile(base_);
-  if (mapping_handle_ != nullptr) CloseHandle(static_cast<HANDLE>(mapping_handle_));
+  if (base_ != nullptr)
+    UnmapViewOfFile(base_);
+  if (mapping_handle_ != nullptr)
+    CloseHandle(static_cast<HANDLE>(mapping_handle_));
   if (file_handle_ != nullptr && file_handle_ != INVALID_HANDLE_VALUE) {
     CloseHandle(static_cast<HANDLE>(file_handle_));
   }
   mapping_handle_ = nullptr;
   file_handle_ = nullptr;
 #else
-  if (base_ != nullptr) munmap(base_, size_);
-  if (fd_ >= 0) ::close(fd_);
+  if (base_ != nullptr)
+    munmap(base_, size_);
+  if (fd_ >= 0)
+    ::close(fd_);
   fd_ = -1;
 #endif
   base_ = nullptr;
   size_ = 0;
 }
 
-bool SafeTensors::prefetch() const { return prefetch_range(base_, size_); }
+bool SafeTensors::prefetch() const {
+  return prefetch_range(base_, size_);
+}
 
 bool SafeTensors::prefetch_range(const void* begin, size_t bytes) const {
-  if (base_ == nullptr || size_ == 0 || begin == nullptr || bytes == 0) return false;
+  if (base_ == nullptr || size_ == 0 || begin == nullptr || bytes == 0)
+    return false;
   // Clamp to the mapping. A caller derives `begin` from a `TensorView`, so it
   // is inside by construction, but a hint that walks off the end of the view is
   // the one bug this cannot afford to have.
   const auto b = reinterpret_cast<uintptr_t>(base_);
   const auto q = reinterpret_cast<uintptr_t>(begin);
-  if (q < b || q > b + size_) return false;
+  if (q < b || q > b + size_)
+    return false;
   const size_t avail = static_cast<size_t>(b + size_ - q);
-  if (avail == 0) return false;
-  if (bytes > avail) bytes = avail;
+  if (avail == 0)
+    return false;
+  if (bytes > avail)
+    bytes = avail;
 
   // Exists so the same binary can be run both ways. Proving that a readahead
   // hint left the weight arena bit-identical needs an A/B, and an A/B across
   // two builds proves less than one across two runs of one build. Same shape
   // as SLOPFAB_NATIVE_NVFP4 in transformer.cpp.
-  if (env_flag("SLOPFAB_NO_PREFETCH")) return false;
+  if (env_flag("SLOPFAB_NO_PREFETCH"))
+    return false;
 #ifdef _WIN32
   // PrefetchVirtualMemory is Windows 8+. Resolved at run time rather than
   // link time so a build that runs on something older degrades to demand
@@ -246,11 +296,11 @@ bool SafeTensors::prefetch_range(const void* begin, size_t bytes) const {
   using Fn = BOOL(WINAPI*)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
   static const Fn prefetch_fn = [] {
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
-    return k32 == nullptr
-               ? nullptr
-               : reinterpret_cast<Fn>(GetProcAddress(k32, "PrefetchVirtualMemory"));
+    return k32 == nullptr ? nullptr
+                          : reinterpret_cast<Fn>(GetProcAddress(k32, "PrefetchVirtualMemory"));
   }();
-  if (prefetch_fn == nullptr) return false;
+  if (prefetch_fn == nullptr)
+    return false;
   WIN32_MEMORY_RANGE_ENTRY range;
   range.VirtualAddress = const_cast<void*>(begin);
   range.NumberOfBytes = bytes;
@@ -266,9 +316,12 @@ bool SafeTensors::prefetch_range(const void* begin, size_t bytes) const {
 }
 
 void SafeTensors::prefix_extent(std::string_view prefix, const void** begin, size_t* bytes) const {
-  if (begin != nullptr) *begin = nullptr;
-  if (bytes != nullptr) *bytes = 0;
-  if (base_ == nullptr) return;
+  if (begin != nullptr)
+    *begin = nullptr;
+  if (bytes != nullptr)
+    *bytes = 0;
+  if (base_ == nullptr)
+    return;
 
   // `tensors_` is keyed by name, and name order is not offset order in general,
   // so this takes a min/max over the matching subset rather than trusting the
@@ -277,45 +330,59 @@ void SafeTensors::prefix_extent(std::string_view prefix, const void** begin, siz
   const uint8_t* lo = nullptr;
   const uint8_t* hi = nullptr;
   for (auto it = tensors_.lower_bound(std::string(prefix)); it != tensors_.end(); ++it) {
-    if (it->first.compare(0, prefix.size(), prefix) != 0) break;
+    if (it->first.compare(0, prefix.size(), prefix) != 0)
+      break;
     const TensorView& v = it->second;
-    if (v.data == nullptr) continue;
+    if (v.data == nullptr)
+      continue;
     const auto* p = static_cast<const uint8_t*>(v.data);
-    if (lo == nullptr || p < lo) lo = p;
-    if (hi == nullptr || p + v.nbytes > hi) hi = p + v.nbytes;
+    if (lo == nullptr || p < lo)
+      lo = p;
+    if (hi == nullptr || p + v.nbytes > hi)
+      hi = p + v.nbytes;
   }
-  if (lo == nullptr || hi == nullptr || hi <= lo) return;
-  if (begin != nullptr) *begin = lo;
-  if (bytes != nullptr) *bytes = static_cast<size_t>(hi - lo);
+  if (lo == nullptr || hi == nullptr || hi <= lo)
+    return;
+  if (begin != nullptr)
+    *begin = lo;
+  if (bytes != nullptr)
+    *bytes = static_cast<size_t>(hi - lo);
 }
 
 void SafeTensors::parse_header() {
   const auto* bytes = static_cast<const uint8_t*>(base_);
 
   uint64_t header_len = 0;
-  std::memcpy(&header_len, bytes, kPrefixBytes);  // little-endian by spec
-  if (header_len == 0) fail(path_, "header length is zero");
-  if (header_len > kMaxHeaderBytes) fail(path_, "header length is implausibly large");
-  if (header_len > size_ - kPrefixBytes) fail(path_, "header length exceeds file size");
+  std::memcpy(&header_len, bytes, kPrefixBytes); // little-endian by spec
+  if (header_len == 0)
+    fail(path_, "header length is zero");
+  if (header_len > kMaxHeaderBytes)
+    fail(path_, "header length is implausibly large");
+  if (header_len > size_ - kPrefixBytes)
+    fail(path_, "header length exceeds file size");
 
   const std::string_view header_text(reinterpret_cast<const char*>(bytes + kPrefixBytes),
                                      static_cast<size_t>(header_len));
   const json::Value root = json::parse(header_text);
-  if (!root.is_object()) fail(path_, "header is not a JSON object");
+  if (!root.is_object())
+    fail(path_, "header is not a JSON object");
 
   const size_t data_start = kPrefixBytes + static_cast<size_t>(header_len);
   const size_t data_bytes = size_ - data_start;
 
   for (const auto& [name, entry] : root.as_object()) {
     if (name == "__metadata__") {
-      if (!entry.is_object()) continue;
+      if (!entry.is_object())
+        continue;
       for (const auto& [k, v] : entry.as_object()) {
-        if (v.is_string()) metadata_.emplace(k, v.as_string());
+        if (v.is_string())
+          metadata_.emplace(k, v.as_string());
       }
       continue;
     }
 
-    if (!entry.is_object()) fail(path_, "tensor entry '" + name + "' is not an object");
+    if (!entry.is_object())
+      fail(path_, "tensor entry '" + name + "' is not an object");
 
     const json::Value* dtype_v = entry.find("dtype");
     const json::Value* shape_v = entry.find("shape");
@@ -333,7 +400,8 @@ void SafeTensors::parse_header() {
 
     for (const json::Value& dim : shape_v->as_array()) {
       const int64_t d = dim.as_int();
-      if (d < 0) fail(path_, "tensor '" + name + "' has a negative dimension");
+      if (d < 0)
+        fail(path_, "tensor '" + name + "' has a negative dimension");
       view.shape.push_back(d);
     }
 
@@ -376,7 +444,8 @@ void SafeTensors::parse_header() {
         break;
       }
     }
-    if (uniform) lookup_prefix_ = prefix;
+    if (uniform)
+      lookup_prefix_ = prefix;
   }
 }
 
@@ -391,10 +460,10 @@ const TensorView* SafeTensors::find(std::string_view name) const {
 const TensorView& SafeTensors::at(std::string_view name) const {
   const TensorView* v = find(name);
   if (v == nullptr) {
-    throw std::runtime_error("safetensors: " + path_ + ": missing tensor '" +
-                             std::string(name) + "'");
+    throw std::runtime_error("safetensors: " + path_ + ": missing tensor '" + std::string(name) +
+                             "'");
   }
   return *v;
 }
 
-}  // namespace slopfab
+} // namespace slopfab

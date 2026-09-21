@@ -20,10 +20,11 @@ namespace slopfab::dit {
 namespace {
 
 void require(bool ok, const char* message) {
-  if (!ok) throw std::runtime_error(std::string("denoise: ") + message);
+  if (!ok)
+    throw std::runtime_error(std::string("denoise: ") + message);
 }
 
-}  // namespace
+} // namespace
 
 DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                        const ProgressFn& progress) {
@@ -56,8 +57,12 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
           "condition video rows are missing or unexpected");
   require((ca == 0) == (inputs.condition_audio_rows == nullptr),
           "condition audio rows are missing or unexpected");
-  if (cv) require(inputs.condition_video_rows->size() == cv, "condition video shape disagrees with layout");
-  if (ca) require(inputs.condition_audio_rows->size() == ca, "condition audio shape disagrees with layout");
+  if (cv)
+    require(inputs.condition_video_rows->size() == cv,
+            "condition video shape disagrees with layout");
+  if (ca)
+    require(inputs.condition_audio_rows->size() == ca,
+            "condition audio shape disagrees with layout");
   std::vector<float> all_video(video_rows * patch, 0.0f);
   const size_t audio_values = audio_rows * static_cast<size_t>(audio_dim);
   // Keep a valid address even for the video-only still path. The transformer
@@ -65,8 +70,12 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   // count of zero; a one-float sentinel avoids null-pointer arithmetic in
   // instrumentation without introducing an audio token or output sample.
   std::vector<float> all_audio(std::max<size_t>(audio_values, 1), 0.0f);
-  if (cv) std::copy(inputs.condition_video_rows->begin(), inputs.condition_video_rows->end(), all_video.begin());
-  if (ca) std::copy(inputs.condition_audio_rows->begin(), inputs.condition_audio_rows->end(), all_audio.begin());
+  if (cv)
+    std::copy(inputs.condition_video_rows->begin(), inputs.condition_video_rows->end(),
+              all_video.begin());
+  if (ca)
+    std::copy(inputs.condition_audio_rows->begin(), inputs.condition_audio_rows->end(),
+              all_audio.begin());
   out.video_rows.assign(all_video.size() - cv, 0.0f);
   out.audio_rows.assign(audio_values - ca, 0.0f);
   require(!inputs.pin_target_audio || (inputs.init_audio_rows && !out.audio_rows.empty()),
@@ -84,9 +93,9 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
             "the supplied initial video latents disagree with the layout");
     out.video_rows = *inputs.init_video_rows;
   } else {
-    const std::vector<float> noise = sampler::video_noise(
-        inputs.seed, layout.num_latent_frames, layout.latent_height, layout.latent_width,
-        transformer.config().in_channels);
+    const std::vector<float> noise =
+        sampler::video_noise(inputs.seed, layout.num_latent_frames, layout.latent_height,
+                             layout.latent_width, transformer.config().in_channels);
     patchify_video(noise.data(), layout, out.video_rows.data());
   }
   if (inputs.init_audio_rows != nullptr) {
@@ -113,10 +122,9 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   StepCache cache(inputs.cache, steps);
   MotionCache motion(inputs.motion_cache, layout, patch, audio_dim, steps,
                      inputs.video_scheduler->shift(), inputs.pin_target_audio);
-  require(!motion.enabled() || (!cache.enabled() &&
-          !transformer.block_cache_config().enabled() &&
-          inputs.video_scheduler->sampler() == sampler::SamplerKind::kEuler &&
-          inputs.audio_scheduler->sampler() == sampler::SamplerKind::kEuler),
+  require(!motion.enabled() || (!cache.enabled() && !transformer.block_cache_config().enabled() &&
+                                inputs.video_scheduler->sampler() == sampler::SamplerKind::kEuler &&
+                                inputs.audio_scheduler->sampler() == sampler::SamplerKind::kEuler),
           "MotionCache requires Euler without step or block caching");
 
   // The signature of a step, `c(t_v)` then `c(t_a)`. Built only when the cache
@@ -143,8 +151,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       // disagree about what this step's signature is — only about what to do
       // with it, which is the thing under test.
       build_signature(code, video_t[static_cast<size_t>(i)],
-                      inputs.pin_target_audio ? 1.0f : audio_t[static_cast<size_t>(i)],
-                      signature);
+                      inputs.pin_target_audio ? 1.0f : audio_t[static_cast<size_t>(i)], signature);
       compute = cache.should_compute(i, signature.data(), static_cast<int>(signature.size()));
     } else {
       compute = cache.should_compute(i, nullptr, 0);
@@ -173,25 +180,24 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         cuda::HostSpan span("build_row_timesteps");
         const float vt = video_t[static_cast<size_t>(i)];
         const float at = inputs.pin_target_audio ? 1.0f : audio_t[static_cast<size_t>(i)];
-        row_timesteps = layout.condition_audio_is_explicit
-                            ? build_row_timesteps(layout, indices, vt, at,
-                                                  std::max(vt, 0.999f), 1.0f)
-                            : build_row_timesteps(layout, indices, vt, at);
+        row_timesteps =
+            layout.condition_audio_is_explicit
+                ? build_row_timesteps(layout, indices, vt, at, std::max(vt, 0.999f), 1.0f)
+                : build_row_timesteps(layout, indices, vt, at);
       }
       if (inputs.velocity) {
-        inputs.velocity(i, row_timesteps, all_video.data(), all_audio.data(),
-                        video_velocity.data(), audio_velocity.data());
+        inputs.velocity(i, row_timesteps, all_video.data(), all_audio.data(), video_velocity.data(),
+                        audio_velocity.data());
       } else {
         transformer.set_denoise_step(i);
         transformer.forward(all_video.data(), all_audio.data(), row_timesteps,
                             video_velocity.data(), audio_velocity.data());
       }
-      motion.update(1.0f - video_t[static_cast<size_t>(i)],
-                    all_video.data() + cv, all_audio.data() + ca,
-                    video_velocity.data() + cv, audio_velocity.data() + ca);
+      motion.update(1.0f - video_t[static_cast<size_t>(i)], all_video.data() + cv,
+                    all_audio.data() + ca, video_velocity.data() + cv, audio_velocity.data() + ca);
     } else if (motion.enabled()) {
-      motion.reuse(all_video.data() + cv, all_audio.data() + ca,
-                   video_velocity.data() + cv, audio_velocity.data() + ca);
+      motion.reuse(all_video.data() + cv, all_audio.data() + ca, video_velocity.data() + cv,
+                   audio_velocity.data() + ca);
     }
 
     {
@@ -206,9 +212,11 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);
     }
 
-    if (inputs.boundary) inputs.boundary(i, out.video_rows, out.audio_rows);
+    if (inputs.boundary)
+      inputs.boundary(i, out.video_rows, out.audio_rows);
 
-    if (progress && !progress(i, steps)) break;
+    if (progress && !progress(i, steps))
+      break;
   }
 
   out.steps_computed = motion.enabled() ? motion.computed() : cache.computed();
@@ -216,4 +224,4 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   return out;
 }
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

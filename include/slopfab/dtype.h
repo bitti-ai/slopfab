@@ -67,7 +67,7 @@ inline float f16_to_f32(uint16_t v) {
   uint32_t bits;
   if (exp == 0) {
     if (mant == 0) {
-      bits = sign;  // signed zero
+      bits = sign; // signed zero
     } else {
       // Subnormal: renormalise into f32's exponent range.
       exp = 1;
@@ -79,7 +79,7 @@ inline float f16_to_f32(uint16_t v) {
       bits = sign | ((exp + 127u - 15u) << 23) | (mant << 13);
     }
   } else if (exp == 0x1F) {
-    bits = sign | 0x7F800000u | (mant << 13);  // inf / nan
+    bits = sign | 0x7F800000u | (mant << 13); // inf / nan
   } else {
     bits = sign | ((exp + 127u - 15u) << 23) | (mant << 13);
   }
@@ -97,20 +97,23 @@ inline uint16_t f32_to_f16(float f) {
     return static_cast<uint16_t>(sign | 0x7C00u | ((abs & 0x7FFFFFu) ? 0x0200u : 0u));
   int exp = static_cast<int>((abs >> 23) & 0xFFu) - 127 + 15;
   uint32_t mant = abs & 0x7FFFFFu;
-  if (exp >= 31) return static_cast<uint16_t>(sign | 0x7C00u);
+  if (exp >= 31)
+    return static_cast<uint16_t>(sign | 0x7C00u);
   if (exp <= 0) {
-    if (exp < -10) return static_cast<uint16_t>(sign);
+    if (exp < -10)
+      return static_cast<uint16_t>(sign);
     mant |= 0x800000u;
     const int shift = 14 - exp;
     const uint32_t half_mant = mant >> shift;
     const uint32_t remainder = mant & ((1u << shift) - 1u);
     const uint32_t halfway = 1u << (shift - 1);
-    return static_cast<uint16_t>(sign | half_mant +
-        (remainder > halfway || (remainder == halfway && (half_mant & 1u))));
+    return static_cast<uint16_t>(
+        sign | half_mant + (remainder > halfway || (remainder == halfway && (half_mant & 1u))));
   }
   uint32_t half = sign | (static_cast<uint32_t>(exp) << 10) | (mant >> 13);
   const uint32_t remainder = mant & 0x1FFFu;
-  if (remainder > 0x1000u || (remainder == 0x1000u && (half & 1u))) ++half;
+  if (remainder > 0x1000u || (remainder == 0x1000u && (half & 1u)))
+    ++half;
   return static_cast<uint16_t>(half);
 }
 
@@ -138,7 +141,7 @@ inline float f8_e4m3_to_f32(uint8_t v) {
       bits = sign | ((e + 127u - 7u) << 23) | (m << 20);
     }
   } else if (exp == 0x0F && mant == 0x07) {
-    bits = sign | 0x7FC00000u;  // NaN
+    bits = sign | 0x7FC00000u; // NaN
   } else {
     bits = sign | ((exp + 127u - 7u) << 23) | (mant << 20);
   }
@@ -176,7 +179,12 @@ inline float f4_e2m1_to_f32(uint8_t nibble) {
 // distinction with no evidence behind it. A 332-tensor bitwise-identical
 // control confirms the fp8 and nvfp4 transformers really are one model, which
 // is what makes that cross-checkpoint comparison mean anything.
-inline float f4_lo(uint8_t byte) { return f4_e2m1_to_f32(byte & 0x0Fu); }
-inline float f4_hi(uint8_t byte) { return f4_e2m1_to_f32(byte >> 4); }
+inline float f4_lo(uint8_t byte) {
+  return f4_e2m1_to_f32(byte & 0x0Fu);
+}
 
-}  // namespace slopfab
+inline float f4_hi(uint8_t byte) {
+  return f4_e2m1_to_f32(byte >> 4);
+}
+
+} // namespace slopfab

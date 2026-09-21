@@ -7,27 +7,31 @@
 namespace slopfab::dit {
 
 float conditioning_distance(const float* a, const float* reference, int n) {
-  if (a == nullptr || reference == nullptr || n <= 0) return 0.0f;
+  if (a == nullptr || reference == nullptr || n <= 0)
+    return 0.0f;
   double delta = 0.0;
   double scale = 0.0;
   for (int i = 0; i < n; ++i) {
     delta += std::fabs(static_cast<double>(a[i]) - static_cast<double>(reference[i]));
     scale += std::fabs(static_cast<double>(reference[i]));
   }
-  if (!(scale > 0.0)) return 0.0f;
+  if (!(scale > 0.0))
+    return 0.0f;
   return static_cast<float>(delta / scale);
 }
 
 StepCache::StepCache(const StepCacheConfig& config, int num_steps)
     : config_(config), num_steps_(std::max(0, num_steps)) {
-  if (config_.skip_every < 0) config_.skip_every = 0;
+  if (config_.skip_every < 0)
+    config_.skip_every = 0;
   // The floor, not the default. A caller passing 0 gets 2, because step 0 has
   // no velocity to reuse and step 1 reuses one drawn from pure noise.
   warmup_ = std::max(kMinWarmup, config_.warmup);
 }
 
 bool StepCache::should_compute(int step, const float* code, int len) {
-  if (code == nullptr) len = 0;
+  if (code == nullptr)
+    len = 0;
 
   // The two unconditional computes. `step >= num_steps_ - 1` rather than
   // `step > num_steps_ - 1`: the schedule has `num_steps_` model evaluations
@@ -55,7 +59,8 @@ bool StepCache::should_compute(int step, const float* code, int len) {
   // accumulation into a per-step comparison, which never crosses a threshold
   // larger than a single increment and silently degrades to "compute the
   // warmup and the last step and nothing else".
-  if (compute) accumulator_ = 0.0f;
+  if (compute)
+    accumulator_ = 0.0f;
 
   if (len > 0) {
     previous_.assign(code, code + len);
@@ -84,7 +89,8 @@ std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
 }
 
 void build_signature(const CodeFn& code, float t_video, float t_audio, std::vector<float>& out) {
-  if (!code) throw std::runtime_error("build_signature: no code function");
+  if (!code)
+    throw std::runtime_error("build_signature: no code function");
   const std::array<float, AdaLNTable::kRank> cv = code(t_video);
   const std::array<float, AdaLNTable::kRank> ca = code(t_audio);
   out.resize(2 * static_cast<size_t>(AdaLNTable::kRank));
@@ -97,7 +103,8 @@ void build_signature(const CodeFn& code, float t_video, float t_audio, std::vect
 std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
                                      const std::vector<std::pair<float, float>>& schedule,
                                      const CodeFn& code) {
-  if (!code) throw std::runtime_error("plan_step_cache: no code function");
+  if (!code)
+    throw std::runtime_error("plan_step_cache: no code function");
   std::vector<std::vector<float>> codes;
   codes.reserve(schedule.size());
   std::vector<float> row;
@@ -108,4 +115,4 @@ std::vector<uint8_t> plan_step_cache(const StepCacheConfig& config,
   return plan_step_cache(config, codes);
 }
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

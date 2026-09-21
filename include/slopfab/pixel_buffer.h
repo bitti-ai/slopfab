@@ -24,20 +24,19 @@
 
 namespace slopfab {
 
-template <typename T, typename Base = std::allocator<T>>
-struct DefaultInitAllocator : Base {
+template <typename T, typename Base = std::allocator<T>> struct DefaultInitAllocator : Base {
   using Base::Base;
 
-  template <typename U>
-  struct rebind {
+  template <typename U> struct rebind {
     using other =
-        DefaultInitAllocator<U,
-                             typename std::allocator_traits<Base>::template rebind_alloc<U>>;
+        DefaultInitAllocator<U, typename std::allocator_traits<Base>::template rebind_alloc<U>>;
   };
 
   DefaultInitAllocator() = default;
+
   template <typename U, typename V>
-  DefaultInitAllocator(const DefaultInitAllocator<U, V>& other) : Base(other) {}
+  DefaultInitAllocator(const DefaultInitAllocator<U, V>& other) : Base(other) {
+  }
 
   // The whole point: `new (p) U` rather than `new (p) U()`.
   template <typename U>
@@ -45,8 +44,7 @@ struct DefaultInitAllocator : Base {
     ::new (static_cast<void*>(p)) U;
   }
 
-  template <typename U, typename... Args>
-  void construct(U* p, Args&&... args) {
+  template <typename U, typename... Args> void construct(U* p, Args&&... args) {
     std::allocator_traits<Base>::construct(static_cast<Base&>(*this), p,
                                            std::forward<Args>(args)...);
   }
@@ -57,4 +55,4 @@ struct DefaultInitAllocator : Base {
 // matter and passed through to the writers unchanged.
 using PixelBuffer = std::vector<float, DefaultInitAllocator<float>>;
 
-}  // namespace slopfab
+} // namespace slopfab

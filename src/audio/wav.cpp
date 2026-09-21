@@ -43,18 +43,21 @@ void put_chunk(std::vector<uint8_t>& out, const char (&tag)[5],
   put_tag(out, tag);
   put_u32(out, static_cast<uint32_t>(payload.size()));
   out.insert(out.end(), payload.begin(), payload.end());
-  if ((payload.size() % 2) != 0) out.push_back(0);
+  if ((payload.size() % 2) != 0)
+    out.push_back(0);
 }
 
-constexpr uint16_t kFormatPcm = 1;        // WAVE_FORMAT_PCM
-constexpr uint16_t kFormatIeeeFloat = 3;  // WAVE_FORMAT_IEEE_FLOAT
+constexpr uint16_t kFormatPcm = 1;       // WAVE_FORMAT_PCM
+constexpr uint16_t kFormatIeeeFloat = 3; // WAVE_FORMAT_IEEE_FLOAT
 
-}  // namespace
+} // namespace
 
 void write_wav(const std::string& path, const std::vector<float>& interleaved, int channels,
                int sample_rate, SampleFormat format) {
-  if (channels <= 0) throw std::runtime_error("wav: channel count must be positive");
-  if (sample_rate <= 0) throw std::runtime_error("wav: sample rate must be positive");
+  if (channels <= 0)
+    throw std::runtime_error("wav: channel count must be positive");
+  if (sample_rate <= 0)
+    throw std::runtime_error("wav: sample rate must be positive");
   if ((interleaved.size() % static_cast<size_t>(channels)) != 0) {
     throw std::runtime_error("wav: sample count " + std::to_string(interleaved.size()) +
                              " is not a multiple of " + std::to_string(channels) + " channels");
@@ -79,7 +82,8 @@ void write_wav(const std::string& path, const std::vector<float>& interleaved, i
   put_u32(fmt, byte_rate);
   put_u16(fmt, block_align);
   put_u16(fmt, bits);
-  if (is_float) put_u16(fmt, 0);  // cbSize
+  if (is_float)
+    put_u16(fmt, 0); // cbSize
 
   std::vector<uint8_t> data;
   data.resize(interleaved.size() * bytes_per_sample);
@@ -134,9 +138,11 @@ void write_wav(const std::string& path, const std::vector<float>& interleaved, i
   file.insert(file.end(), body.begin(), body.end());
 
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) throw std::runtime_error("wav: cannot open " + path + " for writing");
+  if (!out)
+    throw std::runtime_error("wav: cannot open " + path + " for writing");
   out.write(reinterpret_cast<const char*>(file.data()), static_cast<std::streamsize>(file.size()));
-  if (!out) throw std::runtime_error("wav: write failed for " + path);
+  if (!out)
+    throw std::runtime_error("wav: write failed for " + path);
 }
 
-}  // namespace slopfab::audio
+} // namespace slopfab::audio

@@ -28,8 +28,7 @@ struct ViTRopeTables {
 };
 
 // Canonical video-VAE T/H/W rotary tables, including identity suffix rows.
-ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height,
-                                    uint32_t width, uint32_t suffix,
+ViTRopeTables build_vit_rope_tables(uint32_t time, uint32_t height, uint32_t width, uint32_t suffix,
                                     uint32_t rope_dim, float theta);
 
 // Non-owning host views. Linear matrices are row-major fp16 in unrotated
@@ -72,8 +71,7 @@ struct ViTBlockWeights {
 // INT8 scales and ConvRot are undone before narrowing to fp16; all fp16
 // subnormals are canonicalized to signed zero. Affine tensors may
 // be fp16/fp32 and are converted to the exact fp32 stage boundary.
-ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint,
-                                       uint32_t layer,
+ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint, uint32_t layer,
                                        const ViTBlockConfig& config);
 
 // The host boundary is intentional for this first vertical slice: it makes a
@@ -81,17 +79,17 @@ ViTBlockWeights load_vit_block_weights(const SafeTensors& checkpoint,
 // Vulkan label. The later 36-block graph can add a device-resident chaining
 // interface without changing this weight/config contract.
 class ExactViTBlockStage {
- public:
+public:
   virtual ~ExactViTBlockStage() = default;
   virtual DeviceBackend backend() const noexcept = 0;
   virtual const ViTBlockConfig& config() const noexcept = 0;
   virtual void load(const ViTBlockWeightsView& weights) = 0;
   // tokens/output: fp32 [sequence,dim]. Cos/sin: fp32
   // [sequence,rope_dim], including identity rows for suffix tokens.
-  virtual void forward(const float* tokens, const float* cosine,
-                       const float* sine, float* output) = 0;
+  virtual void forward(const float* tokens, const float* cosine, const float* sine,
+                       float* output) = 0;
   virtual uint64_t persistent_bytes() const noexcept = 0;
   virtual uint64_t peak_device_bytes() const noexcept = 0;
 };
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

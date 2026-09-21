@@ -6,4 +6,4 @@ namespace slopfab::text {
 // This is an implementation resource bound, not the model's context length.
 inline constexpr int kMaxPromptTokens = 32768;
 
-}  // namespace slopfab::text
+} // namespace slopfab::text

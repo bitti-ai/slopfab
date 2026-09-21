@@ -9,21 +9,24 @@
 namespace slopfab::dit {
 namespace {
 
-constexpr int kIntervals = AdaLNTable::kRows - 1;  // 1024
+constexpr int kIntervals = AdaLNTable::kRows - 1; // 1024
 
 // Rounds half away from zero, matching what a `round(u)` in the quantiser
 // would have done. Only reachable from kNearest, which is not the default.
 int nearest_index(double u) {
   const int j = static_cast<int>(std::floor(u + 0.5));
-  if (j < 0) return 0;
-  if (j > kIntervals) return kIntervals;
+  if (j < 0)
+    return 0;
+  if (j > kIntervals)
+    return kIntervals;
   return j;
 }
 
 void load_matrix(const SafeTensors& checkpoint, const char* name, int rows, int cols,
                  std::vector<float>& out) {
   const TensorView* view = checkpoint.find(name);
-  if (view == nullptr) throw std::runtime_error(std::string(name) + " is missing");
+  if (view == nullptr)
+    throw std::runtime_error(std::string(name) + " is missing");
   if (view->shape != std::vector<int64_t>{rows, cols}) {
     throw std::runtime_error(std::string(name) + " has the wrong shape; expected [" +
                              std::to_string(rows) + ", " + std::to_string(cols) + "]");
@@ -34,7 +37,8 @@ void load_matrix(const SafeTensors& checkpoint, const char* name, int rows, int 
 void load_vector(const SafeTensors& checkpoint, const char* name, int size,
                  std::vector<float>& out) {
   const TensorView* view = checkpoint.find(name);
-  if (view == nullptr) throw std::runtime_error(std::string(name) + " is missing");
+  if (view == nullptr)
+    throw std::runtime_error(std::string(name) + " is missing");
   if (view->shape != std::vector<int64_t>{size}) {
     throw std::runtime_error(std::string(name) + " has the wrong shape; expected [" +
                              std::to_string(size) + "]");
@@ -42,18 +46,20 @@ void load_vector(const SafeTensors& checkpoint, const char* name, int size,
   to_f32(*view, out);
 }
 
-float silu(float x) { return x / (1.0f + std::exp(-x)); }
+float silu(float x) {
+  return x / (1.0f + std::exp(-x));
+}
 
-}  // namespace
+} // namespace
 
 const char* adaln_lookup_name(AdaLNLookup mode) {
   switch (mode) {
-    case AdaLNLookup::kLinear:
-      return "linear";
-    case AdaLNLookup::kNearest:
-      return "nearest";
-    case AdaLNLookup::kLinearReversed:
-      return "linear-reversed";
+  case AdaLNLookup::kLinear:
+    return "linear";
+  case AdaLNLookup::kNearest:
+    return "nearest";
+  case AdaLNLookup::kLinearReversed:
+    return "linear-reversed";
   }
   return "unknown";
 }
@@ -68,8 +74,7 @@ std::vector<float> minimax_h3_timestep_sinusoid(float timestep, int freq_dim) {
     // diffusers get_timestep_embedding with downscale_freq_shift=0. Compute
     // the frequency in double like torch's exponent construction, then round
     // the stored embedding to float32.
-    const double exponent = -std::log(10000.0) * static_cast<double>(i) /
-                            static_cast<double>(half);
+    const double exponent = -std::log(10000.0) * static_cast<double>(i) / static_cast<double>(half);
     const double phase = static_cast<double>(timestep) * std::exp(exponent);
     out[static_cast<size_t>(i)] = static_cast<float>(std::cos(phase));
     out[static_cast<size_t>(half + i)] = static_cast<float>(std::sin(phase));
@@ -77,8 +82,8 @@ std::vector<float> minimax_h3_timestep_sinusoid(float timestep, int freq_dim) {
   return out;
 }
 
-void FullAdaLNTimestepEmbedding::load(const SafeTensors& checkpoint, int freq_dim,
-                                      int hidden_dim, int output_dim) {
+void FullAdaLNTimestepEmbedding::load(const SafeTensors& checkpoint, int freq_dim, int hidden_dim,
+                                      int output_dim) {
   if (freq_dim <= 0 || hidden_dim <= 0 || output_dim <= 0 || (freq_dim & 1) != 0) {
     throw std::runtime_error("invalid MiniMax-H3 timestep embedding dimensions");
   }
@@ -89,7 +94,8 @@ void FullAdaLNTimestepEmbedding::load(const SafeTensors& checkpoint, int freq_di
   load_vector(checkpoint, "time_embedder.proj_out.bias", output_dim, out_b);
   for (const auto* values : {&in_w, &in_b, &out_w, &out_b}) {
     for (float value : *values) {
-      if (!std::isfinite(value)) throw std::runtime_error("time_embedder contains a non-finite entry");
+      if (!std::isfinite(value))
+        throw std::runtime_error("time_embedder contains a non-finite entry");
     }
   }
   freq_dim_ = freq_dim;
@@ -102,27 +108,29 @@ void FullAdaLNTimestepEmbedding::load(const SafeTensors& checkpoint, int freq_di
 }
 
 std::vector<float> FullAdaLNTimestepEmbedding::forward(float timestep) const {
-  if (!loaded()) throw std::runtime_error("FullAdaLNTimestepEmbedding::forward: not loaded");
+  if (!loaded())
+    throw std::runtime_error("FullAdaLNTimestepEmbedding::forward: not loaded");
   const std::vector<float> sinusoid = minimax_h3_timestep_sinusoid(timestep, freq_dim_);
   std::vector<float> hidden(static_cast<size_t>(hidden_dim_));
   for (int r = 0; r < hidden_dim_; ++r) {
     double sum = proj_in_bias_[static_cast<size_t>(r)];
     const float* weight = proj_in_weight_.data() + static_cast<size_t>(r) * freq_dim_;
-    for (int c = 0; c < freq_dim_; ++c) sum += weight[c] * sinusoid[static_cast<size_t>(c)];
+    for (int c = 0; c < freq_dim_; ++c)
+      sum += weight[c] * sinusoid[static_cast<size_t>(c)];
     hidden[static_cast<size_t>(r)] = silu(static_cast<float>(sum));
   }
   std::vector<float> out(static_cast<size_t>(output_dim_));
   for (int r = 0; r < output_dim_; ++r) {
     double sum = proj_out_bias_[static_cast<size_t>(r)];
     const float* weight = proj_out_weight_.data() + static_cast<size_t>(r) * hidden_dim_;
-    for (int c = 0; c < hidden_dim_; ++c) sum += weight[c] * hidden[static_cast<size_t>(c)];
+    for (int c = 0; c < hidden_dim_; ++c)
+      sum += weight[c] * hidden[static_cast<size_t>(c)];
     out[static_cast<size_t>(r)] = static_cast<float>(sum);
   }
   return out;
 }
 
-std::vector<float> FullAdaLNTimestepEmbedding::forward(
-    const std::vector<float>& timesteps) const {
+std::vector<float> FullAdaLNTimestepEmbedding::forward(const std::vector<float>& timesteps) const {
   std::vector<float> out;
   out.reserve(timesteps.size() * static_cast<size_t>(output_dim_));
   for (float timestep : timesteps) {
@@ -157,7 +165,8 @@ void AdaLNTable::load(const SafeTensors& checkpoint) {
 }
 
 const float* AdaLNTable::row(int index) const {
-  if (!loaded()) throw std::runtime_error("AdaLNTable::row: table not loaded");
+  if (!loaded())
+    throw std::runtime_error("AdaLNTable::row: table not loaded");
   if (index < 0 || index >= kRows) {
     throw std::runtime_error("AdaLNTable::row: index " + std::to_string(index) + " out of range");
   }
@@ -165,28 +174,35 @@ const float* AdaLNTable::row(int index) const {
 }
 
 std::array<float, AdaLNTable::kRank> AdaLNTable::lookup(float t, AdaLNLookup mode) const {
-  if (!loaded()) throw std::runtime_error("AdaLNTable::lookup: table not loaded");
+  if (!loaded())
+    throw std::runtime_error("AdaLNTable::lookup: table not loaded");
 
   // Clamp rather than extrapolate. The schedule produces t in [0, 1] by
   // construction, so anything outside is an upstream bug worth surfacing as a
   // pinned endpoint rather than as a plausible extrapolated coefficient.
   double x = static_cast<double>(t);
-  if (mode == AdaLNLookup::kLinearReversed) x = 1.0 - x;
-  if (x < 0.0) x = 0.0;
-  if (x > 1.0) x = 1.0;
+  if (mode == AdaLNLookup::kLinearReversed)
+    x = 1.0 - x;
+  if (x < 0.0)
+    x = 0.0;
+  if (x > 1.0)
+    x = 1.0;
 
   const double u = x * static_cast<double>(kIntervals);
   std::array<float, kRank> out{};
 
   if (mode == AdaLNLookup::kNearest) {
     const float* r = row(nearest_index(u));
-    for (int i = 0; i < kRank; ++i) out[i] = r[i];
+    for (int i = 0; i < kRank; ++i)
+      out[i] = r[i];
     return out;
   }
 
   int j = static_cast<int>(std::floor(u));
-  if (j < 0) j = 0;
-  if (j > kIntervals - 1) j = kIntervals - 1;
+  if (j < 0)
+    j = 0;
+  if (j > kIntervals - 1)
+    j = kIntervals - 1;
   const double f = u - static_cast<double>(j);
 
   const float* lo = row(j);
@@ -197,10 +213,10 @@ std::array<float, AdaLNTable::kRank> AdaLNTable::lookup(float t, AdaLNLookup mod
     // here biases every block's modulation identically and accumulates
     // coherently over the trajectory — the same argument transformer.py:122-126
     // makes about the SiLU in the unpruned model.
-    out[i] = static_cast<float>((1.0 - f) * static_cast<double>(lo[i]) +
-                                f * static_cast<double>(hi[i]));
+    out[i] =
+        static_cast<float>((1.0 - f) * static_cast<double>(lo[i]) + f * static_cast<double>(hi[i]));
   }
   return out;
 }
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

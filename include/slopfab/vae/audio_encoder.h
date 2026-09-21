@@ -6,7 +6,7 @@
 
 namespace slopfab::vae {
 class AudioEncoder {
- public:
+public:
   explicit AudioEncoder(const SafeTensors& checkpoint);
   ~AudioEncoder();
   AudioEncoder(const AudioEncoder&) = delete;
@@ -17,8 +17,8 @@ class AudioEncoder {
   // H3's normalized channel-major [2*A,32] fixed condition rows.
   std::vector<float> encode_reference(const float* stereo, int samples);
 
- private:
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

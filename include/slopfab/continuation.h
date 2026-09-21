@@ -38,6 +38,6 @@ void append_continuation_guide(const LatentClip& source, const ContinuationPlan&
                                uint64_t seed, std::vector<dit::ReferenceGeometry>& geometry,
                                std::vector<float>& video, std::vector<float>& audio);
 LatentClip join_continuation(const LatentClip& source, const ContinuationPlan& plan,
-                            const std::vector<float>& video, const std::vector<float>& audio);
+                             const std::vector<float>& video, const std::vector<float>& audio);
 
-}  // namespace slopfab
+} // namespace slopfab

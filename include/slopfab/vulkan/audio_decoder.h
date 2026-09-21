@@ -15,7 +15,7 @@ namespace slopfab::vulkan {
 // The graph and all 779 decoder tensors remain device resident; one decode is
 // recorded as a single bounded transaction and returns interleaved stereo.
 class AudioDecoder {
- public:
+public:
   AudioDecoder();
   ~AudioDecoder();
   AudioDecoder(AudioDecoder&&) noexcept;
@@ -24,8 +24,7 @@ class AudioDecoder {
   AudioDecoder& operator=(const AudioDecoder&) = delete;
 
   static AudioDecoder create(const Device& device);
-  void load(const SafeTensors& checkpoint,
-            const vae::AudioVAEConfig& config = {});
+  void load(const SafeTensors& checkpoint, const vae::AudioVAEConfig& config = {});
   void unload();
   const vae::AudioVAEConfig& config() const;
   const std::vector<float>& latents_mean() const;
@@ -44,10 +43,10 @@ class AudioDecoder {
   uint64_t descriptor_set_allocations() const noexcept;
   uint32_t recorded_operators() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit AudioDecoder(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

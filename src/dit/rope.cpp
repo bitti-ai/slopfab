@@ -6,10 +6,10 @@
 
 namespace slopfab::dit {
 
-H3RopeTables build_h3_rope_tables(const std::vector<double>& positions,
-                                  float theta, uint32_t frequency_dim) {
-  if (positions.empty() || positions.size() % 3 != 0 ||
-      !std::isnormal(theta) || theta < 1.0f || frequency_dim == 0) {
+H3RopeTables build_h3_rope_tables(const std::vector<double>& positions, float theta,
+                                  uint32_t frequency_dim) {
+  if (positions.empty() || positions.size() % 3 != 0 || !std::isnormal(theta) || theta < 1.0f ||
+      frequency_dim == 0) {
     throw std::invalid_argument("H3 RoPE: invalid table parameters");
   }
   const size_t rows = positions.size() / 3;
@@ -19,8 +19,7 @@ H3RopeTables build_h3_rope_tables(const std::vector<double>& positions,
     throw std::overflow_error("H3 RoPE: table dimensions overflow");
   }
   for (double position : positions) {
-    if (!std::isfinite(position) ||
-        !std::isfinite(static_cast<float>(position))) {
+    if (!std::isfinite(position) || !std::isfinite(static_cast<float>(position))) {
       throw std::invalid_argument("H3 RoPE: position is outside fp32 range");
     }
   }
@@ -29,8 +28,7 @@ H3RopeTables build_h3_rope_tables(const std::vector<double>& positions,
   std::vector<float> inverse(frequency_dim);
   for (uint32_t k = 0; k < frequency_dim; ++k) {
     inverse[k] = static_cast<float>(
-        1.0 / std::pow(static_cast<double>(theta),
-                       static_cast<double>(k) / frequency_dim));
+        1.0 / std::pow(static_cast<double>(theta), static_cast<double>(k) / frequency_dim));
   }
   H3RopeTables result;
   result.rows = static_cast<uint32_t>(rows);
@@ -53,4 +51,4 @@ H3RopeTables build_h3_rope_tables(const std::vector<double>& positions,
   return result;
 }
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

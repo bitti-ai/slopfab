@@ -36,7 +36,7 @@ struct TransformerConfig {
   int hidden_size = 5376;
   int num_layers = 50;
   int num_attention_heads = 56;
-  int attention_head_dim = 128;  // inner_dim = 56*128 = 7168, wider than hidden
+  int attention_head_dim = 128; // inner_dim = 56*128 = 7168, wider than hidden
   int ffn_dim = 14336;
   int in_channels = 24;
   int audio_in_channels = 32;
@@ -51,8 +51,13 @@ struct TransformerConfig {
   int timestep_hidden_dim = 5376;
   int timestep_embed_dim = 2688;
 
-  int inner_dim() const { return num_attention_heads * attention_head_dim; }
-  int video_patch_dim() const { return in_channels * 4; }  // patch (1,2,2)
+  int inner_dim() const {
+    return num_attention_heads * attention_head_dim;
+  }
+
+  int video_patch_dim() const {
+    return in_channels * 4;
+  } // patch (1,2,2)
 };
 
 struct TransformerLoadOptions {
@@ -68,7 +73,7 @@ struct TransformerLoadOptions {
 };
 
 class Transformer {
- public:
+public:
   Transformer();
   ~Transformer();
   Transformer(const Transformer&) = delete;
@@ -207,11 +212,12 @@ class Transformer {
 
   // One labelled snapshot of the residual stream from inside `prepare_text`.
   struct DebugStage {
-    std::string label;   // "condition_proj", "attn", "ffn", "final_norm"
+    std::string label; // "condition_proj", "attn", "ffn", "final_norm"
     int rows = 0;
     int dim = 0;
     std::vector<float> data;
   };
+
   struct DebugAttentionRoutes {
     uint64_t exact_refiner_full = 0;
     uint64_t exact_main_full = 0;
@@ -219,6 +225,7 @@ class Transformer {
     uint64_t generic_refiner = 0;
     uint64_t generic_main = 0;
   };
+
   DebugAttentionRoutes debug_attention_routes() const;
 
   // Re-runs `prepare_text` capturing the residual stream at every stage
@@ -231,9 +238,9 @@ class Transformer {
   // different consequences while looking identical from outside.
   std::vector<DebugStage> debug_text_stages(const float* prompt_embeds, int num_tokens);
 
- private:
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

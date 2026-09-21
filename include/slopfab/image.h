@@ -30,4 +30,4 @@ RGBImage load_platform_image(const std::string& path);
 // Scale-adaptive separable Lanczos-3 with half-pixel pixel-center mapping.
 RGBImage resize_reference_lanczos(const RGBImage& image, int width, int height);
 
-}  // namespace slopfab
+} // namespace slopfab

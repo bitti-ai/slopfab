@@ -23,7 +23,6 @@
 #include "slopfab/vulkan/linear.h"
 #include "slopfab/vulkan/vsa_attention.h"
 
-
 namespace slopfab::vulkan {
 namespace tensor_detail {
 
@@ -39,8 +38,7 @@ constexpr uint32_t kH3AttentionMinReportedSharedBytes = 49152;
 
 inline uint64_t checked_multiply(uint64_t a, uint64_t b, const char* operation) {
   if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) {
-    throw std::overflow_error(std::string("vulkan tensor: ") + operation +
-                              " shape overflow");
+    throw std::overflow_error(std::string("vulkan tensor: ") + operation + " shape overflow");
   }
   return a * b;
 }
@@ -62,39 +60,34 @@ inline uintptr_t next_context_identity() {
     if (result == 0 || result == std::numeric_limits<uintptr_t>::max()) {
       throw std::overflow_error("vulkan tensor: context identity space exhausted");
     }
-    if (next.compare_exchange_weak(result, result + 1,
-                                   std::memory_order_relaxed)) {
+    if (next.compare_exchange_weak(result, result + 1, std::memory_order_relaxed)) {
       return result;
     }
   }
 }
 
 inline bool known_exact_cooperative_gemm_device(const DeviceInfo& info) {
-  static constexpr uint8_t kDriverUuid[16] = {
-      0x86, 0x90, 0xf1, 0xc8, 0x0a, 0x3f, 0x54, 0x99,
-      0x9b, 0xf6, 0xea, 0x2a, 0xee, 0x51, 0x56, 0x02};
+  static constexpr uint8_t kDriverUuid[16] = {0x86, 0x90, 0xf1, 0xc8, 0x0a, 0x3f, 0x54, 0x99,
+                                              0x9b, 0xf6, 0xea, 0x2a, 0xee, 0x51, 0x56, 0x02};
   return info.vendor_id == 0x10de && info.device_id == 0x2b85 &&
-      info.driver_version == 0x98960000 && info.subgroup_size == 32 &&
-      std::memcmp(info.driver_uuid, kDriverUuid, sizeof(kDriverUuid)) == 0 &&
-      info.cooperative_matrix_enabled && info.storage_buffer_16bit_enabled;
+         info.driver_version == 0x98960000 && info.subgroup_size == 32 &&
+         std::memcmp(info.driver_uuid, kDriverUuid, sizeof(kDriverUuid)) == 0 &&
+         info.cooperative_matrix_enabled && info.storage_buffer_16bit_enabled;
 }
 
 inline bool known_exact_cooperative_bf16_gemm_device(const DeviceInfo& info) {
-  return known_exact_cooperative_gemm_device(info) &&
-      info.shader_bfloat16_type && info.shader_bfloat16_cooperative_matrix &&
-      info.cooperative_matrix_bf16_f32_16x16x16;
+  return known_exact_cooperative_gemm_device(info) && info.shader_bfloat16_type &&
+         info.shader_bfloat16_cooperative_matrix && info.cooperative_matrix_bf16_f32_16x16x16;
 }
 
 inline bool known_exact_cooperative_f16_gemm_device(const DeviceInfo& info) {
-  return known_exact_cooperative_gemm_device(info) &&
-      info.shader_float16_enabled &&
-      info.cooperative_matrix_f16_f32_16x16x16;
+  return known_exact_cooperative_gemm_device(info) && info.shader_float16_enabled &&
+         info.cooperative_matrix_f16_f32_16x16x16;
 }
 
 inline bool known_exact_blocked_attention_device(const DeviceInfo& info) {
-  return detail::known_exact_vae_norm_device(
-             info.vendor_id, info.device_id, info.driver_version) &&
-      info.fp32_signed_zero_inf_nan_preserve && info.shader_int64_enabled;
+  return detail::known_exact_vae_norm_device(info.vendor_id, info.device_id, info.driver_version) &&
+         info.fp32_signed_zero_inf_nan_preserve && info.shader_int64_enabled;
 }
 
 inline bool known_exact_causal_gqa_attention_device(const DeviceInfo& info) {
@@ -104,26 +97,25 @@ inline bool known_exact_causal_gqa_attention_device(const DeviceInfo& info) {
 inline bool known_exact_h3_attention_device(const DeviceInfo& info) {
   // Named separately because H3's direct-BF16/FP16-V contract and checked
   // shader artifacts can evolve independently of the prepared-FP16 plan.
-  return known_exact_blocked_attention_device(info) &&
-      known_exact_cooperative_gemm_device(info) && info.shader_float16_enabled &&
-      info.shader_bfloat16_type && info.shader_bfloat16_cooperative_matrix &&
-      info.cooperative_matrix_bf16_f32_16x16x16 &&
-      info.cooperative_matrix_f16_f32_16x16x16 &&
-      info.max_compute_workgroup_invocations >= kH3AttentionLocalSize &&
-      info.max_compute_workgroup_size[0] >= kH3AttentionLocalSize &&
-      info.max_compute_shared_memory_bytes >= kH3AttentionMinReportedSharedBytes;
+  return known_exact_blocked_attention_device(info) && known_exact_cooperative_gemm_device(info) &&
+         info.shader_float16_enabled && info.shader_bfloat16_type &&
+         info.shader_bfloat16_cooperative_matrix && info.cooperative_matrix_bf16_f32_16x16x16 &&
+         info.cooperative_matrix_f16_f32_16x16x16 &&
+         info.max_compute_workgroup_invocations >= kH3AttentionLocalSize &&
+         info.max_compute_workgroup_size[0] >= kH3AttentionLocalSize &&
+         info.max_compute_shared_memory_bytes >= kH3AttentionMinReportedSharedBytes;
 }
 
 inline bool fast_h3_attention_device(const DeviceInfo& info) {
   return info.cooperative_matrix_enabled && info.shader_float16_enabled &&
-      info.storage_buffer_16bit_enabled && info.subgroup_size == 32 &&
-      info.compute_subgroup_shuffle &&
-      info.cooperative_matrix_f16_f32_16x16x16 &&
-      info.max_compute_workgroup_invocations >= kFastH3AttentionLocalSize &&
-      info.max_compute_workgroup_size[0] >= kFastH3AttentionLocalSize;
+         info.storage_buffer_16bit_enabled && info.subgroup_size == 32 &&
+         info.compute_subgroup_shuffle && info.cooperative_matrix_f16_f32_16x16x16 &&
+         info.max_compute_workgroup_invocations >= kFastH3AttentionLocalSize &&
+         info.max_compute_workgroup_size[0] >= kFastH3AttentionLocalSize;
 }
 
-}  // namespace tensor_detail
+} // namespace tensor_detail
+
 using namespace tensor_detail;
 
 struct DeviceTensor::Impl {
@@ -238,8 +230,8 @@ struct TensorWorkspace::Impl {
   uint64_t generation = 1;
   uintptr_t context = next_context_identity();
 
-  Impl(const Device& input, uint64_t block_bytes)
-      : pool(input, block_bytes) {}
+  Impl(const Device& input, uint64_t block_bytes) : pool(input, block_bytes) {
+  }
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

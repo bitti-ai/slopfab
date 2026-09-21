@@ -52,13 +52,11 @@ struct AudioConvWeights {
 // Loads a plain `name.weight`, or folds legacy `weight_g`/`weight_v` along
 // dimension zero with one shared implementation for both backends. Bias is
 // optional only when `require_bias` is false.
-AudioConvWeights load_audio_conv_weights(
-    const SafeTensors& checkpoint, const std::string& name,
-    const std::vector<int64_t>& weight_shape, uint32_t bias_channels,
-    bool require_bias);
+AudioConvWeights load_audio_conv_weights(const SafeTensors& checkpoint, const std::string& name,
+                                         const std::vector<int64_t>& weight_shape,
+                                         uint32_t bias_channels, bool require_bias);
 
-std::vector<float> load_audio_f32_tensor(
-    const SafeTensors& checkpoint, const std::string& name,
-    const std::vector<int64_t>& shape);
+std::vector<float> load_audio_f32_tensor(const SafeTensors& checkpoint, const std::string& name,
+                                         const std::vector<int64_t>& shape);
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

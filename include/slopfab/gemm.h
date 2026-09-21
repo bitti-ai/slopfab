@@ -8,9 +8,9 @@ namespace slopfab {
 // C[M,N] = A[M,K] * W[N,K]^T. Each output consumes K in ascending order
 // through one fp32 fused multiply-add per element.
 enum class DenseGemmMode : uint32_t {
-  kBFloat16 = 0,       // BF16 A/W, BF16 output
-  kFloat16Vae = 1,     // fp32 A narrowed to fp16, fp16 W, fp32 output
-  kFloat32 = 2,        // fp32 A/W/output
+  kBFloat16 = 0,   // BF16 A/W, BF16 output
+  kFloat16Vae = 1, // fp32 A narrowed to fp16, fp16 W, fp32 output
+  kFloat32 = 2,    // fp32 A/W/output
 };
 
 enum class DenseGemmBias : uint32_t {
@@ -31,4 +31,4 @@ struct DenseGemmPlanDesc {
   bool force_scalar_order = false;
 };
 
-}  // namespace slopfab
+} // namespace slopfab

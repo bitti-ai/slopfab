@@ -35,7 +35,8 @@ struct AudioVAEConfig {
 
   int total_upsample() const {
     int r = 1;
-    for (int v : decoder_rates) r *= v;
+    for (int v : decoder_rates)
+      r *= v;
     return r;
   }
 };
@@ -45,7 +46,7 @@ struct AudioVAEConfig {
 struct DecodedAudio {
   int channels = 2;
   int sample_rate = 32000;
-  std::vector<float> samples;  // [num_frames * channels], interleaved
+  std::vector<float> samples; // [num_frames * channels], interleaved
 
   int64_t num_frames() const {
     return channels > 0 ? static_cast<int64_t>(samples.size()) / channels : 0;
@@ -60,7 +61,7 @@ struct AudioDecodeTrace {
 };
 
 class AudioDecoder {
- public:
+public:
   AudioDecoder();
   ~AudioDecoder();
   AudioDecoder(const AudioDecoder&) = delete;
@@ -78,12 +79,11 @@ class AudioDecoder {
 
   // `latents` is `[2, 32, A]` fp32, already de-normalised
   // (`z * latents_std + latents_mean`). Returns interleaved stereo.
-  DecodedAudio decode(const float* latents, int num_latents,
-                      AudioDecodeTrace* trace = nullptr);
+  DecodedAudio decode(const float* latents, int num_latents, AudioDecodeTrace* trace = nullptr);
 
- private:
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

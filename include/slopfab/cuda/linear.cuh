@@ -50,10 +50,10 @@ enum class QuantFormat {
   kF32,
   kF16,
   kBF16,
-  kF8E4M3,   // per-tensor scales
-  kI8,       // per-output-channel weight_scale
-  kNVFP4,    // 4-bit, block-scaled; `data` is half as many bytes as elements
-  kNF4,      // bitsandbytes NF4, double-quantised 64-element block scales
+  kF8E4M3, // per-tensor scales
+  kI8,     // per-output-channel weight_scale
+  kNVFP4,  // 4-bit, block-scaled; `data` is half as many bytes as elements
+  kNF4,    // bitsandbytes NF4, double-quantised 64-element block scales
 };
 
 // Elements of the contraction axis sharing one e4m3 block scale. Fixed, not a
@@ -65,15 +65,15 @@ constexpr int kNVFP4BlockSize = 16;
 // Compute precision for the GEMM itself. Accumulation is fp32 in every case;
 // this selects the operand precision.
 enum class ComputeType {
-  kBF16,  // default for both block stacks; matches the reference's dtype
-  kF32,   // patch projections, output heads, AdaLN — see spec section 9.1
+  kBF16, // default for both block stacks; matches the reference's dtype
+  kF32,  // patch projections, output heads, AdaLN — see spec section 9.1
 };
 
 // A weight as it sits on the device, plus everything needed to interpret it.
 // Owns nothing: the pointers belong to whoever loaded the checkpoint.
 struct QuantWeight {
   QuantFormat format = QuantFormat::kBF16;
-  const void* data = nullptr;  // device, [out_features, in_features] row-major
+  const void* data = nullptr; // device, [out_features, in_features] row-major
   int out_features = 0;
   int in_features = 0;
 
@@ -116,8 +116,8 @@ struct QuantWeight {
   // Codes are packed high nibble first. Each 64 weights share an absmax; the
   // absmax bytes are themselves quantised in groups of 256.
   const uint8_t* nf4_absmax = nullptr;
-  const float* nf4_quant_map = nullptr;         // 16 entries
-  const float* nf4_nested_quant_map = nullptr;  // 256 entries
+  const float* nf4_quant_map = nullptr;        // 16 entries
+  const float* nf4_nested_quant_map = nullptr; // 256 entries
   const float* nf4_nested_absmax = nullptr;
   int nf4_block_size = 64;
   int nf4_nested_block_size = 256;
@@ -135,7 +135,10 @@ struct QuantWeight {
   const void* bias = nullptr;
   QuantFormat bias_format = QuantFormat::kF32;
 
-  bool has_bias() const { return bias != nullptr; }
+  bool has_bias() const {
+    return bias != nullptr;
+  }
+
   size_t stored_bytes() const;
 };
 
@@ -168,7 +171,7 @@ size_t linear_dense_weight_bytes(const QuantWeight& w);
 size_t linear_activation_workspace_bytes(const QuantWeight& w, int rows, ComputeType compute);
 
 class LinearRunner {
- public:
+public:
   LinearRunner() = default;
 
   void init(cublasHandle_t handle, cudaStream_t stream);
@@ -177,8 +180,13 @@ class LinearRunner {
   // default: the dequantise-then-GEMM path is the reference behaviour and the
   // one the unit tests pin. Turning this on must not change results by more
   // than the per-tensor tolerance (1e-3 abs / 1e-2 rel).
-  void set_native(bool enable) { native_ = enable; }
-  bool native() const { return native_; }
+  void set_native(bool enable) {
+    native_ = enable;
+  }
+
+  bool native() const {
+    return native_;
+  }
 
   // y[rows, out_features] = x[rows, in_features] @ W^T + bias
   //
@@ -213,7 +221,7 @@ class LinearRunner {
   // the activation with the parameter dtype.
   void forward_f32(const QuantWeight& w, const float* x, int rows, float* y, Workspace& ws);
 
- private:
+private:
   // Whether `w` goes to the native nvfp4 GEMM, which consumes the stored
   // nibbles directly and so has no dense bf16 copy to prepare.
   bool takes_native_nvfp4(const QuantWeight& w) const;
@@ -274,15 +282,14 @@ void launch_dequant_nvfp4(const uint8_t* src, const uint8_t* block_scale, float 
                           cudaStream_t stream);
 
 void launch_dequant_nf4(const uint8_t* src, const uint8_t* absmax, const float* quant_map,
-                        const float* nested_quant_map, const float* nested_absmax,
-                        int block_size, int nested_block_size, float nested_offset,
-                        __nv_bfloat16* dst, int out_features, int in_features,
-                        cudaStream_t stream);
+                        const float* nested_quant_map, const float* nested_absmax, int block_size,
+                        int nested_block_size, float nested_offset, __nv_bfloat16* dst,
+                        int out_features, int in_features, cudaStream_t stream);
 
 void launch_dequant_nf4_f16(const uint8_t* src, const uint8_t* absmax, const float* quant_map,
                             const float* nested_quant_map, const float* nested_absmax,
-                            int block_size, int nested_block_size, float nested_offset,
-                            __half* dst, size_t n, cudaStream_t stream);
+                            int block_size, int nested_block_size, float nested_offset, __half* dst,
+                            size_t n, cudaStream_t stream);
 
 // dst[r, i] = src[r, i] * scale[i]. The AWQ activation scaling; separate from
 // the GEMM because it also has to happen ahead of a native fp4 path.
@@ -299,8 +306,7 @@ void launch_narrow_to_bf16(const float* src, __nv_bfloat16* dst, size_t n, cudaS
 // Canonical exact-mode dense view. Non-BF16 formats carve one [out,in] BF16
 // matrix from caller-owned workspace and use the same materialization kernels
 // as LinearRunner; native BF16 returns its immutable device pointer.
-const __nv_bfloat16* materialize_bf16_exact(const QuantWeight& weight,
-                                            Workspace& workspace,
+const __nv_bfloat16* materialize_bf16_exact(const QuantWeight& weight, Workspace& workspace,
                                             cudaStream_t stream);
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

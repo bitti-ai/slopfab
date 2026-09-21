@@ -9,9 +9,10 @@ namespace slopfab {
 // and these serialized fp32 1/sqrt(D) bits. This keeps the score domain shared
 // by CUDA and Vulkan; callers do not recompute the scale with a host libm.
 inline uint32_t exact_attention_scale_bits(uint32_t head_dim) noexcept {
-  return head_dim == 64 ? 0x3e000000u
-      : head_dim == 72 ? 0x3df15befu
-      : head_dim == 128 ? 0x3db504f3u : 0u;
+  return head_dim == 64    ? 0x3e000000u
+         : head_dim == 72  ? 0x3df15befu
+         : head_dim == 128 ? 0x3db504f3u
+                           : 0u;
 }
 
 inline float exact_attention_scale(uint32_t head_dim) noexcept {
@@ -27,4 +28,4 @@ inline bool is_exact_attention_scale(uint32_t head_dim, float value) noexcept {
   return bits != 0 && bits == exact_attention_scale_bits(head_dim);
 }
 
-}  // namespace slopfab
+} // namespace slopfab

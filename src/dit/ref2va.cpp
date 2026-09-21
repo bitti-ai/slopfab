@@ -2,29 +2,167 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
-namespace slopfab::dit { namespace {
-constexpr double kFrameScale=5.0/3.0; constexpr int kFrameSteps[5]={1,4,4,4,4};
-double round_even(double v){double f=std::floor(v),d=v-f; return d<.5?f:d>.5?f+1:(std::fmod(f,2.0)==0?f:f+1);}
-std::vector<double> axis(int dim,double area){int n=dim/2; double ratio=dim/area,left=(1-ratio)/2,delta=(left+ratio)-left; std::vector<double> o(n); for(int i=0;i<n;++i)o[i]=(i*(delta/n)+left)*32; return o;}
-double span(int n){double s=0;for(int f=0;f<n;++f)s+=kFrameScale*kFrameSteps[f%5];return s;}
-void video(std::vector<double>&p,int start,const ReferenceGeometry&g,double origin){double area=std::sqrt(double(g.latent_height)*g.latent_width);auto hg=axis(g.latent_height,area),wg=axis(g.latent_width,area);double t=origin;for(int f=0;f<g.num_latent_frames;++f){for(int h=0;h<int(hg.size());++h)for(int w=0;w<int(wg.size());++w){size_t x=size_t(start+f*hg.size()*wg.size()+h*wg.size()+w)*3;p[x]=t;p[x+1]=hg[h];p[x+2]=wg[w];}t+=kFrameScale*kFrameSteps[f%5];}}
-void audio(std::vector<double>&p,int start,int n,double origin,const std::vector<double>&wg){for(int c=0;c<2;++c)for(int a=0;a<n;++a){size_t x=size_t(start+c*n+a)*3;p[x]=origin+a;p[x+2]=c?wg.back():wg.front();}}
+
+namespace slopfab::dit {
+namespace {
+constexpr double kFrameScale = 5.0 / 3.0;
+constexpr int kFrameSteps[5] = {1, 4, 4, 4, 4};
+
+double round_even(double v) {
+  double f = std::floor(v), d = v - f;
+  return d < .5 ? f : d > .5 ? f + 1 : (std::fmod(f, 2.0) == 0 ? f : f + 1);
+}
+
+std::vector<double> axis(int dim, double area) {
+  int n = dim / 2;
+  double ratio = dim / area, left = (1 - ratio) / 2, delta = (left + ratio) - left;
+  std::vector<double> o(n);
+  for (int i = 0; i < n; ++i)
+    o[i] = (i * (delta / n) + left) * 32;
+  return o;
+}
+
+double span(int n) {
+  double s = 0;
+  for (int f = 0; f < n; ++f)
+    s += kFrameScale * kFrameSteps[f % 5];
+  return s;
+}
+
+void video(std::vector<double>& p, int start, const ReferenceGeometry& g, double origin) {
+  double area = std::sqrt(double(g.latent_height) * g.latent_width);
+  auto hg = axis(g.latent_height, area), wg = axis(g.latent_width, area);
+  double t = origin;
+  for (int f = 0; f < g.num_latent_frames; ++f) {
+    for (int h = 0; h < int(hg.size()); ++h)
+      for (int w = 0; w < int(wg.size()); ++w) {
+        size_t x = size_t(start + f * hg.size() * wg.size() + h * wg.size() + w) * 3;
+        p[x] = t;
+        p[x + 1] = hg[h];
+        p[x + 2] = wg[w];
+      }
+    t += kFrameScale * kFrameSteps[f % 5];
+  }
+}
+
+void audio(std::vector<double>& p, int start, int n, double origin, const std::vector<double>& wg) {
+  for (int c = 0; c < 2; ++c)
+    for (int a = 0; a < n; ++a) {
+      size_t x = size_t(start + c * n + a) * 3;
+      p[x] = origin + a;
+      p[x + 2] = c ? wg.back() : wg.front();
+    }
+}
 } // namespace
-int ReferenceGeometry::video_rows()const{return kind==ReferenceKind::kAudio?0:num_latent_frames*(latent_height/2)*(latent_width/2);} int ReferenceGeometry::audio_rows()const{return 2*num_audio_latents;}
-void resolve_reference_image_size(int w,int h,int*oh,int*ow,int short_edge){if(!oh||!ow||w<=0||h<=0||short_edge<=0)throw std::runtime_error("reference image: invalid size");double r=double(w)/h;if(r<.25||r>4)throw std::runtime_error("reference image: aspect ratio must be 1:4 to 4:1");double s=double(short_edge)/std::min(w,h);*ow=std::max(32,int(round_even(w*s/32))*32);*oh=std::max(32,int(round_even(h*s/32))*32);}
-Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>&tt,const std::vector<ReferenceGeometry>&rs,int F,int H,int W,int A){
- bool aligned_seen = false;
- for (const auto& r : rs) {
-   if (aligned_seen && !r.target_aligned) throw std::invalid_argument("temporal guides must follow ordinary references");
-   if (r.target_aligned) {
-     aligned_seen = true;
-     if (r.kind != ReferenceKind::kVideo || r.latent_height != H || r.latent_width != W ||
-         r.num_latent_frames <= 0 || r.num_latent_frames > F || r.num_audio_latents > A ||
-         !std::isfinite(r.target_time_offset) || std::abs(r.target_time_offset) > 1000000)
-       throw std::invalid_argument("temporal guide must fit the target spatial grid");
-   }
- }
- if(F<=0||H<=0||W<=0||H%2||W%2||A<0)throw std::runtime_error("ref2va: invalid target geometry");Ref2VAPackedSequence o;auto&l=o.layout;l.condition_audio_is_explicit=true;l.num_text=int(tt.size());l.num_latent_frames=F;l.latent_height=H;l.latent_width=W;l.num_audio_latents=A;l.num_audio_rows=2*A;l.num_video_rows=F*(H/2)*(W/2);for(auto&r:rs){l.num_condition_video+=r.video_rows();l.num_condition_audio+=r.audio_rows();}int S=l.total_rows();o.position_ids.assign(size_t(S)*3,0);o.indices.tags.assign(S,kTagText);o.indices.text.resize(tt.size());for(int i=0;i<int(tt.size());++i){o.indices.text[i]=i;o.indices.tags[i]=tt[i];o.position_ids[size_t(i)*3]=i;}auto tw=axis(W,std::sqrt(double(H)*W));int cur=int(tt.size());double clock=cur;
- for(auto&r:rs){if(r.kind==ReferenceKind::kAudio){audio(o.position_ids,cur,r.num_audio_latents,clock,tw);for(int i=0;i<r.audio_rows();++i)o.indices.audio.push_back(cur+i);cur+=r.audio_rows();clock+=r.num_audio_latents;}else if(r.kind==ReferenceKind::kImage){video(o.position_ids,cur,r,clock);for(int i=0;i<r.video_rows();++i)o.indices.video.push_back(cur+i);cur+=r.video_rows();clock+=1;}else{auto rw=axis(r.latent_width,std::sqrt(double(r.latent_height)*r.latent_width));const double origin = clock + (r.target_aligned ? r.target_time_offset : 0);audio(o.position_ids,cur,r.num_audio_latents,origin,rw);for(int i=0;i<r.audio_rows();++i)o.indices.audio.push_back(cur+i);cur+=r.audio_rows();video(o.position_ids,cur,r,origin);for(int i=0;i<r.video_rows();++i)o.indices.video.push_back(cur+i);cur+=r.video_rows();if (!r.target_aligned) clock+=std::max(double(r.num_audio_latents),span(r.num_latent_frames));}}
- audio(o.position_ids,cur,A,clock,tw);for(int i=0;i<2*A;++i)o.indices.audio.push_back(cur+i);cur+=2*A;ReferenceGeometry target{ReferenceKind::kVideo,F,H,W,0};video(o.position_ids,cur,target,clock);for(int i=0;i<target.video_rows();++i)o.indices.video.push_back(cur+i);for(int i:o.indices.audio)o.indices.tags[i]=kTagAudio;for(int i:o.indices.video)o.indices.tags[i]=kTagVideo;return o;}
+
+int ReferenceGeometry::video_rows() const {
+  return kind == ReferenceKind::kAudio
+             ? 0
+             : num_latent_frames * (latent_height / 2) * (latent_width / 2);
+}
+
+int ReferenceGeometry::audio_rows() const {
+  return 2 * num_audio_latents;
+}
+
+void resolve_reference_image_size(int w, int h, int* oh, int* ow, int short_edge) {
+  if (!oh || !ow || w <= 0 || h <= 0 || short_edge <= 0)
+    throw std::runtime_error("reference image: invalid size");
+  double r = double(w) / h;
+  if (r < .25 || r > 4)
+    throw std::runtime_error("reference image: aspect ratio must be 1:4 to 4:1");
+  double s = double(short_edge) / std::min(w, h);
+  *ow = std::max(32, int(round_even(w * s / 32)) * 32);
+  *oh = std::max(32, int(round_even(h * s / 32)) * 32);
+}
+
+Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& tt,
+                                                  const std::vector<ReferenceGeometry>& rs, int F,
+                                                  int H, int W, int A) {
+  bool aligned_seen = false;
+  for (const auto& r : rs) {
+    if (aligned_seen && !r.target_aligned)
+      throw std::invalid_argument("temporal guides must follow ordinary references");
+    if (r.target_aligned) {
+      aligned_seen = true;
+      if (r.kind != ReferenceKind::kVideo || r.latent_height != H || r.latent_width != W ||
+          r.num_latent_frames <= 0 || r.num_latent_frames > F || r.num_audio_latents > A ||
+          !std::isfinite(r.target_time_offset) || std::abs(r.target_time_offset) > 1000000)
+        throw std::invalid_argument("temporal guide must fit the target spatial grid");
+    }
+  }
+  if (F <= 0 || H <= 0 || W <= 0 || H % 2 || W % 2 || A < 0)
+    throw std::runtime_error("ref2va: invalid target geometry");
+  Ref2VAPackedSequence o;
+  auto& l = o.layout;
+  l.condition_audio_is_explicit = true;
+  l.num_text = int(tt.size());
+  l.num_latent_frames = F;
+  l.latent_height = H;
+  l.latent_width = W;
+  l.num_audio_latents = A;
+  l.num_audio_rows = 2 * A;
+  l.num_video_rows = F
+  *(H / 2) * (W / 2);
+  for (auto& r : rs) {
+    l.num_condition_video += r.video_rows();
+    l.num_condition_audio += r.audio_rows();
+  }
+  int S = l.total_rows();
+  o.position_ids.assign(size_t(S) * 3, 0);
+  o.indices.tags.assign(S, kTagText);
+  o.indices.text.resize(tt.size());
+  for (int i = 0; i < int(tt.size()); ++i) {
+    o.indices.text[i] = i;
+    o.indices.tags[i] = tt[i];
+    o.position_ids[size_t(i) * 3] = i;
+  }
+  auto tw = axis(W, std::sqrt(double(H) * W));
+  int cur = int(tt.size());
+  double clock = cur;
+  for (auto& r : rs) {
+    if (r.kind == ReferenceKind::kAudio) {
+      audio(o.position_ids, cur, r.num_audio_latents, clock, tw);
+      for (int i = 0; i < r.audio_rows(); ++i)
+        o.indices.audio.push_back(cur + i);
+      cur += r.audio_rows();
+      clock += r.num_audio_latents;
+    } else if (r.kind == ReferenceKind::kImage) {
+      video(o.position_ids, cur, r, clock);
+      for (int i = 0; i < r.video_rows(); ++i)
+        o.indices.video.push_back(cur + i);
+      cur += r.video_rows();
+      clock += 1;
+    } else {
+      auto rw = axis(r.latent_width, std::sqrt(double(r.latent_height) * r.latent_width));
+      const double origin = clock + (r.target_aligned ? r.target_time_offset : 0);
+      audio(o.position_ids, cur, r.num_audio_latents, origin, rw);
+      for (int i = 0; i < r.audio_rows(); ++i)
+        o.indices.audio.push_back(cur + i);
+      cur += r.audio_rows();
+      video(o.position_ids, cur, r, origin);
+      for (int i = 0; i < r.video_rows(); ++i)
+        o.indices.video.push_back(cur + i);
+      cur += r.video_rows();
+      if (!r.target_aligned)
+        clock += std::max(double(r.num_audio_latents), span(r.num_latent_frames));
+    }
+  }
+  audio(o.position_ids, cur, A, clock, tw);
+  for (int i = 0; i < 2 * A; ++i)
+    o.indices.audio.push_back(cur + i);
+  cur += 2 * A;
+  ReferenceGeometry target {
+    ReferenceKind::kVideo, F
+    , H, W, 0
+  };
+  video(o.position_ids, cur, target, clock);
+  for (int i = 0; i < target.video_rows(); ++i)
+    o.indices.video.push_back(cur + i);
+  for (int i : o.indices.audio)
+    o.indices.tags[i] = kTagAudio;
+  for (int i : o.indices.video)
+    o.indices.tags[i] = kTagVideo;
+  return o;
+}
 } // namespace slopfab::dit

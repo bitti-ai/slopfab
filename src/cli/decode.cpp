@@ -65,21 +65,26 @@
 #endif
 
 #include "commands.h"
+
 namespace slopfab::cli {
 #if SLOPFAB_WITH_CUDA
 bool latent_stats_from_metadata(const slopfab::SafeTensors& ckpt, std::vector<float>& mean,
                                 std::vector<float>& std_dev) {
   auto it = ckpt.metadata().find("minimax_h3_video_vae");
-  if (it == ckpt.metadata().end()) return false;
+  if (it == ckpt.metadata().end())
+    return false;
   try {
     const slopfab::json::Value meta = slopfab::json::parse(it->second);
     const slopfab::json::Value* m = meta.find("latents_mean");
     const slopfab::json::Value* s = meta.find("latents_std");
-    if (m == nullptr || s == nullptr) return false;
+    if (m == nullptr || s == nullptr)
+      return false;
     mean.clear();
     std_dev.clear();
-    for (const auto& v : m->as_array()) mean.push_back(static_cast<float>(v.as_number()));
-    for (const auto& v : s->as_array()) std_dev.push_back(static_cast<float>(v.as_number()));
+    for (const auto& v : m->as_array())
+      mean.push_back(static_cast<float>(v.as_number()));
+    for (const auto& v : s->as_array())
+      std_dev.push_back(static_cast<float>(v.as_number()));
     return mean.size() == 24 && std_dev.size() == 24;
   } catch (const std::exception&) {
     return false;
@@ -104,7 +109,8 @@ std::vector<float> synthetic_latent(int T, int H, int W, uint32_t seed) {
 }
 
 int cmd_decode(int argc, char** argv) {
-  if (wants_help(argc, argv)) return print_command_help(*find_command("decode"));
+  if (wants_help(argc, argv))
+    return print_command_help(*find_command("decode"));
 
   std::string vae_path;
   std::string latent_path;
@@ -213,8 +219,7 @@ int cmd_decode(int argc, char** argv) {
   const auto load_start = std::chrono::steady_clock::now();
   decoder.load(ckpt);
   const auto load_end = std::chrono::steady_clock::now();
-  std::printf("weights    %s on device in %.2f s\n",
-              format_bytes(decoder.weight_bytes()).c_str(),
+  std::printf("weights    %s on device in %.2f s\n", format_bytes(decoder.weight_bytes()).c_str(),
               std::chrono::duration<double>(load_end - load_start).count());
 
   slopfab::vae::DecodeSchedule schedule;
@@ -267,15 +272,15 @@ int cmd_decode(int argc, char** argv) {
     // Raw fp32 pixels, so two runs can be diffed with `slopfab compare` at
     // float precision rather than after 8-bit quantisation. The copy into the
     // writer's own vector type is what this diagnostic path already did.
-    slopfab::write_safetensors(
-        dump_path, {{"pixels",
-                     {3, video.frames, video.height, video.width},
-                     std::vector<float>(video.data.begin(), video.data.end())}});
+    slopfab::write_safetensors(dump_path,
+                               {{"pixels",
+                                 {3, video.frames, video.height, video.width},
+                                 std::vector<float>(video.data.begin(), video.data.end())}});
     std::printf("wrote      %s\n", dump_path.c_str());
   }
 
   slopfab::video::write_y4m(out_path, video.data, video.frames, video.height, video.width,
-                           {fps, 1});
+                            {fps, 1});
   std::printf("wrote      %s\n", out_path.c_str());
   if (!ppm_path.empty()) {
     slopfab::video::write_ppm(ppm_path, video.data, video.frames, video.height, video.width, 0);
@@ -283,7 +288,6 @@ int cmd_decode(int argc, char** argv) {
   }
   return 0;
 }
-#endif  // SLOPFAB_WITH_CUDA
-
+#endif // SLOPFAB_WITH_CUDA
 
 }

@@ -2,6 +2,7 @@
 
 namespace slopfab::cuda {
 using namespace nn_detail;
+
 namespace {
 // --- rotary -----------------------------------------------------------------
 //
@@ -12,26 +13,23 @@ namespace {
 // One warp per (row, head): 48 pairs, so each of 32 lanes handles one or two.
 
 constexpr int kRopeHalf = 48;
-constexpr int kRopeDim = 2 * kRopeHalf;  // 96 rotary channels of 128
+constexpr int kRopeDim = 2 * kRopeHalf; // 96 rotary channels of 128
 
 __device__ float rope_bf16_value(__nv_bfloat16 value) {
   const unsigned short bits = __bfloat16_as_ushort(value);
-  return (bits & 0x7fffu) < 0x0080u
-      ? __uint_as_float(static_cast<unsigned>(bits & 0x8000u) << 16u)
-      : __bfloat162float(value);
+  return (bits & 0x7fffu) < 0x0080u ? __uint_as_float(static_cast<unsigned>(bits & 0x8000u) << 16u)
+                                    : __bfloat162float(value);
 }
 
 __device__ float rope_float_value(float value) {
   const unsigned bits = __float_as_uint(value);
-  return (bits & 0x7fffffffu) < 0x00800000u
-      ? __uint_as_float(bits & 0x80000000u) : value;
+  return (bits & 0x7fffffffu) < 0x00800000u ? __uint_as_float(bits & 0x80000000u) : value;
 }
 
 __device__ __nv_bfloat16 rope_bf16_result(float value) {
   const __nv_bfloat16 rounded = __float2bfloat16(value);
   const unsigned short bits = __bfloat16_as_ushort(rounded);
-  return (bits & 0x7fffu) < 0x0080u
-      ? __ushort_as_bfloat16(bits & 0x8000u) : rounded;
+  return (bits & 0x7fffu) < 0x0080u ? __ushort_as_bfloat16(bits & 0x8000u) : rounded;
 }
 
 // The portable RoPE domain canonicalizes a rounded subnormal multiply to
@@ -56,7 +54,8 @@ __global__ void rope_h3_kernel(__nv_bfloat16* __restrict__ x, const float* __res
   const int lane = threadIdx.x;
   const int head = blockIdx.y * blockDim.y + threadIdx.y;
   const int row = blockIdx.x;
-  if (head >= heads || row >= rows) return;
+  if (head >= heads || row >= rows)
+    return;
 
   __nv_bfloat16* v = x + (static_cast<size_t>(row) * heads + head) * head_dim;
   const float* cos_row = cos_tab + static_cast<size_t>(row) * kRopeDim;
@@ -84,7 +83,8 @@ __global__ void rope_neox_kernel(__nv_bfloat16* __restrict__ x, const float* __r
   const int lane = threadIdx.x;
   const int head = blockIdx.y * blockDim.y + threadIdx.y;
   const int row = blockIdx.x;
-  if (head >= heads || row >= rows) return;
+  if (head >= heads || row >= rows)
+    return;
 
   const int half = head_dim / 2;
   __nv_bfloat16* v = x + (static_cast<size_t>(row) * heads + head) * head_dim;
@@ -106,8 +106,7 @@ __global__ void rope_neox_kernel(__nv_bfloat16* __restrict__ x, const float* __r
   }
 }
 
-
-}  // namespace
+} // namespace
 
 void launch_rope_h3(__nv_bfloat16* x, const float* cos, const float* sin, int rows, int heads,
                     int head_dim, cudaStream_t stream) {
@@ -135,5 +134,4 @@ void launch_rope_neox(__nv_bfloat16* x, const float* cos, const float* sin, int 
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

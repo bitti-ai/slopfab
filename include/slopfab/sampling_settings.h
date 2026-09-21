@@ -23,13 +23,12 @@ struct SamplingSettings {
 // "audio_sigma_shift":3,"base_sigmas":[1,0.5,0]}. Only version is required.
 SamplingSettings parse_sampling_settings(std::string_view text);
 void validate_sampling_settings(const SamplingSettings& settings);
-void overlay_sampling_settings(SamplingSettings& destination,
-                               const SamplingSettings& overrides);
-SamplingSettings sampling_settings_from_metadata(
-    const std::map<std::string, std::string>& metadata);
+void overlay_sampling_settings(SamplingSettings& destination, const SamplingSettings& overrides);
+SamplingSettings
+sampling_settings_from_metadata(const std::map<std::string, std::string>& metadata);
 
 // Compatibility recipes. New checkpoints/adapters can supply the same data
 // through metadata without adding another named scheduler implementation.
 SamplingSettings sampling_schedule_defaults(sampler::ScheduleKind schedule);
 
-}  // namespace slopfab
+} // namespace slopfab

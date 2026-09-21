@@ -23,4 +23,4 @@ enum class SampleFormat {
 void write_wav(const std::string& path, const std::vector<float>& interleaved, int channels,
                int sample_rate, SampleFormat format = SampleFormat::kPcm16);
 
-}  // namespace slopfab::audio
+} // namespace slopfab::audio

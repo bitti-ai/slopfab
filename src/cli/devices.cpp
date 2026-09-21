@@ -65,6 +65,7 @@
 #endif
 
 #include "commands.h"
+
 namespace slopfab::cli {
 int cmd_devices() {
 #if !SLOPFAB_WITH_CUDA
@@ -94,7 +95,8 @@ int cmd_devices() {
     try {
       auto instance = slopfab::vulkan::Instance::create();
       const auto devices = instance.enumerate_devices();
-      if (devices.empty()) std::printf("Vulkan output        no compute device\n");
+      if (devices.empty())
+        std::printf("Vulkan output        no compute device\n");
       for (size_t i = 0; i < devices.size(); ++i) {
         const auto& d = devices[i].info();
         std::printf("Vulkan output %zu     %s (timeline=%s)\n", i, d.name.c_str(),
@@ -109,6 +111,5 @@ int cmd_devices() {
 #endif
   return 0;
 }
-
 
 }

@@ -69,7 +69,7 @@ struct AVRational {
 // Enumerator values, not layout, so they are safe to hard-code: ffmpeg only
 // ever appends to these enums, and the ones used here are the oldest members.
 constexpr int kPixFmtYuv420p = 0;
-constexpr int kPixFmtRgb24 = 2;  // used only by the load-time layout check
+constexpr int kPixFmtRgb24 = 2; // used only by the load-time layout check
 
 constexpr int kSampleFmtS16 = 1;
 constexpr int kSampleFmtFlt = 3;
@@ -80,7 +80,7 @@ constexpr int kCodecIdMpeg4 = 12;
 constexpr int kCodecIdH264 = 27;
 constexpr int kCodecIdAac = 86018;
 
-constexpr int kColorRangeMpeg = 1;  // limited range, 16..235
+constexpr int kColorRangeMpeg = 1; // limited range, 16..235
 constexpr int kColorPrimariesBt709 = 1;
 constexpr int kColorTrcBt709 = 1;
 constexpr int kColorSpaceBt709 = 1;
@@ -133,9 +133,9 @@ struct Layout {
 
   // AVCodecContext. Everything reachable through an AVOption is set that way
   // instead; what is left has no option entry.
-  size_t codec_bit_rate;  // validated against av_opt_set_int(ctx, "b")
-  size_t codec_gop_size;  // validated against av_opt_set_int(ctx, "g")
-  size_t codec_sample_rate;  // validated against av_opt_set_int(ctx, "ar")
+  size_t codec_bit_rate;    // validated against av_opt_set_int(ctx, "b")
+  size_t codec_gop_size;    // validated against av_opt_set_int(ctx, "g")
+  size_t codec_sample_rate; // validated against av_opt_set_int(ctx, "ar")
   size_t codec_time_base;
   size_t codec_framerate;
   size_t codec_width;
@@ -206,13 +206,11 @@ constexpr Layout kLayoutFfmpeg8 = {
 // Reads or writes a field at a known byte offset of an ffmpeg-allocated
 // object. Deliberately noisy at the call site: every use is a place where we
 // depend on a layout, and they should be easy to grep for.
-template <typename T, typename Obj>
-inline T& fld(Obj* obj, size_t offset) {
+template <typename T, typename Obj> inline T& fld(Obj* obj, size_t offset) {
   return *reinterpret_cast<T*>(reinterpret_cast<char*>(obj) + offset);
 }
 
-template <typename T, typename Obj>
-inline const T& fld(const Obj* obj, size_t offset) {
+template <typename T, typename Obj> inline const T& fld(const Obj* obj, size_t offset) {
   return *reinterpret_cast<const T*>(reinterpret_cast<const char*>(obj) + offset);
 }
 
@@ -260,8 +258,8 @@ using AvPacketUnrefFn = void (*)(AVPacket*);
 
 // libavformat
 using AvformatVersionFn = unsigned (*)(void);
-using AvformatAllocOutputContext2Fn = int (*)(AVFormatContext**, const AVOutputFormat*,
-                                              const char*, const char*);
+using AvformatAllocOutputContext2Fn = int (*)(AVFormatContext**, const AVOutputFormat*, const char*,
+                                              const char*);
 using AvformatFreeContextFn = void (*)(AVFormatContext*);
 using AvformatNewStreamFn = AVStream* (*)(AVFormatContext*, const AVCodec*);
 using AvformatWriteHeaderFn = int (*)(AVFormatContext*, AVDictionary**);
@@ -276,7 +274,8 @@ using AvReadFrameFn = int (*)(AVFormatContext*, AVPacket*);
 using AvformatCloseInputFn = void (*)(AVFormatContext**);
 
 using SwscaleVersionFn = unsigned (*)(void);
-using SwsGetContextFn = SwsContext* (*)(int, int, int, int, int, int, int, void*, void*, const double*);
+using SwsGetContextFn = SwsContext* (*)(int, int, int, int, int, int, int, void*, void*,
+                                        const double*);
 using SwsScaleFn = int (*)(SwsContext*, const uint8_t* const[], const int[], int, int,
                            uint8_t* const[], const int[]);
 using SwsFreeContextFn = void (*)(SwsContext*);
@@ -340,4 +339,4 @@ struct Api {
   SwsFreeContextFn sws_freeContext;
 };
 
-}  // namespace slopfab::video::ff
+} // namespace slopfab::video::ff

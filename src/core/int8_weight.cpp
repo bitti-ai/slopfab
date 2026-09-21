@@ -8,26 +8,25 @@
 
 namespace slopfab {
 
-Int8WeightState read_int8_weight(const SafeTensors& checkpoint,
-                                const std::string& name, const char* consumer) {
+Int8WeightState read_int8_weight(const SafeTensors& checkpoint, const std::string& name,
+                                 const char* consumer) {
   const auto fail = [&](const std::string& reason) {
-    return std::runtime_error(std::string(consumer) + ": INT8 weight '" + name +
-                              "': " + reason);
+    return std::runtime_error(std::string(consumer) + ": INT8 weight '" + name + "': " + reason);
   };
   const TensorView& weight = checkpoint.at(name);
-  if (weight.dtype != DType::kI8 || weight.shape.size() != 2 ||
-      weight.shape[0] <= 0 || weight.shape[1] <= 0 ||
-      weight.shape[0] > std::numeric_limits<int>::max() ||
+  if (weight.dtype != DType::kI8 || weight.shape.size() != 2 || weight.shape[0] <= 0 ||
+      weight.shape[1] <= 0 || weight.shape[0] > std::numeric_limits<int>::max() ||
       weight.shape[1] > std::numeric_limits<int>::max())
     throw fail("expected a rank-2 I8 matrix");
-  const std::string base = name.size() >= 7 &&
-      name.compare(name.size() - 7, 7, ".weight") == 0
-      ? name.substr(0, name.size() - 7) : name;
+  const std::string base = name.size() >= 7 && name.compare(name.size() - 7, 7, ".weight") == 0
+                               ? name.substr(0, name.size() - 7)
+                               : name;
   const TensorView* tag = checkpoint.find(base + ".comfy_quant");
   if (!tag || tag->dtype != DType::kU8 || tag->shape.size() != 1)
     throw fail("missing rank-1 U8 comfy_quant metadata");
   std::string text(static_cast<const char*>(tag->data), tag->nbytes);
-  while (!text.empty() && text.back() == '\0') text.pop_back();
+  while (!text.empty() && text.back() == '\0')
+    text.pop_back();
   json::Value root;
   try {
     root = json::parse(text);
@@ -65,7 +64,7 @@ Int8WeightState read_int8_weight(const SafeTensors& checkpoint,
 }
 
 std::vector<uint16_t> unpack_int8_weight(const Int8WeightState& state,
-                                        bool canonicalize_subnormals) {
+                                         bool canonicalize_subnormals) {
   const int group = state.rotation_group;
   const float normalization = 1.0f / std::sqrt(static_cast<float>(group));
   std::vector<uint16_t> output(static_cast<size_t>(state.rows) * state.columns);
@@ -73,7 +72,8 @@ std::vector<uint16_t> unpack_int8_weight(const Int8WeightState& state,
     for (int column = 0; column < state.columns; column += group) {
       const size_t offset = static_cast<size_t>(row) * state.columns + column;
       float values[256];
-      for (int i = 0; i < group; ++i) values[i] = state.codes[offset + i];
+      for (int i = 0; i < group; ++i)
+        values[i] = state.codes[offset + i];
       for (int stride = 1; stride < group; stride *= 4) {
         for (int base = 0; base < group; base += 4 * stride) {
           for (int i = 0; i < stride; ++i) {
@@ -99,4 +99,4 @@ std::vector<uint16_t> unpack_int8_weight(const Int8WeightState& state,
   return output;
 }
 
-}  // namespace slopfab
+} // namespace slopfab

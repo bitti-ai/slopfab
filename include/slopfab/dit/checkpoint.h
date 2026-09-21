@@ -36,6 +36,7 @@ enum class TransformerQuantization {
 // Validated graph facts, independent of distribution filenames. Explicit metadata
 // uses the versioned slopfab.model JSON object; unsupported implementations fail.
 enum class ModulationImplementation { kTable, kTimestepMlp };
+
 struct ModelDescriptor {
   int version = 1;
   std::string family = "h3";
@@ -49,6 +50,7 @@ struct ModelDescriptor {
   TransformerArchitecture compatibility_architecture = TransformerArchitecture::kUnknown;
   TransformerQuantization quantization = TransformerQuantization::kUnknown;
 };
+
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint);
 // The supported table implementation has fixed lookup/capture/adapter contracts.
 void validate_adaln_table_config(int rank, int rows);
@@ -65,10 +67,10 @@ void validate_interleaved_qkv(const TensorView& tensor, int head_dim);
 // Copies a contiguous-layout row slice from an interleaved weight or row-scale
 // tensor without changing its dtype. Packed/nested quantization is unsupported.
 std::vector<uint8_t> deinterleave_qkv_rows(const TensorView& tensor, int head_dim,
-                                        size_t row_offset = 0, size_t row_count = 0);
+                                           size_t row_offset = 0, size_t row_count = 0);
 
 // Ref2VA inputs must never be passed through an FL2VA/T2VA transformer. This
 // is intentionally a header-only inspection and does not touch tensor data.
 void require_ref2va_transformer(const SafeTensors& checkpoint, size_t reference_count);
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

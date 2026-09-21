@@ -20,7 +20,10 @@ struct MotionCacheConfig {
   int subsample_factor = 8;
   bool verbose = false;
 
-  bool active() const { return enabled && reuse_threshold > 0.0f; }
+  bool active() const {
+    return enabled && reuse_threshold > 0.0f;
+  }
+
   void validate() const;
 };
 
@@ -29,21 +32,33 @@ struct MotionCacheConfig {
 // Native velocities have the opposite sign to ComfyUI's model output, so the
 // cached residual is v + x and reuse returns residual - current_x.
 class MotionCache {
- public:
-  MotionCache(const MotionCacheConfig& config, const SequenceLayout& layout,
-              int video_dim, int audio_dim, int steps, float video_shift,
-              bool pin_audio = false);
-  bool enabled() const { return config_.active(); }
-  bool should_compute(int step, float sigma, const float* video, const float* audio);
-  void update(float sigma, const float* video, const float* audio,
-              const float* video_velocity, const float* audio_velocity);
-  void reuse(const float* video, const float* audio,
-             float* video_velocity, float* audio_velocity) const;
-  int computed() const { return computed_; }
-  int skipped() const { return skipped_; }
-  float score() const { return score_; }
+public:
+  MotionCache(const MotionCacheConfig& config, const SequenceLayout& layout, int video_dim,
+              int audio_dim, int steps, float video_shift, bool pin_audio = false);
 
- private:
+  bool enabled() const {
+    return config_.active();
+  }
+
+  bool should_compute(int step, float sigma, const float* video, const float* audio);
+  void update(float sigma, const float* video, const float* audio, const float* video_velocity,
+              const float* audio_velocity);
+  void reuse(const float* video, const float* audio, float* video_velocity,
+             float* audio_velocity) const;
+
+  int computed() const {
+    return computed_;
+  }
+
+  int skipped() const {
+    return skipped_;
+  }
+
+  float score() const {
+    return score_;
+  }
+
+private:
   std::vector<float> sample(const float* data, const std::vector<size_t>& indices) const;
   MotionCacheConfig config_;
   int steps_, frames_, channels_;
@@ -57,4 +72,4 @@ class MotionCache {
   int consecutive_ = 0, computed_ = 0, skipped_ = 0;
 };
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

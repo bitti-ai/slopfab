@@ -29,11 +29,11 @@ using cuda::DeviceBuffer;
 
 struct ConvWeight {
   cuda::F16Weight weight;
-  const __half* bias = nullptr;  // into Loader's affine arena
+  const __half* bias = nullptr; // into Loader's affine arena
 };
 
 struct NormWeight {
-  const __half* weight = nullptr;  // into Loader's affine arena
+  const __half* weight = nullptr; // into Loader's affine arena
   const __half* bias = nullptr;
 };
 
@@ -41,7 +41,8 @@ struct NormWeight {
 // stored plainly or as bitsandbytes NF4. Used twice: once to size the arena
 // before any upload, once to place each tensor in it.
 size_t affine_elements(const SafeTensors& ckpt, const std::string& name) {
-  if (!is_nf4_weight(ckpt, name)) return static_cast<size_t>(ckpt.at(name).numel());
+  if (!is_nf4_weight(ckpt, name))
+    return static_cast<size_t>(ckpt.at(name).numel());
   size_t logical = 1;
   for (int64_t dim : read_nf4_state(ckpt, name, "keyframe encoder").shape) {
     logical *= static_cast<size_t>(dim);
@@ -52,8 +53,8 @@ size_t affine_elements(const SafeTensors& ckpt, const std::string& name) {
 // The tensor names this encoder loads, in load order. Built before anything is
 // uploaded so every device allocation can be sized from it up front.
 struct WeightPlan {
-  std::vector<std::string> convs;  // ".weight" and ".bias" hang off these
-  std::vector<std::string> norms;  // ".weight" and ".bias" hang off these
+  std::vector<std::string> convs; // ".weight" and ".bias" hang off these
+  std::vector<std::string> norms; // ".weight" and ".bias" hang off these
 };
 
 WeightPlan plan_weights() {
@@ -72,7 +73,8 @@ WeightPlan plan_weights() {
       plan.norms.push_back(p + ".norm2");
       plan.convs.push_back(p + ".conv1");
       plan.convs.push_back(p + ".conv2");
-      if (input != output) plan.convs.push_back(p + ".nin_shortcut");
+      if (input != output)
+        plan.convs.push_back(p + ".nin_shortcut");
     }
     if (down[level] == 2) {
       plan.convs.push_back("encoder.down." + std::to_string(level) + ".downsample.conv");
@@ -105,7 +107,7 @@ WeightPlan plan_weights() {
 // Those live in `src/cuda/nf4_weight.cu`, which the video VAE and ViT decoders
 // share, so removing them is not a change this file can make alone.
 class Loader {
- public:
+public:
   Loader(const SafeTensors& checkpoint, const WeightPlan& plan, cudaStream_t stream)
       : ckpt_(checkpoint), stream_(stream) {
     // Arena for every affine, plus the high-water mark of each NF4 scratch.
@@ -113,7 +115,8 @@ class Loader {
     size_t codes = 0, scales = 0, qmap = 0, nested_map = 0, nested_absmax = 0;
     auto account = [&](const std::string& name) {
       arena += align_up(affine_elements(ckpt_, name));
-      if (!is_nf4_weight(ckpt_, name)) return;
+      if (!is_nf4_weight(ckpt_, name))
+        return;
       codes = std::max(codes, ckpt_.at(name).nbytes);
       scales = std::max(scales, ckpt_.at(name + ".absmax").nbytes);
       qmap = std::max(qmap, static_cast<size_t>(ckpt_.at(name + ".quant_map").numel()));
@@ -122,17 +125,24 @@ class Loader {
       nested_absmax =
           std::max(nested_absmax, static_cast<size_t>(ckpt_.at(name + ".nested_absmax").numel()));
     };
-    for (const std::string& name : plan.convs) account(name + ".bias");
+    for (const std::string& name : plan.convs)
+      account(name + ".bias");
     for (const std::string& name : plan.norms) {
       account(name + ".weight");
       account(name + ".bias");
     }
-    if (arena != 0) affines_.allocate(arena);
-    if (codes != 0) codes_.allocate(codes);
-    if (scales != 0) scales_.allocate(scales);
-    if (qmap != 0) qmap_.allocate(qmap);
-    if (nested_map != 0) nested_map_.allocate(nested_map);
-    if (nested_absmax != 0) nested_absmax_.allocate(nested_absmax);
+    if (arena != 0)
+      affines_.allocate(arena);
+    if (codes != 0)
+      codes_.allocate(codes);
+    if (scales != 0)
+      scales_.allocate(scales);
+    if (qmap != 0)
+      qmap_.allocate(qmap);
+    if (nested_map != 0)
+      nested_map_.allocate(nested_map);
+    if (nested_absmax != 0)
+      nested_absmax_.allocate(nested_absmax);
   }
 
   Loader(const Loader&) = delete;
@@ -162,16 +172,15 @@ class Loader {
       // different question from reuse.
       codes_.copy_from_host(static_cast<const uint8_t*>(view.data), view.nbytes, stream_);
       scales_.copy_from_host(static_cast<const uint8_t*>(absmax.data), absmax.nbytes, stream_);
-      qmap_.copy_from_host(static_cast<const float*>(qmap.data),
-                           static_cast<size_t>(qmap.numel()), stream_);
+      qmap_.copy_from_host(static_cast<const float*>(qmap.data), static_cast<size_t>(qmap.numel()),
+                           stream_);
       nested_map_.copy_from_host(static_cast<const float*>(nested_map.data),
                                  static_cast<size_t>(nested_map.numel()), stream_);
       nested_absmax_.copy_from_host(static_cast<const float*>(nested_absmax.data),
                                     static_cast<size_t>(nested_absmax.numel()), stream_);
       cuda::launch_dequant_nf4_f16(codes_.get(), scales_.get(), qmap_.get(), nested_map_.get(),
-                                   nested_absmax_.get(), state.block_size,
-                                   state.nested_block_size, state.nested_offset, out, count,
-                                   stream_);
+                                   nested_absmax_.get(), state.block_size, state.nested_block_size,
+                                   state.nested_offset, out, count, stream_);
       return out;
     }
     if (view.dtype == DType::kF16) {
@@ -188,7 +197,8 @@ class Loader {
     // DMAs and why the mapping must outlive the stream.
     const std::vector<float> f = to_f32(view);
     std::vector<__half> h(f.size());
-    for (size_t i = 0; i < f.size(); ++i) h[i] = __float2half_rn(f[i]);
+    for (size_t i = 0; i < f.size(); ++i)
+      h[i] = __float2half_rn(f[i]);
     copy_in(out, h.data(), count);
     return out;
   }
@@ -236,22 +246,27 @@ class Loader {
   void verify_arena_full() const {
     if (cursor_ != affines_.size()) {
       throw std::runtime_error("keyframe encoder: affine arena accounting disagrees — placed " +
-                               std::to_string(cursor_) + " of " +
-                               std::to_string(affines_.size()) + " elements");
+                               std::to_string(cursor_) + " of " + std::to_string(affines_.size()) +
+                               " elements");
     }
   }
 
-  DeviceBuffer<__half> release_arena() { return std::move(affines_); }
+  DeviceBuffer<__half> release_arena() {
+    return std::move(affines_);
+  }
 
- private:
+private:
   // 16-byte slots, so every tensor in the arena starts at an address the
   // vectorised kernels are happy to read from.
-  static size_t align_up(size_t elements) { return (elements + 7) / 8 * 8; }
+  static size_t align_up(size_t elements) {
+    return (elements + 7) / 8 * 8;
+  }
 
   void copy_in(__half* dst, const __half* src, size_t count) {
-    if (count == 0) return;
-    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, count * sizeof(__half), cudaMemcpyHostToDevice,
-                                      stream_));
+    if (count == 0)
+      return;
+    SLOPFAB_CUDA_CHECK(
+        cudaMemcpyAsync(dst, src, count * sizeof(__half), cudaMemcpyHostToDevice, stream_));
   }
 
   const SafeTensors& ckpt_;
@@ -262,7 +277,7 @@ class Loader {
   DeviceBuffer<float> qmap_, nested_map_, nested_absmax_;
 };
 
-}  // namespace
+} // namespace
 
 struct KeyframeEncoder::Impl {
   std::map<std::string, ConvWeight> convs;
@@ -276,8 +291,8 @@ struct KeyframeEncoder::Impl {
   DeviceBuffer<__half> weight_workspace;
   size_t weight_workspace_elements = 0;
   std::unique_ptr<cuda::ReferenceEncoderOps> reference_ops;
-  template <typename T> std::vector<float> temporal_moments(const float* pixels,
-      int frames, int height, int width);
+  template <typename T>
+  std::vector<float> temporal_moments(const float* pixels, int frames, int height, int width);
 
   explicit Impl(const SafeTensors& checkpoint) {
     // See the note on `SafeTensors::prefetch`: issued first because it is
@@ -316,7 +331,10 @@ struct KeyframeEncoder::Impl {
     // costs nothing.
     struct DrainOnExit {
       cudaStream_t stream;
-      ~DrainOnExit() { cudaStreamSynchronize(stream); }
+
+      ~DrainOnExit() {
+        cudaStreamSynchronize(stream);
+      }
     } drain{stream.get()};
 
     // The affine half of this is pure enqueue: no allocation, no free, no
@@ -325,8 +343,10 @@ struct KeyframeEncoder::Impl {
     // weights still cost an implicit device-wide sync each. Removing those
     // means giving `F16Weight` an arena, and it lives in a file the video VAE
     // and ViT decoders share.
-    for (const std::string& name : plan.norms) norms.emplace(name, load.norm(name));
-    for (const std::string& name : plan.convs) convs.emplace(name, load.conv(name));
+    for (const std::string& name : plan.norms)
+      norms.emplace(name, load.norm(name));
+    for (const std::string& name : plan.convs)
+      convs.emplace(name, load.conv(name));
     load.verify_arena_full();
     affines = load.release_arena();
 
@@ -335,17 +355,16 @@ struct KeyframeEncoder::Impl {
     stream.synchronize();
   }
 
-  DeviceBuffer<float> conv(const DeviceBuffer<float>& x, const std::string& name, int cin,
-                           int cout, int h, int w, int kernel, int stride = 1,
-                           bool asymmetric = false) {
+  DeviceBuffer<float> conv(const DeviceBuffer<float>& x, const std::string& name, int cin, int cout,
+                           int h, int w, int kernel, int stride = 1, bool asymmetric = false) {
     const int oh = stride == 2 ? h / 2 : h;
     const int ow = stride == 2 ? w / 2 : w;
     DeviceBuffer<float> y(static_cast<size_t>(cout) * oh * ow);
     const ConvWeight& cw = convs.at(name);
-    const __half* weight = cw.weight.materialize(weight_workspace.get(), weight_workspace_elements,
-                                                 stream.get());
-    cuda::launch_keyframe_conv3d(x.get(), weight, cw.bias, y.get(), cin, cout, h,
-                                 w, kernel, stride, !asymmetric, asymmetric, stream.get());
+    const __half* weight =
+        cw.weight.materialize(weight_workspace.get(), weight_workspace_elements, stream.get());
+    cuda::launch_keyframe_conv3d(x.get(), weight, cw.bias, y.get(), cin, cout, h, w, kernel, stride,
+                                 !asymmetric, asymmetric, stream.get());
     return y;
   }
 
@@ -353,14 +372,16 @@ struct KeyframeEncoder::Impl {
                            int h, int w) {
     DeviceBuffer<float> y(static_cast<size_t>(channels) * h * w);
     const NormWeight& nw = norms.at(name);
-    cuda::launch_keyframe_groupnorm_silu(x.get(), nw.weight, nw.bias, y.get(),
-                                         channels, h, w, 32, 1e-6f, stream.get());
+    cuda::launch_keyframe_groupnorm_silu(x.get(), nw.weight, nw.bias, y.get(), channels, h, w, 32,
+                                         1e-6f, stream.get());
     return y;
   }
 };
 
 KeyframeEncoder::KeyframeEncoder(const SafeTensors& checkpoint)
-    : impl_(std::make_unique<Impl>(checkpoint)) {}
+    : impl_(std::make_unique<Impl>(checkpoint)) {
+}
+
 KeyframeEncoder::~KeyframeEncoder() = default;
 KeyframeEncoder::KeyframeEncoder(KeyframeEncoder&&) noexcept = default;
 KeyframeEncoder& KeyframeEncoder::operator=(KeyframeEncoder&&) noexcept = default;
@@ -380,10 +401,11 @@ std::vector<float> KeyframeEncoder::encode_moments(const float* pixels, int heig
     const int output = channels[level];
     for (int block = 0; block < 2; ++block) {
       const int input = current;
-      const std::string p = "encoder.down." + std::to_string(level) + ".block." +
-                            std::to_string(block);
+      const std::string p =
+          "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
       DeviceBuffer<float> residual;
-      if (input != output) residual = impl_->conv(hbuf, p + ".nin_shortcut", input, output, h, w, 1);
+      if (input != output)
+        residual = impl_->conv(hbuf, p + ".nin_shortcut", input, output, h, w, 1);
       DeviceBuffer<float> tmp = impl_->norm(hbuf, p + ".norm1", input, h, w);
       tmp = impl_->conv(tmp, p + ".conv1", input, output, h, w, 3);
       tmp = impl_->norm(tmp, p + ".norm2", output, h, w);
@@ -410,22 +432,24 @@ std::vector<float> KeyframeEncoder::encode_moments(const float* pixels, int heig
   return moments;
 }
 
-std::vector<float> KeyframeEncoder::encode_condition_rows(
-    const RGBImage& image, const float* normal, const std::vector<float>& latents_mean,
-    const std::vector<float>& latents_std) {
-  if (!normal) throw std::runtime_error("keyframe encoder: missing posterior normal field");
+std::vector<float> KeyframeEncoder::encode_condition_rows(const RGBImage& image,
+                                                          const float* normal,
+                                                          const std::vector<float>& latents_mean,
+                                                          const std::vector<float>& latents_std) {
+  if (!normal)
+    throw std::runtime_error("keyframe encoder: missing posterior normal field");
   const std::vector<float> pixels = prepare_keyframe_pixels(image);
   const std::vector<float> moments = encode_moments(pixels.data(), image.height, image.width);
   const int latent_h = image.height / 16;
   const int latent_w = image.width / 16;
-  const std::vector<float> latents = sample_keyframe_latents(
-      moments.data(), normal, latent_h, latent_w, latents_mean, latents_std);
+  const std::vector<float> latents = sample_keyframe_latents(moments.data(), normal, latent_h,
+                                                             latent_w, latents_mean, latents_std);
   return patchify_keyframe_latents(latents.data(), latent_h, latent_w);
 }
 
-std::vector<float> KeyframeEncoder::encode_reference_image(
-    const RGBImage& image, const std::vector<float>& latents_mean,
-    const std::vector<float>& latents_std) {
+std::vector<float> KeyframeEncoder::encode_reference_image(const RGBImage& image,
+                                                           const std::vector<float>& latents_mean,
+                                                           const std::vector<float>& latents_std) {
   if (image.height <= 0 || image.width <= 0 || image.height % 16 || image.width % 16)
     throw std::runtime_error("keyframe encoder: reference dimensions must be multiples of 16");
   const size_t count = static_cast<size_t>(24) * (image.height / 16) * (image.width / 16);
@@ -434,18 +458,23 @@ std::vector<float> KeyframeEncoder::encode_reference_image(
 }
 
 template <typename T>
-std::vector<float> KeyframeEncoder::Impl::temporal_moments(const float* pixels, int frames, int height, int width) {
-  if (!pixels || frames <= 0 || frames > 17 || height <= 0 || width <= 0 || height % 16 || width % 16)
-    throw std::invalid_argument("video encoder: expected 1..17 frames and dimensions divisible by 16");
+std::vector<float> KeyframeEncoder::Impl::temporal_moments(const float* pixels, int frames,
+                                                           int height, int width) {
+  if (!pixels || frames <= 0 || frames > 17 || height <= 0 || width <= 0 || height % 16 ||
+      width % 16)
+    throw std::invalid_argument(
+        "video encoder: expected 1..17 frames and dimensions divisible by 16");
   if (!reference_ops)
     reference_ops = std::make_unique<cuda::ReferenceEncoderOps>(stream.get());
   auto& ops = *reference_ops;
   int t = frames, h = height, w = width;
-  auto conv = [&](const cuda::ReferenceBuffer<T>& x, const std::string& name, int ci, int co,
-                  int k, int ss = 1, int ts = 1, bool down = false) {
+  auto conv = [&](const cuda::ReferenceBuffer<T>& x, const std::string& name, int ci, int co, int k,
+                  int ss = 1, int ts = 1, bool down = false) {
     const auto& weight = convs.at(name);
-    return ops.conv3d(x.get(), weight.weight.materialize(weight_workspace.get(),
-        weight_workspace_elements, stream.get()), weight.bias, ci, co, t, h, w, k, ss, ts, down);
+    return ops.conv3d(
+        x.get(),
+        weight.weight.materialize(weight_workspace.get(), weight_workspace_elements, stream.get()),
+        weight.bias, ci, co, t, h, w, k, ss, ts, down);
   };
   auto norm = [&](const T* x, T* y, const std::string& name, int c) {
     const auto& n = norms.at(name);
@@ -457,29 +486,34 @@ std::vector<float> KeyframeEncoder::Impl::temporal_moments(const float* pixels, 
     x.copy_from_host(pixels, x.size(), stream.get());
   } else {
     upload.resize(x.size());
-    for (size_t i = 0; i < x.size(); ++i) upload[i] = __float2half_rn(pixels[i]);
+    for (size_t i = 0; i < x.size(); ++i)
+      upload[i] = __float2half_rn(pixels[i]);
     x.copy_from_host(upload.data(), upload.size(), stream.get());
   }
   x = conv(x, "encoder.conv_in", 3, 128, 3);
-  const int channels[] = {128,256,256,512,512,1024};
-  const int spatial[] = {2,2,2,2,1,1}, temporal[] = {1,2,2,1,1,1};
+  const int channels[] = {128, 256, 256, 512, 512, 1024};
+  const int spatial[] = {2, 2, 2, 2, 1, 1}, temporal[] = {1, 2, 2, 1, 1, 1};
   int current = 128;
   for (int level = 0; level < 6; ++level) {
     for (int block = 0; block < 2; ++block) {
-      std::string prefix = "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
+      std::string prefix =
+          "encoder.down." + std::to_string(level) + ".block." + std::to_string(block);
       auto branch = ops.allocate<T>(x.size());
       norm(x.get(), branch.get(), prefix + ".norm1", current);
       branch = conv(branch, prefix + ".conv1", current, channels[level], 3);
       norm(branch.get(), branch.get(), prefix + ".norm2", channels[level]);
       branch = conv(branch, prefix + ".conv2", channels[level], channels[level], 3);
-      if (current != channels[level]) x = conv(x, prefix + ".nin_shortcut", current, channels[level], 1);
+      if (current != channels[level])
+        x = conv(x, prefix + ".nin_shortcut", current, channels[level], 1);
       ops.add(x.get(), branch.get(), x.size());
       current = channels[level];
     }
     if (spatial[level] > 1 || temporal[level] > 1) {
       x = conv(x, "encoder.down." + std::to_string(level) + ".downsample.conv", current, current, 3,
                spatial[level], temporal[level], true);
-      t = (t - 1) / temporal[level] + 1; h /= spatial[level]; w /= spatial[level];
+      t = (t - 1) / temporal[level] + 1;
+      h /= spatial[level];
+      w /= spatial[level];
     }
   }
   norm(x.get(), x.get(), "encoder.norm_out", 1024);
@@ -493,21 +527,26 @@ std::vector<float> KeyframeEncoder::Impl::temporal_moments(const float* pixels, 
     moments[i] = static_cast<float>(host[i]);
     if constexpr (std::is_same_v<T, __half>) {
       if (!std::isfinite(moments[i]))
-        throw std::runtime_error("reference video: nonfinite FP16 moments; retry with SLOPFAB_REFERENCE_FP32=1");
+        throw std::runtime_error(
+            "reference video: nonfinite FP16 moments; retry with SLOPFAB_REFERENCE_FP32=1");
     }
   }
   ops.report_memory("video chunk");
   return moments;
 }
 
-std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels,
-    int frames, int height, int width, bool mixed_precision) {
+std::vector<float> KeyframeEncoder::encode_temporal_moments(const float* pixels, int frames,
+                                                            int height, int width,
+                                                            bool mixed_precision) {
   return mixed_precision ? impl_->temporal_moments<__half>(pixels, frames, height, width)
                          : impl_->temporal_moments<float>(pixels, frames, height, width);
 }
 
 std::vector<float> KeyframeEncoder::encode_reference_video(const std::vector<RGBImage>& frames,
-    int count, const std::vector<float>& mean, const std::vector<float>& stddev, bool mixed_precision) {
+                                                           int count,
+                                                           const std::vector<float>& mean,
+                                                           const std::vector<float>& stddev,
+                                                           bool mixed_precision) {
   if (count < 22 || (count - 5) % 17 || size_t(count) > frames.size())
     throw std::invalid_argument("reference video: input must be 17*n+5 frames");
   const int h = frames.front().height, w = frames.front().width;
@@ -518,17 +557,21 @@ std::vector<float> KeyframeEncoder::encode_reference_video(const std::vector<RGB
   for (int start = 0; start < count; start += 17) {
     for (int t = 0; t < 17; ++t) {
       const auto& image = frames[std::min(start + t, count - 1)];
-      if (image.height != h || image.width != w) throw std::invalid_argument("reference video: changing dimensions");
+      if (image.height != h || image.width != w)
+        throw std::invalid_argument("reference video: changing dimensions");
       const auto prepared = prepare_keyframe_pixels(image);
       for (int c = 0; c < 3; ++c)
-        std::copy_n(prepared.data() + size_t(c) * plane, plane, pixels.data() + (size_t(c) * 17 + t) * plane);
+        std::copy_n(prepared.data() + size_t(c) * plane, plane,
+                    pixels.data() + (size_t(c) * 17 + t) * plane);
     }
     const auto begin = std::chrono::steady_clock::now();
     const auto chunk = encode_temporal_moments(pixels.data(), 17, h, w, mixed_precision);
     if (cuda::StepProfiler::instance().enabled()) {
-      const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+      const double seconds =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
       std::printf("references  CUDA %s chunk %d/%d: 17 frames at %dx%d in %.3f s\n",
-          mixed_precision ? "fp16" : "fp32", start / 17 + 1, (count + 16) / 17, w, h, seconds);
+                  mixed_precision ? "fp16" : "fp32", start / 17 + 1, (count + 16) / 17, w, h,
+                  seconds);
     }
     const int latent_start = start / 17 * 5;
     const int keep = std::min(5, latent_frames - latent_start);
@@ -537,8 +580,9 @@ std::vector<float> KeyframeEncoder::encode_reference_video(const std::vector<RGB
                   moments.data() + (size_t(c) * latent_frames + latent_start) * latent_plane);
   }
   auto normal = torch_cpu_normal_seed42(size_t(24) * latent_frames * latent_plane);
-  auto latent = sample_keyframe_latents(moments.data(), normal.data(), latent_frames * (h / 16), w / 16, mean, stddev);
+  auto latent = sample_keyframe_latents(moments.data(), normal.data(), latent_frames * (h / 16),
+                                        w / 16, mean, stddev);
   return patchify_reference_video(latent.data(), latent_frames, h / 16, w / 16);
 }
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

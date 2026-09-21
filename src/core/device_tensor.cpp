@@ -8,15 +8,15 @@ namespace {
 
 uint64_t scalar_bytes(ScalarType type) {
   switch (type) {
-    case ScalarType::kFloat32:
-    case ScalarType::kInt32:
-      return 4;
-    case ScalarType::kFloat16:
-    case ScalarType::kBFloat16:
-      return 2;
-    case ScalarType::kUInt8:
-    case ScalarType::kInt8:
-      return 1;
+  case ScalarType::kFloat32:
+  case ScalarType::kInt32:
+    return 4;
+  case ScalarType::kFloat16:
+  case ScalarType::kBFloat16:
+    return 2;
+  case ScalarType::kUInt8:
+  case ScalarType::kInt8:
+    return 1;
   }
   throw std::invalid_argument("tensor: unsupported scalar type");
 }
@@ -28,7 +28,7 @@ uint64_t checked_multiply(uint64_t a, uint64_t b) {
   return a * b;
 }
 
-}  // namespace
+} // namespace
 
 TensorLayout TensorLayout::contiguous(const uint64_t* extents, uint32_t count) {
   if (count > 6 || (count != 0 && extents == nullptr)) {
@@ -38,7 +38,8 @@ TensorLayout TensorLayout::contiguous(const uint64_t* extents, uint32_t count) {
   result.rank = count;
   uint64_t stride = 1;
   for (uint32_t axis = count; axis-- > 0;) {
-    if (extents[axis] == 0) throw std::invalid_argument("tensor: extents must be positive");
+    if (extents[axis] == 0)
+      throw std::invalid_argument("tensor: extents must be positive");
     result.extent[axis] = extents[axis];
     result.stride[axis] = stride;
     stride = checked_multiply(stride, extents[axis]);
@@ -47,10 +48,12 @@ TensorLayout TensorLayout::contiguous(const uint64_t* extents, uint32_t count) {
 }
 
 uint64_t TensorLayout::elements() const {
-  if (rank > 6) throw std::invalid_argument("tensor: invalid rank");
+  if (rank > 6)
+    throw std::invalid_argument("tensor: invalid rank");
   uint64_t count = 1;
   for (uint32_t axis = 0; axis < rank; ++axis) {
-    if (extent[axis] == 0) throw std::invalid_argument("tensor: extents must be positive");
+    if (extent[axis] == 0)
+      throw std::invalid_argument("tensor: extents must be positive");
     count = checked_multiply(count, extent[axis]);
   }
   return count;
@@ -61,10 +64,12 @@ uint64_t TensorLayout::bytes(ScalarType type) const {
 }
 
 uint64_t TensorLayout::storage_bytes(ScalarType type) const {
-  if (rank > 6) throw std::invalid_argument("tensor: invalid rank");
+  if (rank > 6)
+    throw std::invalid_argument("tensor: invalid rank");
   uint64_t largest = 0;
   for (uint32_t axis = 0; axis < rank; ++axis) {
-    if (extent[axis] == 0) throw std::invalid_argument("tensor: extents must be positive");
+    if (extent[axis] == 0)
+      throw std::invalid_argument("tensor: extents must be positive");
     const uint64_t contribution = checked_multiply(extent[axis] - 1, stride[axis]);
     if (largest > std::numeric_limits<uint64_t>::max() - contribution) {
       throw std::overflow_error("tensor: strided storage size overflow");
@@ -78,10 +83,12 @@ uint64_t TensorLayout::storage_bytes(ScalarType type) const {
 }
 
 bool TensorLayout::is_contiguous() const {
-  if (rank > 6) return false;
+  if (rank > 6)
+    return false;
   uint64_t expected = 1;
   for (uint32_t axis = rank; axis-- > 0;) {
-    if (extent[axis] == 0 || stride[axis] != expected) return false;
+    if (extent[axis] == 0 || stride[axis] != expected)
+      return false;
     if (extent[axis] != 0 && expected > std::numeric_limits<uint64_t>::max() / extent[axis]) {
       return false;
     }
@@ -90,11 +97,9 @@ bool TensorLayout::is_contiguous() const {
   return true;
 }
 
-DeviceTensorView DeviceTensorView::slice(uint64_t offset,
-                                         const TensorLayout& slice_layout,
+DeviceTensorView DeviceTensorView::slice(uint64_t offset, const TensorLayout& slice_layout,
                                          uint64_t alignment) const {
-  if (context == 0 || resource == 0 || alignment == 0 ||
-      (alignment & (alignment - 1)) != 0) {
+  if (context == 0 || resource == 0 || alignment == 0 || (alignment & (alignment - 1)) != 0) {
     throw std::invalid_argument("tensor: invalid device view slice");
   }
   const uint64_t bytes = slice_layout.storage_bytes(type);
@@ -119,4 +124,4 @@ DeviceTensorView DeviceTensorView::slice(uint64_t offset,
   return result;
 }
 
-}  // namespace slopfab
+} // namespace slopfab

@@ -45,17 +45,25 @@ std::runtime_error wic_error(const std::string& path, const std::string& reason,
 // Minimal COM pointer. <wrl/client.h> would do this better but is not present
 // in every toolchain that can build this project, and the need here is three
 // pointers deep.
-template <typename T>
-struct ComPtr {
+template <typename T> struct ComPtr {
   T* p = nullptr;
+
   ~ComPtr() {
-    if (p != nullptr) p->Release();
+    if (p != nullptr)
+      p->Release();
   }
+
   ComPtr() = default;
   ComPtr(const ComPtr&) = delete;
   ComPtr& operator=(const ComPtr&) = delete;
-  T** put() { return &p; }
-  T* operator->() const { return p; }
+
+  T** put() {
+    return &p;
+  }
+
+  T* operator->() const {
+    return p;
+  }
 };
 
 // Balances whatever CoInitializeEx actually did, which is the part that is
@@ -70,20 +78,29 @@ struct ComPtr {
 //                     here would decrement someone else's — so we must not,
 //                     and WIC works from either apartment anyway.
 class ComScope {
- public:
+public:
   ComScope() {
     hr_ = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     owns_ = SUCCEEDED(hr_);
   }
+
   ~ComScope() {
-    if (owns_) CoUninitialize();
+    if (owns_)
+      CoUninitialize();
   }
+
   ComScope(const ComScope&) = delete;
   ComScope& operator=(const ComScope&) = delete;
-  bool usable() const { return SUCCEEDED(hr_) || hr_ == RPC_E_CHANGED_MODE; }
-  HRESULT hr() const { return hr_; }
 
- private:
+  bool usable() const {
+    return SUCCEEDED(hr_) || hr_ == RPC_E_CHANGED_MODE;
+  }
+
+  HRESULT hr() const {
+    return hr_;
+  }
+
+private:
   HRESULT hr_ = S_OK;
   bool owns_ = false;
 };
@@ -94,28 +111,31 @@ class ComScope {
 // mistake this diagnoses, and an easy one for a host to make — would be
 // silently mangled and then reported as a missing file.
 std::wstring widen(const std::string& utf8, const std::string& path) {
-  if (utf8.empty()) throw std::runtime_error("reference image: empty path");
+  if (utf8.empty())
+    throw std::runtime_error("reference image: empty path");
   const int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.c_str(),
                                          static_cast<int>(utf8.size()), nullptr, 0);
   if (needed <= 0) {
     throw wic_error(path, "path is not valid UTF-8", HRESULT_FROM_WIN32(GetLastError()));
   }
   std::wstring wide(static_cast<size_t>(needed), L'\0');
-  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.c_str(),
-                      static_cast<int>(utf8.size()), &wide[0], needed);
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.c_str(), static_cast<int>(utf8.size()),
+                      &wide[0], needed);
   return wide;
 }
 
-}  // namespace
+} // namespace
 
 RGBImage load_platform_image(const std::string& path) {
   ComScope com;
-  if (!com.usable()) throw wic_error(path, "cannot initialise COM", com.hr());
+  if (!com.usable())
+    throw wic_error(path, "cannot initialise COM", com.hr());
 
   ComPtr<IWICImagingFactory> factory;
   HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(factory.put()));
-  if (FAILED(hr)) throw wic_error(path, "cannot create the WIC imaging factory", hr);
+  if (FAILED(hr))
+    throw wic_error(path, "cannot create the WIC imaging factory", hr);
 
   const std::wstring wide = widen(path, path);
   ComPtr<IWICBitmapDecoder> decoder;
@@ -139,7 +159,8 @@ RGBImage load_platform_image(const std::string& path) {
   // which is the same rule the FFmpeg path follows.
   ComPtr<IWICBitmapFrameDecode> frame;
   hr = decoder->GetFrame(0, frame.put());
-  if (FAILED(hr)) throw wic_error(path, "cannot read the first frame", hr);
+  if (FAILED(hr))
+    throw wic_error(path, "cannot read the first frame", hr);
 
   // Whatever the file's own pixel format is — palettised, CMYK, 16-bit,
   // premultiplied — WIC converts it to packed 24-bit RGB here, so everything
@@ -147,16 +168,20 @@ RGBImage load_platform_image(const std::string& path) {
   // carried: the pipeline conditions on colour and has nowhere to put it.
   ComPtr<IWICFormatConverter> converter;
   hr = factory->CreateFormatConverter(converter.put());
-  if (FAILED(hr)) throw wic_error(path, "cannot create a WIC format converter", hr);
-  hr = converter->Initialize(frame.p, GUID_WICPixelFormat24bppRGB, WICBitmapDitherTypeNone,
-                             nullptr, 0.0, WICBitmapPaletteTypeCustom);
-  if (FAILED(hr)) throw wic_error(path, "cannot convert this image to 24-bit RGB", hr);
+  if (FAILED(hr))
+    throw wic_error(path, "cannot create a WIC format converter", hr);
+  hr = converter->Initialize(frame.p, GUID_WICPixelFormat24bppRGB, WICBitmapDitherTypeNone, nullptr,
+                             0.0, WICBitmapPaletteTypeCustom);
+  if (FAILED(hr))
+    throw wic_error(path, "cannot convert this image to 24-bit RGB", hr);
 
   UINT width = 0;
   UINT height = 0;
   hr = converter->GetSize(&width, &height);
-  if (FAILED(hr)) throw wic_error(path, "cannot read the image size", hr);
-  if (width == 0 || height == 0) throw wic_error(path, "image has a zero dimension", E_FAIL);
+  if (FAILED(hr))
+    throw wic_error(path, "cannot read the image size", hr);
+  if (width == 0 || height == 0)
+    throw wic_error(path, "image has a zero dimension", E_FAIL);
 
   // Checked before the multiplication below rather than after it: at 3 bytes
   // per pixel a 2 GB image would otherwise wrap the stride computation.
@@ -172,13 +197,14 @@ RGBImage load_platform_image(const std::string& path) {
   image.pixels.resize(static_cast<size_t>(total));
   hr = converter->CopyPixels(nullptr, static_cast<UINT>(stride), static_cast<UINT>(total),
                              image.pixels.data());
-  if (FAILED(hr)) throw wic_error(path, "cannot copy the decoded pixels", hr);
+  if (FAILED(hr))
+    throw wic_error(path, "cannot copy the decoded pixels", hr);
   return image;
 }
 
-}  // namespace slopfab
+} // namespace slopfab
 
-#else  // !_WIN32
+#else // !_WIN32
 
 namespace slopfab {
 
@@ -189,6 +215,6 @@ RGBImage load_platform_image(const std::string& path) {
       "(P6) can be read; convert the image or build with -DSLOPFAB_WITH_FFMPEG=ON");
 }
 
-}  // namespace slopfab
+} // namespace slopfab
 
-#endif  // _WIN32
+#endif // _WIN32

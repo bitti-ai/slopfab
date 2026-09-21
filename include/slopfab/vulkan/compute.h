@@ -26,7 +26,7 @@ struct ComputePipelineOptions {
 };
 
 class ComputePipeline {
- public:
+public:
   ComputePipeline();
   ~ComputePipeline();
   ComputePipeline(ComputePipeline&&) noexcept;
@@ -34,14 +34,13 @@ class ComputePipeline {
   ComputePipeline(const ComputePipeline&) = delete;
   ComputePipeline& operator=(const ComputePipeline&) = delete;
 
-  static ComputePipeline create(const Device& device,
-                                const std::vector<uint32_t>& spirv,
+  static ComputePipeline create(const Device& device, const std::vector<uint32_t>& spirv,
                                 const ComputePipelineOptions& options);
   uint32_t storage_binding_count() const noexcept;
   uint32_t push_constant_bytes() const noexcept;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit ComputePipeline(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -72,14 +71,14 @@ struct ComputeContextOptions {
 };
 
 class Submission {
- public:
+public:
   Submission();
   uint64_t value() const noexcept;
   bool ready() const;
   void wait() const;
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit Submission(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
@@ -89,19 +88,20 @@ class Submission {
 // Optional diagnostics. A pool must not be reused until its submission has
 // completed. Read after waiting; unavailable results throw instead of blocking.
 class TimestampQuery {
- public:
+public:
   TimestampQuery() = default;
   static TimestampQuery create(const Device& device, uint32_t count);
   uint32_t count() const noexcept;
   double elapsed_milliseconds(uint32_t first, uint32_t last) const;
- private:
+
+private:
   struct Impl;
   std::shared_ptr<Impl> impl_;
   friend class CommandList;
 };
 
 class CommandList {
- public:
+public:
   CommandList();
   ~CommandList();
   CommandList(CommandList&&) noexcept;
@@ -109,19 +109,18 @@ class CommandList {
   CommandList(const CommandList&) = delete;
   CommandList& operator=(const CommandList&) = delete;
 
-  void copy_buffer(Buffer& source, Buffer& destination, uint64_t bytes,
-                   uint64_t source_offset = 0, uint64_t destination_offset = 0);
-  void barrier(Buffer& buffer, BufferAccess before, BufferAccess after,
-               uint64_t offset = 0, uint64_t bytes = ~uint64_t{0});
-  void bind_compute(ComputePipeline& pipeline,
-                    const std::vector<StorageBinding>& bindings);
+  void copy_buffer(Buffer& source, Buffer& destination, uint64_t bytes, uint64_t source_offset = 0,
+                   uint64_t destination_offset = 0);
+  void barrier(Buffer& buffer, BufferAccess before, BufferAccess after, uint64_t offset = 0,
+               uint64_t bytes = ~uint64_t{0});
+  void bind_compute(ComputePipeline& pipeline, const std::vector<StorageBinding>& bindings);
   void push_constants(const void* data, uint32_t bytes);
   void dispatch(uint32_t groups_x, uint32_t groups_y = 1, uint32_t groups_z = 1);
   void reset_timestamps(TimestampQuery& queries);
   void write_timestamp(TimestampQuery& queries, uint32_t index);
   explicit operator bool() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit CommandList(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
@@ -129,7 +128,7 @@ class CommandList {
 };
 
 class ComputeContext {
- public:
+public:
   explicit ComputeContext(const Device& device, const ComputeContextOptions& options = {});
   ~ComputeContext();
   ComputeContext(ComputeContext&&) noexcept;
@@ -144,9 +143,9 @@ class ComputeContext {
   uint32_t in_flight() const;
   uint64_t descriptor_set_allocations() const noexcept;
 
- private:
+private:
   struct Impl;
   std::shared_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

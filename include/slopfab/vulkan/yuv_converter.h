@@ -11,7 +11,7 @@ namespace slopfab::vulkan {
 // selected independently. One instance is reusable across frames but
 // conversion calls must be serialized.
 class Yuv420Converter final : public video::FrameConverter {
- public:
+public:
   explicit Yuv420Converter(uint32_t device_index = 0);
   ~Yuv420Converter() override;
   Yuv420Converter(Yuv420Converter&&) noexcept;
@@ -20,17 +20,17 @@ class Yuv420Converter final : public video::FrameConverter {
   Yuv420Converter& operator=(const Yuv420Converter&) = delete;
 
   void convert(const float* r, const float* g, const float* b, int height, int width,
-               uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
-               uint8_t* v_plane, int v_stride) override;
+               uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride, uint8_t* v_plane,
+               int v_stride) override;
 
   uint64_t reserved_bytes() const;
   uint64_t high_water_bytes() const;
   uint64_t capacity_pixels() const;
   const char* device_name() const;
 
- private:
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

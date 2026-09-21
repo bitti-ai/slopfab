@@ -33,11 +33,13 @@ struct DeviceInfo {
   int multiprocessors = 0;
   int max_threads_per_block = 0;
   size_t shared_memory_per_block = 0;
-  bool supports_bf16 = false;    // sm_80+
-  bool supports_fp8 = false;     // sm_89+
-  bool supports_fp4 = false;     // sm_100+ (Blackwell)
+  bool supports_bf16 = false; // sm_80+
+  bool supports_fp8 = false;  // sm_89+
+  bool supports_fp4 = false;  // sm_100+ (Blackwell)
 
-  int compute_capability() const { return major * 10 + minor; }
+  int compute_capability() const {
+    return major * 10 + minor;
+  }
 };
 
 int device_count();
@@ -51,20 +53,22 @@ int current_device_compute_capability();
 
 // Owning device allocation. Move-only; freeing is best-effort in the
 // destructor because throwing from one would terminate.
-template <typename T>
-class DeviceBuffer {
- public:
+template <typename T> class DeviceBuffer {
+public:
   DeviceBuffer() = default;
 
-  explicit DeviceBuffer(size_t count) { allocate(count); }
+  explicit DeviceBuffer(size_t count) {
+    allocate(count);
+  }
 
-  ~DeviceBuffer() { reset(); }
+  ~DeviceBuffer() {
+    reset();
+  }
 
   DeviceBuffer(const DeviceBuffer&) = delete;
   DeviceBuffer& operator=(const DeviceBuffer&) = delete;
 
-  DeviceBuffer(DeviceBuffer&& other) noexcept
-      : ptr_(other.ptr_), count_(other.count_) {
+  DeviceBuffer(DeviceBuffer&& other) noexcept : ptr_(other.ptr_), count_(other.count_) {
     other.ptr_ = nullptr;
     other.count_ = 0;
   }
@@ -82,7 +86,8 @@ class DeviceBuffer {
 
   void allocate(size_t count) {
     reset();
-    if (count == 0) return;
+    if (count == 0)
+      return;
     void* raw = nullptr;
     SLOPFAB_CUDA_CHECK(cudaMalloc(&raw, count * sizeof(T)));
     ptr_ = static_cast<T*>(raw);
@@ -97,29 +102,48 @@ class DeviceBuffer {
     count_ = 0;
   }
 
-  T* get() { return ptr_; }
-  const T* get() const { return ptr_; }
-  size_t size() const { return count_; }
-  size_t nbytes() const { return count_ * sizeof(T); }
-  bool empty() const { return count_ == 0; }
+  T* get() {
+    return ptr_;
+  }
+
+  const T* get() const {
+    return ptr_;
+  }
+
+  size_t size() const {
+    return count_;
+  }
+
+  size_t nbytes() const {
+    return count_ * sizeof(T);
+  }
+
+  bool empty() const {
+    return count_ == 0;
+  }
 
   void copy_from_host(const T* src, size_t count, cudaStream_t stream = nullptr);
   void copy_to_host(T* dst, size_t count, cudaStream_t stream = nullptr) const;
   void zero(cudaStream_t stream = nullptr);
 
- private:
+private:
   T* ptr_ = nullptr;
   size_t count_ = 0;
 };
 
 // Page-locked host allocation, so uploads can overlap compute. Worth the
 // slower allocation for weight staging, which happens once per stage.
-template <typename T>
-class PinnedBuffer {
- public:
+template <typename T> class PinnedBuffer {
+public:
   PinnedBuffer() = default;
-  explicit PinnedBuffer(size_t count) { allocate(count); }
-  ~PinnedBuffer() { reset(); }
+
+  explicit PinnedBuffer(size_t count) {
+    allocate(count);
+  }
+
+  ~PinnedBuffer() {
+    reset();
+  }
 
   PinnedBuffer(const PinnedBuffer&) = delete;
   PinnedBuffer& operator=(const PinnedBuffer&) = delete;
@@ -142,7 +166,8 @@ class PinnedBuffer {
 
   void allocate(size_t count) {
     reset();
-    if (count == 0) return;
+    if (count == 0)
+      return;
     void* raw = nullptr;
     SLOPFAB_CUDA_CHECK(cudaHostAlloc(&raw, count * sizeof(T), cudaHostAllocDefault));
     ptr_ = static_cast<T*>(raw);
@@ -157,12 +182,23 @@ class PinnedBuffer {
     count_ = 0;
   }
 
-  T* get() { return ptr_; }
-  const T* get() const { return ptr_; }
-  size_t size() const { return count_; }
-  size_t nbytes() const { return count_ * sizeof(T); }
+  T* get() {
+    return ptr_;
+  }
 
- private:
+  const T* get() const {
+    return ptr_;
+  }
+
+  size_t size() const {
+    return count_;
+  }
+
+  size_t nbytes() const {
+    return count_ * sizeof(T);
+  }
+
+private:
   T* ptr_ = nullptr;
   size_t count_ = 0;
 };
@@ -179,13 +215,14 @@ class PinnedBuffer {
 // run. `contains` then simply answers false and callers take their staged
 // path, which is correct either way and only slower.
 class RegisteredMapping {
- public:
+public:
   RegisteredMapping() = default;
 
   // `bytes` is the usable length; the registration itself is rounded up to a
   // whole page, which stays inside a file mapping.
   RegisteredMapping(const void* base, size_t bytes) {
-    if (base == nullptr || bytes == 0) return;
+    if (base == nullptr || bytes == 0)
+      return;
     constexpr size_t kPage = 4096;
     const size_t locked = (bytes + kPage - 1) / kPage * kPage;
     if (cudaHostRegister(const_cast<void*>(base), locked, cudaHostRegisterReadOnly) ==
@@ -198,7 +235,9 @@ class RegisteredMapping {
     }
   }
 
-  ~RegisteredMapping() { reset(); }
+  ~RegisteredMapping() {
+    reset();
+  }
 
   RegisteredMapping(const RegisteredMapping&) = delete;
   RegisteredMapping& operator=(const RegisteredMapping&) = delete;
@@ -214,7 +253,9 @@ class RegisteredMapping {
     bytes_ = 0;
   }
 
-  bool registered() const { return base_ != nullptr; }
+  bool registered() const {
+    return base_ != nullptr;
+  }
 
   // Whether `[p, p + n)` lies inside the page-locked range.
   //
@@ -226,25 +267,30 @@ class RegisteredMapping {
   // for any `q` past the end, which made this answer true for exactly the
   // pointers it exists to reject.
   bool contains(const void* p, size_t n) const {
-    if (base_ == nullptr) return false;
+    if (base_ == nullptr)
+      return false;
     const auto b = reinterpret_cast<uintptr_t>(base_);
     const auto q = reinterpret_cast<uintptr_t>(p);
     return q >= b && q <= b + bytes_ && n <= (b + bytes_) - q;
   }
 
- private:
+private:
   const void* base_ = nullptr;
   size_t bytes_ = 0;
 };
 
 class Stream {
- public:
+public:
   Stream();
   ~Stream();
 
   Stream(const Stream&) = delete;
   Stream& operator=(const Stream&) = delete;
-  Stream(Stream&& other) noexcept : stream_(other.stream_) { other.stream_ = nullptr; }
+
+  Stream(Stream&& other) noexcept : stream_(other.stream_) {
+    other.stream_ = nullptr;
+  }
+
   Stream& operator=(Stream&& other) noexcept {
     if (this != &other) {
       destroy();
@@ -254,11 +300,17 @@ class Stream {
     return *this;
   }
 
-  cudaStream_t get() const { return stream_; }
-  operator cudaStream_t() const { return stream_; }
+  cudaStream_t get() const {
+    return stream_;
+  }
+
+  operator cudaStream_t() const {
+    return stream_;
+  }
+
   void synchronize() const;
 
- private:
+private:
   cudaStream_t stream_ = nullptr;
   void destroy();
 };
@@ -267,7 +319,8 @@ class Stream {
 
 template <typename T>
 void DeviceBuffer<T>::copy_from_host(const T* src, size_t count, cudaStream_t stream) {
-  if (count == 0) return;
+  if (count == 0)
+    return;
   if (count > count_) {
     throw std::runtime_error("DeviceBuffer::copy_from_host: source larger than allocation");
   }
@@ -281,7 +334,8 @@ void DeviceBuffer<T>::copy_from_host(const T* src, size_t count, cudaStream_t st
 
 template <typename T>
 void DeviceBuffer<T>::copy_to_host(T* dst, size_t count, cudaStream_t stream) const {
-  if (count == 0) return;
+  if (count == 0)
+    return;
   if (count > count_) {
     throw std::runtime_error("DeviceBuffer::copy_to_host: request larger than allocation");
   }
@@ -293,9 +347,9 @@ void DeviceBuffer<T>::copy_to_host(T* dst, size_t count, cudaStream_t stream) co
   }
 }
 
-template <typename T>
-void DeviceBuffer<T>::zero(cudaStream_t stream) {
-  if (count_ == 0) return;
+template <typename T> void DeviceBuffer<T>::zero(cudaStream_t stream) {
+  if (count_ == 0)
+    return;
   if (stream != nullptr) {
     SLOPFAB_CUDA_CHECK(cudaMemsetAsync(ptr_, 0, count_ * sizeof(T), stream));
   } else {
@@ -303,4 +357,4 @@ void DeviceBuffer<T>::zero(cudaStream_t stream) {
   }
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

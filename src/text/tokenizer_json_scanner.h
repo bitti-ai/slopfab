@@ -23,12 +23,21 @@ namespace slopfab::text::detail {
 // perfectly valid vocabulary that silently disagreed with the reference on the
 // tokens containing it.
 class TokenizerScanner {
- public:
-  explicit TokenizerScanner(std::string_view text) : s_(text) {}
+public:
+  explicit TokenizerScanner(std::string_view text) : s_(text) {
+  }
 
-  bool at_object() { return peek_or_null() == '{'; }
-  bool at_array() { return peek_or_null() == '['; }
-  bool at_string() { return peek_or_null() == '"'; }
+  bool at_object() {
+    return peek_or_null() == '{';
+  }
+
+  bool at_array() {
+    return peek_or_null() == '[';
+  }
+
+  bool at_string() {
+    return peek_or_null() == '"';
+  }
 
   // Calls `on_key(key)` for each member of the object at the cursor, with the
   // cursor left on that member's value. The callback must consume exactly one
@@ -36,8 +45,7 @@ class TokenizerScanner {
   //
   // `key` is one buffer reused across this object's own members, so a callback
   // that needs it past its own return must copy. Nested objects get their own.
-  template <typename Fn>
-  void object(Fn&& on_key) {
+  template <typename Fn> void object(Fn&& on_key) {
     expect('{');
     ws();
     if (peek() == '}') {
@@ -54,14 +62,15 @@ class TokenizerScanner {
       ws();
       const char c = peek();
       ++pos_;
-      if (c == '}') break;
-      if (c != ',') fail("expected ',' or '}' in object");
+      if (c == '}')
+        break;
+      if (c != ',')
+        fail("expected ',' or '}' in object");
     }
   }
 
   // As `object`, for arrays: `on_element()` consumes exactly one value.
-  template <typename Fn>
-  void array(Fn&& on_element) {
+  template <typename Fn> void array(Fn&& on_element) {
     expect('[');
     ws();
     if (peek() == ']') {
@@ -74,8 +83,10 @@ class TokenizerScanner {
       ws();
       const char c = peek();
       ++pos_;
-      if (c == ']') break;
-      if (c != ',') fail("expected ',' or ']' in array");
+      if (c == ']')
+        break;
+      if (c != ',')
+        fail("expected ',' or ']' in array");
     }
   }
 
@@ -85,11 +96,13 @@ class TokenizerScanner {
   void string(std::string& out) {
     out.clear();
     ws();
-    if (pos_ >= s_.size() || s_[pos_] != '"') fail("expected a string");
+    if (pos_ >= s_.size() || s_[pos_] != '"')
+      fail("expected a string");
     ++pos_;
     size_t run = pos_;
     for (;;) {
-      if (pos_ >= s_.size()) fail("unterminated string");
+      if (pos_ >= s_.size())
+        fail("unterminated string");
       const char c = s_[pos_];
       if (c == '"') {
         out.append(s_.data() + run, pos_ - run);
@@ -102,39 +115,57 @@ class TokenizerScanner {
       }
       out.append(s_.data() + run, pos_ - run);
       ++pos_;
-      if (pos_ >= s_.size()) fail("unterminated escape");
+      if (pos_ >= s_.size())
+        fail("unterminated escape");
       switch (s_[pos_++]) {
-        case '"': out.push_back('"'); break;
-        case '\\': out.push_back('\\'); break;
-        case '/': out.push_back('/'); break;
-        case 'b': out.push_back('\b'); break;
-        case 'f': out.push_back('\f'); break;
-        case 'n': out.push_back('\n'); break;
-        case 'r': out.push_back('\r'); break;
-        case 't': out.push_back('\t'); break;
-        case 'u': {
-          uint32_t cp = hex4();
-          if (cp >= 0xD800 && cp <= 0xDBFF) {
-            if (pos_ + 1 < s_.size() && s_[pos_] == '\\' && s_[pos_ + 1] == 'u') {
-              const size_t save = pos_;
-              pos_ += 2;
-              const uint32_t lo = hex4();
-              if (lo >= 0xDC00 && lo <= 0xDFFF) {
-                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-              } else {
-                pos_ = save;
-                cp = 0xFFFD;
-              }
+      case '"':
+        out.push_back('"');
+        break;
+      case '\\':
+        out.push_back('\\');
+        break;
+      case '/':
+        out.push_back('/');
+        break;
+      case 'b':
+        out.push_back('\b');
+        break;
+      case 'f':
+        out.push_back('\f');
+        break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case 'u': {
+        uint32_t cp = hex4();
+        if (cp >= 0xD800 && cp <= 0xDBFF) {
+          if (pos_ + 1 < s_.size() && s_[pos_] == '\\' && s_[pos_ + 1] == 'u') {
+            const size_t save = pos_;
+            pos_ += 2;
+            const uint32_t lo = hex4();
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+              cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
             } else {
+              pos_ = save;
               cp = 0xFFFD;
             }
-          } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+          } else {
             cp = 0xFFFD;
           }
-          utf8_append(out, cp);
-          break;
+        } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+          cp = 0xFFFD;
         }
-        default: fail("unrecognised escape sequence");
+        utf8_append(out, cp);
+        break;
+      }
+      default:
+        fail("unrecognised escape sequence");
       }
       run = pos_;
     }
@@ -147,15 +178,18 @@ class TokenizerScanner {
   int64_t integer() {
     ws();
     const size_t start = pos_;
-    if (pos_ < s_.size() && (s_[pos_] == '-' || s_[pos_] == '+')) ++pos_;
+    if (pos_ < s_.size() && (s_[pos_] == '-' || s_[pos_] == '+'))
+      ++pos_;
     while (pos_ < s_.size()) {
       const char c = s_[pos_];
-      const bool numeric = (c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' ||
-                           c == '+' || c == '-';
-      if (!numeric) break;
+      const bool numeric =
+          (c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-';
+      if (!numeric)
+        break;
       ++pos_;
     }
-    if (pos_ == start) fail("expected a number");
+    if (pos_ == start)
+      fail("expected a number");
     const std::string_view token = s_.substr(start, pos_ - start);
 
     size_t i = 0;
@@ -181,7 +215,8 @@ class TokenizerScanner {
         break;
       }
     }
-    if (plain) return negative ? -value : value;
+    if (plain)
+      return negative ? -value : value;
 
     const std::string text(token);
     char* end = nullptr;
@@ -195,58 +230,70 @@ class TokenizerScanner {
 
   // Consumes one value of any shape without materialising it.
   void skip_value(int depth = 0) {
-    if (depth > kMaxDepth) fail("maximum nesting depth exceeded");
+    if (depth > kMaxDepth)
+      fail("maximum nesting depth exceeded");
     ws();
     switch (peek()) {
-      case '{':
+    case '{':
+      ++pos_;
+      ws();
+      if (peek() == '}') {
         ++pos_;
+        return;
+      }
+      for (;;) {
         ws();
-        if (peek() == '}') {
+        skip_string();
+        ws();
+        expect(':');
+        skip_value(depth + 1);
+        ws();
+        {
+          const char c = peek();
           ++pos_;
-          return;
+          if (c == '}')
+            return;
+          if (c != ',')
+            fail("expected ',' or '}' in object");
         }
-        for (;;) {
-          ws();
-          skip_string();
-          ws();
-          expect(':');
-          skip_value(depth + 1);
-          ws();
-          {
-            const char c = peek();
-            ++pos_;
-            if (c == '}') return;
-            if (c != ',') fail("expected ',' or '}' in object");
-          }
-        }
-      case '[':
+      }
+    case '[':
+      ++pos_;
+      ws();
+      if (peek() == ']') {
         ++pos_;
+        return;
+      }
+      for (;;) {
+        skip_value(depth + 1);
         ws();
-        if (peek() == ']') {
+        {
+          const char c = peek();
           ++pos_;
-          return;
+          if (c == ']')
+            return;
+          if (c != ',')
+            fail("expected ',' or ']' in array");
         }
-        for (;;) {
-          skip_value(depth + 1);
-          ws();
-          {
-            const char c = peek();
-            ++pos_;
-            if (c == ']') return;
-            if (c != ',') fail("expected ',' or ']' in array");
-          }
-        }
-      case '"': skip_string(); return;
-      case 't':
-        if (!literal("true")) fail("invalid literal");
-        return;
-      case 'f':
-        if (!literal("false")) fail("invalid literal");
-        return;
-      case 'n':
-        if (!literal("null")) fail("invalid literal");
-        return;
-      default: integer(); return;
+      }
+    case '"':
+      skip_string();
+      return;
+    case 't':
+      if (!literal("true"))
+        fail("invalid literal");
+      return;
+    case 'f':
+      if (!literal("false"))
+        fail("invalid literal");
+      return;
+    case 'n':
+      if (!literal("null"))
+        fail("invalid literal");
+      return;
+    default:
+      integer();
+      return;
     }
   }
 
@@ -262,10 +309,11 @@ class TokenizerScanner {
   // vocabulary.
   void finish() {
     ws();
-    if (pos_ != s_.size()) fail("trailing content after JSON document");
+    if (pos_ != s_.size())
+      fail("trailing content after JSON document");
   }
 
- private:
+private:
   static constexpr int kMaxDepth = 64;
 
   [[noreturn]] void fail(const char* what) const {
@@ -285,7 +333,8 @@ class TokenizerScanner {
   }
 
   char peek() {
-    if (pos_ >= s_.size()) fail("unexpected end of input");
+    if (pos_ >= s_.size())
+      fail("unexpected end of input");
     return s_[pos_];
   }
 
@@ -297,18 +346,21 @@ class TokenizerScanner {
 
   void expect(char c) {
     ws();
-    if (pos_ >= s_.size() || s_[pos_] != c) fail("expected character");
+    if (pos_ >= s_.size() || s_[pos_] != c)
+      fail("expected character");
     ++pos_;
   }
 
   bool literal(std::string_view lit) {
-    if (s_.substr(pos_, lit.size()) != lit) return false;
+    if (s_.substr(pos_, lit.size()) != lit)
+      return false;
     pos_ += lit.size();
     return true;
   }
 
   uint32_t hex4() {
-    if (pos_ + 4 > s_.size()) fail("truncated \\u escape");
+    if (pos_ + 4 > s_.size())
+      fail("truncated \\u escape");
     uint32_t v = 0;
     for (int i = 0; i < 4; ++i) {
       const char c = s_[pos_++];
@@ -330,14 +382,18 @@ class TokenizerScanner {
   // tokenizer does not read.
   void skip_string() {
     ws();
-    if (pos_ >= s_.size() || s_[pos_] != '"') fail("expected a string");
+    if (pos_ >= s_.size() || s_[pos_] != '"')
+      fail("expected a string");
     ++pos_;
     for (;;) {
-      if (pos_ >= s_.size()) fail("unterminated string");
+      if (pos_ >= s_.size())
+        fail("unterminated string");
       const char c = s_[pos_++];
-      if (c == '"') return;
+      if (c == '"')
+        return;
       if (c == '\\') {
-        if (pos_ >= s_.size()) fail("unterminated escape");
+        if (pos_ >= s_.size())
+          fail("unterminated escape");
         ++pos_;
       }
     }

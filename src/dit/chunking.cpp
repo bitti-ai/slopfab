@@ -20,7 +20,8 @@ constexpr int kFramesPerLatent[5] = {1, 4, 4, 4, 4};
 constexpr double kAudioLatentsPerFrame = 40.0 / 24.0;
 
 void require(bool ok, const std::string& message) {
-  if (!ok) throw std::runtime_error("chunking: " + message);
+  if (!ok)
+    throw std::runtime_error("chunking: " + message);
 }
 
 // Pixel frames covered by latent frames [0, f), i.e. the cumulative sum of
@@ -28,7 +29,8 @@ void require(bool ok, const std::string& message) {
 // where the video offsets put them.
 int pixel_frames_before(int f) {
   int total = 0;
-  for (int j = 0; j < f; ++j) total += kFramesPerLatent[j % kLatentsPerChunkPeriod];
+  for (int j = 0; j < f; ++j)
+    total += kFramesPerLatent[j % kLatentsPerChunkPeriod];
   return total;
 }
 
@@ -36,7 +38,8 @@ int pixel_frames_before(int f) {
 // lengths, zero at the ends of the chunk sequence.
 double window_weight(int j, int extent, int lead, int tail) {
   double w = 1.0;
-  if (lead > 0 && j < lead) w = std::min(w, (static_cast<double>(j) + 0.5) / lead);
+  if (lead > 0 && j < lead)
+    w = std::min(w, (static_cast<double>(j) + 0.5) / lead);
   if (tail > 0 && j >= extent - tail) {
     w = std::min(w, (static_cast<double>(extent - j) - 0.5) / tail);
   }
@@ -53,7 +56,8 @@ void accumulate(const float* src, int extent, int lead, int tail, int slice_widt
     weight[out_slice] += w;
     const float* in = src + static_cast<size_t>(j) * slice_width;
     float* out = dst.data() + out_slice * slice_width;
-    for (int k = 0; k < slice_width; ++k) out[k] += static_cast<float>(w * in[k]);
+    for (int k = 0; k < slice_width; ++k)
+      out[k] += static_cast<float>(w * in[k]);
   }
 }
 
@@ -62,11 +66,12 @@ void normalise(std::vector<float>& data, const std::vector<double>& weight, int 
     require(weight[s] > 0.0, "a slice of the full request is covered by no chunk");
     const double inv = 1.0 / weight[s];
     float* out = data.data() + s * slice_width;
-    for (int k = 0; k < slice_width; ++k) out[k] = static_cast<float>(out[k] * inv);
+    for (int k = 0; k < slice_width; ++k)
+      out[k] = static_cast<float>(out[k] * inv);
   }
 }
 
-}  // namespace
+} // namespace
 
 ChunkPlan resolve_chunk_plan(const SequenceLayout& full, const SequenceLayout& chunk,
                              int num_chunks) {
@@ -88,9 +93,9 @@ ChunkPlan resolve_chunk_plan(const SequenceLayout& full, const SequenceLayout& c
   const int frame_span = full.num_latent_frames - chunk.num_latent_frames;
   const int divisor = num_chunks - 1;
   require(frame_span % divisor == 0,
-          "chunks do not tile: " + std::to_string(full.num_latent_frames) + " latent frames minus " +
-              std::to_string(chunk.num_latent_frames) + " is not divisible by " +
-              std::to_string(divisor));
+          "chunks do not tile: " + std::to_string(full.num_latent_frames) +
+              " latent frames minus " + std::to_string(chunk.num_latent_frames) +
+              " is not divisible by " + std::to_string(divisor));
   plan.latent_stride = frame_span / divisor;
   require(plan.latent_stride > 0, "the chunk stride must be positive");
   require(plan.latent_stride % kLatentsPerChunkPeriod == 0,
@@ -159,8 +164,8 @@ void slice_chunk_noise(uint64_t seed, const SequenceLayout& full, const Sequence
   const size_t frame_stride = static_cast<size_t>(Hl) * Wl;
   std::vector<float> sub(static_cast<size_t>(kChannels) * Fc * frame_stride);
   for (int c = 0; c < kChannels; ++c) {
-    const float* src = field.data() + (static_cast<size_t>(c) * full.num_latent_frames + f0) *
-                                          frame_stride;
+    const float* src =
+        field.data() + (static_cast<size_t>(c) * full.num_latent_frames + f0) * frame_stride;
     float* dst = sub.data() + static_cast<size_t>(c) * Fc * frame_stride;
     std::copy(src, src + static_cast<size_t>(Fc) * frame_stride, dst);
   }
@@ -233,4 +238,4 @@ void blend_chunks(const SequenceLayout& full, const SequenceLayout& chunk, const
   normalise(*audio_rows_out, audio_weight, kAudioDim);
 }
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

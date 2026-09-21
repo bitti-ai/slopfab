@@ -8,7 +8,8 @@ namespace slopfab::video::mux_detail {
 // code that exists so an exotic build degrades in quality rather than failing.
 std::vector<float> resample_linear(const std::vector<float>& in, int channels, int in_rate,
                                    int out_rate) {
-  if (in_rate == out_rate || in.empty()) return in;
+  if (in_rate == out_rate || in.empty())
+    return in;
   const size_t in_frames = in.size() / static_cast<size_t>(channels);
   const size_t out_frames =
       static_cast<size_t>(static_cast<double>(in_frames) * out_rate / in_rate);
@@ -41,21 +42,21 @@ void fill_audio_frame(const std::vector<float>& interleaved, size_t first, int c
       const size_t src = (first + static_cast<size_t>(i)) * channels + c;
       const float v = src < interleaved.size() ? interleaved[src] : 0.0f;
       switch (sample_fmt) {
-        case kSampleFmtFltp:
-          reinterpret_cast<float*>(data[c])[i] = v;
-          break;
-        case kSampleFmtFlt:
-          reinterpret_cast<float*>(data[0])[i * channels + c] = v;
-          break;
-        case kSampleFmtS16p:
-          reinterpret_cast<int16_t*>(data[c])[i] = to_s16(v);
-          break;
-        default:  // kSampleFmtS16
-          reinterpret_cast<int16_t*>(data[0])[i * channels + c] = to_s16(v);
-          break;
+      case kSampleFmtFltp:
+        reinterpret_cast<float*>(data[c])[i] = v;
+        break;
+      case kSampleFmtFlt:
+        reinterpret_cast<float*>(data[0])[i * channels + c] = v;
+        break;
+      case kSampleFmtS16p:
+        reinterpret_cast<int16_t*>(data[c])[i] = to_s16(v);
+        break;
+      default: // kSampleFmtS16
+        reinterpret_cast<int16_t*>(data[0])[i * channels + c] = to_s16(v);
+        break;
       }
     }
   }
 }
 
-}  // namespace slopfab::video::mux_detail
+} // namespace slopfab::video::mux_detail

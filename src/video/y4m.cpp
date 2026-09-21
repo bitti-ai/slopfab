@@ -32,10 +32,12 @@ inline uint8_t clamp_u8(float v) {
 unsigned choose_workers(size_t count, size_t work, size_t min_work) {
   constexpr unsigned kMaxWorkers = 8;
   unsigned workers = std::thread::hardware_concurrency();
-  if (workers == 0) workers = 1;
+  if (workers == 0)
+    workers = 1;
   workers = std::min(workers, kMaxWorkers);
   workers = static_cast<unsigned>(std::min<size_t>(workers, std::max<size_t>(count, 1)));
-  if (work < min_work) workers = 1;
+  if (work < min_work)
+    workers = 1;
   return workers;
 }
 
@@ -44,9 +46,11 @@ unsigned choose_workers(size_t count, size_t work, size_t min_work) {
 // still-joinable threads and call std::terminate.
 struct JoiningPool {
   std::vector<std::thread> threads;
+
   ~JoiningPool() {
     for (std::thread& t : threads) {
-      if (t.joinable()) t.join();
+      if (t.joinable())
+        t.join();
     }
   }
 };
@@ -64,7 +68,8 @@ void static_ranges(size_t count, size_t work, size_t min_work, const Body& body)
   for (unsigned w = 1; w < workers; ++w) {
     const size_t begin = std::min(count, share * w);
     const size_t end = std::min(count, begin + share);
-    if (begin == end) break;
+    if (begin == end)
+      break;
     pool.threads.emplace_back(body, begin, end);
   }
   body(static_cast<size_t>(0), std::min(count, share));
@@ -72,7 +77,7 @@ void static_ranges(size_t count, size_t work, size_t min_work, const Body& body)
 
 // Roughly 1.5 lround per pixel plus three plane reads. The floor is in pixels
 // rather than bytes because the arithmetic, not the traffic, is what dominates.
-constexpr size_t kMinParallelPixels = 1u << 18;  // 256k pixels
+constexpr size_t kMinParallelPixels = 1u << 18; // 256k pixels
 
 // One frame's chroma rows [begin, end), serially, plus the odd tail luma row
 // when `end` is the last range. Both the row-split entry point and the .y4m
@@ -129,7 +134,7 @@ void yuv420_chroma_rows(size_t begin, size_t end, const float* r, const float* g
   }
 }
 
-}  // namespace
+} // namespace
 
 void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int height, int width,
                          uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
@@ -151,8 +156,8 @@ void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int hei
                 });
 }
 
-void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames,
-               int height, int width, FrameRate fps, FrameConverter* converter) {
+void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames, int height,
+               int width, FrameRate fps, FrameConverter* converter) {
   if (frames <= 0 || height <= 0 || width <= 0) {
     throw std::runtime_error("y4m: frame count and dimensions must be positive");
   }
@@ -168,10 +173,11 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
   }
 
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) throw std::runtime_error("y4m: cannot open " + path + " for writing");
+  if (!out)
+    throw std::runtime_error("y4m: cannot open " + path + " for writing");
 
-  out << "YUV4MPEG2 W" << width << " H" << height << " F" << fps.numerator << ":"
-      << fps.denominator << " Ip A1:1 C420jpeg\n";
+  out << "YUV4MPEG2 W" << width << " H" << height << " F" << fps.numerator << ":" << fps.denominator
+      << " Ip A1:1 C420jpeg\n";
 
   const size_t plane = static_cast<size_t>(frames) * frame_pixels;
   const float* r_plane = planar_rgb.data();
@@ -192,10 +198,9 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
   // so the bytes on disk are exactly what the serial loop wrote. The cost is
   // `workers` copies of one frame's YUV rather than one — about 12 MiB at
   // 1280x768 with eight workers.
-  const unsigned workers = converter != nullptr
-                               ? 1u
-                               : choose_workers(static_cast<size_t>(frames), frame_pixels,
-                                                kMinParallelPixels);
+  const unsigned workers = converter != nullptr ? 1u
+                                                : choose_workers(static_cast<size_t>(frames),
+                                                                 frame_pixels, kMinParallelPixels);
   std::vector<std::vector<uint8_t>> luma(workers), cb(workers), cr(workers);
   for (unsigned w = 0; w < workers; ++w) {
     luma[w].resize(frame_pixels);
@@ -219,10 +224,9 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
         throw;
       }
     } else {
-      yuv420_chroma_rows(0, chroma_h, r_plane + base, g_plane + base, b_plane + base,
-                         height, width, luma[w].data(), width, cb[w].data(),
-                         static_cast<int>(chroma_w), cr[w].data(),
-                         static_cast<int>(chroma_w));
+      yuv420_chroma_rows(0, chroma_h, r_plane + base, g_plane + base, b_plane + base, height, width,
+                         luma[w].data(), width, cb[w].data(), static_cast<int>(chroma_w),
+                         cr[w].data(), static_cast<int>(chroma_w));
     }
   };
 
@@ -235,7 +239,7 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
         pool.threads.emplace_back(convert, f0 + k, static_cast<unsigned>(k));
       }
       convert(f0, 0);
-    }  // every worker in the batch has joined before a byte of it is written
+    } // every worker in the batch has joined before a byte of it is written
     for (int k = 0; k < n; ++k) {
       out << "FRAME\n";
       out.write(reinterpret_cast<const char*>(luma[k].data()),
@@ -247,11 +251,12 @@ void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frame
     }
   }
 
-  if (!out) throw std::runtime_error("y4m: write failed for " + path);
+  if (!out)
+    throw std::runtime_error("y4m: write failed for " + path);
 }
 
-void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frames,
-               int height, int width, int frame_index) {
+void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frames, int height,
+               int width, int frame_index) {
   if (frame_index < 0 || frame_index >= frames) {
     throw std::runtime_error("ppm: frame index out of range");
   }
@@ -260,7 +265,8 @@ void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frame
   const size_t base = static_cast<size_t>(frame_index) * frame_pixels;
 
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) throw std::runtime_error("ppm: cannot open " + path + " for writing");
+  if (!out)
+    throw std::runtime_error("ppm: cannot open " + path + " for writing");
   out << "P6\n" << width << " " << height << "\n255\n";
 
   std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
@@ -273,7 +279,8 @@ void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frame
     }
     out.write(reinterpret_cast<const char*>(row.data()), static_cast<std::streamsize>(row.size()));
   }
-  if (!out) throw std::runtime_error("ppm: write failed for " + path);
+  if (!out)
+    throw std::runtime_error("ppm: write failed for " + path);
 }
 
-}  // namespace slopfab::video
+} // namespace slopfab::video

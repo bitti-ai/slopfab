@@ -39,12 +39,10 @@ void launch_split_qkv_norm_rope(const float* qkv, const float* bias, const float
 // Same fp32 computation and BF16 rounding as launch_split_qkv_norm_rope
 // followed by three launch_heads_to_tokens_bf16 calls, but writes the
 // attention kernel's token-major BF16 inputs directly.
-void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias,
-                                     const float* cos_tab, const float* sin_tab,
-                                     __nv_bfloat16* q, __nv_bfloat16* k,
+void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias, const float* cos_tab,
+                                     const float* sin_tab, __nv_bfloat16* q, __nv_bfloat16* k,
                                      __nv_bfloat16* v, int seq, int heads, int head_dim,
-                                     int rope_dim, int num_patches, float eps,
-                                     cudaStream_t stream);
+                                     int rope_dim, int num_patches, float eps, cudaStream_t stream);
 
 void launch_softmax_rows(float* scores, int rows, int cols, float scale, cudaStream_t stream);
 
@@ -71,8 +69,7 @@ void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t s
 
 // Converts BF16 attention output directly to the following fp16 GEMM operand.
 // This is exactly the old lossless BF16->fp32 widen followed by fp32->fp16 RN.
-void launch_bf16_to_f16(const __nv_bfloat16* src, void* dst, size_t count,
-                        cudaStream_t stream);
+void launch_bf16_to_f16(const __nv_bfloat16* src, void* dst, size_t count, cudaStream_t stream);
 
 // Converts head-major [heads, seq, dim] fp32 into the token-major BF16 layout
 // consumed by the shared fused-attention kernel.
@@ -89,12 +86,11 @@ void launch_depth_to_space(const float* tokens, float* out, int T, int H, int W,
 
 // Adds the projection bias in fp32 at the old rounding point while scattering
 // tokens to pixels, eliminating the standalone full projection pass.
-void launch_depth_to_space_bias(const float* tokens, const float* bias, float* out,
-                                int T, int H, int W, int channels, int patch_t, int patch,
-                                cudaStream_t stream);
+void launch_depth_to_space_bias(const float* tokens, const float* bias, float* out, int T, int H,
+                                int W, int channels, int patch_t, int patch, cudaStream_t stream);
 
 // out = z_norm * std + mean, per channel over [channels, voxels].
 void launch_latent_denorm(const float* z_norm, const float* mean, const float* std_dev, float* out,
                           int channels, int voxels, cudaStream_t stream);
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

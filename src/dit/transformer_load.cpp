@@ -96,8 +96,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     if (is_nf4(checkpoint, final_adaln)) {
       plan_nf4(final_adaln, final_adaln_out, config.timestep_embed_dim);
     } else {
-      plan.require(final_adaln + ".weight",
-                   {final_adaln_out, config.timestep_embed_dim}, Store::kVerbatim);
+      plan.require(final_adaln + ".weight", {final_adaln_out, config.timestep_embed_dim},
+                   Store::kVerbatim);
       plan.optional_scalar(final_adaln + ".weight_scale");
     }
     plan.optional("final_layer.adaln_proj.linear.input_scale");
@@ -152,7 +152,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     plan.require(prefix + "attn.q_norm.weight", {head_dim}, Store::kAsBF16);
     plan.require(prefix + "attn.k_norm.weight", {head_dim}, Store::kAsBF16);
     plan_linear(prefix + "attn.out_proj", hidden, inner);
-    if (with_adaln && s.is_vsa()) plan_linear(prefix + "attn.to_gate_compress", inner, hidden);
+    if (with_adaln && s.is_vsa())
+      plan_linear(prefix + "attn.to_gate_compress", inner, hidden);
     plan_linear(prefix + "mlp.fc1", 2 * ffn, hidden);
     plan_linear(prefix + "mlp.fc2", hidden, ffn);
     if (with_adaln) {
@@ -181,12 +182,14 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   size_t fixed_bytes = 0, adapter_rank = 0, adapter_out = 0;
   for (const auto& item : plan.records()) {
     const int block = streamable_block(item.first);
-    if (block >= 0) block_bytes.at(block) += align_up(item.second.bytes);
-    else fixed_bytes += align_up(item.second.bytes);
+    if (block >= 0)
+      block_bytes.at(block) += align_up(item.second.bytes);
+    else
+      fixed_bytes += align_up(item.second.bytes);
   }
   auto count_adapters = [&](const std::string& prefix, size_t& bytes) {
-    visit_block_loras(loras, prefix, config,
-        [&](int, const std::vector<LoraFactors>& factors, int, int out) {
+    visit_block_loras(
+        loras, prefix, config, [&](int, const std::vector<LoraFactors>& factors, int, int out) {
           for (const auto& f : factors) {
             const size_t n = align_up(f.a.size() * 2) + align_up(size_t(out) * f.rank * 2);
             bytes += n;
@@ -202,12 +205,15 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
   int forced = options.offload_blocks;
   if (const char* value = std::getenv("SLOPFAB_DIT_OFFLOAD_BLOCKS")) {
-    size_t end = 0; forced = std::stoi(value, &end);
-    if (value[end] != '\0') throw std::invalid_argument("invalid SLOPFAB_DIT_OFFLOAD_BLOCKS");
+    size_t end = 0;
+    forced = std::stoi(value, &end);
+    if (value[end] != '\0')
+      throw std::invalid_argument("invalid SLOPFAB_DIT_OFFLOAD_BLOCKS");
   }
   size_t cap = options.device_budget_bytes;
   if (const char* value = std::getenv("SLOPFAB_DIT_VRAM_GIB")) {
-    size_t end = 0; const double gib = std::stod(value, &end);
+    size_t end = 0;
+    const double gib = std::stod(value, &end);
     if (value[end] != '\0' || !std::isfinite(gib) || gib <= 0 || gib > 1048576)
       throw std::invalid_argument("invalid SLOPFAB_DIT_VRAM_GIB");
     cap = static_cast<size_t>(gib * 1024 * 1024 * 1024);
@@ -216,45 +222,55 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   if (options.layout) {
     const auto& layout = *options.layout;
     // Conservative ConvRot scratch even for archives that do not use it.
-    const Carve main = plan_carve(config, layout, s.row_chunk, s.attention_mode,
-                                  true, s.compact_queries(s.attention_mode), s.is_vsa());
-    const Carve plain = plan_carve(config, layout, s.row_chunk, s.attention_mode,
-                                   false, s.compact_queries(s.attention_mode), s.is_vsa());
+    const Carve main = plan_carve(config, layout, s.row_chunk, s.attention_mode, true,
+                                  s.compact_queries(s.attention_mode), s.is_vsa());
+    const Carve plain = plan_carve(config, layout, s.row_chunk, s.attention_mode, false,
+                                   s.compact_queries(s.attention_mode), s.is_vsa());
     size_t main_bytes = activation_bytes(layout) + main.total - plain.total;
     // Account for cached text and up to four distinct row timesteps, rather
     // than the two used by the original text-to-video estimator.
     main_bytes += size_t(layout.num_text) * config.hidden_size * 2;
     main_bytes += size_t(config.num_layers) * 6 * 2 * 3 * config.hidden_size * 4;
-    if (options.block_cache) main_bytes += size_t(layout.total_rows()) * config.hidden_size * 2;
+    if (options.block_cache)
+      main_bytes += size_t(layout.total_rows()) * config.hidden_size * 2;
     if (full_adaln) {
-      QuantWeight probe; probe.format = QuantFormat::kF8E4M3;
-      probe.in_features = config.timestep_embed_dim; probe.out_features = adaln_out;
+      QuantWeight probe;
+      probe.format = QuantFormat::kF8E4M3;
+      probe.in_features = config.timestep_embed_dim;
+      probe.out_features = adaln_out;
       const size_t scratch = cuda::linear_workspace_bytes(probe, 4, ComputeType::kF32);
-      if (scratch > main.scratch) main_bytes += scratch - main.scratch;
+      if (scratch > main.scratch)
+        main_bytes += scratch - main.scratch;
     }
-    SequenceLayout text_layout; text_layout.num_text = layout.num_text;
-    const Carve text = plan_carve(config, text_layout, s.row_chunk,
+    SequenceLayout text_layout;
+    text_layout.num_text = layout.num_text;
+    const Carve text = plan_carve(
+        config, text_layout, s.row_chunk,
         s.attention_mode == AttentionMode::kExact ? AttentionMode::kExact : AttentionMode::kFlash2,
-        true, s.compact_queries(s.attention_mode == AttentionMode::kExact
-            ? AttentionMode::kExact : AttentionMode::kFlash2));
-    const size_t text_bytes = text.total + size_t(layout.num_text) *
-        (config.text_dim * 6 + config.hidden_size * 2);
+        true,
+        s.compact_queries(s.attention_mode == AttentionMode::kExact ? AttentionMode::kExact
+                                                                    : AttentionMode::kFlash2));
+    const size_t text_bytes =
+        text.total + size_t(layout.num_text) * (config.text_dim * 6 + config.hidden_size * 2);
     reserve += std::max(main_bytes, text_bytes);
   }
   size_t budget = std::numeric_limits<size_t>::max();
   if (options.layout || cap || forced >= 0) {
     size_t free = 0, total = 0;
     SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
-    if (cap) free = std::min(free, cap > total - free ? cap - (total - free) : 0);
+    if (cap)
+      free = std::min(free, cap > total - free ? cap - (total - free) : 0);
     if (free <= reserve)
-      throw std::runtime_error("transformer offload: activations and safety headroom exhaust the VRAM budget");
+      throw std::runtime_error(
+          "transformer offload: activations and safety headroom exhaust the VRAM budget");
     budget = free - reserve;
   }
   const BlockOffloadPlan residency = plan_block_offload(block_bytes, fixed_bytes, budget, forced);
   if (residency.count) {
     if (!s.block_capture_path.empty() || !s.graph_capture_path.empty() ||
         !s.transformer_capture_path.empty() || !s.sol_capture_path.empty())
-      throw std::runtime_error("transformer offload: full-tensor capture requires resident weights");
+      throw std::runtime_error(
+          "transformer offload: full-tensor capture requires resident weights");
     s.streamer = std::make_unique<BlockStreamer>(s.stream.get());
     s.streamer->initialize(residency, block_bytes);
   }
@@ -282,11 +298,12 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   }
   if (residency.count || cuda::StepProfiler::instance().enabled()) {
     constexpr double gib = 1024.0 * 1024 * 1024;
-    std::printf("offload     blocks [%zu,%zu) of %d; weights+adapters %.3f GiB GPU, "
-                "%.3f GiB pinned CPU, %zu transfer slots (%.3f GiB); activation/headroom reserve %.3f GiB\n",
-                residency.first, residency.first + residency.count, config.num_layers,
-                residency.device_bytes / gib, residency.host_bytes / gib, residency.slots(),
-                residency.slots() * residency.slot_bytes / gib, reserve / gib);
+    std::printf(
+        "offload     blocks [%zu,%zu) of %d; weights+adapters %.3f GiB GPU, "
+        "%.3f GiB pinned CPU, %zu transfer slots (%.3f GiB); activation/headroom reserve %.3f GiB\n",
+        residency.first, residency.first + residency.count, config.num_layers,
+        residency.device_bytes / gib, residency.host_bytes / gib, residency.slots(),
+        residency.slots() * residency.slot_bytes / gib, reserve / gib);
     std::fflush(stdout);
   }
 
@@ -329,7 +346,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
       }
     }
     cuda::DeviceBuffer<uint16_t> widen_src;
-    if (widen_max != 0) widen_src.allocate(widen_max);
+    if (widen_max != 0)
+      widen_src.allocate(widen_max);
     Uploader up(s.stream.get(), &lock);
     for (const auto& kv : plan.records()) {
       const Record& r = kv.second;
@@ -337,12 +355,16 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
       const int block = streamable_block(kv.first);
       const bool staged = s.streamer && block >= 0 && s.streamer->contains(block);
       auto copy = [&](const void* source, size_t bytes, bool mapping) {
-        if (staged) std::memcpy(dst, source, bytes);
-        else up.copy(dst, source, bytes, mapping);
+        if (staged)
+          std::memcpy(dst, source, bytes);
+        else
+          up.copy(dst, source, bytes, mapping);
       };
       if (loras && !full_adaln) {
-        const bool weight = kv.first.size() > 7 && kv.first.compare(kv.first.size() - 7, 7, ".weight") == 0;
-        const bool bias = kv.first.size() > 5 && kv.first.compare(kv.first.size() - 5, 5, ".bias") == 0;
+        const bool weight =
+            kv.first.size() > 7 && kv.first.compare(kv.first.size() - 7, 7, ".weight") == 0;
+        const bool bias =
+            kv.first.size() > 5 && kv.first.compare(kv.first.size() - 5, 5, ".bias") == 0;
         const std::string name = kv.first.substr(0, kv.first.size() - (weight ? 7 : bias ? 5 : 0));
         if ((weight || bias) && loras->has_adaln(name)) {
           wide = weight ? loras->merged_adaln_weight(checkpoint, name)
@@ -351,8 +373,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
           continue;
         }
       }
-      if (loras && (kv.first == "video_patch_proj.weight" ||
-                    kv.first == "final_layer.video_out.weight")) {
+      if (loras &&
+          (kv.first == "video_patch_proj.weight" || kv.first == "final_layer.video_out.weight")) {
         const std::string name = kv.first.substr(0, kv.first.size() - 7);
         if (loras->find(name)) {
           wide = loras->merged_endpoint_weight(checkpoint, name);
@@ -360,8 +382,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
           continue;
         }
       }
-      if (interleaved_qkv &&
-          (kv.first.find(".attn.qkv_proj.weight") != std::string::npos) &&
+      if (interleaved_qkv && (kv.first.find(".attn.qkv_proj.weight") != std::string::npos) &&
           r.view->shape.size() == 2) {
         reordered = deinterleave_qkv_rows(*r.view, head_dim);
         // These records retain their disk dtype (INT8 weights / F32 scales).
@@ -371,55 +392,56 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
         continue;
       }
       switch (r.store) {
-        case Store::kVerbatim:
+      case Store::kVerbatim:
+        copy(r.view->data, r.bytes, /*from_mapping=*/true);
+        break;
+      case Store::kAsF32:
+        // The arena wants fp32 here, and the two dtypes that actually occur
+        // reach it without a host conversion loop at all.
+        //
+        // fp32 on disk is already the arena's format, so `to_f32` was
+        // copying it element by element into a scratch vector in order to
+        // upload an identical copy. It is a straight DMA out of the mapping.
+        //
+        // fp16 -> fp32 is exact, so sending the fp16 bytes and widening on
+        // the device produces the same arena bytes while halving the traffic
+        // and dropping the single-threaded host loop — 43.6 M elements of
+        // AdaLN projection on the real checkpoint. `ViTDecoder::load` has
+        // done this since the video VAE work; `test_widen_f16` compares the
+        // device kernel against `f16_to_f32` over every finite fp16 bit
+        // pattern.
+        //
+        // Note what this does *not* do: the arena still stores these records
+        // as fp32, so it saves no device memory. That is not an oversight,
+        // it is the thing that was verified — `SLOPFAB_ARENA_HASH=1` over
+        // fl2va_pruned_fp8_scaled.safetensors gives 21045398272 bytes, 730
+        // records, fnv1a 190cdce19da29c2d both before and after this change.
+        // An arena that got smaller would be a different arena.
+        if (r.view->dtype == DType::kF32) {
           copy(r.view->data, r.bytes, /*from_mapping=*/true);
-          break;
-        case Store::kAsF32:
-          // The arena wants fp32 here, and the two dtypes that actually occur
-          // reach it without a host conversion loop at all.
-          //
-          // fp32 on disk is already the arena's format, so `to_f32` was
-          // copying it element by element into a scratch vector in order to
-          // upload an identical copy. It is a straight DMA out of the mapping.
-          //
-          // fp16 -> fp32 is exact, so sending the fp16 bytes and widening on
-          // the device produces the same arena bytes while halving the traffic
-          // and dropping the single-threaded host loop — 43.6 M elements of
-          // AdaLN projection on the real checkpoint. `ViTDecoder::load` has
-          // done this since the video VAE work; `test_widen_f16` compares the
-          // device kernel against `f16_to_f32` over every finite fp16 bit
-          // pattern.
-          //
-          // Note what this does *not* do: the arena still stores these records
-          // as fp32, so it saves no device memory. That is not an oversight,
-          // it is the thing that was verified — `SLOPFAB_ARENA_HASH=1` over
-          // fl2va_pruned_fp8_scaled.safetensors gives 21045398272 bytes, 730
-          // records, fnv1a 190cdce19da29c2d both before and after this change.
-          // An arena that got smaller would be a different arena.
-          if (r.view->dtype == DType::kF32) {
-            copy(r.view->data, r.bytes, /*from_mapping=*/true);
-          } else if (r.view->dtype == DType::kF16 && !staged) {
-            const auto count = static_cast<size_t>(r.view->numel());
-            // Reuse across records needs no synchronise: both halves are on
-            // `s.stream`, so the next record's copy into `widen_src` is
-            // ordered after this widen has finished reading it. The buffer is
-            // never reallocated here — see the sizing loop above for why that
-            // distinction matters.
-            up.copy(widen_src.get(), r.view->data, count * sizeof(uint16_t),
-                    /*from_mapping=*/true);
-            cuda::launch_widen_f16(widen_src.get(), reinterpret_cast<float*>(dst), count,
-                                   s.stream.get());
-          } else {
-            to_f32(*r.view, wide);
-            copy(wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
-          }
-          break;
-        case Store::kAsBF16:
+        } else if (r.view->dtype == DType::kF16 && !staged) {
+          const auto count = static_cast<size_t>(r.view->numel());
+          // Reuse across records needs no synchronise: both halves are on
+          // `s.stream`, so the next record's copy into `widen_src` is
+          // ordered after this widen has finished reading it. The buffer is
+          // never reallocated here — see the sizing loop above for why that
+          // distinction matters.
+          up.copy(widen_src.get(), r.view->data, count * sizeof(uint16_t),
+                  /*from_mapping=*/true);
+          cuda::launch_widen_f16(widen_src.get(), reinterpret_cast<float*>(dst), count,
+                                 s.stream.get());
+        } else {
           to_f32(*r.view, wide);
-          narrow.resize(wide.size());
-          for (size_t i = 0; i < wide.size(); ++i) narrow[i] = f32_to_bf16(wide[i]);
-          copy(narrow.data(), narrow.size() * sizeof(uint16_t), /*from_mapping=*/false);
-          break;
+          copy(wide.data(), wide.size() * sizeof(float), /*from_mapping=*/false);
+        }
+        break;
+      case Store::kAsBF16:
+        to_f32(*r.view, wide);
+        narrow.resize(wide.size());
+        for (size_t i = 0; i < wide.size(); ++i)
+          narrow[i] = f32_to_bf16(wide[i]);
+        copy(narrow.data(), narrow.size() * sizeof(uint16_t), /*from_mapping=*/false);
+        break;
       }
     }
   }
@@ -434,7 +456,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   if (const char* want = std::getenv("SLOPFAB_ARENA_HASH"); want != nullptr && want[0] == '1') {
     constexpr size_t kChunk = 64u << 20;
     std::vector<uint64_t> host(kChunk / sizeof(uint64_t));
-    uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
+    uint64_t h = 1469598103934665603ull; // FNV-1a offset basis
     size_t left = s.arena_bytes;
     const uint8_t* src = base;
     while (left > 0) {
@@ -443,7 +465,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
       // Whole words only; the arena's records are 256-byte aligned, so the
       // trailing partial word can only be padding this loop never reaches.
       const size_t words = n / sizeof(uint64_t);
-      for (size_t i = 0; i < words; ++i) h = (h ^ host[i]) * 1099511628211ull;
+      for (size_t i = 0; i < words; ++i)
+        h = (h ^ host[i]) * 1099511628211ull;
       src += n;
       left -= n;
     }
@@ -456,20 +479,24 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
   auto ptr = [&](const std::string& name) -> const void* {
     const auto it = plan.records().find(name);
-    if (it == plan.records().end()) return nullptr;
+    if (it == plan.records().end())
+      return nullptr;
     return destinations.at(name);
   };
   auto bf = [&](const std::string& name) {
     return static_cast<const __nv_bfloat16*>(ptr(name));
   };
-  auto f32 = [&](const std::string& name) { return static_cast<const float*>(ptr(name)); };
+  auto f32 = [&](const std::string& name) {
+    return static_cast<const float*>(ptr(name));
+  };
 
   // A scalar `input_scale` is a host value: it selects a code path rather than
   // feeding a kernel. Zero means absent, which for an fp8 weight is the
   // checkpoint asserting the layer must run at full precision (spec 8.2).
   auto host_scalar = [&](const std::string& name) -> float {
     const TensorView* v = checkpoint.find(name);
-    if (v == nullptr) return 0.0f;
+    if (v == nullptr)
+      return 0.0f;
     std::vector<float> tmp;
     to_f32(*v, tmp);
     return tmp.empty() ? 0.0f : tmp[0];
@@ -526,11 +553,11 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     w.full_precision = tag.full_precision;
     if (tag.convrot) {
       int power = 1;
-      while (power < tag.convrot_group) power *= 4;
+      while (power < tag.convrot_group)
+        power *= 4;
       if (tag.format != "int8_tensorwise" || w.format != QuantFormat::kI8 ||
           power != tag.convrot_group) {
-        throw std::runtime_error("transformer: '" + name +
-                                 "' has incompatible ConvRot metadata");
+        throw std::runtime_error("transformer: '" + name + "' has incompatible ConvRot metadata");
       }
       // The quantiser deliberately leaves a non-aligned contraction axis
       // unrotated, so apply the same per-tensor rule at inference time.
@@ -604,13 +631,15 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     }
 
     b.out_proj = quant(prefix + "attn.out_proj", hidden, inner);
-    if (with_adaln && s.is_vsa()) b.compress_gate = quant(prefix + "attn.to_gate_compress", inner, hidden);
+    if (with_adaln && s.is_vsa())
+      b.compress_gate = quant(prefix + "attn.to_gate_compress", inner, hidden);
     b.fc1 = quant(prefix + "mlp.fc1", 2 * ffn, hidden);
     b.fc2 = quant(prefix + "mlp.fc2", hidden, ffn);
     const int staged_block = streamable_block(prefix);
     const bool staged = s.streamer && staged_block >= 0 && s.streamer->contains(staged_block);
     const QuantWeight* projections[] = {&b.wq, &b.wk, &b.wv, &b.out_proj, &b.fc1, &b.fc2};
-    visit_block_loras(loras, prefix, config,
+    visit_block_loras(
+        loras, prefix, config,
         [&](int projection, const std::vector<LoraFactors>& factors, int offset, int out) {
           const void* key = projections[projection]->data;
           if (staged) {
@@ -629,8 +658,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
     if (with_adaln) {
       if (full_adaln) {
-        b.full_adaln = quant(prefix + "adaln_proj.linear", adaln_out,
-                             config.timestep_embed_dim);
+        b.full_adaln = quant(prefix + "adaln_proj.linear", adaln_out, config.timestep_embed_dim);
         b.full_adaln.bias = ptr(prefix + "adaln_proj.linear.bias");
         b.full_adaln.bias_format = QuantFormat::kBF16;
       } else {
@@ -649,15 +677,16 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   for (int i = 0; i < config.num_layers; ++i) {
     s.blocks.push_back(build_block("blocks." + std::to_string(i) + ".", true));
   }
-  if (s.streamer) for (size_t i = s.streamer->first; i < s.blocks.size(); ++i)
-    if (s.streamer->blocks[i].cursor != s.streamer->blocks[i].host.size())
-      throw std::runtime_error("transformer offload: staged block size does not match its plan");
+  if (s.streamer)
+    for (size_t i = s.streamer->first; i < s.blocks.size(); ++i)
+      if (s.streamer->blocks[i].cursor != s.streamer->blocks[i].host.size())
+        throw std::runtime_error("transformer offload: staged block size does not match its plan");
 
   s.refiner_final_norm = bf("token_refiner.final_norm.weight");
   s.final_norm = bf("final_layer.norm.weight");
   if (full_adaln) {
-    s.final_full_adaln = quant("final_layer.adaln_proj.linear", final_adaln_out,
-                               config.timestep_embed_dim);
+    s.final_full_adaln =
+        quant("final_layer.adaln_proj.linear", final_adaln_out, config.timestep_embed_dim);
     s.final_full_adaln.bias = ptr("final_layer.adaln_proj.linear.bias");
     s.final_full_adaln.bias_format = QuantFormat::kBF16;
   } else {
@@ -685,8 +714,8 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   s.audio_out = fp32_layer("final_layer.audio_out", config.audio_in_channels, hidden);
 
   if (full_adaln) {
-    s.timestep_embedding.load(checkpoint, config.timestep_freq_dim,
-                              config.timestep_hidden_dim, config.timestep_embed_dim);
+    s.timestep_embedding.load(checkpoint, config.timestep_freq_dim, config.timestep_hidden_dim,
+                              config.timestep_embed_dim);
   } else {
     s.table.load(checkpoint);
   }
@@ -694,5 +723,4 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
 
 // ---------------------------------------------------------------------------
 
-
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

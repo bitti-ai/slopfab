@@ -26,7 +26,7 @@ struct KeyframeEncoderStats {
 // arena is reused through all six levels without per-block allocation or
 // submission. No CUDA symbol or fallback is reachable from this type.
 class KeyframeEncoder {
- public:
+public:
   KeyframeEncoder();
   ~KeyframeEncoder();
   KeyframeEncoder(KeyframeEncoder&&) noexcept;
@@ -41,20 +41,19 @@ class KeyframeEncoder {
 
   // ImageNet-normalized planar [3,H,W] -> moments [48,H/16,W/16].
   std::vector<float> encode_moments(const float* pixels, int height, int width);
-  std::vector<float> encode_condition_rows(
-      const RGBImage& image, const float* normal,
-      const std::vector<float>& latents_mean,
-      const std::vector<float>& latents_std);
-  std::vector<float> encode_reference_image(
-      const RGBImage& image, const std::vector<float>& latents_mean,
-      const std::vector<float>& latents_std);
+  std::vector<float> encode_condition_rows(const RGBImage& image, const float* normal,
+                                           const std::vector<float>& latents_mean,
+                                           const std::vector<float>& latents_std);
+  std::vector<float> encode_reference_image(const RGBImage& image,
+                                            const std::vector<float>& latents_mean,
+                                            const std::vector<float>& latents_std);
 
   const KeyframeEncoderStats& stats() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit KeyframeEncoder(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

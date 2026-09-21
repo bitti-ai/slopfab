@@ -43,14 +43,12 @@ struct ExactH3DenoiseResult {
   bool cancelled = false;
 };
 
-using ExactH3DenoiseProgress = std::function<bool(uint32_t step,
-                                                  uint32_t total_steps)>;
+using ExactH3DenoiseProgress = std::function<bool(uint32_t step, uint32_t total_steps)>;
 using ExactH3DenoiseBoundary = std::function<void(
-    uint32_t step, const std::vector<float>& video_rows,
-    const std::vector<float>& audio_rows)>;
+    uint32_t step, const std::vector<float>& video_rows, const std::vector<float>& audio_rows)>;
 
 class ExactH3Denoiser {
- public:
+public:
   ExactH3Denoiser();
   ~ExactH3Denoiser();
   ExactH3Denoiser(ExactH3Denoiser&&) noexcept;
@@ -58,8 +56,7 @@ class ExactH3Denoiser {
   ExactH3Denoiser(const ExactH3Denoiser&) = delete;
   ExactH3Denoiser& operator=(const ExactH3Denoiser&) = delete;
 
-  static ExactH3Denoiser create(TensorContext& context,
-                                const ExactH3DenoiseConfig& config);
+  static ExactH3Denoiser create(TensorContext& context, const ExactH3DenoiseConfig& config);
   void load(const SafeTensors& checkpoint);
   void unload() noexcept;
   bool loaded() const noexcept;
@@ -68,16 +65,14 @@ class ExactH3Denoiser {
 
   // All host spans must exactly match the configured text/video/audio rows.
   // This is the only input activation boundary in a trajectory.
-  void prepare(const float* prompt, uint64_t prompt_elements,
-               const float* video_rows, uint64_t video_elements,
-               const float* audio_rows, uint64_t audio_elements,
+  void prepare(const float* prompt, uint64_t prompt_elements, const float* video_rows,
+               uint64_t video_elements, const float* audio_rows, uint64_t audio_elements,
                const H3TransformerTextReplayTaps* taps = nullptr);
 
   // Only exact Euler is accepted. The two schedules must describe the same
   // number of evaluations. Progress is called after each completed update;
   // false returns the current, consistently updated device trajectory.
-  ExactH3DenoiseResult run(const sampler::FlowScheduler& video,
-                           const sampler::FlowScheduler& audio,
+  ExactH3DenoiseResult run(const sampler::FlowScheduler& video, const sampler::FlowScheduler& audio,
                            const ExactH3DenoiseProgress& progress = {},
                            const ExactH3DenoiseBoundary& boundary = {},
                            const H3TransformerForwardReplayTaps* taps = nullptr);
@@ -85,13 +80,12 @@ class ExactH3Denoiser {
   uint64_t persistent_bytes() const noexcept;
   uint64_t scratch_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;
-  uint32_t required_step_operators(
-      const H3TransformerForwardReplayTaps* taps = nullptr) const;
+  uint32_t required_step_operators(const H3TransformerForwardReplayTaps* taps = nullptr) const;
 
- private:
+private:
   struct Impl;
   explicit ExactH3Denoiser(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

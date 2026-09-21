@@ -12,7 +12,8 @@ namespace slopfab {
 namespace {
 
 SamplingSettings file_settings(const std::string& path) {
-  if (path.empty() || !std::filesystem::exists(path)) return {};
+  if (path.empty() || !std::filesystem::exists(path))
+    return {};
   SafeTensors checkpoint;
   checkpoint.open(path);
   try {
@@ -23,20 +24,22 @@ SamplingSettings file_settings(const std::string& path) {
 }
 
 bool has_settings(const SamplingSettings& settings) {
-  return settings.default_steps || settings.video_sigma_shift || settings.audio_sigma_shift || settings.base_sigmas;
+  return settings.default_steps || settings.video_sigma_shift || settings.audio_sigma_shift ||
+         settings.base_sigmas;
 }
 
 template <typename T>
 void merge_adapter_field(std::optional<T>& target, const std::optional<T>& incoming,
                          const std::optional<T>& explicit_value, const char* field) {
-  if (!incoming) return;
+  if (!incoming)
+    return;
   if (target && *target != *incoming && !explicit_value)
-    throw std::invalid_argument(std::string("conflicting LoRA sampling defaults for ") +
-        field + "; supply an explicit sampling override");
+    throw std::invalid_argument(std::string("conflicting LoRA sampling defaults for ") + field +
+                                "; supply an explicit sampling override");
   target = incoming;
 }
 
-}  // namespace
+} // namespace
 
 void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   SamplingSettings effective;
@@ -55,14 +58,17 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     try {
       model_settings = sampling_settings_from_metadata(checkpoint.metadata());
     } catch (const std::exception& e) {
-      throw std::invalid_argument("sampling metadata in '" + request.transformer_path + "': " + e.what());
+      throw std::invalid_argument("sampling metadata in '" + request.transformer_path +
+                                  "': " + e.what());
     }
   }
   if (plan.fasth3_v2) {
     if (request.has_references() || request.continuation || request.animate ||
         request.schedule != sampler::ScheduleKind::kDefault)
-      throw std::invalid_argument("FastH3 V2 supports text-to-video with its trained eight-step schedule; references, continuation and other schedules are incompatible");
-    overlay_sampling_settings(effective, sampling_schedule_defaults(sampler::ScheduleKind::kFastH3V2));
+      throw std::invalid_argument(
+          "FastH3 V2 supports text-to-video with its trained eight-step schedule; references, continuation and other schedules are incompatible");
+    overlay_sampling_settings(effective,
+                              sampling_schedule_defaults(sampler::ScheduleKind::kFastH3V2));
     plan.sampling_sources.push_back("FastH3 V2 compatibility preset");
   }
   if (request.animate) {
@@ -70,7 +76,8 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.sampling_sources.push_back("Animate compatibility preset");
   }
   overlay_sampling_settings(effective, model_settings);
-  if (has_settings(model_settings)) plan.sampling_sources.push_back("model: " + request.transformer_path);
+  if (has_settings(model_settings))
+    plan.sampling_sources.push_back("model: " + request.transformer_path);
 
   // Named schedules remain compatibility aliases. Request fields win over the
   // alias, and both have higher precedence than adapter or model defaults.
@@ -80,26 +87,32 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   for (const auto& lora : request.loras) {
     if (lora.path.empty() || !std::isfinite(lora.strength))
       throw std::invalid_argument("LoRA path must be nonempty and strength finite");
-    if (lora.strength == 0.0f) continue;
+    if (lora.strength == 0.0f)
+      continue;
     const auto settings = file_settings(lora.path);
     merge_adapter_field(adapters.default_steps, settings.default_steps,
-                        request.num_inference_steps != 0 ? std::optional<int>{request.num_inference_steps}
-                                                         : overrides.default_steps, "default_steps");
+                        request.num_inference_steps != 0
+                            ? std::optional<int>{request.num_inference_steps}
+                            : overrides.default_steps,
+                        "default_steps");
     merge_adapter_field(adapters.video_sigma_shift, settings.video_sigma_shift,
                         overrides.video_sigma_shift, "video_sigma_shift");
     merge_adapter_field(adapters.audio_sigma_shift, settings.audio_sigma_shift,
                         overrides.audio_sigma_shift, "audio_sigma_shift");
-    merge_adapter_field(adapters.base_sigmas, settings.base_sigmas,
-                        overrides.base_sigmas, "base_sigmas");
-    if (has_settings(settings)) plan.sampling_sources.push_back("LoRA: " + lora.path);
+    merge_adapter_field(adapters.base_sigmas, settings.base_sigmas, overrides.base_sigmas,
+                        "base_sigmas");
+    if (has_settings(settings))
+      plan.sampling_sources.push_back("LoRA: " + lora.path);
   }
   if (request.schedule == sampler::ScheduleKind::kTaoMate3Step &&
-      std::none_of(request.loras.begin(), request.loras.end(),
-                   [](const LoraSpec& lora) { return lora.strength != 0.0f; }))
+      std::none_of(request.loras.begin(), request.loras.end(), [](const LoraSpec& lora) {
+        return lora.strength != 0.0f;
+      }))
     throw std::invalid_argument("taomate-3step requires an enabled TaoMate LoRA");
   overlay_sampling_settings(effective, adapters);
   overlay_sampling_settings(effective, overrides);
-  if (has_settings(overrides)) plan.sampling_sources.push_back("request overrides");
+  if (has_settings(overrides))
+    plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);
 
   if (plan.fasth3_v2) {
@@ -110,14 +123,16 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
       throw std::invalid_argument("FastH3 V2 requires its trained sigma shifts and base grid");
   }
   plan.fixed_sampling_grid = effective.base_sigmas.has_value();
-  if (plan.fixed_sampling_grid && (request.motion_cache.active() ||
-      request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0))
-    throw std::invalid_argument("fixed sampling grids require Euler without step, block or MotionCache reuse");
+  if (plan.fixed_sampling_grid && (request.motion_cache.active() || request.cache_threshold > 0 ||
+                                   request.skip_every > 0 || request.block_cache_span > 0))
+    throw std::invalid_argument(
+        "fixed sampling grids require Euler without step, block or MotionCache reuse");
   plan.video_sigma_shift = *effective.video_sigma_shift;
   plan.audio_sigma_shift = *effective.audio_sigma_shift;
   plan.num_inference_steps = effective.base_sigmas
-      ? static_cast<int>(effective.base_sigmas->size())
-      : (request.num_inference_steps == 0 ? *effective.default_steps : request.num_inference_steps);
+                                 ? static_cast<int>(effective.base_sigmas->size())
+                                 : (request.num_inference_steps == 0 ? *effective.default_steps
+                                                                     : request.num_inference_steps);
   sampler::FlowScheduler video(plan.video_sigma_shift), audio(plan.audio_sigma_shift);
   if (effective.base_sigmas) {
     video.set_base_sigmas(*effective.base_sigmas);
@@ -141,4 +156,4 @@ void validate_sampling_sampler(const GeneratePlan& plan, sampler::SamplerKind sa
     throw std::invalid_argument("fixed sampling grids require the Euler sampler");
 }
 
-}  // namespace slopfab
+} // namespace slopfab

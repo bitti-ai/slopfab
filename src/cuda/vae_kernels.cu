@@ -30,7 +30,8 @@ __device__ inline float block_reduce_sum(float value, float* shared) {
   for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
     value += __shfl_down_sync(0xFFFFFFFFu, value, offset);
   }
-  if (lane == 0) shared[warp] = value;
+  if (lane == 0)
+    shared[warp] = value;
   __syncthreads();
 
   value = (threadIdx.x < warps) ? shared[threadIdx.x] : 0.0f;
@@ -38,25 +39,27 @@ __device__ inline float block_reduce_sum(float value, float* shared) {
     for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
       value += __shfl_down_sync(0xFFFFFFFFu, value, offset);
     }
-    if (lane == 0) shared[0] = value;
+    if (lane == 0)
+      shared[0] = value;
   }
   __syncthreads();
   return shared[0];
 }
 
-__device__ inline float block_norm_inverse(float sum, uint32_t dim, float eps,
-                                           float* shared) {
+__device__ inline float block_norm_inverse(float sum, uint32_t dim, float eps, float* shared) {
   // `sum` may have just been loaded from shared[0] by each warp. Ensure every
   // caller consumed it before lane 0 reuses the same word for the broadcast.
   __syncthreads();
-  if (threadIdx.x == 0) shared[0] = deterministic_norm_rsqrt(sum, dim, eps);
+  if (threadIdx.x == 0)
+    shared[0] = deterministic_norm_rsqrt(sum, dim, eps);
   __syncthreads();
   return shared[0];
 }
 
 __device__ inline float block_mean(float sum, uint32_t dim, float* shared) {
   __syncthreads();
-  if (threadIdx.x == 0) shared[0] = deterministic_divide(sum, dim);
+  if (threadIdx.x == 0)
+    shared[0] = deterministic_divide(sum, dim);
   __syncthreads();
   return shared[0];
 }
@@ -69,7 +72,8 @@ __device__ inline float block_reduce_max(float value, float* shared) {
   for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
     value = fmaxf(value, __shfl_down_sync(0xFFFFFFFFu, value, offset));
   }
-  if (lane == 0) shared[warp] = value;
+  if (lane == 0)
+    shared[warp] = value;
   __syncthreads();
 
   value = (threadIdx.x < warps) ? shared[threadIdx.x] : -INFINITY;
@@ -77,7 +81,8 @@ __device__ inline float block_reduce_max(float value, float* shared) {
     for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
       value = fmaxf(value, __shfl_down_sync(0xFFFFFFFFu, value, offset));
     }
-    if (lane == 0) shared[0] = value;
+    if (lane == 0)
+      shared[0] = value;
   }
   __syncthreads();
   return shared[0];
@@ -85,7 +90,10 @@ __device__ inline float block_reduce_max(float value, float* shared) {
 
 // y = x / sqrt(mean(x^2) + eps) * weight
 // PyTorch RMSNorm: no mean subtraction, eps added to the mean square.
-__device__ inline void store_activation(float* dst, float value) { *dst = value; }
+__device__ inline void store_activation(float* dst, float value) {
+  *dst = value;
+}
+
 __device__ inline void store_activation(__half* dst, float value) {
   *dst = __float2half_rn(value);
 }
@@ -114,17 +122,17 @@ __global__ void rmsnorm_kernel(const float* __restrict__ x, const float* __restr
 // y = (x - mean) / sqrt(var + eps) * weight + bias, biased variance.
 template <typename Output>
 __global__ void layernorm_kernel(const float* __restrict__ x, const float* __restrict__ weight,
-                                 const float* __restrict__ bias, Output* __restrict__ out,
-                                 int dim, float eps) {
+                                 const float* __restrict__ bias, Output* __restrict__ out, int dim,
+                                 float eps) {
   extern __shared__ float shared[];
   const int row = blockIdx.x;
   const float* xr = x + static_cast<size_t>(row) * dim;
   Output* outr = out + static_cast<size_t>(row) * dim;
 
   float sum = 0.0f;
-  for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += xr[i];
-  const float mean = block_mean(block_reduce_sum(sum, shared),
-                                static_cast<uint32_t>(dim), shared);
+  for (int i = threadIdx.x; i < dim; i += blockDim.x)
+    sum += xr[i];
+  const float mean = block_mean(block_reduce_sum(sum, shared), static_cast<uint32_t>(dim), shared);
 
   __syncthreads();
   float sum_sq = 0.0f;
@@ -132,8 +140,8 @@ __global__ void layernorm_kernel(const float* __restrict__ x, const float* __res
     const float d = xr[i] - mean;
     sum_sq += d * d;
   }
-  const float inv = block_norm_inverse(block_reduce_sum(sum_sq, shared),
-                                       static_cast<uint32_t>(dim), eps, shared);
+  const float inv =
+      block_norm_inverse(block_reduce_sum(sum_sq, shared), static_cast<uint32_t>(dim), eps, shared);
 
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
     store_activation(outr + i, (xr[i] - mean) * inv * weight[i] + bias[i]);
@@ -144,7 +152,8 @@ __global__ void add_bias_kernel(float* __restrict__ y, const float* __restrict__
                                 int cols) {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const size_t total = static_cast<size_t>(rows) * cols;
-  if (idx >= total) return;
+  if (idx >= total)
+    return;
   y[idx] += bias[idx % cols];
 }
 
@@ -169,13 +178,13 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
                                            const float* __restrict__ sin_tab,
                                            float* __restrict__ q_out, float* __restrict__ k_out,
                                            float* __restrict__ v_out, int seq, int heads,
-                                           int head_dim, int rope_dim, int num_patches,
-                                           float eps) {
+                                           int head_dim, int rope_dim, int num_patches, float eps) {
   const int warp_in_block = threadIdx.x / kWarp;
   const int lane = threadIdx.x % kWarp;
   const int pair = blockIdx.x * (blockDim.x / kWarp) + warp_in_block;
   const int total_pairs = seq * heads;
-  if (pair >= total_pairs) return;
+  if (pair >= total_pairs)
+    return;
 
   const int head = pair % heads;
   const int token = pair / heads;
@@ -191,9 +200,8 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
   // V needs no normalisation or rotation.
   v_out[out_base + lane] =
       row[2 * head_dim + lane] + (bias != nullptr ? bias_row[2 * head_dim + lane] : 0.0f);
-  v_out[out_base + lane + kWarp] =
-      row[2 * head_dim + lane + kWarp] +
-      (bias != nullptr ? bias_row[2 * head_dim + lane + kWarp] : 0.0f);
+  v_out[out_base + lane + kWarp] = row[2 * head_dim + lane + kWarp] +
+                                   (bias != nullptr ? bias_row[2 * head_dim + lane + kWarp] : 0.0f);
 
   // Suffix tokens (register + zero cls) carry position id 0, so their rotation
   // is the identity. They still take part in attention.
@@ -205,8 +213,8 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
     float* dst = (which == 0 ? q_out : k_out) + out_base;
 
     const float v0 = src[lane] + (bias != nullptr ? bias_row[which * head_dim + lane] : 0.0f);
-    const float v1 = src[lane + kWarp] +
-                     (bias != nullptr ? bias_row[which * head_dim + lane + kWarp] : 0.0f);
+    const float v1 =
+        src[lane + kWarp] + (bias != nullptr ? bias_row[which * head_dim + lane + kWarp] : 0.0f);
 
     // The two halves are reduced separately and summed at the end. Folding
     // them into one accumulator first would reassociate the 64-element sum and
@@ -219,9 +227,8 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
       s1 += __shfl_xor_sync(0xFFFFFFFFu, s1, offset);
     }
     const float sum_sq = s0 + s1;
-    float inv = lane == 0
-                    ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(head_dim), eps)
-                    : 0.0f;
+    float inv =
+        lane == 0 ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(head_dim), eps) : 0.0f;
     inv = __shfl_sync(0xFFFFFFFFu, inv, 0);
 
     // Normalise first, then rotate — the reference order. Swapping them
@@ -243,7 +250,8 @@ __global__ void split_qkv_norm_rope_kernel(const float* __restrict__ qkv,
       const int src_reg = partner_index >> 5;
       const float p0 = __shfl_sync(0xFFFFFFFFu, n0, src_lane);
       const float p1 = __shfl_sync(0xFFFFFFFFu, n1, src_lane);
-      if (!active) return normalised;
+      if (!active)
+        return normalised;
       const float sign = (d < half) ? -1.0f : 1.0f;
       const float partner = sign * ((src_reg == 0) ? p0 : p1);
       const float c = cos_tab[static_cast<size_t>(token) * rope_dim + d];
@@ -288,7 +296,8 @@ __global__ void softmax_rows_kernel(float* __restrict__ scores, int cols, float 
   const float total = block_reduce_sum(local_sum, shared);
   const float inv = 1.0f / total;
 
-  for (int i = threadIdx.x; i < cols; i += blockDim.x) r[i] *= inv;
+  for (int i = threadIdx.x; i < cols; i += blockDim.x)
+    r[i] *= inv;
 }
 
 // x += (y + bias) * scale, with bias and scale broadcast over columns.
@@ -301,15 +310,16 @@ __global__ void layerscale_residual_kernel(float* __restrict__ x, const float* _
                                            const float* __restrict__ bias,
                                            const float* __restrict__ scale, int cols) {
   const int c = blockIdx.x * blockDim.x + threadIdx.x;
-  if (c >= cols) return;
+  if (c >= cols)
+    return;
   const size_t idx = static_cast<size_t>(blockIdx.y) * cols + c;
   const float y_value = canonicalize_pointwise_float(y[idx]);
-  const float v = bias != nullptr
-      ? canonicalize_pointwise_float(
-            __fadd_rn(y_value, canonicalize_pointwise_float(bias[c])))
-      : y_value;
-  x[idx] = canonicalize_pointwise_float(__fmaf_rn(
-      v, canonicalize_pointwise_float(scale[c]), canonicalize_pointwise_float(x[idx])));
+  const float v =
+      bias != nullptr
+          ? canonicalize_pointwise_float(__fadd_rn(y_value, canonicalize_pointwise_float(bias[c])))
+          : y_value;
+  x[idx] = canonicalize_pointwise_float(
+      __fmaf_rn(v, canonicalize_pointwise_float(scale[c]), canonicalize_pointwise_float(x[idx])));
 }
 
 // SwiGLU: gate is the FIRST half of w1's output, value the second.
@@ -321,21 +331,21 @@ template <typename Output>
 __global__ void swiglu_kernel(const float* __restrict__ in, const float* __restrict__ bias,
                               Output* __restrict__ out, int inner) {
   const int c = blockIdx.x * blockDim.x + threadIdx.x;
-  if (c >= inner) return;
+  if (c >= inner)
+    return;
   const size_t row = blockIdx.y;
   const float* r = in + row * 2 * inner;
   const float gate_input = canonicalize_pointwise_float(r[c]);
   const float value_input = canonicalize_pointwise_float(r[inner + c]);
-  const float gate = bias != nullptr
-      ? canonicalize_pointwise_float(
-            __fadd_rn(gate_input, canonicalize_pointwise_float(bias[c])))
-      : gate_input;
-  const float value = bias != nullptr
-      ? canonicalize_pointwise_float(__fadd_rn(
-            value_input, canonicalize_pointwise_float(bias[inner + c])))
-      : value_input;
-  store_activation(out + row * inner + c, canonicalize_pointwise_float(
-      __fmul_rn(deterministic_pointwise_silu(gate), value)));
+  const float gate = bias != nullptr ? canonicalize_pointwise_float(__fadd_rn(
+                                           gate_input, canonicalize_pointwise_float(bias[c])))
+                                     : gate_input;
+  const float value =
+      bias != nullptr ? canonicalize_pointwise_float(
+                            __fadd_rn(value_input, canonicalize_pointwise_float(bias[inner + c])))
+                      : value_input;
+  store_activation(out + row * inner + c, canonicalize_pointwise_float(__fmul_rn(
+                                              deterministic_pointwise_silu(gate), value)));
 }
 
 // Widens fp16 checkpoint bytes to fp32 on the device, so the host never has to
@@ -343,22 +353,25 @@ __global__ void swiglu_kernel(const float* __restrict__ in, const float* __restr
 __global__ void widen_f16_kernel(const __half* __restrict__ src, float* __restrict__ dst,
                                  size_t count) {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (idx >= count) return;
+  if (idx >= count)
+    return;
   dst[idx] = __half2float(src[idx]);
 }
 
 __global__ void narrow_f16_kernel(const float* __restrict__ src, __half* __restrict__ dst,
                                   size_t count) {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (idx < count) dst[idx] = __float2half_rn(src[idx]);
+  if (idx < count)
+    dst[idx] = __float2half_rn(src[idx]);
 }
 
 __global__ void heads_to_tokens_bf16_kernel(const float* __restrict__ src,
-                                             __nv_bfloat16* __restrict__ dst, int seq,
-                                             int heads, int head_dim) {
+                                            __nv_bfloat16* __restrict__ dst, int seq, int heads,
+                                            int head_dim) {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const size_t total = static_cast<size_t>(seq) * heads * head_dim;
-  if (idx >= total) return;
+  if (idx >= total)
+    return;
   const int d = static_cast<int>(idx % head_dim);
   const size_t q = idx / head_dim;
   const int h = static_cast<int>(q % heads);
@@ -372,7 +385,8 @@ __global__ void heads_to_tokens_bf16_kernel(const float* __restrict__ src,
 __global__ void transpose_cn_to_nc_kernel(const float* __restrict__ src, float* __restrict__ dst,
                                           int channels, int voxels) {
   const int n = blockIdx.x * blockDim.x + threadIdx.x;
-  if (n >= voxels) return;
+  if (n >= voxels)
+    return;
   const int c = blockIdx.y;
   dst[static_cast<size_t>(n) * channels + c] = src[static_cast<size_t>(c) * voxels + n];
 }
@@ -385,15 +399,15 @@ __global__ void transpose_cn_to_nc_kernel(const float* __restrict__ src, float* 
 // (pt, ph, pw, c) ordering; getting it wrong yields a scrambled image that
 // still looks structured.
 __global__ void depth_to_space_kernel(const float* __restrict__ tokens,
-                                      const float* __restrict__ bias,
-                                      float* __restrict__ out, int T, int H, int W,
-                                      int channels, int patch_t, int patch) {
+                                      const float* __restrict__ bias, float* __restrict__ out,
+                                      int T, int H, int W, int channels, int patch_t, int patch) {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const int out_T = T * patch_t;
   const int out_H = H * patch;
   const int out_W = W * patch;
   const size_t total = static_cast<size_t>(channels) * out_T * out_H * out_W;
-  if (idx >= total) return;
+  if (idx >= total)
+    return;
 
   // Decompose the destination index.
   const int ow = static_cast<int>(idx % out_W);
@@ -424,32 +438,35 @@ __global__ void latent_denorm_kernel(const float* __restrict__ z_norm,
                                      int channels, int voxels) {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const size_t total = static_cast<size_t>(channels) * voxels;
-  if (idx >= total) return;
+  if (idx >= total)
+    return;
   const int c = static_cast<int>(idx / voxels);
-  out[idx] = canonicalize_pointwise_float(__fmaf_rn(
-      canonicalize_pointwise_float(z_norm[idx]),
-      canonicalize_pointwise_float(std_dev[c]),
-      canonicalize_pointwise_float(mean[c])));
+  out[idx] = canonicalize_pointwise_float(__fmaf_rn(canonicalize_pointwise_float(z_norm[idx]),
+                                                    canonicalize_pointwise_float(std_dev[c]),
+                                                    canonicalize_pointwise_float(mean[c])));
 }
 
 __global__ void bf16_to_f16_packed_kernel(const __nv_bfloat16* __restrict__ src,
                                           __half* __restrict__ dst, size_t packs) {
   const size_t pack = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (pack >= packs) return;
+  if (pack >= packs)
+    return;
   const size_t base = pack * 8;
   const uint4 raw = *reinterpret_cast<const uint4*>(src + base);
   const __nv_bfloat162* in = reinterpret_cast<const __nv_bfloat162*>(&raw);
   uint4 converted;
   __half2* out = reinterpret_cast<__half2*>(&converted);
 #pragma unroll
-  for (int i = 0; i < 4; ++i) out[i] = __float22half2_rn(__bfloat1622float2(in[i]));
+  for (int i = 0; i < 4; ++i)
+    out[i] = __float22half2_rn(__bfloat1622float2(in[i]));
   *reinterpret_cast<uint4*>(dst + base) = converted;
 }
 
 __global__ void bf16_to_f16_scalar_kernel(const __nv_bfloat16* __restrict__ src,
                                           __half* __restrict__ dst, size_t count) {
   const size_t idx = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (idx < count) dst[idx] = __float2half_rn(__bfloat162float(src[idx]));
+  if (idx < count)
+    dst[idx] = __float2half_rn(__bfloat162float(src[idx]));
 }
 
 // Shipped-path variant of split_qkv_norm_rope_kernel. Arithmetic deliberately
@@ -459,13 +476,14 @@ __global__ void split_qkv_norm_rope_bf16_kernel(
     const float* __restrict__ qkv, const float* __restrict__ bias,
     const float* __restrict__ cos_tab, const float* __restrict__ sin_tab,
     __nv_bfloat16* __restrict__ q_out, __nv_bfloat16* __restrict__ k_out,
-    __nv_bfloat16* __restrict__ v_out, int seq, int heads, int head_dim,
-    int rope_dim, int num_patches, float eps) {
+    __nv_bfloat16* __restrict__ v_out, int seq, int heads, int head_dim, int rope_dim,
+    int num_patches, float eps) {
   const int warp_in_block = threadIdx.x / kWarp;
   const int lane = threadIdx.x % kWarp;
   const int pair = blockIdx.x * (blockDim.x / kWarp) + warp_in_block;
   const int total_pairs = seq * heads;
-  if (pair >= total_pairs) return;
+  if (pair >= total_pairs)
+    return;
 
   const int head = pair % heads;
   const int token = pair / heads;
@@ -475,21 +493,19 @@ __global__ void split_qkv_norm_rope_bf16_kernel(
   const size_t out_base = (static_cast<size_t>(token) * heads + head) * head_dim;
 
   v_out[out_base + lane] = __float2bfloat16_rn(
-      row[2 * head_dim + lane] +
-      (bias != nullptr ? bias_row[2 * head_dim + lane] : 0.0f));
-  v_out[out_base + lane + kWarp] = __float2bfloat16_rn(
-      row[2 * head_dim + lane + kWarp] +
-      (bias != nullptr ? bias_row[2 * head_dim + lane + kWarp] : 0.0f));
+      row[2 * head_dim + lane] + (bias != nullptr ? bias_row[2 * head_dim + lane] : 0.0f));
+  v_out[out_base + lane + kWarp] =
+      __float2bfloat16_rn(row[2 * head_dim + lane + kWarp] +
+                          (bias != nullptr ? bias_row[2 * head_dim + lane + kWarp] : 0.0f));
 
   const bool rotate = token < num_patches;
   const int half = rope_dim / 2;
   for (int which = 0; which < 2; ++which) {
     const float* src = row + which * head_dim;
     __nv_bfloat16* dst = (which == 0 ? q_out : k_out) + out_base;
-    const float v0 = src[lane] +
-                     (bias != nullptr ? bias_row[which * head_dim + lane] : 0.0f);
-    const float v1 = src[lane + kWarp] +
-                     (bias != nullptr ? bias_row[which * head_dim + lane + kWarp] : 0.0f);
+    const float v0 = src[lane] + (bias != nullptr ? bias_row[which * head_dim + lane] : 0.0f);
+    const float v1 =
+        src[lane + kWarp] + (bias != nullptr ? bias_row[which * head_dim + lane + kWarp] : 0.0f);
 
     float s0 = v0 * v0;
     float s1 = v1 * v1;
@@ -498,9 +514,8 @@ __global__ void split_qkv_norm_rope_bf16_kernel(
       s1 += __shfl_xor_sync(0xFFFFFFFFu, s1, offset);
     }
     const float sum_sq = s0 + s1;
-    float inv = lane == 0
-                    ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(head_dim), eps)
-                    : 0.0f;
+    float inv =
+        lane == 0 ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(head_dim), eps) : 0.0f;
     inv = __shfl_sync(0xFFFFFFFFu, inv, 0);
     const float n0 = v0 * inv;
     const float n1 = v1 * inv;
@@ -512,7 +527,8 @@ __global__ void split_qkv_norm_rope_bf16_kernel(
       const int src_reg = partner_index >> 5;
       const float p0 = __shfl_sync(0xFFFFFFFFu, n0, src_lane);
       const float p1 = __shfl_sync(0xFFFFFFFFu, n1, src_lane);
-      if (!active) return normalised;
+      if (!active)
+        return normalised;
       const float sign = (d < half) ? -1.0f : 1.0f;
       const float partner = sign * ((src_reg == 0) ? p0 : p1);
       const float c = cos_tab[static_cast<size_t>(token) * rope_dim + d];
@@ -525,7 +541,7 @@ __global__ void split_qkv_norm_rope_bf16_kernel(
   }
 }
 
-}  // namespace
+} // namespace
 
 void launch_rmsnorm(const float* x, const float* weight, float* out, int rows, int dim, float eps,
                     cudaStream_t stream) {
@@ -539,8 +555,7 @@ void launch_rmsnorm_f16(const float* x, const float* weight, void* out, int rows
                         float eps, cudaStream_t stream) {
   const int threads = 256;
   const size_t shared = (threads / kWarp) * sizeof(float);
-  rmsnorm_kernel<<<rows, threads, shared, stream>>>(
-      x, weight, static_cast<__half*>(out), dim, eps);
+  rmsnorm_kernel<<<rows, threads, shared, stream>>>(x, weight, static_cast<__half*>(out), dim, eps);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -556,8 +571,8 @@ void launch_layernorm_f16(const float* x, const float* weight, const float* bias
                           int rows, int dim, float eps, cudaStream_t stream) {
   const int threads = 256;
   const size_t shared = (threads / kWarp) * sizeof(float);
-  layernorm_kernel<<<rows, threads, shared, stream>>>(
-      x, weight, bias, static_cast<__half*>(out), dim, eps);
+  layernorm_kernel<<<rows, threads, shared, stream>>>(x, weight, bias, static_cast<__half*>(out),
+                                                      dim, eps);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -605,9 +620,8 @@ void launch_swiglu(const float* in, const float* bias, float* out, int rows, int
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias,
-                                     const float* cos_tab, const float* sin_tab,
-                                     __nv_bfloat16* q, __nv_bfloat16* k,
+void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias, const float* cos_tab,
+                                     const float* sin_tab, __nv_bfloat16* q, __nv_bfloat16* k,
                                      __nv_bfloat16* v, int seq, int heads, int head_dim,
                                      int rope_dim, int num_patches, float eps,
                                      cudaStream_t stream) {
@@ -616,8 +630,7 @@ void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias,
   const int pairs = seq * heads;
   const int blocks = (pairs + warps_per_block - 1) / warps_per_block;
   split_qkv_norm_rope_bf16_kernel<<<blocks, threads, 0, stream>>>(
-      qkv, bias, cos_tab, sin_tab, q, k, v, seq, heads, head_dim, rope_dim,
-      num_patches, eps);
+      qkv, bias, cos_tab, sin_tab, q, k, v, seq, heads, head_dim, rope_dim, num_patches, eps);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -645,9 +658,9 @@ void launch_narrow_f16(const float* src, void* dst, size_t count, cudaStream_t s
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_bf16_to_f16(const __nv_bfloat16* src, void* dst, size_t count,
-                        cudaStream_t stream) {
-  if (count == 0) return;
+void launch_bf16_to_f16(const __nv_bfloat16* src, void* dst, size_t count, cudaStream_t stream) {
+  if (count == 0)
+    return;
   __half* half_dst = static_cast<__half*>(dst);
   const bool packed = count % 8 == 0 && reinterpret_cast<uintptr_t>(src) % 16 == 0 &&
                       reinterpret_cast<uintptr_t>(half_dst) % 16 == 0;
@@ -668,7 +681,7 @@ void launch_heads_to_tokens_bf16(const float* src, __nv_bfloat16* dst, int seq, 
   const size_t count = static_cast<size_t>(seq) * heads * head_dim;
   const int threads = 256;
   heads_to_tokens_bf16_kernel<<<static_cast<int>((count + threads - 1) / threads), threads, 0,
-                                 stream>>>(src, dst, seq, heads, head_dim);
+                                stream>>>(src, dst, seq, heads, head_dim);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -690,9 +703,8 @@ void launch_depth_to_space(const float* tokens, float* out, int T, int H, int W,
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void launch_depth_to_space_bias(const float* tokens, const float* bias, float* out,
-                                int T, int H, int W, int channels, int patch_t, int patch,
-                                cudaStream_t stream) {
+void launch_depth_to_space_bias(const float* tokens, const float* bias, float* out, int T, int H,
+                                int W, int channels, int patch_t, int patch, cudaStream_t stream) {
   const size_t total = static_cast<size_t>(channels) * (T * patch_t) * (H * patch) * (W * patch);
   const int threads = 256;
   const int blocks = static_cast<int>((total + threads - 1) / threads);
@@ -711,4 +723,4 @@ void launch_latent_denorm(const float* z_norm, const float* mean, const float* s
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

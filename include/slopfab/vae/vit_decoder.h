@@ -29,21 +29,23 @@ struct ViTConfig {
   int num_layers = 36;
   int dim = 2048;
   int heads = 32;
-  int head_dim = 64;      // heads * head_dim == dim
-  int ffn_inner = 8192;   // w1 emits 2 * ffn_inner because the FFN is gated
-  int in_channels = 24;   // latent channels
-  int out_channels = 3;   // RGB
-  int patch = 16;         // spatial upsample factor
-  int patch_t = 4;        // temporal upsample factor
-  int num_register = 4;   // learned register tokens
-  int num_suffix = 5;     // register tokens + one literal zero token
-  int rope_dim = 48;      // of head_dim; the remaining 16 dims pass through
+  int head_dim = 64;    // heads * head_dim == dim
+  int ffn_inner = 8192; // w1 emits 2 * ffn_inner because the FFN is gated
+  int in_channels = 24; // latent channels
+  int out_channels = 3; // RGB
+  int patch = 16;       // spatial upsample factor
+  int patch_t = 4;      // temporal upsample factor
+  int num_register = 4; // learned register tokens
+  int num_suffix = 5;   // register tokens + one literal zero token
+  int rope_dim = 48;    // of head_dim; the remaining 16 dims pass through
   float rope_theta = 100.0f;
   float eps = 1e-5f;
   ViTTransformerMode transformer_mode = ViTTransformerMode::kShipped;
 
   // Flat width of proj_out: out_channels * patch_t * patch * patch.
-  int patch_dim() const { return out_channels * patch_t * patch * patch; }
+  int patch_dim() const {
+    return out_channels * patch_t * patch * patch;
+  }
 };
 
 // Temporal chunking and spatial tiling constants, derived in the reference
@@ -53,12 +55,14 @@ struct DecodeSchedule {
   int token_overlap = 2;
   int frame_pre_padding = 3;
   int frame_overlap = 5;
-  int chunk_dec = 20;  // tokens_chunk_size * 4
+  int chunk_dec = 20; // tokens_chunk_size * 4
   int tile_size = 256;
   int tile_overlap_min = 64;
   bool tiling_enabled = true;
 
-  int tokens_per_window() const { return tokens_chunk_size + token_overlap; }  // 7
+  int tokens_per_window() const {
+    return tokens_chunk_size + token_overlap;
+  } // 7
 };
 
 // Decoded output in planar float RGB, values already de-normalised to [0,1].
@@ -67,32 +71,35 @@ struct DecodedVideo {
   int frames = 0;
   int height = 0;
   int width = 0;
-  PixelBuffer data;  // [3][frames][height][width], contiguous
+  PixelBuffer data; // [3][frames][height][width], contiguous
 
-  size_t frame_stride() const { return static_cast<size_t>(height) * width; }
-  size_t plane_stride() const { return frame_stride() * frames; }
+  size_t frame_stride() const {
+    return static_cast<size_t>(height) * width;
+  }
+
+  size_t plane_stride() const {
+    return frame_stride() * frames;
+  }
 };
 
 // Backend-neutral window seam used by the shared temporal/spatial decode
 // scheduler. Implementations own device policy; orchestration owns only host
 // tiling, stitching, cross-fades and final pixel de-normalization.
 class VideoVaeWindowBackend {
- public:
+public:
   virtual ~VideoVaeWindowBackend() = default;
   virtual const ViTConfig& config() const = 0;
   virtual void forward_windows(const float* z, int batch, int T, int H, int W,
-                               std::vector<std::vector<float>>& out,
-                               const size_t* slots) = 0;
-  virtual void denormalize_latents(
-      const float* normalized, int channels, uint64_t voxels,
-      const std::vector<float>& mean, const std::vector<float>& std_dev,
-      std::vector<float>& output) = 0;
+                               std::vector<std::vector<float>>& out, const size_t* slots) = 0;
+  virtual void denormalize_latents(const float* normalized, int channels, uint64_t voxels,
+                                   const std::vector<float>& mean,
+                                   const std::vector<float>& std_dev,
+                                   std::vector<float>& output) = 0;
   virtual void release_host_registrations() = 0;
 };
 
-DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
-                          int T_lat, int H_lat, int W_lat,
-                          const std::vector<float>& latents_mean,
+DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm, int T_lat, int H_lat,
+                          int W_lat, const std::vector<float>& latents_mean,
                           const std::vector<float>& latents_std,
                           const DecodeSchedule& schedule = {});
 
@@ -101,14 +108,13 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
 // temporal phase `frame_pre_padding` (3 for the shipped model) from the first
 // latent position is stitched into the output. This matches the first retained
 // frame of video decode on the repeated latent, without assembling other frames.
-DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
-                                const float* z_norm, int H_lat, int W_lat,
-                                const std::vector<float>& latents_mean,
+DecodedVideo decode_still_image(VideoVaeWindowBackend& backend, const float* z_norm, int H_lat,
+                                int W_lat, const std::vector<float>& latents_mean,
                                 const std::vector<float>& latents_std,
                                 const DecodeSchedule& schedule = {});
 
 class ViTDecoder final : public VideoVaeWindowBackend {
- public:
+public:
   ViTDecoder();
   ~ViTDecoder();
   ViTDecoder(const ViTDecoder&) = delete;
@@ -141,8 +147,7 @@ class ViTDecoder final : public VideoVaeWindowBackend {
   // zero-filled before the copy overwrites every byte of it. `slots` must have
   // `batch` entries and index within `out`, which the caller sizes.
   void forward_windows(const float* z, int batch, int T, int H, int W,
-                       std::vector<std::vector<float>>& out,
-                       const size_t* slots) override;
+                       std::vector<std::vector<float>>& out, const size_t* slots) override;
 
   // forward_windows page-locks the `out` slots it writes so the device can DMA
   // a decoded window straight into the caller's buffer instead of staging it
@@ -152,9 +157,8 @@ class ViTDecoder final : public VideoVaeWindowBackend {
   // a scope guard, so a throw does not leak a lock onto freed memory. Calling
   // it when nothing is registered is free.
   void release_host_registrations() override;
-  void denormalize_latents(const float* normalized, int channels,
-                           uint64_t voxels, const std::vector<float>& mean,
-                           const std::vector<float>& std_dev,
+  void denormalize_latents(const float* normalized, int channels, uint64_t voxels,
+                           const std::vector<float>& mean, const std::vector<float>& std_dev,
                            std::vector<float>& output) override;
 
   // The scope guard that obligation asks for. Declare it *after* the buffer
@@ -168,13 +172,18 @@ class ViTDecoder final : public VideoVaeWindowBackend {
   // dies page-locked and the eventual cudaHostUnregister addresses freed and
   // possibly reused memory.
   class HostRegistrationScope {
-   public:
-    explicit HostRegistrationScope(ViTDecoder& decoder) : decoder_(&decoder) {}
-    ~HostRegistrationScope() { decoder_->release_host_registrations(); }
+  public:
+    explicit HostRegistrationScope(ViTDecoder& decoder) : decoder_(&decoder) {
+    }
+
+    ~HostRegistrationScope() {
+      decoder_->release_host_registrations();
+    }
+
     HostRegistrationScope(const HostRegistrationScope&) = delete;
     HostRegistrationScope& operator=(const HostRegistrationScope&) = delete;
 
-   private:
+  private:
     ViTDecoder* decoder_;
   };
 
@@ -182,13 +191,12 @@ class ViTDecoder final : public VideoVaeWindowBackend {
   // cross-fade stitching and pixel de-normalisation.
   // `z_norm` is [24, T_lat, H_lat, W_lat] as produced by the diffusion model.
   DecodedVideo decode(const float* z_norm, int T_lat, int H_lat, int W_lat,
-                      const std::vector<float>& latents_mean,
-                      const std::vector<float>& latents_std,
+                      const std::vector<float>& latents_mean, const std::vector<float>& latents_std,
                       const DecodeSchedule& schedule = {});
 
- private:
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

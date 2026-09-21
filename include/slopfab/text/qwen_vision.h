@@ -61,8 +61,7 @@ struct QwenVisionPositions {
   std::vector<int32_t> rotary_thw;
 };
 
-QwenVisionPositions qwen3vl_vision_positions(const QwenImageGrid& grid,
-                                             int position_side = 48,
+QwenVisionPositions qwen3vl_vision_positions(const QwenImageGrid& grid, int position_side = 48,
                                              int merge_size = 2);
 
 struct QwenMultimodalPlan {
@@ -86,9 +85,8 @@ int qwen3vl_deepstack_slot(int text_decoder_layer);
 // Qwen vision uses 2-D rotary embedding within each 72-wide attention head.
 // Eighteen frequencies come from height and eighteen from width, then the
 // half-split layout is duplicated to 72 channels.
-void qwen3vl_vision_rope_tables(const QwenVisionPositions& positions,
-                               std::vector<float>& cos, std::vector<float>& sin,
-                               int head_dim = 72, float theta = 10000.0f);
+void qwen3vl_vision_rope_tables(const QwenVisionPositions& positions, std::vector<float>& cos,
+                                std::vector<float>& sin, int head_dim = 72, float theta = 10000.0f);
 void qwen3vl_decoder_rope_tables(const QwenMultimodalPlan& plan, int tokens,
                                  std::vector<float>& cos, std::vector<float>& sin,
                                  int head_dim = 128, float theta = 5.0e6f);
@@ -110,7 +108,7 @@ struct QwenVisionTrace {
 };
 
 class QwenVisionEncoder {
- public:
+public:
   QwenVisionEncoder();
   ~QwenVisionEncoder();
   QwenVisionEncoder(const QwenVisionEncoder&) = delete;
@@ -120,7 +118,8 @@ class QwenVisionEncoder {
   QwenVisionEmbedding encode(const std::vector<QwenPixelValues>& images);
   QwenVisionEmbedding encode_exact(const std::vector<QwenPixelValues>& images,
                                    QwenVisionTrace* trace = nullptr);
- private:
+
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
@@ -139,24 +138,24 @@ QwenImageGrid qwen3vl_conditioning_grid(int width, int height);
 // Returns decoder token count after adding all merged image pads and their
 // start/end sentinels to already-tokenized labels/prompt. Every grid and the
 // aggregate are validated with checked arithmetic before model allocation.
-size_t qwen3vl_conditioning_token_count(
-    const std::vector<QwenImageGrid>& grids, size_t nonvision_tokens,
-    size_t max_prompt_tokens = kMaxPromptTokens);
+size_t qwen3vl_conditioning_token_count(const std::vector<QwenImageGrid>& grids,
+                                        size_t nonvision_tokens,
+                                        size_t max_prompt_tokens = kMaxPromptTokens);
 
 // Patchifies an image already resized to the grid selected above. Keeping
 // interpolation outside this primitive makes its byte-to-row mapping exact
 // and independently testable. A still is repeated for the temporal size 2.
-QwenPixelValues qwen3vl_patchify_resized_rgb(const std::vector<uint8_t>& rgb,
-                                             int width, int height);
+QwenPixelValues qwen3vl_patchify_resized_rgb(const std::vector<uint8_t>& rgb, int width,
+                                             int height);
 QwenPixelValues qwen3vl_patchify_resized_rgb_pair(const std::vector<uint8_t>& first,
-    const std::vector<uint8_t>& second, int width, int height);
+                                                  const std::vector<uint8_t>& second, int width,
+                                                  int height);
 
 // MiniMax's image presentation, before the verbatim prompt. No chat template,
 // BOS, EOS, im_start, or im_end tokens are added.
 std::vector<int32_t> qwen3vl_image_block(const std::vector<int32_t>& label_ids,
-                                         size_t merged_tokens,
-                                         int32_t vision_start_id = 151652,
+                                         size_t merged_tokens, int32_t vision_start_id = 151652,
                                          int32_t image_pad_id = 151655,
                                          int32_t vision_end_id = 151653);
 
-}  // namespace slopfab::text
+} // namespace slopfab::text

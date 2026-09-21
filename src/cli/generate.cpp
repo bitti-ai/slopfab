@@ -65,9 +65,11 @@
 #endif
 
 #include "commands.h"
+
 namespace slopfab::cli {
 int cmd_generate(int argc, char** argv, const char* executable) {
-  if (wants_help(argc, argv)) return print_command_help(*find_command("generate"));
+  if (wants_help(argc, argv))
+    return print_command_help(*find_command("generate"));
 
   slopfab::GenerateRequest req;
   std::vector<std::pair<std::string, bool>> reference_files;
@@ -184,33 +186,37 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--refmod") {
       req.refmods.push_back({slopfab::RefMod::load(next("--refmod")), 1.0f, 1});
     } else if (arg == "--refmod-strength" || arg == "--refmod-copies") {
-      if (req.refmods.empty()) throw std::runtime_error(std::string(arg) + " must follow --refmod");
-      const std::string value = next(arg == "--refmod-strength" ? "--refmod-strength" : "--refmod-copies");
+      if (req.refmods.empty())
+        throw std::runtime_error(std::string(arg) + " must follow --refmod");
+      const std::string value =
+          next(arg == "--refmod-strength" ? "--refmod-strength" : "--refmod-copies");
       size_t consumed = 0;
-      if (arg == "--refmod-strength") req.refmods.back().strength = std::stof(value, &consumed);
-      else req.refmods.back().copies = std::stoi(value, &consumed);
-      if (consumed != value.size()) throw std::runtime_error("invalid refmod numeric value: " + value);
+      if (arg == "--refmod-strength")
+        req.refmods.back().strength = std::stof(value, &consumed);
+      else
+        req.refmods.back().copies = std::stoi(value, &consumed);
+      if (consumed != value.size())
+        throw std::runtime_error("invalid refmod numeric value: " + value);
       slopfab::validate_refmods(req.refmods);
     } else if (arg == "--reference-image") {
       req.reference_image_paths.emplace_back(next("--reference-image"));
     } else if (arg == "--reference-video" || arg == "--reference-audio") {
       const bool is_video = arg == "--reference-video";
-      reference_files.emplace_back(next(is_video ? "--reference-video" : "--reference-audio"), is_video);
+      reference_files.emplace_back(next(is_video ? "--reference-video" : "--reference-audio"),
+                                   is_video);
     } else if (arg == "--raw") {
       req.raw_output = true;
     } else if (arg == "--inference-backend") {
       inference_backend = next("--inference-backend");
       if (inference_backend != "cuda" && inference_backend != "vulkan") {
-        std::fprintf(stderr,
-                     "slopfab: --inference-backend wants cuda or vulkan, got '%s'\n",
+        std::fprintf(stderr, "slopfab: --inference-backend wants cuda or vulkan, got '%s'\n",
                      inference_backend.c_str());
         return 2;
       }
     } else if (arg == "--output-accelerator") {
       output_accelerator = next("--output-accelerator");
       if (output_accelerator != "cpu" && output_accelerator != "vulkan") {
-        std::fprintf(stderr,
-                     "slopfab: --output-accelerator wants cpu or vulkan, got '%s'\n",
+        std::fprintf(stderr, "slopfab: --output-accelerator wants cpu or vulkan, got '%s'\n",
                      output_accelerator.c_str());
         return 2;
       }
@@ -223,11 +229,16 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       const char* value = next(arg.data());
       char* end = nullptr;
       const float parsed = std::strtof(value, &end);
-      if (end == value || *end != '\0') throw std::runtime_error(std::string(arg) + " requires a number");
-      if (arg == "--motion-cache-threshold") req.motion_cache.reuse_threshold = parsed;
-      else if (arg == "--motion-cache-strength") req.motion_cache.motion_strength = parsed;
-      else if (arg == "--motion-cache-start") req.motion_cache.start_percent = parsed;
-      else req.motion_cache.end_percent = parsed;
+      if (end == value || *end != '\0')
+        throw std::runtime_error(std::string(arg) + " requires a number");
+      if (arg == "--motion-cache-threshold")
+        req.motion_cache.reuse_threshold = parsed;
+      else if (arg == "--motion-cache-strength")
+        req.motion_cache.motion_strength = parsed;
+      else if (arg == "--motion-cache-start")
+        req.motion_cache.start_percent = parsed;
+      else
+        req.motion_cache.end_percent = parsed;
     } else if (arg == "--motion-cache-warmup" || arg == "--motion-cache-max-skips" ||
                arg == "--motion-cache-subsample") {
       const char* value = next(arg.data());
@@ -235,9 +246,12 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       const long parsed = std::strtol(value, &end, 10);
       if (end == value || *end != '\0' || parsed < 0 || parsed > 32)
         throw std::runtime_error(std::string(arg) + " requires a small positive integer");
-      if (arg == "--motion-cache-warmup") req.motion_cache.warmup_steps = static_cast<int>(parsed);
-      else if (arg == "--motion-cache-max-skips") req.motion_cache.max_consecutive_skips = static_cast<int>(parsed);
-      else req.motion_cache.subsample_factor = static_cast<int>(parsed);
+      if (arg == "--motion-cache-warmup")
+        req.motion_cache.warmup_steps = static_cast<int>(parsed);
+      else if (arg == "--motion-cache-max-skips")
+        req.motion_cache.max_consecutive_skips = static_cast<int>(parsed);
+      else
+        req.motion_cache.subsample_factor = static_cast<int>(parsed);
     } else if (arg == "--cache-threshold") {
       req.cache_threshold = static_cast<float>(std::strtod(next("--cache-threshold"), nullptr));
     } else if (arg == "--cache-warmup") {
@@ -260,15 +274,18 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       dump_latents = next("--dump-latents");
     } else if (arg == "--save-latents") {
       save_latents = next("--save-latents");
-      if (save_latents.empty()) throw std::runtime_error("--save-latents needs a nonempty path");
+      if (save_latents.empty())
+        throw std::runtime_error("--save-latents needs a nonempty path");
     } else if (arg == "--continue-from") {
       continue_from = next("--continue-from");
-      if (continue_from.empty()) throw std::runtime_error("--continue-from needs a nonempty path");
+      if (continue_from.empty())
+        throw std::runtime_error("--continue-from needs a nonempty path");
     } else if (arg == "--overlap-frames") {
       const std::string value = next("--overlap-frames");
       size_t consumed = 0;
       req.continuation_overlap_frames = std::stoi(value, &consumed);
-      if (consumed != value.size()) throw std::runtime_error("invalid --overlap-frames value");
+      if (consumed != value.size())
+        throw std::runtime_error("invalid --overlap-frames value");
       saw_overlap = true;
     } else if (arg == "--attn-band") {
       attn_band = std::atoi(next("--attn-band"));
@@ -277,22 +294,25 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       if (!slopfab::parse_attention_mode(v, &attention_mode)) {
         std::fprintf(stderr,
                      "slopfab: --attention wants none, flash2, sage2, sol, "
-                     "sol-experimental, or exact, got '%s'\n", v.c_str());
+                     "sol-experimental, or exact, got '%s'\n",
+                     v.c_str());
         return 2;
       }
     } else if (arg == "--vulkan-sage-workspace-mib") {
       const std::string value = next("--vulkan-sage-workspace-mib");
-      if (value.empty() || value.size() > 5 || value.find_first_not_of("0123456789") != std::string::npos ||
+      if (value.empty() || value.size() > 5 ||
+          value.find_first_not_of("0123456789") != std::string::npos ||
           (vulkan_sage_workspace_mib = std::strtoull(value.c_str(), nullptr, 10)) > 65536) {
-        std::fprintf(stderr, "slopfab: --vulkan-sage-workspace-mib wants an integer from 0 to 65536\n");
+        std::fprintf(stderr,
+                     "slopfab: --vulkan-sage-workspace-mib wants an integer from 0 to 65536\n");
         return 2;
       }
     } else if (arg == "--sol-beta") {
       sol_schedule.beta = std::strtof(next("--sol-beta"), nullptr);
     } else if (arg == "--sol-error-k") {
-      sol_schedule.error_k=std::strtof(next("--sol-error-k"),nullptr);
+      sol_schedule.error_k = std::strtof(next("--sol-error-k"), nullptr);
     } else if (arg == "--sol-error-v") {
-      sol_schedule.error_v=std::strtof(next("--sol-error-v"),nullptr);
+      sol_schedule.error_v = std::strtof(next("--sol-error-v"), nullptr);
     } else if (arg == "--sol-step-start") {
       sol_schedule.step_begin = std::atoi(next("--sol-step-start"));
     } else if (arg == "--sol-step-end") {
@@ -310,7 +330,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--lora") {
       req.loras.push_back({next("--lora"), 1.0f});
     } else if (arg == "--lora-strength") {
-      if (req.loras.empty()) throw std::runtime_error("--lora-strength must follow --lora");
+      if (req.loras.empty())
+        throw std::runtime_error("--lora-strength must follow --lora");
       const std::string value = next("--lora-strength");
       size_t used = 0;
       const float strength = std::stof(value, &used);
@@ -320,22 +341,27 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--conditioning-settings") {
       const std::string path = next("--conditioning-settings");
       std::ifstream in(path, std::ios::binary);
-      if (!in) throw std::runtime_error("cannot read conditioning settings: " + path);
+      if (!in)
+        throw std::runtime_error("cannot read conditioning settings: " + path);
       std::ostringstream contents;
       contents << in.rdbuf();
       req.conditioning = slopfab::parse_conditioning_settings(contents.str());
     } else if (arg == "--sampling-settings") {
       const std::string path = next("--sampling-settings");
       std::ifstream in(path, std::ios::binary);
-      if (!in) throw std::runtime_error("cannot read sampling settings: " + path);
+      if (!in)
+        throw std::runtime_error("cannot read sampling settings: " + path);
       std::ostringstream contents;
       contents << in.rdbuf();
       req.sampling = slopfab::parse_sampling_settings(contents.str());
     } else if (arg == "--schedule") {
       const std::string value = next("--schedule");
-      if (value == "default") req.schedule = slopfab::sampler::ScheduleKind::kDefault;
-      else if (value == "taomate-3step") req.schedule = slopfab::sampler::ScheduleKind::kTaoMate3Step;
-      else throw std::runtime_error("--schedule wants default or taomate-3step");
+      if (value == "default")
+        req.schedule = slopfab::sampler::ScheduleKind::kDefault;
+      else if (value == "taomate-3step")
+        req.schedule = slopfab::sampler::ScheduleKind::kTaoMate3Step;
+      else
+        throw std::runtime_error("--schedule wants default or taomate-3step");
     } else if (arg == "--animate") {
       req.animate = true;
     } else if (arg == "--preserve-driving-audio") {
@@ -352,10 +378,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 
   if (inference_backend == "vulkan") {
     if (!slopfab::attention_mode_supported(slopfab::DeviceBackend::kVulkan, attention_mode)) {
-      std::fprintf(stderr,
-                   "slopfab: Vulkan inference requires --attention exact, flash2 or sage2; mode '%s' "
-                   "will not be remapped and no CUDA fallback was used\n",
-                   slopfab::attention_mode_name(attention_mode));
+      std::fprintf(
+          stderr,
+          "slopfab: Vulkan inference requires --attention exact, flash2 or sage2; mode '%s' "
+          "will not be remapped and no CUDA fallback was used\n",
+          slopfab::attention_mode_name(attention_mode));
       return 1;
     }
   }
@@ -380,7 +407,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     std::ostringstream contents;
     contents << in.rdbuf();
     std::string text = contents.str();
-    if (text.rfind("\xEF\xBB\xBF", 0) == 0) text.erase(0, 3);
+    if (text.rfind("\xEF\xBB\xBF", 0) == 0)
+      text.erase(0, 3);
     text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
     const size_t first = text.find_first_not_of(" \t\n");
     if (first == std::string::npos) {
@@ -411,7 +439,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     std::fprintf(stderr, "slopfab: --count must be a positive integer\n");
     return 2;
   }
-  if (!saw_out) req.out_path = timestamped_output_path();
+  if (!saw_out)
+    req.out_path = timestamped_output_path();
   if (saw_overlap && continue_from.empty())
     throw std::runtime_error("--overlap-frames requires --continue-from");
   if (!continue_from.empty()) {
@@ -431,8 +460,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   slopfab::RunOptions options;
   options.source =
       synthetic ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
-  options.inference_backend = inference_backend == "vulkan"
-      ? slopfab::DeviceBackend::kVulkan : slopfab::DeviceBackend::kCuda;
+  options.inference_backend = inference_backend == "vulkan" ? slopfab::DeviceBackend::kVulkan
+                                                            : slopfab::DeviceBackend::kCuda;
   options.sampler = sampler_kind;
   options.dump_latents_path = dump_latents;
   options.save_latents_path = save_latents;
@@ -449,8 +478,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   // After `resolve_plan`, so a canvas that is going to be rejected outright is
   // not first warned about — an invalid request should produce one message
   // about what is wrong with it, not a size advisory followed by a refusal.
-  if (saw_resolution && slopfab::dit::canvas_exceeds_trained_area(req.canvas_height,
-                                                                req.canvas_width, plan.geometry)) {
+  if (saw_resolution && slopfab::dit::canvas_exceeds_trained_area(
+                            req.canvas_height, req.canvas_width, plan.geometry)) {
     // A warning, not a refusal: the caller named this canvas. But packed rows
     // grow with area and attention with their square, so an innocent-looking
     // doubling is roughly four times the attention cost.
@@ -459,13 +488,15 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                  "attention cost grows with the square of that, and quality outside the "
                  "trained range is uncharacterised\n",
                  req.canvas_width, req.canvas_height,
-                 static_cast<double>(req.canvas_width) * req.canvas_height / plan.geometry.trained_max_pixels);
+                 static_cast<double>(req.canvas_width) * req.canvas_height /
+                     plan.geometry.trained_max_pixels);
   }
   if (dry_run) {
     for (int generation = 0; generation < count; ++generation) {
       req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
       req.out_path = counted_output_path(base_out_path, generation, count);
-      if (generation > 0) std::printf("\n");
+      if (generation > 0)
+        std::printf("\n");
       std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);
     }
     return 0;
@@ -485,9 +516,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 
 #if !SLOPFAB_WITH_CUDA
   (void)executable;
-  std::fprintf(stderr,
-               "slopfab: built without CUDA support; model inference requires CUDA. "
-               "Vulkan accelerates output conversion only\n");
+  std::fprintf(stderr, "slopfab: built without CUDA support; model inference requires CUDA. "
+                       "Vulkan accelerates output conversion only\n");
   return 1;
 #else
 
@@ -511,7 +541,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 #endif
 
-  if (!saw_out) std::filesystem::create_directories(std::filesystem::path(req.out_path).parent_path());
+  if (!saw_out)
+    std::filesystem::create_directories(std::filesystem::path(req.out_path).parent_path());
 
   ensure_generate_models(req, executable, prompt_embedding.empty());
   plan = slopfab::resolve_plan(req);
@@ -542,7 +573,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       slopfab::dit::Transformer probe;
       const auto s0 = std::chrono::steady_clock::now();
       probe.load(ckpt, {}, &loras);
-      const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count();
+      const double sec =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - s0).count();
       std::printf("load %d: %s on device in %6.3f s  (%.2f GB/s off disk)\n", i + 1,
                   format_bytes(probe.weight_bytes()).c_str(), sec,
                   static_cast<double>(ckpt.file_size()) / sec / 1e9);
@@ -574,9 +606,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     req.seed = saw_seed ? base_seed + static_cast<uint64_t>(generation) : random_seed();
     req.out_path = counted_output_path(base_out_path, generation, count);
     options.reuse_models = count > 1;
-    options.save_latents_path = save_latents.empty() ? std::string() : counted_output_path(save_latents, generation, count);
+    options.save_latents_path =
+        save_latents.empty() ? std::string() : counted_output_path(save_latents, generation, count);
     options.release_reused_models = generation + 1 == count;
-    if (generation > 0) std::printf("\n");
+    if (generation > 0)
+      std::printf("\n");
     std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);
     std::printf("\n");
     const slopfab::RunResult run = slopfab::run_generate(session, req, plan, options);
@@ -590,8 +624,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   return 0;
 #endif
-#endif  // SLOPFAB_WITH_CUDA
+#endif // SLOPFAB_WITH_CUDA
 }
-
 
 }

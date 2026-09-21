@@ -6,7 +6,8 @@ namespace slopfab::dit {
 
 BlockSpan resolve_block_span(const BlockCacheConfig& config, int num_layers) {
   BlockSpan span;
-  if (!config.enabled() || num_layers <= 0) return span;
+  if (!config.enabled() || num_layers <= 0)
+    return span;
 
   const int width = std::min(config.span, num_layers);
   // Centring biases low on an odd remainder, which keeps the last block — the
@@ -37,8 +38,7 @@ bool BlockCache::should_compute(int step, bool have_delta) {
   // and whatever the span contributed is written into the output with no
   // damping at all. Costing one span evaluation to keep the final frame off a
   // stale delta is the cheapest insurance in the loop.
-  const bool forced = !config_.enabled() || !have_delta || step < warmup_ ||
-                      step >= num_steps_ - 1;
+  const bool forced = !config_.enabled() || !have_delta || step < warmup_ || step >= num_steps_ - 1;
 
   // Phase the interval from the end of the warmup rather than from step 0, so
   // that `warmup` and `interval` are independent: anchoring at 0 makes the
@@ -71,10 +71,11 @@ std::vector<uint8_t> plan_block_cache(const BlockCacheConfig& config, int num_st
   bool have_delta = false;
   for (int i = 0; i < steps; ++i) {
     const bool compute = cache.should_compute(i, have_delta);
-    if (compute) have_delta = true;
+    if (compute)
+      have_delta = true;
     out[static_cast<size_t>(i)] = compute ? 1 : 0;
   }
   return out;
 }
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

@@ -3,6 +3,7 @@
 #include "slopfab/text/prompt_embedding.h"
 #include "slopfab/text/tokenizer.h"
 #include "slopfab/reference_conditioning.h"
+
 namespace slopfab::generation {
 struct ReusedGenerationModels {
   std::string conditioning_key;
@@ -42,6 +43,6 @@ struct ReusedGenerationModels {
   }
 };
 
-
-RunResult run_generate_impl(const GenerateRequest&, const GeneratePlan&, const RunOptions&, ReusedGenerationModels&);
+RunResult run_generate_impl(const GenerateRequest&, const GeneratePlan&, const RunOptions&,
+                            ReusedGenerationModels&);
 }

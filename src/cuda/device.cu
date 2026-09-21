@@ -7,11 +7,13 @@
 namespace slopfab::cuda {
 
 void check(cudaError_t status, const char* expr, const char* file, int line) {
-  if (status == cudaSuccess) return;
+  if (status == cudaSuccess)
+    return;
   // Strip the directory prefix so messages stay readable.
   const char* base = file;
   for (const char* p = file; *p != '\0'; ++p) {
-    if (*p == '/' || *p == '\\') base = p + 1;
+    if (*p == '/' || *p == '\\')
+      base = p + 1;
   }
   throw std::runtime_error("cuda: " + std::string(cudaGetErrorName(status)) + ": " +
                            cudaGetErrorString(status) + "\n  at " + base + ":" +
@@ -23,7 +25,8 @@ int device_count() {
   const cudaError_t status = cudaGetDeviceCount(&count);
   // No driver or no device is a legitimate state to report, not an error to
   // throw from: the CLI needs to print a helpful message instead.
-  if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver) return 0;
+  if (status == cudaErrorNoDevice || status == cudaErrorInsufficientDriver)
+    return 0;
   SLOPFAB_CUDA_CHECK(status);
   return count;
 }
@@ -62,13 +65,16 @@ DeviceInfo query_device(int index) {
   return info;
 }
 
-void set_device(int index) { SLOPFAB_CUDA_CHECK(cudaSetDevice(index)); }
+void set_device(int index) {
+  SLOPFAB_CUDA_CHECK(cudaSetDevice(index));
+}
 
 int device_compute_capability(int index) {
   constexpr int kCachedDevices = 64;
   static std::once_flag once[kCachedDevices];
   static int capabilities[kCachedDevices]{};
-  if (index < 0) throw std::out_of_range("CUDA device index must be non-negative");
+  if (index < 0)
+    throw std::out_of_range("CUDA device index must be non-negative");
   if (index >= kCachedDevices) {
     cudaDeviceProp properties{};
     SLOPFAB_CUDA_CHECK(cudaGetDeviceProperties(&properties, index));
@@ -94,7 +100,9 @@ Stream::Stream() {
   SLOPFAB_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
 }
 
-Stream::~Stream() { destroy(); }
+Stream::~Stream() {
+  destroy();
+}
 
 void Stream::destroy() {
   if (stream_ != nullptr) {
@@ -104,7 +112,8 @@ void Stream::destroy() {
 }
 
 void Stream::synchronize() const {
-  if (stream_ != nullptr) SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
+  if (stream_ != nullptr)
+    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

@@ -24,9 +24,9 @@ namespace slopfab::video {
 // Why an MP4 could not be produced. `kOk` means the file was written.
 enum class MuxStatus {
   kOk,
-  kLibraryNotFound,   // no avcodec/avformat/avutil/swscale on the system
-  kSymbolMissing,     // found, but not the version we know how to drive
-  kEncoderMissing,    // no H.264 or AAC encoder in this build
+  kLibraryNotFound, // no avcodec/avformat/avutil/swscale on the system
+  kSymbolMissing,   // found, but not the version we know how to drive
+  kEncoderMissing,  // no H.264 or AAC encoder in this build
   kWriteFailed,
 };
 
@@ -72,4 +72,4 @@ MuxStatus write_mp4(const MuxRequest& request);
 // muxer and the .y4m fallback share that one implementation; they used to have
 // a copy each.
 
-}  // namespace slopfab::video
+} // namespace slopfab::video

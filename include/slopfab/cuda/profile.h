@@ -35,12 +35,13 @@ namespace slopfab::cuda {
 // Immediate stage boundaries survive an OOM before the final profile report.
 // Samples device-wide usage, not an allocator-exact peak; never synchronizes.
 class StageMemorySpan {
- public:
+public:
   explicit StageMemorySpan(const char* label);
   ~StageMemorySpan();
   StageMemorySpan(const StageMemorySpan&) = delete;
   StageMemorySpan& operator=(const StageMemorySpan&) = delete;
- private:
+
+private:
   void report(const char* boundary) const;
   const char* label_;
   long long start_ = 0;
@@ -51,25 +52,28 @@ class StageMemorySpan {
 // simultaneously live. Enabled by SLOPFAB_PROFILE=1; these are sampled,
 // device-wide figures (including other processes), not allocator-exact peaks.
 class ReferenceMemoryProfiler {
- public:
+public:
   ReferenceMemoryProfiler();
   void sample();
   void report(const char* label) const;
- private:
+
+private:
   bool enabled_ = false;
   size_t baseline_ = 0, peak_ = 0, minimum_free_ = 0;
   size_t samples_ = 0;
 };
 
 class StepProfiler {
- public:
+public:
   // Reads SLOPFAB_PROFILE once. There is one profiler per process because there
   // is one denoising loop per process, and threading a handle through
   // `Transformer::forward` into `run_block` would put a parameter in a hot
   // signature for the sole benefit of a diagnostic.
   static StepProfiler& instance();
 
-  bool enabled() const { return enabled_; }
+  bool enabled() const {
+    return enabled_;
+  }
 
   // Opens a step. `tick` before this, or after `end_step`, does nothing — the
   // token refiner shares `run_block` with the denoising loop and must not
@@ -102,20 +106,23 @@ class StepProfiler {
 
   void report(std::FILE* out) const;
 
-  int steps() const { return steps_; }
+  int steps() const {
+    return steps_;
+  }
 
- private:
+private:
   StepProfiler();
 
   struct Mark {
     const char* label;
     cudaEvent_t event;
-    long long host_ns;  // when the host finished issuing everything up to here
+    long long host_ns; // when the host finished issuing everything up to here
   };
+
   struct Total {
     std::string label;
-    double ms = 0.0;        // GPU: the interval between two stream markers
-    double host_ms = 0.0;   // host: how long the host spent issuing that interval
+    double ms = 0.0;      // GPU: the interval between two stream markers
+    double host_ms = 0.0; // host: how long the host spent issuing that interval
     long long count = 0;
     bool host = false;
   };
@@ -128,7 +135,7 @@ class StepProfiler {
 
   std::vector<cudaEvent_t> pool_;
   size_t pool_used_ = 0;
-  std::vector<Mark> marks_;      // marks_[0] is the step origin, label unused
+  std::vector<Mark> marks_; // marks_[0] is the step origin, label unused
   std::vector<Total> totals_;
 
   double wall_ms_ = 0.0;
@@ -141,24 +148,24 @@ class StepProfiler {
   // start together and the two timelines are directly comparable from there.
   // `lead` is how far the GPU is *behind* the host at a marker: positive means
   // a backlog, and a backlog is the only thing that keeps the GPU fed.
-  double idle_ms_ = 0.0;      // sum of max(0, host reached mark k - GPU reached k-1)
-  double min_lead_ms_ = 0.0;  // worst backlog over the step; <= 0 means a stall
+  double idle_ms_ = 0.0;     // sum of max(0, host reached mark k - GPU reached k-1)
+  double min_lead_ms_ = 0.0; // worst backlog over the step; <= 0 means a stall
 
   size_t total_bytes_ = 0;
-  size_t peak_used_ = 0;   // total - free, at its worst
+  size_t peak_used_ = 0; // total - free, at its worst
   size_t min_free_ = 0;
 };
 
 // Scoped host timer. Costs a `steady_clock::now()` pair when profiling is on
 // and a branch when it is not.
 class HostSpan {
- public:
+public:
   explicit HostSpan(const char* label);
   ~HostSpan();
   HostSpan(const HostSpan&) = delete;
   HostSpan& operator=(const HostSpan&) = delete;
 
- private:
+private:
   const char* label_;
   long long t0_ = 0;
 };
@@ -175,10 +182,12 @@ class HostSpan {
 //
 // Unlike StepProfiler this is not normalised per step — a decode happens once.
 class PhaseProfiler {
- public:
+public:
   static PhaseProfiler& instance();
 
-  bool enabled() const { return enabled_; }
+  bool enabled() const {
+    return enabled_;
+  }
 
   // Host wall time. Spans at the same nesting level tile their stage.
   void add(const char* label, double ms);
@@ -207,7 +216,7 @@ class PhaseProfiler {
 
   void report(std::FILE* out) const;
 
- private:
+private:
   PhaseProfiler();
 
   struct Total {
@@ -216,11 +225,13 @@ class PhaseProfiler {
     long long count = 0;
     bool gpu = false;
   };
+
   struct Pair {
     const char* label;
     cudaEvent_t begin;
     cudaEvent_t end;
   };
+
   Total& slot(const char* label, bool gpu);
 
   bool enabled_ = false;
@@ -238,7 +249,7 @@ class PhaseProfiler {
 
 // Scoped phase timer, the PhaseProfiler counterpart of HostSpan.
 class PhaseSpan {
- public:
+public:
   explicit PhaseSpan(const char* label);
   ~PhaseSpan();
   PhaseSpan(const PhaseSpan&) = delete;
@@ -247,7 +258,7 @@ class PhaseSpan {
   // Ends the span early, so a span can cover part of a scope.
   void stop();
 
- private:
+private:
   const char* label_;
   long long t0_ = 0;
   bool running_ = false;
@@ -258,17 +269,17 @@ class PhaseSpan {
 // the next `flush_gpu`, after a synchronise the code was doing anyway. So the
 // span costs two stream markers and never blocks the host.
 class PhaseGpuSpan {
- public:
+public:
   PhaseGpuSpan(const char* label, cudaStream_t stream);
   ~PhaseGpuSpan();
   PhaseGpuSpan(const PhaseGpuSpan&) = delete;
   PhaseGpuSpan& operator=(const PhaseGpuSpan&) = delete;
 
- private:
+private:
   const char* label_;
   cudaStream_t stream_ = nullptr;
   cudaEvent_t begin_ = nullptr;
   cudaEvent_t end_ = nullptr;
 };
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

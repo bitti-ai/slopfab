@@ -19,7 +19,7 @@ struct TensorView {
   std::string name;
   DType dtype = DType::kUnknown;
   std::vector<int64_t> shape;
-  const void* data = nullptr;  // into the mapping; valid while the file lives
+  const void* data = nullptr; // into the mapping; valid while the file lives
   size_t nbytes = 0;
 
   // Element count implied by `shape`. For packed 4-bit tensors this is the
@@ -27,14 +27,18 @@ struct TensorView {
   // trailing dimension is already halved on disk.
   int64_t numel() const {
     int64_t n = 1;
-    for (int64_t d : shape) n *= d;
+    for (int64_t d : shape)
+      n *= d;
     return n;
   }
-  bool is_scalar() const { return shape.empty(); }
+
+  bool is_scalar() const {
+    return shape.empty();
+  }
 };
 
 class SafeTensors {
- public:
+public:
   SafeTensors() = default;
   ~SafeTensors();
 
@@ -48,16 +52,26 @@ class SafeTensors {
   void open(const std::string& path);
   void close();
 
-  bool is_open() const { return base_ != nullptr; }
-  const std::string& path() const { return path_; }
-  size_t file_size() const { return size_; }
+  bool is_open() const {
+    return base_ != nullptr;
+  }
+
+  const std::string& path() const {
+    return path_;
+  }
+
+  size_t file_size() const {
+    return size_;
+  }
 
   // Base of the mapping. Exposed so a caller can page-lock the whole range
   // with `cudaHostRegister` and then DMA tensors straight out of it, which
   // avoids staging every weight through a host copy first — worth 5x on the
   // text encoder's streaming path, where the memcpy was 96% of the time.
   // Null when closed.
-  const void* mapping_base() const { return base_; }
+  const void* mapping_base() const {
+    return base_;
+  }
 
   // Asks the OS to read the whole mapping in, asynchronously, instead of
   // waiting for it to be demanded a fault at a time. Best-effort in exactly the
@@ -101,10 +115,17 @@ class SafeTensors {
 
   // Free-form key/value block stored under "__metadata__". Absent in most
   // checkpoints; ComfyUI writes provenance here.
-  const std::map<std::string, std::string>& metadata() const { return metadata_; }
+  const std::map<std::string, std::string>& metadata() const {
+    return metadata_;
+  }
 
-  const std::map<std::string, TensorView>& tensors() const { return tensors_; }
-  size_t tensor_count() const { return tensors_.size(); }
+  const std::map<std::string, TensorView>& tensors() const {
+    return tensors_;
+  }
+
+  size_t tensor_count() const {
+    return tensors_.size();
+  }
 
   // Returns nullptr when absent. Archives uniformly wrapped in ComfyUI's
   // `model.diffusion_model.` namespace also accept unprefixed lookup names.
@@ -115,9 +136,9 @@ class SafeTensors {
   // structural error rather than an optional feature.
   const TensorView& at(std::string_view name) const;
 
- private:
+private:
   std::string path_;
-  void* base_ = nullptr;  // start of the mapping
+  void* base_ = nullptr; // start of the mapping
   size_t size_ = 0;
   std::map<std::string, TensorView> tensors_;
   std::map<std::string, std::string> metadata_;
@@ -133,4 +154,4 @@ class SafeTensors {
   void parse_header();
 };
 
-}  // namespace slopfab
+} // namespace slopfab

@@ -3,22 +3,37 @@
 
 namespace slopfab::dit {
 
-
-
 // ---------------------------------------------------------------------------
 
-Transformer::Transformer() : impl_(new Impl()) {}
+Transformer::Transformer() : impl_(new Impl()) {
+}
+
 Transformer::~Transformer() = default;
 
-const TransformerConfig& Transformer::config() const { return impl_->cfg; }
+const TransformerConfig& Transformer::config() const {
+  return impl_->cfg;
+}
+
 size_t Transformer::weight_bytes() const {
   return impl_->arena_bytes + impl_->lora.weight_bytes() +
          (impl_->streamer ? impl_->streamer->device_bytes() : 0);
 }
-size_t Transformer::offloaded_blocks() const { return impl_->streamer ? impl_->streamer->count : 0; }
-size_t Transformer::offloaded_host_bytes() const { return impl_->streamer ? impl_->streamer->host_bytes : 0; }
-void Transformer::set_adaln_lookup(AdaLNLookup mode) { impl_->lookup = mode; }
-AdaLNLookup Transformer::adaln_lookup() const { return impl_->lookup; }
+
+size_t Transformer::offloaded_blocks() const {
+  return impl_->streamer ? impl_->streamer->count : 0;
+}
+
+size_t Transformer::offloaded_host_bytes() const {
+  return impl_->streamer ? impl_->streamer->host_bytes : 0;
+}
+
+void Transformer::set_adaln_lookup(AdaLNLookup mode) {
+  impl_->lookup = mode;
+}
+
+AdaLNLookup Transformer::adaln_lookup() const {
+  return impl_->lookup;
+}
 
 void Transformer::set_attention_band(int frames) {
   const int requested = frames > 0 ? frames : 0;
@@ -28,7 +43,11 @@ void Transformer::set_attention_band(int frames) {
   }
   impl_->attn_band = requested;
 }
-int Transformer::attention_band() const { return impl_->attn_band; }
+
+int Transformer::attention_band() const {
+  return impl_->attn_band;
+}
+
 void Transformer::set_attention_mode(AttentionMode mode) {
   if (!attention_mode_supported(DeviceBackend::kCuda, mode)) {
     throw std::invalid_argument("transformer: invalid CUDA attention mode");
@@ -38,15 +57,18 @@ void Transformer::set_attention_mode(AttentionMode mode) {
         "transformer: attention mode cannot change after attention preparation");
   }
   if (mode == AttentionMode::kExact && !cuda::deterministic_h3_attention_available()) {
-    throw std::runtime_error(
-        "transformer: exact attention is unavailable on this CUDA tuple");
+    throw std::runtime_error("transformer: exact attention is unavailable on this CUDA tuple");
   }
   impl_->attention_mode = mode;
 }
-AttentionMode Transformer::attention_mode() const { return impl_->attention_mode; }
+
+AttentionMode Transformer::attention_mode() const {
+  return impl_->attention_mode;
+}
 
 void Transformer::set_row_chunk(int rows) {
-  if (rows <= 0) throw std::invalid_argument("transformer: row chunk must be positive");
+  if (rows <= 0)
+    throw std::invalid_argument("transformer: row chunk must be positive");
   if (impl_->attention_configuration_locked && rows != impl_->row_chunk)
     throw std::runtime_error("transformer: set row chunk before preparation");
   impl_->row_chunk = rows;
@@ -58,9 +80,17 @@ void Transformer::set_query_chunking(bool enabled) {
   impl_->query_chunking = enabled;
 }
 
-size_t Transformer::workspace_bytes() const { return impl_->ws.capacity(); }
-void Transformer::set_sol_schedule(const SolSchedule& schedule) { impl_->sol_schedule=schedule; }
-void Transformer::set_denoise_step(int step) { impl_->denoise_step = step; }
+size_t Transformer::workspace_bytes() const {
+  return impl_->ws.capacity();
+}
+
+void Transformer::set_sol_schedule(const SolSchedule& schedule) {
+  impl_->sol_schedule = schedule;
+}
+
+void Transformer::set_denoise_step(int step) {
+  impl_->denoise_step = step;
+}
 
 void Transformer::set_block_cache(const BlockCacheConfig& config, int num_steps) {
   Impl& s = *impl_;
@@ -93,16 +123,26 @@ const BlockCacheConfig& Transformer::block_cache_config() const {
   return impl_->block_cache.config();
 }
 
-BlockSpan Transformer::block_cache_span() const { return impl_->bc_span; }
+BlockSpan Transformer::block_cache_span() const {
+  return impl_->bc_span;
+}
 
-int Transformer::num_blocks() const { return static_cast<int>(impl_->blocks.size()); }
+int Transformer::num_blocks() const {
+  return static_cast<int>(impl_->blocks.size());
+}
 
-int Transformer::block_cache_computed() const { return impl_->block_cache.computed(); }
+int Transformer::block_cache_computed() const {
+  return impl_->block_cache.computed();
+}
 
-int Transformer::block_cache_reused() const { return impl_->block_cache.reused(); }
+int Transformer::block_cache_reused() const {
+  return impl_->block_cache.reused();
+}
+
 std::array<float, AdaLNTable::kRank> Transformer::adaln_code(float t) const {
   if (!is_pruned_table_architecture(impl_->architecture)) {
-    throw std::runtime_error("transformer: rank-8 adaln_code is unavailable for full-AdaLN architecture");
+    throw std::runtime_error(
+        "transformer: rank-8 adaln_code is unavailable for full-AdaLN architecture");
   }
   return impl_->table.lookup(t, impl_->lookup);
 }
@@ -117,8 +157,11 @@ void Transformer::unload() {
   impl_->has_sequence = false;
   impl_->attention_configuration_locked = false;
   impl_->attention_routes = {};
-  impl_->vsa_rows.reset(); impl_->vsa_sizes.reset(); impl_->vsa_row_tiles.reset();
-  impl_->vsa_compressed.reset(); impl_->vsa_config = {};
+  impl_->vsa_rows.reset();
+  impl_->vsa_sizes.reset();
+  impl_->vsa_row_tiles.reset();
+  impl_->vsa_compressed.reset();
+  impl_->vsa_config = {};
 }
 
 size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
@@ -136,15 +179,15 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
              align_up(tiles.sizes.size() * sizeof(int32_t)) +
              align_up(tiles.row_tiles.size() * sizeof(int32_t));
   }
-  if (impl_->architecture == TransformerArchitecture::kRef2VAFullAdaLN &&
-      !impl_->blocks.empty()) {
-    size_t full_scratch = cuda::linear_workspace_bytes(
-        impl_->blocks.front().full_adaln, 2, ComputeType::kF32);
-    full_scratch = std::max(full_scratch, cuda::linear_workspace_bytes(
-        impl_->final_full_adaln, 2, ComputeType::kF32));
-    if (full_scratch > c.scratch) total += align_up(full_scratch) - align_up(c.scratch);
+  if (impl_->architecture == TransformerArchitecture::kRef2VAFullAdaLN && !impl_->blocks.empty()) {
+    size_t full_scratch =
+        cuda::linear_workspace_bytes(impl_->blocks.front().full_adaln, 2, ComputeType::kF32);
+    full_scratch = std::max(
+        full_scratch, cuda::linear_workspace_bytes(impl_->final_full_adaln, 2, ComputeType::kF32));
+    if (full_scratch > c.scratch)
+      total += align_up(full_scratch) - align_up(c.scratch);
   }
-  total += align_up(static_cast<size_t>(seq) * cfg.hidden_size * sizeof(__nv_bfloat16));  // hidden
+  total += align_up(static_cast<size_t>(seq) * cfg.hidden_size * sizeof(__nv_bfloat16)); // hidden
   // The block cache's delta, same shape as `hidden`: 844 MB at the production
   // geometry.
   //
@@ -153,8 +196,8 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   if (impl_->block_cache.enabled() && impl_->bc_span.valid()) {
     total += align_up(static_cast<size_t>(seq) * cfg.hidden_size * sizeof(__nv_bfloat16));
   }
-  total += 2 * align_up(static_cast<size_t>(seq) * 96 * sizeof(float));                   // rope
-  total += 3 * align_up(static_cast<size_t>(seq) * sizeof(int32_t));                      // indices
+  total += 2 * align_up(static_cast<size_t>(seq) * 96 * sizeof(float)); // rope
+  total += 3 * align_up(static_cast<size_t>(seq) * sizeof(int32_t));    // indices
   // Modulation at the t2va worst case of two distinct timesteps (spec 7.5).
   total += align_up(static_cast<size_t>(cfg.num_layers) * kNumParams * 2 * kNumModalities *
                     cfg.hidden_size * sizeof(float));
@@ -185,14 +228,14 @@ std::vector<float> Transformer::debug_modulation(int block_index,
   const size_t per_block = s.block_mod_stride();
   std::vector<float> out(per_block);
   SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(out.data(), s.mod.get() + block_index * per_block,
-                                    per_block * sizeof(float), cudaMemcpyDeviceToHost,
-                                    s.stream.get()));
+                                     per_block * sizeof(float), cudaMemcpyDeviceToHost,
+                                     s.stream.get()));
   SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   return out;
 }
 
 std::vector<Transformer::DebugStage> Transformer::debug_text_stages(const float* prompt_embeds,
-                                                                   int num_tokens) {
+                                                                    int num_tokens) {
   Impl& s = *impl_;
   std::vector<DebugStage> stages;
   s.stage_hook = [&](const char* label, const __nv_bfloat16* x, int rows, int dim) {
@@ -202,10 +245,10 @@ std::vector<Transformer::DebugStage> Transformer::debug_text_stages(const float*
     stage.dim = dim;
     const size_t n = static_cast<size_t>(rows) * dim;
     std::vector<uint16_t> bits(n);
-    SLOPFAB_CUDA_CHECK(
-        cudaMemcpy(bits.data(), x, n * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    SLOPFAB_CUDA_CHECK(cudaMemcpy(bits.data(), x, n * sizeof(uint16_t), cudaMemcpyDeviceToHost));
     stage.data.resize(n);
-    for (size_t i = 0; i < n; ++i) stage.data[i] = bf16_to_f32(bits[i]);
+    for (size_t i = 0; i < n; ++i)
+      stage.data[i] = bf16_to_f32(bits[i]);
     stages.push_back(std::move(stage));
   };
   try {
@@ -220,12 +263,14 @@ std::vector<Transformer::DebugStage> Transformer::debug_text_stages(const float*
 
 std::vector<float> Transformer::debug_text_cache() const {
   Impl& s = *impl_;
-  if (s.num_text == 0 || s.text_cache.size() == 0) return {};
+  if (s.num_text == 0 || s.text_cache.size() == 0)
+    return {};
   std::vector<uint16_t> bits(s.text_cache.size());
-  SLOPFAB_CUDA_CHECK(cudaMemcpy(bits.data(), s.text_cache.get(),
-                               bits.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(bits.data(), s.text_cache.get(), bits.size() * sizeof(uint16_t),
+                                cudaMemcpyDeviceToHost));
   std::vector<float> out(bits.size());
-  for (size_t i = 0; i < bits.size(); ++i) out[i] = bf16_to_f32(bits[i]);
+  for (size_t i = 0; i < bits.size(); ++i)
+    out[i] = bf16_to_f32(bits[i]);
   return out;
 }
 
@@ -237,7 +282,8 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   cuda::StageMemorySpan memory("denoising.forward");
   Impl& s = *impl_;
   s.require_loaded("forward");
-  if (!s.has_sequence) throw std::runtime_error("transformer: forward before prepare_sequence");
+  if (!s.has_sequence)
+    throw std::runtime_error("transformer: forward before prepare_sequence");
 
   const TransformerConfig& cfg = s.cfg;
   const int seq = s.layout.total_rows();
@@ -255,7 +301,8 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   cuda::StepProfiler& prof = cuda::StepProfiler::instance();
   const std::chrono::steady_clock::time_point t_enter = std::chrono::steady_clock::now();
   prof.begin_step(s.stream.get());
-  if (s.streamer) s.streamer->prefetch(s.streamer->first);
+  if (s.streamer)
+    s.streamer->prefetch(s.streamer->first);
 
   // Modulation for this step's distinct timesteps, and the per-row indices
   // into it. `torch.unique(sorted=True)` sorts ascending, so which of the video
@@ -263,8 +310,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   // indices have to be re-uploaded every step, not cached.
   s.build_modulation(row_timesteps.unique);
   prof.tick("mod.expand", s.stream.get());
-  s.d_adaln.copy_from_host(row_timesteps.adaln.data(), row_timesteps.adaln.size(),
-                           s.stream.get());
+  s.d_adaln.copy_from_host(row_timesteps.adaln.data(), row_timesteps.adaln.size(), s.stream.get());
   // The final layer selects on `timestep_indices` alone, with no modality
   // dependence (spec 3.2), so each head needs its own rows' timestep index in
   // gathered order.
@@ -284,8 +330,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
     s.d_ts_audio.copy_from_host(s.host_ts.data() + video_rows, audio_rows, s.stream.get());
   }
   prof.tick("mod.index_h2d", s.stream.get());
-  s.begin_transformer_forward_capture(video_latents, audio_latents,
-                                      video_rows, audio_rows);
+  s.begin_transformer_forward_capture(video_latents, audio_latents, video_rows, audio_rows);
 
   s.ws.clear();
   Workspace& ws = s.ws;
@@ -344,9 +389,8 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
               "transformer: exact input projection requires plain fp32 weight and bias");
         }
         cuda::launch_deterministic_scalar_gemm_nt(
-            src, w.data, w.bias, fa, static_cast<uint32_t>(n),
-            static_cast<uint32_t>(hidden), static_cast<uint32_t>(in_dim),
-            DenseGemmMode::kFloat32, DenseGemmBias::kFloat32,
+            src, w.data, w.bias, fa, static_cast<uint32_t>(n), static_cast<uint32_t>(hidden),
+            static_cast<uint32_t>(in_dim), DenseGemmMode::kFloat32, DenseGemmBias::kFloat32,
             static_cast<uint32_t>(start), 0, s.stream.get());
       } else {
         s.linear.forward_f32(w, src + static_cast<size_t>(start) * in_dim, n, fa, ws);
@@ -380,8 +424,7 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
   // Decided once per forward, not per block: `should_compute` counts its calls
   // for reporting, so asking it inside the loop would inflate the tally by the
   // block count and make a reused step look like fifty.
-  const bool bc_compute =
-      !bc_on || s.block_cache.should_compute(s.denoise_step, s.bc_have_delta);
+  const bool bc_compute = !bc_on || s.block_cache.should_compute(s.denoise_step, s.bc_have_delta);
 
   for (size_t b = 0; b < s.blocks.size(); ++b) {
     if (bc_on && static_cast<int>(b) == s.bc_span.begin) {
@@ -389,9 +432,8 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
         // The stream as it enters the span, parked in the delta buffer until
         // the subtract below turns it into the delta. `run_block` works in
         // place, so without this copy the delta would be `x - x`.
-        SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(s.bc_delta.get(), x,
-                                          stream_n * sizeof(__nv_bfloat16),
-                                          cudaMemcpyDeviceToDevice, s.stream.get()));
+        SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(s.bc_delta.get(), x, stream_n * sizeof(__nv_bfloat16),
+                                           cudaMemcpyDeviceToDevice, s.stream.get()));
         // Cleared for the duration: between here and the capture the buffer
         // holds the "before" state, and a `forward` that threw in the middle of
         // the span would otherwise leave it looking like a usable delta.
@@ -403,14 +445,14 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
         // `should_compute` forces a compute while it is false.
         cuda::launch_add_bf16(x, s.bc_delta.get(), stream_n, s.stream.get());
         prof.tick("block_cache.reuse", s.stream.get());
-        b = static_cast<size_t>(s.bc_span.end) - 1;  // the ++ lands on `end`
+        b = static_cast<size_t>(s.bc_span.end) - 1; // the ++ lands on `end`
         continue;
       }
     }
 
     const AttentionMode block_mode =
         is_sol_attention(s.attention_mode) &&
-                !s.sol_schedule.active(s.denoise_step,static_cast<int>(b))
+                !s.sol_schedule.active(s.denoise_step, static_cast<int>(b))
             ? AttentionMode::kFlash2
             : s.attention_mode;
     BlockWeights active = s.blocks[b];
@@ -420,9 +462,9 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
       const auto& host = s.streamer->blocks[b].host;
       active = relocate_block(active, host.get(), host.size(), s.streamer->device(b));
     }
-    s.run_block(active, s.mod.get() + b * per_block, seq, x, s.d_adaln.get(),
-                s.rope_cos.get(), s.rope_sin.get(), q, k, v, attn_out, normed, fused, act, branch,
-                block_mode, static_cast<int>(b));
+    s.run_block(active, s.mod.get() + b * per_block, seq, x, s.d_adaln.get(), s.rope_cos.get(),
+                s.rope_sin.get(), q, k, v, attn_out, normed, fused, act, branch, block_mode,
+                static_cast<int>(b));
 
     if (bc_on && bc_compute && static_cast<int>(b) == s.bc_span.end - 1) {
       // In place over the "before" state: `out` aliases `b`, which the kernel
@@ -457,10 +499,9 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
               "transformer: exact output head requires plain fp32 weight and bias");
         }
         cuda::launch_deterministic_scalar_gemm_nt(
-            fb, w.data, w.bias, dst, static_cast<uint32_t>(n),
-            static_cast<uint32_t>(out_dim), static_cast<uint32_t>(hidden),
-            DenseGemmMode::kFloat32, DenseGemmBias::kFloat32,
-            0, static_cast<uint32_t>(start), s.stream.get());
+            fb, w.data, w.bias, dst, static_cast<uint32_t>(n), static_cast<uint32_t>(out_dim),
+            static_cast<uint32_t>(hidden), DenseGemmMode::kFloat32, DenseGemmBias::kFloat32, 0,
+            static_cast<uint32_t>(start), s.stream.get());
       } else {
         s.linear.forward_f32(w, fb, n, dst + static_cast<size_t>(start) * out_dim, ws);
       }
@@ -496,5 +537,4 @@ void Transformer::forward(const float* video_latents, const float* audio_latents
                      std::chrono::duration<double, std::milli>(t_exit - t_issued).count());
 }
 
-
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

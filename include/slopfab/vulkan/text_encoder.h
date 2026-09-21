@@ -33,7 +33,7 @@ struct ExactQwenTextEncoderStats {
 // widened/downloaded once after layer 49. No final norm or LM head is run.
 // The checkpoint must outlive this object while loaded.
 class ExactQwenTextEncoder {
- public:
+public:
   ExactQwenTextEncoder();
   ~ExactQwenTextEncoder();
   ExactQwenTextEncoder(ExactQwenTextEncoder&&) noexcept;
@@ -42,8 +42,7 @@ class ExactQwenTextEncoder {
   ExactQwenTextEncoder& operator=(const ExactQwenTextEncoder&) = delete;
 
   static ExactQwenTextEncoder create(TensorContext& context);
-  void load(const SafeTensors& checkpoint,
-            const text::EncoderConfig& config = {});
+  void load(const SafeTensors& checkpoint, const text::EncoderConfig& config = {});
   // Releases the checkpoint, compressed weights and reusable shape arena.
   // TensorContext may retain bounded staging/pool blocks for later models.
   void unload() noexcept;
@@ -53,18 +52,16 @@ class ExactQwenTextEncoder {
 
   text::PromptEmbedding encode(const std::vector<int32_t>& token_ids,
                                text::EncoderTrace* trace = nullptr);
-  text::PromptEmbedding encode(
-      const std::vector<int32_t>& token_ids,
-      const std::vector<text::QwenPixelValues>& images,
-      text::EncoderTrace* trace = nullptr);
-  text::PromptEmbedding encode(const text::Tokenizer& tokenizer,
-                               const std::string& prompt);
+  text::PromptEmbedding encode(const std::vector<int32_t>& token_ids,
+                               const std::vector<text::QwenPixelValues>& images,
+                               text::EncoderTrace* trace = nullptr);
+  text::PromptEmbedding encode(const text::Tokenizer& tokenizer, const std::string& prompt);
   const ExactQwenTextEncoderStats& stats() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit ExactQwenTextEncoder(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

@@ -14,15 +14,17 @@ constexpr int kWarp = 32, kWarps = 4, kThreads = 128;
 constexpr int kBr = 64, kBc = 64, kMmaN = 8, kPadH = 8, kPadV = 2;
 constexpr float kHostNegInf = -std::numeric_limits<float>::infinity();
 
-__global__ void pool_kernel(const __nv_bfloat16* q, const __nv_bfloat16* k,
-                            const __nv_bfloat16* v, float* pooled,
-                            VsaConfig c) {
+__global__ void pool_kernel(const __nv_bfloat16* q, const __nv_bfloat16* k, const __nv_bfloat16* v,
+                            float* pooled, VsaConfig c) {
   const int tile = blockIdx.x, head = blockIdx.y, d = threadIdx.x;
-  if (d >= c.head_dim) return;
+  if (d >= c.head_dim)
+    return;
   float sq = 0, sk = 0, sv = 0;
   for (int i = 0; i < c.sizes[tile]; ++i) {
     const size_t off = (size_t(c.rows[tile * 64 + i]) * c.heads + head) * c.head_dim + d;
-    sq += __bfloat162float(q[off]); sk += __bfloat162float(k[off]); sv += __bfloat162float(v[off]);
+    sq += __bfloat162float(q[off]);
+    sk += __bfloat162float(k[off]);
+    sv += __bfloat162float(v[off]);
   }
   const size_t stride = size_t(c.heads) * c.tiles * c.head_dim;
   const size_t dst = (size_t(head) * c.tiles + tile) * c.head_dim + d;
@@ -40,21 +42,25 @@ __global__ void score_kernel(const float* pooled, float* scores, VsaConfig c) {
   const float* k = pooled + stride + size_t(head) * c.tiles * c.head_dim;
   for (int key = warp; key < c.tiles; key += 8) {
     float dot = 0;
-    for (int d = lane; d < c.head_dim; d += 32) dot += q[d] * k[key * c.head_dim + d];
-    for (int delta = 16; delta > 0; delta /= 2) dot += __shfl_down_sync(0xffffffff, dot, delta);
-    if (lane == 0) scores[(size_t(head) * c.tiles + tile) * c.tiles + key] = dot / sqrtf(float(c.head_dim));
+    for (int d = lane; d < c.head_dim; d += 32)
+      dot += q[d] * k[key * c.head_dim + d];
+    for (int delta = 16; delta > 0; delta /= 2)
+      dot += __shfl_down_sync(0xffffffff, dot, delta);
+    if (lane == 0)
+      scores[(size_t(head) * c.tiles + tile) * c.tiles + key] = dot / sqrtf(float(c.head_dim));
   }
 }
 
 // Sort video tile scores in shared memory. Prefix keys are always retained;
 // prefix queries attend every key. Ties use the lower tile index consistently.
-__global__ void route_kernel(const float* scores, uint8_t* mask, VsaConfig c,
-                             int padded, int keep) {
+__global__ void route_kernel(const float* scores, uint8_t* mask, VsaConfig c, int padded,
+                             int keep) {
   const int tile = blockIdx.x, head = blockIdx.y;
   const size_t base = (size_t(head) * c.tiles + tile) * c.tiles;
   for (int i = threadIdx.x; i < c.tiles; i += blockDim.x)
     mask[base + i] = tile < c.prefix_tiles || i < c.prefix_tiles;
-  if (tile < c.prefix_tiles) return;
+  if (tile < c.prefix_tiles)
+    return;
   extern __shared__ char storage[];
   float* values = reinterpret_cast<float*>(storage);
   int* ids = reinterpret_cast<int*>(values + padded);
@@ -68,21 +74,27 @@ __global__ void route_kernel(const float* scores, uint8_t* mask, VsaConfig c,
     for (int stride = width / 2; stride > 0; stride /= 2) {
       for (int i = threadIdx.x; i < padded; i += blockDim.x) {
         const int j = i ^ stride;
-        if (j <= i) continue;
+        if (j <= i)
+          continue;
         const bool before = values[i] > values[j] || (values[i] == values[j] && ids[i] < ids[j]);
         const bool descending = (i & width) == 0;
         if (before != descending) {
-          const float v = values[i]; values[i] = values[j]; values[j] = v;
-          const int id = ids[i]; ids[i] = ids[j]; ids[j] = id;
+          const float v = values[i];
+          values[i] = values[j];
+          values[j] = v;
+          const int id = ids[i];
+          ids[i] = ids[j];
+          ids[j] = id;
         }
       }
       __syncthreads();
     }
-  for (int i = threadIdx.x; i < keep; i += blockDim.x) mask[base + ids[i]] = 1;
+  for (int i = threadIdx.x; i < keep; i += blockDim.x)
+    mask[base + ids[i]] = 1;
 }
 
-__global__ void compress_kernel(const float* pooled, const float* scores,
-                                __nv_bfloat16* compressed, VsaConfig c) {
+__global__ void compress_kernel(const float* pooled, const float* scores, __nv_bfloat16* compressed,
+                                VsaConfig c) {
   const int tile = blockIdx.x, head = blockIdx.y, d = threadIdx.x;
   extern __shared__ float probabilities[];
   const float* row = scores + (size_t(head) * c.tiles + tile) * c.tiles;
@@ -90,24 +102,31 @@ __global__ void compress_kernel(const float* pooled, const float* scores,
   // channels evaluate their pooled-value dot product in parallel.
   if (d == 0) {
     float maximum = kHostNegInf, sum = 0;
-    for (int i = 0; i < c.tiles; ++i) maximum = fmaxf(maximum, row[i]);
-    for (int i = 0; i < c.tiles; ++i) { probabilities[i] = expf(row[i] - maximum); sum += probabilities[i]; }
-    for (int i = 0; i < c.tiles; ++i) probabilities[i] /= sum;
+    for (int i = 0; i < c.tiles; ++i)
+      maximum = fmaxf(maximum, row[i]);
+    for (int i = 0; i < c.tiles; ++i) {
+      probabilities[i] = expf(row[i] - maximum);
+      sum += probabilities[i];
+    }
+    for (int i = 0; i < c.tiles; ++i)
+      probabilities[i] /= sum;
   }
   __syncthreads();
-  if (d >= c.head_dim) return;
+  if (d >= c.head_dim)
+    return;
   const float* vp = pooled + (size_t(2 * c.heads + head) * c.tiles) * c.head_dim;
   float value = 0;
-  for (int i = 0; i < c.tiles; ++i) value += probabilities[i] * vp[i * c.head_dim + d];
+  for (int i = 0; i < c.tiles; ++i)
+    value += probabilities[i] * vp[i * c.head_dim + d];
   compressed[(size_t(tile) * c.heads + head) * c.head_dim + d] = __float2bfloat16(value);
 }
 
 __global__ void add_kernel(__nv_bfloat16* out, const __nv_bfloat16* gate,
-                           const __nv_bfloat16* compressed, int offset, int count,
-                           VsaConfig c) {
+                           const __nv_bfloat16* compressed, int offset, int count, VsaConfig c) {
   const size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
   const int inner = c.heads * c.head_dim;
-  if (i >= size_t(count) * inner) return;
+  if (i >= size_t(count) * inner)
+    return;
   const int tile = c.row_tiles[offset + i / inner];
   const float branch = __bfloat162float(__float2bfloat16(
       __bfloat162float(gate[i]) * __bfloat162float(compressed[size_t(tile) * inner + i % inner])));
@@ -118,23 +137,24 @@ __device__ inline uint32_t pack_h2(float lo, float hi) {
   const __half2 h = __floats2half2_rn(lo, hi);
   return *reinterpret_cast<const uint32_t*>(&h);
 }
+
 __device__ inline void mma_bf16(float (&d)[4], const uint32_t (&a)[4], const uint32_t (&b)[2]) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
-      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
 __device__ inline void mma_f16(float (&d)[4], const uint32_t (&a)[4], const uint32_t (&b)[2]) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
-      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
-__device__ inline uint32_t ld32(const void* p) { return *reinterpret_cast<const uint32_t*>(p); }
+__device__ inline uint32_t ld32(const void* p) {
+  return *reinterpret_cast<const uint32_t*>(p);
+}
 
 template <int D>
 __global__ __launch_bounds__(kThreads) void sparse_kernel(
@@ -157,10 +177,9 @@ __global__ __launch_bounds__(kThreads) void sparse_kernel(
   const int tid = threadIdx.x;
   const int warp = tid / kWarp;
   const int lane = tid % kWarp;
-  const int gid = lane >> 2;   // 0..7, selects the row pair
-  const int tig = lane & 3;    // 0..3, selects the column pair
+  const int gid = lane >> 2; // 0..7, selects the row pair
+  const int tig = lane & 3;  // 0..3, selects the column pair
 
-  
   const size_t qld = static_cast<size_t>(heads) * D;
   const size_t kvld = static_cast<size_t>(heads) * D;
 
@@ -194,7 +213,8 @@ __global__ __launch_bounds__(kThreads) void sparse_kernel(
 
   const uint8_t* selected = mask + (size_t(head) * tiles + blockIdx.x) * tiles;
   for (int tile = 0; tile < tiles; ++tile) {
-    if (!selected[tile]) continue;
+    if (!selected[tile])
+      continue;
     const int valid_keys = sizes[tile];
     __syncthreads();
     for (int i = tid; i < 64 * D / 8; i += kThreads) {
@@ -323,20 +343,21 @@ __global__ __launch_bounds__(kThreads) void sparse_kernel(
   }
 }
 
-}  // namespace
+} // namespace
 
 size_t vsa_attention_workspace_bytes(int tiles, int heads, int dim) {
   if (tiles <= 0 || tiles > 4096 || heads <= 0 || (dim != 64 && dim != 128))
     throw std::invalid_argument("VSA-H3 requires 1..4096 tiles and head dimension 64 or 128");
-  auto align = [](size_t n) { return (n + 255) / 256 * 256; };
+  auto align = [](size_t n) {
+    return (n + 255) / 256 * 256;
+  };
   return align(size_t(3) * heads * tiles * dim * sizeof(float)) +
          align(size_t(heads) * tiles * tiles * sizeof(float)) +
          align(size_t(heads) * tiles * tiles);
 }
 
-void vsa_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
-                           const __nv_bfloat16* k, const __nv_bfloat16* v,
-                           __nv_bfloat16* out, __nv_bfloat16* compressed,
+void vsa_attention_forward(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
+                           const __nv_bfloat16* v, __nv_bfloat16* out, __nv_bfloat16* compressed,
                            const VsaConfig& c, Workspace& ws) {
   (void)vsa_attention_workspace_bytes(c.tiles, c.heads, c.head_dim);
   if (c.prefix_tiles < 0 || c.prefix_tiles >= c.tiles || !c.rows || !c.sizes || !c.row_tiles)
@@ -349,27 +370,29 @@ void vsa_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
   pool_kernel<<<grid, 128, 0, stream>>>(q, k, v, pooled, c);
   score_kernel<<<grid, 256, 0, stream>>>(pooled, scores, c);
   int padded = 1;
-  while (padded < c.tiles - c.prefix_tiles) padded *= 2;
+  while (padded < c.tiles - c.prefix_tiles)
+    padded *= 2;
   // ceil((1 - 0.8) * n) without floating-point boundary artifacts.
   const int keep = (c.tiles - c.prefix_tiles + 4) / 5;
   route_kernel<<<grid, 256, padded * 8, stream>>>(scores, mask, c, padded, keep);
   compress_kernel<<<grid, 128, c.tiles * sizeof(float), stream>>>(pooled, scores, compressed, c);
   const size_t smem = 2 * 64 * (c.head_dim + 8) + 2 * c.head_dim * (64 + 2);
   if (c.head_dim == 128)
-    sparse_kernel<128><<<grid, kThreads, smem, stream>>>(q, k, v, out, c.heads,
-        1.0f / sqrtf(128.0f), c.rows, c.sizes, mask, c.tiles);
+    sparse_kernel<128><<<grid, kThreads, smem, stream>>>(
+        q, k, v, out, c.heads, 1.0f / sqrtf(128.0f), c.rows, c.sizes, mask, c.tiles);
   else
-    sparse_kernel<64><<<grid, kThreads, smem, stream>>>(q, k, v, out, c.heads,
-        1.0f / sqrtf(64.0f), c.rows, c.sizes, mask, c.tiles);
+    sparse_kernel<64><<<grid, kThreads, smem, stream>>>(q, k, v, out, c.heads, 1.0f / sqrtf(64.0f),
+                                                        c.rows, c.sizes, mask, c.tiles);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void vsa_add_compression(cudaStream_t stream, __nv_bfloat16* output,
-                         const __nv_bfloat16* gate, const __nv_bfloat16* compressed,
-                         int offset, int count, const VsaConfig& c) {
+void vsa_add_compression(cudaStream_t stream, __nv_bfloat16* output, const __nv_bfloat16* gate,
+                         const __nv_bfloat16* compressed, int offset, int count,
+                         const VsaConfig& c) {
   const size_t n = size_t(count) * c.heads * c.head_dim;
-  add_kernel<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(output, gate, compressed, offset, count, c);
+  add_kernel<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(output, gate, compressed,
+                                                                         offset, count, c);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

@@ -110,12 +110,12 @@ struct EncoderConfig {
   WeightFormat format = WeightFormat::kAuto;
 
   int hidden_size = 5120;
-  int num_layers = 50;  // the checkpoint is pre-truncated; this is the whole file
+  int num_layers = 50; // the checkpoint is pre-truncated; this is the whole file
   int num_attention_heads = 64;
-  int num_key_value_heads = 8;  // grouped-query, 8 kv heads
+  int num_key_value_heads = 8; // grouped-query, 8 kv heads
   int head_dim = 128;
   int intermediate_size = 25600;
-  float rms_norm_eps = 1e-6f;  // note: 1e-6, unlike the transformer's 1e-5
+  float rms_norm_eps = 1e-6f; // note: 1e-6, unlike the transformer's 1e-5
   float rope_theta = 5.0e6f;
   int vocab_size = 151936;
 
@@ -141,6 +141,7 @@ struct ConditionerDescriptor {
   bool explicit_metadata = false;
   std::string fingerprint() const;
 };
+
 ConditionerDescriptor resolve_conditioner_descriptor(const SafeTensors& checkpoint,
                                                      const EncoderConfig& config = {});
 
@@ -171,9 +172,9 @@ struct EncoderStats {
   double last_encode_seconds = 0.0;
   int last_num_tokens = 0;
 
-  size_t weight_bytes = 0;      // device bytes held by the 50 layers
-  size_t workspace_bytes = 0;   // device arena high-water mark
-  size_t activation_bytes = 0;  // persistent per-encode buffers
+  size_t weight_bytes = 0;     // device bytes held by the 50 layers
+  size_t workspace_bytes = 0;  // device arena high-water mark
+  size_t activation_bytes = 0; // persistent per-encode buffers
   // weights + workspace + activations. Nothing is freed during encode, so this
   // is the peak, not an average.
   size_t peak_device_bytes = 0;
@@ -181,7 +182,7 @@ struct EncoderStats {
 };
 
 class Encoder {
- public:
+public:
   Encoder();
   ~Encoder();
   Encoder(const Encoder&) = delete;
@@ -198,8 +199,8 @@ class Encoder {
 
   const EncoderConfig& config() const;
   size_t weight_bytes() const;
-  Residency residency() const;    // the mode actually chosen, never kAuto
-  WeightFormat format() const;    // the format detected in the file, never kAuto
+  Residency residency() const; // the mode actually chosen, never kAuto
+  WeightFormat format() const; // the format detected in the file, never kAuto
   const EncoderStats& stats() const;
 
   // Frees all device memory. Call before loading the transformer.
@@ -208,16 +209,14 @@ class Encoder {
   // Runs the 50 layers over `token_ids` and returns the unnormalised residual
   // stream. `token_ids` must come from `Tokenizer::encode` with no special
   // tokens added.
+  PromptEmbedding encode(const std::vector<int32_t>& token_ids, EncoderTrace* trace = nullptr);
   PromptEmbedding encode(const std::vector<int32_t>& token_ids,
-                         EncoderTrace* trace = nullptr);
-  PromptEmbedding encode(const std::vector<int32_t>& token_ids,
-                         const std::vector<QwenPixelValues>& images,
-                         EncoderTrace* trace = nullptr);
+                         const std::vector<QwenPixelValues>& images, EncoderTrace* trace = nullptr);
 
   // Convenience: tokenise then encode.
   PromptEmbedding encode(const Tokenizer& tokenizer, const std::string& prompt);
 
- private:
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
@@ -246,14 +245,14 @@ enum class LayerTensor {
   kVScale,
   kOWeight,
   kOScale,
-  kOPreQuantScale,  // nvfp4 only
+  kOPreQuantScale, // nvfp4 only
   kGateWeight,
   kGateScale,
   kUpWeight,
   kUpScale,
   kDownWeight,
   kDownScale,
-  kDownPreQuantScale,  // nvfp4 only
+  kDownPreQuantScale, // nvfp4 only
   kInputLayerNorm,
   kPostAttentionLayerNorm,
   kQNorm,
@@ -264,14 +263,16 @@ enum class LayerTensor {
 constexpr int kLayerTensorCount = static_cast<int>(LayerTensor::kCount);
 
 struct TensorSpec {
-  const char* suffix;  // appended to "model.layers.<i>."; null when absent
+  const char* suffix; // appended to "model.layers.<i>."; null when absent
   DType dtype;
   int64_t dim0;
-  int64_t dim1;  // 0 marks a 1-D tensor
+  int64_t dim1; // 0 marks a 1-D tensor
 
   // False for a tensor this format does not ship. Callers must check: an
   // absent entry has no name to look up and no bytes in the blob.
-  bool present() const { return suffix != nullptr; }
+  bool present() const {
+    return suffix != nullptr;
+  }
 };
 
 // Expected name, dtype and shape of one per-layer tensor, resolved from
@@ -357,7 +358,7 @@ void build_rope_tables(int num_tokens, const std::vector<float>& inv_freq, std::
 void gather_embedding_rows(const TensorView& embed, const TensorView* weight_scale,
                            const std::vector<int32_t>& ids, std::vector<uint16_t>& out);
 
-}  // namespace slopfab::text
+} // namespace slopfab::text
 
 // --- device-side pieces -----------------------------------------------------
 //
@@ -385,8 +386,8 @@ struct CausalAttentionConfig {
   int num_heads = 0;
   int num_kv_heads = 0;
   int head_dim = 0;
-  float scale = 0.0f;     // 0 selects 1/sqrt(head_dim)
-  int query_block = 0;    // 0 selects the default; results must not depend on it
+  float scale = 0.0f;  // 0 selects 1/sqrt(head_dim)
+  int query_block = 0; // 0 selects the default; results must not depend on it
 };
 
 float causal_attention_scale(const CausalAttentionConfig& cfg);
@@ -415,12 +416,9 @@ void launch_residual_add(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n
 // Canonical exact-mode variants shared with the Vulkan text-stage authority.
 // Inputs are canonicalized at the BF16 boundary (subnormals -> signed zero,
 // all NaNs -> one quiet NaN) and results use one RNE BF16 conversion.
-void launch_swiglu_split_exact(const __nv_bfloat16* gate,
-                               const __nv_bfloat16* up,
-                               __nv_bfloat16* out, size_t n,
-                               cudaStream_t stream);
-void launch_residual_add_exact(__nv_bfloat16* x,
-                               const __nv_bfloat16* branch, size_t n,
+void launch_swiglu_split_exact(const __nv_bfloat16* gate, const __nv_bfloat16* up,
+                               __nv_bfloat16* out, size_t n, cudaStream_t stream);
+void launch_residual_add_exact(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
                                cudaStream_t stream);
 
 // One decoder layer's weights as device pointers. Nothing is owned here.
@@ -489,14 +487,12 @@ struct ExactLayerTaps {
 // Canonical exact layer used as the CUDA authority for the device-resident
 // Vulkan stage. It sequentially materializes every compressed projection into
 // one caller-owned dense slot and never invokes cuBLAS/vendor attention.
-size_t exact_layer_workspace_bytes(const LayerWeights& weights,
-                                   const LayerDims& dims);
+size_t exact_layer_workspace_bytes(const LayerWeights& weights, const LayerDims& dims);
 void encoder_layer_forward_exact(cudaStream_t stream, const LayerWeights& weights,
-                                 const LayerDims& dims, const float* cosine,
-                                 const float* sine, __nv_bfloat16* tokens,
-                                 slopfab::cuda::Workspace& workspace,
+                                 const LayerDims& dims, const float* cosine, const float* sine,
+                                 __nv_bfloat16* tokens, slopfab::cuda::Workspace& workspace,
                                  const ExactLayerTaps* taps = nullptr);
 
-}  // namespace slopfab::text
+} // namespace slopfab::text
 
-#endif  // __CUDACC__
+#endif // __CUDACC__

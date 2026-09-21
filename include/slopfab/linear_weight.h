@@ -45,9 +45,9 @@ struct LinearWeightUpload {
   const uint8_t* nf4_absmax = nullptr;
   uint64_t nf4_absmax_count = 0;
   const float* nf4_quant_map = nullptr;
-  uint64_t nf4_quant_map_count = 0;  // exactly 16
+  uint64_t nf4_quant_map_count = 0; // exactly 16
   const float* nf4_nested_quant_map = nullptr;
-  uint64_t nf4_nested_quant_map_count = 0;  // exactly 256
+  uint64_t nf4_nested_quant_map_count = 0; // exactly 256
   const float* nf4_nested_absmax = nullptr;
   uint64_t nf4_nested_absmax_count = 0;
   uint32_t nf4_block_size = 64;
@@ -62,4 +62,4 @@ struct LinearWeightUpload {
   uint32_t convrot_group = 256;
 };
 
-}  // namespace slopfab
+} // namespace slopfab

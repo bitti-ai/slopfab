@@ -14,12 +14,15 @@ namespace {
 
 constexpr size_t kAlign = 256;
 
-size_t align_up(size_t n) { return (n + kAlign - 1) / kAlign * kAlign; }
+size_t align_up(size_t n) {
+  return (n + kAlign - 1) / kAlign * kAlign;
+}
 
-}  // namespace
+} // namespace
 
 void Workspace::reserve(size_t bytes) {
-  if (bytes <= buffer_.nbytes()) return;
+  if (bytes <= buffer_.nbytes())
+    return;
   // A grow frees the old allocation, so every pointer handed out so far is
   // dangling afterwards. Callers size the arena once at load time from the
   // per-layer maxima; growing mid-forward is a bug, not a fallback.
@@ -29,7 +32,8 @@ void Workspace::reserve(size_t bytes) {
 
 void Workspace::resize(size_t bytes) {
   cursor_ = 0;
-  if (align_up(bytes) != buffer_.nbytes()) buffer_.allocate(align_up(bytes));
+  if (align_up(bytes) != buffer_.nbytes())
+    buffer_.allocate(align_up(bytes));
 }
 
 void* Workspace::alloc(size_t bytes) {
@@ -44,4 +48,4 @@ void* Workspace::alloc(size_t bytes) {
   return buffer_.get() + offset;
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

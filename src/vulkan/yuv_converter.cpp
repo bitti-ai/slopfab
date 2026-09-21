@@ -74,7 +74,8 @@ struct Yuv420Converter::Impl {
   }
 
   void ensure_capacity(uint64_t pixels) {
-    if (pixels <= capacity) return;
+    if (pixels <= capacity)
+      return;
     context->collect();
     const uint64_t rgb_bytes = pixels * 3 * sizeof(float);
     const uint64_t yuv_values = pixels + pixels / 2;
@@ -83,14 +84,13 @@ struct Yuv420Converter::Impl {
     try {
       Buffer new_upload =
           pool->allocate(rgb_bytes, BufferUsage::kTransferSource, MemoryUsage::kUpload);
-      Buffer new_input = pool->allocate(rgb_bytes,
-                                        BufferUsage::kTransferDestination | BufferUsage::kStorage,
-                                        MemoryUsage::kDevice);
-      Buffer new_output = pool->allocate(yuv_bytes,
-                                         BufferUsage::kStorage | BufferUsage::kTransferSource,
-                                         MemoryUsage::kDevice);
-      Buffer new_readback = pool->allocate(yuv_bytes, BufferUsage::kTransferDestination,
-                                           MemoryUsage::kReadback);
+      Buffer new_input =
+          pool->allocate(rgb_bytes, BufferUsage::kTransferDestination | BufferUsage::kStorage,
+                         MemoryUsage::kDevice);
+      Buffer new_output = pool->allocate(
+          yuv_bytes, BufferUsage::kStorage | BufferUsage::kTransferSource, MemoryUsage::kDevice);
+      Buffer new_readback =
+          pool->allocate(yuv_bytes, BufferUsage::kTransferDestination, MemoryUsage::kReadback);
       std::vector<uint32_t> new_host_output(static_cast<size_t>(yuv_words));
       upload = std::move(new_upload);
       input = std::move(new_input);
@@ -108,18 +108,20 @@ struct Yuv420Converter::Impl {
 };
 
 Yuv420Converter::Yuv420Converter(uint32_t device_index)
-    : impl_(std::make_unique<Impl>(device_index)) {}
+    : impl_(std::make_unique<Impl>(device_index)) {
+}
+
 Yuv420Converter::~Yuv420Converter() = default;
 Yuv420Converter::Yuv420Converter(Yuv420Converter&&) noexcept = default;
 Yuv420Converter& Yuv420Converter::operator=(Yuv420Converter&&) noexcept = default;
 
-void Yuv420Converter::convert(const float* r, const float* g, const float* b,
-                              int height, int width, uint8_t* y_plane, int y_stride,
-                              uint8_t* u_plane, int u_stride, uint8_t* v_plane,
-                              int v_stride) {
-  if (!impl_) throw std::logic_error("vulkan output: empty converter");
-  if (r == nullptr || g == nullptr || b == nullptr || y_plane == nullptr ||
-      u_plane == nullptr || v_plane == nullptr) {
+void Yuv420Converter::convert(const float* r, const float* g, const float* b, int height, int width,
+                              uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
+                              uint8_t* v_plane, int v_stride) {
+  if (!impl_)
+    throw std::logic_error("vulkan output: empty converter");
+  if (r == nullptr || g == nullptr || b == nullptr || y_plane == nullptr || u_plane == nullptr ||
+      v_plane == nullptr) {
     throw std::invalid_argument("vulkan output: RGB and YUV plane pointers must be non-null");
   }
   if (width <= 0 || height <= 0 || (width & 1) != 0 || (height & 1) != 0) {
@@ -141,9 +143,8 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
   const uint64_t yuv_bytes = yuv_words * sizeof(uint32_t);
   const uint64_t dispatch_groups = (yuv_words + 63) / 64;
   const DeviceInfo& limits = impl_->limits;
-  if ((limits.max_storage_buffer_bytes != 0 &&
-       (rgb_bytes > limits.max_storage_buffer_bytes ||
-        yuv_bytes > limits.max_storage_buffer_bytes)) ||
+  if ((limits.max_storage_buffer_bytes != 0 && (rgb_bytes > limits.max_storage_buffer_bytes ||
+                                                yuv_bytes > limits.max_storage_buffer_bytes)) ||
       (limits.max_allocation_bytes != 0 &&
        (rgb_bytes > limits.max_allocation_bytes || yuv_bytes > limits.max_allocation_bytes)) ||
       dispatch_groups > limits.max_compute_workgroup_count[0]) {
@@ -158,21 +159,21 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
   Impl::Geometry geometry{static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                           static_cast<uint32_t>(pixels)};
   CommandList commands = impl_->context->begin();
-  commands.barrier(impl_->upload, BufferAccess::kHostWrite, BufferAccess::kTransferRead,
-                   0, rgb_bytes);
+  commands.barrier(impl_->upload, BufferAccess::kHostWrite, BufferAccess::kTransferRead, 0,
+                   rgb_bytes);
   commands.copy_buffer(impl_->upload, impl_->input, rgb_bytes);
-  commands.barrier(impl_->input, BufferAccess::kTransferWrite, BufferAccess::kComputeRead,
-                   0, rgb_bytes);
+  commands.barrier(impl_->input, BufferAccess::kTransferWrite, BufferAccess::kComputeRead, 0,
+                   rgb_bytes);
   impl_->bindings[0].bytes = rgb_bytes;
   impl_->bindings[1].bytes = yuv_bytes;
   commands.bind_compute(impl_->pipeline, impl_->bindings);
   commands.push_constants(&geometry, sizeof(geometry));
   commands.dispatch(static_cast<uint32_t>(dispatch_groups));
-  commands.barrier(impl_->output, BufferAccess::kComputeWrite, BufferAccess::kTransferRead,
-                   0, yuv_bytes);
+  commands.barrier(impl_->output, BufferAccess::kComputeWrite, BufferAccess::kTransferRead, 0,
+                   yuv_bytes);
   commands.copy_buffer(impl_->output, impl_->readback, yuv_bytes);
-  commands.barrier(impl_->readback, BufferAccess::kTransferWrite, BufferAccess::kHostRead,
-                   0, yuv_bytes);
+  commands.barrier(impl_->readback, BufferAccess::kTransferWrite, BufferAccess::kHostRead, 0,
+                   yuv_bytes);
   Submission completion = impl_->context->submit(std::move(commands));
   completion.wait();
   impl_->context->collect();
@@ -185,7 +186,8 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
   for (int row = 0; row < height; ++row) {
     uint8_t* destination = y_plane + static_cast<size_t>(row) * y_stride;
     const uint64_t source = static_cast<uint64_t>(row) * width;
-    for (int x = 0; x < width; ++x) destination[x] = byte_at(source + x);
+    for (int x = 0; x < width; ++x)
+      destination[x] = byte_at(source + x);
   }
   for (int row = 0; row < height / 2; ++row) {
     uint8_t* ud = u_plane + static_cast<size_t>(row) * u_stride;
@@ -201,8 +203,17 @@ void Yuv420Converter::convert(const float* r, const float* g, const float* b,
 uint64_t Yuv420Converter::reserved_bytes() const {
   return impl_ ? impl_->pool->reserved_bytes() : 0;
 }
-uint64_t Yuv420Converter::high_water_bytes() const { return impl_ ? impl_->high_water : 0; }
-uint64_t Yuv420Converter::capacity_pixels() const { return impl_ ? impl_->capacity : 0; }
-const char* Yuv420Converter::device_name() const { return impl_ ? impl_->name.c_str() : ""; }
 
-}  // namespace slopfab::vulkan
+uint64_t Yuv420Converter::high_water_bytes() const {
+  return impl_ ? impl_->high_water : 0;
+}
+
+uint64_t Yuv420Converter::capacity_pixels() const {
+  return impl_ ? impl_->capacity : 0;
+}
+
+const char* Yuv420Converter::device_name() const {
+  return impl_ ? impl_->name.c_str() : "";
+}
+
+} // namespace slopfab::vulkan

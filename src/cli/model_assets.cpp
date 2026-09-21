@@ -65,6 +65,7 @@
 #endif
 
 #include "commands.h"
+
 namespace slopfab::cli {
 struct ModelDownload {
   const char* subdirectory;
@@ -96,7 +97,11 @@ constexpr ModelDownload kTextEncoder = {
 #if defined(_WIN32)
 struct InternetHandle {
   HINTERNET value = nullptr;
-  ~InternetHandle() { if (value != nullptr) WinHttpCloseHandle(value); }
+
+  ~InternetHandle() {
+    if (value != nullptr)
+      WinHttpCloseHandle(value);
+  }
 };
 
 void download_model(const ModelDownload& model, const std::filesystem::path& destination) {
@@ -115,24 +120,26 @@ void download_model(const ModelDownload& model, const std::filesystem::path& des
 
   InternetHandle session{WinHttpOpen(L"slopfab/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
-  if (!session.value) throw std::runtime_error("download: cannot initialise WinHTTP");
+  if (!session.value)
+    throw std::runtime_error("download: cannot initialise WinHTTP");
   WinHttpSetTimeouts(session.value, 30000, 30000, 30000, 60000);
   InternetHandle connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
-  if (!connection.value) throw std::runtime_error("download: cannot connect to Hugging Face");
-  InternetHandle request{WinHttpOpenRequest(connection.value, L"GET", path.c_str(), nullptr,
-                                            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                            parts.nScheme == INTERNET_SCHEME_HTTPS
-                                                ? WINHTTP_FLAG_SECURE : 0)};
-  if (!request.value || !WinHttpSendRequest(request.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+  if (!connection.value)
+    throw std::runtime_error("download: cannot connect to Hugging Face");
+  InternetHandle request{
+      WinHttpOpenRequest(connection.value, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                         WINHTTP_DEFAULT_ACCEPT_TYPES,
+                         parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)};
+  if (!request.value ||
+      !WinHttpSendRequest(request.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA,
+                          0, 0, 0) ||
       !WinHttpReceiveResponse(request.value, nullptr)) {
     throw std::runtime_error("download: request failed for " + std::string(model.filename));
   }
   DWORD status = 0;
   DWORD status_size = sizeof(status);
   WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                      WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size,
-                      WINHTTP_NO_HEADER_INDEX);
+                      WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size, WINHTTP_NO_HEADER_INDEX);
   if (status != 200) {
     throw std::runtime_error("download: Hugging Face returned HTTP " + std::to_string(status) +
                              " for " + model.filename);
@@ -141,15 +148,15 @@ void download_model(const ModelDownload& model, const std::filesystem::path& des
   uint64_t total = 0;
   wchar_t length[64]{};
   DWORD length_size = sizeof(length);
-  if (WinHttpQueryHeaders(request.value, WINHTTP_QUERY_CONTENT_LENGTH,
-                          WINHTTP_HEADER_NAME_BY_INDEX, length, &length_size,
-                          WINHTTP_NO_HEADER_INDEX)) {
+  if (WinHttpQueryHeaders(request.value, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX,
+                          length, &length_size, WINHTTP_NO_HEADER_INDEX)) {
     total = std::wcstoull(length, nullptr, 10);
   }
 
   const std::filesystem::path partial = destination.string() + ".part";
   std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-  if (!out) throw std::runtime_error("download: cannot create " + partial.string());
+  if (!out)
+    throw std::runtime_error("download: cannot create " + partial.string());
   std::vector<char> buffer(1 << 20);
   uint64_t received = 0;
   int last_percent = -1;
@@ -161,7 +168,8 @@ void download_model(const ModelDownload& model, const std::filesystem::path& des
       throw std::runtime_error("download: connection interrupted for " +
                                std::string(model.filename));
     }
-    if (count == 0) break;
+    if (count == 0)
+      break;
     out.write(buffer.data(), count);
     if (!out) {
       out.close();
@@ -171,8 +179,10 @@ void download_model(const ModelDownload& model, const std::filesystem::path& des
     received += count;
     const int percent = total == 0 ? -1 : static_cast<int>(received * 100 / total);
     if (percent != last_percent && (percent < 0 || percent % 2 == 0)) {
-      if (percent >= 0) std::printf("\rdownload    %-55s %3d%%", model.filename, percent);
-      else std::printf("\rdownload    %-55s %.2f GB", model.filename, received / 1e9);
+      if (percent >= 0)
+        std::printf("\rdownload    %-55s %3d%%", model.filename, percent);
+      else
+        std::printf("\rdownload    %-55s %.2f GB", model.filename, received / 1e9);
       std::fflush(stdout);
       last_percent = percent;
     }
@@ -206,23 +216,27 @@ std::string timestamped_output_path() {
 }
 
 std::string counted_output_path(const std::string& base, int index, int count) {
-  if (count == 1) return base;
+  if (count == 1)
+    return base;
   const std::filesystem::path path(base);
   char suffix[24];
   std::snprintf(suffix, sizeof(suffix), "-%03d", index + 1);
-  return (path.parent_path() / (path.stem().string() + suffix + path.extension().string())).string();
+  return (path.parent_path() / (path.stem().string() + suffix + path.extension().string()))
+      .string();
 }
 
 std::filesystem::path find_weights_directory(const char* executable) {
   std::vector<std::filesystem::path> starts = {std::filesystem::current_path()};
   std::error_code ec;
   const std::filesystem::path exe = std::filesystem::absolute(executable, ec);
-  if (!ec) starts.push_back(exe.parent_path());
+  if (!ec)
+    starts.push_back(exe.parent_path());
 
   for (std::filesystem::path start : starts) {
     for (int level = 0; level < 4 && !start.empty(); ++level) {
       const std::filesystem::path candidate = start / "weights";
-      if (std::filesystem::is_directory(candidate, ec)) return candidate;
+      if (std::filesystem::is_directory(candidate, ec))
+        return candidate;
       start = start.parent_path();
     }
   }
@@ -235,10 +249,12 @@ std::string find_checkpoint(const std::filesystem::path& directory,
   std::error_code ec;
   for (std::filesystem::directory_iterator it(directory, ec), end; !ec && it != end;
        it.increment(ec)) {
-    if (!it->is_regular_file(ec) || it->path().extension() != ".safetensors") continue;
+    if (!it->is_regular_file(ec) || it->path().extension() != ".safetensors")
+      continue;
     std::string name = it->path().filename().string();
-    std::transform(name.begin(), name.end(), name.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
     if (required_name_part.empty() || name.find(required_name_part) != std::string::npos) {
       matches.push_back(it->path());
     }
@@ -249,12 +265,12 @@ std::string find_checkpoint(const std::filesystem::path& directory,
 
 void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* executable) {
   const std::filesystem::path weights = find_weights_directory(executable);
-  if (weights.empty()) return;
+  if (weights.empty())
+    return;
   if (req.text_encoder_path.empty())
     req.text_encoder_path = find_checkpoint(weights / "text_encoder", "");
   if (req.transformer_path.empty()) {
-    const std::string_view architecture =
-        req.has_references() ? "ref2va" : "fl2va";
+    const std::string_view architecture = req.has_references() ? "ref2va" : "fl2va";
     req.transformer_path = find_checkpoint(weights / "transformer", architecture);
   }
   if (req.video_vae_path.empty())
@@ -274,7 +290,8 @@ std::filesystem::path default_weights_directory(const char* executable) {
 
 void ensure_model(std::string& path, const ModelDownload& model,
                   const std::filesystem::path& weights) {
-  if (!path.empty()) return;
+  if (!path.empty())
+    return;
   const std::filesystem::path directory = weights / model.subdirectory;
   std::filesystem::create_directories(directory);
   const std::filesystem::path destination = directory / model.filename;
@@ -283,18 +300,20 @@ void ensure_model(std::string& path, const ModelDownload& model,
     std::printf("model       %s is missing; downloading from Hugging Face\n", model.filename);
     download_model(model, destination);
 #else
-    throw std::runtime_error("model is missing and automatic download is only available on Windows: " +
-                             destination.string());
+    throw std::runtime_error(
+        "model is missing and automatic download is only available on Windows: " +
+        destination.string());
 #endif
   }
   path = destination.string();
 }
 
-void ensure_generate_models(slopfab::GenerateRequest& req, const char* executable, bool need_text_encoder) {
+void ensure_generate_models(slopfab::GenerateRequest& req, const char* executable,
+                            bool need_text_encoder) {
   const std::filesystem::path weights = default_weights_directory(executable);
-  if (need_text_encoder) ensure_model(req.text_encoder_path, kTextEncoder, weights);
-  ensure_model(req.transformer_path,
-               req.has_references() ? kRef2VATransformer : kFL2VATransformer,
+  if (need_text_encoder)
+    ensure_model(req.text_encoder_path, kTextEncoder, weights);
+  ensure_model(req.transformer_path, req.has_references() ? kRef2VATransformer : kFL2VATransformer,
                weights);
   ensure_model(req.video_vae_path, kVideoVAE, weights);
   ensure_model(req.audio_vae_path, kAudioVAE, weights);
@@ -306,15 +325,20 @@ int cmd_prepare_lora(int argc, char** argv) {
   bool download = false;
   for (int i = 0; i < argc; ++i) {
     const std::string arg = argv[i];
-    if (arg == "--download") { download = true; continue; }
+    if (arg == "--download") {
+      download = true;
+      continue;
+    }
     if ((arg != "--adapter" && arg != "--width") || i + 1 == argc)
       throw std::invalid_argument("prepare-lora requires --adapter FILE --width N [--download]");
     const std::string value = argv[++i];
-    if (arg == "--adapter") adapter = value;
+    if (arg == "--adapter")
+      adapter = value;
     else {
       size_t used = 0;
       width = std::stoi(value, &used);
-      if (used != value.size() || width <= 0) throw std::invalid_argument("prepare-lora: invalid width");
+      if (used != value.size() || width <= 0)
+        throw std::invalid_argument("prepare-lora: invalid width");
     }
   }
   if (adapter.empty() || width <= 0)

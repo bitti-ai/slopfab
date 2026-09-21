@@ -71,15 +71,17 @@ enum class AdaLNLookup {
 const char* adaln_lookup_name(AdaLNLookup mode);
 
 class AdaLNTable {
- public:
-  static constexpr int kRows = 1025;  // 2^10 + 1: a dyadic grid, endpoints included
+public:
+  static constexpr int kRows = 1025; // 2^10 + 1: a dyadic grid, endpoints included
   static constexpr int kRank = 8;
 
   // Reads `adaln_t_table` and validates its shape and finiteness. Throws with
   // a specific message if the tensor is missing or the wrong shape.
   void load(const SafeTensors& checkpoint);
 
-  bool loaded() const { return !data_.empty(); }
+  bool loaded() const {
+    return !data_.empty();
+  }
 
   // The 8-vector for a timestep in [0, 1]. Values outside the range clamp to
   // the endpoints rather than extrapolating: the schedule never leaves [0, 1],
@@ -90,8 +92,8 @@ class AdaLNTable {
   // Raw row access, for verification.
   const float* row(int index) const;
 
- private:
-  std::vector<float> data_;  // [1025, 8] fp32
+private:
+  std::vector<float> data_; // [1025, 8] fp32
 };
 
 // Conventional MiniMax-H3 timestep front end used by the unpruned Ref2VA
@@ -105,18 +107,30 @@ std::vector<float> minimax_h3_timestep_sinusoid(float timestep, int freq_dim = 2
 // The real model dimensions are 256 -> 5376 -> 2688; dimensions are arguments
 // so small exact fixtures can exercise the same arithmetic in unit tests.
 class FullAdaLNTimestepEmbedding {
- public:
+public:
   void load(const SafeTensors& checkpoint, int freq_dim = 256, int hidden_dim = 5376,
             int output_dim = 2688);
-  bool loaded() const { return !proj_in_weight_.empty(); }
-  int freq_dim() const { return freq_dim_; }
-  int hidden_dim() const { return hidden_dim_; }
-  int output_dim() const { return output_dim_; }
+
+  bool loaded() const {
+    return !proj_in_weight_.empty();
+  }
+
+  int freq_dim() const {
+    return freq_dim_;
+  }
+
+  int hidden_dim() const {
+    return hidden_dim_;
+  }
+
+  int output_dim() const {
+    return output_dim_;
+  }
 
   std::vector<float> forward(float timestep) const;
   std::vector<float> forward(const std::vector<float>& timesteps) const;
 
- private:
+private:
   int freq_dim_ = 0;
   int hidden_dim_ = 0;
   int output_dim_ = 0;
@@ -124,4 +138,4 @@ class FullAdaLNTimestepEmbedding {
   std::vector<float> proj_out_weight_, proj_out_bias_;
 };
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

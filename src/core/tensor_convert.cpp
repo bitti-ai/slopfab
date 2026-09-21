@@ -11,10 +11,11 @@ template <typename Stored, typename Fn>
 void widen(const TensorView& view, std::vector<float>& out, Fn convert) {
   const auto* src = static_cast<const Stored*>(view.data);
   const size_t n = out.size();
-  for (size_t i = 0; i < n; ++i) out[i] = convert(src[i]);
+  for (size_t i = 0; i < n; ++i)
+    out[i] = convert(src[i]);
 }
 
-}  // namespace
+} // namespace
 
 void to_f32(const TensorView& view, std::vector<float>& out) {
   const auto n = static_cast<size_t>(view.numel());
@@ -25,49 +26,70 @@ void to_f32(const TensorView& view, std::vector<float>& out) {
   // high-water mark it zeroes nothing at all. The buffer is left the same size
   // with the same contents either way.
   out.resize(n);
-  if (n == 0) return;
+  if (n == 0)
+    return;
 
   switch (view.dtype) {
-    case DType::kF32:
-      widen<float>(view, out, [](float v) { return v; });
-      break;
-    case DType::kF64:
-      widen<double>(view, out, [](double v) { return static_cast<float>(v); });
-      break;
-    case DType::kF16:
-      widen<uint16_t>(view, out, [](uint16_t v) { return f16_to_f32(v); });
-      break;
-    case DType::kBF16:
-      widen<uint16_t>(view, out, [](uint16_t v) { return bf16_to_f32(v); });
-      break;
-    case DType::kF8E4M3:
-      widen<uint8_t>(view, out, [](uint8_t v) { return f8_e4m3_to_f32(v); });
-      break;
-    case DType::kI8:
-      widen<int8_t>(view, out, [](int8_t v) { return static_cast<float>(v); });
-      break;
-    case DType::kU8:
-    case DType::kBool:
-      widen<uint8_t>(view, out, [](uint8_t v) { return static_cast<float>(v); });
-      break;
-    case DType::kI16:
-      widen<int16_t>(view, out, [](int16_t v) { return static_cast<float>(v); });
-      break;
-    case DType::kI32:
-      widen<int32_t>(view, out, [](int32_t v) { return static_cast<float>(v); });
-      break;
-    case DType::kI64:
-      widen<int64_t>(view, out, [](int64_t v) { return static_cast<float>(v); });
-      break;
-    case DType::kF8E5M2:
-      // E5M2 shares f16's exponent field width; widening is a shift into the
-      // f16 layout followed by the existing f16 conversion.
-      widen<uint8_t>(view, out, [](uint8_t v) {
-        return f16_to_f32(static_cast<uint16_t>(static_cast<uint16_t>(v) << 8));
-      });
-      break;
-    case DType::kUnknown:
-      throw std::runtime_error("to_f32: tensor '" + view.name + "' has an unsupported dtype");
+  case DType::kF32:
+    widen<float>(view, out, [](float v) {
+      return v;
+    });
+    break;
+  case DType::kF64:
+    widen<double>(view, out, [](double v) {
+      return static_cast<float>(v);
+    });
+    break;
+  case DType::kF16:
+    widen<uint16_t>(view, out, [](uint16_t v) {
+      return f16_to_f32(v);
+    });
+    break;
+  case DType::kBF16:
+    widen<uint16_t>(view, out, [](uint16_t v) {
+      return bf16_to_f32(v);
+    });
+    break;
+  case DType::kF8E4M3:
+    widen<uint8_t>(view, out, [](uint8_t v) {
+      return f8_e4m3_to_f32(v);
+    });
+    break;
+  case DType::kI8:
+    widen<int8_t>(view, out, [](int8_t v) {
+      return static_cast<float>(v);
+    });
+    break;
+  case DType::kU8:
+  case DType::kBool:
+    widen<uint8_t>(view, out, [](uint8_t v) {
+      return static_cast<float>(v);
+    });
+    break;
+  case DType::kI16:
+    widen<int16_t>(view, out, [](int16_t v) {
+      return static_cast<float>(v);
+    });
+    break;
+  case DType::kI32:
+    widen<int32_t>(view, out, [](int32_t v) {
+      return static_cast<float>(v);
+    });
+    break;
+  case DType::kI64:
+    widen<int64_t>(view, out, [](int64_t v) {
+      return static_cast<float>(v);
+    });
+    break;
+  case DType::kF8E5M2:
+    // E5M2 shares f16's exponent field width; widening is a shift into the
+    // f16 layout followed by the existing f16 conversion.
+    widen<uint8_t>(view, out, [](uint8_t v) {
+      return f16_to_f32(static_cast<uint16_t>(static_cast<uint16_t>(v) << 8));
+    });
+    break;
+  case DType::kUnknown:
+    throw std::runtime_error("to_f32: tensor '" + view.name + "' has an unsupported dtype");
   }
 }
 
@@ -80,7 +102,8 @@ std::vector<float> to_f32(const TensorView& view) {
 CompareStats compare(const std::vector<float>& reference, const std::vector<float>& actual) {
   CompareStats stats;
   stats.shape_match = reference.size() == actual.size();
-  if (!stats.shape_match) return stats;
+  if (!stats.shape_match)
+    return stats;
 
   stats.count = static_cast<int64_t>(reference.size());
   if (reference.empty()) {
@@ -108,7 +131,8 @@ CompareStats compare(const std::vector<float>& reference, const std::vector<floa
       // it cannot poison the error statistics.
       const bool both_nan = std::isnan(r) && std::isnan(a);
       const bool both_same_inf = std::isinf(r) && std::isinf(a) && ((r > 0) == (a > 0));
-      if (!both_nan && !both_same_inf) ++stats.nan_mismatches;
+      if (!both_nan && !both_same_inf)
+        ++stats.nan_mismatches;
       continue;
     }
 
@@ -132,7 +156,8 @@ CompareStats compare(const std::vector<float>& reference, const std::vector<floa
     const double denom = std::fabs(r);
     if (denom > 1e-6) {
       const double rel = err / denom;
-      if (rel > stats.max_rel_err) stats.max_rel_err = rel;
+      if (rel > stats.max_rel_err)
+        stats.max_rel_err = rel;
     }
   }
 
@@ -167,7 +192,8 @@ CompareStats compare(const std::vector<float>& reference, const std::vector<floa
     for (size_t i = 0; i < reference.size(); ++i) {
       const double r = reference[i];
       const double a = actual[i];
-      if (!std::isfinite(r) || !std::isfinite(a)) continue;
+      if (!std::isfinite(r) || !std::isfinite(a))
+        continue;
       const double dr = r - mean_r;
       const double da = a - mean_a;
       s_rr += dr * dr;
@@ -186,4 +212,4 @@ CompareStats compare(const std::vector<float>& reference, const std::vector<floa
   return stats;
 }
 
-}  // namespace slopfab
+} // namespace slopfab

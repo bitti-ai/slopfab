@@ -28,28 +28,43 @@ enum : int32_t {
 };
 
 struct SequenceLayout {
-  int num_text = 0;             // L
-  int num_condition_video = 0;  // C, always 0 for t2va
-  int num_condition_audio = 0;  // reference audio rows, 0 for t2va/fl2va
+  int num_text = 0;            // L
+  int num_condition_video = 0; // C, always 0 for t2va
+  int num_condition_audio = 0; // reference audio rows, 0 for t2va/fl2va
   // False preserves the legacy fl2va convention where num_condition_video is
   // also the prefix of idx.audio kept at video_t. Ref2VA sets this true even
   // when it has zero audio anchors (for example an image-only request).
   bool condition_audio_is_explicit = false;
-  int num_audio_rows = 0;       // Sa = 2 * num_audio_latents
-  int num_video_rows = 0;       // V = F * R
-  int num_audio_latents = 0;    // A, per channel
-  int num_latent_frames = 0;    // F
-  int latent_height = 0;        // Hl
-  int latent_width = 0;         // Wl
+  int num_audio_rows = 0;    // Sa = 2 * num_audio_latents
+  int num_video_rows = 0;    // V = F * R
+  int num_audio_latents = 0; // A, per channel
+  int num_latent_frames = 0; // F
+  int latent_height = 0;     // Hl
+  int latent_width = 0;      // Wl
 
-  int rows_per_frame() const { return rows_per_frame(h3_latent_geometry()); }
+  int rows_per_frame() const {
+    return rows_per_frame(h3_latent_geometry());
+  }
+
   int rows_per_frame(const LatentGeometry& g) const {
     return (latent_height / g.patch_height) * (latent_width / g.patch_width);
   }
-  int condition_start() const { return num_text; }
-  int audio_start() const { return num_text + num_condition_video + num_condition_audio; }
-  int video_start() const { return audio_start() + num_audio_rows; }
-  int total_rows() const { return video_start() + num_video_rows; }  // S
+
+  int condition_start() const {
+    return num_text;
+  }
+
+  int audio_start() const {
+    return num_text + num_condition_video + num_condition_audio;
+  }
+
+  int video_start() const {
+    return audio_start() + num_audio_rows;
+  }
+
+  int total_rows() const {
+    return video_start() + num_video_rows;
+  } // S
 };
 
 // Canvas resolution from a display aspect ratio. Only the ratio matters.
@@ -85,10 +100,10 @@ int video_latent_num_frames(int aligned_frames);
 int audio_latents_for_frames(int aligned_frames);
 
 struct PackedIndices {
-  std::vector<int32_t> text;   // [0, L)
-  std::vector<int32_t> audio;  // [audio_start, video_start)
-  std::vector<int32_t> video;  // conditions, then targets
-  std::vector<int32_t> tags;   // [S], one of kTag*
+  std::vector<int32_t> text;  // [0, L)
+  std::vector<int32_t> audio; // [audio_start, video_start)
+  std::vector<int32_t> video; // conditions, then targets
+  std::vector<int32_t> tags;  // [S], one of kTag*
 };
 
 PackedIndices build_indices(const SequenceLayout& layout);
@@ -125,9 +140,9 @@ void unpack_audio(const float* rows, int num_audio_latents, float* out);
 // timesteps is index 0 flips over the schedule. That feeds the AdaLN index, so
 // it must be reproduced rather than fixed. Spec section 7.5.
 struct RowTimesteps {
-  std::vector<float> unique;     // ascending, normally 2 entries for t2va
-  std::vector<int32_t> indices;  // [S], into `unique`
-  std::vector<int32_t> adaln;    // [S], = indices[s]*3 + max(tag[s], 0)
+  std::vector<float> unique;    // ascending, normally 2 entries for t2va
+  std::vector<int32_t> indices; // [S], into `unique`
+  std::vector<int32_t> adaln;   // [S], = indices[s]*3 + max(tag[s], 0)
 };
 
 RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndices& idx,
@@ -137,14 +152,15 @@ RowTimesteps build_row_timesteps(const SequenceLayout& layout, const PackedIndic
                                  float condition_audio_t);
 
 // Geometry-aware host operations. Existing overloads retain exact H3 defaults.
-void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w,
-                         int short_edge, int max_pixels, const LatentGeometry& geometry);
+void resolve_canvas_size(double aspect_w, double aspect_h, int* out_h, int* out_w, int short_edge,
+                         int max_pixels, const LatentGeometry& geometry);
 void validate_canvas_size(int height, int width, const LatentGeometry& geometry);
 bool canvas_exceeds_trained_area(int height, int width, const LatentGeometry& geometry);
 int align_num_frames(int num_frames, const LatentGeometry& geometry);
 int video_latent_num_frames(int aligned_frames, const LatentGeometry& geometry);
 int audio_latents_for_frames(int aligned_frames, const LatentGeometry& geometry);
-std::vector<double> build_position_ids(const SequenceLayout& layout, const LatentGeometry& geometry);
+std::vector<double> build_position_ids(const SequenceLayout& layout,
+                                       const LatentGeometry& geometry);
 void patchify_video(const float* latents, const SequenceLayout& layout, float* rows_out,
                     const LatentGeometry& geometry);
 void unpatchify_video(const float* rows, const SequenceLayout& layout, float* latents_out,
@@ -204,4 +220,4 @@ struct BandedKeyRanges {
 BandedKeyRanges build_banded_key_ranges(const SequenceLayout& layout, int band_frames,
                                         int query_tile, int key_align);
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

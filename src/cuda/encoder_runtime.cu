@@ -3,6 +3,7 @@
 
 namespace slopfab::text {
 using namespace encoder_detail;
+
 // --- Encoder ------------------------------------------------------------------
 
 struct Encoder::Impl {
@@ -44,7 +45,8 @@ struct Encoder::Impl {
   const std::vector<QwenPixelValues>* pending_images = nullptr;
 
   void open_device() {
-    if (cublas != nullptr) return;
+    if (cublas != nullptr)
+      return;
     SLOPFAB_CUBLAS_CHECK(slopfab::cuda::cublas_create(&cublas));
     // Non-blocking rather than the legacy default stream: the streaming path
     // needs the upload stream to run concurrently with compute, and the legacy
@@ -60,14 +62,19 @@ struct Encoder::Impl {
 
   void close_device() {
     for (int i = 0; i < 2; ++i) {
-      if (upload_done[i] != nullptr) cudaEventDestroy(upload_done[i]);
-      if (compute_done[i] != nullptr) cudaEventDestroy(compute_done[i]);
+      if (upload_done[i] != nullptr)
+        cudaEventDestroy(upload_done[i]);
+      if (compute_done[i] != nullptr)
+        cudaEventDestroy(compute_done[i]);
       upload_done[i] = nullptr;
       compute_done[i] = nullptr;
     }
-    if (transfer != nullptr) cudaStreamDestroy(transfer);
-    if (compute != nullptr) cudaStreamDestroy(compute);
-    if (cublas != nullptr) slopfab::cuda::cublas_destroy(cublas);
+    if (transfer != nullptr)
+      cudaStreamDestroy(transfer);
+    if (compute != nullptr)
+      cudaStreamDestroy(compute);
+    if (cublas != nullptr)
+      slopfab::cuda::cublas_destroy(cublas);
     transfer = nullptr;
     compute = nullptr;
     cublas = nullptr;
@@ -88,9 +95,11 @@ struct Encoder::Impl {
   void try_register_mapping() {
     mapping_registered = false;
     registered_base = nullptr;
-    if (checkpoint == nullptr) return;
+    if (checkpoint == nullptr)
+      return;
     const void* base = checkpoint->mapping_base();
-    if (base == nullptr) return;
+    if (base == nullptr)
+      return;
 
     // cudaHostRegister wants a page-aligned range. The mapping base is already
     // allocation-granularity aligned, and a file mapping always covers whole
@@ -110,7 +119,8 @@ struct Encoder::Impl {
   }
 
   void unregister_mapping() {
-    if (!mapping_registered || registered_base == nullptr) return;
+    if (!mapping_registered || registered_base == nullptr)
+      return;
     cudaHostUnregister(const_cast<void*>(registered_base));
     mapping_registered = false;
     registered_base = nullptr;
@@ -140,7 +150,7 @@ struct Encoder::Impl {
     SLOPFAB_CUDA_CHECK(cudaEventSynchronize(upload_done[slot]));
     pack_layer(*checkpoint, cfg, layer, layout, staging[slot].get());
     SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(dst, staging[slot].get(), layout.total_bytes,
-                                      cudaMemcpyHostToDevice, transfer));
+                                       cudaMemcpyHostToDevice, transfer));
     SLOPFAB_CUDA_CHECK(cudaEventRecord(upload_done[slot], transfer));
   }
 
@@ -157,8 +167,10 @@ struct Encoder::Impl {
   // upload or a partially-created CUDA object failed. Cleanup is deliberately
   // best-effort/noexcept: the original load error is the useful one to report.
   void reset_runtime_state(bool close_handles) noexcept {
-    if (transfer != nullptr) (void)cudaStreamSynchronize(transfer);
-    if (compute != nullptr) (void)cudaStreamSynchronize(compute);
+    if (transfer != nullptr)
+      (void)cudaStreamSynchronize(transfer);
+    if (compute != nullptr)
+      (void)cudaStreamSynchronize(compute);
     vision.unload();
     free_weights();
     ws = Workspace();
@@ -169,7 +181,8 @@ struct Encoder::Impl {
     globals.clear();
     pending_images = nullptr;
     stats = EncoderStats();
-    if (close_handles) close_device();
+    if (close_handles)
+      close_device();
     // cudaStreamSynchronize and resource destruction may each report the same
     // deferred upload failure. Consume it only after all owned work is gone so
     // a subsequent encoder does not misattribute the old error to cublasCreate.
@@ -177,22 +190,33 @@ struct Encoder::Impl {
   }
 };
 
-Encoder::Encoder() : impl_(new Impl()) {}
+Encoder::Encoder() : impl_(new Impl()) {
+}
 
 Encoder::~Encoder() {
   unload();
   impl_->close_device();
 }
 
-const EncoderConfig& Encoder::config() const { return impl_->cfg; }
+const EncoderConfig& Encoder::config() const {
+  return impl_->cfg;
+}
 
-size_t Encoder::weight_bytes() const { return impl_->stats.weight_bytes; }
+size_t Encoder::weight_bytes() const {
+  return impl_->stats.weight_bytes;
+}
 
-Residency Encoder::residency() const { return impl_->mode; }
+Residency Encoder::residency() const {
+  return impl_->mode;
+}
 
-WeightFormat Encoder::format() const { return impl_->cfg.format; }
+WeightFormat Encoder::format() const {
+  return impl_->cfg.format;
+}
 
-const EncoderStats& Encoder::stats() const { return impl_->stats; }
+const EncoderStats& Encoder::stats() const {
+  return impl_->stats;
+}
 
 void Encoder::unload() {
   impl_->reset_runtime_state(false);
@@ -212,104 +236,109 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
 
   Impl& s = *impl_;
   try {
-  s.cfg = config;
-  if (config.arithmetic == EncoderArithmetic::kExact &&
-      !supports_exact_text_layer({config.max_prompt_tokens, config.hidden_size,
-          config.num_attention_heads, config.num_key_value_heads, config.head_dim,
-          config.intermediate_size, config.rms_norm_eps}))
-    throw std::invalid_argument("CUDA text encoder: unsupported exact layer capability");
-  // Detection is per file and there is no flag: the two builds differ in tensor
-  // count, dtype and shape, so validation catches a mismatch rather than
-  // letting it become wrong numbers. An explicitly set format is checked
-  // against the file rather than trusted.
-  s.cfg.format = detect_weight_format(checkpoint);
-  if (config.format != WeightFormat::kAuto && config.format != s.cfg.format) {
-    throw std::runtime_error(
-        "text encoder: the checkpoint declares the other weight format; detection is per file");
-  }
-  validate_checkpoint(checkpoint, s.cfg);
-  s.checkpoint = &checkpoint;
-  s.embed = &checkpoint.at("model.embed_tokens.weight");
-  s.embed_scale = checkpoint.find("model.embed_tokens.weight_scale");
-  s.layout = make_layer_layout(s.cfg);
-  s.globals.resize(static_cast<size_t>(s.cfg.num_layers));
-  for (int i = 0; i < s.cfg.num_layers; ++i) {
-    s.globals[static_cast<size_t>(i)] = read_global_scales(checkpoint, s.cfg, i);
-  }
-  const size_t layer_bytes = s.layout.total_bytes;
-  const size_t weight_bytes = layer_bytes * static_cast<size_t>(s.cfg.num_layers);
+    s.cfg = config;
+    if (config.arithmetic == EncoderArithmetic::kExact &&
+        !supports_exact_text_layer({config.max_prompt_tokens, config.hidden_size,
+                                    config.num_attention_heads, config.num_key_value_heads,
+                                    config.head_dim, config.intermediate_size,
+                                    config.rms_norm_eps}))
+      throw std::invalid_argument("CUDA text encoder: unsupported exact layer capability");
+    // Detection is per file and there is no flag: the two builds differ in tensor
+    // count, dtype and shape, so validation catches a mismatch rather than
+    // letting it become wrong numbers. An explicitly set format is checked
+    // against the file rather than trusted.
+    s.cfg.format = detect_weight_format(checkpoint);
+    if (config.format != WeightFormat::kAuto && config.format != s.cfg.format) {
+      throw std::runtime_error(
+          "text encoder: the checkpoint declares the other weight format; detection is per file");
+    }
+    validate_checkpoint(checkpoint, s.cfg);
+    s.checkpoint = &checkpoint;
+    s.embed = &checkpoint.at("model.embed_tokens.weight");
+    s.embed_scale = checkpoint.find("model.embed_tokens.weight_scale");
+    s.layout = make_layer_layout(s.cfg);
+    s.globals.resize(static_cast<size_t>(s.cfg.num_layers));
+    for (int i = 0; i < s.cfg.num_layers; ++i) {
+      s.globals[static_cast<size_t>(i)] = read_global_scales(checkpoint, s.cfg, i);
+    }
+    const size_t layer_bytes = s.layout.total_bytes;
+    const size_t weight_bytes = layer_bytes * static_cast<size_t>(s.cfg.num_layers);
 
-  Residency mode = config.residency;
-  if (mode == Residency::kAuto || mode == Residency::kResident) {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
-    const size_t required = resident_request_bytes(s.cfg, weight_bytes, total_bytes);
-    if (free_bytes < required) {
-      if (mode == Residency::kResident) {
-        throw std::runtime_error(
-            "text encoder: resident mode requires " +
-            std::to_string(required / (size_t(1) << 20)) +
-            " MiB free for weights, the maximum request, and the driver reserve; only " +
-            std::to_string(free_bytes / (size_t(1) << 20)) + " MiB is free");
+    Residency mode = config.residency;
+    if (mode == Residency::kAuto || mode == Residency::kResident) {
+      size_t free_bytes = 0;
+      size_t total_bytes = 0;
+      SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free_bytes, &total_bytes));
+      const size_t required = resident_request_bytes(s.cfg, weight_bytes, total_bytes);
+      if (free_bytes < required) {
+        if (mode == Residency::kResident) {
+          throw std::runtime_error(
+              "text encoder: resident mode requires " +
+              std::to_string(required / (size_t(1) << 20)) +
+              " MiB free for weights, the maximum request, and the driver reserve; only " +
+              std::to_string(free_bytes / (size_t(1) << 20)) + " MiB is free");
+        }
+        mode = Residency::kStreaming;
+      } else {
+        mode = Residency::kResident;
       }
-      mode = Residency::kStreaming;
+    }
+    s.open_device();
+
+    // Page-lock the mapping if we can, which removes the host copy from every
+    // upload in both modes. Best effort: if it fails we fall back to staging.
+    s.try_register_mapping();
+
+    // The staging buffers are only needed when registration failed. Allocating
+    // 930 MB of pinned memory that nothing will ever touch would be a waste of
+    // exactly the resource that made registration fail in the first place.
+    if (!s.mapping_registered) {
+      s.staging[0].allocate(layer_bytes);
+      s.staging[1].allocate(layer_bytes);
+      s.stats.host_pinned_bytes = 2 * layer_bytes;
     } else {
-      mode = Residency::kResident;
+      s.stats.host_pinned_bytes = 0;
     }
-  }
-  s.open_device();
 
-  // Page-lock the mapping if we can, which removes the host copy from every
-  // upload in both modes. Best effort: if it fails we fall back to staging.
-  s.try_register_mapping();
-
-  // The staging buffers are only needed when registration failed. Allocating
-  // 930 MB of pinned memory that nothing will ever touch would be a waste of
-  // exactly the resource that made registration fail in the first place.
-  if (!s.mapping_registered) {
-    s.staging[0].allocate(layer_bytes);
-    s.staging[1].allocate(layer_bytes);
-    s.stats.host_pinned_bytes = 2 * layer_bytes;
-  } else {
-    s.stats.host_pinned_bytes = 0;
-  }
-
-  if (mode == Residency::kResident) {
-    try {
-      s.resident.resize(static_cast<size_t>(config.num_layers));
-      for (int i = 0; i < config.num_layers; ++i) s.resident[static_cast<size_t>(i)].allocate(layer_bytes);
-    } catch (const std::exception&) {
-      s.resident.clear();
-      if (config.residency != Residency::kAuto) throw;
-      // Only kAuto is allowed to change its mind: an explicit kResident that
-      // does not fit is a sizing error the caller wants to hear about.
-      std::printf(
-          "  text encoder: %.2f GB of layer weights did not fit; falling back to streaming\n",
-          static_cast<double>(weight_bytes) / (1 << 30));
-      mode = Residency::kStreaming;
+    if (mode == Residency::kResident) {
+      try {
+        s.resident.resize(static_cast<size_t>(config.num_layers));
+        for (int i = 0; i < config.num_layers; ++i)
+          s.resident[static_cast<size_t>(i)].allocate(layer_bytes);
+      } catch (const std::exception&) {
+        s.resident.clear();
+        if (config.residency != Residency::kAuto)
+          throw;
+        // Only kAuto is allowed to change its mind: an explicit kResident that
+        // does not fit is a sizing error the caller wants to hear about.
+        std::printf(
+            "  text encoder: %.2f GB of layer weights did not fit; falling back to streaming\n",
+            static_cast<double>(weight_bytes) / (1 << 30));
+        mode = Residency::kStreaming;
+      }
     }
-  }
 
-  if (mode == Residency::kResident) {
-    for (int i = 0; i < config.num_layers; ++i) {
-      s.stage_upload(i, i % 2, s.resident[static_cast<size_t>(i)].get());
+    if (mode == Residency::kResident) {
+      for (int i = 0; i < config.num_layers; ++i) {
+        s.stage_upload(i, i % 2, s.resident[static_cast<size_t>(i)].get());
+      }
+      SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.transfer));
+      for (int i = 0; i < 2; ++i)
+        s.staging[i].reset();
+      s.stats.host_pinned_bytes = 0;
+      s.stats.weight_bytes = weight_bytes;
+    } else {
+      // Two device buffers, ping-ponged: layer i+1 uploads while layer i
+      // computes. 0.98 GB instead of 24.39 GB.
+      for (int i = 0; i < 2; ++i)
+        s.ping[i].allocate(layer_bytes);
+      s.stats.weight_bytes = 2 * layer_bytes;
     }
-    SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.transfer));
-    for (int i = 0; i < 2; ++i) s.staging[i].reset();
-    s.stats.host_pinned_bytes = 0;
-    s.stats.weight_bytes = weight_bytes;
-  } else {
-    // Two device buffers, ping-ponged: layer i+1 uploads while layer i
-    // computes. 0.98 GB instead of 24.39 GB.
-    for (int i = 0; i < 2; ++i) s.ping[i].allocate(layer_bytes);
-    s.stats.weight_bytes = 2 * layer_bytes;
-  }
 
-  s.mode = mode;
-  s.stats.load_seconds =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-  s.loaded = true;
+    s.mode = mode;
+    s.stats.load_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    s.loaded = true;
   } catch (...) {
     // A resident load queues many uploads before the final synchronization.
     // Roll every allocation, registration, event, stream and handle back now;
@@ -320,8 +349,7 @@ void Encoder::load(const SafeTensors& checkpoint, const EncoderConfig& config) {
   }
 }
 
-PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
-                                EncoderTrace* trace) {
+PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids, EncoderTrace* trace) {
   Impl& s = *impl_;
   require(s.loaded, "encode: load() has not been called");
   require(!token_ids.empty(),
@@ -346,10 +374,12 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
   if (s.pending_images && !s.pending_images->empty()) {
     s.vision.load(*s.checkpoint);
     visual = s.cfg.arithmetic == EncoderArithmetic::kExact
-        ? s.vision.encode_exact(*s.pending_images)
-        : s.vision.encode(*s.pending_images);
-    std::vector<QwenImageGrid> grids; grids.reserve(s.pending_images->size());
-    for (const auto& im : *s.pending_images) grids.push_back(im.grid);
+                 ? s.vision.encode_exact(*s.pending_images)
+                 : s.vision.encode(*s.pending_images);
+    std::vector<QwenImageGrid> grids;
+    grids.reserve(s.pending_images->size());
+    for (const auto& im : *s.pending_images)
+      grids.push_back(im.grid);
     mm_plan = qwen3vl_multimodal_plan(token_ids, grids);
     require(static_cast<int>(mm_plan.image_rows.size()) == visual.tokens,
             "encode: visual output count disagrees with image-pad tokens");
@@ -374,9 +404,10 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
   const std::vector<float> inv_freq = rope_inv_freq(s.cfg.head_dim, s.cfg.rope_theta);
   std::vector<float> cos_host;
   std::vector<float> sin_host;
-  if (visual.tokens) qwen3vl_decoder_rope_tables(mm_plan, L, cos_host, sin_host,
-                                                 s.cfg.head_dim, s.cfg.rope_theta);
-  else build_rope_tables(L, inv_freq, cos_host, sin_host);
+  if (visual.tokens)
+    qwen3vl_decoder_rope_tables(mm_plan, L, cos_host, sin_host, s.cfg.head_dim, s.cfg.rope_theta);
+  else
+    build_rope_tables(L, inv_freq, cos_host, sin_host);
   DeviceBuffer<float> cos(cos_host.size());
   DeviceBuffer<float> sin(sin_host.size());
   cos.copy_from_host(cos_host.data(), cos_host.size(), s.compute);
@@ -392,11 +423,12 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
     }
   }
   auto inject = [&](int layer) {
-    if (!visual.tokens) return;
+    if (!visual.tokens)
+      return;
     const int j = qwen3vl_deepstack_slot(layer);
-    if (j >= 0) cuda::launch_scatter_add_rows(reinterpret_cast<__nv_bfloat16*>(deep[j].get()),
-                                               image_rows.get(), xp, visual.tokens, hidden,
-                                               s.compute);
+    if (j >= 0)
+      cuda::launch_scatter_add_rows(reinterpret_cast<__nv_bfloat16*>(deep[j].get()),
+                                    image_rows.get(), xp, visual.tokens, hidden, s.compute);
   };
 
   LayerDims dims;
@@ -414,20 +446,20 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
   auto forward_layer = [&](const LayerWeights& weights) {
     if (s.cfg.arithmetic == EncoderArithmetic::kExact) {
       s.ws.reserve(exact_layer_workspace_bytes(weights, dims));
-      encoder_layer_forward_exact(s.compute, weights, dims, cos.get(),
-                                  sin.get(), xp, s.ws);
+      encoder_layer_forward_exact(s.compute, weights, dims, cos.get(), sin.get(), xp, s.ws);
     } else {
-      encoder_layer_forward(s.cublas, s.compute, s.linear, weights, dims,
-                            cos.get(), sin.get(), xp, s.ws);
+      encoder_layer_forward(s.cublas, s.compute, s.linear, weights, dims, cos.get(), sin.get(), xp,
+                            s.ws);
     }
   };
 
   const int N = s.cfg.num_layers;
   auto capture_layer = [&](int layer) {
-    if (trace_device.get() == nullptr) return;
-    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(
-        trace_device.get() + static_cast<size_t>(layer) * stream_elems, x.get(),
-        stream_elems * sizeof(uint16_t), cudaMemcpyDeviceToDevice, s.compute));
+    if (trace_device.get() == nullptr)
+      return;
+    SLOPFAB_CUDA_CHECK(
+        cudaMemcpyAsync(trace_device.get() + static_cast<size_t>(layer) * stream_elems, x.get(),
+                        stream_elems * sizeof(uint16_t), cudaMemcpyDeviceToDevice, s.compute));
   };
   if (s.mode == Residency::kResident) {
     for (int i = 0; i < N; ++i) {
@@ -444,7 +476,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
       const int slot = i % 2;
       SLOPFAB_CUDA_CHECK(cudaStreamWaitEvent(s.compute, s.upload_done[slot], 0));
       const LayerWeights w = layer_weights_from_blob(s.ping[slot].get(), s.layout, s.cfg,
-                                                    s.globals[static_cast<size_t>(i)]);
+                                                     s.globals[static_cast<size_t>(i)]);
       forward_layer(w);
       inject(i);
       capture_layer(i);
@@ -455,7 +487,8 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
         // The buffer layer i+1 lands in is the one layer i-1 computed from, so
         // that compute must finish first. Without this the upload would race
         // ahead and rewrite weights mid-GEMM — silently, and only under load.
-        if (i >= 1) SLOPFAB_CUDA_CHECK(cudaStreamWaitEvent(s.transfer, s.compute_done[next], 0));
+        if (i >= 1)
+          SLOPFAB_CUDA_CHECK(cudaStreamWaitEvent(s.transfer, s.compute_done[next], 0));
         s.stage_upload(i + 1, next, s.ping[next].get());
       }
     }
@@ -505,8 +538,7 @@ PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
 }
 
 PromptEmbedding Encoder::encode(const std::vector<int32_t>& token_ids,
-                                const std::vector<QwenPixelValues>& images,
-                                EncoderTrace* trace) {
+                                const std::vector<QwenPixelValues>& images, EncoderTrace* trace) {
   Impl& s = *impl_;
   require(!images.empty(), "encode: multimodal overload requires at least one image");
   s.pending_images = &images;
@@ -528,4 +560,4 @@ PromptEmbedding Encoder::encode(const Tokenizer& tokenizer, const std::string& p
   return encode(tokenizer.encode(prompt));
 }
 
-}  // namespace slopfab::text
+} // namespace slopfab::text

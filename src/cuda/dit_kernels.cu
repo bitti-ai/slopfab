@@ -23,7 +23,9 @@ namespace {
 
 constexpr int kThreads = 256;
 
-inline int grid_1d(size_t n, int block) { return static_cast<int>((n + block - 1) / block); }
+inline int grid_1d(size_t n, int block) {
+  return static_cast<int>((n + block - 1) / block);
+}
 
 // --- rank-8 AdaLN expansion -------------------------------------------------
 //
@@ -61,7 +63,8 @@ __global__ void adaln_expand_kernel(const float* __restrict__ w, const float* __
                                     int num_t, int num_modality, int num_param, int channels,
                                     int rank, int out_features) {
   const int p = blockIdx.x * blockDim.x + threadIdx.x;
-  if (p >= out_features) return;
+  if (p >= out_features)
+    return;
   const int ti = blockIdx.y;
 
   const float* c = code + static_cast<size_t>(ti) * rank;
@@ -71,7 +74,8 @@ __global__ void adaln_expand_kernel(const float* __restrict__ w, const float* __
   // consumers at every sampling step, so a rounding here biases every block's
   // modulation identically and accumulates coherently over the trajectory.
   float acc = bias[p];
-  for (int k = 0; k < rank; ++k) acc = fmaf(row[k], c[k], acc);
+  for (int k = 0; k < rank; ++k)
+    acc = fmaf(row[k], c[k], acc);
 
   const int channel = p % channels;
   const int rest = p / channels;
@@ -94,11 +98,12 @@ __global__ void adaln_expand_kernel(const float* __restrict__ w, const float* __
 __global__ void add_rows_bf16_kernel(__nv_bfloat16* __restrict__ x,
                                      const __nv_bfloat16* __restrict__ branch, size_t n) {
   const size_t i = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= n) return;
+  if (i >= n)
+    return;
   x[i] = __float2bfloat16(__bfloat162float(x[i]) + __bfloat162float(branch[i]));
 }
 
-}  // namespace
+} // namespace
 
 void launch_adaln_expand(const float* w, const float* bias, const float* code, float* out,
                          int num_t, int num_modality, int num_param, int channels, int rank,
@@ -131,9 +136,10 @@ void launch_adaln_expand(const float* w, const float* bias, const float* code, f
 
 void launch_add_rows_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
                           cudaStream_t stream) {
-  if (n == 0) return;
+  if (n == 0)
+    return;
   add_rows_bf16_kernel<<<grid_1d(n, kThreads), kThreads, 0, stream>>>(x, branch, n);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

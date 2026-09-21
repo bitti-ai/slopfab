@@ -14,10 +14,8 @@ struct W4A8State {
   int convrot_group_size = 0;
 };
 
-bool is_w4a8_weight(const SafeTensors& checkpoint,
-                    const std::string& weight_name);
-W4A8State read_w4a8_state(const SafeTensors& checkpoint,
-                          const std::string& weight_name,
+bool is_w4a8_weight(const SafeTensors& checkpoint, const std::string& weight_name);
+W4A8State read_w4a8_state(const SafeTensors& checkpoint, const std::string& weight_name,
                           const char* consumer);
 
-}  // namespace slopfab
+} // namespace slopfab

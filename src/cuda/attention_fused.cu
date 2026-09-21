@@ -181,9 +181,9 @@ namespace fused {
 //     the flag existed.
 constexpr int kWarps = 8;
 constexpr int kThreads = kWarps * kWarp;
-constexpr int kBr = 16 * kWarps;  // query rows per block, 16 per warp
-constexpr int kBc = 64;           // key rows per step
-constexpr int kMmaN = 8;          // n extent of one mma tile
+constexpr int kBr = 16 * kWarps; // query rows per block, 16 per warp
+constexpr int kBc = 64;          // key rows per step
+constexpr int kMmaN = 8;         // n extent of one mma tile
 
 // 16-bit tiles only, so the bank argument is the honest one: at stride 136
 // halves the QK operand addresses reduce to `groupID*4 + tig`, which is a
@@ -196,22 +196,22 @@ constexpr int kPadV = 2;
 // consumes fp16 probabilities -- the 11 mantissa bits the blocked path
 // deliberately chose over bf16's 8.
 __device__ inline void mma_bf16(float (&d)[4], const uint32_t (&a)[4], const uint32_t (&b)[2]) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
-      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
 __device__ inline void mma_f16(float (&d)[4], const uint32_t (&a)[4], const uint32_t (&b)[2]) {
-  asm volatile(
-      "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
-      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+  asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+               "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 }
 
-__device__ inline uint32_t ld32(const void* p) { return *reinterpret_cast<const uint32_t*>(p); }
+__device__ inline uint32_t ld32(const void* p) {
+  return *reinterpret_cast<const uint32_t*>(p);
+}
 
 // --- K/V staging ------------------------------------------------------------
 //
@@ -247,18 +247,17 @@ __device__ inline uint32_t ld32(const void* p) { return *reinterpret_cast<const 
 // halves, so 33 words, so its bank reduces to `col + e + row/2 (mod 32)` and a
 // warp covers 16 distinct words with the two lanes of each pair writing the two
 // halves of one word.
-constexpr int kVec = 8;                          // halves in a 16-byte access
-constexpr int kStageCols = 4;                    // 16-byte columns one warp covers
-constexpr int kStageRows = kWarp / kStageCols;   // rows one warp covers
+constexpr int kVec = 8;                        // halves in a 16-byte access
+constexpr int kStageCols = 4;                  // 16-byte columns one warp covers
+constexpr int kStageRows = kWarp / kStageCols; // rows one warp covers
 
 // Hoisted staging state for one thread. Constructed once; `run` stages the
 // current key block and advances to the next, so the loop body carries no
 // addressing of its own. Keeping it a value rather than inline code is what
 // lets a second buffer be staged ahead of the one being consumed without
 // touching any of the arithmetic.
-template <int D>
-struct KvStage {
-  static constexpr int kColGroups = D / (kVec * kStageCols);          // 4 at D=128, 2 at D=64
+template <int D> struct KvStage {
+  static constexpr int kColGroups = D / (kVec * kStageCols); // 4 at D=128, 2 at D=64
   static constexpr int kRowsPerPass = kWarps / kColGroups * kStageRows;
   static constexpr int kPasses = kBc / kRowsPerPass;
   static constexpr int kKStride = D + kPadH;
@@ -273,12 +272,12 @@ struct KvStage {
   // stride is left to check.
   static_assert((kKStride * 2) % 16 == 0, "K rows must start on a 16-byte boundary");
 
-  const __nv_bfloat16* kp;  // this thread's K source for pass 0 of the current key block
+  const __nv_bfloat16* kp; // this thread's K source for pass 0 of the current key block
   const __nv_bfloat16* vp;
-  size_t pass_stride;       // halves between one pass and the next
-  int ks_off;               // halves into ks
-  int vt_off;               // halves into vt
-  int row;                  // absolute key row of pass 0
+  size_t pass_stride; // halves between one pass and the next
+  int ks_off;         // halves into ks
+  int vt_off;         // halves into vt
+  int row;            // absolute key row of pass 0
 
   __device__ KvStage(const __nv_bfloat16* k, const __nv_bfloat16* v, int tid, int kv_head,
                      size_t kvld) {
@@ -347,11 +346,10 @@ __device__ inline uint32_t pack_h2(float lo, float hi) {
 
 // Q is not here. It is read straight from global into the A-fragments at block
 // entry and never staged -- see the load in `fused_kernel`.
-template <int D>
-__host__ __device__ inline size_t smem_bytes() {
+template <int D> __host__ __device__ inline size_t smem_bytes() {
   size_t n = 0;
-  n += sizeof(__nv_bfloat16) * kBc * (D + kPadH);  // K
-  n += sizeof(__half) * D * (kBc + kPadV);         // V transposed
+  n += sizeof(__nv_bfloat16) * kBc * (D + kPadH); // K
+  n += sizeof(__half) * D * (kBc + kPadV);        // V transposed
   return n;
 }
 
@@ -379,8 +377,8 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   const int tid = threadIdx.x;
   const int warp = tid / kWarp;
   const int lane = tid % kWarp;
-  const int gid = lane >> 2;   // 0..7, selects the row pair
-  const int tig = lane & 3;    // 0..3, selects the column pair
+  const int gid = lane >> 2; // 0..7, selects the row pair
+  const int tig = lane & 3;  // 0..3, selects the column pair
 
   const int group = heads / num_kv_heads;
   const int kv_head = head / group;
@@ -412,10 +410,8 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
   // never by the arithmetic.
   const bool q_live_a = q0 + row_a < query_rows;
   const bool q_live_b = q0 + row_b < query_rows;
-  const __nv_bfloat16* qsrc_a =
-      q + static_cast<size_t>(q0 + row_a) * qld + head * D + tig * 2;
-  const __nv_bfloat16* qsrc_b =
-      q + static_cast<size_t>(q0 + row_b) * qld + head * D + tig * 2;
+  const __nv_bfloat16* qsrc_a = q + static_cast<size_t>(q0 + row_a) * qld + head * D + tig * 2;
+  const __nv_bfloat16* qsrc_b = q + static_cast<size_t>(q0 + row_b) * qld + head * D + tig * 2;
   uint32_t qa[kDSteps][4];
 #pragma unroll
   for (int t = 0; t < kDSteps; ++t) {
@@ -464,13 +460,14 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
     k_stop = r.y;
     seam_lo = r.z;
     seam_stop = r.w;
-    stage.advance(k0, kvld);  // from row 0 to the first range
+    stage.advance(k0, kvld); // from row 0 to the first range
   }
 
   while (true) {
     if (k0 >= k_stop) {
       if constexpr (kBanded) {
-        if (seam_stop <= seam_lo) break;
+        if (seam_stop <= seam_lo)
+          break;
         stage.advance(seam_lo - k0, kvld);
         k0 = seam_lo;
         k_stop = seam_stop;
@@ -479,7 +476,7 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
         break;
       }
     }
-    __syncthreads();  // last iteration's mma has finished reading ks/vt
+    __syncthreads(); // last iteration's mma has finished reading ks/vt
     stage.run(ks, vt, seq);
     __syncthreads();
 
@@ -608,16 +605,16 @@ __global__ __launch_bounds__(kThreads) void fused_kernel(
 // >48 KB of shared memory per block is opt-in and the opt-in is per function.
 // Doing it once per (function, thread) rather than per launch keeps it off the
 // hot path; the call is idempotent so a race is harmless.
-template <int D>
-void ensure_smem_optin() {
+template <int D> void ensure_smem_optin() {
   static thread_local bool done = false;
-  if (done) return;
+  if (done)
+    return;
   SLOPFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D, false>,
-                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                         static_cast<int>(smem_bytes<D>())));
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          static_cast<int>(smem_bytes<D>())));
   SLOPFAB_CUDA_CHECK(cudaFuncSetAttribute(fused_kernel<D, true>,
-                                         cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                         static_cast<int>(smem_bytes<D>())));
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                          static_cast<int>(smem_bytes<D>())));
   done = true;
 }
 
@@ -636,17 +633,21 @@ void launch(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
   const int4* band = reinterpret_cast<const int4*>(cfg.band_ranges);
   if (band != nullptr) {
     fused_kernel<D, true><<<grid, kThreads, smem_bytes<D>(), stream>>>(
-        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), band, query_rows);
+        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), band,
+        query_rows);
   } else {
     fused_kernel<D, false><<<grid, kThreads, smem_bytes<D>(), stream>>>(
-        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), nullptr, query_rows);
+        q, k, v, out, cfg.seq_len, cfg.num_heads, num_kv_heads, cfg.effective_scale(), nullptr,
+        query_rows);
   }
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-bool supported(const AttentionConfig& cfg) { return cfg.head_dim == 64 || cfg.head_dim == 128; }
+bool supported(const AttentionConfig& cfg) {
+  return cfg.head_dim == 64 || cfg.head_dim == 128;
+}
 
-}  // namespace fused
+} // namespace fused
 
 void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
                const __nv_bfloat16* v, __nv_bfloat16* out, const AttentionConfig& cfg,
@@ -677,9 +678,14 @@ void run_fused(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16*
   }
 }
 
-}  // namespace slopfab::cuda::attention_detail
+} // namespace slopfab::cuda::attention_detail
 
 namespace slopfab::cuda {
-int attention_fused_query_tile() { return attention_detail::fused::kBr; }
-int attention_fused_key_align() { return attention_detail::fused::kBc; }
-}  // namespace slopfab::cuda
+int attention_fused_query_tile() {
+  return attention_detail::fused::kBr;
+}
+
+int attention_fused_key_align() {
+  return attention_detail::fused::kBc;
+}
+} // namespace slopfab::cuda

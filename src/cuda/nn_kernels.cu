@@ -2,6 +2,7 @@
 
 namespace slopfab::cuda {
 using namespace nn_detail;
+
 namespace {
 // --- rmsnorm ----------------------------------------------------------------
 //
@@ -19,17 +20,19 @@ __device__ inline void rmsnorm_body(const XT* xr, const WT* w, OT* outr, int dim
   for (int p = threadIdx.x; p < packs; p += blockDim.x) {
     XPack::load(xr + p * VEC, buf);
 #pragma unroll
-    for (int i = 0; i < VEC; ++i) sum_sq += buf[i] * buf[i];
+    for (int i = 0; i < VEC; ++i)
+      sum_sq += buf[i] * buf[i];
   }
-  const float inv = block_norm_inverse(block_reduce_sum(sum_sq, shared),
-                                       static_cast<uint32_t>(dim), eps, shared);
+  const float inv =
+      block_norm_inverse(block_reduce_sum(sum_sq, shared), static_cast<uint32_t>(dim), eps, shared);
 
   float wbuf[VEC];
   for (int p = threadIdx.x; p < packs; p += blockDim.x) {
     XPack::load(xr + p * VEC, buf);
     WPack::load(w + p * VEC, wbuf);
 #pragma unroll
-    for (int i = 0; i < VEC; ++i) buf[i] = buf[i] * inv * wbuf[i];
+    for (int i = 0; i < VEC; ++i)
+      buf[i] = buf[i] * inv * wbuf[i];
     OPack::store(outr + p * VEC, buf);
   }
 }
@@ -60,16 +63,17 @@ __global__ void layernorm_affine_kernel(const __nv_bfloat16* __restrict__ x,
   extern __shared__ float shared[];
   const size_t base = static_cast<size_t>(blockIdx.x) * dim;
   float sum = 0.0f;
-  for (int i = threadIdx.x; i < dim; i += blockDim.x) sum += __bfloat162float(x[base + i]);
-  const float mean = block_mean(block_reduce_sum(sum, shared),
-                                static_cast<uint32_t>(dim), shared);
+  for (int i = threadIdx.x; i < dim; i += blockDim.x)
+    sum += __bfloat162float(x[base + i]);
+  const float mean = block_mean(block_reduce_sum(sum, shared), static_cast<uint32_t>(dim), shared);
   __syncthreads();
   float sq = 0.0f;
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
-    const float d = __bfloat162float(x[base + i]) - mean; sq += d * d;
+    const float d = __bfloat162float(x[base + i]) - mean;
+    sq += d * d;
   }
-  const float inv = block_norm_inverse(block_reduce_sum(sq, shared),
-                                       static_cast<uint32_t>(dim), eps, shared);
+  const float inv =
+      block_norm_inverse(block_reduce_sum(sq, shared), static_cast<uint32_t>(dim), eps, shared);
   for (int i = threadIdx.x; i < dim; i += blockDim.x) {
     const float y = (__bfloat162float(x[base + i]) - mean) * inv * __bfloat162float(w[i]) +
                     __bfloat162float(bias[i]);
@@ -97,9 +101,10 @@ template <int VEC, class XPack, class WPack, class OPack, class XT, class WT, cl
 __global__ void rmsnorm_warp_kernel(const XT* __restrict__ x, const WT* __restrict__ w,
                                     OT* __restrict__ out, int rows, int dim, float eps) {
   const size_t row = static_cast<size_t>(blockIdx.x) * blockDim.y + threadIdx.y;
-  if (row >= static_cast<size_t>(rows)) return;
+  if (row >= static_cast<size_t>(rows))
+    return;
 
-  const int packs = dim / VEC;  // <= 32, enforced by the launcher
+  const int packs = dim / VEC; // <= 32, enforced by the launcher
   const int lane = static_cast<int>(threadIdx.x);
   const bool active = lane < packs;
 
@@ -108,7 +113,8 @@ __global__ void rmsnorm_warp_kernel(const XT* __restrict__ x, const WT* __restri
   if (active) {
     XPack::load(x + row * dim + lane * VEC, buf);
 #pragma unroll
-    for (int i = 0; i < VEC; ++i) sum_sq += buf[i] * buf[i];
+    for (int i = 0; i < VEC; ++i)
+      sum_sq += buf[i] * buf[i];
   }
   // Butterfly, not shfl_down: every lane needs the total, and xor leaves it in
   // all 32 without a broadcast. Idle lanes contribute their zero.
@@ -116,16 +122,15 @@ __global__ void rmsnorm_warp_kernel(const XT* __restrict__ x, const WT* __restri
   for (int offset = kWarp / 2; offset > 0; offset >>= 1) {
     sum_sq += __shfl_xor_sync(0xFFFFFFFFu, sum_sq, offset);
   }
-  float inv = lane == 0
-                  ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(dim), eps)
-                  : 0.0f;
+  float inv = lane == 0 ? deterministic_norm_rsqrt(sum_sq, static_cast<uint32_t>(dim), eps) : 0.0f;
   inv = __shfl_sync(0xFFFFFFFFu, inv, 0);
 
   if (active) {
     float wbuf[VEC];
     WPack::load(w + lane * VEC, wbuf);
 #pragma unroll
-    for (int i = 0; i < VEC; ++i) buf[i] = buf[i] * inv * wbuf[i];
+    for (int i = 0; i < VEC; ++i)
+      buf[i] = buf[i] * inv * wbuf[i];
     OPack::store(out + row * dim + lane * VEC, buf);
   }
 }
@@ -135,7 +140,9 @@ __global__ void rmsnorm_warp_kernel(const XT* __restrict__ x, const WT* __restri
 constexpr int kWarpRowsPerBlock = 8;
 
 // The warp kernel needs the whole row to land on one warp.
-inline bool narrow_row(int dim, int vec) { return dim / vec <= kWarp; }
+inline bool narrow_row(int dim, int vec) {
+  return dim / vec <= kWarp;
+}
 
 // --- rmsnorm + AdaLN modulation ---------------------------------------------
 //
@@ -154,10 +161,11 @@ __device__ inline void modulate_body(const XT* xr, const WT* w, const float* sca
   for (int p = threadIdx.x; p < packs; p += blockDim.x) {
     XPack::load(xr + p * VEC, buf);
 #pragma unroll
-    for (int i = 0; i < VEC; ++i) sum_sq += buf[i] * buf[i];
+    for (int i = 0; i < VEC; ++i)
+      sum_sq += buf[i] * buf[i];
   }
-  const float inv = block_norm_inverse(block_reduce_sum(sum_sq, shared),
-                                       static_cast<uint32_t>(dim), eps, shared);
+  const float inv =
+      block_norm_inverse(block_reduce_sum(sum_sq, shared), static_cast<uint32_t>(dim), eps, shared);
 
   float wbuf[VEC];
   float sc[VEC];
@@ -177,37 +185,32 @@ __device__ inline void modulate_body(const XT* xr, const WT* w, const float* sca
 }
 
 template <int VEC>
-__global__ void rmsnorm_modulate_bf16_kernel(const __nv_bfloat16* __restrict__ x,
-                                             const __nv_bfloat16* __restrict__ w,
-                                             const float* __restrict__ scale,
-                                             const float* __restrict__ shift,
-                                             const int32_t* __restrict__ a,
-                                             __nv_bfloat16* __restrict__ out, int dim, float eps) {
+__global__ void
+rmsnorm_modulate_bf16_kernel(const __nv_bfloat16* __restrict__ x,
+                             const __nv_bfloat16* __restrict__ w, const float* __restrict__ scale,
+                             const float* __restrict__ shift, const int32_t* __restrict__ a,
+                             __nv_bfloat16* __restrict__ out, int dim, float eps) {
   extern __shared__ float shared[];
   const size_t row = blockIdx.x;
   const size_t mod = static_cast<size_t>(a[row]) * dim;
-  modulate_body<VEC, BfPack<VEC>, BfPack<VEC>, BfPack<VEC>>(x + row * dim, w, scale + mod,
-                                                            shift + mod, out + row * dim, dim, eps,
-                                                            shared);
+  modulate_body<VEC, BfPack<VEC>, BfPack<VEC>, BfPack<VEC>>(
+      x + row * dim, w, scale + mod, shift + mod, out + row * dim, dim, eps, shared);
 }
 
 template <int VEC>
-__global__ void rmsnorm_modulate_f32_kernel(const float* __restrict__ x,
-                                            const __nv_bfloat16* __restrict__ w,
-                                            const float* __restrict__ scale,
-                                            const float* __restrict__ shift,
-                                            const int32_t* __restrict__ a, float* __restrict__ out,
-                                            int dim, float eps) {
+__global__ void
+rmsnorm_modulate_f32_kernel(const float* __restrict__ x, const __nv_bfloat16* __restrict__ w,
+                            const float* __restrict__ scale, const float* __restrict__ shift,
+                            const int32_t* __restrict__ a, float* __restrict__ out, int dim,
+                            float eps) {
   extern __shared__ float shared[];
   const size_t row = blockIdx.x;
   const size_t mod = static_cast<size_t>(a[row]) * dim;
-  modulate_body<VEC, F32Pack<VEC>, BfPack<VEC>, F32Pack<VEC>>(x + row * dim, w, scale + mod,
-                                                              shift + mod, out + row * dim, dim,
-                                                              eps, shared);
+  modulate_body<VEC, F32Pack<VEC>, BfPack<VEC>, F32Pack<VEC>>(
+      x + row * dim, w, scale + mod, shift + mod, out + row * dim, dim, eps, shared);
 }
 
-
-}  // namespace
+} // namespace
 
 void launch_rmsnorm(const __nv_bfloat16* x, const __nv_bfloat16* w, __nv_bfloat16* out, int rows,
                     int dim, float eps, cudaStream_t stream) {
@@ -252,8 +255,8 @@ void launch_rmsnorm_f32(const float* x, const float* w, float* out, int rows, in
 }
 
 void launch_layernorm_affine(const __nv_bfloat16* x, const __nv_bfloat16* w,
-                             const __nv_bfloat16* bias, __nv_bfloat16* out,
-                             int rows, int dim, float eps, cudaStream_t stream) {
+                             const __nv_bfloat16* bias, __nv_bfloat16* out, int rows, int dim,
+                             float eps, cudaStream_t stream) {
   require_positive(rows, dim, "launch_layernorm_affine");
   layernorm_affine_kernel<<<rows, kRowThreads, reduce_shared_bytes(), stream>>>(x, w, bias, out,
                                                                                 dim, eps);
@@ -301,5 +304,4 @@ void launch_head_rmsnorm(__nv_bfloat16* x, const __nv_bfloat16* w, int rows, int
   launch_rmsnorm(x, w, x, rows * heads, dim, eps, stream);
 }
 
-
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

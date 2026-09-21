@@ -63,7 +63,9 @@ namespace {
 
 constexpr int kWarp = 32;
 
-inline size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
+inline size_t align_up(size_t n) {
+  return (n + 255) / 256 * 256;
+}
 
 bool native_nvfp4_device_supported() {
   return current_device_compute_capability() == 120;
@@ -124,12 +126,14 @@ __global__ __launch_bounds__(256) void quantize_act_kernel(const __nv_bfloat16* 
     }
   } else {
 #pragma unroll
-    for (int i = 0; i < 8; ++i) v[i] = 0.0f;
+    for (int i = 0; i < 8; ++i)
+      v[i] = 0.0f;
   }
 
   float amax = 0.0f;
 #pragma unroll
-  for (int i = 0; i < 8; ++i) amax = fmaxf(amax, fabsf(v[i]));
+  for (int i = 0; i < 8; ++i)
+    amax = fmaxf(amax, fabsf(v[i]));
   amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFFu, amax, 1));
 
   const uint8_t s8 = __nv_cvt_float_to_fp8(amax * (1.0f / 6.0f), __NV_SATFINITE, __NV_E4M3);
@@ -146,9 +150,11 @@ __global__ __launch_bounds__(256) void quantize_act_kernel(const __nv_bfloat16* 
     bytes |= static_cast<uint32_t>(b) << (8 * i);
   }
 
-  if (!live) return;
+  if (!live)
+    return;
   *reinterpret_cast<uint32_t*>(packed + h * 4) = bytes;
-  if ((threadIdx.x & 1) == 0) scales[h / 2] = s8;
+  if ((threadIdx.x & 1) == 0)
+    scales[h / 2] = s8;
 }
 
 // --- the GEMM ---------------------------------------------------------------
@@ -187,12 +193,12 @@ constexpr int kBN = 128;
 constexpr int kBK = 128;
 constexpr int kWarpsM = 2;
 constexpr int kWarpsN = 4;
-constexpr int kThreads = kWarpsM * kWarpsN * kWarp;  // 256
-constexpr int kWM = kBM / kWarpsM;                   // 64 rows per warp
-constexpr int kWN = kBN / kWarpsN;                   // 32 columns per warp
-constexpr int kMTiles = kWM / 16;                    // 4
-constexpr int kNTiles = kWN / 8;                     // 4
-constexpr int kKSteps = kBK / 64;                    // 2 mma k-steps per tile
+constexpr int kThreads = kWarpsM * kWarpsN * kWarp; // 256
+constexpr int kWM = kBM / kWarpsM;                  // 64 rows per warp
+constexpr int kWN = kBN / kWarpsN;                  // 32 columns per warp
+constexpr int kMTiles = kWM / 16;                   // 4
+constexpr int kNTiles = kWN / 8;                    // 4
+constexpr int kKSteps = kBK / 64;                   // 2 mma k-steps per tile
 
 // A staged row is `kBK/2` = 64 bytes = 16 words of nibbles. The stride is
 // padded to 20 rather than 16, and 20 rather than 17 or 18: a fragment load has
@@ -203,14 +209,14 @@ constexpr int kKSteps = kBK / 64;                    // 2 mma k-steps per tile
 // budget -- cheaper than the register shuffling an XOR swizzle would need to
 // keep the staging stores vectorised.
 constexpr int kRowWords = 20;
-constexpr int kUsedWords = kBK / 2 / 4;    // 16
-constexpr int kScaleWords = kBK / 64;      // 2: one u32 of four block scales per k-step
-constexpr int kU4PerRow = kUsedWords / 4;  // 4 uint4 loads per staged row
+constexpr int kUsedWords = kBK / 2 / 4;   // 16
+constexpr int kScaleWords = kBK / 64;     // 2: one u32 of four block scales per k-step
+constexpr int kU4PerRow = kUsedWords / 4; // 4 uint4 loads per staged row
 
-constexpr int kTileU4 = kBM * kU4PerRow;          // 512
-constexpr int kU4PerThread = kTileU4 / kThreads;  // 2
+constexpr int kTileU4 = kBM * kU4PerRow;         // 512
+constexpr int kU4PerThread = kTileU4 / kThreads; // 2
 
-constexpr int kStageWords = 2 * kBM * kRowWords + 2 * kBM * kScaleWords;  // 5632 -> 22 KB
+constexpr int kStageWords = 2 * kBM * kRowWords + 2 * kBM * kScaleWords; // 5632 -> 22 KB
 
 static_assert(kBM == kBN, "the staging routines share one row count");
 static_assert(kTileU4 % kThreads == 0, "the data staging must divide evenly across the block");
@@ -221,12 +227,12 @@ static_assert(kRowWords % 4 == 0 && (kRowWords / 4) % 2 == 1,
 __device__ inline void mma_nvfp4(float (&d)[4], const uint32_t (&a)[4], const uint32_t (&b)[2],
                                  uint32_t sa, uint32_t sb) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 1200
-  asm volatile(
-      "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
-      ".f32.e2m1.e2m1.f32.ue4m3 "
-      "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
-      : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
-      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(sa), "r"(sb));
+  asm volatile("mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X"
+               ".f32.e2m1.e2m1.f32.ue4m3 "
+               "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
+               : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+               : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]), "r"(sa),
+                 "r"(sb));
 #else
   // This translation unit is part of CUDA 12's sm_86/sm_120a fat binary.
   // Runtime dispatch rejects this path below sm_120; keeping a device stub
@@ -262,8 +268,7 @@ __device__ inline uint32_t swap_nibbles(uint32_t v) {
 // `kSwizzled` distinguishes the weight from the activation, not one checkpoint
 // from another. The activation is quantised by this file straight into
 // row-major order; only the stored weight is swizzled.
-template <bool kSwizzled>
-__device__ inline size_t scale_offset(int m, int j, int k_blocks) {
+template <bool kSwizzled> __device__ inline size_t scale_offset(int m, int j, int k_blocks) {
   if (kSwizzled) {
     // `j & 3` is always zero on the kernel's own path -- it loads four blocks
     // at a time -- and is written out anyway so the same function serves a
@@ -339,9 +344,9 @@ __device__ inline void store_tile(uint32_t* __restrict__ dst, uint32_t* __restri
 // force registers to 85 and spill. Anyone changing kBM/kBN/kBK is standing
 // against those two numbers.
 __global__ __launch_bounds__(kThreads, 2) void nvfp4_gemm_kernel(
-    const uint8_t* __restrict__ aq, const uint8_t* __restrict__ as,
-    const uint8_t* __restrict__ bq, const uint8_t* __restrict__ bs, __nv_bfloat16* __restrict__ y,
-    int rows, int out_features, int k_bytes, int k_blocks, int k_tiles, float global_scale) {
+    const uint8_t* __restrict__ aq, const uint8_t* __restrict__ as, const uint8_t* __restrict__ bq,
+    const uint8_t* __restrict__ bs, __nv_bfloat16* __restrict__ y, int rows, int out_features,
+    int k_bytes, int k_blocks, int k_tiles, float global_scale) {
   // 16-byte aligned so the staging stores can be `uint4`; a plain uint32 array
   // is only guaranteed 4.
   __shared__ __align__(16) uint32_t smem[2 * kStageWords];
@@ -381,7 +386,8 @@ __global__ __launch_bounds__(kThreads, 2) void nvfp4_gemm_kernel(
 #pragma unroll
     for (int nt = 0; nt < kNTiles; ++nt)
 #pragma unroll
-      for (int i = 0; i < 4; ++i) acc[mt][nt][i] = 0.0f;
+      for (int i = 0; i < 4; ++i)
+        acc[mt][nt][i] = 0.0f;
 
   // The A-scale row this lane must supply. Lanes `4g` and `4g+1` carry rows
   // `g` and `g+8`; `4g+2` and `4g+3` carry nothing, and pointing them at the
@@ -434,8 +440,8 @@ __global__ __launch_bounds__(kThreads, 2) void nvfp4_gemm_kernel(
 #pragma unroll
       for (int mt = 0; mt < kMTiles; ++mt)
 #pragma unroll
-        for (int nt = 0; nt < kNTiles; ++nt) mma_nvfp4(acc[mt][nt], af[mt], bf[nt], asc[mt],
-                                                       bsc[nt]);
+        for (int nt = 0; nt < kNTiles; ++nt)
+          mma_nvfp4(acc[mt][nt], af[mt], bf[nt], asc[mt], bsc[nt]);
     }
 
     if (kt + 1 < k_tiles) {
@@ -469,7 +475,8 @@ __global__ __launch_bounds__(kThreads, 2) void nvfp4_gemm_kernel(
 #pragma unroll
       for (int half = 0; half < 2; ++half) {
         const int row = row_lo + half * 8;
-        if (row >= rows) continue;
+        if (row >= rows)
+          continue;
         *reinterpret_cast<__nv_bfloat162*>(y + static_cast<size_t>(row) * out_features + col) =
             __floats2bfloat162_rn(c[half * 2] * global_scale, c[half * 2 + 1] * global_scale);
       }
@@ -477,32 +484,28 @@ __global__ __launch_bounds__(kThreads, 2) void nvfp4_gemm_kernel(
   }
 }
 
-void launch_nvfp4_gemm_q(const uint8_t* xq, const uint8_t* xs,
-                         const uint8_t* w_packed, const uint8_t* w_scale,
-                         float global_scale, __nv_bfloat16* y, int rows,
-                         int out_features, int in_features,
-                         cudaStream_t stream) {
+void launch_nvfp4_gemm_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w_packed,
+                         const uint8_t* w_scale, float global_scale, __nv_bfloat16* y, int rows,
+                         int out_features, int in_features, cudaStream_t stream) {
   const dim3 grid(static_cast<unsigned>((rows + kBM - 1) / kBM),
                   static_cast<unsigned>((out_features + kBN - 1) / kBN));
-  nvfp4_gemm_kernel<<<grid, kThreads, 0, stream>>>(
-      xq, xs, w_packed, w_scale, y, rows, out_features, in_features / 2,
-      in_features / 16, (in_features + kBK - 1) / kBK, global_scale);
+  nvfp4_gemm_kernel<<<grid, kThreads, 0, stream>>>(xq, xs, w_packed, w_scale, y, rows, out_features,
+                                                   in_features / 2, in_features / 16,
+                                                   (in_features + kBK - 1) / kBK, global_scale);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace
+} // namespace
 
 bool nvfp4_gemm_shape_supported(int out_features, int in_features) noexcept {
-  return in_features > 0 && out_features > 0 && in_features % 64 == 0 &&
-         out_features % 128 == 0;
+  return in_features > 0 && out_features > 0 && in_features % 64 == 0 && out_features % 128 == 0;
 }
 
 bool nvfp4_gemm_supported(int out_features, int in_features) {
   // `in % 64` is this kernel's own staging requirement -- it is what makes a
   // packed row 32-byte aligned and a scale row 4-byte aligned -- and it happens
   // to subsume the swizzle's `Kb % 4`. `out % 128` is the swizzle's.
-  return native_nvfp4_device_supported() &&
-         nvfp4_gemm_shape_supported(out_features, in_features);
+  return native_nvfp4_device_supported() && nvfp4_gemm_shape_supported(out_features, in_features);
 }
 
 size_t nvfp4_gemm_workspace_bytes(int rows, int in_features) {
@@ -512,7 +515,8 @@ size_t nvfp4_gemm_workspace_bytes(int rows, int in_features) {
 
 void launch_quantize_nvfp4_activations(const __nv_bfloat16* x, uint8_t* packed, uint8_t* scales,
                                        int rows, int dim, cudaStream_t stream) {
-  if (rows <= 0 || dim <= 0) return;
+  if (rows <= 0 || dim <= 0)
+    return;
   if (dim % 16 != 0) {
     throw std::runtime_error("nvfp4: activation dim must be a multiple of 16, got " +
                              std::to_string(dim));
@@ -527,7 +531,8 @@ void launch_quantize_nvfp4_activations(const __nv_bfloat16* x, uint8_t* packed, 
 void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w_packed,
                           const uint8_t* w_scale, float global_scale, __nv_bfloat16* y, int rows,
                           int out_features, int in_features, cudaStream_t stream) {
-  if (rows <= 0 || out_features <= 0) return;
+  if (rows <= 0 || out_features <= 0)
+    return;
   // Throw rather than pad. `out % 128` and `Kb % 4` are the block-scale
   // swizzle's no-padding precondition; every quantised tensor in both
   // checkpoints satisfies both, so the padded layout has never been observed
@@ -536,8 +541,7 @@ void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w
   // day it appears.
   if (!nvfp4_gemm_supported(out_features, in_features)) {
     throw std::runtime_error("nvfp4_gemm: native NVFP4 requires a Blackwell (sm_120) GPU and " +
-                             std::to_string(out_features) + "x" +
-                             std::to_string(in_features) +
+                             std::to_string(out_features) + "x" + std::to_string(in_features) +
                              " needs out % 128 == 0 and in % 64 == 0; the padded block-scale "
                              "layout has never been observed and is not guessed at");
   }
@@ -547,30 +551,31 @@ void nvfp4_gemm_forward_q(const uint8_t* xq, const uint8_t* xs, const uint8_t* w
   // the weight -- 344 KB at qkv_proj -- and sweep the activation together.
   // Swapping them would put the larger of the two streams in the reused
   // position and spill it out of L2.
-  launch_nvfp4_gemm_q(xq, xs, w_packed, w_scale, global_scale, y, rows,
-                       out_features, in_features, stream);
+  launch_nvfp4_gemm_q(xq, xs, w_packed, w_scale, global_scale, y, rows, out_features, in_features,
+                      stream);
 }
 
 void nvfp4_gemm_forward(const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
                         float global_scale, __nv_bfloat16* y, int rows, int out_features,
                         int in_features, Workspace& ws, cudaStream_t stream) {
-  if (rows <= 0 || out_features <= 0) return;
+  if (rows <= 0 || out_features <= 0)
+    return;
   if (!nvfp4_gemm_supported(out_features, in_features)) {
     throw std::runtime_error("nvfp4_gemm: native NVFP4 requires a Blackwell (sm_120) GPU and " +
-                             std::to_string(out_features) + "x" +
-                             std::to_string(in_features) +
+                             std::to_string(out_features) + "x" + std::to_string(in_features) +
                              " needs out % 128 == 0 and in % 64 == 0; the padded block-scale "
                              "layout has never been observed and is not guessed at");
   }
-  nvfp4_gemm_forward_prevalidated(x, w_packed, w_scale, global_scale, y, rows,
-                                  out_features, in_features, ws, stream);
+  nvfp4_gemm_forward_prevalidated(x, w_packed, w_scale, global_scale, y, rows, out_features,
+                                  in_features, ws, stream);
 }
 
-void nvfp4_gemm_forward_prevalidated(
-    const __nv_bfloat16* x, const uint8_t* w_packed, const uint8_t* w_scale,
-    float global_scale, __nv_bfloat16* y, int rows, int out_features,
-    int in_features, Workspace& ws, cudaStream_t stream) {
-  if (rows <= 0 || out_features <= 0) return;
+void nvfp4_gemm_forward_prevalidated(const __nv_bfloat16* x, const uint8_t* w_packed,
+                                     const uint8_t* w_scale, float global_scale, __nv_bfloat16* y,
+                                     int rows, int out_features, int in_features, Workspace& ws,
+                                     cudaStream_t stream) {
+  if (rows <= 0 || out_features <= 0)
+    return;
 
   // Rows are processed in bounded passes so the activation buffer does not
   // scale with the batch. Every call the transformer makes is already inside
@@ -589,9 +594,9 @@ void nvfp4_gemm_forward_prevalidated(
     launch_quantize_nvfp4_activations(x + static_cast<size_t>(start) * in_features, xq, xs, n,
                                       in_features, stream);
     launch_nvfp4_gemm_q(xq, xs, w_packed, w_scale, global_scale,
-                        y + static_cast<size_t>(start) * out_features, n,
-                        out_features, in_features, stream);
+                        y + static_cast<size_t>(start) * out_features, n, out_features, in_features,
+                        stream);
   }
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

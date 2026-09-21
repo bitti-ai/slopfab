@@ -21,8 +21,8 @@ namespace slopfab::text {
 
 std::string ConditionerDescriptor::fingerprint() const {
   return family + ":" + tokenizer + ":" + std::to_string(version) + ":" +
-      std::to_string(output_width) + ":" + std::to_string(output_layer) + ":" +
-      (final_normalization ? "normalized:" : "residual:") + (vision ? "vision" : "text");
+         std::to_string(output_width) + ":" + std::to_string(output_layer) + ":" +
+         (final_normalization ? "normalized:" : "residual:") + (vision ? "vision" : "text");
 }
 
 ConditionerDescriptor resolve_conditioner_descriptor(const SafeTensors& checkpoint,
@@ -38,47 +38,61 @@ ConditionerDescriptor resolve_conditioner_descriptor(const SafeTensors& checkpoi
       ++visual_tensors;
   descriptor.vision = visual_tensors == 351;
   const auto it = checkpoint.metadata().find("slopfab.conditioner");
-  if (it == checkpoint.metadata().end()) return descriptor;
+  if (it == checkpoint.metadata().end())
+    return descriptor;
   const auto root = json::parse(it->second);
-  if (!root.is_object()) throw std::runtime_error("slopfab.conditioner: expected an object");
-  const std::set<std::string> fields = {"version", "family", "tokenizer", "output_width",
-      "output_layer", "final_normalization", "vision"};
+  if (!root.is_object())
+    throw std::runtime_error("slopfab.conditioner: expected an object");
+  const std::set<std::string> fields = {"version",      "family",       "tokenizer",
+                                        "output_width", "output_layer", "final_normalization",
+                                        "vision"};
   for (const auto& field : root.as_object())
-    if (!fields.count(field.first)) throw std::runtime_error("slopfab.conditioner: unknown field " + field.first);
+    if (!fields.count(field.first))
+      throw std::runtime_error("slopfab.conditioner: unknown field " + field.first);
   auto required = [&](const char* key) -> const json::Value& {
     const auto* value = root.find(key);
-    if (!value) throw std::runtime_error(std::string("slopfab.conditioner: missing '") + key + "'");
+    if (!value)
+      throw std::runtime_error(std::string("slopfab.conditioner: missing '") + key + "'");
     return *value;
   };
   if (required("version").as_number() != 1 || required("family").as_string() != descriptor.family ||
       required("tokenizer").as_string() != descriptor.tokenizer)
-    throw std::runtime_error("slopfab.conditioner: unsupported conditioner/tokenizer implementation");
+    throw std::runtime_error(
+        "slopfab.conditioner: unsupported conditioner/tokenizer implementation");
   if (required("output_width").as_number() != descriptor.output_width ||
       required("output_layer").as_number() != descriptor.output_layer ||
       required("final_normalization").as_bool())
-    throw std::runtime_error("slopfab.conditioner: output contract does not match the configured residual stream");
+    throw std::runtime_error(
+        "slopfab.conditioner: output contract does not match the configured residual stream");
   descriptor.vision = required("vision").as_bool();
   if (descriptor.vision && visual_tensors != 351)
-    throw std::runtime_error("slopfab.conditioner: vision requires exactly 351 Qwen vision tensors");
+    throw std::runtime_error(
+        "slopfab.conditioner: vision requires exactly 351 Qwen vision tensors");
   descriptor.explicit_metadata = true;
   return descriptor;
 }
 
 void require_reference_vision_support(const SafeTensors& checkpoint, size_t reference_count) {
-  if (reference_count == 0) return;
+  if (reference_count == 0)
+    return;
   const auto descriptor = resolve_conditioner_descriptor(checkpoint);
-  if (descriptor.vision) return;
+  if (descriptor.vision)
+    return;
   size_t visual_tensors = 0;
   for (const auto& entry : checkpoint.tensors())
     if (entry.first.rfind("visual.", 0) == 0 || entry.first.rfind("model.visual.", 0) == 0)
       ++visual_tensors;
   if (visual_tensors == 0)
-    throw std::runtime_error("reference-image conditioning requires the Qwen3-VL visual tower, but text encoder '" +
+    throw std::runtime_error(
+        "reference-image conditioning requires the Qwen3-VL visual tower, but text encoder '" +
         checkpoint.path() + "' contains no visual.* or model.visual.* tensors");
   if (visual_tensors != 351)
-    throw std::runtime_error("reference-image conditioning requires exactly 351 Qwen vision tensors");
-  throw std::runtime_error("reference-image conditioning is disabled by the conditioner descriptor");
+    throw std::runtime_error(
+        "reference-image conditioning requires exactly 351 Qwen vision tensors");
+  throw std::runtime_error(
+      "reference-image conditioning is disabled by the conditioner descriptor");
 }
+
 namespace {
 
 constexpr int kConvRotGroup = 256;
@@ -93,9 +107,13 @@ constexpr int64_t kNVFP4Pack = 2;
 // Every allocation in the blob starts on a 256-byte boundary. The int8 weights
 // are already multiples of 256 bytes, but the F32 scales and BF16 norms are
 // not, and cuBLAS wants its operands aligned.
-size_t align_up(size_t n) { return (n + 255) / 256 * 256; }
+size_t align_up(size_t n) {
+  return (n + 255) / 256 * 256;
+}
 
-std::string layer_prefix(int layer) { return "model.layers." + std::to_string(layer) + "."; }
+std::string layer_prefix(int layer) {
+  return "model.layers." + std::to_string(layer) + ".";
+}
 
 const char* kQuantSuffixes[7] = {
     "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
@@ -111,21 +129,25 @@ std::string squeeze(const void* data, size_t n) {
   out.reserve(n);
   for (size_t i = 0; i < n; ++i) {
     const char c = p[i];
-    if (c == '\0') break;
-    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+    if (c == '\0')
+      break;
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+      continue;
     out.push_back(c);
   }
   return out;
 }
 
 void require(bool ok, const std::string& message) {
-  if (!ok) throw std::runtime_error("text encoder: " + message);
+  if (!ok)
+    throw std::runtime_error("text encoder: " + message);
 }
 
 std::string shape_string(const std::vector<int64_t>& shape) {
   std::string s = "[";
   for (size_t i = 0; i < shape.size(); ++i) {
-    if (i != 0) s += ", ";
+    if (i != 0)
+      s += ", ";
     s += std::to_string(shape[i]);
   }
   return s + "]";
@@ -135,12 +157,11 @@ void check_tensor(const SafeTensors& checkpoint, const std::string& name, DType 
                   int64_t dim1) {
   const TensorView* view = checkpoint.find(name);
   require(view != nullptr, name + " is missing");
-  require(view->dtype == dtype, name + " has dtype " + dtype_name(view->dtype) + ", expected " +
-                                    dtype_name(dtype));
+  require(view->dtype == dtype,
+          name + " has dtype " + dtype_name(view->dtype) + ", expected " + dtype_name(dtype));
   const size_t rank = dim1 == 0 ? 1u : 2u;
-  require(view->shape.size() == rank,
-          name + " has shape " + shape_string(view->shape) + ", expected rank " +
-              std::to_string(rank));
+  require(view->shape.size() == rank, name + " has shape " + shape_string(view->shape) +
+                                          ", expected rank " + std::to_string(rank));
   require(view->shape[0] == dim0, name + " has shape " + shape_string(view->shape) +
                                       ", expected first dim " + std::to_string(dim0));
   if (dim1 != 0) {
@@ -149,7 +170,7 @@ void check_tensor(const SafeTensors& checkpoint, const std::string& name, DType 
   }
 }
 
-}  // namespace
+} // namespace
 
 WeightFormat detect_weight_format(const SafeTensors& checkpoint) {
   // Layer 0's q_proj descriptor decides for the whole file. `validate_checkpoint`
@@ -163,7 +184,8 @@ WeightFormat detect_weight_format(const SafeTensors& checkpoint) {
     // smaller Qwen model cannot supply H3's trained conditioning features,
     // regardless of how its weights are named or quantized.
     const TensorView* embedding = checkpoint.find("model.language_model.embed_tokens.weight");
-    if (!embedding) embedding = checkpoint.find("model.embed_tokens.weight");
+    if (!embedding)
+      embedding = checkpoint.find("model.embed_tokens.weight");
     if (embedding && embedding->shape.size() == 2 && embedding->shape[1] != 5120) {
       throw std::runtime_error(
           "text encoder: " + embedding->name + " has hidden size " +
@@ -178,7 +200,8 @@ WeightFormat detect_weight_format(const SafeTensors& checkpoint) {
   require(view != nullptr,
           name + " is missing; this file does not look like either shipped Qwen3-VL build");
   const std::string payload = squeeze(view->data, view->nbytes);
-  if (payload.find("\"format\":\"nvfp4\"") != std::string::npos) return WeightFormat::kNVFP4Awq;
+  if (payload.find("\"format\":\"nvfp4\"") != std::string::npos)
+    return WeightFormat::kNVFP4Awq;
   if (payload.find("\"format\":\"int8_tensorwise\"") != std::string::npos) {
     return WeightFormat::kI8ConvRot;
   }
@@ -199,12 +222,12 @@ WeightFormat resolved(const EncoderConfig& c) {
 
 constexpr TensorSpec kAbsent = {nullptr, DType::kUnknown, 0, 0};
 
-}  // namespace
+} // namespace
 
 TensorSpec layer_tensor_spec(const EncoderConfig& c, LayerTensor which) {
   const int64_t hidden = c.hidden_size;
-  const int64_t q_width = static_cast<int64_t>(c.num_attention_heads) * c.head_dim;   // 8192
-  const int64_t kv_width = static_cast<int64_t>(c.num_key_value_heads) * c.head_dim;  // 1024
+  const int64_t q_width = static_cast<int64_t>(c.num_attention_heads) * c.head_dim;  // 8192
+  const int64_t kv_width = static_cast<int64_t>(c.num_key_value_heads) * c.head_dim; // 1024
   const int64_t inner = c.intermediate_size;
 
   if (resolved(c) == WeightFormat::kNVFP4Awq) {
@@ -217,107 +240,107 @@ TensorSpec layer_tensor_spec(const EncoderConfig& c, LayerTensor which) {
     const int64_t half = kNVFP4Pack;
     const int64_t blk = kNVFP4Block;
     switch (which) {
-      case LayerTensor::kQWeight:
-        return {"self_attn.q_proj.weight", DType::kU8, q_width, hidden / half};
-      case LayerTensor::kQScale:
-        return {"self_attn.q_proj.weight_scale", DType::kF8E4M3, q_width, hidden / blk};
-      case LayerTensor::kKWeight:
-        return {"self_attn.k_proj.weight", DType::kU8, kv_width, hidden / half};
-      case LayerTensor::kKScale:
-        return {"self_attn.k_proj.weight_scale", DType::kF8E4M3, kv_width, hidden / blk};
-      case LayerTensor::kVWeight:
-        return {"self_attn.v_proj.weight", DType::kU8, kv_width, hidden / half};
-      case LayerTensor::kVScale:
-        return {"self_attn.v_proj.weight_scale", DType::kF8E4M3, kv_width, hidden / blk};
-      case LayerTensor::kOWeight:
-        return {"self_attn.o_proj.weight", DType::kU8, hidden, q_width / half};
-      case LayerTensor::kOScale:
-        return {"self_attn.o_proj.weight_scale", DType::kF8E4M3, hidden, q_width / blk};
-      // Present on o_proj and down_proj only. The other five had it folded into
-      // the preceding norm by the quantiser, which is why this checkpoint's
-      // input_layernorm and post_attention_layernorm differ from the int8
-      // build's while its q_norm and k_norm are bitwise identical to them.
-      case LayerTensor::kOPreQuantScale:
-        return {"self_attn.o_proj.pre_quant_scale", DType::kBF16, q_width, 0};
-      case LayerTensor::kGateWeight:
-        return {"mlp.gate_proj.weight", DType::kU8, inner, hidden / half};
-      case LayerTensor::kGateScale:
-        return {"mlp.gate_proj.weight_scale", DType::kF8E4M3, inner, hidden / blk};
-      case LayerTensor::kUpWeight:
-        return {"mlp.up_proj.weight", DType::kU8, inner, hidden / half};
-      case LayerTensor::kUpScale:
-        return {"mlp.up_proj.weight_scale", DType::kF8E4M3, inner, hidden / blk};
-      case LayerTensor::kDownWeight:
-        return {"mlp.down_proj.weight", DType::kU8, hidden, inner / half};
-      case LayerTensor::kDownScale:
-        return {"mlp.down_proj.weight_scale", DType::kF8E4M3, hidden, inner / blk};
-      case LayerTensor::kDownPreQuantScale:
-        return {"mlp.down_proj.pre_quant_scale", DType::kBF16, inner, 0};
-      case LayerTensor::kInputLayerNorm:
-        return {"input_layernorm.weight", DType::kBF16, hidden, 0};
-      case LayerTensor::kPostAttentionLayerNorm:
-        return {"post_attention_layernorm.weight", DType::kBF16, hidden, 0};
-      case LayerTensor::kQNorm:
-        return {"self_attn.q_norm.weight", DType::kBF16, c.head_dim, 0};
-      case LayerTensor::kKNorm:
-        return {"self_attn.k_norm.weight", DType::kBF16, c.head_dim, 0};
-      case LayerTensor::kCount:
-        break;
-    }
-    throw std::runtime_error("text encoder: layer_tensor_spec: bad LayerTensor");
-  }
-
-  switch (which) {
-    // The int8 build has no AWQ activation scaling: its smoothing is the
-    // ConvRot rotation, which is on the weight and needs no stored vector.
-    case LayerTensor::kOPreQuantScale:
-    case LayerTensor::kDownPreQuantScale:
-      return kAbsent;
-    // Every linear is stored PyTorch-style [out_features, in_features]; there
-    // are no transposes anywhere in this checkpoint (spec section 8.1). The
-    // scales are [out, 1] F32 — per output channel, despite the format tag
-    // reading "int8_tensorwise" (spec section 5.1).
     case LayerTensor::kQWeight:
-      return {"self_attn.q_proj.weight", DType::kI8, q_width, hidden};
+      return {"self_attn.q_proj.weight", DType::kU8, q_width, hidden / half};
     case LayerTensor::kQScale:
-      return {"self_attn.q_proj.weight_scale", DType::kF32, q_width, 1};
+      return {"self_attn.q_proj.weight_scale", DType::kF8E4M3, q_width, hidden / blk};
     case LayerTensor::kKWeight:
-      return {"self_attn.k_proj.weight", DType::kI8, kv_width, hidden};
+      return {"self_attn.k_proj.weight", DType::kU8, kv_width, hidden / half};
     case LayerTensor::kKScale:
-      return {"self_attn.k_proj.weight_scale", DType::kF32, kv_width, 1};
+      return {"self_attn.k_proj.weight_scale", DType::kF8E4M3, kv_width, hidden / blk};
     case LayerTensor::kVWeight:
-      return {"self_attn.v_proj.weight", DType::kI8, kv_width, hidden};
+      return {"self_attn.v_proj.weight", DType::kU8, kv_width, hidden / half};
     case LayerTensor::kVScale:
-      return {"self_attn.v_proj.weight_scale", DType::kF32, kv_width, 1};
+      return {"self_attn.v_proj.weight_scale", DType::kF8E4M3, kv_width, hidden / blk};
     case LayerTensor::kOWeight:
-      return {"self_attn.o_proj.weight", DType::kI8, hidden, q_width};
+      return {"self_attn.o_proj.weight", DType::kU8, hidden, q_width / half};
     case LayerTensor::kOScale:
-      return {"self_attn.o_proj.weight_scale", DType::kF32, hidden, 1};
+      return {"self_attn.o_proj.weight_scale", DType::kF8E4M3, hidden, q_width / blk};
+    // Present on o_proj and down_proj only. The other five had it folded into
+    // the preceding norm by the quantiser, which is why this checkpoint's
+    // input_layernorm and post_attention_layernorm differ from the int8
+    // build's while its q_norm and k_norm are bitwise identical to them.
+    case LayerTensor::kOPreQuantScale:
+      return {"self_attn.o_proj.pre_quant_scale", DType::kBF16, q_width, 0};
     case LayerTensor::kGateWeight:
-      return {"mlp.gate_proj.weight", DType::kI8, inner, hidden};
+      return {"mlp.gate_proj.weight", DType::kU8, inner, hidden / half};
     case LayerTensor::kGateScale:
-      return {"mlp.gate_proj.weight_scale", DType::kF32, inner, 1};
+      return {"mlp.gate_proj.weight_scale", DType::kF8E4M3, inner, hidden / blk};
     case LayerTensor::kUpWeight:
-      return {"mlp.up_proj.weight", DType::kI8, inner, hidden};
+      return {"mlp.up_proj.weight", DType::kU8, inner, hidden / half};
     case LayerTensor::kUpScale:
-      return {"mlp.up_proj.weight_scale", DType::kF32, inner, 1};
+      return {"mlp.up_proj.weight_scale", DType::kF8E4M3, inner, hidden / blk};
     case LayerTensor::kDownWeight:
-      return {"mlp.down_proj.weight", DType::kI8, hidden, inner};
+      return {"mlp.down_proj.weight", DType::kU8, hidden, inner / half};
     case LayerTensor::kDownScale:
-      return {"mlp.down_proj.weight_scale", DType::kF32, hidden, 1};
+      return {"mlp.down_proj.weight_scale", DType::kF8E4M3, hidden, inner / blk};
+    case LayerTensor::kDownPreQuantScale:
+      return {"mlp.down_proj.pre_quant_scale", DType::kBF16, inner, 0};
     case LayerTensor::kInputLayerNorm:
       return {"input_layernorm.weight", DType::kBF16, hidden, 0};
     case LayerTensor::kPostAttentionLayerNorm:
       return {"post_attention_layernorm.weight", DType::kBF16, hidden, 0};
-    // q_norm and k_norm are [head_dim], one vector shared by all 64 (resp. 8)
-    // heads and applied over the 128-wide head axis only — not over 8192 or
-    // 1024 (spec section 4.1).
     case LayerTensor::kQNorm:
       return {"self_attn.q_norm.weight", DType::kBF16, c.head_dim, 0};
     case LayerTensor::kKNorm:
       return {"self_attn.k_norm.weight", DType::kBF16, c.head_dim, 0};
     case LayerTensor::kCount:
       break;
+    }
+    throw std::runtime_error("text encoder: layer_tensor_spec: bad LayerTensor");
+  }
+
+  switch (which) {
+  // The int8 build has no AWQ activation scaling: its smoothing is the
+  // ConvRot rotation, which is on the weight and needs no stored vector.
+  case LayerTensor::kOPreQuantScale:
+  case LayerTensor::kDownPreQuantScale:
+    return kAbsent;
+  // Every linear is stored PyTorch-style [out_features, in_features]; there
+  // are no transposes anywhere in this checkpoint (spec section 8.1). The
+  // scales are [out, 1] F32 — per output channel, despite the format tag
+  // reading "int8_tensorwise" (spec section 5.1).
+  case LayerTensor::kQWeight:
+    return {"self_attn.q_proj.weight", DType::kI8, q_width, hidden};
+  case LayerTensor::kQScale:
+    return {"self_attn.q_proj.weight_scale", DType::kF32, q_width, 1};
+  case LayerTensor::kKWeight:
+    return {"self_attn.k_proj.weight", DType::kI8, kv_width, hidden};
+  case LayerTensor::kKScale:
+    return {"self_attn.k_proj.weight_scale", DType::kF32, kv_width, 1};
+  case LayerTensor::kVWeight:
+    return {"self_attn.v_proj.weight", DType::kI8, kv_width, hidden};
+  case LayerTensor::kVScale:
+    return {"self_attn.v_proj.weight_scale", DType::kF32, kv_width, 1};
+  case LayerTensor::kOWeight:
+    return {"self_attn.o_proj.weight", DType::kI8, hidden, q_width};
+  case LayerTensor::kOScale:
+    return {"self_attn.o_proj.weight_scale", DType::kF32, hidden, 1};
+  case LayerTensor::kGateWeight:
+    return {"mlp.gate_proj.weight", DType::kI8, inner, hidden};
+  case LayerTensor::kGateScale:
+    return {"mlp.gate_proj.weight_scale", DType::kF32, inner, 1};
+  case LayerTensor::kUpWeight:
+    return {"mlp.up_proj.weight", DType::kI8, inner, hidden};
+  case LayerTensor::kUpScale:
+    return {"mlp.up_proj.weight_scale", DType::kF32, inner, 1};
+  case LayerTensor::kDownWeight:
+    return {"mlp.down_proj.weight", DType::kI8, hidden, inner};
+  case LayerTensor::kDownScale:
+    return {"mlp.down_proj.weight_scale", DType::kF32, hidden, 1};
+  case LayerTensor::kInputLayerNorm:
+    return {"input_layernorm.weight", DType::kBF16, hidden, 0};
+  case LayerTensor::kPostAttentionLayerNorm:
+    return {"post_attention_layernorm.weight", DType::kBF16, hidden, 0};
+  // q_norm and k_norm are [head_dim], one vector shared by all 64 (resp. 8)
+  // heads and applied over the 128-wide head axis only — not over 8192 or
+  // 1024 (spec section 4.1).
+  case LayerTensor::kQNorm:
+    return {"self_attn.q_norm.weight", DType::kBF16, c.head_dim, 0};
+  case LayerTensor::kKNorm:
+    return {"self_attn.k_norm.weight", DType::kBF16, c.head_dim, 0};
+  case LayerTensor::kCount:
+    break;
   }
   throw std::runtime_error("text encoder: layer_tensor_spec: bad LayerTensor");
 }
@@ -349,13 +372,13 @@ LayerLayout make_layer_layout(const EncoderConfig& config) {
 LayerGlobalScales read_global_scales(const SafeTensors& checkpoint, const EncoderConfig& config,
                                      int layer) {
   LayerGlobalScales out;
-  if (resolved(config) != WeightFormat::kNVFP4Awq) return out;
+  if (resolved(config) != WeightFormat::kNVFP4Awq)
+    return out;
   const std::string prefix = layer_prefix(layer);
   for (int i = 0; i < 7; ++i) {
     const std::string name = prefix + kQuantSuffixes[i] + ".weight_scale_2";
     const TensorView& view = checkpoint.at(name);
-    require(view.dtype == DType::kF32 && view.shape.empty() &&
-                view.nbytes == sizeof(float),
+    require(view.dtype == DType::kF32 && view.shape.empty() && view.nbytes == sizeof(float),
             name + " is not a rank-0 single F32; weight_scale_2 is one scalar per tensor");
     std::memcpy(&out.value[i], view.data, sizeof(float));
     require(std::isfinite(out.value[i]) && out.value[i] > 0.0f,
@@ -371,7 +394,8 @@ void validate_checkpoint(const SafeTensors& checkpoint, const EncoderConfig& bas
       base_config.vocab_size <= 0 || base_config.max_prompt_tokens <= 0 ||
       !std::isfinite(base_config.rms_norm_eps) || base_config.rms_norm_eps <= 0 ||
       !std::isfinite(base_config.rope_theta) || base_config.rope_theta <= 0)
-    throw std::runtime_error("text encoder: dimensions and numerical constants must be positive and finite");
+    throw std::runtime_error(
+        "text encoder: dimensions and numerical constants must be positive and finite");
   (void)resolve_conditioner_descriptor(checkpoint, base_config);
 
   EncoderConfig config = base_config;
@@ -466,7 +490,7 @@ void validate_checkpoint(const SafeTensors& checkpoint, const EncoderConfig& bas
           "found " + std::to_string(other_tensors) +
               " tensors outside model.layers.* and visual.*, expected " +
               std::to_string(expected_other));
-  (void)visual_tensors;  // present in the file, never loaded (spec section 8.4)
+  (void)visual_tensors; // present in the file, never loaded (spec section 8.4)
 
   for (int layer = 0; layer < config.num_layers; ++layer) {
     const std::string prefix = layer_prefix(layer);
@@ -501,8 +525,9 @@ void validate_checkpoint(const SafeTensors& checkpoint, const EncoderConfig& bas
         // precision, so none of them may ever take a native fp4 GEMM. This is
         // the file saying so; nothing may infer it from which scales exist.
         require(payload.find("\"full_precision_matrix_mult\":true") != std::string::npos,
-                name + " does not declare full_precision_matrix_mult; this port dequantises every "
-                       "text-encoder linear and would be ignoring the file's own instruction: " +
+                name +
+                    " does not declare full_precision_matrix_mult; this port dequantises every "
+                    "text-encoder linear and would be ignoring the file's own instruction: " +
                     payload);
         require(payload.find("\"convrot\":true") == std::string::npos,
                 name + " declares convrot on an nvfp4 tensor: " + payload);
@@ -528,12 +553,13 @@ void pack_layer(const SafeTensors& checkpoint, const EncoderConfig& config, int 
   const std::string prefix = layer_prefix(layer);
   for (int i = 0; i < kLayerTensorCount; ++i) {
     const TensorSpec spec = layer_tensor_spec(config, static_cast<LayerTensor>(i));
-    if (!spec.present()) continue;
+    if (!spec.present())
+      continue;
     const std::string name = prefix + spec.suffix;
     const TensorView& view = checkpoint.at(name);
-    require(view.nbytes == layout.bytes[i],
-            name + " is " + std::to_string(view.nbytes) + " bytes, layout expects " +
-                std::to_string(layout.bytes[i]));
+    require(view.nbytes == layout.bytes[i], name + " is " + std::to_string(view.nbytes) +
+                                                " bytes, layout expects " +
+                                                std::to_string(layout.bytes[i]));
     std::memcpy(dst + layout.offset[i], view.data, view.nbytes);
   }
 }
@@ -602,9 +628,9 @@ void gather_embedding_rows(const TensorView& embed, const TensorView* weight_sca
 
   const float* scale = nullptr;
   if (quantised) {
-    require(weight_scale->dtype == DType::kF32,
-            "embedding weight_scale has dtype " + std::string(dtype_name(weight_scale->dtype)) +
-                ", expected F32");
+    require(weight_scale->dtype == DType::kF32, "embedding weight_scale has dtype " +
+                                                    std::string(dtype_name(weight_scale->dtype)) +
+                                                    ", expected F32");
     require(weight_scale->numel() == vocab,
             "embedding weight_scale has " + std::to_string(weight_scale->numel()) +
                 " elements, expected one per row of " + std::to_string(vocab));
@@ -637,4 +663,4 @@ void gather_embedding_rows(const TensorView& embed, const TensorView* weight_sca
   }
 }
 
-}  // namespace slopfab::text
+} // namespace slopfab::text

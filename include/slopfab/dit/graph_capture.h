@@ -7,8 +7,9 @@ namespace slopfab::dit {
 constexpr uint32_t kH3MainCaptureLayers = 50;
 
 #pragma pack(push, 1)
+
 struct H3MainGraphCaptureHeader {
-  char magic[8];                 // "VFH3GRF\0"
+  char magic[8]; // "VFH3GRF\0"
   uint32_t version;
   uint32_t header_bytes;
   uint32_t sequence;
@@ -32,7 +33,7 @@ struct H3MainGraphCaptureHeader {
 };
 
 struct H3TransformerCaptureHeader {
-  char magic[8];                 // "VFH3FWD\0"
+  char magic[8]; // "VFH3FWD\0"
   uint32_t version;
   uint32_t header_bytes;
   uint32_t sequence;
@@ -66,6 +67,7 @@ struct H3TransformerCaptureHeader {
   uint64_t audio_output_fnv64;
   uint64_t reserved[37];
 };
+
 #pragma pack(pop)
 
 static_assert(sizeof(H3MainGraphCaptureHeader) == 512,
@@ -73,4 +75,4 @@ static_assert(sizeof(H3MainGraphCaptureHeader) == 512,
 static_assert(sizeof(H3TransformerCaptureHeader) == 512,
               "H3 transformer capture header is a durable 512-byte record");
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

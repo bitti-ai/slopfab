@@ -8,12 +8,14 @@ struct TensorContext::Impl {
     uint32_t count = 0;
     uint32_t p[6] = {};
   };
+
   struct NormParameters {
     uint32_t rows = 0;
     uint32_t dim = 0;
     uint32_t epsilon_bits = 0;
     uint32_t mod_rows = 0;
   };
+
   struct VaeRopeParameters {
     uint32_t sequence = 0;
     uint32_t heads = 0;
@@ -23,6 +25,7 @@ struct TensorContext::Impl {
     uint32_t epsilon_bits = 0;
     uint32_t unused[2] = {};
   };
+
   struct AudioParameters {
     uint32_t op = 0;
     uint32_t batch = 0;
@@ -37,7 +40,9 @@ struct TensorContext::Impl {
     uint32_t groups_x = 0;
     uint32_t scalar_bits = 0;
   };
+
   static_assert(sizeof(AudioParameters) == 48);
+
   struct KeyframeParameters {
     uint32_t in_channels = 0;
     uint32_t out_channels = 0;
@@ -52,7 +57,9 @@ struct TensorContext::Impl {
     uint32_t count = 0;
     uint32_t groups_x = 0;
   };
+
   static_assert(sizeof(KeyframeParameters) == 48);
+
   struct DitParameters {
     uint32_t op = 0;
     uint32_t rows = 0;
@@ -66,7 +73,9 @@ struct TensorContext::Impl {
     uint32_t groups_x = 0;
     uint32_t unused[2] = {};
   };
+
   static_assert(sizeof(DitParameters) == 48);
+
   struct WeightParameters {
     uint32_t op = 0;
     uint32_t count = 0;
@@ -77,6 +86,7 @@ struct TensorContext::Impl {
     uint32_t scalar_bits = 0;
     uint32_t group = 0;
   };
+
   struct GemmParameters {
     uint32_t rows = 0;
     uint32_t out_features = 0;
@@ -86,12 +96,14 @@ struct TensorContext::Impl {
     uint32_t mode = 0;
     uint32_t unused[2] = {};
   };
+
   struct GemmPrepareParameters {
     uint32_t rows = 0;
     uint32_t in_features = 0;
     uint32_t input_row_offset = 0;
     uint32_t groups_x = 0;
   };
+
   struct AttentionParameters {
     uint32_t sequence = 0;
     uint32_t heads = 0;
@@ -102,6 +114,7 @@ struct TensorContext::Impl {
     uint32_t rows = 0;
     uint32_t reserved = 0;
   };
+
   struct CausalGQAAttentionParameters {
     uint32_t sequence = 0;
     uint32_t query_heads = 0;
@@ -112,6 +125,7 @@ struct TensorContext::Impl {
     uint32_t output_row_offset = 0;
     uint32_t rows = 0;
   };
+
   uint32_t max_batch_operators = 0;
   ComputeContext commands;
   BufferPool pool;
@@ -129,7 +143,8 @@ struct TensorContext::Impl {
   ComputePipeline attention_h3_banded_pipeline;
   ComputePipeline attention_flash_pipeline, attention_flash_banded_pipeline;
   ComputePipeline attention_vsa_pipeline, attention_vsa_prepare_pipeline;
-  std::array<std::array<ComputePipeline, 4>, 4> attention_sage_pipelines, attention_sage_banded_pipelines;
+  std::array<std::array<ComputePipeline, 4>, 4> attention_sage_pipelines,
+      attention_sage_banded_pipelines;
   ComputePipeline attention_sage_prepare_pipeline;
   DeviceInfo sage_device_info;
   uint64_t sage_extra_workspace_bytes = 0;
@@ -193,9 +208,11 @@ struct TensorContext::Impl {
   void prepare_pipelines(const Device& input, TensorPipelineSet sets);
   uint32_t prepared_sets = 0;
   void* device_identity = nullptr;
+
   void require_pipeline_set(TensorPipelineSet set) const {
     if ((prepared_sets & static_cast<uint32_t>(set)) == 0)
-      throw std::logic_error("vulkan tensor: prepare the required pipeline set before creating a plan");
+      throw std::logic_error(
+          "vulkan tensor: prepare the required pipeline set before creating a plan");
   }
 
   uintptr_t context_id = next_context_identity();
@@ -203,9 +220,13 @@ struct TensorContext::Impl {
   struct RecorderLease {
     Impl* owner = nullptr;
     RecorderLease() = default;
-    explicit RecorderLease(Impl* value) : owner(value) {}
-    RecorderLease(RecorderLease&& other) noexcept
-        : owner(std::exchange(other.owner, nullptr)) {}
+
+    explicit RecorderLease(Impl* value) : owner(value) {
+    }
+
+    RecorderLease(RecorderLease&& other) noexcept : owner(std::exchange(other.owner, nullptr)) {
+    }
+
     RecorderLease& operator=(RecorderLease&& other) noexcept {
       if (this != &other) {
         release();
@@ -213,11 +234,17 @@ struct TensorContext::Impl {
       }
       return *this;
     }
+
     RecorderLease(const RecorderLease&) = delete;
     RecorderLease& operator=(const RecorderLease&) = delete;
-    ~RecorderLease() { release(); }
+
+    ~RecorderLease() {
+      release();
+    }
+
     void release() noexcept {
-      if (!owner) return;
+      if (!owner)
+        return;
       owner->recorder_active.store(false, std::memory_order_release);
       owner = nullptr;
     }
@@ -225,17 +252,16 @@ struct TensorContext::Impl {
 
   RecorderLease acquire_recorder() {
     bool expected = false;
-    if (!recorder_active.compare_exchange_strong(
-            expected, true, std::memory_order_acquire,
-            std::memory_order_relaxed)) {
-      throw std::logic_error(
-          "vulkan tensor: another batch or boundary operation is active");
+    if (!recorder_active.compare_exchange_strong(expected, true, std::memory_order_acquire,
+                                                 std::memory_order_relaxed)) {
+      throw std::logic_error("vulkan tensor: another batch or boundary operation is active");
     }
     return RecorderLease(this);
   }
 
   void ensure_staging(uint64_t bytes) {
-    if (bytes <= staging_capacity) return;
+    if (bytes <= staging_capacity)
+      return;
     Buffer new_upload = pool.allocate(bytes, BufferUsage::kTransferSource, MemoryUsage::kUpload);
     Buffer new_readback =
         pool.allocate(bytes, BufferUsage::kTransferDestination, MemoryUsage::kReadback);
@@ -270,4 +296,4 @@ struct TensorContext::Impl {
   }
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

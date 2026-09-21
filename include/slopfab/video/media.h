@@ -10,7 +10,7 @@
 // below does not exist — in a build where it does — and would find out as a
 // confusing error in their own code. One line naming the cause is better.
 #if !defined(SLOPFAB_WITH_FFMPEG)
-#error \
+#error                                                                                             \
     "slopfab: SLOPFAB_WITH_FFMPEG is not defined. Define it as 1 or 0 to match the library you are linking (in this build tree the slopfab_core target defines it for you)."
 #endif
 
@@ -35,4 +35,4 @@ struct DecodedVideoFrame {
 DecodedVideoFrame decode_first_video_frame(const std::string& path);
 #endif
 
-}  // namespace slopfab::video
+} // namespace slopfab::video

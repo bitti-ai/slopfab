@@ -20,7 +20,7 @@ enum class ScalarType {
 struct TensorLayout {
   uint32_t rank = 0;
   std::array<uint64_t, 6> extent{};
-  std::array<uint64_t, 6> stride{};  // elements, not bytes
+  std::array<uint64_t, 6> stride{}; // elements, not bytes
 
   static TensorLayout contiguous(const uint64_t* extents, uint32_t rank);
   uint64_t elements() const;
@@ -62,7 +62,7 @@ struct WorkspaceSpan {
 // carves aligned spans during recording, and resets the cursor after the job;
 // growth may invalidate old spans and therefore happens before command build.
 class DeviceWorkspace {
- public:
+public:
   virtual ~DeviceWorkspace() = default;
   virtual DeviceBackend backend() const noexcept = 0;
   virtual void reserve(uint64_t bytes) = 0;
@@ -74,4 +74,4 @@ class DeviceWorkspace {
   virtual bool valid(const WorkspaceSpan& span) const noexcept = 0;
 };
 
-}  // namespace slopfab
+} // namespace slopfab

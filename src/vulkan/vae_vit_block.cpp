@@ -16,18 +16,17 @@ using vae::ViTBlockConfig;
 using vae::ViTBlockWeightsView;
 
 void validate_config(const ViTBlockConfig& c) {
-  if (c.sequence == 0 || c.num_patches > c.sequence || c.dim == 0 ||
-      c.heads == 0 || c.head_dim != 64 || c.heads * c.head_dim != c.dim ||
-      c.ffn_inner == 0 || c.rope_dim == 0 || c.rope_dim > c.head_dim ||
-      (c.rope_dim & 1u) != 0 || !std::isfinite(c.epsilon) || c.epsilon <= 0.0f) {
+  if (c.sequence == 0 || c.num_patches > c.sequence || c.dim == 0 || c.heads == 0 ||
+      c.head_dim != 64 || c.heads * c.head_dim != c.dim || c.ffn_inner == 0 || c.rope_dim == 0 ||
+      c.rope_dim > c.head_dim || (c.rope_dim & 1u) != 0 || !std::isfinite(c.epsilon) ||
+      c.epsilon <= 0.0f) {
     throw std::invalid_argument("exact Vulkan VAE ViT block: invalid configuration");
   }
 }
 
 void validate_weights(const ViTBlockWeightsView& w) {
-  if (!w.norm1 || !w.norm2 || !w.scale1 || !w.scale2 || !w.qkv_weight ||
-      !w.qkv_bias || !w.out_weight || !w.out_bias || !w.w1_weight ||
-      !w.w1_bias || !w.w2_weight || !w.w2_bias) {
+  if (!w.norm1 || !w.norm2 || !w.scale1 || !w.scale2 || !w.qkv_weight || !w.qkv_bias ||
+      !w.out_weight || !w.out_bias || !w.w1_weight || !w.w1_bias || !w.w2_weight || !w.w2_bias) {
     throw std::invalid_argument("exact Vulkan VAE ViT block: null weight view");
   }
 }
@@ -50,20 +49,19 @@ uint64_t bytes(const DeviceTensor& tensor) {
   return tensor ? tensor.layout().bytes(tensor.type()) : 0;
 }
 
-}  // namespace
+} // namespace
 
 struct ExactViTBlockScratch::Impl {
   TensorContext* context = nullptr;
   ViTBlockConfig config;
-  DeviceTensor normed, qkv, q, k, v, q_bf16, k_bf16, v_bf16,
-      attention_bf16, projected, ffn, activation;
+  DeviceTensor normed, qkv, q, k, v, q_bf16, k_bf16, v_bf16, attention_bf16, projected, ffn,
+      activation;
   PreparedF16Activation prepared_dim, prepared_inner;
   PreparedAttentionInputs prepared_attention;
   DenseGemmPlan qkv_plan, out_plan, w1_plan, w2_plan;
   BlockedAttentionPlan attention_plan;
 
-  Impl(TensorContext& owner, const ViTBlockConfig& c)
-      : context(&owner), config(c) {
+  Impl(TensorContext& owner, const ViTBlockConfig& c) : context(&owner), config(c) {
     const uint64_t rows = c.sequence, d = c.dim, inner = c.ffn_inner;
     normed = owner.allocate(matrix(rows, d));
     qkv = owner.allocate(matrix(rows, 3 * d));
@@ -73,8 +71,7 @@ struct ExactViTBlockScratch::Impl {
     q_bf16 = owner.allocate(three(rows, c.heads, c.head_dim), ScalarType::kBFloat16);
     k_bf16 = owner.allocate(three(rows, c.heads, c.head_dim), ScalarType::kBFloat16);
     v_bf16 = owner.allocate(three(rows, c.heads, c.head_dim), ScalarType::kBFloat16);
-    attention_bf16 = owner.allocate(three(rows, c.heads, c.head_dim),
-                                    ScalarType::kBFloat16);
+    attention_bf16 = owner.allocate(three(rows, c.heads, c.head_dim), ScalarType::kBFloat16);
     projected = owner.allocate(matrix(rows, d));
     ffn = owner.allocate(matrix(rows, 2 * inner));
     activation = owner.allocate(matrix(rows, inner));
@@ -83,27 +80,26 @@ struct ExactViTBlockScratch::Impl {
     BlockedAttentionPlanDesc attention_desc{c.sequence, c.heads, c.head_dim, 0.125f};
     prepared_attention = PreparedAttentionInputs::create(owner, attention_desc);
     attention_plan = BlockedAttentionPlan::create(owner, attention_desc);
-    qkv_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{
-        c.sequence, 3 * c.dim, c.dim, DenseGemmMode::kFloat16Vae,
-        DenseGemmBias::kNone, true});
-    out_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{
-        c.sequence, c.dim, c.dim, DenseGemmMode::kFloat16Vae,
-        DenseGemmBias::kNone, true});
-    w1_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{
-        c.sequence, 2 * c.ffn_inner, c.dim, DenseGemmMode::kFloat16Vae,
-        DenseGemmBias::kNone, true});
-    w2_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{
-        c.sequence, c.dim, c.ffn_inner, DenseGemmMode::kFloat16Vae,
-        DenseGemmBias::kNone, true});
+    qkv_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{c.sequence, 3 * c.dim, c.dim,
+                                                              DenseGemmMode::kFloat16Vae,
+                                                              DenseGemmBias::kNone, true});
+    out_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{c.sequence, c.dim, c.dim,
+                                                              DenseGemmMode::kFloat16Vae,
+                                                              DenseGemmBias::kNone, true});
+    w1_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{c.sequence, 2 * c.ffn_inner, c.dim,
+                                                             DenseGemmMode::kFloat16Vae,
+                                                             DenseGemmBias::kNone, true});
+    w2_plan = DenseGemmPlan::create(owner, DenseGemmPlanDesc{c.sequence, c.dim, c.ffn_inner,
+                                                             DenseGemmMode::kFloat16Vae,
+                                                             DenseGemmBias::kNone, true});
   }
 
   uint64_t direct_bytes() const noexcept {
-    return bytes(normed) + bytes(qkv) + bytes(q) + bytes(k) + bytes(v) +
-        bytes(q_bf16) + bytes(k_bf16) + bytes(v_bf16) + bytes(attention_bf16) +
-        bytes(projected) + bytes(ffn) + bytes(activation) +
-        static_cast<uint64_t>(config.sequence) * config.dim * 2u +
-        static_cast<uint64_t>(config.sequence) * config.ffn_inner * 2u +
-        prepared_attention.reserved_bytes();
+    return bytes(normed) + bytes(qkv) + bytes(q) + bytes(k) + bytes(v) + bytes(q_bf16) +
+           bytes(k_bf16) + bytes(v_bf16) + bytes(attention_bf16) + bytes(projected) + bytes(ffn) +
+           bytes(activation) + static_cast<uint64_t>(config.sequence) * config.dim * 2u +
+           static_cast<uint64_t>(config.sequence) * config.ffn_inner * 2u +
+           prepared_attention.reserved_bytes();
   }
 };
 
@@ -111,33 +107,37 @@ struct ExactViTBlockStage::Impl {
   TensorContext* context = nullptr;
   ViTBlockConfig config;
   bool loaded = false;
-  DeviceTensor norm1, norm2, scale1, scale2, qkv_weight, qkv_bias,
-      out_weight, out_bias, w1_weight, w1_bias, w2_weight, w2_bias;
+  DeviceTensor norm1, norm2, scale1, scale2, qkv_weight, qkv_bias, out_weight, out_bias, w1_weight,
+      w1_bias, w2_weight, w2_bias;
 
   struct HostState {
     DeviceTensor tokens, cosine, sine;
     ExactViTBlockScratch scratch;
   };
+
   std::unique_ptr<HostState> host;
 
-  Impl(TensorContext& owner, const ViTBlockConfig& c) : context(&owner), config(c) {}
+  Impl(TensorContext& owner, const ViTBlockConfig& c) : context(&owner), config(c) {
+  }
 
   uint64_t weight_bytes() const noexcept {
-    return bytes(norm1) + bytes(norm2) + bytes(scale1) + bytes(scale2) +
-        bytes(qkv_weight) + bytes(qkv_bias) + bytes(out_weight) + bytes(out_bias) +
-        bytes(w1_weight) + bytes(w1_bias) + bytes(w2_weight) + bytes(w2_bias);
+    return bytes(norm1) + bytes(norm2) + bytes(scale1) + bytes(scale2) + bytes(qkv_weight) +
+           bytes(qkv_bias) + bytes(out_weight) + bytes(out_bias) + bytes(w1_weight) +
+           bytes(w1_bias) + bytes(w2_weight) + bytes(w2_bias);
   }
 };
 
 ExactViTBlockScratch::ExactViTBlockScratch() = default;
 ExactViTBlockScratch::~ExactViTBlockScratch() = default;
-ExactViTBlockScratch::ExactViTBlockScratch(std::shared_ptr<Impl> impl)
-    : impl_(std::move(impl)) {}
+
+ExactViTBlockScratch::ExactViTBlockScratch(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+
 ExactViTBlockScratch::ExactViTBlockScratch(ExactViTBlockScratch&&) noexcept = default;
 ExactViTBlockScratch& ExactViTBlockScratch::operator=(ExactViTBlockScratch&&) noexcept = default;
 
-ExactViTBlockScratch ExactViTBlockScratch::create(
-    TensorContext& context, const ViTBlockConfig& config) {
+ExactViTBlockScratch ExactViTBlockScratch::create(TensorContext& context,
+                                                  const ViTBlockConfig& config) {
   validate_config(config);
   context.require_exact_fp32_vae_normalization();
   context.require_exact_vae_pointwise();
@@ -151,8 +151,10 @@ uint64_t ExactViTBlockScratch::reserved_bytes() const noexcept {
 
 ExactViTBlockStage::ExactViTBlockStage() = default;
 ExactViTBlockStage::~ExactViTBlockStage() = default;
-ExactViTBlockStage::ExactViTBlockStage(std::shared_ptr<Impl> impl)
-    : impl_(std::move(impl)) {}
+
+ExactViTBlockStage::ExactViTBlockStage(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+
 ExactViTBlockStage::ExactViTBlockStage(ExactViTBlockStage&&) noexcept = default;
 ExactViTBlockStage& ExactViTBlockStage::operator=(ExactViTBlockStage&&) noexcept = default;
 
@@ -175,7 +177,8 @@ const ViTBlockConfig& ExactViTBlockStage::config() const noexcept {
 }
 
 void ExactViTBlockStage::load(const ViTBlockWeightsView& w) {
-  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT block: empty stage");
+  if (!impl_)
+    throw std::logic_error("exact Vulkan VAE ViT block: empty stage");
   validate_weights(w);
   Impl& s = *impl_;
   s.loaded = false;
@@ -192,8 +195,10 @@ void ExactViTBlockStage::load(const ViTBlockWeightsView& w) {
   require_canonical_half(w.out_weight, d * d);
   require_canonical_half(w.w1_weight, 2 * inner * d);
   require_canonical_half(w.w2_weight, d * inner);
-  s.norm1 = context.allocate(vector(d)); s.norm2 = context.allocate(vector(d));
-  s.scale1 = context.allocate(vector(d)); s.scale2 = context.allocate(vector(d));
+  s.norm1 = context.allocate(vector(d));
+  s.norm2 = context.allocate(vector(d));
+  s.scale1 = context.allocate(vector(d));
+  s.scale2 = context.allocate(vector(d));
   s.qkv_weight = context.allocate(matrix(3 * d, d), ScalarType::kFloat16);
   s.qkv_bias = context.allocate(vector(3 * d));
   s.out_weight = context.allocate(matrix(d, d), ScalarType::kFloat16);
@@ -202,8 +207,10 @@ void ExactViTBlockStage::load(const ViTBlockWeightsView& w) {
   s.w1_bias = context.allocate(vector(2 * inner));
   s.w2_weight = context.allocate(matrix(d, inner), ScalarType::kFloat16);
   s.w2_bias = context.allocate(vector(d));
-  context.upload(s.norm1, w.norm1, d); context.upload(s.norm2, w.norm2, d);
-  context.upload(s.scale1, w.scale1, d); context.upload(s.scale2, w.scale2, d);
+  context.upload(s.norm1, w.norm1, d);
+  context.upload(s.norm2, w.norm2, d);
+  context.upload(s.scale1, w.scale1, d);
+  context.upload(s.scale2, w.scale2, d);
   context.upload_bytes(s.qkv_weight, w.qkv_weight, 3 * d * d * 2);
   context.upload(s.qkv_bias, w.qkv_bias, 3 * d);
   context.upload_bytes(s.out_weight, w.out_weight, d * d * 2);
@@ -217,10 +224,9 @@ void ExactViTBlockStage::load(const ViTBlockWeightsView& w) {
 
 namespace {
 
-void record_gemm_chunks(TensorBatch& batch, DeviceTensor& input,
-                        PreparedF16Activation& prepared,
-                        const DenseGemmPlan& plan, DeviceTensor& weight,
-                        DeviceTensor& output, uint32_t rows) {
+void record_gemm_chunks(TensorBatch& batch, DeviceTensor& input, PreparedF16Activation& prepared,
+                        const DenseGemmPlan& plan, DeviceTensor& weight, DeviceTensor& output,
+                        uint32_t rows) {
   if (plan.description().force_scalar_order) {
     PreparedF16ActivationView view = prepared.prepare(batch, input, rows, 0);
     plan.record(batch, view, weight, output, 0);
@@ -232,17 +238,15 @@ void record_gemm_chunks(TensorBatch& batch, DeviceTensor& input,
     plan.record(batch, view, weight, output, 0);
   }
   if (tiled != rows) {
-    PreparedF16ActivationView view = prepared.prepare(batch, input, rows - tiled,
-                                                       tiled);
+    PreparedF16ActivationView view = prepared.prepare(batch, input, rows - tiled, tiled);
     plan.record(batch, view, weight, output, tiled);
   }
 }
 
-}  // namespace
+} // namespace
 
-void ExactViTBlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
-                                DeviceTensor& cosine, DeviceTensor& sine,
-                                ExactViTBlockScratch& scratch) const {
+void ExactViTBlockStage::record(TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& cosine,
+                                DeviceTensor& sine, ExactViTBlockScratch& scratch) const {
   if (!impl_ || !impl_->loaded)
     throw std::logic_error("exact Vulkan VAE ViT block: weights not loaded");
   if (!scratch.impl_ || scratch.impl_->context != impl_->context ||
@@ -258,61 +262,56 @@ void ExactViTBlockStage::record(TensorBatch& batch, DeviceTensor& tokens,
   const DeviceTensorView token_view = tokens.view();
   const DeviceTensorView cosine_view = cosine.view();
   const DeviceTensorView sine_view = sine.view();
-  const bool token_shape = token_view.type == ScalarType::kFloat32 &&
-      token_view.layout.rank == 2 && token_view.layout.extent[0] == c.sequence &&
-      token_view.layout.extent[1] == c.dim && token_view.layout.is_contiguous();
-  const bool cosine_shape = cosine_view.type == ScalarType::kFloat32 &&
-      cosine_view.layout.rank == 2 && cosine_view.layout.extent[0] == c.sequence &&
-      cosine_view.layout.extent[1] == c.rope_dim &&
+  const bool token_shape = token_view.type == ScalarType::kFloat32 && token_view.layout.rank == 2 &&
+                           token_view.layout.extent[0] == c.sequence &&
+                           token_view.layout.extent[1] == c.dim &&
+                           token_view.layout.is_contiguous();
+  const bool cosine_shape =
+      cosine_view.type == ScalarType::kFloat32 && cosine_view.layout.rank == 2 &&
+      cosine_view.layout.extent[0] == c.sequence && cosine_view.layout.extent[1] == c.rope_dim &&
       cosine_view.layout.is_contiguous();
-  const bool sine_shape = sine_view.type == ScalarType::kFloat32 &&
-      sine_view.layout.rank == 2 && sine_view.layout.extent[0] == c.sequence &&
-      sine_view.layout.extent[1] == c.rope_dim && sine_view.layout.is_contiguous();
+  const bool sine_shape = sine_view.type == ScalarType::kFloat32 && sine_view.layout.rank == 2 &&
+                          sine_view.layout.extent[0] == c.sequence &&
+                          sine_view.layout.extent[1] == c.rope_dim &&
+                          sine_view.layout.is_contiguous();
   if (!token_shape || !cosine_shape || !sine_shape ||
       token_view.backend != DeviceBackend::kVulkan ||
       cosine_view.backend != DeviceBackend::kVulkan ||
-      sine_view.backend != DeviceBackend::kVulkan ||
-      token_view.context != cosine_view.context ||
-      token_view.context != sine_view.context ||
-      token_view.resource == cosine_view.resource ||
-      token_view.resource == sine_view.resource ||
-      cosine_view.resource == sine_view.resource) {
-    throw std::invalid_argument(
-        "exact Vulkan VAE ViT block: invalid activation tensors");
+      sine_view.backend != DeviceBackend::kVulkan || token_view.context != cosine_view.context ||
+      token_view.context != sine_view.context || token_view.resource == cosine_view.resource ||
+      token_view.resource == sine_view.resource || cosine_view.resource == sine_view.resource) {
+    throw std::invalid_argument("exact Vulkan VAE ViT block: invalid activation tensors");
   }
   constexpr uint32_t kRecordedOperators = 20;
   if (batch.remaining_operator_capacity() < kRecordedOperators) {
-    throw std::logic_error(
-        "exact Vulkan VAE ViT block: insufficient batch capacity");
+    throw std::logic_error("exact Vulkan VAE ViT block: insufficient batch capacity");
   }
   Impl& w = *impl_;
   ExactViTBlockScratch::Impl& s = *scratch.impl_;
   batch.rms_norm(tokens, w.norm1, s.normed, c.epsilon);
-  record_gemm_chunks(batch, s.normed, s.prepared_dim, s.qkv_plan,
-                     w.qkv_weight, s.qkv, c.sequence);
-  batch.split_qkv_norm_rope_f32(s.qkv, w.qkv_bias, cosine, sine, s.q, s.k, s.v,
-                                c.num_patches, c.epsilon);
+  record_gemm_chunks(batch, s.normed, s.prepared_dim, s.qkv_plan, w.qkv_weight, s.qkv, c.sequence);
+  batch.split_qkv_norm_rope_f32(s.qkv, w.qkv_bias, cosine, sine, s.q, s.k, s.v, c.num_patches,
+                                c.epsilon);
   batch.heads_to_tokens_bf16(s.q, s.q_bf16, c.heads, c.sequence, c.head_dim);
   batch.heads_to_tokens_bf16(s.k, s.k_bf16, c.heads, c.sequence, c.head_dim);
   batch.heads_to_tokens_bf16(s.v, s.v_bf16, c.heads, c.sequence, c.head_dim);
-  PreparedAttentionView attention_inputs = s.prepared_attention.prepare(
-      batch, s.q_bf16, s.k_bf16, s.v_bf16);
+  PreparedAttentionView attention_inputs =
+      s.prepared_attention.prepare(batch, s.q_bf16, s.k_bf16, s.v_bf16);
   s.attention_plan.record(batch, attention_inputs, s.attention_bf16);
   batch.convert(s.attention_bf16, s.normed);
-  record_gemm_chunks(batch, s.normed, s.prepared_dim, s.out_plan,
-                     w.out_weight, s.projected, c.sequence);
+  record_gemm_chunks(batch, s.normed, s.prepared_dim, s.out_plan, w.out_weight, s.projected,
+                     c.sequence);
   batch.layer_scale_residual_f32(tokens, s.projected, w.out_bias, w.scale1);
   batch.rms_norm(tokens, w.norm2, s.normed, c.epsilon);
-  record_gemm_chunks(batch, s.normed, s.prepared_dim, s.w1_plan,
-                     w.w1_weight, s.ffn, c.sequence);
+  record_gemm_chunks(batch, s.normed, s.prepared_dim, s.w1_plan, w.w1_weight, s.ffn, c.sequence);
   batch.swiglu_bias_f32(s.ffn, w.w1_bias, s.activation);
-  record_gemm_chunks(batch, s.activation, s.prepared_inner, s.w2_plan,
-                     w.w2_weight, s.projected, c.sequence);
+  record_gemm_chunks(batch, s.activation, s.prepared_inner, s.w2_plan, w.w2_weight, s.projected,
+                     c.sequence);
   batch.layer_scale_residual_f32(tokens, s.projected, w.w2_bias, w.scale2);
 }
 
-void ExactViTBlockStage::forward(const float* tokens, const float* cosine,
-                                 const float* sine, float* output) {
+void ExactViTBlockStage::forward(const float* tokens, const float* cosine, const float* sine,
+                                 float* output) {
   if (!impl_ || !impl_->loaded)
     throw std::logic_error("exact Vulkan VAE ViT block: weights not loaded");
   if (!tokens || !cosine || !sine || !output)
@@ -342,10 +341,11 @@ uint64_t ExactViTBlockStage::persistent_bytes() const noexcept {
 }
 
 uint64_t ExactViTBlockStage::peak_device_bytes() const noexcept {
-  if (!impl_) return 0;
+  if (!impl_)
+    return 0;
   if (impl_->host) {
     return impl_->weight_bytes() + impl_->host->scratch.reserved_bytes() +
-        bytes(impl_->host->tokens) + bytes(impl_->host->cosine) + bytes(impl_->host->sine);
+           bytes(impl_->host->tokens) + bytes(impl_->host->cosine) + bytes(impl_->host->sine);
   }
   return impl_->weight_bytes();
 }
@@ -355,11 +355,13 @@ struct ExactViTBlockGraph::Impl {
   ViTBlockConfig config;
   uint32_t layer_count = 0;
   std::vector<ExactViTBlockStage> blocks;
+
   struct ScratchSlot {
     ViTBlockConfig config;
     ExactViTBlockScratch scratch;
     uint64_t stamp = 0;
   };
+
   std::vector<std::unique_ptr<ScratchSlot>> scratch_slots;
   ScratchSlot* active_slot = nullptr;
   uint64_t scratch_clock = 0;
@@ -367,6 +369,7 @@ struct ExactViTBlockGraph::Impl {
   struct HostState {
     DeviceTensor tokens, cosine, sine;
   };
+
   std::unique_ptr<HostState> host;
 
   Impl(TensorContext& owner, const ViTBlockConfig& c, uint32_t layers)
@@ -385,7 +388,8 @@ struct ExactViTBlockGraph::Impl {
         slot.stamp = ++scratch_clock;
         active_slot = &slot;
         config = selected;
-        for (ExactViTBlockStage& block : blocks) block.impl_->config = selected;
+        for (ExactViTBlockStage& block : blocks)
+          block.impl_->config = selected;
         host.reset();
         return;
       }
@@ -393,8 +397,7 @@ struct ExactViTBlockGraph::Impl {
     if (scratch_slots.size() == 2) {
       const auto oldest = std::min_element(
           scratch_slots.begin(), scratch_slots.end(),
-          [](const std::unique_ptr<ScratchSlot>& a,
-             const std::unique_ptr<ScratchSlot>& b) {
+          [](const std::unique_ptr<ScratchSlot>& a, const std::unique_ptr<ScratchSlot>& b) {
             return a->stamp < b->stamp;
           });
       scratch_slots.erase(oldest);
@@ -406,21 +409,23 @@ struct ExactViTBlockGraph::Impl {
     active_slot = slot.get();
     scratch_slots.push_back(std::move(slot));
     config = selected;
-    for (ExactViTBlockStage& block : blocks) block.impl_->config = selected;
+    for (ExactViTBlockStage& block : blocks)
+      block.impl_->config = selected;
     host.reset();
   }
 };
 
 ExactViTBlockGraph::ExactViTBlockGraph() = default;
 ExactViTBlockGraph::~ExactViTBlockGraph() = default;
-ExactViTBlockGraph::ExactViTBlockGraph(std::shared_ptr<Impl> impl)
-    : impl_(std::move(impl)) {}
-ExactViTBlockGraph::ExactViTBlockGraph(ExactViTBlockGraph&&) noexcept = default;
-ExactViTBlockGraph& ExactViTBlockGraph::operator=(ExactViTBlockGraph&&) noexcept =
-    default;
 
-ExactViTBlockGraph ExactViTBlockGraph::create(
-    TensorContext& context, const ViTBlockConfig& config, uint32_t layers) {
+ExactViTBlockGraph::ExactViTBlockGraph(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+
+ExactViTBlockGraph::ExactViTBlockGraph(ExactViTBlockGraph&&) noexcept = default;
+ExactViTBlockGraph& ExactViTBlockGraph::operator=(ExactViTBlockGraph&&) noexcept = default;
+
+ExactViTBlockGraph ExactViTBlockGraph::create(TensorContext& context, const ViTBlockConfig& config,
+                                              uint32_t layers) {
   validate_config(config);
   if (layers == 0 || layers > 204)
     throw std::invalid_argument("exact Vulkan VAE ViT graph: invalid layer count");
@@ -428,25 +433,25 @@ ExactViTBlockGraph ExactViTBlockGraph::create(
 }
 
 void ExactViTBlockGraph::load(const SafeTensors& checkpoint) {
-  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+  if (!impl_)
+    throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
   for (uint32_t layer = 0; layer < impl_->layer_count; ++layer) {
-    vae::ViTBlockWeights weights =
-        vae::load_vit_block_weights(checkpoint, layer, impl_->config);
+    vae::ViTBlockWeights weights = vae::load_vit_block_weights(checkpoint, layer, impl_->config);
     load_layer(layer, weights.view());
   }
 }
 
-void ExactViTBlockGraph::load_layer(
-    uint32_t layer, const ViTBlockWeightsView& weights) {
-  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+void ExactViTBlockGraph::load_layer(uint32_t layer, const ViTBlockWeightsView& weights) {
+  if (!impl_)
+    throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
   if (layer >= impl_->layer_count)
     throw std::out_of_range("exact Vulkan VAE ViT graph: layer out of range");
   impl_->blocks[layer].load(weights);
 }
 
-void ExactViTBlockGraph::prepare_shape(uint32_t sequence,
-                                       uint32_t num_patches) {
-  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+void ExactViTBlockGraph::prepare_shape(uint32_t sequence, uint32_t num_patches) {
+  if (!impl_)
+    throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
   ViTBlockConfig selected = impl_->config;
   selected.sequence = sequence;
   selected.num_patches = num_patches;
@@ -454,10 +459,10 @@ void ExactViTBlockGraph::prepare_shape(uint32_t sequence,
   impl_->select_shape(selected);
 }
 
-void ExactViTBlockGraph::record(TensorBatch& batch, DeviceTensor& tokens,
-                                DeviceTensor& cosine,
+void ExactViTBlockGraph::record(TensorBatch& batch, DeviceTensor& tokens, DeviceTensor& cosine,
                                 DeviceTensor& sine) const {
-  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+  if (!impl_)
+    throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
   constexpr uint32_t kOperatorsPerLayer = 20;
   const uint32_t required = impl_->layer_count * kOperatorsPerLayer;
   // Reject transactionally before a single layer mutates the caller's batch.
@@ -471,19 +476,19 @@ void ExactViTBlockGraph::record(TensorBatch& batch, DeviceTensor& tokens,
     block.record(batch, tokens, cosine, sine, impl_->active_slot->scratch);
 }
 
-void ExactViTBlockGraph::record_layer(
-    uint32_t layer, TensorBatch& batch, DeviceTensor& tokens,
-    DeviceTensor& cosine, DeviceTensor& sine) const {
-  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+void ExactViTBlockGraph::record_layer(uint32_t layer, TensorBatch& batch, DeviceTensor& tokens,
+                                      DeviceTensor& cosine, DeviceTensor& sine) const {
+  if (!impl_)
+    throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
   if (layer >= impl_->layer_count)
     throw std::out_of_range("exact Vulkan VAE ViT graph: layer out of range");
-  impl_->blocks[layer].record(batch, tokens, cosine, sine,
-                              impl_->active_slot->scratch);
+  impl_->blocks[layer].record(batch, tokens, cosine, sine, impl_->active_slot->scratch);
 }
 
-void ExactViTBlockGraph::forward(const float* tokens, const float* cosine,
-                                 const float* sine, float* output) {
-  if (!impl_) throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
+void ExactViTBlockGraph::forward(const float* tokens, const float* cosine, const float* sine,
+                                 float* output) {
+  if (!impl_)
+    throw std::logic_error("exact Vulkan VAE ViT graph: empty graph");
   if (!tokens || !cosine || !sine || !output)
     throw std::invalid_argument("exact Vulkan VAE ViT graph: null activation");
   for (const ExactViTBlockStage& block : impl_->blocks) {
@@ -492,16 +497,12 @@ void ExactViTBlockGraph::forward(const float* tokens, const float* cosine,
   }
   if (!impl_->host) {
     auto host = std::make_unique<Impl::HostState>();
-    host->tokens = impl_->context->allocate(
-        matrix(impl_->config.sequence, impl_->config.dim));
-    host->cosine = impl_->context->allocate(
-        matrix(impl_->config.sequence, impl_->config.rope_dim));
-    host->sine = impl_->context->allocate(
-        matrix(impl_->config.sequence, impl_->config.rope_dim));
+    host->tokens = impl_->context->allocate(matrix(impl_->config.sequence, impl_->config.dim));
+    host->cosine = impl_->context->allocate(matrix(impl_->config.sequence, impl_->config.rope_dim));
+    host->sine = impl_->context->allocate(matrix(impl_->config.sequence, impl_->config.rope_dim));
     impl_->host = std::move(host);
   }
-  const uint64_t token_count =
-      static_cast<uint64_t>(impl_->config.sequence) * impl_->config.dim;
+  const uint64_t token_count = static_cast<uint64_t>(impl_->config.sequence) * impl_->config.dim;
   const uint64_t rope_count =
       static_cast<uint64_t>(impl_->config.sequence) * impl_->config.rope_dim;
   impl_->context->upload(impl_->host->tokens, tokens, token_count);
@@ -522,7 +523,8 @@ uint32_t ExactViTBlockGraph::cached_scratch_shapes() const noexcept {
 }
 
 uint64_t ExactViTBlockGraph::persistent_bytes() const noexcept {
-  if (!impl_) return 0;
+  if (!impl_)
+    return 0;
   uint64_t total = 0;
   for (const ExactViTBlockStage& block : impl_->blocks)
     total += block.persistent_bytes();
@@ -530,14 +532,14 @@ uint64_t ExactViTBlockGraph::persistent_bytes() const noexcept {
 }
 
 uint64_t ExactViTBlockGraph::peak_device_bytes() const noexcept {
-  if (!impl_) return 0;
+  if (!impl_)
+    return 0;
   uint64_t total = persistent_bytes();
   for (const std::unique_ptr<Impl::ScratchSlot>& slot : impl_->scratch_slots)
     total += slot->scratch.reserved_bytes();
   if (impl_->host)
-    total += bytes(impl_->host->tokens) + bytes(impl_->host->cosine) +
-             bytes(impl_->host->sine);
+    total += bytes(impl_->host->tokens) + bytes(impl_->host->cosine) + bytes(impl_->host->sine);
   return total;
 }
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

@@ -24,7 +24,8 @@ std::string ppm_token(std::istream& in) {
   std::string token;
   for (;;) {
     in >> std::ws;
-    if (in.peek() != '#') break;
+    if (in.peek() != '#')
+      break;
     in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
   }
   in >> token;
@@ -33,21 +34,23 @@ std::string ppm_token(std::istream& in) {
 
 RGBImage load_ppm(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
-  if (!in) throw image_error(path, "cannot open file");
-  if (ppm_token(in) != "P6") throw image_error(path, "not a binary PPM (P6)");
+  if (!in)
+    throw image_error(path, "cannot open file");
+  if (ppm_token(in) != "P6")
+    throw image_error(path, "not a binary PPM (P6)");
   RGBImage image;
   try {
     image.width = std::stoi(ppm_token(in));
     image.height = std::stoi(ppm_token(in));
-    if (std::stoi(ppm_token(in)) != 255) throw image_error(path, "PPM max value must be 255");
+    if (std::stoi(ppm_token(in)) != 255)
+      throw image_error(path, "PPM max value must be 255");
   } catch (const std::invalid_argument&) {
     throw image_error(path, "invalid PPM header");
   } catch (const std::out_of_range&) {
     throw image_error(path, "PPM dimensions are out of range");
   }
   if (image.width <= 0 || image.height <= 0 ||
-      static_cast<uint64_t>(image.width) * image.height >
-          std::numeric_limits<size_t>::max() / 3) {
+      static_cast<uint64_t>(image.width) * image.height > std::numeric_limits<size_t>::max() / 3) {
     throw image_error(path, "invalid image dimensions");
   }
   const int separator = in.get();
@@ -63,14 +66,16 @@ RGBImage load_ppm(const std::string& path) {
   return image;
 }
 
-}  // namespace
+} // namespace
 
 RGBImage load_reference_image(const std::string& path) {
   std::ifstream probe(path, std::ios::binary);
   char magic[2] = {};
   probe.read(magic, 2);
-  if (!probe) throw image_error(path, "cannot open or read file");
-  if (magic[0] == 'P' && magic[1] == '6') return load_ppm(path);
+  if (!probe)
+    throw image_error(path, "cannot open or read file");
+  if (magic[0] == 'P' && magic[1] == '6')
+    return load_ppm(path);
 #if SLOPFAB_WITH_FFMPEG
   // A video file is a legal reference: its first frame is the image.
   const video::DecodedVideoFrame frame = video::decode_first_video_frame(path);
@@ -100,17 +105,19 @@ namespace {
 // changes the rounding of the result, and on a 1920x1080 -> 1280x768 test it
 // moved 11,400 bytes of 1.49 M by one.
 struct AxisWeights {
-  std::vector<size_t> offset;  // into `weight` / `sample`, per output index
+  std::vector<size_t> offset; // into `weight` / `sample`, per output index
   std::vector<int> count;
   std::vector<double> weight;
-  std::vector<int> sample;  // input index, already edge-clamped
-  std::vector<double> sum;  // per output index, summed in ascending tap order
+  std::vector<int> sample; // input index, already edge-clamped
+  std::vector<double> sum; // per output index, summed in ascending tap order
 };
 
 double lanczos3(double x) {
   x = std::abs(x);
-  if (x == 0.0) return 1.0;
-  if (x >= 3.0) return 0.0;
+  if (x == 0.0)
+    return 1.0;
+  if (x >= 3.0)
+    return 0.0;
   constexpr double pi = 3.14159265358979323846;
   return std::sin(pi * x) * std::sin(pi * x / 3.0) / (pi * pi * x * x / 3.0);
 }
@@ -147,11 +154,12 @@ const AxisWeights& axis_weights(int in_extent, int out_extent) {
   static thread_local std::map<std::pair<int, int>, AxisWeights> cache;
   const std::pair<int, int> key{in_extent, out_extent};
   auto it = cache.find(key);
-  if (it == cache.end()) it = cache.emplace(key, build_axis_weights(in_extent, out_extent)).first;
+  if (it == cache.end())
+    it = cache.emplace(key, build_axis_weights(in_extent, out_extent)).first;
   return it->second;
 }
 
-}  // namespace
+} // namespace
 
 RGBImage resize_reference_lanczos(const RGBImage& image, int width, int height) {
   if (image.width <= 0 || image.height <= 0 || width <= 0 || height <= 0 ||
@@ -160,34 +168,39 @@ RGBImage resize_reference_lanczos(const RGBImage& image, int width, int height) 
 
   const AxisWeights& hw = axis_weights(image.width, width);
   std::vector<double> tmp(static_cast<size_t>(image.height) * width * 3);
-  for (int y = 0; y < image.height; ++y) for (int x = 0; x < width; ++x) {
-    const size_t off = hw.offset[static_cast<size_t>(x)];
-    const int taps = hw.count[static_cast<size_t>(x)];
-    double rgb[3] = {};
-    for (int k = 0; k < taps; ++k) {
-      const double w = hw.weight[off + static_cast<size_t>(k)];
-      const int sample = hw.sample[off + static_cast<size_t>(k)];
-      for (int c = 0; c < 3; ++c) rgb[c] += w * image.pixels[(static_cast<size_t>(y) * image.width + sample) * 3 + c];
+  for (int y = 0; y < image.height; ++y)
+    for (int x = 0; x < width; ++x) {
+      const size_t off = hw.offset[static_cast<size_t>(x)];
+      const int taps = hw.count[static_cast<size_t>(x)];
+      double rgb[3] = {};
+      for (int k = 0; k < taps; ++k) {
+        const double w = hw.weight[off + static_cast<size_t>(k)];
+        const int sample = hw.sample[off + static_cast<size_t>(k)];
+        for (int c = 0; c < 3; ++c)
+          rgb[c] += w * image.pixels[(static_cast<size_t>(y) * image.width + sample) * 3 + c];
+      }
+      for (int c = 0; c < 3; ++c)
+        tmp[(static_cast<size_t>(y) * width + x) * 3 + c] = rgb[c] / hw.sum[static_cast<size_t>(x)];
     }
-    for (int c = 0; c < 3; ++c)
-      tmp[(static_cast<size_t>(y) * width + x) * 3 + c] = rgb[c] / hw.sum[static_cast<size_t>(x)];
-  }
 
   const AxisWeights& vw = axis_weights(image.height, height);
   RGBImage out{width, height, std::vector<uint8_t>(static_cast<size_t>(width) * height * 3)};
-  for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
-    const size_t off = vw.offset[static_cast<size_t>(y)];
-    const int taps = vw.count[static_cast<size_t>(y)];
-    double rgb[3] = {};
-    for (int k = 0; k < taps; ++k) {
-      const double w = vw.weight[off + static_cast<size_t>(k)];
-      const int sample = vw.sample[off + static_cast<size_t>(k)];
-      for (int c = 0; c < 3; ++c) rgb[c] += w * tmp[(static_cast<size_t>(sample) * width + x) * 3 + c];
+  for (int y = 0; y < height; ++y)
+    for (int x = 0; x < width; ++x) {
+      const size_t off = vw.offset[static_cast<size_t>(y)];
+      const int taps = vw.count[static_cast<size_t>(y)];
+      double rgb[3] = {};
+      for (int k = 0; k < taps; ++k) {
+        const double w = vw.weight[off + static_cast<size_t>(k)];
+        const int sample = vw.sample[off + static_cast<size_t>(k)];
+        for (int c = 0; c < 3; ++c)
+          rgb[c] += w * tmp[(static_cast<size_t>(sample) * width + x) * 3 + c];
+      }
+      for (int c = 0; c < 3; ++c)
+        out.pixels[(static_cast<size_t>(y) * width + x) * 3 + c] = static_cast<uint8_t>(
+            std::clamp(std::floor(rgb[c] / vw.sum[static_cast<size_t>(y)] + 0.5), 0.0, 255.0));
     }
-    for (int c = 0; c < 3; ++c) out.pixels[(static_cast<size_t>(y) * width + x) * 3 + c] =
-        static_cast<uint8_t>(std::clamp(std::floor(rgb[c] / vw.sum[static_cast<size_t>(y)] + 0.5), 0.0, 255.0));
-  }
   return out;
 }
 
-}  // namespace slopfab
+} // namespace slopfab

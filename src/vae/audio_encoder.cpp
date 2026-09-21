@@ -11,14 +11,17 @@
 
 namespace slopfab::vae {
 using cuda::DeviceBuffer;
+
 struct AudioEncoder::Impl {
   cuda::Stream stream;
   cuda::ReferenceEncoderOps ops{stream.get()};
   std::map<std::string, DeviceBuffer<float>> weights;
   std::vector<float> mean, stddev;
+
   const float* at(const std::string& name) const {
     return weights.at(name).get();
   }
+
   void put(const std::string& name, const std::vector<float>& values) {
     DeviceBuffer<float> buffer(values.size());
     buffer.copy_from_host(values.data(), values.size(), stream.get());
@@ -26,13 +29,13 @@ struct AudioEncoder::Impl {
     stream.synchronize();
     weights.emplace(name, std::move(buffer));
   }
+
   explicit Impl(const SafeTensors& checkpoint) {
     auto tensor = [&](const std::string& name, std::vector<int64_t> shape) {
       put(name, load_audio_f32_tensor(checkpoint, name, shape));
     };
     auto conv = [&](const std::string& name, int ci, int co, int k) {
-      const auto weight =
-          load_audio_conv_weights(checkpoint, name, {co, ci, k}, co, true);
+      const auto weight = load_audio_conv_weights(checkpoint, name, {co, ci, k}, co, true);
       put(name + ".weight", weight.weight);
       put(name + ".bias", weight.bias);
     };
@@ -40,8 +43,7 @@ struct AudioEncoder::Impl {
     int channels = 64;
     const int strides[] = {2, 4, 4, 5, 5};
     for (int stage = 0; stage < 5; ++stage) {
-      const std::string prefix =
-          "encoder.block." + std::to_string(stage + 1) + ".block.";
+      const std::string prefix = "encoder.block." + std::to_string(stage + 1) + ".block.";
       for (int block = 0; block < 3; ++block) {
         const std::string p = prefix + std::to_string(block) + ".block.";
         tensor(p + "0.alpha", {1, channels, 1});
@@ -79,49 +81,48 @@ struct AudioEncoder::Impl {
     mean = load_audio_f32_tensor(checkpoint, "latents_mean", {32});
     stddev = load_audio_f32_tensor(checkpoint, "latents_std", {32});
     for (int i = 0; i < 32; ++i)
-      if (!std::isfinite(mean[i]) || !std::isfinite(stddev[i]) ||
-          stddev[i] <= 0)
+      if (!std::isfinite(mean[i]) || !std::isfinite(stddev[i]) || stddev[i] <= 0)
         throw std::runtime_error("audio encoder: invalid latent statistics");
   }
 };
 
 AudioEncoder::AudioEncoder(const SafeTensors& checkpoint)
-    : impl_(std::make_unique<Impl>(checkpoint)) {}
+    : impl_(std::make_unique<Impl>(checkpoint)) {
+}
+
 AudioEncoder::~AudioEncoder() = default;
+
 std::vector<float> AudioEncoder::encode_mean(const float* stereo, int samples) {
   if (!stereo || samples <= 0 || samples > 15 * 32000)
-    throw std::invalid_argument(
-        "audio encoder: expected 1..480000 stereo samples");
+    throw std::invalid_argument("audio encoder: expected 1..480000 stereo samples");
   const int padded = ((samples + 799) / 800) * 800;
   std::vector<float> host(size_t(2) * padded, 0);
   for (int b = 0; b < 2; ++b)
-    std::copy_n(stereo + size_t(b) * samples, samples,
-                host.data() + size_t(b) * padded);
+    std::copy_n(stereo + size_t(b) * samples, samples, host.data() + size_t(b) * padded);
   auto& ops = impl_->ops;
   auto x = ops.allocate<float>(host.size());
   x.copy_from_host(host.data(), host.size(), impl_->stream.get());
-  auto w = [&](const std::string& n) { return impl_->at(n); };
-  auto conv = [&](const cuda::ReferenceBuffer<float>& input, const std::string& n,
-                  int ci, int co, int len, int k, int stride = 1, int pad = 0,
-                  int dil = 1) {
-    return ops.conv1d(input.get(), w(n + ".weight"), w(n + ".bias"), 2, ci, co,
-                      len, k, stride, pad, dil);
+  auto w = [&](const std::string& n) {
+    return impl_->at(n);
+  };
+  auto conv = [&](const cuda::ReferenceBuffer<float>& input, const std::string& n, int ci, int co,
+                  int len, int k, int stride = 1, int pad = 0, int dil = 1) {
+    return ops.conv1d(input.get(), w(n + ".weight"), w(n + ".bias"), 2, ci, co, len, k, stride, pad,
+                      dil);
   };
   int length = padded, channels = 64;
   x = conv(x, "encoder.block.0", 1, 64, length, 7, 1, 3);
   const int strides[] = {2, 4, 4, 5, 5}, dilations[] = {1, 3, 9};
   for (int stage = 0; stage < 5; ++stage) {
-    const std::string prefix =
-        "encoder.block." + std::to_string(stage + 1) + ".block.";
+    const std::string prefix = "encoder.block." + std::to_string(stage + 1) + ".block.";
     for (int block = 0; block < 3; ++block) {
       const std::string p = prefix + std::to_string(block) + ".block.";
       auto branch = ops.allocate<float>(x.size());
-      SLOPFAB_CUDA_CHECK(
-          cudaMemcpyAsync(branch.get(), x.get(), x.size() * sizeof(float),
-                          cudaMemcpyDeviceToDevice, impl_->stream.get()));
+      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(branch.get(), x.get(), x.size() * sizeof(float),
+                                         cudaMemcpyDeviceToDevice, impl_->stream.get()));
       ops.snake(branch.get(), w(p + "0.alpha"), 2, channels, length);
-      branch = conv(branch, p + "1", channels, channels, length, 7, 1,
-                    3 * dilations[block], dilations[block]);
+      branch = conv(branch, p + "1", channels, channels, length, 7, 1, 3 * dilations[block],
+                    dilations[block]);
       ops.snake(branch.get(), w(p + "2.alpha"), 2, channels, length);
       branch = conv(branch, p + "3", channels, channels, length, 1);
       ops.add(x.get(), branch.get(), x.size());
@@ -143,11 +144,9 @@ std::vector<float> AudioEncoder::encode_mean(const float* stereo, int samples) {
     return ops.linear(input, w(n + ".weight"), w(n + ".bias"), rows, ci, co);
   };
   auto q = norm(x.get(), "pre_block.norm1", 2048);
-  q = ops.linear(q.get(), w("pre_block.attn.qkv.weight"), nullptr, rows, 2048,
-                 6144);
-  q = ops.attention(q.get(), w("pre_block.attn.q_bias"),
-                    w("pre_block.attn.zero_k_bias"), w("pre_block.attn.v_bias"),
-                    2, length);
+  q = ops.linear(q.get(), w("pre_block.attn.qkv.weight"), nullptr, rows, 2048, 6144);
+  q = ops.attention(q.get(), w("pre_block.attn.q_bias"), w("pre_block.attn.zero_k_bias"),
+                    w("pre_block.attn.v_bias"), 2, length);
   q = linear(q.get(), "pre_block.attn.proj", 32, 32);
   x = norm(x.get(), "pre_block.norm3", 2048);
   x = linear(x.get(), "pre_block.proj", 2048, 32);
@@ -170,8 +169,8 @@ std::vector<float> AudioEncoder::encode_mean(const float* stereo, int samples) {
   ops.report_memory("audio encoder");
   return result;
 }
-std::vector<float> AudioEncoder::encode_reference(const float* stereo,
-                                                  int samples) {
+
+std::vector<float> AudioEncoder::encode_reference(const float* stereo, int samples) {
   auto mean = encode_mean(stereo, samples);
   int length = (samples + 799) / 800;
   std::vector<float> rows(mean.size());
@@ -179,8 +178,7 @@ std::vector<float> AudioEncoder::encode_reference(const float* stereo,
     for (int t = 0; t < length; ++t)
       for (int c = 0; c < 32; ++c)
         rows[(size_t(b) * length + t) * 32 + c] =
-            (mean[(size_t(b) * 32 + c) * length + t] - impl_->mean[c]) /
-            impl_->stddev[c];
+            (mean[(size_t(b) * 32 + c) * length + t] - impl_->mean[c]) / impl_->stddev[c];
   return rows;
 }
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

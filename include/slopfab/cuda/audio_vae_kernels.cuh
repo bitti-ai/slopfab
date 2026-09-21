@@ -41,8 +41,8 @@ constexpr int kAudioAARatio = 2;
 // `len_out` must equal len_in + 2*pad - dilation*(K-1); the caller passes it so
 // the arithmetic is checked in one place.
 void launch_conv1d(const float* x, const float* w, const float* bias, float* y, int batch,
-                   int in_channels, int out_channels, int len_in, int len_out, int kernel,
-                   int pad, int dilation, cudaStream_t stream);
+                   int in_channels, int out_channels, int len_in, int len_out, int kernel, int pad,
+                   int dilation, cudaStream_t stream);
 
 // Transposed convolution, the BigVGAN upsamplers.
 //
@@ -56,8 +56,8 @@ void launch_conv1d(const float* x, const float* w, const float* bias, float* y, 
 // len_out = (len_in - 1)*stride - 2*pad + kernel. With pad = (kernel-stride)/2
 // as the reference builds them, that is exactly len_in*stride.
 void launch_conv_transpose1d(const float* x, const float* w, const float* bias, float* y, int batch,
-                             int in_channels, int out_channels, int len_in, int len_out,
-                             int kernel, int stride, int pad, cudaStream_t stream);
+                             int in_channels, int out_channels, int len_in, int len_out, int kernel,
+                             int stride, int pad, cudaStream_t stream);
 
 // y = x + sin(exp(log_alpha[c]) * x)^2 / (exp(log_beta[c]) + 1e-9), in place.
 //
@@ -103,4 +103,4 @@ void launch_clamp_inplace(float* x, float lo, float hi, size_t count, cudaStream
 void launch_interleave(const float* planar, float* interleaved, int batch, int frames,
                        cudaStream_t stream);
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

@@ -12,7 +12,8 @@ namespace {
 uint64_t stream_size(std::ifstream& stream, const std::string& path) {
   stream.seekg(0, std::ios::end);
   const std::streamoff size = stream.tellg();
-  if (size < 0) throw std::runtime_error("compare-y4m: cannot size " + path);
+  if (size < 0)
+    throw std::runtime_error("compare-y4m: cannot size " + path);
   stream.seekg(0, std::ios::beg);
   return static_cast<uint64_t>(size);
 }
@@ -21,8 +22,10 @@ std::string read_header(std::ifstream& stream, const std::string& path) {
   std::string header;
   for (size_t i = 0; i < 4096; ++i) {
     const int ch = stream.get();
-    if (ch == EOF) break;
-    if (ch == '\n') break;
+    if (ch == EOF)
+      break;
+    if (ch == '\n')
+      break;
     header.push_back(static_cast<char>(ch));
   }
   if (header.rfind("YUV4MPEG2 ", 0) != 0) {
@@ -33,7 +36,7 @@ std::string read_header(std::ifstream& stream, const std::string& path) {
   return header;
 }
 
-}  // namespace
+} // namespace
 
 ExactY4mComparison compare_y4m_exact(const std::string& expected_path,
                                      const std::string& actual_path) {
@@ -42,9 +45,11 @@ ExactY4mComparison compare_y4m_exact(const std::string& expected_path,
     throw std::invalid_argument("compare-y4m: expected and actual refer to the same file");
   }
   std::ifstream expected(expected_path, std::ios::binary);
-  if (!expected) throw std::runtime_error("compare-y4m: cannot open " + expected_path);
+  if (!expected)
+    throw std::runtime_error("compare-y4m: cannot open " + expected_path);
   std::ifstream actual(actual_path, std::ios::binary);
-  if (!actual) throw std::runtime_error("compare-y4m: cannot open " + actual_path);
+  if (!actual)
+    throw std::runtime_error("compare-y4m: cannot open " + actual_path);
 
   ExactY4mComparison result;
   result.expected_size = stream_size(expected, expected_path);
@@ -57,8 +62,8 @@ ExactY4mComparison compare_y4m_exact(const std::string& expected_path,
   uint64_t offset = 0;
   const uint64_t common = std::min(result.expected_size, result.actual_size);
   while (offset < common) {
-    const size_t count = static_cast<size_t>(std::min<uint64_t>(expected_bytes.size(),
-                                                                common - offset));
+    const size_t count =
+        static_cast<size_t>(std::min<uint64_t>(expected_bytes.size(), common - offset));
     expected.read(reinterpret_cast<char*>(expected_bytes.data()),
                   static_cast<std::streamsize>(count));
     actual.read(reinterpret_cast<char*>(actual_bytes.data()), static_cast<std::streamsize>(count));
@@ -92,4 +97,4 @@ ExactY4mComparison compare_y4m_exact(const std::string& expected_path,
   return result;
 }
 
-}  // namespace slopfab::video
+} // namespace slopfab::video

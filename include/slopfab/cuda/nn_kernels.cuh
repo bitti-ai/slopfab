@@ -33,8 +33,8 @@ void launch_rmsnorm_f32(const float* x, const float* w, float* out, int rows, in
 // ViT affine LayerNorm: subtract mean, divide by population standard
 // deviation, then apply both learned weight and bias. All reductions are fp32.
 void launch_layernorm_affine(const __nv_bfloat16* x, const __nv_bfloat16* w,
-                             const __nv_bfloat16* bias, __nv_bfloat16* out,
-                             int rows, int dim, float eps, cudaStream_t stream);
+                             const __nv_bfloat16* bias, __nv_bfloat16* out, int rows, int dim,
+                             float eps, cudaStream_t stream);
 
 // RMSNorm followed by AdaLN modulation, fused:
 //
@@ -81,15 +81,14 @@ void launch_swiglu(const __nv_bfloat16* fused, __nv_bfloat16* out, int rows, int
                    cudaStream_t stream);
 // Backend-stable DiT exact-mode baseline paired with Vulkan. Normal attention
 // modes retain the checkpoint's historical fast __expf implementation.
-void launch_swiglu_exact(const __nv_bfloat16* fused, __nv_bfloat16* out,
-                         int rows, int inner, cudaStream_t stream);
+void launch_swiglu_exact(const __nv_bfloat16* fused, __nv_bfloat16* out, int rows, int inner,
+                         cudaStream_t stream);
 
 void launch_silu(const float* x, float* out, size_t n, cudaStream_t stream);
 void launch_gelu_tanh(__nv_bfloat16* x, size_t n, cudaStream_t stream);
 // Canonical exact-mode GELU paired with TensorBatch::vision_gelu_tanh_bf16.
 // Unlike the shipped fast path above, this defines NaN/Inf/subnormal behavior.
-void launch_gelu_tanh_exact(__nv_bfloat16* x, size_t n,
-                            cudaStream_t stream);
+void launch_gelu_tanh_exact(__nv_bfloat16* x, size_t n, cudaStream_t stream);
 
 // --- rotary -----------------------------------------------------------------
 
@@ -137,32 +136,31 @@ void launch_head_rmsnorm(__nv_bfloat16* x, const __nv_bfloat16* w, int rows, int
 // --- row permutation --------------------------------------------------------
 
 // dst[i, :] = src[index[i], :]
-void launch_gather_rows(const __nv_bfloat16* src, const int32_t* index, __nv_bfloat16* dst,
-                        int n, int dim, cudaStream_t stream);
+void launch_gather_rows(const __nv_bfloat16* src, const int32_t* index, __nv_bfloat16* dst, int n,
+                        int dim, cudaStream_t stream);
 void launch_gather_rows_f32(const float* src, const int32_t* index, float* dst, int n, int dim,
                             cudaStream_t stream);
 
 // dst[index[i], :] = src[i, :]
-void launch_scatter_rows(const __nv_bfloat16* src, const int32_t* index, __nv_bfloat16* dst,
-                         int n, int dim, cudaStream_t stream);
+void launch_scatter_rows(const __nv_bfloat16* src, const int32_t* index, __nv_bfloat16* dst, int n,
+                         int dim, cudaStream_t stream);
 void launch_scatter_rows_f32(const float* src, const int32_t* index, float* dst, int n, int dim,
                              cudaStream_t stream);
 
 // dst[index[i], :] += src[i, :], used by Qwen DeepStack. Indices must be
 // unique; accumulation is fp32 and rounded once to bf16.
-void launch_scatter_add_rows(const __nv_bfloat16* src, const int32_t* index,
-                             __nv_bfloat16* dst, int n, int dim, cudaStream_t stream);
+void launch_scatter_add_rows(const __nv_bfloat16* src, const int32_t* index, __nv_bfloat16* dst,
+                             int n, int dim, cudaStream_t stream);
 
 // Concatenates each four consecutive merge-group-major patch rows. The host
 // patchifier guarantees those rows describe a 2x2 spatial group.
-void launch_merge_four_rows(const __nv_bfloat16* src, __nv_bfloat16* dst,
-                            int groups, int dim, cudaStream_t stream);
+void launch_merge_four_rows(const __nv_bfloat16* src, __nv_bfloat16* dst, int groups, int dim,
+                            cudaStream_t stream);
 
 // --- elementwise ------------------------------------------------------------
 
 void launch_add(const float* a, const float* b, float* out, size_t n, cudaStream_t stream);
-void launch_add_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n,
-                     cudaStream_t stream);
+void launch_add_bf16(__nv_bfloat16* x, const __nv_bfloat16* branch, size_t n, cudaStream_t stream);
 // out = a - b. The block cache's delta capture (dit/block_cache.h): `a` is the
 // residual stream after a span of blocks, `b` the state saved before it.
 //
@@ -184,4 +182,4 @@ void launch_sub_bf16(const __nv_bfloat16* a, const __nv_bfloat16* b, __nv_bfloat
 void launch_axpby(const float* x, float a, const float* y, float b, float* out, size_t n,
                   cudaStream_t stream);
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

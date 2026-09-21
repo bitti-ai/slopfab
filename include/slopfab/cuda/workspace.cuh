@@ -19,7 +19,7 @@
 namespace slopfab::cuda {
 
 class Workspace {
- public:
+public:
   Workspace() = default;
 
   // Ensures at least `bytes` are available, reallocating if not. Any pointer
@@ -34,34 +34,45 @@ class Workspace {
   // arena is exhausted — that is a sizing bug, not a runtime condition.
   void* alloc(size_t bytes);
 
-  template <typename T>
-  T* alloc_n(size_t count) {
+  template <typename T> T* alloc_n(size_t count) {
     return static_cast<T*>(alloc(count * sizeof(T)));
   }
 
   // Resets the cursor to zero without freeing.
-  void clear() { cursor_ = 0; }
+  void clear() {
+    cursor_ = 0;
+  }
 
-  size_t capacity() const { return buffer_.nbytes(); }
-  size_t used() const { return cursor_; }
+  size_t capacity() const {
+    return buffer_.nbytes();
+  }
+
+  size_t used() const {
+    return cursor_;
+  }
 
   // Restores the cursor on destruction, so nested helpers can carve scratch
   // without leaking it for the rest of the call.
   class Scope {
-   public:
-    explicit Scope(Workspace& w) : ws_(w), mark_(w.cursor_) {}
-    ~Scope() { ws_.cursor_ = mark_; }
+  public:
+    explicit Scope(Workspace& w) : ws_(w), mark_(w.cursor_) {
+    }
+
+    ~Scope() {
+      ws_.cursor_ = mark_;
+    }
+
     Scope(const Scope&) = delete;
     Scope& operator=(const Scope&) = delete;
 
-   private:
+  private:
     Workspace& ws_;
     size_t mark_;
   };
 
- private:
+private:
   DeviceBuffer<uint8_t> buffer_;
   size_t cursor_ = 0;
 };
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

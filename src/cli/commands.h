@@ -4,15 +4,16 @@
 #include <vector>
 #include <cstdint>
 #include "slopfab/pipeline.h"
+
 namespace slopfab::cli {
 inline constexpr const char* kVersion = "0.1.0";
+
 struct CommandHelp {
   const char* name;
   const char* usage;
   const char* summary;
   const char* detail;
 };
-
 
 const CommandHelp* find_command(std::string_view);
 bool wants_help(int argc, char** argv);

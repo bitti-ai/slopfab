@@ -29,9 +29,9 @@ namespace {
 // shared-memory activation read feeds kConvOut of them.
 constexpr int kConvThreads = 128;
 constexpr int kConvUnroll = 4;
-constexpr int kConvTime = kConvThreads * kConvUnroll;  // 512
+constexpr int kConvTime = kConvThreads * kConvUnroll; // 512
 constexpr int kConvOut = 8;
-constexpr int kConvIn = 4;  // input channels staged per pass
+constexpr int kConvIn = 4; // input channels staged per pass
 
 // Widest activation window a single block needs: kConvTime taps plus the
 // dilated kernel's reach. The decoder's worst case is kernel 11 at dilation 5.
@@ -45,8 +45,8 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
                               int dilation) {
   extern __shared__ float smem[];
   const int span = conv_span(kernel, dilation);
-  float* sx = smem;                   // [kConvIn][span]
-  float* sw = smem + kConvIn * span;  // [kConvIn][kConvOut][kernel]
+  float* sx = smem;                  // [kConvIn][span]
+  float* sw = smem + kConvIn * span; // [kConvIn][kConvOut][kernel]
 
   const int b = static_cast<int>(blockIdx.z);
   const int co0 = static_cast<int>(blockIdx.y) * kConvOut;
@@ -59,8 +59,7 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
 #pragma unroll
     for (int o = 0; o < kConvOut; ++o) {
       const int co = co0 + o;
-      acc[u][o] = (bias != nullptr && co < out_ch)
-          ? canonicalize_pointwise_float(bias[co]) : 0.0f;
+      acc[u][o] = (bias != nullptr && co < out_ch) ? canonicalize_pointwise_float(bias[co]) : 0.0f;
     }
   }
 
@@ -76,8 +75,7 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
       const int t = t0 + s - pad;
       float v = 0.0f;
       if (ci < in_ch && t >= 0 && t < len_in)
-        v = canonicalize_pointwise_float(
-            x[x_batch + static_cast<size_t>(ci) * len_in + t]);
+        v = canonicalize_pointwise_float(x[x_batch + static_cast<size_t>(ci) * len_in + t]);
       sx[idx] = v;
     }
     for (int idx = tid; idx < weights_per_pass; idx += kConvThreads) {
@@ -87,10 +85,10 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
       const int k = rem - o * kernel;
       const int ci = ci0 + c;
       const int co = co0 + o;
-      sw[idx] = (ci < in_ch && co < out_ch)
-          ? canonicalize_pointwise_float(
-                w[(static_cast<size_t>(co) * in_ch + ci) * kernel + k])
-          : 0.0f;
+      sw[idx] =
+          (ci < in_ch && co < out_ch)
+              ? canonicalize_pointwise_float(w[(static_cast<size_t>(co) * in_ch + ci) * kernel + k])
+              : 0.0f;
     }
     __syncthreads();
 
@@ -100,15 +98,15 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
       for (int k = 0; k < kernel; ++k) {
         float wv[kConvOut];
 #pragma unroll
-        for (int o = 0; o < kConvOut; ++o) wv[o] = swc[o * kernel + k];
+        for (int o = 0; o < kConvOut; ++o)
+          wv[o] = swc[o * kernel + k];
         const int base = tid + k * dilation;
 #pragma unroll
         for (int u = 0; u < kConvUnroll; ++u) {
           const float xv = sxc[base + u * kConvThreads];
 #pragma unroll
           for (int o = 0; o < kConvOut; ++o)
-            acc[u][o] = canonicalize_pointwise_float(
-                fmaf(xv, wv[o], acc[u][o]));
+            acc[u][o] = canonicalize_pointwise_float(fmaf(xv, wv[o], acc[u][o]));
         }
       }
     }
@@ -118,11 +116,13 @@ __global__ void conv1d_kernel(const float* __restrict__ x, const float* __restri
 #pragma unroll
   for (int u = 0; u < kConvUnroll; ++u) {
     const int n = t0 + tid + u * kConvThreads;
-    if (n >= len_out) continue;
+    if (n >= len_out)
+      continue;
 #pragma unroll
     for (int o = 0; o < kConvOut; ++o) {
       const int co = co0 + o;
-      if (co < out_ch) y[y_batch + static_cast<size_t>(co) * len_out + n] = acc[u][o];
+      if (co < out_ch)
+        y[y_batch + static_cast<size_t>(co) * len_out + n] = acc[u][o];
     }
   }
 }
@@ -142,7 +142,7 @@ __global__ void conv_transpose1d_kernel(const float* __restrict__ x, const float
                                         const float* __restrict__ bias, float* __restrict__ y,
                                         int in_ch, int out_ch, int len_in, int len_out, int kernel,
                                         int stride, int pad) {
-  extern __shared__ float sw[];  // [kUpIn][kUpOut][kernel], one pass at a time
+  extern __shared__ float sw[]; // [kUpIn][kUpOut][kernel], one pass at a time
 
   const int b = static_cast<int>(blockIdx.z);
   const int co0 = static_cast<int>(blockIdx.y) * kUpOut;
@@ -153,8 +153,7 @@ __global__ void conv_transpose1d_kernel(const float* __restrict__ x, const float
 #pragma unroll
   for (int o = 0; o < kUpOut; ++o) {
     const int co = co0 + o;
-    acc[o] = (bias != nullptr && co < out_ch)
-        ? canonicalize_pointwise_float(bias[co]) : 0.0f;
+    acc[o] = (bias != nullptr && co < out_ch) ? canonicalize_pointwise_float(bias[co]) : 0.0f;
   }
 
   // The phase is per thread, not per block: kUpThreads is not a multiple of a
@@ -176,38 +175,43 @@ __global__ void conv_transpose1d_kernel(const float* __restrict__ x, const float
       const int ci = ci0 + c;
       const int co = co0 + o;
       sw[idx] = (ci < in_ch && co < out_ch)
-          ? canonicalize_pointwise_float(
-                w[(static_cast<size_t>(ci) * out_ch + co) * kernel + k])
-          : 0.0f;
+                    ? canonicalize_pointwise_float(
+                          w[(static_cast<size_t>(ci) * out_ch + co) * kernel + k])
+                    : 0.0f;
     }
     __syncthreads();
     // Every thread keeps iterating the (uniform) ci0 loop so the barriers above
     // stay collective; only the arithmetic is skipped.
-    if (n >= len_out) continue;
+    if (n >= len_out)
+      continue;
 
     for (int c = 0; c < kUpIn; ++c) {
-      if (ci0 + c >= in_ch) break;
+      if (ci0 + c >= in_ch)
+        break;
       const float* swc = sw + c * kUpOut * kernel;
       const size_t x_row = x_batch + static_cast<size_t>(ci0 + c) * len_in;
       for (int k = phase, t = 0; k < kernel; k += stride, ++t) {
         const int j = j0 - t;
-        if (j < 0) break;
-        if (j >= len_in) continue;
+        if (j < 0)
+          break;
+        if (j >= len_in)
+          continue;
         const float xv = canonicalize_pointwise_float(x[x_row + j]);
 #pragma unroll
         for (int o = 0; o < kUpOut; ++o)
-          acc[o] = canonicalize_pointwise_float(
-              fmaf(xv, swc[o * kernel + k], acc[o]));
+          acc[o] = canonicalize_pointwise_float(fmaf(xv, swc[o * kernel + k], acc[o]));
       }
     }
   }
 
-  if (n >= len_out) return;
+  if (n >= len_out)
+    return;
   const size_t y_batch = static_cast<size_t>(b) * out_ch * len_out;
 #pragma unroll
   for (int o = 0; o < kUpOut; ++o) {
     const int co = co0 + o;
-    if (co < out_ch) y[y_batch + static_cast<size_t>(co) * len_out + n] = acc[o];
+    if (co < out_ch)
+      y[y_batch + static_cast<size_t>(co) * len_out + n] = acc[o];
   }
 }
 
@@ -235,7 +239,8 @@ __global__ void aa_upsample_snake_kernel(const float* __restrict__ x,
                                          const float* __restrict__ log_beta, float* __restrict__ y,
                                          int channels, int len_in) {
   __shared__ float f[kAudioAAKernel];
-  if (static_cast<int>(threadIdx.x) < kAudioAAKernel) f[threadIdx.x] = filter[threadIdx.x];
+  if (static_cast<int>(threadIdx.x) < kAudioAAKernel)
+    f[threadIdx.x] = filter[threadIdx.x];
   __syncthreads();
 
   const int c = static_cast<int>(blockIdx.y);
@@ -245,9 +250,9 @@ __global__ void aa_upsample_snake_kernel(const float* __restrict__ x,
   const float* row = x + (static_cast<size_t>(b) * channels + c) * len_in;
   float* out = y + (static_cast<size_t>(b) * channels + c) * len_out;
 
-  constexpr int kHalfTaps = kAudioAAKernel / 2;  // 6 of the 12 taps, by parity
-  constexpr int kCrop = 15;  // pad*stride + (kernel - stride)/2, the left crop
-  constexpr int kLag = 5;    // the replicate pad, kernel/ratio - 1
+  constexpr int kHalfTaps = kAudioAAKernel / 2; // 6 of the 12 taps, by parity
+  constexpr int kCrop = 15;                     // pad*stride + (kernel - stride)/2, the left crop
+  constexpr int kLag = 5;                       // the replicate pad, kernel/ratio - 1
 
   const int stride = static_cast<int>(gridDim.x) * static_cast<int>(blockDim.x);
   for (int n = static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) +
@@ -261,13 +266,12 @@ __global__ void aa_upsample_snake_kernel(const float* __restrict__ x,
     for (int i = 0; i < kHalfTaps; ++i) {
       int s = j - i;
       s = s < 0 ? 0 : (s >= len_in ? len_in - 1 : s);
-      sum = canonicalize_pointwise_float(fmaf(
-          canonicalize_pointwise_float(row[s]),
-          canonicalize_pointwise_float(f[parity + 2 * i]), sum));
+      sum =
+          canonicalize_pointwise_float(fmaf(canonicalize_pointwise_float(row[s]),
+                                            canonicalize_pointwise_float(f[parity + 2 * i]), sum));
     }
     out[n] = deterministic_snake(
-        canonicalize_pointwise_float(
-            __fmul_rn(sum, static_cast<float>(kAudioAARatio))),
+        canonicalize_pointwise_float(__fmul_rn(sum, static_cast<float>(kAudioAARatio))),
         log_alpha[c], log_beta[c]);
   }
 }
@@ -277,7 +281,8 @@ __global__ void aa_upsample_snake_kernel(const float* __restrict__ x,
 __global__ void aa_downsample_kernel(const float* __restrict__ x, const float* __restrict__ filter,
                                      float* __restrict__ y, int channels, int len_in, int len_out) {
   __shared__ float f[kAudioAAKernel];
-  if (static_cast<int>(threadIdx.x) < kAudioAAKernel) f[threadIdx.x] = filter[threadIdx.x];
+  if (static_cast<int>(threadIdx.x) < kAudioAAKernel)
+    f[threadIdx.x] = filter[threadIdx.x];
   __syncthreads();
 
   const int c = static_cast<int>(blockIdx.y);
@@ -294,9 +299,8 @@ __global__ void aa_downsample_kernel(const float* __restrict__ x, const float* _
     for (int k = 0; k < kAudioAAKernel; ++k) {
       int s = kAudioAARatio * n + k - 5;
       s = s < 0 ? 0 : (s >= len_in ? len_in - 1 : s);
-      sum = canonicalize_pointwise_float(fmaf(
-          canonicalize_pointwise_float(row[s]),
-          canonicalize_pointwise_float(f[k]), sum));
+      sum = canonicalize_pointwise_float(
+          fmaf(canonicalize_pointwise_float(row[s]), canonicalize_pointwise_float(f[k]), sum));
     }
     out[n] = sum;
   }
@@ -309,9 +313,8 @@ __global__ void add_inplace_kernel(float* __restrict__ x, const float* __restric
   const size_t stride = static_cast<size_t>(gridDim.x) * blockDim.x;
   for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < count;
        i += stride) {
-    x[i] = canonicalize_pointwise_float(
-        canonicalize_pointwise_float(x[i]) +
-        canonicalize_pointwise_float(y[i]));
+    x[i] = canonicalize_pointwise_float(canonicalize_pointwise_float(x[i]) +
+                                        canonicalize_pointwise_float(y[i]));
   }
 }
 
@@ -319,9 +322,8 @@ __global__ void scale_inplace_kernel(float* __restrict__ x, float scale, size_t 
   const size_t stride = static_cast<size_t>(gridDim.x) * blockDim.x;
   for (size_t i = blockIdx.x * static_cast<size_t>(blockDim.x) + threadIdx.x; i < count;
        i += stride) {
-    x[i] = canonicalize_pointwise_float(__fmul_rn(
-        canonicalize_pointwise_float(x[i]),
-        canonicalize_pointwise_float(scale)));
+    x[i] = canonicalize_pointwise_float(
+        __fmul_rn(canonicalize_pointwise_float(x[i]), canonicalize_pointwise_float(scale)));
   }
 }
 
@@ -342,18 +344,20 @@ __global__ void interleave_kernel(const float* __restrict__ planar, float* __res
        i += stride) {
     const int b = static_cast<int>(i / static_cast<size_t>(frames));
     const int t = static_cast<int>(i - static_cast<size_t>(b) * frames);
-    out[static_cast<size_t>(t) * batch + b] =
-        canonicalize_pointwise_float(planar[i]);
+    out[static_cast<size_t>(t) * batch + b] = canonicalize_pointwise_float(planar[i]);
   }
 }
 
 int elementwise_blocks(size_t count) {
   const size_t blocks = (count + 255) / 256;
-  if (blocks == 0) return 1;
+  if (blocks == 0)
+    return 1;
   return static_cast<int>(blocks > 4096 ? 4096 : blocks);
 }
 
-int ceil_div(int a, int b) { return (a + b - 1) / b; }
+int ceil_div(int a, int b) {
+  return (a + b - 1) / b;
+}
 
 // Anti-alias and Snake kernels are memory bound; capping the time axis keeps
 // the grid-stride loop from degenerating into one element per block.
@@ -363,7 +367,7 @@ dim3 elementwise_grid(int len, int channels, int batch) {
               static_cast<unsigned>(batch));
 }
 
-}  // namespace
+} // namespace
 
 void launch_conv1d(const float* x, const float* w, const float* bias, float* y, int batch,
                    int in_channels, int out_channels, int len_in, int len_out, int kernel, int pad,
@@ -381,8 +385,9 @@ void launch_conv1d(const float* x, const float* w, const float* bias, float* y, 
   const dim3 grid(static_cast<unsigned>(ceil_div(len_out, kConvTime)),
                   static_cast<unsigned>(ceil_div(out_channels, kConvOut)),
                   static_cast<unsigned>(batch));
-  const size_t shared = sizeof(float) * (static_cast<size_t>(kConvIn) * conv_span(kernel, dilation) +
-                                         static_cast<size_t>(kConvIn) * kConvOut * kernel);
+  const size_t shared =
+      sizeof(float) * (static_cast<size_t>(kConvIn) * conv_span(kernel, dilation) +
+                       static_cast<size_t>(kConvIn) * kConvOut * kernel);
   conv1d_kernel<<<grid, kConvThreads, shared, stream>>>(x, w, bias, y, in_channels, out_channels,
                                                         len_in, len_out, kernel, pad, dilation);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
@@ -412,9 +417,8 @@ void launch_conv_transpose1d(const float* x, const float* w, const float* bias, 
 
 void launch_snake_beta(float* x, const float* log_alpha, const float* log_beta, int batch,
                        int channels, int len, cudaStream_t stream) {
-  snake_beta_kernel<<<elementwise_grid(len, channels, batch), 256, 0, stream>>>(x, log_alpha,
-                                                                               log_beta, channels,
-                                                                               len);
+  snake_beta_kernel<<<elementwise_grid(len, channels, batch), 256, 0, stream>>>(
+      x, log_alpha, log_beta, channels, len);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -463,4 +467,4 @@ void launch_interleave(const float* planar, float* interleaved, int batch, int f
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

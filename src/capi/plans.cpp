@@ -1,13 +1,15 @@
 #include "internal.h"
 extern "C" {
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_resolve_plan(const slopfab_request* request, slopfab_plan* out_plan) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_resolve_plan(const slopfab_request* request,
+                                                    slopfab_plan* out_plan) {
   if (request == nullptr || out_plan == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_resolve_plan: null argument");
   }
   return guarded([&] {
     GeneratePlan plan;
     try {
-      if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
+      if (request->request.continuation &&
+          request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       plan = slopfab::resolve_plan(request->request);
       slopfab::validate_generation_options(request->request, plan, request->options);
@@ -35,7 +37,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_resolve_plan(const slopfab_request* reque
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* request, char** out_text) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* request,
+                                                     char** out_text) {
   if (request == nullptr || out_text == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_describe_plan: null argument");
   }
@@ -43,7 +46,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* requ
   return guarded([&] {
     GeneratePlan plan;
     try {
-      if (request->request.continuation && request->options.source != slopfab::LatentSource::kDenoise)
+      if (request->request.continuation &&
+          request->options.source != slopfab::LatentSource::kDenoise)
         throw std::invalid_argument("continuation requires denoising");
       plan = slopfab::resolve_plan(request->request);
       slopfab::validate_generation_options(request->request, plan, request->options);
@@ -51,7 +55,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* requ
       return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
     }
     char* text = dup_string(slopfab::describe_plan(request->request, plan));
-    if (text == nullptr) return fail(SLOPFAB_ERR_OUT_OF_MEMORY, "out of memory");
+    if (text == nullptr)
+      return fail(SLOPFAB_ERR_OUT_OF_MEMORY, "out of memory");
     *out_text = text;
     return SLOPFAB_OK;
   });
@@ -60,17 +65,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_describe_plan(const slopfab_request* requ
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_reused_models_clear(void) {
   bool expected = false;
   if (!g_generation_active.compare_exchange_strong(expected, true)) {
-    return fail(SLOPFAB_ERR_BUSY,
-                "cannot clear reused models while a generation is running");
+    return fail(SLOPFAB_ERR_BUSY, "cannot clear reused models while a generation is running");
   }
+
   struct ActiveClaim {
-    ~ActiveClaim() { g_generation_active.store(false); }
+    ~ActiveClaim() {
+      g_generation_active.store(false);
+    }
   } claim;
+
   return guarded([] {
     slopfab::clear_reused_generation_models();
     return SLOPFAB_OK;
   });
 }
-
-
 }

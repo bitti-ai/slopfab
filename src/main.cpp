@@ -91,20 +91,29 @@ int main(int argc, char** argv) {
   // `--help` is honoured for every command here rather than inside each one,
   // so a command that takes no arguments at all still answers it. Checked
   // before dispatch, so it never runs the command by accident.
-  if (const CommandHelp* c = find_command(command); c != nullptr && wants_help(argc - 2, argv + 2)) {
+  if (const CommandHelp* c = find_command(command);
+      c != nullptr && wants_help(argc - 2, argv + 2)) {
     return print_command_help(*c);
   }
 
   try {
-    if (command == "generate") return cmd_generate(argc - 2, argv + 2, argv[0]);
-    if (command == "prepare-lora") return cmd_prepare_lora(argc - 2, argv + 2);
-    if (command == "inspect") return cmd_inspect(argc - 2, argv + 2);
-    if (command == "compare") return cmd_compare(argc - 2, argv + 2);
-    if (command == "compare-y4m") return cmd_compare_y4m(argc - 2, argv + 2);
-    if (command == "devices") return cmd_devices();
-    if (command == "tokenize") return cmd_tokenize(argc - 2, argv + 2);
+    if (command == "generate")
+      return cmd_generate(argc - 2, argv + 2, argv[0]);
+    if (command == "prepare-lora")
+      return cmd_prepare_lora(argc - 2, argv + 2);
+    if (command == "inspect")
+      return cmd_inspect(argc - 2, argv + 2);
+    if (command == "compare")
+      return cmd_compare(argc - 2, argv + 2);
+    if (command == "compare-y4m")
+      return cmd_compare_y4m(argc - 2, argv + 2);
+    if (command == "devices")
+      return cmd_devices();
+    if (command == "tokenize")
+      return cmd_tokenize(argc - 2, argv + 2);
 #if SLOPFAB_WITH_CUDA
-    if (command == "decode") return cmd_decode(argc - 2, argv + 2);
+    if (command == "decode")
+      return cmd_decode(argc - 2, argv + 2);
 #endif
     if (command == "version") {
       std::printf("slopfab %s\n", kVersion);
@@ -113,7 +122,8 @@ int main(int argc, char** argv) {
     if (command == "help" || command == "--help" || command == "-h") {
       if (argc > 2) {
         const CommandHelp* c = find_command(argv[2]);
-        if (c != nullptr) return print_command_help(*c);
+        if (c != nullptr)
+          return print_command_help(*c);
         std::fprintf(stderr, "slopfab: unknown command '%s'\n\n", argv[2]);
         print_usage();
         return 2;
@@ -129,4 +139,3 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
-

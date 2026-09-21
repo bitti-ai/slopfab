@@ -49,5 +49,5 @@ ConditioningSettings parse_conditioning_settings(std::string_view json);
 void validate_conditioning_settings(const ConditioningSettings& settings);
 ResolvedConditioning resolve_conditioning_settings(const GenerateRequest& request);
 void validate_conditioning_request(const GenerateRequest& request,
-                                  const ResolvedConditioning& settings);
-}  // namespace slopfab
+                                   const ResolvedConditioning& settings);
+} // namespace slopfab

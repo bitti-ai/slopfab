@@ -9,25 +9,34 @@
 
 namespace slopfab::cuda {
 
-ReferenceMemoryProfiler::ReferenceMemoryProfiler()
-    : enabled_(StepProfiler::instance().enabled()) { sample(); }
+ReferenceMemoryProfiler::ReferenceMemoryProfiler() : enabled_(StepProfiler::instance().enabled()) {
+  sample();
+}
 
 void ReferenceMemoryProfiler::sample() {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   size_t free = 0, total = 0;
-  if (cudaMemGetInfo(&free, &total) != cudaSuccess) return;
-  if (!samples_) { baseline_ = total - free; minimum_free_ = free; }
+  if (cudaMemGetInfo(&free, &total) != cudaSuccess)
+    return;
+  if (!samples_) {
+    baseline_ = total - free;
+    minimum_free_ = free;
+  }
   peak_ = std::max(peak_, total - free);
   minimum_free_ = std::min(minimum_free_, free);
   ++samples_;
 }
 
 void ReferenceMemoryProfiler::report(const char* label) const {
-  if (!samples_) return;
+  if (!samples_)
+    return;
   constexpr double gib = 1024.0 * 1024 * 1024;
-  std::printf("references  %s CUDA sampled device memory: baseline %.2f GiB, peak %.2f GiB, minimum free %.2f GiB (%zu samples)\n",
-              label, baseline_ / gib, peak_ / gib, minimum_free_ / gib, samples_);
+  std::printf(
+      "references  %s CUDA sampled device memory: baseline %.2f GiB, peak %.2f GiB, minimum free %.2f GiB (%zu samples)\n",
+      label, baseline_ / gib, peak_ / gib, minimum_free_ / gib, samples_);
 }
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -37,27 +46,30 @@ long long now_ns() {
       .count();
 }
 
-double to_gib(size_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0); }
+double to_gib(size_t bytes) {
+  return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+}
 
-}  // namespace
+} // namespace
 
 StageMemorySpan::StageMemorySpan(const char* label) : label_(label) {
-  if (!StepProfiler::instance().enabled()) return;
+  if (!StepProfiler::instance().enabled())
+    return;
   start_ = now_ns();
   exceptions_ = std::uncaught_exceptions();
   report("begin");
 }
 
 StageMemorySpan::~StageMemorySpan() {
-  if (start_ == 0) return;
+  if (start_ == 0)
+    return;
   report(std::uncaught_exceptions() > exceptions_ ? "failed" : "end");
 }
 
 void StageMemorySpan::report(const char* boundary) const {
   size_t free = 0, total = 0;
   const cudaError_t status = cudaMemGetInfo(&free, &total);
-  std::printf("memory      %s %s %.3f s", label_, boundary,
-              (now_ns() - start_) / 1.0e9);
+  std::printf("memory      %s %s %.3f s", label_, boundary, (now_ns() - start_) / 1.0e9);
   if (status == cudaSuccess)
     std::printf("; device used %.3f GiB, free %.3f GiB", to_gib(total - free), to_gib(free));
   else
@@ -78,7 +90,8 @@ StepProfiler& StepProfiler::instance() {
 
 StepProfiler::Total& StepProfiler::slot(const char* label, bool host) {
   for (Total& t : totals_) {
-    if (t.label == label) return t;
+    if (t.label == label)
+      return t;
   }
   Total fresh;
   fresh.label = label;
@@ -88,15 +101,17 @@ StepProfiler::Total& StepProfiler::slot(const char* label, bool host) {
 }
 
 void StepProfiler::begin_step(cudaStream_t stream) {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   marks_.clear();
   pool_used_ = 0;
   active_ = true;
-  tick(nullptr, stream);  // the origin; its interval belongs to no label
+  tick(nullptr, stream); // the origin; its interval belongs to no label
 }
 
 void StepProfiler::tick(const char* label, cudaStream_t stream) {
-  if (!enabled_ || !active_) return;
+  if (!enabled_ || !active_)
+    return;
   if (pool_used_ == pool_.size()) {
     cudaEvent_t e = nullptr;
     SLOPFAB_CUDA_CHECK(cudaEventCreate(&e));
@@ -108,19 +123,20 @@ void StepProfiler::tick(const char* label, cudaStream_t stream) {
 }
 
 void StepProfiler::end_step() {
-  if (!enabled_ || !active_) return;
+  if (!enabled_ || !active_)
+    return;
   active_ = false;
-  if (marks_.size() < 2) return;
+  if (marks_.size() < 2)
+    return;
 
   const long long h0 = marks_.front().host_ns;
-  double gpu_at = 0.0;        // GPU arrival at mark k, ms since the origin
-  double gpu_prev = 0.0;      // ... at mark k-1
+  double gpu_at = 0.0;   // GPU arrival at mark k, ms since the origin
+  double gpu_prev = 0.0; // ... at mark k-1
   double min_lead = 1.0e30;
   for (size_t i = 1; i < marks_.size(); ++i) {
     float ms = 0.0f;
     SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, marks_[i - 1].event, marks_[i].event));
-    const double host_ms =
-        static_cast<double>(marks_[i].host_ns - marks_[i - 1].host_ns) / 1.0e6;
+    const double host_ms = static_cast<double>(marks_[i].host_ns - marks_[i - 1].host_ns) / 1.0e6;
     Total& t = slot(marks_[i].label, /*host=*/false);
     t.ms += ms;
     t.host_ms += host_ms;
@@ -132,7 +148,8 @@ void StepProfiler::end_step() {
     // The GPU cannot start segment k before the host has issued it. If the host
     // arrives after the GPU has already drained everything up to k-1, the
     // difference is time the card spent with nothing to run.
-    if (host_at > gpu_prev) idle_ms_ += host_at - gpu_prev;
+    if (host_at > gpu_prev)
+      idle_ms_ += host_at - gpu_prev;
     min_lead = std::min(min_lead, gpu_at - host_at);
   }
   float span = 0.0f;
@@ -145,32 +162,39 @@ void StepProfiler::end_step() {
 }
 
 void StepProfiler::add_host(const char* label, double ms) {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   Total& t = slot(label, /*host=*/true);
   t.ms += ms;
   t.count += 1;
 }
 
 void StepProfiler::add_step_wall(double wall_ms, double issue_ms, double wait_ms) {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   wall_ms_ += wall_ms;
   issue_ms_ += issue_ms;
   wait_ms_ += wait_ms;
 }
 
 void StepProfiler::sample_memory() {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   size_t free_bytes = 0;
   size_t total_bytes = 0;
-  if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) return;
+  if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess)
+    return;
   total_bytes_ = total_bytes;
   const size_t used = total_bytes - free_bytes;
-  if (used > peak_used_) peak_used_ = used;
-  if (min_free_ == 0 || free_bytes < min_free_) min_free_ = free_bytes;
+  if (used > peak_used_)
+    peak_used_ = used;
+  if (min_free_ == 0 || free_bytes < min_free_)
+    min_free_ = free_bytes;
 }
 
 void StepProfiler::report(std::FILE* out) const {
-  if (!enabled_ || steps_ == 0) return;
+  if (!enabled_ || steps_ == 0)
+    return;
 
   const double n = static_cast<double>(steps_);
   const double step_ms = wall_ms_ / n;
@@ -184,12 +208,14 @@ void StepProfiler::report(std::FILE* out) const {
   // and so are not part of the 100%.
   double device_sum = 0.0;
   for (const Total& t : totals_) {
-    if (t.host) continue;
+    if (t.host)
+      continue;
     device_sum += t.ms;
   }
   double host_sum = 0.0;
   for (const Total& t : totals_) {
-    if (t.host) continue;
+    if (t.host)
+      continue;
     host_sum += t.host_ms;
     std::fprintf(out, "%-24s %12.3f %12.1f %7.2f%% %12.3f %10.1f\n", t.label.c_str(), t.ms / n,
                  t.ms, 100.0 * t.ms / (step_ms * n), t.host_ms / n,
@@ -200,7 +226,8 @@ void StepProfiler::report(std::FILE* out) const {
 
   bool any_host = false;
   for (const Total& t : totals_) {
-    if (!t.host) continue;
+    if (!t.host)
+      continue;
     if (!any_host) {
       std::fprintf(out, "%-24s\n", "-- host (outside the stream timeline) --");
       any_host = true;
@@ -244,7 +271,8 @@ PhaseProfiler& PhaseProfiler::instance() {
 
 PhaseProfiler::Total& PhaseProfiler::slot(const char* label, bool gpu) {
   for (Total& t : totals_) {
-    if (t.label == label && t.gpu == gpu) return t;
+    if (t.label == label && t.gpu == gpu)
+      return t;
   }
   Total fresh;
   fresh.label = label;
@@ -254,21 +282,24 @@ PhaseProfiler::Total& PhaseProfiler::slot(const char* label, bool gpu) {
 }
 
 void PhaseProfiler::add(const char* label, double ms) {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   Total& t = slot(label, /*gpu=*/false);
   t.ms += ms;
   t.count += 1;
 }
 
 void PhaseProfiler::add_gpu(const char* label, double ms) {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   Total& t = slot(label, /*gpu=*/true);
   t.ms += ms;
   t.count += 1;
 }
 
 void PhaseProfiler::add_total(const char* stage, double ms) {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   stage_ = stage;
   total_ms_ += ms;
 }
@@ -287,7 +318,8 @@ void PhaseProfiler::bank_pair(const char* label, cudaEvent_t begin, cudaEvent_t 
 }
 
 void PhaseProfiler::flush_gpu() {
-  if (!enabled_ || pending_.empty()) return;
+  if (!enabled_ || pending_.empty())
+    return;
   for (const Pair& p : pending_) {
     float ms = 0.0f;
     SLOPFAB_CUDA_CHECK(cudaEventElapsedTime(&ms, p.begin, p.end));
@@ -298,25 +330,31 @@ void PhaseProfiler::flush_gpu() {
 }
 
 void PhaseProfiler::sample_memory() {
-  if (!enabled_) return;
+  if (!enabled_)
+    return;
   size_t free_bytes = 0;
   size_t total_bytes = 0;
-  if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) return;
+  if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess)
+    return;
   total_bytes_ = total_bytes;
   const size_t used = total_bytes - free_bytes;
-  if (used > peak_used_) peak_used_ = used;
-  if (min_free_ == 0 || free_bytes < min_free_) min_free_ = free_bytes;
+  if (used > peak_used_)
+    peak_used_ = used;
+  if (min_free_ == 0 || free_bytes < min_free_)
+    min_free_ = free_bytes;
 }
 
 void PhaseProfiler::report(std::FILE* out) const {
-  if (!enabled_ || total_ms_ == 0.0) return;
+  if (!enabled_ || total_ms_ == 0.0)
+    return;
 
   std::fprintf(out, "\n--- SLOPFAB_PROFILE: %s ---\n", stage_.c_str());
   std::fprintf(out, "%-24s %12s %8s %10s\n", "phase", "ms", "%stage", "calls");
 
   double host_sum = 0.0;
   for (const Total& t : totals_) {
-    if (t.gpu) continue;
+    if (t.gpu)
+      continue;
     host_sum += t.ms;
     std::fprintf(out, "%-24s %12.1f %7.2f%% %10lld\n", t.label.c_str(), t.ms,
                  100.0 * t.ms / total_ms_, t.count);
@@ -330,7 +368,8 @@ void PhaseProfiler::report(std::FILE* out) const {
   bool any_gpu = false;
   double gpu_sum = 0.0;
   for (const Total& t : totals_) {
-    if (!t.gpu) continue;
+    if (!t.gpu)
+      continue;
     if (!any_gpu) {
       std::fprintf(out, "%-24s\n", "-- device (inside the above) --");
       any_gpu = true;
@@ -363,44 +402,52 @@ void PhaseProfiler::report(std::FILE* out) const {
 }
 
 PhaseSpan::PhaseSpan(const char* label) : label_(label) {
-  if (!PhaseProfiler::instance().enabled()) return;
+  if (!PhaseProfiler::instance().enabled())
+    return;
   t0_ = now_ns();
   running_ = true;
 }
 
 void PhaseSpan::stop() {
-  if (!running_) return;
+  if (!running_)
+    return;
   running_ = false;
   PhaseProfiler::instance().add(label_, static_cast<double>(now_ns() - t0_) / 1.0e6);
 }
 
-PhaseSpan::~PhaseSpan() { stop(); }
+PhaseSpan::~PhaseSpan() {
+  stop();
+}
 
 PhaseGpuSpan::PhaseGpuSpan(const char* label, cudaStream_t stream)
     : label_(label), stream_(stream) {
   PhaseProfiler& p = PhaseProfiler::instance();
-  if (!p.enabled()) return;
+  if (!p.enabled())
+    return;
   begin_ = p.lease_event();
   SLOPFAB_CUDA_CHECK(cudaEventRecord(begin_, stream_));
 }
 
 PhaseGpuSpan::~PhaseGpuSpan() {
   PhaseProfiler& p = PhaseProfiler::instance();
-  if (!p.enabled() || begin_ == nullptr) return;
+  if (!p.enabled() || begin_ == nullptr)
+    return;
   end_ = p.lease_event();
   SLOPFAB_CUDA_CHECK(cudaEventRecord(end_, stream_));
   p.bank_pair(label_, begin_, end_);
 }
 
 HostSpan::HostSpan(const char* label) : label_(label) {
-  if (!StepProfiler::instance().enabled()) return;
+  if (!StepProfiler::instance().enabled())
+    return;
   t0_ = now_ns();
 }
 
 HostSpan::~HostSpan() {
   StepProfiler& p = StepProfiler::instance();
-  if (!p.enabled()) return;
+  if (!p.enabled())
+    return;
   p.add_host(label_, static_cast<double>(now_ns() - t0_) / 1.0e6);
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

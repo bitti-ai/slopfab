@@ -5,31 +5,43 @@ namespace detail {
 VkBufferUsageFlags buffer_usage_flags(BufferUsage usage) {
   const uint32_t value = static_cast<uint32_t>(usage);
   VkBufferUsageFlags result = 0;
-  if (value & static_cast<uint32_t>(BufferUsage::kStorage)) result |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-  if (value & static_cast<uint32_t>(BufferUsage::kUniform)) result |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-  if (value & static_cast<uint32_t>(BufferUsage::kTransferSource)) result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  if (value & static_cast<uint32_t>(BufferUsage::kTransferDestination)) result |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-  if (value & static_cast<uint32_t>(BufferUsage::kDeviceAddress)) result |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  if (value & static_cast<uint32_t>(BufferUsage::kStorage))
+    result |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  if (value & static_cast<uint32_t>(BufferUsage::kUniform))
+    result |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+  if (value & static_cast<uint32_t>(BufferUsage::kTransferSource))
+    result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  if (value & static_cast<uint32_t>(BufferUsage::kTransferDestination))
+    result |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  if (value & static_cast<uint32_t>(BufferUsage::kDeviceAddress))
+    result |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   return result;
 }
 
-}  // namespace detail
+} // namespace detail
+
 BufferPool::BufferPool(const Device& device, uint64_t block_bytes) {
-  if (!device.impl_) throw std::invalid_argument("vulkan: BufferPool requires a device");
-  if (block_bytes == 0) throw std::invalid_argument("vulkan: BufferPool block size is zero");
+  if (!device.impl_)
+    throw std::invalid_argument("vulkan: BufferPool requires a device");
+  if (block_bytes == 0)
+    throw std::invalid_argument("vulkan: BufferPool block size is zero");
   impl_ = std::make_shared<Impl>();
   impl_->device = device.impl_->state;
   impl_->block_bytes = block_bytes;
 }
+
 BufferPool::~BufferPool() = default;
 BufferPool::BufferPool(BufferPool&&) noexcept = default;
 BufferPool& BufferPool::operator=(BufferPool&&) noexcept = default;
 
 Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memory) {
-  if (!impl_) throw std::logic_error("vulkan: empty BufferPool");
-  if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized buffers are not supported");
+  if (!impl_)
+    throw std::logic_error("vulkan: empty BufferPool");
+  if (bytes == 0)
+    throw std::invalid_argument("vulkan: zero-sized buffers are not supported");
   const VkBufferUsageFlags flags = detail::buffer_usage_flags(usage);
-  if (flags == 0) throw std::invalid_argument("vulkan: buffer usage is empty");
+  if (flags == 0)
+    throw std::invalid_argument("vulkan: buffer usage is empty");
   const bool addressable =
       (static_cast<uint32_t>(usage) & static_cast<uint32_t>(BufferUsage::kDeviceAddress)) != 0;
   if (addressable && !impl_->device->buffer_device_address_enabled) {
@@ -70,19 +82,19 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
     const uint32_t type = impl_->choose_memory_type(requirements.memoryTypeBits, memory);
     const bool host_visible = (impl_->device->memory.memoryTypes[type].propertyFlags &
                                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
-    const uint64_t suballocation_alignment = host_visible
-        ? std::max<uint64_t>(requirements.alignment, impl_->device->non_coherent_atom_size)
-        : requirements.alignment;
-    suballocation_bytes = host_visible
-        ? detail::align_up(requirements.size, impl_->device->non_coherent_atom_size)
-        : requirements.size;
+    const uint64_t suballocation_alignment =
+        host_visible
+            ? std::max<uint64_t>(requirements.alignment, impl_->device->non_coherent_atom_size)
+            : requirements.alignment;
+    suballocation_bytes =
+        host_visible ? detail::align_up(requirements.size, impl_->device->non_coherent_atom_size)
+                     : requirements.size;
     {
       std::lock_guard<std::mutex> lock(impl_->mutex);
       if (!dedicated) {
         for (const auto& candidate : impl_->blocks) {
           if (!candidate->dedicated && !candidate->recycle_failed &&
-              candidate->memory_type == type &&
-              (!addressable || candidate->addressable) &&
+              candidate->memory_type == type && (!addressable || candidate->addressable) &&
               Impl::take_range(*candidate, suballocation_bytes, suballocation_alignment, &offset)) {
             block = candidate;
             span_reserved = true;
@@ -95,7 +107,8 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
         if (!dedicated) {
           const uint32_t heap_index = impl_->device->memory.memoryTypes[type].heapIndex;
           const uint64_t heap_bytes = impl_->device->memory.memoryHeaps[heap_index].size;
-          const uint64_t economical_block = std::max<uint64_t>(suballocation_bytes,
+          const uint64_t economical_block = std::max<uint64_t>(
+              suballocation_bytes,
               std::min<uint64_t>(impl_->block_bytes,
                                  std::max<uint64_t>(heap_bytes / 8, suballocation_bytes)));
           allocation_bytes = detail::align_up(economical_block, suballocation_alignment);
@@ -107,9 +120,9 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
         span_reserved = true;
       }
     }
-    detail::check(impl_->device->bind_buffer_memory(impl_->device->device, buffer,
-                                                    block->memory, offset),
-                  "vkBindBufferMemory");
+    detail::check(
+        impl_->device->bind_buffer_memory(impl_->device->device, buffer, block->memory, offset),
+        "vkBindBufferMemory");
     auto result = std::make_shared<Buffer::Impl>();
     result->pool = impl_;
     result->block = std::move(block);
@@ -122,20 +135,26 @@ Buffer BufferPool::allocate(uint64_t bytes, BufferUsage usage, MemoryUsage memor
     return Buffer(std::move(result));
   } catch (...) {
     impl_->device->destroy_buffer(impl_->device->device, buffer, nullptr);
-    if (span_reserved) impl_->release(block, offset, suballocation_bytes);
+    if (span_reserved)
+      impl_->release(block, offset, suballocation_bytes);
     throw;
   }
 }
 
 void BufferPool::trim() {
-  if (!impl_) return;
+  if (!impl_)
+    return;
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->blocks.erase(std::remove_if(impl_->blocks.begin(), impl_->blocks.end(),
-                                    [](const auto& block) { return block->used == 0; }),
+                                     [](const auto& block) {
+                                       return block->used == 0;
+                                     }),
                       impl_->blocks.end());
 }
+
 uint64_t BufferPool::reserved_bytes() const {
-  if (!impl_) return 0;
+  if (!impl_)
+    return 0;
   std::lock_guard<std::mutex> lock(impl_->mutex);
   uint64_t total = 0;
   for (const auto& block : impl_->blocks) {
@@ -146,8 +165,10 @@ uint64_t BufferPool::reserved_bytes() const {
   }
   return total;
 }
+
 uint64_t BufferPool::used_bytes() const {
-  if (!impl_) return 0;
+  if (!impl_)
+    return 0;
   std::lock_guard<std::mutex> lock(impl_->mutex);
   uint64_t total = 0;
   for (const auto& block : impl_->blocks) {
@@ -163,77 +184,112 @@ Buffer::Buffer() = default;
 Buffer::~Buffer() = default;
 Buffer::Buffer(Buffer&&) noexcept = default;
 Buffer& Buffer::operator=(Buffer&&) noexcept = default;
-Buffer::Buffer(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
-uint64_t Buffer::size() const noexcept { return impl_ ? impl_->bytes : 0; }
+
+Buffer::Buffer(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+
+uint64_t Buffer::size() const noexcept {
+  return impl_ ? impl_->bytes : 0;
+}
+
 BufferUsage Buffer::usage() const noexcept {
   return impl_ ? impl_->buffer_usage : static_cast<BufferUsage>(0);
 }
+
 MemoryUsage Buffer::memory_usage() const noexcept {
   return impl_ ? impl_->usage : MemoryUsage::kDevice;
 }
+
 void* Buffer::mapped_data() noexcept {
-  if (!impl_ || impl_->block->mapped == nullptr) return nullptr;
+  if (!impl_ || impl_->block->mapped == nullptr)
+    return nullptr;
   return static_cast<unsigned char*>(impl_->block->mapped) + impl_->offset;
 }
+
 const void* Buffer::mapped_data() const noexcept {
-  if (!impl_ || impl_->block->mapped == nullptr) return nullptr;
+  if (!impl_ || impl_->block->mapped == nullptr)
+    return nullptr;
   return static_cast<const unsigned char*>(impl_->block->mapped) + impl_->offset;
 }
+
 void Buffer::flush(uint64_t offset, uint64_t bytes) {
-  if (!impl_) throw std::logic_error("vulkan: empty Buffer");
-  if (bytes == ~uint64_t{0}) bytes = impl_->bytes - offset;
+  if (!impl_)
+    throw std::logic_error("vulkan: empty Buffer");
+  if (bytes == ~uint64_t{0})
+    bytes = impl_->bytes - offset;
   impl_->check_range(offset, bytes);
-  if (bytes == 0) return;
+  if (bytes == 0)
+    return;
   if (!(impl_->block->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
     throw std::logic_error("vulkan: device-local buffer is not mapped");
   }
   std::lock_guard<std::mutex> lock(impl_->block->mapped_mutex);
   impl_->flush_range(offset, bytes);
 }
+
 void Buffer::invalidate(uint64_t offset, uint64_t bytes) const {
-  if (!impl_) throw std::logic_error("vulkan: empty Buffer");
-  if (bytes == ~uint64_t{0}) bytes = impl_->bytes - offset;
+  if (!impl_)
+    throw std::logic_error("vulkan: empty Buffer");
+  if (bytes == ~uint64_t{0})
+    bytes = impl_->bytes - offset;
   impl_->check_range(offset, bytes);
-  if (bytes == 0) return;
+  if (bytes == 0)
+    return;
   if (!(impl_->block->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
     throw std::logic_error("vulkan: device-local buffer is not mapped");
   }
   std::lock_guard<std::mutex> lock(impl_->block->mapped_mutex);
   impl_->invalidate_range(offset, bytes);
 }
+
 void Buffer::write(uint64_t offset, const void* data, uint64_t bytes) {
-  if (data == nullptr && bytes != 0) throw std::invalid_argument("vulkan: null buffer write source");
-  if (mapped_data() == nullptr) throw std::logic_error("vulkan: buffer is not host-visible");
+  if (data == nullptr && bytes != 0)
+    throw std::invalid_argument("vulkan: null buffer write source");
+  if (mapped_data() == nullptr)
+    throw std::logic_error("vulkan: buffer is not host-visible");
   impl_->check_range(offset, bytes);
-  if (bytes == 0) return;
+  if (bytes == 0)
+    return;
   std::lock_guard<std::mutex> lock(impl_->block->mapped_mutex);
   std::memcpy(static_cast<unsigned char*>(mapped_data()) + offset, data,
               static_cast<size_t>(bytes));
   impl_->flush_range(offset, bytes);
 }
+
 void Buffer::read(uint64_t offset, void* data, uint64_t bytes) const {
-  if (data == nullptr && bytes != 0) throw std::invalid_argument("vulkan: null buffer read destination");
-  if (mapped_data() == nullptr) throw std::logic_error("vulkan: buffer is not host-visible");
+  if (data == nullptr && bytes != 0)
+    throw std::invalid_argument("vulkan: null buffer read destination");
+  if (mapped_data() == nullptr)
+    throw std::logic_error("vulkan: buffer is not host-visible");
   impl_->check_range(offset, bytes);
-  if (bytes == 0) return;
+  if (bytes == 0)
+    return;
   std::lock_guard<std::mutex> lock(impl_->block->mapped_mutex);
   impl_->invalidate_range(offset, bytes);
   std::memcpy(data, static_cast<const unsigned char*>(mapped_data()) + offset,
               static_cast<size_t>(bytes));
 }
+
 void Buffer::reset_after_idle(const Queue& queue) {
-  if (!impl_) return;
+  if (!impl_)
+    return;
   if (!queue.impl_ || queue.impl_->state != impl_->pool->device) {
     throw std::invalid_argument("vulkan: buffer and queue belong to different devices");
   }
   queue.wait_idle();
   impl_.reset();
 }
+
 uintptr_t Buffer::native_handle() const noexcept {
   return impl_ ? reinterpret_cast<uintptr_t>(impl_->buffer) : 0;
 }
-uint64_t Buffer::memory_offset() const noexcept { return impl_ ? impl_->offset : 0; }
-Buffer::operator bool() const noexcept { return impl_ != nullptr; }
 
+uint64_t Buffer::memory_offset() const noexcept {
+  return impl_ ? impl_->offset : 0;
+}
 
-}  // namespace slopfab::vulkan
+Buffer::operator bool() const noexcept {
+  return impl_ != nullptr;
+}
+
+} // namespace slopfab::vulkan

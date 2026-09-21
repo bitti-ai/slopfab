@@ -47,23 +47,30 @@
 #endif
 
 #include "helpers.h"
+
 namespace slopfab::generation {
 std::vector<uint8_t> resize_rgb_bilinear(const RGBImage& in, int width, int height) {
   std::vector<uint8_t> out(static_cast<size_t>(width) * height * 3);
-  for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
-    const float sy = (y + .5f) * in.height / height - .5f;
-    const float sx = (x + .5f) * in.width / width - .5f;
-    const int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, in.height - 1);
-    const int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, in.width - 1);
-    const int y1 = std::min(y0 + 1, in.height - 1), x1 = std::min(x0 + 1, in.width - 1);
-    const float fy = std::clamp(sy - std::floor(sy), 0.0f, 1.0f);
-    const float fx = std::clamp(sx - std::floor(sx), 0.0f, 1.0f);
-    for (int c = 0; c < 3; ++c) {
-      auto at=[&](int yy,int xx){return in.pixels[(static_cast<size_t>(yy)*in.width+xx)*3+c];};
-      const float v=(1-fy)*((1-fx)*at(y0,x0)+fx*at(y0,x1))+fy*((1-fx)*at(y1,x0)+fx*at(y1,x1));
-      out[(static_cast<size_t>(y)*width+x)*3+c]=static_cast<uint8_t>(std::clamp(std::lround(v),0l,255l));
+  for (int y = 0; y < height; ++y)
+    for (int x = 0; x < width; ++x) {
+      const float sy = (y + .5f) * in.height / height - .5f;
+      const float sx = (x + .5f) * in.width / width - .5f;
+      const int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, in.height - 1);
+      const int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, in.width - 1);
+      const int y1 = std::min(y0 + 1, in.height - 1), x1 = std::min(x0 + 1, in.width - 1);
+      const float fy = std::clamp(sy - std::floor(sy), 0.0f, 1.0f);
+      const float fx = std::clamp(sx - std::floor(sx), 0.0f, 1.0f);
+      for (int c = 0; c < 3; ++c) {
+        auto at = [&](int yy, int xx) {
+          return in.pixels[(static_cast<size_t>(yy) * in.width + xx) * 3 + c];
+        };
+        const float v = (1 - fy) * ((1 - fx) * at(y0, x0) + fx * at(y0, x1)) +
+                        fy * ((1 - fx) * at(y1, x0) + fx * at(y1, x1));
+        out[(static_cast<size_t>(y) * width + x) * 3 + c] =
+            static_cast<uint8_t>(std::clamp(std::lround(v), 0l, 255l));
+      }
     }
-  } return out;
+  return out;
 }
 
 double seconds_since(Clock::time_point start) {
@@ -73,8 +80,10 @@ double seconds_since(Clock::time_point start) {
 std::string strip_extension(const std::string& path) {
   const size_t slash = path.find_last_of("/\\");
   const size_t dot = path.find_last_of('.');
-  if (dot == std::string::npos) return path;
-  if (slash != std::string::npos && dot < slash) return path;
+  if (dot == std::string::npos)
+    return path;
+  if (slash != std::string::npos && dot < slash)
+    return path;
   return path.substr(0, dot);
 }
 
@@ -84,8 +93,10 @@ std::string strip_extension(const std::string& path) {
 std::vector<float> read_stat(const SafeTensors& st, const char* name, int expect) {
   const TensorView* found = st.find(name);
   if (found == nullptr && expect == 24) {
-    if (std::strcmp(name, "latents_mean") == 0) return vae::default_video_latents_mean();
-    if (std::strcmp(name, "latents_std") == 0) return vae::default_video_latents_std();
+    if (std::strcmp(name, "latents_mean") == 0)
+      return vae::default_video_latents_mean();
+    if (std::strcmp(name, "latents_std") == 0)
+      return vae::default_video_latents_std();
   }
   const TensorView& view = found ? *found : st.at(name);
   std::vector<float> out = to_f32(view);
@@ -102,7 +113,8 @@ bool env_flag(const char* name) {
 #ifdef _MSC_VER
   size_t len = 0;
   char buf[8] = {};
-  if (getenv_s(&len, buf, sizeof(buf), name) != 0) return false;
+  if (getenv_s(&len, buf, sizeof(buf), name) != 0)
+    return false;
   return len != 0 && buf[0] == '1';
 #else
   const char* v = std::getenv(name);
@@ -111,8 +123,7 @@ bool env_flag(const char* name) {
 }
 
 #if SLOPFAB_WITH_VULKAN
-vulkan::Device create_vulkan_inference_device(bool exact_h3,
-                                             bool sage_attention) {
+vulkan::Device create_vulkan_inference_device(bool exact_h3, bool sage_attention) {
   if (!vulkan::Instance::available())
     throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
   vulkan::Instance instance = vulkan::Instance::create();
@@ -123,8 +134,7 @@ vulkan::Device create_vulkan_inference_device(bool exact_h3,
   if (!info.timeline_semaphore || !info.shader_int64 ||
       (exact_h3 && (!info.shader_float16 || !info.storage_buffer_16bit ||
                     !info.cooperative_matrix_bf16_f32_16x16x16)))
-    throw std::runtime_error(
-        "Vulkan inference: device lacks required exact neural features");
+    throw std::runtime_error("Vulkan inference: device lacks required exact neural features");
   vulkan::DeviceOptions options;
   options.enable_timeline_semaphore = true;
   options.enable_shader_int64 = true;

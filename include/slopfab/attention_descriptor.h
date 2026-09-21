@@ -30,10 +30,10 @@ struct AttentionDescriptor {
 };
 
 inline void validate_attention_descriptor(const AttentionDescriptor& desc) {
-  if (!desc.query_tokens || !desc.key_value_tokens || !desc.query_heads ||
-      !desc.key_value_heads || !desc.head_dim ||
-      desc.query_heads % desc.key_value_heads != 0)
-    throw std::invalid_argument("attention: positive dimensions and divisible query/KV heads required");
+  if (!desc.query_tokens || !desc.key_value_tokens || !desc.query_heads || !desc.key_value_heads ||
+      !desc.head_dim || desc.query_heads % desc.key_value_heads != 0)
+    throw std::invalid_argument(
+        "attention: positive dimensions and divisible query/KV heads required");
   if (desc.layout != AttentionLayout::kTokensHeadsChannels)
     throw std::invalid_argument("attention: unsupported layout");
   if (desc.mask != AttentionMask::kFull && desc.mask != AttentionMask::kCausal &&
@@ -51,8 +51,7 @@ inline void validate_attention_descriptor(const AttentionDescriptor& desc) {
   // All current operators use signed 32-bit row strides.
   if (uint64_t(desc.query_heads) * desc.head_dim > uint64_t(INT32_MAX) ||
       uint64_t(desc.key_value_heads) * desc.head_dim > uint64_t(INT32_MAX) ||
-      desc.query_tokens > uint32_t(INT32_MAX) ||
-      desc.key_value_tokens > uint32_t(INT32_MAX))
+      desc.query_tokens > uint32_t(INT32_MAX) || desc.key_value_tokens > uint32_t(INT32_MAX))
     throw std::invalid_argument("attention: dimensions exceed kernel indexing limits");
 }
 
@@ -61,12 +60,11 @@ inline void validate_attention_descriptor(const AttentionDescriptor& desc) {
 inline bool supports_exact_text_attention(const AttentionDescriptor& desc,
                                           uint32_t max_tokens) noexcept {
   return desc.query_tokens > 0 && desc.query_tokens <= max_tokens &&
-      desc.query_tokens == desc.key_value_tokens && desc.query_heads == 64 &&
-      desc.key_value_heads == 8 && desc.head_dim == 128 &&
-      desc.layout == AttentionLayout::kTokensHeadsChannels &&
-      desc.mask == AttentionMask::kCausal &&
-      desc.arithmetic == AttentionArithmetic::kExact &&
-      is_exact_attention_scale(desc.head_dim, desc.scale);
+         desc.query_tokens == desc.key_value_tokens && desc.query_heads == 64 &&
+         desc.key_value_heads == 8 && desc.head_dim == 128 &&
+         desc.layout == AttentionLayout::kTokensHeadsChannels &&
+         desc.mask == AttentionMask::kCausal && desc.arithmetic == AttentionArithmetic::kExact &&
+         is_exact_attention_scale(desc.head_dim, desc.scale);
 }
 
-}  // namespace slopfab
+} // namespace slopfab

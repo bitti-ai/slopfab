@@ -16,13 +16,12 @@ struct VsaConfig {
 
 size_t vsa_attention_workspace_bytes(int tiles, int heads, int head_dim);
 // compressed is [tiles, heads, head_dim], BF16. Sparse out keeps packed order.
-void vsa_attention_forward(cudaStream_t stream, const __nv_bfloat16* q,
-                           const __nv_bfloat16* k, const __nv_bfloat16* v,
-                           __nv_bfloat16* out, __nv_bfloat16* compressed,
+void vsa_attention_forward(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
+                           const __nv_bfloat16* v, __nv_bfloat16* out, __nv_bfloat16* compressed,
                            const VsaConfig& cfg, Workspace& workspace);
 // BF16 multiply, then BF16 add, matching the checkpoint's eager gate branch.
-void vsa_add_compression(cudaStream_t stream, __nv_bfloat16* output,
-                         const __nv_bfloat16* gate, const __nv_bfloat16* compressed,
-                         int offset, int count, const VsaConfig& cfg);
+void vsa_add_compression(cudaStream_t stream, __nv_bfloat16* output, const __nv_bfloat16* gate,
+                         const __nv_bfloat16* compressed, int offset, int count,
+                         const VsaConfig& cfg);
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

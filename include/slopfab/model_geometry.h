@@ -24,10 +24,15 @@ struct LatentGeometry {
   double min_aspect = 0.25, max_aspect = 4.0;
   double rope_frame_rescale = 5.0 / 3.0;
   double rope_spatial_scale = 32.0;
-  std::vector<int> rope_frames_per_latent = {1,4,4,4,4};
-  int video_patch_dim() const { return video_channels * patch_height * patch_width; }
+  std::vector<int> rope_frames_per_latent = {1, 4, 4, 4, 4};
+
+  int video_patch_dim() const {
+    return video_channels * patch_height * patch_width;
+  }
+
   std::string fingerprint() const;
 };
+
 const LatentGeometry& h3_latent_geometry();
 void validate_latent_geometry(const LatentGeometry& geometry);
 // Rejects contracts not implemented by the current H3 transformer/codec kernels.

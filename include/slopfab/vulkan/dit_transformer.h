@@ -42,7 +42,7 @@ struct H3TransformerForwardReplayTaps {
 };
 
 class ExactH3Transformer {
- public:
+public:
   ExactH3Transformer();
   ~ExactH3Transformer();
   ExactH3Transformer(ExactH3Transformer&&) noexcept;
@@ -50,8 +50,7 @@ class ExactH3Transformer {
   ExactH3Transformer(const ExactH3Transformer&) = delete;
   ExactH3Transformer& operator=(const ExactH3Transformer&) = delete;
 
-  static ExactH3Transformer create(TensorContext& context,
-                                   const ExactH3TransformerConfig& config);
+  static ExactH3Transformer create(TensorContext& context, const ExactH3TransformerConfig& config);
   void load(const SafeTensors& checkpoint);
   void unload() noexcept;
   bool loaded() const noexcept;
@@ -61,10 +60,8 @@ class ExactH3Transformer {
   // prompt is contiguous fp32 [text_rows,text_dim]. The cached final-refiner
   // BF16 stream remains device-resident for every subsequent evaluation.
   // One bounded submission; marks the cache ready only after completion.
-  void prepare_text(DeviceTensor& prompt,
-      const H3TransformerTextReplayTaps* taps = nullptr);
-  uint32_t required_prepare_text_operators(
-      const H3TransformerTextReplayTaps* taps = nullptr) const;
+  void prepare_text(DeviceTensor& prompt, const H3TransformerTextReplayTaps* taps = nullptr);
+  uint32_t required_prepare_text_operators(const H3TransformerTextReplayTaps* taps = nullptr) const;
 
   // Inputs/outputs are contiguous fp32 modality rows. Audio tensors may be
   // empty when `audio_rows == 0`; that modality's projection and head are not
@@ -73,32 +70,24 @@ class ExactH3Transformer {
   // and gather that packed stream without a shader or host boundary.
   // main_selectors are [S] AdaLN table rows, code is [T,rank], and final
   // selectors are timestep-only [V]/[A].
-  void record_forward(TensorBatch& batch,
-                      DeviceTensor& video_latents,
-                      DeviceTensor& audio_latents,
-                      DeviceTensor& main_selectors,
-                      DeviceTensor& code,
-                      DeviceTensor& cosine,
-                      DeviceTensor& sine,
-                      DeviceTensor& video_timestep_indices,
-                      DeviceTensor& audio_timestep_indices,
-                      DeviceTensor& video_velocity,
-                      DeviceTensor& audio_velocity,
-                      const H3AttentionRanges* ranges = nullptr,
+  void record_forward(TensorBatch& batch, DeviceTensor& video_latents, DeviceTensor& audio_latents,
+                      DeviceTensor& main_selectors, DeviceTensor& code, DeviceTensor& cosine,
+                      DeviceTensor& sine, DeviceTensor& video_timestep_indices,
+                      DeviceTensor& audio_timestep_indices, DeviceTensor& video_velocity,
+                      DeviceTensor& audio_velocity, const H3AttentionRanges* ranges = nullptr,
                       const H3TransformerForwardReplayTaps* taps = nullptr,
                       DeviceTensor* video_row_indices = nullptr,
                       DeviceTensor* audio_row_indices = nullptr);
-  uint32_t required_forward_operators(
-      const H3TransformerForwardReplayTaps* taps = nullptr) const;
+  uint32_t required_forward_operators(const H3TransformerForwardReplayTaps* taps = nullptr) const;
 
   uint64_t persistent_bytes() const noexcept;
   uint64_t scratch_bytes() const noexcept;
   uint64_t peak_device_bytes() const noexcept;
 
- private:
+private:
   struct Impl;
   explicit ExactH3Transformer(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

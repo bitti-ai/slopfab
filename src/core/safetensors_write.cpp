@@ -20,9 +20,15 @@ std::string quote_json(const std::string& value) {
   const char* hex = "0123456789abcdef";
   std::string result = "\"";
   for (unsigned char c : value) {
-    if (c == '"' || c == '\\') { result += '\\'; result += static_cast<char>(c); }
-    else if (c < 32) { result += "\\u00"; result += hex[c >> 4]; result += hex[c & 15]; }
-    else result += static_cast<char>(c);
+    if (c == '"' || c == '\\') {
+      result += '\\';
+      result += static_cast<char>(c);
+    } else if (c < 32) {
+      result += "\\u00";
+      result += hex[c >> 4];
+      result += hex[c & 15];
+    } else
+      result += static_cast<char>(c);
   }
   return result + '"';
 }
@@ -30,17 +36,18 @@ std::string quote_json(const std::string& value) {
 std::string shape_to_json(const std::vector<int64_t>& shape) {
   std::string out = "[";
   for (size_t i = 0; i < shape.size(); ++i) {
-    if (i != 0) out += ",";
+    if (i != 0)
+      out += ",";
     out += std::to_string(shape[i]);
   }
   out += "]";
   return out;
 }
 
-}  // namespace
+} // namespace
 
 void write_safetensors(const std::string& path, const std::vector<TensorWrite>& tensors,
-                      const std::map<std::string, std::string>& metadata) {
+                       const std::map<std::string, std::string>& metadata) {
   // Header first: offsets are relative to the start of the data block, so the
   // whole layout is known before anything is written.
   std::string header = "{";
@@ -49,7 +56,8 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
   if (!metadata.empty()) {
     header += "\"__metadata__\":{";
     for (const auto& entry : metadata) {
-      if (!first) header += ',';
+      if (!first)
+        header += ',';
       first = false;
       header += quote_json(entry.first) + ':' + quote_json(entry.second);
     }
@@ -57,33 +65,34 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
   }
   for (const TensorWrite& t : tensors) {
     int64_t elems = 1;
-    for (int64_t d : t.shape) elems *= d;
-    if (t.dtype != DType::kF32 && t.dtype != DType::kBF16 &&
-        t.dtype != DType::kF16)
-      throw std::runtime_error(
-          "safetensors write: only F32, F16 and BF16 fixtures are supported");
+    for (int64_t d : t.shape)
+      elems *= d;
+    if (t.dtype != DType::kF32 && t.dtype != DType::kBF16 && t.dtype != DType::kF16)
+      throw std::runtime_error("safetensors write: only F32, F16 and BF16 fixtures are supported");
     const size_t bytes = static_cast<size_t>(elems) * dtype_size(t.dtype);
     if (t.data.size() != static_cast<size_t>(elems)) {
       throw std::runtime_error("safetensors write: tensor '" + t.name + "' has " +
                                std::to_string(t.data.size()) + " values but shape implies " +
                                std::to_string(elems));
     }
-    if (!first) header += ",";
+    if (!first)
+      header += ",";
     first = false;
     header += "\"" + t.name + "\":{\"dtype\":\"" + dtype_name(t.dtype) +
-              "\",\"shape\":" + shape_to_json(t.shape) +
-              ",\"data_offsets\":[" + std::to_string(offset) + "," +
-              std::to_string(offset + bytes) + "]}";
+              "\",\"shape\":" + shape_to_json(t.shape) + ",\"data_offsets\":[" +
+              std::to_string(offset) + "," + std::to_string(offset + bytes) + "]}";
     offset += bytes;
   }
   header += "}";
 
   // The spec requires the data block to start 8-byte aligned; pad the header
   // with spaces, which JSON ignores.
-  while ((8 + header.size()) % 8 != 0) header += " ";
+  while ((8 + header.size()) % 8 != 0)
+    header += " ";
 
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) throw std::runtime_error("safetensors write: cannot open " + path);
+  if (!out)
+    throw std::runtime_error("safetensors write: cannot open " + path);
 
   const uint64_t header_len = header.size();
   out.write(reinterpret_cast<const char*>(&header_len), sizeof(header_len));
@@ -95,14 +104,14 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
     } else {
       std::vector<uint16_t> bits(t.data.size());
       for (size_t i = 0; i < bits.size(); ++i)
-        bits[i] = t.dtype == DType::kBF16 ? f32_to_bf16(t.data[i])
-                                          : f32_to_f16(t.data[i]);
+        bits[i] = t.dtype == DType::kBF16 ? f32_to_bf16(t.data[i]) : f32_to_f16(t.data[i]);
       out.write(reinterpret_cast<const char*>(bits.data()),
                 static_cast<std::streamsize>(bits.size() * sizeof(uint16_t)));
     }
   }
   out.flush();
-  if (!out) throw std::runtime_error("safetensors write: failed writing " + path);
+  if (!out)
+    throw std::runtime_error("safetensors write: failed writing " + path);
 }
 
-}  // namespace slopfab
+} // namespace slopfab

@@ -28,10 +28,12 @@ namespace slopfab::vae {
 namespace {
 
 void cublas_check(cublasStatus_t status, const char* expr, int line) {
-  if (status == CUBLAS_STATUS_SUCCESS) return;
+  if (status == CUBLAS_STATUS_SUCCESS)
+    return;
   throw std::runtime_error("cublas: status " + std::to_string(static_cast<int>(status)) + " at " +
                            std::string(expr) + " (vit_decoder.cu:" + std::to_string(line) + ")");
 }
+
 #define CUBLAS_CHECK(expr) cublas_check((expr), #expr, __LINE__)
 
 using cuda::DeviceBuffer;
@@ -44,7 +46,7 @@ using cuda::DeviceBuffer;
 // straight out of it. Otherwise a pinned bounce buffer is used, because a
 // pageable async copy silently synchronises.
 class WeightUploader {
- public:
+public:
   WeightUploader(cudaStream_t stream, const cuda::RegisteredMapping& mapping)
       : stream_(stream), mapping_(mapping) {
     staging_.allocate(kStagingElems);
@@ -56,7 +58,9 @@ class WeightUploader {
   // The direct path leaves DMAs in flight out of the caller's mapping, which
   // the caller is about to unregister. It synchronises before that happens;
   // this is here so the ordering stays safe if it ever stops.
-  ~WeightUploader() { cudaStreamSynchronize(stream_); }
+  ~WeightUploader() {
+    cudaStreamSynchronize(stream_);
+  }
 
   WeightUploader(const WeightUploader&) = delete;
   WeightUploader& operator=(const WeightUploader&) = delete;
@@ -84,17 +88,18 @@ class WeightUploader {
           // which lives on the device, so stream order already guarantees the
           // widen of one hop finishes before the next hop overwrites it.
           SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), src + done * sizeof(uint16_t),
-                                            n * sizeof(uint16_t), cudaMemcpyHostToDevice,
-                                            stream_));
+                                             n * sizeof(uint16_t), cudaMemcpyHostToDevice,
+                                             stream_));
           cuda::launch_widen_f16(staging_.get(), out.get() + done, n, stream_);
         } else {
           // Allocated on first use rather than in the constructor, so the
           // common registered path never pays for 128 MiB of pinned memory it
           // will not touch.
-          if (raw_.get() == nullptr) raw_.allocate(kStagingElems * sizeof(uint16_t));
+          if (raw_.get() == nullptr)
+            raw_.allocate(kStagingElems * sizeof(uint16_t));
           std::memcpy(raw_.get(), src + done * sizeof(uint16_t), n * sizeof(uint16_t));
           SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(staging_.get(), raw_.get(), n * sizeof(uint16_t),
-                                            cudaMemcpyHostToDevice, stream_));
+                                             cudaMemcpyHostToDevice, stream_));
           cuda::launch_widen_f16(staging_.get(), out.get() + done, n, stream_);
           // The pinned buffer is reused next iteration, so the copy and widen
           // must complete before the next memcpy overwrites it.
@@ -110,7 +115,8 @@ class WeightUploader {
     }
     return out;
   }
- private:
+
+private:
   // 64 Mi elements = 128 MiB of fp16 per hop.
   static constexpr size_t kStagingElems = 64ull << 20;
   cudaStream_t stream_;
@@ -120,21 +126,21 @@ class WeightUploader {
 };
 
 struct BlockWeights {
-  DeviceBuffer<float> norm1;      // [dim]
-  DeviceBuffer<float> norm2;      // [dim]
-  DeviceBuffer<float> scale1;     // [dim]
-  DeviceBuffer<float> scale2;     // [dim]
-  cuda::F16Weight qkv_w;          // [3*dim, dim]
-  DeviceBuffer<float> qkv_b;      // [3*dim]
-  cuda::F16Weight out_w;          // [dim, dim]
-  DeviceBuffer<float> out_b;      // [dim]
-  cuda::F16Weight w1;             // [2*ffn_inner, dim]
-  DeviceBuffer<float> w1_b;       // [2*ffn_inner]
-  cuda::F16Weight w2;             // [dim, ffn_inner]
-  DeviceBuffer<float> w2_b;       // [dim]
+  DeviceBuffer<float> norm1;  // [dim]
+  DeviceBuffer<float> norm2;  // [dim]
+  DeviceBuffer<float> scale1; // [dim]
+  DeviceBuffer<float> scale2; // [dim]
+  cuda::F16Weight qkv_w;      // [3*dim, dim]
+  DeviceBuffer<float> qkv_b;  // [3*dim]
+  cuda::F16Weight out_w;      // [dim, dim]
+  DeviceBuffer<float> out_b;  // [dim]
+  cuda::F16Weight w1;         // [2*ffn_inner, dim]
+  DeviceBuffer<float> w1_b;   // [2*ffn_inner]
+  cuda::F16Weight w2;         // [dim, ffn_inner]
+  DeviceBuffer<float> w2_b;   // [dim]
 };
 
-}  // namespace
+} // namespace
 
 struct ViTDecoder::Impl {
   ViTConfig cfg;
@@ -146,15 +152,15 @@ struct ViTDecoder::Impl {
   std::vector<BlockWeights> blocks;
   std::unique_ptr<cuda::ExactViTBlockGraph> exact_blocks;
   bool loaded = false;
-  cuda::F16Weight x_embed_w;          // [dim, in_channels]
-  DeviceBuffer<float> x_embed_b;      // [dim]
-  DeviceBuffer<float> register_tokens;  // [num_register, dim]
+  cuda::F16Weight x_embed_w;           // [dim, in_channels]
+  DeviceBuffer<float> x_embed_b;       // [dim]
+  DeviceBuffer<float> register_tokens; // [num_register, dim]
   DeviceBuffer<float> norm_out_w;
   DeviceBuffer<float> norm_out_b;
-  cuda::F16Weight proj_out_w;         // [patch_dim, dim]
-  DeviceBuffer<float> proj_out_b;     // [patch_dim]
-  cuda::F16Weight post_quant_w;       // [in_channels, in_channels]
-  DeviceBuffer<float> post_quant_b;   // [in_channels]
+  cuda::F16Weight proj_out_w;       // [patch_dim, dim]
+  DeviceBuffer<float> proj_out_b;   // [patch_dim]
+  cuda::F16Weight post_quant_w;     // [in_channels, in_channels]
+  DeviceBuffer<float> post_quant_b; // [in_channels]
 
   // Scratch, resized on demand for the current window size. Nothing is ever
   // freed mid-run: cudaFree synchronises the whole device, which would make
@@ -166,29 +172,28 @@ struct ViTDecoder::Impl {
   int rope_T = -1;
   int rope_H = -1;
   int rope_W = -1;
-  DeviceBuffer<float> d_tokens;   // [S, dim]
-  DeviceBuffer<float> d_normed;   // [S, dim]
-  DeviceBuffer<float> d_qkv;      // [S, 3*dim]
-  DeviceBuffer<__nv_bfloat16> d_q_bf16, d_k_bf16, d_v_bf16;  // [S, H, D]
-  DeviceBuffer<__nv_bfloat16> d_attn_bf16;                     // [S, H, D]
+  DeviceBuffer<float> d_tokens;                             // [S, dim]
+  DeviceBuffer<float> d_normed;                             // [S, dim]
+  DeviceBuffer<float> d_qkv;                                // [S, 3*dim]
+  DeviceBuffer<__nv_bfloat16> d_q_bf16, d_k_bf16, d_v_bf16; // [S, H, D]
+  DeviceBuffer<__nv_bfloat16> d_attn_bf16;                  // [S, H, D]
   cuda::Workspace attention_ws;
   DeviceBuffer<float> d_proj;     // [S, dim] or [S, patch_dim]
   DeviceBuffer<float> d_ffn;      // [S, 2*ffn_inner]
   DeviceBuffer<__half> d_gemm_in; // narrowed input for tensor-core linears
-  DeviceBuffer<uint8_t> d_weight;  // active NF4/W4A8/INT8 matrix expansion
+  DeviceBuffer<uint8_t> d_weight; // active NF4/W4A8/INT8 matrix expansion
   DeviceBuffer<int8_t> d_w4a8_activation;
   DeviceBuffer<float> d_w4a8_activation_scale;
   size_t cap_weight_bytes = 0;
-  DeviceBuffer<float> d_cos, d_sin;  // [S, rope_dim]
+  DeviceBuffer<float> d_cos, d_sin; // [S, rope_dim]
   DeviceBuffer<float> d_latent;     // [in_channels, T*H*W]
   DeviceBuffer<float> d_patch;      // [N, in_channels] packed tokens
   DeviceBuffer<float> d_quantised;  // [N, in_channels] after post_quant_conv
   DeviceBuffer<float> d_pixels;     // [3, T*4, H*16, W*16]
   size_t cap_pixels = 0;
-  DeviceBuffer<float> d_denorm_input, d_denorm_output, d_denorm_mean,
-      d_denorm_std;
+  DeviceBuffer<float> d_denorm_input, d_denorm_output, d_denorm_mean, d_denorm_std;
   uint64_t cap_denorm_voxels = 0;
-  cuda::PinnedBuffer<float> pinned_out;  // staging for the D2H of decoded pixels
+  cuda::PinnedBuffer<float> pinned_out; // staging for the D2H of decoded pixels
 
   // Page-locking of the *caller's* tile buffers. The decode hoists one buffer
   // per tile and hands the same one back every chunk, so registering it once
@@ -205,12 +210,14 @@ struct ViTDecoder::Impl {
     void* base = nullptr;
     size_t bytes = 0;
   };
+
   std::vector<HostRegistration> host_regs;
   bool warned_no_page_lock = false;
 
   ~Impl() {
     release_host_regs();
-    if (blas != nullptr) slopfab::cuda::cublas_destroy(blas);
+    if (blas != nullptr)
+      slopfab::cuda::cublas_destroy(blas);
   }
 
   void erase_registration(size_t index) {
@@ -222,7 +229,8 @@ struct ViTDecoder::Impl {
   }
 
   void unregister_host(void* p) {
-    if (p == nullptr) return;
+    if (p == nullptr)
+      return;
     for (size_t i = 0; i < host_regs.size(); ++i) {
       if (host_regs[i].base == p) {
         erase_registration(i);
@@ -232,15 +240,19 @@ struct ViTDecoder::Impl {
   }
 
   void release_host_regs() {
-    while (!host_regs.empty()) erase_registration(host_regs.size() - 1);
+    while (!host_regs.empty())
+      erase_registration(host_regs.size() - 1);
   }
 
   // True when `[p, p + bytes)` is page-locked on return.
   bool ensure_registered(void* p, size_t bytes) {
-    if (p == nullptr || bytes == 0) return false;
+    if (p == nullptr || bytes == 0)
+      return false;
     for (size_t i = 0; i < host_regs.size(); ++i) {
-      if (host_regs[i].base != p) continue;
-      if (host_regs[i].bytes == bytes) return true;
+      if (host_regs[i].base != p)
+        continue;
+      if (host_regs[i].bytes == bytes)
+        return true;
       // Same address, different length: the old lock covers the wrong range.
       erase_registration(i);
       break;
@@ -275,43 +287,37 @@ struct ViTDecoder::Impl {
 
   // The producer has already rounded the fp32 activation to the exact fp16
   // operand the old launch_narrow_f16 pass produced.
-  void gemm_nt_prepared(const __half* A, const cuda::F16Weight& weight, float* C,
-                        int M, int N, int K) {
+  void gemm_nt_prepared(const __half* A, const cuda::F16Weight& weight, float* C, int M, int N,
+                        int K) {
     if (weight.packed_w4a8()) {
       if (cfg.transformer_mode == ViTTransformerMode::kExact)
         throw std::runtime_error("W4A8 video VAE does not support exact attention mode");
-      const int8_t* B = weight.materialize_w4a8(
-          reinterpret_cast<int8_t*>(d_weight.get()), cap_weight_bytes,
-          stream.get());
-      cuda::launch_quantize_w4a8_activation(
-          A, d_w4a8_activation.get(), d_w4a8_activation_scale.get(), M, K,
-          stream.get());
+      const int8_t* B = weight.materialize_w4a8(reinterpret_cast<int8_t*>(d_weight.get()),
+                                                cap_weight_bytes, stream.get());
+      cuda::launch_quantize_w4a8_activation(A, d_w4a8_activation.get(),
+                                            d_w4a8_activation_scale.get(), M, K, stream.get());
       const int32_t alpha = 1;
       const int32_t beta = 0;
       CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(
-          blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_8I,
-          K, d_w4a8_activation.get(), CUDA_R_8I, K, &beta, C, CUDA_R_32I,
-          N, CUBLAS_COMPUTE_32I, CUBLAS_GEMM_DEFAULT));
-      cuda::launch_dequant_w4a8_output(
-          reinterpret_cast<int32_t*>(C), d_w4a8_activation_scale.get(),
-          weight.w4a8_channel_scale(), M, N, stream.get());
+          blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_8I, K, d_w4a8_activation.get(),
+          CUDA_R_8I, K, &beta, C, CUDA_R_32I, N, CUBLAS_COMPUTE_32I, CUBLAS_GEMM_DEFAULT));
+      cuda::launch_dequant_w4a8_output(reinterpret_cast<int32_t*>(C), d_w4a8_activation_scale.get(),
+                                       weight.w4a8_channel_scale(), M, N, stream.get());
       return;
     }
-    const __half* B = weight.materialize(
-        reinterpret_cast<__half*>(d_weight.get()), cap_weight_bytes / 2,
-        stream.get());
+    const __half* B = weight.materialize(reinterpret_cast<__half*>(d_weight.get()),
+                                         cap_weight_bytes / 2, stream.get());
     if (cfg.transformer_mode == ViTTransformerMode::kExact) {
-      cuda::launch_deterministic_scalar_gemm_nt(
-          A, B, nullptr, C, static_cast<uint32_t>(M),
-          static_cast<uint32_t>(N), static_cast<uint32_t>(K),
-          DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone, 0, 0,
-          stream.get());
+      cuda::launch_deterministic_scalar_gemm_nt(A, B, nullptr, C, static_cast<uint32_t>(M),
+                                                static_cast<uint32_t>(N), static_cast<uint32_t>(K),
+                                                DenseGemmMode::kFloat16Vae, DenseGemmBias::kNone, 0,
+                                                0, stream.get());
       return;
     }
     const float alpha = 1.0f, beta = 0.0f;
-    CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F,
-                              K, A, CUDA_R_16F, K, &beta, C, CUDA_R_32F, N,
-                              CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+    CUBLAS_CHECK(slopfab::cuda::cublas_gemm_ex(
+        blas, CUBLAS_OP_T, CUBLAS_OP_N, N, M, K, &alpha, B, CUDA_R_16F, K, A, CUDA_R_16F, K, &beta,
+        C, CUDA_R_32F, N, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
   }
 
   void gemm_nn(const float* A, const float* B, float* C, int M, int N, int K) {
@@ -335,7 +341,8 @@ struct ViTDecoder::Impl {
     if (seq != num_patches + cfg.num_suffix) {
       throw std::runtime_error("vae: ensure_scratch called with inconsistent seq/num_patches");
     }
-    if (seq <= cap_seq && batch <= cap_batch) return;
+    if (seq <= cap_seq && batch <= cap_batch)
+      return;
     const int dim = cfg.dim;
     const int hd = cfg.head_dim;
     const size_t s = static_cast<size_t>(seq) * batch;
@@ -371,8 +378,7 @@ struct ViTDecoder::Impl {
     d_ffn.allocate(s * 2 * cfg.ffn_inner);
     d_gemm_in.allocate(s * static_cast<size_t>(std::max(cfg.ffn_inner, cfg.dim)));
     if (has_w4a8) {
-      d_w4a8_activation.allocate(
-          s * static_cast<size_t>(std::max(cfg.ffn_inner, cfg.dim)));
+      d_w4a8_activation.allocate(s * static_cast<size_t>(std::max(cfg.ffn_inner, cfg.dim)));
       d_w4a8_activation_scale.allocate(s);
     }
     d_cos.allocate(static_cast<size_t>(seq) * cfg.rope_dim);
@@ -382,7 +388,7 @@ struct ViTDecoder::Impl {
     // same seq must rebuild rather than run on undersized buffers.
     cap_seq = seq;
     cap_batch = batch;
-    rope_T = rope_H = rope_W = -1;  // tables live in the reallocated buffers
+    rope_T = rope_H = rope_W = -1; // tables live in the reallocated buffers
   }
 
   // Builds the RoPE cos/sin tables on the host.
@@ -391,16 +397,16 @@ struct ViTDecoder::Impl {
   // extents of the tensor entering the ViT, not on any global frame index. The
   // 24 unique angles are ordered T(8), H(8), W(8) and then duplicated to 48.
   void build_rope(int T, int H, int W, int seq, int num_patches) {
-    if (T == rope_T && H == rope_H && W == rope_W) return;
+    if (T == rope_T && H == rope_H && W == rope_W)
+      return;
     if (seq != num_patches + cfg.num_suffix)
       throw std::runtime_error("vae: invalid RoPE sequence");
     vae::ViTRopeTables tables = vae::build_vit_rope_tables(
-        static_cast<uint32_t>(T), static_cast<uint32_t>(H),
-        static_cast<uint32_t>(W), static_cast<uint32_t>(cfg.num_suffix),
-        static_cast<uint32_t>(cfg.rope_dim), cfg.rope_theta);
+        static_cast<uint32_t>(T), static_cast<uint32_t>(H), static_cast<uint32_t>(W),
+        static_cast<uint32_t>(cfg.num_suffix), static_cast<uint32_t>(cfg.rope_dim), cfg.rope_theta);
     d_cos.copy_from_host(tables.cosine.data(), tables.cosine.size(), stream);
     d_sin.copy_from_host(tables.sine.data(), tables.sine.size(), stream);
-    stream.synchronize();  // host vectors die at scope exit
+    stream.synchronize(); // host vectors die at scope exit
     rope_T = T;
     rope_H = H;
     rope_W = W;
@@ -414,8 +420,7 @@ struct ViTDecoder::Impl {
 
     // --- attention ---
     const int rows = seq * batch;
-    cuda::launch_rmsnorm_f16(d_tokens.get(), b.norm1.get(), d_gemm_in.get(), rows, dim,
-                             cfg.eps, s);
+    cuda::launch_rmsnorm_f16(d_tokens.get(), b.norm1.get(), d_gemm_in.get(), rows, dim, cfg.eps, s);
     gemm_nt_prepared(d_gemm_in.get(), b.qkv_w, d_qkv.get(), rows, 3 * dim, dim);
 
     // The qkv bias is applied inside the split kernel, which already reads
@@ -429,9 +434,8 @@ struct ViTDecoder::Impl {
     for (int doc = 0; doc < batch; ++doc) {
       const size_t row0 = static_cast<size_t>(doc) * seq;
       cuda::launch_split_qkv_norm_rope_bf16(
-          d_qkv.get() + row0 * 3 * dim, b.qkv_b.get(), d_cos.get(), d_sin.get(),
-          d_q_bf16.get(), d_k_bf16.get(), d_v_bf16.get(), seq, heads, hd,
-          cfg.rope_dim, num_patches, cfg.eps, s);
+          d_qkv.get() + row0 * 3 * dim, b.qkv_b.get(), d_cos.get(), d_sin.get(), d_q_bf16.get(),
+          d_k_bf16.get(), d_v_bf16.get(), seq, heads, hd, cfg.rope_dim, num_patches, cfg.eps, s);
       attention_ws.clear();
       cuda::attention_forward(blas, s, d_q_bf16.get(), d_k_bf16.get(), d_v_bf16.get(),
                               d_attn_bf16.get(), attn_cfg, attn_backend, attention_ws);
@@ -444,22 +448,27 @@ struct ViTDecoder::Impl {
                                      rows, dim, s);
 
     // --- feed forward ---
-    cuda::launch_rmsnorm_f16(d_tokens.get(), b.norm2.get(), d_gemm_in.get(), rows, dim,
-                             cfg.eps, s);
+    cuda::launch_rmsnorm_f16(d_tokens.get(), b.norm2.get(), d_gemm_in.get(), rows, dim, cfg.eps, s);
     gemm_nt_prepared(d_gemm_in.get(), b.w1, d_ffn.get(), rows, 2 * cfg.ffn_inner, dim);
-    cuda::launch_swiglu_f16(d_ffn.get(), b.w1_b.get(), d_gemm_in.get(), rows,
-                            cfg.ffn_inner, s);
+    cuda::launch_swiglu_f16(d_ffn.get(), b.w1_b.get(), d_gemm_in.get(), rows, cfg.ffn_inner, s);
     gemm_nt_prepared(d_gemm_in.get(), b.w2, d_normed.get(), rows, dim, cfg.ffn_inner);
     cuda::launch_layerscale_residual(d_tokens.get(), d_normed.get(), b.w2_b.get(), b.scale2.get(),
                                      rows, dim, s);
   }
 };
 
-ViTDecoder::ViTDecoder() : impl_(std::make_unique<Impl>()) {}
+ViTDecoder::ViTDecoder() : impl_(std::make_unique<Impl>()) {
+}
+
 ViTDecoder::~ViTDecoder() = default;
 
-const ViTConfig& ViTDecoder::config() const { return impl_->cfg; }
-size_t ViTDecoder::weight_bytes() const { return impl_->weight_bytes; }
+const ViTConfig& ViTDecoder::config() const {
+  return impl_->cfg;
+}
+
+size_t ViTDecoder::weight_bytes() const {
+  return impl_->weight_bytes;
+}
 
 void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   Impl& d = *impl_;
@@ -476,8 +485,8 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   // the correctness harness via SLOPFAB_CUBLAS_PEDANTIC=1.
   const char* pedantic = std::getenv("SLOPFAB_CUBLAS_PEDANTIC");
   const bool want_pedantic = pedantic != nullptr && pedantic[0] == '1';
-  CUBLAS_CHECK(slopfab::cuda::cublas_set_math_mode(d.blas,
-                                 want_pedantic ? CUBLAS_PEDANTIC_MATH : CUBLAS_DEFAULT_MATH));
+  CUBLAS_CHECK(slopfab::cuda::cublas_set_math_mode(d.blas, want_pedantic ? CUBLAS_PEDANTIC_MATH
+                                                                         : CUBLAS_DEFAULT_MATH));
 
   const int dim = config.dim;
   const int inner = config.ffn_inner;
@@ -500,12 +509,10 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
     throw std::runtime_error("vae: heads * head_dim must equal dim");
   }
 
-  const bool checkpoint_w4a8 = is_w4a8_weight(
-      ckpt, "decoder.transformer_blocks.0.attn.to_qkv.weight");
-  if (checkpoint_w4a8 &&
-      config.transformer_mode == ViTTransformerMode::kExact) {
-    throw std::runtime_error(
-        "video vae: W4A8 checkpoints require the shipped CUDA attention mode");
+  const bool checkpoint_w4a8 =
+      is_w4a8_weight(ckpt, "decoder.transformer_blocks.0.attn.to_qkv.weight");
+  if (checkpoint_w4a8 && config.transformer_mode == ViTTransformerMode::kExact) {
+    throw std::runtime_error("video vae: W4A8 checkpoints require the shipped CUDA attention mode");
   }
   d.has_w4a8 = checkpoint_w4a8;
 
@@ -526,21 +533,19 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
   }
   WeightUploader uploader(d.stream.get(), mapping);
 
-  d.x_embed_w.load(ckpt, "decoder.x_embedder.weight", static_cast<size_t>(dim) * ch,
-                   d.stream.get(), "video vae",
-                   config.transformer_mode == ViTTransformerMode::kExact);
+  d.x_embed_w.load(ckpt, "decoder.x_embedder.weight", static_cast<size_t>(dim) * ch, d.stream.get(),
+                   "video vae", config.transformer_mode == ViTTransformerMode::kExact);
   d.x_embed_b = uploader.upload(ckpt, "decoder.x_embedder.bias", dim);
   d.register_tokens = uploader.upload(ckpt, "decoder.register_tokens",
                                       static_cast<size_t>(config.num_register) * dim);
   d.norm_out_w = uploader.upload(ckpt, "decoder.norm_out.weight", dim);
   d.norm_out_b = uploader.upload(ckpt, "decoder.norm_out.bias", dim);
-  d.proj_out_w.load(ckpt, "decoder.proj_out.weight",
-                    static_cast<size_t>(config.patch_dim()) * dim, d.stream.get(), "video vae",
+  d.proj_out_w.load(ckpt, "decoder.proj_out.weight", static_cast<size_t>(config.patch_dim()) * dim,
+                    d.stream.get(), "video vae",
                     config.transformer_mode == ViTTransformerMode::kExact);
   d.proj_out_b = uploader.upload(ckpt, "decoder.proj_out.bias", config.patch_dim());
-  d.post_quant_w.load(ckpt, "post_quant_conv.weight", static_cast<size_t>(ch) * ch,
-                      d.stream.get(), "video vae",
-                      config.transformer_mode == ViTTransformerMode::kExact);
+  d.post_quant_w.load(ckpt, "post_quant_conv.weight", static_cast<size_t>(ch) * ch, d.stream.get(),
+                      "video vae", config.transformer_mode == ViTTransformerMode::kExact);
   d.post_quant_b = uploader.upload(ckpt, "post_quant_conv.bias", ch);
 
   if (config.transformer_mode == ViTTransformerMode::kExact) {
@@ -556,49 +561,42 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
     exact_config.rope_dim = static_cast<uint32_t>(config.rope_dim);
     exact_config.epsilon = config.eps;
     auto graph = std::make_unique<cuda::ExactViTBlockGraph>(
-        cuda::ExactViTBlockGraph::create(exact_config,
-                                         static_cast<uint32_t>(config.num_layers)));
+        cuda::ExactViTBlockGraph::create(exact_config, static_cast<uint32_t>(config.num_layers)));
     graph->load(ckpt);
     d.exact_blocks = std::move(graph);
   } else {
     d.blocks.resize(config.num_layers);
     for (int i = 0; i < config.num_layers; ++i) {
-      const std::string p =
-          "decoder.transformer_blocks." + std::to_string(i) + ".";
+      const std::string p = "decoder.transformer_blocks." + std::to_string(i) + ".";
       BlockWeights& b = d.blocks[i];
       b.norm1 = uploader.upload(ckpt, p + "norm1.weight", dim);
       b.norm2 = uploader.upload(ckpt, p + "norm2.weight", dim);
       b.scale1 = uploader.upload(ckpt, p + "scale1", dim);
       b.scale2 = uploader.upload(ckpt, p + "scale2", dim);
-      b.qkv_w.load(ckpt, p + "attn.to_qkv.weight",
-                   static_cast<size_t>(3) * dim * dim, d.stream.get(),
-                   "video vae");
-      b.qkv_b = uploader.upload(ckpt, p + "attn.to_qkv.bias",
-                                static_cast<size_t>(3) * dim);
-      b.out_w.load(ckpt, p + "attn.to_out.weight",
-                   static_cast<size_t>(dim) * dim, d.stream.get(),
+      b.qkv_w.load(ckpt, p + "attn.to_qkv.weight", static_cast<size_t>(3) * dim * dim,
+                   d.stream.get(), "video vae");
+      b.qkv_b = uploader.upload(ckpt, p + "attn.to_qkv.bias", static_cast<size_t>(3) * dim);
+      b.out_w.load(ckpt, p + "attn.to_out.weight", static_cast<size_t>(dim) * dim, d.stream.get(),
                    "video vae");
       b.out_b = uploader.upload(ckpt, p + "attn.to_out.bias", dim);
-      b.w1.load(ckpt, p + "ff.w1.weight",
-                static_cast<size_t>(2) * inner * dim, d.stream.get(),
+      b.w1.load(ckpt, p + "ff.w1.weight", static_cast<size_t>(2) * inner * dim, d.stream.get(),
                 "video vae");
-      b.w1_b = uploader.upload(ckpt, p + "ff.w1.bias",
-                               static_cast<size_t>(2) * inner);
-      b.w2.load(ckpt, p + "ff.w2.weight",
-                static_cast<size_t>(dim) * inner, d.stream.get(), "video vae");
+      b.w1_b = uploader.upload(ckpt, p + "ff.w1.bias", static_cast<size_t>(2) * inner);
+      b.w2.load(ckpt, p + "ff.w2.weight", static_cast<size_t>(dim) * inner, d.stream.get(),
+                "video vae");
       b.w2_b = uploader.upload(ckpt, p + "ff.w2.bias", dim);
     }
   }
 
   auto workspace_bytes = [](const cuda::F16Weight& weight) {
-    if (weight.packed_w4a8()) return weight.elements();
+    if (weight.packed_w4a8())
+      return weight.elements();
     if (weight.packed_nf4() || weight.packed_int8())
       return weight.elements() * sizeof(__half);
     return size_t{0};
   };
-  size_t max_weight_bytes = std::max(
-      {workspace_bytes(d.x_embed_w), workspace_bytes(d.proj_out_w),
-       workspace_bytes(d.post_quant_w)});
+  size_t max_weight_bytes = std::max({workspace_bytes(d.x_embed_w), workspace_bytes(d.proj_out_w),
+                                      workspace_bytes(d.post_quant_w)});
   size_t total = d.x_embed_w.stored_bytes() + d.x_embed_b.nbytes() + d.register_tokens.nbytes() +
                  d.norm_out_w.nbytes() + d.norm_out_b.nbytes() + d.proj_out_w.stored_bytes() +
                  d.proj_out_b.nbytes() + d.post_quant_w.stored_bytes() + d.post_quant_b.nbytes();
@@ -606,12 +604,12 @@ void ViTDecoder::load(const SafeTensors& ckpt, const ViTConfig& config) {
     total += b.norm1.nbytes() + b.norm2.nbytes() + b.scale1.nbytes() + b.scale2.nbytes() +
              b.qkv_w.stored_bytes() + b.qkv_b.nbytes() + b.out_w.stored_bytes() + b.out_b.nbytes() +
              b.w1.stored_bytes() + b.w1_b.nbytes() + b.w2.stored_bytes() + b.w2_b.nbytes();
-    max_weight_bytes = std::max(
-        {max_weight_bytes, workspace_bytes(b.qkv_w),
-         workspace_bytes(b.out_w), workspace_bytes(b.w1),
-         workspace_bytes(b.w2)});
+    max_weight_bytes =
+        std::max({max_weight_bytes, workspace_bytes(b.qkv_w), workspace_bytes(b.out_w),
+                  workspace_bytes(b.w1), workspace_bytes(b.w2)});
   }
-  if (d.exact_blocks) total += d.exact_blocks->persistent_bytes();
+  if (d.exact_blocks)
+    total += d.exact_blocks->persistent_bytes();
   d.cap_weight_bytes = max_weight_bytes;
   d.d_weight.allocate(max_weight_bytes);
   d.weight_bytes = total;
@@ -639,8 +637,10 @@ void ViTDecoder::forward_window(const float* z, int T, int H, int W, std::vector
 void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
                                  std::vector<std::vector<float>>& out, const size_t* slots) {
   Impl& d = *impl_;
-  if (!d.loaded) throw std::runtime_error("vae: decoder weights not loaded");
-  if (batch <= 0) throw std::runtime_error("vae: window batch must be positive");
+  if (!d.loaded)
+    throw std::runtime_error("vae: decoder weights not loaded");
+  if (batch <= 0)
+    throw std::runtime_error("vae: window batch must be positive");
 
   const ViTConfig& cfg = d.cfg;
   const int ch = cfg.in_channels;
@@ -649,8 +649,7 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   const int dim = cfg.dim;
   cudaStream_t s = d.stream.get();
   if (cfg.transformer_mode == ViTTransformerMode::kExact)
-    d.exact_blocks->prepare_shape(static_cast<uint32_t>(seq),
-                                  static_cast<uint32_t>(num_patches));
+    d.exact_blocks->prepare_shape(static_cast<uint32_t>(seq), static_cast<uint32_t>(num_patches));
 
   cuda::PhaseSpan s_prep("forward: prepare");
   d.ensure_scratch(seq, num_patches, batch);
@@ -662,49 +661,49 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   // the device — it used to round-trip the same bytes back to the host.
   const size_t voxels = static_cast<size_t>(num_patches);
   {
-  cuda::PhaseSpan s_embed("forward: issue embed");
-  cuda::PhaseGpuSpan g_embed("forward: embed", s);
-  d.d_latent.copy_from_host(z, static_cast<size_t>(batch) * ch * voxels, s);
-  for (int doc = 0; doc < batch; ++doc) {
-    const size_t latent0 = static_cast<size_t>(doc) * ch * voxels;
-    const size_t patch0 = static_cast<size_t>(doc) * num_patches;
-    const size_t token0 = static_cast<size_t>(doc) * seq;
-    cuda::launch_transpose_cn_to_nc(d.d_latent.get() + latent0,
-                                    d.d_patch.get() + patch0 * ch, ch,
-                                    static_cast<int>(voxels), s);
-    d.gemm_nt(d.d_patch.get() + patch0 * ch, d.post_quant_w,
-              d.d_quantised.get() + patch0 * ch, num_patches, ch, ch);
-    cuda::launch_add_bias(d.d_quantised.get() + patch0 * ch, d.post_quant_b.get(), num_patches,
-                          ch, s);
-    d.gemm_nt(d.d_quantised.get() + patch0 * ch, d.x_embed_w,
-              d.d_tokens.get() + token0 * dim, num_patches, dim, ch);
-    cuda::launch_add_bias(d.d_tokens.get() + token0 * dim, d.x_embed_b.get(), num_patches, dim, s);
-    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(
-        d.d_tokens.get() + (token0 + num_patches) * dim, d.register_tokens.get(),
-        static_cast<size_t>(cfg.num_register) * dim * sizeof(float), cudaMemcpyDeviceToDevice, s));
-    SLOPFAB_CUDA_CHECK(cudaMemsetAsync(
-        d.d_tokens.get() + (token0 + num_patches + cfg.num_register) * dim, 0,
-        static_cast<size_t>(dim) * sizeof(float), s));
-  }
+    cuda::PhaseSpan s_embed("forward: issue embed");
+    cuda::PhaseGpuSpan g_embed("forward: embed", s);
+    d.d_latent.copy_from_host(z, static_cast<size_t>(batch) * ch * voxels, s);
+    for (int doc = 0; doc < batch; ++doc) {
+      const size_t latent0 = static_cast<size_t>(doc) * ch * voxels;
+      const size_t patch0 = static_cast<size_t>(doc) * num_patches;
+      const size_t token0 = static_cast<size_t>(doc) * seq;
+      cuda::launch_transpose_cn_to_nc(d.d_latent.get() + latent0, d.d_patch.get() + patch0 * ch, ch,
+                                      static_cast<int>(voxels), s);
+      d.gemm_nt(d.d_patch.get() + patch0 * ch, d.post_quant_w, d.d_quantised.get() + patch0 * ch,
+                num_patches, ch, ch);
+      cuda::launch_add_bias(d.d_quantised.get() + patch0 * ch, d.post_quant_b.get(), num_patches,
+                            ch, s);
+      d.gemm_nt(d.d_quantised.get() + patch0 * ch, d.x_embed_w, d.d_tokens.get() + token0 * dim,
+                num_patches, dim, ch);
+      cuda::launch_add_bias(d.d_tokens.get() + token0 * dim, d.x_embed_b.get(), num_patches, dim,
+                            s);
+      SLOPFAB_CUDA_CHECK(
+          cudaMemcpyAsync(d.d_tokens.get() + (token0 + num_patches) * dim, d.register_tokens.get(),
+                          static_cast<size_t>(cfg.num_register) * dim * sizeof(float),
+                          cudaMemcpyDeviceToDevice, s));
+      SLOPFAB_CUDA_CHECK(
+          cudaMemsetAsync(d.d_tokens.get() + (token0 + num_patches + cfg.num_register) * dim, 0,
+                          static_cast<size_t>(dim) * sizeof(float), s));
+    }
   }
 
   {
-  cuda::PhaseSpan s_blocks("forward: issue blocks");
-  cuda::PhaseGpuSpan g_blocks("forward: blocks", s);
-  if (cfg.transformer_mode == ViTTransformerMode::kExact) {
-    for (int doc = 0; doc < batch; ++doc) {
-      d.exact_blocks->forward_device(
-          d.d_tokens.get() + static_cast<size_t>(doc) * seq * dim,
-          d.d_cos.get(), d.d_sin.get(), s);
+    cuda::PhaseSpan s_blocks("forward: issue blocks");
+    cuda::PhaseGpuSpan g_blocks("forward: blocks", s);
+    if (cfg.transformer_mode == ViTTransformerMode::kExact) {
+      for (int doc = 0; doc < batch; ++doc) {
+        d.exact_blocks->forward_device(d.d_tokens.get() + static_cast<size_t>(doc) * seq * dim,
+                                       d.d_cos.get(), d.d_sin.get(), s);
+      }
+    } else {
+      for (int i = 0; i < cfg.num_layers; ++i)
+        d.run_block(d.blocks[i], seq, num_patches, batch);
     }
-  } else {
-    for (int i = 0; i < cfg.num_layers; ++i)
-      d.run_block(d.blocks[i], seq, num_patches, batch);
-  }
   }
 
-  const size_t pixels = static_cast<size_t>(cfg.out_channels) * (T * cfg.patch_t) *
-                        (H * cfg.patch) * (W * cfg.patch);
+  const size_t pixels =
+      static_cast<size_t>(cfg.out_channels) * (T * cfg.patch_t) * (H * cfg.patch) * (W * cfg.patch);
   cuda::PhaseSpan s_grow("forward: grow output");
   if (pixels > d.cap_pixels) {
     d.d_pixels.allocate(pixels);
@@ -725,7 +724,8 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
     // every tile silently reverts to being staged and copied.
     cuda::PhaseSpan s_lock("forward: page-lock output");
     std::vector<float>& dst = out[slots[static_cast<size_t>(doc)]];
-    if (pixels > dst.capacity()) d.unregister_host(dst.data());
+    if (pixels > dst.capacity())
+      d.unregister_host(dst.data());
     dst.resize(pixels);
     const bool landed = d.ensure_registered(dst.data(), dst.capacity() * sizeof(float));
     if (!landed && d.pinned_out.size() < pixels) {
@@ -748,16 +748,16 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
                                d.norm_out_b.get(), d.d_normed.get(), num_patches, dim, cfg.eps, s);
         d.gemm_nt(d.d_normed.get(), d.proj_out_w, d.d_proj.get(), num_patches, patch_dim, dim);
         cuda::launch_add_bias(d.d_proj.get(), d.proj_out_b.get(), num_patches, patch_dim, s);
-        cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W,
-                                    cfg.out_channels, cfg.patch_t, cfg.patch, s);
+        cuda::launch_depth_to_space(d.d_proj.get(), d.d_pixels.get(), T, H, W, cfg.out_channels,
+                                    cfg.patch_t, cfg.patch, s);
       } else {
         cuda::launch_layernorm_f16(d.d_tokens.get() + token0 * dim, d.norm_out_w.get(),
-                                   d.norm_out_b.get(), d.d_gemm_in.get(), num_patches, dim,
-                                   cfg.eps, s);
-        d.gemm_nt_prepared(d.d_gemm_in.get(), d.proj_out_w, d.d_proj.get(), num_patches,
-                           patch_dim, dim);
-        cuda::launch_depth_to_space_bias(d.d_proj.get(), d.proj_out_b.get(), d.d_pixels.get(),
-                                         T, H, W, cfg.out_channels, cfg.patch_t, cfg.patch, s);
+                                   d.norm_out_b.get(), d.d_gemm_in.get(), num_patches, dim, cfg.eps,
+                                   s);
+        d.gemm_nt_prepared(d.d_gemm_in.get(), d.proj_out_w, d.d_proj.get(), num_patches, patch_dim,
+                           dim);
+        cuda::launch_depth_to_space_bias(d.d_proj.get(), d.proj_out_b.get(), d.d_pixels.get(), T, H,
+                                         W, cfg.out_channels, cfg.patch_t, cfg.patch, s);
       }
       d.d_pixels.copy_to_host(host_dst, pixels, s);
     }
@@ -776,12 +776,14 @@ void ViTDecoder::forward_windows(const float* z, int batch, int T, int H, int W,
   }
 }
 
-void ViTDecoder::release_host_registrations() { impl_->release_host_regs(); }
+void ViTDecoder::release_host_registrations() {
+  impl_->release_host_regs();
+}
 
-void ViTDecoder::denormalize_latents(
-    const float* normalized, int channels, uint64_t voxels,
-    const std::vector<float>& mean, const std::vector<float>& std_dev,
-    std::vector<float>& output) {
+void ViTDecoder::denormalize_latents(const float* normalized, int channels, uint64_t voxels,
+                                     const std::vector<float>& mean,
+                                     const std::vector<float>& std_dev,
+                                     std::vector<float>& output) {
   if (!normalized || channels <= 0 || mean.size() != size_t(channels) ||
       std_dev.size() != size_t(channels)) {
     throw std::invalid_argument("vae: invalid latent denormalization input");
@@ -795,18 +797,14 @@ void ViTDecoder::denormalize_latents(
       impl_->d_denorm_std.allocate(channels);
       impl_->cap_denorm_voxels = voxels;
     }
-    impl_->d_denorm_input.copy_from_host(
-        normalized, static_cast<size_t>(channels) * voxels, impl_->stream.get());
-    impl_->d_denorm_mean.copy_from_host(mean.data(), mean.size(),
-                                        impl_->stream.get());
-    impl_->d_denorm_std.copy_from_host(std_dev.data(), std_dev.size(),
-                                       impl_->stream.get());
-    cuda::launch_latent_denorm(
-        impl_->d_denorm_input.get(), impl_->d_denorm_mean.get(),
-        impl_->d_denorm_std.get(), impl_->d_denorm_output.get(), channels,
-        static_cast<uint32_t>(voxels), impl_->stream.get());
-    impl_->d_denorm_output.copy_to_host(
-        output.data(), output.size(), impl_->stream.get());
+    impl_->d_denorm_input.copy_from_host(normalized, static_cast<size_t>(channels) * voxels,
+                                         impl_->stream.get());
+    impl_->d_denorm_mean.copy_from_host(mean.data(), mean.size(), impl_->stream.get());
+    impl_->d_denorm_std.copy_from_host(std_dev.data(), std_dev.size(), impl_->stream.get());
+    cuda::launch_latent_denorm(impl_->d_denorm_input.get(), impl_->d_denorm_mean.get(),
+                               impl_->d_denorm_std.get(), impl_->d_denorm_output.get(), channels,
+                               static_cast<uint32_t>(voxels), impl_->stream.get());
+    impl_->d_denorm_output.copy_to_host(output.data(), output.size(), impl_->stream.get());
     impl_->stream.synchronize();
     return;
   }
@@ -817,4 +815,4 @@ void ViTDecoder::denormalize_latents(
   }
 }
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

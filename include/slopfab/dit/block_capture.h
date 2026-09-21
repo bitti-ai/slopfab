@@ -5,9 +5,10 @@
 namespace slopfab::dit {
 
 #pragma pack(push, 1)
+
 struct H3BlockCaptureHeader {
-  char magic[8];                 // "VFH3BLK\0"
-  uint32_t version;             // 1
+  char magic[8];    // "VFH3BLK\0"
+  uint32_t version; // 1
   uint32_t header_bytes;
   uint32_t sequence;
   uint32_t hidden;
@@ -30,9 +31,10 @@ struct H3BlockCaptureHeader {
   uint64_t attention_residual_fnv64;
   uint64_t final_fnv64;
 };
+
 #pragma pack(pop)
 
 static_assert(sizeof(H3BlockCaptureHeader) == 128,
               "H3 block capture header is a durable 128-byte record");
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

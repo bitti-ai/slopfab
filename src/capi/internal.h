@@ -98,8 +98,9 @@ inline int fail(int code, std::string message) {
 inline bool contains_ci(const std::string& haystack, const char* needle) {
   const std::string lowered = [&haystack] {
     std::string s = haystack;
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
     return s;
   }();
   return lowered.find(needle) != std::string::npos;
@@ -121,8 +122,7 @@ inline int classify(const std::string& message) {
 
 // The wrapper every entry point uses. A lambda returning int keeps the
 // try/catch in one place instead of in thirty.
-template <typename Fn>
-inline int guarded(Fn&& body) {
+template <typename Fn> inline int guarded(Fn&& body) {
   try {
     const int status = body();
     if (status == SLOPFAB_OK) {
@@ -163,12 +163,14 @@ inline int guarded(Fn&& body) {
 // often enough to matter.
 inline char* dup_string(const std::string& text) {
   char* out = static_cast<char*>(std::malloc(text.size() + 1));
-  if (out == nullptr) return nullptr;
+  if (out == nullptr)
+    return nullptr;
   std::memcpy(out, text.c_str(), text.size() + 1);
   return out;
 }
 
-}  // namespace slopfab::capi
+} // namespace slopfab::capi
+
 using namespace slopfab::capi;
 
 // The handle types are declared at namespace scope because the header names
@@ -183,17 +185,18 @@ struct slopfab_request {
 struct slopfab_reference_video {
   slopfab::ReferenceMedia media;
 };
+
 struct slopfab_session {
   std::shared_ptr<slopfab::GenerationSession> value;
 };
 
 namespace slopfab::capi {
 
-template <typename Fn>
-inline int reference_input_guarded(Fn&& body) {
+template <typename Fn> inline int reference_input_guarded(Fn&& body) {
   return guarded([&] {
-    try { body(); }
-    catch (const std::invalid_argument& e) {
+    try {
+      body();
+    } catch (const std::invalid_argument& e) {
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
     }
     return SLOPFAB_OK;
@@ -207,7 +210,8 @@ inline void attach_reference(slopfab_request* request, const slopfab::ReferenceM
   request->request.reference_media.swap(references);
 }
 
-}  // namespace slopfab::capi
+} // namespace slopfab::capi
+
 using namespace slopfab::capi;
 
 struct slopfab_generation {
@@ -294,7 +298,8 @@ inline std::atomic<bool> g_generation_active{false};
 // the two paths above it cannot throw at all.
 inline int report_terminal_status(const slopfab_generation* generation) noexcept {
   const int status = generation->status.load();
-  if (status == SLOPFAB_OK) return SLOPFAB_OK;
+  if (status == SLOPFAB_OK)
+    return SLOPFAB_OK;
   if (status == SLOPFAB_ERR_NOT_READY) {
     return fail(SLOPFAB_ERR_NOT_READY, "the generation is still running");
   }
@@ -309,15 +314,33 @@ inline int report_terminal_status(const slopfab_generation* generation) noexcept
 inline bool progress_hook(RunStage stage, int step, int steps, void* userdata) {
   auto* gen = static_cast<slopfab_generation*>(userdata);
   switch (stage) {
-    case RunStage::kStarting: gen->stage_name = "starting"; break;
-    case RunStage::kReferences: gen->stage_name = "reference encoding"; break;
-    case RunStage::kConditioning: gen->stage_name = "prompt conditioning"; break;
-    case RunStage::kTransformerLoad: gen->stage_name = "transformer loading"; break;
-    case RunStage::kDenoising: gen->stage_name = "denoising"; break;
-    case RunStage::kVideoDecode: gen->stage_name = "video VAE decoding"; break;
-    case RunStage::kAudioDecode: gen->stage_name = "audio VAE decoding"; break;
-    case RunStage::kDelivering: gen->stage_name = "output delivery"; break;
-    case RunStage::kFinished: gen->stage_name = "finishing"; break;
+  case RunStage::kStarting:
+    gen->stage_name = "starting";
+    break;
+  case RunStage::kReferences:
+    gen->stage_name = "reference encoding";
+    break;
+  case RunStage::kConditioning:
+    gen->stage_name = "prompt conditioning";
+    break;
+  case RunStage::kTransformerLoad:
+    gen->stage_name = "transformer loading";
+    break;
+  case RunStage::kDenoising:
+    gen->stage_name = "denoising";
+    break;
+  case RunStage::kVideoDecode:
+    gen->stage_name = "video VAE decoding";
+    break;
+  case RunStage::kAudioDecode:
+    gen->stage_name = "audio VAE decoding";
+    break;
+  case RunStage::kDelivering:
+    gen->stage_name = "output delivery";
+    break;
+  case RunStage::kFinished:
+    gen->stage_name = "finishing";
+    break;
   }
   if (gen->callback != nullptr) {
     slopfab_progress progress;
@@ -339,14 +362,17 @@ inline bool samples_hook(RunSamples& samples, void* userdata) {
   // A move, not a copy. At 248 frames of 1344x768 the video plane is 2.3 GB;
   // copying it here would double the peak host footprint of every run for no
   // reason at all.
-  if (samples.video != nullptr) gen->video = std::move(*samples.video);
-  if (samples.audio != nullptr) gen->audio = std::move(*samples.audio);
+  if (samples.video != nullptr)
+    gen->video = std::move(*samples.video);
+  if (samples.audio != nullptr)
+    gen->audio = std::move(*samples.audio);
   gen->audio_channels = samples.audio_channels;
   gen->audio_sample_rate = samples.audio_sample_rate;
   return true;
 }
 
-inline void latents_hook(const std::shared_ptr<const slopfab::LatentClip>& latents, void* userdata) {
+inline void latents_hook(const std::shared_ptr<const slopfab::LatentClip>& latents,
+                         void* userdata) {
   static_cast<slopfab_generation*>(userdata)->latents = latents;
 }
 
@@ -363,8 +389,8 @@ inline void run_worker(slopfab_generation* gen) {
     options.on_samples = &samples_hook;
     options.hook_userdata = gen;
     const RunResult result = gen->session
-        ? slopfab::run_generate(*gen->session, gen->request, plan, options)
-        : slopfab::run_generate(gen->request, plan, options);
+                                 ? slopfab::run_generate(*gen->session, gen->request, plan, options)
+                                 : slopfab::run_generate(gen->request, plan, options);
     gen->seconds_conditioning = result.seconds_conditioning;
     gen->seconds_denoise = result.seconds_denoise;
     gen->seconds_video_decode = result.seconds_video_decode;
@@ -398,6 +424,6 @@ inline void run_worker(slopfab_generation* gen) {
   gen->finish(code, std::move(message));
 }
 
-}  // namespace slopfab::capi
-using namespace slopfab::capi;
+} // namespace slopfab::capi
 
+using namespace slopfab::capi;

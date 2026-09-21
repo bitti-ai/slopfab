@@ -41,7 +41,9 @@ constexpr int kResblockDilations[3] = {1, 3, 5};
 
 // get_padding(kernel_size, dilation) — dac_utils.py:11-12. SAME padding for the
 // odd kernels this model uses.
-int get_padding(int kernel, int dilation) { return (kernel * dilation - dilation) / 2; }
+int get_padding(int kernel, int dilation) {
+  return (kernel * dilation - dilation) / 2;
+}
 
 // A slice of the single weight allocation. Offsets are in floats.
 struct Slice {
@@ -51,7 +53,7 @@ struct Slice {
 
 struct ConvSpec {
   Slice weight;
-  Slice bias;  // count == 0 when the conv ships without one (conv_post)
+  Slice bias; // count == 0 when the conv ships without one (conv_post)
   int out_channels = 0;
   int in_channels = 0;
   int kernel = 0;
@@ -75,13 +77,13 @@ struct AmpBlockSpec {
 };
 
 struct StageSpec {
-  ConvSpec up;  // ConvTranspose1d, weight is [Cin, Cout, K]
+  ConvSpec up; // ConvTranspose1d, weight is [Cin, Cout, K]
   int rate = 0;
   int kernel = 0;
   AmpBlockSpec blocks[3];
 };
 
-}  // namespace
+} // namespace
 
 struct AudioDecoder::Impl {
   AudioVAEConfig config;
@@ -105,11 +107,15 @@ struct AudioDecoder::Impl {
   DeviceBuffer<float> aa_scratch;
   size_t pool_floats = 0;
 
-  const float* w(const Slice& s) const { return weights.get() + s.offset; }
+  const float* w(const Slice& s) const {
+    return weights.get() + s.offset;
+  }
 
   void ensure_pool(size_t floats) {
-    if (floats <= pool_floats) return;
-    for (auto& buf : pool) buf.allocate(floats);
+    if (floats <= pool_floats)
+      return;
+    for (auto& buf : pool)
+      buf.allocate(floats);
     aa_scratch.allocate(2 * floats);
     pool_floats = floats;
   }
@@ -158,8 +164,9 @@ namespace {
 // and records its offset, so the whole decode path becomes a single cudaMalloc
 // plus a single upload. 779 tensors, 247.64 MiB.
 class Staging {
- public:
-  explicit Staging(const SafeTensors& checkpoint) : ckpt_(checkpoint) {}
+public:
+  explicit Staging(const SafeTensors& checkpoint) : ckpt_(checkpoint) {
+  }
 
   Slice add(const std::string& name, std::initializer_list<int64_t> expect) {
     const TensorView& t = ckpt_.at(name);
@@ -174,8 +181,7 @@ class Staging {
     for (int64_t want : expect) {
       if (t.shape[i] != want) {
         throw std::runtime_error("audio vae: " + name + " dim " + std::to_string(i) + " is " +
-                                 std::to_string(t.shape[i]) + ", expected " +
-                                 std::to_string(want));
+                                 std::to_string(t.shape[i]) + ", expected " + std::to_string(want));
       }
       ++i;
     }
@@ -190,18 +196,22 @@ class Staging {
   Slice add_conv(const std::string& name, std::initializer_list<int64_t> expect,
                  uint32_t bias_channels) {
     const std::vector<int64_t> shape(expect);
-    AudioConvWeights loaded =
-        load_audio_conv_weights(ckpt_, name, shape, bias_channels, false);
+    AudioConvWeights loaded = load_audio_conv_weights(ckpt_, name, shape, bias_channels, false);
     const Slice slice{data_.size(), loaded.weight.size()};
     data_.insert(data_.end(), loaded.weight.begin(), loaded.weight.end());
     tensors_ += loaded.folded_weight_norm ? 2 : 1;
     return slice;
   }
 
-  const std::vector<float>& data() const { return data_; }
-  size_t tensors() const { return tensors_; }
+  const std::vector<float>& data() const {
+    return data_;
+  }
 
- private:
+  size_t tensors() const {
+    return tensors_;
+  }
+
+private:
   const SafeTensors& ckpt_;
   std::vector<float> data_;
   size_t tensors_ = 0;
@@ -211,9 +221,11 @@ std::string join(const std::string& prefix, int index, const std::string& suffix
   return prefix + std::to_string(index) + suffix;
 }
 
-}  // namespace
+} // namespace
 
-AudioDecoder::AudioDecoder() : impl_(std::make_unique<Impl>()) {}
+AudioDecoder::AudioDecoder() : impl_(std::make_unique<Impl>()) {
+}
+
 AudioDecoder::~AudioDecoder() = default;
 
 void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& config) {
@@ -272,9 +284,9 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
     // ConvTranspose1d weights are [Cin, Cout, K] — input channels first, the
     // opposite of Conv1d. See docs/audio_vae_spec.md §5.
     const std::string up = "decoder.ups." + std::to_string(i) + ".0.";
-    stage.up = ConvSpec{st.add_conv(up.substr(0, up.size() - 1),
-                                    {ch, out_ch, stage.kernel}, out_ch),
-                        st.add(up + "bias", {out_ch}), out_ch, ch, stage.kernel};
+    stage.up =
+        ConvSpec{st.add_conv(up.substr(0, up.size() - 1), {ch, out_ch, stage.kernel}, out_ch),
+                 st.add(up + "bias", {out_ch}), out_ch, ch, stage.kernel};
 
     for (int j = 0; j < num_kernels; ++j) {
       const int rb = i * num_kernels + j;
@@ -283,38 +295,31 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
       block.channels = out_ch;
       block.kernel = config.resblock_kernel_sizes[static_cast<size_t>(j)];
       for (int d = 0; d < 3; ++d) {
-        block.convs1[d] =
-            ConvSpec{st.add_conv(join(p + "convs1.", d, ""),
-                                 {out_ch, out_ch, block.kernel}, out_ch),
-                     st.add(join(p + "convs1.", d, ".bias"), {out_ch}), out_ch, out_ch,
-                     block.kernel};
-        block.convs2[d] =
-            ConvSpec{st.add_conv(join(p + "convs2.", d, ""),
-                                 {out_ch, out_ch, block.kernel}, out_ch),
-                     st.add(join(p + "convs2.", d, ".bias"), {out_ch}), out_ch, out_ch,
-                     block.kernel};
+        block.convs1[d] = ConvSpec{
+            st.add_conv(join(p + "convs1.", d, ""), {out_ch, out_ch, block.kernel}, out_ch),
+            st.add(join(p + "convs1.", d, ".bias"), {out_ch}), out_ch, out_ch, block.kernel};
+        block.convs2[d] = ConvSpec{
+            st.add_conv(join(p + "convs2.", d, ""), {out_ch, out_ch, block.kernel}, out_ch),
+            st.add(join(p + "convs2.", d, ".bias"), {out_ch}), out_ch, out_ch, block.kernel};
       }
       for (int a = 0; a < 6; ++a) {
         const std::string ap = join(p + "activations.", a, ".");
-        block.acts[a] = ActSpec{st.add(ap + "act.alpha", {out_ch}),
-                                st.add(ap + "act.beta", {out_ch}),
-                                st.add(ap + "upsample.filter", {1, 1, cuda::kAudioAAKernel}),
-                                st.add(ap + "downsample.lowpass.filter",
-                                       {1, 1, cuda::kAudioAAKernel}),
-                                out_ch};
+        block.acts[a] =
+            ActSpec{st.add(ap + "act.alpha", {out_ch}), st.add(ap + "act.beta", {out_ch}),
+                    st.add(ap + "upsample.filter", {1, 1, cuda::kAudioAAKernel}),
+                    st.add(ap + "downsample.lowpass.filter", {1, 1, cuda::kAudioAAKernel}), out_ch};
       }
     }
     im.stages.push_back(stage);
     ch = out_ch;
   }
 
-  im.activation_post =
-      ActSpec{st.add("decoder.activation_post.act.alpha", {ch}),
-              st.add("decoder.activation_post.act.beta", {ch}),
-              st.add("decoder.activation_post.upsample.filter", {1, 1, cuda::kAudioAAKernel}),
-              st.add("decoder.activation_post.downsample.lowpass.filter",
-                     {1, 1, cuda::kAudioAAKernel}),
-              ch};
+  im.activation_post = ActSpec{
+      st.add("decoder.activation_post.act.alpha", {ch}),
+      st.add("decoder.activation_post.act.beta", {ch}),
+      st.add("decoder.activation_post.upsample.filter", {1, 1, cuda::kAudioAAKernel}),
+      st.add("decoder.activation_post.downsample.lowpass.filter", {1, 1, cuda::kAudioAAKernel}),
+      ch};
 
   // use_bias_at_final is false for this checkpoint, so conv_post has no bias
   // tensor at all (dac_audio_vae.py:184). Requiring one would fail the load.
@@ -323,8 +328,7 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
         "audio vae: decoder.conv_post.bias is present, but the 32 kHz config sets "
         "use_bias_at_final=false");
   }
-  im.conv_post = ConvSpec{st.add_conv("decoder.conv_post", {1, ch, 7}, 0),
-                          Slice{}, 1, ch, 7};
+  im.conv_post = ConvSpec{st.add_conv("decoder.conv_post", {1, ch, 7}, 0), Slice{}, 1, ch, 7};
 
   // Latent statistics ship as tensors as well as in the metadata JSON; prefer
   // the tensors so no JSON has to be parsed on the decode path.
@@ -332,27 +336,25 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
     im.latents_mean = to_f32(*mean);
     im.latents_std = to_f32(checkpoint.at("latents_std"));
   } else {
-    im.latents_mean = {
-        -.0202116875f, .3876466480f, -.0439827980f, -.2859151494f, .0817968621f,
-        -.3578264135f, .0406238100f, -.0155253450f, -.2233624817f, .1821006843f,
-        .2941778784f, -.0790116760f, -.0568150728f, -.3699028222f, -.3161631559f,
-        .5905951377f, -.0521395681f, .0136731603f, -.0369164786f, .0973266065f,
-        -.3394662329f, -.3068567754f, -.2450459891f, -.0346985245f, .0286803218f,
-        -.2121777927f, -.1678263170f, .3221287889f, -.1223055852f, .4356604928f,
-        -.0502599202f, .3979258376f};
-    im.latents_std = {
-        1.6895524230f, 2.7626372722f, 1.7945344281f, 1.6801681847f, 1.6390226547f,
-        2.7788298349f, 1.7659090096f, 1.6199757612f, 2.6336525640f, 1.8539356673f,
-        2.5056497897f, 1.8110192379f, 1.9579657791f, 1.6685498244f, 1.4922469314f,
-        3.2986701981f, 1.9491804497f, 1.8720003270f, 1.8334080103f, 1.6488070417f,
-        1.6176957696f, 1.9131449235f, 1.5695245398f, 1.6943659940f, 1.8318420763f,
-        1.5540637422f, 1.9344930329f, 1.5991982161f, 1.7180459898f, 1.6307219191f,
-        1.8661226051f, 1.5613768203f};
+    im.latents_mean = {-.0202116875f, .3876466480f,  -.0439827980f, -.2859151494f, .0817968621f,
+                       -.3578264135f, .0406238100f,  -.0155253450f, -.2233624817f, .1821006843f,
+                       .2941778784f,  -.0790116760f, -.0568150728f, -.3699028222f, -.3161631559f,
+                       .5905951377f,  -.0521395681f, .0136731603f,  -.0369164786f, .0973266065f,
+                       -.3394662329f, -.3068567754f, -.2450459891f, -.0346985245f, .0286803218f,
+                       -.2121777927f, -.1678263170f, .3221287889f,  -.1223055852f, .4356604928f,
+                       -.0502599202f, .3979258376f};
+    im.latents_std = {1.6895524230f, 2.7626372722f, 1.7945344281f, 1.6801681847f, 1.6390226547f,
+                      2.7788298349f, 1.7659090096f, 1.6199757612f, 2.6336525640f, 1.8539356673f,
+                      2.5056497897f, 1.8110192379f, 1.9579657791f, 1.6685498244f, 1.4922469314f,
+                      3.2986701981f, 1.9491804497f, 1.8720003270f, 1.8334080103f, 1.6488070417f,
+                      1.6176957696f, 1.9131449235f, 1.5695245398f, 1.6943659940f, 1.8318420763f,
+                      1.5540637422f, 1.9344930329f, 1.5991982161f, 1.7180459898f, 1.6307219191f,
+                      1.8661226051f, 1.5613768203f};
   }
   if (im.latents_mean.size() != static_cast<size_t>(zc) ||
       im.latents_std.size() != static_cast<size_t>(zc)) {
-    throw std::runtime_error("audio vae: latents_mean/latents_std are not [" +
-                             std::to_string(zc) + "]");
+    throw std::runtime_error("audio vae: latents_mean/latents_std are not [" + std::to_string(zc) +
+                             "]");
   }
 
   im.weight_floats = st.data().size();
@@ -361,9 +363,13 @@ void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& con
   im.stream.synchronize();
 }
 
-const AudioVAEConfig& AudioDecoder::config() const { return impl_->config; }
+const AudioVAEConfig& AudioDecoder::config() const {
+  return impl_->config;
+}
 
-size_t AudioDecoder::weight_bytes() const { return impl_->weight_floats * sizeof(float); }
+size_t AudioDecoder::weight_bytes() const {
+  return impl_->weight_floats * sizeof(float);
+}
 
 void AudioDecoder::unload() {
   Impl& im = *impl_;
@@ -372,18 +378,24 @@ void AudioDecoder::unload() {
   im.stages.clear();
   im.latents_mean.clear();
   im.latents_std.clear();
-  for (auto& buf : im.pool) buf.reset();
+  for (auto& buf : im.pool)
+    buf.reset();
   im.aa_scratch.reset();
   im.pool_floats = 0;
 }
 
-const std::vector<float>& AudioDecoder::latents_mean() const { return impl_->latents_mean; }
-const std::vector<float>& AudioDecoder::latents_std() const { return impl_->latents_std; }
+const std::vector<float>& AudioDecoder::latents_mean() const {
+  return impl_->latents_mean;
+}
 
-DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
-                                  AudioDecodeTrace* trace) {
+const std::vector<float>& AudioDecoder::latents_std() const {
+  return impl_->latents_std;
+}
+
+DecodedAudio AudioDecoder::decode(const float* latents, int num_latents, AudioDecodeTrace* trace) {
   Impl& im = *impl_;
-  if (im.weight_floats == 0) throw std::runtime_error("audio vae: decode before load");
+  if (im.weight_floats == 0)
+    throw std::runtime_error("audio vae: decode before load");
   if (latents == nullptr || num_latents <= 0) {
     throw std::runtime_error("audio vae: decode needs at least one latent");
   }
@@ -428,11 +440,12 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
     trace->boundaries.reserve(13);
   }
   auto capture = [&](const float* source, size_t count) {
-    if (trace == nullptr) return;
+    if (trace == nullptr)
+      return;
     trace->boundaries.emplace_back(count);
     SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(trace->boundaries.back().data(), source,
-                                      count * sizeof(float),
-                                      cudaMemcpyDeviceToHost, im.stream.get()));
+                                       count * sizeof(float), cudaMemcpyDeviceToHost,
+                                       im.stream.get()));
   };
 
   // Upload [2, 32, A] and project it up to the BigVGAN input width.
@@ -462,9 +475,10 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
     for (int j = 0; j < 3; ++j) {
       float* dst = (j == 0) ? acc : work;
       SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(dst, cur, elems * sizeof(float), cudaMemcpyDeviceToDevice,
-                                        im.stream.get()));
+                                         im.stream.get()));
       im.run_amp_block(stage.blocks[j], dst, batch, len, t1, t2, scratch);
-      if (j != 0) cuda::launch_add_inplace(acc, work, elems, im.stream.get());
+      if (j != 0)
+        cuda::launch_add_inplace(acc, work, elems, im.stream.get());
     }
     // BigVGAN averages the three resblocks; it does not sum them
     // (dac_bigvgan.py:195). Dropping this is 3x too loud and then clips.
@@ -497,7 +511,7 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
   out.sample_rate = cfg.sample_rate;
   out.samples.resize(samples);
   SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(out.samples.data(), spare, samples * sizeof(float),
-                                    cudaMemcpyDeviceToHost, im.stream.get()));
+                                     cudaMemcpyDeviceToHost, im.stream.get()));
   im.stream.synchronize();
   if (trace != nullptr && trace->boundaries.size() != 13)
     throw std::logic_error("audio vae: diagnostic boundary count drift");
@@ -509,4 +523,4 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
   return out;
 }
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

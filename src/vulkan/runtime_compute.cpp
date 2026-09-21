@@ -2,7 +2,8 @@
 
 namespace slopfab::vulkan {
 ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions& options) {
-  if (!device.impl_) throw std::invalid_argument("vulkan: ComputeContext requires a device");
+  if (!device.impl_)
+    throw std::invalid_argument("vulkan: ComputeContext requires a device");
   if (!device.impl_->state->timeline_semaphore_enabled) {
     throw std::invalid_argument("vulkan: ComputeContext requires timeline semaphores enabled");
   }
@@ -11,14 +12,12 @@ ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions
     throw std::invalid_argument("vulkan: compute context limits must be nonzero");
   }
   const uint64_t job_descriptor_capacity =
-      static_cast<uint64_t>(options.max_storage_bindings) *
-      options.max_compute_binds_per_job;
+      static_cast<uint64_t>(options.max_storage_bindings) * options.max_compute_binds_per_job;
   const uint64_t cached_set_capacity =
-      static_cast<uint64_t>(options.max_storage_bindings) *
-      options.max_compute_binds_per_job;
+      static_cast<uint64_t>(options.max_storage_bindings) * options.max_compute_binds_per_job;
   const uint64_t cached_descriptor_capacity =
-      static_cast<uint64_t>(options.max_compute_binds_per_job) *
-      options.max_storage_bindings * (options.max_storage_bindings + 1ull) / 2ull;
+      static_cast<uint64_t>(options.max_compute_binds_per_job) * options.max_storage_bindings *
+      (options.max_storage_bindings + 1ull) / 2ull;
   if (job_descriptor_capacity > std::numeric_limits<uint32_t>::max() ||
       cached_set_capacity > std::numeric_limits<uint32_t>::max() ||
       cached_descriptor_capacity > std::numeric_limits<uint32_t>::max()) {
@@ -35,12 +34,11 @@ ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions
     for (uint32_t i = 0; i < options.max_in_flight; ++i) {
       auto& slot = state->slots[i];
       slot.resources.reserve(static_cast<size_t>(job_descriptor_capacity) +
-                              options.max_compute_binds_per_job + 8);
+                             options.max_compute_binds_per_job + 8);
       slot.seen_bindings.reserve(options.max_storage_bindings);
       slot.descriptor_infos.reserve(options.max_storage_bindings);
       slot.descriptor_writes.reserve(options.max_storage_bindings);
-      slot.descriptor_sets.resize(static_cast<size_t>(cached_set_capacity),
-                                  VK_NULL_HANDLE);
+      slot.descriptor_sets.resize(static_cast<size_t>(cached_set_capacity), VK_NULL_HANDLE);
       slot.descriptor_pipelines.resize(static_cast<size_t>(cached_set_capacity));
       VkCommandPoolCreateInfo pool_create{};
       pool_create.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -66,7 +64,7 @@ ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions
       descriptor_create.poolSizeCount = 1;
       descriptor_create.pPoolSizes = &size;
       detail::check(state->f.create_descriptor_pool(state->device->device, &descriptor_create,
-                                                     nullptr, &slot.descriptors),
+                                                    nullptr, &slot.descriptors),
                     "vkCreateDescriptorPool");
     }
     VkSemaphoreTypeCreateInfo timeline_type{};
@@ -85,12 +83,14 @@ ComputeContext::ComputeContext(const Device& device, const ComputeContextOptions
   impl_ = std::make_shared<Impl>();
   impl_->state = std::move(state);
 }
+
 ComputeContext::~ComputeContext() = default;
 ComputeContext::ComputeContext(ComputeContext&&) noexcept = default;
 ComputeContext& ComputeContext::operator=(ComputeContext&&) noexcept = default;
 
 CommandList ComputeContext::begin() {
-  if (!impl_) throw std::logic_error("vulkan: empty ComputeContext");
+  if (!impl_)
+    throw std::logic_error("vulkan: empty ComputeContext");
   auto state = impl_->state;
   size_t selected = state->slots.size();
   for (;;) {
@@ -103,7 +103,8 @@ CommandList ComputeContext::begin() {
           selected = i;
           break;
         }
-        if (state->slots[i].value != 0) wait_for = std::min(wait_for, state->slots[i].value);
+        if (state->slots[i].value != 0)
+          wait_for = std::min(wait_for, state->slots[i].value);
       }
       if (selected != state->slots.size()) {
         state->slots[selected].reserved = true;
@@ -113,7 +114,7 @@ CommandList ComputeContext::begin() {
     if (wait_for == std::numeric_limits<uint64_t>::max()) {
       throw std::logic_error("vulkan: no usable command slot is available");
     }
-    state->wait_value(wait_for);  // bounded backpressure: oldest submitted slot
+    state->wait_value(wait_for); // bounded backpressure: oldest submitted slot
   }
   VkCommandBufferBeginInfo begin{};
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -137,14 +138,16 @@ CommandList ComputeContext::begin() {
     if (state->f.reset_command_buffer(state->slots[selected].commands, 0) != VK_SUCCESS) {
       state->slots[selected].poisoned = true;
     }
-    if (commands) state->slots[selected].resources.swap(commands->resources);
+    if (commands)
+      state->slots[selected].resources.swap(commands->resources);
     state->slots[selected].reserved = false;
     throw;
   }
 }
 
 Submission ComputeContext::submit(CommandList&& commands) {
-  if (!impl_ || !commands.impl_) throw std::invalid_argument("vulkan: empty command submission");
+  if (!impl_ || !commands.impl_)
+    throw std::invalid_argument("vulkan: empty command submission");
   if (commands.impl_->state != impl_->state) {
     throw std::invalid_argument("vulkan: command list belongs to another context");
   }
@@ -182,31 +185,49 @@ Submission ComputeContext::submit(CommandList&& commands) {
 }
 
 void ComputeContext::collect() {
-  if (!impl_) return;
+  if (!impl_)
+    return;
   std::lock_guard<std::mutex> lock(impl_->state->mutex);
   impl_->state->recycle_locked(impl_->state->completed());
 }
+
 uint32_t ComputeContext::in_flight() const {
-  if (!impl_) return 0;
+  if (!impl_)
+    return 0;
   std::lock_guard<std::mutex> lock(impl_->state->mutex);
   uint32_t count = 0;
-  for (const auto& slot : impl_->state->slots) if (slot.reserved) ++count;
+  for (const auto& slot : impl_->state->slots)
+    if (slot.reserved)
+      ++count;
   return count;
 }
+
 uint64_t ComputeContext::descriptor_set_allocations() const noexcept {
   return impl_ ? impl_->state->descriptor_allocations.load(std::memory_order_relaxed) : 0;
 }
 
 Submission::Submission() = default;
-Submission::Submission(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
-Submission::operator bool() const noexcept { return impl_ != nullptr; }
-uint64_t Submission::value() const noexcept { return impl_ ? impl_->value : 0; }
+
+Submission::Submission(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+
+Submission::operator bool() const noexcept {
+  return impl_ != nullptr;
+}
+
+uint64_t Submission::value() const noexcept {
+  return impl_ ? impl_->value : 0;
+}
+
 bool Submission::ready() const {
-  if (!impl_) return false;
+  if (!impl_)
+    return false;
   return impl_->state->completed() >= impl_->value;
 }
+
 void Submission::wait() const {
-  if (!impl_) throw std::logic_error("vulkan: empty Submission");
+  if (!impl_)
+    throw std::logic_error("vulkan: empty Submission");
   impl_->state->wait_value(impl_->value);
 }
 
@@ -214,21 +235,29 @@ CommandList::CommandList() = default;
 CommandList::~CommandList() = default;
 CommandList::CommandList(CommandList&&) noexcept = default;
 CommandList& CommandList::operator=(CommandList&&) noexcept = default;
-CommandList::CommandList(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
-CommandList::operator bool() const noexcept { return impl_ != nullptr; }
+
+CommandList::CommandList(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {
+}
+
+CommandList::operator bool() const noexcept {
+  return impl_ != nullptr;
+}
 
 void CommandList::reset_timestamps(TimestampQuery& queries) {
   if (!impl_ || !queries.impl_ || queries.impl_->device != impl_->state->device)
     throw std::invalid_argument("vulkan timestamps: incompatible query pool");
   impl_->retain(queries.impl_);
-  queries.impl_->reset(impl_->state->slots[impl_->slot].commands, queries.impl_->pool, 0, queries.impl_->count);
+  queries.impl_->reset(impl_->state->slots[impl_->slot].commands, queries.impl_->pool, 0,
+                       queries.impl_->count);
 }
+
 void CommandList::write_timestamp(TimestampQuery& queries, uint32_t index) {
-  if (!impl_ || !queries.impl_ || queries.impl_->device != impl_->state->device || index >= queries.impl_->count)
+  if (!impl_ || !queries.impl_ || queries.impl_->device != impl_->state->device ||
+      index >= queries.impl_->count)
     throw std::invalid_argument("vulkan timestamps: incompatible query or index");
   impl_->retain(queries.impl_);
   queries.impl_->write(impl_->state->slots[impl_->slot].commands,
-      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries.impl_->pool, index);
+                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries.impl_->pool, index);
 }
 
 void CommandList::copy_buffer(Buffer& source, Buffer& destination, uint64_t bytes,
@@ -246,32 +275,35 @@ void CommandList::copy_buffer(Buffer& source, Buffer& destination, uint64_t byte
   }
   source.impl_->check_range(source_offset, bytes);
   destination.impl_->check_range(destination_offset, bytes);
-  if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized copy");
+  if (bytes == 0)
+    throw std::invalid_argument("vulkan: zero-sized copy");
   if (((source_offset | destination_offset | bytes) & 3u) != 0) {
     throw std::invalid_argument("vulkan: copy offsets and size must be four-byte aligned");
   }
   if (source.impl_->buffer == destination.impl_->buffer &&
-      source_offset < destination_offset + bytes &&
-      destination_offset < source_offset + bytes) {
+      source_offset < destination_offset + bytes && destination_offset < source_offset + bytes) {
     throw std::invalid_argument("vulkan: same-buffer copy ranges overlap");
   }
   impl_->resources.reserve(impl_->resources.size() + 2);
   impl_->retain(source.impl_);
   impl_->retain(destination.impl_);
   VkBufferCopy region{source_offset, destination_offset, bytes};
-  impl_->state->f.cmd_copy_buffer(impl_->state->slots[impl_->slot].commands,
-                                  source.impl_->buffer, destination.impl_->buffer, 1, &region);
+  impl_->state->f.cmd_copy_buffer(impl_->state->slots[impl_->slot].commands, source.impl_->buffer,
+                                  destination.impl_->buffer, 1, &region);
 }
 
-void CommandList::barrier(Buffer& buffer, BufferAccess before, BufferAccess after,
-                          uint64_t offset, uint64_t bytes) {
-  if (!impl_ || !buffer.impl_) throw std::invalid_argument("vulkan: barrier requires buffer");
+void CommandList::barrier(Buffer& buffer, BufferAccess before, BufferAccess after, uint64_t offset,
+                          uint64_t bytes) {
+  if (!impl_ || !buffer.impl_)
+    throw std::invalid_argument("vulkan: barrier requires buffer");
   if (buffer.impl_->pool->device != impl_->state->device) {
     throw std::invalid_argument("vulkan: barrier buffer belongs to another device");
   }
-  if (bytes == ~uint64_t{0}) bytes = buffer.impl_->bytes - offset;
+  if (bytes == ~uint64_t{0})
+    bytes = buffer.impl_->bytes - offset;
   buffer.impl_->check_range(offset, bytes);
-  if (bytes == 0) throw std::invalid_argument("vulkan: zero-sized barrier");
+  if (bytes == 0)
+    throw std::invalid_argument("vulkan: zero-sized barrier");
   const auto src = detail::access_info(before);
   const auto dst = detail::access_info(after);
   impl_->resources.reserve(impl_->resources.size() + 1);
@@ -285,9 +317,8 @@ void CommandList::barrier(Buffer& buffer, BufferAccess before, BufferAccess afte
   barrier.buffer = buffer.impl_->buffer;
   barrier.offset = offset;
   barrier.size = bytes;
-  impl_->state->f.cmd_pipeline_barrier(impl_->state->slots[impl_->slot].commands,
-                                       src.stage, dst.stage, 0, 0, nullptr, 1, &barrier,
-                                       0, nullptr);
+  impl_->state->f.cmd_pipeline_barrier(impl_->state->slots[impl_->slot].commands, src.stage,
+                                       dst.stage, 0, 0, nullptr, 1, &barrier, 0, nullptr);
 }
 
 void CommandList::bind_compute(ComputePipeline& pipeline,
@@ -311,8 +342,7 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
   for (size_t i = 0; i < bindings.size(); ++i) {
     const auto& binding = bindings[i];
     if (binding.binding >= bindings.size() || slot.seen_bindings[binding.binding] ||
-        binding.buffer == nullptr ||
-        !binding.buffer->impl_) {
+        binding.buffer == nullptr || !binding.buffer->impl_) {
       throw std::invalid_argument("vulkan: invalid or duplicate storage binding");
     }
     slot.seen_bindings[binding.binding] = 1;
@@ -321,7 +351,8 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
       throw std::invalid_argument("vulkan: storage binding has wrong device or usage");
     }
     uint64_t range = binding.bytes;
-    if (range == ~uint64_t{0}) range = binding.buffer->impl_->bytes - binding.offset;
+    if (range == ~uint64_t{0})
+      range = binding.buffer->impl_->bytes - binding.offset;
     binding.buffer->impl_->check_range(binding.offset, range);
     if (range == 0 || range > pipeline.impl_->info.max_storage_buffer_bytes) {
       throw std::invalid_argument("vulkan: storage binding range exceeds device limit");
@@ -340,7 +371,8 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
   // Retain only after every binding has validated. This second small pass is
   // allocation-free because the job vector is pre-reserved from its slot.
   impl_->resources.reserve(impl_->resources.size() + bindings.size() + 1);
-  for (const auto& binding : bindings) impl_->retain(binding.buffer->impl_);
+  for (const auto& binding : bindings)
+    impl_->retain(binding.buffer->impl_);
   impl_->retain(pipeline.impl_);
   const uint32_t bind_index = impl_->compute_bind_count;
   // All layouts contain only contiguous storage-buffer bindings, so their
@@ -349,18 +381,16 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
   // without resetting a pool referenced earlier in the command buffer and
   // without steady-state descriptor allocation.
   const uint32_t binding_count = pipeline.impl_->options.storage_binding_count;
-  const size_t set_index = static_cast<size_t>(bind_index) *
-                               impl_->state->max_bindings +
-                           (binding_count - 1);
+  const size_t set_index =
+      static_cast<size_t>(bind_index) * impl_->state->max_bindings + (binding_count - 1);
   if (slot.descriptor_sets[set_index] == VK_NULL_HANDLE) {
     VkDescriptorSetAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocate.descriptorPool = slot.descriptors;
     allocate.descriptorSetCount = 1;
     allocate.pSetLayouts = &pipeline.impl_->descriptor_layout;
-    detail::check(impl_->state->f.allocate_descriptor_sets(
-                      impl_->state->device->device, &allocate,
-                      &slot.descriptor_sets[set_index]),
+    detail::check(impl_->state->f.allocate_descriptor_sets(impl_->state->device->device, &allocate,
+                                                           &slot.descriptor_sets[set_index]),
                   "vkAllocateDescriptorSets");
     impl_->state->descriptor_allocations.fetch_add(1, std::memory_order_relaxed);
     slot.descriptor_pipelines[set_index] = pipeline.impl_;
@@ -369,22 +399,22 @@ void CommandList::bind_compute(ComputePipeline& pipeline,
     write.dstSet = slot.descriptor_sets[set_index];
   }
   impl_->state->f.update_descriptor_sets(impl_->state->device->device,
-      static_cast<uint32_t>(slot.descriptor_writes.size()), slot.descriptor_writes.data(),
-      0, nullptr);
+                                         static_cast<uint32_t>(slot.descriptor_writes.size()),
+                                         slot.descriptor_writes.data(), 0, nullptr);
   const VkCommandBuffer commands = slot.commands;
   impl_->state->f.cmd_bind_pipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     pipeline.impl_->pipeline);
   impl_->state->f.cmd_bind_descriptor_sets(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
                                            pipeline.impl_->pipeline_layout, 0, 1,
-                                           &slot.descriptor_sets[set_index],
-                                           0, nullptr);
+                                           &slot.descriptor_sets[set_index], 0, nullptr);
   impl_->pipeline = pipeline.impl_;
   impl_->push_constants_set = false;
   ++impl_->compute_bind_count;
 }
 
 void CommandList::push_constants(const void* data, uint32_t bytes) {
-  if (!impl_ || !impl_->pipeline) throw std::logic_error("vulkan: bind pipeline before push constants");
+  if (!impl_ || !impl_->pipeline)
+    throw std::logic_error("vulkan: bind pipeline before push constants");
   if (bytes != impl_->pipeline->options.push_constant_bytes || (data == nullptr && bytes != 0)) {
     throw std::invalid_argument("vulkan: push constant size mismatch");
   }
@@ -397,7 +427,8 @@ void CommandList::push_constants(const void* data, uint32_t bytes) {
 }
 
 void CommandList::dispatch(uint32_t groups_x, uint32_t groups_y, uint32_t groups_z) {
-  if (!impl_ || !impl_->pipeline) throw std::logic_error("vulkan: bind pipeline before dispatch");
+  if (!impl_ || !impl_->pipeline)
+    throw std::logic_error("vulkan: bind pipeline before dispatch");
   if (impl_->pipeline->options.push_constant_bytes != 0 && !impl_->push_constants_set) {
     throw std::logic_error("vulkan: set required push constants before dispatch");
   }
@@ -409,9 +440,8 @@ void CommandList::dispatch(uint32_t groups_x, uint32_t groups_y, uint32_t groups
       throw std::invalid_argument("vulkan: dispatch group count exceeds device limit");
     }
   }
-  impl_->state->f.cmd_dispatch(impl_->state->slots[impl_->slot].commands,
-                               groups_x, groups_y, groups_z);
+  impl_->state->f.cmd_dispatch(impl_->state->slots[impl_->slot].commands, groups_x, groups_y,
+                               groups_z);
 }
 
-
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

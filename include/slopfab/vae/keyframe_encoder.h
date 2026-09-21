@@ -15,9 +15,8 @@ std::vector<float> prepare_keyframe_pixels(const RGBImage& image);
 // Converts encoder moments [mean(24), logvar(24)] at every latent voxel into
 // normalized H3 conditioning latents. `normal` is the standard-normal draw
 // (the production caller uses torch-compatible seed 42 generation).
-std::vector<float> sample_keyframe_latents(const float* moments, const float* normal,
-                                           int height, int width,
-                                           const std::vector<float>& latents_mean,
+std::vector<float> sample_keyframe_latents(const float* moments, const float* normal, int height,
+                                           int width, const std::vector<float>& latents_mean,
                                            const std::vector<float>& latents_std);
 
 struct EncoderWeightSummary {
@@ -39,7 +38,7 @@ std::vector<float> torch_cpu_normal_seed42(size_t count);
 
 #ifdef SLOPFAB_WITH_CUDA
 class KeyframeEncoder {
- public:
+public:
   explicit KeyframeEncoder(const SafeTensors& checkpoint);
   ~KeyframeEncoder();
   KeyframeEncoder(KeyframeEncoder&&) noexcept;
@@ -56,11 +55,13 @@ class KeyframeEncoder {
   // The low-level API defaults to the FP32 authority. Generation explicitly
   // selects mixed precision: FP16 activations with FP32 accumulation/norms.
   std::vector<float> encode_temporal_moments(const float* pixels, int frames, int height, int width,
-                                            bool mixed_precision = false);
+                                             bool mixed_precision = false);
   // Normalized reference frames at 24 fps, already snapped to 17*n+5.
   std::vector<float> encode_reference_video(const std::vector<RGBImage>& frames,
-      int encoding_frames, const std::vector<float>& latents_mean,
-      const std::vector<float>& latents_std, bool mixed_precision = false);
+                                            int encoding_frames,
+                                            const std::vector<float>& latents_mean,
+                                            const std::vector<float>& latents_std,
+                                            bool mixed_precision = false);
 
   // Complete Ref2VA conditioning path. `normal` contains 24*(H/16)*(W/16)
   // standard-normal values in channel-major order.
@@ -73,10 +74,10 @@ class KeyframeEncoder {
                                             const std::vector<float>& latents_mean,
                                             const std::vector<float>& latents_std);
 
- private:
+private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 #endif
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

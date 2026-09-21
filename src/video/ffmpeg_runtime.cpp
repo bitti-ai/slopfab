@@ -11,7 +11,6 @@
 #include <dlfcn.h>
 #endif
 
-
 namespace slopfab::video::mux_detail {
 // --- dynamic loading --------------------------------------------------------
 
@@ -42,26 +41,38 @@ std::string lib_file(const char* base, int major) {
   return std::string(base) + "-" + std::to_string(major) + ".dll";
 }
 
-std::string lib_file_unversioned(const char* base) { return std::string(base) + ".dll"; }
+std::string lib_file_unversioned(const char* base) {
+  return std::string(base) + ".dll";
+}
 
 constexpr char kPathSep = '\\';
 #else
 using LibHandle = void*;
 
-LibHandle lib_open(const std::string& path) { return ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL); }
+LibHandle lib_open(const std::string& path) {
+  return ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+}
 
-void* lib_sym(LibHandle h, const char* name) { return ::dlsym(h, name); }
+void* lib_sym(LibHandle h, const char* name) {
+  return ::dlsym(h, name);
+}
 
 #if defined(__APPLE__)
 std::string lib_file(const char* base, int major) {
   return std::string("lib") + base + "." + std::to_string(major) + ".dylib";
 }
-std::string lib_file_unversioned(const char* base) { return std::string("lib") + base + ".dylib"; }
+
+std::string lib_file_unversioned(const char* base) {
+  return std::string("lib") + base + ".dylib";
+}
 #else
 std::string lib_file(const char* base, int major) {
   return std::string("lib") + base + ".so." + std::to_string(major);
 }
-std::string lib_file_unversioned(const char* base) { return std::string("lib") + base + ".so"; }
+
+std::string lib_file_unversioned(const char* base) {
+  return std::string("lib") + base + ".so";
+}
 #endif
 
 constexpr char kPathSep = '/';
@@ -80,12 +91,14 @@ bool env_value(const char* name, std::string* out) {
 #if defined(_WIN32)
   char buf[1024];
   const DWORD n = ::GetEnvironmentVariableA(name, buf, static_cast<DWORD>(sizeof(buf)));
-  if (n == 0 || n >= sizeof(buf)) return false;
+  if (n == 0 || n >= sizeof(buf))
+    return false;
   out->assign(buf, n);
   return true;
 #else
   const char* v = std::getenv(name);
-  if (v == nullptr || v[0] == '\0') return false;
+  if (v == nullptr || v[0] == '\0')
+    return false;
   out->assign(v);
   return true;
 #endif
@@ -97,8 +110,10 @@ bool env_value(const char* name, std::string* out) {
 // PATH either.
 std::string ffmpeg_dir() {
   std::string s;
-  if (!env_value("SLOPFAB_FFMPEG_DIR", &s)) return {};
-  if (s.back() != '/' && s.back() != '\\') s.push_back(kPathSep);
+  if (!env_value("SLOPFAB_FFMPEG_DIR", &s))
+    return {};
+  if (s.back() != '/' && s.back() != '\\')
+    s.push_back(kPathSep);
   return s;
 }
 
@@ -126,38 +141,45 @@ OpenedLib open_library(const char* base, const std::string& dir, int preferred,
   const auto try_major = [&](int major) -> OpenedLib {
     const std::string file = lib_file(base, major);
     if (!dir.empty()) {
-      if (LibHandle h = lib_open(dir + file)) return {h, dir + file};
+      if (LibHandle h = lib_open(dir + file))
+        return {h, dir + file};
     }
-    if (LibHandle h = lib_open(file)) return {h, file};
+    if (LibHandle h = lib_open(file))
+      return {h, file};
     return {};
   };
   if (preferred >= low && preferred <= high) {
     const OpenedLib hit = try_major(preferred);
-    if (hit.handle != nullptr) return hit;
+    if (hit.handle != nullptr)
+      return hit;
   }
   for (int major = high; major >= low; --major) {
-    if (major == preferred) continue;  // just tried
+    if (major == preferred)
+      continue; // just tried
     const OpenedLib hit = try_major(major);
-    if (hit.handle != nullptr) return hit;
+    if (hit.handle != nullptr)
+      return hit;
   }
   // Unversioned last: on Linux this is the -dev symlink, on Windows it is a
   // hand-renamed build. Either is a deliberate act by the user, so honour it,
   // but never in preference to a properly versioned library.
   const std::string plain = lib_file_unversioned(base);
   if (!dir.empty()) {
-    if (LibHandle h = lib_open(dir + plain)) return {h, dir + plain};
+    if (LibHandle h = lib_open(dir + plain))
+      return {h, dir + plain};
   }
-  if (LibHandle h = lib_open(plain)) return {h, plain};
+  if (LibHandle h = lib_open(plain))
+    return {h, plain};
   return {};
 }
 
 // The one and only place a symbol address is turned into something callable.
 // Records the first failure so the caller can name it.
-template <typename Fn>
-bool bind(LibHandle lib, Fn* out, const char* name, std::string* missing) {
+template <typename Fn> bool bind(LibHandle lib, Fn* out, const char* name, std::string* missing) {
   void* sym = lib_sym(lib, name);
   if (sym == nullptr) {
-    if (missing->empty()) *missing = name;
+    if (missing->empty())
+      *missing = name;
     return false;
   }
   *out = reinterpret_cast<Fn>(sym);
@@ -194,8 +216,7 @@ bool validate_layout(const Api& api, const Layout& l, std::string* why) {
     const bool ok = fld<int64_t>(pkt, l.packet_pts) == kNoPts &&
                     fld<int64_t>(pkt, l.packet_dts) == kNoPts &&
                     fld<void*>(pkt, l.packet_data) == nullptr &&
-                    fld<int>(pkt, l.packet_size) == 0 &&
-                    fld<int>(pkt, l.packet_stream_index) == 0;
+                    fld<int>(pkt, l.packet_size) == 0 && fld<int>(pkt, l.packet_stream_index) == 0;
     api.av_packet_free(&pkt);
     if (!ok) {
       *why = "AVPacket";
@@ -215,7 +236,8 @@ bool validate_layout(const Api& api, const Layout& l, std::string* why) {
   if (AVFrame* f = api.av_frame_alloc()) {
     bool ok = fld<int64_t>(f, l.frame_pts) == kNoPts;
     for (size_t off = (l.frame_format + 4 + 7) & ~size_t{7}; off + 8 <= l.frame_pts; off += 8) {
-      if (fld<int64_t>(f, off) == kNoPts) ok = false;
+      if (fld<int64_t>(f, off) == kNoPts)
+        ok = false;
     }
     api.av_frame_free(&f);
     if (!ok) {
@@ -239,6 +261,7 @@ bool validate_layout(const Api& api, const Layout& l, std::string* why) {
     int planes;
     const char* label;
   };
+
   const PixCase pix_cases[] = {{kPixFmtRgb24, 1, "AVFrame(rgb24)"},
                                {kPixFmtYuv420p, 3, "AVFrame(yuv420p)"}};
   for (const PixCase& c : pix_cases) {
@@ -256,9 +279,11 @@ bool validate_layout(const Api& api, const Layout& l, std::string* why) {
       const int* linesize = &fld<int>(f, l.frame_linesize);
       for (int p = 0; p < 4; ++p) {
         const bool want = p < c.planes;
-        if ((data[p] != nullptr) != want) ok = false;
+        if ((data[p] != nullptr) != want)
+          ok = false;
       }
-      if (linesize[0] < 64) ok = false;
+      if (linesize[0] < 64)
+        ok = false;
     }
     api.av_frame_free(&f);
     if (!ok) {
@@ -284,8 +309,8 @@ bool validate_layout(const Api& api, const Layout& l, std::string* why) {
     if (ok) {
       uint8_t** data = &fld<uint8_t*>(f, l.frame_data);
       const int* linesize = &fld<int>(f, l.frame_linesize);
-      ok = data[0] != nullptr && data[1] != nullptr && data[2] == nullptr &&
-           linesize[0] == 1024 * 4;
+      ok =
+          data[0] != nullptr && data[1] != nullptr && data[2] == nullptr && linesize[0] == 1024 * 4;
     }
     api.av_frame_free(&f);
     if (!ok) {
@@ -360,10 +385,8 @@ Loaded probe() {
   Loaded s;
   const std::string dir = ffmpeg_dir();
 
-  const OpenedLib avutil =
-      open_library("avutil", dir, static_cast<int>(kRequiredAvutilMajor));
-  const OpenedLib avcodec =
-      open_library("avcodec", dir, static_cast<int>(kRequiredAvcodecMajor));
+  const OpenedLib avutil = open_library("avutil", dir, static_cast<int>(kRequiredAvutilMajor));
+  const OpenedLib avcodec = open_library("avcodec", dir, static_cast<int>(kRequiredAvcodecMajor));
   const OpenedLib avformat =
       open_library("avformat", dir, static_cast<int>(kRequiredAvformatMajor));
   // libswscale has its own much smaller major sequence (9 in FFmpeg 8).
@@ -372,13 +395,18 @@ Loaded probe() {
       swscale.handle == nullptr) {
     s.status = MuxStatus::kLibraryNotFound;
     s.detail = "could not load ";
-    if (avutil.handle == nullptr) s.detail += "libavutil ";
-    if (avcodec.handle == nullptr) s.detail += "libavcodec ";
-    if (avformat.handle == nullptr) s.detail += "libavformat ";
-    if (swscale.handle == nullptr) s.detail += "libswscale ";
+    if (avutil.handle == nullptr)
+      s.detail += "libavutil ";
+    if (avcodec.handle == nullptr)
+      s.detail += "libavcodec ";
+    if (avformat.handle == nullptr)
+      s.detail += "libavformat ";
+    if (swscale.handle == nullptr)
+      s.detail += "libswscale ";
     s.detail += "(tried majors " + std::to_string(kProbeMajorLow) + "-" +
                 std::to_string(kProbeMajorHigh) + " on the library search path";
-    if (!dir.empty()) s.detail += " and in SLOPFAB_FFMPEG_DIR=" + dir;
+    if (!dir.empty())
+      s.detail += " and in SLOPFAB_FFMPEG_DIR=" + dir;
     s.detail += ")";
     return s;
   }
@@ -460,14 +488,15 @@ Loaded probe() {
       bind(avformat.handle, &api.avio_open, "avio_open", &missing) &&
       bind(avformat.handle, &api.avio_closep, "avio_closep", &missing);
   bound = bound &&
-      bind(avformat.handle, &api.avformat_open_input, "avformat_open_input", &missing) &&
-      bind(avformat.handle, &api.avformat_find_stream_info, "avformat_find_stream_info", &missing) &&
-      bind(avformat.handle, &api.av_find_best_stream, "av_find_best_stream", &missing) &&
-      bind(avformat.handle, &api.av_read_frame, "av_read_frame", &missing) &&
-      bind(avformat.handle, &api.avformat_close_input, "avformat_close_input", &missing) &&
-      bind(swscale.handle, &api.sws_getContext, "sws_getContext", &missing) &&
-      bind(swscale.handle, &api.sws_scale, "sws_scale", &missing) &&
-      bind(swscale.handle, &api.sws_freeContext, "sws_freeContext", &missing);
+          bind(avformat.handle, &api.avformat_open_input, "avformat_open_input", &missing) &&
+          bind(avformat.handle, &api.avformat_find_stream_info, "avformat_find_stream_info",
+               &missing) &&
+          bind(avformat.handle, &api.av_find_best_stream, "av_find_best_stream", &missing) &&
+          bind(avformat.handle, &api.av_read_frame, "av_read_frame", &missing) &&
+          bind(avformat.handle, &api.avformat_close_input, "avformat_close_input", &missing) &&
+          bind(swscale.handle, &api.sws_getContext, "sws_getContext", &missing) &&
+          bind(swscale.handle, &api.sws_scale, "sws_scale", &missing) &&
+          bind(swscale.handle, &api.sws_freeContext, "sws_freeContext", &missing);
   if (!bound) {
     s.status = MuxStatus::kSymbolMissing;
     s.detail = s.version + " is missing " + missing;
@@ -508,36 +537,41 @@ const Loaded& loaded() {
 
 std::string err_text(const Api& api, int code) {
   char buf[256] = {0};
-  if (api.av_strerror(code, buf, sizeof(buf)) < 0) return std::to_string(code);
+  if (api.av_strerror(code, buf, sizeof(buf)) < 0)
+    return std::to_string(code);
   return std::string(buf) + " (" + std::to_string(code) + ")";
 }
 
-}  // namespace slopfab::video::mux_detail
+} // namespace slopfab::video::mux_detail
 
 namespace slopfab::video {
 using namespace mux_detail;
+
 const char* mux_status_message(MuxStatus s) {
   switch (s) {
-    case MuxStatus::kOk:
-      return "ok";
-    case MuxStatus::kLibraryNotFound:
-      return "ffmpeg shared libraries not found";
-    case MuxStatus::kSymbolMissing:
-      return "ffmpeg found but not a version slopfab knows how to drive";
-    case MuxStatus::kEncoderMissing:
-      return "this ffmpeg build has no usable H.264 or AAC encoder";
-    case MuxStatus::kWriteFailed:
-      return "writing the MP4 failed";
+  case MuxStatus::kOk:
+    return "ok";
+  case MuxStatus::kLibraryNotFound:
+    return "ffmpeg shared libraries not found";
+  case MuxStatus::kSymbolMissing:
+    return "ffmpeg found but not a version slopfab knows how to drive";
+  case MuxStatus::kEncoderMissing:
+    return "this ffmpeg build has no usable H.264 or AAC encoder";
+  case MuxStatus::kWriteFailed:
+    return "writing the MP4 failed";
   }
   return "unknown";
 }
 
 bool ffmpeg_available(std::string* detail) {
   const Loaded& s = loaded();
-  if (detail != nullptr) *detail = s.detail;
+  if (detail != nullptr)
+    *detail = s.detail;
   return s.ok;
 }
 
-std::string ffmpeg_version() { return loaded().version; }
+std::string ffmpeg_version() {
+  return loaded().version;
+}
 
-}  // namespace slopfab::video
+} // namespace slopfab::video

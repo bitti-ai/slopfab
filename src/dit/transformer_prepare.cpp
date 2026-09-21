@@ -6,7 +6,8 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   cuda::StageMemorySpan memory("transformer.text");
   Impl& s = *impl_;
   s.require_loaded("prepare_text");
-  if (num_tokens < 0) throw std::runtime_error("transformer: negative token count");
+  if (num_tokens < 0)
+    throw std::runtime_error("transformer: negative token count");
 
   s.num_text = num_tokens;
   if (num_tokens == 0) {
@@ -25,11 +26,10 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
   // forward is stateless (spec 6).
   SequenceLayout text_only;
   text_only.num_text = num_tokens;
-  const Carve text_carve = plan_carve(s.cfg, text_only, s.row_chunk,
-                                      s.attention_mode,
-                                      stack_uses_convrot(s.refiner),
-                                      s.compact_queries(s.attention_mode == AttentionMode::kExact
-                                          ? AttentionMode::kExact : AttentionMode::kFlash2));
+  const Carve text_carve = plan_carve(
+      s.cfg, text_only, s.row_chunk, s.attention_mode, stack_uses_convrot(s.refiner),
+      s.compact_queries(s.attention_mode == AttentionMode::kExact ? AttentionMode::kExact
+                                                                  : AttentionMode::kFlash2));
 
   Workspace& ws = s.ws;
   // The refiner needs one extra bf16 [L, text_dim] buffer that the main path
@@ -56,17 +56,15 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
     const uint32_t tiled = static_cast<uint32_t>(num_tokens) / 64 * 64;
     if (tiled != 0) {
       cuda::launch_deterministic_bf16_gemm_nt(
-          xin, static_cast<const __nv_bfloat16*>(s.condition_proj.data),
-          s.condition_proj.bias, x, tiled, static_cast<uint32_t>(hidden),
-          static_cast<uint32_t>(s.cfg.text_dim), DenseGemmBias::kFloat32,
-          0, 0, s.stream.get());
+          xin, static_cast<const __nv_bfloat16*>(s.condition_proj.data), s.condition_proj.bias, x,
+          tiled, static_cast<uint32_t>(hidden), static_cast<uint32_t>(s.cfg.text_dim),
+          DenseGemmBias::kFloat32, 0, 0, s.stream.get());
     }
     if (tiled != static_cast<uint32_t>(num_tokens)) {
       cuda::launch_deterministic_scalar_gemm_nt(
           xin, s.condition_proj.data, s.condition_proj.bias, x,
-          static_cast<uint32_t>(num_tokens) - tiled,
-          static_cast<uint32_t>(hidden), static_cast<uint32_t>(s.cfg.text_dim),
-          DenseGemmMode::kBFloat16, DenseGemmBias::kFloat32,
+          static_cast<uint32_t>(num_tokens) - tiled, static_cast<uint32_t>(hidden),
+          static_cast<uint32_t>(s.cfg.text_dim), DenseGemmMode::kBFloat16, DenseGemmBias::kFloat32,
           tiled, tiled, s.stream.get());
     }
   } else {
@@ -89,8 +87,8 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
     // No AdaLN, no RoPE, no mask: `mod_base` and `cos` are null.
     // Preserve every legacy mode's historical Flash2 refiner. Exact is the
     // only selection whose contract deliberately covers both stacks.
-    const AttentionMode refiner_mode = s.attention_mode == AttentionMode::kExact
-        ? AttentionMode::kExact : AttentionMode::kFlash2;
+    const AttentionMode refiner_mode =
+        s.attention_mode == AttentionMode::kExact ? AttentionMode::kExact : AttentionMode::kFlash2;
     s.run_block(b, nullptr, num_tokens, x, nullptr, nullptr, nullptr, q, k, v, attn_out, normed,
                 fused, act, branch, refiner_mode);
   }
@@ -101,8 +99,9 @@ void Transformer::prepare_text(const float* prompt_embeds, int num_tokens) {
     __nv_bfloat16* part = x + static_cast<size_t>(start) * hidden;
     cuda::launch_rmsnorm(part, s.refiner_final_norm, normed, n, hidden, s.cfg.norm_eps,
                          s.stream.get());
-    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(part, normed, static_cast<size_t>(n) * hidden * sizeof(__nv_bfloat16),
-                                      cudaMemcpyDeviceToDevice, s.stream.get()));
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(part, normed,
+                                       static_cast<size_t>(n) * hidden * sizeof(__nv_bfloat16),
+                                       cudaMemcpyDeviceToDevice, s.stream.get()));
   }
   SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   s.emit_stage("final_norm", x, num_tokens, hidden);
@@ -117,7 +116,8 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   s.require_loaded("prepare_sequence");
 
   const int seq = layout.total_rows();
-  if (seq <= 0) throw std::runtime_error("transformer: empty packed sequence");
+  if (seq <= 0)
+    throw std::runtime_error("transformer: empty packed sequence");
   if (layout.num_text != s.num_text) {
     throw std::runtime_error("transformer: layout has " + std::to_string(layout.num_text) +
                              " text rows but prepare_text cached " + std::to_string(s.num_text));
@@ -134,14 +134,15 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   s.has_sequence = false;
   s.layout = layout;
   s.indices = indices;
-  s.carve = plan_carve(s.cfg, layout, s.row_chunk, s.attention_mode,
-                       stack_uses_convrot(s.blocks), s.compact_queries(s.attention_mode), s.is_vsa());
+  s.carve = plan_carve(s.cfg, layout, s.row_chunk, s.attention_mode, stack_uses_convrot(s.blocks),
+                       s.compact_queries(s.attention_mode), s.is_vsa());
   if (s.architecture == TransformerArchitecture::kRef2VAFullAdaLN) {
     const size_t old_scratch = s.carve.scratch;
-    s.carve.scratch = std::max(s.carve.scratch, cuda::linear_workspace_bytes(
-        s.blocks.front().full_adaln, 2, ComputeType::kF32));
-    s.carve.scratch = std::max(s.carve.scratch, cuda::linear_workspace_bytes(
-        s.final_full_adaln, 2, ComputeType::kF32));
+    s.carve.scratch =
+        std::max(s.carve.scratch,
+                 cuda::linear_workspace_bytes(s.blocks.front().full_adaln, 2, ComputeType::kF32));
+    s.carve.scratch = std::max(
+        s.carve.scratch, cuda::linear_workspace_bytes(s.final_full_adaln, 2, ComputeType::kF32));
     s.carve.total += align_up(s.carve.scratch) - align_up(old_scratch);
   }
 
@@ -150,18 +151,20 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   if (cuda::StepProfiler::instance().enabled()) {
     constexpr double gib = 1024.0 * 1024 * 1024;
-    std::printf("memory      sequence %d rows (text %d, condition video %d, condition audio %d, video %d, audio %d); "
-                "row chunk %d, compact queries %s; workspace %.3f -> %.3f GiB, "
-                "K/V %.3f GiB, Q/output %.3f GiB\n",
-                layout.total_rows(), layout.num_text, layout.num_condition_video,
-                layout.num_condition_audio, layout.num_video_rows, layout.num_audio_rows, s.carve.chunk,
-                s.carve.chunked_attention ? "yes" : "no", s.ws.capacity() / gib,
-                s.carve.total / gib, 4.0 * s.carve.qkv / gib, 4.0 * s.carve.query / gib);
+    std::printf(
+        "memory      sequence %d rows (text %d, condition video %d, condition audio %d, video %d, audio %d); "
+        "row chunk %d, compact queries %s; workspace %.3f -> %.3f GiB, "
+        "K/V %.3f GiB, Q/output %.3f GiB\n",
+        layout.total_rows(), layout.num_text, layout.num_condition_video,
+        layout.num_condition_audio, layout.num_video_rows, layout.num_audio_rows, s.carve.chunk,
+        s.carve.chunked_attention ? "yes" : "no", s.ws.capacity() / gib, s.carve.total / gib,
+        4.0 * s.carve.qkv / gib, 4.0 * s.carve.query / gib);
     std::fflush(stdout);
   }
   s.ws.resize(s.carve.total);
   if (s.is_vsa()) {
-    if (s.attn_band > 0) throw std::runtime_error("VSA-H3 cannot use frame-banded attention");
+    if (s.attn_band > 0)
+      throw std::runtime_error("VSA-H3 cannot use frame-banded attention");
     const auto tiles = build_vsa_tiles(layout);
     s.vsa_rows.allocate(tiles.rows.size());
     s.vsa_sizes.allocate(tiles.sizes.size());
@@ -170,9 +173,13 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
     s.vsa_sizes.copy_from_host(tiles.sizes.data(), tiles.sizes.size(), s.stream.get());
     s.vsa_row_tiles.copy_from_host(tiles.row_tiles.data(), tiles.row_tiles.size(), s.stream.get());
     s.vsa_compressed.allocate(tiles.sizes.size() * s.cfg.inner_dim());
-    s.vsa_config = {static_cast<int>(tiles.sizes.size()), tiles.prefix_tiles,
-                    s.cfg.num_attention_heads, s.cfg.attention_head_dim,
-                    s.vsa_rows.get(), s.vsa_sizes.get(), s.vsa_row_tiles.get()};
+    s.vsa_config = {static_cast<int>(tiles.sizes.size()),
+                    tiles.prefix_tiles,
+                    s.cfg.num_attention_heads,
+                    s.cfg.attention_head_dim,
+                    s.vsa_rows.get(),
+                    s.vsa_sizes.get(),
+                    s.vsa_row_tiles.get()};
     // The map vectors are local pageable storage; finish their transfers.
     SLOPFAB_CUDA_CHECK(cudaStreamSynchronize(s.stream.get()));
   }
@@ -190,13 +197,13 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   s.host_band.clear();
   if (s.attn_band > 0) {
     const int query_tile = s.attention_mode == AttentionMode::kExact
-        ? static_cast<int>(cuda::deterministic_h3_query_tile())
-        : cuda::attention_fused_query_tile();
+                               ? static_cast<int>(cuda::deterministic_h3_query_tile())
+                               : cuda::attention_fused_query_tile();
     const int key_align = s.attention_mode == AttentionMode::kExact
-        ? static_cast<int>(cuda::deterministic_h3_key_align())
-        : cuda::attention_fused_key_align();
-    const dit::BandedKeyRanges band = dit::build_banded_key_ranges(
-        layout, s.attn_band, query_tile, key_align);
+                              ? static_cast<int>(cuda::deterministic_h3_key_align())
+                              : cuda::attention_fused_key_align();
+    const dit::BandedKeyRanges band =
+        dit::build_banded_key_ranges(layout, s.attn_band, query_tile, key_align);
     s.host_band = band.ranges;
     s.d_band.allocate(band.ranges.size());
     s.d_band.copy_from_host(band.ranges.data(), band.ranges.size(), s.stream.get());
@@ -214,7 +221,8 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
 
   auto upload_idx = [&](const std::vector<int32_t>& src, DeviceBuffer<int32_t>& dst) {
     dst.allocate(std::max<size_t>(src.size(), 1));
-    if (!src.empty()) dst.copy_from_host(src.data(), src.size(), s.stream.get());
+    if (!src.empty())
+      dst.copy_from_host(src.data(), src.size(), s.stream.get());
   };
   upload_idx(indices.text, s.d_text_idx);
   upload_idx(indices.audio, s.d_audio_idx);
@@ -253,5 +261,4 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
 
 // ---------------------------------------------------------------------------
 
-
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

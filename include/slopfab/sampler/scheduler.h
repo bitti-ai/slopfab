@@ -41,11 +41,11 @@ enum class SamplerKind {
 // signed zero. Any NaN, infinity, or non-finite arithmetic result becomes the
 // canonical quiet NaN 0x7fc00000. The association is deliberately fixed to
 // the H3 reference expression; endpoint controls do not elide dead branches.
-float exact_euler_value(float sample, float velocity,
-                        float sigma_from_timestep, float ratio) noexcept;
+float exact_euler_value(float sample, float velocity, float sigma_from_timestep,
+                        float ratio) noexcept;
 
 class FlowScheduler {
- public:
+public:
   // `shift` is the exponential sigma shift: sigma' = s*sigma / (1 + (s-1)*sigma).
   explicit FlowScheduler(float shift = 12.0f);
 
@@ -64,19 +64,31 @@ class FlowScheduler {
   void set_base_sigmas(const std::vector<float>& base_sigmas);
 
   // Sigma grid, strictly decreasing, ending at exactly 0.
-  const std::vector<float>& sigmas() const { return sigmas_; }
+  const std::vector<float>& sigmas() const {
+    return sigmas_;
+  }
 
   // t = 1 - sigma for every sigma except the terminal zero. One entry per
   // model evaluation.
-  const std::vector<float>& timesteps() const { return timesteps_; }
+  const std::vector<float>& timesteps() const {
+    return timesteps_;
+  }
 
-  size_t num_steps() const { return timesteps_.size(); }
-  float shift() const { return shift_; }
+  size_t num_steps() const {
+    return timesteps_.size();
+  }
+
+  float shift() const {
+    return shift_;
+  }
 
   // Selects the integrator. Clears any velocity history, so it is only
   // meaningful between trajectories. Default kEuler.
   void set_sampler(SamplerKind kind);
-  SamplerKind sampler() const { return sampler_; }
+
+  SamplerKind sampler() const {
+    return sampler_;
+  }
 
   // Forgets the velocity history and the step cursor, so the next `step` may
   // carry any index and is treated as the first of a fresh trajectory.
@@ -100,7 +112,7 @@ class FlowScheduler {
   // rather than a schedule entry.
   static void scale_noise(const float* x0, const float* noise, float t, size_t count, float* out);
 
- private:
+private:
   void clear_history();
 
   float shift_;
@@ -117,4 +129,4 @@ class FlowScheduler {
   int expected_step_ = -1;
 };
 
-}  // namespace slopfab::sampler
+} // namespace slopfab::sampler

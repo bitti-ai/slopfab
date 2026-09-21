@@ -16,9 +16,12 @@ SLOPFAB_C_API slopfab_request* SLOPFAB_CALL slopfab_request_create(void) {
   }
 }
 
-SLOPFAB_C_API void SLOPFAB_CALL slopfab_request_destroy(slopfab_request* request) { delete request; }
+SLOPFAB_C_API void SLOPFAB_CALL slopfab_request_destroy(slopfab_request* request) {
+  delete request;
+}
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt(slopfab_request* request, const char* utf8) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt(slopfab_request* request,
+                                                          const char* utf8) {
   if (request == nullptr || utf8 == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_prompt: null argument");
   }
@@ -28,15 +31,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt(slopfab_request* reque
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_file(slopfab_request* request, const char* path) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_file(slopfab_request* request,
+                                                               const char* path) {
   if (request == nullptr || path == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_prompt_file: null argument");
   }
   return guarded([&] {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-      return fail(SLOPFAB_ERR_NOT_FOUND,
-                  std::string("cannot read prompt file '") + path + "'");
+      return fail(SLOPFAB_ERR_NOT_FOUND, std::string("cannot read prompt file '") + path + "'");
     }
     std::ostringstream contents;
     contents << in.rdbuf();
@@ -45,7 +48,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_file(slopfab_request* 
     // file that works on the CLI conditions identically here: a UTF-8 BOM,
     // CRLF line endings and surrounding blank space are all things an editor
     // adds and no prompt wants in its token stream.
-    if (text.rfind("\xEF\xBB\xBF", 0) == 0) text.erase(0, 3);
+    if (text.rfind("\xEF\xBB\xBF", 0) == 0)
+      text.erase(0, 3);
     text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
     const size_t first = text.find_first_not_of(" \t\n");
     if (first == std::string::npos) {
@@ -58,7 +62,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_file(slopfab_request* 
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_aspect(slopfab_request* request, int32_t width, int32_t height) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_aspect(slopfab_request* request, int32_t width,
+                                                          int32_t height) {
   if (request == nullptr || width <= 0 || height <= 0) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_aspect: needs positive extents");
   }
@@ -69,7 +74,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_aspect(slopfab_request* reque
   return SLOPFAB_OK;
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_resolution(slopfab_request* request, int32_t width, int32_t height) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_resolution(slopfab_request* request,
+                                                              int32_t width, int32_t height) {
   if (request == nullptr || width <= 0 || height <= 0) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
                 "slopfab_request_set_resolution: needs positive extents");
@@ -79,7 +85,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_resolution(slopfab_request* r
   return SLOPFAB_OK;
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_frames(slopfab_request* request, int32_t frames) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_frames(slopfab_request* request,
+                                                          int32_t frames) {
   if (request == nullptr || frames <= 0) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_frames: needs a positive count");
   }
@@ -88,10 +95,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_frames(slopfab_request* reque
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_still_image(slopfab_request* request,
-                                                            int32_t enable) {
+                                                               int32_t enable) {
   if (request == nullptr) {
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
-                "slopfab_request_set_still_image: null request");
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_still_image: null request");
   }
   request->request.still_image = enable != 0;
   return SLOPFAB_OK;
@@ -115,27 +121,38 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seed(slopfab_request* request
   return SLOPFAB_OK;
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* request, int32_t which, const char* path) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* request,
+                                                              int32_t which, const char* path) {
   if (request == nullptr || path == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_model_path: null argument");
   }
   return guarded([&] {
     switch (which) {
-      case SLOPFAB_MODEL_TRANSFORMER: request->request.transformer_path = path; break;
-      case SLOPFAB_MODEL_TEXT_ENCODER: request->request.text_encoder_path = path; break;
-      case SLOPFAB_MODEL_TOKENIZER: request->request.tokenizer_path = path; break;
-      case SLOPFAB_MODEL_VIDEO_VAE: request->request.video_vae_path = path; break;
-      case SLOPFAB_MODEL_AUDIO_VAE: request->request.audio_vae_path = path; break;
-      default:
-        return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
-                    "slopfab_request_set_model_path: unknown model id " + std::to_string(which));
+    case SLOPFAB_MODEL_TRANSFORMER:
+      request->request.transformer_path = path;
+      break;
+    case SLOPFAB_MODEL_TEXT_ENCODER:
+      request->request.text_encoder_path = path;
+      break;
+    case SLOPFAB_MODEL_TOKENIZER:
+      request->request.tokenizer_path = path;
+      break;
+    case SLOPFAB_MODEL_VIDEO_VAE:
+      request->request.video_vae_path = path;
+      break;
+    case SLOPFAB_MODEL_AUDIO_VAE:
+      request->request.audio_vae_path = path;
+      break;
+    default:
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                  "slopfab_request_set_model_path: unknown model id " + std::to_string(which));
     }
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
-    slopfab_request* request, const char* path) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(slopfab_request* request,
+                                                                         const char* path) {
   if (request == nullptr || path == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
                 "slopfab_request_set_prompt_embedding_path: null argument");
@@ -146,18 +163,20 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_prompt_embedding_path(
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(
-    slopfab_request* request, int32_t enable, int32_t preserve_driving_audio) {
-  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_animate: null request");
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* request, int32_t enable,
+                                                           int32_t preserve_driving_audio) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_animate: null request");
   request->request.animate = enable != 0;
   request->request.preserve_driving_audio = enable != 0 && preserve_driving_audio != 0;
   return SLOPFAB_OK;
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(
-    slopfab_request* request, const char* path, float strength) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(slopfab_request* request, const char* path,
+                                                        float strength) {
   if (!request || !path || !*path || !std::isfinite(strength))
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "LoRA needs a request, nonempty path and finite strength");
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "LoRA needs a request, nonempty path and finite strength");
   return guarded([&] {
     request->request.loras.push_back({path, strength});
     return SLOPFAB_OK;
@@ -165,27 +184,31 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_loras(slopfab_request* request) {
-  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear_loras: null request");
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear_loras: null request");
   return guarded([&] {
     request->request.loras.clear();
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(
-    slopfab_request* request, int32_t schedule) {
-  if (!request || (schedule != SLOPFAB_SCHEDULE_DEFAULT && schedule != SLOPFAB_SCHEDULE_TAOMATE_3STEP))
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(slopfab_request* request,
+                                                            int32_t schedule) {
+  if (!request ||
+      (schedule != SLOPFAB_SCHEDULE_DEFAULT && schedule != SLOPFAB_SCHEDULE_TAOMATE_3STEP))
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "unknown denoising schedule or null request");
   return guarded([&] {
     request->request.schedule = schedule == SLOPFAB_SCHEDULE_DEFAULT
-        ? slopfab::sampler::ScheduleKind::kDefault : slopfab::sampler::ScheduleKind::kTaoMate3Step;
+                                    ? slopfab::sampler::ScheduleKind::kDefault
+                                    : slopfab::sampler::ScheduleKind::kTaoMate3Step;
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_settings(
-    slopfab_request* request, const char* json) {
-  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "sampling settings: null request");
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_settings(slopfab_request* request,
+                                                                     const char* json) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "sampling settings: null request");
   return guarded([&] {
     try {
       auto settings = json ? slopfab::parse_sampling_settings(json) : slopfab::SamplingSettings{};
@@ -197,12 +220,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_settings(
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_conditioning_settings(
-    slopfab_request* request, const char* json) {
-  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "conditioning settings: null request");
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_conditioning_settings(slopfab_request* request,
+                                                                         const char* json) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "conditioning settings: null request");
   return guarded([&] {
     try {
-      auto settings = json ? slopfab::parse_conditioning_settings(json) : slopfab::ConditioningSettings{};
+      auto settings =
+          json ? slopfab::parse_conditioning_settings(json) : slopfab::ConditioningSettings{};
       request->request.conditioning = std::move(settings);
     } catch (const std::exception& e) {
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
@@ -212,9 +237,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_conditioning_settings(
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_motion_cache(
-    slopfab_request* request, int32_t enabled, float reuse_threshold,
-    float motion_strength, int32_t warmup_steps, int32_t max_consecutive_skips,
-    float start_percent, float end_percent, int32_t subsample_factor, int32_t verbose) {
+    slopfab_request* request, int32_t enabled, float reuse_threshold, float motion_strength,
+    int32_t warmup_steps, int32_t max_consecutive_skips, float start_percent, float end_percent,
+    int32_t subsample_factor, int32_t verbose) {
   if (!request || (enabled != 0 && enabled != 1) || (verbose != 0 && verbose != 1))
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "MotionCache: null request or invalid boolean");
   return guarded([&] {
@@ -228,17 +253,23 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_motion_cache(
     config.end_percent = end_percent;
     config.subsample_factor = subsample_factor;
     config.verbose = verbose != 0;
-    try { config.validate(); }
-    catch (const std::invalid_argument& e) { return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what()); }
+    try {
+      config.validate();
+    } catch (const std::invalid_argument& e) {
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
+    }
     request->request.motion_cache = config;
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(
-    slopfab_request* request, const char* path, float strength, int32_t copies) {
-  if (!request || !path || !*path || !std::isfinite(strength) || strength < 0 || strength > 1 || copies < 1 || copies > 10)
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "refmod needs a request, path, strength 0..1 and copies 1..10");
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(slopfab_request* request,
+                                                          const char* path, float strength,
+                                                          int32_t copies) {
+  if (!request || !path || !*path || !std::isfinite(strength) || strength < 0 || strength > 1 ||
+      copies < 1 || copies > 10)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "refmod needs a request, path, strength 0..1 and copies 1..10");
   return guarded([&] {
     auto refs = request->request.refmods;
     refs.push_back({slopfab::RefMod::load(path), strength, copies});
@@ -248,32 +279,39 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_save_latents(
-    slopfab_request* request, const char* path) {
-  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "save latents: null request");
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_save_latents(slopfab_request* request,
+                                                                const char* path) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "save latents: null request");
   return guarded([&] {
     request->options.save_latents_path = path ? path : "";
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_retain_latents(
-    slopfab_request* request, int32_t enable) {
-  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "retain latents: null request");
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_retain_latents(slopfab_request* request,
+                                                                  int32_t enable) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "retain latents: null request");
   return guarded([&] {
     request->options.on_latents = enable ? &latents_hook : nullptr;
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(
-    slopfab_request* request, const char* path, int32_t overlap_frames) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(slopfab_request* request,
+                                                                     const char* path,
+                                                                     int32_t overlap_frames) {
   if (!request || !path || !*path || overlap_frames < 5 || overlap_frames % 17 != 5)
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "continuation needs a request, archive path and 17*k+5 overlap >=5");
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "continuation needs a request, archive path and 17*k+5 overlap >=5");
   return guarded([&] {
     auto clip = slopfab::LatentClip::load(path);
-    try { (void)slopfab::plan_continuation(*clip, overlap_frames, 17); }
-    catch (const std::exception& e) { return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what()); }
+    try {
+      (void)slopfab::plan_continuation(*clip, overlap_frames, 17);
+    } catch (const std::exception& e) {
+      return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
+    }
     request->request.continuation = std::move(clip);
     request->request.continuation_overlap_frames = overlap_frames;
     return SLOPFAB_OK;
@@ -283,14 +321,20 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_generation(
     slopfab_request* request, const slopfab_generation* source, int32_t overlap_frames) {
   if (!request || !source || overlap_frames < 5 || overlap_frames % 17 != 5)
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "continuation needs a request, source generation and 17*k+5 overlap >=5");
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "continuation needs a request, source generation and 17*k+5 overlap >=5");
   const int terminal = report_terminal_status(source);
-  if (terminal != SLOPFAB_OK) return terminal;
+  if (terminal != SLOPFAB_OK)
+    return terminal;
   return guarded([&] {
     if (!source->latents)
-      return fail(SLOPFAB_ERR_INVALID_REQUEST, "enable latent retention before starting the source generation");
-    try { (void)slopfab::plan_continuation(*source->latents, overlap_frames, 17); }
-    catch (const std::exception& e) { return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what()); }
+      return fail(SLOPFAB_ERR_INVALID_REQUEST,
+                  "enable latent retention before starting the source generation");
+    try {
+      (void)slopfab::plan_continuation(*source->latents, overlap_frames, 17);
+    } catch (const std::exception& e) {
+      return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
+    }
     request->request.continuation = source->latents;
     request->request.continuation_overlap_frames = overlap_frames;
     return SLOPFAB_OK;
@@ -298,44 +342,50 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_generation(
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_request* request) {
-  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear continuation: null request");
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear continuation: null request");
   return guarded([&] {
     request->request.continuation.reset();
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_video_transition(
-    slopfab_request* request, int32_t mode) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_video_transition(slopfab_request* request,
+                                                                    int32_t mode) {
   if (!request || mode < 0 || mode > 2)
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "video transition requires a request and mode 0, 1 or 2");
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "video transition requires a request and mode 0, 1 or 2");
   request->request.video_transition = mode;
   return SLOPFAB_OK;
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_save_latents(
-    const slopfab_generation* generation, const char* path) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_save_latents(const slopfab_generation* generation,
+                                                               const char* path) {
   if (!generation || !path || !*path)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "save latents needs a generation and path");
   const int terminal = report_terminal_status(generation);
-  if (terminal != SLOPFAB_OK) return terminal;
+  if (terminal != SLOPFAB_OK)
+    return terminal;
   return guarded([&] {
     if (!generation->latents)
-      return fail(SLOPFAB_ERR_INVALID_REQUEST, "enable latent retention before starting the generation");
+      return fail(SLOPFAB_ERR_INVALID_REQUEST,
+                  "enable latent retention before starting the generation");
     generation->latents->save(path);
     return SLOPFAB_OK;
   });
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* request) {
-  if (!request) return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear_refmods: null request");
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear_refmods: null request");
   return guarded([&] {
     request->request.refmods.clear();
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_request* request, const char* path) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_request* request,
+                                                                   const char* path) {
   if (request == nullptr || path == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_add_reference_image: null argument");
   }
@@ -344,15 +394,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_reque
       return fail(SLOPFAB_ERR_INVALID_REQUEST,
                   "MiniMax-H3 Ref2VA accepts at most 9 reference images");
     }
-    if (request->request.reference_image_paths.size() + request->request.reference_media.size() >= 12) {
-      return fail(SLOPFAB_ERR_INVALID_REQUEST, "MiniMax-H3 Ref2VA accepts at most 12 references in total");
+    if (request->request.reference_image_paths.size() + request->request.reference_media.size() >=
+        12) {
+      return fail(SLOPFAB_ERR_INVALID_REQUEST,
+                  "MiniMax-H3 Ref2VA accepts at most 12 references in total");
     }
     request->request.reference_image_paths.emplace_back(path);
     return SLOPFAB_OK;
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_attention(slopfab_request* request, const char* mode) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_attention(slopfab_request* request,
+                                                             const char* mode) {
   if (request == nullptr || mode == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_attention: null argument");
   }
@@ -369,36 +422,39 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_attention(slopfab_request* re
   });
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(
-    slopfab_request* request, int32_t backend) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_request* request,
+                                                                     int32_t backend) {
   if (request == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
                 "slopfab_request_set_inference_backend: null request");
   }
   switch (backend) {
-    case SLOPFAB_INFERENCE_CUDA:
-      request->options.inference_backend = slopfab::DeviceBackend::kCuda;
-      return SLOPFAB_OK;
-    case SLOPFAB_INFERENCE_VULKAN:
-      request->options.inference_backend = slopfab::DeviceBackend::kVulkan;
-      return SLOPFAB_OK;
-    default:
-      return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
-                  "slopfab_request_set_inference_backend: unknown backend " +
-                      std::to_string(backend));
+  case SLOPFAB_INFERENCE_CUDA:
+    request->options.inference_backend = slopfab::DeviceBackend::kCuda;
+    return SLOPFAB_OK;
+  case SLOPFAB_INFERENCE_VULKAN:
+    request->options.inference_backend = slopfab::DeviceBackend::kVulkan;
+    return SLOPFAB_OK;
+  default:
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "slopfab_request_set_inference_backend: unknown backend " +
+                    std::to_string(backend));
   }
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_synthetic_latents(slopfab_request* request, int32_t enable) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_synthetic_latents(slopfab_request* request,
+                                                                     int32_t enable) {
   if (request == nullptr) {
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_synthetic_latents: null request");
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "slopfab_request_set_synthetic_latents: null request");
   }
   request->options.source =
       enable != 0 ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
   return SLOPFAB_OK;
 }
 
-SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_verbose(slopfab_request* request, int32_t enable) {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_verbose(slopfab_request* request,
+                                                           int32_t enable) {
   if (request == nullptr) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_verbose: null request");
   }
@@ -407,14 +463,11 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_verbose(slopfab_request* requ
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_reuse_models(slopfab_request* request,
-                                                             int32_t enable) {
+                                                                int32_t enable) {
   if (request == nullptr) {
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
-                "slopfab_request_set_reuse_models: null request");
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_request_set_reuse_models: null request");
   }
   request->options.reuse_models = enable != 0;
   return SLOPFAB_OK;
 }
-
-
 }

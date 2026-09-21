@@ -2,6 +2,7 @@
 #include "session_state.h"
 #include "slopfab/text/qwen_vision.h"
 #include <functional>
+
 namespace slopfab::generation {
 struct PromptInputs {
   text::PromptEmbedding& fixed_prompt;
@@ -12,8 +13,9 @@ struct PromptInputs {
   std::vector<text::QwenPixelValues>& media_qwen_pairs;
   std::function<text::Tokenizer&()> tokenizer;
 };
+
 bool prepare_multimodal_prompt(const GenerateRequest&, const RunOptions&,
-    const std::vector<PreparedReference>&, PromptInputs&, RunResult&);
+                               const std::vector<PreparedReference>&, PromptInputs&, RunResult&);
 bool encode_h3_prompt(const GenerateRequest&, const RunOptions&, ReusedGenerationModels&,
-    PromptInputs&, text::PromptEmbedding&, RunResult&);
+                      PromptInputs&, text::PromptEmbedding&, RunResult&);
 }

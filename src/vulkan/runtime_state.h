@@ -28,14 +28,14 @@ namespace detail {
 [[noreturn]] inline void fail(const char* operation, VkResult result) {
   throw std::runtime_error(std::string("vulkan: ") + operation + " failed (VkResult " +
                            std::to_string(static_cast<int>(result)) + ")" +
-                           (result == VK_ERROR_OUT_OF_DEVICE_MEMORY
-                                ? ": out of memory (device)"
-                                : result == VK_ERROR_OUT_OF_HOST_MEMORY
-                                      ? ": out of memory (host)" : ""));
+                           (result == VK_ERROR_OUT_OF_DEVICE_MEMORY ? ": out of memory (device)"
+                            : result == VK_ERROR_OUT_OF_HOST_MEMORY ? ": out of memory (host)"
+                                                                    : ""));
 }
 
 inline void check(VkResult result, const char* operation) {
-  if (result != VK_SUCCESS) fail(operation, result);
+  if (result != VK_SUCCESS)
+    fail(operation, result);
 }
 
 inline Version unpack_version(uint32_t version) {
@@ -44,24 +44,28 @@ inline Version unpack_version(uint32_t version) {
 }
 
 class Loader {
- public:
+public:
   Loader() {
 #ifdef _WIN32
     module_ = LoadLibraryW(L"vulkan-1.dll");
-    if (module_ == nullptr) throw std::runtime_error("vulkan: vulkan-1.dll is not installed");
+    if (module_ == nullptr)
+      throw std::runtime_error("vulkan: vulkan-1.dll is not installed");
     get_instance_proc_addr_ = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         GetProcAddress(module_, "vkGetInstanceProcAddr"));
 #elif defined(__APPLE__)
     module_ = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
-    if (module_ == nullptr) module_ = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
-    if (module_ == nullptr) throw std::runtime_error(std::string("vulkan: ") + dlerror());
-    get_instance_proc_addr_ = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-        dlsym(module_, "vkGetInstanceProcAddr"));
+    if (module_ == nullptr)
+      module_ = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
+    if (module_ == nullptr)
+      throw std::runtime_error(std::string("vulkan: ") + dlerror());
+    get_instance_proc_addr_ =
+        reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(module_, "vkGetInstanceProcAddr"));
 #else
     module_ = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
-    if (module_ == nullptr) throw std::runtime_error(std::string("vulkan: ") + dlerror());
-    get_instance_proc_addr_ = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-        dlsym(module_, "vkGetInstanceProcAddr"));
+    if (module_ == nullptr)
+      throw std::runtime_error(std::string("vulkan: ") + dlerror());
+    get_instance_proc_addr_ =
+        reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(module_, "vkGetInstanceProcAddr"));
 #endif
     if (get_instance_proc_addr_ == nullptr) {
       close();
@@ -69,12 +73,14 @@ class Loader {
     }
   }
 
-  ~Loader() { close(); }
+  ~Loader() {
+    close();
+  }
+
   Loader(const Loader&) = delete;
   Loader& operator=(const Loader&) = delete;
 
-  template <typename T>
-  T global(const char* name, bool required = true) const {
+  template <typename T> T global(const char* name, bool required = true) const {
     T fn = reinterpret_cast<T>(get_instance_proc_addr_(VK_NULL_HANDLE, name));
     if (required && fn == nullptr) {
       throw std::runtime_error(std::string("vulkan: loader has no ") + name);
@@ -82,11 +88,14 @@ class Loader {
     return fn;
   }
 
-  PFN_vkGetInstanceProcAddr get_instance_proc_addr() const { return get_instance_proc_addr_; }
+  PFN_vkGetInstanceProcAddr get_instance_proc_addr() const {
+    return get_instance_proc_addr_;
+  }
 
- private:
+private:
   void close() noexcept {
-    if (module_ == nullptr) return;
+    if (module_ == nullptr)
+      return;
 #ifdef _WIN32
     FreeLibrary(module_);
 #else
@@ -106,7 +115,8 @@ class Loader {
 template <typename T>
 T load_instance(PFN_vkGetInstanceProcAddr get, VkInstance instance, const char* name) {
   T fn = reinterpret_cast<T>(get(instance, name));
-  if (fn == nullptr) throw std::runtime_error(std::string("vulkan: loader has no ") + name);
+  if (fn == nullptr)
+    throw std::runtime_error(std::string("vulkan: loader has no ") + name);
   return fn;
 }
 
@@ -115,16 +125,20 @@ T load_instance(PFN_vkGetInstanceProcAddr get, VkInstance instance, const char* 
 struct InstanceHandleGuard {
   VkInstance instance = VK_NULL_HANDLE;
   PFN_vkDestroyInstance destroy = nullptr;
+
   ~InstanceHandleGuard() {
-    if (instance != VK_NULL_HANDLE && destroy != nullptr) destroy(instance, nullptr);
+    if (instance != VK_NULL_HANDLE && destroy != nullptr)
+      destroy(instance, nullptr);
   }
 };
 
 struct DeviceHandleGuard {
   VkDevice device = VK_NULL_HANDLE;
   PFN_vkDestroyDevice destroy = nullptr;
+
   ~DeviceHandleGuard() {
-    if (device != VK_NULL_HANDLE && destroy != nullptr) destroy(device, nullptr);
+    if (device != VK_NULL_HANDLE && destroy != nullptr)
+      destroy(device, nullptr);
   }
 };
 
@@ -139,8 +153,7 @@ struct InstanceState {
   PFN_vkGetPhysicalDeviceProperties2 get_physical_device_properties2 = nullptr;
   PFN_vkGetPhysicalDeviceFeatures get_physical_device_features = nullptr;
   PFN_vkGetPhysicalDeviceFeatures2 get_physical_device_features2 = nullptr;
-  PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR
-      get_cooperative_matrix_properties = nullptr;
+  PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR get_cooperative_matrix_properties = nullptr;
   PFN_vkGetPhysicalDeviceMemoryProperties get_physical_device_memory_properties = nullptr;
   PFN_vkGetPhysicalDeviceQueueFamilyProperties get_queue_family_properties = nullptr;
   PFN_vkEnumerateDeviceExtensionProperties enumerate_device_extensions = nullptr;
@@ -196,23 +209,26 @@ struct DeviceState {
 
   ~DeviceState() {
     if (device != VK_NULL_HANDLE && destroy_device != nullptr) {
-      if (device_wait_idle != nullptr) device_wait_idle(device);
+      if (device_wait_idle != nullptr)
+        device_wait_idle(device);
       destroy_device(device, nullptr);
     }
   }
 };
 
 inline uint64_t align_up(uint64_t value, uint64_t alignment) {
-  if (alignment <= 1) return value;
+  if (alignment <= 1)
+    return value;
   const uint64_t remainder = value % alignment;
-  if (remainder == 0) return value;
+  if (remainder == 0)
+    return value;
   if (value > std::numeric_limits<uint64_t>::max() - (alignment - remainder)) {
     throw std::overflow_error("vulkan: allocation size overflow");
   }
   return value + alignment - remainder;
 }
 
-}  // namespace detail
+} // namespace detail
 
 struct Instance::Impl {
   std::shared_ptr<detail::InstanceState> state;
@@ -233,5 +249,4 @@ struct Queue::Impl {
   std::shared_ptr<detail::DeviceState> state;
 };
 
-
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

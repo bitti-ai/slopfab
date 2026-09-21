@@ -12,7 +12,9 @@ constexpr uint64_t kPhi0 = 0x9E3779B97F4A7C15ull;
 constexpr uint64_t kPhi1 = 0xBF58476D1CE4E5B9ull;
 constexpr uint64_t kPhi2 = 0x94D049BB133111EBull;
 
-inline uint64_t rotl(uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
+inline uint64_t rotl(uint64_t x, int k) {
+  return (x << k) | (x >> (64 - k));
+}
 
 // Four rounds of a Threefry-2x64-style mix. Enough diffusion that flipping one
 // input bit changes about half the output bits, which is all that is needed
@@ -38,14 +40,16 @@ inline uint64_t splitmix(uint64_t x) {
 // Open interval (0, 1]: excludes zero so log() below never sees it. Uses 24
 // bits, which is the fp32 mantissa.
 inline float to_unit(uint64_t bits) {
-  const uint32_t m = static_cast<uint32_t>(bits >> 40) & 0xFFFFFFu;  // 24 bits
+  const uint32_t m = static_cast<uint32_t>(bits >> 40) & 0xFFFFFFu; // 24 bits
   return (static_cast<float>(m) + 0.5f) * (1.0f / 16777216.0f);
 }
 
-}  // namespace
+} // namespace
 
 CounterRng::CounterRng(uint64_t seed, NoiseStream stream)
-    : key0_(splitmix(seed)), key1_(splitmix(seed ^ (static_cast<uint64_t>(stream) + 0x5DEECE66Dull))) {}
+    : key0_(splitmix(seed)),
+      key1_(splitmix(seed ^ (static_cast<uint64_t>(stream) + 0x5DEECE66Dull))) {
+}
 
 void CounterRng::uniform2(uint64_t index, float* out) const {
   uint64_t a = key0_ ^ index;
@@ -95,11 +99,11 @@ std::vector<float> audio_noise(uint64_t seed, int num_audio_latents, int latent_
   if (num_audio_latents <= 0 || latent_channels <= 0) {
     throw std::runtime_error("audio_noise: every dimension must be positive");
   }
-  const size_t rows = static_cast<size_t>(num_audio_latents) * 2;  // stereo, channel-major
+  const size_t rows = static_cast<size_t>(num_audio_latents) * 2; // stereo, channel-major
   const size_t n = rows * static_cast<size_t>(latent_channels);
   std::vector<float> out(n);
   fill_normal(seed, NoiseStream::kAudioLatents, out.data(), n);
   return out;
 }
 
-}  // namespace slopfab::sampler
+} // namespace slopfab::sampler

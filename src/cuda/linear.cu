@@ -9,7 +9,8 @@ size_t QuantWeight::stored_bytes() const {
   const size_t n = static_cast<size_t>(out_features) * in_features;
   // Two nibbles per byte. Both shipped 4-bit formats place the even element in
   // the high nibble; their dequantisers pin that convention independently.
-  if (format == QuantFormat::kNVFP4 || format == QuantFormat::kNF4) return (n + 1) / 2;
+  if (format == QuantFormat::kNVFP4 || format == QuantFormat::kNF4)
+    return (n + 1) / 2;
   return element_bytes(format) * n;
 }
 
@@ -28,12 +29,17 @@ size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType comput
     // The AWQ scale writes a scaled copy of the activation, which ConvRot then
     // reads and rotates into a second copy, so on a layer with both the two
     // buffers are live at once and add rather than overlap.
-    if (w.pre_quant_scale != nullptr) total += align_up(act * sizeof(float));
-    if (convrot_applies(w)) total += align_up(act * sizeof(float));
+    if (w.pre_quant_scale != nullptr)
+      total += align_up(act * sizeof(float));
+    if (convrot_applies(w))
+      total += align_up(act * sizeof(float));
   } else {
-    if (w.format != QuantFormat::kBF16) total += align_up(weights * sizeof(__nv_bfloat16));
-    if (w.pre_quant_scale != nullptr) total += align_up(act * sizeof(__nv_bfloat16));
-    if (convrot_applies(w)) total += align_up(act * sizeof(__nv_bfloat16));
+    if (w.format != QuantFormat::kBF16)
+      total += align_up(weights * sizeof(__nv_bfloat16));
+    if (w.pre_quant_scale != nullptr)
+      total += align_up(act * sizeof(__nv_bfloat16));
+    if (convrot_applies(w))
+      total += align_up(act * sizeof(__nv_bfloat16));
   }
 
   // The native nvfp4 GEMM carves a quantised copy of the activation instead of
@@ -54,7 +60,8 @@ size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType comput
 }
 
 size_t linear_dense_weight_bytes(const QuantWeight& w) {
-  if (w.format == QuantFormat::kBF16) return 0;  // already dense; `prepare` carves nothing
+  if (w.format == QuantFormat::kBF16)
+    return 0; // already dense; `prepare` carves nothing
   return align_up(static_cast<size_t>(w.out_features) * w.in_features * sizeof(__nv_bfloat16));
 }
 
@@ -67,12 +74,17 @@ size_t linear_activation_workspace_bytes(const QuantWeight& w, int rows, Compute
   // fp32 widening of it, and the activation copies. The two functions add up to
   // that one for every format the block stacks use.
   if (compute == ComputeType::kF32) {
-    if (w.format != QuantFormat::kF32) total += align_up(weights * sizeof(float));
-    if (w.pre_quant_scale != nullptr) total += align_up(act * sizeof(float));
-    if (convrot_applies(w)) total += align_up(act * sizeof(float));
+    if (w.format != QuantFormat::kF32)
+      total += align_up(weights * sizeof(float));
+    if (w.pre_quant_scale != nullptr)
+      total += align_up(act * sizeof(float));
+    if (convrot_applies(w))
+      total += align_up(act * sizeof(float));
   } else {
-    if (w.pre_quant_scale != nullptr) total += align_up(act * sizeof(__nv_bfloat16));
-    if (convrot_applies(w)) total += align_up(act * sizeof(__nv_bfloat16));
+    if (w.pre_quant_scale != nullptr)
+      total += align_up(act * sizeof(__nv_bfloat16));
+    if (convrot_applies(w))
+      total += align_up(act * sizeof(__nv_bfloat16));
   }
 
   // Same alternative as in `linear_workspace_bytes`: with the native path on,
@@ -111,21 +123,24 @@ bool LinearRunner::takes_native_nvfp4(const QuantWeight& w) const {
   // block-scale swizzle's no-padding precondition. Each falls through to the
   // reference path, which is always correct, never to something approximate.
   return native_path && native_nvfp4_device_ && w.format == QuantFormat::kNVFP4 &&
-         w.block_scale != nullptr &&
-         !convrot_applies(w) && w.pre_quant_scale == nullptr &&
+         w.block_scale != nullptr && !convrot_applies(w) && w.pre_quant_scale == nullptr &&
          nvfp4_gemm_shape_supported(w.out_features, w.in_features);
 }
 
 const __nv_bfloat16* LinearRunner::prepare(const QuantWeight& w, Workspace& ws) {
-  if (handle_ == nullptr) throw std::runtime_error("LinearRunner::prepare: init() not called");
-  if (takes_native_nvfp4(w)) return nullptr;
+  if (handle_ == nullptr)
+    throw std::runtime_error("LinearRunner::prepare: init() not called");
+  if (takes_native_nvfp4(w))
+    return nullptr;
   return materialise_bf16(w, ws, stream_);
 }
 
-void LinearRunner::forward(const QuantWeight& w, const __nv_bfloat16* x, int rows,
-                           __nv_bfloat16* y, Workspace& ws) {
-  if (handle_ == nullptr) throw std::runtime_error("LinearRunner::forward: init() not called");
-  if (rows <= 0) return;
+void LinearRunner::forward(const QuantWeight& w, const __nv_bfloat16* x, int rows, __nv_bfloat16* y,
+                           Workspace& ws) {
+  if (handle_ == nullptr)
+    throw std::runtime_error("LinearRunner::forward: init() not called");
+  if (rows <= 0)
+    return;
 
   // The arena is only rewound, never freed, and everything below is issued on
   // one stream, so releasing the cursor at return cannot race the GEMM.
@@ -139,7 +154,8 @@ void LinearRunner::forward_prepared(const QuantWeight& w, const __nv_bfloat16* w
   if (handle_ == nullptr) {
     throw std::runtime_error("LinearRunner::forward_prepared: init() not called");
   }
-  if (rows <= 0) return;
+  if (rows <= 0)
+    return;
 
   Workspace::Scope scope(ws);
 
@@ -154,9 +170,9 @@ void LinearRunner::forward_prepared(const QuantWeight& w, const __nv_bfloat16* w
         "native nvfp4 GEMM — call prepare() and pass what it returns");
   }
   if (weight == nullptr) {
-    nvfp4_gemm_forward_prevalidated(
-        x, static_cast<const uint8_t*>(w.data), w.block_scale, w.global_scale, y,
-        rows, w.out_features, w.in_features, ws, stream_);
+    nvfp4_gemm_forward_prevalidated(x, static_cast<const uint8_t*>(w.data), w.block_scale,
+                                    w.global_scale, y, rows, w.out_features, w.in_features, ws,
+                                    stream_);
     add_bias(y, /*y_is_f32=*/false, w, rows, stream_);
     return;
   }
@@ -184,17 +200,19 @@ void LinearRunner::forward_prepared(const QuantWeight& w, const __nv_bfloat16* w
   const float alpha = 1.0f;
   const float beta = 0.0f;
   SLOPFAB_CUBLAS_CHECK(cublas_gemm_ex(handle_, CUBLAS_OP_T, CUBLAS_OP_N, w.out_features, rows,
-                                   w.in_features, &alpha, weight, CUDA_R_16BF, w.in_features, xin,
-                                   CUDA_R_16BF, w.in_features, &beta, y, CUDA_R_16BF,
-                                   w.out_features, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+                                      w.in_features, &alpha, weight, CUDA_R_16BF, w.in_features,
+                                      xin, CUDA_R_16BF, w.in_features, &beta, y, CUDA_R_16BF,
+                                      w.out_features, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
 
   add_bias(y, /*y_is_f32=*/false, w, rows, stream_);
 }
 
 void LinearRunner::forward_f32(const QuantWeight& w, const float* x, int rows, float* y,
                                Workspace& ws) {
-  if (handle_ == nullptr) throw std::runtime_error("LinearRunner::forward_f32: init() not called");
-  if (rows <= 0) return;
+  if (handle_ == nullptr)
+    throw std::runtime_error("LinearRunner::forward_f32: init() not called");
+  if (rows <= 0)
+    return;
 
   Workspace::Scope scope(ws);
   const size_t n = static_cast<size_t>(w.out_features) * w.in_features;
@@ -225,4 +243,4 @@ void LinearRunner::forward_f32(const QuantWeight& w, const float* x, int rows, f
   add_bias(y, /*y_is_f32=*/true, w, rows, stream_);
 }
 
-}  // namespace slopfab::cuda
+} // namespace slopfab::cuda

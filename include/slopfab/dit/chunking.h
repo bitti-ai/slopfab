@@ -46,18 +46,18 @@ namespace slopfab::dit {
 struct ChunkPlan {
   int num_chunks = 0;
 
-  int full_latent_frames = 0;   // F
-  int chunk_latent_frames = 0;  // Fc
-  int latent_stride = 0;        // (F - Fc) / (num_chunks - 1), a multiple of 5
-  int frame_overlap = 0;        // Fc - latent_stride, in latent frames
+  int full_latent_frames = 0;  // F
+  int chunk_latent_frames = 0; // Fc
+  int latent_stride = 0;       // (F - Fc) / (num_chunks - 1), a multiple of 5
+  int frame_overlap = 0;       // Fc - latent_stride, in latent frames
 
-  int full_audio_latents = 0;   // A
-  int chunk_audio_latents = 0;  // Ac
-  int audio_stride = 0;         // (A - Ac) / (num_chunks - 1)
-  int audio_overlap = 0;        // Ac - audio_stride
+  int full_audio_latents = 0;  // A
+  int chunk_audio_latents = 0; // Ac
+  int audio_stride = 0;        // (A - Ac) / (num_chunks - 1)
+  int audio_overlap = 0;       // Ac - audio_stride
 
-  std::vector<int> frame_offset;  // [num_chunks], in latent frames
-  std::vector<int> audio_offset;  // [num_chunks], in audio latents
+  std::vector<int> frame_offset; // [num_chunks], in latent frames
+  std::vector<int> audio_offset; // [num_chunks], in audio latents
 
   // The audio clock runs at 5/3 latents per pixel frame while the video clock
   // advances in the non-uniform (1,4,4,4,4) pattern, so an integer video-frame
@@ -113,4 +113,4 @@ void blend_chunks(const SequenceLayout& full, const SequenceLayout& chunk, const
                   const std::vector<std::vector<float>>& chunk_audio,
                   std::vector<float>* video_rows_out, std::vector<float>* audio_rows_out);
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

@@ -108,7 +108,9 @@ struct BlockCacheConfig {
   // step 0 has no delta to reuse at all.
   int warmup = 3;
 
-  bool enabled() const { return span > 0 && interval >= 2; }
+  bool enabled() const {
+    return span > 0 && interval >= 2;
+  }
 };
 
 // The resolved span, half-open `[begin, end)` over block indices.
@@ -116,8 +118,13 @@ struct BlockSpan {
   int begin = 0;
   int end = 0;
 
-  int size() const { return end - begin; }
-  bool valid() const { return end > begin; }
+  int size() const {
+    return end - begin;
+  }
+
+  bool valid() const {
+    return end > begin;
+  }
 };
 
 // Places `config.span` blocks inside a stack of `num_layers`.
@@ -140,12 +147,17 @@ BlockSpan resolve_block_span(const BlockCacheConfig& config, int num_layers);
 // without measuring it. A fixed interval is the honest thing to ship first, and
 // it is the baseline any adaptive rule would have to beat.
 class BlockCache {
- public:
+public:
   BlockCache() = default;
   BlockCache(const BlockCacheConfig& config, int num_steps);
 
-  bool enabled() const { return config_.enabled(); }
-  const BlockCacheConfig& config() const { return config_; }
+  bool enabled() const {
+    return config_.enabled();
+  }
+
+  const BlockCacheConfig& config() const {
+    return config_;
+  }
 
   // Call exactly once per step, in order. Returns true when the span must be
   // evaluated and its delta captured, false when the cached delta is to be
@@ -158,13 +170,20 @@ class BlockCache {
   // the residual stream.
   bool should_compute(int step, bool have_delta);
 
-  int computed() const { return computed_; }
-  int reused() const { return reused_; }
+  int computed() const {
+    return computed_;
+  }
+
+  int reused() const {
+    return reused_;
+  }
 
   // The warmup actually in force, after the one-step floor.
-  int warmup() const { return warmup_; }
+  int warmup() const {
+    return warmup_;
+  }
 
- private:
+private:
   BlockCacheConfig config_;
   int num_steps_ = 0;
   int warmup_ = 1;
@@ -185,4 +204,4 @@ constexpr int kMinBlockWarmup = 1;
 // of this is a test of the run.
 std::vector<uint8_t> plan_block_cache(const BlockCacheConfig& config, int num_steps);
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

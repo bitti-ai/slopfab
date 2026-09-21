@@ -13,7 +13,7 @@ namespace slopfab::vulkan {
 // supplied by the caller and can therefore be cached per active/chunked weight
 // without expanding every resident quantized matrix.
 class LinearWeight {
- public:
+public:
   LinearWeight();
   ~LinearWeight();
   LinearWeight(LinearWeight&&) noexcept;
@@ -21,8 +21,7 @@ class LinearWeight {
   LinearWeight(const LinearWeight&) = delete;
   LinearWeight& operator=(const LinearWeight&) = delete;
 
-  static LinearWeight upload(TensorContext& context,
-                             const LinearWeightUpload& source);
+  static LinearWeight upload(TensorContext& context, const LinearWeightUpload& source);
 
   LinearWeightFormat format() const;
   uint32_t out_features() const;
@@ -46,12 +45,10 @@ class LinearWeight {
 
   // AWQ scale and regular-H4 ConvRot apply to [rows,in] activations. They are
   // independent so a caller with both can retain the two required buffers.
-  void apply_pre_quant_scale(TensorBatch& batch, DeviceTensor& input,
-                             DeviceTensor& output) const;
-  void apply_convrot(TensorBatch& batch, DeviceTensor& input,
-                     DeviceTensor& output) const;
+  void apply_pre_quant_scale(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output) const;
+  void apply_convrot(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output) const;
 
- private:
+private:
   struct Impl;
   explicit LinearWeight(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl_;
@@ -59,4 +56,4 @@ class LinearWeight {
   friend class StreamedNVFP4WeightCache;
 };
 
-}  // namespace slopfab::vulkan
+} // namespace slopfab::vulkan

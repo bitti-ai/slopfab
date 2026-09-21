@@ -65,6 +65,7 @@
 #endif
 
 #include "commands.h"
+
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
     {"prepare-lora", "slopfab prepare-lora --adapter FILE --width N [--download]",
@@ -247,8 +248,7 @@ const CommandHelp kCommands[] = {
      "the sequencing costs nothing measurable and is what makes every mixture of\n"
      "the four safe. Expect the first output well after the progress line starts\n"
      "moving.\n"},
-    {"inspect", "slopfab inspect <file.safetensors> [options]",
-     "summarise a checkpoint's tensors",
+    {"inspect", "slopfab inspect <file.safetensors> [options]", "summarise a checkpoint's tensors",
      "  --list                       print every tensor, not just a summary\n"
      "  --prefix <str>               only tensors whose name starts with <str>\n"
      "  --limit <n>                  cap listed tensors (default 40, 0 = all)\n"},
@@ -284,16 +284,14 @@ const CommandHelp kCommands[] = {
      "byte-compare deterministic raw video outputs",
      "Reports both headers, sizes, and the first differing byte. The command\n"
      "streams its inputs and returns non-zero for any difference.\n"},
-    {"decode", "slopfab decode --vae <f> [--latent <f>] [options]",
-     "run the video VAE decoder",
+    {"decode", "slopfab decode --vae <f> [--latent <f>] [options]", "run the video VAE decoder",
      "  --vae <f>                    video VAE checkpoint\n"
      "  --latent <f>                 latent safetensors; omit for a synthetic one\n"
      "  --shape <T> <H> <W>          synthetic latent shape\n"
      "  --out <f>                    .y4m output\n"
      "  --ppm <f>                    also write frame 0 as a PPM\n"
      "  --dump <f>                   raw fp32 pixels as safetensors\n"},
-    {"tokenize", "slopfab tokenize [--tokenizer <f>] <text>",
-     "encode text and round-trip it",
+    {"tokenize", "slopfab tokenize [--tokenizer <f>] <text>", "encode text and round-trip it",
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --pieces                     also print the pre-tokenizer split\n"},
     {"devices", "slopfab devices", "list CUDA inference and Vulkan output devices", ""},
@@ -302,7 +300,8 @@ const CommandHelp kCommands[] = {
 
 const CommandHelp* find_command(std::string_view name) {
   for (const CommandHelp& c : kCommands) {
-    if (name == c.name) return &c;
+    if (name == c.name)
+      return &c;
   }
   return nullptr;
 }
@@ -312,26 +311,27 @@ const CommandHelp* find_command(std::string_view name) {
 bool wants_help(int argc, char** argv) {
   for (int i = 0; i < argc; ++i) {
     const std::string_view a = argv[i];
-    if (a == "--help" || a == "-h" || a == "help") return true;
+    if (a == "--help" || a == "-h" || a == "help")
+      return true;
   }
   return false;
 }
 
 int print_command_help(const CommandHelp& c) {
   std::printf("usage: %s\n\n%s\n", c.usage, c.summary);
-  if (c.detail[0] != '\0') std::printf("\noptions:\n%s", c.detail);
+  if (c.detail[0] != '\0')
+    std::printf("\noptions:\n%s", c.detail);
   return 0;
 }
 
 void print_usage() {
-  std::printf(
-      "slopfab %s - MiniMax H3 video generation\n"
-      "\n"
-      "usage: slopfab [--cuda-version=auto|13|12] <command> [options]\n"
-      "       slopfab <command> --help\n"
-      "\n"
-      "commands:\n",
-      kVersion);
+  std::printf("slopfab %s - MiniMax H3 video generation\n"
+              "\n"
+              "usage: slopfab [--cuda-version=auto|13|12] <command> [options]\n"
+              "       slopfab <command> --help\n"
+              "\n"
+              "commands:\n",
+              kVersion);
   for (const CommandHelp& c : kCommands) {
     std::printf("  %-9s %s\n", c.name, c.summary);
   }
@@ -359,9 +359,9 @@ void consume_cuda_version_option(int& argc, char** argv) {
   }
   argc = write;
   argv[argc] = nullptr;
-  if (!requested.empty()) slopfab::cuda::set_cublas_version_request(requested);
+  if (!requested.empty())
+    slopfab::cuda::set_cublas_version_request(requested);
 }
 #endif
-
 
 }

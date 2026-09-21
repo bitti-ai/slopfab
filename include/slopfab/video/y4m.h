@@ -16,7 +16,7 @@
 namespace slopfab::video {
 
 class FrameConverter {
- public:
+public:
   virtual ~FrameConverter() = default;
   virtual void convert(const float* r, const float* g, const float* b, int height, int width,
                        uint8_t* y_plane, int y_stride, uint8_t* u_plane, int u_stride,
@@ -31,8 +31,8 @@ struct FrameRate {
 // Writes planar float RGB in [0,1], shaped [3][frames][height][width], as
 // 8-bit YUV 4:2:0 progressive. Conversion is BT.709 limited range, which is
 // what a 768p+ generated video is expected to be interpreted as.
-void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames,
-               int height, int width, FrameRate fps = {}, FrameConverter* converter = nullptr);
+void write_y4m(const std::string& path, const PixelBuffer& planar_rgb, int frames, int height,
+               int width, FrameRate fps = {}, FrameConverter* converter = nullptr);
 
 // Converts one frame of planar float RGB in [0,1] to 8-bit YUV 4:2:0, BT.709
 // limited range, into caller-supplied planes with arbitrary strides — which
@@ -57,7 +57,7 @@ void rgb_frame_to_yuv420(const float* r, const float* g, const float* b, int hei
 
 // Writes a single frame as a binary PPM, for eyeballing one image without a
 // video player.
-void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frames,
-               int height, int width, int frame_index);
+void write_ppm(const std::string& path, const PixelBuffer& planar_rgb, int frames, int height,
+               int width, int frame_index);
 
-}  // namespace slopfab::video
+} // namespace slopfab::video

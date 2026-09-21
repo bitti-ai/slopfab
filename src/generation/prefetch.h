@@ -5,13 +5,17 @@
 #include <system_error>
 #include <thread>
 #include "slopfab/safetensors.h"
+
 namespace slopfab::generation {
 class CheckpointPrefetch {
- public:
+public:
   CheckpointPrefetch() = default;
   CheckpointPrefetch(const CheckpointPrefetch&) = delete;
   CheckpointPrefetch& operator=(const CheckpointPrefetch&) = delete;
-  ~CheckpointPrefetch() { join(); }
+
+  ~CheckpointPrefetch() {
+    join();
+  }
 
   // Off under the same idiom `prefetch()` itself honours, so the same binary
   // can be run both ways. Checked here as well so the flag also skips the
@@ -31,9 +35,12 @@ class CheckpointPrefetch {
       return;
     }
     paths.erase(std::remove_if(paths.begin(), paths.end(),
-                               [](const std::string& p) { return p.empty(); }),
+                               [](const std::string& p) {
+                                 return p.empty();
+                               }),
                 paths.end());
-    if (paths.empty()) return;
+    if (paths.empty())
+      return;
     requested_ = paths.size();
     // `std::thread`'s constructor throws `std::system_error` when the process
     // cannot spawn one. Letting that escape would kill a generation that was
@@ -80,7 +87,8 @@ class CheckpointPrefetch {
   // would not start", "the flag was set" and "it all worked" are five different
   // runs that look identical.
   void join() {
-    if (worker_.joinable()) worker_.join();
+    if (worker_.joinable())
+      worker_.join();
     if (verbose_ && !reported_) {
       reported_ = true;
       if (skipped_) {
@@ -89,14 +97,14 @@ class CheckpointPrefetch {
         std::printf("prefetch    no worker thread available; the vae load demand faults\n");
       } else if (requested_ != 0) {
         std::printf("prefetch    %zu of %zu vae checkpoints hinted, %.2f GiB, %zu accepted\n",
-                    opened_, requested_,
-                    static_cast<double>(bytes_) / (1024.0 * 1024.0 * 1024.0), accepted_);
+                    opened_, requested_, static_cast<double>(bytes_) / (1024.0 * 1024.0 * 1024.0),
+                    accepted_);
       }
     }
     files_.clear();
   }
 
- private:
+private:
   std::thread worker_;
   // Written by the worker, read by the main thread only after `join()`, which
   // is the happens-before edge that makes them safe without atomics.
@@ -110,6 +118,5 @@ class CheckpointPrefetch {
   bool spawn_failed_ = false;
   bool reported_ = false;
 };
-
 
 }

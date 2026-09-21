@@ -25,16 +25,17 @@ float bits_float(uint32_t bits) noexcept {
 float euler_canonical(float value) noexcept {
   const uint32_t bits = float_bits(value);
   const uint32_t magnitude = bits & 0x7fffffffu;
-  if (magnitude < 0x00800000u) return bits_float(bits & 0x80000000u);
-  if (magnitude >= 0x7f800000u) return bits_float(0x7fc00000u);
+  if (magnitude < 0x00800000u)
+    return bits_float(bits & 0x80000000u);
+  if (magnitude >= 0x7f800000u)
+    return bits_float(0x7fc00000u);
   return value;
 }
 
 float euler_multiply(float left, float right) noexcept {
   left = euler_canonical(left);
   right = euler_canonical(right);
-  if (float_bits(left) == 0x7fc00000u ||
-      float_bits(right) == 0x7fc00000u)
+  if (float_bits(left) == 0x7fc00000u || float_bits(right) == 0x7fc00000u)
     return bits_float(0x7fc00000u);
   // The volatile boundary pins a separately-rounded multiply and prevents an
   // optimizer from fusing it with the following reference addition.
@@ -45,17 +46,16 @@ float euler_multiply(float left, float right) noexcept {
 float euler_add(float left, float right) noexcept {
   left = euler_canonical(left);
   right = euler_canonical(right);
-  if (float_bits(left) == 0x7fc00000u ||
-      float_bits(right) == 0x7fc00000u)
+  if (float_bits(left) == 0x7fc00000u || float_bits(right) == 0x7fc00000u)
     return bits_float(0x7fc00000u);
   volatile float sum = left + right;
   return euler_canonical(sum);
 }
 
-}  // namespace
+} // namespace
 
-float exact_euler_value(float sample, float velocity,
-                        float sigma_from_timestep, float ratio) noexcept {
+float exact_euler_value(float sample, float velocity, float sigma_from_timestep,
+                        float ratio) noexcept {
   sample = euler_canonical(sample);
   velocity = euler_canonical(velocity);
   sigma_from_timestep = euler_canonical(sigma_from_timestep);
@@ -80,7 +80,9 @@ void FlowScheduler::clear_history() {
   expected_step_ = -1;
 }
 
-void FlowScheduler::reset() { clear_history(); }
+void FlowScheduler::reset() {
+  clear_history();
+}
 
 void FlowScheduler::set_sampler(SamplerKind kind) {
   sampler_ = kind;
@@ -115,7 +117,8 @@ void FlowScheduler::set_timesteps(int num_inference_steps, ScheduleKind schedule
     // The shift compresses the grid near sigma = 1 hard enough to create
     // exact fp32 collisions; consecutive duplicates are collapsed, which is
     // why the realised step count can be lower than requested.
-    if (!sigmas_.empty() && shifted == sigmas_.back()) continue;
+    if (!sigmas_.empty() && shifted == sigmas_.back())
+      continue;
     sigmas_.push_back(shifted);
   }
 
@@ -141,12 +144,13 @@ void FlowScheduler::set_sigmas(const std::vector<float>& sigmas) {
     throw std::runtime_error("scheduler: sigma grid must start in (0,1] and end at 0");
   for (size_t i = 0; i < sigmas.size(); ++i) {
     if (!std::isfinite(sigmas[i]) || sigmas[i] < 0.0f || sigmas[i] > 1.0f ||
-        (i > 0 && sigmas[i] >= sigmas[i-1]))
+        (i > 0 && sigmas[i] >= sigmas[i - 1]))
       throw std::runtime_error("scheduler: sigma grid must be finite and strictly decreasing");
   }
   sigmas_ = sigmas;
   timesteps_.clear();
-  for (size_t i = 0; i + 1 < sigmas_.size(); ++i) timesteps_.push_back(1.0f - sigmas_[i]);
+  for (size_t i = 0; i + 1 < sigmas_.size(); ++i)
+    timesteps_.push_back(1.0f - sigmas_[i]);
   clear_history();
 }
 
@@ -201,8 +205,7 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
     // first step lands here too, because there is no v_{n-1} to extrapolate
     // from and a second-order start would have to invent one.
     for (size_t i = 0; i < count; ++i) {
-      out[i] = exact_euler_value(sample[i], velocity[i],
-                                 sigma_from_timestep, ratio);
+      out[i] = exact_euler_value(sample[i], velocity[i], sigma_from_timestep, ratio);
     }
   } else {
     // AB2 in this scheduler's ratio parameterisation. The working:
@@ -275,4 +278,4 @@ void FlowScheduler::scale_noise(const float* x0, const float* noise, float t, si
   }
 }
 
-}  // namespace slopfab::sampler
+} // namespace slopfab::sampler

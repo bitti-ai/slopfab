@@ -14,4 +14,4 @@ using Sha256Digest = std::array<uint8_t, 32>;
 Sha256Digest sha256_bytes(const void* data, size_t bytes);
 Sha256Digest sha256_file(const std::string& path);
 
-}  // namespace slopfab
+} // namespace slopfab

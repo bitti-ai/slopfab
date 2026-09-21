@@ -18,4 +18,4 @@ struct VsaTiles {
 
 VsaTiles build_vsa_tiles(const SequenceLayout& layout);
 
-}  // namespace slopfab::dit
+} // namespace slopfab::dit

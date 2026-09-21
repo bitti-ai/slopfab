@@ -44,7 +44,7 @@ enum class NoiseStream : uint32_t {
 // index. Threefry-style, which is cheap, passes the usual statistical batteries
 // at this quality bar, and needs no state.
 class CounterRng {
- public:
+public:
   CounterRng(uint64_t seed, NoiseStream stream);
 
   // Two independent uniforms in [0, 1) for counter `index`.
@@ -53,7 +53,7 @@ class CounterRng {
   // Two independent standard normals for counter `index`, by Box-Muller.
   void normal2(uint64_t index, float* out) const;
 
- private:
+private:
   uint64_t key0_;
   uint64_t key1_;
 };
@@ -75,4 +75,4 @@ std::vector<float> video_noise(uint64_t seed, int latent_frames, int latent_heig
 // means the two can be swapped without touching anything downstream.
 std::vector<float> audio_noise(uint64_t seed, int num_audio_latents, int latent_channels = 32);
 
-}  // namespace slopfab::sampler
+} // namespace slopfab::sampler

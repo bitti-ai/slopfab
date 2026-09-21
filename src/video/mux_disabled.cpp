@@ -28,16 +28,16 @@ namespace slopfab::video {
 // symbol has to exist or the link fails.
 const char* mux_status_message(MuxStatus s) {
   switch (s) {
-    case MuxStatus::kOk:
-      return "ok";
-    case MuxStatus::kLibraryNotFound:
-      return "this build has no FFmpeg support compiled in";
-    case MuxStatus::kSymbolMissing:
-      return "ffmpeg found but not a version slopfab knows how to drive";
-    case MuxStatus::kEncoderMissing:
-      return "this ffmpeg build has no usable H.264 or AAC encoder";
-    case MuxStatus::kWriteFailed:
-      return "writing the MP4 failed";
+  case MuxStatus::kOk:
+    return "ok";
+  case MuxStatus::kLibraryNotFound:
+    return "this build has no FFmpeg support compiled in";
+  case MuxStatus::kSymbolMissing:
+    return "ffmpeg found but not a version slopfab knows how to drive";
+  case MuxStatus::kEncoderMissing:
+    return "this ffmpeg build has no usable H.264 or AAC encoder";
+  case MuxStatus::kWriteFailed:
+    return "writing the MP4 failed";
   }
   return "unknown mux status";
 }
@@ -49,7 +49,9 @@ bool ffmpeg_available(std::string* detail) {
   return false;
 }
 
-std::string ffmpeg_version() { return std::string(); }
+std::string ffmpeg_version() {
+  return std::string();
+}
 
 MuxStatus write_mp4(const MuxRequest&) {
   // Reported as "not found" rather than as a distinct status, because that is
@@ -60,4 +62,4 @@ MuxStatus write_mp4(const MuxRequest&) {
   return MuxStatus::kLibraryNotFound;
 }
 
-}  // namespace slopfab::video
+} // namespace slopfab::video

@@ -17,23 +17,22 @@ namespace slopfab::vae {
 
 const std::vector<float>& default_video_latents_mean() {
   static const std::vector<float> values = {
-      .8580903411f, -.9606591463f, 1.0661640167f, -.5090325475f, -.2727581859f,
-      -1.3675414324f, -.2553254962f, -.2690755427f, -.5376840830f, -.0464097299f,
-      .6657370329f, .1969012767f, -.5460608006f, -.4035342038f, -.2368302494f,
-      .2592845261f, -.3013394475f, .2113419920f, -1.1206848621f, .3581933379f,
-      -.0422514379f, .2604829967f, .2286409289f, .7056031823f};
+      .8580903411f,   -.9606591463f, 1.0661640167f, -.5090325475f, -.2727581859f, -1.3675414324f,
+      -.2553254962f,  -.2690755427f, -.5376840830f, -.0464097299f, .6657370329f,  .1969012767f,
+      -.5460608006f,  -.4035342038f, -.2368302494f, .2592845261f,  -.3013394475f, .2113419920f,
+      -1.1206848621f, .3581933379f,  -.0422514379f, .2604829967f,  .2286409289f,  .7056031823f};
   return values;
 }
 
 const std::vector<float>& default_video_latents_std() {
   static const std::vector<float> values = {
-      1.2223774195f, 1.2767263651f, 1.6831774712f, 1.7549455166f, 1.5636216402f,
-      2.1941435337f, .9653137922f, 1.0569885969f, .8419489264f, .7729952931f,
-      1.8955937624f, .9468418360f, .7996809483f, .4498890042f, .7197399735f,
-      .6936293244f, 2.9610950947f, 2.7694199085f, 3.0496184826f, 2.1088054180f,
-      3.2762262821f, 3.1627357006f, 2.2816812992f, 2.6127843857f};
+      1.2223774195f, 1.2767263651f, 1.6831774712f, 1.7549455166f, 1.5636216402f, 2.1941435337f,
+      .9653137922f,  1.0569885969f, .8419489264f,  .7729952931f,  1.8955937624f, .9468418360f,
+      .7996809483f,  .4498890042f,  .7197399735f,  .6936293244f,  2.9610950947f, 2.7694199085f,
+      3.0496184826f, 2.1088054180f, 3.2762262821f, 3.1627357006f, 2.2816812992f, 2.6127843857f};
   return values;
 }
+
 namespace {
 
 // Scheduling is backend-neutral and lives in slopfab_core. Keep the phase
@@ -41,20 +40,22 @@ namespace {
 // library; a future generic observer can replace this no-op without changing
 // the decode arithmetic or backend interface.
 class ScheduleSpan {
- public:
-  explicit ScheduleSpan(const char*) noexcept {}
-  void stop() noexcept {}
+public:
+  explicit ScheduleSpan(const char*) noexcept {
+  }
+
+  void stop() noexcept {
+  }
 };
 
 // ImageNet statistics used by the reference VAEProcessor (normalize.py:9-10).
 constexpr float kImagenetMean[3] = {0.485f, 0.456f, 0.406f};
 constexpr float kImagenetStd[3] = {0.229f, 0.224f, 0.225f};
 
-}  // namespace
+} // namespace
 
-DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
-                                const float* z_norm, int H_lat, int W_lat,
-                                const std::vector<float>& latents_mean,
+DecodedVideo decode_still_image(VideoVaeWindowBackend& backend, const float* z_norm, int H_lat,
+                                int W_lat, const std::vector<float>& latents_mean,
                                 const std::vector<float>& latents_std,
                                 const DecodeSchedule& schedule) {
   const ViTConfig& cfg = backend.config();
@@ -62,10 +63,8 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
   if (cfg.out_channels != 3) {
     throw std::runtime_error("vae: still-image decode requires three RGB output channels");
   }
-  if (static_cast<int>(latents_mean.size()) != ch ||
-      static_cast<int>(latents_std.size()) != ch) {
-    throw std::runtime_error("vae: latents_mean/std must have " + std::to_string(ch) +
-                             " entries");
+  if (static_cast<int>(latents_mean.size()) != ch || static_cast<int>(latents_std.size()) != ch) {
+    throw std::runtime_error("vae: latents_mean/std must have " + std::to_string(ch) + " entries");
   }
   if (z_norm == nullptr || H_lat <= 0 || W_lat <= 0) {
     throw std::runtime_error("vae: still-image latent and extents must be valid");
@@ -83,8 +82,7 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
   const size_t latent_pixels = static_cast<size_t>(H_lat) * W_lat;
   constexpr int window = 7;
   std::vector<float> z;
-  backend.denormalize_latents(z_norm, ch, latent_pixels, latents_mean,
-                              latents_std, z);
+  backend.denormalize_latents(z_norm, ch, latent_pixels, latents_mean, latents_std, z);
 
   const int H_px = H_lat * cfg.patch;
   const int W_px = W_lat * cfg.patch;
@@ -101,14 +99,18 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
   std::vector<int> tile_h;
   std::vector<int> tile_w;
   std::map<std::pair<int, int>, std::vector<size_t>> shape_groups;
-  tile_shape_groups(ytiles, xtiles, H_px, W_px, cfg.patch,
-                    &tile_h, &tile_w, &shape_groups);
+  tile_shape_groups(ytiles, xtiles, H_px, W_px, cfg.patch, &tile_h, &tile_w, &shape_groups);
 
   std::vector<std::vector<float>> tiles(ytiles.starts.size() * xtiles.starts.size());
+
   struct RegistrationScope {
     VideoVaeWindowBackend* backend;
-    ~RegistrationScope() { backend->release_host_registrations(); }
+
+    ~RegistrationScope() {
+      backend->release_host_registrations();
+    }
   } registration_scope{&backend};
+
   std::vector<float> z_batch;
 
   for (const auto& [shape, ids] : shape_groups) {
@@ -116,7 +118,8 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
     const int tw = shape.second;
     const size_t tile_pixels = static_cast<size_t>(th) * tw;
     const size_t needed = static_cast<size_t>(ids.size()) * ch * window * tile_pixels;
-    if (z_batch.size() < needed) z_batch.resize(needed);
+    if (z_batch.size() < needed)
+      z_batch.resize(needed);
     for (size_t bi = 0; bi < ids.size(); ++bi) {
       const size_t id = ids[bi];
       const size_t ti = id / xtiles.starts.size();
@@ -127,16 +130,16 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
         for (int frame = 0; frame < window; ++frame) {
           for (int y = 0; y < th; ++y) {
             const size_t src = (static_cast<size_t>(ci) * H_lat + (y0 + y)) * W_lat + x0;
-            const size_t dst = ((bi * ch + ci) * window + frame) * tile_pixels +
-                               static_cast<size_t>(y) * tw;
+            const size_t dst =
+                ((bi * ch + ci) * window + frame) * tile_pixels + static_cast<size_t>(y) * tw;
             std::copy_n(z.begin() + static_cast<ptrdiff_t>(src), tw,
                         z_batch.begin() + static_cast<ptrdiff_t>(dst));
           }
         }
       }
     }
-    backend.forward_windows(z_batch.data(), static_cast<int>(ids.size()),
-                            window, th, tw, tiles, ids.data());
+    backend.forward_windows(z_batch.data(), static_cast<int>(ids.size()), window, th, tw, tiles,
+                            ids.data());
   }
 
   DecodedVideo image;
@@ -147,7 +150,7 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
 
   TileMerge merge(ytiles, xtiles, H_px, W_px);
   std::vector<float*> plane_dst(static_cast<size_t>(cfg.out_channels) * window * cfg.patch_t,
-                                 nullptr);
+                                nullptr);
   for (int c = 0; c < cfg.out_channels; ++c)
     plane_dst[static_cast<size_t>(c) * window * cfg.patch_t + phase] =
         image.data.data() + static_cast<size_t>(c) * frame_pixels;
@@ -158,24 +161,19 @@ DecodedVideo decode_still_image(VideoVaeWindowBackend& backend,
   for (int c = 0; c < cfg.out_channels; ++c) {
     float* plane = image.data.data() + static_cast<size_t>(c) * frame_pixels;
     for (size_t i = 0; i < frame_pixels; ++i) {
-      plane[i] = std::min(1.0f,
-                          std::max(0.0f, plane[i] * kImagenetStd[c] + kImagenetMean[c]));
+      plane[i] = std::min(1.0f, std::max(0.0f, plane[i] * kImagenetStd[c] + kImagenetMean[c]));
     }
   }
   return image;
 }
 
-DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
-                          int T_lat, int H_lat, int W_lat,
-                          const std::vector<float>& latents_mean,
-                          const std::vector<float>& latents_std,
-                          const DecodeSchedule& schedule) {
+DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm, int T_lat, int H_lat,
+                          int W_lat, const std::vector<float>& latents_mean,
+                          const std::vector<float>& latents_std, const DecodeSchedule& schedule) {
   const ViTConfig& cfg = backend.config();
   const int ch = cfg.in_channels;
-  if (static_cast<int>(latents_mean.size()) != ch ||
-      static_cast<int>(latents_std.size()) != ch) {
-    throw std::runtime_error("vae: latents_mean/std must have " + std::to_string(ch) +
-                             " entries");
+  if (static_cast<int>(latents_mean.size()) != ch || static_cast<int>(latents_std.size()) != ch) {
+    throw std::runtime_error("vae: latents_mean/std must have " + std::to_string(ch) + " entries");
   }
   if (T_lat <= 0 || H_lat <= 0 || W_lat <= 0) {
     throw std::runtime_error("vae: latent extents must be positive");
@@ -188,9 +186,8 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
   // (1) De-normalise: z = z_norm * std + mean, per channel. Done in fp32 from
   // the config literals rather than the fp16 tensors in the checkpoint.
   std::vector<float> z;
-  backend.denormalize_latents(
-      z_norm, ch, static_cast<uint64_t>(T_lat) * voxels_per_frame,
-      latents_mean, latents_std, z);
+  backend.denormalize_latents(z_norm, ch, static_cast<uint64_t>(T_lat) * voxels_per_frame,
+                              latents_mean, latents_std, z);
 
   // (2) Temporal padding: repeat the final latent frame until the pseudo token
   // count is a multiple of tokens_chunk_size.
@@ -233,7 +230,7 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
 
   const int H_px = H_lat * cfg.patch;
   const int W_px = W_lat * cfg.patch;
-  const int frames_per_chunk = schedule.chunk_dec - schedule.frame_pre_padding;  // 17
+  const int frames_per_chunk = schedule.chunk_dec - schedule.frame_pre_padding; // 17
   const size_t frame_pixels = static_cast<size_t>(H_px) * W_px;
 
   DecodedVideo video;
@@ -280,11 +277,14 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
   // much as the normal one.
   struct RegistrationScope {
     VideoVaeWindowBackend* backend;
-    ~RegistrationScope() { backend->release_host_registrations(); }
+
+    ~RegistrationScope() {
+      backend->release_host_registrations();
+    }
   } registration_scope{&backend};
 
   // Composition reuses composited overlap tails across planes and chunks.
-  const int out_frames = window * cfg.patch_t;  // 28
+  const int out_frames = window * cfg.patch_t; // 28
   TileMerge merge(ytiles, xtiles, H_px, W_px);
   std::vector<float*> plane_dst(static_cast<size_t>(3 * out_frames), nullptr);
   std::vector<float> z_batch;
@@ -331,7 +331,8 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
       // 14 MiB of stores per shape group per chunk that the next loop
       // overwrites in full.
       const size_t needed = static_cast<size_t>(ids.size()) * ch * tile_voxels;
-      if (z_batch.size() < needed) z_batch.resize(needed);
+      if (z_batch.size() < needed)
+        z_batch.resize(needed);
       for (size_t bi = 0; bi < ids.size(); ++bi) {
         const size_t id = ids[bi];
         const size_t ti = id / xtiles.starts.size();
@@ -341,10 +342,10 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
         for (int ci = 0; ci < ch; ++ci) {
           for (int t = 0; t < window; ++t) {
             for (int y = 0; y < th; ++y) {
-              const size_t src = ((static_cast<size_t>(ci) * window + t) * H_lat + (y0 + y)) *
-                                     W_lat + x0;
-              const size_t dst = (bi * ch + ci) * tile_voxels +
-                                 (static_cast<size_t>(t) * th + y) * tw;
+              const size_t src =
+                  ((static_cast<size_t>(ci) * window + t) * H_lat + (y0 + y)) * W_lat + x0;
+              const size_t dst =
+                  (bi * ch + ci) * tile_voxels + (static_cast<size_t>(t) * th + y) * tw;
               std::copy_n(clip.begin() + static_cast<long long>(src), tw,
                           z_batch.begin() + static_cast<long long>(dst));
             }
@@ -354,8 +355,8 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
       s_gather.stop();
       // Decoded straight into the hoisted slots, so each tile lands in the
       // buffer it used last chunk and its resize is a no-op.
-      backend.forward_windows(z_batch.data(), static_cast<int>(ids.size()),
-                              window, th, tw, tiles, ids.data());
+      backend.forward_windows(z_batch.data(), static_cast<int>(ids.size()), window, th, tw, tiles,
+                              ids.data());
     }
 
     // Where the chunk's 28 decoded frames go. This removes the 330 MiB staging
@@ -455,14 +456,16 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
   // small end only runs for tens of milliseconds. Below a threshold the tax
   // exceeds the saving outright and the serial path is simply faster.
   constexpr unsigned kMaxWorkers = 8;
-  constexpr size_t kMinParallelBytes = 32u << 20;  // 32 MiB of output
+  constexpr size_t kMinParallelBytes = 32u << 20; // 32 MiB of output
 
   const size_t out_bytes = planes * frame_pixels * sizeof(float);
   unsigned workers = std::thread::hardware_concurrency();
-  if (workers == 0) workers = 1;
+  if (workers == 0)
+    workers = 1;
   workers = std::min(workers, kMaxWorkers);
   workers = static_cast<unsigned>(std::min<size_t>(workers, std::max<size_t>(planes, 1)));
-  if (out_bytes < kMinParallelBytes) workers = 1;
+  if (out_bytes < kMinParallelBytes)
+    workers = 1;
 
   if (workers <= 1) {
     plane_range(0, planes);
@@ -472,18 +475,22 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
     // still-joinable threads and call std::terminate.
     struct JoiningPool {
       std::vector<std::thread> threads;
+
       ~JoiningPool() {
         for (std::thread& t : threads) {
-          if (t.joinable()) t.join();
+          if (t.joinable())
+            t.join();
         }
       }
     } pool;
+
     pool.threads.reserve(workers - 1);
     const size_t share = (planes + workers - 1) / workers;
     for (unsigned w = 1; w < workers; ++w) {
       const size_t begin = std::min(planes, share * w);
       const size_t end = std::min(planes, begin + share);
-      if (begin == end) break;
+      if (begin == end)
+        break;
       pool.threads.emplace_back(plane_range, begin, end);
     }
     plane_range(0, std::min(planes, share));
@@ -492,13 +499,11 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm,
   return video;
 }
 
-DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat,
-                                int W_lat,
+DecodedVideo ViTDecoder::decode(const float* z_norm, int T_lat, int H_lat, int W_lat,
                                 const std::vector<float>& latents_mean,
                                 const std::vector<float>& latents_std,
                                 const DecodeSchedule& schedule) {
-  return decode_video(*this, z_norm, T_lat, H_lat, W_lat, latents_mean,
-                      latents_std, schedule);
+  return decode_video(*this, z_norm, T_lat, H_lat, W_lat, latents_mean, latents_std, schedule);
 }
 
-}  // namespace slopfab::vae
+} // namespace slopfab::vae

@@ -8,8 +8,9 @@
 namespace slopfab::text {
 
 #pragma pack(push, 1)
+
 struct QwenLayerCaptureHeader {
-  char magic[8] = {'V','F','Q','W','E','N','L','1'};
+  char magic[8] = {'V', 'F', 'Q', 'W', 'E', 'N', 'L', '1'};
   uint32_t version = 1;
   uint32_t sequence = 0;
   uint32_t hidden = 0;
@@ -23,10 +24,10 @@ struct QwenLayerCaptureHeader {
   uint64_t rope_fnv64 = 0;
   std::array<uint64_t, 11> boundary_fnv64{};
 };
+
 #pragma pack(pop)
 
-static_assert(sizeof(QwenLayerCaptureHeader) == 204,
-              "Qwen capture header is a durable packed ABI");
+static_assert(sizeof(QwenLayerCaptureHeader) == 204, "Qwen capture header is a durable packed ABI");
 
 struct QwenLayerCapture {
   QwenLayerCaptureHeader header;
@@ -37,7 +38,6 @@ struct QwenLayerCapture {
 };
 
 QwenLayerCapture read_qwen_layer_capture(const std::string& path);
-void write_qwen_layer_capture(const std::string& path,
-                              const QwenLayerCapture& capture);
+void write_qwen_layer_capture(const std::string& path, const QwenLayerCapture& capture);
 
-}  // namespace slopfab::text
+} // namespace slopfab::text
