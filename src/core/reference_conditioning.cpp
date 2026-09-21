@@ -65,6 +65,32 @@ ReferenceConditionOptions animate_reference_options(int width, int height) {
   return {std::min(width, height), width * height, false};
 }
 
+ReferenceConditionOptions transition_reference_options(int width, int height, int edge) {
+  auto options = animate_reference_options(width, height);
+  options.temporal_edge = edge;
+  options.target_width = width;
+  options.target_height = height;
+  return options;
+}
+
+void align_transition_guides(std::vector<dit::ReferenceGeometry>& geometry, int target_latent_frames) {
+  if (geometry.empty() || geometry.size() > 2 || target_latent_frames < 7)
+    throw std::invalid_argument("video transition needs one or two encoded boundary guides");
+  const auto span = [](int frames) {
+    constexpr int steps[] = {1, 4, 4, 4, 4};
+    double value = 0;
+    for (int i = 0; i < frames; ++i) value += (5.0 / 3.0) * steps[i % 5];
+    return value;
+  };
+  for (size_t i = 0; i < geometry.size(); ++i) {
+    auto& guide = geometry[i];
+    if (guide.kind != dit::ReferenceKind::kVideo || guide.num_latent_frames != 7 || guide.num_audio_latents)
+      throw std::invalid_argument("video transition boundary must contain seven video latents without audio");
+    guide.target_aligned = true;
+    guide.target_time_offset = i == 0 ? -span(guide.num_latent_frames) : span(target_latent_frames);
+  }
+}
+
 std::vector<float> prepare_target_audio(const ReferenceAudio& audio, int target_frames) {
   if (target_frames <= 0 || target_frames > 360)
     throw std::invalid_argument("pinned audio: target frame count must be 1..360");
@@ -107,11 +133,19 @@ ReferenceConditionPlan reference_condition_plan(const ReferenceMedia& reference,
   p.geometry.kind = reference.is_video() ? dit::ReferenceKind::kVideo
                                          : dit::ReferenceKind::kAudio;
   const double duration =
-      std::min(reference.duration_seconds(), target_seconds);
+      options.temporal_edge ? 22.0 / 24 : std::min(reference.duration_seconds(), target_seconds);
+  if (options.temporal_edge && (!reference.is_video() || reference.duration_seconds() + 1e-9 < duration ||
+      (options.temporal_edge != -1 && options.temporal_edge != 1)))
+    throw std::invalid_argument("video transition requires at least 22 source frames and a valid temporal edge");
   if (reference.is_video()) {
     const auto& image = reference.frames().front()->image;
     dit::resolve_canvas_size(image.width, image.height, &p.height, &p.width,
                              options.short_edge, options.max_pixels);
+    if (options.temporal_edge) {
+      dit::validate_canvas_size(options.target_height, options.target_width);
+      p.width = options.target_width;
+      p.height = options.target_height;
+    }
     p.frames = static_cast<int>(std::floor(duration * 24 + .5));
     if (p.frames < 22)
       throw std::invalid_argument(
@@ -141,6 +175,7 @@ PreparedReference prepare_reference_condition(const ReferenceMedia& reference,
   out.plan = reference_condition_plan(reference, target_seconds, options);
   if (reference.is_video()) {
     size_t source = 0;
+    const double start = options.temporal_edge < 0 ? reference.duration_seconds() - 22.0 / 24 : 0;
     out.frames.reserve(out.plan.frames);
     for (int i = 0; i < out.plan.frames; ++i) {
       // On an encoded-media hit only Qwen's 2 fps presentation is needed.
@@ -153,7 +188,7 @@ PreparedReference prepare_reference_condition(const ReferenceMedia& reference,
       // the next one's destination slot, and the last until clip end.
       while (source + 1 < reference.frames().size() &&
              std::floor(reference.frames()[source + 1]->timestamp_seconds * 24 +
-                        .5) <= i)
+                        .5) <= i + std::floor(start * 24 + .5))
         ++source;
       const auto& image = reference.frames()[source]->image;
       out.frames.push_back(image.width == out.plan.width &&

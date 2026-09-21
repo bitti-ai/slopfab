@@ -248,7 +248,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   for (const auto& media : request.reference_media) {
     if (!notify(RunStage::kReferences, -1, 0)) return stop("reference preprocessing");
     const auto t0 = Clock::now();
-    const auto reference_options = plan.conditioning.reference_options(plan.canvas_width, plan.canvas_height);
+    const auto reference_options = request.video_transition
+        ? transition_reference_options(plan.canvas_width, plan.canvas_height, prepared_media.empty() ? -1 : 1)
+        : plan.conditioning.reference_options(plan.canvas_width, plan.canvas_height);
     prepared_media.push_back(prepare_reference_condition(*media, double(plan.sampling_frames) / 24,
                                                          !cached_media, reference_options));
     if (plan.conditioning.pin_target_audio) {
@@ -529,6 +531,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       append_continuation_guide(*request.continuation, plan.continuation, request.seed,
                                 reference_geometry, condition_video_rows, condition_audio_rows);
     }
+    if (request.video_transition)
+      align_transition_guides(reference_geometry, layout.num_latent_frames);
 
     if (!notify(RunStage::kConditioning, -1, 0)) return stop("conditioning");
     text::PromptEmbedding prompt;

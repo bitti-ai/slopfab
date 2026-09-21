@@ -305,6 +305,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_reques
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_video_transition(
+    slopfab_request* request, int32_t mode) {
+  if (!request || mode < 0 || mode > 2)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "video transition requires a request and mode 0, 1 or 2");
+  request->request.video_transition = mode;
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_save_latents(
     const slopfab_generation* generation, const char* path) {
   if (!generation || !path || !*path)

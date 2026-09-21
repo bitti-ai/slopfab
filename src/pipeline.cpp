@@ -24,6 +24,10 @@ constexpr int kMinLatentFrames = 7;
 constexpr int kMinFrames = 22;
 
 void append_media_identity(std::string& key, const GenerateRequest& request) {
+  key += ":video-transition:" + std::to_string(request.video_transition);
+  if (request.video_transition)
+    key += ":" + std::to_string(request.canvas_width) + "x" + std::to_string(request.canvas_height) +
+        ":" + std::to_string(request.aspect_w) + ":" + std::to_string(request.aspect_h);
   const auto settings = resolve_conditioning_settings(request);
   key += settings.cache_identity();
   if (settings.references_at_target_canvas) {
@@ -161,8 +165,11 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   plan.layout.num_video_rows = plan.layout.num_latent_frames * plan.layout.rows_per_frame(plan.geometry);
   if (!request.reference_media.empty()) {
     plan.layout.condition_audio_is_explicit = true;
-    for (const auto& media : request.reference_media) {
-      const auto options = plan.conditioning.reference_options(plan.canvas_width, plan.canvas_height);
+    for (size_t index = 0; index < request.reference_media.size(); ++index) {
+      const auto& media = request.reference_media[index];
+      const auto options = request.video_transition
+          ? transition_reference_options(plan.canvas_width, plan.canvas_height, index == 0 ? -1 : 1)
+          : plan.conditioning.reference_options(plan.canvas_width, plan.canvas_height);
       const auto geometry = reference_condition_plan(*media, double(plan.sampling_frames) / plan.geometry.fps, options).geometry;
       plan.layout.num_condition_video += geometry.video_rows();
       plan.layout.num_condition_audio += geometry.audio_rows();
@@ -422,6 +429,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
     description += "  prompt              fixed " + std::to_string(plan.conditioning.fixed_prompt_tokens) + "-token embedding\n";
   if (plan.conditioning.pin_target_audio)
     description += "  target audio        pinned driving soundtrack (clean t=1)\n";
+  if (request.video_transition)
+    description += std::string("  video transition    ") + (request.video_transition == 1 ? "extend" : "bridge") +
+        " (22-frame encoded boundary guides; output is new segment only)\n";
   if (request.continuation) {
     description += "  continuation        " + std::to_string(request.continuation->frames) +
         " source + " + std::to_string(plan.continuation.extension_frames) + " new frames\n" +

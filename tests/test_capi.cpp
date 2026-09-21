@@ -26,6 +26,31 @@
 #include "refmod_fixture.h"
 #include "latent_fixture.h"
 
+SLOPFAB_TEST(capi_video_transition) {
+  auto* request = slopfab_request_create();
+  CHECK(slopfab_request_set_video_transition(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_video_transition(request, 3) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_video_transition(request, 1) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) != SLOPFAB_OK);
+  slopfab_reference_video* video = nullptr;
+  CHECK(slopfab_reference_video_create(2, &video) == SLOPFAB_OK);
+  const uint8_t pixels[] = {10, 20, 30, 255};
+  CHECK(slopfab_reference_video_append_rgba8(video, pixels, 4, 1, 1, 4, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_reference_video(request, video) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_resolution(request, 64, 32) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_frames(request, 39) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 39);
+  CHECK(slopfab_request_set_video_transition(request, 2) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) != SLOPFAB_OK);
+  CHECK(slopfab_request_add_reference_video(request, video) == SLOPFAB_OK);
+  slopfab_reference_video_destroy(video); // request owns both snapshots
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 39);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_prepare_lora_grid) {
   CHECK(slopfab_prepare_lora_grid(nullptr, 2, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_prepare_lora_grid("", 2, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);

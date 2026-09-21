@@ -67,6 +67,15 @@ ResolvedConditioning resolve_conditioning_settings(const GenerateRequest& reques
 }
 
 void validate_conditioning_request(const GenerateRequest& r, const ResolvedConditioning& s) {
+  if (r.video_transition) {
+    if (r.video_transition < 1 || r.video_transition > 2 || r.still_image || r.continuation ||
+        r.animate || s.video_first || s.pin_target_audio || r.has_refmods() ||
+        !r.reference_image_paths.empty() || r.reference_media.size() != size_t(r.video_transition))
+      throw std::invalid_argument("Extend/Bridge requires exactly one/two source videos without other conditioning modes");
+    for (const auto& media : r.reference_media)
+      if (!media || !media->is_video() || media->duration_seconds() + 1e-9 < 22.0 / 24)
+        throw std::invalid_argument("Extend/Bridge source videos need at least 22 frames at 24 fps");
+  }
   if ((s.video_first || s.pin_target_audio) && s.include_reference_audio)
     throw std::invalid_argument("video_first and pin_target_audio require include_reference_audio=false");
   if (s.fixed_prompt_tokens > 0 && !s.require_prompt_embedding)

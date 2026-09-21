@@ -124,6 +124,9 @@ struct GenerateRequest {
   // (rounded up to a multiple of 17); the output includes the source clip.
   std::shared_ptr<const LatentClip> continuation;
   int continuation_overlap_frames = 22;
+  // 1: extend the final 22 frames of reference video 1. 2: also bridge to
+  // the opening 22 frames of reference video 2. Output is the new segment only.
+  int video_transition = 0;
 
   bool has_native_references() const {
     return !reference_image_paths.empty() || !reference_media.empty();

@@ -12,6 +12,8 @@ struct ReferenceGeometry {
   int num_audio_latents = 0;
   // A final temporal guide shares the target origin instead of advancing it.
   bool target_aligned = false;
+  // Temporal guides may sit immediately before/after the generated timeline.
+  double target_time_offset = 0;
   int video_rows() const;
   int audio_rows() const;
 };

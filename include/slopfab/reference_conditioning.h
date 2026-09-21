@@ -8,8 +8,12 @@ struct ReferenceConditionOptions {
   int short_edge = 768;
   int max_pixels = 768 * 1344;
   bool include_audio = true;
+  int temporal_edge = 0;  // -1: final 22 frames; +1: opening 22 frames
+  int target_width = 0, target_height = 0;
 };
 ReferenceConditionOptions animate_reference_options(int width, int height);
+ReferenceConditionOptions transition_reference_options(int width, int height, int edge);
+void align_transition_guides(std::vector<dit::ReferenceGeometry>& geometry, int target_latent_frames);
 struct ReferenceConditionPlan {
   int width = 0, height = 0;
   int frames = 0;           // CFR frames presented to Qwen

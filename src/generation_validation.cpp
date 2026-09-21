@@ -43,6 +43,8 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
           o.attention_band == 0 && !caches), "compressed attention requires Euler without frame banding or caches");
   require(!r.continuation || (o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
           "continuation requires denoising from fresh noise");
+  require(!r.video_transition || (o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
+          "Extend/Bridge requires denoising from fresh noise");
   require(!p.conditioning.pin_target_audio || o.init_latents_path.empty(),
           "pinned target audio is incompatible with initial latents");
   require(o.source == LatentSource::kDenoise ||

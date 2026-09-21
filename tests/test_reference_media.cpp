@@ -25,6 +25,62 @@ ReferenceMedia clip(double duration = 2) {
 }
 }  // namespace
 
+SLOPFAB_TEST(video_transition_boundary_preprocessing_and_cache) {
+  auto source = ReferenceMedia::video(3);
+  const uint8_t opening[] = {200, 10, 10}, ending[] = {10, 200, 10};
+  source.append_frame(opening, 3, 1, 1, 3, 3, 0);
+  source.append_frame(ending, 3, 1, 1, 3, 3, 1);
+  auto head = slopfab::prepare_reference_condition(source, 6, true,
+      slopfab::transition_reference_options(64, 32, 1));
+  auto tail = slopfab::prepare_reference_condition(source, 6, true,
+      slopfab::transition_reference_options(64, 32, -1));
+  CHECK(head.frames.size() == 22 && tail.frames.size() == 22);
+  CHECK(head.plan.geometry.num_latent_frames == 7);
+  CHECK(head.plan.width == 64 && head.plan.height == 32);
+  CHECK(head.frames.front().pixels[0] == 200);
+  CHECK(tail.frames.front().pixels[1] == 200);
+  CHECK(tail.frames.back().pixels[1] == 200);
+  CHECK(throws([&] { slopfab::prepare_reference_condition(clip(.5), 6, true,
+      slopfab::transition_reference_options(64, 32, -1)); }));
+  slopfab::GenerateRequest request;
+  request.canvas_width = 64; request.canvas_height = 32; request.num_frames = 39;
+  request.video_transition = 1;
+  request.reference_media.push_back(std::make_shared<const ReferenceMedia>(source));
+  const auto plan = slopfab::resolve_plan(request);
+  CHECK(plan.aligned_frames == 39); // source context never lengthens the output
+  CHECK(plan.layout.num_condition_video == 14);
+  CHECK(plan.layout.num_condition_audio == 0);
+  const auto key = slopfab::media_encoding_cache_key(request, slopfab::ReferenceEncoderAuthority::kCudaFp32);
+  request.video_transition = 0;
+  CHECK(key != slopfab::media_encoding_cache_key(request, slopfab::ReferenceEncoderAuthority::kCudaFp32));
+  request.video_transition = 2;
+  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+  request.reference_media.push_back(std::make_shared<const ReferenceMedia>(source));
+  const auto bridge = slopfab::resolve_plan(request);
+  CHECK(bridge.layout.num_condition_video == 28);
+  CHECK(bridge.aligned_frames == 39);
+  request.still_image = true;
+  CHECK(throws([&] { slopfab::resolve_plan(request); }));
+}
+
+SLOPFAB_TEST(video_transition_guides_surround_target_without_advancing_its_clock) {
+  using namespace slopfab::dit;
+  std::vector<ReferenceGeometry> guides = {
+      {ReferenceKind::kVideo, 7, 2, 4, 0}, {ReferenceKind::kVideo, 7, 2, 4, 0}};
+  slopfab::align_transition_guides(guides, 12);
+  CHECK(guides[0].target_time_offset < 0);
+  CHECK(guides[1].target_time_offset > 0);
+  const auto packed = build_ref2va_packed_sequence({}, guides, 12, 2, 4, 65);
+  const auto target = build_ref2va_packed_sequence({}, {}, 12, 2, 4, 65);
+  const int context_rows = guides[0].video_rows() + guides[1].video_rows();
+  for (size_t i = 0; i < target.position_ids.size(); ++i)
+    CHECK(packed.position_ids[size_t(context_rows) * 3 + i] == target.position_ids[i]);
+  CHECK(packed.position_ids[0] < 0);
+  CHECK(packed.position_ids[size_t(guides[0].video_rows()) * 3] > target.position_ids[target.position_ids.size() - 3]);
+  guides.push_back({ReferenceKind::kImage, 1, 2, 4, 0});
+  CHECK(throws([&] { build_ref2va_packed_sequence({}, guides, 12, 2, 4, 65); }));
+}
+
 SLOPFAB_TEST(reference_media_pixels_and_snapshot) {
   auto video = ReferenceMedia::video(2);
   // Two 1-pixel rows: padding and alpha are deliberately distinct. The last

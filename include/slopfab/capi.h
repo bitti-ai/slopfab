@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 13
+#define SLOPFAB_CAPI_VERSION_MINOR 14
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -563,6 +563,16 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_generation(
     slopfab_request* request, const slopfab_generation* source, int32_t overlap_frames);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_request* request);
+
+/* Since 1.14. Encode imported reference videos as temporal latent guides.
+ * mode 0 disables, 1 extends the tail of video 1, 2 bridges from the tail of
+ * video 1 to the head of video 2. Requires exactly one/two videos, no other
+ * references, Animate, still image, or saved-latent continuation. Each source
+ * must contain at least 22 frames at 24 fps. Boundary clips are encoded at the
+ * target canvas; audio is generated from the prompt, not copied. Frames and
+ * output describe only the newly generated segment. Planning does no encoding. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_video_transition(
+    slopfab_request* request, int32_t mode);
 
 /* Save retained latents after a successful generation. NOT_READY while
  * running; INVALID_REQUEST when retention was not enabled. */
