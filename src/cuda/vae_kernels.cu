@@ -305,14 +305,15 @@ __global__ void softmax_rows_kernel(float* __restrict__ scores, int cols, float 
 // The bias add is folded in because this kernel already reads y: applying it
 // as a separate pass costs a full read+write of the buffer for one FMA.
 // `bias` may be null when the caller has already applied it.
-// Row index comes from blockIdx.y, avoiding a 64-bit modulo per element.
+// Rows use grid.x so tile batches can exceed grid.y's 65535-block limit.
+// Keeping columns on a separate axis avoids a 64-bit modulo per element.
 __global__ void layerscale_residual_kernel(float* __restrict__ x, const float* __restrict__ y,
                                            const float* __restrict__ bias,
                                            const float* __restrict__ scale, int cols) {
-  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  const int c = blockIdx.y * blockDim.x + threadIdx.x;
   if (c >= cols)
     return;
-  const size_t idx = static_cast<size_t>(blockIdx.y) * cols + c;
+  const size_t idx = static_cast<size_t>(blockIdx.x) * cols + c;
   const float y_value = canonicalize_pointwise_float(y[idx]);
   const float v =
       bias != nullptr
@@ -330,10 +331,10 @@ __global__ void layerscale_residual_kernel(float* __restrict__ x, const float* _
 template <typename Output>
 __global__ void swiglu_kernel(const float* __restrict__ in, const float* __restrict__ bias,
                               Output* __restrict__ out, int inner) {
-  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  const int c = blockIdx.y * blockDim.x + threadIdx.x;
   if (c >= inner)
     return;
-  const size_t row = blockIdx.y;
+  const size_t row = blockIdx.x;
   const float* r = in + row * 2 * inner;
   const float gate_input = canonicalize_pointwise_float(r[c]);
   const float value_input = canonicalize_pointwise_float(r[inner + c]);
@@ -607,7 +608,7 @@ void launch_softmax_rows(float* scores, int rows, int cols, float scale, cudaStr
 void launch_layerscale_residual(float* x, const float* y, const float* bias, const float* scale,
                                 int rows, int cols, cudaStream_t stream) {
   const int threads = 256;
-  const dim3 grid((cols + threads - 1) / threads, rows);
+  const dim3 grid(rows, (cols + threads - 1) / threads);
   layerscale_residual_kernel<<<grid, threads, 0, stream>>>(x, y, bias, scale, cols);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
@@ -615,7 +616,7 @@ void launch_layerscale_residual(float* x, const float* y, const float* bias, con
 void launch_swiglu(const float* in, const float* bias, float* out, int rows, int inner,
                    cudaStream_t stream) {
   const int threads = 256;
-  const dim3 grid((inner + threads - 1) / threads, rows);
+  const dim3 grid(rows, (inner + threads - 1) / threads);
   swiglu_kernel<<<grid, threads, 0, stream>>>(in, bias, out, inner);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
@@ -637,7 +638,7 @@ void launch_split_qkv_norm_rope_bf16(const float* qkv, const float* bias, const 
 void launch_swiglu_f16(const float* in, const float* bias, void* out, int rows, int inner,
                        cudaStream_t stream) {
   const int threads = 256;
-  const dim3 grid((inner + threads - 1) / threads, rows);
+  const dim3 grid(rows, (inner + threads - 1) / threads);
   swiglu_kernel<<<grid, threads, 0, stream>>>(in, bias, static_cast<__half*>(out), inner);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }

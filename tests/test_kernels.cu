@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <algorithm>
@@ -230,6 +231,64 @@ void test_gemm() {
     CHECK_CLOSE(want, slice, 1e-3, ("gemm_nt_batched b" + std::to_string(b)).c_str());
   }
   slopfab::cuda::cublas_destroy(h);
+}
+
+void test_vae_pointwise_large_rows() {
+  // Tile batching can exceed CUDA's 65535-block grid.y limit even when each
+  // individual VAE window is small. Exercise the boundary and column tails.
+  const std::pair<int, int> shapes[] = {{65535, 1}, {65536, 33}, {65537, 257}};
+  for (const auto shape : shapes) {
+    const int rows = shape.first;
+    const int cols = shape.second;
+    const size_t count = static_cast<size_t>(rows) * cols;
+    const auto x = make_data(count, 101u);
+    const auto y = make_data(count, 102u);
+    const auto scale = make_data(cols, 103u);
+    const auto bias = make_data(cols, 104u);
+    auto dx = to_device(x);
+    auto dy = to_device(y);
+    auto ds = to_device(scale);
+    auto db = to_device(bias);
+    std::vector<float> expected(count);
+    for (bool biased : {false, true}) {
+      dx.copy_from_host(x.data(), count);
+      for (size_t i = 0; i < count; ++i) {
+        const float value = biased ? y[i] + bias[i % cols] : y[i];
+        expected[i] = std::fma(value, scale[i % cols], x[i]);
+      }
+      slopfab::cuda::launch_layerscale_residual(dx.get(), dy.get(), biased ? db.get() : nullptr,
+                                                ds.get(), rows, cols, nullptr);
+      SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      CHECK_CLOSE(expected, to_host(dx), 1e-6, "large-row residual");
+    }
+
+    const auto input = make_data(count * 2, 105u, 4.0f);
+    const auto gate_bias = make_data(cols * 2, 106u);
+    auto din = to_device(input);
+    auto dgb = to_device(gate_bias);
+    DeviceBuffer<uint16_t> fused(count), reference(count);
+    std::vector<uint16_t> fused_host(count), reference_host(count);
+    for (bool biased : {false, true}) {
+      for (int r = 0; r < rows; ++r) {
+        for (int c = 0; c < cols; ++c) {
+          const size_t offset = static_cast<size_t>(r) * 2 * cols + c;
+          const float gate = input[offset] + (biased ? gate_bias[c] : 0.0f);
+          const float value = input[offset + cols] + (biased ? gate_bias[cols + c] : 0.0f);
+          expected[static_cast<size_t>(r) * cols + c] = (gate / (1.0f + std::exp(-gate))) * value;
+        }
+      }
+      slopfab::cuda::launch_swiglu(din.get(), biased ? dgb.get() : nullptr, dx.get(), rows, cols,
+                                   nullptr);
+      slopfab::cuda::launch_swiglu_f16(din.get(), biased ? dgb.get() : nullptr, fused.get(), rows,
+                                       cols, nullptr);
+      slopfab::cuda::launch_narrow_f16(dx.get(), reference.get(), count, nullptr);
+      SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
+      CHECK_CLOSE(expected, to_host(dx), 1e-5, "large-row swiglu");
+      fused.copy_to_host(fused_host.data(), count);
+      reference.copy_to_host(reference_host.data(), count);
+      CHECK(fused_host == reference_host);
+    }
+  }
 }
 
 void test_swiglu() {
@@ -890,6 +949,7 @@ const bool registered =
     ::slopfab::test::register_test("norms", &test_norms) &&
     ::slopfab::test::register_test("gemm", &test_gemm) &&
     ::slopfab::test::register_test("swiglu", &test_swiglu) &&
+    ::slopfab::test::register_test("vae_pointwise_large_rows", &test_vae_pointwise_large_rows) &&
     ::slopfab::test::register_test("softmax", &test_softmax) &&
     ::slopfab::test::register_test("depth_to_space", &test_depth_to_space) &&
     ::slopfab::test::register_test("qkv_norm_rope", &test_qkv_rope) &&
