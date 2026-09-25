@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -141,6 +142,14 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     cuda::PhaseProfiler::instance().report(stdout);
   }
 
+  if (request.image_edit.image) {
+    if (video.frames != 1 || video.channels != 3)
+      throw std::logic_error("image editing requires a single decoded RGB frame");
+    video.data = composite_image_edit(request.image_edit, video.data, video.width, video.height);
+    video.width = request.image_edit.image->width;
+    video.height = request.image_edit.image->height;
+  }
+
   // --- audio ----------------------------------------------------------------
 
   vae::DecodedAudio audio;
@@ -233,6 +242,31 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
         notify(RunStage::kFinished, -1, 0);
         return result;
       }
+    }
+
+    if (request.image_edit.image) {
+      std::ofstream file(request.out_path, std::ios::binary);
+      file << "P6\n" << video.width << ' ' << video.height << "\n255\n";
+      const size_t plane = size_t(video.width) * video.height;
+      std::vector<uint8_t> pixels(plane * 3);
+      for (size_t p = 0; p < plane; ++p)
+        for (size_t c = 0; c < 3; ++c) {
+          const float value = video.data[c * plane + p];
+          if (!std::isfinite(value))
+            throw std::runtime_error("non-finite image edit output");
+          pixels[p * 3 + c] =
+              static_cast<uint8_t>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255));
+        }
+      file.write(reinterpret_cast<const char*>(pixels.data()),
+                 static_cast<std::streamsize>(pixels.size()));
+      file.close();
+      if (!file)
+        throw std::runtime_error("cannot write edited image: " + request.out_path);
+      result.outputs.push_back(request.out_path);
+      result.seconds_output = seconds_since(t0);
+      result.ok = true;
+      notify(RunStage::kFinished, -1, 0);
+      return result;
     }
 
     bool muxed = false;

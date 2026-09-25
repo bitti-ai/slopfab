@@ -16,6 +16,7 @@
 #include "slopfab/dit/motion_cache.h"
 #include "slopfab/dit/transformer.h"
 #include "slopfab/sampler/scheduler.h"
+#include "slopfab/inpaint.h"
 
 namespace slopfab::dit {
 
@@ -28,6 +29,7 @@ using DenoiseBoundaryFn = std::function<void(int step, const std::vector<float>&
                                              const std::vector<float>& audio_rows)>;
 
 struct DenoiseInputs {
+  const InpaintConstraint* inpaint = nullptr;
   const SequenceLayout* layout = nullptr;
   const PackedIndices* indices = nullptr;
 

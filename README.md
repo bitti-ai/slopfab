@@ -13,6 +13,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 - **Video continuation** through [saved video and audio latents](docs/continuation.md).
 - **Quantized checkpoints** and [automatic CUDA transformer offloading](docs/denoising_memory.md) to manage GPU memory.
 - **A C API** for asynchronous video and still-image generation, progress callbacks, cancellation and model reuse.
+- **Bounding-box image editing** on CUDA and Vulkan, with edit strength, inward feathering and exact preservation outside the box. See [inpainting](docs/inpainting.md).
 - **MP4 output through FFmpeg**, raw Y4M/WAV output, checkpoint inspection and tensor comparison tools.
 
 ## Misc

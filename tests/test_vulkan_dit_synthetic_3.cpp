@@ -111,6 +111,56 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
   CHECK(result.audio_rows == audio);
   CHECK(result.video_rows != std::vector<float>(t.video_output_rows * 4, .5f));
   model.unload();
+  // Reuse the constant-velocity fixture to check both conditioned and plain
+  // target storage. Preserved cells follow the source noise trajectory;
+  // editable cells retain the actual GPU Euler update.
+  for (bool conditioned : {true, false}) {
+    auto edit_config = config;
+    edit_config.pin_target_audio = false;
+    if (!conditioned) {
+      auto& l = edit_config.layout;
+      l.num_condition_video = l.num_condition_audio = 0;
+      l.condition_audio_is_explicit = false;
+      edit_config.indices = dit::build_indices(l);
+      edit_config.position_ids = dit::build_position_ids(l);
+      auto& et = edit_config.transformer;
+      et.main.block.sequence = l.total_rows();
+      et.main.block.timesteps = 2;
+      et.video_rows = l.num_video_rows;
+      et.video_output_rows = et.audio_output_rows = 0;
+      et.video_output_start = et.audio_output_start = 0;
+    }
+    auto constraint = std::make_shared<InpaintConstraint>();
+    const size_t n = size_t(edit_config.layout.num_video_rows) * 4;
+    constraint->original.assign(n, 2);
+    constraint->noise.assign(n, 10);
+    constraint->mask.assign(n, 0);
+    constraint->mask[1] = 1;
+    edit_config.inpaint = constraint;
+    auto editor = ExactH3Denoiser::create(context, edit_config);
+    editor.load(checkpoint);
+    std::vector<float> initial(edit_config.transformer.video_rows * 4, .5f);
+    editor.prepare(prompt.data(), prompt.size(), initial.data(), initial.size(), audio.data(),
+                   audio.size());
+    vs.set_sigmas({.75f, .5f, .25f, 0});
+    as.set_sigmas({.75f, .5f, .25f, 0});
+    int updates = 0;
+    const auto edited = editor.run(
+        vs, as, {}, [&](uint32_t step, const std::vector<float>& v, const std::vector<float>&) {
+          ++updates;
+          CHECK(v[0] == 2 + 8 * vs.sigmas()[step + 1]);
+          CHECK_NEAR(v[1], 8 + .0625f * (step + 1), 1e-5);
+        });
+    CHECK(updates == 3 && edited.video_rows[0] == 2);
+    editor.prepare(prompt.data(), prompt.size(), initial.data(), initial.size(), audio.data(),
+                   audio.size());
+    const auto cancelled = editor.run(vs, as, [](uint32_t, uint32_t) {
+      return false;
+    });
+    CHECK(cancelled.cancelled && cancelled.steps_completed == 1);
+    CHECK(cancelled.video_rows[0] == 6);
+    editor.unload();
+  }
   checkpoint.close();
   std::filesystem::remove(path);
 }

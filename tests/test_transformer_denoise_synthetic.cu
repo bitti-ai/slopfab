@@ -1,5 +1,54 @@
 #include "detail/transformer_fixture.h"
 
+SLOPFAB_TEST_CATEGORY(denoise_inpaint_constrains_each_boundary_and_keeps_anchors, "synthetic") {
+  auto layout = tiny_layout();
+  layout.num_latent_frames = 1;
+  layout.num_video_rows = layout.rows_per_frame();
+  layout.num_audio_rows = layout.num_audio_latents = 0;
+  layout.num_condition_video = 1;
+  const auto indices = slopfab::dit::build_indices(layout);
+  slopfab::sampler::FlowScheduler video, audio;
+  video.set_sigmas({.75f, .5f, .25f, 0});
+  audio.set_sigmas({.75f, .5f, .25f, 0});
+  const size_t count = size_t(layout.num_video_rows) * 96;
+  slopfab::InpaintConstraint constraint;
+  constraint.original.assign(count, 2);
+  constraint.noise.assign(count, 10);
+  constraint.mask.assign(count, 0);
+  constraint.mask[1] = 1;
+  std::vector<float> anchors(96, 123);
+  Transformer model;
+  auto in = make_denoise_inputs(layout, indices, video, audio);
+  in.inpaint = &constraint;
+  in.condition_video_rows = &anchors;
+  int calls = 0, boundaries = 0;
+  in.velocity = [&](int step, const RowTimesteps&, const float* v, const float*, float* vv,
+                    float*) {
+    ++calls;
+    CHECK(v[0] == 123);
+    CHECK(v[96] == 2 + 8 * video.sigmas()[step]);
+    CHECK(v[97] == 8); // zero velocity leaves the editable cell at its initial value
+    std::fill(vv, vv + count + 96, 0.0f);
+  };
+  in.boundary = [&](int step, const std::vector<float>& v, const std::vector<float>& a) {
+    ++boundaries;
+    CHECK(v[0] == 2 + 8 * video.sigmas()[step + 1]);
+    CHECK(v[1] == 8);
+    CHECK(a.empty());
+  };
+  auto result = slopfab::dit::denoise(model, in);
+  CHECK(calls == 3 && boundaries == 3);
+  CHECK(result.video_rows[0] == 2 && result.video_rows[1] == 8);
+  video.reset();
+  audio.reset();
+  calls = boundaries = 0;
+  result = slopfab::dit::denoise(model, in, [](int, int) {
+    return false;
+  });
+  CHECK(calls == 1 && boundaries == 1);
+  CHECK(result.video_rows[0] == 6);
+}
+
 SLOPFAB_TEST_CATEGORY(denoise_motion_cache_residual_trajectory_and_reset, "synthetic") {
   // v = constant - x has a constant residual. Reusing that residual must
   // exactly reproduce fresh evaluations, including different modality grids.

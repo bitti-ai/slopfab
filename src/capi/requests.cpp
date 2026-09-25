@@ -1,5 +1,57 @@
 #include "internal.h"
 extern "C" {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_path(slopfab_request* request,
+                                                                   const char* path, int32_t x,
+                                                                   int32_t y, int32_t width,
+                                                                   int32_t height, float strength,
+                                                                   int32_t feather) {
+  if (!request || !path || !*path)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "image edit: null request or empty path");
+  return reference_input_guarded([&] {
+    slopfab::ImageEdit edit{
+        std::make_shared<const slopfab::RGBImage>(slopfab::load_reference_image(path)),
+        x,
+        y,
+        width,
+        height,
+        strength,
+        feather};
+    edit.validate();
+    request->request.image_edit = std::move(edit);
+    request->request.still_image = true;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_rgb24(
+    slopfab_request* request, const uint8_t* pixels, size_t buffer_bytes, int32_t image_width,
+    int32_t image_height, size_t row_stride_bytes, int32_t x, int32_t y, int32_t width,
+    int32_t height, float strength, int32_t feather) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "image edit: null request");
+  return reference_input_guarded([&] {
+    auto media = slopfab::ReferenceMedia::video(2);
+    media.append_frame(pixels, buffer_bytes, image_width, image_height, row_stride_bytes, 3, 0);
+    slopfab::ImageEdit edit{
+        std::make_shared<const slopfab::RGBImage>(media.frames().front()->image),
+        x,
+        y,
+        width,
+        height,
+        strength,
+        feather};
+    edit.validate();
+    request->request.image_edit = std::move(edit);
+    request->request.still_image = true;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit(slopfab_request* request) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "image edit: null request");
+  request->request.image_edit = {};
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API slopfab_request* SLOPFAB_CALL slopfab_request_create(void) {
   try {
     auto* request = new slopfab_request();

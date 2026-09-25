@@ -316,7 +316,8 @@ void ensure_generate_models(slopfab::GenerateRequest& req, const char* executabl
   ensure_model(req.transformer_path, req.has_references() ? kRef2VATransformer : kFL2VATransformer,
                weights);
   ensure_model(req.video_vae_path, kVideoVAE, weights);
-  ensure_model(req.audio_vae_path, kAudioVAE, weights);
+  if (!req.still_image)
+    ensure_model(req.audio_vae_path, kAudioVAE, weights);
 }
 
 int cmd_prepare_lora(int argc, char** argv) {

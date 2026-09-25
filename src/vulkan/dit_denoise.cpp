@@ -374,6 +374,13 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   ExactH3DenoiseResult result;
   const uint32_t steps = static_cast<uint32_t>(video.num_steps());
   const bool conditioned = condition_video != 0 || condition_audio != 0;
+  std::vector<float> edited_video;
+  if (c.inpaint) {
+    c.inpaint->validate(uint64_t(video_output) * c.transformer.video_dim);
+    edited_video = c.inpaint->initial(video.sigmas().front());
+    impl_->context->upload(conditioned ? s.video_result : s.video, edited_video.data(),
+                           edited_video.size());
+  }
   dit::MotionCache motion(c.motion_cache, c.layout, c.transformer.video_dim,
                           c.transformer.audio_dim, steps, video.shift(), c.pin_target_audio);
   std::vector<float> motion_video, motion_audio, motion_vv, motion_av;
@@ -467,6 +474,11 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     }
     batch.submit().wait();
     result.steps_completed = step + 1;
+    if (c.inpaint) {
+      impl_->context->download(video_state, edited_video.data(), edited_video.size());
+      c.inpaint->apply(edited_video.data(), edited_video.size(), video.sigmas()[step + 1]);
+      impl_->context->upload(video_state, edited_video.data(), edited_video.size());
+    }
     if (boundary) {
       result.video_rows.resize(uint64_t(video_output) * c.transformer.video_dim);
       result.audio_rows.resize(uint64_t(audio_output) * c.transformer.audio_dim);

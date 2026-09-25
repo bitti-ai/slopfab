@@ -1,5 +1,6 @@
 #include "slopfab/generate.h"
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 
 namespace slopfab {
@@ -18,9 +19,12 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   const bool caches = step_cache || r.block_cache_span > 0 || r.motion_cache.active();
   r.image_edit.validate();
   require(!r.image_edit.image ||
-              (r.still_image && o.source == LatentSource::kDenoise &&
-               o.init_latents_path.empty() && o.sampler == sampler::SamplerKind::kEuler && !caches),
+              (r.still_image && o.source == LatentSource::kDenoise && o.init_latents_path.empty() &&
+               o.sampler == sampler::SamplerKind::kEuler && !caches),
           "image editing requires still-image Euler denoising without initial latents or caches");
+  require(!r.image_edit.image || o.on_samples || r.out_path.empty() ||
+              std::filesystem::path(r.out_path).extension() == ".ppm",
+          "image editing file output requires a .ppm path");
   require(r.cache_threshold == 0 || r.skip_every == 0,
           "cache threshold and skip interval are alternatives");
   require(o.attention_band >= 0, "attention band must be nonnegative");

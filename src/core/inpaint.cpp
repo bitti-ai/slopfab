@@ -14,8 +14,8 @@ void ImageEdit::validate() const {
   if (image->width <= 0 || image->height <= 0 || image->width > 8192 || image->height > 8192 ||
       image->pixels.size() != size_t(image->width) * image->height * 3)
     throw std::invalid_argument("image edit requires valid RGB pixels, at most 8192 per axis");
-  if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
-      int64_t(x) + width > image->width || int64_t(y) + height > image->height)
+  if (x < 0 || y < 0 || width <= 0 || height <= 0 || int64_t(x) + width > image->width ||
+      int64_t(y) + height > image->height)
     throw std::invalid_argument("edit box must be nonempty and inside the source image");
   if (!std::isfinite(strength) || strength <= 0 || strength > 1 || feather < 0)
     throw std::invalid_argument("edit strength must be in (0,1] and feather nonnegative");
@@ -23,8 +23,8 @@ void ImageEdit::validate() const {
 
 RGBImage pad_edit_image(const ImageEdit& edit, int width, int height) {
   edit.validate();
-  if (!edit.image || width < edit.image->width || height < edit.image->height ||
-      width > 8192 || height > 8192)
+  if (!edit.image || width < edit.image->width || height < edit.image->height || width > 8192 ||
+      height > 8192)
     throw std::invalid_argument("invalid image edit canvas");
   const auto& src = *edit.image;
   RGBImage out{width, height, std::vector<uint8_t>(size_t(width) * height * 3)};
@@ -33,14 +33,16 @@ RGBImage pad_edit_image(const ImageEdit& edit, int width, int height) {
       for (int c = 0; c < 3; ++c)
         out.pixels[(size_t(y) * width + x) * 3 + c] =
             src.pixels[(size_t(std::min(y, src.height - 1)) * src.width +
-                        std::min(x, src.width - 1)) * 3 + c];
+                        std::min(x, src.width - 1)) *
+                           3 +
+                       c];
   return out;
 }
 
 std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height) {
   edit.validate();
-  if (!edit.image || width < edit.image->width || height < edit.image->height ||
-      width > 8192 || height > 8192 || width % 32 || height % 32)
+  if (!edit.image || width < edit.image->width || height < edit.image->height || width > 8192 ||
+      height > 8192 || width % 32 || height % 32)
     throw std::invalid_argument("image edit canvas must contain complete H3 patches");
   dit::SequenceLayout layout;
   layout.num_latent_frames = 1;
@@ -58,8 +60,8 @@ std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height) 
   return rows;
 }
 
-PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& generated,
-                                 int width, int height) {
+PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& generated, int width,
+                                 int height) {
   edit.validate();
   if (!edit.image || width < edit.image->width || height < edit.image->height ||
       generated.size() != size_t(width) * height * 3)
@@ -74,7 +76,8 @@ PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& gener
         alpha = 1;
         if (edit.feather) {
           const float distance = float(std::min({x - edit.x, edit.x + edit.width - 1 - x,
-                                                y - edit.y, edit.y + edit.height - 1 - y})) + .5f;
+                                                 y - edit.y, edit.y + edit.height - 1 - y})) +
+                                 .5f;
           alpha = std::min(1.0f, distance / edit.feather);
         }
       }
@@ -82,8 +85,9 @@ PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& gener
         const size_t p = size_t(y) * src.width + x;
         const float original = src.pixels[3 * p + c] / 255.0f;
         // Branching also prevents unused NaNs from corrupting preserved pixels.
-        out[c * plane + p] = alpha == 0 ? original :
-            alpha * generated[(size_t(c) * height + y) * width + x] + (1 - alpha) * original;
+        out[c * plane + p] = alpha == 0 ? original
+                                        : alpha * generated[(size_t(c) * height + y) * width + x] +
+                                              (1 - alpha) * original;
       }
     }
   }
@@ -94,8 +98,7 @@ void InpaintConstraint::validate(size_t count) const {
   if (!count || original.size() != count || noise.size() != count || mask.size() != count)
     throw std::invalid_argument("inpainting constraint shape mismatch");
   for (size_t i = 0; i < count; ++i)
-    if (!std::isfinite(original[i]) || !std::isfinite(noise[i]) ||
-        (mask[i] != 0 && mask[i] != 1))
+    if (!std::isfinite(original[i]) || !std::isfinite(noise[i]) || (mask[i] != 0 && mask[i] != 1))
       throw std::invalid_argument("inpainting needs finite latents and a binary mask");
 }
 

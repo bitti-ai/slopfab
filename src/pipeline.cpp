@@ -66,9 +66,10 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
   request.image_edit.validate();
-  if (request.image_edit.image && (!request.still_image || request.continuation ||
-                                   request.video_transition || request.animate))
-    throw std::invalid_argument("image editing requires still-image mode without continuation or animation");
+  if (request.image_edit.image &&
+      (!request.still_image || request.continuation || request.video_transition || request.animate))
+    throw std::invalid_argument(
+        "image editing requires still-image mode without continuation or animation");
   request.motion_cache.validate();
   if (request.motion_cache.active() &&
       (request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
@@ -118,7 +119,8 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     plan.canvas_height = (request.image_edit.image->height + multiple - 1) / multiple * multiple;
     if ((request.canvas_width && request.canvas_width != plan.canvas_width) ||
         (request.canvas_height && request.canvas_height != plan.canvas_height))
-      throw std::invalid_argument("image edit resolution must match the source padded to H3 alignment");
+      throw std::invalid_argument(
+          "image edit resolution must match the source padded to H3 alignment");
   } else if (request.has_explicit_canvas()) {
     dit::validate_canvas_size(request.canvas_height, request.canvas_width, plan.geometry);
     plan.canvas_height = request.canvas_height;
@@ -467,10 +469,10 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   if (request.image_edit.image) {
     const auto& e = request.image_edit;
     description += "  image edit          box " + std::to_string(e.x) + "," + std::to_string(e.y) +
-                   "," + std::to_string(e.width) + "," + std::to_string(e.height) +
-                   "; strength " + std::to_string(e.strength) + "; feather " +
-                   std::to_string(e.feather) + "\n  delivered image     " +
-                   std::to_string(e.image->width) + " x " + std::to_string(e.image->height) + "\n";
+                   "," + std::to_string(e.width) + "," + std::to_string(e.height) + "; strength " +
+                   std::to_string(e.strength) + "; feather " + std::to_string(e.feather) +
+                   "\n  delivered image     " + std::to_string(e.image->width) + " x " +
+                   std::to_string(e.image->height) + "\n";
   }
   description += "  conditioning        " + plan.conditioning.cache_identity() + "\n";
   description += "  model contract      " + plan.model.family + " (" + plan.model.origin + ")\n";

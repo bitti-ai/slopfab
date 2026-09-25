@@ -61,12 +61,15 @@ SLOPFAB_TEST(inpaint_constraint_uses_resulting_sigma_and_fixed_noise) {
   CHECK(rows == std::vector<float>({4, -2, 12}));
   c.apply(rows.data(), rows.size(), 0);
   CHECK(rows == std::vector<float>({2, -2, 6}));
-  CHECK(slopfab::test::throws([] { slopfab::InpaintConstraint{{1}, {}, {0}}.initial(.5f); }));
+  CHECK(slopfab::test::throws([] {
+    slopfab::InpaintConstraint{{1}, {}, {0}}.initial(.5f);
+  }));
 }
 
 SLOPFAB_TEST(inpaint_plan_strength_padding_and_invalid_requests) {
   slopfab::GenerateRequest request;
   request.still_image = true;
+  request.out_path = "edited.ppm";
   request.image_edit = edit_fixture();
   request.num_inference_steps = 11;
   const auto plan = slopfab::resolve_plan(request);
@@ -80,21 +83,34 @@ SLOPFAB_TEST(inpaint_plan_strength_padding_and_invalid_requests) {
   slopfab::RunOptions options;
   slopfab::validate_generation_options(request, full, options);
   CHECK(slopfab::test::throws([] {
-    auto edit = edit_fixture(); edit.x = std::numeric_limits<int>::max(); edit.validate();
+    auto edit = edit_fixture();
+    edit.x = std::numeric_limits<int>::max();
+    edit.validate();
   }));
   CHECK(slopfab::test::throws([] {
-    auto edit = edit_fixture(); edit.strength = std::numeric_limits<float>::quiet_NaN(); edit.validate();
+    auto edit = edit_fixture();
+    edit.strength = std::numeric_limits<float>::quiet_NaN();
+    edit.validate();
   }));
   CHECK(slopfab::test::throws([] {
-    slopfab::GenerateRequest r; r.image_edit = edit_fixture(); slopfab::resolve_plan(r);
+    slopfab::GenerateRequest r;
+    r.image_edit = edit_fixture();
+    slopfab::resolve_plan(r);
   }));
   CHECK(slopfab::test::throws([] {
-    slopfab::GenerateRequest r; r.still_image = true; r.image_edit = edit_fixture();
-    r.canvas_width = r.canvas_height = 32; slopfab::resolve_plan(r);
+    slopfab::GenerateRequest r;
+    r.still_image = true;
+    r.image_edit = edit_fixture();
+    r.canvas_width = r.canvas_height = 32;
+    slopfab::resolve_plan(r);
   }));
   CHECK(slopfab::test::throws([] {
-    slopfab::GenerateRequest r; r.still_image = true; r.image_edit = edit_fixture();
-    auto p = slopfab::resolve_plan(r); slopfab::RunOptions o;
-    o.source = slopfab::LatentSource::kSyntheticNoise; slopfab::validate_generation_options(r, p, o);
+    slopfab::GenerateRequest r;
+    r.still_image = true;
+    r.image_edit = edit_fixture();
+    auto p = slopfab::resolve_plan(r);
+    slopfab::RunOptions o;
+    o.source = slopfab::LatentSource::kSyntheticNoise;
+    slopfab::validate_generation_options(r, p, o);
   }));
 }

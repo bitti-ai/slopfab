@@ -88,7 +88,11 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   // Supplied initial latents replace the draw entirely rather than perturbing
   // it, and both modalities are all-or-nothing per modality so a caller cannot
   // half-substitute one and silently get seeded noise for the rest.
-  if (inputs.init_video_rows != nullptr) {
+  if (inputs.inpaint) {
+    require(inputs.init_video_rows == nullptr, "inpainting replaces initial video latents");
+    inputs.inpaint->validate(out.video_rows.size());
+    out.video_rows = inputs.inpaint->initial(inputs.video_scheduler->sigmas().front());
+  } else if (inputs.init_video_rows != nullptr) {
     require(inputs.init_video_rows->size() == out.video_rows.size(),
             "the supplied initial video latents disagree with the layout");
     out.video_rows = *inputs.init_video_rows;
@@ -205,6 +209,9 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       cuda::HostSpan span("scheduler_step");
       inputs.video_scheduler->step(i, all_video.data() + cv, video_velocity.data() + cv,
                                    out.video_rows.size(), out.video_rows.data());
+      if (inputs.inpaint)
+        inputs.inpaint->apply(out.video_rows.data(), out.video_rows.size(),
+                              inputs.video_scheduler->sigmas()[static_cast<size_t>(i) + 1]);
       if (!inputs.pin_target_audio)
         inputs.audio_scheduler->step(i, all_audio.data() + ca, audio_velocity.data() + ca,
                                      out.audio_rows.size(), out.audio_rows.data());

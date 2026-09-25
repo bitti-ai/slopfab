@@ -95,6 +95,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_aspect = false;
   bool saw_resolution = false;
   bool saw_out = false;
+  std::string edit_image;
+  bool saw_edit_box = false;
+  bool saw_edit_option = false;
   bool saw_seed = false;
   int count = 1;
   std::string inference_backend = "cuda";
@@ -108,7 +111,31 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       }
       return argv[++i];
     };
-    if (arg == "--prompt") {
+    if (arg == "--edit-image") {
+      edit_image = next("--edit-image");
+    } else if (arg == "--edit-box") {
+      std::string box = next("--edit-box");
+      std::replace(box.begin(), box.end(), ',', ' ');
+      std::istringstream in(box);
+      auto& e = req.image_edit;
+      if (!(in >> e.x >> e.y >> e.width >> e.height) || !(in >> std::ws).eof())
+        throw std::invalid_argument("--edit-box expects x,y,width,height integers");
+      saw_edit_box = true;
+    } else if (arg == "--edit-strength") {
+      const std::string value = next("--edit-strength");
+      size_t used = 0;
+      req.image_edit.strength = std::stof(value, &used);
+      if (used != value.size())
+        throw std::invalid_argument("--edit-strength expects a number in (0,1]");
+      saw_edit_option = true;
+    } else if (arg == "--edit-feather") {
+      const std::string value = next("--edit-feather");
+      size_t used = 0;
+      req.image_edit.feather = std::stoi(value, &used);
+      if (used != value.size())
+        throw std::invalid_argument("--edit-feather expects a nonnegative integer");
+      saw_edit_option = true;
+    } else if (arg == "--prompt") {
       req.prompt = next("--prompt");
       saw_prompt = true;
     } else if (arg == "--prompt-file") {
@@ -439,8 +466,26 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     std::fprintf(stderr, "slopfab: --count must be a positive integer\n");
     return 2;
   }
+  if (!edit_image.empty()) {
+    if (!saw_edit_box)
+      throw std::invalid_argument("--edit-image requires --edit-box x,y,width,height");
+    if (saw_aspect)
+      throw std::invalid_argument("image editing inherits source dimensions; omit --aspect");
+    req.image_edit.image =
+        std::make_shared<const slopfab::RGBImage>(slopfab::load_reference_image(edit_image));
+    req.image_edit.validate();
+    req.still_image = true;
+  } else if (saw_edit_box || saw_edit_option) {
+    throw std::invalid_argument("edit settings require --edit-image");
+  }
   if (!saw_out)
     req.out_path = timestamped_output_path();
+  if (req.image_edit.image) {
+    if (!saw_out)
+      req.out_path = std::filesystem::path(req.out_path).replace_extension(".ppm").string();
+    if (std::filesystem::path(req.out_path).extension() != ".ppm")
+      throw std::invalid_argument("image edits require --out with a .ppm extension");
+  }
   if (saw_overlap && continue_from.empty())
     throw std::runtime_error("--overlap-frames requires --continue-from");
   if (!continue_from.empty()) {

@@ -147,8 +147,8 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   }
   if (request.image_edit.image) {
     const size_t count = video.num_steps();
-    const size_t keep = std::max<size_t>(1, static_cast<size_t>(
-        std::ceil(double(request.image_edit.strength) * count)));
+    const size_t keep = std::max<size_t>(
+        1, static_cast<size_t>(std::ceil(double(request.image_edit.strength) * count)));
     const size_t start = count - std::min(count, keep);
     const auto vs = video.sigmas(), as = audio.sigmas();
     video.set_sigmas(std::vector<float>(vs.begin() + start, vs.end()));

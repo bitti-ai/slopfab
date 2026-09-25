@@ -26,6 +26,32 @@
 #include "refmod_fixture.h"
 #include "latent_fixture.h"
 
+SLOPFAB_TEST(capi_image_edit_snapshot_validation_and_clear) {
+  auto* request = slopfab_request_create();
+  std::vector<uint8_t> pixels(40 * 33 * 3, 123); // padded rows, visible width 35
+  CHECK(slopfab_request_set_image_edit_rgb24(request, pixels.data(), pixels.size(), 35, 33, 40 * 3,
+                                             15, 16, 2, 2, .5f, 1) == SLOPFAB_OK);
+  pixels.clear();
+  pixels.shrink_to_fit();
+  slopfab_plan plan{};
+  CHECK(slopfab_request_set_steps(request, 11) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 64 && plan.canvas_height == 64);
+  CHECK(plan.aligned_frames == 1 && plan.num_model_evaluations == 5);
+  CHECK(slopfab_request_set_image_edit_rgb24(request, nullptr, 0, 35, 33, 105, 0, 0, 1, 1, 1, 0) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 64 && plan.num_model_evaluations == 5);
+  CHECK(slopfab_request_set_image_edit_path(request, "", 0, 0, 1, 1, 1, 0) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_clear_image_edit(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_clear_image_edit(request) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_resolution(request, 32, 32) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 1 && plan.num_model_evaluations == 10);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_video_transition) {
   auto* request = slopfab_request_create();
   CHECK(slopfab_request_set_video_transition(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);

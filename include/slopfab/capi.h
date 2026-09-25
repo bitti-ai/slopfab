@@ -279,6 +279,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_audio_f32(slopfab_r
  * validate a request, show its geometry and estimate its cost before 20 GB of
  * I/O happens. */
 typedef struct slopfab_plan {
+  /* Internal generation canvas. Image edits pad to H3 alignment; delivered
+   * slopfab_output dimensions equal the original source dimensions. */
   int32_t canvas_width;
   int32_t canvas_height;
   /* The frame count snapped up to the next 17*k + 5 the video VAE can encode,
@@ -408,6 +410,25 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_frames(slopfab_request* reque
  * Disabling it restores the request's previous frame count. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_still_image(slopfab_request* request,
                                                                int32_t enable);
+
+/* Bounding-box inpainting. Each setter copies/decodes the source immediately,
+ * validates the whole edit, and enables still-image mode. Failed setters leave
+ * the request unchanged. Coordinates are source pixels, with exclusive right
+ * and bottom edges. Strength is in (0,1]; feather is inward in pixels (>=0).
+ * RGB24 permits positive row padding. Source dimensions are limited to 8192.
+ * Outside the box, output pixels equal source RGB bytes divided by 255.
+ * Requires Euler denoising, a VAE with encoder weights, and no sampling caches.
+ * Clearing the edit retains still-image mode. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_path(slopfab_request* request,
+                                                                   const char* path, int32_t x,
+                                                                   int32_t y, int32_t width,
+                                                                   int32_t height, float strength,
+                                                                   int32_t feather);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_rgb24(
+    slopfab_request* request, const uint8_t* pixels, size_t buffer_bytes, int32_t image_width,
+    int32_t image_height, size_t row_stride_bytes, int32_t x, int32_t y, int32_t width,
+    int32_t height, float strength, int32_t feather);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit(slopfab_request* request);
 
 /* Sigma grid points *including* the terminal zero, so the model runs
  * `steps - 1` times. At least 2. */

@@ -302,6 +302,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   // a wrong shape fails in a second rather than after 25 GB of conditioner.
   std::vector<float> init_video;
   std::vector<float> init_audio;
+  std::shared_ptr<InpaintConstraint> inpaint;
   if (!options.init_latents_path.empty()) {
     SafeTensors file;
     file.open(options.init_latents_path);
@@ -344,6 +345,35 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         result.message = e.what();
         return result;
       }
+    }
+
+    if (request.image_edit.image) {
+      if (!notify(RunStage::kReferences, -1, 0))
+        return stop("image edit encoding");
+      const RGBImage image =
+          pad_edit_image(request.image_edit, plan.canvas_width, plan.canvas_height);
+      SafeTensors vae_file;
+      vae_file.open(request.video_vae_path);
+      const auto mean = read_stat(vae_file, "latents_mean", 24);
+      const auto stddev = read_stat(vae_file, "latents_std", 24);
+      inpaint = std::make_shared<InpaintConstraint>();
+      if (options.inference_backend == DeviceBackend::kCuda) {
+        vae::KeyframeEncoder encoder(vae_file);
+        inpaint->original = encoder.encode_reference_image(image, mean, stddev);
+      } else {
+#if SLOPFAB_WITH_VULKAN
+        vulkan::Device device = create_vulkan_inference_device();
+        auto encoder = vulkan::KeyframeEncoder::create(device);
+        encoder.load(vae_file);
+        inpaint->original = encoder.encode_reference_image(image, mean, stddev);
+#endif
+      }
+      inpaint->mask = edit_mask_rows(request.image_edit, plan.canvas_width, plan.canvas_height);
+      const auto noise =
+          sampler::video_noise(request.seed, 1, layout.latent_height, layout.latent_width);
+      inpaint->noise.resize(noise.size());
+      dit::patchify_video(noise.data(), layout, inpaint->noise.data());
+      inpaint->validate(static_cast<size_t>(layout.num_video_rows) * 96);
     }
 
     // --- fixed image anchors ------------------------------------------------
@@ -673,6 +703,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       audio_sched.set_sampler(options.sampler);
 
       dit::DenoiseInputs in;
+      in.inpaint = inpaint.get();
       in.layout = &live;
       in.indices = &idx;
       in.video_timesteps = &plan.video_timesteps;
@@ -833,6 +864,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       vulkan::TensorContext context(device, context_options);
       context.require_h3_attention(options.attention_mode);
       vulkan::ExactH3DenoiseConfig config;
+      config.inpaint = inpaint;
       config.motion_cache = request.motion_cache;
       config.transformer.main.layers = 50;
       config.transformer.main.block.attention_mode = options.attention_mode;

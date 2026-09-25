@@ -8,6 +8,7 @@
 #include "slopfab/dit/packing.h"
 #include "slopfab/dit/motion_cache.h"
 #include "slopfab/sampler/scheduler.h"
+#include "slopfab/inpaint.h"
 #include "slopfab/vulkan/dit_transformer.h"
 
 namespace slopfab::vulkan {
@@ -19,6 +20,8 @@ namespace slopfab::vulkan {
 // final result unless MotionCache is enabled. Its host estimator transfers
 // target rows during sampling. A still sequence may contain zero audio rows.
 struct ExactH3DenoiseConfig {
+  // Opt-in still-image constraint; target rows cross the host boundary per step.
+  std::shared_ptr<const InpaintConstraint> inpaint;
   ExactH3TransformerConfig transformer;
   dit::SequenceLayout layout;
   dit::PackedIndices indices;
