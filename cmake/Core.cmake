@@ -13,6 +13,7 @@ add_library(slopfab_core STATIC
   src/core/device_tensor.cpp
   src/core/model_geometry.cpp
   src/core/image.cpp
+  src/core/inpaint.cpp
   src/core/reference_media.cpp
   src/core/refmod.cpp
   src/core/continuation.cpp

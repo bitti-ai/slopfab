@@ -65,6 +65,10 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  request.image_edit.validate();
+  if (request.image_edit.image && (!request.still_image || request.continuation ||
+                                   request.video_transition || request.animate))
+    throw std::invalid_argument("image editing requires still-image mode without continuation or animation");
   request.motion_cache.validate();
   if (request.motion_cache.active() &&
       (request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
@@ -108,7 +112,14 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
     throw std::runtime_error("MiniMax-H3 Ref2VA accepts at most 9 reference images, got " +
                              std::to_string(request.reference_image_paths.size()));
   }
-  if (request.has_explicit_canvas()) {
+  if (request.image_edit.image) {
+    const int multiple = plan.geometry.canvas_multiple;
+    plan.canvas_width = (request.image_edit.image->width + multiple - 1) / multiple * multiple;
+    plan.canvas_height = (request.image_edit.image->height + multiple - 1) / multiple * multiple;
+    if ((request.canvas_width && request.canvas_width != plan.canvas_width) ||
+        (request.canvas_height && request.canvas_height != plan.canvas_height))
+      throw std::invalid_argument("image edit resolution must match the source padded to H3 alignment");
+  } else if (request.has_explicit_canvas()) {
     dit::validate_canvas_size(request.canvas_height, request.canvas_width, plan.geometry);
     plan.canvas_height = request.canvas_height;
     plan.canvas_width = request.canvas_width;
@@ -407,7 +418,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   // canvas reached two ways, and only one of them was capped to the trained
   // area on the way.
   char provenance[64];
-  if (request.has_explicit_canvas()) {
+  if (request.image_edit.image) {
+    std::snprintf(provenance, sizeof(provenance), "padded image edit source");
+  } else if (request.has_explicit_canvas()) {
     std::snprintf(
         provenance, sizeof(provenance), "as given%s",
         dit::canvas_exceeds_trained_area(plan.canvas_height, plan.canvas_width, plan.geometry)
@@ -451,6 +464,14 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigma_shift), static_cast<unsigned long long>(request.seed),
       request.out_path.c_str());
   std::string description = buf;
+  if (request.image_edit.image) {
+    const auto& e = request.image_edit;
+    description += "  image edit          box " + std::to_string(e.x) + "," + std::to_string(e.y) +
+                   "," + std::to_string(e.width) + "," + std::to_string(e.height) +
+                   "; strength " + std::to_string(e.strength) + "; feather " +
+                   std::to_string(e.feather) + "\n  delivered image     " +
+                   std::to_string(e.image->width) + " x " + std::to_string(e.image->height) + "\n";
+  }
   description += "  conditioning        " + plan.conditioning.cache_identity() + "\n";
   description += "  model contract      " + plan.model.family + " (" + plan.model.origin + ")\n";
   if (plan.conditioning.fixed_prompt_tokens > 0)

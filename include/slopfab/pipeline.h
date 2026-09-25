@@ -20,6 +20,7 @@
 #pragma once
 
 #include "slopfab/dit/motion_cache.h"
+#include "slopfab/inpaint.h"
 
 #include <cstdint>
 #include <string>
@@ -86,6 +87,7 @@ struct GenerateRequest {
   // 3 of the first position. It is a different sampling mode, not a faster
   // way to reproduce frame zero of a normal video request.
   bool still_image = false;
+  ImageEdit image_edit;
 
   // Sigma grid points *including* the terminal zero, so the model runs
   // `num_inference_steps - 1` times.

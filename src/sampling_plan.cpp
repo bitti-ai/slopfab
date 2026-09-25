@@ -145,6 +145,16 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     video.set_sigmas(video.sigmas());
     audio.set_sigmas(audio.sigmas());
   }
+  if (request.image_edit.image) {
+    const size_t count = video.num_steps();
+    const size_t keep = std::max<size_t>(1, static_cast<size_t>(
+        std::ceil(double(request.image_edit.strength) * count)));
+    const size_t start = count - std::min(count, keep);
+    const auto vs = video.sigmas(), as = audio.sigmas();
+    video.set_sigmas(std::vector<float>(vs.begin() + start, vs.end()));
+    audio.set_sigmas(std::vector<float>(as.begin() + start, as.end()));
+    plan.num_inference_steps = static_cast<int>(video.sigmas().size());
+  }
   plan.video_sigmas = video.sigmas();
   plan.audio_sigmas = audio.sigmas();
   plan.video_timesteps = video.timesteps();

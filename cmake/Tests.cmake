@@ -17,6 +17,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_decode_pipeline.cpp
     tests/test_stillprobe.cpp
     tests/test_image.cpp
+    tests/test_inpaint.cpp
     tests/test_reference_media.cpp
     tests/test_refmod.cpp
     tests/test_noise.cpp
