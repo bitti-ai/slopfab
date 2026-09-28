@@ -73,9 +73,13 @@ enum class LatentSource {
 
 struct RunOptions {
   LatentSource source = LatentSource::kDenoise;
-  // Neural backend. CUDA remains the default. Both CUDA and Vulkan support
+  // Neural backend. Defaults to CUDA when built, otherwise Vulkan. Both support
   // reference video/audio encoding; backends never fall back silently.
+#if !SLOPFAB_WITH_CUDA && SLOPFAB_WITH_VULKAN
+  DeviceBackend inference_backend = DeviceBackend::kVulkan;
+#else
   DeviceBackend inference_backend = DeviceBackend::kCuda;
+#endif
   bool verbose = true;
 
   // Counted CLI runs share prompt conditioning. Transformer residency cannot
@@ -117,8 +121,12 @@ struct RunOptions {
   // is distant video-to-video attention. Its cost scales as the band's share of
   // the sequence, so it saves more the longer the request.
   int attention_band = 0;
-  // Attention implementation. Flash2 preserves the former default.
+  // Select a supported default for the compiled neural backend.
+#if !SLOPFAB_WITH_CUDA && SLOPFAB_WITH_VULKAN
+  AttentionMode attention_mode = AttentionMode::kExact;
+#else
   AttentionMode attention_mode = AttentionMode::kFlash2;
+#endif
   // Optional Vulkan Sage scratch per shared attention plan. Zero disables
   // parallel smoothing and prepared FP16 V; mandatory Q/K scratch is separate.
   uint64_t vulkan_sage_extra_workspace_bytes = 64ull << 20;

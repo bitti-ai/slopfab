@@ -130,11 +130,6 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/qwen_vision_encoder.cu
       src/vae/keyframe_cuda.cpp
       src/vae/audio_encoder.cpp
-      src/generate.cpp
-      src/generation/helpers.cpp
-      src/generation/decode.cpp
-      src/generation/session.cpp
-      src/generation/prompt.cpp
       # src/capi/capi.cpp is deliberately NOT here. It calls run_generate, so
       # it depends on this target — but compiling it *into* this target as well
       # as into slopfab_c builds every C entry point twice: once with capi.h
@@ -179,12 +174,6 @@ if(SLOPFAB_ENABLE_CUDA)
     # qwenvisionprobe call the runtime API without compiling a CUDA source of
     # their own and therefore do not get its link dependency automatically.
     target_link_libraries(slopfab_cuda PUBLIC slopfab_core CUDA::cudart_static)
-    if(SLOPFAB_ENABLE_VULKAN)
-      target_link_libraries(slopfab_cuda PUBLIC slopfab_vulkan)
-      target_compile_definitions(slopfab_cuda PRIVATE SLOPFAB_WITH_VULKAN=1)
-    else()
-      target_compile_definitions(slopfab_cuda PRIVATE SLOPFAB_WITH_VULKAN=0)
-    endif()
 
     add_executable(slopfab_qwenvisionprobe tools/qwenvisionprobe.cpp)
     target_link_libraries(slopfab_qwenvisionprobe PRIVATE slopfab_cuda)
@@ -197,7 +186,7 @@ if(SLOPFAB_ENABLE_CUDA)
 
     target_compile_definitions(slopfab_core PUBLIC SLOPFAB_WITH_CUDA=1)
   else()
-    message(WARNING "slopfab: no CUDA compiler found; building CPU-only")
+    message(WARNING "slopfab: no CUDA compiler found; building without CUDA")
     set(SLOPFAB_ENABLE_CUDA OFF)
   endif()
 endif()

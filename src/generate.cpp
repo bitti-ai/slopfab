@@ -16,8 +16,12 @@
 
 #include "slopfab/audio/wav.h"
 #include "slopfab/image.h"
+#if SLOPFAB_WITH_CUDA
 #include "slopfab/cuda/profile.h"
+#endif
+#if SLOPFAB_WITH_CUDA
 #include "slopfab/cuda/deterministic_attention.cuh"
+#endif
 #include "slopfab/dit/denoise.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/packing.h"
@@ -83,6 +87,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     return result;
   }
 #endif
+#if SLOPFAB_WITH_CUDA
   // Validate the explicitly selected exact CUDA artifact before touching any
   // prompt/checkpoint. Synthetic-latent runs never execute a transformer and
   // therefore do not require this tuple.
@@ -92,6 +97,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     result.message = "exact attention is unavailable on this CUDA device/runtime tuple";
     return result;
   }
+#else
+  if (options.inference_backend == DeviceBackend::kCuda) {
+    result.message = "CUDA inference requested, but this build disabled CUDA";
+    return result;
+  }
+#endif
 
   // Host hooks (generate.h). `notify` is the run's only cancellation point:
   // it says where the run is and returns false when the host wants it
@@ -358,8 +369,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       const auto stddev = read_stat(vae_file, "latents_std", 24);
       inpaint = std::make_shared<InpaintConstraint>();
       if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
         vae::KeyframeEncoder encoder(vae_file);
         inpaint->original = encoder.encode_reference_image(image, mean, stddev);
+#else
+        throw std::logic_error("CUDA inference compiled out after validation");
+#endif
       } else {
 #if SLOPFAB_WITH_VULKAN
         vulkan::Device device = create_vulkan_inference_device();
@@ -408,12 +423,16 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
         const std::vector<float> stddev = read_stat(vae_file, "latents_std", 24);
         if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
           vae::KeyframeEncoder image_encoder(vae_file);
           for (const RGBImage& image : reference_images) {
             clean_rows.push_back(image_encoder.encode_reference_image(image, mean, stddev));
             geometry.push_back(
                 {dit::ReferenceKind::kImage, 1, image.height / 16, image.width / 16, 0});
           }
+#else
+          throw std::logic_error("CUDA inference compiled out after validation");
+#endif
         } else {
 #if SLOPFAB_WITH_VULKAN
           vulkan::Device keyframe_device = create_vulkan_inference_device();
@@ -490,7 +509,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         const auto load_start = Clock::now();
         SafeTensors checkpoint;
         checkpoint.open(request.video_vae_path);
+#if SLOPFAB_WITH_CUDA
         std::unique_ptr<vae::KeyframeEncoder> cuda_encoder;
+#endif
 #if SLOPFAB_WITH_VULKAN
         vulkan::Device device;
         std::unique_ptr<vulkan::ReferenceEncoder> vk_encoder;
@@ -499,7 +520,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
           vk_encoder = std::make_unique<vulkan::ReferenceEncoder>(device, checkpoint, false);
         } else
 #endif
+#if SLOPFAB_WITH_CUDA
           cuda_encoder = std::make_unique<vae::KeyframeEncoder>(checkpoint);
+#else
+          throw std::logic_error("CUDA reference encoder compiled out after validation");
+#endif
         auto mean = read_stat(checkpoint, "latents_mean", 24),
              stddev = read_stat(checkpoint, "latents_std", 24);
         if (options.verbose)
@@ -519,8 +544,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
                                                       mean, stddev);
           else
 #endif
+#if SLOPFAB_WITH_CUDA
             rows = cuda_encoder->encode_reference_video(media.frames, media.plan.encoding_frames,
                                                         mean, stddev, mixed_reference_video);
+#else
+            throw std::logic_error("CUDA reference encoder compiled out after validation");
+#endif
           if (options.verbose)
             std::printf("references  video %zu: %dx%d, %d frames -> %zu rows in %.3f s\n", i + 1,
                         media.plan.width, media.plan.height, media.plan.encoding_frames,
@@ -536,7 +565,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         const auto load_start = Clock::now();
         SafeTensors checkpoint;
         checkpoint.open(request.audio_vae_path);
+#if SLOPFAB_WITH_CUDA
         std::unique_ptr<vae::AudioEncoder> cuda_encoder;
+#endif
 #if SLOPFAB_WITH_VULKAN
         vulkan::Device device;
         std::unique_ptr<vulkan::ReferenceEncoder> vk_encoder;
@@ -545,7 +576,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
           vk_encoder = std::make_unique<vulkan::ReferenceEncoder>(device, checkpoint, true);
         } else
 #endif
+#if SLOPFAB_WITH_CUDA
           cuda_encoder = std::make_unique<vae::AudioEncoder>(checkpoint);
+#else
+          throw std::logic_error("CUDA reference encoder compiled out after validation");
+#endif
         if (options.verbose)
           std::printf("references  audio VAE load in %.3f s\n", seconds_since(load_start));
         for (size_t i = 0; i < prepared_media.size(); ++i) {
@@ -561,7 +596,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
             rows = vk_encoder->encode_reference(media.audio.data(), media.plan.audio_samples);
           else
 #endif
+#if SLOPFAB_WITH_CUDA
             rows = cuda_encoder->encode_reference(media.audio.data(), media.plan.audio_samples);
+#else
+            throw std::logic_error("CUDA reference encoder compiled out after validation");
+#endif
           if (options.verbose)
             std::printf("references  audio: %d samples -> %zu rows in %.3f s\n",
                         media.plan.audio_samples, rows.size() / 32, seconds_since(encode_start));
@@ -635,6 +674,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     if (!notify(RunStage::kTransformerLoad, -1, 0))
       return stop("transformer load");
     if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
       const Clock::time_point t0 = Clock::now();
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
@@ -850,6 +890,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
                     result.seconds_denoise_loop / std::max(1, total_steps),
                     result.seconds_transformer_load, result.seconds_prepare);
       }
+#else
+      throw std::logic_error("CUDA inference compiled out after validation");
+#endif
     } else {
 #if SLOPFAB_WITH_VULKAN
       const Clock::time_point t0 = Clock::now();

@@ -16,8 +16,6 @@
 
 #include "slopfab/audio/wav.h"
 #include "slopfab/image.h"
-#include "slopfab/cuda/profile.h"
-#include "slopfab/cuda/deterministic_attention.cuh"
 #include "slopfab/dit/denoise.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/packing.h"

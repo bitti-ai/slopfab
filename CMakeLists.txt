@@ -39,6 +39,7 @@ option(SLOPFAB_WITH_FFMPEG "Compile MP4 muxing and FFmpeg-based image decoding" 
 include(cmake/Core.cmake)
 include(cmake/Cuda.cmake)
 include(cmake/Vulkan.cmake)
+include(cmake/Generation.cmake)
 include(cmake/Cli.cmake)
 include(cmake/CApi.cmake)
 include(cmake/Tools.cmake)

@@ -16,8 +16,6 @@
 
 #include "slopfab/audio/wav.h"
 #include "slopfab/image.h"
-#include "slopfab/cuda/profile.h"
-#include "slopfab/cuda/deterministic_attention.cuh"
 #include "slopfab/dit/denoise.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/packing.h"
@@ -56,8 +54,6 @@ namespace slopfab::generation {
 bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions& options,
                                const std::vector<PreparedReference>& prepared_media,
                                PromptInputs& inputs, RunResult& result) {
-  auto& fixed_prompt = inputs.fixed_prompt;
-  const auto& reference_identities = inputs.reference_identities;
   const auto& reference_images = inputs.reference_images;
   auto& reference_conditioning_grids = inputs.reference_conditioning_grids;
   auto& reference_conditioning_ids = inputs.reference_conditioning_ids;
@@ -242,6 +238,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
     }
     const char* conditioner_mode = nullptr;
     if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
       text::Encoder encoder;
       text::EncoderConfig ecfg;
       ecfg.residency = text::Residency::kStreaming;
@@ -253,6 +250,9 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
                              ? "CUDA streaming exact"
                              : "CUDA streaming shipped";
       encoder.unload();
+#else
+      throw std::logic_error("CUDA inference compiled out after validation");
+#endif
     } else {
 #if SLOPFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device(true);

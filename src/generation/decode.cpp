@@ -17,8 +17,12 @@
 
 #include "slopfab/audio/wav.h"
 #include "slopfab/image.h"
+#if SLOPFAB_WITH_CUDA
 #include "slopfab/cuda/profile.h"
+#endif
+#if SLOPFAB_WITH_CUDA
 #include "slopfab/cuda/deterministic_attention.cuh"
+#endif
 #include "slopfab/dit/denoise.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/packing.h"
@@ -77,24 +81,31 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 
     // Rows back to a latent volume, then de-normalise per channel. The
     // multiply-then-add order is the reference's (decoders.py:107).
+#if SLOPFAB_WITH_CUDA
     cuda::PhaseSpan s_unpatch("unpatchify latents");
+#endif
     std::vector<float> latents(static_cast<size_t>(24) * layout.num_latent_frames *
                                layout.latent_height * layout.latent_width);
     dit::unpatchify_video(completed->video_rows.data(), layout, latents.data());
+#if SLOPFAB_WITH_CUDA
     s_unpatch.stop();
+#endif
 
     // Before the span, so the readahead started under the loop is accounted to
     // the loop and this span keeps measuring the load it names. Joining is
     // required, not tidy: the mapping the worker holds is dropped here, and
     // nothing may outlive this function still holding one.
 
+#if SLOPFAB_WITH_CUDA
     cuda::PhaseSpan s_load("vae weight load");
+#endif
     SafeTensors vae_file;
     vae_file.open(request.video_vae_path);
     const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
     const std::vector<float> std_dev = read_stat(vae_file, "latents_std", 24);
 
     if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
       vae::ViTDecoder decoder;
       vae::ViTConfig config;
       if (options.attention_mode == AttentionMode::kExact)
@@ -110,6 +121,9 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
                                             layout.latent_width, mean, std_dev)
                   : decoder.decode(latents.data(), layout.num_latent_frames, layout.latent_height,
                                    layout.latent_width, mean, std_dev);
+#else
+      throw std::logic_error("CUDA inference compiled out after validation");
+#endif
     } else {
 #if SLOPFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device();
@@ -117,7 +131,9 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
       config.transformer_mode = vae::ViTTransformerMode::kExact;
       vulkan::VideoVaeDecoder decoder = vulkan::VideoVaeDecoder::create(device, config);
       decoder.load(vae_file);
+#if SLOPFAB_WITH_CUDA
       s_load.stop();
+#endif
       if (options.verbose) {
         std::printf("video vae   Vulkan %.2f GiB on device\n",
                     static_cast<double>(decoder.persistent_bytes()) / (1024.0 * 1024.0 * 1024.0));
@@ -137,9 +153,11 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
                   video.height, result.seconds_video_decode);
     }
     // The spans above tile this block, so the elapsed time is their denominator.
+#if SLOPFAB_WITH_CUDA
     cuda::PhaseProfiler::instance().add_total("video vae stage",
                                               result.seconds_video_decode * 1000.0);
     cuda::PhaseProfiler::instance().report(stdout);
+#endif
   }
 
   if (request.image_edit.image) {
@@ -177,10 +195,14 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
       }
     };
     if (options.inference_backend == DeviceBackend::kCuda) {
+#if SLOPFAB_WITH_CUDA
       vae::AudioDecoder decoder;
       decoder.load(audio_file);
       denormalize(decoder.latents_mean(), decoder.latents_std());
       audio = decoder.decode(audio_latents.data(), A);
+#else
+      throw std::logic_error("CUDA inference compiled out after validation");
+#endif
     } else {
 #if SLOPFAB_WITH_VULKAN
       vulkan::Device device = create_vulkan_inference_device();
