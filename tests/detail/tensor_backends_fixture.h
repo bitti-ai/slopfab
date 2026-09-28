@@ -31,6 +31,10 @@
 #include <windows.h>
 #include <winioctl.h>
 #include <bcrypt.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 #include "slopfab/cuda/device.h"
@@ -120,6 +124,8 @@ std::array<uint8_t, 32> sha256_mapping(const void* data, size_t bytes) {
   return digest;
 }
 
+#endif
+
 std::filesystem::path make_sparse_qwen_metadata_corruption(const slopfab::SafeTensors& source,
                                                            slopfab::text::WeightFormat format,
                                                            const std::string& corrupt_name,
@@ -127,10 +133,16 @@ std::filesystem::path make_sparse_qwen_metadata_corruption(const slopfab::SafeTe
                                                            bool zero_scalar = false,
                                                            bool visual_shape = false) {
   static std::atomic<uint32_t> serial{0};
+#ifdef _WIN32
+  const auto process_id = GetCurrentProcessId();
+#else
+  const auto process_id = getpid();
+#endif
   const std::filesystem::path path =
       std::filesystem::temp_directory_path() /
-      ("slopfab_qwen_corrupt_" + std::to_string(GetCurrentProcessId()) + "_" +
+      ("slopfab_qwen_corrupt_" + std::to_string(process_id) + "_" +
        std::to_string(serial.fetch_add(1)) + ".safetensors");
+#ifdef _WIN32
   HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                             FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE)
@@ -163,6 +175,37 @@ std::filesystem::path make_sparse_qwen_metadata_corruption(const slopfab::SafeTe
       bytes -= chunk;
     }
   };
+#else
+  const int file = open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (file < 0)
+    throw std::runtime_error("cannot create sparse Qwen corruption fixture");
+  auto close_and_fail = [&](const char* message) {
+    close(file);
+    std::filesystem::remove(path);
+    throw std::runtime_error(message);
+  };
+  // Extending with ftruncate creates holes. Only the small metadata tensors
+  // below are written; a multi-GiB model is never copied or allocated in RAM.
+  if (source.file_size() > static_cast<uint64_t>(std::numeric_limits<off_t>::max()) ||
+      ftruncate(file, static_cast<off_t>(source.file_size())) != 0)
+    close_and_fail("cannot size Qwen corruption fixture");
+  auto write_at = [&](uint64_t offset, const void* data, uint64_t bytes) {
+    if (offset > source.file_size() || bytes > source.file_size() - offset)
+      close_and_fail("Qwen corruption fixture write exceeds its size");
+    const auto* cursor = static_cast<const uint8_t*>(data);
+    while (bytes != 0) {
+      const size_t chunk = static_cast<size_t>(std::min<uint64_t>(bytes, 1u << 20));
+      const ssize_t written = pwrite(file, cursor, chunk, static_cast<off_t>(offset));
+      if (written < 0 && errno == EINTR)
+        continue;
+      if (written <= 0)
+        close_and_fail("cannot write Qwen corruption fixture");
+      cursor += written;
+      offset += static_cast<uint64_t>(written);
+      bytes -= static_cast<uint64_t>(written);
+    }
+  };
+#endif
   uint64_t json_bytes = 0;
   std::memcpy(&json_bytes, source.mapping_base(), sizeof(json_bytes));
   const uint64_t header_bytes = json_bytes + sizeof(json_bytes);
@@ -213,14 +256,17 @@ std::filesystem::path make_sparse_qwen_metadata_corruption(const slopfab::SafeTe
       write_at(offset, view.data, view.nbytes);
     }
   }
-  if (!CloseHandle(file)) {
+#ifdef _WIN32
+  const bool closed = CloseHandle(file) != 0;
+#else
+  const bool closed = close(file) == 0;
+#endif
+  if (!closed) {
     std::filesystem::remove(path);
     throw std::runtime_error("cannot close Qwen corruption fixture");
   }
   return path;
 }
-
-#endif
 
 __global__ void deterministic_rsqrt_probe(const float* input, float* stable, float* native,
                                           int count) {
