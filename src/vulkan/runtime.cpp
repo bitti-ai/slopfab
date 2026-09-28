@@ -534,6 +534,7 @@ Device PhysicalDevice::create_device(const DeviceOptions& options) const {
     result->info.shader_float16_enabled = options.enable_shader_float16;
     result->info.shader_int8_enabled = options.enable_shader_int8;
     result->info.shader_int64_enabled = options.enable_shader_int64;
+    result->info.portable_arithmetic = options.portable_arithmetic;
     result->info.storage_buffer_16bit_enabled = options.enable_storage_buffer_16bit;
     result->info.cooperative_matrix_enabled = options.enable_cooperative_matrix;
     return Device(std::move(result));

@@ -199,11 +199,14 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   // The reference hashes are taken once and shared by both keys, and only when
   // reuse is on at all: a cold `--count 1` run consults neither key, and would
   // otherwise pay to hash every reference twice for nothing.
+  const std::string arithmetic_key = options.inference_backend == DeviceBackend::kVulkan
+      ? (options.vulkan_portable_arithmetic ? ":vulkan-portable" : ":vulkan-qualified-exact")
+      : ":cuda";
   const bool cache_references = options.reuse_models;
   const std::vector<std::string> reference_identities =
       options.reuse_models ? reference_image_identities(request) : std::vector<std::string>();
   const std::string reference_key =
-      options.reuse_models ? reference_cache_key(request, reference_identities) : std::string();
+      options.reuse_models ? reference_cache_key(request, reference_identities) + arithmetic_key : std::string();
   std::vector<RGBImage> owned_reference_images;
   std::vector<RGBImage>& reference_images =
       cache_references ? reuse.reference_images : owned_reference_images;
@@ -265,7 +268,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
                                                             : ReferenceEncoderAuthority::kCudaFp32)
                                    : ReferenceEncoderAuthority::kVulkanFp32;
   const std::string media_key = cache_references && !request.reference_media.empty()
-                                    ? media_encoding_cache_key(request, media_authority)
+                                    ? media_encoding_cache_key(request, media_authority) + arithmetic_key
                                     : std::string();
   const auto* cached_media = cache_references ? reuse.media_cache.find(media_key) : nullptr;
   for (const auto& media : request.reference_media) {
@@ -377,7 +380,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
 #endif
       } else {
 #if SLOPFAB_WITH_VULKAN
-        vulkan::Device device = create_vulkan_inference_device();
+        vulkan::Device device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
         auto encoder = vulkan::KeyframeEncoder::create(device);
         encoder.load(vae_file);
         inpaint->original = encoder.encode_reference_image(image, mean, stddev);
@@ -435,7 +438,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
 #endif
         } else {
 #if SLOPFAB_WITH_VULKAN
-          vulkan::Device keyframe_device = create_vulkan_inference_device();
+          vulkan::Device keyframe_device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
           vulkan::KeyframeEncoder image_encoder = vulkan::KeyframeEncoder::create(keyframe_device);
           image_encoder.load(vae_file);
           for (const RGBImage& image : reference_images) {
@@ -516,7 +519,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         vulkan::Device device;
         std::unique_ptr<vulkan::ReferenceEncoder> vk_encoder;
         if (options.inference_backend == DeviceBackend::kVulkan) {
-          device = create_vulkan_inference_device();
+          device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
           vk_encoder = std::make_unique<vulkan::ReferenceEncoder>(device, checkpoint, false);
         } else
 #endif
@@ -572,7 +575,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         vulkan::Device device;
         std::unique_ptr<vulkan::ReferenceEncoder> vk_encoder;
         if (options.inference_backend == DeviceBackend::kVulkan) {
-          device = create_vulkan_inference_device();
+          device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
           vk_encoder = std::make_unique<vulkan::ReferenceEncoder>(device, checkpoint, true);
         } else
 #endif
@@ -899,7 +902,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
       vulkan::Device device =
-          create_vulkan_inference_device(true, options.attention_mode == AttentionMode::kSage2);
+          create_vulkan_inference_device(options.vulkan_portable_arithmetic, true,
+                                         options.attention_mode == AttentionMode::kSage2);
       vulkan::TensorContextOptions context_options;
       context_options.max_batch_operators =
           request.loras.empty() && !plan.model.compressed_attention ? 2048 : 4096;

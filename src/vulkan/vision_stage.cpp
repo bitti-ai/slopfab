@@ -156,7 +156,7 @@ ExactQwenVisionPatchStage::operator=(ExactQwenVisionPatchStage&&) noexcept = def
 ExactQwenVisionPatchStage ExactQwenVisionPatchStage::create(TensorContext& context,
                                                             const QwenVisionStageConfig& config) {
   validate_config(config);
-  context.require_exact_vae_pointwise();
+  context.require_vae_pointwise();
   return ExactQwenVisionPatchStage(std::make_shared<Impl>(context, config));
 }
 
@@ -287,9 +287,9 @@ ExactQwenVisionScratch::operator=(ExactQwenVisionScratch&&) noexcept = default;
 ExactQwenVisionScratch ExactQwenVisionScratch::create(TensorContext& context,
                                                       const QwenVisionStageConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
-  context.require_exact_blocked_attention();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
+  context.require_blocked_attention();
   return ExactQwenVisionScratch(std::make_shared<Impl>(context, config));
 }
 
@@ -312,9 +312,9 @@ ExactQwenVisionBlockStage::operator=(ExactQwenVisionBlockStage&&) noexcept = def
 ExactQwenVisionBlockStage ExactQwenVisionBlockStage::create(TensorContext& context,
                                                             const QwenVisionStageConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
-  context.require_exact_blocked_attention();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
+  context.require_blocked_attention();
   return ExactQwenVisionBlockStage(std::make_shared<Impl>(context, config));
 }
 
@@ -447,8 +447,8 @@ ExactQwenVisionMergerStage::operator=(ExactQwenVisionMergerStage&&) noexcept = d
 ExactQwenVisionMergerStage ExactQwenVisionMergerStage::create(TensorContext& context,
                                                               const QwenVisionStageConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
   return ExactQwenVisionMergerStage(std::make_shared<Impl>(context, config));
 }
 
@@ -602,9 +602,9 @@ ExactQwenVisionEncoder&
 ExactQwenVisionEncoder::operator=(ExactQwenVisionEncoder&&) noexcept = default;
 
 ExactQwenVisionEncoder ExactQwenVisionEncoder::create(TensorContext& context) {
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
-  context.require_exact_blocked_attention();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
+  context.require_blocked_attention();
   return ExactQwenVisionEncoder(std::make_unique<Impl>(context));
 }
 

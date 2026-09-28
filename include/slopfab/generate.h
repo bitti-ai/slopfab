@@ -80,6 +80,14 @@ struct RunOptions {
 #else
   DeviceBackend inference_backend = DeviceBackend::kCuda;
 #endif
+  // Portable Vulkan executes the same shader graphs on feature-compatible
+  // devices without promising CUDA bit parity. Strict mode requires an
+  // independently qualified GPU/driver tuple. CUDA ignores this setting.
+#ifdef __linux__
+  bool vulkan_portable_arithmetic = true;
+#else
+  bool vulkan_portable_arithmetic = false;
+#endif
   bool verbose = true;
 
   // Counted CLI runs share prompt conditioning. Transformer residency cannot

@@ -193,6 +193,13 @@ struct TensorContext::Impl {
   bool exact_dit_pointwise = false;
   bool exact_attention = false;
   bool exact_h3_attention = false;
+  bool available_vae_norm = false;
+  bool available_vae_pointwise = false;
+  bool available_audio = false;
+  bool available_dit_pointwise = false;
+  bool available_attention = false;
+  bool available_h3_attention = false;
+  bool available_causal_gqa_attention = false;
   bool flash_attention = false;
   bool sage_attention = false;
   bool exact_causal_gqa_attention = false;

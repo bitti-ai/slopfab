@@ -139,9 +139,9 @@ ExactViTBlockScratch& ExactViTBlockScratch::operator=(ExactViTBlockScratch&&) no
 ExactViTBlockScratch ExactViTBlockScratch::create(TensorContext& context,
                                                   const ViTBlockConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
-  context.require_exact_blocked_attention();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
+  context.require_blocked_attention();
   return ExactViTBlockScratch(std::make_shared<Impl>(context, config));
 }
 
@@ -161,9 +161,9 @@ ExactViTBlockStage& ExactViTBlockStage::operator=(ExactViTBlockStage&&) noexcept
 ExactViTBlockStage ExactViTBlockStage::create(TensorContext& context,
                                               const ViTBlockConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
-  context.require_exact_blocked_attention();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
+  context.require_blocked_attention();
   return ExactViTBlockStage(std::make_shared<Impl>(context, config));
 }
 

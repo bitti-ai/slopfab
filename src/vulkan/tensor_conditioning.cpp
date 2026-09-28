@@ -6,7 +6,7 @@ void TensorBatch::text_add_residual_bf16(DeviceTensor& residual, DeviceTensor& b
   if (!impl_ || impl_->poisoned) {
     throw std::logic_error("vulkan tensor: invalid batch");
   }
-  if (!impl_->owner->exact_dit_pointwise) {
+  if (!impl_->owner->available_dit_pointwise) {
     throw std::runtime_error("vulkan text: exact pointwise operations are unavailable");
   }
   auto x = impl_->owner->require(residual);
@@ -48,7 +48,7 @@ void TensorBatch::text_swiglu_split_bf16(DeviceTensor& gate, DeviceTensor& up,
   if (!impl_ || impl_->poisoned) {
     throw std::logic_error("vulkan tensor: invalid batch");
   }
-  if (!impl_->owner->exact_dit_pointwise) {
+  if (!impl_->owner->available_dit_pointwise) {
     throw std::runtime_error("vulkan text: exact pointwise operations are unavailable");
   }
   auto g = impl_->owner->require(gate);
@@ -88,7 +88,7 @@ void TensorBatch::text_swiglu_split_bf16(DeviceTensor& gate, DeviceTensor& up,
 void TensorBatch::vision_gelu_tanh_bf16(DeviceTensor& activation) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_dit_pointwise)
+  if (!impl_->owner->available_dit_pointwise)
     throw std::runtime_error("vulkan vision: exact GELU is unavailable");
   auto x = impl_->owner->require(activation);
   const uint64_t rows = x->layout.rank == 2 ? x->layout.extent[0] : 0;

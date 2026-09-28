@@ -159,9 +159,9 @@ struct VideoVaeDecoder::Impl {
         cfg.num_suffix != cfg.num_register + 1 || cfg.patch_dim() <= 0) {
       throw std::invalid_argument("Vulkan video VAE: invalid configuration");
     }
-    context.require_exact_fp32_vae_normalization();
-    context.require_exact_vae_pointwise();
-    context.require_exact_blocked_attention();
+    context.require_fp32_vae_normalization();
+    context.require_vae_pointwise();
+    context.require_blocked_attention();
   }
 
   ShapeSlot& select_shape(uint32_t time, uint32_t height, uint32_t width) {

@@ -6,7 +6,7 @@ void TensorBatch::dit_add_gated_bf16(DeviceTensor& residual, DeviceTensor& branc
                                      DeviceTensor& gate, DeviceTensor& selectors) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_dit_pointwise) {
+  if (!impl_->owner->available_dit_pointwise) {
     throw std::runtime_error("vulkan DiT: exact pointwise operations are unavailable");
   }
   auto x = impl_->owner->require(residual);
@@ -55,7 +55,7 @@ void TensorBatch::dit_add_gated_bf16_table(DeviceTensor& residual, DeviceTensor&
                                            uint32_t gate_table, DeviceTensor& selectors) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_dit_pointwise)
+  if (!impl_->owner->available_dit_pointwise)
     throw std::runtime_error("vulkan DiT: exact pointwise operations are unavailable");
   auto x = impl_->owner->require(residual), b = impl_->owner->require(branch);
   auto t = impl_->owner->require(tables), a = impl_->owner->require(selectors);
@@ -99,7 +99,7 @@ void TensorBatch::dit_add_gated_bf16_table(DeviceTensor& residual, DeviceTensor&
 void TensorBatch::dit_swiglu_bf16(DeviceTensor& fused, DeviceTensor& output) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_dit_pointwise) {
+  if (!impl_->owner->available_dit_pointwise) {
     throw std::runtime_error("vulkan DiT: exact pointwise operations are unavailable");
   }
   auto src = impl_->owner->require(fused);
@@ -138,7 +138,7 @@ void TensorBatch::dit_expand_adaln(DeviceTensor& weight, DeviceTensor& bias, Dev
                                    uint32_t channels) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_dit_pointwise) {
+  if (!impl_->owner->available_dit_pointwise) {
     throw std::runtime_error("vulkan DiT: exact pointwise operations are unavailable");
   }
   auto w = impl_->owner->require(weight);
@@ -205,7 +205,7 @@ void TensorBatch::dit_euler_step_f32(DeviceTensor& sample, DeviceTensor& velocit
                                      float sigma_from_timestep, float ratio) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_dit_pointwise)
+  if (!impl_->owner->available_dit_pointwise)
     throw std::runtime_error("vulkan tensor: exact DiT Euler is unavailable");
   auto x = impl_->owner->require(sample);
   auto v = impl_->owner->require(velocity);

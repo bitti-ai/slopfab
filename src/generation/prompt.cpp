@@ -166,7 +166,9 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
                                                              : ConditionerAuthority::kCudaShipped);
   const std::string prompt_key =
       options.reuse_models ? conditioning_cache_key_for_authority(request, reference_identities,
-                                                                  conditioner_authority)
+                                                                  conditioner_authority) +
+                                  (options.inference_backend == DeviceBackend::kVulkan &&
+                                   options.vulkan_portable_arithmetic ? ":portable" : ":qualified")
                            : std::string();
   if (!options.prompt_embedding_path.empty()) {
     const Clock::time_point t0 = Clock::now();
@@ -255,7 +257,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
 #endif
     } else {
 #if SLOPFAB_WITH_VULKAN
-      vulkan::Device device = create_vulkan_inference_device(true);
+      vulkan::Device device = create_vulkan_inference_device(options.vulkan_portable_arithmetic, true);
       vulkan::TensorContextOptions tensor_options;
       tensor_options.max_batch_operators = 64;
       vulkan::TensorContext context(device, tensor_options);
@@ -271,7 +273,8 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
                     static_cast<unsigned long long>(stats.descriptor_set_allocations));
       }
       encoder.unload();
-      conditioner_mode = "Vulkan streaming exact";
+      conditioner_mode = options.vulkan_portable_arithmetic ? "Vulkan streaming portable"
+                                                           : "Vulkan streaming exact";
 #else
       throw std::logic_error("Vulkan conditioner compiled out after validation");
 #endif

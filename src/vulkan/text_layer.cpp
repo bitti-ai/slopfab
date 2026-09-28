@@ -400,9 +400,9 @@ ExactQwenTextLayerScratch::operator=(ExactQwenTextLayerScratch&&) noexcept = def
 ExactQwenTextLayerScratch ExactQwenTextLayerScratch::create(TensorContext& context,
                                                             const QwenTextLayerConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
-  context.require_exact_causal_gqa_attention();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
+  context.require_causal_gqa_attention();
   return ExactQwenTextLayerScratch(std::make_shared<Impl>(context, config));
 }
 
@@ -428,9 +428,9 @@ ExactQwenTextLayerStage::operator=(ExactQwenTextLayerStage&&) noexcept = default
 ExactQwenTextLayerStage ExactQwenTextLayerStage::create(TensorContext& context,
                                                         const QwenTextLayerConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
-  context.require_exact_causal_gqa_attention();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
+  context.require_causal_gqa_attention();
   return ExactQwenTextLayerStage(std::make_shared<Impl>(context, config));
 }
 

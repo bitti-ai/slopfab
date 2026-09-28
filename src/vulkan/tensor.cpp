@@ -391,6 +391,56 @@ void TensorContext::require_full_fp32_arithmetic_exactness() const {
   }
 }
 
+// Execution checks follow DeviceOptions::portable_arithmetic. The corresponding
+// require_exact_* entry points below continue to demand qualified bit parity.
+void TensorContext::require_normalization() const {
+  if (!impl_ || !impl_->available_vae_norm) {
+    throw std::runtime_error(
+        "vulkan tensor: normalization requires a compatible shaderInt64-enabled "
+        "Vulkan device");
+  }
+}
+
+void TensorContext::require_fp32_vae_normalization() const {
+  require_normalization();
+}
+
+void TensorContext::require_vae_pointwise() const {
+  if (!impl_)
+    throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->available_vae_pointwise) {
+    throw std::runtime_error(
+        "vulkan tensor: VAE pointwise operations are unavailable on this device/driver");
+  }
+}
+
+void TensorContext::require_audio_vae_primitives() const {
+  if (!impl_)
+    throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->available_audio) {
+    throw std::runtime_error(
+        "vulkan audio: primitives are unavailable on this device/driver");
+  }
+}
+
+void TensorContext::require_blocked_attention() const {
+  if (!impl_)
+    throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->available_attention) {
+    throw std::runtime_error(
+        "vulkan attention: blocked attention is unavailable on this device/driver");
+  }
+}
+
+void TensorContext::require_causal_gqa_attention() const {
+  if (!impl_)
+    throw std::logic_error("vulkan tensor: moved-from context");
+  if (!impl_->available_causal_gqa_attention) {
+    throw std::runtime_error(
+        "vulkan attention: causal GQA attention is unavailable on this device/driver");
+  }
+}
+
 bool TensorContext::exact_normalization() const noexcept {
   return impl_ && impl_->exact_vae_norm;
 }
@@ -459,7 +509,7 @@ bool TensorContext::h3_attention_supported(AttentionMode mode) const noexcept {
     return false;
   switch (mode) {
   case AttentionMode::kExact:
-    return impl_->exact_h3_attention;
+    return impl_->available_h3_attention;
   case AttentionMode::kFlash2:
     return impl_->flash_attention;
   case AttentionMode::kSage2:

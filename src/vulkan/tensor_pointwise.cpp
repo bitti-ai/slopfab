@@ -285,7 +285,7 @@ void TensorBatch::layer_scale_residual_f32(DeviceTensor& x, DeviceTensor& y, Dev
                                            DeviceTensor& scale) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_pointwise) {
+  if (!impl_->owner->available_vae_pointwise) {
     throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
   }
   auto xv = impl_->owner->require(x);
@@ -327,7 +327,7 @@ void TensorBatch::layer_scale_residual_f32(DeviceTensor& x, DeviceTensor& y, Dev
 void TensorBatch::swiglu_bias_f32(DeviceTensor& input, DeviceTensor& bias, DeviceTensor& output) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_pointwise) {
+  if (!impl_->owner->available_vae_pointwise) {
     throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
   }
   auto src = impl_->owner->require(input);
@@ -370,7 +370,7 @@ void TensorBatch::latent_denorm_f32(DeviceTensor& input, DeviceTensor& mean, Dev
                                     DeviceTensor& output) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_pointwise) {
+  if (!impl_->owner->available_vae_pointwise) {
     throw std::runtime_error("vulkan tensor: exact VAE pointwise operations are unavailable");
   }
   auto src = impl_->owner->require(input);

@@ -20,7 +20,7 @@ BlockedAttentionPlan BlockedAttentionPlan::create(TensorContext& context,
   if (!context.impl_)
     throw std::invalid_argument("vulkan attention: empty context");
   context.impl_->require_pipeline_set(TensorPipelineSet::kBlockedAttention);
-  if (!context.impl_->exact_attention) {
+  if (!context.impl_->available_attention) {
     throw std::runtime_error(
         "vulkan attention: exact blocked attention is unavailable on this device/driver");
   }
@@ -240,7 +240,7 @@ H3AttentionRanges H3AttentionRanges::create(TensorContext& context, uint32_t seq
                                             const int32_t* values, uint32_t value_count) {
   if (!context.impl_)
     throw std::invalid_argument("vulkan H3 attention: empty context");
-  if (!context.impl_->exact_h3_attention && !context.impl_->flash_attention &&
+  if (!context.impl_->available_h3_attention && !context.impl_->flash_attention &&
       !context.impl_->sage_attention) {
     throw std::runtime_error(
         "vulkan H3 attention: no supported attention mode on this device/driver");
@@ -759,7 +759,7 @@ CausalGQAAttentionPlan CausalGQAAttentionPlan::create(TensorContext& context,
     throw std::invalid_argument("vulkan causal GQA attention: empty context");
   }
   context.impl_->require_pipeline_set(TensorPipelineSet::kTextAttention);
-  if (!context.impl_->exact_causal_gqa_attention) {
+  if (!context.impl_->available_causal_gqa_attention) {
     throw std::runtime_error(
         "vulkan causal GQA attention: exact mode is unavailable on this device/driver");
   }

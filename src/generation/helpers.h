@@ -15,6 +15,7 @@ std::vector<float> read_stat(const SafeTensors&, const char* name, int expect);
 bool env_flag(const char* name);
 std::vector<uint8_t> resize_rgb_bilinear(const RGBImage&, int width, int height);
 #if SLOPFAB_WITH_VULKAN
-vulkan::Device create_vulkan_inference_device(bool exact_h3 = false, bool sage_attention = false);
+vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool exact_h3 = false,
+                                               bool sage_attention = false);
 #endif
 }

@@ -126,7 +126,7 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 #endif
     } else {
 #if SLOPFAB_WITH_VULKAN
-      vulkan::Device device = create_vulkan_inference_device();
+      vulkan::Device device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
       vae::ViTConfig config;
       config.transformer_mode = vae::ViTTransformerMode::kExact;
       vulkan::VideoVaeDecoder decoder = vulkan::VideoVaeDecoder::create(device, config);
@@ -205,7 +205,7 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 #endif
     } else {
 #if SLOPFAB_WITH_VULKAN
-      vulkan::Device device = create_vulkan_inference_device();
+      vulkan::Device device = create_vulkan_inference_device(options.vulkan_portable_arithmetic);
       vulkan::AudioDecoder decoder = vulkan::AudioDecoder::create(device);
       decoder.load(audio_file);
       denormalize(decoder.latents_mean(), decoder.latents_std());

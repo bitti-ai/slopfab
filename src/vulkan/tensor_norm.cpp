@@ -63,7 +63,7 @@ void TensorBatch::split_qkv_norm_rope_f32(DeviceTensor& qkv, DeviceTensor& bias,
   if (!impl_ || impl_->poisoned) {
     throw std::logic_error("vulkan tensor: invalid batch");
   }
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->available_vae_norm) {
     throw std::runtime_error("vulkan tensor: exact video-VAE fused RoPE is unavailable");
   }
   std::array<std::shared_ptr<DeviceTensor::Impl>, 7> resources{
@@ -135,7 +135,7 @@ void TensorBatch::rms_norm(DeviceTensor& input, DeviceTensor& weight, DeviceTens
                            float epsilon) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->available_vae_norm) {
     throw std::runtime_error("vulkan tensor: exact fp32 VAE RMSNorm is unavailable");
   }
   auto src = impl_->owner->require(input);
@@ -178,7 +178,7 @@ void TensorBatch::layer_norm(DeviceTensor& input, DeviceTensor& weight, DeviceTe
                              DeviceTensor& output, float epsilon) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->available_vae_norm) {
     throw std::runtime_error("vulkan tensor: exact fp32 VAE LayerNorm is unavailable");
   }
   auto src = impl_->owner->require(input);
@@ -225,7 +225,7 @@ void TensorBatch::rms_norm_bf16(DeviceTensor& input, DeviceTensor& weight, Devic
                                 float epsilon) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->available_vae_norm) {
     throw std::runtime_error("vulkan tensor: exact BF16 RMSNorm is unavailable");
   }
   auto src = impl_->owner->require(input);
@@ -274,7 +274,7 @@ void TensorBatch::rms_norm_heads_bf16(DeviceTensor& input, DeviceTensor& weight,
                                       float epsilon) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->available_vae_norm) {
     throw std::runtime_error("vulkan tensor: exact BF16 head RMSNorm is unavailable");
   }
   auto src = impl_->owner->require(input);
@@ -329,7 +329,7 @@ void TensorBatch::layer_norm_bf16(DeviceTensor& input, DeviceTensor& weight, Dev
                                   DeviceTensor& output, float epsilon) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->available_vae_norm) {
     throw std::runtime_error("vulkan tensor: exact BF16 LayerNorm is unavailable");
   }
   auto src = impl_->owner->require(input);

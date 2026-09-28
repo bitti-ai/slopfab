@@ -33,6 +33,7 @@ struct DeviceInfo {
   Version api_version;
   bool discrete = false;
   bool software = false; // Vulkan CPU implementation, such as Mesa lavapipe.
+  bool portable_arithmetic = false; // Selected execution policy, not exact qualification.
   uint32_t compute_queue_family = 0;
   uint32_t compute_queue_count = 0;
   uint32_t timestamp_valid_bits = 0;
@@ -92,6 +93,10 @@ struct InstanceOptions {
 };
 
 struct DeviceOptions {
+  // Execute the existing neural shader graphs on feature-compatible devices
+  // without requiring a CUDA bit-parity-qualified GPU/driver tuple. Results
+  // may differ in their last bits. Strict exact qualification stays separate.
+  bool portable_arithmetic = false;
   std::vector<std::string> extensions;
   bool enable_shader_float16 = false;
   bool enable_shader_int8 = false;

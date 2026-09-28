@@ -6,7 +6,7 @@ void TensorBatch::audio_conv1d(DeviceTensor& input, DeviceTensor& weight, Device
                                DeviceTensor& output, const vae::AudioConv1DDesc& desc) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio) {
+  if (!impl_->owner->available_audio) {
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   }
   desc.validate();
@@ -69,7 +69,7 @@ void TensorBatch::audio_conv_transpose1d(DeviceTensor& input, DeviceTensor& weig
                                          const vae::AudioConvTranspose1DDesc& desc) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio) {
+  if (!impl_->owner->available_audio) {
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   }
   desc.validate();
@@ -131,7 +131,7 @@ void TensorBatch::audio_add_inplace(DeviceTensor& input_output, DeviceTensor& br
                                     uint64_t live_count) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio)
+  if (!impl_->owner->available_audio)
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   auto x = impl_->owner->require(input_output);
   auto y = impl_->owner->require(branch);
@@ -162,7 +162,7 @@ void TensorBatch::audio_copy_prefix(DeviceTensor& source, DeviceTensor& destinat
                                     uint64_t count) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio)
+  if (!impl_->owner->available_audio)
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   auto src = impl_->owner->require(source);
   auto dst = impl_->owner->require(destination);
@@ -187,7 +187,7 @@ void TensorBatch::audio_scale_inplace(DeviceTensor& input_output, float scale,
                                       uint64_t live_count) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio)
+  if (!impl_->owner->available_audio)
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   auto x = impl_->owner->require(input_output);
   const uint64_t capacity = x->layout.elements();
@@ -214,7 +214,7 @@ void TensorBatch::audio_clamp_inplace(DeviceTensor& input_output, float lower, f
                                       uint64_t live_count) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio)
+  if (!impl_->owner->available_audio)
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   auto x = impl_->owner->require(input_output);
   const uint64_t capacity = x->layout.elements();
@@ -243,7 +243,7 @@ void TensorBatch::audio_interleave(DeviceTensor& planar, DeviceTensor& interleav
                                    uint32_t frames) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio)
+  if (!impl_->owner->available_audio)
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   auto src = impl_->owner->require(planar);
   auto dst = impl_->owner->require(interleaved);
@@ -281,7 +281,7 @@ void TensorBatch::audio_snake_beta_inplace(DeviceTensor& input_output, DeviceTen
                                            uint32_t channels, uint32_t length) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio)
+  if (!impl_->owner->available_audio)
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   auto x = impl_->owner->require(input_output);
   auto alpha = impl_->owner->require(log_alpha);
@@ -324,7 +324,7 @@ void TensorBatch::audio_aa_upsample_snake(DeviceTensor& input, DeviceTensor& fil
                                           uint32_t length_in) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio)
+  if (!impl_->owner->available_audio)
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   if (length_in > std::numeric_limits<uint32_t>::max() / 2u) {
     throw std::out_of_range("vulkan audio: AA upsample length overflow");
@@ -388,7 +388,7 @@ void TensorBatch::audio_aa_downsample(DeviceTensor& input, DeviceTensor& filter,
                                       uint32_t length_in, uint32_t length_out) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_audio)
+  if (!impl_->owner->available_audio)
     throw std::runtime_error("vulkan audio: exact primitives are unavailable");
   auto src = impl_->owner->require(input);
   auto f = impl_->owner->require(filter);

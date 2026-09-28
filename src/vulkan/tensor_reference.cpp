@@ -7,7 +7,7 @@ void TensorBatch::group_norm_silu_f16_affine(DeviceTensor& input, DeviceTensor& 
                                              uint32_t groups, float epsilon) {
   if (!impl_ || impl_->poisoned)
     throw std::logic_error("vulkan tensor: invalid batch");
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->available_vae_norm) {
     throw std::runtime_error("vulkan tensor: exact VAE GroupNorm+SiLU is unavailable");
   }
   auto src = impl_->owner->require(input);
@@ -114,7 +114,7 @@ void TensorBatch::keyframe_conv3d_f16(DeviceTensor& input, DeviceTensor& weight,
   if (!impl_ || impl_->poisoned) {
     throw std::logic_error("vulkan tensor: invalid batch");
   }
-  if (!impl_->owner->exact_vae_pointwise) {
+  if (!impl_->owner->available_vae_pointwise) {
     throw std::runtime_error("vulkan keyframe: exact Conv3D is unavailable");
   }
   auto src = impl_->owner->require(input);
@@ -200,7 +200,7 @@ void TensorBatch::keyframe_group_norm_silu_f16_affine(DeviceTensor& input, Devic
   if (!impl_ || impl_->poisoned) {
     throw std::logic_error("vulkan tensor: invalid batch");
   }
-  if (!impl_->owner->exact_vae_norm) {
+  if (!impl_->owner->available_vae_norm) {
     throw std::runtime_error("vulkan keyframe: exact GroupNorm+SiLU is unavailable");
   }
   auto src = impl_->owner->require(input);

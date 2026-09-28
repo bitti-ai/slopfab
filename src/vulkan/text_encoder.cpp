@@ -150,9 +150,9 @@ ExactQwenTextEncoder::ExactQwenTextEncoder(ExactQwenTextEncoder&&) noexcept = de
 ExactQwenTextEncoder& ExactQwenTextEncoder::operator=(ExactQwenTextEncoder&&) noexcept = default;
 
 ExactQwenTextEncoder ExactQwenTextEncoder::create(TensorContext& context) {
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
-  context.require_exact_causal_gqa_attention();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
+  context.require_causal_gqa_attention();
   return ExactQwenTextEncoder(std::make_unique<Impl>(context));
 }
 

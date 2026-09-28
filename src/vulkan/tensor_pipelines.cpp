@@ -60,6 +60,27 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       detail::sage_kernel_fits(input.info(), 1) && input.info().compute_subgroup_arithmetic &&
       input.info().shader_int8_enabled && input.info().cooperative_matrix_i8_i32_16x16x32;
   exact_causal_gqa_attention = known_exact_causal_gqa_attention_device(input.info());
+  // Availability follows the selected policy; the exact_* flags above retain
+  // their qualified GPU/driver meaning for callers that demand bit parity.
+  const auto& info = input.info();
+  const bool portable = info.portable_arithmetic && info.shader_int64_enabled &&
+                        info.fp32_signed_zero_inf_nan_preserve && info.fp32_rounding_rte &&
+                        info.max_compute_workgroup_invocations >= 256 &&
+                        info.max_compute_workgroup_size[0] >= 256 &&
+                        info.max_compute_shared_memory_bytes >= 16384;
+  available_vae_norm = exact_vae_norm || portable;
+  available_vae_pointwise = exact_vae_pointwise || portable;
+  available_audio = exact_audio || portable;
+  available_dit_pointwise = exact_dit_pointwise || portable;
+  available_attention = exact_attention || portable;
+  available_h3_attention = exact_h3_attention || (portable && info.cooperative_matrix_enabled && info.storage_buffer_16bit_enabled &&
+         info.shader_float16_enabled && info.shader_bfloat16_type &&
+         info.shader_bfloat16_cooperative_matrix && info.cooperative_matrix_bf16_f32_16x16x16 &&
+         info.cooperative_matrix_f16_f32_16x16x16 && info.subgroup_size == 32 &&
+         info.max_compute_workgroup_invocations >= kH3AttentionLocalSize &&
+         info.max_compute_workgroup_size[0] >= kH3AttentionLocalSize &&
+         info.max_compute_shared_memory_bytes >= kH3AttentionMinReportedSharedBytes);
+  available_causal_gqa_attention = exact_causal_gqa_attention || portable;
   max_dispatch_x = input.info().max_compute_workgroup_count[0];
   max_dispatch_y = input.info().max_compute_workgroup_count[1];
   max_storage_bytes = input.info().max_storage_buffer_bytes;
@@ -130,7 +151,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
     std::memcpy(spirv.data(), shader, shader_bytes);
     ops_pipeline = ComputePipeline::create(input, spirv, options);
   }
-  if (has(TensorPipelineSet::kVideo) && exact_vae_pointwise) {
+  if (has(TensorPipelineSet::kVideo) && available_vae_pointwise) {
     ComputePipelineOptions pointwise_options = options;
     pointwise_options.storage_binding_count = 4;
     auto make_pointwise = [&](const uint8_t* bytes, size_t byte_count) {
@@ -159,7 +180,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
     reference_options.local_size[0] = reference_options.local_size[1] = 16;
     reference_pipeline = ComputePipeline::create(input, module, reference_options);
   }
-  if (has(TensorPipelineSet::kAudio) && exact_audio) {
+  if (has(TensorPipelineSet::kAudio) && available_audio) {
     std::vector<uint32_t> audio_spirv(sizeof(detail::kTensorAudioSpirv) / sizeof(uint32_t));
     std::memcpy(audio_spirv.data(), detail::kTensorAudioSpirv, sizeof(detail::kTensorAudioSpirv));
     ComputePipelineOptions audio_options;
@@ -168,7 +189,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
     audio_options.local_size[0] = 64;
     audio_pipeline = ComputePipeline::create(input, audio_spirv, audio_options);
   }
-  if (has(TensorPipelineSet::kVideo) && exact_vae_pointwise) {
+  if (has(TensorPipelineSet::kVideo) && available_vae_pointwise) {
     std::vector<uint32_t> keyframe_spirv(sizeof(detail::kTensorKeyframeSpirv) / sizeof(uint32_t));
     std::memcpy(keyframe_spirv.data(), detail::kTensorKeyframeSpirv,
                 sizeof(detail::kTensorKeyframeSpirv));
@@ -178,7 +199,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
     keyframe_options.local_size[0] = 64;
     keyframe_pipeline = ComputePipeline::create(input, keyframe_spirv, keyframe_options);
   }
-  if (has(TensorPipelineSet::kDit) && exact_dit_pointwise) {
+  if (has(TensorPipelineSet::kDit) && available_dit_pointwise) {
     std::vector<uint32_t> dit_spirv(sizeof(detail::kTensorDitSpirv) / sizeof(uint32_t));
     std::memcpy(dit_spirv.data(), detail::kTensorDitSpirv, sizeof(detail::kTensorDitSpirv));
     ComputePipelineOptions dit_options;
@@ -221,7 +242,15 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
     gemm_options.local_size[0] = 8;
     gemm_options.local_size[1] = 8;
     gemm_pipeline = ComputePipeline::create(input, gemm_spirv, gemm_options);
-    cooperative_gemm = known_exact_cooperative_bf16_gemm_device(input.info());
+    const auto& gemm_info = input.info();
+    const bool portable_cooperative = gemm_info.portable_arithmetic &&
+        gemm_info.cooperative_matrix_enabled && gemm_info.storage_buffer_16bit_enabled &&
+        gemm_info.subgroup_size == 32 && gemm_info.max_compute_workgroup_invocations >= 128 &&
+        gemm_info.max_compute_workgroup_size[0] >= 128;
+    cooperative_gemm = known_exact_cooperative_bf16_gemm_device(gemm_info) ||
+        (portable_cooperative && gemm_info.shader_bfloat16_type &&
+         gemm_info.shader_bfloat16_cooperative_matrix &&
+         gemm_info.cooperative_matrix_bf16_f32_16x16x16);
     if (cooperative_gemm) {
       const uint8_t* cooperative_shader =
           full_arithmetic_exact ? detail::kTensorGemmCoopDenormSpirv : detail::kTensorGemmCoopSpirv;
@@ -246,7 +275,9 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
       prepare_options.local_size[0] = 64;
       gemm_prepare_pipeline = ComputePipeline::create(input, prepare_spirv, prepare_options);
     }
-    cooperative_f16_gemm = known_exact_cooperative_f16_gemm_device(input.info());
+    cooperative_f16_gemm = known_exact_cooperative_f16_gemm_device(gemm_info) ||
+        (portable_cooperative && gemm_info.shader_float16_enabled &&
+         gemm_info.cooperative_matrix_f16_f32_16x16x16);
     if (cooperative_f16_gemm) {
       const uint8_t* cooperative_shader = full_arithmetic_exact
                                               ? detail::kTensorGemmCoopF16DenormSpirv
@@ -281,7 +312,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
     selected.specialization_constants = std::move(constants);
     return ComputePipeline::create(input, module, selected);
   };
-  if (has(TensorPipelineSet::kCore) && exact_vae_norm) {
+  if (has(TensorPipelineSet::kCore) && available_vae_norm) {
     rms_norm_pipeline =
         make_norm_pipeline(detail::kTensorRmsNormSpirv, sizeof(detail::kTensorRmsNormSpirv));
     layer_norm_pipeline =
@@ -302,7 +333,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
         make_norm_pipeline(detail::kTensorVaeRopeSpirv, sizeof(detail::kTensorVaeRopeSpirv), 7, 32,
                            1, sizeof(VaeRopeParameters));
   }
-  if (has(TensorPipelineSet::kBlockedAttention) && exact_attention) {
+  if (has(TensorPipelineSet::kBlockedAttention) && available_attention) {
     attention_blocked_pipeline = make_norm_pipeline(detail::kTensorAttentionBlockedSpirv,
                                                     sizeof(detail::kTensorAttentionBlockedSpirv), 4,
                                                     128, 1, sizeof(AttentionParameters));
@@ -310,7 +341,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
                                                     sizeof(detail::kTensorAttentionPrepareSpirv), 6,
                                                     64, 1, sizeof(uint32_t));
   }
-  if (has(TensorPipelineSet::kExactH3Attention) && exact_h3_attention) {
+  if (has(TensorPipelineSet::kExactH3Attention) && available_h3_attention) {
     attention_h3_pipeline =
         make_norm_pipeline(detail::kTensorAttentionH3Spirv, sizeof(detail::kTensorAttentionH3Spirv),
                            4, kH3AttentionLocalSize, 1, sizeof(AttentionParameters));
@@ -365,7 +396,7 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
         detail::kTensorAttentionSagePrepareSpirv, sizeof(detail::kTensorAttentionSagePrepareSpirv),
         7, 128, 1, sizeof(AttentionParameters));
   }
-  if (has(TensorPipelineSet::kTextAttention) && exact_causal_gqa_attention) {
+  if (has(TensorPipelineSet::kTextAttention) && available_causal_gqa_attention) {
     attention_causal_gqa_pipeline = make_norm_pipeline(
         detail::kTensorAttentionCausalGqaSpirv, sizeof(detail::kTensorAttentionCausalGqaSpirv), 4,
         128, 1, sizeof(CausalGQAAttentionParameters));

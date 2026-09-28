@@ -122,7 +122,7 @@ struct AudioDecoder::Impl {
           options.max_batch_operators = kGraphCapacity;
           return options;
         }()) {
-    context.require_exact_audio_vae_primitives();
+    context.require_audio_vae_primitives();
   }
 
   DeviceTensor upload(const std::vector<float>& host, std::initializer_list<uint64_t> extents) {

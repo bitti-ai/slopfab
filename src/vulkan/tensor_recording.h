@@ -372,7 +372,7 @@ struct TensorBatch::Impl {
   void record_shared_mod(bool fp32, DeviceTensor& input, DeviceTensor& weight, DeviceTensor& scale,
                          DeviceTensor& shift, DeviceTensor& selectors, DeviceTensor& output,
                          float epsilon) {
-    if (!owner->exact_vae_norm) {
+    if (!owner->available_vae_norm) {
       throw std::runtime_error("vulkan tensor: exact shared RMSNorm modulation is unavailable");
     }
     auto src = owner->require(input);
@@ -437,7 +437,7 @@ struct TensorBatch::Impl {
   void record_shared_mod_table(DeviceTensor& input, DeviceTensor& weight, DeviceTensor& tables,
                                uint32_t mod_rows, uint32_t scale_table, uint32_t shift_table,
                                DeviceTensor& selectors, DeviceTensor& output, float epsilon) {
-    if (!owner->exact_vae_norm)
+    if (!owner->available_vae_norm)
       throw std::runtime_error("vulkan tensor: exact shared RMSNorm modulation is unavailable");
     auto src = owner->require(input), w = owner->require(weight), table = owner->require(tables);
     auto index = owner->require(selectors), dst = owner->require(output);

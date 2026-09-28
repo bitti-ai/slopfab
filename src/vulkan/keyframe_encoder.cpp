@@ -143,8 +143,8 @@ struct KeyframeEncoder::Impl {
           options.max_batch_operators = 128;
           return options;
         }()) {
-    context.require_exact_fp32_vae_normalization();
-    context.require_exact_vae_pointwise();
+    context.require_fp32_vae_normalization();
+    context.require_vae_pointwise();
   }
 
   Pair& pair(const std::string& name) {

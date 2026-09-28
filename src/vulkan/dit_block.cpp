@@ -537,8 +537,8 @@ ExactH3BlockScratch& ExactH3BlockScratch::operator=(ExactH3BlockScratch&&) noexc
 ExactH3BlockScratch ExactH3BlockScratch::create(TensorContext& context,
                                                 const H3BlockConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
   context.require_h3_attention(config.vsa_tiles ? AttentionMode::kFlash2 : config.attention_mode);
   return ExactH3BlockScratch(std::make_shared<Impl>(context, config));
 }
@@ -558,8 +558,8 @@ ExactH3BlockStage& ExactH3BlockStage::operator=(ExactH3BlockStage&&) noexcept = 
 
 ExactH3BlockStage ExactH3BlockStage::create(TensorContext& context, const H3BlockConfig& config) {
   validate_config(config);
-  context.require_exact_fp32_vae_normalization();
-  context.require_exact_vae_pointwise();
+  context.require_fp32_vae_normalization();
+  context.require_vae_pointwise();
   context.require_h3_attention(config.vsa_tiles ? AttentionMode::kFlash2 : config.attention_mode);
   return ExactH3BlockStage(std::make_shared<Impl>(context, config));
 }

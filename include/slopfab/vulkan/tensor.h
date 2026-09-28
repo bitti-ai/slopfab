@@ -414,6 +414,15 @@ public:
   // intermediates, epsilon and results. Subnormal and NaN arithmetic is
   // deliberately outside the exact domain; require this capability before
   // recording rms_norm/layer_norm.
+  // Graph execution availability uses the device's arithmetic policy. These
+  // checks permit portable execution; exact_* and require_exact_* retain the
+  // strict, independently qualified bit-parity contract.
+  void require_normalization() const;
+  void require_fp32_vae_normalization() const;
+  void require_vae_pointwise() const;
+  void require_audio_vae_primitives() const;
+  void require_blocked_attention() const;
+  void require_causal_gqa_attention() const;
   bool exact_normalization() const noexcept;
   void require_exact_normalization() const;
   bool exact_fp32_vae_normalization() const noexcept;

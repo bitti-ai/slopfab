@@ -121,7 +121,7 @@ bool env_flag(const char* name) {
 }
 
 #if SLOPFAB_WITH_VULKAN
-vulkan::Device create_vulkan_inference_device(bool exact_h3, bool sage_attention) {
+vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool exact_h3, bool sage_attention) {
   if (!vulkan::Instance::available())
     throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
   vulkan::Instance instance = vulkan::Instance::create();
@@ -134,6 +134,7 @@ vulkan::Device create_vulkan_inference_device(bool exact_h3, bool sage_attention
                     !info.cooperative_matrix_bf16_f32_16x16x16)))
     throw std::runtime_error("Vulkan inference: device lacks required exact neural features");
   vulkan::DeviceOptions options;
+  options.portable_arithmetic = portable_arithmetic;
   options.enable_timeline_semaphore = true;
   options.enable_shader_int64 = true;
   options.enable_shader_float16 = exact_h3;
