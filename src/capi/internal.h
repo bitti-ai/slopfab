@@ -9,23 +9,15 @@
 // wrapped, every throw becomes a status code, and the message goes into
 // thread-local storage for `slopfab_last_error`.
 //
-// This is the only translation unit in slopfab_c, the target that builds
-// slopfab.dll and carries the C ABI, and it is compiled into that target
-// *alone*. It links slopfab_cuda,
-// because `run_generate` is declared in slopfab/generate.h and implemented on
-// the CUDA side — so a consumer that only wants the weight-free plan
-// resolution still pulls the CUDA half in. That is a real cost, and the
-// alternative, splitting the C surface across two DLLs, is worse.
-//
-// Building it into slopfab_cuda as well was tried and is wrong: every entry
-// point would be compiled twice, once with capi.h seen as dllimport and once
-// as dllexport, and the linker quietly picks one. See the note in CMakeLists.
+// C API translation units link the shared generation runner, which dispatches
+// to the enabled CUDA and/or Vulkan backend without exposing C++ symbols.
 #include "slopfab/capi.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -41,7 +33,9 @@
 #include <vector>
 
 #include "slopfab/attention_mode.h"
+#if SLOPFAB_WITH_CUDA
 #include "slopfab/cuda/cublas_dispatch.h"
+#endif
 #include "slopfab/generate.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/pixel_buffer.h"

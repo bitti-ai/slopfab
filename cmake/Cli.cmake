@@ -1,22 +1,6 @@
 # --- cli --------------------------------------------------------------------
 
-if(WIN32)
-  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json")
-    message(FATAL_ERROR "slopfab: ref/text_encoder/tokenizer.json is required to embed the tokenizer")
-  endif()
-  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
-  file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ref/text_encoder/tokenizer.json"
-       SLOPFAB_TOKENIZER_RESOURCE)
-  configure_file(src/slopfab_tokenizer.rc.in generated/slopfab_tokenizer.rc @ONLY)
-
-  # A static library cannot usefully carry a .res — the linker has no reference
-  # to pull it in with — so the executable embeds the tokenizer itself.
-  set(SLOPFAB_EXE_RESOURCES
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/slopfab_tokenizer.rc")
-  set(SLOPFAB_CLI_SOURCES src/main.cpp ${SLOPFAB_EXE_RESOURCES})
-else()
-  set(SLOPFAB_CLI_SOURCES src/main.cpp)
-endif()
+set(SLOPFAB_CLI_SOURCES src/main.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
 
 # The CLI and C API use the same in-process CUDA core. On Windows cuBLAS is
 # late-bound, so neither module has a fixed CUDA-major import and no launcher
@@ -34,8 +18,8 @@ target_compile_definitions(${SLOPFAB_CLI_TARGET} PRIVATE
 if(SLOPFAB_ENABLE_VULKAN)
   target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_vulkan)
 endif()
-if(SLOPFAB_ENABLE_CUDA)
-  target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_cuda)
+if(TARGET slopfab_generation)
+  target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_generation)
 endif()
 
 if(MSVC)

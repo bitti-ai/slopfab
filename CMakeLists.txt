@@ -37,6 +37,7 @@ option(SLOPFAB_TEST_BENCHMARKS "Register opt-in performance measurements with CT
 option(SLOPFAB_WITH_FFMPEG "Compile MP4 muxing and FFmpeg-based image decoding" ON)
 
 include(cmake/Core.cmake)
+include(cmake/Tokenizer.cmake)
 include(cmake/Cuda.cmake)
 include(cmake/Vulkan.cmake)
 include(cmake/Generation.cmake)

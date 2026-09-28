@@ -81,19 +81,27 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_set_version(const char* version) {
   if (std::strcmp(version, "auto") != 0 && std::strcmp(version, "13") != 0 &&
       std::strcmp(version, "12") != 0)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_cuda_set_version: expected auto, 13, or 12");
+#if SLOPFAB_WITH_CUDA
   return guarded([&] {
     slopfab::cuda::set_cublas_version_request(version);
     return SLOPFAB_OK;
   });
+#else
+  return fail(SLOPFAB_ERR_RUNTIME, "CUDA backend is disabled in this build");
+#endif
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_loaded_major(int32_t* out_major) {
   if (out_major == nullptr)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_cuda_loaded_major: null out_major");
   *out_major = 0;
+#if SLOPFAB_WITH_CUDA
   return guarded([&] {
     *out_major = slopfab::cuda::cublas_loaded_major();
     return SLOPFAB_OK;
   });
+#else
+  return fail(SLOPFAB_ERR_RUNTIME, "CUDA backend is disabled in this build");
+#endif
 }
 }

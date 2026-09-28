@@ -1,7 +1,15 @@
 # --- tests ------------------------------------------------------------------
 if(SLOPFAB_BUILD_TESTS)
   enable_testing()
+  slopfab_add_tokenizer_tests()
   include(cmake/TestCoverage.cmake)
+  if(TARGET slopfab_generation)
+    add_executable(slopfab_generation_tests tests/harness.cpp tests/test_main.cpp
+      tests/test_generation_backends.cpp)
+    target_link_libraries(slopfab_generation_tests PRIVATE slopfab_generation)
+    add_test(NAME generation_backends COMMAND slopfab_generation_tests)
+    set_tests_properties(generation_backends PROPERTIES LABELS synthetic SKIP_RETURN_CODE 77)
+  endif()
   # Host tests. Each area contributes its own translation unit and registers
   # its cases with the shared harness, so adding tests never touches a file
   # someone else is editing.
@@ -236,7 +244,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_vit_decoder.cu
       tests/test_int8_weight.cu
     )
-    target_link_libraries(slopfab_kernel_tests PRIVATE slopfab_cuda)
+    target_link_libraries(slopfab_kernel_tests PRIVATE slopfab_generation)
     slopfab_test_suite(kernels slopfab_kernel_tests checkpoint integration benchmark)
 
     if(WIN32)
@@ -265,6 +273,8 @@ if(SLOPFAB_BUILD_TESTS)
     else()
       target_compile_options(slopfab_capi_tests PRIVATE -Wall -Wextra)
     endif()
+    target_compile_definitions(slopfab_capi_tests PRIVATE
+      SLOPFAB_TEST_WITH_CUDA=$<BOOL:${SLOPFAB_ENABLE_CUDA}>)
     add_test(NAME capi COMMAND slopfab_capi_tests)
     set_tests_properties(capi PROPERTIES LABELS integration SKIP_RETURN_CODE 77)
 
@@ -278,7 +288,7 @@ if(SLOPFAB_BUILD_TESTS)
     else()
       target_compile_options(slopfab_capi_cuda_dispatch_tests PRIVATE -Wall -Wextra)
     endif()
-    if(WIN32)
+    if(WIN32 AND SLOPFAB_ENABLE_CUDA)
       add_test(NAME capi_cublas_cuda12 COMMAND slopfab_capi_cuda_dispatch_tests 12)
       add_test(NAME capi_cublas_cuda13 COMMAND slopfab_capi_cuda_dispatch_tests 13)
     endif()

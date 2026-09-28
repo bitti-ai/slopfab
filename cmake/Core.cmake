@@ -82,6 +82,13 @@ target_include_directories(slopfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 # these are linked whether or not FFmpeg is on. Both ship with Windows.
 if(WIN32)
   target_link_libraries(slopfab_core PRIVATE windowscodecs ole32 bcrypt)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(PNG REQUIRED)
+  find_package(JPEG REQUIRED)
+  target_link_libraries(slopfab_core PRIVATE PNG::PNG JPEG::JPEG)
+endif()
+if(SLOPFAB_WITH_FFMPEG)
+  target_link_libraries(slopfab_core PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 # The RGB -> YUV 4:2:0 conversion in src/video/y4m.cpp is threaded. MSVC needs

@@ -1,39 +1,22 @@
 # --- c api ------------------------------------------------------------------
 
-# slopfab_c builds slopfab.dll, the stable C ABI with a hand-written export set, for
-# Rust, C#, Python and anything else with an FFI. See include/slopfab/capi.h.
-#
-# Dependent on CUDA rather than merely checked against it, because the C API
-# exists to run generations and `run_generate` is on the CUDA side. Making it a
-# plain option defaulting to ON meant that a machine with no toolkit — the case
-# the lazy-CUDA design at the top of this file exists to support — stopped
-# configuring at all, since the default would then contradict a hard error two
-# hundred lines earlier. This forces it off in that situation instead, and says
-# so, and an explicit -DSLOPFAB_BUILD_C_API=ON cannot resurrect it.
+# The C ABI uses the shared generation runner with any enabled GPU backend.
 include(CMakeDependentOption)
 cmake_dependent_option(SLOPFAB_BUILD_C_API
   "Build slopfab_c, the stable C ABI shared library" ON
-  "SLOPFAB_ENABLE_CUDA" OFF)
+  "SLOPFAB_ENABLE_CUDA OR SLOPFAB_ENABLE_VULKAN" OFF)
 
-if(NOT SLOPFAB_BUILD_C_API AND NOT SLOPFAB_ENABLE_CUDA)
-  message(STATUS "slopfab: no CUDA, so slopfab_c (the C ABI DLL) is not built")
+if(NOT SLOPFAB_ENABLE_CUDA AND NOT SLOPFAB_ENABLE_VULKAN)
+  message(STATUS "slopfab: no GPU backend, so the C API is not built")
 endif()
 
 if(SLOPFAB_BUILD_C_API)
-  # The internal core and CUDA libraries are static and link into this target.
-  # Consequently slopfab.dll is the only project DLL, and its exports are exactly
-  # the C entry points — no unstable C++ ABI and no companion slopfab DLLs.
-  #
-  # Static cudart is embedded (see above), while the shared in-process loader
-  # resolves CUDA 13/12 cuBLAS by absolute toolkit path on first use. Thus the
-  # DLL and CLI have identical selection/error behavior and neither has a
-  # fixed cublas64_<major>.dll import.
+  # Internal static libraries are linked into one shared library, exporting only
+  # the stable C entry points.
   add_library(slopfab_c SHARED src/capi/capi.cpp)
   target_sources(slopfab_c PRIVATE src/capi/requests.cpp src/capi/plans.cpp
     src/capi/generation.cpp src/capi/references.cpp)
-  # slopfab_cuda carries slopfab_core with it as a PUBLIC dependency, so naming
-  # the one target is naming both.
-  target_link_libraries(slopfab_c PRIVATE slopfab_cuda)
+  target_link_libraries(slopfab_c PRIVATE slopfab_generation)
 
   # PRIVATE: consumers of the DLL include capi.h and nothing else, and the
   # install rule below places it for them. Anything in this build tree that
@@ -47,8 +30,11 @@ if(SLOPFAB_BUILD_C_API)
   # The static libraries end up inside a shared object here, which on ELF
   # targets requires every object in them to be position independent. Harmless
   # and ignored on Windows.
-  set_property(TARGET slopfab_core PROPERTY POSITION_INDEPENDENT_CODE ON)
-  set_property(TARGET slopfab_cuda PROPERTY POSITION_INDEPENDENT_CODE ON)
+  foreach(library IN ITEMS slopfab_core slopfab_cuda slopfab_vulkan slopfab_generation)
+    if(TARGET ${library})
+      set_property(TARGET ${library} PROPERTY POSITION_INDEPENDENT_CODE ON)
+    endif()
+  endforeach()
 
   # The export set is the point of this target, so it is stated rather than
   # inherited. WINDOWS_EXPORT_ALL_SYMBOLS is off explicitly because a build
@@ -127,13 +113,7 @@ if(SLOPFAB_BUILD_C_API)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/slopfab/capi.h")
 
-  # `Tokenizer::load_embedded` looks the resource up in the module holding its
-  # own code. That code is linked into slopfab.dll, so the 7 MB tokenizer has to
-  # be here too or a C caller that leaves the tokenizer path empty gets
-  # "embedded resource is missing".
-  if(WIN32)
-    target_sources(slopfab_c PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/slopfab_tokenizer.rc")
-  endif()
+  target_sources(slopfab_c PRIVATE ${SLOPFAB_TOKENIZER_RESOURCES})
 
   if(MSVC)
     target_compile_options(slopfab_c PRIVATE /W4 /permissive- /utf-8)

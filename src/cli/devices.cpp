@@ -89,24 +89,24 @@ int cmd_devices() {
 #if SLOPFAB_WITH_VULKAN
   std::string diagnostic;
   if (!slopfab::vulkan::Instance::available(&diagnostic)) {
-    std::printf("Vulkan output        unavailable: %s\n", diagnostic.c_str());
+    std::printf("Vulkan compute        unavailable: %s\n", diagnostic.c_str());
   } else {
     try {
       auto instance = slopfab::vulkan::Instance::create();
       const auto devices = instance.enumerate_devices();
       if (devices.empty())
-        std::printf("Vulkan output        no compute device\n");
+        std::printf("Vulkan compute        no compute device\n");
       for (size_t i = 0; i < devices.size(); ++i) {
         const auto& d = devices[i].info();
-        std::printf("Vulkan output %zu     %s (timeline=%s)\n", i, d.name.c_str(),
+        std::printf("Vulkan compute %zu     %s (timeline=%s)\n", i, d.name.c_str(),
                     d.timeline_semaphore ? "yes" : "no");
       }
     } catch (const std::exception& error) {
-      std::printf("Vulkan output        unavailable: %s\n", error.what());
+      std::printf("Vulkan compute        unavailable: %s\n", error.what());
     }
   }
 #else
-  std::printf("Vulkan output        disabled in this build\n");
+  std::printf("Vulkan compute        disabled in this build\n");
 #endif
   return 0;
 }

@@ -99,7 +99,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_edit_option = false;
   bool saw_seed = false;
   int count = 1;
+#if !SLOPFAB_WITH_CUDA && SLOPFAB_WITH_VULKAN
+  std::string inference_backend = "vulkan";
+#else
   std::string inference_backend = "cuda";
+#endif
   std::string output_accelerator = "cpu";
 
   for (int i = 0; i < argc; ++i) {
@@ -558,10 +562,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 #endif
 
-#if !SLOPFAB_WITH_CUDA
+#if !SLOPFAB_WITH_CUDA && !SLOPFAB_WITH_VULKAN
   (void)executable;
-  std::fprintf(stderr, "slopfab: built without CUDA support; model inference requires CUDA. "
-                       "Vulkan accelerates output conversion only\n");
+  std::fprintf(stderr, "slopfab: generation requires a CUDA or Vulkan build\n");
   return 1;
 #else
 
@@ -628,19 +631,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
 #else
   if (bench_load > 0) {
-    std::fprintf(stderr, "slopfab: --bench-load needs a GPU build\n");
+    std::fprintf(stderr, "slopfab: --bench-load requires CUDA\n");
     return 1;
   }
 #endif
 
-#if !SLOPFAB_WITH_CUDA
-  (void)sampler_kind;
-  (void)dump_latents;
-  (void)init_latents;
-  (void)attn_band;
-  std::fprintf(stderr, "slopfab: built without CUDA support; generate needs a GPU\n");
-  return 1;
-#else
 #if SLOPFAB_WITH_VULKAN
   options.output_frame_converter = output_converter.get();
 #endif
@@ -667,8 +662,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                                           run.seconds_audio_decode + run.seconds_output);
   }
   return 0;
-#endif
-#endif // SLOPFAB_WITH_CUDA
+#endif // SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
 }
 
 }
