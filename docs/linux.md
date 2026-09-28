@@ -122,7 +122,9 @@ bash package.sh --backend both -- -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
 creates `dist/slopfab-VERSION-linux-x86_64-BACKEND.tar.gz`. It uses a separate
 directory under `build/` for each backend; `--build-dir DIR` overrides it.
 Additional CMake arguments follow `--`. Set `CMAKE_BUILD_PARALLEL_LEVEL` to
-change the default of two compilation jobs.
+change the default of two compilation jobs. Packaging stages files under Linux
+`/tmp` before copying the archive to `dist/`, so WSL checkouts on Windows drives
+do not need to support Linux permissions or shared-library symlinks.
 
 Archives contain `bin/slopfab`, the versioned C API library and SONAME symlinks
 under `lib/`, `include/slopfab/capi.h`, documentation and licenses. The tokenizer

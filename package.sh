@@ -41,5 +41,11 @@ cmake --build "$build_dir" --config Release --parallel "${CMAKE_BUILD_PARALLEL_L
 # Model and GPU integration suites are run separately on a suitable host.
 ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(unit|capi|generation_backends|embedded_tokenizer|reference_media_decode)$'
 mkdir -p -- "$root/dist"
-cpack --config "$build_dir/CPackConfig.cmake" -C Release -B "$root/dist"
+# WSL checkouts can live on a Windows drive where CMake cannot install ELF
+# permissions or shared-library symlinks. Stage on the Linux filesystem and
+# copy only the completed archive back to the checkout.
+package_dir=$(mktemp -d /tmp/slopfab-package.XXXXXXXX)
+trap 'rm -rf -- "$package_dir"' EXIT
+cpack --config "$build_dir/CPackConfig.cmake" -C Release -B "$package_dir"
+cp -- "$package_dir/"*.tar.gz "$root/dist/"
 printf 'package: wrote Linux archive under %s/dist (model weights and GPU/media runtimes are external).\n' "$root"
