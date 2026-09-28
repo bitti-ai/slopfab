@@ -68,7 +68,7 @@ weights/
   vae/
 ```
 
-The CLI discovers checkpoints in these folders. On Windows, it can download missing defaults automatically. To choose files explicitly, use `--text-encoder`, `--transformer`, `--vae` and `--audio-vae`. Checkpoint quantization is detected from the file.
+The CLI discovers local checkpoints in these folders. Supply model files yourself; slopfab does not download missing weights. To choose files explicitly, use `--text-encoder`, `--transformer`, `--vae` and `--audio-vae`. Checkpoint quantization is detected from the file.
 
 The video VAE supports Comfy INT8 ConvRot checkpoints, including `minimax_h3_video_vae_int8_convrot.safetensors`. CUDA keeps these weights compressed and expands one matrix at a time; Vulkan and exact CUDA decoding expand them to FP16 when loading. No manual quantization or shift setting is needed.
 

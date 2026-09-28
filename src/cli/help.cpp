@@ -49,7 +49,6 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
-#include <winhttp.h>
 #endif
 
 #if SLOPFAB_WITH_CUDA
@@ -228,7 +227,7 @@ const CommandHelp kCommands[] = {
      "Every run that reused anything prints how many of its evaluations it\n"
      "skipped.\n"
      "\n"
-     "checkpoints (omitted weights are found under weights/ or downloaded there):\n"
+     "checkpoints (omitted weights are discovered locally under weights/):\n"
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --text-encoder <f>           Qwen3-VL conditioner, int8 ConvRot or nvfp4 AWQ\n"
      "  --transformer <f>            H3 omni transformer, fp8, int8 ConvRot, nvfp4 or NF4\n"

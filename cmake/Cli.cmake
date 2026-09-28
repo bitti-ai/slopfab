@@ -43,9 +43,6 @@ if(MSVC)
 else()
   target_compile_options(${SLOPFAB_CLI_TARGET} PRIVATE -Wall -Wextra)
 endif()
-if(WIN32)
-  target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE winhttp)
-endif()
 
 # Staging the FFmpeg runtime beside the executable, which only a build that
 # compiled the muxer has any use for. Guarded rather than left unconditional

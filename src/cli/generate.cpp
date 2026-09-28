@@ -49,7 +49,6 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
-#include <winhttp.h>
 #endif
 
 #if SLOPFAB_WITH_CUDA
@@ -589,7 +588,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   if (!saw_out)
     std::filesystem::create_directories(std::filesystem::path(req.out_path).parent_path());
 
-  ensure_generate_models(req, executable, prompt_embedding.empty());
+  ensure_generate_models(req, prompt_embedding.empty());
   plan = slopfab::resolve_plan(req);
   slopfab::validate_generation_options(req, plan, options);
 

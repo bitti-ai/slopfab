@@ -49,7 +49,6 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
-#include <winhttp.h>
 #endif
 
 #if SLOPFAB_WITH_CUDA
@@ -67,136 +66,6 @@
 #include "commands.h"
 
 namespace slopfab::cli {
-struct ModelDownload {
-  const char* subdirectory;
-  const char* filename;
-  const wchar_t* url;
-};
-
-constexpr ModelDownload kRef2VATransformer = {
-    "transformer", "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
-    L"https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/"
-    L"minimax_h3_ref2va_pruned_int8_convrot.safetensors?download=true"};
-constexpr ModelDownload kFL2VATransformer = {
-    "transformer", "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
-    L"https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/"
-    L"minimax_h3_fl2va_pruned_int8_convrot.safetensors?download=true"};
-constexpr ModelDownload kVideoVAE = {
-    "vae", "minimax_h3_video_vae_fp16.safetensors",
-    L"https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/"
-    L"minimax_h3_video_vae_fp16.safetensors?download=true"};
-constexpr ModelDownload kAudioVAE = {
-    "vae", "minimax_h3_audio_vae_fp32.safetensors",
-    L"https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/"
-    L"minimax_h3_audio_vae_fp32.safetensors?download=true"};
-constexpr ModelDownload kTextEncoder = {
-    "text_encoder", "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
-    L"https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/"
-    L"qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors?download=true"};
-
-#if defined(_WIN32)
-struct InternetHandle {
-  HINTERNET value = nullptr;
-
-  ~InternetHandle() {
-    if (value != nullptr)
-      WinHttpCloseHandle(value);
-  }
-};
-
-void download_model(const ModelDownload& model, const std::filesystem::path& destination) {
-  URL_COMPONENTS parts{};
-  parts.dwStructSize = sizeof(parts);
-  parts.dwSchemeLength = static_cast<DWORD>(-1);
-  parts.dwHostNameLength = static_cast<DWORD>(-1);
-  parts.dwUrlPathLength = static_cast<DWORD>(-1);
-  parts.dwExtraInfoLength = static_cast<DWORD>(-1);
-  if (!WinHttpCrackUrl(model.url, 0, 0, &parts)) {
-    throw std::runtime_error("download: invalid embedded model URL");
-  }
-  const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
-  std::wstring path(parts.lpszUrlPath, parts.dwUrlPathLength);
-  path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
-
-  InternetHandle session{WinHttpOpen(L"slopfab/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
-  if (!session.value)
-    throw std::runtime_error("download: cannot initialise WinHTTP");
-  WinHttpSetTimeouts(session.value, 30000, 30000, 30000, 60000);
-  InternetHandle connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
-  if (!connection.value)
-    throw std::runtime_error("download: cannot connect to Hugging Face");
-  InternetHandle request{
-      WinHttpOpenRequest(connection.value, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                         WINHTTP_DEFAULT_ACCEPT_TYPES,
-                         parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)};
-  if (!request.value ||
-      !WinHttpSendRequest(request.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA,
-                          0, 0, 0) ||
-      !WinHttpReceiveResponse(request.value, nullptr)) {
-    throw std::runtime_error("download: request failed for " + std::string(model.filename));
-  }
-  DWORD status = 0;
-  DWORD status_size = sizeof(status);
-  WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                      WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size, WINHTTP_NO_HEADER_INDEX);
-  if (status != 200) {
-    throw std::runtime_error("download: Hugging Face returned HTTP " + std::to_string(status) +
-                             " for " + model.filename);
-  }
-
-  uint64_t total = 0;
-  wchar_t length[64]{};
-  DWORD length_size = sizeof(length);
-  if (WinHttpQueryHeaders(request.value, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX,
-                          length, &length_size, WINHTTP_NO_HEADER_INDEX)) {
-    total = std::wcstoull(length, nullptr, 10);
-  }
-
-  const std::filesystem::path partial = destination.string() + ".part";
-  std::ofstream out(partial, std::ios::binary | std::ios::trunc);
-  if (!out)
-    throw std::runtime_error("download: cannot create " + partial.string());
-  std::vector<char> buffer(1 << 20);
-  uint64_t received = 0;
-  int last_percent = -1;
-  for (;;) {
-    DWORD count = 0;
-    if (!WinHttpReadData(request.value, buffer.data(), static_cast<DWORD>(buffer.size()), &count)) {
-      out.close();
-      std::filesystem::remove(partial);
-      throw std::runtime_error("download: connection interrupted for " +
-                               std::string(model.filename));
-    }
-    if (count == 0)
-      break;
-    out.write(buffer.data(), count);
-    if (!out) {
-      out.close();
-      std::filesystem::remove(partial);
-      throw std::runtime_error("download: write failed for " + partial.string());
-    }
-    received += count;
-    const int percent = total == 0 ? -1 : static_cast<int>(received * 100 / total);
-    if (percent != last_percent && (percent < 0 || percent % 2 == 0)) {
-      if (percent >= 0)
-        std::printf("\rdownload    %-55s %3d%%", model.filename, percent);
-      else
-        std::printf("\rdownload    %-55s %.2f GB", model.filename, received / 1e9);
-      std::fflush(stdout);
-      last_percent = percent;
-    }
-  }
-  out.close();
-  std::printf("\rdownload    %-55s done (%.2f GB)\n", model.filename, received / 1e9);
-  if (received < 1024 * 1024 || (total != 0 && received != total)) {
-    std::filesystem::remove(partial);
-    throw std::runtime_error("download: incomplete file for " + std::string(model.filename));
-  }
-  std::filesystem::rename(partial, destination);
-}
-#endif
-
 uint64_t random_seed() {
   std::random_device rd;
   return (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
@@ -279,45 +148,19 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
     req.audio_vae_path = find_checkpoint(weights / "vae", "audio");
 }
 
-std::filesystem::path default_weights_directory(const char* executable) {
-  if (const std::filesystem::path found = find_weights_directory(executable); !found.empty()) {
-    return found;
-  }
-  std::error_code ec;
-  const std::filesystem::path exe = std::filesystem::absolute(executable, ec);
-  return (ec ? std::filesystem::current_path() : exe.parent_path()) / "weights";
-}
-
-void ensure_model(std::string& path, const ModelDownload& model,
-                  const std::filesystem::path& weights) {
-  if (!path.empty())
-    return;
-  const std::filesystem::path directory = weights / model.subdirectory;
-  std::filesystem::create_directories(directory);
-  const std::filesystem::path destination = directory / model.filename;
-  if (!std::filesystem::is_regular_file(destination)) {
-#if defined(_WIN32)
-    std::printf("model       %s is missing; downloading from Hugging Face\n", model.filename);
-    download_model(model, destination);
-#else
-    throw std::runtime_error(
-        "model is missing and automatic download is only available on Windows: " +
-        destination.string());
-#endif
-  }
-  path = destination.string();
-}
-
-void ensure_generate_models(slopfab::GenerateRequest& req, const char* executable,
-                            bool need_text_encoder) {
-  const std::filesystem::path weights = default_weights_directory(executable);
+void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_encoder) {
+  const auto require_model = [](const std::string& path, const char* option,
+                                const char* directory) {
+    if (path.empty())
+      throw std::runtime_error(std::string("missing model: place a compatible checkpoint in weights/") +
+                               directory + " or pass " + option + " <file>");
+  };
   if (need_text_encoder)
-    ensure_model(req.text_encoder_path, kTextEncoder, weights);
-  ensure_model(req.transformer_path, req.has_references() ? kRef2VATransformer : kFL2VATransformer,
-               weights);
-  ensure_model(req.video_vae_path, kVideoVAE, weights);
+    require_model(req.text_encoder_path, "--text-encoder", "text_encoder/");
+  require_model(req.transformer_path, "--transformer", "transformer/");
+  require_model(req.video_vae_path, "--vae", "vae/");
   if (!req.still_image)
-    ensure_model(req.audio_vae_path, kAudioVAE, weights);
+    require_model(req.audio_vae_path, "--audio-vae", "vae/");
 }
 
 int cmd_prepare_lora(int argc, char** argv) {
