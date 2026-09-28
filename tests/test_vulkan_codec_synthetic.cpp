@@ -1,4 +1,5 @@
 #include "detail/vulkan_fixture.h"
+#include "slopfab/vae/audio_primitives.h"
 
 SLOPFAB_TEST_CATEGORY(vulkan_tensor_exact_vae_norms, "synthetic") {
   using namespace slopfab;
@@ -474,4 +475,112 @@ SLOPFAB_TEST_CATEGORY(vulkan_audio_vae_decoder_cuda_off_contract, "synthetic") {
     unloaded_decode_rejected = true;
   }
   CHECK(unloaded_decode_rejected);
+}
+
+
+SLOPFAB_TEST_CATEGORY(vulkan_portable_neural_execution, "synthetic") {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!Instance::available()) {
+    SKIP_UNSUPPORTED_HARDWARE("no Vulkan loader");
+    return;
+  }
+  auto instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore ||
+      !physical.front().info().shader_int64) {
+    SKIP_UNSUPPORTED_HARDWARE("portable neural shaders need timeline semaphores and shaderInt64");
+    return;
+  }
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  options.portable_arithmetic = true;
+  auto device = physical.front().create_device(options);
+  CHECK(device.info().portable_arithmetic);
+  TensorContext context(device);
+  context.require_normalization();
+  context.require_vae_pointwise();
+  context.require_audio_vae_primitives();
+  context.require_blocked_attention();
+  context.require_causal_gqa_attention();
+  // Opting into execution must never qualify an unmeasured device for parity.
+  if (!detail::known_exact_vae_norm_device(device.info().vendor_id, device.info().device_id,
+                                           device.info().driver_version)) {
+    CHECK(!context.exact_normalization());
+    CHECK(!context.exact_audio_vae_primitives());
+    bool rejected = false;
+    try {
+      context.require_exact_normalization();
+    } catch (const std::runtime_error&) {
+      rejected = true;
+    }
+    CHECK(rejected);
+  }
+
+  const uint64_t shape[] = {2, 8};
+  const uint64_t features = 8;
+  auto matrix = TensorLayout::contiguous(shape, 2);
+  auto vector = TensorLayout::contiguous(&features, 1);
+  auto input = context.allocate(matrix);
+  auto output = context.allocate(matrix);
+  auto weight = context.allocate(vector);
+  std::vector<float> values(16), weights(8, 1.0f), result(16);
+  for (size_t i = 0; i < values.size(); ++i)
+    values[i] = (i & 1) ? -0.5f : 0.5f;
+  context.upload(input, values.data(), values.size());
+  context.upload(weight, weights.data(), weights.size());
+  auto batch = context.begin_batch();
+  batch.rms_norm(input, weight, output, 0.75f);
+  batch.audio_scale_inplace(output, 2.0f);
+  batch.audio_clamp_inplace(output, -0.75f, 0.75f);
+  batch.submit().wait();
+  context.download(output, result.data(), result.size());
+  for (size_t i = 0; i < result.size(); ++i)
+    CHECK_NEAR(result[i], values[i] > 0 ? 0.75f : -0.75f, 1e-6);
+
+  auto fused = context.allocate(matrix);
+  const uint64_t output_shape[] = {2, 4};
+  auto swiglu = context.allocate(TensorLayout::contiguous(output_shape, 2));
+  auto bias = context.allocate(vector);
+  std::vector<float> zeros(16, 0.0f);
+  context.upload(fused, zeros.data(), zeros.size());
+  context.upload(bias, zeros.data(), 8);
+  auto pointwise = context.begin_batch();
+  pointwise.swiglu_bias_f32(fused, bias, swiglu);
+  pointwise.submit().wait();
+  std::vector<float> gates(8, 1.0f);
+  context.download(swiglu, gates.data(), gates.size());
+  for (float value : gates)
+    CHECK(value == 0.0f);
+
+  const uint64_t audio_shape[] = {1, 1, 4}, audio_weight_shape[] = {1, 1, 2};
+  const uint64_t audio_output_shape[] = {1, 1, 3};
+  auto samples = context.allocate(TensorLayout::contiguous(audio_shape, 3));
+  auto kernel = context.allocate(TensorLayout::contiguous(audio_weight_shape, 3));
+  auto convolved = context.allocate(TensorLayout::contiguous(audio_output_shape, 3));
+  const float pcm[] = {1, 2, 3, 4}, coefficients[] = {0.5f, 0.5f};
+  context.upload(samples, pcm, 4);
+  context.upload(kernel, coefficients, 2);
+  vae::AudioConv1DDesc convolution;
+  convolution.batch = convolution.in_channels = convolution.out_channels = 1;
+  convolution.length_in = 4;
+  convolution.length_out = 3;
+  convolution.kernel = 2;
+  auto audio_batch = context.begin_batch();
+  audio_batch.audio_conv1d(samples, kernel, nullptr, convolved, convolution);
+  audio_batch.submit().wait();
+  float pcm_result[3] = {};
+  context.download(convolved, pcm_result, 3);
+  for (int i = 0; i < 3; ++i)
+    CHECK_NEAR(pcm_result[i], 1.5f + i, 1e-6);
+
+  // Internal decoder contexts inherit the device policy, including attention.
+  vae::ViTConfig config;
+  config.num_layers = 1;
+  config.transformer_mode = vae::ViTTransformerMode::kExact;
+  auto video = VideoVaeDecoder::create(device, config);
+  CHECK(video.operators_per_document() == 35);
+  auto audio = AudioDecoder::create(device);
+  CHECK(audio.recorded_operators() == 497);
 }

@@ -35,6 +35,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_quantized_weight_residency, "checkpoint") {
     SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty()");
     return;
   }
+  const auto& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64 || !info.shader_float16 ||
+      !info.storage_buffer_16bit || !info.cooperative_matrix_bf16_f32_16x16x16) {
+    SKIP_UNSUPPORTED_HARDWARE("H3 residency test requires cooperative BF16 GPU arithmetic");
+    return;
+  }
   DeviceOptions options;
   options.enable_timeline_semaphore = true;
   options.enable_shader_int64 = physical.front().info().shader_int64;

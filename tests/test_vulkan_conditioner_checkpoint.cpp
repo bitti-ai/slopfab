@@ -27,6 +27,35 @@ SLOPFAB_TEST_CATEGORY(vulkan_qwen_layer0_real_l132_capture_replay, "checkpoint")
     return;
   }
 
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty()) {
+    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty()");
+    return;
+  }
+  const DeviceInfo& info = physical.front().info();
+  if (!info.timeline_semaphore || !info.shader_int64) {
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: !info.timeline_semaphore || !info.shader_int64");
+    return;
+  }
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  options.enable_shader_int64 = true;
+  options.enable_shader_float16 = info.shader_float16;
+  options.enable_storage_buffer_16bit = info.storage_buffer_16bit;
+  options.enable_cooperative_matrix = info.cooperative_matrix_bf16_f32_16x16x16;
+  Device device = physical.front().create_device(options);
+  TensorContextOptions context_options;
+  context_options.max_batch_operators = 46;
+  TensorContext context(device, context_options);
+  if (!context.exact_causal_gqa_attention() || !context.exact_fp32_vae_normalization() ||
+      !context.exact_vae_pointwise()) {
+    SKIP_UNSUPPORTED_HARDWARE(
+        "unavailable prerequisite: !context.exact_causal_gqa_attention() || !context.exact_fp32_vae_normalization() || !context.exact_vae_pointwise()");
+    return;
+  }
+
 #if !defined(SLOPFAB_WITH_CUDA) || !SLOPFAB_WITH_CUDA
   constexpr Sha256Digest capture_sha{0xec, 0x13, 0xad, 0x62, 0xa7, 0xe2, 0x53, 0xd5,
                                      0x88, 0xbf, 0xac, 0x51, 0x85, 0x0b, 0x92, 0x48,
@@ -63,35 +92,6 @@ SLOPFAB_TEST_CATEGORY(vulkan_qwen_layer0_real_l132_capture_replay, "checkpoint")
     rope_hash *= 1099511628211ull;
   }
   CHECK(rope_hash == capture.header.rope_fnv64);
-
-  Instance instance = Instance::create();
-  const auto physical = instance.enumerate_devices();
-  if (physical.empty()) {
-    SKIP_UNSUPPORTED_HARDWARE("unavailable prerequisite: physical.empty()");
-    return;
-  }
-  const DeviceInfo& info = physical.front().info();
-  if (!info.timeline_semaphore || !info.shader_int64) {
-    SKIP_UNSUPPORTED_HARDWARE(
-        "unavailable prerequisite: !info.timeline_semaphore || !info.shader_int64");
-    return;
-  }
-  DeviceOptions options;
-  options.enable_timeline_semaphore = true;
-  options.enable_shader_int64 = true;
-  options.enable_shader_float16 = info.shader_float16;
-  options.enable_storage_buffer_16bit = info.storage_buffer_16bit;
-  options.enable_cooperative_matrix = info.cooperative_matrix_bf16_f32_16x16x16;
-  Device device = physical.front().create_device(options);
-  TensorContextOptions context_options;
-  context_options.max_batch_operators = 46;
-  TensorContext context(device, context_options);
-  if (!context.exact_causal_gqa_attention() || !context.exact_fp32_vae_normalization() ||
-      !context.exact_vae_pointwise()) {
-    SKIP_UNSUPPORTED_HARDWARE(
-        "unavailable prerequisite: !context.exact_causal_gqa_attention() || !context.exact_fp32_vae_normalization() || !context.exact_vae_pointwise()");
-    return;
-  }
 
   SafeTensors checkpoint;
   checkpoint.open(checkpoint_path.string());
