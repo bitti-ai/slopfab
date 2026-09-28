@@ -127,7 +127,8 @@ bool env_flag(const char* name) {
 #if SLOPFAB_WITH_VULKAN
 size_t select_vulkan_inference_device(const std::vector<vulkan::DeviceInfo>& devices,
                                       bool portable_arithmetic, bool cooperative,
-                                      bool sage_attention) {
+                                      bool sage_attention,
+                                      std::optional<AttentionMode> attention) {
   const size_t absent = devices.size();
   size_t selected = absent;
   std::string rejected;
@@ -151,7 +152,19 @@ size_t select_vulkan_inference_device(const std::vector<vulkan::DeviceInfo>& dev
                 !info.cooperative_matrix_bf16_f32_16x16x16 ||
                 !info.cooperative_matrix_f16_f32_16x16x16)) {
       reason = "missing cooperative BF16/FP16 matrix features";
-    } else if (sage_attention &&
+    } else if (attention == AttentionMode::kExact &&
+               (info.subgroup_size != 32 ||
+                info.max_compute_workgroup_invocations < vulkan::detail::kH3ExactLocalSize ||
+                info.max_compute_workgroup_size[0] < vulkan::detail::kH3ExactLocalSize ||
+                info.max_compute_shared_memory_bytes < vulkan::detail::kH3ExactMinReportedSharedBytes)) {
+      reason = "exact H3 attention needs subgroup32, 1024 threads and 48 KiB shared memory";
+    } else if (attention == AttentionMode::kFlash2 &&
+               (info.subgroup_size != 32 || !info.compute_subgroup_shuffle ||
+                info.max_compute_workgroup_invocations < vulkan::detail::kH3FlashLocalSize ||
+                info.max_compute_workgroup_size[0] < vulkan::detail::kH3FlashLocalSize ||
+                info.max_compute_shared_memory_bytes < vulkan::detail::kH3FlashMinSharedBytes)) {
+      reason = "Flash2 attention lacks required subgroup32/workgroup/shared-memory features";
+    } else if ((sage_attention || attention == AttentionMode::kSage2) &&
                (!info.shader_int8 || !info.cooperative_matrix_i8_i32_16x16x32 ||
                 !info.compute_subgroup_shuffle || !info.compute_subgroup_arithmetic ||
                 !vulkan::detail::sage_kernel_fits(info, 1))) {
@@ -177,7 +190,11 @@ size_t select_vulkan_inference_device(const std::vector<vulkan::DeviceInfo>& dev
   return selected;
 }
 
-vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool exact_h3, bool sage_attention) {
+vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool cooperative,
+                                               bool sage_attention,
+                                               std::optional<AttentionMode> attention) {
+  cooperative = cooperative || attention.has_value();
+  sage_attention = sage_attention || attention == AttentionMode::kSage2;
   if (!vulkan::Instance::available())
     throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
   vulkan::Instance instance = vulkan::Instance::create();
@@ -187,15 +204,15 @@ vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool exa
   for (const auto& device : physical)
     devices.push_back(device.info());
   const size_t selected = select_vulkan_inference_device(devices, portable_arithmetic,
-                                                         exact_h3, sage_attention);
+                                                         cooperative, sage_attention, attention);
   const auto& info = devices[selected];
   vulkan::DeviceOptions options;
   options.portable_arithmetic = portable_arithmetic;
   options.enable_timeline_semaphore = true;
   options.enable_shader_int64 = true;
-  options.enable_shader_float16 = exact_h3;
-  options.enable_storage_buffer_16bit = exact_h3;
-  options.enable_cooperative_matrix = exact_h3;
+  options.enable_shader_float16 = cooperative;
+  options.enable_storage_buffer_16bit = cooperative;
+  options.enable_cooperative_matrix = cooperative;
   options.enable_shader_int8 = sage_attention && info.shader_int8;
   return physical[selected].create_device(options);
 }

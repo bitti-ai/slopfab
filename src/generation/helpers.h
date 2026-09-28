@@ -1,5 +1,7 @@
 #pragma once
 #include <chrono>
+#include <optional>
+#include "slopfab/attention_mode.h"
 #include <string>
 #include <vector>
 #include "slopfab/image.h"
@@ -18,8 +20,10 @@ std::vector<uint8_t> resize_rgb_bilinear(const RGBImage&, int width, int height)
 // Pure selection is shared by generation and its hardware-independent tests.
 size_t select_vulkan_inference_device(const std::vector<vulkan::DeviceInfo>& devices,
                                       bool portable_arithmetic, bool cooperative,
-                                      bool sage_attention);
-vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool exact_h3 = false,
-                                               bool sage_attention = false);
+                                      bool sage_attention,
+                                      std::optional<AttentionMode> attention = std::nullopt);
+vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool cooperative = false,
+                                               bool sage_attention = false,
+                                               std::optional<AttentionMode> attention = std::nullopt);
 #endif
 }

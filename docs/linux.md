@@ -184,8 +184,8 @@ CUDA 13.3:
   integration suite skipped because WSL exposed only llvmpipe software Vulkan.
   Portable arithmetic tests executed 33 checks through actual Vulkan shaders.
   No physical Vulkan GPU generation was validated. Full H3 inference also
-  requires the supported BF16/FP16 cooperative-matrix operations and subgroup
-  size; a Vulkan device listing alone does not establish those capabilities.
+  requires the supported BF16/FP16 cooperative-matrix operations and
+  attention-specific subgroup/workgroup limits; a Vulkan device listing alone does not establish those capabilities.
 - The Vulkan-only and combined CUDA/Vulkan packages passed all five packaging checks. After
   extraction elsewhere, the CLI tokenized with the embedded full vocabulary
   and the versioned shared library loaded and accepted both arithmetic policies.

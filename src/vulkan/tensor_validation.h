@@ -4,6 +4,13 @@
 
 namespace slopfab::vulkan::detail {
 
+// Keep device selection and the shader pipeline resource gates in agreement.
+constexpr uint32_t kH3ExactLocalSize = 1024;
+constexpr uint32_t kH3ExactMinReportedSharedBytes = 49152;
+constexpr uint32_t kH3FlashLocalSize = 256;
+constexpr uint32_t kH3FlashMinSharedBytes = 41344;
+
+
 constexpr bool norm_dispatch_fits(uint64_t rows, uint32_t max_workgroups_x) noexcept {
   return rows != 0 && rows <= max_workgroups_x;
 }

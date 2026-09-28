@@ -47,7 +47,7 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
   exact_attention = known_exact_blocked_attention_device(input.info());
   exact_h3_attention = known_exact_h3_attention_device(input.info());
   flash_attention = fast_h3_attention_device(input.info()) &&
-                    input.info().max_compute_shared_memory_bytes >= 41344 &&
+                    input.info().max_compute_shared_memory_bytes >= detail::kH3FlashMinSharedBytes &&
                     input.info().shader_bfloat16_type &&
                     input.info().shader_bfloat16_cooperative_matrix &&
                     input.info().cooperative_matrix_bf16_f32_16x16x16;

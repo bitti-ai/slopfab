@@ -28,13 +28,13 @@ namespace tensor_detail {
 
 constexpr uint64_t kMaxExactNormDimension = 1ull << 24;
 enum class VaePointwiseOperation : uint32_t { kResidual, kSwiglu, kDenorm };
-constexpr uint32_t kH3AttentionLocalSize = 1024;
-constexpr uint32_t kFastH3AttentionLocalSize = 256;
+constexpr uint32_t kH3AttentionLocalSize = detail::kH3ExactLocalSize;
+constexpr uint32_t kFastH3AttentionLocalSize = detail::kH3FlashLocalSize;
 constexpr uint32_t kFastH3AttentionQueryTile = 32;
 // The pinned module declares 99,328 bytes across phase-aliased workgroup
 // arrays. NVIDIA 610.88 lowers those nonoverlapping phases under its reported
 // 48 KiB core limit; pipeline creation remains the final module-resource gate.
-constexpr uint32_t kH3AttentionMinReportedSharedBytes = 49152;
+constexpr uint32_t kH3AttentionMinReportedSharedBytes = detail::kH3ExactMinReportedSharedBytes;
 
 inline uint64_t checked_multiply(uint64_t a, uint64_t b, const char* operation) {
   if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) {

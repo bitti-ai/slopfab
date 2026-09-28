@@ -158,6 +158,33 @@ SLOPFAB_TEST(generation_vulkan_device_selection) {
   sage.compute_subgroup_shuffle = sage.compute_subgroup_arithmetic = true;
   sage.subgroup_size = 32;
   CHECK(select_vulkan_inference_device({discrete, sage}, true, true, true) == 1);
+  // A discrete GPU must not displace another adapter that can actually run
+  // the requested attention graph. Conditioner GEMM can still use its scalar
+  // fallback and Sage has its own subgroup64-capable shader.
+  auto attention_gpu = discrete;
+  attention_gpu.discrete = false;
+  attention_gpu.subgroup_size = 32;
+  auto wave64 = discrete;
+  wave64.subgroup_size = 64;
+  CHECK(select_vulkan_inference_device({wave64, attention_gpu}, true, true, false,
+                                       AttentionMode::kExact) == 1);
+  CHECK(select_vulkan_inference_device({wave64, attention_gpu}, true, true, false) == 0);
+  auto small_shared = discrete;
+  small_shared.subgroup_size = 32;
+  small_shared.max_compute_shared_memory_bytes = 32768;
+  CHECK(select_vulkan_inference_device({small_shared, attention_gpu}, true, true, false,
+                                       AttentionMode::kExact) == 1);
+  auto small_workgroup = discrete;
+  small_workgroup.subgroup_size = 32;
+  small_workgroup.max_compute_workgroup_invocations = 512;
+  CHECK(select_vulkan_inference_device({small_workgroup, attention_gpu}, true, true, false,
+                                       AttentionMode::kExact) == 1);
+  // Flash2 fits smaller workgroups; it must not inherit exact-H3's 1024 gate.
+  small_workgroup.compute_subgroup_shuffle = true;
+  CHECK(select_vulkan_inference_device({small_workgroup, attention_gpu}, true, true, false,
+                                       AttentionMode::kFlash2) == 0);
+  sage.subgroup_size = 64;
+  CHECK(select_vulkan_inference_device({sage}, true, true, true, AttentionMode::kSage2) == 0);
   bool diagnostic = false;
   try {
     (void)select_vulkan_inference_device({integrated}, false, false, false);

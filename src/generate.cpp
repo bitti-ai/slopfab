@@ -903,7 +903,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       dit_file.open(request.transformer_path);
       vulkan::Device device =
           create_vulkan_inference_device(options.vulkan_portable_arithmetic, true,
-                                         options.attention_mode == AttentionMode::kSage2);
+                                         options.attention_mode == AttentionMode::kSage2,
+                                         options.attention_mode);
       vulkan::TensorContextOptions context_options;
       context_options.max_batch_operators =
           request.loras.empty() && !plan.model.compressed_attention ? 2048 : 4096;
