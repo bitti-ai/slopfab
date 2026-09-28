@@ -156,6 +156,28 @@ builds and cannot tokenize real model prompts correctly. A manually enabled
 CUDA job compiles CLI and C API against CUDA 12.8 for SM86. Hosted CI does not
 claim GPU execution, native SM120a coverage or successful model generation.
 
+Validation recorded on 2026-09-28 used WSL Ubuntu 26.04, GCC 15, CMake 4.2 and
+CUDA 13.3:
+
+- The CUDA + Vulkan configuration built all targets and passed nine host, C API
+  and CUDA dispatch tests. CUDA-only CLI/C API builds with FFmpeg disabled also
+  passed device enumeration and embedded-tokenizer smoke checks.
+- Real CUDA video/audio VAE decoding of synthetic latents produced a 22-frame,
+  256x256 MP4; probing confirmed H.264 video and AAC audio. This validates
+  decoding and output, not the complete text-to-video pipeline.
+- The Vulkan-only configuration passed seven of eight CTest suites; the model
+  integration suite skipped because WSL exposed only llvmpipe software Vulkan.
+  Portable arithmetic tests executed 33 checks through actual Vulkan shaders.
+  No physical Vulkan GPU generation was validated. Full H3 inference also
+  requires the supported BF16/FP16 cooperative-matrix operations and subgroup
+  size; a Vulkan device listing alone does not establish those capabilities.
+- The packaged Vulkan CLI and C API passed all five packaging checks. After
+  extraction elsewhere, the CLI tokenized with the embedded full vocabulary
+  and the versioned shared library loaded and accepted both arithmetic policies.
+  SONAME symlinks and relative library search paths were verified.
+- Linux host tests exercised FFmpeg 8 image decoding, MP4 output and reference
+  decoding. Four Windows host regression tests passed as well.
+
 ## WSL
 
 Run the same Linux commands inside the WSL distribution, for example from
