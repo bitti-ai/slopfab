@@ -1,18 +1,13 @@
 // Reference-image decoding through the platform's own image stack.
 //
-// This is the decoder a build without FFmpeg uses. It exists because the
-// alternative in that configuration is PPM only, and a host that wants to
-// condition a run on a PNG should not have to transcode it first — while
-// pulling in libpng, libjpeg and their transitive dependencies to avoid that
-// would trade one runtime dependency for several build-time ones.
+// This is the decoder a build without FFmpeg uses. Linux uses libpng and
+// libjpeg so ordinary reference images also work without an FFmpeg runtime.
 //
 // Windows has a full image stack in the OS: WIC reads PNG, JPEG, BMP, GIF,
 // TIFF, DDS and — with the Store codecs installed — HEIF and WebP, and it is
 // already present on every machine this project targets. Nothing is shipped
 // and nothing is linked that is not part of Windows.
 //
-// Elsewhere there is no equivalent single API, so this refuses rather than
-// pretending: a Linux build without FFmpeg reads PPM, and says so.
 #include "slopfab/image.h"
 
 #include <cstdint>
@@ -204,7 +199,129 @@ RGBImage load_platform_image(const std::string& path) {
 
 } // namespace slopfab
 
-#else // !_WIN32
+#elif defined(__linux__)
+
+#include <csetjmp>
+#include <limits>
+#include <memory>
+#include <utility>
+
+#include <jpeglib.h>
+#include <png.h>
+
+namespace slopfab {
+namespace {
+
+size_t checked_image_size(uint64_t width, uint64_t height, const std::string& path) {
+  if (width == 0 || height == 0 || width > std::numeric_limits<int>::max() ||
+      height > std::numeric_limits<int>::max() || width * height > 0xFFFFFFFFull / 3u) {
+    throw std::runtime_error("reference image '" + path + "': invalid or oversized dimensions");
+  }
+  return static_cast<size_t>(width * height * 3u);
+}
+
+RGBImage load_png(const std::string& path) {
+  struct PngImage {
+    png_image image{};
+    PngImage() { image.version = PNG_IMAGE_VERSION; }
+    ~PngImage() { png_image_free(&image); }
+  } state;
+  auto& png = state.image;
+  if (!png_image_begin_read_from_file(&png, path.c_str()))
+    throw std::runtime_error("reference image '" + path + "': " + png.message);
+  const size_t size = checked_image_size(png.width, png.height, path);
+  png.format = PNG_FORMAT_RGB;
+  RGBImage image{static_cast<int>(png.width), static_cast<int>(png.height),
+                 std::vector<uint8_t>(size)};
+  const png_color background{0, 0, 0};
+  if (!png_image_finish_read(&png, &background, image.pixels.data(), 0, nullptr))
+    throw std::runtime_error("reference image '" + path + "': " + png.message);
+  return image;
+}
+
+struct JpegError {
+  jpeg_error_mgr manager{};
+  std::jmp_buf jump;
+  char message[JMSG_LENGTH_MAX]{};
+};
+
+void jpeg_failure(j_common_ptr info) {
+  auto* error = reinterpret_cast<JpegError*>(info->err);
+  info->err->format_message(info, error->message);
+  std::longjmp(error->jump, 1);
+}
+
+// State lives on the heap: longjmp must neither skip C++ destructors nor
+// invalidate automatic variables changed after setjmp. The owning pointer is
+// created before setjmp and never modified; it releases every resource when
+// the error branch throws, including partially decoded image memory.
+struct JpegState {
+  jpeg_decompress_struct info{};
+  JpegError error;
+  FILE* file = nullptr;
+  bool created = false;
+  RGBImage image;
+  ~JpegState() {
+    if (created)
+      jpeg_destroy_decompress(&info);
+    if (file != nullptr)
+      std::fclose(file);
+  }
+};
+
+RGBImage load_jpeg(const std::string& path) {
+  const auto state = std::make_unique<JpegState>();
+  state->file = std::fopen(path.c_str(), "rb");
+  if (state->file == nullptr)
+    throw std::runtime_error("reference image '" + path + "': cannot open file");
+  state->info.err = jpeg_std_error(&state->error.manager);
+  state->error.manager.error_exit = jpeg_failure;
+  if (setjmp(state->error.jump))
+    throw std::runtime_error("reference image '" + path + "': " + state->error.message);
+  state->created = true;
+  jpeg_create_decompress(&state->info);
+  jpeg_stdio_src(&state->info, state->file);
+  jpeg_read_header(&state->info, TRUE);
+  // Grayscale and YCbCr inputs both become the same packed RGB layout.
+  state->info.out_color_space = JCS_RGB;
+  jpeg_start_decompress(&state->info);
+  const size_t size = checked_image_size(state->info.output_width,
+                                          state->info.output_height, path);
+  state->image.width = static_cast<int>(state->info.output_width);
+  state->image.height = static_cast<int>(state->info.output_height);
+  state->image.pixels.resize(size);
+  const size_t stride = static_cast<size_t>(state->image.width) * 3;
+  while (state->info.output_scanline < state->info.output_height) {
+    JSAMPROW row = state->image.pixels.data() + state->info.output_scanline * stride;
+    jpeg_read_scanlines(&state->info, &row, 1);
+  }
+  jpeg_finish_decompress(&state->info);
+  return std::move(state->image);
+}
+
+} // namespace
+
+RGBImage load_platform_image(const std::string& path) {
+  // Detect the file contents, allowing extensionless files and Unicode paths.
+  const auto close_file = [](FILE* file) { std::fclose(file); };
+  const auto file = std::unique_ptr<FILE, decltype(close_file)>(
+      std::fopen(path.c_str(), "rb"), close_file);
+  if (!file)
+    throw std::runtime_error("reference image '" + path + "': cannot open file");
+  unsigned char signature[8]{};
+  const size_t count = std::fread(signature, 1, sizeof(signature), file.get());
+  if (count == sizeof(signature) && png_sig_cmp(signature, 0, sizeof(signature)) == 0)
+    return load_png(path);
+  if (count >= 2 && signature[0] == 0xFF && signature[1] == 0xD8)
+    return load_jpeg(path);
+  throw std::runtime_error("reference image '" + path +
+                           "': Linux image decoder supports PNG and JPEG; "
+                           "use PPM or build with -DSLOPFAB_WITH_FFMPEG=ON for other formats");
+}
+
+} // namespace slopfab
+
+#else
 
 namespace slopfab {
 

@@ -20,9 +20,9 @@ struct RGBImage {
 RGBImage load_reference_image(const std::string& path);
 
 // Decodes through the platform's own image stack: WIC on Windows, which covers
-// PNG, JPEG, BMP, GIF, TIFF and whatever else has a codec installed. Throws on
-// platforms with no equivalent, where PPM is the only format a build without
-// FFmpeg can read. Compiled in every configuration so that the two decoders
+// PNG, JPEG, BMP, GIF, TIFF and whatever else has a codec installed. Linux
+// uses libpng and libjpeg for PNG/JPEG. Throws on other platforms with no
+// equivalent. Compiled in every configuration so that the two decoders
 // can be compared, but only reached by `load_reference_image` when this build
 // has no FFmpeg.
 RGBImage load_platform_image(const std::string& path);

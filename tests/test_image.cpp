@@ -11,6 +11,11 @@
 #include "harness.h"
 #include "slopfab/image.h"
 
+#if defined(__linux__)
+#include <jpeglib.h>
+#include <png.h>
+#endif
+
 namespace {
 
 SLOPFAB_TEST(reference_image_loads_binary_ppm) {
@@ -61,7 +66,12 @@ SLOPFAB_TEST(reference_media_decodes_common_formats_with_ffmpeg) {
   constexpr const char* quiet = " >/dev/null 2>&1";
 #endif
   int exercised = 0;
-  for (const char* extension : {"png", "jpg", "bmp"}) {
+#if defined(__linux__) && !SLOPFAB_WITH_FFMPEG
+  const std::vector<const char*> extensions = {"png", "jpg"};
+#else
+  const std::vector<const char*> extensions = {"png", "jpg", "bmp"};
+#endif
+  for (const char* extension : extensions) {
     const std::string output = std::string("slopfab_test_media.") + extension;
     const std::string command = "ffmpeg -y -loglevel error -i " + source + " " + output + quiet;
     if (std::system(command.c_str()) != 0)
@@ -77,8 +87,81 @@ SLOPFAB_TEST(reference_media_decodes_common_formats_with_ffmpeg) {
   if (exercised == 0)
     std::printf("  ffmpeg executable unavailable; skipping format fixtures\n");
   else
-    CHECK(exercised == 3);
+    CHECK(exercised == static_cast<int>(extensions.size()));
 }
+
+#if defined(__linux__)
+SLOPFAB_TEST(platform_image_png_and_alpha) {
+  // An extensionless path exercises signature detection. PNG alpha is
+  // composited against black, matching the RGB-only conditioning contract.
+  const std::string path = "slopfab_test_png_\xc3\xa4";
+  png_image png{};
+  png.version = PNG_IMAGE_VERSION;
+  png.width = 2;
+  png.height = 1;
+  png.format = PNG_FORMAT_RGBA;
+  const unsigned char rgba[] = {255, 0, 0, 255, 0, 255, 0, 0};
+  const int written = png_image_write_to_file(&png, path.c_str(), 0, rgba, 0, nullptr);
+  CHECK(written != 0);
+  png_image_free(&png);
+  if (!written)
+    return;
+  const auto image = slopfab::load_platform_image(path);
+  std::remove(path.c_str());
+  CHECK(image.width == 2 && image.height == 1);
+  CHECK(image.pixels == std::vector<uint8_t>({255, 0, 0, 0, 0, 0}));
+}
+
+SLOPFAB_TEST(platform_image_grayscale_jpeg) {
+  const std::string path = "slopfab_test_grayscale.jpg";
+  FILE* output = std::fopen(path.c_str(), "wb");
+  CHECK(output != nullptr);
+  if (!output)
+    return;
+  jpeg_compress_struct compressor{};
+  jpeg_error_mgr error{};
+  compressor.err = jpeg_std_error(&error);
+  jpeg_create_compress(&compressor);
+  jpeg_stdio_dest(&compressor, output);
+  compressor.image_width = 2;
+  compressor.image_height = 1;
+  compressor.input_components = 1;
+  compressor.in_color_space = JCS_GRAYSCALE;
+  jpeg_set_defaults(&compressor);
+  jpeg_set_quality(&compressor, 100, TRUE);
+  jpeg_start_compress(&compressor, TRUE);
+  unsigned char gray[] = {80, 80};
+  JSAMPROW row = gray;
+  jpeg_write_scanlines(&compressor, &row, 1);
+  jpeg_finish_compress(&compressor);
+  jpeg_destroy_compress(&compressor);
+  std::fclose(output);
+  const auto image = slopfab::load_platform_image(path);
+  std::remove(path.c_str());
+  CHECK(image.width == 2 && image.height == 1);
+  CHECK(image.pixels == std::vector<uint8_t>({80, 80, 80, 80, 80, 80}));
+}
+
+SLOPFAB_TEST(platform_image_rejects_corruption) {
+  const std::string path = "slopfab_test_corrupt_image";
+  for (const std::string bytes : {std::string("\x89PNG\r\n\x1a\n", 8),
+                                  std::string("\xff\xd8\xff\xd9", 4),
+                                  std::string("not an image")}) {
+    {
+      std::ofstream output(path, std::ios::binary);
+      output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    bool rejected = false;
+    try {
+      (void)slopfab::load_platform_image(path);
+    } catch (const std::runtime_error& e) {
+      rejected = std::string(e.what()).find(path) != std::string::npos;
+    }
+    CHECK(rejected);
+    std::remove(path.c_str());
+  }
+}
+#endif
 
 SLOPFAB_TEST(reference_image_lanczos_golden) {
   slopfab::RGBImage image;
