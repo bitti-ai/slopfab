@@ -50,6 +50,12 @@ This arithmetic policy is separate from `--attention`: choosing exact
 attention alone does not promise that every decoder operation is bit-identical
 to CUDA.
 
+The H3 exact-attention shader declares about 99 KiB of shared arrays. Its
+48 KiB device-limit threshold relies on shared-memory reuse observed in NVIDIA's
+compiler; successful pipeline creation remains a final compatibility check.
+Portable arithmetic does not guarantee that every feature-compatible GPU can
+compile this shader.
+
 C API callers can override the platform default with
 `slopfab_request_set_vulkan_arithmetic` (added in ABI 1.15); see the arithmetic
 enum in `capi.h`. The choice is part of the request and session cache identity.
