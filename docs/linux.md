@@ -40,21 +40,24 @@ Vulkan loader (`libvulkan.so.1`) and a compatible GPU driver. The runtime checks
 the device's Vulkan features before generation. Software Vulkan drivers are
 useful for limited tests but do not substitute for GPU generation validation.
 
-For CUDA, install the CUDA 12.8 toolkit and a compatible NVIDIA driver, and make
-`nvcc` available on `PATH`. The default architecture list is `86;120a`, covering
+For CUDA, install a CUDA toolkit supporting your Linux distribution and a
+compatible NVIDIA driver, and make `nvcc` available on `PATH`. CUDA 12.8 or newer
+is needed for the default architecture list `86;120a`, covering
 the project's RTX 30-series and RTX 50-series kernels. Build both backends:
 
 ```sh
 cmake -S . -B build/linux-both -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
   -DSLOPFAB_ENABLE_CUDA=ON -DSLOPFAB_ENABLE_VULKAN=ON
 cmake --build build/linux-both --parallel 2
 build/linux-both/slopfab generate --inference-backend cuda \
   --prompt "A cat playing a piano" --frames 22 --resolution 512x512 --raw
 ```
 
-Adjust the compiler path for your toolkit. CUDA compilation can consume
+Adjust the compiler path for your toolkit. CUDA 12.8's headers are incompatible
+with newer glibc declarations on Ubuntu 26.04; use a newer toolkit supported on
+that distribution or build in a compatible older distribution. CUDA compilation can consume
 substantial memory; increase parallelism only when the machine has room.
 Linux links cuBLAS from the selected build toolkit. Its corresponding shared
 libraries must be discoverable by the dynamic linker at runtime. Linux does
@@ -94,7 +97,7 @@ and PCM directly.
 ```sh
 cmake --install build/linux-vulkan --prefix "$HOME/.local"
 bash package.sh --backend vulkan
-bash package.sh --backend both -- -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc
+bash package.sh --backend both -- -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
 ```
 
 `package.sh` configures, builds and runs host/C API/reference-decode tests, then

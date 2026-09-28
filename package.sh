@@ -33,9 +33,13 @@ cmake -S "$root" -B "$build_dir" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib \
   -DSLOPFAB_ENABLE_CUDA="$cuda" -DSLOPFAB_ENABLE_VULKAN="$vulkan" \
   -DSLOPFAB_BUILD_C_API=ON -DSLOPFAB_BUILD_TESTS=ON "${cmake_args[@]}"
+if [[ $cuda == ON ]] && grep -Eq '^CMAKE_CUDA_COMPILER:[^=]*=(|.*NOTFOUND)$' "$build_dir/CMakeCache.txt"; then
+  printf 'package: CUDA packaging requires a working CUDA compiler; set CMAKE_CUDA_COMPILER.\n' >&2
+  exit 1
+fi
 cmake --build "$build_dir" --config Release --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 # Model and GPU integration suites are run separately on a suitable host.
-ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(unit|capi|embedded_tokenizer|reference_media_decode)$'
+ctest --test-dir "$build_dir" -C Release --output-on-failure -R '^(unit|capi|generation_backends|embedded_tokenizer|reference_media_decode)$'
 mkdir -p -- "$root/dist"
 cpack --config "$build_dir/CPackConfig.cmake" -C Release -B "$root/dist"
 printf 'package: wrote Linux archive under %s/dist (model weights and GPU/media runtimes are external).\n' "$root"

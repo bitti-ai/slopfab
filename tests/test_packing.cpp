@@ -928,18 +928,33 @@ SLOPFAB_TEST(h3_rope_tables_are_canonical_serialized_bytes) {
     }
   }
   CHECK(duplicated);
-  uint64_t hash = 1469598103934665603ull;
-  auto hash_bytes = [&](const std::vector<float>& values) {
-    const auto* bytes = reinterpret_cast<const uint8_t*>(values.data());
-    for (size_t i = 0; i < values.size() * sizeof(float); ++i) {
-      hash ^= bytes[i];
-      hash *= 1099511628211ull;
+  // CUDA and Vulkan consume the same serialized host table, but the host's
+  // sinf/cosf may differ by one last bit between Windows CRT and Linux libm.
+  // Check against double-precision trig instead of a Windows-only byte hash.
+  // The position, inverse frequency and angle still round to fp32 first, as
+  // the model requires (particularly position 16777217, above fp32 precision).
+  for (size_t row = 0; row < 3; ++row) {
+    for (size_t axis = 0; axis < 3; ++axis) {
+      for (uint32_t k = 0; k < 16; ++k) {
+        const float inverse = static_cast<float>(1.0 / std::pow(10000.0, k / 16.0));
+        const float angle = static_cast<float>(positions[row * 3 + axis]) * inverse;
+        const size_t at = row * 96 + axis * 16 + k;
+        const float cosine = static_cast<float>(std::cos(static_cast<double>(angle)));
+        const float sine = static_cast<float>(std::sin(static_cast<double>(angle)));
+        const auto within_one_ulp = [](float actual, float expected) {
+          return actual >= std::nextafter(expected, -std::numeric_limits<float>::infinity()) &&
+                 actual <= std::nextafter(expected, std::numeric_limits<float>::infinity());
+        };
+        CHECK(within_one_ulp(tables.cosine[at], cosine));
+        CHECK(within_one_ulp(tables.sine[at], sine));
+      }
     }
-  };
-  hash_bytes(tables.cosine);
-  hash_bytes(tables.sine);
-  CHECK_MSG(hash == 0xdfd06ee912173e0full, "H3 RoPE canonical table hash is %016llx",
-            static_cast<unsigned long long>(hash));
+  }
+  const H3RopeTables repeated = build_h3_rope_tables(positions, 10000.0f, 16);
+  CHECK(std::memcmp(tables.cosine.data(), repeated.cosine.data(),
+                    tables.cosine.size() * sizeof(float)) == 0);
+  CHECK(std::memcmp(tables.sine.data(), repeated.sine.data(),
+                    tables.sine.size() * sizeof(float)) == 0);
   auto rejects = [](auto&& call) {
     try {
       call();
