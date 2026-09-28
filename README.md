@@ -24,6 +24,9 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 
 ## Build
 
+Linux builds support CUDA, Vulkan, or both, including the C API and an embedded
+tokenizer. See [Linux build, packaging and WSL instructions](docs/linux.md).
+
 For Windows builds, install:
 
 - CMake 3.24 or newer and Visual Studio 2022 C++ build tools.
@@ -35,7 +38,7 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "cuda=$($env:CUDA_PATH_
 cmake --build build --config Release
 ```
 
-The default CUDA build targets NVIDIA RTX 30-series and RTX 50-series GPUs. At runtime, it selects cuBLAS from an installed CUDA 13 or CUDA 12 toolkit. Vulkan inference requires a compatible Vulkan 1.2 device and driver.
+The default CUDA build targets NVIDIA RTX 30-series and RTX 50-series GPUs. On Windows, it selects cuBLAS from an installed CUDA 13 or CUDA 12 toolkit at runtime; Linux links the toolkit selected when building. Vulkan inference requires a compatible Vulkan 1.2 device and driver.
 
 Use `build/` for all configurations. Reconfigure it with CMake options as needed:
 
@@ -44,7 +47,9 @@ Use `build/` for all configurations. Reconfigure it with CMake options as needed
 | `SLOPFAB_ENABLE_CUDA` | `ON` | CUDA inference |
 | `SLOPFAB_ENABLE_VULKAN` | `ON` | Vulkan inference and output conversion |
 | `SLOPFAB_WITH_FFMPEG` | `ON` | MP4 output and FFmpeg media input |
-| `SLOPFAB_BUILD_C_API` | `ON` when CUDA is enabled | Build `slopfab.dll` |
+| `SLOPFAB_BUILD_C_API` | `ON` when either GPU backend is enabled | Build `slopfab.dll` or `libslopfab.so` |
+| `SLOPFAB_EMBED_TOKENIZER` | `ON` | Embed the tokenizer in the CLI and C API |
+| `SLOPFAB_TOKENIZER_FILE` | `ref/text_encoder/tokenizer.json` | Tokenizer JSON to embed |
 | `SLOPFAB_BUILD_TESTS` | `ON` | Build tests |
 | `SLOPFAB_BUILD_DEV_TOOLS` | `OFF` | Build additional profiling and diagnostic tools |
 
@@ -56,6 +61,10 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 Packaging uses the same build directory and writes an archive under `dist/`. It includes the CLI, DLL, C header, import library and FFmpeg runtime. Model weights and CUDA libraries are not included.
+
+On Linux, `bash package.sh --backend vulkan` or `bash package.sh --backend both`
+builds, tests and packages the CLI, shared library, C header, documentation and
+licenses. Linux packages use external GPU and media runtimes.
 
 ## Models
 
@@ -76,7 +85,8 @@ Text-to-video uses FL2VA weights. Reference conditioning requires compatible Ref
 
 ## Usage
 
-The Windows executable is `build/Release/slopfab.exe`. The examples below assume `slopfab` is on your `PATH`.
+The Windows executable is `build/Release/slopfab.exe`; the Linux executable is
+`slopfab` inside its chosen build directory. The examples below assume `slopfab` is on your `PATH`.
 
 Generate a video:
 

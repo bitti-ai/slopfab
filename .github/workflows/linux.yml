@@ -1,0 +1,75 @@
+name: Linux
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      compile_cuda:
+        description: Also compile CUDA 12.8 (no GPU execution)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [cpu, vulkan]
+        ffmpeg: ["ON", "OFF"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and media tools
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ libpng-dev libjpeg-dev ffmpeg
+      - name: Configure
+        shell: bash
+        run: |
+          vulkan=OFF
+          if [[ '${{ matrix.backend }}' == vulkan ]]; then vulkan=ON; fi
+          cmake -S . -B build/linux -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib \
+            -DSLOPFAB_ENABLE_CUDA=OFF -DSLOPFAB_ENABLE_VULKAN="$vulkan" \
+            -DSLOPFAB_WITH_FFMPEG=${{ matrix.ffmpeg }} \
+            -DSLOPFAB_TOKENIZER_FILE="$PWD/tests/fixtures/tokenizer.json"
+      - name: Build
+        run: cmake --build build/linux --parallel 2
+      - name: Host and C API tests
+        run: ctest --test-dir build/linux --output-on-failure -E '^(vulkan|kernels|tensor_backends)($|_)'
+      - name: Installed CLI and shared library
+        shell: bash
+        run: |
+          cmake --install build/linux --prefix "$RUNNER_TEMP/slopfab"
+          "$RUNNER_TEMP/slopfab/bin/slopfab" --help
+          test -f "$RUNNER_TEMP/slopfab/share/licenses/slopfab/LICENSE"
+          if [[ '${{ matrix.backend }}' == vulkan ]]; then
+            test -f "$RUNNER_TEMP/slopfab/include/slopfab/capi.h"
+            test -L "$RUNNER_TEMP/slopfab/lib/libslopfab.so"
+            python3 -c 'import ctypes, os; ctypes.CDLL(os.environ["RUNNER_TEMP"] + "/slopfab/lib/libslopfab.so")'
+          fi
+          cpack --config build/linux/CPackConfig.cmake -B build/packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.backend }}-ffmpeg-${{ matrix.ffmpeg }}-test-build
+          path: build/packages/*.tar.gz
+
+  cuda-compile:
+    if: github.event_name == 'workflow_dispatch' && inputs.compile_cuda
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    steps:
+      - name: Install build tools
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build g++ libpng-dev libjpeg-dev
+      - uses: actions/checkout@v4
+      - name: Configure CUDA and Vulkan
+        run: |
+          cmake -S . -B build/linux -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86 \
+            -DSLOPFAB_ENABLE_CUDA=ON -DSLOPFAB_ENABLE_VULKAN=ON \
+            -DSLOPFAB_BUILD_TESTS=OFF \
+            -DSLOPFAB_TOKENIZER_FILE="$GITHUB_WORKSPACE/tests/fixtures/tokenizer.json"
+      - name: Compile CLI and C API
+        run: cmake --build build/linux --target slopfab slopfab_c --parallel 2
