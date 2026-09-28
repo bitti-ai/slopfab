@@ -173,6 +173,13 @@ CUDA 13.3:
   run used the embedded tokenizer, local NVFP4 Qwen/transformer checkpoints,
   video/audio VAEs and one denoising evaluation; it checks execution and output,
   not generation quality.
+- The CUDA synthetic kernel suite completed 18,700 checks with one failure:
+  `transformer_row_chunks_match_full_rows`. On this Linux CUDA 13.3 build,
+  changing GEMM row dimensions changes a few Q/K projection values, reaching
+  one BF16 step in the second refiner block and exceeding the final output
+  tolerance. Identical checkpoint bytes pass on Windows. Restricting cuBLAS
+  reductions did not resolve it; the original assertion remains unchanged.
+  This toolchain's row-chunk numerical equivalence is not qualified.
 - The Vulkan-only configuration passed seven of eight CTest suites; the model
   integration suite skipped because WSL exposed only llvmpipe software Vulkan.
   Portable arithmetic tests executed 33 checks through actual Vulkan shaders.
