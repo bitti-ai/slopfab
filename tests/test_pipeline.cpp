@@ -155,7 +155,13 @@ SLOPFAB_TEST(generation_backend_contract) {
   CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan, LatentSource::kSyntheticNoise,
                                               AttentionMode::kSage2));
   slopfab::RunOptions defaults;
+#if !SLOPFAB_WITH_CUDA && SLOPFAB_WITH_VULKAN
+  CHECK(defaults.inference_backend == DeviceBackend::kVulkan);
+  CHECK(defaults.attention_mode == AttentionMode::kExact);
+#else
   CHECK(defaults.inference_backend == DeviceBackend::kCuda);
+  CHECK(defaults.attention_mode == AttentionMode::kFlash2);
+#endif
 }
 
 SLOPFAB_TEST(pipeline_plan_aspect_and_frames) {

@@ -130,14 +130,6 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/qwen_vision_encoder.cu
       src/vae/keyframe_cuda.cpp
       src/vae/audio_encoder.cpp
-      # src/capi/capi.cpp is deliberately NOT here. It calls run_generate, so
-      # it depends on this target — but compiling it *into* this target as well
-      # as into slopfab_c builds every C entry point twice: once with capi.h
-      # seen as dllimport (here, MSVC C4273 "inconsistent dll linkage") and
-      # once as dllexport (there). The link happens to pick the right copy, so
-      # the failure is silent, and it would leave the C ABI exported from a
-      # library that is otherwise pure C++. It belongs to slopfab_c alone; see
-      # the c api section below.
       src/vae/audio_decoder.cpp
     src/dit/transformer.cpp
     src/dit/transformer_capture.cpp

@@ -525,6 +525,12 @@ SLOPFAB_TEST_CATEGORY(vulkan_dense_gemm_tail_reference, "synthetic") {
   }
 
   auto run_float_mode = [&](DenseGemmMode mode, DenseGemmBias bias_mode) {
+    // Software Vulkan remains useful for runtime, BF16 and FP16 coverage, but
+    // its FP32 FMA rounding has not passed the physical-GPU parity contract.
+    if (mode == DenseGemmMode::kFloat32 && device.info().software) {
+      SKIP_UNSUPPORTED_HARDWARE("exact FP32 GEMM requires a qualified physical GPU; software Vulkan FMA rounding differs");
+      return;
+    }
     const uint64_t fs[] = {rows, k}, fws[] = {n, k}, fos[] = {rows, n};
     DeviceTensor fi = context.allocate(TensorLayout::contiguous(fs, 2), ScalarType::kFloat32);
     DeviceTensor fw = context.allocate(TensorLayout::contiguous(fws, 2),

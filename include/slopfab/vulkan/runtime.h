@@ -32,6 +32,7 @@ struct DeviceInfo {
   uint32_t driver_version = 0;
   Version api_version;
   bool discrete = false;
+  bool software = false; // Vulkan CPU implementation, such as Mesa lavapipe.
   uint32_t compute_queue_family = 0;
   uint32_t compute_queue_count = 0;
   uint32_t timestamp_valid_bits = 0;

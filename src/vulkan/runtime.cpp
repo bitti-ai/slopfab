@@ -76,6 +76,7 @@ DeviceInfo inspect_device(const std::shared_ptr<InstanceState>& state, VkPhysica
   info.driver_version = properties.driverVersion;
   info.api_version = unpack_version(properties.apiVersion);
   info.discrete = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+  info.software = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
   info.compute_queue_family =
       choose_compute_queue(*state, physical, &info.compute_queue_count, &info.timestamp_valid_bits);
   info.timestamp_period_ns = properties.limits.timestampPeriod;

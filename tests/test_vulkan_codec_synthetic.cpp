@@ -409,6 +409,11 @@ SLOPFAB_TEST_CATEGORY(vulkan_audio_vae_decoder_cuda_off_contract, "synthetic") {
   options.enable_shader_int64 = true;
   Device device = physical.front().create_device(options);
 
+  TensorContext capabilities(device);
+  if (!capabilities.exact_audio_vae_primitives()) {
+    SKIP_UNSUPPORTED_HARDWARE("device does not support exact audio codec arithmetic");
+    return;
+  }
   AudioDecoder decoder = AudioDecoder::create(device);
   CHECK(decoder.recorded_operators() == 497u);
   CHECK(decoder.weight_bytes() == 0u);
