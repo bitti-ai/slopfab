@@ -44,11 +44,12 @@ jobs:
         run: |
           cmake --install build/linux --prefix "$RUNNER_TEMP/slopfab"
           "$RUNNER_TEMP/slopfab/bin/slopfab" --help
+          (cd "$RUNNER_TEMP" && "$RUNNER_TEMP/slopfab/bin/slopfab" tokenize hello)
           test -f "$RUNNER_TEMP/slopfab/share/licenses/slopfab/LICENSE"
           if [[ '${{ matrix.backend }}' == vulkan ]]; then
             test -f "$RUNNER_TEMP/slopfab/include/slopfab/capi.h"
             test -L "$RUNNER_TEMP/slopfab/lib/libslopfab.so"
-            python3 -c 'import ctypes, os; ctypes.CDLL(os.environ["RUNNER_TEMP"] + "/slopfab/lib/libslopfab.so")'
+            python3 -c 'import ctypes, os; lib = ctypes.CDLL(os.environ["RUNNER_TEMP"] + "/slopfab/lib/libslopfab.so"); lib.slopfab_capi_version.restype = ctypes.c_uint32; assert lib.slopfab_capi_version() >> 24 == 1'
           fi
           cpack --config build/linux/CPackConfig.cmake -B build/packages
       - uses: actions/upload-artifact@v4
