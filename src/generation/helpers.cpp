@@ -45,6 +45,10 @@
 #endif
 
 #include "helpers.h"
+#if SLOPFAB_WITH_VULKAN
+#include "../vulkan/tensor_validation.h"
+#include "../vulkan/sage_selection.h"
+#endif
 
 namespace slopfab::generation {
 std::vector<uint8_t> resize_rgb_bilinear(const RGBImage& in, int width, int height) {
@@ -121,18 +125,70 @@ bool env_flag(const char* name) {
 }
 
 #if SLOPFAB_WITH_VULKAN
+size_t select_vulkan_inference_device(const std::vector<vulkan::DeviceInfo>& devices,
+                                      bool portable_arithmetic, bool cooperative,
+                                      bool sage_attention) {
+  const size_t absent = devices.size();
+  size_t selected = absent;
+  std::string rejected;
+  for (size_t i = 0; i < devices.size(); ++i) {
+    const auto& info = devices[i];
+    const char* reason = nullptr;
+    if (!info.timeline_semaphore || !info.shader_int64 ||
+        !info.fp32_signed_zero_inf_nan_preserve || !info.fp32_rounding_rte ||
+        info.max_compute_workgroup_invocations < 256 || info.max_compute_workgroup_size[0] < 256 ||
+        info.max_compute_shared_memory_bytes < 16384) {
+      reason = "missing neural shader features or workgroup limits";
+    } else if (!portable_arithmetic &&
+               (!vulkan::detail::known_exact_vae_norm_device(info.vendor_id, info.device_id,
+                                                             info.driver_version) ||
+                !vulkan::detail::known_exact_vae_pointwise_device(info.vendor_id, info.device_id,
+                                                                  info.driver_version))) {
+      reason = "GPU/driver is not qualified for exact arithmetic (try --vulkan-arithmetic portable)";
+    } else if (cooperative &&
+               (!info.cooperative_matrix || !info.shader_float16 || !info.storage_buffer_16bit ||
+                !info.shader_bfloat16_type || !info.shader_bfloat16_cooperative_matrix ||
+                !info.cooperative_matrix_bf16_f32_16x16x16 ||
+                !info.cooperative_matrix_f16_f32_16x16x16)) {
+      reason = "missing cooperative BF16/FP16 matrix features";
+    } else if (sage_attention &&
+               (!info.shader_int8 || !info.cooperative_matrix_i8_i32_16x16x32 ||
+                !info.compute_subgroup_shuffle || !info.compute_subgroup_arithmetic ||
+                !vulkan::detail::sage_kernel_fits(info, 1))) {
+      reason = "missing Sage INT8/subgroup features or shared-memory capacity";
+    }
+    if (reason) {
+      if (!rejected.empty())
+        rejected += "; ";
+      rejected += (info.name.empty() ? "unnamed device" : info.name) + std::string(": ") + reason;
+      continue;
+    }
+    const auto priority = [](const vulkan::DeviceInfo& device) {
+      return device.software ? 0 : (device.discrete ? 2 : 1);
+    };
+    if (selected == absent || priority(info) > priority(devices[selected]) ||
+        (priority(info) == priority(devices[selected]) &&
+         info.device_local_bytes() > devices[selected].device_local_bytes()))
+      selected = i;
+  }
+  if (selected == absent)
+    throw std::runtime_error("Vulkan inference: no compatible compute device" +
+                             (rejected.empty() ? std::string() : "; " + rejected));
+  return selected;
+}
+
 vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool exact_h3, bool sage_attention) {
   if (!vulkan::Instance::available())
     throw std::runtime_error("Vulkan inference: no Vulkan loader is available");
   vulkan::Instance instance = vulkan::Instance::create();
   const std::vector<vulkan::PhysicalDevice> physical = instance.enumerate_devices();
-  if (physical.empty())
-    throw std::runtime_error("Vulkan inference: no compute device is available");
-  const vulkan::DeviceInfo& info = physical.front().info();
-  if (!info.timeline_semaphore || !info.shader_int64 ||
-      (exact_h3 && (!info.shader_float16 || !info.storage_buffer_16bit ||
-                    !info.cooperative_matrix_bf16_f32_16x16x16)))
-    throw std::runtime_error("Vulkan inference: device lacks required exact neural features");
+  std::vector<vulkan::DeviceInfo> devices;
+  devices.reserve(physical.size());
+  for (const auto& device : physical)
+    devices.push_back(device.info());
+  const size_t selected = select_vulkan_inference_device(devices, portable_arithmetic,
+                                                         exact_h3, sage_attention);
+  const auto& info = devices[selected];
   vulkan::DeviceOptions options;
   options.portable_arithmetic = portable_arithmetic;
   options.enable_timeline_semaphore = true;
@@ -141,7 +197,7 @@ vulkan::Device create_vulkan_inference_device(bool portable_arithmetic, bool exa
   options.enable_storage_buffer_16bit = exact_h3;
   options.enable_cooperative_matrix = exact_h3;
   options.enable_shader_int8 = sage_attention && info.shader_int8;
-  return physical.front().create_device(options);
+  return physical[selected].create_device(options);
 }
 #endif
 
