@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <type_traits>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -44,6 +46,8 @@
 #if SLOPFAB_WITH_VULKAN
 #include "slopfab/vulkan/runtime.h"
 #include "slopfab/vulkan/yuv_converter.h"
+#include "slopfab/vulkan/vae_decoder.h"
+#include "../generation/helpers.h"
 #endif
 
 #if defined(_WIN32)
@@ -67,6 +71,16 @@
 
 namespace slopfab::cli {
 #if SLOPFAB_WITH_CUDA
+uint64_t decoder_bytes(const slopfab::vae::ViTDecoder& decoder) {
+  return decoder.weight_bytes();
+}
+#endif
+#if SLOPFAB_WITH_VULKAN
+uint64_t decoder_bytes(const slopfab::vulkan::VideoVaeDecoder& decoder) {
+  return decoder.persistent_bytes();
+}
+#endif
+#if SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
 bool latent_stats_from_metadata(const slopfab::SafeTensors& ckpt, std::vector<float>& mean,
                                 std::vector<float>& std_dev) {
   auto it = ckpt.metadata().find("minimax_h3_video_vae");
@@ -111,6 +125,16 @@ int cmd_decode(int argc, char** argv) {
   if (wants_help(argc, argv))
     return print_command_help(*find_command("decode"));
 
+#if SLOPFAB_WITH_CUDA
+  std::string backend = "cuda";
+#else
+  std::string backend = "vulkan";
+#endif
+#if defined(__linux__)
+  bool portable_arithmetic = true;
+#else
+  bool portable_arithmetic = false;
+#endif
   std::string vae_path;
   std::string latent_path;
   std::string out_path = "out.y4m";
@@ -127,7 +151,16 @@ int cmd_decode(int argc, char** argv) {
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
-    if (arg == "--vae" && i + 1 < argc) {
+    if (arg == "--inference-backend" && i + 1 < argc) {
+      backend = argv[++i];
+      if (backend != "cuda" && backend != "vulkan")
+        throw std::invalid_argument("--inference-backend requires cuda or vulkan");
+    } else if (arg == "--vulkan-arithmetic" && i + 1 < argc) {
+      const std::string value = argv[++i];
+      if (value != "portable" && value != "exact")
+        throw std::invalid_argument("--vulkan-arithmetic requires portable or exact");
+      portable_arithmetic = value == "portable";
+    } else if (arg == "--vae" && i + 1 < argc) {
       vae_path = argv[++i];
     } else if (arg == "--latent" && i + 1 < argc) {
       latent_path = argv[++i];
@@ -162,6 +195,14 @@ int cmd_decode(int argc, char** argv) {
     return 2;
   }
 
+#if !SLOPFAB_WITH_CUDA
+  if (backend == "cuda")
+    throw std::runtime_error("CUDA backend is disabled in this build");
+#endif
+#if !SLOPFAB_WITH_VULKAN
+  if (backend == "vulkan")
+    throw std::runtime_error("Vulkan backend is disabled in this build");
+#endif
   slopfab::SafeTensors ckpt;
   ckpt.open(vae_path);
 
@@ -197,96 +238,121 @@ int cmd_decode(int argc, char** argv) {
   // to pull the mapping in from storage; if they match, the cost is the host
   // memcpy and PCIe, and only then is parallelising or double-buffering it
   // worth building.
-  if (bench_load) {
-    auto time_load = [&](const char* label) {
-      slopfab::vae::ViTDecoder probe;
-      const auto s0 = std::chrono::steady_clock::now();
-      probe.load(ckpt);
-      const auto s1 = std::chrono::steady_clock::now();
-      const double sec = std::chrono::duration<double>(s1 - s0).count();
-      std::printf("load %-8s %s in %.3f s (%.2f GB/s of fp16 across PCIe)\n", label,
-                  format_bytes(probe.weight_bytes()).c_str(), sec,
-                  (static_cast<double>(probe.weight_bytes()) / 2.0) / sec / 1e9);
-    };
-    time_load("first");
-    time_load("second");
-    time_load("third");
-    return 0;
-  }
-
-  slopfab::vae::ViTDecoder decoder;
-  const auto load_start = std::chrono::steady_clock::now();
-  decoder.load(ckpt);
-  const auto load_end = std::chrono::steady_clock::now();
-  std::printf("weights    %s on device in %.2f s\n", format_bytes(decoder.weight_bytes()).c_str(),
-              std::chrono::duration<double>(load_end - load_start).count());
-
-  slopfab::vae::DecodeSchedule schedule;
-  schedule.tiling_enabled = !no_tiling;
-
-  // The first decode pays one-time costs the steady state does not: scratch
-  // allocation, the first RoPE build, and cuBLAS heuristic selection for each
-  // GEMM shape. Reporting it as the decode time overstates the cost by a
-  // noticeable margin, so timings are reported per run and `--repeat` exists to
-  // expose the warm number.
-  slopfab::vae::DecodedVideo video;
-  for (int run = 0; run < repeat; ++run) {
-    const auto t0 = std::chrono::steady_clock::now();
-    video = decoder.decode(z.data(), T, H, W, mean, std_dev, schedule);
-    const auto t1 = std::chrono::steady_clock::now();
-    const double seconds = std::chrono::duration<double>(t1 - t0).count();
-    const char* label = (run == 0) ? "decoded   " : "  (warm)  ";
-    std::printf("%s %d frames of %dx%d in %.3f s (%.2f fps)\n", label, video.frames, video.width,
-                video.height, seconds,
-                seconds > 0 ? static_cast<double>(video.frames) / seconds : 0.0);
-    // The phase spans inside `decode` tile exactly this interval, so it is
-    // their denominator. With --repeat both sides accumulate together.
-    slopfab::cuda::PhaseProfiler::instance().add_total("video vae decode", seconds * 1000.0);
-  }
-  slopfab::cuda::PhaseProfiler::instance().report(stdout);
-
-  // Report basic statistics: a decode that silently produced NaN or a constant
-  // image should be visible here without opening the file.
-  double sum = 0.0;
-  float lo = 1e30f;
-  float hi = -1e30f;
-  size_t nonfinite = 0;
-  for (float v : video.data) {
-    if (!std::isfinite(v)) {
-      ++nonfinite;
-      continue;
+  const auto run_decode = [&](auto make_decoder) {
+    auto decoder = make_decoder();
+    if (bench_load) {
+      auto time_load = [&](const char* label) {
+        auto probe = make_decoder();
+        const auto s0 = std::chrono::steady_clock::now();
+        probe.load(ckpt);
+        const auto s1 = std::chrono::steady_clock::now();
+        const double sec = std::chrono::duration<double>(s1 - s0).count();
+        std::printf("load %-8s %s in %.3f s (%.2f GB/s of fp16 across PCIe)\n", label,
+                    format_bytes(decoder_bytes(probe)).c_str(), sec,
+                    (static_cast<double>(decoder_bytes(probe)) / 2.0) / sec / 1e9);
+      };
+      time_load("first");
+      time_load("second");
+      time_load("third");
+      return 0;
     }
-    sum += v;
-    lo = std::min(lo, v);
-    hi = std::max(hi, v);
-  }
-  std::printf("pixels     min %.4f  max %.4f  mean %.4f  non-finite %zu\n", lo, hi,
-              sum / static_cast<double>(video.data.size()), nonfinite);
-  if (nonfinite != 0) {
-    std::fprintf(stderr, "slopfab: decode produced non-finite pixels\n");
-    return 1;
-  }
 
-  if (!dump_path.empty()) {
-    // Raw fp32 pixels, so two runs can be diffed with `slopfab compare` at
-    // float precision rather than after 8-bit quantisation. The copy into the
-    // writer's own vector type is what this diagnostic path already did.
-    slopfab::write_safetensors(dump_path,
-                               {{"pixels",
-                                 {3, video.frames, video.height, video.width},
-                                 std::vector<float>(video.data.begin(), video.data.end())}});
-    std::printf("wrote      %s\n", dump_path.c_str());
-  }
+    const auto load_start = std::chrono::steady_clock::now();
+    decoder.load(ckpt);
+    const auto load_end = std::chrono::steady_clock::now();
+    std::printf("weights    %s on device in %.2f s\n", format_bytes(decoder_bytes(decoder)).c_str(),
+                std::chrono::duration<double>(load_end - load_start).count());
 
-  slopfab::video::write_y4m(out_path, video.data, video.frames, video.height, video.width,
-                            {fps, 1});
-  std::printf("wrote      %s\n", out_path.c_str());
-  if (!ppm_path.empty()) {
-    slopfab::video::write_ppm(ppm_path, video.data, video.frames, video.height, video.width, 0);
-    std::printf("wrote      %s\n", ppm_path.c_str());
+    slopfab::vae::DecodeSchedule schedule;
+    schedule.tiling_enabled = !no_tiling;
+
+    // The first decode pays one-time costs the steady state does not: scratch
+    // allocation, the first RoPE build, and cuBLAS heuristic selection for each
+    // GEMM shape. Reporting it as the decode time overstates the cost by a
+    // noticeable margin, so timings are reported per run and `--repeat` exists to
+    // expose the warm number.
+    slopfab::vae::DecodedVideo video;
+    for (int run = 0; run < repeat; ++run) {
+      const auto t0 = std::chrono::steady_clock::now();
+      video = decoder.decode(z.data(), T, H, W, mean, std_dev, schedule);
+      const auto t1 = std::chrono::steady_clock::now();
+      const double seconds = std::chrono::duration<double>(t1 - t0).count();
+      const char* label = (run == 0) ? "decoded   " : "  (warm)  ";
+      std::printf("%s %d frames of %dx%d in %.3f s (%.2f fps)\n", label, video.frames, video.width,
+                  video.height, seconds,
+                  seconds > 0 ? static_cast<double>(video.frames) / seconds : 0.0);
+      // The phase spans inside `decode` tile exactly this interval, so it is
+      // their denominator. With --repeat both sides accumulate together.
+#if SLOPFAB_WITH_CUDA
+      if (backend == "cuda")
+        slopfab::cuda::PhaseProfiler::instance().add_total("video vae decode", seconds * 1000.0);
+#endif
+    }
+#if SLOPFAB_WITH_CUDA
+    if (backend == "cuda")
+      slopfab::cuda::PhaseProfiler::instance().report(stdout);
+#endif
+
+    // Report basic statistics: a decode that silently produced NaN or a constant
+    // image should be visible here without opening the file.
+    double sum = 0.0;
+    float lo = 1e30f;
+    float hi = -1e30f;
+    size_t nonfinite = 0;
+    for (float v : video.data) {
+      if (!std::isfinite(v)) {
+        ++nonfinite;
+        continue;
+      }
+      sum += v;
+      lo = std::min(lo, v);
+      hi = std::max(hi, v);
+    }
+    std::printf("pixels     min %.4f  max %.4f  mean %.4f  non-finite %zu\n", lo, hi,
+                sum / static_cast<double>(video.data.size()), nonfinite);
+    if (nonfinite != 0) {
+      std::fprintf(stderr, "slopfab: decode produced non-finite pixels\n");
+      return 1;
+    }
+
+    if (!dump_path.empty()) {
+      // Raw fp32 pixels, so two runs can be diffed with `slopfab compare` at
+      // float precision rather than after 8-bit quantisation. The copy into the
+      // writer's own vector type is what this diagnostic path already did.
+      slopfab::write_safetensors(dump_path,
+                                 {{"pixels",
+                                   {3, video.frames, video.height, video.width},
+                                   std::vector<float>(video.data.begin(), video.data.end())}});
+      std::printf("wrote      %s\n", dump_path.c_str());
+    }
+
+    slopfab::video::write_y4m(out_path, video.data, video.frames, video.height, video.width,
+                              {fps, 1});
+    std::printf("wrote      %s\n", out_path.c_str());
+    if (!ppm_path.empty()) {
+      slopfab::video::write_ppm(ppm_path, video.data, video.frames, video.height, video.width, 0);
+      std::printf("wrote      %s\n", ppm_path.c_str());
+    }
+    return 0;
+  };
+#if SLOPFAB_WITH_VULKAN
+  if (backend == "vulkan") {
+    auto device = slopfab::generation::create_vulkan_inference_device(portable_arithmetic);
+    if (portable_arithmetic)
+      std::printf("Vulkan arithmetic: portable (CUDA bit parity is not guaranteed)\n");
+    return run_decode([&] {
+      slopfab::vae::ViTConfig config;
+      config.transformer_mode = slopfab::vae::ViTTransformerMode::kExact;
+      return slopfab::vulkan::VideoVaeDecoder::create(device, config);
+    });
   }
-  return 0;
+#endif
+#if SLOPFAB_WITH_CUDA
+  return run_decode([] { return slopfab::vae::ViTDecoder(); });
+#else
+  throw std::runtime_error("no inference backend available");
+#endif
 }
-#endif // SLOPFAB_WITH_CUDA
+#endif // SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
 
 }

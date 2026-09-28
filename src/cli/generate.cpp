@@ -75,6 +75,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   req.num_frames = 124;
   // Step defaults are resolved from the model/task recipe.
   req.seed = 0;
+#if defined(__linux__)
+  bool vulkan_portable_arithmetic = true;
+#else
+  bool vulkan_portable_arithmetic = false;
+#endif
   bool dry_run = false;
   bool synthetic = false;
   slopfab::sampler::SamplerKind sampler_kind = slopfab::sampler::SamplerKind::kEuler;
@@ -236,6 +241,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                                    is_video);
     } else if (arg == "--raw") {
       req.raw_output = true;
+    } else if (arg == "--vulkan-arithmetic") {
+      const std::string value = next("--vulkan-arithmetic");
+      if (value != "portable" && value != "exact")
+        throw std::invalid_argument("--vulkan-arithmetic requires portable or exact");
+      vulkan_portable_arithmetic = value == "portable";
     } else if (arg == "--inference-backend") {
       inference_backend = next("--inference-backend");
       if (inference_backend != "cuda" && inference_backend != "vulkan") {
@@ -510,6 +520,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       synthetic ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
   options.inference_backend = inference_backend == "vulkan" ? slopfab::DeviceBackend::kVulkan
                                                             : slopfab::DeviceBackend::kCuda;
+  options.vulkan_portable_arithmetic = vulkan_portable_arithmetic;
   options.sampler = sampler_kind;
   options.dump_latents_path = dump_latents;
   options.save_latents_path = save_latents;

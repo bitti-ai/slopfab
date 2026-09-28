@@ -1,3 +1,4 @@
+#include <stdexcept>
 #include <chrono>
 #include <cmath>
 #include <cstdio>

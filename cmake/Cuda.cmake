@@ -31,6 +31,10 @@ if(SLOPFAB_ENABLE_CUDA)
       # architecture-specific SM120a image required by native NVFP4.
       set(CMAKE_CUDA_ARCHITECTURES "86;120a" CACHE STRING "CUDA architectures" FORCE)
     endif()
+    if(CMAKE_VERSION VERSION_LESS 3.31 AND CMAKE_CUDA_ARCHITECTURES MATCHES "[0-9]a")
+      message(FATAL_ERROR
+        "slopfab: architecture-specific CUDA targets such as 120a require CMake 3.31 or newer")
+    endif()
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)

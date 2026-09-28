@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 14
+#define SLOPFAB_CAPI_VERSION_MINOR 15
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -162,6 +162,8 @@ SLOPFAB_C_API void SLOPFAB_CALL slopfab_free_string(char* text);
  * cuBLAS from an installed CUDA 13 or CUDA 12 toolkit on first use. The
  * default is "auto" (13, then 12); SLOPFAB_CUDA_VERSION provides the same
  * process-wide setting for hosts that prefer environment configuration.
+ * Linux links the toolkit selected at build time: an explicit major must
+ * match that toolkit. Builds without CUDA return ERR_RUNTIME from both calls.
  *
  * This setter is the DLL equivalent of slopfab.exe's --cuda-version option.
  * Call it before the first CUDA/cuBLAS operation. `version` is "auto", "13"
@@ -193,6 +195,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_loaded_major(int32_t* out_major);
  * text-only conditioning, and never calls the CUDA conditioner. */
 #define SLOPFAB_INFERENCE_CUDA 0
 #define SLOPFAB_INFERENCE_VULKAN 1
+
+#define SLOPFAB_VULKAN_ARITHMETIC_EXACT 0
+#define SLOPFAB_VULKAN_ARITHMETIC_PORTABLE 1
 
 /* Where a run is, in `slopfab_progress::stage`. Ordered, and a run may skip
  * several of them: no references, no audio VAE, synthetic latents. These
@@ -537,9 +542,17 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_reque
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_attention(slopfab_request* request,
                                                              const char* mode);
 
-/* Selects the neural inference backend. Default is SLOPFAB_INFERENCE_CUDA. */
+/* Selects the neural backend. Defaults to CUDA when built, otherwise Vulkan. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_request* request,
                                                                      int32_t backend);
+
+/* Since 1.15. Selects the Vulkan arithmetic policy. Linux defaults to PORTABLE;
+ * other platforms default to EXACT. PORTABLE uses device feature checks and
+ * does not promise CUDA bit parity. EXACT requires a qualified device/driver.
+ * This is separate from the attention algorithm selected by set_attention.
+ * CUDA inference ignores this option. Unknown policies are rejected. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_vulkan_arithmetic(slopfab_request* request,
+                                                                  int32_t policy);
 
 /* Skip conditioning and denoising and feed the decoders seeded noise. Not a
  * useful video, but it exercises both VAEs and the colour transform against

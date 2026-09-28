@@ -77,6 +77,36 @@ SLOPFAB_TEST(capi_video_transition) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_vulkan_arithmetic_policy) {
+  auto* request = slopfab_request_create();
+  CHECK(request != nullptr);
+  CHECK(slopfab_request_set_vulkan_arithmetic(nullptr, SLOPFAB_VULKAN_ARITHMETIC_PORTABLE) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_vulkan_arithmetic(request, 42) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_vulkan_arithmetic(request, SLOPFAB_VULKAN_ARITHMETIC_PORTABLE) ==
+        SLOPFAB_OK);
+  CHECK(std::strlen(slopfab_last_error()) == 0);
+  CHECK(slopfab_request_set_vulkan_arithmetic(request, SLOPFAB_VULKAN_ARITHMETIC_EXACT) ==
+        SLOPFAB_OK);
+  CHECK(slopfab_request_set_vulkan_arithmetic(request, -1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  slopfab_request_destroy(request);
+}
+
+SLOPFAB_TEST(capi_disabled_cuda_reports_unavailable) {
+#if !SLOPFAB_TEST_WITH_CUDA
+  CHECK(slopfab_cuda_set_version(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_cuda_set_version("invalid") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_cuda_set_version("auto") == SLOPFAB_ERR_RUNTIME);
+  CHECK(std::strstr(slopfab_last_error(), "disabled") != nullptr);
+  int32_t major = -1;
+  CHECK(slopfab_cuda_loaded_major(&major) == SLOPFAB_ERR_RUNTIME);
+  CHECK(major == 0);
+  CHECK(slopfab_cuda_loaded_major(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+#else
+  CHECK(slopfab_cuda_set_version(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+#endif
+}
+
 SLOPFAB_TEST(capi_prepare_lora_grid) {
   CHECK(slopfab_prepare_lora_grid(nullptr, 2, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_prepare_lora_grid("", 2, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);

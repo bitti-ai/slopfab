@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
       return cmd_devices();
     if (command == "tokenize")
       return cmd_tokenize(argc - 2, argv + 2);
-#if SLOPFAB_WITH_CUDA
+#if SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
     if (command == "decode")
       return cmd_decode(argc - 2, argv + 2);
 #endif

@@ -494,6 +494,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_req
   }
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_vulkan_arithmetic(slopfab_request* request,
+                                                                  int32_t policy) {
+  if (request == nullptr)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_vulkan_arithmetic: null request");
+  if (policy != SLOPFAB_VULKAN_ARITHMETIC_EXACT &&
+      policy != SLOPFAB_VULKAN_ARITHMETIC_PORTABLE)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_vulkan_arithmetic: unknown policy");
+  request->options.vulkan_portable_arithmetic = policy == SLOPFAB_VULKAN_ARITHMETIC_PORTABLE;
+  g_last_error.clear();
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_synthetic_latents(slopfab_request* request,
                                                                      int32_t enable) {
   if (request == nullptr) {

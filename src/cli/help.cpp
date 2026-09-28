@@ -117,6 +117,9 @@ const CommandHelp kCommands[] = {
      "  --count <n>                  generate n videos; explicit seeds increment by one,\n"
      "                               random ones are drawn afresh for each\n"
      "  --raw                        write .y4m + .wav instead of muxing MP4\n"
+     "  --vulkan-arithmetic portable|exact\n"
+     "                               portable checks features without CUDA bit parity;\n"
+     "                               exact requires a qualified device/driver\n"
      "  --inference-backend cuda|vulkan\n"
      "                               neural backend (CUDA by default when built); Vulkan\n"
      "                               supports native text and reference conditioning\n"
@@ -288,6 +291,8 @@ const CommandHelp kCommands[] = {
      "Reports both headers, sizes, and the first differing byte. The command\n"
      "streams its inputs and returns non-zero for any difference.\n"},
     {"decode", "slopfab decode --vae <f> [--latent <f>] [options]", "run the video VAE decoder",
+     "  --inference-backend cuda|vulkan  decoder backend\n"
+     "  --vulkan-arithmetic portable|exact  device-feature or qualified arithmetic\n"
      "  --vae <f>                    video VAE checkpoint\n"
      "  --latent <f>                 latent safetensors; omit for a synthetic one\n"
      "  --shape <T> <H> <W>          synthetic latent shape\n"
@@ -330,7 +335,11 @@ int print_command_help(const CommandHelp& c) {
 void print_usage() {
   std::printf("slopfab %s - MiniMax H3 video generation\n"
               "\n"
+#if SLOPFAB_WITH_CUDA
               "usage: slopfab [--cuda-version=auto|13|12] <command> [options]\n"
+#else
+              "usage: slopfab <command> [options]\n"
+#endif
               "       slopfab <command> --help\n"
               "\n"
               "commands:\n",
@@ -338,9 +347,16 @@ void print_usage() {
   for (const CommandHelp& c : kCommands) {
     std::printf("  %-9s %s\n", c.name, c.summary);
   }
-  std::printf("\nRun `slopfab <command> --help` for that command's options.\n"
-              "CUDA defaults to installed version 13, then 12; "
+  std::printf("\nRun `slopfab <command> --help` for that command's options.\n");
+#if SLOPFAB_WITH_CUDA
+#if defined(_WIN32)
+  std::printf("CUDA defaults to installed version 13, then 12; "
               "SLOPFAB_CUDA_VERSION provides the same override.\n");
+#else
+  std::printf("CUDA uses the toolkit selected at build time; --cuda-version and "
+              "SLOPFAB_CUDA_VERSION must match that major or use auto.\n");
+#endif
+#endif
 }
 
 #if SLOPFAB_WITH_CUDA

@@ -54,6 +54,9 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_device_tensor.cpp
   )
   target_link_libraries(slopfab_tests PRIVATE slopfab_core)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(slopfab_tests PRIVATE PNG::PNG JPEG::JPEG)
+  endif()
   if(MSVC)
     target_compile_options(slopfab_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
   else()
@@ -158,7 +161,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_audio_vulkan_integration.cu tests/test_lora_backends.cu
       tests/test_vsa_vulkan.cu)
     target_link_libraries(slopfab_tensor_backend_tests PRIVATE
-      slopfab_cuda slopfab_vulkan)
+      slopfab_generation slopfab_cuda slopfab_vulkan)
     target_compile_definitions(slopfab_tensor_backend_tests PRIVATE
       SLOPFAB_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     if(WIN32)
