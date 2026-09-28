@@ -40,6 +40,12 @@ Vulkan loader (`libvulkan.so.1`) and a compatible GPU driver. The runtime checks
 the device's Vulkan features before generation. Software Vulkan drivers are
 useful for limited tests but do not substitute for GPU generation validation.
 
+The existing Vulkan VAE path also requires a device/driver tuple qualified for
+its exact normalization and pointwise operations. A successful build or device
+listing does not establish that qualification. Native Linux GPU generation
+still needs the corresponding parity and model tests; an unqualified tuple is
+rejected rather than treated as verified by the Linux build checks.
+
 For CUDA, install a CUDA toolkit supporting your Linux distribution and a
 compatible NVIDIA driver, and make `nvcc` available on `PATH`. CUDA 12.8 or newer
 is needed for the default architecture list `86;120a`, covering
