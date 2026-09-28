@@ -466,13 +466,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_animate(slopfab_request* requ
  * with a copy containing its local companion grid. Requires write access and
  * temporary space for a full adapter copy when embedding. Close other readers
  * of that adapter before calling; do not prepare it during generation.
- * allow_download == 0 permits local assets only; nonzero opts into the pinned,
- * verified legacy grid download (currently Windows-only). No GPU work occurs.
- * Returns INVALID_ARGUMENT for null/empty paths or nonpositive widths; file,
+ * reserved must be zero; the former download option is no longer supported.
+ * Only local assets are used. No GPU work occurs.
+ * Returns INVALID_ARGUMENT for null/empty paths, nonpositive widths or nonzero
+ * reserved values; file,
  * grid and preparation errors use the usual runtime status/last_error contract.
  * Repeating the call on a valid embedded grid succeeds without rewriting it. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_prepare_lora_grid(const char* adapter_path, int32_t width,
-                                                         int32_t allow_download);
+                                                         int32_t reserved);
 
 /* H3 attention/MLP LoRA adapters, combined by summing their updates. Paths are copied.
  * A finite strength may be zero (disabled) or negative. */

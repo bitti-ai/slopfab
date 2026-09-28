@@ -3,12 +3,15 @@
 extern "C" {
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_prepare_lora_grid(const char* adapter_path, int32_t width,
-                                                         int32_t allow_download) {
+                                                         int32_t reserved) {
   if (!adapter_path || !*adapter_path || width <= 0)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
                 "prepare_lora_grid: nonempty adapter path and positive width required");
+  if (reserved != 0)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "prepare_lora_grid: downloads are no longer supported; reserved must be zero");
   return guarded([&] {
-    slopfab::prepare_lora_grid(adapter_path, width, allow_download != 0);
+    slopfab::prepare_lora_grid(adapter_path, width);
     return SLOPFAB_OK;
   });
 }

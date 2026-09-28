@@ -21,8 +21,8 @@ struct LoraFactors {
 };
 
 // Explicit asset preparation, outside inference. Embeds a validated local grid;
-// allow_download opts into the pinned legacy FL2VA asset acquisition.
-void prepare_lora_grid(const std::string& adapter_path, int width, bool allow_download = false);
+// Requires an embedded grid or a local companion file.
+void prepare_lora_grid(const std::string& adapter_path, int width);
 
 class LoraAdapters {
 public:

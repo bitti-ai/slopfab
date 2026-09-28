@@ -52,25 +52,24 @@ floating-point pruned weights at model load on CUDA and Vulkan.
 
 Some Turbo adapters, including the LightX2V v4 step-600 DARE-TIES file, retain
 the original 2,688-dimensional AdaLN input. Pruned checkpoints have only eight
-input coordinates and omit the original timestep embedder. On the first
-successful load, slopfab embeds the matching timestep grid into the LoRA as
-`slopfab.silu_t_emb_grid`. Later loads use that embedded tensor, with no
-companion file or network access required.
+input coordinates and omit the original timestep embedder. Supply a matching
+`h3_silu_temb_grid.safetensors` beside the LoRA, or use an adapter that already
+contains `slopfab.silu_t_emb_grid`. An embedded grid takes precedence over the
+companion. slopfab does not download grids or rewrite adapters during inference.
 
-For standard FL2VA checkpoints on Windows, a missing grid is downloaded from
-[deAPI-ai's H3 distribution](https://huggingface.co/deAPI-ai/minimax-h3-33b-int8/blob/ee696877efb4553214cb8d920d5617fd3309b910/loras/h3_silu_temb_grid.safetensors)
-into temporary storage. The revision, size and SHA-256 are pinned and verified;
-the temporary download is removed automatically. For offline first use, other
-platforms, or other model variants, place a matching
-`h3_silu_temb_grid.safetensors` beside the LoRA. An existing embedded grid takes
-precedence over this companion. A user-supplied companion is left in place and
-can be removed once every adapter that needs it has embedded its copy.
+To embed a local companion for later use without that file, prepare the adapter
+explicitly:
 
-First use requires write access to the LoRA and enough space beside it for a
-temporary full copy. After all adapters validate, slopfab atomically replaces
-the LoRA, preserving its existing tensor bytes and metadata and adding about
-5.26 MiB for the standard grid. Later loads work with a read-only adapter and
-do not rewrite it. The base checkpoint is never changed.
+```sh
+slopfab prepare-lora --adapter adapter.safetensors --width 2688
+```
+
+Preparation requires write access to the LoRA and enough space beside it for a
+temporary full copy. slopfab validates the grid and atomically replaces the
+LoRA, preserving its existing tensor bytes and metadata and adding about
+5.26 MiB for the standard grid. The companion is left in place and can be
+removed once every adapter that needs it has embedded its copy. Later loads
+work with a read-only adapter. The base checkpoint is never changed.
 
 The runtime fits the adapter's timestep input to the loaded base's
 `adaln_t_table`, preserving the

@@ -60,17 +60,16 @@ Inference is read-only: `LoraAdapters::load` reads an embedded grid or a local c
 }
 ```
 
-Only `version` is required; other fields override the legacy companion defaults or assert compatibility. The file is relative to the adapter directory and may not escape it. Grid shape and dtype are checked. When the base model declares `adaln_grid_id`, the adapter must declare the same identity. Affine fitting still enforces its numerical residual bound. Custom assets never trigger the legacy downloader.
+Only `version` is required; other fields override the legacy companion defaults or assert compatibility. The file is relative to the adapter directory and may not escape it. Grid shape and dtype are checked. When the base model declares `adaln_grid_id`, the adapter must declare the same identity. Affine fitting still enforces its numerical residual bound. All grid assets must be supplied locally.
 
 Asset preparation is an explicit operation, separate from inference:
 
 ```cpp
 #include "slopfab/lora.h"
 slopfab::prepare_lora_grid("adapter.safetensors", 2688); // local companion only
-slopfab::prepare_lora_grid("adapter.safetensors", 2688, true); // opt into pinned legacy download
 ```
 
-Preparation embeds the validated grid using atomic replacement and checks the adapter identity before writing. It needs write access and temporary space for a complete copy. The optional downloader remains Windows-only and verifies the pinned asset size and SHA-256. Existing embedded adapters and local companion inference need no write access.
+Preparation embeds the validated grid using atomic replacement and checks the adapter identity before writing. It needs write access and temporary space for a complete copy. Preparation requires an embedded grid or a matching local companion; it never downloads assets. Existing embedded adapters and local companion inference need no write access.
 
 ## Transformer modules
 

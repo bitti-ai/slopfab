@@ -16,7 +16,6 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <winhttp.h>
 #endif
 
 namespace slopfab::detail {
@@ -60,86 +59,13 @@ Sha256Digest header_digest(const SafeTensors& file) {
   return sha256_bytes(file.mapping_base(), size_t(header_size(file)) + 8);
 }
 
-void download_grid(const fs::path& destination) {
-#ifdef _WIN32
-  struct InternetHandle {
-    HINTERNET value;
-
-    ~InternetHandle() {
-      if (value)
-        WinHttpCloseHandle(value);
-    }
-  };
-
-  // Pin both the revision and bytes: an upstream replacement must not silently
-  // change the embedded model data. This is the FL2VA timestep grid, 5.26 MiB.
-  constexpr wchar_t resource[] =
-      L"/deAPI-ai/minimax-h3-33b-int8/resolve/ee696877efb4553214cb8d920d5617fd3309b910/loras/h3_silu_temb_grid.safetensors";
-  constexpr size_t expected_size = 5510600;
-  const Sha256Digest expected_hash = {0x30, 0xeb, 0x3c, 0x2c, 0xc7, 0xfb, 0x6b, 0x47,
-                                      0x0d, 0x97, 0x17, 0xff, 0x84, 0x0d, 0x35, 0x93,
-                                      0x13, 0xac, 0x27, 0xcd, 0x64, 0xb7, 0x05, 0xe3,
-                                      0x2d, 0xa1, 0xba, 0xa1, 0x0f, 0x72, 0xd6, 0xa8};
-  std::fprintf(stderr, "LoRA: downloading FL2VA timestep grid for embedding (5.26 MiB)\n");
-  InternetHandle session{WinHttpOpen(L"slopfab/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
-  if (!session.value)
-    throw std::runtime_error("LoRA: cannot initialize grid download");
-  WinHttpSetTimeouts(session.value, 30000, 30000, 30000, 60000);
-  InternetHandle connection{
-      WinHttpConnect(session.value, L"huggingface.co", INTERNET_DEFAULT_HTTPS_PORT, 0)};
-  if (!connection.value)
-    throw std::runtime_error("LoRA: cannot connect for grid download");
-  InternetHandle request{WinHttpOpenRequest(connection.value, L"GET", resource, nullptr,
-                                            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                            WINHTTP_FLAG_SECURE)};
-  if (!request.value ||
-      !WinHttpSendRequest(request.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA,
-                          0, 0, 0) ||
-      !WinHttpReceiveResponse(request.value, nullptr))
-    throw std::runtime_error(
-        "LoRA: grid download failed; for offline first use, place h3_silu_temb_grid.safetensors beside the LoRA");
-  DWORD status = 0, size = sizeof(status);
-  if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                           WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX) ||
-      status != 200)
-    throw std::runtime_error("LoRA: grid download returned HTTP " + std::to_string(status));
-  std::vector<uint8_t> data(expected_size);
-  size_t received = 0;
-  for (;;) {
-    uint8_t buffer[65536];
-    DWORD count = 0;
-    if (!WinHttpReadData(request.value, buffer, sizeof(buffer), &count))
-      throw std::runtime_error("LoRA: grid download interrupted");
-    if (!count)
-      break;
-    if (count > expected_size - received)
-      throw std::runtime_error("LoRA: downloaded grid exceeds expected size");
-    std::memcpy(data.data() + received, buffer, count);
-    received += count;
-  }
-  if (received != expected_size || sha256_bytes(data.data(), data.size()) != expected_hash)
-    throw std::runtime_error("LoRA: downloaded grid failed size/SHA-256 verification");
-  std::ofstream out(destination, std::ios::binary);
-  out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-  out.close();
-  if (!out)
-    throw std::runtime_error("LoRA: cannot stage downloaded grid");
-#else
-  (void)destination;
-  throw std::runtime_error(
-      "LoRA: automatic grid download requires Windows; place h3_silu_temb_grid.safetensors beside the LoRA for first use");
-#endif
-}
 } // namespace
 
-void LoraGrid::load(const SafeTensors& adapter, int width, bool allow_download) {
+void LoraGrid::load(const SafeTensors& adapter, int width) {
   std::string filename = "h3_silu_temb_grid.safetensors";
   std::string tensor_name = "silu_t_emb_grid";
-  bool custom_asset = false;
   if (const auto it = adapter.metadata().find("slopfab.lora_grid");
       it != adapter.metadata().end()) {
-    custom_asset = true;
     const auto root = json::parse(it->second);
     if (!root.is_object())
       throw std::runtime_error("LoRA: slopfab.lora_grid must be an object");
@@ -194,16 +120,9 @@ void LoraGrid::load(const SafeTensors& adapter, int width, bool allow_download) 
     archive.open(companion.u8string());
     copy(archive.at(tensor_name));
   } else {
-    if (!allow_download || custom_asset || width != 2688)
-      throw std::runtime_error(
-          "LoRA: no matching embedded AdaLN grid; place h3_silu_temb_grid.safetensors beside the LoRA for first use: " +
-          companion.u8string());
-    TemporaryDirectory temporary(fs::temp_directory_path());
-    const auto downloaded = temporary.path / "grid.safetensors";
-    download_grid(downloaded);
-    SafeTensors archive;
-    archive.open(downloaded.u8string());
-    copy(archive.at(tensor_name));
+    throw std::runtime_error(
+        "LoRA: no matching embedded AdaLN grid; supply the local companion file: " +
+        companion.u8string());
   }
   needs_embedding = true;
 }
@@ -281,14 +200,14 @@ void LoraGrid::embed() const {
 } // namespace slopfab::detail
 
 namespace slopfab {
-void prepare_lora_grid(const std::string& adapter_path, int width, bool allow_download) {
+void prepare_lora_grid(const std::string& adapter_path, int width) {
   static std::mutex preparation;
   const std::lock_guard<std::mutex> lock(preparation);
   detail::LoraGrid grid;
   {
     SafeTensors adapter;
     adapter.open(adapter_path);
-    grid.load(adapter, width, allow_download);
+    grid.load(adapter, width);
   }
   grid.embed();
 }

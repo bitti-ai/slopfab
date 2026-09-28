@@ -166,15 +166,10 @@ void ensure_generate_models(const slopfab::GenerateRequest& req, bool need_text_
 int cmd_prepare_lora(int argc, char** argv) {
   std::string adapter;
   int width = 0;
-  bool download = false;
   for (int i = 0; i < argc; ++i) {
     const std::string arg = argv[i];
-    if (arg == "--download") {
-      download = true;
-      continue;
-    }
     if ((arg != "--adapter" && arg != "--width") || i + 1 == argc)
-      throw std::invalid_argument("prepare-lora requires --adapter FILE --width N [--download]");
+      throw std::invalid_argument("prepare-lora requires --adapter FILE --width N");
     const std::string value = argv[++i];
     if (arg == "--adapter")
       adapter = value;
@@ -187,7 +182,7 @@ int cmd_prepare_lora(int argc, char** argv) {
   }
   if (adapter.empty() || width <= 0)
     throw std::invalid_argument("prepare-lora requires --adapter FILE --width N");
-  slopfab::prepare_lora_grid(adapter, width, download);
+  slopfab::prepare_lora_grid(adapter, width);
   std::printf("prepared    %s\n", adapter.c_str());
   return 0;
 }

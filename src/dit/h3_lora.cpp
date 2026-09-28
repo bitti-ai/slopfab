@@ -134,7 +134,7 @@ void convert_output_basis(LoraFactors& f, bool needed) {
 
 void AdaLNBasis::load(const SafeTensors& base, const SafeTensors& adapter, int width) {
   source = std::make_unique<detail::LoraGrid>();
-  source->load(adapter, width, false);
+  source->load(adapter, width);
   const auto model = dit::resolve_model_descriptor(base);
   if (!model.adaln_grid_id.empty() && model.adaln_grid_id != source->identity)
     throw std::runtime_error("LoRA: AdaLN grid identity does not match the base model descriptor");

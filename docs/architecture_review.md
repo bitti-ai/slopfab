@@ -142,7 +142,7 @@ Create a conditioner component with declared output width/semantics, tokenizer a
 
 [lora.cpp](../src/core/lora.cpp#L33) combines generic A/B parsing with H3 endpoint aliases, target whitelists, fused-QKV mapping and FFN permutations. Extract generic factor/alpha/strength validation and composition, then supply family target schemas and separately tested conversions. H3 AdaLN fitting belongs with the H3 adapter implementation.
 
-[lora_grid.cpp](../src/core/lora_grid.cpp#L60) names a specific remote grid asset, and adapter loading can persist that grid into the adapter file. Separate asset acquisition/preparation from inference factor loading. Profiles should declare compatible grid identity and shape; a reusable loader should not need another model-specific download branch.
+[lora_grid.cpp](../src/core/lora_grid.cpp) reads embedded or local companion grids. Explicit preparation can persist a validated local grid into the adapter; inference does not rewrite it. Automatic asset downloads have been removed. Profiles should declare compatible grid identity and shape.
 
 [Transformer-local NF4 parsing](../src/dit/transformer.cpp#L143) duplicates [core/nf4.cpp](../src/core/nf4.cpp#L20). Consolidate it while preserving the local reader's additional BF16-source check. Then normalize quantization metadata into shared per-linear descriptors: logical shape, packing, scales, input transforms, bias and full-precision requirements. Backends should consume those descriptors, not independently rediscover checkpoint semantics. Preserve strict checks for mixed or incompatible formats.
 

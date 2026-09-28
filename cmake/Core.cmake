@@ -81,7 +81,7 @@ target_include_directories(slopfab_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 # decoders can be compared and the code cannot rot unbuilt — which is why
 # these are linked whether or not FFmpeg is on. Both ship with Windows.
 if(WIN32)
-  target_link_libraries(slopfab_core PRIVATE windowscodecs ole32 bcrypt winhttp)
+  target_link_libraries(slopfab_core PRIVATE windowscodecs ole32 bcrypt)
 endif()
 
 # The RGB -> YUV 4:2:0 conversion in src/video/y4m.cpp is threaded. MSVC needs

@@ -23,7 +23,7 @@ struct LoraGrid {
   Sha256Digest original_header{};
   bool needs_embedding = false;
 
-  void load(const SafeTensors& adapter, int width, bool allow_download);
+  void load(const SafeTensors& adapter, int width);
   void embed() const;
 };
 

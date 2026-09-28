@@ -82,6 +82,9 @@ SLOPFAB_TEST(capi_prepare_lora_grid) {
   CHECK(slopfab_prepare_lora_grid("", 2, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_prepare_lora_grid("unused", 0, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_prepare_lora_grid("unused", -1, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_prepare_lora_grid("unused", 2688, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(std::strstr(slopfab_last_error(), "reserved must be zero") != nullptr);
+  CHECK(slopfab_prepare_lora_grid("unused", 2688, -1) == SLOPFAB_ERR_INVALID_ARGUMENT);
 
   struct Fixture {
     std::filesystem::path dir =
@@ -152,8 +155,8 @@ SLOPFAB_TEST(capi_prepare_lora_grid) {
   }
   std::filesystem::remove(fixture.companion);
   CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_OK);
-  CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 1) == SLOPFAB_OK);
-  CHECK(fixture.bytes() == embedded); // Embedded input is idempotent, even with download allowed.
+  CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(fixture.bytes() == embedded); // Neither repeated preparation nor a rejected option rewrites it.
 }
 
 SLOPFAB_TEST(capi_motion_cache_validation_and_atomic_setter) {

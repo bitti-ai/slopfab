@@ -67,11 +67,11 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
-    {"prepare-lora", "slopfab prepare-lora --adapter FILE --width N [--download]",
+    {"prepare-lora", "slopfab prepare-lora --adapter FILE --width N",
      "prepare an adapter's AdaLN grid outside inference",
      "  --adapter FILE             adapter to update atomically\n"
      "  --width N                  base transformer hidden width\n"
-     "  --download                 allow verified legacy grid download\n"},
+     "  Requires an embedded grid or a local companion file.\n"},
     {"generate", "slopfab generate --prompt <text> [options]", "text to video and audio",
      "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
      "  --prompt-file <file>         read that same prompt from a UTF-8 text file\n"

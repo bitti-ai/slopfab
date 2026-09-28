@@ -172,7 +172,7 @@ SLOPFAB_TEST(lora_grid_embedding_preserves_raw_storage_and_rejects_changed_files
     original.open(f.path);
     for (const auto& t : original.tensors())
       hashes[t.first] = sha256_bytes(t.second.data, t.second.nbytes);
-    grid.load(original, 10, false);
+    grid.load(original, 10);
   }
   grid.embed();
   const auto digest = sha256_file(f.path);
@@ -210,7 +210,7 @@ SLOPFAB_TEST(lora_grid_embedding_preserves_raw_storage_and_rejects_changed_files
   {
     SafeTensors reader;
     reader.open(f.path);
-    grid.load(reader, 10, false);
+    grid.load(reader, 10);
     rejected = false;
     try {
       grid.embed();
@@ -567,7 +567,7 @@ SLOPFAB_TEST(lora_grid_metadata_selects_local_asset_without_mutating_adapter) {
   SafeTensors adapter;
   adapter.open(fixture.path);
   detail::LoraGrid grid;
-  grid.load(adapter, 3, false);
+  grid.load(adapter, 3);
   CHECK(grid.identity == "custom-grid-v1");
   CHECK(grid.tensor.shape == std::vector<int64_t>({1025, 3}));
   CHECK(sha256_file(fixture.path) == original);
@@ -576,7 +576,7 @@ SLOPFAB_TEST(lora_grid_metadata_selects_local_asset_without_mutating_adapter) {
   std::filesystem::remove(fixture.dir / "custom-grid.safetensors");
   adapter.open(fixture.path);
   detail::LoraGrid embedded;
-  embedded.load(adapter, 3, false);
+  embedded.load(adapter, 3);
   CHECK(embedded.identity == grid.identity);
   CHECK(embedded.bytes == grid.bytes);
   adapter.close();
@@ -586,7 +586,7 @@ SLOPFAB_TEST(lora_grid_metadata_selects_local_asset_without_mutating_adapter) {
   bool rejected = false;
   try {
     detail::LoraGrid bad;
-    bad.load(adapter, 3, false);
+    bad.load(adapter, 3);
   } catch (const std::runtime_error&) {
     rejected = true;
   }

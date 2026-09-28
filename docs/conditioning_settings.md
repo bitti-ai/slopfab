@@ -68,10 +68,10 @@ C API 1.12 adds `slopfab_session_create`, `slopfab_session_destroy`, `slopfab_se
 Inference reads adapter assets without downloading or rewriting the adapter. Prepare a missing H3 AdaLN grid explicitly:
 
 ```sh
-slopfab prepare-lora --adapter adapter.safetensors --width 2688 --download
+slopfab prepare-lora --adapter adapter.safetensors --width 2688
 ```
 
-Omit `--download` to permit local assets only. See [model contracts](model_contracts.md) for asset metadata/API, [sampling settings](sampling_settings.md) for step/grid defaults, and [backend contracts](backend_contracts.md) for supported execution contracts.
+Place the matching `h3_silu_temb_grid.safetensors` beside the adapter before preparation. All assets must be supplied locally. See [model contracts](model_contracts.md) for asset metadata/API, [sampling settings](sampling_settings.md) for step/grid defaults, and [backend contracts](backend_contracts.md) for supported execution contracts.
 
 C API 1.13 exposes the same operation from the DLL:
 
@@ -82,9 +82,9 @@ if (status != SLOPFAB_OK) {
 }
 ```
 
-The final argument is `allow_download`: zero uses local assets only; nonzero
-allows the verified legacy download. This call is synchronous and performs no
-GPU work. It validates an already embedded grid or embeds a companion using
+The final argument is reserved and must be zero. Nonzero values return
+`SLOPFAB_ERR_INVALID_ARGUMENT`; downloads are no longer supported. This call
+is synchronous and performs no GPU work. It validates an already embedded grid or embeds a companion using
 atomic replacement, requiring write access and space for an adapter copy.
 Close readers of that adapter before preparation and prepare it before starting
 generation. Calling it again after successful preparation does not rewrite the
