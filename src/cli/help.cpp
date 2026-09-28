@@ -302,7 +302,7 @@ const CommandHelp kCommands[] = {
     {"tokenize", "slopfab tokenize [--tokenizer <f>] <text>", "encode text and round-trip it",
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --pieces                     also print the pre-tokenizer split\n"},
-    {"devices", "slopfab devices", "list CUDA inference and Vulkan output devices", ""},
+    {"devices", "slopfab devices", "list CUDA and Vulkan compute devices", ""},
     {"version", "slopfab version", "print the version and exit", ""},
 };
 

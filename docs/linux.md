@@ -160,6 +160,9 @@ claim GPU execution, native SM120a coverage or successful model generation.
 
 Run the same Linux commands inside the WSL distribution, for example from
 `/mnt/d/Projects/slopfab`. Keep Linux and Windows build directories separate.
+Use a build directory on the Linux filesystem, such as
+`-B /tmp/slopfab-linux-vulkan`, when the source checkout is on a Windows drive;
+CMake may be unable to set generated-file permissions on that mounted drive.
 Check GPU availability inside WSL using `slopfab devices`; CUDA availability
 does not imply that a usable Vulkan device is exposed. Use the toolkit installed
 inside the Linux distribution for compilation and the WSL-compatible Windows
