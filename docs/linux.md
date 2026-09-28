@@ -162,16 +162,18 @@ CUDA 13.3:
 - The CUDA + Vulkan configuration built all targets and passed nine host, C API
   and CUDA dispatch tests. CUDA-only CLI/C API builds with FFmpeg disabled also
   passed device enumeration and embedded-tokenizer smoke checks.
-- Real CUDA video/audio VAE decoding of synthetic latents produced a 22-frame,
-  256x256 MP4; probing confirmed H.264 video and AAC audio. This validates
-  decoding and output, not the complete text-to-video pipeline.
+- Both synthetic-latent decoding and a full CUDA text-to-video smoke run
+  produced 22-frame, 256x256 MP4 files with H.264 video and AAC audio. The full
+  run used the embedded tokenizer, local NVFP4 Qwen/transformer checkpoints,
+  video/audio VAEs and one denoising evaluation; it checks execution and output,
+  not generation quality.
 - The Vulkan-only configuration passed seven of eight CTest suites; the model
   integration suite skipped because WSL exposed only llvmpipe software Vulkan.
   Portable arithmetic tests executed 33 checks through actual Vulkan shaders.
   No physical Vulkan GPU generation was validated. Full H3 inference also
   requires the supported BF16/FP16 cooperative-matrix operations and subgroup
   size; a Vulkan device listing alone does not establish those capabilities.
-- The packaged Vulkan CLI and C API passed all five packaging checks. After
+- The Vulkan-only and combined CUDA/Vulkan packages passed all five packaging checks. After
   extraction elsewhere, the CLI tokenized with the embedded full vocabulary
   and the versioned shared library loaded and accepted both arithmetic policies.
   SONAME symlinks and relative library search paths were verified.
