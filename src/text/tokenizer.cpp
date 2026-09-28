@@ -16,6 +16,11 @@
 #endif
 
 namespace slopfab::text {
+#if SLOPFAB_EMBED_TOKENIZER && !defined(_WIN32)
+namespace detail {
+std::string_view embedded_tokenizer_json();
+}
+#endif
 namespace {
 
 struct Range {
@@ -646,7 +651,7 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
   }
 }
 
-#if defined(_WIN32)
+#if defined(_WIN32) && SLOPFAB_EMBED_TOKENIZER
 namespace {
 
 // The module this translation unit was linked into, which is where the
@@ -671,7 +676,11 @@ HMODULE containing_module() {
 #endif
 
 void Tokenizer::load_embedded() {
-#if defined(_WIN32)
+#if !SLOPFAB_EMBED_TOKENIZER
+  throw std::runtime_error(
+      "tokenizer: this build has no embedded tokenizer; pass --tokenizer <file> "
+      "or rebuild with -DSLOPFAB_EMBED_TOKENIZER=ON -DSLOPFAB_TOKENIZER_FILE=<file>");
+#elif defined(_WIN32)
   const HMODULE module = containing_module();
   if (module == nullptr) {
     throw std::runtime_error("tokenizer: cannot identify the module holding the embedded resource");
@@ -687,8 +696,7 @@ void Tokenizer::load_embedded() {
   }
   load_json(std::string_view(static_cast<const char*>(bytes), size));
 #else
-  throw std::runtime_error(
-      "tokenizer: this build has no embedded tokenizer; pass --tokenizer <file>");
+  load_json(detail::embedded_tokenizer_json());
 #endif
 }
 

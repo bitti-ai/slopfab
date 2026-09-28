@@ -32,9 +32,9 @@ public:
   // and the built-in data follow exactly the same code path.
   void load_json(std::string_view tokenizer_json);
 
-  // Loads tokenizer.json compiled into whichever module holds this code — the
-  // slopfab.exe or slopfab.dll, whichever contains this code.
-  // Windows only; elsewhere it throws and the caller must pass a file.
+  // Loads tokenizer.json compiled into this executable or shared library.
+  // Available on every platform when built with SLOPFAB_EMBED_TOKENIZER=ON.
+  // Otherwise throws with instructions for supplying a file explicitly.
   void load_embedded();
 
   bool loaded() const {
