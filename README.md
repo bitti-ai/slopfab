@@ -29,7 +29,7 @@ tokenizer. See [Linux build, packaging and WSL instructions](docs/linux.md).
 
 For Windows builds, install:
 
-- CMake 3.24 or newer and Visual Studio 2022 C++ build tools.
+- CMake 3.31 or newer for the default CUDA architectures, and Visual Studio 2022 C++ build tools.
 - CUDA 12.8 for compilation and CUDA 13.0 headers for the cuBLAS compatibility checks.
 - The model tokenizer at `ref/text_encoder/tokenizer.json` for embedding in the executable and DLL.
 
@@ -106,6 +106,7 @@ Common generation options:
 | Option | Purpose |
 | --- | --- |
 | `--inference-backend cuda\|vulkan` | Select the inference backend |
+| `--vulkan-arithmetic portable\|exact` | Vulkan arithmetic policy; Linux defaults to portable |
 | `--steps N` | Set the sigma schedule length; performs `N - 1` evaluations |
 | `--count N` | Generate multiple variations |
 | `--motion-cache` | Enable approximate motion-aware denoising reuse |

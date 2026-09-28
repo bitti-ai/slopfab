@@ -40,11 +40,21 @@ Vulkan loader (`libvulkan.so.1`) and a compatible GPU driver. The runtime checks
 the device's Vulkan features before generation. Software Vulkan drivers are
 useful for limited tests but do not substitute for GPU generation validation.
 
-The existing Vulkan VAE path also requires a device/driver tuple qualified for
-its exact normalization and pointwise operations. A successful build or device
-listing does not establish that qualification. Native Linux GPU generation
-still needs the corresponding parity and model tests; an unqualified tuple is
-rejected rather than treated as verified by the Linux build checks.
+Linux generation defaults to `--vulkan-arithmetic portable`. This permits
+devices with the required shader capabilities without requiring the driver to
+be on the CUDA bit-parity qualification list. Results are not guaranteed to
+match CUDA byte for byte. `--vulkan-arithmetic exact` keeps the stricter
+device/driver qualification for normalization and pointwise operations;
+unqualified tuples are rejected. Windows retains its existing exact default.
+This arithmetic policy is separate from `--attention`: choosing exact
+attention alone does not promise that every decoder operation is bit-identical
+to CUDA.
+
+C API callers can override the platform default with
+`slopfab_request_set_vulkan_arithmetic` (added in ABI 1.15); see the arithmetic
+enum in `capi.h`. The choice is part of the request and session cache identity.
+Native Linux GPU generation still needs model and driver qualification beyond
+the host and software Vulkan tests run here.
 
 For CUDA, install a CUDA toolkit supporting your Linux distribution and a
 compatible NVIDIA driver, and make `nvcc` available on `PATH`. CUDA 12.8 or newer
@@ -61,6 +71,8 @@ build/linux-both/slopfab generate --inference-backend cuda \
   --prompt "A cat playing a piano" --frames 22 --resolution 512x512 --raw
 ```
 
+Use CMake 3.31 or newer for the default architecture list: older releases can
+reject the `120a` suffix. Host and Vulkan builds retain the CMake 3.24 minimum.
 Adjust the compiler path for your toolkit. CUDA 12.8's headers are incompatible
 with newer glibc declarations on Ubuntu 26.04; use a newer toolkit supported on
 that distribution or build in a compatible older distribution. CUDA compilation can consume
