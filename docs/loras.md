@@ -132,16 +132,29 @@ adapter with FL2VA:
 
 ```powershell
 New-Item -ItemType Directory -Force output | Out-Null
-build/Release/slopfab.exe generate --prompt "A polar bear plays the violin in the snow." --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/dmad_minimax_h3_4step_full_critic.safetensors --schedule dmad-4step --seed 42 --out output/dmad.mp4
+build/Release/slopfab.exe generate --prompt "A polar bear plays the violin in the snow." --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/dmad_minimax_h3_4step_full_critic.safetensors --sampling-settings settings/dmad.json --seed 42 --out output/dmad.mp4
 ```
 
-`--schedule dmad-4step` selects four evaluations, video shift 12, audio shift 2,
-and the upstream re-noising rule: `x0 = x + sigma * velocity`, then
-`x_next = (1 - sigma_next) * x0 + sigma_next * fresh_noise`. The terminal update
-returns x0. The base sigma grid is `[1, .75, .5, .25, 0]`. Omit `--steps`, or use
-`--steps 5`; other explicit counts are rejected. This preset selects re-noising
-even with the ordinary Euler default. AB2, approximate caches and conditioning
-workflows are rejected. Ordinary `--lora` loading does not select the preset.
+[settings/dmad.json](../settings/dmad.json) contains the complete sampling recipe:
+
+```json
+{
+  "version": 1,
+  "sampler": "renoise",
+  "video_sigma_shift": 12,
+  "audio_sigma_shift": 2,
+  "base_sigmas": [1, 0.75, 0.5, 0.25, 0]
+}
+```
+
+No named schedule or separate sampler flag is needed. The five sigma points
+produce four evaluations; a fixed grid determines the count regardless of
+`--steps`. Re-noising predicts `x0 = x + sigma * velocity`, then updates
+`x_next = (1 - sigma_next) * x0 + sigma_next * fresh_noise`. The terminal
+update returns x0. Approximate caches and AB2 with fixed grids are rejected.
+The same JSON can be embedded as `slopfab.sampling` metadata in an adapter.
+Ordinary loading of the released DMAD files does not infer these settings
+from their filenames or descriptive upstream metadata.
 
 Add `--inference-backend vulkan` for Vulkan. CUDA uses the host scheduler;
 Vulkan also updates re-noised rows on the host, transferring latents and
@@ -149,10 +162,10 @@ velocities each step. Both use the same deterministic noise streams, separate
 for every step and modality. These streams do not reproduce PyTorch's RNG.
 The default geometry is 1344x768, 124 frames at 24 fps; no CFG is needed.
 
-For an Euler comparison, omit the preset, use `--steps 5`, and supply
-`--sampling-settings` with `{"version":1,"video_sigma_shift":12,"audio_sigma_shift":2}`.
-`--sampler renoise` also selects re-noising with an ordinary custom step count
-and shifts. Fixed grids outside the DMAD preset retain their Euler requirement.
+For an Euler comparison, add `--sampler euler` to the same command. An explicit
+sampler flag overrides the JSON sampler regardless of command-line order.
+The previous `--schedule dmad-4step` spelling remains a compatibility alias
+that supplies exactly the settings above; explicit settings can override it.
 
 DMAD was trained on the T2VA transformer. FL2VA is supported here as requested,
 but the upstream quality results do not establish quality for this base swap
@@ -168,10 +181,14 @@ including generated audio and repeatability. Flash2 cross-backend differences
 are reported rather than treated as an exact arithmetic contract. A constant
 velocity Vulkan fixture separately checks the re-noising formula at every
 video/audio boundary. These checks do not establish upstream quality parity.
+The settings-only path was also run with the same FL2VA checkpoint, prompt and
+seed; its saved video and audio latent tensors were byte-identical to the
+earlier named-schedule run.
 
-C++ uses `GenerateRequest::schedule = sampler::ScheduleKind::kDmad4Step`.
-C ABI 1.16 adds `SLOPFAB_SCHEDULE_DMAD_4STEP` to `slopfab_request_set_schedule`;
-the preset selects re-noising on both backends without another sampler setter.
+C++ callers set `GenerateRequest::sampling` using `parse_sampling_settings()`.
+C callers pass the JSON to `slopfab_request_set_sampling_settings()`.
+`RunOptions::sampler` is an optional override; unset inherits the resolved
+settings, with Euler as the fallback when no settings choose a sampler.
 
 ## C and C++ APIs
 
