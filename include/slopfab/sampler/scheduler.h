@@ -38,6 +38,8 @@ enum class SamplerKind {
   kRenoise,
 };
 
+const char* sampler_name(SamplerKind kind);
+
 // Canonical fp32 arithmetic used by the production Euler path on both CUDA
 // (through FlowScheduler) and Vulkan. Subnormal operands and results become
 // signed zero. Any NaN, infinity, or non-finite arithmetic result becomes the

@@ -25,7 +25,7 @@ SamplingSettings file_settings(const std::string& path) {
 
 bool has_settings(const SamplingSettings& settings) {
   return settings.default_steps || settings.video_sigma_shift || settings.audio_sigma_shift ||
-         settings.base_sigmas;
+         settings.base_sigmas || settings.sampler;
 }
 
 template <typename T>
@@ -42,15 +42,6 @@ void merge_adapter_field(std::optional<T>& target, const std::optional<T>& incom
 } // namespace
 
 void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
-  plan.dmad = request.schedule == sampler::ScheduleKind::kDmad4Step;
-  if (plan.dmad && (request.has_references() || request.continuation || request.animate ||
-                    request.still_image || request.video_transition))
-    throw std::invalid_argument("dmad-4step supports text-to-audio-video generation");
-  if (plan.dmad &&
-      std::none_of(request.loras.begin(), request.loras.end(), [](const LoraSpec& lora) {
-        return lora.strength != 0.0f;
-      }))
-    throw std::invalid_argument("dmad-4step requires an enabled LoRA");
   SamplingSettings effective;
   effective.default_steps = request.animate ? 4 : 50;
   effective.video_sigma_shift = kVideoSigmaShift;
@@ -108,6 +99,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
                         overrides.video_sigma_shift, "video_sigma_shift");
     merge_adapter_field(adapters.audio_sigma_shift, settings.audio_sigma_shift,
                         overrides.audio_sigma_shift, "audio_sigma_shift");
+    merge_adapter_field(adapters.sampler, settings.sampler, overrides.sampler, "sampler");
     merge_adapter_field(adapters.base_sigmas, settings.base_sigmas, overrides.base_sigmas,
                         "base_sigmas");
     if (has_settings(settings))
@@ -124,16 +116,6 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);
 
-  if (plan.dmad) {
-    const auto required = sampling_schedule_defaults(sampler::ScheduleKind::kDmad4Step);
-    if (effective.video_sigma_shift != required.video_sigma_shift ||
-        effective.audio_sigma_shift != required.audio_sigma_shift ||
-        effective.base_sigmas != required.base_sigmas ||
-        (request.num_inference_steps != 0 && request.num_inference_steps != 5))
-      throw std::invalid_argument(
-          "dmad-4step requires four evaluations, video shift 12 and audio shift 2");
-  }
-
   if (plan.fasth3_v2) {
     const auto required = sampling_schedule_defaults(sampler::ScheduleKind::kFastH3V2);
     if (effective.video_sigma_shift != required.video_sigma_shift ||
@@ -141,6 +123,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
         effective.base_sigmas != required.base_sigmas)
       throw std::invalid_argument("FastH3 V2 requires its trained sigma shifts and base grid");
   }
+  plan.sampler = effective.sampler.value_or(sampler::SamplerKind::kEuler);
   plan.fixed_sampling_grid = effective.base_sigmas.has_value();
   if (plan.fixed_sampling_grid && (request.motion_cache.active() || request.cache_threshold > 0 ||
                                    request.skip_every > 0 || request.block_cache_span > 0))
@@ -181,19 +164,19 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
 }
 
 sampler::SamplerKind resolve_sampling_sampler(const GeneratePlan& plan,
-                                              sampler::SamplerKind requested) {
-  if (plan.dmad) {
-    if (requested == sampler::SamplerKind::kAb2)
-      throw std::invalid_argument("dmad-4step requires re-noising, not AB2");
-    return sampler::SamplerKind::kRenoise;
-  }
-  return requested;
+                                              std::optional<sampler::SamplerKind> requested) {
+  const auto kind = requested.value_or(plan.sampler);
+  sampler::sampler_name(kind);
+  return kind;
 }
 
-void validate_sampling_sampler(const GeneratePlan& plan, sampler::SamplerKind requested) {
+void validate_sampling_sampler(const GeneratePlan& plan,
+                               std::optional<sampler::SamplerKind> requested) {
   const auto kind = resolve_sampling_sampler(plan, requested);
-  if (plan.fixed_sampling_grid && !plan.dmad && kind != sampler::SamplerKind::kEuler)
-    throw std::invalid_argument("fixed sampling grids require the Euler sampler");
+  if (plan.fasth3_v2 && kind != sampler::SamplerKind::kEuler)
+    throw std::invalid_argument("FastH3 V2 requires the Euler sampler");
+  if (plan.fixed_sampling_grid && kind == sampler::SamplerKind::kAb2)
+    throw std::invalid_argument("fixed sampling grids require Euler or re-noising");
 }
 
 } // namespace slopfab

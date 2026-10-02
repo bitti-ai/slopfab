@@ -437,6 +437,31 @@ SLOPFAB_TEST(capi_sampling_settings) {
   CHECK(plan.num_model_evaluations == 49);
 }
 
+SLOPFAB_TEST(capi_dmad_sampling_settings_without_named_schedule) {
+  Request request;
+  CHECK(
+      slopfab_request_set_sampling_settings(
+          request.handle,
+          R"({"version":1,"sampler":"renoise","video_sigma_shift":12,"audio_sigma_shift":2,"base_sigmas":[1,0.75,0.5,0.25,0]})") ==
+      SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 4);
+  CHECK(slopfab_request_set_sampling_settings(request.handle,
+                                              R"({"version":1,"sampler":"unknown"})") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  char* description = nullptr;
+  CHECK(slopfab_describe_plan(request.handle, &description) == SLOPFAB_OK);
+  CHECK(description &&
+        std::string(description).find("sampler             renoise") != std::string::npos);
+  slopfab_free_string(description);
+  CHECK(slopfab_request_set_sampling_settings(request.handle, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_describe_plan(request.handle, &description) == SLOPFAB_OK);
+  CHECK(description &&
+        std::string(description).find("sampler             euler") != std::string::npos);
+  slopfab_free_string(description);
+}
+
 SLOPFAB_TEST(capi_session_ownership_and_conditioning_setter) {
   Request request;
   slopfab_session* session = nullptr;
@@ -722,7 +747,7 @@ SLOPFAB_TEST(capi_lora_and_taomate_schedule) {
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.num_model_evaluations == 4);
   CHECK(slopfab_request_clear_loras(request.handle) == SLOPFAB_OK);
-  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_DEFAULT) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.num_model_evaluations == 49);

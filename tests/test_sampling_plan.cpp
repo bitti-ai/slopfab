@@ -160,57 +160,70 @@ SLOPFAB_TEST(sampling_plan_preserves_fasth3_requirements) {
   }));
 }
 
-SLOPFAB_TEST(sampling_plan_dmad_four_step_preset) {
+SLOPFAB_TEST(sampling_plan_dmad_settings_match_compatibility_alias) {
   using namespace slopfab;
+  GenerateRequest named;
+  named.schedule = sampler::ScheduleKind::kDmad4Step;
+  const auto legacy = resolve_plan(named);
   GenerateRequest request;
-  request.schedule = sampler::ScheduleKind::kDmad4Step;
-  CHECK(rejects([&] {
-    resolve_plan(request);
-  }));
-  request.loras.push_back({"dmad.safetensors", 1});
-  auto plan = resolve_plan(request);
-  CHECK(plan.dmad && plan.num_model_evaluations() == 4);
-  CHECK(plan.video_sigma_shift == 12 && plan.audio_sigma_shift == 2);
-  CHECK_NEAR(plan.video_sigmas[1], 36.0f / 37, 1e-7);
-  CHECK_NEAR(plan.audio_sigmas[1], 6.0f / 7, 1e-7);
+  request.sampling = parse_sampling_settings(
+      R"({"version":1,"sampler":"renoise","video_sigma_shift":12,"audio_sigma_shift":2,"base_sigmas":[1,0.75,0.5,0.25,0]})");
+  const auto plan = resolve_plan(request);
+  CHECK(plan.num_model_evaluations() == 4);
+  CHECK(plan.video_sigmas == legacy.video_sigmas && plan.audio_sigmas == legacy.audio_sigmas);
+  CHECK(plan.video_timesteps == legacy.video_timesteps &&
+        plan.audio_timesteps == legacy.audio_timesteps);
+  CHECK(plan.sampler == legacy.sampler && plan.sampler == sampler::SamplerKind::kRenoise);
+  CHECK(resolve_sampling_sampler(plan) == sampler::SamplerKind::kRenoise);
   CHECK(resolve_sampling_sampler(plan, sampler::SamplerKind::kEuler) ==
-        sampler::SamplerKind::kRenoise);
-  validate_sampling_sampler(plan, sampler::SamplerKind::kRenoise);
+        sampler::SamplerKind::kEuler);
+  CHECK(describe_plan(request, plan).find("sampler             renoise") != std::string::npos);
   RunOptions options;
   validate_generation_options(request, plan, options);
   options.inference_backend = DeviceBackend::kVulkan;
+  validate_generation_options(request, plan, options);
+  options.sampler = sampler::SamplerKind::kEuler;
   validate_generation_options(request, plan, options);
   options.sampler = sampler::SamplerKind::kAb2;
   CHECK(rejects([&] {
     validate_generation_options(request, plan, options);
   }));
-  options.sampler = sampler::SamplerKind::kEuler;
+  options.sampler.reset();
   request.block_cache_span = 1;
   CHECK(rejects([&] {
     validate_generation_options(request, plan, options);
   }));
   request.block_cache_span = 0;
-  CHECK(rejects([&] {
-    validate_sampling_sampler(plan, sampler::SamplerKind::kAb2);
-  }));
-  request.num_inference_steps = 4;
-  CHECK(rejects([&] {
-    resolve_plan(request);
-  }));
-  request.num_inference_steps = 5;
+  request.num_inference_steps = 12; // A fixed grid determines its own length.
   CHECK(resolve_plan(request).num_model_evaluations() == 4);
   request.sampling.audio_sigma_shift = 3;
+  CHECK(resolve_plan(request).audio_sigma_shift == 3); // Settings are generic data.
+}
+
+SLOPFAB_TEST(sampling_plan_sampler_metadata_precedence_and_conflicts) {
+  using namespace slopfab;
+  SamplingFixture model("slopfab_sampler_model.safetensors", R"({"version":1,"sampler":"ab2"})");
+  SamplingFixture first("slopfab_sampler_first.safetensors",
+                        R"({"version":1,"sampler":"renoise"})");
+  SamplingFixture second("slopfab_sampler_second.safetensors",
+                         R"({"version":1,"sampler":"euler"})");
+  GenerateRequest request;
+  CHECK(resolve_plan(request).sampler == sampler::SamplerKind::kEuler);
+  request.transformer_path = model.path.string();
+  CHECK(resolve_plan(request).sampler == sampler::SamplerKind::kAb2);
+  request.loras.push_back({first.path.string(), 0});
+  CHECK(resolve_plan(request).sampler == sampler::SamplerKind::kAb2);
+  request.loras.front().strength = 1;
+  CHECK(resolve_plan(request).sampler == sampler::SamplerKind::kRenoise);
+  request.loras.push_back({second.path.string(), 1});
   CHECK(rejects([&] {
     resolve_plan(request);
   }));
-  request.sampling = {};
-  request.skip_every = 2;
-  CHECK(rejects([&] {
-    resolve_plan(request);
-  }));
-  request.skip_every = 0;
-  request.loras.front().strength = 0;
-  CHECK(rejects([&] {
-    resolve_plan(request);
-  }));
+  request.sampling.sampler = sampler::SamplerKind::kEuler;
+  CHECK(resolve_plan(request).sampler == sampler::SamplerKind::kEuler);
+  request.sampling.sampler.reset();
+  request.schedule = sampler::ScheduleKind::kDmad4Step;
+  CHECK(resolve_plan(request).sampler == sampler::SamplerKind::kRenoise);
+  request.sampling.sampler = sampler::SamplerKind::kEuler;
+  CHECK(resolve_plan(request).sampler == sampler::SamplerKind::kEuler);
 }

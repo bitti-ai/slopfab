@@ -147,3 +147,33 @@ SLOPFAB_TEST(sampling_settings_reject_invalid_or_collapsed_grids_atomically) {
     CHECK(scheduler.timesteps() == timesteps);
   }
 }
+
+SLOPFAB_TEST(sampling_settings_sampler_schema_and_overlay) {
+  using sampler::SamplerKind;
+  CHECK(!parse_sampling_settings(R"({"version":1})").sampler);
+  for (const auto kind : {SamplerKind::kEuler, SamplerKind::kAb2, SamplerKind::kRenoise}) {
+    const std::string json =
+        std::string(R"({"version":1,"sampler":")") + sampler::sampler_name(kind) + R"("})";
+    auto settings = parse_sampling_settings(json);
+    CHECK(settings.sampler == kind);
+    const auto embedded = sampling_settings_from_metadata({{"slopfab.sampling", json}});
+    CHECK(embedded.sampler == kind);
+    overlay_sampling_settings(settings,
+                              parse_sampling_settings(R"({"version":1,"video_sigma_shift":4})"));
+    CHECK(settings.sampler == kind);
+    overlay_sampling_settings(settings,
+                              parse_sampling_settings(R"({"version":1,"sampler":"euler"})"));
+    CHECK(settings.sampler == SamplerKind::kEuler);
+  }
+  for (const char* invalid :
+       {R"({"version":1,"sampler":"dmad"})", R"({"version":1,"sampler":null})",
+        R"({"version":1,"sampler":0})", R"({"version":1,"sampler":true})"})
+    CHECK(rejects([&] {
+      parse_sampling_settings(invalid);
+    }));
+  SamplingSettings invalid;
+  invalid.sampler = static_cast<SamplerKind>(99);
+  CHECK(rejects([&] {
+    validate_sampling_settings(invalid);
+  }));
+}

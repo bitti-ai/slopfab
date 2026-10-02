@@ -33,7 +33,17 @@ SamplingSettings parse_sampling_settings(std::string_view text) {
       settings.default_steps = static_cast<int>(n);
       continue;
     }
-    if (key == "video_sigma_shift")
+    if (key == "sampler") {
+      const auto& name = value.as_string();
+      if (name == "euler")
+        settings.sampler = sampler::SamplerKind::kEuler;
+      else if (name == "ab2")
+        settings.sampler = sampler::SamplerKind::kAb2;
+      else if (name == "renoise")
+        settings.sampler = sampler::SamplerKind::kRenoise;
+      else
+        throw std::invalid_argument("sampling settings: sampler must be euler, ab2 or renoise");
+    } else if (key == "video_sigma_shift")
       settings.video_sigma_shift = scalar(value);
     else if (key == "audio_sigma_shift")
       settings.audio_sigma_shift = scalar(value);
@@ -50,6 +60,8 @@ SamplingSettings parse_sampling_settings(std::string_view text) {
 }
 
 void validate_sampling_settings(const SamplingSettings& settings) {
+  if (settings.sampler)
+    sampler::sampler_name(*settings.sampler); // Reject invalid C++ enum values, too.
   if (settings.default_steps && (*settings.default_steps < 2 || *settings.default_steps > 1000000))
     throw std::invalid_argument("sampling settings: default_steps must be in [2,1000000]");
   for (const auto& shift : {settings.video_sigma_shift, settings.audio_sigma_shift}) {
@@ -64,6 +76,8 @@ void validate_sampling_settings(const SamplingSettings& settings) {
 
 void overlay_sampling_settings(SamplingSettings& destination, const SamplingSettings& overrides) {
   validate_sampling_settings(overrides);
+  if (overrides.sampler)
+    destination.sampler = overrides.sampler;
   if (overrides.default_steps)
     destination.default_steps = overrides.default_steps;
   if (overrides.video_sigma_shift)
@@ -86,6 +100,7 @@ SamplingSettings sampling_schedule_defaults(sampler::ScheduleKind schedule) {
   case sampler::ScheduleKind::kDefault:
     return settings;
   case sampler::ScheduleKind::kDmad4Step:
+    settings.sampler = sampler::SamplerKind::kRenoise;
     settings.video_sigma_shift = 12.0f;
     settings.audio_sigma_shift = 2.0f;
     settings.base_sigmas = std::vector<float>{1, .75f, .5f, .25f, 0};

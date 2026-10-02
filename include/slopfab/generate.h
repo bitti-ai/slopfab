@@ -11,6 +11,7 @@
 // 32 GB card. Each stage frees its weights before the next loads.
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -96,11 +97,9 @@ struct RunOptions {
   bool reuse_models = false;
   bool release_reused_models = false;
 
-  // Which integrator the two schedulers use. Both cost one forward pass per
-  // step; the reason to change it is to be able to lower `num_inference_steps`
-  // for the same quality, not to make a step cheaper. Defaults to the
-  // reference's Euler, and nothing about the default path changes.
-  sampler::SamplerKind sampler = sampler::SamplerKind::kEuler;
+  // An explicit override of the sampler resolved from settings/metadata.
+  // Unset inherits the plan; without settings the plan uses Euler.
+  std::optional<sampler::SamplerKind> sampler;
 
   // If set, the denoiser's own output — the packed video and audio rows,
   // fp32 — is written here as safetensors before either VAE sees it.

@@ -499,8 +499,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* re
 #define SLOPFAB_SCHEDULE_DMAD_4STEP 2 /* Four evaluations with fresh re-noising, shifts 12/2. */
 /* TaoMate uses three evaluations and overrides the ordinary step count.
  * Requires an enabled TaoMate adapter, Euler and no step/block caches.
- * DMAD (since 1.16) selects four re-noising evaluations at shifts 12/2;
- * requires an enabled adapter and text-to-audio-video without caches. */
+ * DMAD (since 1.16) is a settings alias for four re-noising evaluations at
+ * shifts 12/2. New recipes can use set_sampling_settings, including sampler. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(slopfab_request* request,
                                                             int32_t schedule);
 

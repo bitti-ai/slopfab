@@ -441,7 +441,10 @@ SLOPFAB_TEST(ab2_histories_do_not_cross_between_schedulers) {
 SLOPFAB_TEST(run_options_default_selects_the_euler_path) {
   // The default a run gets when no --sampler flag is passed at all.
   const slopfab::RunOptions defaults;
-  CHECK(defaults.sampler == SamplerKind::kEuler);
+  CHECK(!defaults.sampler);
+  const auto default_sampler =
+      slopfab::resolve_sampling_sampler(slopfab::GeneratePlan{}, defaults.sampler);
+  CHECK(default_sampler == SamplerKind::kEuler);
 
   // And handing that default to a scheduler must be indistinguishable from
   // never touching the sampler — bitwise, over a whole trajectory. This is the
@@ -464,7 +467,7 @@ SLOPFAB_TEST(run_options_default_selects_the_euler_path) {
   };
 
   const std::vector<float> untouched = trajectory(false, SamplerKind::kEuler);
-  const std::vector<float> via_defaults = trajectory(true, defaults.sampler);
+  const std::vector<float> via_defaults = trajectory(true, default_sampler);
   CHECK_CLOSE(untouched, via_defaults, 0.0,
               "RunOptions' default drives the same path as never calling set_sampler");
 

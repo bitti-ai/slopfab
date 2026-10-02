@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "sampler": "renoise",
+  "video_sigma_shift": 12,
+  "audio_sigma_shift": 2,
+  "base_sigmas": [1, 0.75, 0.5, 0.25, 0]
+}

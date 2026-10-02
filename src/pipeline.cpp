@@ -466,8 +466,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigma_shift), static_cast<unsigned long long>(request.seed),
       request.out_path.c_str());
   std::string description = buf;
-  if (plan.dmad)
-    description += "  sampler             DMAD fresh re-noising (four evaluations)\n";
+  description += std::string("  sampler             ") + sampler::sampler_name(plan.sampler) + "\n";
   if (request.image_edit.image) {
     const auto& e = request.image_edit;
     description += "  image edit          box " + std::to_string(e.x) + "," + std::to_string(e.y) +
@@ -502,9 +501,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
                    std::to_string(ref.enabled() ? ref.mod->token_count() * ref.copies : 0) + ")\n";
   }
   if (plan.fixed_sampling_grid)
-    description +=
-        plan.dmad ? "  schedule            fixed base grid (re-noising, no approximate caches)\n"
-                  : "  schedule            fixed base grid (Euler, no approximate caches)\n";
+    description += "  schedule            fixed base grid (no approximate caches)\n";
   for (const auto& source : plan.sampling_sources)
     description += "  sampling source     " + source + "\n";
   if (plan.fasth3_v2)

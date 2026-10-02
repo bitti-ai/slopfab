@@ -82,7 +82,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 #endif
   bool dry_run = false;
   bool synthetic = false;
-  slopfab::sampler::SamplerKind sampler_kind = slopfab::sampler::SamplerKind::kEuler;
+  std::optional<slopfab::sampler::SamplerKind> sampler_kind;
   std::string dump_latents;
   std::string save_latents;
   std::string continue_from;
@@ -527,6 +527,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                                                             : slopfab::DeviceBackend::kCuda;
   options.vulkan_portable_arithmetic = vulkan_portable_arithmetic;
   options.sampler = sampler_kind;
+  if (sampler_kind)
+    req.sampling.sampler =
+        sampler_kind; // Explicit CLI selection wins regardless of argument order.
   options.dump_latents_path = dump_latents;
   options.save_latents_path = save_latents;
   options.attention_band = attn_band;

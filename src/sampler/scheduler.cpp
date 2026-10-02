@@ -74,6 +74,18 @@ FlowScheduler::FlowScheduler(float shift) : shift_(shift) {
   }
 }
 
+const char* sampler_name(SamplerKind kind) {
+  switch (kind) {
+  case SamplerKind::kEuler:
+    return "euler";
+  case SamplerKind::kAb2:
+    return "ab2";
+  case SamplerKind::kRenoise:
+    return "renoise";
+  }
+  throw std::invalid_argument("unknown sampler");
+}
+
 void FlowScheduler::clear_history() {
   previous_velocity_.clear();
   has_previous_ = false;

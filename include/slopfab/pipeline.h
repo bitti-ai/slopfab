@@ -179,7 +179,7 @@ struct GeneratePlan {
   bool fasth3_v2 = false;
   // Fixed grids use Euler without approximate step/block/MotionCache reuse.
   bool fixed_sampling_grid = false;
-  bool dmad = false;
+  sampler::SamplerKind sampler = sampler::SamplerKind::kEuler;
   std::vector<std::string> sampling_sources;
   int canvas_height = 0;
   int canvas_width = 0;
@@ -223,10 +223,11 @@ struct GeneratePlan {
 // ratio, a non-positive frame count, or a schedule shorter than one step.
 GeneratePlan resolve_plan(const GenerateRequest& request);
 // Shared by frontend validation and execution before model weights are loaded.
-// DMAD's named preset selects re-noising; other presets keep the requested sampler.
+// Explicit run options override the sampler resolved from settings/metadata.
 sampler::SamplerKind resolve_sampling_sampler(const GeneratePlan& plan,
-                                              sampler::SamplerKind requested);
-void validate_sampling_sampler(const GeneratePlan& plan, sampler::SamplerKind sampler);
+                                              std::optional<sampler::SamplerKind> requested = {});
+void validate_sampling_sampler(const GeneratePlan& plan,
+                               std::optional<sampler::SamplerKind> requested = {});
 
 // --- reuse keys -------------------------------------------------------------
 //

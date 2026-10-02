@@ -781,7 +781,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
         // Said only when it is not the default, so a run that looks like every
         // other run is one, and neither an ab2 run nor a cached one is ever
         // mistaken for a baseline.
-        if (options.sampler == sampler::SamplerKind::kAb2) {
+        if (video_sched.sampler() == sampler::SamplerKind::kAb2) {
           std::printf("sampler     ab2 (Adams-Bashforth 2; step 1 is Euler)\n");
         }
         if (in.cache.enabled()) {
