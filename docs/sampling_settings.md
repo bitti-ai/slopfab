@@ -51,6 +51,11 @@ Two active adapters may agree or supply different fields. Conflicting values for
 
 FastH3 V2 retains its structural and trained-recipe requirements: effective settings must match its existing nine-point grid and video/audio shifts of 10/3. Settings cannot grant reference support, introduce missing VSA gate weights, or bypass those requirements. Existing Animate and TaoMate restrictions also remain.
 
+`--schedule dmad-4step` is the exception to the fixed-grid Euler requirement: it
+selects fresh re-noising, the five-point base grid `[1,.75,.5,.25,0]`, and shifts
+12/2. Overrides must preserve that recipe. It requires an enabled LoRA and
+text-to-audio-video generation without approximate caches. See [DMAD usage](loras.md#dmad-h3-four-evaluations).
+
 `--dry-run` reports the effective shifts, evaluation count, whether the grid is fixed, and settings sources. Source entries show contributing layers, rather than provenance for each individual field.
 
 ## Library interfaces

@@ -12,7 +12,8 @@ slopfab generate --prompt "A cat playing piano" --lora weights/loras/style.safet
 Adapters update H3's `attn.qkv_proj`, `attn.out_proj`, `mlp.fc1`, and `mlp.fc2`
 in main transformer blocks and text-refiner blocks. Supported key suffixes are
 `lora_A.weight` / `lora_B.weight`, PEFT's `lora_A.default.weight` /
-`lora_B.default.weight`, and `lora_down.weight` / `lora_up.weight`. Names can
+`lora_B.default.weight`, `lora_down.weight` / `lora_up.weight`, and
+`lora.down.weight` / `lora.up.weight`. Names can
 start with `diffusion_model.`, `model.diffusion_model.`, `base_model.model.`,
 or the projection name directly. Each projection may provide an `alpha`
 scalar; absent alpha uses embedded `lora_adapter_metadata.lora_alpha`, or the
@@ -122,6 +123,55 @@ existing generation pipeline. It does **not** reproduce the upstream runtime's
 causal streaming chunks, clean KV cache, or separate audio-guidance preparation.
 The upstream project's latency and quality measurements therefore do not apply
 to this implementation; see [the TaoMate runtime](https://github.com/TaoLiveAIGC/TaoMate-H3).
+
+## DMAD H3, four evaluations
+
+The released rank-128 DMAD adapters load directly, including the mixed
+Diffusers attention/MLP keys and both token refiners. Use the local full-critic
+adapter with FL2VA:
+
+```powershell
+New-Item -ItemType Directory -Force output | Out-Null
+build/Release/slopfab.exe generate --prompt "A polar bear plays the violin in the snow." --text-encoder weights/text_encoder/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors --transformer weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors --lora weights/loras/dmad_minimax_h3_4step_full_critic.safetensors --schedule dmad-4step --seed 42 --out output/dmad.mp4
+```
+
+`--schedule dmad-4step` selects four evaluations, video shift 12, audio shift 2,
+and the upstream re-noising rule: `x0 = x + sigma * velocity`, then
+`x_next = (1 - sigma_next) * x0 + sigma_next * fresh_noise`. The terminal update
+returns x0. The base sigma grid is `[1, .75, .5, .25, 0]`. Omit `--steps`, or use
+`--steps 5`; other explicit counts are rejected. This preset selects re-noising
+even with the ordinary Euler default. AB2, approximate caches and conditioning
+workflows are rejected. Ordinary `--lora` loading does not select the preset.
+
+Add `--inference-backend vulkan` for Vulkan. CUDA uses the host scheduler;
+Vulkan also updates re-noised rows on the host, transferring latents and
+velocities each step. Both use the same deterministic noise streams, separate
+for every step and modality. These streams do not reproduce PyTorch's RNG.
+The default geometry is 1344x768, 124 frames at 24 fps; no CFG is needed.
+
+For an Euler comparison, omit the preset, use `--steps 5`, and supply
+`--sampling-settings` with `{"version":1,"video_sigma_shift":12,"audio_sigma_shift":2}`.
+`--sampler renoise` also selects re-noising with an ordinary custom step count
+and shifts. Fixed grids outside the DMAD preset retain their Euler requirement.
+
+DMAD was trained on the T2VA transformer. FL2VA is supported here as requested,
+but the upstream quality results do not establish quality for this base swap
+or quantized weights. See the [DMAD release](https://huggingface.co/ZhengmingYu/DMAD)
+and [reference sampler](https://github.com/Yzmblog/DMAD/blob/main/dmad_h3/sampling.py).
+The adapter has no AdaLN targets and needs no timestep companion grid.
+
+Validation used the full-critic adapter with the FL2VA NVFP4 checkpoint. A full
+CUDA/Sage2 run generated 124 frames at 1344x768 plus stereo audio, with about
+51 seconds for four denoising evaluations on an RTX 5090. The reduced real-model
+test exercises both text refiners and one main block on CUDA and Vulkan,
+including generated audio and repeatability. Flash2 cross-backend differences
+are reported rather than treated as an exact arithmetic contract. A constant
+velocity Vulkan fixture separately checks the re-noising formula at every
+video/audio boundary. These checks do not establish upstream quality parity.
+
+C++ uses `GenerateRequest::schedule = sampler::ScheduleKind::kDmad4Step`.
+C ABI 1.16 adds `SLOPFAB_SCHEDULE_DMAD_4STEP` to `slopfab_request_set_schedule`;
+the preset selects re-noising on both backends without another sampler setter.
 
 ## C and C++ APIs
 

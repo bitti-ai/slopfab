@@ -1,4 +1,5 @@
 #include "detail/vulkan_fixture.h"
+#include "slopfab/sampler/noise.h"
 
 SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
   using namespace slopfab;
@@ -160,6 +161,47 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
     CHECK(cancelled.cancelled && cancelled.steps_completed == 1);
     CHECK(cancelled.video_rows[0] == 6);
     editor.unload();
+
+    // Constant GPU velocities provide an independent oracle for the re-noise
+    // dispatch, including different video/audio sigmas and target row slices.
+    edit_config.inpaint.reset();
+    edit_config.seed = 42;
+    auto student = ExactH3Denoiser::create(context, edit_config);
+    student.load(checkpoint);
+    student.prepare(prompt.data(), prompt.size(), initial.data(), initial.size(), audio.data(),
+                    audio.size());
+    vs = sampler::FlowScheduler(12);
+    as = sampler::FlowScheduler(2);
+    vs.set_timesteps(5);
+    as.set_timesteps(5);
+    vs.set_sampler(sampler::SamplerKind::kRenoise);
+    as.set_sampler(sampler::SamplerKind::kRenoise);
+    std::vector<float> expected_video(n, .5f), expected_audio = audio;
+    const auto check_boundary = [&](uint32_t step, const std::vector<float>& v,
+                                    const std::vector<float>& a) {
+      const auto advance = [&](std::vector<float>& x, const sampler::FlowScheduler& schedule,
+                               sampler::NoiseStream stream, float velocity) {
+        std::vector<float> noise(x.size());
+        sampler::fill_renoise_normal(42, step, stream, noise.data(), noise.size());
+        const float sigma = schedule.sigmas()[step], next = schedule.sigmas()[step + 1];
+        for (size_t i = 0; i < x.size(); ++i)
+          x[i] = (1 - next) * (x[i] + sigma * velocity) + next * noise[i];
+      };
+      advance(expected_video, vs, sampler::NoiseStream::kVideoLatents, .25f);
+      advance(expected_audio, as, sampler::NoiseStream::kAudioLatents, 10);
+      CHECK_CLOSE(expected_video, v, 1e-6, "Vulkan DMAD video formula");
+      CHECK_CLOSE(expected_audio, a, 1e-6, "Vulkan DMAD audio formula");
+    };
+    const auto generated = student.run(vs, as, {}, check_boundary);
+    CHECK(generated.steps_completed == 4);
+    student.prepare(prompt.data(), prompt.size(), initial.data(), initial.size(), audio.data(),
+                    audio.size());
+    const auto repeated = student.run(vs, as);
+    CHECK(generated.video_rows == repeated.video_rows);
+    CHECK(generated.audio_rows == repeated.audio_rows);
+    student.unload();
+    vs.set_sampler(sampler::SamplerKind::kEuler);
+    as.set_sampler(sampler::SamplerKind::kEuler);
   }
   checkpoint.close();
   std::filesystem::remove(path);

@@ -11,6 +11,7 @@
 #include "slopfab/vulkan/lora.h"
 #include "slopfab/vulkan/dit_denoise.h"
 #include "slopfab/dit/transformer.h"
+#include "slopfab/sampler/noise.h"
 
 namespace {
 using namespace slopfab;
@@ -196,12 +197,13 @@ SLOPFAB_TEST(lora_cuda_vulkan_projection_numerics) {
   }
 }
 
-SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
+static void reduced_lora_trajectory(bool dmad) {
   using namespace slopfab::vulkan;
-  const std::string adapter = "weights/loras/TaoMate-H3-3step-ComfyUI.safetensors";
+  const std::string adapter = dmad ? "weights/loras/dmad_minimax_h3_4step_full_critic.safetensors"
+                                   : "weights/loras/TaoMate-H3-3step-ComfyUI.safetensors";
   const std::string path = "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
   if (!std::filesystem::exists(path) || !std::filesystem::exists(adapter)) {
-    SKIP_MISSING_FIXTURE("TaoMate and NVFP4 checkpoints required");
+    SKIP_MISSING_FIXTURE("LoRA and NVFP4 checkpoints required");
     return;
   }
   if (!Instance::available() || cuda::device_count() == 0) {
@@ -221,8 +223,8 @@ SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
   sequence.num_text = 1;
   sequence.num_condition_video = 0;
   sequence.num_condition_audio = 0;
-  sequence.num_audio_latents = 0;
-  sequence.num_audio_rows = 0;
+  sequence.num_audio_latents = dmad ? 1 : 0;
+  sequence.num_audio_rows = dmad ? 2 : 0;
   sequence.num_latent_frames = 1;
   sequence.latent_height = 2;
   sequence.latent_width = 2;
@@ -231,11 +233,19 @@ SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
   const auto positions = dit::build_position_ids(sequence);
   const auto prompt = test::make_data(5120, 284, .125f);
   const auto noise = test::make_data(96, 381, .5f);
-  sampler::FlowScheduler video(12), audio(3);
-  video.set_timesteps(4, sampler::ScheduleKind::kTaoMate3Step);
-  audio.set_timesteps(4, sampler::ScheduleKind::kTaoMate3Step);
-  std::vector<float> expected = noise;
-  std::vector<std::vector<float>> boundaries;
+  const auto audio_noise = test::make_data(sequence.num_audio_rows * 32, 382, .5f);
+  sampler::FlowScheduler video(12), audio(dmad ? 2 : 3);
+  const auto schedule =
+      dmad ? sampler::ScheduleKind::kDmad4Step : sampler::ScheduleKind::kTaoMate3Step;
+  video.set_timesteps(4, schedule);
+  audio.set_timesteps(4, schedule);
+  if (dmad) {
+    video.set_sampler(sampler::SamplerKind::kRenoise);
+    audio.set_sampler(sampler::SamplerKind::kRenoise);
+  }
+  std::vector<float> fresh_noise(96);
+  std::vector<float> expected = noise, expected_audio = audio_noise;
+  std::vector<std::vector<float>> boundaries, audio_boundaries;
   const bool exact_attention = cuda::deterministic_h3_attention_available();
   const auto attention = exact_attention ? AttentionMode::kExact : AttentionMode::kFlash2;
   std::printf("  real reduced transformer attention: %s\n", exact_attention ? "exact" : "flash2");
@@ -247,23 +257,36 @@ SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
     model.set_attention_mode(attention);
     model.prepare_text(prompt.data(), 1);
     model.prepare_sequence(sequence, indices, positions);
-    std::vector<float> baseline(96);
+    std::vector<float> baseline(96), audio_velocity(audio_noise.size());
     auto initial_times =
         dit::build_row_timesteps(sequence, indices, video.timesteps()[0], audio.timesteps()[0]);
-    model.forward(noise.data(), nullptr, initial_times, baseline.data(), nullptr);
+    model.forward(noise.data(), audio_noise.data(), initial_times, baseline.data(),
+                  audio_velocity.data());
     model.load(reduced.file, config, &loras);
     model.set_attention_mode(attention);
     model.prepare_text(prompt.data(), 1);
     model.prepare_sequence(sequence, indices, positions);
     std::vector<float> velocity(96);
-    for (int step = 0; step < 3; ++step) {
+    for (int step = 0; step < int(video.num_steps()); ++step) {
       auto times = dit::build_row_timesteps(sequence, indices, video.timesteps()[step],
                                             audio.timesteps()[step]);
-      model.forward(expected.data(), nullptr, times, velocity.data(), nullptr);
+      model.forward(expected.data(), expected_audio.data(), times, velocity.data(),
+                    audio_velocity.data());
       if (step == 0)
         CHECK(velocity != baseline);
-      video.step(step, expected.data(), velocity.data(), expected.size(), expected.data());
+      if (dmad)
+        sampler::fill_renoise_normal(42, step, sampler::NoiseStream::kVideoLatents,
+                                     fresh_noise.data(), fresh_noise.size());
+      video.step(step, expected.data(), velocity.data(), expected.size(), expected.data(),
+                 fresh_noise.data());
+      if (dmad) {
+        sampler::fill_renoise_normal(42, step, sampler::NoiseStream::kAudioLatents,
+                                     fresh_noise.data(), expected_audio.size());
+        audio.step(step, expected_audio.data(), audio_velocity.data(), expected_audio.size(),
+                   expected_audio.data(), fresh_noise.data());
+      }
       boundaries.push_back(expected);
+      audio_boundaries.push_back(expected_audio);
     }
   }
   auto instance = Instance::create();
@@ -282,6 +305,7 @@ SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
   context_options.max_batch_operators = 256;
   TensorContext vk(device, context_options);
   ExactH3DenoiseConfig config;
+  config.seed = 42;
   config.layout = sequence;
   config.indices = indices;
   config.position_ids = positions;
@@ -292,23 +316,27 @@ SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
   config.transformer.main.block.loras = &loras;
   config.transformer.text_rows = 1;
   config.transformer.video_rows = 1;
-  config.transformer.audio_rows = 0;
+  config.transformer.audio_rows = sequence.num_audio_rows;
   auto without_lora_config = config;
   without_lora_config.transformer.main.block.loras = nullptr;
   std::vector<float> without_lora;
   {
     auto baseline = ExactH3Denoiser::create(vk, without_lora_config);
     baseline.load(reduced.file);
-    baseline.prepare(prompt.data(), prompt.size(), noise.data(), noise.size(), nullptr, 0);
+    baseline.prepare(prompt.data(), prompt.size(), noise.data(), noise.size(), audio_noise.data(),
+                     audio_noise.size());
     without_lora = baseline.run(video, audio).video_rows;
   }
   auto model = ExactH3Denoiser::create(vk, config);
   model.load(reduced.file);
-  model.prepare(prompt.data(), prompt.size(), noise.data(), noise.size(), nullptr, 0);
+  model.prepare(prompt.data(), prompt.size(), noise.data(), noise.size(), audio_noise.data(),
+                audio_noise.size());
   auto actual = model.run(
-      video, audio, {}, [&](uint32_t step, const std::vector<float>& v, const std::vector<float>&) {
+      video, audio, {},
+      [&](uint32_t step, const std::vector<float>& v, const std::vector<float>& a) {
         if (exact_attention) {
-          CHECK_CLOSE(boundaries.at(step), v, 1e-5, "TaoMate real reduced transformer boundary");
+          CHECK_CLOSE(boundaries.at(step), v, 1e-5, "LoRA real reduced transformer boundary");
+          CHECK_CLOSE(audio_boundaries.at(step), a, 1e-5, "LoRA audio boundary");
         } else {
           // Flash2 is not the pinned CUDA/Vulkan numerical contract. The adapter
           // arithmetic is compared independently above; report end-to-end drift
@@ -318,12 +346,25 @@ SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
                       stats.rel_l2, stats.max_abs_err);
         }
       });
-  CHECK(actual.steps_completed == 3);
+  CHECK(actual.steps_completed == video.num_steps());
   CHECK(actual.video_rows != without_lora);
   CHECK(std::all_of(actual.video_rows.begin(), actual.video_rows.end(), [](float v) {
     return std::isfinite(v);
   }));
-  model.prepare(prompt.data(), prompt.size(), noise.data(), noise.size(), nullptr, 0);
+  model.prepare(prompt.data(), prompt.size(), noise.data(), noise.size(), audio_noise.data(),
+                audio_noise.size());
   const auto repeated = model.run(video, audio);
   CHECK(actual.video_rows == repeated.video_rows);
+  CHECK(actual.audio_rows == repeated.audio_rows);
+  CHECK(std::all_of(actual.audio_rows.begin(), actual.audio_rows.end(), [](float v) {
+    return std::isfinite(v);
+  }));
+}
+
+SLOPFAB_TEST(lora_taomate_real_transformer_three_step_cuda_vulkan) {
+  reduced_lora_trajectory(false);
+}
+
+SLOPFAB_TEST(lora_dmad_real_transformer_four_step_cuda_vulkan) {
+  reduced_lora_trajectory(true);
 }
