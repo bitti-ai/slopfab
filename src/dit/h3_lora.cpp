@@ -32,9 +32,13 @@ std::string projection_name(std::string name) {
   if (name == "proj_out")
     return "final_layer.video_out";
   const std::string prefix = "transformer_blocks.";
-  if (name.compare(0, prefix.size(), prefix) != 0)
+  const std::string refiner = "token_refiner.refiner_blocks.";
+  if (name.compare(0, prefix.size(), prefix) == 0)
+    name.replace(0, prefix.size(), "blocks.");
+  else if (name.compare(0, refiner.size(), refiner) == 0)
+    name.replace(0, refiner.size(), "token_refiner.blocks.");
+  else
     return name;
-  name.replace(0, prefix.size(), "blocks.");
   for (const auto& mapping :
        std::vector<std::pair<std::string, std::string>>{{".attn.to_out.0", ".attn.out_proj"},
                                                         {".ff.net.0.proj", ".mlp.fc1"},
@@ -89,7 +93,8 @@ bool supported(const std::string& name) {
 }
 
 bool needs_output_basis_conversion(const std::string& key) {
-  return key.compare(0, 19, "transformer_blocks.") == 0 &&
+  return (key.compare(0, 19, "transformer_blocks.") == 0 ||
+          key.compare(0, 29, "token_refiner.refiner_blocks.") == 0) &&
          key.find(".ff.net.0.proj.") != std::string::npos;
 }
 

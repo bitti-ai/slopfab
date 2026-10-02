@@ -103,6 +103,8 @@ void LoraAdapters::load(const std::vector<LoraSpec>& specs, const SafeTensors& b
                                                     {".lora_B.default.weight", 1},
                                                     {".lora_down.weight", 0},
                                                     {".lora_up.weight", 1},
+                                                    {".lora.down.weight", 0},
+                                                    {".lora.up.weight", 1},
                                                     {".alpha", 2}}) {
         if (!ends(key, suffix.first))
           continue;

@@ -540,6 +540,59 @@ SLOPFAB_TEST(lora_taomate_three_step_schedule_and_plan) {
   }
 }
 
+SLOPFAB_TEST(lora_dmad_mixed_keys_and_refiner_basis) {
+  Fixture f;
+  f.base.close();
+  const std::string native = "token_refiner.blocks.1.";
+  const std::string source = "token_refiner.refiner_blocks.1.";
+  const auto base_path = (f.dir / "base.safetensors").string();
+  write_safetensors(base_path,
+                    {{native + "attn.qkv_proj.weight", {6, 3}, std::vector<float>(18)},
+                     {native + "attn.out_proj.weight", {3, 2}, std::vector<float>(6)},
+                     {native + "mlp.fc1.weight", {4, 3}, std::vector<float>(12)},
+                     {native + "mlp.fc2.weight", {3, 2}, std::vector<float>(6)}});
+  f.base.open(base_path);
+  std::vector<TensorWrite> tensors;
+  for (const char* part : {"to_q", "to_k", "to_v"}) {
+    tensors.push_back({source + "attn." + part + ".lora.down.weight", {1, 3}, {1, 2, 3}});
+    tensors.push_back({source + "attn." + part + ".lora.up.weight", {2, 1}, {4, 5}});
+  }
+  tensors.push_back({source + "attn.to_out.0.lora.down.weight", {1, 2}, {1, 2}});
+  tensors.push_back({source + "attn.to_out.0.lora.up.weight", {3, 1}, {3, 4, 5}});
+  tensors.push_back({source + "ff.net.0.proj.lora_A.weight", {1, 3}, {1, 2, 3}});
+  tensors.push_back({source + "ff.net.0.proj.lora_B.weight", {4, 1}, {4, 5, 6, 7}});
+  tensors.push_back({source + "ff.net.2.lora_A.weight", {1, 2}, {1, 2}});
+  tensors.push_back({source + "ff.net.2.lora_B.weight", {3, 1}, {3, 4, 5}});
+  write_safetensors(f.path, tensors, {{"lora_alpha", "1"}, {"lora_rank", "1"}});
+  LoraAdapters loras;
+  loras.load({{f.path, .5f}}, f.base);
+  CHECK(loras.projection_count() == 6);
+  CHECK(loras.find(native + "attn.to_q")->front().b == std::vector<float>({2, 2.5f}));
+  CHECK(loras.find(native + "attn.out_proj")->front().b == std::vector<float>({1.5f, 2, 2.5f}));
+  CHECK(loras.find(native + "mlp.fc1")->front().b == std::vector<float>({3, 3.5f, 2, 2.5f}));
+  CHECK(loras.find(native + "mlp.fc2")->front().b == std::vector<float>({1.5f, 2, 2.5f}));
+}
+
+SLOPFAB_TEST(lora_dmad_released_adapter_fl2va_compatibility) {
+  const std::string adapter = "weights/loras/dmad_minimax_h3_4step_full_critic.safetensors";
+  const std::string checkpoint = "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
+  if (!std::filesystem::exists(adapter) || !std::filesystem::exists(checkpoint)) {
+    SKIP_MISSING_FIXTURE("DMAD adapter or FL2VA checkpoint unavailable");
+    return;
+  }
+  SafeTensors base;
+  base.open(checkpoint);
+  LoraAdapters loras;
+  loras.load({{adapter, 1}}, base);
+  CHECK(loras.projection_count() == 312);
+  for (const auto& prefix : {std::string("blocks.49."), std::string("token_refiner.blocks.1.")}) {
+    CHECK(loras.find(prefix + "attn.to_q")->front().rank == 128);
+    CHECK(loras.find(prefix + "attn.to_k")->front().out == 7168);
+    CHECK(loras.find(prefix + "attn.to_v")->front().in == 5376);
+    CHECK(loras.find(prefix + "mlp.fc1")->front().out == 28672);
+  }
+}
+
 SLOPFAB_TEST(lora_taomate_released_adapter_compatibility) {
   const std::string adapter = "weights/loras/TaoMate-H3-3step-ComfyUI.safetensors";
   const std::string checkpoint = "weights/transformer/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors";
