@@ -11,16 +11,19 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
       throw std::invalid_argument(message);
   };
   validate_sampling_sampler(p, o.sampler);
+  const auto sampler_kind = resolve_sampling_sampler(p, o.sampler);
   r.motion_cache.validate();
   require(std::isfinite(r.cache_threshold) && r.cache_threshold >= 0 && r.skip_every >= 0 &&
               r.block_cache_span >= 0,
           "cache settings must be finite and nonnegative");
   const bool step_cache = r.cache_threshold > 0 || r.skip_every > 0;
   const bool caches = step_cache || r.block_cache_span > 0 || r.motion_cache.active();
+  require(sampler_kind != sampler::SamplerKind::kRenoise || !caches,
+          "re-noising does not support approximate caches");
   r.image_edit.validate();
   require(!r.image_edit.image ||
               (r.still_image && o.source == LatentSource::kDenoise && o.init_latents_path.empty() &&
-               o.sampler == sampler::SamplerKind::kEuler && !caches),
+               sampler_kind == sampler::SamplerKind::kEuler && !caches),
           "image editing requires still-image Euler denoising without initial latents or caches");
   require(!r.image_edit.image || o.on_samples || r.out_path.empty() ||
               std::filesystem::path(r.out_path).extension() == ".ppm",
@@ -42,24 +45,25 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   require(!step_cache || r.block_cache_span == 0, "step and block caches cannot be combined");
   require(r.block_cache_span == 0 || r.block_cache_interval >= 2,
           "block cache interval must be at least 2");
-  require(!step_cache || o.sampler == sampler::SamplerKind::kEuler, "step caching requires Euler");
+  require(!step_cache || sampler_kind == sampler::SamplerKind::kEuler,
+          "step caching requires Euler");
   require(!p.fixed_sampling_grid || !caches,
           "fixed sampling grids do not support approximate caches");
   require(p.conditioning.allow_caches || !caches,
           "conditioning recipe does not support approximate caches");
-  require(!p.conditioning.require_euler || o.sampler == sampler::SamplerKind::kEuler,
+  require(!p.conditioning.require_euler || sampler_kind == sampler::SamplerKind::kEuler,
           "conditioning recipe requires Euler");
   require(!p.conditioning.require_prompt_embedding || !o.prompt_embedding_path.empty(),
           "conditioning recipe requires a prompt embedding");
   require(
       !r.motion_cache.active() ||
-          (o.sampler == sampler::SamplerKind::kEuler && !step_cache && r.block_cache_span == 0 &&
+          (sampler_kind == sampler::SamplerKind::kEuler && !step_cache && r.block_cache_span == 0 &&
            !p.model.compressed_attention && !p.conditioning.pin_target_audio &&
            !p.conditioning.video_first && r.schedule == sampler::ScheduleKind::kDefault &&
            o.source == LatentSource::kDenoise),
       "MotionCache requires default-schedule Euler denoising without other caches or pinned/reference-first conditioning");
   require(!p.model.compressed_attention ||
-              (o.sampler == sampler::SamplerKind::kEuler && o.attention_band == 0 && !caches),
+              (sampler_kind == sampler::SamplerKind::kEuler && o.attention_band == 0 && !caches),
           "compressed attention requires Euler without frame banding or caches");
   require(!r.continuation || (o.source == LatentSource::kDenoise && o.init_latents_path.empty()),
           "continuation requires denoising from fresh noise");
@@ -75,7 +79,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   require(generation_backend_supported(o.inference_backend, o.source, o.attention_mode),
           "selected attention mode is unsupported by the inference backend");
   require(o.inference_backend != DeviceBackend::kVulkan || o.source != LatentSource::kDenoise ||
-              (o.sampler == sampler::SamplerKind::kEuler && !step_cache && r.block_cache_span == 0),
-          "Vulkan generation supports Euler without step or block caches");
+              ((sampler_kind == sampler::SamplerKind::kEuler ||
+                sampler_kind == sampler::SamplerKind::kRenoise) &&
+               !step_cache && r.block_cache_span == 0),
+          "Vulkan generation supports Euler or re-noising without step or block caches");
 }
 } // namespace slopfab

@@ -62,6 +62,9 @@ private:
 // only on `(seed, stream, i)`.
 void fill_normal(uint64_t seed, NoiseStream stream, float* out, size_t count);
 
+// Fresh row-layout draws, independent of initial noise and of other steps/modalities.
+void fill_renoise_normal(uint64_t seed, int step, NoiseStream modality, float* out, size_t count);
+
 // Video latent noise, `(24, F, Hl, Wl)` fp32 in channel-major layout — the
 // layout `patchify_video` consumes.
 std::vector<float> video_noise(uint64_t seed, int latent_frames, int latent_height,

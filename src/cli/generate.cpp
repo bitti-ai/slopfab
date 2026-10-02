@@ -177,8 +177,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         sampler_kind = slopfab::sampler::SamplerKind::kEuler;
       } else if (v == "ab2") {
         sampler_kind = slopfab::sampler::SamplerKind::kAb2;
+      } else if (v == "renoise") {
+        sampler_kind = slopfab::sampler::SamplerKind::kRenoise;
       } else {
-        std::fprintf(stderr, "slopfab: --sampler wants euler or ab2, got '%s'\n", v.c_str());
+        std::fprintf(stderr, "slopfab: --sampler wants euler, ab2 or renoise, got '%s'\n",
+                     v.c_str());
         return 2;
       }
     } else if (arg == "--aspect") {
@@ -400,8 +403,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
         req.schedule = slopfab::sampler::ScheduleKind::kDefault;
       else if (value == "taomate-3step")
         req.schedule = slopfab::sampler::ScheduleKind::kTaoMate3Step;
+      else if (value == "dmad-4step")
+        req.schedule = slopfab::sampler::ScheduleKind::kDmad4Step;
       else
-        throw std::runtime_error("--schedule wants default or taomate-3step");
+        throw std::runtime_error("--schedule wants default, taomate-3step or dmad-4step");
     } else if (arg == "--animate") {
       req.animate = true;
     } else if (arg == "--preserve-driving-audio") {

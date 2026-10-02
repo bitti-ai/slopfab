@@ -19,7 +19,7 @@
 
 namespace slopfab::sampler {
 
-enum class ScheduleKind { kDefault, kTaoMate3Step, kFastH3V2 };
+enum class ScheduleKind { kDefault, kTaoMate3Step, kFastH3V2, kDmad4Step };
 
 // Which integrator advances the trajectory. Both cost exactly one model
 // evaluation per step; the difference is what they do with the velocity they
@@ -34,6 +34,8 @@ enum class SamplerKind {
   // cheaper step. The first step of a trajectory has no history and falls back
   // to Euler.
   kAb2,
+  // Predict x0, then mix it with fresh noise at the next sigma (DMAD).
+  kRenoise,
 };
 
 // Canonical fp32 arithmetic used by the production Euler path on both CUDA
@@ -105,7 +107,9 @@ public:
   // trajectory, which is what makes one scheduler reusable across runs — or
   // exactly one past the previous call's. Anything else throws. `count` may
   // change between trajectories but not within one.
-  void step(int step_index, const float* sample, const float* velocity, size_t count, float* out);
+  // kRenoise requires fresh row-layout noise, except at the terminal sigma.
+  void step(int step_index, const float* sample, const float* velocity, size_t count, float* out,
+            const float* noise = nullptr);
 
   // Rectified-flow forward process in H3's convention: x_t = t*x0 + (1-t)*noise.
   // Used to noise conditioning anchors, where t is a noise-augmentation level

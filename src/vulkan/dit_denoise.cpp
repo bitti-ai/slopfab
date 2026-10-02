@@ -9,6 +9,7 @@
 
 #include "slopfab/dit/adaln.h"
 #include "slopfab/dit/rope.h"
+#include "slopfab/sampler/noise.h"
 
 namespace slopfab::vulkan {
 namespace {
@@ -338,9 +339,13 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     throw std::logic_error("Vulkan H3 denoise: not prepared");
   if (impl_->running)
     throw std::logic_error("Vulkan H3 denoise: run is active");
-  if (video.sampler() != sampler::SamplerKind::kEuler ||
-      audio.sampler() != sampler::SamplerKind::kEuler)
-    throw std::invalid_argument("Vulkan H3 denoise: only exact Euler is supported");
+  const bool renoise = video.sampler() == sampler::SamplerKind::kRenoise;
+  if (video.sampler() != audio.sampler() ||
+      (!renoise && video.sampler() != sampler::SamplerKind::kEuler))
+    throw std::invalid_argument(
+        "Vulkan H3 denoise: requires matching Euler or re-noising samplers");
+  if (renoise && impl_->config.motion_cache.active())
+    throw std::invalid_argument("Vulkan H3 denoise: re-noising does not support MotionCache");
   if (video.num_steps() == 0 || video.num_steps() != audio.num_steps() ||
       video.timesteps().size() != video.sigmas().size() - 1 ||
       audio.timesteps().size() != audio.sigmas().size() - 1)
@@ -374,6 +379,17 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   ExactH3DenoiseResult result;
   const uint32_t steps = static_cast<uint32_t>(video.num_steps());
   const bool conditioned = condition_video != 0 || condition_audio != 0;
+  auto video_host = video, audio_host = audio;
+  video_host.reset();
+  audio_host.reset();
+  std::vector<float> renoise_rows, renoise_velocity, renoise_noise;
+  if (renoise) {
+    const size_t count = std::max(uint64_t(video_output) * c.transformer.video_dim,
+                                  uint64_t(audio_output) * c.transformer.audio_dim);
+    renoise_rows.resize(count);
+    renoise_velocity.resize(count);
+    renoise_noise.resize(count);
+  }
   std::vector<float> edited_video;
   if (c.inpaint) {
     c.inpaint->validate(uint64_t(video_output) * c.transformer.video_dim);
@@ -467,12 +483,33 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     else
       ++result.steps_skipped;
     DeviceTensor& video_state = conditioned ? s.video_result : s.video;
-    batch.dit_euler_step_f32(video_state, s.video_velocity, video_sigma, video_ratio);
-    if (has_audio && !c.pin_target_audio) {
-      DeviceTensor& audio_state = conditioned ? s.audio_result : s.audio;
-      batch.dit_euler_step_f32(audio_state, s.audio_velocity, audio_sigma, audio_ratio);
+    if (renoise) {
+      batch.submit().wait();
+      const auto update = [&](DeviceTensor& state, DeviceTensor& velocity,
+                              sampler::FlowScheduler& scheduler, sampler::NoiseStream stream,
+                              size_t count) {
+        impl_->context->download(state, renoise_rows.data(), count);
+        impl_->context->download(velocity, renoise_velocity.data(), count);
+        if (step + 1 < steps)
+          sampler::fill_renoise_normal(c.seed, step, stream, renoise_noise.data(), count);
+        scheduler.step(step, renoise_rows.data(), renoise_velocity.data(), count,
+                       renoise_rows.data(), renoise_noise.data());
+        impl_->context->upload(state, renoise_rows.data(), count);
+      };
+      update(video_state, s.video_velocity, video_host, sampler::NoiseStream::kVideoLatents,
+             uint64_t(video_output) * c.transformer.video_dim);
+      if (has_audio && !c.pin_target_audio)
+        update(conditioned ? s.audio_result : s.audio, s.audio_velocity, audio_host,
+               sampler::NoiseStream::kAudioLatents,
+               uint64_t(audio_output) * c.transformer.audio_dim);
+    } else {
+      batch.dit_euler_step_f32(video_state, s.video_velocity, video_sigma, video_ratio);
+      if (has_audio && !c.pin_target_audio) {
+        DeviceTensor& audio_state = conditioned ? s.audio_result : s.audio;
+        batch.dit_euler_step_f32(audio_state, s.audio_velocity, audio_sigma, audio_ratio);
+      }
+      batch.submit().wait();
     }
-    batch.submit().wait();
     result.steps_completed = step + 1;
     if (c.inpaint) {
       impl_->context->download(video_state, edited_video.data(), edited_video.size());

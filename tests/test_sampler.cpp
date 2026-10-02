@@ -29,9 +29,47 @@
 #include "harness.h"
 #include "slopfab/generate.h"
 #include "slopfab/sampler/scheduler.h"
+#include "slopfab/sampler/noise.h"
 
 using slopfab::sampler::FlowScheduler;
 using slopfab::sampler::SamplerKind;
+
+SLOPFAB_TEST(sampler_dmad_renoise_formula_and_noise_streams) {
+  using namespace slopfab::sampler;
+  for (float shift : {12.0f, 2.0f}) {
+    FlowScheduler scheduler(shift);
+    scheduler.set_timesteps(5);
+    scheduler.set_sampler(SamplerKind::kRenoise);
+    std::vector<float> x = {1, -2, .5f}, velocity = {.5f, 1, -3};
+    const std::vector<float> noise = {-1, .25f, 2};
+    bool rejected = false;
+    try {
+      scheduler.step(0, x.data(), velocity.data(), x.size(), x.data());
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    CHECK(rejected);
+    for (int step = 0; step < 4; ++step) {
+      const float base = 1.0f - step / 4.0f;
+      const float next = 1.0f - (step + 1) / 4.0f;
+      const float sigma = shift * base / (1 + (shift - 1) * base);
+      const float sigma_next = shift * next / (1 + (shift - 1) * next);
+      auto expected = x;
+      for (size_t j = 0; j < x.size(); ++j)
+        expected[j] = (1 - sigma_next) * (x[j] + sigma * velocity[j]) + sigma_next * noise[j];
+      scheduler.step(step, x.data(), velocity.data(), x.size(), x.data(),
+                     step == 3 ? nullptr : noise.data());
+      CHECK_CLOSE(expected, x, 1e-6, "DMAD re-noise reference formula");
+    }
+  }
+  std::vector<float> a(4097), b(a.size()), repeated(a.size()), next(a.size()), initial(a.size());
+  fill_renoise_normal(42, 0, NoiseStream::kVideoLatents, a.data(), a.size());
+  fill_renoise_normal(42, 0, NoiseStream::kAudioLatents, b.data(), b.size());
+  fill_renoise_normal(42, 0, NoiseStream::kVideoLatents, repeated.data(), repeated.size());
+  fill_renoise_normal(42, 1, NoiseStream::kVideoLatents, next.data(), next.size());
+  fill_normal(42, NoiseStream::kVideoLatents, initial.data(), initial.size());
+  CHECK(a == repeated && a != b && a != next && a != initial);
+}
 
 namespace {
 

@@ -1,4 +1,5 @@
 #include "detail/transformer_fixture.h"
+#include "slopfab/sampler/noise.h"
 
 SLOPFAB_TEST_CATEGORY(denoise_inpaint_constrains_each_boundary_and_keeps_anchors, "synthetic") {
   auto layout = tiny_layout();
@@ -435,4 +436,49 @@ SLOPFAB_TEST_CATEGORY(denoise_is_deterministic, "synthetic") {
   CHECK_CLOSE(a.video_rows, b.video_rows, 0.0, "same seed, same video latents");
   CHECK_CLOSE(a.audio_rows, b.audio_rows, 0.0, "same seed, same audio latents");
   CHECK(a.video_rows != c.video_rows);
+}
+
+SLOPFAB_TEST_CATEGORY(denoise_dmad_video_audio_trajectory_and_repeatability, "synthetic") {
+  using namespace slopfab;
+  auto layout = tiny_layout();
+  const auto indices = dit::build_indices(layout);
+  sampler::FlowScheduler video(12), audio(2);
+  video.set_timesteps(5);
+  audio.set_timesteps(5);
+  video.set_sampler(sampler::SamplerKind::kRenoise);
+  audio.set_sampler(sampler::SamplerKind::kRenoise);
+  Transformer model;
+  auto inputs = make_denoise_inputs(layout, indices, video, audio);
+  inputs.seed = 42;
+  const size_t nv = indices.video.size() * 96, na = indices.audio.size() * 32;
+  std::vector<float> initial_v(nv, .25f), initial_a(na, -.5f);
+  inputs.init_video_rows = &initial_v;
+  inputs.init_audio_rows = &initial_a;
+  inputs.velocity = [&](int, const RowTimesteps&, const float*, const float*, float* v, float* a) {
+    std::fill(v, v + nv, 2.0f);
+    std::fill(a, a + na, -1.0f);
+  };
+  auto expected_v = initial_v, expected_a = initial_a;
+  inputs.boundary = [&](int step, const std::vector<float>& v, const std::vector<float>& a) {
+    const auto reference = [&](std::vector<float>& x, const sampler::FlowScheduler& scheduler,
+                               sampler::NoiseStream modality, float velocity) {
+      std::vector<float> noise(x.size());
+      sampler::fill_renoise_normal(42, step, modality, noise.data(), noise.size());
+      const float sigma = scheduler.sigmas()[step], next = scheduler.sigmas()[step + 1];
+      for (size_t i = 0; i < x.size(); ++i)
+        x[i] = (1 - next) * (x[i] + sigma * velocity) + next * noise[i];
+    };
+    reference(expected_v, video, sampler::NoiseStream::kVideoLatents, 2);
+    reference(expected_a, audio, sampler::NoiseStream::kAudioLatents, -1);
+    CHECK_CLOSE(expected_v, v, 1e-6, "DMAD video boundary");
+    CHECK_CLOSE(expected_a, a, 1e-6, "DMAD audio boundary");
+  };
+  const auto first = dit::denoise(model, inputs);
+  CHECK(first.steps_computed == 4 && first.steps_skipped == 0);
+  inputs.boundary = {};
+  const auto repeated = dit::denoise(model, inputs);
+  CHECK(first.video_rows == repeated.video_rows && first.audio_rows == repeated.audio_rows);
+  inputs.seed = 43;
+  const auto other = dit::denoise(model, inputs);
+  CHECK(first.video_rows != other.video_rows && first.audio_rows != other.audio_rows);
 }

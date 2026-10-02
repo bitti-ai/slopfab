@@ -126,6 +126,14 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   StepCache cache(inputs.cache, steps);
   MotionCache motion(inputs.motion_cache, layout, patch, audio_dim, steps,
                      inputs.video_scheduler->shift(), inputs.pin_target_audio);
+  const bool renoise = inputs.video_scheduler->sampler() == sampler::SamplerKind::kRenoise;
+  require(renoise == (inputs.audio_scheduler->sampler() == sampler::SamplerKind::kRenoise),
+          "re-noising must be selected for both modalities");
+  require(!renoise || (!cache.enabled() && !motion.enabled() &&
+                       !transformer.block_cache_config().enabled()),
+          "re-noising does not support approximate caches");
+  std::vector<float> video_noise(renoise ? out.video_rows.size() : 0);
+  std::vector<float> audio_noise(renoise ? out.audio_rows.size() : 0);
   require(!motion.enabled() || (!cache.enabled() && !transformer.block_cache_config().enabled() &&
                                 inputs.video_scheduler->sampler() == sampler::SamplerKind::kEuler &&
                                 inputs.audio_scheduler->sampler() == sampler::SamplerKind::kEuler),
@@ -207,14 +215,22 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     {
       // In place: FlowScheduler::step permits `out` to alias `sample`.
       cuda::HostSpan span("scheduler_step");
+      if (renoise && i + 1 < steps) {
+        sampler::fill_renoise_normal(inputs.seed, i, sampler::NoiseStream::kVideoLatents,
+                                     video_noise.data(), video_noise.size());
+        sampler::fill_renoise_normal(inputs.seed, i, sampler::NoiseStream::kAudioLatents,
+                                     audio_noise.data(), audio_noise.size());
+      }
       inputs.video_scheduler->step(i, all_video.data() + cv, video_velocity.data() + cv,
-                                   out.video_rows.size(), out.video_rows.data());
+                                   out.video_rows.size(), out.video_rows.data(),
+                                   video_noise.data());
       if (inputs.inpaint)
         inputs.inpaint->apply(out.video_rows.data(), out.video_rows.size(),
                               inputs.video_scheduler->sigmas()[static_cast<size_t>(i) + 1]);
       if (!inputs.pin_target_audio)
         inputs.audio_scheduler->step(i, all_audio.data() + ca, audio_velocity.data() + ca,
-                                     out.audio_rows.size(), out.audio_rows.data());
+                                     out.audio_rows.size(), out.audio_rows.data(),
+                                     audio_noise.data());
       std::copy(out.video_rows.begin(), out.video_rows.end(), all_video.begin() + cv);
       std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);
     }

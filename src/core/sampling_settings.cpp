@@ -85,6 +85,11 @@ SamplingSettings sampling_schedule_defaults(sampler::ScheduleKind schedule) {
   switch (schedule) {
   case sampler::ScheduleKind::kDefault:
     return settings;
+  case sampler::ScheduleKind::kDmad4Step:
+    settings.video_sigma_shift = 12.0f;
+    settings.audio_sigma_shift = 2.0f;
+    settings.base_sigmas = std::vector<float>{1, .75f, .5f, .25f, 0};
+    return settings;
   case sampler::ScheduleKind::kTaoMate3Step:
     settings.base_sigmas.emplace();
     // Preserve the teacher-grid arithmetic, including float32 rounding.

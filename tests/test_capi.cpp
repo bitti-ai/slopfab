@@ -718,6 +718,9 @@ SLOPFAB_TEST(capi_lora_and_taomate_schedule) {
   CHECK(slopfab_request_add_lora(request.handle, "TaoMate.safetensors", 1) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.num_model_evaluations == 3);
+  CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_DMAD_4STEP) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 4);
   CHECK(slopfab_request_clear_loras(request.handle) == SLOPFAB_OK);
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
   CHECK(slopfab_request_set_schedule(request.handle, SLOPFAB_SCHEDULE_DEFAULT) == SLOPFAB_OK);

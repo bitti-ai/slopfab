@@ -1,5 +1,5 @@
 #include "harness.h"
-#include "slopfab/pipeline.h"
+#include "slopfab/generate.h"
 #include "slopfab/safetensors_write.h"
 
 #include <algorithm>
@@ -155,6 +155,61 @@ SLOPFAB_TEST(sampling_plan_preserves_fasth3_requirements) {
   request.sampling.video_sigma_shift = 10.0f;
   CHECK(resolve_plan(request).num_model_evaluations() == 8);
   request.sampling.base_sigmas = std::vector<float>{1, 0.5f, 0};
+  CHECK(rejects([&] {
+    resolve_plan(request);
+  }));
+}
+
+SLOPFAB_TEST(sampling_plan_dmad_four_step_preset) {
+  using namespace slopfab;
+  GenerateRequest request;
+  request.schedule = sampler::ScheduleKind::kDmad4Step;
+  CHECK(rejects([&] {
+    resolve_plan(request);
+  }));
+  request.loras.push_back({"dmad.safetensors", 1});
+  auto plan = resolve_plan(request);
+  CHECK(plan.dmad && plan.num_model_evaluations() == 4);
+  CHECK(plan.video_sigma_shift == 12 && plan.audio_sigma_shift == 2);
+  CHECK_NEAR(plan.video_sigmas[1], 36.0f / 37, 1e-7);
+  CHECK_NEAR(plan.audio_sigmas[1], 6.0f / 7, 1e-7);
+  CHECK(resolve_sampling_sampler(plan, sampler::SamplerKind::kEuler) ==
+        sampler::SamplerKind::kRenoise);
+  validate_sampling_sampler(plan, sampler::SamplerKind::kRenoise);
+  RunOptions options;
+  validate_generation_options(request, plan, options);
+  options.inference_backend = DeviceBackend::kVulkan;
+  validate_generation_options(request, plan, options);
+  options.sampler = sampler::SamplerKind::kAb2;
+  CHECK(rejects([&] {
+    validate_generation_options(request, plan, options);
+  }));
+  options.sampler = sampler::SamplerKind::kEuler;
+  request.block_cache_span = 1;
+  CHECK(rejects([&] {
+    validate_generation_options(request, plan, options);
+  }));
+  request.block_cache_span = 0;
+  CHECK(rejects([&] {
+    validate_sampling_sampler(plan, sampler::SamplerKind::kAb2);
+  }));
+  request.num_inference_steps = 4;
+  CHECK(rejects([&] {
+    resolve_plan(request);
+  }));
+  request.num_inference_steps = 5;
+  CHECK(resolve_plan(request).num_model_evaluations() == 4);
+  request.sampling.audio_sigma_shift = 3;
+  CHECK(rejects([&] {
+    resolve_plan(request);
+  }));
+  request.sampling = {};
+  request.skip_every = 2;
+  CHECK(rejects([&] {
+    resolve_plan(request);
+  }));
+  request.skip_every = 0;
+  request.loras.front().strength = 0;
   CHECK(rejects([&] {
     resolve_plan(request);
   }));

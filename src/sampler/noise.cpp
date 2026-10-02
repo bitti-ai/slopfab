@@ -84,6 +84,15 @@ void fill_normal(uint64_t seed, NoiseStream stream, float* out, size_t count) {
   }
 }
 
+void fill_renoise_normal(uint64_t seed, int step, NoiseStream modality, float* out, size_t count) {
+  if (step < 0 || step > 1000000 ||
+      (modality != NoiseStream::kVideoLatents && modality != NoiseStream::kAudioLatents))
+    throw std::invalid_argument("re-noise: invalid step or modality");
+  const auto stream = static_cast<NoiseStream>(2u + 2u * static_cast<uint32_t>(step) +
+                                               static_cast<uint32_t>(modality));
+  fill_normal(seed, stream, out, count);
+}
+
 std::vector<float> video_noise(uint64_t seed, int latent_frames, int latent_height,
                                int latent_width, int channels) {
   if (latent_frames <= 0 || latent_height <= 0 || latent_width <= 0 || channels <= 0) {

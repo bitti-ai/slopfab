@@ -742,8 +742,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       sampler::FlowScheduler audio_sched(plan.audio_sigma_shift);
       video_sched.set_sigmas(plan.video_sigmas);
       audio_sched.set_sigmas(plan.audio_sigmas);
-      video_sched.set_sampler(options.sampler);
-      audio_sched.set_sampler(options.sampler);
+      video_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
+      audio_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
 
       dit::DenoiseInputs in;
       in.inpaint = inpaint.get();
@@ -912,6 +912,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       vulkan::TensorContext context(device, context_options);
       context.require_h3_attention(options.attention_mode);
       vulkan::ExactH3DenoiseConfig config;
+      config.seed = request.seed;
       config.inpaint = inpaint;
       config.motion_cache = request.motion_cache;
       config.transformer.main.layers = 50;
@@ -987,6 +988,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       sampler::FlowScheduler audio_sched(plan.audio_sigma_shift);
       video_sched.set_sigmas(plan.video_sigmas);
       audio_sched.set_sigmas(plan.audio_sigmas);
+      video_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
+      audio_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
       const int total_steps = plan.num_model_evaluations();
       vae_prefetch.start(request.still_image ? std::vector<std::string>{request.video_vae_path}
                                              : std::vector<std::string>{request.video_vae_path,

@@ -42,6 +42,15 @@ void merge_adapter_field(std::optional<T>& target, const std::optional<T>& incom
 } // namespace
 
 void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
+  plan.dmad = request.schedule == sampler::ScheduleKind::kDmad4Step;
+  if (plan.dmad && (request.has_references() || request.continuation || request.animate ||
+                    request.still_image || request.video_transition))
+    throw std::invalid_argument("dmad-4step supports text-to-audio-video generation");
+  if (plan.dmad &&
+      std::none_of(request.loras.begin(), request.loras.end(), [](const LoraSpec& lora) {
+        return lora.strength != 0.0f;
+      }))
+    throw std::invalid_argument("dmad-4step requires an enabled LoRA");
   SamplingSettings effective;
   effective.default_steps = request.animate ? 4 : 50;
   effective.video_sigma_shift = kVideoSigmaShift;
@@ -115,6 +124,16 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);
 
+  if (plan.dmad) {
+    const auto required = sampling_schedule_defaults(sampler::ScheduleKind::kDmad4Step);
+    if (effective.video_sigma_shift != required.video_sigma_shift ||
+        effective.audio_sigma_shift != required.audio_sigma_shift ||
+        effective.base_sigmas != required.base_sigmas ||
+        (request.num_inference_steps != 0 && request.num_inference_steps != 5))
+      throw std::invalid_argument(
+          "dmad-4step requires four evaluations, video shift 12 and audio shift 2");
+  }
+
   if (plan.fasth3_v2) {
     const auto required = sampling_schedule_defaults(sampler::ScheduleKind::kFastH3V2);
     if (effective.video_sigma_shift != required.video_sigma_shift ||
@@ -126,7 +145,7 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   if (plan.fixed_sampling_grid && (request.motion_cache.active() || request.cache_threshold > 0 ||
                                    request.skip_every > 0 || request.block_cache_span > 0))
     throw std::invalid_argument(
-        "fixed sampling grids require Euler without step, block or MotionCache reuse");
+        "fixed sampling grids do not support step, block or MotionCache reuse");
   plan.video_sigma_shift = *effective.video_sigma_shift;
   plan.audio_sigma_shift = *effective.audio_sigma_shift;
   plan.num_inference_steps = effective.base_sigmas
@@ -161,8 +180,19 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   plan.audio_timesteps = audio.timesteps();
 }
 
-void validate_sampling_sampler(const GeneratePlan& plan, sampler::SamplerKind sampler) {
-  if (plan.fixed_sampling_grid && sampler != sampler::SamplerKind::kEuler)
+sampler::SamplerKind resolve_sampling_sampler(const GeneratePlan& plan,
+                                              sampler::SamplerKind requested) {
+  if (plan.dmad) {
+    if (requested == sampler::SamplerKind::kAb2)
+      throw std::invalid_argument("dmad-4step requires re-noising, not AB2");
+    return sampler::SamplerKind::kRenoise;
+  }
+  return requested;
+}
+
+void validate_sampling_sampler(const GeneratePlan& plan, sampler::SamplerKind requested) {
+  const auto kind = resolve_sampling_sampler(plan, requested);
+  if (plan.fixed_sampling_grid && !plan.dmad && kind != sampler::SamplerKind::kEuler)
     throw std::invalid_argument("fixed sampling grids require the Euler sampler");
 }
 

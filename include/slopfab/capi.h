@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 15
+#define SLOPFAB_CAPI_VERSION_MINOR 16
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -496,8 +496,11 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(slopfab_request* reque
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* request);
 #define SLOPFAB_SCHEDULE_DEFAULT 0
 #define SLOPFAB_SCHEDULE_TAOMATE_3STEP 1
+#define SLOPFAB_SCHEDULE_DMAD_4STEP 2 /* Four evaluations with fresh re-noising, shifts 12/2. */
 /* TaoMate uses three evaluations and overrides the ordinary step count.
- * Requires an enabled TaoMate adapter, Euler and no step/block caches. */
+ * Requires an enabled TaoMate adapter, Euler and no step/block caches.
+ * DMAD (since 1.16) selects four re-noising evaluations at shifts 12/2;
+ * requires an enabled adapter and text-to-audio-video without caches. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_schedule(slopfab_request* request,
                                                             int32_t schedule);
 

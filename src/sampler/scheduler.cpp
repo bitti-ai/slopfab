@@ -155,12 +155,16 @@ void FlowScheduler::set_sigmas(const std::vector<float>& sigmas) {
 }
 
 void FlowScheduler::step(int step_index, const float* sample, const float* velocity, size_t count,
-                         float* out) {
+                         float* out, const float* noise) {
   if (step_index < 0 || static_cast<size_t>(step_index) + 1 >= sigmas_.size()) {
     throw std::runtime_error("scheduler: step index " + std::to_string(step_index) +
                              " out of range for a schedule of " + std::to_string(sigmas_.size()) +
                              " sigmas");
   }
+
+  if (sampler_ == SamplerKind::kRenoise && count && !noise &&
+      sigmas_[static_cast<size_t>(step_index) + 1] != 0.0f)
+    throw std::invalid_argument("scheduler: re-noising requires fresh noise");
 
   // Ordering. kAb2 carries v_{n-1} across calls, so an index that is neither a
   // restart nor the successor of the last one would extrapolate from a
@@ -200,7 +204,14 @@ void FlowScheduler::step(int step_index, const float* sample, const float* veloc
   const float sigma_next = sigmas_[static_cast<size_t>(step_index) + 1];
   const float ratio = sigma_next / sigma;
 
-  if (!extrapolate) {
+  if (sampler_ == SamplerKind::kRenoise) {
+    for (size_t i = 0; i < count; ++i) {
+      // DMAD uses the sigma grid directly, without the timestep round trip.
+      const float denoised = sample[i] + sigma * velocity[i];
+      out[i] =
+          sigma_next == 0.0f ? denoised : (1.0f - sigma_next) * denoised + sigma_next * noise[i];
+    }
+  } else if (!extrapolate) {
     // Euler, byte for byte what this function has always computed. kAb2's
     // first step lands here too, because there is no v_{n-1} to extrapolate
     // from and a second-order start would have to invent one.

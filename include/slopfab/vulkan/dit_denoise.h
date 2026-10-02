@@ -17,9 +17,10 @@ namespace slopfab::vulkan {
 // velocity rows, RoPE and attention ranges remain on one Vulkan context for
 // the complete trajectory. Only small per-step control tensors are uploaded;
 // fp32 modality rows cross the host boundary once at prepare and once at the
-// final result unless MotionCache is enabled. Its host estimator transfers
+// final result unless MotionCache or re-noising is enabled. Those paths transfer
 // target rows during sampling. A still sequence may contain zero audio rows.
 struct ExactH3DenoiseConfig {
+  uint64_t seed = 0; // Fresh re-noising draws; initial rows are supplied to prepare().
   // Opt-in still-image constraint; target rows cross the host boundary per step.
   std::shared_ptr<const InpaintConstraint> inpaint;
   ExactH3TransformerConfig transformer;
@@ -72,7 +73,8 @@ public:
                uint64_t video_elements, const float* audio_rows, uint64_t audio_elements,
                const H3TransformerTextReplayTaps* taps = nullptr);
 
-  // Only exact Euler is accepted. The two schedules must describe the same
+  // Euler and re-noising are accepted. Re-noising updates rows on the host.
+  // The two schedules must describe the same
   // number of evaluations. Progress is called after each completed update;
   // false returns the current, consistently updated device trajectory.
   ExactH3DenoiseResult run(const sampler::FlowScheduler& video, const sampler::FlowScheduler& audio,
