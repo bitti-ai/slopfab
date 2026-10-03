@@ -123,4 +123,7 @@ private:
 // than yield a half-built tensor table.
 Value parse(std::string_view text);
 
+// Serialize metadata without losing unknown fields when repacking archives.
+std::string stringify(const Value& value);
+
 } // namespace slopfab::json

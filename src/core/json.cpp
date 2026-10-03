@@ -2,6 +2,9 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 
 namespace slopfab::json {
 namespace {
@@ -282,6 +285,56 @@ private:
 
 Value parse(std::string_view text) {
   return Parser(text).parse_document();
+}
+
+std::string stringify(const Value& value) {
+  switch (value.type()) {
+  case Type::Null: return "null";
+  case Type::Bool: return value.as_bool() ? "true" : "false";
+  case Type::Number: {
+    const double number = value.as_number();
+    if (!std::isfinite(number))
+      throw std::invalid_argument("json: cannot serialize non-finite number");
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out << std::setprecision(17) << number;
+    return out.str();
+  }
+  case Type::String: {
+    std::string out = "\"";
+    const char* hex = "0123456789abcdef";
+    for (unsigned char c : value.as_string()) {
+      if (c == '"' || c == '\\') {
+        out += '\\';
+        out += static_cast<char>(c);
+      } else if (c < 32) {
+        out += "\\u00";
+        out += hex[c >> 4];
+        out += hex[c & 15];
+      } else {
+        out += static_cast<char>(c);
+      }
+    }
+    return out + '"';
+  }
+  case Type::Array: {
+    std::string out = "[";
+    for (const auto& item : value.as_array()) {
+      if (out.size() > 1) out += ',';
+      out += stringify(item);
+    }
+    return out + ']';
+  }
+  case Type::Object: {
+    std::string out = "{";
+    for (const auto& item : value.as_object()) {
+      if (out.size() > 1) out += ',';
+      out += stringify(Value(item.first)) + ':' + stringify(item.second);
+    }
+    return out + '}';
+  }
+  }
+  throw std::logic_error("json: unknown value type");
 }
 
 } // namespace slopfab::json
