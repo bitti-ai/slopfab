@@ -33,6 +33,7 @@ int cmd_compare_y4m(int, char**);
 int cmd_decode(int, char**);
 int cmd_tokenize(int, char**);
 int cmd_encode_text(int, char**, const char*);
+int cmd_encode_refmod(int, char**, const char*);
 int cmd_bundle_refmods(int, char**);
 int cmd_generate(int, char**, const char*);
 int cmd_devices();

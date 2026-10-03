@@ -3,6 +3,7 @@
 Usage: python refmod_generation_smoke.py slopfab.dll repository-root [cuda|vulkan] [embedding|export] [bundle]
 `export` creates real standalone text conditioning through the DLL, then generates
 without a text-encoder path. `bundle` packs the three media kinds through the DLL.
+`refmod=PATH` additionally attaches a real exported RefMod/bundle for generation.
 No output files are written; asserts decoded frame/audio geometry and finiteness.
 """
 import ctypes as C
@@ -85,6 +86,9 @@ def tensor_file(path, key, shape, values, metadata=None):
 request, generation = create(), handle()
 scratch = tempfile.TemporaryDirectory(prefix="slopfab-refmod-smoke-")
 try:
+    for argument in sys.argv[3:]:
+        if argument.startswith("refmod="):
+            check(add_refmod(request, str(pathlib.Path(argument[7:]).resolve()).encode(), 1, 1))
     sources = []
     for kind, shape, copies in [("image", [1,24,1,4,4], 2),
                                  ("video", [1,24,2,4,4], 1),

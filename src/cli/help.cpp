@@ -302,6 +302,21 @@ const CommandHelp kCommands[] = {
     {"tokenize", "slopfab tokenize [--tokenizer <f>] <text>", "encode text and round-trip it",
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --pieces                     also print the pre-tokenizer split\n"},
+    {"encode-refmod", "slopfab encode-refmod --reference-image <file> --output <file> [options]",
+     "encode raw images, video and audio into reusable RefMods",
+     "  --reference-image FILE     image input; repeatable\n"
+     "  --reference-video FILE     video and optional soundtrack; repeatable\n"
+     "  --reference-audio FILE     audio input; repeatable\n"
+     "  --video-vae FILE           H3 video VAE with encoder weights\n"
+     "  --audio-vae FILE           H3 audio VAE with encoder weights\n"
+     "  --short-edge N             multiple of 32 in 32..768 (default 768)\n"
+     "  --name TEXT                display name (default output stem)\n"
+     "  --description TEXT         metadata only\n"
+     "  --inference-backend MODE   cuda or vulkan\n"
+     "  --vulkan-arithmetic MODE   portable or exact\n"
+     "  --output FILE              one member: v4; multiple: mixed v5 bundle\n"
+     "  Video/audio input: 2..15 seconds; CLI decoding requires FFmpeg.\n"
+     "  Loads only VAEs; no text encoder or diffusion transformer.\n"},
     {"encode-text", "slopfab encode-text --prompt <text> --output <file> [options]",
      "save standalone H3 prompt conditioning without loading a transformer or VAE",
      "  --prompt-file <file>         UTF-8 prompt instead of --prompt\n"

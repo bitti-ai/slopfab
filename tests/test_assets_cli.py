@@ -93,8 +93,17 @@ with tempfile.TemporaryDirectory(prefix="slopfab-assets-cli-") as directory:
         success=False)
     run("encode-text", "--inference-backend", "invalid", success=False)
     run("encode-text", "--prompt", success=False)
+    run("encode-refmod", "--output", bundle, success=False)
+    run("encode-refmod", "--reference-image", success=False)
+    run("encode-refmod", "--reference-image", "missing.png", "--output", bundle,
+        "--short-edge", "33", success=False)
+    run("encode-refmod", "--short-edge", "32junk", success=False)
+    run("encode-refmod", "--inference-backend", "cpu", success=False)
+    run("encode-refmod", "--vulkan-arithmetic", "invalid", success=False)
     assert bundle.read_bytes() == before
     assert "encode-text" in run("--help")
     assert "bundle-refmods" in run("--help")
+    assert "encode-refmod" in run("--help")
+    assert "--reference-audio" in run("encode-refmod", "--help")
 
 print("PASS: mixed bundle format, byte preservation, flattening, option scoping and CLI failures")

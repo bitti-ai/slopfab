@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 17
+#define SLOPFAB_CAPI_VERSION_MINOR 18
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -507,6 +507,25 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* re
  * Exported conditioning replaces the entire prompt; it is not a text RefMod. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_export_prompt_embedding(const slopfab_request* request,
                                                                const char* output_path);
+
+/* Since 1.18. Synchronously encode attached raw references into a RefMod file.
+ * Uses add_reference_image paths, add_reference_video frames/soundtracks, and
+ * add_reference_audio_f32 PCM, plus VIDEO_VAE/AUDIO_VAE paths and backend.
+ * Images precede media; video soundtracks become separate audio members after
+ * their video. One member saves v4; multiple members save a mixed v5 bundle.
+ * Only the needed VAEs are loaded. Prompt, text encoder, transformer, generation
+ * size/seed, existing RefMods and LoRAs are ignored. Visual posterior seed is 42.
+ * short_edge: 0 selects 768, otherwise a multiple of 32 in 32..768. Aspect is
+ * retained, area capped at 768*1344. Video is sampled at 24 fps and snapped down
+ * to 17*n+5 frames; existing 2..15 second input limits apply. Audio becomes
+ * planar stereo at 32 kHz. Name/description may be NULL; descriptions are metadata.
+ * Saves clean normalized F32 latents atomically; parent directory must exist.
+ * Returns BUSY during generation/another export. Do not mutate/destroy request
+ * during this call. File-backed images must remain readable until it returns.
+ * Load with add_refmod; no source media is needed after successful export. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_export_refmod(const slopfab_request* request,
+                                                     const char* output_path, const char* name,
+                                                     const char* description, int32_t short_edge);
 
 /* Since 1.17. Package existing standalone/bundle files into a v5 RefMod bundle.
  * Inputs are flattened in order (1..256 resulting members); no GPU work occurs.

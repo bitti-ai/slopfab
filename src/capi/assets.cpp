@@ -1,5 +1,43 @@
 #include "internal.h"
 #include "slopfab/text/export.h"
+#include "slopfab/refmod_export.h"
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_export_refmod(const slopfab_request* request,
+                                                     const char* output_path, const char* name,
+                                                     const char* description, int32_t short_edge) {
+  if (!request || !output_path || !*output_path || short_edge < 0 || short_edge > 768 ||
+      short_edge % 32)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "refmod export: invalid request, output or short edge");
+  return guarded([&] {
+    bool expected = false;
+    if (!g_generation_active.compare_exchange_strong(expected, true))
+      return fail(SLOPFAB_ERR_BUSY, "generation or export is already running");
+    struct Claim {
+      ~Claim() {
+        g_generation_active.store(false);
+      }
+    } claim;
+    slopfab::RefModExportRequest options;
+    options.image_paths = request->request.reference_image_paths;
+    options.media = request->request.reference_media;
+    options.video_vae_path = request->request.video_vae_path;
+    options.audio_vae_path = request->request.audio_vae_path;
+    options.backend = request->options.inference_backend;
+    options.vulkan_portable_arithmetic = request->options.vulkan_portable_arithmetic;
+    options.short_edge = short_edge ? short_edge : 768;
+    if (name)
+      options.name = name;
+    if (description)
+      options.description = description;
+    try {
+      slopfab::export_refmod(options, output_path);
+    } catch (const std::invalid_argument& e) {
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
+    }
+    return SLOPFAB_OK;
+  });
+}
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_export_prompt_embedding(const slopfab_request* request,
                                                                const char* output_path) {

@@ -12,6 +12,7 @@ if(TARGET slopfab_cuda OR TARGET slopfab_vulkan)
     src/generation/session.cpp
     src/generation/prompt.cpp)
   target_sources(slopfab_generation PRIVATE src/generation/text_export.cpp)
+  target_sources(slopfab_generation PRIVATE src/generation/refmod_export.cpp)
   target_link_libraries(slopfab_generation PUBLIC slopfab_core)
   set_target_properties(slopfab_generation PROPERTIES POSITION_INDEPENDENT_CODE ON)
   if(TARGET slopfab_cuda)

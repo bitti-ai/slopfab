@@ -364,6 +364,40 @@ SLOPFAB_TEST(capi_mixed_refmod_bundle_save_load_and_failure_atomicity) {
   CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text + 22);
 }
 
+SLOPFAB_TEST(capi_refmod_export_validation_and_failed_call_releases_gpu_claim) {
+  CHECK(slopfab_export_refmod(nullptr, "out.safetensors", nullptr, nullptr, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  auto* request = slopfab_request_create();
+  CHECK(request != nullptr);
+  if (!request) return;
+  struct Guard {
+    slopfab_request* request;
+    ~Guard() { slopfab_request_destroy(request); }
+  } guard{request};
+  CHECK(slopfab_export_refmod(request, nullptr, nullptr, nullptr, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_export_refmod(request, "", nullptr, nullptr, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_export_refmod(request, "out.safetensors", nullptr, nullptr, 33) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_export_refmod(request, "out.safetensors", nullptr, nullptr, -32) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_export_refmod(request, "out.safetensors", nullptr, nullptr, 800) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_export_refmod(request, "out.safetensors", nullptr, nullptr, 0) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  std::vector<float> pcm(64000, .1f);
+  CHECK(slopfab_request_add_reference_audio_f32(request, pcm.data(), pcm.size(), 1, 32000) == SLOPFAB_OK);
+  CHECK(slopfab_export_refmod(request, "out.safetensors", nullptr, nullptr, 32) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_model_path(request, SLOPFAB_MODEL_AUDIO_VAE, "missing-audio-vae.safetensors") == SLOPFAB_OK);
+  RefModFixture output;
+  output.write(R"({"kind":"image"})", {1,24,1,2,2}, std::vector<float>(96, .25f));
+  const auto read_output = [&] {
+    std::ifstream file(output.path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(file), {});
+  };
+  const auto original = read_output();
+  for (int i = 0; i < 2; ++i) {
+    const int status = slopfab_export_refmod(request, output.path.u8string().c_str(), nullptr, nullptr, 32);
+    CHECK(status != SLOPFAB_OK && status != SLOPFAB_ERR_BUSY);
+    CHECK(std::strlen(slopfab_last_error()) > 0);
+    CHECK(read_output() == original);
+  }
+}
+
 SLOPFAB_TEST(capi_text_export_validation_and_failed_call_releases_gpu_claim) {
   CHECK(slopfab_export_prompt_embedding(nullptr, "text.safetensors") ==
         SLOPFAB_ERR_INVALID_ARGUMENT);

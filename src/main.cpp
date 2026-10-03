@@ -112,6 +112,8 @@ int main(int argc, char** argv) {
       return cmd_tokenize(argc - 2, argv + 2);
     if (command == "encode-text")
       return cmd_encode_text(argc - 2, argv + 2, argv[0]);
+    if (command == "encode-refmod")
+      return cmd_encode_refmod(argc - 2, argv + 2, argv[0]);
     if (command == "bundle-refmods")
       return cmd_bundle_refmods(argc - 2, argv + 2);
 #if SLOPFAB_WITH_CUDA || SLOPFAB_WITH_VULKAN
