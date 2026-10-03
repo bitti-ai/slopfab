@@ -40,3 +40,4 @@
 
 # Shell scripts must remain executable by Linux shells after Windows checkouts.
 *.sh text eol=lf
+*.cmd text eol=crlf
