@@ -6,6 +6,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 
 - **Text-to-video with audio**, configurable resolution, frame count, sampling steps, seeds and batch generation.
 - **Image, video and audio references** with compatible Ref2VA models, including reusable [refmods and mixed bundles](docs/refmods.md).
+- **Raw-media RefMod export** via `encode-refmod` or C API `slopfab_export_refmod` (ABI 1.18), using only the required VAEs.
 - **Standalone text embeddings** via [`encode-text`](docs/refmods.md#standalone-text-embeddings), reusable alongside media bundles.
 - **CUDA and Vulkan inference** with native text and reference conditioning, plus selectable attention backends.
 - **LoRA adapters**, adapter stacking and the [TaoMate three-step schedule](docs/loras.md).
