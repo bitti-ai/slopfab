@@ -39,6 +39,34 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T "cuda=$($env:CUDA_PATH_
 cmake --build build --config Release
 ```
 
+To build the current checkout's Windows and Linux libraries together, run:
+
+```powershell
+.\build.cmd
+```
+
+This builds Release CUDA/Vulkan libraries, runs the C API and embedded-tokenizer
+tests for each platform, and writes:
+
+- `dist/windows/slopfab.dll`, `slopfab_c.lib` and `capi.h`.
+- `dist/linux/libslopfab.so`, its versioned copies and `capi.h`.
+- `SHA256SUMS` and `build-info.txt` in both folders.
+
+The Linux build runs in the default WSL distribution, which needs the
+[Linux build prerequisites](docs/linux.md#build) and a Linux CUDA toolkit.
+Windows uses `build/`; Linux uses `$HOME/slopfab-build-linux` on its native
+filesystem. Existing build directories are reused, including settings such as
+FFmpeg; CUDA, Vulkan, the C API, tests and the full tokenizer are enabled
+explicitly. No source, models or dependencies are downloaded. A failed build or
+test stops the script with a nonzero exit code before publishing that platform.
+
+Use `-Target windows` or `-Target linux` to build just one platform, `-Distro Ubuntu`
+to select WSL, or `-Jobs 4` to change the default two compilation jobs.
+`-WindowsBuildDir`, `-LinuxBuildDir` and `-LinuxCudaCompiler` override the build
+directories and Linux compiler. Linux overrides are absolute Linux paths.
+Run `.\build.cmd -Help` for all options. Libraries use external GPU runtimes;
+use the packaging commands below when you also need a CLI distribution.
+
 The default CUDA build targets NVIDIA RTX 30-series and RTX 50-series GPUs. On Windows, it selects cuBLAS from an installed CUDA 13 or CUDA 12 toolkit at runtime; Linux links the toolkit selected when building. Vulkan inference requires a compatible Vulkan 1.2 device and driver.
 
 Use `build/` for all configurations. Reconfigure it with CMake options as needed:

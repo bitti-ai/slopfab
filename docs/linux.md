@@ -197,6 +197,16 @@ CUDA 13.3:
 
 Run the same Linux commands inside the WSL distribution, for example from
 `/mnt/d/Projects/slopfab`. Keep Linux and Windows build directories separate.
+From Windows, `build.cmd` builds both C API libraries into `dist/windows` and
+`dist/linux`; `build.cmd -Target linux -Distro Ubuntu` builds only the Linux
+library. It defaults to `$HOME/slopfab-build-linux` inside WSL and reuses its
+cached CUDA compiler, or discovers `/usr/local/cuda/bin/nvcc` for a new build.
+Override these with `-LinuxBuildDir /absolute/build/path` and
+`-LinuxCudaCompiler /absolute/path/to/nvcc`. The same helper can be run natively
+as `bash tools/build_linux_library.sh`. Matching headers, SHA-256 manifests and
+build information accompany the shared libraries; no model weights or runtime
+dependencies are copied.
+
 Use a build directory on the Linux filesystem, such as
 `-B /tmp/slopfab-linux-vulkan`, when the source checkout is on a Windows drive;
 CMake may be unable to set generated-file permissions on that mounted drive.
