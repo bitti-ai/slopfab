@@ -326,7 +326,9 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(slopfab_request* reque
                 "refmod needs a request, path, strength 0..1 and copies 1..10");
   return guarded([&] {
     auto refs = request->request.refmods;
-    refs.push_back({slopfab::RefMod::load(path), strength, copies});
+    const auto bundle = slopfab::RefModBundle::load(path);
+    for (const auto& mod : bundle.members)
+      refs.push_back({mod, strength, copies});
     slopfab::validate_refmods(refs);
     request->request.refmods.swap(refs);
     return SLOPFAB_OK;
@@ -497,11 +499,10 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_req
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_vulkan_arithmetic(slopfab_request* request,
-                                                                  int32_t policy) {
+                                                                     int32_t policy) {
   if (request == nullptr)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_vulkan_arithmetic: null request");
-  if (policy != SLOPFAB_VULKAN_ARITHMETIC_EXACT &&
-      policy != SLOPFAB_VULKAN_ARITHMETIC_PORTABLE)
+  if (policy != SLOPFAB_VULKAN_ARITHMETIC_EXACT && policy != SLOPFAB_VULKAN_ARITHMETIC_PORTABLE)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_vulkan_arithmetic: unknown policy");
   request->options.vulkan_portable_arithmetic = policy == SLOPFAB_VULKAN_ARITHMETIC_PORTABLE;
   g_last_error.clear();

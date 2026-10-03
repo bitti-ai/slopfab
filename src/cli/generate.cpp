@@ -89,6 +89,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_overlap = false;
   std::string prompt_file;
   bool saw_prompt = false;
+  size_t refmod_slot_begin = 0;
+  bool saw_refmod = false;
   int attn_band = 0;
   slopfab::AttentionMode attention_mode = slopfab::AttentionMode::kSage2;
   uint64_t vulkan_sage_workspace_mib = 64;
@@ -222,17 +224,26 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--audio-vae") {
       req.audio_vae_path = next("--audio-vae");
     } else if (arg == "--refmod") {
-      req.refmods.push_back({slopfab::RefMod::load(next("--refmod")), 1.0f, 1});
+      auto bundle = slopfab::RefModBundle::load(next("--refmod"));
+      refmod_slot_begin = req.refmods.size();
+      saw_refmod = true;
+      for (auto& mod : bundle.members)
+        req.refmods.push_back({std::move(mod), 1.0f, 1});
     } else if (arg == "--refmod-strength" || arg == "--refmod-copies") {
-      if (req.refmods.empty())
+      if (!saw_refmod)
         throw std::runtime_error(std::string(arg) + " must follow --refmod");
       const std::string value =
           next(arg == "--refmod-strength" ? "--refmod-strength" : "--refmod-copies");
       size_t consumed = 0;
-      if (arg == "--refmod-strength")
-        req.refmods.back().strength = std::stof(value, &consumed);
-      else
-        req.refmods.back().copies = std::stoi(value, &consumed);
+      if (arg == "--refmod-strength") {
+        const float strength = std::stof(value, &consumed);
+        for (size_t index = refmod_slot_begin; index < req.refmods.size(); ++index)
+          req.refmods[index].strength = strength;
+      } else {
+        const int copies = std::stoi(value, &consumed);
+        for (size_t index = refmod_slot_begin; index < req.refmods.size(); ++index)
+          req.refmods[index].copies = copies;
+      }
       if (consumed != value.size())
         throw std::runtime_error("invalid refmod numeric value: " + value);
       slopfab::validate_refmods(req.refmods);

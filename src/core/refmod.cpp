@@ -11,6 +11,7 @@
 #include "slopfab/json.h"
 #include "slopfab/reference_conditioning.h"
 #include "slopfab/safetensors.h"
+#include "slopfab/safetensors_write.h"
 #include "slopfab/tensor_convert.h"
 #include "slopfab/sampler/noise.h"
 #include "slopfab/sampler/scheduler.h"
@@ -58,11 +59,8 @@ void blur_plane(const float* input, float* output, int h, int w) {
           fy * ((1 - fx) * pooled[y1 * pw + x0] + fx * pooled[y1 * pw + x1]);
     }
 }
-} // namespace
 
-std::shared_ptr<const RefMod> RefMod::load(const std::string& path) {
-  SafeTensors file;
-  file.open(path);
+json::Value read_metadata(const SafeTensors& file, const std::string& path) {
   json::Value meta;
   auto embedded = file.metadata().find("refmod_meta");
   if (embedded == file.metadata().end())
@@ -79,11 +77,27 @@ std::shared_ptr<const RefMod> RefMod::load(const std::string& path) {
   }
   if (!meta.is_object())
     throw std::runtime_error("refmod metadata must be an object");
+  return meta;
+}
+} // namespace
+
+std::shared_ptr<const RefMod> RefMod::load(const std::string& path) {
+  SafeTensors file;
+  file.open(path);
+  const auto meta = read_metadata(file, path);
+  if (const auto* kind = meta.find("kind"); kind && kind->as_string() == "bundle")
+    throw std::runtime_error("refmod: use RefModBundle::load for bundles");
+  return from_tensor(path, meta, file.at("latent"));
+}
+
+std::shared_ptr<const RefMod> RefMod::from_tensor(const std::string& path, const json::Value& meta,
+                                                  const TensorView& tensor) {
+  if (!meta.is_object())
+    throw std::runtime_error("refmod member metadata must be an object");
   const std::string kind = meta.find("kind") ? meta.find("kind")->as_string() : "image";
   if (kind != "image" && kind != "video" && kind != "audio")
     throw std::runtime_error("refmod: unsupported kind '" + kind +
                              "'; use a standalone image, video or audio refmod");
-  const auto& tensor = file.at("latent");
   if (tensor.dtype != DType::kF32 && tensor.dtype != DType::kF16 && tensor.dtype != DType::kBF16)
     throw std::runtime_error("refmod latent must be F32, F16 or BF16");
   const auto& s = tensor.shape;
@@ -118,11 +132,80 @@ std::shared_ptr<const RefMod> RefMod::load(const std::string& path) {
                                  : std::filesystem::u8path(path).stem().u8string();
   mod->description_ = meta.find("description") ? meta.find("description")->as_string() : "";
   mod->dtype_ = tensor.dtype;
+  mod->metadata_ = meta.as_object();
   mod->latent_ = to_f32(tensor);
   for (float value : mod->latent_)
     if (!std::isfinite(value))
       throw std::runtime_error("refmod latent contains NaN or infinity");
   return mod;
+}
+
+RefModBundle RefModBundle::load(const std::string& path) {
+  SafeTensors file;
+  file.open(path);
+  const auto meta = read_metadata(file, path);
+  RefModBundle bundle;
+  const auto* kind = meta.find("kind");
+  if (!kind || kind->as_string() != "bundle") {
+    bundle.members.push_back(RefMod::from_tensor(path, meta, file.at("latent")));
+    return bundle;
+  }
+  const auto* version = meta.find("_format_version");
+  if (!version || !version->is_number() || version->as_number() != 5)
+    throw std::runtime_error("refmod bundle: expected format version 5");
+  const auto* members = meta.find("members");
+  if (!members || !members->is_array() || members->as_array().empty() ||
+      members->as_array().size() > 256)
+    throw std::runtime_error("refmod bundle: expected 1..256 members");
+  bundle.metadata = meta.as_object();
+  for (size_t i = 0; i < members->as_array().size(); ++i) {
+    const auto& member = members->as_array()[i];
+    const auto* member_kind = member.find("kind");
+    if (!member_kind || !member_kind->is_string() || member_kind->as_string() == "bundle")
+      throw std::runtime_error("refmod bundle: each member must be image, video or audio");
+    bundle.members.push_back(
+        RefMod::from_tensor(path, member, file.at("ref_" + std::to_string(i))));
+  }
+  return bundle;
+}
+
+void RefModBundle::save(const std::string& path) const {
+  if (members.empty() || members.size() > 256)
+    throw std::invalid_argument("refmod bundle: expected 1..256 members");
+  auto info = metadata;
+  info["kind"] = json::Value(std::string("bundle"));
+  info["_format_version"] = json::Value(5.0);
+  if (!info.count("name"))
+    info["name"] = json::Value(std::filesystem::u8path(path).stem().u8string());
+  json::Array member_info;
+  std::vector<TensorWrite> tensors;
+  for (const auto& mod : members) {
+    if (!mod)
+      throw std::invalid_argument("refmod bundle: null member");
+    auto meta = mod->metadata_;
+    const auto& g = mod->geometry_;
+    const bool audio = g.kind == dit::ReferenceKind::kAudio;
+    meta["_format_version"] = json::Value(4.0);
+    meta["kind"] = json::Value(std::string(audio                                  ? "audio"
+                                           : g.kind == dit::ReferenceKind::kImage ? "image"
+                                                                                  : "video"));
+    meta["name"] = json::Value(mod->name_);
+    meta["description"] = json::Value(mod->description_);
+    meta["latent_t"] = json::Value(double(audio ? g.num_audio_latents : g.num_latent_frames));
+    if (audio) {
+      meta["sample_rate"] = json::Value(32000.0);
+    } else {
+      meta["latent_h"] = json::Value(double(g.latent_height));
+      meta["latent_w"] = json::Value(double(g.latent_width));
+    }
+    std::vector<int64_t> shape =
+        audio ? std::vector<int64_t>{1, 32, 2, g.num_audio_latents}
+              : std::vector<int64_t>{1, 24, g.num_latent_frames, g.latent_height, g.latent_width};
+    tensors.push_back({"ref_" + std::to_string(tensors.size()), shape, mod->latent_, mod->dtype_});
+    member_info.emplace_back(std::move(meta));
+  }
+  info["members"] = json::Value(std::move(member_info));
+  write_safetensors_atomic(path, tensors, {{"refmod_meta", json::stringify(json::Value(info))}});
 }
 
 std::vector<float> RefMod::rows(float strength) const {

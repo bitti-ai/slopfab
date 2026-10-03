@@ -4,6 +4,8 @@
 #include "slopfab/pipeline.h"
 #include <cmath>
 #include <limits>
+#include "slopfab/safetensors_write.h"
+#include "slopfab/safetensors.h"
 
 namespace {
 using namespace slopfab;
@@ -205,5 +207,91 @@ SLOPFAB_TEST(refmod_plan_disabled_and_prompt_cache) {
   request.refmods[0] = {nullptr, 1, 1};
   CHECK(rejects([&] {
     resolve_plan(request);
+  }));
+}
+
+SLOPFAB_TEST(refmod_bundle_roundtrip_order_metadata_and_owned_payloads) {
+  RefModFixture image, video, audio, output;
+  image.write(
+      R"({"kind":"image","description":"red \"coat\"","concept_type":"identity","custom":{"tags":["a",2]},"refmod_config":"{\"retention\":0.7}"})",
+      {1, 24, 1, 4, 4}, {}, DType::kBF16);
+  video.write(R"({"kind":"video","name":"dance"})", {1, 24, 3, 6, 8}, {}, DType::kF16);
+  audio.write(R"({"kind":"audio","name":"voice","sample_rate":32000})", {1, 32, 2, 5});
+  RefModBundle bundle;
+  for (const auto& path : {image.path, video.path, audio.path}) {
+    auto loaded = RefModBundle::load(path.string());
+    bundle.members.insert(bundle.members.end(), loaded.members.begin(), loaded.members.end());
+  }
+  bundle.metadata["name"] = json::Value(std::string("hero"));
+  bundle.metadata["description"] = json::Value(std::string("Appearance, motion and voice\n"));
+  bundle.save(output.path.string());
+  auto loaded = RefModBundle::load(output.path.string());
+  CHECK(loaded.members.size() == 3);
+  CHECK(loaded.metadata.at("name").as_string() == "hero");
+  CHECK(loaded.metadata.at("description").as_string() == "Appearance, motion and voice\n");
+  for (size_t i = 0; i < 3; ++i) {
+    CHECK(loaded.members[i]->rows() == bundle.members[i]->rows());
+    CHECK(loaded.members[i]->rows(.5f) == bundle.members[i]->rows(.5f));
+    CHECK(loaded.members[i]->token_count() == bundle.members[i]->token_count());
+  }
+  CHECK(loaded.members[0]->description() == "red \"coat\"");
+  CHECK(loaded.members[1]->name() == "dance");
+  CHECK(loaded.members[2]->name() == "voice");
+  loaded.save(output.path.string()); // No live file mapping prevents replacement on Windows.
+  {
+    SafeTensors file;
+    file.open(output.path.string());
+    CHECK(file.at("ref_0").dtype == DType::kBF16);
+    CHECK(file.at("ref_1").dtype == DType::kF16);
+    CHECK(file.at("ref_2").dtype == DType::kF32);
+    const auto meta = json::parse(file.metadata().at("refmod_meta"));
+    const auto& first = meta.find("members")->as_array()[0];
+    CHECK(first.find("custom")->find("tags")->as_array()[1].as_number() == 2);
+    CHECK(first.find("refmod_config")->as_string() == "{\"retention\":0.7}");
+  }
+  std::vector<RefModReference> original_refs, loaded_refs;
+  for (size_t i = 0; i < 3; ++i) {
+    original_refs.push_back({bundle.members[i], .7f, 2});
+    loaded_refs.push_back({loaded.members[i], .7f, 2});
+  }
+  std::vector<dit::ReferenceGeometry> g1, g2;
+  std::vector<float> v1, v2, a1, a2;
+  append_refmod_conditions(original_refs, 123, g1, v1, a1);
+  append_refmod_conditions(loaded_refs, 123, g2, v2, a2);
+  CHECK(v1 == v2 && a1 == a2 && g1.size() == g2.size());
+  std::filesystem::remove(output.path);
+  CHECK(loaded.members[2]->rows() == bundle.members[2]->rows());
+}
+
+SLOPFAB_TEST(refmod_bundle_rejects_invalid_members_and_preserves_destination) {
+  RefModFixture file;
+  for (const char* meta :
+       {R"({"kind":"bundle","_format_version":6,"members":[{"kind":"image"}]})",
+        R"({"kind":"bundle","_format_version":5,"members":[]})",
+        R"({"kind":"bundle","_format_version":5,"members":[{"kind":"bundle"}]})",
+        R"({"kind":"bundle","_format_version":5,"members":[{"kind":"text"}]})",
+        R"({"kind":"bundle","_format_version":5,"members":[{"kind":"image","latent_h":8}]})",
+        R"({"kind":"bundle","_format_version":5,"members":[{"kind":"image"},{"kind":"audio"}]})"}) {
+    write_safetensors(file.path.string(), {{"ref_0", {1, 24, 1, 4, 4}, std::vector<float>(384)}},
+                      {{"refmod_meta", meta}});
+    CHECK(rejects([&] {
+      RefModBundle::load(file.path.string());
+    }));
+  }
+  file.write();
+  auto bundle = RefModBundle::load(file.path.string());
+  const auto expected = bundle.members[0]->rows();
+  bundle.members.push_back(nullptr);
+  CHECK(rejects([&] {
+    bundle.save(file.path.string());
+  }));
+  CHECK(RefMod::load(file.path.string())->rows() == expected);
+  bundle.members.assign(257, RefMod::load(file.path.string()));
+  CHECK(rejects([&] {
+    bundle.save(file.path.string());
+  }));
+  bundle.members.clear();
+  CHECK(rejects([&] {
+    bundle.save(file.path.string());
   }));
 }
