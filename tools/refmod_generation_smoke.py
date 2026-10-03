@@ -1,6 +1,8 @@
 """Real-checkpoint DLL smoke run with synthetic image/video/audio refmod fixtures.
 
-Usage: python refmod_generation_smoke.py slopfab.dll repository-root [cuda|vulkan] [embedding]
+Usage: python refmod_generation_smoke.py slopfab.dll repository-root [cuda|vulkan] [embedding|export] [bundle]
+`export` creates real standalone text conditioning through the DLL, then generates
+without a text-encoder path. `bundle` packs the three media kinds through the DLL.
 No output files are written; asserts decoded frame/audio geometry and finiteness.
 """
 import ctypes as C
@@ -83,6 +85,7 @@ def tensor_file(path, key, shape, values, metadata=None):
 request, generation = create(), handle()
 scratch = tempfile.TemporaryDirectory(prefix="slopfab-refmod-smoke-")
 try:
+    sources = []
     for kind, shape, copies in [("image", [1,24,1,4,4], 2),
                                  ("video", [1,24,2,4,4], 1),
                                  ("audio", [1,32,2,16], 1)]:
@@ -90,8 +93,19 @@ try:
         count = math.prod(shape)
         tensor_file(path, "latent", shape, [.25 * math.sin(i) for i in range(count)],
                     {"kind": kind, "name": kind, "_format_version": 4})
-        check(add_refmod(request, str(path).encode(), .7, copies))
-        path.unlink()  # The DLL must own the snapshot, including queued runs.
+        sources.append(path)
+        if "bundle" not in sys.argv[3:]:
+            check(add_refmod(request, str(path).encode(), .7, copies))
+    if "bundle" in sys.argv[3:]:
+        save_bundle = bind("slopfab_save_refmod_bundle", [C.POINTER(C.c_char_p), C.c_int,
+                                                        C.c_char_p, C.c_char_p, C.c_char_p])
+        bundle = pathlib.Path(scratch.name) / "mixed.safetensors"
+        paths = (C.c_char_p * len(sources))(*(str(p).encode() for p in sources))
+        check(save_bundle(paths, len(paths), str(bundle).encode(), b"mixed", b"visuals and audio"))
+        check(add_refmod(request, str(bundle).encode(), .7, 1))
+        bundle.unlink()
+    for path in sources:
+        path.unlink()  # The DLL must own snapshots, including queued runs.
     check(set_attention(request, b"flash2"))
     if "embedding" in sys.argv[3:]:
         path = pathlib.Path(scratch.name) / "prompt.safetensors"
@@ -109,6 +123,12 @@ try:
     if len(sys.argv) > 3 and sys.argv[3] == "vulkan":
         set_backend = bind("slopfab_request_set_inference_backend", [handle, C.c_int])
         check(set_backend(request, 1))
+    if "export" in sys.argv[3:]:
+        export_text = bind("slopfab_export_prompt_embedding", [handle, C.c_char_p])
+        path = pathlib.Path(scratch.name) / "exported-text.safetensors"
+        check(export_text(request, str(path).encode()))
+        check(set_embedding(request, str(path).encode()))
+        check(set_model(request, 1, b""))
     check(start(request, progress, None, C.byref(generation)))
     # Inputs are released while the worker is active, exercising ownership.
     destroy(request)

@@ -9,7 +9,7 @@
  *
  * **This API produces pixels, not files.** A generation hands back the decoded
  * frames as planar float RGB and the audio as interleaved float PCM, and
- * writes no media files. Optional latent archives can be saved for continuation.
+ * writes no media files. Optional latent and conditioning archives can be saved.
  * Encoding, muxing and playback belong to the host,
  * which is why the DLL needs no FFmpeg: the one part of this project that
  * loads it is the muxer, and nothing here calls it. A host that wants an MP4
@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 16
+#define SLOPFAB_CAPI_VERSION_MINOR 17
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -486,14 +486,38 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_lora(slopfab_request* request
                                                         float strength);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_loras(slopfab_request* request);
 
-/* Standalone ComfyUI H3 refmod safetensors (image/video/audio). Loads and owns
+/* ComfyUI H3 refmod safetensors (image/video/audio, v5 bundles since 1.17). Loads and owns
  * the latents immediately; later file changes do not affect queued requests.
  * strength: 0..1 (0 disables), copies: 1..10. Requires a Ref2VA transformer.
- * Refmods follow native references and do not alter the text prompt. Since 1.8. */
+ * Refmods follow native references and do not alter the text prompt. Since 1.8.
+ * A bundle expands in member order; strength/copies apply to every member.
+ * Any invalid member rejects the whole addition, leaving the request unchanged. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_refmod(slopfab_request* request,
                                                           const char* path, float strength,
                                                           int32_t copies);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_refmods(slopfab_request* request);
+
+/* Since 1.17. Synchronous text-only encoding and atomic safetensors export.
+ * Uses only request prompt, text-encoder/tokenizer paths, inference backend and
+ * arithmetic settings. Other fields, including media/references, are ignored.
+ * No transformer/VAE is loaded; CUDA encoding streams weights. Requires an
+ * explicit text encoder path and nonempty prompt. The request is not modified.
+ * Returns BUSY if generation or another export is active. The caller must not
+ * mutate/destroy the request during this call. Load with set_prompt_embedding_path.
+ * Exported conditioning replaces the entire prompt; it is not a text RefMod. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_export_prompt_embedding(const slopfab_request* request,
+                                                               const char* output_path);
+
+/* Since 1.17. Package existing standalone/bundle files into a v5 RefMod bundle.
+ * Inputs are flattened in order (1..256 resulting members); no GPU work occurs.
+ * Member dtypes and metadata are preserved. Nullable name/description override
+ * container metadata inherited from the first input bundle, if any. Otherwise
+ * the default name is the output stem. Output is replaced atomically on success.
+ * Descriptions are metadata only; no text is inserted into generation prompts. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_save_refmod_bundle(const char* const* paths,
+                                                          int32_t path_count,
+                                                          const char* output_path, const char* name,
+                                                          const char* description);
 #define SLOPFAB_SCHEDULE_DEFAULT 0
 #define SLOPFAB_SCHEDULE_TAOMATE_3STEP 1
 #define SLOPFAB_SCHEDULE_DMAD_4STEP 2 /* Four evaluations with fresh re-noising, shifts 12/2. */
@@ -555,7 +579,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_req
  * This is separate from the attention algorithm selected by set_attention.
  * CUDA inference ignores this option. Unknown policies are rejected. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_vulkan_arithmetic(slopfab_request* request,
-                                                                  int32_t policy);
+                                                                     int32_t policy);
 
 /* Skip conditioning and denoising and feed the decoders seeded noise. Not a
  * useful video, but it exercises both VAEs and the colour transform against

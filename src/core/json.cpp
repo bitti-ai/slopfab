@@ -289,8 +289,10 @@ Value parse(std::string_view text) {
 
 std::string stringify(const Value& value) {
   switch (value.type()) {
-  case Type::Null: return "null";
-  case Type::Bool: return value.as_bool() ? "true" : "false";
+  case Type::Null:
+    return "null";
+  case Type::Bool:
+    return value.as_bool() ? "true" : "false";
   case Type::Number: {
     const double number = value.as_number();
     if (!std::isfinite(number))
@@ -320,7 +322,8 @@ std::string stringify(const Value& value) {
   case Type::Array: {
     std::string out = "[";
     for (const auto& item : value.as_array()) {
-      if (out.size() > 1) out += ',';
+      if (out.size() > 1)
+        out += ',';
       out += stringify(item);
     }
     return out + ']';
@@ -328,7 +331,8 @@ std::string stringify(const Value& value) {
   case Type::Object: {
     std::string out = "{";
     for (const auto& item : value.as_object()) {
-      if (out.size() > 1) out += ',';
+      if (out.size() > 1)
+        out += ',';
       out += stringify(Value(item.first)) + ':' + stringify(item.second);
     }
     return out + '}';

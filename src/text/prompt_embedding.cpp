@@ -11,8 +11,7 @@ namespace slopfab::text {
 void write_prompt_embedding(const std::string& path, const PromptEmbedding& embedding,
                             const std::map<std::string, std::string>& metadata) {
   if (embedding.num_tokens <= 0 || embedding.num_tokens > kMaxPromptTokens ||
-      embedding.hidden_size != 5120 ||
-      embedding.data.size() != size_t(embedding.num_tokens) * 5120)
+      embedding.hidden_size != 5120 || embedding.data.size() != size_t(embedding.num_tokens) * 5120)
     throw std::invalid_argument("prompt embedding: expected F32 [L,5120] within token capacity");
   for (float value : embedding.data)
     if (!std::isfinite(value))
@@ -28,9 +27,9 @@ void write_prompt_embedding(const std::string& path, const PromptEmbedding& embe
   auto info = metadata;
   info["slopfab_prompt_embedding"] = "h3-prompt-v1";
   write_safetensors_atomic(path,
-                          {{"prompt_embedding", {embedding.num_tokens, 5120}, embedding.data},
-                           {"text_token_tags", {embedding.num_tokens}, {}, DType::kI32, tags}},
-                          info);
+                           {{"prompt_embedding", {embedding.num_tokens, 5120}, embedding.data},
+                            {"text_token_tags", {embedding.num_tokens}, {}, DType::kI32, tags}},
+                           info);
 }
 
 PromptEmbedding read_prompt_embedding(const std::string& path, bool require_tags) {

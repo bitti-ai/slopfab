@@ -1,4 +1,5 @@
 #include "slopfab/text/tokenizer.h"
+#include "slopfab/sha256.h"
 #include "tokenizer_contract.h"
 #include "tokenizer_json_scanner.h"
 
@@ -456,6 +457,7 @@ void Tokenizer::load(const std::string& path) {
 }
 
 void Tokenizer::load_json(std::string_view tokenizer_json) {
+  source_sha256_.clear();
   vocab_.clear();
   id_to_token_.clear();
   merge_ranks_.clear();
@@ -648,6 +650,12 @@ void Tokenizer::load_json(std::string_view tokenizer_json) {
   id_to_token_.assign(static_cast<size_t>(max_id) + 1, std::string());
   for (const auto& [token, id] : vocab_) {
     id_to_token_[static_cast<size_t>(id)] = token;
+  }
+  const auto digest = sha256_bytes(tokenizer_json.data(), tokenizer_json.size());
+  const char* hex = "0123456789abcdef";
+  for (uint8_t byte : digest) {
+    source_sha256_ += hex[byte >> 4];
+    source_sha256_ += hex[byte & 15];
   }
 }
 

@@ -41,6 +41,11 @@ public:
     return !vocab_.empty();
   }
 
+  // SHA-256 of the exact loaded JSON, including embedded resources.
+  const std::string& source_sha256() const {
+    return source_sha256_;
+  }
+
   size_t vocab_size() const {
     return id_to_token_.size();
   }
@@ -70,6 +75,7 @@ public:
   }
 
 private:
+  std::string source_sha256_;
   std::unordered_map<std::string, int32_t> vocab_;
   std::vector<std::string> id_to_token_;
   // Merge rank keyed by "left\x1Fright"; lower rank merges first.

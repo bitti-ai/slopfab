@@ -95,8 +95,8 @@ void write_safetensors(const std::string& path, const std::vector<TensorWrite>& 
     if ((integer ? t.integers.size() : t.data.size()) != elems ||
         !(integer ? t.data.empty() : t.integers.empty())) {
       throw std::runtime_error("safetensors write: tensor '" + t.name + "' has " +
-                               std::to_string(t.data.size()) + " values but shape implies " +
-                               std::to_string(elems));
+                               std::to_string(integer ? t.integers.size() : t.data.size()) +
+                               " values but shape implies " + std::to_string(elems));
     }
     if (!first)
       header += ",";
@@ -158,13 +158,16 @@ void write_safetensors_atomic(const std::string& path, const std::vector<TensorW
   temporary += ".pending-" + std::to_string(process) + "-" +
                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
                std::to_string(serial.fetch_add(1));
+
   struct Cleanup {
     std::filesystem::path path;
+
     ~Cleanup() {
       std::error_code ec;
       std::filesystem::remove(path, ec);
     }
   } cleanup{temporary};
+
   write_safetensors(temporary.u8string(), tensors, metadata);
 #ifdef _WIN32
   if (!MoveFileExW(temporary.c_str(), target.c_str(),

@@ -82,7 +82,7 @@ const CommandHelp kCommands[] = {
      "  --edit-box x,y,w,h           editable rectangle in original-image pixels\n"
      "  --edit-strength <0..1>       fraction of denoising steps, >0 (default 1)\n"
      "  --edit-feather <pixels>      inward edge blending (default 0)\n"
-     "  --refmod <file>              pre-encoded H3 reference safetensors; repeatable.\n"
+     "  --refmod <file>              standalone or mixed H3 RefMod bundle; repeatable.\n"
      "  --refmod-strength <0..1>     strength of preceding refmod (default 1).\n"
      "  --refmod-copies <1..10>      copies of preceding refmod (default 1).\n"
      "  --reference-video <file>     ingest clip and soundtrack (up to 3).\n"
@@ -302,6 +302,25 @@ const CommandHelp kCommands[] = {
     {"tokenize", "slopfab tokenize [--tokenizer <f>] <text>", "encode text and round-trip it",
      "  --tokenizer <f>              override the embedded tokenizer.json\n"
      "  --pieces                     also print the pre-tokenizer split\n"},
+    {"encode-text", "slopfab encode-text --prompt <text> --output <file> [options]",
+     "save standalone H3 prompt conditioning without loading a transformer or VAE",
+     "  --prompt-file <file>         UTF-8 prompt instead of --prompt\n"
+     "  --text-encoder <file>        checkpoint (otherwise discover weights/text_encoder)\n"
+     "  --tokenizer <file>           override embedded tokenizer\n"
+     "  --inference-backend cuda|vulkan\n"
+     "  --residency streaming|resident|auto  CUDA weights; default streaming\n"
+     "  --arithmetic shipped|exact   CUDA arithmetic; default shipped\n"
+     "  --vulkan-arithmetic portable|exact  device-feature or qualified execution\n"
+     "Load the resulting file using generate --prompt-embedding. It replaces the\n"
+     "whole prompt conditioning; it is not an upstream text-kind RefMod.\n"},
+    {"bundle-refmods",
+     "slopfab bundle-refmods --refmod <file> [--refmod <file> ...] --output <file>",
+     "pack existing image/video/audio RefMods into a version-5 mixed bundle",
+     "  --name <text>               display name (input bundle name or output stem)\n"
+     "  --description <text>        associated text metadata; not added to prompts\n"
+     "Input bundles are flattened in order; each member keeps its metadata and dtype.\n"
+     "Up to 256 members. Does not encode raw media. No models or GPU are needed.\n"
+     "Use generate --refmod to load the bundle; strength/copies apply to all members.\n"},
     {"devices", "slopfab devices", "list CUDA and Vulkan compute devices", ""},
     {"version", "slopfab version", "print the version and exit", ""},
 };

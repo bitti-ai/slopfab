@@ -29,7 +29,9 @@ int main(int argc, char** argv) {
     embedded.load_embedded();
     slopfab::text::Tokenizer file;
     file.load(argv[1]);
-    if (!embedded.loaded() || embedded.vocab_size() != file.vocab_size() ||
+    if (!embedded.loaded() || embedded.source_sha256().size() != 64 ||
+        embedded.source_sha256() != file.source_sha256() ||
+        embedded.vocab_size() != file.vocab_size() ||
         embedded.merge_ranks_for_testing() != file.merge_ranks_for_testing()) {
       std::fprintf(stderr, "embedded tokenizer vocabulary or merges differ\n");
       return 1;
@@ -42,8 +44,8 @@ int main(int argc, char** argv) {
         return 1;
       }
     }
-    for (const char* prompt : {"hello world", "<|im_start|>system<|im_end|>",
-                               "line1\r\nline2\t123", "\xe4\xb8\xad\xe6\x96\x87"}) {
+    for (const char* prompt : {"hello world", "<|im_start|>system<|im_end|>", "line1\r\nline2\t123",
+                               "\xe4\xb8\xad\xe6\x96\x87"}) {
       const auto ids = embedded.encode(prompt);
       if (ids != file.encode(prompt) || embedded.decode(ids) != file.decode(ids)) {
         std::fprintf(stderr, "embedded tokenizer encoding differs\n");

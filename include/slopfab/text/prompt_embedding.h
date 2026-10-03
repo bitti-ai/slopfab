@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+
 #include "slopfab/text/encoder.h"
 
 namespace slopfab::text {

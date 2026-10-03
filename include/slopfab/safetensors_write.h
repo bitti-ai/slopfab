@@ -16,7 +16,7 @@ struct TensorWrite {
   std::vector<float> data;
   DType dtype = DType::kF32;
   // Used instead of data when dtype is I32 (e.g. modality tags).
-  std::vector<int32_t> integers;
+  std::vector<int32_t> integers = {};
 };
 
 // Supports F32, F16, BF16 and I32. Validates all tensors before opening output.

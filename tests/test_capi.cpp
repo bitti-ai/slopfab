@@ -186,7 +186,8 @@ SLOPFAB_TEST(capi_prepare_lora_grid) {
   std::filesystem::remove(fixture.companion);
   CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 0) == SLOPFAB_OK);
   CHECK(slopfab_prepare_lora_grid(path.c_str(), 2, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
-  CHECK(fixture.bytes() == embedded); // Neither repeated preparation nor a rejected option rewrites it.
+  CHECK(fixture.bytes() ==
+        embedded); // Neither repeated preparation nor a rejected option rewrites it.
 }
 
 SLOPFAB_TEST(capi_motion_cache_validation_and_atomic_setter) {
@@ -300,6 +301,97 @@ SLOPFAB_TEST(capi_refmod_loading_ownership_and_validation) {
   CHECK(slopfab_resolve_plan(request, &loaded) == SLOPFAB_OK);
   CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text);
   CHECK(slopfab_request_clear_refmods(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+}
+
+SLOPFAB_TEST(capi_mixed_refmod_bundle_save_load_and_failure_atomicity) {
+  RefModFixture image, video, audio, output;
+  image.write();
+  video.write(R"({"kind":"video","name":"motion"})", {1, 24, 2, 4, 4});
+  audio.write(R"({"kind":"audio","description":"voice"})", {1, 32, 2, 3});
+  const std::string ip = image.path.string(), vp = video.path.string(), ap = audio.path.string();
+  const std::string out = output.path.string();
+  const char* paths[] = {ip.c_str(), vp.c_str(), ap.c_str()};
+  CHECK(slopfab_save_refmod_bundle(nullptr, 3, out.c_str(), nullptr, nullptr) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_save_refmod_bundle(paths, 0, out.c_str(), nullptr, nullptr) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_save_refmod_bundle(paths, 3, nullptr, nullptr, nullptr) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_save_refmod_bundle(paths, 3, out.c_str(), "hero", "appearance and voice") ==
+        SLOPFAB_OK);
+  auto* request = slopfab_request_create();
+  CHECK(request != nullptr);
+  if (!request)
+    return;
+
+  struct Guard {
+    slopfab_request* request;
+
+    ~Guard() {
+      slopfab_request_destroy(request);
+    }
+  } guard{request};
+
+  slopfab_plan base{}, loaded{};
+  CHECK(slopfab_resolve_plan(request, &base) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_refmod(request, out.c_str(), 1, 2) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &loaded) == SLOPFAB_OK);
+  CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text + 36);
+  // A bundle can itself be an input; repacking in place closes all source maps.
+  const char* repack[] = {out.c_str(), ip.c_str()};
+  CHECK(slopfab_save_refmod_bundle(repack, 2, out.c_str(), nullptr, nullptr) == SLOPFAB_OK);
+  const char* invalid[] = {ip.c_str(), "missing-refmod.safetensors"};
+  CHECK(slopfab_save_refmod_bundle(invalid, 2, out.c_str(), nullptr, nullptr) != SLOPFAB_OK);
+  CHECK(slopfab_request_clear_refmods(request) == SLOPFAB_OK);
+  CHECK(slopfab_request_add_refmod(request, out.c_str(), 1, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &loaded) == SLOPFAB_OK);
+  CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text + 22);
+  // First member is valid, second is missing. Addition must not partially attach.
+  output.write(
+      R"({"kind":"bundle","_format_version":5,"members":[{"kind":"image"},{"kind":"audio"}]})");
+  {
+    std::ifstream input(output.path, std::ios::binary);
+    std::string bytes(std::istreambuf_iterator<char>(input), {});
+    input.close();
+    // Keep header length/offsets unchanged while naming the valid first tensor.
+    bytes.replace(bytes.find("\"latent\":"), 9, "\"ref_0\" :");
+    std::ofstream out_file(output.path, std::ios::binary);
+    out_file.write(bytes.data(), bytes.size());
+  }
+  CHECK(slopfab_request_add_refmod(request, out.c_str(), 1, 1) != SLOPFAB_OK);
+  std::filesystem::remove(output.path);
+  CHECK(slopfab_resolve_plan(request, &loaded) == SLOPFAB_OK);
+  CHECK(loaded.sequence_rows_without_text == base.sequence_rows_without_text + 22);
+}
+
+SLOPFAB_TEST(capi_text_export_validation_and_failed_call_releases_gpu_claim) {
+  CHECK(slopfab_export_prompt_embedding(nullptr, "text.safetensors") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  auto* request = slopfab_request_create();
+  CHECK(request != nullptr);
+  if (!request)
+    return;
+
+  struct Guard {
+    slopfab_request* request;
+
+    ~Guard() {
+      slopfab_request_destroy(request);
+    }
+  } guard{request};
+
+  CHECK(slopfab_export_prompt_embedding(request, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_export_prompt_embedding(request, "") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_export_prompt_embedding(request, "text.safetensors") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_prompt(request, "A red bird") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_model_path(request, SLOPFAB_MODEL_TEXT_ENCODER,
+                                       "missing-text-encoder.safetensors") == SLOPFAB_OK);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const int status = slopfab_export_prompt_embedding(request, "text.safetensors");
+    CHECK(status != SLOPFAB_OK && status != SLOPFAB_ERR_BUSY);
+    CHECK(std::strlen(slopfab_last_error()) > 0);
+  }
 }
 
 namespace {

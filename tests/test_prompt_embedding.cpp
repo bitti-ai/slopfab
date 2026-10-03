@@ -97,13 +97,20 @@ SLOPFAB_TEST(fixed_prompt_export_roundtrip_and_transactional_failure) {
   const auto original = prompt.data;
   for (int bad = 0; bad < 4; ++bad) {
     auto invalid = prompt;
-    if (bad == 0) invalid.data[0] = std::numeric_limits<float>::infinity();
-    if (bad == 1) invalid.modality_tags = {1, 1};
-    if (bad == 2) invalid.modality_tags[0] = 5;
-    if (bad == 3) invalid.hidden_size = 32;
+    if (bad == 0)
+      invalid.data[0] = std::numeric_limits<float>::infinity();
+    if (bad == 1)
+      invalid.modality_tags = {1, 1};
+    if (bad == 2)
+      invalid.modality_tags[0] = 5;
+    if (bad == 3)
+      invalid.hidden_size = 32;
     bool rejected = false;
-    try { text::write_prompt_embedding(f.path.string(), invalid); }
-    catch (const std::exception&) { rejected = true; }
+    try {
+      text::write_prompt_embedding(f.path.string(), invalid);
+    } catch (const std::exception&) {
+      rejected = true;
+    }
     CHECK(rejected);
     CHECK(text::read_prompt_embedding(f.path.string(), true).data == original);
   }
@@ -115,7 +122,8 @@ SLOPFAB_TEST(fixed_prompt_export_roundtrip_and_transactional_failure) {
 
 SLOPFAB_TEST(conditioning_metadata_json_roundtrip) {
   using namespace slopfab;
-  const auto value = json::parse(R"({"text":"a\n\"b\\c","nested":[true,false,null,1.25,{"x":"voice"}]})");
+  const auto value =
+      json::parse(R"({"text":"a\n\"b\\c","nested":[true,false,null,1.25,{"x":"voice"}]})");
   const auto loaded = json::parse(json::stringify(value));
   CHECK(loaded.find("text")->as_string() == "a\n\"b\\c");
   const auto& nested = loaded.find("nested")->as_array();
