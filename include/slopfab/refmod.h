@@ -16,6 +16,12 @@ struct TensorView;
 class RefMod {
 public:
   static std::shared_ptr<const RefMod> load(const std::string& path);
+  // Construct from clean encoder rows (before reference conditioning noise).
+  // Audio and visual geometry must describe a single modality.
+  static std::shared_ptr<const RefMod> from_rows(const dit::ReferenceGeometry& geometry,
+                                                 const std::vector<float>& rows,
+                                                 json::Object metadata = {});
+  void save(const std::string& path) const;
 
   const std::string& path() const {
     return path_;

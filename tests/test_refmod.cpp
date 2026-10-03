@@ -44,6 +44,43 @@ SLOPFAB_TEST(refmod_visual_packing_and_dtype) {
   }
 }
 
+SLOPFAB_TEST(refmod_encoder_rows_save_roundtrip) {
+  RefModFixture f;
+  for (auto g : {dit::ReferenceGeometry{dit::ReferenceKind::kImage, 1, 4, 6, 0},
+                 dit::ReferenceGeometry{dit::ReferenceKind::kVideo, 7, 4, 6, 0},
+                 dit::ReferenceGeometry{dit::ReferenceKind::kAudio, 0, 0, 0, 81}}) {
+    std::vector<float> rows(size_t(g.video_rows()) * 96 + size_t(g.audio_rows()) * 32);
+    for (size_t i = 0; i < rows.size(); ++i)
+      rows[i] = float(int(i % 137) - 68) / 32;
+    auto mod = RefMod::from_rows(g, rows, {{"name", json::Value(std::string("encoded"))}});
+    mod->save(f.path.u8string());
+    auto loaded = RefMod::load(f.path.u8string());
+    CHECK(loaded->rows() == rows);
+    CHECK(loaded->name() == "encoded");
+    CHECK(loaded->geometry().kind == g.kind);
+    SafeTensors archive;
+    archive.open(f.path.u8string());
+    CHECK(archive.at("latent").dtype == DType::kF32);
+    const auto meta = json::parse(archive.metadata().at("refmod_meta"));
+    CHECK(meta.find("_format_version")->as_number() == 4);
+    CHECK(meta.find("mode")->as_string() == "encode");
+    if (g.kind == dit::ReferenceKind::kAudio)
+      CHECK(meta.find("sample_rate")->as_number() == 32000);
+  }
+  CHECK(rejects([&] {
+    RefMod::from_rows({dit::ReferenceKind::kVideo, 7, 4, 6, 1}, {});
+  }));
+  CHECK(rejects([&] {
+    RefMod::from_rows({dit::ReferenceKind::kImage, 1, 2, 2, 0}, {1});
+  }));
+  CHECK(rejects([&] {
+    RefMod::from_rows({dit::ReferenceKind::kAudio, 0, 0, 0, 1}, std::vector<float>(64, NAN));
+  }));
+  CHECK(rejects([&] {
+    RefMod::from_rows({dit::ReferenceKind::kVideo, INT32_MAX, INT32_MAX - 1, 2, 0}, {});
+  }));
+}
+
 SLOPFAB_TEST(refmod_strength_blurs_detail_preserving_frame_and_channel_means) {
   RefModFixture f;
   std::vector<float> z(24 * 2 * 4 * 4);

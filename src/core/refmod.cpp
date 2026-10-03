@@ -169,6 +169,75 @@ RefModBundle RefModBundle::load(const std::string& path) {
   return bundle;
 }
 
+std::shared_ptr<const RefMod> RefMod::from_rows(const dit::ReferenceGeometry& g,
+                                                const std::vector<float>& rows, json::Object meta) {
+  const bool audio = g.kind == dit::ReferenceKind::kAudio;
+  if (g.kind != dit::ReferenceKind::kImage && g.kind != dit::ReferenceKind::kVideo && !audio)
+    throw std::invalid_argument("refmod export: invalid reference kind");
+  if (audio ? (g.num_audio_latents <= 0 || g.num_latent_frames || g.latent_height || g.latent_width)
+            : (g.num_latent_frames <= 0 || g.latent_height <= 0 || g.latent_width <= 0 ||
+               g.latent_height % 2 || g.latent_width % 2 || g.num_audio_latents ||
+               (g.kind == dit::ReferenceKind::kImage && g.num_latent_frames != 1)))
+    throw std::invalid_argument("refmod export: invalid single-modality geometry");
+  const std::vector<int64_t> shape =
+      audio ? std::vector<int64_t>{1, 32, 2, g.num_audio_latents}
+            : std::vector<int64_t>{1, 24, g.num_latent_frames, g.latent_height, g.latent_width};
+  int64_t elements = 1;
+  for (auto d : shape) {
+    if (d > INT32_MAX / elements)
+      throw std::invalid_argument("refmod export: excessive dimensions");
+    elements *= d;
+  }
+  if (rows.size() != size_t(elements))
+    throw std::invalid_argument("refmod export: encoder rows disagree with geometry");
+  std::vector<float> latent(rows.size());
+  if (audio) {
+    const int t = g.num_audio_latents;
+    for (int c = 0; c < 32; ++c)
+      for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < t; ++i)
+          latent[(size_t(c) * 2 + ch) * t + i] = rows[(size_t(ch) * t + i) * 32 + c];
+    meta["sample_rate"] = json::Value(32000.0);
+  } else {
+    const int t = g.num_latent_frames, h = g.latent_height, w = g.latent_width;
+    for (int c = 0; c < 24; ++c)
+      for (int f = 0; f < t; ++f)
+        for (int y = 0; y < h; ++y)
+          for (int x = 0; x < w; ++x) {
+            const size_t row = (size_t(f) * (h / 2) + y / 2) * (w / 2) + x / 2;
+            latent[((size_t(c) * t + f) * h + y) * w + x] =
+                rows[row * 96 + c * 4 + (y % 2) * 2 + x % 2];
+          }
+    meta["latent_h"] = json::Value(double(h));
+    meta["latent_w"] = json::Value(double(w));
+  }
+  meta["kind"] = json::Value(std::string(audio                                  ? "audio"
+                                         : g.kind == dit::ReferenceKind::kImage ? "image"
+                                                                                : "video"));
+  meta["latent_t"] = json::Value(double(audio ? g.num_audio_latents : g.num_latent_frames));
+  meta["_format_version"] = json::Value(4.0);
+  meta["mode"] = json::Value(std::string("encode"));
+  TensorView tensor{"latent", DType::kF32, shape, latent.data(), latent.size() * sizeof(float)};
+  return from_tensor("", json::Value(std::move(meta)), tensor);
+}
+
+void RefMod::save(const std::string& path) const {
+  const auto& g = geometry_;
+  auto meta = metadata_;
+  const bool audio = g.kind == dit::ReferenceKind::kAudio;
+  meta["kind"] = json::Value(std::string(audio                                  ? "audio"
+                                         : g.kind == dit::ReferenceKind::kImage ? "image"
+                                                                                : "video"));
+  meta["_format_version"] = json::Value(4.0);
+  if (name_.empty())
+    meta["name"] = json::Value(std::filesystem::u8path(path).stem().u8string());
+  const std::vector<int64_t> shape =
+      audio ? std::vector<int64_t>{1, 32, 2, g.num_audio_latents}
+            : std::vector<int64_t>{1, 24, g.num_latent_frames, g.latent_height, g.latent_width};
+  write_safetensors_atomic(path, {{"latent", shape, latent_, dtype_}},
+                           {{"refmod_meta", json::stringify(json::Value(std::move(meta)))}});
+}
+
 void RefModBundle::save(const std::string& path) const {
   if (members.empty() || members.size() > 256)
     throw std::invalid_argument("refmod bundle: expected 1..256 members");
