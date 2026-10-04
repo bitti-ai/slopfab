@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 19
+#define SLOPFAB_CAPI_VERSION_MINOR 20
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -436,6 +436,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_rgb24(
     int32_t image_height, size_t row_stride_bytes, int32_t x, int32_t y, int32_t width,
     int32_t height, float strength, int32_t feather);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit(slopfab_request* request);
+
+/* Since 1.20. Invert an existing image edit: preserve its box and generate all
+ * surrounding pixels in one denoising pass. Requires zero feather, room outside
+ * the box and at least one complete 16x16 latent cell within it. Failed calls
+ * leave the edit unchanged. Ordinary image-edit setters reset this to disabled. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_invert_mask(
+    slopfab_request* request, int32_t enable);
 
 /* Sigma grid points *including* the terminal zero, so the model runs
  * `steps - 1` times. At least 2. */

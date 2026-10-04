@@ -7,7 +7,7 @@
 namespace slopfab {
 void ImageEdit::validate() const {
   if (!image) {
-    if (x || y || width || height || feather || strength != 1.0f)
+    if (x || y || width || height || feather || strength != 1.0f || invert_mask)
       throw std::invalid_argument("image edit settings require a source image");
     return;
   }
@@ -19,6 +19,10 @@ void ImageEdit::validate() const {
     throw std::invalid_argument("edit box must be nonempty and inside the source image");
   if (!std::isfinite(strength) || strength <= 0 || strength > 1 || feather < 0)
     throw std::invalid_argument("edit strength must be in (0,1] and feather nonnegative");
+  if (invert_mask && (feather != 0 || (x == 0 && y == 0 && width == image->width && height == image->height)))
+    throw std::invalid_argument("outpainting needs space outside the preserved box and zero feather");
+  if (invert_mask && ((x + 15) / 16 >= (x + width) / 16 || (y + 15) / 16 >= (y + height) / 16))
+    throw std::invalid_argument("outpainting needs at least one complete latent cell of original context");
 }
 
 RGBImage pad_edit_image(const ImageEdit& edit, int width, int height) {
@@ -49,13 +53,19 @@ std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height) 
   layout.latent_width = width / 16;
   layout.latent_height = height / 16;
   const size_t plane = size_t(layout.latent_width) * layout.latent_height;
-  std::vector<float> mask(24 * plane, 0.0f), rows(mask.size());
+  std::vector<float> mask(24 * plane, edit.invert_mask ? 1.0f : 0.0f), rows(mask.size());
   // Any overlap makes a latent cell editable. Pixel-space compositing enforces
   // the exact box even for sub-cell selections and unaligned edges.
-  for (int y = edit.y / 16; y < (edit.y + edit.height + 15) / 16; ++y)
-    for (int x = edit.x / 16; x < (edit.x + edit.width + 15) / 16; ++x)
+  // In outpaint mode only cells fully inside the original stay locked, so
+  // every new pixel (including unaligned seams) can be generated together.
+  const int left = (edit.x + (edit.invert_mask ? 15 : 0)) / 16;
+  const int top = (edit.y + (edit.invert_mask ? 15 : 0)) / 16;
+  const int right = (edit.x + edit.width + (edit.invert_mask ? 0 : 15)) / 16;
+  const int bottom = (edit.y + edit.height + (edit.invert_mask ? 0 : 15)) / 16;
+  for (int y = top; y < bottom; ++y)
+    for (int x = left; x < right; ++x)
       for (int c = 0; c < 24; ++c)
-        mask[c * plane + size_t(y) * layout.latent_width + x] = 1.0f;
+        mask[c * plane + size_t(y) * layout.latent_width + x] = edit.invert_mask ? 0.0f : 1.0f;
   dit::patchify_video(mask.data(), layout, rows.data());
   return rows;
 }
@@ -81,6 +91,8 @@ PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& gener
           alpha = std::min(1.0f, distance / edit.feather);
         }
       }
+      if (edit.invert_mask)
+        alpha = 1 - alpha;
       for (int c = 0; c < 3; ++c) {
         const size_t p = size_t(y) * src.width + x;
         const float original = src.pixels[3 * p + c] / 255.0f;

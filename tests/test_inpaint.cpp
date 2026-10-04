@@ -66,6 +66,75 @@ SLOPFAB_TEST(inpaint_constraint_uses_resulting_sigma_and_fixed_noise) {
   }));
 }
 
+SLOPFAB_TEST(outpaint_preserves_original_context_and_generates_the_whole_surround) {
+  auto image = std::make_shared<slopfab::RGBImage>();
+  image->width = image->height = 96;
+  image->pixels.resize(96 * 96 * 3, 123);
+  // Exercise aligned, unaligned and corner-anchored originals.
+  for (const int offset : {0, 17, 32}) {
+    slopfab::ImageEdit edit{image, offset, offset, 48, 48, 1, 0, true};
+    const auto packed = slopfab::edit_mask_rows(edit, 96, 96);
+    slopfab::dit::SequenceLayout layout;
+    layout.num_latent_frames = 1;
+    layout.latent_width = layout.latent_height = 6;
+    std::vector<float> mask(packed.size());
+    slopfab::dit::unpatchify_video(packed.data(), layout, mask.data());
+    for (int c = 0; c < 24; ++c)
+      for (int y = 0; y < 6; ++y)
+        for (int x = 0; x < 6; ++x) {
+          const bool preserved = x * 16 >= offset && (x + 1) * 16 <= offset + 48 &&
+                                 y * 16 >= offset && (y + 1) * 16 <= offset + 48;
+          CHECK(mask[c * 36 + y * 6 + x] == (preserved ? 0.0f : 1.0f));
+        }
+    slopfab::InpaintConstraint constraint{std::vector<float>(packed.size(), .4f),
+                                         std::vector<float>(packed.size(), .8f), packed};
+    for (float sigma : {.9f, .5f, 0.0f}) {
+      std::vector<float> rows(packed.size(), -.25f);
+      constraint.apply(rows.data(), rows.size(), sigma);
+      for (size_t i = 0; i < rows.size(); ++i)
+        CHECK_NEAR(rows[i], packed[i] == 0 ? (1 - sigma) * .4f + sigma * .8f : -.25f, 1e-6);
+    }
+    slopfab::PixelBuffer generated(3 * 96 * 96, .9f);
+    // Preserved pixels do not depend on the model's reconstruction, even NaNs.
+    for (int c = 0; c < 3; ++c)
+      for (int y = offset; y < offset + 48; ++y)
+        for (int x = offset; x < offset + 48; ++x)
+          generated[(c * 96 + y) * 96 + x] = std::numeric_limits<float>::quiet_NaN();
+    const auto output = slopfab::composite_image_edit(edit, generated, 96, 96);
+    for (int c = 0; c < 3; ++c)
+      for (int y = 0; y < 96; ++y)
+        for (int x = 0; x < 96; ++x) {
+          const bool preserved = x >= offset && x < offset + 48 && y >= offset && y < offset + 48;
+          CHECK(output[(c * 96 + y) * 96 + x] == (preserved ? 123 / 255.0f : .9f));
+        }
+  }
+}
+
+SLOPFAB_TEST(outpaint_rejects_missing_context_and_empty_extension) {
+  CHECK(slopfab::test::throws([] {
+    auto edit = edit_fixture();
+    edit.invert_mask = true;
+    edit.validate(); // sub-cell context
+  }));
+  CHECK(slopfab::test::throws([] {
+    auto edit = edit_fixture();
+    edit.invert_mask = true;
+    edit.x = edit.y = 0;
+    edit.width = edit.height = 32;
+    edit.validate();
+    edit.feather = 1;
+    edit.validate();
+  }));
+  CHECK(slopfab::test::throws([] {
+    auto edit = edit_fixture();
+    edit.invert_mask = true;
+    edit.x = edit.y = 0;
+    edit.width = 35;
+    edit.height = 33;
+    edit.validate();
+  }));
+}
+
 SLOPFAB_TEST(inpaint_plan_strength_padding_and_invalid_requests) {
   slopfab::GenerateRequest request;
   request.still_image = true;

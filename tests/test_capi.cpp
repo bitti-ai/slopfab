@@ -79,6 +79,34 @@ SLOPFAB_TEST(capi_image_edit_snapshot_validation_and_clear) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_outpaint_validates_preserved_box_and_resets_on_new_source) {
+  auto* request = slopfab_request_create();
+  CHECK(slopfab_request_set_image_edit_invert_mask(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_image_edit_invert_mask(request, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  std::vector<uint8_t> pixels(64 * 64 * 3, 123);
+  const auto set_edit = [&](int feather) {
+    return slopfab_request_set_image_edit_rgb24(request, pixels.data(), pixels.size(), 64, 64,
+                                               64 * 3, 16, 16, 32, 32, 1, feather);
+  };
+  CHECK(set_edit(1) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_image_edit_invert_mask(request, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(set_edit(0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_image_edit_invert_mask(request, 1) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_image_edit_invert_mask(request, 2) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  char* description = nullptr;
+  CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
+  CHECK(std::string(description).find("outpaint (preserve box)") != std::string::npos);
+  slopfab_free_string(description);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 64 && plan.canvas_height == 64 && plan.aligned_frames == 1);
+  CHECK(set_edit(0) == SLOPFAB_OK);
+  CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
+  CHECK(std::string(description).find("outpaint") == std::string::npos);
+  slopfab_free_string(description);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_video_transition) {
   auto* request = slopfab_request_create();
   CHECK(slopfab_request_set_video_transition(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);

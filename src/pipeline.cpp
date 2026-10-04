@@ -472,6 +472,7 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
     description += "  image edit          box " + std::to_string(e.x) + "," + std::to_string(e.y) +
                    "," + std::to_string(e.width) + "," + std::to_string(e.height) + "; strength " +
                    std::to_string(e.strength) + "; feather " + std::to_string(e.feather) +
+                   (e.invert_mask ? "; outpaint (preserve box)" : "") +
                    "\n  delivered image     " + std::to_string(e.image->width) + " x " +
                    std::to_string(e.image->height) + "\n";
   }

@@ -71,3 +71,20 @@ box, output floats equal the decoded source bytes divided by `255.0f`.
 C++ callers use `GenerateRequest::image_edit` with an immutable `RGBImage`
 snapshot and set `still_image = true`. Use a `.ppm` output path or an
 `on_samples` callback. Keep the snapshot immutable while any request uses it.
+
+## Outpainting (C API 1.20)
+
+Place the original on a larger canvas, attach that canvas with an image-edit
+setter using the original's rectangle and zero feather, then call
+`slopfab_request_set_image_edit_invert_mask(request, 1)`. The rectangle now
+identifies the preserved original. All surrounding space is denoised together
+in one pass, with the original latent context restored at each step on CUDA
+and Vulkan. Do not split the border into separate edits or submit an enlarged
+copy of the original as a reference.
+
+Only latent cells fully inside the original rectangle are locked, allowing
+unaligned boundary cells to generate the seam. Pixel compositing preserves
+every original pixel inside the exact rectangle. The preserved box must contain
+at least one complete 16x16 cell and leave room for new pixels. Normal edit
+setters reset inversion; failed inversion calls preserve the previous request.
+In C++, set `ImageEdit::invert_mask = true`.

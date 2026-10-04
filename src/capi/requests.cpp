@@ -52,6 +52,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit(slopfab_request*
   return SLOPFAB_OK;
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_invert_mask(
+    slopfab_request* request, int32_t enable) {
+  if (!request || (enable != 0 && enable != 1) || !request->request.image_edit.image)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "outpainting requires an image edit and enable 0 or 1");
+  return reference_input_guarded([&] {
+    auto edit = request->request.image_edit;
+    edit.invert_mask = enable != 0;
+    edit.validate();
+    request->request.image_edit = std::move(edit);
+  });
+}
+
 SLOPFAB_C_API slopfab_request* SLOPFAB_CALL slopfab_request_create(void) {
   try {
     auto* request = new slopfab_request();

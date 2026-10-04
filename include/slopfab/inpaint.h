@@ -15,6 +15,7 @@ struct ImageEdit {
   int x = 0, y = 0, width = 0, height = 0;
   float strength = 1.0f; // (0,1], fraction of schedule evaluations retained
   int feather = 0;       // pixels, inward from the box boundary
+  bool invert_mask = false; // outpaint: preserve the box, generate its entire surround
   void validate() const;
 };
 
