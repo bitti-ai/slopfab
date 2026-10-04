@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 18
+#define SLOPFAB_CAPI_VERSION_MINOR 19
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -211,6 +211,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_cuda_loaded_major(int32_t* out_major);
 #define SLOPFAB_STAGE_AUDIO_DECODE 6
 #define SLOPFAB_STAGE_DELIVERING 7
 #define SLOPFAB_STAGE_FINISHED 8
+#define SLOPFAB_STAGE_UPSCALING 9
 
 /* --- handles --------------------------------------------------------------- */
 
@@ -446,6 +447,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seed(slopfab_request* request
  * wants used. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* request,
                                                               int32_t which, const char* path);
+
+/* Optional RealESRGAN_x4plus postprocessing on the selected inference backend.
+ * Empty path disables it. Tile dimensions are input pixels; tile_size=0 means
+ * full-frame inference. Defaults: 128/10/10. Output width/height are multiplied
+ * by four; the generation plan still describes the original diffusion canvas.
+ * Progress uses UPSCALING with step/steps counting completed/total tiles.
+ * Image editing cannot be combined with upscaling. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_upscaler(slopfab_request* request,
+    const char* model_path, int32_t tile_size, int32_t tile_pad, int32_t pre_pad);
 
 /* Optional safetensors containing F32 `prompt_embedding` [L,5120]. Reference
  * runs also require I32/I64 `text_token_tags` [L]. Both backends bypass Qwen

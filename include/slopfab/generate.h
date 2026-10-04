@@ -18,13 +18,15 @@
 #include "slopfab/attention_mode.h"
 #include "slopfab/video/y4m.h"
 #include "slopfab/pixel_buffer.h"
+#include "slopfab/upscale.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/sampler/scheduler.h"
 
 namespace slopfab {
 
-// Where a run is, for `RunOptions::on_progress`. Ordered, and a run may skip
-// several: no references, no audio VAE, synthetic latents. The values are
+// Where a run is, for `RunOptions::on_progress`. A run may skip stages (no
+// references/audio VAE, synthetic latents). Upscaling is appended for ABI
+// compatibility, so stage numbers do not imply execution order. Values are
 // mirrored by SLOPFAB_STAGE_* in capi.h and must not be renumbered.
 enum class RunStage {
   kStarting = 0,
@@ -36,6 +38,7 @@ enum class RunStage {
   kAudioDecode = 6,
   kDelivering = 7,
   kFinished = 8,
+  kUpscaling = 9, // appended to preserve existing stage values
 };
 
 // The decoded run, borrowed by `RunOptions::on_samples` for the duration of
@@ -90,6 +93,9 @@ struct RunOptions {
   bool vulkan_portable_arithmetic = false;
 #endif
   bool verbose = true;
+  // Optional RealESRGAN_x4plus postprocessing, after VAE release and before delivery.
+  std::string upscale_model_path;
+  UpscaleOptions upscale;
 
   // Counted CLI runs share prompt conditioning. Transformer residency cannot
   // cross the VAE phase: those weights together exceed practical VRAM on

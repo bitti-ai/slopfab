@@ -26,6 +26,26 @@
 #include "refmod_fixture.h"
 #include "latent_fixture.h"
 
+SLOPFAB_TEST(capi_upscaler_options) {
+  auto* request = slopfab_request_create();
+  CHECK(slopfab_request_set_upscaler(nullptr, "weights.safetensors", 128, 10, 10) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_upscaler(request, nullptr, 128, 10, 10) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_upscaler(request, "weights.safetensors", -1, 10, 10) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_upscaler(request, "weights.safetensors", 128, 257, 10) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_upscaler(request, "weights.safetensors", 128, 10, 10) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK); // does not read the checkpoint
+  const uint8_t rgb[] = {10, 20, 30};
+  CHECK(slopfab_request_set_image_edit_rgb24(request, rgb, 3, 1, 1, 3, 0, 0, 1, 1, 1, 0) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_upscaler(request, "", 128, 10, 10) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_image_edit_snapshot_validation_and_clear) {
   auto* request = slopfab_request_create();
   std::vector<uint8_t> pixels(40 * 33 * 3, 123); // padded rows, visible width 35

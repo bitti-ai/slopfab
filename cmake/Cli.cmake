@@ -11,6 +11,9 @@ target_sources(slopfab PRIVATE src/cli/assets.cpp)
 target_sources(slopfab PRIVATE
   src/cli/model_assets.cpp src/cli/help.cpp src/cli/inspect.cpp
   src/cli/decode.cpp src/cli/tokenize.cpp src/cli/generate.cpp src/cli/devices.cpp)
+if(TARGET slopfab_generation)
+  target_sources(slopfab PRIVATE src/cli/upscale.cpp)
+endif()
 set(SLOPFAB_CLI_TARGET slopfab)
 
 target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_core)

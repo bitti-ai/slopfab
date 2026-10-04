@@ -123,6 +123,10 @@ const CommandHelp kCommands[] = {
      "  --inference-backend cuda|vulkan\n"
      "                               neural backend (CUDA by default when built); Vulkan\n"
      "                               supports native text and reference conditioning\n"
+     "  --upscale-model <file>       optional RealESRGAN_x4plus.safetensors; 4x output\n"
+     "  --upscale-tile <n>           input tile size, 128 (0 = whole frame)\n"
+     "  --upscale-tile-pad <n>       tile overlap, 10 input pixels\n"
+     "  --upscale-pre-pad <n>        right/bottom reflection padding, 10\n"
      "  --output-accelerator cpu|vulkan\n"
      "                               RGB-to-YUV output conversion only (default cpu);\n"
      "                               independent of the inference backend\n"
@@ -254,6 +258,16 @@ const CommandHelp kCommands[] = {
      "the sequencing costs nothing measurable and is what makes every mixture of\n"
      "the four safe. Expect the first output well after the progress line starts\n"
      "moving.\n"},
+    {"upscale", "slopfab upscale --input image.png --out image-4x.ppm [options]",
+     "upscale an RGB image 4x with Real-ESRGAN (requires CUDA or Vulkan)",
+     "  --upscale-model <file>       RealESRGAN_x4plus.safetensors; defaults to\n"
+     "                               weights/upscaler/RealESRGAN_x4plus.safetensors\n"
+     "  --inference-backend <name>   cuda or vulkan\n"
+     "  --upscale-tile <n>           input tile size, 128 (0 = whole image)\n"
+     "  --upscale-tile-pad <n>       tile overlap in input pixels, 10\n"
+     "  --upscale-pre-pad <n>        right/bottom reflection padding, 10\n"
+     "  --dump <file>               also save F32 pixels [3,1,H,W] as safetensors\n"
+     "Output is binary PPM. Input uses the normal reference-image decoder.\n"},
     {"inspect", "slopfab inspect <file.safetensors> [options]", "summarise a checkpoint's tensors",
      "  --list                       print every tensor, not just a summary\n"
      "  --prefix <str>               only tensors whose name starts with <str>\n"

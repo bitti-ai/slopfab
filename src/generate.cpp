@@ -74,6 +74,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   RunResult result;
   try {
     validate_generation_options(request, plan, options);
+    if (!options.upscale_model_path.empty()) {
+      SafeTensors upscale_checkpoint;
+      upscale_checkpoint.open(options.upscale_model_path);
+      validate_realesrgan_checkpoint(upscale_checkpoint);
+    }
   } catch (const std::exception& e) {
     result.message = e.what();
     return result;

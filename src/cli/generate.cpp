@@ -112,6 +112,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   std::string inference_backend = "cuda";
 #endif
   std::string output_accelerator = "cpu";
+  std::string upscale_model;
+  slopfab::UpscaleOptions upscale;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -324,6 +326,22 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       dry_run = true;
     } else if (arg == "--synthetic-latents") {
       synthetic = true;
+    } else if (arg == "--upscale-model") {
+      upscale_model = next("--upscale-model");
+      if (upscale_model.empty())
+        throw std::invalid_argument("--upscale-model needs a path");
+    } else if (arg == "--upscale-tile" || arg == "--upscale-tile-pad" || arg == "--upscale-pre-pad") {
+      const std::string value = next(std::string(arg).c_str());
+      size_t used = 0;
+      const int number = std::stoi(value, &used);
+      if (used != value.size())
+        throw std::invalid_argument("upscale options require integers");
+      if (arg == "--upscale-tile")
+        upscale.tile_size = number;
+      else if (arg == "--upscale-tile-pad")
+        upscale.tile_pad = number;
+      else
+        upscale.pre_pad = number;
     } else if (arg == "--dump-latents") {
       dump_latents = next("--dump-latents");
     } else if (arg == "--save-latents") {
@@ -532,6 +550,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;
   slopfab::RunOptions options;
+  options.upscale_model_path = upscale_model;
+  options.upscale = upscale;
   options.source =
       synthetic ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
   options.inference_backend = inference_backend == "vulkan" ? slopfab::DeviceBackend::kVulkan
@@ -552,6 +572,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   discover_generate_checkpoints(req, executable);
   slopfab::GeneratePlan plan = slopfab::resolve_plan(req);
   slopfab::validate_generation_options(req, plan, options);
+  const auto print_upscale = [&] {
+    if (!upscale_model.empty())
+      std::printf("upscaler    Real-ESRGAN x4plus -> %dx%d (%s)\n", plan.canvas_width * 4,
+                  plan.canvas_height * 4, upscale_model.c_str());
+  };
 
   // After `resolve_plan`, so a canvas that is going to be rejected outright is
   // not first warned about — an invalid request should produce one message
@@ -576,6 +601,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       if (generation > 0)
         std::printf("\n");
       std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);
+      print_upscale();
     }
     return 0;
   }
@@ -681,6 +707,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     if (generation > 0)
       std::printf("\n");
     std::fputs(slopfab::describe_plan(req, plan).c_str(), stdout);
+    print_upscale();
     std::printf("\n");
     const slopfab::RunResult run = slopfab::run_generate(session, req, plan, options);
     if (!run.ok) {

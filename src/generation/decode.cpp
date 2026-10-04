@@ -227,6 +227,26 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 
   // --- output ---------------------------------------------------------------
 
+  if (!options.upscale_model_path.empty()) {
+    if (!notify(RunStage::kUpscaling, 0, 0))
+      return stop("upscaling");
+    const auto t0 = Clock::now();
+    RealEsrgan upscaler(options.upscale_model_path, options.inference_backend);
+    try {
+      video.data = upscaler.upscale(video.data, video.frames, video.height, video.width,
+                                   options.upscale, [&](int done, int total) {
+                                     return notify(RunStage::kUpscaling, done, total);
+                                   });
+    } catch (const UpscaleCancelled&) {
+      return stop("upscaling");
+    }
+    video.height *= 4;
+    video.width *= 4;
+    if (options.verbose)
+      std::printf("upscaled    %d frames to %dx%d in %.2f s\n", video.frames,
+                  video.width, video.height, seconds_since(t0));
+  }
+
   {
     const Clock::time_point t0 = Clock::now();
     const bool have_audio = !audio.samples.empty();
