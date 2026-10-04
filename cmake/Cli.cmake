@@ -40,15 +40,17 @@ endif()
 # distribution the option exists to do without.
 if(WIN32 AND SLOPFAB_WITH_FFMPEG)
   # FFmpeg remains runtime-loaded (and therefore replaceable), but the checked-in
-  # distribution is the default used by local builds. Keep only the libraries
-  # mux.cpp loads, plus swresample which avcodec depends on in this FFmpeg build.
+  # distribution is the default used by local builds. Include the command-line
+  # tools for streamed SeedVR2 decoding, probing and encoding.
   set(SLOPFAB_FFMPEG_BIN "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
   set(SLOPFAB_FFMPEG_RUNTIME_DLLS
     avcodec-62.dll
     avformat-62.dll
     avutil-60.dll
     swresample-6.dll
-    swscale-9.dll)
+    swscale-9.dll
+    ffmpeg.exe
+    ffprobe.exe)
   foreach(SLOPFAB_FFMPEG_DLL IN LISTS SLOPFAB_FFMPEG_RUNTIME_DLLS)
     if(NOT EXISTS "${SLOPFAB_FFMPEG_BIN}/${SLOPFAB_FFMPEG_DLL}")
       message(FATAL_ERROR
