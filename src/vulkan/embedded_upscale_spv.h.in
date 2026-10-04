@@ -1,0 +1,5 @@
+#pragma once
+#include <cstdint>
+namespace slopfab::upscale_detail {
+inline constexpr uint8_t kUpscaleSpirv[] = {@SLOPFAB_UPSCALE_SPV_BYTES@};
+}

@@ -9,12 +9,20 @@ if(SLOPFAB_ENABLE_VULKAN)
   include(cmake/Shaders.cmake)
   include(cmake/ShaderManifest.cmake)
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan")
+  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/upscale.sha256" upscale_hashes)
+  list(GET upscale_hashes 0 upscale_source_hash)
+  list(GET upscale_hashes 1 upscale_binary_hash)
+  slopfab_shader(src/vulkan/upscale.comp "${upscale_source_hash}" SOURCE -)
+  slopfab_shader(src/vulkan/upscale.comp.spv "${upscale_binary_hash}" BINARY SLOPFAB_UPSCALE_SPV_BYTES)
+  configure_file(src/vulkan/embedded_upscale_spv.h.in
+    generated/vulkan/embedded_upscale_spv.h @ONLY)
   configure_file(src/vulkan/embedded_yuv_spv.h.in
     generated/vulkan/embedded_yuv_spv.h @ONLY)
   configure_file(src/vulkan/embedded_tensor_spv.h.in
     generated/vulkan/embedded_tensor_spv.h @ONLY)
 
   add_library(slopfab_vulkan STATIC
+    src/vulkan/upscale.cpp
     src/vulkan/runtime.cpp
     src/vulkan/runtime_buffer.cpp
     src/vulkan/runtime_pipeline.cpp

@@ -9,8 +9,8 @@ std::vector<ConvSpec> model_convolutions() {
   for (int block = 0; block < 23; ++block)
     for (int rdb = 1; rdb <= 3; ++rdb)
       for (int conv = 1; conv <= 5; ++conv)
-        specs.push_back({"body." + std::to_string(block) + ".rdb" + std::to_string(rdb) +
-                             ".conv" + std::to_string(conv),
+        specs.push_back({"body." + std::to_string(block) + ".rdb" + std::to_string(rdb) + ".conv" +
+                             std::to_string(conv),
                          64 + (conv - 1) * 32, conv == 5 ? 64 : 32});
   for (const char* name : {"conv_body", "conv_up1", "conv_up2", "conv_hr"})
     specs.push_back({name, 64, 64});
@@ -21,14 +21,13 @@ std::vector<ConvSpec> model_convolutions() {
 
 namespace slopfab {
 void validate_upscale_options(const UpscaleOptions& o) {
-  if (o.tile_size < 0 || o.tile_size > 512 || o.tile_pad < 0 || o.tile_pad > 256 ||
-      o.pre_pad < 0 || o.pre_pad > 256)
+  if (o.tile_size < 0 || o.tile_size > 512 || o.tile_pad < 0 || o.tile_pad > 256 || o.pre_pad < 0 ||
+      o.pre_pad > 256)
     throw std::invalid_argument("Real-ESRGAN: tile size must be 0..512; padding must be 0..256");
 }
 
 size_t upscale_output_elements(int frames, int height, int width) {
-  if (frames <= 0 || height <= 0 || width <= 0 ||
-      height > std::numeric_limits<int>::max() / 4 ||
+  if (frames <= 0 || height <= 0 || width <= 0 || height > std::numeric_limits<int>::max() / 4 ||
       width > std::numeric_limits<int>::max() / 4)
     throw std::invalid_argument("Real-ESRGAN: invalid or excessive image dimensions");
   size_t count = 3;

@@ -25,7 +25,8 @@ size_t upscale_output_elements(int frames, int height, int width);
 
 class UpscaleCancelled : public std::runtime_error {
 public:
-  UpscaleCancelled() : std::runtime_error("upscaling cancelled") {}
+  UpscaleCancelled() : std::runtime_error("upscaling cancelled") {
+  }
 };
 
 // Native FP32 inference; owns uploaded weights and can be reused across clips.

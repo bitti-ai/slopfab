@@ -1,0 +1,50 @@
+#version 450
+// FP32 implicit convolution GEMM, 16 spatial positions x 16 output channels.
+// Compile: glslangValidator -V --target-env vulkan1.2 -o upscale.comp.spv upscale.comp
+layout(local_size_x=16, local_size_y=16) in;
+layout(set=0,binding=0,std430) readonly buffer X { float x[]; };
+layout(set=0,binding=1,std430) readonly buffer Y { float y[]; };
+layout(set=0,binding=2,std430) readonly buffer B { float bias[]; };
+layout(set=0,binding=3,std430) writeonly buffer O { float result[]; };
+layout(push_constant) uniform Params {
+  uint op, height, width, input_channels, output_channels, count, leaky;
+  float scale;
+} p;
+shared float a[16][16];
+shared float b[16][16];
+void main() {
+  uint lx = gl_LocalInvocationID.x, ly = gl_LocalInvocationID.y;
+  if (p.op != 0) {
+    uint i = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256 + ly * 16 + lx;
+    if (i >= p.count) return;
+    uint c = i % p.output_channels, pixel = i / p.output_channels;
+    if (p.op == 1) {
+      result[i] = c < p.input_channels ? x[pixel * p.input_channels + c]
+        : y[pixel * (p.output_channels - p.input_channels) + c - p.input_channels];
+    } else if (p.op == 2) {
+      result[i] = x[i] + p.scale * y[i];
+    } else {
+      result[i] = x[((pixel / p.width / 2) * (p.width / 2) + pixel % p.width / 2) * p.output_channels + c];
+    }
+    return;
+  }
+  uint pixel = gl_WorkGroupID.x * 16 + ly;
+  uint channel = gl_WorkGroupID.y * 16 + lx;
+  uint k = p.input_channels * 9;
+  float sum = 0;
+  for (uint start = 0; start < k; start += 16) {
+    uint tap = start + lx;
+    int iy = int(pixel / p.width) + int(tap % 9 / 3) - 1;
+    int ix = int(pixel % p.width) + int(tap % 3) - 1;
+    a[ly][lx] = tap < k && pixel < p.height * p.width && iy >= 0 && ix >= 0 && iy < p.height && ix < p.width
+      ? x[(iy * p.width + ix) * p.input_channels + tap / 9] : 0;
+    b[ly][lx] = start + ly < k && channel < p.output_channels ? y[channel * k + start + ly] : 0;
+    barrier();
+    for (uint t = 0; t < 16; ++t) sum = fma(a[ly][t], b[t][lx], sum);
+    barrier();
+  }
+  if (pixel < p.height * p.width && channel < p.output_channels) {
+    float v = sum + bias[channel];
+    result[pixel * p.output_channels + channel] = p.leaky != 0 && v < 0 ? v * 0.2 : v;
+  }
+}

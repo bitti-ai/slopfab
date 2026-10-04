@@ -1,0 +1,116 @@
+#include "../upscale/backend.h"
+#include "slopfab/cuda/device.h"
+#include "slopfab/cuda/cublas_dispatch.h"
+
+namespace slopfab::upscale_detail {
+namespace {
+struct CudaTensor : Tensor {
+  cuda::DeviceBuffer<float> data;
+
+  explicit CudaTensor(size_t count) : data(count) {
+  }
+};
+
+float* pointer(const Buffer& b) {
+  return static_cast<CudaTensor&>(*b).data.get();
+}
+
+__global__ void im2col(const float* x, float* col, Parameters p) {
+  const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+  const unsigned k = p.input * 9;
+  if (i >= p.height * p.width * k)
+    return;
+  const unsigned pixel = i / k, tap = i % k;
+  const int y = int(pixel / p.width) + int(tap % 9 / 3) - 1;
+  const int xx = int(pixel % p.width) + int(tap % 3) - 1;
+  col[i] = y < 0 || xx < 0 || y >= int(p.height) || xx >= int(p.width)
+               ? 0.0f
+               : x[(y * p.width + xx) * p.input + tap / 9];
+}
+
+__global__ void pointwise(const float* x, const float* y, const float* bias, float* out,
+                          Parameters p) {
+  const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= p.count)
+    return;
+  const unsigned c = i % p.output, pixel = i / p.output;
+  if (p.op == kConv) {
+    const float v = out[i] + bias[c];
+    out[i] = p.leaky && v < 0 ? v * 0.2f : v;
+  } else if (p.op == kConcat) {
+    out[i] = c < p.input ? x[pixel * p.input + c] : y[pixel * (p.output - p.input) + c - p.input];
+  } else if (p.op == kResidual) {
+    out[i] = x[i] + p.scale * y[i];
+  } else {
+    out[i] = x[((pixel / p.width / 2) * (p.width / 2) + pixel % p.width / 2) * p.output + c];
+  }
+}
+
+void blas_check(cublasStatus_t status) {
+  if (status != CUBLAS_STATUS_SUCCESS)
+    throw std::runtime_error("Real-ESRGAN: cuBLAS error " + std::to_string(int(status)));
+}
+
+class CudaBackend final : public Backend {
+  cublasHandle_t handle_ = nullptr;
+  cuda::DeviceBuffer<float> columns_;
+
+public:
+  CudaBackend() {
+    blas_check(cuda::cublas_create(&handle_));
+    // FP32 accumulation without TF32 truncation is important for deep RRDBs.
+    const auto status = cuda::cublas_set_math_mode(handle_, CUBLAS_PEDANTIC_MATH);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+      cuda::cublas_destroy(handle_);
+      blas_check(status);
+    }
+  }
+
+  ~CudaBackend() override {
+    cuda::cublas_destroy(handle_);
+  }
+
+  Buffer allocate(size_t count) override {
+    return std::make_shared<CudaTensor>(count);
+  }
+
+  Buffer upload(const std::vector<float>& v) override {
+    auto t = allocate(v.size());
+    SLOPFAB_CUDA_CHECK(
+        cudaMemcpy(pointer(t), v.data(), v.size() * sizeof(float), cudaMemcpyHostToDevice));
+    return t;
+  }
+
+  std::vector<float> download(const Buffer& t, size_t count) override {
+    std::vector<float> v(count);
+    SLOPFAB_CUDA_CHECK(
+        cudaMemcpy(v.data(), pointer(t), count * sizeof(float), cudaMemcpyDeviceToHost));
+    return v;
+  }
+
+  void run(const Parameters& p, const Buffer& x, const Buffer& y, const Buffer& bias,
+           const Buffer& out) override {
+    if (p.op == kConv) {
+      const size_t count = size_t(p.height) * p.width * p.input * 9;
+      if (columns_.size() < count)
+        columns_.allocate(count);
+      im2col<<<unsigned((count + 255) / 256), 256>>>(pointer(x), columns_.get(), p);
+      SLOPFAB_CUDA_CHECK(cudaGetLastError());
+      const float alpha = 1, beta = 0;
+      // Row-major [pixels,K] * [output,K]^T -> [pixels,output].
+      blas_check(cuda::cublas_sgemm(handle_, CUBLAS_OP_T, CUBLAS_OP_N, int(p.output),
+                                    int(p.height * p.width), int(p.input * 9), &alpha, pointer(y),
+                                    int(p.input * 9), columns_.get(), int(p.input * 9), &beta,
+                                    pointer(out), int(p.output)));
+    }
+    pointwise<<<(p.count + 255) / 256, 256>>>(pointer(x), pointer(y), pointer(bias), pointer(out),
+                                              p);
+    SLOPFAB_CUDA_CHECK(cudaGetLastError());
+  }
+};
+} // namespace
+
+std::unique_ptr<Backend> make_cuda_backend() {
+  return std::make_unique<CudaBackend>();
+}
+} // namespace slopfab::upscale_detail
