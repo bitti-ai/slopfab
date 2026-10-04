@@ -1,3 +1,4 @@
+#include "upscale_options.h"
 // slopfab - MiniMax H3 video generation in C++/CUDA.
 
 #include <algorithm>
@@ -112,9 +113,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   std::string inference_backend = "cuda";
 #endif
   std::string output_accelerator = "cpu";
-  std::string upscale_model;
-  auto upscale_method = slopfab::UpscaleMethod::kRealEsrgan;
-  slopfab::UpscaleOptions upscale;
+  UpscaleArguments upscaling;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -327,24 +326,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       dry_run = true;
     } else if (arg == "--synthetic-latents") {
       synthetic = true;
-    } else if (arg == "--upscale-method") {
-      upscale_method = slopfab::parse_upscale_method(next("--upscale-method"));
-    } else if (arg == "--upscale-model") {
-      upscale_model = next("--upscale-model");
-      if (upscale_model.empty())
-        throw std::invalid_argument("--upscale-model needs a path");
-    } else if (arg == "--upscale-tile" || arg == "--upscale-tile-pad" || arg == "--upscale-pre-pad") {
-      const std::string value = next(std::string(arg).c_str());
-      size_t used = 0;
-      const int number = std::stoi(value, &used);
-      if (used != value.size())
-        throw std::invalid_argument("upscale options require integers");
-      if (arg == "--upscale-tile")
-        upscale.tile_size = number;
-      else if (arg == "--upscale-tile-pad")
-        upscale.tile_pad = number;
-      else
-        upscale.pre_pad = number;
+    } else if (upscaling.parse(argc, argv, i)) {
     } else if (arg == "--dump-latents") {
       dump_latents = next("--dump-latents");
     } else if (arg == "--save-latents") {
@@ -553,9 +535,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;
   slopfab::RunOptions options;
-  options.upscale_model_path = upscale_model;
-  options.upscale_method = upscale_method;
-  options.upscale = upscale;
+  upscaling.finish();
+  options.upscale_model_path = upscaling.model;
+  options.upscale_method = upscaling.method;
+  options.upscale = upscaling.options;
   options.source =
       synthetic ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
   options.inference_backend = inference_backend == "vulkan" ? slopfab::DeviceBackend::kVulkan
@@ -577,10 +560,10 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   slopfab::GeneratePlan plan = slopfab::resolve_plan(req);
   slopfab::validate_generation_options(req, plan, options);
   const auto print_upscale = [&] {
-    if (!upscale_model.empty()) {
-      const int scale = slopfab::upscale_scale_factor(upscale_method);
-      std::printf("upscaler    %s -> %dx%d (%s)\n", slopfab::upscale_method_name(upscale_method),
-                  plan.canvas_width * scale, plan.canvas_height * scale, upscale_model.c_str());
+    if (!upscaling.model.empty()) {
+      const auto dims = slopfab::upscale_dimensions(plan.canvas_height, plan.canvas_width, upscaling.method, upscaling.options);
+      std::printf("upscaler    %s -> %dx%d (%s)\n", slopfab::upscale_method_name(upscaling.method),
+                  dims.second, dims.first, upscaling.model.c_str());
     }
   };
 

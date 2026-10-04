@@ -9,11 +9,20 @@
 namespace slopfab {
 using namespace upscale_detail;
 
+#if SLOPFAB_WITH_CUDA
+std::unique_ptr<Upscaler> make_seedvr2_upscaler(const std::string& checkpoint);
+#endif
+
 std::unique_ptr<Upscaler> make_upscaler(UpscaleMethod method, const std::string& checkpoint,
                                         DeviceBackend backend) {
   switch (method) {
   case UpscaleMethod::kRealEsrgan:
     return std::make_unique<RealEsrgan>(checkpoint, backend);
+  case UpscaleMethod::kSeedVr2:
+#if SLOPFAB_WITH_CUDA
+    if (backend == DeviceBackend::kCuda) return make_seedvr2_upscaler(checkpoint);
+#endif
+    throw std::invalid_argument("SeedVR2 requires the CUDA backend");
   }
   throw std::invalid_argument("unknown upscale method");
 }

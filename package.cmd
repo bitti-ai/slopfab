@@ -79,7 +79,7 @@ if errorlevel 1 exit /b 1
 copy /y "%ROOT%\external\ffmpeg\LICENSE" "%STAGE%\FFMPEG-LICENSE.txt" >nul
 if errorlevel 1 exit /b 1
 
-for %%F in (avcodec-62.dll avformat-62.dll avutil-60.dll swresample-6.dll swscale-9.dll ffmpeg.exe ffprobe.exe) do (
+for %%F in (avcodec-62.dll avformat-62.dll avdevice-62.dll avfilter-11.dll avutil-60.dll swresample-6.dll swscale-9.dll ffmpeg.exe ffprobe.exe) do (
   if not exist "%ROOT%\external\ffmpeg\bin\%%F" (
     echo package: required FFmpeg runtime not found at %ROOT%\external\ffmpeg\bin\%%F
     exit /b 1

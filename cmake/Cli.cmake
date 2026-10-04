@@ -8,13 +8,10 @@ set(SLOPFAB_CLI_SOURCES src/main.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
 target_sources(slopfab PRIVATE src/cli/reference_decode.cpp)
 target_sources(slopfab PRIVATE src/cli/assets.cpp)
-target_sources(slopfab PRIVATE src/cli/upscale.cpp src/cli/pipe_process.cpp)
+target_sources(slopfab PRIVATE src/cli/upscale.cpp src/cli/pipe_process.cpp src/cli/upscale_options.cpp)
 target_sources(slopfab PRIVATE
   src/cli/model_assets.cpp src/cli/help.cpp src/cli/inspect.cpp
   src/cli/decode.cpp src/cli/tokenize.cpp src/cli/generate.cpp src/cli/devices.cpp)
-if(TARGET slopfab_generation)
-  target_sources(slopfab PRIVATE src/cli/upscale.cpp)
-endif()
 set(SLOPFAB_CLI_TARGET slopfab)
 
 target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_core)
@@ -46,6 +43,8 @@ if(WIN32 AND SLOPFAB_WITH_FFMPEG)
   set(SLOPFAB_FFMPEG_RUNTIME_DLLS
     avcodec-62.dll
     avformat-62.dll
+    avdevice-62.dll
+    avfilter-11.dll
     avutil-60.dll
     swresample-6.dll
     swscale-9.dll

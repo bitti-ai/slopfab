@@ -1,6 +1,34 @@
 #include "internal.h"
 #include "slopfab/seedvr2.h"
 
+extern "C" SLOPFAB_C_API int SLOPFAB_CALL
+slopfab_request_set_seedvr2_options(slopfab_request* request, const slopfab_seedvr2_options* o) {
+  if (!request || !o || o->struct_size != sizeof(*o) || !o->transformer_path ||
+      !*o->transformer_path || !o->vae_path || !*o->vae_path ||
+      (o->color_match != 0 && o->color_match != 1) || o->width < 16 || o->height < 16)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_seedvr2_options: invalid arguments");
+  return guarded([&] {
+    slopfab::UpscaleOptions options;
+    options.width = o->width;
+    options.height = o->height;
+    options.tile_size = o->vae_tile;
+    options.segment_frames = o->segment_frames;
+    options.vae_path = o->vae_path;
+    options.seed = o->seed;
+    options.device = o->device;
+    options.color_match = o->color_match != 0;
+    try {
+      slopfab::validate_upscale_options(options, slopfab::UpscaleMethod::kSeedVr2);
+    } catch (const std::invalid_argument& e) {
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
+    }
+    request->options.upscale_model_path = o->transformer_path;
+    request->options.upscale_method = slopfab::UpscaleMethod::kSeedVr2;
+    request->options.upscale = std::move(options);
+    return SLOPFAB_OK;
+  });
+}
+
 extern "C" SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
     const slopfab_seedvr2_options* options, slopfab_seedvr2_read_fn read_frame,
     slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,

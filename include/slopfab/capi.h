@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 19
+#define SLOPFAB_CAPI_VERSION_MINOR 20
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -106,7 +106,7 @@ SLOPFAB_C_API uint32_t SLOPFAB_CALL slopfab_capi_version(void);
  * the two cannot disagree. Owned by the library and valid forever. */
 SLOPFAB_C_API const char* SLOPFAB_CALL slopfab_capi_version_string(void);
 
-/* SeedVR2 3B streaming restoration (CUDA, ABI 1.19).
+/* SeedVR2 3B streaming restoration (CUDA, ABI 1.20).
  * Synchronous: run on a host worker thread if needed. No media codec dependency.
  * read_frame fills packed [height][width][3] float RGB in [0,1], already resized
  * to the requested output geometry. Return 1 for a frame, 0 for EOF, -1 on error.
@@ -482,6 +482,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
 /* Upscaling method identifiers. Further implementations can be added without
  * changing the request API. Unknown identifiers are rejected. */
 #define SLOPFAB_UPSCALE_REALESRGAN 1
+#define SLOPFAB_UPSCALE_SEEDVR2 2
 
 /* Optional postprocessing on the selected inference backend. Method is one of
  * SLOPFAB_UPSCALE_*. REALESRGAN requires RealESRGAN_x4plus safetensors weights.
@@ -492,6 +493,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
  * Image editing cannot be combined with upscaling. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_upscaler(slopfab_request* request,
     int32_t method, const char* model_path, int32_t tile_size, int32_t tile_pad, int32_t pre_pad);
+
+/* ABI 1.20: select SeedVR2 for generated output and configure its VAE, target
+ * dimensions, temporal segments and seed. Copies options and both paths.
+ * Width/height are output dimensions, as in the streaming API above.
+ * set_upscaler(SEEDVR2, ...) also works with 4x output and the default VAE path;
+ * its tile_size specifies VAE output pixels, while tile/pre padding is unused. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seedvr2_options(
+    slopfab_request* request, const slopfab_seedvr2_options* options);
 
 /* Optional safetensors containing F32 `prompt_embedding` [L,5120]. Reference
  * runs also require I32/I64 `text_token_tags` [L]. Both backends bypass Qwen

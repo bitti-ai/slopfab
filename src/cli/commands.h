@@ -31,7 +31,6 @@ int cmd_inspect(int, char**);
 int cmd_compare(int, char**);
 int cmd_compare_y4m(int, char**);
 int cmd_decode(int, char**);
-int cmd_upscale(int, char**);
 int cmd_tokenize(int, char**);
 int cmd_encode_text(int, char**, const char*);
 int cmd_encode_refmod(int, char**, const char*);
