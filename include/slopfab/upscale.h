@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "slopfab/device_tensor.h"
 #include "slopfab/pixel_buffer.h"
@@ -52,9 +53,9 @@ public:
   }
 };
 
-// Shared interface for upscaling implementations. Input/output layout is
-// [3,frames,height,width], RGB in [0,1]. The method defines the spatial scale.
-// Progress is called before each tile and on completion; false cancels.
+// Shared interface: [3,frames,height,width] RGB in [0,1]. upscale_dimensions
+// resolves the output geometry. Real-ESRGAN reports tiles; SeedVR2 reports
+// delivered frames and checks cancellation between tiles/transformer blocks.
 class Upscaler {
 public:
   virtual ~Upscaler() = default;
