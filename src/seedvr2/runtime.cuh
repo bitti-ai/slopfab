@@ -9,14 +9,23 @@
 
 namespace slopfab::seedvr2 {
 using BFloat = __nv_bfloat16;
+
 struct Tensor {
   int t = 1, h = 1, w = 1, c = 1;
   cuda::DeviceBuffer<BFloat> data;
   Tensor() = default;
-  Tensor(int t_, int h_, int w_, int c_) : t(t_), h(h_), w(w_), c(c_),
-    data(size_t(t_) * h_ * w_ * c_) {}
-  int rows() const { return t * h * w; }
-  size_t size() const { return data.size(); }
+
+  Tensor(int t_, int h_, int w_, int c_)
+      : t(t_), h(h_), w(w_), c(c_), data(size_t(t_) * h_ * w_ * c_) {
+  }
+
+  int rows() const {
+    return t * h * w;
+  }
+
+  size_t size() const {
+    return data.size();
+  }
 };
 
 class Runtime {

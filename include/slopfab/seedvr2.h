@@ -49,6 +49,7 @@ public:
   std::vector<Frame> restore(const std::vector<Frame>& frames, uint64_t first_frame = 0);
   std::function<void(const std::string&)> progress;
   std::function<bool()> cancelled;
+
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
