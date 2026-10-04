@@ -113,6 +113,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 #endif
   std::string output_accelerator = "cpu";
   std::string upscale_model;
+  auto upscale_method = slopfab::UpscaleMethod::kRealEsrgan;
   slopfab::UpscaleOptions upscale;
 
   for (int i = 0; i < argc; ++i) {
@@ -326,6 +327,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       dry_run = true;
     } else if (arg == "--synthetic-latents") {
       synthetic = true;
+    } else if (arg == "--upscale-method") {
+      upscale_method = slopfab::parse_upscale_method(next("--upscale-method"));
     } else if (arg == "--upscale-model") {
       upscale_model = next("--upscale-model");
       if (upscale_model.empty())
@@ -551,6 +554,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   const uint64_t base_seed = req.seed;
   slopfab::RunOptions options;
   options.upscale_model_path = upscale_model;
+  options.upscale_method = upscale_method;
   options.upscale = upscale;
   options.source =
       synthetic ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
@@ -573,9 +577,11 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   slopfab::GeneratePlan plan = slopfab::resolve_plan(req);
   slopfab::validate_generation_options(req, plan, options);
   const auto print_upscale = [&] {
-    if (!upscale_model.empty())
-      std::printf("upscaler    Real-ESRGAN x4plus -> %dx%d (%s)\n", plan.canvas_width * 4,
-                  plan.canvas_height * 4, upscale_model.c_str());
+    if (!upscale_model.empty()) {
+      const int scale = slopfab::upscale_scale_factor(upscale_method);
+      std::printf("upscaler    %s -> %dx%d (%s)\n", slopfab::upscale_method_name(upscale_method),
+                  plan.canvas_width * scale, plan.canvas_height * scale, upscale_model.c_str());
+    }
   };
 
   // After `resolve_plan`, so a canvas that is going to be rejected outright is

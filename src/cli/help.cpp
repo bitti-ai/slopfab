@@ -124,6 +124,7 @@ const CommandHelp kCommands[] = {
      "                               neural backend (CUDA by default when built); Vulkan\n"
      "                               supports native text and reference conditioning\n"
      "  --upscale-model <file>       optional RealESRGAN_x4plus.safetensors; 4x output\n"
+     "  --upscale-method <name>      upscale method, currently realesrgan (default)\n"
      "  --upscale-tile <n>           input tile size, 128 (0 = whole frame)\n"
      "  --upscale-tile-pad <n>       tile overlap, 10 input pixels\n"
      "  --upscale-pre-pad <n>        right/bottom reflection padding, 10\n"
@@ -262,6 +263,7 @@ const CommandHelp kCommands[] = {
      "upscale an RGB image 4x with Real-ESRGAN (requires CUDA or Vulkan)",
      "  --upscale-model <file>       RealESRGAN_x4plus.safetensors; defaults to\n"
      "                               weights/upscaler/RealESRGAN_x4plus.safetensors\n"
+     "  --upscale-method <name>      upscale method, currently realesrgan (default)\n"
      "  --inference-backend <name>   cuda or vulkan\n"
      "  --upscale-tile <n>           input tile size, 128 (0 = whole image)\n"
      "  --upscale-tile-pad <n>       tile overlap in input pixels, 10\n"

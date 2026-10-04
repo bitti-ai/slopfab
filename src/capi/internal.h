@@ -336,7 +336,7 @@ inline bool progress_hook(RunStage stage, int step, int steps, void* userdata) {
     gen->stage_name = "finishing";
     break;
   case RunStage::kUpscaling:
-    gen->stage_name = "Real-ESRGAN upscaling";
+    gen->stage_name = "upscaling";
     break;
   }
   if (gen->callback != nullptr) {

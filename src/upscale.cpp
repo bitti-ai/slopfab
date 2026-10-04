@@ -9,6 +9,15 @@
 namespace slopfab {
 using namespace upscale_detail;
 
+std::unique_ptr<Upscaler> make_upscaler(UpscaleMethod method, const std::string& checkpoint,
+                                        DeviceBackend backend) {
+  switch (method) {
+  case UpscaleMethod::kRealEsrgan:
+    return std::make_unique<RealEsrgan>(checkpoint, backend);
+  }
+  throw std::invalid_argument("unknown upscale method");
+}
+
 struct RealEsrgan::Impl {
   struct Conv {
     Buffer weight, bias;
@@ -59,7 +68,7 @@ struct RealEsrgan::Impl {
 
   std::vector<float> tile(const std::vector<float>& pixels, int h, int w) {
     // All GPU kernels use 32-bit indices, including their largest im2col workspace.
-    if (uint64_t(h) * w * 16 * 64 * 9 > std::numeric_limits<int>::max())
+    if (uint64_t(h) * w > std::numeric_limits<int>::max() / (16 * 64 * 9))
       throw std::length_error("Real-ESRGAN: tile is too large; reduce --upscale-tile");
     size_t layer = 0;
     auto conv = [&](const Buffer& x, bool leaky) {
@@ -117,6 +126,10 @@ PixelBuffer RealEsrgan::upscale(const PixelBuffer& input, int frames, int height
       throw std::invalid_argument("Real-ESRGAN: non-finite input pixel");
   const int ph = height + o.pre_pad, pw = width + o.pre_pad;
   const int tile = o.tile_size ? o.tile_size : std::max(ph, pw);
+  const uint64_t max_height = std::min(ph, tile + 2 * o.tile_pad);
+  const uint64_t max_width = std::min(pw, tile + 2 * o.tile_pad);
+  if (max_height * max_width > std::numeric_limits<int>::max() / (16 * 64 * 9))
+    throw std::length_error("Real-ESRGAN: tile is too large; reduce --upscale-tile");
   const int64_t tiles = int64_t((ph - 1) / tile + 1) * ((pw - 1) / tile + 1) * frames;
   if (tiles > std::numeric_limits<int>::max())
     throw std::length_error("Real-ESRGAN: too many tiles");

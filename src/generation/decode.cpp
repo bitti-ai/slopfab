@@ -231,17 +231,19 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     if (!notify(RunStage::kUpscaling, 0, 0))
       return stop("upscaling");
     const auto t0 = Clock::now();
-    RealEsrgan upscaler(options.upscale_model_path, options.inference_backend);
+    auto upscaler = make_upscaler(options.upscale_method, options.upscale_model_path,
+                                  options.inference_backend);
     try {
-      video.data = upscaler.upscale(video.data, video.frames, video.height, video.width,
+      video.data = upscaler->upscale(video.data, video.frames, video.height, video.width,
                                    options.upscale, [&](int done, int total) {
                                      return notify(RunStage::kUpscaling, done, total);
                                    });
     } catch (const UpscaleCancelled&) {
       return stop("upscaling");
     }
-    video.height *= 4;
-    video.width *= 4;
+    const int scale = upscale_scale_factor(options.upscale_method);
+    video.height *= scale;
+    video.width *= scale;
     if (options.verbose)
       std::printf("upscaled    %d frames to %dx%d in %.2f s\n", video.frames,
                   video.width, video.height, seconds_since(t0));

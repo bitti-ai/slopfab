@@ -95,6 +95,7 @@ struct RunOptions {
   bool verbose = true;
   // Optional RealESRGAN_x4plus postprocessing, after VAE release and before delivery.
   std::string upscale_model_path;
+  UpscaleMethod upscale_method = UpscaleMethod::kRealEsrgan;
   UpscaleOptions upscale;
 
   // Counted CLI runs share prompt conditioning. Transformer residency cannot
@@ -174,7 +175,8 @@ struct RunOptions {
   // byte-for-byte the run it was.
   //
   // Called at each stage boundary and after each denoising step, with `step`
-  // -1 outside the loop. Returning false cancels: the run stops at that point
+  // -1 outside the loop, except upscaling reports completed/total tiles.
+  // Returning false cancels: the run stops at that point
   // and returns `ok == false`, `cancelled == true`. Cancellation is only as
   // fine-grained as the checkpoints — a cancel during a multi-gigabyte
   // checkpoint read is not seen until that read finishes.

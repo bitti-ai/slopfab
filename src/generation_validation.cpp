@@ -12,8 +12,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   };
   validate_sampling_sampler(p, o.sampler);
   validate_upscale_options(o.upscale);
+  upscale_scale_factor(o.upscale_method); // reject unknown identifiers even when disabled
   if (!o.upscale_model_path.empty())
-    upscale_output_elements(p.aligned_frames, p.canvas_height, p.canvas_width);
+    upscale_output_elements(p.aligned_frames, p.canvas_height, p.canvas_width, o.upscale_method);
   require(o.upscale_model_path.empty() || !r.image_edit.image,
           "upscaling cannot preserve the exact pixels outside an image edit box");
   const auto sampler_kind = resolve_sampling_sampler(p, o.sampler);

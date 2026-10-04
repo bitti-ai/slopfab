@@ -4,6 +4,7 @@
 #include "slopfab/safetensors_write.h"
 
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -18,6 +19,7 @@ int cmd_upscale(int argc, char** argv) {
   auto backend = DeviceBackend::kVulkan;
 #endif
   UpscaleOptions options;
+  auto method = UpscaleMethod::kRealEsrgan;
   for (int i = 0; i < argc; ++i) {
     const std::string arg = argv[i];
     if (i + 1 >= argc)
@@ -31,6 +33,8 @@ int cmd_upscale(int argc, char** argv) {
       dump = value;
     else if (arg == "--upscale-model")
       model = value;
+    else if (arg == "--upscale-method")
+      method = parse_upscale_method(value);
     else if (arg == "--inference-backend") {
       if (value == "cuda")
         backend = DeviceBackend::kCuda;
@@ -64,13 +68,15 @@ int cmd_upscale(int argc, char** argv) {
   for (size_t i = 0; i < plane; ++i)
     for (size_t c = 0; c < 3; ++c)
       pixels[c * plane + i] = image.pixels[i * 3 + c] / 255.0f;
-  RealEsrgan upscaler(model, backend);
-  auto up = upscaler.upscale(pixels, 1, image.height, image.width, options);
-  const int h = image.height * 4, w = image.width * 4;
+  auto upscaler = make_upscaler(method, model, backend);
+  auto up = upscaler->upscale(pixels, 1, image.height, image.width, options);
+  const int scale = upscale_scale_factor(method);
+  const int h = image.height * scale, w = image.width * scale;
+  const size_t out_plane = size_t(h) * w;
   std::vector<uint8_t> rgb(up.size());
-  for (size_t i = 0; i < plane * 16; ++i)
+  for (size_t i = 0; i < out_plane; ++i)
     for (size_t c = 0; c < 3; ++c)
-      rgb[i * 3 + c] = uint8_t(std::lround(up[c * plane * 16 + i] * 255));
+      rgb[i * 3 + c] = uint8_t(std::lround(up[c * out_plane + i] * 255));
   std::ofstream file(std::filesystem::u8path(output), std::ios::binary);
   file << "P6\n" << w << ' ' << h << "\n255\n";
   file.write(reinterpret_cast<const char*>(rgb.data()), std::streamsize(rgb.size()));

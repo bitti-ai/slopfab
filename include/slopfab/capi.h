@@ -312,7 +312,8 @@ typedef struct slopfab_plan {
  * Delivered on the worker thread, not the caller's: a callback that touches
  * host UI state must marshal to its own thread. `step` is -1 outside the
  * denoising loop and on entry before its first step completes; `total_steps`
- * is already set on denoising entry and is 0 where it means nothing. */
+ * is already set on denoising entry and is 0 where it means nothing. During
+ * UPSCALING these fields instead report completed/total tiles (0/0 on entry). */
 typedef struct slopfab_progress {
   int32_t stage; /* one of SLOPFAB_STAGE_* */
   int32_t step;
@@ -448,14 +449,19 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seed(slopfab_request* request
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* request,
                                                               int32_t which, const char* path);
 
-/* Optional RealESRGAN_x4plus postprocessing on the selected inference backend.
+/* Upscaling method identifiers. Further implementations can be added without
+ * changing the request API. Unknown identifiers are rejected. */
+#define SLOPFAB_UPSCALE_REALESRGAN 1
+
+/* Optional postprocessing on the selected inference backend. Method is one of
+ * SLOPFAB_UPSCALE_*. REALESRGAN requires RealESRGAN_x4plus safetensors weights.
  * Empty path disables it. Tile dimensions are input pixels; tile_size=0 means
  * full-frame inference. Defaults: 128/10/10. Output width/height are multiplied
  * by four; the generation plan still describes the original diffusion canvas.
  * Progress uses UPSCALING with step/steps counting completed/total tiles.
  * Image editing cannot be combined with upscaling. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_upscaler(slopfab_request* request,
-    const char* model_path, int32_t tile_size, int32_t tile_pad, int32_t pre_pad);
+    int32_t method, const char* model_path, int32_t tile_size, int32_t tile_pad, int32_t pre_pad);
 
 /* Optional safetensors containing F32 `prompt_embedding` [L,5120]. Reference
  * runs also require I32/I64 `text_token_tags` [L]. Both backends bypass Qwen

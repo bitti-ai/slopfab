@@ -77,7 +77,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     if (!options.upscale_model_path.empty()) {
       SafeTensors upscale_checkpoint;
       upscale_checkpoint.open(options.upscale_model_path);
-      validate_realesrgan_checkpoint(upscale_checkpoint);
+      validate_upscale_checkpoint(upscale_checkpoint, options.upscale_method);
     }
   } catch (const std::exception& e) {
     result.message = e.what();
