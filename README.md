@@ -17,6 +17,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 - **A C API** for asynchronous video and still-image generation, progress callbacks, cancellation and model reuse.
 - **Bounding-box image editing** on CUDA and Vulkan, with edit strength, inward feathering and exact preservation outside the box. See [inpainting](docs/inpainting.md).
 - **MP4 output through FFmpeg**, raw Y4M/WAV output, checkpoint inspection and tensor comparison tools.
+- **Real-ESRGAN 4x upscaling** on CUDA and Vulkan, for standalone images and generated frames. See [upscaling](docs/upscaling.md).
 
 ## Misc
 
