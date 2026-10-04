@@ -73,6 +73,9 @@ SLOPFAB_TEST(outpaint_preserves_original_context_and_generates_the_whole_surroun
   // Exercise aligned, unaligned and corner-anchored originals.
   for (const int offset : {0, 17, 32}) {
     slopfab::ImageEdit edit{image, offset, offset, 48, 48, 1, 0, true};
+    const auto source = slopfab::outpaint_source_image(edit);
+    CHECK(source.width == 48 && source.height == 48);
+    CHECK(source.pixels == std::vector<uint8_t>(48 * 48 * 3, 123));
     const auto packed = slopfab::edit_mask_rows(edit, 96, 96);
     slopfab::dit::SequenceLayout layout;
     layout.num_latent_frames = 1;
@@ -108,6 +111,20 @@ SLOPFAB_TEST(outpaint_preserves_original_context_and_generates_the_whole_surroun
           CHECK(output[(c * 96 + y) * 96 + x] == (preserved ? 123 / 255.0f : .9f));
         }
   }
+}
+
+SLOPFAB_TEST(outpaint_semantic_source_excludes_padding_and_keeps_crop_coordinates) {
+  auto edit = edit_fixture();
+  edit.width = 20;
+  edit.height = 17;
+  edit.invert_mask = true;
+  const auto source = slopfab::outpaint_source_image(edit);
+  CHECK(source.width == 20 && source.height == 17);
+  for (int y = 0; y < source.height; ++y)
+    for (int x = 0; x < source.width; ++x)
+      for (int c = 0; c < 3; ++c)
+        CHECK(source.pixels[(y * source.width + x) * 3 + c] ==
+              edit.image->pixels[((y + edit.y) * edit.image->width + x + edit.x) * 3 + c]);
 }
 
 SLOPFAB_TEST(outpaint_rejects_missing_context_and_empty_extension) {

@@ -43,6 +43,17 @@ RGBImage pad_edit_image(const ImageEdit& edit, int width, int height) {
   return out;
 }
 
+RGBImage outpaint_source_image(const ImageEdit& edit) {
+  edit.validate();
+  if (!edit.image || !edit.invert_mask)
+    throw std::invalid_argument("source scene requires an outpainting edit");
+  RGBImage source{edit.width, edit.height, std::vector<uint8_t>(size_t(edit.width) * edit.height * 3)};
+  for (int y = 0; y < edit.height; ++y)
+    std::copy_n(edit.image->pixels.data() + (size_t(y + edit.y) * edit.image->width + edit.x) * 3,
+                size_t(edit.width) * 3, source.pixels.data() + size_t(y) * edit.width * 3);
+  return source;
+}
+
 std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height) {
   edit.validate();
   if (!edit.image || width < edit.image->width || height < edit.image->height || width > 8192 ||

@@ -70,7 +70,9 @@ bool prepare_multimodal_prompt(const GenerateRequest& request, const RunOptions&
       for (size_t i = 0; i < reference_images.size(); ++i) {
         reference_conditioning_grids.push_back(
             text::qwen3vl_conditioning_grid(reference_images[i].width, reference_images[i].height));
-        labels.push_back(tokenizer.encode("<Picture " + std::to_string(i + 1) + ">: "));
+        const bool outpaint = request.image_edit.invert_mask;
+        labels.push_back(tokenizer.encode(outpaint && i == 0 ? "Source scene: "
+            : "<Picture " + std::to_string(i + (outpaint ? 0 : 1)) + ">: "));
         if (labels.back().size() > std::numeric_limits<size_t>::max() - nonvision_tokens)
           throw std::overflow_error("reference conditioning token overflow");
         nonvision_tokens += labels.back().size();
@@ -153,6 +155,10 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
   auto& fixed_prompt = inputs.fixed_prompt;
   const auto& reference_identities = inputs.reference_identities;
   const auto& reference_images = inputs.reference_images;
+  const bool has_prompt_references = !reference_images.empty() || request.has_native_references();
+  // The source scene is an in-memory crop, not part of the file-reference key.
+  // Never reuse conditioning from another outpainting source with the same text.
+  const bool cache_prompt = options.reuse_models && !request.image_edit.invert_mask;
   auto& reference_conditioning_grids = inputs.reference_conditioning_grids;
   auto& reference_conditioning_ids = inputs.reference_conditioning_ids;
   auto& media_qwen_pairs = inputs.media_qwen_pairs;
@@ -165,7 +171,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
           : (options.attention_mode == AttentionMode::kExact ? ConditionerAuthority::kCudaExact
                                                              : ConditionerAuthority::kCudaShipped);
   const std::string prompt_key =
-      options.reuse_models ? conditioning_cache_key_for_authority(request, reference_identities,
+      cache_prompt ? conditioning_cache_key_for_authority(request, reference_identities,
                                                                   conditioner_authority) +
                                   (options.inference_backend == DeviceBackend::kVulkan &&
                                    options.vulkan_portable_arithmetic ? ":portable" : ":qualified")
@@ -182,7 +188,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
     if (options.verbose)
       std::printf("prompt      captured [%d, %d] from %s (no conditioner)\n", prompt.num_tokens,
                   prompt.hidden_size, options.prompt_embedding_path.c_str());
-  } else if (options.reuse_models && reuse.conditioning_key == prompt_key &&
+  } else if (cache_prompt && reuse.conditioning_key == prompt_key &&
              !reuse.prompt.data.empty()) {
     prompt = reuse.prompt;
     if (options.verbose) {
@@ -207,7 +213,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
     // every rotary position downstream (spec 1.2).
     std::vector<int32_t> ids;
     std::vector<text::QwenPixelValues> qwen_images;
-    if (request.has_native_references()) {
+    if (has_prompt_references) {
       if (reference_conditioning_grids.size() != reference_images.size() ||
           reference_conditioning_ids.empty())
         throw std::logic_error("reference conditioning preflight is absent");
@@ -221,7 +227,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
     }
     for (auto& pair : media_qwen_pairs)
       qwen_images.push_back(std::move(pair));
-    if (!request.has_native_references()) {
+    if (!has_prompt_references) {
       const auto prompt_ids = tokenizer.encode(request.prompt);
       ids.insert(ids.end(), prompt_ids.begin(), prompt_ids.end());
     }
@@ -280,7 +286,7 @@ bool encode_h3_prompt(const GenerateRequest& request, const RunOptions& options,
 #endif
     }
     result.conditioner_executed = true;
-    if (options.reuse_models) {
+    if (cache_prompt) {
       reuse.conditioning_key = prompt_key;
       reuse.prompt = prompt;
     }

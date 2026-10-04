@@ -20,6 +20,7 @@ struct ImageEdit {
 };
 
 RGBImage pad_edit_image(const ImageEdit& edit, int width, int height);
+RGBImage outpaint_source_image(const ImageEdit& edit);
 std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height);
 PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& generated, int width,
                                  int height);

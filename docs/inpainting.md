@@ -82,6 +82,12 @@ in one pass, with the original latent context restored at each step on CUDA
 and Vulkan. Do not split the border into separate edits or submit an enlarged
 copy of the original as a reference.
 
+The preserved crop is supplied to Qwen as `Source scene` for visual semantic
+context, without adding a resized DiT reference anchor. Explicit user images
+keep their existing `<Picture N>` numbering. Outpainting bypasses the prompt
+cache so changing the source with the same instruction cannot reuse stale
+visual conditioning.
+
 Only latent cells fully inside the original rectangle are locked, allowing
 unaligned boundary cells to generate the seam. Pixel compositing preserves
 every original pixel inside the exact rectangle. The preserved box must contain

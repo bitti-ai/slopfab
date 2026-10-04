@@ -302,9 +302,17 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
     }
   }
   std::vector<text::QwenPixelValues> media_qwen_pairs;
+  // Outpainting needs semantic understanding of the source scene, but an
+  // ordinary DiT reference would independently resize/reframe it. Give only
+  // Qwen the original crop; spatial conditioning remains the fixed mask.
+  std::vector<RGBImage> outpaint_prompt_images;
+  if (request.image_edit.invert_mask) {
+    outpaint_prompt_images.push_back(outpaint_source_image(request.image_edit));
+    outpaint_prompt_images.insert(outpaint_prompt_images.end(), reference_images.begin(), reference_images.end());
+  }
   PromptInputs prompt_inputs{fixed_prompt,
                              reference_identities,
-                             reference_images,
+                             request.image_edit.invert_mask ? outpaint_prompt_images : reference_images,
                              reference_conditioning_grids,
                              reference_conditioning_ids,
                              media_qwen_pairs,

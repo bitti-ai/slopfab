@@ -71,12 +71,13 @@ def progress(value, _):
 request = bind("slopfab_request_create", [], handle)()
 generation = handle()
 try:
+    check(bind("slopfab_request_set_verbose", [handle, C.c_int])(request, 1))
     set_model = bind("slopfab_request_set_model_path", [handle, C.c_int, C.c_char_p])
     for model, path in [(0, args.transformer), (1, args.text_encoder), (3, args.vae)]:
         check(set_model(request, model, str(path.resolve()).encode()))
-    prompt = ("integrated_multimodal_description: [Shot 1] Continue the existing image seamlessly beyond its borders, "
-              "as if the view were zoomed out. Extend the same scene, perspective, lighting and objects across the edges. "
-              "Keep the original content at its placed size and position within one continuous image."
+    prompt = ("integrated_multimodal_description: [Shot 1] A wider view of the source scene. "
+              "Continue the same surroundings beyond the visible edges, matching perspective, scale, lighting and textures. "
+              "One continuous scene, with the original content in its existing position."
               "\n\noverall_soundscape: N/A\n\nnon_diegetic_music: N/A")
     check(bind("slopfab_request_set_prompt", [handle, C.c_char_p])(request, prompt.encode()))
     check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, args.steps))
