@@ -16,6 +16,9 @@ void validate(const Options& o) {
     throw std::invalid_argument("SeedVR2: VAE tile must be 0 or a multiple of 16 in [128,2048]");
   if (o.device < 0)
     throw std::invalid_argument("SeedVR2: device must be nonnegative");
+  if (uint64_t((o.width + 15) / 16 * 16) * ((o.height + 15) / 16 * 16) * o.segment_frames >
+      uint64_t(std::numeric_limits<int>::max()))
+    throw std::invalid_argument("SeedVR2: segment pixel count exceeds kernel indexing limits");
 }
 
 std::vector<Window> attention_windows(int t, int h, int w, bool shifted) {
@@ -75,10 +78,9 @@ uint64_t stream(const Options& o, const ReadFrame& read, const WriteFrame& write
     }
     const size_t real = input.size();
     const size_t padded = real == 1 ? 1 : ((real - 1 + 3) / 4) * 4 + 1;
-    auto batch = input;
-    while (batch.size() < padded)
-      batch.push_back(batch.back());
-    auto output = restore(batch, first);
+    while (input.size() < padded)
+      input.push_back(input.back());
+    auto output = restore(input, first);
     if (output.size() != padded)
       throw std::runtime_error("SeedVR2: incorrect output frame count");
     for (const auto& frame : output)
@@ -101,7 +103,7 @@ uint64_t stream(const Options& o, const ReadFrame& read, const WriteFrame& write
         break;
     } else {
       pending = std::move(output[real - 1]);
-      Frame last = std::move(input.back());
+      Frame last = std::move(input[real - 1]);
       input.clear();
       input.push_back(std::move(last));
       first += real - 1;

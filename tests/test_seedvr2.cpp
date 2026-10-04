@@ -108,4 +108,14 @@ SLOPFAB_TEST(seedvr2_validation) {
     failed = true;
   }
   CHECK(failed);
+  o.vae_tile = 256;
+  o.width = o.height = 8192;
+  o.segment_frames = 129;
+  failed = false;
+  try {
+    validate(o);
+  } catch (const std::invalid_argument&) {
+    failed = true;
+  }
+  CHECK(failed);
 }

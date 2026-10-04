@@ -101,8 +101,8 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
   throw std::runtime_error("SeedVR2 requires a CUDA-enabled build");
 #else
   PipeProcess probe({media_tool("ffprobe", executable), "-v", "error", "-select_streams", "v:0",
-                     "-show_entries", "stream=avg_frame_rate,r_frame_rate,start_time", "-of", "json",
-                     in.u8string()},
+                     "-show_entries", "stream=avg_frame_rate,r_frame_rate,start_time", "-of",
+                     "json", in.u8string()},
                     false);
   std::string metadata;
   char buf[4096];
@@ -126,9 +126,11 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
   std::string fps = rate->as_string();
   double video_start = 0;
   if (const auto* start = s.find("start_time")) {
-    if (start->as_string() != "N/A") video_start = std::stod(start->as_string());
+    if (start->as_string() != "N/A")
+      video_start = std::stod(start->as_string());
   }
-  if (!std::isfinite(video_start)) throw std::runtime_error("invalid input video start time");
+  if (!std::isfinite(video_start))
+    throw std::runtime_error("invalid input video start time");
   auto slash = fps.find('/');
   int numerator = integer(fps.substr(0, slash)),
       denominator = slash == std::string::npos ? 1 : integer(fps.substr(slash + 1));

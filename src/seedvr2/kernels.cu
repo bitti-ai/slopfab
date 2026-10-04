@@ -2,6 +2,7 @@
 #include "slopfab/tensor_convert.h"
 #include <cuda_fp16.h>
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <stdexcept>
 
@@ -45,7 +46,8 @@ __global__ void bias_kernel(BFloat* x, const BFloat* b, size_t n, int c) {
 
 __global__ void linear_epilogue(const float* x, const BFloat* b, BFloat* y, size_t n, int c) {
   size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i < n) y[i] = bf(x[i] + val(b[i % c]));
+  if (i < n)
+    y[i] = bf(x[i] + val(b[i % c]));
 }
 
 __global__ void act_kernel(BFloat* x, const BFloat* gate, size_t n) {
@@ -294,17 +296,17 @@ Tensor Runtime::linear(const Tensor& x, const std::string& name) {
   const bool has_bias = file->find(name + ".bias") != nullptr;
   cuda::DeviceBuffer<float> accumulator(has_bias ? y.size() : 0);
   float alpha = 1, beta = 0;
-  SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(blas, CUBLAS_OP_T, CUBLAS_OP_N, out, x.rows(), x.c,
-                                            &alpha, w.data.get(), CUDA_R_16BF, x.c, x.data.get(),
-                                            CUDA_R_16BF, x.c, &beta,
-                                            has_bias ? static_cast<void*>(accumulator.get()) : static_cast<void*>(y.data.get()),
-                                            has_bias ? CUDA_R_32F : CUDA_R_16BF, out,
-                                            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+  SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
+      blas, CUBLAS_OP_T, CUBLAS_OP_N, out, x.rows(), x.c, &alpha, w.data.get(), CUDA_R_16BF, x.c,
+      x.data.get(), CUDA_R_16BF, x.c, &beta,
+      has_bias ? static_cast<void*>(accumulator.get()) : static_cast<void*>(y.data.get()),
+      has_bias ? CUDA_R_32F : CUDA_R_16BF, out, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
   if (file->find(name + ".bias")) {
     if (file->at(name + ".bias").shape != std::vector<int64_t>{out})
       throw std::runtime_error("SeedVR2: linear bias shape mismatch: " + name);
     const auto& b = weight(name + ".bias");
-    linear_epilogue<<<blocks(y.size()), 256>>>(accumulator.get(), b.data.get(), y.data.get(), y.size(), out);
+    linear_epilogue<<<blocks(y.size()), 256>>>(accumulator.get(), b.data.get(), y.data.get(),
+                                               y.size(), out);
     checked();
   }
   return y;
