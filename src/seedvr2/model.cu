@@ -65,7 +65,8 @@ struct Restorer::Impl {
     expect(dit, "vid_out_ada.out_scale", {2560});
     for (int b = 0; b < 32; ++b) {
       const auto p = "blocks." + std::to_string(b) + ".";
-      for (const auto& branch : (b < 10 ? std::vector<std::string>{"vid", "txt"} : std::vector<std::string>{"all"})) {
+      for (const auto& branch :
+           (b < 10 ? std::vector<std::string>{"vid", "txt"} : std::vector<std::string>{"all"})) {
         expect(dit, p + "attn.proj_qkv." + branch + ".weight", {7680, 2560});
         expect(dit, p + "attn.proj_out." + branch + ".weight", {2560, 2560});
         expect(dit, p + "attn.proj_out." + branch + ".bias", {2560});
@@ -94,13 +95,16 @@ struct Restorer::Impl {
     rt = std::make_unique<Runtime>();
   }
 
-  void capture(const std::string& name, const std::vector<float>& data, std::vector<int64_t> shape) {
+  void capture(const std::string& name, const std::vector<float>& data,
+               std::vector<int64_t> shape) {
     if (!capture_dir.empty())
       write_safetensors((std::filesystem::u8path(capture_dir) / (name + ".safetensors")).u8string(),
                         {{name, std::move(shape), data}});
   }
+
   void capture(const std::string& name, const Tensor& tensor) {
-    if (!capture_dir.empty()) capture(name, rt->download(tensor), {tensor.t, tensor.h, tensor.w, tensor.c});
+    if (!capture_dir.empty())
+      capture(name, rt->download(tensor), {tensor.t, tensor.h, tensor.w, tensor.c});
   }
 
   void progress(const std::string& message) {
@@ -196,12 +200,12 @@ struct Restorer::Impl {
                 pixels[((size_t(z) * th + yy) * tw + xx) * 3 + c] =
                     2 * frames[z][(size_t(sy) * o.width + sx) * 3 + c] - 1;
               }
-      auto encoded = encode(rt->upload(pixels, t, th, tw, 3));
-      auto values = rt->download(encoded);
-      if (tile == 1) {
-        capture("vae_input", pixels, {t, th, tw, 3});
-        capture("vae_moments", values, {encoded.t, encoded.h, encoded.w, encoded.c});
-      }
+        auto encoded = encode(rt->upload(pixels, t, th, tw, 3));
+        auto values = rt->download(encoded);
+        if (tile == 1) {
+          capture("vae_input", pixels, {t, th, tw, 3});
+          capture("vae_moments", values, {encoded.t, encoded.h, encoded.w, encoded.c});
+        }
         for (int yy = y.first / 8; yy < y.second / 8; ++yy)
           for (int xx = x.first / 8; xx < x.second / 8; ++xx) {
             float weight = feather(yy, y.first / 8, y.second / 8, lh, 8) *
@@ -241,12 +245,12 @@ struct Restorer::Impl {
                 values[((size_t(z) * th + yy) * tw + xx) * 16 + c] =
                     latent[((size_t(z) * lh + yy + y.first / 8) * lw + xx + x.first / 8) * 16 + c] /
                     0.9152f;
-      auto decoded = decode(rt->upload(values, lt, th, tw, 16));
-      auto pixels = rt->download(decoded);
-      if (tile == 1) {
-        capture("vae_latent", values, {lt, th, tw, 16});
-        capture("vae_decoded", pixels, {decoded.t, decoded.h, decoded.w, decoded.c});
-      }
+        auto decoded = decode(rt->upload(values, lt, th, tw, 16));
+        auto pixels = rt->download(decoded);
+        if (tile == 1) {
+          capture("vae_latent", values, {lt, th, tw, 16});
+          capture("vae_decoded", pixels, {decoded.t, decoded.h, decoded.w, decoded.c});
+        }
         for (int yy = y.first; yy < std::min(y.second, o.height); ++yy)
           for (int xx = x.first; xx < std::min(x.second, o.width); ++xx) {
             float weight =
@@ -322,7 +326,8 @@ struct Restorer::Impl {
       rt->modulate(vn, emb, p + "ada." + vb + ".attn", 0, false);
       // The final block's Ada MMModule is video-only for attention as well as
       // the MLP. Its text K/V use unmodulated RMS-normalized text.
-      if (b != 31) rt->modulate(tn, emb, p + "ada." + tb + ".attn", 0, false);
+      if (b != 31)
+        rt->modulate(tn, emb, p + "ada." + tb + ".attn", 0, false);
       auto vqkv = rt->linear(vn, p + "attn.proj_qkv." + vb),
            tqkv = rt->linear(tn, p + "attn.proj_qkv." + tb);
       rt->window_attention(vqkv, tqkv, vn, tn, p + "attn.", vb, tb, b % 2 ? shifted : regular);
@@ -331,7 +336,8 @@ struct Restorer::Impl {
       vn = rt->linear(vn, p + "attn.proj_out." + vb);
       tn = rt->linear(tn, p + "attn.proj_out." + tb);
       rt->modulate(vn, emb, p + "ada." + vb + ".attn", 0, true);
-      if (b != 31) rt->modulate(tn, emb, p + "ada." + tb + ".attn", 0, true);
+      if (b != 31)
+        rt->modulate(tn, emb, p + "ada." + tb + ".attn", 0, true);
       rt->add(video, vn);
       rt->add(text, tn);
       vn = Tensor();
