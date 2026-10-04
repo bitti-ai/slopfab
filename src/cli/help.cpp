@@ -67,6 +67,21 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"upscale", "slopfab upscale <input> --out <output.mp4> [options]", "SeedVR2 video restoration (CUDA)",
+     "Restore video using Comfy-Org SeedVR2 3B safetensors. Input/output are streamed;\n"
+     "memory depends on segment length and resolution, not total video duration.\n\n"
+     "  --transformer FILE     3B FP16 or FP8 checkpoint (weights/seedvr2 by default)\n"
+     "  --vae FILE             ema_vae_fp16.safetensors\n"
+     "  --resolution WxH       Output size (default 1280x720, even dimensions)\n"
+     "  --segment-frames N     Joint frames: 1 or 4n+1 (default 5); lower uses less VRAM\n"
+     "  --vae-tile N           Spatial tile: multiple of 16 >=128 (default 256; 0 untiled)\n"
+     "  --seed N               Restoration seed (default 666)\n"
+     "  --device N             CUDA device (default 0)\n"
+     "  --no-color-match       Disable per-frame RGB mean/std color matching\n"
+     "  --dry-run              Validate settings without loading weights\n\n"
+     "Requires ffmpeg and ffprobe. Adjacent segments share one blended frame.\n"
+     "Audio streams are copied; use .mkv for audio codecs incompatible with MP4.\n"
+     "Variable-rate input is normalized to its average FPS. Ctrl+C cancels.\n"},
     {"prepare-lora", "slopfab prepare-lora --adapter FILE --width N",
      "prepare an adapter's AdaLN grid outside inference",
      "  --adapter FILE             adapter to update atomically\n"

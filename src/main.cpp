@@ -96,6 +96,8 @@ int main(int argc, char** argv) {
   }
 
   try {
+    if (command == "upscale")
+      return cmd_upscale(argc - 2, argv + 2, argv[0]);
     if (command == "generate")
       return cmd_generate(argc - 2, argv + 2, argv[0]);
     if (command == "prepare-lora")

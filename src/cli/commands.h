@@ -37,6 +37,7 @@ int cmd_encode_text(int, char**, const char*);
 int cmd_encode_refmod(int, char**, const char*);
 int cmd_bundle_refmods(int, char**);
 int cmd_generate(int, char**, const char*);
+int cmd_upscale(int, char**, const char*);
 int cmd_devices();
 int cmd_prepare_lora(int, char**);
 }
