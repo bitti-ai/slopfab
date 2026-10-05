@@ -39,6 +39,51 @@ cumulative 24 fps timeline against the 40 Hz latent clock, rather than rounding
 each extension independently. The sampling window stays bounded, but stored
 latents and full output decoding grow with the cumulative clip length.
 
+## Locking the overlap (experimental)
+
+Add `--lock-overlap` to constrain the target overlap during sampling:
+
+```sh
+slopfab generate --continue-from first.safetensors --overlap-frames 22 --lock-overlap --frames 119 --prompt "The cyclist keeps riding" --out extended.mp4
+```
+
+The default remains conditioning only. With locking enabled, the source tail
+is still provided as conditioning, and the corresponding target video and
+stereo audio prefixes are also restored before the first transformer call and
+after each update. At noise level `sigma`, the constraint is
+`(1 - sigma) * source + sigma * initial_noise`. The initial noise is captured
+once per run; it is not redrawn at each step. At terminal zero, the overlap is
+exactly the source. Only overlap values are replaced; the new suffix remains
+free to generate. Joining still discards the sampled overlap and preserves the
+original source latents.
+
+This works on CUDA and Vulkan, with their supported samplers and with independent
+audio step counts. Each modality follows its own noise schedule. Approximate
+step, block and MotionCache reuse are rejected while locking is enabled.
+Vulkan currently transfers target latents to the host to apply the constraint,
+so enabling it adds transfer overhead.
+
+The option is intended to reduce mismatches at the transition, but visual
+quality has not been established by the numerical tests. It cannot guarantee
+constant exposure or remove differences caused by VAE temporal context or by
+splicing separately decoded clips. Prefer the full joined output when checking
+the boundary. As with ordinary continuation, the overlap comes from the **tail
+of the supplied archive**; branching from its beginning requires a correctly
+cropped source archive.
+
+In C++, set `GenerateRequest::continuation_lock_overlap = true`. C API 1.23
+adds a setter without changing public struct layouts:
+
+```c
+slopfab_request_set_continuation_file(next_req, "first.safetensors", 22);
+slopfab_request_set_continuation_lock_overlap(next_req, 1); /* enable */
+/* slopfab_request_set_continuation_lock_overlap(next_req, 0); disables it */
+```
+
+The setter accepts only 0 or 1 and may be called before attaching the source.
+Planning requires a continuation source when enabled.
+`slopfab_request_clear_continuation` also disables overlap locking.
+
 ## DLL (C API 1.9)
 
 For automatic saving, configure the request before generation:
