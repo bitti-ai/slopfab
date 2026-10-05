@@ -1,6 +1,52 @@
 #include "internal.h"
 #include "slopfab/seedvr2.h"
 
+extern "C" SLOPFAB_C_API int SLOPFAB_CALL slopfab_realesrgan_upscale(
+    const char* model_path, int32_t width, int32_t height, int32_t backend,
+    int32_t tile_size, slopfab_seedvr2_read_fn read_frame,
+    slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,
+    void* user, uint64_t* frames_written) {
+  if (frames_written) *frames_written = 0;
+  if (!model_path || !*model_path || width < 1 || height < 1 || width > 4096 ||
+      height > 4096 || (backend != 0 && backend != 1) || tile_size < 0 ||
+      !read_frame || !write_frame || !frames_written)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "realesrgan_upscale: invalid arguments");
+  return guarded([&] {
+    const auto stop = [&] { return cancelled && cancelled(user); };
+    if (stop()) return fail(SLOPFAB_ERR_CANCELLED, "Real-ESRGAN: cancelled");
+    slopfab::RealEsrgan model(model_path, backend == 0 ? slopfab::DeviceBackend::kCuda
+                                                    : slopfab::DeviceBackend::kVulkan);
+    slopfab::UpscaleOptions options;
+    options.tile_size = tile_size;
+    const size_t pixels = size_t(width) * height;
+    std::vector<float> packed(pixels * 3);
+    slopfab::PixelBuffer planar(pixels * 3);
+    for (;;) {
+      if (stop()) return fail(SLOPFAB_ERR_CANCELLED, "Real-ESRGAN: cancelled");
+      const int read = read_frame(user, packed.data(), packed.size());
+      if (read == 0) return SLOPFAB_OK;
+      if (read != 1) return fail(SLOPFAB_ERR_RUNTIME, "Real-ESRGAN: input callback failed");
+      for (size_t p = 0; p < pixels; ++p)
+        for (size_t c = 0; c < 3; ++c) planar[c * pixels + p] = packed[p * 3 + c];
+      slopfab::PixelBuffer restored;
+      try {
+        restored = model.upscale(planar, 1, height, width, options,
+                                 [&](int, int) { return !stop(); });
+      } catch (const slopfab::UpscaleCancelled&) {
+        return fail(SLOPFAB_ERR_CANCELLED, "Real-ESRGAN: cancelled");
+      }
+      const size_t output_pixels = pixels * 16;
+      std::vector<float> output(output_pixels * 3);
+      for (size_t p = 0; p < output_pixels; ++p)
+        for (size_t c = 0; c < 3; ++c) output[p * 3 + c] = restored[c * output_pixels + p];
+      if (stop()) return fail(SLOPFAB_ERR_CANCELLED, "Real-ESRGAN: cancelled");
+      if (write_frame(user, output.data(), output.size()))
+        return fail(SLOPFAB_ERR_RUNTIME, "Real-ESRGAN: output callback failed");
+      ++*frames_written;
+    }
+  });
+}
+
 extern "C" SLOPFAB_C_API int SLOPFAB_CALL
 slopfab_request_set_seedvr2_options(slopfab_request* request, const slopfab_seedvr2_options* o) {
   if (!request || !o || o->struct_size != sizeof(*o) || !o->transformer_path ||

@@ -1029,3 +1029,18 @@ SLOPFAB_TEST(capi_animate_plan_and_audio_mode) {
   CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
   CHECK(plan.canvas_width == 1344 && plan.canvas_height == 768);
 }
+
+SLOPFAB_TEST(capi_realesrgan_stream_validates_and_cancels_before_loading_weights) {
+  uint64_t written = 99;
+  auto read = +[](void*, float*, uint64_t) { return 0; };
+  auto write = +[](void*, const float*, uint64_t) { return 0; };
+  auto cancel = +[](void*) { return 1; };
+  CHECK(slopfab_realesrgan_upscale(nullptr, 32, 32, 0, 128, read, write, cancel,
+                                  nullptr, &written) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(written == 0);
+  CHECK(slopfab_realesrgan_upscale("absent.safetensors", 32, 32, 0, 128, read, write,
+                                  cancel, nullptr, &written) == SLOPFAB_ERR_CANCELLED);
+  CHECK(written == 0);
+  CHECK(slopfab_realesrgan_upscale("absent.safetensors", 4097, 32, 0, 128, read,
+                                  write, cancel, nullptr, &written) == SLOPFAB_ERR_INVALID_ARGUMENT);
+}

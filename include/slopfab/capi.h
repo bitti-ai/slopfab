@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 21
+#define SLOPFAB_CAPI_VERSION_MINOR 22
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -135,6 +135,17 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
     const slopfab_seedvr2_options* options, slopfab_seedvr2_read_fn read_frame,
     slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,
     slopfab_seedvr2_progress_fn progress, void* user, uint64_t* frames_written);
+
+/* ABI 1.22: stream existing RGB frames through Real-ESRGAN x4plus.
+ * Uses the callback contract above; input is width*height*3 packed floats,
+ * output is (width*4)*(height*4)*3. Keeps one model loaded for the stream.
+ * backend is 0 CUDA or 1 Vulkan; tile_size is in input pixels (0 untiled).
+ * The host owns codecs, timing, audio and any final resampling. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_realesrgan_upscale(
+    const char* model_path, int32_t width, int32_t height, int32_t backend,
+    int32_t tile_size, slopfab_seedvr2_read_fn read_frame,
+    slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,
+    void* user, uint64_t* frames_written);
 
 /* --- status ----------------------------------------------------------------
  *
