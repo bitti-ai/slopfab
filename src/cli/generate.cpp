@@ -352,6 +352,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       if (consumed != value.size())
         throw std::runtime_error("invalid --overlap-frames value");
       saw_overlap = true;
+    } else if (arg == "--lock-overlap") {
+      req.continuation_lock_overlap = true;
     } else if (arg == "--attn-band") {
       attn_band = std::atoi(next("--attn-band"));
     } else if (arg == "--attention") {

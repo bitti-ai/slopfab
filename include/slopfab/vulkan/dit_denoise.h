@@ -9,6 +9,7 @@
 #include "slopfab/dit/motion_cache.h"
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/inpaint.h"
+#include "slopfab/continuation.h"
 #include "slopfab/vulkan/dit_transformer.h"
 
 namespace slopfab::vulkan {
@@ -23,6 +24,8 @@ struct ExactH3DenoiseConfig {
   uint64_t seed = 0; // Fresh re-noising draws; initial rows are supplied to prepare().
   // Opt-in still-image constraint; target rows cross the host boundary per step.
   std::shared_ptr<const InpaintConstraint> inpaint;
+  // Target overlap constraint; opt-in host transfers during sampling.
+  std::shared_ptr<const ContinuationConstraint> continuation;
   ExactH3TransformerConfig transformer;
   dit::SequenceLayout layout;
   dit::PackedIndices indices;
@@ -74,8 +77,7 @@ public:
                const H3TransformerTextReplayTaps* taps = nullptr);
 
   // Euler and re-noising are accepted. Re-noising updates rows on the host.
-  // The two schedules must describe the same
-  // number of evaluations. Progress is called after each completed update;
+  // Unequal schedules interleave modality updates. Progress is called after each completed update;
   // false returns the current, consistently updated device trajectory.
   ExactH3DenoiseResult run(const sampler::FlowScheduler& video, const sampler::FlowScheduler& audio,
                            const ExactH3DenoiseProgress& progress = {},

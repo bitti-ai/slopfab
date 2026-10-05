@@ -75,6 +75,12 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
       (request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
        request.schedule != sampler::ScheduleKind::kDefault))
     throw std::invalid_argument("MotionCache requires the default schedule without other caches");
+  if (request.continuation_lock_overlap && !request.continuation)
+    throw std::invalid_argument("lock-overlap requires a continuation source");
+  if (request.continuation_lock_overlap &&
+      (request.cache_threshold > 0 || request.skip_every > 0 || request.block_cache_span > 0 ||
+       request.motion_cache.active()))
+    throw std::invalid_argument("locked continuation overlap does not support approximate caches");
   if (request.continuation && request.still_image)
     throw std::invalid_argument("continuation is unavailable in still-image mode");
   validate_refmods(request.refmods);
@@ -485,6 +491,9 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
                    std::to_string(plan.sampling_frames) + " frames (" +
                    std::to_string(plan.continuation.overlap_frames) +
                    " hidden overlap); output is full joined clip\n";
+    description +=
+        std::string("  overlap constraint  ") +
+        (request.continuation_lock_overlap ? "locked video and audio" : "conditioning only") + "\n";
   }
   for (const auto& ref : request.refmods) {
     description += "  refmod              " + ref.mod->path() + " (strength " +

@@ -18,6 +18,80 @@ template <class F> bool rejects(F fn) {
 }
 }
 
+SLOPFAB_TEST(continuation_locked_overlap_constraints) {
+  LatentFixture fixture;
+  fixture.write();
+  const auto source = slopfab::LatentClip::load(fixture.path.string());
+  for (int overlap : {5, 22, 39}) {
+    const auto plan = slopfab::plan_continuation(*source, overlap, 34);
+    auto constraint = slopfab::make_continuation_constraint(*source, plan);
+    const size_t nv = size_t(plan.overlap_video_latents) * 2 * 96;
+    CHECK(constraint.video.original ==
+          std::vector<float>(source->video_rows.end() - nv, source->video_rows.end()));
+    const size_t na = size_t(plan.overlap_audio_latents) * 32;
+    const size_t source_channel = size_t(source->layout().num_audio_latents) * 32;
+    for (size_t c = 0; c < 2; ++c)
+      CHECK(std::equal(constraint.audio.original.begin() + c * na,
+                       constraint.audio.original.begin() + (c + 1) * na,
+                       source->audio_rows.begin() + (c + 1) * source_channel - na));
+    for (auto* prefix : {&constraint.video, &constraint.audio}) {
+      const size_t count = prefix->channels * prefix->target_values_per_channel;
+      const size_t kept = prefix->original.size() / prefix->channels;
+      std::vector<float> initial(count);
+      for (size_t i = 0; i < count; ++i)
+        initial[i] = float(i % 31) / 16;
+      CHECK(rejects([&] {
+        prefix->apply(initial.data(), count, .5f);
+      })); // noise must be captured
+      prefix->capture_noise(initial.data(), count);
+      for (float sigma : {1.f, .8f, .3f, 0.f}) {
+        std::vector<float> rows(count, -123.f);
+        prefix->apply(rows.data(), count, sigma);
+        for (size_t c = 0; c < prefix->channels; ++c) {
+          for (size_t i = 0; i < prefix->target_values_per_channel; ++i) {
+            const size_t index = c * prefix->target_values_per_channel + i;
+            const float expected =
+                i < kept ? (1 - sigma) * prefix->original[c * kept + i] + sigma * initial[index]
+                         : -123.f;
+            CHECK(rows[index] == expected);
+          }
+        }
+      }
+      for (float sigma : {-1.f, 2.f, std::numeric_limits<float>::quiet_NaN()})
+        CHECK(rejects([&] {
+          prefix->apply(initial.data(), count, sigma);
+        }));
+      CHECK(rejects([&] {
+        prefix->capture_noise(initial.data(), count - 1);
+      }));
+    }
+  }
+  slopfab::GenerateRequest request;
+  CHECK(!request.continuation_lock_overlap);
+  request.continuation_lock_overlap = true;
+  CHECK(rejects([&] {
+    slopfab::resolve_plan(request);
+  }));
+  request.continuation = source;
+  request.sampling.audio_steps = 7;
+  const auto plan = slopfab::resolve_plan(request);
+  CHECK(slopfab::describe_plan(request, plan).find("locked video and audio") != std::string::npos);
+  request.skip_every = 2;
+  CHECK(rejects([&] {
+    slopfab::resolve_plan(request);
+  }));
+  request.skip_every = 0;
+  request.block_cache_span = 1;
+  CHECK(rejects([&] {
+    slopfab::resolve_plan(request);
+  }));
+  request.block_cache_span = 0;
+  request.motion_cache.enabled = true;
+  CHECK(rejects([&] {
+    slopfab::resolve_plan(request);
+  }));
+}
+
 SLOPFAB_TEST(continuation_archive_roundtrip_and_validation) {
   LatentFixture fixture, saved;
   fixture.write();

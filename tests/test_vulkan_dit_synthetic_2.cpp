@@ -1244,6 +1244,68 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
   denoiser.unload();
   CHECK(denoise_context.pooled_used_bytes() == denoise_staging_used);
 
+  // Locked target overlap with reference rows and unequal modality schedules.
+  // Each channel's suffix stays free, and a reused config captures fresh noise.
+  {
+    auto locked_config = ref_config;
+    auto lock = std::make_shared<ContinuationConstraint>();
+    const size_t vcount = size_t(ref_config.transformer.video_output_rows) * 4;
+    const size_t acount = size_t(ref_config.transformer.audio_output_rows) * 2;
+    const size_t cv = size_t(ref_config.layout.num_condition_video) * 4;
+    const size_t ca = size_t(ref_config.layout.num_condition_audio) * 2;
+    lock->video.target_values_per_channel = vcount;
+    lock->video.original.assign(4, 2.f);
+    lock->audio.channels = 2;
+    lock->audio.target_values_per_channel = acount / 2;
+    lock->audio.original = {3.f, 5.f};
+    locked_config.continuation = lock;
+    auto locked_model = ExactH3Denoiser::create(denoise_context, locked_config);
+    locked_model.load(transformer_checkpoint);
+    std::vector<float> iv(cv + vcount, .25f), ia(ca + acount, -.5f);
+    std::fill(iv.begin(), iv.begin() + cv, .75f);
+    std::fill(ia.begin(), ia.begin() + ca, -.75f);
+    for (auto kind : {sampler::SamplerKind::kEuler, sampler::SamplerKind::kRenoise}) {
+      sampler::FlowScheduler v(12), a(3);
+      v.set_sigmas({.8f, .4f, 0});
+      a.set_sigmas({.9f, .6f, .2f, 0});
+      v.set_sampler(kind);
+      a.set_sampler(kind);
+      const size_t vn[] = {0, 1, 1, 2}, an[] = {1, 1, 2, 3};
+      int boundaries = 0;
+      const auto boundary = [&](uint32_t step, const std::vector<float>& vr,
+                                const std::vector<float>& ar) {
+        ++boundaries;
+        const float vs = v.sigmas()[vn[step]], as = a.sigmas()[an[step]];
+        for (size_t i = 0; i < 4; ++i)
+          CHECK(vr[i] == (1 - vs) * 2.f + vs * .25f);
+        CHECK(ar[0] == (1 - as) * 3.f + as * -.5f);
+        CHECK(ar[acount / 2] == (1 - as) * 5.f + as * -.5f);
+        if (step == 0)
+          CHECK(vr[4] == .25f); // initial projection leaves unmasked video untouched
+      };
+      locked_model.prepare(prompt_values.data(), prompt_values.size(), iv.data(), iv.size(),
+                           ia.data(), ia.size());
+      const auto locked = locked_model.run(v, a, {}, boundary);
+      CHECK(boundaries == 4 && locked.steps_completed == 4 && !locked.cancelled);
+      CHECK(locked.video_rows[4] != .25f);
+      CHECK(lock->video.noise.empty() && lock->audio.noise.empty());
+      locked_model.prepare(prompt_values.data(), prompt_values.size(), iv.data(), iv.size(),
+                           ia.data(), ia.size());
+      const auto repeated = locked_model.run(v, a);
+      CHECK(locked.video_rows == repeated.video_rows && locked.audio_rows == repeated.audio_rows);
+      locked_model.prepare(prompt_values.data(), prompt_values.size(), iv.data(), iv.size(),
+                           ia.data(), ia.size());
+      boundaries = 0;
+      const auto stopped = locked_model.run(
+          v, a,
+          [](uint32_t, uint32_t) {
+            return false;
+          },
+          boundary);
+      CHECK(boundaries == 1 && stopped.cancelled && stopped.steps_completed == 1);
+    }
+  }
+
   // MotionCache leaves the disabled trajectory bit-identical, and its split
   // forward/update submissions must also agree when warmup prevents reuse.
   {

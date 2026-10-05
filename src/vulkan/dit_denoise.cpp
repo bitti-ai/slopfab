@@ -371,6 +371,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   Impl::State& s = *impl_->state;
   const auto& c = impl_->config;
   const uint32_t code_rows = c.transformer.main.block.timesteps;
+  if (c.continuation && (c.inpaint || c.pin_target_audio || c.motion_cache.active()))
+    throw std::invalid_argument(
+        "Vulkan H3 denoise: locked overlap is incompatible with image editing, pinned audio or MotionCache");
   const uint32_t condition_video = static_cast<uint32_t>(c.layout.num_condition_video);
   const uint32_t condition_audio = static_cast<uint32_t>(c.layout.num_condition_audio);
   const uint32_t video_output =
@@ -398,6 +401,30 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     renoise_noise.resize(count);
   }
   std::vector<float> edited_video;
+  ContinuationConstraint overlap;
+  std::vector<float> overlap_video, overlap_audio;
+  const auto constrain = [&](DeviceTensor& state, const LatentPrefixConstraint& constraint,
+                             std::vector<float>& rows, float sigma) {
+    impl_->context->download(state, rows.data(), rows.size());
+    constraint.apply(rows.data(), rows.size(), sigma);
+    impl_->context->upload(state, rows.data(), rows.size());
+  };
+  if (c.continuation) {
+    overlap = *c.continuation;
+    overlap_video.resize(uint64_t(video_output) * c.transformer.video_dim);
+    overlap_audio.resize(uint64_t(audio_output) * c.transformer.audio_dim);
+    DeviceTensor& vs = conditioned ? s.video_result : s.video;
+    DeviceTensor& as = conditioned ? s.audio_result : s.audio;
+    impl_->context->download(vs, overlap_video.data(), overlap_video.size());
+    impl_->context->download(as, overlap_audio.data(), overlap_audio.size());
+    overlap.video.capture_noise(overlap_video.data(), overlap_video.size());
+    overlap.audio.capture_noise(overlap_audio.data(), overlap_audio.size());
+    // Validate both modalities before mutating either prepared state.
+    overlap.video.apply(overlap_video.data(), overlap_video.size(), video.sigmas().front());
+    overlap.audio.apply(overlap_audio.data(), overlap_audio.size(), audio.sigmas().front());
+    impl_->context->upload(vs, overlap_video.data(), overlap_video.size());
+    impl_->context->upload(as, overlap_audio.data(), overlap_audio.size());
+  }
   if (c.inpaint) {
     c.inpaint->validate(uint64_t(video_output) * c.transformer.video_dim);
     edited_video = c.inpaint->initial(video.sigmas().front());
@@ -524,6 +551,13 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
       batch.submit().wait();
     }
     result.steps_completed = step + 1;
+    if (c.continuation) {
+      if (update_step.advance_video)
+        constrain(video_state, overlap.video, overlap_video, video.sigmas()[update_step.video + 1]);
+      if (update_step.advance_audio)
+        constrain(conditioned ? s.audio_result : s.audio, overlap.audio, overlap_audio,
+                  audio.sigmas()[update_step.audio + 1]);
+    }
     if (c.inpaint && update_step.advance_video) {
       impl_->context->download(video_state, edited_video.data(), edited_video.size());
       c.inpaint->apply(edited_video.data(), edited_video.size(),

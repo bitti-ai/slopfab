@@ -441,11 +441,20 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_generation(
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL
+slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t enable) {
+  if (!request || (enable != 0 && enable != 1))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "lock overlap: expected a request and enable 0 or 1");
+  request->request.continuation_lock_overlap = enable != 0;
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_request* request) {
   if (!request)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear continuation: null request");
   return guarded([&] {
     request->request.continuation.reset();
+    request->request.continuation_lock_overlap = false;
     return SLOPFAB_OK;
   });
 }

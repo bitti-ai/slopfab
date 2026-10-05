@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 22
+#define SLOPFAB_CAPI_VERSION_MINOR 23
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -733,6 +733,13 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_file(slopfab_req
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_continuation_generation(
     slopfab_request* request, const slopfab_generation* source, int32_t overlap_frames);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_request* request);
+
+/* Since 1.23. Experimental: constrain target video/audio overlap to the source
+ * at each noise level. enable must be 0 or 1; default is 0. May be set before
+ * attaching a source, but planning requires continuation when enabled. No
+ * approximate caches. clear_continuation also disables this option. */
+SLOPFAB_C_API int SLOPFAB_CALL
+slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t enable);
 
 /* Since 1.14. Encode imported reference videos as temporal latent guides.
  * mode 0 disables, 1 extends the tail of video 1, 2 bridges from the tail of

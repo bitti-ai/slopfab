@@ -1,6 +1,82 @@
 #include "detail/transformer_fixture.h"
 #include "slopfab/sampler/noise.h"
 
+SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
+  using namespace slopfab;
+  using namespace slopfab::sampler;
+  const std::vector<int32_t> tags{dit::kTagText, dit::kTagVideo, dit::kTagText};
+  const std::vector<dit::ReferenceGeometry> refs{{dit::ReferenceKind::kVideo, 1, 4, 4, 1, true}};
+  const auto packed = dit::build_ref2va_packed_sequence(tags, refs, 2, 4, 4, 3);
+  const auto& layout = packed.layout;
+  const auto& indices = packed.indices;
+  std::vector<float> anchors_v(size_t(layout.num_condition_video) * 96, 13);
+  std::vector<float> anchors_a(size_t(layout.num_condition_audio) * 32, 17);
+  std::vector<float> initial_v(size_t(layout.num_video_rows) * 96, .25f);
+  std::vector<float> initial_a(size_t(layout.num_audio_rows) * 32, -.5f);
+  ContinuationConstraint constraint;
+  constraint.video.target_values_per_channel = initial_v.size();
+  constraint.video.original.assign(96, 2.f);
+  constraint.audio.channels = 2;
+  constraint.audio.target_values_per_channel = initial_a.size() / 2;
+  constraint.audio.original.assign(64, 3.f);
+  std::fill(constraint.audio.original.begin() + 32, constraint.audio.original.end(), 5.f);
+  for (auto kind : {SamplerKind::kEuler, SamplerKind::kAb2, SamplerKind::kRenoise}) {
+    for (bool cancel : {false, true}) {
+      FlowScheduler video(12), audio(3);
+      // A non-unit first sigma also exercises projection before the first call.
+      video.set_sigmas({.8f, .4f, 0});
+      audio.set_sigmas({.9f, .6f, .2f, 0});
+      video.set_sampler(kind);
+      audio.set_sampler(kind);
+      Transformer model;
+      auto in = make_denoise_inputs(layout, indices, video, audio);
+      in.continuation = &constraint;
+      in.init_video_rows = &initial_v;
+      in.init_audio_rows = &initial_a;
+      in.condition_video_rows = &anchors_v;
+      in.condition_audio_rows = &anchors_a;
+      const size_t vi[] = {0, 0, 1, 1}, ai[] = {0, 1, 1, 2};
+      const size_t vn[] = {0, 1, 1, 2}, an[] = {1, 1, 2, 3};
+      const auto check = [&](const float* v, const float* a, float vs, float as) {
+        for (size_t i = 0; i < 96; ++i)
+          CHECK(v[i] == (1 - vs) * 2.f + vs * .25f);
+        for (size_t c = 0; c < 2; ++c)
+          for (size_t i = 0; i < 32; ++i)
+            CHECK(a[c * constraint.audio.target_values_per_channel + i] ==
+                  (1 - as) * (c ? 5.f : 3.f) + as * -.5f);
+      };
+      int calls = 0, boundaries = 0;
+      in.velocity = [&](int step, const RowTimesteps&, const float* v, const float* a, float* vv,
+                        float* av) {
+        ++calls;
+        CHECK(std::equal(anchors_v.begin(), anchors_v.end(), v));
+        CHECK(std::equal(anchors_a.begin(), anchors_a.end(), a));
+        check(v + anchors_v.size(), a + anchors_a.size(), video.sigmas()[vi[step]],
+              audio.sigmas()[ai[step]]);
+        std::fill_n(vv, anchors_v.size() + initial_v.size(), 1.f);
+        std::fill_n(av, anchors_a.size() + initial_a.size(), 1.f);
+      };
+      in.boundary = [&](int step, const std::vector<float>& v, const std::vector<float>& a) {
+        ++boundaries;
+        check(v.data(), a.data(), video.sigmas()[vn[step]], audio.sigmas()[an[step]]);
+        if (step == 0)
+          CHECK(v[96] == initial_v[96]); // video did not advance on the audio-only step
+      };
+      const auto output = dit::denoise(model, in, [&](int, int total) {
+        CHECK(total == 4);
+        return !cancel;
+      });
+      CHECK(calls == (cancel ? 1 : 4) && boundaries == calls);
+      CHECK(output.steps_computed == calls && output.steps_skipped == 0);
+      CHECK(constraint.video.noise.empty() && constraint.audio.noise.empty()); // reusable config
+      if (!cancel) {
+        check(output.video_rows.data(), output.audio_rows.data(), 0, 0);
+        CHECK(output.video_rows[96] != initial_v[96]); // suffix remains generated
+      }
+    }
+  }
+}
+
 SLOPFAB_TEST_CATEGORY(denoise_independent_audio_steps, "synthetic") {
   using namespace slopfab::sampler;
   const auto layout = tiny_layout();

@@ -46,6 +46,10 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
           "timestep lists disagree with schedulers");
   const auto schedule = sampler::joint_schedule(video_t.size(), audio_t.size());
   const bool independent = video_t.size() != audio_t.size();
+  require(!inputs.continuation ||
+              (!inputs.inpaint && !inputs.pin_target_audio && !inputs.cache.enabled() &&
+               !inputs.motion_cache.active() && !transformer.block_cache_config().enabled()),
+          "locked continuation overlap is incompatible with image editing, pinned audio or caches");
   require(!independent || (!inputs.pin_target_audio && layout.num_audio_rows > 0),
           "independent audio steps require generated target audio");
   require(!independent || (!inputs.cache.enabled() && !inputs.motion_cache.active() &&
@@ -117,6 +121,16 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         sampler::audio_noise(inputs.seed, layout.num_audio_latents, audio_dim);
     require(noise.size() == out.audio_rows.size(), "audio noise shape disagrees with the layout");
     out.audio_rows = noise;
+  }
+  ContinuationConstraint overlap;
+  if (inputs.continuation) {
+    overlap = *inputs.continuation;
+    overlap.video.capture_noise(out.video_rows.data(), out.video_rows.size());
+    overlap.audio.capture_noise(out.audio_rows.data(), out.audio_rows.size());
+    overlap.video.apply(out.video_rows.data(), out.video_rows.size(),
+                        inputs.video_scheduler->sigmas().front());
+    overlap.audio.apply(out.audio_rows.data(), out.audio_rows.size(),
+                        inputs.audio_scheduler->sigmas().front());
   }
   std::copy(out.video_rows.begin(), out.video_rows.end(), all_video.begin() + cv);
   std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);
@@ -231,6 +245,9 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         if (inputs.inpaint)
           inputs.inpaint->apply(out.video_rows.data(), out.video_rows.size(),
                                 inputs.video_scheduler->sigmas()[update.video + 1]);
+        if (inputs.continuation)
+          overlap.video.apply(out.video_rows.data(), out.video_rows.size(),
+                              inputs.video_scheduler->sigmas()[update.video + 1]);
       }
       if (update.advance_audio && !inputs.pin_target_audio) {
         if (renoise && update.audio + 1 < audio_t.size())
@@ -240,6 +257,9 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         inputs.audio_scheduler->step(static_cast<int>(update.audio), all_audio.data() + ca,
                                      audio_velocity.data() + ca, out.audio_rows.size(),
                                      out.audio_rows.data(), audio_noise.data());
+        if (inputs.continuation)
+          overlap.audio.apply(out.audio_rows.data(), out.audio_rows.size(),
+                              inputs.audio_scheduler->sigmas()[update.audio + 1]);
       }
       std::copy(out.video_rows.begin(), out.video_rows.end(), all_video.begin() + cv);
       std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);

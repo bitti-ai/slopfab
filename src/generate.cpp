@@ -336,6 +336,10 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   std::vector<float> init_video;
   std::vector<float> init_audio;
   std::shared_ptr<InpaintConstraint> inpaint;
+  std::shared_ptr<const ContinuationConstraint> continuation_constraint;
+  if (request.continuation_lock_overlap)
+    continuation_constraint = std::make_shared<ContinuationConstraint>(
+        make_continuation_constraint(*request.continuation, plan.continuation));
   if (!options.init_latents_path.empty()) {
     SafeTensors file;
     file.open(options.init_latents_path);
@@ -766,6 +770,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
 
       dit::DenoiseInputs in;
       in.inpaint = inpaint.get();
+      in.continuation = continuation_constraint.get();
       in.layout = &live;
       in.indices = &idx;
       in.video_timesteps = &plan.video_timesteps;
@@ -933,6 +938,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       vulkan::ExactH3DenoiseConfig config;
       config.seed = request.seed;
       config.inpaint = inpaint;
+      config.continuation = continuation_constraint;
       config.motion_cache = request.motion_cache;
       config.transformer.main.layers = 50;
       config.transformer.main.block.attention_mode = options.attention_mode;

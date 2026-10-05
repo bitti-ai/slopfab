@@ -296,6 +296,35 @@ SLOPFAB_TEST(capi_motion_cache_validation_and_atomic_setter) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_continuation_lock_overlap) {
+  LatentFixture fixture;
+  fixture.write();
+  auto* request = slopfab_request_create();
+  CHECK(slopfab_request_set_continuation_lock_overlap(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_continuation_lock_overlap(request, 1) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_continuation_file(request, fixture.path.string().c_str(), 22) ==
+        SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  for (int value : {-1, 2})
+    CHECK(slopfab_request_set_continuation_lock_overlap(request, value) ==
+          SLOPFAB_ERR_INVALID_ARGUMENT);
+  char* description = nullptr;
+  CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
+  CHECK(description &&
+        std::string(description).find("locked video and audio") != std::string::npos);
+  slopfab_free_string(description);
+  CHECK(slopfab_request_set_continuation_lock_overlap(request, 0) == SLOPFAB_OK);
+  CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
+  CHECK(description && std::string(description).find("conditioning only") != std::string::npos);
+  slopfab_free_string(description);
+  CHECK(slopfab_request_set_continuation_lock_overlap(request, 1) == SLOPFAB_OK);
+  CHECK(slopfab_request_clear_continuation(request) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK); // clear also resets the option
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_continuation_snapshot_and_plan) {
   LatentFixture fixture;
   fixture.write();

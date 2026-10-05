@@ -201,6 +201,7 @@ const CommandHelp kCommands[] = {
      "  --continue-from <f>          extend a saved archive; --frames is NEW frames,\n"
      "                               rounded up to a multiple of 17. Output is joined.\n"
      "  --overlap-frames <n>         hidden context, 17*k+5 frames (default 22).\n"
+     "  --lock-overlap               constrain continuation overlap at every step (experimental).\n"
      "  --animate                   Viggle fixed-conditioning recipe (default 4 steps)\n"
      "  --preserve-driving-audio    pin driving soundtrack as clean target audio\n"
      "  --prompt-embedding <f>       F32 prompt_embedding [L,5120] safetensors;\n"

@@ -195,6 +195,68 @@ ContinuationPlan plan_continuation(const LatentClip& source, int overlap, int ex
   return p;
 }
 
+void LatentPrefixConstraint::capture_noise(const float* rows, size_t count) {
+  require(rows && channels > 0 && count % channels == 0 &&
+              count / channels == target_values_per_channel && !original.empty() &&
+              original.size() % channels == 0 &&
+              original.size() / channels <= target_values_per_channel,
+          "invalid overlap constraint shape");
+  require(std::all_of(original.begin(), original.end(),
+                      [](float x) {
+                        return std::isfinite(x);
+                      }),
+          "overlap constraint needs finite source latents");
+  const size_t prefix = original.size() / channels;
+  noise.resize(original.size());
+  for (size_t c = 0; c < channels; ++c)
+    std::copy_n(rows + c * target_values_per_channel, prefix, noise.begin() + c * prefix);
+  require(std::all_of(noise.begin(), noise.end(),
+                      [](float x) {
+                        return std::isfinite(x);
+                      }),
+          "overlap constraint needs finite initial noise");
+}
+
+void LatentPrefixConstraint::apply(float* rows, size_t count, float sigma) const {
+  require(rows && channels > 0 && count % channels == 0 &&
+              count / channels == target_values_per_channel && !original.empty() &&
+              original.size() % channels == 0 &&
+              original.size() / channels <= target_values_per_channel &&
+              noise.size() == original.size() && std::isfinite(sigma) && sigma >= 0 && sigma <= 1,
+          "invalid overlap constraint update");
+  const size_t prefix = original.size() / channels;
+  for (size_t c = 0; c < channels; ++c) {
+    for (size_t i = 0; i < prefix; ++i) {
+      const size_t from = c * prefix + i;
+      // Explicit endpoints preserve clean source values and initial noise exactly.
+      rows[c * target_values_per_channel + i] =
+          sigma == 0   ? original[from]
+          : sigma == 1 ? noise[from]
+                       : (1 - sigma) * original[from] + sigma * noise[from];
+    }
+  }
+}
+
+ContinuationConstraint make_continuation_constraint(const LatentClip& source,
+                                                    const ContinuationPlan& p) {
+  validate_plan(source, p);
+  const auto layout = source.layout();
+  ContinuationConstraint constraint;
+  const size_t frame_size = size_t(layout.rows_per_frame()) * 96;
+  const size_t prefix = size_t(p.overlap_video_latents) * frame_size;
+  constraint.video.target_values_per_channel =
+      size_t(dit::video_latent_num_frames(p.window_frames)) * frame_size;
+  constraint.video.original.assign(source.video_rows.end() - prefix, source.video_rows.end());
+  constraint.audio.channels = 2;
+  constraint.audio.target_values_per_channel = size_t(p.window_audio_latents) * 32;
+  for (int c = 0; c < 2; ++c) {
+    const auto end = source.audio_rows.begin() + size_t(c + 1) * layout.num_audio_latents * 32;
+    constraint.audio.original.insert(constraint.audio.original.end(),
+                                     end - size_t(p.overlap_audio_latents) * 32, end);
+  }
+  return constraint;
+}
+
 void append_continuation_guide(const LatentClip& source, const ContinuationPlan& p, uint64_t seed,
                                std::vector<dit::ReferenceGeometry>& geometry,
                                std::vector<float>& video, std::vector<float>& audio) {

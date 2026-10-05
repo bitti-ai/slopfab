@@ -17,6 +17,7 @@
 #include "slopfab/dit/transformer.h"
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/inpaint.h"
+#include "slopfab/continuation.h"
 
 namespace slopfab::dit {
 
@@ -30,6 +31,7 @@ using DenoiseBoundaryFn = std::function<void(int step, const std::vector<float>&
 
 struct DenoiseInputs {
   const InpaintConstraint* inpaint = nullptr;
+  const ContinuationConstraint* continuation = nullptr;
   const SequenceLayout* layout = nullptr;
   const PackedIndices* indices = nullptr;
 
