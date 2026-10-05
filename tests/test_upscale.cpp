@@ -64,6 +64,21 @@ struct Fixture {
 }
 
 SLOPFAB_TEST(upscale_validation) {
+  CHECK(parse_upscale_method("seedvr2") == UpscaleMethod::kSeedVr2);
+  UpscaleOptions seed;
+  seed.width = 128; seed.height = 64; seed.segment_frames = 5;
+  CHECK(upscale_output_elements(15, 32, 32, UpscaleMethod::kSeedVr2, seed) == 15 * 128 * 64 * 3);
+  CHECK(rejected([&] { upscale_output_elements(15, 32, 32, UpscaleMethod::kRealEsrgan, seed); }));
+  seed.segment_frames = 6;
+  CHECK(rejected([&] { validate_upscale_options(seed, UpscaleMethod::kSeedVr2); }));
+  CHECK(rejected([&] { make_upscaler(UpscaleMethod::kSeedVr2, "missing", DeviceBackend::kVulkan); }));
+#if SLOPFAB_WITH_CUDA
+  auto restorer = make_upscaler(UpscaleMethod::kSeedVr2, "missing", DeviceBackend::kCuda);
+  bool cancelled = false;
+  try { restorer->upscale(PixelBuffer(16 * 16 * 3), 1, 16, 16, {}, [](int, int) { return false; }); }
+  catch (const UpscaleCancelled&) { cancelled = true; }
+  CHECK(cancelled); // Cancellation before loading weights works through the common factory.
+#endif
   CHECK(parse_upscale_method("realesrgan") == UpscaleMethod::kRealEsrgan);
   CHECK(std::string(upscale_method_name(UpscaleMethod::kRealEsrgan)) == "realesrgan");
   CHECK(upscale_scale_factor(UpscaleMethod::kRealEsrgan) == 4);

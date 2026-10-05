@@ -67,6 +67,26 @@
 
 namespace slopfab::cli {
 const CommandHelp kCommands[] = {
+    {"upscale", "slopfab upscale --input FILE --out FILE --upscale-method NAME [options]",
+     "restore images or stream video with Real-ESRGAN or SeedVR2",
+     "  --upscale-method NAME       realesrgan (default), seedvr2 (CUDA)\n"
+     "  --upscale-model FILE        checkpoint; default path depends on method\n"
+     "  --inference-backend NAME    cuda or vulkan (Real-ESRGAN only)\n"
+     "  --upscale-tile N            128 input pixels for ESRGAN; 256 VAE output pixels for SeedVR2\n"
+     "                             0 disables spatial tiling\n"
+     "  --upscale-tile-pad N        Real-ESRGAN tile context, default 10\n"
+     "  --upscale-pre-pad N         Real-ESRGAN reflection padding, default 10\n"
+     "  --upscale-vae FILE          SeedVR2 VAE safetensors\n"
+     "  --upscale-resolution WxH    SeedVR2 output size; default 4x input\n"
+     "  --upscale-segment-frames N  SeedVR2 joint frames: 1 or 4n+1, default 5\n"
+     "  --upscale-seed N            SeedVR2 seed, default 666\n"
+     "  --upscale-device N          SeedVR2 CUDA device, default 0\n"
+     "  --upscale-no-color-match    disable SeedVR2 color correction\n"
+     "  --dump FILE                save float pixels for .ppm output\n"
+     "  --dry-run                  validate arguments without loading weights\n\n"
+     "Output .ppm restores one image; .mp4/.mkv streams the full clip. Video requires\n"
+     "ffmpeg/ffprobe; audio is copied and variable FPS normalized to the average.\n"
+     "Memory is bounded by temporal segments, independent of clip duration.\n"},
     {"prepare-lora", "slopfab prepare-lora --adapter FILE --width N",
      "prepare an adapter's AdaLN grid outside inference",
      "  --adapter FILE             adapter to update atomically\n"
@@ -123,11 +143,17 @@ const CommandHelp kCommands[] = {
      "  --inference-backend cuda|vulkan\n"
      "                               neural backend (CUDA by default when built); Vulkan\n"
      "                               supports native text and reference conditioning\n"
-     "  --upscale-model <file>       optional RealESRGAN_x4plus.safetensors; 4x output\n"
-     "  --upscale-method <name>      upscale method, currently realesrgan (default)\n"
-     "  --upscale-tile <n>           input tile size, 128 (0 = whole frame)\n"
+     "  --upscale-model <file>       optional upscaler safetensors checkpoint\n"
+     "  --upscale-method <name>      enable realesrgan or seedvr2 (CUDA)\n"
+     "  --upscale-tile <n>           ESRGAN input tile 128 / SeedVR2 VAE tile 256; 0 untiled\n"
      "  --upscale-tile-pad <n>       tile overlap, 10 input pixels\n"
      "  --upscale-pre-pad <n>        right/bottom reflection padding, 10\n"
+     "  --upscale-resolution WxH     SeedVR2 target size; default 4x generation size\n"
+     "  --upscale-vae FILE           SeedVR2 VAE checkpoint\n"
+     "  --upscale-segment-frames N   SeedVR2 joint frames, default 5\n"
+     "  --upscale-seed N             SeedVR2 seed, default 666\n"
+     "  --upscale-device N           SeedVR2 CUDA device, default 0\n"
+     "  --upscale-no-color-match     disable SeedVR2 color correction\n"
      "  --output-accelerator cpu|vulkan\n"
      "                               RGB-to-YUV output conversion only (default cpu);\n"
      "                               independent of the inference backend\n"
@@ -259,17 +285,6 @@ const CommandHelp kCommands[] = {
      "the sequencing costs nothing measurable and is what makes every mixture of\n"
      "the four safe. Expect the first output well after the progress line starts\n"
      "moving.\n"},
-    {"upscale", "slopfab upscale --input image.png --out image-4x.ppm [options]",
-     "upscale an RGB image 4x with Real-ESRGAN (requires CUDA or Vulkan)",
-     "  --upscale-model <file>       RealESRGAN_x4plus.safetensors; defaults to\n"
-     "                               weights/upscaler/RealESRGAN_x4plus.safetensors\n"
-     "  --upscale-method <name>      upscale method, currently realesrgan (default)\n"
-     "  --inference-backend <name>   cuda or vulkan\n"
-     "  --upscale-tile <n>           input tile size, 128 (0 = whole image)\n"
-     "  --upscale-tile-pad <n>       tile overlap in input pixels, 10\n"
-     "  --upscale-pre-pad <n>        right/bottom reflection padding, 10\n"
-     "  --dump <file>               also save F32 pixels [3,1,H,W] as safetensors\n"
-     "Output is binary PPM. Input uses the normal reference-image decoder.\n"},
     {"inspect", "slopfab inspect <file.safetensors> [options]", "summarise a checkpoint's tensors",
      "  --list                       print every tensor, not just a summary\n"
      "  --prefix <str>               only tensors whose name starts with <str>\n"

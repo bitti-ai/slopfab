@@ -106,6 +106,36 @@ SLOPFAB_C_API uint32_t SLOPFAB_CALL slopfab_capi_version(void);
  * the two cannot disagree. Owned by the library and valid forever. */
 SLOPFAB_C_API const char* SLOPFAB_CALL slopfab_capi_version_string(void);
 
+/* SeedVR2 3B streaming restoration (CUDA, ABI 1.20).
+ * Synchronous: run on a host worker thread if needed. No media codec dependency.
+ * read_frame fills packed [height][width][3] float RGB in [0,1], already resized
+ * to the requested output geometry. Return 1 for a frame, 0 for EOF, -1 on error.
+ * write_frame consumes the same layout; return 0 on success, -1 on error. Buffer
+ * pointers are borrowed only for the callback. Callbacks run on the calling
+ * thread and must not throw. Audio/timing remain owned by the host.
+ * cancelled is optional and returns nonzero to stop between tiles/DiT blocks.
+ * Memory is bounded by segment size, not total video duration. Output frames
+ * already delivered before cancellation/error remain owned by the host. */
+typedef int (SLOPFAB_CALL *slopfab_seedvr2_read_fn)(void*, float*, uint64_t);
+typedef int (SLOPFAB_CALL *slopfab_seedvr2_write_fn)(void*, const float*, uint64_t);
+typedef int (SLOPFAB_CALL *slopfab_seedvr2_cancel_fn)(void*);
+typedef void (SLOPFAB_CALL *slopfab_seedvr2_progress_fn)(void*, const char*);
+typedef struct slopfab_seedvr2_options {
+  uint32_t struct_size; /* sizeof(slopfab_seedvr2_options) */
+  const char* transformer_path; /* Comfy-Org 3B FP16/FP8 .safetensors */
+  const char* vae_path; /* Comfy-Org ema_vae_fp16.safetensors */
+  int32_t width, height;
+  int32_t segment_frames; /* 1 or 4n+1; recommended 5 */
+  int32_t vae_tile; /* 0 untiled, or multiple of 16 >=128; recommended 256 */
+  int32_t device;
+  int32_t color_match; /* 0 or 1 */
+  uint64_t seed;
+} slopfab_seedvr2_options;
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
+    const slopfab_seedvr2_options* options, slopfab_seedvr2_read_fn read_frame,
+    slopfab_seedvr2_write_fn write_frame, slopfab_seedvr2_cancel_fn cancelled,
+    slopfab_seedvr2_progress_fn progress, void* user, uint64_t* frames_written);
+
 /* --- status ----------------------------------------------------------------
  *
  * Returned as `int` by every fallible function. The distinctions that carry
@@ -459,6 +489,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
 /* Upscaling method identifiers. Further implementations can be added without
  * changing the request API. Unknown identifiers are rejected. */
 #define SLOPFAB_UPSCALE_REALESRGAN 1
+#define SLOPFAB_UPSCALE_SEEDVR2 2
 
 /* Optional postprocessing on the selected inference backend. Method is one of
  * SLOPFAB_UPSCALE_*. REALESRGAN requires RealESRGAN_x4plus safetensors weights.
@@ -469,6 +500,14 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
  * Image editing cannot be combined with upscaling. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_upscaler(slopfab_request* request,
     int32_t method, const char* model_path, int32_t tile_size, int32_t tile_pad, int32_t pre_pad);
+
+/* ABI 1.20: select SeedVR2 for generated output and configure its VAE, target
+ * dimensions, temporal segments and seed. Copies options and both paths.
+ * Width/height are output dimensions, as in the streaming API above.
+ * set_upscaler(SEEDVR2, ...) also works with 4x output and the default VAE path;
+ * its tile_size specifies VAE output pixels, while tile/pre padding is unused. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seedvr2_options(
+    slopfab_request* request, const slopfab_seedvr2_options* options);
 
 /* Optional safetensors containing F32 `prompt_embedding` [L,5120]. Reference
  * runs also require I32/I64 `text_token_tags` [L]. Both backends bypass Qwen

@@ -221,13 +221,10 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_upscaler(slopfab_request* req
                                                             int32_t pre_pad) {
   if (!request || !path)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_upscaler: null argument");
-  if (tile_size < 0 || tile_size > 512 || tile_pad < 0 || tile_pad > 256 || pre_pad < 0 ||
-      pre_pad > 256)
-    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_upscaler: invalid tile size or padding");
   return guarded([&] {
     const auto selected = static_cast<slopfab::UpscaleMethod>(method);
     try {
-      slopfab::upscale_scale_factor(selected);
+      slopfab::validate_upscale_options({tile_size, tile_pad, pre_pad}, selected);
     } catch (const std::invalid_argument& e) {
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
     }

@@ -1,0 +1,15 @@
+SeedVR2 native architecture port
+
+Based on ByteDance-Seed/SeedVR, commit e4de8c24441a67e1b7df56abea10645059bb1185
+https://github.com/ByteDance-Seed/SeedVR
+Copyright (c) 2025 ByteDance Ltd. and/or its affiliates.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The VAE reference also credits the HuggingFace Team (2023).
+The implementation in src/seedvr2 is a C++/CUDA port, with bounded convolution
+scratch, streamed transformer blocks, overlapping spatial VAE tiling and
+temporal segment orchestration. It does not embed Python or ComfyUI.
+
+Model files are distributed separately by Comfy-Org/SeedVR2 on Hugging Face.
+Their original tensor names and embedded positive_conditioning are read
+directly; no converted model files are distributed with slopfab.

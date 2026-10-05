@@ -97,6 +97,8 @@ if(SLOPFAB_ENABLE_CUDA)
 
     add_library(slopfab_cuda STATIC
       src/cuda/upscale.cu
+      src/seedvr2/kernels.cu
+      src/seedvr2/model.cu
       src/cuda/device.cu
       src/cuda/cublas_dispatch.cpp
       src/cuda/diagnostics.cu

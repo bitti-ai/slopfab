@@ -1,4 +1,4 @@
-# Real-ESRGAN upscaling
+# Upscaling
 
 slopfab runs RealESRGAN_x4plus natively on CUDA or Vulkan, with no Python at
 runtime. It supports the 23-block RRDBNet with 64 feature channels, 32 growth
@@ -16,6 +16,10 @@ curl.exe -L --fail -o weights/upscaler/RealESRGAN_x4plus.safetensors https://hug
 Weights are not included in the repository or downloaded by slopfab.
 The original project is [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN).
 
+[SeedVR2 3B](seedvr2.md) is also available through the same interface with
+`--upscale-method seedvr2`. It runs on CUDA and restores temporal segments with
+a tiled VAE. The selector works for standalone media and generated output.
+
 ## Standalone image
 
 ```sh
@@ -27,12 +31,13 @@ The default backend is CUDA when compiled in, otherwise Vulkan. Choose a model
 elsewhere with `--upscale-model FILE`. The default model path is relative to the
 working directory. At least one GPU backend must be enabled at build time.
 Input uses the normal reference-image decoder (PNG/JPEG and other supported
-formats); video input to this command reads only its first frame. Output is an
+formats); with `.ppm` output, video input reads only its first frame. `.mp4` or `.mkv`
+output instead streams and upscales the complete video, copying its audio. Output is an
 8-bit RGB binary PPM. Alpha is not preserved. `--dump FILE` additionally writes
 the float output as a `pixels` safetensor with shape `[3,1,H,W]`.
 
 `--upscale-method` selects the algorithm independently of `--upscale-model` and
-the GPU backend. It currently accepts `realesrgan`, which is also the default.
+the GPU backend. It accepts `realesrgan` (the default) and `seedvr2`.
 Unknown method names are rejected before loading weights. The same selector is
 available on `generate`, and library callers use stable method identifiers.
 
@@ -45,7 +50,8 @@ slopfab generate --prompt "A cat in warm lamplight" --resolution 256x256 --frame
 The example generates at 256x256 and delivers 1024x1024 frames. Upscaling runs
 after the VAEs release their GPU resources, on the selected inference backend.
 Frame count, frame rate and audio are preserved. Saved latents and the generation
-plan retain the original diffusion dimensions. Upscaling is disabled by default.
+plan retain the original diffusion dimensions. Upscaling is disabled by default; selecting `--upscale-method` enables it with
+the default checkpoint path, unless `--upscale-model` overrides that path.
 Image editing rejects upscaling because resizing would violate exact preservation
 outside the edit box.
 
@@ -78,8 +84,8 @@ auto result = upscaler->upscale(pixels, frames, height, width);
 ```
 
 It loads weights once and upscales planar float RGB clips
-`[3,frames,height,width]`. `upscale_scale_factor(method)` gives the method's
-spatial factor (4 for Real-ESRGAN). Output is clamped to `[0,1]`; non-finite input
+`[3,frames,height,width]`. `upscale_dimensions(height, width, method, options)` gives the output size.
+Real-ESRGAN uses a fixed 4x factor; SeedVR2 accepts a target size and defaults to 4x. Output is clamped to `[0,1]`; non-finite input
 is rejected. A progress callback can cancel between tiles by returning false.
 Generation callers set `RunOptions::upscale_method` and `upscale_model_path`.
 

@@ -11,10 +11,13 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
       throw std::invalid_argument(message);
   };
   validate_sampling_sampler(p, o.sampler);
-  validate_upscale_options(o.upscale);
+  validate_upscale_options(o.upscale, o.upscale_method);
   upscale_scale_factor(o.upscale_method); // reject unknown identifiers even when disabled
   if (!o.upscale_model_path.empty())
-    upscale_output_elements(p.aligned_frames, p.canvas_height, p.canvas_width, o.upscale_method);
+    upscale_output_elements(p.aligned_frames, p.canvas_height, p.canvas_width, o.upscale_method, o.upscale);
+  require(o.upscale_model_path.empty() || o.upscale_method != UpscaleMethod::kSeedVr2 ||
+              o.inference_backend == DeviceBackend::kCuda,
+          "SeedVR2 requires the CUDA backend");
   require(o.upscale_model_path.empty() || !r.image_edit.image,
           "upscaling cannot preserve the exact pixels outside an image edit box");
   const auto sampler_kind = resolve_sampling_sampler(p, o.sampler);

@@ -33,7 +33,7 @@ install(FILES README.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(DIRECTORY docs/ DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs
   FILES_MATCHING PATTERN "*.md")
 install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab)
-foreach(dependency IN ITEMS sageattention motioncache vulkan)
+foreach(dependency IN ITEMS sageattention motioncache vulkan seedvr2)
   if(dependency STREQUAL "vulkan")
     set(license "third_party/${dependency}/LICENSE.md")
   else()
@@ -42,6 +42,8 @@ foreach(dependency IN ITEMS sageattention motioncache vulkan)
   install(FILES "${license}" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab
     RENAME "${dependency}-LICENSE.txt")
 endforeach()
+install(FILES third_party/seedvr2/NOTICE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab
+  RENAME seedvr2-NOTICE.txt)
 if(SLOPFAB_WITH_FFMPEG)
   install(FILES external/ffmpeg/LICENSE
     DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/slopfab RENAME ffmpeg-LICENSE.txt)

@@ -5,17 +5,20 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "slopfab/device_tensor.h"
 #include "slopfab/pixel_buffer.h"
 #include "slopfab/safetensors.h"
+#include "slopfab/seedvr2.h"
 
 namespace slopfab {
 
 // Stable identifiers, mirrored by SLOPFAB_UPSCALE_* in the C API.
-enum class UpscaleMethod { kRealEsrgan = 1 };
+enum class UpscaleMethod { kRealEsrgan = 1, kSeedVr2 = 2 };
 UpscaleMethod parse_upscale_method(std::string_view name);
 const char* upscale_method_name(UpscaleMethod method);
+const char* default_upscale_model(UpscaleMethod method);
 int upscale_scale_factor(UpscaleMethod method);
 
 struct UpscaleOptions {
@@ -23,14 +26,26 @@ struct UpscaleOptions {
   int tile_size = 128;
   int tile_pad = 10;
   int pre_pad = 10; // reflect at the right and bottom edges, as in RealESRGANer
+  // SeedVR2: tile_size is the VAE tile in output pixels; padding above is unused.
+  std::string vae_path = "weights/seedvr2/ema_vae_fp16.safetensors";
+  int width = 0, height = 0; // SeedVR2 target size; both zero selects 4x
+  int segment_frames = 5;
+  uint64_t seed = 666;
+  int device = 0;
+  bool color_match = true;
 };
 
-void validate_upscale_options(const UpscaleOptions& options);
+void validate_upscale_options(const UpscaleOptions& options,
+                              UpscaleMethod method = UpscaleMethod::kRealEsrgan);
+std::pair<int, int> upscale_dimensions(int height, int width, UpscaleMethod method,
+                                       const UpscaleOptions& options = {});
+seedvr2::Options seedvr2_options(const UpscaleOptions& options, int height, int width);
 // Requires the x4plus RRDBNet: RGB, 64 features, 32 growth channels, 23 blocks.
 void validate_realesrgan_checkpoint(const SafeTensors& checkpoint);
 void validate_upscale_checkpoint(const SafeTensors& checkpoint, UpscaleMethod method);
 size_t upscale_output_elements(int frames, int height, int width,
-                               UpscaleMethod method = UpscaleMethod::kRealEsrgan);
+                               UpscaleMethod method = UpscaleMethod::kRealEsrgan,
+                               const UpscaleOptions& options = {});
 
 class UpscaleCancelled : public std::runtime_error {
 public:
@@ -38,9 +53,9 @@ public:
   }
 };
 
-// Shared interface for upscaling implementations. Input/output layout is
-// [3,frames,height,width], RGB in [0,1]. The method defines the spatial scale.
-// Progress is called before each tile and on completion; false cancels.
+// Shared interface: [3,frames,height,width] RGB in [0,1]. upscale_dimensions
+// resolves the output geometry. Real-ESRGAN reports tiles; SeedVR2 reports
+// delivered frames and checks cancellation between tiles/transformer blocks.
 class Upscaler {
 public:
   virtual ~Upscaler() = default;

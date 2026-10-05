@@ -78,6 +78,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       SafeTensors upscale_checkpoint;
       upscale_checkpoint.open(options.upscale_model_path);
       validate_upscale_checkpoint(upscale_checkpoint, options.upscale_method);
+      if (options.upscale_method == UpscaleMethod::kSeedVr2) {
+        SafeTensors vae;
+        vae.open(options.upscale.vae_path);
+        if (vae.at("encoder.conv_in.weight").shape != std::vector<int64_t>{128,3,3,3,3})
+          throw std::invalid_argument("SeedVR2: incompatible VAE checkpoint");
+      }
     }
   } catch (const std::exception& e) {
     result.message = e.what();

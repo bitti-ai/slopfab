@@ -8,8 +8,19 @@ if(SLOPFAB_BUILD_TESTS)
     set_tests_properties(conditioning_assets_cli PROPERTIES LABELS synthetic TIMEOUT 60)
   endif()
   slopfab_add_tokenizer_tests()
+  if(TARGET slopfab_cuda)
+    add_executable(slopfab_seedvr2_tests tests/harness.cpp tests/test_main.cpp tests/test_seedvr2_cuda.cu)
+    target_link_libraries(slopfab_seedvr2_tests PRIVATE slopfab_cuda)
+    add_test(NAME seedvr2_cuda COMMAND slopfab_seedvr2_tests)
+    set_tests_properties(seedvr2_cuda PROPERTIES LABELS integration SKIP_RETURN_CODE 77)
+  endif()
   include(cmake/TestCoverage.cmake)
   if(TARGET slopfab_generation)
+    if(Python3_Interpreter_FOUND)
+      add_test(NAME upscale_cli COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_upscale_cli.py" "$<TARGET_FILE:slopfab>")
+      set_tests_properties(upscale_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+    endif()
     add_executable(slopfab_upscale_tests tests/harness.cpp tests/test_main.cpp tests/test_upscale.cpp)
     target_link_libraries(slopfab_upscale_tests PRIVATE slopfab_generation)
     slopfab_test_suite(upscale slopfab_upscale_tests integration)
@@ -23,6 +34,7 @@ if(SLOPFAB_BUILD_TESTS)
   # its cases with the shared harness, so adding tests never touches a file
   # someone else is editing.
   add_executable(slopfab_tests
+    tests/test_seedvr2.cpp
     tests/harness.cpp
     tests/test_main.cpp
     tests/test_adaln.cpp

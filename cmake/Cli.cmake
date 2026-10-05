@@ -8,12 +8,10 @@ set(SLOPFAB_CLI_SOURCES src/main.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
 add_executable(slopfab ${SLOPFAB_CLI_SOURCES})
 target_sources(slopfab PRIVATE src/cli/reference_decode.cpp)
 target_sources(slopfab PRIVATE src/cli/assets.cpp)
+target_sources(slopfab PRIVATE src/cli/upscale.cpp src/cli/pipe_process.cpp src/cli/upscale_options.cpp)
 target_sources(slopfab PRIVATE
   src/cli/model_assets.cpp src/cli/help.cpp src/cli/inspect.cpp
   src/cli/decode.cpp src/cli/tokenize.cpp src/cli/generate.cpp src/cli/devices.cpp)
-if(TARGET slopfab_generation)
-  target_sources(slopfab PRIVATE src/cli/upscale.cpp)
-endif()
 set(SLOPFAB_CLI_TARGET slopfab)
 
 target_link_libraries(${SLOPFAB_CLI_TARGET} PRIVATE slopfab_core)
@@ -39,15 +37,19 @@ endif()
 # distribution the option exists to do without.
 if(WIN32 AND SLOPFAB_WITH_FFMPEG)
   # FFmpeg remains runtime-loaded (and therefore replaceable), but the checked-in
-  # distribution is the default used by local builds. Keep only the libraries
-  # mux.cpp loads, plus swresample which avcodec depends on in this FFmpeg build.
+  # distribution is the default used by local builds. Include the command-line
+  # tools for streamed SeedVR2 decoding, probing and encoding.
   set(SLOPFAB_FFMPEG_BIN "${CMAKE_CURRENT_SOURCE_DIR}/external/ffmpeg/bin")
   set(SLOPFAB_FFMPEG_RUNTIME_DLLS
     avcodec-62.dll
     avformat-62.dll
+    avdevice-62.dll
+    avfilter-11.dll
     avutil-60.dll
     swresample-6.dll
-    swscale-9.dll)
+    swscale-9.dll
+    ffmpeg.exe
+    ffprobe.exe)
   foreach(SLOPFAB_FFMPEG_DLL IN LISTS SLOPFAB_FFMPEG_RUNTIME_DLLS)
     if(NOT EXISTS "${SLOPFAB_FFMPEG_BIN}/${SLOPFAB_FFMPEG_DLL}")
       message(FATAL_ERROR

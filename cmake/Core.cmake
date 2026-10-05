@@ -1,6 +1,7 @@
 # --- core -------------------------------------------------------------------
 
 add_library(slopfab_core STATIC
+  src/seedvr2/plan.cpp
   src/core/json.cpp
   src/core/nf4.cpp
   src/core/w4a8.cpp

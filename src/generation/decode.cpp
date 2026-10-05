@@ -241,9 +241,9 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     } catch (const UpscaleCancelled&) {
       return stop("upscaling");
     }
-    const int scale = upscale_scale_factor(options.upscale_method);
-    video.height *= scale;
-    video.width *= scale;
+    const auto dims = upscale_dimensions(video.height, video.width, options.upscale_method, options.upscale);
+    video.height = dims.first;
+    video.width = dims.second;
     if (options.verbose)
       std::printf("upscaled    %d frames to %dx%d in %.2f s\n", video.frames,
                   video.width, video.height, seconds_since(t0));

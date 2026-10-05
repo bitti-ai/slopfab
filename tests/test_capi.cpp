@@ -53,6 +53,32 @@ SLOPFAB_TEST(capi_upscaler_options) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_seedvr2_validation) {
+  auto* request = slopfab_request_create();
+  CHECK(slopfab_request_set_upscaler(request, SLOPFAB_UPSCALE_SEEDVR2, "missing", 256, 10, 10) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_upscaler(request, SLOPFAB_UPSCALE_SEEDVR2, "missing", 64, 10, 10) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_seedvr2_options(request, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  uint64_t count = 99;
+  CHECK(slopfab_seedvr2_upscale(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &count) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(count == 0);
+  slopfab_seedvr2_options o{};
+  o.struct_size = sizeof(o);
+  o.transformer_path = "missing.safetensors";
+  o.vae_path = "missing.safetensors";
+  o.width = o.height = 16; o.segment_frames = 2; o.vae_tile = 128;
+  auto read = [](void*, float*, uint64_t) -> int { return 0; };
+  auto write = [](void*, const float*, uint64_t) -> int { return 0; };
+  CHECK(slopfab_seedvr2_upscale(&o, read, write, nullptr, nullptr, nullptr, &count) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  o.segment_frames = 5; o.struct_size--;
+  CHECK(slopfab_seedvr2_upscale(&o, read, write, nullptr, nullptr, nullptr, &count) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  o.struct_size = sizeof(o); o.segment_frames = 5;
+  CHECK(slopfab_request_set_seedvr2_options(request, &o) == SLOPFAB_OK);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_image_edit_snapshot_validation_and_clear) {
   auto* request = slopfab_request_create();
   std::vector<uint8_t> pixels(40 * 33 * 3, 123); // padded rows, visible width 35

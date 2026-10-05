@@ -14,6 +14,7 @@ if(SLOPFAB_BUILD_C_API)
   # Internal static libraries are linked into one shared library, exporting only
   # the stable C entry points.
   add_library(slopfab_c SHARED src/capi/capi.cpp)
+  target_sources(slopfab_c PRIVATE src/capi/seedvr2.cpp)
   target_sources(slopfab_c PRIVATE src/capi/requests.cpp src/capi/plans.cpp
     src/capi/generation.cpp src/capi/references.cpp src/capi/assets.cpp)
   target_link_libraries(slopfab_c PRIVATE slopfab_generation)
