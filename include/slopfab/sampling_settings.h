@@ -15,6 +15,9 @@ namespace slopfab {
 struct SamplingSettings {
   std::optional<sampler::SamplerKind> sampler;
   std::optional<int> default_steps;
+  // Independent audio grid points, including terminal zero. Unset inherits
+  // the video count/base grid; set uses an ordinary linspace for audio only.
+  std::optional<int> audio_steps;
   std::optional<float> video_sigma_shift;
   std::optional<float> audio_sigma_shift;
   std::optional<std::vector<float>> base_sigmas;

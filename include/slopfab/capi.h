@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 20
+#define SLOPFAB_CAPI_VERSION_MINOR 21
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -323,8 +323,8 @@ typedef struct slopfab_plan {
    * which is what will actually be produced; exactly 1 in still-image mode. */
   int32_t aligned_frames;
   double duration_seconds;
-  /* Forward passes the loop will run: one fewer than the grid points, because
-   * the terminal sigma gets none. */
+  /* Forward passes the loop will run. Normally grid points minus one;
+   * independent audio steps include all interleaved modality updates. */
   int32_t num_model_evaluations;
   /* Packed rows excluding text, which is not known until the prompt is
    * tokenised. Attention cost grows with the square of this. */
@@ -477,6 +477,16 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_invert_mask(
 /* Sigma grid points *including* the terminal zero, so the model runs
  * `steps - 1` times. At least 2. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_steps(slopfab_request* request, int32_t steps);
+
+/* Since 1.21. Experimental independent audio grid: steps includes terminal zero
+ * (steps - 1 audio updates), in [2,1000000]. Zero clears this explicit override.
+ * Without an inherited audio_steps setting, audio follows the video grid.
+ * Extra updates run the shared transformer and hold video fixed between its
+ * updates. Requires generated target audio; unsupported with FastH3 V2 or
+ * approximate caches when counts differ. No quality improvement is guaranteed.
+ * This changes sampling.audio_steps; set_sampling_settings replaces it. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_audio_steps(slopfab_request* request,
+                                                               int32_t steps);
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seed(slopfab_request* request, uint64_t seed);
 

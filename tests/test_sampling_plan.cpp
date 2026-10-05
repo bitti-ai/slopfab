@@ -148,6 +148,11 @@ SLOPFAB_TEST(sampling_plan_preserves_fasth3_requirements) {
   GenerateRequest request;
   request.transformer_path = model.path.string();
   CHECK(resolve_plan(request).num_model_evaluations() == 8);
+  request.sampling.audio_steps = 25;
+  CHECK(rejects([&] {
+    resolve_plan(request);
+  }));
+  request.sampling.audio_steps.reset();
   request.sampling.video_sigma_shift = 12.0f;
   CHECK(rejects([&] {
     resolve_plan(request);

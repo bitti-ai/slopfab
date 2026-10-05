@@ -1,9 +1,9 @@
 // The t2va denoising loop (spec 1.6).
 //
 // One transformer call per iteration serving both modalities, then two
-// independent Euler steps — the video scheduler on its shift-12 grid at
-// `video_timesteps[i]`, the audio scheduler on its shift-3 grid at
-// `audio_timesteps[i]`. There is no guider and no second forward pass: the
+// independent scheduler updates. With unequal counts, update boundaries are
+// interleaved and each modality keeps its own step index and noise level.
+// There is no guider and no second forward pass: the
 // released checkpoints are CFG-distilled.
 
 #include "slopfab/dit/denoise.h"
@@ -15,6 +15,7 @@
 
 #include "slopfab/cuda/profile.h"
 #include "slopfab/sampler/noise.h"
+#include "slopfab/sampler/joint_schedule.h"
 
 namespace slopfab::dit {
 namespace {
@@ -40,11 +41,16 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   const std::vector<float>& video_t = *inputs.video_timesteps;
   const std::vector<float>& audio_t = *inputs.audio_timesteps;
 
-  // The reference builds its row-timestep plan by zipping the two schedules
-  // while iterating the video one, so a length mismatch truncates silently
-  // (spec 9.5). resolve_plan already checks this; checking again is free.
-  require(video_t.size() == audio_t.size(), "video and audio schedules differ in length");
-  require(!video_t.empty(), "schedule has no model evaluations");
+  require(video_t == inputs.video_scheduler->timesteps() &&
+              audio_t == inputs.audio_scheduler->timesteps(),
+          "timestep lists disagree with schedulers");
+  const auto schedule = sampler::joint_schedule(video_t.size(), audio_t.size());
+  const bool independent = video_t.size() != audio_t.size();
+  require(!independent || (!inputs.pin_target_audio && layout.num_audio_rows > 0),
+          "independent audio steps require generated target audio");
+  require(!independent || (!inputs.cache.enabled() && !inputs.motion_cache.active() &&
+                           !transformer.block_cache_config().enabled()),
+          "independent audio steps do not support approximate caches");
   const int patch = transformer.config().video_patch_dim();
   const int audio_dim = transformer.config().audio_in_channels;
   const size_t video_rows = indices.video.size();
@@ -122,7 +128,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
   std::vector<float> video_velocity(all_video.size(), 0.0f);
   std::vector<float> audio_velocity(std::max<size_t>(audio_values, 1), 0.0f);
 
-  const int steps = static_cast<int>(video_t.size());
+  const int steps = static_cast<int>(schedule.size());
   StepCache cache(inputs.cache, steps);
   MotionCache motion(inputs.motion_cache, layout, patch, audio_dim, steps,
                      inputs.video_scheduler->shift(), inputs.pin_target_audio);
@@ -153,17 +159,18 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
 
   out.decisions.reserve(static_cast<size_t>(std::max(0, steps)));
   for (int i = 0; i < steps; ++i) {
+    const auto& update = schedule[static_cast<size_t>(i)];
+    const float vt = video_t[update.video];
+    const float at = inputs.pin_target_audio ? 1.0f : audio_t[update.audio];
     bool compute = true;
     if (motion.enabled()) {
-      compute = motion.should_compute(i, 1.0f - video_t[static_cast<size_t>(i)],
-                                      all_video.data() + cv, all_audio.data() + ca);
+      compute = motion.should_compute(i, 1.0f - vt, all_video.data() + cv, all_audio.data() + ca);
     } else if (cache.enabled()) {
       cuda::HostSpan span("step_cache");
       // Shared with `plan_step_cache`, so the loop and the planner cannot
       // disagree about what this step's signature is — only about what to do
       // with it, which is the thing under test.
-      build_signature(code, video_t[static_cast<size_t>(i)],
-                      inputs.pin_target_audio ? 1.0f : audio_t[static_cast<size_t>(i)], signature);
+      build_signature(code, vt, at, signature);
       compute = cache.should_compute(i, signature.data(), static_cast<int>(signature.size()));
     } else {
       compute = cache.should_compute(i, nullptr, 0);
@@ -190,8 +197,6 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         // it is the *only* per-step work a skipped step also avoids, which is
         // why it sits inside this branch rather than above it.
         cuda::HostSpan span("build_row_timesteps");
-        const float vt = video_t[static_cast<size_t>(i)];
-        const float at = inputs.pin_target_audio ? 1.0f : audio_t[static_cast<size_t>(i)];
         row_timesteps =
             layout.condition_audio_is_explicit
                 ? build_row_timesteps(layout, indices, vt, at, std::max(vt, 0.999f), 1.0f)
@@ -205,8 +210,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         transformer.forward(all_video.data(), all_audio.data(), row_timesteps,
                             video_velocity.data(), audio_velocity.data());
       }
-      motion.update(1.0f - video_t[static_cast<size_t>(i)], all_video.data() + cv,
-                    all_audio.data() + ca, video_velocity.data() + cv, audio_velocity.data() + ca);
+      motion.update(1.0f - vt, all_video.data() + cv, all_audio.data() + ca,
+                    video_velocity.data() + cv, audio_velocity.data() + ca);
     } else if (motion.enabled()) {
       motion.reuse(all_video.data() + cv, all_audio.data() + ca, video_velocity.data() + cv,
                    audio_velocity.data() + ca);
@@ -215,22 +220,27 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     {
       // In place: FlowScheduler::step permits `out` to alias `sample`.
       cuda::HostSpan span("scheduler_step");
-      if (renoise && i + 1 < steps) {
-        sampler::fill_renoise_normal(inputs.seed, i, sampler::NoiseStream::kVideoLatents,
-                                     video_noise.data(), video_noise.size());
-        sampler::fill_renoise_normal(inputs.seed, i, sampler::NoiseStream::kAudioLatents,
-                                     audio_noise.data(), audio_noise.size());
+      if (update.advance_video) {
+        if (renoise && update.video + 1 < video_t.size())
+          sampler::fill_renoise_normal(inputs.seed, static_cast<int>(update.video),
+                                       sampler::NoiseStream::kVideoLatents, video_noise.data(),
+                                       video_noise.size());
+        inputs.video_scheduler->step(static_cast<int>(update.video), all_video.data() + cv,
+                                     video_velocity.data() + cv, out.video_rows.size(),
+                                     out.video_rows.data(), video_noise.data());
+        if (inputs.inpaint)
+          inputs.inpaint->apply(out.video_rows.data(), out.video_rows.size(),
+                                inputs.video_scheduler->sigmas()[update.video + 1]);
       }
-      inputs.video_scheduler->step(i, all_video.data() + cv, video_velocity.data() + cv,
-                                   out.video_rows.size(), out.video_rows.data(),
-                                   video_noise.data());
-      if (inputs.inpaint)
-        inputs.inpaint->apply(out.video_rows.data(), out.video_rows.size(),
-                              inputs.video_scheduler->sigmas()[static_cast<size_t>(i) + 1]);
-      if (!inputs.pin_target_audio)
-        inputs.audio_scheduler->step(i, all_audio.data() + ca, audio_velocity.data() + ca,
-                                     out.audio_rows.size(), out.audio_rows.data(),
-                                     audio_noise.data());
+      if (update.advance_audio && !inputs.pin_target_audio) {
+        if (renoise && update.audio + 1 < audio_t.size())
+          sampler::fill_renoise_normal(inputs.seed, static_cast<int>(update.audio),
+                                       sampler::NoiseStream::kAudioLatents, audio_noise.data(),
+                                       audio_noise.size());
+        inputs.audio_scheduler->step(static_cast<int>(update.audio), all_audio.data() + ca,
+                                     audio_velocity.data() + ca, out.audio_rows.size(),
+                                     out.audio_rows.data(), audio_noise.data());
+      }
       std::copy(out.video_rows.begin(), out.video_rows.end(), all_video.begin() + cv);
       std::copy(out.audio_rows.begin(), out.audio_rows.end(), all_audio.begin() + ca);
     }

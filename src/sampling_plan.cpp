@@ -25,7 +25,7 @@ SamplingSettings file_settings(const std::string& path) {
 
 bool has_settings(const SamplingSettings& settings) {
   return settings.default_steps || settings.video_sigma_shift || settings.audio_sigma_shift ||
-         settings.base_sigmas || settings.sampler;
+         settings.base_sigmas || settings.sampler || settings.audio_steps;
 }
 
 template <typename T>
@@ -99,6 +99,8 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
                         overrides.video_sigma_shift, "video_sigma_shift");
     merge_adapter_field(adapters.audio_sigma_shift, settings.audio_sigma_shift,
                         overrides.audio_sigma_shift, "audio_sigma_shift");
+    merge_adapter_field(adapters.audio_steps, settings.audio_steps, overrides.audio_steps,
+                        "audio_steps");
     merge_adapter_field(adapters.sampler, settings.sampler, overrides.sampler, "sampler");
     merge_adapter_field(adapters.base_sigmas, settings.base_sigmas, overrides.base_sigmas,
                         "base_sigmas");
@@ -115,6 +117,12 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
   if (has_settings(overrides))
     plan.sampling_sources.push_back("request overrides");
   validate_sampling_settings(effective);
+
+  if (effective.audio_steps && (request.still_image || plan.conditioning.pin_target_audio))
+    throw std::invalid_argument("audio_steps requires generated target audio");
+  if (effective.audio_steps && plan.fasth3_v2)
+    throw std::invalid_argument(
+        "FastH3 V2 requires its trained audio grid; audio_steps is unsupported");
 
   if (plan.fasth3_v2) {
     const auto required = sampling_schedule_defaults(sampler::ScheduleKind::kFastH3V2);
@@ -147,6 +155,20 @@ void resolve_sampling_plan(const GenerateRequest& request, GeneratePlan& plan) {
     video.set_sigmas(video.sigmas());
     audio.set_sigmas(audio.sigmas());
   }
+  if (effective.audio_steps) {
+    audio.set_timesteps(*effective.audio_steps);
+    audio.set_sigmas(audio.sigmas());
+  }
+  // Preserve the legacy rejection of float32 grid collapse unless the user
+  // actually selected independent audio steps.
+  if (!effective.audio_steps && video.num_steps() != audio.num_steps())
+    throw std::invalid_argument(
+        "video and audio schedules collapsed to different lengths; reduce steps");
+  if (video.num_steps() != audio.num_steps() &&
+      (request.motion_cache.active() || request.cache_threshold > 0 || request.skip_every > 0 ||
+       request.block_cache_span > 0))
+    throw std::invalid_argument(
+        "independent audio steps do not support step, block or MotionCache reuse");
   if (request.image_edit.image) {
     const size_t count = video.num_steps();
     const size_t keep = std::max<size_t>(

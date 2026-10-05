@@ -127,6 +127,7 @@ const CommandHelp kCommands[] = {
      "                               about, and costs attention time quadratically\n"
      "  --frames <n>                 snapped up to 17k+5 (default 124, minimum 6)\n"
      "  --steps <n>                  sigma grid points, n-1 evaluations (inherit recipe; normally 50)\n"
+     "  --audio-steps <n>            independent audio grid points, n-1 updates (experimental)\n"
      "  --lora <file>               H3 safetensors adapter (repeatable)\n"
      "  --lora-strength <n>         strength for preceding --lora (default 1)\n"
      "  --schedule <name>           default, taomate-3step or dmad-4step (re-noising)\n"

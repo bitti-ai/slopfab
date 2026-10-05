@@ -625,6 +625,38 @@ SLOPFAB_TEST(capi_default_request_matches_cpp_defaults) {
   CHECK(plan.num_audio_rows == 414);
 }
 
+SLOPFAB_TEST(capi_audio_steps) {
+  Request request;
+  CHECK(slopfab_request_set_audio_steps(nullptr, 4) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_steps(request.handle, 3) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_audio_steps(request.handle, 4) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 4);
+  for (int value : {-1, 1, 1000001})
+    CHECK(slopfab_request_set_audio_steps(request.handle, value) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 4); // invalid setters leave the override intact
+  char* description = nullptr;
+  CHECK(slopfab_describe_plan(request.handle, &description) == SLOPFAB_OK);
+  CHECK(description && std::string(description).find("video 2, audio 3") != std::string::npos);
+  slopfab_free_string(description);
+  CHECK(slopfab_request_set_audio_steps(request.handle, 0) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 2);
+  CHECK(slopfab_request_set_sampling_settings(
+            request.handle, R"({"version":1,"base_sigmas":[1,0.5,0],"audio_steps":6})") ==
+        SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 6);
+  CHECK(slopfab_request_set_audio_steps(request.handle, 4) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 4);
+  CHECK(slopfab_request_set_sampling_settings(request.handle, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 2);
+}
+
 SLOPFAB_TEST(capi_sampling_settings) {
   Request request;
   CHECK(slopfab_request_set_sampling_settings(nullptr, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);

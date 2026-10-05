@@ -167,6 +167,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_still_image(slopfab_request* 
   return SLOPFAB_OK;
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_audio_steps(slopfab_request* request,
+                                                               int32_t steps) {
+  if (request == nullptr || (steps != 0 && (steps < 2 || steps > 1000000)))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "slopfab_request_set_audio_steps: expected zero or grid points in [2,1000000]");
+  if (steps == 0)
+    request->request.sampling.audio_steps.reset();
+  else
+    request->request.sampling.audio_steps = steps;
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_steps(slopfab_request* request, int32_t steps) {
   if (request == nullptr || steps < 2) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT,

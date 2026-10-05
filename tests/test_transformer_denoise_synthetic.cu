@@ -1,6 +1,88 @@
 #include "detail/transformer_fixture.h"
 #include "slopfab/sampler/noise.h"
 
+SLOPFAB_TEST_CATEGORY(denoise_independent_audio_steps, "synthetic") {
+  using namespace slopfab::sampler;
+  const auto layout = tiny_layout();
+  const auto indices = slopfab::dit::build_indices(layout);
+  const std::vector<float> initial_video(size_t(layout.num_video_rows) * 96, .25f);
+  const std::vector<float> initial_audio(size_t(layout.num_audio_rows) * 32, -.5f);
+  // Explicit oracle for two video and three audio updates. Also swap them to
+  // exercise fewer audio updates, and test every CUDA integrator.
+  for (bool swap : {false, true}) {
+    for (auto kind : {SamplerKind::kEuler, SamplerKind::kAb2, SamplerKind::kRenoise}) {
+      FlowScheduler video(12), audio(3);
+      video.set_timesteps(swap ? 4 : 3);
+      audio.set_timesteps(swap ? 3 : 4);
+      video.set_sampler(kind);
+      audio.set_sampler(kind);
+      auto expected_video_scheduler = video, expected_audio_scheduler = audio;
+      auto expected_video = initial_video, expected_audio = initial_audio;
+      Transformer model;
+      auto in = make_denoise_inputs(layout, indices, video, audio);
+      in.init_video_rows = &initial_video;
+      in.init_audio_rows = &initial_audio;
+      const int short_indices[] = {0, 0, 1, 1};
+      const int long_indices[] = {0, 1, 1, 2};
+      const bool advance_short[] = {false, true, false, true};
+      const bool advance_long[] = {true, false, true, true};
+      int calls = 0, boundaries = 0, progress_calls = 0;
+      in.velocity = [&](int step, const RowTimesteps& row, const float* v, const float* a,
+                        float* vv, float* av) {
+        ++calls;
+        const int vi = swap ? long_indices[step] : short_indices[step];
+        const int ai = swap ? short_indices[step] : long_indices[step];
+        const auto expected_times = slopfab::dit::build_row_timesteps(
+            layout, indices, video.timesteps()[vi], audio.timesteps()[ai]);
+        CHECK(row.unique == expected_times.unique && row.indices == expected_times.indices);
+        CHECK(std::equal(expected_video.begin(), expected_video.end(), v));
+        CHECK(std::equal(expected_audio.begin(), expected_audio.end(), a));
+        // Coupled predictions depend on both current latents and the call.
+        const float v_velocity = .1f * a[0] + .01f * float(step + 1);
+        const float a_velocity = .2f * v[0] - .02f * float(step + 1);
+        std::fill(vv, vv + initial_video.size(), v_velocity);
+        std::fill(av, av + initial_audio.size(), a_velocity);
+        const auto advance = [&](FlowScheduler& scheduler, int index, std::vector<float>& state,
+                                 float velocity, NoiseStream stream) {
+          std::vector<float> velocities(state.size(), velocity), noise(state.size());
+          if (kind == SamplerKind::kRenoise && size_t(index + 1) < scheduler.num_steps())
+            fill_renoise_normal(in.seed, index, stream, noise.data(), noise.size());
+          scheduler.step(index, state.data(), velocities.data(), state.size(), state.data(),
+                         noise.data());
+        };
+        if (swap ? advance_long[step] : advance_short[step])
+          advance(expected_video_scheduler, vi, expected_video, v_velocity,
+                  NoiseStream::kVideoLatents);
+        if (swap ? advance_short[step] : advance_long[step])
+          advance(expected_audio_scheduler, ai, expected_audio, a_velocity,
+                  NoiseStream::kAudioLatents);
+      };
+      in.boundary = [&](int, const std::vector<float>& v, const std::vector<float>& a) {
+        ++boundaries;
+        CHECK(v == expected_video && a == expected_audio);
+      };
+      const auto result = slopfab::dit::denoise(model, in, [&](int step, int total) {
+        CHECK(total == 4 && step == progress_calls++);
+        return true;
+      });
+      CHECK(calls == 4 && boundaries == 4 && progress_calls == 4);
+      CHECK(result.steps_computed == 4 && result.steps_skipped == 0);
+      CHECK(result.video_rows == expected_video && result.audio_rows == expected_audio);
+      // Restart and stop at the first audio/video-only boundary.
+      expected_video = initial_video;
+      expected_audio = initial_audio;
+      calls = boundaries = 0;
+      const auto cancelled = slopfab::dit::denoise(model, in, [](int, int total) {
+        CHECK(total == 4);
+        return false;
+      });
+      CHECK(calls == 1 && boundaries == 1 && cancelled.steps_computed == 1);
+      CHECK(cancelled.video_rows == expected_video && cancelled.audio_rows == expected_audio);
+      CHECK(swap ? cancelled.audio_rows == initial_audio : cancelled.video_rows == initial_video);
+    }
+  }
+}
+
 SLOPFAB_TEST_CATEGORY(denoise_inpaint_constrains_each_boundary_and_keeps_anchors, "synthetic") {
   auto layout = tiny_layout();
   layout.num_latent_frames = 1;

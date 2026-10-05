@@ -6,6 +6,9 @@ if(SLOPFAB_BUILD_TESTS)
     add_test(NAME conditioning_assets_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_assets_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(conditioning_assets_cli PROPERTIES LABELS synthetic TIMEOUT 60)
+    add_test(NAME audio_steps_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_audio_steps_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(audio_steps_cli PROPERTIES LABELS synthetic TIMEOUT 60)
   endif()
   slopfab_add_tokenizer_tests()
   if(TARGET slopfab_cuda)
@@ -62,6 +65,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_lora.cpp
     tests/test_sampler.cpp
     tests/test_sampling_settings.cpp
+    tests/test_audio_steps.cpp
     tests/test_conditioning_settings.cpp
     tests/test_sampling_plan.cpp
     tests/test_step_cache.cpp

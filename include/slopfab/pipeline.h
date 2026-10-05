@@ -33,6 +33,7 @@
 #include "slopfab/lora.h"
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/sampling_settings.h"
+#include "slopfab/sampler/joint_schedule.h"
 #include "slopfab/conditioning_settings.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/model_geometry.h"
@@ -89,8 +90,8 @@ struct GenerateRequest {
   bool still_image = false;
   ImageEdit image_edit;
 
-  // Sigma grid points *including* the terminal zero, so the model runs
-  // `num_inference_steps - 1` times.
+  // Video sigma grid points *including* the terminal zero. Audio inherits
+  // this grid unless sampling.audio_steps selects an independent count.
   int num_inference_steps = 0; // zero inherits the model/task recipe
   sampler::ScheduleKind schedule = sampler::ScheduleKind::kDefault;
   // Explicit overrides of checkpoint and enabled-adapter sampling defaults.
@@ -194,9 +195,8 @@ struct GeneratePlan {
   dit::SequenceLayout layout; // layout.num_text is 0 until the prompt is tokenised
 
   // Two independent schedules stepped inside one loop: video shift 12.0 for
-  // H3 or 3.0 for Viggle-Animate, audio shift 3.0. Both have the same length — the reference
-  // zips them, and a length mismatch after `unique_consecutive` would silently
-  // truncate the run (spec section 9.5).
+  // H3 or 3.0 for Viggle-Animate, audio shift 3.0. Independent audio counts
+  // interleave updates; otherwise both schedules have the same length.
   std::vector<float> video_sigmas;
   std::vector<float> audio_sigmas;
   std::vector<float> video_timesteps;
@@ -211,7 +211,8 @@ struct GeneratePlan {
   int num_inference_steps = 0;
 
   int num_model_evaluations() const {
-    return static_cast<int>(video_timesteps.size());
+    return static_cast<int>(
+        sampler::joint_step_count(video_timesteps.size(), audio_timesteps.size()));
   }
 
   int sequence_length_without_text() const {

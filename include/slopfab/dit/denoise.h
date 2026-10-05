@@ -56,7 +56,8 @@ struct DenoiseInputs {
   // honours the configured lookup mode.
   CodeFn code;
 
-  // Schedules, already validated to be the same length by resolve_plan.
+  // Per-modality schedules. Unequal lengths interleave update boundaries;
+  // these timestep lists must match their respective schedulers.
   const std::vector<float>* video_timesteps = nullptr;
   const std::vector<float>* audio_timesteps = nullptr;
   // Non-const because a second-order sampler keeps v_{n-1} inside the

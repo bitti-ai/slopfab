@@ -58,6 +58,8 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
           "step caching requires Euler");
   require(!p.fixed_sampling_grid || !caches,
           "fixed sampling grids do not support approximate caches");
+  require(p.video_timesteps.size() == p.audio_timesteps.size() || !caches,
+          "independent audio steps do not support approximate caches");
   require(p.conditioning.allow_caches || !caches,
           "conditioning recipe does not support approximate caches");
   require(!p.conditioning.require_euler || sampler_kind == sampler::SamplerKind::kEuler,

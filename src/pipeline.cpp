@@ -227,18 +227,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
 
   resolve_sampling_plan(request, plan);
 
-  // The reference zips the two timestep lists to build its row-timestep plan
-  // while iterating the video one. If `unique_consecutive` collapsed the two
-  // shifted grids to different lengths, that zip would silently truncate. It
-  // does not happen at practical step counts, but it is cheap to be certain.
-  if (plan.video_timesteps.size() != plan.audio_timesteps.size()) {
-    throw std::runtime_error(
-        "video and audio schedules collapsed to different lengths (" +
-        std::to_string(plan.video_timesteps.size()) + " vs " +
-        std::to_string(plan.audio_timesteps.size()) +
-        "); reduce num_inference_steps so the shifted sigma grids stay distinct in float32");
-  }
-  if (plan.video_timesteps.empty()) {
+  if (plan.video_timesteps.empty() || plan.audio_timesteps.empty()) {
     throw std::runtime_error("schedule collapsed to zero model evaluations");
   }
 
@@ -466,6 +455,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
       static_cast<double>(plan.audio_sigma_shift), static_cast<unsigned long long>(request.seed),
       request.out_path.c_str());
   std::string description = buf;
+  description += "  modality updates    video " + std::to_string(plan.video_timesteps.size()) +
+                 ", audio " + std::to_string(plan.audio_timesteps.size()) + "\n";
   description += std::string("  sampler             ") + sampler::sampler_name(plan.sampler) + "\n";
   if (request.image_edit.image) {
     const auto& e = request.image_edit;

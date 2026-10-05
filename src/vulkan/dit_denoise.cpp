@@ -10,6 +10,7 @@
 #include "slopfab/dit/adaln.h"
 #include "slopfab/dit/rope.h"
 #include "slopfab/sampler/noise.h"
+#include "slopfab/sampler/joint_schedule.h"
 
 namespace slopfab::vulkan {
 namespace {
@@ -346,10 +347,16 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
         "Vulkan H3 denoise: requires matching Euler or re-noising samplers");
   if (renoise && impl_->config.motion_cache.active())
     throw std::invalid_argument("Vulkan H3 denoise: re-noising does not support MotionCache");
-  if (video.num_steps() == 0 || video.num_steps() != audio.num_steps() ||
+  if (video.num_steps() == 0 || audio.num_steps() == 0 ||
       video.timesteps().size() != video.sigmas().size() - 1 ||
       audio.timesteps().size() != audio.sigmas().size() - 1)
     throw std::invalid_argument("Vulkan H3 denoise: incompatible schedules");
+  const auto schedule = sampler::joint_schedule(video.num_steps(), audio.num_steps());
+  if (video.num_steps() != audio.num_steps() &&
+      (impl_->config.motion_cache.active() || impl_->config.pin_target_audio ||
+       impl_->config.layout.num_audio_rows == 0))
+    throw std::invalid_argument(
+        "Vulkan H3 denoise: independent audio steps require generated audio without MotionCache");
 
   struct RunGuard {
     bool& value;
@@ -377,7 +384,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   std::vector<int32_t> video_indices(video_output);
   std::vector<int32_t> audio_indices(audio_output);
   ExactH3DenoiseResult result;
-  const uint32_t steps = static_cast<uint32_t>(video.num_steps());
+  const uint32_t steps = static_cast<uint32_t>(schedule.size());
   const bool conditioned = condition_video != 0 || condition_audio != 0;
   auto video_host = video, audio_host = audio;
   video_host.reset();
@@ -407,8 +414,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     motion_av.resize(motion_audio.size());
   }
   for (uint32_t step = 0; step < steps; ++step) {
-    const float video_t = video.timesteps()[step];
-    const float audio_t = c.pin_target_audio ? 1.0f : audio.timesteps()[step];
+    const auto& update_step = schedule[step];
+    const float video_t = video.timesteps()[update_step.video];
+    const float audio_t = c.pin_target_audio ? 1.0f : audio.timesteps()[update_step.audio];
     const dit::RowTimesteps row =
         conditioned ? dit::build_row_timesteps(c.layout, c.indices, video_t, audio_t,
                                                std::max(video_t, 0.999f), 1.0f)
@@ -438,8 +446,10 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
 
     const float video_sigma = 1.0f - video_t;
     const float audio_sigma = 1.0f - audio_t;
-    const float video_ratio = video.sigmas()[step + 1] / video.sigmas()[step];
-    const float audio_ratio = audio.sigmas()[step + 1] / audio.sigmas()[step];
+    const float video_ratio =
+        video.sigmas()[update_step.video + 1] / video.sigmas()[update_step.video];
+    const float audio_ratio =
+        audio.sigmas()[update_step.audio + 1] / audio.sigmas()[update_step.audio];
     bool compute = true;
     if (motion.enabled()) {
       impl_->context->download(conditioned ? s.video_result : s.video, motion_video.data(),
@@ -487,33 +497,37 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
       batch.submit().wait();
       const auto update = [&](DeviceTensor& state, DeviceTensor& velocity,
                               sampler::FlowScheduler& scheduler, sampler::NoiseStream stream,
-                              size_t count) {
+                              size_t count, size_t modality_step) {
         impl_->context->download(state, renoise_rows.data(), count);
         impl_->context->download(velocity, renoise_velocity.data(), count);
-        if (step + 1 < steps)
-          sampler::fill_renoise_normal(c.seed, step, stream, renoise_noise.data(), count);
-        scheduler.step(step, renoise_rows.data(), renoise_velocity.data(), count,
-                       renoise_rows.data(), renoise_noise.data());
+        if (modality_step + 1 < scheduler.num_steps())
+          sampler::fill_renoise_normal(c.seed, static_cast<int>(modality_step), stream,
+                                       renoise_noise.data(), count);
+        scheduler.step(static_cast<int>(modality_step), renoise_rows.data(),
+                       renoise_velocity.data(), count, renoise_rows.data(), renoise_noise.data());
         impl_->context->upload(state, renoise_rows.data(), count);
       };
-      update(video_state, s.video_velocity, video_host, sampler::NoiseStream::kVideoLatents,
-             uint64_t(video_output) * c.transformer.video_dim);
-      if (has_audio && !c.pin_target_audio)
+      if (update_step.advance_video)
+        update(video_state, s.video_velocity, video_host, sampler::NoiseStream::kVideoLatents,
+               uint64_t(video_output) * c.transformer.video_dim, update_step.video);
+      if (update_step.advance_audio && has_audio && !c.pin_target_audio)
         update(conditioned ? s.audio_result : s.audio, s.audio_velocity, audio_host,
                sampler::NoiseStream::kAudioLatents,
-               uint64_t(audio_output) * c.transformer.audio_dim);
+               uint64_t(audio_output) * c.transformer.audio_dim, update_step.audio);
     } else {
-      batch.dit_euler_step_f32(video_state, s.video_velocity, video_sigma, video_ratio);
-      if (has_audio && !c.pin_target_audio) {
+      if (update_step.advance_video)
+        batch.dit_euler_step_f32(video_state, s.video_velocity, video_sigma, video_ratio);
+      if (update_step.advance_audio && has_audio && !c.pin_target_audio) {
         DeviceTensor& audio_state = conditioned ? s.audio_result : s.audio;
         batch.dit_euler_step_f32(audio_state, s.audio_velocity, audio_sigma, audio_ratio);
       }
       batch.submit().wait();
     }
     result.steps_completed = step + 1;
-    if (c.inpaint) {
+    if (c.inpaint && update_step.advance_video) {
       impl_->context->download(video_state, edited_video.data(), edited_video.size());
-      c.inpaint->apply(edited_video.data(), edited_video.size(), video.sigmas()[step + 1]);
+      c.inpaint->apply(edited_video.data(), edited_video.size(),
+                       video.sigmas()[update_step.video + 1]);
       impl_->context->upload(video_state, edited_video.data(), edited_video.size());
     }
     if (boundary) {

@@ -1172,6 +1172,55 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
   const uint64_t denoise_scratch = denoiser.scratch_bytes();
   CHECK(denoise_persistent != 0 && denoise_scratch != 0 &&
         denoiser.peak_device_bytes() == denoise_persistent + denoise_scratch);
+  // Unequal, non-divisible counts: only the active modality may change.
+  // Run both directions and both supported integrators on the actual graph.
+  for (bool swap : {false, true}) {
+    for (auto kind : {sampler::SamplerKind::kEuler, sampler::SamplerKind::kRenoise}) {
+      sampler::FlowScheduler video(12), audio(3);
+      video.set_timesteps(swap ? 4 : 3);
+      audio.set_timesteps(swap ? 3 : 4);
+      video.set_sampler(kind);
+      audio.set_sampler(kind);
+      auto previous_video = video_values, previous_audio = audio_values;
+      const bool advance_short[] = {false, true, false, true};
+      const bool advance_long[] = {true, false, true, true};
+      int boundaries = 0, progress_calls = 0;
+      denoiser.prepare(prompt_values.data(), prompt_values.size(), video_values.data(),
+                       video_values.size(), audio_values.data(), audio_values.size());
+      const auto output = denoiser.run(
+          video, audio,
+          [&](uint32_t step, uint32_t total) {
+            CHECK(total == 4 && step == uint32_t(progress_calls++));
+            return true;
+          },
+          [&](uint32_t step, const std::vector<float>& v, const std::vector<float>& a) {
+            ++boundaries;
+            CHECK((v != previous_video) == (swap ? advance_long[step] : advance_short[step]));
+            CHECK((a != previous_audio) == (swap ? advance_short[step] : advance_long[step]));
+            previous_video = v;
+            previous_audio = a;
+          });
+      CHECK(boundaries == 4 && progress_calls == 4 && output.steps_completed == 4);
+      CHECK(output.steps_computed == 4 && output.steps_skipped == 0 && !output.cancelled);
+      CHECK(std::all_of(output.video_rows.begin(), output.video_rows.end(), [](float x) {
+        return std::isfinite(x);
+      }));
+      CHECK(std::all_of(output.audio_rows.begin(), output.audio_rows.end(), [](float x) {
+        return std::isfinite(x);
+      }));
+      denoiser.prepare(prompt_values.data(), prompt_values.size(), video_values.data(),
+                       video_values.size(), audio_values.data(), audio_values.size());
+      const auto repeat = denoiser.run(video, audio);
+      CHECK(repeat.video_rows == output.video_rows && repeat.audio_rows == output.audio_rows);
+      denoiser.prepare(prompt_values.data(), prompt_values.size(), video_values.data(),
+                       video_values.size(), audio_values.data(), audio_values.size());
+      const auto cancelled = denoiser.run(video, audio, [](uint32_t, uint32_t) {
+        return false;
+      });
+      CHECK(cancelled.cancelled && cancelled.steps_completed == 1);
+      CHECK(swap ? cancelled.audio_rows == audio_values : cancelled.video_rows == video_values);
+    }
+  }
   denoiser.unload();
   CHECK(!denoiser.loaded() && !denoiser.prepared() && denoiser.persistent_bytes() == 0u &&
         denoiser.scratch_bytes() == 0u && denoiser.peak_device_bytes() == 0u);

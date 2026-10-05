@@ -84,6 +84,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool dry_run = false;
   bool synthetic = false;
   std::optional<slopfab::sampler::SamplerKind> sampler_kind;
+  std::optional<int> audio_steps;
   std::string dump_latents;
   std::string save_latents;
   std::string continue_from;
@@ -159,6 +160,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.num_frames = std::atoi(next("--frames"));
     } else if (arg == "--steps") {
       req.num_inference_steps = std::atoi(next("--steps"));
+    } else if (arg == "--audio-steps") {
+      const std::string value = next("--audio-steps");
+      size_t used = 0;
+      const int parsed = std::stoi(value, &used);
+      if (used != value.size() || parsed < 2 || parsed > 1000000)
+        throw std::invalid_argument("--audio-steps expects an integer in [2,1000000]");
+      audio_steps = parsed;
     } else if (arg == "--seed") {
       // A negative seed asks for a random one, the same as passing no --seed at
       // all. Checked on the text rather than on the parsed value because
@@ -545,6 +553,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
                                                             : slopfab::DeviceBackend::kCuda;
   options.vulkan_portable_arithmetic = vulkan_portable_arithmetic;
   options.sampler = sampler_kind;
+  if (audio_steps)
+    req.sampling.audio_steps = audio_steps;
   if (sampler_kind)
     req.sampling.sampler =
         sampler_kind; // Explicit CLI selection wins regardless of argument order.
