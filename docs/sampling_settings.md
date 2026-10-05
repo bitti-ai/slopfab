@@ -25,6 +25,63 @@ Omit `base_sigmas` to inherit the selected grid, or use the ordinary linspace if
 
 CLI, C++ and C API now inherit the same recipe defaults: ordinarily 50 grid points, or 4 for Animate. The CLI previously forced 15. `GenerateRequest::num_inference_steps = 0` means inherit; positive explicit counts are retained when toggling Animate. Set an explicit count to preserve an old CLI invocation's evaluation count.
 
+## Independent audio steps (experimental)
+
+Use `--audio-steps` to give audio its own step count, for example when a LoRA
+uses a short video schedule:
+
+```sh
+slopfab generate --prompt "A person playing a piano" --steps 4 --audio-steps 25 --out piano.mp4
+```
+
+Like `--steps`, this counts grid points **including terminal zero**: the example
+runs 3 video updates and 24 audio updates. Audio uses an ordinary linspace with
+the resolved `audio_sigma_shift`. Video retains its selected grid, including a
+fixed grid from a LoRA, `base_sigmas`, or a named schedule. Without this option,
+audio continues to inherit the video count and base grid exactly as before.
+
+Both CUDA and Vulkan interleave updates by relative progress through each
+modality's step count. Each transformer call sees the current video and audio
+noise levels; only modalities due for an update advance. The other latents
+remain unchanged. Both terminal updates happen together. With V video updates
+and A audio updates, there are `V + A - gcd(V, A)` transformer calls. Counts that
+are multiples of one another need only `max(V, A)` calls. `--dry-run` and C API
+progress report the total calls, and the plan description also lists both
+modality update counts.
+
+Extra audio updates still run the shared transformer, so they cost generation
+time. Video's update grid stays unchanged, but the additional audio states can
+change its predictions and final output. More audio steps are experimental and
+do not guarantee better quality, especially with distilled adapters. Compare
+results with the option unset using the same seed.
+
+`audio_steps` also works in version-1 sampling JSON and model/LoRA metadata.
+It accepts integers from 2 to 1,000,000 and follows the usual field precedence
+and adapter conflict rules. Explicit `--audio-steps` wins over the JSON file
+regardless of argument order. A fixed `base_sigmas` grid still governs video;
+`audio_steps` overrides that grid for audio. Even an explicit equal count uses
+the ordinary audio grid, so omit the option to preserve a fixed audio recipe.
+
+Independent counts support Euler and re-noising on both backends, and AB2 on
+CUDA when no fixed grid is selected. Different counts cannot use step, block,
+or MotionCache reuse. `audio_steps` is rejected for still images, preserved
+target audio, and FastH3 V2, which requires its trained audio grid.
+
+In C++, set `request.sampling.audio_steps = 25`. C API 1.21 adds a setter
+without changing any public struct layouts:
+
+```c
+slopfab_request_set_steps(request, 4);
+slopfab_request_set_audio_steps(request, 25);
+/* Clear the explicit audio override and inherit metadata/defaults again. */
+slopfab_request_set_audio_steps(request, 0);
+```
+
+The setter changes the `audio_steps` field in the request's sampling overrides.
+`slopfab_request_set_sampling_settings` replaces those overrides, including
+this field, so call the dedicated setter after loading JSON if it should win.
+Invalid setter values leave the previous setting intact.
+
 ## Model and adapter metadata
 
 Store the same JSON object as a **string** under the SafeTensors metadata key `slopfab.sampling`:
