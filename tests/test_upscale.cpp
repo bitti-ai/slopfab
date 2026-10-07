@@ -220,6 +220,66 @@ SLOPFAB_TEST(upscale_nearest_convolution) {
   }
 }
 
+SLOPFAB_TEST(upscale_cuda_chunk_boundary_and_buffer_lifetime) {
+#if SLOPFAB_WITH_CUDA
+  int devices = 0;
+  if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
+    SKIP_UNSUPPORTED_HARDWARE("no CUDA device");
+    return;
+  }
+  // 34,427 pixels: the 32,768-pixel chunk boundary splits an odd-width row,
+  // and the final chunk is partial. Three input / five output channels also
+  // catch incorrect output offsets that accidentally use the input stride.
+  constexpr int h = 199, w = 173, ci = 3, co = 5;
+  static_assert(h * w > 32768 && 32768 % w != 0);
+  const auto input = test::make_data(size_t(h) * w * ci, 47, 0.5f);
+  const auto weight = test::make_data(size_t(co) * ci * 9, 53, 0.2f);
+  const auto bias = test::make_data(co, 59, 0.1f);
+  std::vector<float> expected(size_t(h) * w * co);
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x)
+      for (int oc = 0; oc < co; ++oc) {
+        float value = 0;
+        for (int ic = 0; ic < ci; ++ic)
+          for (int ky = 0; ky < 3; ++ky)
+            for (int kx = 0; kx < 3; ++kx) {
+              const int sy = y + ky - 1, sx = x + kx - 1;
+              if (sy >= 0 && sx >= 0 && sy < h && sx < w)
+                value += input[(sy * w + sx) * ci + ic] *
+                         weight[((oc * ci + ic) * 3 + ky) * 3 + kx];
+            }
+        value += bias[oc];
+        expected[(y * w + x) * co + oc] = value < 0 ? value * 0.2f : value;
+      }
+  auto backend = make_cuda_backend();
+  auto a = backend->upload(input), b = backend->upload(weight), c = backend->upload(bias);
+  auto intermediate = backend->allocate(input.size());
+  const Parameters residual{kResidual, h, w, ci, ci, uint32_t(input.size()), 0, 0};
+  backend->run(residual, a, a, a, intermediate);
+  auto output = backend->allocate(expected.size());
+  backend->run({kConv, h, w, ci, co, uint32_t(expected.size()), 1, 0}, intermediate, b, c, output);
+  // Return a just-consumed activation before synchronizing. Reusing its pool
+  // slot must stay ordered after the convolution that still reads it.
+  intermediate.reset();
+  auto reused = backend->allocate(input.size());
+  auto overwrite = residual;
+  overwrite.scale = 1;
+  backend->run(overwrite, a, a, a, reused);
+  // Outputs must own their pool leases even after the producing backend dies.
+  backend.reset();
+  auto reader = make_cuda_backend();
+  CHECK_CLOSE(expected, reader->download(output, expected.size()), 2e-6,
+              "chunked convolution preserves every pixel and survives backend destruction");
+  auto doubled = input;
+  for (float& value : doubled)
+    value *= 2;
+  CHECK_CLOSE(doubled, reader->download(reused, input.size()), 0,
+              "queued activation reuse preserves stream ordering");
+#else
+  SKIP_UNSUPPORTED_HARDWARE("CUDA backend not compiled");
+#endif
+}
+
 SLOPFAB_TEST(upscale_full_graph_tiling_frames_and_cancellation) {
   Fixture fixture;
   std::vector<TensorWrite> tensors;
