@@ -139,7 +139,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_seedvr2_upscale(
 /* ABI 1.22: stream existing RGB frames through Real-ESRGAN x4plus.
  * Uses the callback contract above; input is width*height*3 packed floats,
  * output is (width*4)*(height*4)*3. Keeps one model loaded for the stream.
- * backend is 0 CUDA or 1 Vulkan; tile_size is in input pixels (0 untiled).
+ * backend is 0 CUDA or 1 Vulkan; tile_size is 0..512 input pixels (0 untiled).
+ * Frames are processed independently; Real-ESRGAN has no sampling seed.
  * The host owns codecs, timing, audio and any final resampling. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_realesrgan_upscale(
     const char* model_path, int32_t width, int32_t height, int32_t backend,

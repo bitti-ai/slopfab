@@ -26,6 +26,7 @@ struct UpscaleOptions {
   int tile_size = 128;
   int tile_pad = 10;
   int pre_pad = 10; // reflect at the right and bottom edges, as in RealESRGANer
+  // The following fields apply only to SeedVR2; Real-ESRGAN has no sampling seed.
   // SeedVR2: tile_size is the VAE tile in output pixels; padding above is unused.
   std::string vae_path = "weights/seedvr2/ema_vae_fp16.safetensors";
   int width = 0, height = 0; // SeedVR2 target size; both zero selects 4x

@@ -1072,4 +1072,12 @@ SLOPFAB_TEST(capi_realesrgan_stream_validates_and_cancels_before_loading_weights
   CHECK(written == 0);
   CHECK(slopfab_realesrgan_upscale("absent.safetensors", 4097, 32, 0, 128, read,
                                   write, cancel, nullptr, &written) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  int reads = 0;
+  auto count_reads = +[](void* user, float*, uint64_t) {
+    ++*static_cast<int*>(user);
+    return 0;
+  };
+  CHECK(slopfab_realesrgan_upscale("absent.safetensors", 32, 32, 0, 513, count_reads,
+                                  write, nullptr, &reads, &written) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(reads == 0 && written == 0);
 }

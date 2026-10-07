@@ -8,7 +8,7 @@ extern "C" SLOPFAB_C_API int SLOPFAB_CALL slopfab_realesrgan_upscale(
     void* user, uint64_t* frames_written) {
   if (frames_written) *frames_written = 0;
   if (!model_path || !*model_path || width < 1 || height < 1 || width > 4096 ||
-      height > 4096 || (backend != 0 && backend != 1) || tile_size < 0 ||
+      height > 4096 || (backend != 0 && backend != 1) || tile_size < 0 || tile_size > 512 ||
       !read_frame || !write_frame || !frames_written)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "realesrgan_upscale: invalid arguments");
   return guarded([&] {
