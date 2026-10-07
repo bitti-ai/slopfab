@@ -46,6 +46,8 @@ public:
   ~Restorer();
   Restorer(const Restorer&) = delete;
   Restorer& operator=(const Restorer&) = delete;
+  // first_frame identifies the stream position; it does not alter the seed.
+  // Equal input batches with equal geometry/settings use equal diffusion noise.
   std::vector<Frame> restore(const std::vector<Frame>& frames, uint64_t first_frame = 0);
   std::function<void(const std::string&)> progress;
   std::function<bool()> cancelled;

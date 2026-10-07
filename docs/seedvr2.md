@@ -49,7 +49,10 @@ slopfab upscale --input input.mp4 --upscale-method seedvr2 --upscale-resolution 
 
 For lower memory, retain the default VAE tile, reduce it to 128, or use
 `--upscale-segment-frames 1`. A one-frame segment gives up joint temporal restoration.
-Increase segments to 9 or 17 when memory permits. Explicit settings are honored;
+For stronger temporal context, try 17 when memory permits. With the reference
+window geometry, 5/9/13 frames give one latent time position per DiT attention
+window; 17 is the first supported length with multiple positions per window.
+The VAE also provides temporal context at shorter lengths. Explicit settings are honored;
 allocation failure reports an error instead of silently changing quality settings.
 
 Weights are memory mapped. A restorer caches converted weights across blocks
@@ -119,8 +122,10 @@ already resized float pixels without this quantization.
 - VAE tiles overlap by 64 output pixels and are feathered. Spatial tiling changes
   group normalization and attention context, so it is approximate and may show
   seams. Use `--upscale-tile 0` when memory permits.
-- The VAE posterior is sampled, followed by one Euler diffusion evaluation at
-  sigma 1 with CFG 1 and latent scaling 0.9152. Random draws are reproducible for
+- The VAE posterior mean is used as conditioning, followed by one Euler diffusion
+  evaluation at sigma 1 with CFG 1 and latent scaling 0.9152. Diffusion noise resets
+  to the configured seed for each segment, independently of stream position.
+  Random draws are reproducible for
   a fixed native build/settings, but are not PyTorch's RNG sequence. Changing
   segment length changes restoration. Split at scene cuts for best boundaries.
 - RGB is processed through 8-bit media input/output. HDR, alpha, frame
@@ -157,6 +162,79 @@ Generated H3 samples use the shared upscaler after VAE GPU resources have been
 released. Continuation latents remain H3 latents.
 
 ## Development validation
+
+### Temporal consistency correction, 2026-10-07
+
+Comparison with [numz/ComfyUI-SeedVR2_VideoUpscaler at 4490bd1](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/tree/4490bd1f482e026674543386bb2a4d176da245b9)
+identified two inference mismatches, corrected in `03e9469`:
+
+- The active [VAE wrapper](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/blob/4490bd1f482e026674543386bb2a4d176da245b9/src/models/video_vae_v3/modules/attn_video_vae.py#L1680)
+  returns posterior mode (the mean), including when its caller requests `.latent`.
+  Native inference incorrectly sampled the posterior, adding conditioning noise.
+- The reference [generation loop](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/blob/4490bd1f482e026674543386bb2a4d176da245b9/src/core/generation_phases.py#L661)
+  resets the diffusion seed per batch. Native inference used `seed + first_frame`
+  and consumed posterior draws before diffusion draws. Equal input batches
+  therefore changed their restoration according to their position in the clip.
+
+The native pipeline now uses mean times 0.9152 and an independent fixed-seed
+diffusion sequence. Native/PyTorch RNG sequences still differ; equal numeric
+seeds are not a claim of bit-identical ComfyUI output. No temporal smoothing,
+frame interpolation or averaging beyond the existing overlap blend was added.
+
+Controlled probes used 17 synthetic frames, 256x144 output, FP16 checkpoints,
+seed 666, untiled VAE and the existing RGB color correction. A stationary probe
+repeats an identical patterned frame. A panning probe translates that pattern
+two pixels left per frame; its metric aligns corresponding pixels first.
+Values are RMS differences in float RGB [0,1], averaged across adjacent frames.
+
+| Probe / segment length | Before correction | Corrected, 5 frames | Corrected, 17 frames |
+| --- | ---: | ---: | ---: |
+| Stationary mean temporal RMSE | 0.022425 | 0.016989 | 0.005074 |
+| Stationary maximum temporal RMSE | 0.047780 | 0.023958 | 0.008758 |
+| Motion-aligned pan mean temporal RMSE | 0.012819 | 0.013427 | 0.006876 |
+
+The fixed five-frame pipeline halves the stationary probe's worst jump, but the
+panning mean is slightly worse. Seventeen-frame context helps both probes.
+These are controlled consistency measurements, not a general perceptual-quality
+score, nor a comparison against the user's particular video or ComfyUI workflow.
+Defaults remain five frames and a 256-pixel VAE tile; larger segments and untiled
+VAE need more memory. A corrected 1280x720, 17-frame untiled segment completed
+on the RTX 5090 in 14.27 seconds on its first call, with sampled global CUDA usage
+29,433 MiB including a 1,613 MiB idle baseline. This is close to a 32 GiB card's
+capacity; retain tiling or reduce weight residency if other GPU allocations
+leave insufficient room. No automatic quality reduction is performed.
+
+An independent PyTorch decode also reproduces the residual variation. With the
+same captured conditioning/noise, the pinned ByteDance architecture's five-frame
+pre-color output has mean adjacent RMSE 0.028543 versus native 0.028695, and
+maximum 0.043231 versus 0.043212. Native/reference image RMSE is 0.003314;
+full DiT prediction relative L2 is 1.35%. This isolates arithmetic from RNG and
+preprocessing, and is not a full ComfyUI preprocessing/color-pipeline comparison.
+
+Color matching and VAE tiling still differ from the linked application: its UI
+defaults to LAB correction and disables spatial tiling, while native correction
+matches RGB mean/std per frame. Its enabled tiler also uses a different overlap
+window. Substituting its reference wavelet correction on the captured five-frame
+static output increased mean temporal RMSE from 0.01538 to 0.02725, so that
+substitution was rejected. The source implementation is therefore a useful
+reference, not a promise that these pipelines now produce identical images.
+
+Reproduce the controlled test (requires CUDA/checkpoints; metrics require NumPy):
+
+```sh
+slopfab_seedvr2_temporalbench DIT.safetensors VAE.safetensors 256 144 5 0 static 17 static.f32
+python tools/seedvr2_temporal_metrics.py static.f32 256 144
+slopfab_seedvr2_temporalbench DIT.safetensors VAE.safetensors 256 144 17 0 pan 17 pan.f32
+python tools/seedvr2_temporal_metrics.py pan.f32 256 144 --shift 2
+```
+
+The probe writes interleaved RGB float32 frames. Compare matched settings when
+isolating a code change. The reference comparison tool's `--temporal-output`
+option decodes the complete reference noise-minus-prediction result and saves
+both pre-color clips and metrics. Regression tests inspect actual VAE moments
+and DiT input captures, and require equal input segments at different stream
+positions to return bit-identical outputs. Historical performance comparisons
+below predate this conditioning correction and do not validate its semantics.
 
 ### Performance measurements, 2026-10-07
 
