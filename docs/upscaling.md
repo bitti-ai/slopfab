@@ -72,6 +72,91 @@ on GPU storage and dispatch limits; reduce the tile size if a limit is exceeded.
 An unsupported backend or allocation failure produces an error, with no silent
 fallback. Decoded output uses 16 times the original pixel storage on the host.
 
+## Measured Real-ESRGAN performance
+
+Measured on Windows, RTX 5090 32 GiB, Release build, CUDA 12.8 compiler with
+the dynamically selected CUDA 13 cuBLAS, using `RealESRGAN_x4plus.safetensors`.
+The baseline is revision `1a09b89`; the benchmark was added in `8711ee4` before
+runtime changes. Both versions use FP32 inference and accumulation without TF32.
+These are local measurements, not performance guarantees for other GPUs.
+
+The main workload is one 320x180 RGB frame upscaled to 1280x720, with default
+10-pixel tile padding and reflection padding. Times are the median of nine warm
+calls after one cold call, reusing the loaded model. They include tile preparation,
+GPU transfers and output assembly, and exclude writing the optional float dump.
+
+| Backend / input tile size | Before | After | Speedup | Sampled global peak GPU memory before / after |
+| --- | ---: | ---: | ---: | ---: |
+| CUDA / 128 | 1.299 s | 0.275 s | 4.73x | 2,569 / 2,029 MiB |
+| CUDA / untiled | 0.450 s | 0.235 s | 1.92x | 4,387 / 2,545 MiB |
+| Vulkan / 128 | 0.633 s | 0.477 s | 1.33x | 3,369–3,374 / 3,246 MiB |
+
+CUDA memory uses `cudaMemGetInfo` every 10 ms. Its idle baseline was 1,612.6 MiB;
+the incremental peak therefore fell from 956 to 416 MiB tiled, and from 2,774 to
+932 MiB untiled. Warm retained global memory fell from 2,409 to 2,029 MiB tiled
+and from 3,895 to 2,545 MiB untiled. Activations remain cached for model reuse.
+Peak in the benchmark is cumulative across all calls. Sampling can miss brief
+peaks, and global usage includes unrelated allocations.
+
+Vulkan memory was measured separately with `nvidia-smi`, requesting 20 ms
+sampling; its idle baseline was 2,716 MiB. Two alternating before/after runs
+showed a 123–128 MiB lower peak. These counters differ from CUDA's counters,
+so the memory columns should only be compared within each backend. The benchmark
+itself reports `memory_available=0` for Vulkan; zero fields do not mean zero use.
+A smaller 64x36 untiled Vulkan workload also improved from 56.2 to 30.1 ms
+(median of three warm calls).
+
+A complete 13-frame 320x180 H.264/AAC video, using the default CUDA tile size,
+fell from 18.09 to 4.55 seconds including model initialization, FFmpeg decoding,
+encoding and audio remuxing. Both outputs contain 13 frames at 1280x720, and the
+copied audio packet SHA-256 matches the input. This is a separate single-run
+end-to-end check; the frame benchmark above provides repeated timings.
+
+The retained changes are:
+
+- CUDA activation leases reuse buffers in default-stream order, removing
+  repeated allocation/free synchronization. Persistent weights have separate
+  allocations; outstanding outputs keep the activation pool alive.
+- Convolution im2col processes at most 32,768 pixels at once. Scratch is bounded
+  to 216 MiB at the widest 192-channel layer, instead of growing with the full
+  output area. This preserves FP32 math and the original padding semantics.
+- Vulkan records up to 16 operations per submission and collects completed
+  resources immediately. A 64 MiB resource budget limits batching retention;
+  a single larger operation is submitted immediately. Readback flushes pending
+  work, preserving tile-level cancellation. `SLOPFAB_REALESRGAN_VULKAN_BATCH=1`
+  restores per-operation submission for comparisons (valid range: 1–64).
+
+Experiments were rejected when they did not help: an 8,192-pixel CUDA scratch
+chunk slowed tiled inference about 10% compared with 32,768; fused nearest
+upsampling showed no measurable end-to-end or peak-memory benefit; gathering
+concatenated channels inside im2col slowed this workload roughly threefold.
+Those fusion experiments are not enabled or retained in the implementation.
+
+Maximum final RGB differences versus the original CUDA implementation were
+`1.91e-6` tiled and `6.30e-5` untiled (RMSE `2.64e-7` and `1.01e-6`). Changing
+GEMM chunk shapes can change floating-point rounding. The existing independent
+PyTorch reference still passes its `2e-4` maximum-error requirement on both
+backends. Vulkan before/after outputs are bit-for-bit identical at both benchmark
+sizes. Windows and Linux tests cover reference parity, chunk boundaries, queued
+buffer reuse, output lifetime, batching dependencies, resource bounds, tiling,
+multiple frames and cancellation.
+
+Reproduce the frame measurements with:
+
+```powershell
+cmake --build build --config Release --target slopfab_realesrganbench
+build/Release/slopfab_realesrganbench.exe weights/upscaler/RealESRGAN_x4plus.safetensors cuda 320 180 1 128 10 output-prefix
+# Use tile 0 for untiled inference, or replace cuda with vulkan.
+# Use - instead of output-prefix to suppress raw float32 output files.
+```
+
+The positional arguments are checkpoint, backend, input width, input height,
+frames, tile size, repeats and output prefix. Dumps use planar RGB float32.
+`tools/seedvr2_compare_outputs.py` also compares these raw float files despite its
+name. Preserve separate baseline and candidate executables, keep the GPU free
+of other workloads, and compare matching tile/padding settings: tiling changes
+the model's context, so tiled and untiled outputs need not match each other.
+
 ## Library APIs
 
 The C++ factory in `include/slopfab/upscale.h` returns the shared `Upscaler`
