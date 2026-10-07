@@ -12,9 +12,9 @@ public:
   ~LtLinear();
   LtLinear(const LtLinear&) = delete;
   LtLinear& operator=(const LtLinear&) = delete;
-  bool forward(const __nv_bfloat16* x, const __nv_bfloat16* weights,
-               const __nv_bfloat16* bias, __nv_bfloat16* output, int rows, int input_channels,
-               int output_channels, cudaStream_t stream = nullptr);
+  bool forward(const __nv_bfloat16* x, const __nv_bfloat16* weights, const __nv_bfloat16* bias,
+               __nv_bfloat16* output, int rows, int input_channels, int output_channels,
+               cudaStream_t stream = nullptr);
 
 private:
   struct Impl;

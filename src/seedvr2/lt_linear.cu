@@ -13,10 +13,12 @@
 
 namespace slopfab::seedvr2 {
 namespace {
-#define LT_FUNCTIONS(X)                                                                           \
-  X(Create) X(Destroy) X(MatmulDescCreate) X(MatmulDescDestroy) X(MatmulDescSetAttribute)             \
-  X(MatrixLayoutCreate) X(MatrixLayoutDestroy) X(MatmulPreferenceCreate)                           \
-  X(MatmulPreferenceDestroy) X(MatmulPreferenceSetAttribute) X(MatmulAlgoGetHeuristic) X(Matmul)
+#define LT_FUNCTIONS(X)                                                                            \
+  X(Create)                                                                                        \
+  X(Destroy) X(MatmulDescCreate) X(MatmulDescDestroy) X(MatmulDescSetAttribute)                    \
+      X(MatrixLayoutCreate) X(MatrixLayoutDestroy) X(MatmulPreferenceCreate)                       \
+          X(MatmulPreferenceDestroy) X(MatmulPreferenceSetAttribute) X(MatmulAlgoGetHeuristic)     \
+              X(Matmul)
 
 struct Api {
 #define DECLARE(name) decltype(&::cublasLt##name) name = nullptr;
@@ -34,18 +36,22 @@ struct Api {
     HMODULE module = GetModuleHandleW(path.c_str());
     if (!module)
       return false;
-#define LOAD(name) name = reinterpret_cast<decltype(name)>(GetProcAddress(module, "cublasLt" #name));
+#define LOAD(name)                                                                                 \
+  name = reinterpret_cast<decltype(name)>(GetProcAddress(module, "cublasLt" #name));
 #else
 #define LOAD(name) name = &::cublasLt##name;
 #endif
     LT_FUNCTIONS(LOAD)
 #undef LOAD
-#define REQUIRE(name) if (!name) return false;
+#define REQUIRE(name)                                                                              \
+  if (!name)                                                                                       \
+    return false;
     LT_FUNCTIONS(REQUIRE)
 #undef REQUIRE
     return true;
   }
 };
+
 #undef LT_FUNCTIONS
 
 constexpr size_t workspace_bytes = size_t(8) << 20;
@@ -57,6 +63,7 @@ struct LtLinear::Impl {
   int device = -1;
   cublasLtHandle_t handle = nullptr;
   void* workspace = nullptr;
+
   struct Plan {
     Api& api;
     cublasLtMatmulDesc_t operation = nullptr;
@@ -64,7 +71,10 @@ struct LtLinear::Impl {
     cublasLtMatmulAlgo_t algorithm{};
     size_t workspace_size = 0;
     bool valid = false;
-    explicit Plan(Api& api_) : api(api_) {}
+
+    explicit Plan(Api& api_) : api(api_) {
+    }
+
     ~Plan() {
       if (operation)
         api.MatmulDescDestroy(operation);
@@ -76,6 +86,7 @@ struct LtLinear::Impl {
         api.MatrixLayoutDestroy(output);
     }
   };
+
   std::map<std::tuple<int, int, int>, std::unique_ptr<Plan>> plans;
 
   ~Impl() {
@@ -118,7 +129,8 @@ struct LtLinear::Impl {
       return *found->second;
     auto value = std::make_unique<Plan>(api);
     auto& p = *plans.emplace(key, std::move(value)).first->second;
-    if (api.MatmulDescCreate(&p.operation, CUBLAS_COMPUTE_32F, CUDA_R_32F) != CUBLAS_STATUS_SUCCESS ||
+    if (api.MatmulDescCreate(&p.operation, CUBLAS_COMPUTE_32F, CUDA_R_32F) !=
+            CUBLAS_STATUS_SUCCESS ||
         api.MatrixLayoutCreate(&p.a, CUDA_R_16BF, ci, co, ci) != CUBLAS_STATUS_SUCCESS ||
         api.MatrixLayoutCreate(&p.b, CUDA_R_16BF, ci, rows, ci) != CUBLAS_STATUS_SUCCESS ||
         api.MatrixLayoutCreate(&p.output, CUDA_R_16BF, co, rows, co) != CUBLAS_STATUS_SUCCESS)
@@ -127,25 +139,25 @@ struct LtLinear::Impl {
     const cublasLtEpilogue_t epilogue = CUBLASLT_EPILOGUE_BIAS;
     const cudaDataType_t bias_type = CUDA_R_16BF;
     if (api.MatmulDescSetAttribute(p.operation, CUBLASLT_MATMUL_DESC_TRANSA, &transpose,
-                                  sizeof(transpose)) != CUBLAS_STATUS_SUCCESS ||
+                                   sizeof(transpose)) != CUBLAS_STATUS_SUCCESS ||
         api.MatmulDescSetAttribute(p.operation, CUBLASLT_MATMUL_DESC_EPILOGUE, &epilogue,
-                                  sizeof(epilogue)) != CUBLAS_STATUS_SUCCESS ||
+                                   sizeof(epilogue)) != CUBLAS_STATUS_SUCCESS ||
         api.MatmulDescSetAttribute(p.operation, CUBLASLT_MATMUL_DESC_BIAS_DATA_TYPE, &bias_type,
-                                  sizeof(bias_type)) != CUBLAS_STATUS_SUCCESS ||
+                                   sizeof(bias_type)) != CUBLAS_STATUS_SUCCESS ||
         api.MatmulDescSetAttribute(p.operation, CUBLASLT_MATMUL_DESC_BIAS_POINTER, &bias,
-                                  sizeof(bias)) != CUBLAS_STATUS_SUCCESS)
+                                   sizeof(bias)) != CUBLAS_STATUS_SUCCESS)
       return p;
     cublasLtMatmulPreference_t preference = nullptr;
     if (api.MatmulPreferenceCreate(&preference) != CUBLAS_STATUS_SUCCESS)
       return p;
     cublasLtMatmulHeuristicResult_t result{};
     int count = 0;
-    auto status = api.MatmulPreferenceSetAttribute(
-        preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &workspace_bytes,
-        sizeof(workspace_bytes));
+    auto status =
+        api.MatmulPreferenceSetAttribute(preference, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+                                         &workspace_bytes, sizeof(workspace_bytes));
     if (status == CUBLAS_STATUS_SUCCESS)
       status = api.MatmulAlgoGetHeuristic(handle, p.operation, p.a, p.b, p.output, p.output,
-                                         preference, 1, &result, &count);
+                                          preference, 1, &result, &count);
     api.MatmulPreferenceDestroy(preference);
     if (status == CUBLAS_STATUS_SUCCESS && count && result.state == CUBLAS_STATUS_SUCCESS &&
         result.workspaceSize <= workspace_bytes) {
@@ -157,7 +169,9 @@ struct LtLinear::Impl {
   }
 };
 
-LtLinear::LtLinear() : impl_(std::make_unique<Impl>()) {}
+LtLinear::LtLinear() : impl_(std::make_unique<Impl>()) {
+}
+
 LtLinear::~LtLinear() = default;
 
 bool LtLinear::forward(const __nv_bfloat16* x, const __nv_bfloat16* weights,
@@ -169,12 +183,12 @@ bool LtLinear::forward(const __nv_bfloat16* x, const __nv_bfloat16* weights,
   if (!p.valid)
     return false;
   if (impl_->api.MatmulDescSetAttribute(p.operation, CUBLASLT_MATMUL_DESC_BIAS_POINTER, &bias,
-                                       sizeof(bias)) != CUBLAS_STATUS_SUCCESS)
+                                        sizeof(bias)) != CUBLAS_STATUS_SUCCESS)
     return false;
   const float alpha = 1, beta = 0;
-  const auto status = impl_->api.Matmul(
-      impl_->handle, p.operation, &alpha, weights, p.a, x, p.b, &beta, output, p.output, output,
-      p.output, &p.algorithm, impl_->workspace, p.workspace_size, stream);
+  const auto status = impl_->api.Matmul(impl_->handle, p.operation, &alpha, weights, p.a, x, p.b,
+                                        &beta, output, p.output, output, p.output, &p.algorithm,
+                                        impl_->workspace, p.workspace_size, stream);
   if (status == CUBLAS_STATUS_NOT_SUPPORTED || status == CUBLAS_STATUS_INVALID_VALUE) {
     p.valid = false;
     return false;

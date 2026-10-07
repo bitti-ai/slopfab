@@ -7,8 +7,8 @@ __global__ void prepare_tile(const float* input, BFloat* output, size_t count, i
   const size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= count)
     return;
-  const int c = int(i % channels), xx = int(i / channels % tw),
-            yy = int(i / channels / tw % th), z = int(i / channels / tw / th);
+  const int c = int(i % channels), xx = int(i / channels % tw), yy = int(i / channels / tw % th),
+            z = int(i / channels / tw / th);
   const int sy = min(y + yy, height - 1), sx = min(x + xx, width - 1);
   float value = input[((size_t(z) * height + sy) * width + sx) * channels + c];
   value = image ? __fsub_rn(__fmul_rn(2.0f, value), 1.0f) : value / 0.9152f;
@@ -60,30 +60,29 @@ int blocks(size_t count) {
 }
 
 void prepare_image_tile(const float* input, Tensor& tile, int height, int width, int y, int x) {
-  prepare_tile<<<blocks(tile.size()), 256>>>(input, tile.data.get(), tile.size(), tile.h,
-                                            tile.w, tile.c, height, width, y, x, true);
+  prepare_tile<<<blocks(tile.size()), 256>>>(input, tile.data.get(), tile.size(), tile.h, tile.w,
+                                             tile.c, height, width, y, x, true);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
 void prepare_latent_tile(const float* input, Tensor& tile, int height, int width, int y, int x) {
-  prepare_tile<<<blocks(tile.size()), 256>>>(input, tile.data.get(), tile.size(), tile.h,
-                                            tile.w, tile.c, height, width, y, x, false);
+  prepare_tile<<<blocks(tile.size()), 256>>>(input, tile.data.get(), tile.size(), tile.h, tile.w,
+                                             tile.c, height, width, y, x, false);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void accumulate_image_tile(const Tensor& tile, float* sum, float* coverage, int height,
-                           int width, int padded_height, int padded_width, int y, int x,
-                           int overlap) {
-  accumulate_tile<<<blocks(tile.size()), 256>>>(
-      tile.data.get(), sum, coverage, tile.size(), tile.h, tile.w, tile.c, height, width,
-      padded_height, padded_width, y, x, overlap);
+void accumulate_image_tile(const Tensor& tile, float* sum, float* coverage, int height, int width,
+                           int padded_height, int padded_width, int y, int x, int overlap) {
+  accumulate_tile<<<blocks(tile.size()), 256>>>(tile.data.get(), sum, coverage, tile.size(), tile.h,
+                                                tile.w, tile.c, height, width, padded_height,
+                                                padded_width, y, x, overlap);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
-void normalize_image_tiles(float* sum, const float* coverage, size_t count, int height,
-                           int width, int channels, bool decoded) {
-  normalize_tiles<<<blocks(count), 256>>>(sum, coverage, count, size_t(height) * width,
-                                         channels, decoded);
+void normalize_image_tiles(float* sum, const float* coverage, size_t count, int height, int width,
+                           int channels, bool decoded) {
+  normalize_tiles<<<blocks(count), 256>>>(sum, coverage, count, size_t(height) * width, channels,
+                                          decoded);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 }

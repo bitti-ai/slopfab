@@ -155,7 +155,7 @@ struct Restorer::Impl {
       auto out = rt->attention(q, k, v, 1, 512);
       out = rt->linear(out, a + ".to_out.0");
       SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(norm.data.get() + size_t(t) * frame.size(), out.data.get(),
-                                    frame.size() * sizeof(BFloat), cudaMemcpyDeviceToDevice));
+                                         frame.size() * sizeof(BFloat), cudaMemcpyDeviceToDevice));
     }
     rt->add(x, norm);
     norm = Tensor();
@@ -219,8 +219,8 @@ struct Restorer::Impl {
           auto pixels = rt->tensor(t, y.second - y.first, x.second - x.first, 3);
           prepare_image_tile(input.get(), pixels, o.height, o.width, y.first, x.first);
           auto encoded = encode(std::move(pixels));
-          accumulate_image_tile(encoded, moments.get(), coverage.get(), lh, lw, lh, lw,
-                                y.first / 8, x.first / 8, 8);
+          accumulate_image_tile(encoded, moments.get(), coverage.get(), lh, lw, lh, lw, y.first / 8,
+                                x.first / 8, 8);
         }
       normalize_image_tiles(moments.get(), coverage.get(), moments.size(), lh, lw, 32, false);
       std::vector<float> result(moments.size());
@@ -295,7 +295,7 @@ struct Restorer::Impl {
                                 y.first, x.first, 64);
         }
       normalize_image_tiles(output.get(), coverage.get(), output.size(), o.height, o.width, 3,
-                             true);
+                            true);
       const size_t frame_count = size_t(o.height) * o.width * 3;
       std::vector<Frame> result(t);
       for (int z = 0; z < t; ++z) {
@@ -349,12 +349,7 @@ struct Restorer::Impl {
 
   std::vector<float> denoise(const std::vector<float>& moments, int t, int h, int w,
                              uint64_t first) {
-    rt->begin_dit(dit);
-    struct DenoiseScope {
-      Runtime& runtime;
-      bool finished = false;
-      ~DenoiseScope() { if (!finished) runtime.abort_dit(); }
-    } scope{*rt};
+    rt->clear(dit);
     const int n = t * h * w, ph = h / 2, pw = w / 2;
     std::mt19937_64 rng(o.seed + first);
     std::normal_distribution<float> gaussian;
@@ -387,7 +382,7 @@ struct Restorer::Impl {
     }
     Tensor text = rt->tensor(initial_text.t, initial_text.h, initial_text.w, initial_text.c);
     SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(text.data.get(), initial_text.data.get(),
-                                      text.size() * sizeof(BFloat), cudaMemcpyDeviceToDevice));
+                                       text.size() * sizeof(BFloat), cudaMemcpyDeviceToDevice));
     if (!timestep_embedding.size()) {
       std::vector<float> sinusoid(256);
       for (int i = 0; i < 128; ++i) {
@@ -409,7 +404,7 @@ struct Restorer::Impl {
                shifted = attention_windows(t, ph, pw, true);
     for (int b = 0; b < 32; ++b) {
       progress("DiT block " + std::to_string(b + 1) + "/32");
-      rt->begin_block(b);
+      rt->clear(dit);
       std::string p = "blocks." + std::to_string(b) + ".", vb = b < 10 ? "vid" : "all",
                   tb = b < 10 ? "txt" : "all";
       auto vn = rt->rms(video), tn = rt->rms(text);
@@ -441,8 +436,7 @@ struct Restorer::Impl {
       capture("dit_block_" + std::to_string(b), video);
       capture("dit_text_" + std::to_string(b), text);
     }
-    rt->end_dit();
-    scope.finished = true;
+    rt->clear(dit);
     video = rt->rms(video, "vid_out_norm.weight");
     // The upstream cache aliases output modulation with the first (attention)
     // slice. Re-slicing emb as a one-layer AdaSingle would have the wrong width.

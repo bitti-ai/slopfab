@@ -26,8 +26,9 @@ SLOPFAB_TEST(seedvr2_tile_preparation) {
       for (int y = 0; y < 4; ++y)
         for (int x = 0; x < 4; ++x)
           for (int c = 0; c < channels; ++c) {
-            float value = input[((size_t(z) * 3 + std::min(y + 1, 2)) * 5 +
-                                 std::min(x + 3, 4)) * channels + c];
+            float value =
+                input[((size_t(z) * 3 + std::min(y + 1, 2)) * 5 + std::min(x + 3, 4)) * channels +
+                      c];
             value = image ? 2.0f * value - 1.0f : value / 0.9152f;
             expected[((size_t(z) * 4 + y) * 4 + x) * channels + c] =
                 __bfloat162float(__float2bfloat16(value));
@@ -52,8 +53,8 @@ SLOPFAB_TEST(seedvr2_tile_feathering) {
     std::vector<float> expected(count, 0), weights(25, 0);
     for (int y0 : {0, 2})
       for (int x0 : {0, 2}) {
-        auto values = test::make_data(size_t(2) * 4 * 4 * channels,
-                                      uint32_t(5 + y0 * 2 + x0), 1.1f);
+        auto values =
+            test::make_data(size_t(2) * 4 * 4 * channels, uint32_t(5 + y0 * 2 + x0), 1.1f);
         auto tile = runtime.upload(values, 2, 4, 4, channels);
         accumulate_image_tile(tile, sum.get(), coverage.get(), 5, 5, 6, 6, y0, x0, 2);
         auto feather = [](int p, int lo) {

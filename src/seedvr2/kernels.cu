@@ -36,11 +36,12 @@ __global__ void half_kernel(const __half* x, BFloat* y, size_t n) {
 
 __global__ void fp8_kernel(const uint8_t* x, BFloat* y, size_t n) {
   size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (i >= n) return;
+  if (i >= n)
+    return;
   const int bits = x[i], exp = (bits >> 3) & 15, mantissa = bits & 7;
-  float value = exp ? ldexpf(1.0f + mantissa * 0.125f, exp - 7)
-                    : ldexpf(float(mantissa), -9);
-  if (exp == 15 && mantissa == 7) value = nanf("");
+  float value = exp ? ldexpf(1.0f + mantissa * 0.125f, exp - 7) : ldexpf(float(mantissa), -9);
+  if (exp == 15 && mantissa == 7)
+    value = nanf("");
   y[i] = bf(bits & 128 ? -value : value);
 }
 
@@ -248,8 +249,8 @@ Runtime::Runtime() {
   const char* pool = std::getenv("SLOPFAB_SEEDVR2_POOL");
   if (!pool || std::string(pool) != "0") {
     auto make_pool = [ordinal = device] {
-      return std::shared_ptr<cuda::ReferenceBufferPool>(new cuda::ReferenceBufferPool,
-          [ordinal](cuda::ReferenceBufferPool* value) {
+      return std::shared_ptr<cuda::ReferenceBufferPool>(
+          new cuda::ReferenceBufferPool, [ordinal](cuda::ReferenceBufferPool* value) {
             int previous = ordinal;
             cudaGetDevice(&previous);
             cudaSetDevice(ordinal);
@@ -268,7 +269,8 @@ Runtime::Runtime() {
   resident_budget = free >= 8 * gib ? std::min(8 * gib, free / 3) : 0;
   if (const char* budget = std::getenv("SLOPFAB_SEEDVR2_CACHE_MIB")) {
     const long long mib = std::stoll(budget);
-    if (mib < 0 || mib > 1048576) throw std::invalid_argument("SeedVR2 cache budget");
+    if (mib < 0 || mib > 1048576)
+      throw std::invalid_argument("SeedVR2 cache budget");
     resident_budget = std::min(size_t(mib) * 1048576, free / 2);
   }
   SLOPFAB_CUBLAS_CHECK(cuda::cublas_create(&blas));
@@ -280,10 +282,11 @@ Runtime::~Runtime() {
   cudaGetDevice(&previous);
   cudaSetDevice(device);
   cudaStreamSynchronize(nullptr);
-  weights.clear(); resident.clear();
-  streamed_weights.reset();
+  weights.clear();
+  resident.clear();
   scratch.resize(0);
-  activations.reset(); temporaries.reset();
+  activations.reset();
+  temporaries.reset();
   if (blas)
     cuda::cublas_destroy(blas);
   cudaSetDevice(previous);
@@ -291,33 +294,6 @@ Runtime::~Runtime() {
 
 void Runtime::end_segment() {
   weights.clear();
-}
-
-void Runtime::begin_dit(SafeTensors& f) {
-  clear(f);
-  if (!resident_budget && !stream_attempted) {
-    size_t free = 0, total = 0;
-    SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
-    streamed_weights = WeightStream::create(f, device, std::min(size_t(768) << 20, free / 8));
-    stream_attempted = true;
-  }
-  if (streamed_weights) streamed_weights->begin();
-}
-
-void Runtime::begin_block(int block) {
-  weights.clear();
-  if (streamed_weights) streamed_weights->begin_block(block);
-}
-
-void Runtime::end_dit() {
-  weights.clear();
-  if (streamed_weights) streamed_weights->finish();
-}
-
-void Runtime::abort_dit() noexcept {
-  weights.clear();
-  streamed_weights.reset();
-  stream_attempted = false;
 }
 
 void Runtime::clear(SafeTensors& f) {
@@ -348,19 +324,11 @@ std::vector<float> Runtime::download(const Tensor& x) {
 const Tensor& Runtime::weight(const std::string& name) {
   const auto key = std::make_pair(file, name);
   auto cached = resident.find(key);
-  if (cached != resident.end()) return cached->second;
+  if (cached != resident.end())
+    return cached->second;
   auto it = weights.find(name);
   if (it != weights.end())
     return it->second;
-  if (streamed_weights) {
-    auto view = streamed_weights->find(name);
-    if (view.data) {
-      Tensor x;
-      x.c = int(view.count);
-      x.data = Buffer<BFloat>::view(view.data, view.count);
-      return weights.emplace(name, std::move(x)).first->second;
-    }
-  }
   const auto& v = file->at(name);
   if (v.numel() < 1 || v.numel() > INT_MAX)
     throw std::runtime_error("SeedVR2: invalid tensor size: " + name);
@@ -441,22 +409,23 @@ Tensor Runtime::conv(const Tensor& x, const std::string& name, bool down, int ts
   int k = x.c * kt * kh * kw;
   const auto& weight_data = weight(name + ".weight");
   if (optimized_vae) {
-    vae_conv(blas, x.data.get(), weight_data.data.get(), y.data.get(), x.t, x.h, x.w,
-             x.c, co, kt, kh, kw, down, ts, scratch);
+    vae_conv(blas, x.data.get(), weight_data.data.get(), y.data.get(), x.t, x.h, x.w, x.c, co, kt,
+             kh, kw, down, ts, scratch);
   } else {
-  const int tile = std::min(2048, y.rows());
-  Buffer<BFloat> col(size_t(tile) * k, temporaries);
-  float a = 1, b = 0;
-  for (int start = 0; start < y.rows(); start += tile) {
-    int count = std::min(tile, y.rows() - start);
-    col_kernel<<<blocks(size_t(count) * k), 256>>>(x.data.get(), col.get(), x.t, x.h, x.w, x.c, kt,
-                                                   kh, kw, ss, ts, oh, ow, down, start, count);
-    checked();
-    SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
-        blas, CUBLAS_OP_T, CUBLAS_OP_N, co, count, k, &a, weight_data.data.get(), CUDA_R_16BF, k,
-        col.get(), CUDA_R_16BF, k, &b, y.data.get() + size_t(start) * co, CUDA_R_16BF, co,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
-  }
+    const int tile = std::min(2048, y.rows());
+    Buffer<BFloat> col(size_t(tile) * k, temporaries);
+    float a = 1, b = 0;
+    for (int start = 0; start < y.rows(); start += tile) {
+      int count = std::min(tile, y.rows() - start);
+      col_kernel<<<blocks(size_t(count) * k), 256>>>(x.data.get(), col.get(), x.t, x.h, x.w, x.c,
+                                                     kt, kh, kw, ss, ts, oh, ow, down, start,
+                                                     count);
+      checked();
+      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
+          blas, CUBLAS_OP_T, CUBLAS_OP_N, co, count, k, &a, weight_data.data.get(), CUDA_R_16BF, k,
+          col.get(), CUDA_R_16BF, k, &b, y.data.get() + size_t(start) * co, CUDA_R_16BF, co,
+          CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+    }
   }
   if (file->find(name + ".bias")) {
     if (file->at(name + ".bias").shape != std::vector<int64_t>{co})
@@ -476,8 +445,8 @@ Tensor Runtime::groupnorm(const Tensor& x, const std::string& name, bool silu) {
   const auto& w = weight(name + ".weight");
   const auto& b = weight(name + ".bias");
   if (optimized_vae)
-    vae_groupnorm(x.data.get(), y.data.get(), w.data.get(), b.data.get(), x.t, x.h * x.w,
-                   x.c, silu, scratch);
+    vae_groupnorm(x.data.get(), y.data.get(), w.data.get(), b.data.get(), x.t, x.h * x.w, x.c, silu,
+                  scratch);
   else
     gn_kernel<<<x.t * 32, 256>>>(x.data.get(), y.data.get(), w.data.get(), b.data.get(), x.h * x.w,
                                  x.c, silu);
@@ -531,9 +500,11 @@ void Runtime::mlp(Tensor& x, const Tensor& emb, const std::string& p, const std:
   int chunk = 4096;
   if (const char* value = std::getenv("SLOPFAB_SEEDVR2_MLP_ROWS")) {
     chunk = std::stoi(value);
-    if (chunk < 0) throw std::invalid_argument("SeedVR2 MLP rows must be nonnegative");
+    if (chunk < 0)
+      throw std::invalid_argument("SeedVR2 MLP rows must be nonnegative");
   }
-  if (!chunk) chunk = x.rows();
+  if (!chunk)
+    chunk = x.rows();
   for (int first = 0; first < x.rows(); first += chunk) {
     auto part = x.rows_view(first, std::min(chunk, x.rows() - first));
     auto norm = rms(part);

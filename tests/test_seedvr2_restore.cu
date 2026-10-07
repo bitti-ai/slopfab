@@ -59,12 +59,11 @@ SLOPFAB_TEST_CATEGORY(seedvr2_restore_after_cancel_matches_fresh_instance, "inte
   slopfab::cuda::set_device(options.device);
   size_t free = 0, total = 0;
   SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
-  if (free < (size_t(8) << 30)) {
-    SKIP_INSUFFICIENT_VRAM("8 GiB free required to exercise double-buffered real DiT weights");
+  if (free < (size_t(2) << 30)) {
+    SKIP_INSUFFICIENT_VRAM("2 GiB free required for real-checkpoint restoration");
     return;
   }
   Environment cache("SLOPFAB_SEEDVR2_CACHE_MIB", "0");
-  Environment prefetch("SLOPFAB_SEEDVR2_PREFETCH", "1");
   Environment pool("SLOPFAB_SEEDVR2_POOL", "1");
   Environment capture("SLOPFAB_SEEDVR2_CAPTURE_DIR", nullptr);
   std::vector<Frame> input(5, Frame(size_t(128) * 128 * 3));
@@ -95,7 +94,7 @@ SLOPFAB_TEST_CATEGORY(seedvr2_restore_after_cancel_matches_fresh_instance, "inte
     CHECK(saw_second_block);
     CHECK(cancelled);
     // Cancellation is observed at the next progress checkpoint, after block 2
-    // has issued work and the transfer worker has started prefetching block 3.
+    // has issued work. Reusing pooled storage must remain safe on retry.
     cancel_requested = false;
     model.progress = {};
     recovered = model.restore(input, 0);

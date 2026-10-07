@@ -8,7 +8,6 @@
 #include <map>
 #include "buffer.cuh"
 #include "lt_linear.cuh"
-#include "weight_stream.cuh"
 
 namespace slopfab::seedvr2 {
 using BFloat = __nv_bfloat16;
@@ -29,11 +28,13 @@ struct Tensor {
   size_t size() const {
     return data.size();
   }
+
   Tensor rows_view(int offset, int count) const {
     if (offset < 0 || count < 0 || offset > rows() || count > rows() - offset)
       throw std::out_of_range("SeedVR2 tensor view");
     Tensor result;
-    result.w = count; result.c = c;
+    result.w = count;
+    result.c = c;
     result.data = Buffer<BFloat>::view(data.get() + size_t(offset) * c, size_t(count) * c);
     return result;
   }
@@ -53,13 +54,11 @@ public:
   int device = 0;
   LtLinear fused_linear;
   bool use_fused_linear = true;
-  std::unique_ptr<WeightStream> streamed_weights;
-  bool stream_attempted = false;
-  void begin_dit(SafeTensors& f);
-  void begin_block(int block);
-  void end_dit();
-  void abort_dit() noexcept;
-  Tensor tensor(int t, int h, int w, int c) { return Tensor(t, h, w, c, activations); }
+
+  Tensor tensor(int t, int h, int w, int c) {
+    return Tensor(t, h, w, c, activations);
+  }
+
   void end_segment();
   SafeTensors* file = nullptr;
   // Checkpoints must remain open and immutable for this Runtime's lifetime.

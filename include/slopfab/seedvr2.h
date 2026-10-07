@@ -39,7 +39,7 @@ using RestoreSegment = std::function<std::vector<Frame>(const std::vector<Frame>
 uint64_t stream(const Options&, const ReadFrame&, const WriteFrame&, const RestoreSegment&);
 
 // Native CUDA inference; no Python/ComfyUI runtime. Weights are memory mapped
-// and uploaded one block at a time. Instances are not thread safe.
+// and cached within a device-memory budget. Instances are not thread safe.
 class Restorer {
 public:
   explicit Restorer(const Options&);
