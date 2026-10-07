@@ -72,6 +72,89 @@ on GPU storage and dispatch limits; reduce the tile size if a limit is exceeded.
 An unsupported backend or allocation failure produces an error, with no silent
 fallback. Decoded output uses 16 times the original pixel storage on the host.
 
+## Real-ESRGAN video consistency
+
+Real-ESRGAN x4plus has **no inference sampling seed**. Each frame passes through
+the same deterministic convolution/residual network; it has no temporal state,
+posterior sampling, diffusion noise, dropout or per-frame color normalization.
+This also matches the upstream [RRDBNet architecture](https://github.com/XPixelGroup/BasicSR/blob/master/basicsr/archs/rrdbnet_arch.py)
+and [frame-by-frame video inference](https://github.com/xinntao/Real-ESRGAN/blob/master/inference_realesrgan_video.py).
+The shared `seed`, `segment_frames` and `color_match` options apply to SeedVR2
+only. Increasing the segment length does not add temporal context to Real-ESRGAN.
+
+Real-checkpoint tests on CUDA and Vulkan verify bit-identical restored frames
+for A/B/A sequences, separate versus multi-frame calls, changed SeedVR2-only
+settings, intervening changes of dimensions/tiling, and fresh versus reused
+models. The earlier SeedVR2 seed/conditioning defect does not apply here.
+These checks fix the backend/build/settings; cross-backend or cross-version
+floating-point bit identity is not guaranteed. Lossy input/output codecs can
+also change decoded pixels even when the underlying scene is stationary.
+
+The main measured avoidable inconsistency is insufficient tile context. As a
+feature moves across the fixed tile grid, the model sees different surrounding
+pixels. A controlled five-frame, two-input-pixel horizontal pan at 320x180 →
+1280x720 gave the following results on this RTX 5090. The metric aligns motion
+and excludes a 32-input-pixel border. All settings use the same checkpoint,
+FP32 inference and default pre-padding of 10.
+
+| Tile / context padding | Mean motion-aligned RGB RMSE | RMSE versus untiled output | Warm CUDA seconds/frame |
+| --- | ---: | ---: | ---: |
+| 128 / 10 (default) | 0.002638 | 0.006965 | 0.277 |
+| 128 / 32 | 0.001131 | 0.003318 | 0.409 |
+| 128 / 64 | 0.000401 | 0.000159 | 0.666 |
+| Untiled | 0.000395 | 0 | 0.236 |
+
+CUDA and Vulkan agree on the reported consistency values. Padding 64 reduces
+motion-aligned error about 85% on this fixture, but is about 2.4 times slower
+than padding 10. These are controlled translation measurements, not a general
+perceptual-quality score; complex motion, compression noise and newly visible
+objects can still change framewise predictions. No temporal averaging was added.
+
+For videos where tile boundaries are visible, use complete frames when the
+backend and memory permit, or increase context padding:
+
+```sh
+# Complete frames: removes artificial internal tile boundaries.
+slopfab upscale --input input.mp4 --out output.mp4 --upscale-method realesrgan --upscale-tile 0
+# Bounded spatial tiles with more surrounding context.
+slopfab upscale --input input.mp4 --out output.mp4 --upscale-method realesrgan --upscale-tile 128 --upscale-tile-pad 64
+```
+
+Defaults are unchanged to preserve their runtime/memory tradeoff. The standalone
+C streaming API exposes tile size, including 0, but not context padding;
+the CLI and C++ API expose both.
+
+The old complete-frame size check still assumed a full-spatial im2col allocation.
+It now checks the actual largest activation (4x resolution, 64 channels), since
+CUDA convolution scratch is chunked. This enables larger untiled CUDA frames
+without changing model arithmetic. A real 960x540 → 3840x2160 run completed
+three times at about 2.1–2.3 seconds/frame and a sampled global CUDA peak of
+7,323 MiB, including a 1,613 MiB idle baseline. A 640x360 → 2560x1440 run also
+passed. The 32-bit activation index limit remains enforced; Vulkan has additional
+device storage/dispatch limits, and allocation failures still report errors.
+
+The video CLI now follows FFmpeg autorotation when choosing decoded dimensions
+and preserves Real-ESRGAN's source sample aspect ratio, including its inversion
+after quarter-turn rotations. Previously, rotation-tagged portrait video could
+be forced into landscape dimensions, and non-square pixels lost their display
+aspect. Tests cover integer/fractional rotations and encoded aspect ratios on
+Windows and Linux. A real-checkpoint CLI test restored a 32x16, SAR 2:1, 90-degree
+source to 64x128, SAR 1:2, with no leftover rotation tag. SeedVR2's explicit target
+dimensions and square-pixel output remain unchanged.
+
+Reproduce the motion measurements with:
+
+```sh
+slopfab_realesrgan_temporalbench MODEL.safetensors cuda 320 180 0 10 5 pan full.f32
+slopfab_realesrgan_temporalbench MODEL.safetensors cuda 320 180 128 10 5 pan pad10.f32
+slopfab_realesrgan_temporalbench MODEL.safetensors cuda 320 180 128 64 5 pan pad64.f32
+python tools/realesrgan_temporal_metrics.py 320 180 full.f32 pad10.f32 pad64.f32
+```
+
+Use `vulkan` to check the other backend or `static` for identical input frames.
+These dumps contain interleaved RGB float32; they differ from the planar dumps
+written by the performance benchmark below. NumPy is needed only for analysis.
+
 ## Measured Real-ESRGAN performance
 
 Measured on Windows, RTX 5090 32 GiB, Release build, CUDA 12.8 compiler with
@@ -151,7 +234,8 @@ build/Release/slopfab_realesrganbench.exe weights/upscaler/RealESRGAN_x4plus.saf
 ```
 
 The positional arguments are checkpoint, backend, input width, input height,
-frames, tile size, repeats and output prefix. Dumps use planar RGB float32.
+frames, tile size, repeats and output prefix, optionally followed by tile context
+padding (default 10). Dumps use planar RGB float32.
 `tools/seedvr2_compare_outputs.py` also compares these raw float files despite its
 name. Preserve separate baseline and candidate executables, keep the GPU free
 of other workloads, and compare matching tile/padding settings: tiling changes
