@@ -11,10 +11,10 @@
 #include <thread>
 
 int main(int argc, char** argv) {
-  if (argc != 9) {
+  if (argc != 9 && argc != 10) {
     std::fprintf(
         stderr,
-        "usage: realesrganbench MODEL cuda|vulkan WIDTH HEIGHT FRAMES TILE REPEATS OUTPUT_PREFIX\n");
+        "usage: realesrganbench MODEL cuda|vulkan WIDTH HEIGHT FRAMES TILE REPEATS OUTPUT_PREFIX [TILE_PAD]\n");
     return 2;
   }
   try {
@@ -26,6 +26,8 @@ int main(int argc, char** argv) {
     const int w = std::stoi(argv[3]), h = std::stoi(argv[4]), frames = std::stoi(argv[5]);
     slopfab::UpscaleOptions options;
     options.tile_size = std::stoi(argv[6]);
+    if (argc == 10)
+      options.tile_pad = std::stoi(argv[9]);
     const int repeats = std::stoi(argv[7]);
     slopfab::validate_upscale_options(options);
     const auto output_count = slopfab::upscale_output_elements(frames, h, w);
