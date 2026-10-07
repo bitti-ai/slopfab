@@ -1,6 +1,8 @@
 # --- tools ------------------------------------------------------------------
 
 if(TARGET slopfab_generation)
+  add_executable(slopfab_realesrgan_temporalbench tools/realesrgan_temporalbench.cpp)
+  target_link_libraries(slopfab_realesrgan_temporalbench PRIVATE slopfab_generation)
   add_executable(slopfab_realesrganbench tools/realesrganbench.cpp)
   target_link_libraries(slopfab_realesrganbench PRIVATE slopfab_generation Threads::Threads)
 endif()
