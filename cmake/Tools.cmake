@@ -32,6 +32,8 @@ else()
 endif()
 
 if(SLOPFAB_ENABLE_CUDA)
+  add_executable(slopfab_seedvr2bench tools/seedvr2bench.cpp)
+  target_link_libraries(slopfab_seedvr2bench PRIVATE slopfab_cuda)
   add_executable(slopfab_vaecudaprobe tools/vaecudaprobe.cpp)
   target_link_libraries(slopfab_vaecudaprobe PRIVATE slopfab_cuda)
   if(MSVC)
