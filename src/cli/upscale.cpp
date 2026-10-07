@@ -2,6 +2,7 @@
 #include "bounded_pipeline.h"
 #include "pipe_process.h"
 #include "upscale_options.h"
+#include "upscale_geometry.h"
 #include "slopfab/image.h"
 #include "slopfab/safetensors_write.h"
 #include <fstream>
@@ -139,7 +140,7 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
     return 0;
   }
   PipeProcess probe({media_tool("ffprobe", executable), "-v", "error", "-select_streams", "v:0",
-                     "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,start_time",
+                     "-show_entries", kUpscaleVideoEntries,
                      "-of", "json", in.u8string()},
                     false);
   std::string metadata;
@@ -176,8 +177,9 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
     throw std::runtime_error("invalid input frame rate");
   std::printf("Output rate: %s fps (variable-rate inputs are normalized to this rate)\n",
               fps.c_str());
-  const int source_width = int(s.find("width")->as_number());
-  const int source_height = int(s.find("height")->as_number());
+  const auto geometry = upscale_video_geometry(s);
+  const int source_width = geometry.width;
+  const int source_height = geometry.height;
   const auto dims = upscale_dimensions(source_height, source_width, args.method, args.options);
   const bool seed = args.method == UpscaleMethod::kSeedVr2;
   const int decode_width = seed ? dims.second : source_width;
@@ -239,6 +241,10 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
                         "1:a?",
                         "-map_metadata",
                         "1",
+                        "-vf",
+                        // Raw RGB carries no SAR. Real-ESRGAN preserves display
+                        // geometry; SeedVR2's requested output uses square pixels.
+                        "setsar=" + (seed ? std::string("1/1") : geometry.sar()) + ":max=2147483647",
                         "-c:v",
                         "libx264",
                         "-preset",
