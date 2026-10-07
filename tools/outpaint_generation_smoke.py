@@ -16,6 +16,9 @@ for name in ("library", "source", "output", "transformer", "text-encoder", "vae"
 parser.add_argument("--backend", choices=("cuda", "vulkan"), default="cuda")
 parser.add_argument("--size", type=int, default=512)
 parser.add_argument("--steps", type=int, default=20)
+parser.add_argument("--lora", type=Path)
+parser.add_argument("--schedule", choices=("default", "dmad-4step"), default="default")
+parser.add_argument("--strength", type=float, default=1)
 args = parser.parse_args()
 assert args.size >= 96 and args.size % 32 == 0
 args.output.mkdir(parents=True, exist_ok=True)
@@ -81,11 +84,16 @@ try:
               "\n\noverall_soundscape: N/A\n\nnon_diegetic_music: N/A")
     check(bind("slopfab_request_set_prompt", [handle, C.c_char_p])(request, prompt.encode()))
     check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, args.steps))
+    if args.lora:
+        check(bind("slopfab_request_add_lora", [handle, C.c_char_p, C.c_float])(
+            request, str(args.lora.resolve()).encode(), 1))
+    check(bind("slopfab_request_set_schedule", [handle, C.c_int])(
+        request, 2 if args.schedule == "dmad-4step" else 0))
     check(bind("slopfab_request_set_seed", [handle, C.c_uint64])(request, 17))
     check(bind("slopfab_request_set_inference_backend", [handle, C.c_int])(request, int(args.backend == "vulkan")))
     check(bind("slopfab_request_set_attention", [handle, C.c_char_p])(request, b"sage2"))
     check(bind("slopfab_request_set_image_edit_path", [handle, C.c_char_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_float, C.c_int])(
-        request, str((args.output / "canvas.png").resolve()).encode(), left, top, source.width, source.height, 1, 0))
+        request, str((args.output / "canvas.png").resolve()).encode(), left, top, source.width, source.height, args.strength, 0))
     check(bind("slopfab_request_set_image_edit_invert_mask", [handle, C.c_int])(request, 1))
     check(bind("slopfab_generation_start", [handle, Callback, handle, C.POINTER(handle)])(request, progress, None, C.byref(generation)))
     wait = bind("slopfab_generation_wait", [handle, C.c_int])
@@ -102,6 +110,8 @@ try:
     assert (result.frames, result.width, result.height, result.channels) == (1, args.size, args.size, 3)
     values = np.ctypeslib.as_array(result.video, shape=(result.video_float_count,)).reshape(3, args.size, args.size).transpose(1, 2, 0)
     assert np.isfinite(values).all()
+    expected_source = np.array(source).astype(np.float32) / np.float32(255)
+    assert np.array_equal(values[top:top + source.height, left:left + source.width], expected_source)
     rgb = np.round(values.clip(0, 1) * 255).astype(np.uint8)
     assert np.array_equal(rgb[top:top + source.height, left:left + source.width], np.array(source))
     outside = np.ones((args.size, args.size), dtype=bool)
