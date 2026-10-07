@@ -1,6 +1,7 @@
 // SeedVR2 architecture port based on ByteDance-Seed/SeedVR (Apache-2.0).
 // See third_party/seedvr2/NOTICE for pinned reference provenance.
 #include "runtime.cuh"
+#include "image_ops.cuh"
 #include "slopfab/tensor_convert.h"
 #include <algorithm>
 #include <cmath>
@@ -47,9 +48,13 @@ struct Restorer::Impl {
   std::unique_ptr<Runtime> rt;
   Restorer* owner;
   std::string capture_dir;
+  Tensor initial_text, timestep_embedding;
+  bool gpu_tiles_enabled = true;
 
   Impl(const Options& options, Restorer* parent) : o(options), owner(parent) {
     validate(o);
+    if (const char* tiles = std::getenv("SLOPFAB_SEEDVR2_GPU_TILES"))
+      gpu_tiles_enabled = std::string(tiles) != "0";
     if (const char* capture = std::getenv("SLOPFAB_SEEDVR2_CAPTURE_DIR")) {
       capture_dir = capture;
       std::filesystem::create_directories(std::filesystem::u8path(capture_dir));
@@ -114,6 +119,16 @@ struct Restorer::Impl {
       owner->progress(message);
   }
 
+  bool gpu_tiles(size_t rgb_count, size_t staging_count) const {
+    if (!gpu_tiles_enabled || !capture_dir.empty() ||
+        rgb_count * sizeof(float) > (size_t(256) << 20))
+      return false;
+    size_t available = 0, total = 0;
+    SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&available, &total));
+    // Reserve most free memory for the VAE activations and the weight cache.
+    return staging_count * sizeof(float) <= available / 8;
+  }
+
   Tensor resnet(Tensor x, const std::string& p) {
     auto h = rt->groupnorm(x, p + ".norm1");
     h = rt->conv(h, p + ".conv1");
@@ -131,7 +146,7 @@ struct Restorer::Impl {
     auto norm = rt->groupnorm(x, a + ".group_norm", false);
     // Per-frame spatial attention, never across time.
     for (int t = 0; t < x.t; ++t) {
-      Tensor frame(1, x.h, x.w, x.c);
+      Tensor frame = rt->tensor(1, x.h, x.w, x.c);
       SLOPFAB_CUDA_CHECK(cudaMemcpy(frame.data.get(), norm.data.get() + size_t(t) * frame.size(),
                                     frame.size() * sizeof(BFloat), cudaMemcpyDeviceToDevice));
       auto q = rt->linear(frame, a + ".to_q"), k = rt->linear(frame, a + ".to_k"),
@@ -182,6 +197,36 @@ struct Restorer::Impl {
   std::vector<float> encode_tiled(const std::vector<Frame>& frames, int h, int w) {
     rt->clear(vae);
     const int t = int(frames.size()), lt = (t - 1) / 4 + 1, lh = h / 8, lw = w / 8;
+    // Bound additional residency independently of segment length. The CPU
+    // path also retains the original full-precision diagnostic captures.
+    const size_t input_count = size_t(t) * o.height * o.width * 3;
+    if (gpu_tiles(input_count, input_count + size_t(lt) * lh * lw * 32 + size_t(lh) * lw)) {
+      cuda::DeviceBuffer<float> input(input_count), moments(size_t(lt) * lh * lw * 32),
+          coverage(size_t(lh) * lw);
+      const size_t frame_count = size_t(o.height) * o.width * 3;
+      for (int z = 0; z < t; ++z)
+        SLOPFAB_CUDA_CHECK(cudaMemcpy(input.get() + size_t(z) * frame_count, frames[z].data(),
+                                      frame_count * sizeof(float), cudaMemcpyHostToDevice));
+      moments.zero();
+      coverage.zero();
+      auto ys = tiles(h, o.vae_tile), xs = tiles(w, o.vae_tile);
+      int tile = 0;
+      for (auto y : ys)
+        for (auto x : xs) {
+          progress("VAE encode tile " + std::to_string(++tile) + "/" +
+                   std::to_string(ys.size() * xs.size()));
+          auto pixels = rt->tensor(t, y.second - y.first, x.second - x.first, 3);
+          prepare_image_tile(input.get(), pixels, o.height, o.width, y.first, x.first);
+          auto encoded = encode(std::move(pixels));
+          accumulate_image_tile(encoded, moments.get(), coverage.get(), lh, lw, lh, lw,
+                                y.first / 8, x.first / 8, 8);
+        }
+      normalize_image_tiles(moments.get(), coverage.get(), moments.size(), lh, lw, 32, false);
+      std::vector<float> result(moments.size());
+      SLOPFAB_CUDA_CHECK(cudaMemcpy(result.data(), moments.get(), result.size() * sizeof(float),
+                                    cudaMemcpyDeviceToHost));
+      return result;
+    }
     std::vector<float> moments(size_t(lt) * lh * lw * 32, 0), coverage(size_t(lh) * lw, 0);
     auto ys = tiles(h, o.vae_tile), xs = tiles(w, o.vae_tile);
     int tile = 0;
@@ -228,6 +273,37 @@ struct Restorer::Impl {
   std::vector<Frame> decode_tiled(const std::vector<float>& latent, int t, int h, int w) {
     rt->clear(vae);
     const int lt = (t - 1) / 4 + 1, lh = h / 8, lw = w / 8;
+    const size_t output_count = size_t(t) * o.height * o.width * 3;
+    if (gpu_tiles(output_count, output_count + latent.size() + size_t(o.height) * o.width)) {
+      cuda::DeviceBuffer<float> input(latent.size()), output(output_count),
+          coverage(size_t(o.height) * o.width);
+      SLOPFAB_CUDA_CHECK(cudaMemcpy(input.get(), latent.data(), latent.size() * sizeof(float),
+                                    cudaMemcpyHostToDevice));
+      output.zero();
+      coverage.zero();
+      auto ys = tiles(h, o.vae_tile), xs = tiles(w, o.vae_tile);
+      int tile = 0;
+      for (auto y : ys)
+        for (auto x : xs) {
+          progress("VAE decode tile " + std::to_string(++tile) + "/" +
+                   std::to_string(ys.size() * xs.size()));
+          auto values = rt->tensor(lt, (y.second - y.first) / 8, (x.second - x.first) / 8, 16);
+          prepare_latent_tile(input.get(), values, lh, lw, y.first / 8, x.first / 8);
+          auto decoded = decode(std::move(values));
+          accumulate_image_tile(decoded, output.get(), coverage.get(), o.height, o.width, h, w,
+                                y.first, x.first, 64);
+        }
+      normalize_image_tiles(output.get(), coverage.get(), output.size(), o.height, o.width, 3,
+                             true);
+      const size_t frame_count = size_t(o.height) * o.width * 3;
+      std::vector<Frame> result(t);
+      for (int z = 0; z < t; ++z) {
+        result[z].resize(frame_count);
+        SLOPFAB_CUDA_CHECK(cudaMemcpy(result[z].data(), output.get() + size_t(z) * frame_count,
+                                      frame_count * sizeof(float), cudaMemcpyDeviceToHost));
+      }
+      return result;
+    }
     std::vector<Frame> result(t, Frame(size_t(o.height) * o.width * 3, 0));
     std::vector<float> coverage(size_t(o.height) * o.width, 0);
     auto ys = tiles(h, o.vae_tile), xs = tiles(w, o.vae_tile);
@@ -299,19 +375,27 @@ struct Restorer::Impl {
         }
     capture("dit_patches", patches, {t, ph, pw, 132});
     Tensor video = rt->linear(rt->upload(patches, t, ph, pw, 132), "vid_in.proj");
-    auto& txt = dit.at("positive_conditioning");
-    Tensor text = rt->linear(rt->upload(to_f32(txt), 1, 1, int(txt.shape[0]), 5120), "txt_in");
-    std::vector<float> sinusoid(256);
-    for (int i = 0; i < 128; ++i) {
-      float phase = 1000.0f * std::exp(-std::log(10000.0f) * i / 128);
-      sinusoid[i] = std::sin(phase);
-      sinusoid[i + 128] = std::cos(phase);
+    if (!initial_text.size()) {
+      auto& txt = dit.at("positive_conditioning");
+      initial_text = rt->linear(rt->upload(to_f32(txt), 1, 1, int(txt.shape[0]), 5120), "txt_in");
     }
-    Tensor emb = rt->linear(rt->upload(sinusoid, 1, 1, 1, 256), "emb_in.proj_in");
-    rt->activation(emb);
-    emb = rt->linear(emb, "emb_in.proj_hid");
-    rt->activation(emb);
-    emb = rt->linear(emb, "emb_in.proj_out");
+    Tensor text = rt->tensor(initial_text.t, initial_text.h, initial_text.w, initial_text.c);
+    SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(text.data.get(), initial_text.data.get(),
+                                      text.size() * sizeof(BFloat), cudaMemcpyDeviceToDevice));
+    if (!timestep_embedding.size()) {
+      std::vector<float> sinusoid(256);
+      for (int i = 0; i < 128; ++i) {
+        float phase = 1000.0f * std::exp(-std::log(10000.0f) * i / 128);
+        sinusoid[i] = std::sin(phase);
+        sinusoid[i + 128] = std::cos(phase);
+      }
+      auto emb = rt->linear(rt->upload(sinusoid, 1, 1, 1, 256), "emb_in.proj_in");
+      rt->activation(emb);
+      emb = rt->linear(emb, "emb_in.proj_hid");
+      rt->activation(emb);
+      timestep_embedding = rt->linear(emb, "emb_in.proj_out");
+    }
+    const auto& emb = timestep_embedding;
     capture("dit_embedding", emb);
     capture("dit_video_in", video);
     capture("dit_text_in", text);
@@ -334,12 +418,15 @@ struct Restorer::Impl {
       vqkv = Tensor();
       tqkv = Tensor();
       vn = rt->linear(vn, p + "attn.proj_out." + vb);
-      tn = rt->linear(tn, p + "attn.proj_out." + tb);
+      const bool update_text = b != 31 || !capture_dir.empty();
+      if (update_text)
+        tn = rt->linear(tn, p + "attn.proj_out." + tb);
       rt->modulate(vn, emb, p + "ada." + vb + ".attn", 0, true);
       if (b != 31)
         rt->modulate(tn, emb, p + "ada." + tb + ".attn", 0, true);
       rt->add(video, vn);
-      rt->add(text, tn);
+      if (update_text)
+        rt->add(text, tn);
       vn = Tensor();
       tn = Tensor();
       auto mlp = [&](Tensor& x, const std::string& branch) {
@@ -405,8 +492,7 @@ std::vector<Frame> Restorer::restore(const std::vector<Frame>& frames, uint64_t 
   moments.clear();
   moments.shrink_to_fit();
   auto result = p.decode_tiled(latent, t, h, w);
-  p.rt->weights.clear();
-  p.rt->scratch.resize(0);
+  p.rt->end_segment();
   for (size_t f = 0; f < result.size(); ++f) {
     auto& out = result[f];
     if (o.color_match)
