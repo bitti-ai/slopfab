@@ -76,8 +76,9 @@ struct RealEsrgan::Impl {
   }
 
   std::vector<float> tile(const std::vector<float>& pixels, int h, int w) {
-    // All GPU kernels use 32-bit indices, including their largest im2col workspace.
-    if (uint64_t(h) * w > std::numeric_limits<int>::max() / (16 * 64 * 9))
+    // The largest activation is the 4x-resolution, 64-channel feature map.
+    // CUDA im2col is chunked, so its nine taps no longer limit the full tile.
+    if (uint64_t(h) * w > std::numeric_limits<int>::max() / (16 * 64))
       throw std::length_error("Real-ESRGAN: tile is too large; reduce --upscale-tile");
     size_t layer = 0;
     auto conv = [&](const Buffer& x, bool leaky) {
@@ -137,7 +138,7 @@ PixelBuffer RealEsrgan::upscale(const PixelBuffer& input, int frames, int height
   const int tile = o.tile_size ? o.tile_size : std::max(ph, pw);
   const uint64_t max_height = std::min(ph, tile + 2 * o.tile_pad);
   const uint64_t max_width = std::min(pw, tile + 2 * o.tile_pad);
-  if (max_height * max_width > std::numeric_limits<int>::max() / (16 * 64 * 9))
+  if (max_height * max_width > std::numeric_limits<int>::max() / (16 * 64))
     throw std::length_error("Real-ESRGAN: tile is too large; reduce --upscale-tile");
   const int64_t tiles = int64_t((ph - 1) / tile + 1) * ((pw - 1) / tile + 1) * frames;
   if (tiles > std::numeric_limits<int>::max())

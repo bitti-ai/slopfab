@@ -67,17 +67,30 @@ struct Fixture {
 SLOPFAB_TEST(upscale_validation) {
   CHECK(parse_upscale_method("seedvr2") == UpscaleMethod::kSeedVr2);
   UpscaleOptions seed;
-  seed.width = 128; seed.height = 64; seed.segment_frames = 5;
+  seed.width = 128;
+  seed.height = 64;
+  seed.segment_frames = 5;
   CHECK(upscale_output_elements(15, 32, 32, UpscaleMethod::kSeedVr2, seed) == 15 * 128 * 64 * 3);
-  CHECK(rejected([&] { upscale_output_elements(15, 32, 32, UpscaleMethod::kRealEsrgan, seed); }));
+  CHECK(rejected([&] {
+    upscale_output_elements(15, 32, 32, UpscaleMethod::kRealEsrgan, seed);
+  }));
   seed.segment_frames = 6;
-  CHECK(rejected([&] { validate_upscale_options(seed, UpscaleMethod::kSeedVr2); }));
-  CHECK(rejected([&] { make_upscaler(UpscaleMethod::kSeedVr2, "missing", DeviceBackend::kVulkan); }));
+  CHECK(rejected([&] {
+    validate_upscale_options(seed, UpscaleMethod::kSeedVr2);
+  }));
+  CHECK(rejected([&] {
+    make_upscaler(UpscaleMethod::kSeedVr2, "missing", DeviceBackend::kVulkan);
+  }));
 #if SLOPFAB_WITH_CUDA
   auto restorer = make_upscaler(UpscaleMethod::kSeedVr2, "missing", DeviceBackend::kCuda);
   bool cancelled = false;
-  try { restorer->upscale(PixelBuffer(16 * 16 * 3), 1, 16, 16, {}, [](int, int) { return false; }); }
-  catch (const UpscaleCancelled&) { cancelled = true; }
+  try {
+    restorer->upscale(PixelBuffer(16 * 16 * 3), 1, 16, 16, {}, [](int, int) {
+      return false;
+    });
+  } catch (const UpscaleCancelled&) {
+    cancelled = true;
+  }
   CHECK(cancelled); // Cancellation before loading weights works through the common factory.
 #endif
   CHECK(parse_upscale_method("realesrgan") == UpscaleMethod::kRealEsrgan);
@@ -192,8 +205,8 @@ SLOPFAB_TEST(upscale_cuda_chunk_boundary_and_buffer_lifetime) {
             for (int kx = 0; kx < 3; ++kx) {
               const int sy = y + ky - 1, sx = x + kx - 1;
               if (sy >= 0 && sx >= 0 && sy < h && sx < w)
-                value += input[(sy * w + sx) * ci + ic] *
-                         weight[((oc * ci + ic) * 3 + ky) * 3 + kx];
+                value +=
+                    input[(sy * w + sx) * ci + ic] * weight[((oc * ci + ic) * 3 + ky) * 3 + kx];
             }
         value += bias[oc];
         expected[(y * w + x) * co + oc] = value < 0 ? value * 0.2f : value;
@@ -272,6 +285,32 @@ SLOPFAB_TEST(upscale_full_graph_tiling_frames_and_cancellation) {
       cancelled = true;
     }
     CHECK(cancelled);
+    // Chunked convolution permits complete frames that exceeded the old
+    // full-spatial im2col bound. Cancellation must be reached before allocating
+    // the large output or doing inference, on either backend.
+    bool large_cancelled = false;
+    try {
+      model->upscale(PixelBuffer(size_t(640) * 360 * 3, 0.5f), 1, 360, 640, {0, 10, 10},
+                     [](int, int) {
+                       return false;
+                     });
+    } catch (const UpscaleCancelled&) {
+      large_cancelled = true;
+    }
+    CHECK(large_cancelled);
+    // The actual 32-bit activation indexing limit still rejects excessive
+    // geometry before invoking callbacks or allocating output storage.
+    bool excessive_rejected = false, excessive_callback = false;
+    try {
+      model->upscale(PixelBuffer(size_t(1500) * 1500 * 3, 0.5f), 1, 1500, 1500, {0, 0, 0},
+                     [&](int, int) {
+                       excessive_callback = true;
+                       return false;
+                     });
+    } catch (const std::length_error&) {
+      excessive_rejected = true;
+    }
+    CHECK(excessive_rejected && !excessive_callback);
     cancelled = false;
     int last = -1;
     try {
@@ -340,8 +379,7 @@ SLOPFAB_TEST_CATEGORY(upscale_real_checkpoint_frame_independence, "integration")
   PixelBuffer video(plane * 3 * 3);
   for (size_t c = 0; c < 3; ++c)
     for (size_t f = 0; f < 3; ++f)
-      std::copy_n((f == 1 ? b : a).data() + c * plane, plane,
-                  video.data() + (c * 3 + f) * plane);
+      std::copy_n((f == 1 ? b : a).data() + c * plane, plane, video.data() + (c * 3 + f) * plane);
   constexpr int other_height = 35, other_width = 41;
   PixelBuffer other(size_t(other_height) * other_width * 3);
   for (size_t i = 0; i < other.size(); ++i)
@@ -381,9 +419,10 @@ SLOPFAB_TEST_CATEGORY(upscale_real_checkpoint_frame_independence, "integration")
       PixelBuffer expected_video(output_plane * 3 * 3);
       for (size_t c = 0; c < 3; ++c)
         for (size_t f = 0; f < 3; ++f)
-          std::copy_n((f == 1 ? expected_b : expected_a).data() + c * output_plane,
-                      output_plane, expected_video.data() + (c * 3 + f) * output_plane);
-      same_bits(expected_video, actual_video, "A/B/A video versus separate calls after shape reuse");
+          std::copy_n((f == 1 ? expected_b : expected_a).data() + c * output_plane, output_plane,
+                      expected_video.data() + (c * 3 + f) * output_plane);
+      same_bits(expected_video, actual_video,
+                "A/B/A video versus separate calls after shape reuse");
       last_reference = expected_a;
       last_options = options;
     }
