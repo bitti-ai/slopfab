@@ -80,14 +80,9 @@ struct RealEsrgan::Impl {
     if (uint64_t(h) * w > std::numeric_limits<int>::max() / (16 * 64 * 9))
       throw std::length_error("Real-ESRGAN: tile is too large; reduce --upscale-tile");
     size_t layer = 0;
-    auto conv = [&](Buffer x, bool leaky, bool nearest = false) {
+    auto conv = [&](const Buffer& x, bool leaky) {
       const auto& c = convolutions.at(layer++);
       const size_t n = size_t(h) * w * c.output;
-      if (nearest)
-        return backend->nearest_conv(
-            std::move(x), c.weight, c.bias,
-            {kConv, uint32_t(h), uint32_t(w), uint32_t(c.input), uint32_t(c.output),
-             uint32_t(n), uint32_t(leaky), 0});
       auto dst = backend->allocate(n);
       backend->run({kConv, uint32_t(h), uint32_t(w), uint32_t(c.input), uint32_t(c.output),
                     uint32_t(n), uint32_t(leaky), 0},
@@ -113,7 +108,8 @@ struct RealEsrgan::Impl {
     for (int i = 0; i < 2; ++i) {
       h *= 2;
       w *= 2;
-      x = conv(std::move(x), true, true);
+      x = operation(kNearest, x, x, h, w, 64, 64);
+      x = conv(x, true);
     }
     x = conv(x, true);
     x = conv(x, false);

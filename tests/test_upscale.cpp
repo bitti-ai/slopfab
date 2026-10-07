@@ -166,60 +166,6 @@ SLOPFAB_TEST(upscale_gpu_operators) {
   }
 }
 
-SLOPFAB_TEST(upscale_nearest_convolution) {
-  for (auto device : backends()) {
-    auto backend = device == DeviceBackend::kCuda
-#if SLOPFAB_WITH_CUDA
-                       ? make_cuda_backend()
-#else
-                       ? std::unique_ptr<Backend>{}
-#endif
-#if SLOPFAB_WITH_VULKAN
-                       : make_vulkan_backend();
-#else
-                       : std::unique_ptr<Backend>{};
-#endif
-    for (auto dimensions : {std::pair<int, int>{1, 1}, {3, 5}, {5, 3}}) {
-      const int h = dimensions.first, w = dimensions.second, ci = 3, co = 5;
-      const auto input = test::make_data(size_t(h) * w * ci, 31, 0.5f);
-      const auto weight = test::make_data(size_t(co) * ci * 9, 37, 0.2f);
-      const auto bias = test::make_data(co, 41, 0.1f);
-      const auto a = backend->upload(input), b = backend->upload(weight), c = backend->upload(bias);
-      const uint32_t count = uint32_t(h * 2 * w * 2 * co);
-      for (uint32_t leaky : {0u, 1u}) {
-        Parameters p{kConv, uint32_t(h * 2), uint32_t(w * 2), ci, co, count, leaky, 0};
-        auto actual = backend->download(backend->nearest_conv(a, b, c, p), count);
-        std::vector<float> expected(count);
-        for (int y = 0; y < h * 2; ++y)
-          for (int x = 0; x < w * 2; ++x)
-            for (int oc = 0; oc < co; ++oc) {
-              float value = 0;
-              for (int ic = 0; ic < ci; ++ic)
-                for (int ky = 0; ky < 3; ++ky)
-                  for (int kx = 0; kx < 3; ++kx) {
-                    const int sy = y + ky - 1, sx = x + kx - 1;
-                    // Padding is tested before integer division: -1/2 must
-                    // not accidentally sample the first source pixel.
-                    if (sy >= 0 && sx >= 0 && sy < h * 2 && sx < w * 2)
-                      value += input[((sy / 2) * w + sx / 2) * ci + ic] *
-                               weight[((oc * ci + ic) * 3 + ky) * 3 + kx];
-                  }
-              value += bias[oc];
-              expected[(y * w * 2 + x) * co + oc] = leaky && value < 0 ? value * 0.2f : value;
-            }
-        CHECK_CLOSE(expected, actual, 2e-6, "nearest convolution borders and odd source sizes");
-        auto expanded = backend->allocate(size_t(h * 2) * w * 2 * ci);
-        backend->run({kNearest, uint32_t(h * 2), uint32_t(w * 2), ci, ci,
-                      uint32_t(h * 2 * w * 2 * ci), 0, 0}, a, a, a, expanded);
-        auto explicit_output = backend->allocate(count);
-        backend->run(p, expanded, b, c, explicit_output);
-        CHECK_CLOSE(backend->download(explicit_output, count), actual, 0,
-                    "nearest convolution preserves the explicit operations");
-      }
-    }
-  }
-}
-
 SLOPFAB_TEST(upscale_cuda_chunk_boundary_and_buffer_lifetime) {
 #if SLOPFAB_WITH_CUDA
   int devices = 0;
