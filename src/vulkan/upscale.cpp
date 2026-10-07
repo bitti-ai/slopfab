@@ -3,7 +3,9 @@
 #include "embedded_upscale_spv.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <stdexcept>
 
 namespace slopfab::upscale_detail {
@@ -26,9 +28,61 @@ class VulkanBackend final : public Backend {
   std::unique_ptr<BufferPool> pool_;
   std::unique_ptr<ComputeContext> context_;
   ComputePipeline pipeline_;
+  CommandList commands_;
+  std::vector<Buffer> retained_;
+  uint32_t pending_operations_ = 0, batch_limit_ = 16;
+  uint64_t pending_bytes_ = 0;
+  static constexpr uint64_t kBatchBytes = 64ull << 20;
+
+  void flush() {
+    if (!commands_)
+      return;
+    context_->submit(std::move(commands_)).wait();
+    context_->collect();
+    retained_.clear();
+    pending_operations_ = 0;
+    pending_bytes_ = 0;
+  }
+
+  CommandList& commands(std::initializer_list<Buffer> resources, uint64_t staging_bytes = 0) {
+    uint64_t additional = staging_bytes;
+    std::vector<Buffer> added;
+    for (const auto& buffer : resources)
+      if (std::find(retained_.begin(), retained_.end(), buffer) == retained_.end() &&
+          std::find(added.begin(), added.end(), buffer) == added.end()) {
+        added.push_back(buffer);
+        additional += tensor(buffer).data.size();
+      }
+    if (commands_ && additional > kBatchBytes - std::min(pending_bytes_, kBatchBytes))
+      flush();
+    if (!commands_)
+      commands_ = context_->begin();
+    for (const auto& buffer : resources)
+      if (std::find(retained_.begin(), retained_.end(), buffer) == retained_.end()) {
+        retained_.push_back(buffer);
+        pending_bytes_ += tensor(buffer).data.size();
+      }
+    pending_bytes_ += staging_bytes;
+    return commands_;
+  }
+
+  void recorded() {
+    // Bound both descriptors and retained activation/upload storage. A single
+    // large operator may exceed the byte budget, and is submitted immediately.
+    if (++pending_operations_ >= batch_limit_ || pending_bytes_ >= kBatchBytes)
+      flush();
+  }
 
 public:
   VulkanBackend() {
+    // Keep the original per-operator submission available for parity/benchmarks.
+    if (const char* batch = std::getenv("SLOPFAB_REALESRGAN_VULKAN_BATCH")) {
+      size_t end = 0;
+      const auto count = std::stoul(batch, &end);
+      if (batch[end] || count < 1 || count > 64)
+        throw std::invalid_argument("Real-ESRGAN: Vulkan batch must be between 1 and 64");
+      batch_limit_ = uint32_t(count);
+    }
     instance_ = Instance::create();
     const auto devices = instance_.enumerate_devices();
     if (devices.empty())
@@ -41,6 +95,7 @@ public:
     ComputeContextOptions context_options;
     context_options.max_in_flight = 1;
     context_options.max_storage_bindings = 4;
+    context_options.max_compute_binds_per_job = batch_limit_;
     context_ = std::make_unique<ComputeContext>(device_, context_options);
     std::vector<uint32_t> spirv(sizeof(kUpscaleSpirv) / 4);
     std::memcpy(spirv.data(), kUpscaleSpirv, sizeof(kUpscaleSpirv));
@@ -55,6 +110,9 @@ public:
     const uint64_t bytes = uint64_t(count) * sizeof(float);
     if (bytes > limits_.max_storage_buffer_bytes)
       throw std::length_error("Real-ESRGAN: Vulkan storage limit exceeded; reduce tile size");
+    // Release completed batch temporaries before a large graph allocation.
+    if (commands_ && bytes > kBatchBytes - std::min(pending_bytes_, kBatchBytes))
+      flush();
     auto t = std::make_shared<VulkanTensor>();
     t->data = pool_->allocate(bytes,
                               BufferUsage::kStorage | BufferUsage::kTransferSource |
@@ -68,11 +126,11 @@ public:
     const size_t bytes = v.size() * sizeof(float);
     auto staging = pool_->allocate(bytes, BufferUsage::kTransferSource, MemoryUsage::kUpload);
     staging.write(0, v.data(), bytes);
-    auto cmd = context_->begin();
+    auto& cmd = commands({dst}, bytes);
     cmd.barrier(staging, BufferAccess::kHostWrite, BufferAccess::kTransferRead);
     cmd.copy_buffer(staging, tensor(dst).data, bytes);
-    context_->submit(std::move(cmd)).wait();
     tensor(dst).access = BufferAccess::kTransferWrite;
+    recorded();
     return dst;
   }
 
@@ -81,13 +139,13 @@ public:
     const size_t bytes = count * sizeof(float);
     auto staging =
         pool_->allocate(bytes, BufferUsage::kTransferDestination, MemoryUsage::kReadback);
-    auto cmd = context_->begin();
+    auto& cmd = commands({src}, bytes);
     auto& t = tensor(src);
     cmd.barrier(t.data, t.access, BufferAccess::kTransferRead);
     cmd.copy_buffer(t.data, staging, bytes);
     cmd.barrier(staging, BufferAccess::kTransferWrite, BufferAccess::kHostRead);
-    context_->submit(std::move(cmd)).wait();
     t.access = BufferAccess::kTransferRead;
+    flush();
     staging.read(0, result.data(), bytes);
     return result;
   }
@@ -105,7 +163,7 @@ public:
     }
     if (gx > limits_.max_compute_workgroup_count[0] || gy > limits_.max_compute_workgroup_count[1])
       throw std::length_error("Real-ESRGAN: Vulkan dispatch limit exceeded; reduce tile size");
-    auto cmd = context_->begin();
+    auto& cmd = commands({x, y, bias, out});
     for (auto t : {x, y, bias}) {
       auto& v = tensor(t);
       cmd.barrier(v.data, v.access, BufferAccess::kComputeRead);
@@ -118,8 +176,8 @@ public:
         {{0, &tensor(x).data}, {1, &tensor(y).data}, {2, &tensor(bias).data}, {3, &dst.data}});
     cmd.push_constants(&p, sizeof(p));
     cmd.dispatch(gx, gy);
-    context_->submit(std::move(cmd)).wait();
     dst.access = BufferAccess::kComputeWrite;
+    recorded();
   }
 };
 } // namespace

@@ -131,6 +131,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_vulkan_attention_synthetic.cpp
       tests/test_vulkan_linear_synthetic.cpp
       tests/test_vulkan_runtime_synthetic.cpp
+      tests/test_vulkan_upscale.cpp
       tests/test_vulkan_codec_synthetic.cpp
       tests/test_vulkan_dit_checkpoint.cpp)
     target_link_libraries(slopfab_vulkan_tests PRIVATE slopfab_vulkan)
