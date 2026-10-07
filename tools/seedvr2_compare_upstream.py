@@ -6,6 +6,10 @@ checkout at e4de8c24441a67e1b7df56abea10645059bb1185. No reference code is chang
 The FlashAttention dependency is replaced with FP32 PyTorch SDPA; RMSNorm uses
 the Apex single-rounding formula. Captured noise/conditioning isolates arithmetic
 from the different native/PyTorch RNGs. Outputs report relative L2 and correlation.
+With --temporal-output, also decode noise minus the independent prediction and
+save native/reference pre-color RGB as raw THWC float32, with shape and temporal
+metrics in upstream-comparison.json. Use an untiled capture for this comparison;
+the output preserves decoder overshoot and spatial padding without clamping.
 """
 import argparse
 import gc
@@ -23,6 +27,8 @@ ap.add_argument('--upstream', required=True)
 ap.add_argument('--capture', required=True)
 ap.add_argument('--transformer', required=True)
 ap.add_argument('--vae', required=True)
+ap.add_argument('--temporal-output', action='store_true',
+                help='Decode the full reference prediction and save pre-color THWC RGB float32 outputs')
 args = ap.parse_args()
 sys.path.insert(0, args.upstream)
 root = Path(args.capture)
@@ -85,13 +91,17 @@ def compare(name, value):
     print(name, report[name], flush=True)
 
 
-vae = VideoAutoencoderKL(in_channels=3, out_channels=3,
-    down_block_types=('DownEncoderBlock3D',)*4, up_block_types=('UpDecoderBlock3D',)*4,
-    block_out_channels=(128,256,512,512), layers_per_block=2, latent_channels=16,
-    norm_num_groups=32, temporal_scale_num=2, inflation_mode='pad',
-    use_quant_conv=False, use_post_quant_conv=False)
-vae.load_state_dict(load_file(args.vae), strict=True)
-vae = vae.eval().to(device='cuda', dtype=torch.bfloat16)
+def load_vae():
+    vae = VideoAutoencoderKL(in_channels=3, out_channels=3,
+        down_block_types=('DownEncoderBlock3D',)*4, up_block_types=('UpDecoderBlock3D',)*4,
+        block_out_channels=(128,256,512,512), layers_per_block=2, latent_channels=16,
+        norm_num_groups=32, temporal_scale_num=2, inflation_mode='pad',
+        use_quant_conv=False, use_post_quant_conv=False)
+    vae.load_state_dict(load_file(args.vae), strict=True)
+    return vae.eval().to(device='cuda', dtype=torch.bfloat16)
+
+
+vae = load_vae()
 x = captured('vae_input').permute(3,0,1,2).unsqueeze(0).cuda().bfloat16()
 y = vae.encoder(x)
 compare('vae_moments', y.squeeze(0).permute(1,2,3,0))
@@ -139,6 +149,11 @@ result = dit(video, text, torch.tensor([[t,h*2,w*2]],device='cuda'),
              torch.tensor([[len(text)]],device='cuda'), 1000.0).vid_sample
 prediction = result.reshape(t,h,2,w,2,16).permute(0,1,3,2,4,5).reshape(t,h,w,64)
 compare('dit_prediction', prediction)
+if args.temporal_output:
+    # Keep the original FP32 diffusion noise: native subtraction happens before
+    # the VAE's BF16 upload, while only the DiT input is rounded to BF16.
+    noise = patches.reshape(t,h,w,2,2,33).permute(0,1,3,2,4,5).reshape(t,h*2,w*2,33)[..., :16]
+    reference_latent = (noise - result.detach().cpu().float().reshape(t,h*2,w*2,16)) / 0.9152
 # Isolate every block from accumulated BF16 perturbations. This is stricter
 # than only comparing images, where output projection suppresses hidden drift.
 from common.cache import Cache
@@ -156,6 +171,36 @@ for i, block in enumerate(dit.blocks):
     block_errors.append(err)
 report['isolated_blocks'] = {'relative_l2': block_errors, 'maximum': max(block_errors)}
 print('isolated block maximum relative L2:', max(block_errors), flush=True)
+if args.temporal_output:
+    # Free the DiT before reloading the VAE to keep this useful on 12 GB cards.
+    del dit, block, text, video, result, prediction, emb, vi, ti
+    gc.collect(); torch.cuda.empty_cache()
+    compare('vae_latent', reference_latent)
+    vae = load_vae()
+    decoded = vae.decoder(reference_latent.permute(3,0,1,2).unsqueeze(0).cuda().bfloat16())
+    reference_rgb = decoded.squeeze(0).permute(1,2,3,0).float().cpu() * 0.5 + 0.5
+    native_rgb = captured('vae_decoded').float() * 0.5 + 0.5
+    assert native_rgb.shape == reference_rgb.shape
+
+    def temporal_metrics(rgb):
+        adjacent = (rgb[1:] - rgb[:-1]).square().mean((1,2,3)).sqrt()
+        return dict(adjacent_rmse=adjacent.tolist(),
+                    mean_adjacent_rmse=float(adjacent.mean()) if len(adjacent) else None,
+                    max_adjacent_rmse=float(adjacent.max()) if len(adjacent) else None,
+                    temporal_std_rms=float((rgb-rgb.mean(0)).square().mean().sqrt()))
+
+    difference = native_rgb - reference_rgb
+    report['temporal_output'] = dict(
+        shape=list(native_rgb.shape), layout='THWC', dtype='float32',
+        range='decoder * 0.5 + 0.5, unclipped, before color matching',
+        native=temporal_metrics(native_rgb), reference=temporal_metrics(reference_rgb),
+        native_reference_frame_rmse=difference.square().mean((1,2,3)).sqrt().tolist(),
+        native_reference_rmse=float(difference.square().mean().sqrt()),
+        adjacent_difference_rmse=float((difference[1:]-difference[:-1]).square().mean().sqrt())
+            if len(difference) > 1 else None)
+    for name, rgb in [('native', native_rgb), ('reference', reference_rgb)]:
+        rgb.contiguous().numpy().tofile(root / (name + '-precolor-rgb.f32'))
+    print('temporal output:', report['temporal_output'], flush=True)
 (root/'upstream-comparison.json').write_text(json.dumps(report, indent=2))
 if max(block_errors) > 0.015:
     raise SystemExit('An isolated block exceeded relative L2 0.015')
