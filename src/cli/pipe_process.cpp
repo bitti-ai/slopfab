@@ -1,7 +1,10 @@
 #include "pipe_process.h"
 #include <algorithm>
 #include <filesystem>
+#include <chrono>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
@@ -29,6 +32,7 @@ std::string media_tool(const char* name, const char* executable) {
 
 struct PipeProcess::Impl {
   bool writing = false, finished = false;
+  std::mutex process_mutex;
 #ifdef _WIN32
   HANDLE pipe = nullptr, process = nullptr;
 
@@ -210,12 +214,17 @@ void PipeProcess::write(const void* data, size_t count) {
 }
 
 void PipeProcess::finish() {
+  std::unique_lock<std::mutex> lock(impl_->process_mutex);
   if (impl_->finished)
     return;
 #ifdef _WIN32
   CloseHandle(impl_->pipe);
   impl_->pipe = nullptr;
-  WaitForSingleObject(impl_->process, INFINITE);
+  while (WaitForSingleObject(impl_->process, 0) == WAIT_TIMEOUT) {
+    lock.unlock();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    lock.lock();
+  }
   DWORD status = 1;
   GetExitCodeProcess(impl_->process, &status);
   impl_->finished = true;
@@ -226,12 +235,30 @@ void PipeProcess::finish() {
   impl_->pipe = -1;
   int status = 0;
   pid_t result;
-  do {
-    result = waitpid(impl_->process, &status, 0);
-  } while (result < 0 && errno == EINTR);
+  for (;;) {
+    result = waitpid(impl_->process, &status, WNOHANG);
+    if (result > 0 || (result < 0 && errno != EINTR))
+      break;
+    lock.unlock();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    lock.lock();
+  }
   impl_->finished = true;
   if (result < 0 || !WIFEXITED(status) || WEXITSTATUS(status))
     throw std::runtime_error("FFmpeg/ffprobe failed");
+#endif
+}
+
+void PipeProcess::cancel() noexcept {
+  std::lock_guard<std::mutex> lock(impl_->process_mutex);
+  if (impl_->finished)
+    return;
+#ifdef _WIN32
+  if (impl_->process)
+    TerminateProcess(impl_->process, 1);
+#else
+  if (impl_->process > 0)
+    kill(impl_->process, SIGKILL);
 #endif
 }
 }

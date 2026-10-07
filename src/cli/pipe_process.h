@@ -14,6 +14,9 @@ public:
   size_t read(void*, size_t);
   void write(const void*, size_t);
   void finish();
+  // Thread-safe: terminate the child to unblock a concurrent read/write/finish.
+  // The owner must join its I/O worker before destroying this object.
+  void cancel() noexcept;
 
 private:
   struct Impl;

@@ -1,4 +1,5 @@
 #include "commands.h"
+#include "bounded_pipeline.h"
 #include "pipe_process.h"
 #include "upscale_options.h"
 #include "slopfab/image.h"
@@ -181,6 +182,7 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
   if (dims.first % 2 || dims.second % 2)
     throw std::invalid_argument("video output needs even dimensions");
   std::unique_ptr<Upscaler> upscaler;
+  std::atomic<bool> media_stopped{false};
 #if SLOPFAB_WITH_CUDA
   std::unique_ptr<seedvr2::Restorer> model;
   seedvr2::Options o;
@@ -188,8 +190,8 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
     o = seedvr2_options(args.options, source_height, source_width);
     o.transformer = args.model;
     model = std::make_unique<seedvr2::Restorer>(o);
-    model->cancelled = [] {
-      return interrupted != 0;
+    model->cancelled = [&] {
+      return interrupted != 0 || media_stopped.load();
     };
     model->progress = [](const std::string& msg) {
       std::fprintf(stderr, "  %s\n", msg.c_str());
@@ -249,12 +251,12 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
     std::vector<uint8_t> input_bytes(size_t(decode_width) * decode_height * 3);
     std::vector<uint8_t> output_bytes(size_t(dims.first) * dims.second * 3);
     auto start = std::chrono::steady_clock::now();
-    auto read = [&](seedvr2::Frame& frame) {
-      if (interrupted)
-        throw UpscaleCancelled();
+    auto decode = [&](seedvr2::Frame& frame) {
       const size_t got = reader.read(input_bytes.data(), input_bytes.size());
-      if (!got)
+      if (!got) {
+        reader.finish();
         return false;
+      }
       if (got != input_bytes.size())
         throw std::runtime_error("truncated decoded frame");
       frame.resize(got);
@@ -262,46 +264,72 @@ int cmd_upscale(int argc, char** argv, const char* executable) {
         frame[i] = input_bytes[i] / 255.0f;
       return true;
     };
-    auto write = [&](const seedvr2::Frame& frame) {
-      if (interrupted)
-        throw UpscaleCancelled();
+    auto encode = [&](const seedvr2::Frame& frame) {
+      if (frame.size() != output_bytes.size())
+        throw std::runtime_error("invalid restored frame size");
       for (size_t i = 0; i < frame.size(); ++i)
         output_bytes[i] = uint8_t(std::lround(std::clamp(frame[i], 0.0f, 1.0f) * 255));
       writer.write(output_bytes.data(), output_bytes.size());
     };
+    BoundedPipeline<seedvr2::Frame> media(
+        decode, encode,
+        [&] {
+          writer.finish();
+        },
+        [&] {
+          media_stopped.store(true);
+          reader.cancel();
+          writer.cancel();
+        },
+        [&] {
+          if (interrupted)
+            throw UpscaleCancelled();
+        });
+    auto read = [&](seedvr2::Frame& frame) {
+      return media.read(frame);
+    };
+    auto write = [&](const seedvr2::Frame& frame) {
+      media.write(frame);
+    };
     uint64_t frames = 0;
+    try {
 #if SLOPFAB_WITH_CUDA
-    if (seed) {
-      frames = seedvr2::stream(o, read, write,
-                               [&](const std::vector<seedvr2::Frame>& batch, uint64_t first) {
-                                 std::fprintf(stderr, "Restoring segment at frame %llu\n",
-                                              static_cast<unsigned long long>(first));
-                                 return model->restore(batch, first);
-                               });
-    } else
+      if (seed) {
+        frames = seedvr2::stream(o, read, write,
+                                 [&](const std::vector<seedvr2::Frame>& batch, uint64_t first) {
+                                   std::fprintf(stderr, "Restoring segment at frame %llu\n",
+                                                static_cast<unsigned long long>(first));
+                                   return model->restore(batch, first);
+                                 });
+      } else
 #endif
-    {
-      seedvr2::Frame frame, restored(output_bytes.size());
-      const size_t plane = size_t(source_width) * source_height;
-      const size_t out_plane = size_t(dims.first) * dims.second;
-      PixelBuffer planar(plane * 3);
-      while (read(frame)) {
-        for (size_t p = 0; p < plane; ++p)
-          for (size_t c = 0; c < 3; ++c)
-            planar[c * plane + p] = frame[p * 3 + c];
-        auto up =
-            upscaler->upscale(planar, 1, source_height, source_width, args.options, [](int, int) {
-              return !interrupted;
-            });
-        for (size_t p = 0; p < out_plane; ++p)
-          for (size_t c = 0; c < 3; ++c)
-            restored[p * 3 + c] = up[c * out_plane + p];
-        write(restored);
-        ++frames;
+      {
+        seedvr2::Frame frame, restored(output_bytes.size());
+        const size_t plane = size_t(source_width) * source_height;
+        const size_t out_plane = size_t(dims.first) * dims.second;
+        PixelBuffer planar(plane * 3);
+        while (read(frame)) {
+          for (size_t p = 0; p < plane; ++p)
+            for (size_t c = 0; c < 3; ++c)
+              planar[c * plane + p] = frame[p * 3 + c];
+          auto up = upscaler->upscale(planar, 1, source_height, source_width, args.options,
+                                      [&](int, int) {
+                                        return !interrupted && !media_stopped.load();
+                                      });
+          for (size_t p = 0; p < out_plane; ++p)
+            for (size_t c = 0; c < 3; ++c)
+              restored[p * 3 + c] = up[c * out_plane + p];
+          write(restored);
+          ++frames;
+        }
       }
+      media.finish();
+    } catch (...) {
+      // A worker failure can interrupt model execution through cancelled().
+      // Report its actual media error instead of that secondary cancellation.
+      media.rethrow_failure();
+      throw;
     }
-    reader.finish();
-    writer.finish();
     if (!frames)
       throw std::runtime_error("input contains no decoded frames");
     std::filesystem::rename(temporary, out);
