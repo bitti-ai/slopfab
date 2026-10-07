@@ -33,7 +33,13 @@ int main(int argc, char** argv) {
       throw std::invalid_argument("repeats must be positive");
     std::atomic<bool> stop{false};
     std::atomic<size_t> peak{0};
+    const auto record_peak = [&](size_t bytes) {
+      size_t old = peak.load();
+      while (old < bytes && !peak.compare_exchange_weak(old, bytes)) {
+      }
+    };
     size_t baseline = 0;
+    bool memory_available = false;
     std::thread sampler;
 
     struct Join {
@@ -54,13 +60,14 @@ int main(int argc, char** argv) {
       size_t free = 0, total = 0;
       SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
       baseline = total - free;
+      memory_available = true;
       peak = baseline;
       sampler = std::thread([&] {
         cudaSetDevice(0);
         while (!stop.load()) {
           size_t f = 0, t = 0;
           if (cudaMemGetInfo(&f, &t) == cudaSuccess)
-            peak.store(std::max(peak.load(), t - f));
+            record_peak(t - f);
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
       });
@@ -87,12 +94,13 @@ int main(int argc, char** argv) {
         size_t f = 0, t = 0;
         SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&f, &t));
         resident = t - f;
-        peak.store(std::max(peak.load(), resident));
+        record_peak(resident);
       }
 #endif
-      std::printf("result run=%d seconds=%.6f baseline_mib=%.1f peak_mib=%.1f resident_mib=%.1f\n",
-                  run, seconds, baseline / 1048576.0, peak.load() / 1048576.0,
-                  resident / 1048576.0);
+      std::printf("result run=%d seconds=%.6f memory_available=%d baseline_mib=%.1f "
+                  "peak_mib=%.1f resident_mib=%.1f\n",
+                  run, seconds, int(memory_available), baseline / 1048576.0,
+                  peak.load() / 1048576.0, resident / 1048576.0);
       std::fflush(stdout);
       if (std::string(argv[8]) != "-") {
         std::ofstream file(std::string(argv[8]) + "-" + std::to_string(run) + ".f32",
