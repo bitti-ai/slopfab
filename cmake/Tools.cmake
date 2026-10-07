@@ -1,5 +1,10 @@
 # --- tools ------------------------------------------------------------------
 
+if(TARGET slopfab_generation)
+  add_executable(slopfab_realesrganbench tools/realesrganbench.cpp)
+  target_link_libraries(slopfab_realesrganbench PRIVATE slopfab_generation Threads::Threads)
+endif()
+
 # Disk-side load probe. Deliberately a separate binary rather than a `slopfab`
 # subcommand: it links slopfab_core only, so it never initialises CUDA and can
 # be run while the card is busy with something else.
