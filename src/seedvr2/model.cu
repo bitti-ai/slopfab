@@ -147,14 +147,14 @@ struct Restorer::Impl {
     auto norm = rt->groupnorm(x, a + ".group_norm", false);
     // Per-frame spatial attention, never across time.
     for (int t = 0; t < x.t; ++t) {
-      Tensor frame = rt->tensor(1, x.h, x.w, x.c);
-      SLOPFAB_CUDA_CHECK(cudaMemcpy(frame.data.get(), norm.data.get() + size_t(t) * frame.size(),
-                                    frame.size() * sizeof(BFloat), cudaMemcpyDeviceToDevice));
+      Tensor frame = norm.rows_view(t * x.h * x.w, x.h * x.w);
+      frame.h = x.h;
+      frame.w = x.w;
       auto q = rt->linear(frame, a + ".to_q"), k = rt->linear(frame, a + ".to_k"),
            v = rt->linear(frame, a + ".to_v");
       auto out = rt->attention(q, k, v, 1, 512);
       out = rt->linear(out, a + ".to_out.0");
-      SLOPFAB_CUDA_CHECK(cudaMemcpy(norm.data.get() + size_t(t) * frame.size(), out.data.get(),
+      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(norm.data.get() + size_t(t) * frame.size(), out.data.get(),
                                     frame.size() * sizeof(BFloat), cudaMemcpyDeviceToDevice));
     }
     rt->add(x, norm);
@@ -349,7 +349,12 @@ struct Restorer::Impl {
 
   std::vector<float> denoise(const std::vector<float>& moments, int t, int h, int w,
                              uint64_t first) {
-    rt->clear(dit);
+    rt->begin_dit(dit);
+    struct DenoiseScope {
+      Runtime& runtime;
+      bool finished = false;
+      ~DenoiseScope() { if (!finished) runtime.abort_dit(); }
+    } scope{*rt};
     const int n = t * h * w, ph = h / 2, pw = w / 2;
     std::mt19937_64 rng(o.seed + first);
     std::normal_distribution<float> gaussian;
@@ -404,7 +409,7 @@ struct Restorer::Impl {
                shifted = attention_windows(t, ph, pw, true);
     for (int b = 0; b < 32; ++b) {
       progress("DiT block " + std::to_string(b + 1) + "/32");
-      rt->clear(dit); // Bound weight residency to one block, also on smaller GPUs.
+      rt->begin_block(b);
       std::string p = "blocks." + std::to_string(b) + ".", vb = b < 10 ? "vid" : "all",
                   tb = b < 10 ? "txt" : "all";
       auto vn = rt->rms(video), tn = rt->rms(text);
@@ -436,7 +441,8 @@ struct Restorer::Impl {
       capture("dit_block_" + std::to_string(b), video);
       capture("dit_text_" + std::to_string(b), text);
     }
-    rt->clear(dit);
+    rt->end_dit();
+    scope.finished = true;
     video = rt->rms(video, "vid_out_norm.weight");
     // The upstream cache aliases output modulation with the first (attention)
     // slice. Re-slicing emb as a one-layer AdaSingle would have the wrong width.

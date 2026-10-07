@@ -240,11 +240,26 @@ void checked() {
 }
 
 Runtime::Runtime() {
-  SLOPFAB_CUBLAS_CHECK(cuda::cublas_create(&blas));
+  SLOPFAB_CUDA_CHECK(cudaGetDevice(&device));
+  const char* vae_kernels = std::getenv("SLOPFAB_SEEDVR2_VAE_KERNELS");
+  optimized_vae = !vae_kernels || std::string(vae_kernels) != "0";
+  const char* fused = std::getenv("SLOPFAB_SEEDVR2_FUSED_LINEAR");
+  use_fused_linear = !fused || std::string(fused) != "0";
   const char* pool = std::getenv("SLOPFAB_SEEDVR2_POOL");
   if (!pool || std::string(pool) != "0") {
-    activations = std::make_shared<cuda::ReferenceBufferPool>();
-    temporaries = std::make_shared<cuda::ReferenceBufferPool>();
+    auto make_pool = [ordinal = device] {
+      return std::shared_ptr<cuda::ReferenceBufferPool>(new cuda::ReferenceBufferPool,
+          [ordinal](cuda::ReferenceBufferPool* value) {
+            int previous = ordinal;
+            cudaGetDevice(&previous);
+            cudaSetDevice(ordinal);
+            cudaStreamSynchronize(nullptr);
+            delete value;
+            cudaSetDevice(previous);
+          });
+    };
+    activations = make_pool();
+    temporaries = make_pool();
   }
   size_t free = 0, total = 0;
   SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
@@ -256,16 +271,53 @@ Runtime::Runtime() {
     if (mib < 0 || mib > 1048576) throw std::invalid_argument("SeedVR2 cache budget");
     resident_budget = std::min(size_t(mib) * 1048576, free / 2);
   }
+  SLOPFAB_CUBLAS_CHECK(cuda::cublas_create(&blas));
 }
 
 Runtime::~Runtime() {
+  // Free owned allocations on their device even if an embedding caller switched.
+  int previous = device;
+  cudaGetDevice(&previous);
+  cudaSetDevice(device);
   cudaStreamSynchronize(nullptr);
+  weights.clear(); resident.clear();
+  streamed_weights.reset();
+  scratch.resize(0);
+  activations.reset(); temporaries.reset();
   if (blas)
     cuda::cublas_destroy(blas);
+  cudaSetDevice(previous);
 }
 
 void Runtime::end_segment() {
   weights.clear();
+}
+
+void Runtime::begin_dit(SafeTensors& f) {
+  clear(f);
+  if (!resident_budget && !stream_attempted) {
+    size_t free = 0, total = 0;
+    SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
+    streamed_weights = WeightStream::create(f, device, std::min(size_t(768) << 20, free / 8));
+    stream_attempted = true;
+  }
+  if (streamed_weights) streamed_weights->begin();
+}
+
+void Runtime::begin_block(int block) {
+  weights.clear();
+  if (streamed_weights) streamed_weights->begin_block(block);
+}
+
+void Runtime::end_dit() {
+  weights.clear();
+  if (streamed_weights) streamed_weights->finish();
+}
+
+void Runtime::abort_dit() noexcept {
+  weights.clear();
+  streamed_weights.reset();
+  stream_attempted = false;
 }
 
 void Runtime::clear(SafeTensors& f) {
@@ -300,6 +352,15 @@ const Tensor& Runtime::weight(const std::string& name) {
   auto it = weights.find(name);
   if (it != weights.end())
     return it->second;
+  if (streamed_weights) {
+    auto view = streamed_weights->find(name);
+    if (view.data) {
+      Tensor x;
+      x.c = int(view.count);
+      x.data = Buffer<BFloat>::view(view.data, view.count);
+      return weights.emplace(name, std::move(x)).first->second;
+    }
+  }
   const auto& v = file->at(name);
   if (v.numel() < 1 || v.numel() > INT_MAX)
     throw std::runtime_error("SeedVR2: invalid tensor size: " + name);
@@ -342,6 +403,15 @@ Tensor Runtime::linear(const Tensor& x, const std::string& name) {
   Tensor y = tensor(x.t, x.h, x.w, out);
   const auto& w = weight(name + ".weight");
   const bool has_bias = file->find(name + ".bias") != nullptr;
+  const Tensor* bias = nullptr;
+  if (has_bias) {
+    if (file->at(name + ".bias").shape != std::vector<int64_t>{out})
+      throw std::runtime_error("SeedVR2: linear bias shape mismatch: " + name);
+    bias = &weight(name + ".bias");
+    if (use_fused_linear && fused_linear.forward(x.data.get(), w.data.get(), bias->data.get(),
+                                                 y.data.get(), x.rows(), x.c, out))
+      return y;
+  }
   Buffer<float> accumulator(has_bias ? y.size() : 0, temporaries);
   float alpha = 1, beta = 0;
   SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
@@ -352,7 +422,7 @@ Tensor Runtime::linear(const Tensor& x, const std::string& name) {
   if (file->find(name + ".bias")) {
     if (file->at(name + ".bias").shape != std::vector<int64_t>{out})
       throw std::runtime_error("SeedVR2: linear bias shape mismatch: " + name);
-    const auto& b = weight(name + ".bias");
+    const auto& b = *bias;
     linear_epilogue<<<blocks(y.size()), 256>>>(accumulator.get(), b.data.get(), y.data.get(),
                                                y.size(), out);
     checked();
@@ -370,6 +440,10 @@ Tensor Runtime::conv(const Tensor& x, const std::string& name, bool down, int ts
   Tensor y = tensor(ot, oh, ow, co);
   int k = x.c * kt * kh * kw;
   const auto& weight_data = weight(name + ".weight");
+  if (optimized_vae) {
+    vae_conv(blas, x.data.get(), weight_data.data.get(), y.data.get(), x.t, x.h, x.w,
+             x.c, co, kt, kh, kw, down, ts, scratch);
+  } else {
   const int tile = std::min(2048, y.rows());
   Buffer<BFloat> col(size_t(tile) * k, temporaries);
   float a = 1, b = 0;
@@ -382,6 +456,7 @@ Tensor Runtime::conv(const Tensor& x, const std::string& name, bool down, int ts
         blas, CUBLAS_OP_T, CUBLAS_OP_N, co, count, k, &a, weight_data.data.get(), CUDA_R_16BF, k,
         col.get(), CUDA_R_16BF, k, &b, y.data.get() + size_t(start) * co, CUDA_R_16BF, co,
         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT));
+  }
   }
   if (file->find(name + ".bias")) {
     if (file->at(name + ".bias").shape != std::vector<int64_t>{co})
@@ -400,8 +475,12 @@ Tensor Runtime::groupnorm(const Tensor& x, const std::string& name, bool silu) {
   Tensor y = tensor(x.t, x.h, x.w, x.c);
   const auto& w = weight(name + ".weight");
   const auto& b = weight(name + ".bias");
-  gn_kernel<<<x.t * 32, 256>>>(x.data.get(), y.data.get(), w.data.get(), b.data.get(), x.h * x.w,
-                               x.c, silu);
+  if (optimized_vae)
+    vae_groupnorm(x.data.get(), y.data.get(), w.data.get(), b.data.get(), x.t, x.h * x.w,
+                   x.c, silu, scratch);
+  else
+    gn_kernel<<<x.t * 32, 256>>>(x.data.get(), y.data.get(), w.data.get(), b.data.get(), x.h * x.w,
+                                 x.c, silu);
   checked();
   return y;
 }
@@ -476,6 +555,8 @@ Tensor Runtime::attention(const Tensor& q, const Tensor& k, const Tensor& v, int
   cfg.seq_len = q.rows();
   cfg.num_heads = heads;
   cfg.head_dim = dim;
+  if (optimized_vae && heads == 1 && dim == 512 && cfg.seq_len > 1024)
+    cfg.query_block = 2048;
   const auto backend = cuda::attention_preferred_backend(cfg);
   scratch.reserve(cuda::attention_workspace_bytes(cfg, backend));
   scratch.clear();

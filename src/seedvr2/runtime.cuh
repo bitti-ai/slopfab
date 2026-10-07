@@ -7,6 +7,8 @@
 #include <cuda_bf16.h>
 #include <map>
 #include "buffer.cuh"
+#include "lt_linear.cuh"
+#include "weight_stream.cuh"
 
 namespace slopfab::seedvr2 {
 using BFloat = __nv_bfloat16;
@@ -47,9 +49,20 @@ public:
   std::map<std::string, Tensor> weights;
   std::map<std::pair<SafeTensors*, std::string>, Tensor> resident;
   size_t resident_bytes = 0, resident_budget = 0;
+  bool optimized_vae = true;
+  int device = 0;
+  LtLinear fused_linear;
+  bool use_fused_linear = true;
+  std::unique_ptr<WeightStream> streamed_weights;
+  bool stream_attempted = false;
+  void begin_dit(SafeTensors& f);
+  void begin_block(int block);
+  void end_dit();
+  void abort_dit() noexcept;
   Tensor tensor(int t, int h, int w, int c) { return Tensor(t, h, w, c, activations); }
   void end_segment();
   SafeTensors* file = nullptr;
+  // Checkpoints must remain open and immutable for this Runtime's lifetime.
   void clear(SafeTensors& f);
   const Tensor& weight(const std::string& name);
   Tensor upload(const std::vector<float>& values, int t, int h, int w, int c);

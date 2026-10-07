@@ -23,7 +23,7 @@ if(SLOPFAB_BUILD_TESTS)
   slopfab_add_tokenizer_tests()
   if(TARGET slopfab_cuda)
     add_executable(slopfab_seedvr2_tests tests/harness.cpp tests/test_main.cpp tests/test_seedvr2_cuda.cu
-      tests/test_seedvr2_image_ops.cu)
+      tests/test_seedvr2_image_ops.cu tests/test_seedvr2_runtime.cu)
     target_link_libraries(slopfab_seedvr2_tests PRIVATE slopfab_cuda)
     add_test(NAME seedvr2_cuda COMMAND slopfab_seedvr2_tests)
     set_tests_properties(seedvr2_cuda PROPERTIES LABELS integration SKIP_RETURN_CODE 77)

@@ -101,6 +101,8 @@ if(SLOPFAB_ENABLE_CUDA)
       src/seedvr2/model.cu
       src/seedvr2/image_ops.cu
       src/seedvr2/vae_ops.cu
+      src/seedvr2/lt_linear.cu
+      src/seedvr2/weight_stream.cu
       src/cuda/device.cu
       src/cuda/cublas_dispatch.cpp
       src/cuda/diagnostics.cu
@@ -154,7 +156,7 @@ if(SLOPFAB_ENABLE_CUDA)
     if(NOT WIN32)
       # Windows resolves CUDA 12/13 cuBLAS in-process. Other platforms retain
       # the toolkit selected at link time until an equivalent loader exists.
-      target_link_libraries(slopfab_cuda PUBLIC CUDA::cublas)
+      target_link_libraries(slopfab_cuda PUBLIC CUDA::cublas CUDA::cublasLt)
     endif()
     # Whole-program compilation: no device code crosses translation units, and
     # -rdc=true would otherwise require an explicit device-link step.
