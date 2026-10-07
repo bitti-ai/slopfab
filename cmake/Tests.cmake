@@ -1,6 +1,13 @@
 # --- tests ------------------------------------------------------------------
 if(SLOPFAB_BUILD_TESTS)
   enable_testing()
+  find_package(Threads REQUIRED)
+  add_executable(slopfab_media_pipeline_tests tests/harness.cpp tests/test_media_pipeline.cpp
+    src/cli/pipe_process.cpp)
+  target_link_libraries(slopfab_media_pipeline_tests PRIVATE Threads::Threads)
+  target_include_directories(slopfab_media_pipeline_tests PRIVATE include)
+  add_test(NAME media_pipeline COMMAND slopfab_media_pipeline_tests)
+  set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME conditioning_assets_cli COMMAND ${Python3_EXECUTABLE}
@@ -15,10 +22,13 @@ if(SLOPFAB_BUILD_TESTS)
   endif()
   slopfab_add_tokenizer_tests()
   if(TARGET slopfab_cuda)
-    add_executable(slopfab_seedvr2_tests tests/harness.cpp tests/test_main.cpp tests/test_seedvr2_cuda.cu)
+    add_executable(slopfab_seedvr2_tests tests/harness.cpp tests/test_main.cpp tests/test_seedvr2_cuda.cu
+      tests/test_seedvr2_image_ops.cu)
     target_link_libraries(slopfab_seedvr2_tests PRIVATE slopfab_cuda)
     add_test(NAME seedvr2_cuda COMMAND slopfab_seedvr2_tests)
     set_tests_properties(seedvr2_cuda PROPERTIES LABELS integration SKIP_RETURN_CODE 77)
+    add_executable(slopfab_seedvr2_perf tests/test_seedvr2_perf.cu)
+    target_link_libraries(slopfab_seedvr2_perf PRIVATE slopfab_cuda)
   endif()
   include(cmake/TestCoverage.cmake)
   if(TARGET slopfab_generation)

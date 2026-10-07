@@ -99,6 +99,8 @@ if(SLOPFAB_ENABLE_CUDA)
       src/cuda/upscale.cu
       src/seedvr2/kernels.cu
       src/seedvr2/model.cu
+      src/seedvr2/image_ops.cu
+      src/seedvr2/vae_ops.cu
       src/cuda/device.cu
       src/cuda/cublas_dispatch.cpp
       src/cuda/diagnostics.cu

@@ -5,6 +5,8 @@
 #include <climits>
 #include <cmath>
 #include <stdexcept>
+#include <cstdlib>
+#include "vae_ops.cuh"
 
 namespace slopfab::seedvr2 {
 namespace {
@@ -30,6 +32,16 @@ __global__ void half_kernel(const __half* x, BFloat* y, size_t n) {
   size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n)
     y[i] = bf(__half2float(x[i]));
+}
+
+__global__ void fp8_kernel(const uint8_t* x, BFloat* y, size_t n) {
+  size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  const int bits = x[i], exp = (bits >> 3) & 15, mantissa = bits & 7;
+  float value = exp ? ldexpf(1.0f + mantissa * 0.125f, exp - 7)
+                    : ldexpf(float(mantissa), -9);
+  if (exp == 15 && mantissa == 7) value = nanf("");
+  y[i] = bf(bits & 128 ? -value : value);
 }
 
 __global__ void download_kernel(const BFloat* x, float* y, size_t n) {
@@ -229,11 +241,31 @@ void checked() {
 
 Runtime::Runtime() {
   SLOPFAB_CUBLAS_CHECK(cuda::cublas_create(&blas));
+  const char* pool = std::getenv("SLOPFAB_SEEDVR2_POOL");
+  if (!pool || std::string(pool) != "0") {
+    activations = std::make_shared<cuda::ReferenceBufferPool>();
+    temporaries = std::make_shared<cuda::ReferenceBufferPool>();
+  }
+  size_t free = 0, total = 0;
+  SLOPFAB_CUDA_CHECK(cudaMemGetInfo(&free, &total));
+  constexpr size_t gib = size_t(1) << 30;
+  // Leave most available memory to spatial activations and other applications.
+  resident_budget = free >= 8 * gib ? std::min(8 * gib, free / 3) : 0;
+  if (const char* budget = std::getenv("SLOPFAB_SEEDVR2_CACHE_MIB")) {
+    const long long mib = std::stoll(budget);
+    if (mib < 0 || mib > 1048576) throw std::invalid_argument("SeedVR2 cache budget");
+    resident_budget = std::min(size_t(mib) * 1048576, free / 2);
+  }
 }
 
 Runtime::~Runtime() {
+  cudaStreamSynchronize(nullptr);
   if (blas)
     cuda::cublas_destroy(blas);
+}
+
+void Runtime::end_segment() {
+  weights.clear();
 }
 
 void Runtime::clear(SafeTensors& f) {
@@ -242,10 +274,10 @@ void Runtime::clear(SafeTensors& f) {
 }
 
 Tensor Runtime::upload(const std::vector<float>& v, int t, int h, int w, int c) {
-  Tensor out(t, h, w, c);
+  Tensor out = tensor(t, h, w, c);
   if (v.size() != out.size())
     throw std::runtime_error("SeedVR2: upload size mismatch");
-  cuda::DeviceBuffer<float> tmp(v.size());
+  Buffer<float> tmp(v.size(), temporaries);
   tmp.copy_from_host(v.data(), v.size());
   upload_kernel<<<blocks(v.size()), 256>>>(tmp.get(), out.data.get(), v.size());
   checked();
@@ -253,16 +285,18 @@ Tensor Runtime::upload(const std::vector<float>& v, int t, int h, int w, int c) 
 }
 
 std::vector<float> Runtime::download(const Tensor& x) {
-  cuda::DeviceBuffer<float> tmp(x.size());
+  Buffer<float> tmp(x.size(), temporaries);
   download_kernel<<<blocks(x.size()), 256>>>(x.data.get(), tmp.get(), x.size());
   checked();
   std::vector<float> out(x.size());
   tmp.copy_to_host(out.data(), out.size());
-  SLOPFAB_CUDA_CHECK(cudaDeviceSynchronize());
   return out;
 }
 
 const Tensor& Runtime::weight(const std::string& name) {
+  const auto key = std::make_pair(file, name);
+  auto cached = resident.find(key);
+  if (cached != resident.end()) return cached->second;
   auto it = weights.find(name);
   if (it != weights.end())
     return it->second;
@@ -277,12 +311,26 @@ const Tensor& Runtime::weight(const std::string& name) {
   if (v.dtype == DType::kBF16) {
     SLOPFAB_CUDA_CHECK(cudaMemcpy(x.data.get(), v.data, v.nbytes, cudaMemcpyHostToDevice));
   } else if (v.dtype == DType::kF16) {
-    cuda::DeviceBuffer<__half> tmp(size_t(v.numel()));
+    Buffer<__half> tmp(size_t(v.numel()), temporaries);
     SLOPFAB_CUDA_CHECK(cudaMemcpy(tmp.get(), v.data, v.nbytes, cudaMemcpyHostToDevice));
     half_kernel<<<blocks(x.size()), 256>>>(tmp.get(), x.data.get(), x.size());
     checked();
-  } else
-    x = upload(to_f32(v), 1, 1, 1, int(v.numel()));
+  } else if (v.dtype == DType::kF8E4M3) {
+    Buffer<uint8_t> tmp(size_t(v.numel()), temporaries);
+    tmp.copy_from_host(static_cast<const uint8_t*>(v.data), tmp.size());
+    fp8_kernel<<<blocks(x.size()), 256>>>(tmp.get(), x.data.get(), x.size());
+    checked();
+  } else {
+    Buffer<float> tmp(size_t(v.numel()), temporaries);
+    tmp.copy_from_host(static_cast<const float*>(v.data), tmp.size());
+    upload_kernel<<<blocks(x.size()), 256>>>(tmp.get(), x.data.get(), x.size());
+    checked();
+  }
+  const size_t bytes = x.size() * sizeof(BFloat);
+  if (bytes <= resident_budget - std::min(resident_bytes, resident_budget)) {
+    resident_bytes += bytes;
+    return resident.emplace(key, std::move(x)).first->second;
+  }
   return weights.emplace(name, std::move(x)).first->second;
 }
 
@@ -291,10 +339,10 @@ Tensor Runtime::linear(const Tensor& x, const std::string& name) {
   if (shape.size() != 2 || shape[1] != x.c)
     throw std::runtime_error("SeedVR2: linear shape mismatch: " + name);
   int out = int(shape[0]);
-  Tensor y(x.t, x.h, x.w, out);
+  Tensor y = tensor(x.t, x.h, x.w, out);
   const auto& w = weight(name + ".weight");
   const bool has_bias = file->find(name + ".bias") != nullptr;
-  cuda::DeviceBuffer<float> accumulator(has_bias ? y.size() : 0);
+  Buffer<float> accumulator(has_bias ? y.size() : 0, temporaries);
   float alpha = 1, beta = 0;
   SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(
       blas, CUBLAS_OP_T, CUBLAS_OP_N, out, x.rows(), x.c, &alpha, w.data.get(), CUDA_R_16BF, x.c,
@@ -319,11 +367,11 @@ Tensor Runtime::conv(const Tensor& x, const std::string& name, bool down, int ts
     throw std::runtime_error("SeedVR2: convolution shape mismatch: " + name);
   int co = int(s[0]), kt = int(s[2]), kh = int(s[3]), kw = int(s[4]), ss = down ? 2 : 1;
   int ot = (x.t - 1) / ts + 1, oh = down ? x.h / 2 : x.h, ow = down ? x.w / 2 : x.w;
-  Tensor y(ot, oh, ow, co);
+  Tensor y = tensor(ot, oh, ow, co);
   int k = x.c * kt * kh * kw;
   const auto& weight_data = weight(name + ".weight");
   const int tile = std::min(2048, y.rows());
-  cuda::DeviceBuffer<BFloat> col(size_t(tile) * k);
+  Buffer<BFloat> col(size_t(tile) * k, temporaries);
   float a = 1, b = 0;
   for (int start = 0; start < y.rows(); start += tile) {
     int count = std::min(tile, y.rows() - start);
@@ -349,7 +397,7 @@ Tensor Runtime::groupnorm(const Tensor& x, const std::string& name, bool silu) {
   if (x.c % 32 || file->at(name + ".weight").shape != std::vector<int64_t>{x.c} ||
       file->at(name + ".bias").shape != std::vector<int64_t>{x.c})
     throw std::runtime_error("SeedVR2: group norm shape mismatch: " + name);
-  Tensor y(x.t, x.h, x.w, x.c);
+  Tensor y = tensor(x.t, x.h, x.w, x.c);
   const auto& w = weight(name + ".weight");
   const auto& b = weight(name + ".bias");
   gn_kernel<<<x.t * 32, 256>>>(x.data.get(), y.data.get(), w.data.get(), b.data.get(), x.h * x.w,
@@ -361,7 +409,7 @@ Tensor Runtime::groupnorm(const Tensor& x, const std::string& name, bool silu) {
 Tensor Runtime::rms(const Tensor& x, const std::string& name) {
   if (!name.empty() && file->at(name).shape != std::vector<int64_t>{x.c})
     throw std::runtime_error("SeedVR2: RMS norm shape mismatch: " + name);
-  Tensor y(x.t, x.h, x.w, x.c);
+  Tensor y = tensor(x.t, x.h, x.w, x.c);
   const BFloat* w = name.empty() ? nullptr : weight(name).data.get();
   rms_kernel<<<x.rows(), 256>>>(x.data.get(), y.data.get(), w, x.c);
   checked();
@@ -394,14 +442,36 @@ void Runtime::modulate(Tensor& x, const Tensor& emb, const std::string& name, in
 }
 
 Tensor Runtime::upsample(const Tensor& x, int tr) {
-  Tensor y((x.t - 1) * tr + 1, x.h * 2, x.w * 2, x.c / (4 * tr));
+  Tensor y = tensor((x.t - 1) * tr + 1, x.h * 2, x.w * 2, x.c / (4 * tr));
   up_kernel<<<blocks(y.size()), 256>>>(x.data.get(), y.data.get(), x.t, x.h, x.w, y.c, tr);
   checked();
   return y;
 }
 
+void Runtime::mlp(Tensor& x, const Tensor& emb, const std::string& p, const std::string& branch) {
+  int chunk = 4096;
+  if (const char* value = std::getenv("SLOPFAB_SEEDVR2_MLP_ROWS")) {
+    chunk = std::stoi(value);
+    if (chunk < 0) throw std::invalid_argument("SeedVR2 MLP rows must be nonnegative");
+  }
+  if (!chunk) chunk = x.rows();
+  for (int first = 0; first < x.rows(); first += chunk) {
+    auto part = x.rows_view(first, std::min(chunk, x.rows() - first));
+    auto norm = rms(part);
+    modulate(norm, emb, p + "ada." + branch + ".mlp", 1, false);
+    auto hidden = linear(norm, p + "mlp." + branch + ".proj_in");
+    auto gate = linear(norm, p + "mlp." + branch + ".proj_in_gate");
+    norm = Tensor();
+    activation(hidden, &gate);
+    gate = Tensor();
+    hidden = linear(hidden, p + "mlp." + branch + ".proj_out");
+    modulate(hidden, emb, p + "ada." + branch + ".mlp", 1, true);
+    add(part, hidden);
+  }
+}
+
 Tensor Runtime::attention(const Tensor& q, const Tensor& k, const Tensor& v, int heads, int dim) {
-  Tensor out(q.t, q.h, q.w, q.c);
+  Tensor out = tensor(q.t, q.h, q.w, q.c);
   cuda::AttentionConfig cfg;
   cfg.seq_len = q.rows();
   cfg.num_heads = heads;
@@ -429,13 +499,13 @@ void Runtime::window_attention(const Tensor& vqkv, const Tensor& tqkv, Tensor& v
   const auto* tqn = weight(p + "norm_q." + tb + ".weight").data.get();
   const auto* tkn = weight(p + "norm_k." + tb + ".weight").data.get();
   const auto frequencies = to_f32(file->at(p + "rope.rope.freqs"));
-  cuda::DeviceBuffer<float> freq(frequencies.size());
+  Buffer<float> freq(frequencies.size(), temporaries);
   freq.copy_from_host(frequencies.data(), frequencies.size());
-  cuda::DeviceBuffer<float> pool(text.size());
+  Buffer<float> pool(text.size(), temporaries);
   pool.zero();
   for (auto win : windows) {
     int n = (win.t1 - win.t0) * (win.y1 - win.y0) * (win.x1 - win.x0) + nt;
-    Tensor q(1, 1, n, d), k(1, 1, n, d), v(1, 1, n, d);
+    Tensor q = tensor(1, 1, n, d), k = tensor(1, 1, n, d), v = tensor(1, 1, n, d);
     pack_kernel<<<n*(d / 128), 128>>>(vqkv.data.get(), tqkv.data.get(), q.data.get(), k.data.get(),
                                       v.data.get(), vqn, vkn, tqn, tkn, freq.get(), video.h,
                                       video.w, d, nt, win);

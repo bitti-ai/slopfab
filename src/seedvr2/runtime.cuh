@@ -6,17 +6,18 @@
 #include "slopfab/cuda/attention.cuh"
 #include <cuda_bf16.h>
 #include <map>
+#include "buffer.cuh"
 
 namespace slopfab::seedvr2 {
 using BFloat = __nv_bfloat16;
 
 struct Tensor {
   int t = 1, h = 1, w = 1, c = 1;
-  cuda::DeviceBuffer<BFloat> data;
+  Buffer<BFloat> data;
   Tensor() = default;
 
-  Tensor(int t_, int h_, int w_, int c_)
-      : t(t_), h(h_), w(w_), c(c_), data(size_t(t_) * h_ * w_ * c_) {
+  Tensor(int t_, int h_, int w_, int c_, std::shared_ptr<cuda::ReferenceBufferPool> pool = {})
+      : t(t_), h(h_), w(w_), c(c_), data(size_t(t_) * h_ * w_ * c_, std::move(pool)) {
   }
 
   int rows() const {
@@ -26,6 +27,14 @@ struct Tensor {
   size_t size() const {
     return data.size();
   }
+  Tensor rows_view(int offset, int count) const {
+    if (offset < 0 || count < 0 || offset > rows() || count > rows() - offset)
+      throw std::out_of_range("SeedVR2 tensor view");
+    Tensor result;
+    result.w = count; result.c = c;
+    result.data = Buffer<BFloat>::view(data.get() + size_t(offset) * c, size_t(count) * c);
+    return result;
+  }
 };
 
 class Runtime {
@@ -34,7 +43,12 @@ public:
   ~Runtime();
   cublasHandle_t blas = nullptr;
   cuda::Workspace scratch;
+  std::shared_ptr<cuda::ReferenceBufferPool> activations, temporaries;
   std::map<std::string, Tensor> weights;
+  std::map<std::pair<SafeTensors*, std::string>, Tensor> resident;
+  size_t resident_bytes = 0, resident_budget = 0;
+  Tensor tensor(int t, int h, int w, int c) { return Tensor(t, h, w, c, activations); }
+  void end_segment();
   SafeTensors* file = nullptr;
   void clear(SafeTensors& f);
   const Tensor& weight(const std::string& name);
@@ -47,6 +61,7 @@ public:
   void activation(Tensor& x, const Tensor* gate = nullptr);
   void add(Tensor& x, const Tensor& y);
   void modulate(Tensor& x, const Tensor& emb, const std::string& name, int layer, bool gate);
+  void mlp(Tensor& x, const Tensor& emb, const std::string& prefix, const std::string& branch);
   Tensor upsample(const Tensor& x, int temporal_ratio);
   Tensor attention(const Tensor& q, const Tensor& k, const Tensor& v, int heads, int dim);
   void window_attention(const Tensor& vqkv, const Tensor& tqkv, Tensor& video, Tensor& text,
