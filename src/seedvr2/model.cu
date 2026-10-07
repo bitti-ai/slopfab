@@ -2,6 +2,7 @@
 // See third_party/seedvr2/NOTICE for pinned reference provenance.
 #include "runtime.cuh"
 #include "image_ops.cuh"
+#include "color_ops.h"
 #include "slopfab/tensor_convert.h"
 #include <algorithm>
 #include <cmath>
@@ -429,21 +430,9 @@ struct Restorer::Impl {
         rt->add(text, tn);
       vn = Tensor();
       tn = Tensor();
-      auto mlp = [&](Tensor& x, const std::string& branch) {
-        auto norm = rt->rms(x);
-        rt->modulate(norm, emb, p + "ada." + branch + ".mlp", 1, false);
-        auto hidden = rt->linear(norm, p + "mlp." + branch + ".proj_in");
-        auto gate = rt->linear(norm, p + "mlp." + branch + ".proj_in_gate");
-        norm = Tensor();
-        rt->activation(hidden, &gate);
-        gate = Tensor();
-        hidden = rt->linear(hidden, p + "mlp." + branch + ".proj_out");
-        rt->modulate(hidden, emb, p + "ada." + branch + ".mlp", 1, true);
-        rt->add(x, hidden);
-      };
-      mlp(video, vb);
+      rt->mlp(video, emb, p, vb);
       if (b != 31)
-        mlp(text, tb);
+        rt->mlp(text, emb, p, tb);
       capture("dit_block_" + std::to_string(b), video);
       capture("dit_text_" + std::to_string(b), text);
     }
@@ -493,32 +482,7 @@ std::vector<Frame> Restorer::restore(const std::vector<Frame>& frames, uint64_t 
   moments.shrink_to_fit();
   auto result = p.decode_tiled(latent, t, h, w);
   p.rt->end_segment();
-  for (size_t f = 0; f < result.size(); ++f) {
-    auto& out = result[f];
-    if (o.color_match)
-      for (int c = 0; c < 3; ++c) {
-        double a = 0, b = 0, aa = 0, bb = 0;
-        size_t n = out.size() / 3;
-        for (size_t i = c; i < out.size(); i += 3) {
-          a += out[i];
-          b += frames[f][i];
-        }
-        a /= n;
-        b /= n;
-        for (size_t i = c; i < out.size(); i += 3) {
-          aa += (out[i] - a) * (out[i] - a);
-          bb += (frames[f][i] - b) * (frames[f][i] - b);
-        }
-        double scale = std::sqrt((bb / n + 1e-6) / (aa / n + 1e-6));
-        for (size_t i = c; i < out.size(); i += 3)
-          out[i] = float((out[i] - a) * scale + b);
-      }
-    for (auto& v : out) {
-      if (!std::isfinite(v))
-        throw std::runtime_error("SeedVR2: nonfinite restored pixel");
-      v = std::clamp(v, 0.0f, 1.0f);
-    }
-  }
+  finish_frames(result, frames, o.color_match);
   return result;
 }
 } // namespace slopfab::seedvr2
