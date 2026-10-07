@@ -29,13 +29,15 @@ external conversion to a lossy format may change preserved pixels.
 
 The source is edge-padded to H3's 32-pixel canvas alignment, encoded using the
 existing keyframe VAE, and used to initialize the target latents. At each step,
-unmasked cells are restored to the source at the resulting sigma using the
-same noise field throughout. Latent cells overlapping the box are editable;
+unmasked cells are restored to the source at the resulting sigma. Euler reuses
+the initial noise field; re-noising uses the same fresh noise as the sampler
+at each step. Latent cells overlapping the box are editable;
 final pixel compositing enforces the exact rectangle and removes padding.
 
-Image editing requires a video VAE containing encoder weights and Euler
-sampling without step, block or MotionCache reuse. It cannot be combined with
-initial-latent overrides, video continuation or animation. The source supplies
+Image editing requires a video VAE containing encoder weights and Euler or
+re-noising sampling (including DMAD), without step, block or MotionCache reuse.
+Both samplers also support outpainting and reduced edit strength. Editing cannot
+be combined with initial-latent overrides, video continuation or animation. The source supplies
 target latents and does not automatically become a Ref2VA reference. Explicit
 references remain available with a compatible Ref2VA checkpoint. Vulkan's
 editing path transfers target latents to and from the host after each step.

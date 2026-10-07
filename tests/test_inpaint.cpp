@@ -2,7 +2,9 @@
 #include "slopfab/inpaint.h"
 #include "slopfab/generate.h"
 #include "slopfab/dit/packing.h"
+#include <algorithm>
 #include <limits>
+#include <stdexcept>
 
 namespace {
 slopfab::ImageEdit edit_fixture() {
@@ -64,6 +66,44 @@ SLOPFAB_TEST(inpaint_constraint_uses_resulting_sigma_and_fixed_noise) {
   CHECK(slopfab::test::throws([] {
     slopfab::InpaintConstraint{{1}, {}, {0}}.initial(.5f);
   }));
+}
+
+SLOPFAB_TEST(inpaint_constraint_uses_fresh_noise_without_mutating_initial_noise) {
+  slopfab::InpaintConstraint c{{2, 4, 6}, {10, 20, 30}, {0, 1, 0}};
+  std::vector<float> rows{-1, -2, -3}, fresh{-10, -20, -30};
+  c.apply(rows.data(), rows.size(), .25f, fresh.data());
+  CHECK(rows == std::vector<float>({-1, -2, -3}));
+  CHECK(c.noise == std::vector<float>({10, 20, 30}));
+  std::fill(fresh.begin(), fresh.end(), std::numeric_limits<float>::quiet_NaN());
+  c.apply(rows.data(), rows.size(), 0, fresh.data());
+  CHECK(rows == std::vector<float>({2, -2, 6}));
+}
+
+SLOPFAB_TEST(inpaint_renoise_validation_preserves_other_restrictions) {
+  slopfab::GenerateRequest request;
+  request.still_image = true;
+  request.out_path = "edited.ppm";
+  request.image_edit = edit_fixture();
+  slopfab::RunOptions options;
+  options.sampler = slopfab::sampler::SamplerKind::kRenoise;
+  const auto plan = slopfab::resolve_plan(request);
+  slopfab::validate_generation_options(request, plan, options);
+  const auto rejected = [&] {
+    try {
+      slopfab::validate_generation_options(request, plan, options);
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+  options.sampler = slopfab::sampler::SamplerKind::kAb2;
+  CHECK(rejected());
+  options.sampler = slopfab::sampler::SamplerKind::kRenoise;
+  options.init_latents_path = "initial.safetensors";
+  CHECK(rejected());
+  options.init_latents_path.clear();
+  request.skip_every = 2;
+  CHECK(rejected());
 }
 
 SLOPFAB_TEST(outpaint_preserves_original_context_and_generates_the_whole_surround) {

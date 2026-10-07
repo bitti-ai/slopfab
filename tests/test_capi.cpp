@@ -105,6 +105,27 @@ SLOPFAB_TEST(capi_image_edit_snapshot_validation_and_clear) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_dmad_image_edits_and_outpainting) {
+  auto* request = slopfab_request_create();
+  std::vector<uint8_t> pixels(64 * 64 * 3, 123);
+  for (const int backend : {SLOPFAB_INFERENCE_CUDA, SLOPFAB_INFERENCE_VULKAN}) {
+    CHECK(slopfab_request_set_inference_backend(request, backend) == SLOPFAB_OK);
+    CHECK(slopfab_request_set_schedule(request, SLOPFAB_SCHEDULE_DMAD_4STEP) == SLOPFAB_OK);
+    for (const float strength : {1.f, .5f, .01f}) {
+      CHECK(slopfab_request_set_image_edit_rgb24(request, pixels.data(), pixels.size(), 64, 64,
+                                                 64 * 3, 17, 17, 32, 32, strength, 0) == SLOPFAB_OK);
+      for (const int invert : {0, 1}) {
+        CHECK(slopfab_request_set_image_edit_invert_mask(request, invert) == SLOPFAB_OK);
+        slopfab_plan plan{};
+        CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+        CHECK(plan.aligned_frames == 1);
+        CHECK(plan.num_model_evaluations == (strength == 1 ? 4 : strength == .5f ? 2 : 1));
+      }
+    }
+  }
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_outpaint_validates_preserved_box_and_resets_on_new_source) {
   auto* request = slopfab_request_create();
   CHECK(slopfab_request_set_image_edit_invert_mask(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);

@@ -30,7 +30,9 @@ struct InpaintConstraint {
   std::vector<float> original, noise, mask;
   void validate(size_t count) const;
   std::vector<float> initial(float sigma) const;
-  void apply(float* rows, size_t count, float sigma) const;
+  // Re-noising supplies the same fresh row-layout noise as the scheduler.
+  // Otherwise reuse initial noise. At sigma zero no noise is read.
+  void apply(float* rows, size_t count, float sigma, const float* step_noise = nullptr) const;
 };
 
 } // namespace slopfab

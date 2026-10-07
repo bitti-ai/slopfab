@@ -34,8 +34,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   r.image_edit.validate();
   require(!r.image_edit.image ||
               (r.still_image && o.source == LatentSource::kDenoise && o.init_latents_path.empty() &&
-               sampler_kind == sampler::SamplerKind::kEuler && !caches),
-          "image editing requires still-image Euler denoising without initial latents or caches");
+               (sampler_kind == sampler::SamplerKind::kEuler ||
+                sampler_kind == sampler::SamplerKind::kRenoise) && !caches),
+          "image editing requires still-image Euler or re-noising denoising without initial latents or caches");
   require(!r.image_edit.image || o.on_samples || r.out_path.empty() ||
               std::filesystem::path(r.out_path).extension() == ".ppm",
           "image editing file output requires a .ppm path");

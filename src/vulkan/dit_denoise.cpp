@@ -532,6 +532,10 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
                                        renoise_noise.data(), count);
         scheduler.step(static_cast<int>(modality_step), renoise_rows.data(),
                        renoise_velocity.data(), count, renoise_rows.data(), renoise_noise.data());
+        // Apply before the shared noise buffer is reused for audio.
+        if (c.inpaint && stream == sampler::NoiseStream::kVideoLatents)
+          c.inpaint->apply(renoise_rows.data(), count, scheduler.sigmas()[modality_step + 1],
+                           renoise_noise.data());
         impl_->context->upload(state, renoise_rows.data(), count);
       };
       if (update_step.advance_video)
@@ -558,7 +562,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
         constrain(conditioned ? s.audio_result : s.audio, overlap.audio, overlap_audio,
                   audio.sigmas()[update_step.audio + 1]);
     }
-    if (c.inpaint && update_step.advance_video) {
+    if (c.inpaint && !renoise && update_step.advance_video) {
       impl_->context->download(video_state, edited_video.data(), edited_video.size());
       c.inpaint->apply(edited_video.data(), edited_video.size(),
                        video.sigmas()[update_step.video + 1]);

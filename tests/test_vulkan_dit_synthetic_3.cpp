@@ -200,6 +200,55 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
     CHECK(generated.video_rows == repeated.video_rows);
     CHECK(generated.audio_rows == repeated.audio_rows);
     student.unload();
+
+    // Exercise fresh-noise preservation with both target storage layouts and
+    // generated audio, which reuses the denoiser's scratch noise buffer.
+    for (bool invert : {false, true}) {
+      for (const std::vector<float>& sigmas :
+           {std::vector<float>{1, .75f, .5f, .25f, 0},
+            std::vector<float>{.5f, .25f, 0}, std::vector<float>{.25f, 0}}) {
+        std::fill(constraint->mask.begin(), constraint->mask.end(), invert ? 1.f : 0.f);
+        constraint->mask[1] = invert ? 0.f : 1.f;
+        edit_config.inpaint = constraint;
+        auto renoise_editor = ExactH3Denoiser::create(context, edit_config);
+        renoise_editor.load(checkpoint);
+        vs.set_base_sigmas(sigmas);
+        as.set_base_sigmas(sigmas);
+        auto expected = constraint->initial(vs.sigmas().front());
+        int edit_boundaries = 0;
+        const auto edit_boundary = [&](uint32_t step, const std::vector<float>& v,
+                                        const std::vector<float>&) {
+          ++edit_boundaries;
+          std::vector<float> noise(n);
+          sampler::fill_renoise_normal(42, step, sampler::NoiseStream::kVideoLatents,
+                                       noise.data(), n);
+          const float sigma = vs.sigmas()[step], next = vs.sigmas()[step + 1];
+          for (size_t i = 0; i < n; ++i) {
+            const float clean = constraint->mask[i] ? expected[i] + sigma * .25f : 2.f;
+            expected[i] = (1 - next) * clean + next * noise[i];
+          }
+          CHECK_CLOSE(expected, v, 1e-6, "Vulkan DMAD edit boundary");
+        };
+        const auto prepare = [&] {
+          renoise_editor.prepare(prompt.data(), prompt.size(), initial.data(), initial.size(),
+                                   audio.data(), audio.size());
+          expected = constraint->initial(vs.sigmas().front());
+          edit_boundaries = 0;
+        };
+        prepare();
+        const auto renoise_edited = renoise_editor.run(vs, as, {}, edit_boundary);
+        CHECK(edit_boundaries == int(vs.num_steps()));
+        prepare();
+        const auto repeated_edit = renoise_editor.run(vs, as, {}, edit_boundary);
+        CHECK(renoise_edited.video_rows == repeated_edit.video_rows);
+        CHECK(renoise_edited.audio_rows == repeated_edit.audio_rows);
+        prepare();
+        const auto cancelled_edit = renoise_editor.run(
+            vs, as, [](uint32_t, uint32_t) { return false; }, edit_boundary);
+        CHECK(cancelled_edit.cancelled && edit_boundaries == 1);
+        renoise_editor.unload();
+      }
+    }
     vs.set_sampler(sampler::SamplerKind::kEuler);
     as.set_sampler(sampler::SamplerKind::kEuler);
   }

@@ -135,12 +135,13 @@ std::vector<float> InpaintConstraint::initial(float sigma) const {
   return out;
 }
 
-void InpaintConstraint::apply(float* rows, size_t count, float sigma) const {
+void InpaintConstraint::apply(float* rows, size_t count, float sigma, const float* step_noise) const {
   if (!rows || count != original.size() || noise.size() != count || mask.size() != count ||
       !std::isfinite(sigma) || sigma < 0 || sigma > 1)
     throw std::invalid_argument("invalid inpainting update");
+  const float* preserved_noise = step_noise ? step_noise : noise.data();
   for (size_t i = 0; i < count; ++i)
     if (mask[i] == 0)
-      rows[i] = sigma == 0 ? original[i] : (1 - sigma) * original[i] + sigma * noise[i];
+      rows[i] = sigma == 0 ? original[i] : (1 - sigma) * original[i] + sigma * preserved_noise[i];
 }
 } // namespace slopfab

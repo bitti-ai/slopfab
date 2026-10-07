@@ -1,5 +1,6 @@
 #include "detail/transformer_fixture.h"
 #include "slopfab/sampler/noise.h"
+#include "slopfab/generate.h"
 
 SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {
   using namespace slopfab;
@@ -206,6 +207,72 @@ SLOPFAB_TEST_CATEGORY(denoise_inpaint_constrains_each_boundary_and_keeps_anchors
   });
   CHECK(calls == 1 && boundaries == 1);
   CHECK(result.video_rows[0] == 6);
+}
+
+SLOPFAB_TEST_CATEGORY(denoise_renoise_inpaint_and_outpaint_trajectories, "synthetic") {
+  using namespace slopfab;
+  using namespace slopfab::sampler;
+  auto image = std::make_shared<RGBImage>();
+  image->width = image->height = 64;
+  image->pixels.resize(64 * 64 * 3, 123);
+  for (bool invert : {false, true}) {
+    for (float strength : {1.f, .5f, .01f}) {
+      GenerateRequest request;
+      request.still_image = true;
+      request.schedule = ScheduleKind::kDmad4Step;
+      request.image_edit = {image, 17, 17, 32, 32, strength, 0, invert};
+      const auto plan = resolve_plan(request);
+      auto layout = plan.layout;
+      layout.num_condition_video = 1;
+      const auto indices = dit::build_indices(layout);
+      FlowScheduler video(12), audio(2);
+      video.set_sigmas(plan.video_sigmas);
+      audio.set_sigmas(plan.audio_sigmas);
+      video.set_sampler(SamplerKind::kRenoise);
+      audio.set_sampler(SamplerKind::kRenoise);
+      InpaintConstraint constraint;
+      constraint.mask = edit_mask_rows(request.image_edit, 64, 64);
+      const size_t count = constraint.mask.size();
+      constraint.original.assign(count, 2);
+      constraint.noise.assign(count, 10);
+      std::vector<float> anchors(96, 123);
+      Transformer model;
+      auto in = make_denoise_inputs(layout, indices, video, audio);
+      in.seed = 42;
+      in.inpaint = &constraint;
+      in.condition_video_rows = &anchors;
+      auto expected = constraint.initial(video.sigmas().front());
+      int boundaries = 0;
+      in.velocity = [&](int, const RowTimesteps&, const float* v, const float*, float* vv, float*) {
+        CHECK(std::equal(anchors.begin(), anchors.end(), v));
+        CHECK_CLOSE(expected, std::vector<float>(v + 96, v + 96 + count), 1e-6,
+                    "preserved rows reach the next model evaluation");
+        std::fill(vv, vv + 96 + count, .25f);
+      };
+      in.boundary = [&](int step, const std::vector<float>& v, const std::vector<float>& a) {
+        ++boundaries;
+        std::vector<float> noise(count);
+        fill_renoise_normal(in.seed, step, NoiseStream::kVideoLatents, noise.data(), count);
+        const float sigma = video.sigmas()[step], next = video.sigmas()[step + 1];
+        for (size_t i = 0; i < count; ++i) {
+          const float clean = constraint.mask[i] ? expected[i] + sigma * .25f : 2.f;
+          expected[i] = (1 - next) * clean + next * noise[i];
+        }
+        CHECK_CLOSE(expected, v, 1e-6, "DMAD edit boundary");
+        CHECK(a.empty());
+      };
+      const auto result = dit::denoise(model, in);
+      CHECK(boundaries == int(video.num_steps()));
+      expected = constraint.initial(video.sigmas().front());
+      const auto repeated = dit::denoise(model, in);
+      CHECK(result.video_rows == repeated.video_rows);
+      expected = constraint.initial(video.sigmas().front());
+      boundaries = 0;
+      const auto cancelled = dit::denoise(model, in, [](int, int) { return false; });
+      CHECK(boundaries == 1);
+      CHECK_CLOSE(expected, cancelled.video_rows, 1e-6, "cancelled DMAD edit boundary");
+    }
+  }
 }
 
 SLOPFAB_TEST_CATEGORY(denoise_motion_cache_residual_trajectory_and_reset, "synthetic") {
