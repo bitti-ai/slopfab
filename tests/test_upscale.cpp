@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 
@@ -315,5 +316,80 @@ SLOPFAB_TEST_CATEGORY(upscale_real_checkpoint_reference, "integration") {
       CHECK_CLOSE(expected, std::vector<float>(actual.begin(), actual.end()), 2e-4,
                   "PyTorch RRDBNet reference");
     }
+  }
+}
+
+SLOPFAB_TEST_CATEGORY(upscale_real_checkpoint_frame_independence, "integration") {
+  const char* model_path = std::getenv("SLOPFAB_REALESRGAN_MODEL");
+  if (!model_path || !std::filesystem::is_regular_file(std::filesystem::u8path(model_path))) {
+    SKIP_MISSING_FIXTURE("Set SLOPFAB_REALESRGAN_MODEL to the real x4plus checkpoint");
+    return;
+  }
+  constexpr int height = 23, width = 31;
+  constexpr size_t plane = size_t(height) * width, output_plane = plane * 16;
+  PixelBuffer a(plane * 3), b(plane * 3);
+  for (int c = 0; c < 3; ++c)
+    for (int y = 0; y < height; ++y)
+      for (int x = 0; x < width; ++x) {
+        const size_t i = (size_t(c) * height + y) * width + x;
+        a[i] = float((x * (c + 3) + y * (7 - c) + c * 31) % 251) / 250.0f;
+        b[i] = 0.85f - 0.7f * a[i];
+      }
+  // [channel,frame,y,x]: A/B/A catches both frame-indexing mistakes and
+  // unintended temporal state. Distinct RGB planes catch planar-layout bugs.
+  PixelBuffer video(plane * 3 * 3);
+  for (size_t c = 0; c < 3; ++c)
+    for (size_t f = 0; f < 3; ++f)
+      std::copy_n((f == 1 ? b : a).data() + c * plane, plane,
+                  video.data() + (c * 3 + f) * plane);
+  constexpr int other_height = 35, other_width = 41;
+  PixelBuffer other(size_t(other_height) * other_width * 3);
+  for (size_t i = 0; i < other.size(); ++i)
+    other[i] = float((i * 43 + 19) % 251) / 250.0f;
+
+  for (auto backend : backends()) {
+    const char* name = backend == DeviceBackend::kCuda ? "CUDA" : "Vulkan";
+    auto same_bits = [name](const PixelBuffer& expected, const PixelBuffer& actual,
+                            const char* context) {
+      CHECK_MSG(expected.size() == actual.size(), "%s %s: output sizes differ", name, context);
+      if (expected.size() == actual.size())
+        CHECK_MSG(std::memcmp(expected.data(), actual.data(), expected.size() * sizeof(float)) == 0,
+                  "%s %s: identical frames/settings changed output bits", name, context);
+    };
+    auto model = make_upscaler(UpscaleMethod::kRealEsrgan, model_path, backend);
+    PixelBuffer last_reference;
+    UpscaleOptions last_options;
+    for (int tile : {0, 17}) {
+      const UpscaleOptions options{tile, 2, 3};
+      const auto expected_a = model->upscale(a, 1, height, width, options);
+      const auto expected_b = model->upscale(b, 1, height, width, options);
+      CHECK_MSG(expected_a != expected_b, "%s fixture must restore distinct A and B frames", name);
+
+      auto ignored_options = options;
+      ignored_options.seed = std::numeric_limits<uint64_t>::max();
+      ignored_options.segment_frames = 129;
+      ignored_options.color_match = false;
+      const auto repeated = model->upscale(a, 1, height, width, ignored_options);
+      same_bits(expected_a, repeated, "A after B with changed SeedVR2-only options");
+
+      // Change both geometry and tiling between calls so the activation pool
+      // grows/reuses different shapes before the original configuration returns.
+      const UpscaleOptions other_options{tile ? 0 : 13, 3, 1};
+      const auto resized = model->upscale(other, 1, other_height, other_width, other_options);
+      CHECK(resized.size() == other.size() * 16);
+      const auto actual_video = model->upscale(video, 3, height, width, ignored_options);
+      PixelBuffer expected_video(output_plane * 3 * 3);
+      for (size_t c = 0; c < 3; ++c)
+        for (size_t f = 0; f < 3; ++f)
+          std::copy_n((f == 1 ? expected_b : expected_a).data() + c * output_plane,
+                      output_plane, expected_video.data() + (c * 3 + f) * output_plane);
+      same_bits(expected_video, actual_video, "A/B/A video versus separate calls after shape reuse");
+      last_reference = expected_a;
+      last_options = options;
+    }
+    model.reset();
+    auto fresh = make_upscaler(UpscaleMethod::kRealEsrgan, model_path, backend);
+    same_bits(last_reference, fresh->upscale(a, 1, height, width, last_options),
+              "fresh model versus reused model");
   }
 }
