@@ -17,10 +17,13 @@
 
 namespace slopfab::cli {
 namespace {
-volatile std::sig_atomic_t interrupted = 0;
+// SIGINT may be delivered to either media worker. Lock-free atomics are safe
+// in the handler and make its notification visible to the inference thread.
+static_assert(std::atomic<bool>::is_always_lock_free);
+std::atomic<bool> interrupted{false};
 
 void interrupt(int) {
-  interrupted = 1;
+  interrupted.store(true, std::memory_order_relaxed);
 }
 
 int integer(const std::string& s) {

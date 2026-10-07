@@ -220,6 +220,50 @@ SLOPFAB_TEST(seedvr2_runtime_cache_separates_checkpoints) {
   CHECK(runtime.resident_bytes == 2 * 16 * sizeof(BFloat));
 }
 
+SLOPFAB_TEST(seedvr2_runtime_borrowed_rows_alias_owner) {
+  if (!have_cuda())
+    return;
+  Runtime runtime;
+  runtime.activations = std::make_shared<cuda::ReferenceBufferPool>();
+  std::vector<float> values(12);
+  for (size_t i = 0; i < values.size(); ++i)
+    values[i] = float(i);
+  auto owner = runtime.upload(values, 1, 2, 2, 3);
+  const size_t allocations = runtime.activations->allocations();
+  auto view = owner.rows_view(1, 2);
+  CHECK(view.rows() == 2);
+  CHECK(view.size() == 6);
+  CHECK(view.c == 3);
+  CHECK(view.data.get() == owner.data.get() + 3);
+  CHECK(runtime.activations->allocations() == allocations);
+  CHECK(runtime.download(view) == std::vector<float>({3, 4, 5, 6, 7, 8}));
+  Tensor moved(std::move(view));
+  CHECK(view.size() == 0);
+  CHECK(moved.data.get() == owner.data.get() + 3);
+  auto increment = runtime.upload(std::vector<float>(6, 1), 1, 1, 2, 3);
+  runtime.add(moved, increment);
+  for (int i = 3; i < 9; ++i)
+    values[i] += 1;
+  CHECK(runtime.download(owner) == values);
+  moved = Tensor(); // destroying a borrowed view must not release the owner's lease
+  CHECK(runtime.download(owner) == values);
+  auto rejected = [&](int offset, int count) {
+    try {
+      owner.rows_view(offset, count);
+    } catch (const std::out_of_range&) {
+      return true;
+    }
+    return false;
+  };
+  CHECK(rejected(-1, 1));
+  CHECK(rejected(0, -1));
+  CHECK(rejected(5, 0));
+  CHECK(rejected(3, 2));
+  auto empty = owner.rows_view(owner.rows(), 0);
+  CHECK(empty.size() == 0);
+  CHECK(empty.rows() == 0);
+}
+
 SLOPFAB_TEST(seedvr2_runtime_cache_budget_preserves_results) {
   if (!have_cuda())
     return;
