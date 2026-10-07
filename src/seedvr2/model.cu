@@ -347,19 +347,18 @@ struct Restorer::Impl {
     return result;
   }
 
-  std::vector<float> denoise(const std::vector<float>& moments, int t, int h, int w,
-                             uint64_t first) {
+  std::vector<float> denoise(const std::vector<float>& moments, int t, int h, int w) {
     rt->clear(dit);
     const int n = t * h * w, ph = h / 2, pw = w / 2;
-    std::mt19937_64 rng(o.seed + first);
+    // Match the video upscaler's deterministic VAE conditioning and reset
+    // diffusion noise for each batch. Stream position must not change the
+    // restoration of identical input segments.
+    std::mt19937_64 rng(o.seed);
     std::normal_distribution<float> gaussian;
     std::vector<float> noise(size_t(n) * 16), cond(size_t(n) * 16);
     for (int i = 0; i < n; ++i)
-      for (int c = 0; c < 16; ++c) {
-        float logvar = std::clamp(moments[size_t(i) * 32 + c + 16], -30.0f, 20.0f);
-        cond[size_t(i) * 16 + c] =
-            (moments[size_t(i) * 32 + c] + std::exp(0.5f * logvar) * gaussian(rng)) * 0.9152f;
-      }
+      for (int c = 0; c < 16; ++c)
+        cond[size_t(i) * 16 + c] = moments[size_t(i) * 32 + c] * 0.9152f;
     for (auto& v : noise)
       v = gaussian(rng);
     std::vector<float> patches(size_t(t) * ph * pw * 132);
@@ -462,7 +461,7 @@ Restorer::Restorer(const Options& o) : impl_(std::make_unique<Impl>(o, this)) {
 
 Restorer::~Restorer() = default;
 
-std::vector<Frame> Restorer::restore(const std::vector<Frame>& frames, uint64_t first) {
+std::vector<Frame> Restorer::restore(const std::vector<Frame>& frames, uint64_t /*first*/) {
   auto& p = *impl_;
   const auto& o = p.o;
   if (frames.empty() || frames.size() > size_t(o.segment_frames) || (frames.size() - 1) % 4)
@@ -477,7 +476,7 @@ std::vector<Frame> Restorer::restore(const std::vector<Frame>& frames, uint64_t 
   cuda::set_device(o.device);
   int h = (o.height + 15) / 16 * 16, w = (o.width + 15) / 16 * 16, t = int(frames.size());
   auto moments = p.encode_tiled(frames, h, w);
-  auto latent = p.denoise(moments, (t - 1) / 4 + 1, h / 8, w / 8, first);
+  auto latent = p.denoise(moments, (t - 1) / 4 + 1, h / 8, w / 8);
   moments.clear();
   moments.shrink_to_fit();
   auto result = p.decode_tiled(latent, t, h, w);
