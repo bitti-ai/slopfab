@@ -105,7 +105,7 @@ struct AudioDecoder::Impl {
   std::vector<float> std_dev;
   bool loaded = false;
 
-  std::array<DeviceTensor, 6> arena;
+  std::array<DeviceTensor, 5> arena;
   DeviceTensor aa_scratch;
   uint64_t arena_elements = 0;
   uint64_t last_transient_bytes = 0;
@@ -199,7 +199,7 @@ struct AudioDecoder::Impl {
       throw std::out_of_range("Vulkan audio VAE: activation exceeds exact indexing");
     if (widest <= arena_elements)
       return;
-    std::array<DeviceTensor, 6> replacement;
+    std::array<DeviceTensor, 5> replacement;
     for (DeviceTensor& tensor : replacement)
       tensor = context.allocate(layout({widest}));
     DeviceTensor replacement_scratch = context.allocate(layout({widest * 2}));
@@ -242,7 +242,7 @@ struct AudioDecoder::Impl {
   }
 
   uint64_t activation_bytes() const noexcept {
-    return arena_elements * sizeof(float) * 8;
+    return arena_elements * sizeof(float) * 7;
   }
 };
 
@@ -427,9 +427,8 @@ vae::DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
   DeviceTensor* a = &d.arena[0];
   DeviceTensor* b = &d.arena[1];
   DeviceTensor* accumulator = &d.arena[2];
-  DeviceTensor* work = &d.arena[3];
-  DeviceTensor* t1 = &d.arena[4];
-  DeviceTensor* t2 = &d.arena[5];
+  DeviceTensor* t1 = &d.arena[3];
+  DeviceTensor* t2 = &d.arena[4];
   d.record_conv(commands, d.weights.dec_in_proj, input, *a, batch_size, latent_length,
                 latent_length, 0, 1);
   capture(*a, static_cast<uint64_t>(batch_size) * d.config.latent_dim * latent_length);
@@ -447,6 +446,9 @@ vae::DecodedAudio AudioDecoder::decode(const float* latents, int num_latents,
     commands.audio_conv_transpose1d(*current, stage.up.weight, &stage.up.bias, *spare, desc);
     std::swap(current, spare);
     length = length_out;
+    // Upsampling consumed the previous stage input; its buffer is now free
+    // for the non-accumulating branches until the next stage.
+    DeviceTensor* work = spare;
     const uint64_t count = static_cast<uint64_t>(batch_size) * stage.up.out_channels * length;
     for (int block_index = 0; block_index < 3; ++block_index) {
       DeviceTensor* destination = block_index == 0 ? accumulator : work;

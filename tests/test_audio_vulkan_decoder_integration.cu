@@ -34,7 +34,11 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_decoder_graph, "integration") {
   SafeTensors checkpoint;
   checkpoint.open(checkpoint_path.string());
   vae::AudioDecoder cuda_decoder;
+  const auto cuda_load_begin = std::chrono::steady_clock::now();
   cuda_decoder.load(checkpoint);
+  const double cuda_load_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - cuda_load_begin)
+          .count();
   vulkan::AudioDecoder vk_decoder = vulkan::AudioDecoder::create(device);
   const uint64_t empty_decoder_used = vk_decoder.allocator_used_bytes();
   const auto load_begin = std::chrono::steady_clock::now();
@@ -125,6 +129,15 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_decoder_graph, "integration") {
           .count();
   const vae::DecodedAudio vk_warm = vk_decoder.decode(production.data(), production_length);
   check_exact(cuda_production.samples, vk_warm.samples, "complete A405 audio decoder");
+  // Five full-size activations and the 2x anti-alias scratch; the old
+  // upsample input doubles as work for the remaining residual branches.
+  const uint64_t production_arena_elements = uint64_t(2) * 8 * production_length * 800;
+  const uint64_t production_transient_elements =
+      uint64_t(2) * production_length * (32 + 800);
+  CHECK(vk_decoder.peak_device_bytes() ==
+        vk_decoder.weight_bytes() +
+            (7 * production_arena_elements + production_transient_elements) * sizeof(float));
+  const uint64_t stable_used = vk_decoder.allocator_used_bytes();
   const uint64_t stable_reserved = vk_decoder.allocator_reserved_bytes();
   const uint64_t stable_descriptors = vk_decoder.descriptor_set_allocations();
   const auto vk_begin = std::chrono::steady_clock::now();
@@ -133,6 +146,7 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_decoder_graph, "integration") {
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - vk_begin)
           .count();
   check_exact(cuda_production.samples, vk_production.samples, "repeated A405 audio decoder");
+  CHECK(vk_decoder.allocator_used_bytes() == stable_used);
   CHECK(vk_decoder.allocator_reserved_bytes() == stable_reserved);
   CHECK(vk_decoder.descriptor_set_allocations() == stable_descriptors);
   const vae::DecodedAudio vk_small_after_production =
@@ -148,8 +162,9 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_exact_audio_decoder_graph, "integration") {
   const uint64_t production_digest = fnv64({vk_production.samples});
   CHECK(production_digest == 0x0b9084d3f1c6355aull);
   std::printf(
-      "  exact Vulkan audio decoder: load %.1f ms, A3 forward %.1f ms, A405 CUDA/Vulkan %.1f/%.1f ms, FNV64 %016llx, weights/logical %.1f/%.1f MiB, pool used/reserved/decode-HWM %.1f/%.1f/%.1f MiB, staging-pair %.1f MiB, host-loader peak %.1f MiB, descriptors %llu\n",
-      load_ms, forward_ms, cuda_ms, vk_ms, static_cast<unsigned long long>(production_digest),
+      "  exact audio decoder: CUDA/Vulkan load %.1f/%.1f ms, A3 forward %.1f ms, A405 CUDA/Vulkan %.1f/%.1f ms, FNV64 %016llx, weights/logical %.1f/%.1f MiB, pool used/reserved/decode-HWM %.1f/%.1f/%.1f MiB, staging-pair %.1f MiB, host-loader peak %.1f MiB, descriptors %llu\n",
+      cuda_load_ms, load_ms, forward_ms, cuda_ms, vk_ms,
+      static_cast<unsigned long long>(production_digest),
       double(vk_decoder.weight_bytes()) / 1048576.0,
       double(vk_decoder.peak_device_bytes()) / 1048576.0,
       double(vk_decoder.allocator_used_bytes()) / 1048576.0,

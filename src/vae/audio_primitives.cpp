@@ -105,21 +105,20 @@ AudioConvWeights load_audio_conv_weights(const SafeTensors& checkpoint, const st
     require_shape(v, name + ".weight_v", weight_shape);
     const std::vector<int64_t> g_shape{weight_shape[0], 1, 1};
     require_shape(g, name + ".weight_g", g_shape);
-    const std::vector<float> vf = to_f32(v);
+    result.weight = to_f32(v);
     const std::vector<float> gf = to_f32(g);
     const size_t channels = static_cast<size_t>(weight_shape[0]);
-    const size_t per_channel = vf.size() / channels;
-    result.weight.resize(vf.size());
+    const size_t per_channel = result.weight.size() / channels;
     for (size_t channel = 0; channel < channels; ++channel) {
       double square_sum = 0.0;
       for (size_t i = 0; i < per_channel; ++i) {
-        const float value = vf[channel * per_channel + i];
+        const float value = result.weight[channel * per_channel + i];
         square_sum += static_cast<double>(value) * value;
       }
       const float scale =
           gf[channel] / static_cast<float>(std::sqrt(std::max(square_sum, 1.0e-30)));
       for (size_t i = 0; i < per_channel; ++i)
-        result.weight[channel * per_channel + i] = vf[channel * per_channel + i] * scale;
+        result.weight[channel * per_channel + i] *= scale;
     }
     result.folded_weight_norm = true;
   }

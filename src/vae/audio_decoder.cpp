@@ -3,7 +3,7 @@
 // The graph is a straight chain — no tiling, no chunking, no cross-fading. A
 // ten-second clip is 405 latents in and 324,000 samples out, and the widest
 // intermediate is 256 channels by 10,125 samples, so the whole decode fits in
-// about 160 MiB of activations no matter which stage is running. See
+// about 140 MiB of activations no matter which stage is running. See
 // docs/audio_vae_spec.md, §2 for the graph and §13 for these sizes.
 //
 // Two structural facts worth keeping in view while reading this:
@@ -100,10 +100,10 @@ struct AudioDecoder::Impl {
   ActSpec activation_post;
   ConvSpec conv_post;
 
-  // Activation pool. Six equal buffers plus one double-width scratch for the
+  // Activation pool. Five equal buffers plus one double-width scratch for the
   // 2x anti-alias intermediate; sized once from the widest (channels * length)
   // product the graph reaches.
-  DeviceBuffer<float> pool[6];
+  DeviceBuffer<float> pool[5];
   DeviceBuffer<float> aa_scratch;
   size_t pool_floats = 0;
 
@@ -166,6 +166,26 @@ namespace {
 class Staging {
 public:
   explicit Staging(const SafeTensors& checkpoint) : ckpt_(checkpoint) {
+    // Reserve once instead of repeatedly reallocating/copying a roughly
+    // 248 MiB vector. Use the resolved namespace for wrapped checkpoints too.
+    const std::string anchor = "dec_in_proj.bias";
+    const std::string& resolved = checkpoint.at(anchor).name;
+    const std::string wrapper = resolved.substr(0, resolved.size() - anchor.size());
+    size_t floats = 0;
+    for (const char* prefix : {"dec_in_proj.", "decoder."}) {
+      const std::string full_prefix = wrapper + prefix;
+      for (auto it = checkpoint.tensors().lower_bound(full_prefix);
+           it != checkpoint.tensors().end() &&
+           it->first.compare(0, full_prefix.size(), full_prefix) == 0; ++it) {
+        floats += static_cast<size_t>(it->second.numel());
+      }
+      // Decode never touches the encoder half of this checkpoint.
+      const void* begin = nullptr;
+      size_t bytes = 0;
+      checkpoint.prefix_extent(full_prefix, &begin, &bytes);
+      checkpoint.prefetch_range(begin, bytes);
+    }
+    data_.reserve(floats);
   }
 
   Slice add(const std::string& name, std::initializer_list<int64_t> expect) {
@@ -187,14 +207,23 @@ public:
     }
     const size_t count = static_cast<size_t>(t.numel());
     const Slice slice{data_.size(), count};
-    const std::vector<float> values = to_f32(t);
-    data_.insert(data_.end(), values.begin(), values.end());
+    if (t.dtype == DType::kF32) {
+      const float* values = static_cast<const float*>(t.data);
+      data_.insert(data_.end(), values, values + count);
+    } else {
+      const std::vector<float> values = to_f32(t);
+      data_.insert(data_.end(), values.begin(), values.end());
+    }
     ++tensors_;
     return slice;
   }
 
   Slice add_conv(const std::string& name, std::initializer_list<int64_t> expect,
                  uint32_t bias_channels) {
+    // Plain weights need no folding and can go straight into the final
+    // staging vector. The caller separately validates and stages the bias.
+    if (ckpt_.find(name + ".weight") != nullptr)
+      return add(name + ".weight", expect);
     const std::vector<int64_t> shape(expect);
     AudioConvWeights loaded = load_audio_conv_weights(ckpt_, name, shape, bias_channels, false);
     const Slice slice{data_.size(), loaded.weight.size()};
@@ -230,9 +259,6 @@ AudioDecoder::~AudioDecoder() = default;
 
 void AudioDecoder::load(const SafeTensors& checkpoint, const AudioVAEConfig& config) {
   Impl& im = *impl_;
-  // See the note on `SafeTensors::prefetch`: this loader consumes the whole
-  // file, so it asks for it up front rather than one page fault at a time.
-  checkpoint.prefetch();
   im.config = config;
 
   if (config.decoder_rates.size() != config.decoder_kernel_sizes.size()) {
@@ -431,9 +457,8 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents, AudioDe
   float* buf_a = im.pool[0].get();
   float* buf_b = im.pool[1].get();
   float* acc = im.pool[2].get();
-  float* work = im.pool[3].get();
-  float* t1 = im.pool[4].get();
-  float* t2 = im.pool[5].get();
+  float* t1 = im.pool[3].get();
+  float* t2 = im.pool[4].get();
   float* scratch = im.aa_scratch.get();
   if (trace != nullptr) {
     trace->boundaries.clear();
@@ -471,6 +496,9 @@ DecodedAudio AudioDecoder::decode(const float* latents, int num_latents, AudioDe
     std::swap(cur, spare);
     len = len_out;
 
+    // The old stage input is dead after upsampling. Reuse its buffer for
+    // the non-accumulating branches instead of reserving a sixth buffer.
+    float* work = spare;
     const size_t elems = static_cast<size_t>(batch) * stage.up.out_channels * len;
     for (int j = 0; j < 3; ++j) {
       float* dst = (j == 0) ? acc : work;

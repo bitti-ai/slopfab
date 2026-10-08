@@ -690,17 +690,21 @@ not ported.
 ### 13.2 Memory
 
 One `cudaMalloc` for all 779 decode-path tensors (259,672,032 B = 247.64 MiB),
-staged through a single host vector, with a name -> offset table. Activations
-are six equal buffers sized from `max(C*T) * B` — for `A=405` that is
+staged through a single host vector, with a name -> offset table. The host
+vector reserves decoder tensor capacity once; plain fp32 weights copy directly
+from the mapping, and only decoder ranges are prefetched. Activations
+are five equal buffers sized from `max(C*T) * B` — for `A=405` that is
 `2 * 256 * 10125 = 5,184,000` floats = 19.8 MiB each, the product `C*T` being
 constant at 2,592,000 from stage 1 onward — plus one double-width buffer for the
-2x anti-alias intermediate. Eight buffer-widths in total, ~158 MiB, independent
-of which stage is running. No streaming or chunking is needed at these sizes and
+2x anti-alias intermediate. Seven buffer-widths in total, ~138 MiB, independent
+of which stage is running. The previous upsample input becomes scratch for the
+remaining residual branches, saving one 19.8 MiB buffer without changing the
+graph arithmetic. No streaming or chunking is needed at these sizes and
 none is implemented.
 
 ### 13.3 Measured
 
-RTX 5090 (sm_120), CUDA 13.0, `A = 405` (10.125 s of stereo at 32 kHz,
+Original six-buffer baseline: RTX 5090 (sm_120), CUDA 13.0, `A = 405` (10.125 s of stereo at 32 kHz,
 324,000 samples per channel):
 
 ```
@@ -789,14 +793,14 @@ allocations at two with no pool growth.
 document. It loads all 779 decode tensors, keeps them resident, and records the
 two channels, seven upsample stages, 21 residual blocks, 126 activations, final
 convolution, clamp, and channel interleave as one bounded 497-operator Vulkan
-transaction. Six flat activation arenas and one double-width anti-alias arena
+transaction. Five flat activation arenas and one double-width anti-alias arena
 are reused across every stage; there is no allocation, upload, readback,
 submission, or descriptor creation between individual graph operators.
 
 The real-checkpoint graph test uses the checkpoint identity pinned above. At
 `A=3`, final float samples are bit exact against the CUDA decoder and the PCM16
 WAV files are byte exact. At the production `A=405` shape on an RTX 5090, the
-complete CUDA/Vulkan decodes measured 131.4/655.6 ms and produced the same
+original six-arena CUDA/Vulkan decodes measured 131.4/655.6 ms and produced the same
 FNV64 `0B9084D3F1C6355A`. Vulkan holds 247.6 MiB of weights, accounts a 405.9
 MiB logical peak, reaches 517.9 MiB allocator-used high-water, and uses 517.8
 MiB after decode (524.7 MiB reserved on the clean production path). The
