@@ -69,6 +69,13 @@ SLOPFAB_TEST_CATEGORY(latent_upscale_reference, "integration") {
   SafeTensors reference, model;
   reference.open(golden);
   model.open(weights);
+  const auto version = reference.metadata().find("reference");
+  const bool node_fixture =
+      version != reference.metadata().end() && version->second == "comfy-node-execute-v1";
+  CHECK_MSG(node_fixture,
+            "regenerate latent upscaler fixtures with the complete node normalization");
+  if (!node_fixture)
+    return;
   validate_latent_upscale_checkpoint(model);
   std::vector<DeviceBackend> backends;
 #if SLOPFAB_WITH_CUDA
@@ -77,17 +84,20 @@ SLOPFAB_TEST_CATEGORY(latent_upscale_reference, "integration") {
 #if SLOPFAB_WITH_VULKAN
   backends.push_back(DeviceBackend::kVulkan);
 #endif
-  for (const char* name : {"still", "video", "chunked"}) {
+  int cases = 0;
+  for (const char* name : {"identity", "still", "video", "chunked", "whole", "production"}) {
     const std::string prefix(name);
     const auto* in = reference.find(prefix + ".input");
     if (!in)
       continue;
+    ++cases;
     auto input = to_f32(*in), expected = to_f32(reference.at(prefix + ".output"));
     for (auto backend : backends) {
       const float scale = to_f32(reference.at(prefix + ".scale"))[0];
+      const bool chunking = to_f32(reference.at(prefix + ".chunking"))[0] != 0;
       int previous = -1, total = 0;
       auto actual = upscale_latents(input, int(in->shape[1]), int(in->shape[2]), int(in->shape[3]),
-                                    weights, backend, {scale}, [&](int done, int steps) {
+                                    weights, backend, {scale, chunking}, [&](int done, int steps) {
                                       CHECK(done >= previous);
                                       previous = done;
                                       total = steps;
@@ -97,6 +107,7 @@ SLOPFAB_TEST_CATEGORY(latent_upscale_reference, "integration") {
       CHECK_CLOSE_REL(expected, actual, 2e-4, 2e-4, name);
     }
   }
+  CHECK(cases > 0);
 }
 
 SLOPFAB_TEST_CATEGORY(latent_upscale_generation_handoff, "integration") {
@@ -111,10 +122,12 @@ SLOPFAB_TEST_CATEGORY(latent_upscale_generation_handoff, "integration") {
   request.num_frames = 22;
   request.video_vae_path = "unused.safetensors";
   const auto plan = resolve_plan(request);
+
   struct Capture {
     std::shared_ptr<const LatentClip> latents;
     bool upscaled = false;
   } capture;
+
   RunOptions options;
   options.source = LatentSource::kSyntheticNoise;
   options.verbose = false;
@@ -126,7 +139,8 @@ SLOPFAB_TEST_CATEGORY(latent_upscale_generation_handoff, "integration") {
   };
   options.on_progress = [](RunStage stage, int done, int total, void* data) {
     auto& c = *static_cast<Capture*>(data);
-    if (stage == RunStage::kUpscaling && total > 0 && done == total) c.upscaled = true;
+    if (stage == RunStage::kUpscaling && total > 0 && done == total)
+      c.upscaled = true;
     return stage != RunStage::kVideoDecode;
   };
   const auto result = run_generate(request, plan, options);

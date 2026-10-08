@@ -42,6 +42,11 @@ The standalone `upscale` command accepts decoded media, not H3 latents.
 
 C++ callers use `RunOptions::latent_upscale_model_path` and `latent_upscale`, or
 `upscale_latents` from `slopfab/latent_upscale.h` for normalized `[24,T,H,W]` buffers.
+The function applies and reverses the companion node's additional channel
+normalization internally. The checkpoint expects this even though H3 sampler
+latents are already normalized; omitting it produces colored tile artifacts.
+Pass sampler latents, not raw VAE latents. The initial implementation omitted
+this transform; this has been corrected.
 The C API (1.24) exposes:
 
 ```c
@@ -60,6 +65,11 @@ python tools/latent_upscale_reference.py /path/to/minimax_h3_latent_upscaler_3d.
 
 Set `SLOPFAB_LATENT_UPSCALE_MODEL` and `SLOPFAB_LATENT_UPSCALE_GOLDEN` to absolute
 paths, then run `ctest --test-dir build -C Release -R latent_upscale --output-on-failure`.
-The real-checkpoint tests compare still, fractional-scale video and chunked video
-against the upstream FP32 network on each compiled backend. Model weights are
+The real-checkpoint tests compare identity, still, fractional-scale video, chunked
+and whole-clip video against the upstream FP32 node's `execute` method, including
+its normalization, on each compiled backend. Regenerate older fixtures: bare-network
+fixtures are rejected. To also test saved generation latents at production sizes,
+append `--packed-latents FILE --latent-resolution 32x32` (for a 512x512 generation)
+to the fixture command. This checks layout and CUDA convolution chunk boundaries.
+Model weights are
 licensed separately (Apache-2.0) and are not distributed with slopfab.
