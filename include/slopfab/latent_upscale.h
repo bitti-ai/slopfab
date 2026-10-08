@@ -24,8 +24,9 @@ void validate_latent_upscale_checkpoint(const SafeTensors& checkpoint);
 std::pair<int, int> latent_upscale_dimensions(int height, int width,
                                               const LatentUpscaleOptions& options = {});
 
-// Normalized H3 latents [24,T,H,W], as produced by unpatchify_video. No extra
-// normalization or denormalization is needed. Time is preserved. Loads/releases
+// Normalized H3 sampler latents [24,T,H,W], as produced by unpatchify_video.
+// Internally applies/reverses the companion node's additional normalization;
+// callers must not pass raw VAE latents. Time is preserved. Loads/releases
 // weights within the call; false progress callbacks throw UpscaleCancelled.
 std::vector<float> upscale_latents(const std::vector<float>& input, int frames, int height,
                                    int width, const std::string& checkpoint, DeviceBackend backend,

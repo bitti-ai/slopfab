@@ -1,6 +1,7 @@
 #include "slopfab/latent_upscale.h"
 #include "slopfab/upscale.h"
 #include "slopfab/tensor_convert.h"
+#include "slopfab/vae/vit_decoder.h"
 #include "upscale/backend.h"
 #include <algorithm>
 #include <cmath>
@@ -185,6 +186,11 @@ std::vector<float> upscale_latents(const std::vector<float>& input, int frames, 
     throw std::length_error(
         "latent upscale: activation or output dimensions exceed indexing limits");
   Network network(checkpoint, backend, options.scale, segments, progress);
+  // The companion node applies these statistics to already-normalized H3
+  // sampler latents, then reverses them on output. Preserve that extra affine
+  // transform: feeding sampler latents straight into the network corrupts them.
+  const auto& mean = vae::default_video_latents_mean();
+  const auto& std_dev = vae::default_video_latents_std();
   const size_t src_plane = size_t(h) * w, dst_plane = size_t(oh) * ow;
   std::vector<float> output(size_t(frames) * dst_plane * 24, 0), weights(frames, 0);
   for (int segment = 0; segment < segments; ++segment) {
@@ -201,7 +207,7 @@ std::vector<float> upscale_latents(const std::vector<float>& input, int frames, 
       for (size_t p = 0; p < src_plane; ++p)
         for (int c = 0; c < 24; ++c)
           packed[(size_t(f) * src_plane + p) * 24 + c] =
-              input[(size_t(c) * frames + source) * src_plane + p];
+              (input[(size_t(c) * frames + source) * src_plane + p] - mean[c]) / std_dev[c];
     }
     const auto out = network.segment(packed, t, h, w, oh, ow);
     for (int f = first; f < last; ++f) {
@@ -220,7 +226,7 @@ std::vector<float> upscale_latents(const std::vector<float>& input, int frames, 
     for (int f = 0; f < frames; ++f)
       for (size_t p = 0; p < dst_plane; ++p) {
         auto& v = output[(size_t(c) * frames + f) * dst_plane + p];
-        v /= weights[f];
+        v = (v / weights[f]) * std_dev[c] + mean[c];
         if (!std::isfinite(v))
           throw std::runtime_error("latent upscale: non-finite output");
       }
