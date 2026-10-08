@@ -713,6 +713,12 @@ weights               247.64 MiB
 peak device memory    408.00 MiB   (weights + activation pool, cudaMemGetInfo delta)
 ```
 
+After reusing the former input buffer (2026-10-08), the same CUDA checkpoint
+test measured 128.6 ms and a 388.0 MiB `cudaMemGetInfo` delta after decode.
+That reading includes retained weights and activations, but excludes temporary
+allocations already freed before the sample. Arithmetic is unchanged; the
+measured improvement is lower memory use, not faster convolution kernels.
+
 The exact baseline canonicalizes subnormal/NaN operands and every convolution
 FMA boundary, and uses shared fixed-polynomial exp/sin implementations for
 SnakeBeta instead of vendor transcendental instructions.
@@ -800,10 +806,12 @@ submission, or descriptor creation between individual graph operators.
 The real-checkpoint graph test uses the checkpoint identity pinned above. At
 `A=3`, final float samples are bit exact against the CUDA decoder and the PCM16
 WAV files are byte exact. At the production `A=405` shape on an RTX 5090, the
-original six-arena CUDA/Vulkan decodes measured 131.4/655.6 ms and produced the same
-FNV64 `0B9084D3F1C6355A`. Vulkan holds 247.6 MiB of weights, accounts a 405.9
-MiB logical peak, reaches 517.9 MiB allocator-used high-water, and uses 517.8
-MiB after decode (524.7 MiB reserved on the clean production path). The
+five-arena CUDA/Vulkan decodes measured 130.9/639.9 ms on 2026-10-08 and produced
+the same FNV64 `0B9084D3F1C6355A`. The preceding six-arena baseline in that session
+measured 132.7/638.9 ms, so kernel throughput is effectively unchanged.
+Vulkan holds 247.6 MiB of weights and accounts a 388.64 MiB logical peak at
+`A=405`, down by 19.78 MiB. Its allocator-used high-water is 498.1 MiB; after the
+test's final `A=3` decode it uses 498.1 MiB with 517.4 MiB reserved. The
 persistent upload/readback staging pair is 112.0 MiB; the streaming host loader
 peaks at 56.0 MiB, so it never retains a second 247.6 MiB host weight image. The 476
 descriptor allocations and reserved pool size remain unchanged across a
