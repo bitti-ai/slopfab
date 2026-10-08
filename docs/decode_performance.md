@@ -87,3 +87,33 @@ A standalone host scheduler comparison at 107x768x1344, four runs per version,
 reduced peak process commit from 3244 to 1978 MiB with identical full output hashes.
 Median host scheduling time was 1.734 versus 1.491 seconds; this excludes GPU work
 and is not an end-to-end speed claim.
+
+On an RTX 5090, three repeated CUDA DLL decodes of fixed synthetic latents at
+107x768x1344 gave these local medians (seconds):
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Video decode, including model load | 13.707 | 13.025 |
+| Audio decode, including model load | 0.488 | 0.261 |
+| Whole decode-only request | 15.411 | 14.141 |
+
+Video and audio SHA-256 hashes matched across both versions and all repetitions.
+Peak process commit fell from 15428 to 14175 MiB. Post-destruction private commit
+stayed near 1156 MiB before and 1154 MiB after; these figures include CUDA driver
+state. This short test did not reproduce the reported progressive slowdown/OOM.
+Timing is indicative, with ordinary background activity and no controlled cold
+file-cache experiment; synthetic decoding also excludes conditioning/transformer
+and application-side copies/encoding.
+
+Ten 56x512x512 runs retaining handles/latents but releasing samples also passed:
+all sample hashes matched the baseline, double release succeeded, output/frame
+access was refused after release, and latent archives were byte-identical before
+and after release. Each release freed about 168 MiB of samples. Video decode
+remained around 3.2-3.4 seconds; destroying all retained handles returned private
+commit to about 1100 MiB, the first run's post-release level.
+
+A bounded upload replay (6.25 GiB, reusing a 128 MiB source/destination) verified
+identical bytes and reduced registered-transfer completion from 165.77 to
+158.27 ms. CPU issue time fell from 160.06 to 6.41 ms. This measures staging,
+not full transformer loading; conversion, storage, LoRAs and preparation can
+change the result in a generation.
