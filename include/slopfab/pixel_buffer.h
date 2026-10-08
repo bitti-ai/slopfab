@@ -5,10 +5,8 @@
 // std::vector value-initialises, so sizing one costs a full-width memset of
 // values nothing ever looks at, on top of the page faults the first real write
 // would take anyway. That is pure bandwidth, and at these sizes it is a
-// visible fraction of the decode. (The decoder's internal `assembled` buffer
-// has the same problem and solves it with a bare new float[], which it can
-// because it never leaves the function; this type exists for the output, which
-// is public and has to stay a container.)
+// visible fraction of the decode. Video composition writes straight into this
+// public output container before de-normalising its pixels in place.
 //
 // The allocator below default-initialises instead, which for float means "do
 // nothing". It is deliberately narrow: `construct` with arguments still

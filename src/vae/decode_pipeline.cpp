@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
-#include <memory>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -236,16 +235,19 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm, i
   DecodedVideo video;
   video.height = H_px;
   video.width = W_px;
-  video.frames = num_chunks * frames_per_chunk + schedule.frame_overlap;
+  int pad_frames = 0;
+  for (int k = 0; k < pad_tokens; ++k)
+    pad_frames += ((T_lat + k) % chunk == 0) ? 1 : cfg.patch_t;
+  const int final_frames =
+      std::max(0, num_chunks * frames_per_chunk + schedule.frame_overlap - pad_frames);
+  video.frames = final_frames;
 
-  // Assembled as [frames][3][H][W] first, then transposed to planar at the end.
-  // Deliberately not a vector: every element is written before it is read —
-  // the chunks' primary blocks tile it exactly and the final carry fills the
-  // tail — so value-initialising it would be a gigabytes-wide memset of values
-  // nothing ever looks at.
-  ScheduleSpan s_alloc("alloc assembled");
-  const std::unique_ptr<float[]> assembled(
-      new float[static_cast<size_t>(video.frames) * 3 * frame_pixels]);
+  // Compose straight into the returned planar buffer. A separate frame-major
+  // assembled video doubled the largest host allocation and could force paging
+  // while the GPU still had room. PixelBuffer leaves these
+  // pages uninitialized; composition and the final carry write every element.
+  ScheduleSpan s_alloc("alloc output");
+  video.data.resize(static_cast<size_t>(final_frames) * 3 * frame_pixels);
   s_alloc.stop();
   // Trailing overlap frames from the previous chunk. Allocated up front and
   // swapped with `next_carry` each chunk, so `have_carry` rather than
@@ -279,7 +281,14 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm, i
     VideoVaeWindowBackend* backend;
 
     ~RegistrationScope() {
-      backend->release_host_registrations();
+      release();
+    }
+
+    void release() {
+      if (backend) {
+        backend->release_host_registrations();
+        backend = nullptr;
+      }
     }
   } registration_scope{&backend};
 
@@ -289,10 +298,6 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm, i
   std::vector<float*> plane_dst(static_cast<size_t>(3 * out_frames), nullptr);
   std::vector<float> z_batch;
   std::vector<float> next_carry(static_cast<size_t>(schedule.frame_overlap) * 3 * frame_pixels);
-  // Where each of the chunk's 28 decoded frames belongs, rebuilt per chunk
-  // because `primary` advances and `next_carry` is swapped. Six of the frames
-  // belong nowhere and are marked null; see the comment where it is filled.
-  std::vector<float*> frame_dst(static_cast<size_t>(out_frames), nullptr);
 
   // Keep the decoder windows and shape batching fixed across chunks. Each
   // tile blends against its already-composited neighbours.
@@ -359,38 +364,44 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm, i
                               ids.data());
     }
 
-    // Where the chunk's 28 decoded frames go. This removes the 330 MiB staging
-    // buffer the stitch used to fill and the two copies that emptied it, and
-    // skips the six frames nothing downstream reads. The cross-fade below then
-    // mutates `assembled` in place, which is what it was always trying to
-    // express.
+    // Route retained frames directly into [channel][frame][pixel]. The carry
+    // remains frame-major so the temporal fade preserves its original inputs
+    // and arithmetic. Padding-only output planes need no composition.
     const int pre = schedule.frame_pre_padding;
     const int overlap = schedule.frame_overlap;
-    float* primary = assembled.get() + static_cast<size_t>(written) * 3 * frame_pixels;
-    chunk_frame_destinations(out_frames, pre, frames_per_chunk, schedule.chunk_dec, overlap,
-                             3 * frame_pixels, primary, next_carry.data(), &frame_dst);
-
-    // Route planar decoder output into the retained frame/channel planes.
     for (int p = 0; p < 3 * out_frames; ++p) {
-      float* base = frame_dst[static_cast<size_t>(p % out_frames)];
-      plane_dst[static_cast<size_t>(p)] =
-          base == nullptr ? nullptr : base + static_cast<size_t>(p / out_frames) * frame_pixels;
+      const int channel = p / out_frames;
+      const int phase = p % out_frames;
+      float* dst = nullptr;
+      if (phase >= pre && phase - pre < frames_per_chunk) {
+        const int frame = written + phase - pre;
+        if (frame < final_frames)
+          dst = video.data.data() +
+                (static_cast<size_t>(channel) * final_frames + frame) * frame_pixels;
+      } else if (phase >= schedule.chunk_dec + pre &&
+                 phase - schedule.chunk_dec - pre < overlap) {
+        const int frame = phase - schedule.chunk_dec - pre;
+        dst = next_carry.data() + (static_cast<size_t>(frame) * 3 + channel) * frame_pixels;
+      }
+      plane_dst[static_cast<size_t>(p)] = dst;
     }
     ScheduleSpan s_compose("tile composition");
     merge.compose(tiles, plane_dst);
     s_compose.stop();
 
-    // Cross-fade the leading frames against the previous chunk's carry. The
-    // stitch has already put them in `assembled`, so this mutates the final
-    // buffer in place.
+    // Cross-fade the leading frames in the final buffer against the carry.
     ScheduleSpan s_fade("chunk cross-fade");
     if (have_carry) {
-      for (int f = 0; f < overlap; ++f) {
+      for (int f = 0; f < overlap && written + f < final_frames; ++f) {
         const float wb = static_cast<float>(f) / static_cast<float>(overlap);
         const float wa = 1.0f - wb;
-        for (size_t i = 0; i < 3 * frame_pixels; ++i) {
-          const size_t pi = static_cast<size_t>(f) * 3 * frame_pixels + i;
-          primary[pi] = carry[pi] * wa + primary[pi] * wb;
+        for (int channel = 0; channel < 3; ++channel) {
+          float* dst = video.data.data() +
+                       (static_cast<size_t>(channel) * final_frames + written + f) * frame_pixels;
+          const float* prev =
+              carry.data() + (static_cast<size_t>(f) * 3 + channel) * frame_pixels;
+          for (size_t i = 0; i < frame_pixels; ++i)
+            dst[i] = prev[i] * wa + dst[i] * wb;
         }
       }
     }
@@ -402,26 +413,22 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm, i
     have_carry = true;
   }
 
-  // The final carry is appended verbatim.
-  std::copy_n(carry.begin(), carry.size(),
-              assembled.get() + static_cast<size_t>(written) * 3 * frame_pixels);
-  written += schedule.frame_overlap;
-
-  // Drop frames that came only from repeated padding tokens.
-  int pad_frames = 0;
-  for (int k = 0; k < pad_tokens; ++k) {
-    pad_frames += ((T_lat + k) % chunk == 0) ? 1 : cfg.patch_t;
+  // Append only the retained portion of the final carry.
+  for (int f = 0; written + f < final_frames; ++f) {
+    for (int channel = 0; channel < 3; ++channel) {
+      std::copy_n(carry.data() + (static_cast<size_t>(f) * 3 + channel) * frame_pixels,
+                  frame_pixels,
+                  video.data.data() +
+                      (static_cast<size_t>(channel) * final_frames + written + f) * frame_pixels);
+    }
   }
-  const int final_frames = std::max(0, written - pad_frames);
-  video.frames = final_frames;
 
-  // (8) Pixel de-normalisation, then transpose to planar [3][T][H][W].
-  // resize, not assign(n, 0): PixelBuffer default-initialises, and the loop
-  // below writes every element of it. Zeroing first was a full-width memset of
-  // the whole decoded video for nothing.
-  ScheduleSpan s_alloc_out("alloc output");
-  video.data.resize(static_cast<size_t>(3) * final_frames * frame_pixels);
-  s_alloc_out.stop();
+  // Release pinned tile storage before touching the full video once more.
+  // RegistrationScope still covers exceptions during generation above.
+  registration_scope.release();
+  tiles.clear();
+
+  // (8) Pixel de-normalisation in place, already planar [3][T][H][W].
 
   // Roughly six gigabytes of traffic at the heavy config for two flops per
   // element, so this is bandwidth and not arithmetic, and one core cannot
@@ -436,14 +443,12 @@ DecodedVideo decode_video(VideoVaeWindowBackend& backend, const float* z_norm, i
   ScheduleSpan s_out("pixel de-normalise");
   const auto plane_range = [&](size_t begin, size_t end) {
     for (size_t p = begin; p < end; ++p) {
-      const int f = static_cast<int>(p / 3);
-      const int c = static_cast<int>(p % 3);
+      const int c = static_cast<int>(p / final_frames);
       const float m = kImagenetMean[c];
       const float s = kImagenetStd[c];
-      const size_t src = p * frame_pixels;
-      const size_t dst = (static_cast<size_t>(c) * final_frames + f) * frame_pixels;
+      const size_t dst = p * frame_pixels;
       for (size_t i = 0; i < frame_pixels; ++i) {
-        video.data[dst + i] = std::min(1.0f, std::max(0.0f, assembled[src + i] * s + m));
+        video.data[dst + i] = std::min(1.0f, std::max(0.0f, video.data[dst + i] * s + m));
       }
     }
   };

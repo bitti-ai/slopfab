@@ -1,4 +1,4 @@
-// Host-only contract tests for the dedicated still-image VAE scheduler.
+// Host-only contract tests for video and still-image VAE scheduling.
 
 #include <algorithm>
 #include <cstddef>
@@ -191,6 +191,62 @@ SLOPFAB_TEST(decode_composes_diagonals_before_temporal_crossfade) {
       CHECK_NEAR(video.data[plane + 6 * 12 + 6], (temporal + 0.15f) * stddev[c] + mean[c], 2e-7);
       CHECK_NEAR(video.data[plane], temporal * stddev[c] + mean[c], 2e-7);
       CHECK_NEAR(video.data[plane + 143], (temporal + 0.3f) * stddev[c] + mean[c], 2e-7);
+    }
+  }
+}
+
+SLOPFAB_TEST(decode_planar_output_matches_chunk_reference_with_padding) {
+  StillBackend backend;
+  backend.spatial_values = true;
+  slopfab::vae::DecodeSchedule schedule;
+  schedule.tiling_enabled = false;
+  const float mean[] = {0.485f, 0.456f, 0.406f};
+  const float stddev[] = {0.229f, 0.224f, 0.225f};
+
+  // Every temporal padding residue, multiple joins, all channels and every
+  // pixel. Reuse the backend across sizes, like sequential DLL requests.
+  for (int latent_frames = 7; latent_frames <= 22; ++latent_frames) {
+    backend.calls = 0;
+    backend.released = false;
+    const std::vector<float> latent(static_cast<size_t>(latent_frames) * 6, 0.0f);
+    const auto video = slopfab::vae::decode_video(
+        backend, latent.data(), latent_frames, 2, 3, {0.0f}, {1.0f}, schedule);
+    const int padding = (5 - (latent_frames + 3) % 5) % 5;
+    const int chunks = (latent_frames + 3 + padding) / 5 - 1;
+    int dropped_frames = 0;
+    for (int k = 0; k < padding; ++k)
+      dropped_frames += (latent_frames + k) % 5 == 0 ? 1 : 4;
+    CHECK(video.frames == chunks * 17 + 5 - dropped_frames);
+    CHECK(backend.calls == chunks);
+    CHECK(backend.released);
+    CHECK(video.data.size() == static_cast<size_t>(3 * video.frames * 24));
+
+    for (int channel = 0; channel < 3; ++channel) {
+      std::vector<float> reference;
+      std::vector<float> carry;
+      for (int chunk = 0; chunk < chunks; ++chunk) {
+        std::vector<float> window(28);
+        for (int phase = 0; phase < 28; ++phase)
+          window[phase] = (channel * 28 + phase - 6) * 0.01f + (chunk + 1) * 0.02f;
+        for (int frame = 0; frame < 17; ++frame) {
+          float value = window[frame + 3];
+          if (chunk > 0 && frame < 5) {
+            const float weight = static_cast<float>(frame) / 5.0f;
+            value = carry[frame] * (1.0f - weight) + value * weight;
+          }
+          reference.push_back(value);
+        }
+        carry.assign(window.begin() + 23, window.end());
+      }
+      reference.insert(reference.end(), carry.begin(), carry.end());
+      reference.resize(video.frames);
+      for (int frame = 0; frame < video.frames; ++frame) {
+        const float expected =
+            std::min(1.0f, std::max(0.0f, reference[frame] * stddev[channel] + mean[channel]));
+        for (size_t pixel = 0; pixel < 24; ++pixel)
+          CHECK(video.data[(static_cast<size_t>(channel) * video.frames + frame) * 24 + pixel] ==
+                expected);
+      }
     }
   }
 }
