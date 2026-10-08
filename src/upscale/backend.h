@@ -22,14 +22,24 @@ using Buffer = std::shared_ptr<Tensor>;
 
 // Activations are contiguous HWC; weights retain PyTorch OIHW order.
 // Non-convolution operations: concat channels, x + scale*y, nearest 2x.
-enum Operation : uint32_t { kConv, kConcat, kResidual, kNearest };
+enum Operation : uint32_t {
+  kConv,
+  kConcat,
+  kResidual,
+  kNearest,
+  kConv3d,
+  kDepthwiseTemporal,
+  kGroupNormSilu,
+  kBilinear
+};
 
 struct Parameters {
   uint32_t op, height, width, input, output, count, leaky;
   float scale;
+  uint32_t frames = 1, kernel = 3, source_height = 0, source_width = 0;
 };
 
-static_assert(sizeof(Parameters) == 32);
+static_assert(sizeof(Parameters) == 48);
 
 class Backend {
 public:

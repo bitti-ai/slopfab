@@ -153,8 +153,11 @@ public:
   void run(const Parameters& p, const Buffer& x, const Buffer& y, const Buffer& bias,
            const Buffer& out) override {
     uint32_t gx, gy;
-    if (p.op == kConv) {
-      gx = (p.height * p.width + 15) / 16;
+    if (p.op == kGroupNormSilu) {
+      gx = 32;
+      gy = 1;
+    } else if (p.op == kConv || p.op == kConv3d) {
+      gx = (p.frames * p.height * p.width + 15) / 16;
       gy = (p.output + 15) / 16;
     } else {
       const uint32_t groups = (p.count + 255) / 256;

@@ -15,6 +15,7 @@ add_library(slopfab_core STATIC
   src/core/model_geometry.cpp
   src/core/image.cpp
   src/core/upscale.cpp
+  src/core/latent_upscale.cpp
   src/core/inpaint.cpp
   src/core/reference_media.cpp
   src/core/refmod.cpp

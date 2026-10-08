@@ -7,6 +7,7 @@ target_compile_definitions(slopfab_core PUBLIC
 if(TARGET slopfab_cuda OR TARGET slopfab_vulkan)
   add_library(slopfab_generation STATIC
     src/upscale.cpp
+    src/latent_upscale.cpp
     src/generate.cpp
     src/generation/helpers.cpp
     src/generation/decode.cpp

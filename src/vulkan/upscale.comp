@@ -9,12 +9,45 @@ layout(set=0,binding=3,std430) writeonly buffer O { float result[]; };
 layout(push_constant) uniform Params {
   uint op, height, width, input_channels, output_channels, count, leaky;
   float scale;
+  uint frames, kernel, source_height, source_width;
 } p;
 shared float a[16][16];
 shared float b[16][16];
+shared float sums[256];
 void main() {
   uint lx = gl_LocalInvocationID.x, ly = gl_LocalInvocationID.y;
-  if (p.op != 0) {
+  if (p.op == 6) {
+    uint group = gl_WorkGroupID.x, lane = ly * 16 + lx;
+    uint channels = p.output_channels / 32, n = p.count / 32;
+    float sum = 0;
+    for (uint j = lane; j < n; j += 256)
+      sum += x[(j / channels) * p.output_channels + group * channels + j % channels];
+    sums[lane] = sum; barrier();
+    for (uint d = 128; d > 0; d /= 2) {
+      if (lane < d) sums[lane] += sums[lane + d];
+      barrier();
+    }
+    float mean = sums[0] / n;
+    barrier();
+    sum = 0;
+    for (uint j = lane; j < n; j += 256) {
+      float v = x[(j / channels) * p.output_channels + group * channels + j % channels] - mean;
+      sum += v * v;
+    }
+    sums[lane] = sum; barrier();
+    for (uint d = 128; d > 0; d /= 2) {
+      if (lane < d) sums[lane] += sums[lane + d];
+      barrier();
+    }
+    float inv = inversesqrt(sums[0] / n + 1e-5);
+    for (uint j = lane; j < n; j += 256) {
+      uint c = group * channels + j % channels, i = (j / channels) * p.output_channels + c;
+      float v = (x[i] - mean) * inv * y[c] + bias[c];
+      result[i] = v / (1 + exp(-v));
+    }
+    return;
+  }
+  if (p.op != 0 && p.op != 4) {
     uint i = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256 + ly * 16 + lx;
     if (i >= p.count) return;
     uint c = i % p.output_channels, pixel = i / p.output_channels;
@@ -23,6 +56,25 @@ void main() {
         : y[pixel * (p.output_channels - p.input_channels) + c - p.input_channels];
     } else if (p.op == 2) {
       result[i] = x[i] + p.scale * y[i];
+    } else if (p.op == 5) {
+      int frame = int(pixel / (p.height * p.width));
+      float v = bias[c];
+      for (uint k = 0; k < p.kernel; ++k) {
+        int t = frame + int(k) - int(p.kernel / 2);
+        if (t >= 0 && t < p.frames)
+          v += x[(uint(t) * p.height * p.width + pixel % (p.height * p.width)) * p.output_channels + c] * y[c * p.kernel + k];
+      }
+      result[i] = v;
+    } else if (p.op == 7) {
+      float yy = max(0, (float(pixel / p.width % p.height) + .5) * p.source_height / p.height - .5);
+      float xx = max(0, (float(pixel % p.width) + .5) * p.source_width / p.width - .5);
+      uint y0 = uint(yy), x0 = uint(xx);
+      uint y1 = min(y0 + 1, p.source_height - 1), x1 = min(x0 + 1, p.source_width - 1);
+      uint base = (pixel / (p.height * p.width)) * p.source_height * p.source_width;
+      float fy = yy - y0, fx = xx - x0;
+      float top = x[(base + y0 * p.source_width + x0) * p.output_channels + c] * (1 - fx) + x[(base + y0 * p.source_width + x1) * p.output_channels + c] * fx;
+      float bottom = x[(base + y1 * p.source_width + x0) * p.output_channels + c] * (1 - fx) + x[(base + y1 * p.source_width + x1) * p.output_channels + c] * fx;
+      result[i] = top * (1 - fy) + bottom * fy;
     } else {
       result[i] = x[((pixel / p.width / 2) * (p.width / 2) + pixel % p.width / 2) * p.output_channels + c];
     }
@@ -30,20 +82,23 @@ void main() {
   }
   uint pixel = gl_WorkGroupID.x * 16 + ly;
   uint channel = gl_WorkGroupID.y * 16 + lx;
-  uint k = p.input_channels * 9;
+  uint kernel = p.op == 0 ? 3 : p.kernel;
+  uint taps = p.op == 0 ? 9 : kernel * kernel * kernel;
+  uint k = p.input_channels * taps, pixels = p.frames * p.height * p.width;
   float sum = 0;
   for (uint start = 0; start < k; start += 16) {
     uint tap = start + lx;
-    int iy = int(pixel / p.width) + int(tap % 9 / 3) - 1;
-    int ix = int(pixel % p.width) + int(tap % 3) - 1;
-    a[ly][lx] = tap < k && pixel < p.height * p.width && iy >= 0 && ix >= 0 && iy < p.height && ix < p.width
-      ? x[(iy * p.width + ix) * p.input_channels + tap / 9] : 0;
+    int iy = int(pixel / p.width % p.height) + int(tap / kernel % kernel) - int(kernel / 2);
+    int ix = int(pixel % p.width) + int(tap % kernel) - int(kernel / 2);
+    int it = p.op == 0 ? 0 : int(pixel / (p.height * p.width)) + int(tap / (kernel * kernel) % kernel) - int(kernel / 2);
+    a[ly][lx] = tap < k && pixel < pixels && iy >= 0 && ix >= 0 && it >= 0 && iy < p.height && ix < p.width && it < p.frames
+      ? x[((it * p.height + iy) * p.width + ix) * p.input_channels + tap / taps] : 0;
     b[ly][lx] = start + ly < k && channel < p.output_channels ? y[channel * k + start + ly] : 0;
     barrier();
     for (uint t = 0; t < 16; ++t) sum = fma(a[ly][t], b[t][lx], sum);
     barrier();
   }
-  if (pixel < p.height * p.width && channel < p.output_channels) {
+  if (pixel < pixels && channel < p.output_channels) {
     float v = sum + bias[channel];
     result[pixel * p.output_channels + channel] = p.leaky != 0 && v < 0 ? v * 0.2 : v;
   }
