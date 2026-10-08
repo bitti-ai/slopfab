@@ -11,6 +11,16 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
       throw std::invalid_argument(message);
   };
   validate_sampling_sampler(p, o.sampler);
+  validate_latent_upscale_options(o.latent_upscale);
+  if (!o.latent_upscale_model_path.empty()) {
+    require(!r.image_edit.image,
+            "latent upscaling cannot preserve the exact pixels outside an image edit box");
+    const auto dims =
+        latent_upscale_dimensions(p.canvas_height / 16, p.canvas_width / 16, o.latent_upscale);
+    if (!o.upscale_model_path.empty())
+      upscale_output_elements(p.aligned_frames, dims.first * 16, dims.second * 16, o.upscale_method,
+                              o.upscale);
+  }
   validate_upscale_options(o.upscale, o.upscale_method);
   upscale_scale_factor(o.upscale_method); // reject unknown identifiers even when disabled
   if (!o.upscale_model_path.empty())

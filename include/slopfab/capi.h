@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 23
+#define SLOPFAB_CAPI_VERSION_MINOR 24
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -512,6 +512,17 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
  * changing the request API. Unknown identifiers are rejected. */
 #define SLOPFAB_UPSCALE_REALESRGAN 1
 #define SLOPFAB_UPSCALE_SEEDVR2 2
+
+/* Since 1.24. Optional H3 3D conv v1 latent upscaling on CUDA or Vulkan,
+ * before video VAE decoding. path is copied; an empty string disables it.
+ * scale must be finite in [1,4]; decoded sizes round to multiples of 32.
+ * temporal_chunking is 0 or 1 (32-frame segments, as in the reference node).
+ * Saved/returned latents retain their diffusion resolution. Pixel upscaling
+ * can be configured separately and runs after decode. Image editing rejects
+ * latent upscaling. Reports progress using SLOPFAB_STAGE_UPSCALING. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_latent_upscaler(slopfab_request* request,
+                                                                   const char* path, float scale,
+                                                                   int32_t temporal_chunking);
 
 /* Optional postprocessing on the selected inference backend. Method is one of
  * SLOPFAB_UPSCALE_*. REALESRGAN requires RealESRGAN_x4plus safetensors weights.

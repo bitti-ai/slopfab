@@ -19,6 +19,7 @@
 #include "slopfab/video/y4m.h"
 #include "slopfab/pixel_buffer.h"
 #include "slopfab/upscale.h"
+#include "slopfab/latent_upscale.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/sampler/scheduler.h"
 
@@ -97,6 +98,10 @@ struct RunOptions {
   std::string upscale_model_path;
   UpscaleMethod upscale_method = UpscaleMethod::kRealEsrgan;
   UpscaleOptions upscale;
+  // Optional normalized-latent upscaling, after denoising and before VAE load.
+  // Saved/on_latents snapshots retain the original diffusion resolution.
+  std::string latent_upscale_model_path;
+  LatentUpscaleOptions latent_upscale;
 
   // Counted CLI runs share prompt conditioning. Transformer residency cannot
   // cross the VAE phase: those weights together exceed practical VRAM on

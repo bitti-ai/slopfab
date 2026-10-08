@@ -115,6 +115,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
 #endif
   std::string output_accelerator = "cpu";
   UpscaleArguments upscaling;
+  std::string latent_upscale_model;
+  LatentUpscaleOptions latent_upscale;
 
   for (int i = 0; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -124,7 +126,26 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       }
       return argv[++i];
     };
-    if (arg == "--edit-image") {
+    if (arg == "--latent-upscale") {
+      if (latent_upscale_model.empty())
+        latent_upscale_model = kDefaultLatentUpscaleModel;
+    } else if (arg == "--latent-upscale-model") {
+      latent_upscale_model = next("--latent-upscale-model");
+      if (latent_upscale_model.empty())
+        throw std::invalid_argument("latent upscale needs a model path");
+    } else if (arg == "--latent-upscale-scale") {
+      const std::string value = next("--latent-upscale-scale");
+      size_t used = 0;
+      latent_upscale.scale = std::stof(value, &used);
+      if (used != value.size())
+        throw std::invalid_argument("invalid latent upscale scale");
+      if (latent_upscale_model.empty())
+        latent_upscale_model = kDefaultLatentUpscaleModel;
+    } else if (arg == "--latent-upscale-no-chunking") {
+      latent_upscale.temporal_chunking = false;
+      if (latent_upscale_model.empty())
+        latent_upscale_model = kDefaultLatentUpscaleModel;
+    } else if (arg == "--edit-image") {
       edit_image = next("--edit-image");
     } else if (arg == "--edit-box") {
       std::string box = next("--edit-box");
@@ -549,6 +570,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.upscale_model_path = upscaling.model;
   options.upscale_method = upscaling.method;
   options.upscale = upscaling.options;
+  options.latent_upscale_model_path = latent_upscale_model;
+  options.latent_upscale = latent_upscale;
   options.source =
       synthetic ? slopfab::LatentSource::kSyntheticNoise : slopfab::LatentSource::kDenoise;
   options.inference_backend = inference_backend == "vulkan" ? slopfab::DeviceBackend::kVulkan
@@ -572,8 +595,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   slopfab::GeneratePlan plan = slopfab::resolve_plan(req);
   slopfab::validate_generation_options(req, plan, options);
   const auto print_upscale = [&] {
+    int height = plan.canvas_height, width = plan.canvas_width;
+    if (!latent_upscale_model.empty()) {
+      const auto dims = latent_upscale_dimensions(height / 16, width / 16, latent_upscale);
+      height = dims.first * 16;
+      width = dims.second * 16;
+      std::printf("latent upscaler %.3gx -> %dx%d (%s)\n", latent_upscale.scale, width, height,
+                  latent_upscale_model.c_str());
+    }
     if (!upscaling.model.empty()) {
-      const auto dims = slopfab::upscale_dimensions(plan.canvas_height, plan.canvas_width, upscaling.method, upscaling.options);
+      const auto dims =
+          slopfab::upscale_dimensions(height, width, upscaling.method, upscaling.options);
       std::printf("upscaler    %s -> %dx%d (%s)\n", slopfab::upscale_method_name(upscaling.method),
                   dims.second, dims.first, upscaling.model.c_str());
     }

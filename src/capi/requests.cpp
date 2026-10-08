@@ -227,6 +227,24 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_path(slopfab_request* r
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_latent_upscaler(slopfab_request* request,
+                                                                   const char* path, float scale,
+                                                                   int32_t temporal_chunking) {
+  if (!request || !path || (temporal_chunking != 0 && temporal_chunking != 1))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_latent_upscaler: invalid arguments");
+  return guarded([&] {
+    slopfab::LatentUpscaleOptions options{scale, temporal_chunking != 0};
+    try {
+      slopfab::validate_latent_upscale_options(options);
+    } catch (const std::invalid_argument& e) {
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
+    }
+    request->options.latent_upscale_model_path = path;
+    request->options.latent_upscale = options;
+    return SLOPFAB_OK;
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_upscaler(slopfab_request* request,
                                                             int32_t method, const char* path,
                                                             int32_t tile_size, int32_t tile_pad,

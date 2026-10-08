@@ -1,5 +1,8 @@
 # Upscaling
 
+For learned upscaling before video VAE decoding, see [H3 latent upscaling](latent_upscaling.md).
+Use `generate --latent-upscale` with the Minimax H3 3D conv v1 checkpoint.
+
 slopfab runs RealESRGAN_x4plus natively on CUDA or Vulkan, with no Python at
 runtime. It supports the 23-block RRDBNet with 64 feature channels, 32 growth
 channels, and RGB input/output. Inference and accumulation use FP32; F32, F16

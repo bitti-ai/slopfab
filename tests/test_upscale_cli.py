@@ -31,3 +31,10 @@ with tempfile.TemporaryDirectory() as directory:
     assert '320x192' in run(generate + custom)
     assert '128x128' in run(generate + ['--upscale-method', 'realesrgan'])
     assert run(['upscale', '--help']).count('usage:') == 1
+    assert '64x64' in run(generate + ['--latent-upscale'])
+    assert '96x96' in run(generate + ['--latent-upscale-scale', '3'])
+    assert '256x256' in run(generate + ['--latent-upscale', '--upscale-method', 'realesrgan'])
+    assert 'custom.safetensors' in run(generate + ['--latent-upscale-model', 'custom.safetensors'])
+    assert '64x64' in run(generate + ['--latent-upscale-no-chunking', '--inference-backend', 'vulkan'])
+    for scale in ['nan', 'inf', '0.9', '4.1', '2junk', '']:
+        run(generate + ['--latent-upscale-scale', scale], expected=1)

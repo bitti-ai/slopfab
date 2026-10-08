@@ -126,6 +126,29 @@ SLOPFAB_TEST(capi_dmad_image_edits_and_outpainting) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_latent_upscaler_options) {
+  auto* request = slopfab_request_create();
+  CHECK(slopfab_request_set_latent_upscaler(nullptr, "missing", 2, 1) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_latent_upscaler(request, nullptr, 2, 1) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_latent_upscaler(request, "missing", 2, 2) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  for (float scale : {0.0f, 4.1f, std::numeric_limits<float>::quiet_NaN()})
+    CHECK(slopfab_request_set_latent_upscaler(request, "missing", scale, 1) ==
+          SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_latent_upscaler(request, "missing", 2, 1) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  const uint8_t rgb[] = {10, 20, 30};
+  CHECK(slopfab_request_set_image_edit_rgb24(request, rgb, 3, 1, 1, 3, 0, 0, 1, 1, 1, 0) ==
+        SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_latent_upscaler(request, "", 2, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_outpaint_validates_preserved_box_and_resets_on_new_source) {
   auto* request = slopfab_request_create();
   CHECK(slopfab_request_set_image_edit_invert_mask(nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);

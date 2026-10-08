@@ -69,7 +69,7 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
   };
   // --- video ----------------------------------------------------------------
 
-  if (!notify(RunStage::kVideoDecode, -1, 0))
+  if (options.latent_upscale_model_path.empty() && !notify(RunStage::kVideoDecode, -1, 0))
     return stop("video decode");
   vae::DecodedVideo video;
   {
@@ -90,6 +90,29 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 #if SLOPFAB_WITH_CUDA
     s_unpatch.stop();
 #endif
+    int decode_height = layout.latent_height, decode_width = layout.latent_width;
+    if (!options.latent_upscale_model_path.empty()) {
+      const auto begin = Clock::now();
+      try {
+        latents = upscale_latents(latents, layout.num_latent_frames, decode_height, decode_width,
+                                  options.latent_upscale_model_path, options.inference_backend,
+                                  options.latent_upscale, [&](int done, int total) {
+                                    return notify(RunStage::kUpscaling, done, total);
+                                  });
+      } catch (const UpscaleCancelled&) {
+        return stop("latent upscaling");
+      }
+      const auto dims =
+          latent_upscale_dimensions(decode_height, decode_width, options.latent_upscale);
+      decode_height = dims.first;
+      decode_width = dims.second;
+      if (options.verbose)
+        std::printf("latent upscale %dx%d -> %dx%d in %.2f s\n", layout.latent_width * 16,
+                    layout.latent_height * 16, decode_width * 16, decode_height * 16,
+                    seconds_since(begin));
+    }
+    if (!options.latent_upscale_model_path.empty() && !notify(RunStage::kVideoDecode, -1, 0))
+      return stop("video decode");
 
     // Before the span, so the readahead started under the loop is accounted to
     // the loop and this span keeps measuring the load it names. Joining is
@@ -116,11 +139,10 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
         std::printf("video vae   CUDA %.2f GiB on device\n",
                     static_cast<double>(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
       }
-      video = request.still_image
-                  ? vae::decode_still_image(decoder, latents.data(), layout.latent_height,
-                                            layout.latent_width, mean, std_dev)
-                  : decoder.decode(latents.data(), layout.num_latent_frames, layout.latent_height,
-                                   layout.latent_width, mean, std_dev);
+      video = request.still_image ? vae::decode_still_image(decoder, latents.data(), decode_height,
+                                                            decode_width, mean, std_dev)
+                                  : decoder.decode(latents.data(), layout.num_latent_frames,
+                                                   decode_height, decode_width, mean, std_dev);
 #else
       throw std::logic_error("CUDA inference compiled out after validation");
 #endif
@@ -138,11 +160,10 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
         std::printf("video vae   Vulkan %.2f GiB on device\n",
                     static_cast<double>(decoder.persistent_bytes()) / (1024.0 * 1024.0 * 1024.0));
       }
-      video = request.still_image
-                  ? vae::decode_still_image(decoder, latents.data(), layout.latent_height,
-                                            layout.latent_width, mean, std_dev)
-                  : decoder.decode(latents.data(), layout.num_latent_frames, layout.latent_height,
-                                   layout.latent_width, mean, std_dev);
+      video = request.still_image ? vae::decode_still_image(decoder, latents.data(), decode_height,
+                                                            decode_width, mean, std_dev)
+                                  : decoder.decode(latents.data(), layout.num_latent_frames,
+                                                   decode_height, decode_width, mean, std_dev);
 #else
       throw std::logic_error("Vulkan inference compiled out after validation");
 #endif

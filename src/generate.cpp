@@ -74,6 +74,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   RunResult result;
   try {
     validate_generation_options(request, plan, options);
+    if (!options.latent_upscale_model_path.empty()) {
+      SafeTensors checkpoint;
+      checkpoint.open(options.latent_upscale_model_path);
+      validate_latent_upscale_checkpoint(checkpoint);
+    }
     if (!options.upscale_model_path.empty()) {
       SafeTensors upscale_checkpoint;
       upscale_checkpoint.open(options.upscale_model_path);
