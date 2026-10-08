@@ -1,4 +1,34 @@
 #include "detail/transformer_fixture.h"
+#include "../src/dit/weight_uploader.h"
+
+SLOPFAB_TEST_CATEGORY(transformer_upload_staging_preserves_reused_sources, "synthetic") {
+  // A small staging capacity exercises partial slots, exact boundaries,
+  // multi-slot tensors and repeated ring reuse without a large allocation.
+  constexpr size_t slot_bytes = 4096;
+  const std::vector<size_t> sizes = {0, 3, 13, slot_bytes - 16, 1, slot_bytes,
+                                    5 * slot_bytes + 37, 17, 511, 3 * slot_bytes};
+  size_t total = 0;
+  for (size_t size : sizes)
+    total += size;
+  slopfab::cuda::DeviceBuffer<uint8_t> device(total);
+  slopfab::cuda::Stream stream;
+  std::vector<uint8_t> expected, scratch;
+  {
+    slopfab::dit::Uploader uploader(stream.get(), nullptr, slot_bytes);
+    for (size_t index = 0; index < sizes.size(); ++index) {
+      scratch.resize(sizes[index]);
+      for (size_t i = 0; i < scratch.size(); ++i)
+        scratch[i] = uint8_t(index * 47 + i * 13);
+      uploader.copy(device.get() + expected.size(), scratch.data(), scratch.size(), false);
+      expected.insert(expected.end(), scratch.begin(), scratch.end());
+      // Callers reuse conversion scratch immediately, while DMA may be queued.
+      std::fill(scratch.begin(), scratch.end(), uint8_t(0xcd));
+    }
+  }
+  std::vector<uint8_t> actual(total);
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(actual.data(), device.get(), total, cudaMemcpyDeviceToHost));
+  CHECK(actual == expected);
+}
 
 SLOPFAB_TEST_CATEGORY(transformer_offloaded_blocks_match_resident, "synthetic") {
   auto cfg = tiny_config();

@@ -46,6 +46,7 @@
 #include "slopfab/json.h"
 #include "slopfab/nf4.h"
 #include "weight_metadata.h"
+#include "weight_uploader.h"
 #include "slopfab/sol_capture.h"
 #include "slopfab/tensor_convert.h"
 
@@ -165,79 +166,6 @@ inline std::string shape_string(const std::vector<int64_t>& s) {
   }
   return out + "]";
 }
-
-// --- staged host -> device upload -------------------------------------------
-//
-// 21 GB through pageable memory is the difference between a three second load
-// and a forty second one: a pageable cudaMemcpy stages through a driver-owned
-// bounce buffer one chunk at a time with no overlap. Two pinned buffers and two
-// events let the next memcpy from the mapping run while the previous DMA is in
-// flight.
-class Uploader {
-public:
-  Uploader(cudaStream_t stream, const cuda::RegisteredMapping* lock)
-      : stream_(stream), lock_(lock) {
-    for (int i = 0; i < 2; ++i) {
-      slot_[i].allocate(kStageBytes);
-      SLOPFAB_CUDA_CHECK(cudaEventCreateWithFlags(&event_[i], cudaEventDisableTiming));
-      // Recorded once so the first wait on each slot is a no-op rather than a
-      // wait on an event that was never recorded (which is legal but reads as
-      // an accident).
-      SLOPFAB_CUDA_CHECK(cudaEventRecord(event_[i], stream_));
-    }
-  }
-
-  ~Uploader() {
-    // Best-effort: throwing from a destructor would terminate, and the caller
-    // synchronises again before touching any of the uploaded memory.
-    cudaStreamSynchronize(stream_);
-    for (int i = 0; i < 2; ++i)
-      cudaEventDestroy(event_[i]);
-  }
-
-  Uploader(const Uploader&) = delete;
-  Uploader& operator=(const Uploader&) = delete;
-
-  // `from_mapping` says the source is the checkpoint mapping itself, which
-  // only the caller can know: the alternative sources here are short-lived
-  // `std::vector` scratch buffers, and where the heap puts those relative to a
-  // 12 GB mapping is luck. Taking the direct path for one of those would DMA
-  // out of pageable memory and, worse, return before the scratch buffer is
-  // rewritten by the next record. So provenance is passed in, and the range
-  // check is only a second opinion that must also agree.
-  void copy(void* dst, const void* src, size_t bytes, bool from_mapping) {
-    // Source already page-locked: hand the whole range to the DMA engine and
-    // return. Nothing is written on the host, so there is no staging slot to
-    // wait for, and stream order keeps this correctly sequenced against the
-    // staged copies around it.
-    if (from_mapping && lock_ != nullptr && lock_->contains(src, bytes)) {
-      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream_));
-      return;
-    }
-
-    const uint8_t* s = static_cast<const uint8_t*>(src);
-    uint8_t* d = static_cast<uint8_t*>(dst);
-    while (bytes > 0) {
-      const size_t n = std::min(bytes, kStageBytes);
-      SLOPFAB_CUDA_CHECK(cudaEventSynchronize(event_[cur_]));
-      std::memcpy(slot_[cur_].get(), s, n);
-      SLOPFAB_CUDA_CHECK(cudaMemcpyAsync(d, slot_[cur_].get(), n, cudaMemcpyHostToDevice, stream_));
-      SLOPFAB_CUDA_CHECK(cudaEventRecord(event_[cur_], stream_));
-      cur_ ^= 1;
-      s += n;
-      d += n;
-      bytes -= n;
-    }
-  }
-
-private:
-  static constexpr size_t kStageBytes = 32u << 20;
-  cudaStream_t stream_;
-  const cuda::RegisteredMapping* lock_ = nullptr;
-  cuda::PinnedBuffer<uint8_t> slot_[2];
-  cudaEvent_t event_[2] = {nullptr, nullptr};
-  int cur_ = 0;
-};
 
 // How a checkpoint tensor reaches the device.
 enum class Store {
