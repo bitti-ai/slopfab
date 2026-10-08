@@ -135,6 +135,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generatio
   const int status = report_terminal_status(generation);
   if (status != SLOPFAB_OK)
     return status;
+  if (generation->samples_released)
+    return fail(SLOPFAB_ERR_INVALID_REQUEST, "generation samples have been released");
   out_output->video = generation->video.empty() ? nullptr : generation->video.data();
   out_output->video_float_count = generation->video.size();
   out_output->channels = generation->channels;
@@ -175,6 +177,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_gene
 
   // Guarded from here on: every check below names the offending number in its
   // message, so the reporting path allocates.
+  if (generation->samples_released)
+    return fail(SLOPFAB_ERR_INVALID_REQUEST, "generation samples have been released");
   return guarded([&] {
     if (frame_index < 0 || frame_index >= generation->frames) {
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "frame " + std::to_string(frame_index) +
@@ -212,6 +216,17 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_gene
     }
     return SLOPFAB_OK;
   });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_release_samples(slopfab_generation* generation) {
+  if (!generation)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "release samples: null generation");
+  if (generation->status.load() == SLOPFAB_ERR_NOT_READY)
+    return fail(SLOPFAB_ERR_NOT_READY, "the generation is still running");
+  PixelBuffer().swap(generation->video);
+  std::vector<float>().swap(generation->audio);
+  generation->samples_released = true;
+  return SLOPFAB_OK;
 }
 
 SLOPFAB_C_API void SLOPFAB_CALL slopfab_generation_destroy(slopfab_generation* generation) {

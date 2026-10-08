@@ -232,6 +232,7 @@ struct slopfab_generation {
   // Moved out of the decoder's own buffers by `on_samples`, so the pixels are
   // never copied: they are decoded once and handed to the caller by pointer.
   PixelBuffer video;
+  bool samples_released = false;
   std::shared_ptr<const slopfab::LatentClip> latents;
   std::vector<float> audio;
   int channels = 0;
@@ -414,6 +415,14 @@ inline void run_worker(slopfab_generation* gen) {
     code = SLOPFAB_ERR_UNKNOWN;
     message = "unknown exception in the generation worker";
   }
+  // Input snapshots are needed only during execution. Keeping them in a
+  // completed handle can retain decoded reference videos and a previous
+  // continuation archive in addition to this generation's own outputs.
+  gen->request.reference_media.clear();
+  gen->request.refmods.clear();
+  gen->request.continuation.reset();
+  gen->request.image_edit.image.reset();
+  gen->session.reset();
   // Released before `finish`, so a caller woken by `slopfab_generation_wait`
   // can start the next run immediately rather than racing this thread's
   // remaining bookkeeping.

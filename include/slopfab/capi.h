@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 24
+#define SLOPFAB_CAPI_VERSION_MINOR 25
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -368,7 +368,8 @@ typedef void(SLOPFAB_CALL* slopfab_progress_fn)(const slopfab_progress* progress
 /* --- output ----------------------------------------------------------------
  *
  * The decoded run, borrowed from the generation. **Every pointer here is owned
- * by the generation handle and dies with `slopfab_generation_destroy`** — at
+ * by the generation handle and dies with `slopfab_generation_destroy` or
+ * `slopfab_generation_release_samples`** — at
  * the default geometry the video plane alone is over 2 GB, so it is handed
  * over by pointer rather than copied, and a host that wants to keep it past
  * the handle must copy it out.
@@ -840,7 +841,8 @@ slopfab_generation_error(const slopfab_generation* generation);
 
 /* Fills `out_output` with pointers into the finished generation's buffers.
  * SLOPFAB_ERR_NOT_READY while it is still running, or the failure code if it
- * failed. The pointers are valid until `slopfab_generation_destroy`. */
+ * failed. The pointers are valid until `slopfab_generation_destroy` or
+ * `slopfab_generation_release_samples`. Returns INVALID_REQUEST after release. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generation* generation,
                                                          slopfab_output* out_output);
 
@@ -852,6 +854,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generatio
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_generation* generation,
                                                               int32_t frame_index, uint8_t* dst,
                                                               size_t dst_bytes);
+
+/* Since 1.25. Free decoded video/audio buffers after the caller has consumed
+ * them, while retaining the handle, status and any retained latents for later
+ * saving/continuation. Returns NOT_READY while running; otherwise idempotent.
+ * Invalidates ALL previously borrowed sample pointers. Subsequent output and
+ * frame_rgba8 calls on a successful generation return INVALID_REQUEST.
+ * Serialize this call with sample readers, output/frame accessors and destroy.
+ * Destroy the generation instead if no further access to its latents is needed. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_release_samples(slopfab_generation* generation);
 
 /* Cancels if still running, waits for the worker to drain, and frees
  * everything including the pixel buffers. Every pointer from

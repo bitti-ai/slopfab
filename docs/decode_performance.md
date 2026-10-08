@@ -1,0 +1,89 @@
+# Decode performance and repeated DLL generations
+
+`videoDecode` includes loading the video VAE, decoding its windows, composing
+tiles and producing the full planar float video. `audioDecode` includes loading
+the audio VAE and generating PCM. The `transformerLoad` progress interval includes
+both checkpoint loading and text/sequence preparation before denoising starts.
+The C++ result separates these as `seconds_transformer_load` and `seconds_prepare`.
+
+## Output ownership
+
+Each completed `slopfab_generation` owns its output until the application destroys
+it. The borrowed pointers from `slopfab_generation_output` do not transfer
+ownership. A float RGB video alone occupies `frames * width * height * 3 * 4`
+bytes; 107 frames at 1344x768 occupy about 1264 MiB. Retaining a list of generation
+handles also retains all those videos, in addition to any copies made by the host.
+
+Destroy the handle after encoding/copying the samples if it is no longer needed.
+For continuation, the next request takes shared ownership of the source latents:
+after a successful `slopfab_request_set_continuation_generation`, the source
+generation can be destroyed before starting the next generation.
+
+C API 1.25 adds `slopfab_generation_release_samples` for applications that need
+to keep a completed handle for later latent saving or continuation:
+
+```c
+/* Enable retain_latents on the request before starting, when needed. */
+if (slopfab_generation_wait(generation, -1) == SLOPFAB_OK) {
+    slopfab_output output;
+    if (slopfab_generation_output(generation, &output) == SLOPFAB_OK) {
+        /* Finish consuming output.video and output.audio here. */
+        slopfab_generation_release_samples(generation);
+    }
+}
+/* Retained latents remain usable; destroy the handle when finished with them. */
+slopfab_generation_destroy(generation);
+```
+
+Releasing samples invalidates all borrowed video/audio pointers. Serialize it
+against readers and destruction. It is idempotent after completion and returns
+`NOT_READY` while generation is running. Subsequent output/frame access on a
+successful released generation returns `INVALID_REQUEST`; generation status and
+retained latents are unchanged. Failed/cancelled generations retain their status.
+
+Completed workers also release their snapshots of reference media, continuation
+inputs and sessions. The application's request and explicit session still own
+their respective data until cleared or destroyed.
+
+Continuation outputs contain the joined clip. Progressively longer continuations
+therefore require increasing output memory and decode work even when old handles
+are destroyed. Sample release does not make a growing clip constant-size.
+
+## Implementation changes
+
+- Video tiles compose directly into the final planar buffer. Removing the second
+  full video allocation saves approximately one output video's worth of peak
+  host memory. Tile registrations and buffers are released before normalization.
+- Audio decoder staging reserves its destination once, directly appends plain
+  FP32 weights, folds weight normalization in place, and prefetches only decoder
+  tensors. The ordinary FP32 checkpoint has about 248 MiB of decoder tensors
+  versus 577 MiB for the whole file. CUDA and Vulkan reuse an idle activation
+  buffer, reducing their working arena by one buffer (19.8 MiB at 405 tokens).
+- CUDA transformer uploads pack small converted tensors into bounded pinned
+  staging slots, avoiding waits after every second small tensor. Slots allocate
+  lazily; the limit remains 64 MiB. Weights are not kept resident between runs.
+
+These changes preserve inference precision, decoder arithmetic and blending.
+
+## Reproducing the memory check
+
+From the repository root, with real video/audio VAE checkpoints under `weights/vae`:
+
+```powershell
+python tools/decode_repeat_probe.py build/Release/slopfab.dll --runs 10
+python tools/decode_repeat_probe.py build/Release/slopfab.dll --runs 10 --lifetime release
+```
+
+The probe skips conditioning/denoising, feeds fixed seeded latents to both VAEs,
+and prints JSON with decode timings, output hashes, and Windows process memory
+before/after cleanup. `--width`, `--height`, `--frames` and `--backend` select the
+workload. The `retain` lifetime intentionally keeps complete results to reproduce
+ownership-related growth; use a small geometry for that comparison. The `release`
+mode also checks that output access is refused and saved latents remain identical.
+Process memory includes driver allocations and excludes dedicated GPU memory.
+Synthetic inputs exercise allocation and decoding, not perceptual quality.
+
+A standalone host scheduler comparison at 107x768x1344, four runs per version,
+reduced peak process commit from 3244 to 1978 MiB with identical full output hashes.
+Median host scheduling time was 1.734 versus 1.491 seconds; this excludes GPU work
+and is not an end-to-end speed claim.

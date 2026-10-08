@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 #include <limits>
+#include <condition_variable>
+#include <mutex>
 
 #include "harness.h"
 #include "slopfab/capi.h"
@@ -653,6 +655,7 @@ SLOPFAB_TEST(capi_rejects_null_handles) {
   CHECK(slopfab_generation_start(nullptr, nullptr, nullptr, nullptr) ==
         SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_generation_status(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_generation_release_samples(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
 
   // A null request must be refused rather than dereferenced, even with a
   // perfectly good out-parameter to write into.
@@ -1033,7 +1036,46 @@ SLOPFAB_TEST(capi_reference_video_audio_ingestion) {
   request.handle = nullptr;
   // The request is accepted without loading models synchronously. This fixture
   // intentionally has no checkpoints; the worker reports that failure.
-  CHECK(slopfab_generation_wait(generation, -1) != SLOPFAB_OK);
+  const int failed_status = slopfab_generation_wait(generation, -1);
+  CHECK(failed_status != SLOPFAB_OK);
+  CHECK(slopfab_generation_release_samples(generation) == SLOPFAB_OK);
+  CHECK(slopfab_generation_release_samples(generation) == SLOPFAB_OK);
+  CHECK(slopfab_generation_status(generation) == failed_status);
+  slopfab_generation_destroy(generation);
+}
+
+SLOPFAB_TEST(capi_release_samples_waits_for_completion) {
+  struct State {
+    std::mutex mutex;
+    std::condition_variable ready;
+    slopfab_generation* generation = nullptr;
+    int release_status = SLOPFAB_OK;
+  } state;
+
+  Request request;
+  CHECK(slopfab_request_set_synthetic_latents(request.handle, 1) == SLOPFAB_OK);
+  auto callback = [](const slopfab_progress*, void* userdata) {
+    auto& state = *static_cast<State*>(userdata);
+    std::unique_lock<std::mutex> lock(state.mutex);
+    state.ready.wait(lock, [&] {
+      return state.generation != nullptr;
+    });
+    state.release_status = slopfab_generation_release_samples(state.generation);
+    slopfab_generation_cancel(state.generation);
+  };
+  slopfab_generation* generation = nullptr;
+  CHECK(slopfab_generation_start(request.handle, callback, &state, &generation) == SLOPFAB_OK);
+  if (!generation)
+    return;
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.generation = generation;
+  }
+  state.ready.notify_one();
+  CHECK(slopfab_generation_wait(generation, -1) == SLOPFAB_ERR_CANCELLED);
+  CHECK(state.release_status == SLOPFAB_ERR_NOT_READY);
+  CHECK(slopfab_generation_release_samples(generation) == SLOPFAB_OK);
+  CHECK(slopfab_generation_status(generation) == SLOPFAB_ERR_CANCELLED);
   slopfab_generation_destroy(generation);
 }
 
