@@ -32,7 +32,7 @@ struct ContinuationPlan {
   int window_audio_latents = 0;
 };
 
-// Preserve a prefix in each channel-major group of target values. Video has
+// Preserve a prefix and optional suffix in each channel-major group. Video has
 // one group of packed rows; stereo audio has two. Capture the initial target
 // noise once per run, then use the same noise at every scheduler boundary.
 struct LatentPrefixConstraint {

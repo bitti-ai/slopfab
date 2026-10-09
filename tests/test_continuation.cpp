@@ -124,6 +124,29 @@ SLOPFAB_TEST(latent_bridge_guides_and_validation) {
                    packed.position_ids[size_t(target) * 3 + axis], 1e-10);
     }
   auto b = *req.bridge;
+  // Both stereo guides must use the exact target audio clock, including when
+  // the right video context begins at a fractional 40 Hz coordinate.
+  int guide_offset = 0;
+  for (int side = 0; side < 2; ++side) {
+    const int count = side ? plan.bridge.right_context_audio : plan.bridge.left_context_audio;
+    const int target_offset = side ? plan.layout.num_audio_latents - count : 0;
+    for (int c = 0; c < 2; ++c)
+      for (int i = 0; i < count; ++i) {
+        const int guide = packed.indices.audio[guide_offset + c * count + i];
+        const int target =
+            packed.indices.audio[packed.layout.num_condition_audio +
+                                 c * plan.layout.num_audio_latents + target_offset + i];
+        for (int axis = 0; axis < 3; ++axis)
+          CHECK_NEAR(packed.position_ids[size_t(guide) * 3 + axis],
+                     packed.position_ids[size_t(target) * 3 + axis], 1e-10);
+      }
+    guide_offset += 2 * count;
+  }
+  refs.back().target_audio_time_offset = std::numeric_limits<double>::infinity();
+  CHECK(rejects([&] {
+    slopfab::dit::build_ref2va_packed_sequence({1}, refs, plan.layout.num_latent_frames, 2, 4,
+                                               plan.layout.num_audio_latents);
+  }));
   for (int invalid : {-1, 1, 22}) {
     b.left_margin_frames = invalid;
     CHECK(rejects([&] {

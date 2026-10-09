@@ -87,7 +87,9 @@ Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& tt
       aligned_seen = true;
       if (r.kind != ReferenceKind::kVideo || r.latent_height != H || r.latent_width != W ||
           r.num_latent_frames <= 0 || r.num_latent_frames > F || r.num_audio_latents > A ||
-          !std::isfinite(r.target_time_offset) || std::abs(r.target_time_offset) > 1000000)
+          !std::isfinite(r.target_time_offset) || std::abs(r.target_time_offset) > 1000000 ||
+          (r.target_audio_time_offset && (!std::isfinite(*r.target_audio_time_offset) ||
+                                          std::abs(*r.target_audio_time_offset) > 1000000)))
         throw std::invalid_argument("temporal guide must fit the target spatial grid");
     }
   }
@@ -136,7 +138,10 @@ Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& tt
     } else {
       auto rw = axis(r.latent_width, std::sqrt(double(r.latent_height) * r.latent_width));
       const double origin = clock + (r.target_aligned ? r.target_time_offset : 0);
-      audio(o.position_ids, cur, r.num_audio_latents, origin, rw);
+      const double audio_origin = r.target_aligned && r.target_audio_time_offset
+                                      ? clock + *r.target_audio_time_offset
+                                      : origin;
+      audio(o.position_ids, cur, r.num_audio_latents, audio_origin, rw);
       for (int i = 0; i < r.audio_rows(); ++i)
         o.indices.audio.push_back(cur + i);
       cur += r.audio_rows();

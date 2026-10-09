@@ -467,6 +467,7 @@ void append_bridge_guides(const LatentBridge& b, const BridgePlan& p, uint64_t s
       guide.target_time_offset =
           double(dit::video_latent_num_frames(p.window_frames) - p.context_video_latents) / 5 *
           (17.0 * 5.0 / 3.0);
+    guide.target_audio_time_offset = side ? p.left_context_audio + p.generated_audio_latents : 0;
     geometry.push_back(guide);
   }
 }

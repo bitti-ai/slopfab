@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <optional>
 #include <vector>
 #include "slopfab/dit/packing.h"
 
@@ -16,6 +17,9 @@ struct ReferenceGeometry {
   bool target_aligned = false;
   // Temporal guides may sit immediately before/after the generated timeline.
   double target_time_offset = 0;
+  // Audio boundaries can round differently from the video clock. Temporal
+  // guides may align audio independently to exact target audio row positions.
+  std::optional<double> target_audio_time_offset;
   int video_rows() const;
   int audio_rows() const;
 };
