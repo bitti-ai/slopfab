@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 26
+#define SLOPFAB_CAPI_VERSION_MINOR 27
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -410,6 +410,26 @@ typedef struct slopfab_output {
   int32_t steps_computed;
   int32_t steps_skipped;
 } slopfab_output;
+
+/* Since 1.27. Wall-clock breakdown of seconds_video_decode, in seconds.
+ * Compute includes decoder workspace allocation, transfers, kernels and tile
+ * assembly. Cleanup includes decoder destruction and remaining host/file
+ * teardown and instrumentation overhead. No additional GPU synchronization
+ * is introduced to collect these timings. */
+typedef struct slopfab_video_decode_timings {
+  double seconds_prepare;
+  double seconds_upscale;
+  double seconds_model_open;
+  double seconds_weight_load;
+  double seconds_compute;
+  double seconds_cleanup;
+} slopfab_video_decode_timings;
+
+/* Independent getter preserves the slopfab_output ABI. Requires a successful
+ * completed generation. Timings remain available after release_samples.
+ * The destination is not written when the call fails. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_video_decode_timings(
+    const slopfab_generation* generation, slopfab_video_decode_timings* out_timings);
 
 /* --- request ---------------------------------------------------------------
  *

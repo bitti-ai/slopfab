@@ -6,6 +6,29 @@ the audio VAE and generating PCM. The `transformerLoad` progress interval includ
 both checkpoint loading and text/sequence preparation before denoising starts.
 The C++ result separates these as `seconds_transformer_load` and `seconds_prepare`.
 
+## Decode timing breakdown (C API 1.27)
+
+After successful completion, call `slopfab_generation_video_decode_timings` to
+read six wall-clock durations without changing the existing `slopfab_output`
+layout. The getter returns `NOT_READY` during generation, the terminal error on
+failure, and leaves the destination unchanged on either path. Timings survive
+`slopfab_generation_release_samples` and remain owned by the generation handle.
+
+| Field | Measured work |
+| --- | --- |
+| `seconds_prepare` | Allocate and unpatchify the latent volume |
+| `seconds_upscale` | Optional latent upscaling; zero when disabled |
+| `seconds_model_open` | Open/map the VAE file and read normalization statistics |
+| `seconds_weight_load` | Create the decoder/device and load VAE weights |
+| `seconds_compute` | Decode, including workspace allocation, transfers and tile assembly |
+| `seconds_cleanup` | Remaining time: decoder destruction, temporary buffers, file mapping teardown and instrumentation overhead |
+
+These fields sum to `seconds_video_decode`. Since 1.27 that total also includes
+temporary latent-buffer and checkpoint-mapping destruction. Measurements use
+the monotonic host clock and add no GPU synchronization. They are phase wall
+times, not isolated kernel timings. C++ callers receive the same breakdown in
+`RunResult::video_decode_timings`.
+
 ## Output ownership
 
 Each completed `slopfab_generation` owns its output until the application destroys

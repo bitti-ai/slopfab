@@ -162,6 +162,19 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_output(const slopfab_generatio
   return SLOPFAB_OK;
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_video_decode_timings(
+    const slopfab_generation* generation, slopfab_video_decode_timings* out_timings) {
+  if (generation == nullptr || out_timings == nullptr)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "slopfab_generation_video_decode_timings: null argument");
+  const int status = report_terminal_status(generation);
+  if (status != SLOPFAB_OK)
+    return status;
+  const auto& t = generation->video_decode_timings;
+  *out_timings = {t.seconds_prepare, t.seconds_upscale, t.seconds_model_open,
+                  t.seconds_weight_load, t.seconds_compute, t.seconds_cleanup};
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_generation_frame_rgba8(const slopfab_generation* generation,
                                                               int32_t frame_index, uint8_t* dst,
                                                               size_t dst_bytes) {

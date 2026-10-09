@@ -72,8 +72,9 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
   if (options.latent_upscale_model_path.empty() && !notify(RunStage::kVideoDecode, -1, 0))
     return stop("video decode");
   vae::DecodedVideo video;
+  const Clock::time_point decode_started = Clock::now();
+  auto& timings = result.video_decode_timings;
   {
-    const Clock::time_point t0 = Clock::now();
     if (request.video_vae_path.empty()) {
       result.message = "generate needs --vae <video_vae.safetensors>";
       return result;
@@ -91,6 +92,7 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
     s_unpatch.stop();
 #endif
     int decode_height = layout.latent_height, decode_width = layout.latent_width;
+    timings.seconds_prepare = seconds_since(decode_started);
     if (!options.latent_upscale_model_path.empty()) {
       const auto begin = Clock::now();
       try {
@@ -106,6 +108,7 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
           latent_upscale_dimensions(decode_height, decode_width, options.latent_upscale);
       decode_height = dims.first;
       decode_width = dims.second;
+      timings.seconds_upscale = seconds_since(begin);
       if (options.verbose)
         std::printf("latent upscale %dx%d -> %dx%d in %.2f s\n", layout.latent_width * 16,
                     layout.latent_height * 16, decode_width * 16, decode_height * 16,
@@ -122,10 +125,13 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
 #if SLOPFAB_WITH_CUDA
     cuda::PhaseSpan s_load("vae weight load");
 #endif
+    const auto open_started = Clock::now();
     SafeTensors vae_file;
     vae_file.open(request.video_vae_path);
     const std::vector<float> mean = read_stat(vae_file, "latents_mean", 24);
     const std::vector<float> std_dev = read_stat(vae_file, "latents_std", 24);
+    timings.seconds_model_open = seconds_since(open_started);
+    const auto load_started = Clock::now();
 
     if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
@@ -134,15 +140,18 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
       if (options.attention_mode == AttentionMode::kExact)
         config.transformer_mode = vae::ViTTransformerMode::kExact;
       decoder.load(vae_file, config);
+      timings.seconds_weight_load = seconds_since(load_started);
       s_load.stop();
       if (options.verbose) {
         std::printf("video vae   CUDA %.2f GiB on device\n",
                     static_cast<double>(decoder.weight_bytes()) / (1024.0 * 1024.0 * 1024.0));
       }
+      const auto compute_started = Clock::now();
       video = request.still_image ? vae::decode_still_image(decoder, latents.data(), decode_height,
                                                             decode_width, mean, std_dev)
                                   : decoder.decode(latents.data(), layout.num_latent_frames,
                                                    decode_height, decode_width, mean, std_dev);
+      timings.seconds_compute = seconds_since(compute_started);
 #else
       throw std::logic_error("CUDA inference compiled out after validation");
 #endif
@@ -153,6 +162,7 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
       config.transformer_mode = vae::ViTTransformerMode::kExact;
       vulkan::VideoVaeDecoder decoder = vulkan::VideoVaeDecoder::create(device, config);
       decoder.load(vae_file);
+      timings.seconds_weight_load = seconds_since(load_started);
 #if SLOPFAB_WITH_CUDA
       s_load.stop();
 #endif
@@ -160,26 +170,30 @@ RunResult decode_and_deliver(const GenerateRequest& request, const RunOptions& o
         std::printf("video vae   Vulkan %.2f GiB on device\n",
                     static_cast<double>(decoder.persistent_bytes()) / (1024.0 * 1024.0 * 1024.0));
       }
+      const auto compute_started = Clock::now();
       video = request.still_image ? vae::decode_still_image(decoder, latents.data(), decode_height,
                                                             decode_width, mean, std_dev)
                                   : decoder.decode(latents.data(), layout.num_latent_frames,
                                                    decode_height, decode_width, mean, std_dev);
+      timings.seconds_compute = seconds_since(compute_started);
 #else
       throw std::logic_error("Vulkan inference compiled out after validation");
 #endif
     }
-    result.seconds_video_decode = seconds_since(t0);
-    if (options.verbose) {
-      std::printf("video       %d frames of %dx%d in %.2f s\n", video.frames, video.width,
-                  video.height, result.seconds_video_decode);
-    }
-    // The spans above tile this block, so the elapsed time is their denominator.
-#if SLOPFAB_WITH_CUDA
-    cuda::PhaseProfiler::instance().add_total("video vae stage",
-                                              result.seconds_video_decode * 1000.0);
-    cuda::PhaseProfiler::instance().report(stdout);
-#endif
+  } // Decoder, model mapping and temporary latent buffers have been released.
+  result.seconds_video_decode = seconds_since(decode_started);
+  timings.seconds_cleanup = std::max(0.0, result.seconds_video_decode - timings.seconds_prepare
+      - timings.seconds_upscale - timings.seconds_model_open - timings.seconds_weight_load
+      - timings.seconds_compute);
+  if (options.verbose) {
+    std::printf("video       %d frames of %dx%d in %.2f s\n", video.frames, video.width,
+                video.height, result.seconds_video_decode);
   }
+  // The spans above tile this block, so the elapsed time is their denominator.
+#if SLOPFAB_WITH_CUDA
+  cuda::PhaseProfiler::instance().add_total("video vae stage", result.seconds_video_decode * 1000.0);
+  cuda::PhaseProfiler::instance().report(stdout);
+#endif
 
   if (request.image_edit.image) {
     if (video.frames != 1 || video.channels != 3)

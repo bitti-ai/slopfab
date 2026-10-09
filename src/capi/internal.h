@@ -246,6 +246,7 @@ struct slopfab_generation {
   double seconds_conditioning = 0.0;
   double seconds_denoise = 0.0;
   double seconds_video_decode = 0.0;
+  slopfab::VideoDecodeTimings video_decode_timings;
   double seconds_audio_decode = 0.0;
   double seconds_total = 0.0;
   int steps_computed = 0;
@@ -392,6 +393,7 @@ inline void run_worker(slopfab_generation* gen) {
     gen->seconds_conditioning = result.seconds_conditioning;
     gen->seconds_denoise = result.seconds_denoise;
     gen->seconds_video_decode = result.seconds_video_decode;
+    gen->video_decode_timings = result.video_decode_timings;
     gen->seconds_audio_decode = result.seconds_audio_decode;
     gen->steps_computed = result.steps_computed;
     gen->steps_skipped = result.steps_skipped;

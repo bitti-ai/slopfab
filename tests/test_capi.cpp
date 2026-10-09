@@ -701,6 +701,10 @@ SLOPFAB_TEST(capi_rejects_null_handles) {
         SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_generation_status(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_generation_release_samples(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  slopfab_video_decode_timings timings{};
+  timings.seconds_compute = 123.0;
+  CHECK(slopfab_generation_video_decode_timings(nullptr, &timings) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(timings.seconds_compute == 123.0);
 
   // A null request must be refused rather than dereferenced, even with a
   // perfectly good out-parameter to write into.
@@ -1083,6 +1087,11 @@ SLOPFAB_TEST(capi_reference_video_audio_ingestion) {
   // intentionally has no checkpoints; the worker reports that failure.
   const int failed_status = slopfab_generation_wait(generation, -1);
   CHECK(failed_status != SLOPFAB_OK);
+  slopfab_video_decode_timings timings{};
+  timings.seconds_compute = 123.0;
+  CHECK(slopfab_generation_video_decode_timings(generation, &timings) == failed_status);
+  CHECK(timings.seconds_compute == 123.0);
+  CHECK(slopfab_generation_video_decode_timings(generation, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_generation_release_samples(generation) == SLOPFAB_OK);
   CHECK(slopfab_generation_release_samples(generation) == SLOPFAB_OK);
   CHECK(slopfab_generation_status(generation) == failed_status);
@@ -1095,6 +1104,7 @@ SLOPFAB_TEST(capi_release_samples_waits_for_completion) {
     std::condition_variable ready;
     slopfab_generation* generation = nullptr;
     int release_status = SLOPFAB_OK;
+    int timings_status = SLOPFAB_OK;
   } state;
 
   Request request;
@@ -1106,6 +1116,8 @@ SLOPFAB_TEST(capi_release_samples_waits_for_completion) {
       return state.generation != nullptr;
     });
     state.release_status = slopfab_generation_release_samples(state.generation);
+    slopfab_video_decode_timings timings{};
+    state.timings_status = slopfab_generation_video_decode_timings(state.generation, &timings);
     slopfab_generation_cancel(state.generation);
   };
   slopfab_generation* generation = nullptr;
@@ -1119,6 +1131,7 @@ SLOPFAB_TEST(capi_release_samples_waits_for_completion) {
   state.ready.notify_one();
   CHECK(slopfab_generation_wait(generation, -1) == SLOPFAB_ERR_CANCELLED);
   CHECK(state.release_status == SLOPFAB_ERR_NOT_READY);
+  CHECK(state.timings_status == SLOPFAB_ERR_NOT_READY);
   CHECK(slopfab_generation_release_samples(generation) == SLOPFAB_OK);
   CHECK(slopfab_generation_status(generation) == SLOPFAB_ERR_CANCELLED);
   slopfab_generation_destroy(generation);

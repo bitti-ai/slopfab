@@ -211,6 +211,15 @@ inline bool generation_backend_supported(DeviceBackend backend, LatentSource sou
   return false;
 }
 
+struct VideoDecodeTimings {
+  double seconds_prepare = 0.0;
+  double seconds_upscale = 0.0;
+  double seconds_model_open = 0.0;
+  double seconds_weight_load = 0.0;
+  double seconds_compute = 0.0;
+  double seconds_cleanup = 0.0;
+};
+
 struct RunResult {
   bool ok = false;
   // Set when `RunOptions::on_progress` returned false. Distinct from a plain
@@ -240,6 +249,7 @@ struct RunResult {
   int steps_skipped = 0;
   double seconds_denoise = 0.0;
   double seconds_video_decode = 0.0;
+  VideoDecodeTimings video_decode_timings;
   double seconds_audio_decode = 0.0;
   double seconds_output = 0.0;
 };
