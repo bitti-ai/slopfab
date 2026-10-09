@@ -131,6 +131,9 @@ struct GenerateRequest {
   int continuation_overlap_frames = 22;
   // Constrain target video/audio overlap at every noise level (experimental).
   bool continuation_lock_overlap = false;
+  // Two retained clips, with editable margins. num_frames requests gap frames.
+  // Ordinary image/media/refmod references remain attached across endpoint changes.
+  std::optional<LatentBridge> bridge;
   // 1: extend the final 22 frames of reference video 1. 2: also bridge to
   // the opening 22 frames of reference video 2. Output is the new segment only.
   int video_transition = 0;
@@ -193,6 +196,7 @@ struct GeneratePlan {
   // the bounded sampling window. Equal for ordinary generations.
   int sampling_frames = 0;
   ContinuationPlan continuation;
+  BridgePlan bridge;
 
   dit::SequenceLayout layout; // layout.num_text is 0 until the prompt is tokenised
 

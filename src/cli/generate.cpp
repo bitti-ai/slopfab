@@ -88,6 +88,9 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   std::string dump_latents;
   std::string save_latents;
   std::string continue_from;
+  std::string bridge_from, bridge_to;
+  slopfab::LatentBridge bridge;
+  bool saw_bridge_settings = false;
   bool saw_overlap = false;
   std::string prompt_file;
   bool saw_prompt = false;
@@ -366,6 +369,25 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       continue_from = next("--continue-from");
       if (continue_from.empty())
         throw std::runtime_error("--continue-from needs a nonempty path");
+    } else if (arg == "--bridge-from" || arg == "--bridge-to") {
+      const std::string value = next(arg.data());
+      if (value.empty())
+        throw std::invalid_argument("bridge source path must not be empty");
+      (arg == "--bridge-from" ? bridge_from : bridge_to) = value;
+    } else if (arg == "--bridge-left-margin" || arg == "--bridge-right-margin" ||
+               arg == "--bridge-context") {
+      const std::string value = next(arg.data());
+      size_t consumed = 0;
+      const int frames = std::stoi(value, &consumed);
+      if (consumed != value.size())
+        throw std::invalid_argument("invalid bridge frame count");
+      if (arg == "--bridge-left-margin")
+        bridge.left_margin_frames = frames;
+      else if (arg == "--bridge-right-margin")
+        bridge.right_margin_frames = frames;
+      else
+        bridge.context_frames = frames;
+      saw_bridge_settings = true;
     } else if (arg == "--overlap-frames") {
       const std::string value = next("--overlap-frames");
       size_t consumed = 0;
@@ -557,6 +579,15 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     if (saw_aspect && !saw_resolution)
       throw std::runtime_error("continuation inherits its canvas; omit --aspect");
     req.continuation = slopfab::LatentClip::load(continue_from);
+  }
+  if (!bridge_from.empty() || !bridge_to.empty() || saw_bridge_settings) {
+    if (bridge_from.empty() || bridge_to.empty())
+      throw std::invalid_argument("latent bridge needs both --bridge-from and --bridge-to");
+    if (saw_aspect)
+      throw std::invalid_argument("latent bridge inherits its canvas; omit --aspect");
+    bridge.left = slopfab::LatentClip::load(bridge_from);
+    bridge.right = slopfab::LatentClip::load(bridge_to);
+    req.bridge = std::move(bridge);
   }
   for (const auto& entry : reference_files) {
     req.reference_media.push_back(std::make_shared<const slopfab::ReferenceMedia>(

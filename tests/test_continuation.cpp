@@ -18,6 +18,150 @@ template <class F> bool rejects(F fn) {
 }
 }
 
+SLOPFAB_TEST(latent_bridge_preservation_and_clocks) {
+  LatentFixture fixture;
+  fixture.write(107);
+  const auto left = slopfab::LatentClip::load(fixture.path.string());
+  auto right = std::make_shared<slopfab::LatentClip>(*left);
+  for (auto& v : right->video_rows)
+    v += 10000;
+  for (auto& v : right->audio_rows)
+    v += 20000;
+  for (int lm : {0, 17, 34})
+    for (int rm : {0, 17, 51})
+      for (int context : {5, 22, 39})
+        for (int gap : {0, 12, 13, 29, 30, 63}) {
+          slopfab::LatentBridge b{left, right, lm, rm, context};
+          const auto p = slopfab::plan_bridge(b, gap);
+          CHECK(p.gap_frames >= gap && p.gap_frames % 17 == 12);
+          CHECK(p.output_frames == 214 + p.gap_frames);
+          CHECK(p.window_frames == lm + rm + p.gap_frames + 2 * context);
+          CHECK(p.left_video_start % 5 == 0 && p.right_video_drop % 5 == 0);
+          const size_t frame = 192;
+          std::vector<float> video(
+              size_t(slopfab::dit::video_latent_num_frames(p.window_frames)) * frame, -7);
+          std::vector<float> audio(size_t(p.window_audio_latents) * 64, -8);
+          std::fill(audio.begin() + size_t(p.window_audio_latents) * 32, audio.end(), -9.f);
+          const auto joined = slopfab::join_bridge(b, p, video, audio);
+          CHECK(joined.frames == p.output_frames);
+          CHECK(std::equal(left->video_rows.begin(),
+                           left->video_rows.begin() + size_t(p.left_video_keep) * frame,
+                           joined.video_rows.begin()));
+          CHECK(std::equal(right->video_rows.begin() + size_t(p.right_video_drop) * frame,
+                           right->video_rows.end(),
+                           joined.video_rows.begin() +
+                               size_t(p.left_video_keep + p.generated_video_latents) * frame));
+          CHECK(joined.video_rows[size_t(p.left_video_keep) * frame] == -7);
+          const size_t output_a = size_t((int64_t(joined.frames) * 5 + 1) / 3);
+          const size_t source_a = 178; // round(107 * 40 / 24)
+          CHECK(joined.audio_rows.size() == output_a * 64);
+          for (size_t c = 0; c < 2; ++c) {
+            CHECK(std::equal(left->audio_rows.begin() + c * source_a * 32,
+                             left->audio_rows.begin() + (c * source_a + p.left_audio_keep) * 32,
+                             joined.audio_rows.begin() + c * output_a * 32));
+            CHECK(std::equal(right->audio_rows.begin() + (c * source_a + p.right_audio_drop) * 32,
+                             right->audio_rows.begin() + (c + 1) * source_a * 32,
+                             joined.audio_rows.begin() +
+                                 (c * output_a + p.left_audio_keep + p.generated_audio_latents) *
+                                     32));
+            CHECK(joined.audio_rows[(c * output_a + p.left_audio_keep) * 32] == (c ? -9 : -8));
+          }
+          auto constraints = slopfab::make_bridge_constraint(b, p);
+          for (auto* constraint : {&constraints.video, &constraints.audio}) {
+            const size_t width = constraint->target_values_per_channel;
+            const size_t kept = constraint->original.size() / constraint->channels;
+            const size_t tail = constraint->suffix_values_per_channel;
+            const size_t head = kept - tail;
+            std::vector<float> initial(width * constraint->channels);
+            for (size_t i = 0; i < initial.size(); ++i)
+              initial[i] = float(i % 19) / 16;
+            constraint->capture_noise(initial.data(), initial.size());
+            for (float sigma : {1.f, .5f, 0.f}) {
+              std::vector<float> rows(initial.size(), -33);
+              constraint->apply(rows.data(), rows.size(), sigma);
+              for (size_t c = 0; c < constraint->channels; ++c)
+                for (size_t i = 0; i < width; ++i) {
+                  if (i >= head && i < width - tail)
+                    CHECK(rows[c * width + i] == -33);
+                  else {
+                    const size_t src = c * kept + (i < head ? i : kept - (width - i));
+                    CHECK(rows[c * width + i] ==
+                          (1 - sigma) * constraint->original[src] + sigma * initial[c * width + i]);
+                  }
+                }
+            }
+          }
+        }
+}
+
+SLOPFAB_TEST(latent_bridge_guides_and_validation) {
+  LatentFixture fixture;
+  fixture.write(73);
+  const auto clip = slopfab::LatentClip::load(fixture.path.string());
+  slopfab::GenerateRequest req;
+  req.bridge = slopfab::LatentBridge{clip, clip, 17, 34, 22};
+  req.num_frames = 30;
+  const auto plan = slopfab::resolve_plan(req);
+  CHECK(plan.aligned_frames == 192 && plan.sampling_frames == 141);
+  std::vector<slopfab::dit::ReferenceGeometry> refs{
+      {slopfab::dit::ReferenceKind::kImage, 1, 2, 4, 0}};
+  std::vector<float> video(192, 42), audio;
+  slopfab::append_bridge_guides(*req.bridge, plan.bridge, 7, refs, video, audio);
+  CHECK(refs.size() == 3 && refs[1].target_aligned && refs[2].target_aligned);
+  const auto packed = slopfab::dit::build_ref2va_packed_sequence(
+      {1, 1, 1}, refs, plan.layout.num_latent_frames, 2, 4, plan.layout.num_audio_latents);
+  CHECK(video.size() == size_t(packed.layout.num_condition_video) * 96);
+  CHECK(audio.size() == size_t(packed.layout.num_condition_audio) * 32);
+  const auto& indices = packed.indices.video;
+  const int cv = packed.layout.num_condition_video;
+  for (int side = 0; side < 2; ++side)
+    for (int i = 0; i < 14; ++i) {
+      const int guide = indices[2 + side * 14 + i];
+      const int target_offset = side ? packed.layout.num_video_rows - 14 : 0;
+      const int target = indices[cv + target_offset + i];
+      for (int axis = 0; axis < 3; ++axis)
+        CHECK_NEAR(packed.position_ids[size_t(guide) * 3 + axis],
+                   packed.position_ids[size_t(target) * 3 + axis], 1e-10);
+    }
+  auto b = *req.bridge;
+  for (int invalid : {-1, 1, 22}) {
+    b.left_margin_frames = invalid;
+    CHECK(rejects([&] {
+      slopfab::plan_bridge(b, 12);
+    }));
+  }
+  b = *req.bridge;
+  b.right_margin_frames = 68;
+  CHECK(rejects([&] {
+    slopfab::plan_bridge(b, 12);
+  }));
+  b = *req.bridge;
+  CHECK(rejects([&] {
+    slopfab::plan_bridge(b, -1);
+  }));
+  CHECK(rejects([&] {
+    slopfab::plan_bridge(b, std::numeric_limits<int>::max());
+  }));
+  auto invalid_plan = plan.bridge;
+  ++invalid_plan.right_audio_drop;
+  CHECK(rejects([&] {
+    slopfab::make_bridge_constraint(b, invalid_plan);
+  }));
+  b.right.reset();
+  CHECK(rejects([&] {
+    slopfab::plan_bridge(b, 12);
+  }));
+  req.continuation = clip;
+  CHECK(rejects([&] {
+    slopfab::resolve_plan(req);
+  }));
+  req.continuation.reset();
+  req.motion_cache.enabled = true;
+  CHECK(rejects([&] {
+    slopfab::resolve_plan(req);
+  }));
+}
+
 SLOPFAB_TEST(continuation_locked_overlap_constraints) {
   LatentFixture fixture;
   fixture.write();

@@ -342,6 +342,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   std::vector<float> init_audio;
   std::shared_ptr<InpaintConstraint> inpaint;
   std::shared_ptr<const ContinuationConstraint> continuation_constraint;
+  if (request.bridge)
+    continuation_constraint = std::make_shared<ContinuationConstraint>(
+        make_bridge_constraint(*request.bridge, plan.bridge));
   if (request.continuation_lock_overlap)
     continuation_constraint = std::make_shared<ContinuationConstraint>(
         make_continuation_constraint(*request.continuation, plan.continuation));
@@ -673,6 +676,9 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       append_continuation_guide(*request.continuation, plan.continuation, request.seed,
                                 reference_geometry, condition_video_rows, condition_audio_rows);
     }
+    if (request.bridge)
+      append_bridge_guides(*request.bridge, plan.bridge, request.seed, reference_geometry,
+                           condition_video_rows, condition_audio_rows);
     if (request.video_transition)
       align_transition_guides(reference_geometry, layout.num_latent_frames);
 
@@ -1114,7 +1120,11 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   // Preserve normalized sampler output, join in latent space, then decode the
   // cumulative stream so the VAE sees context on both sides of the join.
   auto completed = std::make_shared<LatentClip>();
-  if (request.continuation) {
+  if (request.bridge) {
+    *completed = join_bridge(*request.bridge, plan.bridge, video_rows, audio_rows);
+    video_rows.clear();
+    audio_rows.clear();
+  } else if (request.continuation) {
     *completed =
         join_continuation(*request.continuation, plan.continuation, video_rows, audio_rows);
     video_rows.clear();

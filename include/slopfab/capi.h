@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 25
+#define SLOPFAB_CAPI_VERSION_MINOR 26
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -753,6 +753,27 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_continuation(slopfab_reques
  * approximate caches. clear_continuation also disables this option. */
 SLOPFAB_C_API int SLOPFAB_CALL
 slopfab_request_set_continuation_lock_overlap(slopfab_request* request, int32_t enable);
+
+/* Since 1.26. Bridge retained clips without VAE re-encoding. Margins replace
+ * the left tail/right head and must be nonnegative multiples of 17 frames.
+ * context_frames is 17*k+5 (>=5), fitting outside each margin. Both contexts
+ * are constrained during sampling. Request frames means the added GAP, rounded
+ * up to 17*k+12 (minimum 12); output/save/retention contain the full joined clip.
+ * Sources must be completed videos with matching canvas/geometry and compatible
+ * VAE normalization. Files are loaded now; generation sources require retention.
+ * Snapshots survive destruction of the sources. A failed setter changes nothing.
+ * Existing image/media/refmod references stay attached, allowing a reusable
+ * request to carry the same original references through successive bridges.
+ * Incompatible with continuation, imported-video transitions, still images,
+ * Animate, pinned audio, initial latents and approximate denoising caches. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_latent_bridge_files(
+    slopfab_request* request, const char* left_path, const char* right_path,
+    int32_t left_margin_frames, int32_t right_margin_frames, int32_t context_frames);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_latent_bridge_generations(
+    slopfab_request* request, const slopfab_generation* left, const slopfab_generation* right,
+    int32_t left_margin_frames, int32_t right_margin_frames, int32_t context_frames);
+/* Clears only bridge sources/settings; original references remain attached. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_latent_bridge(slopfab_request* request);
 
 /* Since 1.14. Encode imported reference videos as temporal latent guides.
  * mode 0 disables, 1 extends the tail of video 1, 2 bridges from the tail of

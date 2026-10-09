@@ -199,7 +199,8 @@ void LatentPrefixConstraint::capture_noise(const float* rows, size_t count) {
   require(rows && channels > 0 && count % channels == 0 &&
               count / channels == target_values_per_channel && !original.empty() &&
               original.size() % channels == 0 &&
-              original.size() / channels <= target_values_per_channel,
+              original.size() / channels <= target_values_per_channel &&
+              suffix_values_per_channel <= original.size() / channels,
           "invalid overlap constraint shape");
   require(std::all_of(original.begin(), original.end(),
                       [](float x) {
@@ -208,8 +209,12 @@ void LatentPrefixConstraint::capture_noise(const float* rows, size_t count) {
           "overlap constraint needs finite source latents");
   const size_t prefix = original.size() / channels;
   noise.resize(original.size());
-  for (size_t c = 0; c < channels; ++c)
-    std::copy_n(rows + c * target_values_per_channel, prefix, noise.begin() + c * prefix);
+  const size_t front = prefix - suffix_values_per_channel;
+  for (size_t c = 0; c < channels; ++c) {
+    std::copy_n(rows + c * target_values_per_channel, front, noise.begin() + c * prefix);
+    std::copy_n(rows + (c + 1) * target_values_per_channel - suffix_values_per_channel,
+                suffix_values_per_channel, noise.begin() + c * prefix + front);
+  }
   require(std::all_of(noise.begin(), noise.end(),
                       [](float x) {
                         return std::isfinite(x);
@@ -222,14 +227,17 @@ void LatentPrefixConstraint::apply(float* rows, size_t count, float sigma) const
               count / channels == target_values_per_channel && !original.empty() &&
               original.size() % channels == 0 &&
               original.size() / channels <= target_values_per_channel &&
+              suffix_values_per_channel <= original.size() / channels &&
               noise.size() == original.size() && std::isfinite(sigma) && sigma >= 0 && sigma <= 1,
           "invalid overlap constraint update");
   const size_t prefix = original.size() / channels;
   for (size_t c = 0; c < channels; ++c) {
     for (size_t i = 0; i < prefix; ++i) {
       const size_t from = c * prefix + i;
+      const size_t front = prefix - suffix_values_per_channel;
+      const size_t target = i < front ? i : target_values_per_channel - prefix + i;
       // Explicit endpoints preserve clean source values and initial noise exactly.
-      rows[c * target_values_per_channel + i] =
+      rows[c * target_values_per_channel + target] =
           sigma == 0   ? original[from]
           : sigma == 1 ? noise[from]
                        : (1 - sigma) * original[from] + sigma * noise[from];
@@ -311,6 +319,185 @@ LatentClip join_continuation(const LatentClip& source, const ContinuationPlan& p
                           audio.begin() +
                               (size_t(c) * p.window_audio_latents + p.overlap_audio_latents) * 32,
                           audio.begin() + size_t(c + 1) * p.window_audio_latents * 32);
+  }
+  out.validate();
+  return out;
+}
+
+BridgePlan plan_bridge(const LatentBridge& b, int gap) {
+  require(b.left && b.right, "bridge requires two source clips");
+  b.left->validate();
+  b.right->validate();
+  const auto& l = *b.left;
+  const auto& r = *b.right;
+  require(l.sampled && r.sampled && l.frames >= 22 && r.frames >= 22,
+          "bridge requires completed video latents");
+  require(l.width == r.width && l.height == r.height &&
+              l.geometry.fingerprint() == r.geometry.fingerprint(),
+          "bridge sources must have matching canvas and latent geometry");
+  require(gap >= 0 && b.left_margin_frames >= 0 && b.right_margin_frames >= 0 &&
+              b.left_margin_frames % 17 == 0 && b.right_margin_frames % 17 == 0,
+          "bridge gap must be nonnegative and margins must be nonnegative multiples of 17");
+  require(b.context_frames >= 5 && b.context_frames % 17 == 5 &&
+              int64_t(b.left_margin_frames) + b.context_frames <= l.frames &&
+              int64_t(b.right_margin_frames) + b.context_frames <= r.frames,
+          "bridge context must be 17*k+5 and fit outside both editable margins");
+  BridgePlan p;
+  const int64_t aligned_gap = gap <= 12 ? 12 : ((int64_t(gap) - 12 + 16) / 17) * 17 + 12;
+  const int64_t output = int64_t(l.frames) + r.frames + aligned_gap;
+  require(output <= std::numeric_limits<int>::max(), "bridge duration overflows");
+  p.gap_frames = static_cast<int>(aligned_gap);
+  p.output_frames = static_cast<int>(output);
+  p.window_frames = static_cast<int>(aligned_gap + b.left_margin_frames + b.right_margin_frames +
+                                     int64_t(2) * b.context_frames);
+  auto result = LatentClip{};
+  result.width = l.width;
+  result.height = l.height;
+  result.geometry = l.geometry;
+  result.frames = p.output_frames;
+  const auto out = result.layout(); // overflow checks before buffer allocation
+  p.context_video_latents = dit::video_latent_num_frames(b.context_frames);
+  p.left_video_keep = l.layout().num_latent_frames - b.left_margin_frames / 17 * 5;
+  p.left_video_start = p.left_video_keep - p.context_video_latents;
+  p.right_video_drop = b.right_margin_frames / 17 * 5;
+  p.generated_video_latents =
+      dit::video_latent_num_frames(p.window_frames) - 2 * p.context_video_latents;
+  const auto audio_at = [](int frames) {
+    return int((int64_t(frames) * 5 + 1) / 3);
+  };
+  p.left_audio_start = audio_at(l.frames - b.left_margin_frames - b.context_frames);
+  p.left_audio_keep = audio_at(l.frames - b.left_margin_frames);
+  p.right_audio_drop = audio_at(b.right_margin_frames);
+  p.left_context_audio = p.left_audio_keep - p.left_audio_start;
+  p.right_context_audio = audio_at(b.right_margin_frames + b.context_frames) - p.right_audio_drop;
+  // Preserve the right source's audio suffix exactly. Any fractional-clock
+  // rounding difference belongs to the newly generated interval.
+  p.generated_audio_latents = out.num_audio_latents - p.left_audio_keep -
+                              (r.layout().num_audio_latents - p.right_audio_drop);
+  p.window_audio_latents = p.left_context_audio + p.generated_audio_latents + p.right_context_audio;
+  return p;
+}
+
+namespace {
+void validate_bridge_plan(const LatentBridge& b, const BridgePlan& p) {
+  const auto expected = plan_bridge(b, p.gap_frames);
+#define BRIDGE_CHECK(field) require(p.field == expected.field, "bridge plan does not match sources")
+  BRIDGE_CHECK(gap_frames);
+  BRIDGE_CHECK(window_frames);
+  BRIDGE_CHECK(output_frames);
+  BRIDGE_CHECK(context_video_latents);
+  BRIDGE_CHECK(left_video_start);
+  BRIDGE_CHECK(left_video_keep);
+  BRIDGE_CHECK(right_video_drop);
+  BRIDGE_CHECK(generated_video_latents);
+  BRIDGE_CHECK(left_audio_start);
+  BRIDGE_CHECK(left_audio_keep);
+  BRIDGE_CHECK(right_audio_drop);
+  BRIDGE_CHECK(left_context_audio);
+  BRIDGE_CHECK(right_context_audio);
+  BRIDGE_CHECK(generated_audio_latents);
+  BRIDGE_CHECK(window_audio_latents);
+#undef BRIDGE_CHECK
+}
+
+void append_rows(std::vector<float>& out, const std::vector<float>& source, size_t first,
+                 size_t count, size_t dim) {
+  require(first <= source.size() / dim && count <= source.size() / dim - first,
+          "bridge slice exceeds source");
+  out.insert(out.end(), source.begin() + first * dim, source.begin() + (first + count) * dim);
+}
+}
+
+ContinuationConstraint make_bridge_constraint(const LatentBridge& b, const BridgePlan& p) {
+  validate_bridge_plan(b, p);
+  ContinuationConstraint out;
+  const size_t frame = size_t(b.left->layout().rows_per_frame()) * 96;
+  out.video.target_values_per_channel =
+      size_t(dit::video_latent_num_frames(p.window_frames)) * frame;
+  out.video.suffix_values_per_channel = size_t(p.context_video_latents) * frame;
+  append_rows(out.video.original, b.left->video_rows, p.left_video_start, p.context_video_latents,
+              frame);
+  append_rows(out.video.original, b.right->video_rows, p.right_video_drop, p.context_video_latents,
+              frame);
+  out.audio.channels = 2;
+  out.audio.target_values_per_channel = size_t(p.window_audio_latents) * 32;
+  out.audio.suffix_values_per_channel = size_t(p.right_context_audio) * 32;
+  for (int c = 0; c < 2; ++c) {
+    append_rows(out.audio.original, b.left->audio_rows,
+                size_t(c) * b.left->layout().num_audio_latents + p.left_audio_start,
+                p.left_context_audio, 32);
+    append_rows(out.audio.original, b.right->audio_rows,
+                size_t(c) * b.right->layout().num_audio_latents + p.right_audio_drop,
+                p.right_context_audio, 32);
+  }
+  return out;
+}
+
+void append_bridge_guides(const LatentBridge& b, const BridgePlan& p, uint64_t seed,
+                          std::vector<dit::ReferenceGeometry>& geometry, std::vector<float>& video,
+                          std::vector<float>& audio) {
+  const auto constraint = make_bridge_constraint(b, p);
+  const auto l = b.left->layout();
+  const size_t n = size_t(p.context_video_latents) * l.rows_per_frame() * 96;
+  auto guide_layout = l;
+  guide_layout.num_latent_frames = p.context_video_latents;
+  guide_layout.num_video_rows = p.context_video_latents * l.rows_per_frame();
+  for (int side = 0; side < 2; ++side) {
+    const auto noise =
+        sampler::video_noise(seed + side, p.context_video_latents, l.latent_height, l.latent_width);
+    std::vector<float> packed(n);
+    dit::patchify_video(noise.data(), guide_layout, packed.data());
+    for (size_t i = 0; i < n; ++i)
+      video.push_back(.999f * constraint.video.original[size_t(side) * n + i] +
+                      (1.f - .999f) * packed[i]);
+    const int count = side ? p.right_context_audio : p.left_context_audio;
+    for (int c = 0; c < 2; ++c)
+      append_rows(audio, constraint.audio.original,
+                  size_t(c) * (p.left_context_audio + p.right_context_audio) +
+                      (side ? p.left_context_audio : 0),
+                  count, 32);
+    dit::ReferenceGeometry guide{dit::ReferenceKind::kVideo,
+                                 p.context_video_latents,
+                                 l.latent_height,
+                                 l.latent_width,
+                                 count,
+                                 true};
+    // The suffix starts at a complete five-latent / 17-frame block boundary.
+    if (side)
+      guide.target_time_offset =
+          double(dit::video_latent_num_frames(p.window_frames) - p.context_video_latents) / 5 *
+          (17.0 * 5.0 / 3.0);
+    geometry.push_back(guide);
+  }
+}
+
+LatentClip join_bridge(const LatentBridge& b, const BridgePlan& p, const std::vector<float>& video,
+                       const std::vector<float>& audio) {
+  validate_bridge_plan(b, p);
+  const size_t frame = size_t(b.left->layout().rows_per_frame()) * 96;
+  require(video.size() == size_t(dit::video_latent_num_frames(p.window_frames)) * frame &&
+              audio.size() == size_t(p.window_audio_latents) * 64,
+          "sampled bridge window has the wrong shape");
+  LatentClip out;
+  out.width = b.left->width;
+  out.height = b.left->height;
+  out.geometry = b.left->geometry;
+  out.frames = p.output_frames;
+  out.transformer = b.left->transformer;
+  out.video_vae = b.left->video_vae;
+  out.audio_vae = b.left->audio_vae;
+  append_rows(out.video_rows, b.left->video_rows, 0, p.left_video_keep, frame);
+  append_rows(out.video_rows, video, p.context_video_latents, p.generated_video_latents, frame);
+  append_rows(out.video_rows, b.right->video_rows, p.right_video_drop,
+              b.right->layout().num_latent_frames - p.right_video_drop, frame);
+  for (int c = 0; c < 2; ++c) {
+    append_rows(out.audio_rows, b.left->audio_rows, size_t(c) * b.left->layout().num_audio_latents,
+                p.left_audio_keep, 32);
+    append_rows(out.audio_rows, audio, size_t(c) * p.window_audio_latents + p.left_context_audio,
+                p.generated_audio_latents, 32);
+    append_rows(out.audio_rows, b.right->audio_rows,
+                size_t(c) * b.right->layout().num_audio_latents + p.right_audio_drop,
+                b.right->layout().num_audio_latents - p.right_audio_drop, 32);
   }
   out.validate();
   return out;

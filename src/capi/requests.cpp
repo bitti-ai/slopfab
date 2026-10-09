@@ -1,5 +1,64 @@
 #include "internal.h"
+
+namespace {
+bool valid_bridge_settings(int left, int right, int context) {
+  return left >= 0 && right >= 0 && left % 17 == 0 && right % 17 == 0 && context >= 5 &&
+         context % 17 == 5;
+}
+
+int attach_bridge(slopfab_request* request, slopfab::LatentBridge bridge) {
+  try {
+    (void)slopfab::plan_bridge(bridge, 12);
+  } catch (const std::exception& e) {
+    return fail(SLOPFAB_ERR_INVALID_REQUEST, e.what());
+  }
+  request->request.bridge = std::move(bridge);
+  return SLOPFAB_OK;
+}
+}
 extern "C" {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_latent_bridge_files(
+    slopfab_request* request, const char* left, const char* right, int32_t left_margin,
+    int32_t right_margin, int32_t context) {
+  if (!request || !left || !*left || !right || !*right ||
+      !valid_bridge_settings(left_margin, right_margin, context))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "bridge requires two paths, 17*k margins and 17*k+5 context");
+  return guarded([&] {
+    return attach_bridge(request,
+                         {slopfab::LatentClip::load(left), slopfab::LatentClip::load(right),
+                          left_margin, right_margin, context});
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_latent_bridge_generations(
+    slopfab_request* request, const slopfab_generation* left, const slopfab_generation* right,
+    int32_t left_margin, int32_t right_margin, int32_t context) {
+  if (!request || !left || !right || !valid_bridge_settings(left_margin, right_margin, context))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
+                "bridge requires two generations, 17*k margins and 17*k+5 context");
+  const int left_status = report_terminal_status(left);
+  if (left_status != SLOPFAB_OK)
+    return left_status;
+  const int right_status = report_terminal_status(right);
+  if (right_status != SLOPFAB_OK)
+    return right_status;
+  return guarded([&] {
+    if (!left->latents || !right->latents)
+      return fail(SLOPFAB_ERR_INVALID_REQUEST,
+                  "enable latent retention before starting both bridge sources");
+    return attach_bridge(request,
+                         {left->latents, right->latents, left_margin, right_margin, context});
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_latent_bridge(slopfab_request* request) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear bridge: null request");
+  request->request.bridge.reset();
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_path(slopfab_request* request,
                                                                    const char* path, int32_t x,
                                                                    int32_t y, int32_t width,

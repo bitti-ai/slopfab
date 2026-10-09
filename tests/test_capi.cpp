@@ -342,6 +342,51 @@ SLOPFAB_TEST(capi_motion_cache_validation_and_atomic_setter) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_latent_bridge_snapshot_and_references) {
+  LatentFixture left, right;
+  left.write(73);
+  right.write(56);
+  auto* request = slopfab_request_create();
+  RefModFixture reference;
+  reference.write();
+  CHECK(slopfab_request_add_refmod(request, reference.path.string().c_str(), 1, 1) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_latent_bridge_files(request, left.path.string().c_str(),
+                                                right.path.string().c_str(), 17, 34,
+                                                22) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_frames(request, 13) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 158 && plan.latent_frames == 37);
+  CHECK(slopfab_request_set_latent_bridge_files(request, left.path.string().c_str(),
+                                                right.path.string().c_str(), 17, 51,
+                                                22) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_latent_bridge_files(request, left.path.string().c_str(),
+                                                right.path.string().c_str(), 1, 17,
+                                                22) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  std::filesystem::remove(left.path);
+  std::filesystem::remove(right.path);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(plan.aligned_frames == 158);
+  char* description = nullptr;
+  CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
+  CHECK(description && std::string(description).find("refmod") != std::string::npos);
+  slopfab_free_string(description);
+  CHECK(slopfab_request_set_still_image(request, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_still_image(request, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_synthetic_latents(request, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_synthetic_latents(request, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_clear_latent_bridge(request) == SLOPFAB_OK);
+  CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
+  CHECK(description && std::string(description).find("refmod") != std::string::npos);
+  slopfab_free_string(description);
+  CHECK(slopfab_request_clear_latent_bridge(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_latent_bridge_generations(request, nullptr, nullptr, 17, 17, 22) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_continuation_lock_overlap) {
   LatentFixture fixture;
   fixture.write();

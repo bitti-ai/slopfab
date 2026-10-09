@@ -84,6 +84,85 @@ The setter accepts only 0 or 1 and may be called before attaching the source.
 Planning requires a continuation source when enabled.
 `slopfab_request_clear_continuation` also disables overlap locking.
 
+## Bridging retained clips (C API 1.26, experimental)
+
+A latent bridge connects two independently generated clips without decoding and
+re-encoding their conditioning. It generates a gap and replaces an editable tail
+of the left clip and an editable head of the right clip. The rest of each source
+is retained exactly in latent space. The full joined timeline is decoded together.
+
+```sh
+slopfab generate --bridge-from left.safetensors --bridge-to right.safetensors --frames 46 --bridge-left-margin 17 --bridge-right-margin 34 --bridge-context 22 --reference-image original-subject.png --prompt "The same subject continues walking, with the camera maintaining its direction" --out joined.mp4 --save-latents joined.safetensors
+```
+
+Use compatible Ref2VA weights when attaching ordinary references. Image, video,
+audio and refmod references can accompany the two temporal guides. Use the same
+original references for each anchor generation and each bridge; a generated tail
+alone is not a persistent identity reference. References attached to a C API
+request survive endpoint replacement and clearing the bridge. Archives contain
+latents and provenance, **not** reference assets: a new request must attach them.
+
+The frame settings have distinct meanings:
+
+| Setting | Meaning |
+| --- | --- |
+| `--frames` | Added gap duration, rounded **up to `17*k+12`**, minimum 12 frames |
+| `--bridge-left-margin` | Left tail to regenerate; nonnegative multiple of 17, default 17 |
+| `--bridge-right-margin` | Right head to regenerate; nonnegative multiple of 17, default 17 |
+| `--bridge-context` | Preserved context on each side; `17*k+5`, minimum 5, default 22 |
+
+These alignments keep both sources on H3's nonuniform temporal grid. Each source
+must have enough frames for its margin **plus** the context. Zero margins are
+allowed. For two 124-frame sources, a 46-frame gap and margins 17/34 produce a
+294-frame joined output. Sampling covers 141 frames: 22 context + 17 editable
+tail + 46 gap + 34 editable head + 22 context. Margins replace source content;
+they do not add to the delivered duration. `--dry-run` reports the resolved gap,
+margins, sampling window and joined duration.
+
+Both video and stereo audio contexts are constrained before sampling and after
+every update using `(1-sigma)*source + sigma*initial_noise`, as with overlap
+locking above. The two contexts are also supplied as temporal conditioning. Only
+the middle is free to generate. Original context values, rather than the sampled
+copies, are used in the joined output. Audio is sliced per channel; the generated
+interval absorbs fractional 24 fps / 40 Hz clock rounding so retained audio is
+not resampled. This preserves the cumulative duration without requiring that
+independently generated audio have matching rhythm or speech.
+
+In the DLL, enable retention before generating both anchors, then attach them to
+a request carrying the original references:
+
+```c
+/* Check every status in production code. left_gen/right_gen must have completed. */
+slopfab_request_set_latent_bridge_generations(bridge_req, left_gen, right_gen,
+                                             17, 34, 22);
+slopfab_request_set_frames(bridge_req, 46);
+slopfab_request_set_retain_latents(bridge_req, 1);
+slopfab_request_set_save_latents(bridge_req, "joined.safetensors");
+/* Endpoint ownership has been retained; these handles may now be destroyed. */
+slopfab_generation_destroy(left_gen);
+slopfab_generation_destroy(right_gen);
+```
+
+`slopfab_request_set_latent_bridge_files` accepts two saved archives and the same
+three frame settings. It loads both snapshots immediately. Both setters are
+atomic on failure. `slopfab_request_clear_latent_bridge` releases the endpoints
+without removing original references. Reuse the request and replace its endpoints
+to keep those references across a sequence of bridges. In C++, set
+`GenerateRequest::bridge` to a `LatentBridge` containing shared immutable clips.
+
+The sources must have matching canvas/geometry and compatible VAE normalization.
+Use the same VAEs throughout; path metadata is not proof of weight identity.
+Continuation, imported-video transitions, still-image editing, Animate, pinned
+audio, initial-latent overrides and approximate caches cannot be combined with
+latent bridging. CUDA and Vulkan share planning, constraints and joining; Vulkan
+currently applies constraints through host transfers. Plan latent counts describe
+the sampling window; output frame counts describe the full joined clip.
+
+This is a constraint and assembly mechanism, not a guarantee of identity or
+smooth motion. Contradictory anchor actions can still require different anchors
+or wider editable margins. Temporal VAE context can change decoded pixels near
+the replaced regions even when the retained latents are exact.
+
 ## DLL (C API 1.9)
 
 For automatic saving, configure the request before generation:

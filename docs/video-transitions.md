@@ -1,5 +1,9 @@
 # Extend and Bridge from imported videos
 
+For saved archives or retained generations, use [latent bridging](continuation.md#bridging-retained-clips-c-api-126-experimental).
+It supports original references, editable margins, constrained context on both
+sides, and full joined output without re-encoding the source clips.
+
 C API 1.14 adds `slopfab_request_set_video_transition(request, mode)`:
 
 - `0`: ordinary generation.

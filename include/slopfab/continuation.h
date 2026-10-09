@@ -38,6 +38,8 @@ struct ContinuationPlan {
 struct LatentPrefixConstraint {
   size_t channels = 1;
   size_t target_values_per_channel = 0;
+  // Original stores prefix followed by suffix within each channel.
+  size_t suffix_values_per_channel = 0;
   std::vector<float> original;
   std::vector<float> noise;
 
@@ -60,5 +62,31 @@ void append_continuation_guide(const LatentClip& source, const ContinuationPlan&
                                std::vector<float>& video, std::vector<float>& audio);
 LatentClip join_continuation(const LatentClip& source, const ContinuationPlan& plan,
                              const std::vector<float>& video, const std::vector<float>& audio);
+
+struct LatentBridge {
+  std::shared_ptr<const LatentClip> left, right;
+  int left_margin_frames = 17, right_margin_frames = 17;
+  int context_frames = 22;
+};
+
+struct BridgePlan {
+  int gap_frames = 0, window_frames = 0, output_frames = 0;
+  int context_video_latents = 0;
+  int left_video_start = 0, left_video_keep = 0, right_video_drop = 0;
+  int generated_video_latents = 0;
+  int left_audio_start = 0, left_audio_keep = 0, right_audio_drop = 0;
+  int left_context_audio = 0, right_context_audio = 0;
+  int generated_audio_latents = 0, window_audio_latents = 0;
+};
+
+// Gap rounds up to 17*k+12; margins must be multiples of 17. This places
+// both source clips and the sampling window on the same H3 temporal phase.
+BridgePlan plan_bridge(const LatentBridge& bridge, int gap_frames);
+ContinuationConstraint make_bridge_constraint(const LatentBridge& bridge, const BridgePlan& plan);
+void append_bridge_guides(const LatentBridge& bridge, const BridgePlan& plan, uint64_t seed,
+                          std::vector<dit::ReferenceGeometry>& geometry, std::vector<float>& video,
+                          std::vector<float>& audio);
+LatentClip join_bridge(const LatentBridge& bridge, const BridgePlan& plan,
+                       const std::vector<float>& video, const std::vector<float>& audio);
 
 } // namespace slopfab
