@@ -112,6 +112,70 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
   CHECK(result.audio_rows == audio);
   CHECK(result.video_rows != std::vector<float>(t.video_output_rows * 4, .5f));
   model.unload();
+  // Bridge boundaries use both ends of each target channel. Keep this on the
+  // tiny checkpoint so validation never depends on resident production weights.
+  {
+    auto bridge_config = config;
+    const auto bridge_packed = dit::build_ref2va_packed_sequence(
+        {1, 1, 1}, {{dit::ReferenceKind::kImage, 1, 4, 4, 0}}, 3, 4, 4, 3);
+    bridge_config.layout = bridge_packed.layout;
+    bridge_config.indices = bridge_packed.indices;
+    bridge_config.position_ids = bridge_packed.position_ids;
+    bridge_config.pin_target_audio = false;
+    auto& bt = bridge_config.transformer;
+    bt.main.block.sequence = bridge_packed.layout.total_rows();
+    bt.video_rows = static_cast<uint32_t>(bridge_packed.indices.video.size());
+    bt.audio_rows = static_cast<uint32_t>(bridge_packed.indices.audio.size());
+    bt.video_output_rows = bridge_packed.layout.num_video_rows;
+    bt.audio_output_rows = bridge_packed.layout.num_audio_rows;
+    bt.video_output_start = bridge_packed.layout.video_start();
+    bt.audio_output_start = bridge_packed.layout.audio_start();
+    auto lock = std::make_shared<ContinuationConstraint>();
+    lock->video.target_values_per_channel = size_t(bt.video_output_rows) * 4;
+    lock->video.suffix_values_per_channel = 4;
+    lock->video.original = {2, 2, 2, 2, 7, 7, 7, 7};
+    lock->audio.channels = 2;
+    lock->audio.target_values_per_channel = size_t(bt.audio_output_rows);
+    lock->audio.suffix_values_per_channel = 2;
+    lock->audio.original = {3, 3, 9, 9, 5, 5, 11, 11};
+    bridge_config.continuation = lock;
+    auto bridge_model = ExactH3Denoiser::create(context, bridge_config);
+    bridge_model.load(checkpoint);
+    std::vector<float> iv(size_t(bt.video_rows) * 4, .25f), ia(size_t(bt.audio_rows) * 2, -.5f);
+    for (auto kind : {sampler::SamplerKind::kEuler, sampler::SamplerKind::kRenoise}) {
+      sampler::FlowScheduler v(12), a(3);
+      v.set_sigmas({.8f, .4f, 0});
+      a.set_sigmas({.9f, .6f, .2f, 0});
+      v.set_sampler(kind);
+      a.set_sampler(kind);
+      const size_t vn[] = {0, 1, 1, 2}, an[] = {1, 1, 2, 3};
+      int updates = 0;
+      const auto boundary = [&](uint32_t step, const std::vector<float>& vr,
+                                const std::vector<float>& ar) {
+        ++updates;
+        const float vsigma = v.sigmas()[vn[step]], asigma = a.sigmas()[an[step]];
+        for (size_t i = 0; i < 4; ++i) {
+          CHECK(vr[i] == (1 - vsigma) * 2 + vsigma * .25f);
+          CHECK(vr[vr.size() - 4 + i] == (1 - vsigma) * 7 + vsigma * .25f);
+        }
+        for (size_t c = 0; c < 2; ++c)
+          for (size_t i = 0; i < 2; ++i) {
+            CHECK(ar[c * 6 + i] == (1 - asigma) * (c ? 5 : 3) + asigma * -.5f);
+            CHECK(ar[c * 6 + 4 + i] == (1 - asigma) * (c ? 11 : 9) + asigma * -.5f);
+          }
+        if (step == 0)
+          CHECK(vr[4] == .25f);
+      };
+      bridge_model.prepare(prompt.data(), prompt.size(), iv.data(), iv.size(), ia.data(),
+                           ia.size());
+      const auto bridged = bridge_model.run(v, a, {}, boundary);
+      CHECK(updates == 4 && bridged.steps_completed == 4);
+      CHECK(bridged.video_rows[4] != .25f);
+      CHECK(bridged.audio_rows[2] != -.5f && bridged.audio_rows[8] != -.5f);
+      CHECK(lock->video.noise.empty() && lock->audio.noise.empty());
+    }
+    bridge_model.unload();
+  }
   // Reuse the constant-velocity fixture to check both conditioned and plain
   // target storage. Preserved cells follow the source noise trajectory;
   // editable cells retain the actual GPU Euler update.

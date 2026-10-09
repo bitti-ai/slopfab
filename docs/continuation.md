@@ -235,6 +235,25 @@ At 1344x768, a roughly 15-second clip occupies about 41.6 MB in this format.
 
 ## Validation
 
+Latent-bridge host tests cover temporal-grid alignment, asymmetric and zero
+margins, exact retained video/stereo regions, audio clock rounding, both boundary
+constraints, and guide coordinates alongside ordinary references. CLI and C API
+tests cover invalid combinations, file snapshot ownership, and persistent
+references. Sampler tests exercise two-sided constraints and unequal audio/video
+schedules on CUDA and Vulkan using small fixtures.
+
+An additional real-weight test exercises two retained generation handles, source
+handle destruction, file handoff, original reference retention and joined decoding:
+
+```sh
+python tools/latent_bridge_smoke.py build/Release/slopfab.dll . cuda
+python tools/latent_bridge_smoke.py build/Release/slopfab.dll . vulkan
+```
+
+This uses tiny synthetic prompt/reference inputs with real model weights. It is
+a plumbing check, not a perceptual benchmark. It requires enough available GPU
+memory for the local Ref2VA and VAE checkpoints.
+
 Host tests cover archive roundtrips and rejection, owning snapshots, guide
 coordinates/timesteps, stereo tail selection, overlap removal, and thirty
 successive extensions without cumulative audio rounding drift. The real-weight
