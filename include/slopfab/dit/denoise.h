@@ -104,12 +104,12 @@ struct DenoiseOutputs {
   // a cache threshold whose skip count is not printed cannot be reasoned about
   // at all, since the same flag value skips a different number of steps at
   // every geometry and schedule length.
-  int steps_computed = 0;
+  int steps_computed = 0; // includes outpaint Langevin inner evaluations
   int steps_skipped = 0;
 
   // The compute/skip decision the loop actually took at each step: 1 = the
   // transformer ran, 0 = a cached prediction was reused. Length is the number
-  // of model evaluations in the schedule.
+  // of outer evaluations in the schedule (excluding Langevin inner calls).
   //
   // This exists because the counts above are a *weak* check. They catch
   // "skipped 14 when the plan said 12" and miss "skipped 12, two of them the

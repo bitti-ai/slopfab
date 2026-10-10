@@ -38,6 +38,7 @@ namespace slopfab::sampler {
 enum class NoiseStream : uint32_t {
   kVideoLatents = 0,
   kAudioLatents = 1,
+  kOutpaintLangevin = 0x80000000u, // outside the reserved re-noising stream range
 };
 
 // Counter-based generator: `value(i)` is a pure function of the key and the

@@ -79,8 +79,8 @@ snapshot and set `still_image = true`. Use a `.ppm` output path or an
 Place the original on a larger canvas, attach that canvas with an image-edit
 setter using the original's rectangle and zero feather, then call
 `slopfab_request_set_image_edit_invert_mask(request, 1)`. The rectangle now
-identifies the preserved original. All surrounding space is denoised together
-in one pass, with the original latent context restored at each step on CUDA
+identifies the source original. All surrounding space is denoised together,
+with the original latent context restored at each outer step on CUDA
 and Vulkan. Do not split the border into separate edits or submit an enlarged
 copy of the original as a reference.
 
@@ -128,3 +128,32 @@ does not enter the mask. Ordinary inpainting retains its existing inward feather
 Hosts should pass the full original rectangle and use this blend instead of
 applying a second feather or color correction. Final blending is independent
 of the generation sampler and does not add model evaluations.
+
+### Langevin refinement (C API 1.28)
+
+Outpainting also runs five extra model evaluations at each schedule point by
+default. Set `ImageEdit::langevin_steps`, or call
+`slopfab_request_set_outpaint_langevin_steps(request, steps)` after enabling
+inversion, to select 0 through 100 iterations. Zero restores the previous
+sampling path. The setting resets to 5 when a new source is attached.
+
+CUDA and Vulkan use the same flow-to-variance-preserving conversion and
+overdamped Langevin dynamics, based on
+[LanPaint's sampler](https://github.com/scraed/LanPaint/blob/master/src/LanPaint/lanpaint.py).
+At a fixed noise level, each inner iteration reevaluates the model and combines
+its clean-image estimate with the known source and fresh Gaussian noise. The
+step size scales with remaining noise variance (base 0.2, guidance lambda 5,
+known-region beta 1). Later iterations use two half-steps with a refreshed
+force correction. H3 uses its single distilled prediction for both guidance
+terms; this does not implement ComfyUI's separate CFG/Prompt First mode,
+early stopping, or tail step-size pinning. The native seeded noise stream is
+deterministic but does not reproduce PyTorch seeds.
+
+Only target image latents are refined. Positioned keyframes stay clean and
+unchanged, and known target latents are restored at each outer step boundary.
+Both Euler and re-noising (including DMAD) support refinement. Ordinary
+inpainting does not enable it. Progress still reports the outer schedule step,
+with repeated callbacks during refinement to permit cancellation between model
+calls; `steps_computed` counts all actual calls. Five inner iterations mean six
+model evaluations per outer step. Final edge blending remains independently
+configurable and adds no model evaluations.

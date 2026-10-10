@@ -509,7 +509,8 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
                    "," + std::to_string(e.width) + "," + std::to_string(e.height) + "; strength " +
                    std::to_string(e.strength) + "; feather " + std::to_string(e.feather) +
                    (e.invert_mask ? "; outpaint (preserve box); blend overlap " +
-                                        std::to_string(e.blend_overlap) : "") +
+                                        std::to_string(e.blend_overlap) + "; Langevin steps " +
+                                        std::to_string(e.langevin_steps) : "") +
                    "\n  delivered image     " + std::to_string(e.image->width) + " x " +
                    std::to_string(e.image->height) + "\n";
   }

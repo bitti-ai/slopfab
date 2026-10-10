@@ -2,6 +2,7 @@
 #include "slopfab/inpaint.h"
 #include "slopfab/generate.h"
 #include "slopfab/dit/packing.h"
+#include "slopfab/sampler/noise.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -78,6 +79,76 @@ SLOPFAB_TEST(inpaint_constraint_uses_fresh_noise_without_mutating_initial_noise)
   std::fill(fresh.begin(), fresh.end(), std::numeric_limits<float>::quiet_NaN());
   c.apply(rows.data(), rows.size(), 0, fresh.data());
   CHECK(rows == std::vector<float>({2, -2, 6}));
+}
+
+SLOPFAB_TEST(outpaint_langevin_matches_overdamped_transition) {
+  slopfab::InpaintConstraint c{{.2f, .4f}, {1, -1}, {0, 1}, 1};
+  // Independent closed-form one-step OU transition, including the flow
+  // normalization and the sign of the distilled H3 velocity.
+  for (float sigma : {1.f, .75f, .01f, 1e-7f}) {
+    auto actual = c.initial(sigma);
+    const auto input = actual;
+    int calls = 0;
+    CHECK(c.refine(actual.data(), actual.size(), sigma, 42, 0,
+        [&](const float* rows, float* velocity) {
+          ++calls;
+          CHECK_NEAR(rows[0], input[0], 1e-6);
+          velocity[0] = .3f;
+          velocity[1] = -.1f;
+          return true;
+        }));
+    CHECK(calls == 1);
+    float noise[2];
+    slopfab::sampler::fill_normal(42 ^ 0x9e3779b97f4a7c15ULL,
+        slopfab::sampler::NoiseStream::kOutpaintLangevin, noise, 2);
+    const double s = sigma, q = std::sqrt((1 - s) * (1 - s) + s * s);
+    const double variance = s * s / (q * q), a = (1 - s) / q;
+    for (int j = 0; j < 2; ++j) {
+      const double clean = input[j] + s * (j ? -.1f : .3f);
+      const double target = j ? clean : 6 * c.original[j] - 5 * clean;
+      const double rate = j ? 1 : 6;
+      const double equilibrium = (a * target + (rate - 1) * input[j] / q) / rate;
+      const double decay = std::exp(-.2 * rate);
+      const double expected = q * (decay * input[j] / q + (1 - decay) * equilibrium +
+          std::sqrt(variance / rate * (1 - decay * decay)) * noise[j]);
+      CHECK_NEAR(actual[j], expected, 2e-6);
+      CHECK(std::isfinite(actual[j]));
+    }
+  }
+}
+
+SLOPFAB_TEST(outpaint_langevin_repeats_reevaluates_and_cancels) {
+  slopfab::InpaintConstraint c{{.2f, .4f}, {1, -1}, {0, 1}, 3};
+  int calls = 0;
+  std::vector<float> inputs;
+  const auto evaluate = [&](const float* rows, float* velocity) {
+    ++calls;
+    inputs.push_back(rows[0]);
+    velocity[0] = rows[1] - rows[0];
+    velocity[1] = rows[0] - rows[1];
+    return true;
+  };
+  auto first = c.initial(.5f), repeated = first, different = first;
+  CHECK(c.refine(first.data(), first.size(), .5f, 17, 2, evaluate));
+  CHECK(calls == 3 && inputs[0] != inputs[1] && inputs[1] != inputs[2]);
+  CHECK(c.refine(repeated.data(), repeated.size(), .5f, 17, 2, evaluate));
+  CHECK(first == repeated);
+  CHECK(c.refine(different.data(), different.size(), .5f, 17, 3, evaluate));
+  CHECK(first != different);
+  CHECK(!c.refine(first.data(), first.size(), .5f, 17, 2,
+      [](const float*, float*) { return false; }));
+  const auto unchanged = first;
+  CHECK(c.refine(first.data(), first.size(), 0, 17, 0, {}));
+  CHECK(first == unchanged);
+  c.langevin_steps = 0;
+  CHECK(c.refine(first.data(), first.size(), .5f, 17, 0, {}));
+  CHECK(first == unchanged);
+  for (int invalid : {-1, 101}) {
+    c.langevin_steps = invalid;
+    bool rejected = false;
+    try { c.validate(2); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+  }
 }
 
 SLOPFAB_TEST(inpaint_renoise_validation_preserves_other_restrictions) {

@@ -154,6 +154,12 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
           "re-noising does not support approximate caches");
   std::vector<float> video_noise(renoise ? out.video_rows.size() : 0);
   std::vector<float> audio_noise(renoise ? out.audio_rows.size() : 0);
+  const bool refine = inputs.inpaint && inputs.inpaint->langevin_steps > 0;
+  require(!refine || (layout.num_audio_rows == 0 && !cache.enabled() && !motion.enabled() &&
+                      !transformer.block_cache_config().enabled() &&
+                      (renoise || inputs.video_scheduler->sampler() == sampler::SamplerKind::kEuler)),
+          "Langevin refinement requires still-image Euler or re-noising without caches");
+  int model_evaluations = 0;
   require(!motion.enabled() || (!cache.enabled() && !transformer.block_cache_config().enabled() &&
                                 inputs.video_scheduler->sampler() == sampler::SamplerKind::kEuler &&
                                 inputs.audio_scheduler->sampler() == sampler::SamplerKind::kEuler),
@@ -216,14 +222,33 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                 ? build_row_timesteps(layout, indices, vt, at, std::max(vt, 0.999f), 1.0f)
                 : build_row_timesteps(layout, indices, vt, at);
       }
-      if (inputs.velocity) {
-        inputs.velocity(i, row_timesteps, all_video.data(), all_audio.data(), video_velocity.data(),
-                        audio_velocity.data());
-      } else {
-        transformer.set_denoise_step(i);
-        transformer.forward(all_video.data(), all_audio.data(), row_timesteps,
-                            video_velocity.data(), audio_velocity.data());
+      const auto evaluate = [&] {
+        if (inputs.velocity) {
+          inputs.velocity(i, row_timesteps, all_video.data(), all_audio.data(), video_velocity.data(),
+                          audio_velocity.data());
+        } else {
+          transformer.set_denoise_step(i);
+          transformer.forward(all_video.data(), all_audio.data(), row_timesteps,
+                              video_velocity.data(), audio_velocity.data());
+        }
+        ++model_evaluations;
+      };
+      if (refine) {
+        const bool completed = inputs.inpaint->refine(
+            all_video.data() + cv, out.video_rows.size(), inputs.video_scheduler->sigmas()[update.video],
+            inputs.seed, i, [&](const float*, float* velocity) {
+              evaluate();
+              std::copy_n(video_velocity.data() + cv, out.video_rows.size(), velocity);
+              return !progress || progress(i, steps);
+            });
+        if (!completed) {
+          std::copy(all_video.begin() + cv, all_video.end(), out.video_rows.begin());
+          // The outer evaluation was planned but never executed.
+          out.decisions.pop_back();
+          break;
+        }
       }
+      evaluate();
       motion.update(1.0f - vt, all_video.data() + cv, all_audio.data() + ca,
                     video_velocity.data() + cv, audio_velocity.data() + ca);
     } else if (motion.enabled()) {
@@ -273,7 +298,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
       break;
   }
 
-  out.steps_computed = motion.enabled() ? motion.computed() : cache.computed();
+  out.steps_computed = model_evaluations;
   out.steps_skipped = motion.enabled() ? motion.skipped() : cache.skipped();
   return out;
 }

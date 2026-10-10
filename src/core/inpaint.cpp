@@ -1,5 +1,6 @@
 #include "slopfab/inpaint.h"
 #include "slopfab/dit/packing.h"
+#include "slopfab/sampler/noise.h"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -7,7 +8,8 @@
 namespace slopfab {
 void ImageEdit::validate() const {
   if (!image) {
-    if (x || y || width || height || feather || strength != 1.0f || invert_mask || blend_overlap != 9)
+    if (x || y || width || height || feather || strength != 1.0f || invert_mask || blend_overlap != 9 ||
+        langevin_steps != 5)
       throw std::invalid_argument("image edit settings require a source image");
     return;
   }
@@ -21,6 +23,8 @@ void ImageEdit::validate() const {
     throw std::invalid_argument("edit strength must be in (0,1] and feather nonnegative");
   if (blend_overlap < 1 || blend_overlap > 51 || blend_overlap % 2 == 0)
     throw std::invalid_argument("outpaint blend overlap must be odd and in [1,51]");
+  if (langevin_steps < 0 || langevin_steps > 100)
+    throw std::invalid_argument("outpaint Langevin steps must be in [0,100]");
   if (invert_mask && (feather != 0 || (x == 0 && y == 0 && width == image->width && height == image->height)))
     throw std::invalid_argument("outpainting needs space outside the preserved box and zero feather");
   if (invert_mask && ((x + 15) / 16 >= (x + width) / 16 || (y + 15) / 16 >= (y + height) / 16))
@@ -189,6 +193,8 @@ PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& gener
 }
 
 void InpaintConstraint::validate(size_t count) const {
+  if (langevin_steps < 0 || langevin_steps > 100)
+    throw std::invalid_argument("outpaint Langevin steps must be in [0,100]");
   if (!count || original.size() != count || noise.size() != count || mask.size() != count)
     throw std::invalid_argument("inpainting constraint shape mismatch");
   for (size_t i = 0; i < count; ++i)
@@ -214,5 +220,64 @@ void InpaintConstraint::apply(float* rows, size_t count, float sigma, const floa
   for (size_t i = 0; i < count; ++i)
     if (mask[i] == 0)
       rows[i] = sigma == 0 ? original[i] : (1 - sigma) * original[i] + sigma * preserved_noise[i];
+}
+
+bool InpaintConstraint::refine(float* rows, size_t count, float sigma, uint64_t seed, int outer_step,
+                              const std::function<bool(const float*, float*)>& evaluate) const {
+  validate(count);
+  if (!rows || !std::isfinite(sigma) || sigma < 0 || sigma > 1 || outer_step < 0)
+    throw std::invalid_argument("invalid Langevin refinement input");
+  if (!langevin_steps || sigma == 0) return true;
+  if (!evaluate) throw std::invalid_argument("Langevin refinement requires a model evaluator");
+
+  // Convert rectified-flow x=(1-s)*x0+s*noise to variance-preserving space.
+  // Keep the noise variance explicit instead of subtracting alpha from one,
+  // which loses precision near the clean end of a schedule.
+  const double s = sigma, norm = std::hypot(1 - s, s);
+  const double sqrt_alpha = (1 - s) / norm, variance = (s / norm) * (s / norm);
+  constexpr double step_size = .2, lambda = 5;
+  const double dt = step_size * variance; // beta=1, no tail step-size pinning
+  std::vector<double> state(count), coefficient(count), previous(count);
+  std::vector<float> velocity(count), random(count);
+  for (size_t j = 0; j < count; ++j) state[j] = rows[j] / norm;
+  const uint64_t step_seed = seed ^ ((uint64_t(outer_step) + 1) * 0x9e3779b97f4a7c15ULL);
+  int draw = 0;
+  const auto publish = [&] {
+    for (size_t j = 0; j < count; ++j) rows[j] = static_cast<float>(state[j] * norm);
+  };
+  const auto advance = [&](double fraction) {
+    sampler::fill_normal(step_seed ^ (uint64_t(draw++) * 0xbf58476d1ce4e5b9ULL),
+                         sampler::NoiseStream::kOutpaintLangevin, random.data(), count);
+    double decay[2], integral[2], noise_scale[2];
+    for (int known = 0; known < 2; ++known) {
+      const double a = (known ? 1 + lambda : 1) / variance;
+      decay[known] = std::exp(-a * dt * fraction);
+      integral[known] = -std::expm1(-a * dt * fraction) / a;
+      noise_scale[known] = std::sqrt(-std::expm1(-2 * a * dt * fraction) / a);
+    }
+    for (size_t j = 0; j < count; ++j) {
+      const int known = mask[j] == 0;
+      state[j] = decay[known] * state[j] + integral[known] * coefficient[j] +
+                 noise_scale[known] * random[j];
+    }
+  };
+  // First-order overdamped LanPaint dynamics. Later iterations reuse the
+  // previous force for two half-steps and correct it with a fresh prediction.
+  for (int inner = 0; inner < langevin_steps; ++inner) {
+    if (inner) advance(.5);
+    publish();
+    if (!evaluate(rows, velocity.data())) return false;
+    previous = coefficient;
+    for (size_t j = 0; j < count; ++j) {
+      const double clean = rows[j] + s * velocity[j];
+      const bool known = mask[j] == 0;
+      const double target = known ? (1 + lambda) * original[j] - lambda * clean : clean;
+      coefficient[j] = (sqrt_alpha * target + (known ? lambda * state[j] : 0)) / variance;
+      if (inner) state[j] += (coefficient[j] - previous[j]) * dt;
+    }
+    advance(inner ? .5 : 1);
+  }
+  publish();
+  return true;
 }
 } // namespace slopfab

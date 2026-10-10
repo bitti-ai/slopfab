@@ -135,6 +135,18 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_blend_overlap(
   });
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_langevin_steps(
+    slopfab_request* request, int32_t steps) {
+  if (!request || !request->request.image_edit.invert_mask)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "Langevin steps require an outpainting edit");
+  return reference_input_guarded([&] {
+    auto edit = request->request.image_edit;
+    edit.langevin_steps = steps;
+    edit.validate();
+    request->request.image_edit = std::move(edit);
+  });
+}
+
 SLOPFAB_C_API slopfab_request* SLOPFAB_CALL slopfab_request_create(void) {
   try {
     auto* request = new slopfab_request();

@@ -1,4 +1,4 @@
-"""Run real outpainting and verify exact preservation of the source rectangle.
+"""Run real outpainting and verify preservation inside the blended source edges.
 
 Requires Pillow and numpy. Supply a source image, output folder and model paths;
 this writes a prepared canvas and generated PNG for visual seam inspection.
@@ -19,6 +19,8 @@ parser.add_argument("--steps", type=int, default=20)
 parser.add_argument("--lora", type=Path)
 parser.add_argument("--schedule", choices=("default", "dmad-4step"), default="default")
 parser.add_argument("--strength", type=float, default=1)
+parser.add_argument("--blend-overlap", type=int, choices=range(1, 52, 2), default=9)
+parser.add_argument("--langevin-steps", type=int, choices=range(101), default=5)
 args = parser.parse_args()
 assert args.size >= 96 and args.size % 32 == 0
 args.output.mkdir(parents=True, exist_ok=True)
@@ -95,7 +97,8 @@ try:
     check(bind("slopfab_request_set_image_edit_path", [handle, C.c_char_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_float, C.c_int])(
         request, str((args.output / "canvas.png").resolve()).encode(), left, top, source.width, source.height, args.strength, 0))
     check(bind("slopfab_request_set_image_edit_invert_mask", [handle, C.c_int])(request, 1))
-    check(bind("slopfab_request_set_outpaint_blend_overlap", [handle, C.c_int])(request, 1))
+    check(bind("slopfab_request_set_outpaint_blend_overlap", [handle, C.c_int])(request, args.blend_overlap))
+    check(bind("slopfab_request_set_outpaint_langevin_steps", [handle, C.c_int])(request, args.langevin_steps))
     check(bind("slopfab_generation_start", [handle, Callback, handle, C.POINTER(handle)])(request, progress, None, C.byref(generation)))
     wait = bind("slopfab_generation_wait", [handle, C.c_int])
     generation_error = bind("slopfab_generation_error", [handle], C.c_char_p)
@@ -112,14 +115,22 @@ try:
     values = np.ctypeslib.as_array(result.video, shape=(result.video_float_count,)).reshape(3, args.size, args.size).transpose(1, 2, 0)
     assert np.isfinite(values).all()
     expected_source = np.array(source).astype(np.float32) / np.float32(255)
-    assert np.array_equal(values[top:top + source.height, left:left + source.width], expected_source)
+    inset = args.blend_overlap - 1
+    assert min(source.size) > 2 * inset, "source must have an interior beyond the blend band"
+    source_interior = (slice(inset, source.height - inset), slice(inset, source.width - inset))
+    output_interior = (slice(top + inset, top + source.height - inset),
+                       slice(left + inset, left + source.width - inset))
+    assert np.array_equal(values[output_interior], expected_source[source_interior])
     rgb = np.round(values.clip(0, 1) * 255).astype(np.uint8)
-    assert np.array_equal(rgb[top:top + source.height, left:left + source.width], np.array(source))
+    assert np.array_equal(rgb[output_interior], np.array(source)[source_interior])
     outside = np.ones((args.size, args.size), dtype=bool)
     outside[top:top + source.height, left:left + source.width] = False
     assert np.abs(rgb[outside].astype(float) - pixels[outside]).mean() > 1
     Image.fromarray(rgb).save(args.output / "result.png")
-    print(f"PASS: source preserved, surround generated in {result.steps_computed} evaluations. Inspect {args.output / 'result.png'}", flush=True)
+    outer_steps = 4 if args.schedule == "dmad-4step" else args.steps - 1
+    retained_steps = max(1, int(np.ceil(args.strength * outer_steps)))
+    assert result.steps_computed == retained_steps * (args.langevin_steps + 1)
+    print(f"PASS: source interior preserved, surround generated in {result.steps_computed} evaluations. Inspect {args.output / 'result.png'}", flush=True)
 finally:
     if generation:
         bind("slopfab_generation_destroy", [handle], None)(generation)

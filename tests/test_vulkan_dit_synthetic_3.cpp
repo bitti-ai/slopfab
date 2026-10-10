@@ -316,6 +316,76 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
     vs.set_sampler(sampler::SamplerKind::kEuler);
     as.set_sampler(sampler::SamplerKind::kEuler);
   }
+  // Real GPU forwards with a constant velocity compare both target storage
+  // layouts against the shared Langevin math and host scheduler.
+  for (bool conditioned : {false, true}) {
+    auto edit_config = config;
+    edit_config.seed = 42;
+    edit_config.pin_target_audio = false;
+    const std::vector<dit::ReferenceGeometry> refs = conditioned
+        ? std::vector<dit::ReferenceGeometry>{{dit::ReferenceKind::kImage, 1, 4, 4, 0}}
+        : std::vector<dit::ReferenceGeometry>{};
+    const auto still = dit::build_ref2va_packed_sequence({1, 1, 1}, refs, 1, 4, 4, 0);
+    edit_config.layout = still.layout;
+    edit_config.indices = still.indices;
+    edit_config.position_ids = still.position_ids;
+    auto& et = edit_config.transformer;
+    et.main.block.sequence = still.layout.total_rows();
+    et.main.block.timesteps = conditioned ? 4 : 2;
+    et.video_rows = static_cast<uint32_t>(still.indices.video.size());
+    et.video_output_rows = still.layout.num_video_rows;
+    et.video_output_start = still.layout.video_start();
+    et.audio_rows = et.audio_output_rows = et.audio_output_start = 0;
+    if (conditioned) et.audio_output_start = still.layout.audio_start();
+    auto constraint = std::make_shared<InpaintConstraint>();
+    const size_t count = size_t(still.layout.num_video_rows) * et.video_dim;
+    constraint->original.assign(count, .2f);
+    constraint->noise.assign(count, .8f);
+    constraint->mask.assign(count, 1);
+    constraint->mask[0] = 0;
+    constraint->langevin_steps = 2;
+    edit_config.inpaint = constraint;
+    auto editor = ExactH3Denoiser::create(context, edit_config);
+    editor.load(checkpoint);
+    std::vector<float> initial(et.video_rows * et.video_dim, 123);
+    for (auto kind : {sampler::SamplerKind::kEuler, sampler::SamplerKind::kRenoise}) {
+      sampler::FlowScheduler v(12), a(3);
+      v.set_sigmas({.75f, .4f, 0});
+      a.set_sigmas({.75f, .4f, 0});
+      v.set_sampler(kind);
+      a.set_sampler(kind);
+      auto oracle = v;
+      auto expected = constraint->initial(.75f);
+      std::vector<float> velocity(count, .25f), noise(count);
+      int boundaries = 0;
+      const auto boundary = [&](uint32_t step, const std::vector<float>& rows,
+                                const std::vector<float>& audio_rows) {
+        ++boundaries;
+        CHECK(audio_rows.empty());
+        CHECK(constraint->refine(expected.data(), count, v.sigmas()[step], 42, step,
+            [&](const float*, float* vv) { std::fill_n(vv, count, .25f); return true; }));
+        sampler::fill_renoise_normal(42, step, sampler::NoiseStream::kVideoLatents, noise.data(), count);
+        oracle.step(step, expected.data(), velocity.data(), count, expected.data(), noise.data());
+        constraint->apply(expected.data(), count, v.sigmas()[step + 1],
+                          kind == sampler::SamplerKind::kRenoise ? noise.data() : nullptr);
+        CHECK_CLOSE(expected, rows, 1e-5, "Vulkan outpaint Langevin trajectory");
+      };
+      const auto prepare = [&] {
+        editor.prepare(prompt.data(), prompt.size(), initial.data(), initial.size(), nullptr, 0);
+      };
+      prepare();
+      const auto result = editor.run(v, a, {}, boundary);
+      CHECK(boundaries == 2 && result.steps_computed == 6 && result.steps_completed == 2);
+      CHECK(result.video_rows[0] == .2f);
+      prepare();
+      const auto repeated = editor.run(v, a);
+      CHECK(result.video_rows == repeated.video_rows);
+      prepare();
+      const auto cancelled = editor.run(v, a, [](uint32_t, uint32_t) { return false; });
+      CHECK(cancelled.cancelled && cancelled.steps_computed == 1 && cancelled.steps_completed == 0);
+    }
+    editor.unload();
+  }
   checkpoint.close();
   std::filesystem::remove(path);
 }

@@ -381,6 +381,9 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   const uint32_t audio_output =
       c.transformer.audio_output_rows ? c.transformer.audio_output_rows : c.transformer.audio_rows;
   const bool has_audio = c.transformer.audio_rows != 0;
+  const bool refine = c.inpaint && c.inpaint->langevin_steps > 0;
+  if (refine && (has_audio || c.motion_cache.active()))
+    throw std::invalid_argument("Langevin refinement requires still-image sampling without caches");
   if (c.pin_target_audio && c.layout.num_audio_rows == 0)
     throw std::invalid_argument("Vulkan H3 denoise: pinned target audio needs target rows");
   std::vector<float> code(uint64_t(code_rows) * dit::AdaLNTable::kRank);
@@ -492,6 +495,33 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
           impl_->context->upload(s.audio_velocity, motion_av.data(), motion_av.size());
       }
     }
+    DeviceTensor& video_state = conditioned ? s.video_result : s.video;
+    if (refine) {
+      impl_->context->download(video_state, edited_video.data(), edited_video.size());
+      const bool completed = c.inpaint->refine(
+          edited_video.data(), edited_video.size(), video.sigmas()[update_step.video], c.seed, step,
+          [&](const float* candidate, float* velocity) {
+            impl_->context->upload(video_state, candidate, edited_video.size());
+            auto inner_batch = impl_->context->begin_batch();
+            inner_batch.require_operator_capacity(required_step_operators(taps));
+            if (conditioned)
+              inner_batch.copy_rows(s.video_result, s.video, 0, condition_video, video_output);
+            s.transformer.record_forward(
+                inner_batch, s.video, s.audio, s.selectors, s.code, s.cosine, s.sine,
+                s.video_timestep_indices, s.audio_timestep_indices, s.video_velocity, s.audio_velocity,
+                s.ranges ? &s.ranges : nullptr, taps, conditioned ? &s.video_row_indices : nullptr,
+                nullptr);
+            inner_batch.submit().wait();
+            impl_->context->download(s.video_velocity, velocity, edited_video.size());
+            ++result.steps_computed;
+            return !progress || progress(step, steps);
+          });
+      impl_->context->upload(video_state, edited_video.data(), edited_video.size());
+      if (!completed) {
+        result.cancelled = true;
+        break;
+      }
+    }
     TensorBatch batch = impl_->context->begin_batch();
     batch.require_operator_capacity(required_step_operators(taps));
     if (conditioned) {
@@ -519,7 +549,6 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
       ++result.steps_computed;
     else
       ++result.steps_skipped;
-    DeviceTensor& video_state = conditioned ? s.video_result : s.video;
     if (renoise) {
       batch.submit().wait();
       const auto update = [&](DeviceTensor& state, DeviceTensor& velocity,

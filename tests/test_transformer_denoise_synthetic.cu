@@ -296,6 +296,67 @@ SLOPFAB_TEST_CATEGORY(denoise_renoise_inpaint_and_outpaint_trajectories, "synthe
   }
 }
 
+SLOPFAB_TEST_CATEGORY(denoise_outpaint_langevin_preserves_anchors_and_counts_calls, "synthetic") {
+  using namespace slopfab;
+  using namespace slopfab::sampler;
+  dit::SequenceLayout layout;
+  layout.num_text = 1;
+  layout.num_latent_frames = 1;
+  layout.latent_width = layout.latent_height = 4;
+  layout.num_video_rows = 4;
+  layout.num_condition_video = 1;
+  const auto indices = dit::build_indices(layout);
+  std::vector<float> anchors(96, 123);
+  InpaintConstraint constraint;
+  constraint.original.assign(384, .2f);
+  constraint.noise.assign(384, .8f);
+  constraint.mask.assign(384, 1);
+  std::fill_n(constraint.mask.begin(), 96, 0);
+  for (auto kind : {SamplerKind::kEuler, SamplerKind::kRenoise}) {
+    for (int inner : {0, 1, 3}) {
+      constraint.langevin_steps = inner;
+      FlowScheduler video(12), audio(3);
+      video.set_sigmas({.75f, .4f, 0});
+      audio.set_sigmas({.75f, .4f, 0});
+      video.set_sampler(kind);
+      audio.set_sampler(kind);
+      Transformer model;
+      auto in = make_denoise_inputs(layout, indices, video, audio);
+      in.seed = 42;
+      in.inpaint = &constraint;
+      in.condition_video_rows = &anchors;
+      int calls = 0, boundaries = 0;
+      in.velocity = [&](int, const RowTimesteps&, const float* v, const float*, float* vv, float*) {
+        ++calls;
+        CHECK(std::equal(anchors.begin(), anchors.end(), v));
+        std::fill_n(vv, anchors.size() + constraint.mask.size(), .25f);
+      };
+      in.boundary = [&](int step, const std::vector<float>& v, const std::vector<float>& a) {
+        ++boundaries;
+        CHECK(a.empty());
+        std::vector<float> noise(384);
+        fill_renoise_normal(in.seed, step, NoiseStream::kVideoLatents, noise.data(), noise.size());
+        const float sigma = video.sigmas()[step + 1];
+        for (size_t j = 0; j < v.size(); ++j) {
+          CHECK(std::isfinite(v[j]));
+          if (constraint.mask[j] == 0)
+            CHECK_NEAR(v[j], (1 - sigma) * .2f + sigma * (kind == SamplerKind::kRenoise ? noise[j] : .8f), 1e-6);
+        }
+      };
+      const auto result = dit::denoise(model, in);
+      CHECK(boundaries == 2 && calls == 2 * (inner + 1));
+      CHECK(result.steps_computed == calls && result.decisions.size() == 2);
+      calls = 0;
+      const auto repeated = dit::denoise(model, in);
+      CHECK(result.video_rows == repeated.video_rows);
+      calls = boundaries = 0;
+      const auto cancelled = dit::denoise(model, in, [](int, int) { return false; });
+      CHECK(calls == 1 && cancelled.steps_computed == 1);
+      CHECK(boundaries == (inner ? 0 : 1));
+    }
+  }
+}
+
 SLOPFAB_TEST_CATEGORY(denoise_motion_cache_residual_trajectory_and_reset, "synthetic") {
   // v = constant - x has a constant residual. Reusing that residual must
   // exactly reproduce fresh evaluations, including different modality grids.

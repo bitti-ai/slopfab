@@ -418,6 +418,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
 #endif
       }
       inpaint->mask = edit_mask_rows(request.image_edit, plan.canvas_width, plan.canvas_height);
+      inpaint->langevin_steps = request.image_edit.invert_mask ? request.image_edit.langevin_steps : 0;
       const auto noise =
           sampler::video_noise(request.seed, 1, layout.latent_height, layout.latent_width);
       inpaint->noise.resize(noise.size());

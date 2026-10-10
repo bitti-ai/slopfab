@@ -158,6 +158,8 @@ SLOPFAB_TEST(capi_outpaint_validates_preserved_box_and_resets_on_new_source) {
   std::vector<uint8_t> pixels(64 * 64 * 3, 123);
   CHECK(slopfab_request_set_outpaint_blend_overlap(nullptr, 9) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_outpaint_blend_overlap(request, 9) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_outpaint_langevin_steps(nullptr, 5) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_outpaint_langevin_steps(request, 5) == SLOPFAB_ERR_INVALID_ARGUMENT);
   const auto set_edit = [&](int feather) {
     return slopfab_request_set_image_edit_rgb24(request, pixels.data(), pixels.size(), 64, 64,
                                                64 * 3, 16, 16, 32, 32, 1, feather);
@@ -171,12 +173,18 @@ SLOPFAB_TEST(capi_outpaint_validates_preserved_box_and_resets_on_new_source) {
   CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
   CHECK(std::string(description).find("outpaint (preserve box)") != std::string::npos);
   CHECK(std::string(description).find("blend overlap 9") != std::string::npos);
+  CHECK(std::string(description).find("Langevin steps 5") != std::string::npos);
   slopfab_free_string(description);
+  CHECK(slopfab_request_set_outpaint_langevin_steps(request, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_outpaint_langevin_steps(request, 100) == SLOPFAB_OK);
+  for (int invalid : {-1, 101})
+    CHECK(slopfab_request_set_outpaint_langevin_steps(request, invalid) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_outpaint_blend_overlap(request, 51) == SLOPFAB_OK);
   for (int invalid : {0, 2, 52})
     CHECK(slopfab_request_set_outpaint_blend_overlap(request, invalid) == SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
   CHECK(std::string(description).find("blend overlap 51") != std::string::npos);
+  CHECK(std::string(description).find("Langevin steps 100") != std::string::npos);
   slopfab_free_string(description);
   slopfab_plan plan{};
   CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
@@ -188,6 +196,7 @@ SLOPFAB_TEST(capi_outpaint_validates_preserved_box_and_resets_on_new_source) {
   CHECK(slopfab_request_set_image_edit_invert_mask(request, 1) == SLOPFAB_OK);
   CHECK(slopfab_describe_plan(request, &description) == SLOPFAB_OK);
   CHECK(std::string(description).find("blend overlap 9") != std::string::npos);
+  CHECK(std::string(description).find("Langevin steps 5") != std::string::npos);
   slopfab_free_string(description);
   slopfab_request_destroy(request);
 }

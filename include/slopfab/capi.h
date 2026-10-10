@@ -500,8 +500,10 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_rgb24(
     int32_t height, float strength, int32_t feather);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit(slopfab_request* request);
 
-/* Since 1.20. Invert an existing image edit: preserve its box and generate all
- * surrounding pixels in one denoising pass. Requires zero feather, room outside
+/* Since 1.20. Invert an existing image edit: use its box as source context and
+ * generate all surrounding pixels together. Since 1.28, the default final blend
+ * reaches into the source edge and sampling adds Langevin iterations (see below).
+ * Requires zero feather, room outside
  * the box and at least one complete 16x16 latent cell within it. Failed calls
  * leave the edit unchanged. Ordinary image-edit setters reset this to disabled. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_invert_mask(
@@ -515,6 +517,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_invert_mask(
  * Attaching a new source resets the kernel to 9. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_blend_overlap(
     slopfab_request* request, int32_t blend_overlap);
+
+/* Since 1.28. Extra Langevin iterations per outpaint denoising step, in [0,100].
+ * Default 5; 0 disables refinement. Each iteration adds one model evaluation.
+ * Requires an inverted image edit; supports CUDA/Vulkan Euler and re-noising.
+ * New image-edit sources reset to 5; failed calls leave settings unchanged.
+ * Progress may repeat the current schedule step between inner evaluations so
+ * cancellation remains responsive. Output steps_computed includes these calls. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_langevin_steps(
+    slopfab_request* request, int32_t steps);
 
 /* Sigma grid points *including* the terminal zero, so the model runs
  * `steps - 1` times. At least 2. */
