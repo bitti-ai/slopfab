@@ -1,6 +1,7 @@
 #include "detail/tensor_backends_fixture.h"
 
-SLOPFAB_TEST_CATEGORY(cuda_vulkan_keyframe_encoder_real_graph, "integration") {
+namespace {
+void keyframe_encoder_real_graph(bool int8_convrot) {
   using namespace slopfab;
   if (!std::getenv("SLOPFAB_KEYFRAME_ENCODER_REAL")) {
     SKIP_OPT_IN("unavailable prerequisite: !std::getenv(\"SLOPFAB_KEYFRAME_ENCODER_REAL\")");
@@ -13,7 +14,11 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_keyframe_encoder_real_graph, "integration") {
         "unavailable prerequisite: cudaGetDeviceCount(&cuda_devices) != cudaSuccess || cuda_devices == 0 || !vulkan::Instance::available()");
     return;
   }
-  const std::filesystem::path path = "weights/vae/minimax_h3_video_vae_fp16.safetensors";
+  const char* int8_path = std::getenv("SLOPFAB_INT8_VIDEO_VAE");
+  const std::filesystem::path path =
+      int8_convrot ? (int8_path ? int8_path
+                               : "weights/vae/minimax_h3_video_vae_int8_convrot.safetensors")
+                   : "weights/vae/minimax_h3_video_vae_fp16.safetensors";
   if (!std::filesystem::exists(path)) {
     SKIP_MISSING_FIXTURE("unavailable prerequisite: !std::filesystem::exists(path)");
     return;
@@ -21,12 +26,24 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_keyframe_encoder_real_graph, "integration") {
   const Sha256Digest expected_sha{0x7c, 0x1f, 0x13, 0x14, 0x92, 0xe7, 0xed, 0xda, 0xca, 0xac, 0x90,
                                   0x69, 0xa6, 0x1b, 0x81, 0xbd, 0xd3, 0x9d, 0xe5, 0xcc, 0x96, 0x56,
                                   0x1e, 0x67, 0x7c, 0x5e, 0xab, 0x1c, 0xdc, 0xe5, 0xe5, 0x22};
-  CHECK(sha256_file(path.string()) == expected_sha);
+  if (!int8_convrot)
+    CHECK(sha256_file(path.string()) == expected_sha);
   SafeTensors checkpoint;
   checkpoint.open(path.string());
   const vae::EncoderWeightSummary weight_summary =
       vae::validate_keyframe_encoder_weights(checkpoint);
   CHECK(weight_summary.tensors == 118);
+  if (int8_convrot) {
+    CHECK(checkpoint.at("encoder.conv_in.bias").dtype == DType::kF32);
+    CHECK(checkpoint.at("encoder.down.0.block.0.norm1.weight").dtype == DType::kF32);
+    CHECK(checkpoint.at("decoder.transformer_blocks.0.attn.to_qkv.weight").dtype == DType::kI8);
+  }
+  uint64_t expected_persistent_bytes = 0;
+  for (const auto& entry : checkpoint.tensors()) {
+    if (entry.first.rfind("encoder.", 0) == 0 || entry.first == "quant_conv.weight" ||
+        entry.first == "quant_conv.bias")
+      expected_persistent_bytes += static_cast<uint64_t>(entry.second.numel()) * 2;
+  }
 
   vulkan::Instance instance = vulkan::Instance::create();
   const auto physical = instance.enumerate_devices();
@@ -86,7 +103,7 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_keyframe_encoder_real_graph, "integration") {
   const vulkan::KeyframeEncoderStats stats = vk.stats();
   CHECK(hash == 0xcfd864f091297976ull);
   CHECK(stats.operators == 72);
-  CHECK(stats.persistent_bytes == weight_summary.bytes);
+  CHECK(stats.persistent_bytes == expected_persistent_bytes);
   const uint64_t stable_reserved = stats.allocator_reserved_bytes;
   const uint64_t stable_descriptors = stats.descriptor_set_allocations;
   const std::vector<float> repeat = vk.encode_moments(pixels.data(), height, width);
@@ -132,4 +149,15 @@ SLOPFAB_TEST_CATEGORY(cuda_vulkan_keyframe_encoder_real_graph, "integration") {
   }
   vk.unload();
   CHECK(!vk.loaded());
+}
+} // namespace
+
+SLOPFAB_TEST_CATEGORY(cuda_vulkan_keyframe_encoder_real_graph, "integration") {
+  keyframe_encoder_real_graph(false);
+}
+
+SLOPFAB_TEST_CATEGORY(cuda_vulkan_keyframe_encoder_int8_convrot, "integration") {
+  // The INT8 checkpoint's encoder, narrowed to FP16, must retain the dense
+  // checkpoint's golden output as well as exact CUDA/Vulkan parity.
+  keyframe_encoder_real_graph(true);
 }

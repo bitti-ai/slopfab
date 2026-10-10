@@ -39,6 +39,19 @@ an error. Mixed runs retain skip counts in their summaries; passing the remainin
 checks does not establish coverage for skipped cases. Existing deferred checks
 remain separately reported known defects.
 
+To check reference-image encoding with a Comfy INT8 ConvRot VAE on CUDA and
+Vulkan, run the real encoder regression from the repository root:
+
+```powershell
+$env:SLOPFAB_KEYFRAME_ENCODER_REAL = '1'
+$env:SLOPFAB_INT8_VIDEO_VAE = 'path/to/minimax_h3_video_vae_int8_convrot.safetensors'
+$env:SLOPFAB_TEST_FILTER = 'cuda_vulkan_keyframe_encoder_int8_convrot'
+build/Release/slopfab_tensor_backend_tests.exe
+```
+
+This checks the mixed FP16/FP32 encoder against the FP16 checkpoint's golden
+output, exact backend agreement, and persistent GPU memory accounting.
+
 The host `unit` suite and the C API suite keep their existing registration and
 carry suite-level labels. Their internal historical cases have not all been
 reclassified by fixture requirements.
