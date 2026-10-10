@@ -7,7 +7,7 @@
 namespace slopfab {
 void ImageEdit::validate() const {
   if (!image) {
-    if (x || y || width || height || feather || strength != 1.0f || invert_mask)
+    if (x || y || width || height || feather || strength != 1.0f || invert_mask || blend_overlap != 9)
       throw std::invalid_argument("image edit settings require a source image");
     return;
   }
@@ -19,6 +19,8 @@ void ImageEdit::validate() const {
     throw std::invalid_argument("edit box must be nonempty and inside the source image");
   if (!std::isfinite(strength) || strength <= 0 || strength > 1 || feather < 0)
     throw std::invalid_argument("edit strength must be in (0,1] and feather nonnegative");
+  if (blend_overlap < 1 || blend_overlap > 51 || blend_overlap % 2 == 0)
+    throw std::invalid_argument("outpaint blend overlap must be odd and in [1,51]");
   if (invert_mask && (feather != 0 || (x == 0 && y == 0 && width == image->width && height == image->height)))
     throw std::invalid_argument("outpainting needs space outside the preserved box and zero feather");
   if (invert_mask && ((x + 15) / 16 >= (x + width) / 16 || (y + 15) / 16 >= (y + height) / 16))
@@ -115,6 +117,36 @@ std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height) 
   return rows;
 }
 
+namespace {
+// Max-pooling the complement of a rectangle erodes its preserved interior.
+// A separable Gaussian then needs only two 1D profiles, including at corners.
+// Replicate canvas edges: nonexistent pixels must not fade the new border or
+// create a seam on an edge where the original already touches the canvas.
+std::vector<float> preserved_profile(int extent, int lo, int hi, int kernel_size) {
+  const int radius = kernel_size / 2;
+  if (lo > 0) lo += radius;
+  if (hi < extent) hi -= radius;
+  std::vector<double> kernel(kernel_size, 1);
+  double total = 0;
+  const double sigma = (kernel_size - 1) / 4.0;
+  for (int i = -radius; i <= radius; ++i) {
+    const double value = radius ? std::exp(-double(i * i) / (2 * sigma * sigma)) : 1;
+    kernel[i + radius] = value;
+    total += value;
+  }
+  std::vector<float> profile(extent);
+  for (int p = 0; p < extent; ++p) {
+    double sum = 0;
+    for (int i = -radius; i <= radius; ++i) {
+      const int q = std::clamp(p + i, 0, extent - 1);
+      if (q >= lo && q < hi) sum += kernel[i + radius];
+    }
+    profile[p] = static_cast<float>(sum / total);
+  }
+  return profile;
+}
+} // namespace
+
 PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& generated, int width,
                                  int height) {
   edit.validate();
@@ -123,6 +155,11 @@ PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& gener
     throw std::invalid_argument("image edit decoded shape mismatch");
   const auto& src = *edit.image;
   const size_t plane = size_t(src.width) * src.height;
+  std::vector<float> preserve_x, preserve_y;
+  if (edit.invert_mask) {
+    preserve_x = preserved_profile(src.width, edit.x, edit.x + edit.width, edit.blend_overlap);
+    preserve_y = preserved_profile(src.height, edit.y, edit.y + edit.height, edit.blend_overlap);
+  }
   PixelBuffer out(3 * plane);
   for (int y = 0; y < src.height; ++y) {
     for (int x = 0; x < src.width; ++x) {
@@ -137,7 +174,7 @@ PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& gener
         }
       }
       if (edit.invert_mask)
-        alpha = 1 - alpha;
+        alpha = 1 - preserve_x[x] * preserve_y[y];
       for (int c = 0; c < 3; ++c) {
         const size_t p = size_t(y) * src.width + x;
         const float original = src.pixels[3 * p + c] / 255.0f;

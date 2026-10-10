@@ -95,6 +95,7 @@ try:
     check(bind("slopfab_request_set_image_edit_path", [handle, C.c_char_p, C.c_int, C.c_int, C.c_int, C.c_int, C.c_float, C.c_int])(
         request, str((args.output / "canvas.png").resolve()).encode(), left, top, source.width, source.height, args.strength, 0))
     check(bind("slopfab_request_set_image_edit_invert_mask", [handle, C.c_int])(request, 1))
+    check(bind("slopfab_request_set_outpaint_blend_overlap", [handle, C.c_int])(request, 1))
     check(bind("slopfab_generation_start", [handle, Callback, handle, C.POINTER(handle)])(request, progress, None, C.byref(generation)))
     wait = bind("slopfab_generation_wait", [handle, C.c_int])
     generation_error = bind("slopfab_generation_error", [handle], C.c_char_p)

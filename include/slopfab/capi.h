@@ -91,8 +91,8 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 27
-#define SLOPFAB_CAPI_VERSION_PATCH 1
+#define SLOPFAB_CAPI_VERSION_MINOR 28
+#define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
  *
@@ -506,6 +506,15 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit(slopfab_request*
  * leave the edit unchanged. Ordinary image-edit setters reset this to disabled. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_invert_mask(
     slopfab_request* request, int32_t enable);
+
+/* Since 1.28. Outpaint final edge blend: odd kernel size in [1,51], default 9.
+ * Expands the generated mask into the source box, Gaussian-feathers it, then
+ * alpha-blends. 1 preserves the entire box exactly; larger values preserve its
+ * interior beyond a kernel_size-1 pixel band on edges facing generated space.
+ * Requires an inverted image edit. Failed calls leave the edit unchanged.
+ * Attaching a new source resets the kernel to 9. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_blend_overlap(
+    slopfab_request* request, int32_t blend_overlap);
 
 /* Sigma grid points *including* the terminal zero, so the model runs
  * `steps - 1` times. At least 2. */

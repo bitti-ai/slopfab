@@ -17,6 +17,7 @@ struct ImageEdit {
   float strength = 1.0f; // (0,1], fraction of schedule evaluations retained
   int feather = 0;       // pixels, inward from the box boundary
   bool invert_mask = false; // outpaint: preserve the box, generate its entire surround
+  int blend_overlap = 9; // outpaint only: odd dilation/blur kernel, 1..51; 1 = hard edge
   void validate() const;
 };
 

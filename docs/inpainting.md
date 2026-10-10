@@ -92,7 +92,7 @@ visual conditioning.
 
 Only latent cells fully inside the original rectangle are locked, allowing
 unaligned boundary cells to generate the seam. Pixel compositing preserves
-every original pixel inside the exact rectangle. The preserved box must contain
+the interior of the original, with the edge blend described below. The source box must contain
 at least one complete 16x16 cell and leave room for new pixels. Normal edit
 setters reset inversion; failed inversion calls preserve the previous request.
 In C++, set `ImageEdit::invert_mask = true`.
@@ -106,8 +106,25 @@ Both CUDA and Vulkan use the same packed geometry. Tiny legacy boxes without
 a complete patch retain latent locking only; interactive hosts should require
 a complete patch of context. Compressed-attention models reject outpainting.
 
-For a seamless boundary, hosts can leave a 16-pixel source edge outside the
-preserved box, then blend the original over that free edge after decoding.
-Only edges facing newly generated space should be inset. This follows the
-spatial-conditioning and boundary treatment of
-[ComfyUI-H3VideoOutpaint](https://github.com/TwoAbove/ComfyUI-H3VideoOutpaint).
+### Edge blend (C API 1.28)
+
+Outpainting now expands the generated mask into the source box by max pooling,
+Gaussian-blurs that mask, and composites `original * (1-mask) + generated * mask`.
+`ImageEdit::blend_overlap` defaults to 9; C callers can set it after enabling
+inversion with `slopfab_request_set_outpaint_blend_overlap(request, 9)`.
+Accepted kernel sizes are odd integers from 1 to 51. At 1 the entire original
+box is preserved exactly. Larger values blend up to `blend_overlap - 1` pixels
+inward on edges facing generated space, including corners; the deeper interior
+is still copied exactly. Attaching a new source restores the default.
+
+The Gaussian uses sigma `(blend_overlap - 1) / 4`, following
+[LanPaint's mask blend](https://github.com/scraed/LanPaint/blob/master/src/LanPaint/nodes.py).
+For our rectangular mask, dilation and separable convolution reduce to two
+one-dimensional profiles. We replicate canvas edges instead of zero-padding
+the convolution so the new border stays fully generated and source edges
+touching the canvas do not acquire a spurious seam. Decode alignment padding
+does not enter the mask. Ordinary inpainting retains its existing inward feather.
+
+Hosts should pass the full original rectangle and use this blend instead of
+applying a second feather or color correction. Final blending is independent
+of the generation sampler and does not add model evaluations.

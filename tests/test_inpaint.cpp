@@ -3,6 +3,7 @@
 #include "slopfab/generate.h"
 #include "slopfab/dit/packing.h"
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -113,6 +114,7 @@ SLOPFAB_TEST(outpaint_preserves_original_context_and_generates_the_whole_surroun
   // Exercise aligned, unaligned and corner-anchored originals.
   for (const int offset : {0, 17, 32}) {
     slopfab::ImageEdit edit{image, offset, offset, 48, 48, 1, 0, true};
+    edit.blend_overlap = 1; // explicit legacy hard-edge preservation
     const auto source = slopfab::outpaint_source_image(edit);
     CHECK(source.width == 48 && source.height == 48);
     CHECK(source.pixels == std::vector<uint8_t>(48 * 48 * 3, 123));
@@ -165,6 +167,75 @@ SLOPFAB_TEST(outpaint_semantic_source_excludes_padding_and_keeps_crop_coordinate
       for (int c = 0; c < 3; ++c)
         CHECK(source.pixels[(y * source.width + x) * 3 + c] ==
               edit.image->pixels[((y + edit.y) * edit.image->width + x + edit.x) * 3 + c]);
+}
+
+SLOPFAB_TEST(outpaint_blend_matches_dense_max_pool_and_gaussian) {
+  auto image = std::make_shared<slopfab::RGBImage>();
+  image->width = 71;
+  image->height = 67;
+  image->pixels.resize(71 * 67 * 3, 51);
+  // A dense reference exercises corners, small preserved interiors, touching
+  // canvas edges and decoded alignment padding independently of the fast path.
+  for (const int offset : {0, 17}) {
+    slopfab::ImageEdit edit{image, offset, offset, 48, 48, 1, 0, true};
+    CHECK(edit.blend_overlap == 9);
+    for (int k : {1, 9, 51}) {
+      edit.blend_overlap = k;
+      const int r = k / 2, w = image->width, h = image->height;
+      std::vector<float> expanded(w * h);
+      for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+          for (int dy = -r; dy <= r; ++dy)
+            for (int dx = -r; dx <= r; ++dx) {
+              const int qx = std::clamp(x + dx, 0, w - 1);
+              const int qy = std::clamp(y + dy, 0, h - 1);
+              if (qx < offset || qy < offset || qx >= offset + 48 || qy >= offset + 48)
+                expanded[y * w + x] = 1;
+            }
+      slopfab::PixelBuffer generated(3 * 96 * 96, .8f);
+      const auto output = slopfab::composite_image_edit(edit, generated, 96, 96);
+      double total = 0;
+      std::vector<double> kernel(k * k);
+      for (int dy = -r; dy <= r; ++dy)
+        for (int dx = -r; dx <= r; ++dx) {
+          const double sigma = (k - 1) / 4.0;
+          const double weight = r ? std::exp(-(dx * dx + dy * dy) / (2 * sigma * sigma)) : 1;
+          kernel[(dy + r) * k + dx + r] = weight;
+          total += weight;
+        }
+      for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+          double alpha = 0;
+          for (int dy = -r; dy <= r; ++dy)
+            for (int dx = -r; dx <= r; ++dx)
+              alpha += kernel[(dy + r) * k + dx + r] *
+                  expanded[std::clamp(y + dy, 0, h - 1) * w + std::clamp(x + dx, 0, w - 1)];
+          alpha /= total;
+          for (int c = 0; c < 3; ++c)
+            CHECK_NEAR(output[(c * h + y) * w + x], .2 * (1 - alpha) + .8 * alpha, 2e-7);
+          if (x < offset || y < offset || x >= offset + 48 || y >= offset + 48)
+            CHECK(output[y * w + x] == .8f);
+        }
+    }
+  }
+}
+
+SLOPFAB_TEST(outpaint_blend_validates_kernel_and_preserves_deep_interior) {
+  auto edit = edit_fixture();
+  edit.x = edit.y = 0;
+  edit.width = edit.height = 32;
+  edit.invert_mask = true;
+  for (int k : {0, 2, 50, 53}) {
+    edit.blend_overlap = k;
+    bool rejected = false;
+    try { edit.validate(); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+  }
+  edit.blend_overlap = 9;
+  slopfab::PixelBuffer generated(3 * 64 * 64, std::numeric_limits<float>::quiet_NaN());
+  const auto out = slopfab::composite_image_edit(edit, generated, 64, 64);
+  CHECK(out[0] == edit.image->pixels[0] / 255.0f);
+  CHECK(out[16 * 35 + 16] == edit.image->pixels[(16 * 35 + 16) * 3] / 255.0f);
 }
 
 SLOPFAB_TEST(outpaint_keyframes_reuse_only_pinned_patches_at_target_coordinates) {
