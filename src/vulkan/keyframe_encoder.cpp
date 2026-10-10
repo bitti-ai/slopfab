@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "slopfab/vae/keyframe_encoder.h"
+#include "slopfab/tensor_convert.h"
 #include "slopfab/vulkan/tensor.h"
 
 namespace slopfab::vulkan {
@@ -95,10 +96,12 @@ void validate_archive(const SafeTensors& checkpoint, const std::vector<WeightSpe
         throw std::runtime_error("Vulkan keyframe: tensor shape overflow");
       elements *= extent;
     }
-    if (view.dtype != DType::kF16 || view.shape != shape ||
-        elements > std::numeric_limits<size_t>::max() / 2 ||
-        view.nbytes != static_cast<size_t>(elements * 2)) {
-      throw std::runtime_error("Vulkan keyframe: invalid exact fp16 tensor '" + spec.name + "'");
+    const size_t stored_element_bytes = view.dtype == DType::kF32 ? 4 : 2;
+    if ((view.dtype != DType::kF16 && view.dtype != DType::kBF16 &&
+         view.dtype != DType::kF32) || view.shape != shape ||
+        elements > std::numeric_limits<size_t>::max() / stored_element_bytes ||
+        view.nbytes != static_cast<size_t>(elements * stored_element_bytes)) {
+      throw std::runtime_error("Vulkan keyframe: invalid dense tensor '" + spec.name + "'");
     }
   }
   size_t observed = 0;
@@ -234,9 +237,20 @@ void KeyframeEncoder::load(const SafeTensors& checkpoint) {
     pair.bias = impl_->context.allocate(bias_layout, ScalarType::kFloat16);
     const TensorView& matrix_view = checkpoint.at(matrix_spec.name);
     const TensorView& bias_view = checkpoint.at(bias_spec.name);
-    impl_->context.upload_transient_bytes(pair.weight, matrix_view.data, matrix_view.nbytes);
-    impl_->context.upload_transient_bytes(pair.bias, bias_view.data, bias_view.nbytes);
-    persistent += matrix_view.nbytes + bias_view.nbytes;
+    auto upload_half = [&](DeviceTensor& destination, const TensorView& view) {
+      const size_t bytes = static_cast<size_t>(view.numel()) * sizeof(uint16_t);
+      if (view.dtype == DType::kF16) {
+        impl_->context.upload_transient_bytes(destination, view.data, bytes);
+      } else {
+        const std::vector<float> values = to_f32(view);
+        std::vector<uint16_t> half(values.size());
+        std::transform(values.begin(), values.end(), half.begin(), f32_to_f16);
+        impl_->context.upload_transient_bytes(destination, half.data(), bytes);
+      }
+      persistent += bytes;
+    };
+    upload_half(pair.weight, matrix_view);
+    upload_half(pair.bias, bias_view);
     next.emplace(matrix_spec.name.substr(0, suffix), std::move(pair));
   }
   impl_->weights = std::move(next);
