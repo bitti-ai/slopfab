@@ -167,6 +167,42 @@ SLOPFAB_TEST(outpaint_semantic_source_excludes_padding_and_keeps_crop_coordinate
               edit.image->pixels[((y + edit.y) * edit.image->width + x + edit.x) * 3 + c]);
 }
 
+SLOPFAB_TEST(outpaint_keyframes_reuse_only_pinned_patches_at_target_coordinates) {
+  auto image = std::make_shared<slopfab::RGBImage>();
+  image->width = 224; image->height = 160;
+  image->pixels.resize(224 * 160 * 3, 127);
+  slopfab::ImageEdit edit{image, 37, 19, 150, 115, 1, 0, true};
+  std::vector<float> original(7 * 5 * 96);
+  for (size_t i = 0; i < original.size(); ++i) original[i] = float(i);
+  std::vector<slopfab::dit::ReferenceGeometry> geometry;
+  std::vector<float> rows;
+  slopfab::append_outpaint_keyframe(edit, 224, 160, original, geometry, rows);
+  CHECK(geometry.size() == 1);
+  const auto& g = geometry.front();
+  CHECK(g.target_aligned && g.target_latent_x == 4 && g.target_latent_y == 2);
+  CHECK(g.latent_width == 6 && g.latent_height == 6);
+  CHECK(rows.size() == 9 * 96);
+  for (int y = 0; y < 3; ++y)
+    for (int x = 0; x < 3; ++x)
+      for (int c = 0; c < 96; ++c)
+        CHECK(rows[(y * 3 + x) * 96 + c] == original[((y + 1) * 7 + x + 2) * 96 + c]);
+  auto packed = slopfab::dit::build_ref2va_packed_sequence({0, 0}, geometry, 1, 10, 14, 0);
+  CHECK(packed.layout.num_condition_video == 9);
+  for (int y = 0; y < 3; ++y)
+    for (int x = 0; x < 3; ++x)
+      for (int c = 0; c < 3; ++c)
+        CHECK(packed.position_ids[(2 + y * 3 + x) * 3 + c] ==
+              packed.position_ids[(2 + 9 + (y + 1) * 7 + x + 2) * 3 + c]);
+  const auto rejects = [](auto action) {
+    try { action(); return false; } catch (const std::invalid_argument&) { return true; }
+  };
+  geometry[0].target_latent_x = 3;
+  CHECK(rejects([&] { slopfab::dit::build_ref2va_packed_sequence({}, geometry, 1, 10, 14, 0); }));
+  geometry[0].target_latent_x = 12;
+  CHECK(rejects([&] { slopfab::dit::build_ref2va_packed_sequence({}, geometry, 1, 10, 14, 0); }));
+  CHECK(rejects([&] { slopfab::append_outpaint_keyframe(edit, 192, 160, original, geometry, rows); }));
+}
+
 SLOPFAB_TEST(outpaint_rejects_missing_context_and_empty_extension) {
   CHECK(slopfab::test::throws([] {
     auto edit = edit_fixture();

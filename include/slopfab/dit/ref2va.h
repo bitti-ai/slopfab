@@ -20,6 +20,9 @@ struct ReferenceGeometry {
   // Audio boundaries can round differently from the video clock. Temporal
   // guides may align audio independently to exact target audio row positions.
   std::optional<double> target_audio_time_offset;
+  // Positioned image keyframes use a crop of the target's spatial grid.
+  // Offsets are latent cells and must be aligned to complete 2x2 patches.
+  int target_latent_x = 0, target_latent_y = 0;
   int video_rows() const;
   int audio_rows() const;
 };

@@ -96,3 +96,18 @@ every original pixel inside the exact rectangle. The preserved box must contain
 at least one complete 16x16 cell and leave room for new pixels. Normal edit
 setters reset inversion; failed inversion calls preserve the previous request.
 In C++, set `ImageEdit::invert_mask = true`.
+
+Version 1.27.1 also supplies the fully preserved 32-pixel patches as a
+positioned keyframe. It reuses the source VAE encoding, places those rows at
+the corresponding target RoPE coordinates and time, and keeps them clean
+throughout denoising. This is separate from latent locking and Qwen's visual
+context; an ordinary resized reference cannot supply this spatial anchor.
+Both CUDA and Vulkan use the same packed geometry. Tiny legacy boxes without
+a complete patch retain latent locking only; interactive hosts should require
+a complete patch of context. Compressed-attention models reject outpainting.
+
+For a seamless boundary, hosts can leave a 16-pixel source edge outside the
+preserved box, then blend the original over that free edge after decoding.
+Only edges facing newly generated space should be inset. This follows the
+spatial-conditioning and boundary treatment of
+[ComfyUI-H3VideoOutpaint](https://github.com/TwoAbove/ComfyUI-H3VideoOutpaint).

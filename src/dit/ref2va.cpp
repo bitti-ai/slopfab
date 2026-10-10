@@ -29,9 +29,19 @@ double span(int n) {
   return s;
 }
 
-void video(std::vector<double>& p, int start, const ReferenceGeometry& g, double origin) {
-  double area = std::sqrt(double(g.latent_height) * g.latent_width);
-  auto hg = axis(g.latent_height, area), wg = axis(g.latent_width, area);
+void video(std::vector<double>& p, int start, const ReferenceGeometry& g, double origin,
+           int target_height = 0, int target_width = 0) {
+  const bool positioned = g.target_aligned && g.kind == ReferenceKind::kImage;
+  const int height = positioned ? target_height : g.latent_height;
+  const int width = positioned ? target_width : g.latent_width;
+  double area = std::sqrt(double(height) * width);
+  auto hg = axis(height, area), wg = axis(width, area);
+  if (positioned) {
+    hg = std::vector<double>(hg.begin() + g.target_latent_y / 2,
+                            hg.begin() + (g.target_latent_y + g.latent_height) / 2);
+    wg = std::vector<double>(wg.begin() + g.target_latent_x / 2,
+                            wg.begin() + (g.target_latent_x + g.latent_width) / 2);
+  }
   double t = origin;
   for (int f = 0; f < g.num_latent_frames; ++f) {
     for (int h = 0; h < int(hg.size()); ++h)
@@ -85,6 +95,14 @@ Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& tt
       throw std::invalid_argument("temporal guides must follow ordinary references");
     if (r.target_aligned) {
       aligned_seen = true;
+      if (r.kind == ReferenceKind::kImage) {
+        if (r.num_latent_frames != 1 || r.num_audio_latents != 0 || r.latent_height <= 0 || r.latent_width <= 0 ||
+            r.latent_height % 2 || r.latent_width % 2 || r.target_latent_x < 0 || r.target_latent_y < 0 ||
+            r.target_latent_x % 2 || r.target_latent_y % 2 ||
+            int64_t(r.target_latent_x) + r.latent_width > W || int64_t(r.target_latent_y) + r.latent_height > H)
+          throw std::invalid_argument("positioned keyframe must fit complete target patches");
+        continue;
+      }
       if (r.kind != ReferenceKind::kVideo || r.latent_height != H || r.latent_width != W ||
           r.num_latent_frames <= 0 || r.num_latent_frames > F || r.num_audio_latents > A ||
           !std::isfinite(r.target_time_offset) || std::abs(r.target_time_offset) > 1000000 ||
@@ -130,11 +148,11 @@ Ref2VAPackedSequence build_ref2va_packed_sequence(const std::vector<int32_t>& tt
       cur += r.audio_rows();
       clock += r.num_audio_latents;
     } else if (r.kind == ReferenceKind::kImage) {
-      video(o.position_ids, cur, r, clock);
+      video(o.position_ids, cur, r, clock, H, W);
       for (int i = 0; i < r.video_rows(); ++i)
         o.indices.video.push_back(cur + i);
       cur += r.video_rows();
-      clock += 1;
+      if (!r.target_aligned) clock += 1;
     } else {
       auto rw = axis(r.latent_width, std::sqrt(double(r.latent_height) * r.latent_width));
       const double origin = clock + (r.target_aligned ? r.target_time_offset : 0);

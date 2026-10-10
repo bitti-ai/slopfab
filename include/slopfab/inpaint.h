@@ -4,6 +4,7 @@
 #include <vector>
 #include "slopfab/image.h"
 #include "slopfab/pixel_buffer.h"
+#include "slopfab/dit/ref2va.h"
 
 namespace slopfab {
 
@@ -22,6 +23,11 @@ struct ImageEdit {
 RGBImage pad_edit_image(const ImageEdit& edit, int width, int height);
 RGBImage outpaint_source_image(const ImageEdit& edit);
 std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height);
+dit::ReferenceGeometry outpaint_keyframe_geometry(const ImageEdit& edit);
+void append_outpaint_keyframe(const ImageEdit& edit, int width, int height,
+                             const std::vector<float>& original,
+                             std::vector<dit::ReferenceGeometry>& geometry,
+                             std::vector<float>& rows);
 PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& generated, int width,
                                  int height);
 

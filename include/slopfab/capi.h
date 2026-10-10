@@ -92,7 +92,7 @@ extern "C" {
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
 #define SLOPFAB_CAPI_VERSION_MINOR 27
-#define SLOPFAB_CAPI_VERSION_PATCH 0
+#define SLOPFAB_CAPI_VERSION_PATCH 1
 
 /* Packed as (major << 24) | (minor << 12) | patch.
  *

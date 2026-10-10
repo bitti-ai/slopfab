@@ -314,8 +314,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   }
   std::vector<text::QwenPixelValues> media_qwen_pairs;
   // Outpainting needs semantic understanding of the source scene, but an
-  // ordinary DiT reference would independently resize/reframe it. Give only
-  // Qwen the original crop; spatial conditioning remains the fixed mask.
+  // ordinary DiT reference would independently resize/reframe it. Qwen gets
+  // the original crop; the DiT gets a positioned crop of the pinned latents.
   std::vector<RGBImage> outpaint_prompt_images;
   if (request.image_edit.invert_mask) {
     outpaint_prompt_images.push_back(outpaint_source_image(request.image_edit));
@@ -681,6 +681,10 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
                            condition_video_rows, condition_audio_rows);
     if (request.video_transition)
       align_transition_guides(reference_geometry, layout.num_latent_frames);
+
+    if (request.image_edit.invert_mask)
+      append_outpaint_keyframe(request.image_edit, plan.canvas_width, plan.canvas_height,
+                              inpaint->original, reference_geometry, condition_video_rows);
 
     if (!notify(RunStage::kConditioning, -1, 0))
       return stop("conditioning");

@@ -54,6 +54,40 @@ RGBImage outpaint_source_image(const ImageEdit& edit) {
   return source;
 }
 
+dit::ReferenceGeometry outpaint_keyframe_geometry(const ImageEdit& edit) {
+  edit.validate();
+  if (!edit.image || !edit.invert_mask)
+    throw std::invalid_argument("positioned source requires an outpainting edit");
+  const int left = (edit.x + 31) / 32, top = (edit.y + 31) / 32;
+  const int right = (edit.x + edit.width) / 32, bottom = (edit.y + edit.height) / 32;
+  dit::ReferenceGeometry geometry{dit::ReferenceKind::kImage, 1,
+      std::max(0, bottom - top) * 2, std::max(0, right - left) * 2, 0};
+  geometry.target_aligned = true;
+  geometry.target_latent_x = left * 2;
+  geometry.target_latent_y = top * 2;
+  return geometry;
+}
+
+void append_outpaint_keyframe(const ImageEdit& edit, int width, int height,
+                             const std::vector<float>& original,
+                             std::vector<dit::ReferenceGeometry>& geometry,
+                             std::vector<float>& rows) {
+  const auto keyframe = outpaint_keyframe_geometry(edit);
+  if (width <= 0 || height <= 0 || width % 32 || height % 32 ||
+      original.size() != size_t(width / 32) * (height / 32) * 96 ||
+      width < edit.image->width || height < edit.image->height)
+    throw std::invalid_argument("outpaint keyframe latent shape mismatch");
+  // Tiny legacy masks can still use latent locking; the UI requires a full
+  // patch for the stronger positioned anchor. Never anchor boundary padding.
+  if (keyframe.video_rows() == 0) return;
+  for (int y = keyframe.target_latent_y / 2;
+       y < (keyframe.target_latent_y + keyframe.latent_height) / 2; ++y) {
+    const auto start = original.begin() + (size_t(y) * (width / 32) + keyframe.target_latent_x / 2) * 96;
+    rows.insert(rows.end(), start, start + size_t(keyframe.latent_width / 2) * 96);
+  }
+  geometry.push_back(keyframe);
+}
+
 std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height) {
   edit.validate();
   if (!edit.image || width < edit.image->width || height < edit.image->height || width > 8192 ||

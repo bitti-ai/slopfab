@@ -110,7 +110,7 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
         !plan.model.supports_references)
       throw std::invalid_argument("selected model does not support reference conditioning");
     if (plan.model.compressed_attention &&
-        (request.has_references() || request.continuation || request.bridge))
+        (request.has_references() || request.continuation || request.bridge || request.image_edit.invert_mask))
       throw std::invalid_argument(
           "compressed attention currently supports unconditioned media layouts only");
   }
@@ -224,6 +224,10 @@ GeneratePlan resolve_plan(const GenerateRequest& request) {
   plan.layout.num_audio_rows = plan.geometry.audio_channels * plan.layout.num_audio_latents;
   plan.layout.num_video_rows =
       plan.layout.num_latent_frames * plan.layout.rows_per_frame(plan.geometry);
+  if (request.image_edit.invert_mask) {
+    plan.layout.condition_audio_is_explicit = true;
+    plan.layout.num_condition_video += outpaint_keyframe_geometry(request.image_edit).video_rows();
+  }
   if (!request.reference_media.empty()) {
     plan.layout.condition_audio_is_explicit = true;
     for (size_t index = 0; index < request.reference_media.size(); ++index) {
