@@ -342,11 +342,19 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
     // synchronises the stream, so anything the stream might still be reading —
     // the registered mapping, and the scratch buffers the staged path copies
     // out of — has to still exist when that sync runs.
-    cuda::RegisteredMapping lock(checkpoint.mapping_base(), checkpoint.file_size());
+    // Pinning a multi-gigabyte mapping alongside the GPU arena can exhaust
+    // host commit (especially with WDDM's backing allocations). Registration
+    // may succeed and the OOM only surface later at a kernel/stream boundary,
+    // too late for a reliable retry. Large checkpoints use the uploader's
+    // bounded staging ring instead of locking the entire source in RAM.
+    constexpr size_t kMaxRegisteredCheckpoint = size_t(64) << 20;
+    const bool register_mapping = checkpoint.file_size() <= kMaxRegisteredCheckpoint;
+    cuda::RegisteredMapping lock(register_mapping ? checkpoint.mapping_base() : nullptr,
+                                  checkpoint.file_size());
     // Success is the normal path and stays quiet; a failure silently costs
     // seconds of staged memcpy, so it says so rather than looking like a
     // mysterious regression later.
-    if (!lock.registered()) {
+    if (register_mapping && !lock.registered()) {
       std::fprintf(stderr,
                    "slopfab: could not page-lock the transformer mapping; uploading via the "
                    "staged path, which is slower\n");
