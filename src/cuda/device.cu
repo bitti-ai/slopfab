@@ -15,7 +15,7 @@ void check(cudaError_t status, const char* expr, const char* file, int line) {
     if (*p == '/' || *p == '\\')
       base = p + 1;
   }
-  throw std::runtime_error("cuda: " + std::string(cudaGetErrorName(status)) + ": " +
+  throw Error(status, "cuda: " + std::string(cudaGetErrorName(status)) + ": " +
                            cudaGetErrorString(status) + "\n  at " + base + ":" +
                            std::to_string(line) + "\n  in " + expr);
 }

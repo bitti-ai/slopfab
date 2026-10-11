@@ -239,6 +239,9 @@ public:
   std::vector<DebugStage> debug_text_stages(const float* prompt_embeds, int num_tokens);
 
 private:
+  void load_attempt(const SafeTensors& checkpoint, const TransformerConfig& config,
+                    const LoraAdapters* loras, const TransformerLoadOptions& options,
+                    size_t weight_ceiling, size_t& planned_weights);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

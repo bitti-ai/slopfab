@@ -1,9 +1,32 @@
 #include "transformer_impl.h"
+#include "load_retry.h"
 
 namespace slopfab::dit {
 
 void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& config,
                        const LoraAdapters* loras, const TransformerLoadOptions& options) {
+  TransformerLoadOptions resolved = options;
+  if (const char* value = std::getenv("SLOPFAB_DIT_OFFLOAD_BLOCKS")) {
+    size_t end = 0;
+    resolved.offload_blocks = std::stoi(value, &end);
+    if (value[end] != '\0')
+      throw std::invalid_argument("invalid SLOPFAB_DIT_OFFLOAD_BLOCKS");
+  }
+  const bool automatic = resolved.offload_blocks == -1 &&
+      (resolved.layout || resolved.device_budget_bytes || std::getenv("SLOPFAB_DIT_VRAM_GIB"));
+  load_with_memory_retry(automatic, config.num_layers,
+      [&](size_t ceiling, size_t& planned) {
+        load_attempt(checkpoint, config, loras, resolved, ceiling, planned);
+      }, [&] {
+        // Complete outstanding uploads before releasing their destinations.
+        (void)cudaStreamSynchronize(impl_->stream.get());
+        unload();
+      });
+}
+
+void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerConfig& config,
+                               const LoraAdapters* loras, const TransformerLoadOptions& options,
+                               size_t weight_ceiling, size_t& planned_weights) {
   cuda::StageMemorySpan memory("transformer.weights");
   require_h3_latent_geometry(read_model_geometry(checkpoint));
   Impl& s = *impl_;
@@ -203,13 +226,7 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
   for (int i = 0; i < config.num_refiner_layers; ++i)
     count_adapters("token_refiner.blocks." + std::to_string(i) + ".", fixed_bytes);
 
-  int forced = options.offload_blocks;
-  if (const char* value = std::getenv("SLOPFAB_DIT_OFFLOAD_BLOCKS")) {
-    size_t end = 0;
-    forced = std::stoi(value, &end);
-    if (value[end] != '\0')
-      throw std::invalid_argument("invalid SLOPFAB_DIT_OFFLOAD_BLOCKS");
-  }
+  const int forced = options.offload_blocks;
   size_t cap = options.device_budget_bytes;
   if (const char* value = std::getenv("SLOPFAB_DIT_VRAM_GIB")) {
     size_t end = 0;
@@ -218,7 +235,18 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
       throw std::invalid_argument("invalid SLOPFAB_DIT_VRAM_GIB");
     cap = static_cast<size_t>(gib * 1024 * 1024 * 1024);
   }
+  // Load the conversion kernel before measuring free VRAM: lazy CUDA module
+  // loading can otherwise allocate memory on its first launch after the arena.
+  size_t widen_max = 0;
+  for (const auto& kv : plan.records()) {
+    const Record& r = kv.second;
+    if (r.store == Store::kAsF32 && r.view->dtype == DType::kF16)
+      widen_max = std::max(widen_max, static_cast<size_t>(r.view->numel()));
+  }
+  if (widen_max)
+    cuda::prepare_widen_f16();
   size_t reserve = options.headroom_bytes + size_t(256) * (adapter_rank + adapter_out) * 2;
+  reserve += widen_max * sizeof(uint16_t);
   if (options.layout) {
     const auto& layout = *options.layout;
     // Conservative ConvRot scratch even for archives that do not use it.
@@ -265,7 +293,9 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
           "transformer offload: activations and safety headroom exhaust the VRAM budget");
     budget = free - reserve;
   }
-  const BlockOffloadPlan residency = plan_block_offload(block_bytes, fixed_bytes, budget, forced);
+  const BlockOffloadPlan residency =
+      plan_block_offload(block_bytes, fixed_bytes, std::min(budget, weight_ceiling), forced);
+  planned_weights = residency.device_bytes;
   if (residency.count) {
     if (!s.block_capture_path.empty() || !s.graph_capture_path.empty() ||
         !s.transformer_capture_path.empty() || !s.sol_capture_path.empty())
@@ -338,13 +368,6 @@ void Transformer::load(const SafeTensors& checkpoint, const TransformerConfig& c
     // future move to `cudaFreeAsync` would turn it into a use-after-free that
     // no test could catch. One pass over the records costs nothing and removes
     // the question.
-    size_t widen_max = 0;
-    for (const auto& kv : plan.records()) {
-      const Record& r = kv.second;
-      if (r.store == Store::kAsF32 && r.view->dtype == DType::kF16) {
-        widen_max = std::max(widen_max, static_cast<size_t>(r.view->numel()));
-      }
-    }
     cuda::DeviceBuffer<uint16_t> widen_src;
     if (widen_max != 0)
       widen_src.allocate(widen_max);

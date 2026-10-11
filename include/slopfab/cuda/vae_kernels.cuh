@@ -62,6 +62,8 @@ void launch_swiglu_f16(const float* in, const float* bias, void* out, int rows, 
 
 // Widens `count` fp16 values to fp32 on the device.
 void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t stream);
+// Force lazy module loading before the transformer chooses its VRAM budget.
+void prepare_widen_f16();
 
 // Narrows fp32 activations for tensor-core linear projections. GEMM output and
 // accumulation remain fp32; only the operands use checkpoint-native fp16.

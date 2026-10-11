@@ -1,5 +1,78 @@
 #include "detail/transformer_fixture.h"
 #include "../src/dit/weight_uploader.h"
+#include "../src/dit/load_retry.h"
+#include "slopfab/dit/offload.h"
+
+SLOPFAB_TEST_CATEGORY(transformer_load_recovers_from_allocation_failure, "synthetic") {
+  size_t resident = 0;
+  int attempts = 0, releases = 0;
+  slopfab::dit::load_with_memory_retry(true, 5,
+      [&](size_t ceiling, size_t& planned) {
+        CHECK(resident == 0); // Failed allocations must be released before replanning.
+        const auto plan = slopfab::dit::plan_block_offload({100, 100, 100, 100, 100}, 50, ceiling);
+        resident = planned = plan.device_bytes;
+        ++attempts;
+        if (attempts == 1) {
+          CHECK(plan.count == 0);
+          SLOPFAB_CUDA_CHECK(cudaErrorMemoryAllocation);
+        }
+        CHECK(plan.count == 3); // One or two blocks would save no VRAM.
+        CHECK(plan.device_bytes == 450);
+      }, [&] { resident = 0; ++releases; });
+  CHECK(attempts == 2);
+  CHECK(releases == 1);
+  CHECK(resident == 450);
+}
+
+SLOPFAB_TEST_CATEGORY(transformer_load_retry_preserves_errors_and_is_bounded, "synthetic") {
+  // Forced residency, non-OOM errors and failure before planning never retry.
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    int attempts = 0, releases = 0;
+    const auto status = scenario == 1 ? cudaErrorInvalidValue : cudaErrorMemoryAllocation;
+    try {
+      slopfab::dit::load_with_memory_retry(scenario != 0, 2,
+          [&](size_t ceiling, size_t& planned) {
+            ++attempts;
+            if (scenario != 2)
+              planned = std::min(size_t(100), ceiling);
+            slopfab::cuda::check(status, "injected load", __FILE__, __LINE__);
+          }, [&] { ++releases; });
+      CHECK(false);
+    } catch (const slopfab::cuda::Error& error) {
+      CHECK(error.status() == status);
+      CHECK(std::string(error.what()).find("injected load") != std::string::npos);
+    }
+    CHECK(attempts == (scenario == 3 ? 3 : 1));
+    CHECK(releases == attempts);
+  }
+  int releases = 0;
+  try {
+    slopfab::dit::load_with_memory_retry(true, 5,
+        [](size_t, size_t&) { throw std::runtime_error("invalid checkpoint"); },
+        [&] { ++releases; });
+    CHECK(false);
+  } catch (const std::runtime_error& error) {
+    CHECK(std::string(error.what()) == "invalid checkpoint");
+  }
+  CHECK(releases == 1);
+}
+
+SLOPFAB_TEST_CATEGORY(transformer_load_stops_when_no_smaller_residency_fits, "synthetic") {
+  int attempts = 0, releases = 0;
+  try {
+    slopfab::dit::load_with_memory_retry(true, 5,
+        [&](size_t ceiling, size_t& planned) {
+          ++attempts;
+          planned = slopfab::dit::plan_block_offload({100, 100, 100, 100, 100}, 50, ceiling).device_bytes;
+          SLOPFAB_CUDA_CHECK(cudaErrorMemoryAllocation);
+        }, [&] { ++releases; });
+    CHECK(false);
+  } catch (const std::runtime_error& error) {
+    CHECK(std::string(error.what()).find("weights and transfer buffers exceed") != std::string::npos);
+  }
+  CHECK(attempts == 5);
+  CHECK(releases == attempts);
+}
 
 SLOPFAB_TEST_CATEGORY(transformer_upload_staging_preserves_reused_sources, "synthetic") {
   // A small staging capacity exercises partial slots, exact boundaries,

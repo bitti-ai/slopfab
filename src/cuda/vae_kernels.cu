@@ -643,6 +643,11 @@ void launch_swiglu_f16(const float* in, const float* bias, void* out, int rows, 
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
+void prepare_widen_f16() {
+  cudaFuncAttributes attributes{};
+  SLOPFAB_CUDA_CHECK(cudaFuncGetAttributes(&attributes, widen_f16_kernel));
+}
+
 void launch_widen_f16(const void* src, float* dst, size_t count, cudaStream_t stream) {
   const int threads = 256;
   const size_t blocks = (count + threads - 1) / threads;

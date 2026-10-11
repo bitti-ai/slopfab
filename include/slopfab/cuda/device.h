@@ -21,6 +21,15 @@ namespace slopfab::cuda {
 // result, which is far more expensive to diagnose than a throw.
 void check(cudaError_t status, const char* expr, const char* file, int line);
 
+class Error : public std::runtime_error {
+public:
+  Error(cudaError_t status, const std::string& message)
+      : std::runtime_error(message), status_(status) {}
+  cudaError_t status() const { return status_; }
+private:
+  cudaError_t status_;
+};
+
 #define SLOPFAB_CUDA_CHECK(expr) ::slopfab::cuda::check((expr), #expr, __FILE__, __LINE__)
 
 struct DeviceInfo {
