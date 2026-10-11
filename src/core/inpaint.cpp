@@ -38,12 +38,21 @@ RGBImage pad_edit_image(const ImageEdit& edit, int width, int height) {
     throw std::invalid_argument("invalid image edit canvas");
   const auto& src = *edit.image;
   RGBImage out{width, height, std::vector<uint8_t>(size_t(width) * height * 3)};
+  // The VAE's receptive field crosses the preserved box. Encoding neutral
+  // canvas padding bakes that rectangular edge into otherwise locked source
+  // latents and positioned anchors. Extend source edge pixels for encoding
+  // only; the mask still generates the entire surround from noise, and the
+  // semantic reference and final composite keep the original source pixels.
+  const int left = edit.invert_mask ? edit.x : 0;
+  const int top = edit.invert_mask ? edit.y : 0;
+  const int right = edit.invert_mask ? edit.x + edit.width : src.width;
+  const int bottom = edit.invert_mask ? edit.y + edit.height : src.height;
   for (int y = 0; y < height; ++y)
     for (int x = 0; x < width; ++x)
       for (int c = 0; c < 3; ++c)
         out.pixels[(size_t(y) * width + x) * 3 + c] =
-            src.pixels[(size_t(std::min(y, src.height - 1)) * src.width +
-                        std::min(x, src.width - 1)) *
+            src.pixels[(size_t(std::clamp(y, top, bottom - 1)) * src.width +
+                        std::clamp(x, left, right - 1)) *
                            3 +
                        c];
   return out;

@@ -56,6 +56,38 @@ SLOPFAB_TEST(inpaint_composite_preserves_every_outside_pixel) {
   CHECK(output[0] == edit.image->pixels[0] / 255.0f);
 }
 
+SLOPFAB_TEST(outpaint_encoding_is_independent_of_unknown_canvas_pixels) {
+  auto dark = std::make_shared<slopfab::RGBImage>();
+  dark->width = dark->height = 96;
+  dark->pixels.resize(96 * 96 * 3, 0);
+  auto light = std::make_shared<slopfab::RGBImage>(*dark);
+  std::fill(light->pixels.begin(), light->pixels.end(), 255);
+  for (int y = 19; y < 77; ++y)
+    for (int x = 17; x < 77; ++x)
+      for (int c = 0; c < 3; ++c) {
+        const size_t i = (y * 96 + x) * 3 + c;
+        dark->pixels[i] = light->pixels[i] = static_cast<uint8_t>(x + y + c);
+      }
+  slopfab::ImageEdit a{dark, 17, 19, 60, 58, 1, 0, true};
+  auto b = a;
+  b.image = light;
+  const auto dark_before = dark->pixels, light_before = light->pixels;
+  const auto encoded = slopfab::pad_edit_image(a, 128, 128);
+  CHECK(encoded.pixels == slopfab::pad_edit_image(b, 128, 128).pixels);
+  for (int y = 19; y < 77; ++y)
+    for (int x = 17; x < 77; ++x)
+      for (int c = 0; c < 3; ++c)
+        CHECK(encoded.pixels[(y * 128 + x) * 3 + c] == dark->pixels[(y * 96 + x) * 3 + c]);
+  CHECK(encoded.pixels[0] == dark->pixels[(19 * 96 + 17) * 3]);
+  CHECK(encoded.pixels[(127 * 128 + 127) * 3] == dark->pixels[(76 * 96 + 76) * 3]);
+  CHECK(dark->pixels == dark_before);
+  CHECK(light->pixels == light_before);
+  CHECK(slopfab::edit_mask_rows(a, 128, 128) == slopfab::edit_mask_rows(b, 128, 128));
+  CHECK(slopfab::outpaint_source_image(a).pixels == slopfab::outpaint_source_image(b).pixels);
+  CHECK(slopfab::outpaint_keyframe_geometry(a).target_latent_x == 2);
+  CHECK(slopfab::outpaint_keyframe_geometry(a).target_latent_y == 2);
+}
+
 SLOPFAB_TEST(inpaint_constraint_uses_resulting_sigma_and_fixed_noise) {
   slopfab::InpaintConstraint c{{2, 4, 6}, {10, 20, 30}, {0, 1, 0}};
   auto rows = c.initial(.5f);
