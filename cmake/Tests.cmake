@@ -73,6 +73,7 @@ if(SLOPFAB_BUILD_TESTS)
     tests/test_packing.cpp
     tests/test_ref2va.cpp
     tests/test_vsa.cpp
+    tests/test_veda.cpp
     tests/test_safetensors.cpp
     tests/test_pipeline.cpp
     tests/test_model_descriptor.cpp

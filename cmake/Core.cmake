@@ -33,6 +33,7 @@ add_library(slopfab_core STATIC
   src/dit/chunking.cpp
   src/dit/checkpoint.cpp
   src/dit/vsa.cpp
+  src/dit/veda.cpp
   src/dit/packing.cpp
   src/dit/ref2va.cpp
   src/dit/rope.cpp
