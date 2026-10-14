@@ -715,6 +715,18 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
 
     if (!notify(RunStage::kTransformerLoad, -1, 0))
       return stop("transformer load");
+    std::shared_ptr<dit::VedaRequest> veda;
+    if (options.attention_mode == AttentionMode::kVeda) {
+      veda = dit::prepare_veda(options.veda, live);
+      if (options.verbose) {
+        const bool exact =
+            veda->plan.grid ==
+            dit::VedaShape{live.num_latent_frames, live.latent_height / 2, live.latent_width / 2};
+        std::printf("VEDA       %s tile plan %s; generated sparsity %s; references dense\n",
+                    exact ? "trained" : "nearest trained", veda->plan.name.c_str(),
+                    options.veda.generated_sparsity.c_str());
+      }
+    }
     if (options.inference_backend == DeviceBackend::kCuda) {
 #if SLOPFAB_WITH_CUDA
       const Clock::time_point t0 = Clock::now();
@@ -722,6 +734,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       dit_file.open(request.transformer_path);
       dit::Transformer model;
       model.set_attention_mode(options.attention_mode);
+      if (veda)
+        model.set_veda(veda);
       dit::TransformerLoadOptions load_options;
       load_options.layout = &live;
       load_options.block_cache = request.block_cache_span > 0;
@@ -941,13 +955,12 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       const Clock::time_point t0 = Clock::now();
       SafeTensors dit_file;
       dit_file.open(request.transformer_path);
-      vulkan::Device device =
-          create_vulkan_inference_device(options.vulkan_portable_arithmetic, true,
-                                         options.attention_mode == AttentionMode::kSage2,
-                                         options.attention_mode);
+      vulkan::Device device = create_vulkan_inference_device(
+          options.vulkan_portable_arithmetic, true, options.attention_mode == AttentionMode::kSage2,
+          options.attention_mode);
       vulkan::TensorContextOptions context_options;
       context_options.max_batch_operators =
-          request.loras.empty() && !plan.model.compressed_attention ? 2048 : 4096;
+          veda ? 8192 : request.loras.empty() && !plan.model.compressed_attention ? 2048 : 4096;
       context_options.sage_extra_workspace_bytes = options.vulkan_sage_extra_workspace_bytes;
       vulkan::TensorContext context(device, context_options);
       context.require_h3_attention(options.attention_mode);
@@ -958,6 +971,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       config.motion_cache = request.motion_cache;
       config.transformer.main.layers = 50;
       config.transformer.main.block.attention_mode = options.attention_mode;
+      config.transformer.main.block.veda = veda;
       config.transformer.main.block.sequence = static_cast<uint32_t>(live.total_rows());
       const bool conditioned = live.num_condition_video != 0 || live.num_condition_audio != 0;
       config.transformer.main.block.timesteps = conditioned ? 4u : 2u;

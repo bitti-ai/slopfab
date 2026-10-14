@@ -1,0 +1,95 @@
+#version 460
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle_relative : require
+// One head at a time. Padding never participates in TripPool extrema.
+layout(local_size_x=256) in;
+layout(binding=0,std430) readonly buffer Q { uint data[]; } q;
+layout(binding=1,std430) readonly buffer K { uint data[]; } k;
+layout(binding=2,std430) readonly buffer Geometry { int data[]; } geometry;
+layout(binding=3,std430) buffer Features { float data[]; } features;
+layout(binding=4,std430) buffer Projected { float data[]; } projected;
+layout(binding=5,std430) readonly buffer Weights { uint data[]; } weights;
+layout(binding=6,std430) buffer Mask { uint data[]; } mask;
+layout(push_constant) uniform Parameters {
+  uint heads, dim, tiles, video;
+  uint head, padded, operation, unused;
+} p;
+shared float scores[4096];
+shared uint ids[4096];
+float bf16(uint word,uint index) {
+  return uintBitsToFloat(((word >> (16u*(index&1u))) & 65535u) << 16u);
+}
+void main() {
+  uint tid=gl_LocalInvocationID.x, tile=gl_WorkGroupID.x;
+  uint stride=p.video*3u*p.dim;
+  if (p.operation==0u) {
+    if (tid>=p.dim) return;
+    uint count=uint(geometry.data[p.tiles*128u+tile]);
+    float sq=0.0,sk=0.0,maxq=-1.0/0.0,maxk=-1.0/0.0,minq=1.0/0.0,mink=1.0/0.0;
+    for (uint r=0u;r<count;++r) {
+      uint index=(uint(geometry.data[tile*128u+r])*p.heads+p.head)*p.dim+tid;
+      float a=bf16(q.data[index/2u],index),b=bf16(k.data[index/2u],index);
+      sq+=a; sk+=b; maxq=max(maxq,a); maxk=max(maxk,b); minq=min(minq,a); mink=min(mink,b);
+    }
+    uint dst=tile*3u*p.dim+tid;
+    features.data[dst]=sq/float(count); features.data[dst+p.dim]=maxq; features.data[dst+2u*p.dim]=minq;
+    features.data[stride+dst]=sk/float(count); features.data[stride+dst+p.dim]=maxk; features.data[stride+dst+2u*p.dim]=mink;
+    return;
+  }
+  if (p.operation==1u) {
+    if (tid>=p.dim) return;
+    uint weight_head=p.head*3u*p.dim*p.dim;
+    uint weight_stride=p.heads*3u*p.dim*p.dim;
+    float a=0.0,b=0.0;
+    for (uint d=0u;d<3u*p.dim;++d) {
+      uint index=weight_head+d*p.dim+tid;
+      a+=features.data[tile*3u*p.dim+d]*bf16(weights.data[index/2u],index);
+      b+=features.data[stride+tile*3u*p.dim+d]*bf16(weights.data[(weight_stride+index)/2u],weight_stride+index);
+    }
+    projected.data[tile*p.dim+tid]=a+features.data[tile*3u*p.dim+tid];
+    projected.data[p.video*p.dim+tile*p.dim+tid]=b+features.data[stride+tile*3u*p.dim+tid];
+    return;
+  }
+  uint words=(p.tiles+31u)/32u;
+  if (tile>=p.video) {
+    for (uint i=tid;i<words;i+=256u) mask.data[tile*words+i]=0xffffffffu;
+    return;
+  }
+  uint lane=tid%32u, warp=tid/32u;
+  for (uint key=warp;key<p.padded;key+=8u) {
+    float dot=-1.0/0.0;
+    if (key<p.video) {
+      dot=0.0;
+      for (uint d=lane;d<p.dim;d+=32u)
+        dot+=projected.data[tile*p.dim+d]*projected.data[p.video*p.dim+key*p.dim+d];
+      for (uint delta=16u;delta>0u;delta/=2u) dot+=subgroupShuffleDown(dot,delta);
+      if (key==tile) dot=1.0/0.0;
+    }
+    if (lane==0u) { scores[key]=dot; ids[key]=key; }
+  }
+  barrier();
+  for (uint width=2u;width<=p.padded;width*=2u)
+    for (uint step=width/2u;step>0u;step/=2u) {
+      for (uint i=tid;i<p.padded;i+=256u) {
+        uint j=i^step;
+        if (j<=i) continue;
+        bool before=scores[i]>scores[j] || (scores[i]==scores[j] && ids[i]<ids[j]);
+        if (before!=((i&width)==0u)) {
+          float value=scores[i]; scores[i]=scores[j]; scores[j]=value;
+          uint id=ids[i]; ids[i]=ids[j]; ids[j]=id;
+        }
+      }
+      barrier();
+    }
+  for (uint i=tid;i<p.tiles;i+=256u) scores[i]=i>=p.video ? 1.0 : 0.0;
+  barrier();
+  uint keep=uint(geometry.data[p.tiles*129u+tile]);
+  for (uint i=tid;i<keep;i+=256u) scores[ids[i]]=1.0;
+  barrier();
+  for (uint i=tid;i<words;i+=256u) {
+    uint bits=0u;
+    for (uint bit=0u;bit<32u;++bit)
+      if (i*32u+bit<p.tiles && scores[i*32u+bit]!=0.0) bits|=1u<<bit;
+    mask.data[tile*words+i]=bits;
+  }
+}

@@ -156,11 +156,12 @@ __device__ inline uint32_t ld32(const void* p) {
   return *reinterpret_cast<const uint32_t*>(p);
 }
 
-template <int D>
+template <int D, int Tile = 64>
 __global__ __launch_bounds__(kThreads) void sparse_kernel(
     const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ k,
     const __nv_bfloat16* __restrict__ v, __nv_bfloat16* __restrict__ out, int heads, float scale,
-    const int32_t* rows, const int32_t* sizes, const uint8_t* mask, int tiles) {
+    const int32_t* rows, const int32_t* sizes, const uint8_t* mask, int tiles,
+    int head_offset = 0) {
   constexpr int kKStride = D + kPadH;
   constexpr int kVStride = kBc + kPadV;
   constexpr int kDSteps = D / 16;      // k-steps of the QK product
@@ -173,7 +174,7 @@ __global__ __launch_bounds__(kThreads) void sparse_kernel(
   __half* vt = reinterpret_cast<__half*>(ks + kBc * kKStride);
 
   const int q0 = blockIdx.x * kBr;
-  const int head = blockIdx.y;
+  const int head = blockIdx.y + head_offset;
   const int tid = threadIdx.x;
   const int warp = tid / kWarp;
   const int lane = tid % kWarp;
@@ -211,11 +212,13 @@ __global__ __launch_bounds__(kThreads) void sparse_kernel(
   float m_a = kHostNegInf, m_b = kHostNegInf;
   float l_a = 0.0f, l_b = 0.0f;
 
-  const uint8_t* selected = mask + (size_t(head) * tiles + blockIdx.x) * tiles;
-  for (int tile = 0; tile < tiles; ++tile) {
-    if (!selected[tile])
+  const uint8_t* selected = mask + (size_t(blockIdx.y) * tiles + blockIdx.x / (Tile / 64)) * tiles;
+  for (int tile = 0; tile < tiles * (Tile / 64); ++tile) {
+    if (!selected[tile / (Tile / 64)])
       continue;
-    const int valid_keys = sizes[tile];
+    const int valid_keys = min(64, sizes[tile / (Tile / 64)] - (tile % (Tile / 64)) * 64);
+    if (valid_keys <= 0)
+      continue;
     __syncthreads();
     for (int i = tid; i < 64 * D / 8; i += kThreads) {
       const int row = i / (D / 8), col = i % (D / 8) * 8;
@@ -344,6 +347,24 @@ __global__ __launch_bounds__(kThreads) void sparse_kernel(
 }
 
 } // namespace
+
+void veda_sparse_forward(cudaStream_t stream, const __nv_bfloat16* q, const __nv_bfloat16* k,
+                         const __nv_bfloat16* v, __nv_bfloat16* out, int heads, int dim, int head,
+                         const int32_t* rows, const int32_t* sizes, const uint8_t* mask,
+                         int tiles) {
+  if (heads <= 0 || head < 0 || head >= heads || tiles <= 0 || tiles > 4096 ||
+      (dim != 64 && dim != 128) || !rows || !sizes || !mask)
+    throw std::invalid_argument("VEDA: invalid sparse attention geometry");
+  const dim3 grid(tiles * 2, 1);
+  const size_t smem = 2 * 64 * (dim + 8) + 2 * dim * (64 + 2);
+  if (dim == 128)
+    sparse_kernel<128, 128><<<grid, kThreads, smem, stream>>>(
+        q, k, v, out, heads, 1.0f / sqrtf(128.0f), rows, sizes, mask, tiles, head);
+  else
+    sparse_kernel<64, 128><<<grid, kThreads, smem, stream>>>(q, k, v, out, heads, 1.0f / 8.0f, rows,
+                                                             sizes, mask, tiles, head);
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
+}
 
 size_t vsa_attention_workspace_bytes(int tiles, int heads, int dim) {
   if (tiles <= 0 || tiles > 4096 || heads <= 0 || (dim != 64 && dim != 128))

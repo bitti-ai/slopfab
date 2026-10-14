@@ -23,6 +23,7 @@ class DenseGemmPlan;
 class BlockedAttentionPlan;
 class H3AttentionPlan;
 class VsaAttentionPlan;
+class VedaAttentionPlan;
 class H3AttentionRanges;
 class CausalGQAAttentionPlan;
 class PreparedAttentionInputs;
@@ -57,6 +58,7 @@ struct TensorContextOptions {
   // Bounded command/rollback capacity for one device-resident graph chunk.
   // The default preserves the small primitive-test footprint; the 36-block
   // video-VAE graph requests 1024 so it can record without per-block submits.
+  // Valid range: 1..8192; a full VEDA transformer requests 8192.
   uint32_t max_batch_operators = 32;
   // Per-plan optional Sage scratch (parallel mean partials and FP16 V).
   // Required INT8 Q/K and means/scales are reported separately by the plan.
@@ -94,6 +96,7 @@ private:
   friend class BlockedAttentionPlan;
   friend class H3AttentionPlan;
   friend class VsaAttentionPlan;
+  friend class VedaAttentionPlan;
   friend class H3AttentionRanges;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
@@ -344,6 +347,7 @@ private:
   friend class BlockedAttentionPlan;
   friend class H3AttentionPlan;
   friend class VsaAttentionPlan;
+  friend class VedaAttentionPlan;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;
   friend class PreparedF16Activation;
@@ -474,6 +478,7 @@ private:
   friend class BlockedAttentionPlan;
   friend class H3AttentionPlan;
   friend class VsaAttentionPlan;
+  friend class VedaAttentionPlan;
   friend class H3AttentionRanges;
   friend class CausalGQAAttentionPlan;
   friend class PreparedAttentionInputs;

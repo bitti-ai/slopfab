@@ -238,6 +238,9 @@ void ExactH3Transformer::load(const SafeTensors& checkpoint) {
   const bool has_audio = c.audio_rows != 0;
   H3BlockConfig ref_cfg = c.main.block;
   ref_cfg.vsa_tiles.reset();
+  ref_cfg.veda.reset();
+  if (ref_cfg.attention_mode == AttentionMode::kVeda)
+    ref_cfg.attention_mode = AttentionMode::kFlash2;
   // Match CUDA: refiners retain floating-point attention in Sage mode.
   if (ref_cfg.attention_mode == AttentionMode::kSage2)
     ref_cfg.attention_mode = AttentionMode::kFlash2;

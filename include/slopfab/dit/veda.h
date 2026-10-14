@@ -26,6 +26,7 @@ struct VedaOptions {
 VedaBudget parse_veda_budget(const std::string& text);
 
 using VedaShape = std::array<int, 3>;
+
 struct VedaPlan {
   std::string name;
   VedaShape grid{};
@@ -40,6 +41,7 @@ struct VedaTiles {
   int video_tiles = 0;
   int video_tokens = 0;
 };
+
 VedaTiles build_veda_tiles(const SequenceLayout& layout, const VedaShape& shape);
 VedaPlan select_veda_plan(const std::vector<VedaPlan>& plans, const VedaShape& grid);
 
@@ -52,6 +54,7 @@ public:
   int layers = 0, heads = 0, head_dim = 0;
   VedaBudget generated;
   std::vector<VedaPlan> plans;
+
 private:
   SafeTensors file_;
 };
@@ -66,6 +69,7 @@ struct VedaRequest {
   std::vector<std::vector<int32_t>> keeps;
   int step = -1;
 };
+
 std::shared_ptr<VedaRequest> prepare_veda(const VedaOptions& options, const SequenceLayout& layout);
 
 } // namespace slopfab::dit

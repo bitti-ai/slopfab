@@ -91,8 +91,8 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 28
-#define SLOPFAB_CAPI_VERSION_PATCH 2
+#define SLOPFAB_CAPI_VERSION_MINOR 29
+#define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
  *
@@ -716,13 +716,22 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_motion_cache(
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_add_reference_image(slopfab_request* request,
                                                                    const char* path);
 
-/* "none", "flash2" (the default), "sage2", "sol", "sol-experimental" or
+/* "none", "flash2" (the default), "sage2", "sol", "sol-experimental", "veda" or
  * "exact". Exact selects the pinned deterministic cooperative H3 arithmetic;
  * it never remaps to another implementation. Named by string rather than by id
  * so that an attention implementation can be added without a new constant in
  * this header. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_attention(slopfab_request* request,
                                                              const char* mode);
+
+/* Since 1.29. Configure VEDA on CUDA or Vulkan. Select "veda" with set_attention.
+ * predictor_path is a local VEDA safetensors bundle; empty clears it.
+ * generated_sparsity is "trained" (also used for NULL), a skipped percentage
+ * such as "90%", or a kept tile count such as "32". Reference attention is dense.
+ * Strings are copied. This does not download weights. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_veda(slopfab_request* request,
+                                                        const char* predictor_path,
+                                                        const char* generated_sparsity);
 
 /* Selects the neural backend. Defaults to CUDA when built, otherwise Vulkan. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_request* request,

@@ -511,6 +511,7 @@ bool TensorContext::h3_attention_supported(AttentionMode mode) const noexcept {
   case AttentionMode::kExact:
     return impl_->available_h3_attention;
   case AttentionMode::kFlash2:
+  case AttentionMode::kVeda:
     return impl_->flash_attention;
   case AttentionMode::kSage2:
     return impl_->sage_attention;
@@ -526,8 +527,9 @@ void TensorContext::require_h3_attention(AttentionMode mode) const {
                              "' is unavailable; check enabled cooperative matrix, "
                              "subgroup and arithmetic features");
   impl_->require_pipeline_set(mode == AttentionMode::kExact ? TensorPipelineSet::kExactH3Attention
-                              : mode == AttentionMode::kFlash2 ? TensorPipelineSet::kFlashAttention
-                                                               : TensorPipelineSet::kSageAttention);
+                              : (mode == AttentionMode::kFlash2 || mode == AttentionMode::kVeda)
+                                  ? TensorPipelineSet::kFlashAttention
+                                  : TensorPipelineSet::kSageAttention);
 }
 
 void TensorContext::require_exact_h3_attention() const {

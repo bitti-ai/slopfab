@@ -143,6 +143,7 @@ struct TensorContext::Impl {
   ComputePipeline attention_h3_banded_pipeline;
   ComputePipeline attention_flash_pipeline, attention_flash_banded_pipeline;
   ComputePipeline attention_vsa_pipeline, attention_vsa_prepare_pipeline;
+  ComputePipeline attention_veda_pipeline, attention_veda_prepare_pipeline;
   std::array<std::array<ComputePipeline, 4>, 4> attention_sage_pipelines,
       attention_sage_banded_pipelines;
   ComputePipeline attention_sage_prepare_pipeline;

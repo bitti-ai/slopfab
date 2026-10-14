@@ -343,6 +343,8 @@ H3AttentionPlan::operator bool() const noexcept {
 }
 
 H3AttentionPlan H3AttentionPlan::create(TensorContext& context, const H3AttentionPlanDesc& desc) {
+  if (desc.mode == AttentionMode::kVeda)
+    throw std::invalid_argument("Vulkan VEDA requires VedaAttentionPlan with a predictor bundle");
   if (!context.impl_)
     throw std::invalid_argument("vulkan H3 attention: empty context");
   context.require_h3_attention(desc.mode);

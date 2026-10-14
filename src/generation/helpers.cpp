@@ -156,9 +156,10 @@ size_t select_vulkan_inference_device(const std::vector<vulkan::DeviceInfo>& dev
                (info.subgroup_size != 32 ||
                 info.max_compute_workgroup_invocations < vulkan::detail::kH3ExactLocalSize ||
                 info.max_compute_workgroup_size[0] < vulkan::detail::kH3ExactLocalSize ||
-                info.max_compute_shared_memory_bytes < vulkan::detail::kH3ExactMinReportedSharedBytes)) {
+                info.max_compute_shared_memory_bytes <
+                    vulkan::detail::kH3ExactMinReportedSharedBytes)) {
       reason = "exact H3 attention needs subgroup32, 1024 threads and 48 KiB shared memory";
-    } else if (attention == AttentionMode::kFlash2 &&
+    } else if ((attention == AttentionMode::kFlash2 || attention == AttentionMode::kVeda) &&
                (info.subgroup_size != 32 || !info.compute_subgroup_shuffle ||
                 info.max_compute_workgroup_invocations < vulkan::detail::kH3FlashLocalSize ||
                 info.max_compute_workgroup_size[0] < vulkan::detail::kH3FlashLocalSize ||

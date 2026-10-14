@@ -41,6 +41,13 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   s.cfg = config;
   s.model = resolve_model_descriptor(checkpoint);
   s.architecture = s.model.compatibility_architecture;
+  if (s.attention_mode == AttentionMode::kVeda) {
+    if (!s.veda_request || s.is_vsa() || s.veda_request->bundle.layers != config.num_layers ||
+        s.veda_request->bundle.heads != config.num_attention_heads ||
+        s.veda_request->bundle.head_dim != config.attention_head_dim)
+      throw std::invalid_argument(
+          "VEDA requires a matching predictor and an uncompressed H3 transformer");
+  }
   if (s.model.modulation == ModulationImplementation::kTable)
     validate_adaln_table_config(config.adaln_rank, config.adaln_table_rows);
   if (s.architecture == TransformerArchitecture::kUnknown) {

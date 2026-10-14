@@ -626,7 +626,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_attention(slopfab_request* re
     if (!slopfab::parse_attention_mode(name, &request->options.attention_mode)) {
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
                   "unknown attention mode '" + name +
-                      "'; expected none, flash2, sage2, sol, sol-experimental or exact");
+                      "'; expected none, flash2, sage2, sol, sol-experimental, exact or veda");
     }
     return SLOPFAB_OK;
   });
@@ -650,6 +650,27 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_inference_backend(slopfab_req
                 "slopfab_request_set_inference_backend: unknown backend " +
                     std::to_string(backend));
   }
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_veda(slopfab_request* request,
+                                                        const char* predictor_path,
+                                                        const char* generated_sparsity) {
+  if (!request || !predictor_path)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_veda: null request or predictor path");
+  return guarded([&] {
+    auto options = request->options.veda;
+    options.predictor_path = predictor_path;
+    options.generated_sparsity = generated_sparsity ? generated_sparsity : "trained";
+    if (options.generated_sparsity != "trained") {
+      try {
+        (void)slopfab::dit::parse_veda_budget(options.generated_sparsity);
+      } catch (const std::exception& e) {
+        return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
+      }
+    }
+    request->options.veda = std::move(options);
+    return SLOPFAB_OK;
+  });
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_vulkan_arithmetic(slopfab_request* request,

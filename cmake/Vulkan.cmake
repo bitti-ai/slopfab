@@ -44,6 +44,7 @@ if(SLOPFAB_ENABLE_VULKAN)
     src/vulkan/tensor_audio.cpp
     src/vulkan/tensor_gemm.cpp
     src/vulkan/tensor_attention.cpp
+    src/vulkan/veda_attention.cpp
     src/vulkan/text_layer.cpp
     src/vulkan/text_encoder.cpp
     src/vulkan/vision_stage.cpp

@@ -956,12 +956,20 @@ SLOPFAB_TEST(capi_model_paths_and_attention) {
   CHECK(slopfab_request_set_reuse_models(request.handle, 1) == SLOPFAB_OK);
   CHECK(slopfab_request_set_reuse_models(request.handle, 0) == SLOPFAB_OK);
 
-  for (const char* mode : {"none", "flash2", "sage2", "sol", "sol-experimental", "exact"}) {
+  for (const char* mode : {"none", "flash2", "sage2", "sol", "sol-experimental", "exact", "veda"}) {
     CHECK(slopfab_request_set_attention(request.handle, mode) == SLOPFAB_OK);
   }
   CHECK(slopfab_request_set_attention(request.handle, "flash3") == SLOPFAB_ERR_INVALID_ARGUMENT);
   // The message has to name what was wrong, since there is no enum to consult.
   CHECK(std::string(slopfab_last_error()).find("flash3") != std::string::npos);
+  CHECK(slopfab_request_set_veda(request.handle, "predictor.safetensors", nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_veda(request.handle, "predictor.safetensors", "90%") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_veda(request.handle, "predictor.safetensors", "32") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_veda(request.handle, "predictor.safetensors", "100%") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_veda(request.handle, nullptr, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_veda(nullptr, "p", nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_veda(request.handle, "", nullptr) == SLOPFAB_OK);
 
   CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_CUDA) ==
         SLOPFAB_OK);

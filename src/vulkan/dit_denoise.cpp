@@ -43,6 +43,8 @@ void validate_config(const ExactH3DenoiseConfig& c) {
   c.motion_cache.validate();
   if (c.motion_cache.active() && c.transformer.main.block.vsa_tiles)
     throw std::invalid_argument("Vulkan VSA does not support MotionCache");
+  if (c.transformer.main.block.veda && (c.attention_band != 0 || !c.attention_ranges.empty()))
+    throw std::invalid_argument("Vulkan VEDA does not support frame banding");
   const dit::SequenceLayout& l = c.layout;
   const uint32_t sequence = c.transformer.main.block.sequence;
   const uint32_t condition_video =
@@ -444,6 +446,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
     motion_av.resize(motion_audio.size());
   }
   for (uint32_t step = 0; step < steps; ++step) {
+    if (c.transformer.main.block.veda)
+      c.transformer.main.block.veda->step = static_cast<int>(step);
     const auto& update_step = schedule[step];
     const float video_t = video.timesteps()[update_step.video];
     const float audio_t = c.pin_target_audio ? 1.0f : audio.timesteps()[update_step.audio];

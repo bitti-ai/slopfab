@@ -18,6 +18,7 @@ enum class AttentionMode {
   // This is distinct from kNone: it has no materialized score tensor and does
   // not silently fall back to the legacy blocked reference.
   kExact,
+  kVeda, // Learned 128-token sparse attention with a predictor bundle.
 };
 
 inline const char* attention_mode_name(AttentionMode mode) {
@@ -34,6 +35,8 @@ inline const char* attention_mode_name(AttentionMode mode) {
     return "sol-experimental";
   case AttentionMode::kExact:
     return "exact";
+  case AttentionMode::kVeda:
+    return "veda";
   }
   return "unknown";
 }
@@ -53,6 +56,8 @@ inline bool parse_attention_mode(std::string_view name, AttentionMode* mode) noe
     *mode = AttentionMode::kSolExperimental;
   else if (name == "exact")
     *mode = AttentionMode::kExact;
+  else if (name == "veda")
+    *mode = AttentionMode::kVeda;
   else
     return false;
   return true;
@@ -65,10 +70,11 @@ inline bool attention_mode_supported(DeviceBackend backend, AttentionMode mode) 
   case DeviceBackend::kCuda:
     return mode == AttentionMode::kNone || mode == AttentionMode::kFlash2 ||
            mode == AttentionMode::kSage2 || mode == AttentionMode::kSol ||
-           mode == AttentionMode::kSolExperimental || mode == AttentionMode::kExact;
+           mode == AttentionMode::kSolExperimental || mode == AttentionMode::kExact ||
+           mode == AttentionMode::kVeda;
   case DeviceBackend::kVulkan:
     return mode == AttentionMode::kExact || mode == AttentionMode::kFlash2 ||
-           mode == AttentionMode::kSage2;
+           mode == AttentionMode::kSage2 || mode == AttentionMode::kVeda;
   }
   return false;
 }

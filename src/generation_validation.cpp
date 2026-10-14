@@ -45,17 +45,27 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
   require(sampler_kind != sampler::SamplerKind::kRenoise || !caches,
           "re-noising does not support approximate caches");
   r.image_edit.validate();
-  require(!r.image_edit.image ||
-              (r.still_image && o.source == LatentSource::kDenoise && o.init_latents_path.empty() &&
-               (sampler_kind == sampler::SamplerKind::kEuler ||
-                sampler_kind == sampler::SamplerKind::kRenoise) && !caches),
-          "image editing requires still-image Euler or re-noising denoising without initial latents or caches");
+  require(
+      !r.image_edit.image ||
+          (r.still_image && o.source == LatentSource::kDenoise && o.init_latents_path.empty() &&
+           (sampler_kind == sampler::SamplerKind::kEuler ||
+            sampler_kind == sampler::SamplerKind::kRenoise) &&
+           !caches),
+      "image editing requires still-image Euler or re-noising denoising without initial latents or caches");
   require(!r.image_edit.image || o.on_samples || r.out_path.empty() ||
               std::filesystem::path(r.out_path).extension() == ".ppm",
           "image editing file output requires a .ppm path");
   require(r.cache_threshold == 0 || r.skip_every == 0,
           "cache threshold and skip interval are alternatives");
   require(o.attention_band >= 0, "attention band must be nonnegative");
+  if (o.attention_mode == AttentionMode::kVeda) {
+    require(!o.veda.predictor_path.empty(), "VEDA requires a predictor bundle (--veda-predictor)");
+    require(!p.model.compressed_attention, "VEDA cannot be combined with FastH3 VSA");
+    if (o.veda.generated_sparsity != "trained")
+      (void)dit::parse_veda_budget(o.veda.generated_sparsity);
+  } else {
+    require(o.veda.predictor_path.empty(), "a VEDA predictor requires --attention veda");
+  }
   require(o.attention_band == 0 || o.attention_mode == AttentionMode::kFlash2 ||
               o.attention_mode == AttentionMode::kExact ||
               (o.inference_backend == DeviceBackend::kVulkan &&

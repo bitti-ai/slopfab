@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "slopfab/attention_mode.h"
+#include "slopfab/dit/veda.h"
 #include "slopfab/video/y4m.h"
 #include "slopfab/pixel_buffer.h"
 #include "slopfab/upscale.h"
@@ -150,6 +151,7 @@ struct RunOptions {
   // parallel smoothing and prepared FP16 V; mandatory Q/K scratch is separate.
   uint64_t vulkan_sage_extra_workspace_bytes = 64ull << 20;
   SolSchedule sol_schedule;
+  dit::VedaOptions veda;
   // If set, the fp32 latent rows in this file replace the seeded noise draw.
   // Off by default; nothing about a normal run reads it.
   //

@@ -317,6 +317,12 @@ void Transformer::Impl::run_block(const BlockWeights& b, const float* mod_base, 
       cuda::vsa_attention_forward(stream.get(), q, k, v, attn_out, vsa_compressed.get(), vsa_config,
                                   ws);
       ++attention_routes.generic_main;
+    } else if (block_attention_mode == AttentionMode::kVeda && layer >= 0 && veda_request &&
+               veda_request->options.active(denoise_step, layer)) {
+      if (!veda)
+        throw std::logic_error("VEDA attention is not prepared");
+      veda->forward(stream.get(), layer, q, k, v, attn_out);
+      ++attention_routes.generic_main;
     } else if (block_attention_mode == AttentionMode::kExact) {
       cuda::launch_deterministic_h3_attention(
           stream.get(), q, k, v, attn_out, acfg.band_ranges, static_cast<uint32_t>(rows),
@@ -341,7 +347,10 @@ void Transformer::Impl::run_block(const BlockWeights& b, const float* mod_base, 
       capture_block_attention(attn_out);
     diagnose("attention", attn_out, size_t(rows) * inner, layer);
     const char* label =
-        layer >= 0 && is_vsa()                          ? "attn.vsa-h3"
+        layer >= 0 && is_vsa() ? "attn.vsa-h3"
+        : block_attention_mode == AttentionMode::kVeda && layer >= 0 && veda_request &&
+                veda_request->options.active(denoise_step, layer)
+            ? "attn.veda"
         : block_attention_mode == AttentionMode::kExact ? "attn.exact"
         : backend == AttentionBackend::kFused           ? "attn.flash2"
         : backend == AttentionBackend::kSage2           ? "attn.sage2"

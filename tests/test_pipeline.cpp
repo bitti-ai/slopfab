@@ -114,7 +114,8 @@ SLOPFAB_TEST(attention_mode_parse_name_and_backend_contract) {
   using slopfab::DeviceBackend;
   const AttentionMode modes[] = {
       AttentionMode::kNone, AttentionMode::kFlash2,          AttentionMode::kSage2,
-      AttentionMode::kSol,  AttentionMode::kSolExperimental, AttentionMode::kExact};
+      AttentionMode::kSol,  AttentionMode::kSolExperimental, AttentionMode::kExact,
+      AttentionMode::kVeda};
   for (AttentionMode mode : modes) {
     AttentionMode parsed = AttentionMode::kNone;
     CHECK(slopfab::parse_attention_mode(slopfab::attention_mode_name(mode), &parsed));
@@ -122,7 +123,7 @@ SLOPFAB_TEST(attention_mode_parse_name_and_backend_contract) {
     CHECK(slopfab::attention_mode_supported(DeviceBackend::kCuda, mode));
     CHECK(slopfab::attention_mode_supported(DeviceBackend::kVulkan, mode) ==
           (mode == AttentionMode::kExact || mode == AttentionMode::kFlash2 ||
-           mode == AttentionMode::kSage2));
+           mode == AttentionMode::kSage2 || mode == AttentionMode::kVeda));
     CHECK(slopfab::generation_backend_supported(DeviceBackend::kVulkan,
                                                 slopfab::LatentSource::kDenoise, mode) ==
           slopfab::attention_mode_supported(DeviceBackend::kVulkan, mode));

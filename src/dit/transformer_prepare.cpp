@@ -132,6 +132,21 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
   }
 
   s.has_sequence = false;
+  if (s.attention_mode == AttentionMode::kVeda) {
+    if (!s.veda || !s.veda_request || s.attn_band || s.is_vsa())
+      throw std::invalid_argument("VEDA requires a predictor without frame banding or VSA");
+    const auto& expected = s.veda_request->layout;
+    if (expected.num_text != layout.num_text ||
+        expected.num_condition_video != layout.num_condition_video ||
+        expected.num_condition_audio != layout.num_condition_audio ||
+        expected.num_audio_rows != layout.num_audio_rows ||
+        expected.num_latent_frames != layout.num_latent_frames ||
+        expected.latent_height != layout.latent_height ||
+        expected.latent_width != layout.latent_width ||
+        expected.num_video_rows != layout.num_video_rows)
+      throw std::invalid_argument(
+          "VEDA predictor tile layout does not match the prepared sequence");
+  }
   s.layout = layout;
   s.indices = indices;
   s.carve = plan_carve(s.cfg, layout, s.row_chunk, s.attention_mode, stack_uses_convrot(s.blocks),
@@ -162,6 +177,8 @@ void Transformer::prepare_sequence(const SequenceLayout& layout, const PackedInd
     std::fflush(stdout);
   }
   s.ws.resize(s.carve.total);
+  if (s.attention_mode == AttentionMode::kVeda)
+    s.veda->prepare(s.stream.get());
   if (s.is_vsa()) {
     if (s.attn_band > 0)
       throw std::runtime_error("VSA-H3 cannot use frame-banded attention");

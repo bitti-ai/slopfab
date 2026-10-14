@@ -34,6 +34,11 @@ layout(binding = 1, std430) readonly buffer K { uint data[]; } k;
 layout(binding = 2, std430) readonly buffer V { uint data[]; } v;
 layout(binding = 3, std430) writeonly buffer O { uint data[]; } o;
 #ifdef VSA
+#ifdef VEDA
+#define SPARSE_TILE 128u
+#else
+#define SPARSE_TILE 64u
+#endif
 layout(binding = 4, std430) readonly buffer Geometry { int data[]; } geometry;
 layout(binding = 5, std430) readonly buffer TileMask { uint data[]; } tile_mask;
 #endif
@@ -96,6 +101,9 @@ void main() {
   uint tid = gl_LocalInvocationID.x, sg = gl_SubgroupID;
   uint qb = (p.query_row_offset & ~(QUERY_ROWS - 1u)) + gl_WorkGroupID.x * QUERY_ROWS;
   uint head = gl_WorkGroupID.y;
+#ifdef VEDA
+  head = p.output_row_offset;
+#endif
   uint query_tile = sg / 4u, key_tile = sg % 4u;
   for (uint i = tid; i < QUERY_ROWS * HD; i += THREADS) {
     uint row = qb + i / HD;
@@ -112,7 +120,7 @@ void main() {
     acc[t] = coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
   barrier();
 #ifdef VSA
-  int bounds[4] = int[4](0, int(p.reserved * 64u), 0, 0);
+  int bounds[4] = int[4](0, int(p.reserved * SPARSE_TILE), 0, 0);
 #elif defined(BANDED)
   uint rb = (qb / 128u) * 4u;
   int bounds[4] = int[4](ranges.data[rb], ranges.data[rb+1], ranges.data[rb+2], ranges.data[rb+3]);
@@ -122,15 +130,23 @@ void main() {
   for (uint range = 0u; range < 2u; ++range) {
     uint stop = min(uint(bounds[range*2u+1u]),
 #ifdef VSA
-        p.reserved * 64u);
+        p.reserved * SPARSE_TILE);
 #else
         p.sequence);
 #endif
     for (uint kb = uint(bounds[range*2u]); kb < stop; kb += 64u) {
 #ifdef VSA
-      uint words = (p.reserved + 31u) / 32u, key_tile_index = kb / 64u;
-      uint mask_offset = (head * p.reserved + qb / 64u) * words + key_tile_index / 32u;
+      uint words = (p.reserved + 31u) / 32u, key_tile_index = kb / SPARSE_TILE;
+#ifdef VEDA
+      uint mask_head = 0u;
+#else
+      uint mask_head = head;
+#endif
+      uint mask_offset = (mask_head * p.reserved + qb / SPARSE_TILE) * words + key_tile_index / 32u;
       if ((tile_mask.data[mask_offset] & (1u << (key_tile_index % 32u))) == 0u) continue;
+#ifdef VEDA
+      if (geometry.data[kb] < 0) continue;
+#endif
 #endif
       for (uint i = tid; i < 64u * HD; i += THREADS) {
         uint row = kb + i / HD;
@@ -241,6 +257,9 @@ void main() {
 #endif
       if (row >= p.query_row_offset && row < p.query_row_offset + p.rows) {
         uint out_row = p.output_row_offset + row - p.query_row_offset;
+#ifdef VEDA
+        out_row = row;
+#endif
         uint index = (out_row * p.heads + head) * HD + i % 64u + t * 64u;
         float denom = sums[i / 64u];
         o.data[index / 2u] = pack_bf16(scores[i] / denom) | (pack_bf16(scores[i+1u] / denom) << 16u);

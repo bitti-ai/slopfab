@@ -1,5 +1,6 @@
 #pragma once
 #include "transformer_support.h"
+#include "slopfab/cuda/veda_attention.cuh"
 
 namespace slopfab::dit {
 struct Transformer::Impl {
@@ -59,6 +60,8 @@ struct Transformer::Impl {
 
   int denoise_step = -1;
   SolSchedule sol_schedule;
+  std::shared_ptr<VedaRequest> veda_request;
+  std::unique_ptr<cuda::VedaAttention> veda;
   std::string sol_capture_path;
   int sol_capture_step = 0;
   int sol_capture_layer = 0;

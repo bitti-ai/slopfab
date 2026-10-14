@@ -90,6 +90,17 @@ void Transformer::set_sol_schedule(const SolSchedule& schedule) {
 
 void Transformer::set_denoise_step(int step) {
   impl_->denoise_step = step;
+  if (impl_->veda_request)
+    impl_->veda_request->step = step;
+}
+
+void Transformer::set_veda(std::shared_ptr<VedaRequest> request) {
+  if (impl_->attention_configuration_locked)
+    throw std::runtime_error("transformer: configure VEDA before preparation");
+  impl_->veda_request = std::move(request);
+  impl_->veda.reset();
+  if (impl_->veda_request)
+    impl_->veda = std::make_unique<cuda::VedaAttention>(impl_->veda_request);
 }
 
 void Transformer::set_block_cache(const BlockCacheConfig& config, int num_steps) {
@@ -162,6 +173,9 @@ void Transformer::unload() {
   impl_->vsa_row_tiles.reset();
   impl_->vsa_compressed.reset();
   impl_->vsa_config = {};
+  impl_->veda.reset();
+  if (impl_->veda_request)
+    impl_->veda = std::make_unique<cuda::VedaAttention>(impl_->veda_request);
 }
 
 size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
@@ -172,6 +186,8 @@ size_t Transformer::activation_bytes(const SequenceLayout& layout) const {
   const int seq = layout.total_rows();
 
   size_t total = c.total + impl_->lora.scratch_bytes();
+  if (impl_->attention_mode == AttentionMode::kVeda && impl_->veda)
+    total += impl_->veda->device_bytes();
   if (impl_->is_vsa()) {
     const auto tiles = build_vsa_tiles(layout);
     total += align_up(tiles.sizes.size() * cfg.inner_dim() * sizeof(__nv_bfloat16));

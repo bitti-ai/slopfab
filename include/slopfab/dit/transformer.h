@@ -27,6 +27,7 @@
 #include "slopfab/dit/block_cache.h"
 #include "slopfab/dit/checkpoint.h"
 #include "slopfab/dit/packing.h"
+#include "slopfab/dit/veda.h"
 #include "slopfab/safetensors.h"
 #include "slopfab/lora.h"
 
@@ -113,6 +114,8 @@ public:
   void set_query_chunking(bool enabled);
   size_t workspace_bytes() const;
   void set_sol_schedule(const SolSchedule& schedule);
+  // Configure before load so residency planning reserves VEDA scratch.
+  void set_veda(std::shared_ptr<VedaRequest> request);
   void set_denoise_step(int step);
 
   // Block-span residual caching (block_cache.h). **Lossy, like the attention

@@ -123,6 +123,7 @@ if(SLOPFAB_ENABLE_CUDA)
     src/cuda/attention_blocked.cu
     src/cuda/attention_fused.cu
       src/cuda/vsa_attention.cu
+      src/cuda/veda_attention.cu
       src/cuda/sage_attention.cu
       src/cuda/sol_attention.cu
       src/cuda/sol_attention_pipeline.cu

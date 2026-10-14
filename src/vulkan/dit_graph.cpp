@@ -10,6 +10,8 @@ namespace slopfab::vulkan {
 namespace {
 
 void validate_graph_config(const H3MainGraphConfig& config) {
+  if (config.block.veda && config.block.veda->bundle.layers != config.layers)
+    throw std::invalid_argument("Vulkan VEDA: predictor layer count mismatch");
   if (config.layers == 0 || config.layers > 50)
     throw std::invalid_argument("Vulkan H3 graph: layer count must be in [1,50]");
   // Reuse the single-stage's complete shape/capability-independent checks.
@@ -145,8 +147,8 @@ uint32_t ExactH3MainGraph::preflight_layers(DeviceTensor& tokens, DeviceTensor& 
       layer_count > impl_->config.layers - first_layer)
     throw std::invalid_argument("Vulkan H3 graph: invalid layer span");
   const H3BlockConfig& c = impl_->config.block;
-  if (c.vsa_tiles && ranges)
-    throw std::invalid_argument("Vulkan VSA: frame-banded attention is incompatible");
+  if ((c.vsa_tiles || c.veda) && ranges)
+    throw std::invalid_argument("Vulkan sparse attention: frame banding is incompatible");
   const auto tv = tokens.view(), sv = selectors.view(), cv = code.view();
   const auto cosv = cosine.view(), sinv = sine.view();
   if (!impl_->context->owns(tokens) || !impl_->context->owns(selectors) ||

@@ -7,9 +7,9 @@ TensorContext::Impl::Impl(const Device& input, const TensorContextOptions& tenso
       commands(input,
                [&] {
                  if (tensor_options.max_batch_operators == 0 ||
-                     tensor_options.max_batch_operators > 4096) {
+                     tensor_options.max_batch_operators > 8192) {
                    throw std::invalid_argument(
-                       "vulkan tensor: max_batch_operators must be in [1,4096]");
+                       "vulkan tensor: max_batch_operators must be in [1,8192]");
                  }
                  ComputeContextOptions options;
                  options.max_in_flight = tensor_options.max_in_flight;
@@ -350,6 +350,11 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
         kH3AttentionLocalSize, 1, sizeof(AttentionParameters));
   }
   if (has(TensorPipelineSet::kFlashAttention) && flash_attention) {
+    attention_veda_pipeline = make_norm_pipeline(
+        detail::kTensorAttention_VEDA, sizeof(detail::kTensorAttention_VEDA), 6, 256, 1, 32);
+    attention_veda_prepare_pipeline =
+        make_norm_pipeline(detail::kTensorAttention_VEDA_PREPARE,
+                           sizeof(detail::kTensorAttention_VEDA_PREPARE), 7, 256, 1, 32);
     attention_vsa_pipeline = make_norm_pipeline(
         detail::kTensorAttention_VSA, sizeof(detail::kTensorAttention_VSA), 6, 256, 1, 32);
     attention_vsa_prepare_pipeline =

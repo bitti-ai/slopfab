@@ -100,6 +100,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   slopfab::AttentionMode attention_mode = slopfab::AttentionMode::kSage2;
   uint64_t vulkan_sage_workspace_mib = 64;
   slopfab::SolSchedule sol_schedule;
+  slopfab::dit::VedaOptions veda;
   std::string init_latents;
   std::string prompt_embedding;
   int bench_load = 0;
@@ -404,10 +405,14 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       if (!slopfab::parse_attention_mode(v, &attention_mode)) {
         std::fprintf(stderr,
                      "slopfab: --attention wants none, flash2, sage2, sol, "
-                     "sol-experimental, or exact, got '%s'\n",
+                     "sol-experimental, exact, or veda, got '%s'\n",
                      v.c_str());
         return 2;
       }
+    } else if (arg == "--veda-predictor") {
+      veda.predictor_path = next("--veda-predictor");
+    } else if (arg == "--veda-sparsity") {
+      veda.generated_sparsity = next("--veda-sparsity");
     } else if (arg == "--vulkan-sage-workspace-mib") {
       const std::string value = next("--vulkan-sage-workspace-mib");
       if (value.empty() || value.size() > 5 ||
@@ -492,7 +497,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     if (!slopfab::attention_mode_supported(slopfab::DeviceBackend::kVulkan, attention_mode)) {
       std::fprintf(
           stderr,
-          "slopfab: Vulkan inference requires --attention exact, flash2 or sage2; mode '%s' "
+          "slopfab: Vulkan inference requires --attention exact, flash2, sage2 or veda; mode '%s' "
           "will not be remapped and no CUDA fallback was used\n",
           slopfab::attention_mode_name(attention_mode));
       return 1;
@@ -620,6 +625,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   options.attention_mode = attention_mode;
   options.vulkan_sage_extra_workspace_bytes = vulkan_sage_workspace_mib << 20;
   options.sol_schedule = sol_schedule;
+  options.veda = veda;
   options.init_latents_path = init_latents;
   options.prompt_embedding_path = prompt_embedding;
   discover_generate_checkpoints(req, executable);

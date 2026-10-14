@@ -8,6 +8,7 @@
 #include "slopfab/vulkan/gemm.h"
 #include "slopfab/vulkan/tensor.h"
 #include "slopfab/dit/vsa.h"
+#include "slopfab/dit/veda.h"
 
 namespace slopfab::vulkan {
 
@@ -26,6 +27,7 @@ struct H3BlockConfig {
   const LoraAdapters* loras = nullptr;
   // Main FastH3 V2 blocks only. Refiners keep dense attention.
   std::shared_ptr<const dit::VsaTiles> vsa_tiles;
+  std::shared_ptr<dit::VedaRequest> veda;
 };
 
 // Optional device-only diagnostic taps. Each non-null destination must match

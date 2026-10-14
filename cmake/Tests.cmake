@@ -141,6 +141,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_vulkan_dit_synthetic_3.cpp
       tests/test_vulkan_dit_integration.cpp
       tests/test_vulkan_attention_synthetic.cpp
+      tests/test_veda_vulkan.cpp
       tests/test_vulkan_linear_synthetic.cpp
       tests/test_vulkan_runtime_synthetic.cpp
       tests/test_vulkan_upscale.cpp
@@ -291,6 +292,7 @@ if(SLOPFAB_BUILD_TESTS)
       tests/test_transformer_denoise_synthetic.cu
       tests/test_transformer_checkpoint.cu
         tests/test_vsa.cu
+      tests/test_veda.cu
       tests/test_encoder.cu
       tests/test_encoder_loading_synthetic.cu
       tests/test_encoder_checkpoint.cu
