@@ -26,6 +26,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 ## Misc
 
 - **FastH3 V2 on CUDA and Vulkan**, with learned VSA-H3 sparse attention and automatic eight-step scheduling. See [FastH3 V2](docs/fasth3_v2.md).
+- **VEDA on CUDA and Vulkan**, using separate learned sparse-attention predictors with ordinary H3 checkpoints. See [VEDA](docs/veda.md).
 - **Optional MotionCache on CUDA and Vulkan**, reusing motion-aware video/audio residuals to reduce transformer calls. See [MotionCache](docs/motioncache.md).
 - **Viggle-Animate checkpoint and adapter loading**, with [fixed-conditioning and driving-audio options](docs/viggle_animate.md).
 
