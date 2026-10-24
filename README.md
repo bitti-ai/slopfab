@@ -1,6 +1,6 @@
 # slopfab
 
-Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), using CUDA or Vulkan, and image generation with [MOSS Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) on CUDA. No Python is required at runtime.
+Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), using CUDA or Vulkan, and image generation with [MOSS Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) and [Fibo 2.0 editing](https://huggingface.co/briaai/Fibo-2.0-edit-turbo) on CUDA. No Python is required at runtime.
 
 ## Features
 
@@ -105,6 +105,8 @@ builds, tests and packages the CLI, shared library, C header, documentation and
 licenses. Linux packages use external GPU and media runtimes.
 
 ## Models
+
+For Fibo 2.0 Edit Turbo, see [Fibo setup and DLL usage](docs/fibo2.md).
 
 For MOSS Image SFT, see [MOSS setup and usage](docs/moss.md). For example:
 

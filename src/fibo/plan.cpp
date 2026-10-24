@@ -168,6 +168,55 @@ std::string edit_prompt(const std::string& prompt, int images, std::vector<std::
   return "<|im_start|>user\n" + body + "<|im_end|>\n<|im_start|>assistant\n";
 }
 
+RGBImage resize_vision_image(const RGBImage& image, int width, int height) {
+  if (width < 1 || height < 1 || image.width < 1 || image.height < 1 ||
+      image.pixels.size() != size_t(image.width) * image.height * 3)
+    throw std::invalid_argument("Fibo vision resize dimensions");
+  if (width == image.width && height == image.height)
+    return image;
+  // Antialiased bicubic, half-pixel centers, a=-0.5 (Qwen's PIL/PyTorch
+  // processor). Boundary taps are truncated and the remaining weights sum to 1.
+  using Taps = std::vector<std::pair<int, double>>;
+  const auto axis = [](int input, int output) {
+    std::vector<Taps> result(output);
+    const double scale = double(input) / output, support = std::max(1., scale);
+    for (int o = 0; o < output; ++o) {
+      const double center = (o + .5) * scale - .5;
+      double sum = 0;
+      for (int i = std::max(0, int(std::ceil(center - 2 * support)));
+           i <= std::min(input - 1, int(std::floor(center + 2 * support))); ++i) {
+        const double x = std::abs((i - center) / support);
+        const double weight =
+            x < 1 ? ((1.5 * x - 2.5) * x) * x + 1 : ((-.5 * x + 2.5) * x - 4) * x + 2;
+        result[o].emplace_back(i, weight);
+        sum += weight;
+      }
+      for (auto& tap : result[o])
+        tap.second /= sum;
+    }
+    return result;
+  };
+  const auto horizontal = axis(image.width, width), vertical = axis(image.height, height);
+  std::vector<double> temp(size_t(image.height) * width * 3);
+  for (int y = 0; y < image.height; ++y)
+    for (int x = 0; x < width; ++x)
+      for (const auto& tap : horizontal[x])
+        for (int c = 0; c < 3; ++c)
+          temp[(size_t(y) * width + x) * 3 + c] +=
+              tap.second * image.pixels[(size_t(y) * image.width + tap.first) * 3 + c];
+  RGBImage out{width, height, std::vector<uint8_t>(size_t(width) * height * 3)};
+  for (int y = 0; y < height; ++y)
+    for (int x = 0; x < width; ++x)
+      for (int c = 0; c < 3; ++c) {
+        double sum = 0;
+        for (const auto& tap : vertical[y])
+          sum += tap.second * temp[(size_t(tap.first) * width + x) * 3 + c];
+        out.pixels[(size_t(y) * width + x) * 3 + c] =
+            uint8_t(std::clamp(std::nearbyint(sum), 0., 255.));
+      }
+  return out;
+}
+
 RGBImage crop_image(const RGBImage& image, int width, int height) {
   const double scale = std::max(double(width) / image.width, double(height) / image.height);
   auto resized = resize_reference_lanczos(image, int(std::ceil(image.width * scale)),

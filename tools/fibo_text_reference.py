@@ -26,6 +26,13 @@ def main():
     for name,module in list(model.named_modules()):
         if isinstance(module,nn.Linear):
             parent,_,leaf=name.rpartition('.');setattr(model.get_submodule(parent),leaf,Linear('model.'+name))
+    class Embedding(nn.Module):
+        def forward(self,ids):
+            key='model.language_model.embed_tokens'
+            value=w.file.get_tensor(key+'.weight')[ids.cpu()].float()
+            scale=w.file.get_tensor(key+'.weight_scale')[ids.cpu()]
+            return (rotate(value,256)*scale).cuda().bfloat16()
+    model.language_model.embed_tokens=Embedding()
     for name,param in list(model.named_parameters()):
         key='model.'+name
         value=w.file.get_tensor(key)
@@ -46,7 +53,12 @@ def main():
     pixels=torch.from_numpy(np.array(Image.open(root/'source.ppm'))).float()/255
     pixels=((pixels-.5)/.5).permute(2,0,1)[None].repeat(2,1,1,1)
     patches=pixels.reshape(1,2,3,2,2,16,2,2,16).permute(0,3,6,4,7,2,1,5,8).reshape(16,1536).cuda().bfloat16()
-    out=model(input_ids=torch.tensor([ids],device='cuda'),pixel_values=patches,image_grid_thw=torch.tensor([[1,4,4]],device='cuda'),output_hidden_states=True,use_cache=False)
+    vision=model.visual(patches,grid_thw=torch.tensor([[1,4,4]],device='cuda'))
+    save_file({'output':torch.cat((vision[0],*vision[1]),-1).float().cpu().contiguous()},str(root/'vision-expected.safetensors'))
+    # Supplying the padding mask prevents Transformers 4.57 from treating
+    # repeated temporal image positions as separate packed text sequences.
+    out=model(input_ids=torch.tensor([ids],device='cuda'),attention_mask=torch.ones((1,len(ids)),device='cuda',dtype=torch.long),pixel_values=patches,image_grid_thw=torch.tensor([[1,4,4]],device='cuda'),output_hidden_states=True,use_cache=False)
+    save_file({str(i):x.float().cpu().contiguous() for i,x in enumerate(out.hidden_states)},str(root/'text-hidden.safetensors'))
     bundles=((9,20,31),(5,16,27),(7,18,29),(9,20,31),(11,22,33),(13,24,35))
     expected=torch.cat([torch.cat([(out.hidden_states[i].float()*torch.rsqrt(out.hidden_states[i].float().square().mean(-1,keepdim=True)+1e-6)).bfloat16() for i in b],-1) for b in bundles],-1)[0].float().cpu()
     save_file({'output':expected.contiguous()},str(root/'text-expected.safetensors'))

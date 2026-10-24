@@ -78,7 +78,7 @@ text::QwenPixelValues pixels(const RGBImage& source) {
     hh = int(std::ceil(h * b / 32)) * 32;
     ww = int(std::ceil(w * b / 32)) * 32;
   }
-  auto image = resize_reference_lanczos(source, ww, hh);
+  auto image = resize_vision_image(resize_vision_image(source, w, h), ww, hh);
   return text::qwen3vl_patchify_resized_rgb(image.pixels, ww, hh);
 }
 }

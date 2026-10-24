@@ -1154,6 +1154,24 @@ SLOPFAB_TEST(capi_moss_plan_and_guidance) {
   CHECK(plan.num_model_evaluations == 1);
 }
 
+SLOPFAB_TEST(capi_fibo_plan_and_mask) {
+  Request request;
+  CHECK(slopfab_request_set_model_family(request.handle, "fibo2") == SLOPFAB_OK);
+  std::vector<uint8_t> pixels(63 * 45 * 3, 128), mask(63 * 45, 255);
+  CHECK(slopfab_request_set_image_edit_rgb24(request.handle, pixels.data(), pixels.size(),
+      63, 45, 63 * 3, 0, 0, 63, 45, 1, 0) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_image_edit_mask_u8(request.handle, mask.data(), mask.size(),
+      63, 45, 63) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 64 && plan.canvas_height == 48);
+  CHECK(plan.aligned_frames == 1 && plan.num_audio_rows == 0);
+  CHECK(plan.num_model_evaluations == 4);
+  CHECK(slopfab_request_set_steps(request.handle, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.num_model_evaluations == 1);
+}
+
 SLOPFAB_TEST(capi_prompt_file) {
   Request request;
   CHECK(slopfab_request_set_prompt_file(request.handle, "definitely-not-here.txt") ==

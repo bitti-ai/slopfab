@@ -14,7 +14,21 @@ int main(int argc, char** argv) {
     std::string mode = argv[1];
     std::vector<float> output;
     std::vector<int64_t> shape;
-    if (mode == "text") {
+    if (mode == "vision") {
+      auto image = load_reference_image(argv[3]);
+      Runtime rt(argv[2]);
+      std::vector<Tensor> deep;
+      auto x = vision(
+          rt, text::qwen3vl_patchify_resized_rgb(image.pixels, image.width, image.height), deep);
+      Tensor packed(x.rows, 10240);
+      SLOPFAB_CUDA_CHECK(cudaMemcpy2D(packed.ptr(), 10240 * 2, x.ptr(), 2560 * 2, 2560 * 2, x.rows,
+                                      cudaMemcpyDeviceToDevice));
+      for (int i = 0; i < 3; ++i)
+        SLOPFAB_CUDA_CHECK(cudaMemcpy2D(packed.ptr() + (i + 1) * 2560, 10240 * 2, deep[i].ptr(),
+                                        2560 * 2, 2560 * 2, x.rows, cudaMemcpyDeviceToDevice));
+      output = to_host(packed);
+      shape = {x.rows, 10240};
+    } else if (mode == "text") {
       auto context =
           encode_prompt(argv[2], "", "Make the object blue", {load_reference_image(argv[3])}, [] {
           });

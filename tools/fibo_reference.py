@@ -88,6 +88,7 @@ def reference(model,data,mode):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--probe',required=True);parser.add_argument('--model',required=True);parser.add_argument('--mode',choices=['perceiver','transformer'],default='transformer');parser.add_argument('--embedding');args=parser.parse_args()
+    if args.mode=='transformer' and not args.embedding:parser.error('transformer comparison requires --embedding from fiboprobe text')
     torch.manual_seed(41);torch.backends.cuda.matmul.allow_tf32=False
     out=Path('build/fibo-support');data={'prompt_embedding':torch.randn(17,46080),'image_latents':torch.randn(3,4,128),'reference_latents':torch.randn(2,3,128),'sigma':torch.tensor([.75])}
     if args.embedding:data['prompt_embedding']=load_file(args.embedding)['output']

@@ -48,6 +48,7 @@ try:
                        (1, "text_encoder/qwen3vl_4b_int8_convrot.safetensors"),
                        (3, "vae/flux2-vae.safetensors")]:
         check(set_path(request, kind, str((args.weights/path).resolve()).encode()))
+    check(bind("slopfab_request_set_model_family", [handle, C.c_char_p])(request, b""))
     check(bind("slopfab_request_set_prompt", [handle, C.c_char_p])(request, b"Make the object blue"))
     check(bind("slopfab_request_set_resolution", [handle, C.c_int, C.c_int])(request, 64, 96))
     check(bind("slopfab_request_set_steps", [handle, C.c_int])(request, 4))

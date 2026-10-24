@@ -77,3 +77,12 @@ SLOPFAB_TEST(fibo_prompt_images_and_glyphs) {
   CHECK(structured.find("aesthetic_score") == std::string::npos);
   CHECK(structured.find("empty") == std::string::npos);
 }
+
+SLOPFAB_TEST(fibo_vision_bicubic_matches_torch) {
+  slopfab::RGBImage image{7, 5, std::vector<uint8_t>(7 * 5 * 3)};
+  for (size_t i = 0; i < image.pixels.size(); ++i) image.pixels[i] = uint8_t(i * 19 % 256);
+  const auto resized = slopfab::fibo::resize_vision_image(image, 3, 2);
+  // torch.interpolate(mode="bicubic", antialias=True), rounded to U8.
+  CHECK(resized.pixels == std::vector<uint8_t>({93,112,130,112,131,132,125,144,104,130,149,121,123,142,121,101,120,138}));
+  CHECK(slopfab::fibo::resize_vision_image(image, 7, 5).pixels == image.pixels);
+}
