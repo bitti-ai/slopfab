@@ -18,6 +18,7 @@
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/inpaint.h"
 #include "slopfab/continuation.h"
+#include "slopfab/sampling_effect.h"
 
 namespace slopfab::dit {
 
@@ -30,6 +31,7 @@ using DenoiseBoundaryFn = std::function<void(int step, const std::vector<float>&
                                              const std::vector<float>& audio_rows)>;
 
 struct DenoiseInputs {
+  SamplingEffect sampling_effect;
   const InpaintConstraint* inpaint = nullptr;
   const ContinuationConstraint* continuation = nullptr;
   const SequenceLayout* layout = nullptr;
@@ -97,6 +99,7 @@ struct DenoiseInputs {
 };
 
 struct DenoiseOutputs {
+  bool cancelled = false;
   std::vector<float> video_rows; // [V, 96] fp32
   std::vector<float> audio_rows; // [Sa, 32] fp32
 

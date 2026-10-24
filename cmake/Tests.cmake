@@ -59,6 +59,8 @@ if(SLOPFAB_BUILD_TESTS)
   # its cases with the shared harness, so adding tests never touches a file
   # someone else is editing.
   add_executable(slopfab_tests
+    tests/test_sampling_effect.cpp
+    tests/test_lcs.cpp
     tests/test_moss.cpp
     tests/test_seedvr2.cpp
     tests/harness.cpp

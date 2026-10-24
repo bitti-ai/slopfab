@@ -11,6 +11,7 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
       throw std::invalid_argument(message);
   };
   if (p.model.family == "moss") {
+    require(!o.sampling_effect && !o.lcs_data, "sampling effects and LCS currently require H3");
     require(o.inference_backend == DeviceBackend::kCuda, "MOSS currently requires the CUDA backend");
     require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler, "MOSS requires Euler sampling");
     require(o.attention_mode == AttentionMode::kFlash2, "MOSS currently supports --attention flash2");
@@ -20,6 +21,22 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     return;
   }
   validate_sampling_sampler(p, o.sampler);
+  require(!o.sampling_effect || o.source == LatentSource::kDenoise,
+          "sampling effects require denoising");
+  o.lcs.validate();
+  require(!o.lcs.active() || o.lcs_data, "LCS requires calibration data");
+  if (o.lcs_data) {
+    o.lcs_data->validate();
+    require(o.source == LatentSource::kDenoise, "LCS requires denoising");
+    require(o.lcs.sharpness == 0 || !o.lcs_data->sharpness.empty(),
+            "LCS calibration has no sharpness direction");
+  }
+  const size_t lcs_plane = size_t(p.layout.latent_height / 2) * size_t(p.layout.latent_width / 2);
+  require(o.lcs_mask.empty() || (o.lcs_data &&
+              (o.lcs_mask.size() == lcs_plane || o.lcs_mask.size() == size_t(p.layout.num_video_rows))),
+          "LCS mask must match one spatial patch plane or the full sampling volume");
+  for (float x : o.lcs_mask)
+    require(std::isfinite(x) && x >= 0 && x <= 1, "LCS mask values must be in [0,1]");
   validate_latent_upscale_options(o.latent_upscale);
   if (!o.latent_upscale_model_path.empty()) {
     require(!r.image_edit.image,

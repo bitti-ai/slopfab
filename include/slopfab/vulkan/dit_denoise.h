@@ -10,6 +10,7 @@
 #include "slopfab/sampler/scheduler.h"
 #include "slopfab/inpaint.h"
 #include "slopfab/continuation.h"
+#include "slopfab/sampling_effect.h"
 #include "slopfab/vulkan/dit_transformer.h"
 
 namespace slopfab::vulkan {
@@ -21,6 +22,7 @@ namespace slopfab::vulkan {
 // final result unless MotionCache or re-noising is enabled. Those paths transfer
 // target rows during sampling. A still sequence may contain zero audio rows.
 struct ExactH3DenoiseConfig {
+  SamplingEffect sampling_effect;
   uint64_t seed = 0; // Fresh re-noising draws; initial rows are supplied to prepare().
   // Opt-in still-image constraint; target rows cross the host boundary per step.
   std::shared_ptr<const InpaintConstraint> inpaint;

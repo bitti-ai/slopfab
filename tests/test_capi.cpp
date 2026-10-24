@@ -28,6 +28,15 @@
 #include "refmod_fixture.h"
 #include "latent_fixture.h"
 
+SLOPFAB_TEST(capi_sampling_callback) {
+  auto* request = slopfab_request_create();
+  auto hook = [](const slopfab_sampling_step*, void*) -> int { return 0; };
+  CHECK(slopfab_request_set_sampling_callback(nullptr, hook, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_sampling_callback(request, hook, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_sampling_callback(request, nullptr, nullptr) == SLOPFAB_OK);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_upscaler_options) {
   auto* request = slopfab_request_create();
   CHECK(slopfab_request_set_upscaler(request, 999, "weights.safetensors", 128, 10, 10) ==

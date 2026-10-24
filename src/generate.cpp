@@ -85,8 +85,17 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
   } release_guard{reuse, options.release_reused_models};
 
   RunResult result;
+  SamplingEffect sampling_effect = options.sampling_effect;
   try {
     validate_generation_options(request, plan, options);
+    if (options.lcs_data && options.lcs.active()) {
+      if (options.lcs_data->vae_sha256 != lcs_vae_fingerprint(request.video_vae_path))
+        throw std::invalid_argument("LCS calibration belongs to a different VAE checkpoint");
+      auto native = make_lcs_effect(options.lcs_data, options.lcs, options.lcs_mask);
+      sampling_effect = [native = std::move(native), host = options.sampling_effect](const SamplingStep& step) {
+        return (!native || native(step)) && (!host || host(step));
+      };
+    }
     if (!options.latent_upscale_model_path.empty()) {
       SafeTensors checkpoint;
       checkpoint.open(options.latent_upscale_model_path);
@@ -812,6 +821,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       audio_sched.set_sampler(resolve_sampling_sampler(plan, options.sampler));
 
       dit::DenoiseInputs in;
+      in.sampling_effect = sampling_effect;
       in.inpaint = inpaint.get();
       in.continuation = continuation_constraint.get();
       in.layout = &live;
@@ -896,7 +906,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       });
       if (options.verbose)
         std::printf("\n");
-      if (cancel_requested)
+      if (cancel_requested || out.cancelled)
         return stop("denoising");
       result.seconds_denoise_loop = seconds_since(loop_start);
       result.steps_computed = out.steps_computed;
@@ -978,6 +988,7 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       vulkan::TensorContext context(device, context_options);
       context.require_h3_attention(options.attention_mode);
       vulkan::ExactH3DenoiseConfig config;
+      config.sampling_effect = sampling_effect;
       config.seed = request.seed;
       config.inpaint = inpaint;
       config.continuation = continuation_constraint;

@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 30
+#define SLOPFAB_CAPI_VERSION_MINOR 31
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -364,6 +364,64 @@ typedef struct slopfab_progress {
 } slopfab_progress;
 
 typedef void(SLOPFAB_CALL* slopfab_progress_fn)(const slopfab_progress* progress, void* userdata);
+
+/* Since 1.31. Writable sampling predictions, H3 CUDA and Vulkan. Called on
+ * the worker thread before each advancing modality's outer sampler update,
+ * after native LCS. Video precedes audio when both advance. Excludes inner
+ * Langevin evaluations, fixed reference rows and pinned audio.
+ * F32 CPU buffers in normalized model space: denoised = latent + sigma*velocity.
+ * Video packing: [latent_frames, latent_height/2, latent_width/2, 24, 2, 2].
+ * Audio packing: [2, audio_latents, 32]. count counts floats; row_width is 96
+ * for video, 32 for audio. Geometry fields are zero for audio. step/total_steps
+ * describe the modality schedule; evaluation is the joint schedule index.
+ * Only denoised's contents may be changed; all pointers expire on return.
+ * No-op callbacks preserve arithmetic exactly. Non-finite output fails the run.
+ * Return 0 to continue, 1 to cancel, any other value to fail the run.
+ * Callbacks must not throw, wait for/destroy this generation, or start another
+ * generation. slopfab_generation_cancel is allowed. Keep callback/userdata alive
+ * until generation completion, even if the request is destroyed or reused.
+ * Vulkan synchronizes and transfers target buffers when this hook is enabled. */
+typedef struct slopfab_sampling_step {
+  uint32_t struct_size;
+  int32_t modality; /* 0 video, 1 audio */
+  int32_t step, total_steps, evaluation;
+  float sigma, sigma_next;
+  int32_t latent_frames, latent_height, latent_width, row_width;
+  uint64_t count;
+  const float* latent;
+  float* denoised;
+} slopfab_sampling_step;
+typedef int(SLOPFAB_CALL* slopfab_sampling_fn)(const slopfab_sampling_step*, void* userdata);
+
+/* Null callback clears the hook. Request snapshots copy the callback and
+ * userdata values, not the pointed-to state. Native LCS is configured separately. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_callback(
+    slopfab_request* request, slopfab_sampling_fn callback, void* userdata);
+
+/* Since 1.31. Calibrate H3 color and sharpness subspaces using the request's
+ * video VAE and backend. Synchronous; run on an application worker thread.
+ * Only the VAE encoder is loaded. colors: 8..4096 (recommended 64+), image_size:
+ * 64..512 divisible by 32 (recommended 256). Progress is on the calling thread;
+ * return 0 to continue, 1 to cancel, another value to fail. Null is allowed.
+ * Writes a reusable safetensors calibration atomically on success only.
+ * Its full VAE SHA256 is checked on generation. No Python/ComfyUI is required.
+ * Calibration shares the process-wide generation lock (BUSY if occupied). */
+typedef int(SLOPFAB_CALL* slopfab_lcs_progress_fn)(int32_t completed, int32_t total, void* userdata);
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_lcs_calibrate(
+    const slopfab_request* request, const char* output_path, int32_t colors, int32_t image_size,
+    slopfab_lcs_progress_fn progress, void* userdata);
+
+/* Load and snapshot calibration plus JSON settings. Null/empty path clears
+ * native LCS and its mask, preserving the application callback. Null/empty JSON
+ * selects neutral defaults. See docs/lcs.md for keys and ranges. Invalid calls
+ * preserve prior settings. Files are read now, and may be removed afterwards. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs(
+    slopfab_request* request, const char* calibration_path, const char* settings_json);
+/* Optional copied F32 patch mask, frame-major. count is either one spatial
+ * plane (latent_height/2 * latent_width/2), or all target video patch rows.
+ * Values are [0,1]; null with count=0 clears. Native effects only. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs_mask(
+    slopfab_request* request, const float* values, size_t count);
 
 /* --- output ----------------------------------------------------------------
  *

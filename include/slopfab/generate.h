@@ -23,6 +23,8 @@
 #include "slopfab/latent_upscale.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/sampler/scheduler.h"
+#include "slopfab/sampling_effect.h"
+#include "slopfab/lcs.h"
 
 namespace slopfab {
 
@@ -78,6 +80,10 @@ enum class LatentSource {
 };
 
 struct RunOptions {
+  SamplingEffect sampling_effect;
+  std::shared_ptr<const LcsData> lcs_data;
+  LcsSettings lcs;
+  std::vector<float> lcs_mask;
   LatentSource source = LatentSource::kDenoise;
   // Neural backend. Defaults to CUDA when built, otherwise Vulkan. Both support
   // reference video/audio encoding; backends never fall back silently.

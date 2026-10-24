@@ -2,6 +2,35 @@
 #include "slopfab/text/export.h"
 #include "slopfab/refmod_export.h"
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_lcs_calibrate(
+    const slopfab_request* request, const char* output_path, int32_t colors, int32_t image_size,
+    slopfab_lcs_progress_fn progress, void* userdata) {
+  if (!request || !output_path || !*output_path || colors < 8 || colors > 4096 ||
+      image_size < 64 || image_size > 512 || image_size % 32)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "LCS calibration: invalid arguments");
+  return guarded([&] {
+    if (request->request.model_family == "moss")
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "LCS calibration requires an H3 VAE");
+    bool expected = false;
+    if (!g_generation_active.compare_exchange_strong(expected, true))
+      return fail(SLOPFAB_ERR_BUSY, "generation or calibration is already running");
+    struct Claim { ~Claim() { g_generation_active.store(false); } } claim;
+    try {
+      const bool done = slopfab::calibrate_lcs(request->request.video_vae_path,
+          request->options.inference_backend, request->options.vulkan_portable_arithmetic,
+          output_path, colors, image_size, [&](int completed, int total) {
+            const int status = progress ? progress(completed, total, userdata) : 0;
+            if (status != 0 && status != 1)
+              throw std::runtime_error("LCS calibration callback failed: " + std::to_string(status));
+            return status == 0;
+          });
+      return done ? SLOPFAB_OK : fail(SLOPFAB_ERR_CANCELLED, "LCS calibration cancelled");
+    } catch (const std::invalid_argument& e) {
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, e.what());
+    }
+  });
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_export_refmod(const slopfab_request* request,
                                                      const char* output_path, const char* name,
                                                      const char* description, int32_t short_edge) {

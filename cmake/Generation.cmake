@@ -6,6 +6,7 @@ target_compile_definitions(slopfab_core PUBLIC
 # a Vulkan-only build must not include or link CUDA headers or libraries.
 if(TARGET slopfab_cuda OR TARGET slopfab_vulkan)
   add_library(slopfab_generation STATIC
+    src/generation/lcs_calibration.cpp
     src/upscale.cpp
     src/latent_upscale.cpp
     src/generate.cpp

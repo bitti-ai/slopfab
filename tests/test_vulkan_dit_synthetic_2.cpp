@@ -1244,6 +1244,34 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
   denoiser.unload();
   CHECK(denoise_context.pooled_used_bytes() == denoise_staging_used);
 
+  // Writable effects use host predictions on the same device sampler path.
+  for (int mode : {0, 1, 2}) {
+    auto config = denoise_config;
+    int calls = 0;
+    config.sampling_effect = [&](const SamplingStep& step) {
+      ++calls;
+      if (mode == 1)
+        std::fill_n(step.denoised, step.count, step.modality == 0 ? 2.f : -3.f);
+      return mode != 2;
+    };
+    auto model = ExactH3Denoiser::create(denoise_context, config);
+    model.load(transformer_checkpoint);
+    model.prepare(prompt_values.data(), prompt_values.size(), video_values.data(),
+                  video_values.size(), audio_values.data(), audio_values.size());
+    const auto output = model.run(denoise_video, denoise_audio);
+    CHECK(calls > 0 && output.cancelled == (mode == 2));
+    if (mode == 0) {
+      CHECK(output.video_rows == denoise_output.video_rows);
+      CHECK(output.audio_rows == denoise_output.audio_rows);
+    } else if (mode == 1) {
+      for (float x : output.video_rows) CHECK_NEAR(x, 2.f, 1e-5);
+      for (float x : output.audio_rows) CHECK_NEAR(x, -3.f, 1e-5);
+    } else {
+      CHECK(output.steps_completed == 0);
+      CHECK(output.video_rows == video_values && output.audio_rows == audio_values);
+    }
+  }
+
   // Locked target overlap with reference rows and unequal modality schedules.
   // Each channel's suffix stays free, and a reused config captures fresh noise.
   {

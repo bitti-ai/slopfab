@@ -176,6 +176,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     return transformer.adaln_code(t);
   });
   std::vector<float> signature;
+  std::vector<float> effect_video, effect_audio, effect_prediction;
 
   out.decisions.reserve(static_cast<size_t>(std::max(0, steps)));
   for (int i = 0; i < steps; ++i) {
@@ -256,6 +257,39 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                    audio_velocity.data() + ca);
     }
 
+    const float* video_step_velocity = video_velocity.data() + cv;
+    const float* audio_step_velocity = audio_velocity.data() + ca;
+    if (inputs.sampling_effect) {
+      const auto apply = [&](bool is_video, std::vector<float>& modified) {
+        const auto& scheduler = is_video ? *inputs.video_scheduler : *inputs.audio_scheduler;
+        SamplingStep step;
+        step.modality = is_video ? 0 : 1;
+        step.step = static_cast<int>(is_video ? update.video : update.audio);
+        step.total_steps = static_cast<int>(scheduler.num_steps());
+        step.evaluation = i;
+        step.sigma = 1.0f - scheduler.timesteps()[step.step];
+        step.sigma_next = scheduler.sigmas()[step.step + 1];
+        step.frames = is_video ? layout.num_latent_frames : 0;
+        step.height = is_video ? layout.latent_height : 0;
+        step.width = is_video ? layout.latent_width : 0;
+        step.row_width = is_video ? patch : audio_dim;
+        step.count = is_video ? out.video_rows.size() : out.audio_rows.size();
+        step.latent = is_video ? all_video.data() + cv : all_audio.data() + ca;
+        return apply_sampling_effect(inputs.sampling_effect, step,
+                                     is_video ? video_step_velocity : audio_step_velocity,
+                                     modified, effect_prediction);
+      };
+      if ((update.advance_video && !apply(true, effect_video)) ||
+          (update.advance_audio && !inputs.pin_target_audio && !out.audio_rows.empty() &&
+           !apply(false, effect_audio))) {
+        out.cancelled = true;
+        break;
+      }
+      if (update.advance_video)
+        video_step_velocity = effect_video.data();
+      if (update.advance_audio && !inputs.pin_target_audio && !out.audio_rows.empty())
+        audio_step_velocity = effect_audio.data();
+    }
     {
       // In place: FlowScheduler::step permits `out` to alias `sample`.
       cuda::HostSpan span("scheduler_step");
@@ -265,7 +299,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                                        sampler::NoiseStream::kVideoLatents, video_noise.data(),
                                        video_noise.size());
         inputs.video_scheduler->step(static_cast<int>(update.video), all_video.data() + cv,
-                                     video_velocity.data() + cv, out.video_rows.size(),
+                                     video_step_velocity, out.video_rows.size(),
                                      out.video_rows.data(), video_noise.data());
         if (inputs.inpaint)
           inputs.inpaint->apply(out.video_rows.data(), out.video_rows.size(),
@@ -281,7 +315,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
                                        sampler::NoiseStream::kAudioLatents, audio_noise.data(),
                                        audio_noise.size());
         inputs.audio_scheduler->step(static_cast<int>(update.audio), all_audio.data() + ca,
-                                     audio_velocity.data() + ca, out.audio_rows.size(),
+                                     audio_step_velocity, out.audio_rows.size(),
                                      out.audio_rows.data(), audio_noise.data());
         if (inputs.continuation)
           overlap.audio.apply(out.audio_rows.data(), out.audio_rows.size(),

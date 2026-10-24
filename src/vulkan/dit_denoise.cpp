@@ -439,6 +439,7 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
   dit::MotionCache motion(c.motion_cache, c.layout, c.transformer.video_dim,
                           c.transformer.audio_dim, steps, video.shift(), c.pin_target_audio);
   std::vector<float> motion_video, motion_audio, motion_vv, motion_av;
+  std::vector<float> effect_rows, effect_velocity, effect_modified, effect_prediction;
   if (motion.enabled()) {
     motion_video.resize(uint64_t(video_output) * c.transformer.video_dim);
     motion_audio.resize(uint64_t(audio_output) * c.transformer.audio_dim);
@@ -553,6 +554,43 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
       ++result.steps_computed;
     else
       ++result.steps_skipped;
+    if (c.sampling_effect) {
+      batch.submit().wait();
+      const auto apply = [&](bool is_video) {
+        const auto& scheduler = is_video ? video : audio;
+        SamplingStep info;
+        info.modality = is_video ? 0 : 1;
+        info.step = static_cast<int>(is_video ? update_step.video : update_step.audio);
+        info.total_steps = static_cast<int>(scheduler.num_steps());
+        info.evaluation = static_cast<int>(step);
+        info.sigma = is_video ? video_sigma : audio_sigma;
+        info.sigma_next = scheduler.sigmas()[info.step + 1];
+        info.frames = is_video ? c.layout.num_latent_frames : 0;
+        info.height = is_video ? c.layout.latent_height : 0;
+        info.width = is_video ? c.layout.latent_width : 0;
+        info.row_width = is_video ? c.transformer.video_dim : c.transformer.audio_dim;
+        info.count = is_video ? uint64_t(video_output) * c.transformer.video_dim
+                              : uint64_t(audio_output) * c.transformer.audio_dim;
+        effect_rows.resize(info.count);
+        effect_velocity.resize(info.count);
+        DeviceTensor& state = is_video ? video_state : (conditioned ? s.audio_result : s.audio);
+        DeviceTensor& velocity = is_video ? s.video_velocity : s.audio_velocity;
+        impl_->context->download(state, effect_rows.data(), info.count);
+        impl_->context->download(velocity, effect_velocity.data(), info.count);
+        info.latent = effect_rows.data();
+        if (!apply_sampling_effect(c.sampling_effect, info, effect_velocity.data(),
+                                   effect_modified, effect_prediction))
+          return false;
+        impl_->context->upload(velocity, effect_modified.data(), info.count);
+        return true;
+      };
+      if ((update_step.advance_video && !apply(true)) ||
+          (update_step.advance_audio && has_audio && !c.pin_target_audio && !apply(false))) {
+        result.cancelled = true;
+        break;
+      }
+      batch = impl_->context->begin_batch();
+    }
     if (renoise) {
       batch.submit().wait();
       const auto update = [&](DeviceTensor& state, DeviceTensor& velocity,

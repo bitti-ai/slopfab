@@ -18,6 +18,63 @@ int attach_bridge(slopfab_request* request, slopfab::LatentBridge bridge) {
 }
 }
 extern "C" {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs(
+    slopfab_request* request, const char* path, const char* json) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "LCS: null request");
+  return reference_input_guarded([&] {
+    if (!path || !*path) {
+      request->options.lcs_data.reset(); request->options.lcs = {};
+      request->options.lcs_mask.clear(); return;
+    }
+    const auto settings = slopfab::parse_lcs_settings(json ? json : "{}");
+    auto data = slopfab::LcsData::load(path);
+    if (settings.sharpness != 0 && data->sharpness.empty())
+      throw std::invalid_argument("LCS calibration has no sharpness direction");
+    request->options.lcs_data = std::move(data);
+    request->options.lcs = settings;
+  });
+}
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_lcs_mask(
+    slopfab_request* request, const float* values, size_t count) {
+  if (!request || (!values && count) || count > size_t(1) << 28)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "LCS mask: invalid argument");
+  return reference_input_guarded([&] {
+    std::vector<float> mask;
+    if (count) mask.assign(values, values + count);
+    for (float value : mask)
+      if (!std::isfinite(value) || value < 0 || value > 1)
+        throw std::invalid_argument("LCS mask must be finite and in [0,1]");
+    request->options.lcs_mask = std::move(mask);
+  });
+}
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_sampling_callback(
+    slopfab_request* request, slopfab_sampling_fn callback, void* userdata) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "sampling callback: null request");
+  return guarded([&] {
+    slopfab::SamplingEffect effect;
+    if (callback) {
+      effect = [callback, userdata](const slopfab::SamplingStep& step) {
+        slopfab_sampling_step info{};
+        info.struct_size = sizeof(info);
+        info.modality = step.modality;
+        info.step = step.step; info.total_steps = step.total_steps;
+        info.evaluation = step.evaluation;
+        info.sigma = step.sigma; info.sigma_next = step.sigma_next;
+        info.latent_frames = step.frames; info.latent_height = step.height;
+        info.latent_width = step.width; info.row_width = step.row_width;
+        info.count = step.count; info.latent = step.latent; info.denoised = step.denoised;
+        const int status = callback(&info, userdata);
+        if (status != 0 && status != 1)
+          throw std::runtime_error("application sampling callback failed: " + std::to_string(status));
+        return status == 0;
+      };
+    }
+    request->options.sampling_effect = std::move(effect);
+    return SLOPFAB_OK;
+  });
+}
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_family(
     slopfab_request* request, const char* family) {
   if (!request || !family)
