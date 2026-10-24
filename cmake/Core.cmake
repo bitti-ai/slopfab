@@ -1,6 +1,7 @@
 # --- core -------------------------------------------------------------------
 
 add_library(slopfab_core STATIC
+  src/fibo/plan.cpp
   src/core/sampling_effect.cpp
   src/core/lcs.cpp
   src/seedvr2/plan.cpp

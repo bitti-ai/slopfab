@@ -110,6 +110,23 @@ void validate_adaln_table_config(int rank, int rows) {
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
   ModelDescriptor model;
+  if (has(checkpoint, "perceiver.latent_queries") && has(checkpoint, "noise_refiner.0.attention.qkv.weight")) {
+    for (const auto& pair : std::vector<std::pair<std::string, std::vector<int64_t>>>{
+        {"x_embedder.weight", {3584,128}}, {"perceiver.latent_queries", {512,3584}},
+        {"layers.43.attention.qkv.weight", {10752,3584}},
+        {"final_layer.linear.weight", {128,3584}},
+        {"perceiver.layers.1.cross_attention.to_kv.weight", {7168,7680}}}) {
+      if (!checkpoint.find(pair.first) || checkpoint.at(pair.first).shape != pair.second)
+        throw std::invalid_argument("Fibo 2.0: incompatible tensor " + pair.first);
+    }
+    model.family = "fibo2";
+    model.compatibility_architecture = TransformerArchitecture::kFibo2EditTurbo;
+    model.supports_references = true;
+    model.modulation = ModulationImplementation::kTimestepMlp;
+    model.quantization = detect_transformer_quantization(checkpoint);
+    model.origin = "Fibo 2.0 Comfy fused tensor contract";
+    return model;
+  }
   model.pdd_steps = pdd_heads(checkpoint);
   if (model.pdd_steps > 1) {
     if (model.pdd_steps != 32 || !has(checkpoint, "adaln_t_table") ||
@@ -269,6 +286,8 @@ TransformerArchitecture detect_transformer_architecture(const SafeTensors& check
 
 TransformerQuantization detect_transformer_quantization(const SafeTensors& checkpoint) {
   std::string prefix = "blocks.0.attn.qkv_proj";
+  if (checkpoint.find("perceiver.latent_queries"))
+    prefix = "layers.0.attention.qkv";
   if (checkpoint.find("video_embedder.weight"))
     prefix = checkpoint.find("layers.0.proj.qkv.weight") ? "layers.0.proj.qkv" : "layers.0.proj.q";
   const TensorView* weight = checkpoint.find(prefix + ".weight");
@@ -297,6 +316,8 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
 
 const char* transformer_architecture_name(TransformerArchitecture architecture) {
   switch (architecture) {
+  case TransformerArchitecture::kFibo2EditTurbo:
+    return "Fibo 2.0 Edit Turbo transformer";
   case TransformerArchitecture::kMossImage:
     return "MOSS Image transformer";
   case TransformerArchitecture::kPrunedTable:

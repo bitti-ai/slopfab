@@ -23,5 +23,7 @@ struct GenerateRequest;
 struct GeneratePlan;
 std::string request_model_family(const GenerateRequest& request);
 GeneratePlan resolve_moss_plan(const GenerateRequest& request);
+GeneratePlan resolve_fibo_plan(const GenerateRequest& request);
+std::vector<float> fibo_sigma_schedule(int steps, int image_tokens);
 std::vector<float> moss_sigma_schedule(int steps, float shift);
 } // namespace slopfab

@@ -93,7 +93,7 @@ const CommandHelp kCommands[] = {
      "  --width N                  base transformer hidden width\n"
      "  Requires an embedded grid or a local companion file.\n"},
     {"generate", "slopfab generate --prompt <text> [options]", "text to image, video and audio",
-     "  --model <h3|moss>            model family; inferred from explicit checkpoint\n"
+     "  --model <h3|moss|fibo2>            model family; inferred from explicit checkpoint\n"
      "  --prompt <text>              the prompt\n"
      "  --negative-prompt <text>     MOSS negative prompt (default empty)\n"
      "  --guidance <number>          MOSS CFG scale (default 3)\n"

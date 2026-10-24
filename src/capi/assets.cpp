@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "slopfab/model_profile.h"
 #include "slopfab/text/export.h"
 #include "slopfab/refmod_export.h"
 
@@ -11,7 +12,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_lcs_calibrate(const slopfab_request* requ
       image_size > 512 || image_size % 32)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "LCS calibration: invalid arguments");
   return guarded([&] {
-    if (request->request.model_family == "moss")
+    if (slopfab::request_model_family(request->request) != "h3")
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "LCS calibration requires an H3 VAE");
     bool expected = false;
     if (!g_generation_active.compare_exchange_strong(expected, true))

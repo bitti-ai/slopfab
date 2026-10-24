@@ -143,12 +143,12 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   if (req.text_encoder_path.empty())
     req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
   if (req.transformer_path.empty()) {
-    const std::string_view architecture = req.has_references() ? "ref2va" : profile.transformer_hint;
+    const std::string_view architecture = (std::string_view(profile.family) == "h3" && req.has_references()) ? "ref2va" : profile.transformer_hint;
     req.transformer_path = find_checkpoint(weights / "transformer", architecture);
   }
   if (req.video_vae_path.empty())
     req.video_vae_path = find_checkpoint(weights / "vae", profile.vae_hint);
-  if (profile.image_only && req.tokenizer_path.empty()) {
+  if (std::string_view(profile.family) == "moss" && req.tokenizer_path.empty()) {
     const auto tokenizer = weights / "text_encoder" / "qwen3.5_tokenizer.json";
     if (std::filesystem::exists(tokenizer))
       req.tokenizer_path = tokenizer.string();

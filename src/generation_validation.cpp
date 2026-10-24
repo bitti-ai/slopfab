@@ -10,6 +10,15 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     if (!ok)
       throw std::invalid_argument(message);
   };
+  if (p.model.family == "fibo2") {
+    require(o.inference_backend == DeviceBackend::kCuda, "Fibo requires the CUDA backend");
+    require(o.source == LatentSource::kDenoise && o.init_latents_path.empty(), "Fibo requires editing from fresh noise");
+    require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler, "Fibo requires Euler sampling");
+    require(o.attention_mode == AttentionMode::kFlash2, "Fibo supports flash2 attention");
+    require(!o.sampling_effect && !o.lcs_data && !o.lcs.active() && o.lcs_mask.empty(), "Fibo does not support H3 sampling effects or LCS");
+    require(o.latent_upscale_model_path.empty() && o.upscale_model_path.empty() && o.save_latents_path.empty() && !o.on_latents && o.attention_band == 0 && o.veda.predictor_path.empty(), "Fibo does not support H3 latent archives, upscaling or attention overrides");
+    return;
+  }
   if (p.model.family == "moss") {
     require(!o.sampling_effect && !o.lcs_data, "sampling effects and LCS currently require H3");
     require(o.inference_backend == DeviceBackend::kCuda, "MOSS currently requires the CUDA backend");

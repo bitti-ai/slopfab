@@ -635,17 +635,17 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     slopfab::validate_reference_media(req.reference_image_paths.size(), req.reference_media);
   }
   discover_generate_checkpoints(req, executable);
-  if (slopfab::request_model_family(req) == "moss") {
+  if (slopfab::request_model_family(req) == "moss" || slopfab::request_model_family(req) == "fibo2") {
     if (saw_frames)
-      throw std::invalid_argument("MOSS generates one image; omit --frames");
+      throw std::invalid_argument("This model generates one image; omit --frames");
     if (!saw_attention)
       attention_mode = slopfab::AttentionMode::kFlash2;
     if (saw_aspect)
-      throw std::invalid_argument("MOSS requires --resolution WxH instead of --aspect");
+      throw std::invalid_argument("This model requires --resolution WxH instead of --aspect");
     if (!saw_out)
       req.out_path = std::filesystem::path(req.out_path).replace_extension(".ppm").string();
     if (std::filesystem::path(req.out_path).extension() != ".ppm")
-      throw std::invalid_argument("MOSS file output requires --out FILE.ppm");
+      throw std::invalid_argument("Image file output requires --out FILE.ppm");
   } else if (saw_image_guidance) {
     throw std::invalid_argument("image guidance options require --model moss");
   }

@@ -93,8 +93,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_family(
   if (!request || !family)
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: null argument");
   return guarded([&] {
-    if (*family && std::string(family) != "h3" && std::string(family) != "moss")
-      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: expected h3, moss or empty");
+    if (*family && std::string(family) != "h3" && std::string(family) != "moss" && std::string(family) != "fibo2")
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: expected h3, moss, fibo2 or empty");
     request->request.model_family = family;
     return SLOPFAB_OK;
   });
@@ -401,7 +401,7 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_steps(slopfab_request* reques
                 "slopfab_request_set_steps: expected a positive step count");
   }
   return guarded([&] {
-    if (steps == 1 && slopfab::request_model_family(request->request) != "moss")
+    if (steps == 1 && slopfab::request_model_family(request->request) == "h3")
       return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "H3 requires at least 2 grid points");
     request->request.num_inference_steps = steps;
     return SLOPFAB_OK;

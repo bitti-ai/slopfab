@@ -57,6 +57,9 @@
 #include "generation/prompt.h"
 
 namespace slopfab {
+namespace fibo {
+RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
+}
 namespace moss {
 RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
 }
@@ -64,13 +67,13 @@ using namespace generation;
 
 RunResult generation::run_generate_impl(const GenerateRequest& request, const GeneratePlan& plan,
                                         const RunOptions& options, ReusedGenerationModels& reuse) {
-  if (plan.model.family == "moss") {
+  if (plan.model.family == "moss" || plan.model.family == "fibo2") {
     reuse.clear();
 #if SLOPFAB_WITH_CUDA
-    return moss::run(request, plan, options);
+    return plan.model.family == "fibo2" ? fibo::run(request, plan, options) : moss::run(request, plan, options);
 #else
     RunResult unsupported;
-    unsupported.message = "MOSS requires a CUDA-enabled build";
+    unsupported.message = "This image model requires a CUDA-enabled build";
     return unsupported;
 #endif
   }

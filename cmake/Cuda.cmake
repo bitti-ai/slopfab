@@ -96,6 +96,9 @@ if(SLOPFAB_ENABLE_CUDA)
     message(STATUS "slopfab: CUDA ${CMAKE_CUDA_COMPILER_VERSION}, arch ${CMAKE_CUDA_ARCHITECTURES}")
 
     add_library(slopfab_cuda STATIC
+      src/fibo/ops.cu
+      src/fibo/text.cu
+      src/fibo/transformer.cu
       src/moss/runtime.cu
       src/moss/text.cu
       src/moss/transformer.cu

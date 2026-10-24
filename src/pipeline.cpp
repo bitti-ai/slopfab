@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <sstream>
 #include <system_error>
 
 #include "slopfab/sampler/scheduler.h"
@@ -72,6 +73,8 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 GeneratePlan resolve_plan(const GenerateRequest& request) {
   if (request_model_family(request) == "moss")
     return resolve_moss_plan(request);
+  if (request_model_family(request) == "fibo2")
+    return resolve_fibo_plan(request);
   if (request.bridge &&
       (request.continuation || request.continuation_lock_overlap || request.video_transition ||
        request.still_image || request.animate || request.image_edit.image ||
@@ -451,6 +454,13 @@ std::string media_encoding_cache_key(const GenerateRequest& request,
 }
 
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan) {
+  if (plan.model.family == "fibo2") {
+    std::ostringstream out;
+    out << "model       Fibo 2.0 Edit Turbo\ncanvas      " << plan.canvas_width << " x " << plan.canvas_height
+        << "\nmode        image editing\nsteps       " << plan.video_timesteps.size()
+        << " Euler updates (dynamic image-size shift)\nguidance    1\nseed        " << request.seed << "\noutput      " << request.out_path << '\n';
+    return out.str();
+  }
   if (model_profile(plan.model.family).image_only) {
     char info[1024];
     std::snprintf(info, sizeof(info),

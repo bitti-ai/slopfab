@@ -46,14 +46,14 @@ __device__ float sum_block(float x) {
 }
 
 __global__ void norm_kernel(const BFloat* x, const BFloat* w, BFloat* y, int width, int cols,
-                            bool offset, const BFloat* mod, int shift, const BFloat* gate) {
+                            bool offset, const BFloat* mod, int shift, const BFloat* gate, float epsilon) {
   const int row = blockIdx.x;
   float sum = 0;
   for (int i = threadIdx.x; i < width; i += blockDim.x) {
     float a = f(x[size_t(row) * width + i]);
     sum += a * a;
   }
-  const float inv = rsqrtf(sum_block(sum) / width + 1e-6f);
+  const float inv = rsqrtf(sum_block(sum) / width + epsilon);
   for (int i = threadIdx.x; i < width; i += blockDim.x) {
     const size_t index = size_t(row) * width + i;
     float a = f(x[index]) * inv;
@@ -166,10 +166,10 @@ Tensor Runtime::project(const Tensor& x, const std::string& name) {
   auto it = linears_.find(name);
   if (it == linears_.end()) {
     const auto& tensor = checkpoint.at(name + ".weight");
-    if (tensor.shape.size() != 2 || tensor.shape[1] != x.cols)
+    if (tensor.shape.size() < 2 || tensor.numel() / tensor.shape[0] != x.cols)
       throw std::invalid_argument("linear shape mismatch: " + name);
     cuda::QuantWeight w;
-    w.in_features = int(tensor.shape[1]);
+    w.in_features = x.cols;
     w.out_features = int(tensor.shape[0]);
     if (tensor.dtype == DType::kI8) {
       const auto state = read_int8_weight(checkpoint, name + ".weight", "CUDA model runtime");
@@ -224,7 +224,7 @@ Tensor Runtime::project(const Tensor& x, const std::string& name) {
 }
 
 Tensor Runtime::norm(const Tensor& x, const std::string& name, int width, bool offset,
-                     const Tensor* mod, int shift, const Tensor* gate) {
+                     const Tensor* mod, int shift, const Tensor* gate, float epsilon) {
   if (!width)
     width = x.cols;
   if (width <= 0 || x.cols % width || checkpoint.at(name).numel() != width ||
@@ -234,14 +234,24 @@ Tensor Runtime::norm(const Tensor& x, const std::string& name, int width, bool o
   Tensor y(x.rows, x.cols);
   norm_kernel<<<x.rows * x.cols / width, 256>>>(x.ptr(), weight(name), y.ptr(), width, x.cols,
                                                 offset, mod ? mod->ptr() : nullptr, shift,
-                                                gate ? gate->ptr() : nullptr);
+                                                gate ? gate->ptr() : nullptr, epsilon);
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
   return y;
 }
 
+namespace {
+__global__ void cross_softmax(const float* scores, BFloat* probabilities, int keys) {
+ __shared__ float reduce[256];int q=blockIdx.x,t=threadIdx.x;
+ float maximum=-INFINITY;for(int k=t;k<keys;k+=256)maximum=fmaxf(maximum,scores[size_t(q)*keys+k]);
+ reduce[t]=maximum;__syncthreads();for(int d=128;d;d/=2){if(t<d)reduce[t]=fmaxf(reduce[t],reduce[t+d]);__syncthreads();}maximum=reduce[0];
+ float sum=0;for(int k=t;k<keys;k+=256)sum+=expf(scores[size_t(q)*keys+k]-maximum);
+ reduce[t]=sum;__syncthreads();for(int d=128;d;d/=2){if(t<d)reduce[t]+=reduce[t+d];__syncthreads();}sum=reduce[0];
+ for(int k=t;k<keys;k+=256)probabilities[size_t(q)*keys+k]=__float2bfloat16(expf(scores[size_t(q)*keys+k]-maximum)/sum);
+}
+}
 Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int heads, int kv_heads,
                        bool causal) {
-  if (q.rows != k.rows || k.rows != v.rows || k.cols != v.cols || q.cols % heads ||
+  if ((causal && q.rows != k.rows) || k.rows != v.rows || k.cols != v.cols || q.cols % heads ||
       k.cols % kv_heads || q.cols / heads != k.cols / kv_heads)
     throw std::invalid_argument("attention tensor shape mismatch");
   if (causal) {
@@ -255,6 +265,23 @@ Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int he
     cuda::Workspace::Scope scope(scratch);
     text::causal_attention_forward(blas, nullptr, q.ptr(), k.ptr(), v.ptr(), out.ptr(), config,
                                    scratch);
+    return out;
+  }
+  if (q.rows != k.rows) {
+    const int dim=q.cols/heads,tile=128;Tensor out(q.rows,q.cols);
+    cuda::DeviceBuffer<float> scores(size_t(std::min(tile,q.rows))*k.rows);
+    cuda::DeviceBuffer<BFloat> probabilities(scores.size());
+    const float scale=1/std::sqrt(float(dim)),one=1,zero=0;
+    for(int head=0;head<heads;++head)for(int first=0;first<q.rows;first+=tile){
+      const int count=std::min(tile,q.rows-first),kh=head/(heads/kv_heads);
+      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(blas,CUBLAS_OP_T,CUBLAS_OP_N,k.rows,count,dim,&scale,
+        k.ptr()+kh*dim,CUDA_R_16BF,k.cols,q.ptr()+size_t(first)*q.cols+head*dim,CUDA_R_16BF,q.cols,
+        &zero,scores.get(),CUDA_R_32F,k.rows,CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT));
+      cross_softmax<<<count,256>>>(scores.get(),probabilities.get(),k.rows);
+      SLOPFAB_CUBLAS_CHECK(cuda::cublas_gemm_ex(blas,CUBLAS_OP_N,CUBLAS_OP_N,dim,count,k.rows,&one,
+        v.ptr()+kh*dim,CUDA_R_16BF,v.cols,probabilities.get(),CUDA_R_16BF,k.rows,
+        &zero,out.ptr()+size_t(first)*out.cols+head*dim,CUDA_R_16BF,out.cols,CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT));
+    }
     return out;
   }
   AttentionDescriptor desc;
@@ -271,6 +298,14 @@ Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int he
   cuda::Workspace::Scope scope(scratch);
   plan.forward(blas, nullptr, q.ptr(), k.ptr(), v.ptr(), out.ptr(), scratch);
   return out;
+}
+
+void Runtime::release_prefix(const std::string& prefix) {
+  // DeviceBuffer destruction waits for outstanding uses before freeing storage.
+  for (auto it = linears_.begin(); it != linears_.end();)
+    if (it->first.rfind(prefix, 0) == 0) it = linears_.erase(it); else ++it;
+  for (auto it = storage_.begin(); it != storage_.end();)
+    if (it->first.rfind(prefix, 0) == 0) it = storage_.erase(it); else ++it;
 }
 
 Tensor from_host(const std::vector<float>& values, int rows, int cols) {

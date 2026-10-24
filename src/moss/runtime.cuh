@@ -43,9 +43,11 @@ public:
   const float* float_weight(const std::string& name);
   Tensor project(const Tensor& x, const std::string& name);
   Tensor norm(const Tensor& x, const std::string& name, int width = 0, bool unit_offset = false,
-              const Tensor* modulation = nullptr, int shift = 0, const Tensor* gate = nullptr);
+              const Tensor* modulation = nullptr, int shift = 0, const Tensor* gate = nullptr,
+              float epsilon = 1e-6f);
   Tensor attend(const Tensor& q, const Tensor& k, const Tensor& v, int heads, int kv_heads,
                 bool causal = false);
+  void release_prefix(const std::string& prefix);
 
 private:
   std::map<std::string, cuda::DeviceBuffer<uint8_t>> storage_;
@@ -69,4 +71,6 @@ Tensor image_prediction(Runtime& rt, const Tensor& latent, const Tensor& text, i
                         int width, float timestep, const std::vector<int>& skip);
 std::vector<float> decode_image(const std::string& path, const std::vector<float>& latent,
                                 int height, int width);
+std::vector<float> encode_flux_image(const std::string& path, const std::vector<uint8_t>& pixels,
+                                    int height, int width);
 } // namespace slopfab::moss

@@ -25,6 +25,8 @@ if(SLOPFAB_BUILD_TESTS)
   endif()
   slopfab_add_tokenizer_tests()
   if(TARGET slopfab_cuda)
+    add_executable(slopfab_fiboprobe tools/fiboprobe.cpp ${SLOPFAB_TOKENIZER_RESOURCES})
+    target_link_libraries(slopfab_fiboprobe PRIVATE slopfab_generation)
     add_executable(slopfab_mossprobe tools/mossprobe.cpp)
     target_link_libraries(slopfab_mossprobe PRIVATE slopfab_cuda)
     add_executable(slopfab_seedvr2_tests tests/harness.cpp tests/test_main.cpp tests/test_seedvr2_cuda.cu
@@ -67,6 +69,7 @@ if(SLOPFAB_BUILD_TESTS)
   add_executable(slopfab_tests
     tests/test_sampling_effect.cpp
     tests/test_lcs.cpp
+    tests/test_fibo.cpp
     tests/test_moss.cpp
     tests/test_seedvr2.cpp
     tests/harness.cpp

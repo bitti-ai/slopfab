@@ -7,6 +7,26 @@
 
 namespace slopfab::moss {
 namespace {
+std::string vae_name(Runtime& rt, std::string name) {
+  if (!rt.checkpoint.find("decoder.mid.block_1.norm1.weight")) return name;
+  const auto replace = [&](const std::string& from, const std::string& to) {
+    auto at = name.find(from); if (at != std::string::npos) name.replace(at, from.size(), to);
+  };
+  if (name == "post_quant_conv") return "decoder.post_quant_conv";
+  if (name == "quant_conv") return "encoder.quant_conv";
+  replace(".mid_block.resnets.0", ".mid.block_1");
+  replace(".mid_block.resnets.1", ".mid.block_2");
+  replace(".mid_block.attentions.0", ".mid.attn_1");
+  for (int i = 0; i < 4; ++i) {
+    replace("decoder.up_blocks." + std::to_string(i), "decoder.up." + std::to_string(3-i));
+    replace("encoder.down_blocks." + std::to_string(i), "encoder.down." + std::to_string(i));
+  }
+  replace(".resnets.", ".block."); replace(".upsamplers.0", ".upsample");
+  replace(".downsamplers.0", ".downsample"); replace(".conv_norm_out", ".norm_out");
+  replace(".conv_shortcut", ".nin_shortcut"); replace(".group_norm", ".norm");
+  replace(".to_q", ".q"); replace(".to_k", ".k"); replace(".to_v", ".v"); replace(".to_out.0", ".proj_out");
+  return name;
+}
 struct Image {
   int h, w, c;
   cuda::DeviceBuffer<float> data;
@@ -17,13 +37,14 @@ struct Image {
 };
 
 __global__ void im2col(const float* x, float* out, int h, int w, int ci, int kernel, int first,
-                       int count) {
+                       int count, int stride, int out_w) {
   const int index = blockIdx.x * blockDim.x + threadIdx.x;
   const int columns = ci * kernel * kernel;
   if (index >= count * columns)
     return;
   const int r = first + index / columns, col = index % columns;
-  const int y = r / w + col / kernel % kernel - kernel / 2, xx = r % w + col % kernel - kernel / 2;
+  const int pad = stride == 1 ? kernel / 2 : 0;
+  const int y = r / out_w * stride + col / kernel % kernel - pad, xx = r % out_w * stride + col % kernel - pad;
   out[index] = (y >= 0 && y < h && xx >= 0 && xx < w)
                    ? x[(size_t(y) * w + xx) * ci + col / (kernel * kernel)]
                    : 0.f;
@@ -35,22 +56,23 @@ __global__ void add_bias(float* x, const float* bias, int n, int c) {
     x[i] += bias[i % c];
 }
 
-Image conv(Runtime& rt, const Image& x, const std::string& p) {
+Image conv(Runtime& rt, const Image& x, const std::string& name, int stride = 1) {
+  const auto p = vae_name(rt, name);
   const auto& shape = rt.checkpoint.at(p + ".weight").shape;
   if (shape.size() != 4 || shape[1] != x.c || shape[2] != shape[3] ||
       (shape[2] != 1 && shape[2] != 3))
     throw std::invalid_argument("FLUX VAE convolution shape: " + p);
   const int co = int(shape[0]), kernel = int(shape[2]), columns = x.c * kernel * kernel;
-  Image y(x.h, x.w, co);
+  Image y(x.h / stride, x.w / stride, co);
   const float* weight = rt.float_weight(p + ".weight");
-  const int tile = 2048, pixels = x.h * x.w;
+  const int tile = 2048, pixels = y.h * y.w;
   cuda::DeviceBuffer<float> patches(size_t(std::min(tile, pixels)) * columns);
   for (int first = 0; first < pixels; first += tile) {
     const int count = std::min(tile, pixels - first);
     const float* input = x.data.get() + size_t(first) * x.c;
     if (kernel != 1) {
       im2col<<<(count * columns + 255) / 256, 256>>>(x.data.get(), patches.get(), x.h, x.w, x.c,
-                                                     kernel, first, count);
+                                                     kernel, first, count, stride, y.w);
       input = patches.get();
     }
     cuda::gemm_nt(rt.blas, input, weight, y.data.get() + size_t(first) * co, count, co, columns);
@@ -96,7 +118,8 @@ __global__ void group_apply(const float* x, float* y, const float* stats, const 
   y[i] = silu ? a / (1.f + expf(-a)) : a;
 }
 
-Image groupnorm(Runtime& rt, const Image& x, const std::string& p, bool silu = true) {
+Image groupnorm(Runtime& rt, const Image& x, const std::string& name, bool silu = true) {
+  const auto p = vae_name(rt, name);
   if (x.c % 32 || rt.checkpoint.at(p + ".weight").numel() != x.c ||
       rt.checkpoint.at(p + ".bias").numel() != x.c)
     throw std::invalid_argument("FLUX VAE groupnorm shape: " + p);
@@ -119,7 +142,7 @@ __global__ void add(float* x, const float* y, int n) {
 Image resnet(Runtime& rt, Image x, const std::string& p) {
   auto y = conv(rt, groupnorm(rt, x, p + ".norm1"), p + ".conv1");
   y = conv(rt, groupnorm(rt, y, p + ".norm2"), p + ".conv2");
-  if (rt.checkpoint.find(p + ".conv_shortcut.weight"))
+  if (rt.checkpoint.find(vae_name(rt, p + ".conv_shortcut") + ".weight"))
     x = conv(rt, x, p + ".conv_shortcut");
   const int n = x.h * x.w * x.c;
   add<<<(n + 255) / 256, 256>>>(y.data.get(), x.data.get(), n);
@@ -173,8 +196,10 @@ __global__ void softmax(float* scores, int width, float scale) {
     row[i] /= total;
 }
 
-Image project(Runtime& rt, const Image& x, const std::string& p) {
-  if (rt.checkpoint.at(p + ".weight").shape != std::vector<int64_t>{x.c, x.c} ||
+Image project(Runtime& rt, const Image& x, const std::string& name) {
+  const auto p = vae_name(rt, name);
+  const auto& shape = rt.checkpoint.at(p + ".weight").shape;
+  if ((shape != std::vector<int64_t>{x.c, x.c} && shape != std::vector<int64_t>{x.c,x.c,1,1}) ||
       rt.checkpoint.at(p + ".bias").numel() != x.c)
     throw std::invalid_argument("FLUX VAE attention projection shape: " + p);
   Image y(x.h, x.w, x.c);
@@ -205,6 +230,38 @@ Image attention(Runtime& rt, Image x, const std::string& p) {
   add<<<(n + 255) / 256, 256>>>(y.data.get(), x.data.get(), n);
   return y;
 }
+}
+
+std::vector<float> encode_flux_image(const std::string& path, const std::vector<uint8_t>& pixels,
+                                    int height, int width) {
+  if (height < 16 || width < 16 || height % 16 || width % 16 || pixels.size() != size_t(height)*width*3)
+    throw std::invalid_argument("FLUX.2 VAE encoding needs an RGB image on the 16-pixel lattice");
+  Runtime rt(path);
+  std::vector<float> input(pixels.size());
+  for (size_t i=0;i<input.size();++i) input[i] = pixels[i] / 127.5f - 1;
+  Image x(height,width,3);
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(x.data.get(),input.data(),input.size()*4,cudaMemcpyHostToDevice));
+  x=conv(rt,x,"encoder.conv_in");
+  for(int i=0;i<4;++i){const std::string p="encoder.down_blocks."+std::to_string(i);
+    for(int j=0;j<2;++j)x=resnet(rt,std::move(x),p+".resnets."+std::to_string(j));
+    if(i<3)x=conv(rt,x,p+".downsamplers.0.conv",2);
+  }
+  x=resnet(rt,std::move(x),"encoder.mid_block.resnets.0");
+  x=attention(rt,std::move(x),"encoder.mid_block.attentions.0");
+  x=resnet(rt,std::move(x),"encoder.mid_block.resnets.1");
+  x=conv(rt,groupnorm(rt,x,"encoder.conv_norm_out"),"encoder.conv_out");
+  x=conv(rt,x,"quant_conv");
+  if(x.c!=64)throw std::invalid_argument("FLUX.2 encoder must output 32 Gaussian means and log variances");
+  std::vector<float> moments(x.data.size());
+  SLOPFAB_CUDA_CHECK(cudaMemcpy(moments.data(),x.data.get(),moments.size()*4,cudaMemcpyDeviceToHost));
+  auto mean=to_f32(rt.checkpoint.at("bn.running_mean")),var=to_f32(rt.checkpoint.at("bn.running_var"));
+  if(mean.size()!=128||var.size()!=128)throw std::invalid_argument("FLUX.2 latent statistics shape");
+  const int h=height/16,w=width/16;std::vector<float> packed(size_t(h)*w*128);
+  for(int y=0;y<h;++y)for(int xx=0;xx<w;++xx)for(int c=0;c<32;++c)for(int dy=0;dy<2;++dy)for(int dx=0;dx<2;++dx){
+    int channel=c*4+dy*2+dx;float v=moments[(size_t(y*2+dy)*w*2+xx*2+dx)*64+c];
+    packed[(size_t(y)*w+xx)*128+channel]=(v-mean[channel])/std::sqrt(var[channel]+1e-4f);
+  }
+  return packed;
 }
 
 std::vector<float> decode_image(const std::string& path, const std::vector<float>& latent,
