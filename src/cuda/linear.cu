@@ -8,8 +8,8 @@ using namespace linear_detail;
 
 size_t QuantWeight::stored_bytes() const {
   const size_t n = static_cast<size_t>(out_features) * in_features;
-  // Two nibbles per byte. Both shipped 4-bit formats place the even element in
-  // the high nibble; their dequantisers pin that convention independently.
+  // Two nibbles per byte. NVFP4/NF4 store the even element in the high nibble;
+  // W4A8 stores it in the low nibble. Each decoder handles its own convention.
   if (format == QuantFormat::kNVFP4 || format == QuantFormat::kNF4 || format == QuantFormat::kW4A8)
     return (n + 1) / 2;
   return element_bytes(format) * n;
@@ -67,7 +67,7 @@ size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType comput
 
 size_t linear_dense_weight_bytes(const QuantWeight& w) {
   if (w.format == QuantFormat::kBF16 || w.format == QuantFormat::kW4A8)
-    return 0; // already dense; `prepare` carves nothing
+    return 0; // already dense or native W4A8; `prepare` carves nothing
   return align_up(static_cast<size_t>(w.out_features) * w.in_features * sizeof(__nv_bfloat16));
 }
 
