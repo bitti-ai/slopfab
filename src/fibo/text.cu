@@ -221,7 +221,7 @@ std::vector<Tensor> encode_prompt(const std::string& path, const std::string& to
     auto gate = rt.project(y, p + "mlp.gate_proj"), up = rt.project(y, p + "mlp.up_proj");
     update = rt.project(moss::activate(up, &gate), p + "mlp.down_proj");
     moss::residual(x, update);
-    if (i < 3)
+    if (i < 3 && !all_deep.empty())
       scatter(x, all_deep[i], plan.image_rows, true);
     if (taps.count(i + 1))
       captured.emplace(i + 1, layer_norm(rt, x, "", true));

@@ -1,5 +1,6 @@
 #include "harness.h"
 #include "slopfab/fibo.h"
+#include "slopfab/json.h"
 #include "slopfab/model_profile.h"
 #include "slopfab/pipeline.h"
 #include "slopfab/generate.h"
@@ -37,6 +38,8 @@ SLOPFAB_TEST(fibo_mask_plan_and_guards) {
       return true;
     }
   };
+  CHECK(!fails(r));
+  r.reference_image_paths = {"a", "b", "c", "d", "e"};
   CHECK(fails(r));
   r.reference_image_paths = {"a", "b", "c", "d"};
   r.canvas_width = r.canvas_height = 4096;
@@ -92,4 +95,25 @@ SLOPFAB_TEST(fibo_vision_bicubic_matches_torch) {
   CHECK(resized.pixels == std::vector<uint8_t>({93, 112, 130, 112, 131, 132, 125, 144, 104, 130,
                                                 149, 121, 123, 142, 121, 101, 120, 138}));
   CHECK(slopfab::fibo::resize_vision_image(image, 7, 5).pixels == image.pixels);
+}
+
+SLOPFAB_TEST(fibo_text_only_plan_and_prompt) {
+  slopfab::GenerateRequest r;
+  r.model_family = "fibo2";
+  r.canvas_width = 256;
+  r.canvas_height = 384;
+  const auto plan = slopfab::resolve_plan(r);
+  CHECK(plan.canvas_width == 256);
+  CHECK(plan.canvas_height == 384);
+  CHECK(plan.aligned_frames == 1);
+  CHECK(plan.num_model_evaluations() == 4);
+  std::vector<std::string> glyphs;
+  for (const auto& prompt : {std::string("A blue vase"), std::string(R"({"edit_instruction":"A blue vase","structured_caption":{"background":"white"}})")}) {
+    const auto formatted = slopfab::fibo::edit_prompt(prompt, 0, glyphs);
+    CHECK(formatted.find("<|image_pad|>") == std::string::npos);
+    const auto first = formatted.find('{'), last = formatted.rfind('}');
+    const auto body = slopfab::json::parse(formatted.substr(first, last - first + 1));
+    CHECK(body.find("edit_instruction")->as_string() == "A blue vase");
+    CHECK(glyphs.empty());
+  }
 }

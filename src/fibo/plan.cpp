@@ -25,9 +25,8 @@ std::vector<float> fibo_sigma_schedule(int steps, int tokens) {
 
 GeneratePlan resolve_fibo_plan(const GenerateRequest& r) {
   r.image_edit.validate();
-  if ((!r.image_edit.image && r.reference_image_paths.empty()) ||
-      r.reference_image_paths.size() + bool(r.image_edit.image) > 4)
-    throw std::invalid_argument("Fibo 2.0 Edit Turbo requires one to four input images");
+  if (r.reference_image_paths.size() + bool(r.image_edit.image) > 4)
+    throw std::invalid_argument("Fibo 2.0 Edit Turbo supports at most four input images");
   if (r.continuation || r.bridge || r.animate || r.video_transition || !r.reference_media.empty() ||
       r.has_refmods() || r.image_edit.invert_mask || !r.loras.empty() || r.cache_threshold != 0 ||
       r.skip_every || r.block_cache_span || r.motion_cache.active() ||
@@ -123,8 +122,8 @@ json::Value clean(const json::Value& v) {
 }
 
 std::string edit_prompt(const std::string& prompt, int images, std::vector<std::string>& rendered) {
-  if (images < 1 || images > 4 || prompt.empty())
-    throw std::invalid_argument("Fibo needs an edit instruction and one to four images");
+  if (images < 0 || images > 4 || prompt.empty())
+    throw std::invalid_argument("Fibo needs a prompt and zero to four images");
   json::Value caption;
   std::string instruction = prompt;
   try {
@@ -167,9 +166,12 @@ std::string edit_prompt(const std::string& prompt, int images, std::vector<std::
                                                     : "image_" + std::to_string(i + 1))) +
             ':' + json::stringify(json::Value(marker));
   }
-  if (!caption.is_null())
-    body += ",\"structured_caption\":" + json::stringify(caption);
-  body += ",\"edit_instruction\":" + json::stringify(json::Value(instruction)) + '}';
+  if (!caption.is_null()) {
+    if (images) body += ',';
+    body += "\"structured_caption\":" + json::stringify(caption);
+  }
+  if (images || !caption.is_null()) body += ',';
+  body += "\"edit_instruction\":" + json::stringify(json::Value(instruction)) + '}';
   return "<|im_start|>user\n" + body + "<|im_end|>\n<|im_start|>assistant\n";
 }
 
