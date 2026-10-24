@@ -1,5 +1,6 @@
 #include "detail/vulkan_fixture.h"
 #include "slopfab/sampler/noise.h"
+#include "slopfab/dit/pdd.h"
 
 SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
   using namespace slopfab;
@@ -112,6 +113,61 @@ SLOPFAB_TEST_CATEGORY(vulkan_animate_pinned_audio_boundaries, "synthetic") {
   CHECK(result.audio_rows == audio);
   CHECK(result.video_rows != std::vector<float>(t.video_output_rows * 4, .5f));
   model.unload();
+  // Distinct constant heads expose wrong PDD bank offsets and modality shifts
+  // without requiring a production transformer in GPU memory.
+  {
+    auto pdd_tensors = tensors;
+    for (auto& tensor : pdd_tensors) {
+      if (tensor.name.find("final_layer.video_out.") != 0 &&
+          tensor.name.find("final_layer.audio_out.") != 0)
+        continue;
+      const size_t stride = tensor.data.size();
+      const float baseline = tensor.data.front();
+      tensor.shape[0] *= 32;
+      tensor.data.resize(stride * 32);
+      for (int j = 0; j < 32; ++j)
+        std::fill(tensor.data.begin() + j * stride, tensor.data.begin() + (j + 1) * stride,
+                  tensor.shape.size() == 1 ? (j ? float(j) * .125f : baseline) : 0.f);
+    }
+    const auto pdd_path = std::filesystem::temp_directory_path() / "slopfab_pdd_heads.safetensors";
+    write_safetensors(pdd_path.string(), pdd_tensors);
+    SafeTensors pdd_checkpoint;
+    pdd_checkpoint.open(pdd_path.string());
+    auto pdd_config = config;
+    pdd_config.pin_target_audio = false;
+    pdd_config.transformer.pdd_steps = 32;
+    auto pdd_model = ExactH3Denoiser::create(context, pdd_config);
+    pdd_model.load(pdd_checkpoint);
+    pdd_model.prepare(prompt.data(), prompt.size(), video.data(), video.size(), audio.data(),
+                      audio.size());
+    sampler::FlowScheduler v(12), a(3);
+    v.set_sigmas(dit::omniref_sigmas(12));
+    a.set_sigmas(dit::omniref_sigmas(3));
+    double video_delta = 0, audio_delta = 0;
+    auto delta = [](int step, double shift, double baseline) {
+      auto sigma = [shift](int j) {
+        double u = 1 - j / 32.;
+        return .999 * shift * u / (1 + (shift - 1) * u);
+      };
+      double sum = 0;
+      for (int j = 4 * step; j < 4 * step + 4; ++j)
+        sum += (sigma(j) - sigma(j + 1)) * (baseline + (j ? j * .125 : 0));
+      return sum;
+    };
+    const auto result = pdd_model.run(
+        v, a, {}, [&](uint32_t step, const std::vector<float>& vr, const std::vector<float>& ar) {
+          video_delta += delta(step, 12, .25);
+          audio_delta += delta(step, 3, 10);
+          for (float value : vr)
+            CHECK_NEAR(value, .5 + video_delta, 2e-5);
+          for (size_t i = 0; i < ar.size(); ++i)
+            CHECK_NEAR(ar[i], audio[i] + audio_delta, 2e-5);
+        });
+    CHECK(result.steps_completed == 8);
+    pdd_model.unload();
+    pdd_checkpoint.close();
+    std::filesystem::remove(pdd_path);
+  }
   // Bridge boundaries use both ends of each target channel. Keep this on the
   // tiny checkpoint so validation never depends on resident production weights.
   {

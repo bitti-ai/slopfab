@@ -133,6 +133,12 @@ SLOPFAB_TEST(model_descriptor_resolves_omniref_without_legacy_aliases) {
     CHECK(plan.video_sigmas.front() == .999f && plan.audio_sigmas.front() == .999f);
     request.sampling.sampler = sampler::SamplerKind::kRenoise;
     CHECK(fails([&] { resolve_plan(request); }));
+    request.sampling.sampler.reset();
+    request.sampling.base_sigmas = std::vector<float>{1, .5f, 0};
+    CHECK(fails([&] { resolve_plan(request); }));
+    request.sampling.base_sigmas.reset();
+    request.cache_threshold = .1f;
+    CHECK(fails([&] { resolve_plan(request); }));
   }
   // Ordinary FastH3 V2 heads must retain their existing architecture/schedule.
   fixture.file.close();
