@@ -34,6 +34,9 @@ inline constexpr uint8_t kTensorReferenceSpirv[] = {@SLOPFAB_TENSOR_REFERENCE_SP
 inline constexpr uint8_t kTensorVaeRopeSpirv[] = {
     @SLOPFAB_TENSOR_VAE_ROPE_SPV_BYTES@};
 inline constexpr uint8_t kTensorWeightSpirv[] = {@SLOPFAB_TENSOR_WEIGHT_SPV_BYTES@};
+inline constexpr uint8_t kTensorW4A8Spirv[] = {@SLOPFAB_TENSOR_W4A8_SPV_BYTES@};
+inline constexpr uint8_t kTensorW4A8DenormSpirv[] = {@SLOPFAB_TENSOR_W4A8_DENORM_SPV_BYTES@};
+inline constexpr uint8_t kTensorW4A8QuantSpirv[] = {@SLOPFAB_TENSOR_W4A8_QUANT_SPV_BYTES@};
 inline constexpr uint8_t kTensorWeightDenormSpirv[] = {
     @SLOPFAB_TENSOR_WEIGHT_DENORM_SPV_BYTES@};
 inline constexpr uint8_t kTensorGemmSpirv[] = {@SLOPFAB_TENSOR_GEMM_SPV_BYTES@};

@@ -48,6 +48,12 @@ public:
   void apply_pre_quant_scale(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output) const;
   void apply_convrot(TensorBatch& batch, DeviceTensor& input, DeviceTensor& output) const;
 
+  // Input is already ConvRot-transformed BF16 [rows,in]. Workspace is F32
+  // [rows,in+1], holding integer activation codes and one F32 scale per row.
+  // The output is BF16 [rows,out]; weights stay packed throughout execution.
+  void forward_w4a8(TensorBatch& batch, DeviceTensor& rotated, DeviceTensor& workspace,
+                    DeviceTensor& output) const;
+
 private:
   struct Impl;
   explicit LinearWeight(std::unique_ptr<Impl> impl);

@@ -42,6 +42,7 @@ LinearWeight LinearWeight::upload(TensorContext& context, const LinearWeightUplo
     break;
   case LinearWeightFormat::kNVFloat4:
   case LinearWeightFormat::kNF4:
+  case LinearWeightFormat::kW4A8:
     expected_bytes = (elements + 1) / 2;
     break;
   }
@@ -61,7 +62,8 @@ LinearWeight LinearWeight::upload(TensorContext& context, const LinearWeightUplo
   const bool pre_scale_pair_valid =
       (source.pre_quant_scale_bf16 == nullptr) == (source.pre_quant_scale_count == 0);
   if (!scale_pair_valid || !block_pair_valid || !absmax_pair_valid || !map_pair_valid ||
-      !nested_map_pair_valid || !nested_absmax_pair_valid || !pre_scale_pair_valid) {
+      !nested_map_pair_valid || !nested_absmax_pair_valid || !pre_scale_pair_valid ||
+      ((source.w4_codebook == nullptr) != (source.w4_codebook_count == 0))) {
     throw std::invalid_argument("vulkan linear weight: auxiliary pointer/count mismatch");
   }
   if (source.has_fp8_input_scale &&
@@ -117,10 +119,32 @@ LinearWeight LinearWeight::upload(TensorContext& context, const LinearWeightUplo
                            source.nf4_nested_quant_map_count != 0 ||
                            source.nf4_nested_absmax_count != 0;
   if ((source.format != LinearWeightFormat::kFloat8E4M3 &&
-       source.format != LinearWeightFormat::kInt8 && source.weight_scale_count != 0) ||
-      (source.format != LinearWeightFormat::kNVFloat4 && source.block_scale_count != 0) ||
-      (source.format != LinearWeightFormat::kNF4 && has_nf4_aux)) {
+       source.format != LinearWeightFormat::kInt8 && source.format != LinearWeightFormat::kW4A8 &&
+       source.weight_scale_count != 0) ||
+      (source.format != LinearWeightFormat::kNVFloat4 && source.format != LinearWeightFormat::kW4A8 &&
+       source.block_scale_count != 0) ||
+      (source.format != LinearWeightFormat::kNF4 && has_nf4_aux) ||
+      (source.format != LinearWeightFormat::kW4A8 && source.w4_codebook_count != 0)) {
     throw std::invalid_argument("vulkan linear weight: auxiliary metadata does not match format");
+  }
+
+  if (source.format == LinearWeightFormat::kW4A8) {
+    // Bound INT32 accumulators even for the largest possible signed products.
+    if (!source.convrot || source.convrot_group != 256 || source.in_features % 256 ||
+        source.in_features > uint32_t(INT32_MAX / (128 * 127)) || source.out_features % 2 ||
+        elements > UINT32_MAX || source.block_scale_count != elements / 16 ||
+        source.weight_scale_count != source.out_features || source.w4_codebook_count != 16 ||
+        source.pre_quant_scale_count != 0)
+      throw std::invalid_argument("vulkan linear weight: invalid W4A8 metadata");
+    for (uint64_t i = 0; i < source.block_scale_count; ++i)
+      if ((source.block_scale[i] & 128) || (source.block_scale[i] & 127) == 127)
+        throw std::invalid_argument("vulkan linear weight: invalid W4A8 group scale");
+    for (uint32_t i = 0; i < source.out_features; ++i)
+      if (!std::isfinite(source.weight_scale[i]) || source.weight_scale[i] <= 0)
+        throw std::invalid_argument("vulkan linear weight: invalid W4A8 channel scale");
+    for (uint32_t i = 0; i < 16; ++i)
+      if (!std::isfinite(source.w4_codebook[i]))
+        throw std::invalid_argument("vulkan linear weight: invalid W4A8 codebook");
   }
 
   auto result = std::make_unique<Impl>();
@@ -168,6 +192,8 @@ LinearWeight LinearWeight::upload(TensorContext& context, const LinearWeightUplo
              source.weight_scale);
   if (source.block_scale_count != 0)
     allocate(result->block_scale, ScalarType::kUInt8, source.block_scale_count, source.block_scale);
+  if (source.w4_codebook_count != 0)
+    allocate(result->w4_codebook, ScalarType::kFloat32, source.w4_codebook_count, source.w4_codebook);
   if (source.format == LinearWeightFormat::kNF4) {
     allocate(result->nf4_absmax, ScalarType::kUInt8, source.nf4_absmax_count, source.nf4_absmax);
     allocate(result->nf4_quant_map, ScalarType::kFloat32, source.nf4_quant_map_count,
@@ -319,6 +345,8 @@ void TensorBatch::materialize_linear_weight(const LinearWeight& weight, DeviceTe
   resources[5] = output;
   uint32_t op = 0;
   switch (weight.impl_->format) {
+  case LinearWeightFormat::kW4A8:
+    throw std::invalid_argument("vulkan W4A8 requires integer matrix multiplication");
   case LinearWeightFormat::kFloat32:
     op = 0;
     break;
@@ -449,6 +477,73 @@ void TensorBatch::transform_linear_activation(const LinearWeight& weight, Device
     }
     impl_->transition(destination, BufferAccess::kComputeWrite);
     impl_->dispatch_weight(parameters, groups, resources);
+  } catch (...) {
+    impl_->poisoned = true;
+    throw;
+  }
+}
+
+void LinearWeight::forward_w4a8(TensorBatch& batch, DeviceTensor& rotated,
+                                DeviceTensor& workspace, DeviceTensor& output) const {
+  batch.w4a8_linear(*this, rotated, workspace, output);
+}
+
+void TensorBatch::w4a8_linear(const LinearWeight& weight, DeviceTensor& rotated,
+                             DeviceTensor& workspace, DeviceTensor& output) {
+  if (!impl_ || impl_->poisoned || !weight.impl_ || weight.format() != LinearWeightFormat::kW4A8)
+    throw std::invalid_argument("vulkan W4A8: invalid batch or weight");
+  auto source = impl_->owner->require(rotated);
+  auto scratch = impl_->owner->require(workspace);
+  auto destination = impl_->owner->require(output);
+  const auto& shape = source->layout;
+  const uint64_t rows = shape.extent[0];
+  const uint32_t in = weight.in_features(), out = weight.out_features();
+  // Q/K/V destinations use [rows,heads,head_dim], with the same row-major storage.
+  if (shape.rank != 2 || shape.extent[1] != in || !shape.is_contiguous() ||
+      source->type != ScalarType::kBFloat16 || rows == 0 ||
+      scratch->type != ScalarType::kFloat32 || scratch->layout.rank != 2 ||
+      scratch->layout.extent[0] != rows || scratch->layout.extent[1] != uint64_t(in) + 1 ||
+      !scratch->layout.is_contiguous() || destination->type != ScalarType::kBFloat16 ||
+      (destination->layout.rank != 2 && destination->layout.rank != 3) ||
+      destination->layout.extent[0] != rows || destination->layout.elements() != rows * out ||
+      !destination->layout.is_contiguous() || rows * (uint64_t(in) + 1) > UINT32_MAX ||
+      rows * out > UINT32_MAX)
+    throw std::invalid_argument("vulkan W4A8: incompatible activation, workspace or output");
+  std::array<std::shared_ptr<DeviceTensor::Impl>, 6> gemm = {
+      impl_->owner->require(weight.impl_->data),
+      impl_->owner->require(weight.impl_->block_scale),
+      impl_->owner->require(weight.impl_->w4_codebook),
+      impl_->owner->require(weight.impl_->weight_scale), scratch, destination};
+  if (source == scratch || source == destination || scratch == destination)
+    throw std::invalid_argument("vulkan W4A8: aliased activation buffers");
+  for (size_t i = 0; i < 4; ++i)
+    if (gemm[i] == source || gemm[i] == scratch || gemm[i] == destination)
+      throw std::invalid_argument("vulkan W4A8: activation aliases weight storage");
+  const uint64_t groups = ((rows + 3) / 4) * ((uint64_t(out) + 31) / 32);
+  if (rows > impl_->owner->max_dispatch_x || groups > UINT32_MAX ||
+      groups > uint64_t(impl_->owner->max_dispatch_x) * impl_->owner->max_dispatch_y)
+    throw std::out_of_range("vulkan W4A8: dispatch exceeds device limits");
+  if (impl_->owner->max_batch_operators - impl_->operator_count < 2)
+    throw std::logic_error("vulkan W4A8: batch operator limit exceeded");
+  TensorContext::Impl::WeightParameters p;
+  p.op = 11;
+  p.count = static_cast<uint32_t>(rows);
+  p.in_features = in;
+  p.out_features = out;
+  std::array<std::shared_ptr<DeviceTensor::Impl>, 6> quant;
+  quant.fill(source);
+  quant[5] = scratch;
+  try {
+    impl_->count_operator();
+    impl_->transition(source, BufferAccess::kComputeRead);
+    impl_->transition(scratch, BufferAccess::kComputeWrite);
+    impl_->dispatch_weight(p, static_cast<uint32_t>(rows), quant);
+    impl_->count_operator();
+    for (size_t i = 0; i < 5; ++i)
+      impl_->transition(gemm[i], BufferAccess::kComputeRead);
+    impl_->transition(destination, BufferAccess::kComputeWrite);
+    p.op = 12;
+    impl_->dispatch_weight(p, static_cast<uint32_t>(groups), gemm);
   } catch (...) {
     impl_->poisoned = true;
     throw;

@@ -917,3 +917,103 @@ SLOPFAB_TEST_CATEGORY(vulkan_gemm_dispatch_geometry, "synthetic") {
   CHECK(!gemm_dispatch_geometry(1, 1, 0, 16, 8, 8, &geometry));
   CHECK(!gemm_dispatch_geometry(1, 1, 16, 16, 8, 8, nullptr));
 }
+
+
+SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {
+  using namespace slopfab;
+  using namespace slopfab::vulkan;
+  if (!Instance::available()) {
+    SKIP_UNSUPPORTED_HARDWARE("Vulkan unavailable");
+    return;
+  }
+  Instance instance = Instance::create();
+  const auto physical = instance.enumerate_devices();
+  if (physical.empty() || !physical.front().info().timeline_semaphore) {
+    SKIP_UNSUPPORTED_HARDWARE("Vulkan timeline semaphore unavailable");
+    return;
+  }
+  DeviceOptions options;
+  options.enable_timeline_semaphore = true;
+  Device device = physical.front().create_device(options);
+  TensorContext context(device);
+  constexpr uint32_t rows = 5, n = 34, k = 512;
+  std::vector<uint8_t> packed(n * k / 2), groups(n * k / 16);
+  std::vector<float> channel(n), codebook(16);
+  for (size_t i = 0; i < packed.size(); ++i)
+    packed[i] = uint8_t(((i * 7 + i / 43) & 15) | (((i * 3 + 5) & 15) << 4));
+  const uint8_t group_values[] = {0, 0x38, 0x48, 0x78};
+  for (size_t i = 0; i < groups.size(); ++i) groups[i] = group_values[i % 4];
+  for (uint32_t i = 0; i < n; ++i) channel[i] = std::ldexp(1.0f, int(i % 4) - 3);
+  for (uint32_t i = 0; i < 16; ++i) codebook[i] = (float(i) - 7.0f) * 0.5f;
+  LinearWeightUpload u;
+  u.format = LinearWeightFormat::kW4A8;
+  u.out_features = n; u.in_features = k;
+  u.data = packed.data(); u.data_bytes = packed.size();
+  u.block_scale = groups.data(); u.block_scale_count = groups.size();
+  u.weight_scale = channel.data(); u.weight_scale_count = channel.size();
+  u.w4_codebook = codebook.data(); u.w4_codebook_count = codebook.size();
+  u.convrot = true; u.convrot_group = 256;
+  auto weight = LinearWeight::upload(context, u);
+  CHECK(weight.stored_bytes() == packed.size());
+  CHECK(weight.resident_bytes() == packed.size() + groups.size() + n * 4 + 64);
+  auto matrix = [&](uint32_t a, uint32_t b, ScalarType type) {
+    const uint64_t shape[] = {a, b};
+    return context.allocate(TensorLayout::contiguous(shape, 2), type);
+  };
+  auto input = matrix(rows, k, ScalarType::kBFloat16);
+  auto rotated = matrix(rows, k, ScalarType::kBFloat16);
+  auto workspace = matrix(rows, k + 1, ScalarType::kFloat32);
+  auto output = matrix(rows, n, ScalarType::kBFloat16);
+  std::vector<uint16_t> x(rows * k), expected(rows * n);
+  x[k] = reference_bf16(1.0f);
+  for (uint32_t i = 2 * k; i < 4 * k; ++i)
+    x[i] = reference_bf16(float(int((i * 37) % 53) - 26) / 8.0f);
+  std::fill(x.begin() + 4 * k, x.end(), reference_bf16(-0.5f));
+  context.upload_bytes(input, x.data(), x.size() * 2);
+  const int h[4][4] = {{1,1,1,-1}, {1,1,-1,1}, {1,-1,1,1}, {-1,1,1,1}};
+  for (uint32_t r = 0; r < rows; ++r) {
+    std::vector<float> rotated_ref(k);
+    float maximum = 0;
+    for (uint32_t i = 0; i < k; ++i) {
+      float sum = 0;
+      for (uint32_t j = 0; j < 256; ++j) {
+        int sign = 1;
+        for (uint32_t digit = 0; digit < 4; ++digit)
+          sign *= h[(i >> (2 * digit)) & 3][(j >> (2 * digit)) & 3];
+        sum += float(sign) * bf16_to_f32(x[r * k + (i / 256) * 256 + j]);
+      }
+      rotated_ref[i] = bf16_to_f32(reference_bf16(sum / 16.0f));
+      maximum = std::max(maximum, std::abs(rotated_ref[i]));
+    }
+    const float scale = std::max(maximum / 127.0f, 1e-30f);
+    const float divisor = bf16_to_f32(reference_bf16(scale));
+    for (uint32_t o = 0; o < n; ++o) {
+      int32_t sum = 0;
+      for (uint32_t i = 0; i < k; ++i) {
+        const float quotient = bf16_to_f32(reference_bf16(rotated_ref[i] / divisor));
+        const int a = std::clamp(int(std::nearbyint(quotient)), -128, 127);
+        const uint32_t index = o * k + i;
+        const int code = (packed[index / 2] >> ((index & 1) * 4)) & 15;
+        const int b = std::clamp(int(std::nearbyint(codebook[code] * f8_e4m3_to_f32(groups[index / 16]))), -127, 127);
+        sum += a * b;
+      }
+      expected[r * n + o] = reference_bf16((float(sum) * scale) * channel[o]);
+    }
+  }
+  auto batch = context.begin_batch();
+  weight.apply_convrot(batch, input, rotated);
+  weight.forward_w4a8(batch, rotated, workspace, output);
+  batch.submit().wait();
+  std::vector<uint16_t> actual(rows * n);
+  context.download_bytes(output, actual.data(), actual.size() * 2);
+  CHECK(actual == expected);
+  auto rejected = [](auto fn) { try { fn(); return false; } catch (const std::exception&) { return true; } };
+  CHECK(rejected([&] { auto b = context.begin_batch(); weight.forward_w4a8(b, rotated, output, output); }));
+  u.w4_codebook_count = 15;
+  const auto before = context.reserved_bytes();
+  CHECK(rejected([&] { LinearWeight::upload(context, u); }));
+  CHECK(context.reserved_bytes() == before);
+  u.w4_codebook_count = 16;
+  groups[0] = 0x7f;
+  CHECK(rejected([&] { LinearWeight::upload(context, u); }));
+}

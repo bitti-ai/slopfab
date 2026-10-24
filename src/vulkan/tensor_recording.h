@@ -291,9 +291,12 @@ struct TensorBatch::Impl {
       owner->weight_bindings[i].buffer = &resources[i]->buffer;
       owner->weight_bindings[i].bytes = resources[i]->buffer.size();
     }
-    commands.bind_compute(owner->weight_pipeline, owner->weight_bindings);
+    commands.bind_compute(parameters.op == 11 ? owner->w4a8_quant_pipeline :
+                          parameters.op == 12 ? owner->w4a8_pipeline : owner->weight_pipeline,
+                          owner->weight_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
-    commands.dispatch(groups);
+    const uint32_t x = std::min(groups, owner->max_dispatch_x);
+    commands.dispatch(x, static_cast<uint32_t>((uint64_t(groups) + x - 1) / x));
   }
 
   void dispatch_attention(const TensorContext::Impl::AttentionParameters& parameters,

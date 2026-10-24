@@ -230,6 +230,18 @@ void TensorContext::Impl::prepare_pipelines(const Device& input, TensorPipelineS
     weight_options.push_constant_bytes = sizeof(WeightParameters);
     weight_options.local_size[0] = 64;
     weight_pipeline = ComputePipeline::create(input, weight_spirv, weight_options);
+    const uint8_t* w4a8_shader = full_arithmetic_exact ? detail::kTensorW4A8DenormSpirv
+                                                    : detail::kTensorW4A8Spirv;
+    const size_t w4a8_bytes = full_arithmetic_exact ? sizeof(detail::kTensorW4A8DenormSpirv)
+                                                   : sizeof(detail::kTensorW4A8Spirv);
+    std::vector<uint32_t> w4a8_spirv(w4a8_bytes / sizeof(uint32_t));
+    std::memcpy(w4a8_spirv.data(), w4a8_shader, w4a8_bytes);
+    w4a8_pipeline = ComputePipeline::create(input, w4a8_spirv, weight_options);
+    const uint8_t* quant_shader = detail::kTensorW4A8QuantSpirv;
+    const size_t quant_bytes = sizeof(detail::kTensorW4A8QuantSpirv);
+    std::vector<uint32_t> quant_spirv(quant_bytes / sizeof(uint32_t));
+    std::memcpy(quant_spirv.data(), quant_shader, quant_bytes);
+    w4a8_quant_pipeline = ComputePipeline::create(input, quant_spirv, weight_options);
     const uint8_t* gemm_shader =
         full_arithmetic_exact ? detail::kTensorGemmDenormSpirv : detail::kTensorGemmSpirv;
     const size_t gemm_shader_bytes = full_arithmetic_exact ? sizeof(detail::kTensorGemmDenormSpirv)

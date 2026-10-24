@@ -65,3 +65,11 @@ set(SLOPFAB_TENSOR_ATTENTION_PREPARE_SPV
 # Reference and fast-attention generators own their existing hash manifests.
 slopfab_reference_shaders()
 slopfab_fast_attention_shaders()
+
+slopfab_shader("src/vulkan/tensor_w4a8.comp" "95c450f795e4447fdfc53408146983fe60f9ea750cd26b247ea746ba2fffa418" SOURCE -)
+
+slopfab_shader("src/vulkan/tensor_w4a8.comp.spv" "26017c613d63caadf8d145815bdb55b2f13e56f599e91ebcbd61f170915324b6" BINARY SLOPFAB_TENSOR_W4A8_SPV_BYTES)
+
+slopfab_shader("src/vulkan/tensor_w4a8_denorm.comp.spv" "4820708e9c0ef1eb2f76b8eb638149b98e8f9dcda43c876798dd6ee7f1b55754" BINARY SLOPFAB_TENSOR_W4A8_DENORM_SPV_BYTES)
+
+slopfab_shader("src/vulkan/tensor_w4a8_quant.comp.spv" "29a355edec2742cb83c31a94eb4015aa20ce844e3a798cc7716e5a38fb1c4334" BINARY SLOPFAB_TENSOR_W4A8_QUANT_SPV_BYTES)

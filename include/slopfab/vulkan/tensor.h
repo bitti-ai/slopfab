@@ -340,6 +340,8 @@ public:
 private:
   void rope_bf16(DeviceTensor& input, DeviceTensor& cosine, DeviceTensor& sine, uint32_t mode);
   void materialize_linear_weight(const LinearWeight& weight, DeviceTensor& dense, bool fp16);
+  void w4a8_linear(const LinearWeight& weight, DeviceTensor& rotated, DeviceTensor& workspace,
+                   DeviceTensor& output);
   void transform_linear_activation(const LinearWeight& weight, DeviceTensor& input,
                                    DeviceTensor& output, bool convrot);
   friend class LinearWeight;

@@ -1,0 +1,171 @@
+#version 460
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input0 { uint words[]; } in0;
+layout(set = 0, binding = 1, std430) readonly buffer Input1 { uint words[]; } in1;
+layout(set = 0, binding = 2, std430) readonly buffer Input2 { uint words[]; } in2;
+layout(set = 0, binding = 3, std430) readonly buffer Input3 { uint words[]; } in3;
+layout(set = 0, binding = 4, std430) readonly buffer Input4 { uint words[]; } in4;
+layout(set = 0, binding = 5, std430) writeonly buffer Output { uint words[]; } output_data;
+
+layout(push_constant) uniform Parameters {
+  uint op;
+  uint count;
+  uint out_features;
+  uint in_features;
+  uint block_size;
+  uint nested_block_size;
+  uint scalar_bits;
+  uint group;
+} p;
+
+shared float convrot_values[320];
+
+uint byte_at(const uint word, uint byte_index) {
+  return (word >> (8u * byte_index)) & 0xffu;
+}
+uint load_byte(const uint binding, uint index) {
+  uint word = binding == 0u ? in0.words[index >> 2u]
+      : binding == 1u ? in1.words[index >> 2u]
+      : binding == 2u ? in2.words[index >> 2u]
+      : binding == 3u ? in3.words[index >> 2u]
+      : in4.words[index >> 2u];
+  return byte_at(word, index & 3u);
+}
+float load_float(const uint binding, uint index) {
+  return uintBitsToFloat(binding == 1u ? in1.words[index]
+      : binding == 2u ? in2.words[index]
+      : binding == 3u ? in3.words[index] : in4.words[index]);
+}
+float load_bf16(uint index) {
+  uint packed = in0.words[index >> 1u];
+  return uintBitsToFloat(((packed >> (16u * (index & 1u))) & 0xffffu) << 16u);
+}
+float load_bf16_scale(uint index) {
+  uint packed = in1.words[index >> 1u];
+  uint bits = (packed >> (16u * (index & 1u))) & 0xffffu;
+  return uintBitsToFloat(bits << 16u);
+}
+float load_half(uint index) {
+  uint packed = in0.words[index >> 1u];
+  vec2 values = unpackHalf2x16(packed);
+  return (index & 1u) == 0u ? values.x : values.y;
+}
+
+float decode_e4m3(uint value) {
+  uint sign = (value & 0x80u) << 24u;
+  uint exponent = (value >> 3u) & 0x0fu;
+  uint mantissa = value & 7u;
+  uint bits;
+  if (exponent == 0u) {
+    if (mantissa == 0u) bits = sign;
+    else {
+      uint e = 1u, m = mantissa;
+      while ((m & 8u) == 0u) { m <<= 1u; --e; }
+      bits = sign | ((e + 120u) << 23u) | ((m & 7u) << 20u);
+    }
+  } else if (exponent == 15u && mantissa == 7u) {
+    bits = sign | 0x7fc00000u;
+  } else {
+    bits = sign | ((exponent + 120u) << 23u) | (mantissa << 20u);
+  }
+  return uintBitsToFloat(bits);
+}
+
+float decode_e2m1(uint value) {
+  uint magnitude = value & 7u;
+  uint bits = magnitude == 0u ? 0u : magnitude == 1u ? 0x3f000000u
+      : ((126u + (magnitude >> 1u)) << 23u) | ((magnitude & 1u) << 22u);
+  return uintBitsToFloat(bits | ((value & 8u) << 28u));
+}
+
+uint bf16_rte(float value) {
+  uint bits = floatBitsToUint(value);
+  uint magnitude = bits & 0x7fffffffu;
+  if (magnitude > 0x7f800000u) return 0x7fffu;
+  return (bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u;
+}
+
+// W4A8 uses BF16-rounded divisors and quotients, but retains the original
+// FP32 row scale for the final INT32 -> BF16 conversion (same as CUDA).
+void w4a8_quantize() {
+  uint lane = gl_LocalInvocationID.x;
+  uint row = gl_WorkGroupID.x;
+  float maximum = 0.0;
+  for (uint k = lane; k < p.in_features; k += 64u)
+    maximum = max(maximum, abs(load_bf16(row * p.in_features + k)));
+  convrot_values[lane] = maximum;
+  barrier();
+  for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+    if (lane < stride) convrot_values[lane] = max(convrot_values[lane], convrot_values[lane + stride]);
+    barrier();
+  }
+  float scale = max(convrot_values[0] / 127.0, 1e-30);
+  float divisor = uintBitsToFloat(bf16_rte(scale) << 16u);
+  uint base = row * (p.in_features + 1u);
+  for (uint k = lane; k < p.in_features; k += 64u) {
+    float value = load_bf16(row * p.in_features + k) / divisor;
+    value = uintBitsToFloat(bf16_rte(value) << 16u);
+    output_data.words[base + k] = uint(int(clamp(roundEven(value), -128.0, 127.0)));
+  }
+  if (lane == 0u) output_data.words[base + p.in_features] = floatBitsToUint(scale);
+}
+
+shared int w4a8_a[128];
+shared int w4a8_b[1024];
+
+// Portable 4x32 output tile, K=32. No integer-dot-product or cooperative
+// matrix extension is needed. Each invocation owns a complete BF16 pair.
+void w4a8_gemm() {
+  uint lane = gl_LocalInvocationID.x;
+  uint tiles_n = (p.out_features + 31u) / 32u;
+  uint tile = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;
+  if (tile >= ((p.count + 3u) / 4u) * tiles_n) return;
+  uint row_base = (tile / tiles_n) * 4u;
+  uint col_base = (tile % tiles_n) * 32u;
+  uint local_row = lane / 16u, local_col = (lane % 16u) * 2u;
+  int sum0 = 0, sum1 = 0;
+  for (uint base = 0u; base < p.in_features; base += 32u) {
+    for (uint i = lane; i < 128u; i += 64u) {
+      uint row = row_base + i / 32u;
+      w4a8_a[i] = row < p.count
+          ? int(in4.words[row * (p.in_features + 1u) + base + i % 32u]) : 0;
+    }
+    for (uint i = lane; i < 1024u; i += 64u) {
+      uint col = col_base + i / 32u;
+      uint index = col * p.in_features + base + i % 32u;
+      int value = 0;
+      if (col < p.out_features) {
+        uint packed = load_byte(0u, index / 2u);
+        uint code = (packed >> ((index & 1u) * 4u)) & 15u;
+        precise float decoded = load_float(2u, code) * decode_e4m3(load_byte(1u, index / 16u));
+        value = int(clamp(roundEven(decoded), -127.0, 127.0));
+      }
+      w4a8_b[i] = value;
+    }
+    barrier();
+    for (uint k = 0u; k < 32u; ++k) {
+      int a = w4a8_a[local_row * 32u + k];
+      sum0 += a * w4a8_b[local_col * 32u + k];
+      sum1 += a * w4a8_b[(local_col + 1u) * 32u + k];
+    }
+    barrier();
+  }
+  uint row = row_base + local_row, col = col_base + local_col;
+  if (row < p.count && col < p.out_features) {
+    float scale = uintBitsToFloat(in4.words[row * (p.in_features + 1u) + p.in_features]);
+    precise float v0 = float(sum0) * scale;
+    precise float v1 = float(sum1) * scale;
+    v0 = v0 * load_float(3u, col);
+    v1 = v1 * load_float(3u, col + 1u);
+    output_data.words[(row * p.out_features + col) / 2u] = bf16_rte(v0) | (bf16_rte(v1) << 16u);
+  }
+}
+
+void main() {
+#ifdef W4A8_QUANTIZE
+  w4a8_quantize();
+#else
+  w4a8_gemm();
+#endif
+}

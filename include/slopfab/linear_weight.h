@@ -15,6 +15,7 @@ enum class LinearWeightFormat {
   kInt8,
   kNVFloat4,
   kNF4,
+  kW4A8,
 };
 
 struct LinearWeightUpload {
@@ -40,6 +41,11 @@ struct LinearWeightUpload {
   const uint8_t* block_scale = nullptr;
   uint64_t block_scale_count = 0;
   float global_scale = 1.0f;
+
+  // W4A8: low-even packed codes, row-major E4M3 block_scale per 16
+  // weights, F32 weight_scale per output channel and a 16-entry codebook.
+  const float* w4_codebook = nullptr;
+  uint64_t w4_codebook_count = 0;
 
   // NF4 double-quant state. Codes use high-even nibble order.
   const uint8_t* nf4_absmax = nullptr;

@@ -134,6 +134,8 @@ struct TensorContext::Impl {
   ComputePipeline rope_pipeline;
   ComputePipeline vae_rope_pipeline;
   ComputePipeline weight_pipeline;
+  ComputePipeline w4a8_pipeline;
+  ComputePipeline w4a8_quant_pipeline;
   ComputePipeline gemm_pipeline;
   ComputePipeline gemm_coop_pipeline;
   ComputePipeline gemm_prepare_pipeline;

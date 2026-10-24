@@ -150,6 +150,8 @@ if(SLOPFAB_BUILD_TESTS)
   endif()
 
   if(SLOPFAB_ENABLE_VULKAN)
+    add_executable(slopfab_vulkan_w4a8probe tools/vulkan_w4a8probe.cpp)
+    target_link_libraries(slopfab_vulkan_w4a8probe PRIVATE slopfab_vulkan)
     add_executable(slopfab_vulkan_tests tests/harness.cpp tests/test_vulkan.cpp
       tests/test_vulkan_pipeline_sets.cpp
       tests/test_vulkan_conditioner_synthetic.cpp

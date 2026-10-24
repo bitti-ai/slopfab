@@ -147,6 +147,7 @@ struct LinearWeight::Impl {
   DeviceTensor data;
   DeviceTensor weight_scale;
   DeviceTensor block_scale;
+  DeviceTensor w4_codebook;
   DeviceTensor nf4_absmax;
   DeviceTensor nf4_quant_map;
   DeviceTensor nf4_nested_quant_map;

@@ -29,8 +29,6 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
             "MOSS does not support H3 latent archives, upscaling or attention bands");
     return;
   }
-  require(p.model.quantization != dit::TransformerQuantization::kW4A8ConvRot || o.inference_backend == DeviceBackend::kCuda,
-          "W4A8 ConvRot transformers currently require CUDA");
   validate_sampling_sampler(p, o.sampler);
   require(!o.sampling_effect || o.source == LatentSource::kDenoise,
           "sampling effects require denoising");
