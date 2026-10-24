@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 
 namespace slopfab {
@@ -60,6 +61,10 @@ GeneratePlan resolve_fibo_plan(const GenerateRequest& r) {
   if (p.canvas_width < 16 || p.canvas_height < 16 || p.canvas_width % 16 || p.canvas_height % 16 ||
       int64_t(p.canvas_width) * p.canvas_height > 4096LL * 4096)
     throw std::invalid_argument("Fibo canvas must be multiples of 16, at most 16 megapixels");
+  const int64_t image_rows = int64_t(p.canvas_width / 16) * (p.canvas_height / 16);
+  const int64_t sources = r.image_edit.image ? 1 : int64_t(r.reference_image_paths.size());
+  if ((image_rows * (1 + sources) + 512) * 19456 > std::numeric_limits<int>::max())
+    throw std::invalid_argument("Fibo canvas and reference count exceed the tensor indexing limit");
   p.aligned_frames = p.sampling_frames = 1;
   p.geometry.canvas_multiple = 16;
   p.geometry.video_channels = 128;

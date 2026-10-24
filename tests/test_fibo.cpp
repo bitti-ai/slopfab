@@ -38,6 +38,11 @@ SLOPFAB_TEST(fibo_mask_plan_and_guards) {
     }
   };
   CHECK(fails(r));
+  r.reference_image_paths = {"a", "b", "c", "d"};
+  r.canvas_width = r.canvas_height = 4096;
+  CHECK(fails(r));
+  r.reference_image_paths.clear();
+  r.canvas_width = r.canvas_height = 0;
   r.image_edit.image = std::make_shared<slopfab::RGBImage>(
       slopfab::RGBImage{63, 45, std::vector<uint8_t>(63 * 45 * 3, 120)});
   r.image_edit.mask = std::make_shared<std::vector<uint8_t>>(63 * 45, 255);
@@ -80,9 +85,11 @@ SLOPFAB_TEST(fibo_prompt_images_and_glyphs) {
 
 SLOPFAB_TEST(fibo_vision_bicubic_matches_torch) {
   slopfab::RGBImage image{7, 5, std::vector<uint8_t>(7 * 5 * 3)};
-  for (size_t i = 0; i < image.pixels.size(); ++i) image.pixels[i] = uint8_t(i * 19 % 256);
+  for (size_t i = 0; i < image.pixels.size(); ++i)
+    image.pixels[i] = uint8_t(i * 19 % 256);
   const auto resized = slopfab::fibo::resize_vision_image(image, 3, 2);
   // torch.interpolate(mode="bicubic", antialias=True), rounded to U8.
-  CHECK(resized.pixels == std::vector<uint8_t>({93,112,130,112,131,132,125,144,104,130,149,121,123,142,121,101,120,138}));
+  CHECK(resized.pixels == std::vector<uint8_t>({93, 112, 130, 112, 131, 132, 125, 144, 104, 130,
+                                                149, 121, 123, 142, 121, 101, 120, 138}));
   CHECK(slopfab::fibo::resize_vision_image(image, 7, 5).pixels == image.pixels);
 }
