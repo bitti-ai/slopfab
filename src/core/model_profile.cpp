@@ -19,7 +19,8 @@ const ModelProfile& model_profile(const std::string& family) {
 const ModelProfile& checkpoint_model_profile(const SafeTensors& checkpoint) {
   return model_profile(checkpoint.find("video_embedder.weight") &&
                                checkpoint.find("shared_block_modulation.weight")
-                           ? "moss" : "h3");
+                           ? "moss"
+                           : "h3");
 }
 
 std::string request_model_family(const GenerateRequest& request) {
@@ -62,10 +63,18 @@ GeneratePlan resolve_moss_plan(const GenerateRequest& r) {
       r.video_transition || r.preserve_driving_audio || !r.loras.empty() ||
       r.cache_threshold != 0 || r.skip_every != 0 || r.block_cache_span != 0 ||
       r.motion_cache.active() || r.schedule != sampler::ScheduleKind::kDefault)
-    throw std::invalid_argument("MOSS supports text-to-image without H3 references, adapters or caches");
+    throw std::invalid_argument(
+        "MOSS supports text-to-image without H3 references, adapters or caches");
   validate_sampling_settings(r.sampling);
+  const auto& c = r.conditioning;
+  if (c.require_prompt_embedding || c.fixed_prompt_tokens || c.image_short_edge ||
+      c.media_short_edge || c.media_max_pixels || c.references_at_target_canvas ||
+      c.canvas_from_reference_video || c.include_reference_audio || c.video_first ||
+      c.pin_target_audio || c.max_frames || c.require_euler || c.allow_caches)
+    throw std::invalid_argument("MOSS does not use H3 conditioning settings");
   if (r.sampling.audio_steps || r.sampling.audio_sigma_shift || r.sampling.base_sigmas)
-    throw std::invalid_argument("MOSS uses its image training-grid schedule; audio/custom grids are unsupported");
+    throw std::invalid_argument(
+        "MOSS uses its image training-grid schedule; audio/custom grids are unsupported");
   if (!std::isfinite(r.guidance_scale) || r.guidance_scale < 0)
     throw std::invalid_argument("MOSS guidance must be finite and nonnegative");
   for (int layer : r.uncond_skip_layers)
@@ -79,13 +88,16 @@ GeneratePlan resolve_moss_plan(const GenerateRequest& r) {
     p.model = dit::resolve_model_descriptor(checkpoint);
     p.checkpoint_available = true;
   }
+  if ((r.canvas_width == 0) != (r.canvas_height == 0))
+    throw std::invalid_argument("MOSS requires both canvas dimensions or neither");
   p.canvas_width = r.canvas_width ? r.canvas_width : 1024;
   p.canvas_height = r.canvas_height ? r.canvas_height : 1024;
-  if (p.canvas_width < 16 || p.canvas_height < 16 || p.canvas_width % 16 ||
-      p.canvas_height % 16 || int64_t(p.canvas_width) * p.canvas_height > 4096LL * 4096)
-    throw std::invalid_argument("MOSS dimensions must be positive multiples of 16, at most 16 megapixels");
+  if (p.canvas_width < 16 || p.canvas_height < 16 || p.canvas_width % 16 || p.canvas_height % 16 ||
+      int64_t(p.canvas_width) * p.canvas_height > 4096LL * 4096)
+    throw std::invalid_argument(
+        "MOSS dimensions must be positive multiples of 16, at most 16 megapixels");
   p.aligned_frames = p.sampling_frames = 1;
-  p.geometry.canvas_multiple = 16;
+  p.geometry.canvas_multiple = model_profile("moss").canvas_multiple;
   p.geometry.video_channels = 128;
   p.geometry.patch_height = p.geometry.patch_width = 1;
   p.geometry.trained_max_pixels = 2048 * 2048;
@@ -94,7 +106,8 @@ GeneratePlan resolve_moss_plan(const GenerateRequest& r) {
   p.layout.latent_width = p.canvas_width / 16;
   p.layout.num_video_rows = p.layout.latent_height * p.layout.latent_width;
   p.video_sigma_shift = r.sampling.video_sigma_shift.value_or(5.f);
-  p.num_inference_steps = r.num_inference_steps ? r.num_inference_steps : r.sampling.default_steps.value_or(50);
+  p.num_inference_steps =
+      r.num_inference_steps ? r.num_inference_steps : r.sampling.default_steps.value_or(50);
   p.video_sigmas = moss_sigma_schedule(p.num_inference_steps, p.video_sigma_shift);
   p.video_timesteps.assign(p.video_sigmas.begin(), p.video_sigmas.end() - 1);
   for (auto& t : p.video_timesteps)

@@ -241,8 +241,8 @@ Tensor Runtime::norm(const Tensor& x, const std::string& name, int width, bool o
 
 Tensor Runtime::attend(const Tensor& q, const Tensor& k, const Tensor& v, int heads, int kv_heads,
                        bool causal) {
-  if (q.rows != k.rows || k.rows != v.rows || k.cols != v.cols ||
-      q.cols % heads || k.cols % kv_heads || q.cols / heads != k.cols / kv_heads)
+  if (q.rows != k.rows || k.rows != v.rows || k.cols != v.cols || q.cols % heads ||
+      k.cols % kv_heads || q.cols / heads != k.cols / kv_heads)
     throw std::invalid_argument("attention tensor shape mismatch");
   if (causal) {
     text::CausalAttentionConfig config;

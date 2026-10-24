@@ -1,5 +1,14 @@
 # Model and adapter contracts
 
+Family routing now precedes H3 planning and execution. `ModelProfile` contains
+family discovery policy; explicit checkpoints are identified by tensor structure.
+The native CUDA MOSS implementation has its own planner, Qwen3.5 conditioner,
+transformer and FLUX.2 decoder. See [MOSS support](moss.md). Its optional
+`slopfab.model` descriptor is `{"version":1,"family":"moss"}`; H3 modulation,
+reference and legacy-profile fields do not apply. Unknown MOSS descriptor fields
+and conflicting family declarations are rejected. Existing H3 descriptors below
+retain their original meaning.
+
 The H3 loader resolves structural capabilities separately from the legacy release enum. Metadata is authoritative when present: renaming an explicitly described checkpoint cannot select Animate behavior or a FastH3 sampling recipe. Missing metadata preserves legacy filename/source inference, reported by `ModelDescriptor::origin`.
 
 `slopfab.model` is a SafeTensors metadata string containing JSON:

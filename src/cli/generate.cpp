@@ -100,6 +100,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   int attn_band = 0;
   slopfab::AttentionMode attention_mode = slopfab::AttentionMode::kSage2;
   bool saw_attention = false;
+  bool saw_frames = false;
+  bool saw_image_guidance = false;
   uint64_t vulkan_sage_workspace_mib = 64;
   slopfab::SolSchedule sol_schedule;
   slopfab::dit::VedaOptions veda;
@@ -178,16 +180,21 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--model") {
       req.model_family = next("--model");
     } else if (arg == "--negative-prompt") {
+      saw_image_guidance = true;
       req.negative_prompt = next("--negative-prompt");
     } else if (arg == "--guidance") {
+      saw_image_guidance = true;
       const std::string value = next("--guidance");
       size_t used = 0;
       req.guidance_scale = std::stof(value, &used);
       if (used != value.size())
         throw std::invalid_argument("--guidance expects a finite nonnegative number");
     } else if (arg == "--uncond-skip-layers") {
+      saw_image_guidance = true;
       req.uncond_skip_layers.clear();
       const std::string value = next("--uncond-skip-layers");
+      if (value.empty() || value.back() == ',')
+        throw std::invalid_argument("--uncond-skip-layers expects layer indices or none");
       if (value != "none") {
         std::istringstream list(value);
         std::string entry;
@@ -208,6 +215,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       req.out_path = next("--out");
       saw_out = true;
     } else if (arg == "--frames") {
+      saw_frames = true;
       req.num_frames = std::atoi(next("--frames"));
     } else if (arg == "--steps") {
       req.num_inference_steps = std::atoi(next("--steps"));
@@ -601,8 +609,6 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     if (!saw_out)
       req.out_path = std::filesystem::path(req.out_path).replace_extension(".ppm").string();
     if (std::filesystem::path(req.out_path).extension() != ".ppm")
-      throw std::invalid_argument("MOSS file output requires --out FILE.ppm");
-    if (std::filesystem::path(req.out_path).extension() != ".ppm")
       throw std::invalid_argument("image edits require --out with a .ppm extension");
   }
   if (saw_overlap && continue_from.empty())
@@ -630,12 +636,18 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   discover_generate_checkpoints(req, executable);
   if (slopfab::request_model_family(req) == "moss") {
+    if (saw_frames)
+      throw std::invalid_argument("MOSS generates one image; omit --frames");
     if (!saw_attention)
       attention_mode = slopfab::AttentionMode::kFlash2;
     if (saw_aspect)
       throw std::invalid_argument("MOSS requires --resolution WxH instead of --aspect");
     if (!saw_out)
       req.out_path = std::filesystem::path(req.out_path).replace_extension(".ppm").string();
+    if (std::filesystem::path(req.out_path).extension() != ".ppm")
+      throw std::invalid_argument("MOSS file output requires --out FILE.ppm");
+  } else if (saw_image_guidance) {
+    throw std::invalid_argument("image guidance options require --model moss");
   }
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;

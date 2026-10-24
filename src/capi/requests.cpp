@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "slopfab/model_profile.h"
 
 namespace {
 bool valid_bridge_settings(int left, int right, int context) {
@@ -17,6 +18,37 @@ int attach_bridge(slopfab_request* request, slopfab::LatentBridge bridge) {
 }
 }
 extern "C" {
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_family(
+    slopfab_request* request, const char* family) {
+  if (!request || !family)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: null argument");
+  return guarded([&] {
+    if (*family && std::string(family) != "h3" && std::string(family) != "moss")
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_model_family: expected h3, moss or empty");
+    request->request.model_family = family;
+    return SLOPFAB_OK;
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_guidance(
+    slopfab_request* request, float scale, const char* negative,
+    const int32_t* layers, int32_t count) {
+  if (!request || !negative || !std::isfinite(scale) || scale < 0 || count < 0 ||
+      count > 42 || (count && !layers))
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_image_guidance: invalid argument");
+  for (int32_t i = 0; i < count; ++i)
+    if (layers[i] < 0 || layers[i] >= 42)
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "set_image_guidance: layer outside [0,42)");
+  return guarded([&] {
+    std::string prompt = negative;
+    std::vector<int> skip;
+    if (count) skip.assign(layers, layers + count);
+    request->request.negative_prompt = std::move(prompt);
+    request->request.uncond_skip_layers = std::move(skip);
+    request->request.guidance_scale = scale;
+    return SLOPFAB_OK;
+  });
+}
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_latent_bridge_files(
     slopfab_request* request, const char* left, const char* right, int32_t left_margin,
     int32_t right_margin, int32_t context) {
@@ -263,13 +295,16 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_audio_steps(slopfab_request* 
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_steps(slopfab_request* request, int32_t steps) {
-  if (request == nullptr || steps < 2) {
+  if (request == nullptr || steps < 1) {
     return fail(SLOPFAB_ERR_INVALID_ARGUMENT,
-                "slopfab_request_set_steps: the grid includes a terminal zero, so it needs at "
-                "least 2 points");
+                "slopfab_request_set_steps: expected a positive step count");
   }
-  request->request.num_inference_steps = steps;
-  return SLOPFAB_OK;
+  return guarded([&] {
+    if (steps == 1 && slopfab::request_model_family(request->request) != "moss")
+      return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "H3 requires at least 2 grid points");
+    request->request.num_inference_steps = steps;
+    return SLOPFAB_OK;
+  });
 }
 
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_seed(slopfab_request* request, uint64_t seed) {

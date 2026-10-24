@@ -998,6 +998,23 @@ SLOPFAB_TEST(capi_reference_image_limit) {
 
 // The same normalisation the CLI applies, so a prompt file that works there
 // conditions identically here.
+SLOPFAB_TEST(capi_moss_plan_and_guidance) {
+  Request request;
+  CHECK(slopfab_request_set_model_family(request.handle, "moss") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_model_family(request.handle, "unknown") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_inference_backend(request.handle, SLOPFAB_INFERENCE_CUDA) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_attention(request.handle, "flash2") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_image_guidance(request.handle, 3.f, "", nullptr, 0) == SLOPFAB_OK);
+  const int32_t bad = 42;
+  CHECK(slopfab_request_set_image_guidance(request.handle, 3.f, "", &bad, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_steps(request.handle, 1) == SLOPFAB_OK);
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request.handle, &plan) == SLOPFAB_OK);
+  CHECK(plan.canvas_width == 1024 && plan.canvas_height == 1024);
+  CHECK(plan.aligned_frames == 1 && plan.num_audio_rows == 0);
+  CHECK(plan.num_model_evaluations == 1);
+}
+
 SLOPFAB_TEST(capi_prompt_file) {
   Request request;
   CHECK(slopfab_request_set_prompt_file(request.handle, "definitely-not-here.txt") ==

@@ -107,8 +107,8 @@ RunResult run(const GenerateRequest& request, const GeneratePlan& plan, const Ru
             image_prediction(transformer, input, positive, h, w, plan.video_timesteps[step], {}));
         if (request.guidance_scale != 1.f) {
           // Default SLG interval is [0.01,1); the first step does not skip.
-          const auto skip = double(step) / steps >= 0.01 ? request.uncond_skip_layers
-                                                        : std::vector<int>{};
+          const auto skip =
+              double(step) / steps >= 0.01 ? request.uncond_skip_layers : std::vector<int>{};
           const auto uncond = to_host(image_prediction(transformer, input, negative, h, w,
                                                        plan.video_timesteps[step], skip));
           for (size_t i = 0; i < latent.size(); ++i)

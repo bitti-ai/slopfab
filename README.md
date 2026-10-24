@@ -1,6 +1,6 @@
 # slopfab
 
-Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), using CUDA or Vulkan. No Python is required at runtime.
+Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3), using CUDA or Vulkan, and image generation with [MOSS Image](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) on CUDA. No Python is required at runtime.
 
 ## Features
 
@@ -103,6 +103,16 @@ builds, tests and packages the CLI, shared library, C header, documentation and
 licenses. Linux packages use external GPU and media runtimes.
 
 ## Models
+
+For MOSS Image SFT, see [MOSS setup and usage](docs/moss.md). For example:
+
+```sh
+slopfab generate --model moss --prompt "A red apple on a wooden table" --resolution 512x512 --seed 42 --out apple.ppm
+```
+
+Model family is inferred from an explicit transformer checkpoint, or selected
+with `--model h3|moss`. Discovery selects matching conditioner and VAE families.
+The default family remains H3.
 
 Generation uses a Qwen3-VL text encoder, an H3 transformer, a video VAE and an audio VAE. Place compatible checkpoints under:
 

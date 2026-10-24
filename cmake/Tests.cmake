@@ -10,6 +10,9 @@ if(SLOPFAB_BUILD_TESTS)
   set_tests_properties(media_pipeline PROPERTIES LABELS synthetic TIMEOUT 30)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
+    add_test(NAME moss_cli COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_moss_cli.py" "$<TARGET_FILE:slopfab>")
+    set_tests_properties(moss_cli PROPERTIES LABELS synthetic TIMEOUT 60)
     add_test(NAME conditioning_assets_cli COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_assets_cli.py" "$<TARGET_FILE:slopfab>")
     set_tests_properties(conditioning_assets_cli PROPERTIES LABELS synthetic TIMEOUT 60)
@@ -22,6 +25,8 @@ if(SLOPFAB_BUILD_TESTS)
   endif()
   slopfab_add_tokenizer_tests()
   if(TARGET slopfab_cuda)
+    add_executable(slopfab_mossprobe tools/mossprobe.cpp)
+    target_link_libraries(slopfab_mossprobe PRIVATE slopfab_cuda)
     add_executable(slopfab_seedvr2_tests tests/harness.cpp tests/test_main.cpp tests/test_seedvr2_cuda.cu
       tests/test_seedvr2_image_ops.cu tests/test_seedvr2_runtime.cu
       tests/test_seedvr2_restore.cu tests/test_seedvr2_temporal.cu)
@@ -54,6 +59,7 @@ if(SLOPFAB_BUILD_TESTS)
   # its cases with the shared harness, so adding tests never touches a file
   # someone else is editing.
   add_executable(slopfab_tests
+    tests/test_moss.cpp
     tests/test_seedvr2.cpp
     tests/harness.cpp
     tests/test_main.cpp

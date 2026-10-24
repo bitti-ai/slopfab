@@ -134,12 +134,12 @@ std::string find_checkpoint(const std::filesystem::path& directory,
 }
 
 void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* executable) {
-  const std::filesystem::path weights = find_weights_directory(executable);
-  if (weights.empty())
-    return;
   const auto& profile = model_profile(request_model_family(req));
   if (profile.image_only)
     req.still_image = true;
+  const std::filesystem::path weights = find_weights_directory(executable);
+  if (weights.empty())
+    return;
   if (req.text_encoder_path.empty())
     req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
   if (req.transformer_path.empty()) {

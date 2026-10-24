@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 #include "slopfab/safetensors.h"
 
 namespace slopfab {
@@ -15,6 +16,7 @@ struct ModelProfile {
   int canvas_multiple;
   int conditioner_width;
 };
+
 const ModelProfile& model_profile(const std::string& family);
 const ModelProfile& checkpoint_model_profile(const SafeTensors& checkpoint);
 struct GenerateRequest;

@@ -92,8 +92,14 @@ const CommandHelp kCommands[] = {
      "  --adapter FILE             adapter to update atomically\n"
      "  --width N                  base transformer hidden width\n"
      "  Requires an embedded grid or a local companion file.\n"},
-    {"generate", "slopfab generate --prompt <text> [options]", "text to video and audio",
-     "  --prompt <text>              the prompt (MiniMax Context-IR structure)\n"
+    {"generate", "slopfab generate --prompt <text> [options]", "text to image, video and audio",
+     "  --model <h3|moss>            model family; inferred from explicit checkpoint\n"
+     "  --prompt <text>              the prompt\n"
+     "  --negative-prompt <text>     MOSS negative prompt (default empty)\n"
+     "  --guidance <number>          MOSS CFG scale (default 3)\n"
+     "  --uncond-skip-layers <list>   MOSS negative-branch layers, e.g. 22,24 or none\n"
+     "                               (default 22; disabled on the first step)\n"
+     "  MOSS defaults: CUDA/flash2, 1024x1024, 50 Euler updates, .ppm output.\n"
      "  --prompt-file <file>         read that same prompt from a UTF-8 text file\n"
      "                               instead; a BOM and surrounding blank space are\n"
      "                               stripped. Cannot be combined with --prompt\n"

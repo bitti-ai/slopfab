@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 29
+#define SLOPFAB_CAPI_VERSION_MINOR 30
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -527,8 +527,22 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_blend_overlap(
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_outpaint_langevin_steps(
     slopfab_request* request, int32_t steps);
 
-/* Sigma grid points *including* the terminal zero, so the model runs
- * `steps - 1` times. At least 2. */
+/* Since 1.30. Family is "h3", "moss", or empty for checkpoint detection.
+ * MOSS is image-only and uses CUDA/flash2, Qwen3.5-9B and the FLUX.2 small VAE.
+ * Supply paths using the existing model-path setter, including TOKENIZER and
+ * VIDEO_VAE. Family selection does not download/discover files in the C API. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_model_family(
+    slopfab_request* request, const char* family);
+/* Since 1.30. MOSS CFG and negative-branch block skipping. Defaults: CFG 3,
+ * empty negative prompt, skip layer 22. count=0 disables skipping; otherwise
+ * indices must be in [0,42). Failed calls leave the request unchanged. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_guidance(
+    slopfab_request* request, float scale, const char* negative_prompt,
+    const int32_t* skip_layers, int32_t count);
+
+/* H3: sigma grid points including terminal zero (`steps - 1` updates), at
+ * least 2. MOSS: requested Euler updates, at least 1; snapping the training
+ * grid can remove duplicate steps. An unset count inherits model defaults. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_steps(slopfab_request* request, int32_t steps);
 
 /* Since 1.21. Experimental independent audio grid: steps includes terminal zero
