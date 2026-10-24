@@ -18,7 +18,7 @@ Native C++ video and audio generation with [MiniMax H3](https://huggingface.co/M
 - **Quantized checkpoints** and [automatic CUDA transformer offloading](docs/denoising_memory.md) to manage GPU memory.
 - **A C API** for asynchronous video and still-image generation, progress callbacks, cancellation and model reuse.
 - **Native H3 latent color controls and writable sampling callbacks** on CUDA and Vulkan, with reusable VAE calibration, tone controls, masks, sharpness and color anchoring. See [LCS and sampling effects](docs/lcs.md).
-- **Bounding-box image editing** on CUDA and Vulkan, with edit strength, inward feathering and exact preservation outside the box. See [inpainting](docs/inpainting.md).
+- **Masked image editing** on CUDA and Vulkan, with arbitrary U8 lasso/brush masks through the C API, rectangular edits, soft-edge blending and exact preservation of unselected pixels. See [inpainting](docs/inpainting.md).
 - **MP4 output through FFmpeg**, raw Y4M/WAV output, checkpoint inspection and tensor comparison tools.
 - **Real-ESRGAN 4x upscaling** on CUDA and Vulkan, for standalone images and generated frames. See [upscaling](docs/upscaling.md).
 - **H3 latent upscaling** on CUDA and Vulkan, enlarging video latents before VAE decoding. See [latent upscaling](docs/latent_upscaling.md).

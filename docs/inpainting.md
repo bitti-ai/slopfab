@@ -1,9 +1,13 @@
-# Bounding-box image editing
+# Masked image editing
 
 Image editing generates new content inside a rectangle while preserving every
 decoded source RGB pixel outside it. CUDA and Vulkan are supported. The output
 is one still image with the source dimensions, even when those dimensions are
 not multiples of 32.
+
+C API 1.32 also supports arbitrary full-resolution pixel masks for lasso,
+polygon, and brush selections, including holes, disconnected regions, and
+soft edges. The CLI continues to accept rectangular edits.
 
 ```sh
 slopfab generate --edit-image scene.png --edit-box 120,80,240,160 --prompt "A red ceramic vase on the table" --edit-strength 0.8 --edit-feather 8 --seed 17 --out edited.ppm
@@ -73,6 +77,78 @@ box, output floats equal the decoded source bytes divided by `255.0f`.
 C++ callers use `GenerateRequest::image_edit` with an immutable `RGBImage`
 snapshot and set `still_image = true`. Use a `.ppm` output path or an
 `on_samples` callback. Keep the snapshot immutable while any request uses it.
+
+## Pixel masks (C API 1.32)
+
+Attach the source using either existing image-edit setter, then attach a
+single-channel U8 mask in original-image coordinates:
+
+```c
+int status = slopfab_request_set_image_edit_rgb24(
+    request, pixels, pixel_bytes, width, height, rgb_stride,
+    0, 0, width, height, 0.8f, 0);
+if (status == SLOPFAB_OK) {
+    status = slopfab_request_set_image_edit_mask_u8(
+        request, mask, mask_bytes, width, height, mask_stride);
+}
+/* Start generation only if status == SLOPFAB_OK. */
+```
+
+The mask must match the original source dimensions, without internal canvas
+padding. Rows may have positive padding; `mask_bytes` must cover
+`(height - 1) * mask_stride + width` bytes. The DLL validates the buffer and
+copies the visible bytes before returning. The application can immediately
+reuse or free both input buffers. Generation snapshots retain the mask even
+if the request is changed or destroyed after generation starts.
+
+Coverage is `0` for exact source preservation, `255` for generated pixels,
+and intermediate values for `source * (1-alpha) + generated * alpha`, with
+`alpha = coverage / 255`. Rasterize the lasso and any antialiasing or feathering
+in the application. Feather inward if pixels outside the selection must stay
+exactly unchanged. The supplied mask overrides the entire rectangle and its
+feather setting; it is not clipped to the old box. Strength still controls
+the generation schedule independently of coverage.
+
+Every 16x16 latent cell touching a nonzero mask pixel becomes editable. The
+sampler uses this binary mask while final compositing uses the original U8
+coverage, preserving holes and precise boundaries even within one latent
+cell. This uses the existing H3 CUDA and Vulkan paths with Euler or re-noising,
+including DMAD. The ordinary image-edit model and cache restrictions still
+apply; this does not add MOSS image editing.
+
+All-zero masks are rejected; all-255 masks edit the entire source. Null buffers,
+dimension mismatches, short buffers, and invalid strides are rejected without
+changing the previous edit. Mask attachment and source attachment are separate
+transactions: after any setter failure, check the error before starting a run.
+
+`slopfab_request_clear_image_edit_mask` restores the saved rectangle and feather;
+it succeeds if no mask is attached. Attaching a new source or clearing the
+whole image edit also clears the mask. The resolved plan description identifies
+pixel-mask mode, while canvas and delivered-image dimensions behave as before.
+
+To invert a lasso selection, submit `255 - coverage` for each pixel. Pixel masks
+cannot be combined with `slopfab_request_set_image_edit_invert_mask(..., 1)`:
+that API enables the rectangle-specific outpainting context, anchors, blending,
+and refinement described below. Disable rectangular inversion before attaching
+a pixel mask. Complemented pixel masks remain ordinary inpainting.
+
+C++ callers set `ImageEdit::mask` to an immutable shared
+`std::vector<uint8_t>` of `image->width * image->height` tightly packed bytes.
+With a mask attached, the rectangle may be omitted. Keep both snapshots
+immutable while requests use them.
+
+The host and C API tests cover mask packing, soft compositing, exact preservation,
+input validation, and snapshots. To exercise real model inference and asynchronous
+ownership through the DLL, use the smoke test with local H3 checkpoints and a
+captured prompt embedding:
+
+```powershell
+python tools/image_edit_mask_smoke.py --library build/Release/slopfab.dll --transformer path/to/h3.safetensors --vae path/to/video_vae.safetensors --prompt-embedding path/to/prompt.safetensors --backend cuda
+```
+
+Repeat with `--backend vulkan` and/or `--sampler renoise`. The test builds an
+unaligned source and an irregular soft mask with a hole, releases the input
+buffers and request, and verifies exact preservation and generated output.
 
 ## Outpainting (C API 1.20)
 
