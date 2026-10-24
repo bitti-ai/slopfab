@@ -35,7 +35,7 @@ def transform(raw: bytes, denorm: bool, rounding_rte: bool = True) -> bytes:
         at += count
     if not entry or not execution_end:
         raise ValueError("SPIR-V has no entry point")
-    capabilities = [(2 << 16) | 17, 4467]
+    capabilities = [(2 << 16) | 17, 4467 if rounding_rte else 4466]
     modes = [(4 << 16) | 16, entry, 4461, 32]
     if rounding_rte:
         capabilities[0:0] = [(2 << 16) | 17, 4466]

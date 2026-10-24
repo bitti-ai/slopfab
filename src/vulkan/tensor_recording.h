@@ -295,8 +295,10 @@ struct TensorBatch::Impl {
                           parameters.op == 12 ? owner->w4a8_pipeline : owner->weight_pipeline,
                           owner->weight_bindings);
     commands.push_constants(&parameters, sizeof(parameters));
-    const uint32_t x = std::min(groups, owner->max_dispatch_x);
-    commands.dispatch(x, static_cast<uint32_t>((uint64_t(groups) + x - 1) / x));
+    const uint32_t y = static_cast<uint32_t>((uint64_t(groups) + owner->max_dispatch_x - 1) /
+                                            owner->max_dispatch_x);
+    const uint32_t x = static_cast<uint32_t>((uint64_t(groups) + y - 1) / y);
+    commands.dispatch(x, y);
   }
 
   void dispatch_attention(const TensorContext::Impl::AttentionParameters& parameters,

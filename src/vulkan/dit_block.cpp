@@ -92,7 +92,18 @@ struct ProjectionTag {
 
 ProjectionTag projection_tag(const SafeTensors& st, const std::string& name, uint32_t in) {
   ProjectionTag tag;
-  const auto root = quantization_state(st, name + ".weight");
+  json::Value root;
+  if (const auto* local = st.find(name + ".comfy_quant")) {
+    // Preserve the historical Vulkan byte-blob descriptor contract, including
+    // archives that carry these JSON bytes in a padded F32 storage tensor.
+    std::string text(static_cast<const char*>(local->data), local->nbytes);
+    while (!text.empty() && (text.back() == '\0' || text.back() == ' ' || text.back() == '\n'))
+      text.pop_back();
+    if (text.empty()) return tag;
+    root = json::parse(text);
+  } else {
+    root = quantization_state(st, name + ".weight");
+  }
   if (const json::Value* full = root.find("full_precision_matrix_mult"))
     tag.full_precision = full->as_bool();
   if (const json::Value* convrot = root.find("convrot"))
@@ -125,7 +136,7 @@ void validate_projection_archive(const SafeTensors& st, const std::string& name,
   const TensorView* block_scale = st.find(name + ".weight_scale");
   const bool nvfp4 =
       w.dtype == DType::kU8 && block_scale && block_scale->dtype == DType::kF8E4M3 && in % 64 == 0;
-  if (is_w4a8_weight(st, name + ".weight")) {
+  if (w.dtype == DType::kI8 && is_w4a8_weight(st, name + ".weight")) {
     validate_w4a8_weight(st, name + ".weight", source_out, in);
     if (st.find(name + ".pre_quant_scale"))
       throw std::runtime_error("Vulkan H3: W4A8 with AWQ pre-scale is unsupported");
@@ -286,7 +297,7 @@ Projection load_projection(TensorContext& context, const SafeTensors& st, const 
   const TensorView* block_scale = st.find(name + ".weight_scale");
   const bool nvfp4 =
       w.dtype == DType::kU8 && block_scale && block_scale->dtype == DType::kF8E4M3 && in % 64 == 0;
-  if (is_w4a8_weight(st, name + ".weight")) {
+  if (w.dtype == DType::kI8 && is_w4a8_weight(st, name + ".weight")) {
     validate_w4a8_weight(st, name + ".weight", source_out, in);
     const auto& groups = st.at(name + ".weight_s_rel");
     auto all_scales = to_f32(st.at(name + ".weight_s_channel"));

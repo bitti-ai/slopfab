@@ -1007,6 +1007,52 @@ SLOPFAB_TEST_CATEGORY(vulkan_w4a8_integer_linear, "synthetic") {
   std::vector<uint16_t> actual(rows * n);
   context.download_bytes(output, actual.data(), actual.size() * 2);
   CHECK(actual == expected);
+  // 65,600 workgroups crosses Vulkan's guaranteed 65,535 X limit.
+  // Check every output after a sentinel fill, including the second grid row.
+  constexpr uint32_t large_rows = 4100, large_n = 2048, large_k = 256;
+  std::vector<uint8_t> large_codes(large_n * large_k / 2, 0);
+  std::vector<uint8_t> large_groups(large_n * large_k / 16, 0x38);
+  std::vector<float> large_scales(large_n);
+  std::array<float, 16> large_book{};
+  large_book[0] = 1.0f;
+  for (uint32_t c = 0; c < large_n; ++c) large_scales[c] = c % 2 ? 0.5f : 1.0f;
+  auto big = u;
+  big.out_features = large_n; big.in_features = large_k;
+  big.data = large_codes.data(); big.data_bytes = large_codes.size();
+  big.block_scale = large_groups.data(); big.block_scale_count = large_groups.size();
+  big.weight_scale = large_scales.data(); big.weight_scale_count = large_scales.size();
+  big.w4_codebook = large_book.data();
+  auto large_weight = LinearWeight::upload(context, big);
+  auto large_input = matrix(large_rows, large_k, ScalarType::kBFloat16);
+  auto large_workspace = matrix(large_rows, large_k + 1, ScalarType::kFloat32);
+  auto large_output = matrix(large_rows, large_n, ScalarType::kBFloat16);
+  std::vector<uint16_t> large_x(size_t(large_rows) * large_k);
+  for (uint32_t r = 0; r < large_rows; ++r)
+    std::fill_n(large_x.begin() + size_t(r) * large_k, large_k, reference_bf16(float(r % 7 + 1)));
+  context.upload_bytes(large_input, large_x.data(), large_x.size() * 2);
+  std::vector<uint16_t> large_y(size_t(large_rows) * large_n, 0x7fc1);
+  context.upload_bytes(large_output, large_y.data(), large_y.size() * 2);
+  auto large_batch = context.begin_batch();
+  large_weight.forward_w4a8(large_batch, large_input, large_workspace, large_output);
+  large_batch.submit().wait();
+  context.download_bytes(large_output, large_y.data(), large_y.size() * 2);
+  bool large_matches = true;
+  size_t first_mismatch = large_y.size();
+  for (uint32_t r = 0; r < large_rows; ++r) {
+    const float row_value = float(r % 7 + 1);
+    const float scale = row_value / 127.0f;
+    const float divisor = bf16_to_f32(reference_bf16(scale));
+    const float quotient = bf16_to_f32(reference_bf16(row_value / divisor));
+    const int quantized = std::clamp(int(std::nearbyint(quotient)), -128, 127);
+    for (uint32_t c = 0; c < large_n; ++c)
+      if (large_y[size_t(r) * large_n + c] !=
+          reference_bf16((float(quantized * large_k) * scale) * large_scales[c])) {
+        large_matches = false;
+        first_mismatch = std::min(first_mismatch, size_t(r) * large_n + c);
+      }
+  }
+  CHECK_MSG(large_matches, "large W4A8 mismatch at %zu: %g", first_mismatch,
+            first_mismatch < large_y.size() ? bf16_to_f32(large_y[first_mismatch]) : 0);
   auto rejected = [](auto fn) { try { fn(); return false; } catch (const std::exception&) { return true; } };
   CHECK(rejected([&] { auto b = context.begin_batch(); weight.forward_w4a8(b, rotated, output, output); }));
   u.w4_codebook_count = 15;

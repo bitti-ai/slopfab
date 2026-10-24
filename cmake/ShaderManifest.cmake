@@ -72,4 +72,4 @@ slopfab_shader("src/vulkan/tensor_w4a8.comp.spv" "26017c613d63caadf8d145815bdb55
 
 slopfab_shader("src/vulkan/tensor_w4a8_denorm.comp.spv" "4820708e9c0ef1eb2f76b8eb638149b98e8f9dcda43c876798dd6ee7f1b55754" BINARY SLOPFAB_TENSOR_W4A8_DENORM_SPV_BYTES)
 
-slopfab_shader("src/vulkan/tensor_w4a8_quant.comp.spv" "29a355edec2742cb83c31a94eb4015aa20ce844e3a798cc7716e5a38fb1c4334" BINARY SLOPFAB_TENSOR_W4A8_QUANT_SPV_BYTES)
+slopfab_shader("src/vulkan/tensor_w4a8_quant.comp.spv" "d82caccba072fbdccf23819ccdfb7046f12447ffb4e55587fba1ebd1db2ed382" BINARY SLOPFAB_TENSOR_W4A8_QUANT_SPV_BYTES)
