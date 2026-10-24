@@ -1264,8 +1264,10 @@ SLOPFAB_TEST_CATEGORY(vulkan_h3_loaded_stage_cuda_off_contract, "synthetic") {
       CHECK(output.video_rows == denoise_output.video_rows);
       CHECK(output.audio_rows == denoise_output.audio_rows);
     } else if (mode == 1) {
-      for (float x : output.video_rows) CHECK_NEAR(x, 2.f, 1e-5);
-      for (float x : output.audio_rows) CHECK_NEAR(x, -3.f, 1e-5);
+      for (float x : output.video_rows)
+        CHECK_NEAR(x, 2.f, 1e-5);
+      for (float x : output.audio_rows)
+        CHECK_NEAR(x, -3.f, 1e-5);
     } else {
       CHECK(output.steps_completed == 0);
       CHECK(output.video_rows == video_values && output.audio_rows == audio_values);

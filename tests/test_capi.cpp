@@ -27,11 +27,72 @@
 #include "slopfab/capi.h"
 #include "refmod_fixture.h"
 #include "latent_fixture.h"
+#include "lcs_fixture.h"
+
+SLOPFAB_TEST(capi_lcs_settings_snapshot_and_mask) {
+  auto* request = slopfab_request_create();
+  LcsFixture fixture;
+  fixture.write();
+  const auto path = fixture.path.string();
+  CHECK(slopfab_request_set_lcs(nullptr, path.c_str(), "{}") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_lcs(request, path.c_str(), "{\"strength\":0.5}") == SLOPFAB_OK);
+  CHECK(slopfab_request_set_lcs(request, path.c_str(), "{\"typo\":1}") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_lcs(request, path.c_str(), "{\"strength\":true}") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_lcs(request, path.c_str(), "{broken") == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_lcs(request, path.c_str(), "{\"sharpness\":1}") ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  std::filesystem::remove(fixture.path); // immutable request snapshot owns the tensors
+  slopfab_plan plan{};
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  const size_t plane = size_t(plan.latent_height / 2) * size_t(plan.latent_width / 2);
+  std::vector<float> mask(plane, .5f);
+  CHECK(slopfab_request_set_lcs_mask(request, mask.data(), mask.size()) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  mask[0] = 2;
+  CHECK(slopfab_request_set_lcs_mask(request, mask.data(), mask.size()) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  CHECK(slopfab_request_set_lcs_mask(request, nullptr, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  const float one = 1;
+  CHECK(slopfab_request_set_lcs_mask(request, &one, 1) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_ERR_INVALID_REQUEST);
+  CHECK(slopfab_request_set_lcs(request, nullptr, nullptr) == SLOPFAB_OK);
+  CHECK(slopfab_resolve_plan(request, &plan) == SLOPFAB_OK);
+  slopfab_request_destroy(request);
+}
+
+SLOPFAB_TEST(capi_lcs_calibration_cancel_and_busy) {
+  auto* request = slopfab_request_create();
+  LcsFixture fixture;
+  CHECK(slopfab_request_set_model_path(request, SLOPFAB_MODEL_VIDEO_VAE, "missing-vae") ==
+        SLOPFAB_OK);
+  CHECK(slopfab_lcs_calibrate(nullptr, fixture.path.string().c_str(), 8, 64, nullptr, nullptr) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_lcs_calibrate(request, fixture.path.string().c_str(), 7, 64, nullptr, nullptr) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  auto cancel = [](int32_t done, int32_t total, void* user) -> int {
+    CHECK(done == 0 && total == 24);
+    CHECK(slopfab_lcs_calibrate(static_cast<slopfab_request*>(user), "unused", 8, 64, nullptr,
+                                nullptr) == SLOPFAB_ERR_BUSY);
+    return 1;
+  };
+  CHECK(slopfab_lcs_calibrate(request, fixture.path.string().c_str(), 8, 64, cancel, request) ==
+        SLOPFAB_ERR_CANCELLED);
+  CHECK(!std::filesystem::exists(fixture.path));
+  CHECK(slopfab_lcs_calibrate(request, fixture.path.string().c_str(), 8, 64, cancel, request) ==
+        SLOPFAB_ERR_CANCELLED);
+  slopfab_request_destroy(request);
+}
 
 SLOPFAB_TEST(capi_sampling_callback) {
   auto* request = slopfab_request_create();
-  auto hook = [](const slopfab_sampling_step*, void*) -> int { return 0; };
-  CHECK(slopfab_request_set_sampling_callback(nullptr, hook, nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  auto hook = [](const slopfab_sampling_step*, void*) -> int {
+    return 0;
+  };
+  CHECK(slopfab_request_set_sampling_callback(nullptr, hook, nullptr) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
   CHECK(slopfab_request_set_sampling_callback(request, hook, nullptr) == SLOPFAB_OK);
   CHECK(slopfab_request_set_sampling_callback(request, nullptr, nullptr) == SLOPFAB_OK);
   slopfab_request_destroy(request);

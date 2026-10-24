@@ -578,8 +578,8 @@ ExactH3DenoiseResult ExactH3Denoiser::run(const sampler::FlowScheduler& video,
         impl_->context->download(state, effect_rows.data(), info.count);
         impl_->context->download(velocity, effect_velocity.data(), info.count);
         info.latent = effect_rows.data();
-        if (!apply_sampling_effect(c.sampling_effect, info, effect_velocity.data(),
-                                   effect_modified, effect_prediction))
+        if (!apply_sampling_effect(c.sampling_effect, info, effect_velocity.data(), effect_modified,
+                                   effect_prediction))
           return false;
         impl_->context->upload(velocity, effect_modified.data(), info.count);
         return true;

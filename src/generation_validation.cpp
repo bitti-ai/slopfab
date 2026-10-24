@@ -32,8 +32,9 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
             "LCS calibration has no sharpness direction");
   }
   const size_t lcs_plane = size_t(p.layout.latent_height / 2) * size_t(p.layout.latent_width / 2);
-  require(o.lcs_mask.empty() || (o.lcs_data &&
-              (o.lcs_mask.size() == lcs_plane || o.lcs_mask.size() == size_t(p.layout.num_video_rows))),
+  require(o.lcs_mask.empty() ||
+              (o.lcs_data && (o.lcs_mask.size() == lcs_plane ||
+                              o.lcs_mask.size() == size_t(p.layout.num_video_rows))),
           "LCS mask must match one spatial patch plane or the full sampling volume");
   for (float x : o.lcs_mask)
     require(std::isfinite(x) && x >= 0 && x <= 1, "LCS mask values must be in [0,1]");

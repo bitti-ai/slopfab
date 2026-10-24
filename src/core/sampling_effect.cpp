@@ -3,11 +3,10 @@
 #include <stdexcept>
 
 namespace slopfab {
-bool apply_sampling_effect(const SamplingEffect& effect, SamplingStep step,
-                           const float* velocity, std::vector<float>& modified,
-                           std::vector<float>& prediction) {
-  if (!effect || !step.count || !step.latent || !velocity ||
-      !std::isfinite(step.sigma) || step.sigma <= 0)
+bool apply_sampling_effect(const SamplingEffect& effect, SamplingStep step, const float* velocity,
+                           std::vector<float>& modified, std::vector<float>& prediction) {
+  if (!effect || !step.count || !step.latent || !velocity || !std::isfinite(step.sigma) ||
+      step.sigma <= 0)
     throw std::invalid_argument("sampling effect: invalid prediction or sigma");
   prediction.resize(step.count);
   modified.assign(velocity, velocity + step.count);

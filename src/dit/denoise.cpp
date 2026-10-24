@@ -243,6 +243,7 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
               return !progress || progress(i, steps);
             });
         if (!completed) {
+          out.cancelled = true;
           std::copy(all_video.begin() + cv, all_video.end(), out.video_rows.begin());
           // The outer evaluation was planned but never executed.
           out.decisions.pop_back();
@@ -276,8 +277,8 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
         step.count = is_video ? out.video_rows.size() : out.audio_rows.size();
         step.latent = is_video ? all_video.data() + cv : all_audio.data() + ca;
         return apply_sampling_effect(inputs.sampling_effect, step,
-                                     is_video ? video_step_velocity : audio_step_velocity,
-                                     modified, effect_prediction);
+                                     is_video ? video_step_velocity : audio_step_velocity, modified,
+                                     effect_prediction);
       };
       if ((update.advance_video && !apply(true, effect_video)) ||
           (update.advance_audio && !inputs.pin_target_audio && !out.audio_rows.empty() &&
@@ -328,8 +329,10 @@ DenoiseOutputs denoise(Transformer& transformer, const DenoiseInputs& inputs,
     if (inputs.boundary)
       inputs.boundary(i, out.video_rows, out.audio_rows);
 
-    if (progress && !progress(i, steps))
+    if (progress && !progress(i, steps)) {
+      out.cancelled = true;
       break;
+    }
   }
 
   out.steps_computed = model_evaluations;

@@ -8,7 +8,8 @@ SLOPFAB_TEST_CATEGORY(denoise_sampling_effect_updates_and_cancellation, "synthet
   const auto layout = tiny_layout();
   const auto indices = dit::build_indices(layout);
   FlowScheduler video(12), audio(3);
-  video.set_timesteps(3); audio.set_timesteps(4);
+  video.set_timesteps(3);
+  audio.set_timesteps(4);
   Transformer model;
   auto in = make_denoise_inputs(layout, indices, video, audio);
   in.velocity = [&](int, const RowTimesteps&, const float*, const float*, float* v, float* a) {
@@ -27,13 +28,52 @@ SLOPFAB_TEST_CATEGORY(denoise_sampling_effect_updates_and_cancellation, "synthet
   };
   const auto edited = dit::denoise(model, in);
   CHECK(vc == 2 && ac == 3 && !edited.cancelled);
-  for (float value : edited.video_rows) CHECK_NEAR(value, 2.f, 1e-5);
-  for (float value : edited.audio_rows) CHECK_NEAR(value, -3.f, 1e-5);
-  in.sampling_effect = [](const SamplingStep&) { return true; };
+  for (float value : edited.video_rows)
+    CHECK_NEAR(value, 2.f, 1e-5);
+  for (float value : edited.audio_rows)
+    CHECK_NEAR(value, -3.f, 1e-5);
+  in.sampling_effect = [](const SamplingStep&) {
+    return true;
+  };
   const auto noop = dit::denoise(model, in);
   CHECK(noop.video_rows == baseline.video_rows && noop.audio_rows == baseline.audio_rows);
-  in.sampling_effect = [](const SamplingStep&) { return false; };
+  in.sampling_effect = [](const SamplingStep&) {
+    return false;
+  };
   CHECK(dit::denoise(model, in).cancelled);
+}
+
+SLOPFAB_TEST_CATEGORY(denoise_sampling_effect_preserves_cached_prediction, "synthetic") {
+  using namespace slopfab;
+  const auto layout = tiny_layout();
+  const auto indices = dit::build_indices(layout);
+  sampler::FlowScheduler video(12), audio(3);
+  video.set_timesteps(7);
+  audio.set_timesteps(7);
+  Transformer model;
+  auto in = make_denoise_inputs(layout, indices, video, audio);
+  in.cache.skip_every = 2;
+  in.cache.warmup = 0;
+  in.code = [](float t) {
+    std::array<float, slopfab::dit::AdaLNTable::kRank> code{};
+    code.fill(t);
+    return code;
+  };
+  in.velocity = [&](int, const RowTimesteps&, const float*, const float*, float* v, float* a) {
+    std::fill_n(v, size_t(layout.num_video_rows) * 96, 1.f);
+    std::fill_n(a, size_t(layout.num_audio_rows) * 32, 1.f);
+  };
+  int calls = 0;
+  in.sampling_effect = [&](const SamplingStep& s) {
+    ++calls;
+    for (size_t i = 0; i < s.count; ++i) {
+      CHECK_NEAR(s.denoised[i], s.latent[i] + s.sigma, 1e-6);
+      s.denoised[i] += s.sigma;
+    }
+    return true;
+  };
+  const auto output = dit::denoise(model, in);
+  CHECK(calls == 12 && output.steps_skipped > 0);
 }
 
 SLOPFAB_TEST_CATEGORY(denoise_locked_continuation_overlap, "synthetic") {

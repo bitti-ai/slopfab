@@ -92,7 +92,8 @@ RunResult generation::run_generate_impl(const GenerateRequest& request, const Ge
       if (options.lcs_data->vae_sha256 != lcs_vae_fingerprint(request.video_vae_path))
         throw std::invalid_argument("LCS calibration belongs to a different VAE checkpoint");
       auto native = make_lcs_effect(options.lcs_data, options.lcs, options.lcs_mask);
-      sampling_effect = [native = std::move(native), host = options.sampling_effect](const SamplingStep& step) {
+      sampling_effect = [native = std::move(native),
+                         host = options.sampling_effect](const SamplingStep& step) {
         return (!native || native(step)) && (!host || host(step));
       };
     }

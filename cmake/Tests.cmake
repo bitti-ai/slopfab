@@ -50,10 +50,16 @@ if(SLOPFAB_BUILD_TESTS)
     target_link_libraries(slopfab_latent_upscale_tests PRIVATE slopfab_generation)
     slopfab_test_suite(latent_upscale slopfab_latent_upscale_tests integration)
     add_executable(slopfab_generation_tests tests/harness.cpp tests/test_main.cpp
+      tests/test_lcs_calibration.cpp
       tests/test_generation_backends.cpp)
     target_link_libraries(slopfab_generation_tests PRIVATE slopfab_generation)
     add_test(NAME generation_backends COMMAND slopfab_generation_tests)
-    set_tests_properties(generation_backends PROPERTIES LABELS synthetic SKIP_RETURN_CODE 77)
+    set_tests_properties(generation_backends PROPERTIES LABELS synthetic SKIP_RETURN_CODE 77
+      ENVIRONMENT "SLOPFAB_TEST_CATEGORY=synthetic")
+    add_test(NAME lcs_calibration_integration COMMAND slopfab_generation_tests)
+    set_tests_properties(lcs_calibration_integration PROPERTIES LABELS integration SKIP_RETURN_CODE 77
+      ENVIRONMENT "SLOPFAB_TEST_FILTER=lcs_real_vae_calibration;SLOPFAB_TEST_CATEGORY=integration"
+      RESOURCE_LOCK slopfab_gpu)
   endif()
   # Host tests. Each area contributes its own translation unit and registers
   # its cases with the shared harness, so adding tests never touches a file
