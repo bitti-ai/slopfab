@@ -222,6 +222,8 @@ struct GeneratePlan {
   int num_inference_steps = 0;
 
   int num_model_evaluations() const {
+    if (audio_timesteps.empty())
+      return static_cast<int>(video_timesteps.size());
     return static_cast<int>(
         sampler::joint_step_count(video_timesteps.size(), audio_timesteps.size()));
   }

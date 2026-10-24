@@ -103,10 +103,17 @@ ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
     shape("text_embedder.proj.weight", {3072, 4096});
     shape("shared_block_modulation.weight", {18432, 3072});
     shape("final_linear_video.weight", {128, 3072});
+    shape("final_norm_video.weight", {3072});
+    shape("time_embedding.0.weight", {3072, 256});
+    shape("time_embedding.2.weight", {3072, 3072});
+    shape("video_head_modulation.weight", {6144, 3072});
     for (int i = 0; i < 42; ++i) {
       const auto prefix = "layers." + std::to_string(i) + ".";
       shape(prefix + "norm1.weight", {3072});
+      shape(prefix + "norm2.weight", {3072});
       shape(prefix + "q_norm.weight", {128});
+      shape(prefix + "k_norm.weight", {128});
+      shape(prefix + "proj.o.weight", {3072, 3072});
       if (checkpoint.find(prefix + "proj.qkv.weight"))
         shape(prefix + "proj.qkv.weight", {9216, 3072});
       else
@@ -116,6 +123,17 @@ ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
       shape(prefix + "proj.ffn_down.weight", {3072, 8192});
     }
     model.family = "moss";
+    const auto metadata = checkpoint.metadata().find("slopfab.model");
+    if (metadata != checkpoint.metadata().end()) {
+      const auto root = json::parse(metadata->second);
+      if (!root.is_object() || !root.find("version") || !root.find("family") ||
+          root.find("version")->as_number() != 1 || root.find("family")->as_string() != "moss")
+        throw std::invalid_argument("MOSS: incompatible slopfab.model descriptor");
+      for (const auto& field : root.as_object())
+        if (field.first != "version" && field.first != "family")
+          throw std::invalid_argument("MOSS: unsupported descriptor field " + field.first);
+      model.explicit_metadata = true;
+    }
     model.modulation = ModulationImplementation::kTimestepMlp;
     model.compatibility_architecture = TransformerArchitecture::kMossImage;
     model.quantization = detect_transformer_quantization(checkpoint);

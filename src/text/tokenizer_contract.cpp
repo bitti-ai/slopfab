@@ -33,7 +33,12 @@ void validate_tokenizer_component(const std::string& name, std::string_view text
     require(field(value, "type").as_string() == "NFC", name);
     return;
   }
-  if (name == "decoder" || name == "post_processor") {
+  if (name == "decoder") {
+    // ByteLevel decoder's serialized pre-tokenization flags are unused on decode.
+    require(field(value, "type").as_string() == "ByteLevel", name);
+    return;
+  }
+  if (name == "post_processor") {
     byte_level(value, name);
     return;
   }

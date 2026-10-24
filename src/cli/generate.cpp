@@ -99,6 +99,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   bool saw_refmod = false;
   int attn_band = 0;
   slopfab::AttentionMode attention_mode = slopfab::AttentionMode::kSage2;
+  bool saw_attention = false;
   uint64_t vulkan_sage_workspace_mib = 64;
   slopfab::SolSchedule sol_schedule;
   slopfab::dit::VedaOptions veda;
@@ -426,6 +427,7 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     } else if (arg == "--attn-band") {
       attn_band = std::atoi(next("--attn-band"));
     } else if (arg == "--attention") {
+      saw_attention = true;
       const std::string v = next("--attention");
       if (!slopfab::parse_attention_mode(v, &attention_mode)) {
         std::fprintf(stderr,
@@ -599,6 +601,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     if (!saw_out)
       req.out_path = std::filesystem::path(req.out_path).replace_extension(".ppm").string();
     if (std::filesystem::path(req.out_path).extension() != ".ppm")
+      throw std::invalid_argument("MOSS file output requires --out FILE.ppm");
+    if (std::filesystem::path(req.out_path).extension() != ".ppm")
       throw std::invalid_argument("image edits require --out with a .ppm extension");
   }
   if (saw_overlap && continue_from.empty())
@@ -626,6 +630,8 @@ int cmd_generate(int argc, char** argv, const char* executable) {
   }
   discover_generate_checkpoints(req, executable);
   if (slopfab::request_model_family(req) == "moss") {
+    if (!saw_attention)
+      attention_mode = slopfab::AttentionMode::kFlash2;
     if (saw_aspect)
       throw std::invalid_argument("MOSS requires --resolution WxH instead of --aspect");
     if (!saw_out)

@@ -57,10 +57,23 @@
 #include "generation/prompt.h"
 
 namespace slopfab {
+namespace moss {
+RunResult run(const GenerateRequest&, const GeneratePlan&, const RunOptions&);
+}
 using namespace generation;
 
 RunResult generation::run_generate_impl(const GenerateRequest& request, const GeneratePlan& plan,
                                         const RunOptions& options, ReusedGenerationModels& reuse) {
+  if (plan.model.family == "moss") {
+    reuse.clear();
+#if SLOPFAB_WITH_CUDA
+    return moss::run(request, plan, options);
+#else
+    RunResult unsupported;
+    unsupported.message = "MOSS requires a CUDA-enabled build";
+    return unsupported;
+#endif
+  }
   struct ReuseReleaseGuard {
     ReusedGenerationModels& reuse;
     bool release = false;
