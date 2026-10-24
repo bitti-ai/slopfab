@@ -590,6 +590,8 @@ const __nv_bfloat16* materialise_bf16(const QuantWeight& w, Workspace& ws, cudaS
     }
     launch_dequant_f8e4m3(static_cast<const uint8_t*>(w.data), w.weight_scale, dst, n, stream);
     break;
+  case QuantFormat::kW4A8:
+    throw std::invalid_argument("W4A8 requires native INT8 activation/GEMM execution");
   case QuantFormat::kNF4:
     if (w.nf4_absmax == nullptr || w.nf4_quant_map == nullptr ||
         w.nf4_nested_quant_map == nullptr || w.nf4_nested_absmax == nullptr) {

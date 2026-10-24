@@ -1,4 +1,5 @@
 #include "linear_internal.cuh"
+#include "slopfab/cuda/w4a8.cuh"
 
 namespace slopfab::cuda {
 using namespace linear_detail;
@@ -9,12 +10,17 @@ size_t QuantWeight::stored_bytes() const {
   const size_t n = static_cast<size_t>(out_features) * in_features;
   // Two nibbles per byte. Both shipped 4-bit formats place the even element in
   // the high nibble; their dequantisers pin that convention independently.
-  if (format == QuantFormat::kNVFP4 || format == QuantFormat::kNF4)
+  if (format == QuantFormat::kNVFP4 || format == QuantFormat::kNF4 || format == QuantFormat::kW4A8)
     return (n + 1) / 2;
   return element_bytes(format) * n;
 }
 
 size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType compute) {
+  if (w.format == QuantFormat::kW4A8) {
+    if (compute != ComputeType::kBF16) throw std::invalid_argument("W4A8 requires BF16 activations");
+    return align_up(size_t(w.out_features)*w.in_features) + align_up(size_t(rows)*w.in_features*2) +
+           align_up(size_t(rows)*w.in_features) + align_up(size_t(rows)*4) + align_up(size_t(rows)*w.out_features*4);
+  }
   const size_t weights = static_cast<size_t>(w.out_features) * w.in_features;
   const size_t act = static_cast<size_t>(rows) * w.in_features;
   size_t total = 0;
@@ -60,12 +66,13 @@ size_t linear_workspace_bytes(const QuantWeight& w, int rows, ComputeType comput
 }
 
 size_t linear_dense_weight_bytes(const QuantWeight& w) {
-  if (w.format == QuantFormat::kBF16)
+  if (w.format == QuantFormat::kBF16 || w.format == QuantFormat::kW4A8)
     return 0; // already dense; `prepare` carves nothing
   return align_up(static_cast<size_t>(w.out_features) * w.in_features * sizeof(__nv_bfloat16));
 }
 
 size_t linear_activation_workspace_bytes(const QuantWeight& w, int rows, ComputeType compute) {
+  if (w.format == QuantFormat::kW4A8) return linear_workspace_bytes(w, rows, compute);
   const size_t weights = static_cast<size_t>(w.out_features) * w.in_features;
   const size_t act = static_cast<size_t>(rows) * w.in_features;
   size_t total = 0;
@@ -130,7 +137,7 @@ bool LinearRunner::takes_native_nvfp4(const QuantWeight& w) const {
 const __nv_bfloat16* LinearRunner::prepare(const QuantWeight& w, Workspace& ws) {
   if (handle_ == nullptr)
     throw std::runtime_error("LinearRunner::prepare: init() not called");
-  if (takes_native_nvfp4(w))
+  if (takes_native_nvfp4(w) || w.format == QuantFormat::kW4A8)
     return nullptr;
   return materialise_bf16(w, ws, stream_);
 }
@@ -164,6 +171,24 @@ void LinearRunner::forward_prepared(const QuantWeight& w, const __nv_bfloat16* w
   // would actually take it. Without the check, a caller that forgot to call
   // `prepare` at all would hand a bf16 weight to the fp4 GEMM and get plausible
   // wrong numbers, which is the failure this whole format invites.
+  if (w.format == QuantFormat::kW4A8) {
+    if (!w.block_scale || !w.w4_codebook || !w.weight_scale || !w.convrot || w.convrot_group!=256 || w.in_features%256)
+      throw std::invalid_argument("W4A8 requires group scales, channel scales, codebook and ConvRot-256");
+    auto* codes=ws.alloc_n<int8_t>(size_t(w.out_features)*w.in_features);
+    auto* rotated=ws.alloc_n<__nv_bfloat16>(size_t(rows)*w.in_features);
+    auto* activation=ws.alloc_n<int8_t>(size_t(rows)*w.in_features);
+    auto* scales=ws.alloc_n<float>(rows);
+    auto* accum=ws.alloc_n<int32_t>(size_t(rows)*w.out_features);
+    launch_dequant_w4a8_weight(static_cast<const int8_t*>(w.data),w.block_scale,w.w4_codebook,codes,w.out_features,w.in_features,16,stream_);
+    launch_convrot(x,rotated,rows,w.in_features,256,stream_);
+    launch_quantize_w4a8_bf16(rotated,activation,scales,rows,w.in_features,stream_);
+    const int32_t one=1,zero=0;
+    SLOPFAB_CUBLAS_CHECK(cublas_gemm_ex(handle_,CUBLAS_OP_T,CUBLAS_OP_N,w.out_features,rows,w.in_features,&one,
+      codes,CUDA_R_8I,w.in_features,activation,CUDA_R_8I,w.in_features,&zero,accum,CUDA_R_32I,w.out_features,CUBLAS_COMPUTE_32I,CUBLAS_GEMM_DEFAULT));
+    launch_w4a8_output_bf16(accum,scales,w.weight_scale,y,rows,w.out_features,stream_);
+    add_bias(y,false,w,rows,stream_);
+    return;
+  }
   if (weight == nullptr && !takes_native_nvfp4(w)) {
     throw std::runtime_error(
         "LinearRunner::forward_prepared: null dense weight for a layer that does not take the "

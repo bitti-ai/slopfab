@@ -269,6 +269,27 @@ void test_w4a8_state() {
   st.close();
   std::error_code ec;
   std::filesystem::remove(path, ec);
+  // This transformer stores descriptors in the header, without .comfy_quant tensors.
+  const auto global = json::parse(R"({"format_version":"1.0","layers":{"layer":{"format":"asym_w4a8_int8","group_size":16,"convrot":true,"convrot_groupsize":256}}})");
+  const auto make_header = [&](const json::Value& metadata) {
+    return std::string("{\"__metadata__\":{\"_quantization_metadata\":") + json::stringify(json::Value(json::stringify(metadata))) +
+      R"(},"layer.weight":{"dtype":"I8","shape":[2,128],"data_offsets":[0,256]},"layer.weight_s_rel":{"dtype":"F8_E4M3","shape":[2,16],"data_offsets":[256,288]},"layer.weight_s_channel":{"dtype":"F32","shape":[2],"data_offsets":[288,296]},"layer.weight_codebook":{"dtype":"F32","shape":[16],"data_offsets":[296,360]}})";
+  };
+  std::vector<uint8_t> packed(360, 0);
+  std::fill(packed.begin()+256,packed.begin()+288,0x38);
+  const float channels[]={1.f,2.f};std::memcpy(packed.data()+288,channels,sizeof(channels));
+  const std::string global_path=write_temp_safetensors(make_header(global),packed,"slopfab_w4a8_global.safetensors");
+  st.open(global_path);
+  CHECK(is_w4a8_weight(st,"layer.weight"));
+  CHECK(!is_w4a8_weight(st,"absent.weight"));
+  CHECK(read_w4a8_state(st,"layer.weight","test").convrot_group_size==256);
+  validate_w4a8_weight(st,"layer.weight",2,256);
+  CHECK(throws([&]{validate_w4a8_weight(st,"layer.weight",2,512);}));
+  st.close();std::filesystem::remove(global_path,ec);
+  packed[256]=0x7f;
+  const std::string bad_path=write_temp_safetensors(make_header(global),packed,"slopfab_w4a8_bad.safetensors");
+  st.open(bad_path);CHECK(throws([&]{validate_w4a8_weight(st,"layer.weight",2,256);}));
+  st.close();std::filesystem::remove(bad_path,ec);
 }
 
 // --- compare ----------------------------------------------------------------

@@ -54,6 +54,7 @@ enum class QuantFormat {
   kI8,     // per-output-channel weight_scale
   kNVFP4,  // 4-bit, block-scaled; `data` is half as many bytes as elements
   kNF4,    // bitsandbytes NF4, double-quantised 64-element block scales
+  kW4A8,   // low-nibble-first codes, group-16 scales, dynamic INT8 activations
 };
 
 // Elements of the contraction axis sharing one e4m3 block scale. Fixed, not a
@@ -99,6 +100,8 @@ struct QuantWeight {
   // Device, `out_features * in_features / kNVFP4BlockSize` raw e4m3 bytes.
   // Block j of row o scales stored elements [j*16, j*16+16).
   const uint8_t* block_scale = nullptr;
+  // W4A8 uses row-major E4M3 group scales and a shared 16-entry codebook.
+  const float* w4_codebook = nullptr;
 
   // Second-level scale, host side, multiplying the whole tensor. Stored as
   // `.weight_scale_2`; one per tensor, so it costs nothing to fold in.
@@ -202,7 +205,7 @@ public:
   //
   // The returned pointer stays valid until the caller's `Workspace::Scope`
   // rewinds, and must be passed to `forward_prepared` alongside the same `w`.
-  // Returns null when `w` takes the native low-precision GEMM instead, which
+  // Returns null for native W4A8 or NVFP4 execution, which
   // never materialises a dense copy; `forward_prepared` handles that pointer
   // and is the reason this returns rather than throws.
   const __nv_bfloat16* prepare(const QuantWeight& w, Workspace& ws);

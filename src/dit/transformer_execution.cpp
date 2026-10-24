@@ -100,9 +100,11 @@ void Transformer::Impl::run_block(const BlockWeights& b, const float* mod_base, 
   };
   auto project = [&](const QuantWeight& weight, const __nv_bfloat16* dense,
                      const __nv_bfloat16* input, int count, __nv_bfloat16* output) {
-    if (block_attention_mode != AttentionMode::kExact) {
+    if (block_attention_mode != AttentionMode::kExact || weight.format == QuantFormat::kW4A8) {
+      // W4A8 uses deterministic integer accumulation, including in exact attention mode.
       linear.forward_prepared(weight, dense, input, count, output, ws);
-      lora.apply(adapter_key(weight), input, count, output, blas, stream.get(), false);
+      lora.apply(adapter_key(weight), input, count, output, blas, stream.get(),
+                 block_attention_mode == AttentionMode::kExact);
       return;
     }
     if (weight.bias != nullptr)

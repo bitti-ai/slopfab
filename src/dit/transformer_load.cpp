@@ -1,5 +1,6 @@
 #include "transformer_impl.h"
 #include "load_retry.h"
+#include "slopfab/w4a8.h"
 #include "slopfab/dit/pdd.h"
 
 namespace slopfab::dit {
@@ -153,7 +154,14 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
   // per-tensor scalar to one e4m3 byte per 16 contracted elements, and adds the
   // second-level `weight_scale_2`. Which of the two it is comes from the file.
   auto plan_linear = [&](const std::string& name, int out_features, int in_features) {
-    if (is_nf4(checkpoint, name)) {
+    if (is_w4a8_weight(checkpoint, name + ".weight")) {
+      validate_w4a8_weight(checkpoint, name + ".weight", out_features, in_features);
+      if (interleaved_qkv) throw std::runtime_error("W4A8 interleaved QKV is not supported");
+      plan.require(name + ".weight", {out_features, in_features / 2}, Store::kVerbatim);
+      plan.require(name + ".weight_s_rel", {out_features, in_features / 16}, Store::kVerbatim);
+      plan.require(name + ".weight_s_channel", {out_features}, Store::kAsF32);
+      plan.require(name + ".weight_codebook", {16}, Store::kAsF32);
+    } else if (is_nf4(checkpoint, name)) {
       plan_nf4(name, out_features, in_features);
     } else if (is_nvfp4(checkpoint, name, in_features)) {
       plan.require(name + ".weight", {out_features, in_features / 2}, Store::kVerbatim);
@@ -558,7 +566,13 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
     w.in_features = in_features;
     w.data = ptr(name + ".weight");
 
-    if (is_nf4(checkpoint, name)) {
+    if (is_w4a8_weight(checkpoint, name + ".weight")) {
+      w.format = QuantFormat::kW4A8;
+      w.block_scale = static_cast<const uint8_t*>(ptr(name + ".weight_s_rel"));
+      w.weight_scale = f32(name + ".weight_s_channel");
+      w.w4_codebook = f32(name + ".weight_codebook");
+      w.convrot = true; w.convrot_group = 256;
+    } else if (is_nf4(checkpoint, name)) {
       const NF4State state = read_nf4_state(checkpoint, name);
       w.format = QuantFormat::kNF4;
       w.nf4_absmax = static_cast<const uint8_t*>(ptr(name + ".weight.absmax"));
@@ -604,7 +618,8 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
       int power = 1;
       while (power < tag.convrot_group)
         power *= 4;
-      if (tag.format != "int8_tensorwise" || w.format != QuantFormat::kI8 ||
+      if (!((tag.format == "int8_tensorwise" && w.format == QuantFormat::kI8) ||
+            (tag.format == "asym_w4a8_int8" && w.format == QuantFormat::kW4A8)) ||
           power != tag.convrot_group) {
         throw std::runtime_error("transformer: '" + name + "' has incompatible ConvRot metadata");
       }
@@ -635,7 +650,15 @@ void Transformer::load_attempt(const SafeTensors& checkpoint, const TransformerC
     b.wk = b.wq;
     b.wv = b.wq;
 
-    if (fused.format == QuantFormat::kNF4) {
+    if (fused.format == QuantFormat::kW4A8) {
+      const size_t third = size_t(inner) * hidden;
+      b.wk.data = static_cast<const uint8_t*>(fused.data) + third / 2;
+      b.wv.data = static_cast<const uint8_t*>(fused.data) + third;
+      b.wk.block_scale = fused.block_scale + third / 16;
+      b.wv.block_scale = fused.block_scale + third / 8;
+      b.wk.weight_scale = fused.weight_scale + inner;
+      b.wv.weight_scale = fused.weight_scale + 2 * inner;
+    } else if (fused.format == QuantFormat::kNF4) {
       const size_t elements_third = static_cast<size_t>(inner) * hidden;
       if (elements_third % fused.nf4_block_size != 0 ||
           (elements_third / fused.nf4_block_size) % fused.nf4_nested_block_size != 0) {

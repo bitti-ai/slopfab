@@ -37,6 +37,8 @@ inline size_t element_bytes(QuantFormat f) {
   case QuantFormat::kF8E4M3:
   case QuantFormat::kI8:
     return 1;
+  case QuantFormat::kNF4:
+  case QuantFormat::kW4A8:
   case QuantFormat::kNVFP4:
     // Half a byte. Callers that need a size must go through `stored_bytes`,
     // which knows the packing; returning 0 or 1 here would be a silent

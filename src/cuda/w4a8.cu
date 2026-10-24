@@ -161,4 +161,53 @@ void launch_dequant_w4a8_output(int32_t* input_output, const float* activation_s
   SLOPFAB_CUDA_CHECK(cudaGetLastError());
 }
 
+namespace {
+__global__ void quantize_bf16(const __nv_bfloat16* input, int8_t* output, float* scales,
+                              int width) {
+  __shared__ float values[256];
+  int t = threadIdx.x, row = blockIdx.x;
+  size_t offset = size_t(row) * width;
+  float maximum = 0;
+  for (int i = t; i < width; i += 256)
+    maximum = fmaxf(maximum, fabsf(__bfloat162float(input[offset + i])));
+  values[t] = maximum;
+  __syncthreads();
+  for (int d = 128; d; d /= 2) {
+    if (t < d)
+      values[t] = fmaxf(values[t], values[t + d]);
+    __syncthreads();
+  }
+  const float scale = fmaxf(values[0] / 127.f, 1e-30f);
+  if (t == 0)
+    scales[row] = scale;
+  const float rounded = __bfloat162float(__float2bfloat16(scale));
+  for (int i = t; i < width; i += 256) {
+    float q = __bfloat162float(__float2bfloat16(__bfloat162float(input[offset + i]) / rounded));
+    output[offset + i] = static_cast<int8_t>(max(-128, min(127, __float2int_rn(q))));
+  }
+}
+
+__global__ void output_bf16(const int32_t* input, const float* rows, const float* channels,
+                            __nv_bfloat16* output, size_t n, int cols) {
+  size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < n)
+    output[i] = __float2bfloat16(float(input[i]) * rows[i / cols] * channels[i % cols]);
+}
+}
+
+void launch_quantize_w4a8_bf16(const __nv_bfloat16* input, int8_t* output, float* scales, int rows,
+                               int width, cudaStream_t stream) {
+  if (rows <= 0 || width <= 0)
+    throw std::invalid_argument("W4A8 activation shape");
+  quantize_bf16<<<rows, 256, 0, stream>>>(input, output, scales, width);
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
+}
+
+void launch_w4a8_output_bf16(const int32_t* input, const float* rows, const float* channels,
+                             __nv_bfloat16* output, int count, int cols, cudaStream_t stream) {
+  size_t n = size_t(count) * cols;
+  output_bf16<<<(n + 255) / 256, 256, 0, stream>>>(input, rows, channels, output, n, cols);
+  SLOPFAB_CUDA_CHECK(cudaGetLastError());
+}
+
 } // namespace slopfab::cuda

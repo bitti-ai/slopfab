@@ -8,6 +8,7 @@
 #include <string>
 #include <set>
 #include "slopfab/json.h"
+#include "slopfab/w4a8.h"
 #include "slopfab/dit/adaln.h"
 
 namespace slopfab::dit {
@@ -293,6 +294,8 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
   const TensorView* weight = checkpoint.find(prefix + ".weight");
   if (weight == nullptr)
     return TransformerQuantization::kUnknown;
+  if (is_w4a8_weight(checkpoint, prefix + ".weight"))
+    return TransformerQuantization::kW4A8ConvRot;
   if (has(checkpoint, "blocks.0.attn.qkv_proj.weight.quant_state.bitsandbytes__nf4")) {
     return TransformerQuantization::kBitsAndBytesNF4;
   }
@@ -342,6 +345,8 @@ const char* transformer_quantization_name(TransformerQuantization quantization) 
   switch (quantization) {
   case TransformerQuantization::kBFloat16:
     return "bfloat16";
+  case TransformerQuantization::kW4A8ConvRot:
+    return "W4A8 INT4 ConvRot";
   case TransformerQuantization::kFloat32:
     return "float32";
   case TransformerQuantization::kFloat8:

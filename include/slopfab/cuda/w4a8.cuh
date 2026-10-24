@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <cstddef>
@@ -18,6 +19,12 @@ void launch_dequant_w4a8_weight(const int8_t* packed, const uint8_t* group_scale
 // quantization in one launch. Input is the FP16 operand used by the VAE GEMM.
 void launch_quantize_w4a8_activation(const __half* input, int8_t* output, float* row_scale,
                                      int rows, int in_features, cudaStream_t stream);
+
+// BF16 transformer path: input has already been rotated and rounded to BF16.
+void launch_quantize_w4a8_bf16(const __nv_bfloat16* rotated, int8_t* output, float* row_scale,
+                              int rows, int width, cudaStream_t stream);
+void launch_w4a8_output_bf16(const int32_t* input, const float* row_scale, const float* channel_scale,
+                            __nv_bfloat16* output, int rows, int cols, cudaStream_t stream);
 
 // Converts an INT32 GEMM result in-place to FP32, applying the activation and
 // per-output-channel weight scales.

@@ -816,3 +816,33 @@ SLOPFAB_TEST_CATEGORY(linear_nf4_double_quant, "synthetic") {
   const auto want = cpu_matmul_nt(x, nf4_reference(w), rows, w.out, w.in);
   CHECK_CLOSE_REL(want, dy.host(), 1e-3, 1e-2, "linear NF4 dequantise-then-GEMM");
 }
+
+
+SLOPFAB_TEST_CATEGORY(nn_w4a8_native_bf16_linear, "synthetic") {
+  using namespace slopfab::cuda;
+  constexpr int rows=3,out=4,k=256;
+  std::vector<int8_t> packed(out*k/2);
+  for(int o=0;o<out;++o)for(int i=0;i<k/2;++i)packed[o*k/2+i]=int8_t(((i+o)&15)|(((i*3+o+1)&15)<<4));
+  std::vector<uint8_t> scales(out*k/16,0x38);std::vector<float> book(16);
+  for(int i=0;i<16;++i)book[i]=float(i-8);
+  std::vector<float> channel={.25f,.5f,1.f,2.f};
+  DeviceBuffer<int8_t> codes(packed.size());codes.copy_from_host(packed.data(),packed.size());
+  DeviceBuffer<uint8_t> groups(scales.size());groups.copy_from_host(scales.data(),scales.size());
+  auto cb=to_device(book),cs=to_device(channel);
+  QuantWeight w;w.format=QuantFormat::kW4A8;w.in_features=k;w.out_features=out;w.data=codes.get();w.block_scale=groups.get();w.weight_scale=cs.get();w.w4_codebook=cb.get();w.convrot=true;w.convrot_group=256;
+  CHECK(w.stored_bytes()==packed.size());
+  CHECK(linear_dense_weight_bytes(w)==0);
+  std::vector<float> input(rows*k);input[k]=1;std::fill(input.begin()+2*k,input.end(),1.f);
+  BfBuf x(input),y(rows*out);CublasScope blas;LinearRunner runner;runner.init(blas.h,nullptr);
+  Workspace ws;ws.reserve(linear_workspace_bytes(w,rows,ComputeType::kBF16));
+  runner.forward(w,x.p(),rows,y.p(),ws);auto actual=y.host();
+  auto h=kron_power(&kH4[0][0],4,4);
+  for(int r=0;r<rows;++r){
+    std::vector<float> rotated(k);float maxabs=0;
+    for(int i=0;i<k;++i){for(int j=0;j<k;++j)rotated[i]+=h[i*k+j]/16*input[r*k+j];maxabs=std::max(maxabs,std::abs(rotated[i]));}
+    float scale=std::max(maxabs/127,1e-30f);float rounded=slopfab::bf16_to_f32(slopfab::f32_to_bf16(scale));
+    for(int o=0;o<out;++o){int32_t sum=0;for(int i=0;i<k;++i){float quotient=slopfab::bf16_to_f32(slopfab::f32_to_bf16(rotated[i]/rounded));int q=std::clamp(int(std::nearbyint(quotient)),-128,127);uint8_t b=uint8_t(packed[o*k/2+i/2]);int code=i%2?b>>4:b&15;sum+=q*int(book[code]);}
+      float expected=slopfab::bf16_to_f32(slopfab::f32_to_bf16(float(sum)*scale*channel[o]));CHECK(actual[r*out+o]==expected);}
+  }
+  runner.set_native(true);runner.forward(w,x.p(),rows,y.p(),ws);CHECK(actual==y.host());
+}
