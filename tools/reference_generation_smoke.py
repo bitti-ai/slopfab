@@ -1,7 +1,7 @@
 """Real-checkpoint FFmpeg-free DLL smoke run with video and PCM references.
 
 Usage: python reference_generation_smoke.py slopfab.dll repository-root [vulkan] [--reuse]
-       [--transformer PATH] [--embedding PATH]
+       [--transformer PATH] [--embedding PATH] [--small-references]
 --reuse checks identical repeated output, a new seed, and skipped VAE encodes.
 No output files are written; asserts decoded frame/audio geometry and finiteness.
 """
@@ -104,6 +104,9 @@ try:
             request, str(embedding_path).encode()))
     check(set_prompt(request, b"A warm red scene with gentle motion and a soft continuous tone."))
     check(set_resolution(request, 32, 32))
+    if "--small-references" in sys.argv:
+        check(bind("slopfab_request_set_conditioning_settings", [handle, C.c_char_p])(
+            request, b'{"version":1,"media_short_edge":32,"media_max_pixels":1024}'))
     check(set_frames(request, 22))
     check(set_steps(request, 2))
     if "vulkan" in sys.argv[3:]:

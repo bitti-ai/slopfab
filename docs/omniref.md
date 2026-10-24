@@ -5,6 +5,8 @@ on CUDA and Vulkan, including `fasth3_omniref_8step_pruned_int8_convrot.safetens
 Applications select it with the existing `slopfab_request_set_model_path` API
 and use the usual H3 text encoder and video/audio VAEs. No new C API calls are
 required. Reference images, videos and audio use the existing reference APIs.
+Image edits use the existing image-edit and U8 mask APIs, including soft-mask
+compositing and exact preservation of pixels outside the selection.
 
 The loader recognizes the 3072-row video and 1024-row audio output projections
 alongside the rank-eight AdaLN table and compressed-attention gates. This

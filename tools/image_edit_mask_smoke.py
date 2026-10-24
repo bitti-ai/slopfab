@@ -32,6 +32,8 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--backend", choices=("cuda", "vulkan"), required=True)
     parser.add_argument("--sampler", choices=("euler", "renoise"), default="euler")
+    parser.add_argument("--trained-grid", action="store_true",
+                        help="Use the checkpoint's trained grid (OmniRef: four steps at strength 0.5)")
     args = parser.parse_args()
     dll = C.CDLL(str(args.library.resolve()))
     handle = C.c_void_p
@@ -82,9 +84,11 @@ def main():
         check(bind("request_set_attention", [handle, C.c_char_p])(request, b"sage2"))
         check(bind("request_set_steps", [handle, C.c_int])(request, 3))
         check(bind("request_set_seed", [handle, C.c_uint64])(request, 17))
+        sampling = {"version": 1, "sampler": args.sampler}
+        if not args.trained_grid:
+            sampling["base_sigmas"] = [1, .5, 0]
         check(bind("request_set_sampling_settings", [handle, C.c_char_p])(
-            request, json.dumps({"version": 1, "sampler": args.sampler,
-                                 "base_sigmas": [1, .5, 0]}).encode()))
+            request, json.dumps(sampling).encode()))
         check(bind("request_set_image_edit_rgb24", [
             handle, C.POINTER(C.c_uint8), C.c_size_t, C.c_int, C.c_int, C.c_size_t,
             C.c_int, C.c_int, C.c_int, C.c_int, C.c_float, C.c_int,
@@ -112,7 +116,7 @@ def main():
         check(bind("generation_output", [handle, C.POINTER(Output)])(generation, C.byref(output)))
         assert (output.frames, output.channels, output.width, output.height) == (1, 3, w, h)
         assert output.video_float_count == 3 * w * h
-        assert output.steps_computed == 1
+        assert output.steps_computed == (4 if args.trained_grid else 1)
         changed = preserved = 0
         for p, alpha in enumerate(coverage):
             for c in range(3):
