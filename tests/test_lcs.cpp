@@ -2,6 +2,7 @@
 #include "slopfab/lcs.h"
 #include "../src/core/lcs_fingerprint_cache.h"
 #include <fstream>
+#include <thread>
 #include <chrono>
 #include <algorithm>
 #include <cmath>
@@ -171,6 +172,11 @@ SLOPFAB_TEST(lcs_fingerprint_reuses_unchanged_files_and_invalidates_edits) {
   CHECK(cache.get(path.string(), hash) == first);
   CHECK(reads == 1);
   const auto modified = fs::last_write_time(path);
+  // Windows can coalesce ChangeTime updates inside one system-clock tick.
+  // This test checks invalidation once the filesystem reports a new change time.
+#ifdef _WIN32
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+#endif
   write(path, "other");
   fs::last_write_time(path, modified);
   const auto second = cache.get(path.string(), hash);
