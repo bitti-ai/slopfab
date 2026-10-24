@@ -55,6 +55,11 @@ constexpr float kAudioSigmaShift = 3.0f;
 constexpr float kViggleVideoSigmaShift = 3.0f;
 
 struct GenerateRequest {
+  // Empty selects from checkpoint tensors, retaining H3 when no file exists.
+  std::string model_family;
+  std::string negative_prompt;
+  float guidance_scale = 3.0f;
+  std::vector<int> uncond_skip_layers = {22};
   std::string prompt;
   // The CLI replaces this default with output/video-<timestamp>.mp4; the
   // concrete fallback remains useful to callers of the library API.

@@ -1,4 +1,5 @@
 #include "upscale_options.h"
+#include "slopfab/model_profile.h"
 // slopfab - MiniMax H3 video generation in C++/CUDA.
 
 #include <algorithm>
@@ -173,6 +174,30 @@ int cmd_generate(int argc, char** argv, const char* executable) {
       if (used != value.size())
         throw std::invalid_argument("--edit-feather expects a nonnegative integer");
       saw_edit_option = true;
+    } else if (arg == "--model") {
+      req.model_family = next("--model");
+    } else if (arg == "--negative-prompt") {
+      req.negative_prompt = next("--negative-prompt");
+    } else if (arg == "--guidance") {
+      const std::string value = next("--guidance");
+      size_t used = 0;
+      req.guidance_scale = std::stof(value, &used);
+      if (used != value.size())
+        throw std::invalid_argument("--guidance expects a finite nonnegative number");
+    } else if (arg == "--uncond-skip-layers") {
+      req.uncond_skip_layers.clear();
+      const std::string value = next("--uncond-skip-layers");
+      if (value != "none") {
+        std::istringstream list(value);
+        std::string entry;
+        while (std::getline(list, entry, ',')) {
+          size_t used = 0;
+          const int layer = std::stoi(entry, &used);
+          if (used != entry.size())
+            throw std::invalid_argument("--uncond-skip-layers expects layer indices or none");
+          req.uncond_skip_layers.push_back(layer);
+        }
+      }
     } else if (arg == "--prompt") {
       req.prompt = next("--prompt");
       saw_prompt = true;
@@ -598,6 +623,13 @@ int cmd_generate(int argc, char** argv, const char* executable) {
     req.reference_media.push_back(std::make_shared<const slopfab::ReferenceMedia>(
         slopfab::cli::decode_reference_file(entry.first, entry.second, executable)));
     slopfab::validate_reference_media(req.reference_image_paths.size(), req.reference_media);
+  }
+  discover_generate_checkpoints(req, executable);
+  if (slopfab::request_model_family(req) == "moss") {
+    if (saw_aspect)
+      throw std::invalid_argument("MOSS requires --resolution WxH instead of --aspect");
+    if (!saw_out)
+      req.out_path = std::filesystem::path(req.out_path).replace_extension(".ppm").string();
   }
   const std::string base_out_path = req.out_path;
   const uint64_t base_seed = req.seed;

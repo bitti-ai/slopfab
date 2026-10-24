@@ -94,6 +94,34 @@ void validate_adaln_table_config(int rank, int rows) {
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
   ModelDescriptor model;
+  if (has(checkpoint, "video_embedder.weight") && has(checkpoint, "shared_block_modulation.weight")) {
+    const auto shape = [&](const std::string& key, std::vector<int64_t> expected) {
+      if (!checkpoint.find(key) || checkpoint.at(key).shape != expected)
+        throw std::invalid_argument("MOSS: incompatible tensor " + key);
+    };
+    shape("video_embedder.weight", {3072, 128});
+    shape("text_embedder.proj.weight", {3072, 4096});
+    shape("shared_block_modulation.weight", {18432, 3072});
+    shape("final_linear_video.weight", {128, 3072});
+    for (int i = 0; i < 42; ++i) {
+      const auto prefix = "layers." + std::to_string(i) + ".";
+      shape(prefix + "norm1.weight", {3072});
+      shape(prefix + "q_norm.weight", {128});
+      if (checkpoint.find(prefix + "proj.qkv.weight"))
+        shape(prefix + "proj.qkv.weight", {9216, 3072});
+      else
+        for (const char* part : {"q", "k", "v"})
+          shape(prefix + "proj." + part + ".weight", {3072, 3072});
+      shape(prefix + "proj.ffn_up_gate.weight", {16384, 3072});
+      shape(prefix + "proj.ffn_down.weight", {3072, 8192});
+    }
+    model.family = "moss";
+    model.modulation = ModulationImplementation::kTimestepMlp;
+    model.compatibility_architecture = TransformerArchitecture::kMossImage;
+    model.quantization = detect_transformer_quantization(checkpoint);
+    model.origin = "MOSS image tensor contract";
+    return model;
+  }
   model.compatibility_architecture = infer_legacy_architecture(checkpoint);
   model.quantization = detect_transformer_quantization(checkpoint);
   const auto legacy = model.compatibility_architecture;
@@ -186,7 +214,10 @@ TransformerArchitecture detect_transformer_architecture(const SafeTensors& check
 }
 
 TransformerQuantization detect_transformer_quantization(const SafeTensors& checkpoint) {
-  const TensorView* weight = checkpoint.find("blocks.0.attn.qkv_proj.weight");
+  std::string prefix = "blocks.0.attn.qkv_proj";
+  if (checkpoint.find("video_embedder.weight"))
+    prefix = checkpoint.find("layers.0.proj.qkv.weight") ? "layers.0.proj.qkv" : "layers.0.proj.q";
+  const TensorView* weight = checkpoint.find(prefix + ".weight");
   if (weight == nullptr)
     return TransformerQuantization::kUnknown;
   if (has(checkpoint, "blocks.0.attn.qkv_proj.weight.quant_state.bitsandbytes__nf4")) {
@@ -194,7 +225,11 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
   }
   if (weight->dtype == DType::kF8E4M3)
     return TransformerQuantization::kFloat8;
-  const TensorView* scale = checkpoint.find("blocks.0.attn.qkv_proj.weight_scale");
+  if (weight->dtype == DType::kBF16)
+    return TransformerQuantization::kBFloat16;
+  if (weight->dtype == DType::kF32)
+    return TransformerQuantization::kFloat32;
+  const TensorView* scale = checkpoint.find(prefix + ".weight_scale");
   if (weight->dtype == DType::kI8 && weight->shape.size() == 2 && scale != nullptr &&
       scale->dtype == DType::kF32 && scale->shape.size() == 2 &&
       scale->shape[0] == weight->shape[0] && scale->shape[1] == 1) {
@@ -208,6 +243,8 @@ TransformerQuantization detect_transformer_quantization(const SafeTensors& check
 
 const char* transformer_architecture_name(TransformerArchitecture architecture) {
   switch (architecture) {
+  case TransformerArchitecture::kMossImage:
+    return "MOSS Image transformer";
   case TransformerArchitecture::kPrunedTable:
     return "pruned AdaLN-table transformer";
   case TransformerArchitecture::kFastH3V2PrunedTable:
@@ -226,6 +263,10 @@ const char* transformer_architecture_name(TransformerArchitecture architecture) 
 
 const char* transformer_quantization_name(TransformerQuantization quantization) {
   switch (quantization) {
+  case TransformerQuantization::kBFloat16:
+    return "bfloat16";
+  case TransformerQuantization::kFloat32:
+    return "float32";
   case TransformerQuantization::kFloat8:
     return "float8";
   case TransformerQuantization::kInt8ConvRot:

@@ -1,4 +1,5 @@
 #include "slopfab/pipeline.h"
+#include "slopfab/model_profile.h"
 
 #include <algorithm>
 #include <cmath>
@@ -69,6 +70,8 @@ void append_media_identity(std::string& key, const GenerateRequest& request) {
 } // namespace
 
 GeneratePlan resolve_plan(const GenerateRequest& request) {
+  if (request_model_family(request) == "moss")
+    return resolve_moss_plan(request);
   if (request.bridge &&
       (request.continuation || request.continuation_lock_overlap || request.video_transition ||
        request.still_image || request.animate || request.image_edit.image ||
@@ -448,6 +451,16 @@ std::string media_encoding_cache_key(const GenerateRequest& request,
 }
 
 std::string describe_plan(const GenerateRequest& request, const GeneratePlan& plan) {
+  if (model_profile(plan.model.family).image_only) {
+    char info[1024];
+    std::snprintf(info, sizeof(info),
+        "model       %s\ncanvas      %d x %d\nmode        text-to-image\n"
+        "steps       %zu Euler updates (shift %.3g)\nguidance    %.3g\nseed        %llu\noutput      %s\n",
+        model_profile(plan.model.family).name, plan.canvas_width, plan.canvas_height,
+        plan.video_timesteps.size(), double(plan.video_sigma_shift), double(request.guidance_scale),
+        static_cast<unsigned long long>(request.seed), request.out_path.c_str());
+    return info;
+  }
   const dit::SequenceLayout& l = plan.layout;
   // The canvas line says where the number came from, because "1344 x 768" from
   // an explicit --resolution and the same figure derived from 16:9 are the same

@@ -64,6 +64,7 @@
 #endif
 
 #include "commands.h"
+#include "slopfab/model_profile.h"
 
 namespace slopfab::cli {
 uint64_t random_seed() {
@@ -136,15 +137,23 @@ void discover_generate_checkpoints(slopfab::GenerateRequest& req, const char* ex
   const std::filesystem::path weights = find_weights_directory(executable);
   if (weights.empty())
     return;
+  const auto& profile = model_profile(request_model_family(req));
+  if (profile.image_only)
+    req.still_image = true;
   if (req.text_encoder_path.empty())
-    req.text_encoder_path = find_checkpoint(weights / "text_encoder", "");
+    req.text_encoder_path = find_checkpoint(weights / "text_encoder", profile.conditioner_hint);
   if (req.transformer_path.empty()) {
-    const std::string_view architecture = req.has_references() ? "ref2va" : "fl2va";
+    const std::string_view architecture = req.has_references() ? "ref2va" : profile.transformer_hint;
     req.transformer_path = find_checkpoint(weights / "transformer", architecture);
   }
   if (req.video_vae_path.empty())
-    req.video_vae_path = find_checkpoint(weights / "vae", "video");
-  if (req.audio_vae_path.empty())
+    req.video_vae_path = find_checkpoint(weights / "vae", profile.vae_hint);
+  if (profile.image_only && req.tokenizer_path.empty()) {
+    const auto tokenizer = weights / "text_encoder" / "qwen3.5_tokenizer.json";
+    if (std::filesystem::exists(tokenizer))
+      req.tokenizer_path = tokenizer.string();
+  }
+  if (!profile.image_only && req.audio_vae_path.empty())
     req.audio_vae_path = find_checkpoint(weights / "vae", "audio");
 }
 

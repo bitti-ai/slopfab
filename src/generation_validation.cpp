@@ -10,6 +10,15 @@ void validate_generation_options(const GenerateRequest& r, const GeneratePlan& p
     if (!ok)
       throw std::invalid_argument(message);
   };
+  if (p.model.family == "moss") {
+    require(o.inference_backend == DeviceBackend::kCuda, "MOSS currently requires the CUDA backend");
+    require(!o.sampler || *o.sampler == sampler::SamplerKind::kEuler, "MOSS requires Euler sampling");
+    require(o.attention_mode == AttentionMode::kFlash2, "MOSS currently supports --attention flash2");
+    require(o.latent_upscale_model_path.empty() && o.upscale_model_path.empty() &&
+                o.save_latents_path.empty() && !o.on_latents && o.attention_band == 0,
+            "MOSS does not support H3 latent archives, upscaling or attention bands");
+    return;
+  }
   validate_sampling_sampler(p, o.sampler);
   validate_latent_upscale_options(o.latent_upscale);
   if (!o.latent_upscale_model_path.empty()) {

@@ -18,7 +18,8 @@ const json::Value& field(const json::Value& value, const char* name) {
 
 void byte_level(const json::Value& value, const std::string& name) {
   require(field(value, "type").as_string() == "ByteLevel", name);
-  for (const char* key : {"add_prefix_space", "use_regex", "trim_offsets"})
+  // trim_offsets affects offset reporting only; this tokenizer returns IDs.
+  for (const char* key : {"add_prefix_space", "use_regex"})
     if (const auto* v = value.find(key))
       require(!v->as_bool(), name + "." + key);
 }

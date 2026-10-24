@@ -16,6 +16,7 @@ enum class TransformerArchitecture {
   kRef2VAFullAdaLN,
   kViggleAnimatePrunedTable,
   kFastH3V2PrunedTable,
+  kMossImage,
 };
 
 constexpr bool is_pruned_table_architecture(TransformerArchitecture architecture) {
@@ -31,6 +32,8 @@ enum class TransformerQuantization {
   kInt8ConvRot,
   kNativeNVFP4,
   kBitsAndBytesNF4,
+  kBFloat16,
+  kFloat32,
 };
 
 // Validated graph facts, independent of distribution filenames. Explicit metadata
