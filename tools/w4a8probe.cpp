@@ -9,7 +9,7 @@
 int main(int argc, char** argv) {
   try {
     if (argc != 5)
-      throw std::invalid_argument("w4a8probe MODEL PROJECTION INPUT_OUTPUT_PREFIX");
+      throw std::invalid_argument("w4a8probe MODEL PROJECTION INPUT OUTPUT");
     using namespace slopfab;
     SafeTensors st, input;
     st.open(argv[1]);

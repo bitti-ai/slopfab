@@ -284,11 +284,12 @@ void test_w4a8_state() {
   CHECK(!is_w4a8_weight(st,"absent.weight"));
   CHECK(read_w4a8_state(st,"layer.weight","test").convrot_group_size==256);
   validate_w4a8_weight(st,"layer.weight",2,256);
-  CHECK(throws([&]{validate_w4a8_weight(st,"layer.weight",2,512);}));
+  const auto rejected = [](const auto& fn) { try { fn(); return false; } catch (const std::exception&) { return true; } };
+  CHECK(rejected([&]{validate_w4a8_weight(st,"layer.weight",2,512);}));
   st.close();std::filesystem::remove(global_path,ec);
   packed[256]=0x7f;
   const std::string bad_path=write_temp_safetensors(make_header(global),packed,"slopfab_w4a8_bad.safetensors");
-  st.open(bad_path);CHECK(throws([&]{validate_w4a8_weight(st,"layer.weight",2,256);}));
+  st.open(bad_path);CHECK(rejected([&]{validate_w4a8_weight(st,"layer.weight",2,256);}));
   st.close();std::filesystem::remove(bad_path,ec);
 }
 

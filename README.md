@@ -106,6 +106,8 @@ licenses. Linux packages use external GPU and media runtimes.
 
 ## Models
 
+For the H3 W4A8 ConvRot transformer, see [packed INT4 setup](docs/w4a8.md).
+
 For Fibo 2.0 Edit Turbo, see [Fibo setup and DLL usage](docs/fibo2.md).
 
 For MOSS Image SFT, see [MOSS setup and usage](docs/moss.md). For example:
