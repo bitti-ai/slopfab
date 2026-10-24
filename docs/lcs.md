@@ -56,7 +56,12 @@ must not throw. It can run for minutes depending on the VAE and GPU.
 The archive contains the raw-space basis `[96,3]`, mean `[96]`, color anchors
 `[8,3]`, model normalization `[24]`, sharpness direction `[96]`, explained color
 variance, and a SHA-256 fingerprint of the entire VAE file. Generation checks
-that fingerprint. Recalibrate after changing or quantizing the VAE. The same
+that fingerprint. Full-file hashes are cached for the lifetime of the loaded
+library, so unchanged VAEs are not reread for every generation. Cache hits check
+file identity, size, modification time and filesystem change time. Replacing or
+editing a VAE invalidates the entry, including same-size edits with restored
+modification times. Failed or changing reads never populate the cache.
+Recalibrate after changing or quantizing the VAE. The same
 archive can be used by both backends with that VAE; neither generation nor
 calibration downloads files. ComfyUI-LCS calibration files are not this archive
 format and cannot be loaded directly.

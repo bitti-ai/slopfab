@@ -1,4 +1,5 @@
 #include "slopfab/lcs.h"
+#include "lcs_fingerprint_cache.h"
 #include "slopfab/json.h"
 #include "slopfab/safetensors.h"
 #include "slopfab/safetensors_write.h"
@@ -206,14 +207,17 @@ V rgb_hsl(V rgb) {
 } // namespace
 
 std::string lcs_vae_fingerprint(const std::string& path) {
-  const auto digest = sha256_file(path);
-  const char* hex = "0123456789abcdef";
-  std::string s;
-  for (uint8_t b : digest) {
-    s += hex[b >> 4];
-    s += hex[b & 15];
-  }
-  return s;
+  static detail::LcsFingerprintCache cache;
+  return cache.get(path, [](const std::string& source) {
+    const auto digest = sha256_file(source);
+    const char* hex = "0123456789abcdef";
+    std::string s;
+    for (uint8_t b : digest) {
+      s += hex[b >> 4];
+      s += hex[b & 15];
+    }
+    return s;
+  });
 }
 
 void LcsData::validate() const {

@@ -1,5 +1,8 @@
 #include "harness.h"
 #include "slopfab/lcs.h"
+#include "../src/core/lcs_fingerprint_cache.h"
+#include <fstream>
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -149,4 +152,41 @@ SLOPFAB_TEST(lcs_settings_and_anchor_isolation) {
   CHECK(second(step));
   for (float x : values)
     CHECK(x == .8f);
+}
+
+SLOPFAB_TEST(lcs_fingerprint_reuses_unchanged_files_and_invalidates_edits) {
+  namespace fs = std::filesystem;
+  const auto folder = fs::temp_directory_path() / ("lcs-fingerprint-" +
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  fs::create_directory(folder);
+  struct Cleanup { fs::path folder; ~Cleanup() { std::error_code ec; fs::remove_all(folder, ec); } } cleanup{folder};
+  const auto path = folder / "vae";
+  const auto write = [](const fs::path& p, const char* content) { std::ofstream(p, std::ios::binary) << content; };
+  write(path, "first");
+  slopfab::detail::LcsFingerprintCache cache;
+  int reads = 0;
+  const auto hash = [&](const std::string& p) { ++reads; return slopfab::lcs_vae_fingerprint(p); };
+  const auto first = cache.get(path.string(), hash);
+  CHECK(first.size() == 64);
+  CHECK(cache.get(path.string(), hash) == first);
+  CHECK(reads == 1);
+  const auto modified = fs::last_write_time(path);
+  write(path, "other");
+  fs::last_write_time(path, modified);
+  const auto second = cache.get(path.string(), hash);
+  CHECK(second != first);
+  CHECK(reads == 2);
+  const auto replacement = folder / "replacement";
+  write(replacement, "third");
+  fs::last_write_time(replacement, modified);
+  fs::remove(path); fs::rename(replacement, path);
+  CHECK(cache.get(path.string(), hash) != second);
+  CHECK(reads == 3);
+  fs::remove(path);
+  CHECK(rejects([&] { cache.get(path.string(), hash); }));
+  write(path, "first");
+  CHECK(rejects([&] { cache.get(path.string(), [](const std::string&) -> std::string { throw std::runtime_error("read failed"); }); }));
+  CHECK(rejects([&] { cache.get(path.string(), [&](const std::string&) { write(path, "changed during hash"); return "bad"; }); }));
+  CHECK(cache.get(path.string(), hash) != "bad");
+  CHECK(reads == 4);
 }
