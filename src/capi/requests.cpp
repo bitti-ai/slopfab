@@ -213,6 +213,37 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit(slopfab_request*
   return SLOPFAB_OK;
 }
 
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_mask_u8(
+    slopfab_request* request, const uint8_t* mask, size_t buffer_bytes,
+    int32_t width, int32_t height, size_t row_stride_bytes) {
+  if (!request || !mask || !request->request.image_edit.image)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "edit mask requires a source image and pixel buffer");
+  return reference_input_guarded([&] {
+    auto edit = request->request.image_edit;
+    if (width != edit.image->width || height != edit.image->height || edit.invert_mask)
+      throw std::invalid_argument("edit mask requires source dimensions and non-inverted editing");
+    // Division checks the last-row offset without overflowing size_t. The last
+    // row need not include trailing stride padding.
+    if (row_stride_bytes < size_t(width) || buffer_bytes < size_t(width) ||
+        size_t(height - 1) > (buffer_bytes - size_t(width)) / row_stride_bytes)
+      throw std::invalid_argument("edit mask buffer or row stride is too small");
+    auto snapshot = std::make_shared<std::vector<uint8_t>>(size_t(width) * height);
+    for (int y = 0; y < height; ++y)
+      std::copy_n(mask + size_t(y) * row_stride_bytes, width,
+                  snapshot->data() + size_t(y) * width);
+    edit.mask = std::move(snapshot);
+    edit.validate();
+    request->request.image_edit = std::move(edit);
+  });
+}
+
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit_mask(slopfab_request* request) {
+  if (!request)
+    return fail(SLOPFAB_ERR_INVALID_ARGUMENT, "clear edit mask: null request");
+  request->request.image_edit.mask.reset();
+  return SLOPFAB_OK;
+}
+
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_invert_mask(
     slopfab_request* request, int32_t enable) {
   if (!request || (enable != 0 && enable != 1) || !request->request.image_edit.image)

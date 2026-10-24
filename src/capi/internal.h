@@ -425,6 +425,7 @@ inline void run_worker(slopfab_generation* gen) {
   gen->request.continuation.reset();
   gen->request.bridge.reset();
   gen->request.image_edit.image.reset();
+  gen->request.image_edit.mask.reset();
   gen->session.reset();
   // Released before `finish`, so a caller woken by `slopfab_generation_wait`
   // can start the next run immediately rather than racing this thread's

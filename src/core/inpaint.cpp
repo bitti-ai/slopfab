@@ -9,16 +9,24 @@ namespace slopfab {
 void ImageEdit::validate() const {
   if (!image) {
     if (x || y || width || height || feather || strength != 1.0f || invert_mask || blend_overlap != 9 ||
-        langevin_steps != 5)
+        langevin_steps != 5 || mask)
       throw std::invalid_argument("image edit settings require a source image");
     return;
   }
   if (image->width <= 0 || image->height <= 0 || image->width > 8192 || image->height > 8192 ||
       image->pixels.size() != size_t(image->width) * image->height * 3)
     throw std::invalid_argument("image edit requires valid RGB pixels, at most 8192 per axis");
-  if (x < 0 || y < 0 || width <= 0 || height <= 0 || int64_t(x) + width > image->width ||
-      int64_t(y) + height > image->height)
+  if (!mask && (x < 0 || y < 0 || width <= 0 || height <= 0 || int64_t(x) + width > image->width ||
+      int64_t(y) + height > image->height))
     throw std::invalid_argument("edit box must be nonempty and inside the source image");
+  if (mask) {
+    if (mask->size() != size_t(image->width) * image->height)
+      throw std::invalid_argument("edit mask dimensions must match the source image");
+    if (std::none_of(mask->begin(), mask->end(), [](uint8_t value) { return value != 0; }))
+      throw std::invalid_argument("edit mask must select at least one pixel");
+    if (invert_mask)
+      throw std::invalid_argument("pixel masks cannot use rectangular outpainting; invert the mask bytes instead");
+  }
   if (!std::isfinite(strength) || strength <= 0 || strength > 1 || feather < 0)
     throw std::invalid_argument("edit strength must be in (0,1] and feather nonnegative");
   if (blend_overlap < 1 || blend_overlap > 51 || blend_overlap % 2 == 0)
@@ -114,6 +122,18 @@ std::vector<float> edit_mask_rows(const ImageEdit& edit, int width, int height) 
   layout.latent_height = height / 16;
   const size_t plane = size_t(layout.latent_width) * layout.latent_height;
   std::vector<float> mask(24 * plane, edit.invert_mask ? 1.0f : 0.0f), rows(mask.size());
+  if (edit.mask) {
+    // Max-pool nonzero pixel coverage into binary latent cells, retaining thin
+    // strokes and sub-cell selections. Alignment padding is never selected.
+    for (int y = 0; y < edit.image->height; ++y)
+      for (int x = 0; x < edit.image->width; ++x)
+        if ((*edit.mask)[size_t(y) * edit.image->width + x])
+          mask[size_t(y / 16) * layout.latent_width + x / 16] = 1;
+    for (int c = 1; c < 24; ++c)
+      std::copy_n(mask.data(), plane, mask.data() + c * plane);
+    dit::patchify_video(mask.data(), layout, rows.data());
+    return rows;
+  }
   // Any overlap makes a latent cell editable. Pixel-space compositing enforces
   // the exact box even for sub-cell selections and unaligned edges.
   // In outpaint mode only cells fully inside the original stay locked, so
@@ -177,7 +197,9 @@ PixelBuffer composite_image_edit(const ImageEdit& edit, const PixelBuffer& gener
   for (int y = 0; y < src.height; ++y) {
     for (int x = 0; x < src.width; ++x) {
       float alpha = 0;
-      if (x >= edit.x && x < edit.x + edit.width && y >= edit.y && y < edit.y + edit.height) {
+      if (edit.mask) {
+        alpha = (*edit.mask)[size_t(y) * src.width + x] / 255.0f;
+      } else if (x >= edit.x && x < edit.x + edit.width && y >= edit.y && y < edit.y + edit.height) {
         alpha = 1;
         if (edit.feather) {
           const float distance = float(std::min({x - edit.x, edit.x + edit.width - 1 - x,

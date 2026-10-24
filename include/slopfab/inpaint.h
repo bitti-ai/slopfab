@@ -10,8 +10,9 @@
 namespace slopfab {
 
 // Source pixels are an immutable snapshot. The half-open box uses source
-// coordinates; feathering stays inside it. Internal padding never changes
-// output dimensions. A null image disables editing.
+// coordinates; feathering stays inside it. A pixel mask overrides the box and
+// feather. Internal padding never changes output dimensions. A null image
+// disables editing.
 struct ImageEdit {
   std::shared_ptr<const RGBImage> image;
   int x = 0, y = 0, width = 0, height = 0;
@@ -20,6 +21,11 @@ struct ImageEdit {
   bool invert_mask = false; // outpaint: box is source context; generate its entire surround
   int blend_overlap = 9; // outpaint only: odd dilation/blur kernel, 1..51; 1 = hard edge
   int langevin_steps = 5; // outpaint only: extra model evaluations per step, 0..100
+  // Optional immutable, tightly packed image-width * image-height coverage.
+  // 0 preserves, 255 replaces; intermediate values blend at final compositing.
+  // Supply antialiasing/feathering in these bytes. Any nonzero coverage unlocks
+  // its latent cell. Cannot be combined with rectangular outpainting.
+  std::shared_ptr<const std::vector<uint8_t>> mask;
   void validate() const;
 };
 

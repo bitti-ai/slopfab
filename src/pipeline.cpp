@@ -518,9 +518,12 @@ std::string describe_plan(const GenerateRequest& request, const GeneratePlan& pl
   description += std::string("  sampler             ") + sampler::sampler_name(plan.sampler) + "\n";
   if (request.image_edit.image) {
     const auto& e = request.image_edit;
-    description += "  image edit          box " + std::to_string(e.x) + "," + std::to_string(e.y) +
-                   "," + std::to_string(e.width) + "," + std::to_string(e.height) + "; strength " +
-                   std::to_string(e.strength) + "; feather " + std::to_string(e.feather) +
+    description += "  image edit          " +
+                   (e.mask ? std::string("pixel mask (U8 coverage)") :
+                    "box " + std::to_string(e.x) + "," + std::to_string(e.y) + "," +
+                    std::to_string(e.width) + "," + std::to_string(e.height) +
+                    "; feather " + std::to_string(e.feather)) +
+                   "; strength " + std::to_string(e.strength) +
                    (e.invert_mask ? "; outpaint (preserve box); blend overlap " +
                                         std::to_string(e.blend_overlap) + "; Langevin steps " +
                                         std::to_string(e.langevin_steps) : "") +

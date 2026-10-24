@@ -91,7 +91,7 @@ extern "C" {
  * A binding should compare `slopfab_capi_version()` against the value it was
  * compiled with and refuse a different MAJOR. */
 #define SLOPFAB_CAPI_VERSION_MAJOR 1
-#define SLOPFAB_CAPI_VERSION_MINOR 31
+#define SLOPFAB_CAPI_VERSION_MINOR 32
 #define SLOPFAB_CAPI_VERSION_PATCH 0
 
 /* Packed as (major << 24) | (minor << 12) | patch.
@@ -551,7 +551,8 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_still_image(slopfab_request* 
  * and bottom edges. Strength is in (0,1]; feather is inward in pixels (>=0).
  * RGB24 permits positive row padding. Source dimensions are limited to 8192.
  * Outside the box, output pixels equal source RGB bytes divided by 255.
- * Requires Euler denoising, a VAE with encoder weights, and no sampling caches.
+ * Requires Euler or re-noising, a VAE with encoder weights, and no sampling caches.
+ * Attaching a new source clears any pixel mask.
  * Clearing the edit retains still-image mode. */
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_path(slopfab_request* request,
                                                                    const char* path, int32_t x,
@@ -563,6 +564,23 @@ SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_rgb24(
     int32_t image_height, size_t row_stride_bytes, int32_t x, int32_t y, int32_t width,
     int32_t height, float strength, int32_t feather);
 SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit(slopfab_request* request);
+
+/* Since 1.32. Attach a copied, source-sized U8 pixel mask to an existing image
+ * edit. Overrides the rectangle and its feather: 0 preserves exactly, 255
+ * replaces, and intermediate values blend source/generated pixels. Supply
+ * feathering/antialiasing in the mask. Any nonzero pixel unlocks its H3 16x16
+ * latent cell; final compositing enforces the exact pixel coverage.
+ * Dimensions must equal the source; positive row padding is allowed and the
+ * final row needs only width bytes. Empty selections are rejected; full-image
+ * selections are allowed. Requires non-inverted editing. To invert a selection,
+ * submit 255-value bytes; rectangular outpainting is a separate mode.
+ * Copies before returning; failed calls leave the request unchanged. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_set_image_edit_mask_u8(
+    slopfab_request* request, const uint8_t* mask, size_t buffer_bytes,
+    int32_t width, int32_t height, size_t row_stride_bytes);
+/* Since 1.32. Remove the pixel mask, restoring the original rectangle and
+ * feather. No-op if no mask is attached; null request is invalid. */
+SLOPFAB_C_API int SLOPFAB_CALL slopfab_request_clear_image_edit_mask(slopfab_request* request);
 
 /* Since 1.20. Invert an existing image edit: use its box as source context and
  * generate all surrounding pixels together. Since 1.28, the default final blend

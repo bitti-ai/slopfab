@@ -177,6 +177,75 @@ SLOPFAB_TEST(capi_image_edit_snapshot_validation_and_clear) {
   slopfab_request_destroy(request);
 }
 
+SLOPFAB_TEST(capi_image_edit_pixel_mask_snapshot_validation_and_reset) {
+  auto* request = slopfab_request_create();
+  std::vector<uint8_t> pixels(35 * 33 * 3, 123);
+  std::vector<uint8_t> mask(40 * 32 + 35, 0); // no final-row padding
+  mask.back() = 128;
+  const auto set_mask = [&] {
+    return slopfab_request_set_image_edit_mask_u8(request, mask.data(), mask.size(), 35, 33, 40);
+  };
+  CHECK(set_mask() == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_image_edit_mask_u8(nullptr, mask.data(), mask.size(), 35, 33, 40) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  const auto set_source = [&] {
+    return slopfab_request_set_image_edit_rgb24(request, pixels.data(), pixels.size(), 35, 33,
+                                               35 * 3, 0, 0, 32, 32, .5f, 0);
+  };
+  const auto description = [&] {
+    char* text = nullptr;
+    CHECK(slopfab_describe_plan(request, &text) == SLOPFAB_OK);
+    std::string result(text ? text : "");
+    slopfab_free_string(text);
+    return result;
+  };
+  CHECK(set_source() == SLOPFAB_OK);
+  CHECK(set_mask() == SLOPFAB_OK);
+  const auto masked = description();
+  CHECK(masked.find("pixel mask (U8 coverage)") != std::string::npos);
+  // Destroy the caller's only selected pixel. The DLL must keep its snapshot.
+  mask.back() = 0;
+  CHECK(description() == masked);
+  CHECK(set_mask() == SLOPFAB_ERR_INVALID_ARGUMENT);
+  // Nonzero row padding must not turn an empty selection into a valid mask.
+  mask[35] = 255;
+  CHECK(set_mask() == SLOPFAB_ERR_INVALID_ARGUMENT);
+  mask.back() = 255;
+  CHECK(slopfab_request_set_image_edit_mask_u8(request, nullptr, mask.size(), 35, 33, 40) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_image_edit_mask_u8(request, mask.data(), mask.size() - 1, 35, 33, 40) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  for (size_t stride : {size_t(0), size_t(34), std::numeric_limits<size_t>::max()})
+    CHECK(slopfab_request_set_image_edit_mask_u8(request, mask.data(), mask.size(), 35, 33, stride) ==
+          SLOPFAB_ERR_INVALID_ARGUMENT);
+  for (int width : {-1, 0, 34, 36, std::numeric_limits<int>::max()})
+    CHECK(slopfab_request_set_image_edit_mask_u8(request, mask.data(), mask.size(), width, 33, 40) ==
+          SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_image_edit_mask_u8(request, mask.data(), mask.size(), 35, 32, 40) ==
+        SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_set_image_edit_invert_mask(request, 1) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(description() == masked); // all failures leave the prior mask/settings intact
+  CHECK(slopfab_request_clear_image_edit_mask(nullptr) == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(slopfab_request_clear_image_edit_mask(request) == SLOPFAB_OK);
+  CHECK(description().find("box 0,0,32,32") != std::string::npos);
+  CHECK(slopfab_request_set_image_edit_invert_mask(request, 1) == SLOPFAB_OK);
+  CHECK(set_mask() == SLOPFAB_ERR_INVALID_ARGUMENT);
+  CHECK(description().find("outpaint") != std::string::npos);
+  CHECK(slopfab_request_set_image_edit_invert_mask(request, 0) == SLOPFAB_OK);
+  CHECK(set_mask() == SLOPFAB_OK);
+  CHECK(set_source() == SLOPFAB_OK);
+  CHECK(description().find("pixel mask") == std::string::npos);
+  CHECK(set_mask() == SLOPFAB_OK);
+  mask.clear();
+  mask.shrink_to_fit();
+  CHECK(description() == masked);
+  CHECK(slopfab_request_clear_image_edit(request) == SLOPFAB_OK);
+  CHECK(slopfab_request_clear_image_edit_mask(request) == SLOPFAB_OK);
+  CHECK(set_source() == SLOPFAB_OK);
+  CHECK(description().find("pixel mask") == std::string::npos);
+  slopfab_request_destroy(request);
+}
+
 SLOPFAB_TEST(capi_dmad_image_edits_and_outpainting) {
   auto* request = slopfab_request_create();
   std::vector<uint8_t> pixels(64 * 64 * 3, 123);

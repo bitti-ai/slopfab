@@ -56,6 +56,109 @@ SLOPFAB_TEST(inpaint_composite_preserves_every_outside_pixel) {
   CHECK(output[0] == edit.image->pixels[0] / 255.0f);
 }
 
+SLOPFAB_TEST(inpaint_pixel_mask_preserves_holes_and_blends_soft_edges) {
+  auto edit = edit_fixture();
+  const int w = edit.image->width, h = edit.image->height;
+  std::vector<uint8_t> pixels(w * h);
+  // An irregular ring with a hole, a faint single-pixel island, and coverage
+  // at the unaligned bottom-right source edge, outside the old edit box.
+  for (int y = 2; y < 29; ++y)
+    for (int x = 2; x < 29; ++x)
+      if (x < 5 || y < 5 || x > 25 || y > 25)
+        pixels[y * w + x] = (x + y) % 2 ? 128 : 255;
+  pixels[30 * w + 31] = 1;
+  pixels.back() = 255;
+  edit.mask = std::make_shared<const std::vector<uint8_t>>(pixels);
+  edit.feather = 100; // overridden, along with the old rectangle
+  for (bool inverted : {false, true}) {
+    if (inverted) {
+      for (auto& value : pixels) value = 255 - value;
+      edit.mask = std::make_shared<const std::vector<uint8_t>>(pixels);
+    }
+    slopfab::PixelBuffer generated(3 * 64 * 64, .9f);
+    for (int c = 0; c < 3; ++c)
+      for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+          if (pixels[y * w + x] == 0)
+            generated[(c * 64 + y) * 64 + x] = std::numeric_limits<float>::quiet_NaN();
+    const auto output = slopfab::composite_image_edit(edit, generated, 64, 64);
+    CHECK(output.size() == size_t(3 * w * h));
+    for (int c = 0; c < 3; ++c)
+      for (int p = 0; p < w * h; ++p) {
+        const float original = edit.image->pixels[p * 3 + c] / 255.0f;
+        const float alpha = pixels[p] / 255.0f;
+        if (!pixels[p]) CHECK(output[c * w * h + p] == original);
+        else CHECK_NEAR(output[c * w * h + p], alpha * .9f + (1 - alpha) * original, 1e-7);
+      }
+  }
+}
+
+SLOPFAB_TEST(inpaint_pixel_mask_unlocks_only_touched_cells_and_ignores_padding) {
+  auto edit = edit_fixture();
+  std::vector<uint8_t> pixels(35 * 33);
+  pixels[0] = 1;
+  pixels[15 * 35 + 15] = 128;
+  pixels[16 * 35 + 32] = 255;
+  pixels[32 * 35 + 34] = 255;
+  edit.mask = std::make_shared<const std::vector<uint8_t>>(pixels);
+  const auto rows = slopfab::edit_mask_rows(edit, 64, 64);
+  slopfab::dit::SequenceLayout layout;
+  layout.num_latent_frames = 1;
+  layout.latent_width = layout.latent_height = 4;
+  std::vector<float> unpacked(rows.size());
+  slopfab::dit::unpatchify_video(rows.data(), layout, unpacked.data());
+  for (int c = 0; c < 24; ++c)
+    for (int y = 0; y < 4; ++y)
+      for (int x = 0; x < 4; ++x)
+        CHECK(unpacked[c * 16 + y * 4 + x] ==
+              ((x == 0 && y == 0) || (x == 2 && (y == 1 || y == 2)) ? 1.f : 0.f));
+  slopfab::InpaintConstraint constraint{std::vector<float>(rows.size(), 2),
+                                       std::vector<float>(rows.size(), 10), rows};
+  constraint.validate(rows.size());
+  for (float sigma : {.75f, .25f, 0.f}) {
+    std::vector<float> latent(rows.size(), -1);
+    constraint.apply(latent.data(), latent.size(), sigma);
+    for (size_t i = 0; i < rows.size(); ++i)
+      CHECK(latent[i] == (rows[i] ? -1.f : 2 + 8 * sigma));
+  }
+  // A fully selected, unaligned source still leaves padding-only cells locked.
+  edit.mask = std::make_shared<const std::vector<uint8_t>>(35 * 33, 255);
+  const auto full = slopfab::edit_mask_rows(edit, 64, 64);
+  slopfab::dit::unpatchify_video(full.data(), layout, unpacked.data());
+  for (int c = 0; c < 24; ++c)
+    for (int y = 0; y < 4; ++y)
+      for (int x = 0; x < 4; ++x)
+        CHECK(unpacked[c * 16 + y * 4 + x] == (x < 3 && y < 3 ? 1.f : 0.f));
+}
+
+SLOPFAB_TEST(inpaint_pixel_mask_validates_source_shape_and_selection) {
+  auto edit = edit_fixture();
+  const auto rejected = [&] {
+    try { edit.validate(); return false; }
+    catch (const std::invalid_argument&) { return true; }
+  };
+  for (size_t size : {size_t(0), size_t(35 * 33 - 1), size_t(35 * 33 + 1)}) {
+    edit.mask = std::make_shared<const std::vector<uint8_t>>(size, 255);
+    CHECK(rejected());
+  }
+  edit.mask = std::make_shared<const std::vector<uint8_t>>(35 * 33, 0);
+  CHECK(rejected());
+  edit.mask = std::make_shared<const std::vector<uint8_t>>(35 * 33, 255);
+  edit.x = edit.y = edit.width = edit.height = 0; // C++ mask-only edit
+  edit.validate();
+  edit.invert_mask = true;
+  CHECK(rejected());
+  edit.invert_mask = false;
+  slopfab::GenerateRequest request;
+  request.still_image = true;
+  request.image_edit = edit;
+  const auto plan = slopfab::resolve_plan(request);
+  CHECK(plan.canvas_width == 64 && plan.canvas_height == 64);
+  CHECK(plan.layout.num_condition_video == 0);
+  edit.image.reset();
+  CHECK(rejected());
+}
+
 SLOPFAB_TEST(outpaint_encoding_is_independent_of_unknown_canvas_pixels) {
   auto dark = std::make_shared<slopfab::RGBImage>();
   dark->width = dark->height = 96;
