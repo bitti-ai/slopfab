@@ -57,6 +57,25 @@ bool marks_fasth3_v2(const SafeTensors& st) {
   return identity.find("fasth38stepv2") != std::string::npos;
 }
 
+void reject_unsupported_pdd(const SafeTensors& st) {
+  // OmniRef's pruned PDD export shares the H3 backbone and VSA gate names,
+  // but predicts multiple fine-grid velocities per token. Neither a filename
+  // alias nor explicit legacy metadata can turn those widened heads into the
+  // single-velocity heads implemented by our CUDA and Vulkan runners.
+  const auto* video = st.find("final_layer.video_out.weight");
+  const auto* audio = st.find("final_layer.audio_out.weight");
+  if (!has(st, "blocks.0.attn.to_gate_compress.weight") || !video || !audio ||
+      video->shape.size() != 2 || audio->shape.size() != 2)
+    return;
+  const int64_t heads = video->shape[0] / 96;
+  if (heads > 1 && video->shape[0] % 96 == 0 && audio->shape[0] == heads * 32 &&
+      video->shape[1] == audio->shape[1])
+    throw std::invalid_argument(
+        "transformer: FastH3 OmniRef/PDD checkpoint (" + std::to_string(heads) +
+        " output heads) is not supported; requires PDD output decoding and sampling "
+        "plus reference-aware VSA. Use a supported H3 Ref2VA checkpoint instead");
+}
+
 } // namespace
 
 static TransformerArchitecture infer_legacy_architecture(const SafeTensors& checkpoint) {
@@ -93,6 +112,7 @@ void validate_adaln_table_config(int rank, int rows) {
 }
 
 ModelDescriptor resolve_model_descriptor(const SafeTensors& checkpoint) {
+  reject_unsupported_pdd(checkpoint);
   ModelDescriptor model;
   if (has(checkpoint, "video_embedder.weight") && has(checkpoint, "shared_block_modulation.weight")) {
     const auto shape = [&](const std::string& key, std::vector<int64_t> expected) {

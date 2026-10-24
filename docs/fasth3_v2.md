@@ -17,3 +17,22 @@ Checkpoint identification requires the gate tensors plus `fasth3_8step_v2` in th
 This model is for text-to-video/audio. Reference conditioning, continuation, frame-banded attention, and step/block caching are not supported with it. The text refiner keeps dense attention. Geometry is limited to 4,096 tiles.
 
 Reference: [FastVideo model card](https://huggingface.co/FastVideo/FastVideo-FastH3-8-Step-V2) and [published inference contract](https://huggingface.co/FastVideo/FastVideo-FastH3-8-Step-V2/blob/main/fastvideo_inference.json).
+
+## FastH3 OmniRef compatibility
+
+The `fasth3_omniref_8step_pruned_int8_convrot.safetensors` release is not
+supported by the FastH3 V2 runner. Its metadata declares `pdd_steps: 32`, and
+its final video/audio heads have 3072/1024 output rows instead of 96/32.
+These are Parallel Decoding Distillation (PDD) heads, requiring output decoding
+and sampling that the current runners do not implement. OmniRef also needs
+reference-aware VSA layouts and its own inference recipe.
+
+Version 1.32.1 detects the widened heads during plan validation and reports
+`FastH3 OmniRef/PDD checkpoint (32 output heads) is not supported`, before
+loading the transformer. Renaming the file to FastH3 V2 or supplying legacy
+model metadata does not make the tensor layout compatible. For current
+reference conditioning and image edits, use a supported MiniMax H3 Ref2VA
+checkpoint.
+
+See the [official OmniRef PDD example](https://github.com/hao-ai-lab/FastVideo/blob/main/examples/inference/basic/basic_fasth3_omniref_pdd.py)
+for its separate model and sampling contract.

@@ -4,6 +4,7 @@
 #include "slopfab/text/tokenizer.h"
 #include "slopfab/text/encoder.h"
 #include "slopfab/nf4.h"
+#include "slopfab/pipeline.h"
 #include <fstream>
 #include <filesystem>
 #include <stdexcept>
@@ -92,6 +93,55 @@ SLOPFAB_TEST(model_descriptor_compression_is_independent_of_release) {
   const auto model = dit::resolve_model_descriptor(fixture.file);
   CHECK(model.compressed_attention && model.qkv_interleaved);
   CHECK(model.compatibility_architecture == dit::TransformerArchitecture::kPrunedTable);
+}
+
+SLOPFAB_TEST(model_descriptor_reports_pdd_before_loading_or_legacy_aliases) {
+  ModelFixture fixture;
+  // Keep the output dimensions from the released OmniRef export, using a
+  // small hidden dimension so this header-only contract needs no checkpoint.
+  const std::vector<TensorWrite> tensors = {
+      {"adaln_t_table", {1025, 8}, std::vector<float>(1025 * 8)},
+      {"blocks.0.adaln_proj.linear.weight", {18, 8}, std::vector<float>(18 * 8)},
+      {"blocks.0.attn.to_gate_compress.weight", {8, 8}, std::vector<float>(64)},
+      {"final_layer.video_out.weight", {3072, 8}, std::vector<float>(3072 * 8)},
+      {"final_layer.audio_out.weight", {1024, 8}, std::vector<float>(1024 * 8)}};
+  const auto rejects_pdd = [&](auto action) {
+    try { action(); return false; }
+    catch (const std::invalid_argument& e) {
+      const std::string message = e.what();
+      return message.find("FastH3 OmniRef/PDD") != std::string::npos &&
+             message.find("32 output heads") != std::string::npos &&
+             message.find("not supported") != std::string::npos;
+    }
+  };
+  for (int variant = 0; variant < 3; ++variant) {
+    fixture.file.close();
+    std::map<std::string, std::string> metadata;
+    if (variant == 0)
+      metadata = {{"source", "transformer_ref"},
+                  {"config", R"({"transformer":{"pdd_steps":32}})"}};
+    if (variant == 1)
+      metadata = {{"model_id", "FastVideo/FastVideo-FastH3-8-Step-V2"}};
+    if (variant == 2)
+      metadata = {{"slopfab.model",
+          R"({"version":1,"family":"h3","modulation":"table","supports_references":true,"compressed_attention":true,"qkv_layout":"contiguous"})"}};
+    write_safetensors(fixture.path.string(), tensors, metadata);
+    fixture.file.open(fixture.path.string());
+    CHECK(rejects_pdd([&] { dit::resolve_model_descriptor(fixture.file); }));
+    GenerateRequest request;
+    request.transformer_path = fixture.path.string();
+    CHECK(rejects_pdd([&] { resolve_plan(request); }));
+  }
+  // Ordinary FastH3 V2 heads must retain their existing architecture/schedule.
+  fixture.file.close();
+  auto ordinary = tensors;
+  ordinary[3] = {"final_layer.video_out.weight", {96, 8}, std::vector<float>(96 * 8)};
+  ordinary[4] = {"final_layer.audio_out.weight", {32, 8}, std::vector<float>(32 * 8)};
+  write_safetensors(fixture.path.string(), ordinary,
+                    {{"model_id", "FastVideo/FastVideo-FastH3-8-Step-V2"}});
+  fixture.file.open(fixture.path.string());
+  CHECK(dit::detect_transformer_architecture(fixture.file) ==
+        dit::TransformerArchitecture::kFastH3V2PrunedTable);
 }
 
 SLOPFAB_TEST(tokenizer_rejects_incompatible_algorithms) {
